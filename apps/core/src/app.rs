@@ -93,7 +93,8 @@ impl App {
 
 fn panicked(log: &Logger, reporter: &Reporter) {
     let fault = Fault::new(code!("core.panicked"), "The core panicked");
-    log.fatal("panicked", &[("err", Field::error(&fault))]);
+    // The daemon survives a panic in one client task, so this is an error, not fatal.
+    log.error("panicked", &[("err", Field::error(&fault))]);
     reporter.capture_error(&fault, fault.code(), log);
 }
 
@@ -235,7 +236,7 @@ mod tests {
         let body = String::from_utf8_lossy(&uploads.lock().unwrap()[0].body).into_owned();
 
         assert_eq!(record.msg, "panicked");
-        assert_eq!(record.level, Level::Fatal);
+        assert_eq!(record.level, Level::Error);
         assert!(body.contains("core.panicked"), "{body}");
     }
 

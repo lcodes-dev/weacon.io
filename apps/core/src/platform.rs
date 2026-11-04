@@ -90,17 +90,28 @@ mod unix {
         Ok(stream.peer_cred()?.uid())
     }
 
-    /// Waits for Ctrl-C or SIGTERM.
-    pub(crate) async fn shutdown_signal() -> io::Result<()> {
-        use tokio::signal::unix::{SignalKind, signal};
+    /// Ctrl-C and SIGTERM, caught from when this is made; needs a tokio runtime.
+    pub(crate) struct Signals {
+        interrupt: Signal,
+        terminate: Signal,
+    }
 
-        let mut interrupt = signal(SignalKind::interrupt())?;
-        let mut terminate = signal(SignalKind::terminate())?;
-        tokio::select! {
-            _ = interrupt.recv() => {}
-            _ = terminate.recv() => {}
+    use tokio::signal::unix::{Signal, SignalKind, signal};
+
+    impl Signals {
+        pub(crate) fn new() -> io::Result<Self> {
+            Ok(Self {
+                interrupt: signal(SignalKind::interrupt())?,
+                terminate: signal(SignalKind::terminate())?,
+            })
         }
-        Ok(())
+
+        pub(crate) async fn wait(mut self) {
+            tokio::select! {
+                _ = self.interrupt.recv() => {}
+                _ = self.terminate.recv() => {}
+            }
+        }
     }
 }
 

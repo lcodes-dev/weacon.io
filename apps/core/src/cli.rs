@@ -24,7 +24,22 @@ pub(crate) enum Command {
     Doctor,
 }
 
+impl Cli {
+    /// Whether info logs reach stderr: with `--verbose`, or for a daemon started in a terminal.
+    pub(crate) fn prints_info(&self, stderr_is_terminal: bool) -> bool {
+        self.verbose || (self.command == Command::Daemon && stderr_is_terminal)
+    }
+}
+
 impl Command {
+    /// The daemon and short commands each rotate their own log file.
+    pub(crate) const fn log_name(&self) -> &'static str {
+        match self {
+            Self::Daemon => "daemon.log",
+            Self::Status | Self::Doctor => "cli.log",
+        }
+    }
+
     pub(crate) const fn name(&self) -> &'static str {
         match self {
             Self::Daemon => "daemon",
@@ -80,6 +95,24 @@ mod tests {
         assert_eq!(names, ["daemon", "status", "doctor"]);
         assert!(!doctor.verbose);
         assert!(verbose.verbose);
+    }
+
+    #[test]
+    fn the_daemon_logs_to_its_terminal_and_its_own_file() {
+        let daemon = run(&["weacon", "daemon"]).unwrap();
+        let status = run(&["weacon", "status"]).unwrap();
+        let verbose = run(&["weacon", "status", "--verbose"]).unwrap();
+
+        assert!(daemon.prints_info(true));
+        assert!(!daemon.prints_info(false));
+        assert!(!status.prints_info(true));
+        assert!(verbose.prints_info(false));
+        assert_eq!(daemon.command.log_name(), "daemon.log");
+        assert_eq!(status.command.log_name(), "cli.log");
+        assert_eq!(
+            run(&["weacon", "doctor"]).unwrap().command.log_name(),
+            "cli.log"
+        );
     }
 
     #[test]

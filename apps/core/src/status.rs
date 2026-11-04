@@ -131,6 +131,17 @@ mod tests {
     }
 
     #[test]
+    fn a_socket_left_by_a_killed_daemon_means_no_daemon() {
+        let dir = crate::test_support::temp_dir("status-stale");
+        let socket = dir.join("weacon.sock");
+        drop(std::os::unix::net::UnixListener::bind(&socket).unwrap());
+        let error = query(&socket, build(&VERSION)).unwrap_err();
+
+        assert_eq!(error.code().as_str(), "daemon.not_running");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
     fn no_socket_means_no_daemon() {
         let error = query(Path::new("/nonexistent/weacon.sock"), build(&VERSION)).unwrap_err();
 
