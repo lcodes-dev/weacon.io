@@ -1,0 +1,8 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+reviews:
+  auto_review:
+    drafts: false
+  pre_merge_checks:
+    # Doc comments are written only where the contract isn't obvious.
+    docstrings:
+      mode: "off"

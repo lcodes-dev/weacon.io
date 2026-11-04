@@ -13,7 +13,7 @@ The default branch is `main`: start from it and open draft PRs against it. This 
 5. **Every build is identifiable.** Every program reports its version and the commit it was built from, and logs and reports errors from its first commit.
 6. **Schemas first.** Every message that crosses a process boundary is a serde type in `crates/protocol` before it is used, and is parsed where it arrives. Schemas only grow: new fields are optional and nothing is removed. Enums carry a tag; no untagged unions.
 7. **Proposals, not writes.** Changes that agents or Weacon's AI make to docs and tasks arrive as proposals a person accepts.
-8. **Draft PRs only.** Every change reaches `main` through a draft PR, unless the owner explicitly asks for something else. Agents never merge or mark a PR ready.
+8. **Draft first, then review.** Every change reaches `main` through a PR, opened as a draft, unless the owner explicitly asks for something else. Once steps 1 to 8 of the definition of done pass, the agent marks it ready for review, which starts CodeRabbit's review, and fixes what it finds. Agents never merge.
 9. **One of each.** Never add a second way to do something the code already does; change the existing way, in its own PR.
 
 ## Code boundaries
@@ -116,6 +116,7 @@ Every change goes through these steps, in order, before it's committed. The `fin
 6. **Rules.** If a rule, a boundary or a command changed, this file says so in the same change.
 7. **Commit.** A short subject in the imperative, under 72 characters. Add a body only when the change needs one: a few lines on what changed and why. Commit messages never link to documents or other projects.
 8. **Draft PR.** Push the branch and open or update a draft PR against `main`.
+9. **Review.** Mark the PR ready for review. Once CodeRabbit has reviewed the latest commit, check each finding against the current code, fix the valid ones with a test and steps 3 to 7, answer the rest with a one-line reason, resolve each addressed thread, and push. Security findings you reject stay open for the owner. Repeat after each new review until no other findings are open, then leave the PR to the owner.
 
 Each review runs as an agent that didn't write the change and hasn't seen its author's reasoning: in Claude Code the `simplifier` and `auditor` subagents, in Codex `codex exec --sandbox read-only "Follow .agents/skills/simplify-review/SKILL.md on the current change"`, in Amp a subagent given the same instruction.
 
