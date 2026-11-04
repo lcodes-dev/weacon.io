@@ -1,3 +1,8 @@
 # `emit` only prints what `instructions` returns, and its tests cover that.
 # `flush` on a file opened for appending does nothing that a test could see.
-exclude_re = ["replace emit with \\(\\)", "replace <impl Write for RotatingFile>::flush"]
+# `random_id` joins two halves that never overlap, so `|` and `^` give the same id.
+exclude_re = [
+    "replace emit with \\(\\)",
+    "replace <impl Write for RotatingFile>::flush",
+    "replace \\| with \\^ in random_id",
+]

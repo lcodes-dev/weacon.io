@@ -1,7 +1,7 @@
 use std::borrow::Cow;
 use std::time::SystemTime;
 
-use sentry_types::protocol::v7::{Envelope, Event, Exception, Level, Map, Uuid, Values};
+use sentry_types::protocol::v7::{Envelope, Event, Exception, Map, Uuid, Values};
 use sentry_types::{Dsn, Scheme};
 use weacon_protocol::{Code, code};
 
@@ -63,7 +63,6 @@ impl Reports {
     ) -> Upload {
         let mut event = Event {
             event_id: Uuid::from_u128(event_id),
-            level: Level::Error,
             timestamp: time,
             release: Some(Cow::Owned(self.release.clone())),
             exception: Values {
@@ -104,7 +103,7 @@ mod tests {
     use std::io;
     use std::time::Duration;
 
-    use sentry_types::protocol::v7::EnvelopeItem;
+    use sentry_types::protocol::v7::{EnvelopeItem, Level};
 
     use super::*;
 
