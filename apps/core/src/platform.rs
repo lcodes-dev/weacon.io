@@ -58,6 +58,68 @@ pub(crate) fn private_append(path: &Path) -> io::Result<File> {
     options.open(path)
 }
 
+/// Opens `path` for writing without truncating it, creating it readable only by this user.
+pub(crate) fn private_file(path: &Path) -> io::Result<File> {
+    let mut options = OpenOptions::new();
+    options.create(true).write(true).truncate(false);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    options.open(path)
+}
+
+#[cfg(unix)]
+pub(crate) use unix::*;
+
+#[cfg(unix)]
+mod unix {
+    use std::fs;
+    use std::io;
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+    use std::path::Path;
+
+    pub(crate) use std::os::unix::net::UnixStream as BlockingStream;
+    pub(crate) use tokio::net::{UnixListener as Listener, UnixStream as Stream};
+
+    /// The user that owns `dir`, when only that user can reach it.
+    pub(crate) fn private_owner(dir: &Path) -> io::Result<Option<u32>> {
+        let metadata = fs::metadata(dir)?;
+        let others = metadata.permissions().mode() & 0o077;
+        let private = metadata.is_dir() && others == 0;
+        Ok(private.then(|| metadata.uid()))
+    }
+
+    /// Listens on a socket at `path` that only this user can open.
+    pub(crate) fn bind(path: &Path) -> io::Result<Listener> {
+        let listener = Listener::bind(path)?;
+        fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
+        Ok(listener)
+    }
+
+    pub(crate) fn peer_uid(stream: &Stream) -> io::Result<u32> {
+        Ok(stream.peer_cred()?.uid())
+    }
+
+    pub(crate) fn connect(path: &Path) -> io::Result<BlockingStream> {
+        BlockingStream::connect(path)
+    }
+
+    /// Waits for Ctrl-C or SIGTERM.
+    pub(crate) async fn shutdown_signal() -> io::Result<()> {
+        use tokio::signal::unix::{SignalKind, signal};
+
+        let mut interrupt = signal(SignalKind::interrupt())?;
+        let mut terminate = signal(SignalKind::terminate())?;
+        tokio::select! {
+            _ = interrupt.recv() => {}
+            _ = terminate.recv() => {}
+        }
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

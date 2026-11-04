@@ -40,9 +40,19 @@ mod tests {
         let blocked = weacon(&["doctor"], "/proc/weacon-cannot-be-here");
 
         assert!(good.status.success());
-        assert!(dir.join("logs/weacon.log").exists());
+        assert!(dir.join("logs/cli.log").exists());
         assert_eq!(blocked.status.code(), Some(1));
         assert!(String::from_utf8_lossy(&blocked.stderr).contains("state.unavailable"));
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn status_says_when_no_daemon_is_running() {
+        let dir = temp_dir("status");
+        let output = weacon(&["status"], dir.to_str().unwrap());
+
+        assert_eq!(output.status.code(), Some(1));
+        assert!(String::from_utf8_lossy(&output.stderr).contains("daemon.not_running"));
         fs::remove_dir_all(&dir).unwrap();
     }
 

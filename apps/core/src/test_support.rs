@@ -25,11 +25,11 @@ pub(crate) fn env(vars: &[(&str, &str)]) -> impl Fn(&str) -> Option<OsString> + 
     move |key| vars.get(key).cloned()
 }
 
-/// An empty folder of this test's own.
+/// An empty folder of this test's own, readable only by this user.
 pub(crate) fn temp_dir(name: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("weacon-core-{name}-{}", std::process::id()));
     drop(fs::remove_dir_all(&dir));
-    fs::create_dir_all(&dir).unwrap();
+    crate::platform::private_dir(&dir).unwrap();
     dir
 }
 

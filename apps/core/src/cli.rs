@@ -16,6 +16,10 @@ pub(crate) struct Cli {
 
 #[derive(Debug, PartialEq, Eq, Subcommand)]
 pub(crate) enum Command {
+    /// Run the daemon that clients connect to, until Ctrl-C or SIGTERM.
+    Daemon,
+    /// Check that the daemon is running and print its build.
+    Status,
     /// Check this install and print what it found.
     Doctor,
 }
@@ -23,6 +27,8 @@ pub(crate) enum Command {
 impl Command {
     pub(crate) const fn name(&self) -> &'static str {
         match self {
+            Self::Daemon => "daemon",
+            Self::Status => "status",
             Self::Doctor => "doctor",
         }
     }
@@ -66,10 +72,12 @@ mod tests {
     #[test]
     fn commands_and_flags_parse() {
         let doctor = run(&["weacon", "doctor"]).unwrap();
+        let names = ["daemon", "status", "doctor"]
+            .map(|name| run(&["weacon", name]).unwrap().command.name());
         let verbose = run(&["weacon", "doctor", "--verbose"]).unwrap();
 
         assert_eq!(doctor.command, Command::Doctor);
-        assert_eq!(doctor.command.name(), "doctor");
+        assert_eq!(names, ["daemon", "status", "doctor"]);
         assert!(!doctor.verbose);
         assert!(verbose.verbose);
     }
