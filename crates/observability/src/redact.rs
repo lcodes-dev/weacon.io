@@ -6,9 +6,7 @@ use serde_json::{Map, Value};
 
 use crate::errors::{AsError, ErrorInfo, describe_error};
 
-// A key is a secret when its letters, run together, contain one of these or end in a key or a
-// token, or when one of its words is a short secret word; unless its last word only describes
-// the secret, or it names a key that isn't one.
+// Matched against a key's letters run together, so "apiKey" and "api_key" both match.
 static SECRET_IN_KEY: LazyLock<Regex> = LazyLock::new(|| {
     pattern(
         r"password|passwd|passphrase|passcode|secret|credential|cookie|authori[sz]ation|(?:key|token)s?$",
@@ -119,8 +117,7 @@ enum Kind {
 }
 
 impl Field {
-    /// Describes an error by its type, code, I/O error kind and causes. Only a
-    /// [`Fault`](crate::Fault) keeps its message.
+    /// An error without its message, unless it is a [`Fault`](crate::Fault).
     pub fn error<E: AsError + ?Sized>(error: &E) -> Self {
         Self(Kind::Error(describe_error(error)))
     }
@@ -132,9 +129,7 @@ impl<T: Into<Value>> From<T> for Field {
     }
 }
 
-/// Copies log fields: fields named like secrets become "[redacted]", fields named like user
-/// content become "[omitted]", credentials, queries and fragments are cut from URLs, and long
-/// strings and keys, big collections and deep nesting are cut.
+/// Copies log fields with secrets and content replaced, URLs stripped and sizes capped.
 pub(crate) fn redact_fields(fields: &[(&str, Field)]) -> Map<String, Value> {
     let kept = fields.iter().take(MAX_ITEMS).map(|(key, Field(kind))| {
         let value = match kind {
@@ -167,9 +162,7 @@ pub(crate) fn safe_url(url: &str) -> String {
     format!("{prefix}{path}")
 }
 
-/// Redacts one string: secrets assigned to secret-looking names, credentials after "Bearer",
-/// "Basic" or "token", and credentials, queries and fragments of URLs anywhere in it. It is cut
-/// to length only afterwards, so a cut can't hide a secret from the patterns.
+/// Redacts one string. It is cut to length last, so a cut can't hide a secret from the patterns.
 pub(crate) fn copy_string(value: &str) -> String {
     let text = SECRET_ASSIGNMENT.replace_all(value, "${1}[redacted]");
     let text = CREDENTIAL_IN_TEXT.replace_all(&text, "${1} [redacted]");
@@ -209,9 +202,7 @@ pub(crate) fn truncate(text: &str, max: usize) -> String {
     format!("{kept}… [{} more]", length - max)
 }
 
-// Credentials end at the authority's last "@". A colon in the authority is either a port or the
-// start of a password that holds a "/", and the two can't be told apart; when an "@" follows
-// before the query, it is taken to be a password.
+// A colon could be a port or a password holding "/"; an "@" before the query means a password.
 fn credentials_end(rest: &str) -> usize {
     let authority = rest.split('/').next().unwrap_or_default();
     if let Some(at) = authority.rfind('@') {
@@ -224,7 +215,6 @@ fn credentials_end(rest: &str) -> usize {
     before_query.rfind('@').map_or(0, |at| at + 1)
 }
 
-// "apiKey", "api_key" and "API-KEY" all give ["api", "key"].
 fn words(key: &str) -> Vec<String> {
     let mut spaced = String::with_capacity(key.len() + 4);
     let mut previous: Option<char> = None;

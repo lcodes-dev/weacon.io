@@ -1,4 +1,4 @@
-//! The version and commit each Weacon program reports, so anyone can tell which build is running.
+//! The version and commit each Weacon program reports.
 //!
 //! An app calls [`emit`] from its `build.rs` and reads its own [`Version`] with [`version!`].
 
@@ -49,10 +49,8 @@ impl fmt::Display for Version {
     }
 }
 
-/// Tells Cargo the commit the calling package is built from. Call it from `build.rs`.
-///
-/// The commit comes from `WEACON_COMMIT` when that is set, as for builds without a git checkout,
-/// and from `git` otherwise.
+/// Tells Cargo the commit being built: `WEACON_COMMIT` when set and not blank, else `git`.
+/// Call it from `build.rs`.
 #[expect(
     clippy::print_stdout,
     reason = "Cargo reads build-script instructions from stdout"
@@ -85,8 +83,7 @@ fn instructions(dir: &Path, given: Option<&str>) -> Vec<String> {
     lines
 }
 
-// The commit, and the files whose change means a new one: HEAD, the branch refs and packed refs.
-// Only paths that exist are watched, since Cargo reruns the script on every build for a missing one.
+// Only paths that exist are watched: Cargo reruns the script on every build for a missing one.
 fn from_git(dir: &Path) -> Option<(String, Vec<String>)> {
     let output = git_command()
         .args([

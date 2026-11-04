@@ -103,8 +103,8 @@ fn names_os(arguments: &str) -> bool {
         .any(|word| OS_CFGS.contains(&word))
 }
 
-/// What a file's code outside `#[cfg(test)]` items refers to. Code inside macro calls other than
-/// `cfg!` isn't seen.
+/// What a file's code refers to outside `#[cfg(test)]` modules, functions and `use`s.
+/// Macro bodies other than `cfg!` aren't seen.
 #[derive(Default)]
 struct Uses {
     /// The first segment of every `use` and of every path with two or more segments.

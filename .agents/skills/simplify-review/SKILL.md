@@ -13,7 +13,7 @@ You review a change someone else wrote, looking only for ways to make it simpler
 4. Go through the three levels below in order; each looks at a wider context, so a finding at a wider level can make a narrower one moot.
 5. Report each finding as `- **Must fix** · path:line · what could be simpler, in one sentence · the simpler version` (or **Should fix**, or **Note**), grouped under "The file", "The feature" and "The project", most severe first. End with the count per rating, or "No findings". Don't pad the list.
 
-- **Must fix:** a second way to do something the code already does, dead or speculative code, or an abstraction that makes the change harder to follow.
+- **Must fix:** a second way to do something the code already does, dead or speculative code, an abstraction that makes the change harder to follow, or a comment the rules in `AGENTS.md` don't allow.
 - **Should fix:** code that is longer, more nested or more indirect than it needs to be.
 - **Note:** a small point the author may take or leave.
 
@@ -24,7 +24,7 @@ You review a change someone else wrote, looking only for ways to make it simpler
 - **Ownership:** no needless `.clone()`, `.to_string()`, `.to_owned()` or `.collect()`. Borrow where the callee only reads (`&str`, `&[T]`, `&Path`). No `Arc<Mutex<_>>` where one owner or a channel would do, and no `Rc<RefCell<_>>` to get around the borrow checker.
 - **Narrower types:** an enum or a newtype over a `String` or `bool` that only takes a few values; no `Option` field that is always set; no enum variant that never occurs; no `serde_json::Value` where the shape is known.
 - **Names:** do names say what things are? Could a better name make a comment unnecessary?
-- **Comments:** only where a reader would otherwise get it wrong. No narration of the next line, no restated names, no history, no references to documents.
+- **Comments:** read every comment and doc comment the change adds or touches; flag any that breaks the comment rule in `AGENTS.md`, or no longer matches the code, and give the shorter version or say to delete it.
 - **Nothing dead:** no unused code, commented-out code, `#[allow(dead_code)]`, or "for later" paths.
 
 ## 2. The feature

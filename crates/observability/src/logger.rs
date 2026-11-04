@@ -41,9 +41,7 @@ pub struct LoggerOptions {
     pub level: Level,
 }
 
-/// Writes records with redacted fields and bindings, dropping those below the level.
-///
-/// A message is a fixed string; values go in fields, where they are redacted:
+/// Writes records at or above its level, with redacted fields. Messages are fixed strings:
 ///
 /// ```compile_fail
 /// fn said(log: &weacon_observability::Logger, text: String) {
