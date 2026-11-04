@@ -65,8 +65,7 @@ const fn is_code(code: &str) -> bool {
     !word_start && words > 1
 }
 
-/// An error Weacon raises: a code and a fixed message with no user content, so both may be
-/// logged and reported.
+/// An error Weacon raises: a code and a fixed message, both safe to log.
 #[derive(Debug)]
 pub struct Fault {
     code: Code,
@@ -108,7 +107,7 @@ impl Error for Fault {
     }
 }
 
-/// What can safely be said about an error in a log line or an error report.
+/// What a log line or an error report may say about an error.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub(crate) struct ErrorInfo {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -123,7 +122,7 @@ pub(crate) struct ErrorInfo {
     cause: Option<Box<Self>>,
 }
 
-/// An error that can be logged: any error type, or a `dyn Error` such as a boxed one.
+/// Lets [`Field::error`](crate::Field::error) take a sized error or a `dyn Error`.
 pub trait AsError {
     fn as_error(&self) -> &(dyn Error + 'static);
 
@@ -161,8 +160,8 @@ impl AsError for dyn Error + Send + Sync + 'static {
     }
 }
 
-/// Describes an error by its type, code, I/O error kind and the first causes. Only a [`Fault`]
-/// keeps its message: other code writes paths, input and URLs into messages.
+/// Describes an error without its message, which can hold paths and input; only a [`Fault`]
+/// keeps its own.
 pub(crate) fn describe_error<E: AsError + ?Sized>(error: &E) -> ErrorInfo {
     let mut info = describe(error.as_error(), 0);
     if let Some(name) = error.type_path() {

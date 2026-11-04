@@ -9,11 +9,8 @@ use crate::redact::{copy_string, redact_in_place, replacement, safe_url};
 
 const NAVIGATION: [&str; 3] = ["url", "from", "to"];
 
-/// Changes an error event in place, for `before_send`. A report keeps error types, stack
-/// frames, tags and ids, and no free text: messages, exception values, breadcrumb messages,
-/// source lines and frame variables are dropped. URLs lose credentials, queries and fragments;
-/// only the user's id and no machine name are kept; fields named like secrets or content are
-/// redacted; and `home_dir` at the start of a path is written as "~".
+/// Strips an error event for `before_send`: drops messages, exception values and source lines,
+/// redacts the rest as the logger does, and writes `home_dir` as "~".
 pub fn scrub_event(event: &mut Event<'_>, home_dir: &str) {
     let scrub = Scrubber {
         home: home_pattern(home_dir),
@@ -90,7 +87,7 @@ struct Scrubber {
 }
 
 impl Scrubber {
-    // A kind of context added after this was written is dropped, since it can't be checked.
+    // `Context` is non-exhaustive; a kind this doesn't know can't be checked, so it is dropped.
     fn context(&self, context: &mut Context) -> bool {
         match context {
             Context::Device(device) => {

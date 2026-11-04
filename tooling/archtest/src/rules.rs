@@ -26,16 +26,14 @@ pub(crate) const RULES: &[Rule] = &[
     },
 ];
 
-/// What every package under `apps/` depends on, and as which kind of dependency: logs and error
-/// reports from its first commit, and the version and commit it was built from.
+/// What every package under `apps/` depends on, and as which kind of dependency.
 pub(crate) const APP_NEEDS: &[(&str, Kind)] = &[
     ("weacon-observability", Kind::Normal),
     ("weacon-version", Kind::Normal),
     ("weacon-version", Kind::Build),
 ];
 
-/// External packages, and those whose names start with theirs and a hyphen, that only the named
-/// workspace packages may depend on.
+/// External packages, with their `name-*` family, that only the listed packages may use.
 pub(crate) const RESTRICTED: &[(&str, &[&str])] = &[
     ("diesel", &["weacon-core", "weacon-server"]),
     ("libsql", &["weacon-core", "weacon-server"]),
@@ -79,8 +77,8 @@ pub(crate) const IO_PACKAGES: &[&str] = &[
     "walkdir",
 ];
 
-/// The most lines a source file may hold before its test module; past it, the file splits.
+/// The most lines a source file may hold before its test module.
 pub(crate) const MAX_CODE_LINES: usize = 400;
 
-/// Markers of unfinished work, which never reach `main`. Split so this file doesn't match itself.
+/// Markers of unfinished work; split so this file doesn't match itself.
 pub(crate) const MARKERS: &[&str] = &[concat!("FIX", "ME"), concat!("TO", "DO")];
