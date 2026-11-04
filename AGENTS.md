@@ -116,7 +116,7 @@ Every change goes through these steps, in order, before it's committed. The `fin
 6. **Rules.** If a rule, a boundary or a command changed, this file says so in the same change.
 7. **Commit.** A short subject in the imperative, under 72 characters. Add a body only when the change needs one: a few lines on what changed and why. Commit messages never link to documents or other projects.
 8. **Draft PR.** Push the branch and open or update a draft PR against `main`.
-9. **Review.** Mark the PR ready for review. Once CodeRabbit has reviewed the latest commit, check each finding against the current code, fix the valid ones with a test and steps 3 to 7, answer the rest with a one-line reason, resolve each thread, and push. Security findings you reject stay open for the owner. Repeat after each new review until no other findings are open, then leave the PR to the owner.
+9. **Review.** Mark the PR ready for review. Once CodeRabbit has reviewed the latest commit, check each finding against the current code, fix the valid ones with a test and steps 3 to 7, answer the rest with a one-line reason, resolve each addressed thread, and push. Security findings you reject stay open for the owner. Repeat after each new review until no other findings are open, then leave the PR to the owner.
 
 Each review runs as an agent that didn't write the change and hasn't seen its author's reasoning: in Claude Code the `simplifier` and `auditor` subagents, in Codex `codex exec --sandbox read-only "Follow .agents/skills/simplify-review/SKILL.md on the current change"`, in Amp a subagent given the same instruction.
 
