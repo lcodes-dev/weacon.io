@@ -40,4 +40,4 @@ You review a change someone else wrote, looking for bugs and security holes.
 - **Network:** nothing listens on a public interface; local servers bind to 127.0.0.1 and check a token; server routes check the session, the workspace and the origin.
 - **Tenancy:** every row and query carries the workspace; no data can cross workspaces; Postgres row-level security covers new tables.
 - **Desktop and extension:** the desktop draws no remote content in its own process; web content opens only in a separate system web view with no bridge to the core. The extension's permissions are minimal, its content security policy is strict, and its messages are checked for their sender.
-- **Dependencies:** each new crate is needed, maintained, under a licence `deny.toml` allows; its build script and procedural macros are worth the trust they need. The extension's packages run no install scripts unless approved.
+- **Dependencies:** each new crate is needed, maintained, under a licence `.cargo/deny.toml` allows; its build script and procedural macros are worth the trust they need. The extension's packages run no install scripts unless approved.

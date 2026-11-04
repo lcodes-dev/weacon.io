@@ -102,7 +102,7 @@ Every program logs, reports errors and says which build it is from its first com
 | `scripts/check.sh` | What CI runs: rustfmt, clippy with warnings as errors, docs, cargo-machete, cargo-deny, all tests with the 90% line-coverage floor, doc tests, mutation tests on the code changed against `origin/main`, and ShellCheck |
 | `cargo test -p <crate> [name]` | Focused tests while iterating |
 
-Every dependency is declared once, in `[workspace.dependencies]` in the root `Cargo.toml`; crates refer to it with `workspace = true`. `Cargo.lock` is committed and every command runs with `--locked`. A new dependency must be at least three days old, maintained, under a licence `deny.toml` allows, and without a build script unless it needs one; say why it's needed in the PR.
+Every dependency is declared once, in `[workspace.dependencies]` in the root `Cargo.toml`; crates refer to it with `workspace = true`. `Cargo.lock` is committed and every command runs with `--locked`. A new dependency must be at least three days old, maintained, under a licence `.cargo/deny.toml` allows, and without a build script unless it needs one; say why it's needed in the PR.
 
 ## Definition of done
 
