@@ -55,8 +55,7 @@ pub struct ErrorBody {
 }
 
 impl Hello {
-    /// The answer from a peer running `app`: a [`Welcome`] on the same protocol, or the error
-    /// `protocol.unsupported`.
+    /// A [`Welcome`] from `app` on the same protocol, else the error `protocol.unsupported`.
     #[must_use]
     pub fn answer(&self, app: App) -> Message {
         if self.protocol == PROTOCOL {

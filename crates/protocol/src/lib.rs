@@ -1,5 +1,4 @@
-//! The messages Weacon programs exchange, how they are framed on a stream, and the error codes
-//! they carry. Everything that crosses a process boundary is a type here first.
+//! The messages Weacon programs exchange, their framing and their error codes.
 
 mod code;
 mod frame;

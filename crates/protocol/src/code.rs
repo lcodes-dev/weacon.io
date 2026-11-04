@@ -3,7 +3,7 @@ use std::borrow::Cow;
 use schemars::JsonSchema;
 use serde::{Deserialize, Deserializer, Serialize, de};
 
-/// A dotted error code such as `store.full`: lowercase words joined by dots.
+/// An error code such as `store.full`: two or more lowercase words joined by dots.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, JsonSchema)]
 pub struct Code(#[schemars(regex(pattern = PATTERN), length(max = MAX_LEN))] Cow<'static, str>);
 
@@ -13,7 +13,7 @@ const MAX_LEN: usize = 64;
 // The schema's form of `is_code`; a test keeps the two in step.
 const PATTERN: &str = r"^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+$";
 
-/// A [`Code`], checked when the program is compiled: `code!("store.full")`.
+/// A [`Code`], checked at compile time: `code!("store.full")`.
 ///
 /// ```compile_fail
 /// let code = weacon_protocol::code!("Store.full");
@@ -26,7 +26,7 @@ macro_rules! code {
 }
 
 impl Code {
-    /// Use [`code!`], which checks the code when the program is compiled.
+    /// Use [`code!`], which checks the code at compile time.
     ///
     /// # Panics
     /// Unless `code` is dotted lowercase words.

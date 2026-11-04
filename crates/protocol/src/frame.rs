@@ -5,7 +5,6 @@ use crate::{Code, Envelope, Message, code};
 /// The largest frame accepted or sent, newline included.
 pub const MAX_FRAME: usize = 1024 * 1024;
 
-/// Why bytes couldn't become a message, or a message couldn't become bytes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FrameError {
     TooLarge,
@@ -36,8 +35,7 @@ impl std::error::Error for FrameError {}
 /// One message as a line of JSON.
 ///
 /// # Errors
-/// When the message is [`Message::Unknown`], which is only ever received, can't be written as
-/// JSON, or would exceed [`MAX_FRAME`].
+/// When the message is [`Message::Unknown`], which is only received, or exceeds [`MAX_FRAME`].
 pub fn encode(envelope: &Envelope) -> Result<Vec<u8>, FrameError> {
     if envelope.message == Message::Unknown {
         return Err(FrameError::Invalid);

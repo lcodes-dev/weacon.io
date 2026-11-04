@@ -76,7 +76,7 @@
       ]
     },
     "Code": {
-      "description": "A dotted error code such as `store.full`: lowercase words joined by dots.",
+      "description": "An error code such as `store.full`: two or more lowercase words joined by dots.",
       "type": "string",
       "maxLength": 64,
       "pattern": "^[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)+$"
