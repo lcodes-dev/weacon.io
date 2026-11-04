@@ -163,12 +163,12 @@ async fn serve_client(stream: Stream, app: App) -> io::Result<()> {
         let Some(read) = within(limit, reader.read(&mut buf)).await.transpose()? else {
             return Ok(());
         };
+        if read == 0 {
+            return Ok(());
+        }
         let bytes = buf.get(..read).unwrap_or_default();
-        let answered = within(
-            limit,
-            answer(&mut session, &mut decoder, bytes, &app, &mut writer),
-        );
-        if read == 0 || !answered.await.transpose()?.unwrap_or(false) {
+        let answered = answer(&mut session, &mut decoder, bytes, &app, &mut writer);
+        if !within(limit, answered).await.transpose()?.unwrap_or(false) {
             return Ok(());
         }
     }
@@ -354,10 +354,12 @@ mod tests {
         let running = start(&dir).unwrap();
         let mut bytes = b"not json\n".to_vec();
         bytes.extend(hello(PROTOCOL));
-        let (replies, _) = exchange(connect(&running.socket).await, &bytes, 2).await;
+        let (replies, client) = exchange(connect(&running.socket).await, &bytes, 2).await;
+        let (later, _) = exchange(client, b"[]\n", 1).await;
 
         assert_eq!(error_code(&replies[0]), Some("frame.invalid"));
         assert!(matches!(replies[1], Message::Welcome(_)));
+        assert_eq!(error_code(&later[0]), Some("frame.invalid"));
         running.stop().await;
         fs::remove_dir_all(&dir).unwrap();
     }
@@ -386,6 +388,19 @@ mod tests {
 
         assert!(matches!(replies[0], Message::Welcome(_)));
         assert_eq!(client.read(&mut [0; 16]).await.unwrap(), 0);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_hello_may_come_late_but_within_the_deadline() {
+        let dir = temp_dir("daemon-late");
+        let running = start(&dir).unwrap();
+        let client = connect(&running.socket).await;
+        tokio::time::sleep(HANDSHAKE_TIMEOUT / 2).await;
+        let (replies, _) = exchange(client, &hello(PROTOCOL), 1).await;
+
+        assert!(matches!(replies[0], Message::Welcome(_)));
+        running.stop().await;
         fs::remove_dir_all(&dir).unwrap();
     }
 
