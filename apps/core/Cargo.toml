@@ -1,0 +1,28 @@
+[package]
+name = "weacon-core"
+description = "The Weacon core: the daemon and the weacon command"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "weacon"
+path = "src/main.rs"
+
+[dependencies]
+clap.workspace = true
+ureq.workspace = true
+weacon-observability.workspace = true
+weacon-protocol.workspace = true
+weacon-version.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
+
+[build-dependencies]
+weacon-version.workspace = true
+
+[lints]
+workspace = true

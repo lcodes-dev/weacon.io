@@ -9,9 +9,9 @@ use crate::redact::{copy_string, redact_in_place, replacement, safe_url};
 
 const NAVIGATION: [&str; 3] = ["url", "from", "to"];
 
-/// Strips an error event for `before_send`: drops messages, exception values and source lines,
+/// Strips an error event: drops messages, exception values and source lines,
 /// redacts the rest as the logger does, and writes `home_dir` as "~".
-pub fn scrub_event(event: &mut Event<'_>, home_dir: &str) {
+pub(crate) fn scrub_event(event: &mut Event<'_>, home_dir: &str) {
     let scrub = Scrubber {
         home: home_pattern(home_dir),
     };

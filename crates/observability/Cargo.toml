@@ -1,6 +1,6 @@
 [package]
 name = "weacon-observability"
-description = "Structured logging with redaction, error descriptions and the error-report scrubber"
+description = "Structured logging with redaction, error descriptions and error reports"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

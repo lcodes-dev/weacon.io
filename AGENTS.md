@@ -76,7 +76,7 @@ Every program logs, reports errors and says which build it is from its first com
 - **Libraries' logs** through `log` or `tracing` reach the same sink with their level and target only; their messages are dropped.
 - **Levels.** `fatal`: about to exit. `error`: a person needs to look. `warn`: failed and handled. `info`: lifecycle, the default. `debug`: developer detail. `trace`: very noisy.
 - **Where logs go.** The core: rotated JSON lines in its state folder, and stderr in a terminal. CLI commands: warnings and errors on stderr, `--verbose` adds info. The team server: stdout, one record per request (method, route template, status, duration, request id). The desktop: rotated JSON lines in its logs folder. The extension: forwarded to the core.
-- **Error reports** use the Sentry protocol, off without a DSN. On people's devices the desktop and the core send them only after the person agrees, and Settings can turn them off. Every Rust app's `before_send` calls `scrub_event(&mut event, home_dir)`; report errors with `capture_error` and a `code` tag, never messages. The release is `version!().release()`.
+- **Error reports** use the Sentry protocol, off without a DSN. On people's devices the desktop and the core send them only after the person agrees, and Settings can turn them off. `crates/observability` builds and scrubs each report (`Reports::upload`) and the app sends it, so only apps touch the network; report errors with `capture_error` and a `code` tag, never messages. A DSN in `WEACON_SENTRY_DSN` turns them on. The release is `version!().release()`.
 - **Versions** come only from `weacon_version::version!()`: `weacon --version`, `GET /version` on the team server (`{"name", "version", "commit"}`, `Cache-Control: no-store`), Settings › About in the desktop, and the extension's `version_name`.
 - **Tests.** Each app has a test that puts marker strings in a message, a token and a file path, triggers a log line and an error report, and checks that no marker reaches either.
 
@@ -101,6 +101,7 @@ Every program logs, reports errors and says which build it is from its first com
 | `scripts/fix.sh` | Formats and applies the lint fixes clippy is sure of |
 | `scripts/check.sh` | What CI runs: rustfmt, clippy with warnings as errors, docs, cargo-machete, cargo-deny, all tests with the 90% line-coverage floor, doc tests, mutation tests on the code changed against `origin/main`, and ShellCheck |
 | `cargo test -p <crate> [name]` | Focused tests while iterating |
+| `WEACON_STATE_DIR=.dev/state cargo run -p weacon-core -- doctor` | Runs the core with this worktree's own state folder |
 | `UPDATE_SCHEMA=1 cargo test -p weacon-protocol` | Regenerates `crates/protocol/schema.json` after a message changes |
 
 Every dependency is declared once, in `[workspace.dependencies]` in the root `Cargo.toml`; crates refer to it with `workspace = true`. `Cargo.lock` is committed and every command runs with `--locked`. A new dependency must be at least three days old, maintained, under a licence `.cargo/deny.toml` allows, and without a build script unless it needs one; say why it's needed in the PR.
