@@ -1,0 +1,2 @@
+# `emit` only prints what `instructions` returns, and its tests cover that.
+exclude_re = ["replace emit with \\(\\)"]

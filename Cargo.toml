@@ -1,0 +1,94 @@
+[workspace]
+resolver = "3"
+members = ["crates/*", "tooling/*"]
+
+[workspace.package]
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.97"
+license = "MIT"
+publish = false
+
+[workspace.dependencies]
+regex = { version = "1.13.1", default-features = false, features = ["std", "perf", "unicode-case", "unicode-perl"] }
+sentry-types = { version = "0.49.5", default-features = false, features = ["protocol"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+syn = { version = "3.0.9", default-features = false, features = ["full", "parsing", "visit"] }
+toml = { version = "1.1.8", default-features = false, features = ["parse", "serde"] }
+
+[workspace.lints.rust]
+unsafe_code = "deny"
+non_ascii_idents = "deny"
+rust_2018_idioms = { level = "warn", priority = -1 }
+redundant_lifetimes = "warn"
+unit_bindings = "warn"
+unreachable_pub = "warn"
+unused_lifetimes = "warn"
+unused_qualifications = "warn"
+let_underscore_drop = "warn"
+single_use_lifetimes = "warn"
+trivial_casts = "warn"
+trivial_numeric_casts = "warn"
+unused_import_braces = "warn"
+
+[workspace.lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+allow_attributes = "warn"
+allow_attributes_without_reason = "warn"
+as_conversions = "warn"
+assertions_on_result_states = "warn"
+branches_sharing_code = "warn"
+clone_on_ref_ptr = "warn"
+collection_is_never_read = "warn"
+dbg_macro = "warn"
+derive_partial_eq_without_eq = "warn"
+empty_structs_with_brackets = "warn"
+equatable_if_let = "warn"
+excessive_nesting = "warn"
+exit = "warn"
+expect_used = "warn"
+format_push_string = "warn"
+get_unwrap = "warn"
+if_then_some_else_none = "warn"
+indexing_slicing = "warn"
+infinite_loop = "warn"
+iter_on_single_items = "warn"
+iter_over_hash_type = "warn"
+iter_with_drain = "warn"
+let_underscore_must_use = "warn"
+literal_string_with_formatting_args = "warn"
+lossy_float_literal = "warn"
+mem_forget = "warn"
+min_ident_chars = "warn"
+mod_module_files = "warn"
+needless_collect = "warn"
+needless_pass_by_ref_mut = "warn"
+or_fun_call = "warn"
+panic = "warn"
+print_stderr = "warn"
+print_stdout = "warn"
+rc_mutex = "warn"
+redundant_clone = "warn"
+redundant_test_prefix = "warn"
+redundant_type_annotations = "warn"
+rest_pat_in_fully_bound_structs = "warn"
+significant_drop_in_scrutinee = "warn"
+str_to_string = "warn"
+string_slice = "warn"
+tests_outside_test_module = "warn"
+todo = "warn"
+trait_duplication_in_bounds = "warn"
+try_err = "warn"
+type_repetition_in_bounds = "warn"
+undocumented_unsafe_blocks = "warn"
+unimplemented = "warn"
+unnecessary_struct_initialization = "warn"
+unneeded_field_pattern = "warn"
+unreachable = "warn"
+unused_result_ok = "warn"
+unwrap_used = "warn"
+use_self = "warn"
+useless_let_if_seq = "warn"
+verbose_file_reads = "warn"
+wildcard_enum_match_arm = "warn"
