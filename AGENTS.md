@@ -13,7 +13,7 @@ The default branch is `main`: start from it and open draft PRs against it. This 
 5. **Every build is identifiable.** Every program reports its version and the commit it was built from, and logs and reports errors from its first commit.
 6. **Schemas first.** Every message that crosses a process boundary is a serde type in `crates/protocol` before it is used, and is parsed where it arrives. Schemas only grow: new fields are optional and nothing is removed. Enums carry a tag; no untagged unions.
 7. **Proposals, not writes.** Changes that agents or Weacon's AI make to docs and tasks arrive as proposals a person accepts.
-8. **Draft first, then review.** Every change reaches `main` through a PR, opened as a draft, unless the owner explicitly asks for something else. Once the definition of done passes, the agent marks it ready for review, which starts CodeRabbit's review, and fixes what it finds. Agents never merge.
+8. **Draft first, then review.** Every change reaches `main` through a PR, opened as a draft, unless the owner explicitly asks for something else. Once steps 1 to 8 of the definition of done pass, the agent marks it ready for review, which starts CodeRabbit's review, and fixes what it finds. Agents never merge.
 9. **One of each.** Never add a second way to do something the code already does; change the existing way, in its own PR.
 
 ## Code boundaries
