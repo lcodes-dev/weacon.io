@@ -12,6 +12,7 @@ regex.workspace = true
 sentry-types.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+weacon-protocol.workspace = true
 
 [lints]
 workspace = true
