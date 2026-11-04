@@ -41,7 +41,11 @@ impl RotatingFile {
                 return Err(error);
             }
         }
-        fs::rename(&self.path, numbered(&self.path, 1))?;
+        if let Err(error) = fs::rename(&self.path, numbered(&self.path, 1))
+            && error.kind() != io::ErrorKind::NotFound
+        {
+            return Err(error);
+        }
         self.file = platform::private_append(&self.path)?;
         self.size = 0;
         Ok(())
@@ -120,6 +124,33 @@ mod tests {
 
         assert_eq!(read(&path), "newer\n");
         assert_eq!(read(&numbered(&path, 1)), "older\n");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_file_may_reach_the_limit_exactly() {
+        let dir = temp_dir("logs-exact");
+        let path = dir.join("weacon.log");
+        let mut file = RotatingFile::open(path.clone(), 8, 1).unwrap();
+        file.write_all(b"one\n").unwrap();
+        file.write_all(b"two\n").unwrap();
+
+        assert_eq!(MAX_BYTES, 10 << 20);
+        assert_eq!(read(&path), "one\ntwo\n");
+        assert!(!numbered(&path, 1).exists());
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_deleted_file_is_created_again() {
+        let dir = temp_dir("logs-deleted");
+        let path = dir.join("weacon.log");
+        let mut file = RotatingFile::open(path.clone(), 8, 1).unwrap();
+        file.write_all(b"one\n").unwrap();
+        fs::remove_file(&path).unwrap();
+        file.write_all(b"three\n").unwrap();
+
+        assert_eq!(read(&path), "three\n");
         fs::remove_dir_all(&dir).unwrap();
     }
 

@@ -146,8 +146,13 @@ mod tests {
     }
 
     #[test]
-    fn ids_are_random() {
-        assert_ne!(random_id(), random_id());
+    fn ids_are_random_in_both_halves() {
+        let id = random_id();
+        let (high, low) = (id >> 64, id & u128::from(u64::MAX));
+
+        assert_ne!(id, random_id());
+        assert_ne!(high, 0);
+        assert_ne!(high, low);
     }
 
     // Answers one request with `status`, and hands back its head lines and body.

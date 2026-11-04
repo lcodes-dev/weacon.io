@@ -1,8 +1,8 @@
 use std::borrow::Cow;
 use std::time::SystemTime;
 
-use sentry_types::Dsn;
 use sentry_types::protocol::v7::{Envelope, Event, Exception, Level, Map, Uuid, Values};
+use sentry_types::{Dsn, Scheme};
 use weacon_protocol::{Code, code};
 
 use crate::errors::{AsError, ErrorInfo, Fault, describe_error};
@@ -31,9 +31,19 @@ impl Reports {
     /// # Errors
     /// When `dsn` isn't a valid DSN.
     pub fn new(dsn: &str, client: &str, release: &str, home_dir: &str) -> Result<Self, Fault> {
-        let dsn = dsn.trim().parse().map_err(|error| {
-            Fault::new(code!("report.dsn_invalid"), "The DSN isn't valid").because(error)
-        })?;
+        let invalid = || {
+            Fault::new(
+                code!("report.dsn_invalid"),
+                "The DSN isn't a valid https DSN",
+            )
+        };
+        let dsn: Dsn = dsn
+            .trim()
+            .parse()
+            .map_err(|error| invalid().because(error))?;
+        if dsn.scheme() != Scheme::Https {
+            return Err(invalid());
+        }
         Ok(Self {
             dsn,
             client: client.to_owned(),
@@ -162,6 +172,7 @@ mod tests {
 
         assert_eq!(event.event_id, Uuid::from_u128(7));
         assert_eq!(event.timestamp, time());
+        assert_eq!(event.level, Level::Error);
         assert_eq!(event.release.as_deref(), Some("weacon-core@0.1.0+1a2b3c4"));
         assert_eq!(
             event.tags.get("code").map(String::as_str),
@@ -184,8 +195,10 @@ mod tests {
 
     #[test]
     fn an_invalid_dsn_is_refused() {
-        let error = Reports::new("not a dsn", "weacon/0.1.0", "", "").unwrap_err();
+        for dsn in ["not a dsn", "http://public@sentry.example.com/42"] {
+            let error = Reports::new(dsn, "weacon/0.1.0", "", "").unwrap_err();
 
-        assert_eq!(error.code().as_str(), "report.dsn_invalid");
+            assert_eq!(error.code().as_str(), "report.dsn_invalid");
+        }
     }
 }

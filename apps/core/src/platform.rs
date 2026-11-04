@@ -18,7 +18,8 @@ pub(crate) fn home_dir(env: Env<'_>) -> Option<PathBuf> {
 /// Where the core keeps its state; `WEACON_STATE_DIR` overrides it.
 pub(crate) fn state_dir(env: Env<'_>) -> Option<PathBuf> {
     if let Some(dir) = var(env, "WEACON_STATE_DIR") {
-        return Some(dir.into());
+        // A relative path would differ between commands started in different folders.
+        return std::path::absolute(dir).ok();
     }
     let home = home_dir(env)?;
     if cfg!(target_os = "macos") {
@@ -32,15 +33,17 @@ pub(crate) fn state_dir(env: Env<'_>) -> Option<PathBuf> {
     Some(base.join("weacon"))
 }
 
-/// Creates `dir` and its parents, and makes `dir` readable only by this user.
+/// Creates `dir` and any missing parents readable only by this user; existing folders keep
+/// their permissions.
 pub(crate) fn private_dir(dir: &Path) -> io::Result<()> {
-    fs::create_dir_all(dir)?;
+    let mut builder = fs::DirBuilder::new();
+    builder.recursive(true);
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(dir, fs::Permissions::from_mode(0o700))?;
+        use std::os::unix::fs::DirBuilderExt;
+        builder.mode(0o700);
     }
-    Ok(())
+    builder.create(dir)
 }
 
 /// Opens `path` for appending, creating it readable only by this user.
@@ -62,10 +65,15 @@ mod tests {
 
     #[test]
     fn the_state_folder_can_be_set() {
-        let env = env(&[("WEACON_STATE_DIR", "/srv/weacon"), ("HOME", "/home/ada")]);
+        let set = env(&[("WEACON_STATE_DIR", "/srv/weacon"), ("HOME", "/home/ada")]);
+        let relative = env(&[("WEACON_STATE_DIR", ".dev/state")]);
 
-        assert_eq!(state_dir(&env), Some(PathBuf::from("/srv/weacon")));
-        assert_eq!(home_dir(&env), Some(PathBuf::from("/home/ada")));
+        assert_eq!(state_dir(&set), Some(PathBuf::from("/srv/weacon")));
+        assert_eq!(home_dir(&set), Some(PathBuf::from("/home/ada")));
+        assert_eq!(
+            state_dir(&relative),
+            Some(std::env::current_dir().unwrap().join(".dev/state"))
+        );
     }
 
     #[cfg(target_os = "linux")]
@@ -87,11 +95,11 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn folders_and_files_are_private() {
+    fn new_folders_and_files_are_private_and_existing_ones_kept() {
         use std::os::unix::fs::PermissionsExt;
 
         let dir = temp_dir("private");
-        let nested = dir.join("state");
+        let nested = dir.join("state/logs");
         let file = nested.join("weacon.log");
         fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).unwrap();
         private_dir(&nested).unwrap();
@@ -99,7 +107,8 @@ mod tests {
         drop(private_append(&file).unwrap());
         let mode = |path: &Path| fs::metadata(path).unwrap().permissions().mode() & 0o777;
 
-        assert_eq!(mode(&dir), 0o700);
+        assert_eq!(mode(&dir), 0o755);
+        assert_eq!(mode(&dir.join("state")), 0o700);
         assert_eq!(mode(&nested), 0o700);
         assert_eq!(mode(&file), 0o600);
         fs::remove_dir_all(&dir).unwrap();
