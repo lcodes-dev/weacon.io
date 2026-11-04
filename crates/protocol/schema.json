@@ -1,0 +1,131 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Envelope",
+  "description": "One message on the wire. A reply carries the `id` of the request it answers.",
+  "type": "object",
+  "properties": {
+    "id": {
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0
+    }
+  },
+  "oneOf": [
+    {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "hello"
+        }
+      },
+      "$ref": "#/$defs/Hello",
+      "required": [
+        "type"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "welcome"
+        }
+      },
+      "$ref": "#/$defs/Welcome",
+      "required": [
+        "type"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "error"
+        }
+      },
+      "$ref": "#/$defs/ErrorBody",
+      "required": [
+        "type"
+      ]
+    }
+  ],
+  "required": [
+    "id"
+  ],
+  "$defs": {
+    "App": {
+      "description": "A program, such as `weacon-desktop`, and the exact build it is.",
+      "type": "object",
+      "properties": {
+        "commit": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "version": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "version",
+        "commit"
+      ]
+    },
+    "Code": {
+      "description": "An error code such as `store.full`: two or more lowercase words joined by dots.",
+      "type": "string",
+      "maxLength": 64,
+      "pattern": "^[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)+$"
+    },
+    "ErrorBody": {
+      "type": "object",
+      "properties": {
+        "code": {
+          "$ref": "#/$defs/Code"
+        },
+        "retryable": {
+          "description": "Whether the same request can succeed if sent again later.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "code",
+        "retryable"
+      ]
+    },
+    "Hello": {
+      "description": "The first message on every connection, from the side that connects.",
+      "type": "object",
+      "properties": {
+        "app": {
+          "$ref": "#/$defs/App"
+        },
+        "protocol": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "protocol",
+        "app"
+      ]
+    },
+    "Welcome": {
+      "description": "The answer to a [`Hello`] that speaks the same protocol.",
+      "type": "object",
+      "properties": {
+        "app": {
+          "$ref": "#/$defs/App"
+        }
+      },
+      "required": [
+        "app"
+      ]
+    }
+  }
+}

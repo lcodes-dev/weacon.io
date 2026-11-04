@@ -23,7 +23,7 @@ The default branch is `main`: start from it and open draft PRs against it. This 
 | Crate or app | May use | Does I/O |
 | --- | --- | --- |
 | `crates/protocol` | nothing in the repo | no |
-| `crates/observability` | nothing in the repo | no |
+| `crates/observability` | `protocol` | no |
 | `crates/version` | nothing in the repo | at build time: it runs `git` |
 | `crates/model` | `protocol` | no |
 | `crates/agents` | `protocol`, `model`, `observability` | yes |
@@ -59,7 +59,7 @@ The default branch is `main`: start from it and open draft PRs against it. This 
 - **Command lines:** ids and paths are checked before they reach a command line, so none can be read as an option.
 - **Hooks and helpers** that agents run never block them: when Weacon isn't there, they print nothing and exit cleanly.
 - **Screenshots and demos** use made-up data, never real project names.
-- **Errors** that Weacon raises are a `Fault` from `crates/observability`: a dotted code, written `code!("store.full")` so it is checked when compiled, and a short fixed message with no user content in it; these are the only messages that reach logs. A crate may have its own error enum and convert it into a `Fault` where it is logged or crosses a process boundary.
+- **Errors** that Weacon raises are a `Fault` from `crates/observability`: a dotted code from `crates/protocol`, written `code!("store.full")` so it is checked when compiled, and a short fixed message with no user content in it; these are the only messages that reach logs. A crate may have its own error enum and convert it into a `Fault` where it is logged or crosses a process boundary.
 - **Tests** sit at the end of the file they test, in a `#[cfg(test)] mod tests`, and are deterministic: no sleeps, no fixed ports, no shared state between tests, temporary folders, and per-worktree state in `.dev/`. They test behaviour strongly enough that the mutation tests find no surviving mutant.
 - **UI copy:** short, plain sentences in sentence case. Vendor names in plain text, no vendor logos.
 
@@ -101,6 +101,7 @@ Every program logs, reports errors and says which build it is from its first com
 | `scripts/fix.sh` | Formats and applies the lint fixes clippy is sure of |
 | `scripts/check.sh` | What CI runs: rustfmt, clippy with warnings as errors, docs, cargo-machete, cargo-deny, all tests with the 90% line-coverage floor, doc tests, mutation tests on the code changed against `origin/main`, and ShellCheck |
 | `cargo test -p <crate> [name]` | Focused tests while iterating |
+| `UPDATE_SCHEMA=1 cargo test -p weacon-protocol` | Regenerates `crates/protocol/schema.json` after a message changes |
 
 Every dependency is declared once, in `[workspace.dependencies]` in the root `Cargo.toml`; crates refer to it with `workspace = true`. `Cargo.lock` is committed and every command runs with `--locked`. A new dependency must be at least three days old, maintained, under a licence `.cargo/deny.toml` allows, and without a build script unless it needs one; say why it's needed in the PR.
 

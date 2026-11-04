@@ -3,67 +3,9 @@ use std::fmt;
 use std::io;
 
 use serde::Serialize;
+use weacon_protocol::Code;
 
 const MAX_CAUSES: usize = 3;
-
-/// A dotted error code such as `store.full`: lowercase words joined by dots.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize)]
-pub struct Code(&'static str);
-
-/// A [`Code`], checked when the program is compiled: `code!("store.full")`.
-///
-/// ```compile_fail
-/// let code = weacon_observability::code!("Store.full");
-/// ```
-#[macro_export]
-macro_rules! code {
-    ($code:literal) => {
-        const { $crate::Code::new($code) }
-    };
-}
-
-impl Code {
-    /// Use [`code!`], which checks the code when the program is compiled.
-    ///
-    /// # Panics
-    /// Unless `code` is dotted lowercase words.
-    #[doc(hidden)]
-    #[must_use]
-    pub const fn new(code: &'static str) -> Self {
-        assert!(
-            is_code(code),
-            "error codes are dotted lowercase words, like store.full"
-        );
-        Self(code)
-    }
-
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        self.0
-    }
-}
-
-const fn is_code(code: &str) -> bool {
-    let mut rest = code.as_bytes();
-    let mut words = 1;
-    let mut word_start = true;
-    while let [byte, tail @ ..] = rest {
-        let byte = *byte;
-        if word_start {
-            if !byte.is_ascii_lowercase() {
-                return false;
-            }
-            word_start = false;
-        } else if byte == b'.' {
-            words += 1;
-            word_start = true;
-        } else if !(byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_') {
-            return false;
-        }
-        rest = tail;
-    }
-    !word_start && words > 1
-}
 
 /// An error Weacon raises: a code and a fixed message, both safe to log.
 #[derive(Debug)]
@@ -90,8 +32,8 @@ impl Fault {
     }
 
     #[must_use]
-    pub const fn code(&self) -> Code {
-        self.code
+    pub const fn code(&self) -> &Code {
+        &self.code
     }
 }
 
@@ -181,7 +123,7 @@ fn describe(error: &(dyn Error + 'static), depth: usize) -> ErrorInfo {
         name: fault
             .map(|_| type_path::<Fault>())
             .or_else(|| io_kind.map(|_| type_path::<io::Error>())),
-        code: fault.map(Fault::code),
+        code: fault.map(|fault| fault.code().clone()),
         message: fault.map(|fault| fault.message),
         kind: io_kind.map(|kind| format!("{kind:?}")),
         cause,
@@ -198,7 +140,7 @@ fn type_path<T: ?Sized>() -> String {
 mod tests {
     use super::*;
 
-    const STORE_FULL: Code = crate::code!("store.full");
+    const STORE_FULL: Code = weacon_protocol::code!("store.full");
 
     #[derive(Debug)]
     struct Leaky<T>(T);
@@ -210,34 +152,6 @@ mod tests {
     }
 
     impl<T: fmt::Debug> Error for Leaky<T> {}
-
-    #[test]
-    fn accepts_dotted_lowercase_codes_only() {
-        for good in [
-            "store.full",
-            "driver.timeout",
-            "ssh.host_key_changed",
-            "agent_sdk.timeout",
-            "a1.b2.c_3",
-        ] {
-            assert!(is_code(good), "{good}");
-        }
-        for bad in [
-            "",
-            "store",
-            "Store.full",
-            "store.",
-            ".full",
-            "store..full",
-            "_store.full",
-            "store.Full",
-            "store.2x",
-            "störe.full",
-            "store full",
-        ] {
-            assert!(!is_code(bad), "{bad}");
-        }
-    }
 
     #[test]
     fn keeps_a_faults_code_and_message() {

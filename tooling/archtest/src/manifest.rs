@@ -159,13 +159,19 @@ mod tests {
 
     #[test]
     fn every_package_has_a_rule_and_every_rule_a_package() {
-        let names: BTreeSet<&str> = ["weacon-archtest", "weacon-version", "weacon-extra"].into();
+        let names: BTreeSet<&str> = [
+            "weacon-archtest",
+            "weacon-observability",
+            "weacon-protocol",
+            "weacon-extra",
+        ]
+        .into();
 
         assert_eq!(
             check_rules(&names),
             [
                 "weacon-extra: has no row in rules.rs",
-                "weacon-observability: has a row in rules.rs but no package"
+                "weacon-version: has a row in rules.rs but no package"
             ]
         );
     }
