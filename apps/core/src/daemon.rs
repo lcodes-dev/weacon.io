@@ -418,14 +418,13 @@ mod tests {
         fs::remove_dir_all(&dir).unwrap();
     }
 
-    // Writes bad lines without reading the replies, until writing fails.
-    async fn flood(mut client: Stream) -> io::Error {
+    // Writes 8 MiB of bad lines without reading the replies; far more than the socket buffers.
+    async fn flood(mut client: Stream) -> io::Result<()> {
         let junk = b"x\n".repeat(32 * 1024);
-        loop {
-            if let Err(error) = client.write_all(&junk).await {
-                return error;
-            }
+        for _ in 0..128 {
+            client.write_all(&junk).await?;
         }
+        Ok(())
     }
 
     #[tokio::test(start_paused = true)]
@@ -434,8 +433,11 @@ mod tests {
         let running = start(&dir).unwrap();
         let client = connect(&running.socket).await;
 
-        // The flood only ends with an error once the daemon hangs up.
-        timeout(HANDSHAKE_TIMEOUT * 2, flood(client)).await.unwrap();
+        // The daemon stops reading while its replies back up, then hangs up at the deadline.
+        timeout(HANDSHAKE_TIMEOUT * 2, flood(client))
+            .await
+            .unwrap()
+            .unwrap_err();
         running.stop().await;
         fs::remove_dir_all(&dir).unwrap();
     }
