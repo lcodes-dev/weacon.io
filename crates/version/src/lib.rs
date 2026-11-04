@@ -49,8 +49,8 @@ impl fmt::Display for Version {
     }
 }
 
-/// Tells Cargo the commit being built: `WEACON_COMMIT` when set and not blank, else `git`.
-/// Call it from `build.rs`.
+/// Tells Cargo the commit being built: `WEACON_COMMIT` when not blank, else `git`; `unknown`
+/// when that isn't a commit hash. Call it from `build.rs`.
 #[expect(
     clippy::print_stdout,
     reason = "Cargo reads build-script instructions from stdout"
