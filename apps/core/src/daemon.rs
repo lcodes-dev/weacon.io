@@ -278,8 +278,10 @@ mod tests {
         writer.write_all(bytes).await.unwrap();
         let mut lines = tokio::io::BufReader::new(reader).lines();
         let mut replies = Vec::new();
+        // Longer than the handshake deadline, so a daemon that never answers fails the test.
+        let wait = HANDSHAKE_TIMEOUT * 2;
         while replies.len() < count
-            && let Some(line) = lines.next_line().await.unwrap()
+            && let Some(line) = timeout(wait, lines.next_line()).await.unwrap().unwrap()
         {
             replies.push(serde_json::from_str::<Envelope>(&line).unwrap().message);
         }
