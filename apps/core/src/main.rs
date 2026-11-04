@@ -39,6 +39,11 @@ fn main() -> ExitCode {
             // The daemon logs to a terminal it was started from.
             verbose: cli.verbose || (cli.command == Command::Daemon && io::stderr().is_terminal()),
             mode: cli.command.name(),
+            log_name: if cli.command == Command::Daemon {
+                "daemon.log"
+            } else {
+                "cli.log"
+            },
         },
     );
     std::panic::set_hook(app.panic_hook());

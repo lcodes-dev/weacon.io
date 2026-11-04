@@ -14,7 +14,7 @@ const TIMEOUT: Duration = Duration::from_secs(5);
 /// Shakes hands with the daemon and prints its build.
 pub(crate) fn run(app: &crate::app::App, out: &mut impl Write) -> Result<(), Fault> {
     let state_dir = app.state_dir.as_deref().ok_or_else(state_unavailable)?;
-    let daemon = query(&socket_path(state_dir), build(&app.version), TIMEOUT)?;
+    let daemon = query(&socket_path(state_dir), build(&app.version))?;
     writeln!(
         out,
         "Daemon: running, weacon {} ({})",
@@ -30,11 +30,11 @@ pub(crate) fn run(app: &crate::app::App, out: &mut impl Write) -> Result<(), Fau
 }
 
 /// The daemon's build, after a handshake as `me` over the socket at `socket`.
-pub(crate) fn query(socket: &Path, me: App, timeout: Duration) -> Result<App, Fault> {
+pub(crate) fn query(socket: &Path, me: App) -> Result<App, Fault> {
     let no_answer = |error: io::Error| {
         Fault::new(code!("daemon.no_answer"), "The daemon didn't answer").because(error)
     };
-    let mut stream = platform::connect(socket).map_err(|error| {
+    let mut stream = platform::BlockingStream::connect(socket).map_err(|error| {
         if matches!(
             error.kind(),
             io::ErrorKind::NotFound | io::ErrorKind::ConnectionRefused
@@ -47,8 +47,8 @@ pub(crate) fn query(socket: &Path, me: App, timeout: Duration) -> Result<App, Fa
             no_answer(error)
         }
     })?;
-    stream.set_read_timeout(Some(timeout)).map_err(no_answer)?;
-    stream.set_write_timeout(Some(timeout)).map_err(no_answer)?;
+    stream.set_read_timeout(Some(TIMEOUT)).map_err(no_answer)?;
+    stream.set_write_timeout(Some(TIMEOUT)).map_err(no_answer)?;
     let hello = Envelope {
         id: 1,
         message: Message::Hello(Hello {
@@ -56,7 +56,9 @@ pub(crate) fn query(socket: &Path, me: App, timeout: Duration) -> Result<App, Fa
             app: me,
         }),
     };
-    let line = encode(&hello).map_err(|error| no_answer(io::Error::other(error)))?;
+    let line = encode(&hello).map_err(|error| {
+        Fault::new(code!("daemon.no_answer"), "The daemon didn't answer").because(error)
+    })?;
     stream.write_all(&line).map_err(no_answer)?;
     let mut decoder = Decoder::default();
     let mut buf = [0; 4096];
@@ -91,20 +93,16 @@ mod tests {
     use weacon_protocol::{ErrorBody, Welcome};
 
     use super::*;
-
-    fn app() -> App {
-        App {
-            name: "weacon-core".to_owned(),
-            version: "0.1.0".to_owned(),
-            commit: "1a2b3c4".to_owned(),
-        }
-    }
+    use crate::test_support::VERSION;
 
     #[test]
     fn a_welcome_gives_the_daemons_build() {
         assert_eq!(
-            welcomed(Message::Welcome(Welcome { app: app() })).unwrap(),
-            app()
+            welcomed(Message::Welcome(Welcome {
+                app: build(&VERSION)
+            }))
+            .unwrap(),
+            build(&VERSION)
         );
     }
 
@@ -134,7 +132,7 @@ mod tests {
 
     #[test]
     fn no_socket_means_no_daemon() {
-        let error = query(Path::new("/nonexistent/weacon.sock"), app(), TIMEOUT).unwrap_err();
+        let error = query(Path::new("/nonexistent/weacon.sock"), build(&VERSION)).unwrap_err();
 
         assert_eq!(error.code().as_str(), "daemon.not_running");
     }

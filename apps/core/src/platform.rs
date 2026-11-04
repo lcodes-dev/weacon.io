@@ -58,18 +58,6 @@ pub(crate) fn private_append(path: &Path) -> io::Result<File> {
     options.open(path)
 }
 
-/// Opens `path` for writing without truncating it, creating it readable only by this user.
-pub(crate) fn private_file(path: &Path) -> io::Result<File> {
-    let mut options = OpenOptions::new();
-    options.create(true).write(true).truncate(false);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
-    }
-    options.open(path)
-}
-
 #[cfg(unix)]
 pub(crate) use unix::*;
 
@@ -100,10 +88,6 @@ mod unix {
 
     pub(crate) fn peer_uid(stream: &Stream) -> io::Result<u32> {
         Ok(stream.peer_cred()?.uid())
-    }
-
-    pub(crate) fn connect(path: &Path) -> io::Result<BlockingStream> {
-        BlockingStream::connect(path)
     }
 
     /// Waits for Ctrl-C or SIGTERM.

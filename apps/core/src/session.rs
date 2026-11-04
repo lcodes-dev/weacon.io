@@ -65,37 +65,28 @@ mod tests {
     use weacon_protocol::{Hello, PROTOCOL, Welcome};
 
     use super::*;
-
-    fn app(name: &str) -> App {
-        App {
-            name: name.to_owned(),
-            version: "0.1.0".to_owned(),
-            commit: "1a2b3c4".to_owned(),
-        }
-    }
+    use crate::daemon::build;
+    use crate::test_support::{self, VERSION};
 
     fn hello(id: u32, protocol: u32) -> Envelope {
         Envelope {
             id,
             message: Message::Hello(Hello {
                 protocol,
-                app: app("weacon-desktop"),
+                app: build(&VERSION),
             }),
         }
     }
 
     fn error_code(reply: &Reply) -> Option<&str> {
-        match &reply.envelope.as_ref()?.message {
-            Message::Error(body) => Some(body.code.as_str()),
-            Message::Hello(_) | Message::Welcome(_) | Message::Unknown => None,
-        }
+        test_support::error_code(&reply.envelope.as_ref()?.message)
     }
 
     #[test]
     fn a_matching_hello_is_welcomed_once() {
         let mut session = Session::default();
-        let welcome = session.answer(Ok(hello(1, PROTOCOL)), &app("weacon-core"));
-        let again = session.answer(Ok(hello(2, PROTOCOL)), &app("weacon-core"));
+        let welcome = session.answer(Ok(hello(1, PROTOCOL)), &build(&VERSION));
+        let again = session.answer(Ok(hello(2, PROTOCOL)), &build(&VERSION));
 
         assert_eq!(
             welcome,
@@ -103,7 +94,7 @@ mod tests {
                 envelope: Some(Envelope {
                     id: 1,
                     message: Message::Welcome(Welcome {
-                        app: app("weacon-core")
+                        app: build(&VERSION)
                     }),
                 }),
                 close: false,
@@ -117,7 +108,7 @@ mod tests {
     #[test]
     fn another_protocol_is_refused_and_hung_up_on() {
         let mut session = Session::default();
-        let reply = session.answer(Ok(hello(1, PROTOCOL + 1)), &app("weacon-core"));
+        let reply = session.answer(Ok(hello(1, PROTOCOL + 1)), &build(&VERSION));
 
         assert_eq!(error_code(&reply), Some("protocol.unsupported"));
         assert!(reply.close);
@@ -132,7 +123,7 @@ mod tests {
                 id: 4,
                 message: Message::Unknown,
             }),
-            &app("weacon-core"),
+            &build(&VERSION),
         );
 
         assert_eq!(reply.envelope.as_ref().map(|envelope| envelope.id), Some(4));
@@ -143,13 +134,13 @@ mod tests {
     #[test]
     fn after_the_hello_unknown_messages_get_an_error_and_errors_get_nothing() {
         let mut session = Session::default();
-        session.answer(Ok(hello(1, PROTOCOL)), &app("weacon-core"));
+        session.answer(Ok(hello(1, PROTOCOL)), &build(&VERSION));
         let unknown = session.answer(
             Ok(Envelope {
                 id: 5,
                 message: Message::Unknown,
             }),
-            &app("weacon-core"),
+            &build(&VERSION),
         );
         let error = session.answer(
             Ok(Envelope {
@@ -159,7 +150,7 @@ mod tests {
                     retryable: true,
                 }),
             }),
-            &app("weacon-core"),
+            &build(&VERSION),
         );
 
         assert_eq!(error_code(&unknown), Some("message.unsupported"));
@@ -176,7 +167,7 @@ mod tests {
     #[test]
     fn a_bad_frame_gets_its_error_and_the_connection_stays() {
         let mut session = Session::default();
-        let reply = session.answer(Err(FrameError::TooLarge), &app("weacon-core"));
+        let reply = session.answer(Err(FrameError::TooLarge), &build(&VERSION));
 
         assert_eq!(reply.envelope.as_ref().map(|envelope| envelope.id), Some(0));
         assert_eq!(error_code(&reply), Some("frame.too_large"));

@@ -29,23 +29,21 @@ pub(crate) struct Setup<'a> {
     pub(crate) deliver: Deliver,
     pub(crate) verbose: bool,
     pub(crate) mode: &'static str,
+    /// The log file's name: the daemon and short commands each rotate their own.
+    pub(crate) log_name: &'static str,
 }
 
 impl App {
     pub(crate) fn start(version: Version, setup: Setup<'_>) -> Self {
         let state_dir = platform::state_dir(setup.env);
-        // The daemon and short commands rotate their own files, so neither moves the other's.
-        let name = if setup.mode == "daemon" {
-            "daemon.log"
-        } else {
-            "cli.log"
+        let (log_file, file_sink, failure) = match state_dir
+            .as_deref()
+            .map(|dir| open_log(dir, setup.log_name))
+        {
+            Some(Ok((path, file))) => (Some(path), json_lines(file), None),
+            Some(Err(error)) => (None, nothing(), Some(error)),
+            None => (None, nothing(), None),
         };
-        let (log_file, file_sink, failure) =
-            match state_dir.as_deref().map(|dir| open_log(dir, name)) {
-                Some(Ok((path, file))) => (Some(path), json_lines(file), None),
-                Some(Err(error)) => (None, nothing(), Some(error)),
-                None => (None, nothing(), None),
-            };
         let stderr_from = if setup.verbose {
             Level::Info
         } else {
@@ -161,6 +159,7 @@ mod tests {
                 }),
                 verbose,
                 mode: "doctor",
+                log_name: "cli.log",
             },
         );
         (app, records, uploads)

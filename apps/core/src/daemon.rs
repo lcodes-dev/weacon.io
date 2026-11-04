@@ -4,9 +4,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::unix::OwnedWriteHalf;
-use tokio::sync::watch;
+use tokio::io::{AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::task::JoinSet;
 use weacon_observability::{Fault, Field, Logger};
 use weacon_protocol::{App, Decoder, code, encode};
@@ -18,7 +16,6 @@ use crate::session::Session;
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
 const READ_CHUNK: usize = 8 * 1024;
 
-/// The daemon's socket in `state_dir`.
 pub(crate) fn socket_path(state_dir: &Path) -> PathBuf {
     state_dir.join("weacon.sock")
 }
@@ -38,13 +35,16 @@ pub(crate) fn run(app: &crate::app::App) -> Result<(), Fault> {
         .state_dir
         .as_deref()
         .ok_or_else(crate::app::state_unavailable)?;
-    let runtime = tokio::runtime::Runtime::new().map_err(|error| {
-        Fault::new(
-            code!("daemon.runtime_failed"),
-            "The daemon couldn't start its runtime",
-        )
-        .because(error)
-    })?;
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|error| {
+            Fault::new(
+                code!("daemon.runtime_failed"),
+                "The daemon couldn't start its runtime",
+            )
+            .because(error)
+        })?;
     runtime.block_on(async {
         let daemon = Daemon::start(state_dir, build(&app.version), app.log.clone())?;
         let log = app.log.clone();
@@ -85,7 +85,7 @@ impl Daemon {
                     "Other users can reach the state folder; make it readable only by you",
                 )
             })?;
-        let lock = platform::private_file(&state_dir.join("weacon.lock")).map_err(failed)?;
+        let lock = platform::private_append(&state_dir.join("weacon.lock")).map_err(failed)?;
         lock.try_lock().map_err(|error| match error {
             TryLockError::WouldBlock => Fault::new(
                 code!("daemon.running"),
@@ -113,14 +113,13 @@ impl Daemon {
 
     /// Serves clients until `shutdown` finishes, then closes every connection and the socket.
     pub(crate) async fn serve(self, shutdown: impl Future<Output = ()>) {
-        let (stop, stopped) = watch::channel(());
         let mut clients = JoinSet::new();
         tokio::pin!(shutdown);
         loop {
             tokio::select! {
                 () = &mut shutdown => break,
                 accepted = self.listener.accept() => match accepted {
-                    Ok((stream, _)) => self.admit(stream, &mut clients, stopped.clone()),
+                    Ok((stream, _)) => self.admit(stream, &mut clients),
                     Err(error) => self.log.warn("accept failed", &[("err", Field::error(&error))]),
                 },
                 Some(_) = clients.join_next(), if !clients.is_empty() => {}
@@ -128,40 +127,33 @@ impl Daemon {
         }
         drop(self.listener);
         drop(fs::remove_file(&self.socket));
-        // Dropping the sender wakes every client, which then hangs up.
-        drop(stop);
-        while clients.join_next().await.is_some() {}
+        clients.shutdown().await;
         self.log.info("daemon stopped", &[]);
     }
 
-    fn admit(&self, stream: Stream, clients: &mut JoinSet<()>, stopped: watch::Receiver<()>) {
+    fn admit(&self, stream: Stream, clients: &mut JoinSet<()>) {
         match platform::peer_uid(&stream) {
             Ok(uid) if uid == self.owner => {}
             _ => return self.log.warn("client refused", &[]),
         }
         let (app, log) = (self.app.clone(), self.log.clone());
         clients.spawn(async move {
-            if let Err(error) = serve_client(stream, app, stopped).await {
+            if let Err(error) = serve_client(stream, app).await {
                 log.debug("client failed", &[("err", Field::error(&error))]);
             }
         });
     }
 }
 
-async fn serve_client(
-    stream: Stream,
-    app: App,
-    mut stopped: watch::Receiver<()>,
-) -> io::Result<()> {
+async fn serve_client(stream: Stream, app: App) -> io::Result<()> {
     let (mut reader, mut writer) = stream.into_split();
     let mut session = Session::default();
     let mut decoder = Decoder::default();
-    let mut buf = vec![0; READ_CHUNK];
+    let mut buf = [0; READ_CHUNK];
     let handshake = tokio::time::sleep(HANDSHAKE_TIMEOUT);
     tokio::pin!(handshake);
     loop {
         let read = tokio::select! {
-            _ = stopped.changed() => return Ok(()),
             () = &mut handshake, if !session.greeted() => return Ok(()),
             read = reader.read(&mut buf) => read?,
         };
@@ -178,7 +170,7 @@ async fn answer(
     decoder: &mut Decoder,
     bytes: &[u8],
     app: &App,
-    writer: &mut OwnedWriteHalf,
+    writer: &mut (impl AsyncWrite + Unpin),
 ) -> io::Result<bool> {
     for received in decoder.push(bytes) {
         let reply = session.answer(received, app);
@@ -205,16 +197,18 @@ mod tests {
 
     use super::*;
     use crate::status::query;
-    use crate::test_support::{VERSION, messages, recording_logger, temp_dir};
+    use crate::test_support::{Records, VERSION, error_code, messages, recording_logger, temp_dir};
 
     struct Running {
         socket: PathBuf,
         stop: oneshot::Sender<()>,
         served: JoinHandle<()>,
+        records: Records,
     }
 
     fn start(dir: &Path) -> Result<Running, Fault> {
-        let daemon = Daemon::start(dir, build(&VERSION), recording_logger().0)?;
+        let (log, records) = recording_logger();
+        let daemon = Daemon::start(dir, build(&VERSION), log)?;
         let socket = daemon.socket.clone();
         let (stop, stopped) = oneshot::channel();
         let served = tokio::spawn(daemon.serve(async move { drop(stopped.await) }));
@@ -222,13 +216,14 @@ mod tests {
             socket,
             stop,
             served,
+            records,
         })
     }
 
     async fn ask(socket: &Path) -> Result<App, Fault> {
         let socket = socket.to_owned();
         let me = build(&VERSION);
-        tokio::task::spawn_blocking(move || query(&socket, me, Duration::from_secs(5)))
+        tokio::task::spawn_blocking(move || query(&socket, me))
             .await
             .unwrap()
     }
@@ -259,14 +254,7 @@ mod tests {
         replies
     }
 
-    fn code(message: &Message) -> Option<&str> {
-        match message {
-            Message::Error(body) => Some(body.code.as_str()),
-            Message::Hello(_) | Message::Welcome(_) | Message::Unknown => None,
-        }
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
+    #[tokio::test]
     async fn a_client_shakes_hands_and_shutdown_cleans_up() {
         let dir = temp_dir("daemon-hello");
         let running = start(&dir).unwrap();
@@ -284,7 +272,7 @@ mod tests {
         fs::remove_dir_all(&dir).unwrap();
     }
 
-    #[tokio::test(flavor = "multi_thread")]
+    #[tokio::test]
     async fn one_daemon_per_state_folder_and_a_stale_socket_is_replaced() {
         let dir = temp_dir("daemon-twice");
         fs::write(socket_path(&dir), "stale").unwrap();
@@ -298,7 +286,7 @@ mod tests {
         fs::remove_dir_all(&dir).unwrap();
     }
 
-    #[tokio::test(flavor = "multi_thread")]
+    #[tokio::test]
     async fn a_state_folder_others_can_reach_is_refused() {
         let dir = temp_dir("daemon-open");
         fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).unwrap();
@@ -311,7 +299,7 @@ mod tests {
         fs::remove_dir_all(&dir).unwrap();
     }
 
-    #[tokio::test(flavor = "multi_thread")]
+    #[tokio::test]
     async fn bad_frames_get_errors_and_another_protocol_is_hung_up_on() {
         let dir = temp_dir("daemon-frames");
         let running = start(&dir).unwrap();
@@ -320,16 +308,16 @@ mod tests {
         let recovered = exchange(&running.socket, &bytes, 2).await;
         let refused = exchange(&running.socket, &hello(PROTOCOL + 1), 9).await;
 
-        assert_eq!(code(&recovered[0]), Some("frame.invalid"));
+        assert_eq!(error_code(&recovered[0]), Some("frame.invalid"));
         assert!(matches!(recovered[1], Message::Welcome(_)));
         assert_eq!(refused.len(), 1);
-        assert_eq!(code(&refused[0]), Some("protocol.unsupported"));
+        assert_eq!(error_code(&refused[0]), Some("protocol.unsupported"));
         running.stop.send(()).unwrap();
         running.served.await.unwrap();
         fs::remove_dir_all(&dir).unwrap();
     }
 
-    #[tokio::test(flavor = "multi_thread")]
+    #[tokio::test]
     async fn shutdown_hangs_up_on_connected_clients() {
         let dir = temp_dir("daemon-idle");
         let running = start(&dir).unwrap();
@@ -345,18 +333,17 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn a_client_that_never_says_hello_is_hung_up_on() {
         let dir = temp_dir("daemon-silent");
-        let (log, records) = recording_logger();
-        let daemon = Daemon::start(&dir, build(&VERSION), log).unwrap();
-        let socket = daemon.socket.clone();
-        let (stop, stopped) = oneshot::channel::<()>();
-        let served = tokio::spawn(daemon.serve(async move { drop(stopped.await) }));
-        let client = Stream::connect(&socket).await.unwrap();
+        let running = start(&dir).unwrap();
+        let client = Stream::connect(&running.socket).await.unwrap();
         let (mut reader, _writer) = client.into_split();
 
         assert_eq!(reader.read(&mut [0; 16]).await.unwrap(), 0);
-        stop.send(()).unwrap();
-        served.await.unwrap();
-        assert_eq!(messages(&records), ["daemon started", "daemon stopped"]);
+        running.stop.send(()).unwrap();
+        running.served.await.unwrap();
+        assert_eq!(
+            messages(&running.records),
+            ["daemon started", "daemon stopped"]
+        );
         fs::remove_dir_all(&dir).unwrap();
     }
 }

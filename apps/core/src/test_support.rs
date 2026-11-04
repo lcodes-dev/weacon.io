@@ -58,3 +58,13 @@ pub(crate) fn messages(records: &Records) -> Vec<&'static str> {
         .map(|record| record.msg)
         .collect()
 }
+
+/// The code of an error message, if it is one.
+pub(crate) fn error_code(message: &weacon_protocol::Message) -> Option<&str> {
+    match message {
+        weacon_protocol::Message::Error(body) => Some(body.code.as_str()),
+        weacon_protocol::Message::Hello(_)
+        | weacon_protocol::Message::Welcome(_)
+        | weacon_protocol::Message::Unknown => None,
+    }
+}
