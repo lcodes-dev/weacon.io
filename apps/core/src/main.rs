@@ -5,12 +5,10 @@ mod cli;
 mod daemon;
 mod disk;
 mod doctor;
-mod logs;
 mod map;
 mod native_host;
 mod picks;
 mod platform;
-mod report;
 mod service;
 mod session;
 mod status;
@@ -40,7 +38,7 @@ fn main() -> ExitCode {
         Setup {
             env: &env,
             stderr: json_lines(io::stderr()),
-            deliver: report::http(),
+            deliver: weacon_appkit::http(),
             verbose: cli.prints_info(io::stderr().is_terminal()),
             mode: cli.command.name(),
             log_name: cli.command.log_name(),

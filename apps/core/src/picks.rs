@@ -84,7 +84,7 @@ fn write_new(path: &Path, json: &[u8]) -> io::Result<()> {
     {
         return Err(error);
     }
-    let mut file = platform::private_append(path)?;
+    let mut file = weacon_appkit::private_append(path)?;
     file.write_all(json)?;
     file.sync_all()
 }

@@ -1,9 +1,12 @@
 //! Test helpers for Weacon's crates.
 
 pub mod fake_core;
+mod logs;
 pub mod platform;
 
 use std::time::Duration;
+
+pub use logs::{Records, messages, recording_logger, recording_sink};
 
 use serde_json::Value;
 use tokio::io::{

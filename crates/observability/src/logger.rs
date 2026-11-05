@@ -144,8 +144,20 @@ pub fn json_lines(writer: impl Write + Send + 'static) -> Sink {
     })
 }
 
+/// Sends every record to `all`, and those at or above `from` to `some` as well.
+#[must_use]
+pub fn tee(all: Sink, some: Sink, from: Level) -> Sink {
+    Box::new(move |record| {
+        all(record);
+        if record.level >= from {
+            some(record);
+        }
+    })
+}
+
+// Not `weacon-testing`: it depends on this crate, so its sinks would record other types.
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use std::time::Duration;
 
     use serde_json::json;
@@ -154,17 +166,33 @@ mod tests {
 
     const TIME: u64 = 1_762_077_600_000;
 
-    fn capture(level: Level) -> (Logger, Arc<Mutex<Vec<Record>>>) {
+    pub(crate) type Records = Arc<Mutex<Vec<Record>>>;
+
+    pub(crate) fn capture(level: Level) -> (Logger, Records) {
         capture_at(level, Box::new(|| UNIX_EPOCH + Duration::from_millis(TIME)))
     }
 
-    fn capture_at(level: Level, now: Clock) -> (Logger, Arc<Mutex<Vec<Record>>>) {
-        let records = Arc::new(Mutex::new(Vec::new()));
+    fn capture_at(level: Level, now: Clock) -> (Logger, Records) {
+        let (sink, records) = recording_sink();
+        (Logger::new(LoggerOptions { sink, now, level }), records)
+    }
+
+    fn recording_sink() -> (Sink, Records) {
+        let records = Records::default();
         let sink_records = Arc::clone(&records);
         let sink: Sink = Box::new(move |record: &Record| {
             sink_records.lock().unwrap().push(record.clone());
         });
-        (Logger::new(LoggerOptions { sink, now, level }), records)
+        (sink, records)
+    }
+
+    fn messages(records: &Records) -> Vec<&'static str> {
+        records
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|record| record.msg)
+            .collect()
     }
 
     fn json(records: &Mutex<Vec<Record>>) -> Value {
@@ -296,5 +324,24 @@ mod tests {
                 "{{\"time\":{TIME},\"level\":\"info\",\"msg\":\"one\"}}\n{{\"count\":2,\"time\":{TIME},\"level\":\"info\",\"msg\":\"two\"}}\n"
             )
         );
+    }
+
+    #[test]
+    fn tee_sends_the_quieter_records_to_one_sink_only() {
+        let ((all, all_seen), (some, some_seen)) = (recording_sink(), recording_sink());
+        let log = Logger::new(LoggerOptions {
+            sink: tee(all, some, Level::Warn),
+            now: Box::new(SystemTime::now),
+            level: Level::Info,
+        });
+        log.info("run started", &[]);
+        log.warn("sync failed", &[]);
+        log.error("store full", &[]);
+
+        assert_eq!(
+            messages(&all_seen),
+            ["run started", "sync failed", "store full"]
+        );
+        assert_eq!(messages(&some_seen), ["sync failed", "store full"]);
     }
 }

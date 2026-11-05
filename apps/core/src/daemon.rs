@@ -11,7 +11,6 @@ use weacon_observability::{Fault, Field, Logger};
 use weacon_protocol::{
     App, Envelope, LineDecoder, Message, Outcome, Pick, Receipt, code, encode_line,
 };
-use weacon_version::Version;
 
 use crate::disk;
 use crate::picks::{KeepError, Picks};
@@ -27,14 +26,7 @@ pub(crate) fn socket_path(state_dir: &Path) -> PathBuf {
     state_dir.join("weacon.sock")
 }
 
-/// How this build introduces itself on the socket.
-pub(crate) fn build(version: &Version) -> App {
-    App {
-        name: version.name.to_owned(),
-        version: version.version.to_owned(),
-        commit: version.commit.to_owned(),
-    }
-}
+pub(crate) use weacon_appkit::build;
 
 /// The single-threaded async runtime the core's commands run on.
 pub(crate) fn runtime() -> Result<tokio::runtime::Runtime, Fault> {
@@ -53,7 +45,7 @@ pub(crate) fn run(app: &crate::app::App) -> Result<(), Fault> {
         .as_deref()
         .ok_or_else(crate::app::state_unavailable)?;
     runtime()?.block_on(async {
-        let signals = platform::Signals::new().map_err(|error| {
+        let signals = weacon_appkit::Signals::new().map_err(|error| {
             Fault::new(
                 code!("daemon.signals_failed"),
                 "The daemon couldn't catch signals",
@@ -99,7 +91,7 @@ impl Daemon {
                     "Other users can reach the state folder; make it readable only by you",
                 )
             })?;
-        let lock = platform::private_append(&state_dir.join("weacon.lock")).map_err(failed)?;
+        let lock = weacon_appkit::private_append(&state_dir.join("weacon.lock")).map_err(failed)?;
         lock.try_lock().map_err(|error| match error {
             TryLockError::WouldBlock => Fault::new(
                 code!("daemon.running"),

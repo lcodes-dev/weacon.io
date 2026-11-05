@@ -30,10 +30,11 @@ The default branch is `main`: start from it and open draft PRs against it. This 
 | `crates/codemap` | `protocol` | no |
 | `crates/agents` | `protocol`, `model`, `observability` | yes |
 | `crates/client` | `protocol`, `model`, `observability` | yes |
+| `crates/appkit` | `protocol`, `observability`, `version`; only apps use it | yes |
 | `crates/testing` | anything; only as a dev-dependency | yes |
-| `apps/core` | `protocol`, `model`, `client`, `agents`, `codemap`, `observability`, `version` | yes |
-| `apps/server` | `protocol`, `model`, `observability`, `version`; never `agents`, because the team server never runs agents | yes |
-| `apps/desktop` | `protocol`, `model`, `client`, `observability`, `version` | yes |
+| `apps/core` | `protocol`, `model`, `client`, `agents`, `codemap`, `observability`, `appkit`, `version` | yes |
+| `apps/server` | `protocol`, `model`, `observability`, `appkit`, `version`; never `agents`, because the team server never runs agents | yes |
+| `apps/desktop` | `protocol`, `model`, `client`, `observability`, `appkit`, `version` | yes |
 | `tooling/*` | nothing in the repo | yes |
 | `apps/extension` | TypeScript; only the types generated from `protocol` | — |
 
@@ -79,7 +80,7 @@ Every program logs, reports errors and says which build it is from its first com
 - **Libraries' logs** through `log` or `tracing` reach the same sink with their level and target only; their messages are dropped.
 - **Levels.** `fatal`: about to exit. `error`: a person needs to look. `warn`: failed and handled. `info`: lifecycle, the default. `debug`: developer detail. `trace`: very noisy.
 - **Where logs go.** The core: rotated JSON lines in its state folder, and stderr in a terminal. CLI commands: warnings and errors on stderr, `--verbose` adds info. The team server: stdout, one record per request (method, route template, status, duration, request id). The desktop: rotated JSON lines in its logs folder. The extension: forwarded to the core.
-- **Error reports** use the Sentry protocol, off without a DSN. On people's devices the desktop and the core send them only after the person agrees, and Settings can turn them off. `crates/observability` builds and scrubs each report (`Reports::upload`) and the app sends it, so only apps touch the network; report errors with `capture_error` and a `code` tag, never messages. A DSN in `WEACON_SENTRY_DSN` turns them on. The release is `version!().release()`.
+- **Error reports** use the Sentry protocol, off without a DSN. On people's devices the desktop and the core send them only after the person agrees, and Settings can turn them off. `crates/observability` builds and scrubs each report (`Reports::upload`) and the app sends it through `crates/appkit`, which only apps use; report errors with `capture_error` and a `code` tag, never messages. A DSN in `WEACON_SENTRY_DSN` turns them on. The release is `version!().release()`.
 - **Versions** come only from `weacon_version::version!()`: `weacon --version`, `GET /version` on the team server (`{"name", "version", "commit"}`, `Cache-Control: no-store`), Settings › About in the desktop, and the extension's `version_name`.
 - **Tests.** Each app has a test that puts marker strings in a message, a token and a file path, triggers a log line and an error report, and checks that no marker reaches either.
 

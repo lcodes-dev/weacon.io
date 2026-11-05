@@ -1,0 +1,22 @@
+[package]
+name = "weacon-appkit"
+description = "What every Weacon app wires in: its logger, error reports, log files and signals"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+tokio.workspace = true
+ureq.workspace = true
+weacon-observability.workspace = true
+weacon-protocol.workspace = true
+weacon-version.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
+weacon-testing.workspace = true
+
+[lints]
+workspace = true

@@ -2,23 +2,21 @@ use std::collections::HashMap;
 use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 
-use weacon_observability::{Level, Logger, LoggerOptions, Record, Sink};
+use weacon_observability::Reporter;
 use weacon_protocol::{Pick, RequestId};
 use weacon_version::Version;
 
+pub(crate) use weacon_testing::{Records, messages, recording_logger, recording_sink};
+
 use crate::app::App;
-use crate::report::Reporter;
 
 pub(crate) const VERSION: Version = Version {
     name: "weacon-core",
     version: "0.1.0",
     commit: "1a2b3c4",
 };
-
-pub(crate) type Records = Arc<Mutex<Vec<Record>>>;
 
 /// A fake environment holding only `vars`.
 pub(crate) fn env(vars: &[(&str, &str)]) -> impl Fn(&str) -> Option<OsString> + use<> {
@@ -42,7 +40,14 @@ pub(crate) fn app(state_dir: Option<&Path>, log_file: Option<&Path>) -> App {
     App {
         version: VERSION,
         log: recording_logger().0,
-        reporter: Reporter::new(None, Box::new(|_| Ok(()))).into(),
+        reporter: Reporter::new(
+            None,
+            true,
+            Box::new(|_| Ok(())),
+            Box::new(|| 0),
+            Box::new(SystemTime::now),
+        )
+        .into(),
         state_dir: state_dir.map(Path::to_path_buf),
         log_file: log_file.map(Path::to_path_buf),
         spawn: weacon_agents::SpawnPolicy::default(),
@@ -59,32 +64,6 @@ pub(crate) fn pick(request: &str, html: &str) -> Pick {
         html: html.to_owned(),
         screenshot_png: Some("iVBORw0KGgo=".to_owned()),
     }
-}
-
-pub(crate) fn recording_sink() -> (Sink, Records) {
-    let records = Records::default();
-    let seen = Arc::clone(&records);
-    let sink: Sink = Box::new(move |record| seen.lock().unwrap().push(record.clone()));
-    (sink, records)
-}
-
-pub(crate) fn recording_logger() -> (Logger, Records) {
-    let (sink, records) = recording_sink();
-    let log = Logger::new(LoggerOptions {
-        sink,
-        now: Box::new(SystemTime::now),
-        level: Level::Info,
-    });
-    (log, records)
-}
-
-pub(crate) fn messages(records: &Records) -> Vec<&'static str> {
-    records
-        .lock()
-        .unwrap()
-        .iter()
-        .map(|record| record.msg)
-        .collect()
 }
 
 /// The code of an error message, if it is one.

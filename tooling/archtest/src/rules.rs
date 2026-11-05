@@ -15,6 +15,11 @@ pub(crate) const RULES: &[Rule] = &[
         io: true,
     },
     Rule {
+        package: "weacon-appkit",
+        may_use: &["weacon-observability", "weacon-protocol", "weacon-version"],
+        io: true,
+    },
+    Rule {
         package: "weacon-archtest",
         may_use: &[],
         io: true,
@@ -33,6 +38,7 @@ pub(crate) const RULES: &[Rule] = &[
         package: "weacon-core",
         may_use: &[
             "weacon-agents",
+            "weacon-appkit",
             "weacon-client",
             "weacon-codemap",
             "weacon-model",
@@ -45,6 +51,7 @@ pub(crate) const RULES: &[Rule] = &[
     Rule {
         package: "weacon-desktop",
         may_use: &[
+            "weacon-appkit",
             "weacon-client",
             "weacon-model",
             "weacon-observability",
@@ -71,6 +78,7 @@ pub(crate) const RULES: &[Rule] = &[
     Rule {
         package: "weacon-server",
         may_use: &[
+            "weacon-appkit",
             "weacon-model",
             "weacon-observability",
             "weacon-protocol",

@@ -2,6 +2,7 @@ use std::ffi::OsString;
 use std::path::PathBuf;
 
 use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
+use weacon_appkit::version_text;
 use weacon_version::Version;
 
 /// Weacon's core: runs agents for your chats and tasks.
@@ -84,11 +85,6 @@ impl Command {
             Self::Map(_) => "map",
         }
     }
-}
-
-/// `0.1.0 (1a2b3c4)`
-pub(crate) fn version_text(version: &Version) -> String {
-    format!("{} ({})", version.version, version.commit)
 }
 
 /// The command line, or the help, version or error text clap would print instead.
