@@ -43,7 +43,7 @@ pub async fn connect(socket: &Path) -> io::Result<impl AsyncRead + AsyncWrite + 
 
 /// A connection to the daemon after a welcome, which yields what the daemon sends next.
 pub struct Connection {
-    stream: Box<dyn AsyncRead + Send + Unpin>,
+    stream: platform::Stream,
     decoder: LineDecoder,
     pending: VecDeque<Envelope>,
 }
@@ -52,7 +52,7 @@ impl Connection {
     /// Connects to the daemon at `socket` as `me` and shakes hands, giving the daemon's welcome.
     ///
     /// # Errors
-    /// As [`handshake`].
+    /// When no daemon listens there, it doesn't answer in time, or it refuses the handshake.
     pub async fn open(socket: &Path, me: App) -> Result<(Welcome, Self), Fault> {
         tokio::time::timeout(TIMEOUT, Self::greet(socket, me))
             .await
@@ -72,7 +72,7 @@ impl Connection {
         let line = encode_line(&hello).map_err(no_answer)?;
         stream.write_all(&line).await.map_err(no_answer)?;
         let mut connection = Self {
-            stream: Box::new(stream),
+            stream,
             decoder: LineDecoder::default(),
             pending: VecDeque::new(),
         };

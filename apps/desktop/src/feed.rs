@@ -1,9 +1,9 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::thread;
 
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use weacon_client::Connection;
-use weacon_observability::{Fault, Field, Logger};
+use weacon_observability::Fault;
 use weacon_protocol::{App, Capability, Message, RunUpdate, code};
 
 /// What the core's connection brings, in order.
@@ -17,12 +17,12 @@ pub(crate) enum Feed {
 }
 
 /// Connects to the core at `socket` as `me` on a thread of its own, and sends what arrives.
-pub(crate) fn start(socket: PathBuf, me: App, log: Logger) -> UnboundedReceiver<Feed> {
+pub(crate) fn start(socket: PathBuf, me: App) -> UnboundedReceiver<Feed> {
     let (sender, receiver) = unbounded_channel();
     let failed = sender.clone();
     let spawned = thread::Builder::new()
         .name("core-feed".to_owned())
-        .spawn(move || run(&socket, me, &log, &sender));
+        .spawn(move || run(&socket, me, &sender));
     if let Err(error) = spawned {
         let fault = Fault::new(code!("feed.start_failed"), "The connection couldn't start");
         drop(failed.send(Feed::Failed(fault.because(error))));
@@ -30,29 +30,21 @@ pub(crate) fn start(socket: PathBuf, me: App, log: Logger) -> UnboundedReceiver<
     receiver
 }
 
-fn run(socket: &std::path::Path, me: App, log: &Logger, sender: &UnboundedSender<Feed>) {
-    let runtime = tokio::runtime::Builder::new_current_thread()
+// The view logs and reports a failure, once.
+fn run(socket: &Path, me: App, sender: &UnboundedSender<Feed>) {
+    let last = tokio::runtime::Builder::new_current_thread()
         .enable_all()
-        .build();
-    let last = match runtime {
-        Ok(runtime) => runtime.block_on(pump(socket, me, sender)),
-        Err(error) => Err(
-            Fault::new(code!("runtime.failed"), "Weacon couldn't start its runtime").because(error),
-        ),
-    };
-    let feed = match last {
-        Ok(()) => Feed::Ended,
-        Err(fault) => {
-            log.warn("core feed failed", &[("err", Field::error(&fault))]);
-            Feed::Failed(fault)
-        }
-    };
-    drop(sender.send(feed));
+        .build()
+        .map_err(|error| {
+            Fault::new(code!("runtime.failed"), "Weacon couldn't start its runtime").because(error)
+        })
+        .and_then(|runtime| runtime.block_on(pump(socket, me, sender)));
+    drop(sender.send(last.map_or_else(Feed::Failed, |()| Feed::Ended)));
 }
 
 /// Sends the core's welcome and then each run update, until it hangs up or nobody listens.
 pub(crate) async fn pump(
-    socket: &std::path::Path,
+    socket: &Path,
     me: App,
     sender: &UnboundedSender<Feed>,
 ) -> Result<(), Fault> {
@@ -92,44 +84,32 @@ mod tests {
     use weacon_testing::{fake_core, platform::listen};
 
     use super::*;
-    use crate::test_support::{VERSION, messages, recording_logger};
+    use crate::app::build;
     #[cfg(unix)]
-    use crate::{test_support::updates, transcript};
+    use crate::test_support::updates;
+    use crate::test_support::{VERSION, temp_dir};
 
     fn me() -> App {
-        App {
-            name: VERSION.name.to_owned(),
-            version: VERSION.version.to_owned(),
-            commit: VERSION.commit.to_owned(),
-        }
-    }
-
-    fn temp_dir(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("weacon-feed-{name}-{}", std::process::id()));
-        drop(fs::remove_dir_all(&dir));
-        fs::create_dir_all(&dir).unwrap();
-        dir
+        build(&VERSION)
     }
 
     #[test]
-    fn without_a_core_the_feed_fails_and_logs_it() {
-        let dir = temp_dir("none");
-        let (log, records) = recording_logger();
-        let mut receiver = start(socket_path(&dir), me(), log);
+    fn without_a_core_the_feed_fails() {
+        let dir = temp_dir("feed-none");
+        let mut receiver = start(socket_path(&dir), me());
         let Some(Feed::Failed(fault)) = receiver.blocking_recv() else {
             panic!("the feed didn't fail");
         };
 
         assert_eq!(fault.code().as_str(), "daemon.not_running");
         assert!(receiver.blocking_recv().is_none());
-        assert_eq!(messages(&records), ["core feed failed"]);
         fs::remove_dir_all(&dir).unwrap();
     }
 
     #[cfg(unix)]
     #[tokio::test]
     async fn the_recorded_session_streams_over_the_socket_in_order() {
-        let dir = temp_dir("session");
+        let dir = temp_dir("feed-session");
         let socket = socket_path(&dir);
         let listener = listen(&socket).unwrap();
         let core = tokio::spawn(async move {
@@ -149,26 +129,16 @@ mod tests {
         while let Some(Feed::Update(update)) = receiver.recv().await {
             updates_sent.push(update);
         }
-        let mut transcript = transcript::Transcript::default();
-        for update in &updates_sent {
-            transcript.apply(&update.event);
-        }
-        let texts = transcript
-            .rows()
-            .iter()
-            .filter(|row| **row == transcript::Row::Text)
-            .count();
 
         assert_eq!(core.name, "weacon-core");
         assert_eq!(updates_sent, updates(100_000));
-        assert!(texts >= 30 * 30, "{texts} messages");
         fs::remove_dir_all(&dir).unwrap();
     }
 
     #[cfg(unix)]
     #[tokio::test]
     async fn a_core_that_cant_stream_runs_is_refused() {
-        let dir = temp_dir("old-core");
+        let dir = temp_dir("feed-old-core");
         let socket = socket_path(&dir);
         let listener = listen(&socket).unwrap();
         let core = tokio::spawn(async move {

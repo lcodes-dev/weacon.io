@@ -10,8 +10,8 @@ use crate::play;
 /// A made-up session of one agent run, one `RunEvent` of JSON per line, with whole text blocks.
 pub const SESSION: &str = include_str!("../sessions/transcript.jsonl");
 
-/// The run every replayed event belongs to.
-pub const RUN: &str = "r-1";
+// The run every replayed event belongs to.
+const RUN: &str = "r-1";
 
 // About four bytes of English per token.
 const BYTES_PER_TOKEN: usize = 4;

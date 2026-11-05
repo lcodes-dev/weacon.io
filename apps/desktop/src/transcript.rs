@@ -46,8 +46,8 @@ impl Transcript {
     /// Applies `event`, giving what changed in order: a new row comes before its text.
     pub(crate) fn apply<'a>(&mut self, event: &'a RunEvent) -> Vec<Change<'a>> {
         match event {
-            RunEvent::TextDelta { text } => self.write(text, Change::Appended, true),
-            RunEvent::Text { text } => self.write(text, Change::Replaced, false),
+            RunEvent::TextDelta { text } => self.write(text, false),
+            RunEvent::Text { text } => self.write(text, true),
             RunEvent::ToolCall { call, tool, .. } => {
                 let index = self.push(Row::Tool {
                     tool: tool.clone(),
@@ -67,25 +67,25 @@ impl Transcript {
         }
     }
 
-    fn write<'a>(
-        &mut self,
-        text: &'a str,
-        change: fn(usize, &'a str) -> Change<'a>,
-        more: bool,
-    ) -> Vec<Change<'a>> {
+    // `whole` text ends the row; a delta leaves it open for more.
+    fn write<'a>(&mut self, text: &'a str, whole: bool) -> Vec<Change<'a>> {
         let mut changes = Vec::new();
         let index = self.writing.unwrap_or_else(|| {
             let index = self.push(Row::Text);
             changes.push(Change::Added(index));
             index
         });
-        self.writing = more.then_some(index);
-        changes.push(change(index, text));
+        self.writing = (!whole).then_some(index);
+        changes.push(if whole {
+            Change::Replaced(index, text)
+        } else {
+            Change::Appended(index, text)
+        });
         changes
     }
 
     fn finish_tool(&mut self, call: &str, failed: bool) -> Vec<Change<'static>> {
-        let Some(&index) = self.calls.get(call) else {
+        let Some(index) = self.calls.remove(call) else {
             return Vec::new();
         };
         if let Some(Row::Tool { state, .. }) = self.rows.get_mut(index) {
@@ -95,15 +95,11 @@ impl Transcript {
                 ToolState::Done
             };
         }
-        self.calls.remove(call);
         vec![Change::Updated(index)]
     }
 
-    // Any other row ends the text being written.
     fn push(&mut self, row: Row) -> usize {
-        if row != Row::Text {
-            self.writing = None;
-        }
+        self.writing = None;
         self.rows.push(row);
         self.rows.len() - 1
     }

@@ -17,7 +17,6 @@ use gpui_kit::component::Root;
 use gpui_kit::{AppContext as _, Bounds, WindowBounds, WindowOptions, px, size};
 use weacon_client::socket_path;
 use weacon_observability::json_lines;
-use weacon_protocol::App as Build;
 
 use crate::app::{App, Setup};
 use crate::ui::Main;
@@ -37,12 +36,7 @@ fn main() -> ExitCode {
         app.fail(&app::state_unavailable());
         return ExitCode::FAILURE;
     };
-    let me = Build {
-        name: app.version.name.to_owned(),
-        version: app.version.version.to_owned(),
-        commit: app.version.commit.to_owned(),
-    };
-    let feed = feed::start(socket_path(&state_dir), me, app.log.clone());
+    let feed = feed::start(socket_path(&state_dir), app::build(&app.version));
     gpui_kit::application().run(move |cx| {
         gpui_kit::init(cx);
         let bounds = Bounds::centered(None, size(px(960.), px(720.)), cx);

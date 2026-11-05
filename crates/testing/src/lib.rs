@@ -76,7 +76,6 @@ async fn play(
         }
     }
     output.shutdown().await.map_err(|error| error.to_string())?;
-    drop(output);
     let mut rest = String::new();
     input
         .read_to_string(&mut rest)

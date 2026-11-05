@@ -1,3 +1,7 @@
+use std::collections::HashMap;
+use std::ffi::OsString;
+use std::fs;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 
@@ -13,6 +17,23 @@ pub(crate) const VERSION: Version = Version {
 };
 
 pub(crate) type Records = Arc<Mutex<Vec<Record>>>;
+
+/// A fake environment holding only `vars`.
+pub(crate) fn env(vars: &[(&str, &str)]) -> impl Fn(&str) -> Option<OsString> + use<> {
+    let vars: HashMap<String, OsString> = vars
+        .iter()
+        .map(|(key, value)| ((*key).to_owned(), OsString::from(value)))
+        .collect();
+    move |key| vars.get(key).cloned()
+}
+
+/// An empty folder of this test's own.
+pub(crate) fn temp_dir(name: &str) -> PathBuf {
+    let dir = std::env::temp_dir().join(format!("weacon-desktop-{name}-{}", std::process::id()));
+    drop(fs::remove_dir_all(&dir));
+    fs::create_dir_all(&dir).unwrap();
+    dir
+}
 
 pub(crate) fn recording_sink() -> (Sink, Records) {
     let records = Records::default();

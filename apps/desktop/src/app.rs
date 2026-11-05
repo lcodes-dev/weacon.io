@@ -78,6 +78,15 @@ impl App {
     }
 }
 
+/// How this build introduces itself to the core.
+pub(crate) fn build(version: &Version) -> weacon_protocol::App {
+    weacon_protocol::App {
+        name: version.name.to_owned(),
+        version: version.version.to_owned(),
+        commit: version.commit.to_owned(),
+    }
+}
+
 pub(crate) fn state_unavailable() -> Fault {
     Fault::new(
         code!("state.unavailable"),
@@ -122,34 +131,20 @@ fn reports(env: Env<'_>, version: &Version, log: &Logger) -> Option<Reports> {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
-    use std::ffi::OsString;
     use std::fs;
     use std::sync::Mutex;
 
     use weacon_observability::Upload;
 
     use super::*;
-    use crate::test_support::{Records, VERSION, messages, recording_sink};
+    use crate::test_support::{Records, VERSION, env, messages, recording_sink, temp_dir};
 
     const DSN: &str = "https://key@sentry.example.com/1";
 
     type Uploads = Arc<Mutex<Vec<Upload>>>;
 
-    fn temp_dir(name: &str) -> PathBuf {
-        let dir =
-            std::env::temp_dir().join(format!("weacon-desktop-{name}-{}", std::process::id()));
-        drop(fs::remove_dir_all(&dir));
-        fs::create_dir_all(&dir).unwrap();
-        dir
-    }
-
     fn start(vars: &[(&str, &str)]) -> (App, Records, Uploads) {
-        let vars: HashMap<String, OsString> = vars
-            .iter()
-            .map(|(key, value)| ((*key).to_owned(), OsString::from(value)))
-            .collect();
-        let env = move |key: &str| vars.get(key).cloned();
+        let env = env(vars);
         let (stderr, records) = recording_sink();
         let uploads = Uploads::default();
         let seen = Arc::clone(&uploads);
@@ -177,7 +172,7 @@ mod tests {
 
     #[test]
     fn logs_go_to_the_state_folder_starting_with_the_build() {
-        let dir = temp_dir("logs");
+        let dir = temp_dir("app-logs");
         let (app, stderr, _) = start(&[("WEACON_STATE_DIR", dir.to_str().unwrap())]);
         let lines = log_lines(&dir);
 
@@ -192,7 +187,7 @@ mod tests {
 
     #[test]
     fn without_a_usable_state_folder_warnings_still_reach_stderr() {
-        let dir = temp_dir("blocked");
+        let dir = temp_dir("app-blocked");
         let file = dir.join("a-file");
         fs::write(&file, "").unwrap();
         let (unknown, unknown_stderr, _) = start(&[]);
@@ -235,7 +230,7 @@ mod tests {
 
     #[test]
     fn no_content_reaches_a_log_line_or_an_error_report() {
-        let dir = temp_dir("markers");
+        let dir = temp_dir("app-markers");
         let vars = [
             ("WEACON_STATE_DIR", dir.to_str().unwrap()),
             ("WEACON_SENTRY_DSN", DSN),

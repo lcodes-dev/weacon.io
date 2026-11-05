@@ -163,11 +163,19 @@ impl Main {
         }
     }
 
-    fn transcript(&self) -> impl IntoElement {
-        let rows: Vec<Row> = self.transcript.rows().to_vec();
-        let texts = self.texts.clone();
+    // Rows render after this view does, so they read it rather than a copy of every row.
+    fn transcript(&self, cx: &Context<'_, Self>) -> impl IntoElement {
+        let this = cx.weak_entity();
         MessageScroller::new("transcript", self.scroller.clone(), move |index, _, cx| {
-            row(rows.get(index), texts.get(&index), cx)
+            let Some(main) = this.upgrade() else {
+                return div().into_any_element();
+            };
+            let main = main.read(cx);
+            row(
+                main.transcript.rows().get(index),
+                main.texts.get(&index),
+                cx,
+            )
         })
         .size_full()
     }
@@ -215,7 +223,7 @@ impl Render for Main {
         let body = if self.settings {
             settings::page(self.version, &self.reporter, cx).into_any_element()
         } else {
-            self.transcript().into_any_element()
+            self.transcript(cx).into_any_element()
         };
         v_flex()
             .size_full()
