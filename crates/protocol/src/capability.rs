@@ -9,6 +9,12 @@ use crate::Code;
 #[serde(transparent)]
 pub struct Capability(Code);
 
+impl From<Code> for Capability {
+    fn from(code: Code) -> Self {
+        Self(code)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -24,5 +30,6 @@ mod tests {
             r#""future.thing_v2""#
         );
         serde_json::from_str::<Capability>(r#""Chat Send""#).unwrap_err();
+        assert_eq!(Capability::from(crate::code!("chat.send")), known);
     }
 }

@@ -1,7 +1,7 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::{Capability, Code, Receipt, code};
+use crate::{Capability, Code, Pick, Receipt, code};
 
 /// The protocol version this build speaks. Only a breaking change raises it; peers must match
 /// it exactly and check each other's capabilities for everything else.
@@ -22,6 +22,7 @@ pub enum Message {
     Welcome(Welcome),
     Error(ErrorBody),
     Receipt(Receipt),
+    Pick(Pick),
     /// A message type this build doesn't know, from a newer peer.
     #[serde(other)]
     #[schemars(skip)]
@@ -61,14 +62,12 @@ pub struct ErrorBody {
 }
 
 impl Hello {
-    /// A [`Welcome`] from `app` on the same protocol, else the error `protocol.unsupported`.
+    /// A [`Welcome`] from `app` with its `capabilities` on the same protocol, else the error
+    /// `protocol.unsupported`.
     #[must_use]
-    pub fn answer(&self, app: App) -> Message {
+    pub fn answer(&self, app: App, capabilities: Vec<Capability>) -> Message {
         if self.protocol == PROTOCOL {
-            Message::Welcome(Welcome {
-                app,
-                capabilities: Vec::new(),
-            })
+            Message::Welcome(Welcome { app, capabilities })
         } else {
             Message::Error(ErrorBody {
                 code: code!("protocol.unsupported"),
@@ -170,15 +169,15 @@ mod tests {
     #[test]
     fn a_matching_hello_is_welcomed_and_any_other_refused() {
         assert_eq!(
-            hello(PROTOCOL).answer(app("weacon-core")),
+            hello(PROTOCOL).answer(app("weacon-core"), capabilities(&["element.pick"])),
             Message::Welcome(Welcome {
                 app: app("weacon-core"),
-                capabilities: Vec::new(),
+                capabilities: capabilities(&["element.pick"]),
             })
         );
         for protocol in [PROTOCOL - 1, PROTOCOL + 1] {
             assert_eq!(
-                hello(protocol).answer(app("weacon-core")),
+                hello(protocol).answer(app("weacon-core"), capabilities(&["element.pick"])),
                 Message::Error(ErrorBody {
                     code: code!("protocol.unsupported"),
                     retryable: false,

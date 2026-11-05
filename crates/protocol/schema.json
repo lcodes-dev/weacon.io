@@ -62,6 +62,19 @@
       "required": [
         "type"
       ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "pick"
+        }
+      },
+      "$ref": "#/$defs/Pick",
+      "required": [
+        "type"
+      ]
     }
   ],
   "required": [
@@ -136,6 +149,43 @@
       "required": [
         "protocol",
         "app"
+      ]
+    },
+    "Pick": {
+      "description": "An element someone picked on a local web page, sent to the core for a chat. The sender cuts\nthe HTML short and shrinks the screenshot so the message fits in one frame.",
+      "type": "object",
+      "properties": {
+        "html": {
+          "description": "The element's outer HTML.",
+          "type": "string"
+        },
+        "request": {
+          "$ref": "#/$defs/RequestId"
+        },
+        "screenshot_png": {
+          "description": "What the element looked like: a PNG, base64-encoded. None when the page couldn't be\ncaptured.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "selector": {
+          "description": "A CSS selector that finds the element on the page.",
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        },
+        "url": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "request",
+        "url",
+        "title",
+        "selector",
+        "html"
       ]
     },
     "Receipt": {

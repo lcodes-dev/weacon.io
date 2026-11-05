@@ -1,4 +1,7 @@
-use weacon_protocol::{App, Code, Envelope, ErrorBody, FrameError, Message, code};
+use weacon_protocol::{App, Capability, Code, Envelope, ErrorBody, FrameError, Message, code};
+
+/// What the daemon offers its clients; each feature adds its capability here.
+const CAPABILITIES: &[Code] = &[];
 
 /// One client's place in the conversation with the daemon.
 #[derive(Debug, Default)]
@@ -42,7 +45,8 @@ impl Session {
         let id = envelope.id;
         match (self.greeted, envelope.message) {
             (false, Message::Hello(hello)) => {
-                let message = hello.answer(app.clone());
+                let capabilities = CAPABILITIES.iter().cloned().map(Capability::from).collect();
+                let message = hello.answer(app.clone(), capabilities);
                 self.greeted = matches!(message, Message::Welcome(_));
                 Reply {
                     envelope: Some(Envelope { id, message }),
