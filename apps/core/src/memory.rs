@@ -4,7 +4,7 @@ use std::io;
 
 use weacon_observability::{Field, Logger};
 
-use crate::platform::{self, Process};
+use crate::platform::Process;
 
 /// The core's own memory and its descendants', such as agents and their tools.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -32,27 +32,52 @@ fn sample(processes: &[Process], root: u32) -> Option<Sample> {
     Some(sample)
 }
 
-/// Logs one sample of this process's tree.
-pub(crate) async fn record(log: &Logger) {
-    let listed = tokio::task::spawn_blocking(platform::processes)
-        .await
-        .unwrap_or_else(|error| Err(io::Error::other(error)));
-    let processes = match listed {
-        Ok(processes) => processes,
-        Err(error) => return log.warn("memory not sampled", &[("err", Field::error(&error))]),
-    };
-    let Some(sample) = sample(&processes, std::process::id()) else {
-        // As where /proc belongs to another PID namespace.
-        return log.warn("memory not sampled", &[]);
-    };
-    log.info(
-        "memory sampled",
-        &[
-            ("core_kib", sample.core_kib.into()),
-            ("descendants_kib", sample.descendants_kib.into()),
-            ("descendants", sample.descendants.into()),
-        ],
-    );
+/// Lists processes; tests pass a fake.
+pub(crate) type Processes = fn() -> io::Result<Vec<Process>>;
+
+/// Samples this process's tree and logs each sample; a failure is logged once until one works.
+pub(crate) struct Watch {
+    processes: Processes,
+    failing: bool,
+}
+
+impl Watch {
+    pub(crate) const fn new(processes: Processes) -> Self {
+        Self {
+            processes,
+            failing: false,
+        }
+    }
+
+    /// Lists processes off the async runtime, since `/proc` can be slow to read.
+    pub(crate) async fn record(&mut self, log: &Logger) {
+        let listed = tokio::task::spawn_blocking(self.processes)
+            .await
+            .unwrap_or_else(|error| Err(io::Error::other(error)));
+        // Not found means /proc can't see this process, as in another PID namespace.
+        let sampled = listed.and_then(|processes| {
+            sample(&processes, std::process::id()).ok_or_else(|| io::ErrorKind::NotFound.into())
+        });
+        match sampled {
+            Ok(sample) => {
+                self.failing = false;
+                log.info(
+                    "memory sampled",
+                    &[
+                        ("core_kib", sample.core_kib.into()),
+                        ("descendants_kib", sample.descendants_kib.into()),
+                        ("descendants", sample.descendants.into()),
+                    ],
+                );
+            }
+            Err(error) => {
+                if !self.failing {
+                    log.warn("memory not sampled", &[("err", Field::error(&error))]);
+                }
+                self.failing = true;
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -94,17 +119,37 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn this_process_is_sampled_where_processes_can_be_listed() {
+    async fn a_failure_is_logged_once_until_a_sample_works() {
+        let (log, records) = crate::test_support::recording_logger();
+        let mut watch = Watch::new(|| Err(io::ErrorKind::PermissionDenied.into()));
+
+        watch.record(&log).await;
+        watch.record(&log).await;
+        watch.processes = || {
+            Ok(vec![Process {
+                pid: std::process::id(),
+                parent: 1,
+                rss_kib: 64,
+            }])
+        };
+        watch.record(&log).await;
+        // A listing without this process, as from another PID namespace.
+        watch.processes = || Ok(Vec::new());
+        watch.record(&log).await;
+
+        assert_eq!(
+            crate::test_support::messages(&records),
+            ["memory not sampled", "memory sampled", "memory not sampled"]
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn this_process_is_sampled_from_proc() {
         let (log, records) = crate::test_support::recording_logger();
 
-        record(&log).await;
+        Watch::new(crate::platform::processes).record(&log).await;
 
-        let logged = crate::test_support::messages(&records);
-        let expected = if platform::PROCESSES {
-            "memory sampled"
-        } else {
-            "memory not sampled"
-        };
-        assert_eq!(logged, [expected]);
+        assert_eq!(crate::test_support::messages(&records), ["memory sampled"]);
     }
 }
