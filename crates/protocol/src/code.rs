@@ -35,7 +35,7 @@ impl Code {
     pub const fn new(code: &'static str) -> Self {
         assert!(
             is_code(code),
-            "error codes are dotted lowercase words, like store.full"
+            "codes are dotted lowercase words, like store.full"
         );
         Self(Cow::Borrowed(code))
     }

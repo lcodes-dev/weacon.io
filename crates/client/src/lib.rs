@@ -8,15 +8,17 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 use weacon_observability::Fault;
-use weacon_protocol::{App, Decoder, Envelope, Hello, Message, PROTOCOL, code, encode};
+use weacon_protocol::{
+    App, Envelope, Hello, LineDecoder, Message, PROTOCOL, Welcome, code, encode_line,
+};
 
 const TIMEOUT: Duration = Duration::from_secs(5);
 
-/// The daemon's build, after a handshake as `me` over the socket at `socket`.
+/// The daemon's build and capabilities, after a handshake as `me` over the socket at `socket`.
 ///
 /// # Errors
 /// When no daemon listens there, it doesn't answer in time, or it refuses the handshake.
-pub fn handshake(socket: &Path, me: App) -> Result<App, Fault> {
+pub fn handshake(socket: &Path, me: App) -> Result<Welcome, Fault> {
     let mut stream = platform::connect(socket, TIMEOUT).map_err(|error| {
         if matches!(
             error.kind(),
@@ -35,11 +37,12 @@ pub fn handshake(socket: &Path, me: App) -> Result<App, Fault> {
         message: Message::Hello(Hello {
             protocol: PROTOCOL,
             app: me,
+            capabilities: Vec::new(),
         }),
     };
-    let line = encode(&hello).map_err(no_answer)?;
+    let line = encode_line(&hello).map_err(no_answer)?;
     stream.write_all(&line).map_err(no_answer)?;
-    let mut decoder = Decoder::default();
+    let mut decoder = LineDecoder::default();
     let mut buf = [0; 4096];
     // One deadline for the whole answer, so a daemon sending only bad lines can't stall us.
     let deadline = Instant::now() + TIMEOUT;
@@ -64,9 +67,9 @@ fn no_answer(error: impl Into<Box<dyn Error + Send + Sync>>) -> Fault {
     Fault::new(code!("daemon.no_answer"), "The daemon didn't answer").because(error)
 }
 
-fn welcomed(message: Message) -> Result<App, Fault> {
+fn welcomed(message: Message) -> Result<Welcome, Fault> {
     match message {
-        Message::Welcome(welcome) => Ok(welcome.app),
+        Message::Welcome(welcome) => Ok(welcome),
         Message::Error(body) if body.code == code!("protocol.unsupported") => Err(Fault::new(
             code!("daemon.other_protocol"),
             "The daemon speaks another protocol version; restart it",
@@ -86,7 +89,7 @@ mod tests {
     use std::path::PathBuf;
     use std::thread;
 
-    use weacon_protocol::{ErrorBody, Welcome};
+    use weacon_protocol::ErrorBody;
 
     use super::*;
 
@@ -115,7 +118,7 @@ mod tests {
             if let Some(message) = reply {
                 stream.write_all(b"not json\n").unwrap();
                 stream
-                    .write_all(&encode(&Envelope { id: 1, message }).unwrap())
+                    .write_all(&encode_line(&Envelope { id: 1, message }).unwrap())
                     .unwrap();
             }
             serde_json::from_str(&line).unwrap()
@@ -123,20 +126,16 @@ mod tests {
     }
 
     #[test]
-    fn a_welcome_gives_the_daemons_build_after_our_hello() {
+    fn a_welcome_gives_the_daemons_build_and_capabilities_after_our_hello() {
         let dir = temp_dir("welcome");
         let socket = dir.join("weacon.sock");
-        let daemon = serve_once(
-            &socket,
-            Some(Message::Welcome(Welcome {
-                app: app("weacon-core"),
-            })),
-        );
+        let welcome = Welcome {
+            app: app("weacon-core"),
+            capabilities: serde_json::from_str(r#"["chat.send"]"#).unwrap(),
+        };
+        let daemon = serve_once(&socket, Some(Message::Welcome(welcome.clone())));
 
-        assert_eq!(
-            handshake(&socket, app("weacon-desktop")).unwrap(),
-            app("weacon-core")
-        );
+        assert_eq!(handshake(&socket, app("weacon-desktop")).unwrap(), welcome);
         assert_eq!(
             daemon.join().unwrap(),
             Envelope {
@@ -144,6 +143,7 @@ mod tests {
                 message: Message::Hello(Hello {
                     protocol: PROTOCOL,
                     app: app("weacon-desktop"),
+                    capabilities: Vec::new(),
                 }),
             }
         );

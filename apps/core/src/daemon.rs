@@ -8,7 +8,7 @@ use tokio::io::{AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::task::JoinSet;
 use tokio::time::Instant;
 use weacon_observability::{Fault, Field, Logger};
-use weacon_protocol::{App, Decoder, code, encode};
+use weacon_protocol::{App, LineDecoder, code, encode_line};
 use weacon_version::Version;
 
 use crate::platform::{self, Listener, Stream};
@@ -154,7 +154,7 @@ impl Daemon {
 async fn serve_client(stream: Stream, app: App) -> io::Result<()> {
     let (mut reader, mut writer) = stream.into_split();
     let mut session = Session::default();
-    let mut decoder = Decoder::default();
+    let mut decoder = LineDecoder::default();
     let mut buf = [0; READ_CHUNK];
     let deadline = Instant::now() + HANDSHAKE_TIMEOUT;
     loop {
@@ -185,7 +185,7 @@ async fn within<F: Future>(deadline: Option<Instant>, future: F) -> Option<F::Ou
 // Answers what `bytes` completes; false once the connection should close.
 async fn answer(
     session: &mut Session,
-    decoder: &mut Decoder,
+    decoder: &mut LineDecoder,
     bytes: &[u8],
     app: &App,
     writer: &mut (impl AsyncWrite + Unpin),
@@ -193,7 +193,7 @@ async fn answer(
     for received in decoder.push(bytes) {
         let reply = session.answer(received, app);
         if let Some(envelope) = reply.envelope
-            && let Ok(line) = encode(&envelope)
+            && let Ok(line) = encode_line(&envelope)
         {
             writer.write_all(&line).await?;
         }
@@ -212,7 +212,7 @@ mod tests {
     use tokio::sync::oneshot;
     use tokio::task::JoinHandle;
     use tokio::time::timeout;
-    use weacon_protocol::{Envelope, Hello, Message, PROTOCOL};
+    use weacon_protocol::{Envelope, Hello, Message, PROTOCOL, Welcome};
 
     use super::*;
     use crate::test_support::{Records, VERSION, error_code, messages, recording_logger, temp_dir};
@@ -252,7 +252,7 @@ mod tests {
         })
     }
 
-    async fn ask(socket: &Path) -> Result<App, Fault> {
+    async fn ask(socket: &Path) -> Result<Welcome, Fault> {
         let socket = socket.to_owned();
         let me = build(&VERSION);
         tokio::task::spawn_blocking(move || weacon_client::handshake(&socket, me))
@@ -261,11 +261,12 @@ mod tests {
     }
 
     fn hello(protocol: u32) -> Vec<u8> {
-        encode(&Envelope {
+        encode_line(&Envelope {
             id: 1,
             message: Message::Hello(Hello {
                 protocol,
                 app: build(&VERSION),
+                capabilities: Vec::new(),
             }),
         })
         .unwrap()
@@ -299,7 +300,7 @@ mod tests {
         let socket = running.socket.clone();
         let mode = fs::metadata(&socket).unwrap().permissions().mode() & 0o777;
 
-        assert_eq!(ask(&socket).await.unwrap(), build(&VERSION));
+        assert_eq!(ask(&socket).await.unwrap().app, build(&VERSION));
         assert_eq!(mode, 0o600);
         let records = running.stop().await;
         assert!(!socket.exists());

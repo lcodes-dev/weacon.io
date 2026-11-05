@@ -13,7 +13,7 @@ pub(crate) fn run(app: &App, out: &mut impl Write) -> Result<(), Fault> {
     writeln!(
         out,
         "Daemon: running, weacon {} ({})",
-        daemon.version, daemon.commit
+        daemon.app.version, daemon.app.commit
     )
     .map_err(|error| {
         Fault::new(
