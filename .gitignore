@@ -3,3 +3,4 @@
 *.profraw
 lcov.info
 .DS_Store
+/dist/

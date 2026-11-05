@@ -105,6 +105,7 @@ Every program logs, reports errors and says which build it is from its first com
 | `cargo test -p <crate> [name]` | Focused tests while iterating |
 | `WEACON_STATE_DIR=.dev/state cargo run -p weacon-core -- doctor` | Runs the core with this worktree's own state folder |
 | `UPDATE_SCHEMA=1 cargo test -p weacon-protocol` | Regenerates `crates/protocol/schema.json` after a message changes |
+| `scripts/release.sh <target>` | Builds a static release `weacon` for one target into `dist/`, checks it reports this commit, and prints its size |
 
 Every dependency is declared once, in `[workspace.dependencies]` in the root `Cargo.toml`; crates refer to it with `workspace = true`. `Cargo.lock` is committed and every command runs with `--locked`. A new dependency must be at least three days old, maintained, under a licence `.cargo/deny.toml` allows, and without a build script unless it needs one; say why it's needed in the PR.
 
