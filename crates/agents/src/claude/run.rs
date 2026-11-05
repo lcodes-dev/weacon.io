@@ -42,10 +42,10 @@ enum Turn {
 }
 
 impl<W: AsyncWrite + Unpin, R: AsyncBufRead + Unpin> Run<W, R> {
-    /// Run `run` over an agent's pipes; `child`, when given, is killed when the run is dropped.
-    pub(crate) fn new(run: RunId, stdin: W, stdout: R, child: Option<Child>) -> Self {
+    /// A run over an agent's pipes; `child`, when given, is killed when the run is dropped.
+    pub(crate) fn new(id: RunId, stdin: W, stdout: R, child: Option<Child>) -> Self {
         Self {
-            id: run,
+            id,
             stdin,
             stdout: Lines::new(stdout, MAX_LINE),
             outbox: Vec::new(),

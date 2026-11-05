@@ -3,7 +3,7 @@ use serde::{Deserialize, Deserializer, Serialize, de};
 use serde_json::Value;
 
 use crate::Outcome;
-use crate::receipt::{TOKEN_MAX, TOKEN_PATTERN, is_token};
+use crate::token::{TOKEN_MAX, TOKEN_PATTERN, is_token};
 
 /// An agent's own id for a conversation, a lowercase UUID, which resumes it later.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, JsonSchema)]

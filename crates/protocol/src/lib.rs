@@ -6,6 +6,7 @@ mod frame;
 mod message;
 mod receipt;
 mod run;
+mod token;
 
 pub use capability::Capability;
 pub use code::Code;

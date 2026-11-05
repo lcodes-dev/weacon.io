@@ -2,18 +2,13 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Deserializer, Serialize, de};
 
 use crate::Code;
+use crate::token::{TOKEN_MAX, TOKEN_PATTERN, is_token};
 
 /// A command's id, chosen by the client and kept across reconnects and retries. Sending the
 /// same id again returns the first receipt instead of repeating the work; the same id with
 /// different content is refused with the error `request.conflict`.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, JsonSchema)]
 pub struct RequestId(#[schemars(regex(pattern = TOKEN_PATTERN), length(max = TOKEN_MAX))] String);
-
-pub(crate) const TOKEN_MAX: usize = 64;
-
-// The schema's form of `is_token`, for every id made of plain tokens; a test keeps the two
-// in step.
-pub(crate) const TOKEN_PATTERN: &str = r"^[A-Za-z0-9_-]+$";
 
 impl TryFrom<String> for RequestId {
     type Error = String;
@@ -28,13 +23,6 @@ impl<'de> Deserialize<'de> for RequestId {
         Self::try_from(String::deserialize(deserializer)?)
             .map_err(|_| de::Error::custom("not a request id"))
     }
-}
-
-pub(crate) fn is_token(id: &str) -> bool {
-    (1..=TOKEN_MAX).contains(&id.len())
-        && id
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
 }
 
 /// Where an accepted command stands. It ends `completed`, `interrupted`, `failed` or `unknown`.
@@ -76,19 +64,7 @@ mod tests {
     }
 
     #[test]
-    fn request_ids_are_short_plain_tokens() {
-        let pattern = regex::Regex::new(TOKEN_PATTERN).unwrap();
-        let longest = "a".repeat(TOKEN_MAX);
-        for good in ["01JC2YQ7Z8", "9b1d-4c2e_f", longest.as_str()] {
-            assert!(is_token(good), "{good}");
-            assert!(pattern.is_match(good), "{good}");
-        }
-        let too_long = "a".repeat(TOKEN_MAX + 1);
-        for bad in ["", "a b", "a/b", "é", too_long.as_str()] {
-            assert!(!is_token(bad), "{bad}");
-            // The schema states the length limit apart from the pattern.
-            assert!(bad.len() > TOKEN_MAX || !pattern.is_match(bad), "{bad}");
-        }
+    fn request_ids_are_plain_tokens_checked_on_arrival() {
         assert_eq!(RequestId::try_from("a b".to_owned()), Err("a b".to_owned()));
         assert_eq!(serde_json::to_value(request("r-1")).unwrap(), json!("r-1"));
         serde_json::from_value::<RequestId>(json!("a b")).unwrap_err();
