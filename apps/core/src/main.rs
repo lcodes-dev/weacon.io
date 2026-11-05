@@ -7,6 +7,7 @@ mod doctor;
 mod logs;
 mod platform;
 mod report;
+mod service;
 mod session;
 mod status;
 #[cfg(test)]
@@ -46,6 +47,7 @@ fn main() -> ExitCode {
         Command::Daemon => daemon::run(&app),
         Command::Status => status::run(&app, &mut io::stdout().lock()),
         Command::Doctor => doctor::run(&app, &mut io::stdout().lock()),
+        Command::Service(command) => service::run(&app, command, &env, &mut service::system),
     };
     app.finish(result)
 }

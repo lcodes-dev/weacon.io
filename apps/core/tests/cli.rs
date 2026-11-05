@@ -107,4 +107,18 @@ mod tests {
     fn a_bad_command_line_exits_with_usage_status() {
         assert_eq!(weacon(&["fly"], "/unused").status.code(), Some(2));
     }
+
+    // Nowhere to put the unit, so it fails before touching systemd.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn service_install_needs_a_home() {
+        let output = Command::new(env!("CARGO_BIN_EXE_weacon"))
+            .args(["service", "install"])
+            .env_clear()
+            .output()
+            .unwrap();
+
+        assert_eq!(output.status.code(), Some(1));
+        assert!(String::from_utf8_lossy(&output.stderr).contains("service.no_config_dir"));
+    }
 }

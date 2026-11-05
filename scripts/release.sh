@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 # Builds a static release weacon for one target into dist/, checks it links only the OS and
 # reports this commit, and prints its size. Run it on a machine that runs the target.
+#   scripts/release.sh <target>
+# Or copies a Linux build to a host over SSH and installs it there as a systemd user service:
+#   scripts/release.sh install <[user@]host> <target>
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -9,6 +12,30 @@ die() {
   printf 'error: %s\n' "$*" >&2
   exit 1
 }
+
+install_on() {
+  local host=${1:-} target=${2:-} arch
+  # Checked so ssh and scp can't read the host as an option or a path.
+  [[ $host =~ ^([A-Za-z0-9_][A-Za-z0-9_.-]*@)?[A-Za-z0-9][A-Za-z0-9.-]*$ ]] \
+    || die "usage: scripts/release.sh install <[user@]host> <target>, with a plain host name"
+  case "$target" in
+    x86_64-unknown-linux-musl | aarch64-unknown-linux-musl) ;;
+    *) die "install takes a Linux target: x86_64-unknown-linux-musl or aarch64-unknown-linux-musl" ;;
+  esac
+  local binary="dist/weacon-$target"
+  [ -f "$binary" ] || die "$binary is missing: run scripts/release.sh $target first"
+  arch=$(ssh -- "$host" 'mkdir -p ~/.local/bin && uname -m') || die "couldn't reach $host"
+  [ "$arch" = "${target%%-*}" ] || die "$host runs $arch, not ${target%%-*}"
+  scp -q -- "$binary" "$host:.local/bin/weacon.new"
+  # Renamed into place, so a running daemon keeps its binary until the restart.
+  ssh -- "$host" 'chmod 755 ~/.local/bin/weacon.new && mv ~/.local/bin/weacon.new ~/.local/bin/weacon \
+    && ~/.local/bin/weacon service install && ~/.local/bin/weacon --version'
+}
+
+if [ "${1:-}" = install ]; then
+  install_on "${2:-}" "${3:-}"
+  exit
+fi
 
 target=${1:-}
 exe=
