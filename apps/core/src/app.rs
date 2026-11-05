@@ -77,7 +77,8 @@ impl App {
         let reports = reports(setup.env, &version, &log);
         Self {
             version,
-            reporter: Arc::new(weacon_appkit::reporter(reports, true, setup.deliver)),
+            // The core sends nothing until it can ask the person and store their answer.
+            reporter: Arc::new(weacon_appkit::reporter(reports, false, setup.deliver)),
             log,
             state_dir,
             log_file,
@@ -230,8 +231,20 @@ mod tests {
     }
 
     #[test]
+    fn a_dsn_alone_sends_nothing() {
+        let (app, _, uploads) = start(&[("WEACON_SENTRY_DSN", DSN)], false);
+        let fault = Fault::new(code!("store.full"), "The store is full");
+
+        assert!(app.reporter.is_on());
+        assert!(!app.reporter.agreed());
+        assert_eq!(app.finish(Err(fault)), ExitCode::from(2));
+        assert!(uploads.lock().unwrap().is_empty());
+    }
+
+    #[test]
     fn success_exits_cleanly_and_reports_nothing() {
         let (app, _, uploads) = start(&[("WEACON_SENTRY_DSN", DSN)], false);
+        app.reporter.set_agreed(true);
 
         assert!(app.reporter.is_on());
         assert_eq!(app.finish(Ok(().into())), ExitCode::SUCCESS);
@@ -253,6 +266,8 @@ mod tests {
             ("HOME", "/home/ada"),
         ];
         let (app, stderr, uploads) = start(&vars, false);
+        // Agreed, so the markers go through a real report.
+        app.reporter.set_agreed(true);
         let leak = io::Error::other(
             "could not open /home/ada/MARKER-PATH: token MARKER-TOKEN, MARKER-MESSAGE",
         );
