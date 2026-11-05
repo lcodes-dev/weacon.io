@@ -6,8 +6,6 @@ yanked = "deny"
 
 [licenses]
 allow = [
-    # doctest-file and recvmsg, from interprocess.
-    "0BSD",
     "Apache-2.0",
     "Apache-2.0 WITH LLVM-exception",
     "BSD-2-Clause",

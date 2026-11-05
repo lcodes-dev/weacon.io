@@ -84,7 +84,6 @@ mod tests {
         fs::remove_dir_all(&dir).unwrap();
     }
 
-    // SIGTERM stops the daemon cleanly, and it removes its socket.
     #[cfg(unix)]
     fn stop(mut daemon: std::process::Child, dir: &std::path::Path) {
         let term = Command::new("kill")

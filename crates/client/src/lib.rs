@@ -25,12 +25,14 @@ pub async fn handshake(socket: &Path, me: App) -> Result<Welcome, Fault> {
         .unwrap_or_else(|_| Err(no_answer(io::Error::from(io::ErrorKind::TimedOut))))
 }
 
-/// A raw connection to the daemon at `socket`, before any handshake.
+/// A raw connection to the daemon at `socket`, before any handshake, such as for protocol tests.
 ///
 /// # Errors
-/// When no daemon listens there.
+/// When no daemon listens there, or it doesn't answer in time.
 pub async fn connect(socket: &Path) -> io::Result<impl AsyncRead + AsyncWrite + Unpin + use<>> {
-    platform::connect(socket).await
+    tokio::time::timeout(TIMEOUT, platform::connect(socket))
+        .await
+        .unwrap_or_else(|_| Err(io::Error::from(io::ErrorKind::TimedOut)))
 }
 
 async fn exchange(socket: &Path, me: App) -> Result<Welcome, Fault> {

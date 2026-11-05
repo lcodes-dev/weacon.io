@@ -114,7 +114,7 @@ impl Daemon {
     }
 
     /// Serves clients until `shutdown` finishes, then closes every connection and the socket.
-    pub(crate) async fn serve(self, shutdown: impl Future<Output = ()>) {
+    pub(crate) async fn serve(mut self, shutdown: impl Future<Output = ()>) {
         let mut clients = JoinSet::new();
         tokio::pin!(shutdown);
         loop {

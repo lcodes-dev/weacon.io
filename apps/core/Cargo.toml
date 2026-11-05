@@ -21,8 +21,7 @@ weacon-protocol.workspace = true
 weacon-version.workspace = true
 
 [target.'cfg(windows)'.dependencies]
-interprocess.workspace = true
-widestring.workspace = true
+windows-sys.workspace = true
 
 [dev-dependencies]
 serde_json.workspace = true
