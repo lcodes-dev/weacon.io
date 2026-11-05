@@ -8,11 +8,16 @@ use std::path::Path;
 use std::ptr;
 use std::time::Duration;
 
-use tokio::io::AsyncReadExt;
+use std::pin::Pin;
+use std::task::{Context, Poll};
+
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, ReadBuf};
 use tokio::net::windows::named_pipe::{
     ClientOptions, NamedPipeClient, NamedPipeServer, ServerOptions,
 };
-use windows_sys::Win32::Foundation::{CloseHandle, ERROR_PIPE_BUSY, LocalFree};
+use windows_sys::Win32::Foundation::{
+    CloseHandle, ERROR_PIPE_BUSY, ERROR_PIPE_NOT_CONNECTED, LocalFree,
+};
 use windows_sys::Win32::Security::Authorization::{
     ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW, GetSecurityInfo,
     SDDL_REVISION_1, SE_FILE_OBJECT, SE_KERNEL_OBJECT, SetNamedSecurityInfoW,
@@ -27,7 +32,7 @@ use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken}
 
 /// Connects to the daemon's pipe, whose name the daemon writes to `socket`, and checks that
 /// this user owns it. tokio's client lets the server identify the user but not act as them.
-pub(crate) async fn connect(socket: &Path) -> io::Result<NamedPipeClient> {
+pub(crate) async fn connect(socket: &Path) -> io::Result<Pipe> {
     let mut name = String::new();
     tokio::fs::File::open(socket)
         .await?
@@ -55,7 +60,47 @@ pub(crate) async fn connect(socket: &Path) -> io::Result<NamedPipeClient> {
             "another user owns this pipe",
         ));
     }
-    Ok(pipe)
+    Ok(Pipe(pipe))
+}
+
+/// The client's end of the daemon's pipe. When the daemon hangs up by disconnecting the pipe,
+/// reads end as at the end of a stream, as they do on a socket.
+#[derive(Debug)]
+pub(crate) struct Pipe(NamedPipeClient);
+
+impl AsyncRead for Pipe {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
+        let hung_up = i32::try_from(ERROR_PIPE_NOT_CONNECTED).ok();
+        let polled = Pin::new(&mut self.0).poll_read(cx, buf);
+        if let Poll::Ready(Err(error)) = &polled
+            && error.raw_os_error() == hung_up
+        {
+            return Poll::Ready(Ok(()));
+        }
+        polled
+    }
+}
+
+impl AsyncWrite for Pipe {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<io::Result<usize>> {
+        Pin::new(&mut self.0).poll_write(cx, buf)
+    }
+
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.0).poll_flush(cx)
+    }
+
+    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.0).poll_shutdown(cx)
+    }
 }
 
 /// A pipe instance named `name`, owned by this user and open only to them. An elevated
