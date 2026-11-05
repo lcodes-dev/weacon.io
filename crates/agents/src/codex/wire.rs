@@ -362,7 +362,7 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn a_resumed_thread_is_interrupted_once_its_turn_is_known() {
+    async fn an_interrupt_waits_for_its_turn_and_withdraws_waiting_prompts() {
         let (mut run, done) = fake(
             include_str!("../../sessions/codex/interrupt.replay"),
             Some(THREAD),
@@ -371,9 +371,23 @@ mod tests {
         run.send("Rewrite the lexer").await.unwrap();
         assert_eq!(until(&mut run, is_started).await, [started(THREAD)]);
         run.interrupt().await.unwrap();
+        let events = until(&mut run, finished).await;
+        assert!(matches!(
+            events.first(),
+            Some(RunEvent::PermissionAsked { prompt: 1, input, .. }) if input["command"] == "rm -rf target"
+        ));
         assert_eq!(
-            until(&mut run, finished).await,
-            [ended(Outcome::Interrupted)]
+            events.get(1..),
+            Some(
+                [
+                    RunEvent::PermissionWithdrawn {
+                        run: test_support::run_id("run-1"),
+                        prompt: 1,
+                    },
+                    ended(Outcome::Interrupted),
+                ]
+                .as_slice()
+            )
         );
         ends_as_recorded(run, done).await;
     }
