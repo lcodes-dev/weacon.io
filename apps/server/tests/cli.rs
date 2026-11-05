@@ -6,6 +6,8 @@ mod tests {
     use std::net::{TcpListener, TcpStream};
     use std::process::{Child, Command, Output, Stdio};
 
+    use weacon_testing::TempDir;
+
     fn server() -> Command {
         let mut command = Command::new(env!("CARGO_BIN_EXE_weacon-server"));
         command.env_remove("WEACON_SENTRY_DSN");
@@ -42,8 +44,10 @@ mod tests {
     fn an_address_in_use_fails_with_its_code() {
         let taken = TcpListener::bind("127.0.0.1:0").unwrap();
         let address = taken.local_addr().unwrap().to_string();
+        let db = TempDir::new().unwrap();
         let output = server()
-            .args(["serve", "--listen", &address])
+            .args(["serve", "--listen", &address, "--db"])
+            .arg(db.file("weacon.db"))
             .env("WEACON_SENTRY_DSN", "")
             .output()
             .unwrap();
@@ -56,9 +60,11 @@ mod tests {
 
     #[test]
     fn serves_its_version_on_the_address_it_logs() {
+        let db = TempDir::new().unwrap();
         let mut child = Running(
             server()
-                .args(["serve", "--listen", "127.0.0.1:0"])
+                .args(["serve", "--listen", "127.0.0.1:0", "--db"])
+                .arg(db.file("weacon.db"))
                 .stdout(Stdio::piped())
                 .spawn()
                 .unwrap(),
@@ -79,9 +85,48 @@ mod tests {
         stream.read_to_string(&mut response).unwrap();
 
         assert!(response.starts_with("HTTP/1.1 200 OK"), "{response}");
+        // The server created its database before listening.
+        assert!(db.file("weacon.db").exists());
         assert!(
             response.contains("\"name\":\"weacon-server\""),
             "{response}"
+        );
+    }
+
+    fn admin(args: &[&str], db: &TempDir) -> String {
+        let output = server()
+            .args(args)
+            .arg("--db")
+            .arg(db.file("weacon.db"))
+            .current_dir(db.dir())
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+        String::from_utf8(output.stdout).unwrap().trim().to_owned()
+    }
+
+    #[test]
+    fn a_backup_restores_a_workspace() {
+        let db = TempDir::new().unwrap();
+        let workspace = admin(&["create-workspace", "--name", "Team"], &db);
+        let member = admin(
+            &[
+                "add-member",
+                "--workspace",
+                &workspace,
+                "--email",
+                "ada@example.com",
+            ],
+            &db,
+        );
+        admin(&["backup", "--to", "backup.db"], &db);
+        let restored = TempDir::new().unwrap();
+        let backup = db.file("backup.db");
+        admin(&["restore", "--from", backup.to_str().unwrap()], &restored);
+
+        assert_eq!(
+            admin(&["members", "--workspace", &workspace], &restored),
+            format!("{member} ada@example.com")
         );
     }
 }

@@ -2,7 +2,7 @@ use std::panic::PanicHookInfo;
 use std::process::ExitCode;
 use std::sync::Arc;
 
-use weacon_appkit::{panic_hook, reporter, reports, root_logger};
+use weacon_appkit::{panic_hook, random_id, reporter, reports, root_logger};
 use weacon_observability::{Deliver, Fault, Field, Logger, Reporter, Sink};
 use weacon_protocol::code;
 use weacon_version::Version;
@@ -51,6 +51,11 @@ impl App {
     pub(crate) fn panic_hook(&self) -> Box<dyn Fn(&PanicHookInfo<'_>) + Send + Sync> {
         panic_hook(self.log.clone(), Arc::clone(&self.reporter), panicked)
     }
+}
+
+/// A new random id, for a request or a row.
+pub(crate) fn new_id() -> String {
+    format!("{:032x}", random_id())
 }
 
 fn panicked() -> Fault {

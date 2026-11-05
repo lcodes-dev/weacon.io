@@ -1,8 +1,10 @@
 use std::ffi::OsString;
 use std::net::SocketAddr;
+use std::path::PathBuf;
 
 use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
 use weacon_appkit::version_text;
+use weacon_protocol::WorkspaceId;
 use weacon_version::Version;
 
 /// Weacon's server: holds every workspace.
@@ -13,14 +15,65 @@ pub(crate) struct Cli {
     pub(crate) command: Command,
 }
 
-#[derive(Debug, Subcommand)]
+#[derive(Debug, PartialEq, Eq, Subcommand)]
 pub(crate) enum Command {
     /// Serve workspaces until Ctrl-C or SIGTERM.
     Serve {
         /// The address and port to listen on.
         #[arg(long, default_value = "127.0.0.1:8080")]
         listen: SocketAddr,
+        /// The database file, created if missing.
+        #[arg(long)]
+        db: PathBuf,
     },
+    #[command(flatten)]
+    Admin(Admin),
+}
+
+/// Commands an operator runs against the database.
+#[derive(Debug, PartialEq, Eq, Subcommand)]
+pub(crate) enum Admin {
+    /// Create a workspace and print its id.
+    CreateWorkspace {
+        #[arg(long)]
+        db: PathBuf,
+        #[arg(long)]
+        name: String,
+    },
+    /// Add a member to a workspace and print their id.
+    AddMember {
+        #[arg(long)]
+        db: PathBuf,
+        #[arg(long, value_parser = workspace_id)]
+        workspace: WorkspaceId,
+        #[arg(long)]
+        email: String,
+    },
+    /// Print a workspace's members, one id and email per line.
+    Members {
+        #[arg(long)]
+        db: PathBuf,
+        #[arg(long, value_parser = workspace_id)]
+        workspace: WorkspaceId,
+    },
+    /// Copy the database to a new file while the server runs, and check the copy.
+    Backup {
+        #[arg(long)]
+        db: PathBuf,
+        #[arg(long)]
+        to: PathBuf,
+    },
+    /// Check a backup and copy it to a new database file, with the server stopped.
+    Restore {
+        #[arg(long)]
+        from: PathBuf,
+        #[arg(long)]
+        db: PathBuf,
+    },
+}
+
+fn workspace_id(text: &str) -> Result<WorkspaceId, String> {
+    WorkspaceId::try_from(text.to_owned()).map_err(|_| "not a workspace id".to_owned())
 }
 
 /// The command line, or the help, version or error text clap would print instead.
@@ -39,7 +92,7 @@ mod tests {
     use clap::error::ErrorKind;
 
     use super::*;
-    use crate::test_support::VERSION;
+    use crate::test_support::{VERSION, workspace_id};
 
     fn run(args: &[&str]) -> Result<Cli, clap::Error> {
         parse(args.iter().map(OsString::from), &VERSION)
@@ -53,19 +106,52 @@ mod tests {
         assert_eq!(error.to_string(), "weacon-server 0.1.0 (1a2b3c4)\n");
     }
 
-    fn listen(args: &[&str]) -> String {
-        let Command::Serve { listen } = run(args).unwrap().command;
-        listen.to_string()
+    fn serve(args: &[&str]) -> (String, PathBuf) {
+        let Command::Serve { listen, db } = run(args).unwrap().command else {
+            panic!("not serve");
+        };
+        (listen.to_string(), db)
     }
 
     #[test]
     fn serves_where_it_is_told() {
-        assert_eq!(listen(&["weacon-server", "serve"]), "127.0.0.1:8080");
+        let args = ["weacon-server", "serve", "--db", "team.db"];
+
         assert_eq!(
-            listen(&["weacon-server", "serve", "--listen", "0.0.0.0:9000"]),
+            serve(&args),
+            ("127.0.0.1:8080".to_owned(), PathBuf::from("team.db"))
+        );
+        assert_eq!(
+            serve(&[&args[..], &["--listen", "0.0.0.0:9000"]].concat()).0,
             "0.0.0.0:9000"
         );
-        run(&["weacon-server", "serve", "--listen", "nowhere"]).unwrap_err();
+        run(&[&args[..], &["--listen", "nowhere"]].concat()).unwrap_err();
+        run(&["weacon-server", "serve"]).unwrap_err();
         run(&["weacon-server"]).unwrap_err();
+    }
+
+    #[test]
+    fn admin_commands_parse() {
+        let add = run(&[
+            "weacon-server",
+            "add-member",
+            "--db",
+            "team.db",
+            "--workspace",
+            "w1",
+            "--email",
+            "ada@example.com",
+        ])
+        .unwrap();
+
+        assert_eq!(
+            add.command,
+            Command::Admin(Admin::AddMember {
+                db: "team.db".into(),
+                workspace: workspace_id("w1"),
+                email: "ada@example.com".to_owned(),
+            })
+        );
+        run(&["weacon-server", "restore", "--from", "a.db"]).unwrap_err();
     }
 }

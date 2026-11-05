@@ -3,10 +3,12 @@
 pub mod fake_core;
 mod logs;
 pub mod platform;
+mod temp;
 
 use std::time::Duration;
 
 pub use logs::{Records, messages, recording_logger, recording_sink};
+pub use temp::TempDir;
 
 use serde_json::Value;
 use tokio::io::{
