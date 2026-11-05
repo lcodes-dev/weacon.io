@@ -72,16 +72,16 @@ pub async fn serve(
         return Err(format!("expected a hello but got {}", line.trim()));
     };
     let stream = Capability::from(code!("run.stream"));
-    if !hello.capabilities.contains(&stream) {
-        return Err("the client didn't offer run.stream".to_owned());
-    }
     let core = App {
         name: "weacon-core".to_owned(),
         version: "0.0.0".to_owned(),
         commit: "0000000".to_owned(),
     };
-    let answer = hello.answer(core, vec![stream]);
+    let answer = hello.answer(core, vec![stream.clone()]);
     let welcomed = matches!(answer, Message::Welcome(_));
+    if welcomed && !hello.capabilities.contains(&stream) {
+        return Err("the client didn't offer run.stream".to_owned());
+    }
     let answer = Envelope {
         id: envelope.id,
         message: answer,
@@ -287,7 +287,7 @@ mod tests {
         let (mut client, core) = duplex(4096);
         let served = tokio::spawn(serve(core, "< {\"a\":1}".to_owned(), Duration::ZERO));
         client
-            .write_all(&hello(1, PROTOCOL + 1, &["run.stream"]))
+            .write_all(&hello(1, PROTOCOL + 1, &[]))
             .await
             .unwrap();
         client.shutdown().await.unwrap();
