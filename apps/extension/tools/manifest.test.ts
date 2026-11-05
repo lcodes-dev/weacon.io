@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 
-import { commit, release, workspaceVersion } from "./manifest.ts";
+import { commit, gitEnv, release, workspaceVersion } from "./manifest.ts";
 
 const read = (path: string) => readFileSync(new URL(path, import.meta.url), "utf8");
 
@@ -24,6 +24,12 @@ test("the commit comes from the environment, then git, and must be a hash", () =
   assert.equal(commit(undefined, none), "unknown");
   assert.equal(commit("not-a-hash", none), "unknown");
   assert.equal(commit("1a2b3c", none), "unknown");
+});
+
+test("git runs on this repository whatever the environment points it at", () => {
+  const env = { GIT_DIR: "/other/.git", GIT_WORK_TREE: "/other", GIT_INDEX_FILE: "/other/index", PATH: "/bin" };
+
+  assert.deepEqual(gitEnv(env), { PATH: "/bin" });
 });
 
 test("the released manifest names its version and commit", () => {

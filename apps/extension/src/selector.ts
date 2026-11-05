@@ -7,13 +7,13 @@ export type SelectorNode = {
 };
 
 /**
- * A CSS selector for `element`: its nearest ancestor with a plain id, then each step down by tag
- * name, numbered among siblings of the same tag where it needs to be.
+ * A CSS selector for `element`: its nearest ancestor with a plain id that `unique` says no other
+ * element has, then each step down by tag name, numbered among same-tag siblings where needed.
  */
-export function cssSelector(element: SelectorNode): string {
+export function cssSelector(element: SelectorNode, unique: (id: string) => boolean): string {
   const steps: string[] = [];
   for (let node: SelectorNode | null = element; node !== null; node = node.parentElement) {
-    if (/^[A-Za-z][\w-]*$/.test(node.id)) {
+    if (/^[A-Za-z][\w-]*$/.test(node.id) && unique(node.id)) {
       steps.unshift(`#${node.id}`);
       break;
     }

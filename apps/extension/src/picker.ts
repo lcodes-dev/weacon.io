@@ -47,7 +47,8 @@ function pick(): Promise<Picked | null> {
     const click = (event: MouseEvent) => {
       event.preventDefault();
       event.stopPropagation();
-      finish(target);
+      // A click with no move before it has no target yet.
+      finish(event.target instanceof Element ? event.target : target);
     };
     const swallow = (event: Event) => {
       event.preventDefault();
@@ -56,6 +57,7 @@ function pick(): Promise<Picked | null> {
     const key = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
         event.preventDefault();
+        event.stopPropagation();
         finish(null);
       }
     };
@@ -94,7 +96,7 @@ function place(box: HTMLElement, element: Element | null) {
 function describe(element: Element): Picked {
   const { x, y, width, height } = element.getBoundingClientRect();
   return {
-    selector: cssSelector(element),
+    selector: cssSelector(element, (id) => document.querySelectorAll(`#${CSS.escape(id)}`).length === 1),
     html: element.outerHTML,
     title: document.title,
     url: location.href,

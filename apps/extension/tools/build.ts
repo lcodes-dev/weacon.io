@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 
 import { build } from "esbuild";
 
-import { commit, release, workspaceVersion } from "./manifest.ts";
+import { commit, gitEnv, release, workspaceVersion } from "./manifest.ts";
 
 const root = new URL("..", import.meta.url);
 const dist = new URL("dist/", root);
@@ -23,7 +23,8 @@ await build({ ...options, entryPoints: ["src/picker.ts"], format: "iife" });
 
 const git = () => {
   try {
-    return execFileSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8", stdio: "pipe" });
+    const env = gitEnv(process.env);
+    return execFileSync("git", ["rev-parse", "HEAD"], { cwd: root, env, encoding: "utf8", stdio: "pipe" });
   } catch {
     return undefined;
   }

@@ -45,15 +45,26 @@ async function pickIn(tab: chrome.tabs.Tab, tabId: number): Promise<boolean> {
   }
   const { rect, ratio, ...page } = picked;
   // Without a screenshot, the rest of the pick still goes.
-  const shoot = await shooter(tab.windowId, rect, ratio).catch(() => undefined);
+  const shoot = await shooter(tabId, tab.windowId, rect, ratio).catch(() => undefined);
   const pick = await fit({ request: crypto.randomUUID(), ...page }, shoot);
   await deliver(chrome.runtime.connectNative(HOST), ME, pick);
   return true;
 }
 
-// Captures the tab and gives the part showing `rect` as a base64 PNG at any scale.
-async function shooter(windowId: number, rect: Rect, ratio: number): Promise<(scale: number) => Promise<string>> {
+// Captures the tab and gives the part showing `rect` as a base64 PNG at any scale. Chrome
+// captures whichever tab is showing, so the capture counts only if the picked one shows throughout.
+async function shooter(
+  tabId: number,
+  windowId: number,
+  rect: Rect,
+  ratio: number,
+): Promise<(scale: number) => Promise<string>> {
+  const showing = async () => (await chrome.tabs.query({ active: true, windowId }))[0]?.id === tabId;
+  const before = await showing();
   const capture = await chrome.tabs.captureVisibleTab(windowId, { format: "png" });
+  if (!before || !(await showing())) {
+    throw new Failure("extension.capture_failed");
+  }
   const image = await createImageBitmap(await (await fetch(capture)).blob());
   const part = crop(rect, ratio, image.width, image.height);
   return async (scale) => {

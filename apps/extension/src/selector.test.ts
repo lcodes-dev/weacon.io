@@ -20,9 +20,13 @@ test("a selector climbs to the nearest plain id, numbering same-tag siblings", (
   const html = tree("html", "", tree("body", "", tree("div", "1-not-plain", main), tree("div", "")));
   const at = (...path: number[]): SelectorNode => path.reduce<Fake>((node, index) => node.children[index] as Fake, html);
 
-  assert.equal(cssSelector(save), "#app > button");
-  assert.equal(cssSelector(at(0, 0, 0, 2, 1, 0)), "#app > ul > li:nth-of-type(2) > a");
-  assert.equal(cssSelector(at(0, 0)), "html > body > div:nth-of-type(1)");
-  assert.equal(cssSelector(main), "#app");
-  assert.equal(cssSelector(html), "html");
+  const all = () => true;
+
+  assert.equal(cssSelector(save, all), "#app > button");
+  assert.equal(cssSelector(at(0, 0, 0, 2, 1, 0), all), "#app > ul > li:nth-of-type(2) > a");
+  assert.equal(cssSelector(at(0, 0), all), "html > body > div:nth-of-type(1)");
+  assert.equal(cssSelector(main, all), "#app");
+  assert.equal(cssSelector(html, all), "html");
+  // An id another element shares can't find this one, so the path goes on past it.
+  assert.equal(cssSelector(save, (id) => id !== "app"), "html > body > div:nth-of-type(1) > main > button");
 });

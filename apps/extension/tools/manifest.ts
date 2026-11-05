@@ -10,6 +10,12 @@ export function workspaceVersion(cargoToml: string): string {
   return version;
 }
 
+/** `env` without the variables that would point git at another repository than the one it runs in. */
+export function gitEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const { GIT_DIR: _dir, GIT_WORK_TREE: _tree, GIT_INDEX_FILE: _index, ...rest } = env;
+  return rest;
+}
+
 /** The commit being built: `given` when not blank, else git's; `unknown` unless it's a hash. */
 export function commit(given: string | undefined, git: () => string | undefined): string {
   const found = given?.trim() || git()?.trim() || "";
