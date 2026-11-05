@@ -75,7 +75,8 @@ mod tests {
         let envs: Vec<_> = command.get_envs().collect();
 
         assert_eq!(command.get_args().collect::<Vec<_>>(), ["app-server"]);
-        assert!(envs.contains(&(OsStr::new("CODEX_HOME"), Some(OsStr::new("/work/config")))));
+        let config = Path::new("/work").join("config");
+        assert!(envs.contains(&(OsStr::new("CODEX_HOME"), Some(config.as_os_str()))));
         for name in OTHER_SIGN_INS {
             assert!(envs.contains(&(OsStr::new(name), None)), "{name}");
         }
