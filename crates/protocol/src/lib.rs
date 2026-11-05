@@ -5,12 +5,15 @@ mod code;
 mod frame;
 mod message;
 mod receipt;
+mod run;
+mod token;
 
 pub use capability::Capability;
 pub use code::Code;
 pub use frame::{FrameError, LineDecoder, MAX_FRAME, encode_line};
 pub use message::{App, Envelope, ErrorBody, Hello, Message, PROTOCOL, Welcome};
 pub use receipt::{Outcome, Receipt, RequestId};
+pub use run::{AgentSession, PermissionAnswer, RunEvent, RunId};
 
 #[cfg(test)]
 mod tests {

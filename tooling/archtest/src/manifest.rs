@@ -5,7 +5,7 @@ use std::iter;
 
 use toml::{Table, Value};
 
-use crate::rules::{APP_NEEDS, IO_PACKAGES, RESTRICTED, RULES, Rule};
+use crate::rules::{APP_NEEDS, IO_PACKAGES, RESTRICTED, RULES, Rule, TESTING};
 use crate::{Kind, Package};
 
 const INHERITED: [&str; 5] = ["version", "edition", "rust-version", "license", "publish"];
@@ -59,6 +59,9 @@ pub(crate) fn check_dependencies(
     let mut out = Vec::new();
     for dependency in &package.dependencies {
         let used = dependency.name.as_str();
+        if used == TESTING && dependency.kind() == Kind::Dev {
+            continue;
+        }
         if names.contains(used) && !rule.may_use.contains(&used) {
             out.push(format!("{name}: may not depend on {used}"));
         }
@@ -160,11 +163,13 @@ mod tests {
     #[test]
     fn every_package_has_a_rule_and_every_rule_a_package() {
         let names: BTreeSet<&str> = [
+            "weacon-agents",
             "weacon-archtest",
             "weacon-client",
             "weacon-core",
             "weacon-observability",
             "weacon-protocol",
+            "weacon-testing",
             "weacon-extra",
         ]
         .into();
@@ -196,6 +201,8 @@ mod tests {
                 ("sentry-types", None),
                 ("tokio", None),
                 ("mio", Some(Kind::Dev)),
+                ("weacon-testing", Some(Kind::Dev)),
+                ("weacon-testing", None),
             ],
         );
 
@@ -210,6 +217,7 @@ mod tests {
                 "weacon-model: may not depend on sqlx; only weacon-core, weacon-server may",
                 "weacon-model: may not depend on sentry-types; only weacon-observability may",
                 "weacon-model: does no I/O, so it may not depend on tokio",
+                "weacon-model: may not depend on weacon-testing",
             ]
         );
     }

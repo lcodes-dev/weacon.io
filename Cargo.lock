@@ -1089,6 +1089,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "weacon-agents"
+version = "0.0.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tokio",
+ "weacon-observability",
+ "weacon-protocol",
+ "weacon-testing",
+]
+
+[[package]]
 name = "weacon-archtest"
 version = "0.0.0"
 dependencies = [
@@ -1140,6 +1152,14 @@ dependencies = [
  "schemars",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "weacon-testing"
+version = "0.0.0"
+dependencies = [
+ "serde_json",
+ "tokio",
 ]
 
 [[package]]

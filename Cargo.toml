@@ -20,9 +20,11 @@ syn = { version = "3.0.9", default-features = false, features = ["full", "parsin
 tokio = { version = "1.54.1", features = ["io-util", "macros", "net", "rt", "signal", "time"] }
 toml = { version = "1.1.8", default-features = false, features = ["parse", "serde"] }
 ureq = { version = "3.5.1", default-features = false, features = ["rustls"] }
+weacon-agents = { path = "crates/agents" }
 weacon-client = { path = "crates/client" }
 weacon-observability = { path = "crates/observability" }
 weacon-protocol = { path = "crates/protocol" }
+weacon-testing = { path = "crates/testing" }
 weacon-version = { path = "crates/version" }
 
 [workspace.lints.rust]
