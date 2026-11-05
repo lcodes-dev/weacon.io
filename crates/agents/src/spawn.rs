@@ -27,12 +27,14 @@ impl SpawnPolicy {
         }
     }
 
-    /// Adjusts the agent just started, long before it can start a tool. Best effort, as where
-    /// procfs is read-only: the agent runs either way.
+    /// Adjusts the agent just started, long before it can start a tool. The core sets a score
+    /// only where it could write its own, so this fails only for an agent already gone.
     pub(crate) fn adjust(&self, child: &Child) {
         if let (Some(score), Some(pid)) = (self.oom_score_adj, child.id()) {
-            std::fs::write(format!("/proc/{pid}/oom_score_adj"), score.to_string())
-                .unwrap_or_default();
+            drop(std::fs::write(
+                format!("/proc/{pid}/oom_score_adj"),
+                score.to_string(),
+            ));
         }
     }
 }

@@ -83,9 +83,12 @@ pub(crate) fn spawn_policy(env: Env<'_>) -> SpawnPolicy {
     tool_policy(env, cpus, oom_score(Path::new("/proc/self/oom_score_adj")))
 }
 
-// None where procfs has no scores to change, as on WSL 1.
+// None where the core can't change its score, as on WSL 1 or with procfs read-only; writing
+// the same score back proves it can.
 fn oom_score(file: &Path) -> Option<i32> {
-    fs::read_to_string(file).ok()?.trim().parse().ok()
+    let score = fs::read_to_string(file).ok()?;
+    fs::write(file, &score).ok()?;
+    score.trim().parse().ok()
 }
 
 fn tool_policy(env: Env<'_>, cpus: usize, own_oom_score: Option<i32>) -> SpawnPolicy {
@@ -391,8 +394,16 @@ mod tests {
         fs::write(&file, "-200\n").unwrap();
 
         assert_eq!(oom_score(&file), Some(-200));
+        assert_eq!(fs::read_to_string(&file).unwrap(), "-200\n");
         assert_eq!(oom_score(&dir.join("missing")), None);
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_score_that_cant_be_written_is_left_alone() {
+        // Readable, but refuses writes even from root.
+        assert_eq!(oom_score(Path::new("/proc/self/oom_score")), None);
     }
 
     #[cfg(target_os = "linux")]
