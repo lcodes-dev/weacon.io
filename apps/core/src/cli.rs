@@ -1,4 +1,5 @@
 use std::ffi::OsString;
+use std::path::PathBuf;
 
 use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
 use weacon_version::Version;
@@ -30,6 +31,9 @@ pub(crate) enum Command {
     /// Relay messages between Chrome's extension and the daemon; Chrome starts it.
     #[command(hide = true)]
     NativeHost { origin: String },
+    /// Work with the code map of a repository.
+    #[command(subcommand)]
+    Map(MapCommand),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Subcommand)]
@@ -38,6 +42,16 @@ pub(crate) enum ServiceCommand {
     Install,
     /// Stop the service and remove it.
     Uninstall,
+}
+
+#[derive(Debug, PartialEq, Eq, Subcommand)]
+pub(crate) enum MapCommand {
+    /// Read pinned anchors on stdin, one per line, and print those that no longer match.
+    CheckAnchors {
+        /// The repository's root folder.
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+    },
 }
 
 impl Cli {
@@ -52,7 +66,9 @@ impl Command {
     pub(crate) const fn log_name(&self) -> &'static str {
         match self {
             Self::Daemon => "daemon.log",
-            Self::Status | Self::Doctor | Self::Service(_) | Self::ConnectChrome => "cli.log",
+            Self::Status | Self::Doctor | Self::Service(_) | Self::ConnectChrome | Self::Map(_) => {
+                "cli.log"
+            }
             Self::NativeHost { .. } => "native-host.log",
         }
     }
@@ -65,6 +81,7 @@ impl Command {
             Self::Service(_) => "service",
             Self::ConnectChrome => "connect-chrome",
             Self::NativeHost { .. } => "native-host",
+            Self::Map(_) => "map",
         }
     }
 }
@@ -125,6 +142,8 @@ mod tests {
             .map(|name| run(&["weacon", name]).unwrap().command.name());
         let install = run(&["weacon", "service", "install"]).unwrap().command;
         let uninstall = run(&["weacon", "service", "uninstall"]).unwrap().command;
+        let map = run(&["weacon", "map", "check-anchors"]).unwrap().command;
+        let rooted = run(&["weacon", "map", "check-anchors", "--root", "/srv/repo"]).unwrap();
         let verbose = run(&["weacon", "doctor", "--verbose"]).unwrap();
 
         assert_eq!(doctor.command, Command::Doctor);
@@ -135,6 +154,17 @@ mod tests {
         );
         let service = run(&["weacon", "service", "install"]).unwrap().command;
         assert_eq!((service.name(), service.log_name()), ("service", "cli.log"));
+        assert_eq!(
+            map,
+            Command::Map(MapCommand::CheckAnchors { root: ".".into() })
+        );
+        assert_eq!((map.name(), map.log_name()), ("map", "cli.log"));
+        assert_eq!(
+            rooted.command,
+            Command::Map(MapCommand::CheckAnchors {
+                root: "/srv/repo".into()
+            })
+        );
         assert!(!doctor.verbose);
         assert!(verbose.verbose);
     }

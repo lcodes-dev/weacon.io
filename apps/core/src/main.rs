@@ -5,6 +5,7 @@ mod cli;
 mod daemon;
 mod doctor;
 mod logs;
+mod map;
 mod native_host;
 mod picks;
 mod platform;
@@ -20,7 +21,7 @@ use std::process::ExitCode;
 
 use weacon_observability::json_lines;
 
-use crate::app::{App, Setup};
+use crate::app::{App, Outcome, Setup};
 use crate::cli::Command;
 
 fn main() -> ExitCode {
@@ -46,12 +47,22 @@ fn main() -> ExitCode {
     );
     std::panic::set_hook(app.panic_hook());
     let result = match cli.command {
-        Command::Daemon => daemon::run(&app),
-        Command::Status => status::run(&app, &mut io::stdout().lock()),
-        Command::Doctor => doctor::run(&app, &mut io::stdout().lock()),
-        Command::Service(command) => service::run(&app, command, &env, &mut service::system),
-        Command::ConnectChrome => native_host::connect_chrome(&app, &env, &mut io::stdout().lock()),
-        Command::NativeHost { origin } => native_host::run(&app, &origin),
+        Command::Daemon => daemon::run(&app).map(Outcome::from),
+        Command::Status => status::run(&app, &mut io::stdout().lock()).map(Outcome::from),
+        Command::Doctor => doctor::run(&app, &mut io::stdout().lock()).map(Outcome::from),
+        Command::Service(command) => {
+            service::run(&app, command, &env, &mut service::system).map(Outcome::from)
+        }
+        Command::ConnectChrome => {
+            native_host::connect_chrome(&app, &env, &mut io::stdout().lock()).map(Outcome::from)
+        }
+        Command::NativeHost { origin } => native_host::run(&app, &origin).map(Outcome::from),
+        Command::Map(command) => map::run(
+            &app,
+            command,
+            &mut io::stdin().lock(),
+            &mut io::stdout().lock(),
+        ),
     };
     app.finish(result)
 }
