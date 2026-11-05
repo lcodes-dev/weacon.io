@@ -212,6 +212,7 @@ mod tests {
             .write_all(b"{\"id\":1,\"type\":\"hello\",\"capabilities\":[\"chat.send\"]}\n")
             .await
             .unwrap();
+        client.shutdown().await.unwrap();
 
         assert_eq!(
             served.await.unwrap(),
