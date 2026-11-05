@@ -74,10 +74,9 @@ fn welcomed(message: Message) -> Result<Welcome, Fault> {
             code!("daemon.other_protocol"),
             "The daemon speaks another protocol version; restart it",
         )),
-        Message::Hello(_) | Message::Error(_) | Message::Unknown => Err(Fault::new(
-            code!("daemon.refused"),
-            "The daemon refused the handshake",
-        )),
+        Message::Hello(_) | Message::Error(_) | Message::Receipt(_) | Message::Unknown => Err(
+            Fault::new(code!("daemon.refused"), "The daemon refused the handshake"),
+        ),
     }
 }
 

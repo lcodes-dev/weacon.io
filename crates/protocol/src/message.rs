@@ -1,7 +1,7 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::{Capability, Code, code};
+use crate::{Capability, Code, Receipt, code};
 
 /// The protocol version this build speaks. Only a breaking change raises it; peers must match
 /// it exactly and check each other's capabilities for everything else.
@@ -21,6 +21,7 @@ pub enum Message {
     Hello(Hello),
     Welcome(Welcome),
     Error(ErrorBody),
+    Receipt(Receipt),
     /// A message type this build doesn't know, from a newer peer.
     #[serde(other)]
     #[schemars(skip)]
