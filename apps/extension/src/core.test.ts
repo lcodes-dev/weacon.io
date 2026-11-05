@@ -137,6 +137,7 @@ test("the extension names its build from its manifest", () => {
   assert.deepEqual(app({ version: "0.1.0", version_name: "0.1.0 (1a2b3c4d)" }), { ...ME, commit: "1a2b3c4d" });
   assert.deepEqual(app({ version: "0.1.0", version_name: "0.1.0 (unknown)" }), { ...ME, commit: "unknown" });
   assert.deepEqual(app({ version: "0.1.0", version_name: "0.1.0 (a b)" }), { ...ME, commit: "unknown" });
+  assert.deepEqual(app({ version: "0.1.0", version_name: "0.1.0 (not_a_hash)" }), { ...ME, commit: "unknown" });
   assert.deepEqual(app({ version: "0.1.0" }), { ...ME, commit: "unknown" });
 });
 

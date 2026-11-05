@@ -1,3 +1,4 @@
+import { isCommit } from "./commit.ts";
 import type { App, Envelope, Pick } from "./protocol.ts";
 
 /** Must equal `weacon_protocol::PROTOCOL`. */
@@ -28,7 +29,8 @@ export type Port = {
 
 /** How the extension introduces itself, from its manifest's `version_name`, `0.1.0 (<commit>)`. */
 export function app(manifest: { version: string; version_name?: string | undefined }): App {
-  const commit = manifest.version_name?.match(/\((\w+)\)$/)?.[1] ?? "unknown";
+  const named = manifest.version_name?.match(/\((\S+)\)$/)?.[1] ?? "";
+  const commit = isCommit(named) ? named : "unknown";
   return { name: "weacon-extension", version: manifest.version, commit };
 }
 
