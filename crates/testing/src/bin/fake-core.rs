@@ -34,6 +34,10 @@ async fn main() -> ExitCode {
 async fn run(dir: PathBuf, tokens: usize, pace: Duration) -> Result<(), String> {
     let recording = recording(SESSION, tokens)?;
     let listener = listen(&dir.join("weacon.sock")).map_err(|error| error.to_string())?;
-    let (stream, _) = listener.accept().await.map_err(|error| error.to_string())?;
+    let stream = listener
+        .accept()
+        .await
+        .map_err(|error| error.to_string())?
+        .0;
     serve(stream, recording, pace).await
 }
