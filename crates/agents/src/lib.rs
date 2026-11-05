@@ -1,6 +1,12 @@
 //! Drives the person's own coding agents and turns their output into run events.
 
 mod claude;
+mod codex;
 mod lines;
+mod run;
+#[cfg(test)]
+mod test_support;
 
-pub use claude::{Claude, ClaudeRun, Run};
+pub use claude::Claude;
+pub use codex::Codex;
+pub use run::{AgentRun, Run};

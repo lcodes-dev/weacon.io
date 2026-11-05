@@ -1,0 +1,5 @@
+> {"id":1,"method":"initialize","params":{"clientInfo":{"name":"weacon-core","title":"Weacon","version":"0.1.0"}}}
+< {"id":1,"result":{"userAgent":"codex_cli_rs/0.166.0"}}
+> {"method":"initialized"}
+> {"id":2,"method":"thread/start","params":{"approvalPolicy":"untrusted","approvalsReviewer":"user"}}
+< {"id":2,"error":{"code":-32000,"message":"not signed in"}}

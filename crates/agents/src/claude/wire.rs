@@ -2,18 +2,17 @@
 
 use serde::Deserialize;
 use serde_json::{Value, json};
-use weacon_protocol::AgentSession;
+use weacon_protocol::{AgentSession, RunEvent};
+
+use crate::run::{Heard, UNSUPPORTED};
 
 /// Sent back when a person denies a tool; the agent reads it.
 const DENIED: &str = "The person declined this tool use.";
 
-/// Sent back for a request the driver doesn't handle.
-const UNSUPPORTED: &str = "Weacon doesn't handle this request.";
-
 /// One line `claude` prints. Lines that don't parse are skipped, as a newer `claude` may add some.
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
-pub(crate) enum Line {
+enum Line {
     System(System),
     Assistant {
         message: Message,
@@ -39,7 +38,7 @@ pub(crate) enum Line {
 
 #[derive(Debug, Deserialize)]
 #[serde(tag = "subtype", rename_all = "snake_case")]
-pub(crate) enum System {
+enum System {
     Init {
         session_id: AgentSession,
     },
@@ -48,13 +47,13 @@ pub(crate) enum System {
 }
 
 #[derive(Debug, Deserialize)]
-pub(crate) struct Message {
+struct Message {
     content: Value,
 }
 
 impl Message {
     /// The blocks this build knows; a plain string content has none of interest.
-    pub(crate) fn blocks(self) -> Vec<Block> {
+    fn blocks(self) -> Vec<Block> {
         let Value::Array(blocks) = self.content else {
             return Vec::new();
         };
@@ -67,7 +66,7 @@ impl Message {
 
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
-pub(crate) enum Block {
+enum Block {
     Text {
         text: String,
     },
@@ -87,7 +86,7 @@ pub(crate) enum Block {
 
 #[derive(Debug, Deserialize)]
 #[serde(tag = "subtype", rename_all = "snake_case")]
-pub(crate) enum Request {
+enum Request {
     CanUseTool {
         tool_name: String,
         input: Value,
@@ -96,40 +95,93 @@ pub(crate) enum Request {
     Other,
 }
 
-pub(crate) fn user(text: &str) -> Value {
-    json!({
+/// Claude's side of a run: the interrupts it has asked for, to number them.
+#[derive(Default)]
+pub(crate) struct Wire {
+    interrupts: u32,
+}
+
+impl Wire {
+    pub(crate) fn interrupt(&mut self) -> Vec<Heard> {
+        self.interrupts += 1;
+        vec![Heard::Send(json!({
+            "type": "control_request",
+            "request_id": format!("weacon-{}", self.interrupts),
+            "request": { "subtype": "interrupt" },
+        }))]
+    }
+}
+
+pub(crate) fn prompt(text: &str) -> Vec<Heard> {
+    vec![Heard::Send(json!({
         "type": "user",
         "message": { "role": "user", "content": text },
         "parent_tool_use_id": null,
         "session_id": "",
-    })
+    }))]
 }
 
-pub(crate) fn permission(request_id: &str, allow: bool, input: &Value) -> Value {
+pub(crate) fn answer(request: &Value, allow: bool, input: &Value) -> Vec<Heard> {
     let response = if allow {
         json!({ "behavior": "allow", "updatedInput": input })
     } else {
         json!({ "behavior": "deny", "message": DENIED })
     };
-    json!({
+    vec![Heard::Send(json!({
         "type": "control_response",
-        "response": { "subtype": "success", "request_id": request_id, "response": response },
-    })
+        "response": { "subtype": "success", "request_id": request, "response": response },
+    }))]
 }
 
-pub(crate) fn unsupported(request_id: &str) -> Value {
-    json!({
-        "type": "control_response",
-        "response": { "subtype": "error", "request_id": request_id, "error": UNSUPPORTED },
-    })
+pub(crate) fn read(line: &[u8]) -> Vec<Heard> {
+    let Ok(line) = serde_json::from_slice(line) else {
+        return Vec::new();
+    };
+    match line {
+        Line::System(System::Init { session_id }) => vec![Heard::Started(session_id)],
+        Line::Assistant { message } | Line::User { message } => {
+            message.blocks().into_iter().filter_map(said).collect()
+        }
+        Line::Result { subtype, is_error } => vec![Heard::Finished {
+            ok: subtype == "success" && !is_error,
+        }],
+        Line::ControlRequest {
+            request_id,
+            request: Request::CanUseTool { tool_name, input },
+        } => vec![Heard::Asked {
+            request: Value::String(request_id),
+            tool: tool_name,
+            input,
+        }],
+        Line::ControlRequest { request_id, .. } => vec![Heard::Send(json!({
+            "type": "control_response",
+            "response": { "subtype": "error", "request_id": request_id, "error": UNSUPPORTED },
+        }))],
+        Line::ControlCancelRequest { request_id } => vec![Heard::Withdrawn {
+            request: Value::String(request_id),
+        }],
+        Line::System(System::Other) | Line::Other => Vec::new(),
+    }
 }
 
-pub(crate) fn interrupt(request_id: &str) -> Value {
-    json!({
-        "type": "control_request",
-        "request_id": request_id,
-        "request": { "subtype": "interrupt" },
-    })
+fn said(block: Block) -> Option<Heard> {
+    let event = match block {
+        Block::Text { text } => RunEvent::Text { text },
+        Block::ToolUse { id, name, input } => RunEvent::ToolCall {
+            call: id,
+            tool: name,
+            input,
+        },
+        Block::ToolResult {
+            tool_use_id,
+            is_error,
+        } => RunEvent::ToolDone {
+            call: tool_use_id,
+            failed: is_error,
+        },
+        Block::Other => return None,
+    };
+    Some(Heard::Event(event))
 }
 
 #[cfg(test)]
@@ -138,6 +190,6 @@ mod tests {
 
     #[test]
     fn the_texts_added_to_the_agents_context_keep_their_size() {
-        assert_eq!([DENIED.len(), UNSUPPORTED.len()], [34, 35]);
+        assert_eq!(DENIED.len(), 34);
     }
 }
