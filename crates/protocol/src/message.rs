@@ -1,7 +1,7 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::{Capability, Code, Pick, Receipt, code};
+use crate::{Capability, Code, Pick, Receipt, RunUpdate, code};
 
 /// The protocol version this build speaks. Only a breaking change raises it; peers must match
 /// it exactly and check each other's capabilities for everything else.
@@ -24,6 +24,8 @@ pub enum Message {
     Receipt(Receipt),
     /// An element picked in Chrome, from the extension's host to a core that offers element.pick.
     Pick(Pick),
+    /// What a run reported, from the core to clients that have the capability `run.stream`.
+    Run(RunUpdate),
     /// A message type this build doesn't know, from a newer peer.
     #[serde(other)]
     #[schemars(skip)]
@@ -83,6 +85,7 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+    use crate::{RunEvent, RunId};
 
     fn app(name: &str) -> App {
         App {
@@ -137,6 +140,19 @@ mod tests {
                 },
                 json!({ "id": 7, "type": "error", "code": "store.full", "retryable": true }),
             ),
+            (
+                Envelope {
+                    id: 0,
+                    message: Message::Run(RunUpdate {
+                        run: RunId::try_from("r-1".to_owned()).unwrap(),
+                        event: RunEvent::TextDelta {
+                            text: "Hel".to_owned(),
+                        },
+                    }),
+                },
+                json!({ "id": 0, "type": "run", "run": "r-1",
+                        "event": { "event": "text_delta", "text": "Hel" } }),
+            ),
         ];
 
         for (envelope, wire) in cases {
@@ -160,7 +176,19 @@ mod tests {
             "capabilities": ["chat.send", "future.thing"] }))
             .unwrap();
 
+        let newer_event: Envelope = serde_json::from_value(
+            json!({ "id": 0, "type": "run", "run": "r-1", "event": { "event": "thinking" } }),
+        )
+        .unwrap();
+
         assert_eq!(unknown.message, Message::Unknown);
+        assert!(matches!(
+            newer_event.message,
+            Message::Run(RunUpdate {
+                event: RunEvent::Newer,
+                ..
+            })
+        ));
         assert!(matches!(extra.message, Message::Error(_)));
         assert!(
             matches!(newer.message, Message::Hello(hello) if hello.capabilities == capabilities(&["chat.send", "future.thing"]))
