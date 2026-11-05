@@ -1,8 +1,9 @@
 # `emit` only prints what `instructions` returns, and its tests cover that.
 # `flush` on a file opened for appending does nothing that a test could see.
 # `random_id` joins two halves that never overlap, so `|` and `^` give the same id.
-# Windows code isn't built on Linux, where mutation tests run; the Windows CI job tests it.
 # A `Lines::next` that always returns a line never ends, so every reader spins instead of failing.
+# Windows code isn't built on Linux, where mutation tests run; the Windows CI job tests it.
+exclude_globs = ["**/platform/windows.rs"]
 exclude_re = [
     "replace emit with \\(\\)",
     "replace <impl Write for RotatingFile>::flush",
