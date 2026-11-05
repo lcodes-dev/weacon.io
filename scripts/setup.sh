@@ -120,7 +120,10 @@ fetch_dependencies
 if [ "$session_start" = false ]; then
   ensure_llvm_tools
   ensure_tools
-  ensure_node
 fi
 persist_path
+# Last, so a Node mismatch can't keep the Rust tools off PATH.
+if [ "$session_start" = false ]; then
+  ensure_node
+fi
 echo "Weacon setup done: $(rustup run "$toolchain" rustc --version). Run scripts/check.sh before committing."
