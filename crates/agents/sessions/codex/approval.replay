@@ -1,0 +1,18 @@
+> {"id":1,"method":"initialize","params":{"clientInfo":{"name":"weacon-core","title":"Weacon","version":"0.1.0"}}}
+< {"id":1,"result":{"userAgent":"codex_cli_rs/0.166.0"}}
+> {"method":"initialized"}
+> {"id":2,"method":"thread/start","params":{}}
+< {"method":"thread/started","params":{"thread":{"id":"019a2b3c-4d5e-7f60-8a9b-0c1d2e3f4a5b","preview":"","modelProvider":"openai"}}}
+< {"id":2,"result":{"thread":{"id":"019a2b3c-4d5e-7f60-8a9b-0c1d2e3f4a5b","preview":"","modelProvider":"openai"},"model":"codex-model","cwd":"/work"}}
+> {"id":3,"method":"turn/start","params":{"threadId":"019a2b3c-4d5e-7f60-8a9b-0c1d2e3f4a5b","input":[{"type":"text","text":"Run the parser tests","text_elements":[]}]}}
+< {"id":3,"result":{"turn":{"id":"turn-1","items":[],"status":"inProgress"}}}
+< {"method":"turn/started","params":{"threadId":"019a2b3c-4d5e-7f60-8a9b-0c1d2e3f4a5b","turn":{"id":"turn-1","items":[],"status":"inProgress"}}}
+< {"method":"item/started","params":{"threadId":"019a2b3c-4d5e-7f60-8a9b-0c1d2e3f4a5b","turnId":"turn-1","startedAtMs":1,"item":{"type":"reasoning","id":"item-0"}}}
+< {"method":"item/started","params":{"threadId":"019a2b3c-4d5e-7f60-8a9b-0c1d2e3f4a5b","turnId":"turn-1","startedAtMs":2,"item":{"type":"commandExecution","id":"item-1","command":"cargo test -p parser","cwd":"/work","commandActions":[],"status":"inProgress"}}}
+< {"id":0,"method":"item/commandExecution/requestApproval","params":{"threadId":"019a2b3c-4d5e-7f60-8a9b-0c1d2e3f4a5b","turnId":"turn-1","itemId":"item-1","startedAtMs":2,"command":"cargo test -p parser","cwd":"/work"}}
+> {"id":0,"result":{"decision":"accept"}}
+< {"method":"serverRequest/resolved","params":{"threadId":"019a2b3c-4d5e-7f60-8a9b-0c1d2e3f4a5b","requestId":0}}
+< {"method":"item/agentMessage/delta","params":{"threadId":"019a2b3c-4d5e-7f60-8a9b-0c1d2e3f4a5b","turnId":"turn-1","itemId":"item-2","delta":"All 12"}}
+< {"method":"item/completed","params":{"threadId":"019a2b3c-4d5e-7f60-8a9b-0c1d2e3f4a5b","turnId":"turn-1","completedAtMs":3,"item":{"type":"commandExecution","id":"item-1","command":"cargo test -p parser","cwd":"/work","commandActions":[],"status":"completed","exitCode":0}}}
+< {"method":"item/completed","params":{"threadId":"019a2b3c-4d5e-7f60-8a9b-0c1d2e3f4a5b","turnId":"turn-1","completedAtMs":4,"item":{"type":"agentMessage","id":"item-2","text":"All 12 tests pass."}}}
+< {"method":"turn/completed","params":{"threadId":"019a2b3c-4d5e-7f60-8a9b-0c1d2e3f4a5b","turn":{"id":"turn-1","items":[],"status":"completed"}}}

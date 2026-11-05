@@ -1,17 +1,16 @@
 //! The driver for Claude Code, through its stream-json mode.
 
-mod run;
 mod wire;
 
 use std::path::PathBuf;
-use std::process::Stdio;
 
-use tokio::io::BufReader;
-use tokio::process::{ChildStdin, ChildStdout, Command};
+use tokio::process::Command;
 use weacon_observability::Fault;
-use weacon_protocol::{AgentSession, RunId, code};
+use weacon_protocol::{AgentSession, RunId};
 
-pub use run::Run;
+pub(crate) use wire::{Wire, answer, prompt, read};
+
+use crate::run::{self, AgentRun};
 
 /// How to start the person's own `claude` for one workspace.
 #[derive(Clone, Debug)]
@@ -23,9 +22,6 @@ pub struct Claude {
     /// The folder the agent works in.
     pub cwd: PathBuf,
 }
-
-/// A run of a real `claude` process.
-pub type ClaudeRun = Run<ChildStdin, BufReader<ChildStdout>>;
 
 // Sign-ins and providers that would win over the workspace's own; removed, never read.
 const OTHER_SIGN_INS: [&str; 7] = [
@@ -44,16 +40,13 @@ impl Claude {
     ///
     /// # Errors
     /// When the program can't be started.
-    pub fn start(&self, run: RunId, session: Option<&AgentSession>) -> Result<ClaudeRun, Fault> {
-        let not_started = || Fault::new(code!("agent.not_started"), "The agent couldn't start");
-        let mut child = self
-            .command(session)
-            .spawn()
-            .map_err(|error| not_started().because(error))?;
-        let (Some(stdin), Some(stdout)) = (child.stdin.take(), child.stdout.take()) else {
-            return Err(not_started());
-        };
-        Ok(Run::new(run, stdin, BufReader::new(stdout), Some(child)))
+    pub fn start(&self, run: RunId, session: Option<&AgentSession>) -> Result<AgentRun, Fault> {
+        run::spawn(
+            self.command(session),
+            run,
+            run::Wire::Claude(Wire::default()),
+            Vec::new(),
+        )
     }
 
     fn command(&self, session: Option<&AgentSession>) -> Command {
@@ -76,11 +69,7 @@ impl Claude {
         }
         command
             .env("CLAUDE_CONFIG_DIR", &self.config_dir)
-            .current_dir(&self.cwd)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .kill_on_drop(true);
+            .current_dir(&self.cwd);
         command
     }
 }
@@ -149,7 +138,7 @@ mod tests {
     }
 
     // Bounded in count and time, so a driver that never ends fails instead of hanging.
-    async fn events(mut run: ClaudeRun) -> Vec<RunEvent> {
+    async fn events(mut run: AgentRun) -> Vec<RunEvent> {
         run.send("Hello").await.unwrap();
         let mut events = Vec::new();
         while events.len() < 10

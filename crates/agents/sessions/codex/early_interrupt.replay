@@ -1,0 +1,5 @@
+> {"id":1,"method":"initialize","params":{"clientInfo":{"name":"weacon-core","title":"Weacon","version":"0.1.0"}}}
+< {"id":1,"result":{"userAgent":"codex_cli_rs/0.166.0"}}
+> {"method":"initialized"}
+> {"id":2,"method":"thread/start","params":{}}
+< {"id":2,"result":{"thread":{"id":"019a2b3c-4d5e-7f60-8a9b-0c1d2e3f4a5b"}}}
