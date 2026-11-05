@@ -12,7 +12,7 @@ use std::process::Command;
 use serde::Deserialize;
 use toml::Table;
 
-use crate::rules::RULES;
+use crate::rules::{PLANNED, RULES};
 
 #[derive(Deserialize)]
 struct Metadata {
@@ -75,7 +75,7 @@ pub fn violations(root: &Path) -> Result<Vec<String>, String> {
         .iter()
         .map(|package| package.name.as_str())
         .collect();
-    let mut out = manifest::check_rules(&names);
+    let mut out = manifest::check_rules(RULES, PLANNED, &names);
     for package in &metadata.packages {
         let dir = package
             .manifest_path

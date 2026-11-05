@@ -5,21 +5,26 @@ use std::iter;
 
 use toml::{Table, Value};
 
-use crate::rules::{APP_NEEDS, IO_PACKAGES, RESTRICTED, RULES, Rule, TESTING};
+use crate::rules::{APP_NEEDS, IO_PACKAGES, RESTRICTED, Rule, TESTING};
 use crate::{Kind, Package};
 
 const INHERITED: [&str; 5] = ["version", "edition", "rust-version", "license", "publish"];
 const DEPENDENCY_TABLES: [&str; 3] = ["dependencies", "dev-dependencies", "build-dependencies"];
 
-pub(crate) fn check_rules(names: &BTreeSet<&str>) -> Vec<String> {
-    let ruled: BTreeSet<&str> = RULES.iter().map(|rule| rule.package).collect();
+pub(crate) fn check_rules(rules: &[Rule], planned: &[&str], names: &BTreeSet<&str>) -> Vec<String> {
+    let with_rows: BTreeSet<&str> = rules.iter().map(|rule| rule.package).collect();
     let unruled = names
-        .difference(&ruled)
+        .difference(&with_rows)
         .map(|name| format!("{name}: has no row in rules.rs"));
-    let stale = ruled
+    let stale = with_rows
         .difference(names)
+        .filter(|name| !planned.contains(name))
         .map(|name| format!("{name}: has a row in rules.rs but no package"));
-    unruled.chain(stale).collect()
+    let created = planned
+        .iter()
+        .filter(|name| names.contains(*name))
+        .map(|name| format!("{name}: exists, so remove it from PLANNED in rules.rs"));
+    unruled.chain(stale).chain(created).collect()
 }
 
 pub(crate) fn check_manifest(name: &str, manifest: &Table) -> Vec<String> {
@@ -162,23 +167,16 @@ mod tests {
 
     #[test]
     fn every_package_has_a_rule_and_every_rule_a_package() {
-        let names: BTreeSet<&str> = [
-            "weacon-agents",
-            "weacon-archtest",
-            "weacon-client",
-            "weacon-core",
-            "weacon-observability",
-            "weacon-protocol",
-            "weacon-testing",
-            "weacon-extra",
-        ]
-        .into();
+        let rules = ["weacon-core", "weacon-gone", "weacon-later", "weacon-new"]
+            .map(|name| rule(name, &[], true));
+        let names: BTreeSet<&str> = ["weacon-core", "weacon-extra", "weacon-new"].into();
 
         assert_eq!(
-            check_rules(&names),
+            check_rules(&rules, &["weacon-later", "weacon-new"], &names),
             [
                 "weacon-extra: has no row in rules.rs",
-                "weacon-version: has a row in rules.rs but no package"
+                "weacon-gone: has a row in rules.rs but no package",
+                "weacon-new: exists, so remove it from PLANNED in rules.rs"
             ]
         );
     }

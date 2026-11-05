@@ -7,11 +7,11 @@ pub(crate) struct Rule {
     pub(crate) io: bool,
 }
 
-/// One row per package that exists today.
+/// One row per package that exists today or is [`PLANNED`].
 pub(crate) const RULES: &[Rule] = &[
     Rule {
         package: "weacon-agents",
-        may_use: &["weacon-observability", "weacon-protocol"],
+        may_use: &["weacon-model", "weacon-observability", "weacon-protocol"],
         io: true,
     },
     Rule {
@@ -21,18 +21,41 @@ pub(crate) const RULES: &[Rule] = &[
     },
     Rule {
         package: "weacon-client",
-        may_use: &["weacon-observability", "weacon-protocol"],
+        may_use: &["weacon-model", "weacon-observability", "weacon-protocol"],
         io: true,
+    },
+    Rule {
+        package: "weacon-codemap",
+        may_use: &["weacon-protocol"],
+        io: false,
     },
     Rule {
         package: "weacon-core",
         may_use: &[
+            "weacon-agents",
             "weacon-client",
+            "weacon-model",
             "weacon-observability",
             "weacon-protocol",
             "weacon-version",
         ],
         io: true,
+    },
+    Rule {
+        package: "weacon-desktop",
+        may_use: &[
+            "weacon-client",
+            "weacon-model",
+            "weacon-observability",
+            "weacon-protocol",
+            "weacon-version",
+        ],
+        io: true,
+    },
+    Rule {
+        package: "weacon-model",
+        may_use: &["weacon-protocol"],
+        io: false,
     },
     Rule {
         package: "weacon-observability",
@@ -45,6 +68,16 @@ pub(crate) const RULES: &[Rule] = &[
         io: false,
     },
     Rule {
+        package: "weacon-server",
+        may_use: &[
+            "weacon-model",
+            "weacon-observability",
+            "weacon-protocol",
+            "weacon-version",
+        ],
+        io: true,
+    },
+    Rule {
         package: "weacon-testing",
         may_use: &[],
         io: true,
@@ -54,6 +87,14 @@ pub(crate) const RULES: &[Rule] = &[
         may_use: &[],
         io: true,
     },
+];
+
+/// Packages a work item will create: their rows above may exist before they do.
+pub(crate) const PLANNED: &[&str] = &[
+    "weacon-codemap",
+    "weacon-desktop",
+    "weacon-model",
+    "weacon-server",
 ];
 
 /// Test helpers, which any package may use as a dev-dependency and none otherwise.
