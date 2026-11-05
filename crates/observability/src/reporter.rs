@@ -1,3 +1,5 @@
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use weacon_protocol::Code;
 
 use crate::{AsError, Clock, Fault, Field, Logger, Reports, Upload};
@@ -8,33 +10,54 @@ pub type Deliver = Box<dyn Fn(&Upload) -> Result<(), Fault> + Send + Sync>;
 /// Gives each report a new random id.
 pub type Ids = Box<dyn Fn() -> u128 + Send + Sync>;
 
-/// Sends error reports when a DSN is set, and does nothing otherwise.
+/// Sends error reports when a DSN is set and the person has agreed, and does nothing otherwise.
 pub struct Reporter {
     reports: Option<Reports>,
+    agreed: AtomicBool,
     deliver: Deliver,
     ids: Ids,
     now: Clock,
 }
 
 impl Reporter {
+    /// `agreed` is whether the person has agreed to send reports; where there is no one to
+    /// ask, as on a team's own server, it is `true`.
     #[must_use]
-    pub fn new(reports: Option<Reports>, deliver: Deliver, ids: Ids, now: Clock) -> Self {
+    pub fn new(
+        reports: Option<Reports>,
+        agreed: bool,
+        deliver: Deliver,
+        ids: Ids,
+        now: Clock,
+    ) -> Self {
         Self {
             reports,
+            agreed: AtomicBool::new(agreed),
             deliver,
             ids,
             now,
         }
     }
 
+    /// Whether reports can be sent at all: a DSN is set.
     #[must_use]
     pub const fn is_on(&self) -> bool {
         self.reports.is_some()
     }
 
+    /// Records the person's answer, which the next error goes by.
+    pub fn set_agreed(&self, agreed: bool) {
+        self.agreed.store(agreed, Ordering::Relaxed);
+    }
+
+    #[must_use]
+    pub fn agreed(&self) -> bool {
+        self.agreed.load(Ordering::Relaxed)
+    }
+
     /// Reports `error` under `code`; a report that can't be sent is logged and dropped.
     pub fn capture_error<E: AsError + ?Sized>(&self, error: &E, code: &Code, log: &Logger) {
-        let Some(reports) = &self.reports else {
+        let Some(reports) = self.reports.as_ref().filter(|_| self.agreed()) else {
             return;
         };
         let upload = reports.upload(error, code, (self.ids)(), (self.now)());
@@ -73,6 +96,7 @@ mod tests {
         let next = AtomicU64::new(1);
         Reporter::new(
             reports,
+            true,
             deliver,
             Box::new(move || u128::from(next.fetch_add(1, Ordering::Relaxed))),
             Box::new(|| UNIX_EPOCH + Duration::from_hours(489_466)),
@@ -136,5 +160,21 @@ mod tests {
         assert_eq!(records.len(), 1);
         assert_eq!(records[0].msg, "report failed");
         assert_eq!(records[0].level, Level::Warn);
+    }
+
+    #[test]
+    fn nothing_is_sent_until_the_person_agrees() {
+        let (deliver, uploads) = recorder(false);
+        let reporter = reporter(reports(), deliver);
+        let log = capture(Level::Info).0;
+        reporter.set_agreed(false);
+        reporter.capture_error(&fault(), &code!("store.full"), &log);
+        let before = uploads.lock().unwrap().len();
+        reporter.set_agreed(true);
+        reporter.capture_error(&fault(), &code!("store.full"), &log);
+
+        assert_eq!(before, 0);
+        assert!(reporter.agreed());
+        assert_eq!(uploads.lock().unwrap().len(), 1);
     }
 }

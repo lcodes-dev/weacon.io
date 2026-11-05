@@ -77,7 +77,7 @@ impl App {
         let reports = reports(setup.env, &version, &log);
         Self {
             version,
-            reporter: Arc::new(weacon_appkit::reporter(reports, setup.deliver)),
+            reporter: Arc::new(weacon_appkit::reporter(reports, true, setup.deliver)),
             log,
             state_dir,
             log_file,

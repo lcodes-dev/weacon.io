@@ -42,6 +42,7 @@ pub(crate) fn app(state_dir: Option<&Path>, log_file: Option<&Path>) -> App {
         log: recording_logger().0,
         reporter: Reporter::new(
             None,
+            true,
             Box::new(|_| Ok(())),
             Box::new(|| 0),
             Box::new(SystemTime::now),

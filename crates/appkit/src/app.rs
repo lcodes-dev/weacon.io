@@ -55,11 +55,12 @@ pub fn reports(
         .ok()
 }
 
-/// A reporter with random ids and the system clock.
+/// A reporter with random ids and the system clock; see [`Reporter::new`] for `agreed`.
 #[must_use]
-pub fn reporter(reports: Option<Reports>, deliver: Deliver) -> Reporter {
+pub fn reporter(reports: Option<Reports>, agreed: bool, deliver: Deliver) -> Reporter {
     Reporter::new(
         reports,
+        agreed,
         deliver,
         Box::new(random_id),
         Box::new(SystemTime::now),
@@ -106,7 +107,7 @@ mod tests {
             seen.lock().unwrap().push(upload.clone());
             Ok(())
         });
-        (reporter(reports, deliver), uploads)
+        (reporter(reports, true, deliver), uploads)
     }
 
     #[test]
