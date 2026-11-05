@@ -99,7 +99,7 @@ impl Daemon {
                     "Other users can reach the state folder; make it readable only by you",
                 )
             })?;
-        let lock = platform::private_append(&state_dir.join("weacon.lock")).map_err(failed)?;
+        let lock = weacon_appkit::private_append(&state_dir.join("weacon.lock")).map_err(failed)?;
         lock.try_lock().map_err(|error| match error {
             TryLockError::WouldBlock => Fault::new(
                 code!("daemon.running"),

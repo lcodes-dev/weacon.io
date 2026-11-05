@@ -6,13 +6,14 @@ use std::sync::Arc;
 use std::time::SystemTime;
 
 use weacon_agents::SpawnPolicy;
-use weacon_observability::{Fault, Field, Level, Logger, LoggerOptions, Reports, Sink, json_lines};
+use weacon_appkit::{KEEP, MAX_BYTES, RotatingFile, random_id};
+use weacon_observability::{
+    Deliver, Fault, Field, Level, Logger, LoggerOptions, Reporter, Reports, Sink, json_lines, tee,
+};
 use weacon_protocol::code;
 use weacon_version::Version;
 
-use crate::logs::{self, RotatingFile};
 use crate::platform::{self, Env};
-use crate::report::{Deliver, Reporter};
 
 /// Exit codes beyond 0: a check that found something, and a command that failed.
 const FINDINGS: u8 = 1;
@@ -70,7 +71,7 @@ impl App {
             Level::Warn
         };
         let log = Logger::new(LoggerOptions {
-            sink: logs::tee(file_sink, setup.stderr, stderr_from),
+            sink: tee(file_sink, setup.stderr, stderr_from),
             now: Box::new(SystemTime::now),
             level: Level::Info,
         })
@@ -86,7 +87,12 @@ impl App {
         let reports = reports(setup.env, &version, &log);
         Self {
             version,
-            reporter: Arc::new(Reporter::new(reports, setup.deliver)),
+            reporter: Arc::new(Reporter::new(
+                reports,
+                setup.deliver,
+                Box::new(random_id),
+                Box::new(SystemTime::now),
+            )),
             log,
             state_dir,
             log_file,
@@ -134,7 +140,7 @@ fn open_log(state_dir: &Path, name: &str) -> io::Result<(PathBuf, RotatingFile)>
     platform::private_dir(state_dir)?;
     platform::private_dir(&dir)?;
     let path = dir.join(name);
-    let file = RotatingFile::open(path.clone(), logs::MAX_BYTES, logs::KEEP)?;
+    let file = RotatingFile::open(path.clone(), MAX_BYTES, KEEP)?;
     Ok((path, file))
 }
 

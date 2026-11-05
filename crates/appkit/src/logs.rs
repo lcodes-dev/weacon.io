@@ -3,15 +3,15 @@ use std::fs::{self, File};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
-use weacon_observability::{Level, Sink};
-
 use crate::platform;
 
-pub(crate) const MAX_BYTES: u64 = 10 * 1024 * 1024;
-pub(crate) const KEEP: u32 = 5;
+/// How large a log file grows before it moves aside.
+pub const MAX_BYTES: u64 = 10 * 1024 * 1024;
+/// How many moved-aside log files are kept.
+pub const KEEP: u32 = 5;
 
 /// A log file that moves to `name.1`, `name.2` and so on as it fills, keeping `keep` old ones.
-pub(crate) struct RotatingFile {
+pub struct RotatingFile {
     path: PathBuf,
     max_bytes: u64,
     keep: u32,
@@ -20,7 +20,11 @@ pub(crate) struct RotatingFile {
 }
 
 impl RotatingFile {
-    pub(crate) fn open(path: PathBuf, max_bytes: u64, keep: u32) -> io::Result<Self> {
+    /// Opens `path` for appending, creating it readable only by this user.
+    ///
+    /// # Errors
+    /// When the file can't be opened or read.
+    pub fn open(path: PathBuf, max_bytes: u64, keep: u32) -> io::Result<Self> {
         let file = platform::private_append(&path)?;
         let size = file.metadata()?.len();
         Ok(Self {
@@ -74,24 +78,10 @@ fn numbered(path: &Path, number: u32) -> PathBuf {
     name.into()
 }
 
-/// Sends every record to `all`, and those at or above `from` to `some` as well.
-pub(crate) fn tee(all: Sink, some: Sink, from: Level) -> Sink {
-    Box::new(move |record| {
-        all(record);
-        if record.level >= from {
-            some(record);
-        }
-    })
-}
-
 #[cfg(test)]
 mod tests {
-    use std::time::SystemTime;
-
-    use weacon_observability::{Logger, LoggerOptions};
-
     use super::*;
-    use crate::test_support::{messages, recording_sink, temp_dir};
+    use crate::temp_dir;
 
     fn read(path: &Path) -> String {
         fs::read_to_string(path).unwrap_or_default()
@@ -164,25 +154,5 @@ mod tests {
         assert_eq!(read(&path), "much too long\n");
         assert!(!numbered(&path, 1).exists());
         fs::remove_dir_all(&dir).unwrap();
-    }
-
-    #[test]
-    fn tee_sends_the_quieter_records_to_one_sink_only() {
-        let (all, all_seen) = recording_sink();
-        let (some, some_seen) = recording_sink();
-        let log = Logger::new(LoggerOptions {
-            sink: tee(all, some, Level::Warn),
-            now: Box::new(SystemTime::now),
-            level: Level::Info,
-        });
-        log.info("run started", &[]);
-        log.warn("sync failed", &[]);
-        log.error("store full", &[]);
-
-        assert_eq!(
-            messages(&all_seen),
-            ["run started", "sync failed", "store full"]
-        );
-        assert_eq!(messages(&some_seen), ["sync failed", "store full"]);
     }
 }

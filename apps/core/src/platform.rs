@@ -1,5 +1,50 @@
 use std::ffi::OsString;
-use std::fs::{self, File, OpenOptions};
+// How far above the core agents and their tools are for the OOM killer, so it picks them first.
+const TOOL_OOM_RAISE: i32 = 500;
+const OOM_SCORE_MAX: i32 = 1000;
+
+// Tools that would otherwise count the host's CPUs rather than the quota; the person's own
+// settings win.
+const CPU_COUNT_VARS: [&str; 5] = [
+    "CARGO_BUILD_JOBS",
+    "GOMAXPROCS",
+    "OMP_NUM_THREADS",
+    "PYTHON_CPU_COUNT",
+    "RAYON_NUM_THREADS",
+];
+
+/// How agents start here; on Linux their tools go first when memory runs out and use only the
+/// CPUs the core may.
+pub(crate) fn spawn_policy(env: Env<'_>) -> SpawnPolicy {
+    if !cfg!(target_os = "linux") {
+        return SpawnPolicy::default();
+    }
+    // Counts the cgroup's CPU quota and affinity, not just the host's CPUs.
+    let cpus = std::thread::available_parallelism().map_or(1, NonZeroUsize::get);
+    tool_policy(env, cpus, oom_score(Path::new("/proc/self/oom_score_adj")))
+}
+
+// None where the core can't change its score, as on WSL 1 or with procfs read-only; writing
+// the same score back proves it can.
+fn oom_score(file: &Path) -> Option<i32> {
+    let score = fs::read_to_string(file).ok()?;
+    fs::write(file, &score).ok()?;
+    score.trim().parse().ok()
+}
+
+fn tool_policy(env: Env<'_>, cpus: usize, own_oom_score: Option<i32>) -> SpawnPolicy {
+    let count = OsString::from(cpus.to_string());
+    SpawnPolicy {
+        env: CPU_COUNT_VARS
+            .into_iter()
+            .filter(|name| var(env, name).is_none())
+            .map(|name| (name.into(), count.clone()))
+            .collect(),
+        oom_score_adj: own_oom_score
+            .map(|own| own.saturating_add(TOOL_OOM_RAISE).min(OOM_SCORE_MAX)),
+    }
+}
+
 use std::io;
 use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
@@ -66,65 +111,7 @@ pub(crate) fn private_dir(dir: &Path) -> io::Result<()> {
     create_private(dir)
 }
 
-/// Opens `path` for appending, creating it readable only by this user.
-pub(crate) fn private_append(path: &Path) -> io::Result<File> {
-    let mut options = OpenOptions::new();
-    // Readable too: Windows locks only a file opened for reading or writing.
-    options.create(true).read(true).append(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
-    }
-    options.open(path)
-}
-
-// How far above the core agents and their tools are for the OOM killer, so it picks them first.
-const TOOL_OOM_RAISE: i32 = 500;
-const OOM_SCORE_MAX: i32 = 1000;
-
-// Tools that would otherwise count the host's CPUs rather than the quota; the person's own
-// settings win.
-const CPU_COUNT_VARS: [&str; 5] = [
-    "CARGO_BUILD_JOBS",
-    "GOMAXPROCS",
-    "OMP_NUM_THREADS",
-    "PYTHON_CPU_COUNT",
-    "RAYON_NUM_THREADS",
-];
-
-/// How agents start here; on Linux their tools go first when memory runs out and use only the
-/// CPUs the core may.
-pub(crate) fn spawn_policy(env: Env<'_>) -> SpawnPolicy {
-    if !cfg!(target_os = "linux") {
-        return SpawnPolicy::default();
-    }
-    // Counts the cgroup's CPU quota and affinity, not just the host's CPUs.
-    let cpus = std::thread::available_parallelism().map_or(1, NonZeroUsize::get);
-    tool_policy(env, cpus, oom_score(Path::new("/proc/self/oom_score_adj")))
-}
-
-// None where the core can't change its score, as on WSL 1 or with procfs read-only; writing
-// the same score back proves it can.
-fn oom_score(file: &Path) -> Option<i32> {
-    let score = fs::read_to_string(file).ok()?;
-    fs::write(file, &score).ok()?;
-    score.trim().parse().ok()
-}
-
-fn tool_policy(env: Env<'_>, cpus: usize, own_oom_score: Option<i32>) -> SpawnPolicy {
-    let count = OsString::from(cpus.to_string());
-    SpawnPolicy {
-        env: CPU_COUNT_VARS
-            .into_iter()
-            .filter(|name| var(env, name).is_none())
-            .map(|name| (name.into(), count.clone()))
-            .collect(),
-        oom_score_adj: own_oom_score
-            .map(|own| own.saturating_add(TOOL_OOM_RAISE).min(OOM_SCORE_MAX)),
-    }
-}
-
+use std::fs;
 #[cfg(unix)]
 pub(crate) use unix::*;
 
@@ -344,7 +331,7 @@ mod windows {
     /// Listens on a pipe with a fresh random name that only this user can open, and writes the
     /// name to `path` for clients to find.
     pub(crate) fn bind(path: &Path) -> io::Result<Listener> {
-        let name = pipe_name(crate::report::random_id());
+        let name = pipe_name(weacon_appkit::random_id());
         let next = create_pipe(&name, true)?;
         super::write_whole(path, name.as_bytes())?;
         Ok(Listener { name, next })
@@ -513,23 +500,20 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn new_folders_and_files_are_private_and_existing_ones_kept() {
+    fn new_folders_are_private_and_existing_ones_kept() {
         use std::fs;
         use std::os::unix::fs::PermissionsExt;
 
         let dir = crate::test_support::temp_dir("private");
         let nested = dir.join("state/logs");
-        let file = nested.join("weacon.log");
         fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).unwrap();
         private_dir(&nested).unwrap();
         private_dir(&dir).unwrap();
-        drop(private_append(&file).unwrap());
         let mode = |path: &Path| fs::metadata(path).unwrap().permissions().mode() & 0o777;
 
         assert_eq!(mode(&dir), 0o755);
         assert_eq!(mode(&dir.join("state")), 0o700);
         assert_eq!(mode(&nested), 0o700);
-        assert_eq!(mode(&file), 0o600);
         fs::remove_dir_all(&dir).unwrap();
     }
 }

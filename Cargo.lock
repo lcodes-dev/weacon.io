@@ -1166,6 +1166,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "weacon-appkit"
+version = "0.0.0"
+dependencies = [
+ "ureq",
+ "weacon-observability",
+ "weacon-protocol",
+]
+
+[[package]]
 name = "weacon-archtest"
 version = "0.0.0"
 dependencies = [
@@ -1205,12 +1214,13 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
- "ureq",
  "weacon-agents",
+ "weacon-appkit",
  "weacon-client",
  "weacon-codemap",
  "weacon-observability",
  "weacon-protocol",
+ "weacon-testing",
  "weacon-version",
  "windows-sys 0.61.2",
 ]
@@ -1242,6 +1252,7 @@ version = "0.0.0"
 dependencies = [
  "serde_json",
  "tokio",
+ "weacon-observability",
  "weacon-protocol",
 ]
 
