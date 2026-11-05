@@ -1,7 +1,7 @@
 use weacon_protocol::{App, Capability, Code, Envelope, ErrorBody, FrameError, Message, code};
 
 /// What the daemon offers its clients; each feature adds its capability here.
-const CAPABILITIES: &[Code] = &[];
+const CAPABILITIES: &[Code] = &[code!("element.pick")];
 
 /// One client's place in the conversation with the daemon.
 #[derive(Debug, Default)]
@@ -17,7 +17,7 @@ pub(crate) struct Reply {
 }
 
 impl Reply {
-    const fn error(id: u32, code: Code, close: bool) -> Self {
+    pub(crate) const fn error(id: u32, code: Code, close: bool) -> Self {
         Self {
             envelope: Some(Envelope {
                 id,
@@ -100,7 +100,7 @@ mod tests {
                     id: 1,
                     message: Message::Welcome(Welcome {
                         app: build(&VERSION),
-                        capabilities: Vec::new(),
+                        capabilities: vec![code!("element.pick").into()],
                     }),
                 }),
                 close: false,

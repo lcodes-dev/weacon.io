@@ -5,6 +5,8 @@ mod cli;
 mod daemon;
 mod doctor;
 mod logs;
+mod native_host;
+mod picks;
 mod platform;
 mod report;
 mod service;
@@ -48,6 +50,8 @@ fn main() -> ExitCode {
         Command::Status => status::run(&app, &mut io::stdout().lock()),
         Command::Doctor => doctor::run(&app, &mut io::stdout().lock()),
         Command::Service(command) => service::run(&app, command, &env, &mut service::system),
+        Command::ConnectChrome => native_host::connect_chrome(&app, &env, &mut io::stdout().lock()),
+        Command::NativeHost { origin } => native_host::run(&app, &origin),
     };
     app.finish(result)
 }
