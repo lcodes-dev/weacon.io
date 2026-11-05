@@ -1,40 +1,8 @@
-use std::ffi::OsString;
 use std::fs::{File, OpenOptions};
 use std::io;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
-/// Reads an environment variable; tests pass a fake.
-pub(crate) type Env<'a> = &'a dyn Fn(&str) -> Option<OsString>;
-
-/// An environment variable, where an empty one counts as unset.
-pub(crate) fn var(env: Env<'_>, key: &str) -> Option<OsString> {
-    env(key).filter(|value| !value.is_empty())
-}
-
-pub(crate) fn home_dir(env: Env<'_>) -> Option<PathBuf> {
-    var(env, if cfg!(windows) { "USERPROFILE" } else { "HOME" }).map(PathBuf::from)
-}
-
-/// Where the core keeps its state; `WEACON_STATE_DIR` overrides it.
-pub(crate) fn state_dir(env: Env<'_>) -> Option<PathBuf> {
-    if let Some(dir) = var(env, "WEACON_STATE_DIR") {
-        // A relative path would differ between commands started in different folders.
-        return std::path::absolute(dir).ok();
-    }
-    if cfg!(windows) {
-        return var(env, "LOCALAPPDATA").map(|dir| PathBuf::from(dir).join("Weacon"));
-    }
-    let home = home_dir(env)?;
-    if cfg!(target_os = "macos") {
-        return Some(home.join("Library/Application Support/Weacon"));
-    }
-    // The XDG spec says to ignore a relative path.
-    let base = var(env, "XDG_STATE_HOME")
-        .map(PathBuf::from)
-        .filter(|dir| dir.is_absolute())
-        .unwrap_or_else(|| home.join(".local/state"));
-    Some(base.join("weacon"))
-}
+pub(crate) use weacon_client::platform::{Env, home_dir, state_dir, var};
 
 /// Creates `dir` and any missing parents readable only by this user; existing folders keep
 /// their permissions.
@@ -267,54 +235,6 @@ mod windows {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::env;
-
-    #[cfg(windows)]
-    #[test]
-    fn on_windows_the_state_folder_is_in_local_app_data() {
-        let vars = env(&[
-            ("LOCALAPPDATA", r"C:\Users\ada\AppData\Local"),
-            ("USERPROFILE", r"C:\Users\ada"),
-        ]);
-
-        assert_eq!(
-            state_dir(&vars),
-            Some(PathBuf::from(r"C:\Users\ada\AppData\Local\Weacon"))
-        );
-        assert_eq!(home_dir(&vars), Some(PathBuf::from(r"C:\Users\ada")));
-        assert_eq!(state_dir(&env(&[])), None);
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn the_state_folder_can_be_set() {
-        let set = env(&[("WEACON_STATE_DIR", "/srv/weacon"), ("HOME", "/home/ada")]);
-        let relative = env(&[("WEACON_STATE_DIR", ".dev/state")]);
-
-        assert_eq!(state_dir(&set), Some(PathBuf::from("/srv/weacon")));
-        assert_eq!(home_dir(&set), Some(PathBuf::from("/home/ada")));
-        assert_eq!(
-            state_dir(&relative),
-            Some(std::env::current_dir().unwrap().join(".dev/state"))
-        );
-    }
-
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn on_linux_the_state_folder_follows_xdg() {
-        let state = |vars: &[(&str, &str)]| state_dir(&env(vars));
-        let home = ("HOME", "/home/ada");
-        let default = Some(PathBuf::from("/home/ada/.local/state/weacon"));
-
-        assert_eq!(state(&[home]), default);
-        assert_eq!(
-            state(&[home, ("XDG_STATE_HOME", "/data/state")]),
-            Some(PathBuf::from("/data/state/weacon"))
-        );
-        assert_eq!(state(&[home, ("XDG_STATE_HOME", "state")]), default);
-        assert_eq!(state(&[home, ("WEACON_STATE_DIR", "")]), default);
-        assert_eq!(state(&[]), None);
-    }
 
     #[cfg(unix)]
     #[test]

@@ -18,9 +18,7 @@ const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
 const READ_CHUNK: usize = 8192;
 const ACCEPT_BACKOFF: Duration = Duration::from_millis(100);
 
-pub(crate) fn socket_path(state_dir: &Path) -> PathBuf {
-    state_dir.join("weacon.sock")
-}
+pub(crate) use weacon_client::socket_path;
 
 /// How this build introduces itself on the socket.
 pub(crate) fn build(version: &Version) -> App {
