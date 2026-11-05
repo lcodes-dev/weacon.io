@@ -15,6 +15,7 @@ weacon-observability.workspace = true
 weacon-protocol.workspace = true
 
 [dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
 weacon-testing.workspace = true
 
 [lints]

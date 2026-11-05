@@ -28,17 +28,23 @@ impl<R: AsyncBufRead + Unpin> Lines<R> {
             if chunk.is_empty() {
                 return Ok(None);
             }
-            let end = chunk.iter().position(|byte| *byte == b'\n');
-            let part = chunk.get(..end.unwrap_or(chunk.len())).unwrap_or_default();
-            if self.line.len() + part.len() > self.max {
+            let newline = chunk.iter().position(|byte| *byte == b'\n');
+            let part = chunk
+                .get(..newline.unwrap_or(chunk.len()))
+                .unwrap_or_default();
+            let used = part.len();
+            if !self.too_long && self.line.len() + used <= self.max {
+                self.line.extend_from_slice(part);
+            } else {
                 self.too_long = true;
                 self.line.clear();
-            } else if !self.too_long {
-                self.line.extend_from_slice(part);
             }
-            let used = end.map_or(part.len(), |end| end + 1);
             self.reader.consume(used);
-            if end.is_some() && !mem::take(&mut self.too_long) {
+            if newline.is_none() {
+                continue;
+            }
+            self.reader.consume(1);
+            if !mem::take(&mut self.too_long) {
                 return Ok(Some(mem::take(&mut self.line)));
             }
         }
@@ -55,7 +61,10 @@ mod tests {
         // A tiny buffer, so lines arrive in pieces.
         let mut lines = Lines::new(BufReader::with_capacity(2, input), max);
         let mut out = Vec::new();
-        while let Some(line) = lines.next().await.unwrap() {
+        // Bounded, so a reader that never ends fails instead of hanging.
+        while out.len() < 10
+            && let Some(line) = lines.next().await.unwrap()
+        {
             out.push(line);
         }
         out

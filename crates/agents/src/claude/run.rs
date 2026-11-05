@@ -258,9 +258,12 @@ fn io_failed(error: std::io::Error) -> Fault {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use serde_json::json;
     use tokio::io::{BufReader, DuplexStream};
     use tokio::task::JoinHandle;
+    use tokio::time::timeout;
     use weacon_testing::replay;
 
     use super::*;
@@ -274,10 +277,18 @@ mod tests {
         (Run::new(replay.stdin, replay.stdout, None), replay.done)
     }
 
+    // Under paused time, a driver and fake stuck waiting on each other time out at once.
+    async fn next(run: &mut FakeRun) -> Option<RunEvent> {
+        timeout(Duration::from_secs(5), run.next())
+            .await
+            .unwrap()
+            .unwrap()
+    }
+
     // Events up to and including the first that `last` picks, or until the agent exits.
     async fn until(run: &mut FakeRun, last: fn(&RunEvent) -> bool) -> Vec<RunEvent> {
         let mut events = Vec::new();
-        while let Some(event) = run.next().await.unwrap() {
+        while let Some(event) = next(run).await {
             let done = last(&event);
             events.push(event);
             if done {
@@ -312,12 +323,16 @@ mod tests {
     }
 
     async fn ends_as_recorded(mut run: FakeRun, done: JoinHandle<Result<(), String>>) {
-        assert_eq!(run.next().await.unwrap(), None);
+        assert_eq!(next(&mut run).await, None);
         drop(run);
-        done.await.unwrap().unwrap();
+        timeout(Duration::from_secs(5), done)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn a_turn_streams_its_events_and_a_permission_goes_out_and_back() {
         let (mut run, done) = fake(include_str!("../../sessions/claude/turn.replay"));
         let command = json!({ "command": "cargo test -p parser" });
@@ -368,7 +383,7 @@ mod tests {
         ends_as_recorded(run, done).await;
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn a_denial_is_sent_back_and_unhandled_requests_are_refused() {
         let (mut run, done) = fake(include_str!("../../sessions/claude/deny.replay"));
 
@@ -395,7 +410,7 @@ mod tests {
         ends_as_recorded(run, done).await;
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn an_interrupt_withdraws_waiting_prompts_and_ends_the_turn_interrupted() {
         let (mut run, done) = fake(include_str!("../../sessions/claude/interrupt.replay"));
 
@@ -414,7 +429,7 @@ mod tests {
         ends_as_recorded(run, done).await;
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn a_turn_cut_off_ends_unknown_and_resuming_never_resends_it() {
         let (mut run, done) = fake(include_str!("../../sessions/claude/cut_off.replay"));
 
@@ -438,7 +453,7 @@ mod tests {
         ends_as_recorded(resumed, done).await;
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn an_agent_error_fails_the_turn() {
         let (mut run, done) = fake(include_str!("../../sessions/claude/failed.replay"));
 
@@ -455,7 +470,7 @@ mod tests {
         ends_as_recorded(run, done).await;
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn an_agent_gone_mid_prompt_still_ends_its_turn_unknown() {
         let (stdin, agent) = tokio::io::duplex(64);
         drop(agent);
