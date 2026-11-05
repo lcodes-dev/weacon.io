@@ -154,6 +154,10 @@ mod unix {
 
     /// Bytes this user may still write on the disk holding `dir`.
     #[expect(unsafe_code, reason = "statvfs has no safe API in std")]
+    #[cfg_attr(
+        target_os = "linux",
+        expect(clippy::useless_conversion, reason = "f_bavail is u32 on macOS")
+    )]
     pub(crate) fn free_space(dir: &Path) -> io::Result<u64> {
         use std::ffi::CString;
         use std::mem::MaybeUninit;
@@ -168,7 +172,7 @@ mod unix {
         }
         // SAFETY: statvfs returned 0, so it filled `stats`.
         let stats = unsafe { stats.assume_init() };
-        Ok(stats.f_bavail.saturating_mul(stats.f_frsize))
+        Ok(u64::from(stats.f_bavail).saturating_mul(stats.f_frsize))
     }
 
     pub(crate) fn create_private(dir: &Path) -> io::Result<()> {
