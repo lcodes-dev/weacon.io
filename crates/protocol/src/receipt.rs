@@ -5,21 +5,14 @@ use crate::Code;
 
 /// A command's id, chosen by the client and kept across reconnects and retries. Sending the
 /// same id again returns the first receipt instead of repeating the work; the same id with
-/// different content is refused with `request.conflict`.
+/// different content is refused with the error `request.conflict`.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, JsonSchema)]
-pub struct RequestId(#[schemars(regex(pattern = PATTERN), length(min = 1, max = MAX_LEN))] String);
+pub struct RequestId(#[schemars(regex(pattern = PATTERN), length(max = MAX_LEN))] String);
 
 const MAX_LEN: usize = 64;
 
 // The schema's form of `is_request_id`; a test keeps the two in step.
 const PATTERN: &str = r"^[A-Za-z0-9_-]+$";
-
-impl RequestId {
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
 
 impl TryFrom<String> for RequestId {
     type Error = String;
@@ -47,8 +40,9 @@ fn is_request_id(id: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
 }
 
-/// Where a command stands. It ends `completed`, `interrupted`, `failed` or `unknown`; a command
-/// whose end is unknown, such as one cut off by a restart, is never sent again.
+/// Where an accepted command stands. It ends `completed`, `interrupted`, `failed` or `unknown`.
+/// `unknown` means it may or may not have run, as when a restart cut it off; the client must not
+/// send it again under a new id.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum Outcome {
@@ -89,40 +83,34 @@ mod tests {
         let too_long = "a".repeat(MAX_LEN + 1);
         for bad in ["", "a b", "a/b", "é", too_long.as_str()] {
             assert!(!is_request_id(bad), "{bad}");
+            // The schema states the length limit apart from the pattern.
+            assert!(bad.len() > MAX_LEN || !pattern.is_match(bad), "{bad}");
         }
         assert_eq!(RequestId::try_from("a b".to_owned()), Err("a b".to_owned()));
-        assert_eq!(request("r-1").as_str(), "r-1");
+        assert_eq!(serde_json::to_value(request("r-1")).unwrap(), json!("r-1"));
         serde_json::from_value::<RequestId>(json!("a b")).unwrap_err();
     }
 
     #[test]
     fn receipts_have_a_flat_tagged_shape() {
         let cases = [
-            (
-                Outcome::Accepted,
-                json!({ "id": 3, "type": "receipt", "request": "r-1", "state": "accepted" }),
-            ),
-            (
-                Outcome::Completed,
-                json!({ "id": 3, "type": "receipt", "request": "r-1", "state": "completed" }),
-            ),
-            (
-                Outcome::Interrupted,
-                json!({ "id": 3, "type": "receipt", "request": "r-1", "state": "interrupted" }),
-            ),
+            (Outcome::Accepted, json!({ "state": "accepted" })),
+            (Outcome::Completed, json!({ "state": "completed" })),
+            (Outcome::Interrupted, json!({ "state": "interrupted" })),
             (
                 Outcome::Failed {
-                    code: code!("request.conflict"),
+                    code: code!("run.failed"),
                 },
-                json!({ "id": 3, "type": "receipt", "request": "r-1", "state": "failed", "code": "request.conflict" }),
+                json!({ "state": "failed", "code": "run.failed" }),
             ),
-            (
-                Outcome::Unknown,
-                json!({ "id": 3, "type": "receipt", "request": "r-1", "state": "unknown" }),
-            ),
+            (Outcome::Unknown, json!({ "state": "unknown" })),
         ];
 
-        for (outcome, wire) in cases {
+        for (outcome, state) in cases {
+            let mut wire = json!({ "id": 3, "type": "receipt", "request": "r-1" });
+            wire.as_object_mut()
+                .unwrap()
+                .extend(state.as_object().unwrap().clone());
             let envelope = Envelope {
                 id: 3,
                 message: Message::Receipt(Receipt {

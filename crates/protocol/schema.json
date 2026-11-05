@@ -217,10 +217,9 @@
       ]
     },
     "RequestId": {
-      "description": "A command's id, chosen by the client and kept across reconnects and retries. Sending the\nsame id again returns the first receipt instead of repeating the work; the same id with\ndifferent content is refused with `request.conflict`.",
+      "description": "A command's id, chosen by the client and kept across reconnects and retries. Sending the\nsame id again returns the first receipt instead of repeating the work; the same id with\ndifferent content is refused with the error `request.conflict`.",
       "type": "string",
       "maxLength": 64,
-      "minLength": 1,
       "pattern": "^[A-Za-z0-9_-]+$"
     },
     "Welcome": {
