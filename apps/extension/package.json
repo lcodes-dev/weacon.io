@@ -3,11 +3,14 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "check": "tsc && node --test",
+    "build": "node tools/build.ts",
+    "check": "tsc && node --test && node tools/build.ts",
     "update-types": "node tools/update-types.ts"
   },
   "devDependencies": {
+    "@types/chrome": "0.3.7",
     "@types/node": "22.20.5",
+    "esbuild": "0.28.2",
     "typescript": "7.0.2"
   }
 }
