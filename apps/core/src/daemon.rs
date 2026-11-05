@@ -11,7 +11,7 @@ use weacon_observability::{Fault, Field, Logger};
 use weacon_protocol::{App, LineDecoder, code, encode_line};
 use weacon_version::Version;
 
-use crate::platform::{self, Listener, Stream};
+use crate::platform::{self, Listener, Owner, Stream};
 use crate::session::Session;
 
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
@@ -31,23 +31,23 @@ pub(crate) fn build(version: &Version) -> App {
     }
 }
 
-/// Runs the daemon until Ctrl-C or SIGTERM.
+/// The single-threaded async runtime the core's commands run on.
+pub(crate) fn runtime() -> Result<tokio::runtime::Runtime, Fault> {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|error| {
+            Fault::new(code!("runtime.failed"), "Weacon couldn't start its runtime").because(error)
+        })
+}
+
+/// Runs the daemon until Ctrl-C or the system asks it to stop.
 pub(crate) fn run(app: &crate::app::App) -> Result<(), Fault> {
     let state_dir = app
         .state_dir
         .as_deref()
         .ok_or_else(crate::app::state_unavailable)?;
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .map_err(|error| {
-            Fault::new(
-                code!("daemon.runtime_failed"),
-                "The daemon couldn't start its runtime",
-            )
-            .because(error)
-        })?;
-    runtime.block_on(async {
+    runtime()?.block_on(async {
         let signals = platform::Signals::new().map_err(|error| {
             Fault::new(
                 code!("daemon.signals_failed"),
@@ -65,7 +65,7 @@ pub(crate) fn run(app: &crate::app::App) -> Result<(), Fault> {
 pub(crate) struct Daemon {
     listener: Listener,
     socket: PathBuf,
-    owner: u32,
+    owner: Owner,
     app: App,
     log: Logger,
     // Held for the daemon's life, so a second daemon can't start.
@@ -114,14 +114,14 @@ impl Daemon {
     }
 
     /// Serves clients until `shutdown` finishes, then closes every connection and the socket.
-    pub(crate) async fn serve(self, shutdown: impl Future<Output = ()>) {
+    pub(crate) async fn serve(mut self, shutdown: impl Future<Output = ()>) {
         let mut clients = JoinSet::new();
         tokio::pin!(shutdown);
         loop {
             tokio::select! {
                 () = &mut shutdown => break,
                 accepted = self.listener.accept() => match accepted {
-                    Ok((stream, _)) => self.admit(stream, &mut clients),
+                    Ok(stream) => self.admit(stream, &mut clients),
                     Err(error) => {
                         // Such as too many open files: wait, rather than spin and flood the log.
                         self.log.warn("accept failed", &[("err", Field::error(&error))]);
@@ -138,9 +138,8 @@ impl Daemon {
     }
 
     fn admit(&self, stream: Stream, clients: &mut JoinSet<()>) {
-        match platform::peer_uid(&stream) {
-            Ok(uid) if uid == self.owner => {}
-            _ => return self.log.warn("client refused", &[]),
+        if !platform::is_owner(&stream, self.owner) {
+            return self.log.warn("client refused", &[]);
         }
         let (app, log) = (self.app.clone(), self.log.clone());
         clients.spawn(async move {
@@ -152,7 +151,7 @@ impl Daemon {
 }
 
 async fn serve_client(stream: Stream, app: App) -> io::Result<()> {
-    let (mut reader, mut writer) = stream.into_split();
+    let (mut reader, mut writer) = tokio::io::split(stream);
     let mut session = Session::default();
     let mut decoder = LineDecoder::default();
     let mut buf = [0; READ_CHUNK];
@@ -206,9 +205,7 @@ async fn answer(
 
 #[cfg(test)]
 mod tests {
-    use std::os::unix::fs::PermissionsExt;
-
-    use tokio::io::AsyncBufReadExt;
+    use tokio::io::{AsyncBufReadExt, AsyncRead};
     use tokio::sync::oneshot;
     use tokio::task::JoinHandle;
     use tokio::time::timeout;
@@ -253,11 +250,7 @@ mod tests {
     }
 
     async fn ask(socket: &Path) -> Result<Welcome, Fault> {
-        let socket = socket.to_owned();
-        let me = build(&VERSION);
-        tokio::task::spawn_blocking(move || weacon_client::handshake(&socket, me))
-            .await
-            .unwrap()
+        weacon_client::handshake(socket, build(&VERSION)).await
     }
 
     fn hello(protocol: u32) -> Vec<u8> {
@@ -273,8 +266,12 @@ mod tests {
     }
 
     // Sends `bytes` and reads replies until the daemon hangs up or `count` arrive.
-    async fn exchange(stream: Stream, bytes: &[u8], count: usize) -> (Vec<Message>, Stream) {
-        let (reader, mut writer) = stream.into_split();
+    async fn exchange<S: AsyncRead + AsyncWrite + Unpin>(
+        stream: S,
+        bytes: &[u8],
+        count: usize,
+    ) -> (Vec<Message>, S) {
+        let (reader, mut writer) = tokio::io::split(stream);
         writer.write_all(bytes).await.unwrap();
         let mut lines = tokio::io::BufReader::new(reader).lines();
         let mut replies = Vec::new();
@@ -286,11 +283,11 @@ mod tests {
             replies.push(serde_json::from_str::<Envelope>(&line).unwrap().message);
         }
         let reader = lines.into_inner().into_inner();
-        (replies, reader.reunite(writer).unwrap())
+        (replies, reader.unsplit(writer))
     }
 
-    async fn connect(socket: &Path) -> Stream {
-        Stream::connect(socket).await.unwrap()
+    async fn connect(socket: &Path) -> impl AsyncRead + AsyncWrite + Unpin + use<> {
+        weacon_client::connect(socket).await.unwrap()
     }
 
     #[tokio::test]
@@ -298,10 +295,14 @@ mod tests {
         let dir = temp_dir("daemon-hello");
         let running = start(&dir).unwrap();
         let socket = running.socket.clone();
-        let mode = fs::metadata(&socket).unwrap().permissions().mode() & 0o777;
 
         assert_eq!(ask(&socket).await.unwrap().app, build(&VERSION));
-        assert_eq!(mode, 0o600);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = fs::metadata(&socket).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600);
+        }
         let records = running.stop().await;
         assert!(!socket.exists());
         assert_eq!(
@@ -325,8 +326,11 @@ mod tests {
         fs::remove_dir_all(&dir).unwrap();
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn a_state_folder_others_can_reach_is_refused() {
+        use std::os::unix::fs::PermissionsExt;
+
         let dir = temp_dir("daemon-open");
         fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).unwrap();
 
@@ -338,6 +342,7 @@ mod tests {
         fs::remove_dir_all(&dir).unwrap();
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn another_user_is_refused() {
         let dir = temp_dir("daemon-stranger");
@@ -419,7 +424,7 @@ mod tests {
     }
 
     // Writes 8 MiB of bad lines without reading the replies; far more than the socket buffers.
-    async fn flood(mut client: Stream) -> io::Result<()> {
+    async fn flood(mut client: impl AsyncWrite + Unpin) -> io::Result<()> {
         let junk = b"x\n".repeat(32 * 1024);
         for _ in 0..128 {
             client.write_all(&junk).await?;

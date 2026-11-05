@@ -1,14 +1,14 @@
 # `emit` only prints what `instructions` returns, and its tests cover that.
 # `flush` on a file opened for appending does nothing that a test could see.
-# `peer_uid` returning 0 can't be told from the real uid when tests run as root, as in cloud
-# sessions; `another_user_is_refused` covers the comparison that uses it.
 # `random_id` joins two halves that never overlap, so `|` and `^` give the same id.
 # A `Lines::next` that always returns a line never ends, so every reader spins instead of failing.
+# Windows code isn't built on Linux, where mutation tests run; the Windows CI job tests it.
+exclude_globs = ["**/platform/windows.rs"]
 exclude_re = [
     "replace emit with \\(\\)",
     "replace <impl Write for RotatingFile>::flush",
     "replace \\| with \\^ in random_id",
-    "replace unix::peer_uid -> io::Result<u32> with Ok\\(0\\)",
+    "windows::",
     "replace Lines<R>::next -> io::Result<Option<Vec<u8>>> with Ok\\(Some",
 ]
 # Some mutants make a blocking client wait out its 5 s read timeout.

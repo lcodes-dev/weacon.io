@@ -8,8 +8,13 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+tokio.workspace = true
 weacon-observability.workspace = true
 weacon-protocol.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+tokio = { workspace = true, features = ["fs"] }
+windows-sys.workspace = true
 
 [dev-dependencies]
 serde_json.workspace = true

@@ -38,7 +38,7 @@ impl Reporter {
 }
 
 // Each `RandomState` gets new keys; the first on each thread come from the operating system.
-fn random_id() -> u128 {
+pub(crate) fn random_id() -> u128 {
     let half = || RandomState::new().build_hasher().finish();
     u128::from(half()) << 64 | u128::from(half())
 }

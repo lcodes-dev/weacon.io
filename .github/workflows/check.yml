@@ -28,3 +28,15 @@ jobs:
           key: ${{ hashFiles('scripts/setup.sh') }}
       - run: scripts/setup.sh
       - run: scripts/check.sh
+
+  # The core and the client have Windows code; check.sh's tools run on Linux only.
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - run: cargo test --workspace --locked --no-fail-fast

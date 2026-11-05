@@ -1115,8 +1115,10 @@ name = "weacon-client"
 version = "0.0.0"
 dependencies = [
  "serde_json",
+ "tokio",
  "weacon-observability",
  "weacon-protocol",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

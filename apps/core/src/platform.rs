@@ -1,5 +1,5 @@
 use std::ffi::OsString;
-use std::fs::{self, File, OpenOptions};
+use std::fs::{File, OpenOptions};
 use std::io;
 use std::path::{Path, PathBuf};
 
@@ -12,7 +12,7 @@ pub(crate) fn var(env: Env<'_>, key: &str) -> Option<OsString> {
 }
 
 pub(crate) fn home_dir(env: Env<'_>) -> Option<PathBuf> {
-    var(env, "HOME").map(PathBuf::from)
+    var(env, if cfg!(windows) { "USERPROFILE" } else { "HOME" }).map(PathBuf::from)
 }
 
 /// Where the core keeps its state; `WEACON_STATE_DIR` overrides it.
@@ -20,6 +20,9 @@ pub(crate) fn state_dir(env: Env<'_>) -> Option<PathBuf> {
     if let Some(dir) = var(env, "WEACON_STATE_DIR") {
         // A relative path would differ between commands started in different folders.
         return std::path::absolute(dir).ok();
+    }
+    if cfg!(windows) {
+        return var(env, "LOCALAPPDATA").map(|dir| PathBuf::from(dir).join("Weacon"));
     }
     let home = home_dir(env)?;
     if cfg!(target_os = "macos") {
@@ -36,20 +39,14 @@ pub(crate) fn state_dir(env: Env<'_>) -> Option<PathBuf> {
 /// Creates `dir` and any missing parents readable only by this user; existing folders keep
 /// their permissions.
 pub(crate) fn private_dir(dir: &Path) -> io::Result<()> {
-    let mut builder = fs::DirBuilder::new();
-    builder.recursive(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::DirBuilderExt;
-        builder.mode(0o700);
-    }
-    builder.create(dir)
+    create_private(dir)
 }
 
 /// Opens `path` for appending, creating it readable only by this user.
 pub(crate) fn private_append(path: &Path) -> io::Result<File> {
     let mut options = OpenOptions::new();
-    options.create(true).append(true);
+    // Readable too: Windows locks only a file opened for reading or writing.
+    options.create(true).read(true).append(true);
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
@@ -68,10 +65,33 @@ mod unix {
     use std::os::unix::fs::{MetadataExt, PermissionsExt};
     use std::path::Path;
 
-    pub(crate) use tokio::net::{UnixListener as Listener, UnixStream as Stream};
+    pub(crate) use tokio::net::UnixStream as Stream;
+
+    /// The user a client must be.
+    pub(crate) type Owner = u32;
+
+    pub(crate) struct Listener(tokio::net::UnixListener);
+
+    impl Listener {
+        #[expect(
+            clippy::needless_pass_by_ref_mut,
+            reason = "Windows' listener swaps in a new pipe on each accept"
+        )]
+        pub(crate) async fn accept(&mut self) -> io::Result<Stream> {
+            Ok(self.0.accept().await?.0)
+        }
+    }
+
+    pub(crate) fn create_private(dir: &Path) -> io::Result<()> {
+        use std::os::unix::fs::DirBuilderExt;
+        fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(dir)
+    }
 
     /// The user that owns `dir`, when only that user can reach it.
-    pub(crate) fn private_owner(dir: &Path) -> io::Result<Option<u32>> {
+    pub(crate) fn private_owner(dir: &Path) -> io::Result<Option<Owner>> {
         let metadata = fs::metadata(dir)?;
         let others = metadata.permissions().mode() & 0o077;
         let private = metadata.is_dir() && others == 0;
@@ -80,13 +100,13 @@ mod unix {
 
     /// Listens on a socket at `path` that only this user can open.
     pub(crate) fn bind(path: &Path) -> io::Result<Listener> {
-        let listener = Listener::bind(path)?;
+        let listener = tokio::net::UnixListener::bind(path)?;
         fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
-        Ok(listener)
+        Ok(Listener(listener))
     }
 
-    pub(crate) fn peer_uid(stream: &Stream) -> io::Result<u32> {
-        Ok(stream.peer_cred()?.uid())
+    pub(crate) fn is_owner(stream: &Stream, owner: Owner) -> bool {
+        stream.peer_cred().is_ok_and(|cred| cred.uid() == owner)
     }
 
     /// Ctrl-C and SIGTERM, caught from when this is made; needs a tokio runtime.
@@ -114,11 +134,158 @@ mod unix {
     }
 }
 
+#[cfg(windows)]
+pub(crate) use windows::*;
+
+#[cfg(windows)]
+mod windows {
+    use std::fs;
+    use std::io;
+    use std::mem;
+    use std::path::Path;
+    use std::pin::Pin;
+    use std::task::{Context, Poll};
+
+    use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
+    use tokio::net::windows::named_pipe::NamedPipeServer;
+    use tokio::signal::windows::{CtrlC, CtrlShutdown, ctrl_c, ctrl_shutdown};
+    use weacon_client::platform::pipe_name;
+    use weacon_client::platform::windows::{create_pipe, make_private};
+
+    /// A client's pipe, disconnected when dropped: a pipe with a write still pending, as to a
+    /// client that never reads, otherwise stays open until that write finishes.
+    pub(crate) struct Stream(NamedPipeServer);
+
+    impl Drop for Stream {
+        fn drop(&mut self) {
+            // A pipe already gone has nothing left to close.
+            self.0.disconnect().unwrap_or_default();
+        }
+    }
+
+    impl AsyncRead for Stream {
+        fn poll_read(
+            mut self: Pin<&mut Self>,
+            cx: &mut Context<'_>,
+            buf: &mut ReadBuf<'_>,
+        ) -> Poll<io::Result<()>> {
+            Pin::new(&mut self.0).poll_read(cx, buf)
+        }
+    }
+
+    impl AsyncWrite for Stream {
+        fn poll_write(
+            mut self: Pin<&mut Self>,
+            cx: &mut Context<'_>,
+            buf: &[u8],
+        ) -> Poll<io::Result<usize>> {
+            Pin::new(&mut self.0).poll_write(cx, buf)
+        }
+
+        fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Pin::new(&mut self.0).poll_flush(cx)
+        }
+
+        fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Pin::new(&mut self.0).poll_shutdown(cx)
+        }
+    }
+
+    /// Nothing to compare: the pipe's access list already admits only this user.
+    #[derive(Clone, Copy, Debug)]
+    pub(crate) struct Owner;
+
+    pub(crate) struct Listener {
+        name: String,
+        next: NamedPipeServer,
+    }
+
+    impl Listener {
+        /// The next client; a new pipe instance waits for the one after.
+        pub(crate) async fn accept(&mut self) -> io::Result<Stream> {
+            self.next.connect().await?;
+            let after = create_pipe(&self.name, false)?;
+            Ok(Stream(mem::replace(&mut self.next, after)))
+        }
+    }
+
+    /// Creates `dir`, making it private if it's new; parents get the access they inherit.
+    pub(crate) fn create_private(dir: &Path) -> io::Result<()> {
+        let new = !dir.exists();
+        fs::DirBuilder::new().recursive(true).create(dir)?;
+        if new {
+            make_private(dir)?;
+        }
+        Ok(())
+    }
+
+    /// Makes `dir`, the core's own folder, private to this user, whatever it inherited.
+    pub(crate) fn private_owner(dir: &Path) -> io::Result<Option<Owner>> {
+        make_private(dir)?;
+        Ok(Some(Owner))
+    }
+
+    /// Listens on a pipe with a fresh random name that only this user can open, and writes the
+    /// name to `path` for clients to find.
+    pub(crate) fn bind(path: &Path) -> io::Result<Listener> {
+        let name = pipe_name(crate::report::random_id());
+        let next = create_pipe(&name, true)?;
+        // Renamed into place, so a client never reads half a name.
+        let unfinished = path.with_extension("new");
+        fs::write(&unfinished, &name)?;
+        fs::rename(&unfinished, path)?;
+        Ok(Listener { name, next })
+    }
+
+    pub(crate) const fn is_owner(_: &Stream, _: Owner) -> bool {
+        true
+    }
+
+    /// Ctrl-C and shutdown, caught from when this is made; needs a tokio runtime.
+    pub(crate) struct Signals {
+        interrupt: CtrlC,
+        shutdown: CtrlShutdown,
+    }
+
+    impl Signals {
+        pub(crate) fn new() -> io::Result<Self> {
+            Ok(Self {
+                interrupt: ctrl_c()?,
+                shutdown: ctrl_shutdown()?,
+            })
+        }
+
+        pub(crate) async fn wait(mut self) {
+            tokio::select! {
+                _ = self.interrupt.recv() => {}
+                _ = self.shutdown.recv() => {}
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::{env, temp_dir};
+    use crate::test_support::env;
 
+    #[cfg(windows)]
+    #[test]
+    fn on_windows_the_state_folder_is_in_local_app_data() {
+        let vars = env(&[
+            ("LOCALAPPDATA", r"C:\Users\ada\AppData\Local"),
+            ("USERPROFILE", r"C:\Users\ada"),
+        ]);
+
+        assert_eq!(
+            state_dir(&vars),
+            Some(PathBuf::from(r"C:\Users\ada\AppData\Local\Weacon"))
+        );
+        assert_eq!(home_dir(&vars), Some(PathBuf::from(r"C:\Users\ada")));
+        assert_eq!(state_dir(&env(&[])), None);
+    }
+
+    #[cfg(unix)]
     #[test]
     fn the_state_folder_can_be_set() {
         let set = env(&[("WEACON_STATE_DIR", "/srv/weacon"), ("HOME", "/home/ada")]);
@@ -152,9 +319,10 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn new_folders_and_files_are_private_and_existing_ones_kept() {
+        use std::fs;
         use std::os::unix::fs::PermissionsExt;
 
-        let dir = temp_dir("private");
+        let dir = crate::test_support::temp_dir("private");
         let nested = dir.join("state/logs");
         let file = nested.join("weacon.log");
         fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).unwrap();

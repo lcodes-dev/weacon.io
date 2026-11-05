@@ -50,7 +50,7 @@ The default branch is `main`: start from it and open draft PRs against it. This 
 
 - **Original code only:** never copied, renamed or translated from another project.
 - **Simple, clear, terse.** Write the shortest code that reads in one pass, never the cleverest: `?` and early returns, `let ... else`, `if let ... &&` chains, iterator chains that read top to bottom, `matches!`, field shorthand. Small functions (clippy stops at 50 lines, 5 arguments and 4 levels of nesting), plain data, precise types. Owned data and plain structs before trait objects, generics with one implementation, or `Arc<Mutex<_>>`. Nothing built for a need nobody has. `pub(crate)` unless another crate needs it. Modules are `name.rs` beside a `name/` folder, never `mod.rs`.
-- **No panics outside tests.** No `unwrap`, `expect`, `panic!` or `unreachable!`; no indexing or string slicing that can panic, so use `get`; no `as` casts, so use `From` and `TryFrom`. Return an error instead. No `unsafe`.
+- **No panics outside tests.** No `unwrap`, `expect`, `panic!` or `unreachable!`; no indexing or string slicing that can panic, so use `get`; no `as` casts, so use `From` and `TryFrom`. Return an error instead. No `unsafe`, except for OS calls with no safe API, inside a `platform` module marked `#[expect(unsafe_code, reason = "...")]`, each block with a `// SAFETY:` comment.
 - **Suppressions** are `#[expect(lint, reason = "...")]`, never `#[allow]`, so a stale one fails the build.
 - **Edges and insides.** Parse data with `protocol` types where it enters a process; inside, trust the types.
 - **Side effects as arguments.** Crates take clocks, id generators, file systems and process spawning as arguments; only apps wire in the real ones.
@@ -101,7 +101,7 @@ Every program logs, reports errors and says which build it is from its first com
 | --- | --- |
 | `scripts/setup.sh` | Installs or updates everything; safe to run again |
 | `scripts/fix.sh` | Formats and applies the lint fixes clippy is sure of |
-| `scripts/check.sh` | What CI runs: rustfmt, clippy with warnings as errors, docs, cargo-machete, cargo-deny, all tests with the 90% line-coverage floor, doc tests, mutation tests on the code changed against `origin/main`, and ShellCheck |
+| `scripts/check.sh` | What CI runs: rustfmt, clippy with warnings as errors, docs, cargo-machete, cargo-deny, all tests with the 90% line-coverage floor, doc tests, mutation tests on the code changed against `origin/main`, and ShellCheck. CI also lints and tests on Windows |
 | `cargo test -p <crate> [name]` | Focused tests while iterating |
 | `WEACON_STATE_DIR=.dev/state cargo run -p weacon-core -- doctor` | Runs the core with this worktree's own state folder |
 | `UPDATE_SCHEMA=1 cargo test -p weacon-protocol` | Regenerates `crates/protocol/schema.json` after a message changes |

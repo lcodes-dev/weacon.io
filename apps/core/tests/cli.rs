@@ -37,14 +37,18 @@ mod tests {
     #[test]
     fn doctor_succeeds_with_a_state_folder_and_fails_without_one() {
         let dir = temp_dir("doctor");
+        let file = temp_dir("doctor-file");
+        fs::write(&file, "").unwrap();
         let good = weacon(&["doctor"], dir.to_str().unwrap());
-        let blocked = weacon(&["doctor"], "/proc/weacon-cannot-be-here");
+        // A folder can't be made inside a file.
+        let blocked = weacon(&["doctor"], file.join("state").to_str().unwrap());
 
         assert!(good.status.success());
         assert!(dir.join("logs/cli.log").exists());
         assert_eq!(blocked.status.code(), Some(1));
         assert!(String::from_utf8_lossy(&blocked.stderr).contains("state.unavailable"));
         fs::remove_dir_all(&dir).unwrap();
+        fs::remove_file(&file).unwrap();
     }
 
     #[test]
@@ -58,7 +62,7 @@ mod tests {
     }
 
     #[test]
-    fn the_daemon_serves_status_and_stops_on_sigterm() {
+    fn the_daemon_serves_status() {
         let dir = temp_dir("daemon");
         let mut daemon = Command::new(env!("CARGO_BIN_EXE_weacon"))
             .args(["daemon", "--verbose"])
@@ -69,11 +73,6 @@ mod tests {
         let mut stderr = BufReader::new(daemon.stderr.take().unwrap()).lines();
         while !stderr.next().unwrap().unwrap().contains("daemon started") {}
         let status = weacon(&["status"], dir.to_str().unwrap());
-        let term = Command::new("kill")
-            .args(["-TERM", &daemon.id().to_string()])
-            .status()
-            .unwrap();
-        let exit = daemon.wait().unwrap();
 
         assert!(status.status.success());
         assert!(
@@ -81,10 +80,27 @@ mod tests {
                 .unwrap()
                 .starts_with("Daemon: running, weacon ")
         );
-        assert!(term.success());
-        assert!(exit.success());
-        assert!(!dir.join("weacon.sock").exists());
+        stop(daemon, &dir);
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    fn stop(mut daemon: std::process::Child, dir: &std::path::Path) {
+        let term = Command::new("kill")
+            .args(["-TERM", &daemon.id().to_string()])
+            .status()
+            .unwrap();
+
+        assert!(term.success());
+        assert!(daemon.wait().unwrap().success());
+        assert!(!dir.join("weacon.sock").exists());
+    }
+
+    // Windows has no SIGTERM to send another process; the daemon is just ended.
+    #[cfg(windows)]
+    fn stop(mut daemon: std::process::Child, _: &std::path::Path) {
+        daemon.kill().unwrap();
+        daemon.wait().unwrap();
     }
 
     #[test]
