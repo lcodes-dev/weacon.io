@@ -88,6 +88,7 @@ Every program logs, reports errors and says which build it is from its first com
 - Rust at the version in `rust-toolchain.toml`, through rustup. Where rustup can't download it, as in Claude Code cloud sessions, it uses the installed stable toolchain if that is exactly the pinned version.
 - The dependencies, and `llvm-tools` for coverage where it can be downloaded.
 - The check tools at pinned versions: cargo-deny, cargo-machete, cargo-llvm-cov and cargo-mutants, built from crates.io the first time.
+- The extension's npm packages, at the exact versions in `apps/extension/package-lock.json`. It needs the Node in `apps/extension/.node-version` and stops if another is installed.
 - Its output goes to `.dev/setup.log`.
 
 | Where the agent runs | How it is set up |
@@ -101,10 +102,11 @@ Every program logs, reports errors and says which build it is from its first com
 | --- | --- |
 | `scripts/setup.sh` | Installs or updates everything; safe to run again |
 | `scripts/fix.sh` | Formats and applies the lint fixes clippy is sure of |
-| `scripts/check.sh` | What CI runs: rustfmt, clippy with warnings as errors, docs, cargo-machete, cargo-deny, all tests with the 90% line-coverage floor, doc tests, mutation tests on the code changed against `origin/main`, and ShellCheck. CI also lints and tests on Windows |
+| `scripts/check.sh` | What CI runs: rustfmt, clippy with warnings as errors, docs, cargo-machete, cargo-deny, all tests with the 90% line-coverage floor, doc tests, mutation tests on the code changed against `origin/main`, the extension's type check and tests, and ShellCheck. CI also lints and tests on Windows |
 | `cargo test -p <crate> [name]` | Focused tests while iterating |
 | `WEACON_STATE_DIR=.dev/state cargo run -p weacon-core -- doctor` | Runs the core with this worktree's own state folder |
 | `UPDATE_SCHEMA=1 cargo test -p weacon-protocol` | Regenerates `crates/protocol/schema.json` after a message changes |
+| `npm --prefix apps/extension run update-types` | Regenerates the extension's `src/protocol.ts` from `schema.json` |
 | `scripts/release.sh <target>` | Builds a static release `weacon` for one target into `dist/`, checks it reports this commit, and prints its size |
 | `scripts/release.sh install <[user@]host> <target>` | Copies that Linux build to a host over SSH and runs `weacon service install` there: a systemd user service, with lingering on |
 

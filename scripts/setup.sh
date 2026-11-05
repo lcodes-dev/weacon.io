@@ -5,7 +5,8 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 # The Claude Code SessionStart hook passes this flag. It gets the toolchain and the dependencies but
-# leaves the check tools, which take minutes to build, to a plain `scripts/setup.sh`.
+# leaves the check tools, which take minutes to build, and the extension's Node packages to a plain
+# `scripts/setup.sh`.
 session_start=false
 if [ "${1:-}" = "--claude-session-start" ]; then
   [ "${CLAUDE_CODE_REMOTE:-}" = "true" ] || exit 0
@@ -91,6 +92,18 @@ fetch_dependencies() {
   }
 }
 
+ensure_node() {
+  local want have
+  want=$(cat apps/extension/.node-version)
+  have=$(node --version 2>/dev/null || true)
+  [ "$have" = "v$want" ] || die "the extension needs Node $want, and the installed one is ${have:-missing}; install it, then run this again"
+  log "Installing the extension's packages"
+  npm ci --prefix apps/extension --include=dev --no-audit --no-fund >>.dev/setup.log 2>&1 || {
+    tail -n 30 .dev/setup.log >&2
+    die "npm ci failed; the end of its output is above"
+  }
+}
+
 # Later steps in a Claude Code session or a GitHub Actions job find the same tools.
 persist_path() {
   if [ -n "${CLAUDE_ENV_FILE:-}" ]; then
@@ -109,4 +122,8 @@ if [ "$session_start" = false ]; then
   ensure_tools
 fi
 persist_path
+# Last, so a Node mismatch can't keep the Rust tools off PATH.
+if [ "$session_start" = false ]; then
+  ensure_node
+fi
 echo "Weacon setup done: $(rustup run "$toolchain" rustc --version). Run scripts/check.sh before committing."
