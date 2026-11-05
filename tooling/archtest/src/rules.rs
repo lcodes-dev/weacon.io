@@ -80,7 +80,15 @@ pub(crate) const RULES: &[Rule] = &[
     },
     Rule {
         package: "weacon-testing",
-        may_use: &[],
+        may_use: &[
+            "weacon-agents",
+            "weacon-client",
+            "weacon-codemap",
+            "weacon-model",
+            "weacon-observability",
+            "weacon-protocol",
+            "weacon-version",
+        ],
         io: true,
     },
     Rule {
