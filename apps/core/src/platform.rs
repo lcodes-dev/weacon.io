@@ -411,14 +411,11 @@ mod tests {
     fn on_linux_agents_start_under_a_policy() {
         let policy = spawn_policy(&env(&[]));
 
-        let own: i32 = fs::read_to_string("/proc/self/oom_score_adj")
-            .unwrap()
-            .trim()
-            .parse()
-            .unwrap();
+        // None where this test's procfs is read-only.
+        let own = oom_score(Path::new("/proc/self/oom_score_adj"));
 
         assert_eq!(policy.env.len(), CPU_COUNT_VARS.len());
-        assert_eq!(policy.oom_score_adj, Some((own + 500).min(1000)));
+        assert_eq!(policy.oom_score_adj, own.map(|own| (own + 500).min(1000)));
     }
 
     #[cfg(not(target_os = "linux"))]
