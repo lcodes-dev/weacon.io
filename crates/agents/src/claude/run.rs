@@ -4,7 +4,7 @@ use serde_json::Value;
 use tokio::io::{AsyncBufRead, AsyncWrite, AsyncWriteExt};
 use tokio::process::Child;
 use weacon_observability::Fault;
-use weacon_protocol::{AgentSession, Outcome, PermissionAnswer, RunEvent, code};
+use weacon_protocol::{AgentSession, Outcome, PermissionAnswer, RunEvent, RunId, code};
 
 use super::wire::{self, Block, Line, Request, System};
 use crate::lines::Lines;
@@ -14,6 +14,7 @@ const MAX_LINE: usize = 16 << 20;
 
 /// A conversation with one running `claude`, over its stdin and stdout.
 pub struct Run<W, R> {
+    id: RunId,
     stdin: W,
     stdout: Lines<R>,
     // Bytes not yet written; kept across a cancelled write so no line is cut.
@@ -41,9 +42,10 @@ enum Turn {
 }
 
 impl<W: AsyncWrite + Unpin, R: AsyncBufRead + Unpin> Run<W, R> {
-    /// A run over an agent's pipes; `child`, when given, is killed when the run is dropped.
-    pub(crate) fn new(stdin: W, stdout: R, child: Option<Child>) -> Self {
+    /// Run `run` over an agent's pipes; `child`, when given, is killed when the run is dropped.
+    pub(crate) fn new(run: RunId, stdin: W, stdout: R, child: Option<Child>) -> Self {
         Self {
+            id: run,
             stdin,
             stdout: Lines::new(stdout, MAX_LINE),
             outbox: Vec::new(),
@@ -81,6 +83,7 @@ impl<W: AsyncWrite + Unpin, R: AsyncBufRead + Unpin> Run<W, R> {
             .prompts
             .iter()
             .position(|prompt| prompt.id == answer.prompt)
+            .filter(|_| answer.run == self.id)
             .ok_or_else(|| {
                 Fault::new(
                     code!("agent.no_such_prompt"),
@@ -193,6 +196,7 @@ impl<W: AsyncWrite + Unpin, R: AsyncBufRead + Unpin> Run<W, R> {
         self.next_prompt += 1;
         let id = self.next_prompt;
         self.events.push_back(RunEvent::PermissionAsked {
+            run: self.id.clone(),
             prompt: id,
             tool,
             input: input.clone(),
@@ -211,8 +215,10 @@ impl<W: AsyncWrite + Unpin, R: AsyncBufRead + Unpin> Run<W, R> {
             .position(|prompt| prompt.request_id == request_id)
         {
             let prompt = self.prompts.swap_remove(at);
-            self.events
-                .push_back(RunEvent::PermissionWithdrawn { prompt: prompt.id });
+            self.events.push_back(RunEvent::PermissionWithdrawn {
+                run: self.id.clone(),
+                prompt: prompt.id,
+            });
         }
     }
 
@@ -274,7 +280,10 @@ mod tests {
 
     fn fake(recording: &str) -> (FakeRun, JoinHandle<Result<(), String>>) {
         let replay = replay(recording);
-        (Run::new(replay.stdin, replay.stdout, None), replay.done)
+        (
+            Run::new(run_id("run-1"), replay.stdin, replay.stdout, None),
+            replay.done,
+        )
     }
 
     // Under paused time, a driver and fake stuck waiting on each other time out at once.
@@ -304,6 +313,18 @@ mod tests {
 
     fn finished(event: &RunEvent) -> bool {
         matches!(event, RunEvent::Finished { .. })
+    }
+
+    fn run_id(id: &str) -> RunId {
+        RunId::try_from(id.to_owned()).unwrap()
+    }
+
+    fn answer(run: &str, allow: bool) -> PermissionAnswer {
+        PermissionAnswer {
+            run: run_id(run),
+            prompt: 1,
+            allow,
+        }
     }
 
     fn started() -> RunEvent {
@@ -349,18 +370,16 @@ mod tests {
                     input: command.clone(),
                 },
                 RunEvent::PermissionAsked {
+                    run: run_id("run-1"),
                     prompt: 1,
                     tool: "Bash".to_owned(),
                     input: command,
                 },
             ]
         );
-        run.answer(&PermissionAnswer {
-            prompt: 1,
-            allow: true,
-        })
-        .await
-        .unwrap();
+        let other = run.answer(&answer("run-0", true)).await.unwrap_err();
+        assert_eq!(other.code().as_str(), "agent.no_such_prompt");
+        run.answer(&answer("run-1", true)).await.unwrap();
         assert_eq!(
             until(&mut run, finished).await,
             [
@@ -372,14 +391,8 @@ mod tests {
                 ended(Outcome::Completed),
             ]
         );
-        let again = run.answer(&PermissionAnswer {
-            prompt: 1,
-            allow: true,
-        });
-        assert_eq!(
-            again.await.unwrap_err().code().as_str(),
-            "agent.no_such_prompt"
-        );
+        let again = run.answer(&answer("run-1", true)).await.unwrap_err();
+        assert_eq!(again.code().as_str(), "agent.no_such_prompt");
         ends_as_recorded(run, done).await;
     }
 
@@ -391,12 +404,7 @@ mod tests {
         let events = until(&mut run, asked).await;
         assert_eq!(events.first(), Some(&started()));
         assert_eq!(events.len(), 3);
-        run.answer(&PermissionAnswer {
-            prompt: 1,
-            allow: false,
-        })
-        .await
-        .unwrap();
+        run.answer(&answer("run-1", false)).await.unwrap();
         assert_eq!(
             until(&mut run, finished).await,
             [
@@ -422,7 +430,10 @@ mod tests {
         assert_eq!(
             until(&mut run, finished).await,
             [
-                RunEvent::PermissionWithdrawn { prompt: 1 },
+                RunEvent::PermissionWithdrawn {
+                    run: run_id("run-1"),
+                    prompt: 1,
+                },
                 ended(Outcome::Interrupted),
             ]
         );
@@ -481,7 +492,7 @@ mod tests {
              {{\"type\":\"control_request\",\"request_id\":\"req-10\",\
              \"request\":{{\"subtype\":\"can_use_tool\",\"tool_name\":\"Bash\",\"input\":{{}}}}}}\n"
         );
-        let mut run = Run::new(stdin, printed.as_bytes(), None);
+        let mut run = Run::new(run_id("run-1"), stdin, printed.as_bytes(), None);
 
         let sent = run.send("Hello").await.unwrap_err();
         assert_eq!(sent.code().as_str(), "agent.io_failed");
@@ -491,11 +502,8 @@ mod tests {
         );
         assert_eq!(run.next().await.unwrap(), Some(started()));
         assert!(run.next().await.unwrap().as_ref().is_some_and(asked));
-        let answer = run.answer(&PermissionAnswer {
-            prompt: 1,
-            allow: false,
-        });
-        assert_eq!(answer.await.unwrap_err().code().as_str(), "agent.io_failed");
+        let lost = run.answer(&answer("run-1", false)).await.unwrap_err();
+        assert_eq!(lost.code().as_str(), "agent.io_failed");
         assert_eq!(run.next().await.unwrap(), Some(ended(Outcome::Unknown)));
         assert_eq!(run.next().await.unwrap(), None);
     }

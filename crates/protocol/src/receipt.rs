@@ -7,22 +7,19 @@ use crate::Code;
 /// same id again returns the first receipt instead of repeating the work; the same id with
 /// different content is refused with the error `request.conflict`.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, JsonSchema)]
-pub struct RequestId(#[schemars(regex(pattern = PATTERN), length(max = MAX_LEN))] String);
+pub struct RequestId(#[schemars(regex(pattern = TOKEN_PATTERN), length(max = TOKEN_MAX))] String);
 
-const MAX_LEN: usize = 64;
+pub(crate) const TOKEN_MAX: usize = 64;
 
-// The schema's form of `is_request_id`; a test keeps the two in step.
-const PATTERN: &str = r"^[A-Za-z0-9_-]+$";
+// The schema's form of `is_token`, for every id made of plain tokens; a test keeps the two
+// in step.
+pub(crate) const TOKEN_PATTERN: &str = r"^[A-Za-z0-9_-]+$";
 
 impl TryFrom<String> for RequestId {
     type Error = String;
 
     fn try_from(id: String) -> Result<Self, Self::Error> {
-        if is_request_id(&id) {
-            Ok(Self(id))
-        } else {
-            Err(id)
-        }
+        if is_token(&id) { Ok(Self(id)) } else { Err(id) }
     }
 }
 
@@ -33,8 +30,8 @@ impl<'de> Deserialize<'de> for RequestId {
     }
 }
 
-fn is_request_id(id: &str) -> bool {
-    (1..=MAX_LEN).contains(&id.len())
+pub(crate) fn is_token(id: &str) -> bool {
+    (1..=TOKEN_MAX).contains(&id.len())
         && id
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
@@ -80,17 +77,17 @@ mod tests {
 
     #[test]
     fn request_ids_are_short_plain_tokens() {
-        let pattern = regex::Regex::new(PATTERN).unwrap();
-        let longest = "a".repeat(MAX_LEN);
+        let pattern = regex::Regex::new(TOKEN_PATTERN).unwrap();
+        let longest = "a".repeat(TOKEN_MAX);
         for good in ["01JC2YQ7Z8", "9b1d-4c2e_f", longest.as_str()] {
-            assert!(is_request_id(good), "{good}");
+            assert!(is_token(good), "{good}");
             assert!(pattern.is_match(good), "{good}");
         }
-        let too_long = "a".repeat(MAX_LEN + 1);
+        let too_long = "a".repeat(TOKEN_MAX + 1);
         for bad in ["", "a b", "a/b", "é", too_long.as_str()] {
-            assert!(!is_request_id(bad), "{bad}");
+            assert!(!is_token(bad), "{bad}");
             // The schema states the length limit apart from the pattern.
-            assert!(bad.len() > MAX_LEN || !pattern.is_match(bad), "{bad}");
+            assert!(bad.len() > TOKEN_MAX || !pattern.is_match(bad), "{bad}");
         }
         assert_eq!(RequestId::try_from("a b".to_owned()), Err("a b".to_owned()));
         assert_eq!(serde_json::to_value(request("r-1")).unwrap(), json!("r-1"));

@@ -9,7 +9,7 @@ use std::process::Stdio;
 use tokio::io::BufReader;
 use tokio::process::{ChildStdin, ChildStdout, Command};
 use weacon_observability::Fault;
-use weacon_protocol::{AgentSession, code};
+use weacon_protocol::{AgentSession, RunId, code};
 
 pub use run::Run;
 
@@ -39,11 +39,11 @@ const OTHER_SIGN_INS: [&str; 7] = [
 ];
 
 impl Claude {
-    /// Starts `claude`, resuming `session` when given.
+    /// Starts `claude` as run `run`, resuming `session` when given.
     ///
     /// # Errors
     /// When the program can't be started.
-    pub fn start(&self, session: Option<&AgentSession>) -> Result<ClaudeRun, Fault> {
+    pub fn start(&self, run: RunId, session: Option<&AgentSession>) -> Result<ClaudeRun, Fault> {
         let not_started = || Fault::new(code!("agent.not_started"), "The agent couldn't start");
         let mut child = self
             .command(session)
@@ -52,7 +52,7 @@ impl Claude {
         let (Some(stdin), Some(stdout)) = (child.stdin.take(), child.stdout.take()) else {
             return Err(not_started());
         };
-        Ok(Run::new(stdin, BufReader::new(stdout), Some(child)))
+        Ok(Run::new(run, stdin, BufReader::new(stdout), Some(child)))
     }
 
     fn command(&self, session: Option<&AgentSession>) -> Command {
@@ -100,6 +100,10 @@ mod tests {
 
     const SESSION_A: &str = "0b7c6a52-3f1e-4d2a-9c8b-5e4f3a2b1c0d";
     const SESSION_B: &str = "5d4c3b2a-1f0e-4d9c-8b7a-6f5e4d3c2b1a";
+
+    fn run_id() -> RunId {
+        RunId::try_from("run-1".to_owned()).unwrap()
+    }
 
     fn session(id: &str) -> AgentSession {
         AgentSession::try_from(id.to_owned()).unwrap()
@@ -166,8 +170,8 @@ mod tests {
         let second = workspace(&dir, "second", SESSION_B);
 
         let (first_events, second_events) = tokio::join!(
-            events(first.start(None).unwrap()),
-            events(second.start(Some(&session(SESSION_A))).unwrap())
+            events(first.start(run_id(), None).unwrap()),
+            events(second.start(run_id(), Some(&session(SESSION_A))).unwrap())
         );
 
         let finished = RunEvent::Finished {
@@ -219,7 +223,7 @@ mod tests {
             cwd: dir.clone(),
         };
 
-        let Err(error) = claude.start(None) else {
+        let Err(error) = claude.start(run_id(), None) else {
             panic!("a missing program started");
         };
 

@@ -3,6 +3,7 @@ use serde::{Deserialize, Deserializer, Serialize, de};
 use serde_json::Value;
 
 use crate::Outcome;
+use crate::receipt::{TOKEN_MAX, TOKEN_PATTERN, is_token};
 
 /// An agent's own id for a conversation, a lowercase UUID, which resumes it later.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, JsonSchema)]
@@ -30,6 +31,26 @@ impl<'de> Deserialize<'de> for AgentSession {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         Self::try_from(String::deserialize(deserializer)?)
             .map_err(|_| de::Error::custom("not an agent session id"))
+    }
+}
+
+/// The core's id for one run of an agent process, 1–64 ASCII letters, digits, `-` or `_`.
+/// Prompts carry it, so an answer only ever reaches the run that asked.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, JsonSchema)]
+pub struct RunId(#[schemars(regex(pattern = TOKEN_PATTERN), length(max = TOKEN_MAX))] String);
+
+impl TryFrom<String> for RunId {
+    type Error = String;
+
+    fn try_from(id: String) -> Result<Self, Self::Error> {
+        if is_token(&id) { Ok(Self(id)) } else { Err(id) }
+    }
+}
+
+impl<'de> Deserialize<'de> for RunId {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        Self::try_from(String::deserialize(deserializer)?)
+            .map_err(|_| de::Error::custom("not a run id"))
     }
 }
 
@@ -66,12 +87,14 @@ pub enum RunEvent {
     },
     /// The agent asks to use a tool and waits for a [`PermissionAnswer`].
     PermissionAsked {
+        run: RunId,
         prompt: u32,
         tool: String,
         input: Value,
     },
     /// The agent no longer waits for the answer to `prompt`.
     PermissionWithdrawn {
+        run: RunId,
         prompt: u32,
     },
     /// Ends the turn and withdraws any prompt still waiting.
@@ -87,6 +110,7 @@ pub enum RunEvent {
 /// A person's answer to a [`RunEvent::PermissionAsked`].
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct PermissionAnswer {
+    pub run: RunId,
     pub prompt: u32,
     pub allow: bool,
 }
@@ -119,6 +143,15 @@ mod tests {
         assert_eq!(session.as_str(), good);
         assert_eq!(AgentSession::try_from("x".to_owned()), Err("x".to_owned()));
         serde_json::from_value::<AgentSession>(json!("--help")).unwrap_err();
+    }
+
+    #[test]
+    fn run_ids_are_plain_tokens_checked_on_arrival() {
+        let run: RunId = serde_json::from_value(json!("run-7")).unwrap();
+
+        assert_eq!(serde_json::to_value(&run).unwrap(), json!("run-7"));
+        assert_eq!(RunId::try_from("a b".to_owned()), Err("a b".to_owned()));
+        serde_json::from_value::<RunId>(json!("a/b")).unwrap_err();
     }
 
     #[test]
