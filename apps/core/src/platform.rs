@@ -141,7 +141,9 @@ mod windows {
     use interprocess::os::windows::named_pipe::{PipeListenerOptions, pipe_mode::Bytes};
     use interprocess::os::windows::security_descriptor::SecurityDescriptor;
     use tokio::signal::windows::{CtrlC, CtrlShutdown, ctrl_c, ctrl_shutdown};
-    use widestring::u16cstr;
+    use weacon_client::platform::only_user_and_admins;
+    use weacon_client::platform::windows::{current_user, folder_access};
+    use widestring::U16CString;
 
     pub(crate) type Stream = DuplexPipeStream<Bytes>;
 
@@ -157,16 +159,21 @@ mod windows {
         }
     }
 
-    /// Private enough: the pipe has its own access list and a new name at each start.
+    /// Whether only this user, the system and administrators can reach `dir`.
     pub(crate) fn private_owner(dir: &Path) -> io::Result<Option<Owner>> {
-        Ok(fs::metadata(dir)?.is_dir().then_some(Owner))
+        let private = only_user_and_admins(&folder_access(dir)?, &current_user()?);
+        Ok(private.then_some(Owner))
     }
 
     /// Listens on a pipe with a fresh random name that only this user can open, and writes the
     /// name to `path` for clients to find; others can't take the name before the daemon does.
     pub(crate) fn bind(path: &Path) -> io::Result<Listener> {
         let name = format!(r"\\.\pipe\weacon-{:032x}", crate::report::random_id());
-        let owner_only = SecurityDescriptor::deserialize(u16cstr!("D:P(A;;GA;;;OW)"))?;
+        // Named by SID, as an elevated user's objects are otherwise owned by Administrators.
+        let user = current_user()?;
+        let owner_only = U16CString::from_str(format!("O:{user}D:P(A;;GA;;;{user})"))
+            .map_err(io::Error::other)?;
+        let owner_only = SecurityDescriptor::deserialize(&owner_only)?;
         let listener = PipeListenerOptions::new()
             .path(name.as_str())
             .security_descriptor(Some(owner_only))

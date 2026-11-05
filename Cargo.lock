@@ -1145,6 +1145,7 @@ dependencies = [
  "tokio",
  "weacon-observability",
  "weacon-protocol",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

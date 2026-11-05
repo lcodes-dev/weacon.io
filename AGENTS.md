@@ -50,7 +50,7 @@ The default branch is `main`: start from it and open draft PRs against it. This 
 
 - **Original code only:** never copied, renamed or translated from another project.
 - **Simple, clear, terse.** Write the shortest code that reads in one pass, never the cleverest: `?` and early returns, `let ... else`, `if let ... &&` chains, iterator chains that read top to bottom, `matches!`, field shorthand. Small functions (clippy stops at 50 lines, 5 arguments and 4 levels of nesting), plain data, precise types. Owned data and plain structs before trait objects, generics with one implementation, or `Arc<Mutex<_>>`. Nothing built for a need nobody has. `pub(crate)` unless another crate needs it. Modules are `name.rs` beside a `name/` folder, never `mod.rs`.
-- **No panics outside tests.** No `unwrap`, `expect`, `panic!` or `unreachable!`; no indexing or string slicing that can panic, so use `get`; no `as` casts, so use `From` and `TryFrom`. Return an error instead. No `unsafe`.
+- **No panics outside tests.** No `unwrap`, `expect`, `panic!` or `unreachable!`; no indexing or string slicing that can panic, so use `get`; no `as` casts, so use `From` and `TryFrom`. Return an error instead. No `unsafe`, except for OS calls with no safe API, inside a `platform` module marked `#[expect(unsafe_code, reason = "...")]`, each block with a `// SAFETY:` comment.
 - **Suppressions** are `#[expect(lint, reason = "...")]`, never `#[allow]`, so a stale one fails the build.
 - **Edges and insides.** Parse data with `protocol` types where it enters a process; inside, trust the types.
 - **Side effects as arguments.** Crates take clocks, id generators, file systems and process spawning as arguments; only apps wire in the real ones.

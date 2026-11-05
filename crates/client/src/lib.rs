@@ -1,6 +1,6 @@
 //! Connects to the core's daemon over its socket and shakes hands with it.
 
-mod platform;
+pub mod platform;
 
 use std::error::Error;
 use std::io;
