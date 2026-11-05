@@ -72,6 +72,10 @@ else
   fi
 fi
 
+step "Extension: types, generated types and tests"
+[ -x apps/extension/node_modules/.bin/tsc ] || die "the extension's packages are missing; run scripts/setup.sh"
+npm --prefix apps/extension run --silent check
+
 step "Shell scripts"
 if command -v shellcheck >/dev/null; then
   shellcheck scripts/*.sh
