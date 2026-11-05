@@ -45,7 +45,8 @@ pub(crate) fn private_dir(dir: &Path) -> io::Result<()> {
 /// Opens `path` for appending, creating it readable only by this user.
 pub(crate) fn private_append(path: &Path) -> io::Result<File> {
     let mut options = OpenOptions::new();
-    options.create(true).append(true);
+    // Readable too: Windows locks only a file opened for reading or writing.
+    options.create(true).read(true).append(true);
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;

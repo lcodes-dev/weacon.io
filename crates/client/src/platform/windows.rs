@@ -14,15 +14,14 @@ use tokio::net::windows::named_pipe::{
 };
 use windows_sys::Win32::Foundation::{CloseHandle, ERROR_PIPE_BUSY, LocalFree};
 use windows_sys::Win32::Security::Authorization::{
-    ConvertSecurityDescriptorToStringSecurityDescriptorW, ConvertSidToStringSidW,
-    ConvertStringSecurityDescriptorToSecurityDescriptorW, GetNamedSecurityInfoW, GetSecurityInfo,
+    ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW, GetSecurityInfo,
     SDDL_REVISION_1, SE_FILE_OBJECT, SE_KERNEL_OBJECT, SetNamedSecurityInfoW,
 };
 use windows_sys::Win32::Security::{
     DACL_SECURITY_INFORMATION, GetSecurityDescriptorDacl, GetSecurityDescriptorOwner,
-    GetTokenInformation, OBJECT_SECURITY_INFORMATION, OWNER_SECURITY_INFORMATION,
-    PROTECTED_DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID, SECURITY_ATTRIBUTES,
-    TOKEN_ELEVATION, TOKEN_INFORMATION_CLASS, TOKEN_QUERY, TOKEN_USER, TokenElevation, TokenUser,
+    GetTokenInformation, OWNER_SECURITY_INFORMATION, PROTECTED_DACL_SECURITY_INFORMATION,
+    PSECURITY_DESCRIPTOR, PSID, SECURITY_ATTRIBUTES, TOKEN_ELEVATION, TOKEN_INFORMATION_CLASS,
+    TOKEN_QUERY, TOKEN_USER, TokenElevation, TokenUser,
 };
 use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 
@@ -136,35 +135,11 @@ pub fn make_private(dir: &Path) -> io::Result<()> {
     set.map_err(|error| io::Error::new(error.kind(), format!("setting the owner: {error}")))
 }
 
-/// `dir`'s owner and access list, in SDDL.
-///
-/// # Errors
-/// When `dir` can't be read.
-pub fn folder_access(dir: &Path) -> io::Result<String> {
-    let path = wide(dir.as_os_str())?;
-    let wanted = OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION;
-    let mut descriptor = ptr::null_mut();
-    // SAFETY: `path` ends with a NUL; only the descriptor is asked for, and it outlives the call.
-    win32(unsafe {
-        GetNamedSecurityInfoW(
-            path.as_ptr(),
-            SE_FILE_OBJECT,
-            wanted,
-            ptr::null_mut(),
-            ptr::null_mut(),
-            ptr::null_mut(),
-            ptr::null_mut(),
-            &raw mut descriptor,
-        )
-    })?;
-    Descriptor(descriptor).text(wanted)
-}
-
 /// The SID of the user running this process, such as `S-1-5-21-…`.
 ///
 /// # Errors
 /// When Windows won't say.
-pub fn current_user() -> io::Result<String> {
+pub(crate) fn current_user() -> io::Result<String> {
     // Room for a TOKEN_USER and the longest SID, aligned for the struct.
     let mut buffer = [0_u64; 16];
     let len = size_of_val(&buffer);
@@ -275,24 +250,6 @@ impl Descriptor {
     }
 }
 
-impl Descriptor {
-    // The parts of this descriptor named by `wanted`, in SDDL.
-    fn text(&self, wanted: OBJECT_SECURITY_INFORMATION) -> io::Result<String> {
-        let mut text = ptr::null_mut();
-        // SAFETY: the descriptor lives through the call, and `text` outlives it.
-        check(unsafe {
-            ConvertSecurityDescriptorToStringSecurityDescriptorW(
-                self.0,
-                SDDL_REVISION_1,
-                wanted,
-                &raw mut text,
-                ptr::null_mut(),
-            )
-        })?;
-        Ok(take_text(text))
-    }
-}
-
 impl Drop for Descriptor {
     fn drop(&mut self) {
         // SAFETY: Windows allocated the descriptor with LocalAlloc, and it's freed only here.
@@ -353,6 +310,52 @@ impl Server {
 mod tests {
     use super::super::pipe_name;
     use super::*;
+    use windows_sys::Win32::Security::Authorization::{
+        ConvertSecurityDescriptorToStringSecurityDescriptorW, GetNamedSecurityInfoW,
+    };
+    use windows_sys::Win32::Security::OBJECT_SECURITY_INFORMATION;
+
+    /// `dir`'s owner and access list, in SDDL.
+    ///
+    /// # Errors
+    /// When `dir` can't be read.
+    fn folder_access(dir: &Path) -> io::Result<String> {
+        let path = wide(dir.as_os_str())?;
+        let wanted = OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION;
+        let mut descriptor = ptr::null_mut();
+        // SAFETY: `path` ends with a NUL; only the descriptor is asked for, and it outlives the call.
+        win32(unsafe {
+            GetNamedSecurityInfoW(
+                path.as_ptr(),
+                SE_FILE_OBJECT,
+                wanted,
+                ptr::null_mut(),
+                ptr::null_mut(),
+                ptr::null_mut(),
+                ptr::null_mut(),
+                &raw mut descriptor,
+            )
+        })?;
+        Descriptor(descriptor).text(wanted)
+    }
+
+    impl Descriptor {
+        // The parts of this descriptor named by `wanted`, in SDDL.
+        fn text(&self, wanted: OBJECT_SECURITY_INFORMATION) -> io::Result<String> {
+            let mut text = ptr::null_mut();
+            // SAFETY: the descriptor lives through the call, and `text` outlives it.
+            check(unsafe {
+                ConvertSecurityDescriptorToStringSecurityDescriptorW(
+                    self.0,
+                    SDDL_REVISION_1,
+                    wanted,
+                    &raw mut text,
+                    ptr::null_mut(),
+                )
+            })?;
+            Ok(take_text(text))
+        }
+    }
 
     fn name() -> String {
         use std::hash::{BuildHasher, RandomState};
