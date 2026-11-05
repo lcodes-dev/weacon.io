@@ -1,9 +1,14 @@
+use std::collections::BTreeMap;
 use std::fmt;
 
 use serde::Deserialize;
 
-use crate::outline::{rust_parser, symbols};
-use crate::{Error, Symbol};
+use crate::area::areas;
+use crate::graph::{file_links, nodes};
+use crate::outline::symbols;
+use crate::paths::paths;
+use crate::syntax::{parse, rust_parser};
+use crate::{Area, Error, Symbol};
 
 /// A file as the caller read it, its path relative to the repository root with `/` separators.
 #[derive(Clone, PartialEq, Eq)]
@@ -18,11 +23,14 @@ impl fmt::Debug for SourceFile {
     }
 }
 
-/// The outline of a repository: its crates, their modules and the modules' items.
+/// The outline of a repository: its crates, their modules and the modules' items, and its
+/// files grouped into areas.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Index {
     /// Sorted by folder.
     pub crates: Vec<Crate>,
+    /// Sorted by id.
+    pub areas: Vec<Area>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -63,6 +71,7 @@ pub fn index(files: &[SourceFile]) -> Result<Index, Error> {
     let mut crates: Vec<Crate> = files.iter().filter_map(manifest).collect();
     crates.sort_by(|one, other| one.folder.cmp(&other.folder));
     let mut parser = rust_parser()?;
+    let mut named = BTreeMap::new();
     let mut sources: Vec<&SourceFile> = files.iter().collect();
     sources.sort_by(|one, other| one.path.cmp(&other.path));
     for file in sources {
@@ -74,14 +83,19 @@ pub fn index(files: &[SourceFile]) -> Result<Index, Error> {
         else {
             continue;
         };
+        let tree = parse(&mut parser, &file.text)?;
+        let source = file.text.as_bytes();
+        named.insert(file.path.clone(), paths(tree.root_node(), source));
         owner.modules.push(Module {
             path,
             file: file.path.clone(),
-            symbols: symbols(&mut parser, &file.text)?,
+            symbols: symbols(&tree, source),
         });
     }
     crates.iter_mut().for_each(root_binary);
-    Ok(Index { crates })
+    let nodes = nodes(&crates);
+    let areas = areas(&nodes, &file_links(&nodes, &named));
+    Ok(Index { crates, areas })
 }
 
 fn manifest(file: &SourceFile) -> Option<Crate> {
@@ -141,6 +155,11 @@ impl Index {
             }?;
             module.symbols.iter().find(|symbol| symbol.name == name)
         })
+    }
+
+    #[must_use]
+    pub fn area(&self, id: &str) -> Option<&Area> {
+        self.areas.iter().find(|area| area.id == id)
     }
 }
 
