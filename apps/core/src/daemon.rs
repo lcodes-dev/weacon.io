@@ -432,10 +432,7 @@ mod tests {
         Ok(())
     }
 
-    // Real time on Windows: a pipe's hang-up arrives through the completion port after paused
-    // time would already have jumped past the test's own deadline.
-    #[cfg_attr(unix, tokio::test(start_paused = true))]
-    #[cfg_attr(windows, tokio::test)]
+    #[tokio::test(start_paused = true)]
     async fn a_client_that_floods_before_its_hello_is_hung_up_on() {
         let dir = temp_dir("daemon-flood");
         let running = start(&dir).unwrap();

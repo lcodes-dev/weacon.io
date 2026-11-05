@@ -143,13 +143,53 @@ mod windows {
     use std::io;
     use std::mem;
     use std::path::Path;
+    use std::pin::Pin;
+    use std::task::{Context, Poll};
 
+    use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
     use tokio::net::windows::named_pipe::NamedPipeServer;
     use tokio::signal::windows::{CtrlC, CtrlShutdown, ctrl_c, ctrl_shutdown};
     use weacon_client::platform::pipe_name;
     use weacon_client::platform::windows::{create_pipe, make_private};
 
-    pub(crate) type Stream = NamedPipeServer;
+    /// A client's pipe, disconnected when dropped: a pipe with a write still pending, as to a
+    /// client that never reads, otherwise stays open until that write finishes.
+    pub(crate) struct Stream(NamedPipeServer);
+
+    impl Drop for Stream {
+        fn drop(&mut self) {
+            // A pipe already gone has nothing left to close.
+            self.0.disconnect().unwrap_or_default();
+        }
+    }
+
+    impl AsyncRead for Stream {
+        fn poll_read(
+            mut self: Pin<&mut Self>,
+            cx: &mut Context<'_>,
+            buf: &mut ReadBuf<'_>,
+        ) -> Poll<io::Result<()>> {
+            Pin::new(&mut self.0).poll_read(cx, buf)
+        }
+    }
+
+    impl AsyncWrite for Stream {
+        fn poll_write(
+            mut self: Pin<&mut Self>,
+            cx: &mut Context<'_>,
+            buf: &[u8],
+        ) -> Poll<io::Result<usize>> {
+            Pin::new(&mut self.0).poll_write(cx, buf)
+        }
+
+        fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Pin::new(&mut self.0).poll_flush(cx)
+        }
+
+        fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Pin::new(&mut self.0).poll_shutdown(cx)
+        }
+    }
 
     /// Nothing to compare: the pipe's access list already admits only this user.
     #[derive(Clone, Copy, Debug)]
@@ -165,7 +205,7 @@ mod windows {
         pub(crate) async fn accept(&mut self) -> io::Result<Stream> {
             self.next.connect().await?;
             let after = create_pipe(&self.name, false)?;
-            Ok(mem::replace(&mut self.next, after))
+            Ok(Stream(mem::replace(&mut self.next, after)))
         }
     }
 
