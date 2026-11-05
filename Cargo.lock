@@ -1201,6 +1201,7 @@ name = "weacon-core"
 version = "0.0.0"
 dependencies = [
  "clap",
+ "libc",
  "serde",
  "serde_json",
  "tokio",
@@ -1210,6 +1211,7 @@ dependencies = [
  "weacon-observability",
  "weacon-protocol",
  "weacon-version",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

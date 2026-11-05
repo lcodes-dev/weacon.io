@@ -3,6 +3,7 @@
 mod app;
 mod cli;
 mod daemon;
+mod disk;
 mod doctor;
 mod logs;
 mod native_host;

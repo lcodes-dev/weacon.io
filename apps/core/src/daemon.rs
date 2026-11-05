@@ -13,6 +13,7 @@ use weacon_protocol::{
 };
 use weacon_version::Version;
 
+use crate::disk;
 use crate::picks::{KeepError, Picks};
 use crate::platform::{self, Listener, Owner, Stream};
 use crate::session::{Reply, Session};
@@ -20,6 +21,7 @@ use crate::session::{Reply, Session};
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
 pub(crate) const READ_CHUNK: usize = 8192;
 const ACCEPT_BACKOFF: Duration = Duration::from_millis(100);
+const DISK_CHECK: Duration = Duration::from_mins(1);
 
 pub(crate) fn socket_path(state_dir: &Path) -> PathBuf {
     state_dir.join("weacon.sock")
@@ -77,6 +79,7 @@ pub(crate) struct Daemon {
     socket: PathBuf,
     owner: Owner,
     shared: Shared,
+    disk: disk::Watch,
     // Held for the daemon's life, so a second daemon can't start.
     _lock: File,
 }
@@ -121,6 +124,7 @@ impl Daemon {
                 picks: Picks::new(state_dir),
                 log,
             },
+            disk: disk::Watch::new(state_dir.to_owned(), platform::free_space),
             _lock: lock,
         })
     }
@@ -128,10 +132,12 @@ impl Daemon {
     /// Serves clients until `shutdown` finishes, then closes every connection and the socket.
     pub(crate) async fn serve(mut self, shutdown: impl Future<Output = ()>) {
         let mut clients = JoinSet::new();
+        let mut disk_check = tokio::time::interval(DISK_CHECK);
         tokio::pin!(shutdown);
         loop {
             tokio::select! {
                 () = &mut shutdown => break,
+                _ = disk_check.tick() => self.disk.check(&self.shared.log).await,
                 accepted = self.listener.accept() => match accepted {
                     Ok(stream) => self.admit(stream, &mut clients),
                     Err(error) => {
@@ -350,6 +356,35 @@ mod tests {
         }
         let reader = lines.into_inner().into_inner();
         (replies, reader.unsplit(writer))
+    }
+
+    // Reads the free space the test wrote into the folder.
+    fn free_in_file(dir: &Path) -> io::Result<u64> {
+        let free = fs::read_to_string(dir.join("free"))?;
+        free.parse().map_err(io::Error::other)
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn the_disk_is_checked_at_start_and_again_each_minute() {
+        let dir = temp_dir("daemon-disk");
+        fs::write(dir.join("free"), "0").unwrap();
+        let watched = dir.clone();
+        let running = start_as(&dir, |daemon| {
+            daemon.disk = disk::Watch::new(watched, free_in_file);
+        })
+        .unwrap();
+
+        tokio::time::sleep(DISK_CHECK / 2).await;
+        fs::write(dir.join("free"), (8_u64 << 30).to_string()).unwrap();
+        tokio::time::sleep(DISK_CHECK).await;
+        let records = running.stop().await;
+
+        let logged = messages(&records);
+        assert!(
+            logged.ends_with(&["runs paused", "disk ok", "daemon stopped"]),
+            "{logged:?}"
+        );
+        fs::remove_dir_all(&dir).unwrap();
     }
 
     async fn connect(socket: &Path) -> impl AsyncRead + AsyncWrite + Unpin + use<> {

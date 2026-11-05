@@ -152,6 +152,25 @@ mod unix {
         }
     }
 
+    /// Bytes this user may still write on the disk holding `dir`.
+    #[expect(unsafe_code, reason = "statvfs has no safe API in std")]
+    pub(crate) fn free_space(dir: &Path) -> io::Result<u64> {
+        use std::ffi::CString;
+        use std::mem::MaybeUninit;
+        use std::os::unix::ffi::OsStrExt;
+
+        let path = CString::new(dir.as_os_str().as_bytes())
+            .map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?;
+        let mut stats = MaybeUninit::<libc::statvfs>::uninit();
+        // SAFETY: `path` is NUL-terminated and `stats` is writable space for one statvfs.
+        if unsafe { libc::statvfs(path.as_ptr(), stats.as_mut_ptr()) } != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        // SAFETY: statvfs returned 0, so it filled `stats`.
+        let stats = unsafe { stats.assume_init() };
+        Ok(stats.f_bavail.saturating_mul(stats.f_frsize))
+    }
+
     pub(crate) fn create_private(dir: &Path) -> io::Result<()> {
         use std::os::unix::fs::DirBuilderExt;
         fs::DirBuilder::new()
@@ -277,6 +296,29 @@ mod windows {
             let after = create_pipe(&self.name, false)?;
             Ok(Stream(mem::replace(&mut self.next, after)))
         }
+    }
+
+    /// Bytes this user may still write on the disk holding `dir`.
+    #[expect(unsafe_code, reason = "GetDiskFreeSpaceExW has no safe API in std")]
+    pub(crate) fn free_space(dir: &Path) -> io::Result<u64> {
+        use std::os::windows::ffi::OsStrExt;
+        use windows_sys::Win32::Storage::FileSystem::GetDiskFreeSpaceExW;
+
+        let wide: Vec<u16> = dir.as_os_str().encode_wide().chain([0]).collect();
+        let mut available = 0_u64;
+        // SAFETY: `wide` is NUL-terminated, `available` is writable and the totals may be null.
+        let done = unsafe {
+            GetDiskFreeSpaceExW(
+                wide.as_ptr(),
+                &raw mut available,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+            )
+        };
+        if done == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(available)
     }
 
     /// Creates `dir`, making it private if it's new; parents get the access they inherit.
@@ -440,6 +482,15 @@ mod tests {
     #[test]
     fn elsewhere_agents_start_as_they_are() {
         assert_eq!(spawn_policy(&env(&[])), SpawnPolicy::default());
+    }
+
+    #[test]
+    fn free_space_is_read_for_a_folder_and_refused_for_a_missing_one() {
+        let dir = crate::test_support::temp_dir("free");
+
+        assert!(free_space(&dir).unwrap() > 0);
+        free_space(&dir.join("missing")).unwrap_err();
+        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
