@@ -3,6 +3,7 @@
 //! It does no I/O: the caller reads the files and passes their contents in.
 
 mod anchor;
+mod cfg;
 mod fingerprint;
 mod index;
 mod outline;

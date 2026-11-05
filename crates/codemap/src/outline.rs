@@ -3,6 +3,7 @@ use std::fmt;
 
 use tree_sitter::{Node, Parser};
 
+use crate::cfg::implies_test;
 use crate::{Error, Fingerprint};
 
 /// An item declared in a module, named relative to it: `Frame`, `Frame::new`, `tests::helper`.
@@ -183,33 +184,6 @@ fn test_only(item: Node<'_>, source: &[u8]) -> bool {
         })
 }
 
-/// Whether a `cfg` predicate holds only in tests: `test`, alone or inside nothing but `all(...)`.
-fn implies_test(predicate: &str) -> bool {
-    // For each open parenthesis, whether it and every one around it belongs to an `all`.
-    let mut only_all: Vec<bool> = Vec::new();
-    let (mut word, mut quoted) = (None, false);
-    for (at, it) in predicate.char_indices().chain([(predicate.len(), ' ')]) {
-        if it.is_alphanumeric() || it == '_' {
-            word.get_or_insert(at);
-            continue;
-        }
-        let name = word
-            .take()
-            .and_then(|start| predicate.get(start..at))
-            .unwrap_or_default();
-        let enclosed = only_all.last().copied().unwrap_or(true);
-        match it {
-            '"' => quoted = !quoted,
-            _ if quoted => {}
-            '(' => only_all.push(enclosed && name == "all"),
-            _ if name == "test" && enclosed => return true,
-            ')' => drop(only_all.pop()),
-            _ => {}
-        }
-    }
-    false
-}
-
 /// Repeated names, such as one function per platform, become `name`, `name[2]`, `name[3]`.
 fn number_repeats(found: &mut [Symbol]) {
     let mut seen: BTreeMap<String, u32> = BTreeMap::new();
@@ -225,11 +199,14 @@ fn number_repeats(found: &mut [Symbol]) {
 fn fingerprint(item: Node<'_>, source: &[u8]) -> Fingerprint {
     let mut tokens = Vec::new();
     preorder(item, |node| {
-        let comment = matches!(node.kind(), "line_comment" | "block_comment");
-        if !comment && node.child_count() == 0 {
+        let skipped = matches!(
+            node.kind(),
+            "line_comment" | "block_comment" | "attribute_item" | "inner_attribute_item"
+        );
+        if !skipped && node.child_count() == 0 {
             tokens.extend(source.get(node.byte_range()));
         }
-        !comment
+        !skipped
     });
     Fingerprint::of(tokens)
 }
@@ -359,36 +336,6 @@ mod tests {
     }
 
     #[test]
-    fn a_deeply_nested_cfg_does_not_overflow_the_stack() {
-        let depth = 100_000;
-        let predicate = format!("{}test{}", "all(".repeat(depth), ")".repeat(depth));
-        assert!(implies_test(&predicate));
-        assert!(!implies_test(&predicate.replace("test", "unix")));
-    }
-
-    #[test]
-    fn only_the_word_test_counts() {
-        for predicate in [
-            "test",
-            "all(unix,test)",
-            "all(feature=\"x(\",test)",
-            "all(not(unix),test)",
-        ] {
-            assert!(implies_test(predicate), "{predicate}");
-        }
-        for predicate in [
-            "tests",
-            "my_test",
-            "test_x",
-            "not(all(test))",
-            "all(not(test))",
-            "feature=\"a test b\"",
-        ] {
-            assert!(!implies_test(predicate), "{predicate}");
-        }
-    }
-
-    #[test]
     fn numbers_repeated_names() {
         let text = "#[cfg(unix)]\nfn a() {}\n#[cfg(windows)]\nfn a() {}\nfn a() {}\nfn b() {}\n";
         assert_eq!(names(text), ["fn a 2", "fn a[2] 4", "fn a[3] 5", "fn b 6"]);
@@ -401,6 +348,11 @@ mod tests {
         assert_eq!(print(styled, "a"), plain);
         assert_ne!(print("fn a(x: u8) -> u8 { x + 2 }", "a"), plain);
         assert_ne!(print("fn a(x: u8) -> u8 { x + 1 } fn b() {}", "b"), plain);
+        let module = print("mod m { fn a() {} }", "m");
+        assert_eq!(
+            print("mod m {\n#![allow(dead_code)]\n#[inline]\nfn a() {} }", "m"),
+            module
+        );
     }
 
     #[test]
