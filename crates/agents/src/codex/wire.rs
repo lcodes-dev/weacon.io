@@ -217,8 +217,18 @@ impl Wire {
         vec![Heard::Finished { ok }]
     }
 
-    // Notices from other threads, such as a sub-agent's, aren't this run's.
+    // Notices from other threads, such as a sub-agent's, aren't this run's; approvals are
+    // asked on any thread, so their resolutions are heard from any thread too.
     fn notified(&mut self, method: &str, params: &Value) -> Vec<Heard> {
+        if method == "serverRequest/resolved" {
+            return params
+                .get("requestId")
+                .map(|request| Heard::Withdrawn {
+                    request: request.clone(),
+                })
+                .into_iter()
+                .collect();
+        }
         if params.get("threadId").and_then(Value::as_str) != self.thread.as_deref() {
             return Vec::new();
         }
@@ -232,13 +242,6 @@ impl Wire {
             }
             "item/started" => item(params).and_then(started).into_iter().collect(),
             "item/completed" => item(params).and_then(completed).into_iter().collect(),
-            "serverRequest/resolved" => params
-                .get("requestId")
-                .map(|request| Heard::Withdrawn {
-                    request: request.clone(),
-                })
-                .into_iter()
-                .collect(),
             _ => Vec::new(),
         }
     }

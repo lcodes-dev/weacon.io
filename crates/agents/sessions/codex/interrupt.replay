@@ -9,7 +9,7 @@
 < {"id":9,"method":"item/commandExecution/requestApproval","params":{"threadId":"019a2b3c-4d5e-7f60-8a9b-0c1d2e3f4a5b","turnId":"turn-2","itemId":"item-3","startedAtMs":1,"command":"rm -rf target","cwd":"/work"}}
 > {"id":4,"method":"turn/interrupt","params":{"threadId":"019a2b3c-4d5e-7f60-8a9b-0c1d2e3f4a5b","turnId":"turn-2"}}
 > {"id":"srv-1","error":{"code":-32601,"message":"Weacon doesn't handle this request."}}
-< {"method":"serverRequest/resolved","params":{"threadId":"019a2b3c-4d5e-7f60-8a9b-0c1d2e3f4a5b","requestId":9}}
+< {"method":"serverRequest/resolved","params":{"threadId":"019a2b3c-0000-7000-8000-00000000c0de","requestId":9}}
 < {"id":3,"result":{"turn":{"id":"turn-2","items":[],"status":"inProgress"}}}
 < {"id":4,"result":{}}
 < {"method":"turn/completed","params":{"threadId":"019a2b3c-4d5e-7f60-8a9b-0c1d2e3f4a5b","turn":{"id":"turn-2","items":[],"status":"interrupted"}}}
