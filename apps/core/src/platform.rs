@@ -1,5 +1,5 @@
 use std::ffi::OsString;
-use std::fs::{self, File, OpenOptions};
+use std::fs::{File, OpenOptions};
 use std::io;
 use std::path::{Path, PathBuf};
 
@@ -39,21 +39,7 @@ pub(crate) fn state_dir(env: Env<'_>) -> Option<PathBuf> {
 /// Creates `dir` and any missing parents readable only by this user; existing folders keep
 /// their permissions.
 pub(crate) fn private_dir(dir: &Path) -> io::Result<()> {
-    #[cfg(windows)]
-    let new = !dir.exists();
-    let mut builder = fs::DirBuilder::new();
-    builder.recursive(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::DirBuilderExt;
-        builder.mode(0o700);
-    }
-    builder.create(dir)?;
-    #[cfg(windows)]
-    if new {
-        private_owner(dir)?;
-    }
-    Ok(())
+    create_private(dir)
 }
 
 /// Opens `path` for appending, creating it readable only by this user.
@@ -93,6 +79,14 @@ mod unix {
         pub(crate) async fn accept(&mut self) -> io::Result<Stream> {
             Ok(self.0.accept().await?.0)
         }
+    }
+
+    pub(crate) fn create_private(dir: &Path) -> io::Result<()> {
+        use std::os::unix::fs::DirBuilderExt;
+        fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(dir)
     }
 
     /// The user that owns `dir`, when only that user can reach it.
@@ -191,6 +185,16 @@ mod windows {
             let after = pipe(&self.name, &self.user, false)?;
             Ok(mem::replace(&mut self.next, after))
         }
+    }
+
+    /// Creates `dir`, making it private if it's new; parents get the access they inherit.
+    pub(crate) fn create_private(dir: &Path) -> io::Result<()> {
+        let new = !dir.exists();
+        fs::DirBuilder::new().recursive(true).create(dir)?;
+        if new {
+            private_owner(dir)?;
+        }
+        Ok(())
     }
 
     /// Makes `dir`, the core's own folder, owned by this user and reachable only by them, the
@@ -425,6 +429,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn new_folders_and_files_are_private_and_existing_ones_kept() {
+        use std::fs;
         use std::os::unix::fs::PermissionsExt;
 
         let dir = crate::test_support::temp_dir("private");
