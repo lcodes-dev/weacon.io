@@ -6,7 +6,7 @@ import { readFileSync } from "node:fs";
 export type Schema = {
   $ref?: string;
   $defs?: Record<string, Schema>;
-  type?: string;
+  type?: string | string[];
   const?: unknown;
   properties?: Record<string, Schema>;
   required?: string[];
@@ -81,11 +81,18 @@ function base(schema: Schema, indent: string): string {
   if (schema.const !== undefined) {
     return literal(schema.const);
   }
+  if (Array.isArray(schema.type)) {
+    return union(
+      schema.type.map((type) => base({ ...schema, type }, indent)),
+      indent,
+    );
+  }
   switch (schema.type) {
     case undefined:
       return schema.properties === undefined ? "unknown" : object(schema, indent);
     case "string":
     case "boolean":
+    case "null":
       return schema.type;
     case "integer":
     case "number":

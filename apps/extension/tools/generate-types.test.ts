@@ -32,6 +32,7 @@ test("objects mark optional fields and keep their descriptions", () => {
       anything: {},
       list: { type: "array" },
       flag: { const: true },
+      maybe: { type: ["string", "null"] },
     },
     required: ["name", "tags"],
     $defs: { Tag: { type: "string", maxLength: 8, pattern: "^[a-z]+$" } as Schema, Bag: { type: "object" } },
@@ -56,6 +57,10 @@ export type Thing = {
   anything?: unknown;
   list?: Array<unknown>;
   flag?: true;
+  maybe?: (
+    | string
+    | null
+  );
 };
 
 export type Tag = string;
@@ -113,7 +118,7 @@ test("anything it doesn't know is refused rather than dropped", () => {
     [{ title: "A", $defs: { "b-c": {} } }, "b-c: not a TypeScript name"],
     [{ title: "A", properties: { "b-c": {} } }, "b-c: not a TypeScript name"],
     [{ title: "A", anyOf: [] } as Schema, "unsupported keywords: anyOf"],
-    [{ title: "A", type: "null" }, "unsupported type: null"],
+    [{ title: "A", type: "tuple" }, "unsupported type: tuple"],
     [{ title: "A", $ref: "other.json#/A" }, "unsupported reference: other.json#/A"],
     [{ title: "A", $ref: "#/$defs/a-b" }, "unsupported reference: #/$defs/a-b"],
     [{ title: "A", const: null }, "unsupported constant: only strings, numbers and booleans"],
