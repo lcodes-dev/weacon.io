@@ -13,6 +13,7 @@ use weacon_protocol::{
 };
 
 use crate::disk;
+use crate::memory;
 use crate::picks::{KeepError, Picks};
 use crate::platform::{self, Listener, Owner, Stream};
 use crate::session::{Reply, Session};
@@ -21,6 +22,7 @@ const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
 pub(crate) const READ_CHUNK: usize = 8192;
 const ACCEPT_BACKOFF: Duration = Duration::from_millis(100);
 const DISK_CHECK: Duration = Duration::from_mins(1);
+const MEMORY_SAMPLE: Duration = Duration::from_mins(5);
 
 pub(crate) fn socket_path(state_dir: &Path) -> PathBuf {
     state_dir.join("weacon.sock")
@@ -125,11 +127,13 @@ impl Daemon {
     pub(crate) async fn serve(mut self, shutdown: impl Future<Output = ()>) {
         let mut clients = JoinSet::new();
         let mut disk_check = tokio::time::interval(DISK_CHECK);
+        let mut memory_sample = tokio::time::interval(MEMORY_SAMPLE);
         tokio::pin!(shutdown);
         loop {
             tokio::select! {
                 () = &mut shutdown => break,
                 _ = disk_check.tick() => self.disk.check(&self.shared.log).await,
+                _ = memory_sample.tick(), if platform::PROCESSES => memory::record(&self.shared.log).await,
                 accepted = self.listener.accept() => match accepted {
                     Ok(stream) => self.admit(stream, &mut clients),
                     Err(error) => {
@@ -352,8 +356,18 @@ mod tests {
 
     // Waits for `message`, since the disk is read on another thread; bounded so a miss fails.
     async fn logs(records: &Records, message: &str) {
+        logs_times(records, message, 1).await;
+    }
+
+    async fn logs_times(records: &Records, message: &str, times: usize) {
+        let count = || {
+            messages(records)
+                .iter()
+                .filter(|logged| **logged == message)
+                .count()
+        };
         let logged = async {
-            while !messages(records).contains(&message) {
+            while count() < times {
                 tokio::time::sleep(Duration::from_millis(1)).await;
             }
         };
@@ -382,11 +396,25 @@ mod tests {
         logs(&running.records, "disk ok").await;
         let records = running.stop().await;
 
-        let logged = messages(&records);
-        assert!(
-            logged.ends_with(&["disk full", "disk ok", "daemon stopped"]),
-            "{logged:?}"
-        );
+        let disk: Vec<_> = messages(&records)
+            .into_iter()
+            .filter(|message| message.starts_with("disk "))
+            .collect();
+        assert_eq!(disk, ["disk full", "disk ok"]);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test(start_paused = true)]
+    async fn memory_is_sampled_at_start_and_every_five_minutes() {
+        let dir = temp_dir("daemon-memory");
+        let running = start(&dir).unwrap();
+
+        logs(&running.records, "memory sampled").await;
+        tokio::time::sleep(MEMORY_SAMPLE).await;
+        logs_times(&running.records, "memory sampled", 2).await;
+
+        running.stop().await;
         fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -413,7 +441,11 @@ mod tests {
             ask(&socket).await.unwrap_err().code().as_str(),
             "daemon.not_running"
         );
-        assert_eq!(messages(&records), ["daemon started", "daemon stopped"]);
+        let lifecycle: Vec<_> = messages(&records)
+            .into_iter()
+            .filter(|message| message.starts_with("daemon "))
+            .collect();
+        assert_eq!(lifecycle, ["daemon started", "daemon stopped"]);
         fs::remove_dir_all(&dir).unwrap();
     }
 
