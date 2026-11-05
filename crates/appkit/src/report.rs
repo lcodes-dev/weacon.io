@@ -24,23 +24,30 @@ fn over(https_only: bool) -> Deliver {
     let agent: ureq::Agent = ureq::Agent::config_builder()
         .timeout_global(Some(TIMEOUT))
         .https_only(https_only)
+        // A redirect would carry the auth header to wherever it points.
+        .max_redirects(0)
         .build()
         .into();
     Box::new(move |upload| {
-        agent
+        let response = agent
             .post(&upload.url)
             .header("X-Sentry-Auth", &upload.auth)
             .header("Content-Type", "application/x-sentry-envelope")
             .send(upload.body.as_slice())
-            .map(drop)
-            .map_err(|error| {
-                Fault::new(
-                    code!("report.send_failed"),
-                    "The error report couldn't be sent",
-                )
-                .because(error)
-            })
+            .map_err(|error| send_failed().because(error))?;
+        if response.status().is_success() {
+            Ok(())
+        } else {
+            Err(send_failed())
+        }
     })
+}
+
+fn send_failed() -> Fault {
+    Fault::new(
+        code!("report.send_failed"),
+        "The error report couldn't be sent",
+    )
 }
 
 #[cfg(test)]
@@ -66,7 +73,7 @@ mod tests {
     }
 
     // Answers one request with `status`, and hands back its head lines and body.
-    fn serve_once(status: &'static str) -> (u16, thread::JoinHandle<Request>) {
+    fn serve_once(status: String) -> (u16, thread::JoinHandle<Request>) {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         let server = thread::spawn(move || {
@@ -106,7 +113,7 @@ mod tests {
 
     #[test]
     fn http_posts_the_envelope_with_its_auth() {
-        let (port, server) = serve_once("200 OK");
+        let (port, server) = serve_once("200 OK".to_owned());
         over(false)(&upload(port)).unwrap();
         let (head, body) = server.join().unwrap();
         let has = |header: &str| head.iter().any(|line| line.eq_ignore_ascii_case(header));
@@ -122,7 +129,7 @@ mod tests {
 
     #[test]
     fn http_reports_a_refused_report() {
-        let (port, server) = serve_once("500 Internal Server Error");
+        let (port, server) = serve_once("500 Internal Server Error".to_owned());
         let error = over(false)(&upload(port)).unwrap_err();
         drop(server.join().unwrap());
 
@@ -139,6 +146,22 @@ mod tests {
         assert_eq!(error.code().as_str(), "report.send_failed");
         assert_eq!(
             listener.accept().unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock
+        );
+    }
+
+    #[test]
+    fn a_redirect_is_a_failure_and_is_not_followed() {
+        let elsewhere = TcpListener::bind("127.0.0.1:0").unwrap();
+        elsewhere.set_nonblocking(true).unwrap();
+        let target = elsewhere.local_addr().unwrap();
+        let (port, server) = serve_once(format!("302 Found\r\nlocation: http://{target}/"));
+        let error = over(false)(&upload(port)).unwrap_err();
+        drop(server.join().unwrap());
+
+        assert_eq!(error.code().as_str(), "report.send_failed");
+        assert_eq!(
+            elsewhere.accept().unwrap_err().kind(),
             std::io::ErrorKind::WouldBlock
         );
     }
