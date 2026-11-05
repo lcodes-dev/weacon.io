@@ -18,6 +18,9 @@ export type Envelope = {
   | {
     type: "receipt";
   } & Receipt
+  | {
+    type: "pick";
+  } & Pick
 );
 
 /**
@@ -56,6 +59,32 @@ export type Hello = {
   app: App;
   capabilities?: Array<Capability>;
   protocol: number;
+};
+
+/**
+ * An element someone picked on a local web page, sent to the core for a chat. The sender cuts
+ * the HTML short and shrinks the screenshot so the message fits in one frame.
+ */
+export type Pick = {
+  /**
+   * The element's outer HTML.
+   */
+  html: string;
+  request: RequestId;
+  /**
+   * What the element looked like: a PNG, base64-encoded. None when the page couldn't be
+   * captured.
+   */
+  screenshot_png?: (
+    | string
+    | null
+  );
+  /**
+   * A CSS selector that finds the element on the page.
+   */
+  selector: string;
+  title: string;
+  url: string;
 };
 
 /**
