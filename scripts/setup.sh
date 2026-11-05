@@ -95,7 +95,7 @@ fetch_dependencies() {
   }
 }
 
-# Only Debian and Ubuntu are covered; elsewhere the desktop's build names what it misses.
+# Only Debian and Ubuntu are covered; elsewhere, or without sudo, the desktop's build names what it misses.
 ensure_gui_packages() {
   [ "$(uname -s)" = Linux ] && command -v dpkg >/dev/null || return 0
   local package missing=() sudo=()
@@ -106,7 +106,7 @@ ensure_gui_packages() {
   [ "$(id -u)" -eq 0 ] || sudo=(sudo -n)
   log "Installing the desktop's system libraries: ${missing[*]}"
   { "${sudo[@]}" apt-get update -q && "${sudo[@]}" apt-get install -yq --no-install-recommends "${missing[@]}"; } \
-    >>.dev/setup.log 2>&1 || die "couldn't install ${missing[*]}; install them with apt-get and run this again"
+    >>.dev/setup.log 2>&1 || log "Couldn't install ${missing[*]}; only the desktop needs them, so install them with apt-get to build it"
 }
 
 # Later steps in a Claude Code session or a GitHub Actions job find the same tools.
