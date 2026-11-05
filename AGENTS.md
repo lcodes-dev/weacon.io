@@ -30,7 +30,7 @@ The default branch is `main`: start from it and open draft PRs against it. This 
 | `crates/codemap` | `protocol` | no |
 | `crates/agents` | `protocol`, `model`, `observability` | yes |
 | `crates/client` | `protocol`, `model`, `observability` | yes |
-| `crates/appkit` | `protocol`, `observability`; only apps use it | yes |
+| `crates/appkit` | `protocol`, `observability`, `version`; only apps use it | yes |
 | `crates/testing` | anything; only as a dev-dependency | yes |
 | `apps/core` | `protocol`, `model`, `client`, `agents`, `codemap`, `observability`, `appkit`, `version` | yes |
 | `apps/server` | `protocol`, `model`, `observability`, `appkit`, `version`; never `agents`, because the team server never runs agents | yes |

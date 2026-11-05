@@ -155,6 +155,7 @@ pub fn tee(all: Sink, some: Sink, from: Level) -> Sink {
     })
 }
 
+// Not `weacon-testing`: it depends on this crate, so its sinks would record other types.
 #[cfg(test)]
 pub(crate) mod tests {
     use std::time::Duration;

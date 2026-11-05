@@ -6,8 +6,8 @@ use weacon_observability::Fault;
 use weacon_protocol::code;
 
 use crate::app::{App, state_unavailable};
-use crate::cli::version_text;
 use crate::{disk, platform};
+use weacon_appkit::version_text;
 
 /// Prints the build and where this install keeps its state, and fails when it has nowhere to.
 pub(crate) fn run(app: &App, out: &mut impl Write) -> Result<(), Fault> {

@@ -81,7 +81,7 @@ fn numbered(path: &Path, number: u32) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::temp_dir;
+    use crate::test_support::temp_dir;
 
     fn read(path: &Path) -> String {
         fs::read_to_string(path).unwrap_or_default()

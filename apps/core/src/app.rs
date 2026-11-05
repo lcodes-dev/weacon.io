@@ -3,12 +3,11 @@ use std::panic::PanicHookInfo;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::Arc;
-use std::time::SystemTime;
 
 use weacon_agents::SpawnPolicy;
-use weacon_appkit::{KEEP, MAX_BYTES, RotatingFile, random_id};
+use weacon_appkit::{KEEP, MAX_BYTES, RotatingFile, panic_hook, root_logger};
 use weacon_observability::{
-    Deliver, Fault, Field, Level, Logger, LoggerOptions, Reporter, Reports, Sink, json_lines, tee,
+    Deliver, Fault, Field, Level, Logger, Reporter, Reports, Sink, json_lines, tee,
 };
 use weacon_protocol::code;
 use weacon_version::Version;
@@ -70,16 +69,7 @@ impl App {
         } else {
             Level::Warn
         };
-        let log = Logger::new(LoggerOptions {
-            sink: tee(file_sink, setup.stderr, stderr_from),
-            now: Box::new(SystemTime::now),
-            level: Level::Info,
-        })
-        .child(&[
-            ("name", version.name.into()),
-            ("version", version.version.into()),
-            ("commit", version.commit.into()),
-        ]);
+        let log = root_logger(tee(file_sink, setup.stderr, stderr_from), &version);
         log.info("app started", &[("mode", setup.mode.into())]);
         if let Some(error) = failure {
             log.warn("log file unavailable", &[("err", Field::error(&error))]);
@@ -87,12 +77,7 @@ impl App {
         let reports = reports(setup.env, &version, &log);
         Self {
             version,
-            reporter: Arc::new(Reporter::new(
-                reports,
-                setup.deliver,
-                Box::new(random_id),
-                Box::new(SystemTime::now),
-            )),
+            reporter: Arc::new(weacon_appkit::reporter(reports, setup.deliver)),
             log,
             state_dir,
             log_file,
@@ -116,16 +101,12 @@ impl App {
 
     /// Logs and reports a panic, without its message or location.
     pub(crate) fn panic_hook(&self) -> Box<dyn Fn(&PanicHookInfo<'_>) + Send + Sync> {
-        let (log, reporter) = (self.log.clone(), Arc::clone(&self.reporter));
-        Box::new(move |_| panicked(&log, &reporter))
+        panic_hook(self.log.clone(), Arc::clone(&self.reporter), panicked)
     }
 }
 
-fn panicked(log: &Logger, reporter: &Reporter) {
-    let fault = Fault::new(code!("core.panicked"), "The core panicked");
-    // The daemon survives a panic in one client task, so this is an error, not fatal.
-    log.error("panicked", &[("err", Field::error(&fault))]);
-    reporter.capture_error(&fault, fault.code(), log);
+fn panicked() -> Fault {
+    Fault::new(code!("core.panicked"), "The core panicked")
 }
 
 pub(crate) fn state_unavailable() -> Fault {
@@ -151,14 +132,13 @@ fn nothing() -> Sink {
 fn reports(env: Env<'_>, version: &Version, log: &Logger) -> Option<Reports> {
     let dsn = platform::var(env, "WEACON_SENTRY_DSN")?;
     let home_dir = platform::home_dir(env).unwrap_or_default();
-    Reports::new(
+    weacon_appkit::reports(
         &dsn.to_string_lossy(),
         &format!("weacon/{}", version.version),
-        &version.release(),
+        version,
         &home_dir.to_string_lossy(),
+        log,
     )
-    .inspect_err(|fault| log.warn("report setup failed", &[("err", Field::error(fault))]))
-    .ok()
 }
 
 #[cfg(test)]
@@ -260,15 +240,8 @@ mod tests {
     }
 
     #[test]
-    fn a_panic_is_logged_and_reported_without_its_text() {
-        let (app, stderr, uploads) = start(&[("WEACON_SENTRY_DSN", DSN)], false);
-        panicked(&app.log, &app.reporter);
-        let record = stderr.lock().unwrap().pop().unwrap();
-        let body = String::from_utf8_lossy(&uploads.lock().unwrap()[0].body).into_owned();
-
-        assert_eq!(record.msg, "panicked");
-        assert_eq!(record.level, Level::Error);
-        assert!(body.contains("core.panicked"), "{body}");
+    fn a_panic_is_reported_as_the_cores() {
+        assert_eq!(panicked().code().as_str(), "core.panicked");
     }
 
     #[test]

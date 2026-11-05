@@ -1169,9 +1169,12 @@ dependencies = [
 name = "weacon-appkit"
 version = "0.0.0"
 dependencies = [
+ "tokio",
  "ureq",
  "weacon-observability",
  "weacon-protocol",
+ "weacon-testing",
+ "weacon-version",
 ]
 
 [[package]]

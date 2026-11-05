@@ -188,30 +188,6 @@ mod unix {
     pub(crate) fn is_owner(stream: &Stream, owner: Owner) -> bool {
         stream.peer_cred().is_ok_and(|cred| cred.uid() == owner)
     }
-
-    /// Ctrl-C and SIGTERM, caught from when this is made; needs a tokio runtime.
-    pub(crate) struct Signals {
-        interrupt: Signal,
-        terminate: Signal,
-    }
-
-    use tokio::signal::unix::{Signal, SignalKind, signal};
-
-    impl Signals {
-        pub(crate) fn new() -> io::Result<Self> {
-            Ok(Self {
-                interrupt: signal(SignalKind::interrupt())?,
-                terminate: signal(SignalKind::terminate())?,
-            })
-        }
-
-        pub(crate) async fn wait(mut self) {
-            tokio::select! {
-                _ = self.interrupt.recv() => {}
-                _ = self.terminate.recv() => {}
-            }
-        }
-    }
 }
 
 #[cfg(windows)]
@@ -228,7 +204,6 @@ mod windows {
 
     use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
     use tokio::net::windows::named_pipe::NamedPipeServer;
-    use tokio::signal::windows::{CtrlC, CtrlShutdown, ctrl_c, ctrl_shutdown};
     use weacon_client::platform::pipe_name;
     use weacon_client::platform::windows::{create_pipe, make_private};
 
@@ -339,28 +314,6 @@ mod windows {
 
     pub(crate) const fn is_owner(_: &Stream, _: Owner) -> bool {
         true
-    }
-
-    /// Ctrl-C and shutdown, caught from when this is made; needs a tokio runtime.
-    pub(crate) struct Signals {
-        interrupt: CtrlC,
-        shutdown: CtrlShutdown,
-    }
-
-    impl Signals {
-        pub(crate) fn new() -> io::Result<Self> {
-            Ok(Self {
-                interrupt: ctrl_c()?,
-                shutdown: ctrl_shutdown()?,
-            })
-        }
-
-        pub(crate) async fn wait(mut self) {
-            tokio::select! {
-                _ = self.interrupt.recv() => {}
-                _ = self.shutdown.recv() => {}
-            }
-        }
     }
 }
 
