@@ -13,13 +13,16 @@ path = "src/main.rs"
 
 [dependencies]
 clap.workspace = true
+tokio.workspace = true
 ureq.workspace = true
+weacon-client.workspace = true
 weacon-observability.workspace = true
 weacon-protocol.workspace = true
 weacon-version.workspace = true
 
 [dev-dependencies]
 serde_json.workspace = true
+tokio = { workspace = true, features = ["sync", "test-util"] }
 
 [build-dependencies]
 weacon-version.workspace = true

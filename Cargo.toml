@@ -17,8 +17,10 @@ sentry-types = { version = "0.49.5", default-features = false, features = ["prot
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 syn = { version = "3.0.9", default-features = false, features = ["full", "parsing", "visit"] }
+tokio = { version = "1.54.1", features = ["io-util", "macros", "net", "rt", "signal", "time"] }
 toml = { version = "1.1.8", default-features = false, features = ["parse", "serde"] }
 ureq = { version = "3.5.1", default-features = false, features = ["rustls"] }
+weacon-client = { path = "crates/client" }
 weacon-observability = { path = "crates/observability" }
 weacon-protocol = { path = "crates/protocol" }
 weacon-version = { path = "crates/version" }

@@ -16,13 +16,34 @@ pub(crate) struct Cli {
 
 #[derive(Debug, PartialEq, Eq, Subcommand)]
 pub(crate) enum Command {
+    /// Run the daemon that clients connect to, until Ctrl-C or SIGTERM.
+    Daemon,
+    /// Check that the daemon is running and print its build.
+    Status,
     /// Check this install and print what it found.
     Doctor,
 }
 
+impl Cli {
+    /// Whether info logs reach stderr: with `--verbose`, or for a daemon started in a terminal.
+    pub(crate) fn prints_info(&self, stderr_is_terminal: bool) -> bool {
+        self.verbose || (self.command == Command::Daemon && stderr_is_terminal)
+    }
+}
+
 impl Command {
+    /// The daemon and short commands each rotate their own log file.
+    pub(crate) const fn log_name(&self) -> &'static str {
+        match self {
+            Self::Daemon => "daemon.log",
+            Self::Status | Self::Doctor => "cli.log",
+        }
+    }
+
     pub(crate) const fn name(&self) -> &'static str {
         match self {
+            Self::Daemon => "daemon",
+            Self::Status => "status",
             Self::Doctor => "doctor",
         }
     }
@@ -66,12 +87,32 @@ mod tests {
     #[test]
     fn commands_and_flags_parse() {
         let doctor = run(&["weacon", "doctor"]).unwrap();
+        let names = ["daemon", "status", "doctor"]
+            .map(|name| run(&["weacon", name]).unwrap().command.name());
         let verbose = run(&["weacon", "doctor", "--verbose"]).unwrap();
 
         assert_eq!(doctor.command, Command::Doctor);
-        assert_eq!(doctor.command.name(), "doctor");
+        assert_eq!(names, ["daemon", "status", "doctor"]);
         assert!(!doctor.verbose);
         assert!(verbose.verbose);
+    }
+
+    #[test]
+    fn the_daemon_logs_to_its_terminal_and_its_own_file() {
+        let daemon = run(&["weacon", "daemon"]).unwrap();
+        let status = run(&["weacon", "status"]).unwrap();
+        let verbose = run(&["weacon", "status", "--verbose"]).unwrap();
+
+        assert!(daemon.prints_info(true));
+        assert!(!daemon.prints_info(false));
+        assert!(!status.prints_info(true));
+        assert!(verbose.prints_info(false));
+        assert_eq!(daemon.command.log_name(), "daemon.log");
+        assert_eq!(status.command.log_name(), "cli.log");
+        assert_eq!(
+            run(&["weacon", "doctor"]).unwrap().command.log_name(),
+            "cli.log"
+        );
     }
 
     #[test]

@@ -4,7 +4,7 @@ use std::path::Path;
 use weacon_observability::Fault;
 use weacon_protocol::code;
 
-use crate::app::App;
+use crate::app::{App, state_unavailable};
 use crate::cli::version_text;
 
 /// Prints the build and where this install keeps its state, and fails when it has nowhere to.
@@ -17,10 +17,7 @@ pub(crate) fn run(app: &App, out: &mut impl Write) -> Result<(), Fault> {
         .because(error)
     })?;
     if app.log_file.is_none() {
-        return Err(Fault::new(
-            code!("state.unavailable"),
-            "The state folder can't be used: set HOME or WEACON_STATE_DIR to a writable folder",
-        ));
+        return Err(state_unavailable());
     }
     Ok(())
 }
@@ -54,7 +51,7 @@ mod tests {
         App {
             version: VERSION,
             log: recording_logger().0,
-            reporter: Reporter::new(None, Box::new(|_| Ok(()))),
+            reporter: Reporter::new(None, Box::new(|_| Ok(()))).into(),
             state_dir: state_dir.map(PathBuf::from),
             log_file: log_file.map(PathBuf::from),
         }

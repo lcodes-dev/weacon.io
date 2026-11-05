@@ -25,11 +25,11 @@ pub(crate) fn env(vars: &[(&str, &str)]) -> impl Fn(&str) -> Option<OsString> + 
     move |key| vars.get(key).cloned()
 }
 
-/// An empty folder of this test's own.
+/// An empty folder of this test's own, readable only by this user.
 pub(crate) fn temp_dir(name: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("weacon-core-{name}-{}", std::process::id()));
     drop(fs::remove_dir_all(&dir));
-    fs::create_dir_all(&dir).unwrap();
+    crate::platform::private_dir(&dir).unwrap();
     dir
 }
 
@@ -57,4 +57,14 @@ pub(crate) fn messages(records: &Records) -> Vec<&'static str> {
         .iter()
         .map(|record| record.msg)
         .collect()
+}
+
+/// The code of an error message, if it is one.
+pub(crate) fn error_code(message: &weacon_protocol::Message) -> Option<&str> {
+    match message {
+        weacon_protocol::Message::Error(body) => Some(body.code.as_str()),
+        weacon_protocol::Message::Hello(_)
+        | weacon_protocol::Message::Welcome(_)
+        | weacon_protocol::Message::Unknown => None,
+    }
 }

@@ -1,9 +1,12 @@
 use std::io;
+use std::panic::PanicHookInfo;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use std::sync::Arc;
 use std::time::SystemTime;
 
 use weacon_observability::{Fault, Field, Level, Logger, LoggerOptions, Reports, Sink, json_lines};
+use weacon_protocol::code;
 use weacon_version::Version;
 
 use crate::logs::{self, RotatingFile};
@@ -14,7 +17,7 @@ use crate::report::{Deliver, Reporter};
 pub(crate) struct App {
     pub(crate) version: Version,
     pub(crate) log: Logger,
-    pub(crate) reporter: Reporter,
+    pub(crate) reporter: Arc<Reporter>,
     pub(crate) state_dir: Option<PathBuf>,
     pub(crate) log_file: Option<PathBuf>,
 }
@@ -26,12 +29,17 @@ pub(crate) struct Setup<'a> {
     pub(crate) deliver: Deliver,
     pub(crate) verbose: bool,
     pub(crate) mode: &'static str,
+    /// The log file's name: the daemon and short commands each rotate their own.
+    pub(crate) log_name: &'static str,
 }
 
 impl App {
     pub(crate) fn start(version: Version, setup: Setup<'_>) -> Self {
         let state_dir = platform::state_dir(setup.env);
-        let (log_file, file_sink, failure) = match state_dir.as_deref().map(open_log) {
+        let (log_file, file_sink, failure) = match state_dir
+            .as_deref()
+            .map(|dir| open_log(dir, setup.log_name))
+        {
             Some(Ok((path, file))) => (Some(path), json_lines(file), None),
             Some(Err(error)) => (None, nothing(), Some(error)),
             None => (None, nothing(), None),
@@ -58,7 +66,7 @@ impl App {
         let reports = reports(setup.env, &version, &log);
         Self {
             version,
-            reporter: Reporter::new(reports, setup.deliver),
+            reporter: Arc::new(Reporter::new(reports, setup.deliver)),
             log,
             state_dir,
             log_file,
@@ -75,13 +83,33 @@ impl App {
         self.reporter.capture_error(&fault, fault.code(), &self.log);
         ExitCode::FAILURE
     }
+
+    /// Logs and reports a panic, without its message or location.
+    pub(crate) fn panic_hook(&self) -> Box<dyn Fn(&PanicHookInfo<'_>) + Send + Sync> {
+        let (log, reporter) = (self.log.clone(), Arc::clone(&self.reporter));
+        Box::new(move |_| panicked(&log, &reporter))
+    }
 }
 
-fn open_log(state_dir: &Path) -> io::Result<(PathBuf, RotatingFile)> {
+fn panicked(log: &Logger, reporter: &Reporter) {
+    let fault = Fault::new(code!("core.panicked"), "The core panicked");
+    // The daemon survives a panic in one client task, so this is an error, not fatal.
+    log.error("panicked", &[("err", Field::error(&fault))]);
+    reporter.capture_error(&fault, fault.code(), log);
+}
+
+pub(crate) fn state_unavailable() -> Fault {
+    Fault::new(
+        code!("state.unavailable"),
+        "The state folder can't be used: set HOME or WEACON_STATE_DIR to a writable folder",
+    )
+}
+
+fn open_log(state_dir: &Path, name: &str) -> io::Result<(PathBuf, RotatingFile)> {
     let dir = state_dir.join("logs");
     platform::private_dir(state_dir)?;
     platform::private_dir(&dir)?;
-    let path = dir.join("weacon.log");
+    let path = dir.join(name);
     let file = RotatingFile::open(path.clone(), logs::MAX_BYTES, logs::KEEP)?;
     Ok((path, file))
 }
@@ -132,6 +160,7 @@ mod tests {
                 }),
                 verbose,
                 mode: "doctor",
+                log_name: "cli.log",
             },
         );
         (app, records, uploads)
@@ -149,7 +178,7 @@ mod tests {
         let text = fs::read_to_string(&file).unwrap();
         let first: serde_json::Value = serde_json::from_str(text.lines().next().unwrap()).unwrap();
 
-        assert_eq!(file, dir.join("logs/weacon.log"));
+        assert_eq!(file, dir.join("logs/cli.log"));
         assert_eq!(first["msg"], "app started");
         assert_eq!(first["commit"], "1a2b3c4");
         assert_eq!(first["mode"], "doctor");
@@ -197,6 +226,18 @@ mod tests {
         assert!(app.reporter.is_on());
         assert_eq!(app.finish(Ok(())), ExitCode::SUCCESS);
         assert!(uploads.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_panic_is_logged_and_reported_without_its_text() {
+        let (app, stderr, uploads) = start(&[("WEACON_SENTRY_DSN", DSN)], false);
+        panicked(&app.log, &app.reporter);
+        let record = stderr.lock().unwrap().pop().unwrap();
+        let body = String::from_utf8_lossy(&uploads.lock().unwrap()[0].body).into_owned();
+
+        assert_eq!(record.msg, "panicked");
+        assert_eq!(record.level, Level::Error);
+        assert!(body.contains("core.panicked"), "{body}");
     }
 
     #[test]

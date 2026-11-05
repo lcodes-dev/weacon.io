@@ -2,14 +2,17 @@
 
 mod app;
 mod cli;
+mod daemon;
 mod doctor;
 mod logs;
 mod platform;
 mod report;
+mod session;
+mod status;
 #[cfg(test)]
 mod test_support;
 
-use std::io;
+use std::io::{self, IsTerminal};
 use std::process::ExitCode;
 
 use weacon_observability::json_lines;
@@ -33,11 +36,15 @@ fn main() -> ExitCode {
             env: &env,
             stderr: json_lines(io::stderr()),
             deliver: report::http(),
-            verbose: cli.verbose,
+            verbose: cli.prints_info(io::stderr().is_terminal()),
             mode: cli.command.name(),
+            log_name: cli.command.log_name(),
         },
     );
+    std::panic::set_hook(app.panic_hook());
     let result = match cli.command {
+        Command::Daemon => daemon::run(&app),
+        Command::Status => status::run(&app, &mut io::stdout().lock()),
         Command::Doctor => doctor::run(&app, &mut io::stdout().lock()),
     };
     app.finish(result)
