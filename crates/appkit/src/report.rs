@@ -14,11 +14,16 @@ pub fn random_id() -> u128 {
     u128::from(half()) << 64 | u128::from(half())
 }
 
-/// Sends reports over HTTP.
+/// Sends reports over HTTPS, so their auth header never travels in the clear.
 #[must_use]
 pub fn http() -> Deliver {
+    over(true)
+}
+
+fn over(https_only: bool) -> Deliver {
     let agent: ureq::Agent = ureq::Agent::config_builder()
         .timeout_global(Some(TIMEOUT))
+        .https_only(https_only)
         .build()
         .into();
     Box::new(move |upload| {
@@ -102,7 +107,7 @@ mod tests {
     #[test]
     fn http_posts_the_envelope_with_its_auth() {
         let (port, server) = serve_once("200 OK");
-        http()(&upload(port)).unwrap();
+        over(false)(&upload(port)).unwrap();
         let (head, body) = server.join().unwrap();
         let has = |header: &str| head.iter().any(|line| line.eq_ignore_ascii_case(header));
 
@@ -118,9 +123,23 @@ mod tests {
     #[test]
     fn http_reports_a_refused_report() {
         let (port, server) = serve_once("500 Internal Server Error");
-        let error = http()(&upload(port)).unwrap_err();
+        let error = over(false)(&upload(port)).unwrap_err();
         drop(server.join().unwrap());
 
         assert_eq!(error.code().as_str(), "report.send_failed");
+    }
+
+    #[test]
+    fn http_refuses_to_send_in_the_clear() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let error = http()(&upload(port)).unwrap_err();
+
+        assert_eq!(error.code().as_str(), "report.send_failed");
+        assert_eq!(
+            listener.accept().unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock
+        );
     }
 }

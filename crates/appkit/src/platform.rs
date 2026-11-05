@@ -2,11 +2,6 @@ use std::fs::{File, OpenOptions};
 use std::io;
 use std::path::Path;
 
-#[cfg(unix)]
-use tokio::signal::unix::{Signal as Interrupt, Signal as Stop, SignalKind, signal};
-#[cfg(windows)]
-use tokio::signal::windows::{CtrlC as Interrupt, CtrlShutdown as Stop, ctrl_c, ctrl_shutdown};
-
 /// Opens `path` for appending, creating it readable only by this user.
 ///
 /// # Errors
@@ -23,38 +18,75 @@ pub fn private_append(path: &Path) -> io::Result<File> {
     options.open(path)
 }
 
-/// Ctrl-C and the system's request to stop, caught from when this is made; needs a tokio
-/// runtime.
-pub struct Signals {
-    interrupt: Interrupt,
-    stop: Stop,
+#[cfg(unix)]
+pub use unix::Signals;
+#[cfg(windows)]
+pub use windows::Signals;
+
+#[cfg(unix)]
+mod unix {
+    use std::io;
+
+    use tokio::signal::unix::{Signal, SignalKind, signal};
+
+    /// Ctrl-C and SIGTERM, caught from when this is made; needs a tokio runtime.
+    pub struct Signals {
+        interrupt: Signal,
+        terminate: Signal,
+    }
+
+    impl Signals {
+        /// # Errors
+        /// When the signals can't be caught.
+        pub fn new() -> io::Result<Self> {
+            Ok(Self {
+                interrupt: signal(SignalKind::interrupt())?,
+                terminate: signal(SignalKind::terminate())?,
+            })
+        }
+
+        pub async fn wait(mut self) {
+            tokio::select! {
+                _ = self.interrupt.recv() => {}
+                _ = self.terminate.recv() => {}
+            }
+        }
+    }
 }
 
-impl Signals {
-    /// # Errors
-    /// When the signals can't be caught.
-    #[cfg(unix)]
-    pub fn new() -> io::Result<Self> {
-        Ok(Self {
-            interrupt: signal(SignalKind::interrupt())?,
-            stop: signal(SignalKind::terminate())?,
-        })
+#[cfg(windows)]
+mod windows {
+    use std::io;
+
+    use tokio::signal::windows::{
+        CtrlC, CtrlClose, CtrlShutdown, ctrl_c, ctrl_close, ctrl_shutdown,
+    };
+
+    /// Ctrl-C, the console closing and shutdown, caught from when this is made; needs a tokio
+    /// runtime.
+    pub struct Signals {
+        interrupt: CtrlC,
+        close: CtrlClose,
+        shutdown: CtrlShutdown,
     }
 
-    /// # Errors
-    /// When the signals can't be caught.
-    #[cfg(windows)]
-    pub fn new() -> io::Result<Self> {
-        Ok(Self {
-            interrupt: ctrl_c()?,
-            stop: ctrl_shutdown()?,
-        })
-    }
+    impl Signals {
+        /// # Errors
+        /// When the signals can't be caught.
+        pub fn new() -> io::Result<Self> {
+            Ok(Self {
+                interrupt: ctrl_c()?,
+                close: ctrl_close()?,
+                shutdown: ctrl_shutdown()?,
+            })
+        }
 
-    pub async fn wait(mut self) {
-        tokio::select! {
-            _ = self.interrupt.recv() => {}
-            _ = self.stop.recv() => {}
+        pub async fn wait(mut self) {
+            tokio::select! {
+                _ = self.interrupt.recv() => {}
+                _ = self.close.recv() => {}
+                _ = self.shutdown.recv() => {}
+            }
         }
     }
 }
