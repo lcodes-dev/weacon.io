@@ -8,24 +8,24 @@ use weacon_observability::{Field, Logger};
 const MIB: u64 = 1 << 20;
 const GIB: u64 = 1 << 30;
 const LOW: u64 = 5 * GIB;
-const PAUSE: u64 = GIB;
+const FULL: u64 = GIB;
 // Each level lifts only well clear of its line, so a disk at the edge doesn't flap.
 const OK_AGAIN: u64 = 6 * GIB;
-const RESUME: u64 = 2 * GIB;
+const NOT_FULL: u64 = 2 * GIB;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Level {
     Ok,
     Low,
-    Paused,
+    Full,
 }
 
 impl Level {
     /// The level with `free` bytes left, coming from `self`.
     pub(crate) const fn next(self, free: u64) -> Self {
-        let paused = matches!(self, Self::Paused);
-        if free < PAUSE || (paused && free < RESUME) {
-            Self::Paused
+        let full = matches!(self, Self::Full);
+        if free < FULL || (full && free < NOT_FULL) {
+            Self::Full
         } else if free < LOW || (!matches!(self, Self::Ok) && free < OK_AGAIN) {
             Self::Low
         } else {
@@ -37,7 +37,7 @@ impl Level {
         match self {
             Self::Ok => "ok",
             Self::Low => "low",
-            Self::Paused => "runs paused",
+            Self::Full => "full",
         }
     }
 }
@@ -89,7 +89,7 @@ impl Watch {
         if next != self.level {
             let fields = [("free_mib", (free / MIB).into())];
             match next {
-                Level::Paused => log.error("runs paused", &fields),
+                Level::Full => log.error("disk full", &fields),
                 Level::Low => log.warn("disk low", &fields),
                 Level::Ok => log.info("disk ok", &fields),
             }
@@ -118,13 +118,13 @@ mod tests {
         assert_eq!(Level::Ok.next(LOW - 1), Level::Low);
         assert_eq!(Level::Low.next(OK_AGAIN - 1), Level::Low);
         assert_eq!(Level::Low.next(OK_AGAIN), Level::Ok);
-        assert_eq!(Level::Low.next(PAUSE), Level::Low);
-        assert_eq!(Level::Low.next(PAUSE - 1), Level::Paused);
-        assert_eq!(Level::Paused.next(RESUME - 1), Level::Paused);
-        assert_eq!(Level::Paused.next(3 * GIB / 2), Level::Paused);
+        assert_eq!(Level::Low.next(FULL), Level::Low);
+        assert_eq!(Level::Low.next(FULL - 1), Level::Full);
+        assert_eq!(Level::Full.next(NOT_FULL - 1), Level::Full);
+        assert_eq!(Level::Full.next(3 * GIB / 2), Level::Full);
         assert_eq!(Level::Low.next(11 * GIB / 2), Level::Low);
-        assert_eq!(Level::Paused.next(RESUME), Level::Low);
-        assert_eq!(Level::Paused.next(OK_AGAIN), Level::Ok);
+        assert_eq!(Level::Full.next(NOT_FULL), Level::Low);
+        assert_eq!(Level::Full.next(OK_AGAIN), Level::Ok);
     }
 
     #[test]
@@ -150,7 +150,7 @@ mod tests {
         assert_eq!(
             messages(&records),
             [
-                "runs paused",
+                "disk full",
                 "disk check failed",
                 "disk low",
                 "disk check failed",
@@ -166,6 +166,6 @@ mod tests {
         assert_eq!(describe(12 * GIB + MIB), "12 GiB free (ok)");
         assert_eq!(describe(10 * GIB), "10 GiB free (ok)");
         assert_eq!(describe(3 * GIB), "3072 MiB free (low)");
-        assert_eq!(describe(MIB), "1 MiB free (runs paused)");
+        assert_eq!(describe(MIB), "1 MiB free (full)");
     }
 }

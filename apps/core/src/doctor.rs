@@ -73,17 +73,22 @@ mod tests {
 
     #[test]
     fn prints_the_build_and_the_state_folder() {
+        let dir = test_support::temp_dir("doctor").join("missing");
+        let state = dir.to_str().unwrap();
         let mut out = Vec::new();
         run(
-            &app(Some("/srv/weacon"), Some("/srv/weacon/logs/weacon.log")),
+            &app(Some(state), Some("/srv/weacon/logs/weacon.log")),
             &mut out,
         )
         .unwrap();
 
         assert_eq!(
             String::from_utf8(out).unwrap(),
-            "weacon 0.1.0 (1a2b3c4)\nState folder: /srv/weacon\nLog file: /srv/weacon/logs/weacon.log\nDisk: unavailable\nError reports: off\n"
+            format!(
+                "weacon 0.1.0 (1a2b3c4)\nState folder: {state}\nLog file: /srv/weacon/logs/weacon.log\nDisk: unavailable\nError reports: off\n"
+            )
         );
+        std::fs::remove_dir_all(dir.parent().unwrap()).unwrap();
     }
 
     #[test]

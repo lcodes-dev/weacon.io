@@ -358,6 +358,16 @@ mod tests {
         (replies, reader.unsplit(writer))
     }
 
+    // Waits for `message`, since the disk is read on another thread; bounded so a miss fails.
+    async fn logs(records: &Records, message: &str) {
+        let logged = async {
+            while !messages(records).contains(&message) {
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }
+        };
+        timeout(Duration::from_secs(5), logged).await.unwrap();
+    }
+
     // Reads the free space the test wrote into the folder.
     fn free_in_file(dir: &Path) -> io::Result<u64> {
         let free = fs::read_to_string(dir.join("free"))?;
@@ -374,14 +384,15 @@ mod tests {
         })
         .unwrap();
 
-        tokio::time::sleep(DISK_CHECK / 2).await;
+        logs(&running.records, "disk full").await;
         fs::write(dir.join("free"), (8_u64 << 30).to_string()).unwrap();
         tokio::time::sleep(DISK_CHECK).await;
+        logs(&running.records, "disk ok").await;
         let records = running.stop().await;
 
         let logged = messages(&records);
         assert!(
-            logged.ends_with(&["runs paused", "disk ok", "daemon stopped"]),
+            logged.ends_with(&["disk full", "disk ok", "daemon stopped"]),
             "{logged:?}"
         );
         fs::remove_dir_all(&dir).unwrap();
