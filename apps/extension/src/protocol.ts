@@ -24,6 +24,9 @@ export type Envelope = {
   | {
     type: "run";
   } & RunUpdate
+  | {
+    type: "workspace";
+  } & WorkspaceUpdate
 );
 
 /**
@@ -68,6 +71,11 @@ export type Hello = {
   capabilities?: Array<Capability>;
   protocol: number;
 };
+
+/**
+ * A member of a workspace, 1–64 ASCII letters, digits, `-` or `_`.
+ */
+export type MemberId = string;
 
 /**
  * Where an accepted command stands. It ends `completed`, `interrupted`, `failed` or `unknown`.
@@ -215,4 +223,29 @@ export type RunUpdate = {
 export type Welcome = {
   app: App;
   capabilities?: Array<Capability>;
+};
+
+/**
+ * What changed in a workspace.
+ */
+export type WorkspaceChange = (
+  | {
+    kind: "member_joined";
+    member: MemberId;
+  }
+);
+
+/**
+ * A workspace on the server, 1–64 ASCII letters, digits, `-` or `_`.
+ */
+export type WorkspaceId = string;
+
+/**
+ * One change to `workspace`. `seq` grows strictly within a workspace, and a feed opened with
+ * `since=N` sends every change after `N`.
+ */
+export type WorkspaceUpdate = {
+  change: WorkspaceChange;
+  seq: number;
+  workspace: WorkspaceId;
 };
