@@ -1,0 +1,12 @@
+{
+  "manifest_version": 3,
+  "name": "Weacon",
+  "description": "Pick an element on a local page and send it to Weacon.",
+  "version": "set by tools/build.ts",
+  "version_name": "set by tools/build.ts",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAtR+9ikxz8W+3zHcXM3vVk72N+/zMSzismAM+moIHfpNwrC7BvWgX/SQ8qa/AouZLFAtKhaRclNWJLDGK9riysjQ+93X/1ti269vh4BQNPG/6cKu9RdbP8TNNCVON/58XQ+FT40cgiTLy7q+ZHCc3C5pBiKnysl3FDZDrJvK6pVxJxLZadlhQpTw+lHJq4irpMeQG1K2YDvDwQisE+XOcOAgSoLe1rahIIMht/3roO0NgcvDFUYdByl1IYezlB7Cf1dWktBCEdwXe8PGqYt9Y6r4QVncPZclpEjnugkPYBqkJy5vHrBNZkUgOV3sCUkheJXKb0GOshjXS7t2RaOZNwQIDAQAB",
+  "minimum_chrome_version": "120",
+  "permissions": ["activeTab", "scripting", "nativeMessaging"],
+  "background": { "service_worker": "background.js", "type": "module" },
+  "action": { "default_title": "Pick an element to send to Weacon" }
+}
