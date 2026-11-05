@@ -33,6 +33,7 @@ mod unix {
 
 #[cfg(windows)]
 mod windows {
+    use std::future::{Ready, ready};
     use std::io;
     use std::path::Path;
 
@@ -45,8 +46,8 @@ mod windows {
         ///
         /// # Errors
         /// Always.
-        pub async fn accept(&self) -> io::Result<(tokio::io::DuplexStream, ())> {
-            Err(io::ErrorKind::Unsupported.into())
+        pub fn accept(&self) -> Ready<io::Result<(tokio::io::DuplexStream, ())>> {
+            ready(Err(io::ErrorKind::Unsupported.into()))
         }
     }
 
