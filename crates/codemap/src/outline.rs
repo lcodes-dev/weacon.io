@@ -174,7 +174,40 @@ fn test_only(item: Node<'_>, source: &[u8]) -> bool {
                 "attribute_item" | "line_comment" | "block_comment"
             )
         })
-        .any(|node| compact(text(node, source)) == "#[cfg(test)]")
+        .any(|node| {
+            let attribute = compact(text(node, source));
+            let predicate = attribute
+                .strip_prefix("#[cfg(")
+                .and_then(|it| it.strip_suffix(")]"));
+            predicate.is_some_and(implies_test)
+        })
+}
+
+/// Whether a `cfg` predicate holds only in tests: `test`, alone or inside nothing but `all(...)`.
+fn implies_test(predicate: &str) -> bool {
+    // For each open parenthesis, whether it and every one around it belongs to an `all`.
+    let mut only_all: Vec<bool> = Vec::new();
+    let (mut word, mut quoted) = (None, false);
+    for (at, it) in predicate.char_indices().chain([(predicate.len(), ' ')]) {
+        if it.is_alphanumeric() || it == '_' {
+            word.get_or_insert(at);
+            continue;
+        }
+        let name = word
+            .take()
+            .and_then(|start| predicate.get(start..at))
+            .unwrap_or_default();
+        let enclosed = only_all.last().copied().unwrap_or(true);
+        match it {
+            '"' => quoted = !quoted,
+            _ if quoted => {}
+            '(' => only_all.push(enclosed && name == "all"),
+            _ if name == "test" && enclosed => return true,
+            ')' => drop(only_all.pop()),
+            _ => {}
+        }
+    }
+    false
 }
 
 /// Repeated names, such as one function per platform, become `name`, `name[2]`, `name[3]`.
@@ -315,6 +348,44 @@ mod tests {
         let text = "fn a() {}\n#[cfg(test)]\n// helpers\nfn b() {}\n#[cfg( test )]\nmod tests { fn c() {} }\n\
                     #[cfg(unix)]\nfn d() {}\n";
         assert_eq!(names(text), ["fn a 1", "fn d 8"]);
+    }
+
+    #[test]
+    fn leaves_out_items_whose_cfg_implies_test() {
+        let text = "#[cfg(all(test, unix))]\nfn a() {}\n#[cfg(all(unix, all(windows, test)))]\nfn b() {}\n\
+                    #[cfg(any(test, unix))]\nfn c() {}\n#[cfg(not(test))]\nfn d() {}\n\
+                    #[cfg(all(unix, any(test, windows)))]\nfn e() {}\n#[cfg(feature = \"test\")]\nfn f() {}\n";
+        assert_eq!(names(text), ["fn c 6", "fn d 8", "fn e 10", "fn f 12"]);
+    }
+
+    #[test]
+    fn a_deeply_nested_cfg_does_not_overflow_the_stack() {
+        let depth = 100_000;
+        let predicate = format!("{}test{}", "all(".repeat(depth), ")".repeat(depth));
+        assert!(implies_test(&predicate));
+        assert!(!implies_test(&predicate.replace("test", "unix")));
+    }
+
+    #[test]
+    fn only_the_word_test_counts() {
+        for predicate in [
+            "test",
+            "all(unix,test)",
+            "all(feature=\"x(\",test)",
+            "all(not(unix),test)",
+        ] {
+            assert!(implies_test(predicate), "{predicate}");
+        }
+        for predicate in [
+            "tests",
+            "my_test",
+            "test_x",
+            "not(all(test))",
+            "all(not(test))",
+            "feature=\"a test b\"",
+        ] {
+            assert!(!implies_test(predicate), "{predicate}");
+        }
     }
 
     #[test]
