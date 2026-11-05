@@ -6,11 +6,11 @@ use weacon_protocol::{AgentSession, App, RunEvent};
 
 use crate::run::{Heard, UNSUPPORTED};
 
-// JSON-RPC's code for a method the receiver doesn't have.
-const NO_METHOD: i64 = -32601;
+const METHOD_NOT_FOUND: i64 = -32601;
 
 /// Codex's side of a run: its thread, its turn, and the requests still waiting for answers.
 pub(crate) struct Wire {
+    client: Value,
     resume: Option<AgentSession>,
     next_id: u64,
     waiting: Vec<(u64, Waiting)>,
@@ -18,7 +18,7 @@ pub(crate) struct Wire {
     turn: Option<String>,
     // A prompt sent before the thread opened.
     queued: Option<String>,
-    interrupt: bool,
+    interrupt_pending: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -65,25 +65,23 @@ enum Item {
 }
 
 impl Wire {
-    pub(crate) const fn new(resume: Option<AgentSession>) -> Self {
+    /// A wire that opens a new thread, or resumes `resume`, introducing itself as `app`.
+    pub(crate) fn new(resume: Option<AgentSession>, app: &App) -> Self {
         Self {
+            client: json!({ "name": app.name, "title": "Weacon", "version": app.version }),
             resume,
             next_id: 0,
             waiting: Vec::new(),
             thread: None,
             turn: None,
             queued: None,
-            interrupt: false,
+            interrupt_pending: false,
         }
     }
 
-    pub(crate) fn opening(&mut self, app: &App) -> Vec<Heard> {
-        let client = json!({ "name": app.name, "title": "Weacon", "version": app.version });
-        vec![self.request(
-            Waiting::Initialize,
-            "initialize",
-            &json!({ "clientInfo": client }),
-        )]
+    pub(crate) fn opening(&mut self) -> Vec<Heard> {
+        let params = json!({ "clientInfo": self.client });
+        vec![self.request(Waiting::Initialize, "initialize", &params)]
     }
 
     pub(crate) fn prompt(&mut self, text: &str) -> Vec<Heard> {
@@ -104,7 +102,7 @@ impl Wire {
         if self.queued.take().is_some() {
             return vec![Heard::Finished { ok: false }];
         }
-        self.interrupt = true;
+        self.interrupt_pending = true;
         self.interrupt_turn()
     }
 
@@ -150,24 +148,30 @@ impl Wire {
                 ]
             }
             (Waiting::Thread, Some(result)) => self.thread_opened(&result),
-            (Waiting::Turn, Some(result)) => {
-                self.turn = turn_field(&result, "id");
-                self.interrupt_turn()
-            }
             (Waiting::Initialize | Waiting::Thread, None) => self.give_up(),
-            (Waiting::Turn, None) => vec![Heard::Finished { ok: false }],
-            (Waiting::Interrupt, _) => Vec::new(),
+            (Waiting::Turn, None) => self.ended(false),
+            // A turn's id comes from `turn/started`, which a late reply can't undo.
+            (Waiting::Turn, Some(_)) | (Waiting::Interrupt, _) => Vec::new(),
         }
     }
 
+    // A person answers every approval, and anything not known to be safe asks first.
     fn open_thread(&mut self) -> Heard {
-        match self.resume.clone() {
-            Some(session) => {
-                let params = json!({ "threadId": session.as_str() });
-                self.request(Waiting::Thread, "thread/resume", &params)
-            }
-            None => self.request(Waiting::Thread, "thread/start", &json!({})),
-        }
+        let (method, params) = match &self.resume {
+            Some(session) => (
+                "thread/resume",
+                json!({
+                    "threadId": session.as_str(),
+                    "approvalPolicy": "untrusted",
+                    "approvalsReviewer": "user",
+                }),
+            ),
+            None => (
+                "thread/start",
+                json!({ "approvalPolicy": "untrusted", "approvalsReviewer": "user" }),
+            ),
+        };
+        self.request(Waiting::Thread, method, &params)
     }
 
     fn thread_opened(&mut self, result: &Value) -> Vec<Heard> {
@@ -195,27 +199,36 @@ impl Wire {
     }
 
     fn interrupt_turn(&mut self) -> Vec<Heard> {
-        let (true, Some(thread), Some(turn)) =
-            (self.interrupt, self.thread.clone(), self.turn.clone())
-        else {
+        let (true, Some(thread), Some(turn)) = (
+            self.interrupt_pending,
+            self.thread.clone(),
+            self.turn.clone(),
+        ) else {
             return Vec::new();
         };
-        self.interrupt = false;
+        self.interrupt_pending = false;
         let params = json!({ "threadId": thread, "turnId": turn });
         vec![self.request(Waiting::Interrupt, "turn/interrupt", &params)]
     }
 
+    fn ended(&mut self, ok: bool) -> Vec<Heard> {
+        self.turn = None;
+        self.interrupt_pending = false;
+        vec![Heard::Finished { ok }]
+    }
+
+    // Notices from other threads, such as a sub-agent's, aren't this run's.
     fn notified(&mut self, method: &str, params: &Value) -> Vec<Heard> {
+        if params.get("threadId").and_then(Value::as_str) != self.thread.as_deref() {
+            return Vec::new();
+        }
         match method {
             "turn/started" => {
                 self.turn = turn_field(params, "id");
                 self.interrupt_turn()
             }
             "turn/completed" => {
-                self.turn = None;
-                self.interrupt = false;
-                let ok = turn_field(params, "status").is_some_and(|status| status == "completed");
-                vec![Heard::Finished { ok }]
+                self.ended(turn_field(params, "status").is_some_and(|status| status == "completed"))
             }
             "item/started" => item(params).and_then(started).into_iter().collect(),
             "item/completed" => item(params).and_then(completed).into_iter().collect(),
@@ -243,7 +256,7 @@ fn asked(id: Value, method: &str, params: Value) -> Vec<Heard> {
         "item/commandExecution/requestApproval" => "command",
         "item/fileChange/requestApproval" => "file_change",
         _ => {
-            let error = json!({ "code": NO_METHOD, "message": UNSUPPORTED });
+            let error = json!({ "code": METHOD_NOT_FOUND, "message": UNSUPPORTED });
             return vec![Heard::Send(json!({ "id": id, "error": error }))];
         }
     };
@@ -259,9 +272,7 @@ fn turn_field(value: &Value, field: &str) -> Option<String> {
 }
 
 fn item(params: &Value) -> Option<Item> {
-    serde_json::from_value::<ItemNote>(params.clone())
-        .ok()
-        .map(|note| note.item)
+    ItemNote::deserialize(params).ok().map(|note| note.item)
 }
 
 fn started(item: Item) -> Option<Heard> {
@@ -301,21 +312,16 @@ mod tests {
     use super::*;
     use crate::run;
     use crate::test_support::{
-        self, Done, FakeRun, answer, asked, ended, ends_as_recorded, finished, is_started, next,
-        started, text, tool_done, until,
+        self, Done, FakeRun, answer, app, ended, ends_as_recorded, is_asked, is_finished,
+        is_started, next, started, text, tool_done, until,
     };
 
     const THREAD: &str = "019a2b3c-4d5e-7f60-8a9b-0c1d2e3f4a5b";
 
     fn fake(recording: &str, resume: Option<&str>) -> (FakeRun, Done) {
         let resume = resume.map(|id| AgentSession::try_from(id.to_owned()).unwrap());
-        let mut wire = Wire::new(resume);
-        let opening = wire.opening(&App {
-            name: "weacon-core".to_owned(),
-            version: "0.1.0".to_owned(),
-            commit: "1a2b3c4".to_owned(),
-        });
-        test_support::fake(run::Wire::Codex(wire), opening, recording)
+        let wire = Wire::new(resume, &app());
+        test_support::fake(run::Wire::Codex(wire), recording)
     }
 
     fn failed() -> RunEvent {
@@ -329,7 +335,7 @@ mod tests {
         let (mut run, done) = fake(include_str!("../../sessions/codex/approval.replay"), None);
 
         run.send("Run the parser tests").await.unwrap();
-        let events = until(&mut run, asked).await;
+        let events = until(&mut run, is_asked).await;
         assert_eq!(
             events.get(..2),
             Some(
@@ -351,7 +357,7 @@ mod tests {
         ));
         run.answer(&answer("run-1", true)).await.unwrap();
         assert_eq!(
-            until(&mut run, finished).await,
+            until(&mut run, is_finished).await,
             [
                 tool_done("item-1", false),
                 text("All 12 tests pass."),
@@ -371,7 +377,7 @@ mod tests {
         run.send("Rewrite the lexer").await.unwrap();
         assert_eq!(until(&mut run, is_started).await, [started(THREAD)]);
         run.interrupt().await.unwrap();
-        let events = until(&mut run, finished).await;
+        let events = until(&mut run, is_finished).await;
         assert!(matches!(
             events.first(),
             Some(RunEvent::PermissionAsked { prompt: 1, input, .. }) if input["command"] == "rm -rf target"
@@ -393,20 +399,25 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn a_refused_turn_fails_and_a_declined_change_fails_its_tool() {
+    async fn a_refused_turn_takes_its_interrupt_along_and_a_declined_change_fails() {
         let (mut run, done) = fake(include_str!("../../sessions/codex/decline.replay"), None);
 
         run.send("Tidy the readme").await.unwrap();
-        assert_eq!(until(&mut run, finished).await, [started(THREAD), failed()]);
+        assert_eq!(until(&mut run, is_started).await, [started(THREAD)]);
+        run.interrupt().await.unwrap();
+        assert_eq!(
+            until(&mut run, is_finished).await,
+            [ended(Outcome::Interrupted)]
+        );
         run.send("Tidy the readme").await.unwrap();
-        let events = until(&mut run, asked).await;
+        let events = until(&mut run, is_asked).await;
         assert!(matches!(
             events.first(),
             Some(RunEvent::ToolCall { call, tool, .. }) if call == "item-5" && tool == "file_change"
         ));
         run.answer(&answer("run-1", false)).await.unwrap();
         assert_eq!(
-            until(&mut run, finished).await,
+            until(&mut run, is_finished).await,
             [tool_done("item-5", true), failed()]
         );
         ends_as_recorded(run, done).await;
@@ -417,7 +428,7 @@ mod tests {
         let (mut run, done) = fake(include_str!("../../sessions/codex/no_thread.replay"), None);
 
         run.send("Explain the build").await.unwrap();
-        assert_eq!(until(&mut run, finished).await, [failed()]);
+        assert_eq!(until(&mut run, is_finished).await, [failed()]);
         run.send("Explain the build").await.unwrap();
         assert_eq!(next(&mut run).await, Some(failed()));
         ends_as_recorded(run, done).await;

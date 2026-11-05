@@ -35,8 +35,7 @@ const OTHER_SIGN_INS: [&str; 7] = [
 ];
 
 impl Claude {
-    /// Starts `claude`, resuming `session` when given. Answers reach a prompt by `run`, so the
-    /// caller must never give two runs the same id.
+    /// Starts `claude`, resuming `session` when given.
     ///
     /// # Errors
     /// When the program can't be started.
@@ -45,7 +44,6 @@ impl Claude {
             self.command(session),
             run,
             run::Wire::Claude(Wire::default()),
-            Vec::new(),
         )
     }
 
@@ -87,17 +85,10 @@ mod tests {
     use weacon_protocol::{Outcome, RunEvent};
 
     use super::*;
+    use crate::test_support::{run_id, started};
 
     const SESSION_A: &str = "0b7c6a52-3f1e-4d2a-9c8b-5e4f3a2b1c0d";
     const SESSION_B: &str = "5d4c3b2a-1f0e-4d9c-8b7a-6f5e4d3c2b1a";
-
-    fn run_id() -> RunId {
-        RunId::try_from("run-1".to_owned()).unwrap()
-    }
-
-    fn session(id: &str) -> AgentSession {
-        AgentSession::try_from(id.to_owned()).unwrap()
-    }
 
     fn temp_dir(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("weacon-agents-{name}-{}", std::process::id()));
@@ -160,23 +151,22 @@ mod tests {
         let second = workspace(&dir, "second", SESSION_B);
 
         let (first_events, second_events) = tokio::join!(
-            events(first.start(run_id(), None).unwrap()),
-            events(second.start(run_id(), Some(&session(SESSION_A))).unwrap())
+            events(first.start(run_id("run-1"), None).unwrap()),
+            events(
+                second
+                    .start(
+                        run_id("run-1"),
+                        Some(&AgentSession::try_from(SESSION_A.to_owned()).unwrap())
+                    )
+                    .unwrap()
+            )
         );
 
         let finished = RunEvent::Finished {
             outcome: Outcome::Completed,
         };
         for (events, id) in [(first_events, SESSION_A), (second_events, SESSION_B)] {
-            assert_eq!(
-                events,
-                [
-                    RunEvent::Started {
-                        session: session(id)
-                    },
-                    finished.clone()
-                ]
-            );
+            assert_eq!(events, [started(id), finished.clone()]);
         }
         let args = |name| fs::read_to_string(dir.join(name).join("args")).unwrap();
         assert!(!args("first").contains("--resume"));
@@ -213,7 +203,7 @@ mod tests {
             cwd: dir.clone(),
         };
 
-        let Err(error) = claude.start(run_id(), None) else {
+        let Err(error) = claude.start(run_id("run-1"), None) else {
             panic!("a missing program started");
         };
 

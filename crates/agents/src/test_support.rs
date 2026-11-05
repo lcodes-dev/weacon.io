@@ -5,21 +5,28 @@ use std::time::Duration;
 use tokio::io::{BufReader, DuplexStream};
 use tokio::task::JoinHandle;
 use tokio::time::timeout;
-use weacon_protocol::{AgentSession, Outcome, PermissionAnswer, RunEvent, RunId};
+use weacon_protocol::{AgentSession, App, Outcome, PermissionAnswer, RunEvent, RunId};
 use weacon_testing::replay;
 
-use crate::run::{Heard, Run, Wire};
+use crate::run::{Run, Wire};
 
 pub(crate) type FakeRun = Run<DuplexStream, BufReader<DuplexStream>>;
 
 pub(crate) type Done = JoinHandle<Result<(), String>>;
 
-/// A run speaking `wire` to a fake agent replaying `recording`, after `opening`.
-pub(crate) fn fake(wire: Wire, opening: Vec<Heard>, recording: &str) -> (FakeRun, Done) {
+/// A run speaking `wire` to a fake agent replaying `recording`.
+pub(crate) fn fake(wire: Wire, recording: &str) -> (FakeRun, Done) {
     let replay = replay(recording);
-    let mut run = Run::new(run_id("run-1"), wire, replay.stdin, replay.stdout, None);
-    run.hear(opening);
+    let run = Run::new(run_id("run-1"), wire, replay.stdin, replay.stdout, None);
     (run, replay.done)
+}
+
+pub(crate) fn app() -> App {
+    App {
+        name: "weacon-core".to_owned(),
+        version: "0.1.0".to_owned(),
+        commit: "1a2b3c4".to_owned(),
+    }
 }
 
 // Under paused time, a driver and fake stuck waiting on each other time out at once.
@@ -53,11 +60,11 @@ pub(crate) async fn ends_as_recorded(mut run: FakeRun, done: Done) {
         .unwrap();
 }
 
-pub(crate) fn asked(event: &RunEvent) -> bool {
+pub(crate) fn is_asked(event: &RunEvent) -> bool {
     matches!(event, RunEvent::PermissionAsked { .. })
 }
 
-pub(crate) fn finished(event: &RunEvent) -> bool {
+pub(crate) fn is_finished(event: &RunEvent) -> bool {
     matches!(event, RunEvent::Finished { .. })
 }
 

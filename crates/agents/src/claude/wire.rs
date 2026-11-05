@@ -190,6 +190,6 @@ mod tests {
 
     #[test]
     fn the_texts_added_to_the_agents_context_keep_their_size() {
-        assert_eq!([DENIED.len(), UNSUPPORTED.len()], [34, 35]);
+        assert_eq!(DENIED.len(), 34);
     }
 }

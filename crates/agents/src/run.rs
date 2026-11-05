@@ -60,6 +60,13 @@ pub(crate) enum Heard {
 }
 
 impl Wire {
+    fn opening(&mut self) -> Vec<Heard> {
+        match self {
+            Self::Claude(_) => Vec::new(),
+            Self::Codex(wire) => wire.opening(),
+        }
+    }
+
     fn prompt(&mut self, text: &str) -> Vec<Heard> {
         match self {
             Self::Claude(_) => claude::prompt(text),
@@ -102,13 +109,8 @@ enum Turn {
     Interrupting,
 }
 
-/// Starts `command` as run `id`, speaking `wire`; the opening lines go out with the first write.
-pub(crate) fn spawn(
-    mut command: Command,
-    id: RunId,
-    wire: Wire,
-    opening: Vec<Heard>,
-) -> Result<AgentRun, Fault> {
+/// Starts `command` as run `id`, speaking `wire`.
+pub(crate) fn spawn(mut command: Command, id: RunId, wire: Wire) -> Result<AgentRun, Fault> {
     let not_started = || Fault::new(code!("agent.not_started"), "The agent couldn't start");
     let mut child = command
         .stdin(Stdio::piped())
@@ -120,15 +122,27 @@ pub(crate) fn spawn(
     let (Some(stdin), Some(stdout)) = (child.stdin.take(), child.stdout.take()) else {
         return Err(not_started());
     };
-    let mut run = Run::new(id, wire, stdin, BufReader::new(stdout), Some(child));
-    run.hear(opening);
-    Ok(run)
+    Ok(Run::new(
+        id,
+        wire,
+        stdin,
+        BufReader::new(stdout),
+        Some(child),
+    ))
 }
 
 impl<W: AsyncWrite + Unpin, R: AsyncBufRead + Unpin> Run<W, R> {
     /// A run over an agent's pipes; `child`, when given, is killed when the run is dropped.
-    pub(crate) fn new(id: RunId, wire: Wire, stdin: W, stdout: R, child: Option<Child>) -> Self {
-        Self {
+    /// The wire's opening lines go out with the first write.
+    pub(crate) fn new(
+        id: RunId,
+        mut wire: Wire,
+        stdin: W,
+        stdout: R,
+        child: Option<Child>,
+    ) -> Self {
+        let opening = wire.opening();
+        let mut run = Self {
             id,
             wire,
             stdin,
@@ -140,7 +154,9 @@ impl<W: AsyncWrite + Unpin, R: AsyncBufRead + Unpin> Run<W, R> {
             turn: Turn::Idle,
             session: None,
             _child: child,
-        }
+        };
+        run.hear(opening);
+        run
     }
 
     /// Starts a turn with the person's `prompt`.
@@ -160,7 +176,8 @@ impl<W: AsyncWrite + Unpin, R: AsyncBufRead + Unpin> Run<W, R> {
         self.flush().await
     }
 
-    /// Sends a person's answer to a permission prompt.
+    /// Sends a person's answer to a permission prompt. Answers reach a prompt by run id, so
+    /// whoever starts runs must never give two the same id.
     ///
     /// # Errors
     /// When the prompt isn't waiting, or the agent's stdin is closed.
@@ -219,7 +236,7 @@ impl<W: AsyncWrite + Unpin, R: AsyncBufRead + Unpin> Run<W, R> {
         }
     }
 
-    pub(crate) fn hear(&mut self, heard: Vec<Heard>) {
+    fn hear(&mut self, heard: Vec<Heard>) {
         for each in heard {
             match each {
                 Heard::Send(line) => {
@@ -234,13 +251,7 @@ impl<W: AsyncWrite + Unpin, R: AsyncBufRead + Unpin> Run<W, R> {
                     input,
                 } => self.asked(request, tool, input),
                 Heard::Withdrawn { request } => self.withdrawn(&request),
-                Heard::Finished { ok } => self.finished(match (ok, self.turn) {
-                    (true, _) => Outcome::Completed,
-                    (false, Turn::Interrupting) => Outcome::Interrupted,
-                    (false, Turn::Idle | Turn::Running) => Outcome::Failed {
-                        code: code!("agent.turn_failed"),
-                    },
-                }),
+                Heard::Finished { ok } => self.finished(self.outcome(ok)),
             }
         }
     }
@@ -275,6 +286,16 @@ impl<W: AsyncWrite + Unpin, R: AsyncBufRead + Unpin> Run<W, R> {
                 run: self.id.clone(),
                 prompt: prompt.id,
             });
+        }
+    }
+
+    const fn outcome(&self, ok: bool) -> Outcome {
+        match (ok, self.turn) {
+            (true, _) => Outcome::Completed,
+            (false, Turn::Interrupting) => Outcome::Interrupted,
+            (false, Turn::Idle | Turn::Running) => Outcome::Failed {
+                code: code!("agent.turn_failed"),
+            },
         }
     }
 
@@ -314,7 +335,8 @@ mod tests {
 
     use super::*;
     use crate::test_support::{
-        self, Done, FakeRun, answer, asked, ended, ends_as_recorded, finished, run_id, text, until,
+        self, Done, FakeRun, answer, ended, ends_as_recorded, is_asked, is_finished, run_id, text,
+        tool_done, until,
     };
 
     const SESSION: &str = "0b7c6a52-3f1e-4d2a-9c8b-5e4f3a2b1c0d";
@@ -324,7 +346,7 @@ mod tests {
     }
 
     fn fake(recording: &str) -> (FakeRun, Done) {
-        test_support::fake(claude_wire(), Vec::new(), recording)
+        test_support::fake(claude_wire(), recording)
     }
 
     fn started() -> RunEvent {
@@ -338,7 +360,7 @@ mod tests {
 
         run.send("Run the parser tests").await.unwrap();
         assert_eq!(
-            until(&mut run, asked).await,
+            until(&mut run, is_asked).await,
             [
                 started(),
                 text("I'll run them."),
@@ -359,12 +381,9 @@ mod tests {
         assert_eq!(other.code().as_str(), "agent.no_such_prompt");
         run.answer(&answer("run-1", true)).await.unwrap();
         assert_eq!(
-            until(&mut run, finished).await,
+            until(&mut run, is_finished).await,
             [
-                RunEvent::ToolDone {
-                    call: "toolu_01".to_owned(),
-                    failed: false,
-                },
+                tool_done("toolu_01", false),
                 text("All 12 tests pass."),
                 ended(Outcome::Completed),
             ]
@@ -379,19 +398,13 @@ mod tests {
         let (mut run, done) = fake(include_str!("../sessions/claude/deny.replay"));
 
         run.send("Tidy the readme").await.unwrap();
-        let events = until(&mut run, asked).await;
+        let events = until(&mut run, is_asked).await;
         assert_eq!(events.first(), Some(&started()));
         assert_eq!(events.len(), 3);
         run.answer(&answer("run-1", false)).await.unwrap();
         assert_eq!(
-            until(&mut run, finished).await,
-            [
-                RunEvent::ToolDone {
-                    call: "toolu_02".to_owned(),
-                    failed: true,
-                },
-                ended(Outcome::Completed),
-            ]
+            until(&mut run, is_finished).await,
+            [tool_done("toolu_02", true), ended(Outcome::Completed),]
         );
         ends_as_recorded(run, done).await;
     }
@@ -402,11 +415,11 @@ mod tests {
 
         run.interrupt().await.unwrap();
         run.send("Rewrite the lexer").await.unwrap();
-        assert_eq!(until(&mut run, asked).await.len(), 2);
+        assert_eq!(until(&mut run, is_asked).await.len(), 2);
         run.interrupt().await.unwrap();
         run.interrupt().await.unwrap();
         assert_eq!(
-            until(&mut run, finished).await,
+            until(&mut run, is_finished).await,
             [
                 RunEvent::PermissionWithdrawn {
                     run: run_id("run-1"),
@@ -424,7 +437,7 @@ mod tests {
 
         run.send("Bump the version").await.unwrap();
         assert_eq!(
-            until(&mut run, finished).await,
+            until(&mut run, is_finished).await,
             [started(), text("Bumping it now."), ended(Outcome::Unknown)]
         );
         ends_as_recorded(run, done).await;
@@ -432,7 +445,7 @@ mod tests {
         let (mut resumed, done) = fake(include_str!("../sessions/claude/resume.replay"));
         resumed.send("Did the bump land?").await.unwrap();
         assert_eq!(
-            until(&mut resumed, finished).await,
+            until(&mut resumed, is_finished).await,
             [
                 started(),
                 text("It didn't; the file is unchanged."),
@@ -448,7 +461,7 @@ mod tests {
 
         run.send("Explain the build").await.unwrap();
         assert_eq!(
-            until(&mut run, finished).await,
+            until(&mut run, is_finished).await,
             [
                 started(),
                 ended(Outcome::Failed {
@@ -485,10 +498,15 @@ mod tests {
             "agent.busy"
         );
         assert_eq!(run.next().await.unwrap(), Some(started()));
-        assert!(run.next().await.unwrap().as_ref().is_some_and(asked));
+        assert!(run.next().await.unwrap().as_ref().is_some_and(is_asked));
         let lost = run.answer(&answer("run-1", false)).await.unwrap_err();
         assert_eq!(lost.code().as_str(), "agent.io_failed");
         assert_eq!(run.next().await.unwrap(), Some(ended(Outcome::Unknown)));
         assert_eq!(run.next().await.unwrap(), None);
+    }
+
+    #[test]
+    fn the_refusal_the_agent_reads_keeps_its_size() {
+        assert_eq!(UNSUPPORTED.len(), 35);
     }
 }

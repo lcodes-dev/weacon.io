@@ -29,15 +29,13 @@ pub struct Codex {
 const OTHER_SIGN_INS: [&str; 2] = ["CODEX_API_KEY", "OPENAI_API_KEY"];
 
 impl Codex {
-    /// Starts `codex app-server` and opens a thread, resuming `session` when given. Answers
-    /// reach a prompt by `run`, so the caller must never give two runs the same id.
+    /// Starts `codex app-server` and opens a thread, resuming `session` when given..
     ///
     /// # Errors
     /// When the program can't be started.
     pub fn start(&self, run: RunId, session: Option<&AgentSession>) -> Result<AgentRun, Fault> {
-        let mut wire = Wire::new(session.cloned());
-        let opening = wire.opening(&self.app);
-        run::spawn(self.command(), run, run::Wire::Codex(wire), opening)
+        let wire = Wire::new(session.cloned(), &self.app);
+        run::spawn(self.command(), run, run::Wire::Codex(wire))
     }
 
     fn command(&self) -> Command {
@@ -59,18 +57,14 @@ mod tests {
     use std::path::Path;
 
     use super::*;
-    use crate::test_support::run_id;
+    use crate::test_support::{app, run_id};
 
     fn codex(dir: &Path) -> Codex {
         Codex {
             program: dir.join("codex"),
             config_dir: dir.join("config"),
             cwd: dir.to_owned(),
-            app: App {
-                name: "weacon-core".to_owned(),
-                version: "0.1.0".to_owned(),
-                commit: "1a2b3c4".to_owned(),
-            },
+            app: app(),
         }
     }
 
@@ -91,11 +85,13 @@ mod tests {
     #[tokio::test]
     async fn a_missing_program_is_reported() {
         let dir = std::env::temp_dir().join(format!("weacon-codex-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
 
         let Err(error) = codex(&dir).start(run_id("run-1"), None) else {
             panic!("a missing program started");
         };
 
         assert_eq!(error.code().as_str(), "agent.not_started");
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }
