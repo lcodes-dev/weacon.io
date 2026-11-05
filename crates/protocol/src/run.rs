@@ -74,6 +74,7 @@ pub enum RunEvent {
     PermissionWithdrawn {
         prompt: u32,
     },
+    /// Ends the turn and withdraws any prompt still waiting.
     Finished {
         outcome: Outcome,
     },

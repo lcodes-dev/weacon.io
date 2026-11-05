@@ -1,15 +1,18 @@
 use std::collections::VecDeque;
 
 use serde_json::Value;
-use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWrite, AsyncWriteExt, Lines};
+use tokio::io::{AsyncBufRead, AsyncWrite, AsyncWriteExt};
 use tokio::process::Child;
 use weacon_observability::Fault;
 use weacon_protocol::{AgentSession, Outcome, PermissionAnswer, RunEvent, code};
 
 use super::wire::{self, Block, Line, Request, System};
+use crate::lines::Lines;
+
+// Far above any real line; a longer one is skipped rather than held in memory.
+const MAX_LINE: usize = 16 << 20;
 
 /// A conversation with one running `claude`, over its stdin and stdout.
-#[derive(Debug)]
 pub struct Run<W, R> {
     stdin: W,
     stdout: Lines<R>,
@@ -24,7 +27,6 @@ pub struct Run<W, R> {
     _child: Option<Child>,
 }
 
-#[derive(Debug)]
 struct Prompt {
     id: u32,
     request_id: String,
@@ -43,7 +45,7 @@ impl<W: AsyncWrite + Unpin, R: AsyncBufRead + Unpin> Run<W, R> {
     pub(crate) fn new(stdin: W, stdout: R, child: Option<Child>) -> Self {
         Self {
             stdin,
-            stdout: stdout.lines(),
+            stdout: Lines::new(stdout, MAX_LINE),
             outbox: Vec::new(),
             events: VecDeque::new(),
             prompts: Vec::new(),
@@ -58,8 +60,14 @@ impl<W: AsyncWrite + Unpin, R: AsyncBufRead + Unpin> Run<W, R> {
     /// Starts a turn with the person's `prompt`.
     ///
     /// # Errors
-    /// When the agent's stdin is closed.
+    /// When a turn is already running, or the agent's stdin is closed.
     pub async fn send(&mut self, prompt: &str) -> Result<(), Fault> {
+        if self.turn != Turn::Idle {
+            return Err(Fault::new(
+                code!("agent.busy"),
+                "The agent is still on a turn",
+            ));
+        }
         self.turn = Turn::Running;
         self.write(&wire::user(prompt)).await
     }
@@ -105,17 +113,20 @@ impl<W: AsyncWrite + Unpin, R: AsyncBufRead + Unpin> Run<W, R> {
     /// The next event, or `None` once the agent has exited. Safe to cancel.
     ///
     /// # Errors
-    /// When the agent's pipes fail.
+    /// When the agent's output can't be read.
     pub async fn next(&mut self) -> Result<Option<RunEvent>, Fault> {
         loop {
-            self.flush().await?;
+            // A closed stdin means the agent is exiting, which its stdout then shows.
+            if self.flush().await.is_err() {
+                self.outbox.clear();
+            }
             if let Some(event) = self.events.pop_front() {
                 return Ok(Some(event));
             }
-            let Some(line) = self.stdout.next_line().await.map_err(io_failed)? else {
+            let Some(line) = self.stdout.next().await.map_err(io_failed)? else {
                 return Ok(self.exited());
             };
-            if let Ok(line) = serde_json::from_str(&line) {
+            if let Ok(line) = serde_json::from_slice(&line) {
                 self.read(line);
             }
         }
@@ -445,17 +456,32 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn writing_to_an_exited_agent_fails() {
+    async fn an_agent_gone_mid_prompt_still_ends_its_turn_unknown() {
         let (stdin, agent) = tokio::io::duplex(64);
         drop(agent);
-        let mut run = Run::new(stdin, BufReader::new(tokio::io::empty()), None);
-
-        let error = run.send("Hello").await.unwrap_err();
-
-        assert_eq!(error.code().as_str(), "agent.io_failed");
-        assert_eq!(
-            run.next().await.unwrap_err().code().as_str(),
-            "agent.io_failed"
+        let printed = format!(
+            "{{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"{SESSION}\"}}\n\
+             {{\"type\":\"control_request\",\"request_id\":\"req-9\",\
+             \"request\":{{\"subtype\":\"hook_callback\"}}}}\n\
+             {{\"type\":\"control_request\",\"request_id\":\"req-10\",\
+             \"request\":{{\"subtype\":\"can_use_tool\",\"tool_name\":\"Bash\",\"input\":{{}}}}}}\n"
         );
+        let mut run = Run::new(stdin, printed.as_bytes(), None);
+
+        let sent = run.send("Hello").await.unwrap_err();
+        assert_eq!(sent.code().as_str(), "agent.io_failed");
+        assert_eq!(
+            run.send("Again").await.unwrap_err().code().as_str(),
+            "agent.busy"
+        );
+        assert_eq!(run.next().await.unwrap(), Some(started()));
+        assert!(run.next().await.unwrap().as_ref().is_some_and(asked));
+        let answer = run.answer(&PermissionAnswer {
+            prompt: 1,
+            allow: false,
+        });
+        assert_eq!(answer.await.unwrap_err().code().as_str(), "agent.io_failed");
+        assert_eq!(run.next().await.unwrap(), Some(ended(Outcome::Unknown)));
+        assert_eq!(run.next().await.unwrap(), None);
     }
 }

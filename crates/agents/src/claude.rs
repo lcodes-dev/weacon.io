@@ -27,11 +27,15 @@ pub struct Claude {
 /// A run of a real `claude` process.
 pub type ClaudeRun = Run<ChildStdin, BufReader<ChildStdout>>;
 
-// Sign-ins that would win over the workspace's own; removed from the agent's environment.
-const OTHER_SIGN_INS: [&str; 3] = [
+// Sign-ins and providers that would win over the workspace's own; removed, never read.
+const OTHER_SIGN_INS: [&str; 7] = [
     "ANTHROPIC_API_KEY",
     "ANTHROPIC_AUTH_TOKEN",
+    "AWS_BEARER_TOKEN_BEDROCK",
     "CLAUDE_CODE_OAUTH_TOKEN",
+    "CLAUDE_CODE_USE_BEDROCK",
+    "CLAUDE_CODE_USE_FOUNDRY",
+    "CLAUDE_CODE_USE_VERTEX",
 ];
 
 impl Claude {
@@ -206,7 +210,9 @@ mod tests {
             cwd: dir.clone(),
         };
 
-        let error = claude.start(None).unwrap_err();
+        let Err(error) = claude.start(None) else {
+            panic!("a missing program started");
+        };
 
         assert_eq!(error.code().as_str(), "agent.not_started");
         fs::remove_dir_all(&dir).unwrap();
