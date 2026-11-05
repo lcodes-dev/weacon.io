@@ -12,9 +12,6 @@ tokio.workspace = true
 weacon-observability.workspace = true
 weacon-protocol.workspace = true
 
-[target.'cfg(windows)'.dependencies]
-interprocess.workspace = true
-
 [dev-dependencies]
 serde_json.workspace = true
 

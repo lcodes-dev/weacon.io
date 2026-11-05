@@ -171,7 +171,10 @@ mod windows {
             .path(name.as_str())
             .security_descriptor(Some(owner_only))
             .create_tokio_duplex()?;
-        fs::write(path, name)?;
+        // Renamed into place, so a client never reads half a name.
+        let unfinished = path.with_extension("new");
+        fs::write(&unfinished, name)?;
+        fs::rename(&unfinished, path)?;
         Ok(Listener(listener))
     }
 

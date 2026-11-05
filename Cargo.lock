@@ -1141,7 +1141,6 @@ dependencies = [
 name = "weacon-client"
 version = "0.0.0"
 dependencies = [
- "interprocess",
  "serde_json",
  "tokio",
  "weacon-observability",
