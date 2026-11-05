@@ -1,16 +1,24 @@
-//! A map of a Rust codebase: its outline, and anchors into it that notice when the code changes.
+//! A map of a Rust codebase: its outline, its areas, and anchors into it that notice when the
+//! code changes.
 //!
 //! It does no I/O: the caller reads the files and passes their contents in.
 
 mod anchor;
+mod area;
 mod cfg;
 mod fingerprint;
+mod graph;
 mod index;
+mod louvain;
 mod outline;
+mod paths;
+mod rank;
+mod syntax;
 
 use std::fmt;
 
 pub use anchor::{Anchor, Finding, Pin};
+pub use area::Area;
 pub use fingerprint::Fingerprint;
 pub use index::{Crate, Index, Module, SourceFile, index};
 pub use outline::{Kind, Symbol};

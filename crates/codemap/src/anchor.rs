@@ -1,7 +1,7 @@
 use std::fmt;
 use std::str::FromStr;
 
-use crate::{Fingerprint, Index};
+use crate::{Area, Fingerprint, Index};
 
 /// A place in the code that docs and tasks point at.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -10,6 +10,8 @@ pub enum Anchor {
     Sym(String),
     /// `flow:weacon_core::cli::run->weacon_core::daemon::serve`: items a flow passes through, in order.
     Flow(Vec<String>),
+    /// `area:crates/protocol/src/lib`: a group of files, named by its highest-ranked one.
+    Area(String),
 }
 
 /// An anchor with the fingerprint it had when it was written: `sym:a::b#0123456789abcdef`.
@@ -42,6 +44,7 @@ impl Index {
                 .map(|step| self.symbol(step).map(|symbol| symbol.fingerprint))
                 .collect::<Option<Vec<_>>>()
                 .map(Fingerprint::combine),
+            Anchor::Area(id) => self.area(id).map(Area::fingerprint),
         }
     }
 
@@ -80,6 +83,11 @@ impl FromStr for Anchor {
         {
             return Ok(Self::Sym(path.to_owned()));
         }
+        if let Some(id) = text.strip_prefix("area:")
+            && is_area_id(id)
+        {
+            return Ok(Self::Area(id.to_owned()));
+        }
         let steps: Vec<&str> = text
             .strip_prefix("flow:")
             .ok_or(())?
@@ -90,6 +98,10 @@ impl FromStr for Anchor {
         }
         Ok(Self::Flow(steps.into_iter().map(str::to_owned).collect()))
     }
+}
+
+fn is_area_id(id: &str) -> bool {
+    !id.is_empty() && !id.contains(char::is_whitespace)
 }
 
 fn is_symbol_path(path: &str) -> bool {
@@ -103,6 +115,7 @@ impl fmt::Display for Anchor {
         match self {
             Self::Sym(path) => write!(formatter, "sym:{path}"),
             Self::Flow(steps) => write!(formatter, "flow:{}", steps.join(FLOW_STEP)),
+            Self::Area(id) => write!(formatter, "area:{id}"),
         }
     }
 }
@@ -193,10 +206,12 @@ mod tests {
     #[test]
     fn current_pins_have_no_findings() {
         let index = repo(LIB);
+        let area = format!("area:{}", index.areas[0].id);
         let pins = format!(
-            "{}\n\n  {}  \n",
+            "{}\n\n  {}  \n{}\n",
             pin(&index, "sym:a_b::m::S::go"),
-            pin(&index, "flow:a_b::run->a_b::m::S::go")
+            pin(&index, "flow:a_b::run->a_b::m::S::go"),
+            pin(&index, &area),
         );
         assert_eq!(index.check(&pins), []);
     }
@@ -211,6 +226,7 @@ mod tests {
             "sym:a_b::gone#0000000000000000".to_owned(),
             "flow:a_b::m::S->a_b::gone#0000000000000000".to_owned(),
             "sym:a_b::run".to_owned(),
+            "area:a/src/gone#0000000000000000".to_owned(),
         ]
         .join("\n");
 
@@ -224,6 +240,7 @@ mod tests {
                 Finding::Missing(Anchor::Sym("a_b::gone".to_owned())),
                 Finding::Missing("flow:a_b::m::S->a_b::gone".parse().unwrap()),
                 Finding::Malformed(6),
+                Finding::Missing(Anchor::Area("a/src/gone".to_owned())),
             ]
         );
     }
@@ -244,6 +261,8 @@ mod tests {
             "sym:a::b#0123456789abcdef",
             "sym:a::B::c[2]#0123456789abcdef",
             "flow:a::b->c::d->e#0123456789abcdef",
+            "area:crates/a-b/src/lib#0123456789abcdef",
+            "area:my_apps/x+y@2:3/src/lib#0123456789abcdef",
         ] {
             assert_eq!(text.parse::<Pin>().unwrap().to_string(), text);
         }
@@ -258,7 +277,9 @@ mod tests {
             "sym:a::::b#0123456789abcdef",
             "sym:a b#0123456789abcdef",
             "sym:a#b#0123456789abcdef",
-            "area:x#0123456789abcdef",
+            "area:#0123456789abcdef",
+            "area:a b#0123456789abcdef",
+            "zone:x#0123456789abcdef",
             "flow:a::b#0123456789abcdef",
             "flow:a->#0123456789abcdef",
             "flow:a-->b#0123456789abcdef",
