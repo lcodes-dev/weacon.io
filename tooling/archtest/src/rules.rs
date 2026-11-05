@@ -15,6 +15,11 @@ pub(crate) const RULES: &[Rule] = &[
         io: true,
     },
     Rule {
+        package: "weacon-core",
+        may_use: &["weacon-observability", "weacon-protocol", "weacon-version"],
+        io: true,
+    },
+    Rule {
         package: "weacon-observability",
         may_use: &["weacon-protocol"],
         io: false,

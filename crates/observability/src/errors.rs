@@ -64,6 +64,16 @@ pub(crate) struct ErrorInfo {
     cause: Option<Box<Self>>,
 }
 
+impl ErrorInfo {
+    pub(crate) fn type_name(&self) -> Option<&str> {
+        self.name.as_deref()
+    }
+
+    pub(crate) fn cause(&self) -> Option<&Self> {
+        self.cause.as_deref()
+    }
+}
+
 /// Lets [`Field::error`](crate::Field::error) take a sized error or a `dyn Error`.
 pub trait AsError {
     fn as_error(&self) -> &(dyn Error + 'static);
