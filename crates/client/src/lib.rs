@@ -16,20 +16,13 @@ use weacon_protocol::{
 const TIMEOUT: Duration = Duration::from_secs(5);
 
 /// The daemon's build and capabilities, after a handshake as `me` over the socket at `socket`.
-/// Blocks; call it outside an async runtime.
 ///
 /// # Errors
 /// When no daemon listens there, it doesn't answer in time, or it refuses the handshake.
-pub fn handshake(socket: &Path, me: App) -> Result<Welcome, Fault> {
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .map_err(no_answer)?;
-    runtime.block_on(async {
-        tokio::time::timeout(TIMEOUT, exchange(socket, me))
-            .await
-            .unwrap_or_else(|_| Err(no_answer(io::Error::from(io::ErrorKind::TimedOut))))
-    })
+pub async fn handshake(socket: &Path, me: App) -> Result<Welcome, Fault> {
+    tokio::time::timeout(TIMEOUT, exchange(socket, me))
+        .await
+        .unwrap_or_else(|_| Err(no_answer(io::Error::from(io::ErrorKind::TimedOut))))
 }
 
 /// A raw connection to the daemon at `socket`, before any handshake.
@@ -98,10 +91,9 @@ fn welcomed(message: Message) -> Result<Welcome, Fault> {
 mod tests {
     use std::fs;
     use std::path::PathBuf;
-    use std::sync::mpsc;
-    use std::thread;
 
     use tokio::io::{AsyncBufReadExt, BufReader};
+    use tokio::task::JoinHandle;
     use weacon_protocol::ErrorBody;
 
     use super::*;
@@ -122,25 +114,13 @@ mod tests {
         dir
     }
 
-    fn runtime() -> tokio::runtime::Runtime {
-        tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap()
-    }
-
     // A one-connection daemon that reads the hello, then sends a bad frame and `reply`, or hangs up.
-    fn serve_once(socket: &Path, reply: Option<Message>) -> thread::JoinHandle<Envelope> {
-        let socket = socket.to_owned();
-        let (bound, ready) = mpsc::channel();
-        let daemon = thread::spawn(move || runtime().block_on(serve(&socket, reply, &bound)));
-        ready.recv().unwrap();
-        daemon
+    fn serve_once(socket: &Path, reply: Option<Message>) -> JoinHandle<Envelope> {
+        let server = Server::bind(socket).unwrap();
+        tokio::spawn(serve(server, reply))
     }
 
-    async fn serve(socket: &Path, reply: Option<Message>, bound: &mpsc::Sender<()>) -> Envelope {
-        let server = Server::bind(socket).unwrap();
-        bound.send(()).unwrap();
+    async fn serve(server: Server, reply: Option<Message>) -> Envelope {
         let mut stream = BufReader::new(server.accept().await.unwrap());
         let mut line = String::new();
         stream.read_line(&mut line).await.unwrap();
@@ -152,8 +132,8 @@ mod tests {
         serde_json::from_str(&line).unwrap()
     }
 
-    #[test]
-    fn a_welcome_gives_the_daemons_build_and_capabilities_after_our_hello() {
+    #[tokio::test]
+    async fn a_welcome_gives_the_daemons_build_and_capabilities_after_our_hello() {
         let dir = temp_dir("welcome");
         let socket = dir.join("weacon.sock");
         let welcome = Welcome {
@@ -162,9 +142,12 @@ mod tests {
         };
         let daemon = serve_once(&socket, Some(Message::Welcome(welcome.clone())));
 
-        assert_eq!(handshake(&socket, app("weacon-desktop")).unwrap(), welcome);
         assert_eq!(
-            daemon.join().unwrap(),
+            handshake(&socket, app("weacon-desktop")).await.unwrap(),
+            welcome
+        );
+        assert_eq!(
+            daemon.await.unwrap(),
             Envelope {
                 id: 1,
                 message: Message::Hello(Hello {
@@ -177,13 +160,13 @@ mod tests {
         fs::remove_dir_all(&dir).unwrap();
     }
 
-    #[test]
-    fn a_daemon_that_hangs_up_gave_no_answer() {
+    #[tokio::test]
+    async fn a_daemon_that_hangs_up_gave_no_answer() {
         let dir = temp_dir("hangup");
         let socket = dir.join("weacon.sock");
         let daemon = serve_once(&socket, None);
-        let error = handshake(&socket, app("weacon-desktop")).unwrap_err();
-        drop(daemon.join());
+        let error = handshake(&socket, app("weacon-desktop")).await.unwrap_err();
+        drop(daemon.await);
 
         assert_eq!(error.code().as_str(), "daemon.no_answer");
         fs::remove_dir_all(&dir).unwrap();
@@ -213,14 +196,14 @@ mod tests {
         );
     }
 
-    #[test]
-    fn no_socket_or_a_dead_one_means_no_daemon() {
+    #[tokio::test]
+    async fn no_socket_or_a_dead_one_means_no_daemon() {
         let dir = temp_dir("dead");
         let socket = dir.join("weacon.sock");
-        drop(runtime().block_on(async { Server::bind(&socket) }).unwrap());
+        drop(Server::bind(&socket).unwrap());
 
         for path in [socket.as_path(), Path::new("/nonexistent/weacon.sock")] {
-            let error = handshake(path, app("weacon-desktop")).unwrap_err();
+            let error = handshake(path, app("weacon-desktop")).await.unwrap_err();
 
             assert_eq!(error.code().as_str(), "daemon.not_running");
         }

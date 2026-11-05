@@ -157,7 +157,7 @@ mod windows {
         }
     }
 
-    /// `dir`, which needs no check: the pipe guards itself, and its name changes at each start.
+    /// Private enough: the pipe has its own access list and a new name at each start.
     pub(crate) fn private_owner(dir: &Path) -> io::Result<Option<Owner>> {
         Ok(fs::metadata(dir)?.is_dir().then_some(Owner))
     }

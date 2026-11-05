@@ -6,7 +6,7 @@ yanked = "deny"
 
 [licenses]
 allow = [
-    # Public-domain-like; interprocess's own small helpers use it.
+    # doctest-file and recvmsg, from interprocess.
     "0BSD",
     "Apache-2.0",
     "Apache-2.0 WITH LLVM-exception",

@@ -1,42 +1,25 @@
-use std::io;
-use std::path::Path;
+#[cfg(unix)]
+pub(crate) use unix::*;
+#[cfg(windows)]
+pub(crate) use windows::*;
 
 #[cfg(unix)]
-pub(crate) use tokio::net::UnixStream as Stream;
-
-#[cfg(windows)]
-pub(crate) type Stream = interprocess::os::windows::named_pipe::tokio::DuplexPipeStream<
-    interprocess::os::windows::named_pipe::pipe_mode::Bytes,
->;
-
-/// Connects to the daemon's socket at `socket`.
-#[cfg(unix)]
-pub(crate) async fn connect(socket: &Path) -> io::Result<Stream> {
-    Stream::connect(socket).await
-}
-
-/// Connects to the daemon's pipe, whose name the daemon writes to `socket`.
-#[cfg(windows)]
-pub(crate) async fn connect(socket: &Path) -> io::Result<Stream> {
-    let name = tokio::fs::read_to_string(socket).await?;
-    Stream::connect_by_path(name.trim()).await
-}
-
-#[cfg(test)]
-pub(crate) use server::Server;
-
-/// A stand-in for the daemon's listener, for the tests.
-#[cfg(test)]
-mod server {
+mod unix {
     use std::io;
     use std::path::Path;
 
-    use super::Stream;
+    use tokio::net::UnixStream as Stream;
 
-    #[cfg(unix)]
+    /// Connects to the daemon's socket at `socket`.
+    pub(crate) async fn connect(socket: &Path) -> io::Result<Stream> {
+        Stream::connect(socket).await
+    }
+
+    /// A stand-in for the daemon's listener, for the tests.
+    #[cfg(test)]
     pub(crate) struct Server(tokio::net::UnixListener);
 
-    #[cfg(unix)]
+    #[cfg(test)]
     impl Server {
         pub(crate) fn bind(socket: &Path) -> io::Result<Self> {
             tokio::net::UnixListener::bind(socket).map(Self)
@@ -46,16 +29,31 @@ mod server {
             Ok(self.0.accept().await?.0)
         }
     }
+}
 
-    #[cfg(windows)]
+#[cfg(windows)]
+mod windows {
+    use std::io;
+    use std::path::Path;
+
+    use interprocess::os::windows::named_pipe::pipe_mode::Bytes;
+    use interprocess::os::windows::named_pipe::tokio::DuplexPipeStream;
+
+    type Stream = DuplexPipeStream<Bytes>;
+
+    /// Connects to the daemon's pipe, whose name the daemon writes to `socket`.
+    pub(crate) async fn connect(socket: &Path) -> io::Result<Stream> {
+        let name = tokio::fs::read_to_string(socket).await?;
+        Stream::connect_by_path(name.as_str()).await
+    }
+
+    /// A stand-in for the daemon's listener, for the tests.
+    #[cfg(test)]
     pub(crate) struct Server(
-        interprocess::os::windows::named_pipe::tokio::PipeListener<
-            interprocess::os::windows::named_pipe::pipe_mode::Bytes,
-            interprocess::os::windows::named_pipe::pipe_mode::Bytes,
-        >,
+        interprocess::os::windows::named_pipe::tokio::PipeListener<Bytes, Bytes>,
     );
 
-    #[cfg(windows)]
+    #[cfg(test)]
     impl Server {
         pub(crate) fn bind(socket: &Path) -> io::Result<Self> {
             use std::hash::BuildHasher;

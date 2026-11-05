@@ -31,23 +31,23 @@ pub(crate) fn build(version: &Version) -> App {
     }
 }
 
-/// Runs the daemon until Ctrl-C or SIGTERM.
+/// The single-threaded async runtime the core's commands run on.
+pub(crate) fn runtime() -> Result<tokio::runtime::Runtime, Fault> {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|error| {
+            Fault::new(code!("runtime.failed"), "Weacon couldn't start its runtime").because(error)
+        })
+}
+
+/// Runs the daemon until Ctrl-C or the system asks it to stop.
 pub(crate) fn run(app: &crate::app::App) -> Result<(), Fault> {
     let state_dir = app
         .state_dir
         .as_deref()
         .ok_or_else(crate::app::state_unavailable)?;
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .map_err(|error| {
-            Fault::new(
-                code!("daemon.runtime_failed"),
-                "The daemon couldn't start its runtime",
-            )
-            .because(error)
-        })?;
-    runtime.block_on(async {
+    runtime()?.block_on(async {
         let signals = platform::Signals::new().map_err(|error| {
             Fault::new(
                 code!("daemon.signals_failed"),
@@ -250,11 +250,7 @@ mod tests {
     }
 
     async fn ask(socket: &Path) -> Result<Welcome, Fault> {
-        let socket = socket.to_owned();
-        let me = build(&VERSION);
-        tokio::task::spawn_blocking(move || weacon_client::handshake(&socket, me))
-            .await
-            .unwrap()
+        weacon_client::handshake(socket, build(&VERSION)).await
     }
 
     fn hello(protocol: u32) -> Vec<u8> {
