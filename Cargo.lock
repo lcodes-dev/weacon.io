@@ -1207,6 +1207,7 @@ dependencies = [
  "ureq",
  "weacon-agents",
  "weacon-client",
+ "weacon-codemap",
  "weacon-observability",
  "weacon-protocol",
  "weacon-version",

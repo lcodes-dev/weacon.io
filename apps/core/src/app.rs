@@ -14,8 +14,23 @@ use crate::logs::{self, RotatingFile};
 use crate::platform::{self, Env};
 use crate::report::{Deliver, Reporter};
 
-/// The exit code of a command that failed; 1 is kept for a check that finds something.
+/// Exit codes beyond 0: a check that found something, and a command that failed.
+const FINDINGS: u8 = 1;
 const FAILED: u8 = 2;
+
+/// How a command that ran to the end came out.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Outcome {
+    Done,
+    /// A check found something, such as a stale anchor.
+    Findings,
+}
+
+impl From<()> for Outcome {
+    fn from((): ()) -> Self {
+        Self::Done
+    }
+}
 
 /// What a command runs with: its build, logger, error reporter and where its state lives.
 pub(crate) struct App {
@@ -79,11 +94,13 @@ impl App {
         }
     }
 
-    /// Logs and reports a failed command, and gives its exit code: 0 when it succeeded, 2 when
-    /// it failed.
-    pub(crate) fn finish(&self, result: Result<(), Fault>) -> ExitCode {
-        let Err(fault) = result else {
-            return ExitCode::SUCCESS;
+    /// Logs and reports a failed command, and gives its exit code: 0 when it's done, 1 when a
+    /// check found something, 2 when it failed.
+    pub(crate) fn finish(&self, result: Result<Outcome, Fault>) -> ExitCode {
+        let fault = match result {
+            Ok(Outcome::Done) => return ExitCode::SUCCESS,
+            Ok(Outcome::Findings) => return ExitCode::from(FINDINGS),
+            Err(fault) => fault,
         };
         self.log
             .error("command failed", &[("err", Field::error(&fault))]);
@@ -231,7 +248,8 @@ mod tests {
         let (app, _, uploads) = start(&[("WEACON_SENTRY_DSN", DSN)], false);
 
         assert!(app.reporter.is_on());
-        assert_eq!(app.finish(Ok(())), ExitCode::SUCCESS);
+        assert_eq!(app.finish(Ok(().into())), ExitCode::SUCCESS);
+        assert_eq!(app.finish(Ok(Outcome::Findings)), ExitCode::from(1));
         assert!(uploads.lock().unwrap().is_empty());
     }
 
