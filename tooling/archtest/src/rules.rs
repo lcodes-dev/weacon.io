@@ -10,6 +10,11 @@ pub(crate) struct Rule {
 /// One row per package that exists today.
 pub(crate) const RULES: &[Rule] = &[
     Rule {
+        package: "weacon-agents",
+        may_use: &["weacon-observability", "weacon-protocol"],
+        io: true,
+    },
+    Rule {
         package: "weacon-archtest",
         may_use: &[],
         io: true,
@@ -40,11 +45,19 @@ pub(crate) const RULES: &[Rule] = &[
         io: false,
     },
     Rule {
+        package: "weacon-testing",
+        may_use: &[],
+        io: true,
+    },
+    Rule {
         package: "weacon-version",
         may_use: &[],
         io: true,
     },
 ];
+
+/// Test helpers, which any package may use as a dev-dependency and none otherwise.
+pub(crate) const TESTING: &str = "weacon-testing";
 
 /// What every package under `apps/` depends on, and as which kind of dependency.
 pub(crate) const APP_NEEDS: &[(&str, Kind)] = &[
