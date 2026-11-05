@@ -14,7 +14,7 @@ const FAILED: u8 = 2;
 pub(crate) struct App {
     pub(crate) version: Version,
     pub(crate) log: Logger,
-    reporter: Arc<Reporter>,
+    pub(crate) reporter: Arc<Reporter>,
 }
 
 impl App {

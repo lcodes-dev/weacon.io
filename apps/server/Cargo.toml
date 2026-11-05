@@ -10,7 +10,13 @@ publish.workspace = true
 [dependencies]
 axum.workspace = true
 clap.workspace = true
+futures-util.workspace = true
+getrandom.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
 sqlx.workspace = true
+subtle.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "sync"] }
 weacon-appkit.workspace = true
 weacon-observability.workspace = true
@@ -20,6 +26,7 @@ weacon-version.workspace = true
 [dev-dependencies]
 serde_json.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
+tokio-tungstenite.workspace = true
 weacon-testing.workspace = true
 
 [build-dependencies]

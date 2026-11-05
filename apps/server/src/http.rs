@@ -1,20 +1,28 @@
 use std::future::{Future, IntoFuture};
-use std::time::{Duration, Instant};
+use std::sync::Arc;
+use std::time::{Duration, Instant, UNIX_EPOCH};
 
 use axum::Json;
 use axum::Router;
-use axum::extract::{MatchedPath, Request, State};
-use axum::http::{HeaderValue, Method, header};
+use axum::extract::{DefaultBodyLimit, MatchedPath, Request, State};
+use axum::http::{HeaderValue, Method, StatusCode, header};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
-use axum::routing::get;
+use axum::routing::{get, post};
 use tokio::net::TcpListener;
-use tokio::sync::oneshot;
-use weacon_observability::{Fault, Logger};
-use weacon_protocol::{App, code};
+use tokio::sync::{Semaphore, broadcast, oneshot};
+use weacon_observability::{Clock, Fault, Field, Logger, Reporter};
+use weacon_protocol::{App, Code, ErrorBody, WorkspaceId, code};
+
+use crate::db::Db;
+use crate::feed;
+use crate::mail::Outbox;
+use crate::sign_in;
 
 const REQUEST_ID: &str = "x-request-id";
 const GRACE: Duration = Duration::from_secs(10);
+/// 16 KiB.
+const MAX_BODY: usize = 16_384;
 static METHODS: [Method; 9] = [
     Method::GET,
     Method::POST,
@@ -31,6 +39,28 @@ static METHODS: [Method; 9] = [
 pub(crate) struct Shared {
     pub(crate) app: App,
     pub(crate) log: Logger,
+    pub(crate) reporter: Arc<Reporter>,
+    pub(crate) db: Db,
+    pub(crate) outbox: Outbox,
+    pub(crate) clock: Arc<Clock>,
+    pub(crate) feed: feed::Timing,
+    /// Which workspace just changed, for the feeds.
+    pub(crate) changes: broadcast::Sender<WorkspaceId>,
+    /// Room for sign-ins being worked on after their answer; when it's full, more are dropped.
+    pub(crate) sign_ins: Arc<Semaphore>,
+    /// How long finishing a sign-in takes at least, so its timing gives nothing away.
+    pub(crate) finish_within: Duration,
+}
+
+impl Shared {
+    /// Seconds since the Unix epoch.
+    pub(crate) fn now(&self) -> i64 {
+        (self.clock)()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |since| {
+                i64::try_from(since.as_secs()).unwrap_or(i64::MAX)
+            })
+    }
 }
 
 /// Serves `listener` until `shutdown` finishes, then lets open requests end for up to
@@ -71,6 +101,10 @@ pub(crate) async fn serve(
 fn router(shared: Shared) -> Router {
     Router::new()
         .route("/version", get(version))
+        .route("/sign-in", post(sign_in::start))
+        .route("/sign-in/finish", post(sign_in::finish))
+        .route("/workspaces/{workspace}/feed", get(feed::feed))
+        .layer(DefaultBodyLimit::max(MAX_BODY))
         .layer(middleware::from_fn_with_state(shared.clone(), log_request))
         .with_state(shared)
 }
@@ -112,55 +146,60 @@ async fn log_request(State(shared): State<Shared>, request: Request, next: Next)
     response
 }
 
+/// Answers that the client must sign in, or try again, with `code`.
+pub(crate) fn refused(code: Code) -> Response {
+    let body = ErrorBody {
+        code,
+        retryable: false,
+    };
+    (StatusCode::UNAUTHORIZED, Json(body)).into_response()
+}
+
+/// Logs and reports `fault`, and answers that the server failed.
+pub(crate) fn failure(shared: &Shared, fault: Fault) -> Response {
+    let body = ErrorBody {
+        code: fault.code().clone(),
+        retryable: true,
+    };
+    report(shared, fault);
+    (StatusCode::INTERNAL_SERVER_ERROR, Json(body)).into_response()
+}
+
+/// Logs and reports `fault`.
+pub(crate) fn report(shared: &Shared, fault: Fault) {
+    shared
+        .log
+        .error("request failed", &[("err", Field::error(&fault))]);
+    let (reporter, log) = (Arc::clone(&shared.reporter), shared.log.clone());
+    // Sending a report blocks, so it runs beside the request rather than holding it up.
+    drop(tokio::task::spawn_blocking(move || {
+        reporter.capture_error(&fault, fault.code(), &log);
+    }));
+}
+
 #[cfg(test)]
 mod tests {
     use std::net::SocketAddr;
 
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpStream;
-    use tokio::sync::oneshot;
-    use tokio::task::JoinHandle;
 
     use super::*;
-    use crate::test_support::{Records, VERSION, messages, recording_logger};
+    use crate::test_support::{Fixture, Running, messages, request, run};
 
-    struct Running {
-        address: SocketAddr,
-        records: Records,
-        stop: oneshot::Sender<()>,
-        done: JoinHandle<Result<(), Fault>>,
+    struct Server {
+        running: Running,
+        fixture: Fixture,
     }
 
-    async fn start() -> Running {
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let address = listener.local_addr().unwrap();
-        let (log, records) = recording_logger();
-        let (stop, stopped) = oneshot::channel();
-        let shared = Shared {
-            app: weacon_appkit::build(&VERSION),
-            log,
-        };
-        let done = tokio::spawn(serve(listener, shared, async {
-            drop(stopped.await);
-        }));
-        Running {
-            address,
-            records,
-            stop,
-            done,
-        }
+    async fn start() -> Server {
+        let fixture = Fixture::new().await;
+        let running = run(fixture.shared.clone()).await;
+        Server { running, fixture }
     }
 
-    // One HTTP/1.1 exchange: the response's lowercased head lines, and its body.
     async fn get(address: SocketAddr, target: &str) -> (Vec<String>, String) {
-        let mut stream = TcpStream::connect(address).await.unwrap();
-        let request = format!("GET {target} HTTP/1.1\r\nhost: test\r\nconnection: close\r\n\r\n");
-        stream.write_all(request.as_bytes()).await.unwrap();
-        let mut response = String::new();
-        stream.read_to_string(&mut response).await.unwrap();
-        let (head, body) = response.split_once("\r\n\r\n").unwrap();
-        let head = head.lines().map(str::to_lowercase).collect();
-        (head, body.to_owned())
+        request(address, &format!("GET {target}"), "").await
     }
 
     fn header<'a>(head: &'a [String], name: &str) -> Option<&'a str> {
@@ -171,7 +210,7 @@ mod tests {
     #[tokio::test]
     async fn version_answers_the_build_uncached() {
         let server = start().await;
-        let (head, body) = get(server.address, "/version").await;
+        let (head, body) = get(server.running.address, "/version").await;
         let body: serde_json::Value = serde_json::from_str(&body).unwrap();
 
         assert_eq!(head[0], "http/1.1 200 ok");
@@ -185,9 +224,9 @@ mod tests {
     #[tokio::test]
     async fn each_request_is_logged_once_with_its_route_and_id() {
         let server = start().await;
-        let (head, _) = get(server.address, "/version?token=MARKER").await;
-        let (missing, _) = get(server.address, "/MARKER-PATH").await;
-        let records = server.records.lock().unwrap().clone();
+        let (head, _) = get(server.running.address, "/version?token=MARKER").await;
+        let (missing, _) = get(server.running.address, "/MARKER-PATH").await;
+        let records = server.fixture.records.lock().unwrap().clone();
         let requests: Vec<_> = records
             .iter()
             .filter(|record| record.msg == "request handled")
@@ -208,24 +247,26 @@ mod tests {
         assert!(!serde_json::to_string(&records).unwrap().contains("MARKER"));
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn shutdown_waits_for_a_stalled_client_only_so_long() {
         let server = start().await;
-        let mut stalled = TcpStream::connect(server.address).await.unwrap();
+        // The pools time out on a paused clock, so pause only after they're open.
+        tokio::time::pause();
+        let mut stalled = TcpStream::connect(server.running.address).await.unwrap();
         stalled
             .write_all(b"GET /version HTTP/1.1\r\nhost: test\r\n")
             .await
             .unwrap();
         tokio::task::yield_now().await;
-        server.stop.send(()).unwrap();
+        server.running.stop.send(()).unwrap();
 
-        tokio::time::timeout(GRACE * 2, server.done)
+        tokio::time::timeout(GRACE * 2, server.running.done)
             .await
             .unwrap()
             .unwrap()
             .unwrap();
         assert_eq!(
-            messages(&server.records),
+            messages(&server.fixture.records),
             ["listening", "shutdown timed out"]
         );
     }
@@ -233,14 +274,14 @@ mod tests {
     #[tokio::test]
     async fn other_methods_are_not_logged_as_sent() {
         let server = start().await;
-        let mut stream = TcpStream::connect(server.address).await.unwrap();
+        let mut stream = TcpStream::connect(server.running.address).await.unwrap();
         stream
             .write_all(b"MARKER /version HTTP/1.1\r\nhost: test\r\nconnection: close\r\n\r\n")
             .await
             .unwrap();
         let mut response = String::new();
         stream.read_to_string(&mut response).await.unwrap();
-        let records = server.records.lock().unwrap();
+        let records = server.fixture.records.lock().unwrap();
 
         assert_eq!(records[1].fields["method"], "other");
         assert_eq!(records[1].fields["route"], "/version");
@@ -249,9 +290,11 @@ mod tests {
     #[tokio::test]
     async fn shutdown_stops_serving() {
         let server = start().await;
-        server.stop.send(()).unwrap();
+        server.running.stop.send(()).unwrap();
 
-        server.done.await.unwrap().unwrap();
-        TcpStream::connect(server.address).await.unwrap_err();
+        server.running.done.await.unwrap().unwrap();
+        TcpStream::connect(server.running.address)
+            .await
+            .unwrap_err();
     }
 }

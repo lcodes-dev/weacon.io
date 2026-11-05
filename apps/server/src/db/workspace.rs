@@ -1,15 +1,15 @@
 use weacon_observability::Fault;
-use weacon_protocol::{MemberId, WorkspaceId, code};
+use weacon_protocol::{MemberId, WorkspaceId};
 
-use super::{Db, failed};
+use super::{Db, failed, stored, unreadable};
 use crate::email::Email;
 
 /// One workspace's view of the database: every query it runs is limited to that workspace.
 /// Only the `db` module makes one, after checking that the workspace exists.
 #[derive(Debug)]
 pub(crate) struct Workspace {
-    db: Db,
-    id: WorkspaceId,
+    pub(super) db: Db,
+    pub(super) id: WorkspaceId,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -21,6 +21,10 @@ pub(crate) struct Member {
 impl Workspace {
     pub(super) const fn new(db: Db, id: WorkspaceId) -> Self {
         Self { db, id }
+    }
+
+    pub(crate) const fn id(&self) -> &WorkspaceId {
+        &self.id
     }
 
     /// Adds a member; an id or email already in this workspace is `db.exists`.
@@ -47,14 +51,10 @@ impl Workspace {
         .into_iter()
         .map(|(id, email)| {
             Ok(Member {
-                id: MemberId::try_from(id).map_err(|_| unreadable())?,
+                id: stored(id)?,
                 email: Email::parse(&email).map_err(|_| unreadable())?,
             })
         })
         .collect()
     }
-}
-
-fn unreadable() -> Fault {
-    Fault::new(code!("db.unreadable"), "A stored value can't be read")
 }
