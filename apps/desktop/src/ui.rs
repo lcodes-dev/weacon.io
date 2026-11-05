@@ -13,9 +13,9 @@ use gpui_kit::{
     AnyElement, AppContext as _, Context, Entity, IntoElement, ParentElement as _, Render,
     SharedString, Styled as _, Window, div, px,
 };
-use tokio::sync::mpsc::UnboundedReceiver;
-use weacon_observability::{Field, Logger};
-use weacon_protocol::Outcome;
+use tokio::sync::mpsc::Receiver;
+use weacon_observability::{Fault, Field, Logger};
+use weacon_protocol::{Outcome, RunId, RunUpdate, code};
 use weacon_version::Version;
 
 use crate::feed::Feed;
@@ -23,10 +23,15 @@ use crate::report::Reporter;
 use crate::transcript::{Change, Row, ToolState, Transcript};
 use crate::ui::frames::Frames;
 
+// The most updates applied before the window may draw again.
+const BATCH: usize = 256;
+
 /// The window's one view: the run's transcript, or Settings.
 pub(crate) struct Main {
     settings: bool,
     status: Status,
+    /// The run shown: the first one the core streamed.
+    run: Option<RunId>,
     transcript: Transcript,
     texts: HashMap<usize, Entity<TextViewState>>,
     scroller: Entity<MessageScrollerState>,
@@ -54,6 +59,7 @@ impl Main {
         Self {
             settings: false,
             status: Status::Connecting,
+            run: None,
             transcript: Transcript::default(),
             texts: HashMap::new(),
             scroller: cx.new(|cx| MessageScrollerState::new(0, cx)),
@@ -64,14 +70,29 @@ impl Main {
         }
     }
 
-    /// Applies what `feed` brings until it closes.
-    pub(crate) fn listen(mut feed: UnboundedReceiver<Feed>, cx: &Context<'_, Self>) {
+    /// Applies what `feed` brings until it closes, a batch at a time.
+    pub(crate) fn listen(mut feed: Receiver<Feed>, cx: &Context<'_, Self>) {
         cx.spawn(async move |this, cx| {
-            while let Some(item) = feed.recv().await
-                && this.update(cx, |main, cx| main.receive(item, cx)).is_ok()
+            while let Some(first) = feed.recv().await
+                && this
+                    .update(cx, |main, cx| main.receive_batch(first, &mut feed, cx))
+                    .is_ok()
             {}
         })
         .detach();
+    }
+
+    // `first` and what else has queued, up to a batch, so the window can draw in between.
+    fn receive_batch(
+        &mut self,
+        first: Feed,
+        feed: &mut Receiver<Feed>,
+        cx: &mut Context<'_, Self>,
+    ) {
+        let rest = std::iter::from_fn(|| feed.try_recv().ok()).take(BATCH - 1);
+        std::iter::once(first)
+            .chain(rest)
+            .for_each(|item| self.receive(item, cx));
     }
 
     pub(crate) fn receive(&mut self, feed: Feed, cx: &mut Context<'_, Self>) {
@@ -86,23 +107,46 @@ impl Main {
                 );
                 self.status = Status::Live;
             }
-            Feed::Update(update) => {
-                for change in self.transcript.apply(&update.event) {
-                    self.change(change, cx);
-                }
+            Feed::Update(update) => self.update(&update, cx),
+            Feed::Skipped(code) => {
+                self.log
+                    .warn("core frame dropped", &[("code", code.as_str().into())]);
             }
             Feed::Ended => {
                 self.frames.report(&self.log);
                 self.status = Status::Ended;
             }
             Feed::Failed(fault) => {
-                self.log
-                    .error("core feed lost", &[("err", Field::error(&fault))]);
-                self.reporter.capture_error(&fault, fault.code(), &self.log);
                 self.status = Status::Failed(fault.to_string().into());
+                self.failed(fault, cx);
             }
         }
         cx.notify();
+    }
+
+    fn update(&mut self, update: &RunUpdate, cx: &mut Context<'_, Self>) {
+        if *self.run.get_or_insert_with(|| update.run.clone()) != update.run {
+            return;
+        }
+        for change in self.transcript.apply(&update.event) {
+            self.change(change, cx);
+        }
+    }
+
+    // A core that isn't running or is too old is expected; anything else is reported, off the
+    // window's thread because a report blocks while it uploads.
+    fn failed(&self, fault: Fault, cx: &Context<'_, Self>) {
+        let expected = [code!("daemon.not_running"), code!("core.no_run_stream")];
+        if expected.contains(fault.code()) {
+            return self
+                .log
+                .warn("core unavailable", &[("err", Field::error(&fault))]);
+        }
+        self.log
+            .error("core feed lost", &[("err", Field::error(&fault))]);
+        let (reporter, log) = (Arc::clone(&self.reporter), self.log.clone());
+        cx.background_spawn(async move { reporter.capture_error(&fault, fault.code(), &log) })
+            .detach();
     }
 
     fn change(&mut self, change: Change<'_>, cx: &mut Context<'_, Self>) {
@@ -147,11 +191,13 @@ impl Main {
                 Button::new("toggle-settings")
                     .ghost()
                     .label(self.header_label())
-                    .on_click(cx.listener(|main, _, _, cx| {
-                        main.settings = !main.settings;
-                        cx.notify();
-                    })),
+                    .on_click(cx.listener(|main, _, _, cx| main.toggle_settings(cx))),
             )
+    }
+
+    fn toggle_settings(&mut self, cx: &mut Context<'_, Self>) {
+        self.settings = !self.settings;
+        cx.notify();
     }
 
     fn status_text(&self) -> SharedString {
@@ -182,37 +228,35 @@ impl Main {
 }
 
 fn row(row: Option<&Row>, text: Option<&Entity<TextViewState>>, cx: &gpui_kit::App) -> AnyElement {
-    let body: AnyElement = match (row, text) {
+    let body = match (row, text) {
         (Some(Row::Text), Some(text)) => TextView::new(text).selectable(true).into_any_element(),
-        (Some(Row::Tool { tool, state }), _) => {
+        _ => div()
+            .text_sm()
+            .text_color(cx.theme().muted_foreground)
+            .children(row.and_then(label))
+            .into_any_element(),
+    };
+    div().px_4().py_1().child(body).into_any_element()
+}
+
+/// What a row other than text says.
+fn label(row: &Row) -> Option<String> {
+    let text = match row {
+        Row::Text => return None,
+        Row::Tool { tool, state } => {
             let state = match state {
                 ToolState::Running => "running",
                 ToolState::Done => "done",
                 ToolState::Failed => "failed",
             };
-            div()
-                .text_sm()
-                .text_color(cx.theme().muted_foreground)
-                .child(format!("{tool}: {state}"))
-                .into_any_element()
+            return Some(format!("{tool}: {state}"));
         }
-        (Some(Row::Finished(outcome)), _) => div()
-            .text_sm()
-            .text_color(cx.theme().muted_foreground)
-            .child(finished(outcome))
-            .into_any_element(),
-        _ => div().into_any_element(),
+        Row::Finished(Outcome::Completed) => "Turn finished",
+        Row::Finished(Outcome::Interrupted) => "Turn interrupted",
+        Row::Finished(Outcome::Failed { .. }) => "Turn failed",
+        Row::Finished(Outcome::Accepted | Outcome::Unknown | Outcome::Newer) => "Turn ended",
     };
-    div().px_4().py_1().child(body).into_any_element()
-}
-
-fn finished(outcome: &Outcome) -> &'static str {
-    match outcome {
-        Outcome::Completed => "Turn finished",
-        Outcome::Interrupted => "Turn interrupted",
-        Outcome::Failed { .. } => "Turn failed",
-        Outcome::Accepted | Outcome::Unknown | Outcome::Newer => "Turn ended",
-    }
+    Some(text.to_owned())
 }
 
 impl Render for Main {
@@ -241,7 +285,7 @@ mod tests {
         Modifiers, MouseButton, TestAppContext, VisualContext as _, VisualTestContext, point, size,
     };
     use weacon_observability::Fault;
-    use weacon_protocol::{App as Build, code};
+    use weacon_protocol::{App as Build, RunEvent};
 
     use super::*;
     use crate::report::Reporter;
@@ -258,10 +302,17 @@ mod tests {
     ];
 
     fn open(cx: &mut TestAppContext) -> (Entity<Main>, Records, &mut VisualTestContext) {
+        open_with(Reporter::new(None, Box::new(|_| Ok(()))), cx)
+    }
+
+    fn open_with(
+        reporter: Reporter,
+        cx: &mut TestAppContext,
+    ) -> (Entity<Main>, Records, &mut VisualTestContext) {
         cx.update(gpui_kit::init);
         let (log, records) = recording_logger();
+        let reporter = Arc::new(reporter);
         let (root, cx) = cx.add_window_view(|window, cx| {
-            let reporter = Arc::new(Reporter::new(None, Box::new(|_| Ok(()))));
             let main = cx.new(|cx| Main::new(VERSION, reporter, log, cx));
             gpui_kit::component::Root::new(main, window, cx)
         });
@@ -335,8 +386,8 @@ mod tests {
     }
 
     #[gpui_kit::test]
-    fn the_status_follows_the_connection_and_a_failure_is_logged(cx: &mut TestAppContext) {
-        let (main, records, cx) = open(cx);
+    fn the_status_follows_the_connection(cx: &mut TestAppContext) {
+        let (main, _, cx) = open(cx);
         let status = |cx: &mut VisualTestContext| main.read_with(cx, |main, _| main.status_text());
 
         assert_eq!(status(cx), "Connecting to the core");
@@ -347,7 +398,6 @@ mod tests {
         let fault = Fault::new(code!("daemon.not_running"), "The daemon isn't running");
         feed(&main, [Feed::Failed(fault)], cx);
         assert_eq!(status(cx), "The daemon isn't running");
-        assert!(messages(&records).contains(&"core feed lost"));
     }
 
     #[gpui_kit::test]
@@ -363,6 +413,180 @@ mod tests {
         assert_eq!(
             settings::about(VERSION),
             [("Version", "0.1.0"), ("Commit", "1a2b3c4")]
+        );
+    }
+
+    fn run_update(run: &str, text: &str) -> Feed {
+        Feed::Update(RunUpdate {
+            run: RunId::try_from(run.to_owned()).unwrap(),
+            event: RunEvent::Text {
+                text: text.to_owned(),
+            },
+        })
+    }
+
+    fn rows(main: &Entity<Main>, cx: &VisualTestContext) -> usize {
+        main.read_with(cx, |main, _| main.transcript.rows().len())
+    }
+
+    #[gpui_kit::test]
+    fn the_feed_reaches_the_view_until_it_closes(cx: &mut TestAppContext) {
+        let (main, _, cx) = open(cx);
+        let (sender, receiver) = tokio::sync::mpsc::channel(BATCH * 3);
+        main.update(cx, |_, cx| Main::listen(receiver, cx));
+        sender.try_send(Feed::Connected(core())).unwrap();
+        for index in 0..BATCH * 2 {
+            sender
+                .try_send(run_update("r-1", &format!("Message {index}")))
+                .unwrap();
+        }
+        drop(sender);
+        draw(cx);
+
+        assert_eq!(
+            main.read_with(cx, |main, _| main.status_text()),
+            "Connected"
+        );
+        assert_eq!(rows(&main, cx), BATCH * 2);
+    }
+
+    #[gpui_kit::test]
+    fn only_the_first_run_is_shown(cx: &mut TestAppContext) {
+        let (main, _, cx) = open(cx);
+        feed(
+            &main,
+            [
+                run_update("r-1", "One"),
+                run_update("r-2", "Other"),
+                run_update("r-1", "Two"),
+            ],
+            cx,
+        );
+
+        assert_eq!(rows(&main, cx), 2);
+    }
+
+    #[gpui_kit::test]
+    fn frames_are_measured_only_while_connected(cx: &mut TestAppContext) {
+        let (idle, idle_records, cx) = open(cx);
+        draw(cx);
+        draw(cx);
+        feed(&idle, [Feed::Ended], cx);
+
+        assert!(!messages(&idle_records).contains(&"stream measured"));
+    }
+
+    #[gpui_kit::test]
+    fn a_stream_reports_its_frames_when_it_ends(cx: &mut TestAppContext) {
+        let (main, records, cx) = open(cx);
+        feed(&main, [Feed::Connected(core())], cx);
+        feed(&main, [run_update("r-1", "Hello")], cx);
+        feed(&main, [Feed::Ended], cx);
+
+        assert!(messages(&records).contains(&"stream measured"));
+    }
+
+    #[gpui_kit::test]
+    fn a_dropped_frame_is_logged(cx: &mut TestAppContext) {
+        let (main, records, cx) = open(cx);
+        feed(&main, [Feed::Skipped(code!("frame.invalid"))], cx);
+
+        assert_eq!(messages(&records), ["core frame dropped"]);
+    }
+
+    fn reporting(
+        cx: &mut TestAppContext,
+    ) -> (
+        Entity<Main>,
+        Records,
+        Arc<std::sync::Mutex<usize>>,
+        &mut VisualTestContext,
+    ) {
+        let reports = weacon_observability::Reports::new(
+            "https://key@sentry.example.com/1",
+            "weacon-desktop/0.1.0",
+            &VERSION.release(),
+            "/home/ada",
+        )
+        .ok();
+        let sent = Arc::new(std::sync::Mutex::new(0));
+        let counted = Arc::clone(&sent);
+        let reporter = Reporter::new(
+            reports,
+            Box::new(move |_| {
+                *counted.lock().unwrap() += 1;
+                Ok(())
+            }),
+        );
+        reporter.set_agreed(true);
+        let (main, records, cx) = open_with(reporter, cx);
+        (main, records, sent, cx)
+    }
+
+    #[gpui_kit::test]
+    fn an_unexpected_failure_is_reported_and_a_missing_core_only_warned(cx: &mut TestAppContext) {
+        let (main, records, sent, cx) = reporting(cx);
+        let missing = Fault::new(code!("daemon.not_running"), "The daemon isn't running");
+        let old = Fault::new(code!("core.no_run_stream"), "The core can't stream runs");
+        feed(&main, [Feed::Failed(missing), Feed::Failed(old)], cx);
+        let after_expected = *sent.lock().unwrap();
+        let lost = Fault::new(code!("daemon.no_answer"), "The daemon didn't answer");
+        feed(&main, [Feed::Failed(lost)], cx);
+
+        assert_eq!(after_expected, 0);
+        assert_eq!(*sent.lock().unwrap(), 1);
+        assert_eq!(
+            messages(&records),
+            ["core unavailable", "core unavailable", "core feed lost"]
+        );
+    }
+
+    #[gpui_kit::test]
+    fn the_settings_button_toggles_between_settings_and_back(cx: &mut TestAppContext) {
+        let (main, _, cx) = open(cx);
+        let label = |cx: &mut VisualTestContext| main.read_with(cx, |main, _| main.header_label());
+        main.update(cx, Main::toggle_settings);
+        let opened = label(cx);
+        main.update(cx, Main::toggle_settings);
+
+        assert_eq!(opened, "Back");
+        assert_eq!(label(cx), "Settings");
+    }
+
+    #[test]
+    fn rows_other_than_text_say_what_happened() {
+        let tool = |state| Row::Tool {
+            tool: "Read".to_owned(),
+            state,
+        };
+        let labels: Vec<_> = [
+            Row::Text,
+            tool(ToolState::Running),
+            tool(ToolState::Done),
+            tool(ToolState::Failed),
+            Row::Finished(Outcome::Completed),
+            Row::Finished(Outcome::Interrupted),
+            Row::Finished(Outcome::Failed {
+                code: code!("agent.failed"),
+            }),
+            Row::Finished(Outcome::Unknown),
+        ]
+        .iter()
+        .map(label)
+        .collect();
+
+        assert_eq!(
+            labels,
+            [
+                None,
+                Some("Read: running".to_owned()),
+                Some("Read: done".to_owned()),
+                Some("Read: failed".to_owned()),
+                Some("Turn finished".to_owned()),
+                Some("Turn interrupted".to_owned()),
+                Some("Turn failed".to_owned()),
+                Some("Turn ended".to_owned()),
+            ]
         );
     }
 }

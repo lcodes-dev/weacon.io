@@ -1,24 +1,31 @@
+use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
 use weacon_observability::Logger;
+
+// The most recent gaps kept, so a long-lived connection doesn't grow without end.
+const KEEP: usize = 8192;
 
 /// The time between renders while a run streams, to report how smooth it was.
 #[derive(Debug, Default)]
 pub(crate) struct Frames {
     last: Option<Instant>,
-    gaps: Vec<Duration>,
+    gaps: VecDeque<Duration>,
 }
 
 impl Frames {
     pub(crate) fn tick(&mut self, now: Instant) {
         if let Some(last) = self.last.replace(now) {
-            self.gaps.push(now.saturating_duration_since(last));
+            if self.gaps.len() == KEEP {
+                self.gaps.pop_front();
+            }
+            self.gaps.push_back(now.saturating_duration_since(last));
         }
     }
 
     /// The median, 95th percentile and longest gap, in microseconds.
     pub(crate) fn summary(&self) -> Option<[u64; 3]> {
-        let mut gaps = self.gaps.clone();
+        let mut gaps: Vec<Duration> = self.gaps.iter().copied().collect();
         gaps.sort_unstable();
         let at = |share: usize| {
             let index = (gaps.len() * share / 100).min(gaps.len().saturating_sub(1));

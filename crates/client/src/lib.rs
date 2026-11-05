@@ -11,7 +11,8 @@ use std::time::Duration;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use weacon_observability::Fault;
 use weacon_protocol::{
-    App, Envelope, Hello, LineDecoder, Message, PROTOCOL, Welcome, code, encode_line,
+    App, Capability, Envelope, FrameError, Hello, LineDecoder, Message, PROTOCOL, Welcome, code,
+    encode_line,
 };
 
 const TIMEOUT: Duration = Duration::from_secs(5);
@@ -28,7 +29,7 @@ pub fn socket_path(state_dir: &Path) -> PathBuf {
 /// # Errors
 /// When no daemon listens there, it doesn't answer in time, or it refuses the handshake.
 pub async fn handshake(socket: &Path, me: App) -> Result<Welcome, Fault> {
-    Ok(Connection::open(socket, me).await?.0)
+    Ok(Connection::open(socket, me, Vec::new()).await?.0)
 }
 
 /// A raw connection to the daemon at `socket`, before any handshake, such as for protocol tests.
@@ -45,28 +46,37 @@ pub async fn connect(socket: &Path) -> io::Result<impl AsyncRead + AsyncWrite + 
 pub struct Connection {
     stream: platform::Stream,
     decoder: LineDecoder,
-    pending: VecDeque<Envelope>,
+    pending: VecDeque<Result<Envelope, FrameError>>,
 }
 
 impl Connection {
-    /// Connects to the daemon at `socket` as `me` and shakes hands, giving the daemon's welcome.
+    /// Connects to the daemon at `socket` as `me`, offering `capabilities`, and shakes hands,
+    /// giving the daemon's welcome.
     ///
     /// # Errors
     /// When no daemon listens there, it doesn't answer in time, or it refuses the handshake.
-    pub async fn open(socket: &Path, me: App) -> Result<(Welcome, Self), Fault> {
-        tokio::time::timeout(TIMEOUT, Self::greet(socket, me))
+    pub async fn open(
+        socket: &Path,
+        me: App,
+        capabilities: Vec<Capability>,
+    ) -> Result<(Welcome, Self), Fault> {
+        tokio::time::timeout(TIMEOUT, Self::greet(socket, me, capabilities))
             .await
             .unwrap_or_else(|_| Err(no_answer(io::Error::from(io::ErrorKind::TimedOut))))
     }
 
-    async fn greet(socket: &Path, me: App) -> Result<(Welcome, Self), Fault> {
+    async fn greet(
+        socket: &Path,
+        me: App,
+        capabilities: Vec<Capability>,
+    ) -> Result<(Welcome, Self), Fault> {
         let mut stream = platform::connect(socket).await.map_err(not_running)?;
         let hello = Envelope {
             id: 1,
             message: Message::Hello(Hello {
                 protocol: PROTOCOL,
                 app: me,
-                capabilities: Vec::new(),
+                capabilities,
             }),
         };
         let line = encode_line(&hello).map_err(no_answer)?;
@@ -76,30 +86,30 @@ impl Connection {
             decoder: LineDecoder::default(),
             pending: VecDeque::new(),
         };
-        let reply = connection
-            .next()
-            .await?
-            .ok_or_else(|| no_answer(io::Error::from(io::ErrorKind::UnexpectedEof)))?;
-        Ok((welcomed(reply)?, connection))
+        loop {
+            match connection.next().await? {
+                Some(Ok(reply)) => return Ok((welcomed(reply)?, connection)),
+                Some(Err(_)) => {}
+                None => return Err(no_answer(io::Error::from(io::ErrorKind::UnexpectedEof))),
+            }
+        }
     }
 
-    /// The next message from the daemon, skipping frames that don't parse; `None` once it
-    /// hangs up.
+    /// The next frame from the daemon, a message or why it isn't one; `None` once it hangs up.
     ///
     /// # Errors
     /// When reading from the daemon fails.
-    pub async fn next(&mut self) -> Result<Option<Message>, Fault> {
+    pub async fn next(&mut self) -> Result<Option<Result<Message, FrameError>>, Fault> {
         let mut buf = [0; READ_CHUNK];
         loop {
-            if let Some(envelope) = self.pending.pop_front() {
-                return Ok(Some(envelope.message));
+            if let Some(frame) = self.pending.pop_front() {
+                return Ok(Some(frame.map(|envelope| envelope.message)));
             }
             let read = self.stream.read(&mut buf).await.map_err(no_answer)?;
             let Some(bytes) = buf.get(..read).filter(|bytes| !bytes.is_empty()) else {
                 return Ok(None);
             };
-            self.pending
-                .extend(self.decoder.push(bytes).into_iter().filter_map(Result::ok));
+            self.pending.extend(self.decoder.push(bytes));
         }
     }
 }
@@ -212,46 +222,57 @@ mod tests {
         fs::remove_dir_all(&dir).unwrap();
     }
 
+    fn update(text: &str) -> Message {
+        Message::Run(RunUpdate {
+            run: serde_json::from_str(r#""r-1""#).unwrap(),
+            event: RunEvent::TextDelta {
+                text: text.to_owned(),
+            },
+        })
+    }
+
+    // A daemon that reads the hello, sends `bytes` and hangs up, handing back the hello.
+    fn send_after_hello(socket: &Path, bytes: Vec<u8>) -> JoinHandle<Envelope> {
+        let server = Server::bind(socket).unwrap();
+        tokio::spawn(async move {
+            let mut stream = BufReader::new(server.accept().await.unwrap());
+            let mut hello = String::new();
+            stream.read_line(&mut hello).await.unwrap();
+            stream.write_all(&bytes).await.unwrap();
+            serde_json::from_str(&hello).unwrap()
+        })
+    }
+
     #[tokio::test]
     async fn what_follows_the_welcome_arrives_in_order_until_the_daemon_hangs_up() {
         let dir = temp_dir("stream");
         let socket = dir.join("weacon.sock");
-        let server = Server::bind(&socket).unwrap();
         let welcome = Welcome {
             app: app("weacon-core"),
             capabilities: Vec::new(),
         };
-        let update = |text: &str| {
-            Message::Run(RunUpdate {
-                run: serde_json::from_str(r#""r-1""#).unwrap(),
-                event: RunEvent::TextDelta {
-                    text: text.to_owned(),
-                },
-            })
-        };
-        let sent = [
-            Message::Welcome(welcome.clone()),
-            update("He"),
-            update("llo"),
-        ];
-        let daemon = tokio::spawn(async move {
-            let mut stream = BufReader::new(server.accept().await.unwrap());
-            stream.read_line(&mut String::new()).await.unwrap();
-            let bytes: Vec<u8> = sent
-                .into_iter()
-                .flat_map(|message| encode_line(&Envelope { id: 0, message }).unwrap())
-                .collect();
-            stream.write_all(&bytes).await.unwrap();
-        });
+        let line = |message| encode_line(&Envelope { id: 0, message }).unwrap();
+        let mut bytes = line(Message::Welcome(welcome.clone()));
+        bytes.extend(line(update("He")));
+        bytes.extend(b"not json\n");
+        bytes.extend(line(update("llo")));
+        let daemon = send_after_hello(&socket, bytes);
+        let offered = vec![Capability::from(code!("run.stream"))];
 
-        let (welcomed, mut connection) = Connection::open(&socket, app("weacon-desktop"))
-            .await
-            .unwrap();
-        daemon.await.unwrap();
+        let (welcomed, mut connection) =
+            Connection::open(&socket, app("weacon-desktop"), offered.clone())
+                .await
+                .unwrap();
+        let hello = daemon.await.unwrap();
 
+        assert!(matches!(hello.message, Message::Hello(hello) if hello.capabilities == offered));
         assert_eq!(welcomed, welcome);
-        assert_eq!(connection.next().await.unwrap(), Some(update("He")));
-        assert_eq!(connection.next().await.unwrap(), Some(update("llo")));
+        assert_eq!(connection.next().await.unwrap(), Some(Ok(update("He"))));
+        assert_eq!(
+            connection.next().await.unwrap(),
+            Some(Err(FrameError::Invalid))
+        );
+        assert_eq!(connection.next().await.unwrap(), Some(Ok(update("llo"))));
         assert_eq!(connection.next().await.unwrap(), None);
         fs::remove_dir_all(&dir).unwrap();
     }

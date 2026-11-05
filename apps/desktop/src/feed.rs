@@ -1,37 +1,42 @@
 use std::path::{Path, PathBuf};
 use std::thread;
 
-use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
+use tokio::sync::mpsc::{Receiver, Sender, channel};
 use weacon_client::Connection;
 use weacon_observability::Fault;
-use weacon_protocol::{App, Capability, Message, RunUpdate, code};
+use weacon_protocol::{App, Capability, Code, Message, RunUpdate, code};
+
+// Updates queue here while the view draws; a full queue holds back reading from the core.
+const QUEUE: usize = 4096;
 
 /// What the core's connection brings, in order.
 #[derive(Debug)]
 pub(crate) enum Feed {
     Connected(App),
     Update(RunUpdate),
+    /// A frame from the core that wasn't a valid message.
+    Skipped(Code),
     /// The core hung up.
     Ended,
     Failed(Fault),
 }
 
 /// Connects to the core at `socket` as `me` on a thread of its own, and sends what arrives.
-pub(crate) fn start(socket: PathBuf, me: App) -> UnboundedReceiver<Feed> {
-    let (sender, receiver) = unbounded_channel();
+pub(crate) fn start(socket: PathBuf, me: App) -> Receiver<Feed> {
+    let (sender, receiver) = channel(QUEUE);
     let failed = sender.clone();
     let spawned = thread::Builder::new()
         .name("core-feed".to_owned())
         .spawn(move || run(&socket, me, &sender));
     if let Err(error) = spawned {
         let fault = Fault::new(code!("feed.start_failed"), "The connection couldn't start");
-        drop(failed.send(Feed::Failed(fault.because(error))));
+        drop(failed.try_send(Feed::Failed(fault.because(error))));
     }
     receiver
 }
 
 // The view logs and reports a failure, once.
-fn run(socket: &Path, me: App, sender: &UnboundedSender<Feed>) {
+fn run(socket: &Path, me: App, sender: &Sender<Feed>) {
     let last = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -39,32 +44,29 @@ fn run(socket: &Path, me: App, sender: &UnboundedSender<Feed>) {
             Fault::new(code!("runtime.failed"), "Weacon couldn't start its runtime").because(error)
         })
         .and_then(|runtime| runtime.block_on(pump(socket, me, sender)));
-    drop(sender.send(last.map_or_else(Feed::Failed, |()| Feed::Ended)));
+    drop(sender.blocking_send(last.map_or_else(Feed::Failed, |()| Feed::Ended)));
 }
 
 /// Sends the core's welcome and then each run update, until it hangs up or nobody listens.
-pub(crate) async fn pump(
-    socket: &Path,
-    me: App,
-    sender: &UnboundedSender<Feed>,
-) -> Result<(), Fault> {
-    let (welcome, mut connection) = Connection::open(socket, me).await?;
-    if !welcome
-        .capabilities
-        .contains(&Capability::from(code!("run.stream")))
-    {
+pub(crate) async fn pump(socket: &Path, me: App, sender: &Sender<Feed>) -> Result<(), Fault> {
+    let stream = Capability::from(code!("run.stream"));
+    let (welcome, mut connection) = Connection::open(socket, me, vec![stream.clone()]).await?;
+    if !welcome.capabilities.contains(&stream) {
         return Err(Fault::new(
             code!("core.no_run_stream"),
             "The core can't stream runs; update it",
         ));
     }
-    if sender.send(Feed::Connected(welcome.app)).is_err() {
+    if sender.send(Feed::Connected(welcome.app)).await.is_err() {
         return Ok(());
     }
-    while let Some(message) = connection.next().await? {
-        if let Message::Run(update) = message
-            && sender.send(Feed::Update(update)).is_err()
-        {
+    while let Some(frame) = connection.next().await? {
+        let item = match frame {
+            Ok(Message::Run(update)) => Feed::Update(update),
+            Ok(_) => continue,
+            Err(error) => Feed::Skipped(error.code()),
+        };
+        if sender.send(item).await.is_err() {
             return Ok(());
         }
     }
@@ -112,15 +114,13 @@ mod tests {
         let dir = temp_dir("feed-session");
         let socket = socket_path(&dir);
         let listener = listen(&socket).unwrap();
-        let core = tokio::spawn(async move {
+        let core_served = tokio::spawn(async move {
             let (stream, _) = listener.accept().await.unwrap();
             let session = fake_core::recording(fake_core::SESSION, 100_000).unwrap();
             fake_core::serve(stream, session, Duration::ZERO).await
         });
-        let (sender, mut receiver) = unbounded_channel();
-        pump(&socket, me(), &sender).await.unwrap();
-        drop(sender);
-        core.await.unwrap().unwrap();
+        let (sender, mut receiver) = channel(QUEUE);
+        let feed = tokio::spawn(async move { pump(&socket, me(), &sender).await });
 
         let Some(Feed::Connected(core)) = receiver.recv().await else {
             panic!("no welcome first");
@@ -129,9 +129,50 @@ mod tests {
         while let Some(Feed::Update(update)) = receiver.recv().await {
             updates_sent.push(update);
         }
+        feed.await.unwrap().unwrap();
+        core_served.await.unwrap().unwrap();
 
         assert_eq!(core.name, "weacon-core");
         assert_eq!(updates_sent, updates(100_000));
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_garbled_frame_is_passed_on_and_other_messages_skipped() {
+        let dir = temp_dir("feed-garbled");
+        let socket = socket_path(&dir);
+        let listener = listen(&socket).unwrap();
+        let core_served = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut stream = BufReader::new(stream);
+            stream.read_line(&mut String::new()).await.unwrap();
+            let lines = [
+                r#"{"id":1,"type":"welcome","app":{"name":"weacon-core","version":"0.1.0","commit":"1a2b3c4"},"capabilities":["run.stream"]}"#,
+                "not json",
+                r#"{"id":0,"type":"error","code":"store.full","retryable":false}"#,
+                r#"{"id":0,"type":"run","run":"r-1","event":{"event":"text_delta","text":"Hi"}}"#,
+            ];
+            stream
+                .write_all(format!("{}\n", lines.join("\n")).as_bytes())
+                .await
+                .unwrap();
+        });
+        let (sender, mut receiver) = channel(QUEUE);
+        pump(&socket, me(), &sender).await.unwrap();
+        drop(sender);
+        core_served.await.unwrap();
+        let mut kinds = Vec::new();
+        while let Some(item) = receiver.recv().await {
+            kinds.push(match item {
+                Feed::Connected(_) => "connected".to_owned(),
+                Feed::Skipped(code) => code.as_str().to_owned(),
+                Feed::Update(_) => "update".to_owned(),
+                Feed::Ended | Feed::Failed(_) => "end".to_owned(),
+            });
+        }
+
+        assert_eq!(kinds, ["connected", "frame.invalid", "update"]);
         fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -151,7 +192,7 @@ mod tests {
                 .await
                 .unwrap();
         });
-        let (sender, mut receiver) = unbounded_channel();
+        let (sender, mut receiver) = channel(QUEUE);
         let error = pump(&socket, me(), &sender).await.unwrap_err();
         core.await.unwrap();
 

@@ -48,8 +48,8 @@ pub fn recording(session: &str, tokens: usize) -> Result<String, String> {
 /// after each line.
 ///
 /// # Errors
-/// When the first line isn't a hello, the connection fails, or the client sends anything more
-/// before it hangs up.
+/// When the first line isn't a hello that offers `run.stream`, the connection fails, or the
+/// client sends anything more before it hangs up.
 pub async fn serve(
     stream: impl AsyncRead + AsyncWrite + Unpin,
     recording: String,
@@ -65,6 +65,10 @@ pub async fn serve(
     let hello: Value = serde_json::from_str(&hello).map_err(|error| error.to_string())?;
     if hello.get("type") != Some(&json!("hello")) {
         return Err(format!("expected a hello but got {hello}"));
+    }
+    let offers = hello.get("capabilities").and_then(Value::as_array);
+    if !offers.is_some_and(|offers| offers.contains(&json!("run.stream"))) {
+        return Err("the client didn't offer run.stream".to_owned());
     }
     let welcome = json!({
         "id": hello.get("id"),
@@ -182,7 +186,7 @@ mod tests {
         let (mut client, core) = duplex(4096);
         let served = tokio::spawn(serve(core, "< {\"a\":1}".to_owned(), Duration::ZERO));
         client
-            .write_all(b"{\"id\":7,\"type\":\"hello\"}\n")
+            .write_all(b"{\"id\":7,\"type\":\"hello\",\"capabilities\":[\"run.stream\"]}\n")
             .await
             .unwrap();
         client.shutdown().await.unwrap();
@@ -198,6 +202,21 @@ mod tests {
         assert_eq!(lines[0]["capabilities"], json!(["run.stream"]));
         assert_eq!(lines[1], json!({ "a": 1 }));
         assert_eq!(served.await.unwrap(), Ok(()));
+    }
+
+    #[tokio::test]
+    async fn a_client_that_cant_take_run_updates_is_refused() {
+        let (mut client, core) = duplex(4096);
+        let served = tokio::spawn(serve(core, String::new(), Duration::ZERO));
+        client
+            .write_all(b"{\"id\":1,\"type\":\"hello\",\"capabilities\":[\"chat.send\"]}\n")
+            .await
+            .unwrap();
+
+        assert_eq!(
+            served.await.unwrap(),
+            Err("the client didn't offer run.stream".to_owned())
+        );
     }
 
     #[tokio::test]
@@ -227,7 +246,7 @@ mod tests {
             Duration::from_millis(5),
         ));
         client
-            .write_all(b"{\"id\":1,\"type\":\"hello\"}\n")
+            .write_all(b"{\"id\":1,\"type\":\"hello\",\"capabilities\":[\"run.stream\"]}\n")
             .await
             .unwrap();
         client.shutdown().await.unwrap();

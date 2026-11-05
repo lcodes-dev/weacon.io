@@ -25,9 +25,21 @@ pub fn listen(path: &Path) -> io::Result<Listener> {
     Ok(listener)
 }
 
-/// The fake core listens only on Unix sockets for now.
+/// The fake core listens only on Unix sockets for now, so nothing connects here.
 #[cfg(windows)]
-pub type Listener = std::convert::Infallible;
+#[derive(Debug)]
+pub struct Listener;
+
+#[cfg(windows)]
+impl Listener {
+    /// Never accepts anyone.
+    ///
+    /// # Errors
+    /// Always.
+    pub async fn accept(&self) -> io::Result<(tokio::io::DuplexStream, ())> {
+        Err(io::ErrorKind::Unsupported.into())
+    }
+}
 
 /// The fake core listens only on Unix sockets for now.
 ///

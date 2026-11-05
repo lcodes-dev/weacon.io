@@ -64,16 +64,20 @@ pub fn state_dir(env: Env<'_>) -> Option<PathBuf> {
     if cfg!(windows) {
         return var(env, "LOCALAPPDATA").map(|dir| PathBuf::from(dir).join("Weacon"));
     }
-    let home = home_dir(env)?;
     if cfg!(target_os = "macos") {
-        return Some(home.join("Library/Application Support/Weacon"));
+        return Some(home_dir(env)?.join("Library/Application Support/Weacon"));
     }
+    Some(xdg_dir(env, "XDG_STATE_HOME", ".local/state")?.join("weacon"))
+}
+
+/// The XDG base folder named by `key`, such as `XDG_CONFIG_HOME`, else `fallback` in the home
+/// folder.
+pub fn xdg_dir(env: Env<'_>, key: &str, fallback: &str) -> Option<PathBuf> {
     // The XDG spec says to ignore a relative path.
-    let base = var(env, "XDG_STATE_HOME")
+    var(env, key)
         .map(PathBuf::from)
         .filter(|dir| dir.is_absolute())
-        .unwrap_or_else(|| home.join(".local/state"));
-    Some(base.join("weacon"))
+        .or_else(|| Some(home_dir(env)?.join(fallback)))
 }
 
 /// The daemon's pipe name for `id`.
@@ -138,6 +142,28 @@ mod tests {
             state_dir(&relative),
             Some(std::env::current_dir().unwrap().join(".dev/state"))
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn xdg_folders_come_from_their_variable_or_the_home_folder() {
+        let xdg = |vars: &[(&str, &str)]| xdg_dir(&env(vars), "XDG_CONFIG_HOME", ".config");
+        let home = ("HOME", "/home/ada");
+
+        assert_eq!(xdg(&[home]), Some(PathBuf::from("/home/ada/.config")));
+        assert_eq!(
+            xdg(&[home, ("XDG_CONFIG_HOME", "/etc/ada")]),
+            Some(PathBuf::from("/etc/ada"))
+        );
+        assert_eq!(
+            xdg(&[home, ("XDG_CONFIG_HOME", "config")]),
+            Some(PathBuf::from("/home/ada/.config"))
+        );
+        assert_eq!(
+            xdg(&[("XDG_CONFIG_HOME", "/etc/ada")]),
+            Some(PathBuf::from("/etc/ada"))
+        );
+        assert_eq!(xdg(&[]), None);
     }
 
     #[cfg(target_os = "linux")]
