@@ -45,8 +45,10 @@ jobs:
       - if: runner.os == 'Linux'
         run: sudo apt-get update -q && sudo apt-get install -yq musl-tools
       - run: scripts/release.sh ${{ matrix.target }} | tee -a "$GITHUB_STEP_SUMMARY"
+      # Artifacts are zipped without file modes; a tar keeps the binary executable.
+      - run: tar -cf weacon-${{ matrix.target }}.tar -C dist .
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: weacon-${{ matrix.target }}
-          path: dist/
+          path: weacon-${{ matrix.target }}.tar
           if-no-files-found: error

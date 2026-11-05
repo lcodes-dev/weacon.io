@@ -21,6 +21,8 @@ case "$target" in
   *) die "usage: scripts/release.sh <target>, for a target this script lists" ;;
 esac
 
+[ -z "$(git status --porcelain)" ] || die "the working tree has changes, so the binary wouldn't be this commit"
+
 rustup target add "$target" >/dev/null
 cargo build --release --locked --package weacon-core --target "$target"
 
@@ -36,7 +38,7 @@ case "$target" in
     ! tail -n +2 <<<"$links" | grep -Ev '^[[:space:]]+/(usr/lib|System/Library)/' \
       || die "$binary links libraries macOS doesn't ship" ;;
   *-windows-msvc)
-    ! grep -aqiE 'vcruntime[0-9]+\.dll|api-ms-win-crt-' "$binary" \
+    ! grep -aqiE '(vcruntime|msvcp)[0-9_]+\.dll|api-ms-win-crt-' "$binary" \
       || die "$binary needs the Visual C++ runtime" ;;
 esac
 
