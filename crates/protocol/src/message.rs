@@ -1,7 +1,7 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::{Capability, Code, Receipt, code};
+use crate::{Capability, Code, Receipt, RunEvent, RunId, code};
 
 /// The protocol version this build speaks. Only a breaking change raises it; peers must match
 /// it exactly and check each other's capabilities for everything else.
@@ -22,6 +22,8 @@ pub enum Message {
     Welcome(Welcome),
     Error(ErrorBody),
     Receipt(Receipt),
+    /// What a run reported, from the core to clients that have the capability `run.stream`.
+    Run(RunUpdate),
     /// A message type this build doesn't know, from a newer peer.
     #[serde(other)]
     #[schemars(skip)]
@@ -43,6 +45,13 @@ pub struct Welcome {
     pub app: App,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub capabilities: Vec<Capability>,
+}
+
+/// One event of the run `run`, in the order the run reported it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct RunUpdate {
+    pub run: RunId,
+    pub event: RunEvent,
 }
 
 /// A program, such as `weacon-desktop`, and the exact build it is.
@@ -136,6 +145,19 @@ mod tests {
                     }),
                 },
                 json!({ "id": 7, "type": "error", "code": "store.full", "retryable": true }),
+            ),
+            (
+                Envelope {
+                    id: 0,
+                    message: Message::Run(RunUpdate {
+                        run: RunId::try_from("r-1".to_owned()).unwrap(),
+                        event: RunEvent::TextDelta {
+                            text: "Hel".to_owned(),
+                        },
+                    }),
+                },
+                json!({ "id": 0, "type": "run", "run": "r-1",
+                        "event": { "event": "text_delta", "text": "Hel" } }),
             ),
         ];
 

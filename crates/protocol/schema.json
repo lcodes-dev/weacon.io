@@ -62,12 +62,31 @@
       "required": [
         "type"
       ]
+    },
+    {
+      "description": "What a run reported, from the core to clients that have the capability `run.stream`.",
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "run"
+        }
+      },
+      "$ref": "#/$defs/RunUpdate",
+      "required": [
+        "type"
+      ]
     }
   ],
   "required": [
     "id"
   ],
   "$defs": {
+    "AgentSession": {
+      "description": "An agent's own id for a conversation, a lowercase UUID, which resumes it later.",
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+    },
     "App": {
       "description": "A program, such as `weacon-desktop`, and the exact build it is.",
       "type": "object",
@@ -136,6 +155,75 @@
       "required": [
         "protocol",
         "app"
+      ]
+    },
+    "Outcome": {
+      "description": "Where an accepted command stands. It ends `completed`, `interrupted`, `failed` or `unknown`.\n`unknown` means it may or may not have run, as when a restart cut it off; the client must not\nsend it again under a new id.",
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "state": {
+              "type": "string",
+              "const": "accepted"
+            }
+          },
+          "required": [
+            "state"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "state": {
+              "type": "string",
+              "const": "completed"
+            }
+          },
+          "required": [
+            "state"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "state": {
+              "type": "string",
+              "const": "interrupted"
+            }
+          },
+          "required": [
+            "state"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "code": {
+              "$ref": "#/$defs/Code"
+            },
+            "state": {
+              "type": "string",
+              "const": "failed"
+            }
+          },
+          "required": [
+            "state",
+            "code"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "state": {
+              "type": "string",
+              "const": "unknown"
+            }
+          },
+          "required": [
+            "state"
+          ]
+        }
       ]
     },
     "Receipt": {
@@ -221,6 +309,194 @@
       "type": "string",
       "maxLength": 64,
       "pattern": "^[A-Za-z0-9_-]+$"
+    },
+    "RunEvent": {
+      "description": "What an agent's run reports, in order. Each turn ends with `finished`.",
+      "oneOf": [
+        {
+          "description": "The agent's conversation, to resume it later.",
+          "type": "object",
+          "properties": {
+            "event": {
+              "type": "string",
+              "const": "started"
+            },
+            "session": {
+              "$ref": "#/$defs/AgentSession"
+            }
+          },
+          "required": [
+            "event",
+            "session"
+          ]
+        },
+        {
+          "description": "More of the text block being written; the [`RunEvent::Text`] that follows replaces it.",
+          "type": "object",
+          "properties": {
+            "event": {
+              "type": "string",
+              "const": "text_delta"
+            },
+            "text": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "event",
+            "text"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "event": {
+              "type": "string",
+              "const": "text"
+            },
+            "text": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "event",
+            "text"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "call": {
+              "type": "string"
+            },
+            "event": {
+              "type": "string",
+              "const": "tool_call"
+            },
+            "input": true,
+            "tool": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "event",
+            "call",
+            "tool",
+            "input"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "call": {
+              "type": "string"
+            },
+            "event": {
+              "type": "string",
+              "const": "tool_done"
+            },
+            "failed": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "event",
+            "call",
+            "failed"
+          ]
+        },
+        {
+          "description": "The agent asks to use a tool and waits for a [`PermissionAnswer`].",
+          "type": "object",
+          "properties": {
+            "event": {
+              "type": "string",
+              "const": "permission_asked"
+            },
+            "input": true,
+            "prompt": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "run": {
+              "$ref": "#/$defs/RunId"
+            },
+            "tool": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "event",
+            "run",
+            "prompt",
+            "tool",
+            "input"
+          ]
+        },
+        {
+          "description": "The agent no longer waits for the answer to `prompt`.",
+          "type": "object",
+          "properties": {
+            "event": {
+              "type": "string",
+              "const": "permission_withdrawn"
+            },
+            "prompt": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "run": {
+              "$ref": "#/$defs/RunId"
+            }
+          },
+          "required": [
+            "event",
+            "run",
+            "prompt"
+          ]
+        },
+        {
+          "description": "Ends the turn and withdraws any prompt still waiting.",
+          "type": "object",
+          "properties": {
+            "event": {
+              "type": "string",
+              "const": "finished"
+            },
+            "outcome": {
+              "$ref": "#/$defs/Outcome"
+            }
+          },
+          "required": [
+            "event",
+            "outcome"
+          ]
+        }
+      ]
+    },
+    "RunId": {
+      "description": "The core's id for one run of an agent process, 1–64 ASCII letters, digits, `-` or `_`.\nPrompts carry it, so an answer only ever reaches the run that asked.",
+      "type": "string",
+      "maxLength": 64,
+      "pattern": "^[A-Za-z0-9_-]+$"
+    },
+    "RunUpdate": {
+      "description": "One event of the run `run`, in the order the run reported it.",
+      "type": "object",
+      "properties": {
+        "event": {
+          "$ref": "#/$defs/RunEvent"
+        },
+        "run": {
+          "$ref": "#/$defs/RunId"
+        }
+      },
+      "required": [
+        "run",
+        "event"
+      ]
     },
     "Welcome": {
       "description": "The answer to a [`Hello`] that speaks the same protocol.",

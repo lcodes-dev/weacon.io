@@ -73,6 +73,10 @@ pub enum RunEvent {
     Started {
         session: AgentSession,
     },
+    /// More of the text block being written; the [`RunEvent::Text`] that follows replaces it.
+    TextDelta {
+        text: String,
+    },
     Text {
         text: String,
     },

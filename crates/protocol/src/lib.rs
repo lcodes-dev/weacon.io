@@ -11,7 +11,7 @@ mod token;
 pub use capability::Capability;
 pub use code::Code;
 pub use frame::{FrameError, LineDecoder, MAX_FRAME, encode_line};
-pub use message::{App, Envelope, ErrorBody, Hello, Message, PROTOCOL, Welcome};
+pub use message::{App, Envelope, ErrorBody, Hello, Message, PROTOCOL, RunUpdate, Welcome};
 pub use receipt::{Outcome, Receipt, RequestId};
 pub use run::{AgentSession, PermissionAnswer, RunEvent, RunId};
 
