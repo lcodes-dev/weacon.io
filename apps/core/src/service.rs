@@ -240,25 +240,6 @@ mod tests {
         assert_eq!(error.code().as_str(), "service.bad_path");
     }
 
-    #[test]
-    fn the_unit_goes_in_the_users_systemd_folder() {
-        let path = |vars: &[(&str, &str)]| unit_path(&env(vars));
-        let home = ("HOME", "/home/ada");
-
-        assert_eq!(
-            path(&[home]),
-            Some(PathBuf::from(
-                "/home/ada/.config/systemd/user/weacon.service"
-            ))
-        );
-        assert_eq!(
-            path(&[home, ("XDG_CONFIG_HOME", "/data/config")]),
-            Some(PathBuf::from("/data/config/systemd/user/weacon.service"))
-        );
-        assert_eq!(path(&[home, ("XDG_CONFIG_HOME", "config")]), path(&[home]));
-        assert_eq!(path(&[]), None);
-    }
-
     #[cfg(unix)]
     #[test]
     fn system_runs_a_program_and_says_whether_it_succeeded() {
@@ -283,6 +264,25 @@ mod tests {
     mod on_linux {
         use super::*;
         use crate::test_support::{messages, temp_dir};
+
+        #[test]
+        fn the_unit_goes_in_the_users_systemd_folder() {
+            let path = |vars: &[(&str, &str)]| unit_path(&env(vars));
+            let home = ("HOME", "/home/ada");
+
+            assert_eq!(
+                path(&[home]),
+                Some(PathBuf::from(
+                    "/home/ada/.config/systemd/user/weacon.service"
+                ))
+            );
+            assert_eq!(
+                path(&[home, ("XDG_CONFIG_HOME", "/data/config")]),
+                Some(PathBuf::from("/data/config/systemd/user/weacon.service"))
+            );
+            assert_eq!(path(&[home, ("XDG_CONFIG_HOME", "config")]), path(&[home]));
+            assert_eq!(path(&[]), None);
+        }
 
         const INSTALLED: [&str; 4] = [
             "loginctl enable-linger",

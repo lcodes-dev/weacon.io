@@ -202,20 +202,28 @@ mod tests {
             let dir = temp_dir("policy");
             fake_claude(&dir);
             let claude = workspace(&dir, "first", SESSION_A);
+            // Writing its own score back shows whether this procfs takes scores at all.
+            let own = fs::read_to_string("/proc/self/oom_score_adj").ok();
+            let adjustable = own
+                .as_ref()
+                .is_some_and(|own| fs::write("/proc/self/oom_score_adj", own).is_ok());
             let policy = SpawnPolicy {
                 env: BTreeMap::from([
                     ("CARGO_BUILD_JOBS".into(), "3".into()),
                     ("CLAUDE_CONFIG_DIR".into(), "/elsewhere".into()),
                 ]),
                 // The highest score, so it raises whatever the test process has.
-                oom_score_adj: Some(1000),
+                oom_score_adj: adjustable.then_some(1000),
             };
 
             events(claude.start(&policy, run_id("run-1"), None).unwrap()).await;
 
             let tool = fs::read_to_string(dir.join("first/tool")).unwrap();
             let config = dir.join("first");
-            assert_eq!(tool, format!("1000\n3 {}\n", config.display()));
+            let raised = String::from("1000\n");
+            let score = adjustable.then_some(raised).or(own);
+            let expected = format!("{}3 {}\n", score.unwrap_or_default(), config.display());
+            assert_eq!(tool, expected);
             fs::remove_dir_all(&dir).unwrap();
         }
     }
