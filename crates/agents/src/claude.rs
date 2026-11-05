@@ -98,7 +98,6 @@ mod tests {
     // Real processes: a shell script stands in for `claude`.
     #[cfg(unix)]
     mod side_by_side {
-        use std::os::unix::fs::PermissionsExt;
         use std::time::Duration;
 
         use tokio::time::timeout;
@@ -110,19 +109,33 @@ mod tests {
         const SESSION_A: &str = "0b7c6a52-3f1e-4d2a-9c8b-5e4f3a2b1c0d";
         const SESSION_B: &str = "5d4c3b2a-1f0e-4d9c-8b7a-6f5e4d3c2b1a";
 
+        /// Writes an executable `script` to `path` from a child shell, so this process never holds a
+        /// write handle that another test's fork could inherit, which makes running it fail as busy.
+        fn write_program(path: &Path, script: &str) {
+            let written = std::process::Command::new("sh")
+                .args([
+                    "-c",
+                    "printf '%s' \"$1\" > \"$2\" && chmod 755 \"$2\"",
+                    "sh",
+                    script,
+                ])
+                .arg(path)
+                .status()
+                .unwrap();
+            assert!(written.success());
+        }
+
         // A `claude` that notes its arguments, reads one line, starts a tool that notes what it
         // inherited, then prints its workspace's session.
         fn fake_claude(dir: &Path) -> PathBuf {
             let program = dir.join("claude");
-            fs::write(
+            write_program(
                 &program,
                 "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$CLAUDE_CONFIG_DIR/args\"\nread -r line\n\
                  sh -c 'cat /proc/self/oom_score_adj; echo \"$CARGO_BUILD_JOBS $CLAUDE_CONFIG_DIR\"' \
                  > \"$CLAUDE_CONFIG_DIR/tool\" 2>/dev/null\n\
                  cat \"$CLAUDE_CONFIG_DIR/session\"\n",
-            )
-            .unwrap();
-            fs::set_permissions(&program, fs::Permissions::from_mode(0o755)).unwrap();
+            );
             program
         }
 
