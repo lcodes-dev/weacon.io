@@ -1,7 +1,7 @@
 use weacon_protocol::{App, Capability, Code, Envelope, ErrorBody, FrameError, Message, code};
 
 /// What the daemon offers its clients; each feature adds its capability here.
-const CAPABILITIES: &[Code] = &[];
+const CAPABILITIES: &[Code] = &[code!("run.stream")];
 
 /// One client's place in the conversation with the daemon.
 #[derive(Debug, Default)]
@@ -100,7 +100,7 @@ mod tests {
                     id: 1,
                     message: Message::Welcome(Welcome {
                         app: build(&VERSION),
-                        capabilities: Vec::new(),
+                        capabilities: vec![Capability::from(code!("run.stream"))],
                     }),
                 }),
                 close: false,

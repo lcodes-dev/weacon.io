@@ -73,6 +73,10 @@ pub enum RunEvent {
     Started {
         session: AgentSession,
     },
+    /// More of the text block being written; the [`RunEvent::Text`] that follows replaces it.
+    TextDelta {
+        text: String,
+    },
     Text {
         text: String,
     },
@@ -105,6 +109,13 @@ pub enum RunEvent {
     #[serde(other)]
     #[schemars(skip)]
     Newer,
+}
+
+/// One event of the run `run`, in the order the run reported it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct RunUpdate {
+    pub run: RunId,
+    pub event: RunEvent,
 }
 
 /// A person's answer to a [`RunEvent::PermissionAsked`].

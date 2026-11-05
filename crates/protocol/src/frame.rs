@@ -1,6 +1,6 @@
 use std::{fmt, mem};
 
-use crate::{Code, Envelope, Message, Outcome, Receipt, code};
+use crate::{Code, Envelope, Message, Outcome, Receipt, RunEvent, RunUpdate, code};
 
 /// The largest frame accepted or sent on any transport: one message's JSON, plus its newline on
 /// a byte stream.
@@ -45,6 +45,10 @@ impl Envelope {
             Message::Unknown
                 | Message::Receipt(Receipt {
                     outcome: Outcome::Newer,
+                    ..
+                })
+                | Message::Run(RunUpdate {
+                    event: RunEvent::Newer,
                     ..
                 })
         ) {
@@ -246,8 +250,17 @@ mod tests {
             }),
         };
 
+        let newer_event = Envelope {
+            id: 9,
+            message: Message::Run(RunUpdate {
+                run: serde_json::from_str(r#""r-1""#).unwrap(),
+                event: RunEvent::Newer,
+            }),
+        };
+
         assert_eq!(encode_line(&unknown), Err(FrameError::Invalid));
         assert_eq!(newer.to_json(), Err(FrameError::Invalid));
+        assert_eq!(newer_event.to_json(), Err(FrameError::Invalid));
     }
 
     #[test]
