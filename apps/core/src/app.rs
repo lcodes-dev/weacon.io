@@ -14,6 +14,9 @@ use crate::logs::{self, RotatingFile};
 use crate::platform::{self, Env};
 use crate::report::{Deliver, Reporter};
 
+/// The exit code of a command that failed; 1 is kept for a check that finds something.
+const FAILED: u8 = 2;
+
 /// What a command runs with: its build, logger, error reporter and where its state lives.
 pub(crate) struct App {
     pub(crate) version: Version,
@@ -76,7 +79,8 @@ impl App {
         }
     }
 
-    /// Logs and reports a failed command, and gives its exit code.
+    /// Logs and reports a failed command, and gives its exit code: 0 when it succeeded, 2 when
+    /// it failed.
     pub(crate) fn finish(&self, result: Result<(), Fault>) -> ExitCode {
         let Err(fault) = result else {
             return ExitCode::SUCCESS;
@@ -84,7 +88,7 @@ impl App {
         self.log
             .error("command failed", &[("err", Field::error(&fault))]);
         self.reporter.capture_error(&fault, fault.code(), &self.log);
-        ExitCode::FAILURE
+        ExitCode::from(FAILED)
     }
 
     /// Logs and reports a panic, without its message or location.
@@ -268,7 +272,7 @@ mod tests {
         let stderr = serde_json::to_string(&*stderr.lock().unwrap()).unwrap();
         let uploads = uploads.lock().unwrap();
 
-        assert_eq!(exit, ExitCode::FAILURE);
+        assert_eq!(exit, ExitCode::from(2));
         assert_eq!(uploads.len(), 1);
         assert!(file.contains("command failed"), "{file}");
         for text in [

@@ -45,7 +45,7 @@ mod tests {
 
         assert!(good.status.success());
         assert!(dir.join("logs/cli.log").exists());
-        assert_eq!(blocked.status.code(), Some(1));
+        assert_eq!(blocked.status.code(), Some(2));
         assert!(String::from_utf8_lossy(&blocked.stderr).contains("state.unavailable"));
         fs::remove_dir_all(&dir).unwrap();
         fs::remove_file(&file).unwrap();
@@ -56,7 +56,7 @@ mod tests {
         let dir = temp_dir("status");
         let output = weacon(&["status"], dir.to_str().unwrap());
 
-        assert_eq!(output.status.code(), Some(1));
+        assert_eq!(output.status.code(), Some(2));
         assert!(String::from_utf8_lossy(&output.stderr).contains("daemon.not_running"));
         fs::remove_dir_all(&dir).unwrap();
     }
@@ -196,7 +196,7 @@ mod tests {
             .output()
             .unwrap();
 
-        assert_eq!(output.status.code(), Some(1));
+        assert_eq!(output.status.code(), Some(2));
         assert!(String::from_utf8_lossy(&output.stderr).contains("service.no_config_dir"));
     }
 }
