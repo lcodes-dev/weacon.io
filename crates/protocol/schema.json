@@ -64,6 +64,7 @@
       ]
     },
     {
+      "description": "An element picked in Chrome, from the extension's host to a core that offers element.pick.",
       "type": "object",
       "properties": {
         "type": {

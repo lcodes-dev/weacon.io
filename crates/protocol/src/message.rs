@@ -22,6 +22,7 @@ pub enum Message {
     Welcome(Welcome),
     Error(ErrorBody),
     Receipt(Receipt),
+    /// An element picked in Chrome, from the extension's host to a core that offers element.pick.
     Pick(Pick),
     /// A message type this build doesn't know, from a newer peer.
     #[serde(other)]
