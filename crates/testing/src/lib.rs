@@ -1,7 +1,15 @@
 //! Test helpers for Weacon's crates.
 
+pub mod fake_core;
+pub mod platform;
+
+use std::time::Duration;
+
 use serde_json::Value;
-use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader, DuplexStream, duplex};
+use tokio::io::{
+    AsyncBufRead, AsyncBufReadExt, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader,
+    DuplexStream, duplex,
+};
 use tokio::task::JoinHandle;
 
 const BUFFER: usize = 1 << 16;
@@ -33,14 +41,17 @@ pub fn replay(recording: &str) -> Replay {
             recording.to_owned(),
             BufReader::new(fake_in),
             fake_out,
+            Duration::ZERO,
         )),
     }
 }
 
+// Plays `recording` as `replay` describes, waiting `pace` after each line it prints.
 async fn play(
     recording: String,
-    mut input: BufReader<DuplexStream>,
-    mut output: DuplexStream,
+    mut input: impl AsyncBufRead + Unpin,
+    mut output: impl AsyncWrite + Unpin,
+    pace: Duration,
 ) -> Result<(), String> {
     for step in recording.lines().filter(|line| !line.trim().is_empty()) {
         if let Some(line) = step.strip_prefix("< ") {
@@ -48,6 +59,9 @@ async fn play(
                 .write_all(format!("{line}\n").as_bytes())
                 .await
                 .map_err(|error| error.to_string())?;
+            if !pace.is_zero() {
+                tokio::time::sleep(pace).await;
+            }
         } else if let Some(expected) = step.strip_prefix("> ") {
             let mut sent = String::new();
             input
@@ -61,7 +75,7 @@ async fn play(
             return Err(format!("not a recorded line: {step}"));
         }
     }
-    drop(output);
+    output.shutdown().await.map_err(|error| error.to_string())?;
     let mut rest = String::new();
     input
         .read_to_string(&mut rest)
