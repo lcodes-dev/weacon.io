@@ -5,7 +5,7 @@ mod platform;
 use std::error::Error;
 use std::io::{self, Read, Write};
 use std::path::Path;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use weacon_observability::Fault;
 use weacon_protocol::{App, Decoder, Envelope, Hello, Message, PROTOCOL, code, encode};
@@ -41,7 +41,14 @@ pub fn handshake(socket: &Path, me: App) -> Result<App, Fault> {
     stream.write_all(&line).map_err(no_answer)?;
     let mut decoder = Decoder::default();
     let mut buf = [0; 4096];
+    // One deadline for the whole answer, so a daemon sending only bad lines can't stall us.
+    let deadline = Instant::now() + TIMEOUT;
     loop {
+        let left = deadline
+            .checked_duration_since(Instant::now())
+            .filter(|left| !left.is_zero())
+            .ok_or_else(|| no_answer(io::Error::from(io::ErrorKind::TimedOut)))?;
+        stream.set_read_timeout(Some(left)).map_err(no_answer)?;
         let read = stream.read(&mut buf).map_err(no_answer)?;
         let Some(bytes) = buf.get(..read).filter(|bytes| !bytes.is_empty()) else {
             return Err(no_answer(io::Error::from(io::ErrorKind::UnexpectedEof)));
