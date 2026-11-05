@@ -126,9 +126,7 @@ pub(crate) fn spawn(
         .kill_on_drop(true)
         .spawn()
         .map_err(|error| not_started().because(error))?;
-    policy
-        .adjust(&child)
-        .map_err(|error| not_started().because(error))?;
+    policy.adjust(&child);
     let (Some(stdin), Some(stdout)) = (child.stdin.take(), child.stdout.take()) else {
         return Err(not_started());
     };
