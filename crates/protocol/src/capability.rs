@@ -9,13 +9,6 @@ use crate::Code;
 #[serde(transparent)]
 pub struct Capability(Code);
 
-impl Capability {
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        self.0.as_str()
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -25,7 +18,7 @@ mod tests {
         let known: Capability = serde_json::from_str(r#""chat.send""#).unwrap();
         let unknown: Capability = serde_json::from_str(r#""future.thing_v2""#).unwrap();
 
-        assert_eq!(known.as_str(), "chat.send");
+        assert_eq!(serde_json::to_string(&known).unwrap(), r#""chat.send""#);
         assert_eq!(
             serde_json::to_string(&unknown).unwrap(),
             r#""future.thing_v2""#

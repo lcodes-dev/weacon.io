@@ -42,7 +42,7 @@ impl Session {
         let id = envelope.id;
         match (self.greeted, envelope.message) {
             (false, Message::Hello(hello)) => {
-                let message = hello.answer(app.clone(), Vec::new());
+                let message = hello.answer(app.clone());
                 self.greeted = matches!(message, Message::Welcome(_));
                 Reply {
                     envelope: Some(Envelope { id, message }),

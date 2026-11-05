@@ -131,6 +131,22 @@ mod tests {
         }
     }
 
+    // A hello whose app name is `padding` bytes long, to size frames exactly.
+    fn hello(padding: usize) -> Envelope {
+        Envelope {
+            id: 6,
+            message: Message::Hello(Hello {
+                protocol: 1,
+                app: App {
+                    name: "n".repeat(padding),
+                    version: "0.1.0".to_owned(),
+                    commit: "1a2b3c4".to_owned(),
+                },
+                capabilities: Vec::new(),
+            }),
+        }
+    }
+
     #[test]
     fn a_message_is_one_line_of_json() {
         let line = encode_line(&envelope(1)).unwrap();
@@ -206,18 +222,6 @@ mod tests {
 
     #[test]
     fn encoding_refuses_unknown_and_oversized_messages() {
-        let hello = |padding: usize| Envelope {
-            id: 6,
-            message: Message::Hello(Hello {
-                protocol: 1,
-                app: App {
-                    name: "n".repeat(padding),
-                    version: "0.1.0".to_owned(),
-                    commit: "1a2b3c4".to_owned(),
-                },
-                capabilities: Vec::new(),
-            }),
-        };
         let fits = MAX_FRAME - encode_line(&hello(1)).unwrap().len() + 1;
         let unknown = Envelope {
             id: 7,
@@ -257,18 +261,6 @@ mod tests {
 
     #[test]
     fn a_frame_may_use_the_whole_limit_but_a_line_needs_room_for_its_newline() {
-        let hello = |padding: usize| Envelope {
-            id: 6,
-            message: Message::Hello(Hello {
-                protocol: 1,
-                app: App {
-                    name: "n".repeat(padding),
-                    version: "0.1.0".to_owned(),
-                    commit: "1a2b3c4".to_owned(),
-                },
-                capabilities: Vec::new(),
-            }),
-        };
         let full = MAX_FRAME - hello(1).to_json().unwrap().len() + 1;
         let mut padded = vec![b' '; MAX_FRAME - envelope(9).to_json().unwrap().len()];
         padded.extend(envelope(9).to_json().unwrap());

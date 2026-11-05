@@ -60,12 +60,14 @@ pub struct ErrorBody {
 }
 
 impl Hello {
-    /// A [`Welcome`] from `app` with its `capabilities` on the same protocol, else the error
-    /// `protocol.unsupported`.
+    /// A [`Welcome`] from `app` on the same protocol, else the error `protocol.unsupported`.
     #[must_use]
-    pub fn answer(&self, app: App, capabilities: Vec<Capability>) -> Message {
+    pub fn answer(&self, app: App) -> Message {
         if self.protocol == PROTOCOL {
-            Message::Welcome(Welcome { app, capabilities })
+            Message::Welcome(Welcome {
+                app,
+                capabilities: Vec::new(),
+            })
         } else {
             Message::Error(ErrorBody {
                 code: code!("protocol.unsupported"),
@@ -167,15 +169,15 @@ mod tests {
     #[test]
     fn a_matching_hello_is_welcomed_and_any_other_refused() {
         assert_eq!(
-            hello(PROTOCOL).answer(app("weacon-core"), capabilities(&["chat.send"])),
+            hello(PROTOCOL).answer(app("weacon-core")),
             Message::Welcome(Welcome {
                 app: app("weacon-core"),
-                capabilities: capabilities(&["chat.send"]),
+                capabilities: Vec::new(),
             })
         );
         for protocol in [PROTOCOL - 1, PROTOCOL + 1] {
             assert_eq!(
-                hello(protocol).answer(app("weacon-core"), capabilities(&["chat.send"])),
+                hello(protocol).answer(app("weacon-core")),
                 Message::Error(ErrorBody {
                     code: code!("protocol.unsupported"),
                     retryable: false,
