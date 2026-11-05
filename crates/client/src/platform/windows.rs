@@ -20,9 +20,9 @@ use windows_sys::Win32::Security::Authorization::{
 };
 use windows_sys::Win32::Security::{
     DACL_SECURITY_INFORMATION, GetSecurityDescriptorDacl, GetSecurityDescriptorOwner,
-    GetTokenInformation, OWNER_SECURITY_INFORMATION, PROTECTED_DACL_SECURITY_INFORMATION,
-    PSECURITY_DESCRIPTOR, PSID, SECURITY_ATTRIBUTES, TOKEN_ELEVATION, TOKEN_INFORMATION_CLASS,
-    TOKEN_QUERY, TOKEN_USER, TokenElevation, TokenUser,
+    GetTokenInformation, OBJECT_SECURITY_INFORMATION, OWNER_SECURITY_INFORMATION,
+    PROTECTED_DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID, SECURITY_ATTRIBUTES,
+    TOKEN_ELEVATION, TOKEN_INFORMATION_CLASS, TOKEN_QUERY, TOKEN_USER, TokenElevation, TokenUser,
 };
 use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 
@@ -109,7 +109,7 @@ pub fn make_private(dir: &Path) -> io::Result<()> {
     // The access list first: its entry for this user then grants the right to take ownership.
     let dacl_only = DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION;
     // SAFETY: `path` ends with a NUL, and `dacl` points into `access`, which outlives the call.
-    win32(unsafe {
+    let set = win32(unsafe {
         SetNamedSecurityInfoW(
             path.as_ptr(),
             SE_FILE_OBJECT,
@@ -119,9 +119,10 @@ pub fn make_private(dir: &Path) -> io::Result<()> {
             dacl,
             ptr::null(),
         )
-    })?;
+    });
+    set.map_err(|error| io::Error::new(error.kind(), format!("setting the access list: {error}")))?;
     // SAFETY: as above, with `owner`.
-    win32(unsafe {
+    let set = win32(unsafe {
         SetNamedSecurityInfoW(
             path.as_ptr(),
             SE_FILE_OBJECT,
@@ -131,7 +132,8 @@ pub fn make_private(dir: &Path) -> io::Result<()> {
             ptr::null(),
             ptr::null(),
         )
-    })
+    });
+    set.map_err(|error| io::Error::new(error.kind(), format!("setting the owner: {error}")))
 }
 
 /// `dir`'s owner and access list, in SDDL.
@@ -155,19 +157,7 @@ pub fn folder_access(dir: &Path) -> io::Result<String> {
             &raw mut descriptor,
         )
     })?;
-    let descriptor = Descriptor(descriptor);
-    let mut text = ptr::null_mut();
-    // SAFETY: `descriptor` lives through the call, and `text` outlives it.
-    check(unsafe {
-        ConvertSecurityDescriptorToStringSecurityDescriptorW(
-            descriptor.0,
-            SDDL_REVISION_1,
-            wanted,
-            &raw mut text,
-            ptr::null_mut(),
-        )
-    })?;
-    Ok(take_text(text))
+    Descriptor(descriptor).text(wanted)
 }
 
 /// The SID of the user running this process, such as `S-1-5-21-…`.
@@ -177,7 +167,8 @@ pub fn folder_access(dir: &Path) -> io::Result<String> {
 pub fn current_user() -> io::Result<String> {
     // Room for a TOKEN_USER and the longest SID, aligned for the struct.
     let mut buffer = [0_u64; 16];
-    token_information(TokenUser, &mut buffer)?;
+    let len = size_of_val(&buffer);
+    token_information(TokenUser, &mut buffer, len)?;
     // SAFETY: on success the buffer starts with a TOKEN_USER whose SID points into it.
     let sid = unsafe { buffer.as_ptr().cast::<TOKEN_USER>().read().User.Sid };
     sid_text(sid)
@@ -185,15 +176,20 @@ pub fn current_user() -> io::Result<String> {
 
 fn elevated() -> io::Result<bool> {
     let mut buffer = [0_u64; 1];
-    token_information(TokenElevation, &mut buffer)?;
+    token_information(TokenElevation, &mut buffer, size_of::<TOKEN_ELEVATION>())?;
     // SAFETY: on success the buffer starts with a TOKEN_ELEVATION.
     let elevation = unsafe { buffer.as_ptr().cast::<TOKEN_ELEVATION>().read() };
     Ok(elevation.TokenIsElevated != 0)
 }
 
-// Reads `class` of this process's token into `buffer`.
-fn token_information(class: TOKEN_INFORMATION_CLASS, buffer: &mut [u64]) -> io::Result<()> {
-    let size = u32::try_from(size_of_val(buffer)).map_err(io::Error::other)?;
+// Reads `class` of this process's token into `buffer`, as exactly `len` bytes when the class
+// demands that.
+fn token_information(
+    class: TOKEN_INFORMATION_CLASS,
+    buffer: &mut [u64],
+    len: usize,
+) -> io::Result<()> {
+    let size = u32::try_from(len.min(size_of_val(buffer))).map_err(io::Error::other)?;
     let mut token = ptr::null_mut();
     // SAFETY: the current process's pseudo-handle needs no closing, and `token` outlives
     // the call.
@@ -276,6 +272,24 @@ impl Descriptor {
             )
         })?;
         Ok(Self(descriptor))
+    }
+}
+
+impl Descriptor {
+    // The parts of this descriptor named by `wanted`, in SDDL.
+    fn text(&self, wanted: OBJECT_SECURITY_INFORMATION) -> io::Result<String> {
+        let mut text = ptr::null_mut();
+        // SAFETY: the descriptor lives through the call, and `text` outlives it.
+        check(unsafe {
+            ConvertSecurityDescriptorToStringSecurityDescriptorW(
+                self.0,
+                SDDL_REVISION_1,
+                wanted,
+                &raw mut text,
+                ptr::null_mut(),
+            )
+        })?;
+        Ok(take_text(text))
     }
 }
 
@@ -384,10 +398,14 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
 
         make_private(&dir).unwrap();
+        make_private(&dir).expect("a private folder can be made private again");
         let access = folder_access(&dir).unwrap();
-        let user = current_user().unwrap();
+        // Windows writes some users' SIDs as aliases, such as LA for the built-in Administrator.
+        let user = Descriptor::new(&format!("O:{}", current_user().unwrap()))
+            .and_then(|owner| owner.text(OWNER_SECURITY_INFORMATION))
+            .unwrap();
 
-        assert!(access.starts_with(&format!("O:{user}D:P")), "{access}");
+        assert!(access.starts_with(&format!("{user}D:P")), "{access}");
         assert!(
             !access.contains(";AU)") && !access.contains(";BU)"),
             "{access}"
