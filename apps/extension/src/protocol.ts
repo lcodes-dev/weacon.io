@@ -21,7 +21,15 @@ export type Envelope = {
   | {
     type: "pick";
   } & Pick
+  | {
+    type: "run";
+  } & RunUpdate
 );
+
+/**
+ * An agent's own id for a conversation, a lowercase UUID, which resumes it later.
+ */
+export type AgentSession = string;
 
 /**
  * A program, such as `weacon-desktop`, and the exact build it is.
@@ -60,6 +68,30 @@ export type Hello = {
   capabilities?: Array<Capability>;
   protocol: number;
 };
+
+/**
+ * Where an accepted command stands. It ends `completed`, `interrupted`, `failed` or `unknown`.
+ * `unknown` means it may or may not have run, as when a restart cut it off; the client must not
+ * send it again under a new id.
+ */
+export type Outcome = (
+  | {
+    state: "accepted";
+  }
+  | {
+    state: "completed";
+  }
+  | {
+    state: "interrupted";
+  }
+  | {
+    code: Code;
+    state: "failed";
+  }
+  | {
+    state: "unknown";
+  }
+);
 
 /**
  * An element someone picked on a local web page, sent to the core for a chat. The sender cuts
@@ -117,6 +149,65 @@ export type Receipt = {
  * different content is refused with the error `request.conflict`.
  */
 export type RequestId = string;
+
+/**
+ * What an agent's run reports, in order. Each turn ends with `finished`.
+ */
+export type RunEvent = (
+  | {
+    event: "started";
+    session: AgentSession;
+  }
+  | {
+    event: "text_delta";
+    text: string;
+  }
+  | {
+    event: "text";
+    text: string;
+  }
+  | {
+    call: string;
+    event: "tool_call";
+    input: unknown;
+    tool: string;
+  }
+  | {
+    call: string;
+    event: "tool_done";
+    failed: boolean;
+  }
+  | {
+    event: "permission_asked";
+    input: unknown;
+    prompt: number;
+    run: RunId;
+    tool: string;
+  }
+  | {
+    event: "permission_withdrawn";
+    prompt: number;
+    run: RunId;
+  }
+  | {
+    event: "finished";
+    outcome: Outcome;
+  }
+);
+
+/**
+ * The core's id for one run of an agent process, 1–64 ASCII letters, digits, `-` or `_`.
+ * Prompts carry it, so an answer only ever reaches the run that asked.
+ */
+export type RunId = string;
+
+/**
+ * One event of the run `run`, in the order the run reported it.
+ */
+export type RunUpdate = {
+  event: RunEvent;
+  run: RunId;
+};
 
 /**
  * The answer to a [`Hello`] that speaks the same protocol.
