@@ -13,6 +13,50 @@ pub(crate) fn is_token(id: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
 }
 
+/// Declares an id that is a token, with its `as_str`, its `TryFrom<String>`, and a
+/// `Deserialize` that refuses anything else with the message `$what`.
+macro_rules! token_id {
+    ($(#[$doc:meta])* $name:ident, $what:literal) => {
+        $(#[$doc])*
+        #[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, schemars::JsonSchema)]
+        pub struct $name(
+            #[schemars(
+                regex(pattern = $crate::token::TOKEN_PATTERN),
+                length(max = $crate::token::TOKEN_MAX)
+            )]
+            String,
+        );
+
+        impl $name {
+            #[must_use]
+            pub fn as_str(&self) -> &str {
+                &self.0
+            }
+        }
+
+        impl TryFrom<String> for $name {
+            type Error = String;
+
+            fn try_from(id: String) -> Result<Self, Self::Error> {
+                if $crate::token::is_token(&id) {
+                    Ok(Self(id))
+                } else {
+                    Err(id)
+                }
+            }
+        }
+
+        impl<'de> serde::Deserialize<'de> for $name {
+            fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+                Self::try_from(<String as serde::Deserialize>::deserialize(deserializer)?)
+                    .map_err(|_| <D::Error as serde::de::Error>::custom($what))
+            }
+        }
+    };
+}
+
+pub(crate) use token_id;
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -1,36 +1,16 @@
 use schemars::JsonSchema;
-use serde::{Deserialize, Deserializer, Serialize, de};
+use serde::{Deserialize, Serialize};
 
 use crate::Code;
-use crate::token::{TOKEN_MAX, TOKEN_PATTERN, is_token};
+use crate::token::token_id;
 
-/// A command's id, chosen by the client and kept across reconnects and retries. Sending the
-/// same id again returns the first receipt instead of repeating the work; the same id with
-/// different content is refused with the error `request.conflict`.
-#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, JsonSchema)]
-pub struct RequestId(#[schemars(regex(pattern = TOKEN_PATTERN), length(max = TOKEN_MAX))] String);
-
-impl RequestId {
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-impl TryFrom<String> for RequestId {
-    type Error = String;
-
-    fn try_from(id: String) -> Result<Self, Self::Error> {
-        if is_token(&id) { Ok(Self(id)) } else { Err(id) }
-    }
-}
-
-impl<'de> Deserialize<'de> for RequestId {
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        Self::try_from(String::deserialize(deserializer)?)
-            .map_err(|_| de::Error::custom("not a request id"))
-    }
-}
+token_id!(
+    /// A command's id, chosen by the client and kept across reconnects and retries. Sending the
+    /// same id again returns the first receipt instead of repeating the work; the same id with
+    /// different content is refused with the error `request.conflict`.
+    RequestId,
+    "not a request id"
+);
 
 /// Where an accepted command stands. It ends `completed`, `interrupted`, `failed` or `unknown`.
 /// `unknown` means it may or may not have run, as when a restart cut it off; the client must not
@@ -74,7 +54,6 @@ mod tests {
     fn request_ids_are_plain_tokens_checked_on_arrival() {
         assert_eq!(RequestId::try_from("a b".to_owned()), Err("a b".to_owned()));
         assert_eq!(serde_json::to_value(request("r-1")).unwrap(), json!("r-1"));
-        assert_eq!(request("r-1").as_str(), "r-1");
         serde_json::from_value::<RequestId>(json!("a b")).unwrap_err();
     }
 
