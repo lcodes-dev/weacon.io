@@ -76,48 +76,63 @@ pub(crate) fn rust_parser() -> Result<Parser, Error> {
 /// The items of a file, test-only items left out, in source order.
 pub(crate) fn symbols(parser: &mut Parser, text: &str) -> Result<Vec<Symbol>, Error> {
     let tree = parser.parse(text, None).ok_or(Error::Parse)?;
+    let source = text.as_bytes();
     let mut found = Vec::new();
-    collect(tree.root_node(), text.as_bytes(), "", &mut found);
+    // A stack rather than recursion, so no nesting depth can overflow ours.
+    let mut pending = Vec::new();
+    push_items(&mut pending, Some(tree.root_node()), "");
+    while let Some((item, prefix)) = pending.pop() {
+        visit(item, &prefix, source, &mut found, &mut pending);
+    }
     number_repeats(&mut found);
     Ok(found)
 }
 
-fn collect(list: Node<'_>, source: &[u8], prefix: &str, found: &mut Vec<Symbol>) {
-    for item in list.named_children(&mut list.walk()) {
-        if test_only(item, source) {
-            continue;
-        }
-        if item.kind() == "impl_item" {
-            let owner = join(prefix, &impl_owner(item, source));
-            body(item, source, &owner, found);
-            continue;
-        }
-        let name = item
-            .child_by_field_name("name")
-            .map(|node| text(node, source));
-        let (Some(kind), Some(name)) = (Kind::of(item.kind()), name) else {
-            continue;
-        };
-        if kind == Kind::Mod && item.child_by_field_name("body").is_none() {
-            continue;
-        }
-        let name = join(prefix, name);
-        found.push(Symbol {
-            kind,
-            name: name.clone(),
-            line: line(item),
-            fingerprint: fingerprint(item, source),
-        });
-        if matches!(kind, Kind::Mod | Kind::Trait) {
-            body(item, source, &name, found);
-        }
+type Pending<'tree> = Vec<(Node<'tree>, String)>;
+
+fn visit<'tree>(
+    item: Node<'tree>,
+    prefix: &str,
+    source: &[u8],
+    found: &mut Vec<Symbol>,
+    pending: &mut Pending<'tree>,
+) {
+    if test_only(item, source) {
+        return;
+    }
+    let body = item.child_by_field_name("body");
+    if item.kind() == "impl_item" {
+        push_items(pending, body, &join(prefix, &impl_owner(item, source)));
+        return;
+    }
+    let name = item
+        .child_by_field_name("name")
+        .map(|node| plain(text(node, source)));
+    let (Some(kind), Some(name)) = (Kind::of(item.kind()), name) else {
+        return;
+    };
+    if kind == Kind::Mod && body.is_none() {
+        return;
+    }
+    let name = join(prefix, name);
+    found.push(Symbol {
+        kind,
+        name: name.clone(),
+        line: line(item),
+        fingerprint: fingerprint(item, source),
+    });
+    if matches!(kind, Kind::Mod | Kind::Trait) {
+        push_items(pending, body, &name);
     }
 }
 
-fn body(item: Node<'_>, source: &[u8], prefix: &str, found: &mut Vec<Symbol>) {
-    if let Some(list) = item.child_by_field_name("body") {
-        collect(list, source, prefix, found);
-    }
+fn push_items<'tree>(pending: &mut Pending<'tree>, list: Option<Node<'tree>>, prefix: &str) {
+    let Some(list) = list else {
+        return;
+    };
+    let mut cursor = list.walk();
+    let items = list.named_children(&mut cursor);
+    push_reversed(pending, items.map(|item| (item, prefix.to_owned())));
 }
 
 /// `Frame` for `impl<T> Frame<T>`, `Frame::Display` for `impl fmt::Display for Frame`.
@@ -133,18 +148,22 @@ fn impl_owner(item: Node<'_>, source: &[u8]) -> String {
     }
 }
 
+/// `Frame` for `fmt::Frame`, `Frame<T>`, `&mut Frame` or `dyn Frame`; `T` for `[T]`.
 fn base_name(node: Node<'_>, source: &[u8]) -> String {
-    let base = match node.kind() {
-        "generic_type" => node.child_by_field_name("type").unwrap_or(node),
-        _ => node,
-    };
-    let base = match base.kind() {
-        "scoped_type_identifier" | "scoped_identifier" => {
-            base.child_by_field_name("name").unwrap_or(base)
-        }
-        _ => base,
-    };
-    compact(text(base, source))
+    let mut base = node;
+    while let Some(inner) = match base.kind() {
+        "generic_type" | "reference_type" | "pointer_type" => base.child_by_field_name("type"),
+        "scoped_type_identifier" | "scoped_identifier" => base.child_by_field_name("name"),
+        "dynamic_type" => base.child_by_field_name("trait"),
+        _ => None,
+    } {
+        base = inner;
+    }
+    let name = text(base, source);
+    let name = name.strip_prefix("r#").unwrap_or(name);
+    name.chars()
+        .filter(|it| it.is_alphanumeric() || *it == '_')
+        .collect()
 }
 
 fn test_only(item: Node<'_>, source: &[u8]) -> bool {
@@ -172,24 +191,42 @@ fn number_repeats(found: &mut [Symbol]) {
 
 fn fingerprint(item: Node<'_>, source: &[u8]) -> Fingerprint {
     let mut tokens = Vec::new();
-    leaves(item, source, &mut tokens);
+    preorder(item, |node| {
+        let comment = matches!(node.kind(), "line_comment" | "block_comment");
+        if !comment && node.child_count() == 0 {
+            tokens.extend(source.get(node.byte_range()));
+        }
+        !comment
+    });
     Fingerprint::of(tokens)
 }
 
-fn leaves<'a>(node: Node<'_>, source: &'a [u8], tokens: &mut Vec<&'a [u8]>) {
-    if matches!(node.kind(), "line_comment" | "block_comment") {
-        return;
+/// Visits `root` and what's inside it in source order, descending where `visit` says so,
+/// without recursion.
+pub(crate) fn preorder<'tree>(root: Node<'tree>, mut visit: impl FnMut(Node<'tree>) -> bool) {
+    let mut pending = vec![root];
+    while let Some(node) = pending.pop() {
+        if visit(node) {
+            push_reversed(&mut pending, node.children(&mut node.walk()));
+        }
     }
-    if node.child_count() == 0 {
-        tokens.extend(source.get(node.byte_range()));
-    }
-    for child in node.children(&mut node.walk()) {
-        leaves(child, source, tokens);
+}
+
+/// Pushes `items` last first, so they come off the stack in order.
+fn push_reversed<T>(stack: &mut Vec<T>, items: impl IntoIterator<Item = T>) {
+    let start = stack.len();
+    stack.extend(items);
+    if let Some(pushed) = stack.get_mut(start..) {
+        pushed.reverse();
     }
 }
 
 fn text<'a>(node: Node<'_>, source: &'a [u8]) -> &'a str {
     node.utf8_text(source).unwrap_or_default()
+}
+
+fn plain(name: &str) -> &str {
+    name.strip_prefix("r#").unwrap_or(name)
 }
 
 fn compact(text: &str) -> String {
@@ -301,6 +338,36 @@ mod tests {
         let found = names(text);
         assert!(found.contains(&"fn a 1".to_owned()), "{found:?}");
         assert!(found.contains(&"fn d 4".to_owned()), "{found:?}");
+    }
+
+    #[test]
+    fn a_fingerprint_covers_only_its_item() {
+        let alone = print("fn a() { 1 }", "a");
+        assert_eq!(print("fn a() { 1 }\nfn b() { 2 }", "a"), alone);
+        assert_eq!(print("mod m { fn a() { 1 } fn b() {} }", "m::a"), alone);
+    }
+
+    #[test]
+    fn deep_nesting_does_not_overflow_the_stack() {
+        let depth = 8_000;
+        let text = format!("fn a() {{ {}1{} }}", "(".repeat(depth), ")".repeat(depth));
+        assert_eq!(names(&text), ["fn a 1"]);
+    }
+
+    #[test]
+    fn names_raw_identifiers_and_unusual_owners_so_anchors_can_hold_them() {
+        let text = "fn r#match() {}\nimpl<T> Tr for &T { fn a() {} }\nimpl Tr for [u8] { fn b() {} }\n\
+                    impl dyn r#Tr { fn c() {} }\nimpl<T> Tr for *const T { fn d() {} }\n";
+        assert_eq!(
+            names(text),
+            [
+                "fn match 1",
+                "fn T::Tr::a 2",
+                "fn u8::Tr::b 3",
+                "fn Tr::c 4",
+                "fn T::Tr::d 5"
+            ]
+        );
     }
 
     #[test]

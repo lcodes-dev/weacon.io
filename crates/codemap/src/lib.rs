@@ -18,7 +18,6 @@ pub use outline::{Kind, Symbol};
 pub enum Error {
     Grammar,
     Parse,
-    Manifest,
 }
 
 impl fmt::Display for Error {
@@ -26,7 +25,6 @@ impl fmt::Display for Error {
         formatter.write_str(match self {
             Self::Grammar => "the Rust grammar can't be loaded",
             Self::Parse => "a file couldn't be parsed",
-            Self::Manifest => "a Cargo.toml isn't valid",
         })
     }
 }
@@ -44,6 +42,5 @@ mod tests {
             "the Rust grammar can't be loaded"
         );
         assert_eq!(Error::Parse.to_string(), "a file couldn't be parsed");
-        assert_eq!(Error::Manifest.to_string(), "a Cargo.toml isn't valid");
     }
 }
