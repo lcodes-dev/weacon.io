@@ -12,7 +12,7 @@ pub(crate) fn var(env: Env<'_>, key: &str) -> Option<OsString> {
 }
 
 pub(crate) fn home_dir(env: Env<'_>) -> Option<PathBuf> {
-    var(env, "HOME").map(PathBuf::from)
+    var(env, if cfg!(windows) { "USERPROFILE" } else { "HOME" }).map(PathBuf::from)
 }
 
 /// Where the core keeps its state; `WEACON_STATE_DIR` overrides it.
@@ -20,6 +20,9 @@ pub(crate) fn state_dir(env: Env<'_>) -> Option<PathBuf> {
     if let Some(dir) = var(env, "WEACON_STATE_DIR") {
         // A relative path would differ between commands started in different folders.
         return std::path::absolute(dir).ok();
+    }
+    if cfg!(windows) {
+        return var(env, "LOCALAPPDATA").map(|dir| PathBuf::from(dir).join("Weacon"));
     }
     let home = home_dir(env)?;
     if cfg!(target_os = "macos") {
@@ -68,10 +71,21 @@ mod unix {
     use std::os::unix::fs::{MetadataExt, PermissionsExt};
     use std::path::Path;
 
-    pub(crate) use tokio::net::{UnixListener as Listener, UnixStream as Stream};
+    pub(crate) use tokio::net::UnixStream as Stream;
+
+    /// The user a client must be.
+    pub(crate) type Owner = u32;
+
+    pub(crate) struct Listener(tokio::net::UnixListener);
+
+    impl Listener {
+        pub(crate) async fn accept(&self) -> io::Result<Stream> {
+            Ok(self.0.accept().await?.0)
+        }
+    }
 
     /// The user that owns `dir`, when only that user can reach it.
-    pub(crate) fn private_owner(dir: &Path) -> io::Result<Option<u32>> {
+    pub(crate) fn private_owner(dir: &Path) -> io::Result<Option<Owner>> {
         let metadata = fs::metadata(dir)?;
         let others = metadata.permissions().mode() & 0o077;
         let private = metadata.is_dir() && others == 0;
@@ -80,13 +94,13 @@ mod unix {
 
     /// Listens on a socket at `path` that only this user can open.
     pub(crate) fn bind(path: &Path) -> io::Result<Listener> {
-        let listener = Listener::bind(path)?;
+        let listener = tokio::net::UnixListener::bind(path)?;
         fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
-        Ok(listener)
+        Ok(Listener(listener))
     }
 
-    pub(crate) fn peer_uid(stream: &Stream) -> io::Result<u32> {
-        Ok(stream.peer_cred()?.uid())
+    pub(crate) fn is_owner(stream: &Stream, owner: Owner) -> bool {
+        stream.peer_cred().is_ok_and(|cred| cred.uid() == owner)
     }
 
     /// Ctrl-C and SIGTERM, caught from when this is made; needs a tokio runtime.
@@ -114,11 +128,102 @@ mod unix {
     }
 }
 
+#[cfg(windows)]
+pub(crate) use windows::*;
+
+#[cfg(windows)]
+mod windows {
+    use std::fs;
+    use std::io;
+    use std::path::Path;
+
+    use interprocess::os::windows::named_pipe::tokio::{DuplexPipeStream, PipeListener};
+    use interprocess::os::windows::named_pipe::{PipeListenerOptions, pipe_mode::Bytes};
+    use interprocess::os::windows::security_descriptor::SecurityDescriptor;
+    use tokio::signal::windows::{CtrlC, CtrlShutdown, ctrl_c, ctrl_shutdown};
+    use widestring::u16cstr;
+
+    pub(crate) type Stream = DuplexPipeStream<Bytes>;
+
+    /// Nothing to compare: the pipe's access list already admits only its owner.
+    #[derive(Clone, Copy, Debug)]
+    pub(crate) struct Owner;
+
+    pub(crate) struct Listener(PipeListener<Bytes, Bytes>);
+
+    impl Listener {
+        pub(crate) async fn accept(&self) -> io::Result<Stream> {
+            self.0.accept().await
+        }
+    }
+
+    /// `dir`, which needs no check: the pipe guards itself, and its name changes at each start.
+    pub(crate) fn private_owner(dir: &Path) -> io::Result<Option<Owner>> {
+        Ok(fs::metadata(dir)?.is_dir().then_some(Owner))
+    }
+
+    /// Listens on a pipe with a fresh random name that only this user can open, and writes the
+    /// name to `path` for clients to find; others can't take the name before the daemon does.
+    pub(crate) fn bind(path: &Path) -> io::Result<Listener> {
+        let name = format!(r"\\.\pipe\weacon-{:032x}", crate::report::random_id());
+        let owner_only = SecurityDescriptor::deserialize(u16cstr!("D:P(A;;GA;;;OW)"))?;
+        let listener = PipeListenerOptions::new()
+            .path(name.as_str())
+            .security_descriptor(Some(owner_only))
+            .create_tokio_duplex()?;
+        fs::write(path, name)?;
+        Ok(Listener(listener))
+    }
+
+    pub(crate) const fn is_owner(_: &Stream, _: Owner) -> bool {
+        true
+    }
+
+    /// Ctrl-C and shutdown, caught from when this is made; needs a tokio runtime.
+    pub(crate) struct Signals {
+        interrupt: CtrlC,
+        shutdown: CtrlShutdown,
+    }
+
+    impl Signals {
+        pub(crate) fn new() -> io::Result<Self> {
+            Ok(Self {
+                interrupt: ctrl_c()?,
+                shutdown: ctrl_shutdown()?,
+            })
+        }
+
+        pub(crate) async fn wait(mut self) {
+            tokio::select! {
+                _ = self.interrupt.recv() => {}
+                _ = self.shutdown.recv() => {}
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::{env, temp_dir};
+    use crate::test_support::env;
 
+    #[cfg(windows)]
+    #[test]
+    fn on_windows_the_state_folder_is_in_local_app_data() {
+        let vars = env(&[
+            ("LOCALAPPDATA", r"C:\Users\ada\AppData\Local"),
+            ("USERPROFILE", r"C:\Users\ada"),
+        ]);
+
+        assert_eq!(
+            state_dir(&vars),
+            Some(PathBuf::from(r"C:\Users\ada\AppData\Local\Weacon"))
+        );
+        assert_eq!(home_dir(&vars), Some(PathBuf::from(r"C:\Users\ada")));
+        assert_eq!(state_dir(&env(&[])), None);
+    }
+
+    #[cfg(unix)]
     #[test]
     fn the_state_folder_can_be_set() {
         let set = env(&[("WEACON_STATE_DIR", "/srv/weacon"), ("HOME", "/home/ada")]);
@@ -154,7 +259,7 @@ mod tests {
     fn new_folders_and_files_are_private_and_existing_ones_kept() {
         use std::os::unix::fs::PermissionsExt;
 
-        let dir = temp_dir("private");
+        let dir = crate::test_support::temp_dir("private");
         let nested = dir.join("state/logs");
         let file = nested.join("weacon.log");
         fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).unwrap();

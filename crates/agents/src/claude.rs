@@ -76,19 +76,10 @@ impl Claude {
 mod tests {
     use std::ffi::OsStr;
     use std::fs;
-    use std::os::unix::fs::PermissionsExt;
     use std::path::Path;
-    use std::time::Duration;
-
-    use tokio::time::timeout;
-
-    use weacon_protocol::{Outcome, RunEvent};
 
     use super::*;
-    use crate::test_support::{run_id, started};
-
-    const SESSION_A: &str = "0b7c6a52-3f1e-4d2a-9c8b-5e4f3a2b1c0d";
-    const SESSION_B: &str = "5d4c3b2a-1f0e-4d9c-8b7a-6f5e4d3c2b1a";
+    use crate::test_support::run_id;
 
     fn temp_dir(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("weacon-agents-{name}-{}", std::process::id()));
@@ -97,81 +88,96 @@ mod tests {
         dir
     }
 
-    // A `claude` that notes its arguments, reads one line, then prints its workspace's session.
-    fn fake_claude(dir: &Path) -> PathBuf {
-        let program = dir.join("claude");
-        fs::write(
-            &program,
-            "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$CLAUDE_CONFIG_DIR/args\"\nread -r line\n\
-             cat \"$CLAUDE_CONFIG_DIR/session\"\n",
-        )
-        .unwrap();
-        fs::set_permissions(&program, fs::Permissions::from_mode(0o755)).unwrap();
-        program
-    }
+    // Real processes: a shell script stands in for `claude`.
+    #[cfg(unix)]
+    mod side_by_side {
+        use std::os::unix::fs::PermissionsExt;
+        use std::time::Duration;
 
-    fn workspace(dir: &Path, name: &str, session: &str) -> Claude {
-        let config_dir = dir.join(name);
-        fs::create_dir_all(&config_dir).unwrap();
-        fs::write(
-            config_dir.join("session"),
-            format!(
-                "{{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"{session}\"}}\n\
-                 {{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false}}\n"
-            ),
-        )
-        .unwrap();
-        Claude {
-            program: dir.join("claude"),
-            config_dir,
-            cwd: dir.to_owned(),
-        }
-    }
+        use tokio::time::timeout;
+        use weacon_protocol::{Outcome, RunEvent};
 
-    // Bounded in count and time, so a driver that never ends fails instead of hanging.
-    async fn events(mut run: AgentRun) -> Vec<RunEvent> {
-        run.send("Hello").await.unwrap();
-        let mut events = Vec::new();
-        while events.len() < 10
-            && let Some(event) = timeout(Duration::from_secs(10), run.next())
-                .await
-                .unwrap()
-                .unwrap()
-        {
-            events.push(event);
-        }
-        events
-    }
+        use super::*;
+        use crate::test_support::started;
 
-    #[tokio::test]
-    async fn two_workspaces_run_side_by_side_each_with_its_own_config() {
-        let dir = temp_dir("workspaces");
-        fake_claude(&dir);
-        let first = workspace(&dir, "first", SESSION_A);
-        let second = workspace(&dir, "second", SESSION_B);
+        const SESSION_A: &str = "0b7c6a52-3f1e-4d2a-9c8b-5e4f3a2b1c0d";
+        const SESSION_B: &str = "5d4c3b2a-1f0e-4d9c-8b7a-6f5e4d3c2b1a";
 
-        let (first_events, second_events) = tokio::join!(
-            events(first.start(run_id("run-1"), None).unwrap()),
-            events(
-                second
-                    .start(
-                        run_id("run-1"),
-                        Some(&AgentSession::try_from(SESSION_A.to_owned()).unwrap())
-                    )
-                    .unwrap()
+        // A `claude` that notes its arguments, reads one line, then prints its workspace's session.
+        fn fake_claude(dir: &Path) -> PathBuf {
+            let program = dir.join("claude");
+            fs::write(
+                &program,
+                "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$CLAUDE_CONFIG_DIR/args\"\nread -r line\n\
+                 cat \"$CLAUDE_CONFIG_DIR/session\"\n",
             )
-        );
-
-        let finished = RunEvent::Finished {
-            outcome: Outcome::Completed,
-        };
-        for (events, id) in [(first_events, SESSION_A), (second_events, SESSION_B)] {
-            assert_eq!(events, [started(id), finished.clone()]);
+            .unwrap();
+            fs::set_permissions(&program, fs::Permissions::from_mode(0o755)).unwrap();
+            program
         }
-        let args = |name| fs::read_to_string(dir.join(name).join("args")).unwrap();
-        assert!(!args("first").contains("--resume"));
-        assert!(args("second").ends_with(&format!("--resume\n{SESSION_A}\n")));
-        fs::remove_dir_all(&dir).unwrap();
+
+        fn workspace(dir: &Path, name: &str, session: &str) -> Claude {
+            let config_dir = dir.join(name);
+            fs::create_dir_all(&config_dir).unwrap();
+            fs::write(
+                config_dir.join("session"),
+                format!(
+                    "{{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"{session}\"}}\n\
+                     {{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false}}\n"
+                ),
+            )
+            .unwrap();
+            Claude {
+                program: dir.join("claude"),
+                config_dir,
+                cwd: dir.to_owned(),
+            }
+        }
+
+        // Bounded in count and time, so a driver that never ends fails instead of hanging.
+        async fn events(mut run: AgentRun) -> Vec<RunEvent> {
+            run.send("Hello").await.unwrap();
+            let mut events = Vec::new();
+            while events.len() < 10
+                && let Some(event) = timeout(Duration::from_secs(10), run.next())
+                    .await
+                    .unwrap()
+                    .unwrap()
+            {
+                events.push(event);
+            }
+            events
+        }
+
+        #[tokio::test]
+        async fn two_workspaces_run_side_by_side_each_with_its_own_config() {
+            let dir = temp_dir("workspaces");
+            fake_claude(&dir);
+            let first = workspace(&dir, "first", SESSION_A);
+            let second = workspace(&dir, "second", SESSION_B);
+
+            let (first_events, second_events) = tokio::join!(
+                events(first.start(run_id("run-1"), None).unwrap()),
+                events(
+                    second
+                        .start(
+                            run_id("run-1"),
+                            Some(&AgentSession::try_from(SESSION_A.to_owned()).unwrap())
+                        )
+                        .unwrap()
+                )
+            );
+
+            let finished = RunEvent::Finished {
+                outcome: Outcome::Completed,
+            };
+            assert_eq!(first_events, [started(SESSION_A), finished.clone()]);
+            assert_eq!(second_events, [started(SESSION_B), finished]);
+            let args = |name| fs::read_to_string(dir.join(name).join("args")).unwrap();
+            assert!(!args("first").contains("--resume"));
+            assert!(args("second").ends_with(&format!("--resume\n{SESSION_A}\n")));
+            fs::remove_dir_all(&dir).unwrap();
+        }
     }
 
     #[test]

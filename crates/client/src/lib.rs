@@ -3,10 +3,11 @@
 mod platform;
 
 use std::error::Error;
-use std::io::{self, Read, Write};
+use std::io;
 use std::path::Path;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use weacon_observability::Fault;
 use weacon_protocol::{
     App, Envelope, Hello, LineDecoder, Message, PROTOCOL, Welcome, code, encode_line,
@@ -15,11 +16,32 @@ use weacon_protocol::{
 const TIMEOUT: Duration = Duration::from_secs(5);
 
 /// The daemon's build and capabilities, after a handshake as `me` over the socket at `socket`.
+/// Blocks; call it outside an async runtime.
 ///
 /// # Errors
 /// When no daemon listens there, it doesn't answer in time, or it refuses the handshake.
 pub fn handshake(socket: &Path, me: App) -> Result<Welcome, Fault> {
-    let mut stream = platform::connect(socket, TIMEOUT).map_err(|error| {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(no_answer)?;
+    runtime.block_on(async {
+        tokio::time::timeout(TIMEOUT, exchange(socket, me))
+            .await
+            .unwrap_or_else(|_| Err(no_answer(io::Error::from(io::ErrorKind::TimedOut))))
+    })
+}
+
+/// A raw connection to the daemon at `socket`, before any handshake.
+///
+/// # Errors
+/// When no daemon listens there.
+pub async fn connect(socket: &Path) -> io::Result<impl AsyncRead + AsyncWrite + Unpin + use<>> {
+    platform::connect(socket).await
+}
+
+async fn exchange(socket: &Path, me: App) -> Result<Welcome, Fault> {
+    let mut stream = platform::connect(socket).await.map_err(|error| {
         if matches!(
             error.kind(),
             io::ErrorKind::NotFound | io::ErrorKind::ConnectionRefused
@@ -41,23 +63,15 @@ pub fn handshake(socket: &Path, me: App) -> Result<Welcome, Fault> {
         }),
     };
     let line = encode_line(&hello).map_err(no_answer)?;
-    stream.write_all(&line).map_err(no_answer)?;
+    stream.write_all(&line).await.map_err(no_answer)?;
     let mut decoder = LineDecoder::default();
     let mut buf = [0; 4096];
-    // One deadline for the whole answer, so a daemon sending only bad lines can't stall us.
-    let deadline = Instant::now() + TIMEOUT;
     loop {
-        let left = deadline
-            .checked_duration_since(Instant::now())
-            .filter(|left| !left.is_zero())
-            .ok_or_else(|| no_answer(io::Error::from(io::ErrorKind::TimedOut)))?;
-        stream.set_read_timeout(Some(left)).map_err(no_answer)?;
-        let read = stream.read(&mut buf).map_err(no_answer)?;
+        let read = stream.read(&mut buf).await.map_err(no_answer)?;
         let Some(bytes) = buf.get(..read).filter(|bytes| !bytes.is_empty()) else {
             return Err(no_answer(io::Error::from(io::ErrorKind::UnexpectedEof)));
         };
-        let replies = decoder.push(bytes);
-        if let Some(reply) = replies.into_iter().find_map(Result::ok) {
+        if let Some(reply) = decoder.push(bytes).into_iter().find_map(Result::ok) {
             return welcomed(reply.message);
         }
     }
@@ -83,14 +97,15 @@ fn welcomed(message: Message) -> Result<Welcome, Fault> {
 #[cfg(test)]
 mod tests {
     use std::fs;
-    use std::io::{BufRead, BufReader};
-    use std::os::unix::net::UnixListener;
     use std::path::PathBuf;
+    use std::sync::mpsc;
     use std::thread;
 
+    use tokio::io::{AsyncBufReadExt, BufReader};
     use weacon_protocol::ErrorBody;
 
     use super::*;
+    use crate::platform::Server;
 
     fn app(name: &str) -> App {
         App {
@@ -107,21 +122,34 @@ mod tests {
         dir
     }
 
+    fn runtime() -> tokio::runtime::Runtime {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+    }
+
     // A one-connection daemon that reads the hello, then sends a bad frame and `reply`, or hangs up.
     fn serve_once(socket: &Path, reply: Option<Message>) -> thread::JoinHandle<Envelope> {
-        let listener = UnixListener::bind(socket).unwrap();
-        thread::spawn(move || {
-            let (mut stream, _) = listener.accept().unwrap();
-            let mut line = String::new();
-            BufReader::new(&stream).read_line(&mut line).unwrap();
-            if let Some(message) = reply {
-                stream.write_all(b"not json\n").unwrap();
-                stream
-                    .write_all(&encode_line(&Envelope { id: 1, message }).unwrap())
-                    .unwrap();
-            }
-            serde_json::from_str(&line).unwrap()
-        })
+        let socket = socket.to_owned();
+        let (bound, ready) = mpsc::channel();
+        let daemon = thread::spawn(move || runtime().block_on(serve(&socket, reply, &bound)));
+        ready.recv().unwrap();
+        daemon
+    }
+
+    async fn serve(socket: &Path, reply: Option<Message>, bound: &mpsc::Sender<()>) -> Envelope {
+        let server = Server::bind(socket).unwrap();
+        bound.send(()).unwrap();
+        let mut stream = BufReader::new(server.accept().await.unwrap());
+        let mut line = String::new();
+        stream.read_line(&mut line).await.unwrap();
+        if let Some(message) = reply {
+            stream.write_all(b"not json\n").await.unwrap();
+            let reply = encode_line(&Envelope { id: 1, message }).unwrap();
+            stream.write_all(&reply).await.unwrap();
+        }
+        serde_json::from_str(&line).unwrap()
     }
 
     #[test]
@@ -189,7 +217,7 @@ mod tests {
     fn no_socket_or_a_dead_one_means_no_daemon() {
         let dir = temp_dir("dead");
         let socket = dir.join("weacon.sock");
-        drop(UnixListener::bind(&socket).unwrap());
+        drop(runtime().block_on(async { Server::bind(&socket) }).unwrap());
 
         for path in [socket.as_path(), Path::new("/nonexistent/weacon.sock")] {
             let error = handshake(path, app("weacon-desktop")).unwrap_err();
