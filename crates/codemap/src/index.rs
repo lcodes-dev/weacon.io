@@ -1,0 +1,225 @@
+use std::cmp::Reverse;
+
+use serde::Deserialize;
+
+use crate::outline::{Outliner, symbols};
+use crate::{Error, Symbol};
+
+/// A file as the caller read it, its path relative to the repository root with `/` separators.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SourceFile {
+    pub path: String,
+    pub text: String,
+}
+
+/// The outline of a repository: its crates, their modules and the modules' items.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Index {
+    /// Sorted by folder.
+    pub crates: Vec<Crate>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Crate {
+    /// The package name, `weacon-protocol`.
+    pub package: String,
+    /// The name code uses, `weacon_protocol`.
+    pub name: String,
+    /// The folder holding `Cargo.toml`, empty at the repository root.
+    pub folder: String,
+    /// One per file under `src/`, sorted by file.
+    pub modules: Vec<Module>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Module {
+    /// Within the crate, `frame::codec`; empty for the crate's root.
+    pub path: String,
+    pub file: String,
+    pub symbols: Vec<Symbol>,
+}
+
+#[derive(Deserialize)]
+struct Manifest {
+    package: Option<Package>,
+}
+
+#[derive(Deserialize)]
+struct Package {
+    name: String,
+}
+
+/// Outlines every crate whose `Cargo.toml` is among `files`, from the `.rs` files under its `src/`.
+///
+/// # Errors
+///
+/// When a `Cargo.toml` isn't valid or the Rust grammar can't be loaded.
+pub fn index(files: &[SourceFile]) -> Result<Index, Error> {
+    let mut crates = files
+        .iter()
+        .filter_map(|file| manifest(file).transpose())
+        .collect::<Result<Vec<_>, _>>()?;
+    crates.sort_by_key(|krate| Reverse(krate.folder.len()));
+    let mut outliner = Outliner::new()?;
+    let mut sources: Vec<&SourceFile> = files.iter().collect();
+    sources.sort_by(|one, other| one.path.cmp(&other.path));
+    for file in sources {
+        let Some((owner, path)) = crates
+            .iter_mut()
+            .find_map(|it| module_path(&it.folder, &file.path).map(|path| (it, path)))
+        else {
+            continue;
+        };
+        let tree = outliner.parse(&file.text)?;
+        owner.modules.push(Module {
+            path,
+            file: file.path.clone(),
+            symbols: symbols(&tree, &file.text),
+        });
+    }
+    crates.sort_by(|one, other| one.folder.cmp(&other.folder));
+    Ok(Index { crates })
+}
+
+fn manifest(file: &SourceFile) -> Result<Option<Crate>, Error> {
+    let folder = match file.path.strip_suffix("Cargo.toml") {
+        Some("") => "",
+        Some(parent) => match parent.strip_suffix('/') {
+            Some(folder) => folder,
+            None => return Ok(None),
+        },
+        None => return Ok(None),
+    };
+    let manifest: Manifest = toml::from_str(&file.text).map_err(|_| Error::Manifest)?;
+    Ok(manifest.package.map(|package| Crate {
+        name: package.name.replace('-', "_"),
+        package: package.name,
+        folder: folder.to_owned(),
+        modules: Vec::new(),
+    }))
+}
+
+/// `frame::codec` for `<folder>/src/frame/codec.rs`; `None` for files outside the crate's `src/`.
+fn module_path(folder: &str, file: &str) -> Option<String> {
+    let inside = if folder.is_empty() {
+        Some(file)
+    } else {
+        file.strip_prefix(folder)?.strip_prefix('/')
+    };
+    let relative = inside?.strip_prefix("src/")?.strip_suffix(".rs")?;
+    let relative = relative.strip_suffix("/mod").unwrap_or(relative);
+    Some(match relative {
+        "lib" | "main" => String::new(),
+        _ => relative.replace('/', "::"),
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    pub(crate) fn file(path: &str, text: &str) -> SourceFile {
+        SourceFile {
+            path: path.to_owned(),
+            text: text.to_owned(),
+        }
+    }
+
+    fn layout(index: &Index) -> Vec<String> {
+        index
+            .crates
+            .iter()
+            .flat_map(|krate| {
+                krate.modules.iter().map(move |module| {
+                    let names: Vec<&str> =
+                        module.symbols.iter().map(|it| it.name.as_str()).collect();
+                    format!(
+                        "{} [{}] {} {}: {}",
+                        krate.package,
+                        krate.folder,
+                        module.path,
+                        module.file,
+                        names.join(",")
+                    )
+                })
+            })
+            .collect()
+    }
+
+    #[test]
+    fn groups_files_into_crates_and_modules() {
+        let index = index(&[
+            file("Cargo.toml", "[workspace]\nmembers = []\n"),
+            file("crates/b-two/Cargo.toml", "[package]\nname = \"b-two\"\n"),
+            file("crates/b-two/src/lib.rs", "mod x;\nfn top() {}\n"),
+            file("crates/b-two/src/x.rs", "fn inner() {}\n"),
+            file("crates/b-two/src/x/y/mod.rs", "struct Deep;\n"),
+            file("crates/b-two/tests/it.rs", "fn ignored() {}\n"),
+            file("crates/b-two/README.md", "fn ignored() {}\n"),
+            file("apps/a/Cargo.toml", "[package]\nname = \"a\"\n"),
+            file("apps/a/src/main.rs", "fn main() {}\n"),
+            file("loose.rs", "fn ignored() {}\n"),
+        ])
+        .unwrap();
+
+        assert_eq!(
+            layout(&index),
+            [
+                "a [apps/a]  apps/a/src/main.rs: main",
+                "b-two [crates/b-two]  crates/b-two/src/lib.rs: top",
+                "b-two [crates/b-two] x crates/b-two/src/x.rs: inner",
+                "b-two [crates/b-two] x::y crates/b-two/src/x/y/mod.rs: Deep",
+            ]
+        );
+        let names: Vec<&str> = index.crates.iter().map(|it| it.name.as_str()).collect();
+        assert_eq!(names, ["a", "b_two"]);
+    }
+
+    #[test]
+    fn a_nested_crate_owns_its_own_files() {
+        let index = index(&[
+            file("Cargo.toml", "[package]\nname = \"outer\"\n"),
+            file("src/lib.rs", "fn outer() {}\n"),
+            file("inner/Cargo.toml", "[package]\nname = \"inner\"\n"),
+            file("inner/src/lib.rs", "fn inner() {}\n"),
+        ])
+        .unwrap();
+
+        assert_eq!(
+            layout(&index),
+            [
+                "outer []  src/lib.rs: outer",
+                "inner [inner]  inner/src/lib.rs: inner"
+            ]
+        );
+    }
+
+    #[test]
+    fn only_files_named_cargo_toml_are_manifests() {
+        let index = index(&[
+            file("notCargo.toml", "[package]\nname = \"no\"\n"),
+            file("x/notCargo.toml", "[package]\nname = \"no\"\n"),
+        ])
+        .unwrap();
+        assert!(index.crates.is_empty());
+    }
+
+    #[test]
+    fn rejects_a_broken_manifest() {
+        assert_eq!(
+            index(&[file("Cargo.toml", "[package")]),
+            Err(Error::Manifest)
+        );
+    }
+
+    #[test]
+    fn a_crate_folder_is_matched_whole() {
+        assert_eq!(module_path("crates/a", "crates/ab/src/lib.rs"), None);
+        assert_eq!(
+            module_path("crates/a", "crates/a/src/lib.rs"),
+            Some(String::new())
+        );
+        assert_eq!(module_path("", "src/a/b.rs"), Some("a::b".to_owned()));
+        assert_eq!(module_path("", "src/a.txt"), None);
+    }
+}
