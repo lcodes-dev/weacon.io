@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+# Builds a static release weacon for one target into dist/, checks it links only the OS and
+# reports this commit, and prints its size. Run it on a machine that runs the target.
+set -euo pipefail
+
+cd "$(dirname "$0")/.."
+
+die() {
+  printf 'error: %s\n' "$*" >&2
+  exit 1
+}
+
+target=${1:-}
+exe=
+case "$target" in
+  x86_64-apple-darwin | aarch64-apple-darwin) ;;
+  x86_64-unknown-linux-musl | aarch64-unknown-linux-musl) export "CC_${target//-/_}=musl-gcc" ;;
+  x86_64-pc-windows-msvc)
+    exe=.exe
+    export CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTFLAGS="-C target-feature=+crt-static" ;;
+  *) die "usage: scripts/release.sh <target>, for a target this script lists" ;;
+esac
+
+rustup target add "$target" >/dev/null
+cargo build --release --locked --package weacon-core --target "$target"
+
+mkdir -p dist
+binary="dist/weacon-$target$exe"
+cp "target/$target/release/weacon$exe" "$binary"
+
+case "$target" in
+  *-linux-musl)
+    file "$binary" | grep -Eq 'statically linked|static-pie linked' || die "$binary isn't static" ;;
+  *-apple-darwin)
+    links=$(otool -L "$binary")
+    ! tail -n +2 <<<"$links" | grep -Ev '^[[:space:]]+/(usr/lib|System/Library)/' \
+      || die "$binary links libraries macOS doesn't ship" ;;
+  *-windows-msvc)
+    ! grep -aqiE 'vcruntime[0-9]+\.dll|api-ms-win-crt-' "$binary" \
+      || die "$binary needs the Visual C++ runtime" ;;
+esac
+
+"$binary" --version | tr -d '\r' | grep -qF "($(git rev-parse HEAD))" \
+  || die "$binary doesn't report this commit"
+
+printf '%s: %s bytes\n' "$binary" "$(wc -c <"$binary" | tr -d ' ')"

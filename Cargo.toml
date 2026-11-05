@@ -28,6 +28,11 @@ weacon-testing = { path = "crates/testing" }
 weacon-version = { path = "crates/version" }
 windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Security_Authorization", "Win32_System_Threading"] }
 
+[profile.release]
+codegen-units = 1
+lto = true
+strip = true
+
 [workspace.lints.rust]
 unsafe_code = "deny"
 non_ascii_idents = "deny"
