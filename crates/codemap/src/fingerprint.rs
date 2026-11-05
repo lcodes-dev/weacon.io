@@ -2,7 +2,7 @@ use std::fmt;
 use std::str::FromStr;
 
 /// A stable 64-bit hash of code, the same on every platform and in every release.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Fingerprint(u64);
 
 const OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
@@ -11,10 +11,10 @@ const SEPARATOR: u8 = 0xff;
 
 impl Fingerprint {
     /// Hashes the parts in order; parts are separated, so `["ab"]` and `["a", "b"]` differ.
-    pub(crate) fn of<'a>(parts: impl IntoIterator<Item = &'a [u8]>) -> Self {
+    pub(crate) fn of(parts: impl IntoIterator<Item = impl AsRef<[u8]>>) -> Self {
         let mut hash = OFFSET;
         for part in parts {
-            for byte in part.iter().chain([&SEPARATOR]) {
+            for byte in part.as_ref().iter().chain([&SEPARATOR]) {
                 hash = (hash ^ u64::from(*byte)).wrapping_mul(PRIME);
             }
         }
@@ -22,11 +22,7 @@ impl Fingerprint {
     }
 
     pub(crate) fn combine(fingerprints: impl IntoIterator<Item = Self>) -> Self {
-        let bytes: Vec<[u8; 8]> = fingerprints
-            .into_iter()
-            .map(|it| it.0.to_be_bytes())
-            .collect();
-        Self::of(bytes.iter().map(<[u8; 8]>::as_slice))
+        Self::of(fingerprints.into_iter().map(|it| it.0.to_be_bytes()))
     }
 }
 
@@ -40,11 +36,10 @@ impl FromStr for Fingerprint {
     type Err = ();
 
     fn from_str(text: &str) -> Result<Self, ()> {
-        let hex = text.len() == 16 && text.bytes().all(|byte| byte.is_ascii_hexdigit());
-        hex.then(|| u64::from_str_radix(text, 16).ok())
-            .flatten()
-            .map(Self)
-            .ok_or(())
+        if text.len() != 16 || !text.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            return Err(());
+        }
+        u64::from_str_radix(text, 16).map(Self).map_err(|_| ())
     }
 }
 
@@ -54,17 +49,14 @@ mod tests {
 
     #[test]
     fn known_values_never_change() {
-        assert_eq!(Fingerprint::of([]).to_string(), "cbf29ce484222325");
-        assert_eq!(
-            Fingerprint::of([b"a".as_slice()]).to_string(),
-            "089bc907b544c769"
-        );
+        assert_eq!(Fingerprint::of([b""; 0]).to_string(), "cbf29ce484222325");
+        assert_eq!(Fingerprint::of([b"a"]).to_string(), "089bc907b544c769");
     }
 
     #[test]
     fn parts_are_separated() {
-        let joined = Fingerprint::of([b"ab".as_slice()]);
-        let split = Fingerprint::of([b"a".as_slice(), b"b".as_slice()]);
+        let joined = Fingerprint::of([b"ab"]);
+        let split = Fingerprint::of([b"a", b"b"]);
         assert_ne!(joined, split);
     }
 

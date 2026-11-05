@@ -49,9 +49,10 @@ impl Index {
     #[must_use]
     pub fn check(&self, pins: &str) -> Vec<Finding> {
         pins.lines()
+            .map(str::trim)
             .enumerate()
-            .filter(|(_, line)| !line.trim().is_empty())
-            .filter_map(|(number, line)| match line.trim().parse::<Pin>() {
+            .filter(|(_, line)| !line.is_empty())
+            .filter_map(|(number, line)| match line.parse::<Pin>() {
                 Err(()) => Some(Finding::Malformed(number.saturating_add(1))),
                 Ok(pin) => self.recheck(pin),
             })
@@ -74,27 +75,27 @@ impl FromStr for Anchor {
     type Err = ();
 
     fn from_str(text: &str) -> Result<Self, ()> {
-        if let Some(path) = text.strip_prefix("sym:") {
-            return symbol_path(path).map(|path| Self::Sym(path.to_owned()));
+        if let Some(path) = text.strip_prefix("sym:")
+            && is_symbol_path(path)
+        {
+            return Ok(Self::Sym(path.to_owned()));
         }
-        let steps = text.strip_prefix("flow:").ok_or(())?;
-        let steps = steps
+        let steps: Vec<&str> = text
+            .strip_prefix("flow:")
+            .ok_or(())?
             .split(FLOW_STEP)
-            .map(|step| symbol_path(step).map(str::to_owned))
-            .collect::<Result<Vec<_>, ()>>()?;
-        if steps.len() < 2 {
+            .collect();
+        if steps.len() < 2 || !steps.iter().all(|step| is_symbol_path(step)) {
             return Err(());
         }
-        Ok(Self::Flow(steps))
+        Ok(Self::Flow(steps.into_iter().map(str::to_owned).collect()))
     }
 }
 
-fn symbol_path(path: &str) -> Result<&str, ()> {
+fn is_symbol_path(path: &str) -> bool {
     let name = |it: char| it.is_alphanumeric() || matches!(it, '_' | '[' | ']');
-    let valid = path
-        .split("::")
-        .all(|part| !part.is_empty() && part.chars().all(name));
-    if valid { Ok(path) } else { Err(()) }
+    path.split("::")
+        .all(|part| !part.is_empty() && part.chars().all(name))
 }
 
 impl fmt::Display for Anchor {
@@ -230,9 +231,11 @@ mod tests {
     #[test]
     fn a_flow_depends_on_its_steps_and_their_order() {
         let index = repo(LIB);
-        let forward = pin(&index, "flow:a_b::run->a_b::m::S::go");
-        let backward = pin(&index, "flow:a_b::m::S::go->a_b::run");
-        assert_ne!(forward.rsplit('#').next(), backward.rsplit('#').next());
+        let print = |anchor: &str| index.fingerprint(&anchor.parse().unwrap()).unwrap();
+        assert_ne!(
+            print("flow:a_b::run->a_b::m::S::go"),
+            print("flow:a_b::m::S::go->a_b::run")
+        );
     }
 
     #[test]

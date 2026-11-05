@@ -1,6 +1,6 @@
 [package]
 name = "weacon-codemap"
-description = "A map of a Rust codebase: its outline, anchors into it, and its areas"
+description = "A map of a Rust codebase: its outline and anchors into it"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::fmt;
 
-use tree_sitter::{Node, Parser, Tree};
+use tree_sitter::{Node, Parser};
 
 use crate::{Error, Fingerprint};
 
@@ -11,12 +11,12 @@ pub struct Symbol {
     pub kind: Kind,
     pub name: String,
     /// The first line, counting from 1.
-    pub line: u32,
+    pub line: usize,
     /// Changes when the item's code does, but not its comments, attributes or layout.
     pub fingerprint: Fingerprint,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Kind {
     Const,
     Enum,
@@ -65,28 +65,21 @@ impl fmt::Display for Kind {
     }
 }
 
-pub(crate) struct Outliner(Parser);
-
-impl Outliner {
-    pub(crate) fn new() -> Result<Self, Error> {
-        let mut parser = Parser::new();
-        parser
-            .set_language(&tree_sitter_rust::LANGUAGE.into())
-            .map_err(|_| Error::Grammar)?;
-        Ok(Self(parser))
-    }
-
-    pub(crate) fn parse(&mut self, text: &str) -> Result<Tree, Error> {
-        self.0.parse(text, None).ok_or(Error::Parse)
-    }
+pub(crate) fn rust_parser() -> Result<Parser, Error> {
+    let mut parser = Parser::new();
+    parser
+        .set_language(&tree_sitter_rust::LANGUAGE.into())
+        .map_err(|_| Error::Grammar)?;
+    Ok(parser)
 }
 
-/// The items of a parsed file, test-only items left out, in source order.
-pub(crate) fn symbols(tree: &Tree, text: &str) -> Vec<Symbol> {
+/// The items of a file, test-only items left out, in source order.
+pub(crate) fn symbols(parser: &mut Parser, text: &str) -> Result<Vec<Symbol>, Error> {
+    let tree = parser.parse(text, None).ok_or(Error::Parse)?;
     let mut found = Vec::new();
     collect(tree.root_node(), text.as_bytes(), "", &mut found);
     number_repeats(&mut found);
-    found
+    Ok(found)
 }
 
 fn collect(list: Node<'_>, source: &[u8], prefix: &str, found: &mut Vec<Symbol>) {
@@ -99,13 +92,16 @@ fn collect(list: Node<'_>, source: &[u8], prefix: &str, found: &mut Vec<Symbol>)
             body(item, source, &owner, found);
             continue;
         }
-        let (Some(kind), Some(name)) = (Kind::of(item.kind()), field(item, "name", source)) else {
+        let name = item
+            .child_by_field_name("name")
+            .map(|node| text(node, source));
+        let (Some(kind), Some(name)) = (Kind::of(item.kind()), name) else {
             continue;
         };
         if kind == Kind::Mod && item.child_by_field_name("body").is_none() {
             continue;
         }
-        let name = join(prefix, &name);
+        let name = join(prefix, name);
         found.push(Symbol {
             kind,
             name: name.clone(),
@@ -192,11 +188,6 @@ fn leaves<'a>(node: Node<'_>, source: &'a [u8], tokens: &mut Vec<&'a [u8]>) {
     }
 }
 
-fn field(node: Node<'_>, name: &str, source: &[u8]) -> Option<String> {
-    node.child_by_field_name(name)
-        .map(|child| text(child, source).to_owned())
-}
-
 fn text<'a>(node: Node<'_>, source: &'a [u8]) -> &'a str {
     node.utf8_text(source).unwrap_or_default()
 }
@@ -213,8 +204,8 @@ fn join(prefix: &str, name: &str) -> String {
     }
 }
 
-fn line(node: Node<'_>) -> u32 {
-    u32::try_from(node.start_position().row.saturating_add(1)).unwrap_or(u32::MAX)
+fn line(node: Node<'_>) -> usize {
+    node.start_position().row.saturating_add(1)
 }
 
 #[cfg(test)]
@@ -222,7 +213,7 @@ mod tests {
     use super::*;
 
     fn outline(text: &str) -> Vec<Symbol> {
-        symbols(&Outliner::new().unwrap().parse(text).unwrap(), text)
+        symbols(&mut rust_parser().unwrap(), text).unwrap()
     }
 
     fn names(text: &str) -> Vec<String> {
@@ -302,6 +293,14 @@ mod tests {
         assert_eq!(print(styled, "a"), plain);
         assert_ne!(print("fn a(x: u8) -> u8 { x + 2 }", "a"), plain);
         assert_ne!(print("fn a(x: u8) -> u8 { x + 1 } fn b() {}", "b"), plain);
+    }
+
+    #[test]
+    fn outlines_a_half_edited_file() {
+        let text = "fn a() {}\nfn b( {\nstruct C;\nfn d() {}\n";
+        let found = names(text);
+        assert!(found.contains(&"fn a 1".to_owned()), "{found:?}");
+        assert!(found.contains(&"fn d 4".to_owned()), "{found:?}");
     }
 
     #[test]

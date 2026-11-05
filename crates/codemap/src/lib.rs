@@ -16,11 +16,8 @@ pub use outline::{Kind, Symbol};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Error {
-    /// The Rust grammar doesn't fit this tree-sitter.
     Grammar,
-    /// The parser gave up on a file.
     Parse,
-    /// A `Cargo.toml` isn't valid.
     Manifest,
 }
 
@@ -35,22 +32,6 @@ impl fmt::Display for Error {
 }
 
 impl std::error::Error for Error {}
-
-impl Index {
-    /// The item at `crate_name::module::path::Name`.
-    #[must_use]
-    pub fn symbol(&self, path: &str) -> Option<&Symbol> {
-        let (name, rest) = path.split_once("::")?;
-        let krate = self.crates.iter().find(|krate| krate.name == name)?;
-        krate.modules.iter().find_map(|module| {
-            let name = match module.path.as_str() {
-                "" => Some(rest),
-                prefix => rest.strip_prefix(prefix)?.strip_prefix("::"),
-            }?;
-            module.symbols.iter().find(|symbol| symbol.name == name)
-        })
-    }
-}
 
 #[cfg(test)]
 mod tests {
