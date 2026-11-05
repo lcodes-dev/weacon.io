@@ -8,8 +8,8 @@ use std::process::{Command, Stdio};
 use weacon_observability::{Fault, Logger};
 use weacon_protocol::code;
 
-use crate::app::state_unavailable;
-use crate::cli::ServiceAction;
+use crate::app::{App, state_unavailable};
+use crate::cli::ServiceCommand;
 use crate::platform::{self, Env};
 
 const UNIT: &str = "weacon.service";
@@ -56,9 +56,25 @@ const STOP: Step = Step {
     failed: "The service couldn't be stopped",
 };
 
-/// Installs or removes the service for the daemon at `exe`.
+/// Installs or removes the service for this binary.
 pub(crate) fn run(
-    action: ServiceAction,
+    app: &App,
+    command: ServiceCommand,
+    env: Env<'_>,
+    runner: Runner<'_>,
+) -> Result<(), Fault> {
+    let exe = std::env::current_exe().map_err(|error| {
+        Fault::new(
+            code!("service.no_exe"),
+            "The weacon binary couldn't be found",
+        )
+        .because(error)
+    })?;
+    apply(command, env, &exe, &app.log, runner)
+}
+
+fn apply(
+    command: ServiceCommand,
     env: Env<'_>,
     exe: &Path,
     log: &Logger,
@@ -76,8 +92,8 @@ pub(crate) fn run(
             "The service has nowhere to go: set HOME",
         )
     })?;
-    match action {
-        ServiceAction::Install => {
+    match command {
+        ServiceCommand::Install => {
             let state_dir = platform::state_dir(env).ok_or_else(state_unavailable)?;
             platform::write_whole(&path, unit(exe, &state_dir)?.as_bytes())
                 .map_err(write_failed)?;
@@ -86,7 +102,7 @@ pub(crate) fn run(
                 .try_for_each(|step| run_step(step, runner))?;
             log.info("service installed", &[]);
         }
-        ServiceAction::Uninstall => {
+        ServiceCommand::Uninstall => {
             if path.exists() {
                 run_step(&STOP, runner)?;
                 fs::remove_file(&path).map_err(write_failed)?;
@@ -262,12 +278,12 @@ mod tests {
     const EXE: &str = "/usr/bin/weacon";
 
     fn act(
-        action: ServiceAction,
+        action: ServiceCommand,
         vars: &[(&str, &str)],
         runner: Runner<'_>,
     ) -> (Result<(), Fault>, Records) {
         let (log, records) = recording_logger();
-        let result = run(action, &env(vars), Path::new(EXE), &log, runner);
+        let result = apply(action, &env(vars), Path::new(EXE), &log, runner);
         (result, records)
     }
 
@@ -291,7 +307,7 @@ mod tests {
         }
 
         fn in_dir(
-            action: ServiceAction,
+            action: ServiceCommand,
             dir: &Path,
             calls: &mut Calls,
             failing: &str,
@@ -304,7 +320,7 @@ mod tests {
             let dir = temp_dir("service-install");
             let mut calls = Calls::new();
 
-            let (result, records) = in_dir(ServiceAction::Install, &dir, &mut calls, "");
+            let (result, records) = in_dir(ServiceCommand::Install, &dir, &mut calls, "");
 
             result.unwrap();
             let file = dir.join("systemd/user/weacon.service");
@@ -323,7 +339,7 @@ mod tests {
             let dir = temp_dir("service-failed");
             let mut calls = Calls::new();
 
-            let error = in_dir(ServiceAction::Install, &dir, &mut calls, INSTALLED[2])
+            let error = in_dir(ServiceCommand::Install, &dir, &mut calls, INSTALLED[2])
                 .0
                 .unwrap_err();
 
@@ -331,7 +347,7 @@ mod tests {
             assert_eq!(error.to_string(), "The service couldn't be enabled");
             assert_eq!(calls, INSTALLED[..3]);
             let mut missing = |_: &str, _: &[&str]| Err(io::ErrorKind::NotFound.into());
-            let gone = act(ServiceAction::Install, &vars(&dir), &mut missing)
+            let gone = act(ServiceCommand::Install, &vars(&dir), &mut missing)
                 .0
                 .unwrap_err();
             assert_eq!(
@@ -346,14 +362,14 @@ mod tests {
         fn uninstall_stops_and_removes_an_installed_service_only() {
             let dir = temp_dir("service-uninstall");
             let mut calls = Calls::new();
-            in_dir(ServiceAction::Install, &dir, &mut calls, "")
+            in_dir(ServiceCommand::Install, &dir, &mut calls, "")
                 .0
                 .unwrap();
             calls.clear();
 
-            let (result, records) = in_dir(ServiceAction::Uninstall, &dir, &mut calls, "");
+            let (result, records) = in_dir(ServiceCommand::Uninstall, &dir, &mut calls, "");
             result.unwrap();
-            in_dir(ServiceAction::Uninstall, &dir, &mut calls, "")
+            in_dir(ServiceCommand::Uninstall, &dir, &mut calls, "")
                 .0
                 .unwrap();
 
@@ -372,14 +388,14 @@ mod tests {
         #[test]
         fn without_a_home_there_is_nowhere_to_install() {
             let mut calls = Calls::new();
-            let error = act(ServiceAction::Install, &[], &mut runner(&mut calls, ""))
+            let error = act(ServiceCommand::Install, &[], &mut runner(&mut calls, ""))
                 .0
                 .unwrap_err();
 
             assert_eq!(error.code().as_str(), "service.no_config_dir");
             let no_state = [("XDG_CONFIG_HOME", "/srv/config")];
             let error = act(
-                ServiceAction::Install,
+                ServiceCommand::Install,
                 &no_state,
                 &mut runner(&mut calls, ""),
             )
@@ -395,7 +411,7 @@ mod tests {
     fn elsewhere_there_is_no_service() {
         let mut calls = Calls::new();
         let error = act(
-            ServiceAction::Install,
+            ServiceCommand::Install,
             &[("HOME", "/home/ada")],
             &mut runner(&mut calls, ""),
         )

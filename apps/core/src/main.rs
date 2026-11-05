@@ -47,9 +47,7 @@ fn main() -> ExitCode {
         Command::Daemon => daemon::run(&app),
         Command::Status => status::run(&app, &mut io::stdout().lock()),
         Command::Doctor => doctor::run(&app, &mut io::stdout().lock()),
-        Command::Service { action } => std::env::current_exe()
-            .map_err(service::no_exe)
-            .and_then(|exe| service::run(action, &env, &exe, &app.log, &mut service::system)),
+        Command::Service(command) => service::run(&app, command, &env, &mut service::system),
     };
     app.finish(result)
 }

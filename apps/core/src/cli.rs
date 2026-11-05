@@ -23,14 +23,12 @@ pub(crate) enum Command {
     /// Check this install and print what it found.
     Doctor,
     /// Run the daemon as a systemd user service that keeps running after logout.
-    Service {
-        #[command(subcommand)]
-        action: ServiceAction,
-    },
+    #[command(subcommand)]
+    Service(ServiceCommand),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Subcommand)]
-pub(crate) enum ServiceAction {
+pub(crate) enum ServiceCommand {
     /// Install, enable and start the service, and let it run with nobody logged in.
     Install,
     /// Stop the service and remove it.
@@ -49,7 +47,7 @@ impl Command {
     pub(crate) const fn log_name(&self) -> &'static str {
         match self {
             Self::Daemon => "daemon.log",
-            Self::Status | Self::Doctor | Self::Service { .. } => "cli.log",
+            Self::Status | Self::Doctor | Self::Service(_) => "cli.log",
         }
     }
 
@@ -58,7 +56,7 @@ impl Command {
             Self::Daemon => "daemon",
             Self::Status => "status",
             Self::Doctor => "doctor",
-            Self::Service { .. } => "service",
+            Self::Service(_) => "service",
         }
     }
 }
@@ -111,8 +109,7 @@ mod tests {
         assert_eq!(names, ["daemon", "status", "doctor"]);
         assert_eq!(
             [install, uninstall],
-            [ServiceAction::Install, ServiceAction::Uninstall]
-                .map(|action| Command::Service { action })
+            [ServiceCommand::Install, ServiceCommand::Uninstall].map(Command::Service)
         );
         let service = run(&["weacon", "service", "install"]).unwrap().command;
         assert_eq!((service.name(), service.log_name()), ("service", "cli.log"));
