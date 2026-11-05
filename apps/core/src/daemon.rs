@@ -82,6 +82,7 @@ pub(crate) struct Daemon {
     owner: Owner,
     shared: Shared,
     disk: disk::Watch,
+    memory: memory::Watch,
     // Held for the daemon's life, so a second daemon can't start.
     _lock: File,
 }
@@ -127,6 +128,7 @@ impl Daemon {
                 log,
             },
             disk: disk::Watch::new(state_dir.to_owned(), platform::free_space),
+            memory: memory::Watch::new(platform::processes),
             _lock: lock,
         })
     }
@@ -141,7 +143,7 @@ impl Daemon {
             tokio::select! {
                 () = &mut shutdown => break,
                 _ = disk_check.tick() => self.disk.check(&self.shared.log).await,
-                _ = memory_sample.tick(), if platform::PROCESSES => memory::record(&self.shared.log).await,
+                _ = memory_sample.tick(), if platform::PROCESSES => self.memory.record(&self.shared.log).await,
                 accepted = self.listener.accept() => match accepted {
                     Ok(stream) => self.admit(stream, &mut clients),
                     Err(error) => {
