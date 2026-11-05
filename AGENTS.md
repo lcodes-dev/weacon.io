@@ -59,6 +59,7 @@ The default branch is `main`: start from it and open draft PRs against it. This 
 - **Async results:** a stale result never overwrites a newer one; give each request a number and drop answers to old ones.
 - **Refreshes** never clear what they refresh: fetch, then replace; show loading only when nothing is there yet; keep good data when a fetch fails.
 - **Command lines:** ids and paths are checked before they reach a command line, so none can be read as an option.
+- **Exit codes:** `weacon` exits 0 on success, 1 when a check finds something (such as `map check-anchors` finding stale pins), and 2 when a command fails, so hooks can tell the two apart.
 - **Hooks and helpers** that agents run never block them: when Weacon isn't there, they print nothing and exit cleanly.
 - **Screenshots and demos** use made-up data, never real project names.
 - **Errors** that Weacon raises are a `Fault` from `crates/observability`: a dotted code from `crates/protocol`, written `code!("store.full")` so it is checked when compiled, and a short fixed message with no user content in it; these are the only messages that reach logs. A crate may have its own error enum and convert it into a `Fault` where it is logged or crosses a process boundary.
