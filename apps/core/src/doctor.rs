@@ -7,23 +7,25 @@ use weacon_protocol::code;
 
 use crate::app::{App, state_unavailable};
 use crate::cli::version_text;
+use crate::{disk, platform};
 
 /// Prints the build and where this install keeps its state, and fails when it has nowhere to.
 pub(crate) fn run(app: &App, out: &mut impl Write) -> Result<(), Fault> {
-    out.write_all(report(app).as_bytes()).map_err(|error| {
-        Fault::new(
-            code!("doctor.output_failed"),
-            "The report couldn't be printed",
-        )
-        .because(error)
-    })?;
+    out.write_all(report(app, platform::free_space).as_bytes())
+        .map_err(|error| {
+            Fault::new(
+                code!("doctor.output_failed"),
+                "The report couldn't be printed",
+            )
+            .because(error)
+        })?;
     if app.log_file.is_none() {
         return Err(state_unavailable());
     }
     Ok(())
 }
 
-fn report(app: &App) -> String {
+fn report(app: &App, free_space: disk::FreeSpace) -> String {
     let path = |path: Option<&Path>| {
         path.map_or_else(
             || "unavailable".to_owned(),
@@ -31,8 +33,13 @@ fn report(app: &App) -> String {
         )
     };
     let reports = if app.reporter.is_on() { "on" } else { "off" };
+    let disk = app
+        .state_dir
+        .as_deref()
+        .and_then(|dir| free_space(dir).ok())
+        .map_or_else(|| "unavailable".to_owned(), disk::describe);
     format!(
-        "weacon {}\nState folder: {}\nLog file: {}\nError reports: {reports}\n{}",
+        "weacon {}\nState folder: {}\nLog file: {}\nDisk: {disk}\nError reports: {reports}\n{}",
         version_text(&app.version),
         path(app.state_dir.as_deref()),
         path(app.log_file.as_deref()),
@@ -66,17 +73,29 @@ mod tests {
 
     #[test]
     fn prints_the_build_and_the_state_folder() {
+        let dir = test_support::temp_dir("doctor").join("missing");
+        let state = dir.to_str().unwrap();
         let mut out = Vec::new();
         run(
-            &app(Some("/srv/weacon"), Some("/srv/weacon/logs/weacon.log")),
+            &app(Some(state), Some("/srv/weacon/logs/weacon.log")),
             &mut out,
         )
         .unwrap();
 
         assert_eq!(
             String::from_utf8(out).unwrap(),
-            "weacon 0.1.0 (1a2b3c4)\nState folder: /srv/weacon\nLog file: /srv/weacon/logs/weacon.log\nError reports: off\n"
+            format!(
+                "weacon 0.1.0 (1a2b3c4)\nState folder: {state}\nLog file: /srv/weacon/logs/weacon.log\nDisk: unavailable\nError reports: off\n"
+            )
         );
+        std::fs::remove_dir_all(dir.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn prints_the_state_folders_free_space() {
+        let text = report(&app(Some("/srv"), None), |_| Ok(3 << 30));
+
+        assert!(text.contains("\nDisk: 3072 MiB free (low)\n"));
     }
 
     #[test]
@@ -91,7 +110,7 @@ mod tests {
             oom_score_adj: Some(500),
         };
 
-        assert!(report(&app).ends_with(
+        assert!(report(&app, platform::free_space).ends_with(
             "Error reports: off\nAgent tools: OOM score 500 CARGO_BUILD_JOBS=2 GOMAXPROCS=2\n"
         ));
     }
