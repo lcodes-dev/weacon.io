@@ -21,7 +21,7 @@ case "$target" in
   *) die "usage: scripts/release.sh <target>, for a target this script lists" ;;
 esac
 
-[ -z "$(git status --porcelain)" ] || die "the working tree has changes, so the binary wouldn't be this commit"
+[ -z "$(git status --porcelain --untracked-files=normal)" ] || die "the working tree has changes, so the binary wouldn't be this commit"
 
 rustup target add "$target" >/dev/null
 cargo build --release --locked --package weacon-core --target "$target"
