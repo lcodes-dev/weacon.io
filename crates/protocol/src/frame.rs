@@ -1,6 +1,6 @@
 use std::{fmt, mem};
 
-use crate::{Code, Envelope, Message, code};
+use crate::{Code, Envelope, Message, Outcome, Receipt, code};
 
 /// The largest frame accepted or sent on any transport: one message's JSON, plus its newline on
 /// a byte stream.
@@ -37,9 +37,17 @@ impl Envelope {
     /// The message as one frame of JSON, for transports that keep frames apart themselves.
     ///
     /// # Errors
-    /// When the message is [`Message::Unknown`], which is only received, or exceeds [`MAX_FRAME`].
+    /// When the message is one only ever received, such as [`Message::Unknown`], or exceeds
+    /// [`MAX_FRAME`].
     pub fn to_json(&self) -> Result<Vec<u8>, FrameError> {
-        if self.message == Message::Unknown {
+        if matches!(
+            self.message,
+            Message::Unknown
+                | Message::Receipt(Receipt {
+                    outcome: Outcome::Newer,
+                    ..
+                })
+        ) {
             return Err(FrameError::Invalid);
         }
         let json = serde_json::to_vec(self).map_err(|_| FrameError::Invalid)?;
@@ -230,7 +238,16 @@ mod tests {
 
         assert_eq!(encode_line(&hello(fits)).unwrap().len(), MAX_FRAME);
         assert_eq!(encode_line(&hello(fits + 1)), Err(FrameError::TooLarge));
+        let newer = Envelope {
+            id: 8,
+            message: Message::Receipt(Receipt {
+                request: serde_json::from_str(r#""r-1""#).unwrap(),
+                outcome: Outcome::Newer,
+            }),
+        };
+
         assert_eq!(encode_line(&unknown), Err(FrameError::Invalid));
+        assert_eq!(newer.to_json(), Err(FrameError::Invalid));
     }
 
     #[test]

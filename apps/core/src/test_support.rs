@@ -65,6 +65,7 @@ pub(crate) fn error_code(message: &weacon_protocol::Message) -> Option<&str> {
         weacon_protocol::Message::Error(body) => Some(body.code.as_str()),
         weacon_protocol::Message::Hello(_)
         | weacon_protocol::Message::Welcome(_)
+        | weacon_protocol::Message::Receipt(_)
         | weacon_protocol::Message::Unknown => None,
     }
 }

@@ -4,11 +4,13 @@ mod capability;
 mod code;
 mod frame;
 mod message;
+mod receipt;
 
 pub use capability::Capability;
 pub use code::Code;
 pub use frame::{FrameError, LineDecoder, MAX_FRAME, encode_line};
 pub use message::{App, Envelope, ErrorBody, Hello, Message, PROTOCOL, Welcome};
+pub use receipt::{Outcome, Receipt, RequestId};
 
 #[cfg(test)]
 mod tests {
