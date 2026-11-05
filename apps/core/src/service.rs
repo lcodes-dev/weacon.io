@@ -178,14 +178,6 @@ fn quoted(text: &str) -> Option<String> {
     Some(word)
 }
 
-pub(crate) fn no_exe(error: io::Error) -> Fault {
-    Fault::new(
-        code!("service.no_exe"),
-        "The weacon binary couldn't be found",
-    )
-    .because(error)
-}
-
 fn write_failed(error: io::Error) -> Fault {
     Fault::new(
         code!("service.write_failed"),
