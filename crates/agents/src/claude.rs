@@ -90,6 +90,9 @@ mod tests {
     use std::fs;
     use std::os::unix::fs::PermissionsExt;
     use std::path::Path;
+    use std::time::Duration;
+
+    use tokio::time::timeout;
 
     use weacon_protocol::{Outcome, RunEvent};
 
@@ -140,10 +143,16 @@ mod tests {
         }
     }
 
+    // Bounded in count and time, so a driver that never ends fails instead of hanging.
     async fn events(mut run: ClaudeRun) -> Vec<RunEvent> {
         run.send("Hello").await.unwrap();
         let mut events = Vec::new();
-        while let Some(event) = run.next().await.unwrap() {
+        while events.len() < 10
+            && let Some(event) = timeout(Duration::from_secs(10), run.next())
+                .await
+                .unwrap()
+                .unwrap()
+        {
             events.push(event);
         }
         events

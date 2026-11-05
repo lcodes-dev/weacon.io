@@ -1,7 +1,5 @@
 //! Test helpers for Weacon's crates.
 
-use std::fmt::Display;
-
 use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader, DuplexStream, duplex};
 use tokio::task::JoinHandle;
@@ -49,10 +47,13 @@ async fn play(
             output
                 .write_all(format!("{line}\n").as_bytes())
                 .await
-                .map_err(text)?;
+                .map_err(|error| error.to_string())?;
         } else if let Some(expected) = step.strip_prefix("> ") {
             let mut sent = String::new();
-            input.read_line(&mut sent).await.map_err(text)?;
+            input
+                .read_line(&mut sent)
+                .await
+                .map_err(|error| error.to_string())?;
             if serde_json::from_str::<Value>(&sent).ok() != Some(json(expected)?) {
                 return Err(format!("expected {expected}\nbut got {sent}"));
             }
@@ -62,7 +63,10 @@ async fn play(
     }
     drop(output);
     let mut rest = String::new();
-    input.read_to_string(&mut rest).await.map_err(text)?;
+    input
+        .read_to_string(&mut rest)
+        .await
+        .map_err(|error| error.to_string())?;
     if rest.is_empty() {
         Ok(())
     } else {
@@ -72,10 +76,6 @@ async fn play(
 
 fn json(line: &str) -> Result<Value, String> {
     serde_json::from_str(line).map_err(|error| format!("{error} in the recording: {line}"))
-}
-
-fn text(error: impl Display) -> String {
-    error.to_string()
 }
 
 #[cfg(test)]
