@@ -34,6 +34,7 @@ pub(crate) const RULES: &[Rule] = &[
         may_use: &[
             "weacon-agents",
             "weacon-client",
+            "weacon-codemap",
             "weacon-model",
             "weacon-observability",
             "weacon-protocol",
