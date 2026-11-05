@@ -48,7 +48,10 @@ impl Envelope {
                     ..
                 })
                 | Message::Run(RunUpdate {
-                    event: RunEvent::Newer,
+                    event: RunEvent::Newer
+                        | RunEvent::Finished {
+                            outcome: Outcome::Newer
+                        },
                     ..
                 })
         ) {
@@ -260,7 +263,18 @@ mod tests {
 
         assert_eq!(encode_line(&unknown), Err(FrameError::Invalid));
         assert_eq!(newer.to_json(), Err(FrameError::Invalid));
+        let newer_finish = Envelope {
+            id: 9,
+            message: Message::Run(RunUpdate {
+                run: serde_json::from_str(r#""r-1""#).unwrap(),
+                event: RunEvent::Finished {
+                    outcome: Outcome::Newer,
+                },
+            }),
+        };
+
         assert_eq!(newer_event.to_json(), Err(FrameError::Invalid));
+        assert_eq!(newer_finish.to_json(), Err(FrameError::Invalid));
     }
 
     #[test]
