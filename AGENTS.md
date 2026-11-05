@@ -87,6 +87,7 @@ Every program logs, reports errors and says which build it is from its first com
 `scripts/setup.sh` installs everything a fresh machine, cloud session, orb or CI runner needs, and is safe to run again:
 - Rust at the version in `rust-toolchain.toml`, through rustup. Where rustup can't download it, as in Claude Code cloud sessions, it uses the installed stable toolchain if that is exactly the pinned version.
 - The dependencies, and `llvm-tools` for coverage where it can be downloaded.
+- On Debian and Ubuntu, the system libraries the desktop's GPUI links against.
 - The check tools at pinned versions: cargo-deny, cargo-machete, cargo-llvm-cov and cargo-mutants, built from crates.io the first time.
 - Its output goes to `.dev/setup.log`.
 
@@ -104,6 +105,7 @@ Every program logs, reports errors and says which build it is from its first com
 | `scripts/check.sh` | What CI runs: rustfmt, clippy with warnings as errors, docs, cargo-machete, cargo-deny, all tests with the 90% line-coverage floor, doc tests, mutation tests on the code changed against `origin/main`, and ShellCheck. CI also lints and tests on Windows |
 | `cargo test -p <crate> [name]` | Focused tests while iterating |
 | `WEACON_STATE_DIR=.dev/state cargo run -p weacon-core -- doctor` | Runs the core with this worktree's own state folder |
+| `cargo run -p weacon-testing --bin fake-core -- .dev/state`, then `WEACON_STATE_DIR=.dev/state cargo run -p weacon-desktop` | Runs the desktop against a fake core that streams a made-up 100,000-token session |
 | `UPDATE_SCHEMA=1 cargo test -p weacon-protocol` | Regenerates `crates/protocol/schema.json` after a message changes |
 | `scripts/release.sh <target>` | Builds a static release `weacon` for one target into `dist/`, checks it reports this commit, and prints its size |
 

@@ -12,6 +12,10 @@ if [ "${1:-}" = "--claude-session-start" ]; then
   session_start=true
 fi
 
+# The system libraries the desktop app's GPUI links against on Linux.
+gui_packages=(libfontconfig1-dev libfreetype-dev libvulkan-dev libwayland-dev libx11-xcb-dev
+  libxcb1-dev libxkbcommon-dev libxkbcommon-x11-dev libxrandr-dev libzstd-dev pkg-config)
+
 # The tools scripts/check.sh runs, at the versions CI uses.
 tools=(deny@0.20.2 machete@0.9.2 llvm-cov@0.9.1 mutants@27.1.0)
 
@@ -91,6 +95,20 @@ fetch_dependencies() {
   }
 }
 
+# Only Debian and Ubuntu are covered; elsewhere the desktop's build names what it misses.
+ensure_gui_packages() {
+  [ "$(uname -s)" = Linux ] && command -v dpkg >/dev/null || return 0
+  local package missing=() sudo=()
+  for package in "${gui_packages[@]}"; do
+    dpkg -s "$package" >/dev/null 2>&1 || missing+=("$package")
+  done
+  [ "${#missing[@]}" -gt 0 ] || return 0
+  [ "$(id -u)" -eq 0 ] || sudo=(sudo -n)
+  log "Installing the desktop's system libraries: ${missing[*]}"
+  { "${sudo[@]}" apt-get update -q && "${sudo[@]}" apt-get install -yq --no-install-recommends "${missing[@]}"; } \
+    >>.dev/setup.log 2>&1 || die "couldn't install ${missing[*]}; install them with apt-get and run this again"
+}
+
 # Later steps in a Claude Code session or a GitHub Actions job find the same tools.
 persist_path() {
   if [ -n "${CLAUDE_ENV_FILE:-}" ]; then
@@ -103,6 +121,7 @@ persist_path() {
 
 : >.dev/setup.log
 ensure_toolchain
+ensure_gui_packages
 fetch_dependencies
 if [ "$session_start" = false ]; then
   ensure_llvm_tools

@@ -6,6 +6,8 @@ yanked = "deny"
 
 [licenses]
 allow = [
+    # enum-iterator, which GPUI Kit's components use.
+    "0BSD",
     "Apache-2.0",
     "Apache-2.0 WITH LLVM-exception",
     "BSD-2-Clause",
