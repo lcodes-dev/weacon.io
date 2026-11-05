@@ -3,14 +3,14 @@ pub(crate) use unix::*;
 #[cfg(all(windows, test))]
 pub(crate) use windows::Server;
 #[cfg(windows)]
-pub(crate) use windows::connect;
+pub(crate) use windows::{Pipe as Stream, connect};
 
 #[cfg(unix)]
 mod unix {
     use std::io;
     use std::path::Path;
 
-    use tokio::net::UnixStream as Stream;
+    pub(crate) use tokio::net::UnixStream as Stream;
 
     /// Connects to the daemon's socket at `socket`.
     pub(crate) async fn connect(socket: &Path) -> io::Result<Stream> {
