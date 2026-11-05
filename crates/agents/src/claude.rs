@@ -11,6 +11,7 @@ use weacon_protocol::{AgentSession, RunId};
 pub(crate) use wire::{Wire, answer, prompt, read};
 
 use crate::run::{self, AgentRun};
+use crate::spawn::SpawnPolicy;
 
 /// How to start the person's own `claude` for one workspace.
 #[derive(Clone, Debug)]
@@ -35,13 +36,19 @@ const OTHER_SIGN_INS: [&str; 7] = [
 ];
 
 impl Claude {
-    /// Starts `claude`, resuming `session` when given.
+    /// Starts `claude` under `policy`, resuming `session` when given.
     ///
     /// # Errors
     /// When the program can't be started.
-    pub fn start(&self, run: RunId, session: Option<&AgentSession>) -> Result<AgentRun, Fault> {
+    pub fn start(
+        &self,
+        policy: &SpawnPolicy,
+        run: RunId,
+        session: Option<&AgentSession>,
+    ) -> Result<AgentRun, Fault> {
         run::spawn(
             self.command(session),
+            policy,
             run,
             run::Wire::Claude(Wire::default()),
         )
@@ -103,12 +110,15 @@ mod tests {
         const SESSION_A: &str = "0b7c6a52-3f1e-4d2a-9c8b-5e4f3a2b1c0d";
         const SESSION_B: &str = "5d4c3b2a-1f0e-4d9c-8b7a-6f5e4d3c2b1a";
 
-        // A `claude` that notes its arguments, reads one line, then prints its workspace's session.
+        // A `claude` that notes its arguments, reads one line, starts a tool that notes what it
+        // inherited, then prints its workspace's session.
         fn fake_claude(dir: &Path) -> PathBuf {
             let program = dir.join("claude");
             fs::write(
                 &program,
                 "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$CLAUDE_CONFIG_DIR/args\"\nread -r line\n\
+                 sh -c 'cat /proc/self/oom_score_adj; echo \"$CARGO_BUILD_JOBS $CLAUDE_CONFIG_DIR\"' \
+                 > \"$CLAUDE_CONFIG_DIR/tool\" 2>/dev/null\n\
                  cat \"$CLAUDE_CONFIG_DIR/session\"\n",
             )
             .unwrap();
@@ -157,10 +167,15 @@ mod tests {
             let second = workspace(&dir, "second", SESSION_B);
 
             let (first_events, second_events) = tokio::join!(
-                events(first.start(run_id("run-1"), None).unwrap()),
+                events(
+                    first
+                        .start(&SpawnPolicy::default(), run_id("run-1"), None)
+                        .unwrap()
+                ),
                 events(
                     second
                         .start(
+                            &SpawnPolicy::default(),
                             run_id("run-1"),
                             Some(&AgentSession::try_from(SESSION_A.to_owned()).unwrap())
                         )
@@ -176,6 +191,31 @@ mod tests {
             let args = |name| fs::read_to_string(dir.join(name).join("args")).unwrap();
             assert!(!args("first").contains("--resume"));
             assert!(args("second").ends_with(&format!("--resume\n{SESSION_A}\n")));
+            fs::remove_dir_all(&dir).unwrap();
+        }
+
+        #[cfg(target_os = "linux")]
+        #[tokio::test]
+        async fn tools_inherit_the_policy_but_never_a_changed_config() {
+            use std::collections::BTreeMap;
+
+            let dir = temp_dir("policy");
+            fake_claude(&dir);
+            let claude = workspace(&dir, "first", SESSION_A);
+            let policy = SpawnPolicy {
+                env: BTreeMap::from([
+                    ("CARGO_BUILD_JOBS".into(), "3".into()),
+                    ("CLAUDE_CONFIG_DIR".into(), "/elsewhere".into()),
+                ]),
+                // The highest score, so it raises whatever the test process has.
+                oom_score_adj: Some(1000),
+            };
+
+            events(claude.start(&policy, run_id("run-1"), None).unwrap()).await;
+
+            let tool = fs::read_to_string(dir.join("first/tool")).unwrap();
+            let config = dir.join("first");
+            assert_eq!(tool, format!("1000\n3 {}\n", config.display()));
             fs::remove_dir_all(&dir).unwrap();
         }
     }
@@ -209,7 +249,7 @@ mod tests {
             cwd: dir.clone(),
         };
 
-        let Err(error) = claude.start(run_id("run-1"), None) else {
+        let Err(error) = claude.start(&SpawnPolicy::default(), run_id("run-1"), None) else {
             panic!("a missing program started");
         };
 

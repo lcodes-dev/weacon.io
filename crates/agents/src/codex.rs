@@ -11,6 +11,7 @@ use weacon_protocol::{AgentSession, App, RunId};
 pub(crate) use wire::{Wire, answer};
 
 use crate::run::{self, AgentRun};
+use crate::spawn::SpawnPolicy;
 
 /// How to start the person's own `codex` for one workspace.
 #[derive(Clone, Debug)]
@@ -29,13 +30,19 @@ pub struct Codex {
 const OTHER_SIGN_INS: [&str; 2] = ["CODEX_API_KEY", "OPENAI_API_KEY"];
 
 impl Codex {
-    /// Starts `codex app-server` and opens a thread, resuming `session` when given..
+    /// Starts `codex app-server` under `policy` and opens a thread, resuming `session` when
+    /// given.
     ///
     /// # Errors
     /// When the program can't be started.
-    pub fn start(&self, run: RunId, session: Option<&AgentSession>) -> Result<AgentRun, Fault> {
+    pub fn start(
+        &self,
+        policy: &SpawnPolicy,
+        run: RunId,
+        session: Option<&AgentSession>,
+    ) -> Result<AgentRun, Fault> {
         let wire = Wire::new(session.cloned(), &self.app);
-        run::spawn(self.command(), run, run::Wire::Codex(wire))
+        run::spawn(self.command(), policy, run, run::Wire::Codex(wire))
     }
 
     fn command(&self) -> Command {
@@ -88,7 +95,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("weacon-codex-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
 
-        let Err(error) = codex(&dir).start(run_id("run-1"), None) else {
+        let Err(error) = codex(&dir).start(&SpawnPolicy::default(), run_id("run-1"), None) else {
             panic!("a missing program started");
         };
 

@@ -1,6 +1,7 @@
 use std::io::Write;
 use std::path::Path;
 
+use weacon_agents::SpawnPolicy;
 use weacon_observability::Fault;
 use weacon_protocol::code;
 
@@ -31,11 +32,24 @@ fn report(app: &App) -> String {
     };
     let reports = if app.reporter.is_on() { "on" } else { "off" };
     format!(
-        "weacon {}\nState folder: {}\nLog file: {}\nError reports: {reports}\n",
+        "weacon {}\nState folder: {}\nLog file: {}\nError reports: {reports}\n{}",
         version_text(&app.version),
         path(app.state_dir.as_deref()),
         path(app.log_file.as_deref()),
+        agent_tools(&app.spawn),
     )
+}
+
+fn agent_tools(policy: &SpawnPolicy) -> String {
+    let Some(score) = policy.oom_score_adj else {
+        return String::new();
+    };
+    let vars: Vec<_> = policy
+        .env
+        .iter()
+        .map(|(key, value)| format!(" {}={}", key.display(), value.display()))
+        .collect();
+    format!("Agent tools: OOM score {score}{}\n", vars.concat())
 }
 
 #[cfg(test)]
@@ -54,6 +68,7 @@ mod tests {
             reporter: Reporter::new(None, Box::new(|_| Ok(()))).into(),
             state_dir: state_dir.map(PathBuf::from),
             log_file: log_file.map(PathBuf::from),
+            spawn: SpawnPolicy::default(),
         }
     }
 
@@ -70,6 +85,23 @@ mod tests {
             String::from_utf8(out).unwrap(),
             "weacon 0.1.0 (1a2b3c4)\nState folder: /srv/weacon\nLog file: /srv/weacon/logs/weacon.log\nError reports: off\n"
         );
+    }
+
+    #[test]
+    fn prints_how_agent_tools_start() {
+        let mut app = app(Some("/srv"), Some("/srv/logs/weacon.log"));
+        app.spawn = SpawnPolicy {
+            env: [
+                ("GOMAXPROCS".into(), "2".into()),
+                ("CARGO_BUILD_JOBS".into(), "2".into()),
+            ]
+            .into(),
+            oom_score_adj: Some(500),
+        };
+
+        assert!(report(&app).ends_with(
+            "Error reports: off\nAgent tools: OOM score 500 CARGO_BUILD_JOBS=2 GOMAXPROCS=2\n"
+        ));
     }
 
     #[test]

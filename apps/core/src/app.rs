@@ -5,6 +5,7 @@ use std::process::ExitCode;
 use std::sync::Arc;
 use std::time::SystemTime;
 
+use weacon_agents::SpawnPolicy;
 use weacon_observability::{Fault, Field, Level, Logger, LoggerOptions, Reports, Sink, json_lines};
 use weacon_protocol::code;
 use weacon_version::Version;
@@ -20,6 +21,7 @@ pub(crate) struct App {
     pub(crate) reporter: Arc<Reporter>,
     pub(crate) state_dir: Option<PathBuf>,
     pub(crate) log_file: Option<PathBuf>,
+    pub(crate) spawn: SpawnPolicy,
 }
 
 /// The outside world an [`App`] starts from; `main` passes the real one.
@@ -70,6 +72,7 @@ impl App {
             log,
             state_dir,
             log_file,
+            spawn: platform::spawn_policy(setup.env),
         }
     }
 

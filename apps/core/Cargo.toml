@@ -15,6 +15,7 @@ path = "src/main.rs"
 clap.workspace = true
 tokio.workspace = true
 ureq.workspace = true
+weacon-agents.workspace = true
 weacon-client.workspace = true
 weacon-observability.workspace = true
 weacon-protocol.workspace = true
