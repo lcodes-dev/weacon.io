@@ -215,7 +215,6 @@ mod tests {
     use weacon_protocol::{Envelope, Hello, Message, PROTOCOL};
 
     use super::*;
-    use crate::status::query;
     use crate::test_support::{Records, VERSION, error_code, messages, recording_logger, temp_dir};
 
     struct Running {
@@ -256,7 +255,7 @@ mod tests {
     async fn ask(socket: &Path) -> Result<App, Fault> {
         let socket = socket.to_owned();
         let me = build(&VERSION);
-        tokio::task::spawn_blocking(move || query(&socket, me))
+        tokio::task::spawn_blocking(move || weacon_client::handshake(&socket, me))
             .await
             .unwrap()
     }

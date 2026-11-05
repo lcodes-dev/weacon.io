@@ -27,9 +27,9 @@ The default branch is `main`: start from it and open draft PRs against it. This 
 | `crates/version` | nothing in the repo | at build time: it runs `git` |
 | `crates/model` | `protocol` | no |
 | `crates/agents` | `protocol`, `model`, `observability` | yes |
-| `crates/client` | `protocol`, `model`, `observability` | yes |
+| `crates/client` | `protocol`, `model`, `observability`; connects to the core's socket for the CLI and the desktop | yes |
 | `crates/testing` | anything; only as a dev-dependency | yes |
-| `apps/core` | `protocol`, `model`, `agents`, `observability`, `version` | yes |
+| `apps/core` | `protocol`, `model`, `client`, `agents`, `observability`, `version` | yes |
 | `apps/server` | `protocol`, `model`, `observability`, `version`; never `agents`, because the team server never runs agents | yes |
 | `apps/desktop` | `protocol`, `model`, `client`, `observability`, `version` | yes |
 | `tooling/*` | nothing in the repo | yes |

@@ -1099,6 +1099,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "weacon-client"
+version = "0.0.0"
+dependencies = [
+ "serde_json",
+ "weacon-observability",
+ "weacon-protocol",
+]
+
+[[package]]
 name = "weacon-core"
 version = "0.0.0"
 dependencies = [
@@ -1106,6 +1115,7 @@ dependencies = [
  "serde_json",
  "tokio",
  "ureq",
+ "weacon-client",
  "weacon-observability",
  "weacon-protocol",
  "weacon-version",

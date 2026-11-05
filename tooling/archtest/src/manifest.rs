@@ -161,6 +161,7 @@ mod tests {
     fn every_package_has_a_rule_and_every_rule_a_package() {
         let names: BTreeSet<&str> = [
             "weacon-archtest",
+            "weacon-client",
             "weacon-core",
             "weacon-observability",
             "weacon-protocol",

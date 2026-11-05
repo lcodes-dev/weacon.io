@@ -68,7 +68,6 @@ mod unix {
     use std::os::unix::fs::{MetadataExt, PermissionsExt};
     use std::path::Path;
 
-    pub(crate) use std::os::unix::net::UnixStream as BlockingStream;
     pub(crate) use tokio::net::{UnixListener as Listener, UnixStream as Stream};
 
     /// The user that owns `dir`, when only that user can reach it.
