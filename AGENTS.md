@@ -19,7 +19,7 @@ The default branch is `main`: start from it and open draft PRs against it. This 
 
 ## Code boundaries
 
-`tooling/archtest` enforces these from `tooling/archtest/src/rules.rs`, which lists the crates that exist today. A new crate needs a row there, tests, and a manifest that takes its lints, package fields and dependency versions from the workspace.
+`tooling/archtest` enforces these from `tooling/archtest/src/rules.rs`, which has a row for each crate that exists today or that a work item will create, listed in `PLANNED`. A new crate needs a row there and its name out of `PLANNED`, tests, and a manifest that takes its lints, package fields and dependency versions from the workspace.
 
 | Crate or app | May use | Does I/O |
 | --- | --- | --- |
