@@ -8,6 +8,7 @@ use weacon_observability::Fault;
 use weacon_protocol::{AgentSession, Outcome, PermissionAnswer, RunEvent, RunId, code};
 
 use crate::lines::Lines;
+use crate::spawn::SpawnPolicy;
 use crate::{claude, codex};
 
 /// Sent back for a request the driver doesn't handle.
@@ -109,9 +110,15 @@ enum Turn {
     Interrupting,
 }
 
-/// Starts `command` as run `id`, speaking `wire`.
-pub(crate) fn spawn(mut command: Command, id: RunId, wire: Wire) -> Result<AgentRun, Fault> {
+/// Starts `command` under `policy` as run `id`, speaking `wire`.
+pub(crate) fn spawn(
+    mut command: Command,
+    policy: &SpawnPolicy,
+    id: RunId,
+    wire: Wire,
+) -> Result<AgentRun, Fault> {
     let not_started = || Fault::new(code!("agent.not_started"), "The agent couldn't start");
+    policy.apply(&mut command);
     let mut child = command
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -119,6 +126,7 @@ pub(crate) fn spawn(mut command: Command, id: RunId, wire: Wire) -> Result<Agent
         .kill_on_drop(true)
         .spawn()
         .map_err(|error| not_started().because(error))?;
+    policy.adjust(&child);
     let (Some(stdin), Some(stdout)) = (child.stdin.take(), child.stdout.take()) else {
         return Err(not_started());
     };
