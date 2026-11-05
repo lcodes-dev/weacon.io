@@ -75,8 +75,12 @@
         "commit"
       ]
     },
+    "Capability": {
+      "description": "A feature a peer supports, such as `chat.send`, named like a [`Code`]. A peer keeps the ones\nit doesn't know, so a newer peer's list still parses.",
+      "$ref": "#/$defs/Code"
+    },
     "Code": {
-      "description": "An error code such as `store.full`: two or more lowercase words joined by dots.",
+      "description": "A dotted code such as `store.full`: two or more lowercase words joined by dots. It names\nerrors, and capabilities too.",
       "type": "string",
       "maxLength": 64,
       "pattern": "^[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)+$"
@@ -104,6 +108,12 @@
         "app": {
           "$ref": "#/$defs/App"
         },
+        "capabilities": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Capability"
+          }
+        },
         "protocol": {
           "type": "integer",
           "format": "uint32",
@@ -121,6 +131,12 @@
       "properties": {
         "app": {
           "$ref": "#/$defs/App"
+        },
+        "capabilities": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Capability"
+          }
         }
       },
       "required": [

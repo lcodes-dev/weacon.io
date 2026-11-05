@@ -74,6 +74,7 @@ mod tests {
             message: Message::Hello(Hello {
                 protocol,
                 app: build(&VERSION),
+                capabilities: Vec::new(),
             }),
         }
     }
@@ -94,7 +95,8 @@ mod tests {
                 envelope: Some(Envelope {
                     id: 1,
                     message: Message::Welcome(Welcome {
-                        app: build(&VERSION)
+                        app: build(&VERSION),
+                        capabilities: Vec::new(),
                     }),
                 }),
                 close: false,

@@ -3,7 +3,8 @@ use std::borrow::Cow;
 use schemars::JsonSchema;
 use serde::{Deserialize, Deserializer, Serialize, de};
 
-/// An error code such as `store.full`: two or more lowercase words joined by dots.
+/// A dotted code such as `store.full`: two or more lowercase words joined by dots. It names
+/// errors, and capabilities too.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, JsonSchema)]
 pub struct Code(#[schemars(regex(pattern = PATTERN), length(max = MAX_LEN))] Cow<'static, str>);
 
@@ -35,7 +36,7 @@ impl Code {
     pub const fn new(code: &'static str) -> Self {
         assert!(
             is_code(code),
-            "error codes are dotted lowercase words, like store.full"
+            "codes are dotted lowercase words, like store.full"
         );
         Self(Cow::Borrowed(code))
     }

@@ -1,11 +1,13 @@
 //! The messages Weacon programs exchange, their framing and their error codes.
 
+mod capability;
 mod code;
 mod frame;
 mod message;
 
+pub use capability::Capability;
 pub use code::Code;
-pub use frame::{Decoder, FrameError, MAX_FRAME, encode};
+pub use frame::{FrameError, LineDecoder, MAX_FRAME, encode_line};
 pub use message::{App, Envelope, ErrorBody, Hello, Message, PROTOCOL, Welcome};
 
 #[cfg(test)]

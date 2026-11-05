@@ -2,7 +2,8 @@ use std::{fmt, mem};
 
 use crate::{Code, Envelope, Message, code};
 
-/// The largest frame accepted or sent, newline included.
+/// The largest frame accepted or sent on any transport: one message's JSON, plus its newline on
+/// a byte stream.
 pub const MAX_FRAME: usize = 1024 * 1024;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -32,15 +33,40 @@ impl fmt::Display for FrameError {
 
 impl std::error::Error for FrameError {}
 
-/// One message as a line of JSON.
+impl Envelope {
+    /// The message as one frame of JSON, for transports that keep frames apart themselves.
+    ///
+    /// # Errors
+    /// When the message is [`Message::Unknown`], which is only received, or exceeds [`MAX_FRAME`].
+    pub fn to_json(&self) -> Result<Vec<u8>, FrameError> {
+        if self.message == Message::Unknown {
+            return Err(FrameError::Invalid);
+        }
+        let json = serde_json::to_vec(self).map_err(|_| FrameError::Invalid)?;
+        if json.len() > MAX_FRAME {
+            return Err(FrameError::TooLarge);
+        }
+        Ok(json)
+    }
+
+    /// One frame of JSON, checked for size before it is parsed.
+    ///
+    /// # Errors
+    /// When `json` exceeds [`MAX_FRAME`] or isn't a valid message.
+    pub fn from_json(json: &[u8]) -> Result<Self, FrameError> {
+        if json.len() > MAX_FRAME {
+            return Err(FrameError::TooLarge);
+        }
+        serde_json::from_slice(json).map_err(|_| FrameError::Invalid)
+    }
+}
+
+/// One message as a line of JSON, for byte streams such as the core's socket.
 ///
 /// # Errors
-/// When the message is [`Message::Unknown`], which is only received, or exceeds [`MAX_FRAME`].
-pub fn encode(envelope: &Envelope) -> Result<Vec<u8>, FrameError> {
-    if envelope.message == Message::Unknown {
-        return Err(FrameError::Invalid);
-    }
-    let mut line = serde_json::to_vec(envelope).map_err(|_| FrameError::Invalid)?;
+/// As [`Envelope::to_json`], counting the newline toward [`MAX_FRAME`].
+pub fn encode_line(envelope: &Envelope) -> Result<Vec<u8>, FrameError> {
+    let mut line = envelope.to_json()?;
     line.push(b'\n');
     if line.len() > MAX_FRAME {
         return Err(FrameError::TooLarge);
@@ -48,14 +74,14 @@ pub fn encode(envelope: &Envelope) -> Result<Vec<u8>, FrameError> {
     Ok(line)
 }
 
-/// Turns a stream of bytes into messages, one per line, whatever the chunks it arrives in.
+/// Turns a byte stream into messages, one per line, whatever the chunks it arrives in.
 #[derive(Debug, Default)]
-pub struct Decoder {
+pub struct LineDecoder {
     pending: Vec<u8>,
     discarding: bool,
 }
 
-impl Decoder {
+impl LineDecoder {
     /// The messages that `bytes` completes, in order. A line over [`MAX_FRAME`] is reported
     /// once and skipped without being kept in memory.
     pub fn push(&mut self, bytes: &[u8]) -> Vec<Result<Envelope, FrameError>> {
@@ -87,7 +113,7 @@ impl Decoder {
 // An empty line is no message at all.
 fn parse(line: &[u8]) -> Option<Result<Envelope, FrameError>> {
     let json = line.trim_ascii();
-    (!json.is_empty()).then(|| serde_json::from_slice(json).map_err(|_| FrameError::Invalid))
+    (!json.is_empty()).then(|| Envelope::from_json(json))
 }
 
 #[cfg(test)]
@@ -105,9 +131,25 @@ mod tests {
         }
     }
 
+    // A hello whose app name is `padding` bytes long, to size frames exactly.
+    fn hello(padding: usize) -> Envelope {
+        Envelope {
+            id: 6,
+            message: Message::Hello(Hello {
+                protocol: 1,
+                app: App {
+                    name: "n".repeat(padding),
+                    version: "0.1.0".to_owned(),
+                    commit: "1a2b3c4".to_owned(),
+                },
+                capabilities: Vec::new(),
+            }),
+        }
+    }
+
     #[test]
     fn a_message_is_one_line_of_json() {
-        let line = encode(&envelope(1)).unwrap();
+        let line = encode_line(&envelope(1)).unwrap();
 
         assert_eq!(
             line,
@@ -118,11 +160,11 @@ mod tests {
 
     #[test]
     fn messages_survive_any_split_into_chunks() {
-        let mut bytes = encode(&envelope(1)).unwrap();
-        bytes.extend(encode(&envelope(2)).unwrap());
+        let mut bytes = encode_line(&envelope(1)).unwrap();
+        bytes.extend(encode_line(&envelope(2)).unwrap());
 
         for size in 1..=bytes.len() {
-            let mut decoder = Decoder::default();
+            let mut decoder = LineDecoder::default();
             let messages: Vec<_> = bytes
                 .chunks(size)
                 .flat_map(|chunk| decoder.push(chunk))
@@ -138,9 +180,9 @@ mod tests {
 
     #[test]
     fn bad_lines_are_reported_and_the_stream_goes_on() {
-        let mut decoder = Decoder::default();
+        let mut decoder = LineDecoder::default();
         let mut bytes = b"not json\n\n\xff\xfe\n".to_vec();
-        bytes.extend(encode(&envelope(3)).unwrap());
+        bytes.extend(encode_line(&envelope(3)).unwrap());
 
         assert_eq!(
             decoder.push(&bytes),
@@ -154,7 +196,7 @@ mod tests {
 
     #[test]
     fn an_oversized_line_is_refused_before_it_is_kept() {
-        let mut decoder = Decoder::default();
+        let mut decoder = LineDecoder::default();
         let big = vec![b'x'; MAX_FRAME];
 
         assert_eq!(decoder.push(&big), []);
@@ -162,13 +204,13 @@ mod tests {
         assert!(decoder.pending.is_empty());
         assert_eq!(decoder.push(&big), []);
         let mut rest = b"xx\n".to_vec();
-        rest.extend(encode(&envelope(4)).unwrap());
+        rest.extend(encode_line(&envelope(4)).unwrap());
         assert_eq!(decoder.push(&rest), [Ok(envelope(4))]);
     }
 
     #[test]
     fn an_oversized_line_in_one_push_is_refused() {
-        let mut decoder = Decoder::default();
+        let mut decoder = LineDecoder::default();
         let mut line = vec![b' '; MAX_FRAME];
         line.push(b'\n');
 
@@ -180,37 +222,53 @@ mod tests {
 
     #[test]
     fn encoding_refuses_unknown_and_oversized_messages() {
-        let hello = |padding: usize| Envelope {
-            id: 6,
-            message: Message::Hello(Hello {
-                protocol: 1,
-                app: App {
-                    name: "n".repeat(padding),
-                    version: "0.1.0".to_owned(),
-                    commit: "1a2b3c4".to_owned(),
-                },
-            }),
-        };
-        let fits = MAX_FRAME - encode(&hello(1)).unwrap().len() + 1;
+        let fits = MAX_FRAME - encode_line(&hello(1)).unwrap().len() + 1;
         let unknown = Envelope {
             id: 7,
             message: Message::Unknown,
         };
 
-        assert_eq!(encode(&hello(fits)).unwrap().len(), MAX_FRAME);
-        assert_eq!(encode(&hello(fits + 1)), Err(FrameError::TooLarge));
-        assert_eq!(encode(&unknown), Err(FrameError::Invalid));
+        assert_eq!(encode_line(&hello(fits)).unwrap().len(), MAX_FRAME);
+        assert_eq!(encode_line(&hello(fits + 1)), Err(FrameError::TooLarge));
+        assert_eq!(encode_line(&unknown), Err(FrameError::Invalid));
     }
 
     #[test]
     fn a_line_of_exactly_the_limit_is_accepted() {
-        let mut decoder = Decoder::default();
-        let mut line = encode(&envelope(5)).unwrap();
+        let mut decoder = LineDecoder::default();
+        let mut line = encode_line(&envelope(5)).unwrap();
         let padding = MAX_FRAME - line.len();
         line.splice(0..0, std::iter::repeat_n(b' ', padding));
 
         assert_eq!(line.len(), MAX_FRAME);
         assert_eq!(decoder.push(&line), [Ok(envelope(5))]);
+    }
+
+    #[test]
+    fn a_frame_is_one_message_of_json_without_a_newline() {
+        let json = envelope(1).to_json().unwrap();
+        let mut line = json.clone();
+        line.push(b'\n');
+
+        assert_eq!(encode_line(&envelope(1)).unwrap(), line);
+        assert_eq!(Envelope::from_json(&json), Ok(envelope(1)));
+        assert_eq!(Envelope::from_json(b"[]"), Err(FrameError::Invalid));
+        assert_eq!(
+            Envelope::from_json(&vec![b' '; MAX_FRAME + 1]),
+            Err(FrameError::TooLarge)
+        );
+    }
+
+    #[test]
+    fn a_frame_may_use_the_whole_limit_but_a_line_needs_room_for_its_newline() {
+        let full = MAX_FRAME - hello(1).to_json().unwrap().len() + 1;
+        let mut padded = vec![b' '; MAX_FRAME - envelope(9).to_json().unwrap().len()];
+        padded.extend(envelope(9).to_json().unwrap());
+
+        assert_eq!(hello(full).to_json().unwrap().len(), MAX_FRAME);
+        assert_eq!(encode_line(&hello(full)), Err(FrameError::TooLarge));
+        assert_eq!(hello(full + 1).to_json(), Err(FrameError::TooLarge));
+        assert_eq!(Envelope::from_json(&padded), Ok(envelope(9)));
     }
 
     #[test]
