@@ -39,7 +39,8 @@ const OTHER_SIGN_INS: [&str; 7] = [
 ];
 
 impl Claude {
-    /// Starts `claude`, resuming `session` when given.
+    /// Starts `claude`, resuming `session` when given. Answers reach a prompt by `run`, so the
+    /// caller must never give two runs the same id.
     ///
     /// # Errors
     /// When the program can't be started.
