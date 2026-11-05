@@ -6,15 +6,16 @@ The default branch is `main`: start from it and open draft PRs against it. This 
 
 ## Rules that must always hold
 
-1. **Agent sign-ins never touch Weacon.** Never read, store, log, copy or forward Claude Code, Codex, `gh` or any other vendor credential. Weacon only reads sign-in status. Agents run as the unmodified vendor binaries, and people sign in through the vendor's own tool, against their workspace's config folder.
-2. **Workspaces never mix.** An agent runs only with a sign-in from its chat's workspace. Every stored row carries its workspace id; on the team server, Postgres row-level security enforces it and the app role can't bypass it.
-3. **Nothing listens publicly but the team server.** The core's socket is reachable only by its user. Local HTTP, such as MCP, binds to 127.0.0.1 and checks a per-run token.
+1. **Agent sign-ins never touch Weacon.** Never read, store, log, copy or forward Claude Code, Codex, `gh` or any other vendor credential. Weacon only reads sign-in status. Agents run as the unmodified vendor binaries, and people sign in through the vendor's own tool, against their workspace's config folder. Weacon never relays a sign-in code, reads another vendor's tokens or imports credential files.
+2. **Workspaces never mix.** An agent runs only with a sign-in from its chat's workspace. Every stored row carries its workspace id, references between rows include it in their foreign keys, and every query goes through the `db` module's workspace handle.
+3. **Nothing listens publicly but the team server.** The core's socket is reachable only by its user. Local HTTP, such as MCP, binds to 127.0.0.1 and checks a per-run token. The core's listener for other devices binds only to private addresses, uses TLS pinned at pairing, and accepts only paired devices' tokens.
 4. **No content in logs or error reports.** Messages, prompts, agent output, file contents, diffs and credentials never reach a log line or an error report.
 5. **Every build is identifiable.** Every program reports its version and the commit it was built from, and logs and reports errors from its first commit.
-6. **Schemas first.** Every message that crosses a process boundary is a serde type in `crates/protocol` before it is used, and is parsed where it arrives. Schemas only grow: new fields are optional and nothing is removed. Enums carry a tag; no untagged unions.
+6. **Schemas first.** Every message that crosses a process boundary is a serde type in `crates/protocol` before it is used, and is parsed where it arrives. Schemas only grow: new fields are optional and nothing is removed. Enums carry a tag; no untagged unions. Peers check each other's capabilities, never a version number; only a breaking change raises the protocol version.
 7. **Proposals, not writes.** Changes that agents or Weacon's AI make to docs and tasks arrive as proposals a person accepts.
 8. **Draft first, then review.** Every change reaches `main` through a PR, opened as a draft, unless the owner explicitly asks for something else. Once steps 1 to 8 of the definition of done pass, the agent marks it ready for review, which starts CodeRabbit's review, and fixes what it finds. Agents never merge.
 9. **One of each.** Never add a second way to do something the code already does; change the existing way, in its own PR.
+10. **Agents answer to their owner.** Every agent message names its owner and machine, and only the owner, or a workspace's shared agent, can be asked to act. Others' words reach an agent as quoted messages, never as instructions. Destructive operations ask a person first, whatever the permission level.
 
 ## Code boundaries
 
@@ -26,6 +27,7 @@ The default branch is `main`: start from it and open draft PRs against it. This 
 | `crates/observability` | `protocol` | no |
 | `crates/version` | nothing in the repo | at build time: it runs `git` |
 | `crates/model` | `protocol` | no |
+| `crates/codemap` | `protocol` | no |
 | `crates/agents` | `protocol`, `model`, `observability` | yes |
 | `crates/client` | `protocol`, `model`, `observability` | yes |
 | `crates/testing` | anything; only as a dev-dependency | yes |
