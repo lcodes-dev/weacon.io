@@ -18,6 +18,18 @@ pub(crate) fn home_dir(env: Env<'_>) -> Option<PathBuf> {
     var(env, if cfg!(windows) { "USERPROFILE" } else { "HOME" }).map(PathBuf::from)
 }
 
+/// Whether `weacon service` can install the daemon here, as a systemd user unit.
+pub(crate) const USER_SERVICES: bool = cfg!(target_os = "linux");
+
+/// The XDG base folder in `key`, or `fallback` under the home folder.
+pub(crate) fn xdg_dir(env: Env<'_>, key: &str, fallback: &str) -> Option<PathBuf> {
+    // The XDG spec says to ignore a relative path.
+    var(env, key)
+        .map(PathBuf::from)
+        .filter(|dir| dir.is_absolute())
+        .or_else(|| home_dir(env).map(|home| home.join(fallback)))
+}
+
 /// Where the core keeps its state; `WEACON_STATE_DIR` overrides it.
 pub(crate) fn state_dir(env: Env<'_>) -> Option<PathBuf> {
     if let Some(dir) = var(env, "WEACON_STATE_DIR") {
@@ -27,16 +39,21 @@ pub(crate) fn state_dir(env: Env<'_>) -> Option<PathBuf> {
     if cfg!(windows) {
         return var(env, "LOCALAPPDATA").map(|dir| PathBuf::from(dir).join("Weacon"));
     }
-    let home = home_dir(env)?;
     if cfg!(target_os = "macos") {
-        return Some(home.join("Library/Application Support/Weacon"));
+        return home_dir(env).map(|home| home.join("Library/Application Support/Weacon"));
     }
-    // The XDG spec says to ignore a relative path.
-    let base = var(env, "XDG_STATE_HOME")
-        .map(PathBuf::from)
-        .filter(|dir| dir.is_absolute())
-        .unwrap_or_else(|| home.join(".local/state"));
-    Some(base.join("weacon"))
+    xdg_dir(env, "XDG_STATE_HOME", ".local/state").map(|dir| dir.join("weacon"))
+}
+
+/// Writes `contents` to `path` whole, through a file renamed into place, so no reader sees
+/// half of it; creates missing parent folders.
+pub(crate) fn write_whole(path: &Path, contents: &[u8]) -> io::Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let unfinished = path.with_extension("new");
+    fs::write(&unfinished, contents)?;
+    fs::rename(&unfinished, path)
 }
 
 /// Creates `dir` and any missing parents readable only by this user; existing folders keep
@@ -279,10 +296,7 @@ mod windows {
     pub(crate) fn bind(path: &Path) -> io::Result<Listener> {
         let name = pipe_name(crate::report::random_id());
         let next = create_pipe(&name, true)?;
-        // Renamed into place, so a client never reads half a name.
-        let unfinished = path.with_extension("new");
-        fs::write(&unfinished, &name)?;
-        fs::rename(&unfinished, path)?;
+        super::write_whole(path, name.as_bytes())?;
         Ok(Listener { name, next })
     }
 
@@ -422,6 +436,20 @@ mod tests {
     #[test]
     fn elsewhere_agents_start_as_they_are() {
         assert_eq!(spawn_policy(&env(&[])), SpawnPolicy::default());
+    }
+
+    #[test]
+    fn a_whole_write_creates_folders_and_replaces_the_file() {
+        let dir = crate::test_support::temp_dir("whole");
+        let path = dir.join("a/b/unit.service");
+
+        write_whole(&path, b"first").unwrap();
+        write_whole(&path, b"second").unwrap();
+
+        assert_eq!(fs::read_to_string(&path).unwrap(), "second");
+        assert!(!path.with_extension("new").exists());
+        assert!(write_whole(&dir.join("a/b/unit.service/x"), b"").is_err());
+        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[cfg(unix)]

@@ -22,6 +22,19 @@ pub(crate) enum Command {
     Status,
     /// Check this install and print what it found.
     Doctor,
+    /// Run the daemon as a systemd user service that keeps running after logout.
+    Service {
+        #[command(subcommand)]
+        action: ServiceAction,
+    },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Subcommand)]
+pub(crate) enum ServiceAction {
+    /// Install, enable and start the service, and let it run with nobody logged in.
+    Install,
+    /// Stop the service and remove it.
+    Uninstall,
 }
 
 impl Cli {
@@ -36,7 +49,7 @@ impl Command {
     pub(crate) const fn log_name(&self) -> &'static str {
         match self {
             Self::Daemon => "daemon.log",
-            Self::Status | Self::Doctor => "cli.log",
+            Self::Status | Self::Doctor | Self::Service { .. } => "cli.log",
         }
     }
 
@@ -45,6 +58,7 @@ impl Command {
             Self::Daemon => "daemon",
             Self::Status => "status",
             Self::Doctor => "doctor",
+            Self::Service { .. } => "service",
         }
     }
 }
@@ -89,10 +103,19 @@ mod tests {
         let doctor = run(&["weacon", "doctor"]).unwrap();
         let names = ["daemon", "status", "doctor"]
             .map(|name| run(&["weacon", name]).unwrap().command.name());
+        let install = run(&["weacon", "service", "install"]).unwrap().command;
+        let uninstall = run(&["weacon", "service", "uninstall"]).unwrap().command;
         let verbose = run(&["weacon", "doctor", "--verbose"]).unwrap();
 
         assert_eq!(doctor.command, Command::Doctor);
         assert_eq!(names, ["daemon", "status", "doctor"]);
+        assert_eq!(
+            [install, uninstall],
+            [ServiceAction::Install, ServiceAction::Uninstall]
+                .map(|action| Command::Service { action })
+        );
+        let service = run(&["weacon", "service", "install"]).unwrap().command;
+        assert_eq!((service.name(), service.log_name()), ("service", "cli.log"));
         assert!(!doctor.verbose);
         assert!(verbose.verbose);
     }
