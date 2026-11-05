@@ -8,14 +8,17 @@ use tokio::io::{AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::task::JoinSet;
 use tokio::time::Instant;
 use weacon_observability::{Fault, Field, Logger};
-use weacon_protocol::{App, LineDecoder, code, encode_line};
+use weacon_protocol::{
+    App, Envelope, LineDecoder, Message, Outcome, Pick, Receipt, code, encode_line,
+};
 use weacon_version::Version;
 
+use crate::picks::{KeepError, Picks};
 use crate::platform::{self, Listener, Owner, Stream};
-use crate::session::Session;
+use crate::session::{Reply, Session};
 
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
-const READ_CHUNK: usize = 8192;
+pub(crate) const READ_CHUNK: usize = 8192;
 const ACCEPT_BACKOFF: Duration = Duration::from_millis(100);
 
 pub(crate) fn socket_path(state_dir: &Path) -> PathBuf {
@@ -61,13 +64,19 @@ pub(crate) fn run(app: &crate::app::App) -> Result<(), Fault> {
     })
 }
 
+#[derive(Clone)]
+struct Shared {
+    app: App,
+    picks: Picks,
+    log: Logger,
+}
+
 /// A daemon that holds its state folder's lock and listens on its socket.
 pub(crate) struct Daemon {
     listener: Listener,
     socket: PathBuf,
     owner: Owner,
-    app: App,
-    log: Logger,
+    shared: Shared,
     // Held for the daemon's life, so a second daemon can't start.
     _lock: File,
 }
@@ -107,8 +116,11 @@ impl Daemon {
             listener,
             socket,
             owner,
-            app,
-            log,
+            shared: Shared {
+                app,
+                picks: Picks::new(state_dir),
+                log,
+            },
             _lock: lock,
         })
     }
@@ -124,7 +136,7 @@ impl Daemon {
                     Ok(stream) => self.admit(stream, &mut clients),
                     Err(error) => {
                         // Such as too many open files: wait, rather than spin and flood the log.
-                        self.log.warn("accept failed", &[("err", Field::error(&error))]);
+                        self.shared.log.warn("accept failed", &[("err", Field::error(&error))]);
                         tokio::time::sleep(ACCEPT_BACKOFF).await;
                     }
                 },
@@ -134,23 +146,25 @@ impl Daemon {
         drop(self.listener);
         drop(fs::remove_file(&self.socket));
         clients.shutdown().await;
-        self.log.info("daemon stopped", &[]);
+        self.shared.log.info("daemon stopped", &[]);
     }
 
     fn admit(&self, stream: Stream, clients: &mut JoinSet<()>) {
         if !platform::is_owner(&stream, self.owner) {
-            return self.log.warn("client refused", &[]);
+            return self.shared.log.warn("client refused", &[]);
         }
-        let (app, log) = (self.app.clone(), self.log.clone());
+        let shared = self.shared.clone();
         clients.spawn(async move {
-            if let Err(error) = serve_client(stream, app).await {
-                log.debug("client failed", &[("err", Field::error(&error))]);
+            if let Err(error) = serve_client(stream, &shared).await {
+                shared
+                    .log
+                    .debug("client failed", &[("err", Field::error(&error))]);
             }
         });
     }
 }
 
-async fn serve_client(stream: Stream, app: App) -> io::Result<()> {
+async fn serve_client(stream: Stream, shared: &Shared) -> io::Result<()> {
     let (mut reader, mut writer) = tokio::io::split(stream);
     let mut session = Session::default();
     let mut decoder = LineDecoder::default();
@@ -166,7 +180,7 @@ async fn serve_client(stream: Stream, app: App) -> io::Result<()> {
             return Ok(());
         }
         let bytes = buf.get(..read).unwrap_or_default();
-        let answered = answer(&mut session, &mut decoder, bytes, &app, &mut writer);
+        let answered = answer(&mut session, &mut decoder, bytes, shared, &mut writer);
         if !within(limit, answered).await.transpose()?.unwrap_or(false) {
             return Ok(());
         }
@@ -186,11 +200,28 @@ async fn answer(
     session: &mut Session,
     decoder: &mut LineDecoder,
     bytes: &[u8],
-    app: &App,
+    shared: &Shared,
     writer: &mut (impl AsyncWrite + Unpin),
 ) -> io::Result<bool> {
     for received in decoder.push(bytes) {
-        let reply = session.answer(received, app);
+        if let Ok(Envelope {
+            message: Message::Error(body),
+            ..
+        }) = &received
+            && session.greeted()
+        {
+            let code = body.code.as_str().into();
+            shared
+                .log
+                .warn("client reported an error", &[("code", code)]);
+        }
+        let reply = match received {
+            Ok(Envelope {
+                id,
+                message: Message::Pick(pick),
+            }) if session.greeted() => keep(shared, id, pick).await,
+            received => session.answer(received, &shared.app),
+        };
         if let Some(envelope) = reply.envelope
             && let Ok(line) = encode_line(&envelope)
         {
@@ -203,16 +234,51 @@ async fn answer(
     Ok(true)
 }
 
+// Keeps `pick` off the runtime's thread and answers with its receipt.
+async fn keep(shared: &Shared, id: u32, pick: Pick) -> Reply {
+    let (picks, request) = (shared.picks.clone(), pick.request.clone());
+    let kept = tokio::task::spawn_blocking(move || picks.keep(&pick))
+        .await
+        .unwrap_or_else(|error| Err(KeepError::Io(error.into())));
+    let outcome = match kept {
+        Ok(()) => {
+            let request_id = request.as_str().into();
+            shared
+                .log
+                .info("element picked", &[("request_id", request_id)]);
+            Outcome::Completed
+        }
+        Err(KeepError::Conflict) => return Reply::error(id, code!("request.conflict"), false),
+        Err(KeepError::Io(error)) => {
+            shared
+                .log
+                .warn("pick not kept", &[("err", Field::error(&error))]);
+            Outcome::Failed {
+                code: code!("pick.not_kept"),
+            }
+        }
+    };
+    Reply {
+        envelope: Some(Envelope {
+            id,
+            message: Message::Receipt(Receipt { request, outcome }),
+        }),
+        close: false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use tokio::io::{AsyncBufReadExt, AsyncRead};
     use tokio::sync::oneshot;
     use tokio::task::JoinHandle;
     use tokio::time::timeout;
-    use weacon_protocol::{Envelope, Hello, Message, PROTOCOL, Welcome};
+    use weacon_protocol::{ErrorBody, Hello, PROTOCOL, Welcome};
 
     use super::*;
-    use crate::test_support::{Records, VERSION, error_code, messages, recording_logger, temp_dir};
+    use crate::test_support::{
+        self, Records, VERSION, error_code, messages, recording_logger, temp_dir,
+    };
 
     struct Running {
         socket: PathBuf,
@@ -420,6 +486,115 @@ mod tests {
 
         assert_eq!(read.unwrap().unwrap(), 0);
         running.stop().await;
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    fn pick(id: u32, request: &str, html: &str) -> Vec<u8> {
+        let message = Message::Pick(test_support::pick(request, html));
+        encode_line(&Envelope { id, message }).unwrap()
+    }
+
+    fn receipt(message: &Message) -> Option<&Outcome> {
+        let Message::Receipt(receipt) = message else {
+            return None;
+        };
+        Some(&receipt.outcome)
+    }
+
+    #[tokio::test]
+    async fn a_pick_is_kept_and_answered_with_a_receipt() {
+        let dir = temp_dir("daemon-pick");
+        let running = start(&dir).unwrap();
+        let mut bytes = hello(PROTOCOL);
+        bytes.extend(pick(2, "p-1", "<b>MARKER-HTML</b>"));
+        bytes.extend(pick(3, "p-1", "<b>MARKER-HTML</b>"));
+        bytes.extend(pick(4, "p-1", "<i>other</i>"));
+        let (replies, _) = exchange(connect(&running.socket).await, &bytes, 4).await;
+        let records = running.stop().await;
+        let kept = Picks::new(&dir).read(&"p-1".to_owned().try_into().unwrap());
+
+        assert!(matches!(&replies[0], Message::Welcome(welcome)
+            if welcome.capabilities == [code!("element.pick").into()]));
+        assert_eq!(receipt(&replies[1]), Some(&Outcome::Completed));
+        assert_eq!(receipt(&replies[2]), Some(&Outcome::Completed));
+        assert_eq!(error_code(&replies[3]), Some("request.conflict"));
+        assert_eq!(kept.unwrap().unwrap().html, "<b>MARKER-HTML</b>");
+        let picked = messages(&records);
+        assert_eq!(
+            picked
+                .iter()
+                .filter(|msg| **msg == "element picked")
+                .count(),
+            2
+        );
+        let logged = serde_json::to_string(&*records.lock().unwrap()).unwrap();
+        assert!(logged.contains("p-1"), "{logged}");
+        assert!(!logged.contains("MARKER"), "{logged}");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_pick_that_cant_be_kept_fails_its_receipt() {
+        let dir = temp_dir("daemon-pick-fails");
+        let running = start(&dir).unwrap();
+        fs::write(dir.join("picks"), "a file, not a folder").unwrap();
+        let mut bytes = hello(PROTOCOL);
+        bytes.extend(pick(2, "p-2", "<p/>"));
+        let (replies, _) = exchange(connect(&running.socket).await, &bytes, 2).await;
+        let records = running.stop().await;
+
+        assert_eq!(
+            receipt(&replies[1]),
+            Some(&Outcome::Failed {
+                code: code!("pick.not_kept")
+            })
+        );
+        assert!(messages(&records).contains(&"pick not kept"));
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_pick_before_the_hello_is_refused() {
+        let dir = temp_dir("daemon-pick-early");
+        let running = start(&dir).unwrap();
+        let (replies, _) =
+            exchange(connect(&running.socket).await, &pick(1, "p-3", "<p/>"), 1).await;
+        running.stop().await;
+
+        assert_eq!(error_code(&replies[0]), Some("handshake.required"));
+        assert!(!dir.join("picks").exists());
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_clients_errors_are_logged_by_code_after_its_hello() {
+        let dir = temp_dir("daemon-client-error");
+        let running = start(&dir).unwrap();
+        let error = encode_line(&Envelope {
+            id: 2,
+            message: Message::Error(ErrorBody {
+                code: code!("extension.capture_failed"),
+                retryable: false,
+            }),
+        })
+        .unwrap();
+        let mut bytes = hello(PROTOCOL);
+        bytes.extend(&error);
+        bytes.extend(pick(3, "p-4", "<p/>"));
+        let (replies, _) = exchange(connect(&running.socket).await, &bytes, 2).await;
+        let records = running.stop().await;
+        let reported: Vec<_> = records
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|record| record.msg == "client reported an error")
+            .cloned()
+            .collect();
+
+        assert_eq!(receipt(&replies[1]), Some(&Outcome::Completed));
+        assert_eq!(reported.len(), 1);
+        let reported = serde_json::to_string(&reported).unwrap();
+        assert!(reported.contains("extension.capture_failed"), "{reported}");
         fs::remove_dir_all(&dir).unwrap();
     }
 

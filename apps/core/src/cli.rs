@@ -25,6 +25,11 @@ pub(crate) enum Command {
     /// Run the daemon as a systemd user service that keeps running after logout.
     #[command(subcommand)]
     Service(ServiceCommand),
+    /// Let Weacon's Chrome extension reach this core.
+    ConnectChrome,
+    /// Relay messages between Chrome's extension and the daemon; Chrome starts it.
+    #[command(hide = true)]
+    NativeHost { origin: String },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Subcommand)]
@@ -47,7 +52,8 @@ impl Command {
     pub(crate) const fn log_name(&self) -> &'static str {
         match self {
             Self::Daemon => "daemon.log",
-            Self::Status | Self::Doctor | Self::Service(_) => "cli.log",
+            Self::Status | Self::Doctor | Self::Service(_) | Self::ConnectChrome => "cli.log",
+            Self::NativeHost { .. } => "native-host.log",
         }
     }
 
@@ -57,6 +63,8 @@ impl Command {
             Self::Status => "status",
             Self::Doctor => "doctor",
             Self::Service(_) => "service",
+            Self::ConnectChrome => "connect-chrome",
+            Self::NativeHost { .. } => "native-host",
         }
     }
 }
@@ -73,8 +81,22 @@ pub(crate) fn parse<I: IntoIterator<Item = OsString>>(
 ) -> Result<Cli, clap::Error> {
     let matches = Cli::command()
         .version(version_text(version))
-        .try_get_matches_from(args)?;
+        .try_get_matches_from(from_chrome(args.into_iter().collect()))?;
     Cli::from_arg_matches(&matches)
+}
+
+// Chrome starts a native host with the extension's origin as its first argument, and on
+// Windows a window handle after it.
+fn from_chrome(mut args: Vec<OsString>) -> Vec<OsString> {
+    let started_by_chrome = args
+        .get(1)
+        .and_then(|arg| arg.to_str())
+        .is_some_and(|arg| arg.starts_with("chrome-extension://"));
+    if started_by_chrome {
+        args.truncate(2);
+        args.insert(1, "native-host".into());
+    }
+    args
 }
 
 #[cfg(test)]
@@ -99,14 +121,14 @@ mod tests {
     #[test]
     fn commands_and_flags_parse() {
         let doctor = run(&["weacon", "doctor"]).unwrap();
-        let names = ["daemon", "status", "doctor"]
+        let names = ["daemon", "status", "doctor", "connect-chrome"]
             .map(|name| run(&["weacon", name]).unwrap().command.name());
         let install = run(&["weacon", "service", "install"]).unwrap().command;
         let uninstall = run(&["weacon", "service", "uninstall"]).unwrap().command;
         let verbose = run(&["weacon", "doctor", "--verbose"]).unwrap();
 
         assert_eq!(doctor.command, Command::Doctor);
-        assert_eq!(names, ["daemon", "status", "doctor"]);
+        assert_eq!(names, ["daemon", "status", "doctor", "connect-chrome"]);
         assert_eq!(
             [install, uninstall],
             [ServiceCommand::Install, ServiceCommand::Uninstall].map(Command::Service)
@@ -132,6 +154,26 @@ mod tests {
         assert_eq!(
             run(&["weacon", "doctor"]).unwrap().command.log_name(),
             "cli.log"
+        );
+    }
+
+    #[test]
+    fn chrome_starts_the_native_host_with_its_origin() {
+        let origin = "chrome-extension://phnfnmnpncfhkhlkmglnlhlkaaociaij/";
+        let host = run(&["weacon", origin, "--parent-window=0"]).unwrap();
+
+        assert_eq!(
+            host.command,
+            Command::NativeHost {
+                origin: origin.to_owned()
+            }
+        );
+        assert_eq!(host.command.name(), "native-host");
+        assert_eq!(host.command.log_name(), "native-host.log");
+        assert!(!host.prints_info(true));
+        assert_eq!(
+            run(&["weacon", "native-host", origin]).unwrap().command,
+            host.command
         );
     }
 

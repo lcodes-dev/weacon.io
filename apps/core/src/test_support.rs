@@ -1,12 +1,16 @@
 use std::collections::HashMap;
 use std::ffi::OsString;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 
 use weacon_observability::{Level, Logger, LoggerOptions, Record, Sink};
+use weacon_protocol::{Pick, RequestId};
 use weacon_version::Version;
+
+use crate::app::App;
+use crate::report::Reporter;
 
 pub(crate) const VERSION: Version = Version {
     name: "weacon-core",
@@ -31,6 +35,30 @@ pub(crate) fn temp_dir(name: &str) -> PathBuf {
     drop(fs::remove_dir_all(&dir));
     crate::platform::private_dir(&dir).unwrap();
     dir
+}
+
+/// An app whose state is in `state_dir`, logging nowhere and reporting nothing.
+pub(crate) fn app(state_dir: Option<&Path>, log_file: Option<&Path>) -> App {
+    App {
+        version: VERSION,
+        log: recording_logger().0,
+        reporter: Reporter::new(None, Box::new(|_| Ok(()))).into(),
+        state_dir: state_dir.map(Path::to_path_buf),
+        log_file: log_file.map(Path::to_path_buf),
+        spawn: weacon_agents::SpawnPolicy::default(),
+    }
+}
+
+/// A pick of a button on a local page, with `html` as its HTML.
+pub(crate) fn pick(request: &str, html: &str) -> Pick {
+    Pick {
+        request: RequestId::try_from(request.to_owned()).unwrap(),
+        url: "http://localhost:3000/".to_owned(),
+        title: "Home".to_owned(),
+        selector: "main > button".to_owned(),
+        html: html.to_owned(),
+        screenshot_png: Some("iVBORw0KGgo=".to_owned()),
+    }
 }
 
 pub(crate) fn recording_sink() -> (Sink, Records) {

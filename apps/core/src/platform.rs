@@ -6,6 +6,10 @@ use std::path::{Path, PathBuf};
 
 use weacon_agents::SpawnPolicy;
 
+mod chrome;
+
+pub(crate) use chrome::{CHROME_HOST, register_chrome_host};
+
 /// Reads an environment variable; tests pass a fake.
 pub(crate) type Env<'a> = &'a dyn Fn(&str) -> Option<OsString>;
 

@@ -103,6 +103,84 @@ mod tests {
         daemon.wait().unwrap();
     }
 
+    // Chrome's frames: a native-endian length, then that many bytes of JSON.
+    fn frame(json: &str) -> Vec<u8> {
+        let mut frame = u32::try_from(json.len()).unwrap().to_ne_bytes().to_vec();
+        frame.extend(json.as_bytes());
+        frame
+    }
+
+    #[test]
+    fn the_native_host_relays_frames_and_ends_with_the_daemon() {
+        use std::io::{Read, Write};
+
+        let dir = temp_dir("native-host");
+        let mut daemon = Command::new(env!("CARGO_BIN_EXE_weacon"))
+            .args(["daemon", "--verbose"])
+            .env("WEACON_STATE_DIR", &dir)
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut stderr = BufReader::new(daemon.stderr.take().unwrap()).lines();
+        while !stderr.next().unwrap().unwrap().contains("daemon started") {}
+        let mut host = Command::new(env!("CARGO_BIN_EXE_weacon"))
+            .arg("chrome-extension://phnfnmnpncfhkhlkmglnlhlkaaociaij/")
+            .env("WEACON_STATE_DIR", &dir)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        let mut stdin = host.stdin.take().unwrap();
+        let mut stdout = host.stdout.take().unwrap();
+        let hello = r#"{"id":1,"type":"hello","protocol":1,"app":{"name":"weacon-extension","version":"0.1.0","commit":"1a2b3c4"}}"#;
+        stdin.write_all(&frame(hello)).unwrap();
+        let mut length = [0; 4];
+        stdout.read_exact(&mut length).unwrap();
+        let mut reply = vec![0; usize::try_from(u32::from_ne_bytes(length)).unwrap()];
+        stdout.read_exact(&mut reply).unwrap();
+
+        assert!(
+            String::from_utf8(reply)
+                .unwrap()
+                .contains(r#""type":"welcome""#)
+        );
+        stop(daemon, &dir);
+        // Chrome still holds stdin open; the host must notice the daemon is gone anyway.
+        let (done, exited) = std::sync::mpsc::channel();
+        std::thread::spawn(move || done.send(host.wait()).unwrap());
+        let status = exited.recv_timeout(std::time::Duration::from_secs(20));
+        assert!(status.is_ok(), "the host outlived the daemon");
+        drop(stdin);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn connect_chrome_registers_this_program() {
+        let dir = temp_dir("connect-chrome");
+        let output = Command::new(env!("CARGO_BIN_EXE_weacon"))
+            .arg("connect-chrome")
+            .env("WEACON_STATE_DIR", dir.join("state"))
+            .env("HOME", &dir)
+            .env_remove("XDG_CONFIG_HOME")
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8(output.stdout).unwrap();
+        let manifest = stdout
+            .lines()
+            .find_map(|line| line.strip_prefix("Registered: "))
+            .unwrap();
+
+        assert!(output.status.success());
+        assert!(
+            fs::read_to_string(manifest)
+                .unwrap()
+                .contains(env!("CARGO_BIN_EXE_weacon"))
+        );
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
     #[test]
     fn a_bad_command_line_exits_with_usage_status() {
         assert_eq!(weacon(&["fly"], "/unused").status.code(), Some(2));

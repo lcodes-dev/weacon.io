@@ -55,21 +55,13 @@ fn agent_tools(policy: &SpawnPolicy) -> String {
 #[cfg(test)]
 mod tests {
     use std::io;
-    use std::path::PathBuf;
+    use std::path::Path;
 
     use super::*;
-    use crate::report::Reporter;
-    use crate::test_support::{VERSION, recording_logger};
+    use crate::test_support;
 
     fn app(state_dir: Option<&str>, log_file: Option<&str>) -> App {
-        App {
-            version: VERSION,
-            log: recording_logger().0,
-            reporter: Reporter::new(None, Box::new(|_| Ok(()))).into(),
-            state_dir: state_dir.map(PathBuf::from),
-            log_file: log_file.map(PathBuf::from),
-            spawn: SpawnPolicy::default(),
-        }
+        test_support::app(state_dir.map(Path::new), log_file.map(Path::new))
     }
 
     #[test]
