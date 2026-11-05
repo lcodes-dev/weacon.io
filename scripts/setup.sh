@@ -98,7 +98,7 @@ ensure_node() {
   have=$(node --version 2>/dev/null || true)
   [ "$have" = "v$want" ] || die "the extension needs Node $want, and the installed one is ${have:-missing}; install it, then run this again"
   log "Installing the extension's packages"
-  npm ci --prefix apps/extension --no-audit --no-fund >>.dev/setup.log 2>&1 || {
+  npm ci --prefix apps/extension --include=dev --no-audit --no-fund >>.dev/setup.log 2>&1 || {
     tail -n 30 .dev/setup.log >&2
     die "npm ci failed; the end of its output is above"
   }
