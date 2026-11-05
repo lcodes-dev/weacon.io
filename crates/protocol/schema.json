@@ -90,6 +90,20 @@
       "required": [
         "type"
       ]
+    },
+    {
+      "description": "A change to a team workspace, from the team server to clients that have the capability\n`workspace.feed`.",
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "workspace"
+        }
+      },
+      "$ref": "#/$defs/WorkspaceUpdate",
+      "required": [
+        "type"
+      ]
     }
   ],
   "required": [
@@ -170,6 +184,12 @@
         "protocol",
         "app"
       ]
+    },
+    "MemberId": {
+      "description": "A member of a team workspace, 1–64 ASCII letters, digits, `-` or `_`.",
+      "type": "string",
+      "maxLength": 64,
+      "pattern": "^[A-Za-z0-9_-]+$"
     },
     "Outcome": {
       "description": "Where an accepted command stands. It ends `completed`, `interrupted`, `failed` or `unknown`.\n`unknown` means it may or may not have run, as when a restart cut it off; the client must not\nsend it again under a new id.",
@@ -565,6 +585,56 @@
       },
       "required": [
         "app"
+      ]
+    },
+    "WorkspaceChange": {
+      "description": "What changed in a team workspace.",
+      "oneOf": [
+        {
+          "description": "A member signed in for the first time.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "member_joined"
+            },
+            "member": {
+              "$ref": "#/$defs/MemberId"
+            }
+          },
+          "required": [
+            "kind",
+            "member"
+          ]
+        }
+      ]
+    },
+    "WorkspaceId": {
+      "description": "A team workspace on the team server, 1–64 ASCII letters, digits, `-` or `_`.",
+      "type": "string",
+      "maxLength": 64,
+      "pattern": "^[A-Za-z0-9_-]+$"
+    },
+    "WorkspaceUpdate": {
+      "description": "One change to `workspace`. `seq` grows strictly within a workspace, and a feed opened with\n`since=N` sends every change after `N`.",
+      "type": "object",
+      "properties": {
+        "change": {
+          "$ref": "#/$defs/WorkspaceChange"
+        },
+        "seq": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "workspace": {
+          "$ref": "#/$defs/WorkspaceId"
+        }
+      },
+      "required": [
+        "workspace",
+        "seq",
+        "change"
       ]
     }
   }

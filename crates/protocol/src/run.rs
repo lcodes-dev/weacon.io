@@ -3,7 +3,7 @@ use serde::{Deserialize, Deserializer, Serialize, de};
 use serde_json::Value;
 
 use crate::Outcome;
-use crate::token::{TOKEN_MAX, TOKEN_PATTERN, is_token};
+use crate::token::token_id;
 
 /// An agent's own id for a conversation, a lowercase UUID, which resumes it later.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, JsonSchema)]
@@ -34,25 +34,12 @@ impl<'de> Deserialize<'de> for AgentSession {
     }
 }
 
-/// The core's id for one run of an agent process, 1–64 ASCII letters, digits, `-` or `_`.
-/// Prompts carry it, so an answer only ever reaches the run that asked.
-#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, JsonSchema)]
-pub struct RunId(#[schemars(regex(pattern = TOKEN_PATTERN), length(max = TOKEN_MAX))] String);
-
-impl TryFrom<String> for RunId {
-    type Error = String;
-
-    fn try_from(id: String) -> Result<Self, Self::Error> {
-        if is_token(&id) { Ok(Self(id)) } else { Err(id) }
-    }
-}
-
-impl<'de> Deserialize<'de> for RunId {
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        Self::try_from(String::deserialize(deserializer)?)
-            .map_err(|_| de::Error::custom("not a run id"))
-    }
-}
+token_id!(
+    /// The core's id for one run of an agent process, 1–64 ASCII letters, digits, `-` or `_`.
+    /// Prompts carry it, so an answer only ever reaches the run that asked.
+    RunId,
+    "not a run id"
+);
 
 fn is_uuid(id: &str) -> bool {
     id.len() == 36

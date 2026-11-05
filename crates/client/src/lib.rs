@@ -138,6 +138,7 @@ fn welcomed(message: Message) -> Result<Welcome, Fault> {
         | Message::Receipt(_)
         | Message::Pick(_)
         | Message::Run(_)
+        | Message::Workspace(_)
         | Message::Unknown => Err(Fault::new(
             code!("daemon.refused"),
             "The daemon refused the handshake",
