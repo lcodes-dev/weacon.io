@@ -2,6 +2,7 @@
 
 mod platform;
 
+use std::error::Error;
 use std::io::{self, Read, Write};
 use std::path::Path;
 use std::time::Duration;
@@ -16,9 +17,6 @@ const TIMEOUT: Duration = Duration::from_secs(5);
 /// # Errors
 /// When no daemon listens there, it doesn't answer in time, or it refuses the handshake.
 pub fn handshake(socket: &Path, me: App) -> Result<App, Fault> {
-    let no_answer = |error: io::Error| {
-        Fault::new(code!("daemon.no_answer"), "The daemon didn't answer").because(error)
-    };
     let mut stream = platform::connect(socket, TIMEOUT).map_err(|error| {
         if matches!(
             error.kind(),
@@ -39,22 +37,24 @@ pub fn handshake(socket: &Path, me: App) -> Result<App, Fault> {
             app: me,
         }),
     };
-    let line = encode(&hello).map_err(|error| {
-        Fault::new(code!("daemon.no_answer"), "The daemon didn't answer").because(error)
-    })?;
+    let line = encode(&hello).map_err(no_answer)?;
     stream.write_all(&line).map_err(no_answer)?;
     let mut decoder = Decoder::default();
     let mut buf = [0; 4096];
     loop {
         let read = stream.read(&mut buf).map_err(no_answer)?;
-        if read == 0 {
-            return Err(no_answer(io::ErrorKind::UnexpectedEof.into()));
-        }
-        let replies = decoder.push(buf.get(..read).unwrap_or_default());
+        let Some(bytes) = buf.get(..read).filter(|bytes| !bytes.is_empty()) else {
+            return Err(no_answer(io::Error::from(io::ErrorKind::UnexpectedEof)));
+        };
+        let replies = decoder.push(bytes);
         if let Some(reply) = replies.into_iter().find_map(Result::ok) {
             return welcomed(reply.message);
         }
     }
+}
+
+fn no_answer(error: impl Into<Box<dyn Error + Send + Sync>>) -> Fault {
+    Fault::new(code!("daemon.no_answer"), "The daemon didn't answer").because(error)
 }
 
 fn welcomed(message: Message) -> Result<App, Fault> {
@@ -98,7 +98,7 @@ mod tests {
         dir
     }
 
-    // A one-connection daemon that reads the hello and answers with `reply`, or hangs up.
+    // A one-connection daemon that reads the hello, then sends a bad frame and `reply`, or hangs up.
     fn serve_once(socket: &Path, reply: Option<Message>) -> thread::JoinHandle<Envelope> {
         let listener = UnixListener::bind(socket).unwrap();
         thread::spawn(move || {
