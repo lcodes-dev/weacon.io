@@ -79,6 +79,10 @@ node_version="v$(cat .node-version)"
 npm --prefix apps/extension run --silent check
 (cd tooling/ts && node --test)
 
+step "Web app: types, generated types, build, tests and end-to-end tests in Chromium"
+[ -x apps/web/node_modules/.bin/tsc ] || die "the web app's packages are missing; run scripts/setup.sh"
+npm --prefix apps/web run --silent check
+
 step "Shell scripts"
 if command -v shellcheck >/dev/null; then
   shellcheck scripts/*.sh
