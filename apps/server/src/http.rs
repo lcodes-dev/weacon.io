@@ -10,7 +10,6 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use tokio::net::TcpListener;
 use tokio::sync::oneshot;
-use weacon_appkit::random_id;
 use weacon_observability::{Fault, Logger};
 use weacon_protocol::{App, code};
 
@@ -84,7 +83,7 @@ async fn version(State(shared): State<Shared>) -> impl IntoResponse {
 /// route it matched.
 async fn log_request(State(shared): State<Shared>, request: Request, next: Next) -> Response {
     let started = Instant::now();
-    let request_id = format!("{:032x}", random_id());
+    let request_id = crate::app::new_id();
     // Any other method is a client's own text.
     let method = METHODS
         .iter()
