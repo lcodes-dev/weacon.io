@@ -1,4 +1,4 @@
-// Generated from crates/protocol/schema.json by tools/generate-types.ts. Don't edit it.
+// Generated from crates/protocol/schema.json by tooling/ts/generate-types.ts. Don't edit it.
 
 /**
  * One message on the wire. A reply carries the `id` of the request it answers.

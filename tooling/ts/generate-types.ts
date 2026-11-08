@@ -34,12 +34,11 @@ const KNOWN = new Set([
   "pattern",
 ]);
 
-const HEADER = "// Generated from crates/protocol/schema.json by tools/generate-types.ts. Don't edit it.\n";
+const HEADER = "// Generated from crates/protocol/schema.json by tooling/ts/generate-types.ts. Don't edit it.\n";
 
-export const TYPES = new URL("../src/protocol.ts", import.meta.url);
-const SCHEMA = new URL("../../../crates/protocol/schema.json", import.meta.url);
+const SCHEMA = new URL("../../crates/protocol/schema.json", import.meta.url);
 
-/** What `src/protocol.ts` should hold for the committed schema. */
+/** What an app's `src/protocol.ts` should hold for the committed schema. */
 export function currentTypes(): string {
   return generate(JSON.parse(readFileSync(SCHEMA, "utf8")) as Schema);
 }

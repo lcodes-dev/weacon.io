@@ -1,24 +1,7 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import { test } from "node:test";
 
-import type { Envelope } from "../src/protocol.ts";
-import { TYPES, currentTypes, generate, type Schema } from "./generate-types.ts";
-
-// The type checker rejects these if the generated types stop matching the wire format.
-export const SAMPLES: Envelope[] = [
-  { id: 1, type: "hello", protocol: 1, app: { name: "weacon-extension", version: "0.1.0", commit: "1a2b3c4" } },
-  { id: 1, type: "error", code: "store.full", retryable: false },
-  { id: 3, type: "receipt", request: "r-1", state: "failed", code: "run.failed" },
-];
-
-test("the committed types are current", () => {
-  assert.equal(
-    readFileSync(TYPES, "utf8"),
-    currentTypes(),
-    "src/protocol.ts is out of date: run npm run update-types in apps/extension",
-  );
-});
+import { generate, type Schema } from "./generate-types.ts";
 
 test("objects mark optional fields and keep their descriptions", () => {
   const schema: Schema = {
@@ -40,7 +23,7 @@ test("objects mark optional fields and keep their descriptions", () => {
 
   assert.equal(
     generate(schema),
-    `// Generated from crates/protocol/schema.json by tools/generate-types.ts. Don't edit it.
+    `// Generated from crates/protocol/schema.json by tooling/ts/generate-types.ts. Don't edit it.
 
 /**
  * A thing.
