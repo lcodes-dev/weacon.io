@@ -1,7 +1,7 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::{Capability, Code, Pick, Receipt, RunUpdate, code};
+use crate::{Capability, Code, Pick, Receipt, RunUpdate, WorkspaceUpdate, code};
 
 /// The protocol version this build speaks. Only a breaking change raises it; peers must match
 /// it exactly and check each other's capabilities for everything else.
@@ -26,6 +26,9 @@ pub enum Message {
     Pick(Pick),
     /// What a run reported, from the core to clients that have the capability `run.stream`.
     Run(RunUpdate),
+    /// A change to a workspace, from the server to clients that have the capability
+    /// `workspace.feed`.
+    Workspace(WorkspaceUpdate),
     /// A message type this build doesn't know, from a newer peer.
     #[serde(other)]
     #[schemars(skip)]
