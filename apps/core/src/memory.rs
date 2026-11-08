@@ -1,5 +1,6 @@
 //! How much memory the core and the processes it started use, logged for long runs.
 
+use std::collections::BTreeSet;
 use std::io;
 
 use weacon_observability::{Field, Logger};
@@ -21,9 +22,14 @@ fn sample(processes: &[Process], root: u32) -> Option<Sample> {
         core_kib: core.rss_kib,
         ..Sample::default()
     };
+    // Each process counts once, even if a reused pid makes the parent links loop.
+    let mut seen = BTreeSet::from([root]);
     let mut below = vec![root];
     while let Some(pid) = below.pop() {
         for child in processes.iter().filter(|process| process.parent == pid) {
+            if !seen.insert(child.pid) {
+                continue;
+            }
             below.push(child.pid);
             sample.descendants_kib = sample.descendants_kib.saturating_add(child.rss_kib);
             sample.descendants = sample.descendants.saturating_add(1);
@@ -116,6 +122,15 @@ mod tests {
             Some(0)
         );
         assert_eq!(sample(&listed, 99), None);
+        let looped = [process(1, 2, 10), process(2, 1, 20)];
+        assert_eq!(
+            sample(&looped, 1),
+            Some(Sample {
+                core_kib: 10,
+                descendants_kib: 20,
+                descendants: 1,
+            })
+        );
     }
 
     #[tokio::test]
