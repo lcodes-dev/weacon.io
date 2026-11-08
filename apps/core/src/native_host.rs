@@ -187,13 +187,12 @@ fn refused(log: &Logger, code: &str) {
 
 #[cfg(test)]
 mod tests {
-    use std::fs;
-
     use tokio::io::{AsyncBufReadExt, BufReader, DuplexStream, duplex};
     use weacon_protocol::{ErrorBody, Message, encode_line};
+    use weacon_testing::TempDir;
 
     use super::*;
-    use crate::test_support::{self, messages, recording_logger, temp_dir};
+    use crate::test_support::{self, messages, recording_logger};
 
     fn app(state_dir: Option<&Path>) -> App {
         test_support::app(state_dir, None)
@@ -206,9 +205,11 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn connecting_chrome_registers_this_program_and_says_where() {
+        use std::fs;
+
         use crate::test_support::env;
 
-        let dir = temp_dir("connect-chrome");
+        let dir = TempDir::new().unwrap();
         let home = dir.join("home");
         let vars = env(&[("HOME", home.to_str().unwrap())]);
         let exe = || Ok(PathBuf::from("/opt/weacon/weacon"));
@@ -241,12 +242,11 @@ mod tests {
             code(register(&app(None), &vars, exe(), &mut Vec::new())),
             "state.unavailable"
         );
-        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
     fn the_host_runs_only_for_the_extension_and_needs_the_daemon() {
-        let dir = temp_dir("native-host");
+        let dir = TempDir::new().unwrap();
 
         assert_eq!(
             code(run(&app(Some(&dir)), "chrome-extension://other/")),
@@ -254,7 +254,6 @@ mod tests {
         );
         assert_eq!(code(run(&app(None), ORIGIN)), "state.unavailable");
         assert_eq!(code(run(&app(Some(&dir)), ORIGIN)), "daemon.unreachable");
-        fs::remove_dir_all(&dir).unwrap();
     }
 
     fn error(id: u32) -> Envelope {

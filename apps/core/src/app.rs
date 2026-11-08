@@ -149,9 +149,10 @@ mod tests {
 
     use weacon_observability::Upload;
     use weacon_protocol::code;
+    use weacon_testing::TempDir;
 
     use super::*;
-    use crate::test_support::{Records, VERSION, env, messages, recording_sink, temp_dir};
+    use crate::test_support::{Records, VERSION, env, messages, recording_sink};
 
     const DSN: &str = "https://key@sentry.example.com/1";
 
@@ -183,7 +184,7 @@ mod tests {
 
     #[test]
     fn logs_go_to_the_state_folder_starting_with_the_build() {
-        let dir = temp_dir("app-logs");
+        let dir = TempDir::new().unwrap();
         let (app, stderr, _) = start(&[state(&dir)], false);
         let file = app.log_file.clone().unwrap();
         let text = fs::read_to_string(&file).unwrap();
@@ -195,21 +196,19 @@ mod tests {
         assert_eq!(first["mode"], "doctor");
         assert!(messages(&stderr).is_empty());
         assert!(!app.reporter.is_on());
-        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
     fn verbose_also_prints_info_logs() {
-        let dir = temp_dir("app-verbose");
+        let dir = TempDir::new().unwrap();
         let (_, stderr, _) = start(&[state(&dir)], true);
 
         assert_eq!(messages(&stderr), ["app started"]);
-        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
     fn without_a_usable_state_folder_logs_still_reach_stderr() {
-        let dir = temp_dir("app-blocked");
+        let dir = TempDir::new().unwrap();
         let file = dir.join("a-file");
         fs::write(&file, "").unwrap();
         let (unknown, unknown_stderr, _) = start(&[], false);
@@ -219,7 +218,6 @@ mod tests {
         assert!(messages(&unknown_stderr).is_empty());
         assert_eq!(blocked.log_file, None);
         assert_eq!(messages(&blocked_stderr), ["log file unavailable"]);
-        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
@@ -259,7 +257,7 @@ mod tests {
 
     #[test]
     fn no_content_reaches_a_log_line_or_an_error_report() {
-        let dir = temp_dir("app-markers");
+        let dir = TempDir::new().unwrap();
         let vars = [
             state(&dir),
             ("WEACON_SENTRY_DSN", DSN),
@@ -294,6 +292,5 @@ mod tests {
         ] {
             assert!(!text.contains("MARKER"), "{text}");
         }
-        fs::remove_dir_all(&dir).unwrap();
     }
 }

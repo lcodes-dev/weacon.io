@@ -193,8 +193,8 @@ mod tests {
 
     #[tokio::test]
     async fn opens_one_writer_in_wal_mode_that_waits_when_busy() {
-        let file = TempDir::new().unwrap();
-        let db = Db::create(&file.file("weacon.db")).await.unwrap();
+        let dir = TempDir::new().unwrap();
+        let db = Db::create(&dir.join("weacon.db")).await.unwrap();
 
         assert_eq!(pragma(&db, "journal_mode").await, "wal");
         assert_eq!(pragma(&db, "busy_timeout").await, "5000");
@@ -206,8 +206,8 @@ mod tests {
 
     #[tokio::test]
     async fn readers_cannot_write() {
-        let file = TempDir::new().unwrap();
-        let db = Db::create(&file.file("weacon.db")).await.unwrap();
+        let dir = TempDir::new().unwrap();
+        let db = Db::create(&dir.join("weacon.db")).await.unwrap();
         let error = sqlx::query("INSERT INTO workspaces (workspace_id, name) VALUES ('w', 'n')")
             .execute(&db.readers)
             .await
@@ -218,13 +218,13 @@ mod tests {
 
     #[tokio::test]
     async fn reopening_keeps_the_data_and_the_schema() {
-        let file = TempDir::new().unwrap();
-        let db = Db::create(&file.file("weacon.db")).await.unwrap();
+        let dir = TempDir::new().unwrap();
+        let db = Db::create(&dir.join("weacon.db")).await.unwrap();
         db.create_workspace(&workspace_id("w1"), "Team")
             .await
             .unwrap();
         db.close().await;
-        let again = Db::open(&file.file("weacon.db")).await.unwrap();
+        let again = Db::open(&dir.join("weacon.db")).await.unwrap();
 
         again.workspace(&workspace_id("w1")).await.unwrap();
         assert_eq!(
@@ -235,8 +235,8 @@ mod tests {
 
     #[tokio::test]
     async fn closing_closes_every_connection() {
-        let file = TempDir::new().unwrap();
-        let db = Db::create(&file.file("weacon.db")).await.unwrap();
+        let dir = TempDir::new().unwrap();
+        let db = Db::create(&dir.join("weacon.db")).await.unwrap();
         db.close().await;
 
         assert!(db.writer.is_closed());
@@ -244,8 +244,8 @@ mod tests {
     }
 
     // A database that another connection is about to write to, so it can't change its mode.
-    async fn held(file: &TempDir) -> (SqliteConnection, SqliteConnection) {
-        let path = file.file("weacon.db");
+    async fn held(dir: &TempDir) -> (SqliteConnection, SqliteConnection) {
+        let path = dir.join("weacon.db");
         let mut holder = SqliteConnectOptions::new()
             .filename(&path)
             .create_if_missing(true)
@@ -262,8 +262,8 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn the_switch_to_wal_waits_out_another_writer() {
-        let file = TempDir::new().unwrap();
-        let (mut holder, mut writer) = held(&file).await;
+        let dir = TempDir::new().unwrap();
+        let (mut holder, mut writer) = held(&dir).await;
         let switching = tokio::spawn(async move { use_wal(&mut writer).await });
         tokio::time::sleep(WAL_RETRY * 3).await;
         sqlx::raw_sql("COMMIT").execute(&mut holder).await.unwrap();
@@ -273,8 +273,8 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn the_switch_to_wal_gives_up_after_a_while() {
-        let file = TempDir::new().unwrap();
-        let (_holder, mut writer) = held(&file).await;
+        let dir = TempDir::new().unwrap();
+        let (_holder, mut writer) = held(&dir).await;
         let started = Instant::now();
         let error = use_wal(&mut writer).await.unwrap_err();
 
@@ -284,8 +284,8 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn other_errors_are_not_tried_again() {
-        let file = TempDir::new().unwrap();
-        let path = file.file("weacon.db");
+        let dir = TempDir::new().unwrap();
+        let path = dir.join("weacon.db");
         drop(
             options(&path)
                 .create_if_missing(true)
@@ -311,8 +311,8 @@ mod tests {
 
     #[tokio::test]
     async fn only_creating_makes_a_missing_database() {
-        let file = TempDir::new().unwrap();
-        let path = file.file("weacon.db");
+        let dir = TempDir::new().unwrap();
+        let path = dir.join("weacon.db");
 
         let error = Db::open(&path).await.unwrap_err();
         assert_eq!(error.code().as_str(), "db.not_found");
@@ -323,22 +323,22 @@ mod tests {
 
     #[tokio::test]
     async fn a_schema_newer_than_this_build_is_refused() {
-        let file = TempDir::new().unwrap();
-        let db = Db::create(&file.file("weacon.db")).await.unwrap();
+        let dir = TempDir::new().unwrap();
+        let db = Db::create(&dir.join("weacon.db")).await.unwrap();
         sqlx::raw_sql("PRAGMA user_version = 1000")
             .execute(&db.writer)
             .await
             .unwrap();
         db.close().await;
 
-        let error = Db::open(&file.file("weacon.db")).await.unwrap_err();
+        let error = Db::open(&dir.join("weacon.db")).await.unwrap_err();
         assert_eq!(error.code().as_str(), "db.too_new");
     }
 
     #[tokio::test]
     async fn two_openings_of_a_new_file_both_get_its_schema() {
-        let file = TempDir::new().unwrap();
-        let path = file.file("weacon.db");
+        let dir = TempDir::new().unwrap();
+        let path = dir.join("weacon.db");
         let (one, two) = tokio::join!(Db::create(&path), Db::create(&path));
 
         one.unwrap();
@@ -347,14 +347,14 @@ mod tests {
 
     #[tokio::test]
     async fn a_file_that_isnt_a_database_fails_to_open() {
-        let file = TempDir::new().unwrap();
+        let dir = TempDir::new().unwrap();
         std::fs::write(
-            file.file("weacon.db"),
+            dir.join("weacon.db"),
             "MARKER not a database, but long enough to have a header",
         )
         .unwrap();
 
-        let error = Db::create(&file.file("weacon.db")).await.unwrap_err();
+        let error = Db::create(&dir.join("weacon.db")).await.unwrap_err();
         assert_eq!(error.code().as_str(), "db.open_failed");
     }
 
@@ -374,8 +374,8 @@ mod tests {
 
     #[tokio::test]
     async fn every_read_sees_only_its_own_workspace() {
-        let file = TempDir::new().unwrap();
-        let db = Db::create(&file.file("weacon.db")).await.unwrap();
+        let dir = TempDir::new().unwrap();
+        let db = Db::create(&dir.join("weacon.db")).await.unwrap();
         let one = with_members(&db, "w1", &[("m1", "ada@example.com")]).await;
         let two = with_members(
             &db,
@@ -420,8 +420,8 @@ mod tests {
 
     #[tokio::test]
     async fn duplicates_are_refused_as_existing() {
-        let file = TempDir::new().unwrap();
-        let db = Db::create(&file.file("weacon.db")).await.unwrap();
+        let dir = TempDir::new().unwrap();
+        let db = Db::create(&dir.join("weacon.db")).await.unwrap();
         let one = db
             .create_workspace(&workspace_id("w1"), "One")
             .await
@@ -457,8 +457,8 @@ mod tests {
 
     #[tokio::test]
     async fn every_table_index_and_reference_leads_with_the_workspace() {
-        let file = TempDir::new().unwrap();
-        let db = Db::create(&file.file("weacon.db")).await.unwrap();
+        let dir = TempDir::new().unwrap();
+        let db = Db::create(&dir.join("weacon.db")).await.unwrap();
         let tables: Vec<String> = sqlx::query_scalar(
             "SELECT name FROM sqlite_schema WHERE type = 'table' AND name NOT LIKE 'sqlite_%'",
         )

@@ -47,7 +47,7 @@ mod tests {
         let db = TempDir::new().unwrap();
         let output = server()
             .args(["serve", "--listen", &address, "--db"])
-            .arg(db.file("weacon.db"))
+            .arg(db.join("weacon.db"))
             .env("WEACON_SENTRY_DSN", "")
             .output()
             .unwrap();
@@ -64,7 +64,7 @@ mod tests {
         let mut child = Running(
             server()
                 .args(["serve", "--listen", "127.0.0.1:0", "--db"])
-                .arg(db.file("weacon.db"))
+                .arg(db.join("weacon.db"))
                 .stdout(Stdio::piped())
                 .spawn()
                 .unwrap(),
@@ -86,7 +86,7 @@ mod tests {
 
         assert!(response.starts_with("HTTP/1.1 200 OK"), "{response}");
         // The server created its database before listening.
-        assert!(db.file("weacon.db").exists());
+        assert!(db.join("weacon.db").exists());
         assert!(
             response.contains("\"name\":\"weacon-server\""),
             "{response}"
@@ -97,8 +97,8 @@ mod tests {
         let output = server()
             .args(args)
             .arg("--db")
-            .arg(db.file("weacon.db"))
-            .current_dir(db.dir())
+            .arg(db.join("weacon.db"))
+            .current_dir(db)
             .output()
             .unwrap();
         assert!(output.status.success(), "{output:?}");
@@ -121,7 +121,7 @@ mod tests {
         );
         admin(&["backup", "--to", "backup.db"], &db);
         let restored = TempDir::new().unwrap();
-        let backup = db.file("backup.db");
+        let backup = db.join("backup.db");
         admin(&["restore", "--from", backup.to_str().unwrap()], &restored);
 
         assert_eq!(

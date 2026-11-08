@@ -115,13 +115,13 @@ fn is_source(path: &str, name: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
+    use weacon_testing::TempDir;
 
     use super::*;
-    use crate::test_support::{app, temp_dir};
+    use crate::test_support::app;
 
-    fn repo(name: &str, files: &[(&str, &str)]) -> PathBuf {
-        let root = temp_dir(name);
+    fn repo(files: &[(&str, &str)]) -> TempDir {
+        let root = TempDir::new().unwrap();
         for (path, text) in files {
             let path = root.join(path);
             fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -147,7 +147,7 @@ mod tests {
 
     #[test]
     fn prints_missing_changed_and_malformed_pins() {
-        let root = repo("map-check", CRATE);
+        let root = repo(CRATE);
         let pins = "sym:a::m::go#0000000000000000\nsym:a::gone#0000000000000000\nnot a pin\n";
         let (outcome, found) = check(&root, pins);
         assert_eq!(outcome.unwrap(), Outcome::Findings);
@@ -178,7 +178,7 @@ mod tests {
             ("a/.cache/x.rs", "fn cached() {}"),
             ("node_modules/b/Cargo.toml", "[package]\nname = \"b\"\n"),
         ]);
-        let root = repo("map-sources", &files);
+        let root = repo(&files);
         fs::write(root.join("a/src/bad.rs"), [0xff, 0xfe]).unwrap();
         let mut files = Vec::new();
         source_files(&root, "", &mut files).unwrap();
@@ -205,7 +205,8 @@ mod tests {
 
     #[test]
     fn fails_on_a_missing_root() {
-        let root = temp_dir("map-missing").join("nowhere");
+        let dir = TempDir::new().unwrap();
+        let root = dir.join("nowhere");
         let mut files = Vec::new();
         let error = source_files(&root, "", &mut files).unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::NotFound);
@@ -229,7 +230,7 @@ mod tests {
                 Ok(())
             }
         }
-        let root = repo("map-broken", CRATE);
+        let root = repo(CRATE);
         let error =
             check_anchors(&app(None, None), &root, &mut Broken, &mut Vec::new()).unwrap_err();
         assert_eq!(error.code().as_str(), "map.input_failed");

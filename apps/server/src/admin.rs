@@ -109,7 +109,7 @@ mod tests {
     #[tokio::test]
     async fn an_operator_sets_up_a_workspace() {
         let dir = TempDir::new().unwrap();
-        let db = dir.file("weacon.db");
+        let db = dir.join("weacon.db");
         let workspace = admin(Admin::CreateWorkspace {
             db: db.clone(),
             name: " Team ".to_owned(),
@@ -141,7 +141,7 @@ mod tests {
     #[tokio::test]
     async fn backups_neither_print_nor_overwrite() {
         let dir = TempDir::new().unwrap();
-        let (db, backup) = (dir.file("weacon.db"), dir.file("backup.db"));
+        let (db, backup) = (dir.join("weacon.db"), dir.join("backup.db"));
         Db::create(&db).await.unwrap();
         let to_backup = || Admin::Backup {
             db: db.clone(),
@@ -151,7 +151,7 @@ mod tests {
         let again = admin(to_backup()).await.unwrap_err();
         let restored = admin(Admin::Restore {
             from: backup.clone(),
-            db: dir.file("restored.db"),
+            db: dir.join("restored.db"),
         })
         .await
         .unwrap();
@@ -165,7 +165,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         for name in ["  ", "a\nb", &"a".repeat(MAX_NAME + 1)] {
             let error = admin(Admin::CreateWorkspace {
-                db: dir.file("weacon.db"),
+                db: dir.join("weacon.db"),
                 name: name.to_owned(),
             })
             .await
@@ -186,22 +186,22 @@ mod tests {
     async fn commands_on_a_missing_database_create_nothing() {
         let dir = TempDir::new().unwrap();
         let error = admin(Admin::Members {
-            db: dir.file("wecon.db"),
+            db: dir.join("wecon.db"),
             workspace: workspace_id("id1"),
         })
         .await
         .unwrap_err();
 
         assert_eq!(error.code().as_str(), "db.not_found");
-        assert!(!dir.file("wecon.db").exists());
+        assert!(!dir.join("wecon.db").exists());
     }
 
     #[tokio::test]
     async fn an_unknown_workspace_is_an_error() {
         let dir = TempDir::new().unwrap();
-        Db::create(&dir.file("weacon.db")).await.unwrap();
+        Db::create(&dir.join("weacon.db")).await.unwrap();
         let error = admin(Admin::Members {
-            db: dir.file("weacon.db"),
+            db: dir.join("weacon.db"),
             workspace: workspace_id("nope"),
         })
         .await
@@ -213,7 +213,7 @@ mod tests {
     #[tokio::test]
     async fn commands_leave_everything_in_the_database_file() {
         let dir = TempDir::new().unwrap();
-        let db = dir.file("weacon.db");
+        let db = dir.join("weacon.db");
         admin(Admin::CreateWorkspace {
             db: db.clone(),
             name: "Team".to_owned(),
@@ -228,14 +228,14 @@ mod tests {
         .await
         .unwrap();
 
-        assert!(!dir.file("weacon.db-wal").exists());
-        assert!(!dir.file("weacon.db-shm").exists());
+        assert!(!dir.join("weacon.db-wal").exists());
+        assert!(!dir.join("weacon.db-shm").exists());
     }
 
     #[tokio::test]
     async fn no_content_reaches_a_log_line_or_an_error_report() {
         let dir = TempDir::new().unwrap();
-        let db = dir.file("weacon.db");
+        let db = dir.join("weacon.db");
         admin(Admin::CreateWorkspace {
             db: db.clone(),
             name: "Team".to_owned(),
@@ -257,8 +257,8 @@ mod tests {
             .await
             .unwrap_err(),
             admin(Admin::Restore {
-                from: dir.file("MARKER-PATH.db"),
-                db: dir.file("restored.db"),
+                from: dir.join("MARKER-PATH.db"),
+                db: dir.join("restored.db"),
             })
             .await
             .unwrap_err(),

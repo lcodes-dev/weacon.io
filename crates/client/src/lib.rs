@@ -148,12 +148,10 @@ fn welcomed(message: Message) -> Result<Welcome, Fault> {
 
 #[cfg(test)]
 mod tests {
-    use std::fs;
-    use std::path::PathBuf;
-
     use tokio::io::{AsyncBufReadExt, BufReader};
     use tokio::task::JoinHandle;
     use weacon_protocol::{ErrorBody, RunEvent, RunUpdate};
+    use weacon_testing::TempDir;
 
     use super::*;
     use crate::platform::Server;
@@ -164,13 +162,6 @@ mod tests {
             version: "0.1.0".to_owned(),
             commit: "1a2b3c4".to_owned(),
         }
-    }
-
-    fn temp_dir(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("weacon-client-{name}-{}", std::process::id()));
-        drop(fs::remove_dir_all(&dir));
-        fs::create_dir_all(&dir).unwrap();
-        dir
     }
 
     // A one-connection daemon that reads the hello, then sends a bad frame and `reply`, or hangs up.
@@ -193,7 +184,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_welcome_gives_the_daemons_build_and_capabilities_after_our_hello() {
-        let dir = temp_dir("welcome");
+        let dir = TempDir::new().unwrap();
         let socket = dir.join("weacon.sock");
         let welcome = Welcome {
             app: app("weacon-core"),
@@ -216,7 +207,6 @@ mod tests {
                 }),
             }
         );
-        fs::remove_dir_all(&dir).unwrap();
     }
 
     fn update(text: &str) -> Message {
@@ -242,7 +232,7 @@ mod tests {
 
     #[tokio::test]
     async fn what_follows_the_welcome_arrives_in_order_until_the_daemon_hangs_up() {
-        let dir = temp_dir("stream");
+        let dir = TempDir::new().unwrap();
         let socket = dir.join("weacon.sock");
         let welcome = Welcome {
             app: app("weacon-core"),
@@ -271,12 +261,11 @@ mod tests {
         );
         assert_eq!(connection.next().await.unwrap(), Some(Ok(update("llo"))));
         assert_eq!(connection.next().await.unwrap(), None);
-        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[tokio::test]
     async fn a_daemon_that_hangs_up_gave_no_answer() {
-        let dir = temp_dir("hangup");
+        let dir = TempDir::new().unwrap();
         let socket = dir.join("weacon.sock");
         let daemon = serve_once(&socket, None);
         let error = handshake(&socket, app("weacon-extension"))
@@ -285,7 +274,6 @@ mod tests {
         drop(daemon.await);
 
         assert_eq!(error.code().as_str(), "daemon.no_answer");
-        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
@@ -314,7 +302,7 @@ mod tests {
 
     #[tokio::test]
     async fn no_socket_or_a_dead_one_means_no_daemon() {
-        let dir = temp_dir("dead");
+        let dir = TempDir::new().unwrap();
         let socket = dir.join("weacon.sock");
         drop(Server::bind(&socket).unwrap());
 
@@ -323,6 +311,5 @@ mod tests {
 
             assert_eq!(error.code().as_str(), "daemon.not_running");
         }
-        fs::remove_dir_all(&dir).unwrap();
     }
 }

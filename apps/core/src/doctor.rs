@@ -65,6 +65,8 @@ mod tests {
     use std::io;
     use std::path::Path;
 
+    use weacon_testing::TempDir;
+
     use super::*;
     use crate::test_support;
 
@@ -74,8 +76,9 @@ mod tests {
 
     #[test]
     fn prints_the_build_and_the_state_folder() {
-        let dir = test_support::temp_dir("doctor").join("missing");
-        let state = dir.to_str().unwrap();
+        let dir = TempDir::new().unwrap();
+        let missing = dir.join("missing");
+        let state = missing.to_str().unwrap();
         let mut out = Vec::new();
         run(
             &app(Some(state), Some("/srv/weacon/logs/weacon.log")),
@@ -89,7 +92,6 @@ mod tests {
                 "weacon 0.1.0 (1a2b3c4)\nState folder: {state}\nLog file: /srv/weacon/logs/weacon.log\nDisk: unavailable\nError reports: off\n"
             )
         );
-        std::fs::remove_dir_all(dir.parent().unwrap()).unwrap();
     }
 
     #[test]

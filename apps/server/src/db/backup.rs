@@ -147,8 +147,8 @@ mod tests {
     use crate::email::Email;
     use crate::test_support::{member_id, workspace_id};
 
-    async fn team(file: &TempDir) -> Db {
-        let db = Db::create(&file.file("weacon.db")).await.unwrap();
+    async fn team(dir: &TempDir) -> Db {
+        let db = Db::create(&dir.join("weacon.db")).await.unwrap();
         let team = db
             .create_workspace(&workspace_id("w1"), "Team")
             .await
@@ -161,9 +161,9 @@ mod tests {
 
     #[tokio::test]
     async fn a_backup_restores_to_the_same_data() {
-        let file = TempDir::new().unwrap();
-        let (backup, restored) = (file.file("backup.db"), file.file("restored.db"));
-        let db = team(&file).await;
+        let dir = TempDir::new().unwrap();
+        let (backup, restored) = (dir.join("backup.db"), dir.join("restored.db"));
+        let db = team(&dir).await;
         db.backup(&backup).await.unwrap();
         db.workspace(&workspace_id("w1"))
             .await
@@ -189,29 +189,29 @@ mod tests {
 
     #[tokio::test]
     async fn neither_overwrites_a_file() {
-        let file = TempDir::new().unwrap();
-        let db = team(&file).await;
-        let backup = file.file("backup.db");
+        let dir = TempDir::new().unwrap();
+        let db = team(&dir).await;
+        let backup = dir.join("backup.db");
         db.backup(&backup).await.unwrap();
 
         let again = db.backup(&backup).await.unwrap_err();
-        let over_live = restore(&backup, &file.file("weacon.db")).await.unwrap_err();
+        let over_live = restore(&backup, &dir.join("weacon.db")).await.unwrap_err();
         assert_eq!(again.code().as_str(), "db.file_exists");
         assert_eq!(over_live.code().as_str(), "db.file_exists");
     }
 
     #[tokio::test]
     async fn a_damaged_backup_is_not_restored() {
-        let file = TempDir::new().unwrap();
-        let backup = file.file("backup.db");
-        team(&file).await.backup(&backup).await.unwrap();
+        let dir = TempDir::new().unwrap();
+        let backup = dir.join("backup.db");
+        team(&dir).await.backup(&backup).await.unwrap();
         let mut bytes = fs::read(&backup).unwrap();
         let page = 4096;
         for byte in bytes.iter_mut().skip(page).take(page) {
             *byte = 0xA5;
         }
         fs::write(&backup, bytes).unwrap();
-        let restored = file.file("restored.db");
+        let restored = dir.join("restored.db");
 
         let error = restore(&backup, &restored).await.unwrap_err();
         assert_eq!(error.code().as_str(), "db.corrupt");
@@ -220,8 +220,8 @@ mod tests {
 
     #[tokio::test]
     async fn a_backup_with_broken_references_is_not_restored() {
-        let file = TempDir::new().unwrap();
-        let broken = file.file("broken.db");
+        let dir = TempDir::new().unwrap();
+        let broken = dir.join("broken.db");
         let mut connection = SqliteConnectOptions::new()
             .filename(&broken)
             .create_if_missing(true)
@@ -239,7 +239,7 @@ mod tests {
         .unwrap();
         connection.close().await.unwrap();
 
-        let error = restore(&broken, &file.file("restored.db"))
+        let error = restore(&broken, &dir.join("restored.db"))
             .await
             .unwrap_err();
         assert_eq!(error.code().as_str(), "db.corrupt");
@@ -247,10 +247,10 @@ mod tests {
 
     #[tokio::test]
     async fn a_missing_backup_is_not_restored() {
-        let file = TempDir::new().unwrap();
-        let restored = file.file("restored.db");
+        let dir = TempDir::new().unwrap();
+        let restored = dir.join("restored.db");
 
-        restore(&file.file("missing.db"), &restored)
+        restore(&dir.join("missing.db"), &restored)
             .await
             .unwrap_err();
         assert!(!restored.exists());
@@ -258,10 +258,10 @@ mod tests {
 
     #[tokio::test]
     async fn a_journal_left_beside_the_target_stops_a_restore() {
-        let file = TempDir::new().unwrap();
-        let backup = file.file("backup.db");
-        team(&file).await.backup(&backup).await.unwrap();
-        let restored = file.file("restored.db");
+        let dir = TempDir::new().unwrap();
+        let backup = dir.join("backup.db");
+        team(&dir).await.backup(&backup).await.unwrap();
+        let restored = dir.join("restored.db");
         for suffix in ["-wal", "-shm", "-journal"] {
             fs::write(sidecar(&restored, suffix), "stale").unwrap();
 
@@ -275,10 +275,10 @@ mod tests {
 
     #[tokio::test]
     async fn a_copy_that_fails_leaves_nothing_behind() {
-        let file = TempDir::new().unwrap();
-        let backup = file.file("backup.db");
-        team(&file).await.backup(&backup).await.unwrap();
-        let restored = file.file("no-folder/restored.db");
+        let dir = TempDir::new().unwrap();
+        let backup = dir.join("backup.db");
+        team(&dir).await.backup(&backup).await.unwrap();
+        let restored = dir.join("no-folder/restored.db");
 
         let error = restore(&backup, &restored).await.unwrap_err();
         assert_eq!(error.code().as_str(), "db.restore_failed");
@@ -287,10 +287,10 @@ mod tests {
 
     #[tokio::test]
     async fn a_restore_keeps_what_is_still_in_the_write_ahead_log() {
-        let file = TempDir::new().unwrap();
-        let live = file.file("weacon.db");
-        let db = team(&file).await;
-        let restored = file.file("restored.db");
+        let dir = TempDir::new().unwrap();
+        let live = dir.join("weacon.db");
+        let db = team(&dir).await;
+        let restored = dir.join("restored.db");
         assert!(fs::metadata(sidecar(&live, "-wal")).unwrap().len() > 0);
 
         restore(&live, &restored).await.unwrap();
@@ -309,10 +309,10 @@ mod tests {
 
     #[tokio::test]
     async fn another_restores_partial_file_is_left_alone() {
-        let file = TempDir::new().unwrap();
-        let backup = file.file("backup.db");
-        team(&file).await.backup(&backup).await.unwrap();
-        let restored = file.file("restored.db");
+        let dir = TempDir::new().unwrap();
+        let backup = dir.join("backup.db");
+        team(&dir).await.backup(&backup).await.unwrap();
+        let restored = dir.join("restored.db");
         fs::write(sidecar(&restored, ".partial"), "busy").unwrap();
 
         let error = restore(&backup, &restored).await.unwrap_err();

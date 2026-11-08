@@ -99,7 +99,9 @@ mod tests {
         use std::fs;
         use std::os::unix::fs::PermissionsExt;
 
-        let dir = crate::test_support::temp_dir("private");
+        use weacon_testing::TempDir;
+
+        let dir = TempDir::new().unwrap();
         let file = dir.join("weacon.log");
         drop(super::private_append(&file).unwrap());
 
@@ -107,7 +109,6 @@ mod tests {
             fs::metadata(&file).unwrap().permissions().mode() & 0o777,
             0o600
         );
-        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[cfg(unix)]

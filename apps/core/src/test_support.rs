@@ -1,7 +1,6 @@
 use std::collections::HashMap;
 use std::ffi::OsString;
-use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::SystemTime;
 
 use weacon_observability::Reporter;
@@ -25,14 +24,6 @@ pub(crate) fn env(vars: &[(&str, &str)]) -> impl Fn(&str) -> Option<OsString> + 
         .map(|(key, value)| ((*key).to_owned(), OsString::from(value)))
         .collect();
     move |key| vars.get(key).cloned()
-}
-
-/// An empty folder of this test's own, readable only by this user.
-pub(crate) fn temp_dir(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("weacon-core-{name}-{}", std::process::id()));
-    drop(fs::remove_dir_all(&dir));
-    crate::platform::private_dir(&dir).unwrap();
-    dir
 }
 
 /// An app whose state is in `state_dir`, logging nowhere and reporting nothing.
