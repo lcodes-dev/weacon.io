@@ -38,6 +38,6 @@ You review a change someone else wrote, looking for bugs and security holes.
 - **Paths:** paths are resolved and checked against the folder they must stay in; symlinks can't escape it; no check-then-use race on a file (open it once, then work with the handle; create with `create_new`).
 - **Unsafe code:** none, unless the platform layer needs it for an OS call; then each block says why it's sound and has a test.
 - **Network:** nothing listens on a public interface; local servers bind to 127.0.0.1 and check a token; server routes check the session, the workspace and the origin.
-- **Tenancy:** every row and query carries the workspace; no data can cross workspaces; Postgres row-level security covers new tables.
-- **Desktop and extension:** the desktop draws no remote content in its own process; web content opens only in a separate system web view with no bridge to the core. The extension's permissions are minimal, its content security policy is strict, and its messages are checked for their sender.
+- **Tenancy:** every row and query carries the workspace; no data can cross workspaces; every query goes through the `db` module's workspace handle, and foreign keys include the workspace id.
+- **Web app and extension:** the web app never renders agent output or user content as raw HTML, keeps a strict content security policy, and only the browser and the core hold the keys of a sealed terminal. The extension's permissions are minimal, its content security policy is strict, and its messages are checked for their sender.
 - **Dependencies:** each new crate is needed, maintained, under a licence `.cargo/deny.toml` allows; its build script and procedural macros are worth the trust they need. The extension's packages run no install scripts unless approved.
