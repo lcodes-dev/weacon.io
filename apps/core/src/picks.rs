@@ -91,12 +91,14 @@ fn write_new(path: &Path, json: &[u8]) -> io::Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use weacon_testing::TempDir;
+
     use super::*;
-    use crate::test_support::{pick, temp_dir};
+    use crate::test_support::pick;
 
     #[test]
     fn a_pick_is_kept_once_and_read_back() {
-        let dir = temp_dir("picks-keep");
+        let dir = TempDir::new().unwrap();
         let picks = Picks::new(&dir);
         let first = pick("p-1", "<button>Save</button>");
 
@@ -114,12 +116,11 @@ mod tests {
             1,
             "only the kept file remains"
         );
-        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
     fn of_different_picks_kept_at_once_under_one_request_exactly_one_wins() {
-        let dir = temp_dir("picks-race");
+        let dir = TempDir::new().unwrap();
         let picks = Picks::new(&dir);
         let tries: Vec<_> = (0..8)
             .map(|n| pick("p-2", &format!("<p>{n}</p>")))
@@ -151,12 +152,11 @@ mod tests {
         );
         assert_eq!(picks.read(&won[0].request).unwrap().as_ref(), Some(won[0]));
         assert_eq!(fs::read_dir(dir.join("picks")).unwrap().count(), 1);
-        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
     fn a_pick_that_cant_be_written_or_read_fails_with_io() {
-        let dir = temp_dir("picks-blocked");
+        let dir = TempDir::new().unwrap();
         let file = dir.join("not-a-folder");
         fs::write(&file, "").unwrap();
         let blocked = pick("p-3", "<p/>");
@@ -170,6 +170,5 @@ mod tests {
         ));
         assert!(matches!(unreadable.keep(&blocked), Err(KeepError::Io(_))));
         unreadable.read(&blocked.request).unwrap_err();
-        fs::remove_dir_all(&dir).unwrap();
     }
 }

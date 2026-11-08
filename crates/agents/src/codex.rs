@@ -63,6 +63,8 @@ mod tests {
     use std::ffi::OsStr;
     use std::path::Path;
 
+    use weacon_testing::TempDir;
+
     use super::*;
     use crate::test_support::{app, run_id};
 
@@ -92,14 +94,12 @@ mod tests {
 
     #[tokio::test]
     async fn a_missing_program_is_reported() {
-        let dir = std::env::temp_dir().join(format!("weacon-codex-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = TempDir::new().unwrap();
 
         let Err(error) = codex(&dir).start(&SpawnPolicy::default(), run_id("run-1"), None) else {
             panic!("a missing program started");
         };
 
         assert_eq!(error.code().as_str(), "agent.not_started");
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

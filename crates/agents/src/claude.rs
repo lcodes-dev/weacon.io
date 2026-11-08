@@ -82,22 +82,17 @@ impl Claude {
 #[cfg(test)]
 mod tests {
     use std::ffi::OsStr;
-    use std::fs;
     use std::path::Path;
+
+    use weacon_testing::TempDir;
 
     use super::*;
     use crate::test_support::run_id;
 
-    fn temp_dir(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("weacon-agents-{name}-{}", std::process::id()));
-        drop(fs::remove_dir_all(&dir));
-        fs::create_dir_all(&dir).unwrap();
-        dir
-    }
-
     // Real processes: a shell script stands in for `claude`.
     #[cfg(unix)]
     mod side_by_side {
+        use std::fs;
         use std::time::Duration;
 
         use tokio::time::timeout;
@@ -174,7 +169,7 @@ mod tests {
 
         #[tokio::test]
         async fn two_workspaces_run_side_by_side_each_with_its_own_config() {
-            let dir = temp_dir("workspaces");
+            let dir = TempDir::new().unwrap();
             fake_claude(&dir);
             let first = workspace(&dir, "first", SESSION_A);
             let second = workspace(&dir, "second", SESSION_B);
@@ -204,7 +199,6 @@ mod tests {
             let args = |name| fs::read_to_string(dir.join(name).join("args")).unwrap();
             assert!(!args("first").contains("--resume"));
             assert!(args("second").ends_with(&format!("--resume\n{SESSION_A}\n")));
-            fs::remove_dir_all(&dir).unwrap();
         }
 
         #[cfg(target_os = "linux")]
@@ -212,7 +206,7 @@ mod tests {
         async fn tools_inherit_the_policy_but_never_a_changed_config() {
             use std::collections::BTreeMap;
 
-            let dir = temp_dir("policy");
+            let dir = TempDir::new().unwrap();
             fake_claude(&dir);
             let claude = workspace(&dir, "first", SESSION_A);
             // Writing its own score back shows whether this procfs takes scores at all.
@@ -237,7 +231,6 @@ mod tests {
             let score = adjustable.then_some(raised).or(own);
             let expected = format!("{}3 {}\n", score.unwrap_or_default(), config.display());
             assert_eq!(tool, expected);
-            fs::remove_dir_all(&dir).unwrap();
         }
     }
 
@@ -263,11 +256,11 @@ mod tests {
 
     #[tokio::test]
     async fn a_missing_program_is_reported() {
-        let dir = temp_dir("missing");
+        let dir = TempDir::new().unwrap();
         let claude = Claude {
             program: dir.join("claude"),
-            config_dir: dir.clone(),
-            cwd: dir.clone(),
+            config_dir: dir.to_path_buf(),
+            cwd: dir.to_path_buf(),
         };
 
         let Err(error) = claude.start(&SpawnPolicy::default(), run_id("run-1"), None) else {
@@ -275,6 +268,5 @@ mod tests {
         };
 
         assert_eq!(error.code().as_str(), "agent.not_started");
-        fs::remove_dir_all(&dir).unwrap();
     }
 }

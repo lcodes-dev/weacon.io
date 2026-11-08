@@ -321,6 +321,8 @@ mod windows {
 
 #[cfg(test)]
 mod tests {
+    use weacon_testing::TempDir;
+
     use super::*;
     use crate::test_support::env;
 
@@ -395,14 +397,13 @@ mod tests {
 
     #[test]
     fn the_cores_oom_score_is_read_when_there_is_one() {
-        let dir = crate::test_support::temp_dir("oom");
+        let dir = TempDir::new().unwrap();
         let file = dir.join("oom_score_adj");
         fs::write(&file, "-200\n").unwrap();
 
         assert_eq!(oom_score(&file), Some(-200));
         assert_eq!(fs::read_to_string(&file).unwrap(), "-200\n");
         assert_eq!(oom_score(&dir.join("missing")), None);
-        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[cfg(target_os = "linux")]
@@ -432,16 +433,15 @@ mod tests {
 
     #[test]
     fn free_space_is_read_for_a_folder_and_refused_for_a_missing_one() {
-        let dir = crate::test_support::temp_dir("free");
+        let dir = TempDir::new().unwrap();
 
         assert!(free_space(&dir).unwrap() > 0);
         free_space(&dir.join("missing")).unwrap_err();
-        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
     fn a_whole_write_creates_folders_and_replaces_the_file() {
-        let dir = crate::test_support::temp_dir("whole");
+        let dir = TempDir::new().unwrap();
         let path = dir.join("a/b/unit.service");
 
         write_whole(&path, b"first").unwrap();
@@ -450,7 +450,6 @@ mod tests {
         assert_eq!(fs::read_to_string(&path).unwrap(), "second");
         assert!(!path.with_extension("new").exists());
         assert!(write_whole(&dir.join("a/b/unit.service/x"), b"").is_err());
-        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[cfg(unix)]
@@ -459,7 +458,7 @@ mod tests {
         use std::fs;
         use std::os::unix::fs::PermissionsExt;
 
-        let dir = crate::test_support::temp_dir("private");
+        let dir = TempDir::new().unwrap();
         let nested = dir.join("state/logs");
         fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).unwrap();
         private_dir(&nested).unwrap();
@@ -469,6 +468,5 @@ mod tests {
         assert_eq!(mode(&dir), 0o755);
         assert_eq!(mode(&dir.join("state")), 0o700);
         assert_eq!(mode(&nested), 0o700);
-        fs::remove_dir_all(&dir).unwrap();
     }
 }

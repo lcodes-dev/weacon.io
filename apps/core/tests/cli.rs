@@ -3,9 +3,9 @@
 #[cfg(test)]
 mod tests {
     use std::io::{BufRead, BufReader};
-    use std::path::PathBuf;
     use std::process::{Command, Output, Stdio};
     use std::{env, fs};
+    use weacon_testing::TempDir;
 
     fn weacon(args: &[&str], state_dir: &str) -> Output {
         Command::new(env!("CARGO_BIN_EXE_weacon"))
@@ -14,12 +14,6 @@ mod tests {
             .env_remove("WEACON_SENTRY_DSN")
             .output()
             .unwrap()
-    }
-
-    fn temp_dir(name: &str) -> PathBuf {
-        let dir = env::temp_dir().join(format!("weacon-core-cli-{name}-{}", std::process::id()));
-        drop(fs::remove_dir_all(&dir));
-        dir
     }
 
     #[test]
@@ -36,8 +30,8 @@ mod tests {
 
     #[test]
     fn doctor_succeeds_with_a_state_folder_and_fails_without_one() {
-        let dir = temp_dir("doctor");
-        let file = temp_dir("doctor-file");
+        let dir = TempDir::new().unwrap();
+        let file = dir.join("a-file");
         fs::write(&file, "").unwrap();
         let good = weacon(&["doctor"], dir.to_str().unwrap());
         // A folder can't be made inside a file.
@@ -47,26 +41,24 @@ mod tests {
         assert!(dir.join("logs/cli.log").exists());
         assert_eq!(blocked.status.code(), Some(2));
         assert!(String::from_utf8_lossy(&blocked.stderr).contains("state.unavailable"));
-        fs::remove_dir_all(&dir).unwrap();
-        fs::remove_file(&file).unwrap();
     }
 
     #[test]
     fn status_says_when_no_daemon_is_running() {
-        let dir = temp_dir("status");
-        let output = weacon(&["status"], dir.to_str().unwrap());
+        let dir = TempDir::new().unwrap();
+        // A first run, before the state folder exists.
+        let output = weacon(&["status"], dir.join("state").to_str().unwrap());
 
         assert_eq!(output.status.code(), Some(2));
         assert!(String::from_utf8_lossy(&output.stderr).contains("daemon.not_running"));
-        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
     fn the_daemon_serves_status() {
-        let dir = temp_dir("daemon");
+        let dir = TempDir::new().unwrap();
         let mut daemon = Command::new(env!("CARGO_BIN_EXE_weacon"))
             .args(["daemon", "--verbose"])
-            .env("WEACON_STATE_DIR", &dir)
+            .env("WEACON_STATE_DIR", &*dir)
             .stderr(Stdio::piped())
             .spawn()
             .unwrap();
@@ -81,7 +73,6 @@ mod tests {
                 .starts_with("Daemon: running, weacon ")
         );
         stop(daemon, &dir);
-        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[cfg(unix)]
@@ -114,10 +105,10 @@ mod tests {
     fn the_native_host_relays_frames_and_ends_with_the_daemon() {
         use std::io::{Read, Write};
 
-        let dir = temp_dir("native-host");
+        let dir = TempDir::new().unwrap();
         let mut daemon = Command::new(env!("CARGO_BIN_EXE_weacon"))
             .args(["daemon", "--verbose"])
-            .env("WEACON_STATE_DIR", &dir)
+            .env("WEACON_STATE_DIR", &*dir)
             .stderr(Stdio::piped())
             .spawn()
             .unwrap();
@@ -125,7 +116,7 @@ mod tests {
         while !stderr.next().unwrap().unwrap().contains("daemon started") {}
         let mut host = Command::new(env!("CARGO_BIN_EXE_weacon"))
             .arg("chrome-extension://phnfnmnpncfhkhlkmglnlhlkaaociaij/")
-            .env("WEACON_STATE_DIR", &dir)
+            .env("WEACON_STATE_DIR", &*dir)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
@@ -152,17 +143,16 @@ mod tests {
         let status = exited.recv_timeout(std::time::Duration::from_secs(20));
         assert!(status.is_ok(), "the host outlived the daemon");
         drop(stdin);
-        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[cfg(unix)]
     #[test]
     fn connect_chrome_registers_this_program() {
-        let dir = temp_dir("connect-chrome");
+        let dir = TempDir::new().unwrap();
         let output = Command::new(env!("CARGO_BIN_EXE_weacon"))
             .arg("connect-chrome")
             .env("WEACON_STATE_DIR", dir.join("state"))
-            .env("HOME", &dir)
+            .env("HOME", &*dir)
             .env_remove("XDG_CONFIG_HOME")
             .output()
             .unwrap();
@@ -178,7 +168,6 @@ mod tests {
                 .unwrap()
                 .contains(env!("CARGO_BIN_EXE_weacon"))
         );
-        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

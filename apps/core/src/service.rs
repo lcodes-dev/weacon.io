@@ -262,8 +262,10 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     mod on_linux {
+        use weacon_testing::TempDir;
+
         use super::*;
-        use crate::test_support::{messages, temp_dir};
+        use crate::test_support::messages;
 
         #[test]
         fn the_unit_goes_in_the_users_systemd_folder() {
@@ -309,7 +311,7 @@ mod tests {
 
         #[test]
         fn install_writes_the_unit_then_lingers_enables_and_restarts() {
-            let dir = temp_dir("service-install");
+            let dir = TempDir::new().unwrap();
             let mut calls = Calls::new();
 
             let (result, records) = in_dir(ServiceCommand::Install, &dir, &mut calls, "");
@@ -323,12 +325,11 @@ mod tests {
             assert!(!file.with_extension("new").exists());
             assert_eq!(calls, INSTALLED);
             assert_eq!(messages(&records), ["service installed"]);
-            fs::remove_dir_all(&dir).unwrap();
         }
 
         #[test]
         fn a_failed_step_stops_the_install_and_says_which() {
-            let dir = temp_dir("service-failed");
+            let dir = TempDir::new().unwrap();
             let mut calls = Calls::new();
 
             let error = in_dir(ServiceCommand::Install, &dir, &mut calls, INSTALLED[2])
@@ -347,12 +348,11 @@ mod tests {
                 "Lingering couldn't be turned on for this user"
             );
             assert!(std::error::Error::source(&gone).is_some());
-            fs::remove_dir_all(&dir).unwrap();
         }
 
         #[test]
         fn uninstall_stops_and_removes_an_installed_service_only() {
-            let dir = temp_dir("service-uninstall");
+            let dir = TempDir::new().unwrap();
             let mut calls = Calls::new();
             in_dir(ServiceCommand::Install, &dir, &mut calls, "")
                 .0
@@ -374,7 +374,6 @@ mod tests {
             );
             assert!(!dir.join("systemd/user/weacon.service").exists());
             assert_eq!(messages(&records), ["service removed"]);
-            fs::remove_dir_all(&dir).unwrap();
         }
 
         #[test]

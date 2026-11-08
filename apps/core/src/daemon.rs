@@ -278,11 +278,10 @@ mod tests {
     use tokio::task::JoinHandle;
     use tokio::time::timeout;
     use weacon_protocol::{ErrorBody, Hello, PROTOCOL, Welcome};
+    use weacon_testing::TempDir;
 
     use super::*;
-    use crate::test_support::{
-        self, Records, VERSION, error_code, messages, recording_logger, temp_dir,
-    };
+    use crate::test_support::{self, Records, VERSION, error_code, messages, recording_logger};
 
     struct Running {
         socket: PathBuf,
@@ -384,9 +383,9 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn the_disk_is_checked_at_start_and_again_each_minute() {
-        let dir = temp_dir("daemon-disk");
+        let dir = TempDir::new().unwrap();
         fs::write(dir.join("free"), "0").unwrap();
-        let watched = dir.clone();
+        let watched = dir.to_path_buf();
         let running = start_as(&dir, |daemon| {
             daemon.disk = disk::Watch::new(watched, free_in_file);
         })
@@ -403,7 +402,6 @@ mod tests {
             .filter(|message| message.starts_with("disk "))
             .collect();
         assert_eq!(disk, ["disk full", "disk ok"]);
-        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[tokio::test(start_paused = true)]
@@ -411,7 +409,7 @@ mod tests {
         if !platform::PROCESSES {
             return;
         }
-        let dir = temp_dir("daemon-memory");
+        let dir = TempDir::new().unwrap();
         let running = start(&dir).unwrap();
 
         logs(&running.records, "memory sampled").await;
@@ -419,7 +417,6 @@ mod tests {
         logs_times(&running.records, "memory sampled", 2).await;
 
         running.stop().await;
-        fs::remove_dir_all(&dir).unwrap();
     }
 
     async fn connect(socket: &Path) -> impl AsyncRead + AsyncWrite + Unpin + use<> {
@@ -428,7 +425,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_client_shakes_hands_and_shutdown_cleans_up() {
-        let dir = temp_dir("daemon-hello");
+        let dir = TempDir::new().unwrap();
         let running = start(&dir).unwrap();
         let socket = running.socket.clone();
 
@@ -450,12 +447,11 @@ mod tests {
             .filter(|message| message.starts_with("daemon "))
             .collect();
         assert_eq!(lifecycle, ["daemon started", "daemon stopped"]);
-        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[tokio::test]
     async fn one_daemon_per_state_folder_and_a_stale_socket_is_replaced() {
-        let dir = temp_dir("daemon-twice");
+        let dir = TempDir::new().unwrap();
         fs::write(socket_path(&dir), "stale").unwrap();
         let first = start(&dir).unwrap();
         let second = start(&dir).err().unwrap();
@@ -463,7 +459,6 @@ mod tests {
         assert_eq!(second.code().as_str(), "daemon.running");
         ask(&first.socket).await.unwrap();
         first.stop().await;
-        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[cfg(unix)]
@@ -471,7 +466,7 @@ mod tests {
     async fn a_state_folder_others_can_reach_is_refused() {
         use std::os::unix::fs::PermissionsExt;
 
-        let dir = temp_dir("daemon-open");
+        let dir = TempDir::new().unwrap();
         fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).unwrap();
 
         assert_eq!(
@@ -479,25 +474,23 @@ mod tests {
             "state.not_private"
         );
         assert!(!socket_path(&dir).exists());
-        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[cfg(unix)]
     #[tokio::test]
     async fn another_user_is_refused() {
-        let dir = temp_dir("daemon-stranger");
+        let dir = TempDir::new().unwrap();
         let running = start_as(&dir, |daemon| daemon.owner += 1).unwrap();
         let refused = ask(&running.socket).await.unwrap_err();
         let records = running.stop().await;
 
         assert_eq!(refused.code().as_str(), "daemon.no_answer");
         assert!(messages(&records).contains(&"client refused"));
-        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[tokio::test]
     async fn bad_frames_get_errors_and_the_connection_goes_on() {
-        let dir = temp_dir("daemon-frames");
+        let dir = TempDir::new().unwrap();
         let running = start(&dir).unwrap();
         let mut bytes = b"not json\n".to_vec();
         bytes.extend(hello(PROTOCOL));
@@ -508,12 +501,11 @@ mod tests {
         assert!(matches!(replies[1], Message::Welcome(_)));
         assert_eq!(error_code(&later[0]), Some("frame.invalid"));
         running.stop().await;
-        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[tokio::test(start_paused = true)]
     async fn another_protocol_is_hung_up_on_at_once() {
-        let dir = temp_dir("daemon-protocol");
+        let dir = TempDir::new().unwrap();
         let running = start(&dir).unwrap();
         let other = hello(PROTOCOL + 1);
         let talk = exchange(connect(&running.socket).await, &other, 9);
@@ -522,12 +514,11 @@ mod tests {
         assert_eq!(replies.len(), 1);
         assert_eq!(error_code(&replies[0]), Some("protocol.unsupported"));
         running.stop().await;
-        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[tokio::test]
     async fn shutdown_hangs_up_on_connected_clients() {
-        let dir = temp_dir("daemon-idle");
+        let dir = TempDir::new().unwrap();
         let running = start(&dir).unwrap();
         let (replies, mut client) =
             exchange(connect(&running.socket).await, &hello(PROTOCOL), 1).await;
@@ -535,12 +526,11 @@ mod tests {
 
         assert!(matches!(replies[0], Message::Welcome(_)));
         assert_eq!(client.read(&mut [0; 16]).await.unwrap(), 0);
-        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[tokio::test(start_paused = true)]
     async fn a_hello_may_come_late_but_within_the_deadline() {
-        let dir = temp_dir("daemon-late");
+        let dir = TempDir::new().unwrap();
         let running = start(&dir).unwrap();
         let client = connect(&running.socket).await;
         tokio::time::sleep(HANDSHAKE_TIMEOUT / 2).await;
@@ -548,19 +538,17 @@ mod tests {
 
         assert!(matches!(replies[0], Message::Welcome(_)));
         running.stop().await;
-        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[tokio::test(start_paused = true)]
     async fn a_client_that_never_says_hello_is_hung_up_on() {
-        let dir = temp_dir("daemon-silent");
+        let dir = TempDir::new().unwrap();
         let running = start(&dir).unwrap();
         let mut client = connect(&running.socket).await;
         let read = timeout(HANDSHAKE_TIMEOUT * 2, client.read(&mut [0; 16])).await;
 
         assert_eq!(read.unwrap().unwrap(), 0);
         running.stop().await;
-        fs::remove_dir_all(&dir).unwrap();
     }
 
     fn pick(id: u32, request: &str, html: &str) -> Vec<u8> {
@@ -577,7 +565,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_pick_is_kept_and_answered_with_a_receipt() {
-        let dir = temp_dir("daemon-pick");
+        let dir = TempDir::new().unwrap();
         let running = start(&dir).unwrap();
         let mut bytes = hello(PROTOCOL);
         bytes.extend(pick(2, "p-1", "<b>MARKER-HTML</b>"));
@@ -604,12 +592,11 @@ mod tests {
         let logged = serde_json::to_string(&*records.lock().unwrap()).unwrap();
         assert!(logged.contains("p-1"), "{logged}");
         assert!(!logged.contains("MARKER"), "{logged}");
-        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[tokio::test]
     async fn a_pick_that_cant_be_kept_fails_its_receipt() {
-        let dir = temp_dir("daemon-pick-fails");
+        let dir = TempDir::new().unwrap();
         let running = start(&dir).unwrap();
         fs::write(dir.join("picks"), "a file, not a folder").unwrap();
         let mut bytes = hello(PROTOCOL);
@@ -624,12 +611,11 @@ mod tests {
             })
         );
         assert!(messages(&records).contains(&"pick not kept"));
-        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[tokio::test]
     async fn a_pick_before_the_hello_is_refused() {
-        let dir = temp_dir("daemon-pick-early");
+        let dir = TempDir::new().unwrap();
         let running = start(&dir).unwrap();
         let (replies, _) =
             exchange(connect(&running.socket).await, &pick(1, "p-3", "<p/>"), 1).await;
@@ -637,12 +623,11 @@ mod tests {
 
         assert_eq!(error_code(&replies[0]), Some("handshake.required"));
         assert!(!dir.join("picks").exists());
-        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[tokio::test]
     async fn a_clients_errors_are_logged_by_code_after_its_hello() {
-        let dir = temp_dir("daemon-client-error");
+        let dir = TempDir::new().unwrap();
         let running = start(&dir).unwrap();
         let error = encode_line(&Envelope {
             id: 2,
@@ -669,7 +654,6 @@ mod tests {
         assert_eq!(reported.len(), 1);
         let reported = serde_json::to_string(&reported).unwrap();
         assert!(reported.contains("extension.capture_failed"), "{reported}");
-        fs::remove_dir_all(&dir).unwrap();
     }
 
     // Writes 8 MiB of bad lines without reading the replies; far more than the socket buffers.
@@ -683,7 +667,7 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn a_client_that_floods_before_its_hello_is_hung_up_on() {
-        let dir = temp_dir("daemon-flood");
+        let dir = TempDir::new().unwrap();
         let running = start(&dir).unwrap();
         let client = connect(&running.socket).await;
 
@@ -693,6 +677,5 @@ mod tests {
             .unwrap()
             .unwrap_err();
         running.stop().await;
-        fs::remove_dir_all(&dir).unwrap();
     }
 }

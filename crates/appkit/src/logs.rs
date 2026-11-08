@@ -81,7 +81,7 @@ fn numbered(path: &Path, number: u32) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::temp_dir;
+    use weacon_testing::TempDir;
 
     fn read(path: &Path) -> String {
         fs::read_to_string(path).unwrap_or_default()
@@ -89,7 +89,7 @@ mod tests {
 
     #[test]
     fn a_full_file_moves_aside_and_only_the_newest_are_kept() {
-        let dir = temp_dir("logs-rotate");
+        let dir = TempDir::new().unwrap();
         let path = dir.join("weacon.log");
         let mut file = RotatingFile::open(path.clone(), 10, 2).unwrap();
         for line in ["one\n", "two\n", "three\n", "four\n"] {
@@ -100,12 +100,11 @@ mod tests {
         assert_eq!(read(&numbered(&path, 1)), "three\n");
         assert_eq!(read(&numbered(&path, 2)), "one\ntwo\n");
         assert!(!numbered(&path, 3).exists());
-        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
     fn an_existing_file_counts_toward_the_limit() {
-        let dir = temp_dir("logs-existing");
+        let dir = TempDir::new().unwrap();
         let path = dir.join("weacon.log");
         fs::write(&path, "older\n").unwrap();
         let mut file = RotatingFile::open(path.clone(), 10, 1).unwrap();
@@ -114,12 +113,11 @@ mod tests {
 
         assert_eq!(read(&path), "newer\n");
         assert_eq!(read(&numbered(&path, 1)), "older\n");
-        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
     fn a_file_may_reach_the_limit_exactly() {
-        let dir = temp_dir("logs-exact");
+        let dir = TempDir::new().unwrap();
         let path = dir.join("weacon.log");
         let mut file = RotatingFile::open(path.clone(), 8, 1).unwrap();
         file.write_all(b"one\n").unwrap();
@@ -128,12 +126,11 @@ mod tests {
         assert_eq!(MAX_BYTES, 10 << 20);
         assert_eq!(read(&path), "one\ntwo\n");
         assert!(!numbered(&path, 1).exists());
-        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
     fn a_deleted_file_is_created_again() {
-        let dir = temp_dir("logs-deleted");
+        let dir = TempDir::new().unwrap();
         let path = dir.join("weacon.log");
         let mut file = RotatingFile::open(path.clone(), 8, 1).unwrap();
         file.write_all(b"one\n").unwrap();
@@ -141,18 +138,16 @@ mod tests {
         file.write_all(b"three\n").unwrap();
 
         assert_eq!(read(&path), "three\n");
-        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
     fn a_line_longer_than_the_limit_is_still_written() {
-        let dir = temp_dir("logs-long");
+        let dir = TempDir::new().unwrap();
         let path = dir.join("weacon.log");
         let mut file = RotatingFile::open(path.clone(), 4, 1).unwrap();
         file.write_all(b"much too long\n").unwrap();
 
         assert_eq!(read(&path), "much too long\n");
         assert!(!numbered(&path, 1).exists());
-        fs::remove_dir_all(&dir).unwrap();
     }
 }

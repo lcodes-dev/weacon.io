@@ -104,12 +104,13 @@ fn register_with(
 mod tests {
     use std::cell::RefCell;
 
+    use weacon_testing::TempDir;
+
     use super::*;
-    use crate::test_support::temp_dir;
 
     #[test]
     fn on_windows_the_registry_points_each_browser_at_the_manifest() {
-        let dir = temp_dir("chrome-registry");
+        let dir = TempDir::new().unwrap();
         let calls = RefCell::new(Vec::new());
         let reg = |args: &[&std::ffi::OsStr]| {
             calls.borrow_mut().push(
@@ -137,7 +138,6 @@ mod tests {
         }
         let failed = register_with(&dir, b"{}", |_| Ok(false)).unwrap_err();
         assert_eq!(failed.kind(), io::ErrorKind::Other);
-        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[cfg(target_os = "linux")]
@@ -173,7 +173,7 @@ mod tests {
     fn the_manifest_is_written_for_each_browser() {
         use crate::test_support::env;
 
-        let dir = temp_dir("chrome-host");
+        let dir = TempDir::new().unwrap();
         let home = dir.join("home");
         let vars = env(&[("HOME", home.to_str().unwrap())]);
 
@@ -191,6 +191,5 @@ mod tests {
                 .kind(),
             io::ErrorKind::NotFound
         );
-        fs::remove_dir_all(&dir).unwrap();
     }
 }

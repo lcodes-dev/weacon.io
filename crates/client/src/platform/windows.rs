@@ -355,6 +355,7 @@ impl Server {
 mod tests {
     use super::super::pipe_name;
     use super::*;
+    use weacon_testing::TempDir;
     use windows_sys::Win32::Security::Authorization::{
         ConvertSecurityDescriptorToStringSecurityDescriptorW, GetNamedSecurityInfoW,
     };
@@ -431,19 +432,18 @@ mod tests {
         }) else {
             return;
         };
-        let dir = std::env::temp_dir().join(format!("weacon-stranger-{}", std::process::id()));
-        std::fs::write(&dir, &name).unwrap();
+        let dir = TempDir::new().unwrap();
+        let socket = dir.join("stranger");
+        std::fs::write(&socket, &name).unwrap();
 
-        let refused = connect(&dir).await.unwrap_err();
+        let refused = connect(&socket).await.unwrap_err();
 
         assert_eq!(refused.kind(), io::ErrorKind::PermissionDenied);
-        std::fs::remove_file(&dir).unwrap();
     }
 
     #[test]
     fn a_folder_is_made_ours_alone() {
-        let dir = std::env::temp_dir().join(format!("weacon-private-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = TempDir::new().unwrap();
 
         make_private(&dir).unwrap();
         make_private(&dir).expect("a private folder can be made private again");
@@ -458,6 +458,5 @@ mod tests {
             !access.contains(";AU)") && !access.contains(";BU)"),
             "{access}"
         );
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 }
