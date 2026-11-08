@@ -143,9 +143,11 @@ mod tests {
         );
     }
 
-    #[cfg(target_os = "linux")]
     #[tokio::test]
     async fn this_process_is_sampled_from_proc() {
+        if !crate::platform::PROCESSES {
+            return;
+        }
         let (log, records) = crate::test_support::recording_logger();
 
         Watch::new(crate::platform::processes).record(&log).await;

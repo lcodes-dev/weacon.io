@@ -406,9 +406,11 @@ mod tests {
         fs::remove_dir_all(&dir).unwrap();
     }
 
-    #[cfg(target_os = "linux")]
     #[tokio::test(start_paused = true)]
     async fn memory_is_sampled_at_start_and_every_five_minutes() {
+        if !platform::PROCESSES {
+            return;
+        }
         let dir = temp_dir("daemon-memory");
         let running = start(&dir).unwrap();
 
