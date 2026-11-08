@@ -5,22 +5,11 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
 use serde_json::{Map, Value};
+use weacon_protocol::Level;
 
 use crate::redact::{Field, redact_fields};
 
 const RESERVED: [&str; 3] = ["time", "level", "msg"];
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
-#[serde(rename_all = "lowercase")]
-pub enum Level {
-    Trace,
-    Debug,
-    #[default]
-    Info,
-    Warn,
-    Error,
-    Fatal,
-}
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct Record {
@@ -214,11 +203,6 @@ pub(crate) mod tests {
                 { "time": TIME, "level": "fatal", "msg": "crashed" },
             ])
         );
-    }
-
-    #[test]
-    fn defaults_to_info() {
-        assert_eq!(Level::default(), Level::Info);
     }
 
     #[test]
