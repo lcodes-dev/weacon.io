@@ -153,7 +153,7 @@ mod tests {
             message: Message::Hello(Hello {
                 protocol,
                 app: App {
-                    name: "weacon-desktop".to_owned(),
+                    name: "weacon-extension".to_owned(),
                     version: "0.1.0".to_owned(),
                     commit: "1a2b3c4".to_owned(),
                 },

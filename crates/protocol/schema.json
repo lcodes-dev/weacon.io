@@ -102,7 +102,7 @@
       "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
     },
     "App": {
-      "description": "A program, such as `weacon-desktop`, and the exact build it is.",
+      "description": "A program, such as `weacon-core`, and the exact build it is.",
       "type": "object",
       "properties": {
         "commit": {
