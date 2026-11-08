@@ -49,7 +49,7 @@ pub struct Welcome {
     pub capabilities: Vec<Capability>,
 }
 
-/// A program, such as `weacon-desktop`, and the exact build it is.
+/// A program, such as `weacon-core`, and the exact build it is.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct App {
     pub name: String,
@@ -98,7 +98,7 @@ mod tests {
     fn hello(protocol: u32) -> Hello {
         Hello {
             protocol,
-            app: app("weacon-desktop"),
+            app: app("weacon-extension"),
             capabilities: Vec::new(),
         }
     }
@@ -116,7 +116,7 @@ mod tests {
                     message: Message::Hello(hello(PROTOCOL)),
                 },
                 json!({ "id": 1, "type": "hello", "protocol": 1,
-                        "app": { "name": "weacon-desktop", "version": "0.1.0", "commit": "1a2b3c4" } }),
+                        "app": { "name": "weacon-extension", "version": "0.1.0", "commit": "1a2b3c4" } }),
             ),
             (
                 Envelope {
@@ -172,7 +172,7 @@ mod tests {
 
         let newer: Envelope =
             serde_json::from_value(json!({ "id": 5, "type": "hello", "protocol": 1,
-            "app": { "name": "weacon-desktop", "version": "9.0.0", "commit": "1a2b3c4" },
+            "app": { "name": "weacon-extension", "version": "9.0.0", "commit": "1a2b3c4" },
             "capabilities": ["chat.send", "future.thing"] }))
             .unwrap();
 

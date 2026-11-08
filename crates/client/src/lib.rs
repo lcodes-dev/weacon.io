@@ -201,7 +201,7 @@ mod tests {
         let daemon = serve_once(&socket, Some(Message::Welcome(welcome.clone())));
 
         assert_eq!(
-            handshake(&socket, app("weacon-desktop")).await.unwrap(),
+            handshake(&socket, app("weacon-extension")).await.unwrap(),
             welcome
         );
         assert_eq!(
@@ -210,7 +210,7 @@ mod tests {
                 id: 1,
                 message: Message::Hello(Hello {
                     protocol: PROTOCOL,
-                    app: app("weacon-desktop"),
+                    app: app("weacon-extension"),
                     capabilities: Vec::new(),
                 }),
             }
@@ -256,7 +256,7 @@ mod tests {
         let offered = vec![Capability::from(code!("run.stream"))];
 
         let (welcomed, mut connection) =
-            Connection::open(&socket, app("weacon-desktop"), offered.clone())
+            Connection::open(&socket, app("weacon-extension"), offered.clone())
                 .await
                 .unwrap();
         let hello = daemon.await.unwrap();
@@ -278,7 +278,9 @@ mod tests {
         let dir = temp_dir("hangup");
         let socket = dir.join("weacon.sock");
         let daemon = serve_once(&socket, None);
-        let error = handshake(&socket, app("weacon-desktop")).await.unwrap_err();
+        let error = handshake(&socket, app("weacon-extension"))
+            .await
+            .unwrap_err();
         drop(daemon.await);
 
         assert_eq!(error.code().as_str(), "daemon.no_answer");
@@ -316,7 +318,7 @@ mod tests {
         drop(Server::bind(&socket).unwrap());
 
         for path in [socket.as_path(), Path::new("/nonexistent/weacon.sock")] {
-            let error = handshake(path, app("weacon-desktop")).await.unwrap_err();
+            let error = handshake(path, app("weacon-extension")).await.unwrap_err();
 
             assert_eq!(error.code().as_str(), "daemon.not_running");
         }

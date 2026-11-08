@@ -32,7 +32,7 @@ export type Envelope = {
 export type AgentSession = string;
 
 /**
- * A program, such as `weacon-desktop`, and the exact build it is.
+ * A program, such as `weacon-core`, and the exact build it is.
  */
 export type App = {
   commit: string;
