@@ -2,9 +2,11 @@ import { useState } from "react";
 
 import { type Status, statusText } from "./connection.ts";
 import type { App as Build } from "./protocol.ts";
+import type { Transcript } from "./transcript.ts";
+import { TranscriptView } from "./transcript-view.tsx";
 
-/** The page: a header with Settings, over the page or Settings. */
-export function App({ me, status }: { me: Build; status: Status }) {
+/** The page: a header with Settings, over the run's transcript or Settings. */
+export function App({ me, status, transcript }: { me: Build; status: Status; transcript: Transcript }) {
   const [settings, setSettings] = useState(false);
   return (
     <div className="app">
@@ -14,14 +16,16 @@ export function App({ me, status }: { me: Build; status: Status }) {
           {settings ? "Back" : "Settings"}
         </button>
       </header>
-      <main>{settings ? <Settings me={me} status={status} /> : <p className="muted">No run yet.</p>}</main>
+      <main>
+{settings ? <Settings me={me} status={status} /> : <TranscriptView rows={transcript.rows} writing={transcript.writing} />}
+      </main>
     </div>
   );
 }
 
 function Settings({ me, status }: { me: Build; status: Status }) {
   return (
-    <section>
+    <section className="page">
       <h1>Settings</h1>
       <h2>About</h2>
       <dl>

@@ -21,9 +21,10 @@ export type Status =
   | { state: "live"; server: App; capabilities: string[] }
   | { state: "ended"; code: End };
 
-/** Told each change of status. */
+/** Told each change of status, and each message after the welcome. */
 export type Listener = {
   status(status: Status): void;
+  message(envelope: Envelope): void;
 };
 
 /** Says hello as `me` once `socket` opens, then passes on what the server sends. */
@@ -37,8 +38,11 @@ export class Connection {
       this.#send({ id: 1, type: "hello", protocol: PROTOCOL, app: me, capabilities: [NEEDS] });
     });
     socket.addEventListener("message", ({ data }) => {
+      const envelope = parse(data);
       if (this.#status.state === "connecting") {
-        this.#welcome(parse(data), listener);
+        this.#welcome(envelope, listener);
+      } else if (this.#status.state === "live" && envelope !== undefined) {
+        listener.message(envelope);
       }
     });
     socket.addEventListener("close", () => {
@@ -97,7 +101,7 @@ export function statusText(status: Status): string {
   }
 }
 
-// The welcome is the only message read so far, so only its fields are checked beyond `type`.
+// The welcome's fields, checked before the connection goes live; `Feed` checks run messages.
 function isApp(app: unknown): app is App {
   return (
     typeof app === "object" &&

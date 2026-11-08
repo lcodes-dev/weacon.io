@@ -118,6 +118,7 @@ Every program logs, reports errors and says which build it is from its first com
 | `UPDATE_SCHEMA=1 cargo test -p weacon-protocol` | Regenerates `crates/protocol/schema.json` after a message changes |
 | `npm --prefix apps/extension run update-types`, `npm --prefix apps/web run update-types` | Regenerates each app's `src/protocol.ts` from `schema.json` |
 | `npm --prefix apps/web run build` | Builds the web app into `apps/web/dist/` (`index.html`, `app.js`, `app.css`), with this commit in Settings › About |
+| `npm --prefix apps/web run measure` | Streams the 100,000-token session into the built web app in Chromium and prints frame gaps, memory and bundle size |
 | `cargo run -p weacon-testing --bin fake-server -- .dev/fake`, then open `apps/web/dist/index.html?server=<the address it prints>` | Streams a made-up 100,000-token session to the web app |
 | `npm --prefix apps/extension run build` | Builds the extension into `apps/extension/dist/`, with this commit in its manifest's `version_name`; load that folder unpacked in Chrome, then run `weacon connect-chrome` |
 | `scripts/release.sh <target>` | Builds a static release `weacon` for one target into `dist/`, checks it reports this commit, and prints its size |
