@@ -40,20 +40,36 @@ mod tests {
         );
     }
 
+    // Runs a command that should end, and gives its exit code and logs; one that doesn't is
+    // killed after 30 seconds.
+    fn exits(command: &mut Command) -> (Option<i32>, String) {
+        let mut child = Running(command.stdout(Stdio::piped()).spawn().unwrap());
+        let mut stdout = child.0.stdout.take().unwrap();
+        let (sent, logs) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let mut text = String::new();
+            drop(stdout.read_to_string(&mut text));
+            drop(sent.send(text));
+        });
+        let logs = logs
+            .recv_timeout(std::time::Duration::from_secs(30))
+            .expect("the server didn't stop");
+        (child.0.wait().unwrap().code(), logs)
+    }
+
     #[test]
     fn a_missing_outbox_stops_the_server_before_it_starts() {
         let dir = TempDir::new().unwrap();
-        let output = server()
-            .args(["serve", "--listen", "127.0.0.1:0", "--db"])
-            .arg(dir.join("weacon.db"))
-            .arg("--outbox")
-            .arg(dir.join("missing"))
-            .env("WEACON_SENTRY_DSN", "")
-            .output()
-            .unwrap();
-        let logs = String::from_utf8_lossy(&output.stdout);
+        let (code, logs) = exits(
+            server()
+                .args(["serve", "--listen", "127.0.0.1:0", "--db"])
+                .arg(dir.join("weacon.db"))
+                .arg("--outbox")
+                .arg(dir.join("missing"))
+                .env("WEACON_SENTRY_DSN", ""),
+        );
 
-        assert_eq!(output.status.code(), Some(2));
+        assert_eq!(code, Some(2));
         assert!(logs.contains("server.outbox_unusable"), "{logs}");
         assert!(!dir.join("weacon.db").exists());
     }
@@ -63,17 +79,16 @@ mod tests {
         let taken = TcpListener::bind("127.0.0.1:0").unwrap();
         let address = taken.local_addr().unwrap().to_string();
         let db = TempDir::new().unwrap();
-        let output = server()
-            .args(["serve", "--listen", &address, "--db"])
-            .arg(db.join("weacon.db"))
-            .arg("--outbox")
-            .arg(&*db)
-            .env("WEACON_SENTRY_DSN", "")
-            .output()
-            .unwrap();
-        let logs = String::from_utf8_lossy(&output.stdout);
+        let (code, logs) = exits(
+            server()
+                .args(["serve", "--listen", &address, "--db"])
+                .arg(db.join("weacon.db"))
+                .arg("--outbox")
+                .arg(&*db)
+                .env("WEACON_SENTRY_DSN", ""),
+        );
 
-        assert_eq!(output.status.code(), Some(2));
+        assert_eq!(code, Some(2));
         assert!(logs.contains("server.bind_failed"), "{logs}");
         assert!(!logs.contains("report setup failed"), "{logs}");
     }
