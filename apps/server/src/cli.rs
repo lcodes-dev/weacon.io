@@ -25,6 +25,9 @@ pub(crate) enum Command {
         /// The database file, created if missing.
         #[arg(long)]
         db: PathBuf,
+        /// The folder where sign-in codes wait, one JSON file each, for a mail relay to send.
+        #[arg(long)]
+        outbox: PathBuf,
     },
     #[command(flatten)]
     Admin(Admin),
@@ -106,27 +109,38 @@ mod tests {
         assert_eq!(error.to_string(), "weacon-server 0.1.0 (1a2b3c4)\n");
     }
 
-    fn serve(args: &[&str]) -> (String, PathBuf) {
-        let Command::Serve { listen, db } = run(args).unwrap().command else {
+    fn serve(args: &[&str]) -> (String, PathBuf, PathBuf) {
+        let Command::Serve { listen, db, outbox } = run(args).unwrap().command else {
             panic!("not serve");
         };
-        (listen.to_string(), db)
+        (listen.to_string(), db, outbox)
     }
 
     #[test]
     fn serves_where_it_is_told() {
-        let args = ["weacon-server", "serve", "--db", "team.db"];
+        let args = [
+            "weacon-server",
+            "serve",
+            "--db",
+            "team.db",
+            "--outbox",
+            "outbox",
+        ];
 
         assert_eq!(
             serve(&args),
-            ("127.0.0.1:8080".to_owned(), PathBuf::from("team.db"))
+            (
+                "127.0.0.1:8080".to_owned(),
+                PathBuf::from("team.db"),
+                PathBuf::from("outbox")
+            )
         );
         assert_eq!(
             serve(&[&args[..], &["--listen", "0.0.0.0:9000"]].concat()).0,
             "0.0.0.0:9000"
         );
         run(&[&args[..], &["--listen", "nowhere"]].concat()).unwrap_err();
-        run(&["weacon-server", "serve"]).unwrap_err();
+        run(&["weacon-server", "serve", "--db", "team.db"]).unwrap_err();
         run(&["weacon-server"]).unwrap_err();
     }
 

@@ -2,9 +2,9 @@
 
 #[cfg(test)]
 mod tests {
-    use std::io::{BufRead, BufReader, Read, Write};
+    use std::io::{BufRead, BufReader, Lines, Read, Write};
     use std::net::{TcpListener, TcpStream};
-    use std::process::{Child, Command, Output, Stdio};
+    use std::process::{Child, ChildStdout, Command, Output, Stdio};
 
     use weacon_testing::TempDir;
 
@@ -48,6 +48,8 @@ mod tests {
         let output = server()
             .args(["serve", "--listen", &address, "--db"])
             .arg(db.join("weacon.db"))
+            .arg("--outbox")
+            .arg(&*db)
             .env("WEACON_SENTRY_DSN", "")
             .output()
             .unwrap();
@@ -58,39 +60,112 @@ mod tests {
         assert!(!logs.contains("report setup failed"), "{logs}");
     }
 
-    #[test]
-    fn serves_its_version_on_the_address_it_logs() {
-        let db = TempDir::new().unwrap();
+    // One HTTP/1.1 exchange with a JSON body; the whole response.
+    fn http(address: &str, head: &str, body: &str) -> String {
+        let mut stream = TcpStream::connect(address).unwrap();
+        let request = format!(
+            "{head} HTTP/1.1\r\nhost: test\r\nconnection: close\r\n\
+             content-type: application/json\r\ncontent-length: {}\r\n\r\n{body}",
+            body.len()
+        );
+        stream.write_all(request.as_bytes()).unwrap();
+        stream
+            .set_read_timeout(Some(std::time::Duration::from_secs(30)))
+            .unwrap();
+        let mut response = String::new();
+        stream.read_to_string(&mut response).unwrap();
+        response
+    }
+
+    // A server on `db` and `outbox`, its address, and the rest of its logs.
+    fn serve(db: &TempDir, outbox: &TempDir) -> (Running, String, Lines<BufReader<ChildStdout>>) {
         let mut child = Running(
             server()
                 .args(["serve", "--listen", "127.0.0.1:0", "--db"])
                 .arg(db.join("weacon.db"))
+                .arg("--outbox")
+                .arg(&**outbox)
                 .stdout(Stdio::piped())
                 .spawn()
                 .unwrap(),
         );
-        let lines = BufReader::new(child.0.stdout.take().unwrap()).lines();
+        let mut lines = BufReader::new(child.0.stdout.take().unwrap()).lines();
         let address = lines
+            .by_ref()
             .map(|line| serde_json::from_str::<serde_json::Value>(&line.unwrap()).unwrap())
             .find(|record| record["msg"] == "listening")
             .unwrap()["address"]
             .as_str()
             .unwrap()
             .to_owned();
-        let mut stream = TcpStream::connect(address).unwrap();
-        stream
-            .write_all(b"GET /version HTTP/1.1\r\nhost: test\r\nconnection: close\r\n\r\n")
-            .unwrap();
-        let mut response = String::new();
-        stream.read_to_string(&mut response).unwrap();
+        (child, address, lines)
+    }
 
-        assert!(response.starts_with("HTTP/1.1 200 OK"), "{response}");
-        // The server created its database before listening.
-        assert!(db.join("weacon.db").exists());
-        assert!(
-            response.contains("\"name\":\"weacon-server\""),
-            "{response}"
+    // The code in the letter the server leaves in `outbox` after answering, and who it is for.
+    fn letter(outbox: &TempDir) -> (String, String) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        let file = loop {
+            assert!(std::time::Instant::now() < deadline, "no letter came");
+            let posted = std::fs::read_dir(outbox)
+                .unwrap()
+                .map(|entry| entry.unwrap().path())
+                .find(|path| {
+                    path.extension()
+                        .is_some_and(|extension| extension == "json")
+                });
+            if let Some(file) = posted {
+                break file;
+            }
+            std::thread::yield_now();
+        };
+        let letter: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(file).unwrap()).unwrap();
+        let text = |key: &str| letter[key].as_str().unwrap().to_owned();
+        (text("to"), text("code"))
+    }
+
+    #[test]
+    fn a_member_signs_in_with_a_code_from_the_outbox() {
+        let db = TempDir::new().unwrap();
+        let outbox = TempDir::new().unwrap();
+        let workspace = admin(&["create-workspace", "--name", "Team"], &db);
+        admin(
+            &[
+                "add-member",
+                "--workspace",
+                &workspace,
+                "--email",
+                "ada@example.com",
+            ],
+            &db,
         );
+        let (child, address, lines) = serve(&db, &outbox);
+        let version = http(&address, "GET /version", "");
+        let start = format!(r#"{{"workspace":"{workspace}","email":"ada@example.com"}}"#);
+        let started = http(&address, "POST /sign-in", &start);
+        let (to, code) = letter(&outbox);
+        let finish =
+            format!(r#"{{"workspace":"{workspace}","email":"ada@example.com","code":"{code}"}}"#);
+        let finished = http(&address, "POST /sign-in/finish", &finish);
+        let (_, body) = finished.split_once("\r\n\r\n").unwrap();
+        let token = serde_json::from_str::<serde_json::Value>(body).unwrap()["token"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        drop(child);
+        let logs: String = lines.map(Result::unwrap).collect();
+
+        assert!(version.starts_with("HTTP/1.1 200 OK"), "{version}");
+        assert!(version.contains("\"name\":\"weacon-server\""), "{version}");
+        assert!(started.starts_with("HTTP/1.1 202 Accepted"), "{started}");
+        assert_eq!(to, "ada@example.com");
+        assert!(finished.starts_with("HTTP/1.1 200 OK"), "{finished}");
+        assert_eq!(token.len(), 64);
+        assert!(logs.contains("request handled"), "{logs}");
+        // A code is six digits, so it is looked for as a whole JSON string.
+        for secret in ["ada@example.com", &format!("\"{code}\""), &token] {
+            assert!(!logs.contains(secret), "{logs}");
+        }
     }
 
     fn admin(args: &[&str], db: &TempDir) -> String {

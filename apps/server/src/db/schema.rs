@@ -5,7 +5,8 @@ use weacon_protocol::code;
 use super::failed;
 
 /// Each step brings the schema from its index to the next version; steps are only appended.
-pub(super) const STEPS: &[&str] = &["
+pub(super) const STEPS: &[&str] = &[
+    "
 CREATE TABLE workspaces (
     workspace_id TEXT PRIMARY KEY,
     name TEXT NOT NULL
@@ -18,7 +19,39 @@ CREATE TABLE members (
     PRIMARY KEY (workspace_id, member_id),
     UNIQUE (workspace_id, email)
 ) STRICT;
-"];
+",
+    "
+CREATE TABLE sign_in_codes (
+    workspace_id TEXT NOT NULL,
+    member_id TEXT NOT NULL,
+    code_hash BLOB NOT NULL,
+    expires_at INTEGER NOT NULL,
+    sent_at INTEGER NOT NULL,
+    attempts INTEGER NOT NULL,
+    window_start INTEGER NOT NULL,
+    PRIMARY KEY (workspace_id, member_id),
+    FOREIGN KEY (workspace_id, member_id) REFERENCES members (workspace_id, member_id)
+) STRICT;
+
+CREATE TABLE sessions (
+    workspace_id TEXT NOT NULL,
+    token_hash BLOB NOT NULL,
+    member_id TEXT NOT NULL,
+    expires_at INTEGER NOT NULL,
+    PRIMARY KEY (workspace_id, token_hash),
+    FOREIGN KEY (workspace_id, member_id) REFERENCES members (workspace_id, member_id)
+) STRICT;
+
+CREATE TABLE changes (
+    workspace_id TEXT NOT NULL,
+    seq INTEGER NOT NULL,
+    kind TEXT NOT NULL,
+    member_id TEXT NOT NULL,
+    PRIMARY KEY (workspace_id, seq),
+    FOREIGN KEY (workspace_id, member_id) REFERENCES members (workspace_id, member_id)
+) STRICT;
+",
+];
 
 /// Applies the steps the database hasn't had yet, each in its own transaction that holds the
 /// write lock from the start, so that two processes opening a new file don't both apply one.

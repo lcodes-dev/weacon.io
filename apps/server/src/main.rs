@@ -5,16 +5,22 @@ mod app;
 mod cli;
 mod db;
 mod email;
+mod feed;
 mod http;
+mod mail;
+mod sign_in;
 #[cfg(test)]
 mod test_support;
 
 use std::io;
 use std::net::SocketAddr;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use std::sync::Arc;
+use std::time::SystemTime;
 
 use tokio::net::TcpListener;
+use tokio::sync::{Semaphore, broadcast};
 use weacon_observability::{Fault, json_lines};
 use weacon_protocol::code;
 
@@ -22,6 +28,10 @@ use crate::app::App;
 use crate::cli::Command;
 use crate::db::Db;
 use crate::http::Shared;
+use crate::mail::Outbox;
+
+/// How many wake-ups a feed may miss before it rereads the database.
+const CHANGES: usize = 256;
 
 fn main() -> ExitCode {
     let version = weacon_version::version!();
@@ -45,7 +55,7 @@ fn main() -> ExitCode {
     let result = runtime().and_then(|runtime| {
         runtime.block_on(async {
             match cli.command {
-                Command::Serve { listen, db } => serve(&app, listen, &db).await,
+                Command::Serve { listen, db, outbox } => serve(&app, listen, &db, outbox).await,
                 Command::Admin(command) => {
                     admin::run(command, &app::new_id, &mut io::stdout().lock()).await
                 }
@@ -64,8 +74,9 @@ fn runtime() -> Result<tokio::runtime::Runtime, Fault> {
         })
 }
 
-/// Serves the database at `db` on `listen` until Ctrl-C or the system asks the server to stop.
-async fn serve(app: &App, listen: SocketAddr, db: &Path) -> Result<(), Fault> {
+/// Serves the database at `db` on `listen` until Ctrl-C or the system asks the server to stop,
+/// leaving sign-in codes in `outbox`.
+async fn serve(app: &App, listen: SocketAddr, db: &Path, outbox: PathBuf) -> Result<(), Fault> {
     let signals = weacon_appkit::Signals::new().map_err(|error| {
         Fault::new(
             code!("server.signals_failed"),
@@ -84,6 +95,14 @@ async fn serve(app: &App, listen: SocketAddr, db: &Path) -> Result<(), Fault> {
     let shared = Shared {
         app: weacon_appkit::build(&app.version),
         log: app.log.clone(),
+        reporter: Arc::clone(&app.reporter),
+        db: db.clone(),
+        outbox: Outbox::new(outbox),
+        clock: Arc::new(Box::new(SystemTime::now)),
+        feed: feed::TIMING,
+        changes: broadcast::channel(CHANGES).0,
+        sign_ins: Arc::new(Semaphore::new(sign_in::AT_ONCE)),
+        finish_within: sign_in::FINISH_WITHIN,
     };
     let served = http::serve(listener, shared, signals.wait()).await;
     db.close().await;

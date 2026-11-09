@@ -3,6 +3,7 @@
 
 mod backup;
 mod schema;
+mod sign_in;
 mod workspace;
 
 use std::path::{Path, PathBuf};
@@ -14,6 +15,9 @@ use weacon_observability::Fault;
 use weacon_protocol::{WorkspaceId, code};
 
 pub(crate) use backup::restore;
+pub(crate) use sign_in::Attempt;
+#[cfg(test)]
+pub(crate) use sign_in::CODE_LIFETIME;
 pub(crate) use workspace::Workspace;
 
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
@@ -78,15 +82,22 @@ impl Db {
 
     /// The workspace `id`; one there isn't is `workspace.not_found`.
     pub(crate) async fn workspace(&self, id: &WorkspaceId) -> Result<Workspace, Fault> {
-        sqlx::query("SELECT 1 FROM workspaces WHERE workspace_id = ?")
+        self.find_workspace(id)
+            .await?
+            .ok_or_else(|| Fault::new(code!("workspace.not_found"), "There is no such workspace"))
+    }
+
+    /// The workspace `id`, if there is one.
+    pub(crate) async fn find_workspace(
+        &self,
+        id: &WorkspaceId,
+    ) -> Result<Option<Workspace>, Fault> {
+        let found = sqlx::query("SELECT 1 FROM workspaces WHERE workspace_id = ?")
             .bind(id.as_str())
             .fetch_optional(&self.readers)
             .await
-            .map_err(failed)?
-            .ok_or_else(|| {
-                Fault::new(code!("workspace.not_found"), "There is no such workspace")
-            })?;
-        Ok(Workspace::new(self.clone(), id.clone()))
+            .map_err(failed)?;
+        Ok(found.map(|_| Workspace::new(self.clone(), id.clone())))
     }
 
     /// Closes every connection, so the file can be copied or removed.
@@ -103,6 +114,15 @@ fn file_path(path: &Path) -> Result<PathBuf, Fault> {
 
 fn path_unusable() -> Fault {
     Fault::new(code!("db.path_unusable"), "The path can't be used")
+}
+
+/// A value read back from the database, such as an id, checked like one that arrived.
+fn stored<T: TryFrom<String>>(value: String) -> Result<T, Fault> {
+    T::try_from(value).map_err(|_| unreadable())
+}
+
+fn unreadable() -> Fault {
+    Fault::new(code!("db.unreadable"), "A stored value can't be read")
 }
 
 fn not_found() -> Fault {
@@ -465,7 +485,16 @@ mod tests {
         .fetch_all(&db.readers)
         .await
         .unwrap();
-        assert_eq!(tables, ["workspaces", "members"]);
+        assert_eq!(
+            tables,
+            [
+                "workspaces",
+                "members",
+                "sign_in_codes",
+                "sessions",
+                "changes"
+            ]
+        );
         for table in &tables {
             let columns = first_columns(
                 &db,
