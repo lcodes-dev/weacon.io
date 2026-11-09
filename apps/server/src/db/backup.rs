@@ -25,17 +25,20 @@ impl Db {
     }
 }
 
-/// Checks the backup `from` and writes a whole copy of it, write-ahead log included, to the
-/// new file `to`, which appears only once the copy is checked and on disk. The server must
-/// not be running on `to`.
+/// Checks the backup `from` and writes a copy of it to the new file `to`, which appears only
+/// once the copy is checked and on disk. The server must not be running on `to`.
 pub(crate) async fn restore(from: &Path, to: &Path) -> Result<(), Fault> {
     let (from, to) = (file_path(from)?, file_path(to)?);
     // SQLite would replay a journal left beside `to`, and a `.partial` may be another restore's.
-    let taken = ["", "-wal", "-shm", "-journal", ".partial"]
-        .iter()
-        .any(|suffix| sidecar(&to, suffix).exists());
-    if taken {
+    if beside(&to, &["", "-wal", "-shm", "-journal", ".partial"]) {
         return Err(exists());
+    }
+    // A backup made by `backup` has no log; one beside it is stale or crafted.
+    if beside(&from, &["-wal", "-journal"]) {
+        return Err(Fault::new(
+            code!("db.backup_has_log"),
+            "The backup has a log beside it; make a fresh one with backup",
+        ));
     }
     check(&from).await?;
     let partial = sidecar(&to, ".partial");
@@ -104,12 +107,20 @@ async fn link(partial: PathBuf, to: PathBuf) -> Result<(), Fault> {
     .map_err(restore_failed)
 }
 
+/// `path` opened read-only and immutable, so `SQLite` reads no log beside it, even one that
+/// appears after `restore` looked (`RUSTSEC-2026-0459`).
 async fn read_only(path: &Path) -> Result<SqliteConnection, sqlx::Error> {
     SqliteConnectOptions::new()
         .filename(path)
         .read_only(true)
+        .immutable(true)
         .connect()
         .await
+}
+
+/// Whether any file named `path` plus one of `suffixes` exists.
+fn beside(path: &Path, suffixes: &[&str]) -> bool {
+    suffixes.iter().any(|suffix| sidecar(path, suffix).exists())
 }
 
 fn sidecar(path: &Path, suffix: &str) -> PathBuf {
@@ -286,25 +297,26 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_restore_keeps_what_is_still_in_the_write_ahead_log() {
+    async fn a_backup_with_a_log_beside_it_is_not_restored() {
         let dir = TempDir::new().unwrap();
-        let live = dir.join("weacon.db");
+        let backup = dir.join("backup.db");
         let db = team(&dir).await;
+        db.backup(&backup).await.unwrap();
+        let live = dir.join("weacon.db");
         let restored = dir.join("restored.db");
-        assert!(fs::metadata(sidecar(&live, "-wal")).unwrap().len() > 0);
+        assert!(sidecar(&live, "-wal").exists());
 
-        restore(&live, &restored).await.unwrap();
+        let from_live = restore(&live, &restored).await.unwrap_err();
+        assert_eq!(from_live.code().as_str(), "db.backup_has_log");
+        for suffix in ["-wal", "-journal"] {
+            fs::write(sidecar(&backup, suffix), "").unwrap();
+            let error = restore(&backup, &restored).await.unwrap_err();
+            assert_eq!(error.code().as_str(), "db.backup_has_log", "{suffix}");
+            assert!(!restored.exists());
+            fs::remove_file(sidecar(&backup, suffix)).unwrap();
+        }
+        restore(&backup, &restored).await.unwrap();
         db.close().await;
-        let members = Db::open(&restored)
-            .await
-            .unwrap()
-            .workspace(&workspace_id("w1"))
-            .await
-            .unwrap()
-            .members()
-            .await
-            .unwrap();
-        assert_eq!(members.len(), 1);
     }
 
     #[tokio::test]
