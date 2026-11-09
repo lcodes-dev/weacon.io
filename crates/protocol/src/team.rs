@@ -15,21 +15,37 @@ token_id!(
     MemberId,
     "not a member id"
 );
+token_id!(
+    /// One sign-in request, which its code and its tries belong to; 1–64 ASCII letters,
+    /// digits, `-` or `_`.
+    ChallengeId,
+    "not a challenge id"
+);
 
 /// Asks the server to send a one-time code to `email`, if it is a member of
-/// `workspace`. The answer is the same either way.
+/// `workspace`. The answer, a [`SignInStarted`], is the same either way.
 #[derive(PartialEq, Eq, Serialize, Deserialize)]
 pub struct SignInStart {
     pub workspace: WorkspaceId,
     pub email: String,
 }
 
-/// Trades the one-time code sent to `email` for a [`SignedIn`].
+/// The answer to a [`SignInStart`], for members and strangers alike: the challenge to finish
+/// it with.
+#[derive(PartialEq, Eq, Serialize, Deserialize)]
+pub struct SignInStarted {
+    pub challenge: ChallengeId,
+}
+
+/// Trades the one-time code sent to `email` for a [`SignedIn`]. `challenge` is the one its
+/// [`SignInStarted`] gave; a server that hands out challenges refuses a finish without one.
 #[derive(PartialEq, Eq, Serialize, Deserialize)]
 pub struct SignInFinish {
     pub workspace: WorkspaceId,
     pub email: String,
     pub code: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub challenge: Option<ChallengeId>,
 }
 
 /// A signed-in member and the session token that proves it, sent as a bearer token.
@@ -39,12 +55,18 @@ pub struct SignedIn {
     pub token: String,
 }
 
-// Emails, codes and tokens never reach a log line, even through `{:?}`.
+// Emails, codes, challenges and tokens never reach a log line, even through `{:?}`.
 impl fmt::Debug for SignInStart {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("SignInStart")
             .field("workspace", &self.workspace)
             .finish_non_exhaustive()
+    }
+}
+
+impl fmt::Debug for SignInStarted {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SignInStarted").finish_non_exhaustive()
     }
 }
 
@@ -115,18 +137,44 @@ mod tests {
 
     #[test]
     fn sign_in_bodies_travel_as_plain_json() {
-        let finish = SignInFinish {
+        let challenge = ChallengeId::try_from("c-1".to_owned()).unwrap();
+        let finish = |challenge| SignInFinish {
             workspace: workspace(),
             email: "ada@example.com".to_owned(),
-            code: "123456".to_owned(),
+            code: "12345678".to_owned(),
+            challenge,
         };
-        let wire = json!({ "workspace": "w-1", "email": "ada@example.com", "code": "123456" });
+        let wire = json!({
+            "workspace": "w-1", "email": "ada@example.com", "code": "12345678", "challenge": "c-1",
+        });
+        let older = json!({ "workspace": "w-1", "email": "ada@example.com", "code": "12345678" });
+        let started = SignInStarted {
+            challenge: challenge.clone(),
+        };
 
-        assert_eq!(serde_json::to_value(&finish).unwrap(), wire);
+        assert_eq!(
+            serde_json::to_value(finish(Some(challenge.clone()))).unwrap(),
+            wire
+        );
         assert_eq!(
             serde_json::from_value::<SignInFinish>(wire).unwrap(),
-            finish
+            finish(Some(challenge))
         );
+        assert_eq!(
+            serde_json::from_value::<SignInFinish>(older.clone()).unwrap(),
+            finish(None)
+        );
+        assert_eq!(serde_json::to_value(finish(None)).unwrap(), older);
+        assert_eq!(
+            serde_json::to_value(&started).unwrap(),
+            json!({ "challenge": "c-1" })
+        );
+        assert_eq!(
+            serde_json::from_value::<SignInStarted>(json!({ "challenge": "c-1" })).unwrap(),
+            started
+        );
+        serde_json::from_value::<SignInStarted>(json!({ "challenge": "c.1" })).unwrap_err();
+        serde_json::from_value::<SignInStarted>(json!({})).unwrap_err();
     }
 
     #[test]
@@ -139,6 +187,10 @@ mod tests {
             workspace: workspace(),
             email: "MARKER-EMAIL".to_owned(),
             code: "MARKER-CODE".to_owned(),
+            challenge: Some(ChallengeId::try_from("MARKER-CHALLENGE".to_owned()).unwrap()),
+        };
+        let started = SignInStarted {
+            challenge: ChallengeId::try_from("MARKER-CHALLENGE".to_owned()).unwrap(),
         };
         let signed_in = SignedIn {
             member: MemberId::try_from("m-1".to_owned()).unwrap(),
@@ -156,6 +208,7 @@ mod tests {
             format!("{signed_in:?}"),
             r#"SignedIn { member: MemberId("m-1"), .. }"#
         );
+        assert_eq!(format!("{started:?}"), "SignInStarted { .. }");
     }
 
     #[test]

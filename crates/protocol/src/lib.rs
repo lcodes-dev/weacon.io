@@ -18,7 +18,8 @@ pub use pick::Pick;
 pub use receipt::{Outcome, Receipt, RequestId};
 pub use run::{AgentSession, PermissionAnswer, RunEvent, RunId, RunUpdate};
 pub use team::{
-    MemberId, SignInFinish, SignInStart, SignedIn, WorkspaceChange, WorkspaceId, WorkspaceUpdate,
+    ChallengeId, MemberId, SignInFinish, SignInStart, SignInStarted, SignedIn, WorkspaceChange,
+    WorkspaceId, WorkspaceUpdate,
 };
 
 #[cfg(test)]

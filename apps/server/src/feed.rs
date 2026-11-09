@@ -223,7 +223,7 @@ mod tests {
     use serde_json::json;
     use tokio::io::AsyncReadExt;
     use tokio_tungstenite::tungstenite::client::IntoClientRequest;
-    use tokio_tungstenite::tungstenite::{self, Message as Wire};
+    use tokio_tungstenite::tungstenite::{self, Message as Wire, Utf8Bytes};
     use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async};
     use weacon_protocol::{Hello, MemberId, PROTOCOL, WorkspaceChange, WorkspaceUpdate};
 
@@ -313,11 +313,22 @@ mod tests {
             .expect("the feed went quiet")
     }
 
+    // The client's next message, pings aside: they come every 100 ms.
     async fn next(client: &mut Client) -> Message {
-        let Some(Ok(Wire::Text(text))) = frame(client).await else {
-            panic!("no message");
-        };
+        let text = timeout(Duration::from_secs(10), text(client))
+            .await
+            .expect("no message in time");
         Envelope::from_json(text.as_bytes()).unwrap().message
+    }
+
+    async fn text(client: &mut Client) -> Utf8Bytes {
+        loop {
+            match client.next().await {
+                Some(Ok(Wire::Ping(_))) => {}
+                Some(Ok(Wire::Text(text))) => return text,
+                other => panic!("no message: {other:?}"),
+            }
+        }
     }
 
     // Whether the feed ends, pings aside, before it has had ten seconds to.
