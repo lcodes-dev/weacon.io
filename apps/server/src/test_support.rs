@@ -160,6 +160,17 @@ pub(crate) async fn request(address: SocketAddr, head: &str, body: &str) -> (Vec
     (head, body.to_owned())
 }
 
+/// Starts a sign-in for `email` in w1: the answer's status line, and its challenge.
+pub(crate) async fn start_sign_in(address: SocketAddr, email: &str) -> (String, serde_json::Value) {
+    let start = serde_json::json!({ "workspace": "w1", "email": email }).to_string();
+    let (head, body) = request(address, "POST /sign-in", &start).await;
+    let body: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
+    (
+        head.first().cloned().unwrap_or_default(),
+        body["challenge"].clone(),
+    )
+}
+
 pub(crate) fn workspace_id(id: &str) -> weacon_protocol::WorkspaceId {
     weacon_protocol::WorkspaceId::try_from(id.to_owned()).unwrap()
 }

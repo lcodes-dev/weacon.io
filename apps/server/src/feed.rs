@@ -230,16 +230,15 @@ mod tests {
     use super::*;
     use crate::email::Email;
     use crate::sign_in::SESSION_LIFETIME;
-    use crate::test_support::{Fixture, Running, VERSION, member_id, request, run, workspace_id};
+    use crate::test_support::{
+        Fixture, Running, VERSION, member_id, request, run, start_sign_in, workspace_id,
+    };
 
     type Client = WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>;
 
     // Signs `email` in to w1, and gives the session's token.
     async fn sign_in(fixture: &Fixture, address: SocketAddr, email: &str) -> String {
-        let start = json!({ "workspace": "w1", "email": email }).to_string();
-        let (_, started) = request(address, "POST /sign-in", &start).await;
-        let challenge =
-            serde_json::from_str::<serde_json::Value>(&started).unwrap()["challenge"].clone();
+        let (_, challenge) = start_sign_in(address, email).await;
         let code = fixture.letter().await.1;
         let finish =
             json!({ "workspace": "w1", "email": email, "challenge": challenge, "code": code });

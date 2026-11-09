@@ -187,18 +187,10 @@ mod tests {
 
     use super::*;
     use crate::db::CODE_LIFETIME;
-    use crate::test_support::{Fixture, request, run, workspace_id};
+    use crate::test_support::{Fixture, request, run, start_sign_in, workspace_id};
 
     fn status(head: &[String]) -> &str {
         head.first().map_or("", String::as_str)
-    }
-
-    // Starts a sign-in for `email` in w1, and gives the answer's status and challenge.
-    async fn start_for(address: SocketAddr, email: &str) -> (String, Value) {
-        let start = json!({ "workspace": "w1", "email": email }).to_string();
-        let (head, body) = request(address, "POST /sign-in", &start).await;
-        let body: Value = serde_json::from_str(&body).unwrap_or_default();
-        (status(&head).to_owned(), body["challenge"].clone())
     }
 
     fn finish_body(workspace: &str, email: &str, challenge: &Value, code: &str) -> String {
@@ -229,7 +221,7 @@ mod tests {
         let fixture = Fixture::new().await;
         let server = run(fixture.shared.clone()).await;
         let mut changes = fixture.shared.changes.subscribe();
-        let (started, challenge) = start_for(server.address, " Ada@Example.com ").await;
+        let (started, challenge) = start_sign_in(server.address, " Ada@Example.com ").await;
         let (to, code) = fixture.letter().await;
         let finish = finish_body("w1", "ada@example.com", &challenge, &code);
         let (finished, body) = finish_with(server.address, &finish).await;
@@ -288,9 +280,9 @@ mod tests {
     async fn a_wrong_or_late_code_is_refused() {
         let fixture = Fixture::new().await;
         let server = run(fixture.shared.clone()).await;
-        let (_, challenge) = start_for(server.address, "ada@example.com").await;
+        let (_, challenge) = start_sign_in(server.address, "ada@example.com").await;
         let (_, code) = fixture.letter().await;
-        let (_, other) = start_for(server.address, "ada@example.com").await;
+        let (_, other) = start_sign_in(server.address, "ada@example.com").await;
         fixture.settled().await;
         let finish = |workspace: &str, email: &str, code: &str| {
             finish_body(workspace, email, &challenge, code)
@@ -322,9 +314,9 @@ mod tests {
     async fn a_strangers_guesses_cant_stop_a_member_signing_in() {
         let fixture = Fixture::new().await;
         let server = run(fixture.shared.clone()).await;
-        let (_, theirs) = start_for(server.address, "ada@example.com").await;
+        let (_, theirs) = start_sign_in(server.address, "ada@example.com").await;
         fixture.letter().await;
-        let (_, mine) = start_for(server.address, "ada@example.com").await;
+        let (_, mine) = start_sign_in(server.address, "ada@example.com").await;
         let (_, code) = fixture.letter().await;
         let unknown = json!("0".repeat(64));
         for (guess, challenge) in (0..10).zip([&theirs, &unknown].into_iter().cycle()) {
@@ -346,7 +338,7 @@ mod tests {
         fixture.shared.starts = Arc::new(Limit::new(1, HOUR));
         fixture.shared.tries = Arc::new(Limit::new(1, HOUR));
         let server = run(fixture.shared.clone()).await;
-        let (first, challenge) = start_for(server.address, "ada@example.com").await;
+        let (first, challenge) = start_sign_in(server.address, "ada@example.com").await;
         let (_, code) = fixture.letter().await;
         let (head, body) = request(
             server.address,
