@@ -5,6 +5,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, UNIX_EPOCH};
 
+use serde_json::{Value, json};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{Semaphore, broadcast, oneshot};
@@ -111,7 +112,7 @@ impl Fixture {
     pub(crate) async fn letter(&self) -> (String, String) {
         self.settled().await;
         let [file] = self.letters().try_into().unwrap();
-        let letter: serde_json::Value = serde_json::from_slice(&fs::read(&file).unwrap()).unwrap();
+        let letter: Value = serde_json::from_slice(&fs::read(&file).unwrap()).unwrap();
         fs::remove_file(&file).unwrap();
         let text = |key: &str| letter[key].as_str().unwrap().to_owned();
         (text("to"), text("code"))
@@ -160,15 +161,23 @@ pub(crate) async fn request(address: SocketAddr, head: &str, body: &str) -> (Vec
     (head, body.to_owned())
 }
 
+/// A response's lowercased status line.
+pub(crate) fn status(head: &[String]) -> &str {
+    head.first().map_or("", String::as_str)
+}
+
 /// Starts a sign-in for `email` in w1: the answer's status line, and its challenge.
-pub(crate) async fn start_sign_in(address: SocketAddr, email: &str) -> (String, serde_json::Value) {
-    let start = serde_json::json!({ "workspace": "w1", "email": email }).to_string();
+pub(crate) async fn start_sign_in(address: SocketAddr, email: &str) -> (String, Value) {
+    let start = json!({ "workspace": "w1", "email": email }).to_string();
     let (head, body) = request(address, "POST /sign-in", &start).await;
-    let body: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
-    (
-        head.first().cloned().unwrap_or_default(),
-        body["challenge"].clone(),
-    )
+    let body: Value = serde_json::from_str(&body).unwrap();
+    (status(&head).to_owned(), body["challenge"].clone())
+}
+
+/// A `POST /sign-in/finish` body.
+pub(crate) fn finish_body(workspace: &str, email: &str, challenge: &Value, code: &str) -> String {
+    json!({ "workspace": workspace, "email": email, "challenge": challenge, "code": code })
+        .to_string()
 }
 
 pub(crate) fn workspace_id(id: &str) -> weacon_protocol::WorkspaceId {

@@ -231,7 +231,8 @@ mod tests {
     use crate::email::Email;
     use crate::sign_in::SESSION_LIFETIME;
     use crate::test_support::{
-        Fixture, Running, VERSION, member_id, request, run, start_sign_in, workspace_id,
+        Fixture, Running, VERSION, finish_body, member_id, request, run, start_sign_in,
+        workspace_id,
     };
 
     type Client = WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>;
@@ -240,9 +241,8 @@ mod tests {
     async fn sign_in(fixture: &Fixture, address: SocketAddr, email: &str) -> String {
         let (_, challenge) = start_sign_in(address, email).await;
         let code = fixture.letter().await.1;
-        let finish =
-            json!({ "workspace": "w1", "email": email, "challenge": challenge, "code": code });
-        let (_, body) = request(address, "POST /sign-in/finish", &finish.to_string()).await;
+        let finish = finish_body("w1", email, &challenge, &code);
+        let (_, body) = request(address, "POST /sign-in/finish", &finish).await;
         serde_json::from_str::<serde_json::Value>(&body).unwrap()["token"]
             .as_str()
             .unwrap()

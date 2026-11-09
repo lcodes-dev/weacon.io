@@ -40,8 +40,7 @@ mod tests {
         );
     }
 
-    // Runs a command that should end, and gives its exit code and logs; one that doesn't is
-    // killed after 30 seconds.
+    // A command that should end: its exit code and logs, or a failed test after 30 seconds.
     fn exits(command: &mut Command) -> (Option<i32>, String) {
         let mut child = Running(command.stdout(Stdio::piped()).spawn().unwrap());
         let mut stdout = child.0.stdout.take().unwrap();

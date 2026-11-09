@@ -187,16 +187,9 @@ mod tests {
 
     use super::*;
     use crate::db::CODE_LIFETIME;
-    use crate::test_support::{Fixture, request, run, start_sign_in, workspace_id};
-
-    fn status(head: &[String]) -> &str {
-        head.first().map_or("", String::as_str)
-    }
-
-    fn finish_body(workspace: &str, email: &str, challenge: &Value, code: &str) -> String {
-        json!({ "workspace": workspace, "email": email, "challenge": challenge, "code": code })
-            .to_string()
-    }
+    use crate::test_support::{
+        Fixture, finish_body, request, run, start_sign_in, status, workspace_id,
+    };
 
     async fn finish_with(address: SocketAddr, body: &str) -> (String, Value) {
         let (head, body) = request(address, "POST /sign-in/finish", body).await;
@@ -368,8 +361,7 @@ mod tests {
         let mut shared = fixture.shared.clone();
         shared.outbox = crate::mail::Outbox::new("missing-outbox".into());
         let server = run(shared).await;
-        let start = json!({ "workspace": "w1", "email": "ada@example.com" }).to_string();
-        let (head, _) = request(server.address, "POST /sign-in", &start).await;
+        let (started, _) = start_sign_in(server.address, "ada@example.com").await;
         fixture.settled().await;
         let failed = fixture
             .records
@@ -379,7 +371,7 @@ mod tests {
             .find(|record| record.msg == "request failed")
             .map(|record| record.fields["err"]["code"].clone());
 
-        assert_eq!(status(&head), "http/1.1 202 accepted");
+        assert_eq!(started, "http/1.1 202 accepted");
         assert_eq!(failed.unwrap(), "mail.failed");
     }
 
@@ -391,12 +383,11 @@ mod tests {
         let busy = Arc::clone(&fixture.shared.sign_ins)
             .try_acquire_many_owned(every)
             .unwrap();
-        let start = json!({ "workspace": "w1", "email": "ada@example.com" }).to_string();
-        let (head, _) = request(server.address, "POST /sign-in", &start).await;
+        let (started, _) = start_sign_in(server.address, "ada@example.com").await;
         drop(busy);
         fixture.settled().await;
 
-        assert_eq!(status(&head), "http/1.1 202 accepted");
+        assert_eq!(started, "http/1.1 202 accepted");
         assert!(fixture.letters().is_empty());
     }
 
