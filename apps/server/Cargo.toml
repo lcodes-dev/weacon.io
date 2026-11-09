@@ -24,7 +24,6 @@ weacon-protocol.workspace = true
 weacon-version.workspace = true
 
 [dev-dependencies]
-serde_json.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
 tokio-tungstenite.workspace = true
 weacon-testing.workspace = true

@@ -14,23 +14,7 @@ use weacon_version::Version;
 
 use crate::platform::{self, Env};
 
-/// Exit codes beyond 0: a check that found something, and a command that failed.
-const FINDINGS: u8 = 1;
-const FAILED: u8 = 2;
-
-/// How a command that ran to the end came out.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Outcome {
-    Done,
-    /// A check found something, such as a stale anchor.
-    Findings,
-}
-
-impl From<()> for Outcome {
-    fn from((): ()) -> Self {
-        Self::Done
-    }
-}
+use weacon_appkit::Outcome;
 
 /// What a command runs with: its build, logger, error reporter and where its state lives.
 pub(crate) struct App {
@@ -86,18 +70,9 @@ impl App {
         }
     }
 
-    /// Logs and reports a failed command, and gives its exit code: 0 when it's done, 1 when a
-    /// check found something, 2 when it failed.
+    /// Logs and reports how the command ended, and gives its exit code.
     pub(crate) fn finish(&self, result: Result<Outcome, Fault>) -> ExitCode {
-        let fault = match result {
-            Ok(Outcome::Done) => return ExitCode::SUCCESS,
-            Ok(Outcome::Findings) => return ExitCode::from(FINDINGS),
-            Err(fault) => fault,
-        };
-        self.log
-            .error("command failed", &[("err", Field::error(&fault))]);
-        self.reporter.capture_error(&fault, fault.code(), &self.log);
-        ExitCode::from(FAILED)
+        weacon_appkit::finish(&self.log, &self.reporter, result)
     }
 
     /// Logs and reports a panic, without its message or location.
@@ -240,14 +215,14 @@ mod tests {
     }
 
     #[test]
-    fn success_exits_cleanly_and_reports_nothing() {
-        let (app, _, uploads) = start(&[("WEACON_SENTRY_DSN", DSN)], false);
+    fn success_exits_cleanly_reports_nothing_and_says_nothing_on_stderr() {
+        let (app, stderr, uploads) = start(&[("WEACON_SENTRY_DSN", DSN)], false);
         app.reporter.set_agreed(true);
 
         assert!(app.reporter.is_on());
         assert_eq!(app.finish(Ok(().into())), ExitCode::SUCCESS);
-        assert_eq!(app.finish(Ok(Outcome::Findings)), ExitCode::from(1));
         assert!(uploads.lock().unwrap().is_empty());
+        assert!(messages(&stderr).is_empty());
     }
 
     #[test]
@@ -284,7 +259,7 @@ mod tests {
 
         assert_eq!(exit, ExitCode::from(2));
         assert_eq!(uploads.len(), 1);
-        assert!(file.contains("command failed"), "{file}");
+        assert!(file.contains("app failed"), "{file}");
         for text in [
             file,
             stderr,

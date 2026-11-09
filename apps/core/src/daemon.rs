@@ -32,12 +32,7 @@ pub(crate) use weacon_appkit::build;
 
 /// The single-threaded async runtime the core's commands run on.
 pub(crate) fn runtime() -> Result<tokio::runtime::Runtime, Fault> {
-    tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .map_err(|error| {
-            Fault::new(code!("runtime.failed"), "Weacon couldn't start its runtime").because(error)
-        })
+    weacon_appkit::runtime(tokio::runtime::Builder::new_current_thread())
 }
 
 /// Runs the daemon until Ctrl-C or the system asks it to stop.

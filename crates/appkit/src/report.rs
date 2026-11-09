@@ -7,6 +7,8 @@ use weacon_protocol::code;
 
 const TIMEOUT: Duration = Duration::from_secs(5);
 
+/// An id for a request, a report or a row; it is unique, not secret, so never use it as a
+/// token or code.
 // Each `RandomState` gets new keys; the first on each thread come from the operating system.
 #[must_use]
 pub fn random_id() -> u128 {

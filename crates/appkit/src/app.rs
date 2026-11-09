@@ -85,13 +85,12 @@ fn panicked(log: &Logger, reporter: &Reporter, fault: &Fault) {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Mutex;
 
-    use weacon_observability::Upload;
     use weacon_protocol::code;
     use weacon_testing::{messages, recording_sink};
 
     use super::*;
+    use crate::test_support::recording_reporter;
 
     const VERSION: Version = Version {
         name: "weacon-core",
@@ -99,16 +98,6 @@ mod tests {
         commit: "1a2b3c4",
     };
     const DSN: &str = "https://key@sentry.example.com/1";
-
-    fn recording_reporter(reports: Option<Reports>) -> (Reporter, Arc<Mutex<Vec<Upload>>>) {
-        let uploads = Arc::new(Mutex::new(Vec::new()));
-        let seen = Arc::clone(&uploads);
-        let deliver: Deliver = Box::new(move |upload| {
-            seen.lock().unwrap().push(upload.clone());
-            Ok(())
-        });
-        (reporter(reports, true, deliver), uploads)
-    }
 
     #[test]
     fn a_build_introduces_itself_by_name_version_and_commit() {

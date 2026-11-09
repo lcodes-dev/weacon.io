@@ -30,12 +30,12 @@ pub(crate) enum Command {
         outbox: PathBuf,
     },
     #[command(flatten)]
-    Admin(Admin),
+    Admin(AdminCommand),
 }
 
 /// Commands an operator runs against the database.
 #[derive(Debug, PartialEq, Eq, Subcommand)]
-pub(crate) enum Admin {
+pub(crate) enum AdminCommand {
     /// Create a workspace and print its id.
     CreateWorkspace {
         #[arg(long)]
@@ -160,7 +160,7 @@ mod tests {
 
         assert_eq!(
             add.command,
-            Command::Admin(Admin::AddMember {
+            Command::Admin(AdminCommand::AddMember {
                 db: "team.db".into(),
                 workspace: workspace_id("w1"),
                 email: "ada@example.com".to_owned(),
