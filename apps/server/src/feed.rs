@@ -313,11 +313,17 @@ mod tests {
             .expect("the feed went quiet")
     }
 
+    // The client's next message, pings aside: they come every 100 ms.
     async fn next(client: &mut Client) -> Message {
-        let Some(Ok(Wire::Text(text))) = frame(client).await else {
-            panic!("no message");
-        };
-        Envelope::from_json(text.as_bytes()).unwrap().message
+        loop {
+            match frame(client).await {
+                Some(Ok(Wire::Ping(_))) => {}
+                Some(Ok(Wire::Text(text))) => {
+                    return Envelope::from_json(text.as_bytes()).unwrap().message;
+                }
+                other => panic!("no message: {other:?}"),
+            }
+        }
     }
 
     // Whether the feed ends, pings aside, before it has had ten seconds to.
