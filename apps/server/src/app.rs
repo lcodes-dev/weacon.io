@@ -2,13 +2,10 @@ use std::panic::PanicHookInfo;
 use std::process::ExitCode;
 use std::sync::Arc;
 
-use weacon_appkit::{panic_hook, random_id, reporter, reports, root_logger};
-use weacon_observability::{Deliver, Fault, Field, Logger, Reporter, Sink};
+use weacon_appkit::{Outcome, panic_hook, random_id, reporter, reports, root_logger};
+use weacon_observability::{Deliver, Fault, Logger, Reporter, Sink};
 use weacon_protocol::code;
 use weacon_version::Version;
-
-/// The exit code of a server that failed, as for a failed `weacon` command.
-const FAILED: u8 = 2;
 
 /// What the server runs with: its build, logger and error reporter.
 pub(crate) struct App {
@@ -36,16 +33,9 @@ impl App {
         }
     }
 
-    /// Logs and reports a failed server, and gives its exit code.
+    /// Logs and reports how the server ended, and gives its exit code.
     pub(crate) fn finish(&self, result: Result<(), Fault>) -> ExitCode {
-        let Err(fault) = result else {
-            self.log.info("app stopped", &[]);
-            return ExitCode::SUCCESS;
-        };
-        self.log
-            .fatal("server failed", &[("err", Field::error(&fault))]);
-        self.reporter.capture_error(&fault, fault.code(), &self.log);
-        ExitCode::from(FAILED)
+        weacon_appkit::finish(&self.log, &self.reporter, result.map(Outcome::from))
     }
 
     pub(crate) fn panic_hook(&self) -> Box<dyn Fn(&PanicHookInfo<'_>) + Send + Sync> {
@@ -103,7 +93,7 @@ mod tests {
 
         assert_eq!(
             messages(&records),
-            ["app started", "report setup failed", "server failed"]
+            ["app started", "report setup failed", "app failed"]
         );
         assert!(uploads.lock().unwrap().is_empty());
     }
@@ -141,7 +131,7 @@ mod tests {
 
         assert_eq!(exit, ExitCode::from(2));
         assert_eq!(uploads.len(), 1);
-        assert!(logs.contains("server failed"), "{logs}");
+        assert!(logs.contains("app failed"), "{logs}");
         for text in [logs, String::from_utf8_lossy(&uploads[0].body).into_owned()] {
             assert!(!text.contains("MARKER"), "{text}");
         }

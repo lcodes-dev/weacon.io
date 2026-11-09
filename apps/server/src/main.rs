@@ -53,7 +53,8 @@ fn main() -> ExitCode {
     };
     let app = App::start(version, logs, weacon_appkit::http(), dsn.as_deref());
     std::panic::set_hook(app.panic_hook());
-    let result = runtime().and_then(|runtime| {
+    let runtime = weacon_appkit::runtime(tokio::runtime::Builder::new_multi_thread());
+    let result = runtime.and_then(|runtime| {
         runtime.block_on(async {
             match cli.command {
                 Command::Serve { listen, db, outbox } => serve(&app, listen, &db, outbox).await,
@@ -66,18 +67,16 @@ fn main() -> ExitCode {
     app.finish(result)
 }
 
-fn runtime() -> Result<tokio::runtime::Runtime, Fault> {
-    tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()
-        .map_err(|error| {
-            Fault::new(code!("runtime.failed"), "Weacon couldn't start its runtime").because(error)
-        })
-}
-
 /// Serves the database at `db` on `listen` until Ctrl-C or the system asks the server to stop,
 /// leaving sign-in codes in `outbox`.
 async fn serve(app: &App, listen: SocketAddr, db: &Path, outbox: PathBuf) -> Result<(), Fault> {
+    // Otherwise every sign-in would fail after its answer, and only the logs would say so.
+    if !outbox.is_dir() {
+        return Err(Fault::new(
+            code!("server.outbox_unusable"),
+            "The outbox folder doesn't exist",
+        ));
+    }
     let signals = weacon_appkit::Signals::new().map_err(|error| {
         Fault::new(
             code!("server.signals_failed"),

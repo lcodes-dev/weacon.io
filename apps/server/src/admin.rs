@@ -3,7 +3,7 @@ use std::io::Write;
 use weacon_observability::Fault;
 use weacon_protocol::{MemberId, WorkspaceId, code};
 
-use crate::cli::Admin;
+use crate::cli::AdminCommand;
 use crate::db::{self, Db};
 use crate::email::Email;
 
@@ -11,19 +11,19 @@ const MAX_NAME: usize = 100;
 
 /// Runs `command`, writing what it prints to `out`; `new_id` names what it creates.
 pub(crate) async fn run(
-    command: Admin,
+    command: AdminCommand,
     new_id: &dyn Fn() -> String,
     out: &mut dyn Write,
 ) -> Result<(), Fault> {
     let printed = match command {
-        Admin::CreateWorkspace { db, name } => {
+        AdminCommand::CreateWorkspace { db, name } => {
             let name = workspace_name(&name)?;
             let id: WorkspaceId = fresh(new_id)?;
             let db = Db::create(&db).await?;
             let created = db.create_workspace(&id, name).await;
             closed(db, created.map(|_| format!("{}\n", id.as_str()))).await
         }
-        Admin::AddMember {
+        AdminCommand::AddMember {
             db,
             workspace,
             email,
@@ -37,7 +37,7 @@ pub(crate) async fn run(
             };
             closed(db, added.map(|()| format!("{}\n", id.as_str()))).await
         }
-        Admin::Members { db, workspace } => {
+        AdminCommand::Members { db, workspace } => {
             let db = Db::open(&db).await?;
             let members = match db.workspace(&workspace).await {
                 Ok(workspace) => workspace.members().await,
@@ -51,12 +51,12 @@ pub(crate) async fn run(
             });
             closed(db, lines).await
         }
-        Admin::Backup { db, to } => {
+        AdminCommand::Backup { db, to } => {
             let db = Db::open(&db).await?;
             let backed_up = db.backup(&to).await;
             closed(db, backed_up.map(|()| String::new())).await
         }
-        Admin::Restore { from, db } => db::restore(&from, &db).await.map(|()| String::new()),
+        AdminCommand::Restore { from, db } => db::restore(&from, &db).await.map(|()| String::new()),
     }?;
     out.write_all(printed.as_bytes()).map_err(|error| {
         Fault::new(code!("output.failed"), "The output couldn't be written").because(error)
@@ -95,7 +95,7 @@ mod tests {
     use crate::app::App;
     use crate::test_support::{VERSION, recording_sink, workspace_id};
 
-    async fn admin(command: Admin) -> Result<String, Fault> {
+    async fn admin(command: AdminCommand) -> Result<String, Fault> {
         let next = Cell::new(0);
         let new_id = || {
             next.set(next.get() + 1);
@@ -110,13 +110,13 @@ mod tests {
     async fn an_operator_sets_up_a_workspace() {
         let dir = TempDir::new().unwrap();
         let db = dir.join("weacon.db");
-        let workspace = admin(Admin::CreateWorkspace {
+        let workspace = admin(AdminCommand::CreateWorkspace {
             db: db.clone(),
             name: " Team ".to_owned(),
         })
         .await
         .unwrap();
-        let member = |email: &str| Admin::AddMember {
+        let member = |email: &str| AdminCommand::AddMember {
             db: db.clone(),
             workspace: workspace_id("id1"),
             email: email.to_owned(),
@@ -124,7 +124,7 @@ mod tests {
         let added = admin(member(" Ada@Example.com ")).await.unwrap();
         let again = admin(member("ada@example.com")).await.unwrap_err();
         let invalid = admin(member("ada")).await.unwrap_err();
-        let members = admin(Admin::Members {
+        let members = admin(AdminCommand::Members {
             db: db.clone(),
             workspace: workspace_id("id1"),
         })
@@ -143,13 +143,13 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let (db, backup) = (dir.join("weacon.db"), dir.join("backup.db"));
         Db::create(&db).await.unwrap();
-        let to_backup = || Admin::Backup {
+        let to_backup = || AdminCommand::Backup {
             db: db.clone(),
             to: backup.clone(),
         };
         let printed = admin(to_backup()).await.unwrap();
         let again = admin(to_backup()).await.unwrap_err();
-        let restored = admin(Admin::Restore {
+        let restored = admin(AdminCommand::Restore {
             from: backup.clone(),
             db: dir.join("restored.db"),
         })
@@ -164,7 +164,7 @@ mod tests {
     async fn names_must_be_one_short_line() {
         let dir = TempDir::new().unwrap();
         for name in ["  ", "a\nb", &"a".repeat(MAX_NAME + 1)] {
-            let error = admin(Admin::CreateWorkspace {
+            let error = admin(AdminCommand::CreateWorkspace {
                 db: dir.join("weacon.db"),
                 name: name.to_owned(),
             })
@@ -185,7 +185,7 @@ mod tests {
     #[tokio::test]
     async fn commands_on_a_missing_database_create_nothing() {
         let dir = TempDir::new().unwrap();
-        let error = admin(Admin::Members {
+        let error = admin(AdminCommand::Members {
             db: dir.join("wecon.db"),
             workspace: workspace_id("id1"),
         })
@@ -200,7 +200,7 @@ mod tests {
     async fn an_unknown_workspace_is_an_error() {
         let dir = TempDir::new().unwrap();
         Db::create(&dir.join("weacon.db")).await.unwrap();
-        let error = admin(Admin::Members {
+        let error = admin(AdminCommand::Members {
             db: dir.join("weacon.db"),
             workspace: workspace_id("nope"),
         })
@@ -214,13 +214,13 @@ mod tests {
     async fn commands_leave_everything_in_the_database_file() {
         let dir = TempDir::new().unwrap();
         let db = dir.join("weacon.db");
-        admin(Admin::CreateWorkspace {
+        admin(AdminCommand::CreateWorkspace {
             db: db.clone(),
             name: "Team".to_owned(),
         })
         .await
         .unwrap();
-        admin(Admin::AddMember {
+        admin(AdminCommand::AddMember {
             db: db.clone(),
             workspace: workspace_id("id1"),
             email: "ada@example.com".to_owned(),
@@ -236,13 +236,13 @@ mod tests {
     async fn no_content_reaches_a_log_line_or_an_error_report() {
         let dir = TempDir::new().unwrap();
         let db = dir.join("weacon.db");
-        admin(Admin::CreateWorkspace {
+        admin(AdminCommand::CreateWorkspace {
             db: db.clone(),
             name: "Team".to_owned(),
         })
         .await
         .unwrap();
-        let add = || Admin::AddMember {
+        let add = || AdminCommand::AddMember {
             db: db.clone(),
             workspace: workspace_id("id1"),
             email: "marker@example.com".to_owned(),
@@ -250,13 +250,13 @@ mod tests {
         admin(add()).await.unwrap();
         let failures = [
             admin(add()).await.unwrap_err(),
-            admin(Admin::CreateWorkspace {
+            admin(AdminCommand::CreateWorkspace {
                 db: db.clone(),
                 name: "MARKER\nname".to_owned(),
             })
             .await
             .unwrap_err(),
-            admin(Admin::Restore {
+            admin(AdminCommand::Restore {
                 from: dir.join("MARKER-PATH.db"),
                 db: dir.join("restored.db"),
             })

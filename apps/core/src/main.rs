@@ -21,8 +21,9 @@ use std::process::ExitCode;
 
 use weacon_observability::json_lines;
 
-use crate::app::{App, Outcome, Setup};
+use crate::app::{App, Setup};
 use crate::cli::Command;
+use weacon_appkit::Outcome;
 
 fn main() -> ExitCode {
     let version = weacon_version::version!();

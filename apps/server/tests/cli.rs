@@ -41,6 +41,24 @@ mod tests {
     }
 
     #[test]
+    fn a_missing_outbox_stops_the_server_before_it_starts() {
+        let dir = TempDir::new().unwrap();
+        let output = server()
+            .args(["serve", "--listen", "127.0.0.1:0", "--db"])
+            .arg(dir.join("weacon.db"))
+            .arg("--outbox")
+            .arg(dir.join("missing"))
+            .env("WEACON_SENTRY_DSN", "")
+            .output()
+            .unwrap();
+        let logs = String::from_utf8_lossy(&output.stdout);
+
+        assert_eq!(output.status.code(), Some(2));
+        assert!(logs.contains("server.outbox_unusable"), "{logs}");
+        assert!(!dir.join("weacon.db").exists());
+    }
+
+    #[test]
     fn an_address_in_use_fails_with_its_code() {
         let taken = TcpListener::bind("127.0.0.1:0").unwrap();
         let address = taken.local_addr().unwrap().to_string();
