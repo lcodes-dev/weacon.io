@@ -143,9 +143,17 @@ mod tests {
         let version = http(&address, "GET /version", "");
         let start = format!(r#"{{"workspace":"{workspace}","email":"ada@example.com"}}"#);
         let started = http(&address, "POST /sign-in", &start);
+        let (_, started_body) = started.split_once("\r\n\r\n").unwrap();
+        let challenge =
+            serde_json::from_str::<serde_json::Value>(started_body).unwrap()["challenge"].clone();
         let (to, code) = letter(&outbox);
-        let finish =
-            format!(r#"{{"workspace":"{workspace}","email":"ada@example.com","code":"{code}"}}"#);
+        let finish = serde_json::json!({
+            "workspace": workspace,
+            "email": "ada@example.com",
+            "challenge": challenge,
+            "code": code,
+        })
+        .to_string();
         let finished = http(&address, "POST /sign-in/finish", &finish);
         let (_, body) = finished.split_once("\r\n\r\n").unwrap();
         let token = serde_json::from_str::<serde_json::Value>(body).unwrap()["token"]
@@ -162,8 +170,9 @@ mod tests {
         assert!(finished.starts_with("HTTP/1.1 200 OK"), "{finished}");
         assert_eq!(token.len(), 64);
         assert!(logs.contains("request handled"), "{logs}");
-        // A code is six digits, so it is looked for as a whole JSON string.
-        for secret in ["ada@example.com", &format!("\"{code}\""), &token] {
+        // A code is eight digits, so it is looked for as a whole JSON string.
+        let challenge = challenge.as_str().unwrap();
+        for secret in ["ada@example.com", &format!("\"{code}\""), &token, challenge] {
             assert!(!logs.contains(secret), "{logs}");
         }
     }

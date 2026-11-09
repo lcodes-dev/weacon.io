@@ -1,4 +1,5 @@
 use std::future::{Future, IntoFuture};
+use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::{Duration, Instant, UNIX_EPOCH};
 
@@ -16,6 +17,7 @@ use weacon_protocol::{App, Code, ErrorBody, WorkspaceId, code};
 
 use crate::db::Db;
 use crate::feed;
+use crate::limit::Limit;
 use crate::mail::Outbox;
 use crate::sign_in;
 
@@ -50,6 +52,10 @@ pub(crate) struct Shared {
     pub(crate) sign_ins: Arc<Semaphore>,
     /// How long finishing a sign-in takes at least, so its timing gives nothing away.
     pub(crate) finish_within: Duration,
+    /// How many sign-ins each client may start.
+    pub(crate) starts: Arc<Limit>,
+    /// How many codes each client may try.
+    pub(crate) tries: Arc<Limit>,
 }
 
 impl Shared {
@@ -80,7 +86,8 @@ pub(crate) async fn serve(
         Fault::new(code!("server.serve_failed"), "The server stopped serving").because(error)
     };
     let (stop, stopped) = oneshot::channel::<()>();
-    let serving = axum::serve(listener, router(shared))
+    let app = router(shared).into_make_service_with_connect_info::<SocketAddr>();
+    let serving = axum::serve(listener, app)
         .with_graceful_shutdown(async { drop(stopped.await) })
         .into_future();
     tokio::pin!(serving);
@@ -148,21 +155,23 @@ async fn log_request(State(shared): State<Shared>, request: Request, next: Next)
 
 /// Answers that the client must sign in, or try again, with `code`.
 pub(crate) fn refused(code: Code) -> Response {
-    let body = ErrorBody {
-        code,
-        retryable: false,
-    };
-    (StatusCode::UNAUTHORIZED, Json(body)).into_response()
+    error(StatusCode::UNAUTHORIZED, code, false)
+}
+
+/// Answers that this client has asked too often for now.
+pub(crate) fn too_many(code: Code) -> Response {
+    error(StatusCode::TOO_MANY_REQUESTS, code, true)
 }
 
 /// Logs and reports `fault`, and answers that the server failed.
 pub(crate) fn failure(shared: &Shared, fault: Fault) -> Response {
-    let body = ErrorBody {
-        code: fault.code().clone(),
-        retryable: true,
-    };
+    let code = fault.code().clone();
     report(shared, fault);
-    (StatusCode::INTERNAL_SERVER_ERROR, Json(body)).into_response()
+    error(StatusCode::INTERNAL_SERVER_ERROR, code, true)
+}
+
+fn error(status: StatusCode, code: Code, retryable: bool) -> Response {
+    (status, Json(ErrorBody { code, retryable })).into_response()
 }
 
 /// Logs and reports `fault`.
@@ -179,7 +188,6 @@ pub(crate) fn report(shared: &Shared, fault: Fault) {
 
 #[cfg(test)]
 mod tests {
-    use std::net::SocketAddr;
 
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpStream;

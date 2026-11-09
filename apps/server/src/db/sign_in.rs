@@ -1,23 +1,20 @@
 use subtle::ConstantTimeEq;
 use weacon_observability::Fault;
-use weacon_protocol::{MemberId, WorkspaceChange, WorkspaceUpdate};
+use weacon_protocol::{ChallengeId, MemberId, WorkspaceChange, WorkspaceUpdate};
 
 use super::{Workspace, failed, stored, unreadable};
 use crate::email::Email;
 
 /// How long a code works, in seconds.
 pub(crate) const CODE_LIFETIME: i64 = 600;
-/// How soon a member can be sent another code, in seconds.
-const RESEND_AFTER: i64 = 60;
-/// The most wrong codes a member may try in [`ATTEMPT_WINDOW`] seconds, whatever codes they
-/// are sent meanwhile; so a code can't be guessed by asking for new ones.
+/// How many wrong tries cancel a challenge's code.
 const MAX_ATTEMPTS: i64 = 5;
-const ATTEMPT_WINDOW: i64 = 3600;
 const MEMBER_JOINED: &str = "member_joined";
 
 /// One try at finishing a sign-in. Times are seconds since the Unix epoch.
 pub(crate) struct Attempt<'a> {
     pub(crate) email: &'a Email,
+    pub(crate) challenge: &'a ChallengeId,
     pub(crate) code_hash: &'a [u8],
     pub(crate) token_hash: &'a [u8],
     pub(crate) now: i64,
@@ -31,7 +28,7 @@ pub(crate) struct Finished {
     pub(crate) joined: bool,
 }
 
-/// The member a pending code is for, and that code.
+/// The member a challenge is for, and its code.
 struct Pending {
     member: String,
     code_hash: Vec<u8>,
@@ -55,41 +52,41 @@ impl Workspace {
         .transpose()
     }
 
-    /// Replaces `member`'s sign-in code with one hashed as `code_hash`, unless they were sent
-    /// one less than [`RESEND_AFTER`] seconds ago; says whether it did.
-    pub(crate) async fn save_code(
+    /// Records `challenge`, for `member`, with the code hashed as `code_hash`; and ends this
+    /// workspace's expired challenges so they don't pile up.
+    pub(crate) async fn start_challenge(
         &self,
         member: &MemberId,
+        challenge: &ChallengeId,
         code_hash: &[u8],
         now: i64,
-    ) -> Result<bool, Fault> {
-        let saved = sqlx::query(
-            "INSERT INTO sign_in_codes
-                 (workspace_id, member_id, code_hash, expires_at, sent_at, attempts, window_start)
-             VALUES (?1, ?2, ?3, ?4 + ?5, ?4, 0, ?4)
-             ON CONFLICT (workspace_id, member_id) DO UPDATE SET
-                 code_hash = excluded.code_hash,
-                 expires_at = excluded.expires_at,
-                 sent_at = excluded.sent_at,
-                 attempts = iif(window_start <= ?4 - ?6, 0, attempts),
-                 window_start = iif(window_start <= ?4 - ?6, ?4, window_start)
-             WHERE sent_at <= ?4 - ?7",
+    ) -> Result<(), Fault> {
+        let mut transaction = self.db.writer.begin().await.map_err(failed)?;
+        sqlx::query("DELETE FROM sign_in_challenges WHERE workspace_id = ? AND expires_at <= ?")
+            .bind(self.id.as_str())
+            .bind(now)
+            .execute(&mut *transaction)
+            .await
+            .map_err(failed)?;
+        sqlx::query(
+            "INSERT INTO sign_in_challenges
+                 (workspace_id, challenge_id, member_id, code_hash, expires_at, attempts)
+             VALUES (?, ?, ?, ?, ?, 0)",
         )
         .bind(self.id.as_str())
+        .bind(challenge.as_str())
         .bind(member.as_str())
         .bind(code_hash)
-        .bind(now)
-        .bind(CODE_LIFETIME)
-        .bind(ATTEMPT_WINDOW)
-        .bind(RESEND_AFTER)
-        .execute(&self.db.writer)
+        .bind(now.saturating_add(CODE_LIFETIME))
+        .execute(&mut *transaction)
         .await
         .map_err(failed)?;
-        Ok(saved.rows_affected() == 1)
+        transaction.commit().await.map_err(failed)
     }
 
-    /// Trades a code for a session: `None` when there is no such member, no live code, too
-    /// many tries, or the wrong code, which counts as a try. A right code is used up.
+    /// Trades a challenge's code for a session: `None` when there is no such challenge for
+    /// that email, it has ended, it has had too many tries, or the code is wrong, which counts
+    /// as a try. A right code is used up.
     pub(crate) async fn finish_sign_in(
         &self,
         attempt: &Attempt<'_>,
@@ -106,12 +103,13 @@ impl Workspace {
                  EXISTS (SELECT 1 FROM changes AS j
                      WHERE j.workspace_id = m.workspace_id AND j.member_id = m.member_id
                          AND j.kind = ?) AS joined
-             FROM members AS m JOIN sign_in_codes AS c
-                 ON c.workspace_id = m.workspace_id AND c.member_id = m.member_id
-             WHERE m.workspace_id = ? AND m.email = ?",
+             FROM sign_in_challenges AS c JOIN members AS m
+                 ON m.workspace_id = c.workspace_id AND m.member_id = c.member_id
+             WHERE c.workspace_id = ? AND c.challenge_id = ? AND m.email = ?",
             )
             .bind(MEMBER_JOINED)
             .bind(self.id.as_str())
+            .bind(attempt.challenge.as_str())
             .bind(attempt.email.as_str())
             .fetch_optional(&mut *transaction)
             .await
@@ -155,14 +153,14 @@ impl Workspace {
         }
         let right = bool::from(pending.code_hash.ct_eq(attempt.code_hash));
         let spend = sqlx::query(if right {
-            "DELETE FROM sign_in_codes WHERE workspace_id = ? AND member_id = ?"
+            "DELETE FROM sign_in_challenges WHERE workspace_id = ? AND challenge_id = ?"
         } else {
-            "UPDATE sign_in_codes SET attempts = attempts + 1
-             WHERE workspace_id = ? AND member_id = ?"
+            "UPDATE sign_in_challenges SET attempts = attempts + 1
+             WHERE workspace_id = ? AND challenge_id = ?"
         });
         spend
             .bind(self.id.as_str())
-            .bind(&pending.member)
+            .bind(attempt.challenge.as_str())
             .execute(&mut *transaction)
             .await
             .map_err(failed)?;
@@ -310,17 +308,43 @@ mod tests {
         (one, two)
     }
 
-    // A try at `code` by ada at `now`, for a session whose token is `token`.
-    async fn try_code(team: &Workspace, code: &[u8], token: &[u8], now: i64) -> Option<Finished> {
-        let ada = email("ada@example.com");
+    // Starts challenge `name` for `member` in `team`, with `code`.
+    async fn challenge(team: &Workspace, member: &str, name: &str, code: &[u8], now: i64) {
+        team.start_challenge(&id(member), &id(name), code, now)
+            .await
+            .unwrap();
+    }
+
+    // A try by `who` at challenge `name` with `code` at `now`; a session it starts has `name` as its token.
+    async fn try_as(
+        team: &Workspace,
+        who: &str,
+        name: &str,
+        code: &[u8],
+        now: i64,
+    ) -> Option<Finished> {
+        let who = email(who);
+        let challenge = id(name);
         let attempt = Attempt {
-            email: &ada,
+            email: &who,
+            challenge: &challenge,
             code_hash: code,
-            token_hash: token,
+            token_hash: name.as_bytes(),
             now,
             token_expires_at: now + 100,
         };
         team.finish_sign_in(&attempt).await.unwrap()
+    }
+
+    async fn try_code(team: &Workspace, name: &str, code: &[u8], now: i64) -> Option<Finished> {
+        try_as(team, "ada@example.com", name, code, now).await
+    }
+
+    async fn challenges(team: &Workspace) -> i64 {
+        sqlx::query_scalar("SELECT count(*) FROM sign_in_challenges")
+            .fetch_one(&team.db.readers)
+            .await
+            .unwrap()
     }
 
     fn joined(seq: u64, member: &str) -> WorkspaceUpdate {
@@ -335,12 +359,11 @@ mod tests {
     async fn a_right_code_signs_in_once_and_the_first_time_joins() {
         let dir = TempDir::new().unwrap();
         let (one, _) = two_teams(&dir).await;
-        assert!(one.save_code(&id("m1"), b"code", NOW).await.unwrap());
-        let first = try_code(&one, b"code", b"token-1", NOW).await;
-        let again = try_code(&one, b"code", b"token-2", NOW).await;
-        let later = NOW + RESEND_AFTER;
-        assert!(one.save_code(&id("m1"), b"code-2", later).await.unwrap());
-        let second = try_code(&one, b"code-2", b"token-3", later).await;
+        challenge(&one, "m1", "c1", b"code", NOW).await;
+        let first = try_code(&one, "c1", b"code", NOW).await;
+        let again = try_code(&one, "c1", b"code", NOW).await;
+        challenge(&one, "m1", "c2", b"code-2", NOW).await;
+        let second = try_code(&one, "c2", b"code-2", NOW).await;
 
         assert_eq!(
             first,
@@ -362,67 +385,63 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_new_code_waits_a_minute_and_keeps_the_count_of_wrong_ones() {
+    async fn the_fifth_wrong_code_is_the_last_for_its_challenge_only() {
         let dir = TempDir::new().unwrap();
         let (one, _) = two_teams(&dir).await;
-        assert!(one.save_code(&id("m1"), b"code", NOW).await.unwrap());
-        assert!(
-            !one.save_code(&id("m1"), b"code-2", NOW + RESEND_AFTER - 1)
-                .await
-                .unwrap()
-        );
-        for _ in 0..MAX_ATTEMPTS {
-            assert_eq!(try_code(&one, b"guess", b"t", NOW).await, None);
+        for name in ["c1", "c2", "c3"] {
+            challenge(&one, "m1", name, b"code", NOW).await;
         }
-        let resent = NOW + RESEND_AFTER;
-        assert!(one.save_code(&id("m1"), b"code-3", resent).await.unwrap());
-        let still_locked = try_code(&one, b"code-3", b"t", resent).await;
-        let window_over = NOW + ATTEMPT_WINDOW;
-        assert!(
-            one.save_code(&id("m1"), b"code-4", window_over)
-                .await
-                .unwrap()
-        );
-        let unlocked = try_code(&one, b"code-4", b"t", window_over).await;
-
-        assert_eq!(still_locked, None);
-        assert!(unlocked.is_some());
-    }
-
-    #[tokio::test]
-    async fn the_fifth_wrong_code_is_the_last() {
-        let dir = TempDir::new().unwrap();
-        let (one, _) = two_teams(&dir).await;
-        one.save_code(&id("m1"), b"code", NOW).await.unwrap();
         for _ in 0..MAX_ATTEMPTS - 1 {
-            assert_eq!(try_code(&one, b"guess", b"t", NOW).await, None);
+            assert_eq!(try_code(&one, "c1", b"guess", NOW).await, None);
+        }
+        for _ in 0..MAX_ATTEMPTS {
+            assert_eq!(try_code(&one, "c2", b"guess", NOW).await, None);
         }
 
-        assert!(try_code(&one, b"code", b"t", NOW).await.is_some());
+        assert!(try_code(&one, "c1", b"code", NOW).await.is_some());
+        assert_eq!(try_code(&one, "c2", b"code", NOW).await, None);
+        assert!(try_code(&one, "c3", b"code", NOW).await.is_some());
     }
 
     #[tokio::test]
-    async fn a_code_works_for_ten_minutes() {
+    async fn a_challenge_is_only_for_its_member() {
         let dir = TempDir::new().unwrap();
         let (one, _) = two_teams(&dir).await;
-        one.save_code(&id("m1"), b"code", NOW).await.unwrap();
+        one.add_member(&id("m3"), &email("bo@example.com"))
+            .await
+            .unwrap();
+        challenge(&one, "m1", "c1", b"code", NOW).await;
 
         assert_eq!(
-            try_code(&one, b"code", b"t", NOW + CODE_LIFETIME).await,
+            try_as(&one, "bo@example.com", "c1", b"code", NOW).await,
             None
         );
-        assert!(
-            try_code(&one, b"code", b"t", NOW + CODE_LIFETIME - 1)
-                .await
-                .is_some()
-        );
+        assert_eq!(try_code(&one, "c9", b"code", NOW).await, None);
+        assert!(try_code(&one, "c1", b"code", NOW).await.is_some());
+    }
+
+    #[tokio::test]
+    async fn a_code_works_for_ten_minutes_and_ended_ones_are_cleared() {
+        let dir = TempDir::new().unwrap();
+        let (one, _) = two_teams(&dir).await;
+        challenge(&one, "m1", "c1", b"code", NOW).await;
+        challenge(&one, "m1", "c2", b"code", NOW).await;
+        let ended = NOW + CODE_LIFETIME;
+
+        assert_eq!(try_code(&one, "c1", b"code", ended).await, None);
+        assert!(try_code(&one, "c2", b"code", ended - 1).await.is_some());
+        challenge(&one, "m1", "c3", b"code", ended - 1).await;
+        assert_eq!(challenges(&one).await, 2);
+        challenge(&one, "m1", "c4", b"code", ended).await;
+        assert_eq!(challenges(&one).await, 2);
     }
 
     #[tokio::test]
     async fn sign_ins_and_sessions_stay_in_their_workspace() {
         let dir = TempDir::new().unwrap();
         let (one, two) = two_teams(&dir).await;
-        one.save_code(&id("m1"), b"code", NOW).await.unwrap();
+        challenge(&one, "m1", "c1", b"code", NOW).await;
+        challenge(&two, "m2", "c2", b"code", NOW).await;
 
         assert_eq!(
             one.member_with(&email("ada@example.com")).await.unwrap(),
@@ -436,15 +455,12 @@ mod tests {
             one.member_with(&email("bo@example.com")).await.unwrap(),
             None
         );
-        assert_eq!(try_code(&two, b"code", b"token", NOW).await, None);
-        try_code(&one, b"code", b"token", NOW).await.unwrap();
-        assert_eq!(
-            one.session_end(b"token", NOW).await.unwrap(),
-            Some(NOW + 100)
-        );
-        assert_eq!(two.session_end(b"token", NOW).await.unwrap(), None);
+        assert_eq!(try_code(&two, "c1", b"code", NOW).await, None);
+        try_code(&one, "c1", b"code", NOW).await.unwrap();
+        assert_eq!(one.session_end(b"c1", NOW).await.unwrap(), Some(NOW + 100));
+        assert_eq!(two.session_end(b"c1", NOW).await.unwrap(), None);
         assert_eq!(one.session_end(b"other", NOW).await.unwrap(), None);
-        assert_eq!(one.session_end(b"token", NOW + 100).await.unwrap(), None);
+        assert_eq!(one.session_end(b"c1", NOW + 100).await.unwrap(), None);
         assert_eq!(one.changes_since(0, 10).await.unwrap().len(), 1);
         assert!(two.changes_since(0, 10).await.unwrap().is_empty());
     }
@@ -453,11 +469,11 @@ mod tests {
     async fn expired_sessions_end_when_another_starts() {
         let dir = TempDir::new().unwrap();
         let (one, _) = two_teams(&dir).await;
-        one.save_code(&id("m1"), b"code", NOW).await.unwrap();
-        try_code(&one, b"code", b"old", NOW).await.unwrap();
+        challenge(&one, "m1", "c1", b"code", NOW).await;
+        try_code(&one, "c1", b"code", NOW).await.unwrap();
         let later = NOW + 100;
-        one.save_code(&id("m1"), b"code", later).await.unwrap();
-        try_code(&one, b"code", b"new", later).await.unwrap();
+        challenge(&one, "m1", "c2", b"code", later).await;
+        try_code(&one, "c2", b"code", later).await.unwrap();
         let sessions: i64 = sqlx::query_scalar("SELECT count(*) FROM sessions")
             .fetch_one(&one.db.readers)
             .await

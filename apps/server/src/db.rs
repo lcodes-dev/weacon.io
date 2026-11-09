@@ -490,9 +490,9 @@ mod tests {
             [
                 "workspaces",
                 "members",
-                "sign_in_codes",
                 "sessions",
-                "changes"
+                "changes",
+                "sign_in_challenges"
             ]
         );
         for table in &tables {

@@ -237,9 +237,12 @@ mod tests {
     // Signs `email` in to w1, and gives the session's token.
     async fn sign_in(fixture: &Fixture, address: SocketAddr, email: &str) -> String {
         let start = json!({ "workspace": "w1", "email": email }).to_string();
-        request(address, "POST /sign-in", &start).await;
+        let (_, started) = request(address, "POST /sign-in", &start).await;
+        let challenge =
+            serde_json::from_str::<serde_json::Value>(&started).unwrap()["challenge"].clone();
         let code = fixture.letter().await.1;
-        let finish = json!({ "workspace": "w1", "email": email, "code": code });
+        let finish =
+            json!({ "workspace": "w1", "email": email, "challenge": challenge, "code": code });
         let (_, body) = request(address, "POST /sign-in/finish", &finish.to_string()).await;
         serde_json::from_str::<serde_json::Value>(&body).unwrap()["token"]
             .as_str()

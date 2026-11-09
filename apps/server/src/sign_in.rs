@@ -1,18 +1,20 @@
+use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
 use axum::Json;
-use axum::extract::State;
+use axum::extract::{ConnectInfo, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use sha2::{Digest, Sha256};
 use tokio::time::{Instant, sleep_until};
 use weacon_observability::Fault;
-use weacon_protocol::{SignInFinish, SignInStart, SignedIn, code};
+use weacon_protocol::{ChallengeId, SignInFinish, SignInStart, SignInStarted, SignedIn, code};
 
 use crate::db::Attempt;
 use crate::email::Email;
-use crate::http::{Shared, failure, refused, report};
+use crate::http::{Shared, failure, refused, report, too_many};
+use crate::limit::Limit;
 use crate::mail::mail_failed;
 
 /// How long a session lasts: 30 days, in seconds.
@@ -21,25 +23,50 @@ pub(crate) const SESSION_LIFETIME: i64 = 2_592_000;
 pub(crate) const AT_ONCE: usize = 64;
 /// How long finishing a sign-in takes at least: longer than any of its database work.
 pub(crate) const FINISH_WITHIN: Duration = Duration::from_millis(250);
+const HOUR: Duration = Duration::from_hours(1);
 
-/// `POST /sign-in`: sends a code to a member. Answers the same, and as fast, whether or not
-/// the address is a member, so it can't be used to find out.
+/// How many sign-ins each client may start.
+pub(crate) fn starts() -> Limit {
+    Limit::new(30, HOUR)
+}
+
+/// How many codes each client may try.
+pub(crate) fn tries() -> Limit {
+    Limit::new(60, HOUR)
+}
+
+/// `POST /sign-in`: sends a code to a member, and answers with the challenge to finish with.
+/// Answers the same, and as fast, whether or not the address is a member, so it can't be used
+/// to find out.
 pub(crate) async fn start(
     State(shared): State<Shared>,
+    ConnectInfo(from): ConnectInfo<SocketAddr>,
     Json(body): Json<SignInStart>,
-) -> StatusCode {
+) -> Response {
+    if !shared.starts.allow(from.ip(), Instant::now()) {
+        return too_many(code!("sign_in.too_many"));
+    }
+    let challenge = match new_challenge() {
+        Ok(challenge) => challenge,
+        Err(fault) => return failure(&shared, fault),
+    };
     if let Ok(room) = Arc::clone(&shared.sign_ins).try_acquire_owned() {
+        let sent = challenge.clone();
         drop(tokio::spawn(async move {
-            if let Err(fault) = send_code(&shared, &body).await {
+            if let Err(fault) = send_code(&shared, &body, &sent).await {
                 report(&shared, fault);
             }
             drop(room);
         }));
     }
-    StatusCode::ACCEPTED
+    (StatusCode::ACCEPTED, Json(SignInStarted { challenge })).into_response()
 }
 
-async fn send_code(shared: &Shared, body: &SignInStart) -> Result<(), Fault> {
+async fn send_code(
+    shared: &Shared,
+    body: &SignInStart,
+    challenge: &ChallengeId,
+) -> Result<(), Fault> {
     let Ok(email) = Email::parse(&body.email) else {
         return Ok(());
     };
@@ -50,35 +77,39 @@ async fn send_code(shared: &Shared, body: &SignInStart) -> Result<(), Fault> {
         return Ok(());
     };
     let code = code_text(&os_secrets()?);
-    if !workspace
-        .save_code(&member, &hash(&code), shared.now())
-        .await?
-    {
-        return Ok(());
-    }
+    workspace
+        .start_challenge(&member, challenge, &hash(&code), shared.now())
+        .await?;
     let outbox = shared.outbox.clone();
     tokio::task::spawn_blocking(move || outbox.send(&email, &code))
         .await
         .map_err(|error| mail_failed().because(error))?
 }
 
-/// `POST /sign-in/finish`: trades a code for a session token, in the same time whether or not
-/// there was a code to try.
+/// `POST /sign-in/finish`: trades a challenge's code for a session token, in the same time
+/// whether or not there was a code to try.
 pub(crate) async fn finish(
     State(shared): State<Shared>,
+    ConnectInfo(from): ConnectInfo<SocketAddr>,
     Json(body): Json<SignInFinish>,
 ) -> Response {
-    let answer_at = Instant::now() + shared.finish_within;
+    let now = Instant::now();
+    if !shared.tries.allow(from.ip(), now) {
+        return too_many(code!("sign_in.too_many"));
+    }
     let answer = match signed_in(&shared, &body).await {
         Ok(Some(signed_in)) => Json(signed_in).into_response(),
         Ok(None) => refused(code!("sign_in.failed")),
         Err(fault) => failure(&shared, fault),
     };
-    sleep_until(answer_at).await;
+    sleep_until(now + shared.finish_within).await;
     answer
 }
 
 async fn signed_in(shared: &Shared, body: &SignInFinish) -> Result<Option<SignedIn>, Fault> {
+    let Some(challenge) = &body.challenge else {
+        return Ok(None);
+    };
     let Ok(email) = Email::parse(&body.email) else {
         return Ok(None);
     };
@@ -89,6 +120,7 @@ async fn signed_in(shared: &Shared, body: &SignInFinish) -> Result<Option<Signed
     let now = shared.now();
     let attempt = Attempt {
         email: &email,
+        challenge,
         code_hash: &hash(body.code.trim()),
         token_hash: &hash(&token),
         now,
@@ -110,10 +142,15 @@ async fn signed_in(shared: &Shared, body: &SignInFinish) -> Result<Option<Signed
     }))
 }
 
-/// A one-time code: six digits.
+/// A challenge nobody can guess: 32 random bytes, in hex.
+fn new_challenge() -> Result<ChallengeId, Fault> {
+    ChallengeId::try_from(hex(&os_secrets()?)).map_err(|_| random_failed())
+}
+
+/// A one-time code: eight digits.
 fn code_text(secret: &[u8; 32]) -> String {
     let word = secret.first_chunk().copied().unwrap_or_default();
-    format!("{:06}", u64::from_le_bytes(word) % 1_000_000)
+    format!("{:08}", u64::from_le_bytes(word) % 100_000_000)
 }
 
 // A lookup table, as clippy refuses `format!` collected into a string.
@@ -133,13 +170,15 @@ pub(crate) fn hash(text: &str) -> [u8; 32] {
 /// The operating system's random bytes.
 fn os_secrets() -> Result<[u8; 32], Fault> {
     let mut bytes = [0; 32];
-    getrandom::fill(&mut bytes).map_err(|_| {
-        Fault::new(
-            code!("random.failed"),
-            "The server couldn't get random bytes",
-        )
-    })?;
+    getrandom::fill(&mut bytes).map_err(|_| random_failed())?;
     Ok(bytes)
+}
+
+fn random_failed() -> Fault {
+    Fault::new(
+        code!("random.failed"),
+        "The server couldn't get random bytes",
+    )
 }
 
 #[cfg(test)]
@@ -154,15 +193,35 @@ mod tests {
         head.first().map_or("", String::as_str)
     }
 
+    // Starts a sign-in for `email` in w1, and gives the answer's status and challenge.
+    async fn start_for(address: SocketAddr, email: &str) -> (String, Value) {
+        let start = json!({ "workspace": "w1", "email": email }).to_string();
+        let (head, body) = request(address, "POST /sign-in", &start).await;
+        let body: Value = serde_json::from_str(&body).unwrap_or_default();
+        (status(&head).to_owned(), body["challenge"].clone())
+    }
+
+    fn finish_body(workspace: &str, email: &str, challenge: &Value, code: &str) -> String {
+        json!({ "workspace": workspace, "email": email, "challenge": challenge, "code": code })
+            .to_string()
+    }
+
+    async fn finish_with(address: SocketAddr, body: &str) -> (String, Value) {
+        let (head, body) = request(address, "POST /sign-in/finish", body).await;
+        let body = serde_json::from_str(&body).unwrap_or_default();
+        (status(&head).to_owned(), body)
+    }
+
     #[test]
-    fn codes_are_six_digits_and_tokens_are_hex() {
-        assert_eq!(code_text(&[1; 32]), "076673");
-        assert_eq!(code_text(&[0; 32]), "000000");
+    fn codes_are_eight_digits_and_tokens_are_hex() {
+        assert_eq!(code_text(&[1; 32]), "38076673");
+        assert_eq!(code_text(&[0; 32]), "00000000");
         assert_eq!(hex(&[0, 10, 255]), "000aff");
         assert_eq!(hash("a"), hash("a"));
         assert_ne!(hash("a"), hash("b"));
         assert_eq!(os_secrets().unwrap().len(), 32);
         assert_ne!(os_secrets().unwrap(), os_secrets().unwrap());
+        assert_eq!(new_challenge().unwrap().as_str().len(), 64);
     }
 
     #[tokio::test]
@@ -170,13 +229,10 @@ mod tests {
         let fixture = Fixture::new().await;
         let server = run(fixture.shared.clone()).await;
         let mut changes = fixture.shared.changes.subscribe();
-        let start = json!({ "workspace": "w1", "email": " Ada@Example.com " });
-        let (started, _) = request(server.address, "POST /sign-in", &start.to_string()).await;
+        let (started, challenge) = start_for(server.address, " Ada@Example.com ").await;
         let (to, code) = fixture.letter().await;
-        let finish = json!({ "workspace": "w1", "email": "ada@example.com", "code": code });
-        let (finished, body) =
-            request(server.address, "POST /sign-in/finish", &finish.to_string()).await;
-        let body: Value = serde_json::from_str(&body).unwrap();
+        let finish = finish_body("w1", "ada@example.com", &challenge, &code);
+        let (finished, body) = finish_with(server.address, &finish).await;
         let token = body["token"].as_str().unwrap();
         let session_end = fixture
             .shared
@@ -188,10 +244,10 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(status(&started), "http/1.1 202 accepted");
+        assert_eq!(started, "http/1.1 202 accepted");
         assert_eq!(to, "ada@example.com");
-        assert_eq!(code.len(), 6);
-        assert_eq!(status(&finished), "http/1.1 200 ok");
+        assert_eq!(code.len(), 8);
+        assert_eq!(finished, "http/1.1 200 ok");
         assert_eq!(body["member"], "m1");
         assert_eq!(token.len(), 64);
         assert_eq!(session_end, Some(fixture.shared.now() + SESSION_LIFETIME));
@@ -202,14 +258,18 @@ mod tests {
     async fn strangers_get_the_same_answer_and_no_code() {
         let fixture = Fixture::new().await;
         let server = run(fixture.shared.clone()).await;
+        let mut challenges = Vec::new();
         for body in [
             json!({ "workspace": "w1", "email": "bo@example.com" }),
             json!({ "workspace": "w9", "email": "ada@example.com" }),
             json!({ "workspace": "w1", "email": "not an email" }),
             json!({ "workspace": "w1", "email": "ada@example.com" }),
         ] {
-            let (head, _) = request(server.address, "POST /sign-in", &body.to_string()).await;
+            let (head, answer) = request(server.address, "POST /sign-in", &body.to_string()).await;
+            let answer: Value = serde_json::from_str(&answer).unwrap();
             assert_eq!(status(&head), "http/1.1 202 accepted", "{body}");
+            assert_eq!(answer.as_object().unwrap().len(), 1, "{body}");
+            challenges.push(answer["challenge"].as_str().unwrap().len());
         }
         let (bad_id, _) = request(
             server.address,
@@ -220,6 +280,7 @@ mod tests {
 
         // Only the member's request leaves a letter.
         assert_eq!(fixture.letter().await.0, "ada@example.com");
+        assert_eq!(challenges, [64; 4]);
         assert_eq!(status(&bad_id), "http/1.1 422 unprocessable entity");
     }
 
@@ -227,37 +288,86 @@ mod tests {
     async fn a_wrong_or_late_code_is_refused() {
         let fixture = Fixture::new().await;
         let server = run(fixture.shared.clone()).await;
-        let start = json!({ "workspace": "w1", "email": "ada@example.com" }).to_string();
-        let finish = |workspace: &str, email: &str, code: &str| {
-            json!({ "workspace": workspace, "email": email, "code": code }).to_string()
-        };
-        request(server.address, "POST /sign-in", &start).await;
+        let (_, challenge) = start_for(server.address, "ada@example.com").await;
         let (_, code) = fixture.letter().await;
+        let (_, other) = start_for(server.address, "ada@example.com").await;
+        fixture.settled().await;
+        let finish = |workspace: &str, email: &str, code: &str| {
+            finish_body(workspace, email, &challenge, code)
+        };
         let mut refusals = Vec::new();
         for body in [
-            finish("w1", "ada@example.com", "000000"),
+            finish("w1", "ada@example.com", "00000000"),
             finish("w9", "ada@example.com", &code),
             finish("w1", "bo@example.com", &code),
             finish("w1", "not an email", &code),
+            finish_body("w1", "ada@example.com", &other, &code),
+            finish_body("w1", "ada@example.com", &Value::Null, &code),
         ] {
-            refusals.push(request(server.address, "POST /sign-in/finish", &body).await);
+            refusals.push(finish_with(server.address, &body).await);
         }
         fixture.advance(CODE_LIFETIME);
-        let late = request(
-            server.address,
-            "POST /sign-in/finish",
-            &finish("w1", "ada@example.com", &code),
-        )
-        .await;
-        refusals.push(late);
+        refusals.push(finish_with(server.address, &finish("w1", "ada@example.com", &code)).await);
 
         for (head, body) in refusals {
-            assert_eq!(status(&head), "http/1.1 401 unauthorized");
+            assert_eq!(head, "http/1.1 401 unauthorized");
             assert_eq!(
-                serde_json::from_str::<Value>(&body).unwrap(),
+                body,
                 json!({ "code": "sign_in.failed", "retryable": false })
             );
         }
+    }
+
+    #[tokio::test]
+    async fn a_strangers_guesses_cant_stop_a_member_signing_in() {
+        let fixture = Fixture::new().await;
+        let server = run(fixture.shared.clone()).await;
+        let (_, theirs) = start_for(server.address, "ada@example.com").await;
+        fixture.letter().await;
+        let (_, mine) = start_for(server.address, "ada@example.com").await;
+        let (_, code) = fixture.letter().await;
+        let unknown = json!("0".repeat(64));
+        for (guess, challenge) in (0..10).zip([&theirs, &unknown].into_iter().cycle()) {
+            let wrong = finish_body("w1", "ada@example.com", challenge, &format!("{guess:08}"));
+            finish_with(server.address, &wrong).await;
+        }
+        let (finished, _) = finish_with(
+            server.address,
+            &finish_body("w1", "ada@example.com", &mine, &code),
+        )
+        .await;
+
+        assert_eq!(finished, "http/1.1 200 ok");
+    }
+
+    #[tokio::test]
+    async fn each_client_may_start_and_try_only_so_many_times() {
+        let mut fixture = Fixture::new().await;
+        fixture.shared.starts = Arc::new(Limit::new(1, HOUR));
+        fixture.shared.tries = Arc::new(Limit::new(1, HOUR));
+        let server = run(fixture.shared.clone()).await;
+        let (first, challenge) = start_for(server.address, "ada@example.com").await;
+        let (_, code) = fixture.letter().await;
+        let (head, body) = request(
+            server.address,
+            "POST /sign-in",
+            &json!({ "workspace": "w1", "email": "ada@example.com" }).to_string(),
+        )
+        .await;
+        fixture.settled().await;
+        let finish = finish_body("w1", "ada@example.com", &challenge, "00000000");
+        let wrong = finish_with(server.address, &finish).await;
+        let right = finish_body("w1", "ada@example.com", &challenge, &code);
+        let (too_many, answer) = finish_with(server.address, &right).await;
+        let refused = json!({ "code": "sign_in.too_many", "retryable": true });
+
+        assert_eq!(first, "http/1.1 202 accepted");
+        assert_eq!(status(&head), "http/1.1 429 too many requests");
+        assert_eq!(serde_json::from_str::<Value>(&body).unwrap(), refused);
+        assert!(fixture.letters().is_empty());
+        assert_eq!(wrong.0, "http/1.1 401 unauthorized");
+        assert_eq!(too_many, "http/1.1 429 too many requests");
+        assert_eq!(answer, refused);
     }
 
     #[tokio::test]
@@ -303,7 +413,7 @@ mod tests {
         let mut fixture = Fixture::new().await;
         fixture.shared.finish_within = Duration::from_millis(200);
         let server = run(fixture.shared.clone()).await;
-        let stranger = json!({ "workspace": "w9", "email": "bo@example.com", "code": "000000" });
+        let stranger = json!({ "workspace": "w9", "email": "bo@example.com", "code": "00000000" });
         let started = std::time::Instant::now();
         let (head, _) = request(
             server.address,
@@ -321,9 +431,8 @@ mod tests {
         let fixture = Fixture::new().await;
         let server = run(fixture.shared.clone()).await;
         fixture.shared.db.close().await;
-        let finish = json!({ "workspace": "w1", "email": "ada@example.com", "code": "000000" });
-        let (head, body) =
-            request(server.address, "POST /sign-in/finish", &finish.to_string()).await;
+        let finish = finish_body("w1", "ada@example.com", &json!("0".repeat(64)), "00000000");
+        let (head, body) = request(server.address, "POST /sign-in/finish", &finish).await;
 
         assert_eq!(status(&head), "http/1.1 500 internal server error");
         assert_eq!(

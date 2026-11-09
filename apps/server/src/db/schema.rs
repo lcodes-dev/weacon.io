@@ -51,6 +51,20 @@ CREATE TABLE changes (
     FOREIGN KEY (workspace_id, member_id) REFERENCES members (workspace_id, member_id)
 ) STRICT;
 ",
+    "
+DROP TABLE sign_in_codes;
+
+CREATE TABLE sign_in_challenges (
+    workspace_id TEXT NOT NULL,
+    challenge_id TEXT NOT NULL,
+    member_id TEXT NOT NULL,
+    code_hash BLOB NOT NULL,
+    expires_at INTEGER NOT NULL,
+    attempts INTEGER NOT NULL,
+    PRIMARY KEY (workspace_id, challenge_id),
+    FOREIGN KEY (workspace_id, member_id) REFERENCES members (workspace_id, member_id)
+) STRICT;
+",
 ];
 
 /// Applies the steps the database hasn't had yet, each in its own transaction that holds the

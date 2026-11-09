@@ -73,6 +73,8 @@ impl Fixture {
             changes: broadcast::channel(16).0,
             sign_ins: Arc::new(Semaphore::new(sign_in::AT_ONCE)),
             finish_within: Duration::ZERO,
+            starts: Arc::new(sign_in::starts()),
+            tries: Arc::new(sign_in::tries()),
         };
         Self {
             dir,
