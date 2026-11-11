@@ -2027,6 +2027,9 @@ dependencies = [
 [[package]]
 name = "weacon-model"
 version = "0.0.0"
+dependencies = [
+ "weacon-protocol",
+]
 
 [[package]]
 name = "weacon-observability"
