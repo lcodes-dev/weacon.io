@@ -292,7 +292,10 @@ mod tests {
         };
         while !whole(&answer) {
             let mut some = [0; 1024];
-            let read = stream.read(&mut some).await.unwrap();
+            let read = timeout(Duration::from_secs(10), stream.read(&mut some))
+                .await
+                .expect("no answer")
+                .unwrap();
             assert_ne!(read, 0, "closed mid-answer");
             answer.push_str(&String::from_utf8_lossy(&some[..read]).to_lowercase());
         }
