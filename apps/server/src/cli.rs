@@ -35,6 +35,11 @@ pub(crate) struct Serve {
     /// The folder where sign-in codes wait, one JSON file each, for a mail relay to send.
     #[arg(long)]
     pub(crate) outbox: PathBuf,
+    /// The file with the server's key for sign-in codes, made if missing and readable only by
+    /// this user. To change the key, replace the file and restart: codes already sent stop
+    /// working, and nobody is signed out.
+    #[arg(long)]
+    pub(crate) secret: PathBuf,
     /// How many connections may be open at once; more wait their turn. Keep it well under the
     /// open-file limit.
     #[arg(long, default_value_t = 512, value_parser = RangedU64ValueParser::<usize>::new().range(1..=1_000_000))]
@@ -129,6 +134,8 @@ mod tests {
             "team.db",
             "--outbox",
             "outbox",
+            "--secret",
+            "secret",
         ];
 
         assert_eq!(
@@ -137,6 +144,7 @@ mod tests {
                 listen: "127.0.0.1:8080".parse().unwrap(),
                 db: PathBuf::from("team.db"),
                 outbox: PathBuf::from("outbox"),
+                secret: PathBuf::from("secret"),
                 max_connections: 512,
             }
         );

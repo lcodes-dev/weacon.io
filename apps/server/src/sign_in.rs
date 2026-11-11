@@ -16,6 +16,7 @@ use crate::email::Email;
 use crate::http::{Shared, failure, refused, report, too_many};
 use crate::limit::Limit;
 use crate::mail::mail_failed;
+use crate::secret::{os_secrets, random_failed};
 
 /// How long a session lasts: 30 days, in seconds.
 pub(crate) const SESSION_LIFETIME: i64 = 2_592_000;
@@ -77,8 +78,9 @@ async fn send_code(
         return Ok(());
     };
     let code = code_text(&os_secrets()?);
+    let code_hash = shared.secret.code_hash(challenge, &code);
     workspace
-        .start_challenge(&member, challenge, &hash(&code), shared.now())
+        .start_challenge(&member, challenge, &code_hash, shared.now())
         .await?;
     let outbox = shared.outbox.clone();
     tokio::task::spawn_blocking(move || outbox.send(&email, &code))
@@ -121,8 +123,8 @@ async fn signed_in(shared: &Shared, body: &SignInFinish) -> Result<Option<Signed
     let attempt = Attempt {
         email: &email,
         challenge,
-        code_hash: &hash(body.code.trim()),
-        token_hash: &hash(&token),
+        code_hash: &shared.secret.code_hash(challenge, body.code.trim()),
+        token_hash: &token_hash(&token),
         now,
         token_expires_at: now.saturating_add(SESSION_LIFETIME),
     };
@@ -163,30 +165,19 @@ fn hex(bytes: &[u8]) -> String {
         .collect()
 }
 
-pub(crate) fn hash(text: &str) -> [u8; 32] {
+/// Unkeyed: a token is too long to guess.
+pub(crate) fn token_hash(text: &str) -> [u8; 32] {
     Sha256::digest(text.as_bytes()).into()
-}
-
-/// The operating system's random bytes.
-fn os_secrets() -> Result<[u8; 32], Fault> {
-    let mut bytes = [0; 32];
-    getrandom::fill(&mut bytes).map_err(|_| random_failed())?;
-    Ok(bytes)
-}
-
-fn random_failed() -> Fault {
-    Fault::new(
-        code!("random.failed"),
-        "The server couldn't get random bytes",
-    )
 }
 
 #[cfg(test)]
 mod tests {
     use serde_json::{Value, json};
+    use weacon_testing::TempDir;
 
     use super::*;
     use crate::db::CODE_LIFETIME;
+    use crate::secret::Secret;
     use crate::test_support::{
         Fixture, finish_body, request, run, start_sign_in, status, workspace_id,
     };
@@ -202,10 +193,8 @@ mod tests {
         assert_eq!(code_text(&[1; 32]), "38076673");
         assert_eq!(code_text(&[0; 32]), "00000000");
         assert_eq!(hex(&[0, 10, 255]), "000aff");
-        assert_eq!(hash("a"), hash("a"));
-        assert_ne!(hash("a"), hash("b"));
-        assert_eq!(os_secrets().unwrap().len(), 32);
-        assert_ne!(os_secrets().unwrap(), os_secrets().unwrap());
+        assert_eq!(token_hash("a"), token_hash("a"));
+        assert_ne!(token_hash("a"), token_hash("b"));
         assert_eq!(new_challenge().unwrap().as_str().len(), 64);
     }
 
@@ -225,7 +214,7 @@ mod tests {
             .workspace(&workspace_id("w1"))
             .await
             .unwrap()
-            .session_end(&hash(token), fixture.shared.now())
+            .session_end(&token_hash(token), fixture.shared.now())
             .await
             .unwrap();
 
@@ -237,6 +226,24 @@ mod tests {
         assert_eq!(token.len(), 64);
         assert_eq!(session_end, Some(fixture.shared.now() + SESSION_LIFETIME));
         assert_eq!(changes.try_recv().unwrap().as_str(), "w1");
+    }
+
+    #[tokio::test]
+    async fn a_code_sent_under_another_secret_is_refused() {
+        let mut fixture = Fixture::new().await;
+        let server = run(fixture.shared.clone()).await;
+        let (_, challenge) = start_sign_in(server.address, "ada@example.com").await;
+        let (_, code) = fixture.letter().await;
+        let dir = TempDir::new().unwrap();
+        fixture.shared.secret = Arc::new(Secret::open(&dir.join("secret")).unwrap());
+        let rotated = run(fixture.shared.clone()).await;
+        let finish = finish_body("w1", "ada@example.com", &challenge, &code);
+
+        let (refused, _) = finish_with(rotated.address, &finish).await;
+        let (finished, _) = finish_with(server.address, &finish).await;
+
+        assert_eq!(refused, "http/1.1 401 unauthorized");
+        assert_eq!(finished, "http/1.1 200 ok");
     }
 
     #[tokio::test]

@@ -21,6 +21,7 @@ use crate::email::Email;
 use crate::feed;
 use crate::http::{self, Shared};
 use crate::mail::Outbox;
+use crate::secret::Secret;
 use crate::sign_in;
 
 pub(crate) const VERSION: Version = Version {
@@ -63,6 +64,7 @@ impl Fixture {
             reporter: Arc::new(weacon_appkit::reporter(None, true, Box::new(|_| Ok(())))),
             db,
             outbox: Outbox::new(dir.join("outbox")),
+            secret: Arc::new(Secret::open(&dir.join("secret")).unwrap()),
             head_within: connections::HEAD_WITHIN,
             connections: Arc::new(Semaphore::new(64)),
             // Short, so tests that wait for the feed's checks don't wait long.
