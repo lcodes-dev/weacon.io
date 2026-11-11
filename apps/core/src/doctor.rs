@@ -1,28 +1,44 @@
 use std::io::Write;
 use std::path::Path;
 
-use weacon_agents::SpawnPolicy;
-use weacon_observability::Fault;
+use weacon_agents::{Launch, SignIn, SpawnPolicy};
+use weacon_observability::{Fault, Field, Logger};
 use weacon_protocol::code;
 
 use crate::app::{App, state_unavailable};
+use crate::daemon::runtime;
+use crate::workspaces::Workspaces;
 use crate::{disk, platform};
 use weacon_appkit::version_text;
 
 /// Prints the build and where this install keeps its state, and fails when it has nowhere to.
 pub(crate) fn run(app: &App, out: &mut impl Write) -> Result<(), Fault> {
-    out.write_all(report(app, platform::free_space).as_bytes())
-        .map_err(|error| {
+    let mut print = |text: String| {
+        out.write_all(text.as_bytes()).map_err(|error| {
             Fault::new(
                 code!("doctor.output_failed"),
                 "The report couldn't be printed",
             )
             .because(error)
-        })?;
+        })
+    };
+    print(report(app, platform::free_space))?;
+    if let Some(dir) = &app.state_dir {
+        let runtime = runtime()?;
+        let sign_in = |launch: &Launch| checked(&app.log, runtime.block_on(launch.sign_in()));
+        print(Workspaces::new(dir).describe(sign_in))?;
+    }
     if app.log_file.is_none() {
         return Err(state_unavailable());
     }
     Ok(())
+}
+
+// A check that failed is logged here, once, and shows as unknown.
+fn checked(log: &Logger, sign_in: Result<SignIn, Fault>) -> Option<SignIn> {
+    sign_in
+        .inspect_err(|error| log.warn("sign-in check failed", &[("err", Field::error(error))]))
+        .ok()
 }
 
 fn report(app: &App, free_space: disk::FreeSpace) -> String {
@@ -141,6 +157,20 @@ mod tests {
         assert!(report(&app, platform::free_space).ends_with(
             "Error reports: off\nAgent tools: OOM score 500 CARGO_BUILD_JOBS=2 GOMAXPROCS=2\n"
         ));
+    }
+
+    #[test]
+    fn a_failed_sign_in_check_is_logged_once_and_shows_as_unknown() {
+        let (log, records) = test_support::recording_logger();
+        let failed = Fault::new(code!("agent.status_failed"), "The check failed");
+
+        assert_eq!(
+            checked(&log, Ok(SignIn::SignedOut)),
+            Some(SignIn::SignedOut)
+        );
+        assert_eq!(test_support::messages(&records), [""; 0]);
+        assert_eq!(checked(&log, Err(failed)), None);
+        assert_eq!(test_support::messages(&records), ["sign-in check failed"]);
     }
 
     #[test]

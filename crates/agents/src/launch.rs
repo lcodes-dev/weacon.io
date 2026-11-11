@@ -1,6 +1,10 @@
+use std::io;
 use std::path::{Path, PathBuf};
+use std::process::Stdio;
+use std::time::Duration;
 
 use tokio::process::Command;
+use tokio::time::timeout;
 use weacon_observability::Fault;
 use weacon_protocol::{AgentKind, AgentSession, App, RunId, code};
 
@@ -18,6 +22,17 @@ pub struct Launch {
     pub config_dir: PathBuf,
     /// The folder the agent works in.
     pub cwd: PathBuf,
+}
+
+// A status command that hangs is given up on, so a report still prints.
+const STATUS_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Whether an agent is signed in for a workspace, as the vendor's own status command says.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SignIn {
+    SignedIn,
+    SignedOut,
+    NotInstalled,
 }
 
 impl Launch {
@@ -54,6 +69,36 @@ impl Launch {
     ) -> Result<AgentRun, Fault> {
         let (command, wire) = self.command(app, session)?;
         run::spawn(command, policy, run, wire)
+    }
+
+    /// Runs the vendor's own status command and reads only how it exits, never what it prints.
+    ///
+    /// # Errors
+    /// When this build doesn't know the agent, or the command can't be run or doesn't end.
+    pub async fn sign_in(&self) -> Result<SignIn, Fault> {
+        let mut command = match self.agent {
+            AgentKind::Claude => claude::status(self),
+            AgentKind::Codex => codex::status(self),
+            AgentKind::Newer => return Err(unknown()),
+        };
+        command
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .kill_on_drop(true);
+        let failed = || {
+            Fault::new(
+                code!("agent.status_failed"),
+                "The agent's sign-in couldn't be checked",
+            )
+        };
+        match timeout(STATUS_TIMEOUT, command.status()).await {
+            Ok(Ok(exit)) if exit.success() => Ok(SignIn::SignedIn),
+            Ok(Ok(_)) => Ok(SignIn::SignedOut),
+            Ok(Err(error)) if error.kind() == io::ErrorKind::NotFound => Ok(SignIn::NotInstalled),
+            Ok(Err(error)) => Err(failed().because(error)),
+            Err(elapsed) => Err(failed().because(elapsed)),
+        }
     }
 
     fn command(
@@ -158,5 +203,66 @@ mod tests {
         assert_eq!(code(AgentKind::Claude), "agent.not_started");
         assert_eq!(code(AgentKind::Codex), "agent.not_started");
         assert_eq!(code(AgentKind::Newer), "agent.unknown");
+    }
+
+    #[tokio::test]
+    async fn a_missing_program_is_not_installed_and_an_unknown_agent_is_refused() {
+        let dir = TempDir::new().unwrap();
+
+        for agent in [AgentKind::Claude, AgentKind::Codex] {
+            let sign_in = launch(agent, &dir).sign_in().await.unwrap();
+            assert_eq!(sign_in, SignIn::NotInstalled, "{agent:?}");
+        }
+        let error = launch(AgentKind::Newer, &dir).sign_in().await.unwrap_err();
+        assert_eq!(error.code().as_str(), "agent.unknown");
+    }
+
+    // `true` and `false` stand in for a vendor's status command: they exit the same whatever
+    // their arguments.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn the_status_commands_exit_says_whether_the_agent_is_signed_in() {
+        let dir = TempDir::new().unwrap();
+        let with = |agent, program: &str| Launch {
+            program: PathBuf::from(program),
+            ..launch(agent, &dir)
+        };
+
+        for agent in [AgentKind::Claude, AgentKind::Codex] {
+            assert_eq!(
+                with(agent, "true").sign_in().await.unwrap(),
+                SignIn::SignedIn
+            );
+            assert_eq!(
+                with(agent, "false").sign_in().await.unwrap(),
+                SignIn::SignedOut
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_program_that_cant_be_run_is_an_error_not_a_sign_in() {
+        let dir = TempDir::new().unwrap();
+        std::fs::write(dir.join("agent"), "").unwrap();
+
+        let error = launch(AgentKind::Claude, &dir).sign_in().await.unwrap_err();
+
+        assert_eq!(error.code().as_str(), "agent.status_failed");
+    }
+
+    // `yes` never exits; with time paused, the wait for it ends as soon as nothing else can run.
+    #[cfg(unix)]
+    #[tokio::test(start_paused = true)]
+    async fn a_status_command_that_never_ends_is_given_up_on() {
+        let dir = TempDir::new().unwrap();
+        let hanging = Launch {
+            program: PathBuf::from("yes"),
+            ..launch(AgentKind::Codex, &dir)
+        };
+
+        let error = hanging.sign_in().await.unwrap_err();
+
+        assert_eq!(error.code().as_str(), "agent.status_failed");
     }
 }

@@ -44,6 +44,25 @@ mod tests {
     }
 
     #[test]
+    fn doctor_asks_each_vendors_own_program_about_each_workspaces_sign_in() {
+        let dir = TempDir::new().unwrap();
+        fs::create_dir_all(dir.join("workspaces/w-w1")).unwrap();
+        // No vendor's program is on an empty PATH.
+        let output = Command::new(env!("CARGO_BIN_EXE_weacon"))
+            .arg("doctor")
+            .env("WEACON_STATE_DIR", dir.as_os_str())
+            .env("PATH", dir.join("empty"))
+            .output()
+            .unwrap();
+
+        assert!(output.status.success());
+        assert!(
+            String::from_utf8_lossy(&output.stdout)
+                .ends_with("\nWorkspace w1: Claude Code not installed, Codex not installed\n")
+        );
+    }
+
+    #[test]
     fn status_says_when_no_daemon_is_running() {
         let dir = TempDir::new().unwrap();
         // A first run, before the state folder exists.
