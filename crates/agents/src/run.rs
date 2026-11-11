@@ -5,7 +5,9 @@ use serde_json::Value;
 use tokio::io::{AsyncBufRead, AsyncWrite, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 use weacon_observability::Fault;
-use weacon_protocol::{AgentSession, Outcome, PermissionAnswer, RunEvent, RunId, code};
+use weacon_protocol::{
+    AccessLevel, AgentSession, Outcome, PermissionAnswer, RunEvent, RunId, code,
+};
 
 use crate::lines::Lines;
 use crate::spawn::SpawnPolicy;
@@ -33,6 +35,7 @@ pub struct Run<W, R> {
     next_prompt: u32,
     turn: Turn,
     session: Option<AgentSession>,
+    access: AccessLevel,
     _child: Option<Child>,
 }
 
@@ -89,6 +92,13 @@ impl Wire {
         }
     }
 
+    fn changes_files(&self, tool: &str) -> bool {
+        match self {
+            Self::Claude(_) => claude::FILE_TOOLS.contains(&tool),
+            Self::Codex(_) => tool == codex::FILE_TOOL,
+        }
+    }
+
     fn read(&mut self, line: &[u8]) -> Vec<Heard> {
         match self {
             Self::Claude(_) => claude::read(line),
@@ -110,12 +120,14 @@ enum Turn {
     Interrupting,
 }
 
-/// Starts `command` under `policy` as run `id`, speaking `wire`.
+/// Starts `command` under `policy` as run `id`, speaking `wire`, answering the prompts `access`
+/// decides itself.
 pub(crate) fn spawn(
     mut command: Command,
     policy: &SpawnPolicy,
     id: RunId,
     wire: Wire,
+    access: AccessLevel,
 ) -> Result<AgentRun, Fault> {
     let not_started = || Fault::new(code!("agent.not_started"), "The agent couldn't start");
     policy.apply(&mut command);
@@ -130,13 +142,18 @@ pub(crate) fn spawn(
     let (Some(stdin), Some(stdout)) = (child.stdin.take(), child.stdout.take()) else {
         return Err(not_started());
     };
-    Ok(Run::new(
-        id,
-        wire,
-        stdin,
-        BufReader::new(stdout),
-        Some(child),
-    ))
+    let mut run = Run::new(id, wire, stdin, BufReader::new(stdout), Some(child));
+    run.access = access;
+    Ok(run)
+}
+
+/// The answer `access` gives a prompt without asking a person, if it gives one.
+fn settled(access: AccessLevel, changes_files: bool) -> Option<bool> {
+    match access {
+        AccessLevel::AskFirst => None,
+        AccessLevel::Full => changes_files.then_some(true),
+        AccessLevel::Off | AccessLevel::ReadOnly | AccessLevel::Newer => Some(false),
+    }
 }
 
 impl<W: AsyncWrite + Unpin, R: AsyncBufRead + Unpin> Run<W, R> {
@@ -161,6 +178,7 @@ impl<W: AsyncWrite + Unpin, R: AsyncBufRead + Unpin> Run<W, R> {
             next_prompt: 0,
             turn: Turn::Idle,
             session: None,
+            access: AccessLevel::AskFirst,
             _child: child,
         };
         run.hear(opening);
@@ -272,6 +290,11 @@ impl<W: AsyncWrite + Unpin, R: AsyncBufRead + Unpin> Run<W, R> {
     }
 
     fn asked(&mut self, request: Value, tool: String, input: Value) {
+        if let Some(allow) = settled(self.access, self.wire.changes_files(&tool)) {
+            let heard = self.wire.answer(&request, allow, &input);
+            self.hear(heard);
+            return;
+        }
         self.next_prompt += 1;
         let id = self.next_prompt;
         self.events.push_back(RunEvent::PermissionAsked {
@@ -399,6 +422,97 @@ mod tests {
         let again = run.answer(&answer("run-1", true)).await.unwrap_err();
         assert_eq!(again.code().as_str(), "agent.no_such_prompt");
         ends_as_recorded(run, done).await;
+    }
+
+    fn tool_call(call: &str, tool: &str, input: Value) -> RunEvent {
+        RunEvent::ToolCall {
+            call: call.to_owned(),
+            tool: tool.to_owned(),
+            input,
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn read_only_access_turns_every_prompt_down_without_asking() {
+        let (mut run, done) = fake(include_str!("../sessions/claude/deny.replay"));
+        run.access = AccessLevel::ReadOnly;
+        let write = json!({ "file_path": "README.md", "content": "# Parser" });
+
+        run.send("Tidy the readme").await.unwrap();
+
+        assert_eq!(
+            until(&mut run, is_finished).await,
+            [
+                started(),
+                tool_call("toolu_02", "Write", write),
+                tool_done("toolu_02", true),
+                ended(Outcome::Completed),
+            ]
+        );
+        ends_as_recorded(run, done).await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn full_access_lets_file_changes_run_and_asks_about_the_rest() {
+        let (mut run, done) = fake(include_str!("../sessions/claude/full.replay"));
+        run.access = AccessLevel::Full;
+        let write = json!({ "file_path": "README.md", "content": "# Parser" });
+        let command = json!({ "command": "cargo test" });
+
+        run.send("Tidy the readme, then run the tests")
+            .await
+            .unwrap();
+        assert_eq!(
+            until(&mut run, is_asked).await,
+            [
+                started(),
+                tool_call("toolu_04", "Write", write),
+                tool_done("toolu_04", false),
+                tool_call("toolu_05", "Bash", command.clone()),
+                RunEvent::PermissionAsked {
+                    run: run_id("run-1"),
+                    prompt: 1,
+                    tool: "Bash".to_owned(),
+                    input: command,
+                },
+            ]
+        );
+        run.answer(&answer("run-1", true)).await.unwrap();
+
+        assert_eq!(
+            until(&mut run, is_finished).await,
+            [tool_done("toolu_05", false), ended(Outcome::Completed)]
+        );
+        ends_as_recorded(run, done).await;
+    }
+
+    #[test]
+    fn each_level_settles_only_the_prompts_it_decides() {
+        let codex = Wire::Codex(codex::Wire::new(None, &test_support::app()));
+        let file_changes = [
+            claude_wire().changes_files("Edit"),
+            claude_wire().changes_files("Write"),
+            claude_wire().changes_files("MultiEdit"),
+            claude_wire().changes_files("NotebookEdit"),
+            codex.changes_files("file_change"),
+        ];
+        let others = [
+            claude_wire().changes_files("Bash"),
+            claude_wire().changes_files("file_change"),
+            codex.changes_files("command"),
+            codex.changes_files("Edit"),
+        ];
+
+        assert_eq!(file_changes, [true; 5]);
+        assert_eq!(others, [false; 4]);
+        for refused in [AccessLevel::Off, AccessLevel::ReadOnly, AccessLevel::Newer] {
+            assert_eq!(settled(refused, true), Some(false), "{refused:?}");
+            assert_eq!(settled(refused, false), Some(false), "{refused:?}");
+        }
+        assert_eq!(settled(AccessLevel::AskFirst, true), None);
+        assert_eq!(settled(AccessLevel::AskFirst, false), None);
+        assert_eq!(settled(AccessLevel::Full, true), Some(true));
+        assert_eq!(settled(AccessLevel::Full, false), None);
     }
 
     #[tokio::test(start_paused = true)]

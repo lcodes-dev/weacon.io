@@ -73,11 +73,11 @@ impl From<Agent> for AgentKind {
 pub(crate) enum Level {
     /// No agent runs.
     Off,
-    /// Agents read and never change anything.
+    /// Agents read; every change they ask for is turned down.
     ReadOnly,
     /// Agents ask a person before each change.
     AskFirst,
-    /// Agents change things without asking.
+    /// Agents change files without asking; commands still ask.
     Full,
 }
 

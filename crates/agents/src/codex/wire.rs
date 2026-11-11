@@ -257,7 +257,7 @@ pub(crate) fn answer(request: &Value, allow: bool) -> Vec<Heard> {
 fn asked(id: Value, method: &str, params: Value) -> Vec<Heard> {
     let tool = match method {
         "item/commandExecution/requestApproval" => "command",
-        "item/fileChange/requestApproval" => "file_change",
+        "item/fileChange/requestApproval" => super::FILE_TOOL,
         _ => {
             let error = json!({ "code": METHOD_NOT_FOUND, "message": UNSUPPORTED });
             return vec![Heard::Send(json!({ "id": id, "error": error }))];

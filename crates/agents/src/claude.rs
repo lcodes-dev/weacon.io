@@ -9,6 +9,9 @@ pub(crate) use wire::{Wire, answer, prompt, read};
 
 use crate::launch::Launch;
 
+/// The tools that only change files, which full access lets run without asking.
+pub(crate) const FILE_TOOLS: [&str; 4] = ["Edit", "MultiEdit", "NotebookEdit", "Write"];
+
 // Sign-ins and providers that would win over the workspace's own; removed, never read.
 const OTHER_SIGN_INS: [&str; 7] = [
     "ANTHROPIC_API_KEY",
@@ -137,6 +140,7 @@ mod tests {
                 program: dir.join("claude"),
                 config_dir,
                 cwd: dir.to_owned(),
+                access: weacon_protocol::AccessLevel::AskFirst,
             }
         }
 
@@ -235,6 +239,7 @@ mod tests {
             program: PathBuf::from("claude"),
             config_dir: PathBuf::from("/work/config"),
             cwd: PathBuf::from("/work"),
+            access: weacon_protocol::AccessLevel::AskFirst,
         };
         let check = status(&claude);
         assert_eq!(

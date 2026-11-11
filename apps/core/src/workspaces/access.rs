@@ -66,7 +66,7 @@ impl Settings {
     /// A line of warning for full access in a team workspace, or nothing.
     pub(crate) fn warning(self) -> &'static str {
         if self.team && self.access == AccessLevel::Full {
-            "Warning: full access is on in a team workspace. Its agents change things on this \
+            "Warning: full access is on in a team workspace. Its agents change files on this \
              machine without asking.\n"
         } else {
             ""
@@ -163,7 +163,7 @@ mod tests {
         assert_eq!(
             team,
             "Workspace w1: access full\nWarning: full access is on in a team workspace. Its \
-             agents change things on this machine without asking.\n"
+             agents change files on this machine without asking.\n"
         );
         assert_eq!(asking, "Workspace w1: access ask-first\n");
         assert_eq!(full_again, team);
