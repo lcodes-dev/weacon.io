@@ -114,12 +114,13 @@ pub enum ChatAnswerKind {
     /// The client missed events and its subscription is over: fetch a snapshot, then subscribe
     /// after its `seq`.
     EventsLost,
-    /// The chat as of `seq`: its runs, the permission prompts still waiting, and its latest
-    /// events.
+    /// The chat as of `seq`: its runs, where in the log the permission prompts still waiting
+    /// are, and its latest events, as many as fit one frame. A `window` fetches a prompt that
+    /// isn't among them.
     Snapshot {
         seq: u64,
         runs: Vec<RunStatus>,
-        waiting: Vec<ChatEntry>,
+        waiting: Vec<u64>,
         events: Vec<ChatEntry>,
     },
     Window {
@@ -147,12 +148,9 @@ impl ChatAnswerKind {
     pub(crate) fn is_newer(&self) -> bool {
         match self {
             Self::EventsLost => false,
-            Self::Snapshot {
-                runs,
-                waiting,
-                events,
-                ..
-            } => runs.iter().any(RunStatus::is_newer) || any_newer(waiting) || any_newer(events),
+            Self::Snapshot { runs, events, .. } => {
+                runs.iter().any(RunStatus::is_newer) || any_newer(events)
+            }
             Self::Window { events } => any_newer(events),
             Self::Newer => true,
         }
@@ -388,12 +386,12 @@ mod tests {
                         run: run(),
                         state: RunState::Idle,
                     }],
-                    waiting: vec![idle()],
+                    waiting: vec![2],
                     events: vec![idle()],
                 },
                 json!({ "kind": "snapshot", "seq": 3,
                         "runs": [{ "run": "run-7", "state": "idle" }],
-                        "waiting": [idle_wire], "events": [idle_wire] }),
+                        "waiting": [2], "events": [idle_wire] }),
             ),
             (
                 ChatAnswerKind::Window {
@@ -431,18 +429,14 @@ mod tests {
     fn a_newer_peers_answers_parse_and_are_never_sent() {
         let event = json!({ "seq": 1, "event": { "kind": "note" } });
         let state = json!({ "run": "run-7", "state": "paused" });
-        let snapshot = |runs: Value, waiting: Value, events: Value| {
-            json!({ "kind": "snapshot", "seq": 1, "runs": runs, "waiting": waiting,
-                    "events": events })
-        };
+        let snapshot = |runs: Value, events: Value| json!({ "kind": "snapshot", "seq": 1, "runs": runs, "waiting": [], "events": events });
 
         never_sent(
             [
                 json!({ "kind": "moved" }),
                 json!({ "kind": "window", "events": [event] }),
-                snapshot(json!([state]), json!([]), json!([])),
-                snapshot(json!([]), json!([event]), json!([])),
-                snapshot(json!([]), json!([]), json!([event])),
+                snapshot(json!([state]), json!([])),
+                snapshot(json!([]), json!([event])),
             ]
             .iter()
             .map(|answer| about("chat_answer", "answer", answer)),

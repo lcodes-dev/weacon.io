@@ -295,7 +295,7 @@
           ]
         },
         {
-          "description": "The chat as of `seq`: its runs, the permission prompts still waiting, and its latest\nevents.",
+          "description": "The chat as of `seq`: its runs, where in the log the permission prompts still waiting\nare, and its latest events, as many as fit one frame. A `window` fetches a prompt that\nisn't among them.",
           "type": "object",
           "properties": {
             "events": {
@@ -322,7 +322,9 @@
             "waiting": {
               "type": "array",
               "items": {
-                "$ref": "#/$defs/ChatEntry"
+                "type": "integer",
+                "format": "uint64",
+                "minimum": 0
               }
             }
           },

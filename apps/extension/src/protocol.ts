@@ -93,7 +93,7 @@ export type ChatAnswerKind = (
     kind: "snapshot";
     runs: Array<RunStatus>;
     seq: number;
-    waiting: Array<ChatEntry>;
+    waiting: Array<number>;
   }
   | {
     events: Array<ChatEntry>;
