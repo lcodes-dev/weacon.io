@@ -15,9 +15,16 @@ test("text stays selected while the run streams, and following waits for the rea
     // A few more than the selection, so it ends well above the row being written.
     await waitForRows(page, ".row.text", MESSAGES + 6);
 
+    // Finished messages show their Markdown; the session has inline code in each pass.
+    assert.ok(await page.evaluate(() => document.querySelector(".row.text p code") !== null));
+
     const writing = await page.evaluate(selectInWritingRow);
     await page.waitForFunction(() => !document.querySelector("[data-picked]")?.hasAttribute("data-writing"));
     assert.equal(await page.evaluate(() => document.getSelection()?.toString()), writing);
+    // The finished row waits as plain text while the selection is in it, then gets its Markdown.
+    assert.ok(await page.evaluate(() => document.querySelector("[data-picked] > p") === null));
+    await page.evaluate(() => document.getSelection()?.removeAllRanges());
+    await page.waitForFunction(() => document.querySelector("[data-picked] > p") !== null);
 
     const before = await page.evaluate(selectMessages, MESSAGES);
     const shown = await page.evaluate(markShown);
@@ -41,6 +48,22 @@ test("text stays selected while the run streams, and following waits for the rea
     const up = await page.evaluate(markShown);
     await waitForRows(page, ".row", (await rowCount(page)) + 50);
     assertStill(up, await page.evaluate(shownTop));
+
+    // A visit to Settings keeps the reader's place.
+    await page.getByRole("button", { name: "Settings" }).click();
+    await waitForRows(page, ".row", (await rowCount(page)) + 50);
+    await page.getByRole("button", { name: "Back" }).click();
+    assertStill(up, await page.evaluate(shownTop));
+
+    // Selecting all in Settings doesn't stop a reader at the bottom from following.
+    await scrollTo(page, "bottom");
+    await page.getByRole("button", { name: "Settings" }).click();
+    await page.keyboard.press("ControlOrMeta+A");
+    await waitForRows(page, ".row", (await rowCount(page)) + 50);
+    await page.evaluate(() => document.getSelection()?.removeAllRanges());
+    await page.getByRole("button", { name: "Back" }).click();
+    await waitForRows(page, ".row", (await rowCount(page)) + 20);
+    assert.ok(atBottom(await page.evaluate(scrollOf)), "it stopped following after a selection in Settings");
   } finally {
     await harness.close();
   }

@@ -17,7 +17,14 @@ export function App({ me, status, transcript }: { me: Build; status: Status; tra
         </button>
       </header>
       <main>
-{settings ? <Settings me={me} status={status} /> : <TranscriptView rows={transcript.rows} writing={transcript.writing} />}
+        <div className={settings ? "pane away" : "pane"}>
+          <TranscriptView rows={transcript.rows} writing={transcript.writing} away={settings} />
+        </div>
+        {settings && (
+          <div className="pane">
+            <Settings me={me} status={status} />
+          </div>
+        )}
       </main>
     </div>
   );
