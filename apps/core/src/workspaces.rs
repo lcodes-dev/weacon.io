@@ -1,6 +1,8 @@
 //! What this machine keeps for each workspace: a folder of its own, holding each agent's
 //! config folder and so its sign-in.
 
+mod access;
+
 use std::ffi::OsString;
 use std::fs;
 use std::io;
@@ -8,7 +10,10 @@ use std::path::{Path, PathBuf};
 
 use weacon_agents::{Launch, SignIn};
 use weacon_observability::Fault;
-use weacon_protocol::{AgentKind, WorkspaceId, code};
+use weacon_protocol::{AccessLevel, AgentKind, WorkspaceId, code};
+
+use access::Settings;
+pub(crate) use access::run as access;
 
 use crate::app::{App, state_unavailable};
 use crate::daemon::runtime;
@@ -19,7 +24,7 @@ use crate::platform;
 pub(crate) fn login(app: &App, agent: AgentKind, workspace: &WorkspaceId) -> Result<(), Fault> {
     let state_dir = app.state_dir.as_deref().ok_or_else(state_unavailable)?;
     let workspaces = Workspaces::new(state_dir, app.path.clone());
-    let launch = workspaces.launch(workspace, agent, workspaces.root(workspace))?;
+    let launch = workspaces.prepared(workspace, agent, workspaces.root(workspace))?;
     runtime()?.block_on(launch.log_in())?;
     let ids = [("workspace_id", workspace.as_str().into())];
     app.log.info("login finished", &ids);
@@ -71,8 +76,9 @@ impl Workspaces {
         Ok(known)
     }
 
-    /// A line for each known workspace saying whether each agent is signed in. `sign_ins`
-    /// answers for all the launches at once, in their order; `None` shows as unknown.
+    /// A line for each known workspace with its access level and whether each agent is signed
+    /// in, then a line for each warning. `sign_ins` answers for all the launches at once, in
+    /// their order; `None` shows as unknown.
     ///
     /// # Errors
     /// When the workspaces' folder can't be listed, so the lines would leave some out.
@@ -99,7 +105,14 @@ impl Workspaces {
         let lines = known.iter().map(|workspace| {
             let agents =
                 AGENTS.map(|(_, name)| format!("{name} {}", states.next().unwrap_or(state(None))));
-            format!("Workspace {}: {}\n", workspace.as_str(), agents.join(", "))
+            let (id, agents) = (workspace.as_str(), agents.join(", "));
+            match Settings::read(&self.root(workspace)) {
+                Ok(settings) => {
+                    let (level, warning) = (settings.level(), settings.warning());
+                    format!("Workspace {id}: access {level}; {agents}\n{warning}")
+                }
+                Err(_) => format!("Workspace {id}: access unknown; {agents}\n"),
+            }
         });
         Ok(lines.collect())
     }
@@ -109,9 +122,34 @@ impl Workspaces {
         self.dir.join(folder_name(workspace))
     }
 
-    /// How to start `agent` in `cwd` with `workspace`'s own config folder, created private when
-    /// missing; the only place runs get an agent.
+    /// How to start `agent` in `cwd` with `workspace`'s own config folder; the only place runs
+    /// get an agent, and none when the workspace's access level doesn't let agents run.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "runs start their agents through this")
+    )]
     pub(crate) fn launch(
+        &self,
+        workspace: &WorkspaceId,
+        agent: AgentKind,
+        cwd: PathBuf,
+    ) -> Result<Launch, Fault> {
+        match Settings::read(&self.root(workspace))?.access {
+            AccessLevel::AskFirst | AccessLevel::Full => self.prepared(workspace, agent, cwd),
+            AccessLevel::Off | AccessLevel::Newer => Err(Fault::new(
+                code!("access.off"),
+                "This workspace's agents are turned off on this machine",
+            )),
+            // Runs can't yet be kept from changing things, so none starts.
+            AccessLevel::ReadOnly => Err(Fault::new(
+                code!("access.read_only_unavailable"),
+                "Read-only access isn't available yet",
+            )),
+        }
+    }
+
+    // A launch whose config folder exists, private to this user.
+    fn prepared(
         &self,
         workspace: &WorkspaceId,
         agent: AgentKind,
@@ -289,12 +327,13 @@ mod tests {
 
         assert_eq!(
             text,
-            "Workspace W1: Claude Code signed out, Codex unknown\n\
-             Workspace a: Claude Code signed out, Codex unknown\n\
-             Workspace w2: Claude Code signed in, Codex signed out\n"
+            "Workspace W1: access ask-first; Claude Code signed out, Codex unknown\n\
+             Workspace a: access ask-first; Claude Code signed out, Codex unknown\n\
+             Workspace w2: access ask-first; Claude Code signed in, Codex signed out\n"
         );
         assert!(cut_short.unwrap().starts_with(
-            "Workspace W1: Claude Code signed in, Codex unknown\nWorkspace a: Claude Code unknown"
+            "Workspace W1: access ask-first; Claude Code signed in, Codex unknown\n\
+             Workspace a: access ask-first; Claude Code unknown"
         ));
     }
 
@@ -318,7 +357,8 @@ mod tests {
             assert_eq!(asked, []);
             Vec::new()
         };
-        let not_installed = "Workspace w1: Claude Code not installed, Codex not installed\n";
+        let not_installed =
+            "Workspace w1: access ask-first; Claude Code not installed, Codex not installed\n";
 
         for path in [None, Some(dir.join("empty").into_os_string())] {
             let workspaces = Workspaces::new(&dir, path);
@@ -330,6 +370,59 @@ mod tests {
             assert!(!workspaces.root(&id("w2")).exists());
             assert_eq!(workspaces.describe(none_asked).unwrap(), not_installed);
         }
+    }
+
+    fn choose(dir: &Path, workspace: &str, json: &str) {
+        let root = dir.join("workspaces").join(format!("w-{workspace}"));
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("workspace.json"), json).unwrap();
+    }
+
+    #[test]
+    fn agents_start_only_where_the_access_level_lets_them() {
+        let dir = TempDir::new().unwrap();
+        let workspaces = workspaces(&dir);
+        choose(&dir, "off", r#"{"access":"off"}"#);
+        choose(&dir, "newer", r#"{"access":"sandboxed"}"#);
+        choose(&dir, "reading", r#"{"access":"read_only"}"#);
+        choose(&dir, "asking", r#"{"access":"ask_first"}"#);
+        choose(&dir, "full", r#"{"access":"full","team":true}"#);
+        choose(&dir, "broken", "{");
+        let code = |workspace: &str| {
+            let launch = workspaces.launch(&id(workspace), AgentKind::Claude, dir.to_path_buf());
+            launch.map_or_else(|error| error.code().as_str().to_owned(), |_| String::new())
+        };
+
+        assert_eq!(code("off"), "access.off");
+        assert_eq!(code("newer"), "access.off");
+        assert_eq!(code("reading"), "access.read_only_unavailable");
+        assert_eq!(code("broken"), "workspace.settings_unreadable");
+        assert_eq!([code("asking"), code("full"), code("unset")], ["", "", ""]);
+        assert!(!workspaces.root(&id("off")).join("claude").exists());
+        // Signing in doesn't depend on the level.
+        let prepared = workspaces.prepared(&id("off"), AgentKind::Claude, dir.to_path_buf());
+        assert!(prepared.unwrap().config_dir.is_dir());
+    }
+
+    #[test]
+    fn each_known_workspace_shows_its_access_level_and_warnings() {
+        let dir = TempDir::new().unwrap();
+        choose(&dir, "a", r#"{"access":"full","team":true}"#);
+        choose(&dir, "b", r#"{"access":"off"}"#);
+        choose(&dir, "c", "{");
+
+        let text = Workspaces::new(&dir, None)
+            .describe(|_| Vec::new())
+            .unwrap();
+
+        assert_eq!(
+            text,
+            "Workspace a: access full; Claude Code not installed, Codex not installed\n\
+             Warning: full access is on in a team workspace. Its agents change things on this \
+             machine without asking.\n\
+             Workspace b: access off; Claude Code not installed, Codex not installed\n\
+             Workspace c: access unknown; Claude Code not installed, Codex not installed\n"
+        );
     }
 
     #[cfg(unix)]
@@ -351,7 +444,8 @@ mod tests {
     #[test]
     fn an_unknown_agent_or_an_unusable_folder_is_refused() {
         let dir = TempDir::new().unwrap();
-        fs::write(dir.join("workspaces"), "").unwrap();
+        fs::create_dir_all(dir.join("workspaces/w-w1")).unwrap();
+        fs::write(dir.join("workspaces/w-w1/claude"), "").unwrap();
         let workspaces = workspaces(&dir);
         let code = |agent| {
             let error = workspaces
