@@ -8,6 +8,8 @@ use weacon_appkit::version_text;
 use weacon_protocol::WorkspaceId;
 use weacon_version::Version;
 
+use crate::client::Net;
+
 /// Weacon's server: holds every workspace.
 #[derive(Debug, Parser)]
 #[command(name = "weacon-server")]
@@ -44,6 +46,12 @@ pub(crate) struct Serve {
     /// open-file limit.
     #[arg(long, default_value_t = 512, value_parser = RangedU64ValueParser::<usize>::new().range(1..=1_000_000))]
     pub(crate) max_connections: usize,
+    /// A reverse proxy in front of the server, as an address or a block such as 10.0.0.0/8;
+    /// repeat it for more. Only these are believed about the client in X-Forwarded-For, where
+    /// they must write bare addresses, without ports. Without any, every request counts as
+    /// coming from the address that connected.
+    #[arg(long)]
+    pub(crate) trusted_proxy: Vec<Net>,
 }
 
 /// Commands an operator runs against the database.
@@ -146,12 +154,25 @@ mod tests {
                 outbox: PathBuf::from("outbox"),
                 secret: PathBuf::from("secret"),
                 max_connections: 512,
+                trusted_proxy: Vec::new(),
             }
         );
-        let told = ["--listen", "0.0.0.0:9000", "--max-connections", "2"];
+        let told = [
+            "--listen",
+            "0.0.0.0:9000",
+            "--max-connections",
+            "2",
+            "--trusted-proxy",
+            "10.0.0.0/8",
+            "--trusted-proxy",
+            "::1",
+        ];
         let told = serve(&[&args[..], &told].concat());
         assert_eq!(told.listen.to_string(), "0.0.0.0:9000");
         assert_eq!(told.max_connections, 2);
+        let proxies = ["10.0.0.0/8".parse().unwrap(), "::1".parse().unwrap()];
+        assert_eq!(told.trusted_proxy, proxies);
+        run(&[&args[..], &["--trusted-proxy", "proxy.example"]].concat()).unwrap_err();
         run(&[&args[..], &["--max-connections", "0"]].concat()).unwrap_err();
         run(&[&args[..], &["--listen", "nowhere"]].concat()).unwrap_err();
         run(&["weacon-server", "serve", "--db", "team.db"]).unwrap_err();

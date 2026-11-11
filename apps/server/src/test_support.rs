@@ -68,6 +68,7 @@ impl Fixture {
             outbox: Outbox::new(dir.join("outbox")),
             secret: Arc::new(secret),
             head_within: connections::HEAD_WITHIN,
+            proxies: Arc::new([]),
             connections: Arc::new(Semaphore::new(64)),
             // Short, so tests that wait for the feed's checks don't wait long.
             feed: feed::Timing {
@@ -148,9 +149,19 @@ pub(crate) async fn run(shared: Shared) -> Running {
 
 /// One HTTP/1.1 exchange: the response's lowercased head lines, and its body.
 pub(crate) async fn request(address: SocketAddr, head: &str, body: &str) -> (Vec<String>, String) {
+    request_with(address, head, "", body).await
+}
+
+/// One HTTP/1.1 exchange with `headers` added, each ending in `\r\n`.
+pub(crate) async fn request_with(
+    address: SocketAddr,
+    head: &str,
+    headers: &str,
+    body: &str,
+) -> (Vec<String>, String) {
     let mut stream = TcpStream::connect(address).await.unwrap();
     let request = format!(
-        "{head} HTTP/1.1\r\nhost: test\r\nconnection: close\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n{body}",
+        "{head} HTTP/1.1\r\n{headers}host: test\r\nconnection: close\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n{body}",
         body.len()
     );
     stream.write_all(request.as_bytes()).await.unwrap();

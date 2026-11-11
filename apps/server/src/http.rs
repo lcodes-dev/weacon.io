@@ -15,6 +15,7 @@ use tokio::time::timeout;
 use weacon_observability::{Clock, Fault, Field, Logger, Reporter};
 use weacon_protocol::{App, Code, ErrorBody, WorkspaceId, code};
 
+use crate::client::Net;
 use crate::connections;
 use crate::db::Db;
 use crate::feed;
@@ -52,6 +53,8 @@ pub(crate) struct Shared {
     pub(crate) clock: Arc<Clock>,
     /// How long a connection may take to send a request's head, or sit idle between requests.
     pub(crate) head_within: Duration,
+    /// Proxies whose `X-Forwarded-For` is believed.
+    pub(crate) proxies: Arc<[Net]>,
     /// Room for open connections, feeds included; when it's full, more wait to be accepted.
     pub(crate) connections: Arc<Semaphore>,
     pub(crate) feed: feed::Timing,
