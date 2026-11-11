@@ -9,7 +9,21 @@ use weacon_agents::{Launch, SignIn};
 use weacon_observability::Fault;
 use weacon_protocol::{AgentKind, WorkspaceId, code};
 
+use crate::app::{App, state_unavailable};
+use crate::daemon::runtime;
 use crate::platform;
+
+/// Runs the vendor's own sign-in for `agent` in this terminal, against `workspace`'s config
+/// folder.
+pub(crate) fn login(app: &App, agent: AgentKind, workspace: &WorkspaceId) -> Result<(), Fault> {
+    let state_dir = app.state_dir.as_deref().ok_or_else(state_unavailable)?;
+    let workspaces = Workspaces::new(state_dir);
+    let launch = workspaces.launch(workspace, agent, workspaces.root(workspace))?;
+    runtime()?.block_on(launch.log_in())?;
+    let ids = [("workspace_id", workspace.as_str().into())];
+    app.log.info("login finished", &ids);
+    Ok(())
+}
 
 #[derive(Debug)]
 pub(crate) struct Workspaces {
@@ -81,10 +95,6 @@ impl Workspaces {
 
     /// How to start `agent` in `cwd` with `workspace`'s own config folder, created private when
     /// missing; the only place runs get an agent.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "runs start their agents through this")
-    )]
     pub(crate) fn launch(
         &self,
         workspace: &WorkspaceId,

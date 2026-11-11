@@ -48,6 +48,13 @@ pub(crate) fn status(launch: &Launch) -> Command {
     command
 }
 
+/// `claude`'s own sign-in, for the person's terminal.
+pub(crate) fn login(launch: &Launch) -> Command {
+    let mut command = with_workspace_sign_in(launch);
+    command.args(["auth", "login"]);
+    command
+}
+
 fn with_workspace_sign_in(launch: &Launch) -> Command {
     let mut command = Command::new(&launch.program);
     for name in OTHER_SIGN_INS {
@@ -235,7 +242,12 @@ mod tests {
             ["auth", "status"]
         );
         assert_eq!(check.as_std().get_current_dir(), None);
-        for command in [command(&claude, None), check] {
+        let login = login(&claude);
+        assert_eq!(
+            login.as_std().get_args().collect::<Vec<_>>(),
+            ["auth", "login"]
+        );
+        for command in [command(&claude, None), check, login] {
             let envs: Vec<_> = command.as_std().get_envs().collect();
 
             assert!(envs.contains(&(
