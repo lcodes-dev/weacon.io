@@ -1,6 +1,7 @@
 //! Test helpers for Weacon's crates.
 
 pub mod fake_core;
+pub mod fake_server;
 mod logs;
 pub mod platform;
 mod temp;
@@ -17,7 +18,7 @@ use tokio::io::{
 };
 use tokio::task::JoinHandle;
 
-const BUFFER: usize = 1 << 16;
+pub(crate) const BUFFER: usize = 1 << 16;
 
 /// A fake agent process that replays a recorded session.
 #[derive(Debug)]
@@ -52,7 +53,7 @@ pub fn replay(recording: &str) -> Replay {
 }
 
 // Plays `recording` as `replay` describes, waiting `pace` after each line it prints.
-async fn play(
+pub(crate) async fn play(
     recording: String,
     mut input: impl AsyncBufRead + Unpin,
     mut output: impl AsyncWrite + Unpin,

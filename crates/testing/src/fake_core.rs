@@ -1,5 +1,6 @@
 //! A fake core that answers one client's hello, then replays a recorded run over the socket.
 
+use std::path::PathBuf;
 use std::time::Duration;
 
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
@@ -66,35 +67,50 @@ pub async fn serve(
         .read_line(&mut line)
         .await
         .map_err(|error| error.to_string())?;
-    let envelope =
-        Envelope::from_json(line.trim().as_bytes()).map_err(|error| error.to_string())?;
-    let Message::Hello(hello) = envelope.message else {
-        return Err(format!("expected a hello but got {}", line.trim()));
-    };
-    let stream = Capability::from(code!("run.stream"));
-    let core = App {
-        name: "weacon-core".to_owned(),
-        version: "0.0.0".to_owned(),
-        commit: "0000000".to_owned(),
-    };
-    let answer = hello.answer(core, vec![stream.clone()]);
-    let welcomed = matches!(answer, Message::Welcome(_));
-    if welcomed && !hello.capabilities.contains(&stream) {
-        return Err("the client didn't offer run.stream".to_owned());
-    }
-    let answer = Envelope {
-        id: envelope.id,
-        message: answer,
-    };
-    let answer = encode_line(&answer).map_err(|error| error.to_string())?;
+    let answer = answer(&line, &[])?;
+    let welcomed = matches!(answer.message, Message::Welcome(_));
     writer
-        .write_all(&answer)
+        .write_all(&encode_line(&answer).map_err(|error| error.to_string())?)
         .await
         .map_err(|error| error.to_string())?;
     if !welcomed {
         return Err("the client speaks another protocol".to_owned());
     }
     play(recording, reader, writer, pace).await
+}
+
+/// The answer to the client's first `line`, offering `run.stream` and `more`. A client it
+/// welcomes must offer `run.stream`.
+pub(crate) fn answer(line: &str, more: &[Capability]) -> Result<Envelope, String> {
+    let envelope =
+        Envelope::from_json(line.trim().as_bytes()).map_err(|error| error.to_string())?;
+    let Message::Hello(hello) = envelope.message else {
+        return Err(format!("expected a hello but got {}", line.trim()));
+    };
+    let core = App {
+        name: "weacon-core".to_owned(),
+        version: "0.0.0".to_owned(),
+        commit: "0000000".to_owned(),
+    };
+    let stream = Capability::from(code!("run.stream"));
+    let capabilities = [std::slice::from_ref(&stream), more].concat();
+    let message = hello.answer(core, capabilities);
+    if matches!(message, Message::Welcome(_)) && !hello.capabilities.contains(&stream) {
+        return Err("the client didn't offer run.stream".to_owned());
+    }
+    Ok(Envelope {
+        id: envelope.id,
+        message,
+    })
+}
+
+/// A fake's command line after its name: `<dir> [tokens] [pace-ms]`, by default 100,000 tokens
+/// at one message a millisecond; `None` without a folder or with a number that isn't one.
+pub fn args(mut args: impl Iterator<Item = String>) -> Option<(PathBuf, usize, Duration)> {
+    let dir = PathBuf::from(args.next()?);
+    let tokens = args.next().map_or(Ok(100_000), |arg| arg.parse()).ok()?;
+    let pace = args.next().map_or(Ok(1), |arg| arg.parse()).ok()?;
+    Some((dir, tokens, Duration::from_millis(pace)))
 }
 
 fn text_tokens(event: &RunEvent) -> usize {
@@ -320,5 +336,22 @@ mod tests {
         served.await.unwrap().unwrap();
 
         assert_eq!(start.elapsed(), Duration::from_millis(10));
+    }
+
+    #[test]
+    fn the_command_line_needs_a_folder_and_has_defaults_for_the_rest() {
+        let args = |list: &[&str]| args(list.iter().map(|arg| (*arg).to_owned()));
+
+        assert_eq!(args(&[]), None);
+        assert_eq!(
+            args(&["dir"]),
+            Some((PathBuf::from("dir"), 100_000, Duration::from_millis(1)))
+        );
+        assert_eq!(
+            args(&["dir", "50", "0"]),
+            Some((PathBuf::from("dir"), 50, Duration::ZERO))
+        );
+        assert_eq!(args(&["dir", "5O"]), None);
+        assert_eq!(args(&["dir", "50", "slow"]), None);
     }
 }

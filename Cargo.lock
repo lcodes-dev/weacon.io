@@ -2071,8 +2071,10 @@ dependencies = [
 name = "weacon-testing"
 version = "0.0.0"
 dependencies = [
+ "futures-util",
  "serde_json",
  "tokio",
+ "tokio-tungstenite",
  "weacon-observability",
  "weacon-protocol",
 ]
