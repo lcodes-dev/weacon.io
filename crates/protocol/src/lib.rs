@@ -2,6 +2,7 @@
 
 mod access;
 mod capability;
+mod chat;
 mod code;
 mod frame;
 mod log;
@@ -14,6 +15,7 @@ mod token;
 
 pub use access::AccessLevel;
 pub use capability::Capability;
+pub use chat::{ChatAction, ChatCommand, ChatId};
 pub use code::Code;
 pub use frame::{FrameError, LineDecoder, MAX_FRAME, encode_line};
 pub use log::{ClientLog, Level, LogEvent};

@@ -1,8 +1,8 @@
 use std::{fmt, mem};
 
 use crate::{
-    Code, Envelope, Message, Outcome, Receipt, RunEvent, RunUpdate, WorkspaceChange,
-    WorkspaceUpdate, code,
+    ChatAction, ChatCommand, Code, Envelope, Message, Outcome, Receipt, RunEvent, RunUpdate,
+    WorkspaceChange, WorkspaceUpdate, code,
 };
 
 /// The largest frame accepted or sent on any transport: one message's JSON, plus its newline on
@@ -59,6 +59,10 @@ impl Envelope {
                 })
                 | Message::Workspace(WorkspaceUpdate {
                     change: WorkspaceChange::Newer,
+                    ..
+                })
+                | Message::ChatCommand(ChatCommand {
+                    action: ChatAction::Newer,
                     ..
                 })
         ) {

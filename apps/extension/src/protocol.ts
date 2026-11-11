@@ -30,6 +30,9 @@ export type Envelope = {
   | {
     type: "log";
   } & ClientLog
+  | {
+    type: "chat_command";
+  } & ChatCommand
 );
 
 /**
@@ -51,6 +54,35 @@ export type App = {
  * it doesn't know, so a newer peer's list still parses.
  */
 export type Capability = Code;
+
+export type ChatAction = (
+  | {
+    kind: "prompt";
+    text: string;
+  }
+  | {
+    answer: PermissionAnswer;
+    kind: "permission";
+  }
+  | {
+    kind: "interrupt";
+  }
+);
+
+/**
+ * The core answers with receipts under `request`.
+ */
+export type ChatCommand = {
+  action: ChatAction;
+  chat: ChatId;
+  request: RequestId;
+  workspace: WorkspaceId;
+};
+
+/**
+ * A chat in a workspace, 1–64 ASCII letters, digits, `-` or `_`.
+ */
+export type ChatId = string;
 
 /**
  * A log record from a client that has no log of its own, such as the web app: an event name and
@@ -130,6 +162,15 @@ export type Outcome = (
     state: "unknown";
   }
 );
+
+/**
+ * A person's answer to a [`RunEvent::PermissionAsked`].
+ */
+export type PermissionAnswer = {
+  allow: boolean;
+  prompt: number;
+  run: RunId;
+};
 
 /**
  * An element someone picked on a local web page, sent to the core for a chat. The sender cuts
