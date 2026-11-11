@@ -373,31 +373,22 @@ export type RunEvent = (
  */
 export type RunId = string;
 
+export type RunState = (
+  | "starting"
+  | "running"
+  | "waiting"
+  | "idle"
+  | "sleeping"
+  | "ended"
+);
+
 /**
  * Where a run stands, as its chat's log records it.
  */
 export type RunStatus = {
   run: RunId;
-} & (
-  | {
-    state: "starting";
-  }
-  | {
-    state: "running";
-  }
-  | {
-    state: "waiting";
-  }
-  | {
-    state: "idle";
-  }
-  | {
-    state: "sleeping";
-  }
-  | {
-    state: "ended";
-  }
-);
+  state: RunState;
+};
 
 /**
  * One event of the run `run`, in the order the run reported it.

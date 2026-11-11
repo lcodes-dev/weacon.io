@@ -1078,96 +1078,54 @@
       "maxLength": 64,
       "pattern": "^[A-Za-z0-9_-]+$"
     },
+    "RunState": {
+      "oneOf": [
+        {
+          "description": "The agent process is starting.",
+          "type": "string",
+          "const": "starting"
+        },
+        {
+          "description": "On a turn.",
+          "type": "string",
+          "const": "running"
+        },
+        {
+          "description": "On a turn, waiting for a person to answer a permission prompt.",
+          "type": "string",
+          "const": "waiting"
+        },
+        {
+          "description": "Between turns, with its process alive.",
+          "type": "string",
+          "const": "idle"
+        },
+        {
+          "description": "Its process was stopped; the next prompt resumes the same agent session in a new run.",
+          "type": "string",
+          "const": "sleeping"
+        },
+        {
+          "description": "Over for good.",
+          "type": "string",
+          "const": "ended"
+        }
+      ]
+    },
     "RunStatus": {
       "description": "Where a run stands, as its chat's log records it.",
       "type": "object",
       "properties": {
         "run": {
           "$ref": "#/$defs/RunId"
+        },
+        "state": {
+          "$ref": "#/$defs/RunState"
         }
       },
-      "oneOf": [
-        {
-          "description": "The agent process is starting.",
-          "type": "object",
-          "properties": {
-            "state": {
-              "type": "string",
-              "const": "starting"
-            }
-          },
-          "required": [
-            "state"
-          ]
-        },
-        {
-          "description": "On a turn.",
-          "type": "object",
-          "properties": {
-            "state": {
-              "type": "string",
-              "const": "running"
-            }
-          },
-          "required": [
-            "state"
-          ]
-        },
-        {
-          "description": "On a turn, waiting for a person to answer a permission prompt.",
-          "type": "object",
-          "properties": {
-            "state": {
-              "type": "string",
-              "const": "waiting"
-            }
-          },
-          "required": [
-            "state"
-          ]
-        },
-        {
-          "description": "Between turns, with its process alive.",
-          "type": "object",
-          "properties": {
-            "state": {
-              "type": "string",
-              "const": "idle"
-            }
-          },
-          "required": [
-            "state"
-          ]
-        },
-        {
-          "description": "Its process was stopped; the next prompt resumes the same agent session in a new run.",
-          "type": "object",
-          "properties": {
-            "state": {
-              "type": "string",
-              "const": "sleeping"
-            }
-          },
-          "required": [
-            "state"
-          ]
-        },
-        {
-          "description": "Over for good.",
-          "type": "object",
-          "properties": {
-            "state": {
-              "type": "string",
-              "const": "ended"
-            }
-          },
-          "required": [
-            "state"
-          ]
-        }
-      ],
       "required": [
-        "run"
+        "run",
+        "state"
       ]
     },
     "RunUpdate": {

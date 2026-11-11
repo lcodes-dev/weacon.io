@@ -141,12 +141,11 @@ pub struct PermissionAnswer {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct RunStatus {
     pub run: RunId,
-    #[serde(flatten)]
     pub state: RunState,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(tag = "state", rename_all = "snake_case")]
+#[serde(rename_all = "snake_case")]
 pub enum RunState {
     /// The agent process is starting.
     Starting,
