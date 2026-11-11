@@ -49,18 +49,6 @@ pub(crate) const RULES: &[Rule] = &[
         io: true,
     },
     Rule {
-        package: "weacon-desktop",
-        may_use: &[
-            "weacon-appkit",
-            "weacon-client",
-            "weacon-model",
-            "weacon-observability",
-            "weacon-protocol",
-            "weacon-version",
-        ],
-        io: true,
-    },
-    Rule {
         package: "weacon-model",
         may_use: &["weacon-protocol"],
         io: false,
@@ -107,7 +95,7 @@ pub(crate) const RULES: &[Rule] = &[
 ];
 
 /// Packages a work item will create: their rows above may exist before they do.
-pub(crate) const PLANNED: &[&str] = &["weacon-desktop", "weacon-model"];
+pub(crate) const PLANNED: &[&str] = &["weacon-model"];
 
 /// Test helpers, which any package may use as a dev-dependency and none otherwise.
 pub(crate) const TESTING: &str = "weacon-testing";
@@ -123,11 +111,11 @@ pub(crate) const APP_NEEDS: &[(&str, Kind)] = &[
 pub(crate) const RESTRICTED: &[(&str, &[&str])] = &[
     ("diesel", &["weacon-core", "weacon-server"]),
     ("libsql", &["weacon-core", "weacon-server"]),
-    ("postgres", &["weacon-server"]),
-    ("rusqlite", &["weacon-core"]),
+    ("postgres", &[]),
+    ("rusqlite", &["weacon-core", "weacon-server"]),
     ("sentry", &["weacon-observability"]),
     ("sqlx", &["weacon-core", "weacon-server"]),
-    ("tokio-postgres", &["weacon-server"]),
+    ("tokio-postgres", &[]),
 ];
 
 /// Database drivers, by crate name in code: only a package's `db` module uses them.

@@ -32,12 +32,12 @@ You review a change someone else wrote, looking for bugs and security holes.
 ## Security
 
 - **Edges:** is everything that crosses a process boundary (socket, named pipe, HTTP, native messaging, MCP, files written by other programs) deserialized into `protocol` types before use, with its size bounded before it's read?
-- **Sign-ins:** does the change read, store, log, copy or forward any agent or vendor credential? It must not; it may only read sign-in status.
+- **Sign-ins:** does the change read, store, log, copy or forward any agent or vendor credential? It must not; it may only read sign-in status. The one exception is rule 1's sign-in terminal: only the vendor's login command, with fixed arguments and no shell, sealed end to end with the core's key checked against the pairing fingerprint, and never parsed, stored or logged.
 - **Content in logs and reports:** can messages, prompts, agent output, file contents, diffs, tokens or cookies reach a log line or an error report? Can they leak through a `Debug` or `Display` impl? Is there a marker-string test that proves they can't?
 - **Commands:** processes are spawned with `Command` and separate arguments, never `sh -c` with a built string; ids and paths are validated, and user-controlled values can't be read as options (put them after `--`).
 - **Paths:** paths are resolved and checked against the folder they must stay in; symlinks can't escape it; no check-then-use race on a file (open it once, then work with the handle; create with `create_new`).
 - **Unsafe code:** none, unless the platform layer needs it for an OS call; then each block says why it's sound and has a test.
-- **Network:** nothing listens on a public interface; local servers bind to 127.0.0.1 and check a token; server routes check the session, the workspace and the origin.
-- **Tenancy:** every row and query carries the workspace; no data can cross workspaces; Postgres row-level security covers new tables.
-- **Desktop and extension:** the desktop draws no remote content in its own process; web content opens only in a separate system web view with no bridge to the core. The extension's permissions are minimal, its content security policy is strict, and its messages are checked for their sender.
+- **Network:** only the server listens publicly, and its routes check the session or token, the workspace and the origin. The core only dials out and verifies the server's TLS; its local servers bind to 127.0.0.1 and check a token.
+- **Tenancy:** every row and query carries the workspace; no data can cross workspaces; every query goes through the `db` module's workspace handle, and foreign keys include the workspace id.
+- **Web app and extension:** the web app never renders agent output or user content as raw HTML, keeps a strict content security policy, and only the browser and the core hold the keys of a sealed terminal. The extension's permissions are minimal, its content security policy is strict, and its messages are checked for their sender.
 - **Dependencies:** each new crate is needed, maintained, under a licence `.cargo/deny.toml` allows; its build script and procedural macros are worth the trust they need. The extension's packages run no install scripts unless approved.
