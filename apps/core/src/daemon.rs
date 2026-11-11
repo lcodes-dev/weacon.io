@@ -5,13 +5,18 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use tokio::io::{AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tokio::sync::mpsc;
 use tokio::task::JoinSet;
 use tokio::time::Instant;
+use weacon_agents::SpawnPolicy;
 use weacon_observability::{Fault, Field, Logger};
 use weacon_protocol::{
-    App, Envelope, LineDecoder, Message, Outcome, Pick, Receipt, code, encode_line,
+    App, ChatAnswer, ChatCommand, ChatQuery, Envelope, LineDecoder, Message, Outcome, Pick,
+    Receipt, code, encode_line,
 };
 
+use crate::chats::feed::{self, Client};
+use crate::chats::{self, Chats};
 use crate::disk;
 use crate::memory;
 use crate::picks::{KeepError, Picks};
@@ -49,7 +54,12 @@ pub(crate) fn run(app: &crate::app::App) -> Result<(), Fault> {
             )
             .because(error)
         })?;
-        let daemon = Daemon::start(state_dir, build(&app.version), app.log.clone())?;
+        let daemon = Daemon::start(
+            state_dir,
+            build(&app.version),
+            app.spawn.clone(),
+            app.log.clone(),
+        )?;
         daemon.serve(signals.wait()).await;
         Ok(())
     })
@@ -59,6 +69,7 @@ pub(crate) fn run(app: &crate::app::App) -> Result<(), Fault> {
 struct Shared {
     app: App,
     picks: Picks,
+    chats: Chats,
     log: Logger,
 }
 
@@ -76,7 +87,12 @@ pub(crate) struct Daemon {
 
 impl Daemon {
     /// Locks `state_dir`, replaces a stale socket and listens; must run inside a tokio runtime.
-    pub(crate) fn start(state_dir: &Path, app: App, log: Logger) -> Result<Self, Fault> {
+    pub(crate) fn start(
+        state_dir: &Path,
+        app: App,
+        spawn: SpawnPolicy,
+        log: Logger,
+    ) -> Result<Self, Fault> {
         let failed = |error: io::Error| {
             Fault::new(code!("daemon.start_failed"), "The daemon couldn't start").because(error)
         };
@@ -103,7 +119,9 @@ impl Daemon {
         {
             return Err(failed(error));
         }
+        let (chats, engine) = chats::start(state_dir, app.clone(), spawn, log.clone())?;
         let listener = platform::bind(&socket).map_err(failed)?;
+        tokio::spawn(engine.run());
         log.info("daemon started", &[]);
         Ok(Self {
             listener,
@@ -112,6 +130,7 @@ impl Daemon {
             shared: Shared {
                 app,
                 picks: Picks::new(state_dir),
+                chats,
                 log,
             },
             disk: disk::Watch::new(state_dir.to_owned(), platform::free_space),
@@ -163,23 +182,44 @@ impl Daemon {
     }
 }
 
+/// One client's connection: where it is in the conversation, and where events it subscribed to
+/// are pushed.
+struct Connection {
+    session: Session,
+    decoder: LineDecoder,
+    client: Client,
+}
+
 async fn serve_client(stream: Stream, shared: &Shared) -> io::Result<()> {
     let (mut reader, mut writer) = tokio::io::split(stream);
-    let mut session = Session::default();
-    let mut decoder = LineDecoder::default();
     let mut buf = [0; READ_CHUNK];
     let deadline = Instant::now() + HANDSHAKE_TIMEOUT;
+    let (push, mut pushed) = mpsc::channel(feed::QUEUE);
+    let mut connection = Connection {
+        session: Session::default(),
+        decoder: LineDecoder::default(),
+        client: Client { push },
+    };
     loop {
         // Until the hello, reading and answering both count against the deadline.
-        let limit = (!session.greeted()).then_some(deadline);
-        let Some(read) = within(limit, reader.read(&mut buf)).await.transpose()? else {
+        let limit = (!connection.session.greeted()).then_some(deadline);
+        let read = tokio::select! {
+            read = within(limit, reader.read(&mut buf)) => read,
+            Some(message) = pushed.recv() => {
+                if let Ok(line) = encode_line(&Envelope { id: 0, message }) {
+                    writer.write_all(&line).await?;
+                }
+                continue;
+            }
+        };
+        let Some(read) = read.transpose()? else {
             return Ok(());
         };
         if read == 0 {
             return Ok(());
         }
         let bytes = buf.get(..read).unwrap_or_default();
-        let answered = answer(&mut session, &mut decoder, bytes, shared, &mut writer);
+        let answered = answer(&mut connection, bytes, shared, &mut writer);
         if !within(limit, answered).await.transpose()?.unwrap_or(false) {
             return Ok(());
         }
@@ -196,12 +236,16 @@ async fn within<F: Future>(deadline: Option<Instant>, future: F) -> Option<F::Ou
 
 // Answers what `bytes` completes; false once the connection should close.
 async fn answer(
-    session: &mut Session,
-    decoder: &mut LineDecoder,
+    connection: &mut Connection,
     bytes: &[u8],
     shared: &Shared,
     writer: &mut (impl AsyncWrite + Unpin),
 ) -> io::Result<bool> {
+    let Connection {
+        session,
+        decoder,
+        client,
+    } = connection;
     for received in decoder.push(bytes) {
         if let Ok(Envelope {
             message: Message::Error(body),
@@ -219,6 +263,14 @@ async fn answer(
                 id,
                 message: Message::Pick(pick),
             }) if session.greeted() => keep(shared, id, pick).await,
+            Ok(Envelope {
+                id,
+                message: Message::ChatCommand(command),
+            }) if session.greeted() => command_chat(shared, id, command).await,
+            Ok(Envelope {
+                id,
+                message: Message::ChatQuery(query),
+            }) if session.greeted() => query_chat(shared, id, query, client).await,
             received => session.answer(received, &shared.app),
         };
         if let Some(envelope) = reply.envelope
@@ -231,6 +283,51 @@ async fn answer(
         }
     }
     Ok(true)
+}
+
+// The reply to a chat command: nothing when it was taken, since its receipts are events in the
+// chat's log, or the error that refused it.
+async fn command_chat(shared: &Shared, id: u32, command: ChatCommand) -> Reply {
+    let fields = [
+        ("request_id", command.request.as_str().into()),
+        ("workspace_id", command.workspace.as_str().into()),
+        ("chat_id", command.chat.as_str().into()),
+    ];
+    match shared.chats.command(command).await {
+        Ok(()) => {
+            shared.log.info("chat command taken", &fields);
+            Reply {
+                envelope: None,
+                close: false,
+            }
+        }
+        Err(fault) => refused(shared, id, &fault),
+    }
+}
+
+async fn query_chat(shared: &Shared, id: u32, query: ChatQuery, client: &Client) -> Reply {
+    let (workspace, chat) = (query.workspace.clone(), query.chat.clone());
+    match shared.chats.query(query, client).await {
+        Ok(answer) => Reply {
+            envelope: answer.map(|answer| Envelope {
+                id,
+                message: Message::ChatAnswer(ChatAnswer {
+                    workspace,
+                    chat,
+                    answer,
+                }),
+            }),
+            close: false,
+        },
+        Err(fault) => refused(shared, id, &fault),
+    }
+}
+
+fn refused(shared: &Shared, id: u32, fault: &Fault) -> Reply {
+    shared
+        .log
+        .warn("chat request refused", &[("err", Field::error(fault))]);
+    Reply::error(id, fault.code().clone(), false)
 }
 
 // Keeps `pick` off the runtime's thread and answers with its receipt.
@@ -300,7 +397,7 @@ mod tests {
     // Starts a daemon, letting `change` adjust it before it serves.
     fn start_as(dir: &Path, change: impl FnOnce(&mut Daemon)) -> Result<Running, Fault> {
         let (log, records) = recording_logger();
-        let mut daemon = Daemon::start(dir, build(&VERSION), log)?;
+        let mut daemon = Daemon::start(dir, build(&VERSION), SpawnPolicy::default(), log)?;
         change(&mut daemon);
         let socket = daemon.socket.clone();
         let (stop, stopped) = oneshot::channel();
@@ -571,7 +668,7 @@ mod tests {
         let kept = Picks::new(&dir).read(&"p-1".to_owned().try_into().unwrap());
 
         assert!(matches!(&replies[0], Message::Welcome(welcome)
-            if welcome.capabilities == [code!("element.pick").into()]));
+            if welcome.capabilities.contains(&code!("element.pick").into())));
         assert_eq!(receipt(&replies[1]), Some(&Outcome::Completed));
         assert_eq!(receipt(&replies[2]), Some(&Outcome::Completed));
         assert_eq!(error_code(&replies[3]), Some("request.conflict"));
@@ -672,5 +769,82 @@ mod tests {
             .unwrap()
             .unwrap_err();
         running.stop().await;
+    }
+
+    #[tokio::test]
+    async fn chat_commands_and_queries_reach_the_engine_and_its_events_come_back() {
+        use crate::chats::test_support::{bench, brief, prompt, query, soon};
+        use weacon_protocol::ChatQueryKind;
+
+        let dir = TempDir::new().unwrap();
+        let mut bench = bench();
+        let chats = bench.chats.clone();
+        let running = start_as(&dir, |daemon| daemon.shared.chats = chats).unwrap();
+        let line = |id, message| encode_line(&Envelope { id, message }).unwrap();
+        let subscribe = query("c-1", ChatQueryKind::Subscribe { after: 0 });
+        let bytes = [
+            hello(PROTOCOL),
+            line(2, Message::ChatQuery(subscribe)),
+            line(3, Message::ChatCommand(prompt("r-1", "MARKER-PROMPT"))),
+            line(4, Message::ChatCommand(prompt("r-2", " "))),
+            line(5, Message::ChatQuery(query("c-1", ChatQueryKind::Snapshot))),
+        ]
+        .concat();
+
+        let (replies, _stream) = exchange(connect(&running.socket).await, &bytes, 7).await;
+        let records = running.stop().await;
+
+        let offered = [
+            code!("chat.send"),
+            code!("chat.events"),
+            code!("run.stream"),
+        ];
+        let Message::Welcome(welcome) = &replies[0] else {
+            panic!("no welcome");
+        };
+        for capability in offered {
+            assert!(welcome.capabilities.contains(&capability.into()));
+        }
+        assert_eq!(error_code(&replies[1]), Some("chat.empty_prompt"));
+        assert!(matches!(&replies[2], Message::ChatAnswer(answer)
+            if matches!(answer.answer, weacon_protocol::ChatAnswerKind::Snapshot { seq: 4, .. })));
+        assert_eq!(
+            replies[3..].iter().map(brief).collect::<Vec<_>>(),
+            [
+                "1 prompt r-1 MARKER-PROMPT",
+                "2 receipt r-1 accepted",
+                "3 run-1 is Starting",
+                "4 run-1 is Running",
+            ]
+        );
+        assert!(soon(bench.started.recv()).await.is_some());
+        let logged = serde_json::to_string(&*records.lock().unwrap()).unwrap();
+        assert!(logged.contains("chat command taken"), "{logged}");
+        assert!(logged.contains("chat request refused"), "{logged}");
+        assert!(logged.contains("r-1"), "{logged}");
+        assert!(!logged.contains("MARKER"), "{logged}");
+    }
+
+    #[tokio::test]
+    async fn chat_messages_before_the_hello_are_refused_like_any_other() {
+        use crate::chats::test_support::{bench, prompt, query};
+        use weacon_protocol::ChatQueryKind;
+
+        let dir = TempDir::new().unwrap();
+        let mut bench = bench();
+        let chats = bench.chats.clone();
+        let running = start_as(&dir, |daemon| daemon.shared.chats = chats).unwrap();
+        let line = |id, message| encode_line(&Envelope { id, message }).unwrap();
+
+        for first in [
+            Message::ChatCommand(prompt("r-1", "Hi")),
+            Message::ChatQuery(query("c-1", ChatQueryKind::Snapshot)),
+        ] {
+            let stream = connect(&running.socket).await;
+            let (replies, _stream) = exchange(stream, &line(1, first), 1).await;
+            assert_eq!(error_code(&replies[0]), Some("handshake.required"));
+        }
+        running.stop().await;
+        bench.started.try_recv().unwrap_err();
     }
 }

@@ -26,16 +26,25 @@ pub(crate) struct Log {
     /// Where each entry starts in the file; the entry `seq` starts at `starts[seq - 1]`.
     starts: Vec<u64>,
     end: u64,
-    /// Every command's request, with the place of its prompt when it was one.
-    requests: HashMap<RequestId, Option<u64>>,
+    requests: HashMap<RequestId, Asked>,
     /// Set by a failed write, which may have left half an entry; opening the log again mends it.
     broken: bool,
+}
+
+/// What the log holds of one command.
+#[derive(Debug, Default)]
+struct Asked {
+    /// The place of its prompt, when it was one.
+    prompt: Option<u64>,
+    receipted: bool,
 }
 
 /// Whether a command was seen before under the same request.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Seen {
     Never,
+    /// The same prompt, committed but without a receipt yet: it may not have been queued.
+    Pending,
     /// With the same content: nothing more to do.
     Same,
     /// With other content.
@@ -54,7 +63,7 @@ impl Log {
     /// When the journal can't be read or an entry before its last is damaged.
     pub(crate) async fn open(workspace_root: &Path, chat: &ChatId) -> Result<Self, Fault> {
         let dir = workspace_root.join("chats");
-        let path = dir.join(platform::case_safe_name("c-", chat.as_str()) + ".jsonl");
+        let path = dir.join(super::file_stem(chat) + ".jsonl");
         blocking(move || {
             platform::private_dir(&dir)?;
             let mut log = Self {
@@ -102,10 +111,11 @@ impl Log {
     fn keep(&mut self, entry: &ChatEntry, len: usize) {
         match &entry.event {
             ChatEvent::Prompt { request, .. } => {
-                self.requests.insert(request.clone(), Some(entry.seq));
+                self.requests.entry(request.clone()).or_default().prompt = Some(entry.seq);
             }
             ChatEvent::Receipt { receipt } => {
-                self.requests.entry(receipt.request.clone()).or_insert(None);
+                let asked = self.requests.entry(receipt.request.clone()).or_default();
+                asked.receipted = true;
             }
             ChatEvent::Run { .. } | ChatEvent::RunStatus { .. } | ChatEvent::Newer => {}
         }
@@ -202,19 +212,24 @@ impl Log {
         request: &RequestId,
         action: &ChatAction,
     ) -> Result<Seen, Fault> {
-        let same = match self.requests.get(request) {
-            None => return Ok(Seen::Never),
-            Some(None) => !matches!(action, ChatAction::Prompt { .. }),
-            Some(Some(seq)) => {
-                let earlier = self.read(*seq, *seq).await?.pop().map(|entry| entry.event);
-                matches!(
-                    (earlier, action),
-                    (Some(ChatEvent::Prompt { text: earlier, .. }), ChatAction::Prompt { text })
-                        if earlier == *text
-                )
-            }
+        let Some(asked) = self.requests.get(request) else {
+            return Ok(Seen::Never);
         };
-        Ok(if same { Seen::Same } else { Seen::Other })
+        let Some(seq) = asked.prompt else {
+            let same = !matches!(action, ChatAction::Prompt { .. });
+            return Ok(if same { Seen::Same } else { Seen::Other });
+        };
+        let earlier = self.read(seq, seq).await?.pop().map(|entry| entry.event);
+        let same = matches!(
+            (earlier, action),
+            (Some(ChatEvent::Prompt { text: earlier, .. }), ChatAction::Prompt { text })
+                if earlier == *text
+        );
+        Ok(match (same, asked.receipted) {
+            (true, true) => Seen::Same,
+            (true, false) => Seen::Pending,
+            (false, _) => Seen::Other,
+        })
     }
 
     async fn read(&self, first: u64, last: u64) -> Result<Vec<ChatEntry>, Fault> {
@@ -235,6 +250,12 @@ impl Log {
         })
         .await
         .map_err(unreadable)
+    }
+
+    /// Makes the log behave as after a failed write.
+    #[cfg(test)]
+    pub(crate) const fn jam(&mut self) {
+        self.broken = true;
     }
 
     fn usable(&self) -> io::Result<()> {
@@ -566,8 +587,11 @@ mod tests {
         assert_eq!(seen(&log, "r-1", asks("Hi")).await, Seen::Never);
         log.append(said("Hello.".to_owned())).await.unwrap();
         log.append(prompt("r-1", "Hi")).await.unwrap();
+        assert_eq!(seen(&log, "r-1", asks("Hi")).await, Seen::Pending);
+        assert_eq!(seen(&log, "r-1", asks("Bye")).await, Seen::Other);
         log.append(accepted("r-1")).await.unwrap();
         log.append(accepted("r-2")).await.unwrap();
+        log.append(prompt("r-4", "Hi")).await.unwrap();
         drop(log);
 
         let log = open(&dir).await;
@@ -578,5 +602,6 @@ mod tests {
         assert_eq!(seen(&log, "r-2", allow).await, Seen::Same);
         assert_eq!(seen(&log, "r-2", asks("Hi")).await, Seen::Other);
         assert_eq!(seen(&log, "r-3", ChatAction::Interrupt).await, Seen::Never);
+        assert_eq!(seen(&log, "r-4", asks("Hi")).await, Seen::Pending);
     }
 }

@@ -9,15 +9,11 @@ use weacon_protocol::{AgentKind, WorkspaceId, code};
 
 use crate::platform;
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub(crate) struct Workspaces {
     dir: PathBuf,
 }
 
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "runs start their agents through this")
-)]
 impl Workspaces {
     pub(crate) fn new(state_dir: &Path) -> Self {
         Self {
