@@ -27,6 +27,9 @@ export type Envelope = {
   | {
     type: "workspace";
   } & WorkspaceUpdate
+  | {
+    type: "log";
+  } & ClientLog
 );
 
 /**
@@ -50,6 +53,18 @@ export type App = {
 export type Capability = Code;
 
 /**
+ * A log record from a client that has no log of its own, such as the web app: an event name and
+ * typed ids. The receiver logs only events it knows, so no other text reaches its log.
+ */
+export type ClientLog = {
+  code?: Code;
+  level: Level;
+  msg: LogEvent;
+  request_id?: RequestId;
+  run_id?: RunId;
+};
+
+/**
  * A dotted code such as `store.full`: two or more lowercase words joined by dots. It names
  * errors, and capabilities too.
  */
@@ -71,6 +86,21 @@ export type Hello = {
   capabilities?: Array<Capability>;
   protocol: number;
 };
+
+export type Level = (
+  | "trace"
+  | "debug"
+  | "info"
+  | "warn"
+  | "error"
+  | "fatal"
+);
+
+/**
+ * What happened, such as `run started`: one to four words of lowercase letters or `_`, one
+ * space apart, at most 40 bytes; no digits, so ids and secrets can't be spelt in it.
+ */
+export type LogEvent = string;
 
 /**
  * A member of a workspace, 1–64 ASCII letters, digits, `-` or `_`.
