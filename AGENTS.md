@@ -35,8 +35,9 @@ The default branch is `main`: start from it and open draft PRs against it. This 
 | `apps/core` | `protocol`, `model`, `client`, `agents`, `codemap`, `observability`, `appkit`, `version` | yes |
 | `apps/server` | `protocol`, `model`, `observability`, `appkit`, `version`; never `agents`, because the team server never runs agents | yes |
 | `apps/desktop` | `protocol`, `model`, `client`, `observability`, `appkit`, `version` | yes |
-| `tooling/*` | nothing in the repo | yes |
-| `apps/extension` | TypeScript; only the types generated from `protocol` | — |
+| `tooling/*` (Rust tools) | nothing in the repo | yes |
+| `tooling/ts` | nothing in the repo; reads `crates/protocol`'s schema, `Cargo.toml` and git | yes |
+| `apps/extension` | TypeScript; only the types generated from `protocol`, and `tooling/ts` | — |
 
 - Apps never depend on other apps. The desktop talks to the core over its socket, never by linking it.
 - Every app depends on `observability`, and on `version` both as a dependency and as a build-dependency whose `emit()` its `build.rs` calls.
@@ -90,7 +91,7 @@ Every program logs, reports errors and says which build it is from its first com
 - Rust at the version in `rust-toolchain.toml`, through rustup. Where rustup can't download it, as in Claude Code cloud sessions, it uses the installed stable toolchain if that is exactly the pinned version.
 - The dependencies, and `llvm-tools` for coverage where it can be downloaded.
 - The check tools at pinned versions: cargo-deny, cargo-machete, cargo-llvm-cov and cargo-mutants, built from crates.io the first time.
-- The extension's npm packages, at the exact versions in `apps/extension/package-lock.json`. It needs the Node in `apps/extension/.node-version` and stops if another is installed.
+- The extension's npm packages, at the exact versions in `apps/extension/package-lock.json`. It needs the Node in `.node-version`, which every TypeScript app and `tooling/ts` share, and stops if another is installed.
 - Its output goes to `.dev/setup.log`.
 
 | Where the agent runs | How it is set up |
@@ -104,7 +105,7 @@ Every program logs, reports errors and says which build it is from its first com
 | --- | --- |
 | `scripts/setup.sh` | Installs or updates everything; safe to run again |
 | `scripts/fix.sh` | Formats and applies the lint fixes clippy is sure of |
-| `scripts/check.sh` | What CI runs: rustfmt, clippy with warnings as errors, docs, cargo-machete, cargo-deny, all tests with the 90% line-coverage floor, doc tests, mutation tests on the code changed against `origin/main`, the extension's type check, tests and build, and ShellCheck. CI also lints and tests on Windows |
+| `scripts/check.sh` | What CI runs: rustfmt, clippy with warnings as errors, docs, cargo-machete, cargo-deny, all tests with the 90% line-coverage floor, doc tests, mutation tests on the code changed against `origin/main`, the extension's type check, tests and build, the shared TypeScript tooling's tests, and ShellCheck. CI also lints and tests on Windows |
 | `cargo test -p <crate> [name]` | Focused tests while iterating |
 | `WEACON_STATE_DIR=.dev/state cargo run -p weacon-core -- doctor` | Runs the core with this worktree's own state folder |
 | `UPDATE_SCHEMA=1 cargo test -p weacon-protocol` | Regenerates `crates/protocol/schema.json` after a message changes |

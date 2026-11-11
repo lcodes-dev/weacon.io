@@ -5,7 +5,7 @@
   "scripts": {
     "build": "node tools/build.ts",
     "check": "tsc && node --test && node tools/build.ts",
-    "update-types": "node tools/update-types.ts"
+    "update-types": "node ../../tooling/ts/update-types.ts src/protocol.ts"
   },
   "devDependencies": {
     "@types/chrome": "0.3.7",

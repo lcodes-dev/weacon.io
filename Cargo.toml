@@ -1,8 +1,8 @@
 [workspace]
 resolver = "3"
 members = ["apps/*", "crates/*", "tooling/*"]
-# The Chrome extension is TypeScript.
-exclude = ["apps/extension"]
+# TypeScript folders, not crates.
+exclude = ["apps/extension", "tooling/ts"]
 
 [workspace.package]
 version = "0.0.0"

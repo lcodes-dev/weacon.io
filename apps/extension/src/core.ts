@@ -1,8 +1,5 @@
-import { isCommit } from "./commit.ts";
+import { PROTOCOL, isCommit } from "../../../tooling/ts/version.ts";
 import type { App, Envelope, Pick } from "./protocol.ts";
-
-/** Must equal `weacon_protocol::PROTOCOL`. */
-export const PROTOCOL = 1;
 
 /** The native host's name, as `weacon connect-chrome` registers it. */
 export const HOST = "io.weacon.core";
