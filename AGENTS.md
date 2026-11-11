@@ -60,11 +60,17 @@ The default branch is `main`: start from it and open draft PRs against it. This 
 - **Async results:** a stale result never overwrites a newer one; give each request a number and drop answers to old ones.
 - **Refreshes** never clear what they refresh: fetch, then replace; show loading only when nothing is there yet; keep good data when a fetch fails.
 - **Command lines:** ids and paths are checked before they reach a command line, so none can be read as an option.
-- **Exit codes:** `weacon` exits 0 on success, 1 when a check finds something (such as `map check-anchors` finding stale pins), and 2 when a command fails, so hooks can tell the two apart.
+- **Exit codes:** every app ends through `appkit::finish`, which logs `app stopped` or `app failed` and exits 0 on success, 1 when a check finds something (such as `map check-anchors` finding stale pins), and 2 when a command fails, so hooks can tell the two apart.
+- **App wiring is shared.** Startup, the root logger, log files, error reporting, signals, the runtime and the exit live in `crates/appkit`, their pure parts in `crates/observability`. A second app uses them and never copies the first one's. A `Reporter` sends nothing until the person has agreed: the core starts with that off, the server with it on.
+- **Protocol messages:** one `Message` variant per feature, its body a named struct in that feature's module, with a doc line saying who sends it and under which capability. A nested enum ends in `#[serde(other)] Newer`, which `to_json` refuses to send. Ids are token newtypes made with `token_id!`, and a type that holds a secret has a `Debug` that hides it.
+- **Capabilities:** a program advertises a capability in the same change that implements it; the core's are in its one `CAPABILITIES` list.
+- **Subcommands:** one `Command` variant each, `Name(NameCommand)` when it nests, and one `module::run(&app, …)` call in `main.rs`; side effects such as `current_exe` stay inside the module.
+- **Background watches,** such as disk space and memory, are a `Watch` with an injected reader, run through `spawn_blocking`. A failed reading warns once until one succeeds, and events start with the area (`disk low`, `memory sampled`).
+- **TypeScript apps** share one type generator and one pinned Node version, and take their version and commit by the rules of `crates/version`.
 - **Hooks and helpers** that agents run never block them: when Weacon isn't there, they print nothing and exit cleanly.
 - **Screenshots and demos** use made-up data, never real project names.
 - **Errors** that Weacon raises are a `Fault` from `crates/observability`: a dotted code from `crates/protocol`, written `code!("store.full")` so it is checked when compiled, and a short fixed message with no user content in it; these are the only messages that reach logs. A crate may have its own error enum and convert it into a `Fault` where it is logged or crosses a process boundary.
-- **Tests** sit at the end of the file they test, in a `#[cfg(test)] mod tests`, and are deterministic: no sleeps, no fixed ports, no shared state between tests, temporary folders, and per-worktree state in `.dev/`. They test behaviour strongly enough that the mutation tests find no surviving mutant.
+- **Tests** sit at the end of the file they test, in a `#[cfg(test)] mod tests`, and are deterministic: no sleeps, no fixed ports, no shared state between tests, temporary folders, and per-worktree state in `.dev/`. They test behaviour strongly enough that the mutation tests find no surviving mutant. Temporary folders come from `weacon_testing::TempDir`, recorded logs from its `recording_logger`, and tests that need a whole app build it through one `test_support::app()`, as the core's do. Fakes speak the `protocol` types, never hand-written JSON.
 - **UI copy:** short, plain sentences in sentence case. Vendor names in plain text, no vendor logos.
 
 ## Logs, error reports and versions
