@@ -1,4 +1,6 @@
 use std::fs::Metadata;
+use std::io;
+use std::path::Path;
 
 /// Whether only its owner can read or write the file `metadata` is of; always, where the
 /// system has no such permissions.
@@ -19,6 +21,20 @@ pub(crate) fn private(metadata: &Metadata) -> bool {
     {
         let _ = metadata;
         true
+    }
+}
+
+/// Makes the names of the files in `folder` last through a crash, where the system keeps
+/// them apart from the files' contents.
+pub(crate) fn sync_folder(folder: &Path) -> io::Result<()> {
+    #[cfg(unix)]
+    {
+        std::fs::File::open(folder)?.sync_all()
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = folder;
+        Ok(())
     }
 }
 
@@ -48,6 +64,14 @@ mod tests {
         assert!(!private_with(0o640));
         assert!(!private_with(0o604));
         assert!(!private_with(0o602));
+    }
+
+    #[test]
+    fn only_a_folder_that_is_there_can_be_synced() {
+        let dir = TempDir::new().unwrap();
+
+        sync_folder(&dir).unwrap();
+        sync_folder(&dir.join("missing")).unwrap_err();
     }
 
     #[test]

@@ -10,7 +10,7 @@ use weacon_observability::Fault;
 use weacon_protocol::{ChallengeId, code};
 
 use crate::app::new_id;
-use crate::platform::private;
+use crate::platform::{private, sync_folder};
 
 /// The server's own key, which sign-in codes are hashed with: a stolen database alone can't
 /// be searched for its eight-digit codes.
@@ -79,7 +79,16 @@ fn create(path: &Path) -> Result<(), Fault> {
         drop(fs::hard_link(&new, path));
     }
     drop(fs::remove_file(&new));
-    made.map_err(unreadable)
+    // The folder holds the key's name: without this, a crash could leave no key behind.
+    made.and_then(|()| sync_folder(folder_of(path)))
+        .map_err(unreadable)
+}
+
+/// The folder `path` is in; the current one for a bare file name.
+fn folder_of(path: &Path) -> &Path {
+    path.parent()
+        .filter(|folder| !folder.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."))
 }
 
 /// The operating system's random bytes.
@@ -216,6 +225,13 @@ mod tests {
             secret.code_hash(&challenge("c1"), "12345679")
         );
         assert_ne!(hash(&secret), hash(&other));
+    }
+
+    #[test]
+    fn a_bare_file_name_is_in_the_current_folder() {
+        assert_eq!(folder_of(Path::new("secret")), Path::new("."));
+        assert_eq!(folder_of(Path::new("keys/secret")), Path::new("keys"));
+        assert_eq!(folder_of(Path::new("/secret")), Path::new("/"));
     }
 
     #[test]
