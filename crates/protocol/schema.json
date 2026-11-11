@@ -1146,6 +1146,12 @@
         "event"
       ]
     },
+    "TaskId": {
+      "description": "A task in a workspace, 1–64 ASCII letters, digits, `-` or `_`.",
+      "type": "string",
+      "maxLength": 64,
+      "pattern": "^[A-Za-z0-9_-]+$"
+    },
     "Welcome": {
       "description": "The answer to a [`Hello`] that speaks the same protocol.",
       "type": "object",
@@ -1182,6 +1188,29 @@
           "required": [
             "kind",
             "member"
+          ]
+        },
+        {
+          "description": "A task was made, at version 1, or changed. Only for clients that have the capability\n`workspace.tasks`, which read the tasks again to see what it now is.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "task_changed"
+            },
+            "task": {
+              "$ref": "#/$defs/TaskId"
+            },
+            "version": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            }
+          },
+          "required": [
+            "kind",
+            "task",
+            "version"
           ]
         }
       ]

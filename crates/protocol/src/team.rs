@@ -3,6 +3,7 @@ use std::fmt;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use crate::TaskId;
 use crate::token::token_id;
 
 token_id!(
@@ -177,6 +178,9 @@ impl fmt::Debug for SignedIn {
 pub enum WorkspaceChange {
     /// A member signed in for the first time.
     MemberJoined { member: MemberId },
+    /// A task was made, at version 1, or changed. Only for clients that have the capability
+    /// `workspace.tasks`, which read the tasks again to see what it now is.
+    TaskChanged { task: TaskId, version: u64 },
     /// A change this build doesn't know, from a newer peer; only ever received.
     #[serde(other)]
     #[schemars(skip)]
@@ -320,6 +324,17 @@ mod tests {
         assert_eq!(
             serde_json::from_value::<WorkspaceUpdate>(wire).unwrap(),
             update
+        );
+        let changed = WorkspaceChange::TaskChanged {
+            task: TaskId::try_from("t-1".to_owned()).unwrap(),
+            version: 2,
+        };
+        let changed_wire = json!({ "kind": "task_changed", "task": "t-1", "version": 2 });
+
+        assert_eq!(serde_json::to_value(&changed).unwrap(), changed_wire);
+        assert_eq!(
+            serde_json::from_value::<WorkspaceChange>(changed_wire).unwrap(),
+            changed
         );
         assert_eq!(
             serde_json::from_value::<WorkspaceChange>(json!({ "kind": "renamed" })).unwrap(),
