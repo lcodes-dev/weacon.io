@@ -95,7 +95,7 @@ pub(crate) const RULES: &[Rule] = &[
 ];
 
 /// Packages a work item will create: their rows above may exist before they do.
-pub(crate) const PLANNED: &[&str] = &["weacon-model"];
+pub(crate) const PLANNED: &[&str] = &[];
 
 /// Test helpers, which any package may use as a dev-dependency and none otherwise.
 pub(crate) const TESTING: &str = "weacon-testing";
