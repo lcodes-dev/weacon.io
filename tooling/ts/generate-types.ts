@@ -8,6 +8,7 @@ export type Schema = {
   $defs?: Record<string, Schema>;
   type?: string | string[];
   const?: unknown;
+  enum?: unknown[];
   properties?: Record<string, Schema>;
   required?: string[];
   items?: Schema;
@@ -22,6 +23,7 @@ const KNOWN = new Set([
   "$schema",
   "type",
   "const",
+  "enum",
   "properties",
   "required",
   "items",
@@ -79,6 +81,12 @@ function render(schema: Schema, indent: string): string {
 function base(schema: Schema, indent: string): string {
   if (schema.const !== undefined) {
     return literal(schema.const);
+  }
+  if (schema.enum !== undefined) {
+    if (schema.enum.length === 0) {
+      throw new Error("unsupported enum: it has no values");
+    }
+    return union(schema.enum.map(literal), indent);
   }
   if (Array.isArray(schema.type)) {
     return union(
