@@ -26,6 +26,13 @@ pub(crate) fn status(launch: &Launch) -> Command {
     command
 }
 
+/// `codex`'s own sign-in, for the person's terminal.
+pub(crate) fn login(launch: &Launch) -> Command {
+    let mut command = with_workspace_sign_in(launch);
+    command.arg("login");
+    command
+}
+
 fn with_workspace_sign_in(launch: &Launch) -> Command {
     let mut command = Command::new(&launch.program);
     for name in OTHER_SIGN_INS {
@@ -45,7 +52,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn both_commands_run_with_the_workspaces_config_and_no_other_sign_in() {
+    fn every_command_runs_with_the_workspaces_config_and_no_other_sign_in() {
         let launch = Launch {
             agent: AgentKind::Codex,
             program: "/work/codex".into(),
@@ -60,7 +67,9 @@ mod tests {
             command(&launch).as_std().get_args().collect::<Vec<_>>(),
             ["app-server"]
         );
-        for command in [command(&launch), status(&launch)] {
+        let login = login(&launch);
+        assert_eq!(login.as_std().get_args().collect::<Vec<_>>(), ["login"]);
+        for command in [command(&launch), status(&launch), login] {
             let command = command.as_std();
             let envs: Vec<_> = command.get_envs().collect();
 

@@ -76,11 +76,7 @@ impl Launch {
     /// # Errors
     /// When this build doesn't know the agent, or the command can't be run or doesn't end.
     pub async fn sign_in(&self) -> Result<SignIn, Fault> {
-        let mut command = match self.agent {
-            AgentKind::Claude => claude::status(self),
-            AgentKind::Codex => codex::status(self),
-            AgentKind::Newer => return Err(unknown()),
-        };
+        let mut command = self.vendors(claude::status, codex::status)?;
         command
             .stdin(Stdio::null())
             .stdout(Stdio::null())
@@ -98,6 +94,39 @@ impl Launch {
             Ok(Err(error)) if error.kind() == io::ErrorKind::NotFound => Ok(SignIn::NotInstalled),
             Ok(Err(error)) => Err(failed().because(error)),
             Err(elapsed) => Err(failed().because(elapsed)),
+        }
+    }
+
+    /// Runs the vendor's own sign-in in the terminal this process has, for the person to
+    /// finish there. Nothing that passes between them is read.
+    ///
+    /// # Errors
+    /// When this build doesn't know the agent, its program isn't installed or can't be run, or
+    /// the sign-in ends without success.
+    pub async fn log_in(&self) -> Result<(), Fault> {
+        let mut command = self.vendors(claude::login, codex::login)?;
+        let failed = || Fault::new(code!("agent.login_failed"), "The sign-in didn't finish");
+        match command.status().await {
+            Ok(exit) if exit.success() => Ok(()),
+            Ok(_) => Err(failed()),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Err(Fault::new(
+                code!("agent.not_installed"),
+                "The agent's program isn't installed",
+            )),
+            Err(error) => Err(failed().because(error)),
+        }
+    }
+
+    // The command of this launch's vendor.
+    fn vendors(
+        &self,
+        claude: fn(&Self) -> Command,
+        codex: fn(&Self) -> Command,
+    ) -> Result<Command, Fault> {
+        match self.agent {
+            AgentKind::Claude => Ok(claude(self)),
+            AgentKind::Codex => Ok(codex(self)),
+            AgentKind::Newer => Err(unknown()),
         }
     }
 
@@ -264,5 +293,50 @@ mod tests {
         let error = hanging.sign_in().await.unwrap_err();
 
         assert_eq!(error.code().as_str(), "agent.status_failed");
+    }
+
+    async fn log_in_code(launch: Launch) -> Option<String> {
+        Some(launch.log_in().await.err()?.code().as_str().to_owned())
+    }
+
+    #[tokio::test]
+    async fn a_sign_in_needs_a_known_agent_and_its_program() {
+        let dir = TempDir::new().unwrap();
+        let code = |agent| log_in_code(launch(agent, &dir));
+
+        assert_eq!(
+            code(AgentKind::Claude).await.as_deref(),
+            Some("agent.not_installed")
+        );
+        assert_eq!(
+            code(AgentKind::Codex).await.as_deref(),
+            Some("agent.not_installed")
+        );
+        assert_eq!(
+            code(AgentKind::Newer).await.as_deref(),
+            Some("agent.unknown")
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_sign_in_ends_as_the_vendors_program_does() {
+        let dir = TempDir::new().unwrap();
+        let with = |program: &str| Launch {
+            program: PathBuf::from(program),
+            ..launch(AgentKind::Claude, &dir)
+        };
+        // A file that can't be run.
+        std::fs::write(dir.join("agent"), "").unwrap();
+
+        assert_eq!(log_in_code(with("true")).await, None);
+        assert_eq!(
+            log_in_code(with("false")).await.as_deref(),
+            Some("agent.login_failed")
+        );
+        assert_eq!(
+            log_in_code(launch(AgentKind::Codex, &dir)).await.as_deref(),
+            Some("agent.login_failed")
+        );
     }
 }
