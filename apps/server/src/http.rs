@@ -25,6 +25,7 @@ use crate::secret::Secret;
 use crate::sign_in;
 use crate::tasks;
 use crate::web::{self, WebFile};
+use crate::workspaces;
 
 const REQUEST_ID: &str = "x-request-id";
 const GRACE: Duration = Duration::from_secs(10);
@@ -129,6 +130,11 @@ fn router(shared: Shared) -> Router {
         .route("/api/sign-in/finish", post(sign_in::finish))
         .route("/api/session", get(sign_in::session))
         .route("/api/sign-out", post(sign_in::sign_out))
+        .route(
+            "/api/workspaces",
+            get(workspaces::list).post(workspaces::create),
+        )
+        .route("/api/workspaces/{workspace}", get(workspaces::read))
         .route("/api/workspaces/{workspace}/feed", get(feed::feed))
         .route(
             "/api/workspaces/{workspace}/tasks",
@@ -192,6 +198,11 @@ async fn log_request(State(shared): State<Shared>, request: Request, next: Next)
 /// Answers that the client must sign in, or try again, with `code`.
 pub(crate) fn refused(code: Code) -> Response {
     error(StatusCode::UNAUTHORIZED, code, false)
+}
+
+/// Answers that the request's body isn't one the server can take, with `code`.
+pub(crate) fn invalid(code: Code) -> Response {
+    error(StatusCode::UNPROCESSABLE_ENTITY, code, false)
 }
 
 /// Answers that the request isn't from the server's own pages.
