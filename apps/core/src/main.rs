@@ -15,6 +15,7 @@ mod session;
 mod status;
 #[cfg(test)]
 mod test_support;
+mod workspaces;
 
 use std::io::{self, IsTerminal};
 use std::process::ExitCode;
