@@ -5,6 +5,7 @@ mod account;
 mod backup;
 mod changes;
 mod schema;
+mod tasks;
 mod workspace;
 
 use std::path::{Path, PathBuf};
@@ -522,7 +523,9 @@ mod tests {
                 "changes",
                 "accounts",
                 "sign_in_challenges",
-                "sessions"
+                "sessions",
+                "tasks",
+                "task_versions"
             ]
         );
         for table in SERVER_WIDE {

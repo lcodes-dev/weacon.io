@@ -101,6 +101,33 @@ CREATE TABLE sessions (
     expires_at INTEGER NOT NULL
 ) STRICT;
 ",
+    // Tasks, each with the versions it went through.
+    "
+CREATE TABLE tasks (
+    workspace_id TEXT NOT NULL REFERENCES workspaces (workspace_id),
+    task_id TEXT NOT NULL,
+    title TEXT NOT NULL,
+    status TEXT NOT NULL,
+    order_key TEXT NOT NULL,
+    version INTEGER NOT NULL,
+    PRIMARY KEY (workspace_id, task_id),
+    UNIQUE (workspace_id, order_key)
+) STRICT;
+
+CREATE TABLE task_versions (
+    workspace_id TEXT NOT NULL,
+    task_id TEXT NOT NULL,
+    version INTEGER NOT NULL,
+    author_kind TEXT NOT NULL,
+    author_member TEXT NOT NULL,
+    accepted_by TEXT NOT NULL,
+    at INTEGER NOT NULL,
+    PRIMARY KEY (workspace_id, task_id, version),
+    FOREIGN KEY (workspace_id, task_id) REFERENCES tasks (workspace_id, task_id),
+    FOREIGN KEY (workspace_id, author_member) REFERENCES members (workspace_id, member_id),
+    FOREIGN KEY (workspace_id, accepted_by) REFERENCES members (workspace_id, member_id)
+) STRICT;
+",
 ];
 
 /// Applies the steps the database hasn't had yet, each in its own transaction that holds the
