@@ -129,6 +129,9 @@ mod tests {
             Err("a b".to_owned())
         );
         assert_eq!(MemberId::try_from(String::new()), Err(String::new()));
+        assert_eq!("w-1".parse(), Ok(workspace()));
+        assert_eq!("a b".parse::<WorkspaceId>(), Err("not a workspace id"));
+        assert_eq!("".parse::<MemberId>(), Err("not a member id"));
         let bad = serde_json::from_value::<WorkspaceId>(json!("../x")).unwrap_err();
         assert!(bad.to_string().contains("not a workspace id"), "{bad}");
         let bad = serde_json::from_value::<MemberId>(json!("a.b")).unwrap_err();

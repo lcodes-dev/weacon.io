@@ -47,7 +47,7 @@ pub(crate) enum AdminCommand {
     AddMember {
         #[arg(long)]
         db: PathBuf,
-        #[arg(long, value_parser = workspace_id)]
+        #[arg(long)]
         workspace: WorkspaceId,
         #[arg(long)]
         email: String,
@@ -56,7 +56,7 @@ pub(crate) enum AdminCommand {
     Members {
         #[arg(long)]
         db: PathBuf,
-        #[arg(long, value_parser = workspace_id)]
+        #[arg(long)]
         workspace: WorkspaceId,
     },
     /// Copy the database to a new file while the server runs, and check the copy.
@@ -73,10 +73,6 @@ pub(crate) enum AdminCommand {
         #[arg(long)]
         db: PathBuf,
     },
-}
-
-fn workspace_id(text: &str) -> Result<WorkspaceId, String> {
-    WorkspaceId::try_from(text.to_owned()).map_err(|_| "not a workspace id".to_owned())
 }
 
 /// The command line, or the help, version or error text clap would print instead.
@@ -167,5 +163,14 @@ mod tests {
             })
         );
         run(&["weacon-server", "restore", "--from", "a.db"]).unwrap_err();
+        let bad_id = [
+            "weacon-server",
+            "members",
+            "--db",
+            "team.db",
+            "--workspace",
+            "a b",
+        ];
+        assert_eq!(run(&bad_id).unwrap_err().kind(), ErrorKind::ValueValidation);
     }
 }
