@@ -50,17 +50,8 @@ impl Workspaces {
     }
 }
 
-// A capital becomes `.` and its small letter, so ids differing only in case don't share a
-// folder; the prefix keeps Windows' device names, such as `CON`, out.
 fn folder_name(workspace: &WorkspaceId) -> String {
-    let mut name = String::from("w-");
-    for letter in workspace.as_str().chars() {
-        if letter.is_ascii_uppercase() {
-            name.push('.');
-        }
-        name.push(letter.to_ascii_lowercase());
-    }
-    name
+    platform::case_safe_name("w-", workspace.as_str())
 }
 
 #[cfg(test)]
