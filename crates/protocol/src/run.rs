@@ -5,6 +5,18 @@ use serde_json::Value;
 use crate::Outcome;
 use crate::token::token_id;
 
+/// Which vendor's agent.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentKind {
+    Claude,
+    Codex,
+    /// An agent this build doesn't know, from a newer peer; only ever received.
+    #[serde(other)]
+    #[schemars(skip)]
+    Newer,
+}
+
 /// An agent's own id for a conversation, a lowercase UUID, which resumes it later.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, JsonSchema)]
 pub struct AgentSession(#[schemars(regex(pattern = PATTERN))] String);
@@ -141,6 +153,21 @@ mod tests {
         assert_eq!(session.as_str(), good);
         assert_eq!(AgentSession::try_from("x".to_owned()), Err("x".to_owned()));
         serde_json::from_value::<AgentSession>(json!("--help")).unwrap_err();
+    }
+
+    #[test]
+    fn agent_kinds_travel_as_names_and_a_newer_one_still_parses() {
+        for (kind, name) in [(AgentKind::Claude, "claude"), (AgentKind::Codex, "codex")] {
+            assert_eq!(serde_json::to_value(kind).unwrap(), json!(name));
+            assert_eq!(
+                serde_json::from_value::<AgentKind>(json!(name)).unwrap(),
+                kind
+            );
+        }
+        assert_eq!(
+            serde_json::from_value::<AgentKind>(json!("amp")).unwrap(),
+            AgentKind::Newer
+        );
     }
 
     #[test]
