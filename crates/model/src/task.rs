@@ -1,3 +1,5 @@
+use std::fmt;
+
 use weacon_protocol::{Author, MemberId, TaskId, TaskStatus};
 
 use crate::OrderKey;
@@ -5,7 +7,8 @@ use crate::OrderKey;
 const TITLE_MAX: usize = 200;
 
 /// A task's title: one line of 1 to 200 characters, with no space at either end and nothing
-/// that changes the direction of the text.
+/// that overrides or isolates the direction of the text. Direction marks, which right-to-left
+/// text needs, are allowed.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TaskTitle(String);
 
@@ -82,6 +85,18 @@ pub enum EditError {
     /// The task is at the last version there is.
     LastVersion,
 }
+
+impl fmt::Display for EditError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::Stale { .. } => "the task has changed since it was read",
+            Self::UnknownStatus => "the status isn't one this version knows",
+            Self::LastVersion => "the task can't be changed any more",
+        })
+    }
+}
+
+impl std::error::Error for EditError {}
 
 impl Task {
     /// A new task, to do, at its first version.
@@ -201,7 +216,11 @@ mod tests {
             "a\u{2066}b",
             "a\u{2069}b",
         ];
-        for good in ["a\u{2027}b", "a\u{202F}b", "a\u{2065}b", "a\u{206A}b"] {
+        let marks = ["a\u{61C}b", "a\u{200E}b", "a\u{200F}b"];
+        for good in ["a\u{2027}b", "a\u{202F}b", "a\u{2065}b", "a\u{206A}b"]
+            .into_iter()
+            .chain(marks)
+        {
             assert_eq!(title(good).as_str(), good);
         }
         for bad in ["", " ", " a", "a ", "a\nb", "a\tb", too_long.as_str()]
@@ -304,6 +323,23 @@ mod tests {
         assert_eq!(
             task.edit(last, TaskEdit::Status(TaskStatus::Done)),
             Err(EditError::LastVersion)
+        );
+    }
+
+    #[test]
+    fn edit_errors_say_what_went_wrong() {
+        let stale: Box<dyn std::error::Error> = Box::new(EditError::Stale {
+            current: TaskVersion::FIRST,
+        });
+
+        assert_eq!(stale.to_string(), "the task has changed since it was read");
+        assert_eq!(
+            EditError::UnknownStatus.to_string(),
+            "the status isn't one this version knows"
+        );
+        assert_eq!(
+            EditError::LastVersion.to_string(),
+            "the task can't be changed any more"
         );
     }
 
