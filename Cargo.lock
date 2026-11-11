@@ -2025,6 +2025,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "weacon-model"
+version = "0.0.0"
+
+[[package]]
 name = "weacon-observability"
 version = "0.0.0"
 dependencies = [
