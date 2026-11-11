@@ -132,6 +132,48 @@
       "required": [
         "type"
       ]
+    },
+    {
+      "description": "A committed event of a chat, from the core to a client that subscribed under\n`chat.events`.",
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "chat"
+        }
+      },
+      "$ref": "#/$defs/ChatUpdate",
+      "required": [
+        "type"
+      ]
+    },
+    {
+      "description": "A question about a chat's log, from a client to a core that offers `chat.events`.",
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "chat_query"
+        }
+      },
+      "$ref": "#/$defs/ChatQuery",
+      "required": [
+        "type"
+      ]
+    },
+    {
+      "description": "The core's answer to a [`ChatQuery`], or its word that the client missed events, to a\nclient that has `chat.events`.",
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "chat_answer"
+        }
+      },
+      "$ref": "#/$defs/ChatAnswer",
+      "required": [
+        "type"
+      ]
     }
   ],
   "required": [
@@ -218,6 +260,101 @@
         }
       ]
     },
+    "ChatAnswer": {
+      "type": "object",
+      "properties": {
+        "answer": {
+          "$ref": "#/$defs/ChatAnswerKind"
+        },
+        "chat": {
+          "$ref": "#/$defs/ChatId"
+        },
+        "workspace": {
+          "$ref": "#/$defs/WorkspaceId"
+        }
+      },
+      "required": [
+        "workspace",
+        "chat",
+        "answer"
+      ]
+    },
+    "ChatAnswerKind": {
+      "oneOf": [
+        {
+          "description": "The client missed events and its subscription is over: fetch a snapshot, then subscribe\nafter its `seq`.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "events_lost"
+            }
+          },
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "description": "The chat as of `seq`: its runs, the permission prompts still waiting, and its latest\nevents.",
+          "type": "object",
+          "properties": {
+            "events": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/ChatEntry"
+              }
+            },
+            "kind": {
+              "type": "string",
+              "const": "snapshot"
+            },
+            "runs": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/RunStatus"
+              }
+            },
+            "seq": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            },
+            "waiting": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/ChatEntry"
+              }
+            }
+          },
+          "required": [
+            "kind",
+            "seq",
+            "runs",
+            "waiting",
+            "events"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "events": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/ChatEntry"
+              }
+            },
+            "kind": {
+              "type": "string",
+              "const": "window"
+            }
+          },
+          "required": [
+            "kind",
+            "events"
+          ]
+        }
+      ]
+    },
     "ChatCommand": {
       "description": "The core answers with receipts under `request`.",
       "type": "object",
@@ -242,11 +379,203 @@
         "action"
       ]
     },
+    "ChatEntry": {
+      "description": "An event and its place in its chat's log: `seq` starts at 1 and grows by one.",
+      "type": "object",
+      "properties": {
+        "event": {
+          "$ref": "#/$defs/ChatEvent"
+        },
+        "seq": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "seq",
+        "event"
+      ]
+    },
+    "ChatEvent": {
+      "oneOf": [
+        {
+          "description": "A person's prompt, accepted under `request`.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "prompt"
+            },
+            "request": {
+              "$ref": "#/$defs/RequestId"
+            },
+            "text": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "request",
+            "text"
+          ]
+        },
+        {
+          "description": "Where a chat command stands; written once per state.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "receipt"
+            },
+            "receipt": {
+              "$ref": "#/$defs/Receipt"
+            }
+          },
+          "required": [
+            "kind",
+            "receipt"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "run"
+            },
+            "update": {
+              "$ref": "#/$defs/RunUpdate"
+            }
+          },
+          "required": [
+            "kind",
+            "update"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "run_status"
+            },
+            "status": {
+              "$ref": "#/$defs/RunStatus"
+            }
+          },
+          "required": [
+            "kind",
+            "status"
+          ]
+        }
+      ]
+    },
     "ChatId": {
       "description": "A chat in a workspace, 1–64 ASCII letters, digits, `-` or `_`.",
       "type": "string",
       "maxLength": 64,
       "pattern": "^[A-Za-z0-9_-]+$"
+    },
+    "ChatQuery": {
+      "description": "The answer is a [`ChatAnswer`], or for `subscribe` the [`ChatUpdate`]s themselves.",
+      "type": "object",
+      "properties": {
+        "chat": {
+          "$ref": "#/$defs/ChatId"
+        },
+        "query": {
+          "$ref": "#/$defs/ChatQueryKind"
+        },
+        "workspace": {
+          "$ref": "#/$defs/WorkspaceId"
+        }
+      },
+      "required": [
+        "workspace",
+        "chat",
+        "query"
+      ]
+    },
+    "ChatQueryKind": {
+      "oneOf": [
+        {
+          "description": "Every event after `after`, then each new one as it is committed.",
+          "type": "object",
+          "properties": {
+            "after": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            },
+            "kind": {
+              "type": "string",
+              "const": "subscribe"
+            }
+          },
+          "required": [
+            "kind",
+            "after"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "snapshot"
+            }
+          },
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "description": "The latest events before `before`: at most `limit`, and fewer when they wouldn't fit\none frame.",
+          "type": "object",
+          "properties": {
+            "before": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            },
+            "kind": {
+              "type": "string",
+              "const": "window"
+            },
+            "limit": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            }
+          },
+          "required": [
+            "kind",
+            "before",
+            "limit"
+          ]
+        }
+      ]
+    },
+    "ChatUpdate": {
+      "description": "Text deltas are never committed; they arrive only as run updates.",
+      "type": "object",
+      "properties": {
+        "chat": {
+          "$ref": "#/$defs/ChatId"
+        },
+        "entry": {
+          "$ref": "#/$defs/ChatEntry"
+        },
+        "workspace": {
+          "$ref": "#/$defs/WorkspaceId"
+        }
+      },
+      "required": [
+        "workspace",
+        "chat",
+        "entry"
+      ]
     },
     "ClientLog": {
       "description": "A log record from a client that has no log of its own, such as the web app: an event name and\ntyped ids. The receiver logs only events it knows, so no other text reaches its log.",
@@ -748,6 +1077,98 @@
       "type": "string",
       "maxLength": 64,
       "pattern": "^[A-Za-z0-9_-]+$"
+    },
+    "RunStatus": {
+      "description": "Where a run stands, as its chat's log records it.",
+      "type": "object",
+      "properties": {
+        "run": {
+          "$ref": "#/$defs/RunId"
+        }
+      },
+      "oneOf": [
+        {
+          "description": "The agent process is starting.",
+          "type": "object",
+          "properties": {
+            "state": {
+              "type": "string",
+              "const": "starting"
+            }
+          },
+          "required": [
+            "state"
+          ]
+        },
+        {
+          "description": "On a turn.",
+          "type": "object",
+          "properties": {
+            "state": {
+              "type": "string",
+              "const": "running"
+            }
+          },
+          "required": [
+            "state"
+          ]
+        },
+        {
+          "description": "On a turn, waiting for a person to answer a permission prompt.",
+          "type": "object",
+          "properties": {
+            "state": {
+              "type": "string",
+              "const": "waiting"
+            }
+          },
+          "required": [
+            "state"
+          ]
+        },
+        {
+          "description": "Between turns, with its process alive.",
+          "type": "object",
+          "properties": {
+            "state": {
+              "type": "string",
+              "const": "idle"
+            }
+          },
+          "required": [
+            "state"
+          ]
+        },
+        {
+          "description": "Its process was stopped; the next prompt resumes the same agent session in a new run.",
+          "type": "object",
+          "properties": {
+            "state": {
+              "type": "string",
+              "const": "sleeping"
+            }
+          },
+          "required": [
+            "state"
+          ]
+        },
+        {
+          "description": "Over for good.",
+          "type": "object",
+          "properties": {
+            "state": {
+              "type": "string",
+              "const": "ended"
+            }
+          },
+          "required": [
+            "state"
+          ]
+        }
+      ],
+      "required": [
+        "run"
+      ]
     },
     "RunUpdate": {
       "description": "One event of the run `run`, in the order the run reported it.",

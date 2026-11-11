@@ -2,7 +2,8 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    Capability, ChatCommand, ClientLog, Code, Pick, Receipt, RunUpdate, WorkspaceUpdate, code,
+    Capability, ChatAnswer, ChatCommand, ChatQuery, ChatUpdate, ClientLog, Code, Pick, Receipt,
+    RunUpdate, WorkspaceUpdate, code,
 };
 
 /// The protocol version this build speaks. Only a breaking change raises it; peers must match
@@ -35,6 +36,14 @@ pub enum Message {
     Log(ClientLog),
     /// What a person asks of a chat's agent, from a client to a core that offers `chat.send`.
     ChatCommand(ChatCommand),
+    /// A committed event of a chat, from the core to a client that subscribed under
+    /// `chat.events`.
+    Chat(ChatUpdate),
+    /// A question about a chat's log, from a client to a core that offers `chat.events`.
+    ChatQuery(ChatQuery),
+    /// The core's answer to a [`ChatQuery`], or its word that the client missed events, to a
+    /// client that has `chat.events`.
+    ChatAnswer(ChatAnswer),
     /// A message type this build doesn't know, from a newer peer.
     #[serde(other)]
     #[schemars(skip)]

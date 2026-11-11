@@ -69,6 +69,9 @@ pub(crate) fn error_code(message: &weacon_protocol::Message) -> Option<&str> {
         | weacon_protocol::Message::Workspace(_)
         | weacon_protocol::Message::Log(_)
         | weacon_protocol::Message::ChatCommand(_)
+        | weacon_protocol::Message::Chat(_)
+        | weacon_protocol::Message::ChatQuery(_)
+        | weacon_protocol::Message::ChatAnswer(_)
         | weacon_protocol::Message::Unknown => None,
     }
 }
