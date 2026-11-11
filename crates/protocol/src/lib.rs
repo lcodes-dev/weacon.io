@@ -10,6 +10,7 @@ mod message;
 mod pick;
 mod receipt;
 mod run;
+mod task;
 mod team;
 mod token;
 
@@ -23,6 +24,7 @@ pub use message::{App, Envelope, ErrorBody, Hello, Message, PROTOCOL, Welcome};
 pub use pick::Pick;
 pub use receipt::{Outcome, Receipt, RequestId};
 pub use run::{AgentKind, AgentSession, PermissionAnswer, RunEvent, RunId, RunUpdate};
+pub use task::{Author, TaskId, TaskStatus};
 pub use team::{
     ChallengeId, MemberId, SignInFinish, SignInStart, SignInStarted, SignedIn, WorkspaceChange,
     WorkspaceId, WorkspaceUpdate,
