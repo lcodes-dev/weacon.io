@@ -1,0 +1,11 @@
+[package]
+name = "weacon-model"
+description = "The rules of tasks: their order, their versions and who changed them"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
