@@ -38,6 +38,7 @@ weacon-agents = { path = "crates/agents" }
 weacon-appkit = { path = "crates/appkit" }
 weacon-client = { path = "crates/client" }
 weacon-codemap = { path = "crates/codemap" }
+weacon-model = { path = "crates/model" }
 weacon-observability = { path = "crates/observability" }
 weacon-protocol = { path = "crates/protocol" }
 weacon-testing = { path = "crates/testing" }

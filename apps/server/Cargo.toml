@@ -21,6 +21,7 @@ sqlx.workspace = true
 subtle.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "sync"] }
 weacon-appkit.workspace = true
+weacon-model.workspace = true
 weacon-observability.workspace = true
 weacon-protocol.workspace = true
 weacon-version.workspace = true

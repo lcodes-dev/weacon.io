@@ -4,6 +4,7 @@
 mod backup;
 mod schema;
 mod sign_in;
+mod tasks;
 mod workspace;
 
 use std::path::{Path, PathBuf};
@@ -492,7 +493,9 @@ mod tests {
                 "members",
                 "sessions",
                 "changes",
-                "sign_in_challenges"
+                "sign_in_challenges",
+                "tasks",
+                "task_versions"
             ]
         );
         for table in &tables {
