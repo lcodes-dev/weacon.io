@@ -1,5 +1,6 @@
 //! The messages Weacon programs exchange, their framing and their error codes.
 
+mod access;
 mod capability;
 mod code;
 mod frame;
@@ -11,6 +12,7 @@ mod run;
 mod team;
 mod token;
 
+pub use access::AccessLevel;
 pub use capability::Capability;
 pub use code::Code;
 pub use frame::{FrameError, LineDecoder, MAX_FRAME, encode_line};
@@ -18,7 +20,7 @@ pub use log::{ClientLog, Level, LogEvent};
 pub use message::{App, Envelope, ErrorBody, Hello, Message, PROTOCOL, Welcome};
 pub use pick::Pick;
 pub use receipt::{Outcome, Receipt, RequestId};
-pub use run::{AgentSession, PermissionAnswer, RunEvent, RunId, RunUpdate};
+pub use run::{AgentKind, AgentSession, PermissionAnswer, RunEvent, RunId, RunUpdate};
 pub use team::{
     ChallengeId, MemberId, SignInFinish, SignInStart, SignInStarted, SignedIn, WorkspaceChange,
     WorkspaceId, WorkspaceUpdate,
