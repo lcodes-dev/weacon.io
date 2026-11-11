@@ -31,8 +31,9 @@ pub use run::{
 };
 pub use task::{Author, TaskId, TaskStatus};
 pub use team::{
-    ChallengeId, MemberId, SignInFinish, SignInStart, SignInStarted, SignedIn, WorkspaceChange,
-    WorkspaceId, WorkspaceUpdate,
+    AccountId, AccountSignInFinish, AccountSignInStart, AccountSignedIn, ChallengeId, MemberId,
+    SignInFinish, SignInStart, SignInStarted, SignedIn, WorkspaceChange, WorkspaceCreate,
+    WorkspaceId, WorkspaceList, WorkspaceRole, WorkspaceSummary, WorkspaceUpdate,
 };
 
 #[cfg(test)]
