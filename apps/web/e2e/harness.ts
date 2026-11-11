@@ -54,7 +54,23 @@ export async function start(tokens: number, paceMs: number): Promise<Harness> {
   }
 }
 
+// Long enough for cargo to build the fake server first.
+const STARTUP_MS = 300_000;
+
+// The server's first line, or a failure once `STARTUP_MS` passes without one, so `start` cleans up.
 async function firstLine(child: ChildProcess): Promise<string> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const late = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error("the fake server didn't start in time")), STARTUP_MS);
+  });
+  try {
+    return await Promise.race([readFirstLine(child), late]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function readFirstLine(child: ChildProcess): Promise<string> {
   if (child.stdout === null) {
     throw new Error("the fake server has no stdout");
   }
