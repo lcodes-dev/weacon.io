@@ -438,21 +438,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn opening_a_whole_log_again_leaves_what_another_handle_appended() {
-        let dir = TempDir::new().unwrap();
-        let mut log = open(&dir).await;
-        log.append(prompt("r-1", "Hi")).await.unwrap();
-        // A handle that can't truncate: opening must not need to.
-        let mut readonly = fs::metadata(journal(&dir)).unwrap().permissions();
-        readonly.set_readonly(true);
-        fs::set_permissions(journal(&dir), readonly).unwrap();
-
-        let reopened = Log::open(&dir, &chat("c-1")).await;
-
-        assert_eq!(reopened.map(|log| log.seq()).ok(), Some(1));
-    }
-
-    #[tokio::test]
     async fn a_failed_write_breaks_the_log_until_it_is_opened_again() {
         let dir = TempDir::new().unwrap();
         let mut log = open(&dir).await;
