@@ -1,4 +1,4 @@
-use std::io::Write;
+use std::io::{self, Write};
 use std::path::Path;
 
 use weacon_agents::{Launch, SignIn, SpawnPolicy};
@@ -25,8 +25,8 @@ pub(crate) fn run(app: &App, out: &mut impl Write) -> Result<(), Fault> {
     print(report(app, platform::free_space))?;
     if let Some(dir) = &app.state_dir {
         let runtime = runtime()?;
-        let sign_in = |launch: &Launch| checked(&app.log, runtime.block_on(launch.sign_in()));
-        print(Workspaces::new(dir).describe(sign_in))?;
+        let all = |launches: &[Launch]| runtime.block_on(sign_ins(&app.log, launches));
+        print(workspaces(&app.log, Workspaces::new(dir).describe(all)))?;
     }
     if app.log_file.is_none() {
         return Err(state_unavailable());
@@ -34,11 +34,43 @@ pub(crate) fn run(app: &App, out: &mut impl Write) -> Result<(), Fault> {
     Ok(())
 }
 
-// A check that failed is logged here, once, and shows as unknown.
-fn checked(log: &Logger, sign_in: Result<SignIn, Fault>) -> Option<SignIn> {
-    sign_in
-        .inspect_err(|error| log.warn("sign-in check failed", &[("err", Field::error(error))]))
-        .ok()
+// Vendor programs asked at once: enough that a slow one doesn't hold up a report, few enough
+// for a small machine.
+const AT_ONCE: usize = 8;
+
+// A check that fails is logged here, once, and shows as unknown.
+async fn sign_ins(log: &Logger, launches: &[Launch]) -> Vec<Option<SignIn>> {
+    let failed = |err: Field| log.warn("sign-in check failed", &[("err", err)]);
+    let mut answers = Vec::new();
+    for together in launches.chunks(AT_ONCE) {
+        let checks: Vec<_> = together
+            .iter()
+            .cloned()
+            .map(|launch| tokio::spawn(async move { launch.sign_in().await }))
+            .collect();
+        for check in checks {
+            answers.push(match check.await {
+                Ok(Ok(sign_in)) => Some(sign_in),
+                Ok(Err(error)) => {
+                    failed(Field::error(&error));
+                    None
+                }
+                Err(error) => {
+                    failed(Field::error(&error));
+                    None
+                }
+            });
+        }
+    }
+    answers
+}
+
+// Workspaces that can't be listed are said to be, never left out.
+fn workspaces(log: &Logger, lines: io::Result<String>) -> String {
+    lines.unwrap_or_else(|error| {
+        log.warn("workspaces unreadable", &[("err", Field::error(&error))]);
+        "Workspaces: unavailable\n".to_owned()
+    })
 }
 
 fn report(app: &App, free_space: disk::FreeSpace) -> String {
@@ -159,18 +191,67 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn a_failed_sign_in_check_is_logged_once_and_shows_as_unknown() {
+    #[tokio::test]
+    async fn every_sign_in_is_checked_and_a_failed_check_is_logged_once_and_unknown() {
+        use weacon_protocol::AgentKind;
+
+        let dir = TempDir::new().unwrap();
         let (log, records) = test_support::recording_logger();
-        let failed = Fault::new(code!("agent.status_failed"), "The check failed");
+        let launch = |agent| Launch {
+            agent,
+            program: dir.join("missing"),
+            config_dir: dir.to_path_buf(),
+            cwd: dir.to_path_buf(),
+        };
+        let launches = [AgentKind::Claude, AgentKind::Newer, AgentKind::Codex].map(launch);
+
+        let answers = sign_ins(&log, &launches).await;
 
         assert_eq!(
-            checked(&log, Ok(SignIn::SignedOut)),
-            Some(SignIn::SignedOut)
+            answers,
+            [Some(SignIn::NotInstalled), None, Some(SignIn::NotInstalled)]
         );
-        assert_eq!(test_support::messages(&records), [""; 0]);
-        assert_eq!(checked(&log, Err(failed)), None);
         assert_eq!(test_support::messages(&records), ["sign-in check failed"]);
+    }
+
+    // `yes` never exits. With time paused, the clock moves only when every check is waiting,
+    // so it shows how many waits there were, one after another.
+    #[cfg(unix)]
+    #[tokio::test(start_paused = true)]
+    async fn checks_run_a_few_at_once_so_slow_ones_dont_add_up() {
+        use std::time::Duration;
+
+        use weacon_protocol::AgentKind;
+
+        let dir = TempDir::new().unwrap();
+        let (log, records) = test_support::recording_logger();
+        let hanging = Launch {
+            agent: AgentKind::Claude,
+            program: "yes".into(),
+            config_dir: dir.to_path_buf(),
+            cwd: dir.to_path_buf(),
+        };
+        let launches = vec![hanging; AT_ONCE + 1];
+        let started = tokio::time::Instant::now();
+
+        let answers = sign_ins(&log, &launches).await;
+
+        let waits = started.elapsed().as_secs() / 30;
+        assert_eq!(waits, 2);
+        assert!(started.elapsed() < Duration::from_secs(61));
+        assert_eq!(answers, vec![None; AT_ONCE + 1]);
+        assert_eq!(test_support::messages(&records).len(), AT_ONCE + 1);
+    }
+
+    #[test]
+    fn workspaces_that_cant_be_listed_are_said_to_be() {
+        let (log, records) = test_support::recording_logger();
+        let listed = workspaces(&log, Ok("Workspace w1: Codex signed in\n".to_owned()));
+        let unlisted = workspaces(&log, Err(io::ErrorKind::PermissionDenied.into()));
+
+        assert_eq!(listed, "Workspace w1: Codex signed in\n");
+        assert_eq!(unlisted, "Workspaces: unavailable\n");
+        assert_eq!(test_support::messages(&records), ["workspaces unreadable"]);
     }
 
     #[test]

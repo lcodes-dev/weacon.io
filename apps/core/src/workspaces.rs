@@ -2,6 +2,7 @@
 //! config folder and so its sign-in.
 
 use std::fs;
+use std::io;
 use std::path::{Path, PathBuf};
 
 use weacon_agents::{Launch, SignIn};
@@ -22,31 +23,55 @@ impl Workspaces {
         }
     }
 
-    /// The workspaces this machine has a folder for, sorted by id.
-    fn known(&self) -> Vec<WorkspaceId> {
-        let mut known: Vec<_> = fs::read_dir(&self.dir)
-            .into_iter()
-            .flatten()
-            .filter_map(Result::ok)
-            .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()))
-            .filter_map(|entry| workspace_id(entry.file_name().to_str()?))
-            .collect();
+    /// The workspaces this machine has a folder for, sorted by id; none before the first.
+    fn known(&self) -> io::Result<Vec<WorkspaceId>> {
+        let entries = match fs::read_dir(&self.dir) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(error) => return Err(error),
+        };
+        let mut known = Vec::new();
+        for entry in entries {
+            let entry = entry?;
+            if entry.file_type()?.is_dir()
+                && let Some(workspace) = entry.file_name().to_str().and_then(workspace_id)
+            {
+                known.push(workspace);
+            }
+        }
         known.sort_by(|one, other| one.as_str().cmp(other.as_str()));
-        known
+        Ok(known)
     }
 
-    /// A line for each known workspace saying whether each agent is signed in, as `sign_in`
-    /// reads it; `None` shows as unknown.
-    pub(crate) fn describe(&self, sign_in: impl Fn(&Launch) -> Option<SignIn>) -> String {
-        let line = |workspace: WorkspaceId| {
-            let root = self.root(&workspace);
-            let agents = AGENTS.map(|(agent, name)| {
-                let launch = Launch::new(agent, &root, root.clone()).ok();
-                format!("{name} {}", state(launch.as_ref().and_then(&sign_in)))
-            });
+    /// A line for each known workspace saying whether each agent is signed in. `sign_ins`
+    /// answers for all the launches at once, in their order; `None` shows as unknown.
+    ///
+    /// # Errors
+    /// When the workspaces' folder can't be listed, so the lines would leave some out.
+    pub(crate) fn describe(
+        &self,
+        sign_ins: impl FnOnce(&[Launch]) -> Vec<Option<SignIn>>,
+    ) -> io::Result<String> {
+        let known = self.known()?;
+        // One place for each workspace and agent, kept even when it has no launch to ask.
+        let places: Vec<Option<Launch>> = known
+            .iter()
+            .flat_map(|workspace| {
+                let root = self.root(workspace);
+                AGENTS.map(|(agent, _)| Launch::new(agent, &root, root.clone()).ok())
+            })
+            .collect();
+        let asked: Vec<Launch> = places.iter().flatten().cloned().collect();
+        let mut answers = sign_ins(&asked).into_iter();
+        let mut states = places
+            .iter()
+            .map(|place| state(place.as_ref().and_then(|_| answers.next().flatten())));
+        let lines = known.iter().map(|workspace| {
+            let agents =
+                AGENTS.map(|(_, name)| format!("{name} {}", states.next().unwrap_or(state(None))));
             format!("Workspace {}: {}\n", workspace.as_str(), agents.join(", "))
-        };
-        self.known().into_iter().map(line).collect()
+        });
+        Ok(lines.collect())
     }
 
     /// The folder for everything this machine keeps for `workspace`.
@@ -190,7 +215,7 @@ mod tests {
     fn each_known_workspace_says_whether_its_agents_are_signed_in() {
         let dir = TempDir::new().unwrap();
         let workspaces = Workspaces::new(&dir);
-        assert_eq!(workspaces.describe(|_| Some(SignIn::SignedIn)), "");
+        assert_eq!(workspaces.describe(|_| Vec::new()).unwrap(), "");
         for workspace in ["w2", "W1", "a"] {
             workspaces
                 .launch(&id(workspace), AgentKind::Claude, dir.to_path_buf())
@@ -201,7 +226,7 @@ mod tests {
         }
         let w2 = dir.join("workspaces/w-w2");
 
-        let text = workspaces.describe(|launch| {
+        let sign_in = |launch: &Launch| {
             let in_w2 = launch.cwd == w2 && launch.config_dir.starts_with(&w2);
             match launch.agent {
                 AgentKind::Claude if in_w2 => Some(SignIn::SignedIn),
@@ -209,7 +234,12 @@ mod tests {
                 AgentKind::Claude => Some(SignIn::NotInstalled),
                 AgentKind::Codex | AgentKind::Newer => None,
             }
-        });
+        };
+        let text = workspaces
+            .describe(|launches| launches.iter().map(sign_in).collect())
+            .unwrap();
+        // Answers that run out show as unknown.
+        let cut_short = workspaces.describe(|_| vec![Some(SignIn::SignedIn)]);
 
         assert_eq!(
             text,
@@ -217,6 +247,19 @@ mod tests {
              Workspace a: Claude Code not installed, Codex unknown\n\
              Workspace w2: Claude Code signed in, Codex signed out\n"
         );
+        assert!(cut_short.unwrap().starts_with(
+            "Workspace W1: Claude Code signed in, Codex unknown\nWorkspace a: Claude Code unknown"
+        ));
+    }
+
+    #[test]
+    fn workspaces_that_cant_be_listed_are_an_error_not_an_empty_list() {
+        let dir = TempDir::new().unwrap();
+        fs::write(dir.join("workspaces"), "").unwrap();
+
+        let unlisted = Workspaces::new(&dir).describe(|_| Vec::new());
+
+        unlisted.unwrap_err();
     }
 
     #[cfg(unix)]
