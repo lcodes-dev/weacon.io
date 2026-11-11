@@ -118,6 +118,20 @@
       "required": [
         "type"
       ]
+    },
+    {
+      "description": "What a person asks of a chat's agent, from a client to a core that offers `chat.send`.",
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "chat_command"
+        }
+      },
+      "$ref": "#/$defs/ChatCommand",
+      "required": [
+        "type"
+      ]
     }
   ],
   "required": [
@@ -152,6 +166,87 @@
     "Capability": {
       "description": "A feature a peer supports, such as `chat.send`, named like a [`Code`]. A peer keeps the ones\nit doesn't know, so a newer peer's list still parses.",
       "$ref": "#/$defs/Code"
+    },
+    "ChatAction": {
+      "oneOf": [
+        {
+          "description": "Starts a turn with `text`, or queues it behind the turn that is running.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "prompt"
+            },
+            "text": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "text"
+          ]
+        },
+        {
+          "description": "Answers a permission prompt of one of the chat's runs.",
+          "type": "object",
+          "properties": {
+            "answer": {
+              "$ref": "#/$defs/PermissionAnswer"
+            },
+            "kind": {
+              "type": "string",
+              "const": "permission"
+            }
+          },
+          "required": [
+            "kind",
+            "answer"
+          ]
+        },
+        {
+          "description": "Stops the turn that is running.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "interrupt"
+            }
+          },
+          "required": [
+            "kind"
+          ]
+        }
+      ]
+    },
+    "ChatCommand": {
+      "description": "The core answers with receipts under `request`.",
+      "type": "object",
+      "properties": {
+        "action": {
+          "$ref": "#/$defs/ChatAction"
+        },
+        "chat": {
+          "$ref": "#/$defs/ChatId"
+        },
+        "request": {
+          "$ref": "#/$defs/RequestId"
+        },
+        "workspace": {
+          "$ref": "#/$defs/WorkspaceId"
+        }
+      },
+      "required": [
+        "request",
+        "workspace",
+        "chat",
+        "action"
+      ]
+    },
+    "ChatId": {
+      "description": "A chat in a workspace, 1–64 ASCII letters, digits, `-` or `_`.",
+      "type": "string",
+      "maxLength": 64,
+      "pattern": "^[A-Za-z0-9_-]+$"
     },
     "ClientLog": {
       "description": "A log record from a client that has no log of its own, such as the web app: an event name and\ntyped ids. The receiver logs only events it knows, so no other text reaches its log.",
@@ -337,6 +432,28 @@
             "state"
           ]
         }
+      ]
+    },
+    "PermissionAnswer": {
+      "description": "A person's answer to a [`RunEvent::PermissionAsked`].",
+      "type": "object",
+      "properties": {
+        "allow": {
+          "type": "boolean"
+        },
+        "prompt": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "run": {
+          "$ref": "#/$defs/RunId"
+        }
+      },
+      "required": [
+        "run",
+        "prompt",
+        "allow"
       ]
     },
     "Pick": {

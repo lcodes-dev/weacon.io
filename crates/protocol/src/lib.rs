@@ -1,6 +1,7 @@
 //! The messages Weacon programs exchange, their framing and their error codes.
 
 mod capability;
+mod chat;
 mod code;
 mod frame;
 mod log;
@@ -12,6 +13,7 @@ mod team;
 mod token;
 
 pub use capability::Capability;
+pub use chat::{ChatAction, ChatCommand, ChatId};
 pub use code::Code;
 pub use frame::{FrameError, LineDecoder, MAX_FRAME, encode_line};
 pub use log::{ClientLog, Level, LogEvent};
