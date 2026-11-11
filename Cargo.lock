@@ -2057,6 +2057,8 @@ dependencies = [
  "clap",
  "futures-util",
  "getrandom 0.4.3",
+ "hyper",
+ "hyper-util",
  "serde",
  "serde_json",
  "sha2",

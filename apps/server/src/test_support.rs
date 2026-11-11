@@ -10,12 +10,12 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{Semaphore, broadcast, oneshot};
 use tokio::task::JoinHandle;
-use weacon_observability::Fault;
 use weacon_testing::TempDir;
 use weacon_version::Version;
 
 pub(crate) use weacon_testing::{Records, messages, recording_logger, recording_sink};
 
+use crate::connections;
 use crate::db::Db;
 use crate::email::Email;
 use crate::feed;
@@ -63,6 +63,8 @@ impl Fixture {
             reporter: Arc::new(weacon_appkit::reporter(None, true, Box::new(|_| Ok(())))),
             db,
             outbox: Outbox::new(dir.join("outbox")),
+            head_within: connections::HEAD_WITHIN,
+            connections: Arc::new(Semaphore::new(64)),
             // Short, so tests that wait for the feed's checks don't wait long.
             feed: feed::Timing {
                 hello_within: Duration::from_millis(100),
@@ -123,7 +125,7 @@ impl Fixture {
 pub(crate) struct Running {
     pub(crate) address: SocketAddr,
     pub(crate) stop: oneshot::Sender<()>,
-    pub(crate) done: JoinHandle<Result<(), Fault>>,
+    pub(crate) done: JoinHandle<()>,
 }
 
 pub(crate) async fn run(shared: Shared) -> Running {
