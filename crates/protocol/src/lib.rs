@@ -16,14 +16,19 @@ mod token;
 
 pub use access::AccessLevel;
 pub use capability::Capability;
-pub use chat::{ChatAction, ChatCommand, ChatId};
+pub use chat::{
+    ChatAction, ChatAnswer, ChatAnswerKind, ChatCommand, ChatEntry, ChatEvent, ChatId, ChatQuery,
+    ChatQueryKind, ChatUpdate,
+};
 pub use code::Code;
 pub use frame::{FrameError, LineDecoder, MAX_FRAME, encode_line};
 pub use log::{ClientLog, Level, LogEvent};
 pub use message::{App, Envelope, ErrorBody, Hello, Message, PROTOCOL, Welcome};
 pub use pick::Pick;
 pub use receipt::{Outcome, Receipt, RequestId};
-pub use run::{AgentKind, AgentSession, PermissionAnswer, RunEvent, RunId, RunUpdate};
+pub use run::{
+    AgentKind, AgentSession, PermissionAnswer, RunEvent, RunId, RunState, RunStatus, RunUpdate,
+};
 pub use task::{Author, TaskId, TaskStatus};
 pub use team::{
     ChallengeId, MemberId, SignInFinish, SignInStart, SignInStarted, SignedIn, WorkspaceChange,

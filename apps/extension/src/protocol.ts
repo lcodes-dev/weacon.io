@@ -33,6 +33,15 @@ export type Envelope = {
   | {
     type: "chat_command";
   } & ChatCommand
+  | {
+    type: "chat";
+  } & ChatUpdate
+  | {
+    type: "chat_query";
+  } & ChatQuery
+  | {
+    type: "chat_answer";
+  } & ChatAnswer
 );
 
 /**
@@ -69,6 +78,29 @@ export type ChatAction = (
   }
 );
 
+export type ChatAnswer = {
+  answer: ChatAnswerKind;
+  chat: ChatId;
+  workspace: WorkspaceId;
+};
+
+export type ChatAnswerKind = (
+  | {
+    kind: "events_lost";
+  }
+  | {
+    events: Array<ChatEntry>;
+    kind: "snapshot";
+    runs: Array<RunStatus>;
+    seq: number;
+    waiting: Array<number>;
+  }
+  | {
+    events: Array<ChatEntry>;
+    kind: "window";
+  }
+);
+
 /**
  * The core answers with receipts under `request`.
  */
@@ -80,9 +112,70 @@ export type ChatCommand = {
 };
 
 /**
+ * An event and its place in its chat's log: `seq` starts at 1 and grows by one.
+ */
+export type ChatEntry = {
+  event: ChatEvent;
+  seq: number;
+};
+
+export type ChatEvent = (
+  | {
+    kind: "prompt";
+    request: RequestId;
+    text: string;
+  }
+  | {
+    kind: "receipt";
+    receipt: Receipt;
+  }
+  | {
+    kind: "run";
+    update: RunUpdate;
+  }
+  | {
+    kind: "run_status";
+    status: RunStatus;
+  }
+);
+
+/**
  * A chat in a workspace, 1–64 ASCII letters, digits, `-` or `_`.
  */
 export type ChatId = string;
+
+/**
+ * The answer is a [`ChatAnswer`], or for `subscribe` the [`ChatUpdate`]s themselves.
+ */
+export type ChatQuery = {
+  chat: ChatId;
+  query: ChatQueryKind;
+  workspace: WorkspaceId;
+};
+
+export type ChatQueryKind = (
+  | {
+    after: number;
+    kind: "subscribe";
+  }
+  | {
+    kind: "snapshot";
+  }
+  | {
+    before: number;
+    kind: "window";
+    limit: number;
+  }
+);
+
+/**
+ * Text deltas are never committed; they arrive only as run updates.
+ */
+export type ChatUpdate = {
+  chat: ChatId;
+  entry: ChatEntry;
+  workspace: WorkspaceId;
+};
 
 /**
  * A log record from a client that has no log of its own, such as the web app: an event name and
@@ -279,6 +372,23 @@ export type RunEvent = (
  * Prompts carry it, so an answer only ever reaches the run that asked.
  */
 export type RunId = string;
+
+export type RunState = (
+  | "starting"
+  | "running"
+  | "waiting"
+  | "idle"
+  | "sleeping"
+  | "ended"
+);
+
+/**
+ * Where a run stands, as its chat's log records it.
+ */
+export type RunStatus = {
+  run: RunId;
+  state: RunState;
+};
 
 /**
  * One event of the run `run`, in the order the run reported it.
