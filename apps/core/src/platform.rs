@@ -53,9 +53,11 @@ use weacon_agents::SpawnPolicy;
 
 mod chrome;
 mod procs;
+mod programs;
 
 pub(crate) use chrome::{CHROME_HOST, register_chrome_host};
 pub(crate) use procs::{PROCESSES, Process, processes};
+pub(crate) use programs::find_program;
 
 /// Reads an environment variable; tests pass a fake.
 pub(crate) type Env<'a> = &'a dyn Fn(&str) -> Option<OsString>;
@@ -170,6 +172,12 @@ mod unix {
             .recursive(true)
             .mode(0o700)
             .create(dir)
+    }
+
+    /// Whether `file` is a file that someone may run.
+    pub(crate) fn is_runnable(file: &Path) -> bool {
+        fs::metadata(file)
+            .is_ok_and(|file| file.is_file() && file.permissions().mode() & 0o111 != 0)
     }
 
     /// The user that owns `dir`, when only that user can reach it.
@@ -297,6 +305,10 @@ mod windows {
             make_private(dir)?;
         }
         Ok(())
+    }
+
+    pub(crate) fn is_runnable(file: &Path) -> bool {
+        file.is_file()
     }
 
     /// Makes `dir`, the core's own folder, private to this user, whatever it inherited.
