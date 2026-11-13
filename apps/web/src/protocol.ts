@@ -586,9 +586,75 @@ export type SignedIn = {
 };
 
 /**
+ * Asks the server to change a task that the client read at `version`; the server refuses
+ * when the task has changed since. The answer is its [`TaskRecord`].
+ */
+export type TaskChange = {
+  edit: TaskEditBody;
+  version: number;
+};
+
+/**
+ * Asks the server for a new task, placed in front of `before`, or last without one. The
+ * answer is its [`TaskRecord`].
+ */
+export type TaskCreate = {
+  before?: TaskId;
+  title: string;
+};
+
+/**
+ * One edit to a task, inside a [`TaskChange`].
+ */
+export type TaskEditBody = (
+  | {
+    kind: "title";
+    title: string;
+  }
+  | {
+    kind: "status";
+    status: TaskStatus;
+  }
+  | {
+    before?: TaskId;
+    kind: "move";
+  }
+);
+
+/**
  * A task in a workspace, 1–64 ASCII letters, digits, `-` or `_`.
  */
 export type TaskId = string;
+
+/**
+ * A workspace's tasks in their order, from the server.
+ */
+export type TaskList = {
+  tasks: Array<TaskRecord>;
+};
+
+/**
+ * A task as it travels: `order` is its order key and `version` rises with each change. The
+ * server sends it to clients that have the capability `workspace.tasks`.
+ */
+export type TaskRecord = {
+  id: TaskId;
+  order: string;
+  status: TaskStatus;
+  title: string;
+  version: number;
+};
+
+/**
+ * How far along a task is.
+ */
+export type TaskStatus = (
+  | (
+    | "todo"
+    | "in_progress"
+    | "done"
+  )
+);
 
 /**
  * The answer to a [`Hello`] that speaks the same protocol.

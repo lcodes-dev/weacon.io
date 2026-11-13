@@ -30,6 +30,17 @@ pub(crate) const VERSION: Version = Version {
     commit: "1a2b3c4",
 };
 
+/// Made-up built files of the web app, which tests serve.
+pub(crate) const WEB: &[crate::web::WebFile] = &[
+    (
+        "/",
+        "text/html; charset=utf-8",
+        b"<!doctype html><title>Made up</title>",
+    ),
+    ("/app.js", "text/javascript; charset=utf-8", b"made_up();"),
+    ("/app.css", "text/css; charset=utf-8", b"body {}"),
+];
+
 /// Seconds since the Unix epoch when a fixture starts.
 const START: u64 = 1_762_077_600;
 
@@ -50,14 +61,9 @@ impl Fixture {
             .create_workspace(&workspace_id("w1"), "Team")
             .await
             .unwrap();
-        workspace
-            .add_member(
-                &member_id("m1"),
-                &fresh_account(),
-                &Email::parse("ada@example.com").unwrap(),
-            )
-            .await
-            .unwrap();
+        let ada = Email::parse("ada@example.com").unwrap();
+        let (m1, account) = (member_id("m1"), fresh_account());
+        workspace.add_member(&m1, &account, &ada).await.unwrap();
         let (log, records) = recording_logger();
         // Its own logger: off Unix it warns, and tests read the fixture's records.
         let secret = Secret::open(&dir.join("secret"), &recording_logger().0).unwrap();
@@ -87,6 +93,7 @@ impl Fixture {
             finish_within: Duration::ZERO,
             starts: Arc::new(sign_in::starts()),
             tries: Arc::new(sign_in::tries()),
+            web: WEB,
         };
         Self {
             dir,
@@ -185,6 +192,12 @@ pub(crate) async fn request_with(
 /// A response's lowercased status line.
 pub(crate) fn status(head: &[String]) -> &str {
     head.first().map_or("", String::as_str)
+}
+
+/// The value of the header `name`, written in lower case, in a response's `head`.
+pub(crate) fn header<'a>(head: &'a [String], name: &str) -> Option<&'a str> {
+    head.iter()
+        .find_map(|line| line.strip_prefix(name)?.strip_prefix(": "))
 }
 
 /// Starts a sign-in for `email`: the answer's status line, and its challenge.

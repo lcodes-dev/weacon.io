@@ -32,7 +32,14 @@ export function App({
         </button>
       </header>
       <main>
-{settings ? <Settings me={me} status={status} /> : <TranscriptView rows={transcript.rows} writing={transcript.writing} />}
+        <div className={settings ? "pane away" : "pane"}>
+          <TranscriptView rows={transcript.rows} writing={transcript.writing} away={settings} />
+        </div>
+        {settings && (
+          <div className="pane">
+            <Settings me={me} status={status} />
+          </div>
+        )}
       </main>
       <Composer send={send} blocked={blocked(status, place)} hidden={settings} />
     </div>

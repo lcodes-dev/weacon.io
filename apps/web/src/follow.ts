@@ -13,5 +13,10 @@ export function selectingIn(
   selection: Pick<Selection, "isCollapsed" | "rangeCount" | "getRangeAt"> | null,
   container: Node,
 ): boolean {
-  return selection !== null && !selection.isCollapsed && selection.rangeCount > 0 && selection.getRangeAt(0).intersectsNode(container);
+  return selection !== null && !selection.isCollapsed && touches(selection, container);
+}
+
+/** Whether `selection`'s range touches `node`, even as a bare caret, as when a drag starts. */
+export function touches(selection: Pick<Selection, "rangeCount" | "getRangeAt"> | null, node: Node): boolean {
+  return selection !== null && selection.rangeCount > 0 && selection.getRangeAt(0).intersectsNode(node);
 }
