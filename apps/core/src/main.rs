@@ -10,6 +10,11 @@ mod memory;
 mod native_host;
 mod picks;
 mod platform;
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "the chat engine, which uses it, comes next")
+)]
+mod runs;
 mod service;
 mod session;
 mod status;
@@ -54,6 +59,9 @@ fn main() -> ExitCode {
         Command::Doctor => doctor::run(&app, &mut io::stdout().lock()).map(Outcome::from),
         Command::Service(command) => {
             service::run(&app, command, &env, &mut service::system).map(Outcome::from)
+        }
+        Command::Login { agent, workspace } => {
+            workspaces::login(&app, agent.into(), &workspace).map(Outcome::from)
         }
         Command::ConnectChrome => {
             native_host::connect_chrome(&app, &env, &mut io::stdout().lock()).map(Outcome::from)

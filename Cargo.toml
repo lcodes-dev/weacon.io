@@ -16,6 +16,8 @@ axum = { version = "0.8.9", default-features = false, features = ["http1", "json
 clap = { version = "4.6.7", features = ["derive", "string"] }
 futures-util = { version = "0.3.31", default-features = false, features = ["sink"] }
 getrandom = "0.4.3"
+hyper = { version = "1.12.0", default-features = false, features = ["http1", "server"] }
+hyper-util = { version = "0.1.21", default-features = false, features = ["service", "tokio"] }
 libc = "0.2.191"
 regex = { version = "1.13.1", default-features = false, features = ["std", "perf", "unicode-case", "unicode-perl"] }
 schemars = "1.2.3"

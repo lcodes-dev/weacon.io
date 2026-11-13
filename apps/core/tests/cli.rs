@@ -8,12 +8,16 @@ mod tests {
     use weacon_testing::TempDir;
 
     fn weacon(args: &[&str], state_dir: &str) -> Output {
-        Command::new(env!("CARGO_BIN_EXE_weacon"))
+        command(args, state_dir).output().unwrap()
+    }
+
+    fn command(args: &[&str], state_dir: &str) -> Command {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_weacon"));
+        command
             .args(args)
             .env("WEACON_STATE_DIR", state_dir)
-            .env_remove("WEACON_SENTRY_DSN")
-            .output()
-            .unwrap()
+            .env_remove("WEACON_SENTRY_DSN");
+        command
     }
 
     #[test]
@@ -41,6 +45,73 @@ mod tests {
         assert!(dir.join("logs/cli.log").exists());
         assert_eq!(blocked.status.code(), Some(2));
         assert!(String::from_utf8_lossy(&blocked.stderr).contains("state.unavailable"));
+    }
+
+    #[test]
+    fn doctor_asks_each_vendors_own_program_about_each_workspaces_sign_in() {
+        let dir = TempDir::new().unwrap();
+        fs::create_dir_all(dir.join("workspaces/w-w1")).unwrap();
+        // No vendor's program is on an empty PATH.
+        let output = command(&["doctor"], dir.to_str().unwrap())
+            .env("PATH", dir.join("empty"))
+            .output()
+            .unwrap();
+
+        assert!(output.status.success());
+        assert!(
+            String::from_utf8_lossy(&output.stdout)
+                .ends_with("\nWorkspace w1: Claude Code not installed, Codex not installed\n")
+        );
+    }
+
+    fn login(dir: &TempDir, agent: &str) -> Output {
+        let state = dir.join("state");
+        command(
+            &["login", agent, "--workspace", "w1"],
+            state.to_str().unwrap(),
+        )
+        .env("PATH", dir.join("bin"))
+        .stdin(Stdio::null())
+        .output()
+        .unwrap()
+    }
+
+    #[test]
+    fn login_needs_the_vendors_program() {
+        let dir = TempDir::new().unwrap();
+        let output = login(&dir, "claude");
+
+        assert_eq!(output.status.code(), Some(2));
+        assert!(String::from_utf8_lossy(&output.stderr).contains("agent.not_installed"));
+        assert!(dir.join("state/workspaces/w-w1/claude").is_dir());
+    }
+
+    // Scripts stand in for the vendors' programs; a child shell writes them, so this process
+    // never holds a write handle a fork could inherit, which makes running one fail as busy.
+    #[cfg(unix)]
+    #[test]
+    fn login_ends_as_the_vendors_own_sign_in_does() {
+        let dir = TempDir::new().unwrap();
+        fs::create_dir(dir.join("bin")).unwrap();
+        for (name, exit) in [("claude", "0"), ("codex", "1")] {
+            let written = Command::new("sh")
+                .args([
+                    "-c",
+                    "printf '#!/bin/sh\\nexit %s\\n' \"$1\" > \"$2\" && chmod 755 \"$2\"",
+                ])
+                .args(["sh", exit])
+                .arg(dir.join("bin").join(name))
+                .status()
+                .unwrap();
+            assert!(written.success());
+        }
+
+        let signed_in = login(&dir, "claude");
+        let gave_up = login(&dir, "codex");
+
+        assert!(signed_in.status.success());
+        assert_eq!(gave_up.status.code(), Some(2));
+        assert!(String::from_utf8_lossy(&gave_up.stderr).contains("agent.login_failed"));
     }
 
     #[test]

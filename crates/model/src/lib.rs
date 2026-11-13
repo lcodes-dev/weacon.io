@@ -3,5 +3,7 @@
 //! It does no I/O.
 
 mod order;
+mod task;
 
 pub use order::OrderKey;
+pub use task::{Change, EditError, Task, TaskEdit, TaskTitle, TaskVersion};

@@ -1,9 +1,6 @@
 use std::{fmt, mem};
 
-use crate::{
-    ChatAction, ChatCommand, Code, Envelope, Message, Outcome, Receipt, RunEvent, RunUpdate,
-    WorkspaceChange, WorkspaceUpdate, code,
-};
+use crate::{ChatAction, ChatQueryKind, Code, Envelope, Message, WorkspaceChange, code};
 
 /// The largest frame accepted or sent on any transport: one message's JSON, plus its newline on
 /// a byte stream.
@@ -43,29 +40,7 @@ impl Envelope {
     /// When the message is one only ever received, such as [`Message::Unknown`], or exceeds
     /// [`MAX_FRAME`].
     pub fn to_json(&self) -> Result<Vec<u8>, FrameError> {
-        if matches!(
-            self.message,
-            Message::Unknown
-                | Message::Receipt(Receipt {
-                    outcome: Outcome::Newer,
-                    ..
-                })
-                | Message::Run(RunUpdate {
-                    event: RunEvent::Newer
-                        | RunEvent::Finished {
-                            outcome: Outcome::Newer
-                        },
-                    ..
-                })
-                | Message::Workspace(WorkspaceUpdate {
-                    change: WorkspaceChange::Newer,
-                    ..
-                })
-                | Message::ChatCommand(ChatCommand {
-                    action: ChatAction::Newer,
-                    ..
-                })
-        ) {
+        if only_received(&self.message) {
             return Err(FrameError::Invalid);
         }
         let json = serde_json::to_vec(self).map_err(|_| FrameError::Invalid)?;
@@ -84,6 +59,24 @@ impl Envelope {
             return Err(FrameError::TooLarge);
         }
         serde_json::from_slice(json).map_err(|_| FrameError::Invalid)
+    }
+}
+
+fn only_received(message: &Message) -> bool {
+    match message {
+        Message::Unknown => true,
+        Message::Receipt(receipt) => receipt.outcome.is_newer(),
+        Message::Run(update) => update.event.is_newer(),
+        Message::Workspace(update) => matches!(update.change, WorkspaceChange::Newer),
+        Message::ChatCommand(command) => matches!(command.action, ChatAction::Newer),
+        Message::Chat(update) => update.entry.event.is_newer(),
+        Message::ChatQuery(query) => matches!(query.query, ChatQueryKind::Newer),
+        Message::ChatAnswer(answer) => answer.answer.is_newer(),
+        Message::Hello(_)
+        | Message::Welcome(_)
+        | Message::Error(_)
+        | Message::Pick(_)
+        | Message::Log(_) => false,
     }
 }
 
@@ -145,7 +138,7 @@ fn parse(line: &[u8]) -> Option<Result<Envelope, FrameError>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{App, ErrorBody, Hello};
+    use crate::{App, ErrorBody, Hello, Outcome, Receipt, RunEvent, RunUpdate, WorkspaceUpdate};
 
     fn envelope(id: u32) -> Envelope {
         Envelope {
