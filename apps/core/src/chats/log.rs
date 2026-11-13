@@ -65,8 +65,8 @@ impl Log {
                 requests: HashMap::new(),
                 broken: false,
             };
-            platform::sync_dir(&dir)?;
-            platform::sync_dir(&workspace_root)?;
+            weacon_appkit::sync_dir(&dir)?;
+            weacon_appkit::sync_dir(&workspace_root)?;
             let len = log.file.metadata()?.len();
             log.replay()?;
             if log.end != len {

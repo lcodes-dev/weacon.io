@@ -16,7 +16,7 @@ use weacon_version::Version;
 pub(crate) use weacon_testing::{Records, messages, recording_logger, recording_sink};
 
 use crate::connections;
-use crate::db::Db;
+use crate::db::{Db, Workspace};
 use crate::email::Email;
 use crate::feed;
 use crate::http::{self, Shared};
@@ -188,4 +188,22 @@ pub(crate) fn workspace_id(id: &str) -> weacon_protocol::WorkspaceId {
 
 pub(crate) fn member_id(id: &str) -> weacon_protocol::MemberId {
     weacon_protocol::MemberId::try_from(id.to_owned()).unwrap()
+}
+
+/// Workspaces `w1` and `w2` in a new database in `dir`, whose members `m1` and `m2` share
+/// the address ada@example.com.
+pub(crate) async fn two_teams(dir: &TempDir) -> (Workspace, Workspace) {
+    let db = Db::create(&dir.join("weacon.db")).await.unwrap();
+    let email = Email::parse("ada@example.com").unwrap();
+    let one = db
+        .create_workspace(&workspace_id("w1"), "One")
+        .await
+        .unwrap();
+    let two = db
+        .create_workspace(&workspace_id("w2"), "Two")
+        .await
+        .unwrap();
+    one.add_member(&member_id("m1"), &email).await.unwrap();
+    two.add_member(&member_id("m2"), &email).await.unwrap();
+    (one, two)
 }

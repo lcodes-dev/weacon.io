@@ -45,7 +45,7 @@ fn tool_policy(env: Env<'_>, cpus: usize, own_oom_score: Option<i32>) -> SpawnPo
     }
 }
 
-use std::io::{self, Write};
+use std::io;
 use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
 
@@ -96,21 +96,6 @@ pub(crate) fn state_dir(env: Env<'_>) -> Option<PathBuf> {
     xdg_dir(env, "XDG_STATE_HOME", ".local/state").map(|dir| dir.join("weacon"))
 }
 
-/// Writes `contents` to `path` whole, through a file synced and renamed into place, so no
-/// reader sees half of it, a crash keeps the old or the new, and what was written stays written;
-/// creates missing parent folders. `path` is absolute.
-pub(crate) fn write_whole(path: &Path, contents: &[u8]) -> io::Result<()> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    let unfinished = path.with_extension("new");
-    let mut file = fs::File::create(&unfinished)?;
-    file.write_all(contents)?;
-    file.sync_all()?;
-    fs::rename(&unfinished, path)?;
-    path.parent().map_or(Ok(()), sync_dir)
-}
-
 /// A file or folder name for `id`, a token id, after `prefix`. A capital becomes `.` and its
 /// small letter, so ids differing only in case don't share a name; the prefix keeps Windows'
 /// device names, such as `CON`, out.
@@ -146,11 +131,6 @@ mod unix {
 
     /// The user a client must be.
     pub(crate) type Owner = u32;
-
-    /// Makes what was created, renamed or removed in `dir` survive a power loss.
-    pub(crate) fn sync_dir(dir: &Path) -> io::Result<()> {
-        fs::File::open(dir)?.sync_all()
-    }
 
     pub(crate) struct Listener(tokio::net::UnixListener);
 
@@ -198,8 +178,7 @@ mod unix {
     /// The user that owns `dir`, when only that user can reach it.
     pub(crate) fn private_owner(dir: &Path) -> io::Result<Option<Owner>> {
         let metadata = fs::metadata(dir)?;
-        let others = metadata.permissions().mode() & 0o077;
-        let private = metadata.is_dir() && others == 0;
+        let private = metadata.is_dir() && weacon_appkit::owner_only(&metadata) == Some(true);
         Ok(private.then(|| metadata.uid()))
     }
 
@@ -231,11 +210,6 @@ mod windows {
     use tokio::net::windows::named_pipe::NamedPipeServer;
     use weacon_client::platform::pipe_name;
     use weacon_client::platform::windows::{create_pipe, make_private};
-
-    /// Only checks that `dir` is there: the file system keeps a rename once it has returned.
-    pub(crate) fn sync_dir(dir: &Path) -> io::Result<()> {
-        fs::metadata(dir).map(drop)
-    }
 
     /// A client's pipe, disconnected when dropped: a pipe with a write still pending, as to a
     /// client that never reads, otherwise stays open until that write finishes.
@@ -338,7 +312,7 @@ mod windows {
     pub(crate) fn bind(path: &Path) -> io::Result<Listener> {
         let name = pipe_name(weacon_appkit::random_id());
         let next = create_pipe(&name, true)?;
-        super::write_whole(path, name.as_bytes())?;
+        weacon_appkit::write_whole(path, name.as_bytes())?;
         Ok(Listener { name, next })
     }
 
@@ -353,14 +327,6 @@ mod tests {
 
     use super::*;
     use crate::test_support::env;
-
-    #[test]
-    fn a_folder_that_isnt_there_cant_be_synced() {
-        let dir = TempDir::new().unwrap();
-
-        sync_dir(&dir).unwrap();
-        sync_dir(&dir.join("missing")).unwrap_err();
-    }
 
     #[cfg(windows)]
     #[test]
@@ -473,19 +439,6 @@ mod tests {
 
         assert!(free_space(&dir).unwrap() > 0);
         free_space(&dir.join("missing")).unwrap_err();
-    }
-
-    #[test]
-    fn a_whole_write_creates_folders_and_replaces_the_file() {
-        let dir = TempDir::new().unwrap();
-        let path = dir.join("a/b/unit.service");
-
-        write_whole(&path, b"first").unwrap();
-        write_whole(&path, b"second").unwrap();
-
-        assert_eq!(fs::read_to_string(&path).unwrap(), "second");
-        assert!(!path.with_extension("new").exists());
-        assert!(write_whole(&dir.join("a/b/unit.service/x"), b"").is_err());
     }
 
     #[cfg(unix)]
