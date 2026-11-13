@@ -1,0 +1,9 @@
+{
+  "extends": "../../tooling/ts/tsconfig.base.json",
+  "compilerOptions": {
+    "lib": ["es2024", "dom", "dom.iterable"],
+    "types": ["node"],
+    "jsx": "react-jsx"
+  },
+  "include": ["src", "tools", "e2e", "../../tooling/ts"]
+}
