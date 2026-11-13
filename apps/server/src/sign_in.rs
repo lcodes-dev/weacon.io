@@ -142,8 +142,9 @@ pub(crate) async fn sign_out(
 ) -> Response {
     let ended = match proof(&method, &headers) {
         Ok(token_hash) => shared.db.end_session(&token_hash).await,
-        Err(Unproven::Missing) => Ok(()),
-        Err(cross_site) => return cross_site.into(),
+        // Nothing to end, but another site's page may not clear the cookie either.
+        Err(Unproven::Missing) if same_origin(&headers) != Some(false) => Ok(()),
+        Err(_) => return Unproven::CrossSite.into(),
     };
     match ended {
         Ok(()) => {
@@ -349,6 +350,8 @@ mod tests {
                 format!("{cookie}origin: http://test\r\n"),
             ),
             ("POST /api/sign-out", format!("{cookie}{other}")),
+            // Without the cookie, as a form on another site sends it, it still can't clear it.
+            ("POST /api/sign-out", other.to_owned()),
             // No page sent this, so it may read but not change.
             ("POST /api/sign-out", cookie.clone()),
         ] {
