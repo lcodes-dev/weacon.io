@@ -192,7 +192,7 @@ impl Workspaces {
 }
 
 // `path` with its deepest existing folder resolved, so a missing path compares like an existing
-// one; `None` when something on the way exists but can't be resolved.
+// one; `None` when something on the way exists but can't be resolved, such as a dangling symlink.
 fn resolved(path: &Path) -> Option<PathBuf> {
     let mut missing = Vec::new();
     let mut base = path;
@@ -207,6 +207,7 @@ fn resolved(path: &Path) -> Option<PathBuf> {
                 );
             }
             Err(error) if error.kind() != io::ErrorKind::NotFound => return None,
+            Err(_) if base.symlink_metadata().is_ok() => return None,
             Err(_) => {}
         }
         missing.push(base.file_name()?);
@@ -534,6 +535,13 @@ mod tests {
             .unwrap_err();
 
         assert_eq!(error.code().as_str(), "workspace.cwd_refused");
+        // A symlink to nowhere could later point anywhere, so it's refused too.
+        std::os::unix::fs::symlink(dir.join("missing"), dir.join("dangling")).unwrap();
+        let dangling = workspaces.launch(&id("w1"), AgentKind::Claude, dir.join("dangling"));
+        assert_eq!(
+            dangling.unwrap_err().code().as_str(),
+            "workspace.cwd_refused"
+        );
         // A file in the way can't be resolved, so the folder is refused too.
         fs::write(dir.join("file"), "").unwrap();
         let blocked = workspaces.launch(&id("w1"), AgentKind::Claude, dir.join("file/inside"));
