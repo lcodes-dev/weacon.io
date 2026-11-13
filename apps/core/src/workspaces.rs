@@ -172,17 +172,8 @@ const AGENTS: [(AgentKind, &str); 2] = [
     (AgentKind::Codex, "Codex"),
 ];
 
-// A capital becomes `.` and its small letter, so ids differing only in case don't share a
-// folder; the prefix keeps Windows' device names, such as `CON`, out.
 fn folder_name(workspace: &WorkspaceId) -> String {
-    let mut name = String::from("w-");
-    for letter in workspace.as_str().chars() {
-        if letter.is_ascii_uppercase() {
-            name.push('.');
-        }
-        name.push(letter.to_ascii_lowercase());
-    }
-    name
+    platform::case_safe_name("w-", workspace.as_str())
 }
 
 const fn state(sign_in: Option<SignIn>) -> &'static str {
@@ -220,22 +211,13 @@ mod tests {
     }
 
     fn program(dir: &Path, name: &str) -> PathBuf {
-        dir.join("bin")
-            .join(name)
-            .with_extension(std::env::consts::EXE_EXTENSION)
+        platform::plant_program(&dir.join("bin"), name, 0o755)
     }
 
     /// Workspaces in `dir`, on a machine with both vendors' programs installed in `dir/bin`.
     fn workspaces(dir: &Path) -> Workspaces {
-        fs::create_dir_all(dir.join("bin")).unwrap();
         for name in ["claude", "codex"] {
-            fs::write(program(dir, name), "").unwrap();
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                let runnable = fs::Permissions::from_mode(0o755);
-                fs::set_permissions(program(dir, name), runnable).unwrap();
-            }
+            program(dir, name);
         }
         Workspaces::new(dir, Some(dir.join("bin").into_os_string()))
     }

@@ -58,6 +58,8 @@ mod programs;
 pub(crate) use chrome::{CHROME_HOST, register_chrome_host};
 pub(crate) use procs::{PROCESSES, Process, processes};
 pub(crate) use programs::find_program;
+#[cfg(test)]
+pub(crate) use programs::plant_program;
 
 /// Reads an environment variable; tests pass a fake.
 pub(crate) type Env<'a> = &'a dyn Fn(&str) -> Option<OsString>;
@@ -98,15 +100,18 @@ pub(crate) fn state_dir(env: Env<'_>) -> Option<PathBuf> {
     xdg_dir(env, "XDG_STATE_HOME", ".local/state").map(|dir| dir.join("weacon"))
 }
 
-/// Writes `contents` to `path` whole, through a file renamed into place, so no reader sees
-/// half of it; creates missing parent folders.
-pub(crate) fn write_whole(path: &Path, contents: &[u8]) -> io::Result<()> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
+/// A file or folder name for `id`, a token id, after `prefix`. A capital becomes `.` and its
+/// small letter, so ids differing only in case don't share a name; the prefix keeps Windows'
+/// device names, such as `CON`, out.
+pub(crate) fn case_safe_name(prefix: &str, id: &str) -> String {
+    let mut name = String::from(prefix);
+    for letter in id.chars() {
+        if letter.is_ascii_uppercase() {
+            name.push('.');
+        }
+        name.push(letter.to_ascii_lowercase());
     }
-    let unfinished = path.with_extension("new");
-    fs::write(&unfinished, contents)?;
-    fs::rename(&unfinished, path)
+    name
 }
 
 /// Creates `dir` and any missing parents readable only by this user; existing folders keep
@@ -174,17 +179,26 @@ mod unix {
             .create(dir)
     }
 
-    /// Whether `file` is a file that someone may run.
+    /// Whether `file` is a file this user may run.
+    #[expect(unsafe_code, reason = "faccessat has no safe API in std")]
     pub(crate) fn is_runnable(file: &Path) -> bool {
-        fs::metadata(file)
-            .is_ok_and(|file| file.is_file() && file.permissions().mode() & 0o111 != 0)
+        use std::ffi::CString;
+        use std::os::unix::ffi::OsStrExt;
+
+        let Ok(path) = CString::new(file.as_os_str().as_bytes()) else {
+            return false;
+        };
+        file.is_file()
+            // SAFETY: `path` is NUL-terminated and outlives the call.
+            && unsafe {
+                libc::faccessat(libc::AT_FDCWD, path.as_ptr(), libc::X_OK, libc::AT_EACCESS)
+            } == 0
     }
 
     /// The user that owns `dir`, when only that user can reach it.
     pub(crate) fn private_owner(dir: &Path) -> io::Result<Option<Owner>> {
         let metadata = fs::metadata(dir)?;
-        let others = metadata.permissions().mode() & 0o077;
-        let private = metadata.is_dir() && others == 0;
+        let private = metadata.is_dir() && weacon_appkit::owner_only(&metadata) == Some(true);
         Ok(private.then(|| metadata.uid()))
     }
 
@@ -322,7 +336,7 @@ mod windows {
     pub(crate) fn bind(path: &Path) -> io::Result<Listener> {
         let name = pipe_name(weacon_appkit::random_id());
         let next = create_pipe(&name, true)?;
-        super::write_whole(path, name.as_bytes())?;
+        weacon_appkit::write_whole(path, name.as_bytes())?;
         Ok(Listener { name, next })
     }
 
@@ -449,19 +463,6 @@ mod tests {
 
         assert!(free_space(&dir).unwrap() > 0);
         free_space(&dir.join("missing")).unwrap_err();
-    }
-
-    #[test]
-    fn a_whole_write_creates_folders_and_replaces_the_file() {
-        let dir = TempDir::new().unwrap();
-        let path = dir.join("a/b/unit.service");
-
-        write_whole(&path, b"first").unwrap();
-        write_whole(&path, b"second").unwrap();
-
-        assert_eq!(fs::read_to_string(&path).unwrap(), "second");
-        assert!(!path.with_extension("new").exists());
-        assert!(write_whole(&dir.join("a/b/unit.service/x"), b"").is_err());
     }
 
     #[cfg(unix)]

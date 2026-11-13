@@ -50,7 +50,7 @@ impl Settings {
 
     fn write(self, root: &Path) -> io::Result<()> {
         platform::private_dir(root)?;
-        platform::write_whole(&root.join(FILE), &serde_json::to_vec(&self)?)
+        weacon_appkit::write_whole(&root.join(FILE), &serde_json::to_vec(&self)?)
     }
 
     /// The level as `weacon access` takes it; one this build doesn't know allows nothing.

@@ -1,6 +1,11 @@
 //! `weacon`: the core's daemon and command line.
 
 mod app;
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "the chat engine, which uses it, comes next")
+)]
+mod chats;
 mod cli;
 mod daemon;
 mod disk;
@@ -10,6 +15,11 @@ mod memory;
 mod native_host;
 mod picks;
 mod platform;
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "the chat engine, which uses it, comes next")
+)]
+mod runs;
 mod service;
 mod session;
 mod status;
@@ -61,7 +71,7 @@ fn run(app: &App, command: Command, env: platform::Env<'_>) -> Result<Outcome, F
             service::run(app, command, env, &mut service::system).map(Outcome::from)
         }
         Command::Login { agent, workspace } => {
-            workspaces::login(app, agent.into(), &workspace).map(Outcome::from)
+            workspaces::login(app, agent, &workspace).map(Outcome::from)
         }
         Command::Access {
             workspace,

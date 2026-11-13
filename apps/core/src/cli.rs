@@ -30,7 +30,9 @@ pub(crate) enum Command {
     Service(ServiceCommand),
     /// Sign an agent in for a workspace, with the vendor's own sign-in in this terminal.
     Login {
-        agent: Agent,
+        /// The agent: claude or codex.
+        #[arg(value_parser = agent)]
+        agent: AgentKind,
         /// The workspace's id.
         #[arg(long)]
         workspace: WorkspaceId,
@@ -54,19 +56,11 @@ pub(crate) enum Command {
     Map(MapCommand),
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
-pub(crate) enum Agent {
-    Claude,
-    Codex,
-}
-
-impl From<Agent> for AgentKind {
-    fn from(agent: Agent) -> Self {
-        match agent {
-            Agent::Claude => Self::Claude,
-            Agent::Codex => Self::Codex,
-        }
-    }
+fn agent(name: &str) -> Result<AgentKind, &'static str> {
+    serde_json::from_value(name.into())
+        .ok()
+        .filter(|agent| *agent != AgentKind::Newer)
+        .ok_or("not an agent this core runs")
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
@@ -228,20 +222,24 @@ mod tests {
 
     #[test]
     fn login_takes_a_known_agent_and_a_workspace_id() {
-        let login = run(&["weacon", "login", "codex", "--workspace", "w-1"]).unwrap();
-        let Command::Login { agent, workspace } = &login.command else {
-            panic!("not a login");
-        };
+        let login = |agent| run(&["weacon", "login", agent, "--workspace", "w-1"]).unwrap();
 
-        assert_eq!(AgentKind::from(*agent), AgentKind::Codex);
-        assert_eq!(AgentKind::from(Agent::Claude), AgentKind::Claude);
-        assert_eq!(workspace.as_str(), "w-1");
-        assert_eq!(
-            (login.command.name(), login.command.log_name()),
-            ("login", "cli.log")
-        );
+        for (name, kind) in [("claude", AgentKind::Claude), ("codex", AgentKind::Codex)] {
+            let login = login(name);
+            let Command::Login { agent, workspace } = &login.command else {
+                panic!("not a login");
+            };
+            assert_eq!(*agent, kind);
+            assert_eq!(workspace.as_str(), "w-1");
+            assert_eq!(
+                (login.command.name(), login.command.log_name()),
+                ("login", "cli.log")
+            );
+        }
         for bad in [
             &["weacon", "login", "amp", "--workspace", "w-1"][..],
+            &["weacon", "login", "newer", "--workspace", "w-1"],
+            &["weacon", "login", "Claude", "--workspace", "w-1"],
             &["weacon", "login", "claude", "--workspace", "../w"],
             &["weacon", "login", "claude"],
         ] {
