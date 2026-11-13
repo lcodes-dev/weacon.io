@@ -82,20 +82,19 @@ impl DocText {
     }
 }
 
-/// The code anchors `body` links to, as `[text](sym:…)` or as autolinks, which end at the
-/// first `>` as Markdown's do.
+/// The code anchors `body` may link to: each target after `](`, `<` or `]:`, up to a space
+/// or the `)` or `>` that closes it, whose kind is code in any case. It finds at least what Markdown links, so
+/// a doubtful link is asked for a pin rather than missed.
 fn links(body: &str) -> BTreeSet<&str> {
-    let inline = body
-        .split("](")
-        .skip(1)
-        .filter_map(|rest| rest.split([')', ' ', '\t', '\r', '\n']).next());
-    let auto = body
-        .split('<')
-        .skip(1)
-        .filter_map(|rest| rest.split_once('>').map(|(target, _)| target));
-    inline
-        .chain(auto)
-        .filter(|target| links_to_code(target))
+    [("](", ')'), ("<", '>'), ("]:", ' ')]
+        .into_iter()
+        .flat_map(|(opener, end)| body.split(opener).skip(1).map(move |rest| (rest, end)))
+        .filter_map(|(rest, end)| {
+            rest.trim_start()
+                .split(|char: char| char.is_whitespace() || char == end)
+                .next()
+        })
+        .filter(|target| links_to_code(&target.to_ascii_lowercase()))
         .collect()
 }
 
@@ -199,6 +198,12 @@ mod tests {
         assert!(text("No links at all.", &[]).unwrap().anchors().is_none());
         for (body, pinned) in [
             ("[a](sym:a)", &[][..]),
+            ("[a]( sym:a)", &[][..]),
+            ("[a](\nsym:a)", &[][..]),
+            ("[a][r]\n\n[r]: sym:a", &[][..]),
+            ("[r]:sym:a", &[][..]),
+            ("<SYM:a>", &[][..]),
+            ("[a](Area:a)", &["area:a"][..]),
             ("[a](sym:a) <area:b>", &["sym:a"][..]),
             ("[a](sym:a)\n[b](flow:a->b)", &["sym:a"][..]),
         ] {
