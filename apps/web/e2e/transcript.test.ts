@@ -136,6 +136,9 @@ async function scrollTo(page: Page, where: "bottom" | "up"): Promise<void> {
     const view = document.querySelector(".transcript");
     if (view !== null) {
       view.scrollTop = to === "bottom" ? view.scrollHeight : view.scrollTop - 2_000;
+      // A reader's scroll reaches the page with its event; a script's event waits for the next
+      // frame, and a row rendering before it would be taken as the reader's.
+      view.dispatchEvent(new Event("scroll"));
     }
     await new Promise((resolve) => requestAnimationFrame(resolve));
   }, where);

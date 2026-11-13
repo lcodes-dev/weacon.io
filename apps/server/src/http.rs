@@ -23,6 +23,7 @@ use crate::limit::Limit;
 use crate::mail::Outbox;
 use crate::secret::Secret;
 use crate::sign_in;
+use crate::tasks;
 use crate::web::{self, WebFile};
 
 const REQUEST_ID: &str = "x-request-id";
@@ -82,6 +83,12 @@ impl Shared {
                 i64::try_from(since.as_secs()).unwrap_or(i64::MAX)
             })
     }
+
+    /// Tells the open feeds that `workspace` changed; nobody listening is fine, as feeds read
+    /// what they missed from the database.
+    pub(crate) fn changed(&self, workspace: &WorkspaceId) {
+        drop(self.changes.send(workspace.clone()));
+    }
 }
 
 /// Serves `listener` until `shutdown` finishes, then lets open requests end for up to
@@ -120,7 +127,17 @@ fn router(shared: Shared) -> Router {
         .route("/version", get(version))
         .route("/api/sign-in", post(sign_in::start))
         .route("/api/sign-in/finish", post(sign_in::finish))
+        .route("/api/session", get(sign_in::session))
+        .route("/api/sign-out", post(sign_in::sign_out))
         .route("/api/workspaces/{workspace}/feed", get(feed::feed))
+        .route(
+            "/api/workspaces/{workspace}/tasks",
+            get(tasks::list).post(tasks::create),
+        )
+        .route(
+            "/api/workspaces/{workspace}/tasks/{task}",
+            post(tasks::change),
+        )
         .merge(web::routes(shared.web))
         .layer(DefaultBodyLimit::max(MAX_BODY))
         .layer(middleware::from_fn(in_time))
@@ -177,6 +194,11 @@ pub(crate) fn refused(code: Code) -> Response {
     error(StatusCode::UNAUTHORIZED, code, false)
 }
 
+/// Answers that the request isn't from the server's own pages.
+pub(crate) fn cross_site() -> Response {
+    error(StatusCode::FORBIDDEN, code!("request.cross_site"), false)
+}
+
 /// Answers that this client has asked too often for now.
 pub(crate) fn too_many(code: Code) -> Response {
     error(StatusCode::TOO_MANY_REQUESTS, code, true)
@@ -189,7 +211,7 @@ pub(crate) fn failure(shared: &Shared, fault: Fault) -> Response {
     error(StatusCode::INTERNAL_SERVER_ERROR, code, true)
 }
 
-fn error(status: StatusCode, code: Code, retryable: bool) -> Response {
+pub(crate) fn error(status: StatusCode, code: Code, retryable: bool) -> Response {
     (status, Json(ErrorBody { code, retryable })).into_response()
 }
 
