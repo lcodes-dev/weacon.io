@@ -3,7 +3,7 @@ use subtle::ConstantTimeEq;
 use weacon_observability::Fault;
 use weacon_protocol::{AccountId, ChallengeId};
 
-use super::{Db, failed, stored};
+use super::{Db, failed, stored, unreadable};
 use crate::email::Email;
 
 /// How long a code works, in seconds.
@@ -117,6 +117,39 @@ impl Db {
         }
         transaction.commit().await.map_err(failed)?;
         right.then(|| stored(account)).transpose()
+    }
+
+    /// The account, and its address, whose live session's token is hashed as `token_hash`.
+    pub(crate) async fn session(
+        &self,
+        token_hash: &[u8],
+        now: i64,
+    ) -> Result<Option<(AccountId, Email)>, Fault> {
+        sqlx::query_as::<_, (String, String)>(
+            "SELECT a.account_id, a.email
+             FROM sessions AS s JOIN accounts AS a ON a.account_id = s.account_id
+             WHERE s.token_hash = ? AND s.expires_at > ?",
+        )
+        .bind(token_hash)
+        .bind(now)
+        .fetch_optional(&self.readers)
+        .await
+        .map_err(failed)?
+        .map(|(account, email)| {
+            let email = Email::parse(&email).map_err(|_| unreadable())?;
+            Ok((stored(account)?, email))
+        })
+        .transpose()
+    }
+
+    /// Ends the session whose token is hashed as `token_hash`, if there is one.
+    pub(crate) async fn end_session(&self, token_hash: &[u8]) -> Result<(), Fault> {
+        sqlx::query("DELETE FROM sessions WHERE token_hash = ?")
+            .bind(token_hash)
+            .execute(&self.writer)
+            .await
+            .map_err(failed)?;
+        Ok(())
     }
 }
 
@@ -286,6 +319,30 @@ mod tests {
         assert_eq!(count(&db, "sign_in_challenges").await, 2);
         challenge(&db, "a2", "c4", b"code", ended).await;
         assert_eq!(count(&db, "sign_in_challenges").await, 2);
+    }
+
+    #[tokio::test]
+    async fn a_session_is_its_accounts_until_it_ends_or_is_ended() {
+        let dir = TempDir::new().unwrap();
+        let db = people(&dir).await;
+        challenge(&db, "a1", "c1", b"code", NOW).await;
+        challenge(&db, "a2", "c2", b"code", NOW).await;
+        try_code(&db, "c1", b"code", NOW).await.unwrap();
+        try_as(&db, "bo@example.com", "c2", b"code", NOW)
+            .await
+            .unwrap();
+        let ends = NOW + 100;
+        let ada = Some((id("a1"), email("ada@example.com")));
+        let bo = Some((id("a2"), email("bo@example.com")));
+
+        assert_eq!(db.session(b"c1", NOW).await.unwrap(), ada);
+        assert_eq!(db.session(b"c2", ends - 1).await.unwrap(), bo);
+        assert_eq!(db.session(b"other", NOW).await.unwrap(), None);
+        assert_eq!(db.session(b"c1", ends).await.unwrap(), None);
+        db.end_session(b"c1").await.unwrap();
+        db.end_session(b"never").await.unwrap();
+        assert_eq!(db.session(b"c1", NOW).await.unwrap(), None);
+        assert_eq!(db.session(b"c2", NOW).await.unwrap(), bo);
     }
 
     #[tokio::test]

@@ -127,6 +127,8 @@ fn router(shared: Shared) -> Router {
         .route("/version", get(version))
         .route("/api/sign-in", post(sign_in::start))
         .route("/api/sign-in/finish", post(sign_in::finish))
+        .route("/api/session", get(sign_in::session))
+        .route("/api/sign-out", post(sign_in::sign_out))
         .route("/api/workspaces/{workspace}/feed", get(feed::feed))
         .route(
             "/api/workspaces/{workspace}/tasks",
@@ -190,6 +192,11 @@ async fn log_request(State(shared): State<Shared>, request: Request, next: Next)
 /// Answers that the client must sign in, or try again, with `code`.
 pub(crate) fn refused(code: Code) -> Response {
     error(StatusCode::UNAUTHORIZED, code, false)
+}
+
+/// Answers that the request isn't from the server's own pages.
+pub(crate) fn cross_site() -> Response {
+    error(StatusCode::FORBIDDEN, code!("request.cross_site"), false)
 }
 
 /// Answers that this client has asked too often for now.

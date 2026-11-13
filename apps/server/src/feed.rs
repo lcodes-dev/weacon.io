@@ -258,6 +258,7 @@ mod tests {
     use weacon_protocol::TaskId;
 
     use super::*;
+    use crate::auth::SESSION_COOKIE;
     use crate::db::Workspace;
     use crate::email::Email;
     use crate::sign_in::SESSION_LIFETIME;
@@ -652,7 +653,47 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn only_a_bearer_token_opens_a_feed() {
+    async fn a_feed_ends_when_its_session_is_signed_out() {
+        let fixture = Fixture::new().await;
+        let (server, token) = signed_in(&fixture).await;
+        let mut client = greeted(server.address, &token, 1).await;
+        let bearer = format!("authorization: Bearer {token}\r\n");
+
+        test_support::request_with(server.address, "POST /api/sign-out", &bearer, "").await;
+
+        assert!(closed(&mut client).await);
+    }
+
+    #[tokio::test]
+    async fn a_browsers_cookie_opens_a_feed_from_the_servers_own_page_only() {
+        let fixture = Fixture::new().await;
+        let (server, token) = signed_in(&fixture).await;
+        let open_from = async |origin: &str| {
+            let mut request = format!("ws://{}/api/workspaces/w1/feed", server.address)
+                .into_client_request()
+                .unwrap();
+            let cookie = format!("{SESSION_COOKIE}={token}");
+            request
+                .headers_mut()
+                .insert("cookie", cookie.parse().unwrap());
+            request
+                .headers_mut()
+                .insert("origin", origin.parse().unwrap());
+            connect_async(request).await.map(|_| ())
+        };
+
+        let own = open_from(&format!("http://{}", server.address)).await;
+        let other = open_from("http://other.example").await;
+
+        own.unwrap();
+        let Err(tungstenite::Error::Http(refused)) = other else {
+            panic!("{other:?}");
+        };
+        assert_eq!(refused.status().as_u16(), 403);
+    }
+
+    #[tokio::test]
+    async fn only_a_session_token_opens_a_feed() {
         let fixture = Fixture::new().await;
         let (server, token) = signed_in(&fixture).await;
         let upgrade = "connection: upgrade\r\nupgrade: websocket\r\nsec-websocket-version: 13\r\n\
