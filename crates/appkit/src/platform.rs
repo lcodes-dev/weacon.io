@@ -1,6 +1,6 @@
 use std::fs::{self, File, Metadata, OpenOptions};
 use std::io::{self, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// Whether only its owner can reach the file or folder `metadata` is of; `None` where the
 /// system keeps access lists instead of permissions, as Windows does, and this can't tell.
@@ -48,14 +48,29 @@ pub fn sync_dir(dir: &Path) -> io::Result<()> {
 /// # Errors
 /// When a folder or the file can't be created, written or renamed.
 pub fn write_whole(path: &Path, contents: &[u8]) -> io::Result<()> {
+    write_staged(path, contents, crate::random_id())
+}
+
+// Each write stages in a file of its own, so writers to one path never share one.
+fn write_staged(path: &Path, contents: &[u8], id: u128) -> io::Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
-    let unfinished = path.with_extension("new");
-    let mut file = File::create(&unfinished)?;
-    file.write_all(contents)?;
-    file.sync_all()?;
-    fs::rename(&unfinished, path)?;
+    let mut name = path.as_os_str().to_owned();
+    name.push(format!(".{id:032x}.new"));
+    let unfinished = PathBuf::from(name);
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&unfinished)?;
+    let written = file
+        .write_all(contents)
+        .and_then(|()| file.sync_all())
+        .and_then(|()| fs::rename(&unfinished, path));
+    if written.is_err() {
+        drop(fs::remove_file(&unfinished));
+    }
+    written?;
     path.parent().map_or(Ok(()), sync_dir)
 }
 
@@ -166,6 +181,31 @@ mod tests {
     }
 
     #[test]
+    fn each_write_stages_in_a_file_of_its_own_and_cleans_up_after_itself() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.join("workspace.json");
+        let staged = |id: u128| dir.join(format!("workspace.json.{id:032x}.new"));
+        fs::write(staged(1), "another write, still going").unwrap();
+
+        write_staged(&path, b"mine", 2).unwrap();
+        let clash = write_staged(&path, b"again", 1).unwrap_err();
+        fs::create_dir(dir.join("folder")).unwrap();
+        write_staged(&dir.join("folder"), b"onto a folder", 3).unwrap_err();
+
+        assert_eq!(fs::read_to_string(&path).unwrap(), "mine");
+        assert_eq!(clash.kind(), io::ErrorKind::AlreadyExists);
+        assert_eq!(
+            fs::read_to_string(staged(1)).unwrap(),
+            "another write, still going"
+        );
+        let left: Vec<_> = fs::read_dir(&*dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        assert_eq!(left.len(), 3, "{left:?}");
+    }
+
+    #[test]
     fn a_whole_write_creates_folders_and_replaces_the_file() {
         let dir = TempDir::new().unwrap();
         let path = dir.join("a/b/unit.service");
@@ -174,7 +214,7 @@ mod tests {
         write_whole(&path, b"second").unwrap();
 
         assert_eq!(fs::read_to_string(&path).unwrap(), "second");
-        assert!(!path.with_extension("new").exists());
+        assert_eq!(fs::read_dir(dir.join("a/b")).unwrap().count(), 1);
         assert!(write_whole(&dir.join("a/b/unit.service/x"), b"").is_err());
     }
 
