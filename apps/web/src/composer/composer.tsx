@@ -101,9 +101,10 @@ export function Composer({ send, blocked, hidden }: { send: Send | undefined; bl
           rows={2}
           value={draft.text}
           readOnly={sending}
-          onChange={(event) =>
-            place(edit(draft, event.target.value, event.target.selectionEnd, (event.nativeEvent as InputEvent).isComposing))
-          }
+          onChange={(event) => {
+            place(edit(draft, event.target.value, event.target.selectionEnd, (event.nativeEvent as InputEvent).isComposing));
+            setProblem(undefined);
+          }}
           onSelect={(event) => {
             const end = event.currentTarget.selectionEnd;
             if (end !== caret) {
