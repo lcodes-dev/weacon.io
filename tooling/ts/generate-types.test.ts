@@ -109,8 +109,11 @@ test("a plain enum is a union of its values", () => {
 
 test("anything it doesn't know is refused rather than dropped", () => {
   const cases: [Schema, string][] = [
-    [{ title: "A", enum: [{}] }, "unsupported constant: only strings, numbers and booleans"],
-    [{ title: "A", enum: [] }, "unsupported enum: it has no values"],
+    [{ title: "A", enum: [] }, "unsupported enum: only a list of strings"],
+    [{ title: "A", type: "string", enum: ["a", 1] }, "unsupported enum: only a list of strings"],
+    [{ title: "A", const: "a", enum: [] }, "unsupported enum: only a list of strings"],
+    [{ title: "A", const: "a", enum: ["a"] }, "unsupported enum: only with no const and no type but string"],
+    [{ title: "A", type: "integer", enum: ["a"] }, "unsupported enum: only with no const and no type but string"],
     [{ type: "object" }, "the root schema needs a title that is a TypeScript name"],
     [{ title: "not a name" }, "the root schema needs a title that is a TypeScript name"],
     [{ title: "A", $defs: { "b-c": {} } }, "b-c: not a TypeScript name"],
