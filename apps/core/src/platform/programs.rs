@@ -14,65 +14,80 @@ pub(crate) fn find_program(name: &str, path: &OsStr) -> Option<PathBuf> {
         .find(|file| super::is_runnable(file))
 }
 
+/// Writes an empty program `name` into `dir`, with Unix permissions `mode`.
+#[cfg(test)]
+pub(crate) fn plant_program(dir: &std::path::Path, name: &str, mode: u32) -> PathBuf {
+    let file = dir.join(format!("{name}{FILE_ENDING}"));
+    std::fs::create_dir_all(dir).unwrap();
+    std::fs::write(&file, "").unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(mode)).unwrap();
+    }
+    #[cfg(windows)]
+    let _ = mode;
+    file
+}
+
 #[cfg(test)]
 mod tests {
     use std::env::join_paths;
     use std::fs;
-    use std::path::Path;
 
     use weacon_testing::TempDir;
 
     use super::*;
 
-    #[cfg(unix)]
-    fn program(dir: &Path, name: &str, runnable: bool) -> PathBuf {
-        use std::os::unix::fs::PermissionsExt;
+    // Planted outside a temporary folder.
+    struct Planted(PathBuf);
 
-        let file = dir.join(name);
-        fs::create_dir_all(dir).unwrap();
-        fs::write(&file, "").unwrap();
-        let mode = if runnable { 0o755 } else { 0o644 };
-        fs::set_permissions(&file, fs::Permissions::from_mode(mode)).unwrap();
-        file
+    impl Drop for Planted {
+        fn drop(&mut self) {
+            fs::remove_file(&self.0).unwrap_or_default();
+        }
     }
 
     #[cfg(unix)]
     #[test]
-    fn the_first_runnable_file_in_an_absolute_folder_is_found() {
+    fn the_first_file_this_user_may_run_in_an_absolute_folder_is_found() {
+        use std::os::unix::fs::MetadataExt;
+
         let dir = TempDir::new().unwrap();
-        program(&dir.join("plain"), "claude", false);
+        plant_program(&dir.join("plain"), "claude", 0o644);
+        let others = plant_program(&dir.join("others"), "claude", 0o011);
         fs::create_dir_all(dir.join("folder/claude")).unwrap();
-        let first = program(&dir.join("first"), "claude", true);
-        program(&dir.join("second"), "claude", true);
-        let codex = program(&dir.join("second"), "codex", true);
+        let first = plant_program(&dir.join("first"), "claude", 0o700);
+        plant_program(&dir.join("second"), "claude", 0o755);
+        let codex = plant_program(&dir.join("second"), "codex", 0o755);
         let folders = ["plain", "folder", "first", "second"].map(|name| dir.join(name));
         let path = join_paths(folders).unwrap();
+        // Root may run anything with an execute bit.
+        let root = fs::metadata(&others).unwrap().uid() == 0;
 
         assert_eq!(find_program("claude", &path), Some(first));
         assert_eq!(find_program("codex", &path), Some(codex));
         assert_eq!(find_program("amp", &path), None);
         assert_eq!(find_program("claude", OsStr::new("")), None);
+        assert_eq!(crate::platform::is_runnable(&others), root);
     }
 
-    #[cfg(unix)]
     #[test]
     fn folders_that_arent_absolute_are_skipped() {
         let dir = TempDir::new().unwrap();
-        let name = format!("weacon-test-{}", std::process::id());
-        let name = name.as_str();
+        let name = dir.file_name().unwrap().to_str().unwrap();
         // Found from the working folder if a relative entry were followed.
         let here = std::env::current_dir().unwrap();
-        let planted = program(&here.join(".dev/programs"), name, true);
-        let real = program(&dir, name, true);
+        let planted = Planted(plant_program(&here.join(".dev/programs"), name, 0o755));
+        let real = plant_program(&dir, name, 0o755);
         let relative = ["", ".dev/programs", "./.dev/programs"].map(PathBuf::from);
 
         let only_relative = join_paths(&relative).unwrap();
         let then_absolute = join_paths(relative.iter().chain([&dir.to_path_buf()])).unwrap();
 
-        assert!(planted.is_file());
+        assert!(planted.0.is_file());
         assert_eq!(find_program(name, &only_relative), None);
         assert_eq!(find_program(name, &then_absolute), Some(real));
-        fs::remove_file(planted).unwrap();
     }
 
     #[cfg(windows)]

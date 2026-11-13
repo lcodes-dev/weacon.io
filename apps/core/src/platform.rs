@@ -58,6 +58,8 @@ mod programs;
 pub(crate) use chrome::{CHROME_HOST, register_chrome_host};
 pub(crate) use procs::{PROCESSES, Process, processes};
 pub(crate) use programs::find_program;
+#[cfg(test)]
+pub(crate) use programs::plant_program;
 
 /// Reads an environment variable; tests pass a fake.
 pub(crate) type Env<'a> = &'a dyn Fn(&str) -> Option<OsString>;
@@ -183,10 +185,20 @@ mod unix {
             .create(dir)
     }
 
-    /// Whether `file` is a file that someone may run.
+    /// Whether `file` is a file this user may run.
+    #[expect(unsafe_code, reason = "faccessat has no safe API in std")]
     pub(crate) fn is_runnable(file: &Path) -> bool {
-        fs::metadata(file)
-            .is_ok_and(|file| file.is_file() && file.permissions().mode() & 0o111 != 0)
+        use std::ffi::CString;
+        use std::os::unix::ffi::OsStrExt;
+
+        let Ok(path) = CString::new(file.as_os_str().as_bytes()) else {
+            return false;
+        };
+        file.is_file()
+            // SAFETY: `path` is NUL-terminated and outlives the call.
+            && unsafe {
+                libc::faccessat(libc::AT_FDCWD, path.as_ptr(), libc::X_OK, libc::AT_EACCESS)
+            } == 0
     }
 
     /// The user that owns `dir`, when only that user can reach it.
