@@ -214,8 +214,8 @@ mod tests {
         assert_eq!(test_support::messages(&records), ["sign-in check failed"]);
     }
 
-    // `yes` never exits. With time paused, the clock moves only when every check is waiting,
-    // so it shows how many waits there were, one after another.
+    // The script never exits in time. With time paused, the clock moves only when every check
+    // is waiting, so it shows how many waits there were, one after another.
     #[cfg(unix)]
     #[tokio::test(start_paused = true)]
     async fn checks_run_a_few_at_once_so_slow_ones_dont_add_up() {
@@ -225,9 +225,18 @@ mod tests {
 
         let dir = TempDir::new().unwrap();
         let (log, records) = test_support::recording_logger();
+        let program = dir.join("hang");
+        // Written from a child shell, so no fork of this process inherits a write handle.
+        let script = "printf '#!/bin/sh\\nexec sleep 1000\\n' > \"$1\" && chmod 755 \"$1\"";
+        let written = std::process::Command::new("sh")
+            .args(["-c", script, "sh"])
+            .arg(&program)
+            .status()
+            .unwrap();
+        assert!(written.success());
         let hanging = Launch {
             agent: AgentKind::Claude,
-            program: "yes".into(),
+            program,
             config_dir: dir.to_path_buf(),
             cwd: dir.to_path_buf(),
         };

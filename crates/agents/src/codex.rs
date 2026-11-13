@@ -36,9 +36,14 @@ pub(crate) fn login(launch: &Launch) -> Command {
     command
 }
 
+/// Codex prints nothing that says where its sign-in comes from, so its exit decides alone.
+pub(crate) const fn own_sign_in(_: &[u8]) -> bool {
+    true
+}
+
 fn with_workspace_sign_in(launch: &Launch) -> Command {
     let mut command = Command::new(&launch.program);
-    OTHER_SIGN_INS.remove(&mut command);
+    OTHER_SIGN_INS.remove(&mut command, std::env::vars_os().map(|(name, _)| name));
     command.env("CODEX_HOME", &launch.config_dir);
     command
 }
@@ -53,7 +58,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn every_command_runs_with_the_workspaces_config_and_no_other_sign_in() {
+    fn every_command_runs_with_the_workspaces_config() {
         let launch = Launch {
             agent: AgentKind::Codex,
             program: "/work/codex".into(),
