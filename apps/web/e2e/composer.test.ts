@@ -23,6 +23,8 @@ test("Enter during a composition neither sends nor clears, and Enter after it se
       await cdp.send("Input.insertText", { text: committed });
       await page.keyboard.press("Enter");
       await waitFor(() => prompts(harness.received()).some(({ action }) => action.kind === "prompt" && action.text === committed));
+      // The box clears once the server accepts the prompt.
+      await page.waitForFunction(() => document.querySelector("textarea")?.value === "");
     }
 
     assert.deepEqual(
@@ -32,7 +34,13 @@ test("Enter during a composition neither sends nor clears, and Enter after it se
         { kind: "prompt", text: "中文" },
       ],
     );
-    assert.equal(await box.inputValue(), "");
+
+    // A prompt over the server's limit is kept, and nothing is sent.
+    const long = "a".repeat(17_000);
+    await box.fill(long);
+    await box.press("Enter");
+    await page.getByText("Too long to send; shorten it and try again").waitFor();
+    assert.equal(await box.inputValue(), long);
 
     const send = page.getByRole("button", { name: "Send" });
     await box.fill("   ");
@@ -44,7 +52,7 @@ test("Enter during a composition neither sends nor clears, and Enter after it se
     await send.click();
     await waitFor(() => prompts(harness.received()).length === 3);
     assert.deepEqual(prompts(harness.received()).at(-1)?.action, { kind: "prompt", text: "Ship it" });
-    assert.equal(await box.inputValue(), "");
+    await page.waitForFunction(() => document.querySelector("textarea")?.value === "");
   } finally {
     await harness.close();
   }
