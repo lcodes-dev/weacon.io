@@ -51,7 +51,7 @@ test("it says hello, and once welcomed passes on each message and sends", () => 
   socket.fire("close");
 
   assert.deepEqual(socket.sent, [
-    { id: 1, type: "hello", protocol: 1, app: ME, capabilities: ["run.stream"] },
+    { id: 1, type: "hello", protocol: 1, app: ME, capabilities: ["run.stream", "diff.view"] },
     { id: 0, type: "error", code: "web.crashed", retryable: false },
   ]);
   assert.deepEqual(statuses, [
