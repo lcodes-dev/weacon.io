@@ -158,11 +158,9 @@ function Options({
           id={`mention-${index}`}
           role="option"
           aria-selected={index === active}
-          // Picked on mouse down, so the box keeps its focus and caret.
-          onMouseDown={(event) => {
-            event.preventDefault();
-            choose(item);
-          }}
+          // The box keeps its focus and caret; a click picks, as assistive technology sends it.
+          onMouseDown={(event) => event.preventDefault()}
+          onClick={() => choose(item)}
         >
           {item.label}
           <span className="muted">{item.kind === "agent" ? "Agent" : "Person"}</span>
