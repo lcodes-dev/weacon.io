@@ -16,7 +16,7 @@ use weacon_protocol::{Capability, Code, Envelope, ErrorBody, Message, WorkspaceI
 use crate::connections::Place;
 use crate::db::Workspace;
 use crate::http::{Shared, failure, refused};
-use crate::sign_in::hash;
+use crate::sign_in::token_hash;
 
 /// What a client must offer, and the server offers, to get a workspace's changes.
 const FEED: Code = code!("workspace.feed");
@@ -56,7 +56,7 @@ pub(crate) async fn feed(
         .get(AUTHORIZATION)
         .and_then(|value| value.to_str().ok())
         .and_then(|value| value.strip_prefix("Bearer "))
-        .map(hash)
+        .map(token_hash)
     else {
         return refused(code!("sign_in.required"));
     };
@@ -238,8 +238,8 @@ mod tests {
     use crate::email::Email;
     use crate::sign_in::SESSION_LIFETIME;
     use crate::test_support::{
-        Fixture, Running, VERSION, finish_body, member_id, request, run, start_sign_in,
-        workspace_id,
+        Fixture, Running, VERSION, finish_body, fresh_account, member_id, request, run,
+        start_sign_in, workspace_id,
     };
 
     type Client = WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>;
@@ -271,7 +271,10 @@ mod tests {
             .await
             .unwrap();
         let email = Email::parse(email).unwrap();
-        workspace.add_member(&member_id(id), &email).await.unwrap();
+        workspace
+            .add_member(&member_id(id), &fresh_account(), &email)
+            .await
+            .unwrap();
     }
 
     async fn open(

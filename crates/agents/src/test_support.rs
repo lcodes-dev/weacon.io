@@ -8,6 +8,7 @@ use tokio::time::timeout;
 use weacon_protocol::{AgentSession, App, Outcome, PermissionAnswer, RunEvent, RunId};
 use weacon_testing::replay;
 
+use crate::access::Rules;
 use crate::run::{Run, Wire};
 
 pub(crate) type FakeRun = Run<DuplexStream, BufReader<DuplexStream>>;
@@ -17,7 +18,13 @@ pub(crate) type Done = JoinHandle<Result<(), String>>;
 /// A run speaking `wire` to a fake agent replaying `recording`.
 pub(crate) fn fake(wire: Wire, recording: &str) -> (FakeRun, Done) {
     let replay = replay(recording);
-    let run = Run::new(run_id("run-1"), wire, replay.stdin, replay.stdout, None);
+    let run = Run::new(
+        run_id("run-1"),
+        wire,
+        replay.stdin,
+        replay.stdout,
+        Rules::ask_first(),
+    );
     (run, replay.done)
 }
 

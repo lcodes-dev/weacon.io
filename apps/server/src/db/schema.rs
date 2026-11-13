@@ -65,6 +65,21 @@ CREATE TABLE sign_in_challenges (
     FOREIGN KEY (workspace_id, member_id) REFERENCES members (workspace_id, member_id)
 ) STRICT;
 ",
+    // Account ids in the format of `app::new_id`.
+    "
+CREATE TABLE accounts (
+    account_id TEXT PRIMARY KEY,
+    email TEXT NOT NULL UNIQUE
+) STRICT;
+
+INSERT INTO accounts (account_id, email)
+SELECT lower(hex(randomblob(16))), email FROM (SELECT DISTINCT email FROM members);
+
+ALTER TABLE members ADD COLUMN account_id TEXT REFERENCES accounts (account_id);
+
+UPDATE members SET account_id =
+    (SELECT account_id FROM accounts WHERE accounts.email = members.email);
+",
 ];
 
 /// Applies the steps the database hasn't had yet, each in its own transaction that holds the

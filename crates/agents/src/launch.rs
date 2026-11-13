@@ -8,8 +8,9 @@ use tokio::io::AsyncReadExt;
 use tokio::process::Command;
 use tokio::time::timeout;
 use weacon_observability::Fault;
-use weacon_protocol::{AgentKind, AgentSession, App, RunId, code};
+use weacon_protocol::{AccessLevel, AgentKind, AgentSession, App, RunId, code};
 
+use crate::access::Rules;
 use crate::run::{self, AgentRun};
 use crate::spawn::SpawnPolicy;
 use crate::{claude, codex};
@@ -24,6 +25,8 @@ pub struct Launch {
     pub config_dir: PathBuf,
     /// The folder the agent works in.
     pub cwd: PathBuf,
+    /// What the agent may do on this machine, which decides the prompts no person is asked.
+    pub access: AccessLevel,
 }
 
 // A status command that hangs is given up on, so a report still prints.
@@ -60,6 +63,7 @@ impl Launch {
             program: find(name).ok_or_else(not_installed)?,
             config_dir: workspace_dir.join(name),
             cwd,
+            access: AccessLevel::AskFirst,
         })
     }
 
@@ -76,7 +80,16 @@ impl Launch {
         session: Option<&AgentSession>,
     ) -> Result<AgentRun, Fault> {
         let (command, wire) = self.command(app, session)?;
-        run::spawn(command, policy, run, wire)
+        let rules = Rules {
+            level: self.access,
+            cwd: self.cwd.clone(),
+            workspace: self
+                .config_dir
+                .parent()
+                .unwrap_or(&self.config_dir)
+                .to_path_buf(),
+        };
+        run::spawn(command, policy, run, wire, rules)
     }
 
     /// Runs the vendor's own status command and reads how it exits and, for Claude, only where
@@ -152,7 +165,7 @@ impl Launch {
             )),
             AgentKind::Codex => Ok((
                 codex::command(self),
-                run::Wire::Codex(codex::Wire::new(session.cloned(), app)),
+                run::Wire::Codex(codex::Wire::new(session.cloned(), app, self.access)),
             )),
             AgentKind::Newer => Err(unknown()),
         }
@@ -221,6 +234,7 @@ mod tests {
             program: dir.join("agent"),
             config_dir: dir.join("config"),
             cwd: dir.to_path_buf(),
+            access: AccessLevel::AskFirst,
         }
     }
 
@@ -294,6 +308,7 @@ mod tests {
                 program: PathBuf::from("/opt/bin/claude"),
                 config_dir: PathBuf::from("/state/w/claude"),
                 cwd: PathBuf::from("/work"),
+                access: AccessLevel::AskFirst,
             }
         );
         assert_eq!(

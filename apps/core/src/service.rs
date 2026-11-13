@@ -322,7 +322,7 @@ mod tests {
                 fs::read_to_string(&file).unwrap(),
                 unit(Path::new(EXE), &dir.join("weacon")).unwrap()
             );
-            assert!(!file.with_extension("new").exists());
+            assert_eq!(fs::read_dir(dir.join("systemd/user")).unwrap().count(), 1);
             assert_eq!(calls, INSTALLED);
             assert_eq!(messages(&records), ["service installed"]);
         }

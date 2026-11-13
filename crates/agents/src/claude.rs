@@ -2,13 +2,30 @@
 
 mod wire;
 
+use std::path::PathBuf;
+
 use serde::Deserialize;
+use serde_json::Value;
 use tokio::process::Command;
-use weacon_protocol::AgentSession;
+use weacon_protocol::{AccessLevel, AgentSession};
 
 pub(crate) use wire::{Wire, answer, prompt, read};
 
 use crate::launch::{Launch, OtherSignIns};
+
+/// The tools that only change files, and the input naming each one's file.
+const FILE_TOOLS: [(&str, &str); 4] = [
+    ("Edit", "file_path"),
+    ("MultiEdit", "file_path"),
+    ("NotebookEdit", "notebook_path"),
+    ("Write", "file_path"),
+];
+
+/// The file a prompt for `tool` would change, when it only changes a file.
+pub(crate) fn changed_file(tool: &str, input: &Value) -> Option<PathBuf> {
+    let (_, key) = FILE_TOOLS.iter().find(|(name, _)| *name == tool)?;
+    input.get(key)?.as_str().map(PathBuf::from)
+}
 
 // Sign-ins and providers that would win over the workspace's own.
 const OTHER_SIGN_INS: OtherSignIns = OtherSignIns {
@@ -28,7 +45,17 @@ pub(crate) fn command(launch: &Launch, session: Option<&AgentSession>) -> Comman
         "stream-json",
         "--permission-prompt-tool",
         "stdio",
+        // Only the workspace's own settings: a repository's could allow tools or add hooks.
+        "--setting-sources",
+        "user",
+        // So no setting's mode skips the prompts the access level answers.
+        "--permission-mode",
+        "default",
     ]);
+    if launch.access == AccessLevel::ReadOnly {
+        let tools = FILE_TOOLS.map(|(tool, _)| tool);
+        command.args(["--disallowedTools", &format!("Bash,{}", tools.join(","))]);
+    }
     if let Some(session) = session {
         command.args(["--resume", session.as_str()]);
     }
@@ -169,6 +196,7 @@ mod tests {
                 program,
                 config_dir: dir.to_path_buf(),
                 cwd: dir.to_path_buf(),
+                access: AccessLevel::AskFirst,
             }
         }
 
@@ -202,6 +230,7 @@ mod tests {
                 program: dir.join("claude"),
                 config_dir,
                 cwd: dir.to_owned(),
+                access: AccessLevel::AskFirst,
             }
         }
 
@@ -300,6 +329,7 @@ mod tests {
             program: PathBuf::from("claude"),
             config_dir: PathBuf::from("/work/config"),
             cwd: PathBuf::from("/work"),
+            access: AccessLevel::AskFirst,
         };
         let check = status(&claude);
         assert_eq!(
@@ -340,6 +370,34 @@ mod tests {
     }
 
     #[test]
+    fn every_level_ignores_the_repositorys_settings_and_read_only_refuses_changing_tools() {
+        let args = |access| {
+            let launch = Launch {
+                agent: AgentKind::Claude,
+                program: PathBuf::from("claude"),
+                config_dir: PathBuf::from("/work/config"),
+                cwd: PathBuf::from("/work"),
+                access,
+            };
+            let command = command(&launch, None);
+            let args: Vec<_> = command.as_std().get_args().map(ToOwned::to_owned).collect();
+            args.join(OsStr::new(" ")).into_string().unwrap()
+        };
+        let refused = "--disallowedTools Bash,Edit,MultiEdit,NotebookEdit,Write";
+
+        for access in [
+            AccessLevel::AskFirst,
+            AccessLevel::Full,
+            AccessLevel::ReadOnly,
+        ] {
+            let args = args(access);
+            assert!(args.contains("--setting-sources user"), "{access:?}");
+            assert!(args.contains("--permission-mode default"), "{access:?}");
+            assert_eq!(args.contains(refused), access == AccessLevel::ReadOnly);
+        }
+    }
+
+    #[test]
     fn only_a_sign_in_from_the_config_folder_counts() {
         let own = |status: &str| own_sign_in(status.as_bytes());
 
@@ -363,6 +421,27 @@ mod tests {
             "",
         ] {
             assert!(!own(other), "{other}");
+        }
+    }
+
+    #[test]
+    fn only_file_tools_name_the_file_they_change() {
+        let edit = serde_json::json!({ "file_path": "src/lib.rs", "notebook_path": "a.ipynb" });
+
+        for tool in ["Edit", "MultiEdit", "Write"] {
+            assert_eq!(changed_file(tool, &edit), Some(PathBuf::from("src/lib.rs")));
+        }
+        assert_eq!(
+            changed_file("NotebookEdit", &edit),
+            Some(PathBuf::from("a.ipynb"))
+        );
+        for (tool, input) in [
+            ("Bash", edit.clone()),
+            ("Read", edit),
+            ("Write", serde_json::json!({ "file_path": 1 })),
+            ("Write", serde_json::json!({})),
+        ] {
+            assert_eq!(changed_file(tool, &input), None, "{tool} {input}");
         }
     }
 }

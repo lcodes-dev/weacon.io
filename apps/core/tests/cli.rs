@@ -58,10 +58,10 @@ mod tests {
             .unwrap();
 
         assert!(output.status.success());
-        assert!(
-            String::from_utf8_lossy(&output.stdout)
-                .ends_with("\nWorkspace w1: Claude Code not installed, Codex not installed\n")
-        );
+        assert!(String::from_utf8_lossy(&output.stdout).ends_with(
+            "\nWorkspace w1: access ask-first; Claude Code not installed, Codex not \
+                     installed\n"
+        ));
     }
 
     fn login(dir: &TempDir, agent: &str) -> Output {
@@ -106,8 +106,14 @@ mod tests {
             assert!(written.success());
         }
 
+        let state = dir.join("state");
+        let off = weacon(&["access", "w1", "off"], state.to_str().unwrap());
+        // Signing in doesn't depend on the access level.
         let signed_in = login(&dir, "claude");
         let gave_up = login(&dir, "codex");
+
+        assert!(off.status.success());
+        assert_eq!(off.stdout, b"Workspace w1: access off\n");
 
         assert!(signed_in.status.success());
         assert!(dir.join("state/workspaces/w-w1/claude").is_dir());

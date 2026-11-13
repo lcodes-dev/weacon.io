@@ -97,10 +97,25 @@ ensure_node() {
   want=$(cat .node-version)
   have=$(node --version 2>/dev/null || true)
   [ "$have" = "v$want" ] || die "Weacon's TypeScript needs Node $want, and the installed one is ${have:-missing}; install it, then run this again"
-  log "Installing the extension's packages"
-  npm ci --prefix apps/extension --include=dev --no-audit --no-fund >>.dev/setup.log 2>&1 || {
+  local app
+  for app in extension web; do
+    log "Installing the $app's packages"
+    npm ci --prefix "apps/$app" --include=dev --no-audit --no-fund >>.dev/setup.log 2>&1 || {
+      tail -n 30 .dev/setup.log >&2
+      die "npm ci failed; the end of its output is above"
+    }
+  done
+}
+
+# The web app's end-to-end tests drive Chromium. Playwright skips the download when the browser it
+# pins is already in PLAYWRIGHT_BROWSERS_PATH, as in Claude Code cloud sessions.
+ensure_chromium() {
+  local install=(node apps/web/node_modules/playwright-core/cli.js install)
+  [ -z "${CI:-}" ] || install+=(--with-deps)
+  log "Installing Chromium for the web app's tests"
+  "${install[@]}" chromium >>.dev/setup.log 2>&1 || {
     tail -n 30 .dev/setup.log >&2
-    die "npm ci failed; the end of its output is above"
+    die "the Chromium install failed; the end of its output is above"
   }
 }
 
@@ -125,5 +140,6 @@ persist_path
 # Last, so a Node mismatch can't keep the Rust tools off PATH.
 if [ "$session_start" = false ]; then
   ensure_node
+  ensure_chromium
 fi
 echo "Weacon setup done: $(rustup run "$toolchain" rustc --version). Run scripts/check.sh before committing."

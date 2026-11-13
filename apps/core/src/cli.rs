@@ -1,9 +1,9 @@
 use std::ffi::OsString;
 use std::path::PathBuf;
 
-use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
+use clap::{CommandFactory, FromArgMatches, Parser, Subcommand, ValueEnum};
 use weacon_appkit::version_text;
-use weacon_protocol::{AgentKind, WorkspaceId};
+use weacon_protocol::{AccessLevel, AgentKind, WorkspaceId};
 use weacon_version::Version;
 
 /// Weacon's core: runs agents for your chats and tasks.
@@ -37,6 +37,15 @@ pub(crate) enum Command {
         #[arg(long)]
         workspace: WorkspaceId,
     },
+    /// Choose what a workspace's agents may do on this machine.
+    Access {
+        /// The workspace's id.
+        workspace: WorkspaceId,
+        level: Level,
+        /// Whether other people are in the workspace; kept as it was when left out.
+        #[arg(long)]
+        team: Option<bool>,
+    },
     /// Let Weacon's Chrome extension reach this core.
     ConnectChrome,
     /// Relay messages between Chrome's extension and the daemon; Chrome starts it.
@@ -52,6 +61,29 @@ fn agent(name: &str) -> Result<AgentKind, &'static str> {
         .ok()
         .filter(|agent| *agent != AgentKind::Newer)
         .ok_or("not an agent this core runs")
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+pub(crate) enum Level {
+    /// No agent runs.
+    Off,
+    /// Agents read; every change they ask for is turned down.
+    ReadOnly,
+    /// Agents ask a person before each change.
+    AskFirst,
+    /// Agents change files in their folder without asking; anything else still asks.
+    Full,
+}
+
+impl From<Level> for AccessLevel {
+    fn from(level: Level) -> Self {
+        match level {
+            Level::Off => Self::Off,
+            Level::ReadOnly => Self::ReadOnly,
+            Level::AskFirst => Self::AskFirst,
+            Level::Full => Self::Full,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Subcommand)]
@@ -88,6 +120,7 @@ impl Command {
             | Self::Doctor
             | Self::Service(_)
             | Self::Login { .. }
+            | Self::Access { .. }
             | Self::ConnectChrome
             | Self::Map(_) => "cli.log",
             Self::NativeHost { .. } => "native-host.log",
@@ -101,6 +134,7 @@ impl Command {
             Self::Doctor => "doctor",
             Self::Service(_) => "service",
             Self::Login { .. } => "login",
+            Self::Access { .. } => "access",
             Self::ConnectChrome => "connect-chrome",
             Self::NativeHost { .. } => "native-host",
             Self::Map(_) => "map",
@@ -208,6 +242,52 @@ mod tests {
             &["weacon", "login", "Claude", "--workspace", "w-1"],
             &["weacon", "login", "claude", "--workspace", "../w"],
             &["weacon", "login", "claude"],
+        ] {
+            run(bad).unwrap_err();
+        }
+    }
+
+    #[test]
+    fn access_takes_a_workspace_a_level_and_whether_its_a_team() {
+        let levels = ["off", "read-only", "ask-first", "full"].map(|level| {
+            let access = run(&["weacon", "access", "w-1", level]).unwrap().command;
+            let Command::Access { level, team, .. } = access else {
+                panic!("not an access command");
+            };
+            assert_eq!(team, None);
+            AccessLevel::from(level)
+        });
+        let team = run(&["weacon", "access", "w-1", "full", "--team", "true"]).unwrap();
+        let left = run(&["weacon", "access", "w-1", "full", "--team", "false"]).unwrap();
+
+        assert_eq!(
+            levels,
+            [
+                AccessLevel::Off,
+                AccessLevel::ReadOnly,
+                AccessLevel::AskFirst,
+                AccessLevel::Full
+            ]
+        );
+        assert!(matches!(
+            &team.command,
+            Command::Access { workspace, team: Some(true), .. } if workspace.as_str() == "w-1"
+        ));
+        assert!(matches!(
+            left.command,
+            Command::Access {
+                team: Some(false),
+                ..
+            }
+        ));
+        assert_eq!(
+            (team.command.name(), team.command.log_name()),
+            ("access", "cli.log")
+        );
+        for bad in [
+            &["weacon", "access", "w-1", "newer"][..],
+            &["weacon", "access", "a b", "full"],
+            &["weacon", "access", "w-1"],
         ] {
             run(bad).unwrap_err();
         }

@@ -30,7 +30,7 @@ mod workspaces;
 use std::io::{self, IsTerminal};
 use std::process::ExitCode;
 
-use weacon_observability::json_lines;
+use weacon_observability::{Fault, json_lines};
 
 use crate::app::{App, Setup};
 use crate::cli::Command;
@@ -58,26 +58,42 @@ fn main() -> ExitCode {
         },
     );
     std::panic::set_hook(app.panic_hook());
-    let result = match cli.command {
-        Command::Daemon => daemon::run(&app).map(Outcome::from),
-        Command::Status => status::run(&app, &mut io::stdout().lock()).map(Outcome::from),
-        Command::Doctor => doctor::run(&app, &mut io::stdout().lock()).map(Outcome::from),
+    let result = run(&app, cli.command, &env);
+    app.finish(result)
+}
+
+fn run(app: &App, command: Command, env: platform::Env<'_>) -> Result<Outcome, Fault> {
+    match command {
+        Command::Daemon => daemon::run(app).map(Outcome::from),
+        Command::Status => status::run(app, &mut io::stdout().lock()).map(Outcome::from),
+        Command::Doctor => doctor::run(app, &mut io::stdout().lock()).map(Outcome::from),
         Command::Service(command) => {
-            service::run(&app, command, &env, &mut service::system).map(Outcome::from)
+            service::run(app, command, env, &mut service::system).map(Outcome::from)
         }
         Command::Login { agent, workspace } => {
-            workspaces::login(&app, agent, &workspace).map(Outcome::from)
+            workspaces::login(app, agent, &workspace).map(Outcome::from)
         }
+        Command::Access {
+            workspace,
+            level,
+            team,
+        } => workspaces::access(
+            app,
+            &workspace,
+            level.into(),
+            team,
+            &mut io::stdout().lock(),
+        )
+        .map(Outcome::from),
         Command::ConnectChrome => {
-            native_host::connect_chrome(&app, &env, &mut io::stdout().lock()).map(Outcome::from)
+            native_host::connect_chrome(app, env, &mut io::stdout().lock()).map(Outcome::from)
         }
-        Command::NativeHost { origin } => native_host::run(&app, &origin).map(Outcome::from),
+        Command::NativeHost { origin } => native_host::run(app, &origin).map(Outcome::from),
         Command::Map(command) => map::run(
-            &app,
+            app,
             command,
             &mut io::stdin().lock(),
             &mut io::stdout().lock(),
         ),
-    };
-    app.finish(result)
+    }
 }
