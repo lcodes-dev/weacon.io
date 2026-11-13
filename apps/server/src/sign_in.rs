@@ -85,10 +85,12 @@ async fn send_code(
     }
     let code = code_text(&os_secrets()?);
     let code_hash = shared.secret.code_hash(challenge, &code);
-    shared
+    let started = shared
         .db
-        .start_challenge(&email, challenge, &code_hash, shared.now())
-        .await?;
+        .start_challenge(&email, challenge, &code_hash, shared.now());
+    if !started.await? {
+        return Ok(());
+    }
     let outbox = shared.outbox.clone();
     tokio::task::spawn_blocking(move || outbox.send(&email, &code))
         .await
@@ -531,6 +533,20 @@ mod tests {
             .account_with(&Email::parse("cy@example.net").unwrap())
             .await;
         assert_eq!(other.unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn past_its_live_codes_an_address_gets_the_same_answer_and_no_more_mail() {
+        let fixture = Fixture::new().await;
+        let server = run(fixture.shared.clone()).await;
+        let mut answers = Vec::new();
+        for _ in 0..4 {
+            answers.push(start_sign_in(server.address, "ada@example.com").await.0);
+        }
+        fixture.settled().await;
+
+        assert_eq!(answers, ["http/1.1 202 accepted"; 4]);
+        assert_eq!(fixture.letters().len(), 3);
     }
 
     #[tokio::test]

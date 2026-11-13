@@ -11,6 +11,8 @@ use crate::email::Email;
 pub(crate) const CODE_LIFETIME: i64 = 600;
 /// How many wrong tries cancel a challenge's code.
 const MAX_ATTEMPTS: i64 = 5;
+/// How many live codes one address may have, so a server open to sign-up can't flood an inbox.
+pub(crate) const MAX_LIVE: i64 = 3;
 
 /// One try at finishing a sign-in. Times are seconds since the Unix epoch.
 pub(crate) struct Attempt<'a> {
@@ -50,34 +52,38 @@ impl Db {
             .transpose()
     }
 
-    /// Records `challenge`, for `email`, with the code hashed as `code_hash`; and ends the
-    /// expired challenges so they don't pile up.
+    /// Records `challenge`, for `email`, with the code hashed as `code_hash`, unless the address
+    /// has [`MAX_LIVE`] live ones, and says whether it did; and ends the expired challenges so
+    /// they don't pile up.
     pub(crate) async fn start_challenge(
         &self,
         email: &Email,
         challenge: &ChallengeId,
         code_hash: &[u8],
         now: i64,
-    ) -> Result<(), Fault> {
+    ) -> Result<bool, Fault> {
         let mut transaction = self.writer.begin().await.map_err(failed)?;
         sqlx::query("DELETE FROM sign_in_challenges WHERE expires_at <= ?")
             .bind(now)
             .execute(&mut *transaction)
             .await
             .map_err(failed)?;
-        sqlx::query(
+        let started = sqlx::query(
             "INSERT INTO sign_in_challenges
                  (challenge_id, email, code_hash, expires_at, attempts)
-             VALUES (?, ?, ?, ?, 0)",
+             SELECT ?1, ?2, ?3, ?4, 0
+             WHERE (SELECT count(*) FROM sign_in_challenges WHERE email = ?2) < ?5",
         )
         .bind(challenge.as_str())
         .bind(email.as_str())
         .bind(code_hash)
         .bind(now.saturating_add(CODE_LIFETIME))
+        .bind(MAX_LIVE)
         .execute(&mut *transaction)
         .await
         .map_err(failed)?;
-        transaction.commit().await.map_err(failed)
+        transaction.commit().await.map_err(failed)?;
+        Ok(started.rows_affected() == 1)
     }
 
     /// Trades a challenge's code for a session, and gives the account, made now if the address
@@ -481,7 +487,7 @@ mod tests {
     async fn a_right_code_makes_an_account_only_where_sign_up_is_allowed() {
         let dir = TempDir::new().unwrap();
         let db = people(&dir).await;
-        for name in ["c1", "c2", "c3", "c4"] {
+        for name in ["c1", "c2", "c3"] {
             challenge(&db, "cy@example.com", name, b"code", NOW).await;
         }
         challenge(&db, "ada@example.com", "c5", b"code", NOW).await;
@@ -498,6 +504,8 @@ mod tests {
             db.account_with(&email("cy@example.com")).await.unwrap(),
             None
         );
+        // The right code was used up, which makes room for another.
+        challenge(&db, "cy@example.com", "c4", b"code", NOW).await;
         assert_eq!(
             sign_up(&db, "cy@example.com", "c3", "a3").await.as_deref(),
             Some("a3")
@@ -520,5 +528,30 @@ mod tests {
             db.session(b"c3", NOW).await.unwrap(),
             Some((id("a3"), email("cy@example.com")))
         );
+    }
+
+    async fn start(db: &Db, who: &str, name: &str, now: i64) -> bool {
+        db.start_challenge(&email(who), &id(name), b"code", now)
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn an_address_has_only_so_many_live_codes() {
+        let dir = TempDir::new().unwrap();
+        let db = people(&dir).await;
+        let mut started = Vec::new();
+        for name in ["c1", "c2", "c3", "c4"] {
+            started.push(start(&db, "ada@example.com", name, NOW).await);
+        }
+        let other = start(&db, "bo@example.com", "c5", NOW).await;
+        let refused = try_code(&db, "c4", b"code", NOW).await;
+        let later = start(&db, "ada@example.com", "c6", NOW + CODE_LIFETIME).await;
+
+        assert_eq!(MAX_LIVE, 3);
+        assert_eq!(started, [true, true, true, false]);
+        assert!(other);
+        assert_eq!(refused, None);
+        assert!(later);
     }
 }
