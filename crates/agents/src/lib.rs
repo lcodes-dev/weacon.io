@@ -9,6 +9,6 @@ mod spawn;
 #[cfg(test)]
 mod test_support;
 
-pub use launch::Launch;
+pub use launch::{Launch, SignIn};
 pub use run::{AgentRun, Run};
 pub use spawn::SpawnPolicy;
