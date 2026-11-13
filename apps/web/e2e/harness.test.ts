@@ -28,7 +28,7 @@ test("a server that never starts is stopped and its folder removed", async () =>
     return server;
   };
 
-  await assert.rejects(start(silent, 100), /didn't start in time/);
+  await assert.rejects(start(silent, { startupMs: 100 }), /didn't start in time/);
   if (server === undefined) {
     throw new Error("no server was started");
   }

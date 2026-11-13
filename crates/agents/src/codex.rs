@@ -6,10 +6,13 @@ use tokio::process::Command;
 
 pub(crate) use wire::{Wire, answer};
 
-use crate::launch::Launch;
+use crate::launch::{Launch, OtherSignIns};
 
-// Sign-ins that would win over the workspace's own; removed, never read.
-const OTHER_SIGN_INS: [&str; 2] = ["CODEX_API_KEY", "OPENAI_API_KEY"];
+// Sign-ins and providers that would win over the workspace's own.
+const OTHER_SIGN_INS: OtherSignIns = OtherSignIns {
+    prefixes: &["CODEX_", "OPENAI_"],
+    names: &[],
+};
 
 /// `codex` as an app server.
 pub(crate) fn command(launch: &Launch) -> Command {
@@ -33,11 +36,14 @@ pub(crate) fn login(launch: &Launch) -> Command {
     command
 }
 
+/// Codex prints nothing that says where its sign-in comes from, so its exit decides alone.
+pub(crate) const fn own_sign_in(_: &[u8]) -> bool {
+    true
+}
+
 fn with_workspace_sign_in(launch: &Launch) -> Command {
     let mut command = Command::new(&launch.program);
-    for name in OTHER_SIGN_INS {
-        command.env_remove(name);
-    }
+    OTHER_SIGN_INS.remove(&mut command, std::env::vars_os().map(|(name, _)| name));
     command.env("CODEX_HOME", &launch.config_dir);
     command
 }
@@ -52,7 +58,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn every_command_runs_with_the_workspaces_config_and_no_other_sign_in() {
+    fn every_command_runs_with_the_workspaces_config() {
         let launch = Launch {
             agent: AgentKind::Codex,
             program: "/work/codex".into(),
@@ -72,15 +78,21 @@ mod tests {
         assert_eq!(login.as_std().get_args().collect::<Vec<_>>(), ["login"]);
         for command in [command(&launch), status(&launch), login] {
             let command = command.as_std();
-            let envs: Vec<_> = command.get_envs().collect();
-
-            assert!(envs.contains(&(OsStr::new("CODEX_HOME"), Some(OsStr::new("/work/config")))));
-            for name in OTHER_SIGN_INS {
-                assert!(envs.contains(&(OsStr::new(name), None)), "{name}");
-            }
+            let config = (OsStr::new("CODEX_HOME"), Some(OsStr::new("/work/config")));
+            assert!(command.get_envs().any(|env| env == config));
         }
         let run = command(&launch);
         assert_eq!(run.as_std().get_current_dir(), Some(Path::new("/work")));
         assert_eq!(status(&launch).as_std().get_current_dir(), None);
+    }
+
+    #[test]
+    fn other_sign_ins_and_providers_are_known_and_the_rest_is_kept() {
+        for name in ["CODEX_API_KEY", "OPENAI_API_KEY", "OPENAI_BASE_URL"] {
+            assert!(OTHER_SIGN_INS.matches(OsStr::new(name)), "{name}");
+        }
+        for name in ["PATH", "HOME", "ANTHROPIC_API_KEY"] {
+            assert!(!OTHER_SIGN_INS.matches(OsStr::new(name)), "{name}");
+        }
     }
 }

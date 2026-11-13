@@ -69,14 +69,8 @@ fn run(app: &App, command: Command, env: platform::Env<'_>) -> Result<Outcome, F
             workspace,
             level,
             team,
-        } => workspaces::access(
-            app,
-            &workspace,
-            level.into(),
-            team,
-            &mut io::stdout().lock(),
-        )
-        .map(Outcome::from),
+        } => workspaces::access(app, &workspace, level, team, &mut io::stdout().lock())
+            .map(Outcome::from),
         Command::ConnectChrome => {
             native_host::connect_chrome(app, env, &mut io::stdout().lock()).map(Outcome::from)
         }
