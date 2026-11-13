@@ -10,6 +10,11 @@ mod memory;
 mod native_host;
 mod picks;
 mod platform;
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "the chat engine, which uses it, comes next")
+)]
+mod runs;
 mod service;
 mod session;
 mod status;
