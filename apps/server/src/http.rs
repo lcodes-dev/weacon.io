@@ -23,6 +23,9 @@ use crate::limit::Limit;
 use crate::mail::Outbox;
 use crate::secret::Secret;
 use crate::sign_in;
+use crate::tasks;
+use crate::web::{self, WebFile};
+use crate::workspaces;
 
 const REQUEST_ID: &str = "x-request-id";
 const GRACE: Duration = Duration::from_secs(10);
@@ -68,6 +71,8 @@ pub(crate) struct Shared {
     pub(crate) starts: Arc<Limit>,
     /// How many codes each client may try.
     pub(crate) tries: Arc<Limit>,
+    /// The web app's built files it serves.
+    pub(crate) web: &'static [WebFile],
 }
 
 impl Shared {
@@ -78,6 +83,12 @@ impl Shared {
             .map_or(0, |since| {
                 i64::try_from(since.as_secs()).unwrap_or(i64::MAX)
             })
+    }
+
+    /// Tells the open feeds that `workspace` changed; nobody listening is fine, as feeds read
+    /// what they missed from the database.
+    pub(crate) fn changed(&self, workspace: &WorkspaceId) {
+        drop(self.changes.send(workspace.clone()));
     }
 }
 
@@ -115,10 +126,27 @@ pub(crate) async fn serve(
 fn router(shared: Shared) -> Router {
     Router::new()
         .route("/version", get(version))
-        .route("/sign-in", post(sign_in::start))
-        .route("/sign-in/finish", post(sign_in::finish))
-        .route("/workspaces/{workspace}/feed", get(feed::feed))
+        .route("/api/sign-in", post(sign_in::start))
+        .route("/api/sign-in/finish", post(sign_in::finish))
+        .route("/api/session", get(sign_in::session))
+        .route("/api/sign-out", post(sign_in::sign_out))
+        .route(
+            "/api/workspaces",
+            get(workspaces::list).post(workspaces::create),
+        )
+        .route("/api/workspaces/{workspace}", get(workspaces::read))
+        .route("/api/workspaces/{workspace}/feed", get(feed::feed))
+        .route(
+            "/api/workspaces/{workspace}/tasks",
+            get(tasks::list).post(tasks::create),
+        )
+        .route(
+            "/api/workspaces/{workspace}/tasks/{task}",
+            post(tasks::change),
+        )
+        .merge(web::routes(shared.web))
         .layer(DefaultBodyLimit::max(MAX_BODY))
+        .layer(middleware::map_response(uncached))
         .layer(middleware::from_fn(in_time))
         .layer(middleware::from_fn_with_state(shared.clone(), log_request))
         .with_state(shared)
@@ -126,6 +154,15 @@ fn router(shared: Shared) -> Router {
 
 async fn version(State(shared): State<Shared>) -> impl IntoResponse {
     ([(header::CACHE_CONTROL, "no-store")], Json(shared.app))
+}
+
+/// Keeps every answer out of caches unless its handler says otherwise: most are one person's.
+async fn uncached(mut response: Response) -> Response {
+    response
+        .headers_mut()
+        .entry(header::CACHE_CONTROL)
+        .or_insert(HeaderValue::from_static("no-store"));
+    response
 }
 
 /// Answers that the request took too long, when it has: a body that never comes, for one.
@@ -173,6 +210,16 @@ pub(crate) fn refused(code: Code) -> Response {
     error(StatusCode::UNAUTHORIZED, code, false)
 }
 
+/// Answers that the request's body isn't one the server can take, with `code`.
+pub(crate) fn invalid(code: Code) -> Response {
+    error(StatusCode::UNPROCESSABLE_ENTITY, code, false)
+}
+
+/// Answers that the request isn't from the server's own pages.
+pub(crate) fn cross_site() -> Response {
+    error(StatusCode::FORBIDDEN, code!("request.cross_site"), false)
+}
+
 /// Answers that this client has asked too often for now.
 pub(crate) fn too_many(code: Code) -> Response {
     error(StatusCode::TOO_MANY_REQUESTS, code, true)
@@ -185,7 +232,7 @@ pub(crate) fn failure(shared: &Shared, fault: Fault) -> Response {
     error(StatusCode::INTERNAL_SERVER_ERROR, code, true)
 }
 
-fn error(status: StatusCode, code: Code, retryable: bool) -> Response {
+pub(crate) fn error(status: StatusCode, code: Code, retryable: bool) -> Response {
     (status, Json(ErrorBody { code, retryable })).into_response()
 }
 
@@ -210,7 +257,7 @@ mod tests {
     use tokio::net::TcpStream;
 
     use super::*;
-    use crate::test_support::{Fixture, Running, messages, request, run};
+    use crate::test_support::{Fixture, Running, header, messages, request, run};
 
     struct Server {
         running: Running,
@@ -230,11 +277,6 @@ mod tests {
 
     async fn get(address: SocketAddr, target: &str) -> (Vec<String>, String) {
         request(address, &format!("GET {target}"), "").await
-    }
-
-    fn header<'a>(head: &'a [String], name: &str) -> Option<&'a str> {
-        head.iter()
-            .find_map(|line| line.strip_prefix(name)?.strip_prefix(": "))
     }
 
     #[tokio::test]
@@ -357,7 +399,7 @@ mod tests {
         tokio::time::pause();
         let mut slow = TcpStream::connect(server.running.address).await.unwrap();
         slow.write_all(
-            b"POST /sign-in HTTP/1.1\r\nhost: test\r\ncontent-type: application/json\r\ncontent-length: 9\r\n\r\n",
+            b"POST /api/sign-in HTTP/1.1\r\nhost: test\r\ncontent-type: application/json\r\ncontent-length: 9\r\n\r\n",
         )
         .await
         .unwrap();

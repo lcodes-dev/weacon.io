@@ -1,13 +1,14 @@
 use std::io::Write;
+use std::path::Path;
 
 use weacon_observability::Fault;
 use weacon_protocol::{AccountId, MemberId, WorkspaceId, code};
 
+use crate::app::fresh;
 use crate::cli::AdminCommand;
 use crate::db::{self, Db};
 use crate::email::Email;
-
-const MAX_NAME: usize = 100;
+use crate::workspaces::workspace_name;
 
 /// Runs `command`, writing what it prints to `out`; `new_id` names what it creates.
 pub(crate) async fn run(
@@ -23,6 +24,7 @@ pub(crate) async fn run(
             let created = db.create_workspace(&id, name).await;
             closed(db, created.map(|_| format!("{}\n", id.as_str()))).await
         }
+        AdminCommand::AddAccount { db, email } => add_account(&db, &email, new_id).await,
         AdminCommand::AddMember {
             db,
             workspace,
@@ -64,22 +66,18 @@ pub(crate) async fn run(
     })
 }
 
+async fn add_account(db: &Path, email: &str, new_id: &dyn Fn() -> String) -> Result<String, Fault> {
+    let email = Email::parse(email)?;
+    let id: AccountId = fresh(new_id)?;
+    let db = Db::open(db).await?;
+    let added = db.add_account(&id, &email).await;
+    closed(db, added.map(|()| format!("{}\n", id.as_str()))).await
+}
+
 /// Closes `db`, which checkpoints its write-ahead log into the file, then gives `result`.
 async fn closed(db: Db, result: Result<String, Fault>) -> Result<String, Fault> {
     db.close().await;
     result
-}
-
-fn fresh<T: TryFrom<String>>(new_id: &dyn Fn() -> String) -> Result<T, Fault> {
-    T::try_from(new_id()).map_err(|_| Fault::new(code!("id.invalid"), "A new id isn't valid"))
-}
-
-/// `name` trimmed, if it is one short line.
-fn workspace_name(name: &str) -> Result<&str, Fault> {
-    let name = name.trim();
-    let fits = (1..=MAX_NAME).contains(&name.chars().count()) && !name.contains(char::is_control);
-    fits.then_some(name)
-        .ok_or_else(|| Fault::new(code!("workspace.name_invalid"), "That name can't be used"))
 }
 
 #[cfg(test)]
@@ -95,6 +93,7 @@ mod tests {
     use super::*;
     use crate::app::App;
     use crate::test_support::{VERSION, recording_sink, workspace_id};
+    use crate::workspaces::MAX_NAME;
 
     async fn admin(command: AdminCommand) -> Result<String, Fault> {
         let next = Cell::new(0);
@@ -137,6 +136,25 @@ mod tests {
         assert_eq!(again.code().as_str(), "db.exists");
         assert_eq!(invalid.code().as_str(), "email.invalid");
         assert_eq!(members, "id1 ada@example.com\n");
+    }
+
+    #[tokio::test]
+    async fn an_operator_makes_an_account_once_for_an_address() {
+        let dir = TempDir::new().unwrap();
+        let db = dir.join("weacon.db");
+        Db::create(&db).await.unwrap().close().await;
+        let account = |email: &str| AdminCommand::AddAccount {
+            db: db.clone(),
+            email: email.to_owned(),
+        };
+
+        let added = admin(account(" Ada@Example.com ")).await.unwrap();
+        let again = admin(account("ada@example.com")).await.unwrap_err();
+        let invalid = admin(account("ada")).await.unwrap_err();
+
+        assert_eq!(added, "id1\n");
+        assert_eq!(again.code().as_str(), "db.exists");
+        assert_eq!(invalid.code().as_str(), "email.invalid");
     }
 
     #[tokio::test]

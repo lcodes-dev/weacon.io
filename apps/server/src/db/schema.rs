@@ -80,6 +80,78 @@ ALTER TABLE members ADD COLUMN account_id TEXT REFERENCES accounts (account_id);
 UPDATE members SET account_id =
     (SELECT account_id FROM accounts WHERE accounts.email = members.email);
 ",
+    // A person signs in to their account, not to one workspace.
+    "
+CREATE UNIQUE INDEX members_account ON members (workspace_id, account_id);
+
+DROP TABLE sign_in_challenges;
+DROP TABLE sessions;
+
+CREATE TABLE sign_in_challenges (
+    challenge_id TEXT PRIMARY KEY,
+    account_id TEXT NOT NULL REFERENCES accounts (account_id),
+    code_hash BLOB NOT NULL,
+    expires_at INTEGER NOT NULL,
+    attempts INTEGER NOT NULL
+) STRICT;
+
+CREATE TABLE sessions (
+    token_hash BLOB PRIMARY KEY,
+    account_id TEXT NOT NULL REFERENCES accounts (account_id),
+    expires_at INTEGER NOT NULL
+) STRICT;
+",
+    // Tasks, each with the versions it went through.
+    "
+CREATE TABLE tasks (
+    workspace_id TEXT NOT NULL REFERENCES workspaces (workspace_id),
+    task_id TEXT NOT NULL,
+    title TEXT NOT NULL,
+    status TEXT NOT NULL,
+    order_key TEXT NOT NULL,
+    version INTEGER NOT NULL,
+    PRIMARY KEY (workspace_id, task_id),
+    UNIQUE (workspace_id, order_key)
+) STRICT;
+
+CREATE TABLE task_versions (
+    workspace_id TEXT NOT NULL,
+    task_id TEXT NOT NULL,
+    version INTEGER NOT NULL,
+    author_kind TEXT NOT NULL,
+    author_member TEXT NOT NULL,
+    accepted_by TEXT NOT NULL,
+    at INTEGER NOT NULL,
+    PRIMARY KEY (workspace_id, task_id, version),
+    FOREIGN KEY (workspace_id, task_id) REFERENCES tasks (workspace_id, task_id),
+    FOREIGN KEY (workspace_id, author_member) REFERENCES members (workspace_id, member_id),
+    FOREIGN KEY (workspace_id, accepted_by) REFERENCES members (workspace_id, member_id)
+) STRICT;
+
+CREATE TABLE changes_with_tasks (
+    workspace_id TEXT NOT NULL,
+    seq INTEGER NOT NULL,
+    kind TEXT NOT NULL,
+    member_id TEXT NOT NULL,
+    task_id TEXT,
+    task_version INTEGER,
+    PRIMARY KEY (workspace_id, seq),
+    FOREIGN KEY (workspace_id, member_id) REFERENCES members (workspace_id, member_id),
+    FOREIGN KEY (workspace_id, task_id, task_version)
+        REFERENCES task_versions (workspace_id, task_id, version)
+) STRICT;
+
+INSERT INTO changes_with_tasks (workspace_id, seq, kind, member_id)
+SELECT workspace_id, seq, kind, member_id FROM changes;
+
+DROP TABLE changes;
+ALTER TABLE changes_with_tasks RENAME TO changes;
+",
+    // What each member may do, and whether an account has had its Personal workspace made.
+    "
+ALTER TABLE members ADD COLUMN role TEXT NOT NULL DEFAULT 'member';
+ALTER TABLE accounts ADD COLUMN personal_made INTEGER NOT NULL DEFAULT 0;
+",
 ];
 
 /// Applies the steps the database hasn't had yet, each in its own transaction that holds the

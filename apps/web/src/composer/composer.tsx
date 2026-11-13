@@ -5,7 +5,7 @@ import { NONE, add, remove, settled } from "./attachments.ts";
 import { type Draft, EMPTY, type Item, type Placed, edit, pick, query } from "./draft.ts";
 import { AttachButton, Files } from "./files.tsx";
 import { composing, picker, sends } from "./keys.ts";
-import { matching, mentionables } from "./mentionables.ts";
+import { offered } from "./mentionables.ts";
 import { type Retry, type Send, after, requestFor, requestId } from "./prompt.ts";
 
 /**
@@ -39,7 +39,7 @@ export function Composer({ send, blocked, hidden }: { send: Send | undefined; bl
   const backdrop = useRef<HTMLDivElement>(null);
   const { draft, caret } = placed;
   const at = query(draft, caret);
-  const options = at === undefined || at.start === dismissed ? [] : matching(mentionables(), at.text);
+  const options = offered(at, dismissed, sending);
   const unsent = files.attachments.length > 0 ? "Files can't be sent yet; remove them to send the message" : undefined;
   const hint = problem ?? blocked ?? files.refused ?? unsent;
   const ready = !sending && unsent === undefined && blocked === undefined && send !== undefined && draft.text.trim() !== "";
@@ -217,11 +217,9 @@ function Options({
           id={`mention-${index}`}
           role="option"
           aria-selected={index === active}
-          // Picked on mouse down, so the box keeps its focus and caret.
-          onMouseDown={(event) => {
-            event.preventDefault();
-            choose(item);
-          }}
+          // The box keeps its focus and caret; a click picks, as assistive technology sends it.
+          onMouseDown={(event) => event.preventDefault()}
+          onClick={() => choose(item)}
         >
           {item.label}
           <span className="muted">{item.kind === "agent" ? "Agent" : "Person"}</span>

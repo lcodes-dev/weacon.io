@@ -58,6 +58,39 @@ impl Workspace {
         transaction.commit().await.map_err(failed)
     }
 
+    /// The member whose account has the live session with the token hashed as `token_hash`.
+    pub(crate) async fn session_member(
+        &self,
+        token_hash: &[u8],
+        now: i64,
+    ) -> Result<Option<MemberId>, Fault> {
+        sqlx::query_scalar::<_, String>(
+            "SELECT m.member_id FROM sessions AS s JOIN members AS m ON m.account_id = s.account_id
+             WHERE m.workspace_id = ? AND s.token_hash = ? AND s.expires_at > ?",
+        )
+        .bind(self.id.as_str())
+        .bind(token_hash)
+        .bind(now)
+        .fetch_optional(&self.db.readers)
+        .await
+        .map_err(failed)?
+        .map(stored)
+        .transpose()
+    }
+
+    /// Ends `member`'s membership for whoever has it, keeping what they did here.
+    #[cfg(test)]
+    pub(crate) async fn unlink(&self, member: &MemberId) {
+        sqlx::query(
+            "UPDATE members SET account_id = NULL WHERE workspace_id = ? AND member_id = ?",
+        )
+        .bind(self.id.as_str())
+        .bind(member.as_str())
+        .execute(&self.db.writer)
+        .await
+        .unwrap();
+    }
+
     /// The members, in the order they were added.
     pub(crate) async fn members(&self) -> Result<Vec<Member>, Fault> {
         sqlx::query_as::<_, (String, String)>(
@@ -84,9 +117,12 @@ mod tests {
     use sqlx::{ConnectOptions, raw_sql};
     use weacon_testing::TempDir;
 
+    use weacon_protocol::ChallengeId;
+
     use super::*;
     use crate::db::schema::STEPS;
-    use crate::test_support::{fresh_account, member_id, workspace_id};
+    use crate::db::{Attempt, NewWorkspace};
+    use crate::test_support::{fresh_account, member_id, two_teams, workspace_id};
 
     fn email(text: &str) -> Email {
         Email::parse(text).unwrap()
@@ -158,12 +194,62 @@ mod tests {
         );
     }
 
+    // Signs `address` in at time 100 with a session that ends at 200, whose token is `token`.
+    async fn session(db: &Db, address: &str, token: &[u8]) {
+        let (address, challenge) = (email(address), ChallengeId::try_from("c".to_owned()));
+        let challenge = challenge.unwrap();
+        let account = db.account_with(&address).await.unwrap().unwrap();
+        db.start_challenge(&account, &challenge, b"code", 100)
+            .await
+            .unwrap();
+        let attempt = Attempt {
+            email: &address,
+            challenge: &challenge,
+            code_hash: b"code",
+            token_hash: token,
+            now: 100,
+            token_expires_at: 200,
+            personal: &NewWorkspace {
+                id: workspace_id(&format!("p-{}", token.len())),
+                name: "Personal".to_owned(),
+                owner: member_id("owner"),
+            },
+        };
+        db.finish_sign_in(&attempt).await.unwrap().unwrap();
+    }
+
     #[tokio::test]
-    async fn members_from_before_accounts_get_one_per_address() {
+    async fn a_session_is_a_member_only_where_its_account_is_and_while_it_lasts() {
         let dir = TempDir::new().unwrap();
-        let path = dir.join("weacon.db");
+        let (one, two) = two_teams(&dir).await;
+        session(&one.db, "ada@example.com", b"ada").await;
+        session(&one.db, "bo@example.com", b"bo").await;
+        let member = |id| Some(member_id(id));
+
+        assert_eq!(one.session_member(b"ada", 100).await.unwrap(), member("m1"));
+        assert_eq!(two.session_member(b"ada", 199).await.unwrap(), member("m2"));
+        assert_eq!(one.session_member(b"bo", 100).await.unwrap(), member("m3"));
+        assert_eq!(two.session_member(b"bo", 100).await.unwrap(), None);
+        assert_eq!(one.session_member(b"other", 100).await.unwrap(), None);
+        assert_eq!(one.session_member(b"ada", 200).await.unwrap(), None);
+        one.unlink(&member_id("m1")).await;
+        assert_eq!(one.session_member(b"ada", 100).await.unwrap(), None);
+        assert_eq!(two.session_member(b"ada", 100).await.unwrap(), member("m2"));
+    }
+
+    async fn rows(db: &Db, table: &str) -> i64 {
+        let count = format!("SELECT count(*) FROM {table}");
+        sqlx::query_scalar(sqlx::AssertSqlSafe(count))
+            .fetch_one(&db.readers)
+            .await
+            .unwrap()
+    }
+
+    // A database at `path` from before accounts: ada in w1 and w2, bo in w1, and a session
+    // and a sign-in of ada's in w1.
+    async fn old_database(path: &std::path::Path) {
         let mut old = SqliteConnectOptions::new()
-            .filename(&path)
+            .filename(path)
             .create_if_missing(true)
             .connect()
             .await
@@ -176,12 +262,21 @@ mod tests {
              INSERT INTO members VALUES
                  ('w1', 'm1', 'ada@example.com'), ('w2', 'm1', 'ada@example.com'),
                  ('w1', 'm2', 'bo@example.com');
+             INSERT INTO sessions VALUES ('w1', x'01', 'm1', 9999999999);
+             INSERT INTO sign_in_challenges VALUES ('w1', 'c1', 'm1', x'02', 9999999999, 0);
              PRAGMA user_version = 3;",
         )
         .execute(&mut old)
         .await
         .unwrap();
         drop(old);
+    }
+
+    #[tokio::test]
+    async fn members_from_before_accounts_get_one_per_address() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.join("weacon.db");
+        old_database(&path).await;
 
         let db = Db::open(&path).await.unwrap();
         let [(ada, ada_email), (bo, bo_email)] = accounts(&db).await.try_into().unwrap();
@@ -195,6 +290,25 @@ mod tests {
         assert_eq!(bo_email, "bo@example.com");
         assert_ne!(ada, bo);
         AccountId::try_from(ada.clone()).unwrap();
-        assert_eq!(of, [ada.clone(), ada, bo]);
+        assert_eq!(of, [ada.clone(), ada.clone(), bo]);
+        // Members from before may do what any member may.
+        let ada_id = AccountId::try_from(ada.clone()).unwrap();
+        let roles = db.workspaces_of(&ada_id).await.unwrap();
+        assert!(
+            roles
+                .iter()
+                .all(|seen| seen.role == weacon_protocol::WorkspaceRole::Member)
+        );
+        // Sign-ins from before were to one workspace, and don't carry over.
+        assert_eq!(rows(&db, "sessions").await, 0);
+        assert_eq!(rows(&db, "sign_in_challenges").await, 0);
+        let twice = sqlx::query(
+            "INSERT INTO members (workspace_id, member_id, email, account_id)
+             VALUES ('w1', 'm9', 'x@example.com', ?)",
+        )
+        .bind(ada)
+        .execute(&db.writer)
+        .await;
+        assert_eq!(failed(twice.unwrap_err()).code().as_str(), "db.exists");
     }
 }

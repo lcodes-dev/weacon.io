@@ -1,8 +1,11 @@
 import { PROTOCOL } from "../../../tooling/ts/version.ts";
+import { DIFF_VIEW } from "./diff/changes.ts";
 import type { App, Envelope } from "./protocol.ts";
 
 // What the web app needs the server to offer.
 const NEEDS = "run.stream";
+// What else it can do with a server that offers the same.
+const OFFERS = [DIFF_VIEW];
 
 /** Why a connection ended. */
 export type End =
@@ -49,7 +52,7 @@ export class Connection {
       }
     }, WELCOME_MS);
     socket.addEventListener("open", () => {
-      this.#send({ id: 1, type: "hello", protocol: PROTOCOL, app: me, capabilities: [NEEDS] });
+      this.#send({ id: 1, type: "hello", protocol: PROTOCOL, app: me, capabilities: [NEEDS, ...OFFERS] });
     });
     socket.addEventListener("message", ({ data }) => {
       const envelope = parse(data);

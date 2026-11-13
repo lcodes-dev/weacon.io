@@ -1,4 +1,4 @@
-//! What a workspace's agents may do on this machine, kept in the workspace's folder.
+//! What a workspace's agents may do on this machine, kept apart from its folder.
 
 use std::fs;
 use std::io::{self, Write};
@@ -11,8 +11,6 @@ use weacon_protocol::{AccessLevel, WorkspaceId, code};
 use super::Workspaces;
 use crate::app::{App, state_unavailable};
 use crate::platform;
-
-const FILE: &str = "workspace.json";
 
 /// What this machine's owner chose for one workspace; a workspace without a choice asks first.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -33,24 +31,26 @@ impl Default for Settings {
 }
 
 impl Settings {
-    /// The settings kept in a workspace's folder `root`.
-    pub(crate) fn read(root: &Path) -> Result<Self, Fault> {
+    /// The settings in `file`; the defaults when there's no file.
+    pub(crate) fn read(file: &Path) -> Result<Self, Fault> {
         let unreadable = || {
             Fault::new(
                 code!("workspace.settings_unreadable"),
                 "The workspace's settings couldn't be read",
             )
         };
-        match fs::read(root.join(FILE)) {
+        match fs::read(file) {
             Ok(json) => serde_json::from_slice(&json).map_err(|error| unreadable().because(error)),
             Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(Self::default()),
             Err(error) => Err(unreadable().because(error)),
         }
     }
 
-    fn write(self, root: &Path) -> io::Result<()> {
-        platform::private_dir(root)?;
-        weacon_appkit::write_whole(&root.join(FILE), &serde_json::to_vec(&self)?)
+    fn write(self, file: &Path) -> io::Result<()> {
+        if let Some(folder) = file.parent() {
+            platform::private_dir(folder)?;
+        }
+        weacon_appkit::write_whole(file, &serde_json::to_vec(&self)?)
     }
 
     pub(crate) const fn level(self) -> &'static str {
@@ -101,14 +101,18 @@ pub(crate) fn run(
     out: &mut impl Write,
 ) -> Result<(), Fault> {
     let state_dir = app.state_dir.as_deref().ok_or_else(state_unavailable)?;
-    let root = Workspaces::new(state_dir, None).root(workspace);
+    let workspaces = Workspaces::new(state_dir, None);
+    let file = workspaces.settings_file(workspace);
     // Saying whether it's a team replaces settings that can't be read.
     let team = match team {
         Some(team) => team,
-        None => Settings::read(&root)?.team,
+        None => Settings::read(&file)?.team,
     };
     let settings = Settings { access, team };
-    settings.write(&root).map_err(|error| {
+    // The workspace's folder makes it one this machine knows.
+    let saved =
+        platform::private_dir(&workspaces.root(workspace)).and_then(|()| settings.write(&file));
+    saved.map_err(|error| {
         Fault::new(
             code!("access.not_saved"),
             "The access level couldn't be saved",
@@ -138,6 +142,8 @@ mod tests {
         WorkspaceId::try_from(id.to_owned()).unwrap()
     }
 
+    const FILE: &str = "settings/w-w1.json";
+
     fn set(dir: &Path, access: AccessLevel, team: Option<bool>) -> Result<String, Fault> {
         let app = test_support::app(Some(dir), None);
         let mut out = Vec::new();
@@ -148,23 +154,28 @@ mod tests {
     #[test]
     fn a_workspace_without_a_choice_asks_first_and_a_choice_is_kept() {
         let dir = TempDir::new().unwrap();
-        let root = dir.join("workspaces/w-w1");
-        assert_eq!(Settings::read(&root).unwrap(), Settings::default());
+        let file = dir.join(FILE);
+        assert_eq!(Settings::read(&file).unwrap(), Settings::default());
         assert_eq!(Settings::default().access, AccessLevel::AskFirst);
 
         let said = set(&dir, AccessLevel::ReadOnly, None).unwrap();
 
         assert_eq!(said, "Workspace w1: access read-only\n");
         assert_eq!(
-            Settings::read(&root).unwrap(),
+            Settings::read(&file).unwrap(),
             Settings {
                 access: AccessLevel::ReadOnly,
                 team: false
             }
         );
         assert_eq!(
-            fs::read_to_string(root.join(FILE)).unwrap(),
+            fs::read_to_string(&file).unwrap(),
             r#"{"access":"read_only","team":false}"#
+        );
+        // Nothing an agent is given holds it.
+        assert_eq!(
+            fs::read_dir(dir.join("workspaces/w-w1")).unwrap().count(),
+            0
         );
     }
 
@@ -208,8 +219,9 @@ mod tests {
     fn older_and_newer_settings_files_still_read() {
         let dir = TempDir::new().unwrap();
         let read = |json: &str| {
-            fs::write(dir.join(FILE), json).unwrap();
-            Settings::read(&dir)
+            let file = dir.join("w-w1.json");
+            fs::write(&file, json).unwrap();
+            Settings::read(&file)
         };
 
         assert_eq!(read("{}").unwrap(), Settings::default());
@@ -230,11 +242,11 @@ mod tests {
     #[test]
     fn settings_that_cant_be_read_or_saved_are_errors() {
         let dir = TempDir::new().unwrap();
-        fs::create_dir_all(dir.join("workspaces/w-w1").join(FILE)).unwrap();
+        fs::create_dir_all(dir.join(FILE)).unwrap();
         let unreadable = set(&dir, AccessLevel::Full, None).unwrap_err();
         let broken = TempDir::new().unwrap();
-        fs::create_dir_all(broken.join("workspaces/w-w1")).unwrap();
-        fs::write(broken.join("workspaces/w-w1").join(FILE), "").unwrap();
+        fs::create_dir_all(broken.join("settings")).unwrap();
+        fs::write(broken.join(FILE), "").unwrap();
         let kept = set(&broken, AccessLevel::Off, None).unwrap_err();
         let replaced = set(&broken, AccessLevel::Off, Some(true)).unwrap();
         let blocked = TempDir::new().unwrap();
@@ -270,19 +282,19 @@ mod tests {
         let error = run(&app, &id("w1"), AccessLevel::Off, None, &mut Closed).unwrap_err();
 
         assert_eq!(error.code().as_str(), "access.output_failed");
-        let saved = Settings::read(&dir.join("workspaces/w-w1")).unwrap();
+        let saved = Settings::read(&dir.join(FILE)).unwrap();
         assert_eq!(saved.access, AccessLevel::Off);
     }
 
     #[cfg(unix)]
     #[test]
-    fn a_workspaces_folder_made_for_its_settings_is_private() {
+    fn the_folders_made_for_a_workspaces_settings_are_private() {
         use std::os::unix::fs::PermissionsExt;
 
         let dir = TempDir::new().unwrap();
         set(&dir, AccessLevel::Full, None).unwrap();
 
-        for folder in ["workspaces", "workspaces/w-w1"] {
+        for folder in ["workspaces", "workspaces/w-w1", "settings"] {
             let mode = fs::metadata(dir.join(folder)).unwrap().permissions().mode();
             assert_eq!(mode & 0o777, 0o700, "{folder}");
         }

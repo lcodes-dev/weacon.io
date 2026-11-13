@@ -1,4 +1,4 @@
-import type { Item } from "./draft.ts";
+import type { Item, Query } from "./draft.ts";
 
 // How many matches the picker offers at once.
 const SHOWN = 5;
@@ -13,6 +13,14 @@ export function mentionables(): readonly Item[] {
     { kind: "agent", id: "a-claude", label: "Claude Code" },
     { kind: "agent", id: "a-codex", label: "Codex" },
   ];
+}
+
+/**
+ * What the picker offers for the query `at`: nothing once it was dismissed, or while a message
+ * is being sent, as a pick then would be lost when the box clears.
+ */
+export function offered(at: Query | undefined, dismissed: number | undefined, sending: boolean): Item[] {
+  return at === undefined || at.start === dismissed || sending ? [] : matching(mentionables(), at.text);
 }
 
 /** The items with a word in their label that starts with `text`, ignoring case. */

@@ -30,6 +30,17 @@ pub(crate) const VERSION: Version = Version {
     commit: "1a2b3c4",
 };
 
+/// Made-up built files of the web app, which tests serve.
+pub(crate) const WEB: &[crate::web::WebFile] = &[
+    (
+        "/",
+        "text/html; charset=utf-8",
+        b"<!doctype html><title>Made up</title>",
+    ),
+    ("/app.js", "text/javascript; charset=utf-8", b"made_up();"),
+    ("/app.css", "text/css; charset=utf-8", b"body {}"),
+];
+
 /// Seconds since the Unix epoch when a fixture starts.
 const START: u64 = 1_762_077_600;
 
@@ -50,14 +61,9 @@ impl Fixture {
             .create_workspace(&workspace_id("w1"), "Team")
             .await
             .unwrap();
-        workspace
-            .add_member(
-                &member_id("m1"),
-                &fresh_account(),
-                &Email::parse("ada@example.com").unwrap(),
-            )
-            .await
-            .unwrap();
+        let ada = Email::parse("ada@example.com").unwrap();
+        let (m1, account) = (member_id("m1"), fresh_account());
+        workspace.add_member(&m1, &account, &ada).await.unwrap();
         let (log, records) = recording_logger();
         // Its own logger: off Unix it warns, and tests read the fixture's records.
         let secret = Secret::open(&dir.join("secret"), &recording_logger().0).unwrap();
@@ -87,6 +93,7 @@ impl Fixture {
             finish_within: Duration::ZERO,
             starts: Arc::new(sign_in::starts()),
             tries: Arc::new(sign_in::tries()),
+            web: WEB,
         };
         Self {
             dir,
@@ -187,33 +194,64 @@ pub(crate) fn status(head: &[String]) -> &str {
     head.first().map_or("", String::as_str)
 }
 
-/// Starts a sign-in for `email` in w1: the answer's status line, and its challenge.
+/// The value of the header `name`, written in lower case, in a response's `head`.
+pub(crate) fn header<'a>(head: &'a [String], name: &str) -> Option<&'a str> {
+    head.iter()
+        .find_map(|line| line.strip_prefix(name)?.strip_prefix(": "))
+}
+
+/// Starts a sign-in for `email`: the answer's status line, and its challenge.
 pub(crate) async fn start_sign_in(address: SocketAddr, email: &str) -> (String, Value) {
-    let start = json!({ "workspace": "w1", "email": email }).to_string();
-    let (head, body) = request(address, "POST /sign-in", &start).await;
+    let start = json!({ "email": email }).to_string();
+    let (head, body) = request(address, "POST /api/sign-in", &start).await;
     let body: Value = serde_json::from_str(&body).unwrap();
     (status(&head).to_owned(), body["challenge"].clone())
 }
 
-/// A `POST /sign-in/finish` body.
-pub(crate) fn finish_body(workspace: &str, email: &str, challenge: &Value, code: &str) -> String {
-    json!({ "workspace": workspace, "email": email, "challenge": challenge, "code": code })
-        .to_string()
+/// A `POST /api/sign-in/finish` body.
+pub(crate) fn finish_body(email: &str, challenge: &Value, code: &str) -> String {
+    json!({ "email": email, "challenge": challenge, "code": code }).to_string()
 }
 
-pub(crate) fn workspace_id(id: &str) -> weacon_protocol::WorkspaceId {
-    weacon_protocol::WorkspaceId::try_from(id.to_owned()).unwrap()
+/// Signs `email` in with the code the server sends: the answer's status line and body.
+pub(crate) async fn sign_in(
+    fixture: &Fixture,
+    address: SocketAddr,
+    email: &str,
+) -> (String, Value) {
+    let (_, challenge) = start_sign_in(address, email).await;
+    let (_, code) = fixture.letter().await;
+    let finish = finish_body(email, &challenge, &code);
+    let (head, body) = request(address, "POST /api/sign-in/finish", &finish).await;
+    (
+        status(&head).to_owned(),
+        serde_json::from_str(&body).unwrap(),
+    )
 }
 
-pub(crate) fn member_id(id: &str) -> weacon_protocol::MemberId {
-    weacon_protocol::MemberId::try_from(id.to_owned()).unwrap()
+/// The header that proves a sign-in whose answer was `body`.
+pub(crate) fn bearer(body: &Value) -> String {
+    let token = body["token"].as_str().unwrap();
+    format!("authorization: Bearer {token}\r\n")
 }
 
-/// Workspaces `w1` and `w2` in a new database in `dir`, whose members `m1` and `m2` share
-/// the address ada@example.com.
+/// One request with `headers` and `body`: the answer's status line, and its JSON body or
+/// null.
+pub(crate) async fn ask(
+    address: SocketAddr,
+    head: &str,
+    headers: &str,
+    body: &str,
+) -> (String, Value) {
+    let (head, body) = request_with(address, head, headers, body).await;
+    let body = serde_json::from_str(&body).unwrap_or_default();
+    (status(&head).to_owned(), body)
+}
+
+/// Workspaces w1 and w2 on a new database. ada@example.com is m1 in w1 and m2 in w2, and
+/// bo@example.com is m3 in w1 only.
 pub(crate) async fn two_teams(dir: &TempDir) -> (Workspace, Workspace) {
     let db = Db::create(&dir.join("weacon.db")).await.unwrap();
-    let email = Email::parse("ada@example.com").unwrap();
     let one = db
         .create_workspace(&workspace_id("w1"), "One")
         .await
@@ -222,13 +260,26 @@ pub(crate) async fn two_teams(dir: &TempDir) -> (Workspace, Workspace) {
         .create_workspace(&workspace_id("w2"), "Two")
         .await
         .unwrap();
-    one.add_member(&member_id("m1"), &fresh_account(), &email)
-        .await
-        .unwrap();
-    two.add_member(&member_id("m2"), &fresh_account(), &email)
-        .await
-        .unwrap();
+    for (workspace, member, address) in [
+        (&one, "m1", "ada@example.com"),
+        (&two, "m2", "ada@example.com"),
+        (&one, "m3", "bo@example.com"),
+    ] {
+        let email = Email::parse(address).unwrap();
+        workspace
+            .add_member(&member_id(member), &fresh_account(), &email)
+            .await
+            .unwrap();
+    }
     (one, two)
+}
+
+pub(crate) fn workspace_id(id: &str) -> weacon_protocol::WorkspaceId {
+    weacon_protocol::WorkspaceId::try_from(id.to_owned()).unwrap()
+}
+
+pub(crate) fn member_id(id: &str) -> weacon_protocol::MemberId {
+    weacon_protocol::MemberId::try_from(id.to_owned()).unwrap()
 }
 
 /// An account id nothing else has.
