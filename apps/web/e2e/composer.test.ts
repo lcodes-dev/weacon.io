@@ -41,6 +41,8 @@ test("Enter during a composition neither sends nor clears, and Enter after it se
     await box.press("Enter");
     await page.getByText("Too long to send; shorten it and try again").waitFor();
     assert.equal(await box.inputValue(), long);
+    await box.press("Backspace");
+    assert.equal(await page.getByText("Too long to send; shorten it and try again").count(), 0);
 
     const send = page.getByRole("button", { name: "Send" });
     await box.fill("   ");

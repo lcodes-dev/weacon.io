@@ -44,7 +44,7 @@ export class Receipts {
     this.#later(() => {
       // Only this wait's deadline, not that of an earlier send of the same request.
       if (this.#waiting.get(request) === waiting) {
-        this.#settle(request, "unsure");
+        this.settle(request, "unsure");
       }
     }, WAIT_MS);
     return settled;
@@ -53,12 +53,12 @@ export class Receipts {
   /** Settles the command `envelope` answers; whether it answered one. */
   take(envelope: Envelope): boolean {
     if (envelope.type === "receipt" && typeof envelope.request === "string") {
-      this.#settle(envelope.request, SETTLED.get(envelope.state) ?? "unsure");
+      this.settle(envelope.request, SETTLED.get(envelope.state) ?? "unsure");
       return true;
     }
     const refused = envelope.type === "error" ? [...this.#waiting].find(([, waiting]) => waiting.id === envelope.id) : undefined;
     if (refused !== undefined) {
-      this.#settle(refused[0], "refused");
+      this.settle(refused[0], "refused");
     }
     return refused !== undefined;
   }
@@ -71,7 +71,8 @@ export class Receipts {
     this.#waiting.clear();
   }
 
-  #settle(request: RequestId, settled: Settled): void {
+  /** Ends the wait for `request` as `settled`, as when its command couldn't be sent. */
+  settle(request: RequestId, settled: Settled): void {
     this.#waiting.get(request)?.resolve(settled);
     this.#waiting.delete(request);
   }

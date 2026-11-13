@@ -42,7 +42,10 @@ export function Composer({ send, blocked, hidden }: { send: Send | undefined; bl
         rows={2}
         value={text}
         readOnly={sending}
-        onChange={(event) => setText(event.target.value)}
+        onChange={(event) => {
+          setText(event.target.value);
+          setProblem(undefined);
+        }}
         onKeyDown={(event) => {
           if (sends(event.nativeEvent)) {
             event.preventDefault();
