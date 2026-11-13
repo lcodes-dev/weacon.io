@@ -50,7 +50,9 @@ export function TranscriptView({ rows, writing, away }: { rows: readonly Row[]; 
   // Selections in Settings, while `away`, don't count.
   const selection = away ? null : document.getSelection();
   const awayNow = useRef(away);
-  awayNow.current = away;
+  useLayoutEffect(() => {
+    awayNow.current = away;
+  }, [away]);
   const keepAtBottom = useRef(() => {
     const element = scroller.current;
     if (element === null || !bottom.current) {

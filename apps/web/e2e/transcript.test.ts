@@ -77,14 +77,28 @@ test("a reader at the bottom of a finished run is still there after Settings", {
   try {
     const { page } = harness;
     await page.waitForSelector(".row.finished");
-    assert.ok(atBottom(await page.evaluate(scrollOf)));
+    // The rows near the end grow to their real height once shown, after the view first followed.
+    await page.evaluate(settled);
+    assert.ok(atBottom(await page.evaluate(scrollOf)), "the run's end stopped short of the bottom");
     await page.getByRole("button", { name: "Settings" }).click();
     await page.getByRole("button", { name: "Back" }).click();
+    await page.evaluate(settled);
     assert.ok(atBottom(await page.evaluate(scrollOf)), "the message box hid the end of the run");
   } finally {
     await harness.close();
   }
 });
+
+// Waits until the transcript's height has held for a few frames.
+async function settled(): Promise<void> {
+  const height = () => document.querySelector(".transcript")?.scrollHeight;
+  for (let still = 0, last = height(); still < 5; ) {
+    await new Promise(requestAnimationFrame);
+    const now = height();
+    still = now === last ? still + 1 : 0;
+    last = now;
+  }
+}
 
 function backAfterNextRow(): Promise<void> {
   return new Promise((resolve) => {
