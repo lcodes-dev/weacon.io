@@ -80,6 +80,12 @@ impl Shared {
                 i64::try_from(since.as_secs()).unwrap_or(i64::MAX)
             })
     }
+
+    /// Tells the open feeds that `workspace` changed; nobody listening is fine, as feeds read
+    /// what they missed from the database.
+    pub(crate) fn changed(&self, workspace: &WorkspaceId) {
+        drop(self.changes.send(workspace.clone()));
+    }
 }
 
 /// Serves `listener` until `shutdown` finishes, then lets open requests end for up to

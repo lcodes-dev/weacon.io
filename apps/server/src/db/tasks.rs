@@ -11,7 +11,12 @@ impl Workspace {
     /// Stores a new task, made by `change`. An id or order key already in this workspace is
     /// `db.exists`.
     pub(crate) async fn add_task(&self, task: &Task, change: &Change) -> Result<(), Fault> {
-        let mut transaction = self.db.writer.begin().await.map_err(failed)?;
+        let mut transaction = self
+            .db
+            .writer
+            .begin_with("BEGIN IMMEDIATE")
+            .await
+            .map_err(failed)?;
         sqlx::query(
             "INSERT INTO tasks (workspace_id, task_id, title, status, order_key, version)
              VALUES (?, ?, ?, ?, ?, ?)",
@@ -69,7 +74,7 @@ impl Workspace {
         .fetch_optional(&mut *transaction)
         .await
         .map_err(failed)?
-        .ok_or_else(|| Fault::new(code!("task.not_found"), "There is no such task"))?;
+        .ok_or_else(task_not_found)?;
         let edited = stored_task(row)?.edit(read_at, edit).map_err(refused)?;
         sqlx::query(
             "UPDATE tasks SET title = ?, status = ?, order_key = ?, version = ?
@@ -128,6 +133,10 @@ fn stored_task((id, title, status, order, version): Row) -> Result<Task, Fault> 
             .map(TaskVersion::new)
             .map_err(|_| unreadable())?,
     })
+}
+
+pub(crate) fn task_not_found() -> Fault {
+    Fault::new(code!("task.not_found"), "There is no such task")
 }
 
 fn refused(error: EditError) -> Fault {
@@ -231,9 +240,13 @@ mod tests {
     async fn tasks_are_listed_in_their_order() {
         let dir = TempDir::new().unwrap();
         let (one, _) = two_teams(&dir).await;
+        let started = Task {
+            status: TaskStatus::InProgress,
+            ..new_task("t2", "Third", "b")
+        };
         for task in [
             new_task("t1", "Second", "V"),
-            new_task("t2", "Third", "b"),
+            started.clone(),
             new_task("t3", "First", "B"),
         ] {
             one.add_task(&task, &by("m1")).await.unwrap();
@@ -244,7 +257,7 @@ mod tests {
             [
                 new_task("t3", "First", "B"),
                 new_task("t1", "Second", "V"),
-                new_task("t2", "Third", "b"),
+                started,
             ]
         );
     }

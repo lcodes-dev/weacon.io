@@ -99,6 +99,8 @@ impl Workspace {
 mod tests {
     use weacon_testing::TempDir;
 
+    use weacon_model::{Change, OrderKey, Task, TaskTitle};
+
     use super::*;
     use crate::test_support::{member_id, two_teams, workspace_id};
 
@@ -155,22 +157,35 @@ mod tests {
     async fn a_task_change_names_its_task_and_version_and_needs_both() {
         let dir = TempDir::new().unwrap();
         let (one, _) = two_teams(&dir).await;
+        let task = Task::new(
+            TaskId::try_from("t1".to_owned()).unwrap(),
+            TaskTitle::try_from("Write".to_owned()).unwrap(),
+            OrderKey::try_from("V".to_owned()).unwrap(),
+        );
+        one.add_task(&task, &Change::by(member_id("m1"), 0))
+            .await
+            .unwrap();
         sqlx::query(
             "INSERT INTO changes (workspace_id, seq, kind, member_id, task_id, task_version)
-             VALUES ('w1', 1, 'task_changed', 'm1', 't1', 2),
-                    ('w1', 2, 'task_changed', 'm1', 't1', NULL),
-                    ('w1', 3, 'member_joined', 'm1', 't1', NULL)",
+             VALUES ('w1', 2, 'task_changed', 'm1', 't1', NULL),
+                    ('w1', 3, 'member_joined', 'm1', 't1', 1)",
         )
         .execute(&one.db.writer)
         .await
         .unwrap();
+        let orphan = sqlx::query(
+            "INSERT INTO changes (workspace_id, seq, kind, member_id, task_id, task_version)
+             VALUES ('w1', 4, 'task_changed', 'm1', 't1', 2)",
+        )
+        .execute(&one.db.writer)
+        .await;
 
         let changed = WorkspaceUpdate {
             workspace: workspace_id("w1"),
             seq: 1,
             change: WorkspaceChange::TaskChanged {
-                task: TaskId::try_from("t1".to_owned()).unwrap(),
-                version: 2,
+                task: task.id,
+                version: 1,
             },
         };
         assert_eq!(one.changes_since(0, 1).await.unwrap(), [changed]);
@@ -178,5 +193,6 @@ mod tests {
             let fault = one.changes_since(after, 1).await.unwrap_err();
             assert_eq!(fault.code().as_str(), "db.unreadable");
         }
+        orphan.unwrap_err();
     }
 }

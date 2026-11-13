@@ -1,18 +1,17 @@
 use axum::Json;
-use axum::extract::rejection::JsonRejection;
+use axum::extract::rejection::{JsonRejection, PathRejection};
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use weacon_model::{Change, OrderKey, Task, TaskEdit, TaskTitle, TaskVersion};
 use weacon_observability::Fault;
 use weacon_protocol::{
-    TaskChange, TaskCreate, TaskEditBody, TaskId, TaskList, TaskRecord, TaskStatus, WorkspaceId,
-    code,
+    TaskChange, TaskCreate, TaskEditBody, TaskId, TaskList, TaskRecord, WorkspaceId, code,
 };
 
 use crate::app::new_id;
 use crate::auth::Member;
-use crate::db::Workspace;
+use crate::db::task_not_found;
 use crate::http::{Shared, error, failure};
 
 /// `GET /api/workspaces/{workspace}/tasks`: the workspace's tasks, in their order.
@@ -46,7 +45,7 @@ pub(crate) async fn create(
     };
     match made.await {
         Ok(task) => {
-            changed(&shared, &member.workspace);
+            shared.changed(member.workspace.id());
             (StatusCode::CREATED, Json(record(task))).into_response()
         }
         Err(fault) => answer(&shared, fault),
@@ -58,7 +57,7 @@ pub(crate) async fn create(
 pub(crate) async fn change(
     State(shared): State<Shared>,
     member: Member,
-    path: Result<Path<(WorkspaceId, TaskId)>, axum::extract::rejection::PathRejection>,
+    path: Result<Path<(WorkspaceId, TaskId)>, PathRejection>,
     body: Result<Json<TaskChange>, JsonRejection>,
 ) -> Response {
     let edited = async {
@@ -66,14 +65,12 @@ pub(crate) async fn change(
         let Json(body) = body.map_err(|_| invalid())?;
         let edit = match body.edit {
             TaskEditBody::Title { title: text } => TaskEdit::Title(title(text)?),
-            TaskEditBody::Status { status } if status != TaskStatus::Newer => {
-                TaskEdit::Status(status)
-            }
+            TaskEditBody::Status { status } => TaskEdit::Status(status),
             TaskEditBody::Move { before } => {
                 let tasks = member.workspace.tasks().await?;
                 TaskEdit::Order(place(&tasks, Some(&id), before.as_ref())?)
             }
-            TaskEditBody::Status { .. } | TaskEditBody::Newer => return Err(invalid()),
+            TaskEditBody::Newer => return Err(invalid()),
         };
         let change = Change::by(member.id.clone(), shared.now());
         let read_at = TaskVersion::new(body.version);
@@ -84,7 +81,7 @@ pub(crate) async fn change(
     };
     match edited.await {
         Ok(task) => {
-            changed(&shared, &member.workspace);
+            shared.changed(member.workspace.id());
             Json(record(task)).into_response()
         }
         Err(fault) => answer(&shared, fault),
@@ -108,7 +105,7 @@ fn place(
         Some(before) => others
             .iter()
             .position(|task| task.id == *before)
-            .ok_or_else(not_found)?,
+            .ok_or_else(task_not_found)?,
         None => others.len(),
     };
     let after = at.checked_sub(1).and_then(|at| others.get(at));
@@ -132,17 +129,8 @@ fn record(task: Task) -> TaskRecord {
     }
 }
 
-/// Tells the open feeds; nobody listening is fine, as feeds read what they missed.
-fn changed(shared: &Shared, workspace: &Workspace) {
-    drop(shared.changes.send(workspace.id().clone()));
-}
-
 fn invalid() -> Fault {
     Fault::new(code!("task.invalid"), "The task request isn't valid")
-}
-
-fn not_found() -> Fault {
-    Fault::new(code!("task.not_found"), "There is no such task")
 }
 
 /// Answers a refusal with its status, and anything else as the server failing.
@@ -163,6 +151,8 @@ mod tests {
     use std::net::SocketAddr;
 
     use weacon_protocol::{ErrorBody, WorkspaceChange};
+
+    use weacon_protocol::TaskStatus;
 
     use super::*;
     use crate::test_support::{self, Fixture, Running, request_with, run, status, workspace_id};
@@ -256,7 +246,7 @@ mod tests {
             .into();
         assert_eq!(ada.list().await, [plan, write.clone(), review, ship]);
         assert_eq!((write.status, write.version), (TaskStatus::Todo, 1));
-        assert_eq!(changes.recv().await.unwrap(), workspace_id("w1"));
+        assert_eq!(changes.try_recv().unwrap(), workspace_id("w1"));
         let w1 = fixture
             .shared
             .db
@@ -400,15 +390,16 @@ mod tests {
                 "POST /api/workspaces/w1/tasks/x",
                 r#"{"version":1,"edit":{"kind":"archive"}}"#,
             ),
-            (
-                "POST /api/workspaces/w1/tasks/x",
-                r#"{"version":1,"edit":{"kind":"status","status":"later"}}"#,
-            ),
         ] {
             let (status, body) = ada.send(head, body).await;
             assert_eq!(status, "http/1.1 400 bad request", "{head}");
             assert_eq!(refusal(&body), "task.invalid");
         }
+        let later = r#"{"version":1,"edit":{"kind":"status","status":"later"}}"#;
+        let head = format!("POST /api/workspaces/w1/tasks/{}", write.id.as_str());
+        let (status, body) = ada.send(&head, later).await;
+        assert_eq!(status, "http/1.1 400 bad request");
+        assert_eq!(refusal(&body), "task.unknown_value");
         assert_eq!(ada.list().await, [write]);
     }
 
@@ -439,5 +430,20 @@ mod tests {
             assert_eq!(refusal(&body), "sign_in.required");
         }
         assert!(ada.list().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_place_another_change_took_meanwhile_is_a_conflict_worth_retrying() {
+        let fixture = Fixture::new().await;
+        let taken = Fault::new(code!("db.exists"), "It already exists");
+
+        let answer = answer(&fixture.shared, taken);
+
+        assert_eq!(answer.status(), StatusCode::CONFLICT);
+        let body = axum::body::to_bytes(answer.into_body(), 1024)
+            .await
+            .unwrap();
+        let error: ErrorBody = serde_json::from_slice(&body).unwrap();
+        assert_eq!((error.code.as_str(), error.retryable), ("db.exists", true));
     }
 }

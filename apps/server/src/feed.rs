@@ -55,8 +55,7 @@ pub(crate) async fn feed(
     let changes = shared.changes.subscribe();
     // A member joins a workspace when they first open it.
     match member.workspace.join(&member.id).await {
-        // Nobody listening is fine: feeds read what they missed from the database.
-        Ok(true) => drop(shared.changes.send(member.workspace.id().clone())),
+        Ok(true) => shared.changed(member.workspace.id()),
         Ok(false) => {}
         Err(fault) => return failure(&shared, fault),
     }

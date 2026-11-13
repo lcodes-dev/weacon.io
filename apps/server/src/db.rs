@@ -8,6 +8,8 @@ mod schema;
 mod tasks;
 mod workspace;
 
+pub(crate) use tasks::task_not_found;
+
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -520,12 +522,12 @@ mod tests {
             [
                 "workspaces",
                 "members",
-                "changes",
                 "accounts",
                 "sign_in_challenges",
                 "sessions",
                 "tasks",
-                "task_versions"
+                "task_versions",
+                "changes"
             ]
         );
         for table in SERVER_WIDE {

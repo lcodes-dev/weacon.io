@@ -128,8 +128,24 @@ CREATE TABLE task_versions (
     FOREIGN KEY (workspace_id, accepted_by) REFERENCES members (workspace_id, member_id)
 ) STRICT;
 
-ALTER TABLE changes ADD COLUMN task_id TEXT;
-ALTER TABLE changes ADD COLUMN task_version INTEGER;
+CREATE TABLE changes_with_tasks (
+    workspace_id TEXT NOT NULL,
+    seq INTEGER NOT NULL,
+    kind TEXT NOT NULL,
+    member_id TEXT NOT NULL,
+    task_id TEXT,
+    task_version INTEGER,
+    PRIMARY KEY (workspace_id, seq),
+    FOREIGN KEY (workspace_id, member_id) REFERENCES members (workspace_id, member_id),
+    FOREIGN KEY (workspace_id, task_id, task_version)
+        REFERENCES task_versions (workspace_id, task_id, version)
+) STRICT;
+
+INSERT INTO changes_with_tasks (workspace_id, seq, kind, member_id)
+SELECT workspace_id, seq, kind, member_id FROM changes;
+
+DROP TABLE changes;
+ALTER TABLE changes_with_tasks RENAME TO changes;
 ",
 ];
 
