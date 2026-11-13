@@ -42,7 +42,7 @@ pub enum Author {
 
 /// A task as it travels: `order` is its order key and `version` rises with each change. The
 /// server sends it to clients that have the capability `workspace.tasks`.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct TaskRecord {
     pub id: TaskId,
     pub title: String,
@@ -52,29 +52,31 @@ pub struct TaskRecord {
 }
 
 /// A workspace's tasks in their order, from the server.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct TaskList {
     pub tasks: Vec<TaskRecord>,
 }
 
 /// Asks the server for a new task, placed in front of `before`, or last without one. The
 /// answer is its [`TaskRecord`].
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct TaskCreate {
     pub title: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "TaskId")]
     pub before: Option<TaskId>,
 }
 
 /// Asks the server to change a task that the client read at `version`; the server refuses
 /// when the task has changed since. The answer is its [`TaskRecord`].
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct TaskChange {
     pub version: u64,
     pub edit: TaskEditBody,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// One edit to a task, inside a [`TaskChange`].
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum TaskEditBody {
     Title {
@@ -86,10 +88,12 @@ pub enum TaskEditBody {
     /// Places the task in front of `before`, or last without one.
     Move {
         #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[schemars(with = "TaskId")]
         before: Option<TaskId>,
     },
     /// An edit this build doesn't know, from a newer peer; only ever received.
     #[serde(other)]
+    #[schemars(skip)]
     Newer,
 }
 
