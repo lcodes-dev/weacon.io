@@ -53,14 +53,8 @@ impl Settings {
         weacon_appkit::write_whole(file, &serde_json::to_vec(&self)?)
     }
 
-    /// The level as `weacon access` takes it; one this build doesn't know allows nothing.
     pub(crate) const fn level(self) -> &'static str {
-        match self.access {
-            AccessLevel::Off | AccessLevel::Newer => "off",
-            AccessLevel::ReadOnly => "read-only",
-            AccessLevel::AskFirst => "ask-first",
-            AccessLevel::Full => "full",
-        }
+        level_name(self.access)
     }
 
     /// A line of warning for full access in a team workspace, or nothing.
@@ -72,6 +66,30 @@ impl Settings {
             ""
         }
     }
+}
+
+/// The name `weacon access` takes and shows for `level`; one this build doesn't know allows
+/// nothing.
+const fn level_name(level: AccessLevel) -> &'static str {
+    match level {
+        AccessLevel::Off | AccessLevel::Newer => "off",
+        AccessLevel::ReadOnly => "read-only",
+        AccessLevel::AskFirst => "ask-first",
+        AccessLevel::Full => "full",
+    }
+}
+
+/// The level `weacon access` takes by `name`.
+pub(crate) fn parse_level(name: &str) -> Result<AccessLevel, &'static str> {
+    [
+        AccessLevel::Off,
+        AccessLevel::ReadOnly,
+        AccessLevel::AskFirst,
+        AccessLevel::Full,
+    ]
+    .into_iter()
+    .find(|level| level_name(*level) == name)
+    .ok_or("not an access level: use off, read-only, ask-first or full")
 }
 
 /// Sets what `workspace`'s agents may do on this machine, and says what it is now.

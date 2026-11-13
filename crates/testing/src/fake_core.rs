@@ -155,6 +155,12 @@ fn line(run: RunId, event: RunEvent) -> Result<String, String> {
         .map_err(|error| error.to_string())
 }
 
+/// `envelope` as the text of one frame.
+pub(crate) fn text(envelope: &Envelope) -> Result<String, String> {
+    let json = envelope.to_json().map_err(|error| error.to_string())?;
+    String::from_utf8(json).map_err(|error| error.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use serde_json::{Value, json};

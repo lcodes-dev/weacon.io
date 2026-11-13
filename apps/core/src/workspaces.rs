@@ -13,7 +13,7 @@ use weacon_observability::Fault;
 use weacon_protocol::{AccessLevel, AgentKind, WorkspaceId, code};
 
 use access::Settings;
-pub(crate) use access::run as access;
+pub(crate) use access::{parse_level, run as access};
 
 use crate::app::{App, state_unavailable};
 use crate::daemon::runtime;
