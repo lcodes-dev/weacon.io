@@ -1,4 +1,4 @@
-use std::fs::{self, File, OpenOptions};
+use std::fs::{self, OpenOptions};
 use std::io;
 use std::path::{Path, PathBuf};
 
@@ -95,11 +95,7 @@ async fn link(partial: PathBuf, to: PathBuf) -> Result<(), Fault> {
     tokio::task::spawn_blocking(move || {
         OpenOptions::new().write(true).open(&partial)?.sync_all()?;
         fs::hard_link(&partial, &to)?;
-        // Windows can't open a folder, and doesn't need this.
-        if let Some(Ok(folder)) = to.parent().map(File::open) {
-            folder.sync_all()?;
-        }
-        Ok(())
+        to.parent().map_or(Ok(()), weacon_appkit::sync_dir)
     })
     .await
     .map_err(io::Error::other)
