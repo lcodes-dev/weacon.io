@@ -51,13 +51,16 @@ export class Api {
     if (response === undefined) {
       return { ok: false, code: UNREACHABLE };
     }
-    const value = response.status === 204 ? undefined : await response.json().catch(() => undefined);
+    const value = response.status === 204 ? undefined : await response.json().catch(() => NOT_JSON);
     if (response.status >= 200 && response.status < 300) {
       return fits(value) ? { ok: true, value } : { ok: false, code: MALFORMED };
     }
     return { ok: false, code: isError(value) ? value.code : MALFORMED };
   }
 }
+
+// What a body that doesn't parse reads as, which no answer's shape fits.
+const NOT_JSON = Symbol("not JSON");
 
 function fields(value: unknown, keys: string[]): boolean {
   return (
