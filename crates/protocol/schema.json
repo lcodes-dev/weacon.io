@@ -290,6 +290,44 @@
         "commit"
       ]
     },
+    "Author": {
+      "description": "Who made a change, such as one to a task.",
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "person"
+            },
+            "member": {
+              "$ref": "#/$defs/MemberId"
+            }
+          },
+          "required": [
+            "kind",
+            "member"
+          ]
+        },
+        {
+          "description": "An agent, named by the member it answers to.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "agent"
+            },
+            "owner": {
+              "$ref": "#/$defs/MemberId"
+            }
+          },
+          "required": [
+            "kind",
+            "owner"
+          ]
+        }
+      ]
+    },
     "Capability": {
       "description": "A feature a peer supports, such as `chat.send`, named like a [`Code`]. A peer keeps the ones\nit doesn't know, so a newer peer's list still parses.",
       "$ref": "#/$defs/Code"
@@ -701,6 +739,11 @@
       "maxLength": 64,
       "pattern": "^[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)+$"
     },
+    "CommitId": {
+      "description": "A git commit, as 40 or 64 lowercase hex digits.",
+      "type": "string",
+      "pattern": "^([0-9a-f]{40}|[0-9a-f]{64})$"
+    },
     "DiffAnswer": {
       "description": "From the core to a client that has `diff.view`, in answer to a [`DiffQuery`].",
       "type": "object",
@@ -893,6 +936,175 @@
             "kind"
           ]
         }
+      ]
+    },
+    "DocAnchors": {
+      "description": "A pin for each anchor a doc links to, all computed at `commit`.",
+      "type": "object",
+      "properties": {
+        "commit": {
+          "$ref": "#/$defs/CommitId"
+        },
+        "pins": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/DocPin"
+          }
+        }
+      },
+      "required": [
+        "commit",
+        "pins"
+      ]
+    },
+    "DocContent": {
+      "description": "What one revision of a doc says: its title, its Markdown, and the anchors it links to,\nunless it links to none.",
+      "type": "object",
+      "properties": {
+        "anchors": {
+          "$ref": "#/$defs/DocAnchors"
+        },
+        "body": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "title",
+        "body"
+      ]
+    },
+    "DocHistory": {
+      "description": "A doc's revisions, newest first, from the server.",
+      "type": "object",
+      "properties": {
+        "revisions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/DocRevision"
+          }
+        }
+      },
+      "required": [
+        "revisions"
+      ]
+    },
+    "DocId": {
+      "description": "A doc in a workspace, 1–64 ASCII letters, digits, `-` or `_`.",
+      "type": "string",
+      "maxLength": 64,
+      "pattern": "^[A-Za-z0-9_-]+$"
+    },
+    "DocList": {
+      "description": "A workspace's docs, from the server.",
+      "type": "object",
+      "properties": {
+        "docs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/DocSummary"
+          }
+        }
+      },
+      "required": [
+        "docs"
+      ]
+    },
+    "DocPin": {
+      "description": "An anchor a doc links to, with the fingerprint the code had at the revision's commit:\n`sym:weacon_protocol::frame::encode_line#0123456789abcdef`. The core computes both; the\nserver only checks their shape.",
+      "type": "string",
+      "maxLength": 512,
+      "pattern": "^(sym|flow|area):\\S+#[0-9a-f]{16}$"
+    },
+    "DocRecord": {
+      "description": "A doc at one revision; `version` rises with each revision. The server sends it to clients\nthat have the capability `workspace.docs`.",
+      "type": "object",
+      "properties": {
+        "content": {
+          "$ref": "#/$defs/DocContent"
+        },
+        "id": {
+          "$ref": "#/$defs/DocId"
+        },
+        "version": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "id",
+        "version",
+        "content"
+      ]
+    },
+    "DocRevise": {
+      "description": "Asks the server for a new revision of a doc that the client read at `version`; the server\nrefuses when the doc has changed since. The answer is its [`DocRecord`].",
+      "type": "object",
+      "properties": {
+        "content": {
+          "$ref": "#/$defs/DocContent"
+        },
+        "version": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "version",
+        "content"
+      ]
+    },
+    "DocRevision": {
+      "description": "Who made one revision of a doc, who accepted it, and when, in seconds since the Unix\nepoch.",
+      "type": "object",
+      "properties": {
+        "accepted_by": {
+          "$ref": "#/$defs/MemberId"
+        },
+        "at": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "author": {
+          "$ref": "#/$defs/Author"
+        },
+        "version": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "version",
+        "author",
+        "accepted_by",
+        "at"
+      ]
+    },
+    "DocSummary": {
+      "description": "A doc in a [`DocList`], without its body.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/DocId"
+        },
+        "title": {
+          "type": "string"
+        },
+        "version": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "id",
+        "title",
+        "version"
       ]
     },
     "ErrorBody": {
@@ -1801,6 +2013,29 @@
           "required": [
             "kind",
             "task",
+            "version"
+          ]
+        },
+        {
+          "description": "A doc was made, at version 1, or revised. Only for clients that have the capability\n`workspace.docs`, which read the doc again to see what it now says.",
+          "type": "object",
+          "properties": {
+            "doc": {
+              "$ref": "#/$defs/DocId"
+            },
+            "kind": {
+              "type": "string",
+              "const": "doc_changed"
+            },
+            "version": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            }
+          },
+          "required": [
+            "kind",
+            "doc",
             "version"
           ]
         }
