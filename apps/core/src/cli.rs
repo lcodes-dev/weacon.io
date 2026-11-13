@@ -67,11 +67,11 @@ fn agent(name: &str) -> Result<AgentKind, &'static str> {
 pub(crate) enum Level {
     /// No agent runs.
     Off,
-    /// Agents read and never change anything.
+    /// Agents read; every change they ask for is turned down.
     ReadOnly,
     /// Agents ask a person before each change.
     AskFirst,
-    /// Agents change things without asking.
+    /// Agents change files in their folder without asking; anything else still asks.
     Full,
 }
 
