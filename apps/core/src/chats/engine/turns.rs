@@ -371,7 +371,7 @@ fn cut(event: &RunEvent) -> RunEvent {
 #[cfg(test)]
 mod tests {
     use serde_json::json;
-    use weacon_protocol::{ChatAction, ChatAnswerKind, ChatCommand, ChatQueryKind};
+    use weacon_protocol::{ChatAction, ChatAnswerKind, ChatCommand, ChatQueryKind, Receipt};
     use weacon_testing::messages;
 
     use super::*;
@@ -804,6 +804,13 @@ mod tests {
         (engine, agent, bench)
     }
 
+    fn receipt_of(event: ChatEvent) -> Option<Receipt> {
+        let ChatEvent::Receipt { receipt } = event else {
+            return None;
+        };
+        Some(receipt)
+    }
+
     fn allow(request: &str) -> (ChatCommand, PermissionAnswer) {
         let answer = PermissionAnswer {
             run: run("run-1"),
@@ -893,12 +900,9 @@ mod tests {
             .await
             .unwrap()
             .into_iter()
-            .filter_map(|entry| match entry.event {
-                ChatEvent::Receipt { receipt } if receipt.request == request => {
-                    Some(receipt.outcome)
-                }
-                _ => None,
-            })
+            .filter_map(|entry| receipt_of(entry.event))
+            .filter(|receipt| receipt.request == request)
+            .map(|receipt| receipt.outcome)
             .collect::<Vec<_>>();
         assert_eq!(outcomes, [Outcome::Accepted, Outcome::Completed]);
     }

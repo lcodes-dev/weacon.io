@@ -23,7 +23,9 @@ impl<A: Agent> Engine<A> {
             Seen::Same => {
                 return match command.action {
                     ChatAction::Permission { answer } => self.deliver(key, &request, answer).await,
-                    _ => self.advance(key).await,
+                    ChatAction::Prompt { .. } | ChatAction::Interrupt | ChatAction::Newer => {
+                        self.advance(key).await
+                    }
                 };
             }
             Seen::Other => {
