@@ -4,11 +4,12 @@ import { createRoot } from "react-dom/client";
 import "./app.css";
 import { App } from "./app.tsx";
 import { ME } from "./build.ts";
-import { prompt, requestId } from "./composer/prompt.ts";
+import { type Send, deliver, prompt } from "./composer/prompt.ts";
 import { Connection, type Status } from "./connection.ts";
 import { Feed, nextFrame } from "./feed.ts";
 import { Log } from "./log.ts";
 import { placeOf } from "./place.ts";
+import { Receipts } from "./receipts.ts";
 import { serverUrl } from "./server.ts";
 import { EMPTY, apply } from "./transcript.ts";
 
@@ -30,7 +31,7 @@ const place = placeOf(window.location.search);
 function Root() {
   const [status, setStatus] = useState<Status>({ state: "connecting" });
   const [transcript, setTranscript] = useState(EMPTY);
-  const [send, setSend] = useState<(text: string) => void>();
+  const [send, setSend] = useState<Send>();
   useEffect(() => {
     // A closed socket's last news must not overwrite the next socket's.
     let current = true;
@@ -42,6 +43,7 @@ function Root() {
       setStatus({ state: "ended", code: "connection.refused" });
       return;
     }
+    const receipts = new Receipts((run, ms) => setTimeout(run, ms));
     const feed = new Feed(
       nextFrame(
         () => document.hidden,
@@ -66,15 +68,21 @@ function Root() {
           if (place !== undefined) {
             // The hello took id 1.
             let lastId = 1;
-            const request = () => requestId(crypto.getRandomValues(new Uint8Array(16)));
-            setSend(() => (text: string) => connection.send(prompt(++lastId, place, request(), text)));
+            const sendTo: Send = (text, request) =>
+              deliver(prompt(++lastId, place, request, text), receipts, (envelope) => connection.send(envelope));
+            setSend(() => sendTo);
           }
         } else if (next.state === "ended") {
           log.detach();
+          receipts.end();
           log.warn(next.code === "connection.lost" ? "connection lost" : "connection refused", { code: next.code });
         }
       },
-      message: (envelope) => feed.push(envelope),
+      message(envelope) {
+        if (!receipts.take(envelope)) {
+          feed.push(envelope);
+        }
+      },
     });
     return () => {
       current = false;

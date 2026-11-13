@@ -24,6 +24,7 @@ use crate::mail::Outbox;
 use crate::secret::Secret;
 use crate::sign_in;
 use crate::tasks;
+use crate::web::{self, WebFile};
 
 const REQUEST_ID: &str = "x-request-id";
 const GRACE: Duration = Duration::from_secs(10);
@@ -69,6 +70,8 @@ pub(crate) struct Shared {
     pub(crate) starts: Arc<Limit>,
     /// How many codes each client may try.
     pub(crate) tries: Arc<Limit>,
+    /// The web app's built files it serves.
+    pub(crate) web: &'static [WebFile],
 }
 
 impl Shared {
@@ -133,6 +136,7 @@ fn router(shared: Shared) -> Router {
             "/api/workspaces/{workspace}/tasks/{task}",
             post(tasks::change),
         )
+        .merge(web::routes(shared.web))
         .layer(DefaultBodyLimit::max(MAX_BODY))
         .layer(middleware::from_fn(in_time))
         .layer(middleware::from_fn_with_state(shared.clone(), log_request))
@@ -225,7 +229,7 @@ mod tests {
     use tokio::net::TcpStream;
 
     use super::*;
-    use crate::test_support::{Fixture, Running, messages, request, run};
+    use crate::test_support::{Fixture, Running, header, messages, request, run};
 
     struct Server {
         running: Running,
@@ -245,11 +249,6 @@ mod tests {
 
     async fn get(address: SocketAddr, target: &str) -> (Vec<String>, String) {
         request(address, &format!("GET {target}"), "").await
-    }
-
-    fn header<'a>(head: &'a [String], name: &str) -> Option<&'a str> {
-        head.iter()
-            .find_map(|line| line.strip_prefix(name)?.strip_prefix(": "))
     }
 
     #[tokio::test]

@@ -17,6 +17,7 @@ mod sign_in;
 mod tasks;
 #[cfg(test)]
 mod test_support;
+mod web;
 
 use std::io;
 use std::net::SocketAddr;
@@ -116,6 +117,7 @@ async fn serve(app: &App, args: Serve) -> Result<(), Fault> {
         finish_within: sign_in::FINISH_WITHIN,
         starts: Arc::new(sign_in::starts()),
         tries: Arc::new(sign_in::tries()),
+        web: web::FILES,
     };
     http::serve(listener, shared, signals.wait()).await;
     db.close().await;
