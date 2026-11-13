@@ -14,6 +14,7 @@ mod limit;
 mod mail;
 mod secret;
 mod sign_in;
+mod tasks;
 #[cfg(test)]
 mod test_support;
 mod web;
