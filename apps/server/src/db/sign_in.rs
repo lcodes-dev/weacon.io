@@ -275,8 +275,8 @@ mod tests {
     use weacon_testing::TempDir;
 
     use super::*;
-    use crate::db::Db;
-    use crate::test_support::{member_id, workspace_id};
+
+    use crate::test_support::two_teams;
 
     const NOW: i64 = 100_000;
 
@@ -289,25 +289,6 @@ mod tests {
     }
 
     // Workspaces w1 and w2 each with ada@example.com, as m1 and m2.
-    async fn two_teams(dir: &TempDir) -> (Workspace, Workspace) {
-        let db = Db::create(&dir.join("weacon.db")).await.unwrap();
-        let one = db
-            .create_workspace(&workspace_id("w1"), "One")
-            .await
-            .unwrap();
-        let two = db
-            .create_workspace(&workspace_id("w2"), "Two")
-            .await
-            .unwrap();
-        one.add_member(&member_id("m1"), &email("ada@example.com"))
-            .await
-            .unwrap();
-        two.add_member(&member_id("m2"), &email("ada@example.com"))
-            .await
-            .unwrap();
-        (one, two)
-    }
-
     // Starts challenge `name` for `member` in `team`, with `code`.
     async fn challenge(team: &Workspace, member: &str, name: &str, code: &[u8], now: i64) {
         team.start_challenge(&id(member), &id(name), code, now)
