@@ -705,16 +705,18 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn a_session_the_journal_couldnt_save_is_resumed_by_the_next_run() {
-        let (mut bench, mut engine, agent, _pushes) = on_turn().await;
+        let (mut bench, mut engine, agent, pushes) = on_turn().await;
         let path = engine.runs.jam();
         let started = RunEvent::Started { session: session() };
         let lost = hear(&mut engine, started).await;
         assert_eq!(lost.unwrap_err().code().as_str(), "runs.not_saved");
         engine.runs.unjam(path);
 
-        drop(agent);
+        // The agent exits and nobody watches: the chat stays open for its session.
+        drop((agent, pushes));
         let exited = Heard::Exited(None);
         engine.heard(&key(), &run("run-1"), exited).await.unwrap();
+        engine.settle(&key());
         engine.command(&key(), prompt("r-2", "More")).await.unwrap();
 
         let next = soon(bench.started.recv()).await.unwrap();

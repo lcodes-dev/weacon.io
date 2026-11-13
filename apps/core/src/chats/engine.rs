@@ -113,10 +113,14 @@ struct Chat {
 }
 
 impl Chat {
-    // Whether no agent, waiting prompt or connected subscriber needs the chat open.
+    // Whether no agent, waiting prompt, unsaved session or connected subscriber needs the chat
+    // open.
     fn is_idle(&mut self) -> bool {
         self.subscribers.retain(|subscriber| !subscriber.is_gone());
-        self.orders.is_none() && self.subscribers.is_empty() && self.waiting.is_empty()
+        self.orders.is_none()
+            && self.subscribers.is_empty()
+            && self.waiting.is_empty()
+            && self.unsaved.is_none()
     }
 }
 
