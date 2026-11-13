@@ -101,3 +101,12 @@ test("only events with the fields this app reads are taken; unknown ones pass", 
   assert.ok(good.every(isRunEvent));
   assert.ok(!bad.some(isRunEvent));
 });
+
+test("a reused call id finishes only its newest row, once", () => {
+  const { rows } = apply(EMPTY, [call("c-1"), call("c-1"), done("c-1", true), done("c-1", false)]);
+
+  assert.deepEqual(rows, [
+    { kind: "tool", call: "c-1", tool: "Read", state: "running" },
+    { kind: "tool", call: "c-1", tool: "Read", state: "failed" },
+  ]);
+});

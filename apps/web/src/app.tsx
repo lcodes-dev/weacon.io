@@ -1,7 +1,7 @@
 import { useState } from "react";
 
 import { Composer } from "./composer/composer.tsx";
-import { blocked } from "./composer/prompt.ts";
+import { type Send, blocked } from "./composer/prompt.ts";
 import { type Status, statusText } from "./connection.ts";
 import { type Changes, canAsk } from "./diff/changes.ts";
 import { DiffView } from "./diff/diff-view.tsx";
@@ -28,7 +28,7 @@ export function App({
   status: Status;
   transcript: Transcript;
   place: Place | undefined;
-  send: ((text: string) => void) | undefined;
+  send: Send | undefined;
   review: Review;
 }) {
   const [shown, setShown] = useState<Shown>("run");
@@ -59,21 +59,24 @@ export function App({
           </button>
         )}
       </header>
-      <main>{page(shown, me, status, transcript, review)}</main>
+      <main>
+        <div className={shown === "run" ? "pane" : "pane away"}>
+          <TranscriptView rows={transcript.rows} writing={transcript.writing} away={shown !== "run"} />
+        </div>
+        {shown === "changes" && (
+          <div className="pane">
+            <DiffView changes={review.changes} />
+          </div>
+        )}
+        {shown === "settings" && (
+          <div className="pane">
+            <Settings me={me} status={status} />
+          </div>
+        )}
+      </main>
       <Composer send={send} blocked={blocked(status, place)} hidden={shown !== "run"} />
     </div>
   );
-}
-
-function page(shown: Shown, me: Build, status: Status, transcript: Transcript, { changes }: Review) {
-  switch (shown) {
-    case "run":
-      return <TranscriptView rows={transcript.rows} writing={transcript.writing} />;
-    case "changes":
-      return <DiffView changes={changes} />;
-    case "settings":
-      return <Settings me={me} status={status} />;
-  }
 }
 
 function Settings({ me, status }: { me: Build; status: Status }) {

@@ -44,6 +44,18 @@ header .actions {
 main {
   flex: 1;
   min-height: 0;
+  position: relative;
+}
+
+.pane {
+  position: absolute;
+  inset: 0;
+}
+
+/* Under Settings the transcript is hidden, not unmounted, and by `visibility` rather than
+   `display`, so it keeps its layout and the reader's place. */
+.away {
+  visibility: hidden;
 }
 
 .page {
@@ -99,4 +111,32 @@ dd {
 
 .tool.failed {
   color: #c4372b;
+}
+
+.text > p,
+.text > ul,
+.text > ol,
+.text > pre {
+  margin: 0 0 8px;
+}
+
+.text > :last-child {
+  margin-bottom: 0;
+}
+
+.text .heading {
+  font-weight: 600;
+}
+
+code {
+  font: 13px/1.5 ui-monospace, monospace;
+  background: var(--border);
+  border-radius: 4px;
+  padding: 0 4px;
+}
+
+pre code {
+  display: block;
+  padding: 8px 12px;
+  overflow-x: auto;
 }
