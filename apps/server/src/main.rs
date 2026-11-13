@@ -3,6 +3,7 @@
 mod admin;
 mod app;
 mod cli;
+mod client;
 mod connections;
 mod db;
 mod email;
@@ -77,6 +78,7 @@ async fn serve(app: &App, args: Serve) -> Result<(), Fault> {
         outbox,
         secret,
         max_connections,
+        trusted_proxy,
     } = args;
     // Otherwise every sign-in would fail after its answer, and only the logs would say so.
     if !outbox.is_dir() {
@@ -104,6 +106,7 @@ async fn serve(app: &App, args: Serve) -> Result<(), Fault> {
         secret: Arc::new(secret),
         clock: Arc::new(Box::new(SystemTime::now)),
         head_within: connections::HEAD_WITHIN,
+        proxies: trusted_proxy.into(),
         connections: Arc::new(Semaphore::new(max_connections)),
         feed: feed::TIMING,
         changes: broadcast::channel(CHANGES).0,
