@@ -266,6 +266,10 @@ mod tests {
         self, Fixture, Running, VERSION, fresh_account, member_id, run, workspace_id,
     };
 
+    // For tests whose client stops reading, or that wait on something other than a ping: no
+    // ping comes while they run.
+    const QUIET: Duration = Duration::from_hours(1);
+
     type Client = WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>;
 
     // Signs `email` in, and gives the session's token.
@@ -411,7 +415,8 @@ mod tests {
 
     #[tokio::test]
     async fn a_member_gets_what_they_missed_then_each_change() {
-        let fixture = Fixture::new().await;
+        let mut fixture = Fixture::new().await;
+        fixture.shared.feed.ping_every = QUIET;
         let (server, token) = signed_in(&fixture).await;
         let mut client = open(server.address, "/api/workspaces/w1/feed", &token)
             .await
@@ -470,7 +475,8 @@ mod tests {
 
     #[tokio::test]
     async fn changes_arrive_once_and_in_order_whatever_wakes_the_feed() {
-        let fixture = Fixture::new().await;
+        let mut fixture = Fixture::new().await;
+        fixture.shared.feed.ping_every = QUIET;
         let (server, token) = signed_in(&fixture).await;
         let mut client = greeted(server.address, &token, 1).await;
         join(&fixture, server.address, "m2", "bo@example.com").await;
@@ -596,8 +602,7 @@ mod tests {
     #[tokio::test]
     async fn a_change_reaches_no_feed_whose_member_is_one_no_more() {
         let mut fixture = Fixture::new().await;
-        // Too long for a ping to end the feed first.
-        fixture.shared.feed.ping_every = Duration::from_hours(1);
+        fixture.shared.feed.ping_every = QUIET;
         let (server, token) = signed_in(&fixture).await;
         let mut client = greeted(server.address, &token, 1).await;
         w1(&fixture).await.unlink(&member_id("m1")).await;
@@ -610,7 +615,7 @@ mod tests {
     #[tokio::test]
     async fn a_member_whose_session_ends_during_a_page_gets_no_more_of_it() {
         let mut fixture = Fixture::new().await;
-        fixture.shared.feed.ping_every = Duration::from_hours(1);
+        fixture.shared.feed.ping_every = QUIET;
         // The clock reads as usual for `checks` more readings, then past every session.
         let checks = Arc::new(AtomicU64::new(u64::MAX));
         let (left, clock) = (Arc::clone(&checks), Arc::clone(&fixture.shared.clock));
