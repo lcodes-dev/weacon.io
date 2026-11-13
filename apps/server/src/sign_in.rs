@@ -134,7 +134,7 @@ pub(crate) async fn session(session: Session) -> Json<AccountSignedIn> {
 }
 
 /// `POST /api/sign-out`: ends the session the request carries, if it is still one, and
-/// clears the browser's cookie either way.
+/// clears the browser's cookie either way, unless another site's page sent it.
 pub(crate) async fn sign_out(
     State(shared): State<Shared>,
     method: Method,
@@ -389,6 +389,8 @@ mod tests {
             .find_map(|line| line.strip_prefix("set-cookie: "));
         let (after, _) = ask(server.address, "GET /api/session", &cookie).await;
         let (again, _) = ask(server.address, "POST /api/sign-out", &page).await;
+        let (unproven, _) = ask(server.address, "POST /api/sign-out", PAGE).await;
+        let (bare, _) = ask(server.address, "POST /api/sign-out", "").await;
         let (others, _) = ask(server.address, "GET /api/session", &bearer).await;
         let (token_out, _) = ask(server.address, "POST /api/sign-out", &bearer).await;
         let (token_after, _) = ask(server.address, "GET /api/session", &bearer).await;
@@ -401,6 +403,8 @@ mod tests {
         assert_eq!(after, "http/1.1 401 unauthorized");
         // Signing out again, or with nothing to sign out of, is as good.
         assert_eq!(again, "http/1.1 204 no content");
+        assert_eq!(unproven, "http/1.1 204 no content");
+        assert_eq!(bare, "http/1.1 204 no content");
         // Each session ends on its own, and a bearer token needs no page behind it.
         assert_eq!(others, "http/1.1 200 ok");
         assert_eq!(token_out, "http/1.1 204 no content");
