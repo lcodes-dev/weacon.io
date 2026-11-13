@@ -209,6 +209,8 @@ pub(crate) fn brief(message: &Message) -> String {
         | Message::Log(_)
         | Message::ChatCommand(_)
         | Message::ChatQuery(_)
+        | Message::DiffQuery(_)
+        | Message::DiffAnswer(_)
         | Message::Unknown => "another message".to_owned(),
     }
 }
