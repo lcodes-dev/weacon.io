@@ -1,0 +1,108 @@
+.diff {
+  --added: #e6f4ea;
+  --removed: #fdecea;
+  --gutter: #f6f7f8;
+}
+
+@media (prefers-color-scheme: dark) {
+  .diff {
+    --added: #17311f;
+    --removed: #3a1c1c;
+    --gutter: #1d2025;
+  }
+}
+
+.diff .file {
+  content-visibility: auto;
+  margin-bottom: 16px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.diff h2 {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0 12px;
+  margin: 0;
+  padding: 8px 12px;
+  min-height: 24px;
+  align-items: center;
+  font-size: 14px;
+  border-bottom: 1px solid var(--border);
+}
+
+.diff .path {
+  font-family: ui-monospace, monospace;
+  overflow-wrap: anywhere;
+}
+
+.diff .file > p {
+  margin: 0;
+  padding: 8px 12px;
+}
+
+.diff .lines {
+  overflow-x: auto;
+  font: 13px/20px ui-monospace, monospace;
+}
+
+.diff .note,
+.diff .line {
+  height: 20px;
+  min-width: max-content;
+  white-space: pre;
+}
+
+.diff .note {
+  padding-left: 12px;
+  color: var(--muted);
+  background: var(--gutter);
+}
+
+.diff .line {
+  display: grid;
+  grid-template-columns: 6ch 6ch auto;
+}
+
+/* The numbers and the sign are generated, so copying a range copies only its code. */
+.diff .line > span::before {
+  content: "  ";
+  user-select: none;
+}
+
+.diff .line[data-op="added"] > span::before {
+  content: "+ ";
+}
+
+.diff .line[data-op="removed"] > span::before {
+  content: "- ";
+}
+
+.diff .line::before {
+  content: attr(data-old);
+}
+
+.diff .line::after {
+  content: attr(data-new);
+  grid-row: 1;
+  grid-column: 2;
+}
+
+.diff .line::before,
+.diff .line::after {
+  padding-right: 1ch;
+  text-align: right;
+  color: var(--muted);
+  background: var(--gutter);
+  user-select: none;
+}
+
+.diff .line[data-op="added"] {
+  background: var(--added);
+}
+
+.diff .line[data-op="removed"] {
+  background: var(--removed);
+}
+

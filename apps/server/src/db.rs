@@ -4,8 +4,12 @@
 mod account;
 mod backup;
 mod changes;
+mod owned;
 mod schema;
+mod tasks;
 mod workspace;
+
+pub(crate) use tasks::task_not_found;
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -19,6 +23,7 @@ pub(crate) use account::Attempt;
 #[cfg(test)]
 pub(crate) use account::CODE_LIFETIME;
 pub(crate) use backup::restore;
+pub(crate) use owned::NewWorkspace;
 pub(crate) use workspace::Workspace;
 
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
@@ -72,12 +77,8 @@ impl Db {
         id: &WorkspaceId,
         name: &str,
     ) -> Result<Workspace, Fault> {
-        sqlx::query("INSERT INTO workspaces (workspace_id, name) VALUES (?, ?)")
-            .bind(id.as_str())
-            .bind(name)
-            .execute(&self.writer)
-            .await
-            .map_err(failed)?;
+        let mut writer = self.writer.acquire().await.map_err(failed)?;
+        insert_workspace(&mut writer, id, name).await?;
         Ok(Workspace::new(self.clone(), id.clone()))
     }
 
@@ -119,6 +120,20 @@ impl Db {
         self.readers.close().await;
         self.writer.close().await;
     }
+}
+
+async fn insert_workspace(
+    writer: &mut SqliteConnection,
+    id: &WorkspaceId,
+    name: &str,
+) -> Result<(), Fault> {
+    sqlx::query("INSERT INTO workspaces (workspace_id, name) VALUES (?, ?)")
+        .bind(id.as_str())
+        .bind(name)
+        .execute(writer)
+        .await
+        .map_err(failed)?;
+    Ok(())
 }
 
 /// `path` made absolute, so that `SQLite` never reads it as a `file:` URI.
@@ -519,10 +534,12 @@ mod tests {
             [
                 "workspaces",
                 "members",
-                "changes",
                 "accounts",
                 "sign_in_challenges",
-                "sessions"
+                "sessions",
+                "tasks",
+                "task_versions",
+                "changes"
             ]
         );
         for table in SERVER_WIDE {
