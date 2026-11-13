@@ -39,8 +39,14 @@ header {
 main {
   flex: 1;
   min-height: 0;
+}
+
+.page {
+  height: 100%;
   overflow-y: auto;
+  margin: 0;
   padding: 16px;
+  box-sizing: border-box;
 }
 
 .muted,
@@ -67,4 +73,25 @@ dl {
 
 dd {
   margin: 0;
+}
+
+
+.row {
+  max-width: 72ch;
+  margin: 0 auto 12px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  /* Rows out of view skip layout and paint, so a long run stays smooth without dropping them. */
+  content-visibility: auto;
+  contain-intrinsic-size: auto 48px;
+}
+
+.tool,
+.finished {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.tool.failed {
+  color: #c4372b;
 }

@@ -276,7 +276,7 @@ mod tests {
 
     use super::*;
 
-    use crate::test_support::two_teams;
+    use crate::test_support::{fresh_account, two_teams};
 
     const NOW: i64 = 100_000;
 
@@ -288,7 +288,6 @@ mod tests {
         T::try_from(text.to_owned()).ok().unwrap()
     }
 
-    // Workspaces w1 and w2 each with ada@example.com, as m1 and m2.
     // Starts challenge `name` for `member` in `team`, with `code`.
     async fn challenge(team: &Workspace, member: &str, name: &str, code: &[u8], now: i64) {
         team.start_challenge(&id(member), &id(name), code, now)
@@ -388,7 +387,7 @@ mod tests {
     async fn a_challenge_is_only_for_its_member() {
         let dir = TempDir::new().unwrap();
         let (one, _) = two_teams(&dir).await;
-        one.add_member(&id("m3"), &email("bo@example.com"))
+        one.add_member(&id("m3"), &fresh_account(), &email("bo@example.com"))
             .await
             .unwrap();
         challenge(&one, "m1", "c1", b"code", NOW).await;

@@ -58,6 +58,7 @@ mod tests {
             program: "/work/codex".into(),
             config_dir: "/work/config".into(),
             cwd: "/work".into(),
+            access: weacon_protocol::AccessLevel::AskFirst,
         };
         let status_command = status(&launch);
         let status_args: Vec<_> = status_command.as_std().get_args().collect();

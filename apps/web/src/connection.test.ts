@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import { Connection, type Listener, type Socket, type Status, parse, statusText } from "./connection.ts";
-import type { App } from "./protocol.ts";
+import type { App, Envelope } from "./protocol.ts";
 
 const ME: App = { name: "weacon-web", version: "0.1.0", commit: "1a2b3c4" };
 const SERVER: App = { name: "weacon-server", version: "0.2.0", commit: "5e6f7a8" };
@@ -29,22 +29,24 @@ class FakeSocket implements Socket {
   }
 }
 
-function open(): { socket: FakeSocket; connection: Connection; statuses: Status[] } {
+function open(): { socket: FakeSocket; connection: Connection; statuses: Status[]; messages: Envelope[] } {
   const socket = new FakeSocket();
   const statuses: Status[] = [];
-  const listener: Listener = { status: (status) => statuses.push(status) };
+  const messages: Envelope[] = [];
+  const listener: Listener = { status: (status) => statuses.push(status), message: (envelope) => messages.push(envelope) };
   const connection = new Connection(socket, ME, listener);
   socket.fire("open");
-  return { socket, connection, statuses };
+  return { socket, connection, statuses, messages };
 }
 
 const welcome = (capabilities: string[]) => JSON.stringify({ id: 1, type: "welcome", app: SERVER, capabilities });
 
-test("it says hello, and sends only once welcomed", () => {
-  const { socket, connection, statuses } = open();
+test("it says hello, and once welcomed passes on each message and sends", () => {
+  const { socket, connection, statuses, messages } = open();
   connection.send({ id: 0, type: "error", code: "web.early", retryable: false });
   socket.fire("message", welcome(["run.stream", "log.forward"]));
-  socket.fire("message", welcome(["run.stream"]));
+  socket.fire("message", "not json");
+  socket.fire("message", JSON.stringify({ id: 0, type: "run", run: "r-1", event: { event: "text_delta", text: "Hi" } }));
   connection.send({ id: 0, type: "error", code: "web.crashed", retryable: false });
   socket.fire("close");
 
@@ -56,6 +58,7 @@ test("it says hello, and sends only once welcomed", () => {
     { state: "live", server: SERVER, capabilities: ["run.stream", "log.forward"] },
     { state: "ended", code: "connection.lost" },
   ]);
+  assert.deepEqual(messages, [{ id: 0, type: "run", run: "r-1", event: { event: "text_delta", text: "Hi" } }]);
 });
 
 test("only a server that streams runs is welcome, and refusals say why", () => {
