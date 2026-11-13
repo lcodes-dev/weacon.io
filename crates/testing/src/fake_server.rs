@@ -1,5 +1,5 @@
 //! A fake server that answers a web client's hello on a WebSocket, then streams a recorded run
-//! to it, one message per text frame, and keeps what the client sends.
+//! to it, one message per text frame, keeps what the client sends, and accepts its prompts.
 
 use std::path::Path;
 use std::time::Duration;
@@ -7,13 +7,17 @@ use std::time::Duration;
 use futures_util::{SinkExt, Stream, StreamExt};
 use tokio::fs::OpenOptions;
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader, duplex};
+use tokio::sync::mpsc::{UnboundedSender, unbounded_channel};
 use tokio_tungstenite::tungstenite::{self, Message as Frame};
-use weacon_protocol::{Capability, Message, code};
+use weacon_protocol::{
+    Capability, ChatAction, ChatCommand, Envelope, Message, Outcome, Receipt, code,
+};
 
 use crate::{BUFFER, fake_core, play};
 
 /// Plays `recording` to the client on `stream`, waiting `pace` after each message, and appends
-/// each text frame the client sends after its hello to `received`, one per line.
+/// each text frame the client sends after its hello to `received`, one per line. It offers
+/// `chat.send` and answers each prompt with a receipt that accepts it.
 ///
 /// # Errors
 /// When the handshake fails, the client's first frame isn't a hello on this protocol that offers
@@ -31,11 +35,10 @@ pub async fn serve(
     let hello = next_text(&mut frames)
         .await?
         .ok_or("the client left before its hello")?;
-    let answer = fake_core::answer(&hello, &[Capability::from(code!("log.forward"))])?;
+    let offered: [Capability; 2] = [code!("log.forward").into(), code!("chat.send").into()];
+    let answer = fake_core::answer(&hello, &offered)?;
     let welcomed = matches!(answer.message, Message::Welcome(_));
-    let answer = answer.to_json().map_err(|error| error.to_string())?;
-    let answer = String::from_utf8(answer).map_err(|error| error.to_string())?;
-    sink.send(Frame::text(answer))
+    sink.send(Frame::text(fake_core::text(&answer)?))
         .await
         .map_err(|error| error.to_string())?;
     if !welcomed {
@@ -44,14 +47,22 @@ pub async fn serve(
     // Sending stops at the first failure, such as the client leaving mid-stream.
     let (played, lines) = duplex(BUFFER);
     let mut lines = BufReader::new(lines).lines();
+    let (receipts, mut answered) = unbounded_channel();
     let forward = async {
-        while let Ok(Some(line)) = lines.next_line().await
-            && sink.send(Frame::text(line)).await.is_ok()
-        {}
+        loop {
+            let text = tokio::select! {
+                Ok(Some(line)) = lines.next_line() => line,
+                Some(receipt) = answered.recv() => receipt,
+                else => break,
+            };
+            if sink.send(Frame::text(text)).await.is_err() {
+                break;
+            }
+        }
     };
     let play = play(recording, BufReader::new(tokio::io::empty()), played, pace);
     let sending = async { drop(tokio::join!(play, forward)) };
-    let keeping = keep(&mut frames, received);
+    let keeping = keep(&mut frames, received, receipts);
     tokio::pin!(keeping);
     tokio::select! {
         kept = &mut keeping => kept,
@@ -59,10 +70,12 @@ pub async fn serve(
     }
 }
 
-// Appends each text frame to `received` until the client closes.
+// Appends each text frame to `received` until the client closes, and hands the receipt for each
+// prompt to `receipts`.
 async fn keep(
     frames: &mut (impl Stream<Item = tungstenite::Result<Frame>> + Unpin),
     received: &Path,
+    receipts: UnboundedSender<String>,
 ) -> Result<(), String> {
     let mut file = OpenOptions::new()
         .create(true)
@@ -76,8 +89,33 @@ async fn keep(
             .map_err(|error| error.to_string())?;
         // Tokio's file writes in the background; a reader may look at any moment.
         file.flush().await.map_err(|error| error.to_string())?;
+        if let Some(receipt) = receipt(&text) {
+            // This fails only once `serve` is done with the client.
+            drop(receipts.send(receipt));
+        }
     }
     Ok(())
+}
+
+// The receipt that accepts `text`, when it is a prompt.
+fn receipt(text: &str) -> Option<String> {
+    let envelope = Envelope::from_json(text.as_bytes()).ok()?;
+    let Message::ChatCommand(ChatCommand {
+        request,
+        action: ChatAction::Prompt { .. },
+        ..
+    }) = envelope.message
+    else {
+        return None;
+    };
+    let receipt = Envelope {
+        id: envelope.id,
+        message: Message::Receipt(Receipt {
+            request,
+            outcome: Outcome::Accepted,
+        }),
+    };
+    fake_core::text(&receipt).ok()
 }
 
 // The next text frame, skipping pings and pongs; `None` once the connection ends. Reading past
@@ -163,7 +201,7 @@ mod tests {
         assert_eq!(welcome[0]["type"], "welcome");
         assert_eq!(
             welcome[0]["capabilities"],
-            json!(["run.stream", "log.forward"])
+            json!(["run.stream", "log.forward", "chat.send"])
         );
         assert_eq!(streamed, expected);
         assert_eq!(fs::read_to_string(&received).unwrap(), format!("{log}\n"));
@@ -198,6 +236,38 @@ mod tests {
         );
         assert_eq!(served.await.unwrap(), Ok(()));
         assert_eq!(fs::read_to_string(&received).unwrap(), format!("{log}\n"));
+    }
+
+    #[tokio::test]
+    async fn a_prompt_is_kept_and_accepted_under_its_request() {
+        let dir = TempDir::new().unwrap();
+        let received = dir.join("received.jsonl");
+        let (mut client, served) = start(String::new(), received.clone()).await;
+        client.send(hello(1, &["run.stream"])).await.unwrap();
+        texts(&mut client, 1).await;
+        let command = |id: u32, request: &str, action: Value| {
+            json!({ "id": id, "type": "chat_command", "request": request, "workspace": "w-1",
+                    "chat": "c-1", "action": action })
+            .to_string()
+        };
+        let interrupt = command(2, "r-1", json!({ "kind": "interrupt" }));
+        let prompt = command(3, "r-2", json!({ "kind": "prompt", "text": "hi" }));
+        let log = r#"{"id":0,"type":"log","level":"info","msg":"sent"}"#;
+        client.send(Frame::text(log)).await.unwrap();
+        client.send(Frame::text(interrupt.clone())).await.unwrap();
+        client.send(Frame::text(prompt.clone())).await.unwrap();
+        let answers = texts(&mut client, 1).await;
+        client.close(None).await.unwrap();
+        served.await.unwrap().unwrap();
+
+        assert_eq!(
+            answers,
+            [json!({ "id": 3, "type": "receipt", "request": "r-2", "state": "accepted" })]
+        );
+        assert_eq!(
+            fs::read_to_string(&received).unwrap(),
+            format!("{log}\n{interrupt}\n{prompt}\n")
+        );
     }
 
     #[tokio::test]

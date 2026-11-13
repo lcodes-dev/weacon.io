@@ -149,10 +149,13 @@ fn line(run: RunId, event: RunEvent) -> Result<String, String> {
         id: 0,
         message: Message::Run(RunUpdate { run, event }),
     };
+    text(&envelope).map(|json| format!("< {json}"))
+}
+
+/// `envelope` as the text of one frame.
+pub(crate) fn text(envelope: &Envelope) -> Result<String, String> {
     let json = envelope.to_json().map_err(|error| error.to_string())?;
-    String::from_utf8(json)
-        .map(|json| format!("< {json}"))
-        .map_err(|error| error.to_string())
+    String::from_utf8(json).map_err(|error| error.to_string())
 }
 
 #[cfg(test)]
