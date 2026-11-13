@@ -26,7 +26,10 @@ pub(crate) fn run(app: &App, out: &mut impl Write) -> Result<(), Fault> {
     if let Some(dir) = &app.state_dir {
         let runtime = runtime()?;
         let all = |launches: &[Launch]| runtime.block_on(sign_ins(&app.log, launches));
-        print(workspaces(&app.log, Workspaces::new(dir).describe(all)))?;
+        print(workspaces(
+            &app.log,
+            Workspaces::new(dir, app.path.clone()).describe(all),
+        ))?;
     }
     if app.log_file.is_none() {
         return Err(state_unavailable());
@@ -191,25 +194,27 @@ mod tests {
         ));
     }
 
+    // `true` and `false` stand in for a vendor's status command.
+    #[cfg(unix)]
     #[tokio::test]
-    async fn every_sign_in_is_checked_and_a_failed_check_is_logged_once_and_unknown() {
+    async fn every_sign_in_is_checked_in_order_and_a_failed_check_is_logged_once_and_unknown() {
         use weacon_protocol::AgentKind;
 
         let dir = TempDir::new().unwrap();
         let (log, records) = test_support::recording_logger();
-        let launch = |agent| Launch {
-            agent,
-            program: dir.join("missing"),
+        let launch = |program: &str| Launch {
+            agent: AgentKind::Codex,
+            program: program.into(),
             config_dir: dir.to_path_buf(),
             cwd: dir.to_path_buf(),
         };
-        let launches = [AgentKind::Claude, AgentKind::Newer, AgentKind::Codex].map(launch);
+        let launches = ["true", "/missing/codex", "false"].map(launch);
 
         let answers = sign_ins(&log, &launches).await;
 
         assert_eq!(
             answers,
-            [Some(SignIn::NotInstalled), None, Some(SignIn::NotInstalled)]
+            [Some(SignIn::SignedIn), None, Some(SignIn::SignedOut)]
         );
         assert_eq!(test_support::messages(&records), ["sign-in check failed"]);
     }

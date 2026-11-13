@@ -48,7 +48,7 @@ mod tests {
     }
 
     #[test]
-    fn doctor_asks_each_vendors_own_program_about_each_workspaces_sign_in() {
+    fn doctor_says_not_installed_for_programs_missing_from_the_path() {
         let dir = TempDir::new().unwrap();
         fs::create_dir_all(dir.join("workspaces/w-w1")).unwrap();
         // No vendor's program is on an empty PATH.
@@ -83,7 +83,7 @@ mod tests {
 
         assert_eq!(output.status.code(), Some(2));
         assert!(String::from_utf8_lossy(&output.stderr).contains("agent.not_installed"));
-        assert!(dir.join("state/workspaces/w-w1/claude").is_dir());
+        assert!(!dir.join("state/workspaces").exists());
     }
 
     // Scripts stand in for the vendors' programs; a child shell writes them, so this process
@@ -110,6 +110,7 @@ mod tests {
         let gave_up = login(&dir, "codex");
 
         assert!(signed_in.status.success());
+        assert!(dir.join("state/workspaces/w-w1/claude").is_dir());
         assert_eq!(gave_up.status.code(), Some(2));
         assert!(String::from_utf8_lossy(&gave_up.stderr).contains("agent.login_failed"));
     }
