@@ -229,10 +229,7 @@
           "type": "string"
         },
         "token": {
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         }
       },
       "required": [
@@ -1385,19 +1382,14 @@
       "description": "What a member may do in a workspace.",
       "oneOf": [
         {
-          "description": "Owns the workspace.",
+          "description": "Made the workspace.",
           "type": "string",
           "const": "owner"
         },
         {
-          "description": "Belongs to the workspace without owning it.",
+          "description": "Was added to it.",
           "type": "string",
           "const": "member"
-        },
-        {
-          "description": "A role this build doesn't know, from a newer peer; only ever received, and it allows\nnothing.",
-          "type": "string",
-          "const": "newer"
         }
       ]
     },

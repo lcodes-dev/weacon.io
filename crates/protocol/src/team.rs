@@ -85,6 +85,7 @@ pub struct AccountSignedIn {
     pub account: AccountId,
     pub email: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "String")]
     pub token: Option<String>,
 }
 
@@ -92,13 +93,14 @@ pub struct AccountSignedIn {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum WorkspaceRole {
-    /// Owns the workspace.
+    /// Made the workspace.
     Owner,
-    /// Belongs to the workspace without owning it.
+    /// Was added to it.
     Member,
     /// A role this build doesn't know, from a newer peer; only ever received, and it allows
     /// nothing.
     #[serde(other)]
+    #[schemars(skip)]
     Newer,
 }
 

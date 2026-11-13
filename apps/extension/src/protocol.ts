@@ -74,10 +74,7 @@ export type AccountSignInStart = {
 export type AccountSignedIn = {
   account: AccountId;
   email: string;
-  token?: (
-    | string
-    | null
-  );
+  token?: string;
 };
 
 /**
@@ -530,7 +527,6 @@ export type WorkspaceList = {
 export type WorkspaceRole = (
   | "owner"
   | "member"
-  | "newer"
 );
 
 /**

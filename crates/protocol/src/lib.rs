@@ -43,30 +43,24 @@ mod tests {
     use std::fs;
     use std::path::Path;
 
-    use schemars::{Schema, SchemaGenerator};
+    use schemars::SchemaGenerator;
 
     use super::*;
 
-    // The HTTP bodies, which no `Envelope` carries; the schema defines them beside it.
-    const BODIES: &[fn(&mut SchemaGenerator) -> Schema] = &[
-        SchemaGenerator::subschema_for::<SignInStart>,
-        SchemaGenerator::subschema_for::<SignInStarted>,
-        SchemaGenerator::subschema_for::<SignInFinish>,
-        SchemaGenerator::subschema_for::<SignedIn>,
-        SchemaGenerator::subschema_for::<AccountSignInStart>,
-        SchemaGenerator::subschema_for::<AccountSignInFinish>,
-        SchemaGenerator::subschema_for::<AccountSignedIn>,
-        SchemaGenerator::subschema_for::<WorkspaceCreate>,
-        SchemaGenerator::subschema_for::<WorkspaceSummary>,
-        SchemaGenerator::subschema_for::<WorkspaceList>,
-    ];
-
     #[test]
     fn the_committed_schema_is_current() {
+        // The HTTP bodies, which no `Envelope` carries, are defined beside it.
         let mut generator = SchemaGenerator::default();
-        for body in BODIES {
-            body(&mut generator);
-        }
+        generator.subschema_for::<SignInStart>();
+        generator.subschema_for::<SignInStarted>();
+        generator.subschema_for::<SignInFinish>();
+        generator.subschema_for::<SignedIn>();
+        generator.subschema_for::<AccountSignInStart>();
+        generator.subschema_for::<AccountSignInFinish>();
+        generator.subschema_for::<AccountSignedIn>();
+        generator.subschema_for::<WorkspaceCreate>();
+        generator.subschema_for::<WorkspaceSummary>();
+        generator.subschema_for::<WorkspaceList>();
         let schema = generator.into_root_schema_for::<Envelope>();
         let current = serde_json::to_string_pretty(&schema).unwrap() + "\n";
         let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("schema.json");
