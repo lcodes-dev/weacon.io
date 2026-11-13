@@ -144,6 +144,7 @@ export function Composer({ send, blocked, hidden }: { send: Send | undefined; bl
           onChange={(event) => {
             place(edit(draft, event.target.value, event.target.selectionEnd, (event.nativeEvent as InputEvent).isComposing));
             setFiles(settled);
+            setProblem(undefined);
           }}
           onSelect={(event) => {
             const end = event.currentTarget.selectionEnd;

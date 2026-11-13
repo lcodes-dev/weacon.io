@@ -79,7 +79,13 @@ test("a prompt the socket can't take is lost", async () => {
   const failing = () => {
     throw new Error("closed");
   };
-  assert.equal(await deliver(command, new Receipts(() => {}), failing), "lost");
+  const receipts = new Receipts(() => {});
+  assert.equal(await deliver(command, receipts, failing), "lost");
+
+  const retry = prompt(3, { workspace: "w-1", chat: "c-1" }, "r-1", "hi");
+  const waiting = deliver(retry, receipts, () => {});
+  receipts.take({ id: 3, type: "error", code: "request.conflict", retryable: false });
+  assert.equal(await waiting, "refused");
 });
 
 test("a request id is its bytes in hex, and a well-formed id", () => {

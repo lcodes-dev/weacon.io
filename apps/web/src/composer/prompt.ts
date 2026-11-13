@@ -29,7 +29,8 @@ export function deliver(command: Command, receipts: Receipts, send: (envelope: E
   try {
     send(command);
   } catch {
-    return Promise.resolve("lost");
+    // A retry then waits afresh, under its own envelope and deadline.
+    receipts.settle(command.request, "lost");
   }
   return settled;
 }
