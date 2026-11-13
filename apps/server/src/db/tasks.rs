@@ -8,7 +8,7 @@ use super::{Workspace, failed, stored, unreadable};
 type Row = (String, String, String, String, i64);
 
 /// The most tasks a workspace holds, since making or moving one reads them all.
-pub(crate) const MAX_TASKS: u32 = 2_000;
+const MAX_TASKS: u32 = 2_000;
 
 impl Workspace {
     /// Stores a new task, made by `change`. An id or order key already in this workspace is
@@ -342,7 +342,10 @@ mod tests {
             .unwrap_err();
 
         assert_eq!(code(&full), "task.too_many");
-        assert_eq!(one.tasks().await.unwrap().len(), 2_000);
+        assert_eq!(
+            one.tasks().await.unwrap().len(),
+            usize::try_from(MAX_TASKS).unwrap()
+        );
         two.add_task(&new_task("t2", "Elsewhere", "V"), &by("m2"))
             .await
             .unwrap();

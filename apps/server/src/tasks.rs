@@ -470,15 +470,23 @@ mod tests {
     #[tokio::test]
     async fn a_full_workspace_or_a_taken_place_is_a_conflict() {
         let fixture = Fixture::new().await;
-        let taken = Fault::new(code!("db.exists"), "It already exists");
+        for (fault, retryable) in [
+            (Fault::new(code!("db.exists"), "It already exists"), true),
+            (Fault::new(code!("task.too_many"), "Full"), false),
+        ] {
+            let code = fault.code().as_str().to_owned();
 
-        let answer = answer(&fixture.shared, taken);
+            let answer = answer(&fixture.shared, fault);
 
-        assert_eq!(answer.status(), StatusCode::CONFLICT);
-        let body = axum::body::to_bytes(answer.into_body(), 1024)
-            .await
-            .unwrap();
-        let error: ErrorBody = serde_json::from_slice(&body).unwrap();
-        assert_eq!((error.code.as_str(), error.retryable), ("db.exists", true));
+            assert_eq!(answer.status(), StatusCode::CONFLICT, "{code}");
+            let body = axum::body::to_bytes(answer.into_body(), 1024)
+                .await
+                .unwrap();
+            let error: ErrorBody = serde_json::from_slice(&body).unwrap();
+            assert_eq!(
+                (error.code.as_str(), error.retryable),
+                (code.as_str(), retryable)
+            );
+        }
     }
 }
