@@ -6,7 +6,7 @@ import { NO_CHANGES, ask } from "./changes.ts";
 import { changeText, contentText, hunkText, summary } from "./labels.ts";
 
 test("the summary says how far the changes have come", () => {
-  const { changes } = ask("q-1", "w-1", "c-1");
+  const { changes } = ask(5, "q-1", "w-1", "c-1");
   const files = (count: number) => Array.from({ length: count }, () => ({ path: "a", change: { kind: "added" }, content: { kind: "binary" } }) as const);
 
   assert.equal(summary(NO_CHANGES), "The changes couldn't load.");

@@ -6,11 +6,11 @@ export const DIFF_VIEW = "diff.view";
 
 /** What the core has sent of a chat's changes under the latest request. */
 export type Changes = {
-  asked: { request: RequestId; workspace: WorkspaceId; chat: ChatId } | undefined;
+  asked: { id: number; request: RequestId; workspace: WorkspaceId; chat: ChatId } | undefined;
   files: readonly DiffFile[];
   /** How many files the change has, once the first answer says. */
   total: number | undefined;
-  /** Whether the connection ended before every file came. */
+  /** Whether the connection ended, or the query failed, before every file came. */
   cut: boolean;
 };
 
@@ -21,17 +21,26 @@ export function canAsk(status: Status): boolean {
   return status.state === "live" && status.capabilities.includes(DIFF_VIEW);
 }
 
-/** The query for `chat`'s changes under `request`, and what to show until its answers come. */
-export function ask(request: RequestId, workspace: WorkspaceId, chat: ChatId): { query: Envelope; changes: Changes } {
+/** The query, as message `id`, for `chat`'s changes under `request`, and what to show until its answers come. */
+export function ask(id: number, request: RequestId, workspace: WorkspaceId, chat: ChatId): { query: Envelope; changes: Changes } {
   return {
-    query: { id: 0, type: "diff_query", request, workspace, chat, query: { kind: "changes" } },
-    changes: { ...NO_CHANGES, asked: { request, workspace, chat } },
+    query: { id, type: "diff_query", request, workspace, chat, query: { kind: "changes" } },
+    changes: { ...NO_CHANGES, asked: { id, request, workspace, chat } },
   };
+}
+
+/** Whether opening the changes should ask for them: they never were, or the last answers were cut short. */
+export function needsAsking(changes: Changes): boolean {
+  return changes.asked === undefined || changes.cut;
 }
 
 /** `changes` with `envelope` taken in when it answers the latest request; a stale, extra or malformed one is dropped. */
 export function receive(changes: Changes, envelope: Envelope): Changes {
   const { asked, files, total } = changes;
+  // An error under the query's id answers it.
+  if (envelope.type === "error" && asked !== undefined && envelope.id === asked.id) {
+    return cut(changes);
+  }
   if (
     envelope.type !== "diff_answer" ||
     asked === undefined ||

@@ -6,7 +6,7 @@ import { App } from "./app.tsx";
 import { ME } from "./build.ts";
 import { type Send, deliver, prompt, requestId } from "./composer/prompt.ts";
 import { Connection, type Status } from "./connection.ts";
-import { NO_CHANGES, ask, cut, receive } from "./diff/changes.ts";
+import { NO_CHANGES, ask, cut, needsAsking, receive } from "./diff/changes.ts";
 import { Feed, nextFrame } from "./feed.ts";
 import { Log } from "./log.ts";
 import { placeOf } from "./place.ts";
@@ -35,6 +35,8 @@ function Root() {
   const [send, setSend] = useState<Send>();
   const [changes, setChanges] = useState(NO_CHANGES);
   const connected = useRef<Connection>(undefined);
+  // The hello takes id 1.
+  const lastId = useRef(1);
   useEffect(() => {
     // A closed socket's last news must not overwrite the next socket's.
     let current = true;
@@ -69,10 +71,8 @@ function Root() {
         if (next.state === "live") {
           log.attach((envelope) => connection.send(envelope), next.capabilities.includes("log.forward"));
           if (place !== undefined) {
-            // The hello took id 1.
-            let lastId = 1;
             const sendTo: Send = (text, request) =>
-              deliver(prompt(++lastId, place, request, text), receipts, (envelope) => connection.send(envelope));
+              deliver(prompt(++lastId.current, place, request, text), receipts, (envelope) => connection.send(envelope));
             setSend(() => sendTo);
           }
         } else if (next.state === "ended") {
@@ -83,9 +83,11 @@ function Root() {
         }
       },
       message(envelope) {
-        if (current && envelope.type === "diff_answer") {
+        // An error may answer the diff query or a prompt; `receive` keeps what isn't for it.
+        if (current && (envelope.type === "diff_answer" || envelope.type === "error")) {
           setChanges((before) => receive(before, envelope));
-        } else if (!receipts.take(envelope)) {
+        }
+        if (envelope.type !== "diff_answer" && !receipts.take(envelope)) {
           feed.push(envelope);
         }
       },
@@ -97,10 +99,10 @@ function Root() {
     };
   }, []);
   const openChanges = () => {
-    // Asked once, the first time they are opened.
-    if (changes.asked === undefined && place !== undefined && connected.current !== undefined) {
+    // Asked the first time they are opened, and again after answers were cut short.
+    if (needsAsking(changes) && place !== undefined && connected.current !== undefined) {
       const request = requestId(crypto.getRandomValues(new Uint8Array(16)));
-      const { query, changes: asked } = ask(request, place.workspace, place.chat);
+      const { query, changes: asked } = ask(++lastId.current, request, place.workspace, place.chat);
       setChanges(asked);
       connected.current.send(query);
     }

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import type { DiffFile, Envelope } from "../protocol.ts";
-import { NO_CHANGES, ask, canAsk, cut, receive, rows } from "./changes.ts";
+import { NO_CHANGES, ask, canAsk, cut, needsAsking, receive, rows } from "./changes.ts";
 
 const file = (path: string): DiffFile => ({
   path,
@@ -28,14 +28,14 @@ const answer = (request: string, body: unknown, chat = "c-1", workspace = "w-1")
   ({ id: 0, type: "diff_answer", request, workspace, chat, answer: body }) as Envelope;
 
 test("asking sends a changes query and waits for its answers", () => {
-  const { query, changes } = ask("q-1", "w-1", "c-1");
+  const { query, changes } = ask(5, "q-1", "w-1", "c-1");
 
-  assert.deepEqual(query, { id: 0, type: "diff_query", request: "q-1", workspace: "w-1", chat: "c-1", query: { kind: "changes" } });
-  assert.deepEqual(changes, { asked: { request: "q-1", workspace: "w-1", chat: "c-1" }, files: [], total: undefined, cut: false });
+  assert.deepEqual(query, { id: 5, type: "diff_query", request: "q-1", workspace: "w-1", chat: "c-1", query: { kind: "changes" } });
+  assert.deepEqual(changes, { asked: { id: 5, request: "q-1", workspace: "w-1", chat: "c-1" }, files: [], total: undefined, cut: false });
 });
 
 test("files arrive one answer each, and only the latest request's for its chat count", () => {
-  const { changes } = ask("q-2", "w-1", "c-1");
+  const { changes } = ask(5, "q-2", "w-1", "c-1");
   const of = (path: string, files = 2) => ({ kind: "file", files, file: file(path) });
   const one = receive(changes, answer("q-2", of("a.rs")));
   const two = receive(one, answer("q-2", of("b.rs", 3)));
@@ -55,7 +55,7 @@ test("files arrive one answer each, and only the latest request's for its chat c
 });
 
 test("unchanged counts only before any file, and a line this app can't number hides its file's lines", () => {
-  const { changes } = ask("q-1", "w-1", "c-1");
+  const { changes } = ask(5, "q-1", "w-1", "c-1");
   const one = receive(changes, answer("q-1", { kind: "file", files: 2, file: file("a.rs") }));
   const moved = { ...file("b.rs"), content: { kind: "text", hunks: [{ old_start: 1, new_start: 1, lines: [{ op: "moved", text: "x" }] }] } };
 
@@ -63,8 +63,21 @@ test("unchanged counts only before any file, and a line this app can't number hi
   assert.deepEqual(receive(one, answer("q-1", { kind: "file", files: 2, file: moved })).files[1], { ...moved, content: { kind: "newer" } });
 });
 
+test("an error under the query's id cuts the changes short, so opening them asks again", () => {
+  const { changes } = ask(5, "q-1", "w-1", "c-1");
+  const error = (id: number): Envelope => ({ id, type: "error", code: "message.unsupported", retryable: false });
+  const failed = receive(changes, error(5));
+
+  assert.equal(needsAsking(NO_CHANGES), true);
+  assert.equal(needsAsking(changes), false);
+  assert.equal(failed.cut, true);
+  assert.equal(needsAsking(failed), true);
+  assert.equal(receive(changes, error(6)), changes);
+  assert.equal(receive(NO_CHANGES, error(5)), NO_CHANGES);
+});
+
 test("a connection that ends cuts short only changes still coming", () => {
-  const { changes } = ask("q-1", "w-1", "c-1");
+  const { changes } = ask(5, "q-1", "w-1", "c-1");
   const one = receive(changes, answer("q-1", { kind: "file", files: 2, file: file("a.rs") }));
   const all = receive(one, answer("q-1", { kind: "file", files: 2, file: file("b.rs") }));
   const none = receive(changes, answer("q-1", { kind: "unchanged" }));
@@ -86,7 +99,7 @@ test("changes can be asked for only on a live connection to a server that offers
 });
 
 test("an unchanged chat has no files, and malformed answers are dropped", () => {
-  const { changes } = ask("q-1", "w-1", "c-1");
+  const { changes } = ask(5, "q-1", "w-1", "c-1");
   const text = (hunks: unknown) => ({ kind: "file", files: 1, file: { path: "a", change: { kind: "added" }, content: { kind: "text", hunks } } });
   const malformed = [
     "nope",

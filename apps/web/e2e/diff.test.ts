@@ -63,7 +63,7 @@ test("Changes asks for the chat's changes once and shows every file, scrolling t
     const [query, ...more] = queries as { request: string }[];
     assert.deepEqual(more, []);
     assert.match(query?.request ?? "", /^[0-9a-f]{32}$/);
-    assert.deepEqual(query, { id: 0, type: "diff_query", request: query?.request, workspace: "w-1", chat: "c-1", query: { kind: "changes" } });
+    assert.deepEqual(query, { id: 2, type: "diff_query", request: query?.request, workspace: "w-1", chat: "c-1", query: { kind: "changes" } });
   } finally {
     await harness.close();
   }
