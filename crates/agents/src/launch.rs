@@ -1,3 +1,4 @@
+use std::ffi::{OsStr, OsString};
 use std::io;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -149,12 +150,43 @@ impl Launch {
     }
 }
 
+/// Variables that would sign a vendor's program in other than through the workspace's own
+/// config folder: any whose name starts with one of `prefixes` or is one of `names`.
+pub(crate) struct OtherSignIns {
+    pub(crate) prefixes: &'static [&'static str],
+    pub(crate) names: &'static [&'static str],
+}
+
+impl OtherSignIns {
+    /// Removes the inherited ones from `command`; their values are never read.
+    pub(crate) fn remove(&self, command: &mut Command) {
+        self.remove_from(command, std::env::vars_os().map(|(name, _)| name));
+    }
+
+    fn remove_from(&self, command: &mut Command, inherited: impl Iterator<Item = OsString>) {
+        for name in inherited.filter(|name| self.matches(name)) {
+            command.env_remove(name);
+        }
+    }
+
+    // Windows reads variable names in any case.
+    pub(crate) fn matches(&self, name: &OsStr) -> bool {
+        let Some(name) = name.to_str().map(str::to_ascii_uppercase) else {
+            return false;
+        };
+        self.prefixes.iter().any(|prefix| name.starts_with(prefix))
+            || self.names.contains(&name.as_str())
+    }
+}
+
 fn unknown() -> Fault {
     Fault::new(code!("agent.unknown"), "This build doesn't know that agent")
 }
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
     use weacon_testing::TempDir;
 
     use super::*;
@@ -171,6 +203,39 @@ mod tests {
 
     fn start(launch: &Launch) -> Result<AgentRun, Fault> {
         launch.start(&SpawnPolicy::default(), &app(), run_id("run-1"), None)
+    }
+
+    #[test]
+    fn inherited_variables_with_a_sign_in_prefix_or_name_are_removed_in_any_case() {
+        let other = OtherSignIns {
+            prefixes: &["VENDOR_"],
+            names: &["TOKEN"],
+        };
+        let inherited = [
+            "VENDOR_KEY",
+            "vendor_key",
+            "token",
+            "TOKEN",
+            "VENDOR",
+            "PATH",
+        ];
+        let mut command = Command::new("agent");
+        command.env("VENDOR_HOME", "/config");
+
+        other.remove_from(&mut command, inherited.into_iter().map(OsString::from));
+
+        let envs: BTreeMap<_, _> = command.as_std().get_envs().collect();
+        let removed = |name| (OsStr::new(name), None);
+        assert_eq!(
+            envs,
+            BTreeMap::from([
+                removed("TOKEN"),
+                removed("VENDOR_KEY"),
+                (OsStr::new("VENDOR_HOME"), Some(OsStr::new("/config"))),
+                removed("token"),
+                removed("vendor_key"),
+            ])
+        );
     }
 
     #[test]

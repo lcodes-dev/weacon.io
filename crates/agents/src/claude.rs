@@ -7,18 +7,13 @@ use weacon_protocol::AgentSession;
 
 pub(crate) use wire::{Wire, answer, prompt, read};
 
-use crate::launch::Launch;
+use crate::launch::{Launch, OtherSignIns};
 
-// Sign-ins and providers that would win over the workspace's own; removed, never read.
-const OTHER_SIGN_INS: [&str; 7] = [
-    "ANTHROPIC_API_KEY",
-    "ANTHROPIC_AUTH_TOKEN",
-    "AWS_BEARER_TOKEN_BEDROCK",
-    "CLAUDE_CODE_OAUTH_TOKEN",
-    "CLAUDE_CODE_USE_BEDROCK",
-    "CLAUDE_CODE_USE_FOUNDRY",
-    "CLAUDE_CODE_USE_VERTEX",
-];
+// Sign-ins and providers that would win over the workspace's own.
+const OTHER_SIGN_INS: OtherSignIns = OtherSignIns {
+    prefixes: &["ANTHROPIC_", "CLAUDE_"],
+    names: &["AWS_BEARER_TOKEN_BEDROCK"],
+};
 
 /// `claude` in its stream-json mode, resuming `session` when given.
 pub(crate) fn command(launch: &Launch, session: Option<&AgentSession>) -> Command {
@@ -57,9 +52,7 @@ pub(crate) fn login(launch: &Launch) -> Command {
 
 fn with_workspace_sign_in(launch: &Launch) -> Command {
     let mut command = Command::new(&launch.program);
-    for name in OTHER_SIGN_INS {
-        command.env_remove(name);
-    }
+    OTHER_SIGN_INS.remove(&mut command);
     command.env("CLAUDE_CONFIG_DIR", &launch.config_dir);
     command
 }
@@ -248,17 +241,29 @@ mod tests {
             ["auth", "login"]
         );
         for command in [command(&claude, None), check, login] {
-            let envs: Vec<_> = command.as_std().get_envs().collect();
-
-            assert!(envs.contains(&(
+            let config = (
                 OsStr::new("CLAUDE_CONFIG_DIR"),
-                Some(OsStr::new("/work/config"))
-            )));
-            for name in OTHER_SIGN_INS {
-                assert!(envs.contains(&(OsStr::new(name), None)), "{name}");
-            }
+                Some(OsStr::new("/work/config")),
+            );
+            assert!(command.as_std().get_envs().any(|env| env == config));
         }
         let run = command(&claude, None);
         assert_eq!(run.as_std().get_current_dir(), Some(Path::new("/work")));
+    }
+
+    #[test]
+    fn other_sign_ins_and_providers_are_known_and_the_rest_is_kept() {
+        for name in [
+            "ANTHROPIC_API_KEY",
+            "ANTHROPIC_BASE_URL",
+            "CLAUDE_CODE_OAUTH_TOKEN",
+            "CLAUDE_CODE_USE_BEDROCK",
+            "AWS_BEARER_TOKEN_BEDROCK",
+        ] {
+            assert!(OTHER_SIGN_INS.matches(OsStr::new(name)), "{name}");
+        }
+        for name in ["PATH", "HOME", "AWS_REGION"] {
+            assert!(!OTHER_SIGN_INS.matches(OsStr::new(name)), "{name}");
+        }
     }
 }
