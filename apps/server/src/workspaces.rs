@@ -70,9 +70,14 @@ fn new_workspace(name: &str) -> Result<NewWorkspace, Fault> {
 /// `name` trimmed, if it is one short line.
 pub(crate) fn workspace_name(name: &str) -> Result<&str, Fault> {
     let name = name.trim();
-    let fits = (1..=MAX_NAME).contains(&name.chars().count()) && !name.contains(char::is_control);
+    let fits = (1..=MAX_NAME).contains(&name.chars().count()) && !name.contains(breaks_line);
     fits.then_some(name)
         .ok_or_else(|| Fault::new(code!("workspace.name_invalid"), "That name can't be used"))
+}
+
+// Control characters, and the two separators Unicode doesn't count among them.
+fn breaks_line(letter: char) -> bool {
+    letter.is_control() || matches!(letter, '\u{2028}' | '\u{2029}')
 }
 
 #[cfg(test)]
@@ -83,7 +88,9 @@ mod tests {
 
     use super::*;
     use crate::email::Email;
-    use crate::test_support::{Fixture, ask, bearer, fresh_account, run, sign_in};
+    use crate::test_support::{
+        Fixture, ask, bearer, fresh_account, header, request_with, run, sign_in, status,
+    };
 
     // Signs `email` in, and gives the header that proves it.
     async fn signed_in(fixture: &Fixture, address: SocketAddr, email: &str) -> String {
@@ -138,6 +145,25 @@ mod tests {
             .count();
 
         assert_eq!(personal, 1);
+    }
+
+    #[tokio::test]
+    async fn what_an_account_sees_is_kept_out_of_caches() {
+        let fixture = Fixture::new().await;
+        let server = run(fixture.shared.clone()).await;
+        let ada = signed_in(&fixture, server.address, "ada@example.com").await;
+        let mut kept = Vec::new();
+        for path in ["/api/workspaces", "/api/workspaces/w1", "/api/session"] {
+            let (head, _) = request_with(server.address, &format!("GET {path}"), &ada, "").await;
+            assert_eq!(status(&head), "http/1.1 200 ok", "{path}");
+            kept.push(
+                header(&head, "cache-control")
+                    .unwrap_or_default()
+                    .to_owned(),
+            );
+        }
+
+        assert_eq!(kept, ["no-store"; 3]);
     }
 
     #[tokio::test]
@@ -212,7 +238,7 @@ mod tests {
         let ada = signed_in(&fixture, server.address, "ada@example.com").await;
         let refused = json!({ "code": "workspace.name_invalid", "retryable": false });
         let long = "a".repeat(MAX_NAME + 1);
-        for name in ["", "   ", "a\nb", long.as_str()] {
+        for name in ["", "   ", "a\nb", "a\u{2028}b", "a\u{2029}b", long.as_str()] {
             let create = json!({ "name": name }).to_string();
             let answer = ask(server.address, "POST /api/workspaces", &ada, &create).await;
             assert_eq!(

@@ -146,6 +146,7 @@ fn router(shared: Shared) -> Router {
         )
         .merge(web::routes(shared.web))
         .layer(DefaultBodyLimit::max(MAX_BODY))
+        .layer(middleware::map_response(uncached))
         .layer(middleware::from_fn(in_time))
         .layer(middleware::from_fn_with_state(shared.clone(), log_request))
         .with_state(shared)
@@ -153,6 +154,15 @@ fn router(shared: Shared) -> Router {
 
 async fn version(State(shared): State<Shared>) -> impl IntoResponse {
     ([(header::CACHE_CONTROL, "no-store")], Json(shared.app))
+}
+
+/// Keeps every answer out of caches unless its handler says otherwise: most are one person's.
+async fn uncached(mut response: Response) -> Response {
+    response
+        .headers_mut()
+        .entry(header::CACHE_CONTROL)
+        .or_insert(HeaderValue::from_static("no-store"));
+    response
 }
 
 /// Answers that the request took too long, when it has: a body that never comes, for one.
