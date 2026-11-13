@@ -4,11 +4,11 @@ use std::path::Path;
 use weacon_observability::Fault;
 use weacon_protocol::{AccountId, MemberId, WorkspaceId, code};
 
+use crate::app::fresh;
 use crate::cli::AdminCommand;
 use crate::db::{self, Db};
 use crate::email::Email;
-
-const MAX_NAME: usize = 100;
+use crate::workspaces::workspace_name;
 
 /// Runs `command`, writing what it prints to `out`; `new_id` names what it creates.
 pub(crate) async fn run(
@@ -80,18 +80,6 @@ async fn closed(db: Db, result: Result<String, Fault>) -> Result<String, Fault> 
     result
 }
 
-fn fresh<T: TryFrom<String>>(new_id: &dyn Fn() -> String) -> Result<T, Fault> {
-    T::try_from(new_id()).map_err(|_| Fault::new(code!("id.invalid"), "A new id isn't valid"))
-}
-
-/// `name` trimmed, if it is one short line.
-fn workspace_name(name: &str) -> Result<&str, Fault> {
-    let name = name.trim();
-    let fits = (1..=MAX_NAME).contains(&name.chars().count()) && !name.contains(char::is_control);
-    fits.then_some(name)
-        .ok_or_else(|| Fault::new(code!("workspace.name_invalid"), "That name can't be used"))
-}
-
 #[cfg(test)]
 mod tests {
     use std::cell::Cell;
@@ -105,6 +93,7 @@ mod tests {
     use super::*;
     use crate::app::App;
     use crate::test_support::{VERSION, recording_sink, workspace_id};
+    use crate::workspaces::MAX_NAME;
 
     async fn admin(command: AdminCommand) -> Result<String, Fault> {
         let next = Cell::new(0);

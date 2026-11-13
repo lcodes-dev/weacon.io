@@ -18,6 +18,7 @@ mod tasks;
 #[cfg(test)]
 mod test_support;
 mod web;
+mod workspaces;
 
 use std::io;
 use std::net::SocketAddr;
