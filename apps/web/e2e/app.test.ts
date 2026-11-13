@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { fakeServer, start } from "./harness.ts";
+import { fakeServer, start, waitFor } from "./harness.ts";
 
 test("Settings shows this build and the server's, and the page's logs reach the server", { timeout: 120_000 }, async () => {
   const harness = await start(fakeServer(1_000, 0));
@@ -26,14 +26,3 @@ test("Settings shows this build and the server's, and the page's logs reach the 
     await harness.close();
   }
 });
-
-// Polls, since the server writes what it receives to a file.
-async function waitFor(done: () => boolean, deadlineMs = 10_000): Promise<void> {
-  const end = Date.now() + deadlineMs;
-  while (!done()) {
-    if (Date.now() > end) {
-      throw new Error("gave up waiting");
-    }
-    await new Promise((resolve) => setTimeout(resolve, 20));
-  }
-}
