@@ -118,12 +118,125 @@
       "required": [
         "type"
       ]
+    },
+    {
+      "description": "What a person asks of a chat's agent, from a client to a core that offers `chat.send`.",
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "chat_command"
+        }
+      },
+      "$ref": "#/$defs/ChatCommand",
+      "required": [
+        "type"
+      ]
+    },
+    {
+      "description": "A committed event of a chat, from the core to a client that subscribed under\n`chat.events`.",
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "chat"
+        }
+      },
+      "$ref": "#/$defs/ChatUpdate",
+      "required": [
+        "type"
+      ]
+    },
+    {
+      "description": "A question about a chat's log, from a client to a core that offers `chat.events`.",
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "chat_query"
+        }
+      },
+      "$ref": "#/$defs/ChatQuery",
+      "required": [
+        "type"
+      ]
+    },
+    {
+      "description": "The core's answer to a [`ChatQuery`], or its word that the client missed events, to a\nclient that has `chat.events`.",
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "chat_answer"
+        }
+      },
+      "$ref": "#/$defs/ChatAnswer",
+      "required": [
+        "type"
+      ]
     }
   ],
   "required": [
     "id"
   ],
   "$defs": {
+    "AccountId": {
+      "description": "A person's account on the server, 1–64 ASCII letters, digits, `-` or `_`.",
+      "type": "string",
+      "maxLength": 64,
+      "pattern": "^[A-Za-z0-9_-]+$"
+    },
+    "AccountSignInFinish": {
+      "description": "Trades the one-time code sent to `email`, and the challenge its [`SignInStarted`] gave,\nfor an [`AccountSignedIn`].",
+      "type": "object",
+      "properties": {
+        "challenge": {
+          "$ref": "#/$defs/ChallengeId"
+        },
+        "code": {
+          "type": "string"
+        },
+        "email": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "email",
+        "code",
+        "challenge"
+      ]
+    },
+    "AccountSignInStart": {
+      "description": "Asks the server to send a one-time code to `email`, if that person may sign in. The\nanswer, a [`SignInStarted`], is the same either way.",
+      "type": "object",
+      "properties": {
+        "email": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "email"
+      ]
+    },
+    "AccountSignedIn": {
+      "description": "The signed-in account. `token`, sent as a bearer token, is only in the answer to an\n[`AccountSignInFinish`], for clients that keep no cookie.",
+      "type": "object",
+      "properties": {
+        "account": {
+          "$ref": "#/$defs/AccountId"
+        },
+        "email": {
+          "type": "string"
+        },
+        "token": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "account",
+        "email"
+      ]
+    },
     "AgentSession": {
       "description": "An agent's own id for a conversation, a lowercase UUID, which resumes it later.",
       "type": "string",
@@ -152,6 +265,382 @@
     "Capability": {
       "description": "A feature a peer supports, such as `chat.send`, named like a [`Code`]. A peer keeps the ones\nit doesn't know, so a newer peer's list still parses.",
       "$ref": "#/$defs/Code"
+    },
+    "ChallengeId": {
+      "description": "One sign-in request, which its code and its tries belong to; 1–64 ASCII letters,\ndigits, `-` or `_`.",
+      "type": "string",
+      "maxLength": 64,
+      "pattern": "^[A-Za-z0-9_-]+$"
+    },
+    "ChatAction": {
+      "oneOf": [
+        {
+          "description": "Starts a turn with `text`, or queues it behind the turn that is running.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "prompt"
+            },
+            "text": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "text"
+          ]
+        },
+        {
+          "description": "Answers a permission prompt of one of the chat's runs.",
+          "type": "object",
+          "properties": {
+            "answer": {
+              "$ref": "#/$defs/PermissionAnswer"
+            },
+            "kind": {
+              "type": "string",
+              "const": "permission"
+            }
+          },
+          "required": [
+            "kind",
+            "answer"
+          ]
+        },
+        {
+          "description": "Stops the turn that is running.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "interrupt"
+            }
+          },
+          "required": [
+            "kind"
+          ]
+        }
+      ]
+    },
+    "ChatAnswer": {
+      "type": "object",
+      "properties": {
+        "answer": {
+          "$ref": "#/$defs/ChatAnswerKind"
+        },
+        "chat": {
+          "$ref": "#/$defs/ChatId"
+        },
+        "workspace": {
+          "$ref": "#/$defs/WorkspaceId"
+        }
+      },
+      "required": [
+        "workspace",
+        "chat",
+        "answer"
+      ]
+    },
+    "ChatAnswerKind": {
+      "oneOf": [
+        {
+          "description": "The client missed events and its subscription is over: fetch a snapshot, then subscribe\nafter its `seq`.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "events_lost"
+            }
+          },
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "description": "The chat as of `seq`: its runs, where in the log the permission prompts still waiting\nare, and its latest events, as many as fit one frame. A `window` fetches a prompt that\nisn't among them.",
+          "type": "object",
+          "properties": {
+            "events": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/ChatEntry"
+              }
+            },
+            "kind": {
+              "type": "string",
+              "const": "snapshot"
+            },
+            "runs": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/RunStatus"
+              }
+            },
+            "seq": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            },
+            "waiting": {
+              "type": "array",
+              "items": {
+                "type": "integer",
+                "format": "uint64",
+                "minimum": 0
+              }
+            }
+          },
+          "required": [
+            "kind",
+            "seq",
+            "runs",
+            "waiting",
+            "events"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "events": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/ChatEntry"
+              }
+            },
+            "kind": {
+              "type": "string",
+              "const": "window"
+            }
+          },
+          "required": [
+            "kind",
+            "events"
+          ]
+        }
+      ]
+    },
+    "ChatCommand": {
+      "description": "The core answers with receipts under `request`.",
+      "type": "object",
+      "properties": {
+        "action": {
+          "$ref": "#/$defs/ChatAction"
+        },
+        "chat": {
+          "$ref": "#/$defs/ChatId"
+        },
+        "request": {
+          "$ref": "#/$defs/RequestId"
+        },
+        "workspace": {
+          "$ref": "#/$defs/WorkspaceId"
+        }
+      },
+      "required": [
+        "request",
+        "workspace",
+        "chat",
+        "action"
+      ]
+    },
+    "ChatEntry": {
+      "description": "An event and its place in its chat's log: `seq` starts at 1 and grows by one.",
+      "type": "object",
+      "properties": {
+        "event": {
+          "$ref": "#/$defs/ChatEvent"
+        },
+        "seq": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "seq",
+        "event"
+      ]
+    },
+    "ChatEvent": {
+      "oneOf": [
+        {
+          "description": "A person's prompt, accepted under `request`.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "prompt"
+            },
+            "request": {
+              "$ref": "#/$defs/RequestId"
+            },
+            "text": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "request",
+            "text"
+          ]
+        },
+        {
+          "description": "Where a chat command stands; written once per state.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "receipt"
+            },
+            "receipt": {
+              "$ref": "#/$defs/Receipt"
+            }
+          },
+          "required": [
+            "kind",
+            "receipt"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "run"
+            },
+            "update": {
+              "$ref": "#/$defs/RunUpdate"
+            }
+          },
+          "required": [
+            "kind",
+            "update"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "run_status"
+            },
+            "status": {
+              "$ref": "#/$defs/RunStatus"
+            }
+          },
+          "required": [
+            "kind",
+            "status"
+          ]
+        }
+      ]
+    },
+    "ChatId": {
+      "description": "A chat in a workspace, 1–64 ASCII letters, digits, `-` or `_`.",
+      "type": "string",
+      "maxLength": 64,
+      "pattern": "^[A-Za-z0-9_-]+$"
+    },
+    "ChatQuery": {
+      "description": "The answer is a [`ChatAnswer`], or for `subscribe` the [`ChatUpdate`]s themselves.",
+      "type": "object",
+      "properties": {
+        "chat": {
+          "$ref": "#/$defs/ChatId"
+        },
+        "query": {
+          "$ref": "#/$defs/ChatQueryKind"
+        },
+        "workspace": {
+          "$ref": "#/$defs/WorkspaceId"
+        }
+      },
+      "required": [
+        "workspace",
+        "chat",
+        "query"
+      ]
+    },
+    "ChatQueryKind": {
+      "oneOf": [
+        {
+          "description": "Every event after `after`, then each new one as it is committed.",
+          "type": "object",
+          "properties": {
+            "after": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            },
+            "kind": {
+              "type": "string",
+              "const": "subscribe"
+            }
+          },
+          "required": [
+            "kind",
+            "after"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "snapshot"
+            }
+          },
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "description": "The latest events before `before`: at most `limit`, and fewer when they wouldn't fit\none frame.",
+          "type": "object",
+          "properties": {
+            "before": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            },
+            "kind": {
+              "type": "string",
+              "const": "window"
+            },
+            "limit": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            }
+          },
+          "required": [
+            "kind",
+            "before",
+            "limit"
+          ]
+        }
+      ]
+    },
+    "ChatUpdate": {
+      "description": "Text deltas are never committed; they arrive only as run updates.",
+      "type": "object",
+      "properties": {
+        "chat": {
+          "$ref": "#/$defs/ChatId"
+        },
+        "entry": {
+          "$ref": "#/$defs/ChatEntry"
+        },
+        "workspace": {
+          "$ref": "#/$defs/WorkspaceId"
+        }
+      },
+      "required": [
+        "workspace",
+        "chat",
+        "entry"
+      ]
     },
     "ClientLog": {
       "description": "A log record from a client that has no log of its own, such as the web app: an event name and\ntyped ids. The receiver logs only events it knows, so no other text reaches its log.",
@@ -337,6 +826,28 @@
             "state"
           ]
         }
+      ]
+    },
+    "PermissionAnswer": {
+      "description": "A person's answer to a [`RunEvent::PermissionAsked`].",
+      "type": "object",
+      "properties": {
+        "allow": {
+          "type": "boolean"
+        },
+        "prompt": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "run": {
+          "$ref": "#/$defs/RunId"
+        }
+      },
+      "required": [
+        "run",
+        "prompt",
+        "allow"
       ]
     },
     "Pick": {
@@ -632,6 +1143,56 @@
       "maxLength": 64,
       "pattern": "^[A-Za-z0-9_-]+$"
     },
+    "RunState": {
+      "oneOf": [
+        {
+          "description": "The agent process is starting.",
+          "type": "string",
+          "const": "starting"
+        },
+        {
+          "description": "On a turn.",
+          "type": "string",
+          "const": "running"
+        },
+        {
+          "description": "On a turn, waiting for a person to answer a permission prompt.",
+          "type": "string",
+          "const": "waiting"
+        },
+        {
+          "description": "Between turns, with its process alive.",
+          "type": "string",
+          "const": "idle"
+        },
+        {
+          "description": "Its process was stopped; the next prompt resumes the same agent session in a new run.",
+          "type": "string",
+          "const": "sleeping"
+        },
+        {
+          "description": "Over for good.",
+          "type": "string",
+          "const": "ended"
+        }
+      ]
+    },
+    "RunStatus": {
+      "description": "Where a run stands, as its chat's log records it.",
+      "type": "object",
+      "properties": {
+        "run": {
+          "$ref": "#/$defs/RunId"
+        },
+        "state": {
+          "$ref": "#/$defs/RunState"
+        }
+      },
+      "required": [
+        "run",
+        "state"
+      ]
+    },
     "RunUpdate": {
       "description": "One event of the run `run`, in the order the run reported it.",
       "type": "object",
@@ -647,6 +1208,79 @@
         "run",
         "event"
       ]
+    },
+    "SignInFinish": {
+      "description": "Trades the one-time code sent to `email` for a [`SignedIn`]. `challenge` is the one its\n[`SignInStarted`] gave; a server that hands out challenges refuses a finish without one.",
+      "type": "object",
+      "properties": {
+        "challenge": {
+          "$ref": "#/$defs/ChallengeId"
+        },
+        "code": {
+          "type": "string"
+        },
+        "email": {
+          "type": "string"
+        },
+        "workspace": {
+          "$ref": "#/$defs/WorkspaceId"
+        }
+      },
+      "required": [
+        "workspace",
+        "email",
+        "code"
+      ]
+    },
+    "SignInStart": {
+      "description": "Sign-in to one workspace, which [`AccountSignInStart`] replaces: asks the server to send\na one-time code to `email`, if it is a member of `workspace`. The answer, a [`SignInStarted`], is the same either way.",
+      "type": "object",
+      "properties": {
+        "email": {
+          "type": "string"
+        },
+        "workspace": {
+          "$ref": "#/$defs/WorkspaceId"
+        }
+      },
+      "required": [
+        "workspace",
+        "email"
+      ]
+    },
+    "SignInStarted": {
+      "description": "The answer to a [`SignInStart`], for members and strangers alike: the challenge to finish\nit with.",
+      "type": "object",
+      "properties": {
+        "challenge": {
+          "$ref": "#/$defs/ChallengeId"
+        }
+      },
+      "required": [
+        "challenge"
+      ]
+    },
+    "SignedIn": {
+      "description": "A signed-in member and the session token that proves it, sent as a bearer token.",
+      "type": "object",
+      "properties": {
+        "member": {
+          "$ref": "#/$defs/MemberId"
+        },
+        "token": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "member",
+        "token"
+      ]
+    },
+    "TaskId": {
+      "description": "A task in a workspace, 1–64 ASCII letters, digits, `-` or `_`.",
+      "type": "string",
+      "maxLength": 64,
+      "pattern": "^[A-Za-z0-9_-]+$"
     },
     "Welcome": {
       "description": "The answer to a [`Hello`] that speaks the same protocol.",
@@ -670,7 +1304,7 @@
       "description": "What changed in a workspace.",
       "oneOf": [
         {
-          "description": "A member signed in for the first time.",
+          "description": "A member opened the workspace for the first time.",
           "type": "object",
           "properties": {
             "kind": {
@@ -685,7 +1319,42 @@
             "kind",
             "member"
           ]
+        },
+        {
+          "description": "A task was made, at version 1, or changed. Only for clients that have the capability\n`workspace.tasks`, which read the tasks again to see what it now is.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "task_changed"
+            },
+            "task": {
+              "$ref": "#/$defs/TaskId"
+            },
+            "version": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            }
+          },
+          "required": [
+            "kind",
+            "task",
+            "version"
+          ]
         }
+      ]
+    },
+    "WorkspaceCreate": {
+      "description": "Asks the server for a new workspace, which the asker owns. The answer is its\n[`WorkspaceSummary`].",
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name"
       ]
     },
     "WorkspaceId": {
@@ -693,6 +1362,56 @@
       "type": "string",
       "maxLength": 64,
       "pattern": "^[A-Za-z0-9_-]+$"
+    },
+    "WorkspaceList": {
+      "description": "The workspaces the signed-in account is a member of.",
+      "type": "object",
+      "properties": {
+        "workspaces": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/WorkspaceSummary"
+          }
+        }
+      },
+      "required": [
+        "workspaces"
+      ]
+    },
+    "WorkspaceRole": {
+      "description": "What a member may do in a workspace.",
+      "oneOf": [
+        {
+          "description": "Made the workspace.",
+          "type": "string",
+          "const": "owner"
+        },
+        {
+          "description": "Was added to it.",
+          "type": "string",
+          "const": "member"
+        }
+      ]
+    },
+    "WorkspaceSummary": {
+      "description": "A workspace as one of its members sees it, with their `role` in it.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/WorkspaceId"
+        },
+        "name": {
+          "type": "string"
+        },
+        "role": {
+          "$ref": "#/$defs/WorkspaceRole"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "role"
+      ]
     },
     "WorkspaceUpdate": {
       "description": "One change to `workspace`. `seq` grows strictly within a workspace, and a feed opened with\n`since=N` sends every change after `N`.",

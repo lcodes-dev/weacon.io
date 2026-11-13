@@ -65,6 +65,8 @@ mod tests {
                 .arg(dir.join("weacon.db"))
                 .arg("--outbox")
                 .arg(dir.join("missing"))
+                .arg("--secret")
+                .arg(dir.join("secret"))
                 .env("WEACON_SENTRY_DSN", ""),
         );
 
@@ -84,6 +86,8 @@ mod tests {
                 .arg(db.join("weacon.db"))
                 .arg("--outbox")
                 .arg(&*db)
+                .arg("--secret")
+                .arg(db.join("secret"))
                 .env("WEACON_SENTRY_DSN", ""),
         );
 
@@ -117,6 +121,8 @@ mod tests {
                 .arg(db.join("weacon.db"))
                 .arg("--outbox")
                 .arg(&**outbox)
+                .arg("--secret")
+                .arg(db.join("secret"))
                 .stdout(Stdio::piped())
                 .spawn()
                 .unwrap(),

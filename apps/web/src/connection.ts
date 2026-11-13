@@ -5,7 +5,15 @@ import type { App, Envelope } from "./protocol.ts";
 const NEEDS = "run.stream";
 
 /** Why a connection ended. */
-export type End = "connection.lost" | "connection.refused" | "connection.other_protocol" | "connection.server_too_old";
+export type End =
+  | "connection.lost"
+  | "connection.refused"
+  | "connection.no_answer"
+  | "connection.other_protocol"
+  | "connection.server_too_old";
+
+// How long the server has to welcome this app once the socket is made.
+const WELCOME_MS = 10_000;
 
 /** The part of a browser `WebSocket` this file uses. */
 export type Socket = {
@@ -31,9 +39,15 @@ export type Listener = {
 export class Connection {
   #socket: Socket;
   #status: Status = { state: "connecting" };
+  #deadline: ReturnType<typeof setTimeout>;
 
   constructor(socket: Socket, me: App, listener: Listener) {
     this.#socket = socket;
+    this.#deadline = setTimeout(() => {
+      if (this.#status.state === "connecting") {
+        this.#end(listener, "connection.no_answer");
+      }
+    }, WELCOME_MS);
     socket.addEventListener("open", () => {
       this.#send({ id: 1, type: "hello", protocol: PROTOCOL, app: me, capabilities: [NEEDS] });
     });
@@ -74,11 +88,13 @@ export class Connection {
       this.#end(listener, "connection.server_too_old");
       return;
     }
+    clearTimeout(this.#deadline);
     this.#status = { state: "live", server: envelope.app, capabilities };
     listener.status(this.#status);
   }
 
   #end(listener: Listener, code: End): void {
+    clearTimeout(this.#deadline);
     this.#status = { state: "ended", code };
     this.#socket.close();
     listener.status(this.#status);
@@ -89,6 +105,14 @@ export class Connection {
   }
 }
 
+const ENDINGS: Record<End, string> = {
+  "connection.lost": "The server closed the connection",
+  "connection.refused": "The server can't be reached",
+  "connection.no_answer": "The server didn't answer",
+  "connection.other_protocol": "The server runs another version of Weacon; reload the page",
+  "connection.server_too_old": "The server is too old for this app",
+};
+
 /** What the header says about the connection. */
 export function statusText(status: Status): string {
   switch (status.state) {
@@ -97,7 +121,7 @@ export function statusText(status: Status): string {
     case "live":
       return "Connected";
     case "ended":
-      return status.code === "connection.lost" ? "The server closed the connection" : "The server can't be reached";
+      return ENDINGS[status.code];
   }
 }
 

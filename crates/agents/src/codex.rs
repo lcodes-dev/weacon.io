@@ -2,60 +2,44 @@
 
 mod wire;
 
-use std::path::PathBuf;
-
 use tokio::process::Command;
-use weacon_observability::Fault;
-use weacon_protocol::{AgentSession, App, RunId};
 
 pub(crate) use wire::{Wire, answer};
 
-use crate::run::{self, AgentRun};
-use crate::spawn::SpawnPolicy;
-
-/// How to start the person's own `codex` for one workspace.
-#[derive(Clone, Debug)]
-pub struct Codex {
-    /// The installed `codex`.
-    pub program: PathBuf,
-    /// The workspace's config folder, which holds its sign-in.
-    pub config_dir: PathBuf,
-    /// The folder the agent works in.
-    pub cwd: PathBuf,
-    /// Weacon's own build, which Codex records as its client.
-    pub app: App,
-}
+use crate::launch::Launch;
 
 // Sign-ins that would win over the workspace's own; removed, never read.
 const OTHER_SIGN_INS: [&str; 2] = ["CODEX_API_KEY", "OPENAI_API_KEY"];
 
-impl Codex {
-    /// Starts `codex app-server` under `policy` and opens a thread, resuming `session` when
-    /// given.
-    ///
-    /// # Errors
-    /// When the program can't be started.
-    pub fn start(
-        &self,
-        policy: &SpawnPolicy,
-        run: RunId,
-        session: Option<&AgentSession>,
-    ) -> Result<AgentRun, Fault> {
-        let wire = Wire::new(session.cloned(), &self.app);
-        run::spawn(self.command(), policy, run, run::Wire::Codex(wire))
-    }
+/// `codex` as an app server.
+pub(crate) fn command(launch: &Launch) -> Command {
+    let mut command = with_workspace_sign_in(launch);
+    command.arg("app-server").current_dir(&launch.cwd);
+    command
+}
 
-    fn command(&self) -> Command {
-        let mut command = Command::new(&self.program);
-        command.arg("app-server");
-        for name in OTHER_SIGN_INS {
-            command.env_remove(name);
-        }
-        command
-            .env("CODEX_HOME", &self.config_dir)
-            .current_dir(&self.cwd);
-        command
+/// `codex`'s own check of its sign-in, which exits with success when signed in; it runs
+/// wherever Weacon does.
+pub(crate) fn status(launch: &Launch) -> Command {
+    let mut command = with_workspace_sign_in(launch);
+    command.args(["login", "status"]);
+    command
+}
+
+/// `codex`'s own sign-in, for the person's terminal.
+pub(crate) fn login(launch: &Launch) -> Command {
+    let mut command = with_workspace_sign_in(launch);
+    command.arg("login");
+    command
+}
+
+fn with_workspace_sign_in(launch: &Launch) -> Command {
+    let mut command = Command::new(&launch.program);
+    for name in OTHER_SIGN_INS {
+        command.env_remove(name);
     }
+    command.env("CODEX_HOME", &launch.config_dir);
+    command
 }
 
 #[cfg(test)]
@@ -63,43 +47,39 @@ mod tests {
     use std::ffi::OsStr;
     use std::path::Path;
 
-    use weacon_testing::TempDir;
+    use weacon_protocol::AgentKind;
 
     use super::*;
-    use crate::test_support::{app, run_id};
-
-    fn codex(dir: &Path) -> Codex {
-        Codex {
-            program: dir.join("codex"),
-            config_dir: dir.join("config"),
-            cwd: dir.to_owned(),
-            app: app(),
-        }
-    }
 
     #[test]
-    fn the_app_server_runs_with_the_workspaces_config_and_no_other_sign_in() {
-        let command = codex(Path::new("/work")).command();
-        let command = command.as_std();
-        let envs: Vec<_> = command.get_envs().collect();
-
-        assert_eq!(command.get_args().collect::<Vec<_>>(), ["app-server"]);
-        let config = Path::new("/work").join("config");
-        assert!(envs.contains(&(OsStr::new("CODEX_HOME"), Some(config.as_os_str()))));
-        for name in OTHER_SIGN_INS {
-            assert!(envs.contains(&(OsStr::new(name), None)), "{name}");
-        }
-        assert_eq!(command.get_current_dir(), Some(Path::new("/work")));
-    }
-
-    #[tokio::test]
-    async fn a_missing_program_is_reported() {
-        let dir = TempDir::new().unwrap();
-
-        let Err(error) = codex(&dir).start(&SpawnPolicy::default(), run_id("run-1"), None) else {
-            panic!("a missing program started");
+    fn every_command_runs_with_the_workspaces_config_and_no_other_sign_in() {
+        let launch = Launch {
+            agent: AgentKind::Codex,
+            program: "/work/codex".into(),
+            config_dir: "/work/config".into(),
+            cwd: "/work".into(),
         };
+        let status_command = status(&launch);
+        let status_args: Vec<_> = status_command.as_std().get_args().collect();
 
-        assert_eq!(error.code().as_str(), "agent.not_started");
+        assert_eq!(status_args, ["login", "status"]);
+        assert_eq!(
+            command(&launch).as_std().get_args().collect::<Vec<_>>(),
+            ["app-server"]
+        );
+        let login = login(&launch);
+        assert_eq!(login.as_std().get_args().collect::<Vec<_>>(), ["login"]);
+        for command in [command(&launch), status(&launch), login] {
+            let command = command.as_std();
+            let envs: Vec<_> = command.get_envs().collect();
+
+            assert!(envs.contains(&(OsStr::new("CODEX_HOME"), Some(OsStr::new("/work/config")))));
+            for name in OTHER_SIGN_INS {
+                assert!(envs.contains(&(OsStr::new(name), None)), "{name}");
+            }
+        }
+        let run = command(&launch);
+        assert_eq!(run.as_std().get_current_dir(), Some(Path::new("/work")));
+        assert_eq!(status(&launch).as_std().get_current_dir(), None);
     }
 }

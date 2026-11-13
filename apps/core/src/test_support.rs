@@ -42,6 +42,7 @@ pub(crate) fn app(state_dir: Option<&Path>, log_file: Option<&Path>) -> App {
         state_dir: state_dir.map(Path::to_path_buf),
         log_file: log_file.map(Path::to_path_buf),
         spawn: weacon_agents::SpawnPolicy::default(),
+        path: None,
     }
 }
 
@@ -68,6 +69,10 @@ pub(crate) fn error_code(message: &weacon_protocol::Message) -> Option<&str> {
         | weacon_protocol::Message::Run(_)
         | weacon_protocol::Message::Workspace(_)
         | weacon_protocol::Message::Log(_)
+        | weacon_protocol::Message::ChatCommand(_)
+        | weacon_protocol::Message::Chat(_)
+        | weacon_protocol::Message::ChatQuery(_)
+        | weacon_protocol::Message::ChatAnswer(_)
         | weacon_protocol::Message::Unknown => None,
     }
 }

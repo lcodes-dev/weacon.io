@@ -140,6 +140,10 @@ fn welcomed(message: Message) -> Result<Welcome, Fault> {
         | Message::Run(_)
         | Message::Workspace(_)
         | Message::Log(_)
+        | Message::ChatCommand(_)
+        | Message::Chat(_)
+        | Message::ChatQuery(_)
+        | Message::ChatAnswer(_)
         | Message::Unknown => Err(Fault::new(
             code!("daemon.refused"),
             "The daemon refused the handshake",
