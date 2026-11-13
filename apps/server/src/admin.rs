@@ -1,4 +1,5 @@
 use std::io::Write;
+use std::path::Path;
 
 use weacon_observability::Fault;
 use weacon_protocol::{AccountId, MemberId, WorkspaceId, code};
@@ -23,6 +24,7 @@ pub(crate) async fn run(
             let created = db.create_workspace(&id, name).await;
             closed(db, created.map(|_| format!("{}\n", id.as_str()))).await
         }
+        AdminCommand::AddAccount { db, email } => add_account(&db, &email, new_id).await,
         AdminCommand::AddMember {
             db,
             workspace,
@@ -62,6 +64,14 @@ pub(crate) async fn run(
     out.write_all(printed.as_bytes()).map_err(|error| {
         Fault::new(code!("output.failed"), "The output couldn't be written").because(error)
     })
+}
+
+async fn add_account(db: &Path, email: &str, new_id: &dyn Fn() -> String) -> Result<String, Fault> {
+    let email = Email::parse(email)?;
+    let id: AccountId = fresh(new_id)?;
+    let db = Db::open(db).await?;
+    let added = db.add_account(&id, &email).await;
+    closed(db, added.map(|()| format!("{}\n", id.as_str()))).await
 }
 
 /// Closes `db`, which checkpoints its write-ahead log into the file, then gives `result`.
@@ -137,6 +147,25 @@ mod tests {
         assert_eq!(again.code().as_str(), "db.exists");
         assert_eq!(invalid.code().as_str(), "email.invalid");
         assert_eq!(members, "id1 ada@example.com\n");
+    }
+
+    #[tokio::test]
+    async fn an_operator_makes_an_account_once_for_an_address() {
+        let dir = TempDir::new().unwrap();
+        let db = dir.join("weacon.db");
+        Db::create(&db).await.unwrap().close().await;
+        let account = |email: &str| AdminCommand::AddAccount {
+            db: db.clone(),
+            email: email.to_owned(),
+        };
+
+        let added = admin(account(" Ada@Example.com ")).await.unwrap();
+        let again = admin(account("ada@example.com")).await.unwrap_err();
+        let invalid = admin(account("ada")).await.unwrap_err();
+
+        assert_eq!(added, "id1\n");
+        assert_eq!(again.code().as_str(), "db.exists");
+        assert_eq!(invalid.code().as_str(), "email.invalid");
     }
 
     #[tokio::test]

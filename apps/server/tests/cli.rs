@@ -179,20 +179,19 @@ mod tests {
         );
         let (child, address, lines) = serve(&db, &outbox);
         let version = http(&address, "GET /version", "");
-        let start = format!(r#"{{"workspace":"{workspace}","email":"ada@example.com"}}"#);
-        let started = http(&address, "POST /sign-in", &start);
+        let start = r#"{"email":"ada@example.com"}"#;
+        let started = http(&address, "POST /api/sign-in", start);
         let (_, started_body) = started.split_once("\r\n\r\n").unwrap();
         let challenge =
             serde_json::from_str::<serde_json::Value>(started_body).unwrap()["challenge"].clone();
         let (to, code) = letter(&outbox);
         let finish = serde_json::json!({
-            "workspace": workspace,
             "email": "ada@example.com",
             "challenge": challenge,
             "code": code,
         })
         .to_string();
-        let finished = http(&address, "POST /sign-in/finish", &finish);
+        let finished = http(&address, "POST /api/sign-in/finish", &finish);
         let (_, body) = finished.split_once("\r\n\r\n").unwrap();
         let token = serde_json::from_str::<serde_json::Value>(body).unwrap()["token"]
             .as_str()

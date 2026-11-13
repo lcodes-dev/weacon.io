@@ -115,9 +115,9 @@ pub(crate) async fn serve(
 fn router(shared: Shared) -> Router {
     Router::new()
         .route("/version", get(version))
-        .route("/sign-in", post(sign_in::start))
-        .route("/sign-in/finish", post(sign_in::finish))
-        .route("/workspaces/{workspace}/feed", get(feed::feed))
+        .route("/api/sign-in", post(sign_in::start))
+        .route("/api/sign-in/finish", post(sign_in::finish))
+        .route("/api/workspaces/{workspace}/feed", get(feed::feed))
         .layer(DefaultBodyLimit::max(MAX_BODY))
         .layer(middleware::from_fn(in_time))
         .layer(middleware::from_fn_with_state(shared.clone(), log_request))
@@ -357,7 +357,7 @@ mod tests {
         tokio::time::pause();
         let mut slow = TcpStream::connect(server.running.address).await.unwrap();
         slow.write_all(
-            b"POST /sign-in HTTP/1.1\r\nhost: test\r\ncontent-type: application/json\r\ncontent-length: 9\r\n\r\n",
+            b"POST /api/sign-in HTTP/1.1\r\nhost: test\r\ncontent-type: application/json\r\ncontent-length: 9\r\n\r\n",
         )
         .await
         .unwrap();

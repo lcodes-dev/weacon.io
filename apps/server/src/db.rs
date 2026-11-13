@@ -1,9 +1,10 @@
 //! The server's `SQLite` database. Only this module uses the driver, and every query
 //! about a workspace goes through its [`Workspace`] handle.
 
+mod account;
 mod backup;
+mod changes;
 mod schema;
-mod sign_in;
 mod workspace;
 
 use std::path::{Path, PathBuf};
@@ -12,12 +13,12 @@ use std::time::Duration;
 use sqlx::SqlitePool;
 use sqlx::sqlite::{SqliteConnectOptions, SqliteConnection, SqlitePoolOptions, SqliteSynchronous};
 use weacon_observability::Fault;
-use weacon_protocol::{WorkspaceId, code};
+use weacon_protocol::{MemberId, WorkspaceId, code};
 
-pub(crate) use backup::restore;
-pub(crate) use sign_in::Attempt;
+pub(crate) use account::Attempt;
 #[cfg(test)]
-pub(crate) use sign_in::CODE_LIFETIME;
+pub(crate) use account::CODE_LIFETIME;
+pub(crate) use backup::restore;
 pub(crate) use workspace::Workspace;
 
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
@@ -85,6 +86,19 @@ impl Db {
         self.find_workspace(id)
             .await?
             .ok_or_else(|| Fault::new(code!("workspace.not_found"), "There is no such workspace"))
+    }
+
+    /// The workspace `id` and who is asking, if the token hashed as `token_hash` has a live
+    /// session whose account is a member there.
+    pub(crate) async fn member_workspace(
+        &self,
+        id: &WorkspaceId,
+        token_hash: &[u8],
+        now: i64,
+    ) -> Result<Option<(Workspace, MemberId)>, Fault> {
+        let workspace = Workspace::new(self.clone(), id.clone());
+        let member = workspace.session_member(token_hash, now).await?;
+        Ok(member.map(|member| (workspace, member)))
     }
 
     /// The workspace `id`, if there is one.
@@ -483,28 +497,49 @@ mod tests {
             .unwrap()
     }
 
-    #[tokio::test]
-    async fn every_table_index_and_reference_leads_with_the_workspace() {
-        let dir = TempDir::new().unwrap();
-        let db = Db::create(&dir.join("weacon.db")).await.unwrap();
-        let tables: Vec<String> = sqlx::query_scalar(
+    const SERVER_WIDE: [&str; 3] = ["accounts", "sign_in_challenges", "sessions"];
+
+    async fn tables(db: &Db) -> Vec<String> {
+        sqlx::query_scalar(
             "SELECT name FROM sqlite_schema WHERE type = 'table' AND name NOT LIKE 'sqlite_%'",
         )
         .fetch_all(&db.readers)
         .await
-        .unwrap();
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_persons_own_tables_hold_nothing_of_a_workspace() {
+        let dir = TempDir::new().unwrap();
+        let db = Db::create(&dir.join("weacon.db")).await.unwrap();
+        let workspace = "SELECT name FROM pragma_table_info(?) WHERE name = 'workspace_id'";
+
         assert_eq!(
-            tables,
+            tables(&db).await,
             [
                 "workspaces",
                 "members",
-                "sessions",
                 "changes",
+                "accounts",
                 "sign_in_challenges",
-                "accounts"
+                "sessions"
             ]
         );
-        for table in tables.iter().filter(|table| *table != "accounts") {
+        for table in SERVER_WIDE {
+            assert!(
+                first_columns(&db, workspace, table).await.is_empty(),
+                "{table}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn every_other_table_index_and_reference_leads_with_the_workspace() {
+        let dir = TempDir::new().unwrap();
+        let db = Db::create(&dir.join("weacon.db")).await.unwrap();
+        let tables = tables(&db).await;
+        let in_workspaces = |table: &&String| !SERVER_WIDE.contains(&table.as_str());
+        for table in tables.iter().filter(in_workspaces) {
             let columns = first_columns(
                 &db,
                 "SELECT name FROM pragma_table_info(?) WHERE cid = 0",

@@ -1,5 +1,6 @@
 //! A fake server that answers a web client's hello on a WebSocket, then streams a recorded run
-//! to it, one message per text frame, keeps what the client sends, and accepts its prompts.
+//! to it, one message per text frame, keeps what the client sends, accepts its prompts and
+//! answers its diff queries with a made-up change of 40 files.
 
 use std::path::Path;
 use std::time::Duration;
@@ -13,11 +14,11 @@ use weacon_protocol::{
     Capability, ChatAction, ChatCommand, Envelope, Message, Outcome, Receipt, code,
 };
 
-use crate::{BUFFER, fake_core, play};
+use crate::{BUFFER, fake_core, fake_diff, play};
 
 /// Plays `recording` to the client on `stream`, waiting `pace` after each message, and appends
 /// each text frame the client sends after its hello to `received`, one per line. It offers
-/// `chat.send` and answers each prompt with a receipt that accepts it.
+/// `chat.send` and answers each prompt with a receipt that accepts it, and offers `diff.view`.
 ///
 /// # Errors
 /// When the handshake fails, the client's first frame isn't a hello on this protocol that offers
@@ -35,7 +36,11 @@ pub async fn serve(
     let hello = next_text(&mut frames)
         .await?
         .ok_or("the client left before its hello")?;
-    let offered: [Capability; 2] = [code!("log.forward").into(), code!("chat.send").into()];
+    let offered: [Capability; 3] = [
+        code!("log.forward").into(),
+        code!("chat.send").into(),
+        code!("diff.view").into(),
+    ];
     let answer = fake_core::answer(&hello, &offered)?;
     let welcomed = matches!(answer.message, Message::Welcome(_));
     sink.send(Frame::text(fake_core::text(&answer)?))
@@ -47,12 +52,12 @@ pub async fn serve(
     // Sending stops at the first failure, such as the client leaving mid-stream.
     let (played, lines) = duplex(BUFFER);
     let mut lines = BufReader::new(lines).lines();
-    let (receipts, mut answered) = unbounded_channel();
+    let (replies, mut answered) = unbounded_channel();
     let forward = async {
         loop {
             let text = tokio::select! {
                 Ok(Some(line)) = lines.next_line() => line,
-                Some(receipt) = answered.recv() => receipt,
+                Some(reply) = answered.recv() => reply,
                 else => break,
             };
             if sink.send(Frame::text(text)).await.is_err() {
@@ -62,7 +67,7 @@ pub async fn serve(
     };
     let play = play(recording, BufReader::new(tokio::io::empty()), played, pace);
     let sending = async { drop(tokio::join!(play, forward)) };
-    let keeping = keep(&mut frames, received, receipts);
+    let keeping = keep(&mut frames, received, replies);
     tokio::pin!(keeping);
     tokio::select! {
         kept = &mut keeping => kept,
@@ -70,12 +75,12 @@ pub async fn serve(
     }
 }
 
-// Appends each text frame to `received` until the client closes, and hands the receipt for each
-// prompt to `receipts`.
+// Appends each text frame to `received` until the client closes, and hands what answers each
+// to `replies`.
 async fn keep(
     frames: &mut (impl Stream<Item = tungstenite::Result<Frame>> + Unpin),
     received: &Path,
-    receipts: UnboundedSender<String>,
+    replies: UnboundedSender<String>,
 ) -> Result<(), String> {
     let mut file = OpenOptions::new()
         .create(true)
@@ -89,33 +94,39 @@ async fn keep(
             .map_err(|error| error.to_string())?;
         // Tokio's file writes in the background; a reader may look at any moment.
         file.flush().await.map_err(|error| error.to_string())?;
-        if let Some(receipt) = receipt(&text) {
+        for reply in replies_to(&text) {
             // This fails only once `serve` is done with the client.
-            drop(receipts.send(receipt));
+            drop(replies.send(reply));
         }
     }
     Ok(())
 }
 
-// The receipt that accepts `text`, when it is a prompt.
-fn receipt(text: &str) -> Option<String> {
-    let envelope = Envelope::from_json(text.as_bytes()).ok()?;
-    let Message::ChatCommand(ChatCommand {
+// What answers `text`: a receipt that accepts a prompt, or the answers to a diff query.
+fn replies_to(text: &str) -> Vec<String> {
+    let Ok(envelope) = Envelope::from_json(text.as_bytes()) else {
+        return Vec::new();
+    };
+    let replies = if let Message::ChatCommand(ChatCommand {
         request,
         action: ChatAction::Prompt { .. },
         ..
-    }) = envelope.message
-    else {
-        return None;
+    }) = &envelope.message
+    {
+        vec![Envelope {
+            id: envelope.id,
+            message: Message::Receipt(Receipt {
+                request: request.clone(),
+                outcome: Outcome::Accepted,
+            }),
+        }]
+    } else {
+        fake_diff::answers(&envelope)
     };
-    let receipt = Envelope {
-        id: envelope.id,
-        message: Message::Receipt(Receipt {
-            request,
-            outcome: Outcome::Accepted,
-        }),
-    };
-    fake_core::text(&receipt).ok()
+    replies
+        .iter()
+        .filter_map(|reply| fake_core::text(reply).ok())
+        .collect()
 }
 
 // The next text frame, skipping pings and pongs; `None` once the connection ends. Reading past
@@ -201,10 +212,35 @@ mod tests {
         assert_eq!(welcome[0]["type"], "welcome");
         assert_eq!(
             welcome[0]["capabilities"],
-            json!(["run.stream", "log.forward", "chat.send"])
+            json!(["run.stream", "log.forward", "chat.send", "diff.view"])
         );
         assert_eq!(streamed, expected);
         assert_eq!(fs::read_to_string(&received).unwrap(), format!("{log}\n"));
+    }
+
+    #[tokio::test]
+    async fn a_diff_query_is_answered_one_file_a_frame_under_its_request() {
+        let dir = TempDir::new().unwrap();
+        let (mut client, served) = start(String::new(), dir.join("received.jsonl")).await;
+        client.send(hello(1, &["run.stream"])).await.unwrap();
+        texts(&mut client, 1).await;
+        let query = json!({ "id": 9, "type": "diff_query", "request": "q-1",
+                            "workspace": "w-1", "chat": "c-1", "query": { "kind": "changes" } });
+        client.send(Frame::text(query.to_string())).await.unwrap();
+        let files = usize::try_from(fake_diff::FILES).unwrap();
+        // A deadline, so a server that never answers fails the test instead of hanging it.
+        let answers = tokio::time::timeout(Duration::from_secs(30), texts(&mut client, files))
+            .await
+            .unwrap();
+        client.close(None).await.unwrap();
+        served.await.unwrap().unwrap();
+
+        for answer in answers {
+            assert_eq!(
+                (&answer["type"], &answer["id"], &answer["request"]),
+                (&json!("diff_answer"), &json!(9), &json!("q-1"))
+            );
+        }
     }
 
     #[tokio::test(start_paused = true)]
