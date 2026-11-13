@@ -108,6 +108,8 @@ struct Chat {
     unended: Option<Outcome>,
     /// An interrupt's request, and the turn it stops, until the interrupt is sent.
     interrupting: Option<(RequestId, RequestId)>,
+    /// The agent's session when the runs journal couldn't save it.
+    unsaved: Option<AgentSession>,
 }
 
 impl Chat {
@@ -301,6 +303,7 @@ impl<A: Agent> Engine<A> {
                 waiting: Vec::new(),
                 unended: None,
                 interrupting: None,
+                unsaved: None,
             })),
         }
     }

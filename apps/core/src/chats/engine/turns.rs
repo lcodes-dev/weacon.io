@@ -6,8 +6,8 @@ use serde_json::Value;
 use tokio::sync::mpsc;
 use weacon_observability::{Fault, Field};
 use weacon_protocol::{
-    ChatEntry, ChatEvent, Message, Outcome, PermissionAnswer, RunEvent, RunId, RunState, RunUpdate,
-    code,
+    AgentSession, ChatEntry, ChatEvent, Message, Outcome, PermissionAnswer, RunEvent, RunId,
+    RunState, RunUpdate, code,
 };
 
 use super::{Engine, Key, Start, Waiting};
@@ -55,20 +55,19 @@ impl<A: Agent> Engine<A> {
         match event {
             // Kept whether or not the event was committed: the chat's next run resumes it.
             RunEvent::Started { session } => {
-                let kept = self
-                    .runs
-                    .update(&key.0, &key.1, |record| record.session = Some(session))
-                    .await;
+                let kept = self.keep_session(key, session).await;
                 committed.and(kept)
             }
             RunEvent::PermissionAsked { prompt, .. } => {
                 self.asked(key, run, prompt, committed).await
             }
+            // Withdrawn whether or not the event was committed: the agent no longer asks.
             RunEvent::PermissionWithdrawn { prompt, .. } => {
-                committed?;
                 let waiting = &mut self.chat(key).await?.waiting;
                 waiting.retain(|waits| waits.prompt != prompt);
-                if waiting.is_empty() && self.turn(key).is_some() {
+                let resumed = waiting.is_empty() && self.turn(key).is_some();
+                committed?;
+                if resumed {
                     self.state(key, run, RunState::Running).await?;
                 }
                 Ok(())
@@ -269,18 +268,33 @@ impl<A: Agent> Engine<A> {
             let code = fault.code().clone();
             self.receipt(key, &queued.request, Outcome::Failed { code })
                 .await?;
-            self.runs
-                .update(&key.0, &key.1, |record| {
-                    record.queue.retain(|waits| waits.request != queued.request);
-                })
-                .await?;
         }
-        Ok(())
+        self.save_ended(key).await
+    }
+
+    // Saves the session the chat's next run resumes; one that can't be saved yet is kept, and
+    // saved before that run starts.
+    async fn keep_session(&mut self, key: &Key, session: AgentSession) -> Result<(), Fault> {
+        let given = session.clone();
+        let kept = self
+            .runs
+            .update(&key.0, &key.1, |record| record.session = Some(given))
+            .await;
+        self.chat(key).await?.unsaved = kept.is_err().then_some(session);
+        kept
+    }
+
+    async fn save_unsaved(&mut self, key: &Key) -> Result<(), Fault> {
+        match self.chat(key).await?.unsaved.take() {
+            Some(session) => self.keep_session(key, session).await,
+            None => Ok(()),
+        }
     }
 
     // Starts the chat's agent as a new run, resuming its session when it has one.
     async fn launch(&mut self, key: &Key) -> Result<RunId, Fault> {
         let not_started = || Fault::new(code!("agent.not_started"), "The agent couldn't start");
+        self.save_unsaved(key).await?;
         let agent = self.runs.of(&key.0, &key.1).ok_or_else(not_started)?.agent;
         let now = (self.host.now)();
         let run = self.runs.begin(&key.0, &key.1, agent, now).await?;
@@ -672,10 +686,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn an_agents_session_is_kept_even_when_its_event_cant_be_committed() {
         let (_bench, mut engine, _agent, _pushes) = on_turn().await;
-        let session = weacon_protocol::AgentSession::try_from(
-            "0b7c6a52-3f1e-4d2a-9c8b-5e4f3a2b1c0d".to_owned(),
-        )
-        .unwrap();
+        let session = session();
         engine.chat(&key()).await.unwrap().log.jam();
 
         let started = RunEvent::Started {
@@ -686,6 +697,45 @@ mod tests {
         assert_eq!(lost.unwrap_err().code().as_str(), "chat.log_not_written");
         let record = engine.runs.of(&key().0, &key().1).unwrap();
         assert_eq!(record.session, Some(session));
+    }
+
+    fn session() -> AgentSession {
+        AgentSession::try_from("0b7c6a52-3f1e-4d2a-9c8b-5e4f3a2b1c0d".to_owned()).unwrap()
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_session_the_journal_couldnt_save_is_resumed_by_the_next_run() {
+        let (mut bench, mut engine, agent, _pushes) = on_turn().await;
+        let path = engine.runs.jam();
+        let started = RunEvent::Started { session: session() };
+        let lost = hear(&mut engine, started).await;
+        assert_eq!(lost.unwrap_err().code().as_str(), "runs.not_saved");
+        engine.runs.unjam(path);
+
+        drop(agent);
+        let exited = Heard::Exited(None);
+        engine.heard(&key(), &run("run-1"), exited).await.unwrap();
+        engine.command(&key(), prompt("r-2", "More")).await.unwrap();
+
+        let next = soon(bench.started.recv()).await.unwrap();
+        assert_eq!(next.start.run, run("run-2"));
+        assert_eq!(next.start.session, Some(session()));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_withdrawn_prompt_stops_waiting_even_when_that_cant_be_committed() {
+        let (mut engine, _agent, _bench) = on_ask().await;
+        engine.chat(&key()).await.unwrap().log.jam();
+        let withdrawn = RunEvent::PermissionWithdrawn {
+            run: run("run-1"),
+            prompt: 1,
+        };
+
+        let lost = hear(&mut engine, withdrawn).await;
+
+        assert_eq!(lost.unwrap_err().code().as_str(), "chat.log_not_written");
+        let refused = engine.command(&key(), allow("r-2").0).await;
+        assert_eq!(refused.unwrap_err().code().as_str(), "agent.no_such_prompt");
     }
 
     #[tokio::test(start_paused = true)]
@@ -765,9 +815,12 @@ mod tests {
         engine.command(&key(), prompt("r-2", "More")).await.unwrap();
         // The agent exits; its report of that isn't handled yet.
         drop(agent.say);
-        while engine.takes_orders(&key()) {
+        let mut tries = 0;
+        while engine.takes_orders(&key()) && tries < 1000 {
+            tries += 1;
             tokio::task::yield_now().await;
         }
+        assert!(!engine.takes_orders(&key()));
 
         let outcome = Outcome::Completed;
         hear(&mut engine, RunEvent::Finished { outcome })

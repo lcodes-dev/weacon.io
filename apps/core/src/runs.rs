@@ -191,6 +191,22 @@ impl Runs {
             .position(|record| record.workspace == *workspace && record.chat == *chat)
     }
 
+    /// Makes every save fail, as on a full disk, until [`Runs::unjam`] gets the path back.
+    #[cfg(test)]
+    pub(crate) fn jam(&mut self) -> PathBuf {
+        let dir = self
+            .path
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_default();
+        std::mem::replace(&mut self.path, dir)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn unjam(&mut self, path: PathBuf) {
+        self.path = path;
+    }
+
     async fn commit(&mut self, next: Journal) -> Result<(), Fault> {
         let not_saved = || Fault::new(code!("runs.not_saved"), "The runs journal can't be saved");
         let json = serde_json::to_vec(&next).map_err(|error| not_saved().because(error))?;
