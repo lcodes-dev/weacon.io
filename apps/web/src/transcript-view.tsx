@@ -12,6 +12,9 @@ import type { Row, ToolState } from "./transcript.ts";
 export function TranscriptView({ rows, writing, away }: { rows: readonly Row[]; writing: boolean; away: boolean }) {
   const scroller = useRef<HTMLDivElement>(null);
   const bottom = useRef(true);
+  // Where the view last scrolled itself. Its scroll event comes a frame later, maybe after the
+  // pane has shrunk, as when the message box comes back, so it says nothing about the reader.
+  const followedTo = useRef<number | undefined>(undefined);
   // Text rows shown as Markdown; once formatted, a row stays so, as reformatting would undo a
   // selection in it. A finished row the selection touches waits until the selection leaves; a
   // bare caret, as a click leaves, holds it only while a button is down, as a drag may follow.
@@ -55,6 +58,7 @@ export function TranscriptView({ rows, writing, away }: { rows: readonly Row[]; 
       bottom.current = atBottom(element);
     } else {
       element.scrollTop = element.scrollHeight;
+      followedTo.current = element.scrollTop;
     }
     // A held row formatting later can grow, so a reader at the bottom is kept there too.
   }, [rows, refreshes]);
@@ -80,7 +84,11 @@ export function TranscriptView({ rows, writing, away }: { rows: readonly Row[]; 
       className="page transcript"
       ref={scroller}
       onScroll={(event) => {
-        bottom.current = atBottom(event.currentTarget);
+        const element = event.currentTarget;
+        if (element.scrollTop !== followedTo.current) {
+          followedTo.current = undefined;
+          bottom.current = atBottom(element);
+        }
       }}
     >
       {rows.map((row, at) => {
