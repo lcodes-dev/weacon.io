@@ -30,7 +30,7 @@ token_id!(
 
 /// Sign-in to one workspace, which [`AccountSignInStart`] replaces: asks the server to send
 /// a one-time code to `email`, if it is a member of `workspace`. The answer, a [`SignInStarted`], is the same either way.
-#[derive(PartialEq, Eq, Serialize, Deserialize)]
+#[derive(PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct SignInStart {
     pub workspace: WorkspaceId,
     pub email: String,
@@ -38,24 +38,25 @@ pub struct SignInStart {
 
 /// The answer to a [`SignInStart`], for members and strangers alike: the challenge to finish
 /// it with.
-#[derive(PartialEq, Eq, Serialize, Deserialize)]
+#[derive(PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct SignInStarted {
     pub challenge: ChallengeId,
 }
 
 /// Trades the one-time code sent to `email` for a [`SignedIn`]. `challenge` is the one its
 /// [`SignInStarted`] gave; a server that hands out challenges refuses a finish without one.
-#[derive(PartialEq, Eq, Serialize, Deserialize)]
+#[derive(PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct SignInFinish {
     pub workspace: WorkspaceId,
     pub email: String,
     pub code: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "ChallengeId")]
     pub challenge: Option<ChallengeId>,
 }
 
 /// A signed-in member and the session token that proves it, sent as a bearer token.
-#[derive(PartialEq, Eq, Serialize, Deserialize)]
+#[derive(PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct SignedIn {
     pub member: MemberId,
     pub token: String,
@@ -63,14 +64,14 @@ pub struct SignedIn {
 
 /// Asks the server to send a one-time code to `email`, if that person may sign in. The
 /// answer, a [`SignInStarted`], is the same either way.
-#[derive(PartialEq, Eq, Serialize, Deserialize)]
+#[derive(PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct AccountSignInStart {
     pub email: String,
 }
 
 /// Trades the one-time code sent to `email`, and the challenge its [`SignInStarted`] gave,
 /// for an [`AccountSignedIn`].
-#[derive(PartialEq, Eq, Serialize, Deserialize)]
+#[derive(PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct AccountSignInFinish {
     pub email: String,
     pub code: String,
@@ -79,35 +80,39 @@ pub struct AccountSignInFinish {
 
 /// The signed-in account. `token`, sent as a bearer token, is only in the answer to an
 /// [`AccountSignInFinish`], for clients that keep no cookie.
-#[derive(PartialEq, Eq, Serialize, Deserialize)]
+#[derive(PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct AccountSignedIn {
     pub account: AccountId,
     pub email: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "String")]
     pub token: Option<String>,
 }
 
 /// What a member may do in a workspace.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum WorkspaceRole {
+    /// Made the workspace.
     Owner,
+    /// Was added to it.
     Member,
     /// A role this build doesn't know, from a newer peer; only ever received, and it allows
     /// nothing.
     #[serde(other)]
+    #[schemars(skip)]
     Newer,
 }
 
 /// Asks the server for a new workspace, which the asker owns. The answer is its
 /// [`WorkspaceSummary`].
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct WorkspaceCreate {
     pub name: String,
 }
 
 /// A workspace as one of its members sees it, with their `role` in it.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct WorkspaceSummary {
     pub id: WorkspaceId,
     pub name: String,
@@ -115,7 +120,7 @@ pub struct WorkspaceSummary {
 }
 
 /// The workspaces the signed-in account is a member of.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct WorkspaceList {
     pub workspaces: Vec<WorkspaceSummary>,
 }

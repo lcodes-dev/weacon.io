@@ -45,6 +45,39 @@ export type Envelope = {
 );
 
 /**
+ * A person's account on the server, 1–64 ASCII letters, digits, `-` or `_`.
+ */
+export type AccountId = string;
+
+/**
+ * Trades the one-time code sent to `email`, and the challenge its [`SignInStarted`] gave,
+ * for an [`AccountSignedIn`].
+ */
+export type AccountSignInFinish = {
+  challenge: ChallengeId;
+  code: string;
+  email: string;
+};
+
+/**
+ * Asks the server to send a one-time code to `email`, if that person may sign in. The
+ * answer, a [`SignInStarted`], is the same either way.
+ */
+export type AccountSignInStart = {
+  email: string;
+};
+
+/**
+ * The signed-in account. `token`, sent as a bearer token, is only in the answer to an
+ * [`AccountSignInFinish`], for clients that keep no cookie.
+ */
+export type AccountSignedIn = {
+  account: AccountId;
+  email: string;
+  token?: string;
+};
+
+/**
  * An agent's own id for a conversation, a lowercase UUID, which resumes it later.
  */
 export type AgentSession = string;
@@ -63,6 +96,12 @@ export type App = {
  * it doesn't know, so a newer peer's list still parses.
  */
 export type Capability = Code;
+
+/**
+ * One sign-in request, which its code and its tries belong to; 1–64 ASCII letters,
+ * digits, `-` or `_`.
+ */
+export type ChallengeId = string;
 
 export type ChatAction = (
   | {
@@ -399,6 +438,42 @@ export type RunUpdate = {
 };
 
 /**
+ * Trades the one-time code sent to `email` for a [`SignedIn`]. `challenge` is the one its
+ * [`SignInStarted`] gave; a server that hands out challenges refuses a finish without one.
+ */
+export type SignInFinish = {
+  challenge?: ChallengeId;
+  code: string;
+  email: string;
+  workspace: WorkspaceId;
+};
+
+/**
+ * Sign-in to one workspace, which [`AccountSignInStart`] replaces: asks the server to send
+ * a one-time code to `email`, if it is a member of `workspace`. The answer, a [`SignInStarted`], is the same either way.
+ */
+export type SignInStart = {
+  email: string;
+  workspace: WorkspaceId;
+};
+
+/**
+ * The answer to a [`SignInStart`], for members and strangers alike: the challenge to finish
+ * it with.
+ */
+export type SignInStarted = {
+  challenge: ChallengeId;
+};
+
+/**
+ * A signed-in member and the session token that proves it, sent as a bearer token.
+ */
+export type SignedIn = {
+  member: MemberId;
+  token: string;
+};
+
+/**
  * A task in a workspace, 1–64 ASCII letters, digits, `-` or `_`.
  */
 export type TaskId = string;
@@ -427,9 +502,41 @@ export type WorkspaceChange = (
 );
 
 /**
+ * Asks the server for a new workspace, which the asker owns. The answer is its
+ * [`WorkspaceSummary`].
+ */
+export type WorkspaceCreate = {
+  name: string;
+};
+
+/**
  * A workspace on the server, 1–64 ASCII letters, digits, `-` or `_`.
  */
 export type WorkspaceId = string;
+
+/**
+ * The workspaces the signed-in account is a member of.
+ */
+export type WorkspaceList = {
+  workspaces: Array<WorkspaceSummary>;
+};
+
+/**
+ * What a member may do in a workspace.
+ */
+export type WorkspaceRole = (
+  | "owner"
+  | "member"
+);
+
+/**
+ * A workspace as one of its members sees it, with their `role` in it.
+ */
+export type WorkspaceSummary = {
+  id: WorkspaceId;
+  name: string;
+  role: WorkspaceRole;
+};
 
 /**
  * One change to `workspace`. `seq` grows strictly within a workspace, and a feed opened with
