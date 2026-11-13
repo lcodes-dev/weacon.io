@@ -180,6 +180,63 @@
     "id"
   ],
   "$defs": {
+    "AccountId": {
+      "description": "A person's account on the server, 1–64 ASCII letters, digits, `-` or `_`.",
+      "type": "string",
+      "maxLength": 64,
+      "pattern": "^[A-Za-z0-9_-]+$"
+    },
+    "AccountSignInFinish": {
+      "description": "Trades the one-time code sent to `email`, and the challenge its [`SignInStarted`] gave,\nfor an [`AccountSignedIn`].",
+      "type": "object",
+      "properties": {
+        "challenge": {
+          "$ref": "#/$defs/ChallengeId"
+        },
+        "code": {
+          "type": "string"
+        },
+        "email": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "email",
+        "code",
+        "challenge"
+      ]
+    },
+    "AccountSignInStart": {
+      "description": "Asks the server to send a one-time code to `email`, if that person may sign in. The\nanswer, a [`SignInStarted`], is the same either way.",
+      "type": "object",
+      "properties": {
+        "email": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "email"
+      ]
+    },
+    "AccountSignedIn": {
+      "description": "The signed-in account. `token`, sent as a bearer token, is only in the answer to an\n[`AccountSignInFinish`], for clients that keep no cookie.",
+      "type": "object",
+      "properties": {
+        "account": {
+          "$ref": "#/$defs/AccountId"
+        },
+        "email": {
+          "type": "string"
+        },
+        "token": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "account",
+        "email"
+      ]
+    },
     "AgentSession": {
       "description": "An agent's own id for a conversation, a lowercase UUID, which resumes it later.",
       "type": "string",
@@ -208,6 +265,12 @@
     "Capability": {
       "description": "A feature a peer supports, such as `chat.send`, named like a [`Code`]. A peer keeps the ones\nit doesn't know, so a newer peer's list still parses.",
       "$ref": "#/$defs/Code"
+    },
+    "ChallengeId": {
+      "description": "One sign-in request, which its code and its tries belong to; 1–64 ASCII letters,\ndigits, `-` or `_`.",
+      "type": "string",
+      "maxLength": 64,
+      "pattern": "^[A-Za-z0-9_-]+$"
     },
     "ChatAction": {
       "oneOf": [
@@ -1146,6 +1209,73 @@
         "event"
       ]
     },
+    "SignInFinish": {
+      "description": "Trades the one-time code sent to `email` for a [`SignedIn`]. `challenge` is the one its\n[`SignInStarted`] gave; a server that hands out challenges refuses a finish without one.",
+      "type": "object",
+      "properties": {
+        "challenge": {
+          "$ref": "#/$defs/ChallengeId"
+        },
+        "code": {
+          "type": "string"
+        },
+        "email": {
+          "type": "string"
+        },
+        "workspace": {
+          "$ref": "#/$defs/WorkspaceId"
+        }
+      },
+      "required": [
+        "workspace",
+        "email",
+        "code"
+      ]
+    },
+    "SignInStart": {
+      "description": "Sign-in to one workspace, which [`AccountSignInStart`] replaces: asks the server to send\na one-time code to `email`, if it is a member of `workspace`. The answer, a [`SignInStarted`], is the same either way.",
+      "type": "object",
+      "properties": {
+        "email": {
+          "type": "string"
+        },
+        "workspace": {
+          "$ref": "#/$defs/WorkspaceId"
+        }
+      },
+      "required": [
+        "workspace",
+        "email"
+      ]
+    },
+    "SignInStarted": {
+      "description": "The answer to a [`SignInStart`], for members and strangers alike: the challenge to finish\nit with.",
+      "type": "object",
+      "properties": {
+        "challenge": {
+          "$ref": "#/$defs/ChallengeId"
+        }
+      },
+      "required": [
+        "challenge"
+      ]
+    },
+    "SignedIn": {
+      "description": "A signed-in member and the session token that proves it, sent as a bearer token.",
+      "type": "object",
+      "properties": {
+        "member": {
+          "$ref": "#/$defs/MemberId"
+        },
+        "token": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "member",
+        "token"
+      ]
+    },
     "TaskId": {
       "description": "A task in a workspace, 1–64 ASCII letters, digits, `-` or `_`.",
       "type": "string",
@@ -1174,7 +1304,7 @@
       "description": "What changed in a workspace.",
       "oneOf": [
         {
-          "description": "A member signed in for the first time.",
+          "description": "A member opened the workspace for the first time.",
           "type": "object",
           "properties": {
             "kind": {
@@ -1215,11 +1345,73 @@
         }
       ]
     },
+    "WorkspaceCreate": {
+      "description": "Asks the server for a new workspace, which the asker owns. The answer is its\n[`WorkspaceSummary`].",
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name"
+      ]
+    },
     "WorkspaceId": {
       "description": "A workspace on the server, 1–64 ASCII letters, digits, `-` or `_`.",
       "type": "string",
       "maxLength": 64,
       "pattern": "^[A-Za-z0-9_-]+$"
+    },
+    "WorkspaceList": {
+      "description": "The workspaces the signed-in account is a member of.",
+      "type": "object",
+      "properties": {
+        "workspaces": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/WorkspaceSummary"
+          }
+        }
+      },
+      "required": [
+        "workspaces"
+      ]
+    },
+    "WorkspaceRole": {
+      "description": "What a member may do in a workspace.",
+      "oneOf": [
+        {
+          "description": "Made the workspace.",
+          "type": "string",
+          "const": "owner"
+        },
+        {
+          "description": "Was added to it.",
+          "type": "string",
+          "const": "member"
+        }
+      ]
+    },
+    "WorkspaceSummary": {
+      "description": "A workspace as one of its members sees it, with their `role` in it.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/WorkspaceId"
+        },
+        "name": {
+          "type": "string"
+        },
+        "role": {
+          "$ref": "#/$defs/WorkspaceRole"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "role"
+      ]
     },
     "WorkspaceUpdate": {
       "description": "One change to `workspace`. `seq` grows strictly within a workspace, and a feed opened with\n`since=N` sends every change after `N`.",
