@@ -7,7 +7,8 @@ use std::path::Path;
 
 use weacon_observability::Fault;
 use weacon_protocol::{
-    ChatAction, ChatEntry, ChatEvent, ChatId, MAX_FRAME, RequestId, RunEvent, RunUpdate, code,
+    ChatAction, ChatEntry, ChatEvent, ChatId, MAX_FRAME, Outcome, RequestId, RunEvent, RunUpdate,
+    code,
 };
 
 use crate::platform;
@@ -37,6 +38,8 @@ struct Asked {
     /// The place of its prompt, when it was one.
     prompt: Option<u64>,
     receipted: bool,
+    /// Whether a receipt other than `accepted` ended it.
+    ended: bool,
 }
 
 /// Whether a command was seen before under the same request.
@@ -119,6 +122,7 @@ impl Log {
             ChatEvent::Receipt { receipt } => {
                 let asked = self.requests.entry(receipt.request.clone()).or_default();
                 asked.receipted = true;
+                asked.ended |= receipt.outcome != Outcome::Accepted;
             }
             ChatEvent::Run { .. } | ChatEvent::RunStatus { .. } | ChatEvent::Newer => {}
         }
@@ -233,6 +237,11 @@ impl Log {
             (true, false) => Seen::Pending,
             (false, _) => Seen::Other,
         })
+    }
+
+    /// Whether a receipt that ends the command under `request` is in the log.
+    pub(crate) fn has_ended(&self, request: &RequestId) -> bool {
+        self.requests.get(request).is_some_and(|asked| asked.ended)
     }
 
     async fn read(&self, first: u64, last: u64) -> Result<Vec<ChatEntry>, Fault> {

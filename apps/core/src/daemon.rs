@@ -204,7 +204,7 @@ async fn serve_client(stream: Stream, shared: &Shared) -> io::Result<()> {
         client: Client { push },
     };
     loop {
-        // Until the hello, reading and answering both count against the deadline.
+        // Until the hello, reading counts against the deadline, as `answer`'s replies do.
         let limit = (!connection.session.greeted()).then_some(deadline);
         let read = tokio::select! {
             read = within(limit, reader.read(&mut buf)) => read,
@@ -222,8 +222,7 @@ async fn serve_client(stream: Stream, shared: &Shared) -> io::Result<()> {
             return Ok(());
         }
         let bytes = buf.get(..read).unwrap_or_default();
-        let answered = answer(&mut connection, bytes, shared, &mut writer);
-        if !within(limit, answered).await.transpose()?.unwrap_or(false) {
+        if !answer(&mut connection, bytes, shared, &mut writer, deadline).await? {
             return Ok(());
         }
     }
@@ -237,12 +236,14 @@ async fn within<F: Future>(deadline: Option<Instant>, future: F) -> Option<F::Ou
     }
 }
 
-// Answers what `bytes` completes; false once the connection should close.
+// Answers what `bytes` completes; false once the connection should close. Replies before the
+// hello count against `deadline`; what follows the hello, even in the same read, doesn't.
 async fn answer(
     connection: &mut Connection,
     bytes: &[u8],
     shared: &Shared,
     writer: &mut (impl AsyncWrite + Unpin),
+    deadline: Instant,
 ) -> io::Result<bool> {
     let Connection {
         session,
@@ -250,6 +251,7 @@ async fn answer(
         client,
     } = connection;
     for received in decoder.push(bytes) {
+        let limit = (!session.greeted()).then_some(deadline);
         if let Ok(Envelope {
             message: Message::Error(body),
             ..
@@ -279,7 +281,10 @@ async fn answer(
         if let Some(envelope) = reply.envelope
             && let Ok(line) = encode_line(&envelope)
         {
-            writer.write_all(&line).await?;
+            let Some(written) = within(limit, writer.write_all(&line)).await else {
+                return Ok(false);
+            };
+            written?;
         }
         if reply.close {
             return Ok(false);
@@ -849,5 +854,30 @@ mod tests {
         }
         running.stop().await;
         bench.started.try_recv().unwrap_err();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_command_read_with_the_hello_isnt_held_to_the_handshake_deadline() {
+        use crate::chats::test_support::{parts, prompt};
+
+        let dir = TempDir::new().unwrap();
+        // An engine that never runs: a command waits for its answer for good.
+        let (bench, _engine) = parts();
+        let chats = bench.chats.clone();
+        let running = start_as(&dir, |daemon| daemon.shared.chats = chats).unwrap();
+        let command = Message::ChatCommand(prompt("r-1", "Hi"));
+        let command = encode_line(&Envelope {
+            id: 2,
+            message: command,
+        })
+        .unwrap();
+
+        let stream = connect(&running.socket).await;
+        let (replies, mut stream) = exchange(stream, &[hello(PROTOCOL), command].concat(), 1).await;
+
+        assert!(matches!(replies[0], Message::Welcome(_)));
+        let read = timeout(HANDSHAKE_TIMEOUT * 2, stream.read(&mut [0; 16])).await;
+        assert!(read.is_err(), "the daemon hung up: {read:?}");
+        running.stop().await;
     }
 }

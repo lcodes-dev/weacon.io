@@ -18,8 +18,14 @@ impl<A: Agent> Engine<A> {
         let seen = seen.await?;
         match seen {
             Seen::Never | Seen::Pending => {}
-            // Whatever cut the first try short, a prompt it queued still gets its turn.
-            Seen::Same => return self.advance(key).await,
+            // Whatever cut the first try short, what it began still happens: an answer still
+            // waiting reaches its run, and a prompt it queued gets its turn.
+            Seen::Same => {
+                if let ChatAction::Permission { answer } = command.action {
+                    return self.deliver(key, answer).await;
+                }
+                return self.advance(key).await;
+            }
             Seen::Other => {
                 return Err(Fault::new(
                     code!("request.conflict"),
@@ -82,15 +88,27 @@ impl<A: Agent> Engine<A> {
         request: RequestId,
         answer: PermissionAnswer,
     ) -> Result<(), Fault> {
-        let asked = self.runs.is_latest(&key.0, &key.1, &answer.run);
-        let waiting = &self.chat(key).await?.waiting;
-        if !asked || !waiting.iter().any(|waits| waits.prompt == answer.prompt) {
+        if !self.waits_for(key, &answer).await? {
             return Err(Fault::new(
                 code!("agent.no_such_prompt"),
                 "That permission prompt isn't waiting",
             ));
         }
         self.receipt(key, &request, Outcome::Completed).await?;
+        self.deliver(key, answer).await
+    }
+
+    async fn waits_for(&mut self, key: &Key, answer: &PermissionAnswer) -> Result<bool, Fault> {
+        let asked = self.runs.is_latest(&key.0, &key.1, &answer.run);
+        let waiting = &self.chat(key).await?.waiting;
+        Ok(asked && waiting.iter().any(|waits| waits.prompt == answer.prompt))
+    }
+
+    // Gives a committed answer to its run, unless its prompt is no longer waiting.
+    async fn deliver(&mut self, key: &Key, answer: PermissionAnswer) -> Result<(), Fault> {
+        if !self.waits_for(key, &answer).await? {
+            return Ok(());
+        }
         let waiting = &mut self.chat(key).await?.waiting;
         waiting.retain(|waiting| waiting.prompt != answer.prompt);
         let (resumed, run) = (waiting.is_empty(), answer.run.clone());
@@ -101,10 +119,12 @@ impl<A: Agent> Engine<A> {
         Ok(())
     }
 
+    // Committed first, so a retry after a failed write can't interrupt a later turn.
     async fn interrupt(&mut self, key: &Key, request: RequestId) -> Result<(), Fault> {
+        self.receipt(key, &request, Outcome::Completed).await?;
         if self.turn(key).is_some() {
             self.order(key, Order::Interrupt);
         }
-        self.receipt(key, &request, Outcome::Completed).await
+        Ok(())
     }
 }

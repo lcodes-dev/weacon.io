@@ -205,6 +205,10 @@ impl<A: Agent> Engine<A> {
         request: &RequestId,
         outcome: Outcome,
     ) -> Result<(), Fault> {
+        // A command's end is told once, whichever path gets there first.
+        if self.chat(key).await?.log.has_ended(request) {
+            return Ok(());
+        }
         let receipt = Receipt {
             request: request.clone(),
             outcome,
@@ -261,10 +265,19 @@ impl<A: Agent> Engine<A> {
         }
     }
 
+    // Whether the chat's run hasn't yet reported its exit.
     fn is_live(&self, key: &Key) -> bool {
         self.chats
             .get(key)
             .is_some_and(|chat| chat.orders.is_some())
+    }
+
+    // Whether the chat's run still reads orders: one that stopped reading reports its exit next.
+    fn takes_orders(&self, key: &Key) -> bool {
+        self.chats
+            .get(key)
+            .and_then(|chat| chat.orders.as_ref())
+            .is_some_and(|orders| !orders.is_closed())
     }
 
     fn turn(&self, key: &Key) -> Option<RequestId> {
