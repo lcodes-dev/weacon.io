@@ -3,7 +3,7 @@ import { type KeyboardEvent, type RefObject, useLayoutEffect, useRef, useState }
 import "./composer.css";
 import { type Draft, EMPTY, type Item, type Placed, edit, pick, query } from "./draft.ts";
 import { composing, picker, sends } from "./keys.ts";
-import { matching, mentionables } from "./mentionables.ts";
+import { offered } from "./mentionables.ts";
 import { type Retry, type Send, after, requestFor, requestId } from "./prompt.ts";
 
 /**
@@ -21,7 +21,7 @@ export function Composer({ send, blocked, hidden }: { send: Send | undefined; bl
   const backdrop = useRef<HTMLDivElement>(null);
   const { draft, caret } = placed;
   const at = query(draft, caret);
-  const options = at === undefined || at.start === dismissed ? [] : matching(mentionables(), at.text);
+  const options = offered(at, dismissed, sending);
   const hint = problem ?? blocked;
   const ready = !sending && blocked === undefined && send !== undefined && draft.text.trim() !== "";
 
