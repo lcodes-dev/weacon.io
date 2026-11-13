@@ -2,23 +2,36 @@
 
 mod wire;
 
+use std::path::PathBuf;
+
+use serde::Deserialize;
+use serde_json::Value;
 use tokio::process::Command;
-use weacon_protocol::AgentSession;
+use weacon_protocol::{AccessLevel, AgentSession};
 
 pub(crate) use wire::{Wire, answer, prompt, read};
 
-use crate::launch::Launch;
+use crate::launch::{Launch, OtherSignIns};
 
-// Sign-ins and providers that would win over the workspace's own; removed, never read.
-const OTHER_SIGN_INS: [&str; 7] = [
-    "ANTHROPIC_API_KEY",
-    "ANTHROPIC_AUTH_TOKEN",
-    "AWS_BEARER_TOKEN_BEDROCK",
-    "CLAUDE_CODE_OAUTH_TOKEN",
-    "CLAUDE_CODE_USE_BEDROCK",
-    "CLAUDE_CODE_USE_FOUNDRY",
-    "CLAUDE_CODE_USE_VERTEX",
+/// The tools that only change files, and the input naming each one's file.
+const FILE_TOOLS: [(&str, &str); 4] = [
+    ("Edit", "file_path"),
+    ("MultiEdit", "file_path"),
+    ("NotebookEdit", "notebook_path"),
+    ("Write", "file_path"),
 ];
+
+/// The file a prompt for `tool` would change, when it only changes a file.
+pub(crate) fn changed_file(tool: &str, input: &Value) -> Option<PathBuf> {
+    let (_, key) = FILE_TOOLS.iter().find(|(name, _)| *name == tool)?;
+    input.get(key)?.as_str().map(PathBuf::from)
+}
+
+// Sign-ins and providers that would win over the workspace's own.
+const OTHER_SIGN_INS: OtherSignIns = OtherSignIns {
+    prefixes: &["ANTHROPIC_", "CLAUDE_"],
+    names: &["AWS_BEARER_TOKEN_BEDROCK"],
+};
 
 /// `claude` in its stream-json mode, resuming `session` when given.
 pub(crate) fn command(launch: &Launch, session: Option<&AgentSession>) -> Command {
@@ -32,7 +45,17 @@ pub(crate) fn command(launch: &Launch, session: Option<&AgentSession>) -> Comman
         "stream-json",
         "--permission-prompt-tool",
         "stdio",
+        // Only the workspace's own settings: a repository's could allow tools or add hooks.
+        "--setting-sources",
+        "user",
+        // So no setting's mode skips the prompts the access level answers.
+        "--permission-mode",
+        "default",
     ]);
+    if launch.access == AccessLevel::ReadOnly {
+        let tools = FILE_TOOLS.map(|(tool, _)| tool);
+        command.args(["--disallowedTools", &format!("Bash,{}", tools.join(","))]);
+    }
     if let Some(session) = session {
         command.args(["--resume", session.as_str()]);
     }
@@ -40,12 +63,37 @@ pub(crate) fn command(launch: &Launch, session: Option<&AgentSession>) -> Comman
     command
 }
 
-/// `claude`'s own check of its sign-in, which exits with success when signed in; it runs
-/// wherever Weacon does.
+/// `claude`'s own check of its sign-in, which exits with success when signed in and prints
+/// how; it runs wherever Weacon does.
 pub(crate) fn status(launch: &Launch) -> Command {
     let mut command = with_workspace_sign_in(launch);
-    command.args(["auth", "status"]);
+    command.args(["auth", "status", "--json"]);
     command
+}
+
+/// The two fields of `status`'s answer that say where a sign-in comes from; nothing else in it
+/// is kept.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Source {
+    auth_method: Option<String>,
+    api_key_source: Option<String>,
+}
+
+/// Whether `status` printed a sign-in kept in the config folder: a claude.ai login, or a key
+/// that `claude auth login` stored. Anything else, such as a token from the host, isn't one.
+pub(crate) fn own_sign_in(status: &[u8]) -> bool {
+    let Ok(source) = serde_json::from_slice::<Source>(status) else {
+        return false;
+    };
+    match (
+        source.auth_method.as_deref(),
+        source.api_key_source.as_deref(),
+    ) {
+        (Some("claude.ai"), _) => true,
+        (Some("api_key"), Some(key)) => key == "/login managed key",
+        _ => false,
+    }
 }
 
 /// `claude`'s own sign-in, for the person's terminal.
@@ -57,9 +105,7 @@ pub(crate) fn login(launch: &Launch) -> Command {
 
 fn with_workspace_sign_in(launch: &Launch) -> Command {
     let mut command = Command::new(&launch.program);
-    for name in OTHER_SIGN_INS {
-        command.env_remove(name);
-    }
+    OTHER_SIGN_INS.remove(&mut command, std::env::vars_os().map(|(name, _)| name));
     command.env("CLAUDE_CONFIG_DIR", &launch.config_dir);
     command
 }
@@ -107,6 +153,53 @@ mod tests {
             assert!(written.success());
         }
 
+        // Scripts stand in for `claude auth status`, printing `status` and exiting `code`.
+        #[tokio::test]
+        async fn only_a_status_that_exits_well_and_names_the_config_folders_sign_in_counts() {
+            use crate::launch::SignIn;
+
+            let dir = TempDir::new().unwrap();
+            let own = r#"{"loggedIn":true,"authMethod":"claude.ai"}"#;
+            let host = r#"{"loggedIn":true,"authMethod":"oauth_token"}"#;
+            let padded = |by: usize| format!("{}{own}", " ".repeat(by));
+            let script = |number, status: &str, code| status_script(&dir, number, status, code);
+
+            assert_eq!(script(0, own, 0).sign_in().await.unwrap(), SignIn::SignedIn);
+            assert_eq!(
+                script(1, own, 1).sign_in().await.unwrap(),
+                SignIn::SignedOut
+            );
+            assert_eq!(
+                script(2, host, 0).sign_in().await.unwrap(),
+                SignIn::SignedOut
+            );
+            assert_eq!(
+                script(3, &padded(4096), 0).sign_in().await.unwrap(),
+                SignIn::SignedIn
+            );
+            // Past the limit, so the answer is never read.
+            let past = padded(70 * 1024);
+            assert_eq!(
+                script(4, &past, 0).sign_in().await.unwrap(),
+                SignIn::SignedOut
+            );
+        }
+
+        fn status_script(dir: &Path, number: usize, status: &str, code: u8) -> Launch {
+            let program = dir.join(format!("claude-{number}"));
+            write_program(
+                &program,
+                &format!("#!/bin/sh\nprintf '%s' '{status}'\nexit {code}\n"),
+            );
+            Launch {
+                agent: AgentKind::Claude,
+                program,
+                config_dir: dir.to_path_buf(),
+                cwd: dir.to_path_buf(),
+                access: AccessLevel::AskFirst,
+            }
+        }
+
         // A `claude` that notes its arguments, reads one line, starts a tool that notes what it
         // inherited, then prints its workspace's session.
         fn fake_claude(dir: &Path) -> PathBuf {
@@ -137,6 +230,7 @@ mod tests {
                 program: dir.join("claude"),
                 config_dir,
                 cwd: dir.to_owned(),
+                access: AccessLevel::AskFirst,
             }
         }
 
@@ -229,17 +323,18 @@ mod tests {
     }
 
     #[test]
-    fn the_workspaces_config_replaces_any_other_sign_in() {
+    fn every_command_runs_with_the_workspaces_config() {
         let claude = Launch {
             agent: AgentKind::Claude,
             program: PathBuf::from("claude"),
             config_dir: PathBuf::from("/work/config"),
             cwd: PathBuf::from("/work"),
+            access: AccessLevel::AskFirst,
         };
         let check = status(&claude);
         assert_eq!(
             check.as_std().get_args().collect::<Vec<_>>(),
-            ["auth", "status"]
+            ["auth", "status", "--json"]
         );
         assert_eq!(check.as_std().get_current_dir(), None);
         let login = login(&claude);
@@ -248,17 +343,105 @@ mod tests {
             ["auth", "login"]
         );
         for command in [command(&claude, None), check, login] {
-            let envs: Vec<_> = command.as_std().get_envs().collect();
-
-            assert!(envs.contains(&(
+            let config = (
                 OsStr::new("CLAUDE_CONFIG_DIR"),
-                Some(OsStr::new("/work/config"))
-            )));
-            for name in OTHER_SIGN_INS {
-                assert!(envs.contains(&(OsStr::new(name), None)), "{name}");
-            }
+                Some(OsStr::new("/work/config")),
+            );
+            assert!(command.as_std().get_envs().any(|env| env == config));
         }
         let run = command(&claude, None);
         assert_eq!(run.as_std().get_current_dir(), Some(Path::new("/work")));
+    }
+
+    #[test]
+    fn other_sign_ins_and_providers_are_known_and_the_rest_is_kept() {
+        for name in [
+            "ANTHROPIC_API_KEY",
+            "ANTHROPIC_BASE_URL",
+            "CLAUDE_CODE_OAUTH_TOKEN",
+            "CLAUDE_CODE_USE_BEDROCK",
+            "AWS_BEARER_TOKEN_BEDROCK",
+        ] {
+            assert!(OTHER_SIGN_INS.matches(OsStr::new(name)), "{name}");
+        }
+        for name in ["PATH", "HOME", "AWS_REGION"] {
+            assert!(!OTHER_SIGN_INS.matches(OsStr::new(name)), "{name}");
+        }
+    }
+
+    #[test]
+    fn every_level_ignores_the_repositorys_settings_and_read_only_refuses_changing_tools() {
+        let args = |access| {
+            let launch = Launch {
+                agent: AgentKind::Claude,
+                program: PathBuf::from("claude"),
+                config_dir: PathBuf::from("/work/config"),
+                cwd: PathBuf::from("/work"),
+                access,
+            };
+            let command = command(&launch, None);
+            let args: Vec<_> = command.as_std().get_args().map(ToOwned::to_owned).collect();
+            args.join(OsStr::new(" ")).into_string().unwrap()
+        };
+        let refused = "--disallowedTools Bash,Edit,MultiEdit,NotebookEdit,Write";
+
+        for access in [
+            AccessLevel::AskFirst,
+            AccessLevel::Full,
+            AccessLevel::ReadOnly,
+        ] {
+            let args = args(access);
+            assert!(args.contains("--setting-sources user"), "{access:?}");
+            assert!(args.contains("--permission-mode default"), "{access:?}");
+            assert_eq!(args.contains(refused), access == AccessLevel::ReadOnly);
+        }
+    }
+
+    #[test]
+    fn only_a_sign_in_from_the_config_folder_counts() {
+        let own = |status: &str| own_sign_in(status.as_bytes());
+
+        assert!(own(
+            r#"{"loggedIn":true,"authMethod":"claude.ai","email":"a@example.com"}"#
+        ));
+        assert!(own(
+            r#"{"authMethod":"api_key","apiKeySource":"/login managed key"}"#
+        ));
+        for other in [
+            r#"{"loggedIn":true,"authMethod":"oauth_token"}"#,
+            r#"{"authMethod":"api_key","apiKeySource":"ANTHROPIC_API_KEY"}"#,
+            r#"{"authMethod":"api_key"}"#,
+            r#"{"authMethod":"api_key_helper","apiKeySource":"apiKeyHelper"}"#,
+            r#"{"authMethod":"third_party"}"#,
+            r#"{"authMethod":"none"}"#,
+            r#"{"authMethod":"newer"}"#,
+            r#"{"loggedIn":true}"#,
+            r#"{"authMethod":1}"#,
+            "Logged in",
+            "",
+        ] {
+            assert!(!own(other), "{other}");
+        }
+    }
+
+    #[test]
+    fn only_file_tools_name_the_file_they_change() {
+        let edit = serde_json::json!({ "file_path": "src/lib.rs", "notebook_path": "a.ipynb" });
+
+        for tool in ["Edit", "MultiEdit", "Write"] {
+            assert_eq!(changed_file(tool, &edit), Some(PathBuf::from("src/lib.rs")));
+        }
+        assert_eq!(
+            changed_file("NotebookEdit", &edit),
+            Some(PathBuf::from("a.ipynb"))
+        );
+        for (tool, input) in [
+            ("Bash", edit.clone()),
+            ("Read", edit),
+            ("Write", serde_json::json!({ "file_path": 1 })),
+            ("Write", serde_json::json!({})),
+        ] {
+            assert_eq!(changed_file(tool, &input), None, "{tool} {input}");
+        }
     }
 }

@@ -2,7 +2,7 @@
 
 use serde::Deserialize;
 use serde_json::{Value, json};
-use weacon_protocol::{AgentSession, App, RunEvent};
+use weacon_protocol::{AccessLevel, AgentSession, App, RunEvent};
 
 use crate::run::{Heard, UNSUPPORTED};
 
@@ -12,6 +12,7 @@ const METHOD_NOT_FOUND: i64 = -32601;
 pub(crate) struct Wire {
     client: Value,
     resume: Option<AgentSession>,
+    read_only: bool,
     next_id: u64,
     waiting: Vec<(u64, Waiting)>,
     thread: Option<String>,
@@ -65,11 +66,13 @@ enum Item {
 }
 
 impl Wire {
-    /// A wire that opens a new thread, or resumes `resume`, introducing itself as `app`.
-    pub(crate) fn new(resume: Option<AgentSession>, app: &App) -> Self {
+    /// A wire that opens a new thread, or resumes `resume`, introducing itself as `app`; with
+    /// read-only `access` the thread runs in Codex's read-only sandbox.
+    pub(crate) fn new(resume: Option<AgentSession>, app: &App, access: AccessLevel) -> Self {
         Self {
             client: json!({ "name": app.name, "title": "Weacon", "version": app.version }),
             resume,
+            read_only: access == AccessLevel::ReadOnly,
             next_id: 0,
             waiting: Vec::new(),
             thread: None,
@@ -157,7 +160,7 @@ impl Wire {
 
     // A person answers every approval, and anything not known to be safe asks first.
     fn open_thread(&mut self) -> Heard {
-        let (method, params) = match &self.resume {
+        let (method, mut params) = match &self.resume {
             Some(session) => (
                 "thread/resume",
                 json!({
@@ -171,6 +174,11 @@ impl Wire {
                 json!({ "approvalPolicy": "untrusted", "approvalsReviewer": "user" }),
             ),
         };
+        if self.read_only
+            && let Some(params) = params.as_object_mut()
+        {
+            params.insert("sandbox".to_owned(), json!("read-only"));
+        }
         self.request(Waiting::Thread, method, &params)
     }
 
@@ -323,7 +331,7 @@ mod tests {
 
     fn fake(recording: &str, resume: Option<&str>) -> (FakeRun, Done) {
         let resume = resume.map(|id| AgentSession::try_from(id.to_owned()).unwrap());
-        let wire = Wire::new(resume, &app());
+        let wire = Wire::new(resume, &app(), AccessLevel::AskFirst);
         test_support::fake(run::Wire::Codex(wire), recording)
     }
 
@@ -449,5 +457,24 @@ mod tests {
         assert_eq!(next(&mut run).await, Some(ended(Outcome::Interrupted)));
         assert_eq!(next(&mut run).await, Some(started(THREAD)));
         ends_as_recorded(run, done).await;
+    }
+
+    #[test]
+    fn a_read_only_thread_asks_for_the_read_only_sandbox_and_others_dont() {
+        let resume = AgentSession::try_from(THREAD.to_owned()).unwrap();
+        let params = |resume: Option<AgentSession>, access| {
+            let Heard::Send(line) = Wire::new(resume, &app(), access).open_thread() else {
+                panic!("nothing sent");
+            };
+            line["params"]["sandbox"].clone()
+        };
+
+        let read_only = AccessLevel::ReadOnly;
+        assert_eq!(params(None, read_only), json!("read-only"));
+        assert_eq!(params(Some(resume.clone()), read_only), json!("read-only"));
+        for access in [AccessLevel::AskFirst, AccessLevel::Full] {
+            assert_eq!(params(None, access), Value::Null);
+            assert_eq!(params(Some(resume.clone()), access), Value::Null);
+        }
     }
 }

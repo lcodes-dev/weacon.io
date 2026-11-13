@@ -13,7 +13,7 @@ use weacon_observability::Fault;
 use weacon_protocol::{AccessLevel, AgentKind, WorkspaceId, code};
 
 use access::Settings;
-pub(crate) use access::run as access;
+pub(crate) use access::{parse_level, run as access};
 
 use crate::app::{App, state_unavailable};
 use crate::daemon::runtime;
@@ -134,18 +134,17 @@ impl Workspaces {
         agent: AgentKind,
         cwd: PathBuf,
     ) -> Result<Launch, Fault> {
-        match Settings::read(&self.root(workspace))?.access {
-            AccessLevel::AskFirst | AccessLevel::Full => self.prepared(workspace, agent, cwd),
-            AccessLevel::Off | AccessLevel::Newer => Err(Fault::new(
+        let access = Settings::read(&self.root(workspace))?.access;
+        if matches!(access, AccessLevel::Off | AccessLevel::Newer) {
+            return Err(Fault::new(
                 code!("access.off"),
                 "This workspace's agents are turned off on this machine",
-            )),
-            // Runs can't yet be kept from changing things, so none starts.
-            AccessLevel::ReadOnly => Err(Fault::new(
-                code!("access.read_only_unavailable"),
-                "Read-only access isn't available yet",
-            )),
+            ));
         }
+        Ok(Launch {
+            access,
+            ..self.prepared(workspace, agent, cwd)?
+        })
     }
 
     // A launch whose config folder exists, private to this user.
@@ -243,6 +242,7 @@ mod tests {
                 program: program(&dir, "claude"),
                 config_dir: dir.join("workspaces/w-w1/claude"),
                 cwd: PathBuf::from("/work"),
+                access: AccessLevel::AskFirst,
             }
         );
         assert_eq!(codex.program, program(&dir, "codex"));
@@ -361,7 +361,7 @@ mod tests {
     }
 
     #[test]
-    fn agents_start_only_where_the_access_level_lets_them() {
+    fn agents_start_only_where_the_access_level_lets_them_and_carry_it() {
         let dir = TempDir::new().unwrap();
         let workspaces = workspaces(&dir);
         choose(&dir, "off", r#"{"access":"off"}"#);
@@ -370,16 +370,21 @@ mod tests {
         choose(&dir, "asking", r#"{"access":"ask_first"}"#);
         choose(&dir, "full", r#"{"access":"full","team":true}"#);
         choose(&dir, "broken", "{");
-        let code = |workspace: &str| {
+        let launch = |workspace: &str| {
             let launch = workspaces.launch(&id(workspace), AgentKind::Claude, dir.to_path_buf());
-            launch.map_or_else(|error| error.code().as_str().to_owned(), |_| String::new())
+            launch
+                .map(|launch| launch.access)
+                .map_err(|error| error.code().as_str().to_owned())
         };
+        let refused = |code: &str| Err(code.to_owned());
 
-        assert_eq!(code("off"), "access.off");
-        assert_eq!(code("newer"), "access.off");
-        assert_eq!(code("reading"), "access.read_only_unavailable");
-        assert_eq!(code("broken"), "workspace.settings_unreadable");
-        assert_eq!([code("asking"), code("full"), code("unset")], ["", "", ""]);
+        assert_eq!(launch("off"), refused("access.off"));
+        assert_eq!(launch("newer"), refused("access.off"));
+        assert_eq!(launch("broken"), refused("workspace.settings_unreadable"));
+        assert_eq!(launch("reading"), Ok(AccessLevel::ReadOnly));
+        assert_eq!(launch("asking"), Ok(AccessLevel::AskFirst));
+        assert_eq!(launch("full"), Ok(AccessLevel::Full));
+        assert_eq!(launch("unset"), Ok(AccessLevel::AskFirst));
         assert!(!workspaces.root(&id("off")).join("claude").exists());
         // Signing in doesn't depend on the level.
         let prepared = workspaces.prepared(&id("off"), AgentKind::Claude, dir.to_path_buf());
@@ -400,7 +405,7 @@ mod tests {
         assert_eq!(
             text,
             "Workspace a: access full; Claude Code not installed, Codex not installed\n\
-             Warning: full access is on in a team workspace. Its agents change things on this \
+             Warning: full access is on in a team workspace. Its agents change files on this \
              machine without asking.\n\
              Workspace b: access off; Claude Code not installed, Codex not installed\n\
              Workspace c: access unknown; Claude Code not installed, Codex not installed\n"

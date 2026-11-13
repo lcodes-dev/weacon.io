@@ -1,4 +1,5 @@
 use std::collections::VecDeque;
+use std::path::PathBuf;
 use std::process::Stdio;
 
 use serde_json::Value;
@@ -7,6 +8,7 @@ use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 use weacon_observability::Fault;
 use weacon_protocol::{AgentSession, Outcome, PermissionAnswer, RunEvent, RunId, code};
 
+use crate::access::{Check, Decision, Rules};
 use crate::lines::Lines;
 use crate::spawn::SpawnPolicy;
 use crate::{claude, codex};
@@ -33,7 +35,11 @@ pub struct Run<W, R> {
     next_prompt: u32,
     turn: Turn,
     session: Option<AgentSession>,
-    _child: Option<Child>,
+    rules: Rules,
+    // Prompts about files waiting for their path to be checked, oldest first.
+    checks: VecDeque<Check>,
+    // Held only so the agent is killed when the run is dropped.
+    child: Option<Child>,
 }
 
 /// Each agent's own way of saying things.
@@ -89,6 +95,14 @@ impl Wire {
         }
     }
 
+    // Codex's file changes always ask a person.
+    fn changed_file(&self, tool: &str, input: &Value) -> Option<PathBuf> {
+        match self {
+            Self::Claude(_) => claude::changed_file(tool, input),
+            Self::Codex(_) => None,
+        }
+    }
+
     fn read(&mut self, line: &[u8]) -> Vec<Heard> {
         match self {
             Self::Claude(_) => claude::read(line),
@@ -110,12 +124,14 @@ enum Turn {
     Interrupting,
 }
 
-/// Starts `command` under `policy` as run `id`, speaking `wire`.
+/// Starts `command` under `policy` as run `id`, speaking `wire`, answering the prompts `rules`
+/// decide.
 pub(crate) fn spawn(
     mut command: Command,
     policy: &SpawnPolicy,
     id: RunId,
     wire: Wire,
+    rules: Rules,
 ) -> Result<AgentRun, Fault> {
     let not_started = || Fault::new(code!("agent.not_started"), "The agent couldn't start");
     policy.apply(&mut command);
@@ -130,25 +146,15 @@ pub(crate) fn spawn(
     let (Some(stdin), Some(stdout)) = (child.stdin.take(), child.stdout.take()) else {
         return Err(not_started());
     };
-    Ok(Run::new(
-        id,
-        wire,
-        stdin,
-        BufReader::new(stdout),
-        Some(child),
-    ))
+    let mut run = Run::new(id, wire, stdin, BufReader::new(stdout), rules);
+    run.child = Some(child);
+    Ok(run)
 }
 
 impl<W: AsyncWrite + Unpin, R: AsyncBufRead + Unpin> Run<W, R> {
-    /// A run over an agent's pipes; `child`, when given, is killed when the run is dropped.
-    /// The wire's opening lines go out with the first write.
-    pub(crate) fn new(
-        id: RunId,
-        mut wire: Wire,
-        stdin: W,
-        stdout: R,
-        child: Option<Child>,
-    ) -> Self {
+    /// A run over an agent's pipes, answering the prompts `rules` decide. The wire's opening
+    /// lines go out with the first write.
+    pub(crate) fn new(id: RunId, mut wire: Wire, stdin: W, stdout: R, rules: Rules) -> Self {
         let opening = wire.opening();
         let mut run = Self {
             id,
@@ -161,7 +167,9 @@ impl<W: AsyncWrite + Unpin, R: AsyncBufRead + Unpin> Run<W, R> {
             next_prompt: 0,
             turn: Turn::Idle,
             session: None,
-            _child: child,
+            rules,
+            checks: VecDeque::new(),
+            child: None,
         };
         run.hear(opening);
         run
@@ -229,6 +237,7 @@ impl<W: AsyncWrite + Unpin, R: AsyncBufRead + Unpin> Run<W, R> {
     /// When the agent's output can't be read.
     pub async fn next(&mut self) -> Result<Option<RunEvent>, Fault> {
         loop {
+            self.settle_checks().await;
             // A closed stdin means the agent is exiting, which its stdout then shows.
             if self.flush().await.is_err() {
                 self.outbox.clear();
@@ -272,6 +281,41 @@ impl<W: AsyncWrite + Unpin, R: AsyncBufRead + Unpin> Run<W, R> {
     }
 
     fn asked(&mut self, request: Value, tool: String, input: Value) {
+        match self.rules.decide(self.wire.changed_file(&tool, &input)) {
+            Decision::Ask => self.ask(request, tool, input),
+            Decision::Refuse => {
+                let heard = self.wire.answer(&request, false, &input);
+                self.hear(heard);
+            }
+            Decision::Check(file) => self.checks.push_back(Check {
+                request,
+                tool,
+                input,
+                file,
+            }),
+        }
+    }
+
+    // Safe to cancel: each check stays queued until its answer is in.
+    async fn settle_checks(&mut self) {
+        while let Some(check) = self.checks.front() {
+            let (rules, file) = (self.rules.clone(), check.file.clone());
+            let allowed = tokio::task::spawn_blocking(move || rules.may_change(&file))
+                .await
+                .unwrap_or(false);
+            let Some(check) = self.checks.pop_front() else {
+                return;
+            };
+            if allowed {
+                let heard = self.wire.answer(&check.request, true, &check.input);
+                self.hear(heard);
+            } else {
+                self.ask(check.request, check.tool, check.input);
+            }
+        }
+    }
+
+    fn ask(&mut self, request: Value, tool: String, input: Value) {
         self.next_prompt += 1;
         let id = self.next_prompt;
         self.events.push_back(RunEvent::PermissionAsked {
@@ -340,6 +384,7 @@ fn io_failed(error: std::io::Error) -> Fault {
 #[cfg(test)]
 mod tests {
     use serde_json::json;
+    use weacon_protocol::AccessLevel;
 
     use super::*;
     use crate::test_support::{
@@ -398,6 +443,98 @@ mod tests {
         );
         let again = run.answer(&answer("run-1", true)).await.unwrap_err();
         assert_eq!(again.code().as_str(), "agent.no_such_prompt");
+        ends_as_recorded(run, done).await;
+    }
+
+    fn tool_call(call: &str, tool: &str, input: Value) -> RunEvent {
+        RunEvent::ToolCall {
+            call: call.to_owned(),
+            tool: tool.to_owned(),
+            input,
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn read_only_access_turns_every_prompt_down_without_asking() {
+        let (mut run, done) = fake(include_str!("../sessions/claude/deny.replay"));
+        run.rules.level = AccessLevel::ReadOnly;
+        let write = json!({ "file_path": "README.md", "content": "# Parser" });
+
+        run.send("Tidy the readme").await.unwrap();
+
+        assert_eq!(
+            until(&mut run, is_finished).await,
+            [
+                started(),
+                tool_call("toolu_02", "Write", write),
+                tool_done("toolu_02", true),
+                ended(Outcome::Completed),
+            ]
+        );
+        ends_as_recorded(run, done).await;
+    }
+
+    fn full(cwd: &str) -> Rules {
+        Rules {
+            level: AccessLevel::Full,
+            cwd: PathBuf::from(cwd),
+            workspace: PathBuf::from("/missing"),
+        }
+    }
+
+    // Real time: a path is checked on a blocking thread, which paused time doesn't wait for.
+    // The recorded file is `/README.md`, in the working folder `/`, and the fake writes nothing.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn full_access_lets_file_changes_inside_the_folder_run_and_asks_about_the_rest() {
+        let (mut run, done) = fake(include_str!("../sessions/claude/full.replay"));
+        run.rules = full("/");
+        let write = json!({ "file_path": "/README.md", "content": "# Parser" });
+        let command = json!({ "command": "cargo test" });
+
+        run.send("Tidy the readme, then run the tests")
+            .await
+            .unwrap();
+        assert_eq!(
+            until(&mut run, is_asked).await,
+            [
+                started(),
+                tool_call("toolu_04", "Write", write),
+                tool_done("toolu_04", false),
+                tool_call("toolu_05", "Bash", command.clone()),
+                RunEvent::PermissionAsked {
+                    run: run_id("run-1"),
+                    prompt: 1,
+                    tool: "Bash".to_owned(),
+                    input: command,
+                },
+            ]
+        );
+        run.answer(&answer("run-1", true)).await.unwrap();
+
+        assert_eq!(
+            until(&mut run, is_finished).await,
+            [tool_done("toolu_05", false), ended(Outcome::Completed)]
+        );
+        ends_as_recorded(run, done).await;
+    }
+
+    #[tokio::test]
+    async fn full_access_asks_about_a_file_named_relative_to_where_the_agent_may_be() {
+        let (mut run, done) = fake(include_str!("../sessions/claude/deny.replay"));
+        run.rules = full("/");
+
+        run.send("Tidy the readme").await.unwrap();
+        let events = until(&mut run, is_asked).await;
+        assert!(matches!(
+            events.last(),
+            Some(RunEvent::PermissionAsked { .. })
+        ));
+        run.answer(&answer("run-1", false)).await.unwrap();
+        assert_eq!(
+            until(&mut run, is_finished).await,
+            [tool_done("toolu_02", true), ended(Outcome::Completed)]
+        );
         ends_as_recorded(run, done).await;
     }
 
@@ -496,7 +633,7 @@ mod tests {
             claude_wire(),
             stdin,
             printed.as_bytes(),
-            None,
+            Rules::ask_first(),
         );
 
         let sent = run.send("Hello").await.unwrap_err();

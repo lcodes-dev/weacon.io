@@ -1,12 +1,16 @@
+use std::ffi::{OsStr, OsString};
+use std::io;
 use std::path::{Path, PathBuf};
-use std::process::Stdio;
+use std::process::{ExitStatus, Stdio};
 use std::time::Duration;
 
+use tokio::io::AsyncReadExt;
 use tokio::process::Command;
 use tokio::time::timeout;
 use weacon_observability::Fault;
-use weacon_protocol::{AgentKind, AgentSession, App, RunId, code};
+use weacon_protocol::{AccessLevel, AgentKind, AgentSession, App, RunId, code};
 
+use crate::access::Rules;
 use crate::run::{self, AgentRun};
 use crate::spawn::SpawnPolicy;
 use crate::{claude, codex};
@@ -21,10 +25,14 @@ pub struct Launch {
     pub config_dir: PathBuf,
     /// The folder the agent works in.
     pub cwd: PathBuf,
+    /// What the agent may do on this machine, which decides the prompts no person is asked.
+    pub access: AccessLevel,
 }
 
 // A status command that hangs is given up on, so a report still prints.
 const STATUS_TIMEOUT: Duration = Duration::from_secs(30);
+// So a status command that prints without end can't fill memory.
+const STATUS_LIMIT: u64 = 64 * 1024;
 
 /// Whether an agent is signed in for a workspace, as the vendor's own status command says.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -55,6 +63,7 @@ impl Launch {
             program: find(name).ok_or_else(not_installed)?,
             config_dir: workspace_dir.join(name),
             cwd,
+            access: AccessLevel::AskFirst,
         })
     }
 
@@ -71,18 +80,32 @@ impl Launch {
         session: Option<&AgentSession>,
     ) -> Result<AgentRun, Fault> {
         let (command, wire) = self.command(app, session)?;
-        run::spawn(command, policy, run, wire)
+        let rules = Rules {
+            level: self.access,
+            cwd: self.cwd.clone(),
+            workspace: self
+                .config_dir
+                .parent()
+                .unwrap_or(&self.config_dir)
+                .to_path_buf(),
+        };
+        run::spawn(command, policy, run, wire, rules)
     }
 
-    /// Runs the vendor's own status command and reads only how it exits, never what it prints.
+    /// Runs the vendor's own status command and reads how it exits and, for Claude, only where
+    /// the sign-in comes from: signed in only from the workspace's own config folder.
     ///
     /// # Errors
     /// When this build doesn't know the agent, or the command can't be run or doesn't end.
     pub async fn sign_in(&self) -> Result<SignIn, Fault> {
         let mut command = self.vendors(claude::status, codex::status)?;
+        let own_sign_in = match self.agent {
+            AgentKind::Claude => claude::own_sign_in,
+            AgentKind::Codex | AgentKind::Newer => codex::own_sign_in,
+        };
         command
             .stdin(Stdio::null())
-            .stdout(Stdio::null())
+            .stdout(Stdio::piped())
             .stderr(Stdio::null())
             .kill_on_drop(true);
         let failed = || {
@@ -91,8 +114,10 @@ impl Launch {
                 "The agent's sign-in couldn't be checked",
             )
         };
-        match timeout(STATUS_TIMEOUT, command.status()).await {
-            Ok(Ok(exit)) if exit.success() => Ok(SignIn::SignedIn),
+        match timeout(STATUS_TIMEOUT, status_of(command)).await {
+            Ok(Ok((exit, status))) if exit.success() && own_sign_in(&status) => {
+                Ok(SignIn::SignedIn)
+            }
             Ok(Ok(_)) => Ok(SignIn::SignedOut),
             Ok(Err(error)) => Err(failed().because(error)),
             Err(elapsed) => Err(failed().because(elapsed)),
@@ -140,11 +165,47 @@ impl Launch {
             )),
             AgentKind::Codex => Ok((
                 codex::command(self),
-                run::Wire::Codex(codex::Wire::new(session.cloned(), app)),
+                run::Wire::Codex(codex::Wire::new(session.cloned(), app, self.access)),
             )),
             AgentKind::Newer => Err(unknown()),
         }
     }
+}
+
+/// Variables that would sign a vendor's program in other than through the workspace's own
+/// config folder: any whose name starts with one of `prefixes` or is one of `names`.
+pub(crate) struct OtherSignIns {
+    pub(crate) prefixes: &'static [&'static str],
+    pub(crate) names: &'static [&'static str],
+}
+
+impl OtherSignIns {
+    /// Removes from `command` those of the `inherited` variables' names that match.
+    pub(crate) fn remove(&self, command: &mut Command, inherited: impl Iterator<Item = OsString>) {
+        for name in inherited.filter(|name| self.matches(name)) {
+            command.env_remove(name);
+        }
+    }
+
+    // Windows reads variable names in any case.
+    pub(crate) fn matches(&self, name: &OsStr) -> bool {
+        let Some(name) = name.to_str().map(str::to_ascii_uppercase) else {
+            return false;
+        };
+        self.prefixes.iter().any(|prefix| name.starts_with(prefix))
+            || self.names.contains(&name.as_str())
+    }
+}
+
+// Runs a status command and keeps the start of what it prints; closing the pipe stops the
+// rest.
+async fn status_of(mut command: Command) -> io::Result<(ExitStatus, Vec<u8>)> {
+    let mut child = command.spawn()?;
+    let mut status = Vec::new();
+    if let Some(stdout) = child.stdout.take() {
+        stdout.take(STATUS_LIMIT).read_to_end(&mut status).await?;
+    }
+    Ok((child.wait().await?, status))
 }
 
 fn not_installed() -> Fault {
@@ -160,6 +221,8 @@ fn unknown() -> Fault {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
     use weacon_testing::TempDir;
 
     use super::*;
@@ -171,11 +234,42 @@ mod tests {
             program: dir.join("agent"),
             config_dir: dir.join("config"),
             cwd: dir.to_path_buf(),
+            access: AccessLevel::AskFirst,
         }
     }
 
     fn start(launch: &Launch) -> Result<AgentRun, Fault> {
         launch.start(&SpawnPolicy::default(), &app(), run_id("run-1"), None)
+    }
+
+    #[test]
+    fn inherited_variables_with_a_sign_in_prefix_or_name_are_removed_in_any_case() {
+        let other = OtherSignIns {
+            prefixes: &["VENDOR_"],
+            names: &["TOKEN"],
+        };
+        // No two differ only in case, as Windows keeps one of each.
+        let inherited = ["VENDOR_KEY", "vendor_id", "token", "VENDOR", "PATH"];
+        let mut command = Command::new("agent");
+        command.env("VENDOR_HOME", "/config");
+
+        other.remove(&mut command, inherited.into_iter().map(OsString::from));
+
+        let envs: BTreeMap<_, _> = command
+            .as_std()
+            .get_envs()
+            .map(|(name, value)| (name.to_ascii_uppercase(), value))
+            .collect();
+        let removed = |name: &str| (OsString::from(name), None);
+        assert_eq!(
+            envs,
+            BTreeMap::from([
+                removed("TOKEN"),
+                removed("VENDOR_ID"),
+                removed("VENDOR_KEY"),
+                (OsString::from("VENDOR_HOME"), Some(OsStr::new("/config"))),
+            ])
+        );
     }
 
     #[test]
@@ -214,6 +308,7 @@ mod tests {
                 program: PathBuf::from("/opt/bin/claude"),
                 config_dir: PathBuf::from("/state/w/claude"),
                 cwd: PathBuf::from("/work"),
+                access: AccessLevel::AskFirst,
             }
         );
         assert_eq!(
@@ -264,7 +359,7 @@ mod tests {
     }
 
     // `true` and `false` stand in for a vendor's status command: they exit the same whatever
-    // their arguments.
+    // their arguments, and print nothing, which never names Claude's sign-in.
     #[cfg(unix)]
     #[tokio::test]
     async fn the_status_commands_exit_says_whether_the_agent_is_signed_in() {
@@ -273,16 +368,16 @@ mod tests {
             program: PathBuf::from(program),
             ..launch(agent, &dir)
         };
+        let cases = [
+            (AgentKind::Codex, "true", SignIn::SignedIn),
+            (AgentKind::Codex, "false", SignIn::SignedOut),
+            (AgentKind::Claude, "true", SignIn::SignedOut),
+            (AgentKind::Claude, "false", SignIn::SignedOut),
+        ];
 
-        for agent in [AgentKind::Claude, AgentKind::Codex] {
-            assert_eq!(
-                with(agent, "true").sign_in().await.unwrap(),
-                SignIn::SignedIn
-            );
-            assert_eq!(
-                with(agent, "false").sign_in().await.unwrap(),
-                SignIn::SignedOut
-            );
+        for (agent, program, expected) in cases {
+            let answer = with(agent, program).sign_in().await.unwrap();
+            assert_eq!(answer, expected, "{agent:?} {program}");
         }
     }
 

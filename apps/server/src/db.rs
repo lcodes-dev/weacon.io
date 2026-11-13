@@ -194,7 +194,7 @@ mod tests {
     use super::*;
     use crate::db::workspace::Member;
     use crate::email::Email;
-    use crate::test_support::{member_id, workspace_id};
+    use crate::test_support::{fresh_account, member_id, workspace_id};
 
     fn email(text: &str) -> Email {
         Email::parse(text).unwrap()
@@ -385,7 +385,7 @@ mod tests {
             .unwrap();
         for (member, address) in members {
             workspace
-                .add_member(&member_id(member), &email(address))
+                .add_member(&member_id(member), &fresh_account(), &email(address))
                 .await
                 .unwrap();
         }
@@ -446,16 +446,24 @@ mod tests {
             .create_workspace(&workspace_id("w1"), "One")
             .await
             .unwrap();
-        one.add_member(&member_id("m1"), &email("ada@example.com"))
-            .await
-            .unwrap();
+        one.add_member(
+            &member_id("m1"),
+            &fresh_account(),
+            &email("ada@example.com"),
+        )
+        .await
+        .unwrap();
 
         let same_email = one
-            .add_member(&member_id("m2"), &email("ada@example.com"))
+            .add_member(
+                &member_id("m2"),
+                &fresh_account(),
+                &email("ada@example.com"),
+            )
             .await
             .unwrap_err();
         let id = one
-            .add_member(&member_id("m1"), &email("bo@example.com"))
+            .add_member(&member_id("m1"), &fresh_account(), &email("bo@example.com"))
             .await
             .unwrap_err();
         let workspace = db
@@ -492,10 +500,11 @@ mod tests {
                 "members",
                 "sessions",
                 "changes",
-                "sign_in_challenges"
+                "sign_in_challenges",
+                "accounts"
             ]
         );
-        for table in &tables {
+        for table in tables.iter().filter(|table| *table != "accounts") {
             let columns = first_columns(
                 &db,
                 "SELECT name FROM pragma_table_info(?) WHERE cid = 0",
@@ -511,7 +520,8 @@ mod tests {
             .await;
             let references = first_columns(
                 &db,
-                "SELECT \"from\" FROM pragma_foreign_key_list(?) WHERE seq = 0",
+                "SELECT \"from\" FROM pragma_foreign_key_list(?) \
+                 WHERE seq = 0 AND \"table\" != 'accounts'",
                 table,
             )
             .await;

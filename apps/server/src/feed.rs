@@ -238,8 +238,8 @@ mod tests {
     use crate::email::Email;
     use crate::sign_in::SESSION_LIFETIME;
     use crate::test_support::{
-        Fixture, Running, VERSION, finish_body, member_id, request, run, start_sign_in,
-        workspace_id,
+        Fixture, Running, VERSION, finish_body, fresh_account, member_id, request, run,
+        start_sign_in, workspace_id,
     };
 
     type Client = WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>;
@@ -271,7 +271,10 @@ mod tests {
             .await
             .unwrap();
         let email = Email::parse(email).unwrap();
-        workspace.add_member(&member_id(id), &email).await.unwrap();
+        workspace
+            .add_member(&member_id(id), &fresh_account(), &email)
+            .await
+            .unwrap();
     }
 
     async fn open(

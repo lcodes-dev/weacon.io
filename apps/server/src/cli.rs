@@ -64,7 +64,8 @@ pub(crate) enum AdminCommand {
         #[arg(long)]
         name: String,
     },
-    /// Add a member to a workspace and print their id.
+    /// Add a member to a workspace, with an account if their address has none, and print the
+    /// member's id.
     AddMember {
         #[arg(long)]
         db: PathBuf,
