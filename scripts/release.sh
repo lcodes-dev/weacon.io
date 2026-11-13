@@ -35,6 +35,9 @@ install_on() {
     && ~/.local/bin/weacon service install && ~/.local/bin/weacon --version'
 }
 
+# The web app's built files, as apps/server/build.rs embeds them.
+web_files=(index.html app.js app.css)
+
 # Starts the server on a free port and checks it serves each built file of the web app.
 check_serves() {
   local binary=$1 dir log address file route
@@ -54,7 +57,7 @@ check_serves() {
   [ -n "$address" ] || die "$binary didn't start serving"
   curl -fsS "http://$address/version" | grep -qF "\"$(git rev-parse HEAD)\"" \
     || die "$binary doesn't report this commit at /version"
-  for file in index.html app.js app.css; do
+  for file in "${web_files[@]}"; do
     route=/$file
     [ "$file" = index.html ] && route=/
     curl -fsS "http://$address$route" | cmp -s - "apps/web/dist/$file" \
@@ -67,14 +70,10 @@ if [ "${1:-}" = install ]; then
   exit
 fi
 
-server=
+server='' bin=weacon package=weacon-core
 if [ "${1:-}" = server ]; then
-  server=1
+  server=1 bin=weacon-server package=weacon-server
   shift
-  case "${1:-}" in
-    *-linux-musl) ;;
-    *) die "usage: scripts/release.sh server <target>, with a Linux target this script lists" ;;
-  esac
 fi
 
 target=${1:-}
@@ -85,8 +84,10 @@ case "$target" in
   x86_64-pc-windows-msvc)
     exe=.exe
     export CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTFLAGS="-C target-feature=+crt-static" ;;
-  *) die "usage: scripts/release.sh <target>, for a target this script lists" ;;
+  *) die "usage: scripts/release.sh [server] <target>, for a target this script lists" ;;
 esac
+[ -z "$server" ] || [[ $target == *-linux-musl ]] \
+  || die "server takes a Linux target: x86_64-unknown-linux-musl or aarch64-unknown-linux-musl"
 
 changes=$(git status --porcelain --untracked-files=normal)
 [ -z "$changes" ] || die "the working tree has changes, so the binary wouldn't be this commit"
@@ -94,29 +95,17 @@ changes=$(git status --porcelain --untracked-files=normal)
 rustup target add "$target" >/dev/null
 
 if [ -n "$server" ]; then
-  [ -d apps/web/node_modules ] || die "the web app's packages are missing: run scripts/setup.sh"
   rm -rf apps/web/dist
   npm --prefix apps/web run build >/dev/null
-  for file in index.html app.js app.css; do
+  for file in "${web_files[@]}"; do
     [ -s "apps/web/dist/$file" ] || die "the web app's build didn't make $file"
   done
-  grep -qF "$(git rev-parse HEAD)" apps/web/dist/app.js || die "the web app doesn't carry this commit"
-  cargo build --release --locked --package weacon-server --target "$target"
-  mkdir -p dist
-  binary="dist/weacon-server-$target"
-  cp "target/$target/release/weacon-server" "$binary"
-  file "$binary" | grep -Eq 'statically linked|static-pie linked' || die "$binary isn't static"
-  "$binary" --version | grep -qF "($(git rev-parse HEAD))" || die "$binary doesn't report this commit"
-  check_serves "$binary"
-  printf '%s: %s bytes\n' "$binary" "$(wc -c <"$binary" | tr -d ' ')"
-  exit
 fi
-
-cargo build --release --locked --package weacon-core --target "$target"
+cargo build --release --locked --package "$package" --target "$target"
 
 mkdir -p dist
-binary="dist/weacon-$target$exe"
-cp "target/$target/release/weacon$exe" "$binary"
+binary="dist/$bin-$target$exe"
+cp "target/$target/release/$bin$exe" "$binary"
 
 case "$target" in
   *-linux-musl)
@@ -132,5 +121,6 @@ esac
 
 "$binary" --version | tr -d '\r' | grep -qF "($(git rev-parse HEAD))" \
   || die "$binary doesn't report this commit"
+[ -z "$server" ] || check_serves "$binary"
 
 printf '%s: %s bytes\n' "$binary" "$(wc -c <"$binary" | tr -d ' ')"

@@ -54,19 +54,30 @@ jobs:
           name: weacon-${{ matrix.target }}
           path: weacon-${{ matrix.target }}.tar
           if-no-files-found: error
-      # Servers run on Linux only.
-      - if: runner.os == 'Linux'
-        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+
+  server:
+    name: server ${{ matrix.target }}
+    # Servers run on Linux only.
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { target: x86_64-unknown-linux-musl, runner: ubuntu-24.04 }
+          - { target: aarch64-unknown-linux-musl, runner: ubuntu-24.04-arm }
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: sudo apt-get update -q && sudo apt-get install -yq musl-tools
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version-file: .node-version
-      - if: runner.os == 'Linux'
-        run: npm ci --prefix apps/web --include=dev --no-audit --no-fund
-      - if: runner.os == 'Linux'
-        run: scripts/release.sh server ${{ matrix.target }} | tee -a "$GITHUB_STEP_SUMMARY"
-      - if: runner.os == 'Linux'
-        run: tar -cf weacon-server-${{ matrix.target }}.tar -C dist weacon-server-${{ matrix.target }}
-      - if: runner.os == 'Linux'
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      - run: npm ci --prefix apps/web --include=dev --no-audit --no-fund
+      - run: scripts/release.sh server ${{ matrix.target }} | tee -a "$GITHUB_STEP_SUMMARY"
+      - run: tar -cf weacon-server-${{ matrix.target }}.tar -C dist .
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: weacon-server-${{ matrix.target }}
           path: weacon-server-${{ matrix.target }}.tar
