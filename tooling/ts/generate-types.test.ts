@@ -94,8 +94,26 @@ export type Same = Start;
   );
 });
 
+test("a plain enum is a union of its values", () => {
+  const schema: Schema = { title: "Kind", type: "string", enum: ["claude", "codex"] };
+
+  assert.equal(
+    generate(schema).split("\n\n").slice(1).join("\n\n"),
+    `export type Kind = (
+  | "claude"
+  | "codex"
+);
+`,
+  );
+});
+
 test("anything it doesn't know is refused rather than dropped", () => {
   const cases: [Schema, string][] = [
+    [{ title: "A", enum: [] }, "unsupported enum: only a list of strings"],
+    [{ title: "A", type: "string", enum: ["a", 1] }, "unsupported enum: only a list of strings"],
+    [{ title: "A", const: "a", enum: [] }, "unsupported enum: only a list of strings"],
+    [{ title: "A", const: "a", enum: ["a"] }, "unsupported enum: only with no const and no type but string"],
+    [{ title: "A", type: "integer", enum: ["a"] }, "unsupported enum: only with no const and no type but string"],
     [{ type: "object" }, "the root schema needs a title that is a TypeScript name"],
     [{ title: "not a name" }, "the root schema needs a title that is a TypeScript name"],
     [{ title: "A", $defs: { "b-c": {} } }, "b-c: not a TypeScript name"],
