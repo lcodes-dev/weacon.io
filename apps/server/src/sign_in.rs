@@ -85,10 +85,12 @@ async fn send_code(
     }
     let code = code_text(&os_secrets()?);
     let code_hash = shared.secret.code_hash(challenge, &code);
-    let started = shared
+    let now = shared.now();
+    if !shared
         .db
-        .start_challenge(&email, challenge, &code_hash, shared.now());
-    if !started.await? {
+        .start_challenge(&email, challenge, &code_hash, now)
+        .await?
+    {
         return Ok(());
     }
     let outbox = shared.outbox.clone();

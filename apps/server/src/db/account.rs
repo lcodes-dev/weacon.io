@@ -12,7 +12,7 @@ pub(crate) const CODE_LIFETIME: i64 = 600;
 /// How many wrong tries cancel a challenge's code.
 const MAX_ATTEMPTS: i64 = 5;
 /// How many live codes one address may have, so a server open to sign-up can't flood an inbox.
-pub(crate) const MAX_LIVE: i64 = 3;
+const MAX_LIVE: i64 = 3;
 
 /// One try at finishing a sign-in. Times are seconds since the Unix epoch.
 pub(crate) struct Attempt<'a> {
@@ -52,9 +52,8 @@ impl Db {
             .transpose()
     }
 
-    /// Records `challenge`, for `email`, with the code hashed as `code_hash`, unless the address
-    /// has [`MAX_LIVE`] live ones, and says whether it did; and ends the expired challenges so
-    /// they don't pile up.
+    /// Records `challenge` for `email`, with its code hashed as `code_hash`, unless the address
+    /// has [`MAX_LIVE`] live ones, and says whether it did; ends the expired challenges first.
     pub(crate) async fn start_challenge(
         &self,
         email: &Email,
@@ -262,10 +261,10 @@ mod tests {
     }
 
     // Starts challenge `name` for the address `who`, with `code`.
-    async fn challenge(db: &Db, who: &str, name: &str, code: &[u8], now: i64) {
+    async fn challenge(db: &Db, who: &str, name: &str, code: &[u8], now: i64) -> bool {
         db.start_challenge(&email(who), &id(name), code, now)
             .await
-            .unwrap();
+            .unwrap()
     }
 
     // A try by `who` at challenge `name` with `code` at `now`, and the account it signs in to;
@@ -504,7 +503,7 @@ mod tests {
             db.account_with(&email("cy@example.com")).await.unwrap(),
             None
         );
-        // The right code was used up, which makes room for another.
+        // Using c1 freed a place.
         challenge(&db, "cy@example.com", "c4", b"code", NOW).await;
         assert_eq!(
             sign_up(&db, "cy@example.com", "c3", "a3").await.as_deref(),
@@ -530,25 +529,18 @@ mod tests {
         );
     }
 
-    async fn start(db: &Db, who: &str, name: &str, now: i64) -> bool {
-        db.start_challenge(&email(who), &id(name), b"code", now)
-            .await
-            .unwrap()
-    }
-
     #[tokio::test]
     async fn an_address_has_only_so_many_live_codes() {
         let dir = TempDir::new().unwrap();
         let db = people(&dir).await;
         let mut started = Vec::new();
         for name in ["c1", "c2", "c3", "c4"] {
-            started.push(start(&db, "ada@example.com", name, NOW).await);
+            started.push(challenge(&db, "ada@example.com", name, b"code", NOW).await);
         }
-        let other = start(&db, "bo@example.com", "c5", NOW).await;
+        let other = challenge(&db, "bo@example.com", "c5", b"code", NOW).await;
         let refused = try_code(&db, "c4", b"code", NOW).await;
-        let later = start(&db, "ada@example.com", "c6", NOW + CODE_LIFETIME).await;
+        let later = challenge(&db, "ada@example.com", "c6", b"code", NOW + CODE_LIFETIME).await;
 
-        assert_eq!(MAX_LIVE, 3);
         assert_eq!(started, [true, true, true, false]);
         assert!(other);
         assert_eq!(refused, None);
