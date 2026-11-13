@@ -5,14 +5,13 @@ import "./app.css";
 import { App } from "./app.tsx";
 import { ME } from "./build.ts";
 import { type Send, deliver, prompt, requestId } from "./composer/prompt.ts";
-import { Connection, type Status } from "./connection.ts";
-import { NO_CHANGES, ask, cut, needsAsking, receive } from "./diff/changes.ts";
+import { type Asks, Connection, type Status } from "./connection.ts";
+import { DIFF_VIEW, NO_CHANGES, ask, cut, needsAsking, receive } from "./diff/changes.ts";
 import { Feed, nextFrame } from "./feed.ts";
 import { Log } from "./log.ts";
 import { placeOf } from "./place.ts";
 import { Receipts } from "./receipts.ts";
 import { fakeServerUrl } from "./server.ts";
-import { Api } from "./shell/api.ts";
 import { Shell } from "./shell/shell.tsx";
 import { EMPTY, apply } from "./transcript.ts";
 
@@ -30,6 +29,7 @@ window.addEventListener("error", crash);
 window.addEventListener("unhandledrejection", crash);
 log.info("app started");
 const place = placeOf(window.location.search);
+const TRANSCRIPT: Asks = { needs: "run.stream", offers: [DIFF_VIEW] };
 
 function Root({ url }: { url: string }) {
   const [status, setStatus] = useState<Status>({ state: "connecting" });
@@ -93,7 +93,7 @@ function Root({ url }: { url: string }) {
           feed.push(envelope);
         }
       },
-    });
+    }, TRANSCRIPT);
     connected.current = connection;
     return () => {
       current = false;
@@ -119,7 +119,7 @@ const root = document.getElementById("root");
 if (root !== null) {
   createRoot(root).render(
     <StrictMode>
-      {fake === undefined ? <Shell api={new Api(fetch.bind(window))} /> : <Root url={fake} />}
+      {fake === undefined ? <Shell fetch={fetch.bind(window)} /> : <Root url={fake} />}
     </StrictMode>,
   );
 }

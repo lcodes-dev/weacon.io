@@ -18,13 +18,13 @@ test("a person signs in with the code sent to them, stays signed in, and signs o
     await page.getByText("That code didn't work. Check it, or ask for a new one.").waitFor();
     await page.getByLabel("Code").fill(await served.code(EMAIL));
     await page.getByRole("button", { name: "Sign in" }).click();
-    await page.getByText("You're signed in.").waitFor();
+    await page.getByRole("heading", { name: "Workspaces" }).waitFor();
     assert.equal(await page.locator("header .who .muted").innerText(), EMAIL);
 
     // The session is in a cookie the page's scripts can't read.
     assert.equal(await page.evaluate(() => document.cookie), "");
     await page.reload();
-    await page.getByText("You're signed in.").waitFor();
+    await page.getByRole("button", { name: "Personal" }).waitFor();
 
     await page.route("**/api/sign-out", (route) => route.abort());
     await page.getByRole("button", { name: "Sign out" }).click();
@@ -35,6 +35,60 @@ test("a person signs in with the code sent to them, stays signed in, and signs o
     await page.getByRole("heading", { name: "Sign in" }).waitFor();
     await page.reload();
     await page.getByLabel("Email").waitFor();
+  } finally {
+    await served.close();
+  }
+});
+
+test("a signed-in person makes a workspace, opens its feed, and finds it again after a reload", { timeout: 600_000 }, async () => {
+  const served = await serve();
+  try {
+    const { page } = served;
+    await served.admin("add-account", "--email", EMAIL);
+    await page.getByLabel("Email").fill(EMAIL);
+    await page.getByRole("button", { name: "Send code" }).click();
+    await page.getByLabel("Code").fill(await served.code(EMAIL));
+    await page.getByRole("button", { name: "Sign in" }).click();
+
+    await page.getByLabel("Name").fill(" ");
+    await page.getByRole("button", { name: "Create" }).click();
+    await page.getByText("Give it a name of one short line.").waitFor();
+    await page.getByLabel("Name").fill("Made-up team");
+    await page.getByRole("button", { name: "Create" }).click();
+    await page.getByRole("heading", { name: "Made-up team" }).waitFor();
+    await page.getByText("Connected").waitFor();
+
+    await page.reload();
+    await page.getByRole("heading", { name: "Made-up team" }).waitFor();
+    await page.getByText("Connected").waitFor();
+    await page.getByRole("button", { name: "All workspaces" }).click();
+    const names = await page.locator(".workspaces li button").allInnerTexts();
+    assert.deepEqual(names.toSorted(), ["Made-up team", "Personal"]);
+    await page.getByRole("button", { name: "Personal" }).click();
+    await page.getByRole("heading", { name: "Personal" }).waitFor();
+    await page.getByText("Connected").waitFor();
+
+    await page.goBack();
+    await page.getByRole("heading", { name: "Workspaces" }).waitFor();
+    await page.goForward();
+    await page.getByRole("heading", { name: "Personal" }).waitFor();
+    await page.goto(new URL("/?workspace=not-mine", page.url()).href);
+    await page.getByRole("heading", { name: "Workspaces" }).waitFor();
+
+    await page.route("**/api/workspaces", (route) => route.abort());
+    await page.reload();
+    await page.getByText("The server can't be reached").waitFor();
+    assert.equal(await page.getByRole("button", { name: "Create" }).count(), 0);
+    await page.unroute("**/api/workspaces");
+    await page.getByRole("button", { name: "Try again" }).click();
+    await page.getByRole("button", { name: "Made-up team" }).waitFor();
+
+    // A session that ends while the page is open sends it back to sign-in.
+    await page.route("**/api/workspaces", (route) =>
+      route.fulfill({ status: 401, contentType: "application/json", body: '{"code":"sign_in.required","retryable":false}' }),
+    );
+    await page.reload();
+    await page.getByRole("heading", { name: "Sign in" }).waitFor();
   } finally {
     await served.close();
   }
