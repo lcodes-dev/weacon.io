@@ -2,6 +2,7 @@
 
 mod admin;
 mod app;
+mod auth;
 mod cli;
 mod client;
 mod connections;

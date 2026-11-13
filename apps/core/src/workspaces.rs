@@ -33,14 +33,18 @@ pub(crate) fn login(app: &App, agent: AgentKind, workspace: &WorkspaceId) -> Res
 
 #[derive(Debug)]
 pub(crate) struct Workspaces {
+    state: PathBuf,
     dir: PathBuf,
+    settings: PathBuf,
     path: Option<OsString>,
 }
 
 impl Workspaces {
     pub(crate) fn new(state_dir: &Path, path: Option<OsString>) -> Self {
         Self {
+            state: state_dir.to_path_buf(),
             dir: state_dir.join("workspaces"),
+            settings: state_dir.join("settings"),
             path,
         }
     }
@@ -106,7 +110,7 @@ impl Workspaces {
             let agents =
                 AGENTS.map(|(_, name)| format!("{name} {}", states.next().unwrap_or(state(None))));
             let (id, agents) = (workspace.as_str(), agents.join(", "));
-            match Settings::read(&self.root(workspace)) {
+            match Settings::read(&self.settings_file(workspace)) {
                 Ok(settings) => {
                     let (level, warning) = (settings.level(), settings.warning());
                     format!("Workspace {id}: access {level}; {agents}\n{warning}")
@@ -117,9 +121,15 @@ impl Workspaces {
         Ok(lines.collect())
     }
 
-    /// The folder for everything this machine keeps for `workspace`.
+    /// The folder for everything this machine keeps for `workspace` but its settings.
     pub(crate) fn root(&self, workspace: &WorkspaceId) -> PathBuf {
         self.dir.join(folder_name(workspace))
+    }
+
+    /// The file of `workspace`'s settings, outside every folder an agent is given.
+    pub(crate) fn settings_file(&self, workspace: &WorkspaceId) -> PathBuf {
+        self.settings
+            .join(format!("{}.json", folder_name(workspace)))
     }
 
     /// How to start `agent` in `cwd` with `workspace`'s own config folder; the only place runs
@@ -134,7 +144,13 @@ impl Workspaces {
         agent: AgentKind,
         cwd: PathBuf,
     ) -> Result<Launch, Fault> {
-        let access = Settings::read(&self.root(workspace))?.access;
+        if self.overlaps_state(&cwd) {
+            return Err(Fault::new(
+                code!("workspace.cwd_refused"),
+                "Agents can't work in or above Weacon's own folder",
+            ));
+        }
+        let access = Settings::read(&self.settings_file(workspace))?.access;
         if matches!(access, AccessLevel::Off | AccessLevel::Newer) {
             return Err(Fault::new(
                 code!("access.off"),
@@ -145,6 +161,15 @@ impl Workspaces {
             access,
             ..self.prepared(workspace, agent, cwd)?
         })
+    }
+
+    // Whether `cwd` is inside the state folder or holds it, so a run could reach the settings;
+    // a folder that can't be resolved counts as one that does.
+    fn overlaps_state(&self, cwd: &Path) -> bool {
+        let (Some(state), Some(cwd)) = (resolved(&self.state), resolved(cwd)) else {
+            return true;
+        };
+        cwd.starts_with(&state) || state.starts_with(&cwd)
     }
 
     // A launch whose config folder exists, private to this user.
@@ -163,6 +188,30 @@ impl Workspaces {
             .because(error)
         })?;
         Ok(launch)
+    }
+}
+
+// `path` with its deepest existing folder resolved, so a missing path compares like an existing
+// one; `None` when something on the way exists but can't be resolved, such as a dangling symlink.
+fn resolved(path: &Path) -> Option<PathBuf> {
+    let mut missing = Vec::new();
+    let mut base = path;
+    loop {
+        match base.canonicalize() {
+            Ok(found) => {
+                return Some(
+                    missing
+                        .iter()
+                        .rev()
+                        .fold(found, |path, name| path.join(name)),
+                );
+            }
+            Err(error) if error.kind() != io::ErrorKind::NotFound => return None,
+            Err(_) if base.symlink_metadata().is_ok() => return None,
+            Err(_) => {}
+        }
+        missing.push(base.file_name()?);
+        base = base.parent()?;
     }
 }
 
@@ -284,7 +333,7 @@ mod tests {
         assert_eq!(workspaces.describe(|_| Vec::new()).unwrap(), "");
         for workspace in ["w2", "W1", "a"] {
             workspaces
-                .launch(&id(workspace), AgentKind::Claude, dir.to_path_buf())
+                .launch(&id(workspace), AgentKind::Claude, PathBuf::from("/work"))
                 .unwrap();
         }
         for file in ["notes.txt", "w-file"] {
@@ -333,7 +382,7 @@ mod tests {
     fn a_program_that_isnt_on_the_path_is_not_installed_and_never_asked() {
         let dir = TempDir::new().unwrap();
         workspaces(&dir)
-            .launch(&id("w1"), AgentKind::Claude, dir.to_path_buf())
+            .launch(&id("w1"), AgentKind::Claude, PathBuf::from("/work"))
             .unwrap();
         let none_asked = |asked: &[Launch]| {
             assert_eq!(asked, []);
@@ -345,7 +394,7 @@ mod tests {
         for path in [None, Some(dir.join("empty").into_os_string())] {
             let workspaces = Workspaces::new(&dir, path);
             let error = workspaces
-                .launch(&id("w2"), AgentKind::Codex, dir.to_path_buf())
+                .launch(&id("w2"), AgentKind::Codex, PathBuf::from("/work"))
                 .unwrap_err();
 
             assert_eq!(error.code().as_str(), "agent.not_installed");
@@ -355,9 +404,9 @@ mod tests {
     }
 
     fn choose(dir: &Path, workspace: &str, json: &str) {
-        let root = dir.join("workspaces").join(format!("w-{workspace}"));
-        fs::create_dir_all(&root).unwrap();
-        fs::write(root.join("workspace.json"), json).unwrap();
+        fs::create_dir_all(dir.join("workspaces").join(format!("w-{workspace}"))).unwrap();
+        fs::create_dir_all(dir.join("settings")).unwrap();
+        fs::write(dir.join(format!("settings/w-{workspace}.json")), json).unwrap();
     }
 
     #[test]
@@ -371,7 +420,8 @@ mod tests {
         choose(&dir, "full", r#"{"access":"full","team":true}"#);
         choose(&dir, "broken", "{");
         let launch = |workspace: &str| {
-            let launch = workspaces.launch(&id(workspace), AgentKind::Claude, dir.to_path_buf());
+            let launch =
+                workspaces.launch(&id(workspace), AgentKind::Claude, PathBuf::from("/work"));
             launch
                 .map(|launch| launch.access)
                 .map_err(|error| error.code().as_str().to_owned())
@@ -419,7 +469,7 @@ mod tests {
 
         let dir = TempDir::new().unwrap();
         let launch = workspaces(&dir)
-            .launch(&id("w1"), AgentKind::Claude, dir.to_path_buf())
+            .launch(&id("w1"), AgentKind::Claude, PathBuf::from("/work"))
             .unwrap();
 
         for folder in [launch.config_dir.as_path(), &dir.join("workspaces")] {
@@ -436,12 +486,68 @@ mod tests {
         let workspaces = workspaces(&dir);
         let code = |agent| {
             let error = workspaces
-                .launch(&id("w1"), agent, dir.to_path_buf())
+                .launch(&id("w1"), agent, PathBuf::from("/work"))
                 .unwrap_err();
             error.code().as_str().to_owned()
         };
 
         assert_eq!(code(AgentKind::Newer), "agent.unknown");
         assert_eq!(code(AgentKind::Claude), "workspace.folder_failed");
+    }
+
+    #[test]
+    fn agents_never_work_in_or_above_the_state_folder() {
+        let dir = TempDir::new().unwrap();
+        let workspaces = workspaces(&dir);
+        let code = |cwd: PathBuf| {
+            let launch = workspaces.launch(&id("w1"), AgentKind::Claude, cwd);
+            launch.map_or_else(|error| error.code().as_str().to_owned(), |_| String::new())
+        };
+        let parent = dir.parent().unwrap().to_path_buf();
+
+        for refused in [
+            dir.to_path_buf(),
+            dir.join("settings"),
+            dir.join("workspaces/w-w1"),
+            parent,
+        ] {
+            assert_eq!(
+                code(refused.clone()),
+                "workspace.cwd_refused",
+                "{}",
+                refused.display()
+            );
+        }
+        assert_eq!(code(dir.with_extension("work")), "");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_missing_folder_reached_through_a_symlink_is_still_refused() {
+        let dir = TempDir::new().unwrap();
+        let state = dir.join("state");
+        fs::create_dir(&state).unwrap();
+        std::os::unix::fs::symlink(&state, dir.join("link")).unwrap();
+        let workspaces = workspaces(&state);
+
+        let error = workspaces
+            .launch(&id("w1"), AgentKind::Claude, dir.join("link/settings"))
+            .unwrap_err();
+
+        assert_eq!(error.code().as_str(), "workspace.cwd_refused");
+        // A symlink to nowhere could later point anywhere, so it's refused too.
+        std::os::unix::fs::symlink(dir.join("missing"), dir.join("dangling")).unwrap();
+        let dangling = workspaces.launch(&id("w1"), AgentKind::Claude, dir.join("dangling"));
+        assert_eq!(
+            dangling.unwrap_err().code().as_str(),
+            "workspace.cwd_refused"
+        );
+        // A file in the way can't be resolved, so the folder is refused too.
+        fs::write(dir.join("file"), "").unwrap();
+        let blocked = workspaces.launch(&id("w1"), AgentKind::Claude, dir.join("file/inside"));
+        assert_eq!(
+            blocked.unwrap_err().code().as_str(),
+            "workspace.cwd_refused"
+        );
     }
 }
