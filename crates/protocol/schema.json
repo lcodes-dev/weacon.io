@@ -1013,10 +1013,10 @@
       ]
     },
     "DocPin": {
-      "description": "An anchor a doc links to, with the fingerprint the code had at the revision's commit:\n`sym:weacon_protocol::frame::encode_line#0123456789abcdef`. The core computes both; the\nserver only checks their shape.",
+      "description": "An anchor a doc links to, with the fingerprint the code had at the revision's commit:\n`sym:weacon_protocol::frame::encode_line#0123456789abcdef`, in printable ASCII. The core\ncomputes both; the server only checks their shape.",
       "type": "string",
       "maxLength": 512,
-      "pattern": "^(sym|flow|area):\\S+#[0-9a-f]{16}$"
+      "pattern": "^(sym|flow|area):[!-~]+#[0-9a-f]{16}$"
     },
     "DocRecord": {
       "description": "A doc at one revision; `version` rises with each revision. The server sends it to clients\nthat have the capability `workspace.docs`.",

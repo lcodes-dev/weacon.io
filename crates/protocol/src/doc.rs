@@ -13,12 +13,12 @@ token_id!(
 const PIN_MAX: usize = 512;
 
 // The schema's forms of `is_pin` and `is_commit`; tests keep each pair in step.
-const PIN_PATTERN: &str = r"^(sym|flow|area):\S+#[0-9a-f]{16}$";
+const PIN_PATTERN: &str = r"^(sym|flow|area):[!-~]+#[0-9a-f]{16}$";
 const COMMIT_PATTERN: &str = r"^([0-9a-f]{40}|[0-9a-f]{64})$";
 
 /// An anchor a doc links to, with the fingerprint the code had at the revision's commit:
-/// `sym:weacon_protocol::frame::encode_line#0123456789abcdef`. The core computes both; the
-/// server only checks their shape.
+/// `sym:weacon_protocol::frame::encode_line#0123456789abcdef`, in printable ASCII. The core
+/// computes both; the server only checks their shape.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, JsonSchema)]
 pub struct DocPin(#[schemars(regex(pattern = PIN_PATTERN), length(max = PIN_MAX))] String);
 
@@ -58,7 +58,7 @@ fn is_pin(pin: &str) -> bool {
     pin.len() <= PIN_MAX
         && matches!(kind, "sym" | "flow" | "area")
         && !name.is_empty()
-        && !name.contains(char::is_whitespace)
+        && name.bytes().all(|byte| byte.is_ascii_graphic())
         && fingerprint.len() == 16
         && is_lower_hex(fingerprint)
 }
@@ -203,6 +203,9 @@ mod tests {
             "sym#0123456789abcdef",
             "file:a#0123456789abcdef",
             "sym:a b#0123456789abcdef",
+            "sym:a\u{1b}#0123456789abcdef",
+            "sym:a\u{feff}#0123456789abcdef",
+            "area:é#0123456789abcdef",
             "sym:a#0123456789ABCDEF",
             "sym:a#0123456789abcde",
             "sym:a#0123456789abcdef0",

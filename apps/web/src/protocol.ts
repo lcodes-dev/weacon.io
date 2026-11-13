@@ -370,8 +370,8 @@ export type DocList = {
 
 /**
  * An anchor a doc links to, with the fingerprint the code had at the revision's commit:
- * `sym:weacon_protocol::frame::encode_line#0123456789abcdef`. The core computes both; the
- * server only checks their shape.
+ * `sym:weacon_protocol::frame::encode_line#0123456789abcdef`, in printable ASCII. The core
+ * computes both; the server only checks their shape.
  */
 export type DocPin = string;
 
