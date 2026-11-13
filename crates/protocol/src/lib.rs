@@ -29,7 +29,9 @@ pub use receipt::{Outcome, Receipt, RequestId};
 pub use run::{
     AgentKind, AgentSession, PermissionAnswer, RunEvent, RunId, RunState, RunStatus, RunUpdate,
 };
-pub use task::{Author, TaskId, TaskStatus};
+pub use task::{
+    Author, TaskChange, TaskCreate, TaskEditBody, TaskId, TaskList, TaskRecord, TaskStatus,
+};
 pub use team::{
     AccountId, AccountSignInFinish, AccountSignInStart, AccountSignedIn, ChallengeId, MemberId,
     SignInFinish, SignInStart, SignInStarted, SignedIn, WorkspaceChange, WorkspaceCreate,

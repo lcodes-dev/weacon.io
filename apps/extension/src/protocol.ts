@@ -399,6 +399,11 @@ export type RunUpdate = {
 };
 
 /**
+ * A task in a workspace, 1–64 ASCII letters, digits, `-` or `_`.
+ */
+export type TaskId = string;
+
+/**
  * The answer to a [`Hello`] that speaks the same protocol.
  */
 export type Welcome = {
@@ -413,6 +418,11 @@ export type WorkspaceChange = (
   | {
     kind: "member_joined";
     member: MemberId;
+  }
+  | {
+    kind: "task_changed";
+    task: TaskId;
+    version: number;
   }
 );
 
