@@ -10,7 +10,6 @@ mod feed;
 mod http;
 mod limit;
 mod mail;
-mod platform;
 mod secret;
 mod sign_in;
 #[cfg(test)]
@@ -94,7 +93,7 @@ async fn serve(app: &App, args: Serve) -> Result<(), Fault> {
         .because(error)
     })?;
     let listener = bind(listen).await?;
-    let secret = Secret::open(&secret)?;
+    let secret = Secret::open(&secret, &app.log)?;
     let db = Db::create(&db).await?;
     let shared = Shared {
         app: weacon_appkit::build(&app.version),

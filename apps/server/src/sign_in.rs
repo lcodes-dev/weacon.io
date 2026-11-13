@@ -235,7 +235,8 @@ mod tests {
         let (_, challenge) = start_sign_in(server.address, "ada@example.com").await;
         let (_, code) = fixture.letter().await;
         let dir = TempDir::new().unwrap();
-        fixture.shared.secret = Arc::new(Secret::open(&dir.join("secret")).unwrap());
+        fixture.shared.secret =
+            Arc::new(Secret::open(&dir.join("secret"), &fixture.shared.log).unwrap());
         let rotated = run(fixture.shared.clone()).await;
         let finish = finish_body("w1", "ada@example.com", &challenge, &code);
 

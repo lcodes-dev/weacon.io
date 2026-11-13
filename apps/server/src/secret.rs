@@ -6,11 +6,11 @@ use std::path::{Path, PathBuf};
 
 use hmac::{Hmac, Mac};
 use sha2::Sha256;
-use weacon_observability::Fault;
+use weacon_appkit::{owner_only, private_append, sync_dir};
+use weacon_observability::{Fault, Logger};
 use weacon_protocol::{ChallengeId, code};
 
 use crate::app::new_id;
-use crate::platform::{private, sync_folder};
 
 /// The server's own key, which sign-in codes are hashed with: a stolen database alone can't
 /// be searched for its eight-digit codes.
@@ -18,22 +18,31 @@ pub(crate) struct Secret(Hmac<Sha256>);
 
 impl Secret {
     /// Reads the 32-byte key in the file at `path`, which only this user may read, or makes
-    /// one there. It blocks.
-    pub(crate) fn open(path: &Path) -> Result<Self, Fault> {
-        if let Ok(file) = File::open(path) {
-            return Self::read(file);
-        }
-        create(path)?;
-        Self::read(File::open(path).map_err(unreadable)?)
+    /// one there; warns where the system can't tell who may read it. It blocks.
+    pub(crate) fn open(path: &Path, log: &Logger) -> Result<Self, Fault> {
+        let file = if let Ok(file) = File::open(path) {
+            file
+        } else {
+            create(path)?;
+            File::open(path).map_err(unreadable)?
+        };
+        // Even a key found there may be one another server has only just made: until its
+        // folder is synced, a crash could lose it and every code hashed with it.
+        path.parent().map_or(Ok(()), sync_dir).map_err(unreadable)?;
+        Self::read(file, log)
     }
 
-    fn read(mut file: File) -> Result<Self, Fault> {
+    fn read(mut file: File, log: &Logger) -> Result<Self, Fault> {
         let metadata = file.metadata().map_err(unreadable)?;
-        if !private(&metadata) {
-            return Err(Fault::new(
-                code!("server.secret_exposed"),
-                "The secret file can be read by other users",
-            ));
+        match owner_only(&metadata) {
+            Some(true) => {}
+            Some(false) => {
+                return Err(Fault::new(
+                    code!("server.secret_exposed"),
+                    "The secret file can be read by other users",
+                ));
+            }
+            None => log.warn("secret unchecked", &[]),
         }
         if metadata.len() != 32 {
             return Err(Fault::new(
@@ -70,7 +79,7 @@ fn create(path: &Path) -> Result<(), Fault> {
     let mut new = OsString::from(path);
     new.push(format!(".{}.new", new_id()));
     let new = PathBuf::from(new);
-    let made = weacon_appkit::private_append(&new).and_then(|mut file| {
+    let made = private_append(&new).and_then(|mut file| {
         file.write_all(&key)?;
         file.sync_all()
     });
@@ -79,16 +88,7 @@ fn create(path: &Path) -> Result<(), Fault> {
         drop(fs::hard_link(&new, path));
     }
     drop(fs::remove_file(&new));
-    // The folder holds the key's name: without this, a crash could leave no key behind.
-    made.and_then(|()| sync_folder(folder_of(path)))
-        .map_err(unreadable)
-}
-
-/// The folder `path` is in; the current one for a bare file name.
-fn folder_of(path: &Path) -> &Path {
-    path.parent()
-        .filter(|folder| !folder.as_os_str().is_empty())
-        .unwrap_or_else(|| Path::new("."))
+    made.map_err(unreadable)
 }
 
 /// The operating system's random bytes.
@@ -121,9 +121,13 @@ impl fmt::Debug for Secret {
 
 #[cfg(test)]
 mod tests {
-    use weacon_testing::TempDir;
+    use weacon_testing::{TempDir, messages, recording_logger};
 
     use super::*;
+
+    fn open(path: &Path) -> Result<Secret, Fault> {
+        Secret::open(path, &recording_logger().0)
+    }
 
     fn challenge(id: &str) -> ChallengeId {
         ChallengeId::try_from(id.to_owned()).unwrap()
@@ -136,10 +140,7 @@ mod tests {
     // A private file holding `bytes`.
     fn stored(dir: &TempDir, name: &str, bytes: &[u8]) -> PathBuf {
         let path = dir.join(name);
-        weacon_appkit::private_append(&path)
-            .unwrap()
-            .write_all(bytes)
-            .unwrap();
+        private_append(&path).unwrap().write_all(bytes).unwrap();
         path
     }
 
@@ -155,13 +156,13 @@ mod tests {
     #[test]
     fn a_missing_secret_is_made_once_and_read_after() {
         let dir = TempDir::new().unwrap();
-        let first = Secret::open(&dir.join("secret")).unwrap();
-        let again = Secret::open(&dir.join("secret")).unwrap();
-        let other = Secret::open(&dir.join("other")).unwrap();
+        let first = open(&dir.join("secret")).unwrap();
+        let again = open(&dir.join("secret")).unwrap();
+        let other = open(&dir.join("other")).unwrap();
         let metadata = fs::metadata(dir.join("secret")).unwrap();
 
         assert_eq!(metadata.len(), 32);
-        assert!(private(&metadata));
+        assert_ne!(owner_only(&metadata), Some(false));
         assert_eq!(hash(&first), hash(&again));
         assert_ne!(hash(&first), hash(&other));
         assert_eq!(names(&dir), ["other", "secret"]);
@@ -172,19 +173,19 @@ mod tests {
     fn a_secret_made_meanwhile_is_kept() {
         let dir = TempDir::new().unwrap();
         let path = stored(&dir, "secret", &[7; 32]);
-        let theirs = hash(&Secret::open(&path).unwrap());
+        let theirs = hash(&open(&path).unwrap());
 
         create(&path).unwrap();
 
         assert_eq!(fs::read(&path).unwrap(), [7; 32]);
-        assert_eq!(hash(&Secret::open(&path).unwrap()), theirs);
+        assert_eq!(hash(&open(&path).unwrap()), theirs);
         assert_eq!(names(&dir), ["secret"]);
     }
 
     #[test]
     fn a_secret_of_another_length_or_out_of_reach_is_refused() {
         let dir = TempDir::new().unwrap();
-        let code_of = |path: &Path| Secret::open(path).unwrap_err().code().as_str().to_owned();
+        let code_of = |path: &Path| open(path).unwrap_err().code().as_str().to_owned();
 
         assert_eq!(
             code_of(&stored(&dir, "short", &[1; 31])),
@@ -208,8 +209,8 @@ mod tests {
     fn a_code_is_hashed_with_the_key_and_its_challenge() {
         let dir = TempDir::new().unwrap();
         let key: Vec<u8> = (0..32).collect();
-        let secret = Secret::open(&stored(&dir, "secret", &key)).unwrap();
-        let other = Secret::open(&dir.join("other")).unwrap();
+        let secret = open(&stored(&dir, "secret", &key)).unwrap();
+        let other = open(&dir.join("other")).unwrap();
 
         // HMAC-SHA256 of "c1", a zero byte and the code, under the bytes 0 to 31.
         assert_eq!(
@@ -228,14 +229,37 @@ mod tests {
     }
 
     #[test]
-    fn a_bare_file_name_is_in_the_current_folder() {
-        assert_eq!(folder_of(Path::new("secret")), Path::new("."));
-        assert_eq!(folder_of(Path::new("keys/secret")), Path::new("keys"));
-        assert_eq!(folder_of(Path::new("/secret")), Path::new("/"));
+    fn random_bytes_differ() {
+        assert_ne!(os_secrets().unwrap(), os_secrets().unwrap());
     }
 
     #[test]
-    fn random_bytes_differ() {
-        assert_ne!(os_secrets().unwrap(), os_secrets().unwrap());
+    fn a_secret_is_unchecked_only_where_permissions_cant_tell() {
+        let dir = TempDir::new().unwrap();
+        let (log, records) = recording_logger();
+        Secret::open(&dir.join("secret"), &log).unwrap();
+        let unknown = owner_only(&fs::metadata(dir.join("secret")).unwrap()).is_none();
+
+        assert_eq!(messages(&records).contains(&"secret unchecked"), unknown);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_secret_others_can_read_is_refused() {
+        use std::fs::Permissions;
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = TempDir::new().unwrap();
+        let file = dir.join("secret");
+        fs::write(&file, [1; 32]).unwrap();
+        fs::set_permissions(&file, Permissions::from_mode(0o644)).unwrap();
+
+        let exposed = open(&file).unwrap_err();
+        fs::set_permissions(&file, Permissions::from_mode(0o600)).unwrap();
+
+        assert_eq!(exposed.code().as_str(), "server.secret_exposed");
+        open(&file).unwrap();
+        fs::set_permissions(&file, Permissions::from_mode(0o400)).unwrap();
+        open(&file).unwrap();
     }
 }

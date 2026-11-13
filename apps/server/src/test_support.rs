@@ -55,6 +55,7 @@ impl Fixture {
             .await
             .unwrap();
         let (log, records) = recording_logger();
+        let secret = Secret::open(&dir.join("secret"), &log).unwrap();
         fs::create_dir(dir.join("outbox")).unwrap();
         let clock = Arc::new(AtomicU64::new(START));
         let now = Arc::clone(&clock);
@@ -64,7 +65,7 @@ impl Fixture {
             reporter: Arc::new(weacon_appkit::reporter(None, true, Box::new(|_| Ok(())))),
             db,
             outbox: Outbox::new(dir.join("outbox")),
-            secret: Arc::new(Secret::open(&dir.join("secret")).unwrap()),
+            secret: Arc::new(secret),
             head_within: connections::HEAD_WITHIN,
             connections: Arc::new(Semaphore::new(64)),
             // Short, so tests that wait for the feed's checks don't wait long.
