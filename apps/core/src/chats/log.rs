@@ -48,13 +48,14 @@ fn unreadable(error: io::Error) -> Fault {
 
 impl Log {
     /// Opens `chat`'s journal under its workspace's own folder, `workspace_root`, created
-    /// private when missing. An entry a crash cut short is dropped.
+    /// private when missing and kept through a power loss. An entry a crash cut short is dropped.
     ///
     /// # Errors
     /// When the journal can't be read or an entry before its last is damaged.
     pub(crate) async fn open(workspace_root: &Path, chat: &ChatId) -> Result<Self, Fault> {
         let dir = workspace_root.join("chats");
         let path = dir.join(platform::case_safe_name("c-", chat.as_str()) + ".jsonl");
+        let workspace_root = workspace_root.to_path_buf();
         blocking(move || {
             platform::private_dir(&dir)?;
             let mut log = Self {
@@ -64,6 +65,8 @@ impl Log {
                 requests: HashMap::new(),
                 broken: false,
             };
+            platform::sync_dir(&dir)?;
+            platform::sync_dir(&workspace_root)?;
             let len = log.file.metadata()?.len();
             log.replay()?;
             if log.end != len {
