@@ -174,6 +174,34 @@
       "required": [
         "type"
       ]
+    },
+    {
+      "description": "A question about a chat's changes, from a client to a core that offers `diff.view`.",
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "diff_query"
+        }
+      },
+      "$ref": "#/$defs/DiffQuery",
+      "required": [
+        "type"
+      ]
+    },
+    {
+      "description": "The core's answer to a [`DiffQuery`], one changed file at a time, to a client that has\n`diff.view`.",
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "diff_answer"
+        }
+      },
+      "$ref": "#/$defs/DiffAnswer",
+      "required": [
+        "type"
+      ]
     }
   ],
   "required": [
@@ -673,6 +701,200 @@
       "maxLength": 64,
       "pattern": "^[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)+$"
     },
+    "DiffAnswer": {
+      "description": "From the core to a client that has `diff.view`, in answer to a [`DiffQuery`].",
+      "type": "object",
+      "properties": {
+        "answer": {
+          "$ref": "#/$defs/DiffAnswerKind"
+        },
+        "chat": {
+          "$ref": "#/$defs/ChatId"
+        },
+        "request": {
+          "$ref": "#/$defs/RequestId"
+        },
+        "workspace": {
+          "$ref": "#/$defs/WorkspaceId"
+        }
+      },
+      "required": [
+        "request",
+        "workspace",
+        "chat",
+        "answer"
+      ]
+    },
+    "DiffAnswerKind": {
+      "oneOf": [
+        {
+          "description": "One of the `files` changed files, which arrive one answer each, in order; `files` is at\nleast 1 and the same in every answer to one query.",
+          "type": "object",
+          "properties": {
+            "file": {
+              "$ref": "#/$defs/DiffFile"
+            },
+            "files": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "kind": {
+              "type": "string",
+              "const": "file"
+            }
+          },
+          "required": [
+            "kind",
+            "files",
+            "file"
+          ]
+        },
+        {
+          "description": "Nothing changed.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "unchanged"
+            }
+          },
+          "required": [
+            "kind"
+          ]
+        }
+      ]
+    },
+    "DiffContent": {
+      "oneOf": [
+        {
+          "description": "No hunks when only the file's mode changed.",
+          "type": "object",
+          "properties": {
+            "hunks": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/Hunk"
+              }
+            },
+            "kind": {
+              "type": "string",
+              "const": "text"
+            }
+          },
+          "required": [
+            "kind",
+            "hunks"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "binary"
+            }
+          },
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "description": "The file's changes wouldn't fit one frame.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "too_large"
+            }
+          },
+          "required": [
+            "kind"
+          ]
+        }
+      ]
+    },
+    "DiffFile": {
+      "type": "object",
+      "properties": {
+        "change": {
+          "$ref": "#/$defs/FileChange"
+        },
+        "content": {
+          "$ref": "#/$defs/DiffContent"
+        },
+        "path": {
+          "description": "Where the file is now, or was when it was removed, relative to the worktree.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "change",
+        "content"
+      ]
+    },
+    "DiffLine": {
+      "description": "One line without its `\\n`, so a `\\r` before it stays in `text`.",
+      "type": "object",
+      "properties": {
+        "no_newline": {
+          "description": "The file's last line, when it has no `\\n`.",
+          "type": "boolean"
+        },
+        "op": {
+          "$ref": "#/$defs/LineOp"
+        },
+        "text": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "op",
+        "text"
+      ]
+    },
+    "DiffQuery": {
+      "description": "From a client to a core that offers `diff.view`. Each answer is a [`DiffAnswer`] that echoes\n`request`.",
+      "type": "object",
+      "properties": {
+        "chat": {
+          "$ref": "#/$defs/ChatId"
+        },
+        "query": {
+          "$ref": "#/$defs/DiffQueryKind"
+        },
+        "request": {
+          "$ref": "#/$defs/RequestId"
+        },
+        "workspace": {
+          "$ref": "#/$defs/WorkspaceId"
+        }
+      },
+      "required": [
+        "request",
+        "workspace",
+        "chat",
+        "query"
+      ]
+    },
+    "DiffQueryKind": {
+      "oneOf": [
+        {
+          "description": "Every file the chat's agents changed in its worktree.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "changes"
+            }
+          },
+          "required": [
+            "kind"
+          ]
+        }
+      ]
+    },
     "ErrorBody": {
       "type": "object",
       "properties": {
@@ -687,6 +909,62 @@
       "required": [
         "code",
         "retryable"
+      ]
+    },
+    "FileChange": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "added"
+            }
+          },
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "removed"
+            }
+          },
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "modified"
+            }
+          },
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "from": {
+              "type": "string"
+            },
+            "kind": {
+              "type": "string",
+              "const": "renamed"
+            }
+          },
+          "required": [
+            "kind",
+            "from"
+          ]
+        }
       ]
     },
     "Hello": {
@@ -711,6 +989,33 @@
       "required": [
         "protocol",
         "app"
+      ]
+    },
+    "Hunk": {
+      "description": "A run of changed lines and their context. Lines count from 1; the start of a side with no\nlines, as the old side of an added file, is 0.",
+      "type": "object",
+      "properties": {
+        "lines": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/DiffLine"
+          }
+        },
+        "new_start": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "old_start": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "old_start",
+        "new_start",
+        "lines"
       ]
     },
     "Level": {
@@ -744,6 +1049,18 @@
           "description": "About to exit.",
           "type": "string",
           "const": "fatal"
+        }
+      ]
+    },
+    "LineOp": {
+      "oneOf": [
+        {
+          "type": "string",
+          "enum": [
+            "context",
+            "added",
+            "removed"
+          ]
         }
       ]
     },

@@ -1,7 +1,7 @@
 use std::ffi::OsString;
 use std::path::PathBuf;
 
-use clap::{CommandFactory, FromArgMatches, Parser, Subcommand, ValueEnum};
+use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
 use weacon_appkit::version_text;
 use weacon_protocol::{AccessLevel, AgentKind, WorkspaceId};
 use weacon_version::Version;
@@ -41,7 +41,9 @@ pub(crate) enum Command {
     Access {
         /// The workspace's id.
         workspace: WorkspaceId,
-        level: Level,
+        /// What its agents may do: off, read-only, ask-first or full.
+        #[arg(value_parser = crate::workspaces::parse_level)]
+        level: AccessLevel,
         /// Whether other people are in the workspace; kept as it was when left out.
         #[arg(long)]
         team: Option<bool>,
@@ -61,29 +63,6 @@ fn agent(name: &str) -> Result<AgentKind, &'static str> {
         .ok()
         .filter(|agent| *agent != AgentKind::Newer)
         .ok_or("not an agent this core runs")
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
-pub(crate) enum Level {
-    /// No agent runs.
-    Off,
-    /// Agents read; every change they ask for is turned down.
-    ReadOnly,
-    /// Agents ask a person before each change.
-    AskFirst,
-    /// Agents change files in their folder without asking; anything else still asks.
-    Full,
-}
-
-impl From<Level> for AccessLevel {
-    fn from(level: Level) -> Self {
-        match level {
-            Level::Off => Self::Off,
-            Level::ReadOnly => Self::ReadOnly,
-            Level::AskFirst => Self::AskFirst,
-            Level::Full => Self::Full,
-        }
-    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Subcommand)]
@@ -255,10 +234,13 @@ mod tests {
                 panic!("not an access command");
             };
             assert_eq!(team, None);
-            AccessLevel::from(level)
+            level
         });
         let team = run(&["weacon", "access", "w-1", "full", "--team", "true"]).unwrap();
         let left = run(&["weacon", "access", "w-1", "full", "--team", "false"]).unwrap();
+        for bad in ["read_only", "Full", "newer", "on", ""] {
+            run(&["weacon", "access", "w-1", bad]).unwrap_err();
+        }
 
         assert_eq!(
             levels,
