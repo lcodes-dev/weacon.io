@@ -1,0 +1,449 @@
+use axum::Json;
+use axum::extract::rejection::{JsonRejection, PathRejection};
+use axum::extract::{Path, State};
+use axum::http::StatusCode;
+use axum::response::{IntoResponse, Response};
+use weacon_model::{Change, OrderKey, Task, TaskEdit, TaskTitle, TaskVersion};
+use weacon_observability::Fault;
+use weacon_protocol::{
+    TaskChange, TaskCreate, TaskEditBody, TaskId, TaskList, TaskRecord, WorkspaceId, code,
+};
+
+use crate::app::new_id;
+use crate::auth::Member;
+use crate::db::task_not_found;
+use crate::http::{Shared, error, failure};
+
+/// `GET /api/workspaces/{workspace}/tasks`: the workspace's tasks, in their order.
+pub(crate) async fn list(State(shared): State<Shared>, member: Member) -> Response {
+    match member.workspace.tasks().await {
+        Ok(tasks) => Json(TaskList {
+            tasks: tasks.into_iter().map(record).collect(),
+        })
+        .into_response(),
+        Err(fault) => answer(&shared, fault),
+    }
+}
+
+/// `POST /api/workspaces/{workspace}/tasks`: makes a task, to do, in front of `before` or
+/// last.
+pub(crate) async fn create(
+    State(shared): State<Shared>,
+    member: Member,
+    body: Result<Json<TaskCreate>, JsonRejection>,
+) -> Response {
+    let made = async {
+        let Json(body) = body.map_err(|_| invalid())?;
+        let title = title(body.title)?;
+        let tasks = member.workspace.tasks().await?;
+        let order = place(&tasks, None, body.before.as_ref())?;
+        let id = TaskId::try_from(new_id()).map_err(|_| invalid())?;
+        let task = Task::new(id, title, order);
+        let change = Change::by(member.id.clone(), shared.now());
+        member.workspace.add_task(&task, &change).await?;
+        Ok(task)
+    };
+    match made.await {
+        Ok(task) => {
+            shared.changed(member.workspace.id());
+            (StatusCode::CREATED, Json(record(task))).into_response()
+        }
+        Err(fault) => answer(&shared, fault),
+    }
+}
+
+/// `POST /api/workspaces/{workspace}/tasks/{task}`: makes one edit to a task the client read
+/// at `version`.
+pub(crate) async fn change(
+    State(shared): State<Shared>,
+    member: Member,
+    path: Result<Path<(WorkspaceId, TaskId)>, PathRejection>,
+    body: Result<Json<TaskChange>, JsonRejection>,
+) -> Response {
+    let edited = async {
+        let Path((_, id)) = path.map_err(|_| invalid())?;
+        let Json(body) = body.map_err(|_| invalid())?;
+        let edit = match body.edit {
+            TaskEditBody::Title { title: text } => TaskEdit::Title(title(text)?),
+            TaskEditBody::Status { status } => TaskEdit::Status(status),
+            TaskEditBody::Move { before } => {
+                let tasks = member.workspace.tasks().await?;
+                TaskEdit::Order(place(&tasks, Some(&id), before.as_ref())?)
+            }
+            TaskEditBody::Newer => return Err(invalid()),
+        };
+        let change = Change::by(member.id.clone(), shared.now());
+        let read_at = TaskVersion::new(body.version);
+        member
+            .workspace
+            .edit_task(&id, read_at, edit, &change)
+            .await
+    };
+    match edited.await {
+        Ok(task) => {
+            shared.changed(member.workspace.id());
+            Json(record(task)).into_response()
+        }
+        Err(fault) => answer(&shared, fault),
+    }
+}
+
+/// An order key in front of `before`, or after the last task, among the tasks but `moving`.
+fn place(
+    tasks: &[Task],
+    moving: Option<&TaskId>,
+    before: Option<&TaskId>,
+) -> Result<OrderKey, Fault> {
+    if before.is_some() && before == moving {
+        return Err(invalid());
+    }
+    let others: Vec<&Task> = tasks
+        .iter()
+        .filter(|task| Some(&task.id) != moving)
+        .collect();
+    let at = match before {
+        Some(before) => others
+            .iter()
+            .position(|task| task.id == *before)
+            .ok_or_else(task_not_found)?,
+        None => others.len(),
+    };
+    let after = at.checked_sub(1).and_then(|at| others.get(at));
+    let lo = after.map(|task| &task.order);
+    let hi = others.get(at).map(|task| &task.order);
+    OrderKey::between(lo, hi)
+        .ok_or_else(|| Fault::new(code!("task.no_room"), "There is no room for the task there"))
+}
+
+fn title(text: String) -> Result<TaskTitle, Fault> {
+    TaskTitle::try_from(text).map_err(|_| invalid())
+}
+
+fn record(task: Task) -> TaskRecord {
+    TaskRecord {
+        id: task.id,
+        title: task.title.as_str().to_owned(),
+        status: task.status,
+        order: task.order.as_str().to_owned(),
+        version: task.version.get(),
+    }
+}
+
+fn invalid() -> Fault {
+    Fault::new(code!("task.invalid"), "The task request isn't valid")
+}
+
+/// Answers a refusal with its status, and anything else as the server failing.
+fn answer(shared: &Shared, fault: Fault) -> Response {
+    let status = match fault.code().as_str() {
+        "task.invalid" | "task.unknown_value" => StatusCode::BAD_REQUEST,
+        "task.not_found" => StatusCode::NOT_FOUND,
+        "task.stale" | "task.no_room" | "task.last_version" => StatusCode::CONFLICT,
+        // Another change took the same place at the same moment; reading again finds a free one.
+        "db.exists" => return error(StatusCode::CONFLICT, fault.code().clone(), true),
+        _ => return failure(shared, fault),
+    };
+    error(status, fault.code().clone(), false)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::net::SocketAddr;
+
+    use weacon_protocol::{ErrorBody, WorkspaceChange};
+
+    use weacon_protocol::TaskStatus;
+
+    use super::*;
+    use crate::test_support::{self, Fixture, Running, request_with, run, status, workspace_id};
+
+    struct Ada {
+        address: SocketAddr,
+        auth: String,
+    }
+
+    impl Ada {
+        async fn send(&self, head: &str, body: &str) -> (String, String) {
+            let (head, body) = request_with(self.address, head, &self.auth, body).await;
+            (status(&head).to_owned(), body)
+        }
+
+        async fn list(&self) -> Vec<TaskRecord> {
+            let (status, body) = self.send("GET /api/workspaces/w1/tasks", "").await;
+            assert_eq!(status, "http/1.1 200 ok");
+            serde_json::from_str::<TaskList>(&body).unwrap().tasks
+        }
+
+        async fn create(&self, title: &str, before: Option<&TaskRecord>) -> TaskRecord {
+            let create = TaskCreate {
+                title: title.to_owned(),
+                before: before.map(|task| task.id.clone()),
+            };
+            let body = serde_json::to_string(&create).unwrap();
+            let (status, body) = self.send("POST /api/workspaces/w1/tasks", &body).await;
+            assert_eq!(status, "http/1.1 201 created");
+            serde_json::from_str(&body).unwrap()
+        }
+
+        async fn change(&self, task: &TaskRecord, edit: TaskEditBody) -> (String, String) {
+            let change = TaskChange {
+                version: task.version,
+                edit,
+            };
+            let head = format!("POST /api/workspaces/w1/tasks/{}", task.id.as_str());
+            self.send(&head, &serde_json::to_string(&change).unwrap())
+                .await
+        }
+
+        async fn changed(&self, task: &TaskRecord, edit: TaskEditBody) -> TaskRecord {
+            let (status, body) = self.change(task, edit).await;
+            assert_eq!(status, "http/1.1 200 ok", "{body}");
+            serde_json::from_str(&body).unwrap()
+        }
+    }
+
+    /// The running server, which stops once dropped, and ada signed in to it.
+    async fn ada(fixture: &Fixture) -> (Running, Ada) {
+        let server = run(fixture.shared.clone()).await;
+        let (_, body) = test_support::sign_in(fixture, server.address, "ada@example.com").await;
+        let token = body["token"].as_str().unwrap();
+        let ada = Ada {
+            address: server.address,
+            auth: format!("authorization: Bearer {token}\r\n"),
+        };
+        (server, ada)
+    }
+
+    fn refusal(body: &str) -> String {
+        let error: ErrorBody = serde_json::from_str(body).unwrap();
+        error.code.as_str().to_owned()
+    }
+
+    fn titles(tasks: &[TaskRecord]) -> Vec<&str> {
+        tasks.iter().map(|task| task.title.as_str()).collect()
+    }
+
+    #[tokio::test]
+    async fn new_tasks_go_last_or_in_front_of_one_and_the_feed_hears_of_each() {
+        let fixture = Fixture::new().await;
+        let (_server, ada) = ada(&fixture).await;
+        let mut changes = fixture.shared.changes.subscribe();
+
+        let write = ada.create("Write", None).await;
+        let ship = ada.create("Ship", None).await;
+        let plan = ada.create("Plan", Some(&write)).await;
+        let review = ada.create("Review", Some(&ship)).await;
+
+        assert_eq!(
+            titles(&ada.list().await),
+            ["Plan", "Write", "Review", "Ship"]
+        );
+        let made: Vec<_> = [&write, &ship, &plan, &review]
+            .map(|task| WorkspaceChange::TaskChanged {
+                task: task.id.clone(),
+                version: 1,
+            })
+            .into();
+        assert_eq!(ada.list().await, [plan, write.clone(), review, ship]);
+        assert_eq!((write.status, write.version), (TaskStatus::Todo, 1));
+        assert_eq!(changes.try_recv().unwrap(), workspace_id("w1"));
+        let w1 = fixture
+            .shared
+            .db
+            .workspace(&workspace_id("w1"))
+            .await
+            .unwrap();
+        let stored = w1.changes_since(0, 10).await.unwrap();
+        let stored: Vec<_> = stored.into_iter().map(|update| update.change).collect();
+        assert_eq!(stored, made);
+    }
+
+    #[tokio::test]
+    async fn an_edit_answers_the_task_at_its_next_version() {
+        let fixture = Fixture::new().await;
+        let (_server, ada) = ada(&fixture).await;
+        let write = ada.create("Write", None).await;
+        let ship = ada.create("Ship", None).await;
+
+        let renamed = ada
+            .changed(
+                &write,
+                TaskEditBody::Title {
+                    title: "Draft".to_owned(),
+                },
+            )
+            .await;
+        let done = ada
+            .changed(
+                &renamed,
+                TaskEditBody::Status {
+                    status: TaskStatus::Done,
+                },
+            )
+            .await;
+        let moved = ada
+            .changed(&done, TaskEditBody::Move { before: None })
+            .await;
+        let back = ada
+            .changed(
+                &moved,
+                TaskEditBody::Move {
+                    before: Some(ship.id.clone()),
+                },
+            )
+            .await;
+
+        assert_eq!((renamed.title.as_str(), renamed.version), ("Draft", 2));
+        assert_eq!((done.status, done.version), (TaskStatus::Done, 3));
+        assert_eq!(titles(&ada.list().await), ["Draft", "Ship"]);
+        assert_eq!(back.version, 5);
+        assert!(moved.order > ship.order && back.order < ship.order);
+    }
+
+    #[tokio::test]
+    async fn a_stale_or_missing_task_is_refused_and_nothing_changes() {
+        let fixture = Fixture::new().await;
+        let (_server, ada) = ada(&fixture).await;
+        let write = ada.create("Write", None).await;
+        ada.changed(
+            &write,
+            TaskEditBody::Title {
+                title: "Draft".to_owned(),
+            },
+        )
+        .await;
+        let gone = TaskRecord {
+            id: TaskId::try_from("t-gone".to_owned()).unwrap(),
+            ..write.clone()
+        };
+
+        let (stale, stale_body) = ada
+            .change(
+                &write,
+                TaskEditBody::Title {
+                    title: "Late".to_owned(),
+                },
+            )
+            .await;
+        let (missing, missing_body) = ada
+            .change(
+                &gone,
+                TaskEditBody::Title {
+                    title: "Late".to_owned(),
+                },
+            )
+            .await;
+        let (nowhere, nowhere_body) = ada
+            .change(
+                &write,
+                TaskEditBody::Move {
+                    before: Some(gone.id.clone()),
+                },
+            )
+            .await;
+
+        assert_eq!(stale, "http/1.1 409 conflict");
+        assert_eq!(refusal(&stale_body), "task.stale");
+        assert_eq!(missing, "http/1.1 404 not found");
+        assert_eq!(refusal(&missing_body), "task.not_found");
+        assert_eq!(nowhere, "http/1.1 404 not found");
+        assert_eq!(refusal(&nowhere_body), "task.not_found");
+        assert_eq!(titles(&ada.list().await), ["Draft"]);
+    }
+
+    #[tokio::test]
+    async fn bad_input_is_refused_as_a_bad_request() {
+        let fixture = Fixture::new().await;
+        let (_server, ada) = ada(&fixture).await;
+        let write = ada.create("Write", None).await;
+        let current = TaskRecord {
+            version: 1,
+            ..write.clone()
+        };
+        let edits = [
+            TaskEditBody::Title {
+                title: " padded".to_owned(),
+            },
+            TaskEditBody::Title {
+                title: String::new(),
+            },
+            TaskEditBody::Move {
+                before: Some(write.id.clone()),
+            },
+        ];
+        for edit in edits {
+            let (status, body) = ada.change(&current, edit).await;
+            assert_eq!(status, "http/1.1 400 bad request");
+            assert_eq!(refusal(&body), "task.invalid");
+        }
+        for (head, body) in [
+            (
+                "POST /api/workspaces/w1/tasks",
+                r#"{"title":"line\nbreak"}"#,
+            ),
+            ("POST /api/workspaces/w1/tasks", "{"),
+            (
+                "POST /api/workspaces/w1/tasks/a%20b",
+                r#"{"version":1,"edit":{"kind":"move"}}"#,
+            ),
+            (
+                "POST /api/workspaces/w1/tasks/x",
+                r#"{"version":1,"edit":{"kind":"archive"}}"#,
+            ),
+        ] {
+            let (status, body) = ada.send(head, body).await;
+            assert_eq!(status, "http/1.1 400 bad request", "{head}");
+            assert_eq!(refusal(&body), "task.invalid");
+        }
+        let later = r#"{"version":1,"edit":{"kind":"status","status":"later"}}"#;
+        let head = format!("POST /api/workspaces/w1/tasks/{}", write.id.as_str());
+        let (status, body) = ada.send(&head, later).await;
+        assert_eq!(status, "http/1.1 400 bad request");
+        assert_eq!(refusal(&body), "task.unknown_value");
+        assert_eq!(ada.list().await, [write]);
+    }
+
+    #[tokio::test]
+    async fn only_a_signed_in_member_reaches_the_tasks() {
+        let fixture = Fixture::new().await;
+        let (_server, ada) = ada(&fixture).await;
+        fixture
+            .shared
+            .db
+            .create_workspace(&workspace_id("w2"), "Other")
+            .await
+            .unwrap();
+        let stranger = Ada {
+            address: ada.address,
+            auth: String::new(),
+        };
+
+        for (who, head) in [
+            (&stranger, "GET /api/workspaces/w1/tasks"),
+            (&stranger, "POST /api/workspaces/w1/tasks"),
+            (&ada, "GET /api/workspaces/w2/tasks"),
+            (&ada, "POST /api/workspaces/w2/tasks"),
+            (&ada, "POST /api/workspaces/w2/tasks/t1"),
+        ] {
+            let (status, body) = who.send(head, r#"{"title":"Spy"}"#).await;
+            assert_eq!(status, "http/1.1 401 unauthorized", "{head}");
+            assert_eq!(refusal(&body), "sign_in.required");
+        }
+        assert!(ada.list().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_place_another_change_took_meanwhile_is_a_conflict_worth_retrying() {
+        let fixture = Fixture::new().await;
+        let taken = Fault::new(code!("db.exists"), "It already exists");
+
+        let answer = answer(&fixture.shared, taken);
+
+        assert_eq!(answer.status(), StatusCode::CONFLICT);
+        let body = axum::body::to_bytes(answer.into_body(), 1024)
+            .await
+            .unwrap();
+        let error: ErrorBody = serde_json::from_slice(&body).unwrap();
+        assert_eq!((error.code.as_str(), error.retryable), ("db.exists", true));
+    }
+}
