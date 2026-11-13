@@ -62,13 +62,31 @@ test("text stays selected while the run streams, and following waits for the rea
     await page.keyboard.press("ControlOrMeta+A");
     await waitForRows(page, ".row", (await rowCount(page)) + 50);
     await page.evaluate(() => document.getSelection()?.removeAllRanges());
-    await page.getByRole("button", { name: "Back" }).click();
+    // Back right after a row renders, so the message box returns and shrinks the pane before the
+    // view's own scroll to that row fires its event.
+    await page.evaluate(backAfterNextRow);
     await waitForRows(page, ".row", (await rowCount(page)) + 20);
     assert.ok(atBottom(await page.evaluate(scrollOf)), "it stopped following after a selection in Settings");
   } finally {
     await harness.close();
   }
 });
+
+function backAfterNextRow(): Promise<void> {
+  return new Promise((resolve) => {
+    const view = document.querySelector(".transcript");
+    const back = [...document.querySelectorAll("button")].find((button) => button.textContent === "Back");
+    if (view === null || back === undefined) {
+      throw new Error("no transcript or no Back button");
+    }
+    const watch = new MutationObserver(() => {
+      watch.disconnect();
+      back.click();
+      resolve();
+    });
+    watch.observe(view, { childList: true });
+  });
+}
 
 // Nothing the reader sees moved: the marked row is where it was, give or take subpixel rounding.
 function assertStill(before: number, after: number): void {
