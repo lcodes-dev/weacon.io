@@ -51,7 +51,11 @@ impl Fixture {
             .await
             .unwrap();
         workspace
-            .add_member(&member_id("m1"), &Email::parse("ada@example.com").unwrap())
+            .add_member(
+                &member_id("m1"),
+                &fresh_account(),
+                &Email::parse("ada@example.com").unwrap(),
+            )
             .await
             .unwrap();
         let (log, records) = recording_logger();
@@ -218,7 +222,16 @@ pub(crate) async fn two_teams(dir: &TempDir) -> (Workspace, Workspace) {
         .create_workspace(&workspace_id("w2"), "Two")
         .await
         .unwrap();
-    one.add_member(&member_id("m1"), &email).await.unwrap();
-    two.add_member(&member_id("m2"), &email).await.unwrap();
+    one.add_member(&member_id("m1"), &fresh_account(), &email)
+        .await
+        .unwrap();
+    two.add_member(&member_id("m2"), &fresh_account(), &email)
+        .await
+        .unwrap();
     (one, two)
+}
+
+/// An account id nothing else has.
+pub(crate) fn fresh_account() -> weacon_protocol::AccountId {
+    weacon_protocol::AccountId::try_from(crate::app::new_id()).unwrap()
 }
