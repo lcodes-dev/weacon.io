@@ -1,12 +1,27 @@
 import { useState } from "react";
 
+import { Composer } from "./composer/composer.tsx";
+import { blocked } from "./composer/prompt.ts";
 import { type Status, statusText } from "./connection.ts";
+import type { Place } from "./place.ts";
 import type { App as Build } from "./protocol.ts";
 import type { Transcript } from "./transcript.ts";
 import { TranscriptView } from "./transcript-view.tsx";
 
-/** The page: a header with Settings, over the run's transcript or Settings. */
-export function App({ me, status, transcript }: { me: Build; status: Status; transcript: Transcript }) {
+/** The page: a header with Settings, over the run's transcript and the message box, or Settings. */
+export function App({
+  me,
+  status,
+  transcript,
+  place,
+  send,
+}: {
+  me: Build;
+  status: Status;
+  transcript: Transcript;
+  place: Place | undefined;
+  send: ((text: string) => void) | undefined;
+}) {
   const [settings, setSettings] = useState(false);
   return (
     <div className="app">
@@ -19,6 +34,7 @@ export function App({ me, status, transcript }: { me: Build; status: Status; tra
       <main>
 {settings ? <Settings me={me} status={status} /> : <TranscriptView rows={transcript.rows} writing={transcript.writing} />}
       </main>
+      <Composer send={send} blocked={blocked(status, place)} hidden={settings} />
     </div>
   );
 }

@@ -1,0 +1,32 @@
+/* Hidden, not unmounted, so a draft outlives a visit to Settings. */
+.composer[hidden] {
+  display: none;
+}
+
+.composer {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: flex-end;
+  padding: 8px 16px 12px;
+  border-top: 1px solid var(--border);
+}
+
+.composer textarea {
+  flex: 1;
+  min-height: 2.5em;
+  max-height: 40vh;
+  resize: vertical;
+  font: inherit;
+  color: inherit;
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 10px;
+}
+
+.composer .hint {
+  flex-basis: 100%;
+  margin: 0;
+  font-size: 13px;
+}

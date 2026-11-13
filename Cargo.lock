@@ -1968,6 +1968,7 @@ dependencies = [
  "weacon-observability",
  "weacon-protocol",
  "weacon-testing",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

@@ -7,8 +7,7 @@ use std::path::{Component, Path, PathBuf};
 use serde_json::Value;
 use weacon_protocol::AccessLevel;
 
-// Folders whose files can make an agent, git or a hook run commands later.
-const PROTECTED: [&str; 3] = [".claude", ".codex", ".git"];
+use crate::platform;
 
 /// What a run may do: its access level, the folder it works in, and the workspace's own
 /// folder, which holds the agent's settings.
@@ -57,9 +56,10 @@ impl Rules {
     }
 
     /// Whether `file` is an absolute path inside the working folder as written and once
-    /// symlinks are resolved, both times outside the folders that hold config, and outside the
-    /// workspace's own folder. A relative path is never allowed: the agent may have changed
-    /// folder. Blocks on the file system, but only for a path that passes as written.
+    /// symlinks are resolved, both times through no hidden name, outside the workspace's own
+    /// folder, and not a file with another name. A relative path is never allowed: the agent
+    /// may have changed folder. Blocks on the file system, but only for a path that passes as
+    /// written.
     pub(crate) fn may_change(&self, file: &Path) -> bool {
         // Checked before any lookup, so a path elsewhere, such as a network share, is never
         // opened.
@@ -73,7 +73,7 @@ impl Rules {
             .workspace
             .canonicalize()
             .is_ok_and(|workspace| file.starts_with(workspace));
-        !in_workspace && plainly_inside(&file, &root)
+        !in_workspace && plainly_inside(&file, &root) && has_one_name(&file)
     }
 }
 
@@ -110,18 +110,19 @@ fn plainly_inside(file: &Path, folder: &Path) -> bool {
     })
 }
 
-// Not a config folder in any case, as some file systems ignore it, and nothing Windows would
-// read as another name: it drops trailing dots and spaces, and `:` opens a stream.
+// A file another name also reaches, a hard link, may be one outside the folder.
+fn has_one_name(file: &Path) -> bool {
+    match platform::links(file) {
+        Ok(links) => links == 1,
+        Err(error) => error.kind() == io::ErrorKind::NotFound,
+    }
+}
+
+// Not hidden, as config such as `.git` and `.claude` is, and no stream: `:` opens one on
+// Windows.
 fn is_plain(name: &OsStr) -> bool {
-    let Some(name) = name.to_str() else {
-        return false;
-    };
-    let trailing = name.ends_with('.') || name.ends_with(' ');
-    !trailing
-        && !name.contains(':')
-        && !PROTECTED
-            .iter()
-            .any(|protected| name.eq_ignore_ascii_case(protected))
+    name.to_str()
+        .is_some_and(|name| !name.starts_with('.') && !name.contains(':'))
 }
 
 #[cfg(test)]
@@ -210,6 +211,29 @@ mod tests {
             ..rules
         };
         assert!(!missing.may_change(&dir.join("missing/README.md")));
+    }
+
+    #[test]
+    fn hidden_paths_and_files_with_another_name_are_asked_about() {
+        let dir = TempDir::new().unwrap();
+        let cwd = dir.join("work");
+        fs::create_dir_all(&cwd).unwrap();
+        fs::write(cwd.join("single.md"), "").unwrap();
+        fs::write(dir.join("elsewhere.md"), "").unwrap();
+        fs::hard_link(dir.join("elsewhere.md"), cwd.join("linked.md")).unwrap();
+        let rules = rules(AccessLevel::Full, &cwd);
+        let may = |file: &str| rules.may_change(&cwd.join(file));
+
+        assert!(may("single.md"));
+        for refused in [
+            ".envrc",
+            ".husky/pre-commit",
+            ".vscode/tasks.json",
+            "src/.hidden.rs",
+            "linked.md",
+        ] {
+            assert!(!may(refused), "{refused}");
+        }
     }
 
     #[cfg(unix)]

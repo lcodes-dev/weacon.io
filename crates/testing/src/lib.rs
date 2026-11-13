@@ -1,6 +1,7 @@
 //! Test helpers for Weacon's crates.
 
 pub mod fake_core;
+mod fake_diff;
 pub mod fake_server;
 mod logs;
 pub mod platform;
