@@ -95,7 +95,7 @@ fn apply(
     match command {
         ServiceCommand::Install => {
             let state_dir = platform::state_dir(env).ok_or_else(state_unavailable)?;
-            platform::write_whole(&path, unit(exe, &state_dir)?.as_bytes())
+            weacon_appkit::write_whole(&path, unit(exe, &state_dir)?.as_bytes())
                 .map_err(write_failed)?;
             [LINGER, RELOAD, ENABLE, RESTART]
                 .iter()

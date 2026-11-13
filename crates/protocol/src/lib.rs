@@ -29,7 +29,9 @@ pub use receipt::{Outcome, Receipt, RequestId};
 pub use run::{
     AgentKind, AgentSession, PermissionAnswer, RunEvent, RunId, RunState, RunStatus, RunUpdate,
 };
-pub use task::{Author, TaskId, TaskStatus};
+pub use task::{
+    Author, TaskChange, TaskCreate, TaskEditBody, TaskId, TaskList, TaskRecord, TaskStatus,
+};
 pub use team::{
     AccountId, AccountSignInFinish, AccountSignInStart, AccountSignedIn, ChallengeId, MemberId,
     SignInFinish, SignInStart, SignInStarted, SignedIn, WorkspaceChange, WorkspaceCreate,
@@ -41,12 +43,26 @@ mod tests {
     use std::fs;
     use std::path::Path;
 
+    use schemars::SchemaGenerator;
+
     use super::*;
 
     #[test]
     fn the_committed_schema_is_current() {
-        let current =
-            serde_json::to_string_pretty(&schemars::schema_for!(Envelope)).unwrap() + "\n";
+        // The HTTP bodies, which no `Envelope` carries, are defined beside it.
+        let mut generator = SchemaGenerator::default();
+        generator.subschema_for::<SignInStart>();
+        generator.subschema_for::<SignInStarted>();
+        generator.subschema_for::<SignInFinish>();
+        generator.subschema_for::<SignedIn>();
+        generator.subschema_for::<AccountSignInStart>();
+        generator.subschema_for::<AccountSignInFinish>();
+        generator.subschema_for::<AccountSignedIn>();
+        generator.subschema_for::<WorkspaceCreate>();
+        generator.subschema_for::<WorkspaceSummary>();
+        generator.subschema_for::<WorkspaceList>();
+        let schema = generator.into_root_schema_for::<Envelope>();
+        let current = serde_json::to_string_pretty(&schema).unwrap() + "\n";
         let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("schema.json");
         if std::env::var_os("UPDATE_SCHEMA").is_some() {
             fs::write(&path, &current).unwrap();
