@@ -142,12 +142,9 @@ async fn serve(mut socket: WebSocket, shared: Shared, mut feed: Feed) {
     }
 }
 
-/// Sends every change after the last one sent, a page at a time.
+/// Sends every change after the last one sent, a page at a time, while its member still is one.
 async fn catch_up(socket: &mut WebSocket, shared: &Shared, feed: &mut Feed) -> bool {
     loop {
-        if !feed.allowed(shared).await {
-            return false;
-        }
         let page = match feed
             .member
             .workspace
@@ -164,6 +161,10 @@ async fn catch_up(socket: &mut WebSocket, shared: &Shared, feed: &mut Feed) -> b
         };
         let more = usize::try_from(PAGE).is_ok_and(|full| page.len() == full);
         for update in page {
+            // Before each one, not each page: a member removed meanwhile gets nothing more.
+            if !feed.allowed(shared).await {
+                return false;
+            }
             feed.last_seq = update.seq;
             if !reply(socket, shared, 0, Message::Workspace(update)).await {
                 return false;
