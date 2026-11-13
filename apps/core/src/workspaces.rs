@@ -1,6 +1,7 @@
 //! What this machine keeps for each workspace: a folder of its own, holding each agent's
 //! config folder and so its sign-in.
 
+use std::ffi::OsString;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -17,7 +18,7 @@ use crate::platform;
 /// folder.
 pub(crate) fn login(app: &App, agent: AgentKind, workspace: &WorkspaceId) -> Result<(), Fault> {
     let state_dir = app.state_dir.as_deref().ok_or_else(state_unavailable)?;
-    let workspaces = Workspaces::new(state_dir);
+    let workspaces = Workspaces::new(state_dir, app.path.clone());
     let launch = workspaces.launch(workspace, agent, workspaces.root(workspace))?;
     runtime()?.block_on(launch.log_in())?;
     let ids = [("workspace_id", workspace.as_str().into())];
@@ -28,13 +29,26 @@ pub(crate) fn login(app: &App, agent: AgentKind, workspace: &WorkspaceId) -> Res
 #[derive(Debug)]
 pub(crate) struct Workspaces {
     dir: PathBuf,
+    path: Option<OsString>,
 }
 
 impl Workspaces {
-    pub(crate) fn new(state_dir: &Path) -> Self {
+    pub(crate) fn new(state_dir: &Path, path: Option<OsString>) -> Self {
         Self {
             dir: state_dir.join("workspaces"),
+            path,
         }
+    }
+
+    // No folder is made.
+    fn located(
+        &self,
+        workspace: &WorkspaceId,
+        agent: AgentKind,
+        cwd: PathBuf,
+    ) -> Result<Launch, Fault> {
+        let find = |name: &str| platform::find_program(name, self.path.as_deref()?);
+        Launch::new(agent, find, &self.root(workspace), cwd)
     }
 
     /// The workspaces this machine has a folder for, sorted by id; none before the first.
@@ -67,19 +81,21 @@ impl Workspaces {
         sign_ins: impl FnOnce(&[Launch]) -> Vec<Option<SignIn>>,
     ) -> io::Result<String> {
         let known = self.known()?;
-        // One place for each workspace and agent, kept even when it has no launch to ask.
+        // One place for each workspace and agent; a program that isn't installed has no launch
+        // to ask, which is the only way the lookup fails for a known agent.
         let places: Vec<Option<Launch>> = known
             .iter()
             .flat_map(|workspace| {
                 let root = self.root(workspace);
-                AGENTS.map(|(agent, _)| Launch::new(agent, &root, root.clone()).ok())
+                AGENTS.map(|(agent, _)| self.located(workspace, agent, root.clone()).ok())
             })
             .collect();
         let asked: Vec<Launch> = places.iter().flatten().cloned().collect();
         let mut answers = sign_ins(&asked).into_iter();
-        let mut states = places
-            .iter()
-            .map(|place| state(place.as_ref().and_then(|_| answers.next().flatten())));
+        let mut states = places.iter().map(|place| match place {
+            Some(_) => state(answers.next().flatten()),
+            None => "not installed",
+        });
         let lines = known.iter().map(|workspace| {
             let agents =
                 AGENTS.map(|(_, name)| format!("{name} {}", states.next().unwrap_or(state(None))));
@@ -101,7 +117,7 @@ impl Workspaces {
         agent: AgentKind,
         cwd: PathBuf,
     ) -> Result<Launch, Fault> {
-        let launch = Launch::new(agent, &self.root(workspace), cwd)?;
+        let launch = self.located(workspace, agent, cwd)?;
         platform::private_dir(&launch.config_dir).map_err(|error| {
             Fault::new(
                 code!("workspace.folder_failed"),
@@ -118,24 +134,14 @@ const AGENTS: [(AgentKind, &str); 2] = [
     (AgentKind::Codex, "Codex"),
 ];
 
-// A capital becomes `.` and its small letter, so ids differing only in case don't share a
-// folder; the prefix keeps Windows' device names, such as `CON`, out.
 fn folder_name(workspace: &WorkspaceId) -> String {
-    let mut name = String::from("w-");
-    for letter in workspace.as_str().chars() {
-        if letter.is_ascii_uppercase() {
-            name.push('.');
-        }
-        name.push(letter.to_ascii_lowercase());
-    }
-    name
+    platform::case_safe_name("w-", workspace.as_str())
 }
 
 const fn state(sign_in: Option<SignIn>) -> &'static str {
     match sign_in {
         Some(SignIn::SignedIn) => "signed in",
         Some(SignIn::SignedOut) => "signed out",
-        Some(SignIn::NotInstalled) => "not installed",
         None => "unknown",
     }
 }
@@ -166,10 +172,22 @@ mod tests {
         WorkspaceId::try_from(id.to_owned()).unwrap()
     }
 
+    fn program(dir: &Path, name: &str) -> PathBuf {
+        platform::plant_program(&dir.join("bin"), name, 0o755)
+    }
+
+    /// Workspaces in `dir`, on a machine with both vendors' programs installed in `dir/bin`.
+    fn workspaces(dir: &Path) -> Workspaces {
+        for name in ["claude", "codex"] {
+            program(dir, name);
+        }
+        Workspaces::new(dir, Some(dir.join("bin").into_os_string()))
+    }
+
     #[test]
     fn each_workspace_and_agent_gets_its_own_config_folder() {
         let dir = TempDir::new().unwrap();
-        let workspaces = Workspaces::new(&dir);
+        let workspaces = workspaces(&dir);
         let launch = |workspace: &str, agent| {
             workspaces
                 .launch(&id(workspace), agent, PathBuf::from("/work"))
@@ -184,12 +202,12 @@ mod tests {
             claude,
             Launch {
                 agent: AgentKind::Claude,
-                program: PathBuf::from("claude"),
+                program: program(&dir, "claude"),
                 config_dir: dir.join("workspaces/w-w1/claude"),
                 cwd: PathBuf::from("/work"),
             }
         );
-        assert_eq!(codex.program, PathBuf::from("codex"));
+        assert_eq!(codex.program, program(&dir, "codex"));
         assert_eq!(codex.config_dir, dir.join("workspaces/w-w1/codex"));
         assert_eq!(other.config_dir, dir.join("workspaces/w-w2/claude"));
         assert_eq!(workspaces.root(&id("w1")), dir.join("workspaces/w-w1"));
@@ -224,7 +242,7 @@ mod tests {
     #[test]
     fn each_known_workspace_says_whether_its_agents_are_signed_in() {
         let dir = TempDir::new().unwrap();
-        let workspaces = Workspaces::new(&dir);
+        let workspaces = workspaces(&dir);
         assert_eq!(workspaces.describe(|_| Vec::new()).unwrap(), "");
         for workspace in ["w2", "W1", "a"] {
             workspaces
@@ -241,7 +259,7 @@ mod tests {
             match launch.agent {
                 AgentKind::Claude if in_w2 => Some(SignIn::SignedIn),
                 AgentKind::Codex if in_w2 => Some(SignIn::SignedOut),
-                AgentKind::Claude => Some(SignIn::NotInstalled),
+                AgentKind::Claude => Some(SignIn::SignedOut),
                 AgentKind::Codex | AgentKind::Newer => None,
             }
         };
@@ -253,8 +271,8 @@ mod tests {
 
         assert_eq!(
             text,
-            "Workspace W1: Claude Code not installed, Codex unknown\n\
-             Workspace a: Claude Code not installed, Codex unknown\n\
+            "Workspace W1: Claude Code signed out, Codex unknown\n\
+             Workspace a: Claude Code signed out, Codex unknown\n\
              Workspace w2: Claude Code signed in, Codex signed out\n"
         );
         assert!(cut_short.unwrap().starts_with(
@@ -267,9 +285,33 @@ mod tests {
         let dir = TempDir::new().unwrap();
         fs::write(dir.join("workspaces"), "").unwrap();
 
-        let unlisted = Workspaces::new(&dir).describe(|_| Vec::new());
+        let unlisted = Workspaces::new(&dir, None).describe(|_| Vec::new());
 
         unlisted.unwrap_err();
+    }
+
+    #[test]
+    fn a_program_that_isnt_on_the_path_is_not_installed_and_never_asked() {
+        let dir = TempDir::new().unwrap();
+        workspaces(&dir)
+            .launch(&id("w1"), AgentKind::Claude, dir.to_path_buf())
+            .unwrap();
+        let none_asked = |asked: &[Launch]| {
+            assert_eq!(asked, []);
+            Vec::new()
+        };
+        let not_installed = "Workspace w1: Claude Code not installed, Codex not installed\n";
+
+        for path in [None, Some(dir.join("empty").into_os_string())] {
+            let workspaces = Workspaces::new(&dir, path);
+            let error = workspaces
+                .launch(&id("w2"), AgentKind::Codex, dir.to_path_buf())
+                .unwrap_err();
+
+            assert_eq!(error.code().as_str(), "agent.not_installed");
+            assert!(!workspaces.root(&id("w2")).exists());
+            assert_eq!(workspaces.describe(none_asked).unwrap(), not_installed);
+        }
     }
 
     #[cfg(unix)]
@@ -278,7 +320,7 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
 
         let dir = TempDir::new().unwrap();
-        let launch = Workspaces::new(&dir)
+        let launch = workspaces(&dir)
             .launch(&id("w1"), AgentKind::Claude, dir.to_path_buf())
             .unwrap();
 
@@ -292,7 +334,7 @@ mod tests {
     fn an_unknown_agent_or_an_unusable_folder_is_refused() {
         let dir = TempDir::new().unwrap();
         fs::write(dir.join("workspaces"), "").unwrap();
-        let workspaces = Workspaces::new(&dir);
+        let workspaces = workspaces(&dir);
         let code = |agent| {
             let error = workspaces
                 .launch(&id("w1"), agent, dir.to_path_buf())

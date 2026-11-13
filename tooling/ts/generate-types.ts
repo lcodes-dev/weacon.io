@@ -8,6 +8,7 @@ export type Schema = {
   $defs?: Record<string, Schema>;
   type?: string | string[];
   const?: unknown;
+  enum?: unknown[];
   properties?: Record<string, Schema>;
   required?: string[];
   items?: Schema;
@@ -22,6 +23,7 @@ const KNOWN = new Set([
   "$schema",
   "type",
   "const",
+  "enum",
   "properties",
   "required",
   "items",
@@ -77,6 +79,9 @@ function render(schema: Schema, indent: string): string {
 
 // The schema's own type, before its `$ref` and `oneOf` are joined to it; `unknown` if none.
 function base(schema: Schema, indent: string): string {
+  if (schema.enum !== undefined) {
+    return stringEnum(schema.enum, schema, indent);
+  }
   if (schema.const !== undefined) {
     return literal(schema.const);
   }
@@ -103,6 +108,17 @@ function base(schema: Schema, indent: string): string {
     default:
       throw new Error(`unsupported type: ${schema.type}`);
   }
+}
+
+function stringEnum(values: unknown[], schema: Schema, indent: string): string {
+  const strings = values.filter((value) => typeof value === "string");
+  if (strings.length === 0 || strings.length < values.length) {
+    throw new Error("unsupported enum: only a list of strings");
+  }
+  if (schema.const !== undefined || (schema.type ?? "string") !== "string") {
+    throw new Error("unsupported enum: only with no const and no type but string");
+  }
+  return union(strings.map(literal), indent);
 }
 
 function object(schema: Schema, indent: string): string {

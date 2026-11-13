@@ -1,4 +1,3 @@
-use std::io;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
@@ -32,25 +31,29 @@ const STATUS_TIMEOUT: Duration = Duration::from_secs(30);
 pub enum SignIn {
     SignedIn,
     SignedOut,
-    NotInstalled,
 }
 
 impl Launch {
-    /// `agent` in `cwd`, with the vendor's program as found on PATH and a config folder named
-    /// after it in `workspace_dir`.
+    /// `agent` in `cwd`, with the vendor's program where `find` says it is installed, and a
+    /// config folder named after it in `workspace_dir`.
     ///
     /// # Errors
-    /// When this build doesn't know the agent.
-    pub fn new(agent: AgentKind, workspace_dir: &Path, cwd: PathBuf) -> Result<Self, Fault> {
-        let program = match agent {
+    /// When this build doesn't know the agent, or its program isn't installed.
+    pub fn new(
+        agent: AgentKind,
+        find: impl FnOnce(&str) -> Option<PathBuf>,
+        workspace_dir: &Path,
+        cwd: PathBuf,
+    ) -> Result<Self, Fault> {
+        let name = match agent {
             AgentKind::Claude => "claude",
             AgentKind::Codex => "codex",
             AgentKind::Newer => return Err(unknown()),
         };
         Ok(Self {
             agent,
-            program: PathBuf::from(program),
-            config_dir: workspace_dir.join(program),
+            program: find(name).ok_or_else(not_installed)?,
+            config_dir: workspace_dir.join(name),
             cwd,
         })
     }
@@ -91,7 +94,6 @@ impl Launch {
         match timeout(STATUS_TIMEOUT, command.status()).await {
             Ok(Ok(exit)) if exit.success() => Ok(SignIn::SignedIn),
             Ok(Ok(_)) => Ok(SignIn::SignedOut),
-            Ok(Err(error)) if error.kind() == io::ErrorKind::NotFound => Ok(SignIn::NotInstalled),
             Ok(Err(error)) => Err(failed().because(error)),
             Err(elapsed) => Err(failed().because(elapsed)),
         }
@@ -101,18 +103,14 @@ impl Launch {
     /// finish there. Nothing that passes between them is read.
     ///
     /// # Errors
-    /// When this build doesn't know the agent, its program isn't installed or can't be run, or
-    /// the sign-in ends without success.
+    /// When this build doesn't know the agent, its program can't be run, or the sign-in ends
+    /// without success.
     pub async fn log_in(&self) -> Result<(), Fault> {
         let mut command = self.vendors(claude::login, codex::login)?;
         let failed = || Fault::new(code!("agent.login_failed"), "The sign-in didn't finish");
         match command.status().await {
             Ok(exit) if exit.success() => Ok(()),
             Ok(_) => Err(failed()),
-            Err(error) if error.kind() == io::ErrorKind::NotFound => Err(Fault::new(
-                code!("agent.not_installed"),
-                "The agent's program isn't installed",
-            )),
             Err(error) => Err(failed().because(error)),
         }
     }
@@ -147,6 +145,13 @@ impl Launch {
             AgentKind::Newer => Err(unknown()),
         }
     }
+}
+
+fn not_installed() -> Fault {
+    Fault::new(
+        code!("agent.not_installed"),
+        "The agent's program isn't installed",
+    )
 }
 
 fn unknown() -> Fault {
@@ -193,27 +198,36 @@ mod tests {
     }
 
     #[test]
-    fn a_launch_names_the_vendors_program_and_its_folder_in_the_workspace() {
-        let new = |agent| Launch::new(agent, Path::new("/state/w"), PathBuf::from("/work"));
-        let claude = new(AgentKind::Claude).unwrap();
-        let codex = new(AgentKind::Codex).unwrap();
+    fn a_launch_has_the_vendors_installed_program_and_its_folder_in_the_workspace() {
+        let installed = |name: &str| Some(Path::new("/opt/bin").join(name));
+        let new = |agent, find: fn(&str) -> Option<PathBuf>| {
+            Launch::new(agent, find, Path::new("/state/w"), PathBuf::from("/work"))
+        };
+        let claude = new(AgentKind::Claude, installed).unwrap();
+        let codex = new(AgentKind::Codex, installed).unwrap();
+        let code = |launch: Result<Launch, Fault>| launch.unwrap_err().code().as_str().to_owned();
 
         assert_eq!(
             claude,
             Launch {
                 agent: AgentKind::Claude,
-                program: PathBuf::from("claude"),
+                program: PathBuf::from("/opt/bin/claude"),
                 config_dir: PathBuf::from("/state/w/claude"),
                 cwd: PathBuf::from("/work"),
             }
         );
         assert_eq!(
             (codex.agent, codex.program, codex.config_dir),
-            (AgentKind::Codex, "codex".into(), "/state/w/codex".into())
+            (
+                AgentKind::Codex,
+                "/opt/bin/codex".into(),
+                "/state/w/codex".into()
+            )
         );
+        assert_eq!(code(new(AgentKind::Newer, installed)), "agent.unknown");
         assert_eq!(
-            new(AgentKind::Newer).unwrap_err().code().as_str(),
-            "agent.unknown"
+            code(new(AgentKind::Claude, |_| None)),
+            "agent.not_installed"
         );
     }
 
@@ -234,16 +248,19 @@ mod tests {
         assert_eq!(code(AgentKind::Newer), "agent.unknown");
     }
 
-    #[tokio::test]
-    async fn a_missing_program_is_not_installed_and_an_unknown_agent_is_refused() {
-        let dir = TempDir::new().unwrap();
+    async fn sign_in_code(launch: Launch) -> String {
+        let error = launch.sign_in().await.unwrap_err();
+        error.code().as_str().to_owned()
+    }
 
-        for agent in [AgentKind::Claude, AgentKind::Codex] {
-            let sign_in = launch(agent, &dir).sign_in().await.unwrap();
-            assert_eq!(sign_in, SignIn::NotInstalled, "{agent:?}");
-        }
-        let error = launch(AgentKind::Newer, &dir).sign_in().await.unwrap_err();
-        assert_eq!(error.code().as_str(), "agent.unknown");
+    #[tokio::test]
+    async fn a_program_that_is_gone_or_an_unknown_agent_is_an_error_not_a_sign_in() {
+        let dir = TempDir::new().unwrap();
+        let code = |agent| sign_in_code(launch(agent, &dir));
+
+        assert_eq!(code(AgentKind::Claude).await, "agent.status_failed");
+        assert_eq!(code(AgentKind::Codex).await, "agent.status_failed");
+        assert_eq!(code(AgentKind::Newer).await, "agent.unknown");
     }
 
     // `true` and `false` stand in for a vendor's status command: they exit the same whatever
@@ -300,17 +317,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_sign_in_needs_a_known_agent_and_its_program() {
+    async fn a_sign_in_needs_a_known_agent_and_a_program_that_is_still_there() {
         let dir = TempDir::new().unwrap();
         let code = |agent| log_in_code(launch(agent, &dir));
 
         assert_eq!(
             code(AgentKind::Claude).await.as_deref(),
-            Some("agent.not_installed")
+            Some("agent.login_failed")
         );
         assert_eq!(
             code(AgentKind::Codex).await.as_deref(),
-            Some("agent.not_installed")
+            Some("agent.login_failed")
         );
         assert_eq!(
             code(AgentKind::Newer).await.as_deref(),

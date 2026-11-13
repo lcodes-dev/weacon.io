@@ -1,6 +1,11 @@
 //! `weacon`: the core's daemon and command line.
 
 mod app;
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "the chat engine, which uses it, comes next")
+)]
+mod chats;
 mod cli;
 mod daemon;
 mod disk;
@@ -61,7 +66,7 @@ fn main() -> ExitCode {
             service::run(&app, command, &env, &mut service::system).map(Outcome::from)
         }
         Command::Login { agent, workspace } => {
-            workspaces::login(&app, agent.into(), &workspace).map(Outcome::from)
+            workspaces::login(&app, agent, &workspace).map(Outcome::from)
         }
         Command::ConnectChrome => {
             native_host::connect_chrome(&app, &env, &mut io::stdout().lock()).map(Outcome::from)
