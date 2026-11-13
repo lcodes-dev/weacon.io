@@ -1,3 +1,4 @@
+use std::ffi::OsString;
 use std::io;
 use std::panic::PanicHookInfo;
 use std::path::{Path, PathBuf};
@@ -24,6 +25,8 @@ pub(crate) struct App {
     pub(crate) state_dir: Option<PathBuf>,
     pub(crate) log_file: Option<PathBuf>,
     pub(crate) spawn: SpawnPolicy,
+    /// The person's `PATH`, where their agents' programs are found.
+    pub(crate) path: Option<OsString>,
 }
 
 /// The outside world an [`App`] starts from; `main` passes the real one.
@@ -67,6 +70,7 @@ impl App {
             state_dir,
             log_file,
             spawn: platform::spawn_policy(setup.env),
+            path: (setup.env)("PATH"),
         }
     }
 

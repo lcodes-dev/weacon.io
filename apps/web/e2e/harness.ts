@@ -20,22 +20,28 @@ export type Harness = {
   close(): Promise<void>;
 };
 
-/** Starts a fake server that streams `tokens` tokens with `paceMs` between messages, and opens the page on it. */
-export async function start(tokens: number, paceMs: number): Promise<Harness> {
+/** The fake server streaming `tokens` tokens with `paceMs` between messages, keeping its files in a folder. */
+export function fakeServer(tokens: number, paceMs: number): (dir: string) => ChildProcess {
+  return (dir) =>
+    spawn(
+      "cargo",
+      ["run", "--locked", "--quiet", "-p", "weacon-testing", "--bin", "fake-server", "--", dir, String(tokens), String(paceMs)],
+      { cwd: REPO, stdio: ["ignore", "pipe", "inherit"] },
+    );
+}
+
+/** Starts `server` in a new folder and opens the page on it; on any failure, stops it and removes the folder. */
+export async function start(server: (dir: string) => ChildProcess, startupMs = STARTUP_MS): Promise<Harness> {
   const dir = mkdtempSync(join(tmpdir(), "weacon-web-"));
-  const server = spawn(
-    "cargo",
-    ["run", "--locked", "--quiet", "-p", "weacon-testing", "--bin", "fake-server", "--", dir, String(tokens), String(paceMs)],
-    { cwd: REPO, stdio: ["ignore", "pipe", "inherit"] },
-  );
+  const child = server(dir);
   let browser: Browser | undefined;
   const stop = async () => {
     await browser?.close();
-    server.kill();
+    child.kill();
     rmSync(dir, { recursive: true, force: true });
   };
   try {
-    const url = await firstLine(server);
+    const url = await firstLine(child, startupMs);
     browser = await chromium.launch();
     const page = await browser.newPage();
     await page.goto(`${PAGE.href}?server=${encodeURIComponent(url)}`);
@@ -54,7 +60,23 @@ export async function start(tokens: number, paceMs: number): Promise<Harness> {
   }
 }
 
-async function firstLine(child: ChildProcess): Promise<string> {
+// Long enough for cargo to build the fake server first.
+const STARTUP_MS = 300_000;
+
+/** `child`'s first line, or a failure once `deadlineMs` passes without one, so `start` cleans up. */
+export async function firstLine(child: ChildProcess, deadlineMs = STARTUP_MS): Promise<string> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const late = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error("the fake server didn't start in time")), deadlineMs);
+  });
+  try {
+    return await Promise.race([readFirstLine(child), late]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function readFirstLine(child: ChildProcess): Promise<string> {
   if (child.stdout === null) {
     throw new Error("the fake server has no stdout");
   }

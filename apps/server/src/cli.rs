@@ -2,10 +2,13 @@ use std::ffi::OsString;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 
-use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
+use clap::builder::RangedU64ValueParser;
+use clap::{Args, CommandFactory, FromArgMatches, Parser, Subcommand};
 use weacon_appkit::version_text;
 use weacon_protocol::WorkspaceId;
 use weacon_version::Version;
+
+use crate::client::Net;
 
 /// Weacon's server: holds every workspace.
 #[derive(Debug, Parser)]
@@ -18,19 +21,37 @@ pub(crate) struct Cli {
 #[derive(Debug, PartialEq, Eq, Subcommand)]
 pub(crate) enum Command {
     /// Serve workspaces until Ctrl-C or SIGTERM.
-    Serve {
-        /// The address and port to listen on.
-        #[arg(long, default_value = "127.0.0.1:8080")]
-        listen: SocketAddr,
-        /// The database file, created if missing.
-        #[arg(long)]
-        db: PathBuf,
-        /// The folder where sign-in codes wait, one JSON file each, for a mail relay to send.
-        #[arg(long)]
-        outbox: PathBuf,
-    },
+    Serve(Serve),
     #[command(flatten)]
     Admin(AdminCommand),
+}
+
+#[derive(Debug, PartialEq, Eq, Args)]
+pub(crate) struct Serve {
+    /// The address and port to listen on.
+    #[arg(long, default_value = "127.0.0.1:8080")]
+    pub(crate) listen: SocketAddr,
+    /// The database file, created if missing.
+    #[arg(long)]
+    pub(crate) db: PathBuf,
+    /// The folder where sign-in codes wait, one JSON file each, for a mail relay to send.
+    #[arg(long)]
+    pub(crate) outbox: PathBuf,
+    /// The file with the server's key for sign-in codes, made if missing and readable only by
+    /// this user. To change the key, replace the file and restart: codes already sent stop
+    /// working, and nobody is signed out.
+    #[arg(long)]
+    pub(crate) secret: PathBuf,
+    /// How many connections may be open at once; more wait their turn. Keep it well under the
+    /// open-file limit.
+    #[arg(long, default_value_t = 512, value_parser = RangedU64ValueParser::<usize>::new().range(1..=1_000_000))]
+    pub(crate) max_connections: usize,
+    /// A reverse proxy in front of the server, as an address or a block such as 10.0.0.0/8;
+    /// repeat it for more. Only these are believed about the client in X-Forwarded-For, where
+    /// they must write bare addresses, without ports. Without any, every request counts as
+    /// coming from the address that connected.
+    #[arg(long)]
+    pub(crate) trusted_proxy: Vec<Net>,
 }
 
 /// Commands an operator runs against the database.
@@ -47,7 +68,7 @@ pub(crate) enum AdminCommand {
     AddMember {
         #[arg(long)]
         db: PathBuf,
-        #[arg(long, value_parser = workspace_id)]
+        #[arg(long)]
         workspace: WorkspaceId,
         #[arg(long)]
         email: String,
@@ -56,7 +77,7 @@ pub(crate) enum AdminCommand {
     Members {
         #[arg(long)]
         db: PathBuf,
-        #[arg(long, value_parser = workspace_id)]
+        #[arg(long)]
         workspace: WorkspaceId,
     },
     /// Copy the database to a new file while the server runs, and check the copy.
@@ -73,10 +94,6 @@ pub(crate) enum AdminCommand {
         #[arg(long)]
         db: PathBuf,
     },
-}
-
-fn workspace_id(text: &str) -> Result<WorkspaceId, String> {
-    WorkspaceId::try_from(text.to_owned()).map_err(|_| "not a workspace id".to_owned())
 }
 
 /// The command line, or the help, version or error text clap would print instead.
@@ -109,11 +126,11 @@ mod tests {
         assert_eq!(error.to_string(), "weacon-server 0.1.0 (1a2b3c4)\n");
     }
 
-    fn serve(args: &[&str]) -> (String, PathBuf, PathBuf) {
-        let Command::Serve { listen, db, outbox } = run(args).unwrap().command else {
+    fn serve(args: &[&str]) -> Serve {
+        let Command::Serve(serve) = run(args).unwrap().command else {
             panic!("not serve");
         };
-        (listen.to_string(), db, outbox)
+        serve
     }
 
     #[test]
@@ -125,20 +142,38 @@ mod tests {
             "team.db",
             "--outbox",
             "outbox",
+            "--secret",
+            "secret",
         ];
 
         assert_eq!(
             serve(&args),
-            (
-                "127.0.0.1:8080".to_owned(),
-                PathBuf::from("team.db"),
-                PathBuf::from("outbox")
-            )
+            Serve {
+                listen: "127.0.0.1:8080".parse().unwrap(),
+                db: PathBuf::from("team.db"),
+                outbox: PathBuf::from("outbox"),
+                secret: PathBuf::from("secret"),
+                max_connections: 512,
+                trusted_proxy: Vec::new(),
+            }
         );
-        assert_eq!(
-            serve(&[&args[..], &["--listen", "0.0.0.0:9000"]].concat()).0,
-            "0.0.0.0:9000"
-        );
+        let told = [
+            "--listen",
+            "0.0.0.0:9000",
+            "--max-connections",
+            "2",
+            "--trusted-proxy",
+            "10.0.0.0/8",
+            "--trusted-proxy",
+            "::1",
+        ];
+        let told = serve(&[&args[..], &told].concat());
+        assert_eq!(told.listen.to_string(), "0.0.0.0:9000");
+        assert_eq!(told.max_connections, 2);
+        let proxies = ["10.0.0.0/8".parse().unwrap(), "::1".parse().unwrap()];
+        assert_eq!(told.trusted_proxy, proxies);
+        run(&[&args[..], &["--trusted-proxy", "proxy.example"]].concat()).unwrap_err();
+        run(&[&args[..], &["--max-connections", "0"]].concat()).unwrap_err();
         run(&[&args[..], &["--listen", "nowhere"]].concat()).unwrap_err();
         run(&["weacon-server", "serve", "--db", "team.db"]).unwrap_err();
         run(&["weacon-server"]).unwrap_err();
@@ -167,5 +202,14 @@ mod tests {
             })
         );
         run(&["weacon-server", "restore", "--from", "a.db"]).unwrap_err();
+        let bad_id = [
+            "weacon-server",
+            "members",
+            "--db",
+            "team.db",
+            "--workspace",
+            "a b",
+        ];
+        assert_eq!(run(&bad_id).unwrap_err().kind(), ErrorKind::ValueValidation);
     }
 }

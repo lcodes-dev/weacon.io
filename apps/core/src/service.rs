@@ -95,7 +95,7 @@ fn apply(
     match command {
         ServiceCommand::Install => {
             let state_dir = platform::state_dir(env).ok_or_else(state_unavailable)?;
-            platform::write_whole(&path, unit(exe, &state_dir)?.as_bytes())
+            weacon_appkit::write_whole(&path, unit(exe, &state_dir)?.as_bytes())
                 .map_err(write_failed)?;
             [LINGER, RELOAD, ENABLE, RESTART]
                 .iter()
@@ -322,7 +322,7 @@ mod tests {
                 fs::read_to_string(&file).unwrap(),
                 unit(Path::new(EXE), &dir.join("weacon")).unwrap()
             );
-            assert!(!file.with_extension("new").exists());
+            assert_eq!(fs::read_dir(dir.join("systemd/user")).unwrap().count(), 1);
             assert_eq!(calls, INSTALLED);
             assert_eq!(messages(&records), ["service installed"]);
         }

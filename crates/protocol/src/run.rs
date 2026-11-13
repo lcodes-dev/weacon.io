@@ -5,6 +5,18 @@ use serde_json::Value;
 use crate::Outcome;
 use crate::token::token_id;
 
+/// Which vendor's agent.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentKind {
+    Claude,
+    Codex,
+    /// An agent this build doesn't know, from a newer peer; only ever received.
+    #[serde(other)]
+    #[schemars(skip)]
+    Newer,
+}
+
 /// An agent's own id for a conversation, a lowercase UUID, which resumes it later.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, JsonSchema)]
 pub struct AgentSession(#[schemars(regex(pattern = PATTERN))] String);
@@ -98,6 +110,18 @@ pub enum RunEvent {
     Newer,
 }
 
+impl RunEvent {
+    pub(crate) const fn is_newer(&self) -> bool {
+        matches!(
+            self,
+            Self::Newer
+                | Self::Finished {
+                    outcome: Outcome::Newer
+                }
+        )
+    }
+}
+
 /// One event of the run `run`, in the order the run reported it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct RunUpdate {
@@ -111,6 +135,40 @@ pub struct PermissionAnswer {
     pub run: RunId,
     pub prompt: u32,
     pub allow: bool,
+}
+
+/// Where a run stands, as its chat's log records it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct RunStatus {
+    pub run: RunId,
+    pub state: RunState,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum RunState {
+    /// The agent process is starting.
+    Starting,
+    /// On a turn.
+    Running,
+    /// On a turn, waiting for a person to answer a permission prompt.
+    Waiting,
+    /// Between turns, with its process alive.
+    Idle,
+    /// Its process was stopped; the next prompt resumes the same agent session in a new run.
+    Sleeping,
+    /// Over for good.
+    Ended,
+    /// A state this build doesn't know, from a newer peer; only ever received.
+    #[serde(other)]
+    #[schemars(skip)]
+    Newer,
+}
+
+impl RunStatus {
+    pub(crate) const fn is_newer(&self) -> bool {
+        matches!(self.state, RunState::Newer)
+    }
 }
 
 #[cfg(test)]
@@ -144,6 +202,21 @@ mod tests {
     }
 
     #[test]
+    fn agent_kinds_travel_as_names_and_a_newer_one_still_parses() {
+        for (kind, name) in [(AgentKind::Claude, "claude"), (AgentKind::Codex, "codex")] {
+            assert_eq!(serde_json::to_value(kind).unwrap(), json!(name));
+            assert_eq!(
+                serde_json::from_value::<AgentKind>(json!(name)).unwrap(),
+                kind
+            );
+        }
+        assert_eq!(
+            serde_json::from_value::<AgentKind>(json!("amp")).unwrap(),
+            AgentKind::Newer
+        );
+    }
+
+    #[test]
     fn run_ids_are_plain_tokens_checked_on_arrival() {
         let run: RunId = serde_json::from_value(json!("run-7")).unwrap();
 
@@ -165,5 +238,28 @@ mod tests {
             serde_json::from_value::<RunEvent>(json!({ "event": "thinking" })).unwrap(),
             RunEvent::Newer
         );
+    }
+
+    #[test]
+    fn run_states_are_snake_case_words() {
+        let states = [
+            (RunState::Starting, "starting"),
+            (RunState::Running, "running"),
+            (RunState::Waiting, "waiting"),
+            (RunState::Idle, "idle"),
+            (RunState::Sleeping, "sleeping"),
+            (RunState::Ended, "ended"),
+        ];
+
+        for (state, word) in states {
+            let wire = RunStatus {
+                run: RunId::try_from("run-7".to_owned()).unwrap(),
+                state,
+            };
+            assert_eq!(
+                serde_json::to_value(&wire).unwrap(),
+                json!({ "run": "run-7", "state": word })
+            );
+        }
     }
 }

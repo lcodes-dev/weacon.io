@@ -28,12 +28,14 @@ export function TranscriptView({ rows, writing, away }: { rows: readonly Row[]; 
     return () => document.removeEventListener("selectionchange", update);
   }, []);
 
+  // Selections in Settings, while `away`, don't count.
+  const selection = away ? null : document.getSelection();
   useLayoutEffect(() => {
     const element = scroller.current;
     if (element === null || !bottom.current) {
       return;
     }
-    if (!away && selectingIn(document.getSelection(), element)) {
+    if (selectingIn(selection, element)) {
       // Once the selection goes, follow only if the reader is still at the bottom.
       bottom.current = atBottom(element);
     } else {
@@ -45,7 +47,6 @@ export function TranscriptView({ rows, writing, away }: { rows: readonly Row[]; 
     return <p className="page muted">No run yet.</p>;
   }
   held.current = false;
-  const selection = away ? null : document.getSelection();
   const format = (at: number): boolean => {
     if (formatted.current.has(at)) {
       return true;
@@ -67,16 +68,26 @@ export function TranscriptView({ rows, writing, away }: { rows: readonly Row[]; 
       }}
     >
       {rows.map((row, at) => {
-        const open = writing && at === rows.length - 1;
-        return <RowView key={at} at={at} row={row} writing={open} formatted={row.kind === "text" && !open && format(at)} />;
+        const writingRow = writing && at === rows.length - 1;
+        return (
+          <RowView key={at} at={at} row={row} writing={writingRow} formatted={row.kind === "text" && !writingRow && format(at)} />
+        );
       })}
     </div>
   );
 }
 
-type RowProps = { at: number; row: Row; writing: boolean; formatted: boolean };
-
-const RowView = memo(function RowView({ at, row, writing, formatted }: RowProps) {
+const RowView = memo(function RowView({
+  at,
+  row,
+  writing,
+  formatted,
+}: {
+  at: number;
+  row: Row;
+  writing: boolean;
+  formatted: boolean;
+}) {
   switch (row.kind) {
     case "text":
       return (

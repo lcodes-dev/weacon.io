@@ -10,17 +10,18 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{Semaphore, broadcast, oneshot};
 use tokio::task::JoinHandle;
-use weacon_observability::Fault;
 use weacon_testing::TempDir;
 use weacon_version::Version;
 
 pub(crate) use weacon_testing::{Records, messages, recording_logger, recording_sink};
 
-use crate::db::Db;
+use crate::connections;
+use crate::db::{Db, Workspace};
 use crate::email::Email;
 use crate::feed;
 use crate::http::{self, Shared};
 use crate::mail::Outbox;
+use crate::secret::Secret;
 use crate::sign_in;
 
 pub(crate) const VERSION: Version = Version {
@@ -54,6 +55,8 @@ impl Fixture {
             .await
             .unwrap();
         let (log, records) = recording_logger();
+        // Its own logger: off Unix it warns, and tests read the fixture's records.
+        let secret = Secret::open(&dir.join("secret"), &recording_logger().0).unwrap();
         fs::create_dir(dir.join("outbox")).unwrap();
         let clock = Arc::new(AtomicU64::new(START));
         let now = Arc::clone(&clock);
@@ -63,6 +66,10 @@ impl Fixture {
             reporter: Arc::new(weacon_appkit::reporter(None, true, Box::new(|_| Ok(())))),
             db,
             outbox: Outbox::new(dir.join("outbox")),
+            secret: Arc::new(secret),
+            head_within: connections::HEAD_WITHIN,
+            proxies: Arc::new([]),
+            connections: Arc::new(Semaphore::new(64)),
             // Short, so tests that wait for the feed's checks don't wait long.
             feed: feed::Timing {
                 hello_within: Duration::from_millis(100),
@@ -123,7 +130,7 @@ impl Fixture {
 pub(crate) struct Running {
     pub(crate) address: SocketAddr,
     pub(crate) stop: oneshot::Sender<()>,
-    pub(crate) done: JoinHandle<Result<(), Fault>>,
+    pub(crate) done: JoinHandle<()>,
 }
 
 pub(crate) async fn run(shared: Shared) -> Running {
@@ -142,9 +149,19 @@ pub(crate) async fn run(shared: Shared) -> Running {
 
 /// One HTTP/1.1 exchange: the response's lowercased head lines, and its body.
 pub(crate) async fn request(address: SocketAddr, head: &str, body: &str) -> (Vec<String>, String) {
+    request_with(address, head, "", body).await
+}
+
+/// One HTTP/1.1 exchange with `headers` added, each ending in `\r\n`.
+pub(crate) async fn request_with(
+    address: SocketAddr,
+    head: &str,
+    headers: &str,
+    body: &str,
+) -> (Vec<String>, String) {
     let mut stream = TcpStream::connect(address).await.unwrap();
     let request = format!(
-        "{head} HTTP/1.1\r\nhost: test\r\nconnection: close\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n{body}",
+        "{head} HTTP/1.1\r\n{headers}host: test\r\nconnection: close\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n{body}",
         body.len()
     );
     stream.write_all(request.as_bytes()).await.unwrap();
@@ -186,4 +203,22 @@ pub(crate) fn workspace_id(id: &str) -> weacon_protocol::WorkspaceId {
 
 pub(crate) fn member_id(id: &str) -> weacon_protocol::MemberId {
     weacon_protocol::MemberId::try_from(id.to_owned()).unwrap()
+}
+
+/// Workspaces `w1` and `w2` in a new database in `dir`, whose members `m1` and `m2` share
+/// the address ada@example.com.
+pub(crate) async fn two_teams(dir: &TempDir) -> (Workspace, Workspace) {
+    let db = Db::create(&dir.join("weacon.db")).await.unwrap();
+    let email = Email::parse("ada@example.com").unwrap();
+    let one = db
+        .create_workspace(&workspace_id("w1"), "One")
+        .await
+        .unwrap();
+    let two = db
+        .create_workspace(&workspace_id("w2"), "Two")
+        .await
+        .unwrap();
+    one.add_member(&member_id("m1"), &email).await.unwrap();
+    two.add_member(&member_id("m2"), &email).await.unwrap();
+    (one, two)
 }

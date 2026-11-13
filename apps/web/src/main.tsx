@@ -5,7 +5,7 @@ import "./app.css";
 import { App } from "./app.tsx";
 import { ME } from "./build.ts";
 import { Connection, type Status } from "./connection.ts";
-import { Feed } from "./feed.ts";
+import { Feed, nextFrame } from "./feed.ts";
 import { Log } from "./log.ts";
 import { serverUrl } from "./server.ts";
 import { EMPTY, apply } from "./transcript.ts";
@@ -39,8 +39,12 @@ function Root() {
       return;
     }
     const feed = new Feed(
-      // A hidden tab gets no frames, so events would pile up until it's shown again.
-      (flush) => (document.hidden ? setTimeout(flush, 250) : requestAnimationFrame(flush)),
+      nextFrame(
+        () => document.hidden,
+        (run) => requestAnimationFrame(run),
+        (frame) => cancelAnimationFrame(frame),
+        (run) => setTimeout(run, 250),
+      ),
       (events) => {
         if (current) {
           setTranscript((before) => apply(before, events));

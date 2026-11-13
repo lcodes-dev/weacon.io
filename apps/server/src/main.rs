@@ -3,19 +3,21 @@
 mod admin;
 mod app;
 mod cli;
+mod client;
+mod connections;
 mod db;
 mod email;
 mod feed;
 mod http;
 mod limit;
 mod mail;
+mod secret;
 mod sign_in;
 #[cfg(test)]
 mod test_support;
 
 use std::io;
 use std::net::SocketAddr;
-use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::Arc;
 use std::time::SystemTime;
@@ -26,10 +28,11 @@ use weacon_observability::{Fault, json_lines};
 use weacon_protocol::code;
 
 use crate::app::App;
-use crate::cli::Command;
+use crate::cli::{Command, Serve};
 use crate::db::Db;
 use crate::http::Shared;
 use crate::mail::Outbox;
+use crate::secret::Secret;
 
 /// How many wake-ups a feed may miss before it rereads the database.
 const CHANGES: usize = 256;
@@ -48,7 +51,7 @@ fn main() -> ExitCode {
         .filter(|dsn| !dsn.is_empty());
     // The server logs to stdout; admin commands print their output there instead.
     let logs = match cli.command {
-        Command::Serve { .. } => json_lines(io::stdout()),
+        Command::Serve(_) => json_lines(io::stdout()),
         Command::Admin(_) => json_lines(io::stderr()),
     };
     let app = App::start(version, logs, weacon_appkit::http(), dsn.as_deref());
@@ -57,7 +60,7 @@ fn main() -> ExitCode {
     let result = runtime.and_then(|runtime| {
         runtime.block_on(async {
             match cli.command {
-                Command::Serve { listen, db, outbox } => serve(&app, listen, &db, outbox).await,
+                Command::Serve(args) => serve(&app, args).await,
                 Command::Admin(command) => {
                     admin::run(command, &app::new_id, &mut io::stdout().lock()).await
                 }
@@ -67,9 +70,16 @@ fn main() -> ExitCode {
     app.finish(result)
 }
 
-/// Serves the database at `db` on `listen` until Ctrl-C or the system asks the server to stop,
-/// leaving sign-in codes in `outbox`.
-async fn serve(app: &App, listen: SocketAddr, db: &Path, outbox: PathBuf) -> Result<(), Fault> {
+/// Serves until Ctrl-C or the system asks the server to stop.
+async fn serve(app: &App, args: Serve) -> Result<(), Fault> {
+    let Serve {
+        listen,
+        db,
+        outbox,
+        secret,
+        max_connections,
+        trusted_proxy,
+    } = args;
     // Otherwise every sign-in would fail after its answer, and only the logs would say so.
     if !outbox.is_dir() {
         return Err(Fault::new(
@@ -84,21 +94,20 @@ async fn serve(app: &App, listen: SocketAddr, db: &Path, outbox: PathBuf) -> Res
         )
         .because(error)
     })?;
-    let listener = TcpListener::bind(listen).await.map_err(|error| {
-        Fault::new(
-            code!("server.bind_failed"),
-            "The server couldn't listen on its address",
-        )
-        .because(error)
-    })?;
-    let db = Db::create(db).await?;
+    let listener = bind(listen).await?;
+    let secret = Secret::open(&secret, &app.log)?;
+    let db = Db::create(&db).await?;
     let shared = Shared {
         app: weacon_appkit::build(&app.version),
         log: app.log.clone(),
         reporter: Arc::clone(&app.reporter),
         db: db.clone(),
         outbox: Outbox::new(outbox),
+        secret: Arc::new(secret),
         clock: Arc::new(Box::new(SystemTime::now)),
+        head_within: connections::HEAD_WITHIN,
+        proxies: trusted_proxy.into(),
+        connections: Arc::new(Semaphore::new(max_connections)),
         feed: feed::TIMING,
         changes: broadcast::channel(CHANGES).0,
         sign_ins: Arc::new(Semaphore::new(sign_in::AT_ONCE)),
@@ -106,7 +115,17 @@ async fn serve(app: &App, listen: SocketAddr, db: &Path, outbox: PathBuf) -> Res
         starts: Arc::new(sign_in::starts()),
         tries: Arc::new(sign_in::tries()),
     };
-    let served = http::serve(listener, shared, signals.wait()).await;
+    http::serve(listener, shared, signals.wait()).await;
     db.close().await;
-    served
+    Ok(())
+}
+
+async fn bind(listen: SocketAddr) -> Result<TcpListener, Fault> {
+    TcpListener::bind(listen).await.map_err(|error| {
+        Fault::new(
+            code!("server.bind_failed"),
+            "The server couldn't listen on its address",
+        )
+        .because(error)
+    })
 }

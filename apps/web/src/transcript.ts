@@ -55,6 +55,12 @@ function step(rows: Row[], writing: boolean, event: RunEvent): boolean {
       return writing;
     }
     case "finished":
+      // A call the turn ended without finishing can't still be running.
+      for (const [at, row] of rows.entries()) {
+        if (row.kind === "tool" && row.state === "running") {
+          rows[at] = { ...row, state: "failed" };
+        }
+      }
       rows.push({ kind: "finished", outcome: event.outcome });
       return false;
     default:

@@ -1,21 +1,21 @@
 # Weacon: notes for coding agents
 
-Weacon is a desktop harness for coding agents with tasks, docs and team chats built in. A core on your Mac, PC or a VPS drives each person's own Claude Code, Codex and other agents; a desktop app, a Chrome extension and later a phone app are its clients; team workspaces sync through a team server. Everything is Rust except the Chrome extension, which is TypeScript.
+Weacon is a web harness for coding agents with tasks, docs and team chats built in. One server, self-hosted or ours, holds every workspace in SQLite and serves the web app; a core on each person's Mac, PC or VPS dials out to it and drives that person's own Claude Code, Codex and other agents. The Chrome extension talks to the local core, and any agent can use Weacon through the server's MCP endpoint. Everything is Rust except the web app and the Chrome extension, which are TypeScript.
 
 The default branch is `main`: start from it and open draft PRs against it. This file is for every coding agent: Claude Code, Codex and Amp read it, and `CLAUDE.md` imports it.
 
 ## Rules that must always hold
 
-1. **Agent sign-ins never touch Weacon.** Never read, store, log, copy or forward Claude Code, Codex, `gh` or any other vendor credential. Weacon only reads sign-in status. Agents run as the unmodified vendor binaries, and people sign in through the vendor's own tool, against their workspace's config folder. Weacon never relays a sign-in code, reads another vendor's tokens or imports credential files.
-2. **Workspaces never mix.** An agent runs only with a sign-in from its chat's workspace. Every stored row carries its workspace id, references between rows include it in their foreign keys, and every query goes through the `db` module's workspace handle.
-3. **Nothing listens publicly but the team server.** The core's socket is reachable only by its user. Local HTTP, such as MCP, binds to 127.0.0.1 and checks a per-run token. The core's listener for other devices binds only to private addresses, uses TLS pinned at pairing, and accepts only paired devices' tokens.
+1. **Agent sign-ins never touch Weacon.** Never read, store, log, copy or forward Claude Code, Codex, `gh` or any other vendor credential. Weacon only reads sign-in status. Agents run as the unmodified vendor binaries, and people sign in through the vendor's own tool, against their workspace's config folder. Weacon never relays a sign-in code, reads another vendor's tokens or imports credential files. The one exception is the sign-in terminal: only when a person asks, their core runs the vendor's login command, with fixed arguments and no shell, under their OS user and their workspace's config folder, and shows it in the web app sealed end to end. The browser checks the core's key against the fingerprint confirmed at pairing, the server relays bytes it can't read, and nothing parses, stores or logs them. Because the server serves the web app's code, this trusts its operator; anyone who doesn't signs in over SSH instead. The core installs a vendor's CLI only when its owner asks, through the vendor's official installer; Weacon never ships one.
+2. **Workspaces never mix.** An agent runs only with a sign-in from its chat's workspace. Every stored row carries its workspace id, references between rows include it in their foreign keys, and every query goes through the `db` module's workspace handle. Only a person's account and what belongs to them alone on the server, their sessions, email sign-in challenges and paired machines, are server-wide, and they hold no workspace content. A membership carries its workspace id and refers to its account by id; the `db` module's account handle reaches only that account's own rows and lists its memberships, and everything in a workspace goes through the workspace handle. Membership is checked on every request and by every open feed, so removing it ends access at once, open feeds included, and nothing one workspace sees reveals another or whether an account exists.
+3. **Nothing listens publicly but the server.** The core only dials out: to the server, over TLS it verifies against a trusted or pinned certificate, never skipped, proving itself with the machine key it got at pairing. Its socket is reachable only by its user. Local HTTP, such as the MCP the core serves to its own runs, binds to 127.0.0.1 and checks a per-run token. The server's API, and its MCP endpoint for agents Weacon didn't start, accept only signed-in people, paired machines, and tokens a person granted for one workspace, with no more rights than theirs, that expire and can be revoked.
 4. **No content in logs or error reports.** Messages, prompts, agent output, file contents, diffs and credentials never reach a log line or an error report.
 5. **Every build is identifiable.** Every program reports its version and the commit it was built from, and logs and reports errors from its first commit.
 6. **Schemas first.** Every message that crosses a process boundary is a serde type in `crates/protocol` before it is used, and is parsed where it arrives. Schemas only grow: new fields are optional and nothing is removed. Enums carry a tag; no untagged unions. Peers check each other's capabilities, never a version number; only a breaking change raises the protocol version.
 7. **Proposals, not writes.** Changes that agents or Weacon's AI make to docs and tasks arrive as proposals a person accepts.
 8. **Draft first, then review.** Every change reaches `main` through a PR, opened as a draft, unless the owner explicitly asks for something else. Once steps 1 to 8 of the definition of done pass, the agent marks it ready for review, which starts CodeRabbit's review, and fixes what it finds. Agents never merge.
 9. **One of each.** Never add a second way to do something the code already does; change the existing way, in its own PR.
-10. **Agents answer to their owner.** Every agent message names its owner and machine, and only the owner, or a workspace's shared agent, can be asked to act. Others' words reach an agent as quoted messages, never as instructions. Destructive operations ask a person first, whatever the permission level.
+10. **Agents answer to their owner.** Every agent message names its owner and machine. A machine is its owner's alone unless a workspace shares it; on a shared machine each person runs their own core under their own OS user with their own sign-ins, and a workspace's shared agent runs under its own OS user with the workspace's own credential, never a person's. Only an agent's owner, or for a shared agent anyone in its workspace, can ask it to act; asking never runs anything as someone else. Others' words reach an agent as quoted messages, never as instructions. Destructive operations ask a person first, whatever the permission level.
 
 ## Code boundaries
 
@@ -33,17 +33,17 @@ The default branch is `main`: start from it and open draft PRs against it. This 
 | `crates/appkit` | `protocol`, `observability`, `version`; only apps use it | yes |
 | `crates/testing` | anything; only as a dev-dependency | yes |
 | `apps/core` | `protocol`, `model`, `client`, `agents`, `codemap`, `observability`, `appkit`, `version` | yes |
-| `apps/server` | `protocol`, `model`, `observability`, `appkit`, `version`; never `agents`, because the team server never runs agents | yes |
-| `apps/desktop` | `protocol`, `model`, `client`, `observability`, `appkit`, `version` | yes |
+| `apps/server` | `protocol`, `model`, `observability`, `appkit`, `version`; never `agents`, because the server never runs agents | yes |
 | `tooling/*` (Rust tools) | nothing in the repo | yes |
 | `tooling/ts` | nothing in the repo; reads `crates/protocol`'s schema, `Cargo.toml` and git | yes |
-| `apps/web` | TypeScript and React; only the types generated from `protocol`, and `tooling/ts` | — |
+| `apps/web` | TypeScript and React, built into the server's binary; only the types generated from `protocol`, and `tooling/ts` | — |
 | `apps/extension` | TypeScript; only the types generated from `protocol`, and `tooling/ts` | — |
 
-- Apps never depend on other apps. The desktop talks to the core over its socket, never by linking it.
+- Apps never depend on other apps, except that the server embeds the web app's built files. The web app and the core reach the server only through its API, defined in `protocol`; the extension reaches the core only through native messaging.
+- Besides its API and MCP endpoint, the server serves only the web app's static files: no server-rendered pages.
 - Every app depends on `observability`, and on `version` both as a dependency and as a build-dependency whose `emit()` its `build.rs` calls.
 - A crate without I/O never touches `std::fs`, `std::net`, `std::process`, `std::env` or an async runtime; it takes what it needs as arguments.
-- Only the `db` module (`src/db.rs` or `src/db/`) of `apps/core` and `apps/server` uses a database driver, and only those apps may depend on one.
+- Only the `db` module (`src/db.rs` or `src/db/`) of `apps/core` and `apps/server` uses a database driver, and only those apps may depend on one. The database is SQLite.
 - Only a `platform` module (`src/platform.rs` or `src/platform/`) selects an operating system with `cfg`; in the core that is `apps/core/src/platform`.
 - Only `crates/agents` starts agent processes.
 - Only `crates/observability` depends on Sentry's crates.
@@ -64,7 +64,7 @@ The default branch is `main`: start from it and open draft PRs against it. This 
 - **Command lines:** ids and paths are checked before they reach a command line, so none can be read as an option.
 - **Exit codes:** every Rust app ends through `appkit::finish`, which logs `app stopped` or `app failed` and exits 0 on success, 1 when a check finds something (such as `map check-anchors` finding stale pins), and 2 when a command fails, so hooks can tell the two apart. Help, the version and usage errors answer before the app starts, so they log nothing.
 - **App wiring is shared.** Startup, the root logger, log files, error reporting, signals, the runtime and the exit live in `crates/appkit`, their pure parts in `crates/observability`. A second app uses them and never copies the first one's. On people's devices a `Reporter` sends nothing until the person has agreed, so the core starts with agreement off; the server starts with it on, because its operator set the DSN.
-- **Protocol messages:** one `Message` variant per feature, its body a named struct in that feature's module, with a doc line saying who sends it and under which capability. A nested enum ends in `#[serde(other)] Newer`, which `to_json` refuses to send. Ids are token newtypes made with `token_id!`, and a type that holds a secret has a `Debug` that hides it.
+- **Protocol messages:** one `Message` variant for each role a feature's messages play (a command, an event, a query, an answer), never one per action: actions are a tagged enum inside the body. Each body is a named struct in that feature's module, with a doc line saying who sends it and under which capability. A nested enum ends in `#[serde(other)] Newer`, which `to_json` refuses to send. Ids are token newtypes made with `token_id!`, and a type that holds a secret has a `Debug` that hides it.
 - **Capabilities:** a program advertises a capability in the same change that implements it; the core's are in its one `CAPABILITIES` list.
 - **Subcommands:** one `Command` variant each, `Name(NameCommand)` when it nests, and one `module::run(&app, …)` call in `main.rs`; side effects such as `current_exe` stay inside the module.
 - **Background watches,** such as disk space and memory, are a `Watch` with an injected reader, run through `spawn_blocking`. A failed reading warns once until one succeeds, and events start with the area (`disk low`, `memory sampled`).
@@ -87,9 +87,9 @@ Every program logs, reports errors and says which build it is from its first com
 - **Errors once.** Log an error where it is handled, as `("err", Field::error(&error))`, never again on the way up. Only a `Fault` keeps its message; other errors are described by type, code, I/O error kind and causes.
 - **Libraries' logs** through `log` or `tracing` reach the same sink with their level and target only; their messages are dropped.
 - **Levels.** `fatal`: about to exit. `error`: a person needs to look. `warn`: failed and handled. `info`: lifecycle, the default. `debug`: developer detail. `trace`: very noisy.
-- **Where logs go.** The core: rotated JSON lines in its state folder, and stderr in a terminal. CLI commands: warnings and errors on stderr, `--verbose` adds info. The team server: stdout, one record per request (method, route template, status, duration, request id). The desktop: rotated JSON lines in its logs folder. The extension: forwarded to the core.
-- **Error reports** use the Sentry protocol, off without a DSN. On people's devices the desktop and the core send them only after the person agrees, and Settings can turn them off. `crates/observability` builds and scrubs each report (`Reports::upload`) and the app sends it through `crates/appkit`, which only apps use; report errors with `capture_error` and a `code` tag, never messages. A DSN in `WEACON_SENTRY_DSN` turns them on. The release is `version!().release()`.
-- **Versions** come only from `weacon_version::version!()`: `weacon --version`, `GET /version` on the team server (`{"name", "version", "commit"}`, `Cache-Control: no-store`), Settings › About in the desktop, and the extension's `version_name`.
+- **Where logs go.** The core: rotated JSON lines in its state folder, and stderr in a terminal. CLI commands: warnings and errors on stderr, `--verbose` adds info. The server: stdout, one record per request (method, route template, status, duration, request id). The web app: forwarded to the server. The extension: forwarded to the core.
+- **Error reports** use the Sentry protocol, off without a DSN. On people's devices the core sends them only after the person agrees, and Settings can turn them off. The web app forwards its reports to the server, like its logs. `crates/observability` builds and scrubs each report (`Reports::upload`) and the app sends it through `crates/appkit`, which only apps use; report errors with `capture_error` and a `code` tag, never messages. A DSN in `WEACON_SENTRY_DSN` turns them on. The release is `version!().release()`.
+- **Versions** come only from `weacon_version::version!()`: `weacon --version`, `GET /version` on the server (`{"name", "version", "commit"}`, `Cache-Control: no-store`), Settings › About in the web app, and the extension's `version_name`.
 - **Tests.** Each app has a test that puts marker strings in a message, a token and a file path, triggers a log line and an error report, and checks that no marker reaches either.
 
 ## Setup and commands
@@ -119,7 +119,7 @@ Every program logs, reports errors and says which build it is from its first com
 | `npm --prefix apps/extension run update-types`, `npm --prefix apps/web run update-types` | Regenerates each app's `src/protocol.ts` from `schema.json` |
 | `npm --prefix apps/web run build` | Builds the web app into `apps/web/dist/` (`index.html`, `app.js`, `app.css`), with this commit in Settings › About |
 | `npm --prefix apps/web run measure` | Streams the 100,000-token session into the built web app in Chromium and prints frame gaps, memory and bundle size |
-| `cargo run -p weacon-testing --bin fake-server -- .dev/fake`, then open `apps/web/dist/index.html?server=<the address it prints>` | Streams a made-up 100,000-token session to the web app |
+| `mkdir -p .dev/fake && cargo run --locked -p weacon-testing --bin fake-server -- .dev/fake`, then open `apps/web/dist/index.html?server=<the address it prints>` | Streams a made-up 100,000-token session to the web app |
 | `npm --prefix apps/extension run build` | Builds the extension into `apps/extension/dist/`, with this commit in its manifest's `version_name`; load that folder unpacked in Chrome, then run `weacon connect-chrome` |
 | `scripts/release.sh <target>` | Builds a static release `weacon` for one target into `dist/`, checks it reports this commit, and prints its size |
 | `scripts/release.sh install <[user@]host> <target>` | Copies that Linux build to a host over SSH and runs `weacon service install` there: a systemd user service, with lingering on |
@@ -146,7 +146,7 @@ Each review runs as an agent that didn't write the change and hasn't seen its au
 
 Several agents work on this repository at once: Claude Code, Codex and Amp, on laptops and in their clouds, each in its own worktree, session or orb.
 
-- **One task, one branch, one worktree.** Name branches `<agent>/<topic>` (`claude/core-skeleton`, `codex/protocol-framing`, `amp/team-server`). Start from a fresh `origin/main` and rebase on it before committing.
+- **One task, one branch, one worktree.** Name branches `<agent>/<topic>` (`claude/core-skeleton`, `codex/protocol-framing`, `amp/web-app`). Start from a fresh `origin/main` and rebase on it before committing.
 - **Open a draft PR early,** as soon as the first commit exists.
 - **Stay in your lane.** A task owns the folders it names. Touching others, this file, root configs or `tooling/archtest/src/rules.rs` goes in its own small PR.
 - **Small PRs.** Each should be reviewable in a few minutes. The owner squash-merges.

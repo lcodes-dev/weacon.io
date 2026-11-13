@@ -1,5 +1,6 @@
 use std::time::Duration;
 
+use axum::Extension;
 use axum::extract::ws::{Message as Frame, Utf8Bytes, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path, Query, State};
 use axum::http::HeaderMap;
@@ -12,9 +13,10 @@ use tokio::time::{Instant, MissedTickBehavior, interval_at, timeout};
 use weacon_observability::{Fault, Field};
 use weacon_protocol::{Capability, Code, Envelope, ErrorBody, Message, WorkspaceId, code};
 
+use crate::connections::Place;
 use crate::db::Workspace;
 use crate::http::{Shared, failure, refused};
-use crate::sign_in::hash;
+use crate::sign_in::token_hash;
 
 /// What a client must offer, and the server offers, to get a workspace's changes.
 const FEED: Code = code!("workspace.feed");
@@ -45,8 +47,8 @@ pub(crate) struct Since {
 /// `since`, then each new one as it happens.
 pub(crate) async fn feed(
     State(shared): State<Shared>,
-    Path(workspace): Path<WorkspaceId>,
-    Query(Since { since }): Query<Since>,
+    (Path(workspace), Query(Since { since })): (Path<WorkspaceId>, Query<Since>),
+    Extension(place): Extension<Place>,
     headers: HeaderMap,
     upgrade: WebSocketUpgrade,
 ) -> Response {
@@ -54,7 +56,7 @@ pub(crate) async fn feed(
         .get(AUTHORIZATION)
         .and_then(|value| value.to_str().ok())
         .and_then(|value| value.strip_prefix("Bearer "))
-        .map(hash)
+        .map(token_hash)
     else {
         return refused(code!("sign_in.required"));
     };
@@ -63,6 +65,7 @@ pub(crate) async fn feed(
             // Subscribed before the backlog is read, so no change falls between the two.
             let changes = shared.changes.subscribe();
             let feed = Feed {
+                _place: place,
                 workspace,
                 ends_at,
                 changes,
@@ -92,6 +95,8 @@ async fn member_workspace(
 }
 
 struct Feed {
+    /// The feed's place among the open connections.
+    _place: Place,
     workspace: Workspace,
     /// When the session the feed was opened with ends, in seconds since the Unix epoch.
     ends_at: i64,
@@ -218,10 +223,12 @@ async fn send<S: Sink<Frame> + Unpin>(socket: &mut S, within: Duration, frame: F
 #[cfg(test)]
 mod tests {
     use std::net::SocketAddr;
+    use std::sync::Arc;
 
     use futures_util::{SinkExt, StreamExt};
     use serde_json::json;
     use tokio::io::AsyncReadExt;
+    use tokio::sync::Semaphore;
     use tokio_tungstenite::tungstenite::client::IntoClientRequest;
     use tokio_tungstenite::tungstenite::{self, Message as Wire, Utf8Bytes};
     use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async};
@@ -358,6 +365,24 @@ mod tests {
                 member: MemberId::try_from(member.to_owned()).unwrap(),
             },
         })
+    }
+
+    #[tokio::test]
+    async fn a_feed_keeps_its_place_among_the_connections() {
+        let mut fixture = Fixture::new().await;
+        let room = Arc::new(Semaphore::new(2));
+        fixture.shared.connections = Arc::clone(&room);
+        let (server, token) = signed_in(&fixture).await;
+        let client = greeted(server.address, &token, 0).await;
+
+        // One place is the feed's, the other is kept for the next connection.
+        assert_eq!(room.available_permits(), 0);
+        drop(client);
+        drop(
+            timeout(Duration::from_secs(10), room.acquire())
+                .await
+                .expect("the feed kept its place after it closed"),
+        );
     }
 
     #[tokio::test]

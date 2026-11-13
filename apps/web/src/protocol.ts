@@ -30,7 +30,52 @@ export type Envelope = {
   | {
     type: "log";
   } & ClientLog
+  | {
+    type: "chat_command";
+  } & ChatCommand
+  | {
+    type: "chat";
+  } & ChatUpdate
+  | {
+    type: "chat_query";
+  } & ChatQuery
+  | {
+    type: "chat_answer";
+  } & ChatAnswer
 );
+
+/**
+ * A person's account on the server, 1–64 ASCII letters, digits, `-` or `_`.
+ */
+export type AccountId = string;
+
+/**
+ * Trades the one-time code sent to `email`, and the challenge its [`SignInStarted`] gave,
+ * for an [`AccountSignedIn`].
+ */
+export type AccountSignInFinish = {
+  challenge: ChallengeId;
+  code: string;
+  email: string;
+};
+
+/**
+ * Asks the server to send a one-time code to `email`, if that person may sign in. The
+ * answer, a [`SignInStarted`], is the same either way.
+ */
+export type AccountSignInStart = {
+  email: string;
+};
+
+/**
+ * The signed-in account. `token`, sent as a bearer token, is only in the answer to an
+ * [`AccountSignInFinish`], for clients that keep no cookie.
+ */
+export type AccountSignedIn = {
+  account: AccountId;
+  email: string;
+  token?: string;
+};
 
 /**
  * An agent's own id for a conversation, a lowercase UUID, which resumes it later.
@@ -51,6 +96,125 @@ export type App = {
  * it doesn't know, so a newer peer's list still parses.
  */
 export type Capability = Code;
+
+/**
+ * One sign-in request, which its code and its tries belong to; 1–64 ASCII letters,
+ * digits, `-` or `_`.
+ */
+export type ChallengeId = string;
+
+export type ChatAction = (
+  | {
+    kind: "prompt";
+    text: string;
+  }
+  | {
+    answer: PermissionAnswer;
+    kind: "permission";
+  }
+  | {
+    kind: "interrupt";
+  }
+);
+
+export type ChatAnswer = {
+  answer: ChatAnswerKind;
+  chat: ChatId;
+  workspace: WorkspaceId;
+};
+
+export type ChatAnswerKind = (
+  | {
+    kind: "events_lost";
+  }
+  | {
+    events: Array<ChatEntry>;
+    kind: "snapshot";
+    runs: Array<RunStatus>;
+    seq: number;
+    waiting: Array<number>;
+  }
+  | {
+    events: Array<ChatEntry>;
+    kind: "window";
+  }
+);
+
+/**
+ * The core answers with receipts under `request`.
+ */
+export type ChatCommand = {
+  action: ChatAction;
+  chat: ChatId;
+  request: RequestId;
+  workspace: WorkspaceId;
+};
+
+/**
+ * An event and its place in its chat's log: `seq` starts at 1 and grows by one.
+ */
+export type ChatEntry = {
+  event: ChatEvent;
+  seq: number;
+};
+
+export type ChatEvent = (
+  | {
+    kind: "prompt";
+    request: RequestId;
+    text: string;
+  }
+  | {
+    kind: "receipt";
+    receipt: Receipt;
+  }
+  | {
+    kind: "run";
+    update: RunUpdate;
+  }
+  | {
+    kind: "run_status";
+    status: RunStatus;
+  }
+);
+
+/**
+ * A chat in a workspace, 1–64 ASCII letters, digits, `-` or `_`.
+ */
+export type ChatId = string;
+
+/**
+ * The answer is a [`ChatAnswer`], or for `subscribe` the [`ChatUpdate`]s themselves.
+ */
+export type ChatQuery = {
+  chat: ChatId;
+  query: ChatQueryKind;
+  workspace: WorkspaceId;
+};
+
+export type ChatQueryKind = (
+  | {
+    after: number;
+    kind: "subscribe";
+  }
+  | {
+    kind: "snapshot";
+  }
+  | {
+    before: number;
+    kind: "window";
+    limit: number;
+  }
+);
+
+/**
+ * Text deltas are never committed; they arrive only as run updates.
+ */
+export type ChatUpdate = {
+  chat: ChatId;
+  entry: ChatEntry;
+  workspace: WorkspaceId;
+};
 
 /**
  * A log record from a client that has no log of its own, such as the web app: an event name and
@@ -130,6 +294,15 @@ export type Outcome = (
     state: "unknown";
   }
 );
+
+/**
+ * A person's answer to a [`RunEvent::PermissionAsked`].
+ */
+export type PermissionAnswer = {
+  allow: boolean;
+  prompt: number;
+  run: RunId;
+};
 
 /**
  * An element someone picked on a local web page, sent to the core for a chat. The sender cuts
@@ -239,6 +412,23 @@ export type RunEvent = (
  */
 export type RunId = string;
 
+export type RunState = (
+  | "starting"
+  | "running"
+  | "waiting"
+  | "idle"
+  | "sleeping"
+  | "ended"
+);
+
+/**
+ * Where a run stands, as its chat's log records it.
+ */
+export type RunStatus = {
+  run: RunId;
+  state: RunState;
+};
+
 /**
  * One event of the run `run`, in the order the run reported it.
  */
@@ -246,6 +436,47 @@ export type RunUpdate = {
   event: RunEvent;
   run: RunId;
 };
+
+/**
+ * Trades the one-time code sent to `email` for a [`SignedIn`]. `challenge` is the one its
+ * [`SignInStarted`] gave; a server that hands out challenges refuses a finish without one.
+ */
+export type SignInFinish = {
+  challenge?: ChallengeId;
+  code: string;
+  email: string;
+  workspace: WorkspaceId;
+};
+
+/**
+ * Sign-in to one workspace, which [`AccountSignInStart`] replaces: asks the server to send
+ * a one-time code to `email`, if it is a member of `workspace`. The answer, a [`SignInStarted`], is the same either way.
+ */
+export type SignInStart = {
+  email: string;
+  workspace: WorkspaceId;
+};
+
+/**
+ * The answer to a [`SignInStart`], for members and strangers alike: the challenge to finish
+ * it with.
+ */
+export type SignInStarted = {
+  challenge: ChallengeId;
+};
+
+/**
+ * A signed-in member and the session token that proves it, sent as a bearer token.
+ */
+export type SignedIn = {
+  member: MemberId;
+  token: string;
+};
+
+/**
+ * A task in a workspace, 1–64 ASCII letters, digits, `-` or `_`.
+ */
+export type TaskId = string;
 
 /**
  * The answer to a [`Hello`] that speaks the same protocol.
@@ -263,12 +494,49 @@ export type WorkspaceChange = (
     kind: "member_joined";
     member: MemberId;
   }
+  | {
+    kind: "task_changed";
+    task: TaskId;
+    version: number;
+  }
 );
+
+/**
+ * Asks the server for a new workspace, which the asker owns. The answer is its
+ * [`WorkspaceSummary`].
+ */
+export type WorkspaceCreate = {
+  name: string;
+};
 
 /**
  * A workspace on the server, 1–64 ASCII letters, digits, `-` or `_`.
  */
 export type WorkspaceId = string;
+
+/**
+ * The workspaces the signed-in account is a member of.
+ */
+export type WorkspaceList = {
+  workspaces: Array<WorkspaceSummary>;
+};
+
+/**
+ * What a member may do in a workspace.
+ */
+export type WorkspaceRole = (
+  | "owner"
+  | "member"
+);
+
+/**
+ * A workspace as one of its members sees it, with their `role` in it.
+ */
+export type WorkspaceSummary = {
+  id: WorkspaceId;
+  name: string;
+  role: WorkspaceRole;
+};
 
 /**
  * One change to `workspace`. `seq` grows strictly within a workspace, and a feed opened with

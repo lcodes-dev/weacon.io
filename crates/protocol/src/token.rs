@@ -13,8 +13,7 @@ pub(crate) fn is_token(id: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
 }
 
-/// Declares an id that is a token, with its `as_str`, its `TryFrom<String>`, and a
-/// `Deserialize` that refuses anything else with the message `$what`.
+/// Declares an id that is a token; parsing anything else fails with the message `$what`.
 macro_rules! token_id {
     ($(#[$doc:meta])* $name:ident, $what:literal) => {
         $(#[$doc])*
@@ -43,6 +42,14 @@ macro_rules! token_id {
                 } else {
                     Err(id)
                 }
+            }
+        }
+
+        impl std::str::FromStr for $name {
+            type Err = &'static str;
+
+            fn from_str(id: &str) -> Result<Self, Self::Err> {
+                Self::try_from(id.to_owned()).map_err(|_| $what)
             }
         }
 

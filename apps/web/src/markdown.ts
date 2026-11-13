@@ -57,15 +57,19 @@ function listAt(lines: readonly string[], at: number): { block: Block; next: num
   const pattern = numbered === null ? BULLET : NUMBERED;
   const items: Inline[][] = [];
   let next = at;
-  for (let match = pattern.exec(lines[at] ?? ""); match !== null; match = pattern.exec(lines[next] ?? "")) {
+  for (;;) {
+    const match = pattern.exec(lines[next] ?? "");
+    if (match === null) {
+      break;
+    }
     items.push(inlines(match.at(-1) ?? ""));
     next += 1;
   }
   if (items.length === 0) {
     return undefined;
   }
-  const start = numbered === null ? undefined : Number(numbered[1]);
-  return { block: start === undefined ? { kind: "list", items } : { kind: "list", start, items }, next };
+  const block: Block = numbered === null ? { kind: "list", items } : { kind: "list", start: Number(numbered[1]), items };
+  return { block, next };
 }
 
 // The first line after `at` that `ends`, or the end; scanning from `at` keeps the parse linear.

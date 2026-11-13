@@ -2,27 +2,12 @@
 
 mod wire;
 
-use std::path::PathBuf;
-
 use tokio::process::Command;
-use weacon_observability::Fault;
-use weacon_protocol::{AgentSession, RunId};
+use weacon_protocol::AgentSession;
 
 pub(crate) use wire::{Wire, answer, prompt, read};
 
-use crate::run::{self, AgentRun};
-use crate::spawn::SpawnPolicy;
-
-/// How to start the person's own `claude` for one workspace.
-#[derive(Clone, Debug)]
-pub struct Claude {
-    /// The installed `claude`.
-    pub program: PathBuf,
-    /// The workspace's config folder, which holds its sign-in.
-    pub config_dir: PathBuf,
-    /// The folder the agent works in.
-    pub cwd: PathBuf,
-}
+use crate::launch::Launch;
 
 // Sign-ins and providers that would win over the workspace's own; removed, never read.
 const OTHER_SIGN_INS: [&str; 7] = [
@@ -35,59 +20,57 @@ const OTHER_SIGN_INS: [&str; 7] = [
     "CLAUDE_CODE_USE_VERTEX",
 ];
 
-impl Claude {
-    /// Starts `claude` under `policy`, resuming `session` when given.
-    ///
-    /// # Errors
-    /// When the program can't be started.
-    pub fn start(
-        &self,
-        policy: &SpawnPolicy,
-        run: RunId,
-        session: Option<&AgentSession>,
-    ) -> Result<AgentRun, Fault> {
-        run::spawn(
-            self.command(session),
-            policy,
-            run,
-            run::Wire::Claude(Wire::default()),
-        )
+/// `claude` in its stream-json mode, resuming `session` when given.
+pub(crate) fn command(launch: &Launch, session: Option<&AgentSession>) -> Command {
+    let mut command = with_workspace_sign_in(launch);
+    command.args([
+        "--print",
+        "--verbose",
+        "--input-format",
+        "stream-json",
+        "--output-format",
+        "stream-json",
+        "--permission-prompt-tool",
+        "stdio",
+    ]);
+    if let Some(session) = session {
+        command.args(["--resume", session.as_str()]);
     }
+    command.current_dir(&launch.cwd);
+    command
+}
 
-    fn command(&self, session: Option<&AgentSession>) -> Command {
-        let mut command = Command::new(&self.program);
-        command.args([
-            "--print",
-            "--verbose",
-            "--input-format",
-            "stream-json",
-            "--output-format",
-            "stream-json",
-            "--permission-prompt-tool",
-            "stdio",
-        ]);
-        if let Some(session) = session {
-            command.args(["--resume", session.as_str()]);
-        }
-        for name in OTHER_SIGN_INS {
-            command.env_remove(name);
-        }
-        command
-            .env("CLAUDE_CONFIG_DIR", &self.config_dir)
-            .current_dir(&self.cwd);
-        command
+/// `claude`'s own check of its sign-in, which exits with success when signed in; it runs
+/// wherever Weacon does.
+pub(crate) fn status(launch: &Launch) -> Command {
+    let mut command = with_workspace_sign_in(launch);
+    command.args(["auth", "status"]);
+    command
+}
+
+/// `claude`'s own sign-in, for the person's terminal.
+pub(crate) fn login(launch: &Launch) -> Command {
+    let mut command = with_workspace_sign_in(launch);
+    command.args(["auth", "login"]);
+    command
+}
+
+fn with_workspace_sign_in(launch: &Launch) -> Command {
+    let mut command = Command::new(&launch.program);
+    for name in OTHER_SIGN_INS {
+        command.env_remove(name);
     }
+    command.env("CLAUDE_CONFIG_DIR", &launch.config_dir);
+    command
 }
 
 #[cfg(test)]
 mod tests {
     use std::ffi::OsStr;
-    use std::path::Path;
-
-    use weacon_testing::TempDir;
+    use std::path::{Path, PathBuf};
 
     use super::*;
-    use crate::test_support::run_id;
+    use weacon_protocol::AgentKind;
 
     // Real processes: a shell script stands in for `claude`.
     #[cfg(unix)]
@@ -99,7 +82,11 @@ mod tests {
         use weacon_protocol::{Outcome, RunEvent};
 
         use super::*;
-        use crate::test_support::started;
+        use weacon_testing::TempDir;
+
+        use crate::run::AgentRun;
+        use crate::spawn::SpawnPolicy;
+        use crate::test_support::{app, run_id, started};
 
         const SESSION_A: &str = "0b7c6a52-3f1e-4d2a-9c8b-5e4f3a2b1c0d";
         const SESSION_B: &str = "5d4c3b2a-1f0e-4d9c-8b7a-6f5e4d3c2b1a";
@@ -134,7 +121,7 @@ mod tests {
             program
         }
 
-        fn workspace(dir: &Path, name: &str, session: &str) -> Claude {
+        fn workspace(dir: &Path, name: &str, session: &str) -> Launch {
             let config_dir = dir.join(name);
             fs::create_dir_all(&config_dir).unwrap();
             fs::write(
@@ -145,7 +132,8 @@ mod tests {
                 ),
             )
             .unwrap();
-            Claude {
+            Launch {
+                agent: AgentKind::Claude,
                 program: dir.join("claude"),
                 config_dir,
                 cwd: dir.to_owned(),
@@ -177,13 +165,14 @@ mod tests {
             let (first_events, second_events) = tokio::join!(
                 events(
                     first
-                        .start(&SpawnPolicy::default(), run_id("run-1"), None)
+                        .start(&SpawnPolicy::default(), &app(), run_id("run-1"), None)
                         .unwrap()
                 ),
                 events(
                     second
                         .start(
                             &SpawnPolicy::default(),
+                            &app(),
                             run_id("run-1"),
                             Some(&AgentSession::try_from(SESSION_A.to_owned()).unwrap())
                         )
@@ -223,7 +212,12 @@ mod tests {
                 oom_score_adj: adjustable.then_some(1000),
             };
 
-            events(claude.start(&policy, run_id("run-1"), None).unwrap()).await;
+            events(
+                claude
+                    .start(&policy, &app(), run_id("run-1"), None)
+                    .unwrap(),
+            )
+            .await;
 
             let tool = fs::read_to_string(dir.join("first/tool")).unwrap();
             let config = dir.join("first");
@@ -236,37 +230,35 @@ mod tests {
 
     #[test]
     fn the_workspaces_config_replaces_any_other_sign_in() {
-        let claude = Claude {
+        let claude = Launch {
+            agent: AgentKind::Claude,
             program: PathBuf::from("claude"),
             config_dir: PathBuf::from("/work/config"),
             cwd: PathBuf::from("/work"),
         };
-        let command = claude.command(None);
-        let envs: Vec<_> = command.as_std().get_envs().collect();
+        let check = status(&claude);
+        assert_eq!(
+            check.as_std().get_args().collect::<Vec<_>>(),
+            ["auth", "status"]
+        );
+        assert_eq!(check.as_std().get_current_dir(), None);
+        let login = login(&claude);
+        assert_eq!(
+            login.as_std().get_args().collect::<Vec<_>>(),
+            ["auth", "login"]
+        );
+        for command in [command(&claude, None), check, login] {
+            let envs: Vec<_> = command.as_std().get_envs().collect();
 
-        assert!(envs.contains(&(
-            OsStr::new("CLAUDE_CONFIG_DIR"),
-            Some(OsStr::new("/work/config"))
-        )));
-        for name in OTHER_SIGN_INS {
-            assert!(envs.contains(&(OsStr::new(name), None)), "{name}");
+            assert!(envs.contains(&(
+                OsStr::new("CLAUDE_CONFIG_DIR"),
+                Some(OsStr::new("/work/config"))
+            )));
+            for name in OTHER_SIGN_INS {
+                assert!(envs.contains(&(OsStr::new(name), None)), "{name}");
+            }
         }
-        assert_eq!(command.as_std().get_current_dir(), Some(Path::new("/work")));
-    }
-
-    #[tokio::test]
-    async fn a_missing_program_is_reported() {
-        let dir = TempDir::new().unwrap();
-        let claude = Claude {
-            program: dir.join("claude"),
-            config_dir: dir.to_path_buf(),
-            cwd: dir.to_path_buf(),
-        };
-
-        let Err(error) = claude.start(&SpawnPolicy::default(), run_id("run-1"), None) else {
-            panic!("a missing program started");
-        };
-
-        assert_eq!(error.code().as_str(), "agent.not_started");
+        let run = command(&claude, None);
+        assert_eq!(run.as_std().get_current_dir(), Some(Path::new("/work")));
     }
 }

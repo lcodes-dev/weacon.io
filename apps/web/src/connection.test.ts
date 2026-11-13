@@ -108,9 +108,28 @@ test("frames that aren't messages are dropped", () => {
   assert.deepEqual(parse('{"id":0,"type":"newer"}'), { id: 0, type: "newer" });
 });
 
+test("a server that doesn't welcome the app in time ends the connection", (context) => {
+  context.mock.timers.enable({ apis: ["setTimeout"] });
+  const late = open();
+  const prompt = open();
+  context.mock.timers.tick(9_999);
+  prompt.socket.fire("message", welcome(["run.stream"]));
+  context.mock.timers.tick(1);
+
+  assert.deepEqual(late.statuses, [{ state: "ended", code: "connection.no_answer" }]);
+  assert.ok(late.socket.closed);
+  assert.equal(prompt.statuses.at(-1)?.state, "live");
+});
+
 test("the header says how the connection stands", () => {
   assert.equal(statusText({ state: "connecting" }), "Connecting to the server");
   assert.equal(statusText({ state: "live", server: SERVER, capabilities: [] }), "Connected");
   assert.equal(statusText({ state: "ended", code: "connection.lost" }), "The server closed the connection");
   assert.equal(statusText({ state: "ended", code: "connection.refused" }), "The server can't be reached");
+  assert.equal(statusText({ state: "ended", code: "connection.no_answer" }), "The server didn't answer");
+  assert.equal(
+    statusText({ state: "ended", code: "connection.other_protocol" }),
+    "The server runs another version of Weacon; reload the page",
+  );
+  assert.equal(statusText({ state: "ended", code: "connection.server_too_old" }), "The server is too old for this app");
 });

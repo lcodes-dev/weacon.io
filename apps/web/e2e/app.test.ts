@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { start } from "./harness.ts";
+import { fakeServer, start } from "./harness.ts";
 
 test("Settings shows this build and the server's, and the page's logs reach the server", { timeout: 120_000 }, async () => {
-  const harness = await start(1_000, 0);
+  const harness = await start(fakeServer(1_000, 0));
   try {
     const { page } = harness;
     await page.getByText("Connected").waitFor();
