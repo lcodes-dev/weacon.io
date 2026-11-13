@@ -256,7 +256,10 @@ mod tests {
         client.send(Frame::text(log)).await.unwrap();
         client.send(Frame::text(interrupt.clone())).await.unwrap();
         client.send(Frame::text(prompt.clone())).await.unwrap();
-        let answers = texts(&mut client, 1).await;
+        // A deadline, so a server that never answers fails the test instead of hanging it.
+        let answers = tokio::time::timeout(Duration::from_secs(30), texts(&mut client, 1))
+            .await
+            .unwrap();
         client.close(None).await.unwrap();
         served.await.unwrap().unwrap();
 
