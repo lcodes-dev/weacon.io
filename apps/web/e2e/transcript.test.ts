@@ -4,12 +4,12 @@ import { test } from "node:test";
 import type { Page } from "playwright-core";
 
 import { atBottom } from "../src/follow.ts";
-import { start } from "./harness.ts";
+import { fakeServer, start } from "./harness.ts";
 
 const MESSAGES = 33;
 
 test("text stays selected while the run streams, and following waits for the reader", { timeout: 180_000 }, async () => {
-  const harness = await start(100_000, 1);
+  const harness = await start(fakeServer(100_000, 1));
   try {
     const { page } = harness;
     // A few more than the selection, so it ends well above the row being written.

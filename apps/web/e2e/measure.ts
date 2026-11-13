@@ -4,12 +4,12 @@
 import { readFileSync } from "node:fs";
 import { gzipSync } from "node:zlib";
 
-import { start } from "./harness.ts";
+import { fakeServer, start } from "./harness.ts";
 
 // How long without a new row means the run is over; the fake server keeps the connection open.
 const QUIET_MS = 2_000;
 
-const harness = await start(100_000, 1);
+const harness = await start(fakeServer(100_000, 1));
 try {
   const { page } = harness;
   await page.evaluate(() => {
