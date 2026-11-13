@@ -64,6 +64,13 @@ pub(crate) enum AdminCommand {
         #[arg(long)]
         name: String,
     },
+    /// Make an account for an email address, so that its owner can sign in, and print its id.
+    AddAccount {
+        #[arg(long)]
+        db: PathBuf,
+        #[arg(long)]
+        email: String,
+    },
     /// Add a member to a workspace, with an account if their address has none, and print the
     /// member's id.
     AddMember {
@@ -200,6 +207,21 @@ mod tests {
                 db: "team.db".into(),
                 workspace: workspace_id("w1"),
                 email: "ada@example.com".to_owned(),
+            })
+        );
+        let account = [
+            "weacon-server",
+            "add-account",
+            "--db",
+            "team.db",
+            "--email",
+            "a@b.example",
+        ];
+        assert_eq!(
+            run(&account).unwrap().command,
+            Command::Admin(AdminCommand::AddAccount {
+                db: PathBuf::from("team.db"),
+                email: "a@b.example".to_owned(),
             })
         );
         run(&["weacon-server", "restore", "--from", "a.db"]).unwrap_err();
