@@ -136,6 +136,7 @@ test("@ offers people and agents, and a pick stays one mention", { timeout: 120_
       kind: "prompt",
       text: "hi @Jun 亜Sato and @Lena Brandt @lex ok",
     });
+    await page.waitForFunction(() => document.querySelector("textarea")?.value === "");
     await page.keyboard.type("@");
     assert.equal(await options.count(), 5);
   } finally {
