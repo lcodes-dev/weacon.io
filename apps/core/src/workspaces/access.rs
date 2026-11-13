@@ -220,9 +220,9 @@ mod tests {
         let kept = set(&broken, AccessLevel::Off, None).unwrap_err();
         let replaced = set(&broken, AccessLevel::Off, Some(true)).unwrap();
         let blocked = TempDir::new().unwrap();
-        // The file is written aside under this name first.
-        fs::create_dir_all(blocked.join("workspaces/w-w1/workspace.new")).unwrap();
-        let unsaved = set(&blocked, AccessLevel::Full, None).unwrap_err();
+        // A file where the workspaces' folder belongs; the choice in full is never read.
+        fs::write(blocked.join("workspaces"), "").unwrap();
+        let unsaved = set(&blocked, AccessLevel::Full, Some(false)).unwrap_err();
         let app = test_support::app(None, None);
         let nowhere = run(&app, &id("w1"), AccessLevel::Off, None, &mut Vec::new()).unwrap_err();
 

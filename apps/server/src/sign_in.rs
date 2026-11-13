@@ -1,9 +1,8 @@
-use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
 use axum::Json;
-use axum::extract::{ConnectInfo, State};
+use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use sha2::{Digest, Sha256};
@@ -11,6 +10,7 @@ use tokio::time::{Instant, sleep_until};
 use weacon_observability::Fault;
 use weacon_protocol::{ChallengeId, SignInFinish, SignInStart, SignInStarted, SignedIn, code};
 
+use crate::client::Client;
 use crate::db::Attempt;
 use crate::email::Email;
 use crate::http::{Shared, failure, refused, report, too_many};
@@ -41,10 +41,10 @@ pub(crate) fn tries() -> Limit {
 /// to find out.
 pub(crate) async fn start(
     State(shared): State<Shared>,
-    ConnectInfo(from): ConnectInfo<SocketAddr>,
+    Client(from): Client,
     Json(body): Json<SignInStart>,
 ) -> Response {
-    if !shared.starts.allow(from.ip(), Instant::now()) {
+    if !shared.starts.allow(from, Instant::now()) {
         return too_many(code!("sign_in.too_many"));
     }
     let challenge = match new_challenge() {
@@ -92,11 +92,11 @@ async fn send_code(
 /// whether or not there was a code to try.
 pub(crate) async fn finish(
     State(shared): State<Shared>,
-    ConnectInfo(from): ConnectInfo<SocketAddr>,
+    Client(from): Client,
     Json(body): Json<SignInFinish>,
 ) -> Response {
     let now = Instant::now();
-    if !shared.tries.allow(from.ip(), now) {
+    if !shared.tries.allow(from, now) {
         return too_many(code!("sign_in.too_many"));
     }
     let answer = match signed_in(&shared, &body).await {
@@ -172,6 +172,8 @@ pub(crate) fn token_hash(text: &str) -> [u8; 32] {
 
 #[cfg(test)]
 mod tests {
+    use std::net::SocketAddr;
+
     use serde_json::{Value, json};
     use weacon_testing::TempDir;
 
@@ -179,7 +181,7 @@ mod tests {
     use crate::db::CODE_LIFETIME;
     use crate::secret::Secret;
     use crate::test_support::{
-        Fixture, finish_body, request, run, start_sign_in, status, workspace_id,
+        Fixture, finish_body, request, request_with, run, start_sign_in, status, workspace_id,
     };
 
     async fn finish_with(address: SocketAddr, body: &str) -> (String, Value) {
@@ -366,6 +368,39 @@ mod tests {
         assert_eq!(wrong.0, "http/1.1 401 unauthorized");
         assert_eq!(too_many, "http/1.1 429 too many requests");
         assert_eq!(answer, refused);
+    }
+
+    #[tokio::test]
+    async fn behind_a_trusted_proxy_each_forwarded_client_has_its_own_limit() {
+        let fixture = Fixture::new().await;
+        let start = json!({ "workspace": "w1", "email": "ada@example.com" }).to_string();
+        let one_each = || Arc::new(Limit::new(1, HOUR));
+        let direct = Shared {
+            starts: one_each(),
+            ..fixture.shared.clone()
+        };
+        let proxied = Shared {
+            starts: one_each(),
+            proxies: Arc::new(["127.0.0.1".parse().unwrap()]),
+            ..fixture.shared.clone()
+        };
+        let (direct, proxied) = (run(direct).await, run(proxied).await);
+        let mut statuses = Vec::new();
+        for (server, forwarded) in [
+            (&direct, "198.51.100.1"),
+            (&direct, "198.51.100.2"),
+            (&proxied, "198.51.100.1"),
+            (&proxied, "198.51.100.2"),
+            (&proxied, "198.51.100.1"),
+        ] {
+            let header = format!("x-forwarded-for: {forwarded}\r\n");
+            let (head, _) = request_with(server.address, "POST /sign-in", &header, &start).await;
+            statuses.push(status(&head).to_owned());
+        }
+        let (accepted, limited) = ("http/1.1 202 accepted", "http/1.1 429 too many requests");
+
+        // Unless its sender is trusted, the header changes nothing.
+        assert_eq!(statuses, [accepted, limited, accepted, accepted, limited]);
     }
 
     #[tokio::test]

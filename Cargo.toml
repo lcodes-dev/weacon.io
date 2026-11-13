@@ -2,7 +2,7 @@
 resolver = "3"
 members = ["apps/*", "crates/*", "tooling/*"]
 # TypeScript folders, not crates.
-exclude = ["apps/extension", "tooling/ts"]
+exclude = ["apps/extension", "apps/web", "tooling/ts"]
 
 [workspace.package]
 version = "0.0.0"
