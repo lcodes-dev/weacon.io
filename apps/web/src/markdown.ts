@@ -21,8 +21,10 @@ export function blocks(source: string): Block[] {
   const out: Block[] = [];
   for (let at = 0; at < lines.length; ) {
     const line = lines[at] ?? "";
-    if (FENCE.test(line)) {
-      const stop = nextLine(lines, at, (next) => FENCE.test(next));
+    const open = fenceLength(line);
+    if (open >= 3) {
+      // Only a run at least as long, and nothing after it, closes the block.
+      const stop = nextLine(lines, at, (next) => fenceLength(next) >= open && next.slice(fenceLength(next)).trim() === "");
       out.push({ kind: "code", text: lines.slice(at + 1, stop).join("\n") });
       at = stop + 1;
       continue;
@@ -79,6 +81,11 @@ function nextLine(lines: readonly string[], at: number, ends: (line: string) => 
     next += 1;
   }
   return next;
+}
+
+// How many backticks `line` starts with.
+function fenceLength(line: string): number {
+  return /^`*/.exec(line)?.[0].length ?? 0;
 }
 
 function startsBlock(line: string): boolean {

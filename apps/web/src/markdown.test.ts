@@ -44,6 +44,13 @@ test("paragraphs, headings, lists and code blocks are read in order", () => {
   ]);
 });
 
+test("a code block closes only on a fence as long as its own, with nothing after it", () => {
+  assert.deepEqual(blocks("````\n```\n# kept\n```js\n```` \nafter"), [
+    { kind: "code", text: "```\n# kept\n```js" },
+    { kind: "paragraph", inlines: [{ kind: "text", text: "after" }] },
+  ]);
+});
+
 test("an unclosed code block runs to the end", () => {
   assert.deepEqual(blocks("```\nlet a = 1;"), [{ kind: "code", text: "let a = 1;" }]);
   assert.deepEqual(blocks(""), []);
