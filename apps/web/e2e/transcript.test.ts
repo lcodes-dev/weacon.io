@@ -77,15 +77,19 @@ function scrollOf(): { scrollTop: number; scrollHeight: number; clientHeight: nu
 }
 
 // Selects the first piece of the text row still being written, and gives what is selected.
-function selectInWritingRow(): string {
-  const row = document.querySelector("[data-writing]");
-  const piece = row?.firstChild;
-  if (row === null || piece === null || piece === undefined) {
-    throw new Error("no row is being written");
+// Waits for a row being written and selects it in the same frame, before the row can close.
+async function selectInWritingRow(): Promise<string> {
+  for (let frame = 0; frame < 600; frame += 1) {
+    const row = document.querySelector("[data-writing]");
+    const piece = row?.firstChild;
+    if (row !== null && piece) {
+      row.setAttribute("data-picked", "");
+      document.getSelection()?.setBaseAndExtent(piece, 0, piece, piece.textContent?.length ?? 0);
+      return document.getSelection()?.toString() ?? "";
+    }
+    await new Promise(requestAnimationFrame);
   }
-  row.setAttribute("data-picked", "");
-  document.getSelection()?.setBaseAndExtent(piece, 0, piece, piece.textContent?.length ?? 0);
-  return document.getSelection()?.toString() ?? "";
+  throw new Error("no row is being written");
 }
 
 // Selects text rows 1 to `count`, as a drag would. Each function here runs in the page on its own.

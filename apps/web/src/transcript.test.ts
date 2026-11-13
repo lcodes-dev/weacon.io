@@ -47,8 +47,8 @@ test("tools get rows that change when they finish, and end the text", () => {
   assert.equal(writing, true);
 });
 
-test("a finished turn ends the text, and other events change nothing", () => {
-  const before = apply(EMPTY, [delta("Bye")]);
+test("a finished turn ends the text and its running tools, and other events change nothing", () => {
+  const before = apply(EMPTY, [call("c-1"), done("c-1", false), call("c-2"), delta("Bye")]);
   const after = apply(before, [
     { event: "started", session: "0b8f5c2e-7a1d-4e3b-9c6f-2d4a8e1b5c7f" },
     { event: "finished", outcome: { state: "completed" } },
@@ -57,6 +57,8 @@ test("a finished turn ends the text, and other events change nothing", () => {
   ]);
 
   assert.deepEqual(after.rows, [
+    { kind: "tool", call: "c-1", tool: "Read", state: "done" },
+    { kind: "tool", call: "c-2", tool: "Read", state: "failed" },
     { kind: "text", pieces: ["Bye"] },
     { kind: "finished", outcome: { state: "completed" } },
     { kind: "text", pieces: ["Hi"] },
