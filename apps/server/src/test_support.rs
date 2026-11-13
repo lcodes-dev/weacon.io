@@ -229,6 +229,25 @@ pub(crate) async fn sign_in(
     )
 }
 
+/// The header that proves a sign-in whose answer was `body`.
+pub(crate) fn bearer(body: &Value) -> String {
+    let token = body["token"].as_str().unwrap();
+    format!("authorization: Bearer {token}\r\n")
+}
+
+/// One request with `headers` and `body`: the answer's status line, and its JSON body or
+/// null.
+pub(crate) async fn ask(
+    address: SocketAddr,
+    head: &str,
+    headers: &str,
+    body: &str,
+) -> (String, Value) {
+    let (head, body) = request_with(address, head, headers, body).await;
+    let body = serde_json::from_str(&body).unwrap_or_default();
+    (status(&head).to_owned(), body)
+}
+
 /// Workspaces w1 and w2 on a new database. ada@example.com is m1 in w1 and m2 in w2, and
 /// bo@example.com is m3 in w1 only.
 pub(crate) async fn two_teams(dir: &TempDir) -> (Workspace, Workspace) {

@@ -21,6 +21,7 @@ use crate::http::{Shared, cross_site, failure, refused, report, too_many};
 use crate::limit::Limit;
 use crate::mail::mail_failed;
 use crate::secret::{os_secrets, random_failed};
+use crate::workspaces;
 
 /// How long a session lasts: 30 days, in seconds.
 pub(crate) const SESSION_LIFETIME: i64 = 2_592_000;
@@ -172,6 +173,7 @@ async fn signed_in(
         token_hash: &token_hash(&token),
         now,
         token_expires_at: now.saturating_add(SESSION_LIFETIME),
+        personal: &workspaces::personal()?,
     };
     let account = shared.db.finish_sign_in(&attempt).await?;
     Ok(account.map(|account| {
@@ -222,8 +224,8 @@ mod tests {
     use crate::db::CODE_LIFETIME;
     use crate::secret::Secret;
     use crate::test_support::{
-        Fixture, finish_body, fresh_account, member_id, request, request_with, run, sign_in,
-        start_sign_in, status, workspace_id,
+        Fixture, ask, bearer, finish_body, fresh_account, member_id, request, request_with, run,
+        sign_in, start_sign_in, status, workspace_id,
     };
 
     async fn finish_with(address: SocketAddr, body: &str) -> (String, Value) {
@@ -295,12 +297,6 @@ mod tests {
         format!("cookie: theme=dark; {SESSION_COOKIE}={token}\r\n")
     }
 
-    async fn ask(address: SocketAddr, head: &str, headers: &str) -> (String, Value) {
-        let (head, body) = request_with(address, head, headers, "").await;
-        let body = serde_json::from_str(&body).unwrap_or_default();
-        (status(&head).to_owned(), body)
-    }
-
     #[tokio::test]
     async fn a_browser_gets_its_session_as_a_cookie_its_scripts_cant_read() {
         let fixture = Fixture::new().await;
@@ -312,7 +308,7 @@ mod tests {
             .unwrap();
         let (name, rest) = set.split_once('=').unwrap();
         let (token, attributes) = rest.split_once(';').unwrap();
-        let (found, session) = ask(server.address, "GET /api/session", &cookie(&head)).await;
+        let (found, session) = ask(server.address, "GET /api/session", &cookie(&head), "").await;
 
         assert_eq!(status(&head), "http/1.1 200 ok");
         assert_eq!(name, "__host-weacon_session");
@@ -355,9 +351,9 @@ mod tests {
             // No page sent this, so it may read but not change.
             ("POST /api/sign-out", cookie.clone()),
         ] {
-            refusals.push(ask(server.address, request, &headers).await);
+            refusals.push(ask(server.address, request, &headers, "").await);
         }
-        let (read, _) = ask(server.address, "GET /api/session", &cookie).await;
+        let (read, _) = ask(server.address, "GET /api/session", &cookie, "").await;
 
         assert_eq!(status(&crossed), "http/1.1 403 forbidden");
         assert_eq!(status(&head), "http/1.1 200 ok");
@@ -377,23 +373,20 @@ mod tests {
         let (head, _) = browser_sign_in(&fixture, server.address).await;
         let cookie = cookie(&head);
         let (_, other) = sign_in(&fixture, server.address, "ada@example.com").await;
-        let bearer = format!(
-            "authorization: Bearer {}\r\n",
-            other["token"].as_str().unwrap()
-        );
+        let bearer = bearer(&other);
 
         let page = format!("{cookie}{PAGE}");
         let (out, _) = request_with(server.address, "POST /api/sign-out", &page, "").await;
         let cleared = out
             .iter()
             .find_map(|line| line.strip_prefix("set-cookie: "));
-        let (after, _) = ask(server.address, "GET /api/session", &cookie).await;
-        let (again, _) = ask(server.address, "POST /api/sign-out", &page).await;
-        let (unproven, _) = ask(server.address, "POST /api/sign-out", PAGE).await;
-        let (bare, _) = ask(server.address, "POST /api/sign-out", "").await;
-        let (others, _) = ask(server.address, "GET /api/session", &bearer).await;
-        let (token_out, _) = ask(server.address, "POST /api/sign-out", &bearer).await;
-        let (token_after, _) = ask(server.address, "GET /api/session", &bearer).await;
+        let (after, _) = ask(server.address, "GET /api/session", &cookie, "").await;
+        let (again, _) = ask(server.address, "POST /api/sign-out", &page, "").await;
+        let (unproven, _) = ask(server.address, "POST /api/sign-out", PAGE, "").await;
+        let (bare, _) = ask(server.address, "POST /api/sign-out", "", "").await;
+        let (others, _) = ask(server.address, "GET /api/session", &bearer, "").await;
+        let (token_out, _) = ask(server.address, "POST /api/sign-out", &bearer, "").await;
+        let (token_after, _) = ask(server.address, "GET /api/session", &bearer, "").await;
 
         assert_eq!(status(&out), "http/1.1 204 no content");
         assert_eq!(
@@ -416,17 +409,14 @@ mod tests {
         let fixture = Fixture::new().await;
         let server = run(fixture.shared.clone()).await;
         let (_, body) = sign_in(&fixture, server.address, "ada@example.com").await;
-        let bearer = format!(
-            "authorization: Bearer {}\r\n",
-            body["token"].as_str().unwrap()
-        );
+        let bearer = bearer(&body);
         let required = json!({ "code": "sign_in.required", "retryable": false });
 
-        let (found, session) = ask(server.address, "GET /api/session", &bearer).await;
-        let none = ask(server.address, "GET /api/session", "").await;
-        let wrong = ask(server.address, "GET /api/session", "cookie: a=b\r\n").await;
+        let (found, session) = ask(server.address, "GET /api/session", &bearer, "").await;
+        let none = ask(server.address, "GET /api/session", "", "").await;
+        let wrong = ask(server.address, "GET /api/session", "cookie: a=b\r\n", "").await;
         fixture.advance(SESSION_LIFETIME);
-        let ended = ask(server.address, "GET /api/session", &bearer).await;
+        let ended = ask(server.address, "GET /api/session", &bearer, "").await;
 
         assert_eq!(found, "http/1.1 200 ok");
         assert_eq!(session["account"], body["account"]);

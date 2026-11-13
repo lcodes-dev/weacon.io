@@ -3,6 +3,7 @@ use subtle::ConstantTimeEq;
 use weacon_observability::Fault;
 use weacon_protocol::{AccountId, ChallengeId};
 
+use super::owned::{NewWorkspace, ensure_personal};
 use super::{Db, failed, stored, unreadable};
 use crate::email::Email;
 
@@ -19,6 +20,8 @@ pub(crate) struct Attempt<'a> {
     pub(crate) token_hash: &'a [u8],
     pub(crate) now: i64,
     pub(crate) token_expires_at: i64,
+    /// The account's Personal workspace, made with the session unless it has had one.
+    pub(crate) personal: &'a NewWorkspace,
 }
 
 impl Db {
@@ -114,6 +117,7 @@ impl Db {
             .map_err(failed)?;
         if right {
             start_session(&mut transaction, &account, attempt).await?;
+            ensure_personal(&mut transaction, &account, attempt.personal).await?;
         }
         transaction.commit().await.map_err(failed)?;
         right.then(|| stored(account)).transpose()
@@ -179,6 +183,15 @@ mod tests {
     use weacon_testing::TempDir;
 
     use super::*;
+    use crate::test_support::{member_id, workspace_id};
+
+    fn personal(name: &str) -> NewWorkspace {
+        NewWorkspace {
+            id: workspace_id(&format!("p-{name}")),
+            name: "Personal".to_owned(),
+            owner: member_id(&format!("o-{name}")),
+        }
+    }
 
     const NOW: i64 = 100_000;
 
@@ -218,6 +231,7 @@ mod tests {
             token_hash: name.as_bytes(),
             now,
             token_expires_at: now + 100,
+            personal: &personal(name),
         };
         let account = db.finish_sign_in(&attempt).await.unwrap();
         account.map(|account| account.as_str().to_owned())
