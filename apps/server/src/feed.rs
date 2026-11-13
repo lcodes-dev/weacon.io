@@ -16,7 +16,7 @@ use weacon_protocol::{Capability, Code, Envelope, ErrorBody, Message, WorkspaceI
 use crate::connections::Place;
 use crate::db::Workspace;
 use crate::http::{Shared, failure, refused};
-use crate::sign_in::hash;
+use crate::sign_in::token_hash;
 
 /// What a client must offer, and the server offers, to get a workspace's changes.
 const FEED: Code = code!("workspace.feed");
@@ -56,7 +56,7 @@ pub(crate) async fn feed(
         .get(AUTHORIZATION)
         .and_then(|value| value.to_str().ok())
         .and_then(|value| value.strip_prefix("Bearer "))
-        .map(hash)
+        .map(token_hash)
     else {
         return refused(code!("sign_in.required"));
     };
