@@ -630,11 +630,14 @@ mod tests {
             ]
         );
         bench.broken.store(false, Ordering::SeqCst);
-        bench.chats.command(prompt("r-2", "Hi")).await.unwrap();
+        bench.chats.command(prompt("r-2", "Again")).await.unwrap();
 
+        // The failed prompt left the queue: the new run gets only the next one.
+        let mut started = soon(bench.started.recv()).await.unwrap();
+        assert_eq!(started.start.run, run("run-2"));
         assert_eq!(
-            soon(bench.started.recv()).await.unwrap().start.run,
-            run("run-2")
+            soon(started.told.recv()).await,
+            Some(Told::Send("Again".to_owned()))
         );
     }
 
