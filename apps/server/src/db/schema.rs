@@ -101,6 +101,52 @@ CREATE TABLE sessions (
     expires_at INTEGER NOT NULL
 ) STRICT;
 ",
+    // Tasks, each with the versions it went through.
+    "
+CREATE TABLE tasks (
+    workspace_id TEXT NOT NULL REFERENCES workspaces (workspace_id),
+    task_id TEXT NOT NULL,
+    title TEXT NOT NULL,
+    status TEXT NOT NULL,
+    order_key TEXT NOT NULL,
+    version INTEGER NOT NULL,
+    PRIMARY KEY (workspace_id, task_id),
+    UNIQUE (workspace_id, order_key)
+) STRICT;
+
+CREATE TABLE task_versions (
+    workspace_id TEXT NOT NULL,
+    task_id TEXT NOT NULL,
+    version INTEGER NOT NULL,
+    author_kind TEXT NOT NULL,
+    author_member TEXT NOT NULL,
+    accepted_by TEXT NOT NULL,
+    at INTEGER NOT NULL,
+    PRIMARY KEY (workspace_id, task_id, version),
+    FOREIGN KEY (workspace_id, task_id) REFERENCES tasks (workspace_id, task_id),
+    FOREIGN KEY (workspace_id, author_member) REFERENCES members (workspace_id, member_id),
+    FOREIGN KEY (workspace_id, accepted_by) REFERENCES members (workspace_id, member_id)
+) STRICT;
+
+CREATE TABLE changes_with_tasks (
+    workspace_id TEXT NOT NULL,
+    seq INTEGER NOT NULL,
+    kind TEXT NOT NULL,
+    member_id TEXT NOT NULL,
+    task_id TEXT,
+    task_version INTEGER,
+    PRIMARY KEY (workspace_id, seq),
+    FOREIGN KEY (workspace_id, member_id) REFERENCES members (workspace_id, member_id),
+    FOREIGN KEY (workspace_id, task_id, task_version)
+        REFERENCES task_versions (workspace_id, task_id, version)
+) STRICT;
+
+INSERT INTO changes_with_tasks (workspace_id, seq, kind, member_id)
+SELECT workspace_id, seq, kind, member_id FROM changes;
+
+DROP TABLE changes;
+ALTER TABLE changes_with_tasks RENAME TO changes;
+",
 ];
 
 /// Applies the steps the database hasn't had yet, each in its own transaction that holds the
