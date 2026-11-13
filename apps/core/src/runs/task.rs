@@ -70,6 +70,8 @@ pub(crate) enum Heard {
 
 // How long an agent whose pipes broke may still speak before it is stopped.
 const LAST_WORDS: Duration = Duration::from_secs(5);
+// How long an order may take to write; an agent that stops reading counts as broken.
+const ORDER_WRITE: Duration = Duration::from_secs(30);
 
 /// Drives `agent` as the run `of` until it exits or the engine drops `orders`.
 pub(crate) async fn drive<A: Agent>(
@@ -117,11 +119,21 @@ pub(crate) async fn drive<A: Agent>(
 }
 
 async fn obey<A: Agent>(agent: &mut A, order: Order) -> Result<(), Fault> {
-    match order {
-        Order::Send(prompt) => agent.send(&prompt).await,
-        Order::Answer(answer) => agent.answer(&answer).await,
-        Order::Interrupt => agent.interrupt().await,
-    }
+    let obeyed = async {
+        match order {
+            Order::Send(prompt) => agent.send(&prompt).await,
+            Order::Answer(answer) => agent.answer(&answer).await,
+            Order::Interrupt => agent.interrupt().await,
+        }
+    };
+    tokio::time::timeout(ORDER_WRITE, obeyed)
+        .await
+        .unwrap_or_else(|_| {
+            Err(Fault::new(
+                code!("agent.io_failed"),
+                "The agent stopped reading",
+            ))
+        })
 }
 
 #[cfg(test)]
@@ -182,8 +194,8 @@ mod tests {
         assert!(reports.recv().await.is_none());
     }
 
-    // Refuses every prompt: as busy, or with broken pipes when the prompt says so. A second
-    // after it is asked, it says one text, then nothing more.
+    // Refuses every prompt: as busy, with broken pipes, or by never reading it, as the prompt
+    // says. A second after it is asked, it says one text, then nothing more.
     struct Refuses {
         said: bool,
     }
@@ -192,6 +204,7 @@ mod tests {
         async fn send(&mut self, prompt: &str) -> Result<(), Fault> {
             Err(match prompt {
                 "broken" => Fault::new(code!("agent.io_failed"), "The agent's pipes failed"),
+                "stuck" => return std::future::pending().await,
                 _ => Fault::new(code!("agent.busy"), "The agent is still on a turn"),
             })
         }
@@ -242,6 +255,28 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn an_agent_that_stops_reading_its_orders_is_stopped() {
+        let of = RunOf {
+            workspace: WorkspaceId::try_from("w-1".to_owned()).unwrap(),
+            chat: ChatId::try_from("c-1".to_owned()).unwrap(),
+            run: RunId::try_from("run-1".to_owned()).unwrap(),
+        };
+        let (orders, ordered) = mpsc::unbounded_channel();
+        let (reporter, mut reports) = mpsc::channel(8);
+        orders.send(Order::Send("stuck".to_owned())).unwrap();
+
+        let driven = drive(Refuses { said: true }, of, ordered, reporter);
+        tokio::time::timeout(ORDER_WRITE + LAST_WORDS * 2, driven)
+            .await
+            .unwrap();
+
+        let last = reports.recv().await.unwrap();
+        assert!(
+            matches!(&last.heard, Heard::Exited(Some(fault)) if fault.code().as_str() == "agent.io_failed")
+        );
     }
 
     // A real process: a shell script stands in for `claude`.
