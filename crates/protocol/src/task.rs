@@ -40,6 +40,59 @@ pub enum Author {
     Newer,
 }
 
+/// A task as it travels: `order` is its order key and `version` rises with each change. The
+/// server sends it to clients that have the capability `workspace.tasks`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TaskRecord {
+    pub id: TaskId,
+    pub title: String,
+    pub status: TaskStatus,
+    pub order: String,
+    pub version: u64,
+}
+
+/// A workspace's tasks in their order, from the server.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TaskList {
+    pub tasks: Vec<TaskRecord>,
+}
+
+/// Asks the server for a new task, placed in front of `before`, or last without one. The
+/// answer is its [`TaskRecord`].
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TaskCreate {
+    pub title: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub before: Option<TaskId>,
+}
+
+/// Asks the server to change a task that the client read at `version`; the server refuses
+/// when the task has changed since. The answer is its [`TaskRecord`].
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TaskChange {
+    pub version: u64,
+    pub edit: TaskEditBody,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum TaskEditBody {
+    Title {
+        title: String,
+    },
+    Status {
+        status: TaskStatus,
+    },
+    /// Places the task in front of `before`, or last without one.
+    Move {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        before: Option<TaskId>,
+    },
+    /// An edit this build doesn't know, from a newer peer; only ever received.
+    #[serde(other)]
+    Newer,
+}
+
 #[cfg(test)]
 mod tests {
     use serde_json::json;
@@ -98,5 +151,110 @@ mod tests {
             Author::Newer
         );
         serde_json::from_value::<Author>(json!({ "kind": "person" })).unwrap_err();
+    }
+
+    fn record() -> TaskRecord {
+        TaskRecord {
+            id: TaskId::try_from("t-1".to_owned()).unwrap(),
+            title: "Write the docs".to_owned(),
+            status: TaskStatus::InProgress,
+            order: "V".to_owned(),
+            version: 3,
+        }
+    }
+
+    #[test]
+    fn a_task_and_a_list_travel_as_plain_json() {
+        let wire = json!({
+            "id": "t-1", "title": "Write the docs", "status": "in_progress", "order": "V",
+            "version": 3,
+        });
+        let list = TaskList {
+            tasks: vec![record()],
+        };
+        let list_wire = json!({ "tasks": [wire] });
+
+        assert_eq!(serde_json::to_value(record()).unwrap(), wire);
+        assert_eq!(
+            serde_json::from_value::<TaskRecord>(wire).unwrap(),
+            record()
+        );
+        let newer = json!({
+            "id": "t-1", "title": "Write the docs", "status": "in_progress", "order": "V",
+            "version": 3, "due": "soon",
+        });
+        assert_eq!(
+            serde_json::from_value::<TaskRecord>(newer).unwrap(),
+            record()
+        );
+        assert_eq!(serde_json::to_value(&list).unwrap(), list_wire);
+        assert_eq!(serde_json::from_value::<TaskList>(list_wire).unwrap(), list);
+    }
+
+    #[test]
+    fn a_new_task_names_the_one_it_goes_in_front_of_or_none() {
+        let before = TaskId::try_from("t-2".to_owned()).unwrap();
+        let create = |before| TaskCreate {
+            title: "Ship".to_owned(),
+            before,
+        };
+        let last = json!({ "title": "Ship" });
+        let placed = json!({ "title": "Ship", "before": "t-2" });
+
+        assert_eq!(serde_json::to_value(create(None)).unwrap(), last);
+        assert_eq!(
+            serde_json::from_value::<TaskCreate>(last).unwrap(),
+            create(None)
+        );
+        assert_eq!(
+            serde_json::to_value(create(Some(before.clone()))).unwrap(),
+            placed
+        );
+        assert_eq!(
+            serde_json::from_value::<TaskCreate>(placed).unwrap(),
+            create(Some(before))
+        );
+        serde_json::from_value::<TaskCreate>(json!({ "title": "Ship", "before": "a b" }))
+            .unwrap_err();
+    }
+
+    #[test]
+    fn a_change_names_the_version_read_and_one_tagged_edit() {
+        let before = TaskId::try_from("t-2".to_owned()).unwrap();
+        for (edit, wire) in [
+            (
+                TaskEditBody::Title {
+                    title: "Ship".to_owned(),
+                },
+                json!({ "kind": "title", "title": "Ship" }),
+            ),
+            (
+                TaskEditBody::Status {
+                    status: TaskStatus::Done,
+                },
+                json!({ "kind": "status", "status": "done" }),
+            ),
+            (
+                TaskEditBody::Move {
+                    before: Some(before),
+                },
+                json!({ "kind": "move", "before": "t-2" }),
+            ),
+            (
+                TaskEditBody::Move { before: None },
+                json!({ "kind": "move" }),
+            ),
+        ] {
+            let change = TaskChange { version: 3, edit };
+            let wire = json!({ "version": 3, "edit": wire });
+
+            assert_eq!(serde_json::to_value(&change).unwrap(), wire);
+            assert_eq!(serde_json::from_value::<TaskChange>(wire).unwrap(), change);
+        }
+        assert_eq!(
+            serde_json::from_value::<TaskEditBody>(json!({ "kind": "archive" })).unwrap(),
+            TaskEditBody::Newer
+        );
+        serde_json::from_value::<TaskChange>(json!({ "edit": { "kind": "move" } })).unwrap_err();
     }
 }
