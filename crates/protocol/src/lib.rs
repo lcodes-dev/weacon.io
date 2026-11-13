@@ -7,6 +7,7 @@ mod code;
 mod diff;
 mod frame;
 mod log;
+mod machine;
 mod message;
 mod pick;
 mod receipt;
@@ -18,8 +19,8 @@ mod token;
 pub use access::AccessLevel;
 pub use capability::Capability;
 pub use chat::{
-    ChatAction, ChatAnswer, ChatAnswerKind, ChatCommand, ChatEntry, ChatEvent, ChatId, ChatQuery,
-    ChatQueryKind, ChatUpdate,
+    Asker, ChatAction, ChatAnswer, ChatAnswerKind, ChatCommand, ChatEntry, ChatEvent, ChatId,
+    ChatQuery, ChatQueryKind, ChatUpdate,
 };
 pub use code::Code;
 pub use diff::{
@@ -28,6 +29,10 @@ pub use diff::{
 };
 pub use frame::{FrameError, LineDecoder, MAX_FRAME, encode_line};
 pub use log::{ClientLog, Level, LogEvent};
+pub use machine::{
+    MachineId, MachineKey, MachineList, MachineName, MachineOs, MachineSummary, PairClaim,
+    PairClaimed, PairConfirm, PairLookup, PairPending, PairStart, PairStarted, PairingId,
+};
 pub use message::{App, Envelope, ErrorBody, Hello, Message, PROTOCOL, Welcome};
 pub use pick::Pick;
 pub use receipt::{Outcome, Receipt, RequestId};
@@ -69,6 +74,14 @@ mod tests {
         generator.subschema_for::<TaskList>();
         generator.subschema_for::<TaskCreate>();
         generator.subschema_for::<TaskChange>();
+        generator.subschema_for::<PairStart>();
+        generator.subschema_for::<PairStarted>();
+        generator.subschema_for::<PairLookup>();
+        generator.subschema_for::<PairPending>();
+        generator.subschema_for::<PairConfirm>();
+        generator.subschema_for::<PairClaim>();
+        generator.subschema_for::<PairClaimed>();
+        generator.subschema_for::<MachineList>();
         let schema = generator.into_root_schema_for::<Envelope>();
         let current = serde_json::to_string_pretty(&schema).unwrap() + "\n";
         let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("schema.json");
