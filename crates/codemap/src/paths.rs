@@ -10,7 +10,19 @@ pub(crate) type Segments = Vec<String>;
 pub(crate) struct Named {
     pub(crate) within: Vec<String>,
     pub(crate) segments: Segments,
+    /// What a `use` brings into scope under this path; `None` for other paths.
+    pub(crate) bound: Option<Bound>,
 }
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Bound {
+    /// The name it is known by: the path's last segment, or its `as` alias.
+    Name(String),
+    /// Everything the path names, from `use path::*`.
+    Glob,
+}
+
+type Found = Vec<(Segments, Option<Bound>)>;
 
 type Scopes<'tree> = Vec<(Node<'tree>, Vec<String>)>;
 
@@ -24,9 +36,10 @@ pub(crate) fn paths(root: Node<'_>, source: &[u8]) -> Vec<Named> {
         preorder(scope, |node| {
             visit(node, source, &within, &mut written, &mut scopes)
         });
-        found.extend(written.into_iter().map(|segments| Named {
+        found.extend(written.into_iter().map(|(segments, bound)| Named {
             within: within.clone(),
             segments,
+            bound,
         }));
     }
     found
@@ -37,7 +50,7 @@ fn visit<'tree>(
     node: Node<'tree>,
     source: &[u8],
     within: &[String],
-    found: &mut Vec<Segments>,
+    found: &mut Found,
     scopes: &mut Scopes<'tree>,
 ) -> bool {
     // Only items take attributes, and checking others is slow in deep trees.
@@ -57,7 +70,7 @@ fn visit<'tree>(
                 .child_by_field_name("name")
                 .map(|name| text(name, source).to_owned());
             match (node.child_by_field_name("body"), name) {
-                (None, Some(name)) => found.push(vec![name]),
+                (None, Some(name)) => found.push((vec![name], None)),
                 (Some(body), Some(name)) => scopes.push((body, [within, &[name]].concat())),
                 _ => {}
             }
@@ -65,7 +78,7 @@ fn visit<'tree>(
         }
         "scoped_identifier" | "scoped_type_identifier" => match segments(node, source) {
             Some(path) => {
-                found.push(path);
+                found.push((path, None));
                 false
             }
             None => true,
@@ -74,7 +87,7 @@ fn visit<'tree>(
     }
 }
 
-fn use_tree(root: Node<'_>, source: &[u8], found: &mut Vec<Segments>) {
+fn use_tree(root: Node<'_>, source: &[u8], found: &mut Found) {
     let mut pending = vec![(root, Vec::new())];
     while let Some((node, prefix)) = pending.pop() {
         let path = |node: Option<Node<'_>>| {
@@ -94,16 +107,27 @@ fn use_tree(root: Node<'_>, source: &[u8], found: &mut Vec<Segments>) {
                 let items = node.named_children(&mut cursor);
                 push_reversed(&mut pending, items.map(|item| (item, prefix.clone())));
             }
-            "use_as_clause" => found.extend(path(node.child_by_field_name("path"))),
-            "use_wildcard" => found.extend(path(node.named_child(0))),
-            "self" => found.extend(path(None)),
-            _ => found.extend(path(Some(node))),
+            "use_as_clause" => {
+                let alias = node.child_by_field_name("alias");
+                let alias = alias.map(|it| Bound::Name(text(it, source).to_owned()));
+                found.extend(path(node.child_by_field_name("path")).map(|it| (it, alias)));
+            }
+            "use_wildcard" => {
+                found.extend(path(node.named_child(0)).map(|it| (it, Some(Bound::Glob))));
+            }
+            "self" => found.extend(path(None).map(named_by_last)),
+            _ => found.extend(path(Some(node)).map(named_by_last)),
         }
     }
 }
 
+fn named_by_last(segments: Segments) -> (Segments, Option<Bound>) {
+    let bound = segments.last().map(|last| Bound::Name(last.clone()));
+    (segments, bound)
+}
+
 /// `a::b::C` as `["a", "b", "C"]`; `None` for paths through types such as `<T as U>::f`.
-fn segments(node: Node<'_>, source: &[u8]) -> Option<Segments> {
+pub(crate) fn segments(node: Node<'_>, source: &[u8]) -> Option<Segments> {
     let mut reversed = Vec::new();
     let mut next = Some(node);
     while let Some(node) = next {
@@ -162,6 +186,21 @@ mod tests {
                 "h::I",
                 "super::j"
             ]
+        );
+    }
+
+    #[test]
+    fn notes_what_each_use_brings_into_scope() {
+        let text = "use a::{self, b::C, d as e, f::*};\nfn g() { h::I; }\n";
+        let tree = parse(&mut rust_parser().unwrap(), text).unwrap();
+        let bound: Vec<Option<Bound>> = paths(tree.root_node(), text.as_bytes())
+            .into_iter()
+            .map(|path| path.bound)
+            .collect();
+        let name = |it: &str| Some(Bound::Name(it.to_owned()));
+        assert_eq!(
+            bound,
+            [name("a"), name("C"), name("e"), Some(Bound::Glob), None]
         );
     }
 

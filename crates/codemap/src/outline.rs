@@ -4,6 +4,7 @@ use std::fmt;
 use tree_sitter::{Node, Tree};
 
 use crate::Fingerprint;
+use crate::refs::{Ref, refs};
 use crate::syntax::{preorder, push_reversed, test_only, text};
 
 /// An item declared in a module, named relative to it: `Frame`, `Frame::new`, `tests::helper`.
@@ -66,26 +67,45 @@ impl fmt::Display for Kind {
     }
 }
 
+/// A symbol, where it sits in its file, and what its code refers to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Item {
+    pub(crate) symbol: Symbol,
+    /// The inline modules around it, outermost first.
+    pub(crate) within: Vec<String>,
+    /// The type or trait it belongs to, which `Self` names, as written in `within`.
+    pub(crate) owner: Option<String>,
+    pub(crate) refs: Vec<Ref>,
+}
+
+/// Where items sit: the inline modules around them, their owner, and the prefix of their names.
+#[derive(Clone, Default)]
+struct Place {
+    within: Vec<String>,
+    owner: Option<String>,
+    prefix: String,
+}
+
 /// The items of a file, test-only items left out, in source order.
-pub(crate) fn symbols(tree: &Tree, source: &[u8]) -> Vec<Symbol> {
+pub(crate) fn symbols(tree: &Tree, source: &[u8]) -> Vec<Item> {
     let mut found = Vec::new();
     // A stack rather than recursion, so no nesting depth can overflow ours.
     let mut pending = Vec::new();
-    push_items(&mut pending, Some(tree.root_node()), "");
-    while let Some((item, prefix)) = pending.pop() {
-        visit(item, &prefix, source, &mut found, &mut pending);
+    push_items(&mut pending, Some(tree.root_node()), &Place::default());
+    while let Some((item, place)) = pending.pop() {
+        visit(item, &place, source, &mut found, &mut pending);
     }
     number_repeats(&mut found);
     found
 }
 
-type Pending<'tree> = Vec<(Node<'tree>, String)>;
+type Pending<'tree> = Vec<(Node<'tree>, Place)>;
 
 fn visit<'tree>(
     item: Node<'tree>,
-    prefix: &str,
+    place: &Place,
     source: &[u8],
-    found: &mut Vec<Symbol>,
+    found: &mut Vec<Item>,
     pending: &mut Pending<'tree>,
 ) {
     if test_only(item, source) {
@@ -93,7 +113,13 @@ fn visit<'tree>(
     }
     let body = item.child_by_field_name("body");
     if item.kind() == "impl_item" {
-        push_items(pending, body, &join(prefix, &impl_owner(item, source)));
+        let (owner, path) = impl_owner(item, source);
+        let inside = Place {
+            within: place.within.clone(),
+            owner: Some(owner),
+            prefix: join(&place.prefix, &path),
+        };
+        push_items(pending, body, &inside);
         return;
     }
     let name = item
@@ -105,38 +131,75 @@ fn visit<'tree>(
     if kind == Kind::Mod && body.is_none() {
         return;
     }
-    let name = join(prefix, name);
-    found.push(Symbol {
+    let full = join(&place.prefix, name);
+    let symbol = Symbol {
         kind,
-        name: name.clone(),
+        name: full.clone(),
         line: line(item),
         fingerprint: fingerprint(item, source),
+    };
+    let inside = place.inside(kind, name, full);
+    let refs = if inside.is_some() {
+        Vec::new()
+    } else {
+        refs(item, source)
+    };
+    found.push(Item {
+        symbol,
+        within: place.within.clone(),
+        owner: place.owner.clone(),
+        refs,
     });
-    if matches!(kind, Kind::Mod | Kind::Trait) {
-        push_items(pending, body, &name);
+    if let Some(inside) = inside {
+        push_items(pending, body, &inside);
     }
 }
 
-fn push_items<'tree>(pending: &mut Pending<'tree>, list: Option<Node<'tree>>, prefix: &str) {
+impl Place {
+    /// Where the items inside a module or a trait sit; `None` for other kinds.
+    fn inside(&self, kind: Kind, name: &str, full: String) -> Option<Self> {
+        let within = match kind {
+            Kind::Mod => [&self.within[..], &[name.to_owned()]].concat(),
+            Kind::Trait => self.within.clone(),
+            Kind::Const
+            | Kind::Enum
+            | Kind::Fn
+            | Kind::Macro
+            | Kind::Static
+            | Kind::Struct
+            | Kind::Type
+            | Kind::Union => return None,
+        };
+        Some(Self {
+            within,
+            owner: (kind == Kind::Trait).then(|| name.to_owned()),
+            prefix: full,
+        })
+    }
+}
+
+fn push_items<'tree>(pending: &mut Pending<'tree>, list: Option<Node<'tree>>, place: &Place) {
     let Some(list) = list else {
         return;
     };
     let mut cursor = list.walk();
     let items = list.named_children(&mut cursor);
-    push_reversed(pending, items.map(|item| (item, prefix.to_owned())));
+    push_reversed(pending, items.map(|item| (item, place.clone())));
 }
 
-/// `Frame` for `impl<T> Frame<T>`, `Frame::Display` for `impl fmt::Display for Frame`.
-fn impl_owner(item: Node<'_>, source: &[u8]) -> String {
+/// The type an `impl` is for, and the prefix of its items' names: `Frame` for
+/// `impl<T> Frame<T>`, `Frame::Display` for `impl fmt::Display for Frame`.
+fn impl_owner(item: Node<'_>, source: &[u8]) -> (String, String) {
     let named = |name| {
         item.child_by_field_name(name)
             .map(|node| base_name(node, source))
     };
     let owner = named("type").unwrap_or_default();
-    match named("trait") {
+    let path = match named("trait") {
         Some(name) => format!("{owner}::{name}"),
-        None => owner,
-    }
+        None => owner.clone(),
+    };
+    (owner, path)
 }
 
 /// `Frame` for `fmt::Frame`, `Frame<T>`, `&mut Frame` or `dyn Frame`; `T` for `[T]`.
@@ -158,9 +221,9 @@ fn base_name(node: Node<'_>, source: &[u8]) -> String {
 }
 
 /// Repeated names, such as one function per platform, become `name`, `name[2]`, `name[3]`.
-fn number_repeats(found: &mut [Symbol]) {
+fn number_repeats(found: &mut [Item]) {
     let mut seen: BTreeMap<String, u32> = BTreeMap::new();
-    for symbol in found {
+    for Item { symbol, .. } in found {
         let count = seen.entry(symbol.name.clone()).or_default();
         *count += 1;
         if *count > 1 {
@@ -208,6 +271,9 @@ mod tests {
     fn symbols_in(text: &str) -> Vec<Symbol> {
         let tree = parse(&mut rust_parser().unwrap(), text).unwrap();
         symbols(&tree, text.as_bytes())
+            .into_iter()
+            .map(|item| item.symbol)
+            .collect()
     }
 
     fn names(text: &str) -> Vec<String> {

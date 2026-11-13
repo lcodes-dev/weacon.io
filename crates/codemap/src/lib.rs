@@ -6,6 +6,7 @@
 mod anchor;
 mod area;
 mod cfg;
+mod edges;
 mod facts;
 mod fingerprint;
 mod graph;
@@ -14,12 +15,14 @@ mod louvain;
 mod outline;
 mod paths;
 mod rank;
+mod refs;
 mod syntax;
 
 use std::fmt;
 
 pub use anchor::{Anchor, Finding, Pin};
 pub use area::Area;
+pub use edges::{Edge, EdgeKind};
 pub use fingerprint::Fingerprint;
 pub use index::{Crate, Index, Module, SourceFile, index};
 pub use outline::{Kind, Symbol};

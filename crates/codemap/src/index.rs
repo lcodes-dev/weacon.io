@@ -2,9 +2,9 @@ use std::collections::BTreeMap;
 use std::fmt;
 
 use crate::area::areas;
+use crate::edges::{Edge, edges};
 use crate::facts::{Facts, FileKind, Reader};
 use crate::graph::{file_links, nodes};
-use crate::paths::Named;
 use crate::{Area, Error, Symbol};
 
 /// A file as the caller read it, its path relative to the repository root with `/` separators.
@@ -28,6 +28,8 @@ pub struct Index {
     pub crates: Vec<Crate>,
     /// Sorted by id.
     pub areas: Vec<Area>,
+    /// Sorted.
+    pub edges: Vec<Edge>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -68,18 +70,15 @@ pub fn index(files: &[SourceFile]) -> Result<Index, Error> {
 pub(crate) fn assemble(facts: &[Facts]) -> Index {
     let mut crates: Vec<Crate> = facts.iter().filter_map(manifest).collect();
     crates.sort_by(|one, other| one.folder.cmp(&other.folder));
-    let mut named = BTreeMap::new();
-    let mut sources: Vec<(&str, &[Symbol], &[Named])> = facts
-        .iter()
-        .filter_map(|facts| match &facts.kind {
-            FileKind::Rust { symbols, named } => {
-                Some((facts.path.as_str(), &symbols[..], &named[..]))
-            }
-            FileKind::Manifest(_) => None,
-        })
-        .collect();
-    sources.sort_by_key(|(path, ..)| *path);
-    for (file, symbols, paths) in sources {
+    let mut named_by_file = BTreeMap::new();
+    let mut items_by_file = BTreeMap::new();
+    let mut sources: Vec<&Facts> = facts.iter().collect();
+    sources.sort_by_key(|facts| &facts.path);
+    for facts in sources {
+        let FileKind::Rust { items, named } = &facts.kind else {
+            continue;
+        };
+        let file = facts.path.as_str();
         // A folder sorts before the folders inside it, so the last match is the innermost crate.
         let Some((owner, path)) = crates
             .iter_mut()
@@ -88,17 +87,23 @@ pub(crate) fn assemble(facts: &[Facts]) -> Index {
         else {
             continue;
         };
-        named.insert(file, paths);
+        named_by_file.insert(file, &named[..]);
+        items_by_file.insert(file, &items[..]);
         owner.modules.push(Module {
             path,
             file: file.to_owned(),
-            symbols: symbols.to_vec(),
+            symbols: items.iter().map(|item| item.symbol.clone()).collect(),
         });
     }
     crates.iter_mut().for_each(root_binary);
     let nodes = nodes(&crates);
-    let areas = areas(&nodes, &file_links(&nodes, &named));
-    Index { crates, areas }
+    let areas = areas(&nodes, &file_links(&nodes, &named_by_file));
+    let edges = edges(&crates, &named_by_file, &items_by_file);
+    Index {
+        crates,
+        areas,
+        edges,
+    }
 }
 
 fn manifest(facts: &Facts) -> Option<Crate> {

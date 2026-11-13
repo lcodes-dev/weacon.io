@@ -40,8 +40,15 @@ pub(crate) fn file_links(nodes: &[Node<'_>], named: &BTreeMap<&str, &[Named]>) -
                 .unwrap_or_default()
                 .iter()
                 .filter_map(|path| {
-                    let (owner, segments) = absolute(&crate_names, &krate.name, &module.path, path);
-                    longest_module(&numbers, owner, &segments, deepest)
+                    let mut here = segments_of(&module.path);
+                    here.extend(path.within.iter().map(String::as_str));
+                    let segments = path.segments.iter().map(String::as_str);
+                    let (owner, segments) = absolute(&crate_names, &krate.name, here, segments);
+                    let module = |length| segments.get(..length).map(|it| it.join("::"));
+                    let length = longest_module(&segments, deepest, |module| {
+                        numbers.contains_key(&(owner, module))
+                    })?;
+                    numbers.get(&(owner, module(length)?.as_str())).copied()
                 });
             let mut weights = BTreeMap::new();
             for target in targets.filter(|target| *target != number) {
@@ -52,16 +59,15 @@ pub(crate) fn file_links(nodes: &[Node<'_>], named: &BTreeMap<&str, &[Named]>) -
         .collect()
 }
 
-/// The crate a path starts in, and its segments from that crate's root.
-fn absolute<'a>(
+/// The crate a path written in module `here` of `krate` starts in, and its segments from that
+/// crate's root.
+pub(crate) fn absolute<'a>(
     crates: &BTreeSet<&str>,
     krate: &'a str,
-    module: &'a str,
-    path: &'a Named,
+    mut here: Vec<&'a str>,
+    segments: impl IntoIterator<Item = &'a str>,
 ) -> (&'a str, Vec<&'a str>) {
-    let mut here: Vec<&str> = module.split("::").filter(|it| !it.is_empty()).collect();
-    here.extend(path.within.iter().map(String::as_str));
-    let mut segments = path.segments.iter().map(String::as_str).peekable();
+    let mut segments = segments.into_iter().peekable();
     match segments.peek().copied() {
         Some("crate") => {
             segments.next();
@@ -85,20 +91,25 @@ fn absolute<'a>(
     (krate, here)
 }
 
-fn depth(module: &str) -> usize {
-    module.split("::").filter(|it| !it.is_empty()).count()
+/// `["a", "b"]` for the module path `a::b`; none for the crate's root.
+pub(crate) fn segments_of(module: &str) -> Vec<&str> {
+    module.split("::").filter(|it| !it.is_empty()).collect()
 }
 
-/// The deepest module that `segments` passes through, if any; no module is deeper than `deepest`.
-fn longest_module(
-    numbers: &BTreeMap<(&str, &str), usize>,
-    krate: &str,
+fn depth(module: &str) -> usize {
+    segments_of(module).len()
+}
+
+/// The length of the longest start of `segments`, at most `deepest` long, that `is_module`.
+pub(crate) fn longest_module(
     segments: &[&str],
     deepest: usize,
+    is_module: impl Fn(&str) -> bool,
 ) -> Option<usize> {
-    (0..=segments.len().min(deepest)).rev().find_map(|length| {
-        let module = segments.get(..length)?.join("::");
-        numbers.get(&(krate, module.as_str())).copied()
+    (0..=segments.len().min(deepest)).rev().find(|length| {
+        segments
+            .get(..*length)
+            .is_some_and(|it| is_module(&it.join("::")))
     })
 }
 
@@ -132,6 +143,7 @@ mod tests {
                 .map(str::to_owned)
                 .collect(),
             segments: segments.split("::").map(str::to_owned).collect(),
+            bound: None,
         }
     }
 

@@ -3,10 +3,10 @@ use std::path::Path;
 use serde::Deserialize;
 use tree_sitter::Parser;
 
-use crate::outline::symbols;
+use crate::outline::{Item, symbols};
 use crate::paths::{Named, paths};
 use crate::syntax::{parse, rust_parser};
-use crate::{Error, SourceFile, Symbol};
+use crate::{Error, SourceFile};
 
 /// What one file adds to the index, found from its text alone, so a file whose text hasn't
 /// changed needn't be read again.
@@ -21,7 +21,7 @@ pub(crate) enum FileKind {
     /// A `Cargo.toml` with a package, and the name code uses for it.
     Manifest(String),
     Rust {
-        symbols: Vec<Symbol>,
+        items: Vec<Item>,
         named: Vec<Named>,
     },
 }
@@ -65,7 +65,7 @@ impl Reader {
             let tree = parse(&mut self.parser, &file.text)?;
             let source = file.text.as_bytes();
             Some(FileKind::Rust {
-                symbols: symbols(&tree, source),
+                items: symbols(&tree, source),
                 named: paths(tree.root_node(), source),
             })
         } else {
@@ -109,13 +109,13 @@ mod tests {
     #[test]
     fn reads_rust_files_only() {
         let Some(Facts {
-            kind: FileKind::Rust { symbols, named },
+            kind: FileKind::Rust { items, named },
             ..
         }) = read("src/lib.rs", "mod x;\nfn top() {}\n")
         else {
             panic!("not read as Rust");
         };
-        let names: Vec<&str> = symbols.iter().map(|it| it.name.as_str()).collect();
+        let names: Vec<&str> = items.iter().map(|it| it.symbol.name.as_str()).collect();
         assert_eq!(names, ["top"]);
         assert_eq!(named.len(), 1);
         assert_eq!(read("README.md", "fn top() {}"), None);
