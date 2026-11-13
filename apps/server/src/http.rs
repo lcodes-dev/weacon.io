@@ -20,6 +20,7 @@ use crate::db::Db;
 use crate::feed;
 use crate::limit::Limit;
 use crate::mail::Outbox;
+use crate::secret::Secret;
 use crate::sign_in;
 
 const REQUEST_ID: &str = "x-request-id";
@@ -47,6 +48,7 @@ pub(crate) struct Shared {
     pub(crate) reporter: Arc<Reporter>,
     pub(crate) db: Db,
     pub(crate) outbox: Outbox,
+    pub(crate) secret: Arc<Secret>,
     pub(crate) clock: Arc<Clock>,
     /// How long a connection may take to send a request's head, or sit idle between requests.
     pub(crate) head_within: Duration,

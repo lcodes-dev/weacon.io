@@ -21,6 +21,7 @@ use crate::email::Email;
 use crate::feed;
 use crate::http::{self, Shared};
 use crate::mail::Outbox;
+use crate::secret::Secret;
 use crate::sign_in;
 
 pub(crate) const VERSION: Version = Version {
@@ -54,6 +55,8 @@ impl Fixture {
             .await
             .unwrap();
         let (log, records) = recording_logger();
+        // Its own logger: off Unix it warns, and tests read the fixture's records.
+        let secret = Secret::open(&dir.join("secret"), &recording_logger().0).unwrap();
         fs::create_dir(dir.join("outbox")).unwrap();
         let clock = Arc::new(AtomicU64::new(START));
         let now = Arc::clone(&clock);
@@ -63,6 +66,7 @@ impl Fixture {
             reporter: Arc::new(weacon_appkit::reporter(None, true, Box::new(|_| Ok(())))),
             db,
             outbox: Outbox::new(dir.join("outbox")),
+            secret: Arc::new(secret),
             head_within: connections::HEAD_WITHIN,
             connections: Arc::new(Semaphore::new(64)),
             // Short, so tests that wait for the feed's checks don't wait long.
