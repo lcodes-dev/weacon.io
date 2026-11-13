@@ -1174,7 +1174,7 @@
       "description": "What changed in a workspace.",
       "oneOf": [
         {
-          "description": "A member signed in for the first time.",
+          "description": "A member opened the workspace for the first time.",
           "type": "object",
           "properties": {
             "kind": {
