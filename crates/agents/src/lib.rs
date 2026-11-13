@@ -1,5 +1,6 @@
 //! Drives the person's own coding agents and turns their output into run events.
 
+mod access;
 mod claude;
 mod codex;
 mod launch;

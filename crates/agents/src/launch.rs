@@ -7,6 +7,7 @@ use tokio::time::timeout;
 use weacon_observability::Fault;
 use weacon_protocol::{AccessLevel, AgentKind, AgentSession, App, RunId, code};
 
+use crate::access::Rules;
 use crate::run::{self, AgentRun};
 use crate::spawn::SpawnPolicy;
 use crate::{claude, codex};
@@ -74,7 +75,16 @@ impl Launch {
         session: Option<&AgentSession>,
     ) -> Result<AgentRun, Fault> {
         let (command, wire) = self.command(app, session)?;
-        run::spawn(command, policy, run, wire, self.access)
+        let rules = Rules {
+            level: self.access,
+            cwd: self.cwd.clone(),
+            workspace: self
+                .config_dir
+                .parent()
+                .unwrap_or(&self.config_dir)
+                .to_path_buf(),
+        };
+        run::spawn(command, policy, run, wire, rules)
     }
 
     /// Runs the vendor's own status command and reads only how it exits, never what it prints.
@@ -143,7 +153,7 @@ impl Launch {
             )),
             AgentKind::Codex => Ok((
                 codex::command(self),
-                run::Wire::Codex(codex::Wire::new(session.cloned(), app)),
+                run::Wire::Codex(codex::Wire::new(session.cloned(), app, self.access)),
             )),
             AgentKind::Newer => Err(unknown()),
         }

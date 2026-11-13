@@ -71,7 +71,7 @@ pub(crate) enum Level {
     ReadOnly,
     /// Agents ask a person before each change.
     AskFirst,
-    /// Agents change files without asking; commands still ask.
+    /// Agents change files in their folder without asking; anything else still asks.
     Full,
 }
 

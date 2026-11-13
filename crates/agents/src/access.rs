@@ -1,0 +1,233 @@
+//! The prompts a workspace's access level answers without asking a person.
+
+use std::ffi::OsStr;
+use std::io;
+use std::path::{Component, Path, PathBuf};
+
+use serde_json::Value;
+use weacon_protocol::AccessLevel;
+
+// Folders whose files can make an agent, git or a hook run commands later.
+const PROTECTED: [&str; 3] = [".claude", ".codex", ".git"];
+
+/// What a run may do: its access level, the folder it works in, and the workspace's own
+/// folder, which holds the agent's settings.
+#[derive(Clone)]
+pub(crate) struct Rules {
+    pub(crate) level: AccessLevel,
+    pub(crate) cwd: PathBuf,
+    pub(crate) workspace: PathBuf,
+}
+
+/// How a prompt is settled.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum Decision {
+    Ask,
+    Refuse,
+    /// Allowed if the file `may_change`, else asked.
+    Check(PathBuf),
+}
+
+/// A prompt about changing `file`, waiting for the file to be checked.
+pub(crate) struct Check {
+    pub(crate) request: Value,
+    pub(crate) tool: String,
+    pub(crate) input: Value,
+    pub(crate) file: PathBuf,
+}
+
+impl Rules {
+    /// Rules that ask a person about everything.
+    #[cfg(test)]
+    pub(crate) fn ask_first() -> Self {
+        Self {
+            level: AccessLevel::AskFirst,
+            cwd: PathBuf::new(),
+            workspace: PathBuf::new(),
+        }
+    }
+
+    /// The decision for a prompt about changing `file`, or about anything else when `None`.
+    pub(crate) fn decide(&self, file: Option<PathBuf>) -> Decision {
+        match self.level {
+            AccessLevel::AskFirst => Decision::Ask,
+            AccessLevel::Full => file.map_or(Decision::Ask, Decision::Check),
+            AccessLevel::Off | AccessLevel::ReadOnly | AccessLevel::Newer => Decision::Refuse,
+        }
+    }
+
+    /// Whether `file` is an absolute path inside the working folder once symlinks are
+    /// resolved, outside the folders that hold config and outside the workspace's own folder.
+    /// A relative path is never allowed: the agent may have changed folder. Blocks on the file
+    /// system.
+    pub(crate) fn may_change(&self, file: &Path) -> bool {
+        let (true, Ok(root), Some(file)) =
+            (file.is_absolute(), self.cwd.canonicalize(), resolve(file))
+        else {
+            return false;
+        };
+        let in_workspace = self
+            .workspace
+            .canonicalize()
+            .is_ok_and(|workspace| file.starts_with(workspace));
+        !in_workspace
+            && file.strip_prefix(&root).is_ok_and(|inside| {
+                inside.components().next().is_some()
+                    && inside
+                        .components()
+                        .all(|part| matches!(part, Component::Normal(name) if is_plain(name)))
+            })
+    }
+}
+
+// `path` with symlinks resolved as far as it exists; `None` if the rest climbs with `..` or
+// anything on the way can't be resolved, such as a symlink to nowhere.
+fn resolve(path: &Path) -> Option<PathBuf> {
+    let mut missing = Vec::new();
+    let mut base = path;
+    loop {
+        if let Ok(found) = base.canonicalize() {
+            return Some(
+                missing
+                    .iter()
+                    .rev()
+                    .fold(found, |path, name| path.join(name)),
+            );
+        }
+        match base.symlink_metadata() {
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            _ => return None,
+        }
+        missing.push(base.file_name()?);
+        base = base.parent()?;
+    }
+}
+
+// Not a config folder in any case, as some file systems ignore it, and nothing Windows would
+// read as another name: it drops trailing dots and spaces, and `:` opens a stream.
+fn is_plain(name: &OsStr) -> bool {
+    let Some(name) = name.to_str() else {
+        return false;
+    };
+    let trailing = name.ends_with('.') || name.ends_with(' ');
+    !trailing
+        && !name.contains(':')
+        && !PROTECTED
+            .iter()
+            .any(|protected| name.eq_ignore_ascii_case(protected))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+
+    use weacon_testing::TempDir;
+
+    use super::*;
+
+    fn rules(level: AccessLevel, cwd: &Path) -> Rules {
+        Rules {
+            level,
+            cwd: cwd.to_path_buf(),
+            workspace: cwd.join("state/workspaces/w-w1"),
+        }
+    }
+
+    #[test]
+    fn each_level_decides_only_what_it_should() {
+        let rules = |level| rules(level, Path::new("/work"));
+        let file = || Some(PathBuf::from("/work/README.md"));
+
+        for refused in [AccessLevel::Off, AccessLevel::ReadOnly, AccessLevel::Newer] {
+            assert_eq!(rules(refused).decide(file()), Decision::Refuse);
+            assert_eq!(rules(refused).decide(None), Decision::Refuse);
+        }
+        assert_eq!(rules(AccessLevel::AskFirst).decide(file()), Decision::Ask);
+        assert_eq!(rules(AccessLevel::AskFirst).decide(None), Decision::Ask);
+        assert_eq!(
+            rules(AccessLevel::Full).decide(file()),
+            Decision::Check(PathBuf::from("/work/README.md"))
+        );
+        assert_eq!(rules(AccessLevel::Full).decide(None), Decision::Ask);
+        assert_eq!(Rules::ask_first().decide(file()), Decision::Ask);
+    }
+
+    #[test]
+    fn only_absolute_files_inside_the_folder_and_outside_its_config_may_change() {
+        let dir = TempDir::new().unwrap();
+        let cwd = dir.join("work");
+        fs::create_dir_all(cwd.join("src")).unwrap();
+        fs::create_dir_all(cwd.join(".git")).unwrap();
+        fs::create_dir_all(cwd.join("state/workspaces/w-w1/claude")).unwrap();
+        fs::write(cwd.join("README.md"), "").unwrap();
+        let rules = rules(AccessLevel::Full, &cwd);
+        let may = |file: &str| rules.may_change(&cwd.join(file));
+
+        for allowed in [
+            "README.md",
+            "src/new.rs",
+            "src/new/deeper/file.rs",
+            "state/other.md",
+        ] {
+            assert!(may(allowed), "{allowed}");
+        }
+        for refused in [
+            "../outside.md",
+            "src/../../outside.md",
+            "missing/../../outside.md",
+            ".git/hooks/pre-commit",
+            ".Git/config",
+            ".git./config",
+            ".git /config",
+            "notes.md:stream",
+            ".claude/settings.json",
+            "src/.codex/config.toml",
+            "vendor/.git/config",
+            "state/workspaces/w-w1/claude/settings.json",
+            "state/workspaces/w-w1/workspace.json",
+            "",
+        ] {
+            assert!(!may(refused), "{refused}");
+        }
+        // A file in the way can't be resolved; Windows may report it as missing instead.
+        if cfg!(unix) {
+            assert!(!may("README.md/inside.md"));
+        }
+        for relative in ["README.md", "~/.bashrc", "./README.md", "~"] {
+            assert!(!rules.may_change(Path::new(relative)), "{relative}");
+        }
+        assert!(!rules.may_change(&dir.join("outside.md")));
+        let missing = Rules {
+            cwd: dir.join("missing"),
+            ..rules
+        };
+        assert!(!missing.may_change(&dir.join("missing/README.md")));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symlink_is_followed_before_the_folder_is_checked() {
+        use std::os::unix::fs::symlink;
+
+        let dir = TempDir::new().unwrap();
+        let cwd = dir.join("work");
+        fs::create_dir_all(cwd.join(".git")).unwrap();
+        fs::create_dir_all(dir.join("elsewhere")).unwrap();
+        symlink(dir.join("elsewhere"), cwd.join("out")).unwrap();
+        symlink(cwd.join(".git"), cwd.join("hidden")).unwrap();
+        symlink(&cwd, dir.join("link")).unwrap();
+        symlink(dir.join("missing.md"), cwd.join("dangling.md")).unwrap();
+        let rules = rules(AccessLevel::Full, &cwd);
+        let may = |file: &str| rules.may_change(&cwd.join(file));
+
+        assert!(!may("out/file.md"));
+        assert!(!may("hidden/hooks/pre-commit"));
+        assert!(!may("dangling.md"));
+        assert!(!may("dangling.md/file.md"));
+        let linked = Rules {
+            cwd: dir.join("link"),
+            ..rules
+        };
+        assert!(linked.may_change(&dir.join("link/file.md")));
+    }
+}

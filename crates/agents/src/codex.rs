@@ -8,9 +8,6 @@ pub(crate) use wire::{Wire, answer};
 
 use crate::launch::Launch;
 
-/// The prompt for a change to files, which full access lets run without asking.
-pub(crate) const FILE_TOOL: &str = "file_change";
-
 // Sign-ins that would win over the workspace's own; removed, never read.
 const OTHER_SIGN_INS: [&str; 2] = ["CODEX_API_KEY", "OPENAI_API_KEY"];
 
