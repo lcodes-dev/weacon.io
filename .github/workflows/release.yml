@@ -69,6 +69,10 @@ jobs:
         include:
           - { target: x86_64-unknown-linux-musl, runner: ubuntu-24.04 }
           - { target: aarch64-unknown-linux-musl, runner: ubuntu-24.04-arm }
+    defaults:
+      run:
+        # With pipefail, so a failed check isn't hidden by tee.
+        shell: bash
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
