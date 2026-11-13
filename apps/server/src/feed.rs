@@ -227,6 +227,7 @@ async fn send<S: Sink<Frame> + Unpin>(socket: &mut S, within: Duration, frame: F
 mod tests {
     use std::net::SocketAddr;
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicU64, Ordering};
 
     use axum::http::header::AUTHORIZATION;
     use futures_util::{SinkExt, StreamExt};
@@ -546,6 +547,39 @@ mod tests {
 
         join(&fixture, server.address, "m2", "bo@example.com").await;
 
+        assert!(closed(&mut client).await);
+    }
+
+    #[tokio::test]
+    async fn a_member_whose_session_ends_during_a_page_gets_no_more_of_it() {
+        let mut fixture = Fixture::new().await;
+        fixture.shared.feed.ping_every = Duration::from_hours(1);
+        // The clock reads as usual for `checks` more readings, then past every session.
+        let checks = Arc::new(AtomicU64::new(u64::MAX));
+        let (left, clock) = (Arc::clone(&checks), Arc::clone(&fixture.shared.clock));
+        let past = Duration::from_secs(SESSION_LIFETIME.try_into().unwrap());
+        fixture.shared.clock = Arc::new(Box::new(move || {
+            let ended = left
+                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
+                .is_err();
+            clock() + past * u32::from(ended)
+        }));
+        let (server, token) = signed_in(&fixture).await;
+        let w1 = w1(&fixture).await;
+        let bo = Email::parse("bo@example.com").unwrap();
+        w1.add_member(&member_id("m2"), &fresh_account(), &bo)
+            .await
+            .unwrap();
+        w1.join(&member_id("m2")).await.unwrap();
+        let mut client = open(server.address, "/api/workspaces/w1/feed", &token)
+            .await
+            .unwrap();
+        // A page of two changes, m2's and m1's: the session lasts through the first's check.
+        checks.store(1, Ordering::SeqCst);
+        say(&mut client, &["workspace.feed"]).await;
+
+        assert!(matches!(next(&mut client).await, Message::Welcome(_)));
+        assert_eq!(next(&mut client).await, joined(1, "m2"));
         assert!(closed(&mut client).await);
     }
 
