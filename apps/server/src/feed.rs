@@ -411,7 +411,9 @@ mod tests {
 
     #[tokio::test]
     async fn a_member_gets_what_they_missed_then_each_change() {
-        let fixture = Fixture::new().await;
+        let mut fixture = Fixture::new().await;
+        // The client reads nothing while another member signs in, so pings would go unanswered.
+        fixture.shared.feed.ping_every = Duration::from_hours(1);
         let (server, token) = signed_in(&fixture).await;
         let mut client = open(server.address, "/api/workspaces/w1/feed", &token)
             .await
@@ -470,7 +472,9 @@ mod tests {
 
     #[tokio::test]
     async fn changes_arrive_once_and_in_order_whatever_wakes_the_feed() {
-        let fixture = Fixture::new().await;
+        let mut fixture = Fixture::new().await;
+        // The client reads nothing while another member signs in, so pings would go unanswered.
+        fixture.shared.feed.ping_every = Duration::from_hours(1);
         let (server, token) = signed_in(&fixture).await;
         let mut client = greeted(server.address, &token, 1).await;
         join(&fixture, server.address, "m2", "bo@example.com").await;
