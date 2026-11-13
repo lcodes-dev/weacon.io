@@ -104,8 +104,8 @@ struct Chat {
     /// The way to the chat's running agent.
     orders: Option<mpsc::UnboundedSender<Order>>,
     waiting: Vec<Waiting>,
-    /// The outcome the run reported for its turn when the turn's receipt couldn't be written.
-    unended: Option<Outcome>,
+    /// The turn, and the outcome its run reported, when its receipt couldn't be written.
+    unended: Option<(RequestId, Outcome)>,
     /// An interrupt's request, and the turn it stops, until the interrupt is sent.
     interrupting: Option<(RequestId, RequestId)>,
     /// The agent's session when the runs journal couldn't save it.
@@ -180,7 +180,7 @@ impl<A: Agent> Engine<A> {
                         drop(answer.send(self.query(&key, query.query, &client).await));
                         key
                     }
-                    None => return,
+                    None => return self.log.info("engine stopped", &[]),
                 },
                 Some(report) = self.reports.recv() => {
                     let key = (report.of.workspace, report.of.chat);
@@ -270,11 +270,12 @@ impl<A: Agent> Engine<A> {
         }
     }
 
-    fn order(&self, key: &Key, order: Order) {
-        if let Some(orders) = self.chats.get(key).and_then(|chat| chat.orders.as_ref()) {
-            // A run that is gone says so itself, in its last report.
-            drop(orders.send(order));
-        }
+    // Whether the order reached the run; a run that is gone says so itself, in its last report.
+    fn order(&self, key: &Key, order: Order) -> bool {
+        self.chats
+            .get(key)
+            .and_then(|chat| chat.orders.as_ref())
+            .is_some_and(|orders| orders.send(order).is_ok())
     }
 
     // Whether the chat's run hasn't yet reported its exit.

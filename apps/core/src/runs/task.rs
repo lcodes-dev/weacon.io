@@ -6,7 +6,7 @@ use std::future::Future;
 use tokio::sync::mpsc;
 use weacon_agents::AgentRun;
 use weacon_observability::Fault;
-use weacon_protocol::{ChatId, PermissionAnswer, RunEvent, RunId, WorkspaceId};
+use weacon_protocol::{ChatId, PermissionAnswer, RunEvent, RunId, WorkspaceId, code};
 
 /// What the engine needs of a running agent: the driver's run in the daemon, a fake in tests.
 /// Dropping it stops the agent.
@@ -77,9 +77,14 @@ pub(crate) async fn drive<A: Agent>(
         let heard = tokio::select! {
             order = orders.recv() => {
                 let Some(order) = order else { return };
-                // A failed order shows in what the agent says next: it exits, or goes on.
-                drop(obey(&mut agent, order).await);
-                continue;
+                match obey(&mut agent, order).await {
+                    // Its pipes are broken: the agent can't take orders, so it is stopped.
+                    Err(fault) if fault.code() == &code!("agent.io_failed") => {
+                        Heard::Exited(Some(fault))
+                    }
+                    // Any other refusal shows in what the agent says next.
+                    Ok(()) | Err(_) => continue,
+                }
             }
             event = agent.next() => match event {
                 Ok(Some(event)) => Heard::Event(event),
@@ -161,6 +166,54 @@ mod tests {
         assert!(first.of == of && matches!(first.heard, Heard::Event(RunEvent::Text { .. })));
         let last = reports.recv().await.unwrap();
         assert!(matches!(last.heard, Heard::Exited(None)));
+        assert!(reports.recv().await.is_none());
+    }
+
+    // Refuses every prompt: as busy, or with broken pipes when the prompt says so; never speaks.
+    struct Refuses;
+
+    impl Agent for Refuses {
+        async fn send(&mut self, prompt: &str) -> Result<(), Fault> {
+            Err(match prompt {
+                "broken" => Fault::new(code!("agent.io_failed"), "The agent's pipes failed"),
+                _ => Fault::new(code!("agent.busy"), "The agent is still on a turn"),
+            })
+        }
+
+        async fn answer(&mut self, _answer: &PermissionAnswer) -> Result<(), Fault> {
+            Ok(())
+        }
+
+        async fn interrupt(&mut self) -> Result<(), Fault> {
+            Ok(())
+        }
+
+        async fn next(&mut self) -> Result<Option<RunEvent>, Fault> {
+            std::future::pending().await
+        }
+    }
+
+    #[tokio::test]
+    async fn an_agent_whose_pipes_break_on_an_order_is_stopped_and_other_refusals_are_not() {
+        let of = RunOf {
+            workspace: WorkspaceId::try_from("w-1".to_owned()).unwrap(),
+            chat: ChatId::try_from("c-1".to_owned()).unwrap(),
+            run: RunId::try_from("run-1".to_owned()).unwrap(),
+        };
+        let (orders, ordered) = mpsc::unbounded_channel();
+        let (reporter, mut reports) = mpsc::channel(8);
+        orders.send(Order::Send("busy".to_owned())).unwrap();
+        orders.send(Order::Send("broken".to_owned())).unwrap();
+
+        let driven = drive(Refuses, of, ordered, reporter);
+        tokio::time::timeout(Duration::from_secs(5), driven)
+            .await
+            .unwrap();
+
+        let last = reports.recv().await.unwrap();
+        assert!(
+            matches!(&last.heard, Heard::Exited(Some(fault)) if fault.code().as_str() == "agent.io_failed")
+        );
         assert!(reports.recv().await.is_none());
     }
 

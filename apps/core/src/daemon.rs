@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use tokio::io::{AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::sync::mpsc;
-use tokio::task::JoinSet;
+use tokio::task::{JoinHandle, JoinSet};
 use tokio::time::Instant;
 use weacon_agents::SpawnPolicy;
 use weacon_observability::{Fault, Field, Logger};
@@ -83,6 +83,7 @@ pub(crate) struct Daemon {
     shared: Shared,
     disk: disk::Watch,
     memory: memory::Watch,
+    engine: JoinHandle<()>,
     // Held for the daemon's life, so a second daemon can't start.
     _lock: File,
 }
@@ -124,7 +125,7 @@ impl Daemon {
         }
         let (chats, engine) = chats::start(state_dir, path, app.clone(), spawn, log.clone())?;
         let listener = platform::bind(&socket).map_err(failed)?;
-        tokio::spawn(engine.run());
+        let engine = tokio::spawn(engine.run());
         log.info("daemon started", &[]);
         Ok(Self {
             listener,
@@ -138,6 +139,7 @@ impl Daemon {
             },
             disk: disk::Watch::new(state_dir.to_owned(), platform::free_space),
             memory: memory::Watch::new(platform::processes),
+            engine,
             _lock: lock,
         })
     }
@@ -167,7 +169,11 @@ impl Daemon {
         drop(self.listener);
         drop(fs::remove_file(&self.socket));
         clients.shutdown().await;
-        self.shared.log.info("daemon stopped", &[]);
+        // The engine stops once the last way to it is gone; its writes end before the lock goes.
+        let log = self.shared.log.clone();
+        drop(self.shared);
+        drop(self.engine.await);
+        log.info("daemon stopped", &[]);
     }
 
     fn admit(&self, stream: Stream, clients: &mut JoinSet<()>) {
@@ -375,7 +381,6 @@ async fn keep(shared: &Shared, id: u32, pick: Pick) -> Reply {
 mod tests {
     use tokio::io::{AsyncBufReadExt, AsyncRead};
     use tokio::sync::oneshot;
-    use tokio::task::JoinHandle;
     use tokio::time::timeout;
     use weacon_protocol::{ErrorBody, Hello, PROTOCOL, Welcome};
     use weacon_testing::TempDir;
@@ -879,5 +884,15 @@ mod tests {
         let read = timeout(HANDSHAKE_TIMEOUT * 2, stream.read(&mut [0; 16])).await;
         assert!(read.is_err(), "the daemon hung up: {read:?}");
         running.stop().await;
+    }
+
+    #[tokio::test]
+    async fn the_engine_stops_before_the_daemon_lets_go_of_its_lock() {
+        let dir = TempDir::new().unwrap();
+        let records = start(&dir).unwrap().stop().await;
+
+        let logged = messages(&records);
+        let at = |message| logged.iter().position(|logged| *logged == message);
+        assert!(at("engine stopped").unwrap() < at("daemon stopped").unwrap());
     }
 }

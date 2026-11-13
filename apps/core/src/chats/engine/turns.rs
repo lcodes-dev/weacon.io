@@ -11,6 +11,7 @@ use weacon_protocol::{
 };
 
 use super::{Engine, Key, Start, Waiting};
+use crate::runs::Queued;
 use crate::runs::task::{Agent, Heard, Order, RunOf, drive};
 
 // What is kept of a text too long for one frame: it still fits when every byte is escaped.
@@ -164,13 +165,16 @@ impl<A: Agent> Engine<A> {
         let chat = self.chat(key).await?;
         chat.waiting.clear();
         // What the run reported first wins over a later end, such as its exit.
-        let outcome = chat.unended.take().unwrap_or(outcome);
+        let outcome = match chat.unended.take() {
+            Some((ended, reported)) if turn.as_ref() == Some(&ended) => reported,
+            _ => outcome,
+        };
         // The turn stays in the journal until its receipt is in the log; `advance` retries it.
         if let Some(request) = turn
             && let Err(fault) = self.receipt(key, &request, outcome.clone()).await
         {
             if let Some(chat) = self.chats.get_mut(key) {
-                chat.unended = Some(outcome);
+                chat.unended = Some((request, outcome));
             }
             return Err(fault);
         }
@@ -211,16 +215,30 @@ impl<A: Agent> Engine<A> {
                 Err(fault) => return self.fail_queue(key, &fault).await,
             },
         };
+        self.give_turn(key, &run, next).await
+    }
+
+    // Moves `next` from the queue to the turn and sends it to `run`.
+    async fn give_turn(&mut self, key: &Key, run: &RunId, next: Queued) -> Result<(), Fault> {
         let now = (self.host.now)();
         self.runs
             .update(&key.0, &key.1, |record| {
                 record.queue.retain(|queued| queued.request != next.request);
-                record.turn = Some(next.request);
+                record.turn = Some(next.request.clone());
                 record.active_at = now;
             })
             .await?;
-        self.order(key, Order::Send(next.text));
-        self.state(key, &run, RunState::Running).await
+        if !self.order(key, Order::Send(next.text.clone())) {
+            // It stopped reading while the journal was saved: the prompt waits for the next run.
+            return self
+                .runs
+                .update(&key.0, &key.1, |record| {
+                    record.turn = None;
+                    record.queue.insert(0, next);
+                })
+                .await;
+        }
+        self.state(key, run, RunState::Running).await
     }
 
     // Saves what a failed write left unsaved of ends already known: the running turn's, and
@@ -248,11 +266,13 @@ impl<A: Agent> Engine<A> {
                 })
                 .await?;
         }
+        let state = if live {
+            RunState::Idle
+        } else {
+            RunState::Sleeping
+        };
         match self.run_of(key) {
-            Some(run) if turn_ended && live => {
-                let unknown = Outcome::Unknown;
-                self.finished(key, &run, unknown, RunState::Idle).await
-            }
+            Some(run) if turn_ended => self.finished(key, &run, Outcome::Unknown, state).await,
             _ => Ok(()),
         }
     }
@@ -318,6 +338,8 @@ impl<A: Agent> Engine<A> {
                     ("err", Field::error(&fault)),
                 ];
                 self.log.warn("run not started", &fields);
+                // A run that stopped reading is let go of too, so the chat can close.
+                self.chat(key).await?.orders = None;
                 self.state(key, &run, RunState::Ended).await?;
                 return Err(fault);
             }
@@ -385,7 +407,9 @@ fn cut(event: &RunEvent) -> RunEvent {
 #[cfg(test)]
 mod tests {
     use serde_json::json;
-    use weacon_protocol::{ChatAction, ChatAnswerKind, ChatCommand, ChatQueryKind, Receipt};
+    use weacon_protocol::{
+        ChatAction, ChatAnswerKind, ChatCommand, ChatQueryKind, Receipt, RequestId,
+    };
     use weacon_testing::messages;
 
     use super::*;
@@ -859,6 +883,18 @@ mod tests {
         (engine, agent, bench)
     }
 
+    // The outcomes of `request`'s receipts in the log, in order.
+    async fn outcomes(engine: &mut Engine<FakeAgent>, request: &RequestId) -> Vec<Outcome> {
+        let log = &engine.chat(&key()).await.unwrap().log;
+        let window = log.window(u64::MAX, 64).await.unwrap();
+        window
+            .into_iter()
+            .filter_map(|entry| receipt_of(entry.event))
+            .filter(|receipt| receipt.request == *request)
+            .map(|receipt| receipt.outcome)
+            .collect()
+    }
+
     fn receipt_of(event: ChatEvent) -> Option<Receipt> {
         let ChatEvent::Receipt { receipt } = event else {
             return None;
@@ -974,17 +1010,10 @@ mod tests {
             soon(agent.told.recv()).await,
             Some(Told::Send("More".to_owned()))
         );
-        let log = &engine.chat(&key()).await.unwrap().log;
-        let outcomes = log
-            .window(u64::MAX, 64)
-            .await
-            .unwrap()
-            .into_iter()
-            .filter_map(|entry| receipt_of(entry.event))
-            .filter(|receipt| receipt.request == request)
-            .map(|receipt| receipt.outcome)
-            .collect::<Vec<_>>();
-        assert_eq!(outcomes, [Outcome::Accepted, Outcome::Completed]);
+        assert_eq!(
+            outcomes(&mut engine, &request).await,
+            [Outcome::Accepted, Outcome::Completed]
+        );
     }
 
     #[tokio::test(start_paused = true)]
@@ -1010,5 +1039,81 @@ mod tests {
 
         assert_eq!(soon(agent.told.recv()).await, None);
         assert!(engine.runs.of(&key().0, &key().1).unwrap().queue.is_empty());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn an_exit_whose_receipt_failed_is_ended_before_the_next_run_starts() {
+        let (mut bench, mut engine, agent, _pushes) = on_turn().await;
+        engine.chat(&key()).await.unwrap().log.jam();
+        drop(agent);
+        let exited = Heard::Exited(None);
+        let lost = engine.heard(&key(), &run("run-1"), exited).await;
+        assert_eq!(lost.unwrap_err().code().as_str(), "chat.log_not_written");
+
+        engine.command(&key(), prompt("r-2", "More")).await.unwrap();
+
+        let mut next = soon(bench.started.recv()).await.unwrap();
+        assert_eq!(next.start.run, run("run-2"));
+        assert_eq!(
+            soon(next.told.recv()).await,
+            Some(Told::Send("More".to_owned()))
+        );
+        let first = prompt("r-1", "Hi").request;
+        assert_eq!(
+            outcomes(&mut engine, &first).await,
+            [Outcome::Accepted, Outcome::Unknown]
+        );
+        assert!(engine.chat(&key()).await.unwrap().unended.is_none());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_prompt_its_run_never_got_goes_back_to_the_queue() {
+        let (_bench, mut engine, _agent, _pushes) = on_turn().await;
+        let outcome = Outcome::Completed;
+        hear(&mut engine, RunEvent::Finished { outcome })
+            .await
+            .unwrap();
+        // The run stopped reading while its next turn was being saved.
+        let (closed, gone) = mpsc::unbounded_channel();
+        drop(gone);
+        engine.chat(&key()).await.unwrap().orders = Some(closed);
+        let next = Queued {
+            request: prompt("r-2", "More").request,
+            text: "More".to_owned(),
+        };
+
+        engine
+            .give_turn(&key(), &run("run-1"), next.clone())
+            .await
+            .unwrap();
+
+        let record = engine.runs.of(&key().0, &key().1).unwrap();
+        assert_eq!(
+            (record.turn.as_ref(), record.queue.as_slice()),
+            (None, [next].as_slice())
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_chat_whose_new_run_cant_start_lets_go_of_the_old_one_and_closes() {
+        let (bench, mut engine, agent, pushes) = on_turn().await;
+        drop((agent, pushes));
+        let mut tries = 0;
+        while engine.takes_orders(&key()) && tries < 1000 {
+            tries += 1;
+            tokio::task::yield_now().await;
+        }
+        bench
+            .broken
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+
+        let outcome = Outcome::Completed;
+        hear(&mut engine, RunEvent::Finished { outcome })
+            .await
+            .unwrap();
+        engine.command(&key(), prompt("r-2", "More")).await.unwrap();
+        engine.settle(&key());
+
+        assert!(!engine.chats.contains_key(&key()));
     }
 }
