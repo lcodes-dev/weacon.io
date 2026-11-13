@@ -43,7 +43,9 @@ pub use team::{
     SignInFinish, SignInStart, SignInStarted, SignedIn, WorkspaceChange, WorkspaceCreate,
     WorkspaceId, WorkspaceList, WorkspaceRole, WorkspaceSummary, WorkspaceUpdate,
 };
-pub use update::{Build, Commit, DownloadUrl, Manifest, ReleaseVersion, Sha256, Target};
+pub use update::{
+    BuildTarget, Commit, DownloadUrl, ReleaseBuild, ReleaseManifest, ReleaseVersion, Sha256,
+};
 
 #[cfg(test)]
 mod tests {
@@ -71,7 +73,7 @@ mod tests {
         generator.subschema_for::<TaskList>();
         generator.subschema_for::<TaskCreate>();
         generator.subschema_for::<TaskChange>();
-        generator.subschema_for::<Manifest>();
+        generator.subschema_for::<ReleaseManifest>();
         let schema = generator.into_root_schema_for::<Envelope>();
         let current = serde_json::to_string_pretty(&schema).unwrap() + "\n";
         let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("schema.json");

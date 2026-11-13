@@ -98,14 +98,9 @@ export type App = {
 };
 
 /**
- * One target's binary in a release.
+ * A Rust target a release is built for, such as `x86_64-unknown-linux-musl`.
  */
-export type Build = {
-  sha256: Sha256;
-  size: number;
-  target: Target;
-  url: DownloadUrl;
-};
+export type BuildTarget = string;
 
 /**
  * A feature a peer supports, such as `chat.send`, named like a [`Code`]. A peer keeps the ones
@@ -328,7 +323,7 @@ export type DiffQueryKind = (
 );
 
 /**
- * An `https://` address with no spaces or control characters, at most 2,048 bytes.
+ * An `https://` address of printable ASCII, at most 2,048 bytes.
  */
 export type DownloadUrl = string;
 
@@ -397,20 +392,6 @@ export type LineOp = (
  * space apart, at most 40 bytes; no digits, so ids and secrets can't be spelt in it.
  */
 export type LogEvent = string;
-
-/**
- * A release, as its signed manifest describes it; a core reads it to update itself. It is
- * published with the release's builds, and its signature beside it.
- */
-export type Manifest = {
-  builds: Array<Build>;
-  commit: Commit;
-  /**
-   * The protocol the release speaks; a core asks its owner before installing one that differs.
-   */
-  protocol: number;
-  version: ReleaseVersion;
-};
 
 /**
  * A member of a workspace, 1–64 ASCII letters, digits, `-` or `_`.
@@ -500,6 +481,34 @@ export type Receipt = {
   }
 );
 
+/**
+ * One target's binary in a release.
+ */
+export type ReleaseBuild = {
+  sha256: Sha256;
+  size: number;
+  target: BuildTarget;
+  url: DownloadUrl;
+};
+
+/**
+ * A release, as its signed manifest describes it; a core reads it to update itself.
+ */
+export type ReleaseManifest = {
+  builds: Array<ReleaseBuild>;
+  commit: Commit;
+  protocol: number;
+  /**
+   * When the release was signed, in seconds since the Unix epoch, so a core can tell a
+   * manifest that is being held back from the newest one.
+   */
+  published_at: number;
+  version: ReleaseVersion;
+};
+
+/**
+ * A release's `major.minor.patch`, ordered by its numbers.
+ */
 export type ReleaseVersion = string;
 
 /**
@@ -625,11 +634,6 @@ export type SignedIn = {
   member: MemberId;
   token: string;
 };
-
-/**
- * A Rust target a release is built for, such as `x86_64-unknown-linux-musl`.
- */
-export type Target = string;
 
 /**
  * Asks the server to change a task that the client read at `version`; the server refuses

@@ -290,31 +290,11 @@
         "commit"
       ]
     },
-    "Build": {
-      "description": "One target's binary in a release.",
-      "type": "object",
-      "properties": {
-        "sha256": {
-          "$ref": "#/$defs/Sha256"
-        },
-        "size": {
-          "type": "integer",
-          "format": "uint64",
-          "minimum": 0
-        },
-        "target": {
-          "$ref": "#/$defs/Target"
-        },
-        "url": {
-          "$ref": "#/$defs/DownloadUrl"
-        }
-      },
-      "required": [
-        "target",
-        "url",
-        "size",
-        "sha256"
-      ]
+    "BuildTarget": {
+      "description": "A Rust target a release is built for, such as `x86_64-unknown-linux-musl`.",
+      "type": "string",
+      "maxLength": 64,
+      "pattern": "^[A-Za-z0-9_-]+$"
     },
     "Capability": {
       "description": "A feature a peer supports, such as `chat.send`, named like a [`Code`]. A peer keeps the ones\nit doesn't know, so a newer peer's list still parses.",
@@ -927,7 +907,7 @@
       ]
     },
     "DownloadUrl": {
-      "description": "An `https://` address with no spaces or control characters, at most 2,048 bytes.",
+      "description": "An `https://` address of printable ASCII, at most 2,048 bytes.",
       "type": "string",
       "maxLength": 2048,
       "pattern": "^https://[!-~]+$"
@@ -1106,36 +1086,6 @@
       "type": "string",
       "maxLength": 40,
       "pattern": "^[a-z][a-z_]*( [a-z_]+){0,3}$"
-    },
-    "Manifest": {
-      "description": "A release, as its signed manifest describes it; a core reads it to update itself. It is\npublished with the release's builds, and its signature beside it.",
-      "type": "object",
-      "properties": {
-        "builds": {
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/Build"
-          }
-        },
-        "commit": {
-          "$ref": "#/$defs/Commit"
-        },
-        "protocol": {
-          "description": "The protocol the release speaks; a core asks its owner before installing one that differs.",
-          "type": "integer",
-          "format": "uint32",
-          "minimum": 0
-        },
-        "version": {
-          "$ref": "#/$defs/ReleaseVersion"
-        }
-      },
-      "required": [
-        "version",
-        "commit",
-        "protocol",
-        "builds"
-      ]
     },
     "MemberId": {
       "description": "A member of a workspace, 1–64 ASCII letters, digits, `-` or `_`.",
@@ -1349,7 +1299,70 @@
         "request"
       ]
     },
+    "ReleaseBuild": {
+      "description": "One target's binary in a release.",
+      "type": "object",
+      "properties": {
+        "sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "size": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "target": {
+          "$ref": "#/$defs/BuildTarget"
+        },
+        "url": {
+          "$ref": "#/$defs/DownloadUrl"
+        }
+      },
+      "required": [
+        "target",
+        "url",
+        "size",
+        "sha256"
+      ]
+    },
+    "ReleaseManifest": {
+      "description": "A release, as its signed manifest describes it; a core reads it to update itself.",
+      "type": "object",
+      "properties": {
+        "builds": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ReleaseBuild"
+          }
+        },
+        "commit": {
+          "$ref": "#/$defs/Commit"
+        },
+        "protocol": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "published_at": {
+          "description": "When the release was signed, in seconds since the Unix epoch, so a core can tell a\nmanifest that is being held back from the newest one.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "version": {
+          "$ref": "#/$defs/ReleaseVersion"
+        }
+      },
+      "required": [
+        "version",
+        "commit",
+        "published_at",
+        "protocol",
+        "builds"
+      ]
+    },
     "ReleaseVersion": {
+      "description": "A release's `major.minor.patch`, ordered by its numbers.",
       "type": "string",
       "pattern": "^(0|[1-9][0-9]{0,8})\\.(0|[1-9][0-9]{0,8})\\.(0|[1-9][0-9]{0,8})$"
     },
@@ -1668,12 +1681,6 @@
         "member",
         "token"
       ]
-    },
-    "Target": {
-      "description": "A Rust target a release is built for, such as `x86_64-unknown-linux-musl`.",
-      "type": "string",
-      "maxLength": 64,
-      "pattern": "^[A-Za-z0-9_-]+$"
     },
     "TaskChange": {
       "description": "Asks the server to change a task that the client read at `version`; the server refuses\nwhen the task has changed since. The answer is its [`TaskRecord`].",

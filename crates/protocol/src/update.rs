@@ -9,41 +9,41 @@ use crate::token::token_id;
 
 token_id!(
     /// A Rust target a release is built for, such as `x86_64-unknown-linux-musl`.
-    Target,
+    BuildTarget,
     "not a build target"
 );
 
-/// A release, as its signed manifest describes it; a core reads it to update itself. It is
-/// published with the release's builds, and its signature beside it.
+/// A release, as its signed manifest describes it; a core reads it to update itself.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct Manifest {
+pub struct ReleaseManifest {
     pub version: ReleaseVersion,
     pub commit: Commit,
-    /// The protocol the release speaks; a core asks its owner before installing one that differs.
+    /// When the release was signed, in seconds since the Unix epoch, so a core can tell a
+    /// manifest that is being held back from the newest one.
+    pub published_at: u64,
     pub protocol: u32,
-    pub builds: Vec<Build>,
+    pub builds: Vec<ReleaseBuild>,
 }
 
 /// One target's binary in a release.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct Build {
-    pub target: Target,
+pub struct ReleaseBuild {
+    pub target: BuildTarget,
     pub url: DownloadUrl,
     pub size: u64,
     pub sha256: Sha256,
 }
 
-impl Manifest {
+impl ReleaseManifest {
     #[must_use]
-    pub fn build_for(&self, target: &str) -> Option<&Build> {
-        self.builds
-            .iter()
-            .find(|build| build.target.as_str() == target)
+    /// The first build for `target`.
+    pub fn build_for(&self, target: &BuildTarget) -> Option<&ReleaseBuild> {
+        self.builds.iter().find(|build| &build.target == target)
     }
 }
 
 /// A release's `major.minor.patch`, ordered by its numbers.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct ReleaseVersion {
     pub major: u32,
     pub minor: u32,
@@ -59,7 +59,8 @@ impl FromStr for ReleaseVersion {
     fn from_str(text: &str) -> Result<Self, Self::Err> {
         const WHAT: &str = "not a major.minor.patch version";
         let number = |part: &str| {
-            let digits = (1..=9).contains(&part.len()) && part.bytes().all(|b| b.is_ascii_digit());
+            let digits =
+                (1..=9).contains(&part.len()) && part.bytes().all(|byte| byte.is_ascii_digit());
             let leading_zero = part.len() > 1 && part.starts_with('0');
             if digits && !leading_zero {
                 part.parse().map_err(|_| WHAT)
@@ -107,42 +108,47 @@ impl JsonSchema for ReleaseVersion {
     }
 
     fn json_schema(_: &mut SchemaGenerator) -> Schema {
-        json_schema!({ "type": "string", "pattern": VERSION_PATTERN })
+        json_schema!({
+            "description": "A release's `major.minor.patch`, ordered by its numbers.",
+            "type": "string",
+            "pattern": VERSION_PATTERN,
+        })
     }
 }
 
-/// Declares a string of lowercase hex digits of a fixed length.
+/// Declares a string of `$len` lowercase hex digits; parsing anything else fails with `$what`.
 macro_rules! hex_string {
-    ($(#[$doc:meta])* $name:ident, $len:literal, $pattern:literal, $what:literal) => {
+    ($(#[$doc:meta])* $name:ident, $len:literal, $what:literal) => {
         $(#[$doc])*
         #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, JsonSchema)]
-        pub struct $name(#[schemars(regex(pattern = $pattern))] String);
+        pub struct $name(#[schemars(regex(pattern = Self::PATTERN))] String);
 
         impl $name {
+            // The schema's form of `try_from`; a test keeps the two in step.
+            const PATTERN: &str = concat!("^[0-9a-f]{", stringify!($len), "}$");
+
             #[must_use]
             pub fn as_str(&self) -> &str {
                 &self.0
             }
         }
 
-        impl FromStr for $name {
-            type Err = &'static str;
+        impl TryFrom<String> for $name {
+            type Error = String;
 
-            fn from_str(text: &str) -> Result<Self, Self::Err> {
-                let hex = |b: u8| b.is_ascii_digit() || (b'a'..=b'f').contains(&b);
-                if text.len() == $len && text.bytes().all(hex) {
-                    Ok(Self(text.to_owned()))
+            fn try_from(text: String) -> Result<Self, Self::Error> {
+                if text.len() == $len && text.bytes().all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f')) {
+                    Ok(Self(text))
                 } else {
-                    Err($what)
+                    Err(text)
                 }
             }
         }
 
         impl<'de> Deserialize<'de> for $name {
             fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-                String::deserialize(deserializer)?
-                    .parse()
-                    .map_err(de::Error::custom)
+                Self::try_from(String::deserialize(deserializer)?)
+                    .map_err(|_| de::Error::custom($what))
             }
         }
     };
@@ -152,7 +158,6 @@ hex_string!(
     /// A full git commit id: 40 lowercase hex digits.
     Commit,
     40,
-    "^[0-9a-f]{40}$",
     "not a full commit id"
 );
 
@@ -160,17 +165,16 @@ hex_string!(
     /// A SHA-256 digest: 64 lowercase hex digits.
     Sha256,
     64,
-    "^[0-9a-f]{64}$",
     "not a SHA-256 digest"
 );
 
-/// An `https://` address with no spaces or control characters, at most 2,048 bytes.
+/// An `https://` address of printable ASCII, at most 2,048 bytes.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, JsonSchema)]
 pub struct DownloadUrl(#[schemars(regex(pattern = URL_PATTERN), length(max = URL_MAX))] String);
 
 const URL_MAX: usize = 2048;
 
-// The schema's form of `DownloadUrl::from_str`; a test keeps the two in step.
+// The schema's form of `DownloadUrl::try_from`; a test keeps the two in step.
 const URL_PATTERN: &str = r"^https://[!-~]+$";
 
 impl DownloadUrl {
@@ -180,24 +184,24 @@ impl DownloadUrl {
     }
 }
 
-impl FromStr for DownloadUrl {
-    type Err = &'static str;
+impl TryFrom<String> for DownloadUrl {
+    type Error = String;
 
-    fn from_str(text: &str) -> Result<Self, Self::Err> {
-        let rest = text.strip_prefix("https://").unwrap_or_default();
-        if text.len() <= URL_MAX && !rest.is_empty() && rest.bytes().all(|b| b.is_ascii_graphic()) {
-            Ok(Self(text.to_owned()))
+    fn try_from(text: String) -> Result<Self, Self::Error> {
+        let printable =
+            |rest: &str| !rest.is_empty() && rest.bytes().all(|byte| byte.is_ascii_graphic());
+        if text.len() <= URL_MAX && text.strip_prefix("https://").is_some_and(printable) {
+            Ok(Self(text))
         } else {
-            Err("not an https address")
+            Err(text)
         }
     }
 }
 
 impl<'de> Deserialize<'de> for DownloadUrl {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        String::deserialize(deserializer)?
-            .parse()
-            .map_err(de::Error::custom)
+        Self::try_from(String::deserialize(deserializer)?)
+            .map_err(|_| de::Error::custom("not an https address"))
     }
 }
 
@@ -215,6 +219,7 @@ mod tests {
         json!({
             "version": "1.2.3",
             "commit": COMMIT,
+            "published_at": 1_794_614_400,
             "protocol": 1,
             "builds": [{
                 "target": "x86_64-unknown-linux-musl",
@@ -227,13 +232,32 @@ mod tests {
 
     #[test]
     fn a_manifest_round_trips_and_finds_its_target() {
-        let parsed: Manifest = serde_json::from_value(manifest()).unwrap();
+        let parsed: ReleaseManifest = serde_json::from_value(manifest()).unwrap();
         assert_eq!(serde_json::to_value(&parsed).unwrap(), manifest());
-        let build = parsed.build_for("x86_64-unknown-linux-musl").unwrap();
+        let target = |name: &str| BuildTarget::try_from(name.to_owned()).unwrap();
+        let build = parsed
+            .build_for(&target("x86_64-unknown-linux-musl"))
+            .unwrap();
         assert_eq!(build.size, 7_148_880);
+        assert_eq!(
+            build.url.as_str(),
+            "https://example.com/weacon-x86_64-unknown-linux-musl"
+        );
+        assert_eq!(parsed.published_at, 1_794_614_400);
         assert_eq!(build.sha256.as_str(), SHA);
         assert_eq!(parsed.commit.as_str(), COMMIT);
-        assert!(parsed.build_for("aarch64-apple-darwin").is_none());
+        assert!(parsed.build_for(&target("aarch64-apple-darwin")).is_none());
+    }
+
+    #[test]
+    fn the_first_build_for_a_target_wins() {
+        let mut twice = manifest();
+        let mut second = twice["builds"][0].clone();
+        second["size"] = json!(1);
+        twice["builds"].as_array_mut().unwrap().push(second);
+        let parsed: ReleaseManifest = serde_json::from_value(twice).unwrap();
+        let target = BuildTarget::try_from("x86_64-unknown-linux-musl".to_owned()).unwrap();
+        assert_eq!(parsed.build_for(&target).unwrap().size, 7_148_880);
     }
 
     #[test]
@@ -241,7 +265,7 @@ mod tests {
         let mut newer = manifest();
         newer["notes"] = json!("later");
         newer["builds"][0]["signed_by"] = json!("k2");
-        let parsed: Manifest = serde_json::from_value(newer).unwrap();
+        let parsed: ReleaseManifest = serde_json::from_value(newer).unwrap();
         assert_eq!(serde_json::to_value(parsed).unwrap(), manifest());
     }
 
@@ -250,16 +274,17 @@ mod tests {
         let cases = [
             ("/version", json!("1.2")),
             ("/commit", json!(COMMIT.to_uppercase())),
-            ("/builds/0/sha256", json!(&SHA[1..])),
+            ("/builds/0/sha256", json!(COMMIT)),
             ("/builds/0/url", json!("http://example.com/weacon")),
             ("/builds/0/target", json!("x86 64")),
             ("/builds/0/size", json!(-1)),
+            ("/published_at", json!("today")),
         ];
         for (pointer, value) in cases {
             let mut bad = manifest();
             *bad.pointer_mut(pointer).unwrap() = value;
             assert!(
-                serde_json::from_value::<Manifest>(bad).is_err(),
+                serde_json::from_value::<ReleaseManifest>(bad).is_err(),
                 "{pointer}"
             );
         }
@@ -282,68 +307,71 @@ mod tests {
         );
     }
 
-    #[test]
-    fn the_patterns_match_the_parsers() {
-        let checks: [(&str, fn(&str) -> bool, &[&str]); 4] = [
-            (
-                VERSION_PATTERN,
-                |t| t.parse::<ReleaseVersion>().is_ok(),
-                &[
-                    "0.0.0",
-                    "1.2.3",
-                    "999999999.0.1",
-                    "1.2",
-                    "1.2.3.4",
-                    "01.2.3",
-                    "1.2.-3",
-                    "1.2.3-rc1",
-                    "1000000000.0.0",
-                    "",
-                    "a.b.c",
-                    "1..3",
-                ],
-            ),
-            (
-                URL_PATTERN,
-                |t| t.parse::<DownloadUrl>().is_ok(),
-                &[
-                    "https://a",
-                    "https://example.com/x?y=1",
-                    "https://",
-                    "http://a",
-                    "https://a b",
-                    "https://a\n",
-                    "https://é",
-                    " https://a",
-                ],
-            ),
-            (
-                "^[0-9a-f]{40}$",
-                |t| t.parse::<Commit>().is_ok(),
-                &[COMMIT, "abc", "g0123456789abcdef0123456789abcdef0123456"],
-            ),
-            (
-                "^[0-9a-f]{64}$",
-                |t| t.parse::<Sha256>().is_ok(),
-                &[SHA, "", COMMIT],
-            ),
-        ];
-        for (pattern, parses, samples) in checks {
-            let regex = Regex::new(pattern).unwrap();
-            for sample in samples {
-                assert_eq!(
-                    regex.is_match(sample),
-                    parses(sample),
-                    "{pattern} {sample:?}"
-                );
-            }
+    fn matches_its_parser(pattern: &str, parses: impl Fn(&str) -> bool, samples: &[&str]) {
+        let regex = Regex::new(pattern).unwrap();
+        for sample in samples {
+            assert_eq!(regex.is_match(sample), parses(sample), "{sample:?}");
         }
+    }
+
+    #[test]
+    fn the_version_pattern_matches_its_parser() {
+        let samples = [
+            "0.0.0",
+            "1.2.3",
+            "999999999.0.1",
+            "1.2",
+            "1.2.3.4",
+            "01.2.3",
+            "1.2.-3",
+            "1.2.3-rc1",
+            "1000000000.0.0",
+            "",
+            "a.b.c",
+            "1..3",
+        ];
+        matches_its_parser(
+            VERSION_PATTERN,
+            |text| text.parse::<ReleaseVersion>().is_ok(),
+            &samples,
+        );
+    }
+
+    #[test]
+    fn the_url_pattern_matches_its_parser() {
+        let samples = [
+            "https://a",
+            "https://example.com/x?y=1",
+            "https://",
+            "http://a",
+            "https://a b",
+            "https://a\n",
+            "https://é",
+            " https://a",
+        ];
+        let parses = |text: &str| DownloadUrl::try_from(text.to_owned()).is_ok();
+        matches_its_parser(URL_PATTERN, parses, &samples);
+    }
+
+    #[test]
+    fn the_hex_patterns_match_their_parsers() {
+        let samples = [
+            COMMIT,
+            SHA,
+            "",
+            "abc",
+            "g123456789abcdef0123456789abcdef01234567",
+        ];
+        let commit = |text: &str| Commit::try_from(text.to_owned()).is_ok();
+        let sha = |text: &str| Sha256::try_from(text.to_owned()).is_ok();
+        matches_its_parser(Commit::PATTERN, commit, &samples);
+        matches_its_parser(Sha256::PATTERN, sha, &samples);
     }
 
     #[test]
     fn urls_are_bounded() {
         let long = format!("https://{}", "a".repeat(URL_MAX - 8));
-        assert!(long.parse::<DownloadUrl>().is_ok());
-        assert!(format!("{long}a").parse::<DownloadUrl>().is_err());
+        DownloadUrl::try_from(long.clone()).unwrap();
+        DownloadUrl::try_from(format!("{long}a")).unwrap_err();
     }
 }
