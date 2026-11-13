@@ -23,9 +23,8 @@ impl<A: Agent> Engine<A> {
             Seen::Same => {
                 return match command.action {
                     ChatAction::Permission { answer } => self.deliver(key, &request, answer).await,
-                    ChatAction::Prompt { .. } | ChatAction::Interrupt | ChatAction::Newer => {
-                        self.advance(key).await
-                    }
+                    ChatAction::Interrupt => self.stop_turn(key, &request).await,
+                    ChatAction::Prompt { .. } | ChatAction::Newer => self.advance(key).await,
                 };
             }
             Seen::Other => {
@@ -137,12 +136,27 @@ impl<A: Agent> Engine<A> {
         Ok(())
     }
 
-    // Committed first, so a retry after a failed write can't interrupt a later turn.
+    // Committed first and bound to the turn it stops, so a retry after a failed write still
+    // stops that turn and never a later one.
     async fn interrupt(&mut self, key: &Key, request: RequestId) -> Result<(), Fault> {
+        let stops = self.turn(key).map(|turn| (request.clone(), turn));
+        self.chat(key).await?.interrupting = stops;
         self.receipt(key, &request, Outcome::Completed).await?;
-        if self.turn(key).is_some() {
-            self.order(key, Order::Interrupt);
+        self.stop_turn(key, &request).await
+    }
+
+    // Sends the interrupt `request` committed, while the turn it stops is still running.
+    async fn stop_turn(&mut self, key: &Key, request: &RequestId) -> Result<(), Fault> {
+        let Some(turn) = self.turn(key) else {
+            return Ok(());
+        };
+        let stops = Some((request.clone(), turn));
+        let chat = self.chat(key).await?;
+        if chat.interrupting != stops {
+            return Ok(());
         }
+        chat.interrupting = None;
+        self.order(key, Order::Interrupt);
         Ok(())
     }
 }

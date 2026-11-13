@@ -106,6 +106,8 @@ struct Chat {
     waiting: Vec<Waiting>,
     /// The outcome the run reported for its turn when the turn's receipt couldn't be written.
     unended: Option<Outcome>,
+    /// An interrupt's request, and the turn it stops, until the interrupt is sent.
+    interrupting: Option<(RequestId, RequestId)>,
 }
 
 impl Chat {
@@ -298,6 +300,7 @@ impl<A: Agent> Engine<A> {
                 orders: None,
                 waiting: Vec::new(),
                 unended: None,
+                interrupting: None,
             })),
         }
     }

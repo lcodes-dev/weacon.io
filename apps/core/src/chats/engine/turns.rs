@@ -857,6 +857,31 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
+    async fn an_interrupt_whose_receipt_was_written_stops_its_turn_when_sent_again() {
+        let (_bench, mut engine, mut agent, _pushes) = on_turn().await;
+        assert_eq!(
+            soon(agent.told.recv()).await,
+            Some(Told::Send("Hi".to_owned()))
+        );
+        let interrupt = command("r-2", "c-1", ChatAction::Interrupt);
+        engine.chat(&key()).await.unwrap().log.jam();
+        let failed = engine.command(&key(), interrupt.clone()).await;
+        assert_eq!(failed.unwrap_err().code().as_str(), "chat.log_not_written");
+        // As when its receipt reached the disk all the same.
+        let request = interrupt.request.clone();
+        engine
+            .receipt(&key(), &request, Outcome::Completed)
+            .await
+            .unwrap();
+
+        engine.command(&key(), interrupt.clone()).await.unwrap();
+        engine.command(&key(), interrupt).await.unwrap();
+
+        assert_eq!(soon(agent.told.recv()).await, Some(Told::Interrupt));
+        assert_eq!(soon(agent.told.recv()).await, None);
+    }
+
+    #[tokio::test(start_paused = true)]
     async fn an_interrupt_that_cant_be_committed_isnt_sent() {
         let (_bench, mut engine, mut agent, _pushes) = on_turn().await;
         assert_eq!(
