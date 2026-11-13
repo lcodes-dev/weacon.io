@@ -10,6 +10,9 @@ on:
       - scripts/release.sh
       - apps/web/package-lock.json
       - apps/server/build.rs
+      - apps/server/src/web.rs
+      - apps/web/tools/build.ts
+      - tooling/ts/build.ts
       - rust-toolchain.toml
       - Cargo.lock
       - "**/Cargo.toml"

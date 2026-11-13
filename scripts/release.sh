@@ -40,7 +40,7 @@ web_files=(index.html app.js app.css)
 
 # Starts the server on a free port and checks it serves each built file of the web app.
 check_serves() {
-  local binary=$1 dir log address file route
+  local binary=$1 dir log address file route version
   dir=$(mktemp -d)
   log="$dir/log"
   mkdir "$dir/outbox"
@@ -48,14 +48,15 @@ check_serves() {
     --secret "$dir/secret" >"$log" 2>&1 &
   local pid=$!
   # shellcheck disable=SC2064 # The values are fixed now, on purpose.
-  trap "kill $pid 2>/dev/null; rm -rf '$dir'" EXIT
+  trap "kill $pid 2>/dev/null; wait $pid 2>/dev/null; rm -rf '$dir'" EXIT
   for _ in $(seq 100); do
     address=$(grep -F '"msg":"listening"' "$log" | grep -Eo '127\.0\.0\.1:[0-9]+' || true)
     if [ -n "$address" ] || ! kill -0 "$pid" 2>/dev/null; then break; fi
     sleep 0.1
   done
   [ -n "$address" ] || die "$binary didn't start serving"
-  curl -fsS "http://$address/version" | grep -qF "\"$(git rev-parse HEAD)\"" \
+  version=$(curl -fsS "http://$address/version") || die "$binary doesn't answer at /version"
+  grep -qF "\"$(git rev-parse HEAD)\"" <<<"$version" \
     || die "$binary doesn't report this commit at /version"
   for file in "${web_files[@]}"; do
     route=/$file
