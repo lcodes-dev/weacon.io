@@ -93,12 +93,16 @@ fn client(peer: IpAddr, headers: &HeaderMap, trusted: &[Net]) -> Client {
         .get_all(FORWARDED_FOR)
         .iter()
         .rev()
-        .flat_map(|value| value.to_str().unwrap_or_default().rsplit(','));
+        .flat_map(|value| value.as_bytes().rsplit(|byte| *byte == b','));
     for hop in forwarded {
         if !is_proxy(client) {
             break;
         }
-        let Ok(hop) = hop.trim().parse() else {
+        // Each hop on its own, so bad bytes the walk never reaches can't hide a good one.
+        let Some(hop) = str::from_utf8(hop)
+            .ok()
+            .and_then(|hop| hop.trim().parse().ok())
+        else {
             break;
         };
         client = hop;
@@ -200,6 +204,8 @@ mod tests {
         assert_eq!(from(&[b"198.51.100.1, nonsense"]), "10.0.0.1");
         assert_eq!(from(&[b"198.51.100.1, nonsense, 10.0.0.2"]), "10.0.0.2");
         assert_eq!(from(&[b"198.51.100.1", b"\xe9"]), "10.0.0.1");
+        assert_eq!(from(&[b"\xe9, 198.51.100.1"]), "198.51.100.1");
+        assert_eq!(from(&[b"198.51.100.1, \xe9, 10.0.0.2"]), "10.0.0.2");
         assert_eq!(from(&[b"198.51.100.1:443"]), "10.0.0.1");
     }
 }
