@@ -42,6 +42,12 @@ export type Envelope = {
   | {
     type: "chat_answer";
   } & ChatAnswer
+  | {
+    type: "diff_query";
+  } & DiffQuery
+  | {
+    type: "diff_answer";
+  } & DiffAnswer
 );
 
 /**
@@ -234,6 +240,74 @@ export type ClientLog = {
  */
 export type Code = string;
 
+/**
+ * The core's answer to a [`DiffQuery`], to a client that has `diff.view`.
+ */
+export type DiffAnswer = {
+  answer: DiffAnswerKind;
+  chat: ChatId;
+  request: RequestId;
+  workspace: WorkspaceId;
+};
+
+export type DiffAnswerKind = (
+  | {
+    file: DiffFile;
+    files: number;
+    kind: "file";
+  }
+  | {
+    kind: "unchanged";
+  }
+);
+
+export type DiffContent = (
+  | {
+    hunks: Array<Hunk>;
+    kind: "text";
+  }
+  | {
+    kind: "binary";
+  }
+  | {
+    kind: "too_large";
+  }
+);
+
+export type DiffFile = {
+  change: FileChange;
+  content: DiffContent;
+  /**
+   * Where the file is now, or was when it was removed, relative to the worktree.
+   */
+  path: string;
+};
+
+/**
+ * One line, without its line ending.
+ */
+export type DiffLine = {
+  op: LineOp;
+  text: string;
+};
+
+/**
+ * A question about a chat's changes, from a client to a core that offers `diff.view`. Each
+ * answer is a [`DiffAnswer`] that echoes `request`.
+ */
+export type DiffQuery = {
+  chat: ChatId;
+  query: DiffQueryKind;
+  request: RequestId;
+  workspace: WorkspaceId;
+};
+
+export type DiffQueryKind = (
+  | {
+    kind: "changes";
+  }
+);
+
 export type ErrorBody = {
   code: Code;
   /**
@@ -241,6 +315,22 @@ export type ErrorBody = {
    */
   retryable: boolean;
 };
+
+export type FileChange = (
+  | {
+    kind: "added";
+  }
+  | {
+    kind: "removed";
+  }
+  | {
+    kind: "modified";
+  }
+  | {
+    from: string;
+    kind: "renamed";
+  }
+);
 
 /**
  * The first message on every connection, from the side that connects.
@@ -251,6 +341,15 @@ export type Hello = {
   protocol: number;
 };
 
+/**
+ * A run of changed lines and their context. Lines count from 1 in the old and the new file.
+ */
+export type Hunk = {
+  lines: Array<DiffLine>;
+  new_start: number;
+  old_start: number;
+};
+
 export type Level = (
   | "trace"
   | "debug"
@@ -258,6 +357,14 @@ export type Level = (
   | "warn"
   | "error"
   | "fatal"
+);
+
+export type LineOp = (
+  | (
+    | "context"
+    | "added"
+    | "removed"
+  )
 );
 
 /**

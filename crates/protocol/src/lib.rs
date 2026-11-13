@@ -4,6 +4,7 @@ mod access;
 mod capability;
 mod chat;
 mod code;
+mod diff;
 mod frame;
 mod log;
 mod message;
@@ -21,6 +22,10 @@ pub use chat::{
     ChatQueryKind, ChatUpdate,
 };
 pub use code::Code;
+pub use diff::{
+    DiffAnswer, DiffAnswerKind, DiffContent, DiffFile, DiffLine, DiffQuery, DiffQueryKind,
+    FileChange, Hunk, LineOp,
+};
 pub use frame::{FrameError, LineDecoder, MAX_FRAME, encode_line};
 pub use log::{ClientLog, Level, LogEvent};
 pub use message::{App, Envelope, ErrorBody, Hello, Message, PROTOCOL, Welcome};
