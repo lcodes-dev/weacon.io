@@ -20,7 +20,8 @@ pub enum Hunk {
 
 /// Merges `proposed`, written against `base`, into `current`, line by line with each line's
 /// ending kept. Where only one side changed lines, that change is taken; where both changed the
-/// same or neighbouring lines differently, the hunk is a conflict.
+/// same or neighbouring lines differently, the hunk is a conflict. Its time grows with the
+/// product of the lines each side rewrote, so callers bound the texts' size.
 #[must_use]
 pub fn merge(base: &str, current: &str, proposed: &str) -> Merge {
     let [base, current, proposed]: [Vec<&str>; 3] =
@@ -324,7 +325,7 @@ mod tests {
             .map(|_| {
                 let len = next(12);
                 (0..len)
-                    .map(|_| ["a\n", "b\n", "c\n", "\n"][next(4)])
+                    .map(|_| ["a\n", "b\n", "é 🙂\n", " \n", "\n"][next(5)])
                     .collect()
             })
             .collect()
