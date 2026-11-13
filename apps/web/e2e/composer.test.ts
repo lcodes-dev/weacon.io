@@ -144,6 +144,79 @@ test("@ offers people and agents, and a pick stays one mention", { timeout: 120_
   }
 });
 
+test("files come by picker, paste and drop, show before sending, and can be removed", { timeout: 120_000 }, async () => {
+  const harness = await start(fakeServer(1_000, 0), { query: "&workspace=w-1&chat=c-1" });
+  try {
+    const { page } = harness;
+    const box = page.getByRole("combobox", { name: "Message" });
+    const send = page.getByRole("button", { name: "Send" });
+    const chips = page.getByRole("list", { name: "Attached files" }).getByRole("listitem");
+    await page.getByText("Connected").waitFor();
+    await box.fill("Logs attached");
+
+    const chooser = page.waitForEvent("filechooser");
+    await page.getByRole("button", { name: "Attach" }).click();
+    await (await chooser).setFiles([
+      { name: "notes.md", mimeType: "text/markdown", buffer: Buffer.from("# Notes\n") },
+      { name: "build.log", mimeType: "text/plain", buffer: Buffer.alloc(2_048) },
+    ]);
+    await box.evaluate((element) => {
+      const data = new DataTransfer();
+      data.items.add(new File(["png"], "screenshot.png", { type: "image/png" }));
+      element.dispatchEvent(new ClipboardEvent("paste", { clipboardData: data, bubbles: true, cancelable: true }));
+    });
+    const drop = await page.evaluateHandle(() => {
+      const data = new DataTransfer();
+      data.items.add(new File(["a,b\n"], "table.csv", { type: "text/csv" }));
+      return data;
+    });
+    await box.dispatchEvent("dragover", { dataTransfer: drop });
+    await box.dispatchEvent("drop", { dataTransfer: drop });
+
+    assert.deepEqual(await chips.allInnerTexts(), [
+      "notes.md\n8 B\n×",
+      "build.log\n2 KB\n×",
+      "screenshot.png\n3 B\n×",
+      "table.csv\n4 B\n×",
+    ]);
+    assert.equal(await box.inputValue(), "Logs attached");
+    await page.getByText("Files can't be sent yet; remove them to send the message").waitFor();
+    assert.equal(await send.isDisabled(), true);
+
+    const tooBig = page.waitForEvent("filechooser");
+    await page.getByRole("button", { name: "Attach" }).click();
+    await (await tooBig).setFiles([{ name: "huge.bin", mimeType: "application/octet-stream", buffer: Buffer.alloc(11 * 1024 * 1024) }]);
+    await page.getByText("Files must be 10 MB or smaller, and not empty").waitFor();
+    assert.equal(await chips.count(), 4);
+    // Typing on moves past it, back to why the message waits.
+    await box.press("End");
+    await page.keyboard.type(".");
+    await page.getByText("Files can't be sent yet; remove them to send the message").waitFor();
+
+    // Text copied from an office app comes with a picture of itself; the text is pasted, not the picture.
+    const kept = await box.evaluate((element) => {
+      const data = new DataTransfer();
+      data.setData("text/plain", "cells");
+      data.items.add(new File(["png"], "cells.png", { type: "image/png" }));
+      const paste = new ClipboardEvent("paste", { clipboardData: data, bubbles: true, cancelable: true });
+      element.dispatchEvent(paste);
+      return !paste.defaultPrevented;
+    });
+    assert.equal(kept, true);
+    assert.equal(await chips.count(), 4);
+
+    for (const name of ["build.log", "notes.md", "table.csv", "screenshot.png"]) {
+      await page.getByRole("button", { name: `Remove ${name}` }).click();
+    }
+    assert.equal(await chips.count(), 0);
+    await send.click();
+    await waitFor(() => prompts(harness.received()).length > 0);
+    assert.deepEqual(prompts(harness.received()).at(-1)?.action, { kind: "prompt", text: "Logs attached." });
+  } finally {
+    await harness.close();
+  }
+});
+
 type Command = Extract<Envelope, { type: "chat_command" }>;
 
 function prompts(received: unknown[]): Command[] {
