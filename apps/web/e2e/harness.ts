@@ -30,8 +30,14 @@ export function fakeServer(tokens: number, paceMs: number): (dir: string) => Chi
     );
 }
 
-/** Starts `server` in a new folder and opens the page on it; on any failure, stops it and removes the folder. */
-export async function start(server: (dir: string) => ChildProcess, startupMs = STARTUP_MS): Promise<Harness> {
+/**
+ * Starts `server` in a new folder and opens the page on it, with `query` after its address; on
+ * any failure, stops it and removes the folder.
+ */
+export async function start(
+  server: (dir: string) => ChildProcess,
+  { startupMs = STARTUP_MS, query = "" }: { startupMs?: number; query?: string } = {},
+): Promise<Harness> {
   const dir = mkdtempSync(join(tmpdir(), "weacon-web-"));
   const child = server(dir);
   let browser: Browser | undefined;
@@ -44,7 +50,7 @@ export async function start(server: (dir: string) => ChildProcess, startupMs = S
     const url = await firstLine(child, startupMs);
     browser = await chromium.launch();
     const page = await browser.newPage();
-    await page.goto(`${PAGE.href}?server=${encodeURIComponent(url)}`);
+    await page.goto(`${PAGE.href}?server=${encodeURIComponent(url)}${query}`);
     return {
       page,
       received: () =>
@@ -84,4 +90,15 @@ async function readFirstLine(child: ChildProcess): Promise<string> {
     return line;
   }
   throw new Error("the fake server exited before it listened");
+}
+
+/** Polls until `done`; fails after `deadlineMs`. */
+export async function waitFor(done: () => boolean, deadlineMs = 10_000): Promise<void> {
+  const end = Date.now() + deadlineMs;
+  while (!done()) {
+    if (Date.now() > end) {
+      throw new Error("gave up waiting");
+    }
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
 }
