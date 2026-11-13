@@ -181,7 +181,7 @@ impl fmt::Debug for SignedIn {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum WorkspaceChange {
-    /// A member signed in for the first time.
+    /// A member opened the workspace for the first time.
     MemberJoined { member: MemberId },
     /// A task was made, at version 1, or changed. Only for clients that have the capability
     /// `workspace.tasks`, which read the tasks again to see what it now is.
