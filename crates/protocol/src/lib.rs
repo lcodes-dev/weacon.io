@@ -29,7 +29,7 @@ pub use diff::{
 };
 pub use doc::{
     CommitId, DocAnchors, DocContent, DocHistory, DocId, DocList, DocPin, DocRecord, DocRevise,
-    DocRevision, DocSummary,
+    DocRevision, DocSummary, links_to_code,
 };
 pub use frame::{FrameError, LineDecoder, MAX_FRAME, encode_line};
 pub use log::{ClientLog, Level, LogEvent};

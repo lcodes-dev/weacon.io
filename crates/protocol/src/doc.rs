@@ -27,6 +27,22 @@ impl DocPin {
     pub fn as_str(&self) -> &str {
         &self.0
     }
+
+    /// The pin without its fingerprint, as a doc links to it.
+    #[must_use]
+    pub fn anchor(&self) -> &str {
+        self.0
+            .rsplit_once('#')
+            .map_or(&self.0, |(anchor, _)| anchor)
+    }
+}
+
+/// Whether a link's target is a code anchor: `sym:`, `flow:` or `area:`, then anything.
+#[must_use]
+pub fn links_to_code(target: &str) -> bool {
+    target
+        .split_once(':')
+        .is_some_and(|(kind, _)| matches!(kind, "sym" | "flow" | "area"))
 }
 
 impl TryFrom<String> for DocPin {
@@ -52,11 +68,11 @@ fn is_pin(pin: &str) -> bool {
     let Some((anchor, fingerprint)) = pin.rsplit_once('#') else {
         return false;
     };
-    let Some((kind, name)) = anchor.split_once(':') else {
+    let Some((_, name)) = anchor.split_once(':') else {
         return false;
     };
     pin.len() <= PIN_MAX
-        && matches!(kind, "sym" | "flow" | "area")
+        && links_to_code(anchor)
         && !name.is_empty()
         && name.bytes().all(|byte| byte.is_ascii_graphic())
         && fingerprint.len() == 16
@@ -226,8 +242,27 @@ mod tests {
             pin(PIN)
         );
         assert_eq!(pin(PIN).as_str(), PIN);
+        assert_eq!(pin(PIN).anchor(), "sym:weacon_protocol::frame::encode_line");
+        assert_eq!(pin("area:a#b#0000000000000000").anchor(), "area:a#b");
         let bad = serde_json::from_value::<DocPin>(json!("sym:a")).unwrap_err();
         assert!(bad.to_string().contains("not an anchor pin"), "{bad}");
+    }
+
+    #[test]
+    fn code_links_are_named_by_their_kind() {
+        for code in ["sym:a", "flow:a->b", "area:x", "sym:"] {
+            assert!(links_to_code(code), "{code}");
+        }
+        for other in [
+            "https://example.com",
+            "#section",
+            "symbol:a",
+            "sym",
+            "",
+            "area",
+        ] {
+            assert!(!links_to_code(other), "{other}");
+        }
     }
 
     #[test]
