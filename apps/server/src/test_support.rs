@@ -55,7 +55,8 @@ impl Fixture {
             .await
             .unwrap();
         let (log, records) = recording_logger();
-        let secret = Secret::open(&dir.join("secret"), &log).unwrap();
+        // Its own logger: off Unix it warns, and tests read the fixture's records.
+        let secret = Secret::open(&dir.join("secret"), &recording_logger().0).unwrap();
         fs::create_dir(dir.join("outbox")).unwrap();
         let clock = Arc::new(AtomicU64::new(START));
         let now = Arc::clone(&clock);
