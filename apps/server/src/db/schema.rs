@@ -127,6 +127,9 @@ CREATE TABLE task_versions (
     FOREIGN KEY (workspace_id, author_member) REFERENCES members (workspace_id, member_id),
     FOREIGN KEY (workspace_id, accepted_by) REFERENCES members (workspace_id, member_id)
 ) STRICT;
+
+ALTER TABLE changes ADD COLUMN task_id TEXT;
+ALTER TABLE changes ADD COLUMN task_version INTEGER;
 ",
 ];
 

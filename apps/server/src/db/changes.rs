@@ -1,9 +1,13 @@
+use sqlx::SqliteConnection;
 use weacon_observability::Fault;
-use weacon_protocol::{MemberId, WorkspaceChange, WorkspaceUpdate};
+use weacon_protocol::{MemberId, TaskId, WorkspaceChange, WorkspaceUpdate};
 
 use super::{Workspace, failed, stored, unreadable};
 
 const MEMBER_JOINED: &str = "member_joined";
+const TASK_CHANGED: &str = "task_changed";
+
+type Row = (i64, String, String, Option<String>, Option<i64>);
 
 impl Workspace {
     /// Records that `member` joined, as the workspace's next change; false when they already
@@ -24,6 +28,31 @@ impl Workspace {
         Ok(joined.rows_affected() == 1)
     }
 
+    /// Records, inside the transaction that stores it, that `task` is now at `version`,
+    /// through a change `member` made or accepted.
+    pub(super) async fn task_changed(
+        &self,
+        transaction: &mut SqliteConnection,
+        task: &TaskId,
+        version: i64,
+        member: &MemberId,
+    ) -> Result<(), Fault> {
+        sqlx::query(
+            "INSERT INTO changes (workspace_id, seq, kind, member_id, task_id, task_version)
+             SELECT ?1, COALESCE(MAX(seq), 0) + 1, ?2, ?3, ?4, ?5 FROM changes
+             WHERE workspace_id = ?1",
+        )
+        .bind(self.id.as_str())
+        .bind(TASK_CHANGED)
+        .bind(member.as_str())
+        .bind(task.as_str())
+        .bind(version)
+        .execute(transaction)
+        .await
+        .map_err(failed)?;
+        Ok(())
+    }
+
     /// Up to `limit` changes after `seq`, in order.
     pub(crate) async fn changes_since(
         &self,
@@ -31,8 +60,8 @@ impl Workspace {
         limit: u32,
     ) -> Result<Vec<WorkspaceUpdate>, Fault> {
         let after = i64::try_from(seq).unwrap_or(i64::MAX);
-        sqlx::query_as::<_, (i64, String, String)>(
-            "SELECT seq, kind, member_id FROM changes
+        sqlx::query_as::<_, Row>(
+            "SELECT seq, kind, member_id, task_id, task_version FROM changes
              WHERE workspace_id = ? AND seq > ? ORDER BY seq LIMIT ?",
         )
         .bind(self.id.as_str())
@@ -42,14 +71,18 @@ impl Workspace {
         .await
         .map_err(failed)?
         .into_iter()
-        .map(|(seq, kind, member)| self.update(seq, &kind, member))
+        .map(|row| self.update(row))
         .collect()
     }
 
-    fn update(&self, seq: i64, kind: &str, member: String) -> Result<WorkspaceUpdate, Fault> {
-        let change = match kind {
-            MEMBER_JOINED => WorkspaceChange::MemberJoined {
+    fn update(&self, (seq, kind, member, task, version): Row) -> Result<WorkspaceUpdate, Fault> {
+        let change = match (kind.as_str(), task, version) {
+            (MEMBER_JOINED, None, None) => WorkspaceChange::MemberJoined {
                 member: stored(member)?,
+            },
+            (TASK_CHANGED, Some(task), Some(version)) => WorkspaceChange::TaskChanged {
+                task: stored(task)?,
+                version: u64::try_from(version).map_err(|_| unreadable())?,
             },
             // This server writes every kind it stores, so another is damage, not news.
             _ => return Err(unreadable()),
@@ -116,5 +149,34 @@ mod tests {
             one.changes_since(2, 2).await.unwrap_err().code().as_str(),
             "db.unreadable"
         );
+    }
+
+    #[tokio::test]
+    async fn a_task_change_names_its_task_and_version_and_needs_both() {
+        let dir = TempDir::new().unwrap();
+        let (one, _) = two_teams(&dir).await;
+        sqlx::query(
+            "INSERT INTO changes (workspace_id, seq, kind, member_id, task_id, task_version)
+             VALUES ('w1', 1, 'task_changed', 'm1', 't1', 2),
+                    ('w1', 2, 'task_changed', 'm1', 't1', NULL),
+                    ('w1', 3, 'member_joined', 'm1', 't1', NULL)",
+        )
+        .execute(&one.db.writer)
+        .await
+        .unwrap();
+
+        let changed = WorkspaceUpdate {
+            workspace: workspace_id("w1"),
+            seq: 1,
+            change: WorkspaceChange::TaskChanged {
+                task: TaskId::try_from("t1".to_owned()).unwrap(),
+                version: 2,
+            },
+        };
+        assert_eq!(one.changes_since(0, 1).await.unwrap(), [changed]);
+        for after in [1, 2] {
+            let fault = one.changes_since(after, 1).await.unwrap_err();
+            assert_eq!(fault.code().as_str(), "db.unreadable");
+        }
     }
 }

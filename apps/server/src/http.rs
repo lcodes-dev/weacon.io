@@ -23,6 +23,7 @@ use crate::limit::Limit;
 use crate::mail::Outbox;
 use crate::secret::Secret;
 use crate::sign_in;
+use crate::tasks;
 
 const REQUEST_ID: &str = "x-request-id";
 const GRACE: Duration = Duration::from_secs(10);
@@ -118,6 +119,14 @@ fn router(shared: Shared) -> Router {
         .route("/api/sign-in", post(sign_in::start))
         .route("/api/sign-in/finish", post(sign_in::finish))
         .route("/api/workspaces/{workspace}/feed", get(feed::feed))
+        .route(
+            "/api/workspaces/{workspace}/tasks",
+            get(tasks::list).post(tasks::create),
+        )
+        .route(
+            "/api/workspaces/{workspace}/tasks/{task}",
+            post(tasks::change),
+        )
         .layer(DefaultBodyLimit::max(MAX_BODY))
         .layer(middleware::from_fn(in_time))
         .layer(middleware::from_fn_with_state(shared.clone(), log_request))
@@ -185,7 +194,7 @@ pub(crate) fn failure(shared: &Shared, fault: Fault) -> Response {
     error(StatusCode::INTERNAL_SERVER_ERROR, code, true)
 }
 
-fn error(status: StatusCode, code: Code, retryable: bool) -> Response {
+pub(crate) fn error(status: StatusCode, code: Code, retryable: bool) -> Response {
     (status, Json(ErrorBody { code, retryable })).into_response()
 }
 

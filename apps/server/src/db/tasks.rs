@@ -7,10 +7,6 @@ use super::{Workspace, failed, stored, unreadable};
 
 type Row = (String, String, String, String, i64);
 
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "the task routes call these when they land")
-)]
 impl Workspace {
     /// Stores a new task, made by `change`. An id or order key already in this workspace is
     /// `db.exists`.
@@ -93,7 +89,7 @@ impl Workspace {
         Ok(edited)
     }
 
-    /// Records who is behind the version `task` is now at.
+    /// Records who is behind the version `task` is now at, and the change for the feed.
     async fn record(
         &self,
         transaction: &mut SqliteConnection,
@@ -101,6 +97,7 @@ impl Workspace {
         change: &Change,
     ) -> Result<(), Fault> {
         let (kind, author) = author_columns(change.author())?;
+        let version = version_number(task.version)?;
         sqlx::query(
             "INSERT INTO task_versions
                  (workspace_id, task_id, version, author_kind, author_member, accepted_by, at)
@@ -108,15 +105,16 @@ impl Workspace {
         )
         .bind(self.id.as_str())
         .bind(task.id.as_str())
-        .bind(version_number(task.version)?)
+        .bind(version)
         .bind(kind)
         .bind(author.as_str())
         .bind(change.accepted_by().as_str())
         .bind(change.at())
-        .execute(transaction)
+        .execute(&mut *transaction)
         .await
         .map_err(failed)?;
-        Ok(())
+        self.task_changed(transaction, &task.id, version, change.accepted_by())
+            .await
     }
 }
 
@@ -194,7 +192,6 @@ mod tests {
     use weacon_testing::TempDir;
 
     use super::*;
-    use crate::email::Email;
     use crate::test_support::{member_id, two_teams};
 
     const NOW: i64 = 1_762_077_600;
@@ -317,9 +314,6 @@ mod tests {
     async fn every_version_records_who_made_it_and_who_accepted_it() {
         let dir = TempDir::new().unwrap();
         let (one, _) = two_teams(&dir).await;
-        one.add_member(&member_id("m3"), &Email::parse("cy@example.com").unwrap())
-            .await
-            .unwrap();
         let task = new_task("t1", "Write", "V");
         one.add_task(&task, &by("m1")).await.unwrap();
         let agents = Change::accepted(member_id("m1"), member_id("m3"), NOW + 5);

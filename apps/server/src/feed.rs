@@ -17,6 +17,8 @@ use crate::http::{Shared, failure};
 
 /// What a client must offer, and the server offers, to get a workspace's changes.
 const FEED: Code = code!("workspace.feed");
+/// What the server offers to clients that read and change tasks.
+const TASKS: Code = code!("workspace.tasks");
 
 /// How long a feed waits for the client's hello, and how often it checks that the client
 /// answers and its session hasn't ended; a send that takes longer than that ends the feed.
@@ -190,7 +192,10 @@ async fn greet(socket: &mut WebSocket, shared: &Shared) -> bool {
         return false;
     };
     let feed = Capability::from(FEED);
-    let answer = hello.answer(shared.app.clone(), vec![feed.clone()]);
+    let answer = hello.answer(
+        shared.app.clone(),
+        vec![feed.clone(), Capability::from(TASKS)],
+    );
     let welcomed = matches!(answer, Message::Welcome(_));
     if welcomed && !hello.capabilities.contains(&feed) {
         reply(socket, shared, id, error(code!("capability.missing"))).await;
@@ -406,7 +411,10 @@ mod tests {
         let Message::Welcome(welcome) = welcome else {
             panic!("{welcome:?}");
         };
-        assert_eq!(welcome.capabilities, [Capability::from(FEED)]);
+        assert_eq!(
+            welcome.capabilities,
+            [Capability::from(FEED), Capability::from(TASKS)]
+        );
         assert_eq!(missed, joined(1, "m1"));
         assert_eq!(live, joined(2, "m2"));
     }
