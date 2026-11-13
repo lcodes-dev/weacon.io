@@ -13,8 +13,6 @@ use weacon_protocol::{
     AgentKind, AgentSession, ChatId, RequestId, RunId, RunState, WorkspaceId, code,
 };
 
-use crate::platform;
-
 #[derive(Debug)]
 pub(crate) struct Runs {
     path: PathBuf,
@@ -94,10 +92,10 @@ impl Runs {
         agent: AgentKind,
         now: u64,
     ) -> Result<RunId, Fault> {
+        let no_id = || Fault::new(code!("runs.no_id"), "No run id could be made");
         // Kept even when the save fails, so the id is never tried again.
-        self.journal.issued += 1;
-        let run = RunId::try_from(format!("run-{}", self.journal.issued))
-            .map_err(|_| Fault::new(code!("runs.no_id"), "No run id could be made"))?;
+        self.journal.issued = self.journal.issued.checked_add(1).ok_or_else(no_id)?;
+        let run = RunId::try_from(format!("run-{}", self.journal.issued)).map_err(|_| no_id())?;
         let mut next = self.journal.clone();
         let (session, queue) = self
             .position(workspace, chat)
@@ -197,7 +195,7 @@ impl Runs {
         let not_saved = || Fault::new(code!("runs.not_saved"), "The runs journal can't be saved");
         let json = serde_json::to_vec(&next).map_err(|error| not_saved().because(error))?;
         let path = self.path.clone();
-        tokio::task::spawn_blocking(move || platform::write_whole(&path, &json))
+        tokio::task::spawn_blocking(move || weacon_appkit::write_whole(&path, &json))
             .await
             .unwrap_or_else(|error| Err(io::Error::other(error)))
             .map_err(|error| not_saved().because(error))?;
@@ -358,6 +356,22 @@ mod tests {
             })
         );
         assert_eq!(restarted.of(&w1, &chat("c-9")), None);
+    }
+
+    #[tokio::test]
+    async fn a_counter_at_its_end_issues_no_more_ids() {
+        let dir = TempDir::new().unwrap();
+        let last = format!(r#"{{"issued":{},"chats":[]}}"#, u64::MAX - 1);
+        std::fs::write(dir.join("runs.json"), last).unwrap();
+        let mut runs = Runs::load(&dir).unwrap();
+        let (w1, c1) = (workspace("w-1"), chat("c-1"));
+
+        let last = begin(&mut runs, "c-1").await;
+        let spent = runs.begin(&w1, &c1, AgentKind::Claude, 100).await;
+
+        assert_eq!(last.as_str(), format!("run-{}", u64::MAX));
+        assert_eq!(spent.unwrap_err().code().as_str(), "runs.no_id");
+        assert_eq!(runs.of(&w1, &c1).unwrap().run, Some(last));
     }
 
     #[test]

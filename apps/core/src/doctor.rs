@@ -1,28 +1,79 @@
-use std::io::Write;
+use std::io::{self, Write};
 use std::path::Path;
 
-use weacon_agents::SpawnPolicy;
-use weacon_observability::Fault;
+use weacon_agents::{Launch, SignIn, SpawnPolicy};
+use weacon_observability::{Fault, Field, Logger};
 use weacon_protocol::code;
 
 use crate::app::{App, state_unavailable};
+use crate::daemon::runtime;
+use crate::workspaces::Workspaces;
 use crate::{disk, platform};
 use weacon_appkit::version_text;
 
 /// Prints the build and where this install keeps its state, and fails when it has nowhere to.
 pub(crate) fn run(app: &App, out: &mut impl Write) -> Result<(), Fault> {
-    out.write_all(report(app, platform::free_space).as_bytes())
-        .map_err(|error| {
+    let mut print = |text: String| {
+        out.write_all(text.as_bytes()).map_err(|error| {
             Fault::new(
                 code!("doctor.output_failed"),
                 "The report couldn't be printed",
             )
             .because(error)
-        })?;
+        })
+    };
+    print(report(app, platform::free_space))?;
+    if let Some(dir) = &app.state_dir {
+        let runtime = runtime()?;
+        let all = |launches: &[Launch]| runtime.block_on(sign_ins(&app.log, launches));
+        print(workspaces(
+            &app.log,
+            Workspaces::new(dir, app.path.clone()).describe(all),
+        ))?;
+    }
     if app.log_file.is_none() {
         return Err(state_unavailable());
     }
     Ok(())
+}
+
+// Vendor programs asked at once: enough that a slow one doesn't hold up a report, few enough
+// for a small machine.
+const AT_ONCE: usize = 8;
+
+// A check that fails is logged here, once, and shows as unknown.
+async fn sign_ins(log: &Logger, launches: &[Launch]) -> Vec<Option<SignIn>> {
+    let failed = |err: Field| log.warn("sign-in check failed", &[("err", err)]);
+    let mut answers = Vec::new();
+    for together in launches.chunks(AT_ONCE) {
+        let checks: Vec<_> = together
+            .iter()
+            .cloned()
+            .map(|launch| tokio::spawn(async move { launch.sign_in().await }))
+            .collect();
+        for check in checks {
+            answers.push(match check.await {
+                Ok(Ok(sign_in)) => Some(sign_in),
+                Ok(Err(error)) => {
+                    failed(Field::error(&error));
+                    None
+                }
+                Err(error) => {
+                    failed(Field::error(&error));
+                    None
+                }
+            });
+        }
+    }
+    answers
+}
+
+// Workspaces that can't be listed are said to be, never left out.
+fn workspaces(log: &Logger, lines: io::Result<String>) -> String {
+    lines.unwrap_or_else(|error| {
+        log.warn("workspaces unreadable", &[("err", Field::error(&error))]);
+        "Workspaces: unavailable\n".to_owned()
+    })
 }
 
 fn report(app: &App, free_space: disk::FreeSpace) -> String {
@@ -141,6 +192,71 @@ mod tests {
         assert!(report(&app, platform::free_space).ends_with(
             "Error reports: off\nAgent tools: OOM score 500 CARGO_BUILD_JOBS=2 GOMAXPROCS=2\n"
         ));
+    }
+
+    // `true` and `false` stand in for a vendor's status command.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn every_sign_in_is_checked_in_order_and_a_failed_check_is_logged_once_and_unknown() {
+        use weacon_protocol::AgentKind;
+
+        let dir = TempDir::new().unwrap();
+        let (log, records) = test_support::recording_logger();
+        let launch = |program: &str| Launch {
+            agent: AgentKind::Codex,
+            program: program.into(),
+            config_dir: dir.to_path_buf(),
+            cwd: dir.to_path_buf(),
+        };
+        let launches = ["true", "/missing/codex", "false"].map(launch);
+
+        let answers = sign_ins(&log, &launches).await;
+
+        assert_eq!(
+            answers,
+            [Some(SignIn::SignedIn), None, Some(SignIn::SignedOut)]
+        );
+        assert_eq!(test_support::messages(&records), ["sign-in check failed"]);
+    }
+
+    // `yes` never exits. With time paused, the clock moves only when every check is waiting,
+    // so it shows how many waits there were, one after another.
+    #[cfg(unix)]
+    #[tokio::test(start_paused = true)]
+    async fn checks_run_a_few_at_once_so_slow_ones_dont_add_up() {
+        use std::time::Duration;
+
+        use weacon_protocol::AgentKind;
+
+        let dir = TempDir::new().unwrap();
+        let (log, records) = test_support::recording_logger();
+        let hanging = Launch {
+            agent: AgentKind::Claude,
+            program: "yes".into(),
+            config_dir: dir.to_path_buf(),
+            cwd: dir.to_path_buf(),
+        };
+        let launches = vec![hanging; AT_ONCE + 1];
+        let started = tokio::time::Instant::now();
+
+        let answers = sign_ins(&log, &launches).await;
+
+        let waits = started.elapsed().as_secs() / 30;
+        assert_eq!(waits, 2);
+        assert!(started.elapsed() < Duration::from_secs(61));
+        assert_eq!(answers, vec![None; AT_ONCE + 1]);
+        assert_eq!(test_support::messages(&records).len(), AT_ONCE + 1);
+    }
+
+    #[test]
+    fn workspaces_that_cant_be_listed_are_said_to_be() {
+        let (log, records) = test_support::recording_logger();
+        let listed = workspaces(&log, Ok("Workspace w1: Codex signed in\n".to_owned()));
+        let unlisted = workspaces(&log, Err(io::ErrorKind::PermissionDenied.into()));
+
+        assert_eq!(listed, "Workspace w1: Codex signed in\n");
+        assert_eq!(unlisted, "Workspaces: unavailable\n");
+        assert_eq!(test_support::messages(&records), ["workspaces unreadable"]);
     }
 
     #[test]

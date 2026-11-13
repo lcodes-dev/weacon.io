@@ -114,7 +114,7 @@ pub(crate) fn parts() -> (Bench, Engine<FakeAgent>) {
     };
     let (log, records) = recording_logger();
     let runs = Runs::load(&dir).unwrap();
-    let (chats, engine) = Engine::new(runs, Workspaces::new(&dir), host, log);
+    let (chats, engine) = Engine::new(runs, Workspaces::new(&dir, None), host, log);
     let bench = Bench {
         chats,
         started,

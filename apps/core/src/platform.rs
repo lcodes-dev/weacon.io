@@ -45,7 +45,7 @@ fn tool_policy(env: Env<'_>, cpus: usize, own_oom_score: Option<i32>) -> SpawnPo
     }
 }
 
-use std::io::{self, Write};
+use std::io;
 use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
 
@@ -53,9 +53,13 @@ use weacon_agents::SpawnPolicy;
 
 mod chrome;
 mod procs;
+mod programs;
 
 pub(crate) use chrome::{CHROME_HOST, register_chrome_host};
 pub(crate) use procs::{PROCESSES, Process, processes};
+pub(crate) use programs::find_program;
+#[cfg(test)]
+pub(crate) use programs::plant_program;
 
 /// Reads an environment variable; tests pass a fake.
 pub(crate) type Env<'a> = &'a dyn Fn(&str) -> Option<OsString>;
@@ -94,19 +98,6 @@ pub(crate) fn state_dir(env: Env<'_>) -> Option<PathBuf> {
         return home_dir(env).map(|home| home.join("Library/Application Support/Weacon"));
     }
     xdg_dir(env, "XDG_STATE_HOME", ".local/state").map(|dir| dir.join("weacon"))
-}
-
-/// Writes `contents` to `path` whole, through a file synced and renamed into place, so no
-/// reader sees half of it and a crash keeps the old or the new; creates missing parent folders.
-pub(crate) fn write_whole(path: &Path, contents: &[u8]) -> io::Result<()> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    let unfinished = path.with_extension("new");
-    let mut file = fs::File::create(&unfinished)?;
-    file.write_all(contents)?;
-    file.sync_all()?;
-    fs::rename(&unfinished, path)
 }
 
 /// A file or folder name for `id`, a token id, after `prefix`. A capital becomes `.` and its
@@ -188,11 +179,26 @@ mod unix {
             .create(dir)
     }
 
+    /// Whether `file` is a file this user may run.
+    #[expect(unsafe_code, reason = "faccessat has no safe API in std")]
+    pub(crate) fn is_runnable(file: &Path) -> bool {
+        use std::ffi::CString;
+        use std::os::unix::ffi::OsStrExt;
+
+        let Ok(path) = CString::new(file.as_os_str().as_bytes()) else {
+            return false;
+        };
+        file.is_file()
+            // SAFETY: `path` is NUL-terminated and outlives the call.
+            && unsafe {
+                libc::faccessat(libc::AT_FDCWD, path.as_ptr(), libc::X_OK, libc::AT_EACCESS)
+            } == 0
+    }
+
     /// The user that owns `dir`, when only that user can reach it.
     pub(crate) fn private_owner(dir: &Path) -> io::Result<Option<Owner>> {
         let metadata = fs::metadata(dir)?;
-        let others = metadata.permissions().mode() & 0o077;
-        let private = metadata.is_dir() && others == 0;
+        let private = metadata.is_dir() && weacon_appkit::owner_only(&metadata) == Some(true);
         Ok(private.then(|| metadata.uid()))
     }
 
@@ -315,6 +321,10 @@ mod windows {
         Ok(())
     }
 
+    pub(crate) fn is_runnable(file: &Path) -> bool {
+        file.is_file()
+    }
+
     /// Makes `dir`, the core's own folder, private to this user, whatever it inherited.
     pub(crate) fn private_owner(dir: &Path) -> io::Result<Option<Owner>> {
         make_private(dir)?;
@@ -326,7 +336,7 @@ mod windows {
     pub(crate) fn bind(path: &Path) -> io::Result<Listener> {
         let name = pipe_name(weacon_appkit::random_id());
         let next = create_pipe(&name, true)?;
-        super::write_whole(path, name.as_bytes())?;
+        weacon_appkit::write_whole(path, name.as_bytes())?;
         Ok(Listener { name, next })
     }
 
@@ -453,19 +463,6 @@ mod tests {
 
         assert!(free_space(&dir).unwrap() > 0);
         free_space(&dir.join("missing")).unwrap_err();
-    }
-
-    #[test]
-    fn a_whole_write_creates_folders_and_replaces_the_file() {
-        let dir = TempDir::new().unwrap();
-        let path = dir.join("a/b/unit.service");
-
-        write_whole(&path, b"first").unwrap();
-        write_whole(&path, b"second").unwrap();
-
-        assert_eq!(fs::read_to_string(&path).unwrap(), "second");
-        assert!(!path.with_extension("new").exists());
-        assert!(write_whole(&dir.join("a/b/unit.service/x"), b"").is_err());
     }
 
     #[cfg(unix)]

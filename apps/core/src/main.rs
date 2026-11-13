@@ -57,6 +57,9 @@ fn main() -> ExitCode {
         Command::Service(command) => {
             service::run(&app, command, &env, &mut service::system).map(Outcome::from)
         }
+        Command::Login { agent, workspace } => {
+            workspaces::login(&app, agent, &workspace).map(Outcome::from)
+        }
         Command::ConnectChrome => {
             native_host::connect_chrome(&app, &env, &mut io::stdout().lock()).map(Outcome::from)
         }

@@ -1,3 +1,4 @@
+use std::ffi::OsString;
 use std::fs::{self, File, TryLockError};
 use std::future::Future;
 use std::io;
@@ -58,6 +59,7 @@ pub(crate) fn run(app: &crate::app::App) -> Result<(), Fault> {
             state_dir,
             build(&app.version),
             app.spawn.clone(),
+            app.path.clone(),
             app.log.clone(),
         )?;
         daemon.serve(signals.wait()).await;
@@ -91,6 +93,7 @@ impl Daemon {
         state_dir: &Path,
         app: App,
         spawn: SpawnPolicy,
+        path: Option<OsString>,
         log: Logger,
     ) -> Result<Self, Fault> {
         let failed = |error: io::Error| {
@@ -119,7 +122,7 @@ impl Daemon {
         {
             return Err(failed(error));
         }
-        let (chats, engine) = chats::start(state_dir, app.clone(), spawn, log.clone())?;
+        let (chats, engine) = chats::start(state_dir, path, app.clone(), spawn, log.clone())?;
         let listener = platform::bind(&socket).map_err(failed)?;
         tokio::spawn(engine.run());
         log.info("daemon started", &[]);
@@ -397,7 +400,7 @@ mod tests {
     // Starts a daemon, letting `change` adjust it before it serves.
     fn start_as(dir: &Path, change: impl FnOnce(&mut Daemon)) -> Result<Running, Fault> {
         let (log, records) = recording_logger();
-        let mut daemon = Daemon::start(dir, build(&VERSION), SpawnPolicy::default(), log)?;
+        let mut daemon = Daemon::start(dir, build(&VERSION), SpawnPolicy::default(), None, log)?;
         change(&mut daemon);
         let socket = daemon.socket.clone();
         let (stop, stopped) = oneshot::channel();

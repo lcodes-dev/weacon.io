@@ -6,6 +6,7 @@ pub(crate) mod log;
 #[cfg(test)]
 pub(crate) mod test_support;
 
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -22,18 +23,19 @@ use crate::runs::Runs;
 use crate::workspaces::Workspaces;
 
 /// The clients' way to the chats in `state_dir`, and the engine to run behind it, which starts
-/// each agent under `policy` with its workspace's own sign-in.
+/// each agent under `policy` with its workspace's own sign-in, finding vendors on `path`.
 ///
 /// # Errors
 /// When the journal of runs can't be read.
 pub(crate) fn start(
     state_dir: &Path,
+    path: Option<OsString>,
     app: App,
     policy: SpawnPolicy,
     log: Logger,
 ) -> Result<(Chats, Engine<AgentRun>), Fault> {
     let runs = Runs::load(state_dir)?;
-    let workspaces = Workspaces::new(state_dir);
+    let workspaces = Workspaces::new(state_dir, path);
     let roots = workspaces.clone();
     let host = Host {
         start: Arc::new(move |start: &Start| {
@@ -106,10 +108,10 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let app = weacon_appkit::build(&VERSION);
         let (log, _records) = recording_logger();
-        let (chats, engine) = start(&dir, app, SpawnPolicy::default(), log).unwrap();
+        let (chats, engine) = start(&dir, None, app, SpawnPolicy::default(), log).unwrap();
         tokio::spawn(engine.run());
         // A file where the chat's working folder would go: its agent can't be started.
-        let work = Workspaces::new(&dir).root(&workspace()).join("work");
+        let work = Workspaces::new(&dir, None).root(&workspace()).join("work");
         std::fs::create_dir_all(&work).unwrap();
         std::fs::write(work.join("c-c-1"), b"").unwrap();
 

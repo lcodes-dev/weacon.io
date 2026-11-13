@@ -22,7 +22,7 @@ const OTHER_SIGN_INS: [&str; 7] = [
 
 /// `claude` in its stream-json mode, resuming `session` when given.
 pub(crate) fn command(launch: &Launch, session: Option<&AgentSession>) -> Command {
-    let mut command = Command::new(&launch.program);
+    let mut command = with_workspace_sign_in(launch);
     command.args([
         "--print",
         "--verbose",
@@ -36,12 +36,31 @@ pub(crate) fn command(launch: &Launch, session: Option<&AgentSession>) -> Comman
     if let Some(session) = session {
         command.args(["--resume", session.as_str()]);
     }
+    command.current_dir(&launch.cwd);
+    command
+}
+
+/// `claude`'s own check of its sign-in, which exits with success when signed in; it runs
+/// wherever Weacon does.
+pub(crate) fn status(launch: &Launch) -> Command {
+    let mut command = with_workspace_sign_in(launch);
+    command.args(["auth", "status"]);
+    command
+}
+
+/// `claude`'s own sign-in, for the person's terminal.
+pub(crate) fn login(launch: &Launch) -> Command {
+    let mut command = with_workspace_sign_in(launch);
+    command.args(["auth", "login"]);
+    command
+}
+
+fn with_workspace_sign_in(launch: &Launch) -> Command {
+    let mut command = Command::new(&launch.program);
     for name in OTHER_SIGN_INS {
         command.env_remove(name);
     }
-    command
-        .env("CLAUDE_CONFIG_DIR", &launch.config_dir)
-        .current_dir(&launch.cwd);
+    command.env("CLAUDE_CONFIG_DIR", &launch.config_dir);
     command
 }
 
@@ -217,16 +236,29 @@ mod tests {
             config_dir: PathBuf::from("/work/config"),
             cwd: PathBuf::from("/work"),
         };
-        let command = command(&claude, None);
-        let envs: Vec<_> = command.as_std().get_envs().collect();
+        let check = status(&claude);
+        assert_eq!(
+            check.as_std().get_args().collect::<Vec<_>>(),
+            ["auth", "status"]
+        );
+        assert_eq!(check.as_std().get_current_dir(), None);
+        let login = login(&claude);
+        assert_eq!(
+            login.as_std().get_args().collect::<Vec<_>>(),
+            ["auth", "login"]
+        );
+        for command in [command(&claude, None), check, login] {
+            let envs: Vec<_> = command.as_std().get_envs().collect();
 
-        assert!(envs.contains(&(
-            OsStr::new("CLAUDE_CONFIG_DIR"),
-            Some(OsStr::new("/work/config"))
-        )));
-        for name in OTHER_SIGN_INS {
-            assert!(envs.contains(&(OsStr::new(name), None)), "{name}");
+            assert!(envs.contains(&(
+                OsStr::new("CLAUDE_CONFIG_DIR"),
+                Some(OsStr::new("/work/config"))
+            )));
+            for name in OTHER_SIGN_INS {
+                assert!(envs.contains(&(OsStr::new(name), None)), "{name}");
+            }
         }
-        assert_eq!(command.as_std().get_current_dir(), Some(Path::new("/work")));
+        let run = command(&claude, None);
+        assert_eq!(run.as_std().get_current_dir(), Some(Path::new("/work")));
     }
 }

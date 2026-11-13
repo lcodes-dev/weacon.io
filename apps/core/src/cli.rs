@@ -3,6 +3,7 @@ use std::path::PathBuf;
 
 use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
 use weacon_appkit::version_text;
+use weacon_protocol::{AgentKind, WorkspaceId};
 use weacon_version::Version;
 
 /// Weacon's core: runs agents for your chats and tasks.
@@ -27,6 +28,15 @@ pub(crate) enum Command {
     /// Run the daemon as a systemd user service that keeps running after logout.
     #[command(subcommand)]
     Service(ServiceCommand),
+    /// Sign an agent in for a workspace, with the vendor's own sign-in in this terminal.
+    Login {
+        /// The agent: claude or codex.
+        #[arg(value_parser = agent)]
+        agent: AgentKind,
+        /// The workspace's id.
+        #[arg(long)]
+        workspace: WorkspaceId,
+    },
     /// Let Weacon's Chrome extension reach this core.
     ConnectChrome,
     /// Relay messages between Chrome's extension and the daemon; Chrome starts it.
@@ -35,6 +45,13 @@ pub(crate) enum Command {
     /// Work with the code map of a repository.
     #[command(subcommand)]
     Map(MapCommand),
+}
+
+fn agent(name: &str) -> Result<AgentKind, &'static str> {
+    serde_json::from_value(name.into())
+        .ok()
+        .filter(|agent| *agent != AgentKind::Newer)
+        .ok_or("not an agent this core runs")
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Subcommand)]
@@ -67,9 +84,12 @@ impl Command {
     pub(crate) const fn log_name(&self) -> &'static str {
         match self {
             Self::Daemon => "daemon.log",
-            Self::Status | Self::Doctor | Self::Service(_) | Self::ConnectChrome | Self::Map(_) => {
-                "cli.log"
-            }
+            Self::Status
+            | Self::Doctor
+            | Self::Service(_)
+            | Self::Login { .. }
+            | Self::ConnectChrome
+            | Self::Map(_) => "cli.log",
             Self::NativeHost { .. } => "native-host.log",
         }
     }
@@ -80,6 +100,7 @@ impl Command {
             Self::Status => "status",
             Self::Doctor => "doctor",
             Self::Service(_) => "service",
+            Self::Login { .. } => "login",
             Self::ConnectChrome => "connect-chrome",
             Self::NativeHost { .. } => "native-host",
             Self::Map(_) => "map",
@@ -163,6 +184,33 @@ mod tests {
         );
         assert!(!doctor.verbose);
         assert!(verbose.verbose);
+    }
+
+    #[test]
+    fn login_takes_a_known_agent_and_a_workspace_id() {
+        let login = |agent| run(&["weacon", "login", agent, "--workspace", "w-1"]).unwrap();
+
+        for (name, kind) in [("claude", AgentKind::Claude), ("codex", AgentKind::Codex)] {
+            let login = login(name);
+            let Command::Login { agent, workspace } = &login.command else {
+                panic!("not a login");
+            };
+            assert_eq!(*agent, kind);
+            assert_eq!(workspace.as_str(), "w-1");
+            assert_eq!(
+                (login.command.name(), login.command.log_name()),
+                ("login", "cli.log")
+            );
+        }
+        for bad in [
+            &["weacon", "login", "amp", "--workspace", "w-1"][..],
+            &["weacon", "login", "newer", "--workspace", "w-1"],
+            &["weacon", "login", "Claude", "--workspace", "w-1"],
+            &["weacon", "login", "claude", "--workspace", "../w"],
+            &["weacon", "login", "claude"],
+        ] {
+            run(bad).unwrap_err();
+        }
     }
 
     #[test]
