@@ -56,27 +56,24 @@ impl Rules {
         }
     }
 
-    /// Whether `file` is an absolute path inside the working folder once symlinks are
-    /// resolved, outside the folders that hold config and outside the workspace's own folder.
-    /// A relative path is never allowed: the agent may have changed folder. Blocks on the file
-    /// system.
+    /// Whether `file` is an absolute path inside the working folder as written and once
+    /// symlinks are resolved, both times outside the folders that hold config, and outside the
+    /// workspace's own folder. A relative path is never allowed: the agent may have changed
+    /// folder. Blocks on the file system, but only for a path that passes as written.
     pub(crate) fn may_change(&self, file: &Path) -> bool {
-        let (true, Ok(root), Some(file)) =
-            (file.is_absolute(), self.cwd.canonicalize(), resolve(file))
-        else {
+        // Checked before any lookup, so a path elsewhere, such as a network share, is never
+        // opened.
+        if !file.is_absolute() || !plainly_inside(file, &self.cwd) {
+            return false;
+        }
+        let (Ok(root), Some(file)) = (self.cwd.canonicalize(), resolve(file)) else {
             return false;
         };
         let in_workspace = self
             .workspace
             .canonicalize()
             .is_ok_and(|workspace| file.starts_with(workspace));
-        !in_workspace
-            && file.strip_prefix(&root).is_ok_and(|inside| {
-                inside.components().next().is_some()
-                    && inside
-                        .components()
-                        .all(|part| matches!(part, Component::Normal(name) if is_plain(name)))
-            })
+        !in_workspace && plainly_inside(&file, &root)
     }
 }
 
@@ -101,6 +98,16 @@ fn resolve(path: &Path) -> Option<PathBuf> {
         missing.push(base.file_name()?);
         base = base.parent()?;
     }
+}
+
+// Whether `file` is below `folder`, through plain names only.
+fn plainly_inside(file: &Path, folder: &Path) -> bool {
+    file.strip_prefix(folder).is_ok_and(|inside| {
+        inside.components().next().is_some()
+            && inside
+                .components()
+                .all(|part| matches!(part, Component::Normal(name) if is_plain(name)))
+    })
 }
 
 // Not a config folder in any case, as some file systems ignore it, and nothing Windows would
@@ -197,6 +204,7 @@ mod tests {
             assert!(!rules.may_change(Path::new(relative)), "{relative}");
         }
         assert!(!rules.may_change(&dir.join("outside.md")));
+        assert!(!rules.may_change(Path::new(r"\\host\share\file.md")));
         let missing = Rules {
             cwd: dir.join("missing"),
             ..rules
@@ -217,6 +225,8 @@ mod tests {
         symlink(cwd.join(".git"), cwd.join("hidden")).unwrap();
         symlink(&cwd, dir.join("link")).unwrap();
         symlink(dir.join("missing.md"), cwd.join("dangling.md")).unwrap();
+        symlink(cwd.join("plain"), cwd.join(".claude")).unwrap();
+        fs::create_dir(cwd.join("plain")).unwrap();
         let rules = rules(AccessLevel::Full, &cwd);
         let may = |file: &str| rules.may_change(&cwd.join(file));
 
@@ -224,6 +234,10 @@ mod tests {
         assert!(!may("hidden/hooks/pre-commit"));
         assert!(!may("dangling.md"));
         assert!(!may("dangling.md/file.md"));
+        assert!(!may(".claude/settings.json"));
+        assert!(may("plain/settings.json"));
+        // Inside once resolved, but not as written.
+        assert!(!rules.may_change(&dir.join("link/file.md")));
         let linked = Rules {
             cwd: dir.join("link"),
             ..rules
