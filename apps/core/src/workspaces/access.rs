@@ -31,7 +31,7 @@ impl Default for Settings {
 }
 
 impl Settings {
-    /// The settings kept in `file`.
+    /// The settings in `file`; the defaults when there's no file.
     pub(crate) fn read(file: &Path) -> Result<Self, Fault> {
         let unreadable = || {
             Fault::new(
@@ -201,8 +201,9 @@ mod tests {
     fn older_and_newer_settings_files_still_read() {
         let dir = TempDir::new().unwrap();
         let read = |json: &str| {
-            fs::write(dir.join("w-w1.json"), json).unwrap();
-            Settings::read(&dir.join("w-w1.json"))
+            let file = dir.join("w-w1.json");
+            fs::write(&file, json).unwrap();
+            Settings::read(&file)
         };
 
         assert_eq!(read("{}").unwrap(), Settings::default());
