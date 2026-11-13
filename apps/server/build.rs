@@ -9,14 +9,9 @@ const WEB_FILES: [&str; 3] = ["index.html", "app.js", "app.css"];
 
 fn main() -> io::Result<()> {
     weacon_version::emit();
-    let manifest = env::var_os("CARGO_MANIFEST_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_default();
-    let web = manifest.join("../web");
-    let out = env::var_os("OUT_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_default();
-    fs::write(out.join("web.rs"), embed(&web.join("dist"))?)
+    let dist = Path::new(env!("CARGO_MANIFEST_DIR")).join("../web/dist");
+    let out = PathBuf::from(env::var_os("OUT_DIR").unwrap_or_default());
+    fs::write(out.join("web.rs"), embed(&dist)?)
 }
 
 /// A Rust list of the built files that are there, each a name and its bytes; an empty one

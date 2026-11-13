@@ -214,7 +214,7 @@ mod tests {
     use tokio::net::TcpStream;
 
     use super::*;
-    use crate::test_support::{Fixture, Running, messages, request, run};
+    use crate::test_support::{Fixture, Running, header, messages, request, run};
 
     struct Server {
         running: Running,
@@ -234,11 +234,6 @@ mod tests {
 
     async fn get(address: SocketAddr, target: &str) -> (Vec<String>, String) {
         request(address, &format!("GET {target}"), "").await
-    }
-
-    fn header<'a>(head: &'a [String], name: &str) -> Option<&'a str> {
-        head.iter()
-            .find_map(|line| line.strip_prefix(name)?.strip_prefix(": "))
     }
 
     #[tokio::test]

@@ -190,6 +190,12 @@ pub(crate) fn status(head: &[String]) -> &str {
     head.first().map_or("", String::as_str)
 }
 
+/// The value of the header `name`, written in lower case, in a response's `head`.
+pub(crate) fn header<'a>(head: &'a [String], name: &str) -> Option<&'a str> {
+    head.iter()
+        .find_map(|line| line.strip_prefix(name)?.strip_prefix(": "))
+}
+
 /// Starts a sign-in for `email`: the answer's status line, and its challenge.
 pub(crate) async fn start_sign_in(address: SocketAddr, email: &str) -> (String, Value) {
     let start = json!({ "email": email }).to_string();
