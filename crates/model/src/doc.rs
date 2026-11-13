@@ -1,18 +1,15 @@
 use std::collections::BTreeSet;
 use std::fmt;
 
-use weacon_protocol::{DocAnchors, DocId};
+use weacon_protocol::{DocAnchors, DocId, DocPin, links_to_code};
 
 use crate::{Revision, Title};
 
 const BODY_MAX: usize = 256 * 1024;
 const PINS_MAX: usize = 256;
-const KINDS: [&str; 3] = ["sym:", "flow:", "area:"];
 
-/// What one revision of a doc says: its title, at most 256 KiB of Markdown, and a pin for
-/// each anchor the Markdown links to, at most 256. A link is `[text](sym:…)`, with `flow:`
-/// or `area:` too, or an autolink `<sym:…>`, which ends at the first `>` as Markdown's does;
-/// every one has exactly one pin, and every pin is linked.
+/// A doc's title, Markdown body and pins, where every link to code has exactly one pin and
+/// every pin a link.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DocText {
     title: Title,
@@ -21,7 +18,7 @@ pub struct DocText {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum TextError {
+pub enum DocTextError {
     TooLarge,
     /// The body links to an anchor without a pin.
     Unpinned,
@@ -29,40 +26,38 @@ pub enum TextError {
     Unlinked,
 }
 
-impl fmt::Display for TextError {
+impl fmt::Display for DocTextError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(match self {
             Self::TooLarge => "the doc is larger than the limit",
             Self::Unpinned => "the doc links to an anchor it has no pin for",
-            Self::Unlinked => "the doc has a pin it doesn't link to",
+            Self::Unlinked => "the doc's pins don't match its links",
         })
     }
 }
 
-impl std::error::Error for TextError {}
+impl std::error::Error for DocTextError {}
 
 impl DocText {
     /// # Errors
     /// When the body or its pins are over the limit, or the pins don't match the links.
-    pub fn new(title: Title, body: String, anchors: Option<DocAnchors>) -> Result<Self, TextError> {
+    pub fn new(
+        title: Title,
+        body: String,
+        anchors: Option<DocAnchors>,
+    ) -> Result<Self, DocTextError> {
         let pins = anchors.as_ref().map_or(&[][..], |anchors| &anchors.pins);
         if body.len() > BODY_MAX || pins.len() > PINS_MAX {
-            return Err(TextError::TooLarge);
+            return Err(DocTextError::TooLarge);
         }
-        let pinned: BTreeSet<&str> = pins
-            .iter()
-            .filter_map(|pin| pin.as_str().rsplit_once('#'))
-            .map(|(anchor, _)| anchor)
-            .collect();
-        if pinned.len() < pins.len() || (anchors.is_some() && pins.is_empty()) {
-            return Err(TextError::Unlinked);
-        }
+        let pinned: BTreeSet<&str> = pins.iter().map(DocPin::anchor).collect();
         let linked = links(&body);
         if !linked.is_subset(&pinned) {
-            return Err(TextError::Unpinned);
+            return Err(DocTextError::Unpinned);
         }
-        if linked != pinned {
-            return Err(TextError::Unlinked);
+        // With every link pinned, as many links as pins leaves no pin spare or repeated.
+        if linked.len() != pins.len() || (anchors.is_some() && pins.is_empty()) {
+            return Err(DocTextError::Unlinked);
         }
         Ok(Self {
             title,
@@ -87,7 +82,8 @@ impl DocText {
     }
 }
 
-/// The anchors `body` links to, inline or as autolinks.
+/// The code anchors `body` links to, as `[text](sym:…)` or as autolinks, which end at the
+/// first `>` as Markdown's do.
 fn links(body: &str) -> BTreeSet<&str> {
     let inline = body
         .split("](")
@@ -99,7 +95,7 @@ fn links(body: &str) -> BTreeSet<&str> {
         .filter_map(|rest| rest.split_once('>').map(|(target, _)| target));
     inline
         .chain(auto)
-        .filter(|target| KINDS.iter().any(|kind| target.starts_with(kind)))
+        .filter(|target| links_to_code(target))
         .collect()
 }
 
@@ -107,7 +103,7 @@ fn links(body: &str) -> BTreeSet<&str> {
 pub struct Doc {
     pub id: DocId,
     pub text: DocText,
-    pub revision: Revision,
+    pub version: Revision,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -115,14 +111,14 @@ pub enum ReviseError {
     /// The doc was revised since the revision the new text was written against.
     Stale { current: Revision },
     /// The doc is at the last revision there is.
-    LastRevision,
+    LastVersion,
 }
 
 impl fmt::Display for ReviseError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(match self {
             Self::Stale { .. } => "the doc has changed since it was read",
-            Self::LastRevision => "the doc can't be revised any more",
+            Self::LastVersion => "the doc can't be revised any more",
         })
     }
 }
@@ -136,7 +132,7 @@ impl Doc {
         Self {
             id,
             text,
-            revision: Revision::FIRST,
+            version: Revision::FIRST,
         }
     }
 
@@ -146,12 +142,12 @@ impl Doc {
     /// # Errors
     /// When the doc has changed since `read_at`, or no revision is left.
     pub fn revise(mut self, read_at: Revision, text: DocText) -> Result<Self, ReviseError> {
-        if read_at != self.revision {
+        if read_at != self.version {
             return Err(ReviseError::Stale {
-                current: self.revision,
+                current: self.version,
             });
         }
-        self.revision = self.revision.next().ok_or(ReviseError::LastRevision)?;
+        self.version = self.version.next().ok_or(ReviseError::LastVersion)?;
         self.text = text;
         Ok(self)
     }
@@ -180,7 +176,7 @@ mod tests {
         }
     }
 
-    fn text(body: &str, pinned: &[&str]) -> Result<DocText, TextError> {
+    fn text(body: &str, pinned: &[&str]) -> Result<DocText, DocTextError> {
         let anchors = (!pinned.is_empty()).then(|| anchors(pinned));
         DocText::new(title("Framing"), body.to_owned(), anchors)
     }
@@ -206,14 +202,14 @@ mod tests {
             ("[a](sym:a) <area:b>", &["sym:a"][..]),
             ("[a](sym:a)\n[b](flow:a->b)", &["sym:a"][..]),
         ] {
-            assert_eq!(text(body, pinned), Err(TextError::Unpinned), "{body}");
+            assert_eq!(text(body, pinned), Err(DocTextError::Unpinned), "{body}");
         }
         for (body, pinned) in [
             ("No links.", &["sym:a"][..]),
             ("[a](sym:a)", &["sym:a", "sym:b"][..]),
             ("[a](sym:a)", &["sym:a", "sym:a"][..]),
         ] {
-            assert_eq!(text(body, pinned), Err(TextError::Unlinked), "{body}");
+            assert_eq!(text(body, pinned), Err(DocTextError::Unlinked), "{body}");
         }
         let commit_only = Some(DocAnchors {
             pins: Vec::new(),
@@ -221,7 +217,7 @@ mod tests {
         });
         assert_eq!(
             DocText::new(title("Framing"), "No links.".to_owned(), commit_only),
-            Err(TextError::Unlinked)
+            Err(DocTextError::Unlinked)
         );
     }
 
@@ -229,7 +225,10 @@ mod tests {
     fn a_body_and_its_pins_have_limits() {
         let longest = "a".repeat(BODY_MAX);
         text(&longest, &[]).unwrap();
-        assert_eq!(text(&format!("{longest}a"), &[]), Err(TextError::TooLarge));
+        assert_eq!(
+            text(&format!("{longest}a"), &[]),
+            Err(DocTextError::TooLarge)
+        );
         let names: Vec<String> = (0..=PINS_MAX).map(|n| format!("sym:a{n}")).collect();
         let names: Vec<&str> = names.iter().map(String::as_str).collect();
         let body = |names: &[&str]| {
@@ -242,7 +241,7 @@ mod tests {
         let most = &names[..PINS_MAX];
 
         text(&body(most), most).unwrap();
-        assert_eq!(text(&body(&names), &names), Err(TextError::TooLarge));
+        assert_eq!(text(&body(&names), &names), Err(DocTextError::TooLarge));
     }
 
     fn doc() -> Doc {
@@ -255,17 +254,14 @@ mod tests {
         let second = text("Second.", &[]).unwrap();
         let third = text("[a](sym:a)", &["sym:a"]).unwrap();
 
-        assert_eq!(doc().revision, Revision::FIRST);
+        assert_eq!(doc().version, Revision::FIRST);
         let revised = doc().revise(Revision::FIRST, second.clone()).unwrap();
         assert_eq!(
-            (&revised.text, revised.revision),
+            (&revised.text, revised.version),
             (&second, Revision::new(2))
         );
         let revised = revised.revise(Revision::new(2), third.clone()).unwrap();
-        assert_eq!(
-            (&revised.text, revised.revision),
-            (&third, Revision::new(3))
-        );
+        assert_eq!((&revised.text, revised.version), (&third, Revision::new(3)));
     }
 
     #[test]
@@ -281,12 +277,12 @@ mod tests {
             );
         }
         let last = Doc {
-            revision: Revision::new(u64::MAX),
+            version: Revision::new(u64::MAX),
             ..doc()
         };
         assert_eq!(
             last.revise(Revision::new(u64::MAX), next()),
-            Err(ReviseError::LastRevision)
+            Err(ReviseError::LastVersion)
         );
     }
 
@@ -294,16 +290,16 @@ mod tests {
     fn errors_say_what_went_wrong() {
         for (error, message) in [
             (
-                TextError::TooLarge.to_string(),
+                DocTextError::TooLarge.to_string(),
                 "the doc is larger than the limit",
             ),
             (
-                TextError::Unpinned.to_string(),
+                DocTextError::Unpinned.to_string(),
                 "the doc links to an anchor it has no pin for",
             ),
             (
-                TextError::Unlinked.to_string(),
-                "the doc has a pin it doesn't link to",
+                DocTextError::Unlinked.to_string(),
+                "the doc's pins don't match its links",
             ),
             (
                 ReviseError::Stale {
@@ -313,7 +309,7 @@ mod tests {
                 "the doc has changed since it was read",
             ),
             (
-                ReviseError::LastRevision.to_string(),
+                ReviseError::LastVersion.to_string(),
                 "the doc can't be revised any more",
             ),
         ] {

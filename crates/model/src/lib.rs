@@ -10,7 +10,7 @@ mod task;
 mod title;
 
 pub use change::{Change, Revision};
-pub use doc::{Doc, DocText, ReviseError, TextError};
+pub use doc::{Doc, DocText, DocTextError, ReviseError};
 pub use order::OrderKey;
 pub use task::{EditError, Task, TaskEdit};
 pub use title::Title;
