@@ -1,7 +1,7 @@
 use std::io::Write;
 
 use weacon_observability::Fault;
-use weacon_protocol::{MemberId, WorkspaceId, code};
+use weacon_protocol::{AccountId, MemberId, WorkspaceId, code};
 
 use crate::cli::AdminCommand;
 use crate::db::{self, Db};
@@ -30,9 +30,10 @@ pub(crate) async fn run(
         } => {
             let email = Email::parse(&email)?;
             let id: MemberId = fresh(new_id)?;
+            let account: AccountId = fresh(new_id)?;
             let db = Db::open(&db).await?;
             let added = match db.workspace(&workspace).await {
-                Ok(workspace) => workspace.add_member(&id, &email).await,
+                Ok(workspace) => workspace.add_member(&id, &account, &email).await,
                 Err(fault) => Err(fault),
             };
             closed(db, added.map(|()| format!("{}\n", id.as_str()))).await

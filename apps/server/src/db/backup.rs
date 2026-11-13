@@ -152,7 +152,7 @@ mod tests {
 
     use super::*;
     use crate::email::Email;
-    use crate::test_support::{member_id, workspace_id};
+    use crate::test_support::{fresh_account, member_id, workspace_id};
 
     async fn team(dir: &TempDir) -> Db {
         let db = Db::create(&dir.join("weacon.db")).await.unwrap();
@@ -160,9 +160,13 @@ mod tests {
             .create_workspace(&workspace_id("w1"), "Team")
             .await
             .unwrap();
-        team.add_member(&member_id("m1"), &Email::parse("ada@example.com").unwrap())
-            .await
-            .unwrap();
+        team.add_member(
+            &member_id("m1"),
+            &fresh_account(),
+            &Email::parse("ada@example.com").unwrap(),
+        )
+        .await
+        .unwrap();
         db
     }
 
@@ -175,7 +179,11 @@ mod tests {
         db.workspace(&workspace_id("w1"))
             .await
             .unwrap()
-            .add_member(&member_id("m2"), &Email::parse("bo@example.com").unwrap())
+            .add_member(
+                &member_id("m2"),
+                &fresh_account(),
+                &Email::parse("bo@example.com").unwrap(),
+            )
             .await
             .unwrap();
         restore(&backup, &restored).await.unwrap();
