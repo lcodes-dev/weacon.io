@@ -66,6 +66,9 @@ mod tests {
         generator.subschema_for::<WorkspaceCreate>();
         generator.subschema_for::<WorkspaceSummary>();
         generator.subschema_for::<WorkspaceList>();
+        generator.subschema_for::<TaskList>();
+        generator.subschema_for::<TaskCreate>();
+        generator.subschema_for::<TaskChange>();
         let schema = generator.into_root_schema_for::<Envelope>();
         let current = serde_json::to_string_pretty(&schema).unwrap() + "\n";
         let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("schema.json");
