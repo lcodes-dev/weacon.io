@@ -171,7 +171,7 @@ mod tests {
         use std::time::Duration;
 
         use weacon_agents::{Launch, SpawnPolicy};
-        use weacon_protocol::{AgentKind, AgentSession, Outcome};
+        use weacon_protocol::{AccessLevel, AgentKind, AgentSession, Outcome};
         use weacon_testing::TempDir;
 
         use super::super::*;
@@ -219,6 +219,7 @@ printf '%s\n' '{"type":"result","subtype":"error_during_execution","is_error":tr
                 program,
                 config_dir: dir.join("config"),
                 cwd: dir.to_path_buf(),
+                access: AccessLevel::AskFirst,
             };
             let run = RunId::try_from("run-1".to_owned()).unwrap();
             let app = weacon_appkit::build(&VERSION);
