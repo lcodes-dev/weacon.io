@@ -34,6 +34,8 @@ pub(crate) fn login(app: &App, agent: AgentKind, workspace: &WorkspaceId) -> Res
 #[derive(Debug)]
 pub(crate) struct Workspaces {
     dir: PathBuf,
+    // Apart from the workspaces' folders, which agents are given.
+    settings: PathBuf,
     path: Option<OsString>,
 }
 
@@ -41,6 +43,7 @@ impl Workspaces {
     pub(crate) fn new(state_dir: &Path, path: Option<OsString>) -> Self {
         Self {
             dir: state_dir.join("workspaces"),
+            settings: state_dir.join("settings"),
             path,
         }
     }
@@ -106,7 +109,7 @@ impl Workspaces {
             let agents =
                 AGENTS.map(|(_, name)| format!("{name} {}", states.next().unwrap_or(state(None))));
             let (id, agents) = (workspace.as_str(), agents.join(", "));
-            match Settings::read(&self.root(workspace)) {
+            match Settings::read(&self.settings_file(workspace)) {
                 Ok(settings) => {
                     let (level, warning) = (settings.level(), settings.warning());
                     format!("Workspace {id}: access {level}; {agents}\n{warning}")
@@ -117,9 +120,15 @@ impl Workspaces {
         Ok(lines.collect())
     }
 
-    /// The folder for everything this machine keeps for `workspace`.
+    /// The folder for everything this machine keeps for `workspace` but its settings.
     pub(crate) fn root(&self, workspace: &WorkspaceId) -> PathBuf {
         self.dir.join(folder_name(workspace))
+    }
+
+    /// The file of `workspace`'s settings, outside every folder an agent is given.
+    pub(crate) fn settings_file(&self, workspace: &WorkspaceId) -> PathBuf {
+        self.settings
+            .join(format!("{}.json", folder_name(workspace)))
     }
 
     /// How to start `agent` in `cwd` with `workspace`'s own config folder; the only place runs
@@ -134,7 +143,7 @@ impl Workspaces {
         agent: AgentKind,
         cwd: PathBuf,
     ) -> Result<Launch, Fault> {
-        match Settings::read(&self.root(workspace))?.access {
+        match Settings::read(&self.settings_file(workspace))?.access {
             AccessLevel::AskFirst | AccessLevel::Full => self.prepared(workspace, agent, cwd),
             AccessLevel::Off | AccessLevel::Newer => Err(Fault::new(
                 code!("access.off"),
@@ -355,9 +364,9 @@ mod tests {
     }
 
     fn choose(dir: &Path, workspace: &str, json: &str) {
-        let root = dir.join("workspaces").join(format!("w-{workspace}"));
-        fs::create_dir_all(&root).unwrap();
-        fs::write(root.join("workspace.json"), json).unwrap();
+        fs::create_dir_all(dir.join("workspaces").join(format!("w-{workspace}"))).unwrap();
+        fs::create_dir_all(dir.join("settings")).unwrap();
+        fs::write(dir.join(format!("settings/w-{workspace}.json")), json).unwrap();
     }
 
     #[test]
