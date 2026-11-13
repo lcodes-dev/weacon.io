@@ -98,6 +98,16 @@ export type App = {
 };
 
 /**
+ * One target's binary in a release.
+ */
+export type Build = {
+  sha256: Sha256;
+  size: number;
+  target: Target;
+  url: DownloadUrl;
+};
+
+/**
  * A feature a peer supports, such as `chat.send`, named like a [`Code`]. A peer keeps the ones
  * it doesn't know, so a newer peer's list still parses.
  */
@@ -241,6 +251,11 @@ export type ClientLog = {
 export type Code = string;
 
 /**
+ * A full git commit id: 40 lowercase hex digits.
+ */
+export type Commit = string;
+
+/**
  * From the core to a client that has `diff.view`, in answer to a [`DiffQuery`].
  */
 export type DiffAnswer = {
@@ -312,6 +327,11 @@ export type DiffQueryKind = (
   }
 );
 
+/**
+ * An `https://` address with no spaces or control characters, at most 2,048 bytes.
+ */
+export type DownloadUrl = string;
+
 export type ErrorBody = {
   code: Code;
   /**
@@ -377,6 +397,20 @@ export type LineOp = (
  * space apart, at most 40 bytes; no digits, so ids and secrets can't be spelt in it.
  */
 export type LogEvent = string;
+
+/**
+ * A release, as its signed manifest describes it; a core reads it to update itself. It is
+ * published with the release's builds, and its signature beside it.
+ */
+export type Manifest = {
+  builds: Array<Build>;
+  commit: Commit;
+  /**
+   * The protocol the release speaks; a core asks its owner before installing one that differs.
+   */
+  protocol: number;
+  version: ReleaseVersion;
+};
 
 /**
  * A member of a workspace, 1–64 ASCII letters, digits, `-` or `_`.
@@ -466,6 +500,8 @@ export type Receipt = {
   }
 );
 
+export type ReleaseVersion = string;
+
 /**
  * A command's id, chosen by the client and kept across reconnects and retries. Sending the
  * same id again returns the first receipt instead of repeating the work; the same id with
@@ -550,6 +586,11 @@ export type RunUpdate = {
 };
 
 /**
+ * A SHA-256 digest: 64 lowercase hex digits.
+ */
+export type Sha256 = string;
+
+/**
  * Trades the one-time code sent to `email` for a [`SignedIn`]. `challenge` is the one its
  * [`SignInStarted`] gave; a server that hands out challenges refuses a finish without one.
  */
@@ -584,6 +625,11 @@ export type SignedIn = {
   member: MemberId;
   token: string;
 };
+
+/**
+ * A Rust target a release is built for, such as `x86_64-unknown-linux-musl`.
+ */
+export type Target = string;
 
 /**
  * Asks the server to change a task that the client read at `version`; the server refuses
