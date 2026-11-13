@@ -9,7 +9,9 @@ use serde::Deserialize;
 use tokio::sync::broadcast::{Receiver, error::RecvError};
 use tokio::time::{Instant, MissedTickBehavior, interval_at, timeout};
 use weacon_observability::Field;
-use weacon_protocol::{Capability, Code, Envelope, ErrorBody, Message, WorkspaceId, code};
+use weacon_protocol::{
+    Capability, Code, Envelope, ErrorBody, Message, WorkspaceChange, WorkspaceId, code,
+};
 
 use crate::auth::Member;
 use crate::connections::Place;
@@ -17,6 +19,8 @@ use crate::http::{Shared, failure};
 
 /// What a client must offer, and the server offers, to get a workspace's changes.
 const FEED: Code = code!("workspace.feed");
+/// What the server offers to clients that read and change tasks.
+const TASKS: Code = code!("workspace.tasks");
 
 /// How long a feed waits for the client's hello, and how often it checks that the client
 /// answers and its session hasn't ended; a send that takes longer than that ends the feed.
@@ -53,8 +57,7 @@ pub(crate) async fn feed(
     let changes = shared.changes.subscribe();
     // A member joins a workspace when they first open it.
     match member.workspace.join(&member.id).await {
-        // Nobody listening is fine: feeds read what they missed from the database.
-        Ok(true) => drop(shared.changes.send(member.workspace.id().clone())),
+        Ok(true) => shared.changed(member.workspace.id()),
         Ok(false) => {}
         Err(fault) => return failure(&shared, fault),
     }
@@ -63,6 +66,7 @@ pub(crate) async fn feed(
         member,
         changes,
         last_seq: since,
+        tasks: false,
     };
     upgrade
         .max_message_size(MAX_MESSAGE)
@@ -77,6 +81,8 @@ struct Feed {
     /// Which workspace changed; the changes themselves are read from the database, in order.
     changes: Receiver<WorkspaceId>,
     last_seq: u64,
+    /// Whether the client offered `workspace.tasks`, without which it gets no task changes.
+    tasks: bool,
 }
 
 impl Feed {
@@ -104,8 +110,11 @@ async fn serve(mut socket: WebSocket, shared: Shared, mut feed: Feed) {
         hello_within,
         ping_every,
     } = shared.feed;
-    let greeted = timeout(hello_within, greet(&mut socket, &shared)).await;
-    if !matches!(greeted, Ok(true)) || !catch_up(&mut socket, &shared, &mut feed).await {
+    let Ok(Some(tasks)) = timeout(hello_within, greet(&mut socket, &shared)).await else {
+        return;
+    };
+    feed.tasks = tasks;
+    if !catch_up(&mut socket, &shared, &mut feed).await {
         return;
     }
     let mut ping = interval_at(Instant::now() + ping_every, ping_every);
@@ -161,11 +170,15 @@ async fn catch_up(socket: &mut WebSocket, shared: &Shared, feed: &mut Feed) -> b
         };
         let more = usize::try_from(PAGE).is_ok_and(|full| page.len() == full);
         for update in page {
+            feed.last_seq = update.seq;
+            let task = matches!(update.change, WorkspaceChange::TaskChanged { .. });
+            if task && !feed.tasks {
+                continue;
+            }
             // Before each one, not each page: a member removed meanwhile gets nothing more.
             if !feed.allowed(shared).await {
                 return false;
             }
-            feed.last_seq = update.seq;
             if !reply(socket, shared, 0, Message::Workspace(update)).await {
                 return false;
             }
@@ -176,10 +189,11 @@ async fn catch_up(socket: &mut WebSocket, shared: &Shared, feed: &mut Feed) -> b
     }
 }
 
-/// Answers the client's hello; the feed goes on only for a client that offers it.
-async fn greet(socket: &mut WebSocket, shared: &Shared) -> bool {
+/// Answers the client's hello. The feed goes on only for a client that offers it, and then
+/// says whether the client also offered tasks.
+async fn greet(socket: &mut WebSocket, shared: &Shared) -> Option<bool> {
     let Some(Ok(Frame::Text(text))) = socket.recv().await else {
-        return false;
+        return None;
     };
     let Ok(Envelope {
         id,
@@ -187,16 +201,17 @@ async fn greet(socket: &mut WebSocket, shared: &Shared) -> bool {
     }) = Envelope::from_json(text.as_bytes())
     else {
         reply(socket, shared, 0, error(code!("handshake.required"))).await;
-        return false;
+        return None;
     };
-    let feed = Capability::from(FEED);
-    let answer = hello.answer(shared.app.clone(), vec![feed.clone()]);
+    let (feed, tasks) = (Capability::from(FEED), Capability::from(TASKS));
+    let answer = hello.answer(shared.app.clone(), vec![feed.clone(), tasks.clone()]);
     let welcomed = matches!(answer, Message::Welcome(_));
     if welcomed && !hello.capabilities.contains(&feed) {
         reply(socket, shared, id, error(code!("capability.missing"))).await;
-        return false;
+        return None;
     }
-    reply(socket, shared, id, answer).await && welcomed
+    let sent = reply(socket, shared, id, answer).await;
+    (sent && welcomed).then(|| hello.capabilities.contains(&tasks))
 }
 
 fn error(code: Code) -> Message {
@@ -238,6 +253,9 @@ mod tests {
     use tokio_tungstenite::tungstenite::{self, Message as Wire, Utf8Bytes};
     use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async};
     use weacon_protocol::{Hello, MemberId, PROTOCOL, WorkspaceChange, WorkspaceUpdate};
+
+    use weacon_model::{Change, OrderKey, Task, TaskTitle};
+    use weacon_protocol::TaskId;
 
     use super::*;
     use crate::auth::SESSION_COOKIE;
@@ -407,9 +425,47 @@ mod tests {
         let Message::Welcome(welcome) = welcome else {
             panic!("{welcome:?}");
         };
-        assert_eq!(welcome.capabilities, [Capability::from(FEED)]);
+        assert_eq!(
+            welcome.capabilities,
+            [Capability::from(FEED), Capability::from(TASKS)]
+        );
         assert_eq!(missed, joined(1, "m1"));
         assert_eq!(live, joined(2, "m2"));
+    }
+
+    #[tokio::test]
+    async fn only_a_client_that_offers_tasks_hears_of_task_changes() {
+        let fixture = Fixture::new().await;
+        let (server, token) = signed_in(&fixture).await;
+        let mut plain = greeted(server.address, &token, 0).await;
+        let first = next(&mut plain).await;
+        let task = Task::new(
+            TaskId::try_from("t1".to_owned()).unwrap(),
+            TaskTitle::try_from("Write".to_owned()).unwrap(),
+            OrderKey::try_from("V".to_owned()).unwrap(),
+        );
+        let change = Change::by(member_id("m1"), 0);
+        w1(&fixture).await.add_task(&task, &change).await.unwrap();
+        fixture.shared.changed(&workspace_id("w1"));
+        join(&fixture, server.address, "m2", "bo@example.com").await;
+        let after_the_task = next(&mut plain).await;
+        let path = "/api/workspaces/w1/feed";
+        let mut both = open(server.address, path, &token).await.unwrap();
+        say(&mut both, &["workspace.feed", "workspace.tasks"]).await;
+        next(&mut both).await;
+
+        let task_changed = Message::Workspace(WorkspaceUpdate {
+            workspace: workspace_id("w1"),
+            seq: 2,
+            change: WorkspaceChange::TaskChanged {
+                task: task.id,
+                version: 1,
+            },
+        });
+        assert_eq!((first, after_the_task), (joined(1, "m1"), joined(3, "m2")));
+        assert_eq!(next(&mut both).await, joined(1, "m1"));
+        assert_eq!(next(&mut both).await, task_changed);
+        assert_eq!(next(&mut both).await, joined(3, "m2"));
     }
 
     #[tokio::test]
