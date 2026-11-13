@@ -72,6 +72,20 @@ test("text stays selected while the run streams, and following waits for the rea
   }
 });
 
+test("a reader at the bottom of a finished run is still there after Settings", { timeout: 60_000 }, async () => {
+  const harness = await start(fakeServer(20_000, 0));
+  try {
+    const { page } = harness;
+    await page.waitForSelector(".row.finished");
+    assert.ok(atBottom(await page.evaluate(scrollOf)));
+    await page.getByRole("button", { name: "Settings" }).click();
+    await page.getByRole("button", { name: "Back" }).click();
+    assert.ok(atBottom(await page.evaluate(scrollOf)), "the message box hid the end of the run");
+  } finally {
+    await harness.close();
+  }
+});
+
 function backAfterNextRow(): Promise<void> {
   return new Promise((resolve) => {
     const view = document.querySelector(".transcript");
@@ -84,7 +98,7 @@ function backAfterNextRow(): Promise<void> {
       back.click();
       resolve();
     });
-    watch.observe(view, { childList: true });
+    watch.observe(view, { childList: true, subtree: true });
   });
 }
 

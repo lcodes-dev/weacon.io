@@ -11,6 +11,7 @@ import type { Row, ToolState } from "./transcript.ts";
  */
 export function TranscriptView({ rows, writing, away }: { rows: readonly Row[]; writing: boolean; away: boolean }) {
   const scroller = useRef<HTMLDivElement>(null);
+  const content = useRef<HTMLDivElement>(null);
   const bottom = useRef(true);
   // Where the view last scrolled itself. Its scroll event comes a frame later, maybe after the
   // pane has shrunk, as when the message box comes back, so it says nothing about the reader.
@@ -48,22 +49,38 @@ export function TranscriptView({ rows, writing, away }: { rows: readonly Row[]; 
 
   // Selections in Settings, while `away`, don't count.
   const selection = away ? null : document.getSelection();
-  useLayoutEffect(() => {
+  const awayNow = useRef(away);
+  awayNow.current = away;
+  const keepAtBottom = useRef(() => {
     const element = scroller.current;
     if (element === null || !bottom.current) {
       return;
     }
-    if (selectingIn(selection, element)) {
+    if (selectingIn(awayNow.current ? null : document.getSelection(), element)) {
       // Once the selection goes, follow only if the reader is still at the bottom.
       bottom.current = atBottom(element);
     } else {
       element.scrollTop = element.scrollHeight;
       followedTo.current = element.scrollTop;
     }
-    // A held row formatting later can grow, so a reader at the bottom is kept there too.
-  }, [rows, refreshes]);
+  });
+  useLayoutEffect(() => keepAtBottom.current(), [rows, refreshes]);
 
-  if (rows.length === 0) {
+  const empty = rows.length === 0;
+  useEffect(() => {
+    const [element, inner] = [scroller.current, content.current];
+    if (empty || element === null || inner === null) {
+      return;
+    }
+    // Rows reach their real height only once shown, and the message box takes its room back when
+    // Settings closes; a following reader stays at the bottom through both.
+    const watch = new ResizeObserver(() => keepAtBottom.current());
+    watch.observe(element);
+    watch.observe(inner);
+    return () => watch.disconnect();
+  }, [empty]);
+
+  if (empty) {
     return <p className="page muted">No run yet.</p>;
   }
   held.current = false;
@@ -91,12 +108,14 @@ export function TranscriptView({ rows, writing, away }: { rows: readonly Row[]; 
         }
       }}
     >
-      {rows.map((row, at) => {
-        const writingRow = writing && at === rows.length - 1;
-        return (
-          <RowView key={at} at={at} row={row} writing={writingRow} formatted={row.kind === "text" && !writingRow && format(at)} />
-        );
-      })}
+      <div ref={content}>
+        {rows.map((row, at) => {
+          const writingRow = writing && at === rows.length - 1;
+          return (
+            <RowView key={at} at={at} row={row} writing={writingRow} formatted={row.kind === "text" && !writingRow && format(at)} />
+          );
+        })}
+      </div>
     </div>
   );
 }
