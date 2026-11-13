@@ -5,8 +5,10 @@ import "./app.css";
 import { App } from "./app.tsx";
 import { ME } from "./build.ts";
 import { Connection, type Status } from "./connection.ts";
+import { Feed, nextFrame } from "./feed.ts";
 import { Log } from "./log.ts";
 import { serverUrl } from "./server.ts";
+import { EMPTY, apply } from "./transcript.ts";
 
 const log = new Log();
 // A crash is reported by a fixed code, as its message and stack could hold content, and once,
@@ -24,6 +26,7 @@ log.info("app started");
 
 function Root() {
   const [status, setStatus] = useState<Status>({ state: "connecting" });
+  const [transcript, setTranscript] = useState(EMPTY);
   useEffect(() => {
     // A closed socket's last news must not overwrite the next socket's.
     let current = true;
@@ -35,6 +38,19 @@ function Root() {
       setStatus({ state: "ended", code: "connection.refused" });
       return;
     }
+    const feed = new Feed(
+      nextFrame(
+        () => document.hidden,
+        (run) => requestAnimationFrame(run),
+        (frame) => cancelAnimationFrame(frame),
+        (run) => setTimeout(run, 250),
+      ),
+      (events) => {
+        if (current) {
+          setTranscript((before) => apply(before, events));
+        }
+      },
+    );
     const connection = new Connection(socket, ME, {
       status(next) {
         if (!current) {
@@ -48,13 +64,14 @@ function Root() {
           log.warn(next.code === "connection.lost" ? "connection lost" : "connection refused", { code: next.code });
         }
       },
+      message: (envelope) => feed.push(envelope),
     });
     return () => {
       current = false;
       socket.close();
     };
   }, []);
-  return <App me={ME} status={status} />;
+  return <App me={ME} status={status} transcript={transcript} />;
 }
 
 const root = document.getElementById("root");
