@@ -6,7 +6,7 @@ use weacon_protocol::{
     code,
 };
 
-use super::{Engine, Key, unsupported};
+use super::{Engine, Key, Waiting, unsupported};
 use crate::chats::log::Seen;
 use crate::runs::Queued;
 use crate::runs::task::{Agent, Order};
@@ -21,10 +21,10 @@ impl<A: Agent> Engine<A> {
             // Whatever cut the first try short, what it began still happens: an answer still
             // waiting reaches its run, and a prompt it queued gets its turn.
             Seen::Same => {
-                if let ChatAction::Permission { answer } = command.action {
-                    return self.deliver(key, answer).await;
-                }
-                return self.advance(key).await;
+                return match command.action {
+                    ChatAction::Permission { answer } => self.deliver(key, &request, answer).await,
+                    _ => self.advance(key).await,
+                };
             }
             Seen::Other => {
                 return Err(Fault::new(
@@ -94,8 +94,16 @@ impl<A: Agent> Engine<A> {
                 "That permission prompt isn't waiting",
             ));
         }
+        let given = Some((request.clone(), answer.allow));
+        let waiting = &mut self.chat(key).await?.waiting;
+        for waits in waiting
+            .iter_mut()
+            .filter(|waits| waits.prompt == answer.prompt)
+        {
+            waits.answered.clone_from(&given);
+        }
         self.receipt(key, &request, Outcome::Completed).await?;
-        self.deliver(key, answer).await
+        self.deliver(key, &request, answer).await
     }
 
     async fn waits_for(&mut self, key: &Key, answer: &PermissionAnswer) -> Result<bool, Fault> {
@@ -104,9 +112,17 @@ impl<A: Agent> Engine<A> {
         Ok(asked && waiting.iter().any(|waits| waits.prompt == answer.prompt))
     }
 
-    // Gives a committed answer to its run, unless its prompt is no longer waiting.
-    async fn deliver(&mut self, key: &Key, answer: PermissionAnswer) -> Result<(), Fault> {
-        if !self.waits_for(key, &answer).await? {
+    // Gives the answer `request` committed to its run, unless its prompt is no longer waiting.
+    async fn deliver(
+        &mut self,
+        key: &Key,
+        request: &RequestId,
+        answer: PermissionAnswer,
+    ) -> Result<(), Fault> {
+        let given = Some((request.clone(), answer.allow));
+        let committed = |waits: &Waiting| waits.prompt == answer.prompt && waits.answered == given;
+        let waits = self.chat(key).await?.waiting.iter().any(committed);
+        if !waits || !self.runs.is_latest(&key.0, &key.1, &answer.run) {
             return Ok(());
         }
         let waiting = &mut self.chat(key).await?.waiting;

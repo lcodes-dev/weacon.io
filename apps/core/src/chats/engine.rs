@@ -104,6 +104,8 @@ struct Chat {
     /// The way to the chat's running agent.
     orders: Option<mpsc::UnboundedSender<Order>>,
     waiting: Vec<Waiting>,
+    /// The outcome the run reported for its turn when the turn's receipt couldn't be written.
+    unended: Option<Outcome>,
 }
 
 impl Chat {
@@ -118,6 +120,8 @@ impl Chat {
 struct Waiting {
     prompt: u32,
     seq: u64,
+    /// The request, and whether it allowed, that answered it once its receipt is written.
+    answered: Option<(RequestId, bool)>,
 }
 
 pub(crate) struct Engine<A> {
@@ -293,6 +297,7 @@ impl<A: Agent> Engine<A> {
                 subscribers: Vec::new(),
                 orders: None,
                 waiting: Vec::new(),
+                unended: None,
             })),
         }
     }
