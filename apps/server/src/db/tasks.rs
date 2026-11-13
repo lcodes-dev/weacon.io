@@ -7,9 +7,12 @@ use super::{Workspace, failed, stored, unreadable};
 
 type Row = (String, String, String, String, i64);
 
+/// The most tasks a workspace holds, since making or moving one reads them all.
+pub(crate) const MAX_TASKS: u32 = 2_000;
+
 impl Workspace {
     /// Stores a new task, made by `change`. An id or order key already in this workspace is
-    /// `db.exists`.
+    /// `db.exists`, and a workspace with [`MAX_TASKS`] already is `task.too_many`.
     pub(crate) async fn add_task(&self, task: &Task, change: &Change) -> Result<(), Fault> {
         let mut transaction = self
             .db
@@ -17,9 +20,10 @@ impl Workspace {
             .begin_with("BEGIN IMMEDIATE")
             .await
             .map_err(failed)?;
-        sqlx::query(
+        let added = sqlx::query(
             "INSERT INTO tasks (workspace_id, task_id, title, status, order_key, version)
-             VALUES (?, ?, ?, ?, ?, ?)",
+             SELECT ?1, ?2, ?3, ?4, ?5, ?6
+             WHERE (SELECT COUNT(*) FROM tasks WHERE workspace_id = ?1) < ?7",
         )
         .bind(self.id.as_str())
         .bind(task.id.as_str())
@@ -27,9 +31,16 @@ impl Workspace {
         .bind(status_text(task.status)?)
         .bind(task.order.as_str())
         .bind(version_number(task.version)?)
+        .bind(MAX_TASKS)
         .execute(&mut *transaction)
         .await
         .map_err(failed)?;
+        if added.rows_affected() == 0 {
+            return Err(Fault::new(
+                code!("task.too_many"),
+                "The workspace has as many tasks as it can hold",
+            ));
+        }
         self.record(&mut transaction, task, change).await?;
         transaction.commit().await.map_err(failed)
     }
@@ -300,6 +311,41 @@ mod tests {
         };
         assert_eq!(moved, expected);
         assert_eq!(one.tasks().await.unwrap(), [expected]);
+    }
+
+    // Fills `workspace` with `count` tasks, keyed `a11`, `a21` and on.
+    async fn fill(workspace: &Workspace, count: u32) {
+        sqlx::query(
+            "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < ?2)
+             INSERT INTO tasks (workspace_id, task_id, title, status, order_key, version)
+             SELECT ?1, 'f' || i, 'Filler', 'todo', 'a' || i || '1', 1 FROM n",
+        )
+        .bind(workspace.id.as_str())
+        .bind(count)
+        .execute(&workspace.db.writer)
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_workspace_holds_up_to_its_most_tasks_and_no_more() {
+        let dir = TempDir::new().unwrap();
+        let (one, two) = two_teams(&dir).await;
+        fill(&one, MAX_TASKS - 1).await;
+
+        one.add_task(&new_task("t1", "Last", "z"), &by("m1"))
+            .await
+            .unwrap();
+        let full = one
+            .add_task(&new_task("t2", "Over", "zz"), &by("m1"))
+            .await
+            .unwrap_err();
+
+        assert_eq!(code(&full), "task.too_many");
+        assert_eq!(one.tasks().await.unwrap().len(), 2_000);
+        two.add_task(&new_task("t2", "Elsewhere", "V"), &by("m2"))
+            .await
+            .unwrap();
     }
 
     #[tokio::test]

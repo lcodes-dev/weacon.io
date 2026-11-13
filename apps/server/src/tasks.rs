@@ -33,7 +33,7 @@ pub(crate) async fn create(
     body: Result<Json<TaskCreate>, JsonRejection>,
 ) -> Response {
     let made = async {
-        let Json(body) = body.map_err(|_| invalid())?;
+        let body = parsed(body)?;
         let title = title(body.title)?;
         let tasks = member.workspace.tasks().await?;
         let order = place(&tasks, None, body.before.as_ref())?;
@@ -62,7 +62,7 @@ pub(crate) async fn change(
 ) -> Response {
     let edited = async {
         let Path((_, id)) = path.map_err(|_| invalid())?;
-        let Json(body) = body.map_err(|_| invalid())?;
+        let body = parsed(body)?;
         let edit = match body.edit {
             TaskEditBody::Title { title: text } => TaskEdit::Title(title(text)?),
             TaskEditBody::Status { status } => TaskEdit::Status(status),
@@ -129,6 +129,18 @@ fn record(task: Task) -> TaskRecord {
     }
 }
 
+/// A request's body, or `task.too_large` past the size limit and `task.invalid` otherwise.
+fn parsed<T>(body: Result<Json<T>, JsonRejection>) -> Result<T, Fault> {
+    match body {
+        Ok(Json(body)) => Ok(body),
+        Err(rejection) if rejection.status() == StatusCode::PAYLOAD_TOO_LARGE => Err(Fault::new(
+            code!("task.too_large"),
+            "The task request is too large",
+        )),
+        Err(_) => Err(invalid()),
+    }
+}
+
 fn invalid() -> Fault {
     Fault::new(code!("task.invalid"), "The task request isn't valid")
 }
@@ -138,7 +150,10 @@ fn answer(shared: &Shared, fault: Fault) -> Response {
     let status = match fault.code().as_str() {
         "task.invalid" | "task.unknown_value" => StatusCode::BAD_REQUEST,
         "task.not_found" => StatusCode::NOT_FOUND,
-        "task.stale" | "task.no_room" | "task.last_version" => StatusCode::CONFLICT,
+        "task.stale" | "task.no_room" | "task.last_version" | "task.too_many" => {
+            StatusCode::CONFLICT
+        }
+        "task.too_large" => StatusCode::PAYLOAD_TOO_LARGE,
         // Another change took the same place at the same moment; reading again finds a free one.
         "db.exists" => return error(StatusCode::CONFLICT, fault.code().clone(), true),
         _ => return failure(shared, fault),
@@ -352,6 +367,26 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_body_past_the_size_limit_is_too_large() {
+        let fixture = Fixture::new().await;
+        let (_server, ada) = ada(&fixture).await;
+        let write = ada.create("Write", None).await;
+        let huge = TaskCreate {
+            title: "x".repeat(20_000),
+            before: None,
+        };
+        let huge = serde_json::to_string(&huge).unwrap();
+        let change = format!("POST /api/workspaces/w1/tasks/{}", write.id.as_str());
+
+        for head in ["POST /api/workspaces/w1/tasks", change.as_str()] {
+            let (status, body) = ada.send(head, &huge).await;
+            assert_eq!(status, "http/1.1 413 payload too large", "{head}");
+            assert_eq!(refusal(&body), "task.too_large");
+        }
+        assert_eq!(ada.list().await, [write]);
+    }
+
+    #[tokio::test]
     async fn bad_input_is_refused_as_a_bad_request() {
         let fixture = Fixture::new().await;
         let (_server, ada) = ada(&fixture).await;
@@ -433,7 +468,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_place_another_change_took_meanwhile_is_a_conflict_worth_retrying() {
+    async fn a_full_workspace_or_a_taken_place_is_a_conflict() {
         let fixture = Fixture::new().await;
         let taken = Fault::new(code!("db.exists"), "It already exists");
 
