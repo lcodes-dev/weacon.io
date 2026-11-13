@@ -23,7 +23,8 @@ test("text stays selected while the run streams, and following waits for the rea
     assert.equal(await page.evaluate(() => document.getSelection()?.toString()), writing);
     // The finished row waits as plain text while the selection is in it, then gets its Markdown.
     assert.ok(await page.evaluate(() => document.querySelector("[data-picked] > p") === null));
-    await page.evaluate(() => document.getSelection()?.removeAllRanges());
+    // Clicking in it to deselect leaves a caret there, which doesn't hold it.
+    await page.click("[data-picked]");
     await page.waitForFunction(() => document.querySelector("[data-picked] > p") !== null);
 
     const before = await page.evaluate(selectMessages, MESSAGES);

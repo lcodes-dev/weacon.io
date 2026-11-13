@@ -1,7 +1,7 @@
 import { memo, useEffect, useLayoutEffect, useReducer, useRef } from "react";
 
 import { atBottom, selectingIn, touches } from "./follow.ts";
-import { MarkdownView } from "./markdown-view.tsx";
+import { MarkdownView } from "./markdown-view.ts";
 import type { Outcome } from "./protocol.ts";
 import type { Row, ToolState } from "./transcript.ts";
 
@@ -13,10 +13,12 @@ export function TranscriptView({ rows, writing, away }: { rows: readonly Row[]; 
   const scroller = useRef<HTMLDivElement>(null);
   const bottom = useRef(true);
   // Text rows shown as Markdown; once formatted, a row stays so, as reformatting would undo a
-  // selection in it. A finished row the selection touches waits until the selection leaves.
+  // selection in it. A finished row the selection touches waits until the selection leaves; a
+  // bare caret, as a click leaves, holds it only while a button is down, as a drag may follow.
   const formatted = useRef(new Set<number>());
   const held = useRef(false);
-  const [, refresh] = useReducer((count: number) => count + 1, 0);
+  const pressed = useRef(false);
+  const [refreshes, refresh] = useReducer((count: number) => count + 1, 0);
 
   useEffect(() => {
     const update = () => {
@@ -24,8 +26,21 @@ export function TranscriptView({ rows, writing, away }: { rows: readonly Row[]; 
         refresh();
       }
     };
+    const press = () => {
+      pressed.current = true;
+    };
+    const release = () => {
+      pressed.current = false;
+      update();
+    };
     document.addEventListener("selectionchange", update);
-    return () => document.removeEventListener("selectionchange", update);
+    document.addEventListener("pointerdown", press);
+    document.addEventListener("pointerup", release);
+    return () => {
+      document.removeEventListener("selectionchange", update);
+      document.removeEventListener("pointerdown", press);
+      document.removeEventListener("pointerup", release);
+    };
   }, []);
 
   // Selections in Settings, while `away`, don't count.
@@ -41,7 +56,8 @@ export function TranscriptView({ rows, writing, away }: { rows: readonly Row[]; 
     } else {
       element.scrollTop = element.scrollHeight;
     }
-  }, [rows]);
+    // A held row formatting later can grow, so a reader at the bottom is kept there too.
+  }, [rows, refreshes]);
 
   if (rows.length === 0) {
     return <p className="page muted">No run yet.</p>;
@@ -52,7 +68,7 @@ export function TranscriptView({ rows, writing, away }: { rows: readonly Row[]; 
       return true;
     }
     const element = scroller.current?.querySelector(`[data-index="${at}"]`);
-    if (element && touches(selection, element)) {
+    if (element && (selectingIn(selection, element) || (pressed.current && touches(selection, element)))) {
       held.current = true;
       return false;
     }
