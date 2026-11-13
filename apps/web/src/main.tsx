@@ -1,4 +1,4 @@
-import { StrictMode, useEffect, useState } from "react";
+import { StrictMode, useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 
 import "./app.css";
@@ -6,6 +6,7 @@ import { App } from "./app.tsx";
 import { ME } from "./build.ts";
 import { prompt, requestId } from "./composer/prompt.ts";
 import { Connection, type Status } from "./connection.ts";
+import { NO_CHANGES, ask, cut, receive } from "./diff/changes.ts";
 import { Feed, nextFrame } from "./feed.ts";
 import { Log } from "./log.ts";
 import { placeOf } from "./place.ts";
@@ -31,6 +32,8 @@ function Root() {
   const [status, setStatus] = useState<Status>({ state: "connecting" });
   const [transcript, setTranscript] = useState(EMPTY);
   const [send, setSend] = useState<(text: string) => void>();
+  const [changes, setChanges] = useState(NO_CHANGES);
+  const connected = useRef<Connection>(undefined);
   useEffect(() => {
     // A closed socket's last news must not overwrite the next socket's.
     let current = true;
@@ -70,18 +73,36 @@ function Root() {
             setSend(() => (text: string) => connection.send(prompt(++lastId, place, request(), text)));
           }
         } else if (next.state === "ended") {
+          setChanges(cut);
           log.detach();
           log.warn(next.code === "connection.lost" ? "connection lost" : "connection refused", { code: next.code });
         }
       },
-      message: (envelope) => feed.push(envelope),
+      message(envelope) {
+        feed.push(envelope);
+        if (current && envelope.type === "diff_answer") {
+          setChanges((before) => receive(before, envelope));
+        }
+      },
     });
+    connected.current = connection;
     return () => {
       current = false;
       socket.close();
     };
   }, []);
-  return <App me={ME} status={status} transcript={transcript} place={place} send={send} />;
+  const openChanges = () => {
+    // Asked once, the first time they are opened.
+    if (changes.asked === undefined && place !== undefined && connected.current !== undefined) {
+      const request = requestId(crypto.getRandomValues(new Uint8Array(16)));
+      const { query, changes: asked } = ask(request, place.workspace, place.chat);
+      setChanges(asked);
+      connected.current.send(query);
+    }
+  };
+  return (
+    <App me={ME} status={status} transcript={transcript} place={place} send={send} review={{ changes, openChanges }} />
+  );
 }
 
 const root = document.getElementById("root");
