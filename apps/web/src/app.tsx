@@ -1,7 +1,7 @@
 import { useState } from "react";
 
 import { Composer } from "./composer/composer.tsx";
-import { blocked } from "./composer/prompt.ts";
+import { type Send, blocked } from "./composer/prompt.ts";
 import { type Status, statusText } from "./connection.ts";
 import type { Place } from "./place.ts";
 import type { App as Build } from "./protocol.ts";
@@ -20,7 +20,7 @@ export function App({
   status: Status;
   transcript: Transcript;
   place: Place | undefined;
-  send: ((text: string) => void) | undefined;
+  send: Send | undefined;
 }) {
   const [settings, setSettings] = useState(false);
   return (
