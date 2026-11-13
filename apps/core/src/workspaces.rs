@@ -163,10 +163,12 @@ impl Workspaces {
         })
     }
 
-    // Whether `cwd` is inside the state folder or holds it, so a run could reach the settings.
+    // Whether `cwd` is inside the state folder or holds it, so a run could reach the settings;
+    // a folder that can't be resolved counts as one that does.
     fn overlaps_state(&self, cwd: &Path) -> bool {
-        let real = |path: &Path| path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
-        let (state, cwd) = (real(&self.state), real(cwd));
+        let (Some(state), Some(cwd)) = (resolved(&self.state), resolved(cwd)) else {
+            return true;
+        };
         cwd.starts_with(&state) || state.starts_with(&cwd)
     }
 
@@ -186,6 +188,29 @@ impl Workspaces {
             .because(error)
         })?;
         Ok(launch)
+    }
+}
+
+// `path` with its deepest existing folder resolved, so a missing path compares like an existing
+// one; `None` when something on the way exists but can't be resolved.
+fn resolved(path: &Path) -> Option<PathBuf> {
+    let mut missing = Vec::new();
+    let mut base = path;
+    loop {
+        match base.canonicalize() {
+            Ok(found) => {
+                return Some(
+                    missing
+                        .iter()
+                        .rev()
+                        .fold(found, |path, name| path.join(name)),
+                );
+            }
+            Err(error) if error.kind() != io::ErrorKind::NotFound => return None,
+            Err(_) => {}
+        }
+        missing.push(base.file_name()?);
+        base = base.parent()?;
     }
 }
 
@@ -493,5 +518,28 @@ mod tests {
             );
         }
         assert_eq!(code(dir.with_extension("work")), "");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_missing_folder_reached_through_a_symlink_is_still_refused() {
+        let dir = TempDir::new().unwrap();
+        let state = dir.join("state");
+        fs::create_dir(&state).unwrap();
+        std::os::unix::fs::symlink(&state, dir.join("link")).unwrap();
+        let workspaces = workspaces(&state);
+
+        let error = workspaces
+            .launch(&id("w1"), AgentKind::Claude, dir.join("link/settings"))
+            .unwrap_err();
+
+        assert_eq!(error.code().as_str(), "workspace.cwd_refused");
+        // A file in the way can't be resolved, so the folder is refused too.
+        fs::write(dir.join("file"), "").unwrap();
+        let blocked = workspaces.launch(&id("w1"), AgentKind::Claude, dir.join("file/inside"));
+        assert_eq!(
+            blocked.unwrap_err().code().as_str(),
+            "workspace.cwd_refused"
+        );
     }
 }
