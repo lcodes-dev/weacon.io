@@ -49,6 +49,9 @@ test("files arrive one answer each, and only the latest request's for its chat c
   assert.equal(receive(one, answer("q-2", of("x.rs"), "c-1", "w-2")), one);
   assert.equal(receive(two, { id: 0, type: "run", run: "r-1", event: { event: "text", text: "x" } }), two);
   assert.equal(receive(NO_CHANGES, answer("q-2", of("a.rs"))), NO_CHANGES);
+  // Before any query, even an answer without a request is dropped.
+  const unasked = { id: 0, type: "diff_answer", answer: of("a.rs") } as unknown as Envelope;
+  assert.equal(receive(NO_CHANGES, unasked), NO_CHANGES);
 });
 
 test("a connection that ends cuts short only changes still coming", () => {

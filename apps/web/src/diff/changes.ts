@@ -34,7 +34,8 @@ export function receive(changes: Changes, envelope: Envelope): Changes {
   const { asked, files, total } = changes;
   if (
     envelope.type !== "diff_answer" ||
-    envelope.request !== asked?.request ||
+    asked === undefined ||
+    envelope.request !== asked.request ||
     envelope.workspace !== asked.workspace ||
     envelope.chat !== asked.chat ||
     (total !== undefined && files.length >= total)

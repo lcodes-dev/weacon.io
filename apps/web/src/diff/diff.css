@@ -22,10 +22,11 @@
 
 .diff h2 {
   display: flex;
-  gap: 12px;
+  flex-wrap: wrap;
+  gap: 0 12px;
   margin: 0;
-  padding: 0 12px;
-  height: 40px;
+  padding: 8px 12px;
+  min-height: 24px;
   align-items: center;
   font-size: 14px;
   border-bottom: 1px solid var(--border);
@@ -33,6 +34,7 @@
 
 .diff .path {
   font-family: ui-monospace, monospace;
+  overflow-wrap: anywhere;
 }
 
 .diff .file > p {
