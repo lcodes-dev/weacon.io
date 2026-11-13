@@ -80,6 +80,27 @@ ALTER TABLE members ADD COLUMN account_id TEXT REFERENCES accounts (account_id);
 UPDATE members SET account_id =
     (SELECT account_id FROM accounts WHERE accounts.email = members.email);
 ",
+    // A person signs in to their account, not to one workspace.
+    "
+CREATE UNIQUE INDEX members_account ON members (workspace_id, account_id);
+
+DROP TABLE sign_in_challenges;
+DROP TABLE sessions;
+
+CREATE TABLE sign_in_challenges (
+    challenge_id TEXT PRIMARY KEY,
+    account_id TEXT NOT NULL REFERENCES accounts (account_id),
+    code_hash BLOB NOT NULL,
+    expires_at INTEGER NOT NULL,
+    attempts INTEGER NOT NULL
+) STRICT;
+
+CREATE TABLE sessions (
+    token_hash BLOB PRIMARY KEY,
+    account_id TEXT NOT NULL REFERENCES accounts (account_id),
+    expires_at INTEGER NOT NULL
+) STRICT;
+",
 ];
 
 /// Applies the steps the database hasn't had yet, each in its own transaction that holds the

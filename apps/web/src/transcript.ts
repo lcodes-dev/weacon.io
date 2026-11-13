@@ -46,9 +46,10 @@ function step(rows: Row[], writing: boolean, event: RunEvent): boolean {
       rows.push({ kind: "tool", call: event.call, tool: event.tool, state: "running" });
       return false;
     case "tool_done": {
-      const at = rows.findLastIndex((row) => row.kind === "tool" && row.call === event.call && row.state === "running");
+      // A repeat or a stale id changes nothing.
+      const at = rows.findLastIndex((row) => row.kind === "tool" && row.call === event.call);
       const row = rows[at];
-      if (row?.kind === "tool") {
+      if (row?.kind === "tool" && row.state === "running") {
         rows[at] = { ...row, state: event.failed ? "failed" : "done" };
       }
       return writing;

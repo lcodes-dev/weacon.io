@@ -1593,11 +1593,155 @@
         "token"
       ]
     },
+    "TaskChange": {
+      "description": "Asks the server to change a task that the client read at `version`; the server refuses\nwhen the task has changed since. The answer is its [`TaskRecord`].",
+      "type": "object",
+      "properties": {
+        "edit": {
+          "$ref": "#/$defs/TaskEditBody"
+        },
+        "version": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "version",
+        "edit"
+      ]
+    },
+    "TaskCreate": {
+      "description": "Asks the server for a new task, placed in front of `before`, or last without one. The\nanswer is its [`TaskRecord`].",
+      "type": "object",
+      "properties": {
+        "before": {
+          "$ref": "#/$defs/TaskId"
+        },
+        "title": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "title"
+      ]
+    },
+    "TaskEditBody": {
+      "description": "One edit to a task, inside a [`TaskChange`].",
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "title"
+            },
+            "title": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "title"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "status"
+            },
+            "status": {
+              "$ref": "#/$defs/TaskStatus"
+            }
+          },
+          "required": [
+            "kind",
+            "status"
+          ]
+        },
+        {
+          "description": "Places the task in front of `before`, or last without one.",
+          "type": "object",
+          "properties": {
+            "before": {
+              "$ref": "#/$defs/TaskId"
+            },
+            "kind": {
+              "type": "string",
+              "const": "move"
+            }
+          },
+          "required": [
+            "kind"
+          ]
+        }
+      ]
+    },
     "TaskId": {
       "description": "A task in a workspace, 1–64 ASCII letters, digits, `-` or `_`.",
       "type": "string",
       "maxLength": 64,
       "pattern": "^[A-Za-z0-9_-]+$"
+    },
+    "TaskList": {
+      "description": "A workspace's tasks in their order, from the server.",
+      "type": "object",
+      "properties": {
+        "tasks": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/TaskRecord"
+          }
+        }
+      },
+      "required": [
+        "tasks"
+      ]
+    },
+    "TaskRecord": {
+      "description": "A task as it travels: `order` is its order key and `version` rises with each change. The\nserver sends it to clients that have the capability `workspace.tasks`.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/TaskId"
+        },
+        "order": {
+          "type": "string"
+        },
+        "status": {
+          "$ref": "#/$defs/TaskStatus"
+        },
+        "title": {
+          "type": "string"
+        },
+        "version": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "id",
+        "title",
+        "status",
+        "order",
+        "version"
+      ]
+    },
+    "TaskStatus": {
+      "description": "How far along a task is.",
+      "oneOf": [
+        {
+          "type": "string",
+          "enum": [
+            "todo",
+            "in_progress",
+            "done"
+          ]
+        }
+      ]
     },
     "Welcome": {
       "description": "The answer to a [`Hello`] that speaks the same protocol.",

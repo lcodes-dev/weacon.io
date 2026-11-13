@@ -23,6 +23,7 @@ use crate::limit::Limit;
 use crate::mail::Outbox;
 use crate::secret::Secret;
 use crate::sign_in;
+use crate::web::{self, WebFile};
 
 const REQUEST_ID: &str = "x-request-id";
 const GRACE: Duration = Duration::from_secs(10);
@@ -68,6 +69,8 @@ pub(crate) struct Shared {
     pub(crate) starts: Arc<Limit>,
     /// How many codes each client may try.
     pub(crate) tries: Arc<Limit>,
+    /// The web app's built files it serves.
+    pub(crate) web: &'static [WebFile],
 }
 
 impl Shared {
@@ -115,9 +118,10 @@ pub(crate) async fn serve(
 fn router(shared: Shared) -> Router {
     Router::new()
         .route("/version", get(version))
-        .route("/sign-in", post(sign_in::start))
-        .route("/sign-in/finish", post(sign_in::finish))
-        .route("/workspaces/{workspace}/feed", get(feed::feed))
+        .route("/api/sign-in", post(sign_in::start))
+        .route("/api/sign-in/finish", post(sign_in::finish))
+        .route("/api/workspaces/{workspace}/feed", get(feed::feed))
+        .merge(web::routes(shared.web))
         .layer(DefaultBodyLimit::max(MAX_BODY))
         .layer(middleware::from_fn(in_time))
         .layer(middleware::from_fn_with_state(shared.clone(), log_request))
@@ -210,7 +214,7 @@ mod tests {
     use tokio::net::TcpStream;
 
     use super::*;
-    use crate::test_support::{Fixture, Running, messages, request, run};
+    use crate::test_support::{Fixture, Running, header, messages, request, run};
 
     struct Server {
         running: Running,
@@ -230,11 +234,6 @@ mod tests {
 
     async fn get(address: SocketAddr, target: &str) -> (Vec<String>, String) {
         request(address, &format!("GET {target}"), "").await
-    }
-
-    fn header<'a>(head: &'a [String], name: &str) -> Option<&'a str> {
-        head.iter()
-            .find_map(|line| line.strip_prefix(name)?.strip_prefix(": "))
     }
 
     #[tokio::test]
@@ -357,7 +356,7 @@ mod tests {
         tokio::time::pause();
         let mut slow = TcpStream::connect(server.running.address).await.unwrap();
         slow.write_all(
-            b"POST /sign-in HTTP/1.1\r\nhost: test\r\ncontent-type: application/json\r\ncontent-length: 9\r\n\r\n",
+            b"POST /api/sign-in HTTP/1.1\r\nhost: test\r\ncontent-type: application/json\r\ncontent-length: 9\r\n\r\n",
         )
         .await
         .unwrap();

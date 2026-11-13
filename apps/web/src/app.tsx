@@ -1,7 +1,7 @@
 import { useState } from "react";
 
 import { Composer } from "./composer/composer.tsx";
-import { blocked } from "./composer/prompt.ts";
+import { type Send, blocked } from "./composer/prompt.ts";
 import { type Status, statusText } from "./connection.ts";
 import type { Place } from "./place.ts";
 import type { App as Build } from "./protocol.ts";
@@ -20,7 +20,7 @@ export function App({
   status: Status;
   transcript: Transcript;
   place: Place | undefined;
-  send: ((text: string) => void) | undefined;
+  send: Send | undefined;
 }) {
   const [settings, setSettings] = useState(false);
   return (
@@ -32,7 +32,14 @@ export function App({
         </button>
       </header>
       <main>
-{settings ? <Settings me={me} status={status} /> : <TranscriptView rows={transcript.rows} writing={transcript.writing} />}
+        <div className={settings ? "pane away" : "pane"}>
+          <TranscriptView rows={transcript.rows} writing={transcript.writing} away={settings} />
+        </div>
+        {settings && (
+          <div className="pane">
+            <Settings me={me} status={status} />
+          </div>
+        )}
       </main>
       <Composer send={send} blocked={blocked(status, place)} hidden={settings} />
     </div>
