@@ -2,6 +2,7 @@
 //! orders agents, commits what happens to each chat's log and then publishes it.
 
 mod commands;
+mod cut;
 mod queries;
 mod turns;
 

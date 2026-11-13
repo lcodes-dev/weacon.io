@@ -2,7 +2,6 @@
 
 use std::sync::Arc;
 
-use serde_json::Value;
 use tokio::sync::mpsc;
 use weacon_observability::{Fault, Field};
 use weacon_protocol::{
@@ -10,12 +9,10 @@ use weacon_protocol::{
     RunState, RunUpdate, code,
 };
 
+use super::cut::cut;
 use super::{Engine, Key, Start, Waiting};
 use crate::runs::Queued;
 use crate::runs::task::{Agent, Heard, Order, RunOf, drive};
-
-// What is kept of a text too long for one frame: it still fits when every byte is escaped.
-const TEXT_KEPT: usize = 128 << 10;
 
 impl<A: Agent> Engine<A> {
     pub(super) async fn heard(
@@ -370,43 +367,9 @@ impl<A: Agent> Engine<A> {
     }
 }
 
-// `event` without what made it too large for one frame.
-fn cut(event: &RunEvent) -> RunEvent {
-    match event.clone() {
-        RunEvent::Text { text } => {
-            let kept = text
-                .char_indices()
-                .take_while(|(at, _)| *at < TEXT_KEPT)
-                .map(|(_, letter)| letter);
-            RunEvent::Text {
-                text: kept.collect(),
-            }
-        }
-        RunEvent::ToolCall { call, tool, .. } => RunEvent::ToolCall {
-            call,
-            tool,
-            input: Value::Null,
-        },
-        RunEvent::PermissionAsked {
-            run, prompt, tool, ..
-        } => RunEvent::PermissionAsked {
-            run,
-            prompt,
-            tool,
-            input: Value::Null,
-        },
-        whole @ (RunEvent::Started { .. }
-        | RunEvent::TextDelta { .. }
-        | RunEvent::ToolDone { .. }
-        | RunEvent::PermissionWithdrawn { .. }
-        | RunEvent::Finished { .. }
-        | RunEvent::Newer) => whole,
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use serde_json::json;
+    use serde_json::{Value, json};
     use weacon_protocol::{
         ChatAction, ChatAnswerKind, ChatCommand, ChatQueryKind, Receipt, RequestId,
     };
