@@ -86,7 +86,9 @@ pub(crate) async fn drive<A: Agent>(
             order = orders.recv(), if broken.is_none() => {
                 let Some(order) = order else { return };
                 match obey(&mut agent, order).await {
+                    // Closed, so the engine sends its next prompt to a new run.
                     Err(fault) if fault.code() == &code!("agent.io_failed") => {
+                        orders.close();
                         broken = Some((fault, Instant::now() + LAST_WORDS));
                     }
                     // Any other refusal shows in what the agent says next.
@@ -225,16 +227,21 @@ mod tests {
         orders.send(Order::Send("busy".to_owned())).unwrap();
         orders.send(Order::Send("broken".to_owned())).unwrap();
 
-        let driven = drive(Refuses { said: false }, of, ordered, reporter);
-        tokio::time::timeout(LAST_WORDS * 2, driven).await.unwrap();
+        let driven = tokio::spawn(drive(Refuses { said: false }, of, ordered, reporter));
 
         let said = reports.recv().await.unwrap();
         assert!(matches!(said.heard, Heard::Event(RunEvent::Text { .. })));
+        // Still speaking, it takes no more orders.
+        assert!(!driven.is_finished() && orders.is_closed());
         let last = reports.recv().await.unwrap();
         assert!(
             matches!(&last.heard, Heard::Exited(Some(fault)) if fault.code().as_str() == "agent.io_failed")
         );
         assert!(reports.recv().await.is_none());
+        tokio::time::timeout(LAST_WORDS, driven)
+            .await
+            .unwrap()
+            .unwrap();
     }
 
     // A real process: a shell script stands in for `claude`.

@@ -1034,6 +1034,25 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
+    async fn an_outcome_left_by_another_turn_doesnt_end_this_one() {
+        let (_bench, mut engine, _agent, _pushes) = on_turn().await;
+        let other = (prompt("r-0", "Earlier").request, Outcome::Completed);
+        engine.chat(&key()).await.unwrap().unended = Some(other);
+
+        let (run_1, idle) = (run("run-1"), RunState::Idle);
+        engine
+            .finished(&key(), &run_1, Outcome::Interrupted, idle)
+            .await
+            .unwrap();
+
+        let first = prompt("r-1", "Hi").request;
+        assert_eq!(
+            outcomes(&mut engine, &first).await,
+            [Outcome::Accepted, Outcome::Interrupted]
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
     async fn a_turn_whose_run_is_gone_ends_unknown_on_the_next_prompt() {
         let (mut bench, mut engine, _agent, _pushes) = on_turn().await;
         // As after a restart: nothing of the chat or its run is in memory.
