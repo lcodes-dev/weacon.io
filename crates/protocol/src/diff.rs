@@ -3,7 +3,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::{ChatId, RequestId, WorkspaceId};
 
-/// Each answer is a [`DiffAnswer`] that echoes `request`.
+/// From a client to a core that offers `diff.view`. Each answer is a [`DiffAnswer`] that echoes
+/// `request`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct DiffQuery {
     pub request: RequestId,
@@ -23,6 +24,7 @@ pub enum DiffQueryKind {
     Newer,
 }
 
+/// From the core to a client that has `diff.view`, in answer to a [`DiffQuery`].
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct DiffAnswer {
     pub request: RequestId,

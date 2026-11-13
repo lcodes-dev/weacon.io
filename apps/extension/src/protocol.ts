@@ -240,6 +240,9 @@ export type ClientLog = {
  */
 export type Code = string;
 
+/**
+ * From the core to a client that has `diff.view`, in answer to a [`DiffQuery`].
+ */
 export type DiffAnswer = {
   answer: DiffAnswerKind;
   chat: ChatId;
@@ -293,7 +296,8 @@ export type DiffLine = {
 };
 
 /**
- * Each answer is a [`DiffAnswer`] that echoes `request`.
+ * From a client to a core that offers `diff.view`. Each answer is a [`DiffAnswer`] that echoes
+ * `request`.
  */
 export type DiffQuery = {
   chat: ChatId;

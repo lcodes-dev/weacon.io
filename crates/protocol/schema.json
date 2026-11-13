@@ -702,6 +702,7 @@
       "pattern": "^[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)+$"
     },
     "DiffAnswer": {
+      "description": "From the core to a client that has `diff.view`, in answer to a [`DiffQuery`].",
       "type": "object",
       "properties": {
         "answer": {
@@ -854,7 +855,7 @@
       ]
     },
     "DiffQuery": {
-      "description": "Each answer is a [`DiffAnswer`] that echoes `request`.",
+      "description": "From a client to a core that offers `diff.view`. Each answer is a [`DiffAnswer`] that echoes\n`request`.",
       "type": "object",
       "properties": {
         "chat": {
