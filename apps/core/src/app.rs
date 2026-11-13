@@ -62,7 +62,9 @@ impl App {
             log.warn("log file unavailable", &[("err", Field::error(&error))]);
         }
         let reports = reports(setup.env, &version, &log);
-        let agreed = state_dir.as_deref().is_some_and(|dir| crate::reports::agreed(dir, &log));
+        let agreed = state_dir
+            .as_deref()
+            .is_some_and(|dir| crate::reports::agreed(dir, &log));
         Self {
             version,
             reporter: Arc::new(weacon_appkit::reporter(reports, agreed, setup.deliver)),

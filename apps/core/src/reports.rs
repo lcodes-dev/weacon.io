@@ -178,7 +178,10 @@ mod tests {
             before,
             "Error reports: off until you choose. Run weacon reports on, or off.\n"
         );
-        assert!(on.starts_with("Error reports: on. They hold no messages"), "{on}");
+        assert!(
+            on.starts_with("Error reports: on. They hold no messages"),
+            "{on}"
+        );
         assert_eq!(kept_on, on);
         assert_eq!(stored_on, r#"{"send":true}"#);
         assert_eq!(off, "Error reports: off.\n");
@@ -212,8 +215,17 @@ mod tests {
         let replaced = reports(&dir, Some(Answer::Off)).unwrap();
 
         assert_eq!(broken.code().as_str(), "reports.unreadable");
-        assert!(shown.starts_with("Error reports: off until you choose."), "{shown}");
+        assert!(
+            shown.starts_with("Error reports: off until you choose."),
+            "{shown}"
+        );
         assert_eq!(read(&not_a_folder).unwrap(), None);
+        let folder = TempDir::new().unwrap();
+        fs::create_dir_all(file(&folder)).unwrap();
+        assert_eq!(
+            read(&folder).unwrap_err().code().as_str(),
+            "reports.unreadable"
+        );
         assert!(replaced.starts_with("Error reports: off."), "{replaced}");
         assert_eq!(read(&dir).unwrap(), Some(false));
     }
