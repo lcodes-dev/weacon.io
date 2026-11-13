@@ -12,5 +12,5 @@ mod test_support;
 pub use app::{build, panic_hook, reporter, reports, root_logger, version_text};
 pub use exit::{Outcome, finish, runtime};
 pub use logs::{KEEP, MAX_BYTES, RotatingFile};
-pub use platform::{Signals, private_append};
+pub use platform::{Signals, owner_only, private_append, sync_dir, write_whole};
 pub use report::{http, random_id};
