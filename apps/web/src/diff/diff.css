@@ -2,6 +2,7 @@
   --added: #e6f4ea;
   --removed: #fdecea;
   --gutter: #f6f7f8;
+  --marked: #fff3c4;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -9,6 +10,7 @@
     --added: #17311f;
     --removed: #3a1c1c;
     --gutter: #1d2025;
+    --marked: #3d3414;
   }
 }
 
@@ -106,3 +108,53 @@
   background: var(--removed);
 }
 
+.diff .line[data-mark="commented"]::before,
+.diff .line[data-mark="commented"]::after {
+  background: var(--marked);
+}
+
+.diff .line[data-mark="selected"] {
+  background: var(--marked);
+}
+
+.diff .line::before,
+.diff .line::after {
+  cursor: pointer;
+}
+
+.diff .comment {
+  margin: 4px 12px 8px 12ch;
+  padding: 8px 12px;
+  max-width: 72ch;
+  font: 14px/1.5 system-ui, sans-serif;
+  white-space: normal;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+}
+
+.diff .comment p {
+  margin: 0 0 4px;
+}
+
+.diff .comment .text {
+  white-space: pre-wrap;
+}
+
+.diff .comment textarea {
+  display: block;
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 5em;
+  font: inherit;
+  color: inherit;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.diff .comment .actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+}
