@@ -5,27 +5,22 @@ use axum::routing::get;
 
 use crate::http::Shared;
 
-/// A built file of the web app: its name and its bytes.
-pub(crate) type WebFile = (&'static str, &'static [u8]);
+/// A built file of the web app: the route it is served at, its type and its bytes.
+pub(crate) type WebFile = (&'static str, &'static str, &'static [u8]);
 
 /// The web app's built files, embedded when the server was built; none if it wasn't.
 pub(crate) const FILES: &[WebFile] = include!(concat!(env!("OUT_DIR"), "/web.rs"));
 
 // Only the server's own files and its API, over its own origin.
-const POLICY: &str = "default-src 'self'; base-uri 'none'; form-action 'none'; \
-                      frame-ancestors 'none'";
+const POLICY: &str = "default-src 'self'; connect-src 'self'; base-uri 'none'; \
+                      form-action 'none'; frame-ancestors 'none'";
 
-/// Routes for those of `files` the server knows: `index.html` at `/`, the rest at their names.
 pub(crate) fn routes(files: &'static [WebFile]) -> Router<Shared> {
-    files.iter().fold(Router::new(), |router, &(name, bytes)| {
-        let (path, kind) = match name {
-            "index.html" => ("/", "text/html; charset=utf-8"),
-            "app.js" => ("/app.js", "text/javascript; charset=utf-8"),
-            "app.css" => ("/app.css", "text/css; charset=utf-8"),
-            _ => return router,
-        };
-        router.route(path, get(move || async move { file(kind, bytes) }))
-    })
+    files
+        .iter()
+        .fold(Router::new(), |router, &(route, kind, bytes)| {
+            router.route(route, get(move || async move { file(kind, bytes) }))
+        })
 }
 
 fn file(kind: &'static str, bytes: &'static [u8]) -> Response {
@@ -81,20 +76,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn only_the_built_files_the_server_knows_are_served() {
+    async fn only_the_built_files_are_served() {
         let mut fixture = Fixture::new().await;
-        fixture.shared.web = &[("app.js", b"made_up();"), ("app.wasm", b"\0asm")];
+        fixture.shared.web = &[("/app.js", "text/javascript", b"made_up();")];
         let server = run(fixture.shared.clone()).await;
         let mut statuses = Vec::new();
-        for path in ["/", "/index.html", "/app.js", "/app.wasm", "/app.map"] {
+        for path in ["/", "/index.html", "/app.js", "/app.map"] {
             let (head, _) = request(server.address, &format!("GET {path}"), "").await;
             statuses.push(status(&head).to_owned());
         }
         let missing = "http/1.1 404 not found";
 
-        assert_eq!(
-            statuses,
-            [missing, missing, "http/1.1 200 ok", missing, missing]
-        );
+        assert_eq!(statuses, [missing, missing, "http/1.1 200 ok", missing]);
     }
 }

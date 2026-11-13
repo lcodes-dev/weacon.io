@@ -32,9 +32,13 @@ pub(crate) const VERSION: Version = Version {
 
 /// Made-up built files of the web app, which tests serve.
 pub(crate) const WEB: &[crate::web::WebFile] = &[
-    ("index.html", b"<!doctype html><title>Made up</title>"),
-    ("app.js", b"made_up();"),
-    ("app.css", b"body {}"),
+    (
+        "/",
+        "text/html; charset=utf-8",
+        b"<!doctype html><title>Made up</title>",
+    ),
+    ("/app.js", "text/javascript; charset=utf-8", b"made_up();"),
+    ("/app.css", "text/css; charset=utf-8", b"body {}"),
 ];
 
 /// Seconds since the Unix epoch when a fixture starts.
