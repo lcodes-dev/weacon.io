@@ -10,11 +10,13 @@ mod feed;
 mod http;
 mod limit;
 mod mail;
+mod secret;
 mod sign_in;
 #[cfg(test)]
 mod test_support;
 
 use std::io;
+use std::net::SocketAddr;
 use std::process::ExitCode;
 use std::sync::Arc;
 use std::time::SystemTime;
@@ -29,6 +31,7 @@ use crate::cli::{Command, Serve};
 use crate::db::Db;
 use crate::http::Shared;
 use crate::mail::Outbox;
+use crate::secret::Secret;
 
 /// How many wake-ups a feed may miss before it rereads the database.
 const CHANGES: usize = 256;
@@ -72,6 +75,7 @@ async fn serve(app: &App, args: Serve) -> Result<(), Fault> {
         listen,
         db,
         outbox,
+        secret,
         max_connections,
     } = args;
     // Otherwise every sign-in would fail after its answer, and only the logs would say so.
@@ -88,13 +92,8 @@ async fn serve(app: &App, args: Serve) -> Result<(), Fault> {
         )
         .because(error)
     })?;
-    let listener = TcpListener::bind(listen).await.map_err(|error| {
-        Fault::new(
-            code!("server.bind_failed"),
-            "The server couldn't listen on its address",
-        )
-        .because(error)
-    })?;
+    let listener = bind(listen).await?;
+    let secret = Secret::open(&secret, &app.log)?;
     let db = Db::create(&db).await?;
     let shared = Shared {
         app: weacon_appkit::build(&app.version),
@@ -102,6 +101,7 @@ async fn serve(app: &App, args: Serve) -> Result<(), Fault> {
         reporter: Arc::clone(&app.reporter),
         db: db.clone(),
         outbox: Outbox::new(outbox),
+        secret: Arc::new(secret),
         clock: Arc::new(Box::new(SystemTime::now)),
         head_within: connections::HEAD_WITHIN,
         connections: Arc::new(Semaphore::new(max_connections)),
@@ -115,4 +115,14 @@ async fn serve(app: &App, args: Serve) -> Result<(), Fault> {
     http::serve(listener, shared, signals.wait()).await;
     db.close().await;
     Ok(())
+}
+
+async fn bind(listen: SocketAddr) -> Result<TcpListener, Fault> {
+    TcpListener::bind(listen).await.map_err(|error| {
+        Fault::new(
+            code!("server.bind_failed"),
+            "The server couldn't listen on its address",
+        )
+        .because(error)
+    })
 }
