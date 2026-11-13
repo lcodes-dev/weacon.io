@@ -5,6 +5,7 @@ mod claude;
 mod codex;
 mod launch;
 mod lines;
+mod platform;
 mod run;
 mod spawn;
 #[cfg(test)]
