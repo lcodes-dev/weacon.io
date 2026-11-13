@@ -2,8 +2,10 @@
 //! the agent says.
 
 use std::future::Future;
+use std::time::Duration;
 
 use tokio::sync::mpsc;
+use tokio::time::Instant;
 use weacon_agents::AgentRun;
 use weacon_observability::Fault;
 use weacon_protocol::{ChatId, PermissionAnswer, RunEvent, RunId, WorkspaceId, code};
@@ -66,6 +68,9 @@ pub(crate) enum Heard {
     Exited(Option<Fault>),
 }
 
+// How long an agent whose pipes broke may still speak before it is stopped.
+const LAST_WORDS: Duration = Duration::from_secs(5);
+
 /// Drives `agent` as the run `of` until it exits or the engine drops `orders`.
 pub(crate) async fn drive<A: Agent>(
     mut agent: A,
@@ -73,18 +78,24 @@ pub(crate) async fn drive<A: Agent>(
     mut orders: mpsc::UnboundedReceiver<Order>,
     reports: mpsc::Sender<Report>,
 ) {
+    // Once its pipes break, the agent takes no more orders and has a while to finish speaking.
+    let mut broken: Option<(Fault, Instant)> = None;
     loop {
+        let deadline = broken.as_ref().map_or_else(Instant::now, |(_, at)| *at);
         let heard = tokio::select! {
-            order = orders.recv() => {
+            order = orders.recv(), if broken.is_none() => {
                 let Some(order) = order else { return };
                 match obey(&mut agent, order).await {
-                    // Its pipes are broken: the agent can't take orders, so it is stopped.
                     Err(fault) if fault.code() == &code!("agent.io_failed") => {
-                        Heard::Exited(Some(fault))
+                        broken = Some((fault, Instant::now() + LAST_WORDS));
                     }
                     // Any other refusal shows in what the agent says next.
-                    Ok(()) | Err(_) => continue,
+                    Ok(()) | Err(_) => {}
                 }
+                continue;
+            }
+            () = tokio::time::sleep_until(deadline), if broken.is_some() => {
+                Heard::Exited(broken.take().map(|(fault, _)| fault))
             }
             event = agent.next() => match event {
                 Ok(Some(event)) => Heard::Event(event),
@@ -169,8 +180,11 @@ mod tests {
         assert!(reports.recv().await.is_none());
     }
 
-    // Refuses every prompt: as busy, or with broken pipes when the prompt says so; never speaks.
-    struct Refuses;
+    // Refuses every prompt: as busy, or with broken pipes when the prompt says so. A second
+    // after it is asked, it says one text, then nothing more.
+    struct Refuses {
+        said: bool,
+    }
 
     impl Agent for Refuses {
         async fn send(&mut self, prompt: &str) -> Result<(), Fault> {
@@ -189,12 +203,18 @@ mod tests {
         }
 
         async fn next(&mut self) -> Result<Option<RunEvent>, Fault> {
-            std::future::pending().await
+            if self.said {
+                return std::future::pending().await;
+            }
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            self.said = true;
+            let text = "Last words.".to_owned();
+            Ok(Some(RunEvent::Text { text }))
         }
     }
 
-    #[tokio::test]
-    async fn an_agent_whose_pipes_break_on_an_order_is_stopped_and_other_refusals_are_not() {
+    #[tokio::test(start_paused = true)]
+    async fn an_agent_whose_pipes_break_is_stopped_once_it_has_said_its_last_words() {
         let of = RunOf {
             workspace: WorkspaceId::try_from("w-1".to_owned()).unwrap(),
             chat: ChatId::try_from("c-1".to_owned()).unwrap(),
@@ -205,11 +225,11 @@ mod tests {
         orders.send(Order::Send("busy".to_owned())).unwrap();
         orders.send(Order::Send("broken".to_owned())).unwrap();
 
-        let driven = drive(Refuses, of, ordered, reporter);
-        tokio::time::timeout(Duration::from_secs(5), driven)
-            .await
-            .unwrap();
+        let driven = drive(Refuses { said: false }, of, ordered, reporter);
+        tokio::time::timeout(LAST_WORDS * 2, driven).await.unwrap();
 
+        let said = reports.recv().await.unwrap();
+        assert!(matches!(said.heard, Heard::Event(RunEvent::Text { .. })));
         let last = reports.recv().await.unwrap();
         assert!(
             matches!(&last.heard, Heard::Exited(Some(fault)) if fault.code().as_str() == "agent.io_failed")

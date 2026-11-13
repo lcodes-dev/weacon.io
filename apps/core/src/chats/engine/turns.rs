@@ -238,8 +238,8 @@ impl<A: Agent> Engine<A> {
         self.state(key, run, RunState::Running).await
     }
 
-    // Saves what a failed write left unsaved of ends already known: the running turn's, and
-    // those of queued prompts, which then never run.
+    // Saves the ends a failed write or an exit left unsaved: the turn's, and those of queued
+    // prompts, which then never run.
     async fn save_ended(&mut self, key: &Key) -> Result<(), Fault> {
         let Some(record) = self.runs.of(&key.0, &key.1) else {
             return Ok(());
@@ -247,8 +247,9 @@ impl<A: Agent> Engine<A> {
         let (turn, queue) = (record.turn.clone(), record.queue.clone());
         let live = self.is_live(key);
         let chat = self.chat(key).await?;
+        // A turn whose run is gone, as after a restart, is over too.
         let turn_ended =
-            turn.is_some_and(|turn| chat.unended.is_some() || chat.log.has_ended(&turn));
+            turn.is_some_and(|turn| !live || chat.unended.is_some() || chat.log.has_ended(&turn));
         let ended: Vec<_> = queue
             .into_iter()
             .map(|queued| queued.request)
@@ -1012,6 +1013,9 @@ mod tests {
         let exited = Heard::Exited(None);
         let lost = engine.heard(&key(), &run("run-1"), exited).await;
         assert_eq!(lost.unwrap_err().code().as_str(), "chat.log_not_written");
+        // Its outcome keeps the chat open, though nothing else does.
+        engine.settle(&key());
+        assert!(engine.chats.contains_key(&key()));
 
         engine.command(&key(), prompt("r-2", "More")).await.unwrap();
 
@@ -1027,6 +1031,27 @@ mod tests {
             [Outcome::Accepted, Outcome::Unknown]
         );
         assert!(engine.chat(&key()).await.unwrap().unended.is_none());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_turn_whose_run_is_gone_ends_unknown_on_the_next_prompt() {
+        let (mut bench, mut engine, _agent, _pushes) = on_turn().await;
+        // As after a restart: nothing of the chat or its run is in memory.
+        engine.chats.remove(&key());
+
+        engine.command(&key(), prompt("r-2", "More")).await.unwrap();
+
+        let first = prompt("r-1", "Hi").request;
+        assert_eq!(
+            outcomes(&mut engine, &first).await,
+            [Outcome::Accepted, Outcome::Unknown]
+        );
+        let mut next = soon(bench.started.recv()).await.unwrap();
+        assert_eq!(next.start.run, run("run-2"));
+        assert_eq!(
+            soon(next.told.recv()).await,
+            Some(Told::Send("More".to_owned()))
+        );
     }
 
     #[tokio::test(start_paused = true)]

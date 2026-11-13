@@ -172,7 +172,9 @@ impl Daemon {
         // The engine stops once the last way to it is gone; its writes end before the lock goes.
         let log = self.shared.log.clone();
         drop(self.shared);
-        drop(self.engine.await);
+        if self.engine.await.is_err() {
+            log.error("engine failed", &[]);
+        }
         log.info("daemon stopped", &[]);
     }
 
