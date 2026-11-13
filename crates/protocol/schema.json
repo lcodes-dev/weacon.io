@@ -702,7 +702,6 @@
       "pattern": "^[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)+$"
     },
     "DiffAnswer": {
-      "description": "The core's answer to a [`DiffQuery`], to a client that has `diff.view`.",
       "type": "object",
       "properties": {
         "answer": {
@@ -728,7 +727,7 @@
     "DiffAnswerKind": {
       "oneOf": [
         {
-          "description": "One of the `files` changed files, which arrive one answer each, in order.",
+          "description": "One of the `files` changed files, which arrive one answer each, in order; `files` is at\nleast 1 and the same in every answer to one query.",
           "type": "object",
           "properties": {
             "file": {
@@ -768,6 +767,7 @@
     "DiffContent": {
       "oneOf": [
         {
+          "description": "No hunks when only the file's mode changed.",
           "type": "object",
           "properties": {
             "hunks": {
@@ -834,9 +834,13 @@
       ]
     },
     "DiffLine": {
-      "description": "One line, without its line ending.",
+      "description": "One line without its `\\n`, so a `\\r` before it stays in `text`.",
       "type": "object",
       "properties": {
+        "no_newline": {
+          "description": "The file's last line, when it has no `\\n`.",
+          "type": "boolean"
+        },
         "op": {
           "$ref": "#/$defs/LineOp"
         },
@@ -850,7 +854,7 @@
       ]
     },
     "DiffQuery": {
-      "description": "A question about a chat's changes, from a client to a core that offers `diff.view`. Each\nanswer is a [`DiffAnswer`] that echoes `request`.",
+      "description": "Each answer is a [`DiffAnswer`] that echoes `request`.",
       "type": "object",
       "properties": {
         "chat": {
@@ -987,7 +991,7 @@
       ]
     },
     "Hunk": {
-      "description": "A run of changed lines and their context. Lines count from 1 in the old and the new file.",
+      "description": "A run of changed lines and their context. Lines count from 1; the start of a side with no\nlines, as the old side of an added file, is 0.",
       "type": "object",
       "properties": {
         "lines": {

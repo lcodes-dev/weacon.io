@@ -3,8 +3,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{ChatId, RequestId, WorkspaceId};
 
-/// A question about a chat's changes, from a client to a core that offers `diff.view`. Each
-/// answer is a [`DiffAnswer`] that echoes `request`.
+/// Each answer is a [`DiffAnswer`] that echoes `request`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct DiffQuery {
     pub request: RequestId,
@@ -24,7 +23,6 @@ pub enum DiffQueryKind {
     Newer,
 }
 
-/// The core's answer to a [`DiffQuery`], to a client that has `diff.view`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct DiffAnswer {
     pub request: RequestId,
@@ -36,7 +34,8 @@ pub struct DiffAnswer {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum DiffAnswerKind {
-    /// One of the `files` changed files, which arrive one answer each, in order.
+    /// One of the `files` changed files, which arrive one answer each, in order; `files` is at
+    /// least 1 and the same in every answer to one query.
     File { files: u32, file: DiffFile },
     /// Nothing changed.
     Unchanged,
@@ -72,6 +71,7 @@ pub enum FileChange {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum DiffContent {
+    /// No hunks when only the file's mode changed.
     Text {
         hunks: Vec<Hunk>,
     },
@@ -84,7 +84,8 @@ pub enum DiffContent {
     Newer,
 }
 
-/// A run of changed lines and their context. Lines count from 1 in the old and the new file.
+/// A run of changed lines and their context. Lines count from 1; the start of a side with no
+/// lines, as the old side of an added file, is 0.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct Hunk {
     pub old_start: u32,
@@ -92,11 +93,14 @@ pub struct Hunk {
     pub lines: Vec<DiffLine>,
 }
 
-/// One line, without its line ending.
+/// One line without its `\n`, so a `\r` before it stays in `text`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct DiffLine {
     pub op: LineOp,
     pub text: String,
+    /// The file's last line, when it has no `\n`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub no_newline: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -123,15 +127,20 @@ impl DiffAnswerKind {
 
 impl DiffFile {
     fn is_newer(&self) -> bool {
-        matches!(self.change, FileChange::Newer)
-            || match &self.content {
-                DiffContent::Text { hunks } => hunks
-                    .iter()
-                    .flat_map(|hunk| &hunk.lines)
-                    .any(|line| line.op == LineOp::Newer),
-                DiffContent::Binary | DiffContent::TooLarge => false,
-                DiffContent::Newer => true,
-            }
+        matches!(self.change, FileChange::Newer) || self.content.is_newer()
+    }
+}
+
+impl DiffContent {
+    fn is_newer(&self) -> bool {
+        match self {
+            Self::Text { hunks } => hunks
+                .iter()
+                .flat_map(|hunk| &hunk.lines)
+                .any(|line| line.op == LineOp::Newer),
+            Self::Binary | Self::TooLarge => false,
+            Self::Newer => true,
+        }
     }
 }
 
@@ -142,28 +151,38 @@ mod tests {
     use super::*;
     use crate::{Envelope, FrameError, Message};
 
+    fn envelope(message: Message) -> Envelope {
+        Envelope { id: 4, message }
+    }
+
+    fn request() -> RequestId {
+        RequestId::try_from("r-1".to_owned()).unwrap()
+    }
+
+    fn workspace() -> WorkspaceId {
+        WorkspaceId::try_from("w-1".to_owned()).unwrap()
+    }
+
+    fn chat() -> ChatId {
+        ChatId::try_from("c-1".to_owned()).unwrap()
+    }
+
     fn query(query: DiffQueryKind) -> Envelope {
-        Envelope {
-            id: 4,
-            message: Message::DiffQuery(DiffQuery {
-                request: RequestId::try_from("r-1".to_owned()).unwrap(),
-                workspace: WorkspaceId::try_from("w-1".to_owned()).unwrap(),
-                chat: ChatId::try_from("c-1".to_owned()).unwrap(),
-                query,
-            }),
-        }
+        envelope(Message::DiffQuery(DiffQuery {
+            request: request(),
+            workspace: workspace(),
+            chat: chat(),
+            query,
+        }))
     }
 
     fn answer(answer: DiffAnswerKind) -> Envelope {
-        Envelope {
-            id: 4,
-            message: Message::DiffAnswer(DiffAnswer {
-                request: RequestId::try_from("r-1".to_owned()).unwrap(),
-                workspace: WorkspaceId::try_from("w-1".to_owned()).unwrap(),
-                chat: ChatId::try_from("c-1".to_owned()).unwrap(),
-                answer,
-            }),
-        }
+        envelope(Message::DiffAnswer(DiffAnswer {
+            request: request(),
+            workspace: workspace(),
+            chat: chat(),
+            answer,
+        }))
     }
 
     fn wire(message: &str, field: &str, body: Value) -> Value {
@@ -215,6 +234,7 @@ mod tests {
         let line = |op, text: &str| DiffLine {
             op,
             text: text.to_owned(),
+            no_newline: false,
         };
         let hunks = vec![Hunk {
             old_start: 3,
@@ -223,6 +243,10 @@ mod tests {
                 line(LineOp::Context, "fn main() {"),
                 line(LineOp::Removed, "    old();"),
                 line(LineOp::Added, "    new();"),
+                DiffLine {
+                    no_newline: true,
+                    ..line(LineOp::Added, "}")
+                },
             ],
         }];
         travels(
@@ -233,6 +257,7 @@ mod tests {
                     { "op": "context", "text": "fn main() {" },
                     { "op": "removed", "text": "    old();" },
                     { "op": "added", "text": "    new();" },
+                    { "op": "added", "text": "}", "no_newline": true },
                 ] }] }),
             ),
         );

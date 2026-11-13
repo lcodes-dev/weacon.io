@@ -240,9 +240,6 @@ export type ClientLog = {
  */
 export type Code = string;
 
-/**
- * The core's answer to a [`DiffQuery`], to a client that has `diff.view`.
- */
 export type DiffAnswer = {
   answer: DiffAnswerKind;
   chat: ChatId;
@@ -284,16 +281,19 @@ export type DiffFile = {
 };
 
 /**
- * One line, without its line ending.
+ * One line without its `\n`, so a `\r` before it stays in `text`.
  */
 export type DiffLine = {
+  /**
+   * The file's last line, when it has no `\n`.
+   */
+  no_newline?: boolean;
   op: LineOp;
   text: string;
 };
 
 /**
- * A question about a chat's changes, from a client to a core that offers `diff.view`. Each
- * answer is a [`DiffAnswer`] that echoes `request`.
+ * Each answer is a [`DiffAnswer`] that echoes `request`.
  */
 export type DiffQuery = {
   chat: ChatId;
@@ -342,7 +342,8 @@ export type Hello = {
 };
 
 /**
- * A run of changed lines and their context. Lines count from 1 in the old and the new file.
+ * A run of changed lines and their context. Lines count from 1; the start of a side with no
+ * lines, as the old side of an added file, is 0.
  */
 export type Hunk = {
   lines: Array<DiffLine>;
