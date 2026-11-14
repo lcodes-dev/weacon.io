@@ -107,3 +107,15 @@ pub(crate) async fn append(
 pub(crate) fn seqs(entries: &[ChatEntry]) -> Vec<u64> {
     entries.iter().map(|entry| entry.seq).collect()
 }
+
+impl Workspace {
+    /// Puts every chat of the workspace on `machine`.
+    pub(crate) async fn move_chats_to(&self, machine: &MachineId) {
+        sqlx::query("UPDATE chats SET machine_id = ? WHERE workspace_id = ?")
+            .bind(machine.as_str())
+            .bind(self.id.as_str())
+            .execute(&self.db.writer)
+            .await
+            .unwrap();
+    }
+}

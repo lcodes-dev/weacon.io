@@ -7,7 +7,7 @@ use weacon_protocol::{
     ChatId, ChatState, ChatSummary, MachineId, MachineName, MemberId, RepoId, code,
 };
 
-pub(crate) use events::{CHAT_QUOTA, Incoming, chat_quota_full};
+pub(crate) use events::{Incoming, chat_quota_full};
 pub(crate) use ledger::{NewRequest, Recorded};
 
 use super::changes::Versioned;

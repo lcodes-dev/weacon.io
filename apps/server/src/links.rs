@@ -110,13 +110,6 @@ impl Links {
     }
 
     /// Each machine connected from now on.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "chats subscribe to it to resend a machine's open requests"
-        )
-    )]
     pub(crate) fn connected(&self) -> broadcast::Receiver<Connected> {
         self.connected.subscribe()
     }

@@ -1,6 +1,6 @@
 use sqlx::SqliteConnection;
 use weacon_observability::Fault;
-use weacon_protocol::{ChatCommand, ChatId, MemberId};
+use weacon_protocol::{ChatCommand, ChatId, MemberId, RequestId};
 
 use super::super::{Workspace, failed, unreadable};
 use super::unstorable;
@@ -61,11 +61,32 @@ impl Workspace {
         Ok(recorded)
     }
 
-    /// Closes `request`, whose receipt ended it.
-    pub(crate) async fn end_request(
-        &self,
-        request: &weacon_protocol::RequestId,
-    ) -> Result<(), Fault> {
+    /// Whether the ledger has `request`, for any chat.
+    pub(crate) async fn has_request(&self, request: &RequestId) -> Result<bool, Fault> {
+        let found =
+            sqlx::query("SELECT 1 FROM chat_requests WHERE workspace_id = ? AND request_id = ?")
+                .bind(self.id.as_str())
+                .bind(request.as_str())
+                .fetch_optional(&self.db.readers)
+                .await
+                .map_err(failed)?;
+        Ok(found.is_some())
+    }
+
+    /// Takes `request` out of the ledger: it was recorded but never sent.
+    pub(crate) async fn forget_request(&self, request: &RequestId) -> Result<(), Fault> {
+        sqlx::query("DELETE FROM chat_requests WHERE workspace_id = ? AND request_id = ?")
+            .bind(self.id.as_str())
+            .bind(request.as_str())
+            .execute(&self.db.writer)
+            .await
+            .map_err(failed)?;
+        Ok(())
+    }
+
+    /// Closes `request`, as its receipt does.
+    #[cfg(test)]
+    pub(crate) async fn end_request(&self, request: &RequestId) -> Result<(), Fault> {
         sqlx::query("UPDATE chat_requests SET open = 0 WHERE workspace_id = ? AND request_id = ?")
             .bind(self.id.as_str())
             .bind(request.as_str())
@@ -196,5 +217,26 @@ mod tests {
             at: NOW,
         };
         assert_eq!(two.record_request(&elsewhere).await.unwrap(), Recorded::New);
+    }
+
+    #[tokio::test]
+    async fn a_request_never_sent_is_forgotten_and_can_be_made_again() {
+        let dir = TempDir::new().unwrap();
+        let (one, two) = two_teams(&dir).await;
+        make(&one, "c-1", "m1", NOW).await.unwrap();
+        make(&two, "c-1", "m2", NOW).await.unwrap();
+        assert_eq!(record(&one, "r-1", "c-1", "Go", NOW).await, Recorded::New);
+
+        assert!(one.has_request(&id("r-1")).await.unwrap());
+        assert!(!two.has_request(&id("r-1")).await.unwrap());
+        one.forget_request(&id("r-1")).await.unwrap();
+        two.forget_request(&id("r-c-1")).await.unwrap();
+
+        assert!(!one.has_request(&id("r-1")).await.unwrap());
+        assert!(one.has_request(&id("r-c-1")).await.unwrap());
+        assert_eq!(
+            record(&one, "r-1", "c-1", "Other", NOW).await,
+            Recorded::New
+        );
     }
 }
