@@ -210,4 +210,13 @@ impl Workspace {
         .await
         .unwrap();
     }
+
+    /// Leaves the workspace no room for more chat events.
+    pub(crate) async fn fill_quota(&self) {
+        sqlx::query("UPDATE workspaces SET chat_bytes = 536870912 WHERE workspace_id = ?")
+            .bind(self.id.as_str())
+            .execute(&self.db.writer)
+            .await
+            .unwrap();
+    }
 }

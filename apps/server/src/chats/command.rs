@@ -316,4 +316,25 @@ mod tests {
         let changes = workspace.changes_since(0, 50).await.unwrap();
         assert_eq!(changes.len(), before + 1);
     }
+
+    #[tokio::test]
+    async fn an_action_the_server_doesnt_list_never_reaches_the_machine() {
+        let fixture = Fixture::new().await;
+        let shared = &fixture.shared;
+        let ada = ada(&fixture).await;
+        let workspace = &ada.member.workspace;
+        make(workspace, "c-1", "m1", NOW).await.unwrap();
+        workspace.move_chats_to(&ada.machine).await;
+        let mut serving = attach(shared, &ada, &["chat.serve"]);
+        // A terminal's own action, such as holding the chat, reads here as one not listed.
+        let hold: ChatAction = serde_json::from_str(r#"{"kind":"hold"}"#).unwrap();
+        let mut asked = prompt("r-2", "c-1", "Go", None);
+        asked.action = hold;
+
+        let refused = take(&ada.member, &ada.asker, shared, asked).await;
+
+        assert_eq!(refused.unwrap_err().code().as_str(), "message.unsupported");
+        assert!(sent(&mut serving).is_empty());
+        assert!(!workspace.has_request(&id("r-2")).await.unwrap());
+    }
 }
