@@ -1,5 +1,5 @@
 import type { Status } from "../connection.ts";
-import type { ChatId, DiffContent, DiffFile, Envelope, Hunk, LineOp, RequestId, WorkspaceId } from "../protocol.ts";
+import type { ChatId, DiffFile, Envelope, Hunk, LineOp, RequestId, WorkspaceId } from "../protocol.ts";
 
 /** The capability under which a server answers diff queries. */
 export const DIFF_VIEW = "diff.view";
@@ -67,16 +67,7 @@ export function receive(changes: Changes, envelope: Envelope): Changes {
   if (!isFileAnswer(answer)) {
     return changes;
   }
-  return { ...changes, files: [...files, showable(answer.file)], total: total ?? answer.files, held: false };
-}
-
-const OPS: readonly string[] = ["context", "added", "removed"] satisfies LineOp[];
-
-// A file with a line this app can't number is shown as content it can't show.
-function showable(file: DiffFile): DiffFile {
-  const { content } = file;
-  const known = content.kind !== "text" || content.hunks.every((hunk) => hunk.lines.every((line) => OPS.includes(line.op)));
-  return known ? file : { ...file, content: { kind: "newer" } as unknown as DiffContent };
+  return { ...changes, files: [...files, answer.file], total: total ?? answer.files, held: false };
 }
 
 /** `changes` once the connection has ended: any files still to come won't. */

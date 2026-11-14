@@ -226,26 +226,40 @@ pub(crate) fn invalid(code: Code) -> Response {
 /// other client error is.
 pub(crate) struct Body<T>(pub(crate) T);
 
-impl<T: DeserializeOwned, S: Send + Sync> FromRequest<S> for Body<T> {
-    type Rejection = Response;
+/// Why a request's body couldn't be read.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum Unreadable {
+    TooLarge,
+    NotJson,
+    Invalid,
+}
 
-    async fn from_request(request: Request, state: &S) -> Result<Self, Response> {
+impl<T: DeserializeOwned, S: Send + Sync> FromRequest<S> for Body<T> {
+    type Rejection = Unreadable;
+
+    async fn from_request(request: Request, state: &S) -> Result<Self, Unreadable> {
         Json::<T>::from_request(request, state)
             .await
             .map(|Json(body)| Self(body))
             .map_err(|rejection| match rejection.status() {
-                StatusCode::PAYLOAD_TOO_LARGE => error(
-                    StatusCode::PAYLOAD_TOO_LARGE,
-                    code!("request.too_large"),
-                    false,
-                ),
-                StatusCode::UNSUPPORTED_MEDIA_TYPE => error(
-                    StatusCode::UNSUPPORTED_MEDIA_TYPE,
-                    code!("request.not_json"),
-                    false,
-                ),
-                _ => error(StatusCode::BAD_REQUEST, code!("request.invalid"), false),
+                StatusCode::PAYLOAD_TOO_LARGE => Unreadable::TooLarge,
+                StatusCode::UNSUPPORTED_MEDIA_TYPE => Unreadable::NotJson,
+                _ => Unreadable::Invalid,
             })
+    }
+}
+
+impl IntoResponse for Unreadable {
+    fn into_response(self) -> Response {
+        let (status, code) = match self {
+            Self::TooLarge => (StatusCode::PAYLOAD_TOO_LARGE, code!("request.too_large")),
+            Self::NotJson => (
+                StatusCode::UNSUPPORTED_MEDIA_TYPE,
+                code!("request.not_json"),
+            ),
+            Self::Invalid => (StatusCode::BAD_REQUEST, code!("request.invalid")),
+        };
+        error(status, code, false)
     }
 }
 
@@ -304,7 +318,7 @@ mod tests {
     use tokio::net::TcpStream;
 
     use super::*;
-    use crate::test_support::{Fixture, Running, header, messages, request, run};
+    use crate::test_support::{Fixture, Running, header, messages, request};
 
     struct Server {
         running: Running,
@@ -318,7 +332,7 @@ mod tests {
     async fn start_with(change: impl FnOnce(&mut Shared)) -> Server {
         let mut fixture = Fixture::new().await;
         change(&mut fixture.shared);
-        let running = run(fixture.shared.clone()).await;
+        let running = fixture.run().await;
         Server { running, fixture }
     }
 
@@ -556,7 +570,8 @@ mod tests {
         let answer = Body::<serde_json::Value>::from_request(request, &())
             .await
             .err()
-            .unwrap();
+            .unwrap()
+            .into_response();
         let status = answer.status();
         let bytes = axum::body::to_bytes(answer.into_body(), 1024)
             .await
