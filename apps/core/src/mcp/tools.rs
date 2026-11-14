@@ -25,8 +25,8 @@ pub(crate) fn listed() -> Vec<Tool> {
         {
             "name": "map",
             "description": format!(
-                "Where to begin in the code of this chat's folder: its crates and their modules, \
-                 with how many items each holds. Call it before reading files. Plain text within \
+                "Where to begin in the code of this chat's folder: its entry points, its most \
+                 central items and its crates. Call it before reading files. Plain text within \
                  `budget` bytes, {BUDGET} unless given."
             ),
             "inputSchema": {"type": "object", "properties": {"budget": budget}},
@@ -34,8 +34,9 @@ pub(crate) fn listed() -> Vec<Tool> {
         },
         {
             "name": "symbol",
-            "description": "One item by its full path, such as \
-                `weacon_protocol::message::Envelope`: its kind and the file and line that declare it.",
+            "description": "One item by its path, such as `weacon_protocol::message::Envelope`: \
+                where it is, what calls, uses and tests it, and what it calls. A partial path \
+                lists the items it ends.",
             "inputSchema": {
                 "type": "object",
                 "properties": {"path": {"type": "string"}, "budget": budget},
@@ -68,8 +69,8 @@ fn answer_from(call: &McpCall, map: &Index) -> String {
         return NO_MAP.to_owned();
     }
     match call {
-        McpCall::Map(args) => fit(outline(map), budget(args.budget)),
-        McpCall::Symbol(args) => fit(vec![symbol(map, &args.path)], budget(args.budget)),
+        McpCall::Map(args) => map.start_here(budget(args.budget)),
+        McpCall::Symbol(args) => map.item(&args.path, budget(args.budget)),
         McpCall::Newer => String::new(),
     }
 }
@@ -78,72 +79,6 @@ fn answer_from(call: &McpCall, map: &Index) -> String {
 fn budget(asked: Option<u32>) -> usize {
     let bytes = asked.map_or(BUDGET, |asked| asked.clamp(LEAST, MOST));
     usize::try_from(bytes).unwrap_or(usize::MAX)
-}
-
-fn outline(map: &Index) -> Vec<String> {
-    map.crates
-        .iter()
-        .flat_map(|krate| {
-            let folder = if krate.folder.is_empty() {
-                "."
-            } else {
-                &krate.folder
-            };
-            let modules = count(krate.modules.len(), "module");
-            let head = format!("{} {folder}: {modules}", krate.name);
-            let modules = krate.modules.iter().map(|module| {
-                let name = if module.path.is_empty() {
-                    "(root)"
-                } else {
-                    &module.path
-                };
-                let items = count(module.symbols.len(), "item");
-                format!("  {name} {}: {items}", module.file)
-            });
-            std::iter::once(head).chain(modules)
-        })
-        .collect()
-}
-
-fn count(number: usize, what: &str) -> String {
-    let plural = if number == 1 { "" } else { "s" };
-    format!("{number} {what}{plural}")
-}
-
-fn symbol(map: &Index, path: &str) -> String {
-    let Some(symbol) = map.symbol(path) else {
-        return "No item has this path.".to_owned();
-    };
-    // `Index::symbol` doesn't say which module holds the item, so it is found by identity.
-    let modules = map.crates.iter().flat_map(|krate| &krate.modules);
-    let file = modules
-        .filter(|module| module.symbols.iter().any(|item| std::ptr::eq(item, symbol)))
-        .map(|module| module.file.as_str())
-        .next()
-        .unwrap_or("?");
-    format!("{path}: {:?} at {file}:{}", symbol.kind, symbol.line)
-}
-
-/// The lines that fit in `budget` bytes, each ending with a newline; when some don't, the last
-/// line says how many were left out, and is kept even when the budget is smaller than it.
-fn fit(lines: Vec<String>, budget: usize) -> String {
-    let total: usize = lines.iter().map(|line| line.len() + 1).sum();
-    if total <= budget {
-        return lines.into_iter().map(|line| line + "\n").collect();
-    }
-    let count = lines.len();
-    let tail = |kept: usize| format!("{} more lines left out.\n", count - kept);
-    let mut out = String::new();
-    let mut kept = 0;
-    for line in lines {
-        if out.len() + line.len() + 1 + tail(kept).len() > budget {
-            break;
-        }
-        out.push_str(&line);
-        out.push('\n');
-        kept += 1;
-    }
-    out + &tail(kept)
 }
 
 #[cfg(test)]
@@ -191,25 +126,30 @@ mod tests {
             .collect();
 
         assert_eq!(names, ["map", "symbol"]);
-        assert_eq!(sizes, [Some(194), Some(120)]);
-        assert_eq!(serde_json::to_string(&tools).unwrap().len(), 755);
+        assert_eq!(sizes, [Some(189), Some(170)]);
+        assert_eq!(serde_json::to_string(&tools).unwrap().len(), 800);
     }
 
     #[test]
-    fn map_outlines_each_crate_and_its_modules() {
+    fn map_says_where_to_begin() {
         assert_eq!(
             answer_from(&map(None), &repo()),
-            "a_b .: 2 modules\n  (root) src/lib.rs: 1 item\n  m src/m.rs: 2 items\n"
+            "Start here: 1 crates, 3 items.\nEntry points:\nMost central items:\n\
+             - struct a_b::m::S  src/m.rs:1\n- fn a_b::m::S::go  src/m.rs:2\n\
+             - fn a_b::run  src/lib.rs:2\nCrates:\n- a_b  .  3 items\n"
         );
     }
 
     #[test]
-    fn symbol_says_where_an_item_is_or_that_none_has_the_path() {
+    fn symbol_says_where_an_item_is_or_which_items_end_with_the_path() {
         let found = answer_from(&symbol_call("a_b::m::S::go"), &repo());
-        let missing = answer_from(&symbol_call("a_b::m::T"), &repo());
+        let close = answer_from(&symbol_call("S::go"), &repo());
 
-        assert_eq!(found, "a_b::m::S::go: Fn at src/m.rs:2\n");
-        assert_eq!(missing, "No item has this path.\n");
+        assert_eq!(found, "fn a_b::m::S::go  src/m.rs:2\n");
+        assert_eq!(
+            close,
+            "No item S::go.\nItems with that name:\n- fn a_b::m::S::go  src/m.rs:2\n"
+        );
     }
 
     #[test]
@@ -235,16 +175,18 @@ mod tests {
 
     #[test]
     fn an_answer_ends_with_a_whole_line_within_its_budget() {
-        let lines = || (0..10).map(|n| format!("line {n}")).collect::<Vec<_>>();
+        let items = (0..400).fold(String::new(), |items, n| {
+            items + &format!("pub fn item_{n}() {{}}\n")
+        });
+        let large = index(&[
+            file("Cargo.toml", "[package]\nname = \"a-b\"\n"),
+            file("src/lib.rs", &items),
+        ])
+        .unwrap();
 
-        assert_eq!(fit(lines(), 70), lines().join("\n") + "\n");
-        let cut = fit(lines(), 50);
-        assert_eq!(cut, "line 0\nline 1\nline 2\n7 more lines left out.\n");
-        assert!(cut.len() <= 50);
-        assert_eq!(fit(lines(), 5), "10 more lines left out.\n");
-        // Seventy bytes in all, so sixty-nine cut; a line that fits exactly is kept.
-        assert!(fit(lines(), 69).ends_with("left out.\n"));
-        let exact = fit(lines(), 51);
-        assert_eq!((exact.lines().count(), exact.len()), (5, 51));
+        for call in [map(Some(1000)), symbol_call("item_1")] {
+            let answer = answer_from(&call, &large);
+            assert!(answer.len() <= 1000 && answer.ends_with('\n'), "{answer}");
+        }
     }
 }

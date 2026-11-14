@@ -137,9 +137,12 @@ fn skipped(folder: &Path, name: &str) -> bool {
     name == "node_modules" || folder.join("CACHEDIR.TAG").is_file()
 }
 
+/// Manifests, Rust under a `src` folder, and Markdown, whose flows the map checks.
 fn is_source(path: &str, name: &str) -> bool {
-    let rust = Path::new(name).extension().is_some_and(|it| it == "rs");
-    name == "Cargo.toml" || (rust && path.split('/').any(|part| part == "src"))
+    let extension = Path::new(name).extension();
+    let rust = extension.is_some_and(|it| it == "rs");
+    let doc = extension.is_some_and(|it| it == "md");
+    name == "Cargo.toml" || doc || (rust && path.split('/').any(|part| part == "src"))
 }
 
 #[cfg(test)]
@@ -193,7 +196,7 @@ mod tests {
     }
 
     #[test]
-    fn reads_only_crate_sources() {
+    fn reads_only_crate_sources_and_docs() {
         let mut files = CRATE.to_vec();
         files.extend([
             ("a/src/notes.md", "fn hidden() {}"),
@@ -221,6 +224,7 @@ mod tests {
                 "a/Cargo.toml",
                 "a/src/lib.rs",
                 "a/src/m.rs",
+                "a/src/notes.md",
                 "a/src/target/x.rs"
             ]
         );
@@ -273,7 +277,10 @@ mod tests {
 
         assert_eq!(outline, tool(McpCall::Map(MapArgs::default()), &root));
         assert_eq!(item, tool(McpCall::Symbol(go()), &root));
-        assert_eq!(item, "a::m::go: Fn at a/src/m.rs:1\n");
+        assert_eq!(
+            item,
+            "fn a::m::go  a/src/m.rs:1\ncalled by fn a::run  a/src/lib.rs:2\n"
+        );
         let none = tool(McpCall::Map(MapArgs::default()), &empty);
         assert_eq!(printed(&empty, None, None), none);
     }
@@ -281,12 +288,12 @@ mod tests {
     #[test]
     fn a_budget_reaches_the_map_tool() {
         let root = repo(CRATE);
-        let modules: Vec<_> = (0..80)
-            .map(|n| format!("mod module_number_{n};\n"))
-            .collect();
-        fs::write(root.join("a/src/lib.rs"), modules.concat()).unwrap();
-        for n in 0..80 {
-            fs::write(root.join(format!("a/src/module_number_{n}.rs")), "").unwrap();
+        for n in 0..60 {
+            let folder = root.join(format!("crate_number_{n}"));
+            fs::create_dir_all(folder.join("src")).unwrap();
+            let manifest = format!("[package]\nname = \"crate_number_{n}\"\n");
+            fs::write(folder.join("Cargo.toml"), manifest).unwrap();
+            fs::write(folder.join("src/lib.rs"), "pub fn run() {}\n").unwrap();
         }
         let cut_by_tool = MapArgs { budget: Some(1000) };
 

@@ -441,11 +441,13 @@ mod tests {
         assert_eq!((one.status, two.status), (200, 200));
         assert_eq!(
             answer_text(&one),
-            "one .: 1 module\n  (root) src/lib.rs: 1 item\n"
+            "Start here: 1 crates, 1 items.\nEntry points:\nMost central items:\n\
+             - fn one::run  src/lib.rs:1\nCrates:\n- one  .  1 items\n"
         );
         assert_eq!(
             answer_text(&two),
-            "two .: 1 module\n  (root) src/lib.rs: 1 item\n"
+            "Start here: 1 crates, 1 items.\nEntry points:\nMost central items:\n\
+             - fn two::run  src/lib.rs:1\nCrates:\n- two  .  1 items\n"
         );
     }
 
@@ -507,7 +509,8 @@ mod tests {
         assert_eq!(host.status, 403);
         assert_eq!(origin.status, 403);
         assert_eq!(too_large.status, 413);
-        assert_eq!(answer_text(&large_enough), "No item has this path.\n");
+        // Too long to echo within the budget, so only the count of what was left out.
+        assert_eq!(answer_text(&large_enough), "… 1 more line\n");
     }
 
     #[tokio::test]
