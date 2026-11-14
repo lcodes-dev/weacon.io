@@ -270,6 +270,7 @@ fn answering(message: &Message) -> Option<Asked> {
 mod tests {
     use std::net::SocketAddr;
 
+    use tokio::task::yield_now;
     use tokio::time::timeout;
 
     use weacon_protocol::{
@@ -285,6 +286,8 @@ mod tests {
 
     use crate::test_support::socket::{Client, ends, next, next_envelope, open, say, send};
     use crate::test_support::{Fixture, Paired, ask, member_id, pair_machine, run, workspace_id};
+
+    const WITHIN: Duration = Duration::from_secs(10);
 
     fn machine_of(paired: &Paired) -> MachineId {
         MachineId::try_from(paired.machine["id"].as_str().unwrap().to_owned()).unwrap()
@@ -342,7 +345,28 @@ mod tests {
     // Once `client`'s peer has read all it was sent: it reads in order, and pongs as it does.
     async fn synced(client: &mut Client) {
         client.send(Wire::Ping(Vec::new().into())).await.unwrap();
-        while !matches!(client.next().await, Some(Ok(Wire::Pong(_)))) {}
+        timeout(WITHIN, pong(client)).await.unwrap();
+    }
+
+    // Once a pong comes; a socket that ends first fails the test.
+    async fn pong(client: &mut Client) {
+        loop {
+            if let Wire::Pong(_) = client.next().await.unwrap().unwrap() {
+                return;
+            }
+        }
+    }
+
+    // Once every one of `timers` has stopped.
+    async fn stopped(timers: &[AbortHandle]) {
+        while !timers.iter().all(AbortHandle::is_finished) {
+            yield_now().await;
+        }
+    }
+
+    // The next envelope on `channel`, which comes well within a test's time.
+    async fn heard(channel: &mut mpsc::Receiver<Envelope>) -> Envelope {
+        timeout(WITHIN, channel.recv()).await.unwrap().unwrap()
     }
 
     // `paired`'s core, connected and offering `capabilities`, once its connection is relayed to.
@@ -590,11 +614,13 @@ mod tests {
         relay.answered(&one, envelope(7, changed(&one, another)));
         relay.answered(&one, envelope(8, settings_answer(&one)));
         relay.answered(&one, envelope(7, Message::Unknown));
+        let before = answers.try_recv();
         relay.answered(&one, envelope(7, settings_answer(&one)));
         relay.answered(&one, envelope(7, settings_answer(&one)));
 
+        before.unwrap_err();
         assert_eq!(
-            answers.recv().await.unwrap(),
+            heard(&mut answers).await,
             envelope(41, settings_answer(&one))
         );
         answers.try_recv().unwrap_err();
@@ -611,7 +637,7 @@ mod tests {
 
         relay.answered(&one, envelope(7, refused.clone()));
 
-        assert_eq!(answers.recv().await.unwrap(), envelope(41, refused));
+        assert_eq!(heard(&mut answers).await, envelope(41, refused));
     }
 
     // Ada's paired machine, connected and offering settings, and her as an asker in w1.
@@ -687,12 +713,10 @@ mod tests {
             &back,
         )
         .await;
-        let told = timeout(Duration::from_secs(10), answers.recv())
-            .await
-            .unwrap();
+        let told = heard(&mut answers).await;
 
         assert_eq!(code_of(sent), None);
-        assert_eq!(refusal(&told.unwrap()), (1, "machine.no_answer", true));
+        assert_eq!(refusal(&told), (1, "machine.no_answer", true));
         assert!(fixture.shared.relay.lock().waiting.is_empty());
     }
 
@@ -742,22 +766,25 @@ mod tests {
                 None
             );
         }
-        let first = attached.incoming.recv().await.unwrap().id;
-        let second = attached.incoming.recv().await.unwrap().id;
+        let timers: Vec<_> = (fixture.shared.relay.lock().waiting.values())
+            .map(|waiter| waiter.timer.clone())
+            .collect();
+        let first = heard(&mut attached.incoming).await.id;
+        let second = heard(&mut attached.incoming).await.id;
         let relay = &fixture.shared.relay;
         relay.answered(&machine, envelope(second, failed(code!("test.second"))));
         relay.answered(&machine, envelope(first, failed(code!("test.first"))));
 
+        assert_eq!(refusal(&heard(&mut to_one).await), (1, "test.first", false));
         assert_eq!(
-            refusal(&to_one.recv().await.unwrap()),
-            (1, "test.first", false)
-        );
-        assert_eq!(
-            refusal(&to_two.recv().await.unwrap()),
+            refusal(&heard(&mut to_two).await),
             (1, "test.second", false)
         );
         to_one.try_recv().unwrap_err();
         to_two.try_recv().unwrap_err();
+        // An answered ask's timer stops with it.
+        timeout(WITHIN, stopped(&timers)).await.unwrap();
+        assert_eq!(timers.len(), 2);
     }
 
     #[tokio::test]

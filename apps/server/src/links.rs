@@ -169,14 +169,16 @@ mod tests {
     fn a_newer_connection_takes_over_and_an_older_one_leaving_keeps_it() {
         let links = Arc::new(Links::default());
 
-        let older = links.open(connected("mc-1"), Vec::new());
-        let newer = links.open(connected("mc-1"), Vec::new());
+        let settings = Capability::from(code!("machine.settings"));
+        let older = links.open(connected("mc-1"), vec![settings.clone()]);
+        let newer = links.open(connected("mc-1"), vec![settings.clone()]);
         drop(older);
         let still = links.send(&machine("mc-1"), envelope(1));
         drop(newer);
 
         assert_eq!(still, Ok(()));
         assert_eq!(links.send(&machine("mc-1"), envelope(2)), Err(Offline));
+        assert!(!links.offers(&machine("mc-1"), &settings));
     }
 
     #[test]
