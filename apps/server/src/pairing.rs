@@ -45,6 +45,21 @@ pub(crate) fn claims() -> Limit {
     Limit::new(1200, HOUR)
 }
 
+/// How often each client may ask each pairing step.
+pub(crate) struct Limits {
+    pub(crate) starts: Limit,
+    pub(crate) tries: Limit,
+    pub(crate) claims: Limit,
+}
+
+pub(crate) fn limits() -> Limits {
+    Limits {
+        starts: starts(),
+        tries: tries(),
+        claims: claims(),
+    }
+}
+
 /// `POST /api/machines/pair`: records a machine waiting to be paired, and answers with the
 /// code for its person and the secret its core claims it with.
 pub(crate) async fn start(
@@ -52,7 +67,7 @@ pub(crate) async fn start(
     Client(from): Client,
     Body(body): Body<PairStart>,
 ) -> Response {
-    if !shared.pair_starts.allow(from, Instant::now()) {
+    if !shared.pairing.starts.allow(from, Instant::now()) {
         return too_many(code!("pairing.too_many"));
     }
     if body.os == MachineOs::Newer {
@@ -96,7 +111,7 @@ pub(crate) async fn lookup(
     _: Session,
     Body(body): Body<PairLookup>,
 ) -> Response {
-    if !shared.pair_tries.allow(from, Instant::now()) {
+    if !shared.pairing.tries.allow(from, Instant::now()) {
         return too_many(code!("pairing.too_many"));
     }
     let code_hash = shared.secret.pairing_code_hash(&normalised(&body.code));
@@ -115,7 +130,7 @@ pub(crate) async fn confirm(
     session: Session,
     Body(body): Body<PairConfirm>,
 ) -> Response {
-    if !shared.pair_tries.allow(from, Instant::now()) {
+    if !shared.pairing.tries.allow(from, Instant::now()) {
         return too_many(code!("pairing.too_many"));
     }
     match confirmed(&shared, &session, &body).await {
@@ -146,7 +161,7 @@ pub(crate) async fn claim(
     Client(from): Client,
     Body(body): Body<PairClaim>,
 ) -> Response {
-    if !shared.pair_claims.allow(from, Instant::now()) {
+    if !shared.pairing.claims.allow(from, Instant::now()) {
         return too_many(code!("pairing.too_many"));
     }
     match claimed(&shared, &body).await {
@@ -414,8 +429,11 @@ mod tests {
     #[tokio::test]
     async fn each_client_tries_and_claims_only_so_many_times() {
         let mut fixture = Fixture::new().await;
-        fixture.shared.pair_tries = Arc::new(Limit::new(2, HOUR));
-        fixture.shared.pair_claims = Arc::new(Limit::new(1, HOUR));
+        fixture.shared.pairing = Arc::new(Limits {
+            starts: starts(),
+            tries: Limit::new(2, HOUR),
+            claims: Limit::new(1, HOUR),
+        });
         let server = fixture.run().await;
         let (_, ada) = sign_in(&fixture, server.address, "ada@example.com").await;
         let (_, pairing) = start_pairing(server.address, "linux").await;

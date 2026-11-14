@@ -7,11 +7,12 @@ use weacon_protocol::{App, MachineId, WorkspaceId};
 
 use crate::client::Net;
 use crate::db::Db;
-use crate::limit::Limit;
 use crate::links::Links;
 use crate::outbox::Outbox;
+use crate::pairing;
 use crate::relay::Relay;
 use crate::secret::Secret;
+use crate::sign_in;
 use crate::sign_up::SignUp;
 use crate::socket;
 use crate::web::WebFile;
@@ -44,18 +45,10 @@ pub(crate) struct Shared {
     pub(crate) sign_ins: Arc<Semaphore>,
     /// How long finishing a sign-in takes at least, so its timing gives nothing away.
     pub(crate) finish_within: Duration,
-    /// How many sign-ins each client may start.
-    pub(crate) starts: Arc<Limit>,
-    /// How many codes each client may try.
-    pub(crate) tries: Arc<Limit>,
     /// Who may make an account by signing in.
     pub(crate) sign_up: Arc<[SignUp]>,
-    /// How many pairings each client may start.
-    pub(crate) pair_starts: Arc<Limit>,
-    /// How many pairing codes each client may try.
-    pub(crate) pair_tries: Arc<Limit>,
-    /// How many pairing claims each client may make.
-    pub(crate) pair_claims: Arc<Limit>,
+    pub(crate) sign_in: Arc<sign_in::Limits>,
+    pub(crate) pairing: Arc<pairing::Limits>,
     /// The web app's built files it serves.
     pub(crate) web: &'static [WebFile],
 }

@@ -95,12 +95,9 @@ impl Fixture {
             relay: Arc::default(),
             sign_ins: Arc::new(Semaphore::new(sign_in::AT_ONCE)),
             finish_within: Duration::ZERO,
-            starts: Arc::new(sign_in::starts()),
-            tries: Arc::new(sign_in::tries()),
+            sign_in: Arc::new(sign_in::limits()),
             sign_up: Arc::new([]),
-            pair_starts: Arc::new(pairing::starts()),
-            pair_tries: Arc::new(pairing::tries()),
-            pair_claims: Arc::new(pairing::claims()),
+            pairing: Arc::new(pairing::limits()),
             web: WEB,
         };
         Self {

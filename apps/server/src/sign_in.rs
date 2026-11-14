@@ -45,6 +45,19 @@ pub(crate) fn tries() -> Limit {
     Limit::new(60, HOUR)
 }
 
+/// How often each client may start a sign-in and try a code.
+pub(crate) struct Limits {
+    pub(crate) starts: Limit,
+    pub(crate) tries: Limit,
+}
+
+pub(crate) fn limits() -> Limits {
+    Limits {
+        starts: starts(),
+        tries: tries(),
+    }
+}
+
 /// `POST /api/sign-in`: sends a code to an account's address, and answers with the challenge
 /// to finish with. Answers the same, and as fast, whether or not the address has an account,
 /// so it can't be used to find out.
@@ -53,7 +66,7 @@ pub(crate) async fn start(
     Client(from): Client,
     Body(body): Body<AccountSignInStart>,
 ) -> Response {
-    if !shared.starts.allow(from, Instant::now()) {
+    if !shared.sign_in.starts.allow(from, Instant::now()) {
         return too_many(code!("sign_in.too_many"));
     }
     let challenge = match new_challenge() {
@@ -119,7 +132,7 @@ pub(crate) async fn finish(
     Body(body): Body<AccountSignInFinish>,
 ) -> Response {
     let began = Instant::now();
-    if !shared.tries.allow(from, began) {
+    if !shared.sign_in.tries.allow(from, began) {
         return too_many(code!("sign_in.too_many"));
     }
     let page = sender(&headers);
@@ -618,8 +631,10 @@ mod tests {
     #[tokio::test]
     async fn each_client_may_start_and_try_only_so_many_times() {
         let mut fixture = Fixture::new().await;
-        fixture.shared.starts = Arc::new(Limit::new(1, HOUR));
-        fixture.shared.tries = Arc::new(Limit::new(1, HOUR));
+        fixture.shared.sign_in = Arc::new(Limits {
+            starts: Limit::new(1, HOUR),
+            tries: Limit::new(1, HOUR),
+        });
         let server = fixture.run().await;
         let (first, challenge) = start_sign_in(server.address, "ada@example.com").await;
         let (_, code) = fixture.letter().await;
@@ -649,13 +664,18 @@ mod tests {
     async fn behind_a_trusted_proxy_each_forwarded_client_has_its_own_limit() {
         let fixture = Fixture::new().await;
         let start = json!({ "email": "ada@example.com" }).to_string();
-        let one_each = || Arc::new(Limit::new(1, HOUR));
+        let one_each = || {
+            Arc::new(Limits {
+                starts: Limit::new(1, HOUR),
+                tries: tries(),
+            })
+        };
         let direct = Shared {
-            starts: one_each(),
+            sign_in: one_each(),
             ..fixture.shared.clone()
         };
         let proxied = Shared {
-            starts: one_each(),
+            sign_in: one_each(),
             proxies: Arc::new(["127.0.0.1".parse().unwrap()]),
             ..fixture.shared.clone()
         };
