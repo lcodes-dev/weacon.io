@@ -225,6 +225,8 @@ mod tests {
         assert_eq!(String::from(key()), SECRET);
         assert_eq!(key().public().as_str(), PUBLIC);
         assert_eq!(fingerprint.replace(' ', ""), expected);
+        // The web app checks the same vector.
+        assert_eq!(fingerprint, "300c 9c96 03b9 2a4b 39ed 3958 bf92 4011");
         assert_eq!(fingerprint.len(), 39);
         assert!(fingerprint.split(' ').all(|group| group.len() == 4));
         assert_eq!(Key::try_from("zz".repeat(32)), Err("not a machine key"));

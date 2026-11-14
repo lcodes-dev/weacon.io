@@ -51,22 +51,23 @@ pub(crate) fn run(app: &crate::app::App) -> Result<(), Fault> {
             .because(error)
         })?;
         let daemon = Daemon::start(state_dir, build(&app.version), app.log.clone())?;
-        // The chat engine takes the owner's commands from here; until then each is answered
-        // `chat.unavailable`.
-        let (commands, _) = tokio::sync::mpsc::channel(16);
+        // The chat engine takes the server's messages from here, and sends its own through the
+        // other channel; until then the owner's commands are answered `chat.unavailable`.
+        let (to_daemon, _) = tokio::sync::mpsc::channel(64);
+        let (_, from_daemon) = tokio::sync::mpsc::channel(64);
         let uplink = Uplink {
             state_dir: state_dir.to_owned(),
             app: build(&app.version),
             capabilities: CAPABILITIES.iter().cloned().map(Capability::from).collect(),
             log: app.log.child(&[("component", "uplink".into())]),
-            commands,
+            to_daemon,
             timing: uplink::TIMING,
             random: weacon_appkit::random_id,
         };
         let serve = async {
             tokio::select! {
                 () = daemon.serve(signals.wait()) => {}
-                never = Box::pin(uplink.run()) => match never {},
+                never = Box::pin(uplink.run(from_daemon)) => match never {},
             }
         };
         crate::reports::following(state_dir, &app.reporter, &app.log, serve).await;

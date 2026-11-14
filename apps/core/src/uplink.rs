@@ -40,8 +40,11 @@ pub(crate) const TIMING: Timing = Timing {
     steady_after: Duration::from_secs(30),
 };
 
-/// Where the owner's chat commands go in the daemon.
-pub(crate) type Commands = mpsc::Sender<ChatCommand>;
+/// Where the messages from the server that the uplink doesn't handle itself go in the daemon,
+/// such as the owner's chat commands.
+pub(crate) type ToDaemon = mpsc::Sender<Envelope>;
+/// What the daemon sends the server, while a connection is up.
+pub(crate) type FromDaemon = mpsc::Receiver<Envelope>;
 
 /// How a connection ended.
 #[derive(Debug, PartialEq, Eq)]
@@ -96,30 +99,30 @@ pub(crate) struct Uplink {
     pub(crate) app: App,
     pub(crate) capabilities: Vec<Capability>,
     pub(crate) log: Logger,
-    pub(crate) commands: Commands,
+    pub(crate) to_daemon: ToDaemon,
     pub(crate) timing: Timing,
     /// Random numbers, for the backoff's jitter.
     pub(crate) random: fn() -> u128,
 }
 
 impl Uplink {
-    pub(crate) async fn run(self) -> ! {
+    pub(crate) async fn run(self, mut from_daemon: FromDaemon) -> ! {
         let mut retry = Retry::default();
         loop {
-            let wait = self.step(&mut retry).await;
+            let wait = self.step(&mut retry, &mut from_daemon).await;
             sleep(wait).await;
         }
     }
 
     /// Connects once if the machine is paired, and says how long to wait before the next try.
-    async fn step(&self, retry: &mut Retry) -> Duration {
+    async fn step(&self, retry: &mut Retry, from_daemon: &mut FromDaemon) -> Duration {
         let Some(paired) = self.paired().await else {
             return LOOK_EVERY;
         };
         let log = self
             .log
             .child(&[("machine_id", paired.machine.as_str().into())]);
-        match self.connection(&paired, &log).await {
+        match self.connection(&paired, &log, from_daemon).await {
             Ok(Ended::Unpaired) => {
                 self.unpaired(&paired, &log).await;
                 LOOK_EVERY
@@ -151,7 +154,12 @@ impl Uplink {
         }
     }
 
-    async fn connection(&self, paired: &Paired, log: &Logger) -> Result<Ended, Fault> {
+    async fn connection(
+        &self,
+        paired: &Paired,
+        log: &Logger,
+        from_daemon: &mut FromDaemon,
+    ) -> Result<Ended, Fault> {
         let server = Server::new(&paired.server, paired.pinned.as_deref().map(str::as_bytes))?;
         let mut socket = match server.socket(PATH, &paired.token).await {
             Ok(socket) => socket,
@@ -166,17 +174,8 @@ impl Uplink {
         }
         log.info("uplink connected", &[]);
         let up = Instant::now();
-        let quiet_within = self.timing.quiet_within;
-        while let Ok(Some(Ok(frame))) = timeout(quiet_within, socket.next()).await {
-            let Wire::Text(text) = frame else { continue };
-            let Ok(envelope) = Envelope::from_json(text.as_bytes()) else {
-                continue;
-            };
-            match self.answer(envelope, &paired.owner) {
-                Step::Unpaired => return Ok(Ended::Unpaired),
-                Step::Reply(reply) => send(&mut socket, &reply).await,
-                Step::Nothing => {}
-            }
+        if self.serve(&mut socket, &paired.owner, from_daemon).await {
+            return Ok(Ended::Unpaired);
         }
         let steady = up.elapsed() >= self.timing.steady_after;
         Ok(if steady {
@@ -184,6 +183,29 @@ impl Uplink {
         } else {
             Ended::Unwelcome
         })
+    }
+
+    /// Carries messages both ways until the connection breaks or goes quiet; `true` when it
+    /// ends because the machine was unpaired.
+    async fn serve(
+        &self,
+        socket: &mut Socket,
+        owner: &AccountId,
+        from_daemon: &mut FromDaemon,
+    ) -> bool {
+        loop {
+            tokio::select! {
+                frame = timeout(self.timing.quiet_within, socket.next()) => {
+                    let Ok(Some(Ok(frame))) = frame else { return false };
+                    match self.answer(frame, owner) {
+                        Step::Unpaired => return true,
+                        Step::Reply(reply) => send(socket, &reply).await,
+                        Step::Nothing => {}
+                    }
+                }
+                Some(envelope) = from_daemon.recv() => send(socket, &envelope).await,
+            }
+        }
     }
 
     /// Says hello, and whether the server welcomed it with the connection.
@@ -209,34 +231,49 @@ impl Uplink {
 }
 
 impl Uplink {
-    /// What to do with a message from the server. Only the machine's owner may ask it to act,
-    /// whatever the server allows.
-    fn answer(&self, envelope: Envelope, owner: &AccountId) -> Step {
+    /// What to do with a frame from the server. Only the machine's owner may ask it to act,
+    /// whatever the server allows; the rest goes to the daemon.
+    fn answer(&self, frame: Wire, owner: &AccountId) -> Step {
+        let Wire::Text(text) = frame else {
+            return Step::Nothing;
+        };
+        let Ok(envelope) = Envelope::from_json(text.as_bytes()) else {
+            return Step::Nothing;
+        };
         if let Message::Error(ErrorBody { code, .. }) = &envelope.message
             && *code == code!("machine.unpaired")
         {
             return Step::Unpaired;
         }
-        let Message::ChatCommand(command) = envelope.message else {
-            return Step::Nothing;
-        };
-        let request = command.request.clone();
-        let from_owner = command.by.as_ref().is_some_and(|by| by.account == *owner);
-        let code = if !from_owner {
-            code!("chat.not_owner")
-        } else if self.commands.try_send(command).is_err() {
-            code!("chat.unavailable")
+        let command = if let Message::ChatCommand(command) = &envelope.message {
+            Some(command.clone())
         } else {
-            return Step::Nothing;
+            None
         };
-        Step::Reply(Envelope {
-            id: envelope.id,
-            message: Message::Receipt(Receipt {
-                request,
-                outcome: Outcome::Failed { code },
-            }),
+        if let Some(command) = &command
+            && !command.by.as_ref().is_some_and(|by| by.account == *owner)
+        {
+            return refusal(envelope.id, command, code!("chat.not_owner"));
+        }
+        let id = envelope.id;
+        if self.to_daemon.try_send(envelope).is_ok() {
+            return Step::Nothing;
+        }
+        command.map_or(Step::Nothing, |command| {
+            refusal(id, &command, code!("chat.unavailable"))
         })
     }
+}
+
+/// A receipt that fails `command` with `code`, under the envelope `id` it came in.
+fn refusal(id: u32, command: &ChatCommand, code: Code) -> Step {
+    Step::Reply(Envelope {
+        id,
+        message: Message::Receipt(Receipt {
+            request: command.request.clone(),
+            outcome: Outcome::Failed { code },
+        }),
+    })
 }
 
 enum Step {
@@ -270,8 +307,8 @@ mod tests {
     use tokio_rustls::server::TlsStream;
     use tokio_tungstenite::WebSocketStream;
     use weacon_protocol::{
-        Asker, ChatAction, ChatCommand, ChatId, MachineId, MemberId, RequestId, Welcome,
-        WorkspaceId,
+        Asker, ChatAction, ChatId, ChatQuery, ChatQueryKind, MachineId, MemberId, RequestId,
+        Welcome, WorkspaceId,
     };
     use weacon_testing::TempDir;
 
@@ -301,19 +338,25 @@ mod tests {
         with_commands(dir, mpsc::channel(1).0)
     }
 
-    fn with_commands(dir: &TempDir, commands: Commands) -> Uplink {
+    fn with_commands(dir: &TempDir, to_daemon: ToDaemon) -> Uplink {
         Uplink {
             state_dir: dir.to_path_buf(),
             app: weacon_appkit::build(&VERSION),
             capabilities: vec![Capability::from(CONNECT)],
             log: recording_logger().0,
-            commands,
+            to_daemon,
             timing: Timing {
                 quiet_within: Duration::from_secs(10),
                 steady_after: Duration::ZERO,
             },
             random: || 0,
         }
+    }
+
+    // One connection, with a daemon that sends nothing.
+    async fn once(link: &Uplink, pairing: &Paired) -> Result<Ended, Fault> {
+        link.connection(pairing, &link.log, &mut mpsc::channel(1).1)
+            .await
     }
 
     fn text(envelope: &Envelope) -> Wire {
@@ -450,7 +493,7 @@ mod tests {
             heard_back
         };
 
-        let (ended, heard_back) = tokio::join!(link.connection(&pairing, &link.log), serve);
+        let (ended, heard_back) = tokio::join!(once(&link, &pairing), serve);
 
         assert_eq!(ended.unwrap(), Ended::Unpaired);
         let refusals: Vec<_> = heard_back.iter().map(refusal).collect();
@@ -461,7 +504,10 @@ mod tests {
                 Some(("r-nobody", "chat.not_owner")),
             ]
         );
-        assert_eq!(taken.recv().await.unwrap().request.as_str(), "r-owner");
+        let Message::ChatCommand(taken_command) = taken.recv().await.unwrap().message else {
+            panic!("not a command");
+        };
+        assert_eq!(taken_command.request.as_str(), "r-owner");
         taken.try_recv().unwrap_err();
     }
 
@@ -475,10 +521,49 @@ mod tests {
             asked(&mut peer, &command("r-owner", Some(&owner()))).await
         };
 
-        let (ended, refused) = tokio::join!(link.connection(&pairing, &link.log), serve);
+        let (ended, refused) = tokio::join!(once(&link, &pairing), serve);
 
         assert_eq!(ended.unwrap(), Ended::Lost);
         assert_eq!(refusal(&refused), Some(("r-owner", "chat.unavailable")));
+    }
+
+    #[tokio::test]
+    async fn other_messages_reach_the_daemon_and_its_own_reach_the_server() {
+        let (dir, tls) = (TempDir::new().unwrap(), Tls::new().await);
+        let (to_daemon, mut taken) = mpsc::channel(4);
+        let link = with_commands(&dir, to_daemon);
+        let pairing = paired(&tls);
+        let (outgoing, mut from_daemon) = mpsc::channel(4);
+        let query = Envelope {
+            id: 5,
+            message: Message::ChatQuery(ChatQuery {
+                workspace: WorkspaceId::try_from("w-1".to_owned()).unwrap(),
+                chat: ChatId::try_from("c-1".to_owned()).unwrap(),
+                query: ChatQueryKind::Subscribe { after: 7 },
+            }),
+        };
+        let answer = Envelope {
+            id: 5,
+            message: Message::Receipt(Receipt {
+                request: RequestId::try_from("r-1".to_owned()).unwrap(),
+                outcome: Outcome::Accepted,
+            }),
+        };
+        outgoing.send(answer.clone()).await.unwrap();
+        let serve = async {
+            let mut peer = welcoming(&tls, &[CONNECT]).await;
+            peer.send(text(&query)).await.unwrap();
+            heard(&mut peer).await
+        };
+
+        let (ended, heard_back) = tokio::join!(
+            link.connection(&pairing, &link.log, &mut from_daemon),
+            serve
+        );
+
+        assert_eq!(ended.unwrap(), Ended::Lost);
+        assert_eq!(heard_back, answer.message);
+        assert_eq!(taken.recv().await.unwrap(), query);
     }
 
     #[tokio::test]
@@ -487,7 +572,7 @@ mod tests {
         let link = uplink(&dir);
         let pairing = paired(&tls);
 
-        let (ended, ()) = tokio::join!(link.connection(&pairing, &link.log), async {
+        let (ended, ()) = tokio::join!(once(&link, &pairing), async {
             drop(welcoming(&tls, &[CONNECT]).await);
         });
 
@@ -500,14 +585,13 @@ mod tests {
         let link = uplink(&dir);
         let pairing = paired(&tls);
 
-        let (unoffered, _) =
-            tokio::join!(link.connection(&pairing, &link.log), welcoming(&tls, &[]));
+        let (unoffered, _) = tokio::join!(once(&link, &pairing), welcoming(&tls, &[]));
         let (unauthorized, ()) = tokio::join!(
-            link.connection(&pairing, &link.log),
+            once(&link, &pairing),
             refusing(&tls, "401 Unauthorized", code!("machine.unpaired"))
         );
         let (busy, ()) = tokio::join!(
-            link.connection(&pairing, &link.log),
+            once(&link, &pairing),
             refusing(&tls, "401 Unauthorized", code!("proxy.sign_in"))
         );
 
@@ -526,15 +610,12 @@ mod tests {
         };
         let pairing = paired(&tls);
 
-        let (at_once, ()) = tokio::join!(link.connection(&pairing, &link.log), async {
+        let (at_once, ()) = tokio::join!(once(&link, &pairing), async {
             drop(welcoming(&tls, &[CONNECT]).await);
         });
         link.timing.steady_after = Duration::ZERO;
         let offers = [CONNECT];
-        let (quiet, _peer) = tokio::join!(
-            link.connection(&pairing, &link.log),
-            welcoming(&tls, &offers)
-        );
+        let (quiet, _peer) = tokio::join!(once(&link, &pairing), welcoming(&tls, &offers));
 
         assert_eq!(at_once.unwrap(), Ended::Unwelcome);
         assert_eq!(quiet.unwrap(), Ended::Lost);
@@ -561,7 +642,7 @@ mod tests {
             peer.send(text(&envelope)).await.unwrap();
         };
 
-        let (ended, ()) = tokio::join!(link.connection(&pairing, &link.log), serve);
+        let (ended, ()) = tokio::join!(once(&link, &pairing), serve);
 
         assert_eq!(ended.unwrap(), Ended::Lost);
     }
@@ -571,13 +652,14 @@ mod tests {
         let (dir, tls) = (TempDir::new().unwrap(), Tls::new().await);
         let link = uplink(&dir);
         let mut retry = Retry::default();
+        let mut from_daemon = mpsc::channel(1).1;
         machine::write(&dir, &paired(&tls)).unwrap();
 
         let (unpaired, ()) = tokio::join!(
-            link.step(&mut retry),
+            link.step(&mut retry, &mut from_daemon),
             refusing(&tls, "401 Unauthorized", code!("machine.unpaired"))
         );
-        let alone = link.step(&mut retry).await;
+        let alone = link.step(&mut retry, &mut from_daemon).await;
 
         assert_eq!(unpaired, LOOK_EVERY);
         assert_eq!(alone, LOOK_EVERY);
@@ -604,7 +686,7 @@ mod tests {
         let mut gone = paired(&tls);
         gone.server = nowhere();
 
-        let failed = link.connection(&gone, &link.log).await;
+        let failed = once(&link, &gone).await;
 
         assert_eq!(failed.unwrap_err().code().as_str(), "server.unreachable");
     }
