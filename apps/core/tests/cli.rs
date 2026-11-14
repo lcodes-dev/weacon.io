@@ -130,6 +130,13 @@ mod tests {
         assert!(String::from_utf8_lossy(&output.stderr).contains("daemon.not_running"));
     }
 
+    // So a daemon in a test never reaches the release server.
+    fn updates_off(dir: &Path) {
+        let off = weacon(&["update", "schedule", "off"], dir);
+        assert!(off.status.success());
+        assert_eq!(String::from_utf8(off.stdout).unwrap(), "Updates: off.\n");
+    }
+
     #[test]
     fn the_daemon_serves_status() {
         let dir = TempDir::new().unwrap();
@@ -147,6 +154,7 @@ mod tests {
 
     // Started, and its log still read so it never writes into a closed pipe.
     fn daemon(dir: &Path) -> Child {
+        updates_off(dir);
         let mut daemon = command(&["daemon", "--verbose"], dir)
             .stderr(Stdio::piped())
             .spawn()

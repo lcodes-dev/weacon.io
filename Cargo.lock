@@ -2116,6 +2116,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "tokio",
+ "ureq",
  "weacon-agents",
  "weacon-appkit",
  "weacon-client",

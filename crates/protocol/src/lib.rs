@@ -68,6 +68,7 @@ pub use terminal::{
 };
 pub use update::{
     BuildTarget, Commit, DownloadUrl, ReleaseBuild, ReleaseManifest, ReleaseVersion, Sha256,
+    UpdateSchedule,
 };
 
 /// `bytes` as lowercase hex.
@@ -119,6 +120,7 @@ mod tests {
         generator.subschema_for::<ReleaseManifest>();
         generator.subschema_for::<TerminalInput>();
         generator.subschema_for::<TerminalOutput>();
+        generator.subschema_for::<UpdateSchedule>();
         let schema = generator.into_root_schema_for::<Envelope>();
         let current = serde_json::to_string_pretty(&schema).unwrap() + "\n";
         let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("schema.json");
