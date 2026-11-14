@@ -1,15 +1,17 @@
 import { type ReactNode, useEffect, useRef, useState } from "react";
 
-import { workspaceOf } from "../chat-ref.ts";
+import { chatRefOf, workspaceOf } from "../chat-ref.ts";
 import { Connection, type Status, statusText } from "../connection.ts";
 import { ME } from "../me.ts";
-import type { WorkspaceId, WorkspaceSummary } from "../protocol.ts";
+import type { Incoming } from "../incoming.ts";
+import type { ChatId, WorkspaceChange, WorkspaceId, WorkspaceSummary } from "../protocol.ts";
 import type { Api } from "./api.ts";
 import { useAsk } from "./ask.ts";
 import { Frame } from "./frame.tsx";
 import { STORE, opening, remember } from "./last-workspace.ts";
 import { useLoaded } from "./loaded.ts";
-import { FEED, feedUrl } from "./workspace-feed.ts";
+import { ChatsNav } from "./chats.tsx";
+import { FEED, feedUrl, retryAfter } from "./workspace-feed.ts";
 
 /**
  * The signed-in person's workspaces, and the one `?workspace=` names, or else the last one opened
@@ -139,40 +141,100 @@ function NewWorkspace({ api, made }: { api: Api; made(workspace: WorkspaceSummar
 }
 
 function Workspace({ api, workspace }: { api: Api; workspace: WorkspaceSummary }) {
-  const status = useFeed(workspace.id, api);
+  const chats = useLoaded(() => api.chats(workspace.id), workspace.id);
+  const reload = useBurst(() => void chats.load());
+  const status = useFeed(workspace.id, api, (change) => {
+    if (change.kind === "chat_changed") {
+      reload();
+    }
+  });
+  const [chosen, setChosen] = useState(() => chatRefOf(window.location.search)?.chat);
+  useEffect(() => {
+    const follow = () => setChosen(chatRefOf(window.location.search)?.chat);
+    window.addEventListener("popstate", follow);
+    return () => window.removeEventListener("popstate", follow);
+  }, []);
+  const choose = (chat: ChatId) => {
+    window.history.pushState(null, "", `?workspace=${workspace.id}&chat=${chat}`);
+    setChosen(chat);
+  };
+  const open = chats.value?.chats.find(({ id }) => id === chosen);
   return (
     <div className="workspace">
-      <nav className="chats" aria-label="Chats">
-        <h2>Chats</h2>
-        <p className="muted">No chats yet. Connect a machine to start one.</p>
-      </nav>
+      <ChatsNav loaded={chats} chosen={chosen} choose={choose} />
       <section className="page">
-        <h1>{workspace.name}</h1>
+        <h1>{open?.title ?? workspace.name}</h1>
         <p className="status">{statusText(status)}</p>
       </section>
     </div>
   );
 }
 
-/** Where the feed of `workspace`'s changes stands; when it ends, asking for the session lets a lost one reach sign-in. */
-function useFeed(workspace: WorkspaceId, api: Api): Status {
+// How long a burst of changes waits before its one reload, as when a reopened feed catches up.
+const BURST_MS = 250;
+
+/** `run`, at most once per burst of calls. */
+function useBurst(run: () => void): () => void {
+  const latest = useRef(run);
+  latest.current = run;
+  const timer = useRef<ReturnType<typeof setTimeout>>(undefined);
+  useEffect(() => () => clearTimeout(timer.current), []);
+  return () => {
+    if (timer.current === undefined) {
+      timer.current = setTimeout(() => {
+        timer.current = undefined;
+        latest.current();
+      }, BURST_MS);
+    }
+  };
+}
+
+/**
+ * Where the feed of `workspace`'s changes stands, telling `changed` each one. When it ends, asking
+ * for the session lets a lost one reach sign-in, and the feed opens again after the last change it
+ * told, waiting longer after each failure.
+ */
+function useFeed(workspace: WorkspaceId, api: Api, changed: (change: WorkspaceChange) => void): Status {
   const [status, setStatus] = useState<Status>({ state: "connecting" });
+  const latest = useRef(changed);
+  latest.current = changed;
   useEffect(() => {
     let current = true;
-    const socket = new WebSocket(feedUrl(window.location, workspace));
-    const onStatus = (next: Status) => {
-      if (!current) {
-        return;
-      }
-      setStatus(next);
-      if (next.state === "ended") {
-        void api.session();
-      }
+    let since = 0;
+    let failed = 0;
+    let socket: WebSocket | undefined;
+    let retry: ReturnType<typeof setTimeout> | undefined;
+    const open = () => {
+      const opened = new WebSocket(feedUrl(window.location, workspace, since));
+      socket = opened;
+      const listener = {
+        status(next: Status) {
+          if (!current) {
+            return;
+          }
+          setStatus(next);
+          if (next.state === "live") {
+            failed = 0;
+          } else if (next.state === "ended") {
+            void api.session();
+            failed += 1;
+            retry = setTimeout(open, retryAfter(failed));
+          }
+        },
+        message(envelope: Incoming) {
+          if (current && envelope.type === "workspace" && envelope.workspace === workspace && envelope.seq > since) {
+            since = envelope.seq;
+            latest.current(envelope.change);
+          }
+        },
+      };
+      new Connection(opened, ME, listener, FEED, (run, ms) => setTimeout(run, ms));
     };
-    new Connection(socket, ME, { status: onStatus, message: () => {} }, FEED, (run, ms) => setTimeout(run, ms));
+    open();
     return () => {
       current = false;
-      socket.close();
+      clearTimeout(retry);
+      socket?.close();
     };
   }, [workspace, api]);
   return status;

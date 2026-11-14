@@ -3,7 +3,7 @@ import { type Incoming, parse } from "./incoming.ts";
 import type { App, Envelope } from "./protocol.ts";
 
 /** Every capability the web app speaks of, in its hello or in the server's welcome. */
-export type WebCapability = "run.stream" | "workspace.feed" | "diff.view" | "chat.send" | "log.forward";
+export type WebCapability = "run.stream" | "workspace.feed" | "workspace.chats" | "diff.view" | "chat.send" | "log.forward";
 
 /** What a connection asks of the server: what it must offer, and what else this app can use. */
 export type Asks = { needs: WebCapability; offers: WebCapability[] };

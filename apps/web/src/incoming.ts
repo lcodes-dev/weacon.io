@@ -1,7 +1,10 @@
 import type { App, Envelope, RunEvent } from "./protocol.ts";
 
 /** A message from the server that this app acts on, its fields checked where it arrives. */
-export type Incoming = Extract<Envelope, { type: "welcome" | "error" | "receipt" | "run" | "diff_answer" }>;
+export type Incoming = Extract<Envelope, { type: "welcome" | "error" | "receipt" | "run" | "diff_answer" | "workspace" }>;
+
+/** A change to a workspace, from its feed, checked. */
+export type WorkspaceMessage = Extract<Incoming, { type: "workspace" }>;
 
 /** A run message, checked. */
 export type RunMessage = Extract<Incoming, { type: "run" }>;
@@ -44,6 +47,7 @@ export function route(message: Incoming, to: Routes): void {
       to.changes(message);
       return;
     case "welcome":
+    case "workspace":
       return;
   }
 }
@@ -60,6 +64,8 @@ function isIncoming(value: unknown): value is Incoming {
   switch (fields["type"]) {
     case "welcome":
       return isApp(fields["app"]) && (fields["capabilities"] === undefined || isStrings(fields["capabilities"]));
+    case "workspace":
+      return text("workspace") && Number.isSafeInteger(fields["seq"]) && isChange(fields["change"]);
     case "error":
       return text("code");
     case "receipt":
@@ -108,4 +114,13 @@ function isRunEvent(event: unknown): event is RunEvent {
     default:
       return typeof fields["event"] === "string";
   }
+}
+
+// A change of a kind this app reads has its fields; one of a newer kind passes, to be skipped.
+function isChange(value: unknown): boolean {
+  if (typeof value !== "object" || value === null) {
+    return false;
+  }
+  const fields = value as Record<string, unknown>;
+  return fields["kind"] === "chat_changed" ? typeof fields["chat"] === "string" : typeof fields["kind"] === "string";
 }

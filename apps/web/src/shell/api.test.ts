@@ -142,3 +142,22 @@ test("a request sent before a newer sign-in can't end it, but one before a faile
     assert.equal(ends, ended);
   }
 });
+
+test("a workspace's chats are listed, and an answer of the wrong shape is refused", async () => {
+  const chat = { id: "c-1", title: "Merge the lists", owner: "m-1", machine: "laptop", state: "open", updated_at: 1_800_000_000 };
+  const { api, sent } = serve(
+    { status: 200, body: { chats: [chat] } },
+    { status: 200, body: { chats: [{ ...chat, id: "a/b" }] } },
+    { status: 200, body: { chats: [{ ...chat, updated_at: "now" }] } },
+    { status: 200, body: { chats: [{ ...chat, machine: undefined }] } },
+    { status: 200, body: { chats: "none" } },
+    { status: 403, body: { code: "workspace.not_member", retryable: false } },
+  );
+
+  assert.deepEqual(await api.chats("ws-1"), { ok: true, value: { chats: [chat] } });
+  for (let left = 4; left > 0; left -= 1) {
+    assert.deepEqual(await api.chats("ws-1"), { ok: false, code: MALFORMED });
+  }
+  assert.deepEqual(await api.chats("ws-1"), { ok: false, code: "workspace.not_member" });
+  assert.deepEqual(sent[0], { path: "/api/workspaces/ws-1/chats", method: "GET" });
+});

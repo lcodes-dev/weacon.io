@@ -4,9 +4,12 @@ import type {
   AccountSignedIn,
   AccountSignInFinish,
   AccountSignInStart,
+  ChatList,
+  ChatSummary,
   Code,
   SignInStarted,
   WorkspaceCreate,
+  WorkspaceId,
   WorkspaceList,
   WorkspaceSummary,
 } from "../protocol.ts";
@@ -74,6 +77,11 @@ export class Api {
     return this.#ask("POST", "/api/workspaces", body, isWorkspace);
   }
 
+  /** The chats of `workspace` the signed-in member can see. */
+  chats(workspace: WorkspaceId): Promise<Answer<ChatList>> {
+    return this.#ask("GET", `/api/workspaces/${workspace}/chats`, undefined, isChats);
+  }
+
   async #ask<T>(method: string, path: string, body: object | undefined, fits: (value: unknown) => value is T): Promise<Answer<T>> {
     const signIns = this.#signIns;
     const init = body === undefined ? { method } : { method, headers: { "content-type": "application/json" }, body: JSON.stringify(body) };
@@ -115,3 +123,10 @@ const isList = (value: unknown): value is WorkspaceList =>
   "workspaces" in value &&
   Array.isArray(value.workspaces) &&
   value.workspaces.every(isWorkspace);
+
+const isChat = (value: unknown): value is ChatSummary =>
+  fields(value, ["id", "machine", "owner", "state", "title"]) &&
+  isId((value as ChatSummary).id) &&
+  Number.isSafeInteger((value as ChatSummary).updated_at);
+const isChats = (value: unknown): value is ChatList =>
+  typeof value === "object" && value !== null && "chats" in value && Array.isArray(value.chats) && value.chats.every(isChat);

@@ -1,9 +1,19 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
+import type { Page } from "playwright-core";
+
+import type { ChatList, Envelope } from "../src/protocol.ts";
 import { type Served, serve } from "./server.ts";
 
 const EMAIL = "ada@example.com";
+
+// Lists `list` as every workspace's chats, until the server serves its own.
+async function listChats(page: Page, list: ChatList): Promise<void> {
+  await page.route("**/api/workspaces/*/chats", (route) =>
+    route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(list) }),
+  );
+}
 
 async function signIn(served: Served): Promise<void> {
   const { page } = served;
@@ -122,12 +132,13 @@ test("the header switches workspaces, and the page reopens the last one", { time
   const served = await serve();
   t.after(() => served.close());
   const { page } = served;
+  await listChats(page, { chats: [] });
   await signIn(served);
   await page.getByLabel("Name").fill("Made-up team");
   await page.getByRole("button", { name: "Create" }).click();
   await page.getByRole("heading", { name: "Made-up team" }).waitFor();
   const chats = page.getByRole("navigation", { name: "Chats" });
-  assert.equal(await chats.getByText("No chats yet. Connect a machine to start one.").count(), 1);
+  await chats.getByText("No chats yet. Connect a machine to start one.").waitFor();
 
   const selector = page.getByLabel("Workspace");
   assert.deepEqual((await selector.locator("option").allInnerTexts()).toSorted(), ["Made-up team", "Personal"]);
@@ -256,4 +267,69 @@ test("a page that can't reach the server says so, and trying again reaches sign-
   await page.unroute("**/api/session");
   await page.getByRole("button", { name: "Try again" }).click();
   await page.getByLabel("Email").waitFor();
+});
+
+test("a workspace lists its chats newest first, and opens one in the address", { timeout: 600_000 }, async (t) => {
+  const served = await serve();
+  t.after(() => served.close());
+  const { page } = served;
+  await listChats(page, {
+    chats: [
+      { id: "c-1", title: "Merge the shopping lists", owner: "m-1", machine: "laptop", state: "open", updated_at: 1_800_000_000 },
+      { id: "c-2", title: "Sort the pantry", owner: "m-1", machine: "team VPS", state: "full", updated_at: 1_800_000_100 },
+      { id: "c-3", title: "Old notes", owner: "m-1", machine: "desktop", state: "detached", updated_at: 1_700_000_000 },
+    ],
+  });
+  await signIn(served);
+  await page.getByRole("button", { name: "Personal" }).click();
+  const chats = page.getByRole("navigation", { name: "Chats" });
+  await chats.getByText("Sort the pantry").waitFor();
+
+  assert.deepEqual(await chats.locator(".title").allInnerTexts(), ["Sort the pantry", "Merge the shopping lists", "Old notes"]);
+  assert.deepEqual(await chats.locator("li .muted").allInnerTexts(), ["team VPS · Full", "laptop", "desktop · Read only"]);
+  await chats.getByRole("button", { name: /Merge the shopping lists/ }).click();
+  await page.getByRole("heading", { name: "Merge the shopping lists" }).waitFor();
+  assert.match(page.url(), /\?workspace=[A-Za-z0-9_-]+&chat=c-1$/);
+  assert.equal(await chats.locator("[aria-current]").innerText(), "Merge the shopping lists\nlaptop");
+  await page.goBack();
+  await page.getByRole("heading", { name: "Personal" }).waitFor();
+});
+
+test("a chat change on the feed reloads the list, and a feed that ends opens again after it", { timeout: 600_000 }, async (t) => {
+  const served = await serve();
+  t.after(() => served.close());
+  const { page } = served;
+  let listed = 0;
+  await page.route("**/api/workspaces/*/chats", (route) => {
+    listed += 1;
+    const chats: ChatList = { chats: listed === 1 ? [] : [{ id: "c-9", title: "A new chat", owner: "m-1", machine: "laptop", state: "open", updated_at: 1 }] };
+    return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(chats) });
+  });
+  const opened: string[] = [];
+  await page.routeWebSocket(/\/api\/workspaces\/[^/]+\/feed/, (socket) => {
+    opened.push(new URL(socket.url()).search);
+    socket.onMessage((text) => {
+      const hello = JSON.parse(String(text)) as Envelope;
+      const app = { name: "weacon-server", version: "0.0.0", commit: "0000000" };
+      const welcome: Envelope = { id: hello.id, type: "welcome", app, capabilities: ["workspace.feed", "workspace.chats"] };
+      socket.send(JSON.stringify(welcome));
+      if (opened.length === 1) {
+        // The change names the page's own workspace, read from the address it opened.
+        const workspace = /workspaces\/([^/]+)\/feed/.exec(socket.url())?.[1] ?? "";
+        const change: Envelope = { id: 0, type: "workspace", workspace, seq: 7, change: { kind: "chat_changed", chat: "c-9" } };
+        socket.send(JSON.stringify(change));
+        void socket.close();
+      }
+    });
+  });
+  // Only pages loaded after the route have their sockets routed.
+  await page.reload();
+  await signIn(served);
+  await page.getByRole("button", { name: "Personal" }).click();
+  const chats = page.getByRole("navigation", { name: "Chats" });
+
+  await chats.getByText("A new chat").waitFor();
+  await page.waitForFunction(() => document.querySelector(".status")?.textContent === "Connected");
+  assert.deepEqual(opened, ["?since=0", "?since=7"]);
+  assert.equal(listed, 2);
 });
