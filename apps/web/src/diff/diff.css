@@ -158,3 +158,24 @@
   gap: 8px;
   margin-top: 8px;
 }
+
+/* Send review above the diff, which scrolls beneath it. */
+.chat-changes {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.chat-changes > .page {
+  flex: 1;
+  min-height: 0;
+  height: auto;
+}
+
+.review-send {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  padding: 8px 16px;
+  border-bottom: 1px solid var(--border);
+}
