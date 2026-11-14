@@ -18,7 +18,7 @@ pub(crate) fn nodes(crates: &[Crate]) -> Vec<Node<'_>> {
 }
 
 /// A link from each file to each other file it names, weighted by how often it names it.
-pub(crate) fn file_links(nodes: &[Node<'_>], named: &BTreeMap<String, Vec<Named>>) -> Links {
+pub(crate) fn file_links(nodes: &[Node<'_>], named: &BTreeMap<&str, &[Named]>) -> Links {
     let numbers: BTreeMap<(&str, &str), usize> = nodes
         .iter()
         .enumerate()
@@ -35,9 +35,10 @@ pub(crate) fn file_links(nodes: &[Node<'_>], named: &BTreeMap<String, Vec<Named>
         .enumerate()
         .map(|(number, (krate, module))| {
             let targets = named
-                .get(&module.file)
-                .into_iter()
-                .flatten()
+                .get(module.file.as_str())
+                .copied()
+                .unwrap_or_default()
+                .iter()
                 .filter_map(|path| {
                     let (owner, segments) = absolute(&crate_names, &krate.name, &module.path, path);
                     longest_module(&numbers, owner, &segments, deepest)
@@ -146,14 +147,13 @@ mod tests {
             ),
             krate("b", vec![module("", "b.rs")]),
         ];
-        let paths = named
+        let parsed: Vec<(&str, Vec<Named>)> = named
             .iter()
-            .map(|(file, paths)| {
-                (
-                    (*file).to_owned(),
-                    paths.iter().map(|it| path(it)).collect(),
-                )
-            })
+            .map(|(file, paths)| (*file, paths.iter().map(|it| path(it)).collect()))
+            .collect();
+        let paths = parsed
+            .iter()
+            .map(|(file, paths)| (*file, &paths[..]))
             .collect();
         file_links(&nodes(&crates), &paths)
             .into_iter()

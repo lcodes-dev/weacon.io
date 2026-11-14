@@ -108,6 +108,20 @@ export type Asker = {
 };
 
 /**
+ * Who made a change, such as one to a task.
+ */
+export type Author = (
+  | {
+    kind: "person";
+    member: MemberId;
+  }
+  | {
+    kind: "agent";
+    owner: MemberId;
+  }
+);
+
+/**
  * A feature a peer supports, such as `chat.send`, named like a [`Code`]. A peer keeps the ones
  * it doesn't know, so a newer peer's list still parses.
  */
@@ -122,6 +136,7 @@ export type ChallengeId = string;
 export type ChatAction = (
   | {
     kind: "prompt";
+    repo?: RepoId;
     text: string;
   }
   | {
@@ -181,6 +196,7 @@ export type ChatEntry = {
 export type ChatEvent = (
   | {
     kind: "prompt";
+    repo?: RepoId;
     request: RequestId;
     text: string;
   }
@@ -255,6 +271,11 @@ export type ClientLog = {
 export type Code = string;
 
 /**
+ * A git commit, as 40 or 64 lowercase hex digits.
+ */
+export type CommitId = string;
+
+/**
  * From the core to a client that has `diff.view`, in answer to a [`DiffQuery`].
  */
 export type DiffAnswer = {
@@ -325,6 +346,89 @@ export type DiffQueryKind = (
     kind: "changes";
   }
 );
+
+/**
+ * A pin for each anchor a doc links to, all computed at `commit`.
+ */
+export type DocAnchors = {
+  commit: CommitId;
+  pins: Array<DocPin>;
+};
+
+/**
+ * What one revision of a doc says: its title, its Markdown, and the anchors it links to,
+ * unless it links to none.
+ */
+export type DocContent = {
+  anchors?: DocAnchors;
+  body: string;
+  title: string;
+};
+
+/**
+ * A doc's revisions, newest first, from the server.
+ */
+export type DocHistory = {
+  revisions: Array<DocRevision>;
+};
+
+/**
+ * A doc in a workspace, 1–64 ASCII letters, digits, `-` or `_`.
+ */
+export type DocId = string;
+
+/**
+ * A workspace's docs, from the server.
+ */
+export type DocList = {
+  docs: Array<DocSummary>;
+};
+
+/**
+ * An anchor a doc links to, with the fingerprint the code had at the revision's commit:
+ * `sym:weacon_protocol::frame::encode_line#0123456789abcdef`, in printable ASCII. The core
+ * computes both; the server only checks their shape.
+ */
+export type DocPin = string;
+
+/**
+ * A doc at one revision; `version` rises with each revision. The server sends it to clients
+ * that have the capability `workspace.docs`.
+ */
+export type DocRecord = {
+  content: DocContent;
+  id: DocId;
+  version: number;
+};
+
+/**
+ * Asks the server for a new revision of a doc that the client read at `version`; the server
+ * refuses when the doc has changed since. The answer is its [`DocRecord`].
+ */
+export type DocRevise = {
+  content: DocContent;
+  version: number;
+};
+
+/**
+ * Who made one revision of a doc, who accepted it, and when, in seconds since the Unix
+ * epoch.
+ */
+export type DocRevision = {
+  accepted_by: MemberId;
+  at: number;
+  author: Author;
+  version: number;
+};
+
+/**
+ * A doc in a [`DocList`], without its body.
+ */
+export type DocSummary = {
+  id: DocId;
+  title: string;
+  version: number;
+};
 
 export type ErrorBody = {
   code: Code;
@@ -607,6 +711,12 @@ export type Receipt = {
 );
 
 /**
+ * A git repository the owner registered for a workspace on their machine, 1–64 ASCII
+ * letters, digits, `-` or `_`.
+ */
+export type RepoId = string;
+
+/**
  * A command's id, chosen by the client and kept across reconnects and retries. Sending the
  * same id again returns the first receipt instead of repeating the work; the same id with
  * different content is refused with the error `request.conflict`.
@@ -815,6 +925,11 @@ export type WorkspaceChange = (
   | {
     kind: "task_changed";
     task: TaskId;
+    version: number;
+  }
+  | {
+    doc: DocId;
+    kind: "doc_changed";
     version: number;
   }
 );

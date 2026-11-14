@@ -5,12 +5,14 @@ mod capability;
 mod chat;
 mod code;
 mod diff;
+mod doc;
 mod frame;
 mod log;
 mod machine;
 mod message;
 mod pick;
 mod receipt;
+mod repo;
 mod run;
 mod task;
 mod team;
@@ -27,6 +29,10 @@ pub use diff::{
     DiffAnswer, DiffAnswerKind, DiffContent, DiffFile, DiffLine, DiffQuery, DiffQueryKind,
     FileChange, Hunk, LineOp,
 };
+pub use doc::{
+    CommitId, DocAnchors, DocContent, DocHistory, DocId, DocList, DocPin, DocRecord, DocRevise,
+    DocRevision, DocSummary, links_to_code,
+};
 pub use frame::{FrameError, LineDecoder, MAX_FRAME, encode_line};
 pub use log::{ClientLog, Level, LogEvent};
 pub use machine::{
@@ -36,6 +42,7 @@ pub use machine::{
 pub use message::{App, Envelope, ErrorBody, Hello, Message, PROTOCOL, Welcome};
 pub use pick::Pick;
 pub use receipt::{Outcome, Receipt, RequestId};
+pub use repo::RepoId;
 pub use run::{
     AgentKind, AgentSession, PermissionAnswer, RunEvent, RunId, RunState, RunStatus, RunUpdate,
 };
@@ -82,6 +89,10 @@ mod tests {
         generator.subschema_for::<PairClaim>();
         generator.subschema_for::<PairClaimed>();
         generator.subschema_for::<MachineList>();
+        generator.subschema_for::<DocList>();
+        generator.subschema_for::<DocRecord>();
+        generator.subschema_for::<DocRevise>();
+        generator.subschema_for::<DocHistory>();
         let schema = generator.into_root_schema_for::<Envelope>();
         let current = serde_json::to_string_pretty(&schema).unwrap() + "\n";
         let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("schema.json");
