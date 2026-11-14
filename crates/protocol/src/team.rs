@@ -3,8 +3,8 @@ use std::fmt;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::TaskId;
 use crate::token::token_id;
+use crate::{DocId, TaskId};
 
 token_id!(
     /// A workspace on the server, 1–64 ASCII letters, digits, `-` or `_`.
@@ -186,6 +186,9 @@ pub enum WorkspaceChange {
     /// A task was made, at version 1, or changed. Only for clients that have the capability
     /// `workspace.tasks`, which read the tasks again to see what it now is.
     TaskChanged { task: TaskId, version: u64 },
+    /// A doc was made, at version 1, or revised. Only for clients that have the capability
+    /// `workspace.docs`, which read the doc again to see what it now says.
+    DocChanged { doc: DocId, version: u64 },
     /// A change this build doesn't know, from a newer peer; only ever received.
     #[serde(other)]
     #[schemars(skip)]
@@ -340,6 +343,17 @@ mod tests {
         assert_eq!(
             serde_json::from_value::<WorkspaceChange>(changed_wire).unwrap(),
             changed
+        );
+        let revised = WorkspaceChange::DocChanged {
+            doc: DocId::try_from("d-1".to_owned()).unwrap(),
+            version: 3,
+        };
+        let revised_wire = json!({ "kind": "doc_changed", "doc": "d-1", "version": 3 });
+
+        assert_eq!(serde_json::to_value(&revised).unwrap(), revised_wire);
+        assert_eq!(
+            serde_json::from_value::<WorkspaceChange>(revised_wire).unwrap(),
+            revised
         );
         assert_eq!(
             serde_json::from_value::<WorkspaceChange>(json!({ "kind": "renamed" })).unwrap(),

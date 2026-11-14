@@ -155,3 +155,10 @@ pub(crate) fn write_program(path: &Path, script: &str) {
         .unwrap();
     assert!(written.success());
 }
+
+/// `lines` as a file of JSON lines.
+pub(crate) fn jsonl(lines: &[Value]) -> String {
+    lines
+        .iter()
+        .fold(String::new(), |file, line| file + &line.to_string() + "\n")
+}

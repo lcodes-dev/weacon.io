@@ -51,6 +51,12 @@ pub(crate) enum Command {
     /// Answer an agent's hooks.
     #[command(subcommand)]
     Guard(GuardCommand),
+    /// Choose whether this core sends error reports, or show the answer.
+    Reports {
+        /// on or off; left out, shows the answer.
+        #[arg(value_enum)]
+        answer: Option<crate::reports::Answer>,
+    },
     /// Let Weacon's Chrome extension reach this core.
     ConnectChrome,
     /// Relay messages between Chrome's extension and the daemon; Chrome starts it.
@@ -139,6 +145,7 @@ impl Command {
             | Self::Login { .. }
             | Self::Access { .. }
             | Self::Guard(_)
+            | Self::Reports { .. }
             | Self::ConnectChrome
             | Self::Map(_) => "cli.log",
             Self::NativeHost { .. } => "native-host.log",
@@ -154,6 +161,7 @@ impl Command {
             Self::Login { .. } => "login",
             Self::Access { .. } => "access",
             Self::Guard(_) => "guard",
+            Self::Reports { .. } => "reports",
             Self::ConnectChrome => "connect-chrome",
             Self::NativeHost { .. } => "native-host",
             Self::Map(_) => "map",
@@ -191,6 +199,7 @@ mod tests {
     use clap::error::ErrorKind;
 
     use super::*;
+    use crate::reports::Answer;
     use crate::test_support::VERSION;
 
     fn run(args: &[&str]) -> Result<Cli, clap::Error> {
@@ -312,6 +321,25 @@ mod tests {
             &["weacon", "access", "w-1"],
         ] {
             run(bad).unwrap_err();
+        }
+    }
+
+    #[test]
+    fn reports_takes_on_off_or_nothing() {
+        let answer = |args: &[&str]| {
+            let Command::Reports { answer } = run(args).unwrap().command else {
+                panic!("not a reports command");
+            };
+            answer
+        };
+        let shown = run(&["weacon", "reports"]).unwrap().command;
+
+        assert_eq!(answer(&["weacon", "reports"]), None);
+        assert_eq!(answer(&["weacon", "reports", "on"]), Some(Answer::On));
+        assert_eq!(answer(&["weacon", "reports", "off"]), Some(Answer::Off));
+        assert_eq!((shown.name(), shown.log_name()), ("reports", "cli.log"));
+        for bad in ["yes", "On", "true", ""] {
+            run(&["weacon", "reports", bad]).unwrap_err();
         }
     }
 

@@ -1,6 +1,7 @@
 //! The driver for Claude Code, through its stream-json mode.
 
 pub(crate) mod hook;
+pub(crate) mod transcript;
 mod wire;
 
 use std::path::PathBuf;

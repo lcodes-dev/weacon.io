@@ -87,13 +87,12 @@ mod tests {
     use serde_json::{Value, json};
 
     use super::*;
-    use crate::email::Email;
     use crate::test_support::{
-        Fixture, ask, bearer, fresh_account, header, request_with, run, sign_in, status,
+        Fixture, ask, bearer, email, fresh_account, header, request_with, sign_in, status,
     };
 
     // Signs `email` in, and gives the header that proves it.
-    async fn signed_in(fixture: &Fixture, address: SocketAddr, email: &str) -> String {
+    async fn sign_in_header(fixture: &Fixture, address: SocketAddr, email: &str) -> String {
         bearer(&sign_in(fixture, address, email).await.1)
     }
 
@@ -105,8 +104,8 @@ mod tests {
     #[tokio::test]
     async fn a_person_makes_a_workspace_they_own_and_finds_it_listed() {
         let fixture = Fixture::new().await;
-        let server = run(fixture.shared.clone()).await;
-        let ada = signed_in(&fixture, server.address, "ada@example.com").await;
+        let server = fixture.run().await;
+        let ada = sign_in_header(&fixture, server.address, "ada@example.com").await;
         let create = json!({ "name": "  Team two " }).to_string();
 
         let (created, made) = ask(server.address, "POST /api/workspaces", &ada, &create).await;
@@ -134,9 +133,9 @@ mod tests {
     #[tokio::test]
     async fn signing_in_again_makes_no_second_personal_workspace() {
         let fixture = Fixture::new().await;
-        let server = run(fixture.shared.clone()).await;
-        signed_in(&fixture, server.address, "ada@example.com").await;
-        let ada = signed_in(&fixture, server.address, "ada@example.com").await;
+        let server = fixture.run().await;
+        sign_in_header(&fixture, server.address, "ada@example.com").await;
+        let ada = sign_in_header(&fixture, server.address, "ada@example.com").await;
 
         let personal = listed(server.address, &ada)
             .await
@@ -150,8 +149,8 @@ mod tests {
     #[tokio::test]
     async fn what_an_account_sees_is_kept_out_of_caches() {
         let fixture = Fixture::new().await;
-        let server = run(fixture.shared.clone()).await;
-        let ada = signed_in(&fixture, server.address, "ada@example.com").await;
+        let server = fixture.run().await;
+        let ada = sign_in_header(&fixture, server.address, "ada@example.com").await;
         let mut kept = Vec::new();
         for path in ["/api/workspaces", "/api/workspaces/w1", "/api/session"] {
             let (head, _) = request_with(server.address, &format!("GET {path}"), &ada, "").await;
@@ -169,16 +168,16 @@ mod tests {
     #[tokio::test]
     async fn nobody_reads_a_workspace_they_arent_in() {
         let fixture = Fixture::new().await;
-        let bo = Email::parse("bo@example.com").unwrap();
+        let bo = email("bo@example.com");
         fixture
             .shared
             .db
             .add_account(&fresh_account(), &bo)
             .await
             .unwrap();
-        let server = run(fixture.shared.clone()).await;
-        let ada = signed_in(&fixture, server.address, "ada@example.com").await;
-        let bo = signed_in(&fixture, server.address, "bo@example.com").await;
+        let server = fixture.run().await;
+        let ada = sign_in_header(&fixture, server.address, "ada@example.com").await;
+        let bo = sign_in_header(&fixture, server.address, "bo@example.com").await;
         let theirs = listed(server.address, &ada).await;
         let mine = listed(server.address, &bo).await;
         let required = json!({ "code": "sign_in.required", "retryable": false });
@@ -213,8 +212,8 @@ mod tests {
     #[tokio::test]
     async fn an_account_that_owns_too_many_is_told_so() {
         let fixture = Fixture::new().await;
-        let server = run(fixture.shared.clone()).await;
-        let ada = signed_in(&fixture, server.address, "ada@example.com").await;
+        let server = fixture.run().await;
+        let ada = sign_in_header(&fixture, server.address, "ada@example.com").await;
         let create = json!({ "name": "Team" }).to_string();
         // The Personal workspace is one of them.
         for _ in 1..100 {
@@ -234,8 +233,8 @@ mod tests {
     #[tokio::test]
     async fn a_workspace_needs_a_name_of_one_short_line_and_a_session() {
         let fixture = Fixture::new().await;
-        let server = run(fixture.shared.clone()).await;
-        let ada = signed_in(&fixture, server.address, "ada@example.com").await;
+        let server = fixture.run().await;
+        let ada = sign_in_header(&fixture, server.address, "ada@example.com").await;
         let refused = json!({ "code": "workspace.name_invalid", "retryable": false });
         let long = "a".repeat(MAX_NAME + 1);
         for name in ["", "   ", "a\nb", "a\u{2028}b", "a\u{2029}b", long.as_str()] {

@@ -14,14 +14,13 @@ use weacon_protocol::{AccessLevel, AgentKind, WorkspaceId, code};
 
 use access::{Settings, level_name};
 
-use crate::app::{App, state_unavailable};
-use crate::daemon::runtime;
+use crate::app::{App, runtime};
 use crate::platform;
 
 /// Runs the vendor's own sign-in for `agent` in this terminal, against `workspace`'s config
 /// folder.
 pub(crate) fn login(app: &App, agent: AgentKind, workspace: &WorkspaceId) -> Result<(), Fault> {
-    let state_dir = app.state_dir.as_deref().ok_or_else(state_unavailable)?;
+    let state_dir = app.state_dir()?;
     let workspaces = Workspaces::new(state_dir, app.path.clone());
     let launch = workspaces.prepared(workspace, agent, workspaces.root(workspace))?;
     runtime()?.block_on(launch.log_in())?;

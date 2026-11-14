@@ -14,6 +14,7 @@ mod limit;
 mod mail;
 mod secret;
 mod sign_in;
+mod sign_up;
 mod tasks;
 #[cfg(test)]
 mod test_support;
@@ -22,13 +23,14 @@ mod workspaces;
 
 use std::io;
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::Arc;
 use std::time::SystemTime;
 
 use tokio::net::TcpListener;
 use tokio::sync::{Semaphore, broadcast};
-use weacon_observability::{Fault, json_lines};
+use weacon_observability::{Fault, Logger, json_lines};
 use weacon_protocol::code;
 
 use crate::app::App;
@@ -66,7 +68,7 @@ fn main() -> ExitCode {
             match cli.command {
                 Command::Serve(args) => serve(&app, args).await,
                 Command::Admin(command) => {
-                    admin::run(command, &app::new_id, &mut io::stdout().lock()).await
+                    admin::run(command, &app::new_id, &mut io::stdout()).await
                 }
             }
         })
@@ -83,14 +85,9 @@ async fn serve(app: &App, args: Serve) -> Result<(), Fault> {
         secret,
         max_connections,
         trusted_proxy,
+        sign_up,
     } = args;
-    // Otherwise every sign-in would fail after its answer, and only the logs would say so.
-    if !outbox.is_dir() {
-        return Err(Fault::new(
-            code!("server.outbox_unusable"),
-            "The outbox folder doesn't exist",
-        ));
-    }
+    usable_outbox(outbox.clone()).await?;
     let signals = weacon_appkit::Signals::new().map_err(|error| {
         Fault::new(
             code!("server.signals_failed"),
@@ -99,7 +96,7 @@ async fn serve(app: &App, args: Serve) -> Result<(), Fault> {
         .because(error)
     })?;
     let listener = bind(listen).await?;
-    let secret = Secret::open(&secret, &app.log)?;
+    let secret = open_secret(secret, app.log.clone()).await?;
     let db = Db::create(&db).await?;
     let shared = Shared {
         app: weacon_appkit::build(&app.version),
@@ -111,6 +108,7 @@ async fn serve(app: &App, args: Serve) -> Result<(), Fault> {
         clock: Arc::new(Box::new(SystemTime::now)),
         head_within: connections::HEAD_WITHIN,
         proxies: trusted_proxy.into(),
+        sign_up: sign_up.into(),
         connections: Arc::new(Semaphore::new(max_connections)),
         feed: feed::TIMING,
         changes: broadcast::channel(CHANGES).0,
@@ -123,6 +121,27 @@ async fn serve(app: &App, args: Serve) -> Result<(), Fault> {
     http::serve(listener, shared, signals.wait()).await;
     db.close().await;
     Ok(())
+}
+
+/// Checks that `outbox` is a folder; otherwise every sign-in would fail after its answer, and
+/// only the logs would say so.
+async fn usable_outbox(outbox: PathBuf) -> Result<(), Fault> {
+    let usable = tokio::task::spawn_blocking(move || outbox.is_dir())
+        .await
+        .map_err(|error| app::panicked().because(error))?;
+    if usable {
+        return Ok(());
+    }
+    Err(Fault::new(
+        code!("server.outbox_unusable"),
+        "The outbox folder doesn't exist",
+    ))
+}
+
+async fn open_secret(path: PathBuf, log: Logger) -> Result<Secret, Fault> {
+    tokio::task::spawn_blocking(move || Secret::open(&path, &log))
+        .await
+        .map_err(|error| app::panicked().because(error))?
 }
 
 async fn bind(listen: SocketAddr) -> Result<TcpListener, Fault> {

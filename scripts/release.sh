@@ -2,6 +2,9 @@
 # Builds a static release weacon for one target into dist/, checks it links only the OS and
 # reports this commit, and prints its size. Run it on a machine that runs the target.
 #   scripts/release.sh <target>
+# Or builds the web app and a static release weacon-server, with the web app in it, for a Linux
+# target, and checks it reports this commit and serves this web app:
+#   scripts/release.sh server <target>
 # Or copies a Linux build to a host over SSH and installs it there as a systemd user service:
 #   scripts/release.sh install <[user@]host> <target>
 set -euo pipefail
@@ -32,9 +35,46 @@ install_on() {
     && ~/.local/bin/weacon service install && ~/.local/bin/weacon --version'
 }
 
+# The web app's built files, as apps/server/build.rs embeds them.
+web_files=(index.html app.js app.css)
+
+# Starts the server on a free port and checks it serves each built file of the web app.
+check_serves() {
+  local binary=$1 dir log address file route version
+  dir=$(mktemp -d)
+  log="$dir/log"
+  mkdir "$dir/outbox"
+  "$binary" serve --listen 127.0.0.1:0 --db "$dir/db" --outbox "$dir/outbox" \
+    --secret "$dir/secret" >"$log" 2>&1 &
+  local pid=$!
+  # shellcheck disable=SC2064 # The values are fixed now, on purpose.
+  trap "kill $pid 2>/dev/null; wait $pid 2>/dev/null; rm -rf '$dir'" EXIT
+  for _ in $(seq 100); do
+    address=$(grep -F '"msg":"listening"' "$log" | grep -Eo '127\.0\.0\.1:[0-9]+' || true)
+    if [ -n "$address" ] || ! kill -0 "$pid" 2>/dev/null; then break; fi
+    sleep 0.1
+  done
+  [ -n "$address" ] || die "$binary didn't start serving"
+  version=$(curl -fsS "http://$address/version") || die "$binary doesn't answer at /version"
+  grep -qF "\"$(git rev-parse HEAD)\"" <<<"$version" \
+    || die "$binary doesn't report this commit at /version"
+  for file in "${web_files[@]}"; do
+    route=/$file
+    [ "$file" = index.html ] && route=/
+    curl -fsS "http://$address$route" | cmp -s - "apps/web/dist/$file" \
+      || die "$binary doesn't serve this web app's $file"
+  done
+}
+
 if [ "${1:-}" = install ]; then
   install_on "${2:-}" "${3:-}"
   exit
+fi
+
+server='' bin=weacon package=weacon-core
+if [ "${1:-}" = server ]; then
+  server=1 bin=weacon-server package=weacon-server
+  shift
 fi
 
 target=${1:-}
@@ -45,18 +85,28 @@ case "$target" in
   x86_64-pc-windows-msvc)
     exe=.exe
     export CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTFLAGS="-C target-feature=+crt-static" ;;
-  *) die "usage: scripts/release.sh <target>, for a target this script lists" ;;
+  *) die "usage: scripts/release.sh [server] <target>, for a target this script lists" ;;
 esac
+[ -z "$server" ] || [[ $target == *-linux-musl ]] \
+  || die "server takes a Linux target: x86_64-unknown-linux-musl or aarch64-unknown-linux-musl"
 
 changes=$(git status --porcelain --untracked-files=normal)
 [ -z "$changes" ] || die "the working tree has changes, so the binary wouldn't be this commit"
 
 rustup target add "$target" >/dev/null
-cargo build --release --locked --package weacon-core --target "$target"
+
+if [ -n "$server" ]; then
+  rm -rf apps/web/dist
+  npm --prefix apps/web run build >/dev/null
+  for file in "${web_files[@]}"; do
+    [ -s "apps/web/dist/$file" ] || die "the web app's build didn't make $file"
+  done
+fi
+cargo build --release --locked --package "$package" --target "$target"
 
 mkdir -p dist
-binary="dist/weacon-$target$exe"
-cp "target/$target/release/weacon$exe" "$binary"
+binary="dist/$bin-$target$exe"
+cp "target/$target/release/$bin$exe" "$binary"
 
 case "$target" in
   *-linux-musl)
@@ -72,5 +122,6 @@ esac
 
 "$binary" --version | tr -d '\r' | grep -qF "($(git rev-parse HEAD))" \
   || die "$binary doesn't report this commit"
+[ -z "$server" ] || check_serves "$binary"
 
 printf '%s: %s bytes\n' "$binary" "$(wc -c <"$binary" | tr -d ' ')"
