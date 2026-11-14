@@ -1,8 +1,10 @@
 use axum::Json;
+use axum::Router;
 use axum::extract::rejection::PathRejection;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
+use axum::routing::{get, post};
 use weacon_model::{Attribution, OrderKey, Revision, Task, TaskEdit, Title};
 use weacon_observability::Fault;
 use weacon_protocol::{
@@ -14,6 +16,12 @@ use crate::auth::Member;
 use crate::db::task_not_found;
 use crate::http::{self, Body, Refusals, Unreadable, parsed};
 use crate::shared::Shared;
+
+pub(crate) fn routes() -> Router<Shared> {
+    Router::new()
+        .route("/api/workspaces/{workspace}/tasks", get(list).post(create))
+        .route("/api/workspaces/{workspace}/tasks/{task}", post(change))
+}
 
 /// `GET /api/workspaces/{workspace}/tasks`: the workspace's tasks, in their order.
 pub(crate) async fn list(member: Member) -> Result<Json<TaskList>, Refused> {

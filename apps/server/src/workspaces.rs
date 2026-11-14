@@ -1,7 +1,9 @@
 use axum::Json;
+use axum::Router;
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
+use axum::routing::get;
 use weacon_model::Title;
 use weacon_observability::Fault;
 use weacon_protocol::{WorkspaceCreate, WorkspaceList, WorkspaceSummary, code};
@@ -15,6 +17,12 @@ use crate::shared::Shared;
 pub(crate) const MAX_NAME: usize = 100;
 /// What an account's own workspace is called when it is made.
 const PERSONAL: &str = "Personal";
+
+pub(crate) fn routes() -> Router<Shared> {
+    Router::new()
+        .route("/api/workspaces", get(list).post(create))
+        .route("/api/workspaces/{workspace}", get(read))
+}
 
 /// `POST /api/workspaces`: makes a workspace that the signed-in account owns.
 pub(crate) async fn create(

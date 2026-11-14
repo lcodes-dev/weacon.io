@@ -1,8 +1,11 @@
 use axum::Json;
+use axum::Router;
+use axum::extract::DefaultBodyLimit;
 use axum::extract::rejection::PathRejection;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
+use axum::routing::get;
 use weacon_model::{Attribution, Doc, DocText, DocTextError, Revision};
 use weacon_observability::Fault;
 use weacon_protocol::{
@@ -19,6 +22,25 @@ use crate::shared::Shared;
 pub(crate) const MAX_BODY: usize = 2 * 1024 * 1024;
 /// How many revisions a history holds, newest first; older ones are still read by version.
 const HISTORY: u32 = 1000;
+
+/// The doc routes, whose bodies may be larger than others.
+pub(crate) fn routes() -> Router<Shared> {
+    Router::new()
+        .route("/api/workspaces/{workspace}/docs", get(list).post(create))
+        .route(
+            "/api/workspaces/{workspace}/docs/{doc}",
+            get(read).post(revise),
+        )
+        .route(
+            "/api/workspaces/{workspace}/docs/{doc}/revisions",
+            get(history),
+        )
+        .route(
+            "/api/workspaces/{workspace}/docs/{doc}/revisions/{version}",
+            get(revision),
+        )
+        .layer(DefaultBodyLimit::max(MAX_BODY))
+}
 
 /// `GET /api/workspaces/{workspace}/docs`: the workspace's docs, by title, without bodies.
 pub(crate) async fn list(member: Member) -> Result<Json<DocList>, Refused> {

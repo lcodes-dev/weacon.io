@@ -3,9 +3,11 @@
 use std::convert::Infallible;
 
 use axum::Extension;
+use axum::Router;
 use axum::extract::State;
 use axum::extract::ws::{Message as Frame, WebSocket, WebSocketUpgrade};
 use axum::response::Response;
+use axum::routing::get;
 use tokio::sync::broadcast::{Receiver, error::RecvError};
 use tokio::time::timeout;
 use weacon_observability::{Field, Logger};
@@ -20,6 +22,10 @@ use crate::socket::{Closed, Pings, error, greet, reply, send};
 
 /// What a core must offer, and the server offers, to keep a machine's connection.
 const CONNECT: Code = code!("machine.connect");
+
+pub(crate) fn routes() -> Router<Shared> {
+    Router::new().route("/api/machines/connect", get(connect))
+}
 
 /// `GET /api/machines/connect`: a paired machine's WebSocket, open until the machine is
 /// unpaired, its core goes, or the server stops.

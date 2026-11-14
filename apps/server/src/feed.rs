@@ -1,9 +1,11 @@
 use std::convert::Infallible;
 
 use axum::Extension;
+use axum::Router;
 use axum::extract::ws::{Message as Frame, WebSocket, WebSocketUpgrade};
 use axum::extract::{Query, State};
 use axum::response::Response;
+use axum::routing::get;
 use serde::Deserialize;
 use tokio::sync::broadcast::{Receiver, error::RecvError};
 use tokio::sync::mpsc;
@@ -36,6 +38,10 @@ const PAGE: u32 = 500;
 pub(crate) struct Since {
     #[serde(default)]
     since: u64,
+}
+
+pub(crate) fn routes() -> Router<Shared> {
+    Router::new().route("/api/workspaces/{workspace}/feed", get(feed))
 }
 
 /// `GET /api/workspaces/{workspace}/feed`: a member's WebSocket of the workspace's changes

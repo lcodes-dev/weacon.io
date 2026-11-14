@@ -2,10 +2,12 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use axum::Json;
+use axum::Router;
 use axum::extract::State;
 use axum::http::header::SET_COOKIE;
 use axum::http::{HeaderMap, Method, StatusCode};
 use axum::response::{IntoResponse, Response};
+use axum::routing::{get, post};
 use tokio::time::{Instant, sleep_until};
 use weacon_observability::Fault;
 use weacon_protocol::{
@@ -56,6 +58,14 @@ pub(crate) fn limits() -> Limits {
         starts: starts(),
         tries: tries(),
     }
+}
+
+pub(crate) fn routes() -> Router<Shared> {
+    Router::new()
+        .route("/api/sign-in", post(start))
+        .route("/api/sign-in/finish", post(finish))
+        .route("/api/session", get(session))
+        .route("/api/sign-out", post(sign_out))
 }
 
 /// `POST /api/sign-in`: sends a code to an account's address, and answers with the challenge

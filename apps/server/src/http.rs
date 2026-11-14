@@ -8,7 +8,7 @@ use axum::extract::{DefaultBodyLimit, MatchedPath, Request, State};
 use axum::http::{HeaderValue, Method, StatusCode, header};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{delete, get, post};
+use axum::routing::get;
 use tokio::net::TcpListener;
 use tokio::sync::watch;
 use tokio::time::timeout;
@@ -83,57 +83,16 @@ pub(crate) async fn serve(
     }
 }
 
-/// The doc routes, whose bodies may be larger than others.
-fn doc_routes() -> Router<Shared> {
-    Router::new()
-        .route(
-            "/api/workspaces/{workspace}/docs",
-            get(docs::list).post(docs::create),
-        )
-        .route(
-            "/api/workspaces/{workspace}/docs/{doc}",
-            get(docs::read).post(docs::revise),
-        )
-        .route(
-            "/api/workspaces/{workspace}/docs/{doc}/revisions",
-            get(docs::history),
-        )
-        .route(
-            "/api/workspaces/{workspace}/docs/{doc}/revisions/{version}",
-            get(docs::revision),
-        )
-        .layer(DefaultBodyLimit::max(docs::MAX_BODY))
-}
-
 fn router(shared: Shared) -> Router {
     Router::new()
         .route("/version", get(version))
-        .route("/api/sign-in", post(sign_in::start))
-        .route("/api/sign-in/finish", post(sign_in::finish))
-        .route("/api/session", get(sign_in::session))
-        .route("/api/sign-out", post(sign_in::sign_out))
-        .route(
-            "/api/workspaces",
-            get(workspaces::list).post(workspaces::create),
-        )
-        .route("/api/machines", get(pairing::machines))
-        .route("/api/machines/{machine}", delete(pairing::unpair))
-        .route("/api/machines/connect", get(uplink::connect))
-        .route("/api/machines/pair", post(pairing::start))
-        .route("/api/machines/pair/lookup", post(pairing::lookup))
-        .route("/api/machines/pair/confirm", post(pairing::confirm))
-        .route("/api/machines/pair/claim", post(pairing::claim))
-        .route("/api/workspaces/{workspace}", get(workspaces::read))
-        .route("/api/workspaces/{workspace}/feed", get(feed::feed))
-        .route(
-            "/api/workspaces/{workspace}/tasks",
-            get(tasks::list).post(tasks::create),
-        )
-        .route(
-            "/api/workspaces/{workspace}/tasks/{task}",
-            post(tasks::change),
-        )
-        .merge(doc_routes())
+        .merge(sign_in::routes())
+        .merge(workspaces::routes())
+        .merge(pairing::routes())
+        .merge(uplink::routes())
+        .merge(feed::routes())
+        .merge(tasks::routes())
+        .merge(docs::routes())
         .merge(web::routes(shared.web))
         .layer(DefaultBodyLimit::max(MAX_BODY))
         .layer(middleware::map_response(uncached))

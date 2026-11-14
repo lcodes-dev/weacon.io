@@ -2,10 +2,12 @@
 //! confirms the code the core shows.
 
 use axum::Json;
+use axum::Router;
 use axum::extract::rejection::PathRejection;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
+use axum::routing::{delete, get, post};
 use tokio::time::Instant;
 use weacon_observability::Fault;
 use weacon_protocol::{
@@ -58,6 +60,16 @@ pub(crate) fn limits() -> Limits {
         tries: tries(),
         claims: claims(),
     }
+}
+
+pub(crate) fn routes() -> Router<Shared> {
+    Router::new()
+        .route("/api/machines", get(machines))
+        .route("/api/machines/{machine}", delete(unpair))
+        .route("/api/machines/pair", post(start))
+        .route("/api/machines/pair/lookup", post(lookup))
+        .route("/api/machines/pair/confirm", post(confirm))
+        .route("/api/machines/pair/claim", post(claim))
 }
 
 /// `POST /api/machines/pair`: records a machine waiting to be paired, and answers with the
