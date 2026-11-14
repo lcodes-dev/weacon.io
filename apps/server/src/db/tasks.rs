@@ -1,5 +1,5 @@
 use sqlx::SqliteConnection;
-use weacon_model::{Attribution, EditError, Revision, Task, TaskEdit};
+use weacon_model::{Attribution, EditError, OrderKey, Revision, Task, TaskEdit};
 use weacon_observability::Fault;
 use weacon_protocol::{TaskId, TaskStatus, code};
 
@@ -90,6 +90,22 @@ impl Workspace {
             .await?;
         transaction.commit().await.map_err(failed)?;
         Ok(edited)
+    }
+
+    /// An order key after every task's, for a new task placed last.
+    pub(super) async fn after_last(
+        &self,
+        transaction: &mut SqliteConnection,
+    ) -> Result<OrderKey, Fault> {
+        let last: Option<String> = sqlx::query_scalar(
+            "SELECT order_key FROM tasks WHERE workspace_id = ? ORDER BY order_key DESC LIMIT 1",
+        )
+        .bind(self.id.as_str())
+        .fetch_optional(&mut *transaction)
+        .await
+        .map_err(failed)?;
+        let last: Option<OrderKey> = last.map(stored).transpose()?;
+        OrderKey::between(last.as_ref(), None).ok_or_else(no_room)
     }
 
     /// The task `id` as it is now, inside the caller's transaction; `task.not_found` when

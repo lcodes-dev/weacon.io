@@ -1,24 +1,131 @@
-/// The outcome of merging a proposal into the doc it was written against.
+use weacon_protocol::MergeHunk;
+
+use crate::{DocText, DocTextError};
+
+/// What merging a proposed text into a doc gives.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Merge {
+pub enum Merged {
+    Text(DocText),
+    /// The whole body in order, with its conflicts; it is all agreed when only the title or
+    /// the pins conflict.
+    Conflict {
+        hunks: Vec<MergeHunk>,
+        title: bool,
+        anchors: bool,
+    },
+}
+
+impl DocText {
+    /// Merges `proposed`, written against `base`, into `current`. The title and the pins each
+    /// take the side that changed them, and conflict when both did differently; the body is
+    /// merged line by line. A body whose merge would compare more than `max_cost` lines times
+    /// lines is a conflict of the whole body, so that a merge takes a bounded time.
+    ///
+    /// # Errors
+    /// [`DocTextError::TooLarge`] when the merged text is over the limit.
+    pub fn merge(
+        base: &Self,
+        current: &Self,
+        proposed: &Self,
+        max_cost: usize,
+    ) -> Result<Merged, DocTextError> {
+        let title = settled(base.title(), current.title(), proposed.title());
+        let anchors = settled(&base.anchors(), &current.anchors(), &proposed.anchors()).copied();
+        let body = merge_bodies(base.body(), current.body(), proposed.body(), max_cost);
+        let (Merge::Clean(body), Some(title), Some(anchors)) = (&body, title, anchors) else {
+            return Ok(Merged::Conflict {
+                hunks: body.into_hunks(),
+                title: title.is_none(),
+                anchors: anchors.is_none(),
+            });
+        };
+        match Self::new(title.clone(), body.clone(), anchors.cloned()) {
+            Ok(text) => Ok(Merged::Text(text)),
+            Err(DocTextError::TooLarge) => Err(DocTextError::TooLarge),
+            // Each side's links matched its pins, but the merged ones don't.
+            Err(DocTextError::Unpinned | DocTextError::Unlinked) => Ok(Merged::Conflict {
+                hunks: vec![MergeHunk::Agreed { text: body.clone() }],
+                title: false,
+                anchors: true,
+            }),
+        }
+    }
+}
+
+/// What both sides settle on: the proposal's when the doc kept the base's, the doc's when
+/// the proposal kept it or made the same, and none when they differ.
+fn settled<'a, T: PartialEq + ?Sized>(base: &T, current: &'a T, proposed: &'a T) -> Option<&'a T> {
+    if current == base {
+        Some(proposed)
+    } else if proposed == base || proposed == current {
+        Some(current)
+    } else {
+        None
+    }
+}
+
+/// The merge of a doc's bodies, or a conflict of the whole body when it costs too much.
+fn merge_bodies(base: &str, current: &str, proposed: &str, max_cost: usize) -> Merge {
+    if let Some(body) = settled(base, current, proposed) {
+        return Merge::Clean(body.to_owned());
+    }
+    if cost(base, current).max(cost(base, proposed)) > max_cost {
+        return Merge::Conflicted(vec![MergeHunk::Conflict {
+            base: base.to_owned(),
+            current: current.to_owned(),
+            proposed: proposed.to_owned(),
+        }]);
+    }
+    merge(base, current, proposed)
+}
+
+/// The lines times lines aligning `other` with `base` compares, past the start and end they
+/// share.
+fn cost(base: &str, other: &str) -> usize {
+    let (base, other) = (lines(base), lines(other));
+    let (start, end) = shared_ends(&base, &other);
+    let middle = |lines: &[&str]| lines.len().saturating_sub(start + end).max(1);
+    middle(&base).saturating_mul(middle(&other))
+}
+
+/// `text`'s lines, each with its ending.
+fn lines(text: &str) -> Vec<&str> {
+    text.split_inclusive('\n').collect()
+}
+
+/// How many lines `base` and `other` share at their start, and then at their end.
+fn shared_ends(base: &[&str], other: &[&str]) -> (usize, usize) {
+    let start = base
+        .iter()
+        .zip(other)
+        .take_while(|(one, two)| one == two)
+        .count();
+    let end = base
+        .iter()
+        .skip(start)
+        .rev()
+        .zip(other.iter().skip(start).rev())
+        .take_while(|(one, two)| one == two)
+        .count();
+    (start, end)
+}
+
+/// The outcome of merging two bodies.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum Merge {
     Clean(String),
-    /// The whole doc in order; joining the hunks, with one text chosen for each conflict,
-    /// gives the merged doc.
+    /// The whole body in order; joining the hunks, with one text chosen for each conflict,
+    /// gives the merged body.
     Conflicted(Vec<MergeHunk>),
 }
 
-/// A run of lines in a [`Merge::Conflicted`] doc.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum MergeHunk {
-    /// Lines the merge settled: unchanged, changed on one side only, or changed the same way on
-    /// both.
-    Agreed(String),
-    /// Lines `current` and `proposed` both changed since `base`, each in its own way.
-    Conflict {
-        base: String,
-        current: String,
-        proposed: String,
-    },
+impl Merge {
+    fn into_hunks(self) -> Vec<MergeHunk> {
+        match self {
+            Self::Clean(text) => vec![MergeHunk::Agreed { text }],
+            Self::Conflicted(hunks) => hunks,
+        }
+    }
 }
 
 /// A line number in each of the three texts.
@@ -29,18 +136,47 @@ struct At {
     proposed: usize,
 }
 
+impl At {
+    const fn next(self) -> Self {
+        Self {
+            base: self.base + 1,
+            current: self.current + 1,
+            proposed: self.proposed + 1,
+        }
+    }
+}
+
 /// Merges `proposed`, written against `base`, into `current`, line by line with each line's
 /// ending kept, as diff3 does: each side is aligned with `base` by Hirschberg's linear-space
 /// longest common subsequence. Where only one side changed lines, that change is taken; where
 /// both changed the same or neighbouring lines differently, the hunk is a conflict. Its time
-/// grows with the product of the lines each side rewrote, so callers bound the texts' size.
-#[must_use]
-pub fn merge(base: &str, current: &str, proposed: &str) -> Merge {
-    let [base, current, proposed]: [Vec<&str>; 3] =
-        [base, current, proposed].map(|text| text.split_inclusive('\n').collect());
-    let (in_current, in_proposed) = (matches(&base, &current), matches(&base, &proposed));
-    // Lines of `base` that both sides kept cut the three texts into spans merged one by one.
-    let kept = in_current.iter().zip(&in_proposed).enumerate().filter_map(
+/// grows with the product of the lines each side rewrote, which [`cost`] bounds.
+fn merge(base: &str, current: &str, proposed: &str) -> Merge {
+    let texts = [base, current, proposed].map(lines);
+    let mut hunks = Vec::new();
+    let mut from = At::default();
+    for upto in kept(&texts) {
+        merge_span(&mut hunks, &texts, from, upto);
+        agree(&mut hunks, span(&texts[0], upto.base, upto.base + 1));
+        from = upto.next();
+    }
+    match hunks.as_slice() {
+        [] => Merge::Clean(String::new()),
+        [MergeHunk::Agreed { text }] => Merge::Clean(text.clone()),
+        _ => Merge::Conflicted(hunks),
+    }
+}
+
+/// Where each line of `base` that both sides kept is in all three texts, then where the
+/// texts end: these cut the texts into spans merged one by one.
+fn kept([base, current, proposed]: &[Vec<&str>; 3]) -> Vec<At> {
+    let (in_current, in_proposed) = (matches(base, current), matches(base, proposed));
+    let end = At {
+        base: base.len(),
+        current: current.len(),
+        proposed: proposed.len(),
+    };
+    let both = in_current.iter().zip(&in_proposed).enumerate().filter_map(
         |(line, (in_current, in_proposed))| {
             Some(At {
                 base: line,
@@ -49,39 +185,22 @@ pub fn merge(base: &str, current: &str, proposed: &str) -> Merge {
             })
         },
     );
-    let end = At {
-        base: base.len(),
-        current: current.len(),
-        proposed: proposed.len(),
-    };
-    let mut hunks = Vec::new();
-    let mut from = At::default();
-    for upto in kept.chain([end]) {
-        let base_span = span(&base, from.base, upto.base);
-        let current_span = span(&current, from.current, upto.current);
-        let proposed_span = span(&proposed, from.proposed, upto.proposed);
-        if current_span == base_span {
-            agree(&mut hunks, proposed_span);
-        } else if proposed_span == base_span || proposed_span == current_span {
-            agree(&mut hunks, current_span);
-        } else {
-            hunks.push(MergeHunk::Conflict {
-                base: base_span,
-                current: current_span,
-                proposed: proposed_span,
-            });
-        }
-        agree(&mut hunks, span(&base, upto.base, upto.base + 1));
-        from = At {
-            base: upto.base + 1,
-            current: upto.current + 1,
-            proposed: upto.proposed + 1,
-        };
-    }
-    match hunks.as_slice() {
-        [] => Merge::Clean(String::new()),
-        [MergeHunk::Agreed(text)] => Merge::Clean(text.clone()),
-        _ => Merge::Conflicted(hunks),
+    both.chain([end]).collect()
+}
+
+/// Merges the lines from `from` up to `upto` in each text.
+fn merge_span(hunks: &mut Vec<MergeHunk>, texts: &[Vec<&str>; 3], from: At, upto: At) {
+    let [base, current, proposed] = texts;
+    let base = span(base, from.base, upto.base);
+    let current = span(current, from.current, upto.current);
+    let proposed = span(proposed, from.proposed, upto.proposed);
+    match settled(&base, &current, &proposed) {
+        Some(text) => agree(hunks, text.clone()),
+        None => hunks.push(MergeHunk::Conflict {
+            base,
+            current,
+            proposed,
+        }),
     }
 }
 
@@ -94,10 +213,10 @@ fn agree(hunks: &mut Vec<MergeHunk>, text: String) {
     if text.is_empty() {
         return;
     }
-    if let Some(MergeHunk::Agreed(last)) = hunks.last_mut() {
+    if let Some(MergeHunk::Agreed { text: last }) = hunks.last_mut() {
         last.push_str(&text);
     } else {
-        hunks.push(MergeHunk::Agreed(text));
+        hunks.push(MergeHunk::Agreed { text });
     }
 }
 
@@ -112,17 +231,7 @@ fn matches(base: &[&str], other: &[&str]) -> Vec<Option<usize>> {
 /// `offset`, that they match. It halves `base` instead of filling a table, so it needs memory
 /// only in proportion to the lines.
 fn align(base: &[&str], other: &[&str], offset: usize, found: &mut [Option<usize>]) {
-    let start = base
-        .iter()
-        .zip(other)
-        .take_while(|(line, candidate)| line == candidate)
-        .count();
-    let (base_rest, other_rest) = (base.iter().skip(start), other.iter().skip(start));
-    let end = base_rest
-        .rev()
-        .zip(other_rest.rev())
-        .take_while(|(line, candidate)| line == candidate)
-        .count();
+    let (start, end) = shared_ends(base, other);
     // A shared start and end match line for line; only the middle needs searching.
     let (Some(base_middle), Some(other_middle)) = (
         base.get(start..base.len() - end),
@@ -137,24 +246,29 @@ fn align(base: &[&str], other: &[&str], offset: usize, found: &mut [Option<usize
     for (index, slot) in found.iter_mut().skip(tail).enumerate() {
         *slot = Some(offset + start + other_middle.len() + index);
     }
-    let (Some(middle), middle_at) = (found.get_mut(start..tail), offset + start) else {
-        return;
-    };
-    if let [line] = base_middle {
-        if let Some(slot) = middle.first_mut() {
-            *slot = other_middle
+    if let Some(middle) = found.get_mut(start..tail) {
+        align_middle(base_middle, other_middle, offset + start, middle);
+    }
+}
+
+/// [`align`] for what is left once the shared start and end are set aside: one line is
+/// looked for, and more are halved.
+fn align_middle(base: &[&str], other: &[&str], offset: usize, found: &mut [Option<usize>]) {
+    if let [line] = base {
+        if let Some(slot) = found.first_mut() {
+            *slot = other
                 .iter()
                 .position(|candidate| candidate == line)
-                .map(|to| middle_at + to);
+                .map(|to| offset + to);
         }
-    } else if !base_middle.is_empty() && !other_middle.is_empty() {
-        let half = base_middle.len() / 2;
-        let (top, bottom) = base_middle.split_at(half);
-        let cut = split(top, bottom, other_middle);
-        let (left, right) = other_middle.split_at(cut);
-        let (found_top, found_bottom) = middle.split_at_mut(half);
-        align(top, left, middle_at, found_top);
-        align(bottom, right, middle_at + cut, found_bottom);
+    } else if !base.is_empty() && !other.is_empty() {
+        let half = base.len() / 2;
+        let (top, bottom) = base.split_at(half);
+        let cut = split(top, bottom, other);
+        let (left, right) = other.split_at(cut);
+        let (found_top, found_bottom) = found.split_at_mut(half);
+        align(top, left, offset, found_top);
+        align(bottom, right, offset + cut, found_bottom);
     }
 }
 
@@ -192,14 +306,19 @@ fn lengths<'a>(
 
 #[cfg(test)]
 mod tests {
+    use weacon_protocol::{CommitId, DocAnchors, DocPin};
+
     use super::*;
+    use crate::Title;
 
     fn clean(text: &str) -> Merge {
         Merge::Clean(text.to_owned())
     }
 
     fn agreed(text: &str) -> MergeHunk {
-        MergeHunk::Agreed(text.to_owned())
+        MergeHunk::Agreed {
+            text: text.to_owned(),
+        }
     }
 
     fn conflict(base: &str, current: &str, proposed: &str) -> MergeHunk {
@@ -434,7 +553,7 @@ mod tests {
             };
             conflicted += 1;
             let settled =
-                |hunk: &MergeHunk| matches!(hunk, MergeHunk::Agreed(text) if !text.is_empty());
+                |hunk: &MergeHunk| matches!(hunk, MergeHunk::Agreed { text } if !text.is_empty());
             assert!(
                 hunks
                     .iter()
@@ -449,5 +568,127 @@ mod tests {
             );
         }
         assert!(conflicted > 100);
+    }
+
+    // A doc titled `title` whose body links to each of `pinned` once, with a pin for each.
+    fn doc(title: &str, body: &str, pinned: &[&str]) -> DocText {
+        let anchors = (!pinned.is_empty()).then(|| DocAnchors {
+            commit: CommitId::try_from("a".repeat(40)).unwrap(),
+            pins: pinned
+                .iter()
+                .map(|name| DocPin::try_from(format!("{name}#0123456789abcdef")).unwrap())
+                .collect(),
+        });
+        let title = Title::try_from(title.to_owned()).unwrap();
+        DocText::new(title, body.to_owned(), anchors).unwrap()
+    }
+
+    fn merged(base: &DocText, current: &DocText, proposed: &DocText) -> Merged {
+        DocText::merge(base, current, proposed, usize::MAX).unwrap()
+    }
+
+    #[test]
+    fn a_title_takes_the_side_that_changed_it_and_conflicts_when_both_did() {
+        let base = doc("Plan", "a\n", &[]);
+        let (renamed, again) = (doc("Plan B", "a\n", &[]), doc("Plan C", "a\n", &[]));
+
+        assert_eq!(
+            merged(&base, &base, &renamed),
+            Merged::Text(renamed.clone())
+        );
+        assert_eq!(
+            merged(&base, &renamed, &base),
+            Merged::Text(renamed.clone())
+        );
+        assert_eq!(
+            merged(&base, &renamed, &renamed),
+            Merged::Text(renamed.clone())
+        );
+        let Merged::Conflict {
+            title,
+            anchors,
+            hunks,
+        } = merged(&base, &renamed, &again)
+        else {
+            panic!("no conflict");
+        };
+        assert!(title && !anchors);
+        assert_eq!(hunks, [agreed("a\n")]);
+    }
+
+    #[test]
+    fn pins_come_with_the_side_that_added_their_link() {
+        let base = doc("Plan", "One\nTwo\n", &[]);
+        let current = doc("Plan", "One\nTwo\nThree\n", &[]);
+        let linked = doc("Plan", "See [a](sym:a).\nTwo\n", &["sym:a"]);
+
+        let both = doc("Plan", "See [a](sym:a).\nTwo\nThree\n", &["sym:a"]);
+        assert_eq!(merged(&base, &current, &linked), Merged::Text(both.clone()));
+        assert_eq!(merged(&base, &linked, &current), Merged::Text(both));
+    }
+
+    #[test]
+    fn pins_both_sides_changed_or_that_no_longer_match_the_links_conflict() {
+        let base = doc("Plan", "One\nTwo\n", &[]);
+        let one = doc("Plan", "[a](sym:a)\nTwo\n", &["sym:a"]);
+        let other = doc("Plan", "One\n[b](sym:b)\n", &["sym:b"]);
+
+        let Merged::Conflict { anchors, title, .. } = merged(&base, &one, &other) else {
+            panic!("no conflict");
+        };
+        assert!(anchors && !title);
+        // The pins settle on the side that dropped them, but the other side links to it again.
+        let linked = doc("Plan", "[a](sym:a)\nTwo\nThree\n", &["sym:a"]);
+        let again = doc("Plan", "[a](sym:a)\nTwo\nThree [x](sym:a)\n", &["sym:a"]);
+        let dropped = doc("Plan", "One\nTwo\nThree\n", &[]);
+        assert_eq!(
+            merged(&linked, &again, &dropped),
+            Merged::Conflict {
+                hunks: vec![agreed("One\nTwo\nThree [x](sym:a)\n")],
+                title: false,
+                anchors: true,
+            }
+        );
+    }
+
+    #[test]
+    fn a_merge_past_the_doc_limit_is_refused() {
+        let big = "x".repeat(130 * 1024);
+        let base = doc("Plan", "One\n", &[]);
+        let current = doc("Plan", &format!("{big}\nOne\n"), &[]);
+        let proposed = doc("Plan", &format!("One\n{big}\n"), &[]);
+
+        assert_eq!(
+            DocText::merge(&base, &current, &proposed, usize::MAX),
+            Err(DocTextError::TooLarge)
+        );
+    }
+
+    #[test]
+    fn a_body_that_costs_too_much_to_merge_is_one_conflict() {
+        let base = doc("Plan", "first\nb\nb\nlast\n", &[]);
+        let current = doc("Plan", "first\nc\nc\nlast\n", &[]);
+        let proposed = doc("Plan", "first\np\np\nlast\n", &[]);
+
+        let cheap = DocText::merge(&base, &current, &proposed, 4).unwrap();
+        let Merged::Conflict { hunks, .. } = cheap else {
+            panic!("no conflict");
+        };
+        assert_eq!(hunks.len(), 3);
+        assert_eq!(
+            DocText::merge(&base, &current, &proposed, 3).unwrap(),
+            Merged::Conflict {
+                hunks: vec![conflict(base.body(), current.body(), proposed.body())],
+                title: false,
+                anchors: false,
+            }
+        );
+        // A side that kept the base costs nothing to merge.
+        assert_eq!(
+            DocText::merge(&base, &base, &proposed, 0).unwrap(),
+            Merged::Text(proposed)
+        );
+        assert_eq!(cost("a\nb\nc\n", "a\nb\nc\n"), 1);
+        assert_eq!(cost("a\nb\nc\n", "a\nx\ny\nc\n"), 2);
     }
 }
