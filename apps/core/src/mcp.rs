@@ -55,6 +55,11 @@ type Body = BoxBody<Bytes, Infallible>;
 /// Listens on a free port of 127.0.0.1 and serves until the returned task is aborted; must run
 /// inside a tokio runtime.
 pub(crate) fn start(app: &App, log: &Logger) -> Result<(Mcp, Server), Fault> {
+    listen(app, log, HEADER_TIMEOUT)
+}
+
+/// [`start`], closing connections whose request headers take longer than `header_timeout`.
+fn listen(app: &App, log: &Logger, header_timeout: Duration) -> Result<(Mcp, Server), Fault> {
     let failed = |error| {
         Fault::new(code!("mcp.start_failed"), "The local MCP couldn't start").because(error)
     };
@@ -71,7 +76,13 @@ pub(crate) fn start(app: &App, log: &Logger) -> Result<(Mcp, Server), Fault> {
     handler
         .log
         .info("mcp started", &[("port", address.port().into())]);
-    let server = tokio::spawn(serve(listener, address, grants.clone(), handler));
+    let server = tokio::spawn(serve(
+        listener,
+        address,
+        grants.clone(),
+        handler,
+        header_timeout,
+    ));
     let mcp = Mcp {
         url: format!("http://{address}/mcp"),
         grants,
@@ -122,7 +133,13 @@ pub(crate) fn grant(
     ))
 }
 
-async fn serve(listener: TcpListener, address: SocketAddr, grants: Grants, handler: Handler) {
+async fn serve(
+    listener: TcpListener,
+    address: SocketAddr,
+    grants: Grants,
+    handler: Handler,
+    header_timeout: Duration,
+) {
     // Stateless: each request stands alone, so no session outlives its run's token. No origin is
     // allowed, so any request that names one is refused.
     let config = StreamableHttpServerConfig::default()
@@ -137,7 +154,12 @@ async fn serve(listener: TcpListener, address: SocketAddr, grants: Grants, handl
         Arc::new(LocalSessionManager::default()),
         config,
     );
-    let front = Arc::new(Front { grants, rmcp, log });
+    let front = Arc::new(Front {
+        header_timeout,
+        grants,
+        rmcp,
+        log,
+    });
     let open = Arc::new(Semaphore::new(CONNECTIONS));
     loop {
         let Ok(slot) = Arc::clone(&open).acquire_owned().await else {
@@ -168,13 +190,14 @@ async fn connection(stream: TcpStream, front: Arc<Front>, _slot: OwnedSemaphoreP
     drop(
         http1::Builder::new()
             .timer(TokioTimer::new())
-            .header_read_timeout(HEADER_TIMEOUT)
+            .header_read_timeout(front.header_timeout)
             .serve_connection(TokioIo::new(stream), service)
             .await,
     );
 }
 
 struct Front {
+    header_timeout: Duration,
     grants: Grants,
     rmcp: StreamableHttpService<Handler, LocalSessionManager>,
     log: Logger,
@@ -546,10 +569,11 @@ mod tests {
         TcpStream::connect(address).await.unwrap_err();
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn a_connection_that_sends_nothing_is_closed() {
         let (log, _records) = recording_logger();
-        let (mcp, _server) = start(&weacon_appkit::build(&VERSION), &log).unwrap();
+        let quick = Duration::from_millis(50);
+        let (mcp, _server) = listen(&weacon_appkit::build(&VERSION), &log, quick).unwrap();
         let address = mcp
             .url
             .trim_start_matches("http://")
@@ -557,7 +581,8 @@ mod tests {
         let mut idle = TcpStream::connect(address).await.unwrap();
 
         let mut read = Vec::new();
-        let closed = tokio::time::timeout(HEADER_TIMEOUT * 2, idle.read_to_end(&mut read)).await;
+        let closed =
+            tokio::time::timeout(Duration::from_secs(5), idle.read_to_end(&mut read)).await;
 
         closed.unwrap().unwrap();
     }
