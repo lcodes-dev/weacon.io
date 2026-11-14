@@ -71,6 +71,24 @@ impl Secret {
         mac.update(code.as_bytes());
         mac.finalize().into_bytes().into()
     }
+
+    /// What is stored for a pairing's `code`, which is looked up by it. No challenge id holds
+    /// a dot, so no sign-in code is stored the same.
+    pub(crate) fn pairing_code_hash(&self, code: &str) -> [u8; 32] {
+        let mut mac = self.0.clone();
+        mac.update(b"pairing.code\0");
+        mac.update(code.as_bytes());
+        mac.finalize().into_bytes().into()
+    }
+
+    /// The token of the machine whose pairing is claimed with `secret`, the same each time so
+    /// that a core may claim again when an answer was lost.
+    pub(crate) fn machine_token(&self, secret: &str) -> [u8; 32] {
+        let mut mac = self.0.clone();
+        mac.update(b"machine.token\0");
+        mac.update(secret.as_bytes());
+        mac.finalize().into_bytes().into()
+    }
 }
 
 /// Makes a key at `path`, whole or not at all; a file already there is left as it is.
@@ -167,6 +185,26 @@ mod tests {
         assert_ne!(hash(&first), hash(&other));
         assert_eq!(names(&dir), ["other", "secret"]);
         assert_eq!(format!("{first:?}"), "Secret(..)");
+    }
+
+    #[test]
+    fn pairing_codes_and_machine_tokens_are_keyed_and_kept_apart() {
+        let dir = TempDir::new().unwrap();
+        let (one, two) = (
+            open(&dir.join("one")).unwrap(),
+            open(&dir.join("two")).unwrap(),
+        );
+        let challenge = ChallengeId::try_from("pairing".to_owned()).unwrap();
+
+        assert_eq!(one.machine_token("s"), one.machine_token("s"));
+        assert_ne!(one.machine_token("s"), one.machine_token("t"));
+        assert_ne!(one.machine_token("s"), two.machine_token("s"));
+        assert_eq!(one.pairing_code_hash("c"), one.pairing_code_hash("c"));
+        assert_ne!(one.pairing_code_hash("c"), one.pairing_code_hash("d"));
+        assert_ne!(one.pairing_code_hash("c"), two.pairing_code_hash("c"));
+        assert_ne!(one.pairing_code_hash("c"), one.machine_token("c"));
+        assert_ne!(one.pairing_code_hash("c"), one.code_hash(&challenge, "c"));
+        assert_ne!(one.machine_token("c"), one.code_hash(&challenge, "c"));
     }
 
     #[test]

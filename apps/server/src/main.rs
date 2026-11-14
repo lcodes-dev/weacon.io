@@ -12,6 +12,7 @@ mod feed;
 mod http;
 mod limit;
 mod mail;
+mod pairing;
 mod secret;
 mod sign_in;
 mod tasks;
@@ -91,13 +92,7 @@ async fn serve(app: &App, args: Serve) -> Result<(), Fault> {
             "The outbox folder doesn't exist",
         ));
     }
-    let signals = weacon_appkit::Signals::new().map_err(|error| {
-        Fault::new(
-            code!("server.signals_failed"),
-            "The server couldn't catch signals",
-        )
-        .because(error)
-    })?;
+    let signals = signals()?;
     let listener = bind(listen).await?;
     let secret = Secret::open(&secret, &app.log)?;
     let db = Db::create(&db).await?;
@@ -118,11 +113,24 @@ async fn serve(app: &App, args: Serve) -> Result<(), Fault> {
         finish_within: sign_in::FINISH_WITHIN,
         starts: Arc::new(sign_in::starts()),
         tries: Arc::new(sign_in::tries()),
+        pair_starts: Arc::new(pairing::starts()),
+        pair_tries: Arc::new(pairing::tries()),
+        pair_claims: Arc::new(pairing::claims()),
         web: web::FILES,
     };
     http::serve(listener, shared, signals.wait()).await;
     db.close().await;
     Ok(())
+}
+
+fn signals() -> Result<weacon_appkit::Signals, Fault> {
+    weacon_appkit::Signals::new().map_err(|error| {
+        Fault::new(
+            code!("server.signals_failed"),
+            "The server couldn't catch signals",
+        )
+        .because(error)
+    })
 }
 
 async fn bind(listen: SocketAddr) -> Result<TcpListener, Fault> {

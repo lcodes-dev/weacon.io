@@ -152,6 +152,33 @@ ALTER TABLE changes_with_tasks RENAME TO changes;
 ALTER TABLE members ADD COLUMN role TEXT NOT NULL DEFAULT 'member';
 ALTER TABLE accounts ADD COLUMN personal_made INTEGER NOT NULL DEFAULT 0;
 ",
+    // Machines paired with an account, and the pairings under way. A confirmed pairing names
+    // its account and machine, and stays until it expires so that its core may claim again.
+    "
+CREATE TABLE machines (
+    machine_id TEXT PRIMARY KEY,
+    account_id TEXT NOT NULL REFERENCES accounts (account_id),
+    name TEXT NOT NULL,
+    os TEXT NOT NULL,
+    machine_key TEXT NOT NULL,
+    token_hash BLOB NOT NULL UNIQUE,
+    paired_at INTEGER NOT NULL
+) STRICT;
+
+CREATE TABLE pairings (
+    pairing_id TEXT PRIMARY KEY,
+    code_hash BLOB NOT NULL UNIQUE,
+    secret_hash BLOB NOT NULL,
+    name TEXT NOT NULL,
+    os TEXT NOT NULL,
+    machine_key TEXT NOT NULL,
+    expires_at INTEGER NOT NULL,
+    account_id TEXT REFERENCES accounts (account_id),
+    machine_id TEXT,
+    confirmed_at INTEGER,
+    claimed INTEGER NOT NULL DEFAULT 0
+) STRICT;
+",
 ];
 
 /// Applies the steps the database hasn't had yet, each in its own transaction that holds the

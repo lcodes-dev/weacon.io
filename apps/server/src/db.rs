@@ -4,6 +4,7 @@
 mod account;
 mod backup;
 mod changes;
+mod machine;
 mod owned;
 mod schema;
 mod tasks;
@@ -23,6 +24,7 @@ pub(crate) use account::Attempt;
 #[cfg(test)]
 pub(crate) use account::CODE_LIFETIME;
 pub(crate) use backup::restore;
+pub(crate) use machine::{Claim, Confirmation, NewPairing};
 pub(crate) use owned::NewWorkspace;
 pub(crate) use workspace::Workspace;
 
@@ -512,7 +514,13 @@ mod tests {
             .unwrap()
     }
 
-    const SERVER_WIDE: [&str; 3] = ["accounts", "sign_in_challenges", "sessions"];
+    const SERVER_WIDE: [&str; 5] = [
+        "accounts",
+        "sign_in_challenges",
+        "sessions",
+        "machines",
+        "pairings",
+    ];
 
     async fn tables(db: &Db) -> Vec<String> {
         sqlx::query_scalar(
@@ -539,7 +547,9 @@ mod tests {
                 "sessions",
                 "tasks",
                 "task_versions",
-                "changes"
+                "changes",
+                "machines",
+                "pairings"
             ]
         );
         for table in SERVER_WIDE {
