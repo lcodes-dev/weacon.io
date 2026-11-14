@@ -288,13 +288,19 @@ mod tests {
         fs::remove_dir_all(&root).unwrap();
 
         let expected = |name: &str| {
-            let path = Path::new("integrations/claude/hooks").join(name);
+            let path = Path::new("integrations")
+                .join("claude")
+                .join("hooks")
+                .join(name);
             let path = path.display();
             format!("{path} isn't data; integrations/ holds only JSON and Markdown")
         };
         let mut expected = vec![expected("notes"), expected("run.sh")];
         if cfg!(unix) {
-            let link = Path::new("integrations/claude/hooks/up.json");
+            let link = Path::new("integrations")
+                .join("claude")
+                .join("hooks")
+                .join("up.json");
             let link = link.display();
             expected.push(format!(
                 "{link} is a link; integrations/ holds only its own files"
