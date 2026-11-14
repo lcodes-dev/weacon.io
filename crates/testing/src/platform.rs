@@ -1,11 +1,11 @@
 //! How the fake core listens and test folders are made, per OS.
 
 #[cfg(unix)]
-pub(crate) use unix::create_own_dir;
+pub(crate) use unix::create_private_dir;
 #[cfg(unix)]
 pub use unix::{Listener, listen};
 #[cfg(windows)]
-pub(crate) use windows::create_own_dir;
+pub(crate) use windows::create_private_dir;
 #[cfg(windows)]
 pub use windows::{Listener, listen};
 
@@ -20,7 +20,7 @@ mod unix {
     pub type Listener = tokio::net::UnixListener;
 
     /// Creates the folder `path`, readable only by this user.
-    pub(crate) fn create_own_dir(path: &Path) -> io::Result<()> {
+    pub(crate) fn create_private_dir(path: &Path) -> io::Result<()> {
         use std::os::unix::fs::DirBuilderExt;
 
         fs::DirBuilder::new().mode(0o700).create(path)
@@ -49,7 +49,7 @@ mod windows {
     use std::path::Path;
 
     /// Creates the folder `path`, which inherits its parent's access list.
-    pub(crate) fn create_own_dir(path: &Path) -> io::Result<()> {
+    pub(crate) fn create_private_dir(path: &Path) -> io::Result<()> {
         std::fs::create_dir(path)
     }
 
