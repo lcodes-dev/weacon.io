@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import type { ChatSummary } from "../protocol.ts";
-import { newestFirst, stateNote } from "./chat-list.ts";
+import { newestFirst, owns, stateNote } from "./chat-list.ts";
 
 const chat = (id: string, updated_at: number): ChatSummary => ({ id, title: id, owner: "m-1", machine: "laptop", state: "open", updated_at });
 
@@ -21,4 +21,12 @@ test("a chat that takes no prompts says why", () => {
   assert.equal(stateNote("full"), "Full");
   assert.equal(stateNote("detached"), "Read only");
   assert.equal(stateNote("newer" as ChatSummary["state"]), undefined);
+});
+
+test("only the chat's owner owns it, and a person whose member isn't known owns none", () => {
+  const theirs = chat("c-1", 10);
+  assert.equal(owns(theirs.owner, theirs), true);
+  assert.equal(owns("m-other", theirs), false);
+  assert.equal(owns(undefined, theirs), false);
+  assert.equal(owns(theirs.owner, undefined), false);
 });

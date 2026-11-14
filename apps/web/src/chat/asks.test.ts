@@ -19,6 +19,9 @@ test("an answer that may have been taken goes again under its request, unless it
   const again = sending(lost, mine(true), ids).answers;
   const changed = sending(lost, mine(false), ids).answers;
   const refused = sending(settle(first, key, "a-1", "refused"), mine(true), ids).answers;
+  const offline = sending(settle(first, key, "a-1", "offline"), mine(true), ids).answers;
+  const unsure = sending(settle(first, key, "a-1", "unsure"), mine(true), ids).answers;
+  const pending = sending(first, mine(true), ids).answers;
 
   assert.deepEqual(first.get(key), { run: "r-1", prompt: 2, allow: true, request: "a-1", settled: undefined });
   assert.equal(sending(lost, mine(true), ids).request, "a-1");
@@ -26,6 +29,9 @@ test("an answer that may have been taken goes again under its request, unless it
   assert.equal(again.get(key)?.request, "a-1");
   assert.equal(changed.get(key)?.request, "a-2");
   assert.equal(refused.get(key)?.request, "a-3");
+  assert.equal(offline.get(key)?.request, "a-4");
+  assert.equal(unsure.get(key)?.request, "a-1");
+  assert.equal(pending.get(key)?.request, "a-1");
   assert.equal(first.size, 1);
   assert.equal(none.size, 0);
 });
@@ -47,6 +53,11 @@ test("a prompt says why its answer may not have been taken", () => {
   assert.equal(answerProblem(undefined), undefined);
   assert.equal(answerProblem(first.get(key)), undefined);
   assert.equal(answerProblem(settle(first, key, "a-1", "refused").get(key)), "The answer wasn't taken.");
+  assert.equal(
+    answerProblem(settle(first, key, "a-1", "offline").get(key)),
+    "The machine is offline, so the answer wasn't sent. Try again once it's back.",
+  );
+  assert.equal(answerProblem(settle(first, key, "a-1", "detached").get(key)), "This chat's machine is gone, so it takes no answers.");
   assert.equal(answerProblem(settle(first, key, "a-1", "unsure").get(key)), "The server didn't answer. The answer may not have been sent.");
 });
 
@@ -71,6 +82,8 @@ test("an answer settles under the prompt it was sent for, on time or late, and o
 test("Stop says why it may not have worked", () => {
   assert.equal(stopProblem("accepted"), undefined);
   assert.equal(stopProblem("refused"), "The agent wasn't stopped.");
+  assert.equal(stopProblem("offline"), "The machine is offline, so the agent wasn't stopped. Try again once it's back.");
+  assert.equal(stopProblem("detached"), "This chat's machine is gone, so there's no agent to stop.");
   assert.equal(stopProblem("lost"), "The connection closed. The agent may not have stopped.");
   assert.equal(stopProblem("unsure"), "The server didn't answer. The agent may not have stopped.");
 });

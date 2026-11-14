@@ -1,4 +1,3 @@
-import { type Status, offers } from "../connection.ts";
 import type { ChatId, DiffFile, Envelope, Hunk, LineOp, RequestId, WorkspaceId } from "../protocol.ts";
 
 /** What the core has sent of a chat's changes under the latest request. */
@@ -14,11 +13,6 @@ export type Changes = {
 };
 
 export const NO_CHANGES: Changes = { asked: undefined, files: [], total: undefined, cut: false, held: false };
-
-/** Whether `status` is a connection that can ask for changes. */
-export function canAsk(status: Status): boolean {
-  return offers(status, "diff.view");
-}
 
 /** The query, as message `id`, for `chat`'s changes under `request`; what is `shown` stays until its first answer. */
 export function ask(
