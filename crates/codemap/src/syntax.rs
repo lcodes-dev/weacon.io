@@ -86,6 +86,12 @@ pub(crate) fn text<'a>(node: Node<'_>, source: &'a [u8]) -> &'a str {
     node.utf8_text(source).unwrap_or_default()
 }
 
+/// A name as code means it: `type` for the raw identifier `r#type`.
+pub(crate) fn name<'a>(node: Node<'_>, source: &'a [u8]) -> &'a str {
+    let name = text(node, source);
+    name.strip_prefix("r#").unwrap_or(name)
+}
+
 fn compact(text: &str) -> String {
     text.split_whitespace().collect()
 }

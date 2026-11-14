@@ -93,7 +93,11 @@ fn statements(sql: &str) -> Vec<String> {
 /// A quoted name as one word, its text kept exactly between markers that tokenizing leaves alone.
 fn quoted(chars: &mut Peekable<Chars<'_>>, out: &mut String, quote: char) {
     out.push(QUOTED);
-    for inside in chars.by_ref().take_while(|inside| *inside != quote) {
+    while let Some(inside) = chars.next() {
+        // A doubled quote stands for one inside the name.
+        if inside == quote && chars.next_if_eq(&quote).is_none() {
+            break;
+        }
         let hidden = SPLITS.iter().position(|split| *split == inside);
         out.push(
             hidden
@@ -219,13 +223,17 @@ mod tests {
             "CREATE TABLE \"a,b\"(id); CREATE TABLE a(id); DROP TABLE \"a,b\";",
             "CREATE TABLE \"my table\" (id); CREATE TABLE main.\"a.b\" (id);",
             "CREATE TABLE \"(odd)\" (id); CREATE TABLE plain_name(id);",
+            "CREATE TABLE \"a\"\"b\"(id); CREATE TABLE `c``d`(id); CREATE TABLE \"\"\"e\"\"\"(id);",
         ]);
         assert_eq!(
             found,
             named(&[
+                ("\"e\"", 4),
                 ("(odd)", 3),
                 ("a", 1),
+                ("a\"b", 4),
                 ("a.b", 2),
+                ("c`d", 4),
                 ("my table", 2),
                 ("plain_name", 3)
             ])
