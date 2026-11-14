@@ -32,8 +32,9 @@ const SIGNED_OUT: Code = "sign_in.required";
 export class Api {
   #fetch: Fetch;
   #signedOut: () => void;
+  #signIns = 0;
 
-  /** `signedOut` is told whenever the server answers that the session is over. */
+  /** `signedOut` is told when the server answers that the current session is over. */
   constructor(fetch: Fetch, signedOut: () => void) {
     this.#fetch = fetch;
     this.#signedOut = signedOut;
@@ -51,8 +52,12 @@ export class Api {
     return this.#ask("POST", "/api/sign-in", body, isStarted);
   }
 
-  finish(body: AccountSignInFinish): Promise<Answer<AccountSignedIn>> {
-    return this.#ask("POST", "/api/sign-in/finish", body, isAccount);
+  async finish(body: AccountSignInFinish): Promise<Answer<AccountSignedIn>> {
+    const answer = await this.#ask("POST", "/api/sign-in/finish", body, isAccount);
+    if (answer.ok) {
+      this.#signIns++;
+    }
+    return answer;
   }
 
   signOut(): Promise<Answer<undefined>> {
@@ -70,6 +75,7 @@ export class Api {
   }
 
   async #ask<T>(method: string, path: string, body: object | undefined, fits: (value: unknown) => value is T): Promise<Answer<T>> {
+    const signIns = this.#signIns;
     const init = body === undefined ? { method } : { method, headers: { "content-type": "application/json" }, body: JSON.stringify(body) };
     const response = await this.#fetch(path, init).catch(() => undefined);
     if (response === undefined) {
@@ -80,7 +86,7 @@ export class Api {
       return fits(value) ? { ok: true, value } : { ok: false, code: MALFORMED };
     }
     const code = isError(value) ? value.code : MALFORMED;
-    if (code === SIGNED_OUT) {
+    if (code === SIGNED_OUT && signIns === this.#signIns) {
       this.#signedOut();
     }
     return { ok: false, code };

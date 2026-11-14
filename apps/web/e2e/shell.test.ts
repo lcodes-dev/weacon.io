@@ -171,6 +171,13 @@ test("the header switches workspaces, and the page reopens the last one", { time
     await page.getByLabel("Code").fill(await served.code(EMAIL));
     await page.getByRole("button", { name: "Sign in" }).click();
     await page.getByRole("heading", { name: "Workspaces" }).waitFor();
+
+    // A feed refused for want of a session sends the page back to sign-in.
+    await page.getByRole("button", { name: "Personal" }).click();
+    await page.getByText("Connected").waitFor();
+    await page.context().clearCookies();
+    await page.getByLabel("Workspace").selectOption({ label: "Made-up team" });
+    await page.getByRole("heading", { name: "Sign in" }).waitFor();
   } finally {
     await served.close();
   }

@@ -82,7 +82,7 @@ export function Workspaces({ api, who }: { api: Api; who: ReactNode }) {
   return (
     <Frame middle={selector} right={who}>
       {workspace !== undefined ? (
-        <Workspace key={workspace.id} workspace={workspace} />
+        <Workspace key={workspace.id} api={api} workspace={workspace} />
       ) : (
         <section className="page workspaces">
           <h1>Workspaces</h1>
@@ -154,8 +154,8 @@ function NewWorkspace({ api, made }: { api: Api; made(workspace: WorkspaceSummar
   );
 }
 
-function Workspace({ workspace }: { workspace: WorkspaceSummary }) {
-  const status = useFeed(workspace.id);
+function Workspace({ api, workspace }: { api: Api; workspace: WorkspaceSummary }) {
+  const status = useFeed(workspace.id, api);
   return (
     <div className="workspace">
       <nav className="chats" aria-label="Chats">
@@ -170,17 +170,26 @@ function Workspace({ workspace }: { workspace: WorkspaceSummary }) {
   );
 }
 
-/** Where the feed of `workspace`'s changes stands, while it is open. */
-function useFeed(workspace: WorkspaceId): Status {
+/** Where the feed of `workspace`'s changes stands; when it ends, asking for the session lets a lost one reach sign-in. */
+function useFeed(workspace: WorkspaceId, api: Api): Status {
   const [status, setStatus] = useState<Status>({ state: "connecting" });
   useEffect(() => {
     let current = true;
     const socket = new WebSocket(feedUrl(window.location, workspace));
-    new Connection(socket, ME, { status: (next) => current && setStatus(next), message: () => {} }, FEED);
+    const onStatus = (next: Status) => {
+      if (!current) {
+        return;
+      }
+      setStatus(next);
+      if (next.state === "ended") {
+        void api.session();
+      }
+    };
+    new Connection(socket, ME, { status: onStatus, message: () => {} }, FEED);
     return () => {
       current = false;
       socket.close();
     };
-  }, [workspace]);
+  }, [workspace, api]);
   return status;
 }

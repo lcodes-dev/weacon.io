@@ -117,3 +117,28 @@ test("whenever the server says the session is over, the page is told", async () 
   await api.create("Made up");
   assert.equal(ended(), 2);
 });
+
+test("a request sent before a newer sign-in can't end it, but one before a failed sign-in can", async () => {
+  type Response = Awaited<ReturnType<Fetch>>;
+  const answer = (status: number, body: unknown): Response => ({ status, json: () => Promise.resolve(body) });
+  const over = answer(401, { code: "sign_in.required", retryable: false });
+  for (const [signIn, ended] of [
+    [answer(200, ADA), 0],
+    [answer(401, { code: "sign_in.failed", retryable: false }), 1],
+  ] as const) {
+    let ends = 0;
+    let answerLate = (_: Response) => {};
+    const answers: Array<() => Promise<Response>> = [
+      () => new Promise((resolve) => (answerLate = resolve)),
+      () => Promise.resolve(signIn),
+    ];
+    const api = new Api(() => answers.shift()?.() ?? Promise.reject(new TypeError("none")), () => ends++);
+
+    const late = api.workspaces();
+    await api.finish({ email: "ada@example.com", code: "12345678", challenge: "ch-1" });
+    answerLate(over);
+
+    assert.deepEqual(await late, { ok: false, code: "sign_in.required" });
+    assert.equal(ends, ended);
+  }
+});
