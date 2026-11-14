@@ -132,11 +132,11 @@ export class Connection {
 }
 
 const ENDINGS: Record<End, string> = {
-  "connection.lost": "The server closed the connection",
-  "connection.refused": "The server can't be reached",
-  "connection.no_answer": "The server didn't answer",
-  "connection.other_protocol": "The server runs another version of Weacon; reload the page",
-  "connection.server_too_old": "The server is too old for this app",
+  "connection.lost": "The server closed the connection.",
+  "connection.refused": "The server can't be reached.",
+  "connection.no_answer": "The server didn't answer.",
+  "connection.other_protocol": "The server runs another version of Weacon. Reload the page.",
+  "connection.server_too_old": "The server is too old for this app.",
 };
 
 /** What the header says about the connection. */

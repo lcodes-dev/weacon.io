@@ -85,7 +85,7 @@ test("a person signs in with the code sent to them, stays signed in, and signs o
 
   await page.route("**/api/sign-out", (route) => route.abort());
   await page.getByRole("button", { name: "Sign out" }).click();
-  await page.getByRole("alert").getByText("The server can't be reached").waitFor();
+  await page.getByRole("alert").getByText("The server can't be reached.").waitFor();
   assert.equal(await page.locator("header .who .muted").innerText(), EMAIL);
   await page.unroute("**/api/sign-out");
   await page.getByRole("button", { name: "Sign out" }).click();
@@ -152,7 +152,7 @@ test("a signed-in person makes a workspace, opens its feed, and finds it again a
 
   await page.route("**/api/workspaces", (route) => route.abort());
   await page.reload();
-  await page.getByText("The server can't be reached").waitFor();
+  await page.getByText("The server can't be reached.").waitFor();
   assert.equal(await page.getByRole("button", { name: "Create" }).count(), 0);
   await page.unroute("**/api/workspaces");
   await page.getByRole("button", { name: "Try again" }).click();
@@ -277,7 +277,7 @@ test("Settings shows the account and this build, and signs out from there", { ti
   await page.getByRole("button", { name: "Settings" }).click();
   await page.route("**/api/sign-out", (route) => route.abort());
   await page.getByRole("button", { name: "Sign out" }).click();
-  await page.getByRole("alert").getByText("The server can't be reached").waitFor();
+  await page.getByRole("alert").getByText("The server can't be reached.").waitFor();
   assert.equal(await email.innerText(), EMAIL);
   await page.getByRole("button", { name: "Back" }).click();
   assert.equal(await page.getByRole("alert").count(), 0);
@@ -311,7 +311,7 @@ test("a page that can't reach the server says so, and trying again reaches sign-
   const { page } = served;
   await page.route("**/api/session", (route) => route.abort());
   await page.reload();
-  await page.getByText("The server can't be reached").waitFor();
+  await page.getByText("The server can't be reached.").waitFor();
   await page.unroute("**/api/session");
   await page.getByRole("button", { name: "Try again" }).click();
   await page.getByLabel("Email").waitFor();

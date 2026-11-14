@@ -125,14 +125,14 @@ test("a server that doesn't welcome the app in time ends the connection", () => 
 test("the header says how the connection stands", () => {
   assert.equal(statusText({ state: "connecting" }), "Connecting to the server");
   assert.equal(statusText({ state: "live", server: SERVER, capabilities: [] }), "Connected");
-  assert.equal(statusText({ state: "ended", code: "connection.lost" }), "The server closed the connection");
-  assert.equal(statusText({ state: "ended", code: "connection.refused" }), "The server can't be reached");
-  assert.equal(statusText({ state: "ended", code: "connection.no_answer" }), "The server didn't answer");
+  assert.equal(statusText({ state: "ended", code: "connection.lost" }), "The server closed the connection.");
+  assert.equal(statusText({ state: "ended", code: "connection.refused" }), "The server can't be reached.");
+  assert.equal(statusText({ state: "ended", code: "connection.no_answer" }), "The server didn't answer.");
   assert.equal(
     statusText({ state: "ended", code: "connection.other_protocol" }),
-    "The server runs another version of Weacon; reload the page",
+    "The server runs another version of Weacon. Reload the page.",
   );
-  assert.equal(statusText({ state: "ended", code: "connection.server_too_old" }), "The server is too old for this app");
+  assert.equal(statusText({ state: "ended", code: "connection.server_too_old" }), "The server is too old for this app.");
 });
 
 test("a capability counts only while the server is live and offers it", () => {
