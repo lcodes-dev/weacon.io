@@ -1,14 +1,18 @@
 //! Helpers for the drivers' tests: a run over a replayed session, and the events it yields.
 
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use serde_json::Value;
 use tokio::io::{BufReader, DuplexStream};
 use tokio::task::JoinHandle;
 use tokio::time::timeout;
-use weacon_protocol::{AgentSession, App, Outcome, PermissionAnswer, RunEvent, RunId};
+use weacon_protocol::{
+    AccessLevel, AgentKind, AgentSession, App, Outcome, PermissionAnswer, RunEvent, RunId,
+};
 use weacon_testing::{Failure, replay};
 
+use crate::Launch;
 use crate::access::Rules;
 use crate::run::Run;
 use crate::wire::Wire;
@@ -161,5 +165,18 @@ pub(crate) fn tool_call(call: &str, tool: &str, input: Value) -> RunEvent {
         call: call.to_owned(),
         tool: tool.to_owned(),
         input,
+    }
+}
+
+/// A launch of `agent` running `program`, working in `dir`, with its config folder there.
+pub(crate) fn launch(agent: AgentKind, program: impl Into<PathBuf>, dir: &Path) -> Launch {
+    Launch {
+        agent,
+        program: program.into(),
+        config_dir: dir.join("config"),
+        cwd: dir.to_path_buf(),
+        access: AccessLevel::AskFirst,
+        mcp: None,
+        plugin: None,
     }
 }

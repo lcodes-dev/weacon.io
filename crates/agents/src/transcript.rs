@@ -22,7 +22,8 @@ pub struct Transcript {
     pub steps: Vec<Step>,
     /// Complete lines that didn't parse.
     pub skipped: usize,
-    /// Where the complete lines end: a later read of the same file starts there.
+    /// Where the complete lines end, counted from the start of the bytes read: a later read
+    /// of the same file starts that far past where this one did.
     pub end: u64,
 }
 

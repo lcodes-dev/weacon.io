@@ -16,8 +16,7 @@ use crate::platform;
 use crate::run::{self, AgentRun};
 use crate::spawn::SpawnPolicy;
 use crate::terminal::{Events, Size, Terminal};
-use crate::wire::Wire;
-use crate::{claude, codex};
+use crate::vendor::{Vendor, unknown, vendor};
 
 /// How to start one of the person's own agents for one workspace.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -79,11 +78,7 @@ impl Launch {
         workspace_dir: &Path,
         cwd: PathBuf,
     ) -> Result<Self, Fault> {
-        let name = match agent {
-            AgentKind::Claude => "claude",
-            AgentKind::Codex => "codex",
-            AgentKind::Newer => return Err(unknown()),
-        };
+        let name = agent.name().ok_or_else(unknown)?;
         Ok(Self {
             agent,
             program: find(name).ok_or_else(not_installed)?,
@@ -107,7 +102,7 @@ impl Launch {
         run: RunId,
         session: Option<&AgentSession>,
     ) -> Result<AgentRun, Fault> {
-        let (command, wire) = self.command(app, session)?;
+        let (command, wire) = (self.vendor()?.drive)(self, app, session);
         let rules = Rules {
             level: self.access,
             cwd: self.cwd.clone(),
@@ -126,11 +121,8 @@ impl Launch {
     /// # Errors
     /// When this build doesn't know the agent, or the command can't be run or doesn't end.
     pub async fn sign_in(&self) -> Result<SignIn, Fault> {
-        let mut command = self.vendors(claude::status, codex::status)?;
-        let own_sign_in = match self.agent {
-            AgentKind::Claude => claude::own_sign_in,
-            AgentKind::Codex | AgentKind::Newer => codex::own_sign_in,
-        };
+        let vendor = self.vendor()?;
+        let mut command = self.status_command(vendor);
         command
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
@@ -143,7 +135,7 @@ impl Launch {
             )
         };
         match timeout(STATUS_TIMEOUT, status_of(command)).await {
-            Ok(Ok((exit, status))) if exit.success() && own_sign_in(&status) => {
+            Ok(Ok((exit, status))) if exit.success() && (vendor.own_sign_in)(&status) => {
                 Ok(SignIn::SignedIn)
             }
             Ok(Ok(_)) => Ok(SignIn::SignedOut),
@@ -174,7 +166,7 @@ impl Launch {
     /// When this build doesn't know the agent, its program can't be run, or the sign-in ends
     /// without success.
     pub async fn log_in(&self) -> Result<(), Fault> {
-        let mut command = self.vendors(claude::login, codex::login)?;
+        let mut command = self.login_command(self.vendor()?);
         let failed = || Fault::new(code!("agent.login_failed"), "The sign-in didn't finish");
         match command.status().await {
             Ok(exit) if exit.success() => Ok(()),
@@ -190,16 +182,13 @@ impl Launch {
     /// # Errors
     /// When this agent can't be resumed by hand, or its program can't be run.
     pub async fn resume_by_hand(&self, session: &AgentSession) -> Result<(), Fault> {
-        let mut command = match self.agent {
-            AgentKind::Claude => claude::resume(self, session),
-            AgentKind::Codex => {
-                return Err(Fault::new(
-                    code!("agent.no_resume_by_hand"),
-                    "This agent can't be carried on by hand yet",
-                ));
-            }
-            AgentKind::Newer => return Err(unknown()),
-        };
+        let resume = self.vendor()?.resume.ok_or_else(|| {
+            Fault::new(
+                code!("agent.no_resume_by_hand"),
+                "This agent can't be carried on by hand yet",
+            )
+        })?;
+        let mut command = resume(self, session);
         let failed = |error| {
             Fault::new(code!("agent.resume_failed"), "The agent couldn't start").because(error)
         };
@@ -220,7 +209,7 @@ impl Launch {
     /// # Errors
     /// When this build doesn't know the agent, or its program can't be started.
     pub fn log_in_terminal(&self, size: Size) -> Result<(Terminal, Events), Fault> {
-        let mut command = self.vendors(claude::login, codex::login)?;
+        let mut command = self.login_command(self.vendor()?);
         // What the browser's terminal emulates, whatever this process runs under.
         command.env("TERM", "xterm-256color");
         let (pty, events) = platform::Pty::spawn(command, size).map_err(|error| {
@@ -229,31 +218,34 @@ impl Launch {
         Ok((Terminal { pty }, Events(events)))
     }
 
-    // The command of this launch's vendor.
-    fn vendors(
-        &self,
-        claude: fn(&Self) -> Command,
-        codex: fn(&Self) -> Command,
-    ) -> Result<Command, Fault> {
-        match self.agent {
-            AgentKind::Claude => Ok(claude(self)),
-            AgentKind::Codex => Ok(codex(self)),
-            AgentKind::Newer => Err(unknown()),
-        }
+    /// Whether a run of this agent is pointed at the core's MCP.
+    #[must_use]
+    pub fn takes_mcp(&self) -> bool {
+        self.vendor().is_ok_and(|vendor| vendor.takes_mcp)
     }
 
-    fn command(&self, app: &App, session: Option<&AgentSession>) -> Result<(Command, Wire), Fault> {
-        match self.agent {
-            AgentKind::Claude => Ok((
-                claude::command(self, session),
-                Wire::Claude(claude::Wire::default()),
-            )),
-            AgentKind::Codex => Ok((
-                codex::command(self),
-                Wire::Codex(codex::Wire::new(session.cloned(), app, self.access)),
-            )),
-            AgentKind::Newer => Err(unknown()),
-        }
+    pub(crate) fn with_workspace_sign_in(&self, vendor: &Vendor) -> Command {
+        let mut command = Command::new(&self.program);
+        let inherited = std::env::vars_os().map(|(name, _)| name);
+        vendor.other_sign_ins.remove(&mut command, inherited);
+        command.env(vendor.config_variable, &self.config_dir);
+        command
+    }
+
+    pub(crate) fn status_command(&self, vendor: &Vendor) -> Command {
+        let mut command = self.with_workspace_sign_in(vendor);
+        command.args(vendor.status);
+        command
+    }
+
+    pub(crate) fn login_command(&self, vendor: &Vendor) -> Command {
+        let mut command = self.with_workspace_sign_in(vendor);
+        command.args(vendor.login);
+        command
+    }
+
+    fn vendor(&self) -> Result<&'static Vendor, Fault> {
+        vendor(self.agent)
     }
 }
 
@@ -300,10 +292,6 @@ fn not_installed() -> Fault {
     )
 }
 
-fn unknown() -> Fault {
-    Fault::new(code!("agent.unknown"), "This build doesn't know that agent")
-}
-
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
@@ -311,18 +299,11 @@ mod tests {
     use weacon_testing::TempDir;
 
     use super::*;
-    use crate::test_support::{app, run_id};
+    use crate::test_support::{self, app, run_id};
+    use crate::wire::Wire;
 
     fn launch(agent: AgentKind, dir: &TempDir) -> Launch {
-        Launch {
-            agent,
-            program: dir.join("agent"),
-            config_dir: dir.join("config"),
-            cwd: dir.to_path_buf(),
-            access: AccessLevel::AskFirst,
-            mcp: None,
-            plugin: None,
-        }
+        test_support::launch(agent, dir.join("agent"), dir)
     }
 
     fn start(launch: &Launch) -> Result<AgentRun, Fault> {
@@ -399,10 +380,21 @@ mod tests {
     }
 
     #[test]
+    fn only_claude_code_is_pointed_at_the_mcp() {
+        let dir = TempDir::new().unwrap();
+        let takes = |agent| launch(agent, &dir).takes_mcp();
+
+        assert!(takes(AgentKind::Claude));
+        assert!(!takes(AgentKind::Codex));
+        assert!(!takes(AgentKind::Newer));
+    }
+
+    #[test]
     fn each_agent_starts_through_its_own_driver() {
         let dir = TempDir::new().unwrap();
         let first_arg = |agent| {
-            let (command, wire) = launch(agent, &dir).command(&app(), None).unwrap();
+            let launch = launch(agent, &dir);
+            let (command, wire) = (launch.vendor().unwrap().drive)(&launch, &app(), None);
             let command = command.as_std();
             assert_eq!(command.get_program(), dir.join("agent"));
             (command.get_args().next().map(ToOwned::to_owned), wire)
@@ -492,10 +484,7 @@ mod tests {
     #[tokio::test]
     async fn the_status_commands_exit_says_whether_the_agent_is_signed_in() {
         let dir = TempDir::new().unwrap();
-        let with = |agent, program: &str| Launch {
-            program: PathBuf::from(program),
-            ..launch(agent, &dir)
-        };
+        let with = |agent, program: &str| test_support::launch(agent, program, &dir);
         let cases = [
             (AgentKind::Codex, "true", SignIn::SignedIn),
             (AgentKind::Codex, "false", SignIn::SignedOut),
@@ -525,10 +514,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn a_status_command_that_never_ends_is_given_up_on() {
         let dir = TempDir::new().unwrap();
-        let hanging = Launch {
-            program: PathBuf::from("yes"),
-            ..launch(AgentKind::Codex, &dir)
-        };
+        let hanging = test_support::launch(AgentKind::Codex, "yes", &dir);
 
         let error = hanging.sign_in().await.unwrap_err();
 
@@ -539,10 +525,7 @@ mod tests {
     #[tokio::test]
     async fn a_run_is_refused_unless_the_workspace_is_signed_in_on_its_own() {
         let dir = TempDir::new().unwrap();
-        let with = |program: &str| Launch {
-            program: PathBuf::from(program),
-            ..launch(AgentKind::Codex, &dir)
-        };
+        let with = |program: &str| test_support::launch(AgentKind::Codex, program, &dir);
 
         let refused = with("false").require_sign_in().await.unwrap_err();
 
@@ -577,10 +560,7 @@ mod tests {
     #[tokio::test]
     async fn a_sign_in_ends_as_the_vendors_program_does() {
         let dir = TempDir::new().unwrap();
-        let with = |program: &str| Launch {
-            program: PathBuf::from(program),
-            ..launch(AgentKind::Claude, &dir)
-        };
+        let with = |program: &str| test_support::launch(AgentKind::Claude, program, &dir);
         // A file that can't be run.
         std::fs::write(dir.join("agent"), "").unwrap();
 
