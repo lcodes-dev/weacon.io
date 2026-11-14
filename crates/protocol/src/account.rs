@@ -37,15 +37,9 @@ impl fmt::Debug for SignInStart {
 
 /// The answer to a [`SignInStart`], for members and strangers alike: the challenge to finish
 /// it with.
-#[derive(PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct SignInStarted {
     pub challenge: ChallengeId,
-}
-
-impl fmt::Debug for SignInStarted {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("SignInStarted").finish_non_exhaustive()
-    }
 }
 
 /// Trades the one-time code sent to `email` for a [`SignedIn`]. `challenge` is the one its
@@ -202,7 +196,10 @@ mod tests {
             format!("{signed_in:?}"),
             r#"SignedIn { member: MemberId("m-1"), .. }"#
         );
-        assert_eq!(format!("{started:?}"), "SignInStarted { .. }");
+        assert_eq!(
+            format!("{started:?}"),
+            "SignInStarted { challenge: ChallengeId(..) }"
+        );
     }
 
     fn account() -> AccountId {
