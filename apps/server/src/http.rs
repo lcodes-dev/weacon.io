@@ -24,6 +24,7 @@ use crate::feed;
 use crate::limit::Limit;
 use crate::outbox::Outbox;
 use crate::pairing;
+use crate::search;
 use crate::secret::Secret;
 use crate::sign_in;
 use crate::sign_up::SignUp;
@@ -188,6 +189,7 @@ fn router(shared: Shared) -> Router {
             "/api/workspaces/{workspace}/tasks/{task}",
             post(tasks::change),
         )
+        .route("/api/workspaces/{workspace}/search", post(search::search))
         .merge(doc_routes())
         .merge(web::routes(shared.web))
         .layer(DefaultBodyLimit::max(MAX_BODY))

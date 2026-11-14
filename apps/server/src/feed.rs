@@ -13,6 +13,7 @@ use weacon_protocol::{Capability, Code, Message, WorkspaceChange, WorkspaceId, c
 use crate::auth::Member;
 use crate::connections::Place;
 use crate::http::{Shared, failure};
+use crate::search::SEARCH;
 use crate::socket::{Closed, Pings, greet, reply};
 
 /// What a client must offer, and the server offers, to get a workspace's changes.
@@ -116,8 +117,8 @@ async fn run(
     shared: &Shared,
     feed: &mut Feed,
 ) -> Result<Infallible, Closed> {
-    let [feed_offer, tasks, docs] = [FEED, TASKS, DOCS].map(Capability::from);
-    let offered = vec![feed_offer.clone(), tasks.clone(), docs.clone()];
+    let [feed_offer, tasks, docs, search] = [FEED, TASKS, DOCS, SEARCH].map(Capability::from);
+    let offered = vec![feed_offer.clone(), tasks.clone(), docs.clone(), search];
     let greeted = greet(socket, shared, offered, &feed_offer);
     let hello = timeout(shared.sockets.hello_within, greeted)
         .await
@@ -295,7 +296,7 @@ mod tests {
         };
         assert_eq!(
             welcome.capabilities,
-            [FEED, TASKS, DOCS].map(Capability::from)
+            [FEED, TASKS, DOCS, SEARCH].map(Capability::from)
         );
         assert_eq!(missed, joined(1, "m1"));
         assert_eq!(live, joined(2, "m2"));

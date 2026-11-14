@@ -14,6 +14,7 @@ mod pick;
 mod receipt;
 mod repo;
 mod run;
+mod search;
 mod settings;
 mod task;
 mod team;
@@ -53,6 +54,7 @@ pub use run::{
     AgentKind, AgentOwner, AgentRef, AgentSession, PermissionAnswer, RunEvent, RunId, RunState,
     RunStatus, RunUpdate,
 };
+pub use search::{Mark, SearchAnswer, SearchHit, SearchQuery, Snippet};
 pub use settings::{
     AgentSignIn, MachineSettings, MachineSettingsAction, MachineSettingsAnswer,
     MachineSettingsAnswerKind, MachineSettingsCommand, MachineSettingsQuery,
@@ -125,6 +127,8 @@ mod tests {
         generator.subschema_for::<DocRecord>();
         generator.subschema_for::<DocRevise>();
         generator.subschema_for::<DocHistory>();
+        generator.subschema_for::<SearchQuery>();
+        generator.subschema_for::<SearchAnswer>();
         generator.subschema_for::<ReleaseManifest>();
         generator.subschema_for::<TerminalInput>();
         generator.subschema_for::<TerminalOutput>();

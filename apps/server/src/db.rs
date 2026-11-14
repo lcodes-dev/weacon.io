@@ -8,6 +8,7 @@ mod docs;
 mod machine;
 mod owned;
 mod schema;
+mod search;
 mod tasks;
 mod workspace;
 

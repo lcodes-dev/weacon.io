@@ -139,6 +139,7 @@ impl Workspace {
         .execute(&mut *transaction)
         .await
         .map_err(failed)?;
+        self.index_task(transaction, task, attribution.at()).await?;
         let versioned = Versioned::Task(&task.id, version);
         self.changed(transaction, versioned, attribution.accepted_by())
             .await

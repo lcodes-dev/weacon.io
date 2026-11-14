@@ -1883,6 +1883,26 @@
         "paired_at"
       ]
     },
+    "Mark": {
+      "description": "The part of a [`Snippet`] from `start` up to `end`, counted in UTF-16 code units as a\nbrowser counts a string.",
+      "type": "object",
+      "properties": {
+        "end": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "start": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "start",
+        "end"
+      ]
+    },
     "MemberId": {
       "description": "A member of a workspace, 1–64 ASCII letters, digits, `-` or `_`.",
       "type": "string",
@@ -2579,6 +2599,94 @@
         "event"
       ]
     },
+    "SearchAnswer": {
+      "description": "The server's answer to a [`SearchQuery`]: matches in the title first, then the most\nrecently changed.",
+      "type": "object",
+      "properties": {
+        "hits": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/SearchHit"
+          }
+        }
+      },
+      "required": [
+        "hits"
+      ]
+    },
+    "SearchHit": {
+      "description": "One thing a [`SearchQuery`] found, with its title and where it matched.",
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "task"
+            },
+            "snippet": {
+              "$ref": "#/$defs/Snippet"
+            },
+            "task": {
+              "$ref": "#/$defs/TaskId"
+            },
+            "title": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "task",
+            "title",
+            "snippet"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "doc": {
+              "$ref": "#/$defs/DocId"
+            },
+            "kind": {
+              "type": "string",
+              "const": "doc"
+            },
+            "snippet": {
+              "$ref": "#/$defs/Snippet"
+            },
+            "title": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "doc",
+            "title",
+            "snippet"
+          ]
+        }
+      ]
+    },
+    "SearchQuery": {
+      "description": "Asks the server, under the capability `workspace.search`, for what in the workspace holds\nevery word of `text`, at most 8 words of at most 64 characters, in 256 bytes. Words of three\nor more characters match\nwhatever their case and accents; shorter ones match as typed, ignoring only ASCII case, and\ntext without a longer word finds nothing. `limit` is 20 without one, and at most 50.",
+      "type": "object",
+      "properties": {
+        "limit": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        },
+        "text": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "text"
+      ]
+    },
     "Sha256": {
       "description": "A SHA-256 digest: 64 lowercase hex digits.",
       "type": "string",
@@ -2667,6 +2775,25 @@
       "required": [
         "member",
         "token"
+      ]
+    },
+    "Snippet": {
+      "description": "Plain text from around a match, and the parts of it that matched.",
+      "type": "object",
+      "properties": {
+        "marks": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Mark"
+          }
+        },
+        "text": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "text",
+        "marks"
       ]
     },
     "TaskChange": {
