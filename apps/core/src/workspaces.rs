@@ -1,19 +1,18 @@
 //! What this machine keeps for each workspace: a folder of its own, holding each agent's
 //! config folder and so its sign-in.
 
-mod access;
+pub(crate) mod access;
 
 use std::ffi::OsString;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
-use weacon_agents::{Launch, SignIn};
+use weacon_agents::{Launch, SignIn, resolve};
 use weacon_observability::Fault;
 use weacon_protocol::{AccessLevel, AgentKind, WorkspaceId, code};
 
-use access::Settings;
-pub(crate) use access::{parse_level, run as access};
+use access::{Settings, level_name};
 
 use crate::app::{App, runtime};
 use crate::{names, platform};
@@ -32,19 +31,19 @@ pub(crate) fn login(app: &App, agent: AgentKind, workspace: &WorkspaceId) -> Res
 
 #[derive(Clone, Debug)]
 pub(crate) struct Workspaces {
-    state: PathBuf,
-    dir: PathBuf,
-    settings: PathBuf,
-    path: Option<OsString>,
+    state_dir: PathBuf,
+    roots_dir: PathBuf,
+    settings_dir: PathBuf,
+    env_path: Option<OsString>,
 }
 
 impl Workspaces {
     pub(crate) fn new(state_dir: &Path, path: Option<OsString>) -> Self {
         Self {
-            state: state_dir.to_path_buf(),
-            dir: state_dir.join("workspaces"),
-            settings: state_dir.join("settings"),
-            path,
+            state_dir: state_dir.to_path_buf(),
+            roots_dir: state_dir.join("workspaces"),
+            settings_dir: state_dir.join("settings"),
+            env_path: path,
         }
     }
 
@@ -55,13 +54,13 @@ impl Workspaces {
         agent: AgentKind,
         cwd: PathBuf,
     ) -> Result<Launch, Fault> {
-        let find = |name: &str| platform::find_program(name, self.path.as_deref()?);
+        let find = |name: &str| platform::find_program(name, self.env_path.as_deref()?);
         Launch::new(agent, find, &self.root(workspace), cwd)
     }
 
     /// The workspaces this machine has a folder for, sorted by id; none before the first.
     fn known(&self) -> io::Result<Vec<WorkspaceId>> {
-        let entries = match fs::read_dir(&self.dir) {
+        let entries = match fs::read_dir(&self.roots_dir) {
             Ok(entries) => entries,
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
             Err(error) => return Err(error),
@@ -101,34 +100,57 @@ impl Workspaces {
             .collect();
         let asked: Vec<Launch> = places.iter().flatten().cloned().collect();
         let mut answers = sign_ins(&asked).into_iter();
-        let mut states = places.iter().map(|place| match place {
-            Some(_) => state(answers.next().flatten()),
-            None => "not installed",
-        });
-        let lines = known.iter().map(|workspace| {
-            let agents =
-                AGENTS.map(|(_, name)| format!("{name} {}", states.next().unwrap_or(state(None))));
-            let (id, agents) = (workspace.as_str(), agents.join(", "));
-            match Settings::read(&self.settings_file(workspace)) {
-                Ok(settings) => {
-                    let (level, warning) = (settings.level(), settings.warning());
-                    format!("Workspace {id}: access {level}; {agents}\n{warning}")
-                }
-                Err(_) => format!("Workspace {id}: access unknown; {agents}\n"),
+        let labels: Vec<&str> = places
+            .iter()
+            .map(|place| match place {
+                Some(_) => sign_in_label(answers.next().flatten()),
+                None => "not installed",
+            })
+            .collect();
+        Ok(known
+            .iter()
+            .zip(labels.chunks(AGENTS.len()))
+            .map(|(workspace, labels)| self.line(workspace, labels))
+            .collect())
+    }
+
+    // A workspace's access level and the sign-in of each of its agents, then any warning.
+    fn line(&self, workspace: &WorkspaceId, labels: &[&str]) -> String {
+        let agents: Vec<String> = AGENTS
+            .iter()
+            .zip(labels)
+            .map(|((_, name), label)| format!("{name} {label}"))
+            .collect();
+        let (id, agents) = (workspace.as_str(), agents.join(", "));
+        match self.settings(workspace) {
+            Ok(settings) => {
+                let (level, warning) = (level_name(settings.access), settings.warning());
+                format!("Workspace {id}: access {level}; {agents}\n{warning}")
             }
-        });
-        Ok(lines.collect())
+            Err(_) => format!("Workspace {id}: access unknown; {agents}\n"),
+        }
     }
 
     /// The folder for everything this machine keeps for `workspace` but its settings.
     pub(crate) fn root(&self, workspace: &WorkspaceId) -> PathBuf {
-        self.dir.join(folder_name(workspace))
+        self.roots_dir.join(folder_name(workspace))
     }
 
     /// The file of `workspace`'s settings, outside every folder an agent is given.
     pub(crate) fn settings_file(&self, workspace: &WorkspaceId) -> PathBuf {
-        self.settings
+        self.settings_dir
             .join(format!("{}.json", folder_name(workspace)))
+    }
+
+    /// What this machine's owner chose for `workspace`.
+    pub(crate) fn settings(&self, workspace: &WorkspaceId) -> Result<Settings, Fault> {
+        Settings::read(&self.settings_file(workspace))
+    }
+
+    /// Saves `settings` for `workspace`; its folder makes it one this machine knows.
+    pub(crate) fn save(&self, workspace: &WorkspaceId, settings: &Settings) -> io::Result<()> {
+        platform::private_dir(&self.root(workspace))?;
+        settings.write(&self.settings_file(workspace))
     }
 
     /// How to start `agent` in `cwd` with `workspace`'s own config folder; the only place runs
@@ -145,15 +167,20 @@ impl Workspaces {
                 "Agents can't work in or above Weacon's own folder",
             ));
         }
-        let access = Settings::read(&self.settings_file(workspace))?.access;
+        let access = self.settings(workspace)?.access;
         if matches!(access, AccessLevel::Off | AccessLevel::Newer) {
             return Err(Fault::new(
                 code!("access.off"),
                 "This workspace's agents are turned off on this machine",
             ));
         }
+        let hook = match agent {
+            AgentKind::Claude => Some(guard_hook(workspace, &cwd)?),
+            AgentKind::Codex | AgentKind::Newer => None,
+        };
         Ok(Launch {
             access,
+            hook,
             ..self.prepared(workspace, agent, cwd)?
         })
     }
@@ -161,7 +188,7 @@ impl Workspaces {
     // Whether `cwd` is inside the state folder or holds it, so a run could reach the settings;
     // a folder that can't be resolved counts as one that does.
     fn overlaps_state(&self, cwd: &Path) -> bool {
-        let (Some(state), Some(cwd)) = (resolved(&self.state), resolved(cwd)) else {
+        let (Some(state), Some(cwd)) = (resolve(&self.state_dir), resolve(cwd)) else {
             return true;
         };
         cwd.starts_with(&state) || state.starts_with(&cwd)
@@ -186,28 +213,26 @@ impl Workspaces {
     }
 }
 
-// `path` with its deepest existing folder resolved, so a missing path compares like an existing
-// one; `None` when something on the way exists but can't be resolved, such as a dangling symlink.
-pub(crate) fn resolved(path: &Path) -> Option<PathBuf> {
-    let mut missing = Vec::new();
-    let mut base = path;
-    loop {
-        match base.canonicalize() {
-            Ok(found) => {
-                return Some(
-                    missing
-                        .iter()
-                        .rev()
-                        .fold(found, |path, name| path.join(name)),
-                );
-            }
-            Err(error) if error.kind() != io::ErrorKind::NotFound => return None,
-            Err(_) if base.symlink_metadata().is_ok() => return None,
-            Err(_) => {}
-        }
-        missing.push(base.file_name()?);
-        base = base.parent()?;
-    }
+// The core's own `guard check` for the run's hook; a run without its guard doesn't start.
+fn guard_hook(workspace: &WorkspaceId, cwd: &Path) -> Result<Vec<String>, Fault> {
+    let unavailable = || {
+        Fault::new(
+            code!("workspace.guard_unavailable"),
+            "The guard for the agent's run couldn't be set up",
+        )
+    };
+    let exe = std::env::current_exe().map_err(|error| unavailable().because(error))?;
+    let (Some(exe), Some(cwd)) = (exe.to_str(), cwd.to_str()) else {
+        return Err(unavailable());
+    };
+    // Each value joined to its option, so none can be read as an option of its own.
+    Ok(vec![
+        exe.to_owned(),
+        "guard".to_owned(),
+        "check".to_owned(),
+        format!("--workspace={}", workspace.as_str()),
+        format!("--worktree={cwd}"),
+    ])
 }
 
 const AGENTS: [(AgentKind, &str); 2] = [
@@ -219,7 +244,7 @@ fn folder_name(workspace: &WorkspaceId) -> String {
     names::case_safe_name("w-", workspace.as_str())
 }
 
-const fn state(sign_in: Option<SignIn>) -> &'static str {
+const fn sign_in_label(sign_in: Option<SignIn>) -> &'static str {
     match sign_in {
         Some(SignIn::SignedIn) => "signed in",
         Some(SignIn::SignedOut) => "signed out",
@@ -269,17 +294,31 @@ mod tests {
         let codex = launch("w1", AgentKind::Codex);
         let other = launch("w2", AgentKind::Claude);
 
+        let hook = claude.hook.clone().unwrap();
         assert_eq!(
-            claude,
+            Launch {
+                hook: None,
+                ..claude.clone()
+            },
             Launch {
                 agent: AgentKind::Claude,
                 program: program(&dir, "claude"),
                 config_dir: dir.join("workspaces/w-w1/claude"),
                 cwd: PathBuf::from("/work"),
                 access: AccessLevel::AskFirst,
+                hook: None,
                 mcp: None,
             }
         );
+        assert_eq!(
+            hook.first().map(PathBuf::from),
+            std::env::current_exe().ok()
+        );
+        assert_eq!(
+            &hook[1..],
+            ["guard", "check", "--workspace=w1", "--worktree=/work"]
+        );
+        assert_eq!(codex.hook, None);
         assert_eq!(codex.program, program(&dir, "codex"));
         assert_eq!(codex.config_dir, dir.join("workspaces/w-w1/codex"));
         assert_eq!(other.config_dir, dir.join("workspaces/w-w2/claude"));

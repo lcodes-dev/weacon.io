@@ -42,12 +42,15 @@ pub(crate) enum Command {
         /// The workspace's id.
         workspace: WorkspaceId,
         /// What its agents may do: off, read-only, ask-first or full.
-        #[arg(value_parser = crate::workspaces::parse_level)]
+        #[arg(value_parser = crate::workspaces::access::parse_level)]
         level: AccessLevel,
         /// Whether other people are in the workspace; kept as it was when left out.
         #[arg(long)]
         team: Option<bool>,
     },
+    /// Answer an agent's hooks.
+    #[command(subcommand)]
+    Guard(GuardCommand),
     /// Choose whether this core sends error reports, or show the answer.
     Reports {
         /// on or off; left out, shows the answer.
@@ -68,6 +71,41 @@ fn agent(name: &str) -> Result<AgentKind, &'static str> {
         .ok()
         .filter(|agent| *agent != AgentKind::Newer)
         .ok_or("not an agent this core runs")
+}
+
+#[derive(Debug, PartialEq, Eq, Subcommand)]
+pub(crate) enum GuardCommand {
+    /// Read Claude Code's pre-tool hook call on stdin, and ask a person first if it's on the
+    /// guard's list.
+    Check(CheckCommand),
+    /// Also ask before commands that start with these words in this workspace.
+    Add {
+        /// The workspace's id.
+        workspace: WorkspaceId,
+        /// The command's first words, such as: terraform destroy.
+        #[arg(required = true, num_args = 1..)]
+        words: Vec<String>,
+    },
+    /// Stop asking about commands added with `weacon guard add`.
+    Remove {
+        /// The workspace's id.
+        workspace: WorkspaceId,
+        /// The command's first words, as they were added.
+        #[arg(required = true, num_args = 1..)]
+        words: Vec<String>,
+    },
+    /// List the commands this workspace added.
+    List { workspace: WorkspaceId },
+}
+
+#[derive(Debug, PartialEq, Eq, Args)]
+pub(crate) struct CheckCommand {
+    /// The workspace of the Weacon run the agent is in.
+    #[arg(long)]
+    pub(crate) workspace: WorkspaceId,
+    /// The chat's worktree.
+    #[arg(long)]
+    pub(crate) worktree: PathBuf,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Subcommand)]
@@ -115,6 +153,7 @@ impl Command {
             | Self::Service(_)
             | Self::Login { .. }
             | Self::Access { .. }
+            | Self::Guard(_)
             | Self::Reports { .. }
             | Self::ConnectChrome
             | Self::Map(_) => "cli.log",
@@ -130,6 +169,7 @@ impl Command {
             Self::Service(_) => "service",
             Self::Login { .. } => "login",
             Self::Access { .. } => "access",
+            Self::Guard(_) => "guard",
             Self::Reports { .. } => "reports",
             Self::ConnectChrome => "connect-chrome",
             Self::NativeHost { .. } => "native-host",
@@ -404,5 +444,34 @@ mod tests {
             run(&["weacon", "fly"]).unwrap_err().kind(),
             ErrorKind::InvalidSubcommand
         );
+    }
+
+    #[test]
+    fn guard_takes_a_hooks_run_or_a_workspaces_additions() {
+        let check = run(&[
+            "weacon",
+            "guard",
+            "check",
+            "--workspace=w1",
+            "--worktree=/work",
+        ])
+        .unwrap();
+        let Command::Guard(GuardCommand::Check(hook)) = &check.command else {
+            panic!("not a guard check");
+        };
+
+        assert_eq!(hook.workspace.as_str(), "w1");
+        assert_eq!(hook.worktree, std::path::Path::new("/work"));
+        assert_eq!(
+            (check.command.name(), check.command.log_name()),
+            ("guard", "cli.log")
+        );
+        let add = run(&["weacon", "guard", "add", "w1", "terraform", "destroy"]).unwrap();
+        assert!(matches!(
+            add.command,
+            Command::Guard(GuardCommand::Add { ref words, .. }) if words == &["terraform", "destroy"]
+        ));
+        run(&["weacon", "guard", "add", "w1"]).unwrap_err();
+        run(&["weacon", "guard", "check", "--workspace=w1"]).unwrap_err();
     }
 }

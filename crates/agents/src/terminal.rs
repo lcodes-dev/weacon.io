@@ -132,6 +132,7 @@ mod tests {
                 config_dir: dir.join("config"),
                 cwd: dir.to_path_buf(),
                 access: AccessLevel::AskFirst,
+                hook: None,
                 mcp: None,
             }
         }
