@@ -8,7 +8,7 @@ use weacon_protocol::{WorkspaceCreate, WorkspaceList, code};
 use crate::app::{fresh, new_id};
 use crate::auth::{Member, Session};
 use crate::db::NewWorkspace;
-use crate::http::{Shared, failure, invalid, refused};
+use crate::http::{Body, Shared, failure, invalid, refused};
 
 pub(crate) const MAX_NAME: usize = 100;
 /// What an account's own workspace is called when it is made.
@@ -18,7 +18,7 @@ const PERSONAL: &str = "Personal";
 pub(crate) async fn create(
     State(shared): State<Shared>,
     session: Session,
-    Json(body): Json<WorkspaceCreate>,
+    Body(body): Body<WorkspaceCreate>,
 ) -> Response {
     let made = match workspace_name(&body.name).and_then(new_workspace) {
         Ok(new) => {

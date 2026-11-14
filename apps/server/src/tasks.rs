@@ -1,5 +1,5 @@
 use axum::Json;
-use axum::extract::rejection::{JsonRejection, PathRejection};
+use axum::extract::rejection::PathRejection;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
@@ -12,7 +12,7 @@ use weacon_protocol::{
 use crate::app::new_id;
 use crate::auth::Member;
 use crate::db::task_not_found;
-use crate::http::{Shared, error, failure};
+use crate::http::{Body, Shared, error, failure};
 
 /// `GET /api/workspaces/{workspace}/tasks`: the workspace's tasks, in their order.
 pub(crate) async fn list(State(shared): State<Shared>, member: Member) -> Response {
@@ -30,10 +30,10 @@ pub(crate) async fn list(State(shared): State<Shared>, member: Member) -> Respon
 pub(crate) async fn create(
     State(shared): State<Shared>,
     member: Member,
-    body: Result<Json<TaskCreate>, JsonRejection>,
+    body: Result<Body<TaskCreate>, Response>,
 ) -> Response {
     let made = async {
-        let Json(body) = body.map_err(|_| invalid())?;
+        let Body(body) = body.map_err(|_| invalid())?;
         let title = title(body.title)?;
         let tasks = member.workspace.tasks().await?;
         let order = place(&tasks, None, body.before.as_ref())?;
@@ -58,11 +58,11 @@ pub(crate) async fn change(
     State(shared): State<Shared>,
     member: Member,
     path: Result<Path<(WorkspaceId, TaskId)>, PathRejection>,
-    body: Result<Json<TaskChange>, JsonRejection>,
+    body: Result<Body<TaskChange>, Response>,
 ) -> Response {
     let edited = async {
         let Path((_, id)) = path.map_err(|_| invalid())?;
-        let Json(body) = body.map_err(|_| invalid())?;
+        let Body(body) = body.map_err(|_| invalid())?;
         let edit = match body.edit {
             TaskEditBody::Title { title: text } => TaskEdit::Title(title(text)?),
             TaskEditBody::Status { status } => TaskEdit::Status(status),

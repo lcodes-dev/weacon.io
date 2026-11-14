@@ -4,11 +4,12 @@ use std::time::{Duration, Instant, UNIX_EPOCH};
 
 use axum::Json;
 use axum::Router;
-use axum::extract::{DefaultBodyLimit, MatchedPath, Request, State};
+use axum::extract::{DefaultBodyLimit, FromRequest, MatchedPath, Request, State};
 use axum::http::{HeaderValue, Method, StatusCode, header};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
+use serde::de::DeserializeOwned;
 use tokio::net::TcpListener;
 use tokio::sync::{Semaphore, broadcast, watch};
 use tokio::time::timeout;
@@ -216,6 +217,33 @@ pub(crate) fn refused(code: Code) -> Response {
 /// Answers that the request's body isn't one the server can take, with `code`.
 pub(crate) fn invalid(code: Code) -> Response {
     error(StatusCode::UNPROCESSABLE_ENTITY, code, false)
+}
+
+/// A JSON request body; one the server can't read is refused with an `ErrorBody`, as every
+/// other client error is.
+pub(crate) struct Body<T>(pub(crate) T);
+
+impl<T: DeserializeOwned, S: Send + Sync> FromRequest<S> for Body<T> {
+    type Rejection = Response;
+
+    async fn from_request(request: Request, state: &S) -> Result<Self, Response> {
+        Json::<T>::from_request(request, state)
+            .await
+            .map(|Json(body)| Self(body))
+            .map_err(|rejection| match rejection.status() {
+                StatusCode::PAYLOAD_TOO_LARGE => error(
+                    StatusCode::PAYLOAD_TOO_LARGE,
+                    code!("request.too_large"),
+                    false,
+                ),
+                StatusCode::UNSUPPORTED_MEDIA_TYPE => error(
+                    StatusCode::UNSUPPORTED_MEDIA_TYPE,
+                    code!("request.not_json"),
+                    false,
+                ),
+                _ => error(StatusCode::BAD_REQUEST, code!("request.invalid"), false),
+            })
+    }
 }
 
 /// Answers that the request isn't from the server's own pages.
@@ -501,5 +529,40 @@ mod tests {
         TcpStream::connect(server.running.address)
             .await
             .unwrap_err();
+    }
+
+    // How a body of `content_type` is refused.
+    async fn refusal(content_type: &str, body: &str) -> (StatusCode, serde_json::Value) {
+        let request = Request::builder()
+            .header(header::CONTENT_TYPE, content_type)
+            .body(axum::body::Body::from(body.to_owned()))
+            .unwrap();
+        let answer = Body::<serde_json::Value>::from_request(request, &())
+            .await
+            .err()
+            .unwrap();
+        let status = answer.status();
+        let bytes = axum::body::to_bytes(answer.into_body(), 1024)
+            .await
+            .unwrap();
+        (status, serde_json::from_slice(&bytes).unwrap())
+    }
+
+    #[tokio::test]
+    async fn a_body_that_cant_be_read_is_answered_with_an_error_body() {
+        let code = |code: &str| serde_json::json!({ "code": code, "retryable": false });
+
+        assert_eq!(
+            refusal("application/json", "{").await,
+            (StatusCode::BAD_REQUEST, code("request.invalid"))
+        );
+        assert_eq!(
+            refusal("text/plain", "{}").await,
+            (StatusCode::UNSUPPORTED_MEDIA_TYPE, code("request.not_json"))
+        );
+        let server = start().await;
+        let big = format!(r#"{{"email":"{}"}}"#, "a".repeat(MAX_BODY));
+        let (head, _) = request(server.running.address, "POST /api/sign-in", &big).await;
+        assert_eq!(head[0], "http/1.1 413 payload too large");
     }
 }

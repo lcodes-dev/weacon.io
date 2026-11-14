@@ -18,7 +18,7 @@ use crate::auth::{Sender, Session, Unproven, proof, sender, set_session_cookie, 
 use crate::client::Client;
 use crate::db::Attempt;
 use crate::email::Email;
-use crate::http::{Shared, cross_site, failure, refused, report, too_many};
+use crate::http::{Body, Shared, cross_site, failure, refused, report, too_many};
 use crate::limit::Limit;
 use crate::outbox::mail_failed;
 use crate::secret::{os_secrets, random_failed};
@@ -49,7 +49,7 @@ pub(crate) fn tries() -> Limit {
 pub(crate) async fn start(
     State(shared): State<Shared>,
     Client(from): Client,
-    Json(body): Json<AccountSignInStart>,
+    Body(body): Body<AccountSignInStart>,
 ) -> Response {
     if !shared.starts.allow(from, Instant::now()) {
         return too_many(code!("sign_in.too_many"));
@@ -111,7 +111,7 @@ pub(crate) async fn finish(
     State(shared): State<Shared>,
     Client(from): Client,
     headers: HeaderMap,
-    Json(body): Json<AccountSignInFinish>,
+    Body(body): Body<AccountSignInFinish>,
 ) -> Response {
     let now = Instant::now();
     if !shared.tries.allow(from, now) {
@@ -497,12 +497,16 @@ mod tests {
             assert_eq!(answer.as_object().unwrap().len(), 1, "{body}");
             challenges.push(answer["challenge"].as_str().unwrap().len());
         }
-        let (unreadable, _) = request(server.address, "POST /api/sign-in", "{}").await;
+        let (unreadable, refusal) = request(server.address, "POST /api/sign-in", "{}").await;
 
         // Only the request for an account's address leaves a letter.
         assert_eq!(fixture.letter().await.0, "ada@example.com");
         assert_eq!(challenges, [64; 3]);
-        assert_eq!(status(&unreadable), "http/1.1 422 unprocessable entity");
+        assert_eq!(status(&unreadable), "http/1.1 400 bad request");
+        assert_eq!(
+            serde_json::from_str::<Value>(&refusal).unwrap(),
+            json!({ "code": "request.invalid", "retryable": false })
+        );
     }
 
     #[tokio::test]
@@ -594,7 +598,7 @@ mod tests {
         let unchallenged = finish_body("ada@example.com", &Value::Null, &code);
         let (unreadable, _) = finish_with(server.address, &unchallenged).await;
 
-        assert_eq!(unreadable, "http/1.1 422 unprocessable entity");
+        assert_eq!(unreadable, "http/1.1 400 bad request");
         for (head, body) in refusals {
             assert_eq!(head, "http/1.1 401 unauthorized");
             assert_eq!(
