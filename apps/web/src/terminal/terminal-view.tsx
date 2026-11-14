@@ -16,11 +16,13 @@ export type TerminalProps = {
   send: (command: TerminalCommand) => void;
   /** Hands each terminal update to `handle` until the returned function is called. */
   subscribe: (handle: (update: TerminalUpdate) => void) => () => void;
+  /** Called once the terminal has closed, whatever closed it. */
+  onClosed?: () => void;
 };
 
 /** A vendor's sign-in on the person's machine, sealed between this page and the machine. */
 export function TerminalView(props: TerminalProps) {
-  const { machine, workspace, agent, pins, send, subscribe } = props;
+  const { machine, workspace, agent, pins, send, subscribe, onClosed } = props;
   const screen = useRef<HTMLDivElement>(null);
   const session = useRef<SignInTerminal>(undefined);
   const [state, setState] = useState<TerminalState>({ kind: "checking" });
@@ -38,7 +40,15 @@ export function TerminalView(props: TerminalProps) {
       pins,
       send,
       size: SIZE,
-      screen: { write: (data) => terminal.write(data), state: setState },
+      screen: {
+        write: (data) => terminal.write(data),
+        state: (next) => {
+          setState(next);
+          if (next.kind === "closed") {
+            onClosed?.();
+          }
+        },
+      },
     });
     session.current = opened;
     const encoder = new TextEncoder();
@@ -51,7 +61,7 @@ export function TerminalView(props: TerminalProps) {
       opened.close();
       terminal.dispose();
     };
-  }, [machine, workspace, agent, pins, send, subscribe]);
+  }, [machine, workspace, agent, pins, send, subscribe, onClosed]);
   return (
     <div className="sign-in-terminal">
       <TerminalNote state={state} confirm={() => void session.current?.confirm()} />
