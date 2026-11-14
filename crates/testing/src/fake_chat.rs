@@ -8,9 +8,13 @@ use serde_json::Value;
 use weacon_protocol::{
     AgentKind, AgentOwner, AgentRef, ChatAction, ChatAnswer, ChatAnswerKind, ChatCommand,
     ChatEntry, ChatEvent, ChatId, ChatQuery, ChatQueryKind, ChatUpdate, Envelope, ErrorBody,
-    MachineName, MemberId, Message, Outcome, PermissionAnswer, Receipt, RequestId, RunEvent, RunId,
-    RunState, RunStatus, RunUpdate, WorkspaceId, code,
+    MemberId, Message, Outcome, PermissionAnswer, Receipt, RequestId, RunEvent, RunId, RunState,
+    RunStatus, RunUpdate, WorkspaceId, code,
 };
+
+mod events;
+
+use events::{agent, asked, closes, run, said};
 
 /// The prompt text that makes the fake drop its client's subscription.
 const LOSE: &str = "/lose";
@@ -371,57 +375,9 @@ impl FakeChat {
     }
 }
 
-// The run and prompt of the permission prompt `entry` is, if it is one.
-fn asked(entry: &ChatEntry) -> Option<(&RunId, u32)> {
-    let ChatEvent::Run { update } = &entry.event else {
-        return None;
-    };
-    let RunEvent::PermissionAsked { prompt, .. } = update.event else {
-        return None;
-    };
-    Some((&update.run, prompt))
-}
-
-// Whether `entry` ends the wait for the prompt `prompt` of `run`.
-fn closes(entry: &ChatEntry, run: &RunId, prompt: u32) -> bool {
-    if let ChatEvent::RunStatus { status } = &entry.event {
-        return status.run == *run && status.state != RunState::Waiting;
-    }
-    let ChatEvent::Run { update } = &entry.event else {
-        return false;
-    };
-    update.run == *run
-        && (matches!(update.event, RunEvent::Finished { .. })
-            || matches!(update.event, RunEvent::PermissionWithdrawn { prompt: withdrawn, .. } if withdrawn == prompt)
-            || matches!(&update.event, RunEvent::PermissionAnswered { answer } if answer.prompt == prompt))
-}
-
-fn run(id: &str) -> Result<RunId, String> {
-    RunId::try_from(id.to_owned())
-}
-
-fn agent(kind: AgentKind, owner: AgentOwner, machine: &str) -> Result<AgentRef, String> {
-    Ok(AgentRef {
-        kind,
-        owner,
-        machine: Some(MachineName::try_from(machine.to_owned())?),
-    })
-}
-
-fn said(run: &RunId, text: &str) -> ChatEvent {
-    ChatEvent::Run {
-        update: RunUpdate {
-            run: run.clone(),
-            event: RunEvent::Text {
-                text: text.to_owned(),
-            },
-        },
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use weacon_protocol::PermissionAnswer;
+    use weacon_protocol::MachineName;
 
     use super::*;
 
