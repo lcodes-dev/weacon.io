@@ -107,7 +107,7 @@ fn subcommand(name: &str, args: &[Word], context: &Context, repo: &Path) -> Opti
         }
         // It sets or deletes any ref, from its arguments or its input.
         "update-ref" => Some(Reason::DeleteBranch),
-        "fetch" if fetch_overwrites(args) => Some(Reason::DeleteBranch),
+        "fetch" | "pull" if fetch_overwrites(args) => Some(Reason::DeleteBranch),
         "checkout" if has(&[], &['B']) => Some(Reason::DeleteBranch),
         "switch" if has(&["--force-create"], &['C']) => Some(Reason::DeleteBranch),
         "reset" if has(&["--hard", "--merge", "--keep"], &[]) => main_checkout(repo, context),

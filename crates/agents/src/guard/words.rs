@@ -137,11 +137,6 @@ pub(super) fn program_name(text: &str) -> String {
     base.strip_suffix(".exe").unwrap_or(&base).to_owned()
 }
 
-/// The name without a version at its end, so `python3.12` is `python`.
-pub(super) fn family(name: &str) -> &str {
-    name.trim_end_matches(|char: char| char.is_ascii_digit() || char == '.')
-}
-
 /// Whether the command is `pattern`'s program with its words, in order, among its arguments;
 /// an option's value may come between them.
 pub(super) fn begins(name: &str, args: &[Word], pattern: &[String]) -> bool {
@@ -169,48 +164,8 @@ pub(super) fn positional(args: &[Word]) -> Vec<&Word> {
         .collect()
 }
 
-/// The value of the first of `options`, given as the next word or after `=`.
-pub(super) fn value_of(args: &[Word], options: &[&str]) -> Option<Word> {
-    values_of(args, options).into_iter().next()
-}
-
-/// The values of every one of `options`, in order.
-pub(super) fn values_of(args: &[Word], options: &[&str]) -> Vec<Word> {
-    // Past `--`, words are operands, not options.
-    let options_end = args
-        .iter()
-        .position(|arg| arg.text == "--")
-        .unwrap_or(args.len());
-    args.iter()
-        .take(options_end)
-        .enumerate()
-        .filter_map(|(at, arg)| {
-            options.iter().find_map(|option| {
-                if arg.text == *option {
-                    return args.get(at + 1).cloned();
-                }
-                // A short option's value may follow it at once, as in `-t/etc`.
-                let value = arg.text.strip_prefix(&format!("{option}=")).or_else(|| {
-                    (option.len() == 2)
-                        .then(|| arg.text.strip_prefix(option))
-                        .flatten()
-                })?;
-                Some(arg.tail(value))
-            })
-        })
-        .collect()
-}
-
 /// The letters of a cluster of short options, such as `rf` in `-rf`.
 pub(super) fn short_flags(text: &str) -> Option<&str> {
     text.strip_prefix('-')
         .filter(|flags| !flags.starts_with('-'))
-}
-
-/// Whether `sed` edits its files in place.
-pub(super) fn in_place(args: &[Word]) -> bool {
-    args.iter().any(|arg| {
-        arg.text.starts_with("--in-place")
-            || short_flags(&arg.text).is_some_and(|flags| flags.contains('i'))
-    })
 }

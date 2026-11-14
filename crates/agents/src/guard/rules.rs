@@ -5,8 +5,7 @@ use std::path::{Path, PathBuf};
 
 use super::shell::{Simple, Word};
 use super::words::{
-    Command, begins, command, in_place, is_assignment, positional, program_name, short_flags,
-    value_of, values_of,
+    Command, begins, command, is_assignment, positional, program_name, short_flags,
 };
 use super::{Context, Reason, check_word, git, path_of, reading, safe};
 
@@ -16,7 +15,18 @@ const DEVICES: [&str; 5] = ["/dev/null", "/dev/stdout", "/dev/stderr", "/dev/tty
 // neither.
 const GIT_HARMLESS: [&str; 2] = ["GIT_PAGER", "GIT_TERMINAL_PROMPT"];
 // Variables that choose which programs run or how the shell splits words.
-const SHELL_SETTINGS: [&str; 4] = ["PATH", "BASH_ENV", "ENV", "IFS"];
+// Variables that choose which programs run or how the shell splits words; an editor or pager
+// is a program the command then runs.
+const SHELL_SETTINGS: [&str; 8] = [
+    "PATH",
+    "BASH_ENV",
+    "ENV",
+    "IFS",
+    "EDITOR",
+    "VISUAL",
+    "PAGER",
+    "SUDO_EDITOR",
+];
 // Programs that print their words and read no file they name, so an expansion there is only text.
 const TEXT_ONLY: [&str; 3] = ["echo", "printf", "git"];
 // Programs that read through every folder they're given.
@@ -84,7 +94,8 @@ fn goes_deep(name: &str, args: &[Word]) -> bool {
     name != "find"
         && (DEEP.contains(&name)
             || args.iter().any(|arg| {
-                arg.text == "--recursive"
+                // `--recursive` and `--dereference-recursive`, shortened as the tools allow.
+                (arg.text.starts_with("--") && arg.text.contains("rec"))
                     || short_flags(&arg.text).is_some_and(|flags| flags.contains(['r', 'R']))
                     || (name == "cp"
                         && short_flags(&arg.text).is_some_and(|flags| flags.contains('a')))
@@ -236,5 +247,4 @@ impl Call<'_> {
             })
             .collect()
     }
-
 }

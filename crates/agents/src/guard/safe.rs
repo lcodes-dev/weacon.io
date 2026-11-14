@@ -29,27 +29,69 @@ const READERS: [(&str, Forbids); 33] = [
     ("dirname", NONE),
     ("realpath", NONE),
     ("readlink", NONE),
-    ("date", Forbids { short: "s", long: &["--set"], operands: usize::MAX }),
+    (
+        "date",
+        Forbids {
+            short: "s",
+            long: &["--set"],
+            operands: usize::MAX,
+        },
+    ),
     ("uname", NONE),
     ("whoami", NONE),
     ("printenv", NONE),
     ("grep", NONE),
     ("egrep", NONE),
     ("fgrep", NONE),
-    ("rg", Forbids { short: "", long: &["--pre", "--pre-glob"], operands: usize::MAX }),
-    ("diff", Forbids { short: "", long: &["--to-file", "--from-file"], operands: usize::MAX }),
+    (
+        "rg",
+        Forbids {
+            short: "",
+            long: &["--pre", "--pre-glob"],
+            operands: usize::MAX,
+        },
+    ),
+    (
+        "diff",
+        Forbids {
+            short: "",
+            long: &["--to-file", "--from-file"],
+            operands: usize::MAX,
+        },
+    ),
     ("cut", NONE),
     ("tr", NONE),
-    ("sort", Forbids { short: "oT", long: &["--output", "--temporary-directory"], operands: usize::MAX }),
+    (
+        "sort",
+        Forbids {
+            short: "oT",
+            long: &["--output", "--temporary-directory"],
+            operands: usize::MAX,
+        },
+    ),
     // A second operand is the file it writes.
-    ("uniq", Forbids { short: "", long: &[], operands: 1 }),
+    (
+        "uniq",
+        Forbids {
+            short: "",
+            long: &[],
+            operands: 1,
+        },
+    ),
     ("du", NONE),
     ("jq", NONE),
 ];
 
 // `find`'s own options are single words after a single dash, so they are matched whole.
-const FIND_FORBIDS: [&str; 10] = [
-    "-exec", "-execdir", "-ok", "-okdir", "-delete", "-fprint", "-fprint0", "-fprintf", "-fls",
+const FIND_FORBIDS: [&str; 9] = [
+    "-exec",
+    "-execdir",
+    "-ok",
+    "-okdir",
+    "-fprint",
+    "-fprint0",
+    "-fprintf",
+    "-fls",
     "-files0-from",
 ];
 
@@ -104,12 +146,35 @@ const BUILD_AND_TEST: [&[&str]; 30] = [
 
 /// The git subcommands that run without asking, once git's own checks pass.
 const GIT_SAFE: [&str; 20] = [
-    "status", "diff", "log", "show", "add", "commit", "push", "pull", "fetch", "branch",
-    "checkout", "switch", "restore", "stash", "rev-parse", "ls-files", "remote", "blame", "grep",
+    "status",
+    "diff",
+    "log",
+    "show",
+    "add",
+    "commit",
+    "push",
+    "pull",
+    "fetch",
+    "branch",
+    "checkout",
+    "switch",
+    "restore",
+    "stash",
+    "rev-parse",
+    "ls-files",
+    "remote",
+    "blame",
+    "grep",
     "merge-base",
 ];
 // Git options that run a command or write a file of their own.
-const GIT_FORBIDS: [&str; 5] = ["--receive-pack", "--upload-pack", "--exec", "--output", "--ext-diff"];
+const GIT_FORBIDS: [&str; 5] = [
+    "--receive-pack",
+    "--upload-pack",
+    "--exec",
+    "--output",
+    "--ext-diff",
+];
 
 /// Options that make a reader write or run something, and how many operands it may take.
 #[derive(Clone, Copy)]
@@ -132,8 +197,7 @@ pub(super) fn judge(name: &str, args: &[Word], context: &Context, cwd: &Path) ->
         return reads(args, forbids).then_some(Reason::NotListed);
     }
     if name == "find" {
-        let runs = args.iter().any(|arg| FIND_FORBIDS.contains(&arg.text.as_str()));
-        return runs.then_some(Reason::NotListed);
+        return find(args, context, cwd);
     }
     if let Some((_, letters, outside)) = WRITERS.iter().find(|(writer, ..)| *writer == name) {
         return writes(args, letters, *outside, context, cwd);
@@ -141,13 +205,38 @@ pub(super) fn judge(name: &str, args: &[Word], context: &Context, cwd: &Path) ->
     if name == "git" {
         return git(args);
     }
-    if BUILD_AND_TEST
-        .iter()
-        .any(|entry| leads(name, args, entry))
-    {
+    if BUILD_AND_TEST.iter().any(|entry| leads(name, args, entry)) {
         return builds(args, context, cwd);
     }
     Some(Reason::NotListed)
+}
+
+// Options that follow symlinks, so `-delete` could reach past the folders it starts from.
+const FIND_FOLLOWS: [&str; 2] = ["-L", "-follow"];
+
+// `find` lists; with `-delete` it deletes below the folders it starts from, which must then be
+// inside the worktree.
+fn find(args: &[Word], context: &Context, cwd: &Path) -> Option<Reason> {
+    let named = |names: &[&str]| args.iter().any(|arg| names.contains(&arg.text.as_str()));
+    if named(&FIND_FORBIDS) || (named(&["-delete"]) && named(&FIND_FOLLOWS)) {
+        return Some(Reason::NotListed);
+    }
+    if !named(&["-delete"]) {
+        return None;
+    }
+    let starts: Vec<&Word> = args
+        .iter()
+        .take_while(|arg| !arg.text.starts_with(['-', '(', '!']))
+        .collect();
+    let here = Word::default();
+    let starts = if starts.is_empty() {
+        vec![&here]
+    } else {
+        starts
+    };
+    starts
+        .iter()
+        .find_map(|start| check_word(start, context, cwd, Reason::DeleteOutside))
 }
 
 // Whether a reader's arguments use one of its writing options or too many operands.
@@ -157,23 +246,35 @@ fn reads(args: &[Word], forbids: &Forbids) -> bool {
 
 // A long option counts when written in full, with `=`, or shortened as the tools allow.
 fn forbidden(arg: &Word, forbids: &Forbids) -> bool {
-    let given = arg.text.split_once('=').map_or(arg.text.as_str(), |(given, _)| given);
+    let given = arg
+        .text
+        .split_once('=')
+        .map_or(arg.text.as_str(), |(given, _)| given);
     let shortened = given.len() > 2 && given.starts_with("--");
     let long = forbids
         .long
         .iter()
         .any(|option| given == *option || (shortened && option.starts_with(given)));
-    long || short_flags(&arg.text).is_some_and(|flags| flags.contains(|flag| forbids.short.contains(flag)))
+    long || short_flags(&arg.text)
+        .is_some_and(|flags| flags.contains(|flag| forbids.short.contains(flag)))
 }
 
 // Every option one of `letters` and every other word a path inside the worktree.
-fn writes(args: &[Word], letters: &str, outside: Reason, context: &Context, cwd: &Path) -> Option<Reason> {
+fn writes(
+    args: &[Word],
+    letters: &str,
+    outside: Reason,
+    context: &Context,
+    cwd: &Path,
+) -> Option<Reason> {
     let mut operands = false;
     for arg in args {
         if arg.text == "--" {
             operands = true;
         } else if !operands && arg.text.starts_with('-') {
-            let known = short_flags(&arg.text).is_some_and(|flags| !flags.is_empty() && flags.chars().all(|flag| letters.contains(flag)));
+            let known = short_flags(&arg.text).is_some_and(|flags| {
+                !flags.is_empty() && flags.chars().all(|flag| letters.contains(flag))
+            });
             if !known {
                 return Some(Reason::NotListed);
             }
@@ -185,7 +286,11 @@ fn writes(args: &[Word], letters: &str, outside: Reason, context: &Context, cwd:
 }
 
 fn git(args: &[Word]) -> Option<Reason> {
-    let runs = args.iter().any(|arg| GIT_FORBIDS.iter().any(|option| arg.text.starts_with(option)));
+    let runs = args.iter().any(|arg| {
+        GIT_FORBIDS
+            .iter()
+            .any(|option| arg.text.starts_with(option))
+    });
     // The first word that isn't a global option or its value.
     let mut words = args.iter();
     let mut subcommand = None;
@@ -215,6 +320,14 @@ fn leads(name: &str, args: &[Word], entry: &[&str]) -> bool {
 
 // A build tool may take any option, but no path it is given may lead outside the worktree.
 fn builds(args: &[Word], context: &Context, cwd: &Path) -> Option<Reason> {
+    // Running Weacon's own build runs Weacon, and `make --eval` runs text from the line.
+    let runs = args.first().is_some_and(|first| first.text == "run");
+    if runs && args.iter().any(|arg| arg.text.starts_with("weacon")) {
+        return Some(Reason::Weacon);
+    }
+    if args.iter().any(|arg| arg.text.starts_with("--eval")) {
+        return Some(Reason::NotListed);
+    }
     args.iter().find_map(|arg| {
         let value = if arg.text.starts_with('-') {
             arg.text.split_once('=').map(|(_, value)| arg.tail(value))?
