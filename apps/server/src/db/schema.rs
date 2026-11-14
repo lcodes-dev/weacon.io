@@ -152,6 +152,31 @@ ALTER TABLE changes_with_tasks RENAME TO changes;
 ALTER TABLE members ADD COLUMN role TEXT NOT NULL DEFAULT 'member';
 ALTER TABLE accounts ADD COLUMN personal_made INTEGER NOT NULL DEFAULT 0;
 ",
+    // A challenge is for an address, whose account a right code may make. A server's owner is
+    // its first account; one from before is that of the first member added.
+    "
+DROP TABLE sign_in_challenges;
+
+CREATE TABLE sign_in_challenges (
+    challenge_id TEXT PRIMARY KEY,
+    email TEXT NOT NULL,
+    code_hash BLOB NOT NULL,
+    expires_at INTEGER NOT NULL,
+    attempts INTEGER NOT NULL
+) STRICT;
+
+ALTER TABLE accounts ADD COLUMN owner INTEGER NOT NULL DEFAULT 0;
+UPDATE accounts SET owner = 1 WHERE account_id = coalesce(
+    (SELECT account_id FROM members ORDER BY rowid LIMIT 1),
+    (SELECT account_id FROM accounts ORDER BY rowid LIMIT 1)
+);
+CREATE UNIQUE INDEX accounts_owner ON accounts (owner) WHERE owner = 1;
+",
+    // Only so many live codes are mailed to an address; its other challenges take those codes.
+    "
+ALTER TABLE sign_in_challenges ADD COLUMN mailed INTEGER NOT NULL DEFAULT 1;
+CREATE INDEX sign_in_challenges_email ON sign_in_challenges (email);
+",
 ];
 
 /// Applies the steps the database hasn't had yet, each in its own transaction that holds the
