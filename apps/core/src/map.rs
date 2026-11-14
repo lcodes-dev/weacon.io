@@ -6,7 +6,7 @@ use std::time::Instant;
 use weacon_appkit::Ending;
 use weacon_codemap::{Index, SourceFile, index};
 use weacon_observability::Fault;
-use weacon_protocol::{MapArgs, McpCall, SymbolArgs, code};
+use weacon_protocol::{FlowArgs, MapArgs, McpCall, SymbolArgs, code};
 
 use crate::app::App;
 use crate::cli::{MapCommand, MapSubcommand};
@@ -26,13 +26,28 @@ pub(crate) fn run(
         root,
         budget,
     } = command;
-    let call = match command {
+    let text = match command {
         Some(MapSubcommand::CheckAnchors) => return check_anchors(app, &root, input, out),
-        Some(MapSubcommand::Symbol { path }) => McpCall::Symbol(SymbolArgs { path, budget }),
-        None => McpCall::Map(MapArgs { budget }),
+        Some(MapSubcommand::Symbol { path }) => {
+            tools::answer(&McpCall::Symbol(SymbolArgs { path, budget }), &root)?
+        }
+        Some(MapSubcommand::Flows) => tools::answer(&McpCall::Flow(FlowArgs { budget }), &root)?,
+        Some(MapSubcommand::Architecture) => tools::answered(&root, budget, Index::architecture)?,
+        Some(MapSubcommand::Contracts) => tools::answered(&root, budget, contracts)?,
+        None => tools::answer(&McpCall::Map(MapArgs { budget }), &root)?,
     };
-    print(out, &tools::answer(&call, &root)?)?;
+    print(out, &text)?;
     Ok(Ending::Done)
+}
+
+/// The code's contracts, or a line saying it declares none.
+fn contracts(map: &Index, budget: usize) -> String {
+    let listed = map.contracts(None, budget);
+    if listed.is_empty() {
+        "No contracts.\n".to_owned()
+    } else {
+        listed
+    }
 }
 
 /// Prints each pin read from `input` that no longer matches the repository at `root`.
@@ -252,6 +267,60 @@ mod tests {
         String::from_utf8(out).unwrap()
     }
 
+    #[test]
+    fn each_view_prints_its_answer_and_the_tools_views_match_them() {
+        let root = repo(CRATE);
+        let empty = TempDir::new().unwrap();
+        let (index, _) = index_folder(&root).unwrap();
+        let tool = |call: McpCall| tools::answer(&call, &root).unwrap();
+        let view = |root: &Path, view| printed(root, Some(view), None);
+
+        let flows = tool(McpCall::Flow(FlowArgs::default()));
+        assert_eq!(view(&root, MapSubcommand::Flows), flows);
+        assert_eq!(
+            view(&root, MapSubcommand::Architecture),
+            index.architecture(6000)
+        );
+        assert_eq!(view(&root, MapSubcommand::Contracts), "No contracts.\n");
+        let serde = repo(&[
+            ("Cargo.toml", "[package]\nname = \"a\"\n"),
+            ("src/lib.rs", "#[derive(Serialize)]\npub struct Reply;\n"),
+        ]);
+        let (declared, _) = index_folder(&serde).unwrap();
+        let contracts = declared.contracts(None, 6000);
+        assert!(!contracts.is_empty());
+        assert_eq!(view(&serde, MapSubcommand::Contracts), contracts);
+        for subcommand in [MapSubcommand::Architecture, MapSubcommand::Contracts] {
+            assert_eq!(view(&empty, subcommand), "No code map for this folder.\n");
+        }
+        let none = "Flows pinned in the docs: 0.\n";
+        assert_eq!(view(&empty, MapSubcommand::Flows), none);
+    }
+
+    #[test]
+    fn a_flow_a_doc_pins_reaches_the_flow_tool() {
+        let mut files = CRATE.to_vec();
+        files.push((
+            "docs/run.md",
+            "Runs flow:a::run->a::m::go, then flow:a::run->a::gone.\n",
+        ));
+        let root = repo(&files);
+
+        let flows = tools::answer(&McpCall::Flow(FlowArgs::default()), &root).unwrap();
+
+        assert_eq!(
+            flows,
+            "Flows pinned in the docs: 2.\n- docs/run.md:1  a::run -> a::m::go: holds\n\
+             - docs/run.md:1  a::run -> a::gone: breaks: no item a::gone\n"
+        );
+        assert_eq!(printed(&root, Some(MapSubcommand::Flows), None), flows);
+        let docs_only = repo(&[("docs/run.md", "Runs flow:a::run->a::gone.\n")]);
+        assert_eq!(
+            printed(&docs_only, Some(MapSubcommand::Flows), None),
+            "Flows pinned in the docs: 1.\n- docs/run.md:1  a::run -> a::gone: breaks: no item a::run\n"
+        );
+    }
+
     fn symbol(path: &str) -> MapSubcommand {
         let path = path.to_owned();
         MapSubcommand::Symbol { path }
@@ -272,7 +341,10 @@ mod tests {
 
         assert_eq!(outline, tool(McpCall::Map(MapArgs::default()), &root));
         assert_eq!(item, tool(McpCall::Symbol(go()), &root));
-        assert_eq!(item, "a::m::go: Fn at a/src/m.rs:1\n");
+        assert_eq!(
+            item,
+            "fn a::m::go  a/src/m.rs:1\ncalled by fn a::run  a/src/lib.rs:2\n"
+        );
         let none = tool(McpCall::Map(MapArgs::default()), &empty);
         assert_eq!(printed(&empty, None, None), none);
     }
@@ -280,12 +352,12 @@ mod tests {
     #[test]
     fn a_budget_reaches_the_map_tool() {
         let root = repo(CRATE);
-        let modules: Vec<_> = (0..80)
-            .map(|n| format!("mod module_number_{n};\n"))
-            .collect();
-        fs::write(root.join("a/src/lib.rs"), modules.concat()).unwrap();
-        for n in 0..80 {
-            fs::write(root.join(format!("a/src/module_number_{n}.rs")), "").unwrap();
+        for n in 0..60 {
+            let folder = root.join(format!("crate_number_{n}"));
+            fs::create_dir_all(folder.join("src")).unwrap();
+            let manifest = format!("[package]\nname = \"crate_number_{n}\"\n");
+            fs::write(folder.join("Cargo.toml"), manifest).unwrap();
+            fs::write(folder.join("src/lib.rs"), "pub fn run() {}\n").unwrap();
         }
         let cut_by_tool = MapArgs { budget: Some(1000) };
 

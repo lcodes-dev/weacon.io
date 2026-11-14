@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 
 import type { Api } from "../api/api.ts";
-import { Connection, type Status, offers } from "../connection.ts";
+import { Connection, type Status, later, offers } from "../connection.ts";
 import type { Incoming } from "../incoming.ts";
 import type { Log } from "../log.ts";
 import { ME } from "../me.ts";
@@ -61,7 +61,7 @@ export function useFeed(workspace: WorkspaceId, api: Api, socket: WorkspaceSocke
           socket.heard(envelope);
         },
       };
-      const connection = new Connection(fresh, ME, listener, FEED, (run, ms) => setTimeout(run, ms));
+      const connection = new Connection(fresh, ME, listener, FEED, later);
       opened = connection;
     };
     open();

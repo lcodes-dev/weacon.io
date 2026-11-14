@@ -1,7 +1,7 @@
 import type { AgentRef, MemberId } from "../protocol.ts";
 
 const AGENTS = new Map([
-  ["claude", "Claude"],
+  ["claude", "Claude Code"],
   ["codex", "Codex"],
 ]);
 

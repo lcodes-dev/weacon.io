@@ -2,6 +2,7 @@
 
 use std::future::Future;
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
@@ -76,8 +77,21 @@ pub(crate) struct Bench {
     pub(crate) started: mpsc::UnboundedReceiver<Started>,
     /// While set, no agent can be started.
     pub(crate) broken: Arc<AtomicBool>,
+    /// The next agent's start blocks, as a slow one does, until this is sent to.
+    gate: Arc<Mutex<Option<std::sync::mpsc::Receiver<()>>>>,
     pub(crate) records: Records,
     _dir: TempDir,
+}
+
+impl Bench {
+    /// Holds up the next agent's start until the returned sender is sent to or dropped.
+    pub(crate) fn hold_next_start(&self) -> std::sync::mpsc::Sender<()> {
+        let (release, held) = std::sync::mpsc::channel();
+        if let Ok(mut gate) = self.gate.lock() {
+            *gate = Some(held);
+        }
+        release
+    }
 }
 
 /// An engine with its state in a new folder, running on the current runtime.
@@ -93,8 +107,13 @@ pub(crate) fn parts() -> (Bench, Engine<FakeAgent>) {
     let (starts, started) = mpsc::unbounded_channel();
     let broken = Arc::new(AtomicBool::new(false));
     let fails = Arc::clone(&broken);
+    let gate: Arc<Mutex<Option<std::sync::mpsc::Receiver<()>>>> = Arc::new(Mutex::new(None));
+    let waits = Arc::clone(&gate);
     let host = Host {
         launch: Arc::new(move |run_as: &RunAs| {
+            // Sent to or dropped, the start goes on either way.
+            let held = waits.lock().ok().and_then(|mut gate| gate.take());
+            let _ = held.map(|held| held.recv());
             if fails.load(Ordering::SeqCst) {
                 return Err(Fault::new(
                     code!("agent.not_started"),
@@ -111,7 +130,7 @@ pub(crate) fn parts() -> (Bench, Engine<FakeAgent>) {
                 on_turn: false,
             })
         }),
-        now: || 1000,
+        now: || 1_000_000,
     };
     let (log, records) = recording_logger();
     let runs = Runs::load(&dir).unwrap();
@@ -120,6 +139,7 @@ pub(crate) fn parts() -> (Bench, Engine<FakeAgent>) {
         chats,
         started,
         broken,
+        gate,
         records,
         _dir: dir,
     };
