@@ -1,26 +1,22 @@
 use std::ffi::OsString;
 use std::io;
-use std::panic::PanicHookInfo;
+use std::ops::Deref;
 use std::path::{Path, PathBuf};
-use std::process::ExitCode;
 use std::sync::Arc;
 
 use serde::de::DeserializeOwned;
 use weacon_agents::SpawnPolicy;
-use weacon_appkit::{KEEP, MAX_BYTES, Outcome, RotatingFile, panic_hook, root_logger};
-use weacon_observability::{
-    Deliver, Fault, Field, Level, Logger, Reporter, Reports, Sink, json_lines, tee,
-};
+use weacon_appkit::{RotatingFile, root_logger};
+use weacon_observability::{Deliver, Fault, Field, Level, Logger, Reports, Sink, json_lines, tee};
 use weacon_protocol::code;
 use weacon_version::Version;
 
 use crate::platform::{self, Env};
 
-/// What a command runs with: its build, logger, error reporter and where its state lives.
+/// What a command runs with: appkit's build, logger and error reporter, and where its state
+/// lives.
 pub(crate) struct App {
-    pub(crate) version: Version,
-    pub(crate) log: Logger,
-    pub(crate) reporter: Arc<Reporter>,
+    pub(crate) base: weacon_appkit::App,
     pub(crate) state_dir: Option<PathBuf>,
     /// Where chats' working folders go, apart from the state.
     pub(crate) work_root: Option<PathBuf>,
@@ -67,9 +63,11 @@ impl App {
             .as_deref()
             .is_some_and(|dir| crate::reports::agreed(dir, &log));
         Self {
-            version,
-            reporter: Arc::new(weacon_appkit::reporter(reports, agreed, setup.deliver)),
-            log,
+            base: weacon_appkit::App {
+                version,
+                reporter: Arc::new(weacon_appkit::reporter(reports, agreed, setup.deliver)),
+                log,
+            },
             state_dir,
             work_root: platform::work_root(setup.env),
             log_file,
@@ -82,19 +80,17 @@ impl App {
     pub(crate) fn state_dir(&self) -> Result<&Path, Fault> {
         self.state_dir.as_deref().ok_or_else(state_unavailable)
     }
+}
 
-    /// Logs and reports how the command ended, and gives its exit code.
-    pub(crate) fn finish(&self, result: Result<Outcome, Fault>) -> ExitCode {
-        weacon_appkit::finish(&self.log, &self.reporter, result)
-    }
+impl Deref for App {
+    type Target = weacon_appkit::App;
 
-    /// Logs and reports a panic, without its message or location.
-    pub(crate) fn panic_hook(&self) -> Box<dyn Fn(&PanicHookInfo<'_>) + Send + Sync> {
-        panic_hook(self.log.clone(), Arc::clone(&self.reporter), panicked)
+    fn deref(&self) -> &Self::Target {
+        &self.base
     }
 }
 
-fn panicked() -> Fault {
+pub(crate) fn panicked() -> Fault {
     Fault::new(code!("core.panicked"), "The core panicked")
 }
 
@@ -133,7 +129,7 @@ fn open_log(state_dir: &Path, name: &str) -> io::Result<(PathBuf, RotatingFile)>
     platform::private_dir(state_dir)?;
     platform::private_dir(&dir)?;
     let path = dir.join(name);
-    let file = RotatingFile::open(path.clone(), MAX_BYTES, KEEP)?;
+    let file = RotatingFile::open(path.clone())?;
     Ok((path, file))
 }
 
@@ -156,6 +152,7 @@ fn reports(env: Env<'_>, version: &Version, log: &Logger) -> Option<Reports> {
 #[cfg(test)]
 mod tests {
     use std::fs;
+    use std::process::ExitCode;
     use std::sync::{Arc, Mutex};
 
     use weacon_observability::Upload;
@@ -268,7 +265,7 @@ mod tests {
                 fs::write(dir.join("reports.json"), answer).unwrap();
             }
             let (app, stderr, uploads) = start(&[state(&dir), ("WEACON_SENTRY_DSN", DSN)], false);
-            app.finish(Err(fault()));
+            assert_eq!(app.finish(Err(fault())), ExitCode::from(2));
             (uploads.lock().unwrap().len(), messages(&stderr))
         };
 

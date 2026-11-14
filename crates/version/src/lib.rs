@@ -37,15 +37,17 @@ impl Version {
     pub fn release(&self) -> String {
         format!("{}@{}+{}", self.name, self.version, self.commit)
     }
+
+    /// `0.1.0 (<commit>)`: what `--version` prints after the name.
+    #[must_use]
+    pub fn with_commit(&self) -> String {
+        format!("{} ({})", self.version, self.commit)
+    }
 }
 
 impl fmt::Display for Version {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            formatter,
-            "{} {} ({})",
-            self.name, self.version, self.commit
-        )
+        write!(formatter, "{} {}", self.name, self.with_commit())
     }
 }
 
@@ -151,6 +153,7 @@ mod tests {
     fn shows_name_version_and_commit() {
         assert_eq!(version().to_string(), format!("weacon-core 0.1.0 ({SHA})"));
         assert_eq!(version().release(), format!("weacon-core@0.1.0+{SHA}"));
+        assert_eq!(version().with_commit(), format!("0.1.0 ({SHA})"));
     }
 
     #[test]

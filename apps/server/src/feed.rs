@@ -1,22 +1,19 @@
 use std::convert::Infallible;
-use std::time::Duration;
 
 use axum::Extension;
-use axum::extract::ws::{Message as Frame, Utf8Bytes, WebSocket, WebSocketUpgrade};
+use axum::extract::ws::{WebSocket, WebSocketUpgrade};
 use axum::extract::{Query, State};
 use axum::response::Response;
-use futures_util::{Sink, SinkExt};
 use serde::Deserialize;
 use tokio::sync::broadcast::{Receiver, error::RecvError};
-use tokio::time::{Instant, MissedTickBehavior, interval_at, timeout};
+use tokio::time::timeout;
 use weacon_observability::{Fault, Field};
-use weacon_protocol::{
-    Capability, Code, Envelope, ErrorBody, Message, WorkspaceChange, WorkspaceId, code,
-};
+use weacon_protocol::{Capability, Code, Message, WorkspaceChange, WorkspaceId, code};
 
 use crate::auth::Member;
 use crate::connections::Place;
 use crate::http::{Shared, failure};
+use crate::socket::{Closed, Pings, greet, reply};
 
 /// What a client must offer, and the server offers, to get a workspace's changes.
 const FEED: Code = code!("workspace.feed");
@@ -25,18 +22,6 @@ const TASKS: Code = code!("workspace.tasks");
 /// What the server offers to clients that read and revise docs.
 const DOCS: Code = code!("workspace.docs");
 
-/// How long a feed waits for the client's hello, and how often it checks that the client
-/// answers and its session hasn't ended; a send that takes longer than that ends the feed.
-#[derive(Clone, Copy, Debug)]
-pub(crate) struct Timing {
-    pub(crate) hello_within: Duration,
-    pub(crate) ping_every: Duration,
-}
-
-pub(crate) const TIMING: Timing = Timing {
-    hello_within: Duration::from_secs(10),
-    ping_every: Duration::from_secs(30),
-};
 const MAX_MESSAGE: usize = 16 * 1024;
 const PAGE: u32 = 500;
 
@@ -93,9 +78,6 @@ struct Offers {
     docs: bool,
 }
 
-/// The feed has ended: its client left, its member is one no more, or something failed.
-struct Closed;
-
 impl Feed {
     /// Goes on only while the feed's session is live and its account still a member.
     async fn allowed(&self, shared: &Shared) -> Result<(), Closed> {
@@ -134,18 +116,18 @@ async fn run(
     shared: &Shared,
     feed: &mut Feed,
 ) -> Result<Infallible, Closed> {
-    let Timing {
-        hello_within,
-        ping_every,
-    } = shared.feed;
-    feed.offers = timeout(hello_within, greet(socket, shared))
+    let [feed_offer, tasks, docs] = [FEED, TASKS, DOCS].map(Capability::from);
+    let offered = vec![feed_offer.clone(), tasks.clone(), docs.clone()];
+    let greeted = greet(socket, shared, offered, &feed_offer);
+    let hello = timeout(shared.sockets.hello_within, greeted)
         .await
         .map_err(|_| Closed)??;
+    feed.offers = Offers {
+        tasks: hello.capabilities.contains(&tasks),
+        docs: hello.capabilities.contains(&docs),
+    };
     catch_up(socket, shared, feed).await?;
-    let mut ping = interval_at(Instant::now() + ping_every, ping_every);
-    // After a stall, one late tick rather than a burst that would count as missed answers.
-    ping.set_missed_tick_behavior(MissedTickBehavior::Delay);
-    let mut unanswered: u8 = 0;
+    let mut pings = Pings::new(shared.sockets.ping_every);
     loop {
         tokio::select! {
             change = feed.changes.recv() => match change {
@@ -154,19 +136,8 @@ async fn run(
                 Ok(_) | Err(RecvError::Lagged(_)) => catch_up(socket, shared, feed).await?,
                 Err(RecvError::Closed) => return Err(Closed),
             },
-            _ = ping.tick() => {
-                // Two pings unanswered: the client is gone, or its connection is.
-                if unanswered >= 2 {
-                    return Err(Closed);
-                }
-                feed.allowed(shared).await?;
-                send(socket, ping_every, Frame::Ping(Vec::new().into())).await?;
-                unanswered = unanswered.saturating_add(1);
-            },
-            frame = socket.recv() => match frame {
-                Some(Ok(Frame::Close(_)) | Err(_)) | None => return Err(Closed),
-                Some(Ok(_)) => unanswered = 0,
-            },
+            () = pings.due() => pings.ping(socket, feed.allowed(shared)).await?,
+            frame = socket.recv() => pings.heard(&frame.ok_or(Closed)?)?,
         }
     }
 }
@@ -202,84 +173,21 @@ async fn catch_up(socket: &mut WebSocket, shared: &Shared, feed: &mut Feed) -> R
     }
 }
 
-/// Answers the client's hello. The feed goes on only for a client that offers it, and then
-/// says which other features the client offered.
-async fn greet(socket: &mut WebSocket, shared: &Shared) -> Result<Offers, Closed> {
-    let Some(Ok(Frame::Text(text))) = socket.recv().await else {
-        return Err(Closed);
-    };
-    let Ok(Envelope {
-        id,
-        message: Message::Hello(hello),
-    }) = Envelope::from_json(text.as_bytes())
-    else {
-        reply(socket, shared, 0, error(code!("handshake.required"))).await?;
-        return Err(Closed);
-    };
-    let offered = [FEED, TASKS, DOCS].map(Capability::from);
-    let answer = hello.answer(shared.app.clone(), offered.to_vec());
-    let offers = |code| hello.capabilities.contains(&Capability::from(code));
-    if !matches!(answer, Message::Welcome(_)) {
-        reply(socket, shared, id, answer).await?;
-        return Err(Closed);
-    }
-    if !offers(FEED) {
-        reply(socket, shared, id, error(code!("capability.missing"))).await?;
-        return Err(Closed);
-    }
-    reply(socket, shared, id, answer).await?;
-    Ok(Offers {
-        tasks: offers(TASKS),
-        docs: offers(DOCS),
-    })
-}
-
-fn error(code: Code) -> Message {
-    Message::Error(ErrorBody {
-        code,
-        retryable: false,
-    })
-}
-
-async fn reply(
-    socket: &mut WebSocket,
-    shared: &Shared,
-    id: u32,
-    message: Message,
-) -> Result<(), Closed> {
-    let json = (Envelope { id, message }).to_json().map_err(|_| Closed)?;
-    let text = Utf8Bytes::try_from(json).map_err(|_| Closed)?;
-    send(socket, shared.feed.ping_every, Frame::Text(text)).await
-}
-
-/// Sends `frame`, or gives up after `within`: a client that stops reading can't hold the feed.
-async fn send<S: Sink<Frame> + Unpin>(
-    socket: &mut S,
-    within: Duration,
-    frame: Frame,
-) -> Result<(), Closed> {
-    timeout(within, socket.send(frame))
-        .await
-        .ok()
-        .and_then(Result::ok)
-        .ok_or(Closed)
-}
-
 #[cfg(test)]
 mod tests {
     use std::net::SocketAddr;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicU64, Ordering};
 
-    use axum::http::header::AUTHORIZATION;
-    use futures_util::{SinkExt, StreamExt};
-    use serde_json::json;
+    use std::time::Duration;
+
+    use futures_util::SinkExt;
     use tokio::io::AsyncReadExt;
     use tokio::sync::Semaphore;
     use tokio_tungstenite::tungstenite::client::IntoClientRequest;
-    use tokio_tungstenite::tungstenite::{self, Message as Wire, Utf8Bytes};
-    use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async};
-    use weacon_protocol::{Hello, MemberId, PROTOCOL, WorkspaceChange, WorkspaceUpdate};
+    use tokio_tungstenite::tungstenite::{self, Message as Wire};
+    use tokio_tungstenite::{MaybeTlsStream, connect_async};
+    use weacon_protocol::{MemberId, PROTOCOL, WorkspaceChange, WorkspaceUpdate};
 
     use weacon_model::{Attribution, Doc, DocText, OrderKey, Task, Title};
     use weacon_protocol::{DocId, TaskId};
@@ -289,15 +197,15 @@ mod tests {
     use crate::db::Workspace;
     use crate::email::Email;
     use crate::sign_in::SESSION_LIFETIME;
+    use crate::socket::error;
+    use crate::test_support::socket::{Client, ends, frame, next, open, say, say_as};
     use crate::test_support::{
-        self, Fixture, Running, VERSION, fresh_account, member_id, run, workspace_id,
+        self, Fixture, Running, fresh_account, member_id, run, workspace_id,
     };
 
     // For tests whose client stops reading, or that wait on something other than a ping: no
     // ping comes while they run.
     const QUIET: Duration = Duration::from_hours(1);
-
-    type Client = WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>;
 
     // Signs `email` in, and gives the session's token.
     async fn sign_in(fixture: &Fixture, address: SocketAddr, email: &str) -> String {
@@ -329,37 +237,6 @@ mod tests {
         greeted(address, &token, 0).await;
     }
 
-    async fn open(
-        address: SocketAddr,
-        path: &str,
-        token: &str,
-    ) -> Result<Client, tungstenite::Error> {
-        let mut request = format!("ws://{address}{path}")
-            .into_client_request()
-            .unwrap();
-        request
-            .headers_mut()
-            .insert(AUTHORIZATION, format!("Bearer {token}").parse().unwrap());
-        connect_async(request).await.map(|(client, _)| client)
-    }
-
-    async fn say(client: &mut Client, capabilities: &[&str]) {
-        say_as(client, PROTOCOL, capabilities).await;
-    }
-
-    async fn say_as(client: &mut Client, protocol: u32, capabilities: &[&str]) {
-        let hello = Envelope {
-            id: 1,
-            message: Message::Hello(Hello {
-                protocol,
-                app: weacon_appkit::build(&VERSION),
-                capabilities: serde_json::from_value(json!(capabilities)).unwrap(),
-            }),
-        };
-        let json = String::from_utf8(hello.to_json().unwrap()).unwrap();
-        client.send(Wire::text(json)).await.unwrap();
-    }
-
     // A feed of w1 for `token` after `since`, past its welcome.
     async fn greeted(address: SocketAddr, token: &str, since: u64) -> Client {
         let path = format!("/api/workspaces/w1/feed?since={since}");
@@ -368,48 +245,6 @@ mod tests {
         let welcome = next(&mut client).await;
         assert!(matches!(welcome, Message::Welcome(_)), "{welcome:?}");
         client
-    }
-
-    // The client's next frame; a feed that sends nothing for this long is broken.
-    async fn frame(client: &mut Client) -> Option<Result<Wire, tungstenite::Error>> {
-        timeout(Duration::from_secs(10), client.next())
-            .await
-            .expect("the feed went quiet")
-    }
-
-    // The client's next message, pings aside.
-    async fn next(client: &mut Client) -> Message {
-        let text = timeout(Duration::from_secs(10), text(client))
-            .await
-            .expect("no message in time");
-        Envelope::from_json(text.as_bytes()).unwrap().message
-    }
-
-    async fn text(client: &mut Client) -> Utf8Bytes {
-        loop {
-            match client.next().await {
-                Some(Ok(Wire::Ping(_))) => {}
-                Some(Ok(Wire::Text(text))) => return text,
-                other => panic!("no message: {other:?}"),
-            }
-        }
-    }
-
-    // Whether the feed ends, pings aside, before it has had ten seconds to.
-    async fn closed(client: &mut Client) -> bool {
-        timeout(Duration::from_secs(10), ends(client))
-            .await
-            .unwrap_or(false)
-    }
-
-    async fn ends(client: &mut Client) -> bool {
-        loop {
-            match client.next().await {
-                Some(Ok(Wire::Ping(_))) => {}
-                None | Some(Ok(Wire::Close(_)) | Err(_)) => return true,
-                Some(Ok(_)) => return false,
-            }
-        }
     }
 
     fn joined(seq: u64, member: &str) -> Message {
@@ -425,7 +260,7 @@ mod tests {
     #[tokio::test]
     async fn a_feed_keeps_its_place_among_the_connections() {
         let mut fixture = Fixture::new().await;
-        fixture.shared.feed.ping_every = QUIET;
+        fixture.shared.sockets.ping_every = QUIET;
         let room = Arc::new(Semaphore::new(2));
         fixture.shared.connections = Arc::clone(&room);
         let (server, token) = signed_in(&fixture).await;
@@ -444,7 +279,7 @@ mod tests {
     #[tokio::test]
     async fn a_member_gets_what_they_missed_then_each_change() {
         let mut fixture = Fixture::new().await;
-        fixture.shared.feed.ping_every = QUIET;
+        fixture.shared.sockets.ping_every = QUIET;
         let (server, token) = signed_in(&fixture).await;
         let mut client = open(server.address, "/api/workspaces/w1/feed", &token)
             .await
@@ -469,7 +304,7 @@ mod tests {
     #[tokio::test]
     async fn only_a_client_that_offers_tasks_hears_of_task_changes() {
         let mut fixture = Fixture::new().await;
-        fixture.shared.feed.ping_every = QUIET;
+        fixture.shared.sockets.ping_every = QUIET;
         let (server, token) = signed_in(&fixture).await;
         let mut plain = greeted(server.address, &token, 0).await;
         let first = next(&mut plain).await;
@@ -552,7 +387,7 @@ mod tests {
     #[tokio::test]
     async fn changes_arrive_once_and_in_order_whatever_wakes_the_feed() {
         let mut fixture = Fixture::new().await;
-        fixture.shared.feed.ping_every = QUIET;
+        fixture.shared.sockets.ping_every = QUIET;
         let (server, token) = signed_in(&fixture).await;
         let mut client = greeted(server.address, &token, 1).await;
         join(&fixture, server.address, "m2", "bo@example.com").await;
@@ -629,9 +464,9 @@ mod tests {
 
         assert_eq!(next(&mut wrong).await, error(code!("handshake.required")));
         assert_eq!(next(&mut without).await, error(code!("capability.missing")));
-        assert!(closed(&mut without).await);
+        assert!(ends(&mut without).await);
         assert_eq!(next(&mut older).await, error(code!("protocol.unsupported")));
-        assert!(closed(&mut older).await);
+        assert!(ends(&mut older).await);
     }
 
     #[tokio::test]
@@ -642,7 +477,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(closed(&mut silent).await);
+        assert!(ends(&mut silent).await);
     }
 
     #[tokio::test]
@@ -658,7 +493,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(closed(&mut client).await);
+        assert!(ends(&mut client).await);
     }
 
     #[tokio::test]
@@ -673,26 +508,26 @@ mod tests {
         }
         fixture.advance(SESSION_LIFETIME);
 
-        assert!(closed(&mut client).await);
+        assert!(ends(&mut client).await);
     }
 
     #[tokio::test]
     async fn a_change_reaches_no_feed_whose_member_is_one_no_more() {
         let mut fixture = Fixture::new().await;
-        fixture.shared.feed.ping_every = QUIET;
+        fixture.shared.sockets.ping_every = QUIET;
         let (server, token) = signed_in(&fixture).await;
         let mut client = greeted(server.address, &token, 1).await;
         w1(&fixture).await.unlink(&member_id("m1")).await;
 
         join(&fixture, server.address, "m2", "bo@example.com").await;
 
-        assert!(closed(&mut client).await);
+        assert!(ends(&mut client).await);
     }
 
     #[tokio::test]
     async fn a_member_whose_session_ends_during_a_page_gets_no_more_of_it() {
         let mut fixture = Fixture::new().await;
-        fixture.shared.feed.ping_every = QUIET;
+        fixture.shared.sockets.ping_every = QUIET;
         // The clock reads as usual for `checks` more readings, then past every session.
         let checks = Arc::new(AtomicU64::new(u64::MAX));
         let (left, clock) = (Arc::clone(&checks), Arc::clone(&fixture.shared.clock));
@@ -719,7 +554,7 @@ mod tests {
 
         assert!(matches!(next(&mut client).await, Message::Welcome(_)));
         assert_eq!(next(&mut client).await, joined(1, "m2"));
-        assert!(closed(&mut client).await);
+        assert!(ends(&mut client).await);
     }
 
     #[tokio::test]
@@ -730,7 +565,7 @@ mod tests {
         // Read meanwhile, so it's the unlinking that ends the feed, not unanswered pings.
         let unlink = async { w1(&fixture).await.unlink(&member_id("m1")).await };
 
-        let ((), ended) = tokio::join!(unlink, closed(&mut client));
+        let ((), ended) = tokio::join!(unlink, ends(&mut client));
         assert!(ended);
         let again = open(server.address, "/api/workspaces/w1/feed", &token).await;
         again.unwrap_err();
@@ -746,7 +581,7 @@ mod tests {
         let sign_out =
             test_support::request_with(server.address, "POST /api/sign-out", &bearer, "");
 
-        let (_, ended) = tokio::join!(sign_out, closed(&mut client));
+        let (_, ended) = tokio::join!(sign_out, ends(&mut client));
         assert!(ended);
     }
 
@@ -809,18 +644,6 @@ mod tests {
                 "http/1.1 101 switching protocols"
             ]
         );
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn a_send_the_client_never_takes_gives_up() {
-        let mut stuck = futures_util::sink::unfold((), |(), _: Frame| {
-            std::future::pending::<Result<(), Infallible>>()
-        });
-        let mut taken = futures_util::sink::drain();
-        let frame = || Frame::Ping(Vec::new().into());
-
-        assert!(send(&mut stuck, TIMING.ping_every, frame()).await.is_err());
-        assert!(send(&mut taken, TIMING.ping_every, frame()).await.is_ok());
     }
 
     #[tokio::test]

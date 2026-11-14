@@ -415,6 +415,61 @@
         }
       ]
     },
+    "AgentOwner": {
+      "description": "Whose agent it is.",
+      "oneOf": [
+        {
+          "description": "A member's own, under their sign-in.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "member"
+            },
+            "member": {
+              "$ref": "#/$defs/MemberId"
+            }
+          },
+          "required": [
+            "kind",
+            "member"
+          ]
+        },
+        {
+          "description": "The workspace's shared agent, under the workspace's own credential.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "shared"
+            }
+          },
+          "required": [
+            "kind"
+          ]
+        }
+      ]
+    },
+    "AgentRef": {
+      "description": "An agent as people know it.",
+      "type": "object",
+      "properties": {
+        "kind": {
+          "$ref": "#/$defs/AgentKind"
+        },
+        "machine": {
+          "description": "What the machine it runs on is called, which the server stamps from its own record of\nthe core that sent the status and never takes from the core; left out when not known.",
+          "$ref": "#/$defs/MachineName"
+        },
+        "owner": {
+          "$ref": "#/$defs/AgentOwner"
+        }
+      },
+      "required": [
+        "kind",
+        "owner"
+      ]
+    },
     "AgentSession": {
       "description": "An agent's own id for a conversation, a lowercase UUID, which resumes it later.",
       "type": "string",
@@ -2489,6 +2544,10 @@
       "description": "Where a run stands, as its chat's log records it.",
       "type": "object",
       "properties": {
+        "agent": {
+          "description": "Who runs it; left out when not known.",
+          "$ref": "#/$defs/AgentRef"
+        },
         "run": {
           "$ref": "#/$defs/RunId"
         },
