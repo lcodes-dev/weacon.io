@@ -94,9 +94,15 @@ async fn send_code(
         return Ok(());
     }
     let outbox = shared.outbox.clone();
-    tokio::task::spawn_blocking(move || outbox.send(&email, &code))
+    let sent = tokio::task::spawn_blocking(move || outbox.send(&email, &code))
         .await
-        .map_err(|error| mail_failed().because(error))?
+        .map_err(|error| mail_failed().because(error))
+        .and_then(|sent| sent);
+    if sent.is_err() {
+        // A code nobody received mustn't keep the address from getting another.
+        shared.db.unmail(challenge).await?;
+    }
+    sent
 }
 
 /// `POST /api/sign-in/finish`: trades a challenge's code for a session, in the same time
@@ -710,6 +716,23 @@ mod tests {
 
         assert_eq!(started, "http/1.1 202 accepted");
         assert_eq!(failed.unwrap(), "mail.failed");
+    }
+
+    #[tokio::test]
+    async fn codes_that_couldnt_be_sent_leave_room_for_ones_that_can() {
+        let fixture = Fixture::new().await;
+        let mut broken = fixture.shared.clone();
+        broken.outbox = crate::mail::Outbox::new("missing-outbox".into());
+        let failing = run(broken).await;
+        for _ in 0..3 {
+            start_sign_in(failing.address, "ada@example.com").await;
+        }
+        fixture.settled().await;
+        let server = run(fixture.shared.clone()).await;
+        start_sign_in(server.address, "ada@example.com").await;
+        fixture.settled().await;
+
+        assert_eq!(fixture.letters().len(), 1);
     }
 
     #[tokio::test]
