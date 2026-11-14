@@ -5,10 +5,10 @@
 use std::path::Path;
 use std::time::Duration;
 
-use futures_util::{SinkExt, Stream, StreamExt};
+use futures_util::{Sink, SinkExt, Stream, StreamExt};
 use tokio::fs::OpenOptions;
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader, duplex};
-use tokio::sync::mpsc::{UnboundedSender, unbounded_channel};
+use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use tokio_tungstenite::tungstenite::{self, Message as Frame};
 use weacon_protocol::{
     Capability, ChatAction, ChatCommand, Envelope, Message, Outcome, Receipt, code,
@@ -48,29 +48,40 @@ pub async fn serve(
     if !welcomed {
         return Err("the client speaks another protocol".into());
     }
-    // Sending stops at the first failure, such as the client leaving mid-stream.
-    let (played, lines) = duplex(BUFFER);
-    let mut lines = BufReader::new(lines).lines();
-    let (replies, mut answered) = unbounded_channel();
-    let forward = async {
-        loop {
-            let text = tokio::select! {
-                Ok(Some(line)) = lines.next_line() => line,
-                Some(reply) = answered.recv() => reply,
-                else => break,
-            };
-            if sink.send(Frame::text(text)).await.is_err() {
-                break;
-            }
-        }
+    let (run_out, run_lines) = duplex(BUFFER);
+    let (reply_sender, replies) = unbounded_channel();
+    let playing = play(recording, BufReader::new(tokio::io::empty()), run_out, pace);
+    let sending = async {
+        drop(tokio::join!(
+            playing,
+            send_all(&mut sink, run_lines, replies)
+        ));
     };
-    let play = play(recording, BufReader::new(tokio::io::empty()), played, pace);
-    let sending = async { drop(tokio::join!(play, forward)) };
-    let keeping = keep(&mut frames, received, replies);
+    let keeping = keep(&mut frames, received, reply_sender);
     tokio::pin!(keeping);
     tokio::select! {
         kept = &mut keeping => kept,
         () = sending => keeping.await,
+    }
+}
+
+// Sends each of the run's lines and each reply as a text frame, until both end or a send fails,
+// such as when the client leaves mid-stream.
+async fn send_all(
+    sink: &mut (impl Sink<Frame> + Unpin),
+    run_lines: impl AsyncRead + Unpin,
+    mut replies: UnboundedReceiver<String>,
+) {
+    let mut run_lines = BufReader::new(run_lines).lines();
+    loop {
+        let text = tokio::select! {
+            Ok(Some(line)) = run_lines.next_line() => line,
+            Some(reply) = replies.recv() => reply,
+            else => break,
+        };
+        if sink.send(Frame::text(text)).await.is_err() {
+            break;
+        }
     }
 }
 
@@ -116,8 +127,10 @@ fn replies_to(text: &str) -> Vec<String> {
                 outcome: Outcome::Accepted,
             }),
         }]
-    } else {
+    } else if matches!(envelope.message, Message::DiffQuery(_)) {
         fake_diff::answers(&envelope)
+    } else {
+        Vec::new()
     };
     replies
         .iter()
