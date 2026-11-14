@@ -16,25 +16,20 @@ export function useFeed(workspace: WorkspaceId, api: Api, socket: WorkspaceSocke
   const [status, setStatus] = useState<Status>({ state: "connecting" });
   // Kept apart from `status`, which a feed that ends at once may replace before it is shown.
   useEffect(() => {
-    let current = true;
     let since = 0;
     let failed = 0;
     // Whether the open feed has stayed long enough, or brought a change, to restart the backoff.
     let stayed = false;
     let staying: ReturnType<typeof setTimeout> | undefined;
-    let opened: WebSocket | undefined;
+    let opened: Connection | undefined;
     let retry: ReturnType<typeof setTimeout> | undefined;
     const open = () => {
       if (failed > 0) {
         setStatus({ state: "connecting" });
       }
       const fresh = new WebSocket(feedUrl(window.location, workspace, since));
-      opened = fresh;
       const listener = {
         status(next: Status) {
-          if (!current) {
-            return;
-          }
           setStatus(next);
           if (next.state === "live") {
             stayed = false;
@@ -53,7 +48,7 @@ export function useFeed(workspace: WorkspaceId, api: Api, socket: WorkspaceSocke
           }
         },
         message(envelope: Incoming) {
-          const after = current ? heardAfter(envelope, workspace, since) : undefined;
+          const after = heardAfter(envelope, workspace, since);
           if (after === undefined) {
             return;
           }
@@ -63,10 +58,11 @@ export function useFeed(workspace: WorkspaceId, api: Api, socket: WorkspaceSocke
         },
       };
       const connection = new Connection(fresh, ME, listener, FEED, (run, ms) => setTimeout(run, ms));
+      opened = connection;
     };
     open();
+    // A closed connection tells nothing more, so it can't attach the socket or retry.
     return () => {
-      current = false;
       clearTimeout(retry);
       clearTimeout(staying);
       socket.attach(undefined);

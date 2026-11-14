@@ -41,8 +41,6 @@ export function ChatPage({ url, log }: { url: string; log: Log }) {
   const live = useRef<{ connection: Connection; receipts: Receipts; liveChat: LiveChat | undefined }>(undefined);
   const lastId = useRef(HELLO_ID);
   useEffect(() => {
-    // A closed socket's last news must not overwrite the next socket's.
-    let current = true;
     let socket: WebSocket;
     try {
       socket = new WebSocket(url);
@@ -53,9 +51,6 @@ export function ChatPage({ url, log }: { url: string; log: Log }) {
     }
     const later: Later = (run, ms) => setTimeout(run, ms);
     const receipts = new Receipts(later, (request, settled) => {
-      if (!current) {
-        return;
-      }
       setLate({ request, settled });
       const answer = answered.current.get(request);
       if (answer !== undefined && settled === "accepted") {
@@ -71,9 +66,6 @@ export function ChatPage({ url, log }: { url: string; log: Log }) {
     );
     const connection = new Connection(socket, ME, {
       status(next) {
-        if (!current) {
-          return;
-        }
         setStatus(next);
         if (next.state === "live") {
           const liveChat =
@@ -83,7 +75,7 @@ export function ChatPage({ url, log }: { url: string; log: Log }) {
                   id: () => ++lastId.current,
                   send: (envelope) => connection.send(envelope),
                   schedule,
-                  show: (shown) => current && setSync(shown),
+                  show: setSync,
                 });
           live.current = { connection, receipts, liveChat };
           liveChat?.open();
@@ -107,18 +99,17 @@ export function ChatPage({ url, log }: { url: string; log: Log }) {
             live.current?.liveChat?.push(message);
           },
           answers: (message) => receipts.take(message),
-          changes: (message) => {
-            if (current) {
-              setChanges((before) => receive(before, message));
-            }
-          },
+          changes: (message) => setChanges((before) => receive(before, message)),
         });
       },
     }, TRANSCRIPT, later);
+    // A closed connection tells nothing more, so its last news can't overwrite the next one's.
     return () => {
-      current = false;
+      live.current?.liveChat?.close();
       live.current = undefined;
-      socket.close();
+      log.detach();
+      receipts.end();
+      connection.close();
     };
   }, [url]);
   const command = (action: ChatAction, request: RequestId): Promise<Sent> => {
