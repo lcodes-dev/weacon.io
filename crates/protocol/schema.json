@@ -682,7 +682,7 @@
           ]
         },
         {
-          "description": "Ends the hold this connection placed; the chat's queued prompts then go on. Sent by a\nlocal client under `chat.hold`, never through the server.",
+          "description": "Ends this connection's hold, under `chat.hold`; queued prompts then go on.",
           "type": "object",
           "properties": {
             "kind": {

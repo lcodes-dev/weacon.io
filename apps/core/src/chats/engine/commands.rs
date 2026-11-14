@@ -42,7 +42,7 @@ impl<A: Agent> Engine<A> {
             ChatAction::Permission { answer } => self.deliver(key, request, answer).await,
             ChatAction::Interrupt => self.stop_turn(key, request).await,
             ChatAction::Prompt { .. } | ChatAction::Newer => self.advance(key).await,
-            ChatAction::Hold | ChatAction::Release => Ok(()),
+            ChatAction::Hold | ChatAction::Release => Err(unsupported()),
         }
     }
 
@@ -80,7 +80,7 @@ impl<A: Agent> Engine<A> {
             }
             ChatAction::Permission { answer } => self.permission(key, request, answer).await,
             ChatAction::Interrupt => self.interrupt(key, request).await,
-            // Not yet held here: this core doesn't offer `chat.hold`.
+            // This core doesn't offer `chat.hold`.
             ChatAction::Hold | ChatAction::Release | ChatAction::Newer => Err(unsupported()),
         }
     }

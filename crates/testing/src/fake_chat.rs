@@ -254,7 +254,7 @@ impl FakeChat {
                     self.stopped.push(run);
                 }
             }
-            // Only a local client holds a chat; the server never relays it.
+            // A hold comes only from a local client, never through the server.
             ChatAction::Hold | ChatAction::Release | ChatAction::Newer => {}
         }
         told

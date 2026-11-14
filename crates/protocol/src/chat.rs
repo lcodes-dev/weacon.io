@@ -54,8 +54,7 @@ pub enum ChatAction {
     /// sent it is open, no run starts and prompts queue. Sent by a local client under
     /// `chat.hold`, never through the server.
     Hold,
-    /// Ends the hold this connection placed; the chat's queued prompts then go on. Sent by a
-    /// local client under `chat.hold`, never through the server.
+    /// Ends this connection's hold, under `chat.hold`; queued prompts then go on.
     Release,
     /// An action this build doesn't know, from a newer peer; only ever received.
     #[serde(other)]
