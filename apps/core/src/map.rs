@@ -119,7 +119,7 @@ mod tests {
     use weacon_testing::TempDir;
 
     use super::*;
-    use crate::test_support::app;
+    use crate::test_support::{Broken, app};
 
     fn repo(files: &[(&str, &str)]) -> TempDir {
         let root = TempDir::new().unwrap();
@@ -217,20 +217,6 @@ mod tests {
 
     #[test]
     fn fails_when_it_cant_read_or_print() {
-        struct Broken;
-        impl Read for Broken {
-            fn read(&mut self, _: &mut [u8]) -> io::Result<usize> {
-                Err(io::ErrorKind::BrokenPipe.into())
-            }
-        }
-        impl Write for Broken {
-            fn write(&mut self, _: &[u8]) -> io::Result<usize> {
-                Err(io::ErrorKind::BrokenPipe.into())
-            }
-            fn flush(&mut self) -> io::Result<()> {
-                Ok(())
-            }
-        }
         let root = repo(CRATE);
         let error =
             check_anchors(&app(None, None), &root, &mut Broken, &mut Vec::new()).unwrap_err();

@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::ffi::OsString;
+use std::io::{self, Read, Write};
 use std::path::Path;
 use std::time::SystemTime;
 
@@ -55,6 +56,25 @@ pub(crate) fn pick(request: &str, html: &str) -> Pick {
         selector: "main > button".to_owned(),
         html: html.to_owned(),
         screenshot_png: Some("iVBORw0KGgo=".to_owned()),
+    }
+}
+
+/// A reader and writer whose every read and write fails.
+pub(crate) struct Broken;
+
+impl Read for Broken {
+    fn read(&mut self, _: &mut [u8]) -> io::Result<usize> {
+        Err(io::ErrorKind::BrokenPipe.into())
+    }
+}
+
+impl Write for Broken {
+    fn write(&mut self, _: &[u8]) -> io::Result<usize> {
+        Err(io::ErrorKind::BrokenPipe.into())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
     }
 }
 
