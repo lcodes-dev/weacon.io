@@ -5,6 +5,8 @@ use std::time::Duration;
 
 use weacon_protocol::{Envelope, Message, RunEvent, RunId, RunUpdate};
 
+use crate::Failure;
+
 /// A made-up session of one agent run, one `RunEvent` of JSON per line, with whole text blocks.
 pub const SESSION: &str = include_str!("../sessions/transcript.jsonl");
 
@@ -22,15 +24,15 @@ const DELTA_BYTES: usize = 24;
 ///
 /// # Errors
 /// When a line of `session` isn't a `RunEvent`, or the session has no text.
-pub fn recording(session: &str, tokens: usize) -> Result<String, String> {
+pub fn recording(session: &str, tokens: usize) -> Result<String, Failure> {
     let events = session
         .lines()
         .filter(|line| !line.trim().is_empty())
-        .map(|line| serde_json::from_str(line).map_err(|error| format!("{error}: {line}")))
-        .collect::<Result<Vec<RunEvent>, _>>()?;
+        .map(|line| serde_json::from_str(line).map_err(|error| format!("{error}: {line}").into()))
+        .collect::<Result<Vec<RunEvent>, Failure>>()?;
     let per_pass: usize = events.iter().map(text_tokens).sum();
     if per_pass == 0 {
-        return Err("the session has no text".to_owned());
+        return Err("the session has no text".into());
     }
     let run = RunId::try_from(RUN.to_owned())?;
     let mut lines = Vec::new();
@@ -84,7 +86,7 @@ fn deltas(event: &RunEvent) -> Vec<RunEvent> {
     deltas
 }
 
-fn line(run: RunId, event: RunEvent) -> Result<String, String> {
+fn line(run: RunId, event: RunEvent) -> Result<String, Failure> {
     let envelope = Envelope {
         id: 0,
         message: Message::Run(RunUpdate { run, event }),
@@ -93,9 +95,8 @@ fn line(run: RunId, event: RunEvent) -> Result<String, String> {
 }
 
 /// `envelope` as the text of one frame.
-pub(crate) fn envelope_text(envelope: &Envelope) -> Result<String, String> {
-    let json = envelope.to_json().map_err(|error| error.to_string())?;
-    String::from_utf8(json).map_err(|error| error.to_string())
+pub(crate) fn envelope_text(envelope: &Envelope) -> Result<String, Failure> {
+    Ok(String::from_utf8(envelope.to_json()?)?)
 }
 
 #[cfg(test)]
@@ -144,10 +145,10 @@ mod tests {
         let finished = json!({ "event": "finished", "outcome": { "state": "completed" } });
 
         assert_eq!(
-            recording(&finished.to_string(), 1),
-            Err("the session has no text".to_owned())
+            recording(&finished.to_string(), 1).unwrap_err().to_string(),
+            "the session has no text"
         );
-        assert!(recording("{", 1).is_err_and(|error| error.ends_with(": {")));
+        assert!(recording("{", 1).is_err_and(|error| error.to_string().ends_with(": {")));
     }
 
     #[test]

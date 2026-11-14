@@ -5,6 +5,7 @@ use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
 use weacon_protocol::{App, Capability, Envelope, Message, code, encode_line};
 
+use crate::Failure;
 use crate::replay::play;
 
 /// Answers the hello that `stream`'s client sends, then plays `recording` to it, waiting `pace`
@@ -17,33 +18,26 @@ pub async fn serve(
     stream: impl AsyncRead + AsyncWrite + Unpin,
     recording: String,
     pace: Duration,
-) -> Result<(), String> {
+) -> Result<(), Failure> {
     let (reader, mut writer) = tokio::io::split(stream);
     let mut reader = BufReader::new(reader);
     let mut line = String::new();
-    reader
-        .read_line(&mut line)
-        .await
-        .map_err(|error| error.to_string())?;
+    reader.read_line(&mut line).await?;
     let answer = answer(&line, &[])?;
     let welcomed = matches!(answer.message, Message::Welcome(_));
-    writer
-        .write_all(&encode_line(&answer).map_err(|error| error.to_string())?)
-        .await
-        .map_err(|error| error.to_string())?;
+    writer.write_all(&encode_line(&answer)?).await?;
     if !welcomed {
-        return Err("the client speaks another protocol".to_owned());
+        return Err("the client speaks another protocol".into());
     }
     play(recording, reader, writer, pace).await
 }
 
 /// The answer to the client's first `line`, offering `run.stream` and `more`. A client it
 /// welcomes must offer `run.stream`.
-pub(crate) fn answer(line: &str, more: &[Capability]) -> Result<Envelope, String> {
-    let envelope =
-        Envelope::from_json(line.trim().as_bytes()).map_err(|error| error.to_string())?;
+pub(crate) fn answer(line: &str, more: &[Capability]) -> Result<Envelope, Failure> {
+    let envelope = Envelope::from_json(line.trim().as_bytes())?;
     let Message::Hello(hello) = envelope.message else {
-        return Err(format!("expected a hello but got {}", line.trim()));
+        return Err(format!("expected a hello but got {}", line.trim()).into());
     };
     let core = App {
         name: "weacon-core".to_owned(),
@@ -54,7 +48,7 @@ pub(crate) fn answer(line: &str, more: &[Capability]) -> Result<Envelope, String
     let capabilities = [std::slice::from_ref(&stream), more].concat();
     let message = hello.answer(core, capabilities);
     if matches!(message, Message::Welcome(_)) && !hello.capabilities.contains(&stream) {
-        return Err("the client didn't offer run.stream".to_owned());
+        return Err("the client didn't offer run.stream".into());
     }
     Ok(Envelope {
         id: envelope.id,
@@ -106,7 +100,7 @@ mod tests {
         assert_eq!(lines[0]["type"], "welcome");
         assert_eq!(lines[0]["capabilities"], json!(["run.stream"]));
         assert_eq!(lines[1], json!({ "a": 1 }));
-        assert_eq!(served.await.unwrap(), Ok(()));
+        served.await.unwrap().unwrap();
     }
 
     #[tokio::test]
@@ -120,8 +114,8 @@ mod tests {
         client.shutdown().await.unwrap();
 
         assert_eq!(
-            served.await.unwrap(),
-            Err("the client didn't offer run.stream".to_owned())
+            served.await.unwrap().unwrap_err().to_string(),
+            "the client didn't offer run.stream"
         );
     }
 
@@ -140,7 +134,7 @@ mod tests {
             served
                 .await
                 .unwrap()
-                .is_err_and(|error| error.starts_with("expected a hello"))
+                .is_err_and(|error| error.to_string().starts_with("expected a hello"))
         );
     }
 
@@ -159,8 +153,8 @@ mod tests {
 
         assert_eq!(reply["code"], "protocol.unsupported");
         assert_eq!(
-            served.await.unwrap(),
-            Err("the client speaks another protocol".to_owned())
+            served.await.unwrap().unwrap_err().to_string(),
+            "the client speaks another protocol"
         );
     }
 

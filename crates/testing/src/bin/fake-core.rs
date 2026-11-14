@@ -5,6 +5,7 @@ use std::path::Path;
 use std::process::ExitCode;
 use std::time::Duration;
 
+use weacon_testing::Failure;
 use weacon_testing::fake_core::serve;
 use weacon_testing::platform::listen;
 use weacon_testing::recording::{SESSION, args, recording};
@@ -20,13 +21,9 @@ async fn main() -> ExitCode {
     }
 }
 
-async fn run(dir: &Path, tokens: usize, pace: Duration) -> Result<(), String> {
+async fn run(dir: &Path, tokens: usize, pace: Duration) -> Result<(), Failure> {
     let recording = recording(SESSION, tokens)?;
-    let listener = listen(&dir.join("weacon.sock")).map_err(|error| error.to_string())?;
-    let stream = listener
-        .accept()
-        .await
-        .map_err(|error| error.to_string())?
-        .0;
+    let listener = listen(&dir.join("weacon.sock"))?;
+    let stream = listener.accept().await?.0;
     serve(stream, recording, pace).await
 }
