@@ -43,8 +43,9 @@ const MOVING: [&str; 7] = [
 ];
 
 // Programs that run a command given as text, which the guard doesn't follow.
-const RUNNERS: [&str; 10] = [
+const RUNNERS: [&str; 11] = [
     "su", "runuser", "script", "parallel", "trap", "alias", "chroot", "watch", "ssh", "nsenter",
+    "eval",
 ];
 
 // Words that start or join shell constructs rather than name a program.
@@ -216,17 +217,4 @@ pub(super) fn in_place(args: &[Word]) -> bool {
         arg.text.starts_with("--in-place")
             || short_flags(&arg.text).is_some_and(|flags| flags.contains('i'))
     })
-}
-
-/// The words as one line, when none of them is unknown.
-pub(super) fn joined(args: &[Word]) -> Option<String> {
-    if args.iter().any(|arg| arg.dynamic) {
-        return None;
-    }
-    Some(
-        args.iter()
-            .map(|arg| arg.text.as_str())
-            .collect::<Vec<_>>()
-            .join(" "),
-    )
 }

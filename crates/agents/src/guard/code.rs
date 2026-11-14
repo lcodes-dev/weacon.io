@@ -1,11 +1,9 @@
 //! Programs that run code or queries given in their arguments: shells, interpreters and
 //! database clients.
 
-use std::path::Path;
-
+use super::Reason;
 use super::shell::{Simple, Word};
 use super::words::{family, short_flags};
-use super::{Context, Reason, check_command};
 
 const SHELLS: [&str; 6] = ["sh", "bash", "zsh", "dash", "ksh", "fish"];
 // Shells whose code isn't the POSIX shell's, so the guard can't read it.
@@ -48,16 +46,10 @@ const DROPS: [&str; 6] = [
 ];
 
 /// What a program that runs code needs a person for; nothing when it isn't one.
-pub(super) fn judge(
-    name: &str,
-    args: &[Word],
-    simple: &Simple,
-    context: &Context,
-    cwd: &Path,
-) -> Option<Reason> {
+pub(super) fn judge(name: &str, args: &[Word], simple: &Simple) -> Option<Reason> {
     let kind = family(name);
     if SHELLS.contains(&kind) {
-        return shell(args, simple, context, cwd);
+        return shell(args, simple);
     }
     if OTHER_SHELLS.contains(&kind) {
         return (!args.is_empty() || simple.fed).then_some(Reason::Unsure);
@@ -71,27 +63,13 @@ pub(super) fn judge(
     database(name, args, simple)
 }
 
-// `-c` may come alone or among other short options, as in `bash -lc`, and the code is the
-// first word after it that isn't an option.
-fn shell(args: &[Word], simple: &Simple, context: &Context, cwd: &Path) -> Option<Reason> {
+// Code given inline, as in `bash -lc '…'`, or through a pipe or a here-document, isn't
+// followed: a person sees it first.
+fn shell(args: &[Word], simple: &Simple) -> Option<Reason> {
     let inline = args
         .iter()
-        .position(|arg| short_flags(&arg.text).is_some_and(|flags| flags.contains('c')));
-    let Some(inline) = inline else {
-        // Commands from a pipe or a here-document aren't in the command line.
-        return simple.fed.then_some(Reason::Unsure);
-    };
-    let code = args
-        .get(inline + 1..)
-        .and_then(|rest| rest.iter().find(|arg| !arg.text.starts_with('-')));
-    let Some(code) = code.filter(|code| !code.dynamic) else {
-        return Some(Reason::Unsure);
-    };
-    let inner = Context {
-        cwd: cwd.to_path_buf(),
-        ..context.clone()
-    };
-    check_command(&code.text, &inner)
+        .any(|arg| short_flags(&arg.text).is_some_and(|flags| flags.contains('c')));
+    (inline || simple.fed).then_some(Reason::Unsure)
 }
 
 fn interpreter(args: &[Word], simple: &Simple) -> Option<Reason> {

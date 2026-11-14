@@ -4,10 +4,10 @@ use std::path::{Path, PathBuf};
 
 use super::shell::{Simple, Word};
 use super::words::{
-    Command, begins, command, in_place, is_assignment, joined, positional, program_name,
-    short_flags, value_of,
+    Command, begins, command, in_place, is_assignment, positional, program_name, short_flags,
+    value_of,
 };
-use super::{Context, Reason, check_command, check_word, code, git, path_of, reading};
+use super::{Context, Reason, check_word, code, git, path_of, reading};
 
 const DELETERS: [&str; 7] = [
     "rm",
@@ -148,9 +148,6 @@ impl Call<'_> {
             }
             "dd" => self.dd(cwd),
             "find" => self.find(cwd),
-            "eval" => joined(self.args).map_or(Some(Reason::Unsure), |line| {
-                check_command(&line, &self.inside(cwd))
-            }),
             _ if DELETERS.contains(&name) => {
                 self.targets(cwd, Reason::DeleteOutside, &positional(self.args))
             }
@@ -158,14 +155,7 @@ impl Call<'_> {
             _ if WRITERS.contains(&name) || (name == "sed" && in_place(self.args)) => {
                 self.targets(cwd, Reason::WriteOutside, &positional(self.args))
             }
-            _ => code::judge(name, self.args, self.simple, self.context, cwd),
-        }
-    }
-
-    fn inside(&self, cwd: &Path) -> Context {
-        Context {
-            cwd: cwd.to_path_buf(),
-            ..self.context.clone()
+            _ => code::judge(name, self.args, self.simple),
         }
     }
 
