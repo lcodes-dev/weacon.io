@@ -135,7 +135,7 @@ impl Db {
             ensure_personal(&mut transaction, account, attempt.personal).await?;
         }
         transaction.commit().await.map_err(failed)?;
-        account.map(stored).transpose()
+        Ok(account)
     }
 
     /// The account, and its address, whose live session's token is hashed as `token_hash`.
@@ -196,7 +196,7 @@ pub(super) async fn insert_account(
 async fn account_for(
     connection: &mut SqliteConnection,
     attempt: &Attempt<'_>,
-) -> Result<Option<String>, Fault> {
+) -> Result<Option<AccountId>, Fault> {
     if let Some(new) = attempt.new_account {
         insert_account(&mut *connection, new.as_str(), attempt.email).await?;
     }
@@ -204,7 +204,9 @@ async fn account_for(
         .bind(attempt.email.as_str())
         .fetch_optional(connection)
         .await
-        .map_err(failed)
+        .map_err(failed)?
+        .map(stored)
+        .transpose()
 }
 
 /// The challenge whose code `attempt` gives, among the live ones mailed to its address. Every
@@ -253,7 +255,7 @@ async fn wrong_try(connection: &mut SqliteConnection, challenge: &str) -> Result
 /// Starts a session, and ends the expired ones so they don't pile up.
 async fn start_session(
     transaction: &mut SqliteConnection,
-    account: &str,
+    account: &AccountId,
     attempt: &Attempt<'_>,
 ) -> Result<(), Fault> {
     sqlx::query("DELETE FROM sessions WHERE expires_at <= ?")
@@ -263,7 +265,7 @@ async fn start_session(
         .map_err(failed)?;
     sqlx::query("INSERT INTO sessions (token_hash, account_id, expires_at) VALUES (?, ?, ?)")
         .bind(attempt.token_hash)
-        .bind(account)
+        .bind(account.as_str())
         .bind(attempt.token_expires_at)
         .execute(&mut *transaction)
         .await

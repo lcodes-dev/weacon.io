@@ -72,20 +72,20 @@ impl Account {
 /// Makes `account`'s Personal workspace as `new`, unless it has had one.
 pub(super) async fn ensure_personal(
     transaction: &mut SqliteConnection,
-    account: &str,
+    account: &AccountId,
     new: &NewWorkspace,
 ) -> Result<(), Fault> {
     let unmade = sqlx::query(
         "UPDATE accounts SET personal_made = 1 WHERE account_id = ? AND personal_made = 0",
     )
-    .bind(account)
+    .bind(account.as_str())
     .execute(&mut *transaction)
     .await
     .map_err(failed)?;
     if unmade.rows_affected() == 0 {
         return Ok(());
     }
-    insert_owned(transaction, &stored(account.to_owned())?, new).await
+    insert_owned(transaction, account, new).await
 }
 
 async fn insert_owned(
@@ -243,11 +243,11 @@ mod tests {
         let mut connection = db.writer.acquire().await.unwrap();
 
         for id in ["p1", "p2"] {
-            ensure_personal(&mut connection, "a2", &new(id, "Personal"))
+            ensure_personal(&mut connection, &account("a2"), &new(id, "Personal"))
                 .await
                 .unwrap();
         }
-        ensure_personal(&mut connection, "a9", &new("p3", "Personal"))
+        ensure_personal(&mut connection, &account("a9"), &new("p3", "Personal"))
             .await
             .unwrap();
         drop(connection);
