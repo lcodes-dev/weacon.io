@@ -31,9 +31,17 @@ pub(crate) fn check_sources(rule: &Rule, sources: &[SourceFile]) -> Vec<String> 
 }
 
 fn check_file(rule: &Rule, file: &SourceFile) -> Vec<String> {
+    let mut out = check_text(&file.text);
+    match Uses::of(&file.text) {
+        Ok(uses) => out.extend(check_uses(rule, &file.path, &uses)),
+        Err(error) => out.push(format!("can't be parsed: {error}")),
+    }
+    out
+}
+
+fn check_text(text: &str) -> Vec<String> {
     let mut out = Vec::new();
-    let code = file
-        .text
+    let code = text
         .split("#[cfg(test)]\nmod tests")
         .next()
         .unwrap_or_default();
@@ -43,21 +51,17 @@ fn check_file(rule: &Rule, file: &SourceFile) -> Vec<String> {
             "has {code_lines} lines before its tests; split it to stay within {MAX_CODE_LINES}"
         ));
     }
-    let markers: BTreeSet<&str> = words(&file.text)
-        .filter(|word| MARKERS.contains(word))
-        .collect();
+    let markers: BTreeSet<&str> = words(text).filter(|word| MARKERS.contains(word)).collect();
     out.extend(
         markers
             .iter()
             .map(|marker| format!("has a {marker}; finish the work or remove the note")),
     );
-    let uses = match Uses::of(&file.text) {
-        Ok(uses) => uses,
-        Err(error) => {
-            out.push(format!("can't be parsed: {error}"));
-            return out;
-        }
-    };
+    out
+}
+
+fn check_uses(rule: &Rule, path: &Path, uses: &Uses) -> Vec<String> {
+    let mut out = Vec::new();
     if !rule.io {
         out.extend(
             uses.std_modules
@@ -66,8 +70,8 @@ fn check_file(rule: &Rule, file: &SourceFile) -> Vec<String> {
                 .map(|module| format!("uses std::{module}, but its package does no I/O")),
         );
     }
-    if file.path.starts_with("src") {
-        if !in_module(&file.path, "db") {
+    if path.starts_with("src") {
+        if !in_module(path, "db") {
             out.extend(
                 uses.roots
                     .iter()
@@ -75,7 +79,7 @@ fn check_file(rule: &Rule, file: &SourceFile) -> Vec<String> {
                     .map(|driver| format!("uses {driver} outside the db module")),
             );
         }
-        if uses.os_cfg && !in_module(&file.path, "platform") {
+        if uses.os_cfg && !in_module(path, "platform") {
             out.push("selects an operating system outside the platform module".to_owned());
         }
     }
