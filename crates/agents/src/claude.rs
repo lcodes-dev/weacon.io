@@ -131,9 +131,10 @@ mod tests {
         use super::*;
         use weacon_testing::TempDir;
 
+        use crate::platform::write_program;
         use crate::run::AgentRun;
         use crate::spawn::SpawnPolicy;
-        use crate::test_support::{app, run_id, started, write_program};
+        use crate::test_support::{app, run_id, started};
 
         const SESSION_A: &str = "0b7c6a52-3f1e-4d2a-9c8b-5e4f3a2b1c0d";
         const SESSION_B: &str = "5d4c3b2a-1f0e-4d9c-8b7a-6f5e4d3c2b1a";

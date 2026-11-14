@@ -30,7 +30,7 @@ mod tests {
     #[cfg(unix)]
     fn program(dir: &TempDir) -> Command {
         let path = dir.join("terminal-check");
-        crate::test_support::write_program(
+        crate::platform::write_program(
             &path,
             "#!/bin/sh\n\
              [ -t 0 ] && [ -t 1 ] && [ \"$(stty size < /dev/tty)\" = \"$(stty size)\" ] && \
@@ -95,7 +95,7 @@ mod tests {
     async fn the_end_comes_when_the_program_ends_whatever_it_left_running() {
         let dir = TempDir::new().unwrap();
         let path = dir.join("leaves");
-        crate::test_support::write_program(
+        crate::platform::write_program(
             &path,
             "#!/bin/sh\n(trap '' HUP; exec sleep 30) &\necho left\nexit 0\n",
         );

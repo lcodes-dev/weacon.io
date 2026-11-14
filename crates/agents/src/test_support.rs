@@ -123,23 +123,6 @@ pub(crate) fn jsonl(lines: &[Value]) -> String {
         .fold(String::new(), |file, line| file + &line.to_string() + "\n")
 }
 
-/// Writes an executable `script` to `path` from a child shell, so this process never holds a
-/// write handle that another test's fork could inherit, which makes running it fail as busy.
-#[cfg(unix)]
-pub(crate) fn write_program(path: &std::path::Path, script: &str) {
-    let written = std::process::Command::new("sh")
-        .args([
-            "-c",
-            "printf '%s' \"$1\" > \"$2\" && chmod 755 \"$2\"",
-            "sh",
-            script,
-        ])
-        .arg(path)
-        .status()
-        .unwrap();
-    assert!(written.success());
-}
-
 /// The next thing a terminal's program did, failing the test if nothing comes in time.
 pub(crate) async fn next_event(events: &mut crate::Events) -> Option<crate::Event> {
     timeout(Duration::from_secs(30), events.next())

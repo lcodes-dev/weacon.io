@@ -117,7 +117,8 @@ mod tests {
 
         use super::*;
         use crate::Launch;
-        use crate::test_support::{after_output, next_event, output_until, write_program};
+        use crate::platform::write_program;
+        use crate::test_support::{after_output, next_event, output_until};
 
         fn launch(agent: AgentKind, dir: &Path) -> Launch {
             let program = dir.join("vendor");
