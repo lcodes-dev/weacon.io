@@ -1,5 +1,6 @@
 use std::future::Future;
 use std::io;
+use std::ops::ControlFlow;
 
 use tokio::io::{AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::sync::mpsc;
@@ -16,29 +17,35 @@ use crate::chats::feed::{self, Client};
 use crate::picks::KeepError;
 use crate::platform::Stream;
 
-/// One client's connection: where it is in the conversation, and where events it subscribed to
-/// are pushed.
+/// One client's connection: where it is in the conversation, when its hello is due, and where
+/// events it subscribed to are pushed.
 struct Connection {
     session: Session,
     decoder: LineDecoder,
     client: Client,
+    hello_by: Instant,
+}
+
+impl Connection {
+    // Until the hello, reading and replying count against `hello_by`.
+    fn limit(&self) -> Option<Instant> {
+        (!self.session.greeted()).then_some(self.hello_by)
+    }
 }
 
 pub(super) async fn serve_client(stream: Stream, shared: &Shared) -> io::Result<()> {
     let (mut reader, mut writer) = tokio::io::split(stream);
     let mut buf = [0; READ_CHUNK];
-    let deadline = Instant::now() + HANDSHAKE_TIMEOUT;
     let (push, mut pushed) = mpsc::channel(feed::QUEUE);
     let mut connection = Connection {
         session: Session::default(),
         decoder: LineDecoder::default(),
         client: Client { push },
+        hello_by: Instant::now() + HANDSHAKE_TIMEOUT,
     };
     loop {
-        // Until the hello, reading counts against the deadline, as `answer`'s replies do.
-        let limit = (!connection.session.greeted()).then_some(deadline);
         let read = tokio::select! {
-            read = within(limit, reader.read(&mut buf)) => read,
+            read = within(connection.limit(), reader.read(&mut buf)) => read,
             Some(message) = pushed.recv() => {
                 if let Ok(line) = encode_line(&Envelope { id: 0, message }) {
                     writer.write_all(&line).await?;
@@ -53,7 +60,10 @@ pub(super) async fn serve_client(stream: Stream, shared: &Shared) -> io::Result<
             return Ok(());
         }
         let bytes = buf.get(..read).unwrap_or_default();
-        if !answer(&mut connection, bytes, shared, &mut writer, deadline).await? {
+        if answer(&mut connection, bytes, shared, &mut writer)
+            .await?
+            .is_break()
+        {
             return Ok(());
         }
     }
@@ -67,22 +77,19 @@ async fn within<F: Future>(deadline: Option<Instant>, future: F) -> Option<F::Ou
     }
 }
 
-// Answers what `bytes` completes; false once the connection should close. Replies before the
-// hello count against `deadline`; what follows the hello, even in the same read, doesn't.
+// Answers what `bytes` completes; breaks once the connection should close. What follows the
+// hello, even in the same read, isn't held to `hello_by`.
 async fn answer(
     connection: &mut Connection,
     bytes: &[u8],
     shared: &Shared,
     writer: &mut (impl AsyncWrite + Unpin),
-    deadline: Instant,
-) -> io::Result<bool> {
-    let Connection {
-        session,
-        decoder,
-        client,
-    } = connection;
-    for received in decoder.push(bytes) {
-        let limit = (!session.greeted()).then_some(deadline);
+) -> io::Result<ControlFlow<()>> {
+    for received in connection.decoder.push(bytes) {
+        let limit = connection.limit();
+        let Connection {
+            session, client, ..
+        } = &mut *connection;
         if let Ok(Envelope {
             message: Message::Error(body),
             ..
@@ -113,15 +120,15 @@ async fn answer(
             && let Ok(line) = encode_line(&envelope)
         {
             let Some(written) = within(limit, writer.write_all(&line)).await else {
-                return Ok(false);
+                return Ok(ControlFlow::Break(()));
             };
             written?;
         }
         if reply.close {
-            return Ok(false);
+            return Ok(ControlFlow::Break(()));
         }
     }
-    Ok(true)
+    Ok(ControlFlow::Continue(()))
 }
 
 // The reply to a chat command: nothing when it was taken, since its receipts are events in the
