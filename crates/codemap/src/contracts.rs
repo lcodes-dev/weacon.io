@@ -147,10 +147,7 @@ pub(crate) fn contracts(item: Node<'_>, source: &[u8]) -> Vec<Declared> {
             "macro_invocation" => found.extend(error_code(node, source)),
             "call_expression" => found.extend(routes(node, source)),
             "string_literal" | "raw_string_literal" => {
-                let sql = literal(node, source);
-                for (number, text) in (line(node)..).zip(sql.lines()) {
-                    tables.apply(text, number);
-                }
+                tables.apply(&literal(node, source), line(node));
             }
             _ => {}
         }
@@ -221,16 +218,17 @@ fn routes(node: Node<'_>, source: &[u8]) -> Vec<Declared> {
     };
     let path = literal(path, source);
     let mut methods = Vec::new();
-    if let Some(handlers) = arguments.and_then(|list| list.named_child(1)) {
-        preorder(handlers, |node| {
-            let name = (node.kind() == "call_expression")
-                .then(|| called(node, source))
-                .flatten()
-                .filter(|name| METHODS.contains(name));
-            methods.extend(name.map(|name| format!("{} {path}", name.to_uppercase())));
-            true
-        });
+    // Only the chain of method routers, as in `get(a).post(b)`: never inside the handlers.
+    let mut chain = arguments.and_then(|list| list.named_child(1));
+    while let Some(call) = chain.filter(|node| node.kind() == "call_expression") {
+        let name = called(call, source).filter(|name| METHODS.contains(name));
+        methods.extend(name.map(|name| format!("{} {path}", name.to_uppercase())));
+        chain = call
+            .child_by_field_name("function")
+            .filter(|function| function.kind() == "field_expression")
+            .and_then(|function| function.child_by_field_name("value"));
     }
+    methods.reverse();
     if methods.is_empty() {
         methods.push(path);
     }
@@ -337,13 +335,15 @@ mod tests {
     #[test]
     fn reads_methods_however_they_are_written() {
         let lib = "fn router() -> Router { Router::new()\n.route(\"/a\", routing::get(h).put(i))\n\
-                   .route(\"/b\", any(get))\n.route(\"/c\", axum::routing::post(h)) }\n";
+                   .route(\"/b\", any(get))\n.route(\"/c\", axum::routing::post(h)) }\n\
+                   fn more() { r.route(\"/d\", post(|| async { cache.get(\"key\").await })); }\n";
         assert_eq!(
             found(lib),
             [
                 "Route /b @a::router:3",
                 "Route GET /a @a::router:2",
                 "Route POST /c @a::router:4",
+                "Route POST /d @a::more:5",
                 "Route PUT /a @a::router:2",
             ]
         );

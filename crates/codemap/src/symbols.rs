@@ -100,6 +100,8 @@ pub(crate) struct Outline {
 pub(crate) struct Impl {
     pub(crate) within: Vec<String>,
     pub(crate) owner: String,
+    /// The type, as written, such as `model::Store` for `impl Show for model::Store<u8>`.
+    pub(crate) owner_path: Segments,
     /// The trait, as written.
     pub(crate) trait_path: Segments,
 }
@@ -145,7 +147,8 @@ fn visit<'tree>(
     found: &mut Outline,
     pending: &mut Pending<'tree>,
 ) {
-    if test_only(item, source) {
+    let test = item.kind() == "function_item" && test_fns::is_test(item, source);
+    if test || test_only(item, source) {
         found.tests.extend(test_fns::tests(item, place, source));
         return;
     }
@@ -221,9 +224,12 @@ fn visit_impl<'tree>(
     let (owner, path) = impl_owner(item, source);
     let written = item.child_by_field_name("trait");
     if let Some(trait_path) = written.and_then(|written| segments(written, source)) {
+        let written = item.child_by_field_name("type");
+        let owner_path = written.and_then(|written| segments(written, source));
         found.impls.push(Impl {
             within: place.within.clone(),
             owner: owner.clone(),
+            owner_path: owner_path.unwrap_or_else(|| vec![owner.clone()]),
             trait_path,
         });
     }
@@ -422,10 +428,13 @@ mod tests {
         let text = "#[cfg(all(test, unix))]\nfn a() {}\n#[cfg(all(unix, all(windows, test)))]\nfn b() {}\n\
                     #[cfg(any(test, unix))]\nfn c() {}\n#[cfg(not(test))]\nfn d() {}\n\
                     #[cfg(all(unix, any(test, windows)))]\nfn e() {}\n#[cfg(feature = \"test\")]\nfn f() {}\n\
-                    #[cfg(all(unix,test))]\nfn g() {}\n";
+                    #[cfg(all(unix,test))]\nfn g() {}\n#[cfg(all(feature = \"x\", any(unix, test, windows)))]\nfn h() {}\n\
+                    #[cfg(all(any(unix, windows), test))]\nfn i() {}\n";
         assert_eq!(
             names(text),
-            ["fn b 4", "fn c 6", "fn d 8", "fn e 10", "fn f 12"]
+            [
+                "fn b 4", "fn c 6", "fn d 8", "fn e 10", "fn f 12", "fn h 16"
+            ]
         );
     }
 

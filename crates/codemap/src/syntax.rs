@@ -58,7 +58,7 @@ pub(crate) fn test_only(item: Node<'_>, source: &[u8]) -> bool {
         let predicate = attribute
             .strip_prefix("#[cfg(")
             .and_then(|rest| rest.strip_suffix(")]"));
-        let listed = |all: &str| all.split(',').any(|part| part == "test");
+        let listed = |all: &str| top_level(all).any(|part| part == "test");
         predicate.is_some_and(|predicate| {
             predicate == "test"
                 || predicate
@@ -66,6 +66,19 @@ pub(crate) fn test_only(item: Node<'_>, source: &[u8]) -> bool {
                     .and_then(|rest| rest.strip_suffix(')'))
                     .is_some_and(listed)
         })
+    })
+}
+
+/// The comma-separated parts of `list` that aren't inside parentheses.
+fn top_level(list: &str) -> impl Iterator<Item = &str> {
+    let mut depth = 0_usize;
+    list.split(move |ch: char| {
+        match ch {
+            '(' => depth += 1,
+            ')' => depth = depth.saturating_sub(1),
+            _ => {}
+        }
+        ch == ',' && depth == 0
     })
 }
 

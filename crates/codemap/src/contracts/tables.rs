@@ -5,22 +5,18 @@ use std::collections::BTreeMap;
 pub(crate) struct Tables(BTreeMap<String, usize>);
 
 impl Tables {
-    /// Applies each statement in one line of SQL that makes, drops or renames a table.
+    /// Applies each statement in `sql`, which starts on `line`, that makes, drops or renames
+    /// a table; a statement may span lines.
     pub(crate) fn apply(&mut self, sql: &str, line: usize) {
-        let spaced: String = sql
-            .chars()
-            .map(|ch| {
-                if matches!(ch, '(' | ')' | ',') {
-                    ' '
-                } else {
-                    ch
-                }
-            })
-            .collect();
-        let spaced = spaced.replace(';', " ; ");
-        let words: Vec<&str> = spaced.split_whitespace().collect();
-        for statement in words.split(|word| *word == ";") {
-            self.statement(statement, line);
+        let mut line = line;
+        for statement in sql.split(';') {
+            let leading = statement.len() - statement.trim_start().len();
+            let before = statement.get(..leading).unwrap_or_default();
+            let starts = line + before.matches('\n').count();
+            let spaced = statement.replace(['(', ')', ','], " ");
+            let words: Vec<&str> = spaced.split_whitespace().collect();
+            self.statement(&words, starts);
+            line += statement.matches('\n').count();
         }
     }
 
@@ -80,9 +76,7 @@ mod tests {
 
     fn left(lines: &[&str]) -> Vec<(String, usize)> {
         let mut tables = Tables::default();
-        for (line, sql) in (1..).zip(lines) {
-            tables.apply(sql, line);
-        }
+        tables.apply(&lines.join("\n"), 1);
         tables.into_lines().collect()
     }
 
@@ -110,9 +104,26 @@ mod tests {
     }
 
     #[test]
+    fn reads_a_statement_across_lines() {
+        assert_eq!(
+            left(&[
+                "",
+                "CREATE TABLE",
+                "notes (id INTEGER);",
+                "  CREATE TABLE b (x);"
+            ]),
+            named(&[("b", 4), ("notes", 2)])
+        );
+    }
+
+    #[test]
     fn reads_only_statements() {
         assert_eq!(
-            left(&["warn: create table now", "CREATE UNIQUE TABLE x", "CREATE"]),
+            left(&[
+                "warn: create table now;",
+                "CREATE UNIQUE TABLE x;",
+                "CREATE"
+            ]),
             []
         );
     }
