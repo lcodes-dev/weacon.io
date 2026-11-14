@@ -99,12 +99,16 @@ size_and_sha256() {
 
 # Writes <folder>/manifest.json for the core's builds there. It is dated when it's signed.
 write_manifest() {
-  local tag=${1:-} dir=${2:-} base=${3:-} protocol target name size sha256 builds=()
+  local tag=${1:-} dir=${2:-} base=${3:-} protocol commit target name size sha256 builds=()
   if [ "$tag" != "v$(workspace_version)" ] || ! [ -d "$dir" ] || [[ $base != https://* ]]; then
     die "usage: scripts/release.sh manifest v$(workspace_version) <folder> <https base URL>"
   fi
   protocol=$(sed -n 's/^pub const PROTOCOL: u32 = \([0-9]*\);$/\1/p' crates/protocol/src/message.rs)
   [ -n "$protocol" ] || die "the protocol version wasn't found"
+  # As for the builds: WEACON_COMMIT when it isn't blank, else git's.
+  commit=${WEACON_COMMIT:-}
+  [ -n "$commit" ] || commit=$(git rev-parse HEAD) || die "the commit wasn't found; set WEACON_COMMIT"
+  [[ $commit =~ ^[0-9a-f]{40}$ ]] || die "the commit isn't a full commit id"
   for target in "${CORE_TARGETS[@]}"; do
     name=$(build_name "$target")
     [ -f "$dir/$name" ] || die "$dir has no $name"
@@ -113,7 +117,7 @@ write_manifest() {
       --argjson size "$size" --arg sha256 "$sha256" \
       '{target: $target, url: $url, size: $size, sha256: $sha256}')")
   done
-  printf '%s\n' "${builds[@]}" | jq -cs --arg version "${tag#v}" --arg commit "$(git rev-parse HEAD)" \
+  printf '%s\n' "${builds[@]}" | jq -cs --arg version "${tag#v}" --arg commit "$commit" \
     --argjson protocol "$protocol" \
     '{version: $version, commit: $commit, published_at: 0, protocol: $protocol, builds: .}' \
     >"$dir/manifest.json"

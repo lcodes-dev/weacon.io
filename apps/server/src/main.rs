@@ -7,6 +7,7 @@ mod cli;
 mod client;
 mod connections;
 mod db;
+mod docs;
 mod email;
 mod feed;
 mod http;
