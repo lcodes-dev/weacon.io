@@ -6,7 +6,7 @@ use weacon_protocol::{
     RunEvent, RunState, RunUpdate, code,
 };
 
-use super::{Answered, ChatKey, Engine, unsupported};
+use super::{ChatKey, Engine, PendingAnswer, PendingInterrupt, unsupported};
 use crate::chats::log::Seen;
 use crate::runs::Queued;
 use crate::runs::task::{Agent, Order};
@@ -71,7 +71,7 @@ impl<A: Agent> Engine<A> {
             text: text.to_owned(),
             repo,
         };
-        self.commit(key, prompt).await.map(drop)
+        self.commit(key, prompt).await
     }
 
     async fn prompt(
@@ -106,11 +106,11 @@ impl<A: Agent> Engine<A> {
                 "That permission prompt isn't waiting",
             ));
         }
-        let answered = Answered {
+        let answered = PendingAnswer {
             request: request.clone(),
             answer: answer.clone(),
         };
-        let answers = &mut self.open(key).await?.answers;
+        let answers = &mut self.open(key).await?.pending_answers;
         answers.retain(|other| other.answer.prompt != answer.prompt);
         answers.push(answered);
         self.commit_receipt(key, &request, Outcome::Completed)
@@ -134,13 +134,13 @@ impl<A: Agent> Engine<A> {
         request: &RequestId,
         answer: PermissionAnswer,
     ) -> Result<(), Fault> {
-        let given = Answered {
+        let given = PendingAnswer {
             request: request.clone(),
             answer: answer.clone(),
         };
         let live = self.is_live(key);
         let chat = self.open(key).await?;
-        if !live || !chat.answers.contains(&given) {
+        if !live || !chat.pending_answers.contains(&given) {
             return Ok(());
         }
         if chat.log.runs().waits(&answer.run, answer.prompt) {
@@ -154,7 +154,7 @@ impl<A: Agent> Engine<A> {
             self.commit(key, ChatEvent::Run { update }).await?;
         }
         let chat = self.open(key).await?;
-        chat.answers.retain(|other| *other != given);
+        chat.pending_answers.retain(|other| *other != given);
         let run = answer.run.clone();
         let resumed = !chat.log.runs().waiting.iter().any(|waits| waits.run == run);
         self.order(key, Order::Answer(answer));
@@ -167,8 +167,11 @@ impl<A: Agent> Engine<A> {
     // Committed first and bound to the turn it stops, so a retry after a failed write still
     // stops that turn and never a later one.
     async fn interrupt(&mut self, key: &ChatKey, request: RequestId) -> Result<(), Fault> {
-        let stops = self.turn(key).map(|turn| (request.clone(), turn));
-        self.open(key).await?.interrupting = stops;
+        let stops = self.turn(key).map(|turn| PendingInterrupt {
+            request: request.clone(),
+            turn,
+        });
+        self.open(key).await?.pending_interrupt = stops;
         self.commit_receipt(key, &request, Outcome::Completed)
             .await?;
         self.stop_turn(key, &request).await
@@ -179,12 +182,15 @@ impl<A: Agent> Engine<A> {
         let Some(turn) = self.turn(key) else {
             return Ok(());
         };
-        let stops = Some((request.clone(), turn));
+        let stops = Some(PendingInterrupt {
+            request: request.clone(),
+            turn,
+        });
         let chat = self.open(key).await?;
-        if chat.interrupting != stops {
+        if chat.pending_interrupt != stops {
             return Ok(());
         }
-        chat.interrupting = None;
+        chat.pending_interrupt = None;
         self.order(key, Order::Interrupt);
         Ok(())
     }

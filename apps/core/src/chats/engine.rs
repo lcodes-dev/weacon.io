@@ -101,13 +101,11 @@ struct Chat {
     subscribers: Vec<Subscriber>,
     /// The way to the chat's running agent.
     orders: Option<mpsc::UnboundedSender<Order>>,
-    answers: Vec<Answered>,
-    /// The turn, and the outcome its run reported, when its receipt couldn't be written.
-    unended: Option<(RequestId, Outcome)>,
-    /// An interrupt's request, and the turn it stops, until the interrupt is sent.
-    interrupting: Option<(RequestId, RequestId)>,
+    pending_answers: Vec<PendingAnswer>,
+    pending_end: Option<PendingEnd>,
+    pending_interrupt: Option<PendingInterrupt>,
     /// The agent's session when the runs journal couldn't save it.
-    unsaved: Option<AgentSession>,
+    pending_session: Option<AgentSession>,
 }
 
 impl Chat {
@@ -120,17 +118,37 @@ impl Chat {
     fn is_unused(&self) -> bool {
         self.orders.is_none()
             && self.subscribers.is_empty()
-            && self.answers.is_empty()
-            && self.unended.is_none()
-            && self.unsaved.is_none()
+            && self.pending_answers.is_empty()
+            && self.pending_end.is_none()
+            && self.pending_session.is_none()
     }
 }
 
 /// An answer to a waiting prompt whose receipt is being written, so a retry delivers it.
 #[derive(Debug, PartialEq, Eq)]
-struct Answered {
+struct PendingAnswer {
     request: RequestId,
     answer: PermissionAnswer,
+}
+
+/// The outcome a turn's run reported, when the turn's receipt couldn't be written.
+#[derive(Debug, PartialEq, Eq)]
+struct PendingEnd {
+    turn: RequestId,
+    outcome: Outcome,
+}
+
+/// How a run's event reached the log: whole, or cut down to fit one frame.
+enum Logged {
+    Whole,
+    Cut,
+}
+
+/// An interrupt committed and not yet sent, and the turn it stops.
+#[derive(Debug, PartialEq, Eq)]
+struct PendingInterrupt {
+    request: RequestId,
+    turn: RequestId,
 }
 
 pub(crate) struct Engine<A> {
@@ -211,9 +229,7 @@ impl<A: Agent> Engine<A> {
             state,
             agent: None,
         };
-        self.commit(key, ChatEvent::RunStatus { status })
-            .await
-            .map(drop)
+        self.commit(key, ChatEvent::RunStatus { status }).await
     }
 
     async fn commit_receipt(
@@ -230,18 +246,16 @@ impl<A: Agent> Engine<A> {
             request: request.clone(),
             outcome,
         };
-        self.commit(key, ChatEvent::Receipt { receipt })
-            .await
-            .map(drop)
+        self.commit(key, ChatEvent::Receipt { receipt }).await
     }
 
     // Commits `event` to the chat's log, then tells its subscribers.
-    async fn commit(&mut self, key: &ChatKey, event: ChatEvent) -> Result<ChatEntry, Fault> {
+    async fn commit(&mut self, key: &ChatKey, event: ChatEvent) -> Result<(), Fault> {
         let chat = self.open(key).await?;
         match chat.log.append(event).await {
             Ok(entry) => {
-                self.publish(key, &update(key, entry.clone()));
-                Ok(entry)
+                self.publish(key, &update(key, entry));
+                Ok(())
             }
             Err(fault) => {
                 if fault.code() == &code!("chat.log_not_written") {
@@ -310,10 +324,10 @@ impl<A: Agent> Engine<A> {
                 log: Log::open(&root, &key.chat).await?,
                 subscribers: Vec::new(),
                 orders: None,
-                answers: Vec::new(),
-                unended: None,
-                interrupting: None,
-                unsaved: None,
+                pending_answers: Vec::new(),
+                pending_end: None,
+                pending_interrupt: None,
+                pending_session: None,
             })),
         }
     }

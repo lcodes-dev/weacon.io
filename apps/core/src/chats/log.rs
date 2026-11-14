@@ -40,9 +40,17 @@ pub(crate) struct Log {
 struct Asked {
     /// The place of its prompt, when it was one.
     prompt: Option<u64>,
-    receipted: bool,
-    /// Whether a receipt other than `accepted` ended it.
-    ended: bool,
+    stage: Stage,
+}
+
+/// How far a command got, as its receipts say; a later receipt never moves it back.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
+enum Stage {
+    #[default]
+    Logged,
+    Accepted,
+    /// A receipt other than `accepted` ended it.
+    Ended,
 }
 
 /// Whether a command was seen before under the same request.
@@ -126,8 +134,12 @@ impl Log {
             }
             ChatEvent::Receipt { receipt } => {
                 let asked = self.requests.entry(receipt.request.clone()).or_default();
-                asked.receipted = true;
-                asked.ended |= receipt.outcome != Outcome::Accepted;
+                let stage = if receipt.outcome == Outcome::Accepted {
+                    Stage::Accepted
+                } else {
+                    Stage::Ended
+                };
+                asked.stage = asked.stage.max(stage);
             }
             ChatEvent::Run { .. } | ChatEvent::RunStatus { .. } | ChatEvent::Newer => {}
         }
@@ -244,16 +256,18 @@ impl Log {
                 ChatAction::Prompt { text, repo, .. },
             ) if was_text == *text && was_repo == *repo
         );
-        Ok(match (same, asked.receipted) {
-            (true, true) => Seen::Same,
-            (true, false) => Seen::Pending,
+        Ok(match (same, asked.stage) {
+            (true, Stage::Logged) => Seen::Pending,
+            (true, Stage::Accepted | Stage::Ended) => Seen::Same,
             (false, _) => Seen::Other,
         })
     }
 
     /// Whether a receipt that ends the command under `request` is in the log.
     pub(crate) fn has_ended(&self, request: &RequestId) -> bool {
-        self.requests.get(request).is_some_and(|asked| asked.ended)
+        self.requests
+            .get(request)
+            .is_some_and(|asked| asked.stage == Stage::Ended)
     }
 
     async fn read(&self, first: u64, last: u64) -> Result<Vec<ChatEntry>, Fault> {
@@ -628,5 +642,33 @@ mod tests {
         assert_eq!(seen(&log, "r-2", asks("Hi")).await, Seen::Other);
         assert_eq!(seen(&log, "r-3", ChatAction::Interrupt).await, Seen::Never);
         assert_eq!(seen(&log, "r-4", asks("Hi")).await, Seen::Pending);
+    }
+
+    #[tokio::test]
+    async fn a_command_ends_with_its_first_receipt_that_isnt_accepted() {
+        let dir = TempDir::new().unwrap();
+        let mut log = open(&dir).await;
+        let receipt = |id: &str, outcome| ChatEvent::Receipt {
+            receipt: Receipt {
+                request: request(id),
+                outcome,
+            },
+        };
+        log.append(prompt("r-1", "Hi")).await.unwrap();
+        log.append(accepted("r-1")).await.unwrap();
+        assert!(!log.has_ended(&request("r-1")));
+        log.append(receipt("r-1", Outcome::Interrupted))
+            .await
+            .unwrap();
+        log.append(accepted("r-1")).await.unwrap();
+        log.append(receipt("r-2", Outcome::Completed))
+            .await
+            .unwrap();
+        drop(log);
+
+        let log = open(&dir).await;
+        assert!(log.has_ended(&request("r-1")) && log.has_ended(&request("r-2")));
+        assert!(!log.has_ended(&request("r-3")));
+        assert_eq!(seen(&log, "r-1", asks("Hi")).await, Seen::Same);
     }
 }
