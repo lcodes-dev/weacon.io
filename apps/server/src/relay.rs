@@ -283,7 +283,7 @@ mod tests {
     use tokio_tungstenite::tungstenite::Message as Wire;
 
     use crate::test_support::socket::{
-        Client, PATIENCE, ends, next, next_envelope, open, say, send,
+        PATIENCE, Socket, ends, next, next_envelope, open, say, send,
     };
     use crate::test_support::{Fixture, Paired, ask, member_id, pair_machine, workspace_id};
 
@@ -337,13 +337,13 @@ mod tests {
     }
 
     // Once `client`'s peer has read all it was sent: it reads in order, and pongs as it does.
-    async fn synced(client: &mut Client) {
+    async fn synced(client: &mut Socket) {
         client.send(Wire::Ping(Vec::new().into())).await.unwrap();
         timeout(PATIENCE, pong(client)).await.unwrap();
     }
 
     // Once a pong comes; a socket that ends first fails the test.
-    async fn pong(client: &mut Client) {
+    async fn pong(client: &mut Socket) {
         loop {
             if let Wire::Pong(_) = client.next().await.unwrap().unwrap() {
                 return;
@@ -364,7 +364,7 @@ mod tests {
     }
 
     // `paired`'s core, connected and offering `capabilities`, once its connection is relayed to.
-    async fn connected(address: SocketAddr, paired: &Paired, capabilities: &[&str]) -> Client {
+    async fn connected(address: SocketAddr, paired: &Paired, capabilities: &[&str]) -> Socket {
         let mut core = open(address, "/api/machines/connect", &paired.token)
             .await
             .unwrap();
@@ -379,7 +379,7 @@ mod tests {
         fixture: &Fixture,
         address: SocketAddr,
         capabilities: &[&str],
-    ) -> (Paired, Client, Client) {
+    ) -> (Paired, Socket, Socket) {
         let paired = pair_machine(fixture, address).await;
         let core = connected(address, &paired, &["machine.connect", "machine.settings"]).await;
         let mut browser = open(address, "/api/workspaces/w1/feed", &paired.session)
@@ -397,12 +397,12 @@ mod tests {
     }
 
     // What the feed answers `message`, sent under `id`.
-    async fn asked(browser: &mut Client, id: u32, message: Message) -> Envelope {
+    async fn asked(browser: &mut Socket, id: u32, message: Message) -> Envelope {
         send(browser, envelope(id, message)).await;
         next_envelope(browser).await
     }
 
-    fn refusal(envelope: &Envelope) -> (u32, &str, bool) {
+    fn error_of(envelope: &Envelope) -> (u32, &str, bool) {
         let Message::Error(ErrorBody { code, retryable }) = &envelope.message else {
             panic!("{envelope:?}");
         };
@@ -447,7 +447,7 @@ mod tests {
         }
         assert_ne!(relayed.id, 41);
         assert_eq!(answered, envelope(41, settings_answer(&machine)));
-        assert_eq!(refusal(&refusal_back), (42, "settings.not_owner", false));
+        assert_eq!(error_of(&refusal_back), (42, "settings.not_owner", false));
     }
 
     #[tokio::test]
@@ -473,10 +473,10 @@ mod tests {
         let unsettled = asked(&mut browser, 5, query(&older.machine_id(), "w1")).await;
         drop(core);
 
-        assert_eq!(refusal(&not_theirs), (1, "machine.not_found", false));
-        assert_eq!(refusal(&elsewhere), (2, "machine.not_found", false));
-        assert_eq!(refusal(&offline), (4, "machine.offline", true));
-        assert_eq!(refusal(&unsettled), (5, "machine.offline", true));
+        assert_eq!(error_of(&not_theirs), (1, "machine.not_found", false));
+        assert_eq!(error_of(&elsewhere), (2, "machine.not_found", false));
+        assert_eq!(error_of(&offline), (4, "machine.offline", true));
+        assert_eq!(error_of(&unsettled), (5, "machine.offline", true));
     }
 
     #[tokio::test]
@@ -715,7 +715,7 @@ mod tests {
         let told = heard(&mut answers).await;
 
         assert_eq!(code_of(sent), None);
-        assert_eq!(refusal(&told), (1, "machine.no_answer", true));
+        assert_eq!(error_of(&told), (1, "machine.no_answer", true));
         assert!(fixture.shared.relay.lock().is_empty());
     }
 
@@ -774,9 +774,12 @@ mod tests {
         assert!(relay.answered(&machine, envelope(second, failed(code!("test.second")))));
         assert!(relay.answered(&machine, envelope(first, failed(code!("test.first")))));
 
-        assert_eq!(refusal(&heard(&mut to_one).await), (1, "test.first", false));
         assert_eq!(
-            refusal(&heard(&mut to_two).await),
+            error_of(&heard(&mut to_one).await),
+            (1, "test.first", false)
+        );
+        assert_eq!(
+            error_of(&heard(&mut to_two).await),
             (1, "test.second", false)
         );
         to_one.try_recv().unwrap_err();

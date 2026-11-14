@@ -17,14 +17,14 @@ use super::VERSION;
 /// How long a test waits for a socket before taking it as broken.
 pub(crate) const PATIENCE: Duration = Duration::from_secs(10);
 
-pub(crate) type Client = WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>;
+pub(crate) type Socket = WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>;
 
 /// Opens the WebSocket at `path` with `token` as its bearer token.
 pub(crate) async fn open(
     address: SocketAddr,
     path: &str,
     token: &str,
-) -> Result<Client, tungstenite::Error> {
+) -> Result<Socket, tungstenite::Error> {
     let mut request = format!("ws://{address}{path}")
         .into_client_request()
         .unwrap();
@@ -34,11 +34,11 @@ pub(crate) async fn open(
     connect_async(request).await.map(|(client, _)| client)
 }
 
-pub(crate) async fn say(client: &mut Client, capabilities: &[&str]) {
+pub(crate) async fn say(client: &mut Socket, capabilities: &[&str]) {
     say_as(client, PROTOCOL, capabilities).await;
 }
 
-pub(crate) async fn say_as(client: &mut Client, protocol: u32, capabilities: &[&str]) {
+pub(crate) async fn say_as(client: &mut Socket, protocol: u32, capabilities: &[&str]) {
     let hello = Message::Hello(Hello {
         protocol,
         app: weacon_appkit::build(&VERSION),
@@ -55,20 +55,20 @@ pub(crate) async fn say_as(client: &mut Client, protocol: u32, capabilities: &[&
 }
 
 /// Sends `envelope` as one text frame.
-pub(crate) async fn send(client: &mut Client, envelope: Envelope) {
+pub(crate) async fn send(client: &mut Socket, envelope: Envelope) {
     let json = String::from_utf8(envelope.to_json().unwrap()).unwrap();
     client.send(Wire::text(json)).await.unwrap();
 }
 
 // The client's next frame.
-pub(crate) async fn frame(client: &mut Client) -> Option<Result<Wire, tungstenite::Error>> {
+pub(crate) async fn frame(client: &mut Socket) -> Option<Result<Wire, tungstenite::Error>> {
     timeout(PATIENCE, client.next())
         .await
         .expect("the socket went quiet")
 }
 
 // The client's next frame other than a ping: they come every 100 ms.
-pub(crate) async fn past_pings(client: &mut Client) -> Option<Result<Wire, tungstenite::Error>> {
+pub(crate) async fn past_pings(client: &mut Socket) -> Option<Result<Wire, tungstenite::Error>> {
     let past = async {
         loop {
             let frame = client.next().await;
@@ -83,12 +83,12 @@ pub(crate) async fn past_pings(client: &mut Client) -> Option<Result<Wire, tungs
 }
 
 // The client's next message, pings aside.
-pub(crate) async fn next(client: &mut Client) -> Message {
+pub(crate) async fn next(client: &mut Socket) -> Message {
     next_envelope(client).await.message
 }
 
 // The client's next envelope, pings aside.
-pub(crate) async fn next_envelope(client: &mut Client) -> Envelope {
+pub(crate) async fn next_envelope(client: &mut Socket) -> Envelope {
     match past_pings(client).await {
         Some(Ok(Wire::Text(text))) => Envelope::from_json(text.as_bytes()).unwrap(),
         other => panic!("no message: {other:?}"),
@@ -96,7 +96,7 @@ pub(crate) async fn next_envelope(client: &mut Client) -> Envelope {
 }
 
 // Whether the socket ends, pings aside.
-pub(crate) async fn ends(client: &mut Client) -> bool {
+pub(crate) async fn ends(client: &mut Socket) -> bool {
     matches!(
         past_pings(client).await,
         None | Some(Ok(Wire::Close(_)) | Err(_))
@@ -104,7 +104,7 @@ pub(crate) async fn ends(client: &mut Client) -> bool {
 }
 
 // The status a WebSocket upgrade was refused with.
-pub(crate) fn refused<T>(result: Result<T, tungstenite::Error>) -> u16 {
+pub(crate) fn upgrade_status<T>(result: Result<T, tungstenite::Error>) -> u16 {
     match result {
         Err(tungstenite::Error::Http(response)) => response.status().as_u16(),
         Err(error) => panic!("{error}"),

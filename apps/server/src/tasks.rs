@@ -159,7 +159,7 @@ mod tests {
     use weacon_protocol::TaskStatus;
 
     use super::*;
-    use crate::test_support::{Client, Fixture, refusal, workspace_id};
+    use crate::test_support::{Client, Fixture, error_code, workspace_id};
 
     impl Client {
         async fn list(&self) -> Vec<TaskRecord> {
@@ -320,11 +320,11 @@ mod tests {
             .await;
 
         assert_eq!(stale, "http/1.1 409 conflict");
-        assert_eq!(refusal(&stale_body), "task.stale");
+        assert_eq!(error_code(&stale_body), "task.stale");
         assert_eq!(missing, "http/1.1 404 not found");
-        assert_eq!(refusal(&missing_body), "task.not_found");
+        assert_eq!(error_code(&missing_body), "task.not_found");
         assert_eq!(nowhere, "http/1.1 404 not found");
-        assert_eq!(refusal(&nowhere_body), "task.not_found");
+        assert_eq!(error_code(&nowhere_body), "task.not_found");
         assert_eq!(titles(&ada.list().await), ["Draft"]);
     }
 
@@ -350,7 +350,7 @@ mod tests {
         for head in ["POST /api/workspaces/w1/tasks", change.as_str()] {
             let (status, body) = ada.send(head, &huge).await;
             assert_eq!(status, "http/1.1 413 payload too large", "{head}");
-            assert_eq!(refusal(&body), "task.too_large");
+            assert_eq!(error_code(&body), "task.too_large");
         }
         assert_eq!(ada.list().await, [write]);
         let (status, _) = ada.send("POST /api/workspaces/w1/tasks", &padded).await;
@@ -380,7 +380,7 @@ mod tests {
         for edit in edits {
             let (status, body) = ada.change(&current, edit).await;
             assert_eq!(status, "http/1.1 400 bad request");
-            assert_eq!(refusal(&body), "task.invalid");
+            assert_eq!(error_code(&body), "task.invalid");
         }
         for (head, body) in [
             (
@@ -399,13 +399,13 @@ mod tests {
         ] {
             let (status, body) = ada.send(head, body).await;
             assert_eq!(status, "http/1.1 400 bad request", "{head}");
-            assert_eq!(refusal(&body), "task.invalid");
+            assert_eq!(error_code(&body), "task.invalid");
         }
         let later = r#"{"version":1,"edit":{"kind":"status","status":"later"}}"#;
         let head = format!("POST /api/workspaces/w1/tasks/{}", write.id.as_str());
         let (status, body) = ada.send(&head, later).await;
         assert_eq!(status, "http/1.1 400 bad request");
-        assert_eq!(refusal(&body), "task.unknown_value");
+        assert_eq!(error_code(&body), "task.unknown_value");
         assert_eq!(ada.list().await, [write]);
     }
 
@@ -433,7 +433,7 @@ mod tests {
         ] {
             let (status, body) = who.send(head, r#"{"title":"Spy"}"#).await;
             assert_eq!(status, "http/1.1 401 unauthorized", "{head}");
-            assert_eq!(refusal(&body), "sign_in.required");
+            assert_eq!(error_code(&body), "sign_in.required");
         }
         assert!(ada.list().await.is_empty());
     }

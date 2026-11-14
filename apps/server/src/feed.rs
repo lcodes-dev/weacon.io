@@ -281,7 +281,7 @@ mod tests {
     use crate::sign_in::SESSION_LIFETIME;
     use crate::socket::refusal;
     use crate::test_support::socket::{
-        Client, PATIENCE, ends, frame, next, open, refused, say, say_as,
+        PATIENCE, Socket, ends, frame, next, open, say, say_as, upgrade_status,
     };
     use crate::test_support::{self, Fixture, fresh_account, member_id, workspace_id};
 
@@ -306,7 +306,7 @@ mod tests {
     }
 
     // A feed of w1 for `token` after `since`, past its welcome.
-    async fn greeted(address: SocketAddr, token: &str, since: u64) -> Client {
+    async fn greeted(address: SocketAddr, token: &str, since: u64) -> Socket {
         let path = format!("/api/workspaces/w1/feed?since={since}");
         let mut client = open(address, &path, token).await.unwrap();
         say(&mut client, &["workspace.feed"]).await;
@@ -478,15 +478,15 @@ mod tests {
         let address = server.address;
 
         assert_eq!(
-            refused(open(address, "/api/workspaces/w1/feed", "wrong").await),
+            upgrade_status(open(address, "/api/workspaces/w1/feed", "wrong").await),
             401
         );
         assert_eq!(
-            refused(open(address, "/api/workspaces/w9/feed", &ada.token).await),
+            upgrade_status(open(address, "/api/workspaces/w9/feed", &ada.token).await),
             401
         );
         assert_eq!(
-            refused(open(address, "/api/workspaces/w.1/feed", &ada.token).await),
+            upgrade_status(open(address, "/api/workspaces/w.1/feed", &ada.token).await),
             400
         );
         // Signed in, but to an account that isn't a member.
@@ -495,12 +495,12 @@ mod tests {
         db.add_account(&fresh_account(), &bo).await.unwrap();
         let stranger = fixture.sign_in_client(address, "bo@example.com").await;
         assert_eq!(
-            refused(open(address, "/api/workspaces/w1/feed", &stranger.token).await),
+            upgrade_status(open(address, "/api/workspaces/w1/feed", &stranger.token).await),
             401
         );
         fixture.advance(SESSION_LIFETIME);
         assert_eq!(
-            refused(open(address, "/api/workspaces/w1/feed", &ada.token).await),
+            upgrade_status(open(address, "/api/workspaces/w1/feed", &ada.token).await),
             401
         );
     }
@@ -675,7 +675,7 @@ mod tests {
         let other = open_from("http://other.example").await;
 
         own.unwrap();
-        assert_eq!(refused(other), 403);
+        assert_eq!(upgrade_status(other), 403);
     }
 
     #[tokio::test]

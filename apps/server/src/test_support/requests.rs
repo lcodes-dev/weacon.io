@@ -82,7 +82,7 @@ pub(crate) async fn sign_in(
 }
 
 /// The code of the refusal whose JSON body is `body`.
-pub(crate) fn refusal(body: &str) -> String {
+pub(crate) fn error_code(body: &str) -> String {
     let error: weacon_protocol::ErrorBody = serde_json::from_str(body).unwrap();
     error.code.as_str().to_owned()
 }

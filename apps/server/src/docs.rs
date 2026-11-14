@@ -195,7 +195,7 @@ mod tests {
     use weacon_protocol::{Author, CommitId, DocAnchors, DocPin, DocSummary, WorkspaceChange};
 
     use super::*;
-    use crate::test_support::{Client, Fixture, refusal, workspace_id};
+    use crate::test_support::{Client, Fixture, error_code, workspace_id};
 
     impl Client {
         async fn ok<T: serde::de::DeserializeOwned>(
@@ -308,7 +308,7 @@ mod tests {
         let second: DocRecord = serde_json::from_str(&body).unwrap();
         assert_eq!((second.version, &second.content), (2, &linked()));
         assert_eq!(
-            (stale.as_str(), refusal(&stale_body).as_str()),
+            (stale.as_str(), error_code(&stale_body).as_str()),
             ("http/1.1 409 conflict", "doc.stale")
         );
         let id = first.id.as_str();
@@ -357,14 +357,14 @@ mod tests {
                 .send(&format!("GET /api/workspaces/w1/docs{path}"), "")
                 .await;
             assert_eq!(
-                (status.as_str(), refusal(&body).as_str()),
+                (status.as_str(), error_code(&body).as_str()),
                 ("http/1.1 404 not found", "doc.not_found"),
                 "{path}"
             );
         }
         let (status, body) = ada.revise(&gone, &linked()).await;
         assert_eq!(
-            (status.as_str(), refusal(&body).as_str()),
+            (status.as_str(), error_code(&body).as_str()),
             ("http/1.1 404 not found", "doc.not_found")
         );
     }
@@ -398,8 +398,8 @@ mod tests {
             let (made, made_body) = ada.send("POST /api/workspaces/w1/docs", &body).await;
             let (revised, revised_body) = ada.revise(&doc, &content).await;
             let got = [
-                (made, refusal(&made_body)),
-                (revised, refusal(&revised_body)),
+                (made, error_code(&made_body)),
+                (revised, error_code(&revised_body)),
             ];
             let want = (status.to_owned(), code.to_owned());
             assert_eq!(got, [want.clone(), want]);
@@ -429,7 +429,7 @@ mod tests {
         ] {
             let (status, answer) = ada.send(head, &body).await;
             assert_eq!(
-                (status.as_str(), refusal(&answer).as_str()),
+                (status.as_str(), error_code(&answer).as_str()),
                 ("http/1.1 400 bad request", "doc.invalid"),
                 "{head}"
             );
@@ -466,7 +466,7 @@ mod tests {
         let (status, answer) = ada.send("POST /api/workspaces/w1/docs", &body).await;
 
         assert_eq!(
-            (status.as_str(), refusal(&answer).as_str()),
+            (status.as_str(), error_code(&answer).as_str()),
             ("http/1.1 413 payload too large", "doc.too_large")
         );
     }
@@ -498,7 +498,7 @@ mod tests {
         ] {
             let (status, answer) = who.send(head, &body).await;
             assert_eq!(
-                (status.as_str(), refusal(&answer).as_str()),
+                (status.as_str(), error_code(&answer).as_str()),
                 ("http/1.1 401 unauthorized", "sign_in.required"),
                 "{head}"
             );
@@ -537,8 +537,8 @@ mod tests {
             "doc.quota_full".to_owned(),
         );
         let got = [
-            (made, refusal(&made_body)),
-            (revised, refusal(&revised_body)),
+            (made, error_code(&made_body)),
+            (revised, error_code(&revised_body)),
         ];
         assert_eq!(got, [full.clone(), full]);
         assert_eq!(

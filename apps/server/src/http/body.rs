@@ -6,7 +6,7 @@ use serde::de::DeserializeOwned;
 use weacon_observability::Fault;
 use weacon_protocol::code;
 
-use super::error;
+use super::answer::error;
 
 pub(super) const MAX_BODY: usize = 16 * 1024;
 

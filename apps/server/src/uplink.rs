@@ -161,14 +161,16 @@ mod tests {
     use weacon_protocol::{AccountId, Message, Welcome};
 
     use super::*;
-    use crate::test_support::socket::{Client, ends, frame, next, open, past_pings, refused, say};
+    use crate::test_support::socket::{
+        Socket, ends, frame, next, open, past_pings, say, upgrade_status,
+    };
     use crate::test_support::{Fixture, Paired, ask, pair_machine};
 
     const CONNECT_PATH: &str = "/api/machines/connect";
 
     // A paired machine's connection, welcomed: the header proving ada's sign-in, her session's
     // token, the machine, its token and the connection.
-    async fn connected(address: SocketAddr, fixture: &Fixture) -> (Paired, Client) {
+    async fn connected(address: SocketAddr, fixture: &Fixture) -> (Paired, Socket) {
         let paired = pair_machine(fixture, address).await;
         let mut client = open(address, CONNECT_PATH, &paired.token).await.unwrap();
         say(&mut client, &["machine.connect"]).await;
@@ -189,7 +191,7 @@ mod tests {
 
         for token in ["", "nonsense", paired.session.as_str()] {
             let opened = open(server.address, CONNECT_PATH, token).await;
-            assert_eq!(refused(opened), 401, "{token}");
+            assert_eq!(upgrade_status(opened), 401, "{token}");
         }
     }
 
@@ -231,7 +233,7 @@ mod tests {
         assert_eq!(unpaired, "http/1.1 204 no content");
         assert_eq!(said, refusal(code!("machine.unpaired")));
         assert!(ended);
-        assert_eq!(refused(again), 401);
+        assert_eq!(upgrade_status(again), 401);
     }
 
     #[tokio::test]
