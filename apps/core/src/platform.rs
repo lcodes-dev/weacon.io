@@ -54,6 +54,14 @@ use weacon_agents::SpawnPolicy;
 mod chrome;
 mod procs;
 mod programs;
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "chats remove their worktrees through it once wired in"
+    )
+)]
+pub(crate) mod trash;
 
 pub(crate) use chrome::{CHROME_HOST, register_chrome_host};
 pub(crate) use procs::{PROCESSES, Process, processes};
