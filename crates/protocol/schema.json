@@ -1119,7 +1119,8 @@
     "MachineName": {
       "description": "What a machine is called: 1–64 characters, none of them control or bidirectional\nformatting characters, so it shows the same wherever it is shown.",
       "type": "string",
-      "maxLength": 64
+      "maxLength": 64,
+      "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F\\u061C\\u200E\\u200F\\u202A-\\u202E\\u2066-\\u2069]+$"
     },
     "MachineOs": {
       "description": "The operating system a machine runs.",

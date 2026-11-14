@@ -68,9 +68,13 @@ impl<'de> Deserialize<'de> for MachineKey {
 /// What a machine is called: 1–64 characters, none of them control or bidirectional
 /// formatting characters, so it shows the same wherever it is shown.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, JsonSchema)]
-pub struct MachineName(#[schemars(length(max = NAME_MAX))] String);
+pub struct MachineName(#[schemars(regex(pattern = NAME_PATTERN), length(max = NAME_MAX))] String);
 
 const NAME_MAX: usize = 64;
+
+// The schema's form of the check in `try_from`; a test keeps the two in step.
+const NAME_PATTERN: &str =
+    r"^[^\u0000-\u001F\u007F-\u009F\u061C\u200E\u200F\u202A-\u202E\u2066-\u2069]+$";
 
 impl MachineName {
     #[must_use]
@@ -267,9 +271,11 @@ mod tests {
 
     #[test]
     fn a_name_is_short_and_shows_as_written() {
+        let pattern = regex::Regex::new(NAME_PATTERN).unwrap();
         let longest = "é".repeat(64);
         for good in ["Studio", "Lena's MacBook Pro", "工作站", longest.as_str()] {
             assert_eq!(name(good).as_str(), good);
+            assert!(pattern.is_match(good), "{good}");
         }
         let too_long = "a".repeat(65);
         for bad in [
@@ -279,9 +285,17 @@ mod tests {
             "a\u{202e}b",
             "\u{2066}a",
             "\u{200f}",
+            "a\u{85}",
+            "\u{61c}a",
+            "a\u{2069}",
             too_long.as_str(),
         ] {
             assert_eq!(MachineName::try_from(bad.to_owned()), Err(bad.to_owned()));
+            // The schema states the length limit apart from the pattern.
+            assert!(
+                bad.chars().count() > NAME_MAX || !pattern.is_match(bad),
+                "{bad:?}"
+            );
             let error = serde_json::from_value::<MachineName>(json!(bad)).unwrap_err();
             assert!(error.to_string().contains("not a machine name"), "{bad:?}");
         }
