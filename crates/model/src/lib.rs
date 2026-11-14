@@ -11,7 +11,7 @@ mod revision;
 mod task;
 mod title;
 
-pub use chat::ChatState;
+pub use chat::{ChatRuns, Waiting};
 pub use doc::{Doc, DocText, DocTextError, ReviseError};
 pub use merge::{Hunk, Merge, merge};
 pub use order::OrderKey;

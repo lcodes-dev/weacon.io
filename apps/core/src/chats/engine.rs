@@ -104,7 +104,7 @@ struct Chat {
     subscribers: Vec<Subscriber>,
     /// The way to the chat's running agent.
     orders: Option<mpsc::UnboundedSender<Order>>,
-    waiting: Vec<Waiting>,
+    answers: Vec<Answered>,
     /// The turn, and the outcome its run reported, when its receipt couldn't be written.
     unended: Option<(RequestId, Outcome)>,
     /// An interrupt's request, and the turn it stops, until the interrupt is sent.
@@ -114,23 +114,24 @@ struct Chat {
 }
 
 impl Chat {
-    // Whether nothing needs the chat open: no agent, waiting prompt, outcome or session still
-    // to save, or connected subscriber.
+    // Whether nothing needs the chat open: no agent, answer, outcome or session still to save,
+    // or connected subscriber.
     fn is_idle(&mut self) -> bool {
         self.subscribers.retain(|subscriber| !subscriber.is_gone());
         self.orders.is_none()
             && self.subscribers.is_empty()
-            && self.waiting.is_empty()
+            && self.answers.is_empty()
             && self.unended.is_none()
             && self.unsaved.is_none()
     }
 }
 
-/// A permission prompt still waiting for a person.
-struct Waiting {
+/// An answer to a waiting prompt whose receipt is being written, so a retry delivers it.
+#[derive(Debug, PartialEq, Eq)]
+struct Answered {
     prompt: u32,
-    /// The request, and whether it allowed, that answered it once its receipt is written.
-    answered: Option<(RequestId, bool)>,
+    request: RequestId,
+    allow: bool,
 }
 
 pub(crate) struct Engine<A> {
@@ -306,7 +307,7 @@ impl<A: Agent> Engine<A> {
                 log: Log::open(&root, &key.1).await?,
                 subscribers: Vec::new(),
                 orders: None,
-                waiting: Vec::new(),
+                answers: Vec::new(),
                 unended: None,
                 interrupting: None,
                 unsaved: None,
@@ -339,7 +340,7 @@ fn update(key: &Key, entry: ChatEntry) -> Message {
 mod tests {
     use std::sync::atomic::Ordering;
 
-    use weacon_model::ChatState;
+    use weacon_model::ChatRuns;
     use weacon_protocol::{
         AgentSession, ChatAction, ChatAnswerKind, ChatQueryKind, PermissionAnswer, RunEvent,
     };
@@ -384,7 +385,6 @@ mod tests {
         command(request, chat_id, ChatAction::Permission { answer })
     }
 
-    // A client subscribed to chat c-1 from its start.
     // The chat's snapshot: its runs, its waiting prompts and its latest events.
     async fn snapshot(bench: &Bench) -> (Vec<RunStatus>, Vec<u64>, Vec<ChatEntry>) {
         let (anyone, _pushes) = client(1);
@@ -401,6 +401,7 @@ mod tests {
         (runs, waiting, events)
     }
 
+    // A client subscribed to chat c-1 from its start.
     async fn watch(bench: &Bench) -> mpsc::Receiver<Message> {
         let (client, pushes) = client(64);
         let subscribe = query("c-1", ChatQueryKind::Subscribe { after: 0 });
@@ -824,9 +825,9 @@ mod tests {
         bench.chats.command(first).await.unwrap();
         // Of the two prompts, only the second still waits, as the fold of the log says.
         let (runs, waiting, events) = snapshot(&bench).await;
-        let folded = ChatState::fold(&events);
+        let folded = ChatRuns::fold(&events);
         assert_eq!((waiting.as_slice(), runs.len()), ([7].as_slice(), 1));
-        assert_eq!((folded.runs(), folded.waiting()), (runs, waiting));
+        assert_eq!((folded.waiting_seqs(), folded.runs), (waiting, runs));
         let second = allow("r-3", "c-1", "run-1", 2);
         bench.chats.command(second).await.unwrap();
 

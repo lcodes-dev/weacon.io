@@ -19,6 +19,8 @@ impl<A: Agent> Engine<A> {
         if matches!(query, ChatQueryKind::Subscribe { .. }) {
             self.sweep();
         }
+        // A run cut off, as by a restart, isn't shown as working.
+        self.save_ended(key).await?;
         let chat = self.chat(key).await?;
         match query {
             ChatQueryKind::Subscribe { after } => {
@@ -38,11 +40,10 @@ impl<A: Agent> Engine<A> {
                 chat.subscribers.extend(caught_up);
                 Ok(None)
             }
-            // What the log says, as the server, folding the same entries, also says.
             ChatQueryKind::Snapshot => Ok(Some(ChatAnswerKind::Snapshot {
                 seq: chat.log.seq(),
-                runs: chat.log.state().runs(),
-                waiting: chat.log.state().waiting(),
+                runs: chat.log.runs().runs.clone(),
+                waiting: chat.log.runs().waiting_seqs(),
                 events: chat.log.window(u64::MAX, SNAPSHOT_EVENTS).await?,
             })),
             ChatQueryKind::Window { before, limit } => Ok(Some(ChatAnswerKind::Window {

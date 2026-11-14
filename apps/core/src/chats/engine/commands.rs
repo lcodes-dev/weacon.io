@@ -6,7 +6,7 @@ use weacon_protocol::{
     RunEvent, RunState, RunUpdate, code,
 };
 
-use super::{Engine, Key, Waiting, unsupported};
+use super::{Answered, Engine, Key, unsupported};
 use crate::chats::log::Seen;
 use crate::runs::Queued;
 use crate::runs::task::{Agent, Order};
@@ -98,48 +98,57 @@ impl<A: Agent> Engine<A> {
                 "That permission prompt isn't waiting",
             ));
         }
-        let given = Some((request.clone(), answer.allow));
-        let waiting = &mut self.chat(key).await?.waiting;
-        for waits in waiting
-            .iter_mut()
-            .filter(|waits| waits.prompt == answer.prompt)
-        {
-            waits.answered.clone_from(&given);
-        }
+        let answered = Answered {
+            prompt: answer.prompt,
+            request: request.clone(),
+            allow: answer.allow,
+        };
+        let answers = &mut self.chat(key).await?.answers;
+        answers.retain(|other| other.prompt != answer.prompt);
+        answers.push(answered);
         self.receipt(key, &request, Outcome::Completed).await?;
         self.deliver(key, &request, answer).await
     }
 
+    // Whether the prompt waits, as the log says, for a person to answer it in a run still going.
     async fn waits_for(&mut self, key: &Key, answer: &PermissionAnswer) -> Result<bool, Fault> {
-        let asked = self.runs.is_latest(&key.0, &key.1, &answer.run);
-        let waiting = &self.chat(key).await?.waiting;
-        Ok(asked && waiting.iter().any(|waits| waits.prompt == answer.prompt))
+        let asked = self.runs.is_latest(&key.0, &key.1, &answer.run) && self.is_live(key);
+        let log = &self.chat(key).await?.log;
+        Ok(asked && log.runs().waits(&answer.run, answer.prompt))
     }
 
-    // Gives the answer `request` committed to its run, unless its prompt is no longer waiting.
+    // Gives the answer `request` committed to its run. It is logged unless the log has it
+    // already, as after a write reported failed that still landed.
     async fn deliver(
         &mut self,
         key: &Key,
         request: &RequestId,
         answer: PermissionAnswer,
     ) -> Result<(), Fault> {
-        let given = Some((request.clone(), answer.allow));
-        let committed = |waits: &Waiting| waits.prompt == answer.prompt && waits.answered == given;
-        let waits = self.chat(key).await?.waiting.iter().any(committed);
-        if !waits || !self.runs.is_latest(&key.0, &key.1, &answer.run) {
+        let given = Answered {
+            prompt: answer.prompt,
+            request: request.clone(),
+            allow: answer.allow,
+        };
+        let live = self.runs.is_latest(&key.0, &key.1, &answer.run) && self.is_live(key);
+        let chat = self.chat(key).await?;
+        if !live || !chat.answers.contains(&given) {
             return Ok(());
         }
-        // In the log before the agent is told, so a crash between the two leaves the truth there.
-        let update = RunUpdate {
-            run: answer.run.clone(),
-            event: RunEvent::PermissionAnswered {
-                answer: answer.clone(),
-            },
-        };
-        self.commit(key, ChatEvent::Run { update }).await?;
-        let waiting = &mut self.chat(key).await?.waiting;
-        waiting.retain(|waiting| waiting.prompt != answer.prompt);
-        let (resumed, run) = (waiting.is_empty(), answer.run.clone());
+        if chat.log.runs().waits(&answer.run, answer.prompt) {
+            // In the log before the agent is told, so a crash between the two leaves the truth.
+            let update = RunUpdate {
+                run: answer.run.clone(),
+                event: RunEvent::PermissionAnswered {
+                    answer: answer.clone(),
+                },
+            };
+            self.commit(key, ChatEvent::Run { update }).await?;
+        }
+        let chat = self.chat(key).await?;
+        chat.answers.retain(|other| *other != given);
+        let run = answer.run.clone();
+        let resumed = !chat.log.runs().waiting.iter().any(|waits| waits.run == run);
         self.order(key, Order::Answer(answer));
         if resumed {
             self.state(key, &run, RunState::Running).await?;
