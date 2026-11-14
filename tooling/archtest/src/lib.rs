@@ -6,6 +6,7 @@ mod sources;
 
 use std::collections::BTreeSet;
 use std::fs;
+use std::io;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -190,8 +191,10 @@ fn files_under(path: &Path) -> Result<Vec<PathBuf>, String> {
     let mut files = Vec::new();
     let mut pending = vec![path.to_path_buf()];
     while let Some(path) = pending.pop() {
-        let Ok(kind) = fs::symlink_metadata(&path).map(|metadata| metadata.file_type()) else {
-            continue;
+        let kind = match fs::symlink_metadata(&path) {
+            Ok(metadata) => metadata.file_type(),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(format!("{}: {error}", path.display())),
         };
         if kind.is_dir() {
             let entries =
@@ -239,6 +242,17 @@ mod tests {
         fs::remove_dir(&dir).unwrap();
 
         found.unwrap_err();
+    }
+
+    #[test]
+    fn only_a_missing_path_counts_as_no_files() {
+        assert!(
+            files_under(Path::new("no-such-folder-here"))
+                .unwrap()
+                .is_empty()
+        );
+        let unreadable = files_under(Path::new("bad\0name")).unwrap_err();
+        assert!(unreadable.starts_with("bad\0name: "), "{unreadable}");
     }
 
     #[cfg(unix)]

@@ -171,7 +171,14 @@ impl Uses {
         {
             return colons.saturating_add(1);
         }
-        if let Some((ident, _)) = cursor.ident() {
+        if let Some((ident, next)) = cursor.ident() {
+            if INCLUDES.iter().any(|name| ident == name)
+                && let Some((bang, after)) = next.punct()
+                && bang.as_char() == '!'
+                && let Some((inside, ..)) = after.any_group()
+            {
+                self.includes_integrations |= names_integrations(&inside.token_stream());
+            }
             if colons == ALIAS {
                 return 0;
             }
@@ -292,22 +299,25 @@ impl<'ast> Visit<'ast> for Uses {
         if mac.path.is_ident("cfg") {
             self.os_cfg |= names_os(&mac.tokens.to_string());
         }
-        if ["include", "include_str", "include_bytes"]
-            .iter()
-            .any(|name| mac.path.is_ident(name))
-        {
-            let tokens = mac.tokens.to_string();
-            self.includes_integrations |= [
-                format!("/{INTEGRATIONS_FOLDER}/"),
-                format!("\"{INTEGRATIONS_FOLDER}/"),
-                format!("\"{INTEGRATIONS_FOLDER}\""),
-            ]
-            .iter()
-            .any(|named| tokens.contains(named));
+        if INCLUDES.iter().any(|name| mac.path.is_ident(name)) {
+            self.includes_integrations |= names_integrations(&mac.tokens);
         }
         self.note_tokens(TokenBuffer::new2(mac.tokens.clone()).begin(), &[]);
         visit::visit_macro(self, mac);
     }
+}
+
+const INCLUDES: [&str; 3] = ["include", "include_str", "include_bytes"];
+
+fn names_integrations(tokens: &impl ToString) -> bool {
+    let tokens = tokens.to_string();
+    [
+        format!("/{INTEGRATIONS_FOLDER}/"),
+        format!("\"{INTEGRATIONS_FOLDER}/"),
+        format!("\"{INTEGRATIONS_FOLDER}\""),
+    ]
+    .iter()
+    .any(|named| tokens.contains(named))
 }
 
 #[cfg(test)]
@@ -347,6 +357,7 @@ mod tests {
             "const C: &str = include_str!(concat!(env!(\"CARGO_MANIFEST_DIR\"), \"/../../integrations/x.md\"));",
             "const D: &str = include_str!(concat!(\"../../\", \"integrations\", \"/x.md\"));",
             "const E: &str = include_str![\"integrations/x.md\"];",
+            "const F: &str = concat!(include_str!(\"../../integrations/x.md\"), \"\\n\");",
         ];
         let refused = "includes integrations/ files, which only weacon-core reads";
 
@@ -358,6 +369,8 @@ mod tests {
             "// integrations/ is read elsewhere\nconst A: &str = include_str!(\"a.txt\");",
             "#[cfg(test)]\nmod tests { const A: &str = include_str!(\"integrations/a.md\"); }",
             "const A: &str = concat!(\"integrations/\", \"a.md\");",
+            "const A: &str = m!(include_str + (\"integrations/a.md\"));",
+            "const A: &str = m!(concat!(\"integrations/\", \"a.md\"));",
             "const V: &str = include_str!(\"../assets/vendor_integrations/a.json\");",
             "#[cfg(test)]\nfn helper() { include_str!(\"integrations/a.md\"); }",
         ];
