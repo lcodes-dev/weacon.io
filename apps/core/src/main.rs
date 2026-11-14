@@ -1,10 +1,6 @@
 //! `weacon`: the core's daemon and command line.
 
 mod app;
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "the chat engine, which uses it, comes next")
-)]
 mod chats;
 mod cli;
 mod daemon;
@@ -18,10 +14,6 @@ mod pair;
 mod picks;
 mod platform;
 mod reports;
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "the chat engine, which uses it, comes next")
-)]
 mod runs;
 mod server;
 mod service;
