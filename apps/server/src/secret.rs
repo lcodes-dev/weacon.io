@@ -4,7 +4,7 @@ use std::fs::{self, File};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 
-use hmac::{Hmac, Mac};
+use hmac::{Hmac, KeyInit, Mac};
 use sha2::Sha256;
 use weacon_appkit::{owner_only, private_append, sync_dir};
 use weacon_observability::{Fault, Logger};
@@ -192,6 +192,24 @@ mod tests {
         assert_ne!(one.machine_token("c"), one.code_hash(&email, "c"));
         Email::parse("pairing.code").unwrap_err();
         Email::parse("machine.token").unwrap_err();
+    }
+
+    #[test]
+    fn pairing_codes_and_machine_tokens_keep_their_digests() {
+        let dir = TempDir::new().unwrap();
+        let key: Vec<u8> = (0..32).collect();
+        let secret = open(&stored(&dir, "secret", &key)).unwrap();
+        let hex = |digest: [u8; 32]| digest.map(|byte| format!("{byte:02x}")).concat();
+
+        // HMAC-SHA256 of each one's prefix and input, under the bytes 0 to 31.
+        assert_eq!(
+            hex(secret.pairing_code_hash("ABCD-1234")),
+            "a8e23ba6ef0ef2afc01c96adf9a45091de5578f6289c08589434b0809af699d8"
+        );
+        assert_eq!(
+            hex(secret.machine_token("secret")),
+            "dfa64f2eb1af8f2fec07c7fa779c2c8312fbdd7e2ed666a94fded34db17b9c07"
+        );
     }
 
     #[test]
