@@ -4,18 +4,8 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::token::token_id;
-use crate::{ChatId, DocId, ProposalId, TaskId};
+use crate::{MemberId, WorkspaceId};
 
-token_id!(
-    /// A workspace on the server, 1–64 ASCII letters, digits, `-` or `_`.
-    WorkspaceId,
-    "not a workspace id"
-);
-token_id!(
-    /// A member of a workspace, 1–64 ASCII letters, digits, `-` or `_`.
-    MemberId,
-    "not a member id"
-);
 token_id!(
     /// A person's account on the server, 1–64 ASCII letters, digits, `-` or `_`.
     AccountId,
@@ -36,11 +26,26 @@ pub struct SignInStart {
     pub email: String,
 }
 
+// Emails, codes, challenges and tokens never reach a log line, even through `{:?}`.
+impl fmt::Debug for SignInStart {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SignInStart")
+            .field("workspace", &self.workspace)
+            .finish_non_exhaustive()
+    }
+}
+
 /// The answer to a [`SignInStart`], for members and strangers alike: the challenge to finish
 /// it with.
 #[derive(PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct SignInStarted {
     pub challenge: ChallengeId,
+}
+
+impl fmt::Debug for SignInStarted {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SignInStarted").finish_non_exhaustive()
+    }
 }
 
 /// Trades the one-time code sent to `email` for a [`SignedIn`]. `challenge` is the one its
@@ -55,11 +60,27 @@ pub struct SignInFinish {
     pub challenge: Option<ChallengeId>,
 }
 
+impl fmt::Debug for SignInFinish {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SignInFinish")
+            .field("workspace", &self.workspace)
+            .finish_non_exhaustive()
+    }
+}
+
 /// A signed-in member and the session token that proves it, sent as a bearer token.
 #[derive(PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct SignedIn {
     pub member: MemberId,
     pub token: String,
+}
+
+impl fmt::Debug for SignedIn {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SignedIn")
+            .field("member", &self.member)
+            .finish_non_exhaustive()
+    }
 }
 
 /// Asks the server to send a one-time code to `email`, if that person may sign in. The
@@ -69,6 +90,12 @@ pub struct AccountSignInStart {
     pub email: String,
 }
 
+impl fmt::Debug for AccountSignInStart {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("AccountSignInStart").finish_non_exhaustive()
+    }
+}
+
 /// Trades the one-time code sent to `email`, and the challenge its [`SignInStarted`] gave,
 /// for an [`AccountSignedIn`].
 #[derive(PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -76,6 +103,13 @@ pub struct AccountSignInFinish {
     pub email: String,
     pub code: String,
     pub challenge: ChallengeId,
+}
+
+impl fmt::Debug for AccountSignInFinish {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("AccountSignInFinish")
+            .finish_non_exhaustive()
+    }
 }
 
 /// The signed-in account. `token`, sent as a bearer token, is only in the answer to an
@@ -89,56 +123,6 @@ pub struct AccountSignedIn {
     pub token: Option<String>,
 }
 
-/// What a member may do in a workspace.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum WorkspaceRole {
-    /// Made the workspace.
-    Owner,
-    /// Was added to it.
-    Member,
-    /// A role this build doesn't know, from a newer peer; only ever received, and it allows
-    /// nothing.
-    #[serde(other)]
-    #[schemars(skip)]
-    Newer,
-}
-
-/// Asks the server for a new workspace, which the asker owns. The answer is its
-/// [`WorkspaceSummary`].
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct WorkspaceCreate {
-    pub name: String,
-}
-
-/// A workspace as one of its members sees it, with their `role` in it.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct WorkspaceSummary {
-    pub id: WorkspaceId,
-    pub name: String,
-    pub role: WorkspaceRole,
-}
-
-/// The workspaces the signed-in account is a member of.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct WorkspaceList {
-    pub workspaces: Vec<WorkspaceSummary>,
-}
-
-// Emails, codes, challenges and tokens never reach a log line, even through `{:?}`.
-impl fmt::Debug for AccountSignInStart {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("AccountSignInStart").finish_non_exhaustive()
-    }
-}
-
-impl fmt::Debug for AccountSignInFinish {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("AccountSignInFinish")
-            .finish_non_exhaustive()
-    }
-}
-
 impl fmt::Debug for AccountSignedIn {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("AccountSignedIn")
@@ -147,75 +131,12 @@ impl fmt::Debug for AccountSignedIn {
     }
 }
 
-impl fmt::Debug for SignInStart {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("SignInStart")
-            .field("workspace", &self.workspace)
-            .finish_non_exhaustive()
-    }
-}
-
-impl fmt::Debug for SignInStarted {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("SignInStarted").finish_non_exhaustive()
-    }
-}
-
-impl fmt::Debug for SignInFinish {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("SignInFinish")
-            .field("workspace", &self.workspace)
-            .finish_non_exhaustive()
-    }
-}
-
-impl fmt::Debug for SignedIn {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("SignedIn")
-            .field("member", &self.member)
-            .finish_non_exhaustive()
-    }
-}
-
-/// What changed in a workspace.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum WorkspaceChange {
-    /// A member opened the workspace for the first time.
-    MemberJoined { member: MemberId },
-    /// A task was made, at version 1, or changed. Only for clients that have the capability
-    /// `workspace.tasks`, which read the tasks again to see what it now is.
-    TaskChanged { task: TaskId, version: u64 },
-    /// A doc was made, at version 1, or revised. Only for clients that have the capability
-    /// `workspace.docs`, which read the doc again to see what it now says.
-    DocChanged { doc: DocId, version: u64 },
-    /// A chat was made, or its title, state or latest turn changed. Only for clients that have
-    /// the capability `workspace.chats`, which read the chats again.
-    ChatChanged { chat: ChatId },
-    /// A proposal was made or its state changed. Only for clients that have the capability
-    /// `workspace.proposals`, which read the proposals again.
-    ProposalChanged { proposal: ProposalId },
-    /// A change this build doesn't know, from a newer peer; only ever received.
-    #[serde(other)]
-    #[schemars(skip)]
-    Newer,
-}
-
-/// One change to `workspace`. `seq` grows strictly within a workspace, and a feed opened with
-/// `since=N` sends every change after `N`.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct WorkspaceUpdate {
-    pub workspace: WorkspaceId,
-    pub seq: u64,
-    pub change: WorkspaceChange,
-}
-
 #[cfg(test)]
 mod tests {
     use serde_json::json;
 
     use super::*;
-    use crate::test_support::{chat, workspace};
+    use crate::test_support::workspace;
 
     #[test]
     fn a_challenge_hides_its_value_but_other_ids_dont() {
@@ -302,73 +223,6 @@ mod tests {
         assert_eq!(format!("{started:?}"), "SignInStarted { .. }");
     }
 
-    #[test]
-    fn an_update_carries_its_workspace_and_order() {
-        let update = WorkspaceUpdate {
-            workspace: workspace(),
-            seq: 7,
-            change: WorkspaceChange::ChatChanged { chat: chat() },
-        };
-        let wire = json!({
-            "workspace": "w-1",
-            "seq": 7,
-            "change": { "kind": "chat_changed", "chat": "c-1" },
-        });
-
-        assert_eq!(serde_json::to_value(&update).unwrap(), wire);
-        assert_eq!(
-            serde_json::from_value::<WorkspaceUpdate>(wire).unwrap(),
-            update
-        );
-    }
-
-    #[test]
-    fn changes_are_tagged_and_a_newer_one_still_parses() {
-        let changes = [
-            (
-                WorkspaceChange::MemberJoined {
-                    member: "m-1".parse().unwrap(),
-                },
-                json!({ "kind": "member_joined", "member": "m-1" }),
-            ),
-            (
-                WorkspaceChange::TaskChanged {
-                    task: "t-1".parse().unwrap(),
-                    version: 2,
-                },
-                json!({ "kind": "task_changed", "task": "t-1", "version": 2 }),
-            ),
-            (
-                WorkspaceChange::DocChanged {
-                    doc: "d-1".parse().unwrap(),
-                    version: 3,
-                },
-                json!({ "kind": "doc_changed", "doc": "d-1", "version": 3 }),
-            ),
-            (
-                WorkspaceChange::ChatChanged { chat: chat() },
-                json!({ "kind": "chat_changed", "chat": "c-1" }),
-            ),
-            (
-                WorkspaceChange::ProposalChanged {
-                    proposal: "p-1".parse().unwrap(),
-                },
-                json!({ "kind": "proposal_changed", "proposal": "p-1" }),
-            ),
-        ];
-        for (change, wire) in changes {
-            assert_eq!(serde_json::to_value(&change).unwrap(), wire);
-            assert_eq!(
-                serde_json::from_value::<WorkspaceChange>(wire).unwrap(),
-                change
-            );
-        }
-        assert_eq!(
-            serde_json::from_value::<WorkspaceChange>(json!({ "kind": "renamed" })).unwrap(),
-            WorkspaceChange::Newer
-        );
-    }
-
     fn account() -> AccountId {
         "a-1".parse().unwrap()
     }
@@ -437,58 +291,6 @@ mod tests {
         assert_eq!(
             format!("{signed_in:?}"),
             r#"AccountSignedIn { account: AccountId("a-1"), .. }"#
-        );
-    }
-
-    #[test]
-    fn workspaces_travel_with_the_members_role() {
-        let summary = WorkspaceSummary {
-            id: workspace(),
-            name: "Personal".to_owned(),
-            role: WorkspaceRole::Owner,
-        };
-        let wire = json!({ "id": "w-1", "name": "Personal", "role": "owner" });
-        let list = WorkspaceList {
-            workspaces: vec![summary.clone()],
-        };
-        let create = WorkspaceCreate {
-            name: "Team".to_owned(),
-        };
-
-        assert_eq!(serde_json::to_value(&summary).unwrap(), wire);
-        assert_eq!(
-            serde_json::from_value::<WorkspaceSummary>(wire.clone()).unwrap(),
-            summary
-        );
-        assert_eq!(
-            serde_json::to_value(&list).unwrap(),
-            json!({ "workspaces": [wire] })
-        );
-        assert_eq!(
-            serde_json::from_value::<WorkspaceList>(json!({ "workspaces": [wire] })).unwrap(),
-            list
-        );
-        assert_eq!(
-            serde_json::to_value(&create).unwrap(),
-            json!({ "name": "Team" })
-        );
-        assert_eq!(
-            serde_json::from_value::<WorkspaceCreate>(json!({ "name": "Team" })).unwrap(),
-            create
-        );
-        for (wire, role) in [
-            ("owner", WorkspaceRole::Owner),
-            ("member", WorkspaceRole::Member),
-            ("auditor", WorkspaceRole::Newer),
-        ] {
-            assert_eq!(
-                serde_json::from_value::<WorkspaceRole>(json!(wire)).unwrap(),
-                role
-            );
-        }
-        assert_eq!(
-            serde_json::to_value(WorkspaceRole::Member).unwrap(),
-            json!("member")
         );
     }
 }

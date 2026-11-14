@@ -1,6 +1,7 @@
 //! The messages Weacon programs exchange, their framing and their error codes.
 
 mod access;
+mod account;
 mod capability;
 mod chat;
 mod code;
@@ -14,24 +15,28 @@ mod message;
 mod pick;
 mod proposal;
 mod receipt;
+mod release;
 mod repo;
 mod run;
 mod sessions;
 mod settings;
 mod task;
-mod team;
 mod terminal;
 #[cfg(test)]
 mod test_support;
 mod token;
-mod update;
+mod workspace;
 mod worktree;
 
 pub use access::AccessLevel;
+pub use account::{
+    AccountId, AccountSignInFinish, AccountSignInStart, AccountSignedIn, ChallengeId, SignInFinish,
+    SignInStart, SignInStarted, SignedIn,
+};
 pub use capability::Capability;
 pub use chat::{
-    Asker, ChatAction, ChatAnswer, ChatAnswerKind, ChatCommand, ChatEntry, ChatEvent, ChatId,
-    ChatList, ChatQuery, ChatQueryKind, ChatState, ChatSummary, ChatUpdate,
+    ChatAction, ChatAnswer, ChatAnswerKind, ChatCommand, ChatEntry, ChatEvent, ChatId, ChatList,
+    ChatQuery, ChatQueryKind, ChatState, ChatSummary, ChatUpdate,
 };
 pub use code::Code;
 pub use diff::{
@@ -56,6 +61,9 @@ pub use proposal::{
     ProposalId, ProposalList, ProposalOutcome, ProposalRecord, ProposalState, ProposalVerdict,
 };
 pub use receipt::{Outcome, Receipt, RequestId};
+pub use release::{
+    BuildTarget, Commit, DownloadUrl, ReleaseBuild, ReleaseManifest, ReleaseVersion, Sha256,
+};
 pub use repo::RepoId;
 pub use run::{
     AgentKind, AgentOwner, AgentRef, AgentSession, PermissionAnswer, RunEvent, RunId, RunState,
@@ -72,17 +80,13 @@ pub use settings::{
 pub use task::{
     Author, TaskChange, TaskCreate, TaskEditBody, TaskId, TaskList, TaskRecord, TaskStatus,
 };
-pub use team::{
-    AccountId, AccountSignInFinish, AccountSignInStart, AccountSignedIn, ChallengeId, MemberId,
-    SignInFinish, SignInStart, SignInStarted, SignedIn, WorkspaceChange, WorkspaceCreate,
-    WorkspaceId, WorkspaceList, WorkspaceRole, WorkspaceSummary, WorkspaceUpdate,
-};
 pub use terminal::{
     Bytes, NOISE_MAX, SEALED_MAX, TERMINAL_NOISE, TerminalAction, TerminalCommand, TerminalEvent,
     TerminalId, TerminalInput, TerminalOutput, TerminalUpdate,
 };
-pub use update::{
-    BuildTarget, Commit, DownloadUrl, ReleaseBuild, ReleaseManifest, ReleaseVersion, Sha256,
+pub use workspace::{
+    Asker, MemberId, WorkspaceChange, WorkspaceCreate, WorkspaceId, WorkspaceList, WorkspaceRole,
+    WorkspaceSummary, WorkspaceUpdate,
 };
 pub use worktree::{
     WorktreeAction, WorktreeAnswer, WorktreeAnswerKind, WorktreeCommand, WorktreeQuery,

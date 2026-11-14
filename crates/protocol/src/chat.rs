@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::token::token_id;
 use crate::{
-    AccountId, AgentKind, MachineId, MachineName, MemberId, PermissionAnswer, Receipt, RepoId,
+    AgentKind, Asker, MachineId, MachineName, MemberId, PermissionAnswer, Receipt, RepoId,
     RequestId, RunStatus, RunUpdate, WorkspaceId,
 };
 
@@ -24,15 +24,6 @@ pub struct ChatCommand {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(with = "Asker")]
     pub by: Option<Asker>,
-}
-
-/// Who asked for a command, stamped by the server on what it relays to a machine and never
-/// taken from a client. The core acts only when `account` is its owner's, and records only
-/// `member`.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct Asker {
-    pub account: AccountId,
-    pub member: MemberId,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
