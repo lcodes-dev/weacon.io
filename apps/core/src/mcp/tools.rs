@@ -235,5 +235,9 @@ mod tests {
         assert_eq!(cut, "line 0\nline 1\nline 2\n7 more lines left out.\n");
         assert!(cut.len() <= 50);
         assert_eq!(fit(lines(), 5), "10 more lines left out.\n");
+        // Seventy bytes in all, so sixty-nine cut; a line that fits exactly is kept.
+        assert!(fit(lines(), 69).ends_with("left out.\n"));
+        let exact = fit(lines(), 51);
+        assert_eq!((exact.lines().count(), exact.len()), (5, 51));
     }
 }

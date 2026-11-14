@@ -281,7 +281,8 @@ mod tests {
     use std::path::PathBuf;
 
     use rmcp::model::{
-        CallToolRequest, ClientJsonRpcMessage, ClientRequest, JsonObject, JsonRpcRequest,
+        CallToolRequest, ClientCapabilities, ClientJsonRpcMessage, ClientRequest,
+        InitializeRequest, InitializeRequestParams, JsonObject, JsonRpcRequest, ListToolsRequest,
         NumberOrString,
     };
     use serde_json::{Value, json};
@@ -298,13 +299,16 @@ mod tests {
         body: String,
     }
 
-    fn call(name: &str, arguments: Value) -> String {
-        let arguments: JsonObject = serde_json::from_value(arguments).unwrap();
-        let params = CallToolRequestParams::new(name.to_owned()).with_arguments(arguments);
-        let request = ClientRequest::CallToolRequest(CallToolRequest::new(params));
+    fn rpc(request: ClientRequest) -> String {
         let message =
             ClientJsonRpcMessage::Request(JsonRpcRequest::new(NumberOrString::Number(1), request));
         serde_json::to_string(&message).unwrap()
+    }
+
+    fn call(name: &str, arguments: Value) -> String {
+        let arguments: JsonObject = serde_json::from_value(arguments).unwrap();
+        let params = CallToolRequestParams::new(name.to_owned()).with_arguments(arguments);
+        rpc(ClientRequest::CallToolRequest(CallToolRequest::new(params)))
     }
 
     async fn post(mcp: &Mcp, headers: &[(&str, &str)], body: &str) -> Reply {
@@ -433,6 +437,7 @@ mod tests {
         let auth = bearer(&token);
         let map = call("map", json!({}));
         let large = call("symbol", json!({"path": "x".repeat(MAX_BODY)}));
+        let fits = call("symbol", json!({"path": "x".repeat(60_000)}));
 
         let host = post(
             &mcp,
@@ -446,10 +451,12 @@ mod tests {
         ];
         let origin = post(&mcp, &origin, &map).await;
         let too_large = post(&mcp, &[("Authorization", &auth)], &large).await;
+        let large_enough = post(&mcp, &[("Authorization", &auth)], &fits).await;
 
         assert_eq!(host.status, 403);
         assert_eq!(origin.status, 403);
         assert_eq!(too_large.status, 413);
+        assert_eq!(answer_text(&large_enough), "No item has this path.\n");
     }
 
     #[tokio::test]
@@ -488,6 +495,55 @@ mod tests {
         let unknown = post(&mcp, &[("Authorization", &auth)], &later).await;
         let error: Value = serde_json::from_str(&unknown.body).unwrap();
         assert_eq!(error["error"]["message"], "No such tool");
+    }
+
+    #[tokio::test]
+    async fn it_names_itself_and_lists_its_tools() {
+        let dir = TempDir::new().unwrap();
+        let (log, _records) = recording_logger();
+        let (mcp, _server) = start(&weacon_appkit::build(&VERSION), &log).unwrap();
+        let (token, _revoke) = mcp
+            .grants
+            .issue(run_grant("w-1", "run-1", repo(&dir, "one")))
+            .unwrap();
+        let auth = [("Authorization", bearer(&token))];
+        let auth: Vec<_> = auth
+            .iter()
+            .map(|(name, value)| (*name, value.as_str()))
+            .collect();
+        let client = Implementation::new("test", "1");
+        let params = InitializeRequestParams::new(ClientCapabilities::default(), client);
+        let hello = rpc(ClientRequest::InitializeRequest(InitializeRequest::new(
+            params,
+        )));
+        let list = rpc(ClientRequest::ListToolsRequest(ListToolsRequest::default()));
+
+        let hello: Value = serde_json::from_str(&post(&mcp, &auth, &hello).await.body).unwrap();
+        let list: Value = serde_json::from_str(&post(&mcp, &auth, &list).await.body).unwrap();
+
+        let info = &hello["result"]["serverInfo"];
+        assert_eq!(
+            (&info["name"], &info["version"]),
+            (&json!("weacon"), &json!(VERSION.version))
+        );
+        assert!(hello["result"]["capabilities"]["tools"].is_object());
+        let tools = serde_json::to_value(tools::listed()).unwrap();
+        assert_eq!(list["result"]["tools"], tools);
+    }
+
+    #[tokio::test]
+    async fn dropping_the_server_stops_it() {
+        let (log, _records) = recording_logger();
+        let (mcp, server) = start(&weacon_appkit::build(&VERSION), &log).unwrap();
+        let address = mcp
+            .url
+            .trim_start_matches("http://")
+            .trim_end_matches("/mcp");
+
+        drop(server);
+        tokio::task::yield_now().await;
+
+        TcpStream::connect(address).await.unwrap_err();
     }
 
     #[tokio::test(start_paused = true)]

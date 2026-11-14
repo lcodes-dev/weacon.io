@@ -118,12 +118,12 @@ impl Drop for Revoke {
 }
 
 /// An agent whose token ends with it.
-pub(crate) struct Granted {
-    pub(crate) agent: AgentRun,
+pub(crate) struct Granted<A = AgentRun> {
+    pub(crate) agent: A,
     pub(crate) _revoke: Option<Revoke>,
 }
 
-impl Agent for Granted {
+impl<A: Agent> Agent for Granted<A> {
     async fn send(&mut self, prompt: &str) -> Result<(), Fault> {
         self.agent.send(prompt).await
     }
@@ -144,6 +144,57 @@ impl Agent for Granted {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Fails every order with the name of the call, and says something.
+    struct Echo;
+
+    fn refused(call: &'static str) -> Fault {
+        Fault::new(code!("test.refused"), call)
+    }
+
+    impl Agent for Echo {
+        async fn send(&mut self, _: &str) -> Result<(), Fault> {
+            Err(refused("send"))
+        }
+
+        async fn answer(&mut self, _: &PermissionAnswer) -> Result<(), Fault> {
+            Err(refused("answer"))
+        }
+
+        async fn interrupt(&mut self) -> Result<(), Fault> {
+            Err(refused("interrupt"))
+        }
+
+        async fn next(&mut self) -> Result<Option<RunEvent>, Fault> {
+            Ok(Some(RunEvent::Text { text: "hi".into() }))
+        }
+    }
+
+    #[tokio::test]
+    async fn a_granted_agent_passes_every_call_on() {
+        let mut agent = Granted {
+            agent: Echo,
+            _revoke: None,
+        };
+        let answer = PermissionAnswer {
+            run: RunId::try_from("run-1".to_owned()).unwrap(),
+            prompt: 1,
+            allow: true,
+        };
+
+        let refusals = [
+            agent.send("hi").await.unwrap_err(),
+            agent.answer(&answer).await.unwrap_err(),
+            agent.interrupt().await.unwrap_err(),
+        ];
+
+        let said: Vec<_> = refusals.iter().map(ToString::to_string).collect();
+        assert_eq!(said, ["send", "answer", "interrupt"]);
+        assert!(matches!(
+            agent.next().await,
+            Ok(Some(RunEvent::Text { .. }))
+        ));
+    }
 
     fn grant(workspace: &str, run: &str) -> Grant {
         Grant::new(
