@@ -29,7 +29,7 @@ pub(crate) const DOWNLOAD_WITHIN: Duration = Duration::from_mins(10);
 pub(crate) fn https(body_within: Duration) -> impl Fn(&str) -> Result<Body, Fault> {
     let agent: ureq::Agent = ureq::Agent::config_builder()
         .https_only(true)
-        .user_agent("weacon")
+        .user_agent(concat!("weacon/", env!("CARGO_PKG_VERSION")))
         .timeout_connect(Some(Duration::from_secs(15)))
         .timeout_recv_response(Some(Duration::from_secs(30)))
         .timeout_recv_body(Some(body_within))
