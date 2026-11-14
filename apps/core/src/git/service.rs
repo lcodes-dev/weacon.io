@@ -4,14 +4,16 @@
 use std::ffi::OsString;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::SystemTime;
+
+use tokio::sync::Semaphore;
 
 use weacon_observability::Fault;
 use weacon_protocol::{
     ChatId, DiffAnswer, DiffAnswerKind, DiffContent, DiffQuery, DiffQueryKind, Envelope,
     FrameError, Message, WorkspaceId, WorktreeAction, WorktreeAnswer, WorktreeAnswerKind,
-    WorktreeCommand, WorktreeQuery, WorktreeQueryKind, code,
+    WorktreeCommand, WorktreeQuery, WorktreeQueryKind, code, encode_line,
 };
 
 use super::branch::{Draft, Gh};
@@ -24,7 +26,10 @@ use crate::workspaces::Workspaces;
 /// Moves an item to the person's Trash; tests pass one of their own.
 pub(crate) type ToTrash = fn(&Path, SystemTime) -> io::Result<Trashed>;
 
-/// What answers about worktrees: one call at a time, as their journals need.
+// At most this many calls run git at once; the rest wait their turn without a thread.
+const WORKERS: usize = 4;
+
+/// What answers about worktrees, a few calls at a time.
 #[derive(Clone)]
 pub(crate) struct Worktrees {
     inner: Arc<Inner>,
@@ -42,7 +47,9 @@ struct Inner {
     path: Option<OsString>,
     work_root: Option<PathBuf>,
     to_trash: ToTrash,
-    busy: Mutex<()>,
+    workers: Arc<Semaphore>,
+    // Held while a journal changes; it guards no data, so a panic under it leaves none broken.
+    journals: Mutex<()>,
 }
 
 impl Worktrees {
@@ -59,7 +66,8 @@ impl Worktrees {
             path,
             work_root,
             to_trash,
-            busy: Mutex::new(()),
+            workers: Arc::new(Semaphore::new(WORKERS)),
+            journals: Mutex::new(()),
         };
         Self {
             inner: Arc::new(inner),
@@ -107,14 +115,27 @@ impl Worktrees {
         .await
     }
 
-    // Runs `work` off the runtime, after any call already under way.
+    /// Waits for every call under way to end, and refuses any after.
+    pub(crate) async fn drain(&self) {
+        let workers = &self.inner.workers;
+        let all = u32::try_from(WORKERS).unwrap_or(u32::MAX);
+        drop(workers.acquire_many(all).await);
+        workers.close();
+    }
+
+    // Runs `work` off the runtime once a worker is free. It runs to its end even when its
+    // asker stops waiting, and keeps its worker until then.
     async fn blocking<T: Send + 'static>(
         &self,
         work: impl FnOnce(&Inner) -> Result<T, Fault> + Send + 'static,
     ) -> Result<T, Fault> {
         let inner = Arc::clone(&self.inner);
+        let worker = Arc::clone(&inner.workers)
+            .acquire_owned()
+            .await
+            .map_err(|_| failed())?;
         tokio::task::spawn_blocking(move || {
-            let _turn = inner.busy.lock().map_err(|_| failed())?;
+            let _worker = worker;
             work(&inner)
         })
         .await
@@ -184,6 +205,7 @@ impl Inner {
         let journal = self.journal(workspace, &found.git);
         match action {
             WorktreeAction::Remove => {
+                let _changing = self.journals.lock().unwrap_or_else(PoisonError::into_inner);
                 if journal.removed(chat)?.is_none() {
                     let now = SystemTime::now();
                     let to_trash = |path: &Path| (self.to_trash)(path, now);
@@ -192,6 +214,7 @@ impl Inner {
                 self.state(workspace, chat)
             }
             WorktreeAction::Restore => {
+                let _changing = self.journals.lock().unwrap_or_else(PoisonError::into_inner);
                 if journal.removed(chat)?.is_some() {
                     journal.restore(chat)?;
                 }
@@ -267,13 +290,13 @@ impl Inner {
     }
 }
 
-// `answer`, its file said to be too large when it wouldn't fit one frame.
+// `answer`, its file said to be too large when it wouldn't fit one line, whatever its id.
 fn fitted(mut answer: DiffAnswer) -> DiffAnswer {
     let envelope = Envelope {
-        id: 0,
+        id: u32::MAX,
         message: Message::DiffAnswer(answer.clone()),
     };
-    if envelope.to_json() == Err(FrameError::TooLarge)
+    if encode_line(&envelope) == Err(FrameError::TooLarge)
         && let DiffAnswerKind::File { file, .. } = &mut answer.answer
     {
         file.content = DiffContent::TooLarge;
@@ -403,6 +426,105 @@ mod tests {
             };
             Ok(self.worktrees.command(command).await?.answer)
         }
+    }
+
+    fn one_line(text: String) -> DiffAnswer {
+        use weacon_protocol::{DiffLine, FileChange, Hunk, LineOp};
+
+        let line = DiffLine {
+            op: LineOp::Added,
+            text,
+            no_newline: false,
+        };
+        let file = DiffFile {
+            path: "notes.md".to_owned(),
+            change: FileChange::Added,
+            content: DiffContent::Text {
+                hunks: vec![Hunk {
+                    old_start: 0,
+                    new_start: 1,
+                    lines: vec![line],
+                }],
+            },
+        };
+        DiffAnswer {
+            request: request(),
+            workspace: "w-1".parse().unwrap(),
+            chat: chat("c-1"),
+            answer: DiffAnswerKind::File { files: 1, file },
+        }
+    }
+
+    fn content(answer: &DiffAnswer) -> &DiffContent {
+        let DiffAnswerKind::File { file, .. } = &answer.answer else {
+            panic!("not a file");
+        };
+        &file.content
+    }
+
+    #[test]
+    fn an_answer_that_fills_a_frame_without_its_newline_is_too_large() {
+        let size = |answer: DiffAnswer| {
+            let envelope = Envelope {
+                id: 0,
+                message: Message::DiffAnswer(answer),
+            };
+            envelope.to_json().unwrap().len()
+        };
+        let short = size(one_line(String::new()));
+        let filling = one_line("a".repeat(weacon_protocol::MAX_FRAME - short));
+        assert_eq!(size(filling.clone()), weacon_protocol::MAX_FRAME);
+        let fitting = one_line("a".repeat(weacon_protocol::MAX_FRAME - short - 20));
+
+        assert_eq!(content(&fitted(filling)), &DiffContent::TooLarge);
+        assert!(matches!(
+            content(&fitted(fitting)),
+            DiffContent::Text { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn a_drain_waits_for_the_work_under_way_then_refuses_more() {
+        let bench = bench();
+        let (release, held) = std::sync::mpsc::channel::<()>();
+        let worktrees = bench.worktrees.clone();
+        let working = tokio::spawn(async move {
+            worktrees
+                .blocking(move |_| held.recv().map_err(|_| failed()))
+                .await
+        });
+        while bench.worktrees.inner.workers.available_permits() == WORKERS {
+            tokio::task::yield_now().await;
+        }
+
+        let draining = bench.worktrees.clone();
+        let draining = tokio::spawn(async move { draining.drain().await });
+        for _ in 0..20 {
+            tokio::task::yield_now().await;
+        }
+        assert!(!draining.is_finished());
+        release.send(()).unwrap();
+        draining.await.unwrap();
+
+        assert!(working.is_finished());
+        assert_eq!(code(&bench.state().await.unwrap_err()), "worktree.failed");
+    }
+
+    #[tokio::test]
+    async fn a_panic_while_a_journal_changed_breaks_no_later_change() {
+        let bench = bench();
+        let inner = Arc::clone(&bench.worktrees.inner);
+        std::thread::spawn(move || {
+            let _held = inner.journals.lock().unwrap();
+            panic!("poisons the lock");
+        })
+        .join()
+        .unwrap_err();
+
+        assert_eq!(
+            bench.act(Action::Remove).await.unwrap(),
+            state(true, false, false)
+        );
     }
 
     // The path of a file that's one of two changed.

@@ -1,6 +1,6 @@
 //! The repositories a workspace's chats may work in on this machine, which the owner adds.
 
-use std::io::Write;
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -83,6 +83,17 @@ impl Repos {
                 "That folder isn't the top of a git repository",
             ));
         }
+        let _held = state::hold(&self.file).map_err(|error| {
+            let fault = if error.kind() == io::ErrorKind::WouldBlock {
+                Fault::new(
+                    code!("repo.busy"),
+                    "Another change to the workspace's repositories is under way",
+                )
+            } else {
+                failed()
+            };
+            fault.because(error)
+        })?;
         let mut repos = state::load::<Repo>(&self.file).map_err(|error| failed().because(error))?;
         let ours = |repo: &&Repo| repo.workspace == self.workspace;
         if let Some(kept) = repos
@@ -175,6 +186,20 @@ mod tests {
         assert_eq!(ours.get(&id("site")).unwrap(), Some(added.clone()));
         assert_eq!(ours.get(&id("other")).unwrap(), None);
         assert_eq!(ours.list().unwrap(), [added]);
+    }
+
+    #[test]
+    fn one_change_to_the_list_at_a_time() {
+        let dir = TempDir::new().unwrap();
+        let (git, folder) = (git(&dir), repo(&dir));
+        let ours = repos(&dir, "w-1");
+
+        let held = state::hold(&dir.join("repos.json")).unwrap();
+        let error = ours.add(&git, id("site"), &folder).unwrap_err();
+        assert_eq!(code(&error), "repo.busy");
+        drop(held);
+
+        ours.add(&git, id("site"), &folder).unwrap();
     }
 
     #[test]

@@ -176,6 +176,8 @@ impl Daemon {
         drop(self.listener);
         drop(fs::remove_file(&self.socket));
         clients.shutdown().await;
+        // Worktree work outlives its asker; it ends before the lock goes.
+        self.shared.worktrees.drain().await;
         drop(self.mcp);
         // The engine stops once the last way to it is gone; its writes end before the lock goes.
         let log = self.shared.log.clone();

@@ -1,6 +1,6 @@
 //! The git module's own state files: each a JSON list, read whole and written whole.
 
-use std::fs;
+use std::fs::{self, File, TryLockError};
 use std::io;
 use std::path::Path;
 
@@ -20,6 +20,21 @@ pub(super) fn save<T: Serialize>(file: &Path, items: &[T]) -> io::Result<()> {
     weacon_appkit::write_whole(file, &serde_json::to_vec(items)?)
 }
 
+/// A hold on changing `file`, kept until dropped, so no other process changes it meanwhile.
+/// While another holds it, this fails as `WouldBlock`.
+pub(super) fn hold(file: &Path) -> io::Result<File> {
+    let lock = file.with_extension("lock");
+    if let Some(parent) = lock.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let held = File::create(lock)?;
+    held.try_lock().map_err(|error| match error {
+        TryLockError::WouldBlock => io::ErrorKind::WouldBlock.into(),
+        TryLockError::Error(error) => error,
+    })?;
+    Ok(held)
+}
+
 #[cfg(test)]
 mod tests {
     use weacon_testing::TempDir;
@@ -34,6 +49,17 @@ mod tests {
         assert_eq!(load::<u32>(&file).unwrap(), Vec::<u32>::new());
         save(&file, &[3_u32, 1]).unwrap();
         assert_eq!(load::<u32>(&file).unwrap(), [3, 1]);
+    }
+
+    #[test]
+    fn a_file_is_held_by_one_at_a_time() {
+        let dir = TempDir::new().unwrap();
+        let file = dir.join("state/list.json");
+
+        let held = hold(&file).unwrap();
+        assert_eq!(hold(&file).unwrap_err().kind(), io::ErrorKind::WouldBlock);
+        drop(held);
+        hold(&file).unwrap();
     }
 
     #[test]

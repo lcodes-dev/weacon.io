@@ -1,9 +1,10 @@
 //! A chat's branch: what its worktree holds that isn't safe yet, and its draft pull request.
 
 use std::ffi::OsStr;
-use std::io::Write as _;
+use std::io::{self, Read as _, Write as _};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, ExitStatus, Stdio};
+use std::time::{Duration, Instant};
 
 use weacon_observability::Fault;
 use weacon_protocol::{DownloadUrl, code};
@@ -11,6 +12,11 @@ use weacon_protocol::{DownloadUrl, code};
 use super::diff::CommitId;
 use super::{Git, not_run, run, text};
 use crate::platform;
+
+// A push and each gh call reach the network: past these they're stopped.
+const PUSH_LIMIT: Duration = Duration::from_mins(2);
+const GH_LIMIT: Duration = Duration::from_mins(1);
+const POLL: Duration = Duration::from_millis(20);
 
 // Variables that would sign `gh` in as someone other than the workspace, or point it elsewhere.
 const GH_OVERRIDES: [&str; 6] = [
@@ -59,11 +65,13 @@ impl Git {
     /// and whatever credentials it uses there.
     pub(crate) fn push(&self, worktree: &Path, branch: &str) -> Result<(), Fault> {
         let refspec = format!("refs/heads/{branch}:refs/heads/{branch}");
-        run(self
-            .command(worktree)
-            .args(["push", "--quiet", "--set-upstream", "origin", &refspec]))
-        .map(drop)
-        .map_err(|_| Fault::new(code!("pr.push_failed"), "The branch couldn't be pushed"))
+        let mut command = self.command(worktree);
+        command
+            .args(["push", "--quiet", "--set-upstream", "origin", &refspec])
+            .stderr(Stdio::null());
+        output_for(&mut command, PUSH_LIMIT)
+            .map(drop)
+            .ok_or_else(|| Fault::new(code!("pr.push_failed"), "The branch couldn't be pushed"))
     }
 
     /// The page where a person can open a pull request of `branch` into `base`, when `origin`
@@ -118,11 +126,9 @@ impl Gh {
 
     /// Whether the workspace is signed in to GitHub with `gh`; only the answer is read.
     pub(crate) fn signed_in(&self, worktree: &Path) -> bool {
-        self.command(worktree)
-            .args(["auth", "status", "--hostname", "github.com"])
-            .stdout(Stdio::null())
-            .status()
-            .is_ok_and(|status| status.success())
+        let mut command = self.command(worktree);
+        command.args(["auth", "status", "--hostname", "github.com"]);
+        output_for(&mut command, GH_LIMIT).is_some()
     }
 
     /// Opens `draft` and gives its page; one already open for its branch is given instead.
@@ -160,29 +166,26 @@ impl Gh {
             // A body gh didn't read shows as gh's own failure below.
             drop(input.write_all(body.as_bytes()));
         }
-        let out = child.wait_with_output().map_err(not_run)?;
         let opened = || {
             Fault::new(
                 code!("pr.not_opened"),
                 "The pull request couldn't be opened",
             )
         };
-        if !out.status.success() {
+        let status = wait_for(&mut child, GH_LIMIT).map_err(not_run)?;
+        if !status.is_some_and(|status| status.success()) {
             return Err(opened());
         }
-        last_page(out.stdout).ok_or_else(opened)
+        read_out(&mut child).and_then(last_page).ok_or_else(opened)
     }
 
     // The page of the pull request already open for `branch`, if gh can say.
     fn open_for(&self, worktree: &Path, branch: &str) -> Option<DownloadUrl> {
-        let out = self
-            .command(worktree)
+        let mut command = self.command(worktree);
+        command
             .args(["pr", "list", "--state=open", "--json=url", "--jq=.[].url"])
-            .arg(format!("--head={branch}"))
-            .output()
-            .ok()?;
-        out.status.success().then_some(())?;
-        last_page(out.stdout)
+            .arg(format!("--head={branch}"));
+        output_for(&mut command, GH_LIMIT).and_then(last_page)
     }
 
     fn command(&self, worktree: &Path) -> Command {
@@ -199,6 +202,38 @@ impl Gh {
             command.env_remove(name);
         }
         command
+    }
+}
+
+// What `command` printed, when it succeeds within `limit`. Its output is read once it ends, so
+// it must be small: the little a push or gh prints.
+fn output_for(command: &mut Command, limit: Duration) -> Option<Vec<u8>> {
+    let mut child = command.stdout(Stdio::piped()).spawn().ok()?;
+    let status = wait_for(&mut child, limit).ok()??;
+    status.success().then_some(())?;
+    read_out(&mut child)
+}
+
+fn read_out(child: &mut Child) -> Option<Vec<u8>> {
+    let mut out = Vec::new();
+    child.stdout.take()?.read_to_end(&mut out).ok()?;
+    Some(out)
+}
+
+// How `child` ended, or None once `limit` passes, when it is stopped.
+fn wait_for(child: &mut Child, limit: Duration) -> io::Result<Option<ExitStatus>> {
+    let start = Instant::now();
+    loop {
+        if let Some(status) = child.try_wait()? {
+            return Ok(Some(status));
+        }
+        if start.elapsed() >= limit {
+            // It may have just ended; either way it is waited for.
+            drop(child.kill());
+            child.wait()?;
+            return Ok(None);
+        }
+        std::thread::sleep(POLL);
     }
 }
 
@@ -424,6 +459,30 @@ esac
         for arg in ["--base=main", "--head=weacon/c-1", "--title=Fix it --draft"] {
             assert!(args.contains(&arg), "{arg}: {args:?}");
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_program_past_its_time_is_stopped() {
+        let mut slow = Command::new("sleep").arg("30").spawn().unwrap();
+        let started = Instant::now();
+
+        assert_eq!(
+            wait_for(&mut slow, Duration::from_millis(50)).unwrap(),
+            None
+        );
+        assert!(started.elapsed() < Duration::from_secs(10));
+        assert!(slow.try_wait().unwrap().is_some());
+
+        let mut quick = Command::new("true");
+        assert_eq!(
+            output_for(&mut quick, Duration::from_secs(30)),
+            Some(Vec::new())
+        );
+        assert_eq!(
+            output_for(&mut Command::new("false"), Duration::from_secs(30)),
+            None
+        );
     }
 
     #[test]
