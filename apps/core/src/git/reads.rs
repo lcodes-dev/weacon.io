@@ -98,38 +98,6 @@ impl Git {
         paths.dedup();
         Ok(paths)
     }
-
-    /// How many of the last `commits` commits up to `commit` changed each file, merges left
-    /// out; paths that aren't UTF-8 are left out.
-    pub(crate) fn churn(
-        &self,
-        repo: &Path,
-        commit: &CommitId,
-        commits: u32,
-    ) -> Result<BTreeMap<String, u32>, Fault> {
-        let out = run(self
-            .command(repo)
-            .args([
-                "log",
-                "--format=",
-                "--name-only",
-                "-z",
-                "--no-renames",
-                "--no-merges",
-            ])
-            .arg(format!("--max-count={commits}"))
-            .arg(commit.as_str())
-            .arg("--"))?;
-        let mut churn = BTreeMap::new();
-        for path in out.split(|byte| *byte == 0) {
-            if let Ok(path) = std::str::from_utf8(path)
-                && !path.is_empty()
-            {
-                *churn.entry(path.to_owned()).or_insert(0) += 1;
-            }
-        }
-        Ok(churn)
-    }
 }
 
 /// The UTF-8 blobs in `cat-file --batch` output, by id: each a header `<id> <type> <size>`, then
@@ -224,35 +192,6 @@ mod tests {
         assert_eq!(
             changed,
             ["-n", ".gitignore", "README.md", "committed.md", "new.md"]
-        );
-    }
-
-    #[test]
-    fn counts_the_commits_that_changed_each_file() {
-        let dir = TempDir::new().unwrap();
-        let repo = repo(&dir);
-        for (file, text) in [("a.md", "1"), ("b.md", "1"), ("a.md", "2")] {
-            fs::write(repo.join(file), text).unwrap();
-            fixture(&dir, &repo, &["add", file]);
-            fixture(&dir, &repo, &["commit", "--quiet", "-m", "Change"]);
-        }
-        let git = git(&dir);
-        let head = git.head(&repo).unwrap();
-        let churn = git.churn(&repo, &head, 100).unwrap();
-        let churn: Vec<(&str, u32)> = churn.iter().map(|(file, n)| (file.as_str(), *n)).collect();
-        assert_eq!(
-            churn,
-            [
-                (".gitattributes", 1),
-                ("README.md", 1),
-                ("a.md", 2),
-                ("b.md", 1)
-            ]
-        );
-        let recent = git.churn(&repo, &head, 2).unwrap();
-        assert_eq!(
-            recent.into_iter().collect::<Vec<_>>(),
-            [("a.md".to_owned(), 1), ("b.md".to_owned(), 1)]
         );
     }
 

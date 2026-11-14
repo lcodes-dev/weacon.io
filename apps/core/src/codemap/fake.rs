@@ -5,9 +5,9 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use weacon_observability::Fault;
-use weacon_protocol::code;
+use weacon_protocol::CommitId;
 
-use super::{Source, content_key};
+use super::{Source, content_key, read_failed};
 
 /// A repository in memory: commits by id, each its files' text by path.
 #[derive(Clone, Default)]
@@ -28,14 +28,20 @@ pub(crate) fn blob(text: &str) -> String {
     format!("blob-{}", content_key(text))
 }
 
+/// The commit a test calls `name`, which must be hex.
+pub(crate) fn commit_id(name: &str) -> CommitId {
+    CommitId::try_from(format!("{name:0>40}")).unwrap()
+}
+
 impl Fake {
-    pub(crate) fn commit(&self, id: &str, files: &[(&str, &str)]) {
+    pub(crate) fn commit(&self, name: &str, files: &[(&str, &str)]) {
         let mut state = self.state.lock().unwrap();
         let files = files
             .iter()
             .map(|(path, text)| ((*path).to_owned(), (*text).to_owned()));
-        state.commits.insert(id.to_owned(), files.collect());
-        id.clone_into(&mut state.head);
+        let id = commit_id(name).as_str().to_owned();
+        state.commits.insert(id.clone(), files.collect());
+        state.head = id;
     }
 
     pub(crate) fn change(&self, changed: &[(&str, Option<&str>)]) {
@@ -48,29 +54,28 @@ impl Fake {
     pub(crate) fn blobs_read(&self) -> Vec<String> {
         std::mem::take(&mut self.state.lock().unwrap().blobs_read)
     }
-}
 
-impl Fake {
     pub(crate) fn fail(&self, failing: bool) {
         self.state.lock().unwrap().failing = failing;
     }
 }
 
 impl Source for Fake {
-    fn head(&self) -> Result<String, Fault> {
+    fn head(&self) -> Result<CommitId, Fault> {
         let state = self.state.lock().unwrap();
         if state.failing {
-            return Err(Fault::new(
-                code!("map.read_failed"),
-                "The repository couldn't be read",
-            ));
+            return Err(read_failed());
         }
-        Ok(state.head.clone())
+        Ok(CommitId::try_from(state.head.clone()).unwrap())
     }
 
-    fn tree(&self, commit: &str) -> Result<Vec<(String, String)>, Fault> {
+    fn tree(&self, commit: &CommitId) -> Result<Vec<(String, String)>, Fault> {
         let state = self.state.lock().unwrap();
-        let files = state.commits.get(commit).cloned().unwrap_or_default();
+        let files = state
+            .commits
+            .get(commit.as_str())
+            .cloned()
+            .unwrap_or_default();
         Ok(files
             .into_iter()
             .map(|(path, text)| (path, blob(&text)))
@@ -91,7 +96,7 @@ impl Source for Fake {
             .collect())
     }
 
-    fn changed(&self, _: &Path, _: &str) -> Result<Vec<(String, Option<String>)>, Fault> {
+    fn changed(&self, _: &Path, _: &CommitId) -> Result<Vec<(String, Option<String>)>, Fault> {
         Ok(self.state.lock().unwrap().changed.clone())
     }
 }

@@ -15,12 +15,12 @@ mod repo;
 mod watch;
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use sha2::{Digest, Sha256};
-use weacon_codemap::{Facts, Reader, SourceFile};
+use weacon_codemap::{Facts, Reader, SourceFile, is_mapped};
 use weacon_observability::Fault;
-use weacon_protocol::{Sha256 as Sha256Hex, code};
+use weacon_protocol::{CommitId, Sha256 as Sha256Hex, code};
 
 use crate::app::blocking;
 use crate::db::{BASE, Layer, Map, Stored};
@@ -31,20 +31,24 @@ const SEARCHED: u32 = 50;
 /// What the code map reads from a repository. Every call may block.
 pub(crate) trait Source: Clone + Send + Sync + 'static {
     /// The commit the main worktree is at.
-    fn head(&self) -> Result<String, Fault>;
+    fn head(&self) -> Result<CommitId, Fault>;
     /// Each file at `commit`, with its blob.
-    fn tree(&self, commit: &str) -> Result<Vec<(String, String)>, Fault>;
+    fn tree(&self, commit: &CommitId) -> Result<Vec<(String, String)>, Fault>;
     /// The text of each blob that is UTF-8, by blob.
     fn blobs(&self, blobs: &[String]) -> Result<BTreeMap<String, String>, Fault>;
     /// Each file that differs in the worktree at `path` from `commit`, committed or not, with
     /// its text now, `None` once deleted or when it isn't UTF-8.
-    fn changed(&self, path: &Path, commit: &str) -> Result<Vec<(String, Option<String>)>, Fault>;
+    fn changed(
+        &self,
+        path: &Path,
+        commit: &CommitId,
+    ) -> Result<Vec<(String, Option<String>)>, Fault>;
 }
 
 /// The base layer's commit and the facts of its files.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Base {
-    pub(crate) commit: String,
+    pub(crate) commit: CommitId,
     pub(crate) facts: Vec<Facts>,
 }
 
@@ -57,7 +61,7 @@ pub(crate) struct RepoMap<S> {
 
 impl<S: Source> RepoMap<S> {
     /// The commit the main worktree is at.
-    pub(crate) async fn head(&self) -> Result<String, Fault> {
+    pub(crate) async fn head(&self) -> Result<CommitId, Fault> {
         self.blocking(Source::head).await
     }
 
@@ -66,16 +70,16 @@ impl<S: Source> RepoMap<S> {
     pub(crate) async fn base(&self) -> Result<Base, Fault> {
         let commit = self.head().await?;
         if let Some(layer) = self.map.layer(BASE).await?
-            && layer.commit == commit
+            && layer.commit == commit.as_str()
         {
-            let facts = self.stored_facts(&layer.files).await?;
+            let (facts, _) = self.cached(&layer.files).await?;
             return Ok(Base { commit, facts });
         }
-        let wanted = {
+        let tree = {
             let commit = commit.clone();
             self.blocking(move |source| source.tree(&commit)).await?
         };
-        let files: Vec<Stored> = wanted
+        let files: Vec<Stored> = tree
             .into_iter()
             .filter(|(path, _)| is_mapped(path))
             .map(|(path, blob)| Stored {
@@ -93,7 +97,7 @@ impl<S: Source> RepoMap<S> {
         facts.extend(read.iter().map(|(_, _, facts)| facts.clone()));
         let layer = Layer {
             name: BASE.to_owned(),
-            commit: commit.clone(),
+            commit: commit.as_str().to_owned(),
             files,
         };
         let entries = weacon_codemap::assemble(&facts).entries();
@@ -125,18 +129,21 @@ impl<S: Source> RepoMap<S> {
         path: &Path,
         changed: Vec<(String, Option<String>)>,
     ) -> Result<Vec<Facts>, Fault> {
-        let files: Vec<Stored> = changed
+        let keyed: Vec<(String, Option<(String, String)>)> = changed
+            .into_iter()
+            .map(|(path, text)| (path, text.map(|text| (content_key(&text), text))))
+            .collect();
+        let files: Vec<Stored> = keyed
             .iter()
             .map(|(path, text)| Stored {
                 path: path.clone(),
-                blob: text.as_deref().map(content_key),
+                blob: text.as_ref().map(|(key, _)| key.clone()),
             })
             .collect();
         let (mut overlay, missing) = self.cached(&files).await?;
         let missing: BTreeSet<(String, String)> = missing.into_iter().collect();
-        let read = read(changed.into_iter().filter_map(|(path, text)| {
-            let text = text?;
-            let key = content_key(&text);
+        let read = read(keyed.into_iter().filter_map(|(path, text)| {
+            let (key, text) = text?;
             missing
                 .contains(&(path.clone(), key.clone()))
                 .then_some((path, key, text))
@@ -157,7 +164,7 @@ impl<S: Source> RepoMap<S> {
             .collect();
         let layer = Layer {
             name: layer_name(path),
-            commit: String::new(),
+            commit: base.commit.as_str().to_owned(),
             files,
         };
         self.map.replace(&layer, &read, &entries).await?;
@@ -202,19 +209,14 @@ impl<S: Source> RepoMap<S> {
         Ok((facts, missing))
     }
 
-    async fn stored_facts(&self, files: &[Stored]) -> Result<Vec<Facts>, Fault> {
-        let (facts, _) = self.cached(files).await?;
-        Ok(facts)
-    }
-
     async fn blocking<T: Send + 'static>(
         &self,
         call: impl FnOnce(&S) -> Result<T, Fault> + Send + 'static,
     ) -> Result<T, Fault> {
         let source = self.source.clone();
-        blocking(move || Ok(call(&source))).await.map_err(|error| {
-            Fault::new(code!("map.read_failed"), "The repository couldn't be read").because(error)
-        })?
+        blocking(move || Ok(call(&source)))
+            .await
+            .map_err(|error| read_failed().because(error))?
     }
 }
 
@@ -223,32 +225,29 @@ impl<S: Source> RepoMap<S> {
 fn read(
     texts: impl Iterator<Item = (String, String, String)>,
 ) -> Result<Vec<(String, String, Facts)>, Fault> {
-    let mut reader = Reader::new().map_err(index_failed)?;
+    let mut reader = Reader::new().map_err(|error| index_failed().because(error))?;
     let mut found = Vec::new();
     for (path, key, text) in texts {
         let file = SourceFile {
             path: path.clone(),
             text,
         };
-        if let Some(facts) = reader.facts(&file).map_err(index_failed)? {
+        if let Some(facts) = reader
+            .facts(&file)
+            .map_err(|error| index_failed().because(error))?
+        {
             found.push((path, key, facts));
         }
     }
     Ok(found)
 }
 
-fn index_failed(error: weacon_codemap::Error) -> Fault {
-    Fault::new(code!("map.index_failed"), "The code map couldn't be built").because(error)
+pub(crate) fn read_failed() -> Fault {
+    Fault::new(code!("map.read_failed"), "The repository couldn't be read")
 }
 
-/// Every `Cargo.toml`, `.rs` file inside a `src` folder and Markdown file.
-fn is_mapped(path: &str) -> bool {
-    let name = path.rsplit('/').next().unwrap_or_default();
-    let in_src = path.split('/').any(|part| part == "src");
-    let extension = Path::new(name)
-        .extension()
-        .and_then(|extension| extension.to_str());
-    name == "Cargo.toml" || extension == Some("md") || (in_src && extension == Some("rs"))
+pub(crate) fn index_failed() -> Fault {
+    Fault::new(code!("map.index_failed"), "The code map couldn't be built")
 }
 
 /// What a worktree's text is stored under: its hash, which no git blob id looks like.
@@ -259,7 +258,7 @@ fn content_key(text: &str) -> String {
 
 /// The layer that holds what the worktree at `path` changed.
 fn layer_name(path: &Path) -> String {
-    format!("worktree:{}", PathBuf::from(path).display())
+    format!("worktree:{}", path.display())
 }
 
 #[cfg(test)]
@@ -306,7 +305,7 @@ mod tests {
             ],
         );
         let Base { commit, facts } = repo.base().await.unwrap();
-        assert_eq!((commit.as_str(), facts.len()), ("c1", 3));
+        assert_eq!((commit, facts.len()), (fake::commit_id("c1"), 3));
         assert_eq!(source.blobs_read().len(), 3);
         assert!(items(&facts, "a::run").contains("calls fn a::m::go"));
 
@@ -415,11 +414,7 @@ mod tests {
     }
 
     #[test]
-    fn maps_manifests_sources_and_docs() {
-        let mapped = ["Cargo.toml", "a/Cargo.toml", "a/src/lib.rs", "docs/x.md"];
-        assert!(mapped.iter().all(|path| is_mapped(path)));
-        let skipped = ["a/tests/it.rs", "a/build.rs", "web/app.ts", "Cargo.lock"];
-        assert!(!skipped.iter().any(|path| is_mapped(path)));
+    fn keys_text_by_its_hash() {
         assert!(content_key("a").starts_with("sha256:ca978112"));
     }
 }

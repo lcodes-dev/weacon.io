@@ -1,7 +1,7 @@
-use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fmt;
 
+use serde::{Deserialize, Serialize};
 use tree_sitter::{Node, Tree};
 
 mod test_fns;

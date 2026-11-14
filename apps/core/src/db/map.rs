@@ -2,10 +2,10 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 use sha2::{Digest, Sha256};
-use sqlx::{QueryBuilder, Row, Sqlite};
+use sqlx::{QueryBuilder, Sqlite};
 use weacon_codemap::{Entry, Facts};
 use weacon_observability::Fault;
-use weacon_protocol::Sha256 as Sha256Hex;
+use weacon_protocol::{Sha256 as Sha256Hex, code};
 
 use super::{Workspace, failed, unreadable};
 
@@ -44,7 +44,7 @@ pub(crate) struct Layer {
 
 /// A file of a layer, by the git blob its text has; `None` in a worktree's layer for a file
 /// the worktree deleted.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Stored {
     pub(crate) path: String,
     pub(crate) blob: Option<String>,
@@ -87,7 +87,7 @@ impl Map {
         let Some(commit) = commit else {
             return Ok(None);
         };
-        let rows = sqlx::query(
+        let rows: Vec<(String, Option<String>)> = sqlx::query_as(
             "SELECT path, blob FROM map_files WHERE workspace_id = ? AND repo = ? AND layer = ? \
              ORDER BY path",
         )
@@ -98,14 +98,9 @@ impl Map {
         .await
         .map_err(failed)?;
         let files = rows
-            .iter()
-            .map(|row| {
-                Ok(Stored {
-                    path: row.try_get("path").map_err(failed)?,
-                    blob: row.try_get("blob").map_err(failed)?,
-                })
-            })
-            .collect::<Result<_, Fault>>()?;
+            .into_iter()
+            .map(|(path, blob)| Stored { path, blob })
+            .collect();
         Ok(Some(Layer {
             name: name.to_owned(),
             commit,
@@ -138,15 +133,12 @@ impl Map {
                     .push_unseparated(")");
             }
             query.push(")");
-            let rows = query
-                .build()
+            let rows: Vec<(String, String, String)> = query
+                .build_query_as()
                 .fetch_all(&self.workspace.db.pool)
                 .await
                 .map_err(failed)?;
-            for row in rows {
-                let path: String = row.try_get("path").map_err(failed)?;
-                let blob: String = row.try_get("blob").map_err(failed)?;
-                let json: String = row.try_get("facts").map_err(failed)?;
+            for (path, blob, json) in rows {
                 let facts = serde_json::from_str(&json).map_err(|_| unreadable())?;
                 found.insert((path, blob), facts);
             }
@@ -211,10 +203,10 @@ impl Map {
             return Ok(Vec::new());
         };
         let (workspace, repo) = self.keys();
-        let rows = sqlx::query(
+        let rows: Vec<(String, String, String)> = sqlx::query_as(
             "SELECT path, kind, name FROM map_search \
              WHERE map_search MATCH ?1 AND workspace_id = ?2 AND repo = ?3 \
-             AND (layer = ?4 OR (layer = 'base' AND path NOT IN (SELECT path FROM map_files \
+             AND (layer = ?4 OR (layer = ?6 AND path NOT IN (SELECT path FROM map_files \
                  WHERE workspace_id = ?2 AND repo = ?3 AND layer = ?4))) \
              ORDER BY rank LIMIT ?5",
         )
@@ -223,18 +215,14 @@ impl Map {
         .bind(repo)
         .bind(layer)
         .bind(limit)
+        .bind(BASE)
         .fetch_all(&self.workspace.db.pool)
         .await
         .map_err(failed)?;
-        rows.iter()
-            .map(|row| {
-                Ok(Hit {
-                    path: row.try_get("path").map_err(failed)?,
-                    kind: row.try_get("kind").map_err(failed)?,
-                    name: row.try_get("name").map_err(failed)?,
-                })
-            })
-            .collect()
+        Ok(rows
+            .into_iter()
+            .map(|(path, kind, name)| Hit { path, kind, name })
+            .collect())
     }
 
     /// Removes this repository's map, every layer of it.
@@ -292,7 +280,7 @@ async fn insert_facts(
         let rows = batch
             .iter()
             .map(|(path, blob, facts)| {
-                let json = serde_json::to_string(facts).map_err(|_| unreadable())?;
+                let json = serde_json::to_string(facts).map_err(|_| unwritable())?;
                 Ok((path, blob, json))
             })
             .collect::<Result<Vec<_>, Fault>>()?;
@@ -350,6 +338,10 @@ fn match_query(words: &str) -> Option<String> {
         .map(|word| format!("\"{}\"*", word.replace('"', "\"\"")))
         .collect();
     (!terms.is_empty()).then(|| terms.join(" "))
+}
+
+fn unwritable() -> Fault {
+    Fault::new(code!("db.unwritable"), "A value can't be stored")
 }
 
 #[cfg(test)]

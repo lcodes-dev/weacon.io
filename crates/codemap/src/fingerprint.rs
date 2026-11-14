@@ -1,6 +1,7 @@
-use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::str::FromStr;
+
+use serde::{Deserialize, Serialize};
 
 /// A stable 64-bit hash of code, the same on every platform and in every release.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

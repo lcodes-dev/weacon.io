@@ -1,6 +1,6 @@
-use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
+use serde::{Deserialize, Serialize};
 use tree_sitter::Node;
 
 use super::{Contract, Declared, Declares, declared, literal};

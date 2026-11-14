@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use weacon_codemap::Facts;
-use weacon_observability::{Field, Logger};
+use weacon_observability::{Fault, Field, Logger};
 
 use super::{Base, RepoMap, Source, content_key};
 
@@ -49,23 +49,21 @@ impl<S: Source> Watch<S> {
         }
     }
 
-    async fn update(&mut self) -> Result<Option<Vec<Facts>>, weacon_observability::Fault> {
+    async fn update(&mut self) -> Result<Option<Vec<Facts>>, Fault> {
         let head = self.repo.head().await?;
-        let moved = self.base.as_ref().is_none_or(|base| base.commit != head);
-        if moved {
-            self.base = Some(self.repo.base().await?);
-        }
-        let Some(base) = &self.base else {
-            return Ok(None);
+        let base = match self.base.take() {
+            Some(base) if base.commit == head => base,
+            _ => self.repo.base().await?,
         };
+        let base = self.base.insert(base);
         let changed = self.repo.changed(base, &self.worktree).await?;
-        let mut state = base.commit.clone();
+        let mut state = base.commit.as_str().to_owned();
         for (path, text) in &changed {
             let key = text.as_deref().map(content_key).unwrap_or_default();
             state.extend(["\0", path, "\0", &key]);
         }
         let state = content_key(&state);
-        if !moved && self.seen.as_deref() == Some(state.as_str()) {
+        if self.seen.as_deref() == Some(state.as_str()) {
             return Ok(None);
         }
         let facts = self.repo.worktree(base, &self.worktree, changed).await?;

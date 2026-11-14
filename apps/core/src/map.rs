@@ -10,6 +10,7 @@ use weacon_protocol::code;
 
 use crate::app::App;
 use crate::cli::MapCommand;
+use crate::codemap::{index_failed, read_failed};
 
 /// Checks the repository; `Findings` when a pin no longer matches.
 pub(crate) fn run(
@@ -64,17 +65,12 @@ fn check_anchors(
 /// The code map of the repository at `root`, and how many files it read; it blocks.
 pub(crate) fn index_folder(root: &Path) -> Result<(Index, usize), Fault> {
     let mut files = Vec::new();
-    source_files(root, "", &mut files).map_err(|error| {
-        Fault::new(code!("map.read_failed"), "The repository couldn't be read").because(error)
-    })?;
-    let index = index(&files).map_err(|error| {
-        Fault::new(code!("map.index_failed"), "The code map couldn't be built").because(error)
-    })?;
+    source_files(root, "", &mut files).map_err(|error| read_failed().because(error))?;
+    let index = index(&files).map_err(|error| index_failed().because(error))?;
     Ok((index, files.len()))
 }
 
-/// Every `Cargo.toml`, and every `.rs` file inside a `src` folder, under `root/folder`, its path
-/// joined with `/`. Hidden entries, links, `node_modules`, Cargo's build folders and files
+/// Every file the code map takes under `root/folder`, its path joined with `/`. Hidden entries, links, `node_modules`, Cargo's build folders and files
 /// that aren't UTF-8 are left out.
 fn source_files(root: &Path, folder: &str, files: &mut Vec<SourceFile>) -> io::Result<()> {
     for entry in fs::read_dir(root.join(folder))? {
@@ -96,7 +92,7 @@ fn source_files(root: &Path, folder: &str, files: &mut Vec<SourceFile>) -> io::R
         if kind.is_dir() && !skipped(&root.join(&path), name) {
             present(source_files(root, &path, files))?;
         } else if kind.is_file()
-            && is_source(&path, name)
+            && weacon_codemap::is_mapped(&path)
             && let Some(text) = text_or_skip(fs::read_to_string(root.join(&path)))?
         {
             files.push(SourceFile { path, text });
@@ -125,11 +121,6 @@ fn present<T>(read: io::Result<T>) -> io::Result<Option<T>> {
 /// `node_modules`, and folders Cargo marks as its build output.
 fn skipped(folder: &Path, name: &str) -> bool {
     name == "node_modules" || folder.join("CACHEDIR.TAG").is_file()
-}
-
-fn is_source(path: &str, name: &str) -> bool {
-    let rust = Path::new(name).extension().is_some_and(|it| it == "rs");
-    name == "Cargo.toml" || (rust && path.split('/').any(|part| part == "src"))
 }
 
 #[cfg(test)]
@@ -184,7 +175,8 @@ mod tests {
     fn reads_only_crate_sources() {
         let mut files = CRATE.to_vec();
         files.extend([
-            ("a/src/notes.md", "fn hidden() {}"),
+            ("a/src/notes.txt", "fn hidden() {}"),
+            ("a/notes.md", "# Notes\n"),
             (
                 "a/target/CACHEDIR.TAG",
                 "Signature: 8a477f597d28d172789f06886806bc55",
@@ -207,6 +199,7 @@ mod tests {
             paths,
             [
                 "a/Cargo.toml",
+                "a/notes.md",
                 "a/src/lib.rs",
                 "a/src/m.rs",
                 "a/src/target/x.rs"
