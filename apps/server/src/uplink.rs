@@ -125,7 +125,8 @@ async fn run(
                 Err(RecvError::Closed) => return Err(Closed),
             },
             () = pings.due() => pings.ping(socket, link.paired(shared)).await?,
-            Some(relayed) = attached.incoming.recv() => {
+            relayed = attached.incoming.recv() => {
+                let relayed = relayed.ok_or(Closed)?;
                 reply(socket, shared, relayed.id, relayed.message).await?;
             }
             frame = socket.recv() => {
@@ -162,9 +163,9 @@ mod tests {
 
     use super::*;
     use crate::test_support::socket::{
-        Socket, ends, frame, next, open, pongs, say, upgrade_status,
+        Socket, ends, frame, next, next_envelope, open, pongs, say, upgrade_status,
     };
-    use crate::test_support::{Fixture, Paired, ask, pair_machine};
+    use crate::test_support::{Fixture, PATIENCE, Paired, ask, pair_machine};
 
     const CONNECT_PATH: &str = "/api/machines/connect";
 
@@ -250,6 +251,35 @@ mod tests {
 
         assert_eq!(next(&mut client).await, refusal(code!("machine.unpaired")));
         assert!(ends(&mut client).await);
+    }
+
+    #[tokio::test]
+    async fn a_machine_that_connects_again_ends_its_older_connection() {
+        let mut fixture = Fixture::new().await;
+        // Pings far apart, so only the takeover can end a connection in time.
+        fixture.quiet();
+        let server = fixture.run().await;
+        let mut opened = fixture.shared.links.connected();
+        let (paired, mut older) = connected(server.address, &fixture).await;
+        // Its welcome comes before it's attached; wait until it is.
+        timeout(PATIENCE, opened.recv()).await.unwrap().unwrap();
+        let mut newer = open(server.address, CONNECT_PATH, &paired.token)
+            .await
+            .unwrap();
+        say(&mut newer, &["machine.connect", "machine.settings"]).await;
+        assert!(matches!(next(&mut newer).await, Message::Welcome(_)));
+
+        let ended = ends(&mut older).await;
+        let asked = Envelope {
+            id: 9,
+            message: refusal(code!("machine.test")),
+        };
+        let settings = Capability::new(SETTINGS);
+        let sent = (fixture.shared.links).send(&paired.machine_id(), &settings, asked.clone());
+
+        assert!(ended);
+        assert_eq!(sent, Ok(()));
+        assert_eq!(next_envelope(&mut newer).await, asked);
     }
 
     #[tokio::test]
