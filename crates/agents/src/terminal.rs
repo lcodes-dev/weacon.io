@@ -117,15 +117,15 @@ mod tests {
 
         use super::*;
         use crate::Launch;
-        use crate::platform::write_program;
         use crate::test_support::{after_output, next_event, output_until};
+        use weacon_testing::platform::write_program;
 
         fn launch(agent: AgentKind, dir: &Path) -> Launch {
             let program = dir.join("vendor");
             write_program(
                 &program,
                 "#!/bin/sh\necho \"args [$*] claude [$CLAUDE_CONFIG_DIR] codex [$CODEX_HOME] term [$TERM]\"\n",
-            );
+            ).unwrap();
             Launch {
                 agent,
                 program,
@@ -186,7 +186,7 @@ mod tests {
             assert_eq!(error.code().as_str(), "agent.login_failed");
 
             let waiting = dir.join("waiting");
-            write_program(&waiting, "#!/bin/sh\necho ready\nread line\n");
+            write_program(&waiting, "#!/bin/sh\necho ready\nread line\n").unwrap();
             let launch = Launch {
                 program: waiting,
                 ..launch(AgentKind::Claude, &dir)
@@ -206,7 +206,8 @@ mod tests {
             write_program(
                 &asking,
                 "#!/bin/sh\necho ready\nIFS= read -r line\necho \"got $line\"\nstty size\n",
-            );
+            )
+            .unwrap();
             let launch = Launch {
                 program: asking,
                 ..launch(AgentKind::Claude, &dir)

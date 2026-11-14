@@ -1,7 +1,9 @@
 //! Who is told about a chat's events as they are committed.
 
 use tokio::sync::mpsc::{self, error::TrySendError};
-use weacon_protocol::{ChatAnswer, ChatAnswerKind, ChatId, Message, WorkspaceId};
+use weacon_protocol::{ChatAnswer, ChatAnswerKind, Message};
+
+use crate::runs::ChatKey;
 
 /// How many pushed messages may wait for one client; one more than it can miss.
 pub(crate) const QUEUE: usize = 1024;
@@ -23,10 +25,10 @@ pub(crate) struct Subscriber {
 
 impl Subscriber {
     /// `None` when the client's queue is full or it is gone.
-    pub(crate) fn new(client: &Client, workspace: &WorkspaceId, chat: &ChatId) -> Option<Self> {
+    pub(crate) fn new(client: &Client, key: &ChatKey) -> Option<Self> {
         let notice = Message::ChatAnswer(ChatAnswer {
-            workspace: workspace.clone(),
-            chat: chat.clone(),
+            workspace: key.workspace.clone(),
+            chat: key.chat.clone(),
             answer: ChatAnswerKind::EventsLost,
         });
         Some(Self {

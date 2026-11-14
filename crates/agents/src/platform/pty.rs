@@ -30,7 +30,7 @@ mod tests {
     #[cfg(unix)]
     fn program(dir: &TempDir) -> Command {
         let path = dir.join("terminal-check");
-        crate::platform::write_program(
+        weacon_testing::platform::write_program(
             &path,
             "#!/bin/sh\n\
              [ -t 0 ] && [ -t 1 ] && [ \"$(stty size < /dev/tty)\" = \"$(stty size)\" ] && \
@@ -41,7 +41,8 @@ mod tests {
              IFS= read -r line\n\
              stty size\n\
              exit 3\n",
-        );
+        )
+        .unwrap();
         Command::new(path)
     }
 
@@ -95,10 +96,11 @@ mod tests {
     async fn the_end_comes_when_the_program_ends_whatever_it_left_running() {
         let dir = TempDir::new().unwrap();
         let path = dir.join("leaves");
-        crate::platform::write_program(
+        weacon_testing::platform::write_program(
             &path,
             "#!/bin/sh\n(trap '' HUP; exec sleep 30) &\necho left\nexit 0\n",
-        );
+        )
+        .unwrap();
         let (_pty, events) = Pty::spawn(Command::new(path), Size::new(80, 24).unwrap()).unwrap();
         let mut events = Events(events);
         let mut seen = String::new();
