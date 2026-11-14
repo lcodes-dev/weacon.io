@@ -14,6 +14,7 @@ mod limit;
 mod mail;
 mod secret;
 mod sign_in;
+mod sign_up;
 mod tasks;
 #[cfg(test)]
 mod test_support;
@@ -84,6 +85,7 @@ async fn serve(app: &App, args: Serve) -> Result<(), Fault> {
         secret,
         max_connections,
         trusted_proxy,
+        sign_up,
     } = args;
     usable_outbox(outbox.clone()).await?;
     let signals = weacon_appkit::Signals::new().map_err(|error| {
@@ -106,6 +108,7 @@ async fn serve(app: &App, args: Serve) -> Result<(), Fault> {
         clock: Arc::new(Box::new(SystemTime::now)),
         head_within: connections::HEAD_WITHIN,
         proxies: trusted_proxy.into(),
+        sign_up: sign_up.into(),
         connections: Arc::new(Semaphore::new(max_connections)),
         feed: feed::TIMING,
         changes: broadcast::channel(CHANGES).0,

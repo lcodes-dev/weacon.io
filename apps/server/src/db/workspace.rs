@@ -1,6 +1,7 @@
 use weacon_observability::Fault;
 use weacon_protocol::{AccountId, MemberId, WorkspaceId};
 
+use super::account::insert_account;
 use super::{Db, failed, stored, unreadable};
 use crate::email::Email;
 
@@ -36,15 +37,7 @@ impl Workspace {
         email: &Email,
     ) -> Result<(), Fault> {
         let mut transaction = self.db.writer.begin().await.map_err(failed)?;
-        sqlx::query(
-            "INSERT INTO accounts (account_id, email) VALUES (?, ?)
-             ON CONFLICT (email) DO NOTHING",
-        )
-        .bind(new_account.as_str())
-        .bind(email.as_str())
-        .execute(&mut *transaction)
-        .await
-        .map_err(failed)?;
+        insert_account(&mut transaction, new_account.as_str(), email).await?;
         sqlx::query(
             "INSERT INTO members (workspace_id, member_id, email, account_id)
              SELECT ?, ?, email, account_id FROM accounts WHERE email = ?",
@@ -194,8 +187,7 @@ mod tests {
     async fn session(db: &Db, address: &str, token: &[u8]) {
         let (address, challenge) = (email(address), ChallengeId::try_from("c".to_owned()));
         let challenge = challenge.unwrap();
-        let account = db.account_with(&address).await.unwrap().unwrap();
-        db.start_challenge(&account, &challenge, b"code", 100)
+        db.start_challenge(&address, &challenge, b"code", 100)
             .await
             .unwrap();
         let attempt = Attempt {
@@ -210,6 +202,7 @@ mod tests {
                 name: "Personal".to_owned(),
                 owner: member_id("owner"),
             },
+            new_account: None,
         };
         db.finish_sign_in(&attempt).await.unwrap().unwrap();
     }
@@ -237,6 +230,13 @@ mod tests {
         let count = format!("SELECT count(*) FROM {table}");
         sqlx::query_scalar(sqlx::AssertSqlSafe(count))
             .fetch_one(&db.readers)
+            .await
+            .unwrap()
+    }
+
+    async fn owners(db: &Db) -> Vec<String> {
+        sqlx::query_scalar("SELECT account_id FROM accounts WHERE owner = 1")
+            .fetch_all(&db.readers)
             .await
             .unwrap()
     }
@@ -295,6 +295,7 @@ mod tests {
                 .iter()
                 .all(|seen| seen.role == weacon_protocol::WorkspaceRole::Member)
         );
+        assert_eq!(owners(&db).await, [ada.as_str()]);
         // Sign-ins from before were to one workspace, and don't carry over.
         assert_eq!(rows(&db, "sessions").await, 0);
         assert_eq!(rows(&db, "sign_in_challenges").await, 0);

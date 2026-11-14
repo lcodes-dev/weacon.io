@@ -209,9 +209,13 @@ fn failed(error: sqlx::Error) -> Fault {
         .as_database_error()
         .is_some_and(sqlx::error::DatabaseError::is_unique_violation);
     if exists {
-        return Fault::new(code!("db.exists"), "It already exists").because(error);
+        return self::exists().because(error);
     }
     Fault::new(code!("db.failed"), "The database failed").because(error)
+}
+
+fn exists() -> Fault {
+    Fault::new(code!("db.exists"), "It already exists")
 }
 
 #[cfg(test)]
