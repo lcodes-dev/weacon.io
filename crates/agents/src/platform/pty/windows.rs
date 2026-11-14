@@ -36,8 +36,8 @@ pub(crate) struct Pty {
     input: PipeWriter,
     console: Arc<Console>,
     process: Arc<OwnedHandle>,
-    // Dropped with this, which tells the output's reader to stop waiting for the events' reader.
-    _stop: watch::Sender<()>,
+    // Tells the output's reader to stop waiting for the events' reader.
+    stop: watch::Sender<()>,
 }
 
 // The pseudo-console, until it is closed once the program has ended.
@@ -90,7 +90,7 @@ impl Pty {
             input,
             console,
             process,
-            _stop: stop,
+            stop,
         };
         Ok((pty, received))
     }
@@ -126,6 +126,8 @@ impl Drop for Pty {
     fn drop(&mut self) {
         // SAFETY: the process handle is open; ending a program that already ended does nothing.
         unsafe { TerminateProcess(self.process.as_raw_handle(), 1) };
+        // First, so the output's reader goes on draining whoever closes the console.
+        self.stop.send_replace(());
         // Not left to `supervise`, which a runtime that is stopping no longer runs: until the
         // console closes, the thread reading its output can't end, nor can the runtime.
         let console = Arc::clone(&self.console);
