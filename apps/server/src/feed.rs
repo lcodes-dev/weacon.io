@@ -102,7 +102,7 @@ struct Feed {
 impl Feed {
     /// Whether the client offered `feature`.
     fn hears(&self, feature: Code) -> bool {
-        self.offers.contains(&Capability::from(feature))
+        self.offers.contains(&Capability::new(feature))
     }
 
     /// Goes on only while the feed's session is live and its account still a member.
@@ -142,9 +142,9 @@ async fn run(
     shared: &Shared,
     feed: &mut Feed,
 ) -> Result<Infallible, Closed> {
-    let feed_offer = Capability::from(FEED);
+    let feed_offer = Capability::new(FEED);
     let offered = [FEED, TASKS, DOCS, SETTINGS, PROPOSALS]
-        .map(Capability::from)
+        .map(Capability::new)
         .to_vec();
     let greeted = greet(socket, shared, offered, &feed_offer);
     let hello = timeout(shared.sockets.hello_within, greeted)
@@ -354,7 +354,7 @@ mod tests {
         };
         assert_eq!(
             welcome.capabilities,
-            [FEED, TASKS, DOCS, SETTINGS, PROPOSALS].map(Capability::from)
+            [FEED, TASKS, DOCS, SETTINGS, PROPOSALS].map(Capability::new)
         );
         assert_eq!(missed, joined(1, "m1"));
         assert_eq!(live, joined(2, "m2"));

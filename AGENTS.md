@@ -118,6 +118,7 @@ Every program logs, reports errors and says which build it is from its first com
 | `cargo test -p <crate> [name]` | Focused tests while iterating |
 | `WEACON_STATE_DIR=.dev/state cargo run -p weacon-core -- doctor` | Runs the core with this worktree's own state folder |
 | `cargo run -p weacon-core -- map [symbol <path>] [--root <folder>] [--budget <bytes>]` | Prints where to begin in a repository's code, or where one item is, exactly as the local MCP's `map` and `symbol` tools answer |
+| `cargo run -p weacon-core -- hook session-start` | What the core's Claude Code plugin adds at session start: the current folder's map within 4,000 bytes, or nothing and exit 0 if it can't answer within 5 seconds |
 | `UPDATE_SCHEMA=1 cargo test -p weacon-protocol` | Regenerates `crates/protocol/schema.json` after a message changes |
 | `UPDATE_VECTORS=1 cargo test --locked -p weacon-core seal` | Regenerates the sign-in terminal's Noise vectors in `crates/protocol/noise-vectors.json` after its messages change |
 | `npm --prefix apps/extension run update-types`, `npm --prefix apps/web run update-types` | Regenerates each app's `src/protocol.ts` from `schema.json` |

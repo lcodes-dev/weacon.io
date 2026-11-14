@@ -1,4 +1,5 @@
-//! The rule for ids made of plain tokens, such as request and run ids.
+//! The rule for ids made of plain tokens, such as request and run ids, and for other checked
+//! strings.
 
 pub(crate) const TOKEN_MAX: usize = 64;
 
@@ -11,6 +12,46 @@ pub(crate) fn is_token(id: &str) -> bool {
         && id
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
+}
+
+/// Gives `$name`, a newtype around a `String` that holds only what `$check` accepts, its
+/// `as_str`, `TryFrom<String>`, `FromStr` and `Deserialize`; anything else fails with `$what`.
+macro_rules! checked_string {
+    ($name:ident, $check:expr, $what:literal) => {
+        impl $name {
+            #[must_use]
+            pub fn as_str(&self) -> &str {
+                &self.0
+            }
+        }
+
+        impl TryFrom<String> for $name {
+            type Error = String;
+
+            fn try_from(text: String) -> Result<Self, Self::Error> {
+                if ($check)(text.as_str()) {
+                    Ok(Self(text))
+                } else {
+                    Err(text)
+                }
+            }
+        }
+
+        impl std::str::FromStr for $name {
+            type Err = &'static str;
+
+            fn from_str(text: &str) -> Result<Self, Self::Err> {
+                Self::try_from(text.to_owned()).map_err(|_| $what)
+            }
+        }
+
+        impl<'de> serde::Deserialize<'de> for $name {
+            fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+                Self::try_from(<String as serde::Deserialize>::deserialize(deserializer)?)
+                    .map_err(|_| <D::Error as serde::de::Error>::custom($what))
+            }
+        }
+    };
 }
 
 /// Declares an id that is a token; parsing anything else fails with the message `$what`. A
@@ -27,39 +68,7 @@ macro_rules! token_id {
             String,
         );
 
-        impl $name {
-            #[must_use]
-            pub fn as_str(&self) -> &str {
-                &self.0
-            }
-        }
-
-        impl TryFrom<String> for $name {
-            type Error = String;
-
-            fn try_from(id: String) -> Result<Self, Self::Error> {
-                if $crate::token::is_token(&id) {
-                    Ok(Self(id))
-                } else {
-                    Err(id)
-                }
-            }
-        }
-
-        impl std::str::FromStr for $name {
-            type Err = &'static str;
-
-            fn from_str(id: &str) -> Result<Self, Self::Err> {
-                Self::try_from(id.to_owned()).map_err(|_| $what)
-            }
-        }
-
-        impl<'de> serde::Deserialize<'de> for $name {
-            fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-                Self::try_from(<String as serde::Deserialize>::deserialize(deserializer)?)
-                    .map_err(|_| <D::Error as serde::de::Error>::custom($what))
-            }
-        }
+        $crate::token::checked_string!($name, $crate::token::is_token, $what);
     };
     ($(#[$doc:meta])* secret $name:ident, $what:literal) => {
         token_id!(@define $(#[$doc])* $name, $what);
@@ -75,7 +84,7 @@ macro_rules! token_id {
     };
 }
 
-pub(crate) use token_id;
+pub(crate) use {checked_string, token_id};
 
 #[cfg(test)]
 mod tests {
@@ -87,8 +96,8 @@ mod tests {
 
     use super::*;
     use crate::{
-        AccountId, ChallengeId, ChatId, DocId, MemberId, RepoId, RequestId, RunId, TaskId,
-        WorkspaceId,
+        AccountId, BuildTarget, ChallengeId, ChatId, DocId, MachineId, MemberId, PairingId, RepoId,
+        RequestId, RunId, TaskId, TerminalId, WorkspaceId,
     };
 
     // How `T` refuses a token, when parsed and when it arrives.
@@ -103,14 +112,18 @@ mod tests {
     fn each_id_says_what_it_isnt() {
         let cases = [
             (refusal::<AccountId>(), "not an account id"),
+            (refusal::<BuildTarget>(), "not a build target"),
             (refusal::<ChallengeId>(), "not a challenge id"),
             (refusal::<ChatId>(), "not a chat id"),
             (refusal::<DocId>(), "not a doc id"),
+            (refusal::<MachineId>(), "not a machine id"),
             (refusal::<MemberId>(), "not a member id"),
+            (refusal::<PairingId>(), "not a pairing id"),
             (refusal::<RepoId>(), "not a repo id"),
             (refusal::<RequestId>(), "not a request id"),
             (refusal::<RunId>(), "not a run id"),
             (refusal::<TaskId>(), "not a task id"),
+            (refusal::<TerminalId>(), "not a terminal id"),
             (refusal::<WorkspaceId>(), "not a workspace id"),
         ];
 

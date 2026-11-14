@@ -104,32 +104,25 @@ mod tests {
     use serde_json::{Value, json};
 
     use super::*;
+    use crate::test_support::{envelope, request};
     use crate::{ChatEvent, Envelope, FrameError, Message};
 
     const SESSION: &str = "0b7c6a52-3f1e-4d2a-9c8b-5e4f3a2b1c0d";
 
-    fn envelope(message: Message) -> Envelope {
-        Envelope { id: 3, message }
-    }
-
     fn wire(kind: &str, field: &str, body: Value) -> Value {
-        let mut wire = json!({ "id": 3, "type": kind, "request": "r-1", "machine": "mc-1" });
+        let mut wire = json!({ "id": 4, "type": kind, "request": "r-1", "machine": "mc-1" });
         wire[field] = body;
         wire
     }
 
-    fn request() -> RequestId {
-        RequestId::try_from("r-1".to_owned()).unwrap()
-    }
-
     fn machine() -> MachineId {
-        MachineId::try_from("mc-1".to_owned()).unwrap()
+        "mc-1".parse().unwrap()
     }
 
     fn session() -> OutsideSession {
         OutsideSession {
             agent: AgentKind::Claude,
-            session: AgentSession::try_from(SESSION.to_owned()).unwrap(),
+            session: SESSION.parse().unwrap(),
             folder: Some("/work/app".to_owned()),
             modified_at: 1_763_000_000,
         }
@@ -142,10 +135,10 @@ mod tests {
             machine: machine(),
             query: SessionsQueryKind::Open {
                 agent: AgentKind::Codex,
-                session: AgentSession::try_from(SESSION.to_owned()).unwrap(),
+                session: SESSION.parse().unwrap(),
                 after: 4,
             },
-            by: Some(AccountId::try_from("a-1".to_owned()).unwrap()),
+            by: Some("a-1".parse().unwrap()),
         }));
         let open = json!({ "kind": "open", "agent": "codex", "session": SESSION, "after": 4 });
         let mut query_wire = wire("sessions_query", "query", open);
