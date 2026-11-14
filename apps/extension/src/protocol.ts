@@ -122,6 +122,11 @@ export type Author = (
 );
 
 /**
+ * A Rust target a release is built for, such as `x86_64-unknown-linux-musl`.
+ */
+export type BuildTarget = string;
+
+/**
  * A feature a peer supports, such as `chat.send`, named like a [`Code`]. A peer keeps the ones
  * it doesn't know, so a newer peer's list still parses.
  */
@@ -269,6 +274,11 @@ export type ClientLog = {
  * errors, and capabilities too.
  */
 export type Code = string;
+
+/**
+ * A full git commit id: 40 lowercase hex digits.
+ */
+export type Commit = string;
 
 /**
  * A git commit, as 40 or 64 lowercase hex digits.
@@ -429,6 +439,12 @@ export type DocSummary = {
   title: string;
   version: number;
 };
+
+/**
+ * An `https://` address of printable ASCII, at most 2,048 bytes, with a plain host name and
+ * optionally a port: no user name or password.
+ */
+export type DownloadUrl = string;
 
 export type ErrorBody = {
   code: Code;
@@ -711,6 +727,39 @@ export type Receipt = {
 );
 
 /**
+ * One target's binary in a release.
+ */
+export type ReleaseBuild = {
+  sha256: Sha256;
+  size: number;
+  target: BuildTarget;
+  url: DownloadUrl;
+};
+
+/**
+ * A release, as its signed manifest describes it; a core reads it to update itself.
+ */
+export type ReleaseManifest = {
+  /**
+   * At most one for each target.
+   */
+  builds: Array<ReleaseBuild>;
+  commit: Commit;
+  protocol: number;
+  /**
+   * When the release was signed, in seconds since the Unix epoch, so a core can tell a
+   * manifest that is being held back from the newest one.
+   */
+  published_at: number;
+  version: ReleaseVersion;
+};
+
+/**
+ * A release's `major.minor.patch`, ordered by its numbers.
+ */
+export type ReleaseVersion = string;
+
+/**
  * A git repository the owner registered for a workspace on their machine, 1–64 ASCII
  * letters, digits, `-` or `_`.
  */
@@ -798,6 +847,11 @@ export type RunUpdate = {
   event: RunEvent;
   run: RunId;
 };
+
+/**
+ * A SHA-256 digest: 64 lowercase hex digits.
+ */
+export type Sha256 = string;
 
 /**
  * Trades the one-time code sent to `email` for a [`SignedIn`]. `challenge` is the one its

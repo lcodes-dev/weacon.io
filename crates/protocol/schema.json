@@ -344,6 +344,12 @@
         }
       ]
     },
+    "BuildTarget": {
+      "description": "A Rust target a release is built for, such as `x86_64-unknown-linux-musl`.",
+      "type": "string",
+      "maxLength": 64,
+      "pattern": "^[A-Za-z0-9_-]+$"
+    },
     "Capability": {
       "description": "A feature a peer supports, such as `chat.send`, named like a [`Code`]. A peer keeps the ones\nit doesn't know, so a newer peer's list still parses.",
       "$ref": "#/$defs/Code"
@@ -765,6 +771,11 @@
       "maxLength": 64,
       "pattern": "^[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)+$"
     },
+    "Commit": {
+      "description": "A full git commit id: 40 lowercase hex digits.",
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
     "CommitId": {
       "description": "A git commit, as 40 or 64 lowercase hex digits.",
       "type": "string",
@@ -1132,6 +1143,12 @@
         "title",
         "version"
       ]
+    },
+    "DownloadUrl": {
+      "description": "An `https://` address of printable ASCII, at most 2,048 bytes, with a plain host name and\noptionally a port: no user name or password.",
+      "type": "string",
+      "maxLength": 2048,
+      "pattern": "^https://[A-Za-z0-9.-]+(:[0-9]{1,5})?([/?#][!-~]*)?$"
     },
     "ErrorBody": {
       "type": "object",
@@ -1756,6 +1773,74 @@
         "request"
       ]
     },
+    "ReleaseBuild": {
+      "description": "One target's binary in a release.",
+      "type": "object",
+      "properties": {
+        "sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "size": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "target": {
+          "$ref": "#/$defs/BuildTarget"
+        },
+        "url": {
+          "$ref": "#/$defs/DownloadUrl"
+        }
+      },
+      "required": [
+        "target",
+        "url",
+        "size",
+        "sha256"
+      ]
+    },
+    "ReleaseManifest": {
+      "description": "A release, as its signed manifest describes it; a core reads it to update itself.",
+      "type": "object",
+      "properties": {
+        "builds": {
+          "description": "At most one for each target.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ReleaseBuild"
+          }
+        },
+        "commit": {
+          "$ref": "#/$defs/Commit"
+        },
+        "protocol": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "published_at": {
+          "description": "When the release was signed, in seconds since the Unix epoch, so a core can tell a\nmanifest that is being held back from the newest one.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "version": {
+          "$ref": "#/$defs/ReleaseVersion"
+        }
+      },
+      "required": [
+        "version",
+        "commit",
+        "published_at",
+        "protocol",
+        "builds"
+      ]
+    },
+    "ReleaseVersion": {
+      "description": "A release's `major.minor.patch`, ordered by its numbers.",
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]{0,8})\\.(0|[1-9][0-9]{0,8})\\.(0|[1-9][0-9]{0,8})$"
+    },
     "RepoId": {
       "description": "A git repository the owner registered for a workspace on their machine, 1–64 ASCII\nletters, digits, `-` or `_`.",
       "type": "string",
@@ -2005,6 +2090,11 @@
         "run",
         "event"
       ]
+    },
+    "Sha256": {
+      "description": "A SHA-256 digest: 64 lowercase hex digits.",
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
     },
     "SignInFinish": {
       "description": "Trades the one-time code sent to `email` for a [`SignedIn`]. `challenge` is the one its\n[`SignInStarted`] gave; a server that hands out challenges refuses a finish without one.",
