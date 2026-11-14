@@ -3,12 +3,14 @@
 # `random_id` joins two halves that never overlap, so `|` and `^` give the same id.
 # A `Lines::next` that always returns a line never ends, so every reader spins instead of failing.
 # Windows code isn't built on Linux, where mutation tests run; the Windows CI job tests it.
-exclude_globs = ["**/platform/windows.rs"]
+# Nor is macOS's or other systems' `trash`; the rest of macOS's Trash is tested on Linux.
+exclude_globs = ["**/platform/**/windows.rs"]
 exclude_re = [
     "replace emit with \\(\\)",
     "replace <impl Write for RotatingFile>::flush",
     "replace \\| with \\^ in random_id",
     "windows::",
+    "platform/trash(/macos)?\\.rs:.*(replace trash ->| in trash$)",
     "replace Lines<R>::next -> io::Result<Option<Vec<u8>>> with Ok\\(Some",
 ]
 # Some mutants make a blocking client wait out its 5 s read timeout.
