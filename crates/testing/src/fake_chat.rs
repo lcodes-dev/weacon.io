@@ -130,15 +130,20 @@ impl FakeChat {
         let Message::Run(update) = &envelope.message else {
             return Vec::new();
         };
-        if !self.plays(envelope) || matches!(update.event, RunEvent::TextDelta { .. }) {
+        if !self.plays(envelope) {
             return Vec::new();
         }
         let run = update.run.clone();
+        let delta = matches!(update.event, RunEvent::TextDelta { .. });
         let event = ChatEvent::Run {
             update: update.clone(),
         };
         let Some(agent) = self.agent_of(&run) else {
-            return self.commit(event);
+            return if delta {
+                Vec::new()
+            } else {
+                self.commit(event)
+            };
         };
         // The recording's run goes idle at the end of each pass, and runs again with the next.
         if matches!(update.event, RunEvent::Finished { .. }) {
@@ -156,6 +161,10 @@ impl FakeChat {
         } else {
             Vec::new()
         };
+        // Deltas stream to the client as they are, and are never committed.
+        if delta {
+            return told;
+        }
         told.extend(self.commit(event));
         if asks {
             told.extend(self.status(&run, RunState::Waiting, agent));
@@ -698,11 +707,14 @@ mod tests {
         let finished = fake.played(&played(RunEvent::Finished {
             outcome: Outcome::Completed,
         }));
+        let delta = fake.played(&played(RunEvent::TextDelta {
+            text: "Next".to_owned(),
+        }));
         let again = fake.played(&played(RunEvent::Text {
             text: "Next pass.".to_owned(),
         }));
-        let more = fake.played(&played(RunEvent::Text {
-            text: "More.".to_owned(),
+        let more = fake.played(&played(RunEvent::TextDelta {
+            text: "More".to_owned(),
         }));
 
         assert_eq!(
@@ -712,26 +724,27 @@ mod tests {
                 (4, "71 r-1 Idle".to_owned())
             ]
         );
-        assert_eq!(
-            shape(&again),
-            [
-                (4, "72 r-1 Running".to_owned()),
-                (4, "73 r-1 text".to_owned())
-            ]
-        );
-        assert_eq!(shape(&more), [(4, "74 r-1 text".to_owned())]);
-        let stranger = Envelope {
+        // The next pass's first delta runs it again, so the client streams its text.
+        assert_eq!(shape(&delta), [(4, "72 r-1 Running".to_owned())]);
+        assert_eq!(shape(&again), [(4, "73 r-1 text".to_owned())]);
+        assert!(more.is_empty());
+        let stranger = |event| Envelope {
             id: 0,
             message: Message::Run(RunUpdate {
                 run: run("r-9").unwrap(),
-                event: RunEvent::Finished {
-                    outcome: Outcome::Completed,
-                },
+                event,
             }),
         };
+        let unknown_delta = stranger(RunEvent::TextDelta {
+            text: "x".to_owned(),
+        });
+        assert!(fake.played(&unknown_delta).is_empty());
+        let unknown_finished = stranger(RunEvent::Finished {
+            outcome: Outcome::Completed,
+        });
         assert_eq!(
-            shape(&fake.played(&stranger)),
-            [(4, "75 r-9 finished".to_owned())]
+            shape(&fake.played(&unknown_finished)),
+            [(4, "74 r-9 finished".to_owned())]
         );
     }
 

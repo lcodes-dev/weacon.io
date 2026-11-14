@@ -66,7 +66,7 @@ export function hear(sync: Sync, heard: Heard, ref: ChatRef, id: () => number): 
       return next === undefined ? open(sync, ref, id) : { sync: { ...sync, chat: next }, send: [] };
     }
     case "lost":
-      return sync.live ? open(sync, ref, id) : { sync, send: [] };
+      return sync.live && heard.id === sync.subscription ? open(sync, ref, id) : { sync, send: [] };
     case "window": {
       if (chat === undefined || heard.id !== sync.window) {
         return { sync, send: [] };

@@ -10,7 +10,7 @@ import { NO_CHANGES, ask, cut, needsAsking, receive } from "./diff/changes.ts";
 import { type Answers, askKey, sending, settle, settleLate, stopProblem } from "./chat/asks.ts";
 import { working } from "./chat/chat.ts";
 import { ChatFeed, nextFrame } from "./chat/feed.ts";
-import { receiptIn } from "./chat/heard.ts";
+import { receiptsIn } from "./chat/heard.ts";
 import { lines } from "./chat/lines.ts";
 import { START, type Sync } from "./chat/sync.ts";
 import { newRequestId } from "./ids.ts";
@@ -117,8 +117,7 @@ function Root({ url }: { url: string }) {
         route(envelope, {
           run: (message) => live.current?.feed?.push(message),
           chat: (message) => {
-            const receipt = receiptIn(message);
-            if (receipt !== undefined) {
+            for (const receipt of receiptsIn(message)) {
               receipts.take(receipt);
             }
             live.current?.feed?.push(message);

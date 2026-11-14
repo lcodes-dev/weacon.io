@@ -72,9 +72,13 @@ test("events commit while subscribed, and a gap or lost events take a new snapsh
   const id = ids(50);
   const next = hear(live, { kind: "entry", entry: said(4) }, place, id);
   const gap = hear(next.sync, { kind: "entry", entry: said(6) }, place, ids(50));
-  const lost = hear(next.sync, { kind: "lost" }, place, ids(50));
+  const lost = hear(next.sync, { kind: "lost", id: live.subscription ?? 0 }, place, ids(50));
+  const stale = hear(next.sync, { kind: "lost", id: (live.subscription ?? 0) - 1 }, place, ids(50));
 
   assert.deepEqual(next.send, []);
+  // Word from a subscription given up on changes nothing.
+  assert.equal(stale.sync, next.sync);
+  assert.deepEqual(stale.send, []);
   assert.equal(next.sync.chat?.seq, 4);
   for (const step of [gap, lost]) {
     assert.deepEqual(queries(step), [[50, { kind: "snapshot" }]]);
@@ -90,7 +94,7 @@ test("while a snapshot is on its way, events and lost word are dropped", () => {
   const asking = open(live, place, id).sync;
 
   const entry = hear(asking, { kind: "entry", entry: said(4) }, place, id);
-  const lost = hear(asking, { kind: "lost" }, place, id);
+  const lost = hear(asking, { kind: "lost", id: live.subscription ?? 0 }, place, id);
   const unopened = hear(START, { kind: "entry", entry: said(1) }, place, id);
 
   assert.equal(entry.sync, asking);

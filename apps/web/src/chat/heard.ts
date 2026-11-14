@@ -6,7 +6,7 @@ import type { Run, Snapshot } from "./chat.ts";
 /** What the server said about one chat. */
 export type Heard =
   | { kind: "entry"; entry: ChatEntry }
-  | { kind: "lost" }
+  | { kind: "lost"; id: number }
   | { kind: "snapshot"; id: number; snapshot: Snapshot }
   | { kind: "window"; id: number; events: ChatEntry[] }
   | { kind: "run"; run: RunId; event: RunEvent }
@@ -32,7 +32,7 @@ export function heard(message: ChatMessage | RunMessage | ErrorMessage, ref: Cha
   const { answer } = message;
   switch (answer.kind) {
     case "events_lost":
-      return { kind: "lost" };
+      return { kind: "lost", id: message.id };
     case "window":
       return { kind: "window", id: message.id, events: answer.events };
     case "snapshot": {
@@ -43,12 +43,13 @@ export function heard(message: ChatMessage | RunMessage | ErrorMessage, ref: Cha
 }
 
 /**
- * The receipt a committed entry carries, as commands wait for one: a core's receipts are events in
- * its chat's log.
+ * The receipts the entries in `message` carry, as commands wait for them: a core's receipts are
+ * events in its chat's log, live or in a snapshot or window.
  */
-export function receiptIn(message: ChatMessage | RunMessage | ErrorMessage): Extract<Incoming, { type: "receipt" }> | undefined {
-  if (message.type !== "chat" || message.entry.event.kind !== "receipt") {
-    return undefined;
+export function receiptsIn(message: ChatMessage | RunMessage | ErrorMessage): Array<Extract<Incoming, { type: "receipt" }>> {
+  if (message.type !== "chat" && message.type !== "chat_answer") {
+    return [];
   }
-  return { id: message.id, type: "receipt", ...message.entry.event.receipt };
+  const entries = message.type === "chat" ? [message.entry] : "events" in message.answer ? message.answer.events : [];
+  return entries.flatMap(({ event }) => (event.kind === "receipt" ? [{ id: message.id, type: "receipt" as const, ...event.receipt }] : []));
 }

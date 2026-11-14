@@ -172,6 +172,8 @@ function isEntry(value: unknown): value is ChatEntry {
   switch (event["kind"]) {
     case "prompt":
       return typeof event["request"] === "string" && typeof event["text"] === "string";
+    case "outside_prompt":
+      return typeof event["text"] === "string";
     case "receipt":
       return typeof record(event["receipt"])?.["state"] === "string";
     case "run": {

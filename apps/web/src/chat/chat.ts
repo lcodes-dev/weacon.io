@@ -106,10 +106,13 @@ export function older(chat: Chat, events: readonly ChatEntry[]): Chat {
     return chat;
   }
   const earlier = fold(chat, before).map((item) => (item.kind === "turn" ? { ...item, turn: { ...item.turn, open: false } } : item));
-  // What the log said after the snapshot also closes the prompts this window brings back.
+  // What the log said after the snapshot also closes the prompts this window brings back; the
+  // snapshot's own entries only say how they were answered, as it says which still wait.
   for (const entry of chat.entries) {
     if (entry.seq > chat.base) {
       closeBy(earlier, entry);
+    } else {
+      showAnswer(earlier, entry);
     }
   }
   return { ...chat, first: before[0]?.seq ?? chat.first, entries: [...before, ...chat.entries], items: [...earlier, ...chat.items] };
@@ -157,7 +160,7 @@ function fold(chat: Chat, entries: readonly ChatEntry[]): Item[] {
 // Applies one committed entry to `items`; `waiting` says whether a prompt it asks is open.
 function step(items: Item[], entry: ChatEntry, waiting: boolean): void {
   const { event } = entry;
-  if (event.kind === "prompt") {
+  if (event.kind === "prompt" || event.kind === "outside_prompt") {
     items.push({ kind: "prompt", seq: entry.seq, text: event.text });
     return;
   }
@@ -212,7 +215,14 @@ function closeBy(items: Item[], entry: ChatEntry): void {
     closeAsks(items, event.update.run, (ask) => ask.prompt === prompt);
   } else if (event.kind === "run" && event.update.event.event === "finished") {
     closeAsks(items, event.update.run, () => true);
-  } else if (event.kind === "run" && event.update.event.event === "permission_answered") {
+  } else {
+    showAnswer(items, entry);
+  }
+}
+
+// Closes the prompt `entry` answers, if it is an answer, saying how.
+function showAnswer(items: Item[], { event }: ChatEntry): void {
+  if (event.kind === "run" && event.update.event.event === "permission_answered") {
     const { prompt, allow } = event.update.event.answer;
     changeAsks(items, event.update.run, (ask) => (ask.prompt === prompt ? { ...ask, open: false, allowed: allow } : ask));
   }

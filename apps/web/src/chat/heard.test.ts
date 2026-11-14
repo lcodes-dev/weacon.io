@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import type { ChatMessage } from "../incoming.ts";
-import { heard, receiptIn } from "./heard.ts";
+import { heard, receiptsIn } from "./heard.ts";
 
 const ref = { workspace: "w-1", chat: "c-1" };
 const said = { seq: 1, event: { kind: "prompt" as const, request: "q-1", text: "Hi" } };
@@ -19,7 +19,7 @@ test("this chat's events and answers are heard, under the envelope they answer",
   const snapshot = answer({ kind: "snapshot", seq: 4, runs: [{ run: "r-1", state: "waiting", agent }, { run: "r-2", state: "idle" }], waiting: [3], events: [said] });
 
   assert.deepEqual(heard(update, ref), { kind: "entry", entry: said });
-  assert.deepEqual(heard(answer({ kind: "events_lost" }), ref), { kind: "lost" });
+  assert.deepEqual(heard(answer({ kind: "events_lost" }), ref), { kind: "lost", id: 7 });
   assert.deepEqual(heard(answer({ kind: "window", events: [said] }), ref), { kind: "window", id: 7, events: [said] });
   assert.deepEqual(heard(snapshot, ref), {
     kind: "snapshot",
@@ -46,12 +46,18 @@ test("another chat's or workspace's messages aren't heard, and run updates alway
   assert.deepEqual(heard({ id: 6, type: "error", code: "chat.unknown", retryable: false }, ref), { kind: "refused", id: 6 });
 });
 
-test("a committed receipt is taken as the receipt of the command it answers", () => {
+test("a committed receipt is taken as the receipt of the command it answers, live or in an answer", () => {
   const receipt = { kind: "receipt" as const, receipt: { request: "q-1", state: "accepted" as const } };
   const failed = { kind: "receipt" as const, receipt: { request: "q-2", state: "failed" as const, code: "run.failed" } };
+  const accepted = { id: 7, type: "receipt", request: "q-1", state: "accepted" };
+  const refused = { id: 7, type: "receipt", request: "q-2", state: "failed", code: "run.failed" };
+  const events = [{ seq: 2, event: receipt }, said, { seq: 3, event: failed }];
 
-  assert.deepEqual(receiptIn({ ...update, entry: { seq: 2, event: receipt } }), { id: 7, type: "receipt", request: "q-1", state: "accepted" });
-  assert.deepEqual(receiptIn({ ...update, entry: { seq: 3, event: failed } }), { id: 7, type: "receipt", request: "q-2", state: "failed", code: "run.failed" });
-  assert.equal(receiptIn(update), undefined);
-  assert.equal(receiptIn(answer({ kind: "events_lost" })), undefined);
+  assert.deepEqual(receiptsIn({ ...update, entry: { seq: 2, event: receipt } }), [accepted]);
+  assert.deepEqual(receiptsIn({ ...update, entry: { seq: 3, event: failed } }), [refused]);
+  assert.deepEqual(receiptsIn(answer({ kind: "window", events })), [accepted, refused]);
+  assert.deepEqual(receiptsIn(answer({ kind: "snapshot", seq: 3, runs: [], waiting: [], events })), [accepted, refused]);
+  assert.deepEqual(receiptsIn(update), []);
+  assert.deepEqual(receiptsIn(answer({ kind: "events_lost" })), []);
+  assert.deepEqual(receiptsIn({ id: 6, type: "error", code: "chat.unknown", retryable: false }), []);
 });
