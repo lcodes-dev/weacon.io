@@ -9,6 +9,7 @@ mod doc;
 mod frame;
 mod log;
 mod machine;
+mod mcp;
 mod message;
 mod pick;
 mod receipt;
@@ -45,6 +46,7 @@ pub use machine::{
     MachineId, MachineKey, MachineList, MachineName, MachineOs, MachineSummary, PairClaim,
     PairClaimed, PairConfirm, PairLookup, PairPending, PairStart, PairStarted, PairingId,
 };
+pub use mcp::{MapArgs, McpCall, SymbolArgs};
 pub use message::{App, Envelope, ErrorBody, Hello, Message, PROTOCOL, Welcome};
 pub use pick::Pick;
 pub use receipt::{Outcome, Receipt, RequestId};
@@ -79,7 +81,8 @@ pub use worktree::{
 };
 
 /// `bytes` as lowercase hex.
-pub(crate) fn to_hex(bytes: &[u8]) -> String {
+#[must_use]
+pub fn to_hex(bytes: &[u8]) -> String {
     let nibbles = bytes.iter().flat_map(|byte| [byte >> 4, byte & 0xf]);
     nibbles
         .filter_map(|nibble| char::from_digit(u32::from(nibble), 16))

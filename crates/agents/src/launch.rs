@@ -1,4 +1,5 @@
 use std::ffi::{OsStr, OsString};
+use std::fmt;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::process::{ExitStatus, Stdio};
@@ -32,6 +33,26 @@ pub struct Launch {
     pub access: AccessLevel,
     /// The command, word by word, that answers the agent's pre-tool hook, when it has one.
     pub hook: Option<Vec<String>>,
+    /// The core's MCP for this run; only Claude Code is pointed at it.
+    pub mcp: Option<McpServer>,
+}
+
+/// Where the core's MCP listens, and the token of the one run it serves.
+#[derive(Clone, PartialEq, Eq)]
+pub struct McpServer {
+    pub url: String,
+    pub token: String,
+    /// The names of its tools, which all only read.
+    pub tools: Vec<String>,
+}
+
+impl fmt::Debug for McpServer {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("McpServer")
+            .field("url", &self.url)
+            .field("tools", &self.tools)
+            .finish_non_exhaustive()
+    }
 }
 
 // A status command that hangs is given up on, so a report still prints.
@@ -70,6 +91,7 @@ impl Launch {
             cwd,
             access: AccessLevel::AskFirst,
             hook: None,
+            mcp: None,
         })
     }
 
@@ -330,6 +352,7 @@ mod tests {
                 cwd: PathBuf::from("/work"),
                 access: AccessLevel::AskFirst,
                 hook: None,
+                mcp: None,
             }
         );
         assert_eq!(

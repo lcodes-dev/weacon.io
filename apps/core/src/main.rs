@@ -8,6 +8,7 @@ mod disk;
 mod doctor;
 mod guard;
 mod map;
+mod mcp;
 mod memory;
 mod names;
 mod native_host;

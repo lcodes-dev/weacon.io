@@ -134,6 +134,7 @@ pub(crate) fn launch(agent: AgentKind, dir: &Path) -> Launch {
         cwd: dir.to_path_buf(),
         access: AccessLevel::AskFirst,
         hook: None,
+        mcp: None,
     }
 }
 

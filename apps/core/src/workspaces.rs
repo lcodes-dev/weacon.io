@@ -307,6 +307,7 @@ mod tests {
                 cwd: PathBuf::from("/work"),
                 access: AccessLevel::AskFirst,
                 hook: None,
+                mcp: None,
             }
         );
         assert_eq!(

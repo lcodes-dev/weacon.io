@@ -17,7 +17,7 @@ mod transcript;
 mod wire;
 
 pub use access::resolve;
-pub use launch::{Launch, SignIn};
+pub use launch::{Launch, McpServer, SignIn};
 pub use run::{AgentRun, Run};
 pub use spawn_policy::SpawnPolicy;
 pub use terminal::{Event, Events, Size, Terminal};

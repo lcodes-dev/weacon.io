@@ -302,7 +302,7 @@ mod tests {
     }
 
     fn pairing() -> PairingId {
-        PairingId::try_from("p-1".to_owned()).unwrap()
+        "p-1".parse().unwrap()
     }
 
     #[test]
@@ -344,8 +344,8 @@ mod tests {
         };
         let start_wire = json!({ "name": "Studio", "os": "macos", "key": key().as_str() });
         let claimed = PairClaimed::Paired {
-            machine: MachineId::try_from("mc-1".to_owned()).unwrap(),
-            owner: AccountId::try_from("a-1".to_owned()).unwrap(),
+            machine: "mc-1".parse().unwrap(),
+            owner: "a-1".parse().unwrap(),
             token: "tok".to_owned(),
         };
         let claimed_wire =
@@ -429,8 +429,8 @@ mod tests {
                 format!(
                     "{:?}",
                     PairClaimed::Paired {
-                        machine: MachineId::try_from("mc-1".to_owned()).unwrap(),
-                        owner: AccountId::try_from("a-1".to_owned()).unwrap(),
+                        machine: "mc-1".parse().unwrap(),
+                        owner: "a-1".parse().unwrap(),
                         token: "s3cr3t-marker".to_owned(),
                     }
                 ),

@@ -44,6 +44,9 @@ const SIGN_IN_ENV: SignInEnv = SignInEnv {
     names: &["AWS_BEARER_TOKEN_BEDROCK"],
 };
 
+const TOKEN_VARIABLE: &str = "WEACON_MCP_TOKEN";
+const TOKEN_HEADER: &str = "Bearer ${WEACON_MCP_TOKEN}";
+
 /// `claude` in its stream-json mode, resuming `session` when given.
 pub(crate) fn command(launch: &Launch, session: Option<&AgentSession>) -> Command {
     let mut command = SIGN_IN_ENV.command(launch);
@@ -69,6 +72,21 @@ pub(crate) fn command(launch: &Launch, session: Option<&AgentSession>) -> Comman
     }
     if let Some(hook) = &launch.hook {
         command.args(["--settings", &hook_settings(hook)]);
+    }
+    if let Some(mcp) = &launch.mcp {
+        // Claude reads the token from its environment, so it never reaches the command line.
+        let server =
+            json!({"type": "http", "url": mcp.url, "headers": {"Authorization": TOKEN_HEADER}});
+        let config = json!({"mcpServers": {"weacon": server}});
+        command.args(["--mcp-config", &config.to_string()]);
+        // Each of these tools only reads, so none waits for a person.
+        let tools: Vec<_> = mcp
+            .tools
+            .iter()
+            .map(|tool| format!("mcp__weacon__{tool}"))
+            .collect();
+        command.args(["--allowedTools", &tools.join(",")]);
+        command.env(TOKEN_VARIABLE, &mcp.token);
     }
     if let Some(session) = session {
         command.args(["--resume", session.as_str()]);
@@ -139,6 +157,7 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     use super::*;
+    use crate::launch::McpServer;
     use weacon_protocol::AgentKind;
 
     // Real processes: a shell script stands in for `claude`.
@@ -209,6 +228,7 @@ mod tests {
                 cwd: dir.to_path_buf(),
                 access: AccessLevel::AskFirst,
                 hook: None,
+                mcp: None,
             }
         }
 
@@ -244,6 +264,7 @@ mod tests {
                 cwd: dir.to_owned(),
                 access: AccessLevel::AskFirst,
                 hook: None,
+                mcp: None,
             }
         }
 
@@ -451,6 +472,75 @@ mod tests {
             assert!(args.contains("--permission-mode default"), "{access:?}");
             assert_eq!(args.contains(refused), access == AccessLevel::ReadOnly);
         }
+    }
+
+    fn with_mcp(mcp: Option<McpServer>) -> (Command, Vec<String>) {
+        let launch = Launch {
+            access: AccessLevel::ReadOnly,
+            mcp,
+            ..crate::test_support::launch(AgentKind::Claude, Path::new("/work"))
+        };
+        let command = command(&launch, None);
+        let args = command.as_std().get_args();
+        let args = args.map(|arg| arg.to_string_lossy().into_owned()).collect();
+        (command, args)
+    }
+
+    fn token(command: &Command) -> Option<&OsStr> {
+        let mut envs = command.as_std().get_envs();
+        envs.find(|(key, _)| *key == "WEACON_MCP_TOKEN")
+            .and_then(|(_, value)| value)
+    }
+
+    #[test]
+    fn a_run_reaches_the_cores_mcp_with_its_token_only_in_its_environment() {
+        let server = McpServer {
+            url: "http://127.0.0.1:9/mcp".into(),
+            token: "secret-token".into(),
+            tools: vec!["map".into(), "symbol".into()],
+        };
+        let (with, given) = with_mcp(Some(server));
+        let after = |flag: &str| {
+            let at = given.iter().position(|arg| arg == flag)?;
+            given.get(at + 1).cloned()
+        };
+
+        let config: Value = serde_json::from_str(&after("--mcp-config").unwrap()).unwrap();
+        let expected = json!({"mcpServers": {"weacon": {
+            "type": "http",
+            "url": "http://127.0.0.1:9/mcp",
+            "headers": {"Authorization": "Bearer ${WEACON_MCP_TOKEN}"},
+        }}});
+        assert_eq!(config, expected);
+        let allowed = after("--allowedTools");
+        assert_eq!(
+            allowed.as_deref(),
+            Some("mcp__weacon__map,mcp__weacon__symbol")
+        );
+        assert!(!given.iter().any(|arg| arg.contains("secret-token")));
+        assert_eq!(token(&with), Some(OsStr::new("secret-token")));
+    }
+
+    #[test]
+    fn a_run_without_the_mcp_gets_neither_its_flags_nor_a_token() {
+        let (without, plain) = with_mcp(None);
+
+        let flags = ["--mcp-config", "--allowedTools"];
+        assert!(!plain.iter().any(|arg| flags.contains(&arg.as_str())));
+        assert_eq!(token(&without), None);
+    }
+
+    #[test]
+    fn an_mcp_servers_debug_hides_its_token() {
+        let server = McpServer {
+            url: "http://127.0.0.1:9/mcp".into(),
+            token: "secret-token".into(),
+            tools: vec!["map".into(), "symbol".into()],
+        };
+        assert_eq!(
+            format!("{server:?}"),
+            r#"McpServer { url: "http://127.0.0.1:9/mcp", tools: ["map", "symbol"], .. }"#
+        );
     }
 
     #[test]
