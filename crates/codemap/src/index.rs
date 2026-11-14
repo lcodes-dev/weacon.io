@@ -2,9 +2,12 @@ use std::collections::BTreeMap;
 use std::fmt;
 
 use crate::area::areas;
+use crate::contracts::{self, Contract};
+use crate::edges::{Edge, edges, id};
 use crate::facts::{Facts, FileKind, Reader};
-use crate::graph::{file_links, nodes};
-use crate::paths::Named;
+use crate::flows::{self, Flow};
+use crate::graph::{ModuleNode, file_links, nodes};
+use crate::rank::central;
 use crate::{Area, Error, Symbol};
 
 /// A file as the caller read it, its path relative to the repository root with `/` separators.
@@ -27,7 +30,34 @@ pub struct Index {
     /// Sorted by folder.
     pub crates: Vec<Crate>,
     /// Sorted by id.
-    pub areas: Vec<Area>,
+    pub(crate) areas: Vec<Area>,
+    /// Sorted.
+    pub(crate) edges: Vec<Edge>,
+    /// Sorted.
+    pub(crate) contracts: Vec<Contract>,
+    /// Sorted by file and line.
+    pub(crate) flows: Vec<Flow>,
+    /// Every item, by its path.
+    pub(crate) items: BTreeMap<String, Located>,
+    /// Every item's path, most central first.
+    pub(crate) central: Vec<String>,
+}
+
+/// An item and the file it is in.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Located {
+    pub(crate) symbol: Symbol,
+    pub(crate) file: String,
+}
+
+impl Located {
+    /// `fn a::run  a/src/lib.rs:3`.
+    pub(crate) fn describe(&self, path: &str) -> String {
+        format!(
+            "{} {path}  {}:{}",
+            self.symbol.kind, self.file, self.symbol.line
+        )
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -68,37 +98,72 @@ pub fn index(files: &[SourceFile]) -> Result<Index, Error> {
 pub(crate) fn assemble(facts: &[Facts]) -> Index {
     let mut crates: Vec<Crate> = facts.iter().filter_map(manifest).collect();
     crates.sort_by(|one, other| one.folder.cmp(&other.folder));
-    let mut named = BTreeMap::new();
-    let mut sources: Vec<(&str, &[Symbol], &[Named])> = facts
-        .iter()
-        .filter_map(|facts| match &facts.kind {
-            FileKind::Rust { symbols, named } => {
-                Some((facts.path.as_str(), &symbols[..], &named[..]))
-            }
-            FileKind::Manifest(_) => None,
-        })
-        .collect();
-    sources.sort_by_key(|(path, ..)| *path);
-    for (file, symbols, paths) in sources {
+    let mut named_by_file = BTreeMap::new();
+    let mut outlines = BTreeMap::new();
+    let mut sources: Vec<&Facts> = facts.iter().collect();
+    sources.sort_by_key(|facts| &facts.path);
+    for facts in sources {
+        let FileKind::Rust {
+            outline,
+            named_paths,
+        } = &facts.kind
+        else {
+            continue;
+        };
+        let file = facts.path.as_str();
         // A folder sorts before the folders inside it, so the last match is the innermost crate.
         let Some((owner, path)) = crates
             .iter_mut()
             .rev()
-            .find_map(|it| module_path(&it.folder, file).map(|path| (it, path)))
+            .find_map(|krate| module_path(&krate.folder, file).map(|path| (krate, path)))
         else {
             continue;
         };
-        named.insert(file, paths);
+        named_by_file.insert(file, &named_paths[..]);
+        outlines.insert(file, outline);
         owner.modules.push(Module {
             path,
             file: file.to_owned(),
-            symbols: symbols.to_vec(),
+            symbols: outline.symbols(),
         });
     }
     crates.iter_mut().for_each(root_binary);
     let nodes = nodes(&crates);
-    let areas = areas(&nodes, &file_links(&nodes, &named));
-    Index { crates, areas }
+    let areas = areas(&nodes, &file_links(&nodes, &named_by_file));
+    let edges = edges(&crates, &named_by_file, &outlines);
+    let contracts = contracts::assemble(&crates, &outlines);
+    let items = located(&nodes);
+    let central = central(&items, &edges);
+    let flows = flows::check(facts, &items, &edges);
+    Index {
+        crates,
+        areas,
+        edges,
+        contracts,
+        flows,
+        items,
+        central,
+    }
+}
+
+/// Every item of the nodes, by its path.
+fn located(nodes: &[ModuleNode<'_>]) -> BTreeMap<String, Located> {
+    nodes
+        .iter()
+        .flat_map(|&ModuleNode { krate, module }| {
+            module.symbols.iter().map(|symbol| {
+                let path = id(&krate.name, &module.path, &symbol.name);
+                let file = module.file.clone();
+                (
+                    path,
+                    Located {
+                        symbol: symbol.clone(),
+                        file,
+                    },
+                )
+            })
+        })
+        .collect()
 }
 
 fn manifest(facts: &Facts) -> Option<Crate> {
@@ -159,7 +224,7 @@ impl Index {
     }
 
     #[must_use]
-    pub fn area(&self, id: &str) -> Option<&Area> {
+    pub(crate) fn area(&self, id: &str) -> Option<&Area> {
         self.areas.iter().find(|area| area.id == id)
     }
 }
@@ -167,13 +232,7 @@ impl Index {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn file(path: &str, text: &str) -> SourceFile {
-        SourceFile {
-            path: path.to_owned(),
-            text: text.to_owned(),
-        }
-    }
+    use crate::test_support::file;
 
     fn layout(index: &Index) -> Vec<String> {
         index
@@ -181,8 +240,11 @@ mod tests {
             .iter()
             .flat_map(|krate| {
                 krate.modules.iter().map(move |module| {
-                    let names: Vec<&str> =
-                        module.symbols.iter().map(|it| it.name.as_str()).collect();
+                    let names: Vec<&str> = module
+                        .symbols
+                        .iter()
+                        .map(|symbol| symbol.name.as_str())
+                        .collect();
                     format!(
                         "{} [{}] {} {}: {}",
                         krate.name,
@@ -300,10 +362,10 @@ mod tests {
         let mut reader = Reader::new().unwrap();
         let mut facts: Vec<Facts> = files
             .iter()
-            .filter_map(|it| reader.facts(it).unwrap())
+            .filter_map(|file| reader.facts(file).unwrap())
             .collect();
         let changed = file("a/src/m.rs", "pub fn went() {}\n");
-        facts.retain(|it| it.path != changed.path);
+        facts.retain(|kept| kept.path != changed.path);
         facts.extend(reader.facts(&changed).unwrap());
 
         let fresh = index(&[files[0].clone(), files[1].clone(), changed]).unwrap();

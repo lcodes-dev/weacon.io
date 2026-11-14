@@ -13,7 +13,8 @@ token_id!(
     "not a chat id"
 );
 
-/// The core answers with receipts under `request`.
+/// What a person asks of a chat's agent, from a client to a core that offers `chat.send`. The
+/// core answers with receipts under `request`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ChatCommand {
     pub request: RequestId,
@@ -64,6 +65,7 @@ pub enum ChatAction {
     Newer,
 }
 
+/// A committed event of a chat, from the core to a client that subscribed under `chat.events`.
 /// Text deltas are never committed; they arrive only as run updates.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ChatUpdate {
@@ -114,7 +116,8 @@ pub enum ChatEvent {
     Newer,
 }
 
-/// The answer is a [`ChatAnswer`], or for `subscribe` the [`ChatUpdate`]s themselves.
+/// A question about a chat's log, from a client to a core that offers `chat.events`. The answer
+/// is a [`ChatAnswer`], or for `subscribe` the [`ChatUpdate`]s themselves.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ChatQuery {
     pub workspace: WorkspaceId,
@@ -142,6 +145,8 @@ pub enum ChatQueryKind {
     Newer,
 }
 
+/// The core's answer to a [`ChatQuery`], or its word that the client missed events, to a client
+/// that has `chat.events`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ChatAnswer {
     pub workspace: WorkspaceId,
