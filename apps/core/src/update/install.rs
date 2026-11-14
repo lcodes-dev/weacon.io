@@ -1,5 +1,7 @@
 //! Installs a release's build over the running binary: stage it beside, check it, swap it in
-//! keeping the old one, and put the old one back when the new one doesn't come up.
+//! keeping the old one, and put the old one back when the new one doesn't come up. The files
+//! beside the binary have fixed names, so the caller holds one update lock from `stage` to the
+//! end.
 
 use std::fs::{self, File};
 use std::io::{self, Read};
@@ -60,7 +62,6 @@ fn write_checked(file: &Path, body: &mut dyn Read, build: &ReleaseBuild) -> Resu
     let mut body = body.take(build.size.saturating_add(1));
     let size = io::copy(&mut body, &mut out).map_err(download_failed)?;
     out.sync_all().map_err(download_failed)?;
-    // Hashes what reached the disk.
     let mut hasher = Sha256::new();
     io::copy(&mut File::open(file).map_err(download_failed)?, &mut hasher)
         .map_err(download_failed)?;
@@ -126,15 +127,21 @@ pub(crate) fn swap(paths: &Paths) -> Result<(), Fault> {
 }
 
 /// Puts the old binary back after the new one didn't come up once restarted; the error says
-/// whether that worked.
+/// whether that worked. The new one is moved aside first, so this works while it still runs.
 pub(crate) fn roll_back(paths: &Paths) -> Fault {
-    match fs::rename(&paths.old, &paths.exe) {
-        Ok(()) => Fault::new(
-            code!("update.unhealthy"),
-            "The new build didn't start, so the old one is back",
-        ),
-        Err(error) => rollback_failed(error),
+    remove(&paths.new);
+    if let Err(error) = fs::rename(&paths.exe, &paths.new) {
+        return rollback_failed(error);
     }
+    if let Err(error) = fs::rename(&paths.old, &paths.exe) {
+        drop(fs::rename(&paths.new, &paths.exe));
+        return rollback_failed(error);
+    }
+    remove(&paths.new);
+    Fault::new(
+        code!("update.unhealthy"),
+        "The new build didn't start, so the old one is back",
+    )
 }
 
 fn rollback_failed(error: io::Error) -> Fault {
@@ -318,6 +325,16 @@ mod tests {
         swap(&paths).unwrap();
         let fault = roll_back(&paths);
         assert_eq!(fault.code().as_str(), "update.unhealthy");
+        assert_eq!(files(&dir), [pair("weacon", "old")]);
+    }
+
+    #[test]
+    fn a_download_that_never_ends_is_cut_off() {
+        let dir = TempDir::new().unwrap();
+        let paths = installed(&dir);
+        let mut endless = io::repeat(b'n');
+        let fault = stage(&paths, &mut endless, &build_of(b"new")).unwrap_err();
+        assert_eq!(fault.code().as_str(), "update.corrupt");
         assert_eq!(files(&dir), [pair("weacon", "old")]);
     }
 
