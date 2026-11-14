@@ -47,8 +47,8 @@ test("a prompt says why its answer may not have been taken", () => {
 
   assert.equal(answerProblem(undefined), undefined);
   assert.equal(answerProblem(first.get(key)), undefined);
-  assert.equal(answerProblem(settle(first, key, "a-1", "refused").get(key)), "The answer wasn't taken");
-  assert.equal(answerProblem(settle(first, key, "a-1", "unsure").get(key)), "The server didn't answer; the answer may not have been sent");
+  assert.equal(answerProblem(settle(first, key, "a-1", "refused").get(key)), "The answer wasn't taken.");
+  assert.equal(answerProblem(settle(first, key, "a-1", "unsure").get(key)), "The server didn't answer. The answer may not have been sent.");
 });
 
 test("a chat command carries its chat, request and action", () => {
@@ -77,7 +77,7 @@ test("a late receipt settles the answer sent under its request", () => {
   const unsure = settle(sending(none, mine(true), ids).answers, key, "a-1", "unsure");
 
   assert.equal(settleLate(unsure, "a-1", "accepted").size, 0);
-  assert.equal(answerProblem(settleLate(unsure, "a-1", "refused").get(key)), "The answer wasn't taken");
+  assert.equal(answerProblem(settleLate(unsure, "a-1", "refused").get(key)), "The answer wasn't taken.");
   assert.equal(settleLate(unsure, "a-9", "accepted"), unsure);
   assert.equal(answeredUnder(unsure, "a-1")?.prompt, 2);
   assert.equal(answeredUnder(unsure, "a-9"), undefined);
@@ -85,7 +85,7 @@ test("a late receipt settles the answer sent under its request", () => {
 
 test("Stop says why it may not have worked", () => {
   assert.equal(stopProblem("accepted"), undefined);
-  assert.equal(stopProblem("refused"), "The agent wasn't stopped");
-  assert.equal(stopProblem("lost"), "The connection closed; the agent may not have stopped");
-  assert.equal(stopProblem("unsure"), "The server didn't answer; the agent may not have stopped");
+  assert.equal(stopProblem("refused"), "The agent wasn't stopped.");
+  assert.equal(stopProblem("lost"), "The connection closed. The agent may not have stopped.");
+  assert.equal(stopProblem("unsure"), "The server didn't answer. The agent may not have stopped.");
 });

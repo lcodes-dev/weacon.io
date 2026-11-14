@@ -5,7 +5,7 @@ import { answered } from "./chat.ts";
 import { heard } from "./heard.ts";
 import { START, type Step, type Sync, ended, hear, more, open } from "./sync.ts";
 
-/** What the feed needs from the page: envelope ids, a way to send, and a frame to render on. */
+/** What a live chat needs from the page: envelope ids, a way to send, and a frame to render on. */
 export type Wiring = {
   id: () => number;
   send: (envelope: Envelope) => void;
@@ -14,10 +14,10 @@ export type Wiring = {
 };
 
 /**
- * Keeps the chat at `place` in step with the server, and shows it at most once per scheduled
+ * Keeps the chat at `ref` in step with the server, and shows it at most once per scheduled
  * flush, so a burst of messages costs one render.
  */
-export class ChatFeed {
+export class LiveChat {
   #ref: ChatRef;
   #wiring: Wiring;
   #sync: Sync = START;
@@ -44,6 +44,11 @@ export class ChatFeed {
     if (chat !== undefined) {
       this.#change({ ...this.#sync, chat: answered(chat, run, prompt) });
     }
+  }
+
+  /** Sends and shows nothing more, a flush still to come included, as when the page is gone. */
+  close(): void {
+    this.#wiring = { ...this.#wiring, send: () => {}, show: () => {} };
   }
 
   /** Stops waiting for answers, keeping the chat, as when the connection ends. */
@@ -85,7 +90,7 @@ export class ChatFeed {
 }
 
 /**
- * A `schedule` for `ChatFeed` that flushes on the next frame. A tab hidden before then gets no frame,
+ * A `schedule` for `LiveChat` that flushes on the next frame. A tab hidden before then gets no frame,
  * so `later` sends the batch instead; a visible tab's batches go out only between renders.
  */
 export function nextFrame(

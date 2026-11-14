@@ -22,6 +22,18 @@ impl Workspace {
         attribution: &Attribution,
     ) -> Result<(), Fault> {
         let mut transaction = self.db.write().await?;
+        self.insert_task(&mut transaction, task, attribution)
+            .await?;
+        transaction.commit().await.map_err(failed)
+    }
+
+    /// [`Self::add_task`], inside the caller's transaction.
+    pub(super) async fn insert_task(
+        &self,
+        transaction: &mut SqliteConnection,
+        task: &Task,
+        attribution: &Attribution,
+    ) -> Result<(), Fault> {
         let added = sqlx::query(
             "INSERT INTO tasks (workspace_id, task_id, title, status, order_key, version)
              SELECT ?1, ?2, ?3, ?4, ?5, ?6
@@ -43,9 +55,7 @@ impl Workspace {
                 "The workspace has as many tasks as it can hold",
             ));
         }
-        self.record_version(&mut transaction, task, attribution)
-            .await?;
-        transaction.commit().await.map_err(failed)
+        self.record_version(transaction, task, attribution).await
     }
 
     /// The tasks, in their order.
@@ -74,6 +84,21 @@ impl Workspace {
         attribution: &Attribution,
     ) -> Result<Task, Fault> {
         let mut transaction = self.db.write().await?;
+        let task = self.read_task(&mut transaction, id).await?;
+        let edited = task.edit(read_at, edit).map_err(refused)?;
+        self.store_task(&mut transaction, &edited, attribution)
+            .await?;
+        transaction.commit().await.map_err(failed)?;
+        Ok(edited)
+    }
+
+    /// The task `id` as it is now, inside the caller's transaction; `task.not_found` when
+    /// there's none.
+    pub(super) async fn read_task(
+        &self,
+        transaction: &mut SqliteConnection,
+        id: &TaskId,
+    ) -> Result<Task, Fault> {
         let row = sqlx::query_as::<_, Row>(
             "SELECT task_id, title, status, order_key, version FROM tasks
              WHERE workspace_id = ? AND task_id = ?",
@@ -84,7 +109,17 @@ impl Workspace {
         .await
         .map_err(failed)?
         .ok_or_else(task_not_found)?;
-        let edited = stored_task(row)?.edit(read_at, edit).map_err(refused)?;
+        stored_task(row)
+    }
+
+    /// Stores `edited`, read and edited inside the caller's transaction, as the task's new
+    /// version.
+    pub(super) async fn store_task(
+        &self,
+        transaction: &mut SqliteConnection,
+        edited: &Task,
+        attribution: &Attribution,
+    ) -> Result<(), Fault> {
         sqlx::query(
             "UPDATE tasks SET title = ?, status = ?, order_key = ?, version = ?
              WHERE workspace_id = ? AND task_id = ?",
@@ -94,14 +129,11 @@ impl Workspace {
         .bind(edited.order.as_str())
         .bind(version_number(edited.version, last_version)?)
         .bind(self.id.as_str())
-        .bind(id.as_str())
+        .bind(edited.id.as_str())
         .execute(&mut *transaction)
         .await
         .map_err(failed)?;
-        self.record_version(&mut transaction, &edited, attribution)
-            .await?;
-        transaction.commit().await.map_err(failed)?;
-        Ok(edited)
+        self.record_version(transaction, edited, attribution).await
     }
 
     /// Records who is behind the version `task` is now at, and the change for the feed.
@@ -147,11 +179,16 @@ fn stored_task((id, title, status, order, version): Row) -> Result<Task, Fault> 
     })
 }
 
+/// No order key fits between the task's neighbours.
+pub(crate) fn no_room() -> Fault {
+    Fault::new(code!("task.no_room"), "There is no room for the task there")
+}
+
 pub(crate) fn task_not_found() -> Fault {
     Fault::new(code!("task.not_found"), "There is no such task")
 }
 
-fn refused(error: EditError) -> Fault {
+pub(super) fn refused(error: EditError) -> Fault {
     match error {
         EditError::Stale => Fault::new(
             code!("task.stale"),

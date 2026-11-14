@@ -3,7 +3,7 @@ import { useState } from "react";
 import type { Comment } from "./comments.ts";
 
 /** A box for a comment's `text`, with `action` to keep it and Cancel; Escape cancels too. */
-export function Composer({
+export function CommentBox({
   label,
   text,
   action,
@@ -59,7 +59,7 @@ export function CommentView({
   const [editing, setEditing] = useState<string>();
   if (editing !== undefined) {
     return (
-      <Composer
+      <CommentBox
         label={label}
         text={editing}
         action="Save"

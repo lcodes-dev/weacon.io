@@ -6,12 +6,7 @@ export function isId(text: string): boolean {
   return /^[A-Za-z0-9_-]{1,64}$/.test(text);
 }
 
-/** A request id made of `bytes` in hex. */
-export function requestId(bytes: Uint8Array): RequestId {
-  return hex(bytes);
-}
-
-/** A new request id, from 16 random bytes. */
+/** A new request id: 16 random bytes in hex. */
 export function newRequestId(): RequestId {
-  return requestId(crypto.getRandomValues(new Uint8Array(16)));
+  return hex(crypto.getRandomValues(new Uint8Array(16)));
 }

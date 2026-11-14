@@ -229,13 +229,16 @@ pub(crate) fn resolved(path: &Path) -> Option<PathBuf> {
     }
 }
 
+const FOLDER_PREFIX: &str = "w-";
+
 const AGENTS: [(AgentKind, &str); 2] = [
     (AgentKind::Claude, "Claude Code"),
     (AgentKind::Codex, "Codex"),
 ];
 
-fn folder_name(workspace: &WorkspaceId) -> String {
-    names::case_safe_name("w-", workspace.as_str())
+/// What a workspace's folders are called, wherever they are.
+pub(crate) fn folder_name(workspace: &WorkspaceId) -> String {
+    names::case_safe_name(FOLDER_PREFIX, workspace.as_str())
 }
 
 const fn state(sign_in: Option<SignIn>) -> &'static str {
@@ -248,7 +251,7 @@ const fn state(sign_in: Option<SignIn>) -> &'static str {
 
 /// The workspace that `name` is the folder of, if any.
 fn workspace_id(name: &str) -> Option<WorkspaceId> {
-    WorkspaceId::try_from(names::case_safe_id("w-", name)?).ok()
+    WorkspaceId::try_from(names::case_safe_id(FOLDER_PREFIX, name)?).ok()
 }
 
 #[cfg(test)]
@@ -560,7 +563,12 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let launch = |code: u8| {
             let bin = dir.join(format!("bin-{code}"));
-            platform::plant_script(&bin, "codex", &format!("exit {code}"));
+            fs::create_dir_all(&bin).unwrap();
+            weacon_testing::platform::write_program(
+                &bin.join("codex"),
+                &format!("#!/bin/sh\nexit {code}\n"),
+            )
+            .unwrap();
             Workspaces::new(&dir.join("state"), Some(bin.into_os_string()))
                 .located(&id("w1"), AgentKind::Codex, dir.to_path_buf())
                 .unwrap()
