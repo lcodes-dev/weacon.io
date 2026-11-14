@@ -1,9 +1,14 @@
 //! The one task that owns every chat on this machine: it takes people's commands, starts and
 //! orders agents, commits what happens to each chat's log and then publishes it.
 
+pub(crate) mod agent;
+#[cfg(test)]
+mod by_hand;
 mod commands;
 mod cut;
+mod launch;
 mod queries;
+mod said;
 mod turns;
 
 use std::collections::HashMap;
@@ -13,38 +18,35 @@ use std::sync::Arc;
 use tokio::sync::{mpsc, oneshot};
 use weacon_observability::{Fault, Field, Logger};
 use weacon_protocol::{
-    AgentKind, AgentSession, ChatAnswerKind, ChatCommand, ChatEntry, ChatEvent, ChatId, ChatQuery,
+    AgentKind, AgentSession, ChatAnswerKind, ChatCommand, ChatEntry, ChatEvent, ChatQuery,
     ChatUpdate, Message, Outcome, PermissionAnswer, Receipt, RequestId, RunId, RunState, RunStatus,
-    WorkspaceId, code,
+    code,
 };
 
+use self::agent::{Agent, Order, Said};
 use super::feed::{Client, Subscriber};
-use super::log::Log;
-use crate::runs::Runs;
-use crate::runs::task::{Agent, Order, Report};
+use super::log::ChatLog;
+use crate::runs::{ChatKey, Runs};
 use crate::workspaces::Workspaces;
 
 const ASKS: usize = 64;
-const REPORTS: usize = 256;
-
-type Key = (WorkspaceId, ChatId);
+const SAYS: usize = 256;
 
 /// Which agent to start, and as what.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct Start {
-    pub(crate) workspace: WorkspaceId,
-    pub(crate) chat: ChatId,
+pub(crate) struct RunAs {
+    pub(crate) key: ChatKey,
     pub(crate) agent: AgentKind,
     pub(crate) run: RunId,
     pub(crate) session: Option<AgentSession>,
 }
 
-type Starter<A> = Arc<dyn Fn(&Start) -> Result<A, Fault> + Send + Sync>;
+type Launcher<A> = Arc<dyn Fn(&RunAs) -> Result<A, Fault> + Send + Sync>;
 
 /// What the engine takes from the machine; the daemon wires the real ones.
 pub(crate) struct Host<A> {
     /// Starts an agent; may block, so it is called off the runtime.
-    pub(crate) start: Starter<A>,
+    pub(crate) launch: Launcher<A>,
     /// Unix seconds.
     pub(crate) now: fn() -> u64,
 }
@@ -100,47 +102,62 @@ impl Chats {
 
 /// A chat the engine has open: one with a running agent, a waiting prompt or a subscriber.
 struct Chat {
-    log: Log,
+    events: ChatLog,
     subscribers: Vec<Subscriber>,
-    /// The way to the chat's running agent.
+    /// The way to the chat's agent: none without one, closed once it stopped reading, until
+    /// its exit is reported.
     orders: Option<mpsc::UnboundedSender<Order>>,
-    answers: Vec<Answered>,
-    /// The turn, and the outcome its run reported, when its receipt couldn't be written.
-    unended: Option<(RequestId, Outcome)>,
-    /// An interrupt's request, and the turn it stops, until the interrupt is sent.
-    interrupting: Option<(RequestId, RequestId)>,
+    pending_answers: Vec<PendingAnswer>,
+    pending_end: Option<PendingEnd>,
+    pending_interrupt: Option<PendingInterrupt>,
     /// The agent's session when the runs journal couldn't save it.
-    unsaved: Option<AgentSession>,
+    pending_session: Option<AgentSession>,
 }
 
 impl Chat {
-    // Whether nothing needs the chat open: no agent, answer, outcome or session still to save,
-    // or connected subscriber.
-    fn is_idle(&mut self) -> bool {
+    fn forget_gone(&mut self) {
         self.subscribers.retain(|subscriber| !subscriber.is_gone());
+    }
+
+    // Whether nothing needs the chat open.
+    fn is_unused(&self) -> bool {
         self.orders.is_none()
             && self.subscribers.is_empty()
-            && self.answers.is_empty()
-            && self.unended.is_none()
-            && self.unsaved.is_none()
+            && self.pending_answers.is_empty()
+            && self.pending_end.is_none()
+            && self.pending_session.is_none()
     }
 }
 
 /// An answer to a waiting prompt whose receipt is being written, so a retry delivers it.
 #[derive(Debug, PartialEq, Eq)]
-struct Answered {
+struct PendingAnswer {
     request: RequestId,
     answer: PermissionAnswer,
+}
+
+/// The outcome a turn's run reported, when the turn's receipt couldn't be written.
+#[derive(Debug, PartialEq, Eq)]
+struct PendingEnd {
+    turn: RequestId,
+    outcome: Outcome,
+}
+
+/// An interrupt committed and not yet sent, and the turn it stops.
+#[derive(Debug, PartialEq, Eq)]
+struct PendingInterrupt {
+    request: RequestId,
+    turn: RequestId,
 }
 
 pub(crate) struct Engine<A> {
     runs: Runs,
     workspaces: Workspaces,
-    chats: HashMap<Key, Chat>,
+    open_chats: HashMap<ChatKey, Chat>,
     host: Host<A>,
-    asks: mpsc::Receiver<Ask>,
-    reports: mpsc::Receiver<Report>,
-    reporter: mpsc::Sender<Report>,
+    asked: mpsc::Receiver<Ask>,
+    incoming: mpsc::Receiver<Said>,
+    says: mpsc::Sender<Said>,
     log: Logger,
 }
 
@@ -151,45 +168,42 @@ impl<A: Agent> Engine<A> {
         host: Host<A>,
         log: Logger,
     ) -> (Chats, Self) {
-        let (asks_in, asks) = mpsc::channel(ASKS);
-        let (reporter, reports) = mpsc::channel(REPORTS);
+        let (asks, asked) = mpsc::channel(ASKS);
+        let (says, incoming) = mpsc::channel(SAYS);
         let engine = Self {
             runs,
             workspaces,
-            chats: HashMap::new(),
+            open_chats: HashMap::new(),
             host,
-            asks,
-            reports,
-            reporter,
+            asked,
+            incoming,
+            says,
             log,
         };
-        (Chats { asks: asks_in }, engine)
+        (Chats { asks }, engine)
     }
 
     /// Serves until every [`Chats`] is dropped; the agents stop with it.
-    pub(crate) async fn run(mut self) {
+    pub(crate) async fn serve(mut self) {
         loop {
             let key = tokio::select! {
-                ask = self.asks.recv() => match ask {
+                ask = self.asked.recv() => match ask {
                     Some(Ask::Command(command, answer)) => {
-                        let key = (command.workspace.clone(), command.chat.clone());
+                        let key = ChatKey::new(&command.workspace, &command.chat);
                         drop(answer.send(self.command(&key, command).await));
                         key
                     }
                     Some(Ask::Query(query, client, answer)) => {
-                        let key = (query.workspace.clone(), query.chat.clone());
+                        let key = ChatKey::new(&query.workspace, &query.chat);
                         drop(answer.send(self.query(&key, query.query, &client).await));
                         key
                     }
                     None => return self.log.info("engine stopped", &[]),
                 },
-                Some(report) = self.reports.recv() => {
-                    let key = (report.of.workspace, report.of.chat);
-                    if let Err(fault) = self.heard(&key, &report.of.run, report.heard).await {
-                        let fields = [
-                            ("run_id", report.of.run.as_str().into()),
-                            ("err", Field::error(&fault)),
-                        ];
+                Some(said) = self.incoming.recv() => {
+                    let key = said.of.key;
+                    if let Err(fault) = self.heard(&key, &said.of.run, said.heard).await {
+                        let fields = failed(&key, &said.of.run, &fault);
                         self.log.error("run event not committed", &fields);
                     }
                     key
@@ -199,46 +213,55 @@ impl<A: Agent> Engine<A> {
         }
     }
 
-    async fn state(&mut self, key: &Key, run: &RunId, state: RunState) -> Result<(), Fault> {
-        self.runs
-            .update(&key.0, &key.1, |record| record.state = state)
-            .await?;
+    async fn set_state(
+        &mut self,
+        key: &ChatKey,
+        run: &RunId,
+        state: RunState,
+    ) -> Result<(), Fault> {
+        self.runs.update(key, |record| record.state = state).await?;
+        self.tell_state(key, run, state).await
+    }
+
+    // Commits the run's state for the chat's subscribers; the journal already holds it.
+    async fn tell_state(
+        &mut self,
+        key: &ChatKey,
+        run: &RunId,
+        state: RunState,
+    ) -> Result<(), Fault> {
         let status = RunStatus {
             run: run.clone(),
             state,
             agent: None,
         };
-        self.commit(key, ChatEvent::RunStatus { status })
-            .await
-            .map(drop)
+        self.commit(key, ChatEvent::RunStatus { status }).await
     }
 
-    async fn receipt(
+    async fn commit_receipt(
         &mut self,
-        key: &Key,
+        key: &ChatKey,
         request: &RequestId,
         outcome: Outcome,
     ) -> Result<(), Fault> {
         // A command's end is told once, whichever path gets there first.
-        if self.chat(key).await?.log.has_ended(request) {
+        if self.open(key).await?.events.has_ended(request) {
             return Ok(());
         }
         let receipt = Receipt {
             request: request.clone(),
             outcome,
         };
-        self.commit(key, ChatEvent::Receipt { receipt })
-            .await
-            .map(drop)
+        self.commit(key, ChatEvent::Receipt { receipt }).await
     }
 
     // Commits `event` to the chat's log, then tells its subscribers.
-    async fn commit(&mut self, key: &Key, event: ChatEvent) -> Result<ChatEntry, Fault> {
-        let chat = self.chat(key).await?;
-        match chat.log.append(event).await {
+    async fn commit(&mut self, key: &ChatKey, event: ChatEvent) -> Result<(), Fault> {
+        let chat = self.open(key).await?;
+        match chat.events.append(event).await {
             Ok(entry) => {
-                self.publish(key, &update(key, entry.clone()));
-                Ok(entry)
+                self.publish(key, &update(key, entry));
+                Ok(())
             }
             Err(fault) => {
                 if fault.code() == &code!("chat.log_not_written") {
@@ -250,21 +273,21 @@ impl<A: Agent> Engine<A> {
     }
 
     // Opens a log again after a failed write; its subscribers start over from a snapshot.
-    async fn mend(&mut self, key: &Key) {
-        let root = self.workspaces.root(&key.0);
-        let Some(chat) = self.chats.get_mut(key) else {
+    async fn mend(&mut self, key: &ChatKey) {
+        let root = self.workspaces.root(&key.workspace);
+        let Some(chat) = self.open_chats.get_mut(key) else {
             return;
         };
         for subscriber in chat.subscribers.drain(..) {
             subscriber.end();
         }
-        if let Ok(log) = Log::open(&root, &key.1).await {
-            chat.log = log;
+        if let Ok(log) = ChatLog::open(&root, &key.chat).await {
+            chat.events = log;
         }
     }
 
-    fn publish(&mut self, key: &Key, message: &Message) {
-        if let Some(chat) = self.chats.get_mut(key) {
+    fn publish(&mut self, key: &ChatKey, message: &Message) {
+        if let Some(chat) = self.open_chats.get_mut(key) {
             chat.subscribers = std::mem::take(&mut chat.subscribers)
                 .into_iter()
                 .filter_map(|subscriber| subscriber.tell(message.clone()))
@@ -273,65 +296,93 @@ impl<A: Agent> Engine<A> {
     }
 
     // Whether the order reached the run; a run that is gone says so itself, in its last report.
-    fn order(&self, key: &Key, order: Order) -> bool {
-        self.chats
+    fn order(&self, key: &ChatKey, order: Order) -> bool {
+        self.open_chats
             .get(key)
             .and_then(|chat| chat.orders.as_ref())
             .is_some_and(|orders| orders.send(order).is_ok())
     }
 
     // Whether the chat's run hasn't yet reported its exit.
-    fn is_live(&self, key: &Key) -> bool {
-        self.chats
+    fn is_live(&self, key: &ChatKey) -> bool {
+        self.open_chats
             .get(key)
             .is_some_and(|chat| chat.orders.is_some())
     }
 
     // Whether the chat's run still reads orders: one that stopped reading reports its exit next.
-    fn takes_orders(&self, key: &Key) -> bool {
-        self.chats
+    fn takes_orders(&self, key: &ChatKey) -> bool {
+        self.open_chats
             .get(key)
             .and_then(|chat| chat.orders.as_ref())
             .is_some_and(|orders| !orders.is_closed())
     }
 
-    fn turn(&self, key: &Key) -> Option<RequestId> {
-        self.runs.of(&key.0, &key.1)?.turn.clone()
+    fn now(&self) -> u64 {
+        (self.host.now)()
     }
 
-    async fn chat(&mut self, key: &Key) -> Result<&mut Chat, Fault> {
-        let root = self.workspaces.root(&key.0);
-        match self.chats.entry(key.clone()) {
+    fn turn(&self, key: &ChatKey) -> Option<RequestId> {
+        self.runs.of(key)?.turn.clone()
+    }
+
+    fn run_of(&self, key: &ChatKey) -> Option<RunId> {
+        self.runs.of(key)?.run.clone()
+    }
+
+    async fn open(&mut self, key: &ChatKey) -> Result<&mut Chat, Fault> {
+        let root = self.workspaces.root(&key.workspace);
+        match self.open_chats.entry(key.clone()) {
             Entry::Occupied(open) => Ok(open.into_mut()),
             Entry::Vacant(closed) => Ok(closed.insert(Chat {
-                log: Log::open(&root, &key.1).await?,
+                events: ChatLog::open(&root, &key.chat).await?,
                 subscribers: Vec::new(),
                 orders: None,
-                answers: Vec::new(),
-                unended: None,
-                interrupting: None,
-                unsaved: None,
+                pending_answers: Vec::new(),
+                pending_end: None,
+                pending_interrupt: None,
+                pending_session: None,
             })),
         }
     }
 
     // Closes a chat nobody is using, so its log doesn't stay open for good.
-    fn settle(&mut self, key: &Key) {
-        if self.chats.get_mut(key).is_some_and(Chat::is_idle) {
-            self.chats.remove(key);
+    fn settle(&mut self, key: &ChatKey) {
+        let Some(chat) = self.open_chats.get_mut(key) else {
+            return;
+        };
+        chat.forget_gone();
+        if chat.is_unused() {
+            self.open_chats.remove(key);
         }
     }
 
     // Lets go of clients that hung up, and of the chats only they were watching.
     fn sweep(&mut self) {
-        self.chats.retain(|_, chat| !chat.is_idle());
+        self.open_chats.values_mut().for_each(Chat::forget_gone);
+        self.open_chats.retain(|_, chat| !chat.is_unused());
     }
 }
 
-fn update(key: &Key, entry: ChatEntry) -> Message {
+// What names a chat's run on a log line.
+fn about(key: &ChatKey, run: &RunId) -> [(&'static str, Field); 3] {
+    [
+        ("workspace_id", key.workspace.as_str().into()),
+        ("chat_id", key.chat.as_str().into()),
+        ("run_id", run.as_str().into()),
+    ]
+}
+
+// What names a chat's run on a log line, and the fault it met.
+fn failed(key: &ChatKey, run: &RunId, fault: &Fault) -> [(&'static str, Field); 4] {
+    let [workspace, chat, run] = about(key, run);
+    [workspace, chat, run, ("err", Field::error(fault))]
+}
+
+fn update(key: &ChatKey, entry: ChatEntry) -> Message {
     Message::Chat(ChatUpdate {
-        workspace: key.0.clone(),
-        chat: key.1.clone(),
+        workspace: key.workspace.clone(),
+        chat: key.chat.clone(),
         entry,
     })
 }
@@ -341,49 +392,18 @@ mod tests {
     use std::sync::atomic::Ordering;
 
     use weacon_model::ChatRuns;
-    use weacon_protocol::{
-        AgentKind, AgentSession, ChatAction, ChatAnswerKind, ChatCommand, ChatQueryKind,
-        PermissionAnswer, RunEvent,
-    };
+    use weacon_protocol::{ChatAction, ChatAnswerKind, ChatQueryKind, RunEvent};
 
+    use super::agent::Heard;
+    use super::by_hand::on_turn;
     use super::*;
     use crate::chats::test_support::{
-        Bench, Started, Told, bench, chat, client, command, prompt, pushed, query, run, soon,
-        workspace,
+        Bench, Started, Told, allow, asks, bench, chat, client, command, key, prompt,
+        prompt_naming, pushed, query, run, session, skip, soon, text,
     };
-
-    const SESSION: &str = "0b7c6a52-3f1e-4d2a-9c8b-5e4f3a2b1c0d";
-
-    fn session() -> AgentSession {
-        AgentSession::try_from(SESSION.to_owned()).unwrap()
-    }
-
-    fn text(text: &str) -> RunEvent {
-        RunEvent::Text {
-            text: text.to_owned(),
-        }
-    }
 
     fn done(outcome: Outcome) -> RunEvent {
         RunEvent::Finished { outcome }
-    }
-
-    fn asks(run_id: &str, prompt: u32) -> RunEvent {
-        RunEvent::PermissionAsked {
-            run: run(run_id),
-            prompt,
-            tool: "Bash".to_owned(),
-            input: serde_json::json!({ "command": "ls" }),
-        }
-    }
-
-    fn allow(request: &str, chat_id: &str, run_id: &str, prompt: u32) -> ChatCommand {
-        let answer = PermissionAnswer {
-            run: run(run_id),
-            prompt,
-            allow: true,
-        };
-        command(request, chat_id, ChatAction::Permission { answer })
     }
 
     // The chat's snapshot: its runs, its waiting prompts and its latest events.
@@ -441,10 +461,9 @@ mod tests {
 
         let mut agent = first_turn(&mut bench, &mut pushes).await;
         assert_eq!(
-            agent.start,
-            Start {
-                workspace: workspace(),
-                chat: chat("c-1"),
+            agent.run_as,
+            RunAs {
+                key: key(),
                 agent: AgentKind::Claude,
                 run: run("run-1"),
                 session: None,
@@ -589,7 +608,7 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn a_prompt_cut_off_with_its_run_is_never_answered_in_the_chats_next_run() {
+    async fn a_permission_cut_off_with_its_run_is_never_answered_in_the_chats_next_run() {
         let mut bench = bench();
         let mut pushes = watch(&bench).await;
         let agent = first_turn(&mut bench, &mut pushes).await;
@@ -611,7 +630,7 @@ mod tests {
         bench.chats.command(prompt("r-4", "Again")).await.unwrap();
         let mut next = soon(bench.started.recv()).await.unwrap();
         assert_eq!(
-            (next.start.run.as_str(), next.start.session.clone()),
+            (next.run_as.run.as_str(), next.run_as.session.clone()),
             ("run-2", Some(session()))
         );
         assert_eq!(
@@ -624,7 +643,7 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn a_withdrawn_prompt_stops_waiting_and_an_interrupt_ends_the_turn() {
+    async fn a_withdrawn_permission_stops_waiting_and_an_interrupt_ends_the_turn() {
         let mut bench = bench();
         let mut pushes = watch(&bench).await;
         let mut agent = first_turn(&mut bench, &mut pushes).await;
@@ -666,31 +685,23 @@ mod tests {
         agent.told.try_recv().unwrap_err();
     }
 
-    fn prompt_for(request: &str, text: &str, agent: AgentKind) -> ChatCommand {
-        let mut asked = prompt(request, text);
-        if let ChatAction::Prompt { agent: named, .. } = &mut asked.action {
-            *named = Some(agent);
-        }
-        asked
-    }
-
     #[tokio::test(start_paused = true)]
     async fn a_chats_first_prompt_fixes_its_agent_and_a_later_one_cant_change_it() {
         let mut bench = bench();
         let mut pushes = watch(&bench).await;
 
-        let first = prompt_for("r-1", "Hi", AgentKind::Codex);
+        let first = prompt_naming("r-1", "Hi", AgentKind::Codex);
         bench.chats.command(first).await.unwrap();
 
         let started = soon(bench.started.recv()).await.unwrap();
-        assert_eq!(started.start.agent, AgentKind::Codex);
-        assert_eq!(pushed(&mut pushes, 4).await.len(), 4);
-        let other = prompt_for("r-2", "More", AgentKind::Claude);
+        assert_eq!(started.run_as.agent, AgentKind::Codex);
+        skip(&mut pushes, 4).await;
+        let other = prompt_naming("r-2", "More", AgentKind::Claude);
         assert_eq!(
             code_of(bench.chats.command(other).await),
             "chat.agent_conflict"
         );
-        let same = prompt_for("r-3", "More", AgentKind::Codex);
+        let same = prompt_naming("r-3", "More", AgentKind::Codex);
         bench.chats.command(same).await.unwrap();
         assert_eq!(pushed(&mut pushes, 1).await, ["5 prompt r-3 More"]);
     }
@@ -699,7 +710,7 @@ mod tests {
     async fn an_agent_this_build_doesnt_know_is_refused() {
         let bench = bench();
 
-        let newer = prompt_for("r-1", "Hi", AgentKind::Newer);
+        let newer = prompt_naming("r-1", "Hi", AgentKind::Newer);
 
         assert_eq!(
             code_of(bench.chats.command(newer).await),
@@ -728,7 +739,7 @@ mod tests {
 
         // The failed prompt left the queue: the new run gets only the next one.
         let mut started = soon(bench.started.recv()).await.unwrap();
-        assert_eq!(started.start.run, run("run-2"));
+        assert_eq!(started.run_as.run, run("run-2"));
         assert_eq!(
             soon(started.told.recv()).await,
             Some(Told::Send("Again".to_owned()))
@@ -742,7 +753,7 @@ mod tests {
         let agent = first_turn(&mut bench, &mut pushes).await;
         bench.chats.command(prompt("r-2", "Second")).await.unwrap();
         bench.chats.command(prompt("r-3", "Third")).await.unwrap();
-        assert_eq!(pushed(&mut pushes, 4).await.len(), 4);
+        skip(&mut pushes, 4).await;
 
         drop(agent);
         assert_eq!(
@@ -789,7 +800,7 @@ mod tests {
         for said in ["One", "Two", "Three"] {
             agent.say.send(text(said)).unwrap();
         }
-        assert_eq!(pushed(&mut pushes, 3).await.len(), 3);
+        skip(&mut pushes, 3).await;
         assert_eq!(
             pushed(&mut slowly, 2).await,
             ["5 run-1 text One", "events lost"]
@@ -826,7 +837,7 @@ mod tests {
         );
         let agent = first_turn(&mut bench, &mut pushes).await;
         agent.say.send(asks("run-1", 1)).unwrap();
-        assert_eq!(pushed(&mut pushes, 2).await.len(), 2);
+        skip(&mut pushes, 2).await;
 
         let snapshot = query("c-1", ChatQueryKind::Snapshot);
         let Ok(Some(ChatAnswerKind::Snapshot {
@@ -862,7 +873,7 @@ mod tests {
         let mut agent = first_turn(&mut bench, &mut pushes).await;
         agent.say.send(asks("run-1", 1)).unwrap();
         agent.say.send(asks("run-1", 2)).unwrap();
-        assert_eq!(pushed(&mut pushes, 4).await.len(), 4);
+        skip(&mut pushes, 4).await;
 
         let first = allow("r-2", "c-1", "run-1", 1);
         bench.chats.command(first).await.unwrap();
@@ -894,7 +905,7 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn a_withdrawn_prompt_leaves_the_run_waiting_while_another_waits() {
+    async fn a_withdrawn_permission_leaves_the_run_waiting_while_another_waits() {
         let mut bench = bench();
         let mut pushes = watch(&bench).await;
         let agent = first_turn(&mut bench, &mut pushes).await;
@@ -935,7 +946,7 @@ mod tests {
 
         let _agent = first_turn(&mut bench, &mut pushes).await;
 
-        assert_eq!(pushed(&mut once, 4).await.len(), 4);
+        skip(&mut once, 4).await;
         once.try_recv().unwrap_err();
         let lost = bench.chats.query(subscribe(), &full).await.unwrap();
         assert_eq!(lost, Some(ChatAnswerKind::EventsLost));
@@ -966,5 +977,55 @@ mod tests {
         let snapshot = query("c-1", ChatQueryKind::Snapshot);
         let asked = stopped.chats.query(snapshot, &anyone).await;
         assert_eq!(asked.unwrap_err().code().as_str(), "chat.engine_stopped");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_chat_stays_open_only_while_an_agent_a_prompt_or_a_client_needs_it() {
+        let mut on = on_turn().await;
+        let other = ChatKey {
+            chat: chat("c-2"),
+            ..key()
+        };
+        let (watcher, watching) = client(4);
+        let subscribe = || ChatQueryKind::Subscribe { after: 0 };
+        on.engine
+            .query(&other, subscribe(), &watcher)
+            .await
+            .unwrap();
+
+        on.engine.settle(&key());
+        on.engine.settle(&other);
+        assert!(
+            on.engine.open_chats.contains_key(&key()) && on.engine.open_chats.contains_key(&other)
+        );
+
+        // The agent exits, and both clients hang up.
+        drop(on.agent);
+        on.engine
+            .heard(&key(), &run("run-1"), Heard::Exited(None))
+            .await
+            .unwrap();
+        on.engine.settle(&key());
+        assert!(
+            on.engine.open_chats.contains_key(&key()),
+            "a client still watches it"
+        );
+        drop((on.pushes, watching));
+        on.engine.settle(&key());
+        assert!(!on.engine.open_chats.contains_key(&key()));
+
+        // A hung-up client's chat is let go when anyone subscribes anywhere.
+        assert!(on.engine.open_chats.contains_key(&other));
+        let (third, _watching) = client(4);
+        let elsewhere = ChatKey {
+            chat: chat("c-3"),
+            ..key()
+        };
+        on.engine
+            .query(&elsewhere, subscribe(), &third)
+            .await
+            .unwrap();
+        assert!(!on.engine.open_chats.contains_key(&other));
+        assert!(on.engine.open_chats.contains_key(&elsewhere));
     }
 }

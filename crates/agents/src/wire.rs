@@ -22,8 +22,13 @@ pub(crate) enum Effect {
     Started(AgentSession),
     Event(RunEvent),
     Asked(Asked),
-    Withdrawn { request: Value },
-    Finished { ok: bool },
+    Withdrawn {
+        request: Value,
+    },
+    /// The turn ended; when not `ok`, the run tells a failure from an interrupt it asked for.
+    Finished {
+        ok: bool,
+    },
 }
 
 /// An agent's request for permission to use `tool` with `input`.

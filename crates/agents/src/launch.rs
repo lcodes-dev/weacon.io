@@ -450,7 +450,7 @@ mod tests {
     async fn a_status_command_that_never_ends_is_given_up_on() {
         let dir = TempDir::new().unwrap();
         let program = dir.join("codex");
-        platform::write_program(&program, "#!/bin/sh\nexec sleep 3600\n");
+        weacon_testing::platform::write_program(&program, "#!/bin/sh\nexec sleep 3600\n").unwrap();
         let hanging = Launch {
             program,
             ..launch(AgentKind::Codex, &dir)
