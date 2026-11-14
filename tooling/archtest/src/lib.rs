@@ -167,6 +167,15 @@ mod tests {
 
     #[test]
     fn a_folder_without_a_workspace_is_an_error() {
-        violations(&std::env::temp_dir()).unwrap_err();
+        use std::hash::{BuildHasher, RandomState};
+
+        // archtest may use nothing in the repo, so not weacon_testing's TempDir.
+        let id = RandomState::new().hash_one(std::process::id());
+        let dir = std::env::temp_dir().join(format!("weacon-archtest-{id:016x}"));
+        fs::create_dir(&dir).unwrap();
+        let found = violations(&dir);
+        fs::remove_dir(&dir).unwrap();
+
+        found.unwrap_err();
     }
 }
