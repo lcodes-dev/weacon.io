@@ -3,7 +3,9 @@
 mod app;
 mod chats;
 mod cli;
+mod codemap;
 mod daemon;
+mod db;
 mod disk;
 mod doctor;
 #[cfg_attr(

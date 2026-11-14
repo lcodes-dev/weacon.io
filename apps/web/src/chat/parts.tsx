@@ -16,9 +16,9 @@ export function AskView({
   const sending = answering !== undefined && answering.settled === undefined;
   const problem = answerProblem(answering);
   return (
-    <div className={ask.open ? "row ask open" : "row ask"} role="group" aria-label={`Use ${ask.tool}?`}>
+    <div className={ask.state === "open" ? "row ask open" : "row ask"} role="group" aria-label={`Use ${ask.tool}?`}>
       <span>{askText(ask)}</span>
-      {ask.open && (
+      {ask.state === "open" && (
         <span className="choices">
           <button type="button" disabled={sending} onClick={() => onAnswer(true)}>
             Allow
@@ -28,7 +28,7 @@ export function AskView({
           </button>
         </span>
       )}
-      {ask.open && problem !== undefined && (
+      {ask.state === "open" && problem !== undefined && (
         <span className="problem" role="alert">
           {problem}
         </span>
@@ -37,11 +37,17 @@ export function AskView({
   );
 }
 
-function askText({ open, tool, allowed }: Ask): string {
-  if (open) {
-    return `Asks to use ${tool}`;
+function askText({ state, tool }: Ask): string {
+  switch (state) {
+    case "open":
+      return `Asks to use ${tool}`;
+    case "closed":
+      return `Asked to use ${tool}`;
+    case "allowed":
+      return `Allowed ${tool}`;
+    case "denied":
+      return `Denied ${tool}`;
   }
-  return allowed === undefined ? `Asked to use ${tool}` : `${allowed ? "Allowed" : "Denied"} ${tool}`;
 }
 
 /** Stop, shown while an agent is on a turn, and why the last one may not have worked. */
