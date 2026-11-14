@@ -1,6 +1,5 @@
 //! The person's answer to whether this core sends error reports, kept in the state folder.
 
-use std::fs;
 use std::future::Future;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -12,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use weacon_observability::{Fault, Field, Logger, Reporter};
 use weacon_protocol::code;
 
-use crate::app::{App, state_unavailable};
+use crate::app::{App, WarnOnce, read_json};
 use crate::platform;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
@@ -56,14 +55,14 @@ pub(crate) async fn following<T>(
 
 struct Watch {
     state_dir: PathBuf,
-    failing: bool,
+    failures: WarnOnce,
 }
 
 impl Watch {
-    const fn new(state_dir: PathBuf) -> Self {
+    fn new(state_dir: PathBuf) -> Self {
         Self {
             state_dir,
-            failing: false,
+            failures: WarnOnce::default(),
         }
     }
 
@@ -90,15 +89,7 @@ impl Watch {
     // Only logs: the reporter was brought into line under the lock, and a change saved since
     // must stand.
     fn observe(&mut self, read: Result<(), Fault>, log: &Logger) {
-        match read {
-            Ok(()) => self.failing = false,
-            Err(error) => {
-                if !self.failing {
-                    log.warn("reports unreadable", &[("err", Field::error(&error))]);
-                }
-                self.failing = true;
-            }
-        }
+        self.failures.check(read, log, "reports unreadable");
     }
 }
 
@@ -120,18 +111,9 @@ fn unreadable() -> Fault {
 
 // `None` until the person answers; a state folder that is a file holds no answer either.
 fn read(state_dir: &Path) -> Result<Option<bool>, Fault> {
-    match fs::read(file(state_dir)) {
-        Ok(json) => serde_json::from_slice::<Stored>(&json)
-            .map(|stored| Some(stored.send))
-            .map_err(|error| unreadable().because(error)),
-        Err(error)
-            if matches!(
-                error.kind(),
-                io::ErrorKind::NotFound | io::ErrorKind::NotADirectory
-            ) =>
-        {
-            Ok(None)
-        }
+    match read_json::<Stored>(&file(state_dir)) {
+        Ok(stored) => Ok(stored.map(|stored| stored.send)),
+        Err(error) if error.kind() == io::ErrorKind::NotADirectory => Ok(None),
         Err(error) => Err(unreadable().because(error)),
     }
 }
@@ -184,7 +166,7 @@ fn settled<T>(step: impl FnOnce() -> T) -> T {
 
 /// Stores `answer` when given, applies it to this run, and says what the answer is now.
 pub(crate) fn run(app: &App, answer: Option<Answer>, out: &mut impl Write) -> Result<(), Fault> {
-    let state_dir = app.state_dir.as_deref().ok_or_else(state_unavailable)?;
+    let state_dir = app.state_dir()?;
     let send = match answer {
         Some(answer) => {
             let send = answer == Answer::On;
@@ -193,7 +175,8 @@ pub(crate) fn run(app: &App, answer: Option<Answer>, out: &mut impl Write) -> Re
         }
         None => current(state_dir),
     };
-    out.write_all(describe(send).as_bytes()).map_err(|error| {
+    let shown = describe(send, app.reporter.is_on());
+    out.write_all(shown.as_bytes()).map_err(|error| {
         Fault::new(
             code!("reports.output_failed"),
             "The answer to error reports couldn't be printed",
@@ -202,9 +185,14 @@ pub(crate) fn run(app: &App, answer: Option<Answer>, out: &mut impl Write) -> Re
     })
 }
 
-fn describe(send: Option<bool>) -> &'static str {
+fn describe(send: Option<bool>, can_send: bool) -> &'static str {
     match send {
-        Some(true) => "Error reports: on. They hold no messages, prompts, code or file contents.\n",
+        Some(true) if can_send => {
+            "Error reports: on. They hold no messages, prompts, code or file contents.\n"
+        }
+        Some(true) => {
+            "Error reports: on, but none are sent until a valid WEACON_SENTRY_DSN is set.\n"
+        }
         Some(false) => "Error reports: off.\n",
         None => "Error reports: off until you choose. Run weacon reports on, or off.\n",
     }
@@ -212,10 +200,14 @@ fn describe(send: Option<bool>) -> &'static str {
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+
     use weacon_testing::TempDir;
 
     use super::*;
-    use crate::test_support::{self, Broken};
+    use crate::test_support::{self, Broken, Records};
+
+    const UNCHOSEN: &str = "Error reports: off until you choose. Run weacon reports on, or off.\n";
 
     fn reports(dir: &Path, answer: Option<Answer>) -> Result<String, Fault> {
         let app = test_support::app(Some(dir), None);
@@ -268,27 +260,62 @@ mod tests {
     }
 
     #[test]
-    fn nothing_is_chosen_until_the_person_answers_and_the_answer_is_kept() {
+    fn nothing_is_chosen_until_the_person_answers() {
         let dir = TempDir::new().unwrap();
-        let before = reports(&dir, None).unwrap();
+
+        assert_eq!(reports(&dir, None).unwrap(), UNCHOSEN);
+        assert_eq!(read(&dir).unwrap(), None);
+    }
+
+    #[test]
+    fn an_answer_is_saved_and_kept() {
+        let dir = TempDir::new().unwrap();
         let on = reports(&dir, Some(Answer::On)).unwrap();
-        let kept_on = reports(&dir, None).unwrap();
-        let stored_on = fs::read_to_string(file(&dir)).unwrap();
-        let off = reports(&dir, Some(Answer::Off)).unwrap();
+
+        assert_eq!(reports(&dir, None).unwrap(), on);
+        assert_eq!(fs::read_to_string(file(&dir)).unwrap(), r#"{"send":true}"#);
+        assert_eq!(
+            reports(&dir, Some(Answer::Off)).unwrap(),
+            "Error reports: off.\n"
+        );
+        assert_eq!(read(&dir).unwrap(), Some(false));
+        assert_eq!(reports(&dir, None).unwrap(), "Error reports: off.\n");
+    }
+
+    #[test]
+    fn a_yes_without_a_dsn_says_nothing_is_sent() {
+        let dir = TempDir::new().unwrap();
 
         assert_eq!(
-            before,
-            "Error reports: off until you choose. Run weacon reports on, or off.\n"
+            reports(&dir, Some(Answer::On)).unwrap(),
+            "Error reports: on, but none are sent until a valid WEACON_SENTRY_DSN is set.\n"
         );
-        assert!(
-            on.starts_with("Error reports: on. They hold no messages"),
-            "{on}"
+    }
+
+    #[test]
+    fn a_yes_with_a_dsn_says_what_reports_hold() {
+        let dir = TempDir::new().unwrap();
+        let mut app = test_support::app(Some(&dir), None);
+        let reports = weacon_observability::Reports::new(
+            "https://key@sentry.example.com/1",
+            "weacon/0.1.0",
+            "weacon-core@0.1.0+1a2b3c4",
+            "",
+        )
+        .ok();
+        app.base.reporter = Arc::new(weacon_appkit::reporter(
+            reports,
+            false,
+            Box::new(|_| Ok(())),
+        ));
+        let mut out = Vec::new();
+
+        run(&app, Some(Answer::On), &mut out).unwrap();
+
+        assert_eq!(
+            String::from_utf8(out).unwrap(),
+            "Error reports: on. They hold no messages, prompts, code or file contents.\n"
         );
-        assert_eq!(kept_on, on);
-        assert_eq!(stored_on, r#"{"send":true}"#);
-        assert_eq!(off, "Error reports: off.\n");
-        assert_eq!(read(&dir).unwrap(), Some(false));
-        assert_eq!(reports(&dir, None).unwrap(), off);
     }
 
     #[test]
@@ -306,56 +333,111 @@ mod tests {
     }
 
     #[test]
-    fn a_broken_or_newer_file_still_reads_or_is_an_error() {
+    fn a_newer_file_still_reads() {
         let dir = TempDir::new().unwrap();
         fs::write(file(&dir), r#"{"send":true,"later":1}"#).unwrap();
-        assert_eq!(read(&dir).unwrap(), Some(true));
-        fs::write(file(&dir), "not json").unwrap();
-        let broken = read(&dir).unwrap_err();
-        let shown = reports(&dir, None).unwrap();
-        let not_a_folder = dir.join("reports.json");
-        let replaced = reports(&dir, Some(Answer::Off)).unwrap();
 
-        assert_eq!(broken.code().as_str(), "reports.unreadable");
-        assert!(
-            shown.starts_with("Error reports: off until you choose."),
-            "{shown}"
-        );
-        assert_eq!(read(&not_a_folder).unwrap(), None);
-        let folder = TempDir::new().unwrap();
-        fs::create_dir_all(file(&folder)).unwrap();
+        assert_eq!(read(&dir).unwrap(), Some(true));
+    }
+
+    #[test]
+    fn a_broken_file_is_unreadable_and_shown_as_unchosen() {
+        let dir = TempDir::new().unwrap();
+        fs::write(file(&dir), "not json").unwrap();
+
         assert_eq!(
-            read(&folder).unwrap_err().code().as_str(),
+            read(&dir).unwrap_err().code().as_str(),
             "reports.unreadable"
         );
-        assert!(replaced.starts_with("Error reports: off."), "{replaced}");
+        assert_eq!(reports(&dir, None).unwrap(), UNCHOSEN);
+    }
+
+    #[test]
+    fn a_broken_file_is_replaced_by_an_answer() {
+        let dir = TempDir::new().unwrap();
+        fs::write(file(&dir), "not json").unwrap();
+
+        assert_eq!(
+            reports(&dir, Some(Answer::Off)).unwrap(),
+            "Error reports: off.\n"
+        );
         assert_eq!(read(&dir).unwrap(), Some(false));
     }
 
-    #[tokio::test]
-    async fn a_watch_follows_the_stored_answer_and_warns_once_while_it_cant_be_read() {
+    #[test]
+    fn a_state_folder_that_is_a_file_holds_no_answer() {
         let dir = TempDir::new().unwrap();
-        let app = test_support::app(Some(&dir), None);
+        fs::write(file(&dir), r#"{"send":true}"#).unwrap();
+
+        assert_eq!(read(&file(&dir)).unwrap(), None);
+    }
+
+    #[test]
+    fn an_answer_that_is_a_folder_is_unreadable() {
+        let dir = TempDir::new().unwrap();
+        fs::create_dir_all(file(&dir)).unwrap();
+
+        assert_eq!(
+            read(&dir).unwrap_err().code().as_str(),
+            "reports.unreadable"
+        );
+    }
+
+    // A watch whose reporter was last told yes, and the logger it warns on.
+    fn watching(dir: &Path) -> (Watch, App, Logger, Records) {
+        let app = test_support::app(Some(dir), None);
         let (log, records) = test_support::recording_logger();
-        let mut watch = Watch::new(dir.to_path_buf());
         app.reporter.set_agreed(true);
-        watch.check(&app.reporter, &log).await;
-        let mut agreed = vec![app.reporter.agreed()];
-        for answer in [r#"{"send":true}"#, "not json", "still not"] {
-            fs::write(file(&dir), answer).unwrap();
-            app.reporter.set_agreed(true);
-            watch.check(&app.reporter, &log).await;
-            agreed.push(app.reporter.agreed());
-        }
-        let broken = test_support::messages(&records);
-        fs::write(file(&dir), r#"{"send":false}"#).unwrap();
-        watch.check(&app.reporter, &log).await;
-        fs::write(file(&dir), "broken again").unwrap();
+        (Watch::new(dir.to_path_buf()), app, log, records)
+    }
+
+    #[tokio::test]
+    async fn a_watch_with_no_answer_sends_nothing() {
+        let dir = TempDir::new().unwrap();
+        let (mut watch, app, log, records) = watching(&dir);
+
         watch.check(&app.reporter, &log).await;
 
-        assert_eq!(agreed, [false, true, false, false]);
-        assert_eq!(broken, ["reports unreadable"]);
         assert!(!app.reporter.agreed());
+        assert!(test_support::messages(&records).is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_watch_follows_a_no_then_a_yes() {
+        let dir = TempDir::new().unwrap();
+        let (mut watch, app, log, _) = watching(&dir);
+        fs::write(file(&dir), r#"{"send":false}"#).unwrap();
+        watch.check(&app.reporter, &log).await;
+        let after_no = app.reporter.agreed();
+        fs::write(file(&dir), r#"{"send":true}"#).unwrap();
+        watch.check(&app.reporter, &log).await;
+
+        assert!(!after_no);
+        assert!(app.reporter.agreed());
+    }
+
+    #[tokio::test]
+    async fn a_watch_sends_nothing_and_warns_once_while_the_answer_cant_be_read() {
+        let dir = TempDir::new().unwrap();
+        let (mut watch, app, log, records) = watching(&dir);
+        fs::write(file(&dir), "not json").unwrap();
+        watch.check(&app.reporter, &log).await;
+        app.reporter.set_agreed(true);
+        watch.check(&app.reporter, &log).await;
+
+        assert!(!app.reporter.agreed());
+        assert_eq!(test_support::messages(&records), ["reports unreadable"]);
+    }
+
+    #[tokio::test]
+    async fn a_watch_warns_again_once_a_reading_has_worked() {
+        let dir = TempDir::new().unwrap();
+        let (mut watch, app, log, records) = watching(&dir);
+        for answer in ["not json", r#"{"send":false}"#, "broken again"] {
+            fs::write(file(&dir), answer).unwrap();
+            watch.check(&app.reporter, &log).await;
+        }
+
         assert_eq!(
             test_support::messages(&records),
             ["reports unreadable", "reports unreadable"]
@@ -382,25 +464,33 @@ mod tests {
     }
 
     #[test]
-    fn an_answer_that_cant_be_saved_or_printed_is_an_error() {
+    fn an_answer_that_cant_be_saved_is_an_error_and_changes_nothing() {
         let dir = TempDir::new().unwrap();
         fs::create_dir_all(file(&dir)).unwrap();
         let app = test_support::app(Some(&dir), None);
         app.reporter.set_agreed(false);
+
         let unsaved = run(&app, Some(Answer::On), &mut Vec::new()).unwrap_err();
-        let printable = TempDir::new().unwrap();
-        let unprinted = run(
-            &test_support::app(Some(&printable), None),
-            Some(Answer::On),
-            &mut Broken,
-        )
-        .unwrap_err();
-        let nowhere = run(&test_support::app(None, None), None, &mut Vec::new()).unwrap_err();
 
         assert_eq!(unsaved.code().as_str(), "reports.not_saved");
         assert!(!app.reporter.agreed());
+    }
+
+    #[test]
+    fn an_answer_that_cant_be_printed_is_an_error_but_is_saved() {
+        let dir = TempDir::new().unwrap();
+        let app = test_support::app(Some(&dir), None);
+
+        let unprinted = run(&app, Some(Answer::On), &mut Broken).unwrap_err();
+
         assert_eq!(unprinted.code().as_str(), "reports.output_failed");
-        assert_eq!(read(&printable).unwrap(), Some(true));
+        assert_eq!(read(&dir).unwrap(), Some(true));
+    }
+
+    #[test]
+    fn there_is_no_answer_without_a_state_folder() {
+        let nowhere = run(&test_support::app(None, None), None, &mut Vec::new()).unwrap_err();
+
         assert_eq!(nowhere.code().as_str(), "state.unavailable");
     }
 }

@@ -85,6 +85,8 @@ impl Refusals for Proposals {
         (code!("proposal.invalid"), StatusCode::BAD_REQUEST, false),
         (code!("proposal.not_found"), StatusCode::NOT_FOUND, false),
         (code!("proposal.closed"), StatusCode::CONFLICT, false),
+        // The doc was revised while the edit merged; accepting again merges with that.
+        (code!("doc.stale"), StatusCode::CONFLICT, true),
         (code!("doc.too_large"), StatusCode::PAYLOAD_TOO_LARGE, false),
         (
             code!("doc.quota_full"),
@@ -252,6 +254,7 @@ mod tests {
             ("proposal.invalid", 400),
             ("proposal.not_found", 404),
             ("proposal.closed", 409),
+            ("doc.stale", 409),
             ("doc.too_large", 413),
             ("doc.quota_full", 413),
             ("task.too_many", 409),

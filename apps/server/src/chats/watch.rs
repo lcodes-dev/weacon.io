@@ -594,10 +594,11 @@ mod tests {
         assert_eq!(served, [("c-1", page), ("c-2", 1), ("c-1", 1)]);
     }
 
-    // Each page `watch` sends until none is behind: its chat and its length.
+    // Each page `watch` sends until none is behind, a few at most: its chat and its length.
     async fn pages(watch: &mut Watch, workspace: &Workspace) -> Vec<(String, usize)> {
         let mut pages = Vec::new();
-        while let page = watch.next(workspace).await.unwrap()
+        while pages.len() < 5
+            && let page = watch.next(workspace).await.unwrap()
             && let Some(Message::Chat(update)) = page.first()
         {
             pages.push((update.chat.as_str().to_owned(), page.len()));

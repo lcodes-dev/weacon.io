@@ -131,3 +131,9 @@ pub(crate) fn bind(path: &Path) -> io::Result<Listener> {
 pub(crate) const fn is_owner(_: &Stream, _: Owner) -> bool {
     true
 }
+
+/// Lets other users into `dir`; false, since a test can't do that here.
+#[cfg(test)]
+pub(crate) const fn open_to_others(_: &Path) -> bool {
+    false
+}
