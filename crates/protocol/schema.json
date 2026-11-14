@@ -1283,6 +1283,10 @@
       "description": "From a client to a core that offers `diff.view`. Each answer is a [`DiffAnswer`] that echoes\n`request`.",
       "type": "object",
       "properties": {
+        "by": {
+          "description": "Who asked, stamped by the server when it relays the query to a machine; a client's own\nvalue is overwritten.",
+          "$ref": "#/$defs/Asker"
+        },
         "chat": {
           "$ref": "#/$defs/ChatId"
         },

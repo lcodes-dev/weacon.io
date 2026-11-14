@@ -1,10 +1,12 @@
 use serde::{Deserialize, Serialize};
 use sqlx::SqliteConnection;
-use weacon_model::{DocText, Title};
+use weacon_model::{DocText, Revision, TaskEdit, Title};
 use weacon_observability::Fault;
-use weacon_protocol::{DocContent, DocId, ProposalChange, TaskEditBody, TaskId, TaskStatus, code};
+use weacon_protocol::{
+    Code, DocContent, DocId, ProposalChange, TaskEditBody, TaskId, TaskStatus, code,
+};
 
-use super::super::Workspace;
+use super::super::{Workspace, version_number};
 use super::{DOC_EDIT, NEW_DOC, NEW_TASK, Proposed, TASK_EDIT, invalid};
 
 /// What a change is to, once checked against what the workspace holds now.
@@ -28,7 +30,7 @@ pub(super) struct Snapshot {
 
 impl Workspace {
     /// Checks `proposed`'s change against the workspace as it is now.
-    pub(super) async fn target<'a>(
+    pub(super) async fn proposal_target<'a>(
         &self,
         transaction: &mut SqliteConnection,
         proposed: &'a Proposed,
@@ -37,16 +39,17 @@ impl Workspace {
         match &proposed.change {
             ProposalChange::DocEdit { doc, base, content } => {
                 let text = doc_text(content)?;
-                let base = i64::try_from(*base).map_err(|_| invalid())?;
+                let base = Revision::new(*base);
                 // A revision there isn't, and an edit that changes nothing, are both refused.
                 let was = self.read_doc(transaction, doc, Some(base)).await;
-                if was.map_err(|_| invalid())?.text == text {
+                let was = was.map_err(|fault| invalid_if(fault, &code!("doc.not_found")))?;
+                if was.text == text {
                     return Err(invalid());
                 }
                 Ok(Target {
                     kind: DOC_EDIT,
                     doc: Some(doc),
-                    base: Some(base),
+                    base: Some(version_number(base, invalid)?),
                     ..Target::default()
                 })
             }
@@ -87,7 +90,7 @@ impl Workspace {
         let found = self
             .read_task(transaction, task)
             .await
-            .map_err(|_| invalid())?;
+            .map_err(|fault| invalid_if(fault, &code!("task.not_found")))?;
         if found.version.get() != base {
             return Err(Fault::new(
                 code!("proposal.stale"),
@@ -102,10 +105,20 @@ impl Workspace {
         Ok(Target {
             kind: TASK_EDIT,
             task: Some(task),
-            base: Some(i64::try_from(base).map_err(|_| invalid())?),
+            base: Some(version_number(Revision::new(base), invalid)?),
             snapshot: Some(serde_json::to_string(&snapshot).map_err(|_| invalid())?),
             ..Target::default()
         })
+    }
+}
+
+/// `proposal.invalid` for a doc or task there isn't, whose code is `missing`; any other
+/// fault stays itself.
+fn invalid_if(fault: Fault, missing: &Code) -> Fault {
+    if fault.code() == missing {
+        invalid()
+    } else {
+        fault
     }
 }
 
@@ -116,16 +129,26 @@ pub(super) fn doc_text(content: &DocContent) -> Result<DocText, Fault> {
     text.map_err(|_| invalid())
 }
 
-/// Refuses edits a proposal can't make: none at all, a move, one the model refuses, or one
-/// that changes nothing about the task as it is.
-fn task_edits(edits: &[TaskEditBody], task: &Snapshot) -> Result<(), Fault> {
-    let fine = |edit: &TaskEditBody| match edit {
-        TaskEditBody::Title { title } => {
-            *title != task.title && Title::try_from(title.clone()).is_ok()
+/// The model's edit for one a proposal may carry: a title or a status this build knows.
+pub(super) fn proposable(edit: TaskEditBody) -> Option<TaskEdit> {
+    match edit {
+        TaskEditBody::Title { title } => Title::try_from(title).ok().map(TaskEdit::Title),
+        TaskEditBody::Status { status } if status != TaskStatus::Newer => {
+            Some(TaskEdit::Status(status))
         }
-        TaskEditBody::Status { status } => *status != task.status && *status != TaskStatus::Newer,
-        TaskEditBody::Move { .. } | TaskEditBody::Newer => false,
+        TaskEditBody::Status { .. } | TaskEditBody::Move { .. } | TaskEditBody::Newer => None,
+    }
+}
+
+/// Refuses edits a proposal can't make: none at all, one it may not carry, or one that
+/// changes nothing about the task as it is.
+fn task_edits(edits: &[TaskEditBody], task: &Snapshot) -> Result<(), Fault> {
+    let changes = |edit: TaskEdit| match edit {
+        TaskEdit::Title(title) => title.as_str() != task.title,
+        TaskEdit::Status(status) => status != task.status,
+        TaskEdit::Order(_) => false,
     };
+    let fine = |edit: &TaskEditBody| proposable(edit.clone()).is_some_and(changes);
     if edits.is_empty() || !edits.iter().all(fine) {
         return Err(invalid());
     }
