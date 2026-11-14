@@ -4,6 +4,7 @@
 mod account;
 mod backup;
 mod changes;
+mod docs;
 mod owned;
 mod schema;
 mod tasks;
@@ -16,12 +17,13 @@ use std::time::Duration;
 
 use sqlx::SqlitePool;
 use sqlx::sqlite::{SqliteConnectOptions, SqliteConnection, SqlitePoolOptions, SqliteSynchronous};
+use weacon_model::Revision;
 use weacon_observability::Fault;
-use weacon_protocol::{MemberId, WorkspaceId, code};
+use weacon_protocol::{AccountId, Author, MemberId, WorkspaceId, code};
 
-pub(crate) use account::Attempt;
 #[cfg(test)]
 pub(crate) use account::CODE_LIFETIME;
+pub(crate) use account::{Account, Attempt};
 pub(crate) use backup::restore;
 pub(crate) use owned::NewWorkspace;
 pub(crate) use workspace::Workspace;
@@ -115,6 +117,15 @@ impl Db {
         Ok(found.map(|_| Workspace::new(self.clone(), id.clone())))
     }
 
+    /// The handle to the account `id`, which reaches only that account's own rows; the id
+    /// comes from a session, so the account is there.
+    pub(crate) fn account(&self, id: AccountId) -> Account {
+        Account {
+            db: self.clone(),
+            id,
+        }
+    }
+
     /// Closes every connection, so the file can be copied or removed.
     pub(crate) async fn close(&self) {
         self.readers.close().await;
@@ -148,6 +159,30 @@ fn path_unusable() -> Fault {
 /// A value read back from the database, such as an id, checked like one that arrived.
 fn stored<T: TryFrom<String>>(value: String) -> Result<T, Fault> {
     T::try_from(value).map_err(|_| unreadable())
+}
+
+fn stored_version(version: i64) -> Result<Revision, Fault> {
+    u64::try_from(version)
+        .map(Revision::new)
+        .map_err(|_| unreadable())
+}
+
+/// How `author` is stored, unless it is one from a newer peer.
+fn author_columns(author: &Author) -> Option<(&'static str, &MemberId)> {
+    match author {
+        Author::Person { member } => Some(("person", member)),
+        Author::Agent { owner } => Some(("agent", owner)),
+        Author::Newer => None,
+    }
+}
+
+fn stored_author(kind: &str, member: String) -> Result<Author, Fault> {
+    let member = stored(member)?;
+    match kind {
+        "person" => Ok(Author::Person { member }),
+        "agent" => Ok(Author::Agent { owner: member }),
+        _ => Err(unreadable()),
+    }
 }
 
 fn unreadable() -> Fault {
@@ -209,9 +244,13 @@ fn failed(error: sqlx::Error) -> Fault {
         .as_database_error()
         .is_some_and(sqlx::error::DatabaseError::is_unique_violation);
     if exists {
-        return Fault::new(code!("db.exists"), "It already exists").because(error);
+        return self::exists().because(error);
     }
     Fault::new(code!("db.failed"), "The database failed").because(error)
+}
+
+fn exists() -> Fault {
+    Fault::new(code!("db.exists"), "It already exists")
 }
 
 #[cfg(test)]
@@ -221,13 +260,7 @@ mod tests {
     use weacon_testing::TempDir;
 
     use super::*;
-    use crate::db::workspace::Member;
-    use crate::email::Email;
-    use crate::test_support::{fresh_account, member_id, workspace_id};
-
-    fn email(text: &str) -> Email {
-        Email::parse(text).unwrap()
-    }
+    use crate::test_support::workspace_id;
 
     async fn pragma(db: &Db, name: &str) -> String {
         let row = sqlx::raw_sql(sqlx::AssertSqlSafe(format!("PRAGMA {name}")))
@@ -371,30 +404,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_schema_newer_than_this_build_is_refused() {
-        let dir = TempDir::new().unwrap();
-        let db = Db::create(&dir.join("weacon.db")).await.unwrap();
-        sqlx::raw_sql("PRAGMA user_version = 1000")
-            .execute(&db.writer)
-            .await
-            .unwrap();
-        db.close().await;
-
-        let error = Db::open(&dir.join("weacon.db")).await.unwrap_err();
-        assert_eq!(error.code().as_str(), "db.too_new");
-    }
-
-    #[tokio::test]
-    async fn two_openings_of_a_new_file_both_get_its_schema() {
-        let dir = TempDir::new().unwrap();
-        let path = dir.join("weacon.db");
-        let (one, two) = tokio::join!(Db::create(&path), Db::create(&path));
-
-        one.unwrap();
-        two.unwrap();
-    }
-
-    #[tokio::test]
     async fn a_file_that_isnt_a_database_fails_to_open() {
         let dir = TempDir::new().unwrap();
         std::fs::write(
@@ -405,188 +414,5 @@ mod tests {
 
         let error = Db::create(&dir.join("weacon.db")).await.unwrap_err();
         assert_eq!(error.code().as_str(), "db.open_failed");
-    }
-
-    async fn with_members(db: &Db, id: &str, members: &[(&str, &str)]) -> Workspace {
-        let workspace = db
-            .create_workspace(&workspace_id(id), "Team")
-            .await
-            .unwrap();
-        for (member, address) in members {
-            workspace
-                .add_member(&member_id(member), &fresh_account(), &email(address))
-                .await
-                .unwrap();
-        }
-        workspace
-    }
-
-    #[tokio::test]
-    async fn every_read_sees_only_its_own_workspace() {
-        let dir = TempDir::new().unwrap();
-        let db = Db::create(&dir.join("weacon.db")).await.unwrap();
-        let one = with_members(&db, "w1", &[("m1", "ada@example.com")]).await;
-        let two = with_members(
-            &db,
-            "w2",
-            &[("m2", "ada@example.com"), ("m3", "bo@example.com")],
-        )
-        .await;
-        let member = |id: &str, address: &str| Member {
-            id: member_id(id),
-            email: email(address),
-        };
-
-        assert_eq!(
-            db.workspace(&workspace_id("w1"))
-                .await
-                .unwrap()
-                .members()
-                .await
-                .unwrap(),
-            [member("m1", "ada@example.com")]
-        );
-        assert_eq!(
-            db.workspace(&workspace_id("w3"))
-                .await
-                .unwrap_err()
-                .code()
-                .as_str(),
-            "workspace.not_found"
-        );
-        assert_eq!(
-            one.members().await.unwrap(),
-            [member("m1", "ada@example.com")]
-        );
-        assert_eq!(
-            two.members().await.unwrap(),
-            [
-                member("m2", "ada@example.com"),
-                member("m3", "bo@example.com")
-            ]
-        );
-    }
-
-    #[tokio::test]
-    async fn duplicates_are_refused_as_existing() {
-        let dir = TempDir::new().unwrap();
-        let db = Db::create(&dir.join("weacon.db")).await.unwrap();
-        let one = db
-            .create_workspace(&workspace_id("w1"), "One")
-            .await
-            .unwrap();
-        one.add_member(
-            &member_id("m1"),
-            &fresh_account(),
-            &email("ada@example.com"),
-        )
-        .await
-        .unwrap();
-
-        let same_email = one
-            .add_member(
-                &member_id("m2"),
-                &fresh_account(),
-                &email("ada@example.com"),
-            )
-            .await
-            .unwrap_err();
-        let id = one
-            .add_member(&member_id("m1"), &fresh_account(), &email("bo@example.com"))
-            .await
-            .unwrap_err();
-        let workspace = db
-            .create_workspace(&workspace_id("w1"), "Again")
-            .await
-            .unwrap_err();
-        assert_eq!(same_email.code().as_str(), "db.exists");
-        assert_eq!(id.code().as_str(), "db.exists");
-        assert_eq!(workspace.code().as_str(), "db.exists");
-    }
-
-    async fn first_columns(db: &Db, sql: &'static str, table: &str) -> Vec<String> {
-        sqlx::query_scalar(sql)
-            .bind(table)
-            .fetch_all(&db.readers)
-            .await
-            .unwrap()
-    }
-
-    const SERVER_WIDE: [&str; 3] = ["accounts", "sign_in_challenges", "sessions"];
-
-    async fn tables(db: &Db) -> Vec<String> {
-        sqlx::query_scalar(
-            "SELECT name FROM sqlite_schema WHERE type = 'table' AND name NOT LIKE 'sqlite_%'",
-        )
-        .fetch_all(&db.readers)
-        .await
-        .unwrap()
-    }
-
-    #[tokio::test]
-    async fn a_persons_own_tables_hold_nothing_of_a_workspace() {
-        let dir = TempDir::new().unwrap();
-        let db = Db::create(&dir.join("weacon.db")).await.unwrap();
-        let workspace = "SELECT name FROM pragma_table_info(?) WHERE name = 'workspace_id'";
-
-        assert_eq!(
-            tables(&db).await,
-            [
-                "workspaces",
-                "members",
-                "accounts",
-                "sign_in_challenges",
-                "sessions",
-                "tasks",
-                "task_versions",
-                "changes"
-            ]
-        );
-        for table in SERVER_WIDE {
-            assert!(
-                first_columns(&db, workspace, table).await.is_empty(),
-                "{table}"
-            );
-        }
-    }
-
-    #[tokio::test]
-    async fn every_other_table_index_and_reference_leads_with_the_workspace() {
-        let dir = TempDir::new().unwrap();
-        let db = Db::create(&dir.join("weacon.db")).await.unwrap();
-        let tables = tables(&db).await;
-        let in_workspaces = |table: &&String| !SERVER_WIDE.contains(&table.as_str());
-        for table in tables.iter().filter(in_workspaces) {
-            let columns = first_columns(
-                &db,
-                "SELECT name FROM pragma_table_info(?) WHERE cid = 0",
-                table,
-            )
-            .await;
-            let indexes = first_columns(
-                &db,
-                "SELECT ii.name FROM pragma_index_list(?1) AS il \
-                 JOIN pragma_index_info(il.name) AS ii WHERE ii.seqno = 0",
-                table,
-            )
-            .await;
-            let references = first_columns(
-                &db,
-                "SELECT \"from\" FROM pragma_foreign_key_list(?) \
-                 WHERE seq = 0 AND \"table\" != 'accounts'",
-                table,
-            )
-            .await;
-
-            assert_eq!(columns, ["workspace_id"], "{table}");
-            assert!(
-                indexes.iter().all(|column| column == "workspace_id"),
-                "{table}: {indexes:?}"
-            );
-            assert!(
-                references.iter().all(|column| column == "workspace_id"),
-                "{table}: {references:?}"
-            );
-        }
     }
 }

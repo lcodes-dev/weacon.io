@@ -118,11 +118,14 @@ Every program logs, reports errors and says which build it is from its first com
 | `UPDATE_SCHEMA=1 cargo test -p weacon-protocol` | Regenerates `crates/protocol/schema.json` after a message changes |
 | `npm --prefix apps/extension run update-types`, `npm --prefix apps/web run update-types` | Regenerates each app's `src/protocol.ts` from `schema.json` |
 | `npm --prefix apps/web run build` | Builds the web app into `apps/web/dist/` (`index.html`, `app.js`, `app.css`), with this commit in Settings › About |
-| `npm --prefix apps/web run measure` | Streams the 100,000-token session into the built web app in Chromium and prints frame gaps, memory and bundle size |
+| `npm --prefix apps/web run measure` | Streams the 100,000-token session into the built web app in Chromium, then scrolls the 5,000-line diff, and prints frame gaps, memory and bundle size |
 | `mkdir -p .dev/fake && cargo run --locked -p weacon-testing --bin fake-server -- .dev/fake`, then open `apps/web/dist/index.html?server=<the address it prints>` | Streams a made-up 100,000-token session to the web app |
 | `npm --prefix apps/extension run build` | Builds the extension into `apps/extension/dist/`, with this commit in its manifest's `version_name`; load that folder unpacked in Chrome, then run `weacon connect-chrome` |
 | `scripts/release.sh <target>` | Builds a static release `weacon` for one target into `dist/`, checks it reports this commit, and prints its size |
+| `scripts/release.sh server <target>` | Builds the web app, then a static release `weacon-server` with it inside for a Linux target into `dist/`, checks it reports this commit and serves this web app, and prints its size |
 | `scripts/release.sh install <[user@]host> <target>` | Copies that Linux build to a host over SSH and runs `weacon service install` there: a systemd user service, with lingering on |
+| `scripts/release.sh manifest <tag> <folder> <https base URL>` | Writes the unsigned `manifest.json` for the core's builds in a folder: version, commit, protocol, and each target's URL, size and SHA-256. The release workflow runs it for a tag and uploads it with the builds to a draft release |
+| `scripts/release.sh sign <tag> <secret key file>` | Run by the owner, on the machine with the release key: checks the draft's manifest against its tag (version, commit, every target, each URL) and each build against its SHA-256, dates and signs the manifest with minisign, checks the signature against the keys the tag's core trusts, and uploads both to the draft |
 
 Every dependency is declared once, in `[workspace.dependencies]` in the root `Cargo.toml`; crates refer to it with `workspace = true`. `Cargo.lock` is committed and every command runs with `--locked`. A new dependency must be at least three days old, maintained, under a licence `.cargo/deny.toml` allows, and without a build script unless it needs one; say why it's needed in the PR.
 

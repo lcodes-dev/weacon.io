@@ -4,45 +4,48 @@ import { Composer } from "./composer/composer.tsx";
 import { type Send, blocked } from "./composer/prompt.ts";
 import { type Status, statusText } from "./connection.ts";
 import { type Changes, canAsk } from "./diff/changes.ts";
+import type { Comment } from "./diff/comments.ts";
 import { DiffView } from "./diff/diff-view.tsx";
-import type { Place } from "./place.ts";
+import type { ChatRef } from "./chat-ref.ts";
 import type { App as Build } from "./protocol.ts";
-import type { Transcript } from "./transcript.ts";
-import { TranscriptView } from "./transcript-view.tsx";
+import { Settings } from "./settings/settings.tsx";
+import type { Transcript } from "./transcript/transcript.ts";
+import { TranscriptView } from "./transcript/transcript-view.tsx";
 
 type Shown = "run" | "changes" | "settings";
-
-/** The chat's changes, and what opening them asks of the server. */
-export type Review = { changes: Changes; openChanges: () => void };
 
 /** The page: a header with Changes and Settings, over the run's transcript and the message box, its changes, or Settings. */
 export function App({
   me,
   status,
   transcript,
-  place,
+  chatRef,
   send,
-  review,
+  changes,
+  openChanges,
 }: {
   me: Build;
   status: Status;
   transcript: Transcript;
-  place: Place | undefined;
-  send: Send | undefined;
-  review: Review;
+  chatRef: ChatRef | undefined;
+  send: Send;
+  changes: Changes;
+  /** Asks the server for the chat's changes, when they need asking. */
+  openChanges: () => void;
 }) {
   const [shown, setShown] = useState<Shown>("run");
+  const [comments, setComments] = useState<readonly Comment[]>([]);
   return (
     <div className="app">
       <header>
         <span className="status">{statusText(status)}</span>
         {shown === "run" ? (
           <span className="actions">
-            {place !== undefined && canAsk(status) && (
+            {chatRef !== undefined && canAsk(status) && (
               <button
                 type="button"
                 onClick={() => {
-                  review.openChanges();
+                  openChanges();
                   setShown("changes");
                 }}
               >
@@ -65,39 +68,16 @@ export function App({
         </div>
         {shown === "changes" && (
           <div className="pane">
-            <DiffView changes={review.changes} />
+            <DiffView changes={changes} comments={comments} setComments={setComments} />
           </div>
         )}
         {shown === "settings" && (
           <div className="pane">
-            <Settings me={me} status={status} />
+            <Settings me={me} server={status.state === "live" ? status.server : undefined} />
           </div>
         )}
       </main>
-      <Composer send={send} blocked={blocked(status, place)} hidden={shown !== "run"} />
+      <Composer send={send} blocked={blocked(status, chatRef)} hidden={shown !== "run"} />
     </div>
-  );
-}
-
-function Settings({ me, status }: { me: Build; status: Status }) {
-  return (
-    <section className="page">
-      <h1>Settings</h1>
-      <h2>About</h2>
-      <dl>
-        <dt>Version</dt>
-        <dd>{me.version}</dd>
-        <dt>Commit</dt>
-        <dd>{me.commit}</dd>
-        {status.state === "live" && (
-          <>
-            <dt>Server</dt>
-            <dd>
-              {status.server.version} ({status.server.commit})
-            </dd>
-          </>
-        )}
-      </dl>
-    </section>
   );
 }

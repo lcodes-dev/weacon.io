@@ -8,6 +8,11 @@ on:
     paths:
       - .github/workflows/release.yml
       - scripts/release.sh
+      - apps/web/package-lock.json
+      - apps/server/build.rs
+      - apps/server/src/web.rs
+      - apps/web/tools/build.ts
+      - tooling/ts/build.ts
       - rust-toolchain.toml
       - Cargo.lock
       - "**/Cargo.toml"
@@ -52,3 +57,67 @@ jobs:
           name: weacon-${{ matrix.target }}
           path: weacon-${{ matrix.target }}.tar
           if-no-files-found: error
+
+  server:
+    name: server ${{ matrix.target }}
+    # Servers run on Linux only.
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { target: x86_64-unknown-linux-musl, runner: ubuntu-24.04 }
+          - { target: aarch64-unknown-linux-musl, runner: ubuntu-24.04-arm }
+    defaults:
+      run:
+        # With pipefail, so a failed check isn't hidden by tee.
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: sudo apt-get update -q && sudo apt-get install -yq musl-tools
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .node-version
+      - run: npm ci --prefix apps/web --include=dev --no-audit --no-fund
+      - run: scripts/release.sh server ${{ matrix.target }} | tee -a "$GITHUB_STEP_SUMMARY"
+      - run: tar -cf weacon-server-${{ matrix.target }}.tar -C dist .
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: weacon-server-${{ matrix.target }}
+          path: weacon-server-${{ matrix.target }}.tar
+          if-no-files-found: error
+
+  # A tag's builds go up as a draft release with their unsigned manifest; its owner signs the
+  # manifest with `scripts/release.sh sign` and publishes it.
+  draft:
+    name: draft release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [build, server]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      # To read this run's artifacts, and to make the draft release.
+      actions: read
+      contents: write
+    defaults:
+      run:
+        shell: bash
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: ${{ github.ref_name }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: gh run download "$GITHUB_RUN_ID" --repo "$GITHUB_REPOSITORY" --dir artifacts
+      - run: mkdir dist && for tar in artifacts/*/*.tar; do tar -xf "$tar" -C dist; done
+      - run: >-
+          scripts/release.sh manifest "$TAG" dist
+          "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases/download/$TAG"
+          | tee -a "$GITHUB_STEP_SUMMARY"
+      - run: >-
+          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --draft --verify-tag
+          --title "weacon ${TAG#v}" dist/*

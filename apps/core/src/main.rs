@@ -1,10 +1,6 @@
 //! `weacon`: the core's daemon and command line.
 
 mod app;
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "the chat engine, which uses it, comes next")
-)]
 mod chats;
 mod cli;
 mod daemon;
@@ -15,16 +11,18 @@ mod memory;
 mod native_host;
 mod picks;
 mod platform;
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "the chat engine, which uses it, comes next")
-)]
+mod reports;
 mod runs;
 mod service;
 mod session;
 mod status;
 #[cfg(test)]
 mod test_support;
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "`weacon update`, which uses it, comes next")
+)]
+mod update;
 mod workspaces;
 
 use std::io::{self, IsTerminal};
@@ -79,6 +77,9 @@ fn run(app: &App, command: Command, env: platform::Env<'_>) -> Result<Outcome, F
             team,
         } => workspaces::access(app, &workspace, level, team, &mut io::stdout().lock())
             .map(Outcome::from),
+        Command::Reports { answer } => {
+            reports::run(app, answer, &mut io::stdout().lock()).map(Outcome::from)
+        }
         Command::ConnectChrome => {
             native_host::connect_chrome(app, env, &mut io::stdout().lock()).map(Outcome::from)
         }

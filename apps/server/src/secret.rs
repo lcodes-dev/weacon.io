@@ -8,9 +8,10 @@ use hmac::{Hmac, Mac};
 use sha2::Sha256;
 use weacon_appkit::{owner_only, private_append, sync_dir};
 use weacon_observability::{Fault, Logger};
-use weacon_protocol::{ChallengeId, code};
+use weacon_protocol::code;
 
 use crate::app::new_id;
+use crate::email::Email;
 
 /// The server's own key, which sign-in codes are hashed with: a stolen database alone can't
 /// be searched for its eight-digit codes.
@@ -61,12 +62,12 @@ impl Secret {
         Ok(Self(Hmac::new(&block.into())))
     }
 
-    /// What is stored for the code of `challenge`, which is part of it so that the same code
-    /// in two challenges is stored differently.
-    pub(crate) fn code_hash(&self, challenge: &ChallengeId, code: &str) -> [u8; 32] {
+    /// What is stored for a code mailed to `email`, which is part of it so that the same code
+    /// for two addresses is stored differently; any of the address's challenges can check it.
+    pub(crate) fn code_hash(&self, email: &Email, code: &str) -> [u8; 32] {
         let mut mac = self.0.clone();
-        mac.update(challenge.as_str().as_bytes());
-        // A challenge id never holds a zero byte, so this keeps the two apart.
+        mac.update(email.as_str().as_bytes());
+        // An address never holds a zero byte, so this keeps the two apart.
         mac.update(&[0]);
         mac.update(code.as_bytes());
         mac.finalize().into_bytes().into()
@@ -75,7 +76,7 @@ impl Secret {
 
 /// Makes a key at `path`, whole or not at all; a file already there is left as it is.
 fn create(path: &Path) -> Result<(), Fault> {
-    let key = os_secrets()?;
+    let key = random_bytes()?;
     let mut new = OsString::from(path);
     new.push(format!(".{}.new", new_id()));
     let new = PathBuf::from(new);
@@ -92,7 +93,7 @@ fn create(path: &Path) -> Result<(), Fault> {
 }
 
 /// The operating system's random bytes.
-pub(crate) fn os_secrets() -> Result<[u8; 32], Fault> {
+pub(crate) fn random_bytes() -> Result<[u8; 32], Fault> {
     let mut bytes = [0; 32];
     getrandom::fill(&mut bytes).map_err(|_| random_failed())?;
     Ok(bytes)
@@ -129,12 +130,12 @@ mod tests {
         Secret::open(path, &recording_logger().0)
     }
 
-    fn challenge(id: &str) -> ChallengeId {
-        ChallengeId::try_from(id.to_owned()).unwrap()
+    fn address(text: &str) -> Email {
+        Email::parse(text).unwrap()
     }
 
     fn hash(secret: &Secret) -> [u8; 32] {
-        secret.code_hash(&challenge("c1"), "12345678")
+        secret.code_hash(&address("ada@example.com"), "12345678")
     }
 
     // A private file holding `bytes`.
@@ -206,31 +207,31 @@ mod tests {
     }
 
     #[test]
-    fn a_code_is_hashed_with_the_key_and_its_challenge() {
+    fn a_code_is_hashed_with_the_key_and_its_address() {
         let dir = TempDir::new().unwrap();
         let key: Vec<u8> = (0..32).collect();
         let secret = open(&stored(&dir, "secret", &key)).unwrap();
         let other = open(&dir.join("other")).unwrap();
 
-        // HMAC-SHA256 of "c1", a zero byte and the code, under the bytes 0 to 31.
+        // HMAC-SHA256 of the address, a zero byte and the code, under the bytes 0 to 31.
         assert_eq!(
             hash(&secret).map(|byte| format!("{byte:02x}")).concat(),
-            "de17a9792373011b788c5cdb054da494710e8160ee9b5405380cd0f499bca7ba"
+            "a9a3d81fa081739162c1e32f8416dc4784edca22cb7a5b756b458b6cd03815e8"
         );
         assert_ne!(
             hash(&secret),
-            secret.code_hash(&challenge("c2"), "12345678")
+            secret.code_hash(&address("bo@example.com"), "12345678")
         );
         assert_ne!(
             hash(&secret),
-            secret.code_hash(&challenge("c1"), "12345679")
+            secret.code_hash(&address("ada@example.com"), "12345679")
         );
         assert_ne!(hash(&secret), hash(&other));
     }
 
     #[test]
     fn random_bytes_differ() {
-        assert_ne!(os_secrets().unwrap(), os_secrets().unwrap());
+        assert_ne!(random_bytes().unwrap(), random_bytes().unwrap());
     }
 
     #[test]

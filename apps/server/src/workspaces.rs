@@ -8,7 +8,7 @@ use weacon_protocol::{WorkspaceCreate, WorkspaceList, code};
 use crate::app::{fresh, new_id};
 use crate::auth::{Member, Session};
 use crate::db::NewWorkspace;
-use crate::http::{Shared, failure, invalid, refused};
+use crate::http::{Body, Shared, failure, invalid, unauthorized};
 
 pub(crate) const MAX_NAME: usize = 100;
 /// What an account's own workspace is called when it is made.
@@ -18,13 +18,14 @@ const PERSONAL: &str = "Personal";
 pub(crate) async fn create(
     State(shared): State<Shared>,
     session: Session,
-    Json(body): Json<WorkspaceCreate>,
+    Body(body): Body<WorkspaceCreate>,
 ) -> Response {
     let made = match workspace_name(&body.name).and_then(new_workspace) {
         Ok(new) => {
             shared
                 .db
-                .create_owned_workspace(&session.account, new)
+                .account(session.account)
+                .create_workspace(new)
                 .await
         }
         Err(fault) => return invalid(fault.code().clone()),
@@ -32,25 +33,25 @@ pub(crate) async fn create(
     match made {
         Ok(Some(summary)) => (StatusCode::CREATED, Json(summary)).into_response(),
         Ok(None) => invalid(code!("workspace.too_many")),
-        Err(fault) => failure(&shared, fault),
+        Err(fault) => failure(fault),
     }
 }
 
 /// `GET /api/workspaces`: the signed-in account's workspaces.
 pub(crate) async fn list(State(shared): State<Shared>, session: Session) -> Response {
-    match shared.db.workspaces_of(&session.account).await {
+    match shared.db.account(session.account).workspaces().await {
         Ok(workspaces) => Json(WorkspaceList { workspaces }).into_response(),
-        Err(fault) => failure(&shared, fault),
+        Err(fault) => failure(fault),
     }
 }
 
 /// `GET /api/workspaces/{workspace}`: one workspace, to one of its members.
-pub(crate) async fn read(State(shared): State<Shared>, member: Member) -> Response {
+pub(crate) async fn read(member: Member) -> Response {
     match member.workspace.summary(&member.id).await {
         Ok(Some(summary)) => Json(summary).into_response(),
         // Someone else ended the membership since it was checked.
-        Ok(None) => refused(code!("sign_in.required")),
-        Err(fault) => failure(&shared, fault),
+        Ok(None) => unauthorized(code!("sign_in.required")),
+        Err(fault) => failure(fault),
     }
 }
 
@@ -87,13 +88,12 @@ mod tests {
     use serde_json::{Value, json};
 
     use super::*;
-    use crate::email::Email;
     use crate::test_support::{
-        Fixture, ask, bearer, fresh_account, header, request_with, run, sign_in, status,
+        Fixture, ask, bearer, email, fresh_account, header, request_with, sign_in, status,
     };
 
     // Signs `email` in, and gives the header that proves it.
-    async fn signed_in(fixture: &Fixture, address: SocketAddr, email: &str) -> String {
+    async fn sign_in_header(fixture: &Fixture, address: SocketAddr, email: &str) -> String {
         bearer(&sign_in(fixture, address, email).await.1)
     }
 
@@ -105,8 +105,8 @@ mod tests {
     #[tokio::test]
     async fn a_person_makes_a_workspace_they_own_and_finds_it_listed() {
         let fixture = Fixture::new().await;
-        let server = run(fixture.shared.clone()).await;
-        let ada = signed_in(&fixture, server.address, "ada@example.com").await;
+        let server = fixture.run().await;
+        let ada = sign_in_header(&fixture, server.address, "ada@example.com").await;
         let create = json!({ "name": "  Team two " }).to_string();
 
         let (created, made) = ask(server.address, "POST /api/workspaces", &ada, &create).await;
@@ -134,9 +134,9 @@ mod tests {
     #[tokio::test]
     async fn signing_in_again_makes_no_second_personal_workspace() {
         let fixture = Fixture::new().await;
-        let server = run(fixture.shared.clone()).await;
-        signed_in(&fixture, server.address, "ada@example.com").await;
-        let ada = signed_in(&fixture, server.address, "ada@example.com").await;
+        let server = fixture.run().await;
+        sign_in_header(&fixture, server.address, "ada@example.com").await;
+        let ada = sign_in_header(&fixture, server.address, "ada@example.com").await;
 
         let personal = listed(server.address, &ada)
             .await
@@ -150,8 +150,8 @@ mod tests {
     #[tokio::test]
     async fn what_an_account_sees_is_kept_out_of_caches() {
         let fixture = Fixture::new().await;
-        let server = run(fixture.shared.clone()).await;
-        let ada = signed_in(&fixture, server.address, "ada@example.com").await;
+        let server = fixture.run().await;
+        let ada = sign_in_header(&fixture, server.address, "ada@example.com").await;
         let mut kept = Vec::new();
         for path in ["/api/workspaces", "/api/workspaces/w1", "/api/session"] {
             let (head, _) = request_with(server.address, &format!("GET {path}"), &ada, "").await;
@@ -169,16 +169,16 @@ mod tests {
     #[tokio::test]
     async fn nobody_reads_a_workspace_they_arent_in() {
         let fixture = Fixture::new().await;
-        let bo = Email::parse("bo@example.com").unwrap();
+        let bo = email("bo@example.com");
         fixture
             .shared
             .db
             .add_account(&fresh_account(), &bo)
             .await
             .unwrap();
-        let server = run(fixture.shared.clone()).await;
-        let ada = signed_in(&fixture, server.address, "ada@example.com").await;
-        let bo = signed_in(&fixture, server.address, "bo@example.com").await;
+        let server = fixture.run().await;
+        let ada = sign_in_header(&fixture, server.address, "ada@example.com").await;
+        let bo = sign_in_header(&fixture, server.address, "bo@example.com").await;
         let theirs = listed(server.address, &ada).await;
         let mine = listed(server.address, &bo).await;
         let required = json!({ "code": "sign_in.required", "retryable": false });
@@ -192,7 +192,7 @@ mod tests {
             refusals.push(ask(server.address, &read, &bo, "").await);
             refusals.push(ask(server.address, &read, "", "").await);
         }
-        let (bad_id, _) = ask(server.address, "GET /api/workspaces/w.1", &ada, "").await;
+        let bad_id = ask(server.address, "GET /api/workspaces/w.1", &ada, "").await;
         let (nobody, _) = ask(server.address, "GET /api/workspaces", "", "").await;
 
         assert_eq!(theirs.len(), 2);
@@ -206,15 +206,21 @@ mod tests {
                 ("http/1.1 401 unauthorized".to_owned(), required.clone())
             );
         }
-        assert_eq!(bad_id, "http/1.1 400 bad request");
+        assert_eq!(
+            bad_id,
+            (
+                "http/1.1 400 bad request".to_owned(),
+                json!({ "code": "request.invalid", "retryable": false })
+            )
+        );
         assert_eq!(nobody, "http/1.1 401 unauthorized");
     }
 
     #[tokio::test]
     async fn an_account_that_owns_too_many_is_told_so() {
         let fixture = Fixture::new().await;
-        let server = run(fixture.shared.clone()).await;
-        let ada = signed_in(&fixture, server.address, "ada@example.com").await;
+        let server = fixture.run().await;
+        let ada = sign_in_header(&fixture, server.address, "ada@example.com").await;
         let create = json!({ "name": "Team" }).to_string();
         // The Personal workspace is one of them.
         for _ in 1..100 {
@@ -234,8 +240,8 @@ mod tests {
     #[tokio::test]
     async fn a_workspace_needs_a_name_of_one_short_line_and_a_session() {
         let fixture = Fixture::new().await;
-        let server = run(fixture.shared.clone()).await;
-        let ada = signed_in(&fixture, server.address, "ada@example.com").await;
+        let server = fixture.run().await;
+        let ada = sign_in_header(&fixture, server.address, "ada@example.com").await;
         let refused = json!({ "code": "workspace.name_invalid", "retryable": false });
         let long = "a".repeat(MAX_NAME + 1);
         for name in ["", "   ", "a\nb", "a\u{2028}b", "a\u{2029}b", long.as_str()] {

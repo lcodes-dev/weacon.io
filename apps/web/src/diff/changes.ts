@@ -1,8 +1,5 @@
-import type { Status } from "../connection.ts";
-import type { ChatId, DiffContent, DiffFile, Envelope, Hunk, LineOp, RequestId, WorkspaceId } from "../protocol.ts";
-
-/** The capability under which a server answers diff queries. */
-export const DIFF_VIEW = "diff.view";
+import { type Status, offers } from "../connection.ts";
+import type { ChatId, DiffFile, Envelope, Hunk, LineOp, RequestId, WorkspaceId } from "../protocol.ts";
 
 /** What the core has sent of a chat's changes under the latest request. */
 export type Changes = {
@@ -12,20 +9,28 @@ export type Changes = {
   total: number | undefined;
   /** Whether the connection ended, or the query failed, before every file came. */
   cut: boolean;
+  /** Whether `files` and `total` are an earlier request's, shown until this one's first answer. */
+  held: boolean;
 };
 
-export const NO_CHANGES: Changes = { asked: undefined, files: [], total: undefined, cut: false };
+export const NO_CHANGES: Changes = { asked: undefined, files: [], total: undefined, cut: false, held: false };
 
 /** Whether `status` is a connection that can ask for changes. */
 export function canAsk(status: Status): boolean {
-  return status.state === "live" && status.capabilities.includes(DIFF_VIEW);
+  return offers(status, "diff.view");
 }
 
-/** The query, as message `id`, for `chat`'s changes under `request`, and what to show until its answers come. */
-export function ask(id: number, request: RequestId, workspace: WorkspaceId, chat: ChatId): { query: Envelope; changes: Changes } {
+/** The query, as message `id`, for `chat`'s changes under `request`; what is `shown` stays until its first answer. */
+export function ask(
+  id: number,
+  request: RequestId,
+  workspace: WorkspaceId,
+  chat: ChatId,
+  shown: Changes,
+): { query: Envelope; changes: Changes } {
   return {
     query: { id, type: "diff_query", request, workspace, chat, query: { kind: "changes" } },
-    changes: { ...NO_CHANGES, asked: { id, request, workspace, chat } },
+    changes: { ...shown, asked: { id, request, workspace, chat }, cut: false, held: shown.files.length > 0 },
   };
 }
 
@@ -36,7 +41,8 @@ export function needsAsking(changes: Changes): boolean {
 
 /** `changes` with `envelope` taken in when it answers the latest request; a stale, extra or malformed one is dropped. */
 export function receive(changes: Changes, envelope: Envelope): Changes {
-  const { asked, files, total } = changes;
+  const { asked } = changes;
+  const { files, total } = changes.held ? NO_CHANGES : changes;
   // An error under the query's id answers it.
   if (envelope.type === "error" && asked !== undefined && envelope.id === asked.id) {
     return cut(changes);
@@ -53,26 +59,18 @@ export function receive(changes: Changes, envelope: Envelope): Changes {
   }
   const answer: unknown = envelope.answer;
   if (record(answer)?.["kind"] === "unchanged") {
-    return total === undefined ? { ...changes, total: 0 } : changes;
+    return total === undefined ? { ...changes, files: [], total: 0, held: false } : changes;
   }
   if (!isFileAnswer(answer)) {
     return changes;
   }
-  return { ...changes, files: [...files, showable(answer.file)], total: total ?? answer.files };
-}
-
-const OPS: readonly string[] = ["context", "added", "removed"] satisfies LineOp[];
-
-// A file with a line this app can't number is shown as content it can't show.
-function showable(file: DiffFile): DiffFile {
-  const { content } = file;
-  const known = content.kind !== "text" || content.hunks.every((hunk) => hunk.lines.every((line) => OPS.includes(line.op)));
-  return known ? file : { ...file, content: { kind: "newer" } as unknown as DiffContent };
+  return { ...changes, files: [...files, answer.file], total: total ?? answer.files, held: false };
 }
 
 /** `changes` once the connection has ended: any files still to come won't. */
 export function cut(changes: Changes): Changes {
-  const waiting = changes.asked !== undefined && (changes.total === undefined || changes.files.length < changes.total);
+  const { asked, held, files, total } = changes;
+  const waiting = asked !== undefined && (held || total === undefined || files.length < total);
   return waiting ? { ...changes, cut: true } : changes;
 }
 

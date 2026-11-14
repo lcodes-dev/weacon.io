@@ -8,13 +8,10 @@ use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 use weacon_observability::Fault;
 use weacon_protocol::{AgentSession, Outcome, PermissionAnswer, RunEvent, RunId, code};
 
-use crate::access::{Check, Decision, Rules};
+use crate::access::{Decision, Rules};
 use crate::lines::Lines;
 use crate::spawn::SpawnPolicy;
-use crate::{claude, codex};
-
-/// Sent back for a request the driver doesn't handle.
-pub(crate) const UNSUPPORTED: &str = "Weacon doesn't handle this request.";
+use crate::wire::{Asked, Effect, Wire};
 
 // Far above any real line; a longer one is skipped rather than held in memory.
 const MAX_LINE: usize = 16 << 20;
@@ -32,89 +29,19 @@ pub struct Run<W, R> {
     outbox: Vec<u8>,
     events: VecDeque<RunEvent>,
     prompts: Vec<Prompt>,
-    next_prompt: u32,
+    last_prompt: u32,
     turn: Turn,
     session: Option<AgentSession>,
     rules: Rules,
-    // Prompts about files waiting for their path to be checked, oldest first.
-    checks: VecDeque<Check>,
+    // Prompts about a file waiting for its path to be checked, oldest first.
+    checks: VecDeque<(Asked, PathBuf)>,
     // Held only so the agent is killed when the run is dropped.
     child: Option<Child>,
 }
 
-/// Each agent's own way of saying things.
-pub(crate) enum Wire {
-    Claude(claude::Wire),
-    Codex(codex::Wire),
-}
-
-/// What an agent's wire made of a line or a request, for the run to act on.
-pub(crate) enum Heard {
-    Send(Value),
-    Started(AgentSession),
-    Event(RunEvent),
-    Asked {
-        request: Value,
-        tool: String,
-        input: Value,
-    },
-    Withdrawn {
-        request: Value,
-    },
-    Finished {
-        ok: bool,
-    },
-}
-
-impl Wire {
-    fn opening(&mut self) -> Vec<Heard> {
-        match self {
-            Self::Claude(_) => Vec::new(),
-            Self::Codex(wire) => wire.opening(),
-        }
-    }
-
-    fn prompt(&mut self, text: &str) -> Vec<Heard> {
-        match self {
-            Self::Claude(_) => claude::prompt(text),
-            Self::Codex(wire) => wire.prompt(text),
-        }
-    }
-
-    fn answer(&self, request: &Value, allow: bool, input: &Value) -> Vec<Heard> {
-        match self {
-            Self::Claude(_) => claude::answer(request, allow, input),
-            Self::Codex(_) => codex::answer(request, allow),
-        }
-    }
-
-    fn interrupt(&mut self) -> Vec<Heard> {
-        match self {
-            Self::Claude(wire) => wire.interrupt(),
-            Self::Codex(wire) => wire.interrupt(),
-        }
-    }
-
-    // Codex's file changes always ask a person.
-    fn changed_file(&self, tool: &str, input: &Value) -> Option<PathBuf> {
-        match self {
-            Self::Claude(_) => claude::changed_file(tool, input),
-            Self::Codex(_) => None,
-        }
-    }
-
-    fn read(&mut self, line: &[u8]) -> Vec<Heard> {
-        match self {
-            Self::Claude(_) => claude::read(line),
-            Self::Codex(wire) => wire.read(line),
-        }
-    }
-}
-
 struct Prompt {
     id: u32,
-    request: Value,
-    input: Value,
+    asked: Asked,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -164,14 +91,14 @@ impl<W: AsyncWrite + Unpin, R: AsyncBufRead + Unpin> Run<W, R> {
             outbox: Vec::new(),
             events: VecDeque::new(),
             prompts: Vec::new(),
-            next_prompt: 0,
+            last_prompt: 0,
             turn: Turn::Idle,
             session: None,
             rules,
             checks: VecDeque::new(),
             child: None,
         };
-        run.hear(opening);
+        run.apply(opening);
         run
     }
 
@@ -187,8 +114,8 @@ impl<W: AsyncWrite + Unpin, R: AsyncBufRead + Unpin> Run<W, R> {
             ));
         }
         self.turn = Turn::Running;
-        let heard = self.wire.prompt(prompt);
-        self.hear(heard);
+        let effects = self.wire.prompt(prompt);
+        self.apply(effects);
         self.flush().await
     }
 
@@ -201,8 +128,7 @@ impl<W: AsyncWrite + Unpin, R: AsyncBufRead + Unpin> Run<W, R> {
         let at = self
             .prompts
             .iter()
-            .position(|prompt| prompt.id == answer.prompt)
-            .filter(|_| answer.run == self.id)
+            .position(|prompt| answer.run == self.id && prompt.id == answer.prompt)
             .ok_or_else(|| {
                 Fault::new(
                     code!("agent.no_such_prompt"),
@@ -210,10 +136,8 @@ impl<W: AsyncWrite + Unpin, R: AsyncBufRead + Unpin> Run<W, R> {
                 )
             })?;
         let prompt = self.prompts.swap_remove(at);
-        let heard = self
-            .wire
-            .answer(&prompt.request, answer.allow, &prompt.input);
-        self.hear(heard);
+        let effects = self.wire.answer(&prompt.asked, answer.allow);
+        self.apply(effects);
         self.flush().await
     }
 
@@ -226,8 +150,8 @@ impl<W: AsyncWrite + Unpin, R: AsyncBufRead + Unpin> Run<W, R> {
             return Ok(());
         }
         self.turn = Turn::Interrupting;
-        let heard = self.wire.interrupt();
-        self.hear(heard);
+        let effects = self.wire.interrupt();
+        self.apply(effects);
         self.flush().await
     }
 
@@ -248,27 +172,23 @@ impl<W: AsyncWrite + Unpin, R: AsyncBufRead + Unpin> Run<W, R> {
             let Some(line) = self.stdout.next().await.map_err(io_failed)? else {
                 return Ok(self.exited());
             };
-            let heard = self.wire.read(&line);
-            self.hear(heard);
+            let effects = self.wire.read(&line);
+            self.apply(effects);
         }
     }
 
-    fn hear(&mut self, heard: Vec<Heard>) {
-        for each in heard {
-            match each {
-                Heard::Send(line) => {
+    fn apply(&mut self, effects: Vec<Effect>) {
+        for effect in effects {
+            match effect {
+                Effect::Send(line) => {
                     self.outbox.extend(line.to_string().as_bytes());
                     self.outbox.push(b'\n');
                 }
-                Heard::Started(session) => self.started(session),
-                Heard::Event(event) => self.events.push_back(event),
-                Heard::Asked {
-                    request,
-                    tool,
-                    input,
-                } => self.asked(request, tool, input),
-                Heard::Withdrawn { request } => self.withdrawn(&request),
-                Heard::Finished { ok } => self.finished(self.outcome(ok)),
+                Effect::Started(session) => self.started(session),
+                Effect::Event(event) => self.events.push_back(event),
+                Effect::Asked(asked) => self.settle(asked),
+                Effect::Withdrawn { request } => self.withdrawn(&request),
+                Effect::Finished { ok } => self.finished(self.outcome(ok)),
             }
         }
     }
@@ -280,58 +200,53 @@ impl<W: AsyncWrite + Unpin, R: AsyncBufRead + Unpin> Run<W, R> {
         }
     }
 
-    fn asked(&mut self, request: Value, tool: String, input: Value) {
-        match self.rules.decide(self.wire.changed_file(&tool, &input)) {
-            Decision::Ask => self.ask(request, tool, input),
+    fn settle(&mut self, asked: Asked) {
+        match self.rules.decide(self.wire.changed_file(&asked)) {
+            Decision::Ask => self.ask_person(asked),
             Decision::Refuse => {
-                let heard = self.wire.answer(&request, false, &input);
-                self.hear(heard);
+                let effects = self.wire.answer(&asked, false);
+                self.apply(effects);
             }
-            Decision::Check(file) => self.checks.push_back(Check {
-                request,
-                tool,
-                input,
-                file,
-            }),
+            Decision::Check(file) => self.checks.push_back((asked, file)),
         }
     }
 
     // Safe to cancel: each check stays queued until its answer is in.
     async fn settle_checks(&mut self) {
-        while let Some(check) = self.checks.front() {
-            let (rules, file) = (self.rules.clone(), check.file.clone());
+        while let Some((_, file)) = self.checks.front() {
+            let (rules, file) = (self.rules.clone(), file.clone());
             let allowed = tokio::task::spawn_blocking(move || rules.may_change(&file))
                 .await
                 .unwrap_or(false);
-            let Some(check) = self.checks.pop_front() else {
+            let Some((asked, _)) = self.checks.pop_front() else {
                 return;
             };
             if allowed {
-                let heard = self.wire.answer(&check.request, true, &check.input);
-                self.hear(heard);
+                let effects = self.wire.answer(&asked, true);
+                self.apply(effects);
             } else {
-                self.ask(check.request, check.tool, check.input);
+                self.ask_person(asked);
             }
         }
     }
 
-    fn ask(&mut self, request: Value, tool: String, input: Value) {
-        self.next_prompt += 1;
-        let id = self.next_prompt;
+    fn ask_person(&mut self, asked: Asked) {
+        self.last_prompt += 1;
+        let id = self.last_prompt;
         self.events.push_back(RunEvent::PermissionAsked {
             run: self.id.clone(),
             prompt: id,
-            tool,
-            input: input.clone(),
+            tool: asked.tool.clone(),
+            input: asked.input.clone(),
         });
-        self.prompts.push(Prompt { id, request, input });
+        self.prompts.push(Prompt { id, asked });
     }
 
     fn withdrawn(&mut self, request: &Value) {
         if let Some(at) = self
             .prompts
             .iter()
-            .position(|prompt| prompt.request == *request)
+            .position(|prompt| prompt.asked.request == *request)
         {
             let prompt = self.prompts.swap_remove(at);
             self.events.push_back(RunEvent::PermissionWithdrawn {
@@ -387,6 +302,7 @@ mod tests {
     use weacon_protocol::AccessLevel;
 
     use super::*;
+    use crate::claude;
     use crate::test_support::{
         self, Done, FakeRun, answer, ended, ends_as_recorded, is_asked, is_finished, run_id, text,
         tool_done, until,
@@ -648,10 +564,5 @@ mod tests {
         assert_eq!(lost.code().as_str(), "agent.io_failed");
         assert_eq!(run.next().await.unwrap(), Some(ended(Outcome::Unknown)));
         assert_eq!(run.next().await.unwrap(), None);
-    }
-
-    #[test]
-    fn the_refusal_the_agent_reads_keeps_its_size() {
-        assert_eq!(UNSUPPORTED.len(), 35);
     }
 }

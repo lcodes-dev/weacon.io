@@ -127,8 +127,7 @@ fn is_commit(text: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use std::fs;
-    use std::path::PathBuf;
+    use weacon_testing::TempDir;
 
     use super::*;
 
@@ -140,13 +139,6 @@ mod tests {
             version: "0.1.0",
             commit: SHA,
         }
-    }
-
-    fn temp_dir(name: &str) -> PathBuf {
-        let dir = env::temp_dir().join(format!("weacon-version-{name}-{}", std::process::id()));
-        drop(fs::remove_dir_all(&dir));
-        fs::create_dir_all(&dir).unwrap();
-        dir
     }
 
     fn git(dir: &Path, args: &[&str]) -> String {
@@ -163,7 +155,7 @@ mod tests {
 
     #[test]
     fn takes_the_commit_from_git_and_watches_head_and_refs() {
-        let dir = temp_dir("git");
+        let dir = TempDir::new().unwrap();
         git(&dir, &["init", "--quiet"]);
         git(
             &dir,
@@ -193,7 +185,6 @@ mod tests {
                 format!("cargo::rustc-env=WEACON_COMMIT={commit}"),
             ]
         );
-        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
@@ -215,7 +206,7 @@ mod tests {
 
     #[test]
     fn reports_unknown_outside_a_git_checkout() {
-        let dir = temp_dir("plain");
+        let dir = TempDir::new().unwrap();
 
         assert_eq!(instructions(&dir, Some(" ")), instructions(&dir, None));
         assert_eq!(
@@ -225,6 +216,5 @@ mod tests {
                 "cargo::rustc-env=WEACON_COMMIT=unknown"
             ]
         );
-        fs::remove_dir_all(dir).unwrap();
     }
 }

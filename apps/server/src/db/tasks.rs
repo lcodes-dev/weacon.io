@@ -1,25 +1,34 @@
 use sqlx::SqliteConnection;
-use weacon_model::{Change, EditError, Task, TaskEdit, TaskVersion};
+use weacon_model::{Attribution, EditError, Revision, Task, TaskEdit};
 use weacon_observability::Fault;
-use weacon_protocol::{Author, MemberId, TaskId, TaskStatus, code};
+use weacon_protocol::{TaskId, TaskStatus, code};
 
-use super::{Workspace, failed, stored, unreadable};
+use super::changes::Versioned;
+use super::{Workspace, author_columns, failed, stored, stored_version, unreadable};
 
 type Row = (String, String, String, String, i64);
 
+/// The most tasks a workspace holds, since making or moving one reads them all.
+const MAX_TASKS: u32 = 2_000;
+
 impl Workspace {
-    /// Stores a new task, made by `change`. An id or order key already in this workspace is
-    /// `db.exists`.
-    pub(crate) async fn add_task(&self, task: &Task, change: &Change) -> Result<(), Fault> {
+    /// Stores a new task, made as `attribution` says. An id or order key already in this
+    /// workspace is `db.exists`, and a workspace with [`MAX_TASKS`] already is `task.too_many`.
+    pub(crate) async fn add_task(
+        &self,
+        task: &Task,
+        attribution: &Attribution,
+    ) -> Result<(), Fault> {
         let mut transaction = self
             .db
             .writer
             .begin_with("BEGIN IMMEDIATE")
             .await
             .map_err(failed)?;
-        sqlx::query(
+        let added = sqlx::query(
             "INSERT INTO tasks (workspace_id, task_id, title, status, order_key, version)
-             VALUES (?, ?, ?, ?, ?, ?)",
+             SELECT ?1, ?2, ?3, ?4, ?5, ?6
+             WHERE (SELECT COUNT(*) FROM tasks WHERE workspace_id = ?1) < ?7",
         )
         .bind(self.id.as_str())
         .bind(task.id.as_str())
@@ -27,10 +36,18 @@ impl Workspace {
         .bind(status_text(task.status)?)
         .bind(task.order.as_str())
         .bind(version_number(task.version)?)
+        .bind(MAX_TASKS)
         .execute(&mut *transaction)
         .await
         .map_err(failed)?;
-        self.record(&mut transaction, task, change).await?;
+        if added.rows_affected() == 0 {
+            return Err(Fault::new(
+                code!("task.too_many"),
+                "The workspace has as many tasks as it can hold",
+            ));
+        }
+        self.record_version(&mut transaction, task, attribution)
+            .await?;
         transaction.commit().await.map_err(failed)
     }
 
@@ -55,9 +72,9 @@ impl Workspace {
     pub(crate) async fn edit_task(
         &self,
         id: &TaskId,
-        read_at: TaskVersion,
+        read_at: Revision,
         edit: TaskEdit,
-        change: &Change,
+        attribution: &Attribution,
     ) -> Result<Task, Fault> {
         let mut transaction = self
             .db
@@ -89,19 +106,20 @@ impl Workspace {
         .execute(&mut *transaction)
         .await
         .map_err(failed)?;
-        self.record(&mut transaction, &edited, change).await?;
+        self.record_version(&mut transaction, &edited, attribution)
+            .await?;
         transaction.commit().await.map_err(failed)?;
         Ok(edited)
     }
 
     /// Records who is behind the version `task` is now at, and the change for the feed.
-    async fn record(
+    async fn record_version(
         &self,
         transaction: &mut SqliteConnection,
         task: &Task,
-        change: &Change,
+        attribution: &Attribution,
     ) -> Result<(), Fault> {
-        let (kind, author) = author_columns(change.author())?;
+        let (kind, author) = author_columns(attribution.author()).ok_or_else(unknown_value)?;
         let version = version_number(task.version)?;
         sqlx::query(
             "INSERT INTO task_versions
@@ -113,12 +131,13 @@ impl Workspace {
         .bind(version)
         .bind(kind)
         .bind(author.as_str())
-        .bind(change.accepted_by().as_str())
-        .bind(change.at())
+        .bind(attribution.accepted_by().as_str())
+        .bind(attribution.at())
         .execute(&mut *transaction)
         .await
         .map_err(failed)?;
-        self.task_changed(transaction, &task.id, version, change.accepted_by())
+        let versioned = Versioned::Task(&task.id, version);
+        self.changed(transaction, versioned, attribution.accepted_by())
             .await
     }
 }
@@ -129,9 +148,7 @@ fn stored_task((id, title, status, order, version): Row) -> Result<Task, Fault> 
         title: stored(title)?,
         status: stored_status(&status)?,
         order: stored(order)?,
-        version: u64::try_from(version)
-            .map(TaskVersion::new)
-            .map_err(|_| unreadable())?,
+        version: stored_version(version)?,
     })
 }
 
@@ -141,17 +158,17 @@ pub(crate) fn task_not_found() -> Fault {
 
 fn refused(error: EditError) -> Fault {
     match error {
-        EditError::Stale { .. } => Fault::new(
+        EditError::Stale => Fault::new(
             code!("task.stale"),
             "The task has changed since it was read",
         ),
-        EditError::UnknownStatus => unknown(),
+        EditError::UnknownStatus => unknown_value(),
         EditError::LastVersion => last_version(),
     }
 }
 
 /// A status or an author from a newer peer, which this build can't store.
-fn unknown() -> Fault {
+fn unknown_value() -> Fault {
     Fault::new(
         code!("task.unknown_value"),
         "The task has a value this version doesn't know",
@@ -165,7 +182,7 @@ fn last_version() -> Fault {
     )
 }
 
-fn version_number(version: TaskVersion) -> Result<i64, Fault> {
+fn version_number(version: Revision) -> Result<i64, Fault> {
     i64::try_from(version.get()).map_err(|_| last_version())
 }
 
@@ -174,7 +191,7 @@ fn status_text(status: TaskStatus) -> Result<&'static str, Fault> {
         TaskStatus::Todo => Ok("todo"),
         TaskStatus::InProgress => Ok("in_progress"),
         TaskStatus::Done => Ok("done"),
-        TaskStatus::Newer => Err(unknown()),
+        TaskStatus::Newer => Err(unknown_value()),
     }
 }
 
@@ -187,38 +204,23 @@ fn stored_status(text: &str) -> Result<TaskStatus, Fault> {
     }
 }
 
-fn author_columns(author: &Author) -> Result<(&'static str, &MemberId), Fault> {
-    match author {
-        Author::Person { member } => Ok(("person", member)),
-        Author::Agent { owner } => Ok(("agent", owner)),
-        Author::Newer => Err(unknown()),
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use weacon_model::{OrderKey, TaskTitle};
+    use weacon_model::{OrderKey, Title};
+    use weacon_protocol::Author;
     use weacon_testing::TempDir;
 
     use super::*;
-    use crate::test_support::{member_id, two_teams};
+    use crate::test_support::{member_id, new_task, two_teams};
 
     const NOW: i64 = 1_762_077_600;
 
-    fn new_task(id: &str, title: &str, order: &str) -> Task {
-        Task::new(
-            TaskId::try_from(id.to_owned()).unwrap(),
-            TaskTitle::try_from(title.to_owned()).unwrap(),
-            OrderKey::try_from(order.to_owned()).unwrap(),
-        )
-    }
-
-    fn by(member: &str) -> Change {
-        Change::by(member_id(member), NOW)
+    fn by(member: &str) -> Attribution {
+        Attribution::by(member_id(member), NOW)
     }
 
     fn rename(title: &str) -> TaskEdit {
-        TaskEdit::Title(TaskTitle::try_from(title.to_owned()).unwrap())
+        TaskEdit::Title(Title::try_from(title.to_owned()).unwrap())
     }
 
     fn code(fault: &Fault) -> &str {
@@ -271,7 +273,7 @@ mod tests {
         let id = task.id.clone();
 
         let renamed = one
-            .edit_task(&id, TaskVersion::FIRST, rename("Ship"), &by("m1"))
+            .edit_task(&id, Revision::FIRST, rename("Ship"), &by("m1"))
             .await
             .unwrap();
         let done = one
@@ -295,11 +297,49 @@ mod tests {
 
         let expected = Task {
             status: TaskStatus::Done,
-            version: TaskVersion::new(4),
+            version: Revision::new(4),
             ..new_task("t1", "Ship", "W")
         };
         assert_eq!(moved, expected);
         assert_eq!(one.tasks().await.unwrap(), [expected]);
+    }
+
+    // Fills `workspace` with `count` tasks, keyed `a11`, `a21` and on.
+    async fn fill(workspace: &Workspace, count: u32) {
+        sqlx::query(
+            "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < ?2)
+             INSERT INTO tasks (workspace_id, task_id, title, status, order_key, version)
+             SELECT ?1, 'f' || i, 'Filler', 'todo', 'a' || i || '1', 1 FROM n",
+        )
+        .bind(workspace.id.as_str())
+        .bind(count)
+        .execute(&workspace.db.writer)
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_workspace_holds_up_to_its_most_tasks_and_no_more() {
+        let dir = TempDir::new().unwrap();
+        let (one, two) = two_teams(&dir).await;
+        fill(&one, MAX_TASKS - 1).await;
+
+        one.add_task(&new_task("t1", "Last", "z"), &by("m1"))
+            .await
+            .unwrap();
+        let full = one
+            .add_task(&new_task("t2", "Over", "zz"), &by("m1"))
+            .await
+            .unwrap_err();
+
+        assert_eq!(code(&full), "task.too_many");
+        assert_eq!(
+            one.tasks().await.unwrap().len(),
+            usize::try_from(MAX_TASKS).unwrap()
+        );
+        two.add_task(&new_task("t2", "Elsewhere", "V"), &by("m2"))
+            .await
+            .unwrap();
     }
 
     #[tokio::test]
@@ -309,12 +349,12 @@ mod tests {
         let task = new_task("t1", "Write", "V");
         one.add_task(&task, &by("m1")).await.unwrap();
         let first = one
-            .edit_task(&task.id, TaskVersion::FIRST, rename("Ship"), &by("m1"))
+            .edit_task(&task.id, Revision::FIRST, rename("Ship"), &by("m1"))
             .await
             .unwrap();
 
         let late = one
-            .edit_task(&task.id, TaskVersion::FIRST, rename("Drop"), &by("m1"))
+            .edit_task(&task.id, Revision::FIRST, rename("Drop"), &by("m1"))
             .await
             .unwrap_err();
 
@@ -329,8 +369,8 @@ mod tests {
         let (one, _) = two_teams(&dir).await;
         let task = new_task("t1", "Write", "V");
         one.add_task(&task, &by("m1")).await.unwrap();
-        let agents = Change::accepted(member_id("m1"), member_id("m3"), NOW + 5);
-        one.edit_task(&task.id, TaskVersion::FIRST, rename("Ship"), &agents)
+        let agents = Attribution::accepted(member_id("m1"), member_id("m3"), NOW + 5);
+        one.edit_task(&task.id, Revision::FIRST, rename("Ship"), &agents)
             .await
             .unwrap();
 
@@ -363,7 +403,7 @@ mod tests {
         let id = TaskId::try_from("t1".to_owned()).unwrap();
 
         let edited = two
-            .edit_task(&id, TaskVersion::FIRST, rename("Changed"), &by("m2"))
+            .edit_task(&id, Revision::FIRST, rename("Changed"), &by("m2"))
             .await
             .unwrap();
 
@@ -381,11 +421,11 @@ mod tests {
         one.add_task(&task, &by("m1")).await.unwrap();
 
         let missing = two
-            .edit_task(&task.id, TaskVersion::FIRST, rename("Taken"), &by("m2"))
+            .edit_task(&task.id, Revision::FIRST, rename("Taken"), &by("m2"))
             .await
             .unwrap_err();
         let stranger = one
-            .edit_task(&task.id, TaskVersion::FIRST, rename("Taken"), &by("m2"))
+            .edit_task(&task.id, Revision::FIRST, rename("Taken"), &by("m2"))
             .await
             .unwrap_err();
         let added = one
@@ -422,7 +462,7 @@ mod tests {
         let moved_onto = one
             .edit_task(
                 &task.id,
-                TaskVersion::FIRST,
+                Revision::FIRST,
                 TaskEdit::Order(OrderKey::try_from("W".to_owned()).unwrap()),
                 &by("m1"),
             )
@@ -447,14 +487,14 @@ mod tests {
             ..new_task("t2", "Read", "W")
         };
         let too_far = Task {
-            version: TaskVersion::new(u64::MAX),
+            version: Revision::new(u64::MAX),
             ..new_task("t3", "Read", "X")
         };
 
         let edited = one
             .edit_task(
                 &task.id,
-                TaskVersion::FIRST,
+                Revision::FIRST,
                 TaskEdit::Status(TaskStatus::Newer),
                 &by("m1"),
             )
@@ -466,10 +506,7 @@ mod tests {
         assert_eq!(code(&edited), "task.unknown_value");
         assert_eq!(code(&added), "task.unknown_value");
         assert_eq!(code(&last), "task.last_version");
-        assert_eq!(
-            code(&author_columns(&Author::Newer).unwrap_err()),
-            "task.unknown_value"
-        );
+        assert_eq!(author_columns(&Author::Newer), None);
         assert_eq!(one.tasks().await.unwrap(), [task]);
     }
 
@@ -484,7 +521,7 @@ mod tests {
             .execute(&one.db.writer)
             .await
             .unwrap();
-        let last = TaskVersion::new(u64::try_from(i64::MAX).unwrap());
+        let last = Revision::new(u64::try_from(i64::MAX).unwrap());
 
         let fault = one
             .edit_task(&task.id, last, rename("Ship"), &by("m1"))

@@ -1,6 +1,8 @@
 //! The core's journal of its runs: the ids it has issued and what each chat's latest run was
 //! doing, so a restart can pick them up.
 
+pub(crate) mod task;
+
 use std::fmt;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -30,7 +32,8 @@ pub(crate) struct Record {
     pub(crate) workspace: WorkspaceId,
     pub(crate) chat: ChatId,
     pub(crate) agent: AgentKind,
-    pub(crate) run: RunId,
+    /// `None` until the chat's first run starts.
+    pub(crate) run: Option<RunId>,
     pub(crate) state: RunState,
     /// The agent's own conversation, once it has named it; the chat's next run resumes it.
     pub(crate) session: Option<AgentSession>,
@@ -108,7 +111,7 @@ impl Runs {
             workspace: workspace.clone(),
             chat: chat.clone(),
             agent,
-            run: run.clone(),
+            run: Some(run.clone()),
             state: RunState::Starting,
             session,
             turn: None,
@@ -117,6 +120,45 @@ impl Runs {
         });
         self.commit(next).await?;
         Ok(run)
+    }
+
+    /// Queues a prompt for the chat, which gets a record for `agent` when it has none. A
+    /// prompt already queued or running under the same request isn't queued again.
+    pub(crate) async fn enqueue(
+        &mut self,
+        (workspace, chat): (&WorkspaceId, &ChatId),
+        agent: AgentKind,
+        prompt: Queued,
+        now: u64,
+    ) -> Result<(), Fault> {
+        let mut next = self.journal.clone();
+        let at = self.position(workspace, chat).unwrap_or(next.chats.len());
+        if at == next.chats.len() {
+            next.chats.push(Record {
+                workspace: workspace.clone(),
+                chat: chat.clone(),
+                agent,
+                run: None,
+                state: RunState::Sleeping,
+                session: None,
+                turn: None,
+                queue: Vec::new(),
+                active_at: now,
+            });
+        }
+        let Some(record) = next.chats.get_mut(at) else {
+            return Ok(());
+        };
+        let known = record.turn.as_ref() == Some(&prompt.request)
+            || record
+                .queue
+                .iter()
+                .any(|queued| queued.request == prompt.request);
+        if known {
+            return Ok(());
+        }
+        record.queue.push(prompt);
+        self.commit(next).await
     }
 
     /// Changes the chat's record and saves it; a change that can't be saved isn't made. Does
@@ -136,10 +178,10 @@ impl Runs {
         self.commit(next).await
     }
 
-    /// Whether `run` is the chat's own run and is waiting for a permission answer.
-    pub(crate) fn awaits(&self, workspace: &WorkspaceId, chat: &ChatId, run: &RunId) -> bool {
+    /// Whether `run` is the chat's latest run: an earlier run's, or another chat's, never is.
+    pub(crate) fn is_latest(&self, workspace: &WorkspaceId, chat: &ChatId, run: &RunId) -> bool {
         self.of(workspace, chat)
-            .is_some_and(|record| record.run == *run && record.state == RunState::Waiting)
+            .is_some_and(|record| record.run.as_ref() == Some(run))
     }
 
     fn position(&self, workspace: &WorkspaceId, chat: &ChatId) -> Option<usize> {
@@ -147,6 +189,22 @@ impl Runs {
             .chats
             .iter()
             .position(|record| record.workspace == *workspace && record.chat == *chat)
+    }
+
+    /// Makes every save fail, as on a full disk, until [`Runs::unjam`] gets the path back.
+    #[cfg(test)]
+    pub(crate) fn jam(&mut self) -> PathBuf {
+        let dir = self
+            .path
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_default();
+        std::mem::replace(&mut self.path, dir)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn unjam(&mut self, path: PathBuf) {
+        self.path = path;
     }
 
     async fn commit(&mut self, next: Journal) -> Result<(), Fault> {
@@ -226,7 +284,7 @@ mod tests {
 
         assert_eq!(begun.unwrap_err().code().as_str(), "runs.not_saved");
         assert_eq!(updated.unwrap_err().code().as_str(), "runs.not_saved");
-        assert!(runs.awaits(&w1, &c1, &asked));
+        assert!(runs.is_latest(&w1, &c1, &asked));
         assert_eq!(begin(&mut runs, "c-1").await.as_str(), "run-3");
     }
 
@@ -255,22 +313,21 @@ mod tests {
         let other = begin(&mut runs, "c-2").await;
         let (w1, c1) = (workspace("w-1"), chat("c-1"));
 
-        assert!(!runs.awaits(&w1, &c1, &asked), "not waiting yet");
         waiting(&mut runs, "c-1").await;
         waiting(&mut runs, "c-2").await;
 
-        assert!(runs.awaits(&w1, &c1, &asked));
-        assert!(!runs.awaits(&w1, &c1, &other));
-        assert!(!runs.awaits(&w1, &chat("c-3"), &asked));
-        assert!(!runs.awaits(&workspace("w-2"), &c1, &asked));
+        assert!(runs.is_latest(&w1, &c1, &asked));
+        assert!(!runs.is_latest(&w1, &c1, &other));
+        assert!(!runs.is_latest(&w1, &chat("c-3"), &asked));
+        assert!(!runs.is_latest(&workspace("w-2"), &c1, &asked));
 
         let mut restarted = Runs::load(&dir).unwrap();
-        assert!(restarted.awaits(&w1, &c1, &asked));
+        assert!(restarted.is_latest(&w1, &c1, &asked));
         let next = begin(&mut restarted, "c-1").await;
         waiting(&mut restarted, "c-1").await;
 
-        assert!(!restarted.awaits(&w1, &c1, &asked));
-        assert!(restarted.awaits(&w1, &c1, &next));
+        assert!(!restarted.is_latest(&w1, &c1, &asked));
+        assert!(restarted.is_latest(&w1, &c1, &next));
     }
 
     #[tokio::test]
@@ -306,7 +363,7 @@ mod tests {
                 workspace: w1.clone(),
                 chat: c1.clone(),
                 agent: AgentKind::Claude,
-                run,
+                run: Some(run),
                 state: RunState::Starting,
                 session: AgentSession::try_from(SESSION.to_owned()).ok(),
                 turn: None,
@@ -330,7 +387,7 @@ mod tests {
 
         assert_eq!(last.as_str(), format!("run-{}", u64::MAX));
         assert_eq!(spent.unwrap_err().code().as_str(), "runs.no_id");
-        assert_eq!(runs.of(&w1, &c1).unwrap().run, last);
+        assert_eq!(runs.of(&w1, &c1).unwrap().run, Some(last));
     }
 
     #[test]
@@ -355,5 +412,59 @@ mod tests {
 
         assert!(!format!("{queued:?}").contains("MARKER"));
         assert!(format!("{queued:?}").contains("r-1"));
+    }
+
+    #[tokio::test]
+    async fn a_prompt_is_queued_once_and_a_new_chat_gets_a_record_without_a_run() {
+        let dir = TempDir::new().unwrap();
+        let mut runs = Runs::load(&dir).unwrap();
+        let (w1, c1, c2) = (workspace("w-1"), chat("c-1"), chat("c-2"));
+        let queued = |id: &str| Queued {
+            request: RequestId::try_from(id.to_owned()).unwrap(),
+            text: "Hi".to_owned(),
+        };
+        let agent = AgentKind::Codex;
+
+        runs.enqueue((&w1, &c1), agent, queued("r-1"), 7)
+            .await
+            .unwrap();
+        runs.enqueue((&w1, &c1), agent, queued("r-1"), 8)
+            .await
+            .unwrap();
+        let record = Runs::load(&dir).unwrap().of(&w1, &c1).cloned().unwrap();
+        let fresh = Record {
+            workspace: w1.clone(),
+            chat: c1.clone(),
+            agent,
+            run: None,
+            state: RunState::Sleeping,
+            session: None,
+            turn: None,
+            queue: vec![queued("r-1")],
+            active_at: 7,
+        };
+        assert_eq!(record, fresh);
+        assert!(!runs.is_latest(&w1, &c1, &RunId::try_from("run-1".to_owned()).unwrap()));
+
+        // A prompt on its turn isn't queued again, and another chat's record is left alone.
+        runs.update(&w1, &c1, |record| {
+            record.turn = record.queue.pop().map(|queued| queued.request);
+        })
+        .await
+        .unwrap();
+        runs.enqueue((&w1, &c1), agent, queued("r-1"), 9)
+            .await
+            .unwrap();
+        runs.enqueue((&w1, &c1), agent, queued("r-2"), 9)
+            .await
+            .unwrap();
+        runs.enqueue((&w1, &c2), agent, queued("r-1"), 9)
+            .await
+            .unwrap();
+
+        assert_eq!(runs.of(&w1, &c1).unwrap().queue, [queued("r-2")]);
+        assert_eq!(runs.of(&w1, &c2).unwrap().queue, [queued("r-1")]);
+        assert_eq!(begin(&mut runs, "c-1").await.as_str(), "run-1");
+        assert_eq!(runs.of(&w1, &c1).unwrap().queue, [queued("r-2")]);
     }
 }
