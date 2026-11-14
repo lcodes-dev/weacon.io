@@ -358,10 +358,10 @@ mod tests {
     use tokio_rustls::server::TlsStream;
     use tokio_tungstenite::WebSocketStream;
     use weacon_protocol::{
-        ChatAction, ChatId, MachineId, MachineSettingsAction, MachineSettingsCommand,
-        MachineSettingsQuery, MachineSettingsQueryKind, MemberId, RequestId, SessionsQuery,
-        SessionsQueryKind, TerminalAction, TerminalCommand, TerminalId, Welcome, WorkspaceId,
-        WorktreeAction, WorktreeCommand, WorktreeQuery, WorktreeQueryKind,
+        ChatAction, ChatId, ChatQuery, ChatQueryKind, MachineId, MachineSettingsAction,
+        MachineSettingsCommand, MachineSettingsQuery, MachineSettingsQueryKind, MemberId,
+        RequestId, SessionsQuery, SessionsQueryKind, TerminalAction, TerminalCommand, TerminalId,
+        Welcome, WorkspaceId, WorktreeAction, WorktreeCommand, WorktreeQuery, WorktreeQueryKind,
     };
     use weacon_testing::TempDir;
 
@@ -666,12 +666,22 @@ mod tests {
             .map(|ask| answered(&link, ask))
             .collect();
         let error = answered(&link, other_error.clone());
+        // The server reads chats from what cores upload; it never asks a core for one.
+        let chat_query = answered(
+            &link,
+            Message::ChatQuery(ChatQuery {
+                workspace: WorkspaceId::try_from("w-1".to_owned()).unwrap(),
+                chat: ChatId::try_from("c-1".to_owned()).unwrap(),
+                query: ChatQueryKind::Snapshot,
+            }),
+        );
 
         assert_eq!(owners, [None, None, None, None, None, None]);
         assert_eq!(others, vec![not_owner; 12]);
         // A kind this build doesn't know arrives as `Message::Unknown`.
         assert!(matches!(asking(&Message::Unknown), Asking::Unknown));
         assert_eq!(error, None);
+        assert_eq!(chat_query, Some("uplink.unknown".to_owned()));
         let passed: Vec<_> = std::iter::from_fn(|| taken.try_recv().ok())
             .map(|envelope| envelope.message)
             .collect();
