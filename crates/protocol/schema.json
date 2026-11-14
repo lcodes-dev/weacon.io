@@ -2798,7 +2798,7 @@
       ]
     },
     "Receipt": {
-      "description": "The daemon's word on a command, sent when it is accepted and again when it ends.",
+      "description": "The word of the core or server that runs a command, sent when it accepts the command and\nagain when it ends.",
       "type": "object",
       "properties": {
         "request": {

@@ -1132,7 +1132,8 @@ export type ProposalVerdict = (
 );
 
 /**
- * The daemon's word on a command, sent when it is accepted and again when it ends.
+ * The word of the core or server that runs a command, sent when it accepts the command and
+ * again when it ends.
  */
 export type Receipt = {
   request: RequestId;

@@ -37,7 +37,8 @@ impl Outcome {
     }
 }
 
-/// The daemon's word on a command, sent when it is accepted and again when it ends.
+/// The word of the core or server that runs a command, sent when it accepts the command and
+/// again when it ends.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct Receipt {
     pub request: RequestId,
