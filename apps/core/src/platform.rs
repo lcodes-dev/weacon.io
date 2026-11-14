@@ -54,10 +54,12 @@ use weacon_agents::SpawnPolicy;
 mod chrome;
 mod procs;
 mod programs;
+mod runnable;
 
 pub(crate) use chrome::{CHROME_HOST, register_chrome_host};
 pub(crate) use procs::{PROCESSES, Process, processes};
 pub(crate) use programs::find_program;
+pub(crate) use runnable::make_runnable;
 #[cfg(test)]
 pub(crate) use programs::plant_program;
 
@@ -169,11 +171,6 @@ mod unix {
         // SAFETY: statvfs returned 0, so it filled `stats`.
         let stats = unsafe { stats.assume_init() };
         Ok(u64::from(stats.f_bavail).saturating_mul(stats.f_frsize))
-    }
-
-    /// Lets anyone run `file`, and only its owner change it.
-    pub(crate) fn make_runnable(file: &Path) -> io::Result<()> {
-        fs::set_permissions(file, fs::Permissions::from_mode(0o755))
     }
 
     pub(crate) fn create_private(dir: &Path) -> io::Result<()> {
@@ -314,11 +311,6 @@ mod windows {
             return Err(io::Error::last_os_error());
         }
         Ok(available)
-    }
-
-    /// Windows runs any file whose name ends in `.exe`.
-    pub(crate) fn make_runnable(_file: &Path) -> io::Result<()> {
-        Ok(())
     }
 
     /// Creates `dir`, making it private if it's new; parents get the access they inherit.
