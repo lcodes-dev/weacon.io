@@ -1,18 +1,20 @@
-import type { ChatEntry, RunEvent, RunId, RunState } from "../protocol.ts";
-import { EMPTY, type Transcript, apply } from "../transcript.ts";
-import type { RunAgent } from "./label.ts";
+import type { AgentRef, ChatEntry, RunEvent, RunId, RunState, RunStatus } from "../protocol.ts";
+import { EMPTY, type Transcript, apply } from "../transcript/transcript.ts";
 
 /** A permission prompt, shown after `at` rows of its turn; `seq` is its place in the log. */
 export type Ask = { seq: number; prompt: number; tool: string; at: number; open: boolean };
 
-/** What one run did from its first event after a prompt until it finished. */
-export type Turn = { run: RunId; transcript: Transcript; asks: readonly Ask[]; open: boolean };
+/**
+ * What one run did from its first event after a prompt until it finished; `key` names it for
+ * as long as the chat is shown, as older events load before it.
+ */
+export type Turn = { key: string; run: RunId; transcript: Transcript; asks: readonly Ask[]; open: boolean };
 
 /** What the screen shows, in order: people's prompts and agents' turns. */
 export type Item = { kind: "prompt"; seq: number; text: string } | { kind: "turn"; turn: Turn };
 
 /** A run as its chat's log records it. */
-export type Run = { state: RunState; agent: RunAgent | undefined };
+export type Run = { state: RunState; agent: AgentRef | undefined };
 
 /**
  * A chat's log from `first` to `seq` with nothing missing, its runs, and the text its runs are
@@ -90,7 +92,7 @@ export function stream(chat: Chat, run: RunId, event: RunEvent): Chat {
     return chat;
   }
   const items = [...chat.items];
-  addTo(items, run, (turn) => ({ ...turn, transcript: apply(turn.transcript, [event]) }));
+  addTo(items, run, turnKey(chat.seq, run), (turn) => ({ ...turn, transcript: apply(turn.transcript, [event]) }));
   const live = new Map(chat.live).set(run, [...(chat.live.get(run) ?? []), event]);
   return { ...chat, live, items };
 }
@@ -146,7 +148,7 @@ function fold(chat: Chat, entries: readonly ChatEntry[]): Item[] {
     step(items, entry, entry.seq > chat.base || chat.waiting.has(entry.seq));
   }
   for (const [run, events] of chat.live) {
-    addTo(items, run, (turn) => ({ ...turn, transcript: apply(turn.transcript, events) }));
+    addTo(items, run, turnKey(chat.seq, run), (turn) => ({ ...turn, transcript: apply(turn.transcript, events) }));
   }
   return items;
 }
@@ -169,7 +171,7 @@ function step(items: Item[], entry: ChatEntry, waiting: boolean): void {
     update(items, run, (turn) => ({ ...turn, asks: turn.asks.map((ask) => (ask.prompt === done.prompt ? { ...ask, open: false } : ask)) }));
     return;
   }
-  addTo(items, run, (turn) => {
+  addTo(items, run, turnKey(entry.seq - 1, run), (turn) => {
     if (done.event === "permission_asked") {
       const ask = { seq: entry.seq, prompt: done.prompt, tool: done.tool, at: turn.transcript.rows.length, open: waiting };
       return { ...turn, asks: [...turn.asks, ask] };
@@ -182,10 +184,10 @@ function step(items: Item[], entry: ChatEntry, waiting: boolean): void {
   });
 }
 
-// Changes `run`'s open turn, starting one at the end when it has none.
-function addTo(items: Item[], run: RunId, change: (turn: Turn) => Turn): void {
+// Changes `run`'s open turn, starting one called `key` at the end when it has none.
+function addTo(items: Item[], run: RunId, key: string, change: (turn: Turn) => Turn): void {
   if (!update(items, run, change)) {
-    items.push({ kind: "turn", turn: change({ run, transcript: EMPTY, asks: [], open: true }) });
+    items.push({ kind: "turn", turn: change({ key, run, transcript: EMPTY, asks: [], open: true }) });
   }
 }
 
@@ -206,11 +208,16 @@ function closeAsks(items: Item[], run: RunId): void {
   );
 }
 
+// The same for a turn whether its first event was streamed or committed after `seq`.
+function turnKey(seq: number, run: RunId): string {
+  return `t${seq}-${run}`;
+}
+
 function ends(event: RunEvent): boolean {
   return event.event === "text" || event.event === "finished";
 }
 
 // A status that names no agent keeps the one the run had.
-function agentOf(status: { run: RunId; agent?: RunAgent }, runs: ReadonlyMap<RunId, Run>): RunAgent | undefined {
+function agentOf(status: RunStatus, runs: ReadonlyMap<RunId, Run>): AgentRef | undefined {
   return status.agent ?? runs.get(status.run)?.agent;
 }

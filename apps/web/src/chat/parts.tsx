@@ -1,3 +1,5 @@
+import "./chat.css";
+
 import type { Answering } from "./asks.ts";
 import { answerProblem } from "./asks.ts";
 import type { Ask } from "./chat.ts";

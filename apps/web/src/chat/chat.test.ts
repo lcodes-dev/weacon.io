@@ -163,7 +163,7 @@ test("an answered prompt stops being answerable, and only that one", () => {
 });
 
 test("a status keeps the agent the run had when it names none", () => {
-  const agent = { kind: "claude" };
+  const agent = { kind: "claude" as const, owner: { kind: "shared" as const } };
   const start = fromSnapshot({ seq: 0, runs: new Map([["r-1", { state: "idle", agent }]]), waiting: [], events: [] });
   const next = commitAll(start, [status(1, "r-1", "running"), status(2, "r-3", "starting")]);
 

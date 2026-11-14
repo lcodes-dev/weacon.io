@@ -50,9 +50,9 @@ test("a prompt says why its answer may not have been taken", () => {
 });
 
 test("answers and interrupts are commands to the chat", () => {
-  const place = { workspace: "w-1", chat: "c-1" };
+  const ref = { workspace: "w-1", chat: "c-1" };
 
-  assert.deepEqual(answer(4, place, "a-1", "r-1", 2, false), {
+  assert.deepEqual(answer(4, ref, "a-1", "r-1", 2, false), {
     id: 4,
     type: "chat_command",
     workspace: "w-1",
@@ -60,7 +60,7 @@ test("answers and interrupts are commands to the chat", () => {
     request: "a-1",
     action: { kind: "permission", answer: { run: "r-1", prompt: 2, allow: false } },
   });
-  assert.deepEqual(interrupt(5, place, "s-1"), {
+  assert.deepEqual(interrupt(5, ref, "s-1"), {
     id: 5,
     type: "chat_command",
     workspace: "w-1",

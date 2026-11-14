@@ -1,0 +1,42 @@
+.row.prompt {
+  border-left: 3px solid var(--border);
+  padding-left: 10px;
+}
+
+.row.agent {
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+
+.row.ask {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.row.ask.open {
+  color: inherit;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px 10px;
+}
+
+.row.ask .choices {
+  display: flex;
+  gap: 8px;
+}
+
+.row.ask .problem {
+  flex-basis: 100%;
+  color: #c4372b;
+}
+
+.transcript .older {
+  display: block;
+  margin: 0 auto 12px;
+}

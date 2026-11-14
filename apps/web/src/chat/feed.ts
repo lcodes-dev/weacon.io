@@ -1,6 +1,8 @@
-import type { Place } from "../place.ts";
-import type { Envelope } from "../protocol.ts";
-import { about } from "./parse.ts";
+import type { ChatRef } from "../chat-ref.ts";
+import type { ChatMessage, RunMessage } from "../incoming.ts";
+import type { Envelope, RunId } from "../protocol.ts";
+import { answered } from "./chat.ts";
+import { heard } from "./heard.ts";
 import { START, type Step, type Sync, ended, hear, more, open } from "./sync.ts";
 
 /** What the feed needs from the page: envelope ids, a way to send, and a frame to render on. */
@@ -16,24 +18,32 @@ export type Wiring = {
  * flush, so a burst of messages costs one render.
  */
 export class ChatFeed {
-  #place: Place;
+  #ref: ChatRef;
   #wiring: Wiring;
   #sync: Sync = START;
   #shown = true;
 
-  constructor(place: Place, wiring: Wiring) {
-    this.#place = place;
+  constructor(ref: ChatRef, wiring: Wiring) {
+    this.#ref = ref;
     this.#wiring = wiring;
   }
 
   /** Asks for the chat afresh, as once the connection is live. */
   open(): void {
-    this.#take(open(this.#sync, this.#place, this.#wiring.id));
+    this.#take(open(this.#sync, this.#ref, this.#wiring.id));
   }
 
   /** Asks for older events, as when the reader wants to see them. */
   more(): void {
-    this.#take(more(this.#sync, this.#place, this.#wiring.id));
+    this.#take(more(this.#sync, this.#ref, this.#wiring.id));
+  }
+
+  /** Stops the prompt `prompt` of `run` being answerable, as once its answer is taken. */
+  answered(run: RunId, prompt: number): void {
+    const { chat } = this.#sync;
+    if (chat !== undefined) {
+      this.#change({ ...this.#sync, chat: answered(chat, run, prompt) });
+    }
   }
 
   /** Stops waiting for answers, keeping the chat, as when the connection ends. */
@@ -41,14 +51,12 @@ export class ChatFeed {
     this.#change(ended(this.#sync));
   }
 
-  /** Hears `envelope`; whether it was a chat or run message this feed takes. */
-  push(envelope: Envelope): boolean {
-    const heard = about(envelope, this.#place);
-    if (heard === undefined) {
-      return false;
+  /** Hears `message`, when it is about this chat. */
+  push(message: ChatMessage | RunMessage): void {
+    const about = heard(message, this.#ref);
+    if (about !== undefined) {
+      this.#take(hear(this.#sync, about, this.#ref, this.#wiring.id));
     }
-    this.#take(hear(this.#sync, heard, this.#place, this.#wiring.id));
-    return true;
   }
 
   #take(step: Step): void {
@@ -66,9 +74,33 @@ export class ChatFeed {
     if (this.#shown) {
       this.#shown = false;
       this.#wiring.schedule(() => {
-        this.#shown = true;
-        this.#wiring.show(this.#sync);
+        // A flush that runs twice, by frame and by timer, shows the chat once.
+        if (!this.#shown) {
+          this.#shown = true;
+          this.#wiring.show(this.#sync);
+        }
       });
     }
   }
+}
+
+/**
+ * A `schedule` for `ChatFeed` that flushes on the next frame. A tab hidden before then gets no frame,
+ * so `later` sends the batch instead; a visible tab's batches go out only between renders.
+ */
+export function nextFrame(
+  hidden: () => boolean,
+  frame: (run: () => void) => number,
+  cancel: (frame: number) => void,
+  later: (run: () => void) => void,
+): (flush: () => void) => void {
+  return (flush) => {
+    const pending = frame(flush);
+    later(() => {
+      if (hidden()) {
+        cancel(pending);
+        flush();
+      }
+    });
+  };
 }

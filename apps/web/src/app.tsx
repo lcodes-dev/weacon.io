@@ -8,16 +8,26 @@ import type { Comment } from "./diff/comments.ts";
 import { DiffView } from "./diff/diff-view.tsx";
 import type { ChatRef } from "./chat-ref.ts";
 import type { App as Build } from "./protocol.ts";
-import type { Transcript } from "./transcript/transcript.ts";
-import { TranscriptView } from "./transcript/transcript-view.tsx";
+import type { Line } from "./chat/lines.ts";
+import { StopButton } from "./chat/parts.tsx";
+import { type Answering, TranscriptView } from "./transcript/transcript-view.tsx";
 
 type Shown = "run" | "changes" | "settings";
 
-/** The page: a header with Changes and Settings, over the run's transcript and the message box, its changes, or Settings. */
+/** What the chat shows, and what a person can do with it. */
+export type ChatView = {
+  lines: readonly Line[];
+  older: (() => void) | undefined;
+  answering: Answering;
+  /** Stops the agent's turn, while one is running. */
+  stop: { stopping: boolean; stop: () => void } | undefined;
+};
+
+/** The page: a header with Stop, Changes and Settings, over the chat's transcript and the message box, its changes, or Settings. */
 export function App({
   me,
   status,
-  transcript,
+  chat,
   chatRef,
   send,
   changes,
@@ -25,7 +35,7 @@ export function App({
 }: {
   me: Build;
   status: Status;
-  transcript: Transcript;
+  chat: ChatView;
   chatRef: ChatRef | undefined;
   send: Send;
   changes: Changes;
@@ -40,6 +50,7 @@ export function App({
         <span className="status">{statusText(status)}</span>
         {shown === "run" ? (
           <span className="actions">
+            {chat.stop !== undefined && <StopButton stopping={chat.stop.stopping} onStop={chat.stop.stop} />}
             {chatRef !== undefined && canAsk(status) && (
               <button
                 type="button"
@@ -63,7 +74,7 @@ export function App({
       </header>
       <main>
         <div className={shown === "run" ? "pane" : "pane away"}>
-          <TranscriptView rows={transcript.rows} writing={transcript.writing} away={shown !== "run"} />
+          <TranscriptView lines={chat.lines} older={chat.older} answering={chat.answering} away={shown !== "run"} />
         </div>
         {shown === "changes" && (
           <div className="pane">

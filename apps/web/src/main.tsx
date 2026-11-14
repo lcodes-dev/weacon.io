@@ -3,11 +3,16 @@ import { createRoot } from "react-dom/client";
 
 import "./app.css";
 import { App } from "./app.tsx";
-import { chatRefOf } from "./chat-ref.ts";
-import { type Send, deliver, prompt } from "./composer/prompt.ts";
+import { type ChatRef, chatRefOf } from "./chat-ref.ts";
+import { type Command, type Send, type Sent, deliver, prompt } from "./composer/prompt.ts";
 import { type Asks, Connection, type Later, type Status, offers } from "./connection.ts";
 import { NO_CHANGES, ask, cut, needsAsking, receive } from "./diff/changes.ts";
-import { Feed, nextFrame } from "./feed.ts";
+import { type Answers, askKey, sending, settle } from "./chat/asks.ts";
+import { working } from "./chat/chat.ts";
+import { answer, interrupt } from "./chat/commands.ts";
+import { ChatFeed, nextFrame } from "./chat/feed.ts";
+import { lines } from "./chat/lines.ts";
+import { START, type Sync } from "./chat/sync.ts";
 import { newRequestId } from "./ids.ts";
 import { route } from "./incoming.ts";
 import { Log } from "./log.ts";
@@ -15,7 +20,6 @@ import { ME } from "./me.ts";
 import { Receipts } from "./receipts.ts";
 import { fakeServerUrl } from "./server.ts";
 import { Shell } from "./shell/shell.tsx";
-import { EMPTY, apply } from "./transcript/transcript.ts";
 
 const log = new Log();
 // A crash is reported by a fixed code, as its message and stack could hold content, and once,
@@ -33,14 +37,18 @@ log.info("app started");
 const chatRef = chatRefOf(window.location.search);
 // How long a hidden tab waits for a frame before its batch of run events goes out anyway.
 const HIDDEN_MS = 250;
-const TRANSCRIPT: Asks = { needs: "run.stream", offers: ["diff.view"] };
+const TRANSCRIPT: Asks = { needs: "run.stream", offers: ["diff.view", "chat.events"] };
+// The members' names, which no message carries yet.
+const NO_MEMBERS = new Map<string, string>();
 
 function Root({ url }: { url: string }) {
   const [status, setStatus] = useState<Status>({ state: "connecting" });
-  const [transcript, setTranscript] = useState(EMPTY);
+  const [sync, setSync] = useState<Sync>(START);
+  const [answers, setAnswers] = useState<Answers>(new Map());
+  const [stopping, setStopping] = useState(false);
   const [changes, setChanges] = useState(NO_CHANGES);
   // The connection while it is live, and the commands sent on it that wait for an answer.
-  const live = useRef<{ connection: Connection; receipts: Receipts }>(undefined);
+  const live = useRef<{ connection: Connection; receipts: Receipts; feed: ChatFeed | undefined }>(undefined);
   // The hello takes id 1.
   const lastId = useRef(1);
   useEffect(() => {
@@ -56,18 +64,11 @@ function Root({ url }: { url: string }) {
     }
     const later: Later = (run, ms) => setTimeout(run, ms);
     const receipts = new Receipts(later);
-    const feed = new Feed(
-      nextFrame(
-        () => document.hidden,
-        (run) => requestAnimationFrame(run),
-        (frame) => cancelAnimationFrame(frame),
-        (run) => later(run, HIDDEN_MS),
-      ),
-      (events) => {
-        if (current) {
-          setTranscript((before) => apply(before, events));
-        }
-      },
+    const schedule = nextFrame(
+      () => document.hidden,
+      (run) => requestAnimationFrame(run),
+      (frame) => cancelAnimationFrame(frame),
+      (run) => later(run, HIDDEN_MS),
     );
     const connection = new Connection(socket, ME, {
       status(next) {
@@ -76,9 +77,20 @@ function Root({ url }: { url: string }) {
         }
         setStatus(next);
         if (next.state === "live") {
-          live.current = { connection, receipts };
+          const feed =
+            chatRef === undefined || !offers(next, "chat.events")
+              ? undefined
+              : new ChatFeed(chatRef, {
+                  id: () => ++lastId.current,
+                  send: (envelope) => connection.send(envelope),
+                  schedule,
+                  show: (shown) => current && setSync(shown),
+                });
+          live.current = { connection, receipts, feed };
+          feed?.open();
           log.attach((envelope) => connection.send(envelope), offers(next, "log.forward"));
         } else if (next.state === "ended") {
+          live.current?.feed?.end();
           live.current = undefined;
           setChanges(cut);
           log.detach();
@@ -88,7 +100,8 @@ function Root({ url }: { url: string }) {
       },
       message(envelope) {
         route(envelope, {
-          run: (message) => feed.push(message),
+          run: (message) => live.current?.feed?.push(message),
+          chat: (message) => live.current?.feed?.push(message),
           answers: (message) => receipts.take(message),
           changes: (message) => {
             if (current) {
@@ -111,6 +124,41 @@ function Root({ url }: { url: string }) {
     }
     return deliver(prompt(++lastId.current, chatRef, request, text), now.receipts, (envelope) => now.connection.send(envelope));
   };
+  const command = (build: (id: number, ref: ChatRef) => Command) => {
+    const now = live.current;
+    if (now === undefined || chatRef === undefined) {
+      return Promise.resolve<Sent>("lost");
+    }
+    return deliver(build(++lastId.current, chatRef), now.receipts, (envelope) => now.connection.send(envelope));
+  };
+  const answering = {
+    answers,
+    answer(run: string, prompt: number, allow: boolean) {
+      const key = askKey(run, prompt);
+      const next = sending(answers, key, allow, newRequestId);
+      const request = next.get(key)?.request ?? newRequestId();
+      setAnswers(next);
+      void command((id, ref) => answer(id, ref, request, run, prompt, allow)).then((sent) => {
+        // An answer is far too short to be refused for its size.
+        const settled = sent === "too_long" ? "refused" : sent;
+        setAnswers((before) => settle(before, key, request, settled));
+        if (settled === "accepted") {
+          live.current?.feed?.answered(run, prompt);
+        }
+      });
+    },
+  };
+  const stop = () => {
+    setStopping(true);
+    void command((id, ref) => interrupt(id, ref, newRequestId())).then(() => setStopping(false));
+  };
+  const { chat } = sync;
+  const shown = {
+    lines: chat === undefined ? [] : lines(chat, NO_MEMBERS),
+    older: chat !== undefined && sync.live && chat.first > 1 ? () => live.current?.feed?.more() : undefined,
+    answering,
+    stop: chat !== undefined && working(chat) ? { stopping, stop } : undefined,
+  };
   const openChanges = () => {
     // Asked the first time they are opened, and again after answers were cut short.
     if (needsAsking(changes) && chatRef !== undefined && live.current !== undefined) {
@@ -120,7 +168,7 @@ function Root({ url }: { url: string }) {
     }
   };
   return (
-    <App me={ME} status={status} transcript={transcript} chatRef={chatRef} send={send} changes={changes} openChanges={openChanges} />
+    <App me={ME} status={status} chat={shown} chatRef={chatRef} send={send} changes={changes} openChanges={openChanges} />
   );
 }
 

@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import type { Place } from "../place.ts";
+import type { ChatRef } from "../chat-ref.ts";
 import type { ChatEntry, Envelope } from "../protocol.ts";
-import type { Heard } from "./parse.ts";
+import type { Heard } from "./heard.ts";
 import { START, type Step, type Sync, ended, hear, more, open } from "./sync.ts";
 
-const place: Place = { workspace: "w-1", chat: "c-1" };
+const place: ChatRef = { workspace: "w-1", chat: "c-1" };
 
 function ids(from = 10): () => number {
   let next = from;

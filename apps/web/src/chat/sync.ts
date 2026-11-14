@@ -1,7 +1,7 @@
-import type { Place } from "../place.ts";
+import type { ChatRef } from "../chat-ref.ts";
 import type { ChatQueryKind, Envelope } from "../protocol.ts";
 import { type Chat, commit, fromSnapshot, missing, older, stream } from "./chat.ts";
-import type { Heard } from "./parse.ts";
+import type { Heard } from "./heard.ts";
 
 /**
  * Where a chat's screen stands with the server: the chat it shows, the snapshot and window it
@@ -19,7 +19,7 @@ export const START: Sync = { chat: undefined, snapshot: undefined, window: undef
 const PAGE = 100;
 
 /** Asks for the chat afresh, keeping what it shows until the answer comes, as on opening it. */
-export function open(sync: Sync, place: Place, id: () => number): Step {
+export function open(sync: Sync, place: ChatRef, id: () => number): Step {
   const query = ask(place, id(), { kind: "snapshot" });
   return { sync: { ...sync, snapshot: query.id, window: undefined, live: false }, send: [query] };
 }
@@ -31,7 +31,7 @@ export function ended(sync: Sync): Sync {
 }
 
 /** Asks for the page of events before the oldest the chat holds, unless one is on its way. */
-export function more(sync: Sync, place: Place, id: () => number): Step {
+export function more(sync: Sync, place: ChatRef, id: () => number): Step {
   const { chat } = sync;
   if (chat === undefined || !sync.live || sync.window !== undefined || chat.first <= 1) {
     return { sync, send: [] };
@@ -40,7 +40,7 @@ export function more(sync: Sync, place: Place, id: () => number): Step {
 }
 
 /** What hearing `heard` does to `sync`. */
-export function hear(sync: Sync, heard: Heard, place: Place, id: () => number): Step {
+export function hear(sync: Sync, heard: Heard, place: ChatRef, id: () => number): Step {
   const { chat } = sync;
   switch (heard.kind) {
     case "snapshot": {
@@ -75,7 +75,7 @@ export function hear(sync: Sync, heard: Heard, place: Place, id: () => number): 
 }
 
 // Asks for every event back to the oldest waiting prompt the chat doesn't hold yet.
-function fetchWaiting(sync: Sync, place: Place, id: () => number, send: Envelope[]): Step {
+function fetchWaiting(sync: Sync, place: ChatRef, id: () => number, send: Envelope[]): Step {
   const { chat } = sync;
   const oldest = chat === undefined ? undefined : missing(chat);
   if (chat === undefined || oldest === undefined) {
@@ -85,11 +85,11 @@ function fetchWaiting(sync: Sync, place: Place, id: () => number, send: Envelope
   return { sync: step.sync, send: [...send, ...step.send] };
 }
 
-function windowTo(sync: Sync, chat: Chat, place: Place, id: () => number, from: number): Step {
+function windowTo(sync: Sync, chat: Chat, place: ChatRef, id: () => number, from: number): Step {
   const query = ask(place, id(), { kind: "window", before: chat.first, limit: chat.first - from });
   return { sync: { ...sync, window: query.id }, send: [query] };
 }
 
-function ask(place: Place, id: number, query: ChatQueryKind): Envelope {
+function ask(place: ChatRef, id: number, query: ChatQueryKind): Envelope {
   return { id, type: "chat_query", ...place, query };
 }
