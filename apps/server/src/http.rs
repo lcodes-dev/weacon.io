@@ -39,9 +39,6 @@ pub(crate) use body::{Body, Unreadable, parsed};
 
 const REQUEST_ID: &str = "x-request-id";
 
-/// The id `log_request` gave the request, for handlers that log after answering it.
-#[derive(Clone)]
-pub(crate) struct RequestTag(pub(crate) String);
 const GRACE: Duration = Duration::from_secs(10);
 /// How long a request may take from its head to its answer, its body included.
 const ANSWER_WITHIN: Duration = Duration::from_secs(30);
@@ -126,6 +123,10 @@ async fn in_time(request: Request, next: Next) -> Response {
         .await
         .unwrap_or_else(|_| error(StatusCode::REQUEST_TIMEOUT, code!("request.too_slow"), true))
 }
+
+/// The id `log_request` gave the request, for handlers that log after answering it.
+#[derive(Clone)]
+pub(crate) struct RequestTag(pub(crate) String);
 
 /// Logs one record per request: never its path or query, which can hold content, only the
 /// route it matched.

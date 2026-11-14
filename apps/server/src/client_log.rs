@@ -1,4 +1,4 @@
-use weacon_observability::{Forwarded, Known, Logger};
+use weacon_observability::{Forwarded, KnownLogs, Logger};
 use weacon_protocol::{ClientLog, Code, code};
 
 use crate::auth::Member;
@@ -9,7 +9,7 @@ use crate::shared::Shared;
 pub(crate) const LOG_FORWARD: Code = code!("log.forward");
 
 // The events and codes the web app logs, as its `log.ts` lists them.
-static WEB: Known = Known {
+static WEB: KnownLogs = KnownLogs {
     events: &["app started", "connection lost", "connection refused"],
     codes: &[code!("connection.lost"), code!("connection.refused")],
 };
@@ -43,8 +43,8 @@ impl ClientLogs {
 mod tests {
     use serde_json::{Value, json};
     use weacon_protocol::{
-        Envelope, Level, LogEvent, MachineId, MachineSettingsQuery, MachineSettingsQueryKind,
-        Message, RequestId, RunId,
+        ClientLog, Envelope, Level, LogEvent, MachineId, MachineSettingsQuery,
+        MachineSettingsQueryKind, Message, RequestId, RunId, code,
     };
 
     use crate::test_support::socket::{Socket, next, open, say, send};
@@ -75,14 +75,13 @@ mod tests {
     async fn forward_markers(client: &mut Socket) {
         let token = "markertoken_sk_live_0123456789";
         for msg in ["app started", "markermessage"] {
-            let log = serde_json::from_value(json!({
-                "level": "warn",
-                "msg": LogEvent::try_from(msg.to_owned()).unwrap(),
-                "run_id": RunId::try_from(token.to_owned()).unwrap(),
-                "request_id": RequestId::try_from(token.to_owned()).unwrap(),
-                "code": "home.markerpath.id_rsa",
-            }))
-            .unwrap();
+            let log = ClientLog {
+                level: Level::Warn,
+                msg: LogEvent::try_from(msg.to_owned()).unwrap(),
+                run_id: Some(RunId::try_from(token.to_owned()).unwrap()),
+                request_id: Some(RequestId::try_from(token.to_owned()).unwrap()),
+                code: Some(code!("home.markerpath.id_rsa")),
+            };
             send(
                 client,
                 Envelope {

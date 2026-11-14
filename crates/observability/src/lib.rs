@@ -8,7 +8,7 @@ mod report;
 mod reporter;
 
 pub use errors::Fault;
-pub use forwarded::{Forwarded, Known};
+pub use forwarded::{Forwarded, KnownLogs};
 pub use logger::{Clock, Logger, LoggerOptions, Record, Sink, json_lines, tee};
 pub use redact::Field;
 pub use report::{Reports, Upload};

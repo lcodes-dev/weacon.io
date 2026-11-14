@@ -9,7 +9,7 @@ const BURST: u32 = 20;
 
 /// The events and codes a client is known to send; nothing else from it is written.
 #[derive(Debug)]
-pub struct Known {
+pub struct KnownLogs {
     pub events: &'static [&'static str],
     pub codes: &'static [Code],
 }
@@ -18,7 +18,7 @@ pub struct Known {
 /// Only a known event is written, as the receiver's own string; a known code may go with it.
 #[derive(Debug)]
 pub struct Forwarded {
-    known: &'static Known,
+    known: &'static KnownLogs,
     tokens: u32,
     refilled: SystemTime,
     dropped: u64,
@@ -27,7 +27,7 @@ pub struct Forwarded {
 
 impl Forwarded {
     #[must_use]
-    pub fn new(known: &'static Known, now: SystemTime) -> Self {
+    pub fn new(known: &'static KnownLogs, now: SystemTime) -> Self {
         Self {
             known,
             tokens: BURST,
@@ -71,16 +71,15 @@ impl Forwarded {
             .duration_since(self.refilled)
             .map_or(0, |since| since.as_secs());
         let tokens = u64::from(self.tokens).saturating_add(earned);
-        match u32::try_from(tokens) {
+        if let Ok(tokens) = u32::try_from(tokens)
+            && tokens < BURST
+        {
+            self.tokens = tokens;
+            self.refilled += Duration::from_secs(earned);
+        } else {
             // Full, so the part of a second already earned no longer counts.
-            Ok(tokens) if tokens < BURST => {
-                self.tokens = tokens;
-                self.refilled += Duration::from_secs(earned);
-            }
-            _ => {
-                self.tokens = BURST;
-                self.refilled = now;
-            }
+            self.tokens = BURST;
+            self.refilled = now;
         }
         if self.tokens == 0 {
             if self.dropped == 0 {
@@ -110,12 +109,12 @@ mod tests {
     use std::time::UNIX_EPOCH;
 
     use serde_json::{Value, json};
-    use weacon_protocol::code;
+    use weacon_protocol::{LogEvent, RequestId, RunId, code};
 
     use super::*;
     use crate::logger::tests::{Records, capture};
 
-    static KNOWN: Known = Known {
+    static KNOWN: KnownLogs = KnownLogs {
         events: &["app started", "connection lost"],
         codes: &[code!("connection.lost")],
     };
@@ -124,12 +123,14 @@ mod tests {
         UNIX_EPOCH + Duration::from_millis(seconds * 1000 + 500)
     }
 
-    fn record(level: &str, msg: &str, more: Value) -> ClientLog {
-        let mut wire = json!({ "level": level, "msg": msg });
-        if let (Some(wire), Value::Object(more)) = (wire.as_object_mut(), more) {
-            wire.extend(more);
+    fn record(level: Level, msg: &str, code: Option<Code>) -> ClientLog {
+        ClientLog {
+            level,
+            msg: LogEvent::try_from(msg.to_owned()).unwrap(),
+            run_id: None,
+            request_id: None,
+            code,
         }
-        serde_json::from_value(wire).unwrap()
     }
 
     fn written(records: &Records) -> Vec<(Level, &'static str, Value)> {
@@ -150,14 +151,22 @@ mod tests {
     fn only_known_events_and_codes_are_written_as_the_receivers_own() {
         let (log, records) = capture(Level::Trace);
         let mut forwarded = Forwarded::new(&KNOWN, at(0));
-        let ids = json!({ "run_id": "sk_live_marker", "request_id": "marker-request" });
-        let lost = json!({ "code": "connection.lost" });
+        let with_ids = ClientLog {
+            run_id: Some(RunId::try_from("sk_live_marker".to_owned()).unwrap()),
+            request_id: Some(RequestId::try_from("marker-request".to_owned()).unwrap()),
+            ..record(Level::Info, "app started", None)
+        };
+        let lost = Some(code!("connection.lost"));
+        let marker_code = Some(code!("marker.sk_live_123"));
 
-        forwarded.take(&log, &record("info", "app started", ids), at(0));
-        forwarded.take(&log, &record("warn", "connection lost", lost), at(0));
-        forwarded.take(&log, &record("info", "marker word", json!({})), at(0));
-        let marker_code = json!({ "code": "marker.sk_live_123" });
-        forwarded.take(&log, &record("warn", "connection lost", marker_code), at(0));
+        forwarded.take(&log, &with_ids, at(0));
+        forwarded.take(&log, &record(Level::Warn, "connection lost", lost), at(0));
+        forwarded.take(&log, &record(Level::Info, "marker word", None), at(0));
+        forwarded.take(
+            &log,
+            &record(Level::Warn, "connection lost", marker_code),
+            at(0),
+        );
 
         assert_eq!(
             written(&records),
@@ -181,8 +190,15 @@ mod tests {
         let (log, records) = capture(Level::Trace);
         let mut forwarded = Forwarded::new(&KNOWN, at(0));
 
-        for level in ["trace", "debug", "info", "warn", "error", "fatal"] {
-            forwarded.take(&log, &record(level, "app started", json!({})), at(0));
+        for level in [
+            Level::Trace,
+            Level::Debug,
+            Level::Info,
+            Level::Warn,
+            Level::Error,
+            Level::Fatal,
+        ] {
+            forwarded.take(&log, &record(level, "app started", None), at(0));
         }
 
         let levels: Vec<Level> = written(&records).iter().map(|(level, ..)| *level).collect();
@@ -193,11 +209,11 @@ mod tests {
     fn a_client_sends_a_burst_then_one_a_second_and_the_dropped_are_counted() {
         let (log, records) = capture(Level::Trace);
         let mut forwarded = Forwarded::new(&KNOWN, at(0));
-        let started = record("info", "app started", json!({}));
+        let started = record(Level::Info, "app started", None);
         let count = |records: &Records, msg: &str| {
             written(records)
                 .iter()
-                .filter(|(_, m, _)| *m == msg)
+                .filter(|(_, written, _)| *written == msg)
                 .count()
         };
 
@@ -224,7 +240,7 @@ mod tests {
     fn idle_seconds_refill_the_burst_but_no_further() {
         let (log, records) = capture(Level::Trace);
         let mut forwarded = Forwarded::new(&KNOWN, at(0));
-        let started = record("info", "app started", json!({}));
+        let started = record(Level::Info, "app started", None);
 
         for _ in 0..BURST {
             forwarded.take(&log, &started, at(0));
