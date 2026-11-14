@@ -178,12 +178,6 @@ impl Runs {
         self.commit(next).await
     }
 
-    /// Whether `run` is the chat's latest run: an earlier run's, or another chat's, never is.
-    pub(crate) fn is_latest(&self, workspace: &WorkspaceId, chat: &ChatId, run: &RunId) -> bool {
-        self.of(workspace, chat)
-            .is_some_and(|record| record.run.as_ref() == Some(run))
-    }
-
     fn position(&self, workspace: &WorkspaceId, chat: &ChatId) -> Option<usize> {
         self.journal
             .chats
@@ -284,7 +278,7 @@ mod tests {
 
         assert_eq!(begun.unwrap_err().code().as_str(), "runs.not_saved");
         assert_eq!(updated.unwrap_err().code().as_str(), "runs.not_saved");
-        assert!(runs.is_latest(&w1, &c1, &asked));
+        assert_eq!(latest(&runs, &w1, &c1).as_ref(), Some(&asked));
         assert_eq!(begin(&mut runs, "c-1").await.as_str(), "run-3");
     }
 
@@ -305,8 +299,12 @@ mod tests {
         assert_eq!(runs.of(&w1, &c1).unwrap().session, None);
     }
 
+    fn latest(runs: &Runs, workspace: &WorkspaceId, chat: &ChatId) -> Option<RunId> {
+        runs.of(workspace, chat)?.run.clone()
+    }
+
     #[tokio::test]
-    async fn a_permission_answer_only_reaches_the_run_that_asked() {
+    async fn each_chat_has_its_own_latest_run_and_keeps_it_across_a_restart() {
         let dir = TempDir::new().unwrap();
         let mut runs = Runs::load(&dir).unwrap();
         let asked = begin(&mut runs, "c-1").await;
@@ -316,18 +314,18 @@ mod tests {
         waiting(&mut runs, "c-1").await;
         waiting(&mut runs, "c-2").await;
 
-        assert!(runs.is_latest(&w1, &c1, &asked));
-        assert!(!runs.is_latest(&w1, &c1, &other));
-        assert!(!runs.is_latest(&w1, &chat("c-3"), &asked));
-        assert!(!runs.is_latest(&workspace("w-2"), &c1, &asked));
+        assert_eq!(latest(&runs, &w1, &c1).as_ref(), Some(&asked));
+        assert_ne!(latest(&runs, &w1, &c1).as_ref(), Some(&other));
+        assert_ne!(latest(&runs, &w1, &chat("c-3")).as_ref(), Some(&asked));
+        assert_ne!(latest(&runs, &workspace("w-2"), &c1).as_ref(), Some(&asked));
 
         let mut restarted = Runs::load(&dir).unwrap();
-        assert!(restarted.is_latest(&w1, &c1, &asked));
+        assert_eq!(latest(&restarted, &w1, &c1).as_ref(), Some(&asked));
         let next = begin(&mut restarted, "c-1").await;
         waiting(&mut restarted, "c-1").await;
 
-        assert!(!restarted.is_latest(&w1, &c1, &asked));
-        assert!(restarted.is_latest(&w1, &c1, &next));
+        assert_ne!(latest(&restarted, &w1, &c1).as_ref(), Some(&asked));
+        assert_eq!(latest(&restarted, &w1, &c1).as_ref(), Some(&next));
     }
 
     #[tokio::test]
@@ -444,7 +442,10 @@ mod tests {
             active_at: 7,
         };
         assert_eq!(record, fresh);
-        assert!(!runs.is_latest(&w1, &c1, &RunId::try_from("run-1".to_owned()).unwrap()));
+        assert_ne!(
+            latest(&runs, &w1, &c1).as_ref(),
+            Some(&RunId::try_from("run-1".to_owned()).unwrap())
+        );
 
         // A prompt on its turn isn't queued again, and another chat's record is left alone.
         runs.update(&w1, &c1, |record| {

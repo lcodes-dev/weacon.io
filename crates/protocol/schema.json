@@ -2482,6 +2482,23 @@
           ]
         },
         {
+          "description": "A person answered a waiting prompt; committed before the agent is told.",
+          "type": "object",
+          "properties": {
+            "answer": {
+              "$ref": "#/$defs/PermissionAnswer"
+            },
+            "event": {
+              "type": "string",
+              "const": "permission_answered"
+            }
+          },
+          "required": [
+            "event",
+            "answer"
+          ]
+        },
+        {
           "description": "Ends the turn and withdraws any prompt still waiting.",
           "type": "object",
           "properties": {

@@ -6,11 +6,11 @@ use tokio::sync::mpsc;
 use weacon_observability::{Fault, Field};
 use weacon_protocol::{
     AgentSession, ChatEntry, ChatEvent, Message, Outcome, PermissionAnswer, RunEvent, RunId,
-    RunState, RunUpdate, code,
+    RunState, RunStatus, RunUpdate, code,
 };
 
 use super::cut::cut;
-use super::{Engine, Key, Start, Waiting};
+use super::{Engine, Key, Start};
 use crate::runs::Queued;
 use crate::runs::task::{Agent, Heard, Order, RunOf, drive};
 
@@ -59,13 +59,15 @@ impl<A: Agent> Engine<A> {
             RunEvent::PermissionAsked { prompt, .. } => {
                 self.asked(key, run, prompt, committed).await
             }
-            // Withdrawn whether or not the event was committed: the agent no longer asks.
-            RunEvent::PermissionWithdrawn { prompt, .. } => {
-                let waiting = &mut self.chat(key).await?.waiting;
-                waiting.retain(|waits| waits.prompt != prompt);
-                let resumed = waiting.is_empty() && self.turn(key).is_some();
-                committed?;
-                if resumed {
+            // Tried again after a failed write, which reopens the log, so it never shows the
+            // prompt still waiting.
+            RunEvent::PermissionWithdrawn { .. } => {
+                if committed.is_err() {
+                    self.commit_said(key, run, &event).await?;
+                }
+                let log = &self.chat(key).await?.log;
+                let asks = log.runs().waiting.iter().any(|waits| waits.run == *run);
+                if !asks && self.turn(key).is_some() {
                     self.state(key, run, RunState::Running).await?;
                 }
                 Ok(())
@@ -87,6 +89,7 @@ impl<A: Agent> Engine<A> {
             | RunEvent::Text { .. }
             | RunEvent::ToolCall { .. }
             | RunEvent::ToolDone { .. }
+            | RunEvent::PermissionAnswered { .. }
             | RunEvent::Newer => committed.map(drop),
         }
     }
@@ -99,15 +102,7 @@ impl<A: Agent> Engine<A> {
         prompt: u32,
         committed: Result<(ChatEntry, bool), Fault>,
     ) -> Result<(), Fault> {
-        if let Ok((entry, true)) = &committed {
-            let seq = entry.seq;
-            let answered = None;
-            let waiting = Waiting {
-                prompt,
-                seq,
-                answered,
-            };
-            self.chat(key).await?.waiting.push(waiting);
+        if let Ok((_, true)) = &committed {
             return self.state(key, run, RunState::Waiting).await;
         }
         let answer = PermissionAnswer {
@@ -160,7 +155,7 @@ impl<A: Agent> Engine<A> {
     ) -> Result<(), Fault> {
         let (turn, now) = (self.turn(key), (self.host.now)());
         let chat = self.chat(key).await?;
-        chat.waiting.clear();
+        chat.answers.clear();
         // What the run reported first wins over a later end, such as its exit.
         let outcome = match chat.unended.take() {
             Some((ended, reported)) if turn.as_ref() == Some(&ended) => reported,
@@ -242,16 +237,23 @@ impl<A: Agent> Engine<A> {
 
     // Saves the ends a failed write or an exit left unsaved: the turn's, and those of queued
     // prompts, which then never run.
-    async fn save_ended(&mut self, key: &Key) -> Result<(), Fault> {
+    pub(super) async fn save_ended(&mut self, key: &Key) -> Result<(), Fault> {
         let Some(record) = self.runs.of(&key.0, &key.1) else {
             return Ok(());
         };
         let (turn, queue) = (record.turn.clone(), record.queue.clone());
         let live = self.is_live(key);
         let chat = self.chat(key).await?;
-        // A turn whose run is gone, as after a restart, is over too.
+        // A turn whose run is gone, as after a restart, is over too, and so is that run.
         let turn_ended =
             turn.is_some_and(|turn| !live || chat.unended.is_some() || chat.log.has_ended(&turn));
+        let working = |status: &RunStatus| {
+            matches!(
+                status.state,
+                RunState::Starting | RunState::Running | RunState::Waiting
+            )
+        };
+        let cut_off = !live && chat.log.runs().runs.iter().any(working);
         let ended: Vec<_> = queue
             .into_iter()
             .map(|queued| queued.request)
@@ -272,7 +274,9 @@ impl<A: Agent> Engine<A> {
             RunState::Sleeping
         };
         match self.run_of(key) {
-            Some(run) if turn_ended => self.finished(key, &run, Outcome::Unknown, state).await,
+            Some(run) if turn_ended || cut_off => {
+                self.finished(key, &run, Outcome::Unknown, state).await
+            }
             _ => Ok(()),
         }
     }
@@ -378,6 +382,7 @@ mod tests {
     };
     use weacon_testing::messages;
 
+    use super::super::Answered;
     use super::*;
     use crate::chats::test_support::{
         Bench, FakeAgent, Started, Told, chat, client, command, parts, prompt, pushed, run, soon,
@@ -543,7 +548,7 @@ mod tests {
         assert_eq!(lost.unwrap_err().code().as_str(), "chat.log_not_written");
         assert_eq!(engine.turn(&key()), None);
         let receipt = ChatEvent::RunStatus {
-            status: weacon_protocol::RunStatus {
+            status: RunStatus {
                 run: run("run-1"),
                 state: RunState::Idle,
                 agent: None,
@@ -717,7 +722,7 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn a_withdrawn_prompt_stops_waiting_even_when_that_cant_be_committed() {
+    async fn a_withdrawal_whose_write_fails_is_written_again_and_the_prompt_stops_waiting() {
         let (mut engine, _agent, _bench) = on_ask().await;
         engine.chat(&key()).await.unwrap().log.jam();
         let withdrawn = RunEvent::PermissionWithdrawn {
@@ -725,9 +730,9 @@ mod tests {
             prompt: 1,
         };
 
-        let lost = hear(&mut engine, withdrawn).await;
+        hear(&mut engine, withdrawn).await.unwrap();
 
-        assert_eq!(lost.unwrap_err().code().as_str(), "chat.log_not_written");
+        assert!(waiting_in(&mut engine).await.is_empty());
         let refused = engine.command(&key(), allow("r-2").0).await;
         assert_eq!(refused.unwrap_err().code().as_str(), "agent.no_such_prompt");
     }
@@ -851,6 +856,67 @@ mod tests {
         (engine, agent, bench)
     }
 
+    // What the chat's snapshot says waits for a person.
+    async fn waiting_in(engine: &mut Engine<FakeAgent>) -> Vec<u64> {
+        let (anyone, _pushes) = client(1);
+        let snapshot = engine.query(&key(), ChatQueryKind::Snapshot, &anyone).await;
+        let Ok(Some(ChatAnswerKind::Snapshot { waiting, .. })) = snapshot else {
+            panic!("no snapshot");
+        };
+        waiting
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_working_run_with_no_turn_left_after_a_restart_sleeps() {
+        let (_bench, mut engine, _agent, _pushes) = on_turn().await;
+        let outcome = Outcome::Completed;
+        hear(&mut engine, RunEvent::Finished { outcome })
+            .await
+            .unwrap();
+        // As when the core stopped right after starting a run, before it got a turn.
+        let (run_1, running) = (run("run-1"), RunState::Running);
+        let status = RunStatus {
+            run: run_1,
+            state: running,
+            agent: None,
+        };
+        engine
+            .commit(&key(), ChatEvent::RunStatus { status })
+            .await
+            .unwrap();
+        engine.chats.remove(&key());
+
+        waiting_in(&mut engine).await;
+
+        let status = RunStatus {
+            run: run("run-1"),
+            state: RunState::Sleeping,
+            agent: None,
+        };
+        assert_eq!(latest(&mut engine).await, ChatEvent::RunStatus { status });
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_run_cut_off_by_a_restart_ends_and_leaves_no_prompt_waiting() {
+        let (mut engine, _agent, _bench) = on_ask().await;
+        assert_eq!(waiting_in(&mut engine).await.len(), 1);
+        // As after a restart: the log is all that is left of the chat.
+        engine.chats.remove(&key());
+
+        assert!(waiting_in(&mut engine).await.is_empty());
+        let first = prompt("r-1", "Hi").request;
+        assert_eq!(
+            outcomes(&mut engine, &first).await,
+            [Outcome::Accepted, Outcome::Unknown]
+        );
+        let status = RunStatus {
+            run: run("run-1"),
+            state: RunState::Sleeping,
+            agent: None,
+        };
+        assert_eq!(latest(&mut engine).await, ChatEvent::RunStatus { status });
+    }
+
     // The outcomes of `request`'s receipts in the log, in order.
     async fn outcomes(engine: &mut Engine<FakeAgent>, request: &RequestId) -> Vec<Outcome> {
         let log = &engine.chat(&key()).await.unwrap().log;
@@ -901,6 +967,95 @@ mod tests {
 
         assert_eq!(soon(agent.told.recv()).await, Some(Told::Answer(answer)));
         assert_eq!(soon(agent.told.recv()).await, None);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn an_answer_already_in_the_log_reaches_its_run_once_and_is_logged_once() {
+        let (mut engine, mut agent, _bench) = on_ask().await;
+        let (answers, answer) = allow("r-2");
+        let answered = Answered {
+            prompt: 1,
+            request: answers.request.clone(),
+            allow: true,
+        };
+        // As when its receipt and its answer reached the disk but the write was reported failed.
+        engine.chat(&key()).await.unwrap().answers.push(answered);
+        let receipt = Outcome::Completed;
+        engine
+            .receipt(&key(), &answers.request, receipt)
+            .await
+            .unwrap();
+        let event = RunEvent::PermissionAnswered {
+            answer: answer.clone(),
+        };
+        hear(&mut engine, event).await.unwrap();
+
+        engine.command(&key(), answers.clone()).await.unwrap();
+        engine.command(&key(), answers).await.unwrap();
+
+        assert_eq!(soon(agent.told.recv()).await, Some(Told::Answer(answer)));
+        assert_eq!(soon(agent.told.recv()).await, None);
+        let log = &engine.chat(&key()).await.unwrap().log;
+        let entries = log.window(u64::MAX, 64).await.unwrap();
+        let logged = entries.iter().filter(|entry| {
+            matches!(&entry.event, ChatEvent::Run { update } if matches!(update.event, RunEvent::PermissionAnswered { .. }))
+        });
+        assert_eq!(logged.count(), 1);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_prompt_of_a_run_cut_off_by_a_restart_takes_no_answer() {
+        let (mut engine, _agent, _bench) = on_ask().await;
+        // As after a restart: the log still shows the prompt, but its run is gone.
+        engine.chats.remove(&key());
+
+        let refused = engine.command(&key(), allow("r-2").0).await;
+
+        assert_eq!(refused.unwrap_err().code().as_str(), "agent.no_such_prompt");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn answering_one_prompt_keeps_another_answer_still_on_its_way() {
+        let (mut engine, mut agent, _bench) = on_ask().await;
+        let asks = RunEvent::PermissionAsked {
+            run: run("run-1"),
+            prompt: 2,
+            tool: "Write".to_owned(),
+            input: json!({}),
+        };
+        hear(&mut engine, asks).await.unwrap();
+        let (second, given) = allow("r-2");
+        let second = ChatCommand {
+            action: ChatAction::Permission {
+                answer: PermissionAnswer {
+                    prompt: 2,
+                    ..given.clone()
+                },
+            },
+            ..second
+        };
+        // As when its receipt was written but its delivery was cut short.
+        let pending = Answered {
+            prompt: 2,
+            request: second.request.clone(),
+            allow: true,
+        };
+        engine.chat(&key()).await.unwrap().answers.push(pending);
+        let receipt = Outcome::Completed;
+        engine
+            .receipt(&key(), &second.request, receipt)
+            .await
+            .unwrap();
+
+        engine.command(&key(), allow("r-3").0).await.unwrap();
+        engine.command(&key(), second).await.unwrap();
+
+        assert_eq!(
+            soon(agent.told.recv()).await,
+            Some(Told::Answer(given.clone()))
+        );
+        let two = PermissionAnswer { prompt: 2, ..given };
+        assert_eq!(soon(agent.told.recv()).await, Some(Told::Answer(two)));
     }
 
     #[tokio::test(start_paused = true)]

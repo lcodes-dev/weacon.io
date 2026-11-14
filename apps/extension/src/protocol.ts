@@ -1014,6 +1014,10 @@ export type RunEvent = (
     run: RunId;
   }
   | {
+    answer: PermissionAnswer;
+    event: "permission_answered";
+  }
+  | {
     event: "finished";
     outcome: Outcome;
   }
