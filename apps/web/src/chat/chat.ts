@@ -159,7 +159,7 @@ function step(items: Item[], entry: ChatEntry, waiting: boolean): void {
   closeBy(items, entry);
   // A run that stops without a finished event, as when its core crashed, ends its turn too.
   if (event.kind === "run_status" && !["starting", "running", "waiting"].includes(event.status.state)) {
-    update(items, event.status.run, (turn) => ({ ...turn, open: false }));
+    update(items, event.status.run, (turn) => ({ ...turn, open: false, transcript: { ...turn.transcript, writing: false } }));
   }
   if (event.kind !== "run" || event.update.event.event === "permission_withdrawn") {
     return;

@@ -225,3 +225,12 @@ test("a prompt withdrawn before the window that brings it back stays closed", ()
     "r-2 done: ask 1@0 open",
   ]);
 });
+
+test("a run that stops while it writes leaves its text written", () => {
+  const writing = stream(chat([said(1, "Hi")]), "r-1", delta("Hal"));
+  const stopped = commitAll(writing, [status(2, "r-1", "idle")]);
+  const turn = stopped.items.at(-1);
+
+  assert.equal(turn?.kind === "turn" && turn.turn.transcript.writing, false);
+  assert.equal(turn?.kind === "turn" && turn.turn.open, false);
+});

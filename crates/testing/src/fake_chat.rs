@@ -301,16 +301,19 @@ impl FakeChat {
     }
 
     // Where the permission prompts still waiting are: those of runs that wait, not yet answered.
+    // The permission prompts no later entry has closed: by a withdrawal, the run finishing, or the
+    // run no longer waiting.
     fn waiting(&self) -> Vec<u64> {
-        let waits = |run: &RunId| {
-            self.runs
-                .iter()
-                .any(|status| status.run == *run && status.state == RunState::Waiting)
-        };
         self.entries
             .iter()
-            .filter(|entry| asked(entry).is_some_and(waits))
-            .map(|entry| entry.seq)
+            .filter_map(|entry| Some((entry.seq, asked(entry)?)))
+            .filter(|&(seq, (run, prompt))| {
+                !self
+                    .entries
+                    .iter()
+                    .any(|later| later.seq > seq && closes(later, run, prompt))
+            })
+            .map(|(seq, _)| seq)
             .collect()
     }
 
@@ -345,12 +348,28 @@ impl FakeChat {
     }
 }
 
-// The run whose permission prompt `entry` is, if it is one.
-fn asked(entry: &ChatEntry) -> Option<&RunId> {
+// The run and prompt of the permission prompt `entry` is, if it is one.
+fn asked(entry: &ChatEntry) -> Option<(&RunId, u32)> {
     let ChatEvent::Run { update } = &entry.event else {
         return None;
     };
-    matches!(update.event, RunEvent::PermissionAsked { .. }).then_some(&update.run)
+    let RunEvent::PermissionAsked { prompt, .. } = update.event else {
+        return None;
+    };
+    Some((&update.run, prompt))
+}
+
+// Whether `entry` ends the wait for the prompt `prompt` of `run`.
+fn closes(entry: &ChatEntry, run: &RunId, prompt: u32) -> bool {
+    if let ChatEvent::RunStatus { status } = &entry.event {
+        return status.run == *run && status.state != RunState::Waiting;
+    }
+    let ChatEvent::Run { update } = &entry.event else {
+        return false;
+    };
+    update.run == *run
+        && (matches!(update.event, RunEvent::Finished { .. })
+            || matches!(update.event, RunEvent::PermissionWithdrawn { prompt: withdrawn, .. } if withdrawn == prompt))
 }
 
 fn run(id: &str) -> Result<RunId, String> {
@@ -726,6 +745,33 @@ mod tests {
             runs.iter()
                 .any(|status| status.run.as_str() == "r-1" && status.state == RunState::Waiting)
         );
+    }
+
+    #[test]
+    fn a_snapshot_lists_only_the_prompts_still_waiting() {
+        let mut fake = fake();
+        let ask = |prompt| {
+            played(RunEvent::PermissionAsked {
+                run: run("r-1").unwrap(),
+                prompt,
+                tool: "Edit".to_owned(),
+                input: Value::Null,
+            })
+        };
+        fake.played(&ask(7));
+        fake.played(&played(RunEvent::Finished {
+            outcome: Outcome::Completed,
+        }));
+        fake.played(&ask(8));
+        let after_second = snapshot(&mut fake).2;
+        fake.played(&played(RunEvent::PermissionWithdrawn {
+            run: run("r-1").unwrap(),
+            prompt: 8,
+        }));
+
+        // The seeded Codex prompt, then the second Claude one; the first ended with its turn.
+        assert_eq!(after_second, [SEEDED, SEEDED + 6]);
+        assert_eq!(snapshot(&mut fake).2, [SEEDED]);
     }
 
     #[test]
