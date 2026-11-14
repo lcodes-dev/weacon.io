@@ -139,3 +139,27 @@ pub(crate) fn write_program(path: &std::path::Path, script: &str) {
         .unwrap();
     assert!(written.success());
 }
+
+/// The next thing a terminal's program did, failing the test if nothing comes in time.
+pub(crate) async fn next_event(
+    events: &mut tokio::sync::mpsc::Receiver<crate::terminal::Event>,
+) -> Option<crate::terminal::Event> {
+    timeout(Duration::from_secs(30), events.recv())
+        .await
+        .unwrap()
+}
+
+/// The first event that isn't output, with the output before it added to `seen`.
+pub(crate) async fn after_output(
+    events: &mut tokio::sync::mpsc::Receiver<crate::terminal::Event>,
+    seen: &mut String,
+) -> Option<crate::terminal::Event> {
+    loop {
+        match next_event(events).await {
+            Some(crate::terminal::Event::Output(data)) => {
+                seen.push_str(&String::from_utf8_lossy(&data));
+            }
+            other => return other,
+        }
+    }
+}

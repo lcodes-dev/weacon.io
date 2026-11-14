@@ -3,7 +3,7 @@
     reason = "std has no pseudo-terminals: they need grantpt, unlockpt, ptsname and ioctl"
 )]
 
-use std::ffi::{CStr, OsStr};
+use std::ffi::{CStr, OsStr, OsString};
 use std::fs::{File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::os::fd::{AsRawFd, OwnedFd};
@@ -124,15 +124,11 @@ fn open_pair() -> io::Result<(OwnedFd, OwnedFd)> {
     if unsafe { libc::grantpt(fd) != 0 || libc::unlockpt(fd) != 0 } {
         return Err(io::Error::last_os_error());
     }
-    let mut name = [0; 128];
-    slave_name(fd, &mut name)?;
-    let name = CStr::from_bytes_until_nul(&name)
-        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "no pseudo-terminal name"))?;
     let slave = OpenOptions::new()
         .read(true)
         .write(true)
         .custom_flags(libc::O_NOCTTY)
-        .open(OsStr::from_bytes(name.to_bytes()))?;
+        .open(slave_name(fd)?)?;
     Ok((master.into(), slave.into()))
 }
 
@@ -150,8 +146,17 @@ fn set_size(master: &impl AsRawFd, size: Size) -> io::Result<()> {
     Ok(())
 }
 
+// The path of the master's other end.
+fn slave_name(fd: i32) -> io::Result<OsString> {
+    let mut name = [0; 128];
+    name_into(fd, &mut name)?;
+    let name = CStr::from_bytes_until_nul(&name)
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "no pseudo-terminal name"))?;
+    Ok(OsStr::from_bytes(name.to_bytes()).to_owned())
+}
+
 #[cfg(target_os = "macos")]
-fn slave_name(fd: i32, name: &mut [u8; 128]) -> io::Result<()> {
+fn name_into(fd: i32, name: &mut [u8; 128]) -> io::Result<()> {
     // SAFETY: TIOCPTYGNAME writes at most 128 bytes, the size of `name`.
     let named = unsafe {
         libc::ioctl(
@@ -167,7 +172,7 @@ fn slave_name(fd: i32, name: &mut [u8; 128]) -> io::Result<()> {
 }
 
 #[cfg(not(target_os = "macos"))]
-fn slave_name(fd: i32, name: &mut [u8; 128]) -> io::Result<()> {
+fn name_into(fd: i32, name: &mut [u8; 128]) -> io::Result<()> {
     // SAFETY: `ptsname_r` writes at most `name.len()` bytes into `name`.
     let failed = unsafe { libc::ptsname_r(fd, name.as_mut_ptr().cast(), name.len()) };
     if failed != 0 {

@@ -3,12 +3,8 @@
 use std::io;
 
 use tokio::sync::mpsc;
-use weacon_observability::Fault;
-use weacon_protocol::code;
 
-use crate::launch::Launch;
 use crate::platform::Pty;
-use crate::{claude, codex};
 
 /// A terminal's size in characters.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -33,16 +29,15 @@ impl Size {
     }
 }
 
-// Windows keeps a console's sides in an `i16`.
-const MAX_SIDE: u16 = 0x7fff;
+const MAX_SIDE: u16 = i16::MAX.cast_unsigned();
 
 /// The vendor's sign-in, running. Dropping it ends the sign-in.
 pub struct Terminal {
-    pty: Pty,
+    pub(crate) pty: Pty,
 }
 
 /// What the sign-in does, in order: all it prints, then its end.
-pub struct Events(mpsc::Receiver<Event>);
+pub struct Events(pub(crate) mpsc::Receiver<Event>);
 
 /// One thing the sign-in did.
 #[derive(Debug, PartialEq, Eq)]
@@ -51,21 +46,6 @@ pub enum Event {
     Output(Vec<u8>),
     /// It ended, successfully or not; nothing comes after.
     Exited { success: bool },
-}
-
-impl Launch {
-    /// Runs the vendor's own sign-in in a new terminal of `size`: the same program, fixed
-    /// arguments and config folder as [`Launch::log_in`], and no shell.
-    ///
-    /// # Errors
-    /// When this build doesn't know the agent, or its program can't be started.
-    pub fn log_in_terminal(&self, size: Size) -> Result<(Terminal, Events), Fault> {
-        let command = self.vendors(claude::login, codex::login)?;
-        let (pty, events) = Pty::spawn(command, size).map_err(|error| {
-            Fault::new(code!("agent.login_failed"), "The sign-in couldn't start").because(error)
-        })?;
-        Ok((Terminal { pty }, Events(events)))
-    }
 }
 
 impl Terminal {
@@ -111,14 +91,13 @@ mod tests {
     #[cfg(unix)]
     mod vendors {
         use std::path::Path;
-        use std::time::Duration;
 
-        use tokio::time::timeout;
         use weacon_protocol::{AccessLevel, AgentKind};
         use weacon_testing::TempDir;
 
         use super::*;
-        use crate::test_support::write_program;
+        use crate::Launch;
+        use crate::test_support::{after_output, next_event, write_program};
 
         fn launch(agent: AgentKind, dir: &Path) -> Launch {
             let program = dir.join("vendor");
@@ -135,24 +114,11 @@ mod tests {
             }
         }
 
-        // The first event that isn't output, with the output before it in `seen`.
-        async fn after_output(events: &mut Events, seen: &mut String) -> Option<Event> {
-            loop {
-                match timeout(Duration::from_secs(30), events.next())
-                    .await
-                    .unwrap()
-                {
-                    Some(Event::Output(data)) => seen.push_str(&String::from_utf8_lossy(&data)),
-                    other => return other,
-                }
-            }
-        }
-
         async fn printed(launch: &Launch) -> (String, bool) {
             let (_terminal, mut events) =
                 launch.log_in_terminal(Size::new(80, 24).unwrap()).unwrap();
             let mut seen = String::new();
-            match after_output(&mut events, &mut seen).await {
+            match after_output(&mut events.0, &mut seen).await {
                 Some(Event::Exited { success }) => (seen, success),
                 other => panic!("{other:?} after {seen:?}"),
             }
@@ -200,12 +166,10 @@ mod tests {
             };
             let (terminal, mut events) =
                 launch.log_in_terminal(Size::new(80, 24).unwrap()).unwrap();
-            let ready = timeout(Duration::from_secs(30), events.next())
-                .await
-                .unwrap();
+            let ready = next_event(&mut events.0).await;
             assert!(matches!(ready, Some(Event::Output(_))), "{ready:?}");
             drop(terminal);
-            assert_eq!(after_output(&mut events, &mut String::new()).await, None);
+            assert_eq!(after_output(&mut events.0, &mut String::new()).await, None);
         }
     }
 }

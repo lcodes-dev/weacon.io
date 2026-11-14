@@ -16,38 +16,20 @@ const CHUNK: usize = 16 * 1024;
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
-
     use tokio::process::Command;
     use tokio::sync::mpsc;
-    use tokio::time::timeout;
     use weacon_testing::TempDir;
 
     use super::*;
     use crate::terminal::{Event, Size};
-
-    async fn next(events: &mut mpsc::Receiver<Event>) -> Option<Event> {
-        timeout(Duration::from_secs(30), events.recv())
-            .await
-            .unwrap()
-    }
+    use crate::test_support::{after_output, next_event};
 
     // Reads output into `seen` until it holds `wanted`.
     async fn until(events: &mut mpsc::Receiver<Event>, seen: &mut String, wanted: &str) {
         while !seen.contains(wanted) {
-            match next(events).await {
+            match next_event(events).await {
                 Some(Event::Output(data)) => seen.push_str(&String::from_utf8_lossy(&data)),
                 other => panic!("{other:?} before {wanted:?}, after {seen:?}"),
-            }
-        }
-    }
-
-    async fn exited(events: &mut mpsc::Receiver<Event>) -> bool {
-        loop {
-            match next(events).await {
-                Some(Event::Output(_)) => {}
-                Some(Event::Exited { success }) => return success,
-                None => panic!("no end"),
             }
         }
     }
@@ -102,7 +84,8 @@ mod tests {
         pty.resize(Size::new(120, 40).unwrap()).unwrap();
         pty.write(b"\r").await.unwrap();
         until(&mut events, &mut seen, "40 120").await;
-        assert!(!exited(&mut events).await);
-        assert_eq!(next(&mut events).await, None);
+        let end = after_output(&mut events, &mut seen).await;
+        assert_eq!(end, Some(Event::Exited { success: false }));
+        assert_eq!(next_event(&mut events).await, None);
     }
 }

@@ -292,13 +292,20 @@ fn coord(size: Size) -> COORD {
     }
 }
 
-// `text` as UTF-16 ending in NUL; text that holds a NUL itself is refused.
-fn wide(text: &OsStr) -> io::Result<Vec<u16>> {
+// `text` as UTF-16; text that holds a NUL itself is refused.
+fn units(text: &OsStr) -> io::Result<Vec<u16>> {
     let units: Vec<u16> = text.encode_wide().collect();
     if units.contains(&0) {
         return Err(io::ErrorKind::InvalidInput.into());
     }
-    Ok(units.into_iter().chain(iter::once(0)).collect())
+    Ok(units)
+}
+
+// `text` as UTF-16 ending in NUL.
+fn wide(text: &OsStr) -> io::Result<Vec<u16>> {
+    let mut wide = units(text)?;
+    wide.push(0);
+    Ok(wide)
 }
 
 const SPACE: u16 = 0x20;
@@ -306,8 +313,8 @@ const TAB: u16 = 0x09;
 const QUOTE: u16 = 0x22;
 const BACKSLASH: u16 = 0x5c;
 
-/// The program and its arguments as one command line, each quoted so the program's own parser
-/// gets them back exactly.
+// The program and its arguments as one command line, each quoted so the program's own parser
+// gets them back exactly.
 fn command_line<'a>(program: &Path, args: impl Iterator<Item = &'a OsStr>) -> io::Result<Vec<u16>> {
     let mut line = Vec::new();
     push_quoted(&mut line, program.as_os_str())?;
@@ -320,8 +327,7 @@ fn command_line<'a>(program: &Path, args: impl Iterator<Item = &'a OsStr>) -> io
 }
 
 fn push_quoted(line: &mut Vec<u16>, arg: &OsStr) -> io::Result<()> {
-    let mut units = wide(arg)?;
-    units.pop();
+    let units = units(arg)?;
     if !units.is_empty() && !units.iter().any(|unit| [SPACE, TAB, QUOTE].contains(unit)) {
         line.extend(units);
         return Ok(());
@@ -348,8 +354,8 @@ fn push_quoted(line: &mut Vec<u16>, arg: &OsStr) -> io::Result<()> {
     Ok(())
 }
 
-/// This process's environment with the command's changes, as the block `CreateProcessW` takes:
-/// sorted by name in any case, and ending in two NULs.
+// This process's environment with the command's changes, as the block `CreateProcessW` takes:
+// sorted by name in any case, and ending in two NULs.
 fn environment(command: &std::process::Command) -> io::Result<Vec<u16>> {
     let mut variables: BTreeMap<OsString, (OsString, OsString)> = std::env::vars_os()
         .map(|(name, value)| (name.to_ascii_uppercase(), (name, value)))
