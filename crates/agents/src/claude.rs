@@ -159,22 +159,6 @@ mod tests {
         const SESSION_A: &str = "0b7c6a52-3f1e-4d2a-9c8b-5e4f3a2b1c0d";
         const SESSION_B: &str = "5d4c3b2a-1f0e-4d9c-8b7a-6f5e4d3c2b1a";
 
-        /// Writes an executable `script` to `path` from a child shell, so this process never holds a
-        /// write handle that another test's fork could inherit, which makes running it fail as busy.
-        fn write_program(path: &Path, script: &str) {
-            let written = std::process::Command::new("sh")
-                .args([
-                    "-c",
-                    "printf '%s' \"$1\" > \"$2\" && chmod 755 \"$2\"",
-                    "sh",
-                    script,
-                ])
-                .arg(path)
-                .status()
-                .unwrap();
-            assert!(written.success());
-        }
-
         // Scripts stand in for `claude auth status`, printing `status` and exiting `code`.
         #[tokio::test]
         async fn only_a_status_that_exits_well_and_names_the_config_folders_sign_in_counts() {
@@ -212,7 +196,7 @@ mod tests {
 
         fn status_script(dir: &Path, number: usize, status: &str, code: u8) -> Launch {
             let program = dir.join(format!("claude-{number}"));
-            write_program(
+            crate::test_support::write_program(
                 &program,
                 &format!("#!/bin/sh\nprintf '%s' '{status}'\nexit {code}\n"),
             );
@@ -230,7 +214,7 @@ mod tests {
         // inherited, then prints its workspace's session.
         fn fake_claude(dir: &Path) -> PathBuf {
             let program = dir.join("claude");
-            write_program(
+            crate::test_support::write_program(
                 &program,
                 "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$CLAUDE_CONFIG_DIR/args\"\nread -r line\n\
                  sh -c 'cat /proc/self/oom_score_adj; echo \"$CARGO_BUILD_JOBS $CLAUDE_CONFIG_DIR\"' \

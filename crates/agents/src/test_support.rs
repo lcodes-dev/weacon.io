@@ -139,3 +139,19 @@ pub(crate) fn launch(agent: AgentKind, dir: &Path) -> Launch {
 pub(crate) const fn finished(outcome: Outcome) -> RunEvent {
     RunEvent::Finished { outcome }
 }
+
+/// Writes an executable `script` to `path` from a child shell, so this process never holds a
+/// write handle that another test's fork could inherit, which makes running it fail as busy.
+pub(crate) fn write_program(path: &Path, script: &str) {
+    let written = std::process::Command::new("sh")
+        .args([
+            "-c",
+            "printf '%s' \"$1\" > \"$2\" && chmod 755 \"$2\"",
+            "sh",
+            script,
+        ])
+        .arg(path)
+        .status()
+        .unwrap();
+    assert!(written.success());
+}
