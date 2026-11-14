@@ -139,9 +139,16 @@ pub(crate) fn read(line: &[u8]) -> Vec<Effect> {
     };
     match line {
         Line::System(System::Init { session_id }) => vec![Effect::Started(session_id)],
-        Line::Assistant { message } | Line::User { message } => message
+        Line::Assistant { message } => message
             .blocks()
             .into_iter()
+            .filter_map(|block| event(block).map(Effect::Event))
+            .collect(),
+        // The person's side: only its tool results are the agent's; any text is the person's.
+        Line::User { message } => message
+            .blocks()
+            .into_iter()
+            .filter(|block| matches!(block, Block::ToolResult { .. }))
             .filter_map(|block| event(block).map(Effect::Event))
             .collect(),
         Line::Result { subtype, is_error } => vec![Effect::Finished {
@@ -183,4 +190,29 @@ pub(super) fn event(block: Block) -> Option<RunEvent> {
         },
         Block::Other => return None,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn text_on_the_persons_side_is_never_the_agents() {
+        let line = json!({ "type": "user", "message": { "content": [
+            { "type": "text", "text": "Fix it" },
+            { "type": "tool_result", "tool_use_id": "t1", "is_error": true },
+        ] } });
+
+        let heard = read(line.to_string().as_bytes());
+
+        assert!(matches!(
+            heard.as_slice(),
+            [Effect::Event(RunEvent::ToolDone { call, failed: true })] if call == "t1"
+        ));
+    }
+
+    #[test]
+    fn the_texts_added_to_the_agents_context_keep_their_size() {
+        assert_eq!(DENIED.len(), 34);
+    }
 }

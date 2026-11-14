@@ -324,7 +324,7 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn a_turn_streams_its_events_and_a_permission_goes_out_and_back() {
-        let (mut run, done) = fake(include_str!("../sessions/claude/turn.replay"));
+        let (mut run, done) = fake(include_str!("../replays/claude/turn.replay"));
         let command = json!({ "command": "cargo test -p parser" });
 
         run.send("Run the parser tests").await.unwrap();
@@ -364,7 +364,7 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn read_only_access_turns_every_prompt_down_without_asking() {
-        let (mut run, done) = fake(include_str!("../sessions/claude/deny.replay"));
+        let (mut run, done) = fake(include_str!("../replays/claude/deny.replay"));
         run.rules.level = AccessLevel::ReadOnly;
         let write = json!({ "file_path": "README.md", "content": "# Parser" });
 
@@ -395,7 +395,7 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn full_access_lets_file_changes_inside_the_folder_run_and_asks_about_the_rest() {
-        let (mut run, done) = fake(include_str!("../sessions/claude/full.replay"));
+        let (mut run, done) = fake(include_str!("../replays/claude/full.replay"));
         run.rules = full("/");
         let write = json!({ "file_path": "/README.md", "content": "# Parser" });
         let command = json!({ "command": "cargo test" });
@@ -429,7 +429,7 @@ mod tests {
 
     #[tokio::test]
     async fn full_access_asks_about_a_file_named_relative_to_where_the_agent_may_be() {
-        let (mut run, done) = fake(include_str!("../sessions/claude/deny.replay"));
+        let (mut run, done) = fake(include_str!("../replays/claude/deny.replay"));
         run.rules = full("/");
 
         run.send("Tidy the readme").await.unwrap();
@@ -448,7 +448,7 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn a_denial_is_sent_back_and_unhandled_requests_are_refused() {
-        let (mut run, done) = fake(include_str!("../sessions/claude/deny.replay"));
+        let (mut run, done) = fake(include_str!("../replays/claude/deny.replay"));
 
         run.send("Tidy the readme").await.unwrap();
         let events = until(&mut run, is_asked).await;
@@ -464,7 +464,7 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn an_interrupt_withdraws_waiting_prompts_and_ends_the_turn_interrupted() {
-        let (mut run, done) = fake(include_str!("../sessions/claude/interrupt.replay"));
+        let (mut run, done) = fake(include_str!("../replays/claude/interrupt.replay"));
 
         run.interrupt().await.unwrap();
         run.send("Rewrite the lexer").await.unwrap();
@@ -486,7 +486,7 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn a_turn_cut_off_ends_unknown_and_resuming_never_resends_it() {
-        let (mut run, done) = fake(include_str!("../sessions/claude/cut_off.replay"));
+        let (mut run, done) = fake(include_str!("../replays/claude/cut_off.replay"));
 
         run.send("Bump the version").await.unwrap();
         assert_eq!(
@@ -499,7 +499,7 @@ mod tests {
         );
         ends_as_recorded(run, done).await;
 
-        let (mut resumed, done) = fake(include_str!("../sessions/claude/resume.replay"));
+        let (mut resumed, done) = fake(include_str!("../replays/claude/resume.replay"));
         resumed.send("Did the bump land?").await.unwrap();
         assert_eq!(
             until(&mut resumed, is_finished).await,
@@ -514,7 +514,7 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn an_agent_error_fails_the_turn() {
-        let (mut run, done) = fake(include_str!("../sessions/claude/failed.replay"));
+        let (mut run, done) = fake(include_str!("../replays/claude/failed.replay"));
 
         run.send("Explain the build").await.unwrap();
         assert_eq!(
