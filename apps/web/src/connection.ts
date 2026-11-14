@@ -3,7 +3,15 @@ import { type Incoming, parse } from "./incoming.ts";
 import type { App, Envelope } from "./protocol.ts";
 
 /** Every capability the web app speaks of, in its hello or in the server's welcome. */
-export type WebCapability = "run.stream" | "workspace.feed" | "workspace.chats" | "diff.view" | "chat.send" | "chat.events" | "log.forward";
+export type WebCapability =
+  | "run.stream"
+  | "workspace.feed"
+  | "workspace.chats"
+  | "diff.view"
+  | "chat.send"
+  | "chat.events"
+  | "log.forward"
+  | "machine.settings";
 
 /** The hello's envelope id; a connection's requests take the ids after it. */
 export const HELLO_ID = 1;
