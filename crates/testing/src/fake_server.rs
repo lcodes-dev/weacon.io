@@ -5,16 +5,25 @@
 use std::path::Path;
 use std::time::Duration;
 
-use futures_util::{SinkExt, Stream, StreamExt};
+use futures_util::{Sink, SinkExt, Stream, StreamExt};
 use tokio::fs::OpenOptions;
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader, duplex};
-use tokio::sync::mpsc::{UnboundedSender, unbounded_channel};
+use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use tokio_tungstenite::tungstenite::{self, Message as Frame};
 use weacon_protocol::{
     Capability, ChatAction, ChatCommand, Envelope, Message, Outcome, Receipt, code,
 };
 
-use crate::{BUFFER, fake_core, fake_diff, play};
+use crate::Failure;
+use crate::recording::envelope_text;
+use crate::replay::{BUFFER, play};
+use crate::{fake_core, fake_diff};
+
+const OFFERED: &[Capability] = &[
+    Capability::new(code!("log.forward")),
+    Capability::new(code!("chat.send")),
+    Capability::new(code!("diff.view")),
+];
 
 /// Plays `recording` to the client on `stream`, waiting `pace` after each message, and appends
 /// each text frame the client sends after its hello to `received`, one per line. It offers
@@ -28,50 +37,52 @@ pub async fn serve(
     recording: String,
     pace: Duration,
     received: &Path,
-) -> Result<(), String> {
-    let socket = tokio_tungstenite::accept_async(stream)
-        .await
-        .map_err(|error| error.to_string())?;
+) -> Result<(), Failure> {
+    let socket = tokio_tungstenite::accept_async(stream).await?;
     let (mut sink, mut frames) = socket.split();
     let hello = next_text(&mut frames)
         .await?
         .ok_or("the client left before its hello")?;
-    let offered: [Capability; 3] = [
-        code!("log.forward").into(),
-        code!("chat.send").into(),
-        code!("diff.view").into(),
-    ];
-    let answer = fake_core::answer(&hello, &offered)?;
+    let answer = fake_core::answer(&hello, OFFERED)?;
     let welcomed = matches!(answer.message, Message::Welcome(_));
-    sink.send(Frame::text(fake_core::text(&answer)?))
-        .await
-        .map_err(|error| error.to_string())?;
+    sink.send(Frame::text(envelope_text(&answer)?)).await?;
     if !welcomed {
-        return Err("the client speaks another protocol".to_owned());
+        return Err("the client speaks another protocol".into());
     }
-    // Sending stops at the first failure, such as the client leaving mid-stream.
-    let (played, lines) = duplex(BUFFER);
-    let mut lines = BufReader::new(lines).lines();
-    let (replies, mut answered) = unbounded_channel();
-    let forward = async {
-        loop {
-            let text = tokio::select! {
-                Ok(Some(line)) = lines.next_line() => line,
-                Some(reply) = answered.recv() => reply,
-                else => break,
-            };
-            if sink.send(Frame::text(text)).await.is_err() {
-                break;
-            }
-        }
+    let (run_out, run_lines) = duplex(BUFFER);
+    let (reply_sender, replies) = unbounded_channel();
+    let playing = play(recording, BufReader::new(tokio::io::empty()), run_out, pace);
+    let sending = async {
+        drop(tokio::join!(
+            playing,
+            send_all(&mut sink, run_lines, replies)
+        ));
     };
-    let play = play(recording, BufReader::new(tokio::io::empty()), played, pace);
-    let sending = async { drop(tokio::join!(play, forward)) };
-    let keeping = keep(&mut frames, received, replies);
+    let keeping = keep(&mut frames, received, reply_sender);
     tokio::pin!(keeping);
     tokio::select! {
         kept = &mut keeping => kept,
         () = sending => keeping.await,
+    }
+}
+
+// Sends each of the run's lines and each reply as a text frame, until both end or a send fails,
+// such as when the client leaves mid-stream.
+async fn send_all(
+    sink: &mut (impl Sink<Frame> + Unpin),
+    run_lines: impl AsyncRead + Unpin,
+    mut replies: UnboundedReceiver<String>,
+) {
+    let mut run_lines = BufReader::new(run_lines).lines();
+    loop {
+        let text = tokio::select! {
+            Ok(Some(line)) = run_lines.next_line() => line,
+            Some(reply) = replies.recv() => reply,
+            else => break,
+        };
+        if sink.send(Frame::text(text)).await.is_err() {
+            break;
+        }
     }
 }
 
@@ -81,19 +92,16 @@ async fn keep(
     frames: &mut (impl Stream<Item = tungstenite::Result<Frame>> + Unpin),
     received: &Path,
     replies: UnboundedSender<String>,
-) -> Result<(), String> {
+) -> Result<(), Failure> {
     let mut file = OpenOptions::new()
         .create(true)
         .append(true)
         .open(received)
-        .await
-        .map_err(|error| error.to_string())?;
+        .await?;
     while let Some(text) = next_text(frames).await? {
-        file.write_all(format!("{text}\n").as_bytes())
-            .await
-            .map_err(|error| error.to_string())?;
+        file.write_all(format!("{text}\n").as_bytes()).await?;
         // Tokio's file writes in the background; a reader may look at any moment.
-        file.flush().await.map_err(|error| error.to_string())?;
+        file.flush().await?;
         for reply in replies_to(&text) {
             // This fails only once `serve` is done with the client.
             drop(replies.send(reply));
@@ -125,7 +133,7 @@ fn replies_to(text: &str) -> Vec<String> {
     };
     replies
         .iter()
-        .filter_map(|reply| fake_core::text(reply).ok())
+        .filter_map(|reply| envelope_text(reply).ok())
         .collect()
 }
 
@@ -133,11 +141,11 @@ fn replies_to(text: &str) -> Vec<String> {
 // a close sends its reply, so the client sees a clean close.
 async fn next_text(
     frames: &mut (impl Stream<Item = tungstenite::Result<Frame>> + Unpin),
-) -> Result<Option<String>, String> {
+) -> Result<Option<String>, Failure> {
     while let Some(frame) = frames.next().await {
-        match frame.map_err(|error| error.to_string())? {
+        match frame? {
             Frame::Text(text) => return Ok(Some(text.as_str().to_owned())),
-            Frame::Binary(_) => return Err("the client sent a binary frame".to_owned()),
+            Frame::Binary(_) => return Err("the client sent a binary frame".into()),
             Frame::Close(_) | Frame::Ping(_) | Frame::Pong(_) | Frame::Frame(_) => {}
         }
     }
@@ -151,18 +159,21 @@ mod tests {
 
     use serde_json::{Value, json};
     use tokio::net::{TcpListener, TcpStream};
-    use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async};
+    use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, client_async, connect_async};
 
     use super::*;
+    use weacon_protocol::PROTOCOL;
+
     use crate::TempDir;
-    use crate::fake_core::{SESSION, recording};
+    use crate::fake_core::client_hello;
+    use crate::recording::{SESSION, recording};
 
     type Client = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
     async fn start(
         recording: String,
         received: PathBuf,
-    ) -> (Client, tokio::task::JoinHandle<Result<(), String>>) {
+    ) -> (Client, tokio::task::JoinHandle<Result<(), Failure>>) {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let url = format!("ws://{}/", listener.local_addr().unwrap());
         let served = tokio::spawn(async move {
@@ -172,15 +183,15 @@ mod tests {
         (connect_async(url).await.unwrap().0, served)
     }
 
-    fn hello(protocol: u32, capabilities: &[&str]) -> Frame {
-        Frame::text(
-            json!({ "id": 1, "type": "hello", "protocol": protocol, "capabilities": capabilities,
-                    "app": { "name": "weacon-web", "version": "0.1.0", "commit": "1a2b3c4" } })
-            .to_string(),
-        )
+    fn hello(protocol: u32) -> Frame {
+        let hello = client_hello(1, protocol, [code!("run.stream")]);
+        Frame::text(envelope_text(&hello).unwrap())
     }
 
-    async fn texts(client: &mut Client, count: usize) -> Vec<Value> {
+    async fn texts(
+        client: &mut (impl Stream<Item = tungstenite::Result<Frame>> + Unpin),
+        count: usize,
+    ) -> Vec<Value> {
         let mut texts = Vec::new();
         while texts.len() < count {
             if let Frame::Text(text) = client.next().await.unwrap().unwrap() {
@@ -200,9 +211,13 @@ mod tests {
             .collect();
         let received = dir.join("received.jsonl");
         let (mut client, served) = start(recording, received.clone()).await;
-        client.send(hello(1, &["run.stream"])).await.unwrap();
+        client.send(hello(PROTOCOL)).await.unwrap();
         let welcome = texts(&mut client, 1).await;
-        let streamed = texts(&mut client, expected.len()).await;
+        // A deadline, so a server that never streams fails the test instead of hanging it.
+        let streamed =
+            tokio::time::timeout(Duration::from_secs(30), texts(&mut client, expected.len()))
+                .await
+                .unwrap();
         let log = r#"{"id":0,"type":"log","level":"warn","msg":"feed lost"}"#;
         client.send(Frame::text(log)).await.unwrap();
         client.send(Frame::Ping(Vec::new().into())).await.unwrap();
@@ -222,7 +237,7 @@ mod tests {
     async fn a_diff_query_is_answered_one_file_a_frame_under_its_request() {
         let dir = TempDir::new().unwrap();
         let (mut client, served) = start(String::new(), dir.join("received.jsonl")).await;
-        client.send(hello(1, &["run.stream"])).await.unwrap();
+        client.send(hello(PROTOCOL)).await.unwrap();
         texts(&mut client, 1).await;
         let query = json!({ "id": 9, "type": "diff_query", "request": "q-1",
                             "workspace": "w-1", "chat": "c-1", "query": { "kind": "changes" } });
@@ -243,21 +258,23 @@ mod tests {
         }
     }
 
+    // In memory rather than over TCP, so the paused clock only moves once both sides are idle.
     #[tokio::test(start_paused = true)]
     async fn a_client_can_leave_mid_stream_and_its_close_is_answered() {
         let dir = TempDir::new().unwrap();
         let received = dir.join("received.jsonl");
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let url = format!("ws://{}/", listener.local_addr().unwrap());
+        let (stream, server_end) = duplex(BUFFER);
         let kept = received.clone();
         let served = tokio::spawn(async move {
-            let (stream, _) = listener.accept().await.unwrap();
             let recording = recording(SESSION, 100_000).unwrap();
-            serve(stream, recording, Duration::from_secs(1), &kept).await
+            serve(server_end, recording, Duration::from_secs(1), &kept).await
         });
-        let (mut client, _) = connect_async(url).await.unwrap();
-        client.send(hello(1, &["run.stream"])).await.unwrap();
-        let first = texts(&mut client, 2).await;
+        let (mut client, _) = client_async("ws://fake/", stream).await.unwrap();
+        client.send(hello(PROTOCOL)).await.unwrap();
+        // A deadline, so a server that never streams fails the test instead of hanging it.
+        let first = tokio::time::timeout(Duration::from_secs(30), texts(&mut client, 2))
+            .await
+            .unwrap();
         let log = r#"{"id":0,"type":"log","level":"info","msg":"run shown"}"#;
         client.send(Frame::text(log)).await.unwrap();
         client.close(None).await.unwrap();
@@ -270,7 +287,7 @@ mod tests {
                 .any(|frame| matches!(frame, Ok(Frame::Close(_)))),
             "the close went unanswered"
         );
-        assert_eq!(served.await.unwrap(), Ok(()));
+        served.await.unwrap().unwrap();
         assert_eq!(fs::read_to_string(&received).unwrap(), format!("{log}\n"));
     }
 
@@ -279,7 +296,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let received = dir.join("received.jsonl");
         let (mut client, served) = start(String::new(), received.clone()).await;
-        client.send(hello(1, &["run.stream"])).await.unwrap();
+        client.send(hello(PROTOCOL)).await.unwrap();
         texts(&mut client, 1).await;
         let command = |id: u32, request: &str, action: Value| {
             json!({ "id": id, "type": "chat_command", "request": request, "workspace": "w-1",
@@ -316,8 +333,8 @@ mod tests {
         client.close(None).await.unwrap();
 
         assert_eq!(
-            served.await.unwrap(),
-            Err("the client left before its hello".to_owned())
+            served.await.unwrap().unwrap_err().to_string(),
+            "the client left before its hello"
         );
     }
 
@@ -325,14 +342,14 @@ mod tests {
     async fn a_client_on_another_protocol_is_refused() {
         let dir = TempDir::new().unwrap();
         let (mut client, served) = start(String::new(), dir.join("received.jsonl")).await;
-        client.send(hello(99, &["run.stream"])).await.unwrap();
+        client.send(hello(PROTOCOL + 1)).await.unwrap();
         let answer = texts(&mut client, 1).await;
         drop(client.close(None).await);
 
         assert_eq!(answer[0]["code"], "protocol.unsupported");
         assert_eq!(
-            served.await.unwrap(),
-            Err("the client speaks another protocol".to_owned())
+            served.await.unwrap().unwrap_err().to_string(),
+            "the client speaks another protocol"
         );
     }
 
@@ -352,14 +369,15 @@ mod tests {
         drop(gone);
 
         assert_eq!(
-            binary_served.await.unwrap(),
-            Err("the client sent a binary frame".to_owned())
+            binary_served.await.unwrap().unwrap_err().to_string(),
+            "the client sent a binary frame"
         );
         assert!(
             other_served
                 .await
                 .unwrap()
                 .unwrap_err()
+                .to_string()
                 .starts_with("expected a hello")
         );
         assert!(gone_served.await.unwrap().is_err());
