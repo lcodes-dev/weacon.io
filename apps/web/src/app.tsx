@@ -10,6 +10,7 @@ import type { ChatRef } from "./chat-ref.ts";
 import type { App as Build } from "./protocol.ts";
 import type { Line } from "./chat/lines.ts";
 import { StopButton } from "./chat/parts.tsx";
+import { Settings } from "./settings/settings.tsx";
 import { type Answering, TranscriptView } from "./transcript/transcript-view.tsx";
 
 type Shown = "run" | "changes" | "settings";
@@ -83,34 +84,11 @@ export function App({
         )}
         {shown === "settings" && (
           <div className="pane">
-            <Settings me={me} status={status} />
+            <Settings me={me} server={status.state === "live" ? status.server : undefined} />
           </div>
         )}
       </main>
       <Composer send={send} blocked={blocked(status, chatRef)} hidden={shown !== "run"} />
     </div>
-  );
-}
-
-function Settings({ me, status }: { me: Build; status: Status }) {
-  return (
-    <section className="page">
-      <h1>Settings</h1>
-      <h2>About</h2>
-      <dl>
-        <dt>Version</dt>
-        <dd>{me.version}</dd>
-        <dt>Commit</dt>
-        <dd>{me.commit}</dd>
-        {status.state === "live" && (
-          <>
-            <dt>Server</dt>
-            <dd>
-              {status.server.version} ({status.server.commit})
-            </dd>
-          </>
-        )}
-      </dl>
-    </section>
   );
 }

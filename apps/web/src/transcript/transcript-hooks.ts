@@ -12,9 +12,9 @@ export function useFollow(
   { rows, refreshes, away }: { rows: readonly unknown[]; refreshes: number; away: boolean },
 ): UIEventHandler<HTMLDivElement> {
   const following = useRef(true);
-  // Where the view last scrolled itself. Its scroll event comes a frame later, maybe after the
-  // pane has shrunk, as when the message box comes back, so it says nothing about the reader.
-  const followedTo = useRef<number | undefined>(undefined);
+  // Where the last scroll left the view. The browser also moves the view, down as rows reach their
+  // height, so only a scroll up from there is the reader leaving the bottom.
+  const lastTop = useRef(0);
   const awayNow = useRef(away);
   useLayoutEffect(() => {
     awayNow.current = away;
@@ -29,7 +29,7 @@ export function useFollow(
       following.current = atBottom(element);
     } else {
       element.scrollTop = element.scrollHeight;
-      followedTo.current = element.scrollTop;
+      lastTop.current = element.scrollTop;
     }
   });
   useLayoutEffect(() => keepAtBottom.current(), [rows, refreshes]);
@@ -49,10 +49,9 @@ export function useFollow(
   }, [empty]);
 
   return ({ currentTarget: element }) => {
-    if (element.scrollTop !== followedTo.current) {
-      followedTo.current = undefined;
-      following.current = atBottom(element);
-    }
+    const top = element.scrollTop;
+    following.current = atBottom(element) || (following.current && top >= lastTop.current);
+    lastTop.current = top;
   };
 }
 

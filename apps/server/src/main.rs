@@ -11,7 +11,7 @@ mod email;
 mod feed;
 mod http;
 mod limit;
-mod mail;
+mod outbox;
 mod secret;
 mod sign_in;
 mod sign_up;
@@ -37,7 +37,7 @@ use crate::app::App;
 use crate::cli::{Command, Serve};
 use crate::db::Db;
 use crate::http::Shared;
-use crate::mail::Outbox;
+use crate::outbox::Outbox;
 use crate::secret::Secret;
 
 /// How many wake-ups a feed may miss before it rereads the database.

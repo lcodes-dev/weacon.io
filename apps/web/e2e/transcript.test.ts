@@ -77,11 +77,54 @@ test("a reader at the bottom of a finished run is still there after Settings", {
   // The rows near the end grow to their real height once shown, after the view first followed.
   await page.evaluate(settled);
   assert.ok(atBottom(await page.evaluate(scrollOf)), "the run's end stopped short of the bottom");
+  // The pane shrinks, as when the message box comes back, and the browser moves the view down a
+  // little before the view catches up; that is no reader leaving the bottom.
+  await page.evaluate(() => {
+    const view = document.querySelector<HTMLElement>(".transcript");
+    if (view !== null) {
+      view.style.height = "50%";
+      view.scrollTop += 1;
+      view.dispatchEvent(new Event("scroll"));
+    }
+  });
+  await page.evaluate(settled);
+  assert.ok(atBottom(await page.evaluate(scrollOf)), "a scroll the browser made stopped the view following");
+  await page.evaluate(() => document.querySelector<HTMLElement>(".transcript")?.style.removeProperty("height"));
   await page.getByRole("button", { name: "Settings" }).click();
   await page.getByRole("button", { name: "Back" }).click();
   await page.evaluate(settled);
   assert.ok(atBottom(await page.evaluate(scrollOf)), "the message box hid the end of the run");
+
+  // A reader who scrolls up in the frame the view follows a new row in has still left the bottom.
+  await page.evaluate(settled);
+  await page.evaluate(scrollUpAsViewFollows, 100);
+  await page.evaluate(settled);
+  await page.evaluate(scrollUpAsViewFollows, 0);
+  await page.evaluate(settled);
+  assert.ok(!atBottom(await page.evaluate(scrollOf)), "the next row pulled the reader back down");
 });
+
+// Grows the transcript, as a new row does, and scrolls it up by `up` in the same frame, right
+// after the view has followed and before its scroll event: the reader's wheel lands just so.
+async function scrollUpAsViewFollows(up: number): Promise<void> {
+  const view = document.querySelector(".transcript");
+  const content = view?.firstElementChild;
+  if (view === null || content === null || content === undefined) {
+    throw new Error("the transcript isn't there");
+  }
+  const row = document.createElement("div");
+  row.style.height = "400px";
+  await new Promise<void>((resolve) => {
+    // Observers run in the order they were made, so this one runs after the view's.
+    const after = new ResizeObserver(() => {
+      after.disconnect();
+      view.scrollTop -= up;
+      resolve();
+    });
+    content.append(row);
+    after.observe(content);
+  });
+}
 
 // Waits until the transcript's height has held for a few frames.
 async function settled(): Promise<void> {
