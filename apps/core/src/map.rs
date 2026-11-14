@@ -78,7 +78,9 @@ pub(crate) fn index_folder(root: &Path) -> Result<(Index, usize), Fault> {
 /// that aren't UTF-8 are left out.
 fn source_files(root: &Path, folder: &str, files: &mut Vec<SourceFile>) -> io::Result<()> {
     for entry in fs::read_dir(root.join(folder))? {
-        let entry = entry?;
+        let Some(entry) = present(entry)? else {
+            continue;
+        };
         let name = entry.file_name();
         let Some(name) = name.to_str().filter(|name| !name.starts_with('.')) else {
             continue;
@@ -88,9 +90,11 @@ fn source_files(root: &Path, folder: &str, files: &mut Vec<SourceFile>) -> io::R
         } else {
             format!("{folder}/{name}")
         };
-        let kind = entry.file_type()?;
+        let Some(kind) = present(entry.file_type())? else {
+            continue;
+        };
         if kind.is_dir() && !skipped(&root.join(&path), name) {
-            gone_or(source_files(root, &path, files))?;
+            present(source_files(root, &path, files))?;
         } else if kind.is_file()
             && is_source(&path, name)
             && let Some(text) = text_or_skip(fs::read_to_string(root.join(&path)))?
@@ -104,17 +108,17 @@ fn source_files(root: &Path, folder: &str, files: &mut Vec<SourceFile>) -> io::R
 /// A file's text, or `None` for a file that isn't UTF-8 or was removed while the folder was read.
 fn text_or_skip(read: io::Result<String>) -> io::Result<Option<String>> {
     match read {
-        Ok(text) => Ok(Some(text)),
         Err(error) if error.kind() == io::ErrorKind::InvalidData => Ok(None),
-        Err(error) => gone_or(Err(error)).map(|()| None),
+        read => present(read),
     }
 }
 
-/// `read`, with a folder that was removed while it was read counting as read.
-fn gone_or(read: io::Result<()>) -> io::Result<()> {
+/// What was read, or `None` for an entry removed while its folder was read.
+fn present<T>(read: io::Result<T>) -> io::Result<Option<T>> {
     match read {
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
-        read => read,
+        Ok(read) => Ok(Some(read)),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error),
     }
 }
 
@@ -215,8 +219,11 @@ mod tests {
         for kind in [io::ErrorKind::InvalidData, io::ErrorKind::NotFound] {
             assert_eq!(text_or_skip(Err(kind.into())).unwrap(), None);
         }
-        gone_or(Err(io::ErrorKind::NotFound.into())).unwrap();
-        let denied = gone_or(Err(io::ErrorKind::PermissionDenied.into())).unwrap_err();
+        assert_eq!(
+            present(Err::<(), _>(io::ErrorKind::NotFound.into())).unwrap(),
+            None
+        );
+        let denied = present(Err::<(), _>(io::ErrorKind::PermissionDenied.into())).unwrap_err();
         assert_eq!(denied.kind(), io::ErrorKind::PermissionDenied);
         let failed = text_or_skip(Err(io::ErrorKind::PermissionDenied.into())).unwrap_err();
         assert_eq!(failed.kind(), io::ErrorKind::PermissionDenied);

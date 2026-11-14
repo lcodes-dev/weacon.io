@@ -2,6 +2,7 @@
 
 use std::fmt;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use sha2::{Digest, Sha256};
@@ -39,6 +40,7 @@ pub(crate) struct Grant {
     pub(crate) run: RunId,
     pub(crate) folder: PathBuf,
     pub(crate) calls: Semaphore,
+    revoked: AtomicBool,
 }
 
 impl Grant {
@@ -48,7 +50,13 @@ impl Grant {
             run,
             folder,
             calls: Semaphore::new(CALLS_AT_ONCE),
+            revoked: AtomicBool::new(false),
         }
+    }
+
+    /// Whether its token still works.
+    pub(crate) fn is_live(&self) -> bool {
+        !self.revoked.load(Ordering::Relaxed)
     }
 }
 
@@ -113,7 +121,13 @@ pub(crate) struct Revoke {
 
 impl Drop for Revoke {
     fn drop(&mut self) {
-        self.grants.held().retain(|(hash, _)| *hash != self.hash);
+        self.grants.held().retain(|(hash, grant)| {
+            let ends = *hash == self.hash;
+            if ends {
+                grant.revoked.store(true, Ordering::Relaxed);
+            }
+            !ends
+        });
     }
 }
 
@@ -221,7 +235,11 @@ mod tests {
         assert_eq!(found(&first.as_str().to_uppercase()), None);
 
         assert_eq!(grants.live(), 2);
+        let held = grants.find(first.as_str()).unwrap();
+        assert!(held.is_live());
         drop(revoke_first);
+        assert!(!held.is_live());
+        assert!(grants.find(second.as_str()).unwrap().is_live());
         assert_eq!(grants.live(), 1);
         assert_eq!(found(first.as_str()), None);
         assert_eq!(found(second.as_str()).as_deref(), Some("run-2"));
