@@ -1,16 +1,14 @@
-use std::ffi::OsString;
 use std::fmt;
-use std::fs::{self, File};
-use std::io::{self, Read, Write};
-use std::path::{Path, PathBuf};
+use std::fs::File;
+use std::io::{self, Read};
+use std::path::Path;
 
 use hmac::{Hmac, Mac};
 use sha2::Sha256;
-use weacon_appkit::{is_private, private_append, sync_dir};
+use weacon_appkit::{create_private, is_private, sync_dir};
 use weacon_observability::{Fault, Logger};
 use weacon_protocol::code;
 
-use crate::app::new_id;
 use crate::email::Email;
 
 /// The server's own key, which sign-in codes are hashed with: a stolen database alone can't
@@ -77,19 +75,11 @@ impl Secret {
 /// Makes a key at `path`, whole or not at all; a file already there is left as it is.
 fn create(path: &Path) -> Result<(), Fault> {
     let key = os_secrets()?;
-    let mut new = OsString::from(path);
-    new.push(format!(".{}.new", new_id()));
-    let new = PathBuf::from(new);
-    let made = private_append(&new).and_then(|mut file| {
-        file.write_all(&key)?;
-        file.sync_all()
-    });
-    if made.is_ok() {
-        // Fails when another server made the file first; then its key is the one read.
-        drop(fs::hard_link(&new, path));
+    match create_private(path, &key) {
+        // Another server made the file first; then its key is the one read.
+        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => Ok(()),
+        made => made.map_err(unreadable),
     }
-    drop(fs::remove_file(&new));
-    made.map_err(unreadable)
 }
 
 /// The operating system's random bytes.
@@ -122,6 +112,11 @@ impl fmt::Debug for Secret {
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+    use std::io::Write;
+    use std::path::PathBuf;
+
+    use weacon_appkit::private_append;
     use weacon_testing::{TempDir, messages, recording_logger};
 
     use super::*;
