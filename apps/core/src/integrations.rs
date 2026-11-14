@@ -380,6 +380,10 @@ mod tests {
         fs::write(dir.join("hooks/more.json"), "{}").unwrap();
 
         let folders: Vec<_> = std::thread::scope(|scope| {
+            #[expect(
+                clippy::needless_collect,
+                reason = "every launch starts before the first is joined"
+            )]
             let launches: Vec<_> = (0..8).map(|_| scope.spawn(|| plugin.folder())).collect();
             launches
                 .into_iter()
