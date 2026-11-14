@@ -131,9 +131,17 @@ mod tests {
         assert!(String::from_utf8_lossy(&output.stderr).contains("daemon.not_running"));
     }
 
+    // So a daemon in a test never reaches the release server.
+    fn updates_off(dir: &std::path::Path) {
+        let off = weacon(&["update", "schedule", "off"], dir.to_str().unwrap());
+        assert!(off.status.success());
+        assert_eq!(String::from_utf8(off.stdout).unwrap(), "Updates: off.\n");
+    }
+
     #[test]
     fn the_daemon_serves_status() {
         let dir = TempDir::new().unwrap();
+        updates_off(&dir);
         let mut daemon = Command::new(env!("CARGO_BIN_EXE_weacon"))
             .args(["daemon", "--verbose"])
             .env("WEACON_STATE_DIR", &*dir)
@@ -184,6 +192,7 @@ mod tests {
         use std::io::{Read, Write};
 
         let dir = TempDir::new().unwrap();
+        updates_off(&dir);
         let mut daemon = Command::new(env!("CARGO_BIN_EXE_weacon"))
             .args(["daemon", "--verbose"])
             .env("WEACON_STATE_DIR", &*dir)
