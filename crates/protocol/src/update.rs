@@ -183,8 +183,9 @@ hex_string!(
     "not a SHA-256 digest"
 );
 
-impl From<[u8; 32]> for Sha256 {
-    fn from(digest: [u8; 32]) -> Self {
+impl Sha256 {
+    #[must_use]
+    pub fn from_bytes(digest: [u8; 32]) -> Self {
         Self(crate::to_hex(&digest))
     }
 }
@@ -415,7 +416,7 @@ mod tests {
         let bytes = std::array::from_fn(|i| u8::try_from(i * 8 + 7).unwrap());
         let hex = "070f171f272f373f474f575f676f777f878f979fa7afb7bfc7cfd7dfe7eff7ff";
 
-        assert_eq!(Sha256::from(bytes).as_str(), hex);
+        assert_eq!(Sha256::from_bytes(bytes).as_str(), hex);
     }
 
     #[test]
