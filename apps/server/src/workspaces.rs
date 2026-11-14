@@ -1,18 +1,28 @@
 use axum::Json;
+use axum::Router;
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
+use axum::routing::get;
+use weacon_model::Title;
 use weacon_observability::Fault;
-use weacon_protocol::{WorkspaceCreate, WorkspaceList, code};
+use weacon_protocol::{WorkspaceCreate, WorkspaceList, WorkspaceSummary, code};
 
 use crate::app::{fresh, new_id};
 use crate::auth::{Member, Session};
 use crate::db::NewWorkspace;
-use crate::http::{Body, Shared, failure, invalid, unauthorized};
+use crate::http::{Body, failure, invalid, unauthorized};
+use crate::shared::Shared;
 
 pub(crate) const MAX_NAME: usize = 100;
 /// What an account's own workspace is called when it is made.
 const PERSONAL: &str = "Personal";
+
+pub(crate) fn routes() -> Router<Shared> {
+    Router::new()
+        .route("/api/workspaces", get(list).post(create))
+        .route("/api/workspaces/{workspace}", get(read))
+}
 
 /// `POST /api/workspaces`: makes a workspace that the signed-in account owns.
 pub(crate) async fn create(
@@ -30,9 +40,13 @@ pub(crate) async fn create(
         }
         Err(fault) => return invalid(fault.code().clone()),
     };
+    created(made)
+}
+
+fn created(made: Result<WorkspaceSummary, Fault>) -> Response {
     match made {
-        Ok(Some(summary)) => (StatusCode::CREATED, Json(summary)).into_response(),
-        Ok(None) => invalid(code!("workspace.too_many")),
+        Ok(summary) => (StatusCode::CREATED, Json(summary)).into_response(),
+        Err(fault) if *fault.code() == code!("workspace.too_many") => invalid(fault.code().clone()),
         Err(fault) => failure(fault),
     }
 }
@@ -68,57 +82,44 @@ fn new_workspace(name: &str) -> Result<NewWorkspace, Fault> {
     })
 }
 
-/// `name` trimmed, if it is one short line.
+/// `name` trimmed, if it is a title of at most [`MAX_NAME`] characters.
 pub(crate) fn workspace_name(name: &str) -> Result<&str, Fault> {
     let name = name.trim();
-    let fits = (1..=MAX_NAME).contains(&name.chars().count()) && !name.contains(breaks_line);
+    let fits = name.chars().count() <= MAX_NAME && Title::try_from(name.to_owned()).is_ok();
     fits.then_some(name)
         .ok_or_else(|| Fault::new(code!("workspace.name_invalid"), "That name can't be used"))
 }
 
-// Control characters, and the two separators Unicode doesn't count among them.
-fn breaks_line(letter: char) -> bool {
-    letter.is_control() || matches!(letter, '\u{2028}' | '\u{2029}')
-}
-
 #[cfg(test)]
 mod tests {
-    use std::net::SocketAddr;
-
     use serde_json::{Value, json};
 
     use super::*;
     use crate::test_support::{
-        Fixture, ask, bearer, email, fresh_account, header, request_with, sign_in, status,
+        Client, Fixture, ask, email, fresh_account, header, request_with, status,
     };
 
-    // Signs `email` in, and gives the header that proves it.
-    async fn sign_in_header(fixture: &Fixture, address: SocketAddr, email: &str) -> String {
-        bearer(&sign_in(fixture, address, email).await.1)
-    }
-
-    async fn listed(address: SocketAddr, who: &str) -> Vec<Value> {
-        let (_, list) = ask(address, "GET /api/workspaces", who, "").await;
+    async fn listed(who: &Client) -> Vec<Value> {
+        let (_, list) = ask(who.address, "GET /api/workspaces", &who.proof(), "").await;
         list["workspaces"].as_array().unwrap().clone()
     }
 
     #[tokio::test]
     async fn a_person_makes_a_workspace_they_own_and_finds_it_listed() {
         let fixture = Fixture::new().await;
-        let server = fixture.run().await;
-        let ada = sign_in_header(&fixture, server.address, "ada@example.com").await;
+        let (_server, ada) = fixture.client("ada@example.com").await;
         let create = json!({ "name": "  Team two " }).to_string();
 
-        let (created, made) = ask(server.address, "POST /api/workspaces", &ada, &create).await;
+        let (created, made) = ask(ada.address, "POST /api/workspaces", &ada.proof(), &create).await;
         let id = made["id"].as_str().unwrap();
         let read = ask(
-            server.address,
+            ada.address,
             &format!("GET /api/workspaces/{id}"),
-            &ada,
+            &ada.proof(),
             "",
         )
         .await;
-        let workspaces = listed(server.address, &ada).await;
+        let workspaces = listed(&ada).await;
 
         assert_eq!(created, "http/1.1 201 created");
         assert_eq!(made["name"], "Team two");
@@ -134,11 +135,10 @@ mod tests {
     #[tokio::test]
     async fn signing_in_again_makes_no_second_personal_workspace() {
         let fixture = Fixture::new().await;
-        let server = fixture.run().await;
-        sign_in_header(&fixture, server.address, "ada@example.com").await;
-        let ada = sign_in_header(&fixture, server.address, "ada@example.com").await;
+        drop(fixture.client("ada@example.com").await);
+        let (_server, ada) = fixture.client("ada@example.com").await;
 
-        let personal = listed(server.address, &ada)
+        let personal = listed(&ada)
             .await
             .into_iter()
             .filter(|seen| seen["name"] == "Personal")
@@ -150,11 +150,11 @@ mod tests {
     #[tokio::test]
     async fn what_an_account_sees_is_kept_out_of_caches() {
         let fixture = Fixture::new().await;
-        let server = fixture.run().await;
-        let ada = sign_in_header(&fixture, server.address, "ada@example.com").await;
+        let (_server, ada) = fixture.client("ada@example.com").await;
         let mut kept = Vec::new();
         for path in ["/api/workspaces", "/api/workspaces/w1", "/api/session"] {
-            let (head, _) = request_with(server.address, &format!("GET {path}"), &ada, "").await;
+            let (head, _) =
+                request_with(ada.address, &format!("GET {path}"), &ada.proof(), "").await;
             assert_eq!(status(&head), "http/1.1 200 ok", "{path}");
             kept.push(
                 header(&head, "cache-control")
@@ -176,11 +176,10 @@ mod tests {
             .add_account(&fresh_account(), &bo)
             .await
             .unwrap();
-        let server = fixture.run().await;
-        let ada = sign_in_header(&fixture, server.address, "ada@example.com").await;
-        let bo = sign_in_header(&fixture, server.address, "bo@example.com").await;
-        let theirs = listed(server.address, &ada).await;
-        let mine = listed(server.address, &bo).await;
+        let (_server, ada) = fixture.client("ada@example.com").await;
+        let (_server, bo) = fixture.client("bo@example.com").await;
+        let theirs = listed(&ada).await;
+        let mine = listed(&bo).await;
         let required = json!({ "code": "sign_in.required", "retryable": false });
         let mut refusals = Vec::new();
         for id in theirs
@@ -189,11 +188,11 @@ mod tests {
             .chain(["w9"])
         {
             let read = format!("GET /api/workspaces/{id}");
-            refusals.push(ask(server.address, &read, &bo, "").await);
-            refusals.push(ask(server.address, &read, "", "").await);
+            refusals.push(ask(bo.address, &read, &bo.proof(), "").await);
+            refusals.push(ask(ada.address, &read, "", "").await);
         }
-        let bad_id = ask(server.address, "GET /api/workspaces/w.1", &ada, "").await;
-        let (nobody, _) = ask(server.address, "GET /api/workspaces", "", "").await;
+        let bad_id = ask(ada.address, "GET /api/workspaces/w.1", &ada.proof(), "").await;
+        let (nobody, _) = ask(ada.address, "GET /api/workspaces", "", "").await;
 
         assert_eq!(theirs.len(), 2);
         assert_eq!(mine.len(), 1);
@@ -219,16 +218,15 @@ mod tests {
     #[tokio::test]
     async fn an_account_that_owns_too_many_is_told_so() {
         let fixture = Fixture::new().await;
-        let server = fixture.run().await;
-        let ada = sign_in_header(&fixture, server.address, "ada@example.com").await;
+        let (_server, ada) = fixture.client("ada@example.com").await;
         let create = json!({ "name": "Team" }).to_string();
         // The Personal workspace is one of them.
         for _ in 1..100 {
-            let (made, _) = ask(server.address, "POST /api/workspaces", &ada, &create).await;
+            let (made, _) = ada.send("POST /api/workspaces", &create).await;
             assert_eq!(made, "http/1.1 201 created");
         }
 
-        let more = ask(server.address, "POST /api/workspaces", &ada, &create).await;
+        let more = ask(ada.address, "POST /api/workspaces", &ada.proof(), &create).await;
 
         let refused = json!({ "code": "workspace.too_many", "retryable": false });
         assert_eq!(
@@ -238,31 +236,45 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_workspace_needs_a_name_of_one_short_line_and_a_session() {
+    async fn a_workspace_needs_a_name_of_one_short_line_that_keeps_its_direction_and_a_session() {
         let fixture = Fixture::new().await;
-        let server = fixture.run().await;
-        let ada = sign_in_header(&fixture, server.address, "ada@example.com").await;
+        let (_server, ada) = fixture.client("ada@example.com").await;
         let refused = json!({ "code": "workspace.name_invalid", "retryable": false });
         let long = "a".repeat(MAX_NAME + 1);
-        for name in ["", "   ", "a\nb", "a\u{2028}b", "a\u{2029}b", long.as_str()] {
+        let refused_names = [
+            "",
+            "   ",
+            "a\nb",
+            "a\u{2028}b",
+            "a\u{2029}b",
+            "a\u{202A}b",
+            "a\u{202E}b",
+            "a\u{2066}b",
+            "a\u{2069}b",
+            long.as_str(),
+        ];
+        for name in refused_names {
             let create = json!({ "name": name }).to_string();
-            let answer = ask(server.address, "POST /api/workspaces", &ada, &create).await;
+            let answer = ask(ada.address, "POST /api/workspaces", &ada.proof(), &create).await;
             assert_eq!(
                 answer,
                 (
                     "http/1.1 422 unprocessable entity".to_owned(),
                     refused.clone()
-                )
+                ),
+                "{name:?}"
             );
         }
         let create = json!({ "name": "Team" }).to_string();
-        let (nobody, _) = ask(server.address, "POST /api/workspaces", "", &create).await;
+        let (nobody, _) = ask(ada.address, "POST /api/workspaces", "", &create).await;
         let page = "cookie: __Host-weacon_session=x\r\norigin: https://other.example\r\n";
-        let (crossed, _) = ask(server.address, "POST /api/workspaces", page, &create).await;
+        let (crossed, _) = ask(ada.address, "POST /api/workspaces", page, &create).await;
 
-        assert_eq!(listed(server.address, &ada).await.len(), 2);
+        assert_eq!(listed(&ada).await.len(), 2);
         assert_eq!(nobody, "http/1.1 401 unauthorized");
         assert_eq!(crossed, "http/1.1 403 forbidden");
+        Title::try_from(long.clone()).unwrap();
+        assert_eq!(workspace_name(" Team\u{200F} ").unwrap(), "Team\u{200F}");
         assert_eq!(
             workspace_name(&"é".repeat(MAX_NAME))
                 .unwrap()
@@ -270,5 +282,14 @@ mod tests {
                 .count(),
             MAX_NAME
         );
+    }
+
+    #[test]
+    fn only_a_full_account_is_refused_and_other_faults_fail() {
+        let full = created(Err(Fault::new(code!("workspace.too_many"), "Full")));
+        let broken = created(Err(Fault::new(code!("db.failed"), "Broken")));
+
+        assert_eq!(full.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(broken.status(), StatusCode::INTERNAL_SERVER_ERROR);
     }
 }

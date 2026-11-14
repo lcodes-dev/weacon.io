@@ -1,7 +1,7 @@
 import type { App, Envelope, RunEvent } from "./protocol.ts";
 
 /** A message from the server that this app acts on, its fields checked where it arrives. */
-export type Incoming = Extract<Envelope, { type: "welcome" | "error" | "receipt" | "run" | "diff_answer" | "workspace" }>;
+export type Incoming = Extract<Envelope, { type: "welcome" | "error" | "receipt" | "run" | "diff_answer" | "workspace" | "machine_settings_answer" }>;
 
 /** A run message, checked. */
 export type RunMessage = Extract<Incoming, { type: "run" }>;
@@ -45,6 +45,7 @@ export function route(message: Incoming, to: Routes): void {
       return;
     case "welcome":
     case "workspace":
+    case "machine_settings_answer":
       return;
   }
 }
@@ -62,6 +63,8 @@ const CHECKS: { [T in Incoming["type"]]: (fields: Fields) => boolean } = {
   // The answer itself is checked where the chat's changes take it.
   diff_answer: (fields) => text(fields, "request") && text(fields, "workspace") && text(fields, "chat"),
   workspace: (fields) => text(fields, "workspace") && Number.isSafeInteger(fields["seq"]) && isChange(fields["change"]),
+  machine_settings_answer: (fields) =>
+    text(fields, "request") && text(fields, "machine") && text(fields, "workspace") && isMachineSettingsAnswer(fields["answer"]),
 };
 
 function isIncoming(value: unknown): value is Incoming {
@@ -121,4 +124,26 @@ function isChange(value: unknown): boolean {
   }
   const fields = value as Fields;
   return fields["kind"] === "chat_changed" ? typeof fields["chat"] === "string" : typeof fields["kind"] === "string";
+}
+
+/** Whether `answer` is the current settings with every field this app reads, or another kind it ignores. */
+function isMachineSettingsAnswer(answer: unknown): boolean {
+  if (typeof answer !== "object" || answer === null) {
+    return false;
+  }
+  const fields = answer as Fields;
+  if (fields["kind"] !== "current") {
+    return typeof fields["kind"] === "string";
+  }
+  const signIns = fields["sign_ins"];
+  return (
+    text(fields, "access") &&
+    typeof fields["team"] === "boolean" &&
+    (fields["reports"] === undefined || typeof fields["reports"] === "boolean") &&
+    Array.isArray(signIns) &&
+    signIns.every((signIn: unknown) => {
+      const one = signIn as Fields | null;
+      return typeof one === "object" && one !== null && text(one, "agent") && text(one, "state");
+    })
+  );
 }
