@@ -106,7 +106,8 @@ mod tests {
 
     #[test]
     fn the_committed_schema_is_current() {
-        // The HTTP bodies, which no `Envelope` carries, are defined beside it.
+        // The HTTP bodies, which no `Envelope` carries, are defined beside it, in the order of
+        // the `pub use` block above.
         let mut generator = SchemaGenerator::default();
         generator.subschema_for::<SignInStart>();
         generator.subschema_for::<SignInStarted>();
@@ -115,12 +116,11 @@ mod tests {
         generator.subschema_for::<AccountSignInStart>();
         generator.subschema_for::<AccountSignInFinish>();
         generator.subschema_for::<AccountSignedIn>();
-        generator.subschema_for::<WorkspaceCreate>();
-        generator.subschema_for::<WorkspaceSummary>();
-        generator.subschema_for::<WorkspaceList>();
-        generator.subschema_for::<TaskList>();
-        generator.subschema_for::<TaskCreate>();
-        generator.subschema_for::<TaskChange>();
+        generator.subschema_for::<ChatList>();
+        generator.subschema_for::<DocList>();
+        generator.subschema_for::<DocRecord>();
+        generator.subschema_for::<DocRevise>();
+        generator.subschema_for::<DocHistory>();
         generator.subschema_for::<PairStart>();
         generator.subschema_for::<PairStarted>();
         generator.subschema_for::<PairLookup>();
@@ -129,17 +129,18 @@ mod tests {
         generator.subschema_for::<PairClaim>();
         generator.subschema_for::<PairClaimed>();
         generator.subschema_for::<MachineList>();
-        generator.subschema_for::<ChatList>();
-        generator.subschema_for::<DocList>();
-        generator.subschema_for::<DocRecord>();
-        generator.subschema_for::<DocRevise>();
-        generator.subschema_for::<DocHistory>();
         generator.subschema_for::<ProposalList>();
         generator.subschema_for::<ProposalDecision>();
         generator.subschema_for::<ProposalOutcome>();
         generator.subschema_for::<ReleaseManifest>();
+        generator.subschema_for::<TaskList>();
+        generator.subschema_for::<TaskCreate>();
+        generator.subschema_for::<TaskChange>();
         generator.subschema_for::<TerminalInput>();
         generator.subschema_for::<TerminalOutput>();
+        generator.subschema_for::<WorkspaceCreate>();
+        generator.subschema_for::<WorkspaceSummary>();
+        generator.subschema_for::<WorkspaceList>();
         let schema = generator.into_root_schema_for::<Envelope>();
         let current = serde_json::to_string_pretty(&schema).unwrap() + "\n";
         let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("schema.json");
