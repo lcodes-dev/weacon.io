@@ -347,6 +347,13 @@ mod tests {
         }
     }
 
+    type Handshake = tokio_tungstenite::tungstenite::handshake::server::Request;
+
+    fn header(request: &Handshake) -> Option<String> {
+        let value = request.headers().get(AUTHORIZATION)?;
+        Some(value.to_str().ok()?.to_owned())
+    }
+
     #[tokio::test]
     async fn a_socket_opens_over_the_same_checked_tls_with_the_token() {
         let tls = Tls::new().await;
@@ -354,18 +361,13 @@ mod tests {
         let serve = async {
             let stream = tls.accept().await.unwrap();
             let mut bearer = None;
-            let mut socket = tokio_tungstenite::accept_hdr_async(
-                stream,
-                |request: &tokio_tungstenite::tungstenite::handshake::server::Request, response| {
-                    bearer = request
-                        .headers()
-                        .get(AUTHORIZATION)
-                        .map(|value| value.to_str().unwrap().to_owned());
+            let mut socket =
+                tokio_tungstenite::accept_hdr_async(stream, |request: &Handshake, response| {
+                    bearer = header(request);
                     Ok(response)
-                },
-            )
-            .await
-            .unwrap();
+                })
+                .await
+                .unwrap();
             socket.send(Wire::text("hi")).await.unwrap();
             bearer
         };

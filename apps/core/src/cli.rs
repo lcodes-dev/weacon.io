@@ -48,6 +48,18 @@ pub(crate) enum Command {
         #[arg(long)]
         team: Option<bool>,
     },
+    /// Pair this machine with your Weacon account: confirm the code it shows in the web app.
+    Pair {
+        /// The server's address, an https URL with no path.
+        #[arg(long)]
+        server: String,
+        /// What the web app calls this machine.
+        #[arg(long)]
+        name: Option<String>,
+        /// A PEM file of the certificates to trust for the server, in place of the public ones.
+        #[arg(long)]
+        pin: Option<PathBuf>,
+    },
     /// Choose whether this core sends error reports, or show the answer.
     Reports {
         /// on or off; left out, shows the answer.
@@ -106,6 +118,7 @@ impl Command {
             | Self::Service(_)
             | Self::Login { .. }
             | Self::Access { .. }
+            | Self::Pair { .. }
             | Self::Reports { .. }
             | Self::ConnectChrome
             | Self::Map(_) => "cli.log",
@@ -121,6 +134,7 @@ impl Command {
             Self::Service(_) => "service",
             Self::Login { .. } => "login",
             Self::Access { .. } => "access",
+            Self::Pair { .. } => "pair",
             Self::Reports { .. } => "reports",
             Self::ConnectChrome => "connect-chrome",
             Self::NativeHost { .. } => "native-host",
