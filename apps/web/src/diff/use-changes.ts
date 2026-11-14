@@ -7,10 +7,10 @@ import { type WorkspaceSocket, useOffers } from "../shell/workspace-socket.ts";
 import { NO_CHANGES, ask, cut, needsAsking, receive } from "./changes.ts";
 
 /**
- * The changes of the chat at `chatRef`, asked over `link` the first time they are opened and again
- * after answers were cut short; whether they can be asked at all, while the link is `live`.
+ * The changes of the chat at `chatRef`, asked over `link` when they are `shown`, and again when the
+ * link comes back while they are, if its answers were cut short; whether they can be asked at all.
  */
-export function useChanges(link: WorkspaceSocket, chatRef: ChatRef | undefined, live: boolean) {
+export function useChanges(link: WorkspaceSocket, chatRef: ChatRef | undefined, live: boolean, shown: boolean) {
   const [changes, setChanges] = useState(NO_CHANGES);
   const offered = useOffers(link, "diff.view");
   useEffect(() => {
@@ -26,12 +26,13 @@ export function useChanges(link: WorkspaceSocket, chatRef: ChatRef | undefined, 
     };
   }, [link, live]);
   const askable = chatRef !== undefined && live && offered;
-  const open = () => {
-    if (askable && needsAsking(changes)) {
+  useEffect(() => {
+    if (shown && askable && needsAsking(changes)) {
       const { query, changes: asked } = ask(link.nextId(), newRequestId(), chatRef.workspace, chatRef.chat, changes);
       setChanges(asked);
       link.send(query);
     }
-  };
-  return { changes, askable, open };
+    // Only showing them and the link coming back ask; a failed answer waits for one of those.
+  }, [shown, askable]);
+  return { changes, askable };
 }

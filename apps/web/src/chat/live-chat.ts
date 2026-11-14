@@ -30,6 +30,11 @@ export class LiveChat {
     this.#sync = ended(from);
   }
 
+  /** Where the chat stands now, flushed to the screen or not. */
+  get sync(): Sync {
+    return this.#sync;
+  }
+
   /** Asks for the chat afresh, as once the connection is live. */
   open(): void {
     this.#take(open(this.#sync, this.#ref, this.#wiring.id));

@@ -2,12 +2,12 @@ import type { ChatRef } from "../chat-ref.ts";
 import { route } from "../incoming.ts";
 import type { WorkspaceSocket } from "../shell/workspace-socket.ts";
 import { LiveChat } from "./live-chat.ts";
-import { START, type Sync, ended } from "./sync.ts";
+import { START, type Sync } from "./sync.ts";
 
 /** What the chats of a socket need of it. */
 export type Feed = Pick<WorkspaceSocket, "subscribe" | "send" | "nextId" | "connection">;
 
-type Held = { chat: LiveChat; connection: number; last: Sync; screen: ((sync: Sync) => void) | undefined; stop: () => void };
+type Held = { chat: LiveChat; connection: number; screen: ((sync: Sync) => void) | undefined; stop: () => void };
 
 /**
  * The chats kept in step over one socket: at most one subscription per chat and connection, as the
@@ -32,9 +32,9 @@ export class ChatFeeds {
   show(ref: ChatRef, screen: (sync: Sync) => void): { chat: LiveChat; hide: () => void } {
     const held = this.#take(ref);
     held.screen = screen;
-    const kept = held.last.state.kind === "asking" || held.last.state.kind === "live";
-    if (kept) {
-      screen(held.last);
+    const { sync } = held.chat;
+    if (sync.state.kind === "asking" || sync.state.kind === "live") {
+      screen(sync);
     } else {
       held.chat.open();
     }
@@ -59,19 +59,15 @@ export class ChatFeeds {
       id: () => this.#feed.nextId(),
       send: (envelope: Parameters<Feed["send"]>[0]) => void this.#feed.send(envelope),
       schedule: this.#schedule(),
-      show: (sync: Sync) => {
-        held.last = sync;
-        held.screen?.(sync);
-      },
+      show: (sync: Sync) => held.screen?.(sync),
     };
-    const chat = new LiveChat(ref, wiring, before?.last ?? START);
+    const chat = new LiveChat(ref, wiring, before?.chat.sync ?? START);
     const unsubscribe = this.#feed.subscribe((message) =>
       route(message, { run: (run) => held.screen !== undefined && chat.push(run), chat: (said) => chat.push(said) }),
     );
     const held: Held = {
       chat,
       connection,
-      last: ended(before?.last ?? START),
       screen: undefined,
       stop: () => {
         unsubscribe();

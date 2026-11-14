@@ -40,7 +40,7 @@ export function ChatScreen({
   const access = useChatAccess(link);
   const reading = useLiveChat(link, chatRef, live, access.read);
   const commands = useChatCommands(link, chatRef, live, reading.answered);
-  const changes = useChanges(link, chatRef, live);
+  const changes = useChanges(link, chatRef, live, shown === "changes");
   const { chat, state } = reading.sync;
   const acts = mine && access.send;
   const stop = acts && chat !== undefined && working(chat) ? commands.stop : undefined;
@@ -53,13 +53,7 @@ export function ChatScreen({
             <>
               {stop !== undefined && <StopButton stopping={stop.stopping} problem={stop.problem} onStop={stop.stop} />}
               {changes.askable && (
-                <button
-                  type="button"
-                  onClick={() => {
-                    changes.open();
-                    setShown("changes");
-                  }}
-                >
+                <button type="button" onClick={() => setShown("changes")}>
                   Changes
                 </button>
               )}

@@ -17,8 +17,10 @@ type Feed = {
   close?: (opened: number) => boolean;
   /** Capabilities to offer besides the feed and chats. */
   also?: string[];
-  /** What to answer each envelope the page sends after its hello. */
-  answer?: (sent: Envelope) => Envelope[];
+  /** What the nth socket answers each envelope the page sends after its hello. */
+  answer?: (sent: Envelope, opened: number) => Envelope[];
+  /** Whether the nth socket closes once it has answered `sent`. */
+  drop?: (sent: Envelope, opened: number) => boolean;
 };
 
 /**
@@ -26,7 +28,7 @@ type Feed = {
  * `feed` says. Gives the addresses opened and what the page sent after its hellos. Only pages
  * loaded after this have their sockets routed, so it reloads the page.
  */
-async function serveFeed(page: Page, { changes = () => [], close = () => false, also = [], answer = () => [] }: Feed = {}): Promise<{ opened: string[]; sent: Envelope[] }> {
+async function serveFeed(page: Page, { changes = () => [], close = () => false, also = [], answer = () => [], drop = () => false }: Feed = {}): Promise<{ opened: string[]; sent: Envelope[] }> {
   const opened: string[] = [];
   const sent: Envelope[] = [];
   await page.routeWebSocket(/\/api\/workspaces\/[^/]+\/feed/, (socket) => {
@@ -36,8 +38,11 @@ async function serveFeed(page: Page, { changes = () => [], close = () => false, 
       const hello = JSON.parse(String(text)) as Envelope;
       if (hello.type !== "hello") {
         sent.push(hello);
-        for (const reply of answer(hello)) {
+        for (const reply of answer(hello, nth)) {
           socket.send(JSON.stringify(reply));
+        }
+        if (drop(hello, nth)) {
+          void socket.close();
         }
         return;
       }
@@ -563,3 +568,32 @@ test("picking another chat shows that one, and sends only to it", { timeout: 600
   const subscribed = sent.flatMap((envelope) => (envelope.type === "chat_query" && envelope.query.kind === "subscribe" ? [envelope.chat] : []));
   assert.deepEqual(subscribed.toSorted(), ["c-1", "c-2"]);
 });
+
+// A changed file of a chat's changes, as a core answers it under `asked`'s request.
+function changedFile(asked: Envelope, path: string): Envelope[] {
+  if (asked.type !== "diff_query") {
+    return [];
+  }
+  const file = { path, change: { kind: "modified" as const }, content: { kind: "binary" as const } };
+  return [{ id: asked.id, type: "diff_answer", workspace: asked.workspace, chat: asked.chat, request: asked.request, answer: { kind: "file", file, files: 2 } }];
+}
+
+test("open changes cut short by a lost connection are asked for again once it is back", { timeout: 600_000 }, async (t) => {
+  const served = await serve();
+  t.after(() => served.close());
+  const { page } = served;
+  // The first socket sends one of the two files, then drops; the next sends both.
+  const { sent } = await serveFeed(page, {
+    also: ["diff.view"],
+    answer: (asked, nth) => [...snapshot(asked), ...changedFile(asked, "src/pantry.rs"), ...(nth > 1 ? changedFile(asked, "src/shelves.rs") : [])],
+    drop: (asked, nth) => nth === 1 && asked.type === "diff_query",
+  });
+  await openChats(served, [{ id: "c-1", title: "Sort the pantry" }], (member) => member);
+  await nav(page).getByRole("button", { name: /Sort the pantry/ }).click();
+  await page.getByRole("button", { name: "Changes" }).click();
+
+  await page.getByText("src/shelves.rs").waitFor();
+  assert.equal(sent.filter((envelope) => envelope.type === "diff_query").length, 2);
+  await page.getByText("src/pantry.rs").waitFor();
+});
+

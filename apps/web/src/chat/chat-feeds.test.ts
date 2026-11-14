@@ -102,3 +102,30 @@ test("a chat whose ask failed asks again when it is shown", () => {
 
   assert.equal(queries("snapshot").length, 2);
 });
+
+test("a chat hidden before its answers reach the screen keeps the subscription they made", () => {
+  const sent: Envelope[] = [];
+  const handlers = new Set<(message: Incoming) => void>();
+  let next = 0;
+  const feed = {
+    connection: 1,
+    nextId: () => ++next,
+    send: (envelope: Envelope) => sent.push(envelope) > 0,
+    subscribe: (handle: (message: Incoming) => void) => {
+      handlers.add(handle);
+      return () => handlers.delete(handle);
+    },
+  };
+  // Flushes wait for a frame that doesn't come.
+  const feeds = new ChatFeeds(feed, () => () => {});
+  const { hide } = feeds.show(REF, () => {});
+  [...handlers].forEach((handle) => handle(snapshot(1)));
+  hide();
+
+  const again: Sync[] = [];
+  feeds.show(REF, (sync) => again.push(sync));
+
+  const kinds = sent.flatMap((envelope) => (envelope.type === "chat_query" ? [envelope.query.kind] : []));
+  assert.deepEqual(kinds, ["snapshot", "subscribe"]);
+  assert.equal(again[0]?.state.kind, "live");
+});
