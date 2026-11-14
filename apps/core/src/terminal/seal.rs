@@ -248,8 +248,8 @@ mod tests {
     use serde::{Deserialize, Serialize};
     use snow::HandshakeState;
     use weacon_protocol::{
-        AgentKind, Bytes, MachineId, TerminalAction, TerminalCommand, TerminalId, TerminalInput,
-        TerminalOutput, WorkspaceId,
+        AgentKind, Bytes, MachineId, SignInState, TerminalAction, TerminalCommand, TerminalId,
+        TerminalInput, TerminalOutput, WorkspaceId,
     };
 
     use super::*;
@@ -422,12 +422,19 @@ mod tests {
     fn weacon_draft() -> Vector {
         let prologue = hex(&prologue());
         let data = |text: &[u8]| Bytes::new(text.to_vec()).unwrap();
+        // As a terminal runs: the size in the handshake and again in the browser's first frame,
+        // what the login prints, what the person types, and the end.
         let payloads = [
             TerminalInput::Resize { cols: 80, rows: 24 }.to_json(),
             Ok(Vec::new()),
-            TerminalInput::Input { data: data(b"y\r") }.to_json(),
+            TerminalInput::Resize { cols: 80, rows: 24 }.to_json(),
             TerminalOutput::Output {
-                data: data(b"Signed in.\r\n"),
+                data: data(b"Paste the code: "),
+            }
+            .to_json(),
+            TerminalInput::Input { data: data(b"y\r") }.to_json(),
+            TerminalOutput::Ended {
+                sign_in: SignInState::SignedIn,
             }
             .to_json(),
         ];

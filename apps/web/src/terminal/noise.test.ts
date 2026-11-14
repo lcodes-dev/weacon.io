@@ -2,38 +2,9 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 
-import { type Channel, type Ephemeral, NOISE_MAX, PROTOCOL, SEALED_MAX, SealError, ephemeral, initiate } from "./noise.ts";
-
-type Vector = {
-  protocol_name: string;
-  init_prologue: string;
-  init_ephemeral: string;
-  init_remote_static: string;
-  messages: { payload: string; ciphertext: string }[];
-};
-
-const vectors = JSON.parse(
-  readFileSync(new URL("../../../../crates/protocol/noise-vectors.json", import.meta.url), "utf8"),
-) as { published: Vector; weacon: Vector };
-
-function bytes(hex: string): Uint8Array<ArrayBuffer> {
-  return Uint8Array.from(hex.match(/../g) ?? [], (pair) => parseInt(pair, 16));
-}
-
-function hex(data: Uint8Array): string {
-  return Array.from(data, (byte) => byte.toString(16).padStart(2, "0")).join("");
-}
-
-// A fixed ephemeral, as the vectors use; Web Crypto takes a private X25519 key only as PKCS #8.
-async function fixed(privateHex: string): Promise<Ephemeral> {
-  const pkcs8 = bytes(`302e020100300506032b656e04220420${privateHex}`);
-  const privateKey = await crypto.subtle.importKey("pkcs8", pkcs8, { name: "X25519" }, false, ["deriveBits"]);
-  const base = new Uint8Array(32);
-  base[0] = 9;
-  const point = await crypto.subtle.importKey("raw", base, { name: "X25519" }, false, []);
-  const own = await crypto.subtle.deriveBits({ name: "X25519", public: point }, privateKey, 256);
-  return { privateKey, public: new Uint8Array(own) };
-}
+import { hex } from "../hex.ts";
+import { type Channel, NOISE_MAX, PROTOCOL, SEALED_MAX, SealError, ephemeral, initiate } from "./noise.ts";
+import { type Vector, bytes, fixed, vectors } from "./vectors.ts";
 
 async function handshake(vector: Vector): Promise<Channel> {
   const [first, reply] = vector.messages;
