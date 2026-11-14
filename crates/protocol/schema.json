@@ -592,12 +592,15 @@
     "ChatAction": {
       "oneOf": [
         {
-          "description": "Starts a turn with `text`, or queues it behind the turn that is running. On a chat's\nfirst prompt, `repo` fixes the repository its agents work in; later prompts leave it out.",
+          "description": "Starts or queues a turn. Only a chat's first prompt has `repo` and `machine`, one of the\nsender's; the server drops `machine` before relaying.",
           "type": "object",
           "properties": {
             "kind": {
               "type": "string",
               "const": "prompt"
+            },
+            "machine": {
+              "$ref": "#/$defs/MachineId"
             },
             "repo": {
               "$ref": "#/$defs/RepoId"
@@ -869,6 +872,21 @@
       "maxLength": 64,
       "pattern": "^[A-Za-z0-9_-]+$"
     },
+    "ChatList": {
+      "description": "A workspace's chats, from the server, to clients that have the capability\n`workspace.chats`.",
+      "type": "object",
+      "properties": {
+        "chats": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ChatSummary"
+          }
+        }
+      },
+      "required": [
+        "chats"
+      ]
+    },
     "ChatQuery": {
       "description": "The answer is a [`ChatAnswer`], or for `subscribe` the [`ChatUpdate`]s themselves.",
       "type": "object",
@@ -947,6 +965,59 @@
             "limit"
           ]
         }
+      ]
+    },
+    "ChatState": {
+      "description": "What can still happen to a chat.",
+      "oneOf": [
+        {
+          "description": "Its owner can prompt it.",
+          "type": "string",
+          "const": "open"
+        },
+        {
+          "description": "Its workspace has no room for more of its events, so it takes no prompts until it has.",
+          "type": "string",
+          "const": "full"
+        },
+        {
+          "description": "Its machine was unpaired, or no longer has its log: it can be read, never prompted.",
+          "type": "string",
+          "const": "detached"
+        }
+      ]
+    },
+    "ChatSummary": {
+      "description": "A chat in a [`ChatList`]: `machine` is a name, never an id, and `updated_at` is when its\nlatest turn began or ended, in seconds since the Unix epoch.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/ChatId"
+        },
+        "machine": {
+          "$ref": "#/$defs/MachineName"
+        },
+        "owner": {
+          "$ref": "#/$defs/MemberId"
+        },
+        "state": {
+          "$ref": "#/$defs/ChatState"
+        },
+        "title": {
+          "type": "string"
+        },
+        "updated_at": {
+          "type": "integer",
+          "format": "int64"
+        }
+      },
+      "required": [
+        "id",
+        "title",
+        "owner",
+        "machine",
+        "state",
+        "updated_at"
       ]
     },
     "ChatUpdate": {
@@ -3079,6 +3150,23 @@
             "kind",
             "doc",
             "version"
+          ]
+        },
+        {
+          "description": "A chat was made, or its title, state or latest turn changed. Only for clients that have\nthe capability `workspace.chats`, which read the chats again.",
+          "type": "object",
+          "properties": {
+            "chat": {
+              "$ref": "#/$defs/ChatId"
+            },
+            "kind": {
+              "type": "string",
+              "const": "chat_changed"
+            }
+          },
+          "required": [
+            "kind",
+            "chat"
           ]
         }
       ]

@@ -264,6 +264,18 @@ CREATE TABLE pairings (
     claimed INTEGER NOT NULL DEFAULT 0
 ) STRICT;
 ",
+    // The bytes of doc revisions each workspace holds, which its quota bounds. Each revision
+    // also counts 256 bytes for its rows, as `db::docs` counts them.
+    "
+ALTER TABLE workspaces ADD COLUMN doc_bytes INTEGER NOT NULL DEFAULT 0;
+
+UPDATE workspaces SET doc_bytes =
+    (SELECT COALESCE(SUM(256 + length(CAST(title AS BLOB)) + length(CAST(body AS BLOB))
+         + COALESCE(length(commit_id), 0)), 0)
+     FROM doc_versions WHERE doc_versions.workspace_id = workspaces.workspace_id)
+    + (SELECT COALESCE(SUM(length(pin)), 0)
+       FROM doc_pins WHERE doc_pins.workspace_id = workspaces.workspace_id);
+",
     // Which agent made a version, as its JSON, when its author names one.
     "
 ALTER TABLE task_versions ADD COLUMN agent TEXT;
@@ -299,6 +311,29 @@ pub(super) async fn migrate(writer: &SqlitePool) -> Result<(), Fault> {
             .map_err(failed)?;
         transaction.commit().await.map_err(failed)?;
     }
+}
+
+/// Makes a database at `path` from before the first step that contains `marker`, holding
+/// `rows`, for tests of what that step and the ones after it do to existing data.
+#[cfg(test)]
+pub(super) async fn database_before(path: &std::path::Path, marker: &str, rows: &str) {
+    use sqlx::ConnectOptions;
+
+    let mut old = sqlx::sqlite::SqliteConnectOptions::new()
+        .filename(path)
+        .create_if_missing(true)
+        .connect()
+        .await
+        .unwrap();
+    let before = STEPS.iter().position(|step| step.contains(marker)).unwrap();
+    for step in &STEPS[..before] {
+        sqlx::raw_sql(*step).execute(&mut old).await.unwrap();
+    }
+    let rows = format!("{rows}; PRAGMA user_version = {before};");
+    sqlx::raw_sql(AssertSqlSafe(rows))
+        .execute(&mut old)
+        .await
+        .unwrap();
 }
 
 fn too_new() -> Fault {
