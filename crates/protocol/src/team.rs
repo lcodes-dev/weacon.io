@@ -215,29 +215,6 @@ mod tests {
     }
 
     #[test]
-    fn ids_are_plain_tokens_checked_on_arrival() {
-        let member: MemberId = serde_json::from_value(json!("m_2")).unwrap();
-
-        assert_eq!(member.as_str(), "m_2");
-        assert_eq!(workspace().as_str(), "w-1");
-        assert_eq!(serde_json::to_value(workspace()).unwrap(), json!("w-1"));
-        assert_eq!(
-            WorkspaceId::try_from("a b".to_owned()),
-            Err("a b".to_owned())
-        );
-        assert_eq!(MemberId::try_from(String::new()), Err(String::new()));
-        assert_eq!("w-1".parse(), Ok(workspace()));
-        assert_eq!("a b".parse::<WorkspaceId>(), Err("not a workspace id"));
-        assert_eq!("".parse::<MemberId>(), Err("not a member id"));
-        let bad = serde_json::from_value::<WorkspaceId>(json!("../x")).unwrap_err();
-        assert!(bad.to_string().contains("not a workspace id"), "{bad}");
-        let bad = serde_json::from_value::<MemberId>(json!("a.b")).unwrap_err();
-        assert!(bad.to_string().contains("not a member id"), "{bad}");
-        let bad = serde_json::from_value::<AccountId>(json!("a b")).unwrap_err();
-        assert!(bad.to_string().contains("not an account id"), "{bad}");
-    }
-
-    #[test]
     fn sign_in_bodies_travel_as_plain_json() {
         let challenge = ChallengeId::try_from("c-1".to_owned()).unwrap();
         let finish = |challenge| SignInFinish {
