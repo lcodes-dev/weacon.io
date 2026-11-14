@@ -1,7 +1,7 @@
 import { type Command, deliver } from "../chat/commands.ts";
 import type { ChatRef } from "../chat-ref.ts";
 import type { Envelope, RequestId } from "../protocol.ts";
-import { type Receipts, type Settled, mayHaveRun, settledText } from "../receipts.ts";
+import { type Receipts, type Settled, type Subject, settledText } from "../receipts.ts";
 
 /** How sending a prompt ended: as its command did, or refused here for its size. */
 export type Sent = Settled | "too_long";
@@ -20,25 +20,17 @@ export function deliverPrompt(command: Command, receipts: Receipts, send: (envel
   return deliver(command, receipts, send);
 }
 
-/** A prompt that may have run, kept with its request so sending it again can't run it twice. */
-export type Retry = { text: string; request: RequestId };
+const MESSAGE: Subject = {
+  subject: "the message",
+  refused: "wasn't sent",
+  unsent: "wasn't sent",
+  unsure: "may not have been sent",
+  gone: "it can be read but takes no messages",
+};
 
-const MESSAGE = { the: "the message", not: "wasn't sent", maybe: "may not have been sent" };
-
-/** What the box holds after a send. */
-export type After = { text: string; problem: string | undefined; retry: Retry | undefined };
-
-/**
- * What the box holds once sending `text` under `request` ended as `sent`: empty when accepted,
- * else the text, why, and the request to retry it under when it may have run.
- */
-export function after(sent: Sent, text: string, request: RequestId): After {
-  if (sent === "accepted") {
-    return { text: "", problem: undefined, retry: undefined };
-  }
-  const retry = sent !== "too_long" && mayHaveRun(sent) ? { text, request } : undefined;
-  const problem = sent === "too_long" ? "It's too long to send. Shorten it and try again." : settledText(sent, MESSAGE);
-  return { text, problem, retry };
+/** Why a send that ended as `sent` wasn't taken, or may not have been; nothing when it was. */
+export function sentProblem(sent: Sent): string | undefined {
+  return sent === "too_long" ? "It's too long to send. Shorten it and try again." : settledText(sent, MESSAGE);
 }
 
 /** How a command ended, heard after its wait ran out. */

@@ -134,7 +134,7 @@ function isRunEvent(event: unknown): event is RunEvent {
       return text(fields, "run") && isSeq(fields["prompt"], 0);
     case "permission_answered": {
       const answer = record(fields["answer"]);
-      return typeof answer?.["run"] === "string" && isSeq(answer["prompt"], 0) && typeof answer["allow"] === "boolean";
+      return answer !== undefined && text(answer, "run") && isSeq(answer["prompt"], 0) && typeof answer["allow"] === "boolean";
     }
     case "finished":
       return typeof record(fields["outcome"])?.["state"] === "string";

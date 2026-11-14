@@ -1,4 +1,4 @@
-import { type ReactNode, useRef, useState } from "react";
+import { type ReactNode, useState } from "react";
 
 import type { Lates, Send } from "../composer/prompt.ts";
 import { useSend } from "../composer/send.ts";
@@ -31,17 +31,8 @@ export function ChatChanges({
   bar?: ReactNode;
 }) {
   const [comments, setComments] = useState<readonly Comment[]>([]);
-  // The comments each review sent carried, by its text.
-  const carried = useRef(new Map<string, readonly Comment[]>());
-  const { sending, problem, submit } = useSend(send, lates, (text) => {
-    const sent = carried.current.get(text) ?? [];
-    setComments((now) => unsent(now, sent));
-  });
-  const sendReview = async () => {
-    const text = reviewPrompt(comments);
-    carried.current.set(text, comments);
-    await submit(text);
-  };
+  const { sending, problem, submit } = useSend<readonly Comment[]>(send, lates, (sent) => setComments((now) => unsent(now, sent)));
+  const sendReview = () => submit(reviewPrompt(comments), comments);
   if (hidden) {
     return null;
   }

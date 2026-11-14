@@ -179,15 +179,15 @@ test("an error about an overdue envelope doesn't decide a retry that waits", asy
 });
 
 test("how a command ended is said once for every subject", () => {
-  const subject = { the: "the agent", not: "wasn't stopped", maybe: "may not have stopped" };
+  const subject = { subject: "the answer", refused: "wasn't taken", unsent: "wasn't sent", unsure: "may not have been sent", gone: "it takes no answers" };
   const said = (["accepted", "refused", "offline", "detached", "lost", "unsure"] as const).map((settled) => settledText(settled, subject));
 
   assert.deepEqual(said, [
     undefined,
-    "The agent wasn't stopped.",
-    "The machine is offline, so the agent wasn't stopped. Try again once it's back.",
-    "This chat's machine is gone, so the agent wasn't stopped.",
-    "The connection closed. The agent may not have stopped.",
-    "The server didn't answer. The agent may not have stopped.",
+    "The answer wasn't taken.",
+    "The machine is offline, so the answer wasn't sent. Try again once it's back.",
+    "This chat's machine is gone, so it takes no answers.",
+    "The connection closed. The answer may not have been sent.",
+    "The server didn't answer. The answer may not have been sent.",
   ]);
 });

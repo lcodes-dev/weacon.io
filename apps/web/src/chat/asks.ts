@@ -1,5 +1,5 @@
 import type { RequestId, RunId } from "../protocol.ts";
-import { type Settled, mayHaveRun, settledText } from "../receipts.ts";
+import { type Settled, type Subject, mayHaveRun, settledText } from "../receipts.ts";
 
 /** A person's answer to the prompt `prompt` of `run`, on its way or not taken. */
 export type Answering = {
@@ -60,8 +60,20 @@ export function settleAnswer(answers: Answers, sent: SentAnswers, request: Reque
   return answer === undefined ? answers : settle(answers, askKey(answer.run, answer.prompt), request, settled);
 }
 
-const ANSWER = { the: "the answer", not: "wasn't taken", maybe: "may not have been sent" };
-const STOP = { the: "the agent", not: "wasn't stopped", maybe: "may not have stopped" };
+const ANSWER: Subject = {
+  subject: "the answer",
+  refused: "wasn't taken",
+  unsent: "wasn't sent",
+  unsure: "may not have been sent",
+  gone: "it takes no answers",
+};
+const STOP: Subject = {
+  subject: "the agent",
+  refused: "wasn't stopped",
+  unsent: "wasn't stopped",
+  unsure: "may not have stopped",
+  gone: "there's no agent to stop",
+};
 
 /** What Stop says once its interrupt ended as `settled`: nothing when it was taken. */
 export function stopProblem(settled: Settled): string | undefined {
