@@ -66,22 +66,11 @@ impl Session {
 
 #[cfg(test)]
 mod tests {
-    use weacon_protocol::{Hello, PROTOCOL, Welcome};
+    use weacon_protocol::{PROTOCOL, Welcome};
 
     use super::*;
     use crate::daemon::build;
-    use crate::test_support::{self, VERSION};
-
-    fn hello(id: u32, protocol: u32) -> Envelope {
-        Envelope {
-            id,
-            message: Message::Hello(Hello {
-                protocol,
-                app: build(&VERSION),
-                capabilities: Vec::new(),
-            }),
-        }
-    }
+    use crate::test_support::{self, VERSION, hello};
 
     fn error_code(reply: &Reply) -> Option<&str> {
         test_support::error_code(&reply.envelope.as_ref()?.message)

@@ -4,7 +4,7 @@ use std::path::Path;
 use std::time::SystemTime;
 
 use weacon_observability::Reporter;
-use weacon_protocol::{Pick, RequestId};
+use weacon_protocol::{Envelope, Hello, Message, Pick, RequestId};
 use weacon_version::Version;
 
 pub(crate) use weacon_testing::{Records, messages, recording_logger, recording_sink};
@@ -58,9 +58,21 @@ pub(crate) fn pick(request: &str, html: &str) -> Pick {
     }
 }
 
+/// A hello from this build on `protocol`, offering nothing.
+pub(crate) fn hello(id: u32, protocol: u32) -> Envelope {
+    Envelope {
+        id,
+        message: Message::Hello(Hello {
+            protocol,
+            app: crate::daemon::build(&VERSION),
+            capabilities: Vec::new(),
+        }),
+    }
+}
+
 /// The code of an error message, if it is one.
-pub(crate) fn error_code(message: &weacon_protocol::Message) -> Option<&str> {
-    let weacon_protocol::Message::Error(body) = message else {
+pub(crate) fn error_code(message: &Message) -> Option<&str> {
+    let Message::Error(body) = message else {
         return None;
     };
     Some(body.code.as_str())
