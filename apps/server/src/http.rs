@@ -13,7 +13,7 @@ use tokio::net::TcpListener;
 use tokio::sync::{Semaphore, broadcast, watch};
 use tokio::time::timeout;
 use weacon_observability::{Clock, Fault, Field, Logger, Reporter};
-use weacon_protocol::{App, Code, ErrorBody, WorkspaceId, code};
+use weacon_protocol::{App, Code, ErrorBody, MachineId, WorkspaceId, code};
 
 use crate::client::Net;
 use crate::connections;
@@ -24,7 +24,9 @@ use crate::mail::Outbox;
 use crate::pairing;
 use crate::secret::Secret;
 use crate::sign_in;
+use crate::socket;
 use crate::tasks;
+use crate::uplink;
 use crate::web::{self, WebFile};
 use crate::workspaces;
 
@@ -61,9 +63,11 @@ pub(crate) struct Shared {
     pub(crate) proxies: Arc<[Net]>,
     /// Room for open connections, feeds included; when it's full, more wait to be accepted.
     pub(crate) connections: Arc<Semaphore>,
-    pub(crate) feed: feed::Timing,
+    pub(crate) sockets: socket::Timing,
     /// Which workspace just changed, for the feeds.
     pub(crate) changes: broadcast::Sender<WorkspaceId>,
+    /// Which machine was just unpaired, for its open connection.
+    pub(crate) unpaired: broadcast::Sender<MachineId>,
     /// Room for sign-ins being worked on after their answer; when it's full, more are dropped.
     pub(crate) sign_ins: Arc<Semaphore>,
     /// How long finishing a sign-in takes at least, so its timing gives nothing away.
@@ -143,6 +147,7 @@ fn router(shared: Shared) -> Router {
         )
         .route("/api/machines", get(pairing::list))
         .route("/api/machines/{machine}", delete(pairing::unpair))
+        .route("/api/machines/connect", get(uplink::connect))
         .route("/api/machines/pair", post(pairing::start))
         .route("/api/machines/pair/lookup", post(pairing::lookup))
         .route("/api/machines/pair/confirm", post(pairing::confirm))
