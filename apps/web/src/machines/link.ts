@@ -9,10 +9,10 @@ import type {
 import type { Answer } from "../shell/api.ts";
 import { UNREACHABLE } from "../shell/api.ts";
 
-/** A connection that reaches the person's machines through the server. */
+/** The open workspace's connection, through which the server reaches the person's machines. */
 export type Link = {
-  /** Puts `envelope` on the connection; its `id` is new on this connection. */
-  send(envelope: Envelope): void;
+  /** Puts `envelope` on the connection; false, dropping it, while the connection isn't live. */
+  send(envelope: Envelope): boolean;
   /** Hands every envelope that arrives to `handle`, until the returned function is called. */
   subscribe(handle: (envelope: Envelope) => void): () => void;
   /** An envelope id not yet used on this connection. */
@@ -25,6 +25,7 @@ export type Wait = (run: () => void, ms: number) => () => void;
 // A core that is offline never answers; the page says so rather than wait for good.
 const ANSWER_MS = 30_000;
 export const NO_ANSWER = "settings.no_answer";
+export const RECONNECTING = "settings.reconnecting";
 
 /** Where the settings are: one machine, as it is set up for one workspace. */
 export type Place = { machine: MachineId; workspace: WorkspaceId };
@@ -76,7 +77,9 @@ function ask(link: Link, wait: Wait, request: string, sent: Envelope): Promise<A
     });
     cancel = wait(() => finish({ ok: false, code: NO_ANSWER }), ANSWER_MS);
     try {
-      link.send(sent);
+      if (!link.send(sent)) {
+        finish({ ok: false, code: RECONNECTING });
+      }
     } catch {
       finish({ ok: false, code: UNREACHABLE });
     }

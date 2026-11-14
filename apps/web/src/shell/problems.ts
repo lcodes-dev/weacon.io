@@ -12,6 +12,7 @@ const PROBLEMS = new Map<Code, string>([
   ["pairing.too_many", "Too many tries. Wait a while, then try again."],
   ["machine.not_found", "That machine isn't paired any more."],
   ["settings.no_answer", "The machine didn't answer. Check that it's on and connected."],
+  ["settings.reconnecting", "The workspace is reconnecting. Try again in a moment."],
   ["settings.not_owner", "Only this machine's owner can see or change its settings."],
 ]);
 

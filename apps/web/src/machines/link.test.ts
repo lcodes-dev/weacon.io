@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import type { Envelope, MachineSettings } from "../protocol.ts";
-import { type Link, NO_ANSWER, type Wait, change, current } from "./link.ts";
+import { type Link, NO_ANSWER, RECONNECTING, type Wait, change, current } from "./link.ts";
 
 const PLACE = { machine: "mc-1", workspace: "w-1" };
 const SETTINGS: MachineSettings = {
@@ -13,17 +13,29 @@ const SETTINGS: MachineSettings = {
 };
 
 /** A link whose core the test plays, and a clock it moves by hand. */
-function fake(): { link: Link; sent: Envelope[]; deliver(envelope: Envelope): void; listeners(): number; wait: Wait; expire(): void; failing(): void } {
+function fake(): {
+  link: Link;
+  sent: Envelope[];
+  deliver(envelope: Envelope): void;
+  listeners(): number;
+  wait: Wait;
+  expire(): void;
+  failing(): void;
+  offline(): void;
+} {
   const sent: Envelope[] = [];
   const handles = new Set<(envelope: Envelope) => void>();
   const timers = new Set<() => void>();
   let ids = 10;
   let broken = false;
+  let live = true;
   return {
     link: {
       send: (envelope) => {
         if (broken) throw new Error("closed");
+        if (!live) return false;
         sent.push(envelope);
+        return true;
       },
       subscribe: (handle) => {
         handles.add(handle);
@@ -45,6 +57,9 @@ function fake(): { link: Link; sent: Envelope[]; deliver(envelope: Envelope): vo
     },
     failing: () => {
       broken = true;
+    },
+    offline: () => {
+      live = false;
     },
   };
 }
@@ -82,7 +97,7 @@ test("a command carries its action, and an error for its envelope answers it", a
   assert.equal(core.listeners(), 0);
 });
 
-test("a core that never answers, a newer answer, or a closed connection each end the request", async () => {
+test("a core that never answers, a newer answer, a closed connection or a reconnecting one each end the request", async () => {
   const silent = fake();
   const waiting = current(silent.link, PLACE, silent.wait);
   silent.expire();
@@ -95,5 +110,12 @@ test("a core that never answers, a newer answer, or a closed connection each end
   assert.deepEqual(await waiting, { ok: false, code: NO_ANSWER });
   assert.deepEqual(await odd, { ok: false, code: "answer.malformed" });
   assert.deepEqual(await current(closed.link, PLACE, closed.wait), { ok: false, code: "connection.refused" });
-  assert.equal(silent.listeners() + newer.listeners() + closed.listeners(), 0);
+  const reconnecting = fake();
+  reconnecting.offline();
+  assert.deepEqual(await change(reconnecting.link, PLACE, { kind: "set_reports", send: true }, reconnecting.wait), {
+    ok: false,
+    code: RECONNECTING,
+  });
+  assert.equal(reconnecting.sent.length, 0);
+  assert.equal(silent.listeners() + newer.listeners() + closed.listeners() + reconnecting.listeners(), 0);
 });
