@@ -35,24 +35,35 @@ pub fn recording(session: &str, tokens: usize) -> Result<String, Failure> {
         return Err("the session has no text".into());
     }
     let run = RunId::try_from(RUN.to_owned())?;
-    let mut lines = Vec::new();
-    for _ in 0..tokens.div_ceil(per_pass) {
-        for event in &events {
-            for event in deltas(event).into_iter().chain([event.clone()]) {
-                lines.push(line(run.clone(), event)?);
-            }
-        }
-    }
-    Ok(lines.join("\n"))
+    let pass = events
+        .iter()
+        .flat_map(|event| deltas(event).into_iter().chain([event.clone()]))
+        .map(|event| line(run.clone(), event))
+        .collect::<Result<Vec<_>, _>>()?
+        .join("\n");
+    Ok(vec![pass; tokens.div_ceil(per_pass)].join("\n"))
+}
+
+/// What a fake's command line asks for, as [`args`] reads it.
+#[derive(Debug, PartialEq, Eq)]
+pub struct FakeArgs {
+    pub dir: PathBuf,
+    pub tokens: usize,
+    /// The wait after each message.
+    pub pace: Duration,
 }
 
 /// A fake's command line after its name: `<dir> [tokens] [pace-ms]`, by default 100,000 tokens
 /// at one message a millisecond; `None` without a folder or with a number that isn't one.
-pub fn args(mut args: impl Iterator<Item = String>) -> Option<(PathBuf, usize, Duration)> {
+pub fn args(mut args: impl Iterator<Item = String>) -> Option<FakeArgs> {
     let dir = PathBuf::from(args.next()?);
     let tokens = args.next().map_or(Ok(100_000), |arg| arg.parse()).ok()?;
     let pace = args.next().map_or(Ok(1), |arg| arg.parse()).ok()?;
-    Some((dir, tokens, Duration::from_millis(pace)))
+    Some(FakeArgs {
+        dir,
+        tokens,
+        pace: Duration::from_millis(pace),
+    })
 }
 
 fn text_tokens(event: &RunEvent) -> usize {
@@ -173,11 +184,19 @@ mod tests {
         assert_eq!(args(&[]), None);
         assert_eq!(
             args(&["dir"]),
-            Some((PathBuf::from("dir"), 100_000, Duration::from_millis(1)))
+            Some(FakeArgs {
+                dir: PathBuf::from("dir"),
+                tokens: 100_000,
+                pace: Duration::from_millis(1)
+            })
         );
         assert_eq!(
             args(&["dir", "50", "0"]),
-            Some((PathBuf::from("dir"), 50, Duration::ZERO))
+            Some(FakeArgs {
+                dir: PathBuf::from("dir"),
+                tokens: 50,
+                pace: Duration::ZERO
+            })
         );
         assert_eq!(args(&["dir", "5O"]), None);
         assert_eq!(args(&["dir", "50", "slow"]), None);
