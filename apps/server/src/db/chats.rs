@@ -127,6 +127,30 @@ impl Workspace {
         Ok(())
     }
 
+    /// The open chats on `machine` whose turn may not be over, a run at work or a command no
+    /// receipt has ended, each with the last of the machine's events it has.
+    pub(crate) async fn unsettled_on(
+        &self,
+        machine: &MachineId,
+    ) -> Result<Vec<(ChatId, u64)>, Fault> {
+        sqlx::query_as::<_, (String, i64)>(
+            "SELECT chat_id, core_seq FROM chats AS c
+             WHERE workspace_id = ? AND machine_id = ? AND state = 'open'
+                 AND (json_extract(run_status, '$.state') IN ('starting', 'running', 'waiting')
+                     OR EXISTS (SELECT 1 FROM chat_requests AS r WHERE r.workspace_id = c.workspace_id
+                         AND r.chat_id = c.chat_id AND r.open = 1))
+             ORDER BY chat_id",
+        )
+        .bind(self.id.as_str())
+        .bind(machine.as_str())
+        .fetch_all(&self.db.readers)
+        .await
+        .map_err(failed)?
+        .into_iter()
+        .map(|(chat, core_seq)| Ok((stored(chat)?, count(core_seq)?)))
+        .collect()
+    }
+
     /// Who `member` is when they ask a chat's agent: none once their membership has ended.
     pub(crate) async fn asker(&self, member: &MemberId) -> Result<Option<Asker>, Fault> {
         sqlx::query_scalar::<_, Option<String>>(
@@ -232,6 +256,15 @@ pub(crate) mod test_support {
         workspace.add_chat(&new, &first).await
     }
 
+    pub(crate) fn status(state: weacon_protocol::RunState) -> ChatEvent {
+        let status = weacon_protocol::RunStatus {
+            run: id("run-1"),
+            state,
+            agent: None,
+        };
+        ChatEvent::RunStatus { status }
+    }
+
     /// The prompt `text` to `chat` under `request`, as a member of w1 sent it.
     pub(crate) fn command(request: &str, chat: &str, text: &str) -> ChatCommand {
         ChatCommand {
@@ -283,7 +316,7 @@ pub(crate) mod test_support {
 mod tests {
     use weacon_testing::TempDir;
 
-    use super::test_support::{NOW, code, id, make};
+    use super::test_support::{NOW, append, code, id, make};
     use super::*;
     use crate::test_support::{member_id, two_teams};
 
@@ -335,5 +368,37 @@ mod tests {
 
     fn seqs_of_ids(list: &[ChatSummary]) -> Vec<&str> {
         list.iter().map(|chat| chat.id.as_str()).collect()
+    }
+
+    #[tokio::test]
+    async fn a_machine_follows_again_only_its_open_chats_whose_turn_may_not_be_over() {
+        let dir = TempDir::new().unwrap();
+        let (one, two) = two_teams(&dir).await;
+        for chat in ["c-1", "c-2", "c-3", "c-4", "c-5"] {
+            make(&one, chat, "m1", NOW).await.unwrap();
+        }
+        make(&two, "c-1", "m2", NOW).await.unwrap();
+        for chat in ["c-2", "c-3"] {
+            one.end_request(&id(&format!("r-{chat}"))).await.unwrap();
+        }
+        let running = super::test_support::status(weacon_protocol::RunState::Running);
+        let idle = super::test_support::status(weacon_protocol::RunState::Idle);
+        append(&one, "c-2", &[(Some(4), idle)]).await.unwrap();
+        append(&one, "c-3", &[(Some(7), running)]).await.unwrap();
+        one.set_chat_state(&id("c-4"), ChatState::Detached)
+            .await
+            .unwrap();
+        sqlx::query("UPDATE chats SET machine_id = 'mc-2' WHERE chat_id = 'c-5'")
+            .execute(&one.db.writer)
+            .await
+            .unwrap();
+
+        let unsettled = one.unsettled_on(&id("mc-1")).await.unwrap();
+        let ids: Vec<_> = unsettled
+            .iter()
+            .map(|(chat, core_seq)| (chat.as_str(), *core_seq))
+            .collect();
+        assert_eq!(ids, [("c-1", 0), ("c-3", 7)]);
+        assert_eq!(two.unsettled_on(&id("mc-1")).await.unwrap().len(), 1);
     }
 }
