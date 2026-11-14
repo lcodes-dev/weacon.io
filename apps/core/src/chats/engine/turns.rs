@@ -62,12 +62,13 @@ impl<A: Agent> Engine<A> {
             // Tried again after a failed write, which reopens the log, so it never shows the
             // prompt still waiting.
             RunEvent::PermissionWithdrawn { prompt, .. } => {
+                // An answer still on its way to a withdrawn prompt is never given, even if the
+                // withdrawal can't be written.
+                let answers = &mut self.chat(key).await?.answers;
+                answers.retain(|answered| answered.answer.prompt != prompt);
                 if committed.is_err() {
                     self.commit_said(key, run, &event).await?;
                 }
-                // An answer still on its way to a withdrawn prompt is never given.
-                let answers = &mut self.chat(key).await?.answers;
-                answers.retain(|answered| answered.answer.prompt != prompt);
                 let log = &self.chat(key).await?.log;
                 let asks = log.runs().waiting.iter().any(|waits| waits.run == *run);
                 if !asks && self.turn(key).is_some() {
@@ -1019,6 +1020,26 @@ mod tests {
         engine.command(&key(), answers).await.unwrap();
 
         assert_eq!(soon(agent.told.recv()).await, None);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_withdrawal_that_cant_be_written_still_drops_the_answers_on_their_way() {
+        let (mut engine, _agent, _bench) = on_ask().await;
+        on_its_way(&mut engine).await;
+        // Both writes fail: the log is broken, and a folder where its file was keeps it so.
+        let file = engine.workspaces.root(&key().0).join("chats/c-c-1.jsonl");
+        std::fs::rename(&file, file.with_extension("moved")).unwrap();
+        std::fs::create_dir(&file).unwrap();
+        engine.chat(&key()).await.unwrap().log.jam();
+        let withdrawn = RunEvent::PermissionWithdrawn {
+            run: run("run-1"),
+            prompt: 1,
+        };
+
+        let lost = hear(&mut engine, withdrawn).await;
+
+        assert_eq!(lost.unwrap_err().code().as_str(), "chat.log_not_written");
+        assert!(engine.chat(&key()).await.unwrap().answers.is_empty());
     }
 
     #[tokio::test(start_paused = true)]
