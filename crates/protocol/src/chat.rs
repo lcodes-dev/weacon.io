@@ -40,8 +40,8 @@ pub struct Asker {
 pub enum ChatAction {
     /// Starts or queues a turn. Only a chat's first prompt has `repo` and `machine`, one of the
     /// sender's; the server drops `machine` before relaying. `agent` fixes the chat's agent on
-    /// its first prompt, the core's default when missing; a later prompt naming another agent is
-    /// refused as `chat.agent_conflict`.
+    /// its first prompt, Claude when missing; a later prompt naming another agent is refused as
+    /// `chat.agent_conflict`, and an agent the core doesn't know as `message.unsupported`.
     Prompt {
         text: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]

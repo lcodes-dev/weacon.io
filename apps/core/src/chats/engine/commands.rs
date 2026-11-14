@@ -35,20 +35,31 @@ impl<A: Agent> Engine<A> {
             }
         }
         match command.action {
+            // A prompt is in the log before it is queued, and queued before it is accepted.
+            // Whichever step a first try stopped at, sending it again takes it from there.
             ChatAction::Prompt {
-                text, repo, agent, ..
+                text,
+                repo,
+                agent: named,
+                ..
             } => {
-                let runs = self.agent_of(key, agent)?;
-                if seen != Seen::Pending {
+                let (agent, fresh) = (self.agent_of(key, named).await?, seen != Seen::Pending);
+                if fresh && text.trim().is_empty() {
+                    return Err(Fault::new(
+                        code!("chat.empty_prompt"),
+                        "The prompt is empty",
+                    ));
+                }
+                if fresh {
                     let prompt = ChatEvent::Prompt {
                         request: request.clone(),
                         text: text.clone(),
                         repo,
-                        agent,
+                        agent: named,
                     };
-                    self.log_prompt(key, prompt).await?;
+                    self.commit(key, prompt).await?;
                 }
-                self.prompt(key, request, text, runs).await
+                self.prompt(key, request, text, agent).await
             }
             ChatAction::Permission { answer } => self.permission(key, request, answer).await,
             ChatAction::Interrupt => self.interrupt(key, request).await,
@@ -56,10 +67,9 @@ impl<A: Agent> Engine<A> {
         }
     }
 
-    // The chat's agent: the one its first prompt named, or the core's default; a later prompt
-    // can't change it.
-    fn agent_of(&self, key: &Key, named: Option<AgentKind>) -> Result<AgentKind, Fault> {
-        let chosen = self.runs.of(&key.0, &key.1).map(|record| record.agent);
+    // The chat's agent is the one its first logged prompt named; a later prompt can't change it.
+    async fn agent_of(&mut self, key: &Key, named: Option<AgentKind>) -> Result<AgentKind, Fault> {
+        let chosen = self.chat(key).await?.log.agent();
         match (named, chosen) {
             (Some(AgentKind::Newer), _) => Err(unsupported()),
             (Some(named), Some(chosen)) if named != chosen => Err(Fault::new(
@@ -68,20 +78,6 @@ impl<A: Agent> Engine<A> {
             )),
             (named, chosen) => Ok(chosen.or(named).unwrap_or(AgentKind::Claude)),
         }
-    }
-
-    // A prompt is in the log before it is queued, and queued before it is accepted. Whichever
-    // step a first try stopped at, sending it again takes it from there.
-    async fn log_prompt(&mut self, key: &Key, prompt: ChatEvent) -> Result<(), Fault> {
-        if let ChatEvent::Prompt { text, .. } = &prompt
-            && text.trim().is_empty()
-        {
-            return Err(Fault::new(
-                code!("chat.empty_prompt"),
-                "The prompt is empty",
-            ));
-        }
-        self.commit(key, prompt).await.map(drop)
     }
 
     async fn prompt(

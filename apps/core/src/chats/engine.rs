@@ -646,7 +646,6 @@ mod tests {
         agent.told.try_recv().unwrap_err();
     }
 
-    // A prompt to chat c-1 that names `agent`.
     fn prompt_for(request: &str, text: &str, agent: AgentKind) -> ChatCommand {
         let mut asked = prompt(request, text);
         if let ChatAction::Prompt { agent: named, .. } = &mut asked.action {
@@ -673,7 +672,6 @@ mod tests {
         );
         let same = prompt_for("r-3", "More", AgentKind::Codex);
         bench.chats.command(same).await.unwrap();
-        // The refused prompt never reached the log: the next entry is the accepted one's.
         assert_eq!(pushed(&mut pushes, 1).await, ["5 prompt r-3 More"]);
     }
 

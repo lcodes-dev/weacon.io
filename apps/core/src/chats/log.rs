@@ -7,8 +7,8 @@ use std::path::Path;
 
 use weacon_observability::Fault;
 use weacon_protocol::{
-    ChatAction, ChatEntry, ChatEvent, ChatId, MAX_FRAME, Outcome, RequestId, RunEvent, RunUpdate,
-    code,
+    AgentKind, ChatAction, ChatEntry, ChatEvent, ChatId, MAX_FRAME, Outcome, RequestId, RunEvent,
+    RunUpdate, code,
 };
 
 use crate::app::blocking;
@@ -31,6 +31,8 @@ pub(crate) struct Log {
     requests: HashMap<RequestId, Asked>,
     /// Set by a failed write, which may have left half an entry; opening the log again mends it.
     broken: bool,
+    /// The agent the chat's first prompt named, Claude when it named none.
+    agent: Option<AgentKind>,
 }
 
 /// What the log holds of one command.
@@ -77,6 +79,7 @@ impl Log {
                 end: 0,
                 requests: HashMap::new(),
                 broken: false,
+                agent: None,
             };
             weacon_appkit::sync_dir(&dir)?;
             weacon_appkit::sync_dir(&workspace_root)?;
@@ -117,8 +120,11 @@ impl Log {
 
     fn keep(&mut self, entry: &ChatEntry, len: usize) {
         match &entry.event {
-            ChatEvent::Prompt { request, .. } => {
+            ChatEvent::Prompt { request, agent, .. } => {
                 self.requests.entry(request.clone()).or_default().prompt = Some(entry.seq);
+                self.agent = self
+                    .agent
+                    .or_else(|| Some(agent.unwrap_or(AgentKind::Claude)));
             }
             ChatEvent::Receipt { receipt } => {
                 let asked = self.requests.entry(receipt.request.clone()).or_default();
@@ -129,6 +135,11 @@ impl Log {
         }
         self.starts.push(self.end);
         self.end += u64::try_from(len).unwrap_or(u64::MAX);
+    }
+
+    /// The chat's agent, once a prompt is in the log.
+    pub(crate) const fn agent(&self) -> Option<AgentKind> {
+        self.agent
     }
 
     /// The last entry's place, 0 while the log is empty.
@@ -627,7 +638,7 @@ mod tests {
             text: "Hi".to_owned(),
             repo: None,
             machine: None,
-            agent: Some(weacon_protocol::AgentKind::Codex),
+            agent: Some(AgentKind::Codex),
         };
         assert_eq!(seen(&log, "r-1", another_agent).await, Seen::Other);
         assert_eq!(seen(&log, "r-1", ChatAction::Interrupt).await, Seen::Other);
