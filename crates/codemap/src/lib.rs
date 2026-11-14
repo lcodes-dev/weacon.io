@@ -6,6 +6,7 @@
 mod anchor;
 mod area;
 mod cfg;
+mod facts;
 mod fingerprint;
 mod graph;
 mod index;
