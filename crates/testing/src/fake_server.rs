@@ -72,8 +72,8 @@ pub async fn serve(
     }
 }
 
-// Sends each of the run's lines the chat still plays, and each reply, as a text frame, until
-// both end or a send fails, such as when the client leaves mid-stream.
+// Sends each of the run's lines the chat still plays, and each reply, as a text frame, until a
+// send fails, such as when the client leaves mid-stream; once the lines end, their run asks.
 async fn send_all(
     sink: &mut (impl Sink<Frame> + Unpin),
     run_lines: impl AsyncRead + Unpin,
@@ -294,6 +294,24 @@ mod tests {
         assert_eq!(fs::read_to_string(&received).unwrap(), format!("{log}\n"));
     }
 
+    /// Reads until a status in `state`, with a deadline so a silent server fails the test.
+    async fn until_state(client: &mut Client, state: &'static str) -> Vec<Value> {
+        let in_state = move |text: &Value| text["entry"]["event"]["status"]["state"] == state;
+        tokio::time::timeout(Duration::from_secs(10), until(client, in_state))
+            .await
+            .unwrap()
+    }
+
+    fn kind(text: &Value) -> String {
+        let event = &text["entry"]["event"];
+        event["update"]["event"]["event"]
+            .as_str()
+            .or_else(|| event["status"]["state"].as_str())
+            .or_else(|| event["kind"].as_str())
+            .unwrap_or_default()
+            .to_owned()
+    }
+
     #[tokio::test]
     async fn a_subscribed_client_hears_every_commit_in_order_under_its_id() {
         let dir = TempDir::new().unwrap();
@@ -308,17 +326,14 @@ mod tests {
                 allow: true,
             },
         };
-        for text in [subscription(7, 0), command(8, request("q-1"), allow)] {
-            client.send(Frame::text(text)).await.unwrap();
-        }
-        let played = |text: &Value| {
-            let update = &text["entry"]["event"]["update"];
-            update["run"] == "r-1" && text["entry"]["seq"].as_u64() > Some(SEEDED)
-        };
-        // A deadline, so a server that never tells fails the test instead of hanging it.
-        let seen = tokio::time::timeout(Duration::from_secs(10), until(&mut client, played))
+        client.send(Frame::text(subscription(7, 0))).await.unwrap();
+        let mut seen = until_state(&mut client, "waiting").await;
+        client
+            .send(Frame::text(command(8, request("q-1"), allow)))
             .await
             .unwrap();
+        let answered = until_state(&mut client, "idle").await;
+        seen.extend(answered.iter().cloned());
         client.close(None).await.unwrap();
         served.await.unwrap().unwrap();
 
@@ -333,6 +348,22 @@ mod tests {
             (1..=u64::try_from(seqs.len()).unwrap()).collect::<Vec<_>>()
         );
         assert!(seqs.len() > usize::try_from(SEEDED).unwrap());
+        let after: Vec<_> = answered
+            .iter()
+            .filter(|text| text["type"] == "chat")
+            .map(kind)
+            .collect();
+        assert_eq!(
+            after,
+            [
+                "receipt",
+                "permission_answered",
+                "running",
+                "text",
+                "finished",
+                "idle"
+            ]
+        );
     }
 
     #[tokio::test]
