@@ -41,6 +41,7 @@ pub(crate) struct Member {
 /// Only a bearer token counts: no page acts as a machine.
 pub(crate) struct Machine {
     pub(crate) id: MachineId,
+    pub(crate) owner: AccountId,
     pub(crate) token_hash: [u8; 32],
 }
 
@@ -53,8 +54,12 @@ impl FromRequestParts<Shared> for Machine {
             .map(token_hash)
             .ok_or_else(unpaired)?;
         let found = shared.db.machine_with(&token_hash).await.map_err(failure)?;
-        let id = found.ok_or_else(unpaired)?;
-        Ok(Self { id, token_hash })
+        let (id, owner) = found.ok_or_else(unpaired)?;
+        Ok(Self {
+            id,
+            owner,
+            token_hash,
+        })
     }
 }
 

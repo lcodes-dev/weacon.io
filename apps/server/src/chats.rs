@@ -12,7 +12,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::{Json, Router};
 use tokio::sync::broadcast;
-use weacon_protocol::{ChatId, ChatList, WorkspaceId};
+use weacon_protocol::{ChatId, ChatList, Message, WorkspaceId};
 
 use crate::auth::Member;
 use crate::http::{Shared, failure};
@@ -44,6 +44,11 @@ impl Hub {
     pub(crate) fn notices(&self) -> broadcast::Receiver<(WorkspaceId, ChatId)> {
         self.stored.subscribe()
     }
+}
+
+/// Whether `message` is one a client sends about a chat.
+pub(crate) const fn carries(message: &Message) -> bool {
+    matches!(message, Message::ChatQuery(_) | Message::ChatCommand(_))
 }
 
 pub(crate) fn routes() -> Router<Shared> {

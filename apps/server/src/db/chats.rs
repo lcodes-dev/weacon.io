@@ -4,7 +4,7 @@ mod runs;
 
 use weacon_observability::Fault;
 use weacon_protocol::{
-    Asker, ChatId, ChatState, ChatSummary, MachineId, MachineName, MemberId, RepoId, code,
+    ChatId, ChatState, ChatSummary, MachineId, MachineName, MemberId, RepoId, code,
 };
 
 pub(crate) use events::{CHAT_QUOTA, Incoming, chat_quota_full};
@@ -152,26 +152,6 @@ impl Workspace {
         .into_iter()
         .map(|(chat, core_seq)| Ok((stored(chat)?, count(core_seq)?)))
         .collect()
-    }
-
-    /// Who `member` is when they ask a chat's agent: none once their membership has ended.
-    pub(crate) async fn asker(&self, member: &MemberId) -> Result<Option<Asker>, Fault> {
-        sqlx::query_scalar::<_, Option<String>>(
-            "SELECT account_id FROM members WHERE workspace_id = ? AND member_id = ?",
-        )
-        .bind(self.id.as_str())
-        .bind(member.as_str())
-        .fetch_optional(&self.db.readers)
-        .await
-        .map_err(failed)?
-        .flatten()
-        .map(|account| {
-            Ok(Asker {
-                account: stored(account)?,
-                member: member.clone(),
-            })
-        })
-        .transpose()
     }
 }
 

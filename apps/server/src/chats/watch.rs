@@ -2,12 +2,11 @@
 
 use std::collections::{HashMap, HashSet};
 
-use axum::extract::ws::Message as Frame;
 use tokio::sync::broadcast::{Receiver, error::RecvError};
 use weacon_observability::{Fault, Field};
 use weacon_protocol::{
-    ChatAnswer, ChatAnswerKind, ChatEntry, ChatId, ChatQuery, ChatQueryKind, ChatUpdate, Envelope,
-    ErrorBody, MAX_FRAME, Message, WorkspaceId,
+    Asker, ChatAnswer, ChatAnswerKind, ChatEntry, ChatId, ChatQuery, ChatQueryKind, ChatUpdate,
+    Envelope, ErrorBody, MAX_FRAME, Message, WorkspaceId,
 };
 
 use super::{command, read};
@@ -57,24 +56,20 @@ impl Watch {
         }
     }
 
-    /// The answers to `frame` when it is a chat query or command, each under the envelope id
-    /// it answers; none for anything else.
+    /// The answer to `envelope`, a chat query or command from `asker`, under the id it
+    /// answers; none for a subscription, whose events follow.
     pub(crate) async fn heard(
         &mut self,
-        frame: &Frame,
+        envelope: Envelope,
         member: &Member,
+        asker: &Asker,
         shared: &Shared,
     ) -> Vec<(u32, Message)> {
-        let Frame::Text(text) = frame else {
-            return Vec::new();
-        };
-        let Ok(Envelope { id, message }) = Envelope::from_json(text.as_bytes()) else {
-            return Vec::new();
-        };
+        let Envelope { id, message } = envelope;
         let answered = if let Message::ChatQuery(query) = message {
             self.query(member, query).await
         } else if let Message::ChatCommand(asked) = message {
-            command::take(member, shared, asked).await
+            command::take(member, asker, shared, asked).await
         } else {
             return Vec::new();
         };

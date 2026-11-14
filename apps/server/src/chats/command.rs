@@ -1,9 +1,9 @@
 //! A member's command to a chat: checked here, then relayed to the chat's machine.
 
 use weacon_observability::Fault;
-use weacon_protocol::{ChatCommand, ChatState, MachineId, Message, code};
+use weacon_protocol::{Asker, ChatCommand, ChatState, MachineId, Message, code};
 
-use super::admit::{Admitted, admit, detached, not_owner};
+use super::admit::{Admitted, admit, detached};
 use crate::auth::Member;
 use crate::db::chat_not_found;
 use crate::http::Shared;
@@ -11,6 +11,7 @@ use crate::http::Shared;
 /// Takes `command` from `member`, refusing what the chat's owner or machine doesn't allow.
 pub(crate) async fn take(
     member: &Member,
+    asker: &Asker,
     shared: &Shared,
     command: ChatCommand,
 ) -> Result<Option<Message>, Fault> {
@@ -21,9 +22,8 @@ pub(crate) async fn take(
     }
     let id = command.chat.clone();
     let chat = workspace.chat(&id).await?;
-    let asker = workspace.asker(&member.id).await?.ok_or_else(not_owner)?;
     let account = asker.account.clone();
-    let admitted = admit(chat.as_ref(), asker, command)?;
+    let admitted = admit(chat.as_ref(), asker.clone(), command)?;
     let machine = match (&admitted, chat) {
         (Admitted::New { machine, .. }, _) => machine.clone(),
         (Admitted::Existing(_), Some(chat)) => chat.machine,
