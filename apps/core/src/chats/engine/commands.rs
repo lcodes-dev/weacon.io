@@ -112,9 +112,10 @@ impl<A: Agent> Engine<A> {
 
     // Whether the prompt waits, as the log says, for a person to answer it in a run still going.
     async fn waits_for(&mut self, key: &Key, answer: &PermissionAnswer) -> Result<bool, Fault> {
-        let asked = self.runs.is_latest(&key.0, &key.1, &answer.run) && self.is_live(key);
+        // The log forgets another run's prompts as soon as a newer run reports.
+        let live = self.is_live(key);
         let log = &self.chat(key).await?.log;
-        Ok(asked && log.runs().waits(&answer.run, answer.prompt))
+        Ok(live && log.runs().waits(&answer.run, answer.prompt))
     }
 
     // Gives the answer `request` committed to its run. It is logged unless the log has it
@@ -130,7 +131,7 @@ impl<A: Agent> Engine<A> {
             request: request.clone(),
             allow: answer.allow,
         };
-        let live = self.runs.is_latest(&key.0, &key.1, &answer.run) && self.is_live(key);
+        let live = self.is_live(key);
         let chat = self.chat(key).await?;
         if !live || !chat.answers.contains(&given) {
             return Ok(());

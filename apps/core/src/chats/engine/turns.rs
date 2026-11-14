@@ -1000,6 +1000,61 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
+    async fn a_prompt_of_a_run_cut_off_by_a_restart_takes_no_answer() {
+        let (mut engine, _agent, _bench) = on_ask().await;
+        // As after a restart: the log still shows the prompt, but its run is gone.
+        engine.chats.remove(&key());
+
+        let refused = engine.command(&key(), allow("r-2").0).await;
+
+        assert_eq!(refused.unwrap_err().code().as_str(), "agent.no_such_prompt");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn answering_one_prompt_keeps_another_answer_still_on_its_way() {
+        let (mut engine, mut agent, _bench) = on_ask().await;
+        let asks = RunEvent::PermissionAsked {
+            run: run("run-1"),
+            prompt: 2,
+            tool: "Write".to_owned(),
+            input: json!({}),
+        };
+        hear(&mut engine, asks).await.unwrap();
+        let (second, given) = allow("r-2");
+        let second = ChatCommand {
+            action: ChatAction::Permission {
+                answer: PermissionAnswer {
+                    prompt: 2,
+                    ..given.clone()
+                },
+            },
+            ..second
+        };
+        // As when its receipt was written but its delivery was cut short.
+        let pending = Answered {
+            prompt: 2,
+            request: second.request.clone(),
+            allow: true,
+        };
+        engine.chat(&key()).await.unwrap().answers.push(pending);
+        let receipt = Outcome::Completed;
+        engine
+            .receipt(&key(), &second.request, receipt)
+            .await
+            .unwrap();
+
+        engine.command(&key(), allow("r-3").0).await.unwrap();
+        engine.command(&key(), second).await.unwrap();
+
+        assert_eq!(
+            soon(agent.told.recv()).await,
+            Some(Told::Answer(given.clone()))
+        );
+        let two = PermissionAnswer { prompt: 2, ..given };
+        assert_eq!(soon(agent.told.recv()).await, Some(Told::Answer(two)));
+    }
+
+    #[tokio::test(start_paused = true)]
     async fn an_answer_under_another_commands_request_never_reaches_the_run() {
         let (mut engine, mut agent, _bench) = on_ask().await;
         let interrupt = command("r-2", "c-1", ChatAction::Interrupt);
