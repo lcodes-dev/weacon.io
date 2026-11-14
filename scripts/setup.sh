@@ -25,6 +25,16 @@ die() {
   exit 1
 }
 
+# Runs a command with its output in .dev/setup.log; when it fails, shows the log's end and stops.
+run_logged() {
+  local what=$1
+  shift
+  "$@" >>.dev/setup.log 2>&1 || {
+    tail -n 30 .dev/setup.log >&2
+    die "$what failed; the end of its output is above"
+  }
+}
+
 toolchain=$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml)
 [ -n "$toolchain" ] || die "rust-toolchain.toml names no channel"
 cargo_bin="${CARGO_HOME:-$HOME/.cargo}/bin"
@@ -77,19 +87,13 @@ ensure_tools() {
       continue
     fi
     log "Building cargo-$name $version (a few minutes, once)"
-    cargo install --locked --quiet "cargo-$name@$version" >>.dev/setup.log 2>&1 || {
-      tail -n 30 .dev/setup.log >&2
-      die "cargo install cargo-$name failed; the end of its output is above"
-    }
+    run_logged "cargo install cargo-$name" cargo install --locked --quiet "cargo-$name@$version"
   done
 }
 
 fetch_dependencies() {
   log "Fetching dependencies"
-  cargo fetch --locked >>.dev/setup.log 2>&1 || {
-    tail -n 30 .dev/setup.log >&2
-    die "cargo fetch failed; the end of its output is above"
-  }
+  run_logged "cargo fetch" cargo fetch --locked
 }
 
 ensure_node() {
@@ -100,10 +104,7 @@ ensure_node() {
   local app
   for app in extension web; do
     log "Installing the $app's packages"
-    npm ci --prefix "apps/$app" --include=dev --no-audit --no-fund >>.dev/setup.log 2>&1 || {
-      tail -n 30 .dev/setup.log >&2
-      die "npm ci failed; the end of its output is above"
-    }
+    run_logged "npm ci" npm ci --prefix "apps/$app" --include=dev --no-audit --no-fund
   done
 }
 
@@ -113,10 +114,7 @@ ensure_chromium() {
   local install=(node apps/web/node_modules/playwright-core/cli.js install)
   [ -z "${CI:-}" ] || install+=(--with-deps)
   log "Installing Chromium for the web app's tests"
-  "${install[@]}" chromium >>.dev/setup.log 2>&1 || {
-    tail -n 30 .dev/setup.log >&2
-    die "the Chromium install failed; the end of its output is above"
-  }
+  run_logged "the Chromium install" "${install[@]}" chromium
 }
 
 # Later steps in a Claude Code session or a GitHub Actions job find the same tools.
