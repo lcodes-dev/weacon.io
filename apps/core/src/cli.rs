@@ -3,7 +3,7 @@ use std::path::PathBuf;
 
 use clap::error::ErrorKind;
 use clap::{Args, CommandFactory, FromArgMatches, Parser, Subcommand};
-use weacon_protocol::{AccessLevel, AgentKind, WorkspaceId};
+use weacon_protocol::{AccessLevel, AgentKind, ChatId, WorkspaceId};
 use weacon_version::Version;
 
 /// Weacon's core: runs agents for your chats and tasks.
@@ -53,6 +53,19 @@ pub(crate) enum Command {
         /// on or off; left out, shows the answer.
         #[arg(value_enum)]
         answer: Option<crate::reports::Answer>,
+    },
+    /// Carry on a chat's agent by hand in this terminal, on the session the chat holds, once
+    /// its run here sleeps.
+    ///
+    /// You answer the agent's own prompts, whatever the workspace's access level. Send the chat
+    /// nothing from the web app until you end it here.
+    Resume {
+        /// The workspace's id.
+        #[arg(long)]
+        workspace: WorkspaceId,
+        /// The chat's id.
+        #[arg(long)]
+        chat: ChatId,
     },
     /// Let Weacon's Chrome extension reach this core.
     ConnectChrome,
@@ -125,6 +138,7 @@ impl Command {
             | Self::Login { .. }
             | Self::Access { .. }
             | Self::Reports { .. }
+            | Self::Resume { .. }
             | Self::ConnectChrome
             | Self::Map(_)
             | Self::Hook(_) => "cli.log",
@@ -141,6 +155,7 @@ impl Command {
             Self::Login { .. } => "login",
             Self::Access { .. } => "access",
             Self::Reports { .. } => "reports",
+            Self::Resume { .. } => "resume",
             Self::ConnectChrome => "connect-chrome",
             Self::NativeHost { .. } => "native-host",
             Self::Map(_) => "map",

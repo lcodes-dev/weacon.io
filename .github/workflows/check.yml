@@ -36,7 +36,7 @@ jobs:
       - run: scripts/setup.sh
       - run: scripts/check.sh
 
-  # The core and the client have Windows code; check.sh's tools run on Linux only.
+  # Several crates and apps have Windows code; check.sh's tools run on Linux only.
   windows:
     runs-on: windows-latest
     timeout-minutes: 30

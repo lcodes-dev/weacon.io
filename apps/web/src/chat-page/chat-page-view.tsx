@@ -4,8 +4,7 @@ import { Composer } from "../composer/composer.tsx";
 import { type Late, type Send, blocked } from "../composer/prompt.ts";
 import { type Status, statusText } from "../connection.ts";
 import { type Changes, canAsk } from "../diff/changes.ts";
-import type { Comment } from "../diff/comments.ts";
-import { DiffView } from "../diff/diff-view.tsx";
+import { ChatChanges } from "../diff/chat-changes.tsx";
 import type { ChatRef } from "../chat-ref.ts";
 import type { App as Build } from "../protocol.ts";
 import type { Line } from "../chat/lines.ts";
@@ -50,7 +49,6 @@ export function ChatPageView({
   openChanges: () => void;
 }) {
   const [shown, setShown] = useState<Shown>("run");
-  const [comments, setComments] = useState<readonly Comment[]>([]);
   return (
     <div className="app">
       <header>
@@ -90,11 +88,15 @@ export function ChatPageView({
             away={shown !== "run"}
           />
         </div>
-        {shown === "changes" && (
-          <div className="pane">
-            <DiffView changes={changes} comments={comments} setComments={setComments} />
-          </div>
-        )}
+        <ChatChanges
+          changes={changes}
+          hidden={shown !== "changes"}
+          // The fake server's page shows its one person their own chat.
+          mine
+          send={send}
+          late={late}
+          blocked={blocked(status, chatRef)}
+        />
         {shown === "settings" && (
           <div className="pane">
             <Settings me={me} server={status.state === "live" ? status.server : undefined} />

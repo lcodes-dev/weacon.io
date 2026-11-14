@@ -125,7 +125,7 @@ function Machine({
         </button>
       )}
       {socket !== undefined && settable && open && (
-        <MachineSettingsView key={socket.workspace} machine={machine} link={socket} later={later} />
+        <MachineSettingsView key={socket.workspace} machine={machine} socket={socket} later={later} />
       )}
     </li>
   );

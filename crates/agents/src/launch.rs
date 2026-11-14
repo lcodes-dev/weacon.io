@@ -152,6 +152,21 @@ impl Launch {
         }
     }
 
+    /// Refuses unless the agent is signed in only from the workspace's own config folder,
+    /// checked afresh on every call.
+    ///
+    /// # Errors
+    /// `agent.signed_out` when it isn't; the check's own fault when it can't run.
+    pub async fn require_sign_in(&self) -> Result<(), Fault> {
+        match self.sign_in().await? {
+            SignIn::SignedIn => Ok(()),
+            SignIn::SignedOut => Err(Fault::new(
+                code!("agent.signed_out"),
+                "The agent isn't signed in for this workspace on this machine",
+            )),
+        }
+    }
+
     /// Runs the vendor's own sign-in in the terminal this process has, for the person to
     /// finish there. Nothing that passes between them is read.
     ///
@@ -168,6 +183,37 @@ impl Launch {
         }
     }
 
+    /// Runs the agent on `session` in the terminal this process has, for the person to carry on
+    /// by hand: the vendor's program unmodified, with the workspace's config folder and no
+    /// shell. Only Claude Code, whose `--resume` takes the session a chat holds.
+    ///
+    /// # Errors
+    /// When this agent can't be resumed by hand, or its program can't be run.
+    pub async fn resume_by_hand(&self, session: &AgentSession) -> Result<(), Fault> {
+        let mut command = match self.agent {
+            AgentKind::Claude => claude::resume(self, session),
+            AgentKind::Codex => {
+                return Err(Fault::new(
+                    code!("agent.no_resume_by_hand"),
+                    "This agent can't be carried on by hand yet",
+                ));
+            }
+            AgentKind::Newer => return Err(unknown()),
+        };
+        let failed = |error| {
+            Fault::new(code!("agent.resume_failed"), "The agent couldn't start").because(error)
+        };
+        // The terminal's Ctrl-C reaches this process too; caught, it leaves the agent the terminal.
+        let mut interrupts = platform::interrupts().map_err(failed)?;
+        let mut child = command.spawn().map_err(failed)?;
+        loop {
+            tokio::select! {
+                status = child.wait() => return status.map(drop).map_err(failed),
+                Some(()) = interrupts.recv() => {}
+            }
+        }
+    }
+
     /// Runs the vendor's own sign-in in a new terminal of `size`: the same program, fixed
     /// arguments and config folder as [`Launch::log_in`], and no shell.
     ///
@@ -177,10 +223,9 @@ impl Launch {
         let mut command = self.vendors(claude::login, codex::login)?;
         // What the browser's terminal emulates, whatever this process runs under.
         command.env("TERM", "xterm-256color");
-        let (pty, events) = platform::Pty::spawn(command, size).map_err(|error| {
+        Terminal::open(command, size).map_err(|error| {
             Fault::new(code!("agent.login_failed"), "The sign-in couldn't start").because(error)
-        })?;
-        Ok((Terminal { pty }, Events(events)))
+        })
     }
 
     // The command of this launch's vendor.
@@ -281,6 +326,45 @@ mod tests {
 
     fn start(launch: &Launch) -> Result<AgentRun, Fault> {
         launch.start(&SpawnPolicy::default(), &app(), run_id("run-1"), None)
+    }
+
+    const SESSION: &str = "0b7c6a52-3f1e-4d2a-9c8b-5e4f3a2b1c0d";
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_resumed_agent_keeps_the_terminal_through_ctrl_c_until_the_person_ends_it() {
+        let dir = TempDir::new().unwrap();
+        let claude = launch(AgentKind::Claude, &dir);
+        // Ctrl-C reaches the whole foreground group, this process too.
+        let script = "#!/bin/sh\nkill -INT $PPID\nprintf ended > ended\nexit 3\n";
+        weacon_testing::platform::write_program(&claude.program, script).unwrap();
+        let session = AgentSession::try_from(SESSION.to_owned()).unwrap();
+        // Whatever the agent exits with, the person ended it.
+        claude.resume_by_hand(&session).await.unwrap();
+        assert_eq!(std::fs::read_to_string(dir.join("ended")).unwrap(), "ended");
+        let missing = Launch {
+            program: dir.join("missing"),
+            ..claude
+        };
+        let fault = missing.resume_by_hand(&session).await.unwrap_err();
+        assert_eq!(fault.code().as_str(), "agent.resume_failed");
+    }
+
+    #[tokio::test]
+    async fn only_claude_is_resumed_by_hand_for_now() {
+        let dir = TempDir::new().unwrap();
+        let session = AgentSession::try_from(SESSION.to_owned()).unwrap();
+        let codex = launch(AgentKind::Codex, &dir)
+            .resume_by_hand(&session)
+            .await;
+        assert_eq!(
+            codex.unwrap_err().code().as_str(),
+            "agent.no_resume_by_hand"
+        );
+        let newer = launch(AgentKind::Newer, &dir)
+            .resume_by_hand(&session)
+            .await;
+        assert_eq!(newer.unwrap_err().code().as_str(), "agent.unknown");
     }
 
     #[test]
@@ -448,6 +532,21 @@ mod tests {
         let error = hanging.sign_in().await.unwrap_err();
 
         assert_eq!(error.code().as_str(), "agent.status_failed");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_run_is_refused_unless_the_workspace_is_signed_in_on_its_own() {
+        let dir = TempDir::new().unwrap();
+        let with = |program: &str| Launch {
+            program: PathBuf::from(program),
+            ..launch(AgentKind::Codex, &dir)
+        };
+
+        let refused = with("false").require_sign_in().await.unwrap_err();
+
+        with("true").require_sign_in().await.unwrap();
+        assert_eq!(refused.code().as_str(), "agent.signed_out");
     }
 
     async fn log_in_code(launch: Launch) -> Option<String> {

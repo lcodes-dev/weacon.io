@@ -5,7 +5,7 @@ import type { Envelope, MachineId, MachineSettings, MachineSettingsAction, Reque
 import { type Answer, MALFORMED, UNREACHABLE } from "../api/api.ts";
 
 /** The open workspace's socket, through which the server reaches the person's machines. */
-export type Link = {
+export type SettingsSocket = {
   readonly workspace: WorkspaceId;
   /** Puts `envelope` on the socket; false, dropping it, while the socket isn't live. */
   send(envelope: Envelope): boolean;
@@ -20,38 +20,38 @@ const ANSWER_MS = 35_000;
 export const NO_ANSWER = "machine.no_answer";
 export const RECONNECTING = "workspace.reconnecting";
 
-/** `machine`'s settings for the link's workspace, as they are now. */
-export function current(link: Link, machine: MachineId, later: Later): Promise<Answer<MachineSettings>> {
-  return ask(link, later, (id, request) => ({
+/** `machine`'s settings for the socket's workspace, as they are now. */
+export function current(socket: SettingsSocket, machine: MachineId, later: Later): Promise<Answer<MachineSettings>> {
+  return ask(socket, later, (id, request) => ({
     id,
     type: "machine_settings_query",
     request,
     machine,
-    workspace: link.workspace,
+    workspace: socket.workspace,
     query: { kind: "current" },
   }));
 }
 
-/** Changes `machine`'s settings for the link's workspace; the answer is them after the change. */
+/** Changes `machine`'s settings for the socket's workspace; the answer is them after the change. */
 export function change(
-  link: Link,
+  socket: SettingsSocket,
   machine: MachineId,
   action: MachineSettingsAction,
   later: Later,
 ): Promise<Answer<MachineSettings>> {
-  return ask(link, later, (id, request) => ({
+  return ask(socket, later, (id, request) => ({
     id,
     type: "machine_settings_command",
     request,
     machine,
-    workspace: link.workspace,
+    workspace: socket.workspace,
     action,
   }));
 }
 
 // The core's answer echoes the request; an error answers the envelope by its id.
-function ask(link: Link, later: Later, envelope: (id: number, request: RequestId) => Envelope): Promise<Answer<MachineSettings>> {
-  const id = link.nextId();
+function ask(socket: SettingsSocket, later: Later, envelope: (id: number, request: RequestId) => Envelope): Promise<Answer<MachineSettings>> {
+  const id = socket.nextId();
   const request = newRequestId();
   return new Promise((resolve) => {
     let finished = false;
@@ -63,7 +63,7 @@ function ask(link: Link, later: Later, envelope: (id: number, request: RequestId
         resolve(answer);
       }
     };
-    unsubscribe = link.subscribe((message) => {
+    unsubscribe = socket.subscribe((message) => {
       if (message.type === "machine_settings_answer" && message.request === request) {
         const { answer } = message;
         if (answer.kind === "current") {
@@ -78,7 +78,7 @@ function ask(link: Link, later: Later, envelope: (id: number, request: RequestId
     });
     later(() => finish({ ok: false, code: NO_ANSWER }), ANSWER_MS);
     try {
-      if (!link.send(envelope(id, request))) {
+      if (!socket.send(envelope(id, request))) {
         finish({ ok: false, code: RECONNECTING });
       }
     } catch {
