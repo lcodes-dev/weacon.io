@@ -6,13 +6,17 @@ use weacon_protocol::{
     RunEvent, RunState, RunUpdate, code,
 };
 
-use super::{Answered, Engine, Key, unsupported};
+use super::{Answered, ChatKey, Engine, unsupported};
 use crate::chats::log::Seen;
 use crate::runs::Queued;
 use crate::runs::task::{Agent, Order};
 
 impl<A: Agent> Engine<A> {
-    pub(super) async fn command(&mut self, key: &Key, command: ChatCommand) -> Result<(), Fault> {
+    pub(super) async fn command(
+        &mut self,
+        key: &ChatKey,
+        command: ChatCommand,
+    ) -> Result<(), Fault> {
         let request = command.request;
         let seen = self.open(key).await?.log.seen(&request, &command.action);
         let seen = seen.await?;
@@ -51,7 +55,7 @@ impl<A: Agent> Engine<A> {
     // step a first try stopped at, sending it again takes it from there.
     async fn log_prompt(
         &mut self,
-        key: &Key,
+        key: &ChatKey,
         request: &RequestId,
         text: &str,
         repo: Option<RepoId>,
@@ -70,16 +74,19 @@ impl<A: Agent> Engine<A> {
         self.commit(key, prompt).await.map(drop)
     }
 
-    async fn prompt(&mut self, key: &Key, request: RequestId, text: String) -> Result<(), Fault> {
+    async fn prompt(
+        &mut self,
+        key: &ChatKey,
+        request: RequestId,
+        text: String,
+    ) -> Result<(), Fault> {
         let queued = Queued {
             request: request.clone(),
             text,
         };
         // Until a prompt can name its agent, a new chat runs Claude.
         let (agent, now) = (AgentKind::Claude, (self.host.now)());
-        self.runs
-            .enqueue((&key.0, &key.1), agent, queued, now)
-            .await?;
+        self.runs.enqueue(key, agent, queued, now).await?;
         self.commit_receipt(key, &request, Outcome::Accepted)
             .await?;
         self.advance(key).await
@@ -89,7 +96,7 @@ impl<A: Agent> Engine<A> {
     // receipt is committed before the agent is told, so a refused answer was never given.
     async fn permission(
         &mut self,
-        key: &Key,
+        key: &ChatKey,
         request: RequestId,
         answer: PermissionAnswer,
     ) -> Result<(), Fault> {
@@ -112,7 +119,7 @@ impl<A: Agent> Engine<A> {
     }
 
     // Whether the prompt waits, as the log says, for a person to answer it in a run still going.
-    async fn waits_for(&mut self, key: &Key, answer: &PermissionAnswer) -> Result<bool, Fault> {
+    async fn waits_for(&mut self, key: &ChatKey, answer: &PermissionAnswer) -> Result<bool, Fault> {
         // The log forgets another run's prompts as soon as a newer run reports.
         let live = self.is_live(key);
         let log = &self.open(key).await?.log;
@@ -123,7 +130,7 @@ impl<A: Agent> Engine<A> {
     // already, as after a write reported failed that still landed.
     async fn deliver(
         &mut self,
-        key: &Key,
+        key: &ChatKey,
         request: &RequestId,
         answer: PermissionAnswer,
     ) -> Result<(), Fault> {
@@ -159,7 +166,7 @@ impl<A: Agent> Engine<A> {
 
     // Committed first and bound to the turn it stops, so a retry after a failed write still
     // stops that turn and never a later one.
-    async fn interrupt(&mut self, key: &Key, request: RequestId) -> Result<(), Fault> {
+    async fn interrupt(&mut self, key: &ChatKey, request: RequestId) -> Result<(), Fault> {
         let stops = self.turn(key).map(|turn| (request.clone(), turn));
         self.open(key).await?.interrupting = stops;
         self.commit_receipt(key, &request, Outcome::Completed)
@@ -168,7 +175,7 @@ impl<A: Agent> Engine<A> {
     }
 
     // Sends the interrupt `request` committed, while the turn it stops is still running.
-    async fn stop_turn(&mut self, key: &Key, request: &RequestId) -> Result<(), Fault> {
+    async fn stop_turn(&mut self, key: &ChatKey, request: &RequestId) -> Result<(), Fault> {
         let Some(turn) = self.turn(key) else {
             return Ok(());
         };

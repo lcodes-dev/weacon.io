@@ -3,7 +3,7 @@
 use weacon_observability::Fault;
 use weacon_protocol::{ChatAnswerKind, ChatQueryKind};
 
-use super::{Engine, Key, unsupported, update};
+use super::{ChatKey, Engine, unsupported, update};
 use crate::chats::feed::{Client, Subscriber};
 use crate::runs::task::Agent;
 
@@ -12,7 +12,7 @@ const SNAPSHOT_EVENTS: u32 = 50;
 impl<A: Agent> Engine<A> {
     pub(super) async fn query(
         &mut self,
-        key: &Key,
+        key: &ChatKey,
         query: ChatQueryKind,
         client: &Client,
     ) -> Result<Option<ChatAnswerKind>, Fault> {
@@ -28,7 +28,7 @@ impl<A: Agent> Engine<A> {
                 chat.subscribers
                     .retain(|subscriber| !subscriber.is_for(client));
                 let missed = chat.log.since(after).await?;
-                let subscriber = Subscriber::new(client, &key.0, &key.1);
+                let subscriber = Subscriber::new(client, &key.workspace, &key.chat);
                 let (Some(missed), Some(subscriber)) = (missed, subscriber) else {
                     return Ok(Some(ChatAnswerKind::EventsLost));
                 };

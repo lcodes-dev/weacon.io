@@ -15,8 +15,8 @@ use weacon_testing::{Records, TempDir, recording_logger};
 
 use super::engine::{Chats, Engine, Host, Start};
 use super::feed::Client;
-use crate::runs::Runs;
 use crate::runs::task::Agent;
+use crate::runs::{ChatKey, Runs};
 use crate::workspaces::Workspaces;
 
 /// What a fake agent was told.
@@ -131,6 +131,14 @@ pub(crate) fn workspace() -> WorkspaceId {
 
 pub(crate) fn chat(id: &str) -> ChatId {
     ChatId::try_from(id.to_owned()).unwrap()
+}
+
+/// Chat `c-1` in the workspace `workspace` names.
+pub(crate) fn key() -> ChatKey {
+    ChatKey {
+        workspace: workspace(),
+        chat: chat("c-1"),
+    }
 }
 
 pub(crate) fn run(id: &str) -> RunId {

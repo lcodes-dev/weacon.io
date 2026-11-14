@@ -48,8 +48,12 @@ pub(crate) fn start(
     let roots = workspaces.clone();
     let host = Host {
         start: Arc::new(move |start: &Start| {
-            let cwd = work_dir(places.work_root.as_deref(), &start.workspace, &start.chat)?;
-            let launch = roots.launch(&start.workspace, start.agent, cwd)?;
+            let cwd = work_dir(
+                places.work_root.as_deref(),
+                &start.chat.workspace,
+                &start.chat.chat,
+            )?;
+            let launch = roots.launch(&start.chat.workspace, start.agent, cwd)?;
             launch.start(&policy, &app, start.run.clone(), start.session.as_ref())
         }),
         now: unix_now,
@@ -94,7 +98,7 @@ mod tests {
     use weacon_protocol::{AgentKind, ChatAnswerKind, ChatEvent, ChatQueryKind, Outcome, Receipt};
     use weacon_testing::{TempDir, recording_logger};
 
-    use super::test_support::{chat, client, prompt, query, workspace};
+    use super::test_support::{chat, client, key, prompt, query, workspace};
     use super::*;
     use crate::test_support::VERSION;
 
@@ -178,7 +182,7 @@ mod tests {
         };
         assert_eq!(events.last().map(|entry| &entry.event), Some(&failed));
         let journal = Runs::load(&dir).unwrap();
-        let record = journal.of(&workspace(), &chat("c-1")).unwrap();
+        let record = journal.of(&key()).unwrap();
         assert!(record.active_at > 1_700_000_000);
     }
 }

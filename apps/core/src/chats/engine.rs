@@ -13,27 +13,24 @@ use std::sync::Arc;
 use tokio::sync::{mpsc, oneshot};
 use weacon_observability::{Fault, Field, Logger};
 use weacon_protocol::{
-    AgentKind, AgentSession, ChatAnswerKind, ChatCommand, ChatEntry, ChatEvent, ChatId, ChatQuery,
+    AgentKind, AgentSession, ChatAnswerKind, ChatCommand, ChatEntry, ChatEvent, ChatQuery,
     ChatUpdate, Message, Outcome, PermissionAnswer, Receipt, RequestId, RunId, RunState, RunStatus,
-    WorkspaceId, code,
+    code,
 };
 
 use super::feed::{Client, Subscriber};
 use super::log::Log;
-use crate::runs::Runs;
 use crate::runs::task::{Agent, Order, Report};
+use crate::runs::{ChatKey, Runs};
 use crate::workspaces::Workspaces;
 
 const ASKS: usize = 64;
 const REPORTS: usize = 256;
 
-type Key = (WorkspaceId, ChatId);
-
 /// Which agent to start, and as what.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Start {
-    pub(crate) workspace: WorkspaceId,
-    pub(crate) chat: ChatId,
+    pub(crate) chat: ChatKey,
     pub(crate) agent: AgentKind,
     pub(crate) run: RunId,
     pub(crate) session: Option<AgentSession>,
@@ -139,7 +136,7 @@ struct Answered {
 pub(crate) struct Engine<A> {
     runs: Runs,
     workspaces: Workspaces,
-    chats: HashMap<Key, Chat>,
+    chats: HashMap<ChatKey, Chat>,
     host: Host<A>,
     asks: mpsc::Receiver<Ask>,
     reports: mpsc::Receiver<Report>,
@@ -175,19 +172,19 @@ impl<A: Agent> Engine<A> {
             let key = tokio::select! {
                 ask = self.asks.recv() => match ask {
                     Some(Ask::Command(command, answer)) => {
-                        let key = (command.workspace.clone(), command.chat.clone());
+                        let key = ChatKey { workspace: command.workspace.clone(), chat: command.chat.clone() };
                         drop(answer.send(self.command(&key, command).await));
                         key
                     }
                     Some(Ask::Query(query, client, answer)) => {
-                        let key = (query.workspace.clone(), query.chat.clone());
+                        let key = ChatKey { workspace: query.workspace.clone(), chat: query.chat.clone() };
                         drop(answer.send(self.query(&key, query.query, &client).await));
                         key
                     }
                     None => return self.log.info("engine stopped", &[]),
                 },
                 Some(report) = self.reports.recv() => {
-                    let key = (report.of.workspace, report.of.chat);
+                    let key = report.of.chat;
                     if let Err(fault) = self.heard(&key, &report.of.run, report.heard).await {
                         let fields = [
                             ("run_id", report.of.run.as_str().into()),
@@ -202,10 +199,13 @@ impl<A: Agent> Engine<A> {
         }
     }
 
-    async fn set_state(&mut self, key: &Key, run: &RunId, state: RunState) -> Result<(), Fault> {
-        self.runs
-            .update(&key.0, &key.1, |record| record.state = state)
-            .await?;
+    async fn set_state(
+        &mut self,
+        key: &ChatKey,
+        run: &RunId,
+        state: RunState,
+    ) -> Result<(), Fault> {
+        self.runs.update(key, |record| record.state = state).await?;
         let status = RunStatus {
             run: run.clone(),
             state,
@@ -218,7 +218,7 @@ impl<A: Agent> Engine<A> {
 
     async fn commit_receipt(
         &mut self,
-        key: &Key,
+        key: &ChatKey,
         request: &RequestId,
         outcome: Outcome,
     ) -> Result<(), Fault> {
@@ -236,7 +236,7 @@ impl<A: Agent> Engine<A> {
     }
 
     // Commits `event` to the chat's log, then tells its subscribers.
-    async fn commit(&mut self, key: &Key, event: ChatEvent) -> Result<ChatEntry, Fault> {
+    async fn commit(&mut self, key: &ChatKey, event: ChatEvent) -> Result<ChatEntry, Fault> {
         let chat = self.open(key).await?;
         match chat.log.append(event).await {
             Ok(entry) => {
@@ -253,20 +253,20 @@ impl<A: Agent> Engine<A> {
     }
 
     // Opens a log again after a failed write; its subscribers start over from a snapshot.
-    async fn mend(&mut self, key: &Key) {
-        let root = self.workspaces.root(&key.0);
+    async fn mend(&mut self, key: &ChatKey) {
+        let root = self.workspaces.root(&key.workspace);
         let Some(chat) = self.chats.get_mut(key) else {
             return;
         };
         for subscriber in chat.subscribers.drain(..) {
             subscriber.end();
         }
-        if let Ok(log) = Log::open(&root, &key.1).await {
+        if let Ok(log) = Log::open(&root, &key.chat).await {
             chat.log = log;
         }
     }
 
-    fn publish(&mut self, key: &Key, message: &Message) {
+    fn publish(&mut self, key: &ChatKey, message: &Message) {
         if let Some(chat) = self.chats.get_mut(key) {
             chat.subscribers = std::mem::take(&mut chat.subscribers)
                 .into_iter()
@@ -276,7 +276,7 @@ impl<A: Agent> Engine<A> {
     }
 
     // Whether the order reached the run; a run that is gone says so itself, in its last report.
-    fn order(&self, key: &Key, order: Order) -> bool {
+    fn order(&self, key: &ChatKey, order: Order) -> bool {
         self.chats
             .get(key)
             .and_then(|chat| chat.orders.as_ref())
@@ -284,30 +284,30 @@ impl<A: Agent> Engine<A> {
     }
 
     // Whether the chat's run hasn't yet reported its exit.
-    fn is_live(&self, key: &Key) -> bool {
+    fn is_live(&self, key: &ChatKey) -> bool {
         self.chats
             .get(key)
             .is_some_and(|chat| chat.orders.is_some())
     }
 
     // Whether the chat's run still reads orders: one that stopped reading reports its exit next.
-    fn takes_orders(&self, key: &Key) -> bool {
+    fn takes_orders(&self, key: &ChatKey) -> bool {
         self.chats
             .get(key)
             .and_then(|chat| chat.orders.as_ref())
             .is_some_and(|orders| !orders.is_closed())
     }
 
-    fn turn(&self, key: &Key) -> Option<RequestId> {
-        self.runs.of(&key.0, &key.1)?.turn.clone()
+    fn turn(&self, key: &ChatKey) -> Option<RequestId> {
+        self.runs.of(key)?.turn.clone()
     }
 
-    async fn open(&mut self, key: &Key) -> Result<&mut Chat, Fault> {
-        let root = self.workspaces.root(&key.0);
+    async fn open(&mut self, key: &ChatKey) -> Result<&mut Chat, Fault> {
+        let root = self.workspaces.root(&key.workspace);
         match self.chats.entry(key.clone()) {
             Entry::Occupied(open) => Ok(open.into_mut()),
             Entry::Vacant(closed) => Ok(closed.insert(Chat {
-                log: Log::open(&root, &key.1).await?,
+                log: Log::open(&root, &key.chat).await?,
                 subscribers: Vec::new(),
                 orders: None,
                 answers: Vec::new(),
@@ -319,7 +319,7 @@ impl<A: Agent> Engine<A> {
     }
 
     // Closes a chat nobody is using, so its log doesn't stay open for good.
-    fn settle(&mut self, key: &Key) {
+    fn settle(&mut self, key: &ChatKey) {
         let Some(chat) = self.chats.get_mut(key) else {
             return;
         };
@@ -336,10 +336,10 @@ impl<A: Agent> Engine<A> {
     }
 }
 
-fn update(key: &Key, entry: ChatEntry) -> Message {
+fn update(key: &ChatKey, entry: ChatEntry) -> Message {
     Message::Chat(ChatUpdate {
-        workspace: key.0.clone(),
-        chat: key.1.clone(),
+        workspace: key.workspace.clone(),
+        chat: key.chat.clone(),
         entry,
     })
 }
@@ -355,8 +355,7 @@ mod tests {
 
     use super::*;
     use crate::chats::test_support::{
-        Bench, Started, Told, bench, chat, client, command, prompt, pushed, query, run, soon,
-        workspace,
+        Bench, Started, Told, bench, client, command, key, prompt, pushed, query, run, soon,
     };
 
     const SESSION: &str = "0b7c6a52-3f1e-4d2a-9c8b-5e4f3a2b1c0d";
@@ -450,8 +449,7 @@ mod tests {
         assert_eq!(
             agent.start,
             Start {
-                workspace: workspace(),
-                chat: chat("c-1"),
+                chat: key(),
                 agent: AgentKind::Claude,
                 run: run("run-1"),
                 session: None,

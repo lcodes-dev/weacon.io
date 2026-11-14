@@ -10,14 +10,14 @@ use weacon_protocol::{
 };
 
 use super::cut::cut;
-use super::{Engine, Key, Start};
+use super::{ChatKey, Engine, Start};
 use crate::runs::Queued;
 use crate::runs::task::{Agent, Heard, Order, RunOf, drive};
 
 impl<A: Agent> Engine<A> {
     pub(super) async fn heard(
         &mut self,
-        key: &Key,
+        key: &ChatKey,
         run: &RunId,
         heard: Heard,
     ) -> Result<(), Fault> {
@@ -48,7 +48,7 @@ impl<A: Agent> Engine<A> {
     }
 
     // Commits what the run said and acts on it.
-    async fn said(&mut self, key: &Key, run: &RunId, event: RunEvent) -> Result<(), Fault> {
+    async fn said(&mut self, key: &ChatKey, run: &RunId, event: RunEvent) -> Result<(), Fault> {
         let committed = self.commit_said(key, run, &event).await;
         match event {
             // Kept whether or not the event was committed: the chat's next run resumes it.
@@ -88,7 +88,7 @@ impl<A: Agent> Engine<A> {
     // is tried again, which reopens the log, unless the log has the withdrawal all the same.
     async fn withdrawn(
         &mut self,
-        key: &Key,
+        key: &ChatKey,
         run: &RunId,
         prompt: u32,
         committed: Result<(), Fault>,
@@ -114,7 +114,7 @@ impl<A: Agent> Engine<A> {
     // A prompt a person can't be shown in full is refused for them; it never waits unseen.
     async fn asked(
         &mut self,
-        key: &Key,
+        key: &ChatKey,
         run: &RunId,
         prompt: u32,
         committed: Result<(ChatEntry, bool), Fault>,
@@ -147,7 +147,7 @@ impl<A: Agent> Engine<A> {
     // Commits a run's event, cut down when it is too large for one frame; true when whole.
     async fn commit_said(
         &mut self,
-        key: &Key,
+        key: &ChatKey,
         run: &RunId,
         event: &RunEvent,
     ) -> Result<(ChatEntry, bool), Fault> {
@@ -169,7 +169,7 @@ impl<A: Agent> Engine<A> {
     // Ends the turn, if one is running, with `outcome`, and leaves the run in `state`.
     async fn finished(
         &mut self,
-        key: &Key,
+        key: &ChatKey,
         run: &RunId,
         outcome: Outcome,
         state: RunState,
@@ -193,7 +193,7 @@ impl<A: Agent> Engine<A> {
         }
         // The state goes in the same save, so no record is left running with no turn.
         self.runs
-            .update(&key.0, &key.1, |record| {
+            .update(key, |record| {
                 record.turn = None;
                 record.state = state;
                 record.active_at = now;
@@ -203,7 +203,7 @@ impl<A: Agent> Engine<A> {
     }
 
     // The agent is gone: its turn ends unknown, and what is queued goes to the chat's next run.
-    async fn exited(&mut self, key: &Key, run: &RunId) -> Result<(), Fault> {
+    async fn exited(&mut self, key: &ChatKey, run: &RunId) -> Result<(), Fault> {
         self.open(key).await?.orders = None;
         self.finished(key, run, Outcome::Unknown, RunState::Sleeping)
             .await?;
@@ -211,9 +211,9 @@ impl<A: Agent> Engine<A> {
     }
 
     // Starts the next queued prompt's turn, in a new run when the chat's agent isn't running.
-    pub(super) async fn advance(&mut self, key: &Key) -> Result<(), Fault> {
+    pub(super) async fn advance(&mut self, key: &ChatKey) -> Result<(), Fault> {
         self.save_ended(key).await?;
-        let Some(record) = self.runs.of(&key.0, &key.1) else {
+        let Some(record) = self.runs.of(key) else {
             return Ok(());
         };
         // A turn whose agent is gone is over, even if the journal couldn't be told.
@@ -234,10 +234,10 @@ impl<A: Agent> Engine<A> {
     }
 
     // Moves `next` from the queue to the turn and sends it to `run`.
-    async fn give_turn(&mut self, key: &Key, run: &RunId, next: Queued) -> Result<(), Fault> {
+    async fn give_turn(&mut self, key: &ChatKey, run: &RunId, next: Queued) -> Result<(), Fault> {
         let now = (self.host.now)();
         self.runs
-            .update(&key.0, &key.1, |record| {
+            .update(key, |record| {
                 record.queue.retain(|queued| queued.request != next.request);
                 record.turn = Some(next.request.clone());
                 record.active_at = now;
@@ -247,7 +247,7 @@ impl<A: Agent> Engine<A> {
             // It stopped reading while the journal was saved: the prompt waits for the next run.
             return self
                 .runs
-                .update(&key.0, &key.1, |record| {
+                .update(key, |record| {
                     record.turn = None;
                     record.queue.insert(0, next);
                 })
@@ -258,8 +258,8 @@ impl<A: Agent> Engine<A> {
 
     // Saves the ends a failed write or an exit left unsaved: the turn's, and those of queued
     // prompts, which then never run.
-    pub(super) async fn save_ended(&mut self, key: &Key) -> Result<(), Fault> {
-        let Some(record) = self.runs.of(&key.0, &key.1) else {
+    pub(super) async fn save_ended(&mut self, key: &ChatKey) -> Result<(), Fault> {
+        let Some(record) = self.runs.of(key) else {
             return Ok(());
         };
         let (turn, queue) = (record.turn.clone(), record.queue.clone());
@@ -282,7 +282,7 @@ impl<A: Agent> Engine<A> {
             .collect();
         if !ended.is_empty() {
             self.runs
-                .update(&key.0, &key.1, |record| {
+                .update(key, |record| {
                     record
                         .queue
                         .retain(|queued| !ended.contains(&queued.request));
@@ -303,8 +303,8 @@ impl<A: Agent> Engine<A> {
     }
 
     // Nothing can run them: each queued prompt fails rather than waits for ever.
-    async fn fail_queue(&mut self, key: &Key, fault: &Fault) -> Result<(), Fault> {
-        let record = self.runs.of(&key.0, &key.1);
+    async fn fail_queue(&mut self, key: &ChatKey, fault: &Fault) -> Result<(), Fault> {
+        let record = self.runs.of(key);
         let queue = record
             .map(|record| record.queue.clone())
             .unwrap_or_default();
@@ -319,17 +319,17 @@ impl<A: Agent> Engine<A> {
 
     // Saves the session the chat's next run resumes; one that can't be saved yet is kept, and
     // saved before that run starts.
-    async fn keep_session(&mut self, key: &Key, session: AgentSession) -> Result<(), Fault> {
+    async fn keep_session(&mut self, key: &ChatKey, session: AgentSession) -> Result<(), Fault> {
         let given = session.clone();
         let kept = self
             .runs
-            .update(&key.0, &key.1, |record| record.session = Some(given))
+            .update(key, |record| record.session = Some(given))
             .await;
         self.open(key).await?.unsaved = kept.is_err().then_some(session);
         kept
     }
 
-    async fn save_unsaved(&mut self, key: &Key) -> Result<(), Fault> {
+    async fn save_unsaved(&mut self, key: &ChatKey) -> Result<(), Fault> {
         match self.open(key).await?.unsaved.take() {
             Some(session) => self.keep_session(key, session).await,
             None => Ok(()),
@@ -337,16 +337,15 @@ impl<A: Agent> Engine<A> {
     }
 
     // Starts the chat's agent as a new run, resuming its session when it has one.
-    async fn launch(&mut self, key: &Key) -> Result<RunId, Fault> {
+    async fn launch(&mut self, key: &ChatKey) -> Result<RunId, Fault> {
         let not_started = || Fault::new(code!("agent.not_started"), "The agent couldn't start");
         self.save_unsaved(key).await?;
-        let agent = self.runs.of(&key.0, &key.1).ok_or_else(not_started)?.agent;
+        let agent = self.runs.of(key).ok_or_else(not_started)?.agent;
         let now = (self.host.now)();
-        let run = self.runs.begin(&key.0, &key.1, agent, now).await?;
-        let record = self.runs.of(&key.0, &key.1);
+        let run = self.runs.begin(key, agent, now).await?;
+        let record = self.runs.of(key);
         let run_as = Start {
-            workspace: key.0.clone(),
-            chat: key.1.clone(),
+            chat: key.clone(),
             agent,
             run: run.clone(),
             session: record.and_then(|record| record.session.clone()),
@@ -371,8 +370,7 @@ impl<A: Agent> Engine<A> {
         };
         let (orders, ordered) = mpsc::unbounded_channel();
         let of = RunOf {
-            workspace: key.0.clone(),
-            chat: key.1.clone(),
+            chat: key.clone(),
             run: run.clone(),
         };
         tokio::spawn(drive(agent, of, ordered, self.reporter.clone()));
@@ -390,8 +388,8 @@ impl<A: Agent> Engine<A> {
         Ok(run)
     }
 
-    fn run_of(&self, key: &Key) -> Option<RunId> {
-        self.runs.of(&key.0, &key.1)?.run.clone()
+    fn run_of(&self, key: &ChatKey) -> Option<RunId> {
+        self.runs.of(key)?.run.clone()
     }
 }
 
@@ -406,14 +404,10 @@ mod tests {
     use super::super::Answered;
     use super::*;
     use crate::chats::test_support::{
-        Bench, FakeAgent, Started, Told, chat, client, command, parts, prompt, pushed, run, soon,
-        workspace,
+        Bench, FakeAgent, Started, Told, chat, client, command, key, parts, prompt, pushed, run,
+        soon,
     };
     use crate::runs::Queued;
-
-    fn key() -> Key {
-        (workspace(), chat("c-1"))
-    }
 
     // An engine driven by hand, on its first turn, with the client watching the chat.
     async fn on_turn() -> (Bench, Engine<FakeAgent>, Started, mpsc::Receiver<Message>) {
@@ -589,7 +583,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn a_prompt_sent_again_goes_on_from_where_its_first_try_stopped() {
         let (mut bench, mut engine) = parts();
-        let chat_of = (&workspace(), &chat("c-1"));
+        let chat_of = key();
         let agent = weacon_protocol::AgentKind::Claude;
 
         // Stopped after the prompt reached the log, before it was queued.
@@ -617,7 +611,7 @@ mod tests {
         };
         engine
             .runs
-            .enqueue(chat_of, agent, queued, 1)
+            .enqueue(&chat_of, agent, queued, 1)
             .await
             .unwrap();
         engine.command(&key(), prompt("r-2", "More")).await.unwrap();
@@ -649,7 +643,7 @@ mod tests {
             soon(agent.told.recv()).await,
             Some(Told::Send("Next".to_owned()))
         );
-        assert!(engine.runs.of(&key().0, &key().1).unwrap().queue.is_empty());
+        assert!(engine.runs.of(&key()).unwrap().queue.is_empty());
     }
 
     #[tokio::test(start_paused = true)]
@@ -713,7 +707,7 @@ mod tests {
         let lost = hear(&mut engine, started).await;
 
         assert_eq!(lost.unwrap_err().code().as_str(), "chat.log_not_written");
-        let record = engine.runs.of(&key().0, &key().1).unwrap();
+        let record = engine.runs.of(&key()).unwrap();
         assert_eq!(record.session, Some(session));
     }
 
@@ -761,7 +755,10 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn a_chat_stays_open_only_while_an_agent_a_prompt_or_a_client_needs_it() {
         let (_bench, mut engine, agent, pushes) = on_turn().await;
-        let other = (workspace(), chat("c-2"));
+        let other = ChatKey {
+            chat: chat("c-2"),
+            ..key()
+        };
         let (watcher, watching) = client(4);
         let subscribe = || ChatQueryKind::Subscribe { after: 0 };
         engine.query(&other, subscribe(), &watcher).await.unwrap();
@@ -788,7 +785,10 @@ mod tests {
         // A hung-up client's chat is let go when anyone subscribes anywhere.
         assert!(engine.chats.contains_key(&other));
         let (third, _watching) = client(4);
-        let elsewhere = (workspace(), chat("c-3"));
+        let elsewhere = ChatKey {
+            chat: chat("c-3"),
+            ..key()
+        };
         engine.query(&elsewhere, subscribe(), &third).await.unwrap();
         assert!(!engine.chats.contains_key(&other));
         assert!(engine.chats.contains_key(&elsewhere));
@@ -799,7 +799,10 @@ mod tests {
         let (bench, mut engine, _agent, _pushes) = on_turn().await;
         let stale = Heard::Event(text("Old".to_owned()));
         engine.heard(&key(), &run("run-9"), stale).await.unwrap();
-        let other = (workspace(), chat("c-2"));
+        let other = ChatKey {
+            chat: chat("c-2"),
+            ..key()
+        };
         let elsewhere = Heard::Event(text("Other".to_owned()));
         engine
             .heard(&other, &run("run-1"), elsewhere)
@@ -1043,7 +1046,10 @@ mod tests {
         let (mut engine, _agent, _bench) = on_ask().await;
         on_its_way(&mut engine).await;
         // Both writes fail: the log is broken, and a folder where its file was keeps it so.
-        let file = engine.workspaces.root(&key().0).join("chats/c-c-1.jsonl");
+        let file = engine
+            .workspaces
+            .root(&key().workspace)
+            .join("chats/c-c-1.jsonl");
         std::fs::rename(&file, file.with_extension("moved")).unwrap();
         std::fs::create_dir(&file).unwrap();
         engine.open(&key()).await.unwrap().log.jam();
@@ -1312,7 +1318,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(soon(agent.told.recv()).await, None);
-        assert!(engine.runs.of(&key().0, &key().1).unwrap().queue.is_empty());
+        assert!(engine.runs.of(&key()).unwrap().queue.is_empty());
     }
 
     #[tokio::test(start_paused = true)]
@@ -1404,7 +1410,7 @@ mod tests {
             .await
             .unwrap();
 
-        let record = engine.runs.of(&key().0, &key().1).unwrap();
+        let record = engine.runs.of(&key()).unwrap();
         assert_eq!(
             (record.turn.as_ref(), record.queue.as_slice()),
             (None, [next].as_slice())

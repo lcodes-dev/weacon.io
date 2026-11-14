@@ -8,7 +8,9 @@ use tokio::sync::mpsc;
 use tokio::time::Instant;
 use weacon_agents::AgentRun;
 use weacon_observability::Fault;
-use weacon_protocol::{ChatId, PermissionAnswer, RunEvent, RunId, WorkspaceId, code};
+use weacon_protocol::{PermissionAnswer, RunEvent, RunId, code};
+
+use crate::runs::ChatKey;
 
 /// What the engine needs of a running agent: the driver's run in the daemon, a fake in tests.
 /// Dropping it stops the agent.
@@ -51,8 +53,7 @@ pub(crate) enum Order {
 /// Which run of which chat.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct RunOf {
-    pub(crate) workspace: WorkspaceId,
-    pub(crate) chat: ChatId,
+    pub(crate) chat: ChatKey,
     pub(crate) run: RunId,
 }
 
@@ -141,6 +142,7 @@ mod tests {
     use std::time::Duration;
 
     use super::*;
+    use crate::chats::test_support::key;
 
     // Says one text, then exits; it panics if asked for more after that.
     struct Brief {
@@ -175,8 +177,7 @@ mod tests {
     #[tokio::test]
     async fn a_run_reports_what_its_agent_says_then_its_exit_once_and_stops() {
         let of = RunOf {
-            workspace: WorkspaceId::try_from("w-1".to_owned()).unwrap(),
-            chat: ChatId::try_from("c-1".to_owned()).unwrap(),
+            chat: key(),
             run: RunId::try_from("run-1".to_owned()).unwrap(),
         };
         let (_orders, ordered) = mpsc::unbounded_channel();
@@ -231,8 +232,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn an_agent_whose_pipes_break_is_stopped_once_it_has_said_its_last_words() {
         let of = RunOf {
-            workspace: WorkspaceId::try_from("w-1".to_owned()).unwrap(),
-            chat: ChatId::try_from("c-1".to_owned()).unwrap(),
+            chat: key(),
             run: RunId::try_from("run-1".to_owned()).unwrap(),
         };
         let (orders, ordered) = mpsc::unbounded_channel();
@@ -260,8 +260,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn an_agent_that_stops_reading_its_orders_is_stopped() {
         let of = RunOf {
-            workspace: WorkspaceId::try_from("w-1".to_owned()).unwrap(),
-            chat: ChatId::try_from("c-1".to_owned()).unwrap(),
+            chat: key(),
             run: RunId::try_from("run-1".to_owned()).unwrap(),
         };
         let (orders, ordered) = mpsc::unbounded_channel();
