@@ -1,4 +1,3 @@
-import { fingerprint } from "../machines/fingerprint.ts";
 import type { Pins } from "../machines/pins.ts";
 import { fromHex, hex } from "../hex.ts";
 import type {
@@ -19,15 +18,16 @@ import { type Channel, type Ephemeral, type Pending, ephemeral, initiate } from 
 /** Where a sign-in terminal stands, for the view to say. */
 export type TerminalState =
   | { kind: "checking" }
-  /** No key is pinned for the machine: the person compares `fingerprint` with the machine's. */
-  | { kind: "confirm"; fingerprint: string }
   | { kind: "connecting" }
   | { kind: "open" }
   | { kind: "ended"; signIn: SignInState }
   | { kind: "closed"; problem?: Problem };
 
-/** Why a terminal closed before its sign-in ended. */
-export type Problem = "key_changed" | "key_unchecked" | "broken" | Code;
+/**
+ * Why a terminal closed before its sign-in ended. `unpinned`: this browser hasn't confirmed the
+ * machine's key, which only the pairing confirm in Settings does.
+ */
+export type Problem = "unpinned" | "key_changed" | "key_unchecked" | "broken" | Code;
 
 /** What a terminal shows. Output goes nowhere but `write`. */
 export interface Screen {
@@ -50,9 +50,9 @@ export type Options = {
 };
 
 /**
- * The browser's end of a sign-in terminal. It seals to the key this browser pinned for the
- * machine, never to one it hasn't, and closes for good at the first thing that doesn't check
- * out.
+ * The browser's end of a sign-in terminal. It seals only to the key this browser pinned for the
+ * machine at pairing, never pins one itself, and closes for good at the first thing that doesn't
+ * check out.
  */
 export class SignInTerminal {
   readonly #options: Options;
@@ -60,7 +60,9 @@ export class SignInTerminal {
   #pending: Pending | undefined;
   #channel: Channel | undefined;
   #done = false;
-  #handshaken = false;
+  #started = false;
+  // Whether the core has heard of this terminal, and so has one to close.
+  #sent = false;
   #received: Promise<void> = Promise.resolve();
 
   constructor(options: Options) {
@@ -68,8 +70,15 @@ export class SignInTerminal {
     this.#terminal = options.terminal ?? hex(crypto.getRandomValues(new Uint8Array(16)));
   }
 
-  /** Checks the machine's key against this browser's pin, then opens, or asks the person. */
+  /**
+   * Checks the machine's key against this browser's pin, then opens; once only, and not once
+   * closed, as a handshake nobody finishes would hold the machine's slot.
+   */
   async start(): Promise<void> {
+    if (this.#done || this.#started) {
+      return;
+    }
+    this.#started = true;
     const { machine, pins, screen } = this.#options;
     screen.state({ kind: "checking" });
     let check;
@@ -81,26 +90,8 @@ export class SignInTerminal {
     if (this.#done) {
       return;
     }
-    if (check === "mismatch") {
-      return this.#close("key_changed");
-    }
-    if (check === "unpinned") {
-      const shown = await fingerprint(machine.key);
-      return this.#done ? undefined : screen.state({ kind: "confirm", fingerprint: shown });
-    }
-    await this.#open();
-  }
-
-  /** The person said the fingerprint matches the machine's: pins its key, then opens. */
-  async confirm(): Promise<void> {
-    const { machine, pins } = this.#options;
-    if (this.#done || this.#handshaken) {
-      return;
-    }
-    try {
-      await pins.pin(machine.id, machine.key);
-    } catch {
-      return this.#close("key_unchecked");
+    if (check !== "match") {
+      return this.#close(check === "mismatch" ? "key_changed" : "unpinned");
     }
     await this.#open();
   }
@@ -143,12 +134,7 @@ export class SignInTerminal {
     this.#end();
   }
 
-  // Once only, and not once closed: a handshake nobody finishes would hold the machine's slot.
   async #open(): Promise<void> {
-    if (this.#done || this.#handshaken) {
-      return;
-    }
-    this.#handshaken = true;
     const { machine, size, screen } = this.#options;
     const remote = fromHex(machine.key);
     if (remote === undefined) {
@@ -162,6 +148,7 @@ export class SignInTerminal {
         return;
       }
       this.#pending = pending;
+      this.#sent = true;
       this.#send({ kind: "open", agent: this.#options.agent, handshake: hex(message) });
     } catch {
       this.#fail();
@@ -232,10 +219,10 @@ export class SignInTerminal {
   }
 
   #end(problem?: Problem): void {
-    if (!this.#done) {
+    if (!this.#done && this.#sent) {
       this.#send({ kind: "close" });
-      this.#close(problem);
     }
+    this.#close(problem);
   }
 
   #close(problem?: Problem): void {

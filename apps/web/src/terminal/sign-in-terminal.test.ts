@@ -101,19 +101,15 @@ test("a changed key, or a pin that can't be read, sends nothing", async () => {
   }
 });
 
-test("an unpinned machine opens only once the person says its fingerprint matches", async () => {
-  const pins = new Pins(store());
+test("an unpinned machine sends nothing and is never pinned here", async () => {
+  const pinned: string[] = [];
+  const pins = new Pins({ ...store(), put: async (id) => void pinned.push(id) });
   const { session, sent, states } = terminal(pins);
   await session.start();
+  await session.start();
   assert.deepEqual(sent, []);
-  const asked = states.at(-1);
-  assert.equal(asked?.kind, "confirm");
-  assert.match(asked?.kind === "confirm" ? asked.fingerprint : "", /^([0-9a-f]{4} ){7}[0-9a-f]{4}$/);
-  assert.equal(await pins.matches("m-1", machine.key), "unpinned");
-
-  await session.confirm();
-  assert.equal(await pins.matches("m-1", machine.key), "match");
-  assert.equal(sealed(sent[0]), message(0).ciphertext);
+  assert.deepEqual(pinned, []);
+  assert.deepEqual(states.at(-1), { kind: "closed", problem: "unpinned" });
 });
 
 test("anything that doesn't check out closes the terminal, which then shows nothing", async () => {
@@ -175,13 +171,12 @@ test("a terminal closed while it checks or opens sends nothing, and opens only o
   const starting = session.start();
   session.close();
   await starting;
-  assert.deepEqual(sent.map((command) => command.action.kind), ["close"]);
+  assert.deepEqual(sent, []);
   assert.deepEqual(states.at(-1), { kind: "closed" });
 
-  const unpinned = terminal(new Pins(store()));
-  await unpinned.session.start();
-  await Promise.all([unpinned.session.confirm(), unpinned.session.confirm()]);
-  assert.deepEqual(unpinned.sent.map((command) => command.action.kind), ["open"]);
+  const twice = terminal(new Pins(store(machine.key)));
+  await Promise.all([twice.session.start(), twice.session.start()]);
+  assert.deepEqual(twice.sent.map((command) => command.action.kind), ["open"]);
 });
 
 test("closing sends one close and nothing after", async () => {

@@ -29,7 +29,6 @@ export function TerminalView(props: TerminalProps) {
   const latest = useRef(props);
   latest.current = props;
   const screen = useRef<HTMLDivElement>(null);
-  const session = useRef<SignInTerminal>(undefined);
   const [state, setState] = useState<TerminalState>({ kind: "checking" });
   useEffect(() => {
     const host = screen.current;
@@ -51,7 +50,6 @@ export function TerminalView(props: TerminalProps) {
         state: closedOnce(setState, () => mounted && latest.current.onClosed?.()),
       },
     });
-    session.current = opened;
     const encoder = new TextEncoder();
     const typing = terminal.onData((data) => void opened.input(encoder.encode(data)));
     const unsubscribe = latest.current.subscribe((update) => void opened.receive(update));
@@ -66,26 +64,8 @@ export function TerminalView(props: TerminalProps) {
   }, [machine.id, machine.key, workspace, agent, pins]);
   return (
     <div className="sign-in-terminal">
-      <TerminalNote state={state} confirm={() => void session.current?.confirm()} />
-      <div ref={screen} hidden={state.kind === "confirm" || state.kind === "checking"} />
-    </div>
-  );
-}
-
-function TerminalNote({ state, confirm }: { state: TerminalState; confirm: () => void }) {
-  if (state.kind !== "confirm") {
-    const note = noteOf(state);
-    return note === undefined ? null : <p className="muted">{note}</p>;
-  }
-  return (
-    <div>
-      <p>Check that this fingerprint matches the one Weacon shows on the machine.</p>
-      <p>
-        <code>{state.fingerprint}</code>
-      </p>
-      <button type="button" onClick={confirm}>
-        It matches
-      </button>
+      {noteOf(state) !== undefined && <p className="muted">{noteOf(state)}</p>}
+      <div ref={screen} hidden={state.kind === "checking"} />
     </div>
   );
 }
@@ -104,6 +84,8 @@ function noteOf(state: TerminalState): string | undefined {
       switch (state.problem) {
         case undefined:
           return "The terminal closed.";
+        case "unpinned":
+          return "Confirm this machine's key in Settings › Machines first.";
         case "key_changed":
           return "This machine's key changed. Pair it again.";
         case "key_unchecked":
@@ -113,7 +95,5 @@ function noteOf(state: TerminalState): string | undefined {
         default:
           return "The machine closed the terminal.";
       }
-    case "confirm":
-      return undefined;
   }
 }
