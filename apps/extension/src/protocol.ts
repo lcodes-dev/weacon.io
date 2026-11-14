@@ -1624,6 +1624,10 @@ export type WorkspaceRole = (
  */
 export type WorkspaceSummary = {
   id: WorkspaceId;
+  /**
+   * The signed-in person's own member in this workspace, sent by the server.
+   */
+  member?: MemberId;
   name: string;
   role: WorkspaceRole;
 };
