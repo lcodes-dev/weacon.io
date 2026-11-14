@@ -25,7 +25,7 @@ pub(crate) struct Limit {
 struct Seen {
     clients: HashMap<IpAddr, Window>,
     /// How many clients each IPv6 /48 has in `clients`.
-    wide: HashMap<Ipv6Addr, usize>,
+    per_48: HashMap<Ipv6Addr, usize>,
     /// When expired windows were last swept out.
     swept: Option<Instant>,
 }
@@ -56,22 +56,14 @@ impl Limit {
         };
         let window = self.window;
         if seen.swept.is_none_or(|swept| now >= swept + window) {
-            seen.clients.retain(|_, kept| now < kept.started + window);
-            seen.wide = seen
-                .clients
-                .keys()
-                .fold(HashMap::new(), |mut wide, client| {
-                    count_wide(&mut wide, *client);
-                    wide
-                });
-            seen.swept = Some(now);
+            seen.sweep(now, window);
         }
         let client = seen.client(from);
         if !seen.clients.contains_key(&client) {
             if seen.clients.len() >= self.room {
                 return false;
             }
-            count_wide(&mut seen.wide, client);
+            count_in_48(&mut seen.per_48, client);
         }
         let kept = seen.clients.entry(client).or_insert(Window {
             started: now,
@@ -87,6 +79,19 @@ impl Limit {
 }
 
 impl Seen {
+    /// Drops the clients whose window has ended, and counts the rest again.
+    fn sweep(&mut self, now: Instant, window: Duration) {
+        self.clients.retain(|_, kept| now < kept.started + window);
+        self.per_48 = self
+            .clients
+            .keys()
+            .fold(HashMap::new(), |mut per_48, client| {
+                count_in_48(&mut per_48, *client);
+                per_48
+            });
+        self.swept = Some(now);
+    }
+
     /// `from` as the client it counts as: an IPv4 address, or the /64 an IPv6 one is in,
     /// or its /48 once that has `PER_48` others.
     fn client(&self, from: IpAddr) -> IpAddr {
@@ -94,22 +99,35 @@ impl Seen {
             IpAddr::V6(v6) => v6,
             v4 @ IpAddr::V4(_) => return v4,
         };
-        let one = IpAddr::V6(prefix(v6, 4));
-        let wide = prefix(v6, 3);
-        let full = self.wide.get(&wide).is_some_and(|count| *count >= PER_48);
+        let own = IpAddr::V6(net_64(v6));
+        let shared = net_48(v6);
+        let full = self
+            .per_48
+            .get(&shared)
+            .is_some_and(|count| *count >= PER_48);
         // The /48's own key is the /64 at its start, which is in it anyway.
-        if full && !self.clients.contains_key(&one) {
-            IpAddr::V6(wide)
+        if full && !self.clients.contains_key(&own) {
+            IpAddr::V6(shared)
         } else {
-            one
+            own
         }
     }
 }
 
-fn count_wide(wide: &mut HashMap<Ipv6Addr, usize>, client: IpAddr) {
+fn count_in_48(per_48: &mut HashMap<Ipv6Addr, usize>, client: IpAddr) {
     if let IpAddr::V6(v6) = client {
-        *wide.entry(prefix(v6, 3)).or_default() += 1;
+        *per_48.entry(net_48(v6)).or_default() += 1;
     }
+}
+
+/// The /64 `address` is in.
+fn net_64(address: Ipv6Addr) -> Ipv6Addr {
+    prefix(address, 4)
+}
+
+/// The /48 `address` is in.
+fn net_48(address: Ipv6Addr) -> Ipv6Addr {
+    prefix(address, 3)
 }
 
 /// The first `segments` segments of `address`, the rest zero.
