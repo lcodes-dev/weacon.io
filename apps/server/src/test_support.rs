@@ -84,6 +84,7 @@ impl Fixture {
                 UNIX_EPOCH + Duration::from_secs(now.load(Ordering::Relaxed))
             })),
             changes: broadcast::channel(16).0,
+            chats: crate::chats::Hub::default(),
             unpaired: broadcast::channel(16).0,
             links: Arc::default(),
             relay: Arc::default(),

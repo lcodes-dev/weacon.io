@@ -3,6 +3,7 @@
 mod admin;
 mod app;
 mod auth;
+mod chats;
 mod cli;
 mod client;
 mod connections;
@@ -117,6 +118,7 @@ async fn serve(app: &App, args: Serve) -> Result<(), Fault> {
         connections: Arc::new(Semaphore::new(max_connections)),
         sockets: socket::TIMING,
         changes: broadcast::channel(CHANGES).0,
+        chats: chats::Hub::default(),
         unpaired: broadcast::channel(CHANGES).0,
         links: Arc::default(),
         relay: Arc::default(),
@@ -129,6 +131,7 @@ async fn serve(app: &App, args: Serve) -> Result<(), Fault> {
         pair_claims: Arc::new(pairing::claims()),
         web: web::FILES,
     };
+    tokio::spawn(chats::follow_machines(shared.clone()));
     http::serve(listener, shared, signals.wait()).await;
     db.close().await;
     Ok(())

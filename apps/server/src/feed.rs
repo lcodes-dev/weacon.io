@@ -14,6 +14,7 @@ use weacon_protocol::{
 };
 
 use crate::auth::{Member, Session};
+use crate::chats::{self, Watch};
 use crate::connections::Place;
 use crate::http::{Shared, failure};
 use crate::relay::{self, Ask, Refusal, SETTINGS};
@@ -25,6 +26,8 @@ const FEED: Code = code!("workspace.feed");
 const TASKS: Code = code!("workspace.tasks");
 /// What the server offers to clients that read and revise docs.
 const DOCS: Code = code!("workspace.docs");
+/// What the server offers to clients that read chats and ask their agents.
+const CHATS: Code = code!("workspace.chats");
 /// How many answers from machines wait for the client to take them.
 const ANSWERS: usize = 16;
 
@@ -66,6 +69,7 @@ pub(crate) async fn feed(
         changes,
         last_seq: since,
         offers: Offers::default(),
+        chats: Watch::new(&shared),
         answer_to,
         answers,
     };
@@ -85,6 +89,7 @@ struct Feed {
     changes: Receiver<WorkspaceId>,
     last_seq: u64,
     offers: Offers,
+    chats: Watch,
     /// Machines' answers to what the client asked them through the relay.
     answer_to: mpsc::Sender<Envelope>,
     answers: mpsc::Receiver<Envelope>,
@@ -92,10 +97,12 @@ struct Feed {
 
 /// Which features the client offered besides the feed; it hears only of their changes.
 #[derive(Default)]
-struct Offers {
-    tasks: bool,
-    docs: bool,
-    settings: bool,
+struct Offers(Vec<Capability>);
+
+impl Offers {
+    fn has(&self, feature: Code) -> bool {
+        self.0.contains(&Capability::from(feature))
+    }
 }
 
 impl Feed {
@@ -136,22 +143,15 @@ async fn run(
     shared: &Shared,
     feed: &mut Feed,
 ) -> Result<Infallible, Closed> {
-    let [feed_offer, tasks, docs, settings] = [FEED, TASKS, DOCS, SETTINGS].map(Capability::from);
-    let offered = vec![
-        feed_offer.clone(),
-        tasks.clone(),
-        docs.clone(),
-        settings.clone(),
-    ];
+    let feed_offer = Capability::from(FEED);
+    let offered = [FEED, TASKS, DOCS, SETTINGS, CHATS]
+        .map(Capability::from)
+        .to_vec();
     let greeted = greet(socket, shared, offered, &feed_offer);
     let hello = timeout(shared.sockets.hello_within, greeted)
         .await
         .map_err(|_| Closed)??;
-    feed.offers = Offers {
-        tasks: hello.capabilities.contains(&tasks),
-        docs: hello.capabilities.contains(&docs),
-        settings: hello.capabilities.contains(&settings),
-    };
+    feed.offers = Offers(hello.capabilities);
     catch_up(socket, shared, feed).await?;
     let mut pings = Pings::new(shared.sockets.ping_every);
     loop {
@@ -162,6 +162,10 @@ async fn run(
                 Ok(_) | Err(RecvError::Lagged(_)) => catch_up(socket, shared, feed).await?,
                 Err(RecvError::Closed) => return Err(Closed),
             },
+            changed = feed.chats.changed(feed.member.workspace.id()) => {
+                changed?;
+                send_chats(socket, shared, feed, None).await?;
+            }
             () = pings.due() => pings.ping(socket, feed.allowed(shared)).await?,
             Some(answer) = feed.answers.recv() => {
                 feed.allowed(shared).await?;
@@ -180,16 +184,53 @@ async fn run(
     }
 }
 
+/// Sends `answer`, then the events of the chats it follows that it hasn't sent, while its
+/// member still is one.
+async fn send_chats(
+    socket: &mut WebSocket,
+    shared: &Shared,
+    feed: &mut Feed,
+    answer: Option<(u32, Message)>,
+) -> Result<(), Closed> {
+    if let Some((id, answer)) = answer {
+        feed.allowed(shared).await?;
+        reply(socket, shared, id, answer).await?;
+    }
+    loop {
+        let workspace = &feed.member.workspace;
+        let page = feed
+            .chats
+            .next(workspace)
+            .await
+            .map_err(|fault| feed_failed(shared, workspace.id(), &fault))?;
+        if page.is_empty() {
+            return Ok(());
+        }
+        for update in page {
+            feed.allowed(shared).await?;
+            reply(socket, shared, 0, update).await?;
+        }
+    }
+}
+
 /// Gives what the client sent to the feature it is for, if the client offered that feature;
 /// anything else is dropped.
 async fn received(
     socket: &mut WebSocket,
     shared: &Shared,
-    feed: &Feed,
+    feed: &mut Feed,
     envelope: Envelope,
 ) -> Result<(), Closed> {
-    if feed.offers.settings && relay::carries(&envelope.message) {
+    if feed.offers.has(SETTINGS) && relay::carries(&envelope.message) {
         return relay(socket, shared, feed, envelope).await;
+    }
+    if feed.offers.has(CHATS) && chats::carries(&envelope.message) {
+        feed.allowed(shared).await?;
+        let answer = feed
+            .chats
+            .heard(envelope, &feed.member, &feed.asker, shared)
+            .await;
+        return send_chats(socket, shared, feed, answer).await;
     }
     Ok(())
 }
@@ -228,12 +269,11 @@ async fn catch_up(socket: &mut WebSocket, shared: &Shared, feed: &mut Feed) -> R
         for update in page {
             feed.last_seq = update.seq;
             let wanted = match update.change {
-                WorkspaceChange::TaskChanged { .. } => feed.offers.tasks,
-                WorkspaceChange::DocChanged { .. } => feed.offers.docs,
-                // No feed offers `workspace.chats` or `workspace.proposals` yet.
-                WorkspaceChange::ChatChanged { .. } | WorkspaceChange::ProposalChanged { .. } => {
-                    false
-                }
+                WorkspaceChange::TaskChanged { .. } => feed.offers.has(TASKS),
+                WorkspaceChange::DocChanged { .. } => feed.offers.has(DOCS),
+                WorkspaceChange::ChatChanged { .. } => feed.offers.has(CHATS),
+                // No feed offers `workspace.proposals` yet.
+                WorkspaceChange::ProposalChanged { .. } => false,
                 WorkspaceChange::MemberJoined { .. } | WorkspaceChange::Newer => true,
             };
             if !wanted {
@@ -371,7 +411,7 @@ mod tests {
         };
         assert_eq!(
             welcome.capabilities,
-            [FEED, TASKS, DOCS, SETTINGS].map(Capability::from)
+            [FEED, TASKS, DOCS, SETTINGS, CHATS].map(Capability::from)
         );
         assert_eq!(missed, joined(1, "m1"));
         assert_eq!(live, joined(2, "m2"));

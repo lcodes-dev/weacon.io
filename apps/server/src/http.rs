@@ -16,6 +16,7 @@ use tokio::time::timeout;
 use weacon_observability::{Clock, Fault, Field, Logger, Reporter};
 use weacon_protocol::{App, Code, ErrorBody, MachineId, WorkspaceId, code};
 
+use crate::chats;
 use crate::client::Net;
 use crate::connections;
 use crate::db::Db;
@@ -76,6 +77,7 @@ pub(crate) struct Shared {
     pub(crate) unpaired: broadcast::Sender<MachineId>,
     /// Which workspace just changed, for the feeds.
     pub(crate) changes: broadcast::Sender<WorkspaceId>,
+    pub(crate) chats: chats::Hub,
     /// Room for sign-ins being worked on after their answer; when it's full, more are dropped.
     pub(crate) sign_ins: Arc<Semaphore>,
     /// How long finishing a sign-in takes at least, so its timing gives nothing away.
@@ -195,6 +197,7 @@ fn router(shared: Shared) -> Router {
             post(tasks::change),
         )
         .merge(doc_routes())
+        .merge(chats::routes())
         .merge(web::routes(shared.web))
         .layer(DefaultBodyLimit::max(MAX_BODY))
         .layer(middleware::map_response(uncached))
