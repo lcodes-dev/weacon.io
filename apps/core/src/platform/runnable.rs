@@ -10,6 +10,7 @@ pub(crate) fn make_runnable(file: &Path) -> io::Result<()> {
 
 /// Windows runs any file whose name ends in `.exe`.
 #[cfg(windows)]
+#[expect(clippy::unnecessary_wraps, reason = "the same call as on Unix, where it can fail")]
 pub(crate) fn make_runnable(_file: &Path) -> io::Result<()> {
     Ok(())
 }
