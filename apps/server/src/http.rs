@@ -168,7 +168,7 @@ mod tests {
     use tokio::sync::Semaphore;
 
     use super::*;
-    use crate::test_support::{Fixture, Running, header, messages, request};
+    use crate::test_support::{Fixture, PATIENCE, Running, header, messages, request};
 
     struct Server {
         running: Running,
@@ -250,7 +250,7 @@ mod tests {
         };
         while !whole(&answer) {
             let mut some = [0; 1024];
-            let read = timeout(Duration::from_secs(10), stream.read(&mut some))
+            let read = timeout(PATIENCE, stream.read(&mut some))
                 .await
                 .expect("no answer")
                 .unwrap();

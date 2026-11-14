@@ -279,13 +279,11 @@ mod tests {
 
     use super::*;
     use crate::links::{Attached, Connected, QUEUE};
-    use futures_util::{SinkExt, StreamExt};
-    use tokio_tungstenite::tungstenite::Message as Wire;
 
-    use crate::test_support::socket::{
-        PATIENCE, Socket, ends, next, next_envelope, open, say, send,
+    use crate::test_support::socket::{Socket, ends, next, next_envelope, open, pongs, say, send};
+    use crate::test_support::{
+        Fixture, PATIENCE, Paired, ask, member_id, pair_machine, workspace_id,
     };
-    use crate::test_support::{Fixture, Paired, ask, member_id, pair_machine, workspace_id};
 
     // A query for `machine`'s settings in `workspace`, claiming to be from someone else.
     fn query(machine: &MachineId, in_workspace: &str) -> Message {
@@ -336,21 +334,6 @@ mod tests {
         Message::MachineSettingsAnswer(answer)
     }
 
-    // Once `client`'s peer has read all it was sent: it reads in order, and pongs as it does.
-    async fn synced(client: &mut Socket) {
-        client.send(Wire::Ping(Vec::new().into())).await.unwrap();
-        timeout(PATIENCE, pong(client)).await.unwrap();
-    }
-
-    // Once a pong comes; a socket that ends first fails the test.
-    async fn pong(client: &mut Socket) {
-        loop {
-            if let Wire::Pong(_) = client.next().await.unwrap().unwrap() {
-                return;
-            }
-        }
-    }
-
     // Once every one of `timers` has stopped.
     async fn stopped(timers: &[AbortHandle]) {
         while !timers.iter().all(AbortHandle::is_finished) {
@@ -370,7 +353,7 @@ mod tests {
             .unwrap();
         say(&mut core, capabilities).await;
         assert!(matches!(next(&mut core).await, Message::Welcome(_)));
-        synced(&mut core).await;
+        assert!(pongs(&mut core).await);
         core
     }
 
@@ -482,7 +465,7 @@ mod tests {
     #[tokio::test]
     async fn a_feed_whose_member_is_one_no_more_relays_nothing_and_ends() {
         let mut fixture = Fixture::new().await;
-        fixture.shared.sockets.ping_every = Duration::from_hours(1);
+        fixture.quiet();
         let server = fixture.run().await;
         let (paired, core, mut browser) = both(
             &fixture,
@@ -508,7 +491,7 @@ mod tests {
     #[tokio::test]
     async fn a_member_who_leaves_while_their_machine_answers_hears_nothing_more() {
         let mut fixture = Fixture::new().await;
-        fixture.shared.sockets.ping_every = Duration::from_hours(1);
+        fixture.quiet();
         let server = fixture.run().await;
         let (paired, mut core, mut browser) = both(
             &fixture,
@@ -561,7 +544,7 @@ mod tests {
 
         send(&mut browser, envelope(1, query(&machine, "w1"))).await;
         send(&mut browser, envelope(2, settings_answer(&machine))).await;
-        synced(&mut browser).await;
+        assert!(pongs(&mut browser).await);
 
         assert!(fixture.shared.relay.lock().is_empty());
         drop(core);

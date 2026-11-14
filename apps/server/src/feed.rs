@@ -281,9 +281,9 @@ mod tests {
     use crate::sign_in::SESSION_LIFETIME;
     use crate::socket::refusal;
     use crate::test_support::socket::{
-        PATIENCE, Socket, ends, frame, next, open, say, say_as, upgrade_status,
+        Socket, ends, frame, next, open, say, say_as, upgrade_status,
     };
-    use crate::test_support::{self, Fixture, fresh_account, member_id, workspace_id};
+    use crate::test_support::{self, Fixture, PATIENCE, fresh_account, member_id, workspace_id};
 
     fn w1(fixture: &Fixture) -> impl Future<Output = Workspace> {
         let db = fixture.shared.db.clone();

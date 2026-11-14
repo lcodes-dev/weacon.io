@@ -49,6 +49,9 @@ pub(crate) const WEB: &[crate::web::WebFile] = &[
     ("/app.css", "text/css; charset=utf-8", b"body {}"),
 ];
 
+/// How long a test waits for an answer before taking the server as broken.
+pub(crate) const PATIENCE: Duration = Duration::from_secs(10);
+
 /// Seconds since the Unix epoch when a fixture starts.
 const START: u64 = 1_762_077_600;
 

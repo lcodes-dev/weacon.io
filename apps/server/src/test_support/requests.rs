@@ -1,14 +1,13 @@
 //! Requests tests make to a running server.
 
 use std::net::SocketAddr;
-use std::time::Duration;
 
 use serde_json::{Value, json};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use weacon_protocol::MachineId;
 
-use super::Fixture;
+use super::{Fixture, PATIENCE};
 
 /// One HTTP/1.1 exchange: the response's lowercased head lines, and its body.
 pub(crate) async fn request(address: SocketAddr, head: &str, body: &str) -> (Vec<String>, String) {
@@ -29,13 +28,10 @@ pub(crate) async fn request_with(
     );
     stream.write_all(request.as_bytes()).await.unwrap();
     let mut response = String::new();
-    tokio::time::timeout(
-        Duration::from_secs(10),
-        stream.read_to_string(&mut response),
-    )
-    .await
-    .expect("no answer")
-    .unwrap();
+    tokio::time::timeout(PATIENCE, stream.read_to_string(&mut response))
+        .await
+        .expect("no answer")
+        .unwrap();
     let (head, body) = response.split_once("\r\n\r\n").unwrap();
     let head = head.lines().map(str::to_lowercase).collect();
     (head, body.to_owned())

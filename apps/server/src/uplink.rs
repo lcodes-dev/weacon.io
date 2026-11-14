@@ -162,7 +162,7 @@ mod tests {
 
     use super::*;
     use crate::test_support::socket::{
-        Socket, ends, frame, next, open, past_pings, say, upgrade_status,
+        Socket, ends, frame, next, open, pongs, say, upgrade_status,
     };
     use crate::test_support::{Fixture, Paired, ask, pair_machine};
 
@@ -262,11 +262,8 @@ mod tests {
             let got = frame(&mut client).await;
             assert!(matches!(got, Some(Ok(Wire::Ping(_)))), "{got:?}");
         }
-        client.send(Wire::Ping(Vec::new().into())).await.unwrap();
 
-        let answered = past_pings(&mut client).await;
-
-        assert!(matches!(answered, Some(Ok(Wire::Pong(_)))), "{answered:?}");
+        assert!(pongs(&mut client).await);
     }
 
     #[tokio::test]
@@ -301,12 +298,8 @@ mod tests {
             .send(Wire::text("x".repeat(MAX_FRAME)))
             .await
             .unwrap();
-        client.send(Wire::Ping(Vec::new().into())).await.unwrap();
 
-        assert!(matches!(
-            past_pings(&mut client).await,
-            Some(Ok(Wire::Pong(_)))
-        ));
+        assert!(pongs(&mut client).await);
     }
 
     #[tokio::test]
@@ -318,11 +311,7 @@ mod tests {
         let other = MachineId::try_from("other".to_owned()).unwrap();
 
         fixture.shared.unpaired.send(other).unwrap();
-        client.send(Wire::Ping(Vec::new().into())).await.unwrap();
 
-        assert!(matches!(
-            past_pings(&mut client).await,
-            Some(Ok(Wire::Pong(_)))
-        ));
+        assert!(pongs(&mut client).await);
     }
 }

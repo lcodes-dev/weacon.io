@@ -1,7 +1,6 @@
 //! A test client for the server's web sockets.
 
 use std::net::SocketAddr;
-use std::time::Duration;
 
 use axum::http::header::AUTHORIZATION;
 use futures_util::{SinkExt, StreamExt};
@@ -12,10 +11,7 @@ use tokio_tungstenite::tungstenite::{self, Message as Wire};
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async};
 use weacon_protocol::{Envelope, Hello, Message, PROTOCOL};
 
-use super::VERSION;
-
-/// How long a test waits for a socket before taking it as broken.
-pub(crate) const PATIENCE: Duration = Duration::from_secs(10);
+use super::{PATIENCE, VERSION};
 
 pub(crate) type Socket = WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>;
 
@@ -101,6 +97,13 @@ pub(crate) async fn ends(client: &mut Socket) -> bool {
         past_pings(client).await,
         None | Some(Ok(Wire::Close(_)) | Err(_))
     )
+}
+
+// Whether the peer answers a ping before anything but its own pings: it reads in order, so
+// by then it has read all it was sent.
+pub(crate) async fn pongs(client: &mut Socket) -> bool {
+    client.send(Wire::Ping(Vec::new().into())).await.unwrap();
+    matches!(past_pings(client).await, Some(Ok(Wire::Pong(_))))
 }
 
 // The status a WebSocket upgrade was refused with.
