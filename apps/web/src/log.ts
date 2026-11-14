@@ -19,16 +19,16 @@ export class Log {
   #forwards = false;
 
   info(event: Event, ids: Ids = {}): void {
-    this.#hold({ id: 0, type: "log", level: "info", msg: event, ...ids });
+    this.#record({ id: 0, type: "log", level: "info", msg: event, ...ids });
   }
 
   warn(event: Event, ids: Ids = {}): void {
-    this.#hold({ id: 0, type: "log", level: "warn", msg: event, ...ids });
+    this.#record({ id: 0, type: "log", level: "warn", msg: event, ...ids });
   }
 
   /** Reports a failure; the server takes an `error` from a client as its report. */
   report(code: Failure): void {
-    this.#hold({ id: 0, type: "error", code, retryable: false });
+    this.#record({ id: 0, type: "error", code, retryable: false });
   }
 
   /** Sends what's held, and from now on each record, through `send`; logs only if `forwards`. */
@@ -37,7 +37,7 @@ export class Log {
     this.#forwards = forwards;
     const held = this.#held;
     this.#held = [];
-    held.forEach((envelope) => this.#hold(envelope));
+    held.forEach((envelope) => this.#record(envelope));
   }
 
   /** Holds records again, as when the connection ends. */
@@ -45,7 +45,7 @@ export class Log {
     this.#send = undefined;
   }
 
-  #hold(envelope: Envelope): void {
+  #record(envelope: Envelope): void {
     if (this.#send === undefined) {
       this.#held = [...this.#held, envelope].slice(-KEEP);
     } else if (envelope.type !== "log" || this.#forwards) {

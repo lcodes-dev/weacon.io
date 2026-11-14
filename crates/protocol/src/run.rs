@@ -17,6 +17,18 @@ pub enum AgentKind {
     Newer,
 }
 
+impl AgentKind {
+    /// The vendor's name, as on the wire; `None` for an agent this build doesn't know.
+    #[must_use]
+    pub const fn name(self) -> Option<&'static str> {
+        match self {
+            Self::Claude => Some("claude"),
+            Self::Codex => Some("codex"),
+            Self::Newer => None,
+        }
+    }
+}
+
 /// An agent's own id for a conversation, a lowercase UUID, which resumes it later.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, JsonSchema)]
 pub struct AgentSession(#[schemars(regex(pattern = SESSION_PATTERN))] String);
@@ -206,6 +218,7 @@ mod tests {
     fn agent_kinds_travel_as_names_and_a_newer_one_still_parses() {
         for (kind, name) in [(AgentKind::Claude, "claude"), (AgentKind::Codex, "codex")] {
             assert_eq!(serde_json::to_value(kind).unwrap(), json!(name));
+            assert_eq!(kind.name(), Some(name));
             assert_eq!(
                 serde_json::from_value::<AgentKind>(json!(name)).unwrap(),
                 kind
@@ -215,6 +228,7 @@ mod tests {
             serde_json::from_value::<AgentKind>(json!("amp")).unwrap(),
             AgentKind::Newer
         );
+        assert_eq!(AgentKind::Newer.name(), None);
     }
 
     #[test]

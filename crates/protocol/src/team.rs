@@ -24,7 +24,7 @@ token_id!(
 token_id!(
     /// One sign-in request, which its code and its tries belong to; 1–64 ASCII letters,
     /// digits, `-` or `_`.
-    ChallengeId,
+    secret ChallengeId,
     "not a challenge id"
 );
 
@@ -210,6 +210,15 @@ mod tests {
 
     use super::*;
     use crate::test_support::workspace;
+
+    #[test]
+    fn a_challenge_hides_its_value_but_other_ids_dont() {
+        let challenge = ChallengeId::try_from("c-secret".to_owned()).unwrap();
+
+        assert_eq!(format!("{challenge:?}"), "ChallengeId(..)");
+        assert_eq!(format!("{:?}", workspace()), r#"WorkspaceId("w-1")"#);
+        assert_eq!(challenge.as_str(), "c-secret");
+    }
 
     #[test]
     fn sign_in_bodies_travel_as_plain_json() {

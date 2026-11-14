@@ -20,7 +20,7 @@ use crate::db::{Db, Workspace};
 use crate::email::Email;
 use crate::feed;
 use crate::http::{self, Shared};
-use crate::mail::Outbox;
+use crate::outbox::Outbox;
 use crate::secret::Secret;
 use crate::sign_in;
 
@@ -246,6 +246,12 @@ pub(crate) async fn sign_in(
         status(&head).to_owned(),
         serde_json::from_str(&body).unwrap(),
     )
+}
+
+/// The code of the refusal whose JSON body is `body`.
+pub(crate) fn refusal(body: &str) -> String {
+    let error: weacon_protocol::ErrorBody = serde_json::from_str(body).unwrap();
+    error.code.as_str().to_owned()
 }
 
 /// The header that proves a sign-in whose answer was `body`.

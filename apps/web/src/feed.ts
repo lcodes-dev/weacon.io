@@ -1,5 +1,5 @@
-import type { Envelope, RunEvent, RunId } from "./protocol.ts";
-import { isRunEvent } from "./transcript.ts";
+import type { RunMessage } from "./incoming.ts";
+import type { RunEvent, RunId } from "./protocol.ts";
 
 /**
  * Gathers the events of the first run the server streams, and hands them over in batches, at
@@ -17,11 +17,7 @@ export class Feed {
     this.#deliver = deliver;
   }
 
-  push(envelope: Envelope): void {
-    // The server's frames are parsed here, where they arrive; a malformed one is dropped.
-    if (envelope.type !== "run" || typeof envelope.run !== "string" || !isRunEvent(envelope.event)) {
-      return;
-    }
+  push(envelope: RunMessage): void {
     this.#run ??= envelope.run;
     if (envelope.run !== this.#run) {
       return;

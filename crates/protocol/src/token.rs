@@ -13,11 +13,12 @@ pub(crate) fn is_token(id: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
 }
 
-/// Declares an id that is a token; parsing anything else fails with the message `$what`.
+/// Declares an id that is a token; parsing anything else fails with the message `$what`. A
+/// `secret` one never shows its value through `{:?}`.
 macro_rules! token_id {
-    ($(#[$doc:meta])* $name:ident, $what:literal) => {
-        $(#[$doc])*
-        #[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, schemars::JsonSchema)]
+    (@define $(#[$attr:meta])* $name:ident, $what:literal) => {
+        $(#[$attr])*
+        #[derive(Clone, PartialEq, Eq, Hash, serde::Serialize, schemars::JsonSchema)]
         pub struct $name(
             #[schemars(
                 regex(pattern = $crate::token::TOKEN_PATTERN),
@@ -59,6 +60,18 @@ macro_rules! token_id {
                     .map_err(|_| <D::Error as serde::de::Error>::custom($what))
             }
         }
+    };
+    ($(#[$doc:meta])* secret $name:ident, $what:literal) => {
+        token_id!(@define $(#[$doc])* $name, $what);
+
+        impl std::fmt::Debug for $name {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str(concat!(stringify!($name), "(..)"))
+            }
+        }
+    };
+    ($(#[$doc:meta])* $name:ident, $what:literal) => {
+        token_id!(@define $(#[$doc])* #[derive(Debug)] $name, $what);
     };
 }
 
