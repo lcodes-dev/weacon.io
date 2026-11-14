@@ -258,6 +258,7 @@ mod tests {
                 status: RunStatus {
                     run: run(),
                     state: RunState::Idle,
+                    agent: None,
                 },
             },
         }
@@ -403,6 +404,7 @@ mod tests {
                     status: RunStatus {
                         run: run(),
                         state: RunState::Sleeping,
+                        agent: None,
                     },
                 },
                 json!({ "kind": "run_status", "status": { "run": "run-7", "state": "sleeping" } }),
@@ -464,6 +466,7 @@ mod tests {
                     runs: vec![RunStatus {
                         run: run(),
                         state: RunState::Idle,
+                        agent: None,
                     }],
                     waiting: vec![2],
                     events: vec![idle()],
@@ -500,6 +503,14 @@ mod tests {
                                 "event": { "event": "thinking" } } })),
             entry_wire(&json!({ "kind": "receipt",
                                 "receipt": { "request": "r-1", "state": "queued" } })),
+            entry_wire(
+                &json!({ "kind": "run_status", "status": { "run": "run-7", "state": "idle",
+                                "agent": { "kind": "gemini", "owner": { "kind": "shared" } } } }),
+            ),
+            entry_wire(
+                &json!({ "kind": "run_status", "status": { "run": "run-7", "state": "idle",
+                                "agent": { "kind": "claude", "owner": { "kind": "team" } } } }),
+            ),
             about("chat_query", "query", &json!({ "kind": "search" })),
         ]);
     }
