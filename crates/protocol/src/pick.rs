@@ -3,8 +3,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::RequestId;
 
-/// An element someone picked on a local web page, sent to the core for a chat. The sender cuts
-/// the HTML short and shrinks the screenshot so the message fits in one frame.
+/// An element someone picked in Chrome, from the extension's host to a core that offers
+/// `element.pick`, for a chat. The sender cuts the HTML short and shrinks the screenshot so the
+/// message fits in one frame.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct Pick {
     pub request: RequestId,
