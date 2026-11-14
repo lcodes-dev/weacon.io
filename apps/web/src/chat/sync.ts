@@ -26,7 +26,8 @@ export function open(sync: Sync, place: Place, id: () => number): Step {
 
 /** Stops waiting for answers, keeping the chat, as when the connection ends. */
 export function ended(sync: Sync): Sync {
-  return { ...sync, snapshot: undefined, window: undefined, live: false };
+  const idle = !sync.live && sync.snapshot === undefined && sync.window === undefined;
+  return idle ? sync : { ...sync, snapshot: undefined, window: undefined, live: false };
 }
 
 /** Asks for the page of events before the oldest the chat holds, unless one is on its way. */

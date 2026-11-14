@@ -141,4 +141,5 @@ test("text streams onto the chat it shows, and the end of the connection keeps i
   assert.equal(streamed.sync.chat?.live.get("r-1")?.length, 1);
   assert.equal(unopened.sync, START);
   assert.deepEqual(gone, { chat: streamed.sync.chat, snapshot: undefined, window: undefined, live: false });
+  assert.equal(ended(gone), gone);
 });
