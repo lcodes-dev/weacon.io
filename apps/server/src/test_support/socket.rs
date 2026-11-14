@@ -36,15 +36,24 @@ pub(crate) async fn say(client: &mut Client, capabilities: &[&str]) {
 }
 
 pub(crate) async fn say_as(client: &mut Client, protocol: u32, capabilities: &[&str]) {
-    let hello = Envelope {
-        id: 1,
-        message: Message::Hello(Hello {
-            protocol,
-            app: weacon_appkit::build(&VERSION),
-            capabilities: serde_json::from_value(json!(capabilities)).unwrap(),
-        }),
-    };
-    let json = String::from_utf8(hello.to_json().unwrap()).unwrap();
+    let hello = Message::Hello(Hello {
+        protocol,
+        app: weacon_appkit::build(&VERSION),
+        capabilities: serde_json::from_value(json!(capabilities)).unwrap(),
+    });
+    send(
+        client,
+        Envelope {
+            id: 1,
+            message: hello,
+        },
+    )
+    .await;
+}
+
+/// Sends `envelope` as one text frame.
+pub(crate) async fn send(client: &mut Client, envelope: Envelope) {
+    let json = String::from_utf8(envelope.to_json().unwrap()).unwrap();
     client.send(Wire::text(json)).await.unwrap();
 }
 
@@ -58,10 +67,15 @@ pub(crate) async fn frame(client: &mut Client) -> Option<Result<Wire, tungstenit
 
 // The client's next message, pings aside: they come every 100 ms.
 pub(crate) async fn next(client: &mut Client) -> Message {
+    next_envelope(client).await.message
+}
+
+// The client's next envelope, pings aside.
+pub(crate) async fn next_envelope(client: &mut Client) -> Envelope {
     let text = timeout(Duration::from_secs(10), text(client))
         .await
         .expect("no message in time");
-    Envelope::from_json(text.as_bytes()).unwrap().message
+    Envelope::from_json(text.as_bytes()).unwrap()
 }
 
 pub(crate) async fn text(client: &mut Client) -> Utf8Bytes {

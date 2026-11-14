@@ -12,8 +12,10 @@ mod email;
 mod feed;
 mod http;
 mod limit;
+mod links;
 mod outbox;
 mod pairing;
+mod relay;
 mod secret;
 mod sign_in;
 mod sign_up;
@@ -97,13 +99,7 @@ async fn serve(app: &App, args: Serve) -> Result<(), Fault> {
         sign_up,
     } = args;
     usable_outbox(outbox.clone()).await?;
-    let signals = weacon_appkit::Signals::new().map_err(|error| {
-        Fault::new(
-            code!("server.signals_failed"),
-            "The server couldn't catch signals",
-        )
-        .because(error)
-    })?;
+    let signals = signals()?;
     let listener = bind(listen).await?;
     let secret = open_secret(secret, app.log.clone()).await?;
     let db = Db::create(&db).await?;
@@ -122,8 +118,10 @@ async fn serve(app: &App, args: Serve) -> Result<(), Fault> {
         sockets: socket::TIMING,
         changes: broadcast::channel(CHANGES).0,
         unpaired: broadcast::channel(CHANGES).0,
+        links: Arc::default(),
+        relay: Arc::default(),
         sign_ins: Arc::new(Semaphore::new(sign_in::AT_ONCE)),
-        finish_within: sign_in::FINISH_WITHIN,
+        finish_within: sign_in::FINISH_TAKES,
         starts: Arc::new(sign_in::starts()),
         tries: Arc::new(sign_in::tries()),
         pair_starts: Arc::new(pairing::starts()),
@@ -134,6 +132,16 @@ async fn serve(app: &App, args: Serve) -> Result<(), Fault> {
     http::serve(listener, shared, signals.wait()).await;
     db.close().await;
     Ok(())
+}
+
+fn signals() -> Result<weacon_appkit::Signals, Fault> {
+    weacon_appkit::Signals::new().map_err(|error| {
+        Fault::new(
+            code!("server.signals_failed"),
+            "The server couldn't catch signals",
+        )
+        .because(error)
+    })
 }
 
 /// Checks that `outbox` is a folder; otherwise every sign-in would fail after its answer, and
