@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import type { Answer } from "../shell/api.ts";
+import type { Answer } from "../api/api.ts";
 import { unpair } from "./unpair.ts";
 
 const answering = (answer: Answer<undefined>) => ({ unpair: async () => answer });

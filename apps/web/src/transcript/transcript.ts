@@ -6,15 +6,15 @@ export type ToolState = "running" | "done" | "failed";
  * One row of a run's transcript. A text row keeps its streamed pieces apart, so the view adds a
  * text node for each new piece and never rewrites one a reader may have selected text in.
  */
-export type Row =
+export type TranscriptRow =
   | { kind: "text"; pieces: readonly string[] }
   | { kind: "tool"; call: string; tool: string; state: ToolState }
   | { kind: "finished"; outcome: Outcome };
 
 /** The rows of one run, and the text row still being written, if any. */
-export type Transcript = { rows: readonly Row[]; writing: boolean };
+export type Transcript = { rows: readonly TranscriptRow[]; writing: boolean };
 
-export const EMPTY: Transcript = { rows: [], writing: false };
+export const EMPTY_TRANSCRIPT: Transcript = { rows: [], writing: false };
 
 /** `transcript` with `events` applied in order; rows they don't touch are the same objects. */
 export function apply(transcript: Transcript, events: readonly RunEvent[]): Transcript {
@@ -27,7 +27,7 @@ export function apply(transcript: Transcript, events: readonly RunEvent[]): Tran
 }
 
 // Applies one event to `rows`, giving whether a text row is still open for more.
-function step(rows: Row[], writing: boolean, event: RunEvent): boolean {
+function step(rows: TranscriptRow[], writing: boolean, event: RunEvent): boolean {
   switch (event.event) {
     case "text_delta":
     case "text": {
