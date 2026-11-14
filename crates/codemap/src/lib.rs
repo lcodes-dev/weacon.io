@@ -26,7 +26,7 @@ mod test_support;
 use std::fmt;
 
 pub use anchor::{Anchor, Finding, Pin};
-pub use answers::Churn;
+pub use answers::{Churn, fit};
 pub(crate) use area::Area;
 pub use contracts::ContractKind;
 pub(crate) use edges::{Edge, EdgeKind};
