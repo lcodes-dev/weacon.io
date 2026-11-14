@@ -1,19 +1,23 @@
 use std::convert::Infallible;
 
 use axum::Extension;
-use axum::extract::ws::{WebSocket, WebSocketUpgrade};
+use axum::extract::ws::{Message as Frame, WebSocket, WebSocketUpgrade};
 use axum::extract::{Query, State};
 use axum::response::Response;
 use serde::Deserialize;
 use tokio::sync::broadcast::{Receiver, error::RecvError};
+use tokio::sync::mpsc;
 use tokio::time::timeout;
 use weacon_observability::{Fault, Field};
-use weacon_protocol::{Capability, Code, Message, WorkspaceChange, WorkspaceId, code};
+use weacon_protocol::{
+    Asker, Capability, Code, Envelope, Message, WorkspaceChange, WorkspaceId, code,
+};
 
-use crate::auth::Member;
+use crate::auth::{Member, Session};
 use crate::connections::Place;
 use crate::http::{Shared, failure};
 use crate::proposals::PROPOSALS;
+use crate::relay::{self, Ask, Refusal, SETTINGS};
 use crate::socket::{Closed, Pings, greet, reply};
 
 /// What a client must offer, and the server offers, to get a workspace's changes.
@@ -22,6 +26,8 @@ const FEED: Code = code!("workspace.feed");
 const TASKS: Code = code!("workspace.tasks");
 /// What the server offers to clients that read and revise docs.
 const DOCS: Code = code!("workspace.docs");
+/// How many answers from machines wait for the client to take them.
+const ANSWERS: usize = 16;
 
 const MAX_MESSAGE: usize = 16 * 1024;
 const PAGE: u32 = 500;
@@ -38,7 +44,7 @@ pub(crate) async fn feed(
     State(shared): State<Shared>,
     Query(Since { since }): Query<Since>,
     Extension(place): Extension<Place>,
-    member: Member,
+    (member, session): (Member, Session),
     upgrade: WebSocketUpgrade,
 ) -> Response {
     // Subscribed before the backlog is read, so no change falls between the two.
@@ -49,12 +55,20 @@ pub(crate) async fn feed(
         Ok(false) => {}
         Err(fault) => return failure(fault),
     }
+    let asker = Asker {
+        account: session.account,
+        member: member.id.clone(),
+    };
+    let (answer_to, answers) = mpsc::channel(ANSWERS);
     let feed = Feed {
         _place: place,
         member,
+        asker,
         changes,
         last_seq: since,
-        offers: Offers::default(),
+        offers: Vec::new(),
+        answer_to,
+        answers,
     };
     upgrade
         .max_message_size(MAX_MESSAGE)
@@ -66,21 +80,24 @@ struct Feed {
     /// The feed's place among the open connections.
     _place: Place,
     member: Member,
+    /// Who the feed's client is, for the messages it relays to its machines.
+    asker: Asker,
     /// Which workspace changed; the changes themselves are read from the database, in order.
     changes: Receiver<WorkspaceId>,
     last_seq: u64,
-    offers: Offers,
-}
-
-/// Which features the client offered besides the feed; it hears only of their changes.
-#[derive(Default)]
-struct Offers {
-    tasks: bool,
-    docs: bool,
-    proposals: bool,
+    /// What the client offered besides the feed; it hears only of those features' changes.
+    offers: Vec<Capability>,
+    /// Machines' answers to what the client asked them through the relay.
+    answer_to: mpsc::Sender<Envelope>,
+    answers: mpsc::Receiver<Envelope>,
 }
 
 impl Feed {
+    /// Whether the client offered `feature`.
+    fn hears(&self, feature: Code) -> bool {
+        self.offers.contains(&Capability::from(feature))
+    }
+
     /// Goes on only while the feed's session is live and its account still a member.
     async fn allowed(&self, shared: &Shared) -> Result<(), Closed> {
         let Member {
@@ -118,22 +135,15 @@ async fn run(
     shared: &Shared,
     feed: &mut Feed,
 ) -> Result<Infallible, Closed> {
-    let [feed_offer, tasks, docs, proposals] = [FEED, TASKS, DOCS, PROPOSALS].map(Capability::from);
-    let offered = vec![
-        feed_offer.clone(),
-        tasks.clone(),
-        docs.clone(),
-        proposals.clone(),
-    ];
+    let feed_offer = Capability::from(FEED);
+    let offered = [FEED, TASKS, DOCS, SETTINGS, PROPOSALS]
+        .map(Capability::from)
+        .to_vec();
     let greeted = greet(socket, shared, offered, &feed_offer);
     let hello = timeout(shared.sockets.hello_within, greeted)
         .await
         .map_err(|_| Closed)??;
-    feed.offers = Offers {
-        tasks: hello.capabilities.contains(&tasks),
-        docs: hello.capabilities.contains(&docs),
-        proposals: hello.capabilities.contains(&proposals),
-    };
+    feed.offers = hello.capabilities;
     catch_up(socket, shared, feed).await?;
     let mut pings = Pings::new(shared.sockets.ping_every);
     loop {
@@ -145,8 +155,56 @@ async fn run(
                 Err(RecvError::Closed) => return Err(Closed),
             },
             () = pings.due() => pings.ping(socket, feed.allowed(shared)).await?,
-            frame = socket.recv() => pings.heard(&frame.ok_or(Closed)?)?,
+            Some(answer) = feed.answers.recv() => {
+                feed.allowed(shared).await?;
+                reply(socket, shared, answer.id, answer.message).await?;
+            }
+            frame = socket.recv() => {
+                let frame = frame.ok_or(Closed)?;
+                pings.heard(&frame)?;
+                if let Ok(Frame::Text(text)) = &frame
+                    && let Ok(envelope) = Envelope::from_json(text.as_bytes())
+                {
+                    received(socket, shared, feed, envelope).await?;
+                }
+            }
         }
+    }
+}
+
+/// Gives what the client sent to the feature it is for, if the client offered that feature;
+/// anything else is dropped.
+async fn received(
+    socket: &mut WebSocket,
+    shared: &Shared,
+    feed: &Feed,
+    envelope: Envelope,
+) -> Result<(), Closed> {
+    if feed.hears(SETTINGS) && relay::carries(&envelope.message) {
+        return relay(socket, shared, feed, envelope).await;
+    }
+    Ok(())
+}
+
+/// Relays a message the client sent for one of its machines; the machine answers later, and a
+/// refusal answers at once.
+async fn relay(
+    socket: &mut WebSocket,
+    shared: &Shared,
+    feed: &Feed,
+    envelope: Envelope,
+) -> Result<(), Closed> {
+    feed.allowed(shared).await?;
+    let id = envelope.id;
+    let workspace = feed.member.workspace.id();
+    let ask = Ask {
+        asker: &feed.asker,
+        workspace,
+    };
+    match relay::forward(shared, &ask, envelope, &feed.answer_to).await {
+        Ok(()) => Ok(()),
+        Err(Refusal::Refused(refusal)) => reply(socket, shared, id, Message::Error(refusal)).await,
+        Err(Refusal::Failed(fault)) => Err(feed_failed(shared, workspace, &fault)),
     }
 }
 
@@ -162,9 +220,9 @@ async fn catch_up(socket: &mut WebSocket, shared: &Shared, feed: &mut Feed) -> R
         for update in page {
             feed.last_seq = update.seq;
             let wanted = match update.change {
-                WorkspaceChange::TaskChanged { .. } => feed.offers.tasks,
-                WorkspaceChange::DocChanged { .. } => feed.offers.docs,
-                WorkspaceChange::ProposalChanged { .. } => feed.offers.proposals,
+                WorkspaceChange::TaskChanged { .. } => feed.hears(TASKS),
+                WorkspaceChange::DocChanged { .. } => feed.hears(DOCS),
+                WorkspaceChange::ProposalChanged { .. } => feed.hears(PROPOSALS),
                 // No feed offers `workspace.chats` yet.
                 WorkspaceChange::ChatChanged { .. } => false,
                 WorkspaceChange::MemberJoined { .. } | WorkspaceChange::Newer => true,
@@ -304,7 +362,7 @@ mod tests {
         };
         assert_eq!(
             welcome.capabilities,
-            [FEED, TASKS, DOCS, PROPOSALS].map(Capability::from)
+            [FEED, TASKS, DOCS, SETTINGS, PROPOSALS].map(Capability::from)
         );
         assert_eq!(missed, joined(1, "m1"));
         assert_eq!(live, joined(2, "m2"));
