@@ -331,10 +331,19 @@ mod tests {
 
         // words.rs: an unknown wrapper option, a valued one, and a non-assignment.
         assert_eq!(check("env --foo rm -rf /"), Some(Reason::Unsure));
-        assert_eq!(check("timeout -s 9 60 rm -rf /"), Some(Reason::DeleteOutside));
+        assert_eq!(
+            check("timeout -s 9 60 rm -rf /"),
+            Some(Reason::DeleteOutside)
+        );
 
-        // shell.rs: a line continuation before the first word is skipped.
-        assert_eq!(check("\\\nrm -rf /"), Some(Reason::DeleteOutside));
+        // shell.rs: a `(` after a word is a definition, `((` is arithmetic — both can't be read.
+        assert_eq!(check("f() { rm -rf /; }"), Some(Reason::Unsure));
+        assert_eq!(check("((rm -rf /))"), Some(Reason::Unsure));
+        // words.rs skip_options: a wrapper's valued options are stepped over to reach the command.
+        assert_eq!(
+            check("timeout -k 1 -s 9 60 rm -rf /"),
+            Some(Reason::DeleteOutside)
+        );
 
         // quoting.rs: $HOME at a word's start is the home folder.
         assert_eq!(
