@@ -818,4 +818,30 @@ pub(crate) mod tests {
         assert_eq!(check_command("cd src", &searched), Some(Reason::Unsure));
         assert_eq!(check_command("cd ./src", &searched), None);
     }
+
+    #[test]
+    fn near_misses_of_what_asks_dont_ask() {
+        let dir = TempDir::new().unwrap();
+        let worktree = context(&dir);
+        let main = Context {
+            cwd: dir.join("main"),
+            ..worktree.clone()
+        };
+        let check = |line: &str| check_command(line, &worktree);
+
+        for line in [
+            "rails db:migrate",
+            "npx prisma migrate deploy",
+            "npx prisma generate --reset",
+            "git push origin -- main",
+            "git clone /tmp/repo",
+        ] {
+            assert_eq!(check(line), None, "{line}");
+        }
+        assert_eq!(check_command("git switch -c feature", &main), None);
+        assert!(check_command("git switch -c feature -f", &main).is_some());
+        assert!(check_command("git switch other", &main).is_some());
+        assert_eq!(check("cat ~/.cod${X}"), Some(Reason::Credentials));
+        assert_eq!(check("cat ~/.codex/*${X}"), Some(Reason::Credentials));
+    }
 }

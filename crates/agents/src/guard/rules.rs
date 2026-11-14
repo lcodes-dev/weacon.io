@@ -115,17 +115,11 @@ fn assignments(simple: &Simple, context: &Context, cwd: &Path) -> Option<Reason>
         .iter()
         .filter(|word| is_assignment(word))
         .find_map(|word| {
-            let (name, value) = word.text.split_once('=')?;
+            let (name, _) = word.text.split_once('=')?;
             if name.starts_with("GIT_") && !GIT_HARMLESS.contains(&name) {
                 return Some(Reason::Unsure);
             }
-            // The shell expands a `~` that starts the value.
-            let value = Word {
-                text: value.to_owned(),
-                tilde: value.starts_with('~'),
-                ..word.clone()
-            };
-            read(&value, context, cwd, false)
+            read(word, context, cwd, false)
         })
 }
 
