@@ -175,30 +175,11 @@ mod tests {
     use serde_json::{Value, json};
 
     use super::*;
-    use crate::{Envelope, FrameError, Message, Outcome, RunEvent, RunId, RunState};
-
-    fn run() -> RunId {
-        RunId::try_from("run-7".to_owned()).unwrap()
-    }
+    use crate::test_support::{chat, envelope, request, run, travels, workspace};
+    use crate::{Envelope, FrameError, Message, Outcome, RunEvent, RunState};
 
     fn repo() -> RepoId {
-        RepoId::try_from("site".to_owned()).unwrap()
-    }
-
-    fn workspace() -> WorkspaceId {
-        WorkspaceId::try_from("w-1".to_owned()).unwrap()
-    }
-
-    fn chat() -> ChatId {
-        ChatId::try_from("c-1".to_owned()).unwrap()
-    }
-
-    fn request() -> RequestId {
-        RequestId::try_from("r-1".to_owned()).unwrap()
-    }
-
-    fn envelope(message: Message) -> Envelope {
-        Envelope { id: 4, message }
+        "site".parse().unwrap()
     }
 
     fn command(action: ChatAction) -> Envelope {
@@ -261,15 +242,6 @@ mod tests {
 
     fn entry_wire(event: &Value) -> Value {
         about("chat", "entry", &json!({ "seq": 9, "event": event }))
-    }
-
-    fn travels(envelope: &Envelope, wire: Value) {
-        assert_eq!(serde_json::to_value(envelope).unwrap(), wire);
-        assert_eq!(
-            Envelope::from_json(&envelope.to_json().unwrap()).unwrap(),
-            *envelope
-        );
-        assert_eq!(serde_json::from_value::<Envelope>(wire).unwrap(), *envelope);
     }
 
     fn never_sent(received: impl IntoIterator<Item = Value>) {

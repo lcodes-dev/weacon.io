@@ -209,10 +209,7 @@ mod tests {
     use serde_json::json;
 
     use super::*;
-
-    fn workspace() -> WorkspaceId {
-        WorkspaceId::try_from("w-1".to_owned()).unwrap()
-    }
+    use crate::test_support::workspace;
 
     #[test]
     fn sign_in_bodies_travel_as_plain_json() {
