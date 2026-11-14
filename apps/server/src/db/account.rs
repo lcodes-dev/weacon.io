@@ -9,9 +9,10 @@ use crate::email::Email;
 
 /// How long a code works, in seconds.
 pub(crate) const CODE_LIFETIME: i64 = 600;
-/// How many wrong tries cancel a challenge's code.
+/// How many wrong tries end a challenge.
 const MAX_ATTEMPTS: i64 = 5;
-/// How many live codes one address may have, so a server open to sign-up can't flood an inbox.
+/// How many live codes are mailed to one address, so a server open to sign-up can't flood an
+/// inbox; `ada+1@` and `ada+2@` count apart, though they may reach the same one.
 const MAX_LIVE: i64 = 3;
 
 /// One try at finishing a sign-in. Times are seconds since the Unix epoch.
@@ -52,8 +53,8 @@ impl Db {
             .transpose()
     }
 
-    /// Records `challenge` for `email`, with its code hashed as `code_hash`, unless the address
-    /// has [`MAX_LIVE`] live ones, and says whether it did; ends the expired challenges first.
+    /// Records `challenge` for `email`, with its code hashed as `code_hash`, and says whether
+    /// the code may be mailed: not while the address has [`MAX_LIVE`] mailed live codes.
     pub(crate) async fn start_challenge(
         &self,
         email: &Email,
@@ -67,28 +68,30 @@ impl Db {
             .execute(&mut *transaction)
             .await
             .map_err(failed)?;
-        let started = sqlx::query(
+        let mailed = sqlx::query_scalar(
             "INSERT INTO sign_in_challenges
-                 (challenge_id, email, code_hash, expires_at, attempts)
-             SELECT ?1, ?2, ?3, ?4, 0
-             WHERE (SELECT count(*) FROM sign_in_challenges WHERE email = ?2) < ?5",
+                 (challenge_id, email, code_hash, expires_at, attempts, mailed)
+             VALUES (?1, ?2, ?3, ?4, 0,
+                 (SELECT count(*) FROM sign_in_challenges WHERE email = ?2 AND mailed) < ?5)
+             RETURNING mailed",
         )
         .bind(challenge.as_str())
         .bind(email.as_str())
         .bind(code_hash)
         .bind(now.saturating_add(CODE_LIFETIME))
         .bind(MAX_LIVE)
-        .execute(&mut *transaction)
+        .fetch_one(&mut *transaction)
         .await
         .map_err(failed)?;
         transaction.commit().await.map_err(failed)?;
-        Ok(started.rows_affected() == 1)
+        Ok(mailed)
     }
 
-    /// Trades a challenge's code for a session, and gives the account, made now if the address
-    /// had none and may sign up: `None` when there is no such live challenge for that email, it
-    /// has had too many tries, the code is wrong, which counts as a try, or there is no account
-    /// to sign in to. A right code is used up.
+    /// Trades a code for a session, and gives the account, made now if the address had none
+    /// and may sign up. The code may be any live one mailed to the address, so codes others
+    /// asked for can't lock its owner out. `None` when there is no such live challenge for that
+    /// email, the code is wrong, which counts as a try, or there is no account to sign in to.
+    /// A right code is used up, and a challenge that has had too many tries ends.
     pub(crate) async fn finish_sign_in(
         &self,
         attempt: &Attempt<'_>,
@@ -98,34 +101,24 @@ impl Db {
             .begin_with("BEGIN IMMEDIATE")
             .await
             .map_err(failed)?;
-        let Some(code_hash) = sqlx::query_scalar::<_, Vec<u8>>(
-            "SELECT code_hash FROM sign_in_challenges
-             WHERE challenge_id = ? AND email = ? AND expires_at > ? AND attempts < ?",
+        let live = sqlx::query_scalar::<_, i64>(
+            "SELECT 1 FROM sign_in_challenges
+             WHERE challenge_id = ? AND email = ? AND expires_at > ?",
         )
         .bind(attempt.challenge.as_str())
         .bind(attempt.email.as_str())
         .bind(attempt.now)
-        .bind(MAX_ATTEMPTS)
         .fetch_optional(&mut *transaction)
         .await
-        .map_err(failed)?
-        else {
+        .map_err(failed)?;
+        if live.is_none() {
             return Ok(None);
-        };
-        let right = bool::from(code_hash.ct_eq(attempt.code_hash));
-        let spend = sqlx::query(if right {
-            "DELETE FROM sign_in_challenges WHERE challenge_id = ?"
-        } else {
-            "UPDATE sign_in_challenges SET attempts = attempts + 1 WHERE challenge_id = ?"
-        });
-        spend
-            .bind(attempt.challenge.as_str())
-            .execute(&mut *transaction)
-            .await
-            .map_err(failed)?;
-        let account = if right {
+        }
+        let account = if let Some(used) = matched_code(&mut transaction, attempt).await? {
+            end_challenge(&mut transaction, &used).await?;
             account_for(&mut transaction, attempt).await?
         } else {
+            wrong_try(&mut transaction, attempt.challenge.as_str()).await?;
             None
         };
         if let Some(account) = &account {
@@ -203,6 +196,54 @@ async fn account_for(
         .fetch_optional(connection)
         .await
         .map_err(failed)
+}
+
+/// The challenge whose code `attempt` gives, among the live ones mailed to its address. Every
+/// code is compared in full, so the time taken gives nothing away.
+async fn matched_code(
+    connection: &mut SqliteConnection,
+    attempt: &Attempt<'_>,
+) -> Result<Option<String>, Fault> {
+    let codes = sqlx::query_as::<_, (String, Vec<u8>)>(
+        "SELECT challenge_id, code_hash FROM sign_in_challenges
+         WHERE email = ? AND expires_at > ? AND mailed",
+    )
+    .bind(attempt.email.as_str())
+    .bind(attempt.now)
+    .fetch_all(connection)
+    .await
+    .map_err(failed)?;
+    Ok(codes
+        .into_iter()
+        .fold(None, |found, (challenge, code_hash)| {
+            let right = bool::from(code_hash.ct_eq(attempt.code_hash));
+            found.or_else(|| right.then_some(challenge))
+        }))
+}
+
+async fn end_challenge(connection: &mut SqliteConnection, challenge: &str) -> Result<(), Fault> {
+    sqlx::query("DELETE FROM sign_in_challenges WHERE challenge_id = ?")
+        .bind(challenge)
+        .execute(connection)
+        .await
+        .map_err(failed)?;
+    Ok(())
+}
+
+/// Counts a wrong code against `challenge`, and ends it at [`MAX_ATTEMPTS`].
+async fn wrong_try(connection: &mut SqliteConnection, challenge: &str) -> Result<(), Fault> {
+    sqlx::query("UPDATE sign_in_challenges SET attempts = attempts + 1 WHERE challenge_id = ?")
+        .bind(challenge)
+        .execute(&mut *connection)
+        .await
+        .map_err(failed)?;
+    sqlx::query("DELETE FROM sign_in_challenges WHERE challenge_id = ? AND attempts >= ?")
+        .bind(challenge)
+        .bind(MAX_ATTEMPTS)
+        .execute(connection)
+        .await
+        .map_err(failed)?;
+    Ok(())
 }
 
 /// Starts a session, and ends the expired ones so they don't pile up.
@@ -530,20 +571,63 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn an_address_has_only_so_many_live_codes() {
+    async fn only_so_many_codes_are_mailed_to_an_address_at_once() {
         let dir = TempDir::new().unwrap();
         let db = people(&dir).await;
-        let mut started = Vec::new();
-        for name in ["c1", "c2", "c3", "c4"] {
-            started.push(challenge(&db, "ada@example.com", name, b"code", NOW).await);
+        let mut mailed = Vec::new();
+        for (name, code) in [("c1", b"k1"), ("c2", b"k2"), ("c3", b"k3"), ("c4", b"k4")] {
+            mailed.push(challenge(&db, "ada@example.com", name, code, NOW).await);
         }
-        let other = challenge(&db, "bo@example.com", "c5", b"code", NOW).await;
-        let refused = try_code(&db, "c4", b"code", NOW).await;
-        let later = challenge(&db, "ada@example.com", "c6", b"code", NOW + CODE_LIFETIME).await;
+        let other = challenge(&db, "bo@example.com", "c5", b"k5", NOW).await;
+        // A code that was never mailed works nowhere, not even for its own challenge.
+        let unmailed = try_code(&db, "c4", b"k4", NOW).await;
+        let later = challenge(&db, "ada@example.com", "c6", b"k6", NOW + CODE_LIFETIME).await;
 
-        assert_eq!(started, [true, true, true, false]);
+        assert_eq!(mailed, [true, true, true, false]);
         assert!(other);
-        assert_eq!(refused, None);
+        assert_eq!(unmailed, None);
         assert!(later);
+    }
+
+    #[tokio::test]
+    async fn codes_others_asked_for_still_let_the_address_sign_in() {
+        let dir = TempDir::new().unwrap();
+        let db = people(&dir).await;
+        // Someone else asks three times for ada, and those codes reach her inbox.
+        for (name, code) in [("x1", b"k1"), ("x2", b"k2"), ("x3", b"k3")] {
+            assert!(challenge(&db, "ada@example.com", name, code, NOW).await);
+        }
+        let own = challenge(&db, "ada@example.com", "c1", b"never-sent", NOW).await;
+        let signed_in = try_code(&db, "c1", b"k2", NOW).await;
+        let used = try_code(&db, "c1", b"k2", NOW).await;
+        // Another address's codes don't count.
+        let bo = try_as(&db, "bo@example.com", "x1", b"k1", NOW).await;
+
+        assert!(!own);
+        assert_eq!(signed_in.as_deref(), Some("a1"));
+        assert_eq!(used, None);
+        assert_eq!(bo, None);
+        // Using k2 freed a place, so this one is mailed.
+        assert!(challenge(&db, "ada@example.com", "c2", b"k4", NOW).await);
+        assert_eq!(try_code(&db, "c2", b"k3", NOW).await.as_deref(), Some("a1"));
+    }
+
+    #[tokio::test]
+    async fn a_challenge_that_has_had_too_many_tries_frees_its_place() {
+        let dir = TempDir::new().unwrap();
+        let db = people(&dir).await;
+        for name in ["x1", "x2", "x3"] {
+            challenge(&db, "ada@example.com", name, b"code", NOW).await;
+        }
+        for _ in 0..MAX_ATTEMPTS {
+            assert_eq!(try_code(&db, "x1", b"guess", NOW).await, None);
+        }
+
+        assert_eq!(count(&db, "sign_in_challenges").await, 2);
+        assert!(challenge(&db, "ada@example.com", "c1", b"mine", NOW).await);
+        assert_eq!(
+            try_code(&db, "c1", b"mine", NOW).await.as_deref(),
+            Some("a1")
+        );
     }
 }

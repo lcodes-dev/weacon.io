@@ -84,7 +84,7 @@ async fn send_code(
         return Ok(());
     }
     let code = code_text(&os_secrets()?);
-    let code_hash = shared.secret.code_hash(challenge, &code);
+    let code_hash = shared.secret.code_hash(&email, &code);
     let now = shared.now();
     if !shared
         .db
@@ -180,7 +180,7 @@ async fn signed_in(
     let attempt = Attempt {
         email: &email,
         challenge: &body.challenge,
-        code_hash: &shared.secret.code_hash(&body.challenge, body.code.trim()),
+        code_hash: &shared.secret.code_hash(&email, body.code.trim()),
         token_hash: &token_hash(&token),
         now,
         token_expires_at: now.saturating_add(SESSION_LIFETIME),
@@ -236,8 +236,8 @@ mod tests {
     use crate::db::CODE_LIFETIME;
     use crate::secret::Secret;
     use crate::test_support::{
-        Fixture, ask, bearer, finish_body, fresh_account, member_id, request, request_with, run,
-        sign_in, start_sign_in, status, workspace_id,
+        Fixture, ask, bearer, finish_body, fresh_account, letter_in, member_id, request,
+        request_with, run, sign_in, start_sign_in, status, workspace_id,
     };
 
     async fn finish_with(address: SocketAddr, body: &str) -> (String, Value) {
@@ -552,20 +552,42 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn codes_someone_else_asked_for_still_sign_the_owner_in() {
+        let fixture = Fixture::new().await;
+        let server = run(fixture.shared.clone()).await;
+        for _ in 0..3 {
+            start_sign_in(server.address, "ada@example.com").await;
+        }
+        fixture.settled().await;
+        let inbox = fixture.letters();
+        // Ada's own start is answered as usual, but no more mail is sent.
+        let (_, own) = start_sign_in(server.address, "ada@example.com").await;
+        fixture.settled().await;
+        let mailed_after = fixture.letters().len();
+        let (_, code) = letter_in(&inbox[1]);
+        let finish = finish_body("ada@example.com", &own, &code);
+        let (head, body) = request(server.address, "POST /api/sign-in/finish", &finish).await;
+
+        assert_eq!(mailed_after, 3);
+        assert_eq!(status(&head), "http/1.1 200 ok");
+        assert_eq!(
+            serde_json::from_str::<Value>(&body).unwrap()["email"],
+            "ada@example.com"
+        );
+    }
+
+    #[tokio::test]
     async fn a_wrong_or_late_code_is_refused() {
         let fixture = Fixture::new().await;
         let server = run(fixture.shared.clone()).await;
         let (_, challenge) = start_sign_in(server.address, "ada@example.com").await;
         let (_, code) = fixture.letter().await;
-        let (_, other) = start_sign_in(server.address, "ada@example.com").await;
-        fixture.settled().await;
         let finish = |email: &str, code: &str| finish_body(email, &challenge, code);
         let mut refusals = Vec::new();
         for body in [
             finish("ada@example.com", "00000000"),
             finish("bo@example.com", &code),
             finish("not an email", &code),
-            finish_body("ada@example.com", &other, &code),
         ] {
             refusals.push(finish_with(server.address, &body).await);
         }
