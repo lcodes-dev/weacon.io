@@ -175,7 +175,8 @@ pub(crate) fn run(app: &App, answer: Option<Answer>, out: &mut impl Write) -> Re
         }
         None => current(state_dir),
     };
-    out.write_all(describe(send).as_bytes()).map_err(|error| {
+    let shown = describe(send, app.reporter.is_on());
+    out.write_all(shown.as_bytes()).map_err(|error| {
         Fault::new(
             code!("reports.output_failed"),
             "The answer to error reports couldn't be printed",
@@ -184,9 +185,14 @@ pub(crate) fn run(app: &App, answer: Option<Answer>, out: &mut impl Write) -> Re
     })
 }
 
-fn describe(send: Option<bool>) -> &'static str {
+fn describe(send: Option<bool>, can_send: bool) -> &'static str {
     match send {
-        Some(true) => "Error reports: on. They hold no messages, prompts, code or file contents.\n",
+        Some(true) if can_send => {
+            "Error reports: on. They hold no messages, prompts, code or file contents.\n"
+        }
+        Some(true) => {
+            "Error reports: on, but none are sent until a valid WEACON_SENTRY_DSN is set.\n"
+        }
         Some(false) => "Error reports: off.\n",
         None => "Error reports: off until you choose. Run weacon reports on, or off.\n",
     }
@@ -264,15 +270,41 @@ mod tests {
             before,
             "Error reports: off until you choose. Run weacon reports on, or off.\n"
         );
-        assert!(
-            on.starts_with("Error reports: on. They hold no messages"),
-            "{on}"
+        assert_eq!(
+            on,
+            "Error reports: on, but none are sent until a valid WEACON_SENTRY_DSN is set.\n"
         );
         assert_eq!(kept_on, on);
         assert_eq!(stored_on, r#"{"send":true}"#);
         assert_eq!(off, "Error reports: off.\n");
         assert_eq!(read(&dir).unwrap(), Some(false));
         assert_eq!(reports(&dir, None).unwrap(), off);
+    }
+
+    #[test]
+    fn a_yes_with_a_dsn_says_what_reports_hold() {
+        let dir = TempDir::new().unwrap();
+        let mut app = test_support::app(Some(&dir), None);
+        let reports = weacon_observability::Reports::new(
+            "https://key@sentry.example.com/1",
+            "weacon/0.1.0",
+            "weacon-core@0.1.0+1a2b3c4",
+            "",
+        )
+        .ok();
+        app.base.reporter = Arc::new(weacon_appkit::reporter(
+            reports,
+            false,
+            Box::new(|_| Ok(())),
+        ));
+        let mut out = Vec::new();
+
+        run(&app, Some(Answer::On), &mut out).unwrap();
+
+        assert_eq!(
+            String::from_utf8(out).unwrap(),
+            "Error reports: on. They hold no messages, prompts, code or file contents.\n"
+        );
     }
 
     #[test]
