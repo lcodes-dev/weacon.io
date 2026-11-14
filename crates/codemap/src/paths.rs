@@ -107,6 +107,19 @@ pub(crate) fn imports(declaration: Node<'_>, source: &[u8]) -> Vec<(Segments, Bo
         .collect()
 }
 
+/// What the `use`s inside `item`'s code bring into scope there.
+pub(crate) fn local_imports(item: Node<'_>, source: &[u8]) -> Vec<(Segments, Bound)> {
+    let mut found = Vec::new();
+    preorder(item, |node| {
+        if node.kind() == "use_declaration" {
+            found.extend(imports(node, source));
+            return false;
+        }
+        true
+    });
+    found
+}
+
 fn in_block(node: Node<'_>) -> bool {
     std::iter::successors(node.parent(), Node::parent).any(|parent| parent.kind() == "block")
 }

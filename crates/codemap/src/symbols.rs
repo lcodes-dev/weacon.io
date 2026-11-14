@@ -3,11 +3,13 @@ use std::fmt;
 
 use tree_sitter::{Node, Tree};
 
+mod test_fns;
+
 use crate::Fingerprint;
 use crate::contracts::{Declared, contracts};
-use crate::paths::{self, Bound, Segments, segments};
+use crate::paths::{Bound, Segments, local_imports, segments};
 use crate::refs::{Ref, refs};
-use crate::syntax::{attributes, line, preorder, push_reversed, test_only, text};
+use crate::syntax::{line, preorder, push_reversed, test_only, text};
 
 /// An item declared in a module, named relative to it: `Frame`, `Frame::new`, `tests::helper`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -143,7 +145,7 @@ fn visit<'tree>(
     pending: &mut Pending<'tree>,
 ) {
     if test_only(item, source) {
-        found.tests.extend(tests(item, place, source));
+        found.tests.extend(test_fns::tests(item, place, source));
         return;
     }
     let body = item.child_by_field_name("body");
@@ -277,75 +279,6 @@ fn impl_owner(item: Node<'_>, source: &[u8]) -> (String, String) {
         None => owner.clone(),
     };
     (owner, path)
-}
-
-/// The `#[test]` functions in `item`, a test-only item, each read as if written in `place`.
-fn tests(item: Node<'_>, place: &Place, source: &[u8]) -> Vec<Item> {
-    let mut found = Vec::new();
-    let mut modules = vec![(item, place.clone(), Vec::new())];
-    while let Some((node, place, imports)) = modules.pop() {
-        let name = node
-            .child_by_field_name("name")
-            .map(|name| plain(text(name, source)));
-        match (node.kind(), name, node.child_by_field_name("body")) {
-            ("mod_item", Some(name), Some(body)) => {
-                let inside = Place {
-                    within: [&place.within[..], &[name.to_owned()]].concat(),
-                    owner: None,
-                    prefix: join(&place.prefix, name),
-                };
-                let mut cursor = body.walk();
-                let children: Vec<Node<'_>> = body.named_children(&mut cursor).collect();
-                let mut imports = imports.clone();
-                for child in children
-                    .iter()
-                    .filter(|child| child.kind() == "use_declaration")
-                {
-                    imports.extend(paths::imports(*child, source));
-                }
-                modules.extend(
-                    children
-                        .into_iter()
-                        .map(|child| (child, inside.clone(), imports.clone())),
-                );
-            }
-            ("function_item", Some(name), _) if is_test(node, source) => found.push(Item {
-                symbol: Symbol {
-                    kind: Kind::Fn,
-                    name: join(&place.prefix, name),
-                    line: line(node),
-                    fingerprint: fingerprint(node, source),
-                },
-                within: place.within.clone(),
-                owner: None,
-                imports: [imports, local_imports(node, source)].concat(),
-                refs: refs(node, source),
-                contracts: Vec::new(),
-            }),
-            _ => {}
-        }
-    }
-    found
-}
-
-/// What the `use`s inside `item`'s code bring into scope there.
-fn local_imports(item: Node<'_>, source: &[u8]) -> Vec<(Segments, Bound)> {
-    let mut found = Vec::new();
-    preorder(item, |node| {
-        if node.kind() == "use_declaration" {
-            found.extend(paths::imports(node, source));
-            return false;
-        }
-        true
-    });
-    found
-}
-
-fn is_test(function: Node<'_>, source: &[u8]) -> bool {
-    attributes(function).any(|node| {
-        let attribute: String = text(node, source).split_whitespace().collect();
-        attribute == "#[test]" || attribute.ends_with("::test]")
-    })
 }
 
 /// `Frame` for `fmt::Frame`, `Frame<T>`, `&mut Frame` or `dyn Frame`; `T` for `[T]`.
