@@ -1,5 +1,4 @@
 use std::collections::BTreeSet;
-use std::fmt;
 
 use weacon_protocol::{DocAnchors, DocId, DocPin, links_to_code};
 
@@ -26,18 +25,6 @@ pub enum DocTextError {
     /// A pin or a commit that no link needs, or two pins for one anchor.
     Unlinked,
 }
-
-impl fmt::Display for DocTextError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(match self {
-            Self::TooLarge => "the doc is larger than the limit",
-            Self::Unpinned => "the doc links to an anchor it has no pin for",
-            Self::Unlinked => "the doc's pins don't match its links",
-        })
-    }
-}
-
-impl std::error::Error for DocTextError {}
 
 impl DocText {
     /// # Errors
@@ -130,21 +117,10 @@ pub struct Doc {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ReviseError {
     /// The doc was revised since the revision the new text was written against.
-    Stale { current: Revision },
+    Stale,
     /// The doc is at the last revision there is.
     LastVersion,
 }
-
-impl fmt::Display for ReviseError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(match self {
-            Self::Stale { .. } => "the doc has changed since it was read",
-            Self::LastVersion => "the doc can't be revised any more",
-        })
-    }
-}
-
-impl std::error::Error for ReviseError {}
 
 impl Doc {
     /// A new doc, at its first revision.
@@ -164,9 +140,7 @@ impl Doc {
     /// When the doc has changed since `read_at`, or no revision is left.
     pub fn revise(mut self, read_at: Revision, text: DocText) -> Result<Self, ReviseError> {
         if read_at != self.version {
-            return Err(ReviseError::Stale {
-                current: self.version,
-            });
+            return Err(ReviseError::Stale);
         }
         self.version = self.version.next().ok_or(ReviseError::LastVersion)?;
         self.text = text;
@@ -307,9 +281,7 @@ mod tests {
         for read_at in [Revision::FIRST, Revision::new(3)] {
             assert_eq!(
                 revised.clone().revise(read_at, next()),
-                Err(ReviseError::Stale {
-                    current: Revision::new(2)
-                })
+                Err(ReviseError::Stale)
             );
         }
         let last = Doc {
@@ -320,36 +292,5 @@ mod tests {
             last.revise(Revision::new(u64::MAX), next()),
             Err(ReviseError::LastVersion)
         );
-    }
-
-    #[test]
-    fn errors_say_what_went_wrong() {
-        for (error, message) in [
-            (
-                DocTextError::TooLarge.to_string(),
-                "the doc is larger than the limit",
-            ),
-            (
-                DocTextError::Unpinned.to_string(),
-                "the doc links to an anchor it has no pin for",
-            ),
-            (
-                DocTextError::Unlinked.to_string(),
-                "the doc's pins don't match its links",
-            ),
-            (
-                ReviseError::Stale {
-                    current: Revision::FIRST,
-                }
-                .to_string(),
-                "the doc has changed since it was read",
-            ),
-            (
-                ReviseError::LastVersion.to_string(),
-                "the doc can't be revised any more",
-            ),
-        ] {
-            assert_eq!(error, message);
-        }
     }
 }
