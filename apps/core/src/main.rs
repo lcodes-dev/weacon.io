@@ -6,6 +6,14 @@ mod cli;
 mod daemon;
 mod disk;
 mod doctor;
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "chats start their agents in worktrees once wired in"
+    )
+)]
+mod git;
 mod map;
 mod mcp;
 mod memory;
