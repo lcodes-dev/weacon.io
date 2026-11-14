@@ -11,6 +11,7 @@ use weacon_protocol::{
     code,
 };
 
+use crate::app::blocking;
 use crate::platform;
 
 // An entry, and a window of entries, each fit one frame with room for what travels with them.
@@ -292,14 +293,6 @@ impl Log {
             .copied()
             .unwrap_or(self.end)
     }
-}
-
-async fn blocking<T: Send + 'static>(
-    work: impl FnOnce() -> io::Result<T> + Send + 'static,
-) -> io::Result<T> {
-    tokio::task::spawn_blocking(work)
-        .await
-        .unwrap_or_else(|error| Err(io::Error::other(error)))
 }
 
 #[cfg(test)]

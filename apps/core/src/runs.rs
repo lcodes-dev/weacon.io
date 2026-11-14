@@ -13,6 +13,8 @@ use weacon_protocol::{
     AgentKind, AgentSession, ChatId, RequestId, RunId, RunState, WorkspaceId, code,
 };
 
+use crate::app::blocking;
+
 #[derive(Debug)]
 pub(crate) struct Runs {
     path: PathBuf,
@@ -211,9 +213,8 @@ impl Runs {
         let not_saved = || Fault::new(code!("runs.not_saved"), "The runs journal can't be saved");
         let json = serde_json::to_vec(&next).map_err(|error| not_saved().because(error))?;
         let path = self.path.clone();
-        tokio::task::spawn_blocking(move || weacon_appkit::write_whole(&path, &json))
+        blocking(move || weacon_appkit::write_whole(&path, &json))
             .await
-            .unwrap_or_else(|error| Err(io::Error::other(error)))
             .map_err(|error| not_saved().because(error))?;
         self.journal = next;
         Ok(())
