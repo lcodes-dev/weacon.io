@@ -1,7 +1,8 @@
 # `emit` only prints what `instructions` returns, and its tests cover that.
 # `flush` on a file opened for appending does nothing that a test could see.
 # `random_id` joins two halves that never overlap, so `|` and `^` give the same id; so do the
-# flags `open_pair` opens with.
+# flags `open_pair` opens with, where `&` leaves the master blocking: a test catches that, but
+# the terminal tests hang on it instead of failing.
 # A `Lines::next` that always returns a line never ends, so every reader spins instead of failing.
 # Windows and macOS code isn't built on Linux, where mutation tests run; the Windows CI job
 # tests the Windows code.
@@ -10,7 +11,7 @@ exclude_re = [
     "replace emit with \\(\\)",
     "replace <impl Write for RotatingFile>::flush",
     "replace \\| with \\^ in random_id",
-    "replace \\| with \\^ in open_pair",
+    "replace \\| with (\\^|&) in open_pair",
     "windows::",
     "replace Lines<R>::next -> io::Result<Option<Vec<u8>>> with Ok\\(Some",
 ]
