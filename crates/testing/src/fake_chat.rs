@@ -110,18 +110,28 @@ impl FakeChat {
             }
             return self.query(envelope.id, query);
         }
-        if let Message::ChatCommand(ChatCommand {
+        let Message::ChatCommand(ChatCommand {
             workspace,
             chat,
             request,
             action,
             ..
         }) = &envelope.message
-            && self.is(workspace, chat)
-        {
-            return self.command(request, action);
+        else {
+            return Vec::new();
+        };
+        if !self.is(workspace, chat) {
+            return Vec::new();
         }
-        Vec::new()
+        let seq = self.seq();
+        self.command(request, action);
+        let mut told = self.told_since(seq);
+        if matches!(action, ChatAction::Prompt { text, .. } if text == LOSE)
+            && let Some(id) = self.subscription.take()
+        {
+            told.push(self.envelope(id, ChatAnswerKind::EventsLost));
+        }
+        told
     }
 
     /// Commits a recorded event of a run; what tells the client of it, if it subscribed.
@@ -132,39 +142,9 @@ impl FakeChat {
         if !self.plays(envelope) {
             return Vec::new();
         }
-        let run = &update.run;
-        let delta = matches!(update.event, RunEvent::TextDelta { .. });
-        let event = ChatEvent::Run {
-            update: update.clone(),
-        };
-        let Some(state) = self.last(run).map(|status| status.state) else {
-            return if delta {
-                Vec::new()
-            } else {
-                self.commit(event)
-            };
-        };
-        // The recording's run goes idle at the end of each pass, and runs again with the next.
-        if matches!(update.event, RunEvent::Finished { .. }) {
-            let mut told = self.commit(event);
-            told.extend(self.status(run, RunState::Idle));
-            return told;
-        }
-        let asks = matches!(update.event, RunEvent::PermissionAsked { .. });
-        let mut told = if state == RunState::Idle {
-            self.status(run, RunState::Running)
-        } else {
-            Vec::new()
-        };
-        // Deltas stream to the client as they are, and are never committed.
-        if delta {
-            return told;
-        }
-        told.extend(self.commit(event));
-        if asks {
-            told.extend(self.status(run, RunState::Waiting));
-        }
-        told
+        let seq = self.seq();
+        self.play(update);
+        self.told_since(seq)
     }
 
     /// Whether a recorded message is still played: not one of a run a person stopped.
@@ -201,12 +181,7 @@ impl FakeChat {
             }
             ChatQueryKind::Subscribe { after } if *after <= self.seq() => {
                 self.subscription = Some(id);
-                let missed = self
-                    .entries
-                    .iter()
-                    .filter(|entry| entry.seq > *after)
-                    .cloned();
-                missed.map(|entry| self.update(id, entry)).collect()
+                self.told_since(*after)
             }
             ChatQueryKind::Subscribe { .. } => vec![self.envelope(id, ChatAnswerKind::EventsLost)],
             ChatQueryKind::Newer => Vec::new(),
@@ -214,54 +189,46 @@ impl FakeChat {
     }
 
     // A command's receipt is an event in the log, as a core's is.
-    fn command(&mut self, request: &RequestId, action: &ChatAction) -> Vec<Envelope> {
-        let mut told = self.commit(ChatEvent::Receipt {
+    fn command(&mut self, request: &RequestId, action: &ChatAction) {
+        self.commit(ChatEvent::Receipt {
             receipt: Receipt {
                 request: request.clone(),
                 outcome: Outcome::Accepted,
             },
         });
         match action {
-            ChatAction::Prompt { text, agent, .. } => {
-                told.extend(self.commit(ChatEvent::Prompt {
-                    request: request.clone(),
-                    text: text.clone(),
-                    repo: None,
-                    agent: *agent,
-                }));
-                if text == LOSE
-                    && let Some(id) = self.subscription.take()
-                {
-                    told.push(self.envelope(id, ChatAnswerKind::EventsLost));
-                }
-            }
-            ChatAction::Permission { answer } => told.extend(self.answered(answer)),
+            ChatAction::Prompt { text, agent, .. } => self.commit(ChatEvent::Prompt {
+                request: request.clone(),
+                text: text.clone(),
+                repo: None,
+                agent: *agent,
+            }),
+            ChatAction::Permission { answer } => self.answered(answer),
             ChatAction::Interrupt => {
                 let working = self
                     .statuses()
                     .next_back()
                     .filter(|status| matches!(status.state, RunState::Running | RunState::Waiting));
                 if let Some(run) = working.map(|status| status.run.clone()) {
-                    told.extend(self.finish(&run, Outcome::Interrupted));
+                    self.finish(&run, Outcome::Interrupted);
                     self.stopped.push(run);
                 }
             }
             ChatAction::Newer => {}
         }
-        told
     }
 
     // Commits the answer to a prompt still waiting, then plays the turn it lets the run finish.
-    fn answered(&mut self, answer: &PermissionAnswer) -> Vec<Envelope> {
+    fn answered(&mut self, answer: &PermissionAnswer) {
         if !ChatRuns::fold(&self.entries).waits(&answer.run, answer.prompt) {
-            return Vec::new();
+            return;
         }
         let reply = if answer.allow {
             "The tests pass."
         } else {
             "I won't run them, then."
         };
-        let mut told = self.commit(ChatEvent::Run {
+        self.commit(ChatEvent::Run {
             update: RunUpdate {
                 run: answer.run.clone(),
                 event: RunEvent::PermissionAnswered {
@@ -269,58 +236,86 @@ impl FakeChat {
                 },
             },
         });
-        told.extend(self.status(&answer.run, RunState::Running));
-        told.extend(self.commit(said(&answer.run, reply)));
-        told.extend(self.finish(&answer.run, Outcome::Completed));
-        told
+        self.status(&answer.run, RunState::Running);
+        self.commit(said(&answer.run, reply));
+        self.finish(&answer.run, Outcome::Completed);
     }
 
-    fn prompt(&mut self, request: &str, text: &str) -> Result<Vec<Envelope>, String> {
+    // The recording's run goes idle at the end of each pass, and runs again with the next.
+    fn play(&mut self, update: &RunUpdate) {
+        let run = &update.run;
+        let known = self.last(run).map(|status| status.state);
+        let finished = matches!(update.event, RunEvent::Finished { .. });
+        if known == Some(RunState::Idle) && !finished {
+            self.status(run, RunState::Running);
+        }
+        // Deltas stream to the client as they are, and are never committed.
+        if !matches!(update.event, RunEvent::TextDelta { .. }) {
+            self.commit(ChatEvent::Run {
+                update: update.clone(),
+            });
+        }
+        if known.is_none() {
+            return;
+        }
+        if finished {
+            self.status(run, RunState::Idle);
+        } else if matches!(update.event, RunEvent::PermissionAsked { .. }) {
+            self.status(run, RunState::Waiting);
+        }
+    }
+
+    fn prompt(&mut self, request: &str, text: &str) -> Result<(), String> {
         let request = RequestId::try_from(request.to_owned())?;
-        Ok(self.commit(ChatEvent::Prompt {
+        self.commit(ChatEvent::Prompt {
             request,
             text: text.to_owned(),
             repo: None,
             agent: None,
-        }))
+        });
+        Ok(())
     }
 
-    fn finish(&mut self, run: &RunId, outcome: Outcome) -> Vec<Envelope> {
-        let mut told = self.commit(ChatEvent::Run {
+    fn finish(&mut self, run: &RunId, outcome: Outcome) {
+        self.commit(ChatEvent::Run {
             update: RunUpdate {
                 run: run.clone(),
                 event: RunEvent::Finished { outcome },
             },
         });
-        told.extend(self.status(run, RunState::Idle));
-        told
+        self.status(run, RunState::Idle);
     }
 
     // A run's state, under the agent its last status named.
-    fn status(&mut self, run: &RunId, state: RunState) -> Vec<Envelope> {
+    fn status(&mut self, run: &RunId, state: RunState) {
         let agent = self.last(run).and_then(|status| status.agent.clone());
-        self.start(run, state, agent)
+        self.start(run, state, agent);
     }
 
-    fn start(&mut self, run: &RunId, state: RunState, agent: Option<AgentRef>) -> Vec<Envelope> {
+    fn start(&mut self, run: &RunId, state: RunState, agent: Option<AgentRef>) {
         let status = RunStatus {
             run: run.clone(),
             state,
             agent,
         };
-        self.commit(ChatEvent::RunStatus { status })
+        self.commit(ChatEvent::RunStatus { status });
     }
 
-    fn commit(&mut self, event: ChatEvent) -> Vec<Envelope> {
+    fn commit(&mut self, event: ChatEvent) {
         let entry = ChatEntry {
             seq: self.seq() + 1,
             event,
         };
-        self.entries.push(entry.clone());
-        self.subscription
-            .map(|id| self.update(id, entry))
-            .into_iter()
-            .collect()
+        self.entries.push(entry);
+    }
+
+    // What tells the subscriber of the entries after `seq`.
+    fn told_since(&self, seq: u64) -> Vec<Envelope> {
+        let Some(id) = self.subscription else {
+            return Vec::new();
+        };
+        let after = self.entries.iter().filter(|entry| entry.seq > seq);
+        after.map(|entry| self.update(id, entry.clone())).collect()
     }
 
     fn seq(&self) -> u64 {
