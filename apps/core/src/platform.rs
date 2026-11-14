@@ -171,6 +171,11 @@ mod unix {
         Ok(u64::from(stats.f_bavail).saturating_mul(stats.f_frsize))
     }
 
+    /// Lets anyone run `file`, and only its owner change it.
+    pub(crate) fn make_runnable(file: &Path) -> io::Result<()> {
+        fs::set_permissions(file, fs::Permissions::from_mode(0o755))
+    }
+
     pub(crate) fn create_private(dir: &Path) -> io::Result<()> {
         use std::os::unix::fs::DirBuilderExt;
         fs::DirBuilder::new()
@@ -309,6 +314,11 @@ mod windows {
             return Err(io::Error::last_os_error());
         }
         Ok(available)
+    }
+
+    /// Windows runs any file whose name ends in `.exe`.
+    pub(crate) fn make_runnable(_file: &Path) -> io::Result<()> {
+        Ok(())
     }
 
     /// Creates `dir`, making it private if it's new; parents get the access they inherit.
