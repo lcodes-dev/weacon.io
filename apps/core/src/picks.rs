@@ -80,7 +80,7 @@ mod tests {
 
         assert_eq!(picks.read(&first.request).unwrap(), Some(first));
         let file = fs::metadata(dir.join("picks/pick-p-1.json")).unwrap();
-        assert_ne!(weacon_appkit::owner_only(&file), Some(false));
+        assert_ne!(weacon_appkit::is_private(&file), Some(false));
         assert!(matches!(
             picks.keep(&pick("p-1", "<button>Other</button>")),
             Err(KeepError::Conflict)

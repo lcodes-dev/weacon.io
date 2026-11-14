@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 
 use hmac::{Hmac, Mac};
 use sha2::Sha256;
-use weacon_appkit::{owner_only, private_append, sync_dir};
+use weacon_appkit::{is_private, private_append, sync_dir};
 use weacon_observability::{Fault, Logger};
 use weacon_protocol::code;
 
@@ -35,7 +35,7 @@ impl Secret {
 
     fn read(mut file: File, log: &Logger) -> Result<Self, Fault> {
         let metadata = file.metadata().map_err(unreadable)?;
-        match owner_only(&metadata) {
+        match is_private(&metadata) {
             Some(true) => {}
             Some(false) => {
                 return Err(Fault::new(
@@ -163,7 +163,7 @@ mod tests {
         let metadata = fs::metadata(dir.join("secret")).unwrap();
 
         assert_eq!(metadata.len(), 32);
-        assert_ne!(owner_only(&metadata), Some(false));
+        assert_ne!(is_private(&metadata), Some(false));
         assert_eq!(hash(&first), hash(&again));
         assert_ne!(hash(&first), hash(&other));
         assert_eq!(names(&dir), ["other", "secret"]);
@@ -239,7 +239,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let (log, records) = recording_logger();
         Secret::open(&dir.join("secret"), &log).unwrap();
-        let unknown = owner_only(&fs::metadata(dir.join("secret")).unwrap()).is_none();
+        let unknown = is_private(&fs::metadata(dir.join("secret")).unwrap()).is_none();
 
         assert_eq!(messages(&records).contains(&"secret unchecked"), unknown);
     }

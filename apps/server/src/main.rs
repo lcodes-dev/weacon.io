@@ -61,7 +61,12 @@ fn main() -> ExitCode {
         Command::Serve(_) => json_lines(io::stdout()),
         Command::Admin(_) => json_lines(io::stderr()),
     };
-    let app = app::start(version, logs, weacon_appkit::http(), dsn.as_deref());
+    let app = app::start(
+        version,
+        logs,
+        weacon_appkit::deliver_over_https(),
+        dsn.as_deref(),
+    );
     std::panic::set_hook(app.panic_hook(app::panicked));
     let runtime = weacon_appkit::runtime(tokio::runtime::Builder::new_multi_thread());
     let result = runtime.and_then(|runtime| {
