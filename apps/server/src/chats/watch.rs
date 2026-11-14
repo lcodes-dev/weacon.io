@@ -377,7 +377,7 @@ mod tests {
             machine: id(&machine),
             owner: owner.unwrap(),
         };
-        let offers = vec![Capability::from(code!("chat.serve"))];
+        let offers = vec![Capability::new(code!("chat.serve"))];
         let attached = fixture.shared.links.open(connected, offers);
         (paired.session, machine, attached)
     }

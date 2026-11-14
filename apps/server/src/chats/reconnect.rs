@@ -74,7 +74,7 @@ mod tests {
             .await
             .unwrap();
         make(workspace, "c-3", "m1", NOW).await.unwrap();
-        workspace.close("c-3", "r-c-3").await;
+        workspace.close_request("c-3", "r-c-3").await;
         workspace.move_chats_to(&ada.machine).await;
         let mut attached = attach(shared, &ada, &["chat.serve"]);
         let connected = Connected {

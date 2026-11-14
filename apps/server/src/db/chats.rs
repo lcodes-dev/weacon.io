@@ -302,7 +302,7 @@ mod tests {
         }
         make(&two, "c-1", "m2", NOW).await.unwrap();
         for chat in ["c-2", "c-3"] {
-            one.close(chat, &format!("r-{chat}")).await;
+            one.close_request(chat, &format!("r-{chat}")).await;
         }
         let running = status(RunState::Running);
         let idle = status(RunState::Idle);

@@ -20,7 +20,7 @@ pub(crate) fn send(shared: &Shared, machine: &MachineId, message: Message) -> Re
     };
     shared
         .links
-        .send(machine, &Capability::from(SERVE), envelope)
+        .send(machine, &Capability::new(SERVE), envelope)
         .map_err(|_| offline())
 }
 
