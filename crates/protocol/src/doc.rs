@@ -383,6 +383,7 @@ mod tests {
                 version: 1,
                 author: Author::Agent {
                     owner: member.clone(),
+                    agent: None,
                 },
                 accepted_by: member,
                 at: 1_700_000_000,

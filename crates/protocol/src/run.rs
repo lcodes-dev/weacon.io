@@ -191,7 +191,9 @@ pub enum AgentOwner {
 }
 
 impl AgentRef {
-    pub(crate) const fn is_newer(&self) -> bool {
+    /// Whether its kind or owner is one this build doesn't know.
+    #[must_use]
+    pub const fn is_newer(&self) -> bool {
         matches!(self.kind, AgentKind::Newer) || matches!(self.owner, AgentOwner::Newer)
     }
 }

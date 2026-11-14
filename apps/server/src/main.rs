@@ -35,10 +35,10 @@ use std::time::SystemTime;
 
 use tokio::net::TcpListener;
 use tokio::sync::{Semaphore, broadcast};
+use weacon_appkit::{App, Ending};
 use weacon_observability::{Fault, Logger, json_lines};
 use weacon_protocol::code;
 
-use crate::app::App;
 use crate::cli::{Command, Serve};
 use crate::db::Db;
 use crate::http::Shared;
@@ -65,8 +65,13 @@ fn main() -> ExitCode {
         Command::Serve(_) => json_lines(io::stdout()),
         Command::Admin(_) => json_lines(io::stderr()),
     };
-    let app = App::start(version, logs, weacon_appkit::http(), dsn.as_deref());
-    std::panic::set_hook(app.panic_hook());
+    let app = app::start(
+        version,
+        logs,
+        weacon_appkit::deliver_over_https(),
+        dsn.as_deref(),
+    );
+    std::panic::set_hook(app.panic_hook(app::panicked));
     let runtime = weacon_appkit::runtime(tokio::runtime::Builder::new_multi_thread());
     let result = runtime.and_then(|runtime| {
         runtime.block_on(async {
@@ -78,7 +83,7 @@ fn main() -> ExitCode {
             }
         })
     });
-    app.finish(result)
+    app.finish(result.map(Ending::from))
 }
 
 /// Serves until Ctrl-C or the system asks the server to stop.
