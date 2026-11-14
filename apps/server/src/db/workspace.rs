@@ -134,7 +134,7 @@ mod tests {
 
     use super::*;
     use crate::db::schema::{steps, steps_before};
-    use crate::db::{Attempt, NewWorkspace};
+    use crate::db::{Attempt, NewChallenge, NewWorkspace};
     use crate::test_support::{email, fresh_account, member_id, two_teams, workspace_id};
 
     async fn accounts(db: &Db) -> Vec<(String, String)> {
@@ -207,9 +207,14 @@ mod tests {
     async fn session(db: &Db, address: &str, token: &[u8]) {
         let (address, challenge) = (email(address), ChallengeId::try_from("c".to_owned()));
         let challenge = challenge.unwrap();
-        db.start_challenge(&address, &challenge, b"code", 100)
-            .await
-            .unwrap();
+        let new = NewChallenge {
+            email: &address,
+            id: &challenge,
+            code_hash: b"code",
+            now: 100,
+            expires_at: 700,
+        };
+        db.start_challenge(&new).await.unwrap();
         let attempt = Attempt {
             email: &address,
             challenge: &challenge,

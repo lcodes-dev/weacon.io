@@ -7,13 +7,20 @@ use super::account::{NewWorkspace, ensure_personal};
 use super::{Db, exists, failed, stored, unreadable};
 use crate::email::Email;
 
-/// How long a code works, in seconds.
-pub(crate) const CODE_LIFETIME: i64 = 10 * 60;
 /// How many wrong tries end a challenge.
 const MAX_ATTEMPTS: i64 = 5;
 /// How many live codes are mailed to one address, so a server open to sign-up can't flood an
 /// inbox; `ada+1@` and `ada+2@` count apart, though they may reach the same one.
 const MAX_LIVE: i64 = 3;
+
+/// A sign-in code to record, as `code_hash`. Times are seconds since the Unix epoch.
+pub(crate) struct NewChallenge<'a> {
+    pub(crate) email: &'a Email,
+    pub(crate) id: &'a ChallengeId,
+    pub(crate) code_hash: &'a [u8],
+    pub(crate) now: i64,
+    pub(crate) expires_at: i64,
+}
 
 /// One try at finishing a sign-in. Times are seconds since the Unix epoch.
 pub(crate) struct Attempt<'a> {
@@ -53,18 +60,12 @@ impl Db {
             .transpose()
     }
 
-    /// Records `challenge` for `email`, with its code hashed as `code_hash`, and says whether
-    /// the code may be mailed: not while the address has [`MAX_LIVE`] mailed live codes.
-    pub(crate) async fn start_challenge(
-        &self,
-        email: &Email,
-        challenge: &ChallengeId,
-        code_hash: &[u8],
-        now: i64,
-    ) -> Result<bool, Fault> {
+    /// Records `new`, and says whether its code may be mailed: not while the address has
+    /// [`MAX_LIVE`] mailed live codes.
+    pub(crate) async fn start_challenge(&self, new: &NewChallenge<'_>) -> Result<bool, Fault> {
         let mut transaction = self.writer.begin().await.map_err(failed)?;
         sqlx::query("DELETE FROM sign_in_challenges WHERE expires_at <= ?")
-            .bind(now)
+            .bind(new.now)
             .execute(&mut *transaction)
             .await
             .map_err(failed)?;
@@ -75,10 +76,10 @@ impl Db {
                  (SELECT count(*) FROM sign_in_challenges WHERE email = ?2 AND mailed) < ?5)
              RETURNING mailed",
         )
-        .bind(challenge.as_str())
-        .bind(email.as_str())
-        .bind(code_hash)
-        .bind(now.saturating_add(CODE_LIFETIME))
+        .bind(new.id.as_str())
+        .bind(new.email.as_str())
+        .bind(new.code_hash)
+        .bind(new.expires_at)
         .bind(MAX_LIVE)
         .fetch_one(&mut *transaction)
         .await
@@ -281,6 +282,8 @@ mod tests {
     use crate::db::test_support::{NOW, id};
     use crate::test_support::{email, member_id, workspace_id};
 
+    use crate::sign_in::CODE_LIFETIME;
+
     fn personal(name: &str) -> NewWorkspace {
         NewWorkspace {
             id: workspace_id(&format!("p-{name}")),
@@ -299,10 +302,17 @@ mod tests {
     }
 
     // Starts challenge `name` for the address `who`, with `code`.
+    // A code that works for a code's lifetime from `now`.
     async fn challenge(db: &Db, who: &str, name: &str, code: &[u8], now: i64) -> bool {
-        db.start_challenge(&email(who), &id(name), code, now)
-            .await
-            .unwrap()
+        let (email, id) = (email(who), id(name));
+        let new = NewChallenge {
+            email: &email,
+            id: &id,
+            code_hash: code,
+            now,
+            expires_at: now + CODE_LIFETIME,
+        };
+        db.start_challenge(&new).await.unwrap()
     }
 
     // A try by `who` at challenge `name` with `code` at `now`, and the account it signs in to;

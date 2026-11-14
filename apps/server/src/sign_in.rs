@@ -16,7 +16,7 @@ use weacon_protocol::{
 use crate::app::{fresh, new_id};
 use crate::auth::{Sender, Session, Unproven, proof, sender, set_session_cookie, token_hash};
 use crate::client::Client;
-use crate::db::Attempt;
+use crate::db::{Attempt, NewChallenge};
 use crate::email::Email;
 use crate::http::{Body, Shared, cross_site, failure, report, too_many, unauthorized};
 use crate::limit::{HOUR, Limit};
@@ -25,6 +25,8 @@ use crate::secret::{random_failed, random_token, random_u64};
 use crate::sign_up;
 use crate::workspaces;
 
+/// How long a mailed code works, in seconds.
+pub(crate) const CODE_LIFETIME: i64 = 10 * 60;
 /// How long a session lasts, in seconds.
 pub(crate) const SESSION_LIFETIME: i64 = 30 * 24 * 60 * 60;
 /// How many sign-ins may be worked on at once after their answer.
@@ -84,11 +86,14 @@ async fn send_code(
     let code = code_text(random_u64()?);
     let code_hash = shared.secret.sign_in_code_hash(&email, &code);
     let now = shared.now();
-    if !shared
-        .db
-        .start_challenge(&email, challenge, &code_hash, now)
-        .await?
-    {
+    let new = NewChallenge {
+        email: &email,
+        id: challenge,
+        code_hash: &code_hash,
+        now,
+        expires_at: now.saturating_add(CODE_LIFETIME),
+    };
+    if !shared.db.start_challenge(&new).await? {
         return Ok(());
     }
     let outbox = shared.outbox.clone();
@@ -221,7 +226,6 @@ mod tests {
 
     use super::*;
     use crate::auth::SESSION_COOKIE;
-    use crate::db::CODE_LIFETIME;
     use crate::secret::Secret;
     use crate::test_support::{
         Fixture, ask, bearer, finish_body, fresh_account, letter_in, member_id, request,
