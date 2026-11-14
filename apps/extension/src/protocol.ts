@@ -1628,6 +1628,9 @@ export type WorktreeAction = (
     kind: "open_pull_request";
     title: string;
   }
+  | {
+    kind: "open_terminal";
+  }
 );
 
 /**
@@ -1658,6 +1661,9 @@ export type WorktreeAnswerKind = (
   | {
     kind: "pull_request_page";
     url: DownloadUrl;
+  }
+  | {
+    kind: "terminal_opened";
   }
 );
 
