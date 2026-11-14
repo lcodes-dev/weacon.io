@@ -81,13 +81,7 @@ pub(crate) fn run(app: &App, origin: &str) -> Result<(), Fault> {
     let socket = socket_path(state_dir);
     let runtime = runtime()?;
     let relayed = runtime.block_on(async {
-        let daemon = weacon_client::connect(&socket).await.map_err(|error| {
-            Fault::new(
-                code!("daemon.unreachable"),
-                "The daemon can't be reached; start it with weacon daemon",
-            )
-            .because(error)
-        })?;
+        let daemon = weacon_client::connect(&socket).await?;
         let relay = Box::pin(relay(
             tokio::io::stdin(),
             tokio::io::stdout(),
@@ -198,7 +192,7 @@ mod tests {
     use weacon_testing::TempDir;
 
     use super::*;
-    use crate::test_support::{self, messages, recording_logger};
+    use crate::test_support::{self, Broken, messages, recording_logger};
 
     fn app(state_dir: Option<&Path>) -> App {
         test_support::app(state_dir, None)
@@ -259,7 +253,7 @@ mod tests {
             "native_host.origin_refused"
         );
         assert_eq!(code(run(&app(None), ORIGIN)), "state.unavailable");
-        assert_eq!(code(run(&app(Some(&dir)), ORIGIN)), "daemon.unreachable");
+        assert_eq!(code(run(&app(Some(&dir)), ORIGIN)), "daemon.not_running");
     }
 
     fn error(id: u32) -> Envelope {
@@ -375,19 +369,6 @@ mod tests {
             assert_eq!(messages(&records), ["native message refused"]);
             assert!(logged.contains(code), "{logged}");
             assert_eq!(daemon.read(&mut [0; 16]).await.unwrap(), 0);
-        }
-    }
-
-    // A reader that fails as a broken pipe would.
-    struct Broken;
-
-    impl AsyncRead for Broken {
-        fn poll_read(
-            self: std::pin::Pin<&mut Self>,
-            _: &mut std::task::Context<'_>,
-            _: &mut tokio::io::ReadBuf<'_>,
-        ) -> std::task::Poll<io::Result<()>> {
-            std::task::Poll::Ready(Err(io::ErrorKind::BrokenPipe.into()))
         }
     }
 

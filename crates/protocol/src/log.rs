@@ -1,6 +1,7 @@
 use schemars::JsonSchema;
-use serde::{Deserialize, Deserializer, Serialize, de};
+use serde::{Deserialize, Serialize};
 
+use crate::token::checked_string;
 use crate::{Code, RequestId, RunId};
 
 const EVENT_MAX: usize = 40;
@@ -9,6 +10,7 @@ const EVENT_WORDS: usize = 4;
 // The schema's form of `is_event`; a test keeps the two in step.
 const EVENT_PATTERN: &str = r"^[a-z][a-z_]*( [a-z_]+){0,3}$";
 
+// No `Newer`: the levels are fixed, and a record at a level the receiver doesn't know is refused.
 #[derive(
     Clone,
     Copy,
@@ -40,13 +42,13 @@ pub enum Level {
     Fatal,
 }
 
-/// A log record from a client that has no log of its own, such as the web app: an event name and
-/// typed ids. The receiver logs only events it knows, so no other text reaches its log.
+/// A log record from a client that has no log of its own, such as the web app: an event name
+/// and typed ids, sent only to a peer that offers `log.forward`. The receiver logs only events
+/// it knows, so no other text reaches its log.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ClientLog {
     pub level: Level,
     pub msg: LogEvent,
-    // These are left out rather than null, so the schema and the generated types say so too.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(with = "RunId")]
     pub run_id: Option<RunId>,
@@ -63,31 +65,7 @@ pub struct ClientLog {
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, JsonSchema)]
 pub struct LogEvent(#[schemars(regex(pattern = EVENT_PATTERN), length(max = EVENT_MAX))] String);
 
-impl LogEvent {
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-impl TryFrom<String> for LogEvent {
-    type Error = String;
-
-    fn try_from(event: String) -> Result<Self, Self::Error> {
-        if is_event(&event) {
-            Ok(Self(event))
-        } else {
-            Err(event)
-        }
-    }
-}
-
-impl<'de> Deserialize<'de> for LogEvent {
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        Self::try_from(String::deserialize(deserializer)?)
-            .map_err(|_| de::Error::custom("not a log event"))
-    }
-}
+checked_string!(LogEvent, is_event, "not a log event");
 
 fn is_event(event: &str) -> bool {
     let word = |word: &str| {

@@ -1,10 +1,22 @@
+import type { ReactNode } from "react";
+
 import type { App as Build } from "../protocol.ts";
 
 /** The signed-in account, and signing it out. */
 export type Account = { email: string; signOut(): void; signingOut: boolean };
 
-/** Settings: the account, when someone is signed in, and which builds are running. */
-export function Settings({ me, server, account }: { me: Build; server?: Build | undefined; account?: Account }) {
+/** Settings: the account and what belongs to it, when someone is signed in, and which builds are running. */
+export function Settings({
+  me,
+  server,
+  account,
+  children,
+}: {
+  me: Build;
+  server?: Build | undefined;
+  account?: Account;
+  children?: ReactNode;
+}) {
   return (
     <section className="page">
       <h1>Settings</h1>
@@ -20,6 +32,7 @@ export function Settings({ me, server, account }: { me: Build; server?: Build | 
           </button>
         </>
       )}
+      {children}
       <h2>About</h2>
       <dl>
         <dt>Version</dt>

@@ -1,6 +1,8 @@
 use std::process::ExitCode;
 
-use weacon_observability::{Fault, Field, Logger, Reporter};
+use weacon_observability::{Fault, Field};
+
+use crate::App;
 
 const FINDINGS: u8 = 1;
 const FAILED: u8 = 2;
@@ -19,22 +21,26 @@ impl From<()> for Ending {
     }
 }
 
-/// Logs how a command ended, reports a failure, and gives the exit code: 0 when it's done,
-/// 1 when a check found something, 2 when it failed.
-pub fn finish(log: &Logger, reporter: &Reporter, result: Result<Ending, Fault>) -> ExitCode {
-    match result {
-        Ok(Ending::Done) => {
-            log.info("app stopped", &[]);
-            ExitCode::SUCCESS
-        }
-        Ok(Ending::Findings) => {
-            log.info("app stopped", &[("findings", true.into())]);
-            ExitCode::from(FINDINGS)
-        }
-        Err(fault) => {
-            log.fatal("app failed", &[("err", Field::error(&fault))]);
-            reporter.capture_error(&fault, fault.code(), log);
-            ExitCode::from(FAILED)
+impl App {
+    /// Logs how the app ended, reports a failure, and gives the exit code: 0 when it's done,
+    /// 1 when a check found something, 2 when it failed.
+    #[must_use]
+    pub fn finish(&self, result: Result<Ending, Fault>) -> ExitCode {
+        match result {
+            Ok(Ending::Done) => {
+                self.log.info("app stopped", &[]);
+                ExitCode::SUCCESS
+            }
+            Ok(Ending::Findings) => {
+                self.log.info("app stopped", &[("findings", true.into())]);
+                ExitCode::from(FINDINGS)
+            }
+            Err(fault) => {
+                self.log
+                    .fatal("app failed", &[("err", Field::error(&fault))]);
+                self.reporter.capture_error(&fault, fault.code(), &self.log);
+                ExitCode::from(FAILED)
+            }
         }
     }
 }
@@ -59,15 +65,21 @@ mod tests {
         )
         .ok();
         let (reporter, uploads) = recording_reporter(reports);
+        let app = App {
+            version: weacon_version::Version {
+                name: "weacon-core",
+                version: "0.1.0",
+                commit: "1a2b3c4",
+            },
+            log,
+            reporter: reporter.into(),
+        };
         let fault = Fault::new(code!("store.full"), "The store is full");
 
-        assert_eq!(finish(&log, &reporter, Ok(().into())), ExitCode::SUCCESS);
-        assert_eq!(
-            finish(&log, &reporter, Ok(Ending::Findings)),
-            ExitCode::from(1)
-        );
+        assert_eq!(app.finish(Ok(().into())), ExitCode::SUCCESS);
+        assert_eq!(app.finish(Ok(Ending::Findings)), ExitCode::from(1));
         assert!(uploads.lock().unwrap().is_empty());
-        assert_eq!(finish(&log, &reporter, Err(fault)), ExitCode::from(2));
+        assert_eq!(app.finish(Err(fault)), ExitCode::from(2));
         assert_eq!(uploads.lock().unwrap().len(), 1);
         assert_eq!(
             messages(&records),

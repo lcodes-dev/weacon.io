@@ -17,13 +17,31 @@ set -euo pipefail
 caller=$PWD
 cd "$(dirname "$0")/.."
 
-# The targets every release builds the core for; the manifest names a build for each.
-CORE_TARGETS=(x86_64-unknown-linux-musl aarch64-unknown-linux-musl aarch64-apple-darwin
-  x86_64-apple-darwin x86_64-pc-windows-msvc)
+# The targets every release builds the core for; the manifest names a build for each, and the
+# release workflow's matrix lists them too. Only the Linux ones build the server.
+LINUX_TARGETS=(x86_64-unknown-linux-musl aarch64-unknown-linux-musl)
+CORE_TARGETS=("${LINUX_TARGETS[@]}" aarch64-apple-darwin x86_64-apple-darwin x86_64-pc-windows-msvc)
+LINUX_CHOICE=${LINUX_TARGETS[*]}
+LINUX_CHOICE=${LINUX_CHOICE// / or }
 
 die() {
   printf 'error: %s\n' "$*" >&2
   exit 1
+}
+
+# Whether $1 is one of the rest of the arguments.
+one_of() {
+  local item=$1 each
+  shift
+  for each; do
+    [ "$each" = "$item" ] && return
+  done
+  return 1
+}
+
+# What a Windows build's file name ends in, and nothing for the others.
+exe_suffix() {
+  [[ $1 != *-windows-* ]] || printf '.exe'
 }
 
 install_on() {
@@ -31,10 +49,7 @@ install_on() {
   # Checked so ssh and scp can't read the host as an option or a path.
   [[ $host =~ ^([A-Za-z0-9_][A-Za-z0-9_.-]*@)?[A-Za-z0-9][A-Za-z0-9.-]*$ ]] \
     || die "usage: scripts/release.sh install <[user@]host> <target>, with a plain host name"
-  case "$target" in
-    x86_64-unknown-linux-musl | aarch64-unknown-linux-musl) ;;
-    *) die "install takes a Linux target: x86_64-unknown-linux-musl or aarch64-unknown-linux-musl" ;;
-  esac
+  one_of "$target" "${LINUX_TARGETS[@]}" || die "install takes a Linux target: $LINUX_CHOICE"
   local binary="dist/weacon-$target"
   [ -f "$binary" ] || die "$binary is missing: run scripts/release.sh $target first"
   arch=$(ssh -- "$host" 'mkdir -p ~/.local/bin && uname -m') || die "couldn't reach $host"
@@ -82,10 +97,12 @@ workspace_version() {
 
 # The file a target's build of the core is published as.
 build_name() {
-  case "$1" in
-    *-windows-*) printf 'weacon-%s.exe' "$1" ;;
-    *) printf 'weacon-%s' "$1" ;;
-  esac
+  printf 'weacon-%s%s' "$1" "$(exe_suffix "$1")"
+}
+
+# The trusted public keys in the core's verify.rs, read from stdin, one a line.
+trusted_keys() {
+  sed -n '/const TRUSTED/,/];/s/.*"\(RW[A-Za-z0-9+/]*\)".*/\1/p'
 }
 
 # A file's size and SHA-256 on one line; shasum, unlike sha256sum, comes with macOS too.
@@ -126,7 +143,7 @@ write_manifest() {
 
 # Signs the draft release of <tag> once its manifest and builds match the tag.
 sign_release() {
-  local tag=${1:-} key=${2:-} tool commit repo keys target name public trusted=
+  local tag=${1:-} key=${2:-} tool commit repo keys target name names public trusted=
   [[ $key == /* ]] || key="$caller/$key"
   if ! [[ $tag =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || ! [ -f "$key" ]; then
     die "usage: scripts/release.sh sign <vX.Y.Z> <secret key file>"
@@ -137,21 +154,21 @@ sign_release() {
   commit=$(git rev-parse -q --verify "$tag^{commit}") || die "$tag isn't here: fetch the tags"
   repo=$(gh repo view --json nameWithOwner --jq .nameWithOwner)
   # The keys the tag's own core trusts.
-  keys=$(git show "$tag:apps/core/src/update/verify.rs" \
-    | sed -n '/const TRUSTED/,/];/s/.*"\(RW[A-Za-z0-9+/]*\)".*/\1/p')
+  keys=$(git show "$tag:apps/core/src/update/verify.rs" | trusted_keys)
   [ -n "$keys" ] || die "the trusted keys weren't found at $tag"
 
   # Global, so the trap still sees it once this returns.
   work=$(mktemp -d)
   trap 'rm -rf "$work"' EXIT
   gh release download "$tag" --repo "$repo" --dir "$work" --pattern manifest.json
+  names=$(for target in "${CORE_TARGETS[@]}"; do
+    jq -cn --arg target "$target" --arg name "$(build_name "$target")" '{($target): $name}'
+  done | jq -cs add)
   jq -e --arg version "${tag#v}" --arg commit "$commit" \
-    --arg base "https://github.com/$repo/releases/download/$tag/" \
-    --argjson targets "$(printf '%s\n' "${CORE_TARGETS[@]}" | jq -R . | jq -cs .)" '
+    --arg base "https://github.com/$repo/releases/download/$tag/" --argjson names "$names" '
       .version == $version and .commit == $commit
-      and ([.builds[].target] | sort) == ($targets | sort)
-      and all(.builds[]; .url == $base + "weacon-" + .target
-        + (if .target | test("-windows-") then ".exe" else "" end))' \
+      and ([.builds[].target] | sort) == ($names | keys)
+      and all(.builds[]; .url == $base + $names[.target])' \
     "$work/manifest.json" >/dev/null || die "the draft's manifest doesn't describe $tag's builds"
   for target in "${CORE_TARGETS[@]}"; do
     name=$(build_name "$target")
@@ -179,69 +196,65 @@ sign_release() {
   printf 'https://weacon.io/releases/stable/.\n'
 }
 
+# Builds the core, or with `server` first the server, for a target into dist/, and checks it.
+build() {
+  local server='' bin=weacon package=weacon-core target exe changes binary links
+  if [ "${1:-}" = server ]; then
+    server=1 bin=weacon-server package=weacon-server
+    shift
+  fi
+
+  target=${1:-}
+  one_of "$target" "${CORE_TARGETS[@]}" \
+    || die "usage: scripts/release.sh [server] <target>, for a target this script lists"
+  exe=$(exe_suffix "$target")
+  case "$target" in
+    *-linux-musl) export "CC_${target//-/_}=musl-gcc" ;;
+    *-windows-msvc) export CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTFLAGS="-C target-feature=+crt-static" ;;
+  esac
+  [ -z "$server" ] || one_of "$target" "${LINUX_TARGETS[@]}" \
+    || die "server takes a Linux target: $LINUX_CHOICE"
+
+  changes=$(git status --porcelain --untracked-files=normal)
+  [ -z "$changes" ] || die "the working tree has changes, so the binary wouldn't be this commit"
+
+  rustup target add "$target" >/dev/null
+
+  if [ -n "$server" ]; then
+    rm -rf apps/web/dist
+    npm --prefix apps/web run build >/dev/null
+    for file in "${web_files[@]}"; do
+      [ -s "apps/web/dist/$file" ] || die "the web app's build didn't make $file"
+    done
+  fi
+  cargo build --release --locked --package "$package" --target "$target"
+
+  mkdir -p dist
+  binary="dist/$bin-$target$exe"
+  cp "target/$target/release/$bin$exe" "$binary"
+
+  case "$target" in
+    *-linux-musl)
+      file "$binary" | grep -Eq 'statically linked|static-pie linked' || die "$binary isn't static" ;;
+    *-apple-darwin)
+      links=$(otool -L "$binary")
+      ! tail -n +2 <<<"$links" | grep -Ev '^[[:space:]]+/(usr/lib|System/Library)/' \
+        || die "$binary links libraries macOS doesn't ship" ;;
+    *-windows-msvc)
+      ! grep -aqiE '(vcruntime|msvcp)[0-9_]+\.dll|api-ms-win-crt-' "$binary" \
+        || die "$binary needs the Visual C++ runtime" ;;
+  esac
+
+  "$binary" --version | tr -d '\r' | grep -qF "($(git rev-parse HEAD))" \
+    || die "$binary doesn't report this commit"
+  [ -z "$server" ] || check_serves "$binary"
+
+  printf '%s: %s bytes\n' "$binary" "$(wc -c <"$binary" | tr -d ' ')"
+}
+
 case "${1:-}" in
-  install)
-    install_on "${2:-}" "${3:-}"
-    exit ;;
-  manifest)
-    write_manifest "${2:-}" "${3:-}" "${4:-}"
-    exit ;;
-  sign)
-    sign_release "${2:-}" "${3:-}"
-    exit ;;
+  install) install_on "${2:-}" "${3:-}" ;;
+  manifest) write_manifest "${2:-}" "${3:-}" "${4:-}" ;;
+  sign) sign_release "${2:-}" "${3:-}" ;;
+  *) build "$@" ;;
 esac
-
-server='' bin=weacon package=weacon-core
-if [ "${1:-}" = server ]; then
-  server=1 bin=weacon-server package=weacon-server
-  shift
-fi
-
-target=${1:-}
-exe=
-case "$target" in
-  x86_64-apple-darwin | aarch64-apple-darwin) ;;
-  x86_64-unknown-linux-musl | aarch64-unknown-linux-musl) export "CC_${target//-/_}=musl-gcc" ;;
-  x86_64-pc-windows-msvc)
-    exe=.exe
-    export CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTFLAGS="-C target-feature=+crt-static" ;;
-  *) die "usage: scripts/release.sh [server] <target>, for a target this script lists" ;;
-esac
-[ -z "$server" ] || [[ $target == *-linux-musl ]] \
-  || die "server takes a Linux target: x86_64-unknown-linux-musl or aarch64-unknown-linux-musl"
-
-changes=$(git status --porcelain --untracked-files=normal)
-[ -z "$changes" ] || die "the working tree has changes, so the binary wouldn't be this commit"
-
-rustup target add "$target" >/dev/null
-
-if [ -n "$server" ]; then
-  rm -rf apps/web/dist
-  npm --prefix apps/web run build >/dev/null
-  for file in "${web_files[@]}"; do
-    [ -s "apps/web/dist/$file" ] || die "the web app's build didn't make $file"
-  done
-fi
-cargo build --release --locked --package "$package" --target "$target"
-
-mkdir -p dist
-binary="dist/$bin-$target$exe"
-cp "target/$target/release/$bin$exe" "$binary"
-
-case "$target" in
-  *-linux-musl)
-    file "$binary" | grep -Eq 'statically linked|static-pie linked' || die "$binary isn't static" ;;
-  *-apple-darwin)
-    links=$(otool -L "$binary")
-    ! tail -n +2 <<<"$links" | grep -Ev '^[[:space:]]+/(usr/lib|System/Library)/' \
-      || die "$binary links libraries macOS doesn't ship" ;;
-  *-windows-msvc)
-    ! grep -aqiE '(vcruntime|msvcp)[0-9_]+\.dll|api-ms-win-crt-' "$binary" \
-      || die "$binary needs the Visual C++ runtime" ;;
-esac
-
-"$binary" --version | tr -d '\r' | grep -qF "($(git rev-parse HEAD))" \
-  || die "$binary doesn't report this commit"
-[ -z "$server" ] || check_serves "$binary"
-
-printf '%s: %s bytes\n' "$binary" "$(wc -c <"$binary" | tr -d ' ')"

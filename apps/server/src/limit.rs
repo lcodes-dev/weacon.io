@@ -5,6 +5,9 @@ use std::time::Duration;
 
 use tokio::time::Instant;
 
+/// The window most limits count over.
+pub(crate) const HOUR: Duration = Duration::from_hours(1);
+
 /// The most clients a limit keeps track of; past that, new ones are refused until old ones go.
 const MAX_CLIENTS: usize = 100_000;
 /// How many /64s of one IPv6 /48 are kept apart; the rest of the /48 counts as one client, so

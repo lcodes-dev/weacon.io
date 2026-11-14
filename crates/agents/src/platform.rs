@@ -1,5 +1,8 @@
 //! What differs between operating systems.
 
+mod pty;
+
+pub(crate) use pty::Pty;
 #[cfg(unix)]
 pub(crate) use unix::links;
 #[cfg(unix)]
@@ -12,6 +15,18 @@ use windows::{links_of, open_unfollowed};
 use std::fs::File;
 use std::io;
 use std::path::Path;
+
+/// The terminal's interrupt, caught from now on instead of ending this process.
+#[cfg(unix)]
+pub(crate) fn interrupts() -> io::Result<tokio::signal::unix::Signal> {
+    tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())
+}
+
+/// The console's Ctrl-C, caught from now on instead of ending this process.
+#[cfg(windows)]
+pub(crate) fn interrupts() -> io::Result<tokio::signal::windows::CtrlC> {
+    tokio::signal::windows::ctrl_c()
+}
 
 /// `file` opened to read, when it is a regular file with one link and not a symlink.
 pub(crate) fn open_plain(file: &Path) -> io::Result<File> {
@@ -30,7 +45,6 @@ pub(crate) fn open_plain(file: &Path) -> io::Result<File> {
 mod unix {
     use std::fs::{File, OpenOptions};
     use std::io;
-    use std::ops::BitOr;
     use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
     use std::path::Path;
 
@@ -41,10 +55,9 @@ mod unix {
 
     /// `file` opened to read, a symlink refused. Non-blocking, so a pipe can't hold the open.
     pub(super) fn open_unfollowed(file: &Path) -> io::Result<File> {
-        let flags = [libc::O_NOFOLLOW, libc::O_NONBLOCK];
         OpenOptions::new()
             .read(true)
-            .custom_flags(flags.into_iter().fold(0, BitOr::bitor))
+            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
             .open(file)
     }
 

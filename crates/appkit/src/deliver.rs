@@ -7,7 +7,7 @@ const TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Sends reports over HTTPS, so their auth header never travels in the clear.
 #[must_use]
-pub fn http() -> Deliver {
+pub fn deliver_over_https() -> Deliver {
     over(true)
 }
 
@@ -93,7 +93,7 @@ mod tests {
     }
 
     #[test]
-    fn http_posts_the_envelope_with_its_auth() {
+    fn delivery_posts_the_envelope_with_its_auth() {
         let (port, server) = serve_once("200 OK".to_owned());
         over(false)(&upload(port)).unwrap();
         let (head, body) = server.join().unwrap();
@@ -109,7 +109,7 @@ mod tests {
     }
 
     #[test]
-    fn http_reports_a_refused_report() {
+    fn delivery_fails_for_a_refused_report() {
         let (port, server) = serve_once("500 Internal Server Error".to_owned());
         let error = over(false)(&upload(port)).unwrap_err();
         drop(server.join().unwrap());
@@ -118,11 +118,11 @@ mod tests {
     }
 
     #[test]
-    fn http_refuses_to_send_in_the_clear() {
+    fn delivery_refuses_to_send_in_the_clear() {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         listener.set_nonblocking(true).unwrap();
         let port = listener.local_addr().unwrap().port();
-        let error = http()(&upload(port)).unwrap_err();
+        let error = deliver_over_https()(&upload(port)).unwrap_err();
 
         assert_eq!(error.code().as_str(), "report.send_failed");
         assert_eq!(

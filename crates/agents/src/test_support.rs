@@ -1,21 +1,25 @@
 //! Helpers for the drivers' tests: a run over a replayed session, and the events it yields.
 
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use serde_json::Value;
 use tokio::io::{BufReader, DuplexStream};
 use tokio::task::JoinHandle;
 use tokio::time::timeout;
-use weacon_protocol::{AgentSession, App, Outcome, PermissionAnswer, RunEvent, RunId};
-use weacon_testing::replay;
+use weacon_protocol::{
+    AccessLevel, AgentKind, AgentSession, App, Outcome, PermissionAnswer, RunEvent, RunId,
+};
+use weacon_testing::{Failure, replay};
 
+use crate::Launch;
 use crate::access::Rules;
 use crate::run::Run;
 use crate::wire::Wire;
 
 pub(crate) type FakeRun = Run<DuplexStream, BufReader<DuplexStream>>;
 
-pub(crate) type Done = JoinHandle<Result<(), String>>;
+pub(crate) type Done = JoinHandle<Result<(), Failure>>;
 
 /// A run speaking `wire` to a fake agent replaying `recording`.
 pub(crate) fn fake(wire: Wire, recording: &str) -> (FakeRun, Done) {
@@ -121,4 +125,58 @@ pub(crate) fn jsonl(lines: &[Value]) -> String {
     lines
         .iter()
         .fold(String::new(), |file, line| file + &line.to_string() + "\n")
+}
+
+/// The next thing a terminal's program did, failing the test if nothing comes in time.
+pub(crate) async fn next_event(events: &mut crate::Events) -> Option<crate::Event> {
+    timeout(Duration::from_secs(30), events.next())
+        .await
+        .unwrap()
+}
+
+/// The first event that isn't output, with the output before it added to `seen`.
+pub(crate) async fn after_output(
+    events: &mut crate::Events,
+    seen: &mut String,
+) -> Option<crate::Event> {
+    loop {
+        match next_event(events).await {
+            Some(crate::Event::Output(data)) => seen.push_str(&String::from_utf8_lossy(&data)),
+            other => return other,
+        }
+    }
+}
+
+/// Output into `seen` until it holds `wanted`.
+pub(crate) async fn output_until(events: &mut crate::Events, seen: &mut String, wanted: &str) {
+    while !seen.contains(wanted) {
+        match next_event(events).await {
+            Some(crate::Event::Output(data)) => seen.push_str(&String::from_utf8_lossy(&data)),
+            other => panic!("{other:?} before {wanted:?}, after {seen:?}"),
+        }
+    }
+}
+
+pub(crate) const SESSION: &str = "0b7c6a52-3f1e-4d2a-9c8b-5e4f3a2b1c0d";
+pub(crate) const OTHER_SESSION: &str = "1c8d7b63-4a2f-4e3b-8d9c-6f5a4b3c2d1e";
+
+pub(crate) fn tool_call(call: &str, tool: &str, input: Value) -> RunEvent {
+    RunEvent::ToolCall {
+        call: call.to_owned(),
+        tool: tool.to_owned(),
+        input,
+    }
+}
+
+/// A launch of `agent` running `program`, working in `dir`, with its config folder there.
+pub(crate) fn launch(agent: AgentKind, program: impl Into<PathBuf>, dir: &Path) -> Launch {
+    Launch {
+        agent,
+        program: program.into(),
+        config_dir: dir.join("config"),
+        cwd: dir.to_path_buf(),
+        access: AccessLevel::AskFirst,
+        mcp: None,
+        plugin: None,
+    }
 }

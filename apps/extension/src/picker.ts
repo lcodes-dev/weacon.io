@@ -1,7 +1,7 @@
 // Runs in the page's isolated world: highlights the element under the pointer until a click
 // picks it or Escape cancels.
 
-import type { Rect } from "./fit.ts";
+import type { Rect } from "./screenshot.ts";
 import { cssSelector } from "./selector.ts";
 
 /** What the picker found, for the service worker to screenshot and send. */

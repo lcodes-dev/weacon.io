@@ -1,4 +1,4 @@
-import { useRef } from "react";
+import { type DragEvent as ReactDragEvent, useEffect, useRef, useState } from "react";
 
 import { type Attachment, size } from "./attachments.ts";
 
@@ -40,4 +40,56 @@ export function Files({ attachments, remove }: { attachments: readonly Attachmen
       ))}
     </ul>
   );
+}
+
+/**
+ * Takes files dropped on the element its props are spread on, and marks it while they are dragged
+ * over it. Files dropped anywhere else are kept from opening in place of the app.
+ */
+export function useFileDrop(attach: (files: File[]) => void) {
+  const [dropping, setDropping] = useState(false);
+  useEffect(() => {
+    // A file dropped beside the box would otherwise open in place of the app, losing the draft.
+    const keep = (event: DragEvent) => {
+      if (event.dataTransfer?.types.includes("Files")) {
+        event.preventDefault();
+      }
+    };
+    document.addEventListener("dragover", keep);
+    document.addEventListener("drop", keep);
+    return () => {
+      document.removeEventListener("dragover", keep);
+      document.removeEventListener("drop", keep);
+    };
+  }, []);
+  return {
+    "data-dropping": dropping || undefined,
+    onDragOver(event: ReactDragEvent<HTMLElement>) {
+      if (event.dataTransfer.types.includes("Files")) {
+        event.preventDefault();
+        setDropping(true);
+      }
+    },
+    onDragLeave(event: ReactDragEvent<HTMLElement>) {
+      if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
+        setDropping(false);
+      }
+    },
+    onDrop(event: ReactDragEvent<HTMLElement>) {
+      setDropping(false);
+      // Dropped text goes into the box as usual.
+      if (event.dataTransfer.types.includes("Files")) {
+        event.preventDefault();
+        attach(dropped(event.dataTransfer));
+      }
+    },
+  };
+}
+
+// The files dropped, without folders.
+function dropped(data: DataTransfer): File[] {
+  return [...data.items].flatMap((item) => {
+    const file = item.kind === "file" && item.webkitGetAsEntry()?.isDirectory !== true ? item.getAsFile() : null;
+    return file === null ? [] : [file];
+  });
 }

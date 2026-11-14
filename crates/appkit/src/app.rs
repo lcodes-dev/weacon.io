@@ -1,5 +1,4 @@
 use std::panic::PanicHookInfo;
-use std::process::ExitCode;
 use std::sync::Arc;
 use std::time::SystemTime;
 
@@ -8,7 +7,7 @@ use weacon_observability::{
 };
 use weacon_version::Version;
 
-use crate::{Ending, random_id};
+use crate::random_id;
 
 /// What every app runs with: its build, logger and error reporter.
 pub struct App {
@@ -18,19 +17,14 @@ pub struct App {
 }
 
 impl App {
-    /// Logs and reports how the app ended, and gives its exit code.
-    #[must_use]
-    pub fn finish(&self, result: Result<Ending, Fault>) -> ExitCode {
-        crate::exit::finish(&self.log, &self.reporter, result)
-    }
-
     /// Logs and reports a panic as `fault`, without its message or location.
     #[must_use]
     pub fn panic_hook(
         &self,
         fault: fn() -> Fault,
     ) -> Box<dyn Fn(&PanicHookInfo<'_>) + Send + Sync> {
-        panic_hook(self.log.clone(), Arc::clone(&self.reporter), fault)
+        let (log, reporter) = (self.log.clone(), Arc::clone(&self.reporter));
+        Box::new(move |_| panicked(&log, &reporter, &fault()))
     }
 }
 
@@ -85,16 +79,6 @@ pub fn reporter(reports: Option<Reports>, agreed: bool, deliver: Deliver) -> Rep
     )
 }
 
-/// Logs and reports a panic as `fault`, without its message or location.
-#[must_use]
-pub fn panic_hook(
-    log: Logger,
-    reporter: Arc<Reporter>,
-    fault: fn() -> Fault,
-) -> Box<dyn Fn(&PanicHookInfo<'_>) + Send + Sync> {
-    Box::new(move |_| panicked(&log, &reporter, &fault()))
-}
-
 fn panicked(log: &Logger, reporter: &Reporter, fault: &Fault) {
     // An app survives a panic in one task, so this is an error, not fatal.
     log.error("panicked", &[("err", Field::error(fault))]);
@@ -125,18 +109,6 @@ mod tests {
             (app.name.as_str(), app.version.as_str(), app.commit.as_str()),
             ("weacon-core", "0.1.0", "1a2b3c4")
         );
-    }
-
-    #[test]
-    fn an_app_ends_with_the_code_of_how_it_ended() {
-        let (sink, _) = recording_sink();
-        let app = App {
-            version: VERSION,
-            log: root_logger(sink, &VERSION),
-            reporter: Arc::new(recording_reporter(None).0),
-        };
-
-        assert_eq!(app.finish(Ok(Ending::Findings)), ExitCode::from(1));
     }
 
     #[test]

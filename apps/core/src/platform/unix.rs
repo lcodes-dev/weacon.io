@@ -77,7 +77,7 @@ pub(crate) fn is_runnable(file: &Path) -> bool {
 /// The user that owns `dir`, when only that user can reach it.
 pub(crate) fn private_owner(dir: &Path) -> io::Result<Option<Owner>> {
     let metadata = fs::metadata(dir)?;
-    let private = metadata.is_dir() && weacon_appkit::owner_only(&metadata) == Some(true);
+    let private = metadata.is_dir() && weacon_appkit::is_private(&metadata) == Some(true);
     Ok(private.then(|| metadata.uid()))
 }
 
@@ -90,6 +90,12 @@ pub(crate) fn bind(path: &Path) -> io::Result<Listener> {
 
 pub(crate) fn is_owner(stream: &Stream, owner: Owner) -> bool {
     stream.peer_cred().is_ok_and(|cred| cred.uid() == owner)
+}
+
+/// Lets other users into `dir`; true, since here they can be.
+#[cfg(test)]
+pub(crate) fn open_to_others(dir: &Path) -> bool {
+    fs::set_permissions(dir, fs::Permissions::from_mode(0o755)).is_ok()
 }
 
 #[cfg(test)]

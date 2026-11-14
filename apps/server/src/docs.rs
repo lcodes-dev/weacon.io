@@ -1,8 +1,11 @@
 use axum::Json;
+use axum::Router;
+use axum::extract::DefaultBodyLimit;
 use axum::extract::rejection::PathRejection;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
-use axum::response::{IntoResponse, Response};
+use axum::response::IntoResponse;
+use axum::routing::get;
 use weacon_model::{Attribution, Doc, DocText, DocTextError, Revision};
 use weacon_observability::Fault;
 use weacon_protocol::{
@@ -11,7 +14,8 @@ use weacon_protocol::{
 
 use crate::app::new_id;
 use crate::auth::Member;
-use crate::http::{Body, Shared, Unreadable, error, failure};
+use crate::http::{self, Body, Refusals, Unreadable, parsed};
+use crate::shared::Shared;
 
 /// The most a doc request's body may be: room for the largest doc the model allows, even
 /// when JSON escapes each byte of its Markdown as `\u00XX`, with its pins.
@@ -19,12 +23,29 @@ pub(crate) const MAX_BODY: usize = 2 * 1024 * 1024;
 /// How many revisions a history holds, newest first; older ones are still read by version.
 const HISTORY: u32 = 1000;
 
+/// The doc routes, whose bodies may be larger than others.
+pub(crate) fn routes() -> Router<Shared> {
+    Router::new()
+        .route("/api/workspaces/{workspace}/docs", get(list).post(create))
+        .route(
+            "/api/workspaces/{workspace}/docs/{doc}",
+            get(read).post(revise),
+        )
+        .route(
+            "/api/workspaces/{workspace}/docs/{doc}/revisions",
+            get(history),
+        )
+        .route(
+            "/api/workspaces/{workspace}/docs/{doc}/revisions/{version}",
+            get(revision),
+        )
+        .layer(DefaultBodyLimit::max(MAX_BODY))
+}
+
 /// `GET /api/workspaces/{workspace}/docs`: the workspace's docs, by title, without bodies.
-pub(crate) async fn list(member: Member) -> Response {
-    match member.workspace.docs().await {
-        Ok(docs) => Json(DocList { docs }).into_response(),
-        Err(fault) => answer(fault),
-    }
+pub(crate) async fn list(member: Member) -> Result<Json<DocList>, Refused> {
+    let docs = member.workspace.docs().await?;
+    Ok(Json(DocList { docs }))
 }
 
 /// `POST /api/workspaces/{workspace}/docs`: makes a doc at its first version.
@@ -32,35 +53,27 @@ pub(crate) async fn create(
     State(shared): State<Shared>,
     member: Member,
     body: Result<Body<DocContent>, Unreadable>,
-) -> Response {
-    let made = async {
-        let body = parsed(body)?;
-        let text = text(body)?;
-        let id = DocId::try_from(new_id()).map_err(|_| invalid())?;
-        let doc = Doc::new(id, text);
-        let attribution = Attribution::by(member.id.clone(), shared.now());
-        member.workspace.add_doc(&doc, &attribution).await?;
-        Ok(doc)
-    };
-    match made.await {
-        Ok(doc) => {
-            shared.changed(member.workspace.id());
-            (StatusCode::CREATED, Json(record(doc))).into_response()
-        }
-        Err(fault) => refused_write(&shared, &member, fault),
-    }
+) -> Result<impl IntoResponse, Refused> {
+    let text = text(parsed(body, too_large, invalid)?)?;
+    let id = DocId::try_from(new_id()).map_err(|_| invalid())?;
+    let doc = Doc::new(id, text);
+    let attribution = Attribution::by(member.id.clone(), shared.now());
+    member
+        .workspace
+        .add_doc(&doc, &attribution)
+        .await
+        .inspect_err(|fault| warn_if_full(&shared, &member, fault))?;
+    shared.wake_feeds(member.workspace.id());
+    Ok((StatusCode::CREATED, Json(record(doc))))
 }
 
 /// `GET /api/workspaces/{workspace}/docs/{doc}`: the doc as it is now.
 pub(crate) async fn read(
     member: Member,
     path: Result<Path<(WorkspaceId, DocId)>, PathRejection>,
-) -> Response {
-    let found = async {
-        let Path((_, id)) = path.map_err(|_| invalid())?;
-        member.workspace.doc(&id, None).await
-    };
-    reply(found.await)
+) -> Result<Json<DocRecord>, Refused> {
+    let Path((_, id)) = path.map_err(|_| invalid())?;
+    Ok(Json(record(member.workspace.doc(&id, None).await?)))
 }
 
 /// `POST /api/workspaces/{workspace}/docs/{doc}`: replaces the text of a doc the client read
@@ -70,25 +83,19 @@ pub(crate) async fn revise(
     member: Member,
     path: Result<Path<(WorkspaceId, DocId)>, PathRejection>,
     body: Result<Body<DocRevise>, Unreadable>,
-) -> Response {
-    let revised = async {
-        let Path((_, id)) = path.map_err(|_| invalid())?;
-        let body = parsed(body)?;
-        let text = text(body.content)?;
-        let attribution = Attribution::by(member.id.clone(), shared.now());
-        let read_at = Revision::new(body.version);
-        member
-            .workspace
-            .revise_doc(&id, read_at, text, &attribution)
-            .await
-    };
-    match revised.await {
-        Ok(doc) => {
-            shared.changed(member.workspace.id());
-            Json(record(doc)).into_response()
-        }
-        Err(fault) => refused_write(&shared, &member, fault),
-    }
+) -> Result<Json<DocRecord>, Refused> {
+    let Path((_, id)) = path.map_err(|_| invalid())?;
+    let body = parsed(body, too_large, invalid)?;
+    let text = text(body.content)?;
+    let attribution = Attribution::by(member.id.clone(), shared.now());
+    let read_at = Revision::new(body.version);
+    let doc = member
+        .workspace
+        .revise_doc(&id, read_at, text, &attribution)
+        .await
+        .inspect_err(|fault| warn_if_full(&shared, &member, fault))?;
+    shared.wake_feeds(member.workspace.id());
+    Ok(Json(record(doc)))
 }
 
 /// `GET /api/workspaces/{workspace}/docs/{doc}/revisions`: who made the doc's newest
@@ -96,15 +103,10 @@ pub(crate) async fn revise(
 pub(crate) async fn history(
     member: Member,
     path: Result<Path<(WorkspaceId, DocId)>, PathRejection>,
-) -> Response {
-    let found = async {
-        let Path((_, id)) = path.map_err(|_| invalid())?;
-        member.workspace.doc_history(&id, HISTORY).await
-    };
-    match found.await {
-        Ok(revisions) => Json(DocHistory { revisions }).into_response(),
-        Err(fault) => answer(fault),
-    }
+) -> Result<Json<DocHistory>, Refused> {
+    let Path((_, id)) = path.map_err(|_| invalid())?;
+    let revisions = member.workspace.doc_history(&id, HISTORY).await?;
+    Ok(Json(DocHistory { revisions }))
 }
 
 /// `GET /api/workspaces/{workspace}/docs/{doc}/revisions/{version}`: the doc as it was at
@@ -112,15 +114,10 @@ pub(crate) async fn history(
 pub(crate) async fn revision(
     member: Member,
     path: Result<Path<(WorkspaceId, DocId, u64)>, PathRejection>,
-) -> Response {
-    let found = async {
-        let Path((_, id, version)) = path.map_err(|_| invalid())?;
-        member
-            .workspace
-            .doc(&id, Some(Revision::new(version)))
-            .await
-    };
-    reply(found.await)
+) -> Result<Json<DocRecord>, Refused> {
+    let Path((_, id, version)) = path.map_err(|_| invalid())?;
+    let at = Some(Revision::new(version));
+    Ok(Json(record(member.workspace.doc(&id, at).await?)))
 }
 
 fn text(content: DocContent) -> Result<DocText, Fault> {
@@ -150,32 +147,15 @@ fn record(doc: Doc) -> DocRecord {
     }
 }
 
-fn reply(doc: Result<Doc, Fault>) -> Response {
-    match doc {
-        Ok(doc) => Json(record(doc)).into_response(),
-        Err(fault) => answer(fault),
-    }
-}
-
-/// A request's body, or `doc.too_large` past the size limit and `doc.invalid` otherwise.
-fn parsed<T>(body: Result<Body<T>, Unreadable>) -> Result<T, Fault> {
-    match body {
-        Ok(Body(body)) => Ok(body),
-        Err(Unreadable::TooLarge) => Err(too_large()),
-        Err(_) => Err(invalid()),
-    }
-}
-
-/// Answers a refused create or revision. A full workspace stays full, since nothing is
-/// pruned, so it is logged for the operator.
-fn refused_write(shared: &Shared, member: &Member, fault: Fault) -> Response {
-    if fault.code().as_str() == "doc.quota_full" {
+/// Logs a refused write that found the workspace full: it stays full, since nothing is
+/// pruned, so the operator needs to know.
+fn warn_if_full(shared: &Shared, member: &Member, fault: &Fault) {
+    if *fault.code() == code!("doc.quota_full") {
         let workspace = member.workspace.id().as_str().to_owned();
         shared
             .log
             .warn("doc quota full", &[("workspace_id", workspace.into())]);
     }
-    answer(fault)
 }
 
 fn too_large() -> Fault {
@@ -186,51 +166,38 @@ fn invalid() -> Fault {
     Fault::new(code!("doc.invalid"), "The doc request isn't valid")
 }
 
-/// The refusals the doc routes answer, with their status; anything else is the server failing.
-const REFUSALS: [(Code, StatusCode); 9] = [
-    (code!("doc.invalid"), StatusCode::BAD_REQUEST),
-    (code!("doc.unpinned"), StatusCode::BAD_REQUEST),
-    (code!("doc.unlinked"), StatusCode::BAD_REQUEST),
-    (code!("doc.unknown_value"), StatusCode::BAD_REQUEST),
-    (code!("doc.too_large"), StatusCode::PAYLOAD_TOO_LARGE),
-    (code!("doc.quota_full"), StatusCode::PAYLOAD_TOO_LARGE),
-    (code!("doc.not_found"), StatusCode::NOT_FOUND),
-    (code!("doc.stale"), StatusCode::CONFLICT),
-    (code!("doc.last_version"), StatusCode::CONFLICT),
-];
+/// The doc routes' refusals.
+pub(crate) struct Docs;
 
-/// Answers a refusal with its status, and anything else as the server failing.
-fn answer(fault: Fault) -> Response {
-    let code = fault.code().clone();
-    match REFUSALS.iter().find(|(refusal, _)| *refusal == code) {
-        Some((_, status)) => error(*status, code, false),
-        None => failure(fault),
-    }
+impl Refusals for Docs {
+    const REFUSALS: &'static [(Code, StatusCode, bool)] = &[
+        (code!("doc.invalid"), StatusCode::BAD_REQUEST, false),
+        (code!("doc.unpinned"), StatusCode::BAD_REQUEST, false),
+        (code!("doc.unlinked"), StatusCode::BAD_REQUEST, false),
+        (code!("doc.unknown_value"), StatusCode::BAD_REQUEST, false),
+        (code!("doc.too_large"), StatusCode::PAYLOAD_TOO_LARGE, false),
+        (
+            code!("doc.quota_full"),
+            StatusCode::PAYLOAD_TOO_LARGE,
+            false,
+        ),
+        (code!("doc.not_found"), StatusCode::NOT_FOUND, false),
+        (code!("doc.stale"), StatusCode::CONFLICT, false),
+        (code!("doc.last_version"), StatusCode::CONFLICT, false),
+    ];
 }
+
+type Refused = http::Refused<Docs>;
 
 #[cfg(test)]
 mod tests {
-    use std::net::SocketAddr;
-
     use serde_json::json;
     use weacon_protocol::{Author, CommitId, DocAnchors, DocPin, DocSummary, WorkspaceChange};
 
     use super::*;
-    use crate::test_support::{
-        Fixture, Running, bearer, refusal, request_with, status, workspace_id,
-    };
+    use crate::test_support::{Client, Fixture, error_code, workspace_id};
 
-    struct Ada {
-        address: SocketAddr,
-        auth: String,
-    }
-
-    impl Ada {
-        async fn send(&self, head: &str, body: &str) -> (String, String) {
-            let (head, body) = request_with(self.address, head, &self.auth, body).await;
-            (status(&head).to_owned(), body)
-        }
-
+    impl Client {
         async fn ok<T: serde::de::DeserializeOwned>(
             &self,
             head: &str,
@@ -242,7 +209,7 @@ mod tests {
             serde_json::from_str(&body).unwrap()
         }
 
-        async fn create(&self, content: &DocContent) -> DocRecord {
+        async fn create_doc(&self, content: &DocContent) -> DocRecord {
             let body = serde_json::to_string(content).unwrap();
             self.ok(
                 "POST /api/workspaces/w1/docs",
@@ -272,15 +239,6 @@ mod tests {
         }
     }
 
-    async fn ada(fixture: &Fixture) -> (Running, Ada) {
-        let (server, body) = fixture.signed_in("ada@example.com").await;
-        let ada = Ada {
-            address: server.address,
-            auth: bearer(&body),
-        };
-        (server, ada)
-    }
-
     fn content(title: &str, body: &str, pinned: &[&str]) -> DocContent {
         DocContent {
             title: title.to_owned(),
@@ -306,11 +264,11 @@ mod tests {
     #[tokio::test]
     async fn a_doc_is_made_listed_and_read_and_the_feed_hears_of_it() {
         let fixture = Fixture::new().await;
-        let (_server, ada) = ada(&fixture).await;
+        let (_server, ada) = fixture.client("ada@example.com").await;
         let mut changes = fixture.shared.changes.subscribe();
 
-        let made = ada.create(&linked()).await;
-        let plain = ada.create(&content("Agents", "Plain.", &[])).await;
+        let made = ada.create_doc(&linked()).await;
+        let plain = ada.create_doc(&content("Agents", "Plain.", &[])).await;
 
         assert_eq!((made.version, &made.content), (1, &linked()));
         assert_eq!(changes.try_recv().unwrap(), workspace_id("w1"));
@@ -340,8 +298,8 @@ mod tests {
     #[tokio::test]
     async fn a_revision_answers_the_doc_at_its_next_version_and_keeps_the_old_one() {
         let fixture = Fixture::new().await;
-        let (_server, ada) = ada(&fixture).await;
-        let first = ada.create(&content("Framing", "Draft.", &[])).await;
+        let (_server, ada) = fixture.client("ada@example.com").await;
+        let first = ada.create_doc(&content("Framing", "Draft.", &[])).await;
 
         let (status, body) = ada.revise(&first, &linked()).await;
         let (stale, stale_body) = ada.revise(&first, &content("Late", "Late.", &[])).await;
@@ -350,7 +308,7 @@ mod tests {
         let second: DocRecord = serde_json::from_str(&body).unwrap();
         assert_eq!((second.version, &second.content), (2, &linked()));
         assert_eq!(
-            (stale.as_str(), refusal(&stale_body).as_str()),
+            (stale.as_str(), error_code(&stale_body).as_str()),
             ("http/1.1 409 conflict", "doc.stale")
         );
         let id = first.id.as_str();
@@ -380,8 +338,8 @@ mod tests {
     #[tokio::test]
     async fn a_doc_or_version_there_isnt_is_not_found() {
         let fixture = Fixture::new().await;
-        let (_server, ada) = ada(&fixture).await;
-        let doc = ada.create(&linked()).await;
+        let (_server, ada) = fixture.client("ada@example.com").await;
+        let doc = ada.create_doc(&linked()).await;
         let id = doc.id.as_str();
         let gone = DocRecord {
             id: DocId::try_from("d-gone".to_owned()).unwrap(),
@@ -399,14 +357,14 @@ mod tests {
                 .send(&format!("GET /api/workspaces/w1/docs{path}"), "")
                 .await;
             assert_eq!(
-                (status.as_str(), refusal(&body).as_str()),
+                (status.as_str(), error_code(&body).as_str()),
                 ("http/1.1 404 not found", "doc.not_found"),
                 "{path}"
             );
         }
         let (status, body) = ada.revise(&gone, &linked()).await;
         assert_eq!(
-            (status.as_str(), refusal(&body).as_str()),
+            (status.as_str(), error_code(&body).as_str()),
             ("http/1.1 404 not found", "doc.not_found")
         );
     }
@@ -414,8 +372,8 @@ mod tests {
     #[tokio::test]
     async fn bad_or_mismatched_content_is_refused_and_nothing_changes() {
         let fixture = Fixture::new().await;
-        let (_server, ada) = ada(&fixture).await;
-        let doc = ada.create(&linked()).await;
+        let (_server, ada) = fixture.client("ada@example.com").await;
+        let doc = ada.create_doc(&linked()).await;
         let huge = content("Huge", &"a".repeat(300 * 1024), &[]);
 
         for (content, status, code) in [
@@ -440,8 +398,8 @@ mod tests {
             let (made, made_body) = ada.send("POST /api/workspaces/w1/docs", &body).await;
             let (revised, revised_body) = ada.revise(&doc, &content).await;
             let got = [
-                (made, refusal(&made_body)),
-                (revised, refusal(&revised_body)),
+                (made, error_code(&made_body)),
+                (revised, error_code(&revised_body)),
             ];
             let want = (status.to_owned(), code.to_owned());
             assert_eq!(got, [want.clone(), want]);
@@ -456,8 +414,8 @@ mod tests {
     #[tokio::test]
     async fn a_request_that_isnt_a_doc_request_is_invalid() {
         let fixture = Fixture::new().await;
-        let (_server, ada) = ada(&fixture).await;
-        let doc = ada.create(&linked()).await;
+        let (_server, ada) = fixture.client("ada@example.com").await;
+        let doc = ada.create_doc(&linked()).await;
         let head = format!("POST /api/workspaces/w1/docs/{}", doc.id.as_str());
 
         for (head, body) in [
@@ -471,7 +429,7 @@ mod tests {
         ] {
             let (status, answer) = ada.send(head, &body).await;
             assert_eq!(
-                (status.as_str(), refusal(&answer).as_str()),
+                (status.as_str(), error_code(&answer).as_str()),
                 ("http/1.1 400 bad request", "doc.invalid"),
                 "{head}"
             );
@@ -487,11 +445,11 @@ mod tests {
     #[tokio::test]
     async fn a_doc_larger_than_other_requests_or_heavy_with_escapes_fits() {
         let fixture = Fixture::new().await;
-        let (_server, ada) = ada(&fixture).await;
+        let (_server, ada) = fixture.client("ada@example.com").await;
         let large = content("Large", &"a".repeat(100 * 1024), &[]);
         let escaped = content("Escaped", &"\u{1}".repeat(256 * 1024), &[]);
 
-        let made = ada.create(&large).await;
+        let made = ada.create_doc(&large).await;
         let (status, body) = ada.revise(&made, &escaped).await;
 
         assert_eq!(status, "http/1.1 200 ok", "{body}");
@@ -502,13 +460,13 @@ mod tests {
     #[tokio::test]
     async fn a_body_over_the_route_limit_is_too_large() {
         let fixture = Fixture::new().await;
-        let (_server, ada) = ada(&fixture).await;
+        let (_server, ada) = fixture.client("ada@example.com").await;
         let body = serde_json::to_string(&content("Huge", &"a".repeat(MAX_BODY), &[])).unwrap();
 
         let (status, answer) = ada.send("POST /api/workspaces/w1/docs", &body).await;
 
         assert_eq!(
-            (status.as_str(), refusal(&answer).as_str()),
+            (status.as_str(), error_code(&answer).as_str()),
             ("http/1.1 413 payload too large", "doc.too_large")
         );
     }
@@ -516,16 +474,16 @@ mod tests {
     #[tokio::test]
     async fn only_a_signed_in_member_reaches_the_docs() {
         let fixture = Fixture::new().await;
-        let (_server, ada) = ada(&fixture).await;
+        let (_server, ada) = fixture.client("ada@example.com").await;
         fixture
             .shared
             .db
             .create_workspace(&workspace_id("w2"), "Other")
             .await
             .unwrap();
-        let stranger = Ada {
+        let stranger = Client {
             address: ada.address,
-            auth: String::new(),
+            token: String::new(),
         };
         let body = serde_json::to_string(&linked()).unwrap();
         for (who, head) in [
@@ -540,7 +498,7 @@ mod tests {
         ] {
             let (status, answer) = who.send(head, &body).await;
             assert_eq!(
-                (status.as_str(), refusal(&answer).as_str()),
+                (status.as_str(), error_code(&answer).as_str()),
                 ("http/1.1 401 unauthorized", "sign_in.required"),
                 "{head}"
             );
@@ -552,7 +510,7 @@ mod tests {
     fn a_failure_of_the_server_is_not_a_refusal() {
         let broken = Fault::new(code!("db.failed"), "The database failed");
 
-        let answer = answer(broken);
+        let answer = Refused::from(broken).into_response();
 
         assert_eq!(answer.status(), StatusCode::INTERNAL_SERVER_ERROR);
     }
@@ -560,8 +518,8 @@ mod tests {
     #[tokio::test]
     async fn a_full_workspace_takes_no_more_docs_and_the_operator_hears_of_it() {
         let fixture = Fixture::new().await;
-        let (_server, ada) = ada(&fixture).await;
-        let doc = ada.create(&linked()).await;
+        let (_server, ada) = fixture.client("ada@example.com").await;
+        let doc = ada.create_doc(&linked()).await;
         let w1 = fixture
             .shared
             .db
@@ -579,8 +537,8 @@ mod tests {
             "doc.quota_full".to_owned(),
         );
         let got = [
-            (made, refusal(&made_body)),
-            (revised, refusal(&revised_body)),
+            (made, error_code(&made_body)),
+            (revised, error_code(&revised_body)),
         ];
         assert_eq!(got, [full.clone(), full]);
         assert_eq!(

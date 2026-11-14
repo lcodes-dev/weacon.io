@@ -54,8 +54,9 @@ pub(crate) struct Serve {
     pub(crate) trusted_proxy: Vec<Net>,
     /// Who may make an account by signing in: `anyone`, or the addresses at one domain, such
     /// as example.com; repeat it for more domains. Without it, only accounts an operator made
-    /// with `admin add-account` or `admin add-member` can sign in. The first account on the
-    /// server is its owner, so make your own with `admin add-account` before allowing sign-up.
+    /// with `weacon-server add-account` or `weacon-server add-member` can sign in. The first
+    /// account on the server is its owner, so make your own with `weacon-server add-account`
+    /// before allowing sign-up.
     #[arg(long)]
     pub(crate) sign_up: Vec<SignUp>,
 }

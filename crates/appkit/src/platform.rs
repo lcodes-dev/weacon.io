@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 /// Whether only its owner can reach the file or folder `metadata` is of; `None` where the
 /// system keeps access lists instead of permissions, as Windows does, and this can't tell.
 #[must_use]
-pub fn owner_only(metadata: &Metadata) -> Option<bool> {
+pub fn is_private(metadata: &Metadata) -> Option<bool> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -313,7 +313,7 @@ mod tests {
         fs::write(&file, "").unwrap();
         let private_with = |mode| {
             fs::set_permissions(&file, Permissions::from_mode(mode)).unwrap();
-            owner_only(&fs::metadata(&file).unwrap()).unwrap()
+            is_private(&fs::metadata(&file).unwrap()).unwrap()
         };
 
         assert!(private_with(0o600));
@@ -332,7 +332,7 @@ mod tests {
         let file = dir.join("file");
         fs::write(&file, "").unwrap();
 
-        assert_eq!(owner_only(&fs::metadata(&file).unwrap()), None);
+        assert_eq!(is_private(&fs::metadata(&file).unwrap()), None);
     }
 
     #[cfg(unix)]

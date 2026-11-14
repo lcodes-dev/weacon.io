@@ -1,8 +1,9 @@
 use std::ffi::OsString;
 use std::path::PathBuf;
 
+use clap::error::ErrorKind;
 use clap::{Args, CommandFactory, FromArgMatches, Parser, Subcommand};
-use weacon_protocol::{AccessLevel, AgentKind, UpdateSchedule, WorkspaceId};
+use weacon_protocol::{AccessLevel, AgentKind, ChatId, UpdateSchedule, WorkspaceId};
 use weacon_version::Version;
 
 /// Weacon's core: runs agents for your chats and tasks.
@@ -47,23 +48,55 @@ pub(crate) enum Command {
         #[arg(long)]
         team: Option<bool>,
     },
+    /// Pair this machine with your Weacon account: confirm the code it shows in the web app.
+    Pair {
+        /// The server's address, an https URL with no path.
+        server: String,
+        /// What the web app calls this machine.
+        #[arg(long)]
+        name: Option<String>,
+        /// A PEM file of the certificates to trust for the server, in place of the public ones.
+        #[arg(long)]
+        pin: Option<PathBuf>,
+    },
     /// Choose whether this core sends error reports, or show the answer.
     Reports {
         /// on or off; left out, shows the answer.
         #[arg(value_enum)]
         answer: Option<crate::reports::Answer>,
     },
+    /// Carry on a chat's agent by hand in this terminal, on the session the chat holds, once
+    /// its run here sleeps.
+    ///
+    /// You answer the agent's own prompts, whatever the workspace's access level. Send the chat
+    /// nothing from the web app until you end it here.
+    Resume {
+        /// The workspace's id.
+        #[arg(long)]
+        workspace: WorkspaceId,
+        /// The chat's id.
+        #[arg(long)]
+        chat: ChatId,
+    },
     /// Let Weacon's Chrome extension reach this core.
     ConnectChrome,
     /// Relay messages between Chrome's extension and the daemon; Chrome starts it.
     #[command(hide = true)]
     NativeHost { origin: String },
-    /// Work with the code map of a repository.
-    #[command(subcommand)]
+    /// Print the text the MCP's `map` tool answers: where to begin in a repository's code.
     Map(MapCommand),
     /// Install the latest release over this binary, checking its signature first, and restart
     /// the service.
     Update(UpdateCommand),
+    /// Print what an agent's hook adds; the plugin the core gives its runs calls it.
+    #[command(subcommand, hide = true)]
+    Hook(HookCommand),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Subcommand)]
+pub(crate) enum HookCommand {
+    /// Print where to begin in the current folder's code, or nothing.
+    SessionStart,
 }
 
 fn agent(name: &str) -> Result<AgentKind, &'static str> {
@@ -79,6 +112,18 @@ pub(crate) enum ServiceCommand {
     Install,
     /// Stop the service and remove it.
     Uninstall,
+}
+
+#[derive(Debug, PartialEq, Eq, Args)]
+pub(crate) struct MapCommand {
+    #[command(subcommand)]
+    pub(crate) command: Option<MapSubcommand>,
+    /// The repository's root folder.
+    #[arg(long, global = true, default_value = ".")]
+    pub(crate) root: PathBuf,
+    /// The most bytes the answer may hold, for the map and `symbol`.
+    #[arg(long, global = true)]
+    pub(crate) budget: Option<u32>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Args)]
@@ -109,13 +154,11 @@ fn schedule(name: &str) -> Result<UpdateSchedule, &'static str> {
 }
 
 #[derive(Debug, PartialEq, Eq, Subcommand)]
-pub(crate) enum MapCommand {
+pub(crate) enum MapSubcommand {
+    /// Print the text the MCP's `symbol` tool answers for an item's full path.
+    Symbol { path: String },
     /// Read pinned anchors on stdin, one per line, and print those that no longer match.
-    CheckAnchors {
-        /// The repository's root folder.
-        #[arg(long, default_value = ".")]
-        root: PathBuf,
-    },
+    CheckAnchors,
 }
 
 impl Cli {
@@ -135,10 +178,13 @@ impl Command {
             | Self::Service(_)
             | Self::Login { .. }
             | Self::Access { .. }
+            | Self::Pair { .. }
             | Self::Reports { .. }
+            | Self::Resume { .. }
             | Self::ConnectChrome
             | Self::Map(_)
-            | Self::Update(_) => "cli.log",
+            | Self::Update(_)
+            | Self::Hook(_) => "cli.log",
             Self::NativeHost { .. } => "native-host.log",
         }
     }
@@ -151,11 +197,14 @@ impl Command {
             Self::Service(_) => "service",
             Self::Login { .. } => "login",
             Self::Access { .. } => "access",
+            Self::Pair { .. } => "pair",
             Self::Reports { .. } => "reports",
+            Self::Resume { .. } => "resume",
             Self::ConnectChrome => "connect-chrome",
             Self::NativeHost { .. } => "native-host",
             Self::Map(_) => "map",
             Self::Update(_) => "update",
+            Self::Hook(_) => "hook",
         }
     }
 }
@@ -165,10 +214,19 @@ pub(crate) fn parse<I: IntoIterator<Item = OsString>>(
     args: I,
     version: &Version,
 ) -> Result<Cli, clap::Error> {
-    let matches = Cli::command()
-        .version(version.with_commit())
-        .try_get_matches_from(from_chrome(args.into_iter().collect()))?;
-    Cli::from_arg_matches(&matches)
+    let mut command = Cli::command().version(version.with_commit());
+    let matches = command.try_get_matches_from_mut(from_chrome(args.into_iter().collect()))?;
+    let cli = Cli::from_arg_matches(&matches)?;
+    if let Command::Map(MapCommand {
+        command: Some(MapSubcommand::CheckAnchors),
+        budget: Some(_),
+        ..
+    }) = cli.command
+    {
+        let refused = "only the map and `symbol` take --budget, not check-anchors";
+        return Err(command.error(ErrorKind::ArgumentConflict, refused));
+    }
+    Ok(cli)
 }
 
 // Chrome starts a native host with the extension's origin as its first argument, and on
@@ -187,8 +245,6 @@ fn from_chrome(mut args: Vec<OsString>) -> Vec<OsString> {
 
 #[cfg(test)]
 mod tests {
-    use clap::error::ErrorKind;
-
     use super::*;
     use crate::reports::Answer;
     use crate::test_support::VERSION;
@@ -212,8 +268,6 @@ mod tests {
             .map(|name| run(&["weacon", name]).unwrap().command.name());
         let install = run(&["weacon", "service", "install"]).unwrap().command;
         let uninstall = run(&["weacon", "service", "uninstall"]).unwrap().command;
-        let map = run(&["weacon", "map", "check-anchors"]).unwrap().command;
-        let rooted = run(&["weacon", "map", "check-anchors", "--root", "/srv/repo"]).unwrap();
         let verbose = run(&["weacon", "doctor", "--verbose"]).unwrap();
 
         assert_eq!(doctor.command, Command::Doctor);
@@ -224,19 +278,78 @@ mod tests {
         );
         let service = run(&["weacon", "service", "install"]).unwrap().command;
         assert_eq!((service.name(), service.log_name()), ("service", "cli.log"));
-        assert_eq!(
-            map,
-            Command::Map(MapCommand::CheckAnchors { root: ".".into() })
-        );
-        assert_eq!((map.name(), map.log_name()), ("map", "cli.log"));
-        assert_eq!(
-            rooted.command,
-            Command::Map(MapCommand::CheckAnchors {
-                root: "/srv/repo".into()
-            })
-        );
         assert!(!doctor.verbose);
         assert!(verbose.verbose);
+    }
+
+    #[test]
+    fn pair_takes_the_server_first_and_its_name_and_pin_as_options() {
+        let url = "https://weacon.example.com";
+        let pair = run(&[
+            "weacon", "pair", url, "--name", "Studio", "--pin", "cert.pem",
+        ]);
+        let bare = run(&["weacon", "pair", url]).unwrap().command;
+
+        assert_eq!(
+            pair.unwrap().command,
+            Command::Pair {
+                server: url.to_owned(),
+                name: Some("Studio".to_owned()),
+                pin: Some(PathBuf::from("cert.pem")),
+            }
+        );
+        assert_eq!((bare.name(), bare.log_name()), ("pair", "cli.log"));
+        run(&["weacon", "pair", "--server", url]).unwrap_err();
+    }
+
+    #[test]
+    fn map_commands_take_a_root_and_a_budget_before_or_after_their_subcommand() {
+        let map = |args: &[&str]| {
+            let args = [["weacon", "map"].as_slice(), args].concat();
+            run(&args).map(|cli| cli.command).ok()
+        };
+        let map_of = |command, root: &str, budget| {
+            Some(Command::Map(MapCommand {
+                command,
+                root: root.into(),
+                budget,
+            }))
+        };
+        let symbol = || {
+            let path = "a::b".to_owned();
+            Some(MapSubcommand::Symbol { path })
+        };
+        let check = || Some(MapSubcommand::CheckAnchors);
+
+        let outline = map(&["--budget", "2000"]);
+        let item = map(&["--root", "r", "symbol", "a::b", "--budget", "1500"]);
+        let early = map(&["--budget", "1500", "symbol", "a::b"]);
+        let checked = map(&["check-anchors"]).unwrap();
+
+        assert_eq!(outline, map_of(None, ".", Some(2000)));
+        assert_eq!(item, map_of(symbol(), "r", Some(1500)));
+        assert_eq!(early, map_of(symbol(), ".", Some(1500)));
+        assert_eq!(
+            map(&["symbol", "a::b", "--root", "r"]),
+            map_of(symbol(), "r", None)
+        );
+        assert_eq!((checked.name(), checked.log_name()), ("map", "cli.log"));
+        assert_eq!(Some(checked), map_of(check(), ".", None));
+        assert_eq!(
+            map(&["--root", "/srv", "check-anchors"]),
+            map_of(check(), "/srv", None)
+        );
+        assert_eq!(
+            map(&["check-anchors", "--root", "/srv"]),
+            map_of(check(), "/srv", None)
+        );
+        for args in [
+            ["--budget", "3", "check-anchors"],
+            ["check-anchors", "--budget", "3"],
+        ] {
+            let refused = run(&[["weacon", "map"].as_slice(), &args].concat()).unwrap_err();
+            assert_eq!(refused.kind(), ErrorKind::ArgumentConflict);
+        }
     }
 
     #[test]

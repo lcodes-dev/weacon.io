@@ -1,8 +1,9 @@
 use schemars::JsonSchema;
-use serde::{Deserialize, Deserializer, Serialize, de};
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::token::token_id;
+use crate::hex::is_lower_hex;
+use crate::token::{checked_string, token_id};
 use crate::{MachineName, MemberId, Outcome};
 
 /// Which vendor's agent.
@@ -31,32 +32,16 @@ impl AgentKind {
 
 /// An agent's own id for a conversation, a lowercase UUID, which resumes it later.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, JsonSchema)]
-pub struct AgentSession(#[schemars(regex(pattern = PATTERN))] String);
+pub struct AgentSession(#[schemars(regex(pattern = SESSION_PATTERN))] String);
 
 // The schema's form of `is_uuid`; a test keeps the two in step.
-const PATTERN: &str = r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$";
+const SESSION_PATTERN: &str = r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$";
 
-impl AgentSession {
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
+fn is_uuid(id: &str) -> bool {
+    id.split('-').map(str::len).eq([8, 4, 4, 4, 12]) && id.split('-').all(is_lower_hex)
 }
 
-impl TryFrom<String> for AgentSession {
-    type Error = String;
-
-    fn try_from(id: String) -> Result<Self, Self::Error> {
-        if is_uuid(&id) { Ok(Self(id)) } else { Err(id) }
-    }
-}
-
-impl<'de> Deserialize<'de> for AgentSession {
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        Self::try_from(String::deserialize(deserializer)?)
-            .map_err(|_| de::Error::custom("not an agent session id"))
-    }
-}
+checked_string!(AgentSession, is_uuid, "not an agent session id");
 
 token_id!(
     /// The core's id for one run of an agent process, 1–64 ASCII letters, digits, `-` or `_`.
@@ -64,17 +49,6 @@ token_id!(
     RunId,
     "not a run id"
 );
-
-fn is_uuid(id: &str) -> bool {
-    id.len() == 36
-        && id.bytes().enumerate().all(|(at, byte)| {
-            if matches!(at, 8 | 13 | 18 | 23) {
-                byte == b'-'
-            } else {
-                matches!(byte, b'0'..=b'9' | b'a'..=b'f')
-            }
-        })
-}
 
 /// What an agent's run reports, in order. Each turn ends with `finished`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -112,6 +86,10 @@ pub enum RunEvent {
         run: RunId,
         prompt: u32,
     },
+    /// A person answered a waiting prompt; committed before the agent is told.
+    PermissionAnswered {
+        answer: PermissionAnswer,
+    },
     /// Ends the turn and withdraws any prompt still waiting.
     Finished {
         outcome: Outcome,
@@ -134,7 +112,8 @@ impl RunEvent {
     }
 }
 
-/// One event of the run `run`, in the order the run reported it.
+/// One event of the run `run`, in the order the run reported it, from the core to clients that
+/// have `run.stream`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct RunUpdate {
     pub run: RunId,
@@ -187,7 +166,9 @@ pub enum AgentOwner {
 }
 
 impl AgentRef {
-    pub(crate) const fn is_newer(&self) -> bool {
+    /// Whether its kind or owner is one this build doesn't know.
+    #[must_use]
+    pub const fn is_newer(&self) -> bool {
         matches!(self.kind, AgentKind::Newer) || matches!(self.owner, AgentOwner::Newer)
     }
 }
@@ -225,10 +206,11 @@ mod tests {
     use serde_json::{Value, json};
 
     use super::*;
+    use crate::test_support::{round_trips, run};
 
     #[test]
     fn sessions_are_lowercase_uuids() {
-        let pattern = regex::Regex::new(PATTERN).unwrap();
+        let pattern = regex::Regex::new(SESSION_PATTERN).unwrap();
         let good = "0b7c6a52-3f1e-4d2a-9c8b-5e4f3a2b1c0d";
         assert!(is_uuid(good));
         assert!(pattern.is_match(good));
@@ -253,12 +235,8 @@ mod tests {
     #[test]
     fn agent_kinds_travel_as_names_and_a_newer_one_still_parses() {
         for (kind, name) in [(AgentKind::Claude, "claude"), (AgentKind::Codex, "codex")] {
-            assert_eq!(serde_json::to_value(kind).unwrap(), json!(name));
+            round_trips(&kind, json!(name));
             assert_eq!(kind.name(), Some(name));
-            assert_eq!(
-                serde_json::from_value::<AgentKind>(json!(name)).unwrap(),
-                kind
-            );
         }
         assert_eq!(
             serde_json::from_value::<AgentKind>(json!("amp")).unwrap(),
@@ -268,12 +246,20 @@ mod tests {
     }
 
     #[test]
-    fn run_ids_are_plain_tokens_checked_on_arrival() {
-        let run: RunId = serde_json::from_value(json!("run-7")).unwrap();
+    fn an_answer_travels_with_the_prompt_it_answers() {
+        let run = "run-1".parse().unwrap();
+        let answer = PermissionAnswer {
+            run,
+            prompt: 2,
+            allow: false,
+        };
+        let event = RunEvent::PermissionAnswered { answer };
+        let wire = json!({
+            "event": "permission_answered",
+            "answer": { "run": "run-1", "prompt": 2, "allow": false }
+        });
 
-        assert_eq!(serde_json::to_value(&run).unwrap(), json!("run-7"));
-        assert_eq!(RunId::try_from("a b".to_owned()), Err("a b".to_owned()));
-        serde_json::from_value::<RunId>(json!("a/b")).unwrap_err();
+        round_trips(&event, wire);
     }
 
     #[test]
@@ -283,8 +269,7 @@ mod tests {
         };
         let wire = json!({ "event": "finished", "outcome": { "state": "unknown" } });
 
-        assert_eq!(serde_json::to_value(&event).unwrap(), wire);
-        assert_eq!(serde_json::from_value::<RunEvent>(wire).unwrap(), event);
+        round_trips(&event, wire);
         assert_eq!(
             serde_json::from_value::<RunEvent>(json!({ "event": "thinking" })).unwrap(),
             RunEvent::Newer
@@ -293,10 +278,10 @@ mod tests {
 
     #[test]
     fn a_status_may_name_who_runs_the_run() {
-        let member = MemberId::try_from("m-1".to_owned()).unwrap();
-        let laptop = MachineName::try_from("Ada's laptop".to_owned()).unwrap();
+        let member = "m-1".parse().unwrap();
+        let laptop = "Ada's laptop".parse().unwrap();
         let status = |agent| RunStatus {
-            run: RunId::try_from("run-7".to_owned()).unwrap(),
+            run: run(),
             state: RunState::Running,
             agent,
         };
@@ -323,8 +308,7 @@ mod tests {
         ];
 
         for (status, wire) in cases {
-            assert_eq!(serde_json::to_value(&status).unwrap(), wire);
-            assert_eq!(serde_json::from_value::<RunStatus>(wire).unwrap(), status);
+            round_trips(&status, wire);
             assert!(!status.is_newer());
         }
         let newer = |agent: Value| {
@@ -356,7 +340,7 @@ mod tests {
 
         for (state, word) in states {
             let wire = RunStatus {
-                run: RunId::try_from("run-7".to_owned()).unwrap(),
+                run: run(),
                 state,
                 agent: None,
             };

@@ -6,12 +6,15 @@ mod backup;
 mod changes;
 mod docs;
 mod machine;
-mod owned;
+mod proposals;
 mod schema;
+mod sign_in;
 mod tasks;
+#[cfg(test)]
+mod test_support;
 mod workspace;
 
-pub(crate) use tasks::task_not_found;
+pub(crate) use tasks::{no_room, task_not_found};
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -20,14 +23,14 @@ use sqlx::SqlitePool;
 use sqlx::sqlite::{SqliteConnectOptions, SqliteConnection, SqlitePoolOptions, SqliteSynchronous};
 use weacon_model::Revision;
 use weacon_observability::Fault;
-use weacon_protocol::{AccountId, Author, MemberId, WorkspaceId, code};
+use weacon_protocol::{AccountId, AgentOwner, AgentRef, Author, MemberId, WorkspaceId, code};
 
-#[cfg(test)]
-pub(crate) use account::CODE_LIFETIME;
-pub(crate) use account::{Account, Attempt};
+pub(crate) use account::{Account, NewWorkspace};
 pub(crate) use backup::restore;
-pub(crate) use machine::{Claim, Confirmation, NewPairing};
-pub(crate) use owned::NewWorkspace;
+pub(crate) use machine::{Claim, Claiming, Confirmation, NewPairing};
+#[cfg(test)]
+pub(crate) use proposals::Proposed;
+pub(crate) use sign_in::{Attempt, NewChallenge};
 pub(crate) use workspace::Workspace;
 
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
@@ -43,6 +46,15 @@ pub(crate) struct Db {
 }
 
 impl Db {
+    /// A transaction that holds the write lock from the start, so nothing changes between its
+    /// reads and its writes.
+    async fn write(&self) -> Result<sqlx::Transaction<'static, sqlx::Sqlite>, Fault> {
+        self.writer
+            .begin_with("BEGIN IMMEDIATE")
+            .await
+            .map_err(failed)
+    }
+
     /// Opens the database at `path`, creating it if it's missing, and brings its schema up
     /// to date.
     pub(crate) async fn create(path: &Path) -> Result<Self, Fault> {
@@ -159,8 +171,18 @@ fn path_unusable() -> Fault {
 }
 
 /// A value read back from the database, such as an id, checked like one that arrived.
+/// A value stored as JSON.
+fn parsed<T: serde::de::DeserializeOwned>(json: &str) -> Result<T, Fault> {
+    serde_json::from_str(json).map_err(|_| unreadable())
+}
+
 fn stored<T: TryFrom<String>>(value: String) -> Result<T, Fault> {
     T::try_from(value).map_err(|_| unreadable())
+}
+
+/// `version` as stored, or `too_big` when it doesn't fit in an `i64`.
+fn version_number(version: Revision, too_big: fn() -> Fault) -> Result<i64, Fault> {
+    i64::try_from(version.get()).map_err(|_| too_big())
 }
 
 fn stored_version(version: i64) -> Result<Revision, Fault> {
@@ -169,20 +191,39 @@ fn stored_version(version: i64) -> Result<Revision, Fault> {
         .map_err(|_| unreadable())
 }
 
-/// How `author` is stored, unless it is one from a newer peer.
-fn author_columns(author: &Author) -> Option<(&'static str, &MemberId)> {
+/// How `author` is stored: its kind, its member and, for an agent that names one, the agent
+/// as JSON. `None` for an author or agent from a newer peer, or an agent that isn't `owner`'s
+/// own or the shared one, whose member the row's reference wouldn't cover.
+fn author_columns(author: &Author) -> Option<(&'static str, &MemberId, Option<String>)> {
     match author {
-        Author::Person { member } => Some(("person", member)),
-        Author::Agent { owner } => Some(("agent", owner)),
-        Author::Newer => None,
+        Author::Person { member } => Some(("person", member, None)),
+        Author::Agent { owner, agent: None } => Some(("agent", owner, None)),
+        Author::Agent {
+            owner,
+            agent: Some(agent),
+        } if !agent.is_newer() && answers_to(agent, owner) => {
+            Some(("agent", owner, Some(serde_json::to_string(agent).ok()?)))
+        }
+        Author::Agent { .. } | Author::Newer => None,
     }
 }
 
-fn stored_author(kind: &str, member: String) -> Result<Author, Fault> {
+fn answers_to(agent: &AgentRef, owner: &MemberId) -> bool {
+    match &agent.owner {
+        AgentOwner::Member { member } => member == owner,
+        AgentOwner::Shared | AgentOwner::Newer => true,
+    }
+}
+
+/// The author stored in [`author_columns`]' columns; a row an older build wrote has no agent.
+fn stored_author(kind: &str, member: String, agent: Option<&str>) -> Result<Author, Fault> {
     let member = stored(member)?;
-    match kind {
-        "person" => Ok(Author::Person { member }),
-        "agent" => Ok(Author::Agent { owner: member }),
+    match (kind, agent) {
+        ("person", None) => Ok(Author::Person { member }),
+        ("agent", agent) => Ok(Author::Agent {
+            owner: member,
+            agent: agent.map(parsed).transpose()?,
+        }),
         _ => Err(unreadable()),
     }
 }

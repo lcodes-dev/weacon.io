@@ -3,7 +3,7 @@ use axum::http::header;
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 
-use crate::http::Shared;
+use crate::shared::Shared;
 
 /// A built file of the web app: the route it is served at, its type and its bytes.
 pub(crate) type WebFile = (&'static str, &'static str, &'static [u8]);

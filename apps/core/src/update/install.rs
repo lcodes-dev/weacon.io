@@ -170,6 +170,7 @@ mod tests {
     use weacon_testing::TempDir;
 
     use super::*;
+    use crate::test_support::Broken;
 
     const RELEASE: &str = "0123456789abcdef0123456789abcdef01234567";
 
@@ -274,12 +275,6 @@ mod tests {
 
     #[test]
     fn a_failed_download_leaves_nothing_behind() {
-        struct Broken;
-        impl Read for Broken {
-            fn read(&mut self, _: &mut [u8]) -> io::Result<usize> {
-                Err(io::Error::from(io::ErrorKind::ConnectionReset))
-            }
-        }
         let dir = TempDir::new().unwrap();
         let paths = installed(&dir);
         let mut body = Cursor::new("ne").chain(Broken);

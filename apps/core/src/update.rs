@@ -4,8 +4,8 @@ mod fetch;
 #[cfg(test)]
 mod fixtures;
 mod install;
-mod manifest;
 mod settings;
+mod verify;
 mod watch;
 
 pub(crate) use watch::{CHECK_EVERY, Check, Hooks, Watch};
@@ -297,7 +297,7 @@ fn unix_now() -> u64 {
 
 /// The latest release, fetched and checked against the keys every build trusts.
 pub(crate) fn latest() -> Result<ReleaseManifest, Fault> {
-    fetch::release(&fetch::https(fetch::MANIFEST_WITHIN), &manifest::TRUSTED)
+    fetch::release(&fetch::https(fetch::MANIFEST_WITHIN), &verify::TRUSTED)
 }
 
 /// Asks `status` of the binary at `exe` up to `tries` times, `pause` apart, until it names

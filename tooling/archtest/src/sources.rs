@@ -3,11 +3,15 @@
 use std::collections::BTreeSet;
 use std::path::Path;
 
+use syn::buffer::{Cursor, TokenBuffer};
 use syn::visit::{self, Visit};
-use syn::{Attribute, Ident, ItemFn, ItemMod, ItemUse, Macro, Meta, UseTree};
+use syn::{Attribute, Ident, ItemFn, ItemMod, ItemUse, Lit, Macro, Meta, UseTree};
 
 use crate::SourceFile;
-use crate::rules::{DB_DRIVERS, IO_MODULES, MARKERS, MAX_CODE_LINES, OS_CFGS, Rule};
+use crate::rules::{
+    DB_DRIVERS, INTEGRATIONS_FOLDER, INTEGRATIONS_READER, IO_MODULES, MARKERS, MAX_CODE_LINES,
+    OS_CFGS, Rule,
+};
 
 pub(crate) fn check_sources(rule: &Rule, sources: &[SourceFile]) -> Vec<String> {
     let name = rule.package;
@@ -30,9 +34,17 @@ pub(crate) fn check_sources(rule: &Rule, sources: &[SourceFile]) -> Vec<String> 
 }
 
 fn check_file(rule: &Rule, file: &SourceFile) -> Vec<String> {
+    let mut out = check_text(&file.text);
+    match Uses::of(&file.text) {
+        Ok(uses) => out.extend(check_uses(rule, &file.path, &uses)),
+        Err(error) => out.push(format!("can't be parsed: {error}")),
+    }
+    out
+}
+
+fn check_text(text: &str) -> Vec<String> {
     let mut out = Vec::new();
-    let code = file
-        .text
+    let code = text
         .split("#[cfg(test)]\nmod tests")
         .next()
         .unwrap_or_default();
@@ -42,21 +54,17 @@ fn check_file(rule: &Rule, file: &SourceFile) -> Vec<String> {
             "has {code_lines} lines before its tests; split it to stay within {MAX_CODE_LINES}"
         ));
     }
-    let markers: BTreeSet<&str> = words(&file.text)
-        .filter(|word| MARKERS.contains(word))
-        .collect();
+    let markers: BTreeSet<&str> = words(text).filter(|word| MARKERS.contains(word)).collect();
     out.extend(
         markers
             .iter()
             .map(|marker| format!("has a {marker}; finish the work or remove the note")),
     );
-    let uses = match Uses::of(&file.text) {
-        Ok(uses) => uses,
-        Err(error) => {
-            out.push(format!("can't be parsed: {error}"));
-            return out;
-        }
-    };
+    out
+}
+
+fn check_uses(rule: &Rule, path: &Path, uses: &Uses) -> Vec<String> {
+    let mut out = Vec::new();
     if !rule.io {
         out.extend(
             uses.std_modules
@@ -65,8 +73,8 @@ fn check_file(rule: &Rule, file: &SourceFile) -> Vec<String> {
                 .map(|module| format!("uses std::{module}, but its package does no I/O")),
         );
     }
-    if file.path.starts_with("src") {
-        if !in_module(&file.path, "db") {
+    if path.starts_with("src") {
+        if !in_module(path, "db") {
             out.extend(
                 uses.roots
                     .iter()
@@ -74,9 +82,14 @@ fn check_file(rule: &Rule, file: &SourceFile) -> Vec<String> {
                     .map(|driver| format!("uses {driver} outside the db module")),
             );
         }
-        if uses.os_cfg && !in_module(&file.path, "platform") {
+        if uses.os_cfg && !in_module(path, "platform") {
             out.push("selects an operating system outside the platform module".to_owned());
         }
+    }
+    if uses.includes_integrations && rule.package != INTEGRATIONS_READER {
+        out.push(format!(
+            "includes {INTEGRATIONS_FOLDER}/ files, which only {INTEGRATIONS_READER} reads"
+        ));
     }
     out
 }
@@ -104,13 +117,14 @@ fn names_os(arguments: &str) -> bool {
 }
 
 /// What a file's code refers to outside `#[cfg(test)]` modules, functions and `use`s.
-/// Macro bodies other than `cfg!` aren't seen.
 #[derive(Default)]
 struct Uses {
     /// The first segment of every `use` and of every path with two or more segments.
     roots: BTreeSet<String>,
     std_modules: BTreeSet<String>,
     os_cfg: bool,
+    /// An `include!`, `include_str!` or `include_bytes!` of an integrations file.
+    includes_integrations: bool,
 }
 
 impl Uses {
@@ -133,6 +147,79 @@ impl Uses {
         self.roots.insert(root);
     }
 
+    /// Notes the paths in a macro's tokens, which `syn` leaves unparsed, each after `prefix`.
+    fn note_tokens(&mut self, mut cursor: Cursor<'_>, prefix: &[Ident]) {
+        let mut path = Vec::new();
+        let mut last = Last::Other;
+        while let Some((_, next)) = cursor.token_tree() {
+            last = self.note_token(cursor, prefix, &mut path, last);
+            cursor = next;
+        }
+        self.note_path(prefix, &mut path);
+    }
+
+    // Takes the token at `cursor` into `path`, and returns what now ends it.
+    fn note_token(
+        &mut self,
+        cursor: Cursor<'_>,
+        prefix: &[Ident],
+        path: &mut Vec<Ident>,
+        last: Last,
+    ) -> Last {
+        if let Some((punct, _)) = cursor.punct()
+            && punct.as_char() == ':'
+        {
+            return last.colon();
+        }
+        if let Some((ident, next)) = cursor.ident() {
+            if INCLUDES.iter().any(|name| ident == name)
+                && let Some((bang, after)) = next.punct()
+                && bang.as_char() == '!'
+                && let Some((inside, ..)) = after.any_group()
+            {
+                self.includes_integrations |= names_integrations(inside);
+            }
+            if last == Last::Alias {
+                return Last::Other;
+            }
+            let alias = ident == "as"
+                && prefix
+                    .first()
+                    .or_else(|| path.first())
+                    .is_some_and(|first| first == "use");
+            if !last.continues_path() || ident == "as" {
+                self.note_path(prefix, path);
+            }
+            if alias {
+                return Last::Alias;
+            }
+            // After `use`, even one segment names a crate, as in `use sqlx as db;`.
+            let used = ident == "use";
+            path.push(ident);
+            return if used { Last::Use } else { Last::Other };
+        }
+        // A group straight after `::` continues the path, as in `std::{fs, env}`.
+        let outer = if last.continues_path() {
+            [prefix, path].concat()
+        } else {
+            Vec::new()
+        };
+        self.note_path(prefix, path);
+        if let Some((inside, ..)) = cursor.any_group() {
+            self.note_tokens(inside, &outer);
+        }
+        Last::Other
+    }
+
+    fn note_path(&mut self, prefix: &[Ident], path: &mut Vec<Ident>) {
+        let full = [prefix, path].concat();
+        let (segments, after_use) = used(&full);
+        if segments.len() > 1 || after_use {
+            self.note(segments.iter());
+        }
+        path.clear();
+    }
+
     fn note_tree(&mut self, tree: &UseTree, prefix: &mut Vec<Ident>) {
         match tree {
             UseTree::Path(path) => {
@@ -149,6 +236,46 @@ impl Uses {
                 }
             }
         }
+    }
+}
+
+// What ends the path so far, while reading a macro's tokens.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Last {
+    Other,
+    Colon,
+    PathSep,
+    ManyColons,
+    // `as` in a `use`: the next name is an alias, not a path.
+    Alias,
+    // `use`, which a name, a group or a leading `::` continues, as in `use ::sqlx;`.
+    Use,
+    // One colon after `use`, which a macro matcher such as `(use: $x)` writes.
+    UseColon,
+}
+
+impl Last {
+    const fn colon(self) -> Self {
+        match self {
+            Self::Other => Self::Colon,
+            Self::Colon | Self::UseColon => Self::PathSep,
+            Self::PathSep | Self::ManyColons => Self::ManyColons,
+            Self::Alias => Self::Alias,
+            Self::Use => Self::UseColon,
+        }
+    }
+
+    // Whether a name or group that comes next is part of the same path.
+    fn continues_path(self) -> bool {
+        matches!(self, Self::PathSep | Self::Use)
+    }
+}
+
+// `path` without a leading `use`, and whether it had one.
+fn used(path: &[Ident]) -> (&[Ident], bool) {
+    match path.split_first() {
+        Some((first, rest)) if first == "use" => (rest, true),
+        _ => (path, false),
     }
 }
 
@@ -201,7 +328,40 @@ impl<'ast> Visit<'ast> for Uses {
         if mac.path.is_ident("cfg") {
             self.os_cfg |= names_os(&mac.tokens.to_string());
         }
+        let tokens = TokenBuffer::new2(mac.tokens.clone());
+        if mac
+            .path
+            .segments
+            .last()
+            .is_some_and(|last| INCLUDES.iter().any(|name| last.ident == name))
+        {
+            self.includes_integrations |= names_integrations(tokens.begin());
+        }
+        self.note_tokens(tokens.begin(), &[]);
         visit::visit_macro(self, mac);
+    }
+}
+
+const INCLUDES: [&str; 3] = ["include", "include_str", "include_bytes"];
+
+/// Whether the string literals in an include's tokens, joined as `concat!` would, name the folder.
+fn names_integrations(tokens: Cursor<'_>) -> bool {
+    let mut path = String::new();
+    join_literals(tokens, &mut path);
+    path.split(['/', '\\'])
+        .any(|part| part == INTEGRATIONS_FOLDER)
+}
+
+fn join_literals(mut cursor: Cursor<'_>, path: &mut String) {
+    while let Some((_, next)) = cursor.token_tree() {
+        if let Some((literal, _)) = cursor.literal()
+            && let Lit::Str(text) = Lit::new(literal)
+        {
+            path.push_str(&text.value());
+        } else if let Some((inside, ..)) = cursor.any_group() {
+            join_literals(inside, path);
+        }
+        cursor = next;
     }
 }
 
@@ -231,6 +391,41 @@ mod tests {
 
     fn check(rule: &Rule, path: &str, text: &str) -> Vec<String> {
         check_file(rule, &file(path, text))
+    }
+
+    #[test]
+    fn only_the_core_includes_integrations_files() {
+        let includes = [
+            "const S: &str = include_str!(\n    \"../../../integrations/claude/skill.md\"\n);",
+            "const B: &[u8] = include_bytes!(\"integrations/x.json\");",
+            "include!(\"../integrations/gen.json\");",
+            "const C: &str = include_str!(concat!(env!(\"CARGO_MANIFEST_DIR\"), \"/../../integrations/x.md\"));",
+            "const D: &str = include_str!(concat!(\"../../\", \"integrations\", \"/x.md\"));",
+            "const E: &str = include_str![\"integrations/x.md\"];",
+            "const F: &str = concat!(include_str!(\"../../integrations/x.md\"), \"\\n\");",
+            "const G: &str = include_str!(concat!(\"../../../integrations\", \"/x.md\"));",
+            "const H: &str = std::include_str!(\"../../integrations/x.md\");",
+            "const I: &str = include_str!(r\"..\\integrations\\x.md\");",
+        ];
+        let refused = "includes integrations/ files, which only weacon-core reads";
+
+        for text in includes {
+            assert_eq!(check(&PURE, "src/lib.rs", text), [refused], "{text}");
+            assert!(check(&IO, "src/lib.rs", text).is_empty(), "{text}");
+        }
+        let elsewhere = [
+            "// integrations/ is read elsewhere\nconst A: &str = include_str!(\"a.txt\");",
+            "#[cfg(test)]\nmod tests { const A: &str = include_str!(\"integrations/a.md\"); }",
+            "const A: &str = concat!(\"integrations/\", \"a.md\");",
+            "const A: &str = m!(include_str + (\"integrations/a.md\"));",
+            "const A: &str = m!(concat!(\"integrations/\", \"a.md\"));",
+            "const V: &str = include_str!(\"../assets/vendor_integrations/a.json\");",
+            "const W: &str = include_str!(\"../docs/integrations.md\");",
+            "#[cfg(test)]\nfn helper() { include_str!(\"integrations/a.md\"); }",
+        ];
+        for text in elsewhere {
+            assert!(check(&PURE, "src/lib.rs", text).is_empty(), "{text}");
+        }
     }
 
     #[test]
@@ -277,6 +472,47 @@ mod tests {
     }
 
     #[test]
+    fn finds_io_modules_inside_macro_calls() {
+        let io = |module: &str| format!("uses std::{module}, but its package does no I/O");
+        let cases = [
+            (
+                "fn home() -> String { format!(\"home\", std::env::var(\"HOME\")) }",
+                vec![io("env")],
+            ),
+            (
+                "fn all() -> Vec<u8> { vec![std::fs::read(\"x\").map(|_| 0).unwrap_or(1)] }",
+                vec![io("fs")],
+            ),
+            (
+                "fn check() { assert!(matches!(Some(1), Some(_)), \"pid\", { std::process::id() }); }",
+                vec![io("process")],
+            ),
+            (
+                "fn f() { assert!(std :: net :: Ipv4Addr::LOCALHOST.is_loopback()); }",
+                vec![io("net")],
+            ),
+            (
+                "fn f() -> String { format!(\"std::fs\", std::fmt::Error) }",
+                vec![],
+            ),
+            ("fn f() { let x: fs::File; m!(std: fs::File); }", vec![]),
+            ("fn f() { m!(std::fs::File); }", vec![io("fs")]),
+            (
+                "fn f() { m!(std::{fs::File, env}, net); }",
+                vec![io("env"), io("fs")],
+            ),
+            (
+                "macro_rules! t { () => { use std::{process}; }; }",
+                vec![io("process")],
+            ),
+        ];
+
+        for (text, found) in cases {
+            assert_eq!(check(&PURE, "src/lib.rs", text), found, "{text}");
+        }
+    }
+
+    #[test]
     fn database_drivers_stay_in_the_db_module() {
         let text = "use sqlx::PgPool;\nfn rows() { tokio_postgres::connect(); }";
 
@@ -290,14 +526,51 @@ mod tests {
         assert!(check(&IO, "src/db.rs", text).is_empty());
         assert!(check(&IO, "src/db/chats.rs", text).is_empty());
         assert!(check(&IO, "tests/store.rs", text).is_empty());
-        assert!(
-            check(
-                &IO,
-                "src/chats.rs",
-                "fn rows(postgres: u8) -> u8 { postgres }"
-            )
-            .is_empty()
+        for text in [
+            "fn rows(postgres: u8) -> u8 { postgres }",
+            "fn rows(postgres: u8) -> String { format!(\"rows\", postgres) }",
+        ] {
+            assert!(check(&IO, "src/chats.rs", text).is_empty(), "{text}");
+        }
+        assert_eq!(
+            check(&IO, "src/chats.rs", "fn rows() { m!(a::b sqlx::query) }"),
+            ["uses sqlx outside the db module"]
         );
+    }
+
+    #[test]
+    fn database_drivers_in_macro_bodies_are_found() {
+        // Three colons end a path rather than join one, and so do colons after a `use` alias.
+        for text in [
+            "fn rows() { m!(sqlx:::query) }",
+            "macro_rules! imports { () => { use std::fmt as ::sqlx; }; }",
+        ] {
+            assert!(check(&IO, "src/chats.rs", text).is_empty(), "{text}");
+        }
+        for text in [
+            "macro_rules! driver { () => { use sqlx as db; }; }",
+            "macro_rules! driver { () => { use ::sqlx; }; }",
+            "macro_rules! driver { () => { use ::sqlx as db; }; }",
+            "macro_rules! driver { () => { use sqlx; }; }",
+            "macro_rules! driver { () => { use sqlx::{self as db}; }; }",
+            "macro_rules! driver { () => { use {sqlx as db, std::fmt}; }; }",
+            "fn f() { m!(<T as sqlx::Type<Db>>::type_info()) }",
+            "macro_rules! driver { () => { use sqlx as db::query; }; }",
+        ] {
+            assert_eq!(
+                check(&IO, "src/chats.rs", text),
+                ["uses sqlx outside the db module"],
+                "{text}"
+            );
+        }
+        for text in [
+            "macro_rules! imports { () => { use std::{fmt as fs}; }; }",
+            "macro_rules! imports { () => { use {std::fmt as sqlx}; }; }",
+            "macro_rules! imports { () => { use std::fmt as fs::File; }; }",
+            "macro_rules! example { (use: sqlx) => { () }; }",
+        ] {
+            assert!(check(&PURE, "src/chats.rs", text).is_empty(), "{text}");
+        }
     }
 
     #[test]

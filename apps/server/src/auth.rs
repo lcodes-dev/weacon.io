@@ -11,7 +11,8 @@ use weacon_protocol::{AccountId, MachineId, MemberId, WorkspaceId, code};
 
 use crate::db::Workspace;
 use crate::email::Email;
-use crate::http::{Shared, cross_site, error, failure, unauthorized};
+use crate::http::{cross_site, error, failure, unauthorized};
+use crate::shared::Shared;
 
 /// The browser's session cookie; the prefix ties it to this host.
 pub(crate) const SESSION_COOKIE: &str = "__Host-weacon_session";
@@ -41,6 +42,7 @@ pub(crate) struct Member {
 /// Only a bearer token counts: no page acts as a machine.
 pub(crate) struct Machine {
     pub(crate) id: MachineId,
+    pub(crate) owner: AccountId,
     pub(crate) token_hash: [u8; 32],
 }
 
@@ -53,8 +55,12 @@ impl FromRequestParts<Shared> for Machine {
             .map(token_hash)
             .ok_or_else(unpaired)?;
         let found = shared.db.machine_with(&token_hash).await.map_err(failure)?;
-        let id = found.ok_or_else(unpaired)?;
-        Ok(Self { id, token_hash })
+        let (id, owner) = found.ok_or_else(unpaired)?;
+        Ok(Self {
+            id,
+            owner,
+            token_hash,
+        })
     }
 }
 

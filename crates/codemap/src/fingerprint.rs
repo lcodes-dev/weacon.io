@@ -5,24 +5,28 @@ use std::str::FromStr;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Fingerprint(u64);
 
-const OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
-const PRIME: u64 = 0x0100_0000_01b3;
+const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+const FNV_PRIME: u64 = 0x0100_0000_01b3;
 const SEPARATOR: u8 = 0xff;
 
 impl Fingerprint {
     /// Hashes the parts in order; parts are separated, so `["ab"]` and `["a", "b"]` differ.
     pub(crate) fn of(parts: impl IntoIterator<Item = impl AsRef<[u8]>>) -> Self {
-        let mut hash = OFFSET;
+        let mut hash = FNV_OFFSET;
         for part in parts {
             for byte in part.as_ref().iter().chain([&SEPARATOR]) {
-                hash = (hash ^ u64::from(*byte)).wrapping_mul(PRIME);
+                hash = (hash ^ u64::from(*byte)).wrapping_mul(FNV_PRIME);
             }
         }
         Self(hash)
     }
 
     pub(crate) fn combine(fingerprints: impl IntoIterator<Item = Self>) -> Self {
-        Self::of(fingerprints.into_iter().map(|it| it.0.to_be_bytes()))
+        Self::of(
+            fingerprints
+                .into_iter()
+                .map(|fingerprint| fingerprint.0.to_be_bytes()),
+        )
     }
 }
 

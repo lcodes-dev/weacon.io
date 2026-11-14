@@ -1,22 +1,34 @@
 use tree_sitter::Node;
 
-use crate::syntax::{preorder, push_reversed, test_only, text};
+use crate::syntax::{name, preorder, push_reversed, test_only};
 
 /// A path as written in code, split on `::`: `["crate", "frame", "encode_line"]`.
 pub(crate) type Segments = Vec<String>;
 
 /// A path, and the inline modules around it within its file.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct Named {
-    pub(crate) within: Vec<String>,
+pub(crate) struct NamedPath {
+    pub(crate) within: Segments,
     pub(crate) segments: Segments,
+    /// What a `use` brings into scope under this path; `None` for other paths.
+    pub(crate) bound: Option<Bound>,
 }
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Bound {
+    /// The name it is known by: the path's last segment, or its `as` alias.
+    Name(String),
+    /// Everything the path names, from `use path::*`.
+    Glob,
+}
+
+type Found = Vec<(Segments, Option<Bound>)>;
 
 type Scopes<'tree> = Vec<(Node<'tree>, Vec<String>)>;
 
 /// Every path a file names outside its test-only items: in `use` trees, in qualified names
 /// such as `frame::Frame::new`, and in `mod frame;` declarations.
-pub(crate) fn paths(root: Node<'_>, source: &[u8]) -> Vec<Named> {
+pub(crate) fn named_paths(root: Node<'_>, source: &[u8]) -> Vec<NamedPath> {
     let mut found = Vec::new();
     let mut scopes = vec![(root, Vec::new())];
     while let Some((scope, within)) = scopes.pop() {
@@ -24,9 +36,10 @@ pub(crate) fn paths(root: Node<'_>, source: &[u8]) -> Vec<Named> {
         preorder(scope, |node| {
             visit(node, source, &within, &mut written, &mut scopes)
         });
-        found.extend(written.into_iter().map(|segments| Named {
+        found.extend(written.into_iter().map(|(segments, bound)| NamedPath {
             within: within.clone(),
             segments,
+            bound,
         }));
     }
     found
@@ -37,7 +50,7 @@ fn visit<'tree>(
     node: Node<'tree>,
     source: &[u8],
     within: &[String],
-    found: &mut Vec<Segments>,
+    found: &mut Found,
     scopes: &mut Scopes<'tree>,
 ) -> bool {
     // Only items take attributes, and checking others is slow in deep trees.
@@ -48,16 +61,24 @@ fn visit<'tree>(
     match node.kind() {
         "use_declaration" => {
             if let Some(tree) = node.child_by_field_name("argument") {
+                let start = found.len();
                 use_tree(tree, source, found);
+                // A `use` in a block binds names only there, so it brings nothing into the module.
+                if in_block(node) {
+                    found
+                        .iter_mut()
+                        .skip(start)
+                        .for_each(|(_, bound)| *bound = None);
+                }
             }
             false
         }
         "mod_item" => {
             let name = node
                 .child_by_field_name("name")
-                .map(|name| text(name, source).to_owned());
+                .map(|node| name(node, source).to_owned());
             match (node.child_by_field_name("body"), name) {
-                (None, Some(name)) => found.push(vec![name]),
+                (None, Some(name)) => found.push((vec![name], None)),
                 (Some(body), Some(name)) => scopes.push((body, [within, &[name]].concat())),
                 _ => {}
             }
@@ -65,7 +86,7 @@ fn visit<'tree>(
         }
         "scoped_identifier" | "scoped_type_identifier" => match segments(node, source) {
             Some(path) => {
-                found.push(path);
+                found.push((path, None));
                 false
             }
             None => true,
@@ -74,7 +95,36 @@ fn visit<'tree>(
     }
 }
 
-fn use_tree(root: Node<'_>, source: &[u8], found: &mut Vec<Segments>) {
+/// What a `use` declaration brings into scope, and under which names.
+pub(crate) fn imports(declaration: Node<'_>, source: &[u8]) -> Vec<(Segments, Bound)> {
+    let mut found = Vec::new();
+    if let Some(tree) = declaration.child_by_field_name("argument") {
+        use_tree(tree, source, &mut found);
+    }
+    found
+        .into_iter()
+        .filter_map(|(segments, bound)| Some((segments, bound?)))
+        .collect()
+}
+
+/// What the `use`s inside `item`'s code bring into scope there.
+pub(crate) fn local_imports(item: Node<'_>, source: &[u8]) -> Vec<(Segments, Bound)> {
+    let mut found = Vec::new();
+    preorder(item, |node| {
+        if node.kind() == "use_declaration" {
+            found.extend(imports(node, source));
+            return false;
+        }
+        true
+    });
+    found
+}
+
+fn in_block(node: Node<'_>) -> bool {
+    std::iter::successors(node.parent(), Node::parent).any(|parent| parent.kind() == "block")
+}
+
+fn use_tree(root: Node<'_>, source: &[u8], found: &mut Found) {
     let mut pending = vec![(root, Vec::new())];
     while let Some((node, prefix)) = pending.pop() {
         let path = |node: Option<Node<'_>>| {
@@ -94,16 +144,27 @@ fn use_tree(root: Node<'_>, source: &[u8], found: &mut Vec<Segments>) {
                 let items = node.named_children(&mut cursor);
                 push_reversed(&mut pending, items.map(|item| (item, prefix.clone())));
             }
-            "use_as_clause" => found.extend(path(node.child_by_field_name("path"))),
-            "use_wildcard" => found.extend(path(node.named_child(0))),
-            "self" => found.extend(path(None)),
-            _ => found.extend(path(Some(node))),
+            "use_as_clause" => {
+                let alias = node.child_by_field_name("alias");
+                let alias = alias.map(|alias| Bound::Name(name(alias, source).to_owned()));
+                found.extend(path(node.child_by_field_name("path")).map(|path| (path, alias)));
+            }
+            "use_wildcard" => {
+                found.extend(path(node.named_child(0)).map(|path| (path, Some(Bound::Glob))));
+            }
+            "self" => found.extend(path(None).map(named_by_last)),
+            _ => found.extend(path(Some(node)).map(named_by_last)),
         }
     }
 }
 
+fn named_by_last(segments: Segments) -> (Segments, Option<Bound>) {
+    let bound = segments.last().map(|last| Bound::Name(last.clone()));
+    (segments, bound)
+}
+
 /// `a::b::C` as `["a", "b", "C"]`; `None` for paths through types such as `<T as U>::f`.
-fn segments(node: Node<'_>, source: &[u8]) -> Option<Segments> {
+pub(crate) fn segments(node: Node<'_>, source: &[u8]) -> Option<Segments> {
     let mut reversed = Vec::new();
     let mut next = Some(node);
     while let Some(node) = next {
@@ -116,9 +177,14 @@ fn segments(node: Node<'_>, source: &[u8]) -> Option<Segments> {
                 next = node.child_by_field_name("path");
                 node.child_by_field_name("name")?
             }
+            // `Store::<A>::new` is the path `Store::new`; its type arguments aren't part of it.
+            "generic_type" => {
+                next = node.child_by_field_name("type");
+                continue;
+            }
             _ => return None,
         };
-        reversed.push(text(name, source).to_owned());
+        reversed.push(self::name(name, source).to_owned());
     }
     reversed.reverse();
     Some(reversed)
@@ -127,11 +193,11 @@ fn segments(node: Node<'_>, source: &[u8]) -> Option<Segments> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::syntax::{parse, rust_parser};
+    use crate::test_support::tree;
 
     fn found(text: &str) -> Vec<String> {
-        let tree = parse(&mut rust_parser().unwrap(), text).unwrap();
-        paths(tree.root_node(), text.as_bytes())
+        let tree = tree(text);
+        named_paths(tree.root_node(), text.as_bytes())
             .into_iter()
             .map(|path| {
                 let mut parts = path.within;
@@ -162,6 +228,21 @@ mod tests {
                 "h::I",
                 "super::j"
             ]
+        );
+    }
+
+    #[test]
+    fn notes_what_each_use_brings_into_scope() {
+        let text = "use a::{self, b::C, d as e, f::*};\nfn g() { h::I; }\n";
+        let tree = tree(text);
+        let bound: Vec<Option<Bound>> = named_paths(tree.root_node(), text.as_bytes())
+            .into_iter()
+            .map(|path| path.bound)
+            .collect();
+        let name = |name: &str| Some(Bound::Name(name.to_owned()));
+        assert_eq!(
+            bound,
+            [name("a"), name("C"), name("e"), Some(Bound::Glob), None]
         );
     }
 

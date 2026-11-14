@@ -4,7 +4,7 @@ use std::io::{self, Write};
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
-use weacon_observability::Fault;
+use weacon_observability::{Fault, Logger};
 use weacon_protocol::{AccessLevel, WorkspaceId, code};
 
 use super::Workspaces;
@@ -17,7 +17,7 @@ use crate::platform;
 pub(crate) struct Settings {
     pub(crate) access: AccessLevel,
     /// Whether other people are in the workspace.
-    team: bool,
+    pub(crate) team: bool,
 }
 
 impl Default for Settings {
@@ -89,18 +89,16 @@ pub(crate) fn parse_level(name: &str) -> Result<AccessLevel, &'static str> {
     .ok_or("not an access level: use off, read-only, ask-first or full")
 }
 
-/// Sets what `workspace`'s agents may do on this machine, and says what it is now.
-pub(crate) fn run(
-    app: &App,
+/// Saves what `workspace`'s agents may do on this machine; `team` is kept as it was when left
+/// out, and saying it replaces settings that can't be read.
+pub(crate) fn store(
+    workspaces: &Workspaces,
     workspace: &WorkspaceId,
     access: AccessLevel,
     team: Option<bool>,
-    out: &mut impl Write,
-) -> Result<(), Fault> {
-    let state_dir = app.state_dir()?;
-    let workspaces = Workspaces::new(state_dir, None);
+    log: &Logger,
+) -> Result<Settings, Fault> {
     let file = workspaces.settings_file(workspace);
-    // Saying whether it's a team replaces settings that can't be read.
     let team = match team {
         Some(team) => team,
         None => Settings::read(&file)?.team,
@@ -116,8 +114,25 @@ pub(crate) fn run(
         )
         .because(error)
     })?;
-    let ids = [("workspace_id", workspace.as_str().into())];
-    app.log.info("access set", &ids);
+    log.info("access set", &[("workspace_id", workspace.as_str().into())]);
+    Ok(settings)
+}
+
+/// Sets what `workspace`'s agents may do on this machine, and says what it is now.
+pub(crate) fn run(
+    app: &App,
+    workspace: &WorkspaceId,
+    access: AccessLevel,
+    team: Option<bool>,
+    out: &mut impl Write,
+) -> Result<(), Fault> {
+    let settings = store(
+        &Workspaces::new(app.state_dir()?, None),
+        workspace,
+        access,
+        team,
+        &app.log,
+    )?;
     let (id, level, warning) = (workspace.as_str(), settings.level(), settings.warning());
     write!(out, "Workspace {id}: access {level}\n{warning}").map_err(|error| {
         Fault::new(
@@ -135,7 +150,7 @@ mod tests {
     use weacon_testing::TempDir;
 
     use super::*;
-    use crate::test_support;
+    use crate::test_support::{self, Broken};
 
     fn id(id: &str) -> WorkspaceId {
         WorkspaceId::try_from(id.to_owned()).unwrap()
@@ -266,19 +281,10 @@ mod tests {
 
     #[test]
     fn a_report_that_cant_be_printed_is_an_error_after_the_level_is_saved() {
-        struct Closed;
-        impl Write for Closed {
-            fn write(&mut self, _: &[u8]) -> io::Result<usize> {
-                Err(io::ErrorKind::BrokenPipe.into())
-            }
-            fn flush(&mut self) -> io::Result<()> {
-                Ok(())
-            }
-        }
         let dir = TempDir::new().unwrap();
         let app = test_support::app(Some(&dir), None);
 
-        let error = run(&app, &id("w1"), AccessLevel::Off, None, &mut Closed).unwrap_err();
+        let error = run(&app, &id("w1"), AccessLevel::Off, None, &mut Broken).unwrap_err();
 
         assert_eq!(error.code().as_str(), "access.output_failed");
         let saved = Settings::read(&dir.join(FILE)).unwrap();

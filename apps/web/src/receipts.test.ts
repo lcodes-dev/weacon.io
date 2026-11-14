@@ -102,3 +102,60 @@ test("a state this build doesn't know is unsure, whatever its name", async () =>
   all.take({ id: 2, type: "receipt", request: "r-1", state: "constructor" } as unknown as Incoming);
   assert.equal(await odd, "unsure");
 });
+
+test("a receipt that comes after the wait ran out is heard as late, once", async () => {
+  const deadlines: Array<() => void> = [];
+  const late: string[] = [];
+  const all = new Receipts((run) => deadlines.push(run), (request, settled) => late.push(`${request} ${settled}`));
+  const slow = all.wait("r-1", 2);
+  const retried = all.wait("r-2", 3);
+  all.wait("r-3", 4);
+  for (const deadline of deadlines.splice(0)) {
+    deadline();
+  }
+  assert.equal(await slow, "unsure");
+  assert.equal(await retried, "unsure");
+  // A retry under the same request waits again, so its receipt settles it, not the late listener.
+  const again = all.wait("r-2", 5);
+
+  all.take(receipt("r-1", "accepted"));
+  all.take(receipt("r-1", "accepted"));
+  all.take(receipt("r-2", "accepted"));
+  all.take({ id: 4, type: "receipt", request: "r-3", state: "failed", code: "run.failed" });
+  all.take(receipt("r-9", "accepted"));
+
+  assert.equal(await again, "accepted");
+  assert.deepEqual(late, ["r-1 accepted", "r-3 refused"]);
+});
+
+test("an error that answers a command after its wait ran out is heard as a late refusal", async () => {
+  const deadlines: Array<() => void> = [];
+  const late: string[] = [];
+  const all = new Receipts((run) => deadlines.push(run), (request, settled) => late.push(`${request} ${settled}`));
+  const slow = all.wait("r-1", 2);
+  deadlines.shift()?.();
+  assert.equal(await slow, "unsure");
+
+  all.take({ id: 9, type: "error", code: "request.conflict", retryable: false });
+  all.take({ id: 2, type: "error", code: "request.conflict", retryable: false });
+  all.take({ id: 2, type: "error", code: "request.conflict", retryable: false });
+  all.take(receipt("r-1", "accepted"));
+
+  assert.deepEqual(late, ["r-1 refused"]);
+});
+
+test("an error about an overdue envelope doesn't decide a retry that waits", async () => {
+  const deadlines: Array<() => void> = [];
+  const late: string[] = [];
+  const all = new Receipts((run) => deadlines.push(run), (request, settled) => late.push(`${request} ${settled}`));
+  const slow = all.wait("r-1", 2);
+  deadlines.shift()?.();
+  assert.equal(await slow, "unsure");
+  const retry = all.wait("r-1", 5);
+
+  all.take({ id: 2, type: "error", code: "request.conflict", retryable: false });
+  all.take(receipt("r-1", "accepted"));
+
+  assert.equal(await retry, "accepted");
+  assert.deepEqual(late, []);
+});

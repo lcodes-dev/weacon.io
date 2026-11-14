@@ -16,7 +16,7 @@ concurrency:
 jobs:
   check:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -36,7 +36,7 @@ jobs:
       - run: scripts/setup.sh
       - run: scripts/check.sh
 
-  # The core and the client have Windows code; check.sh's tools run on Linux only.
+  # Several crates and apps have Windows code; check.sh's tools run on Linux only.
   windows:
     runs-on: windows-latest
     timeout-minutes: 30
