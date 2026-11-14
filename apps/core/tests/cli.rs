@@ -5,6 +5,8 @@ mod tests {
     use std::io::{BufRead, BufReader};
     use std::process::{Command, Output, Stdio};
     use std::{env, fs};
+
+    use weacon_protocol::{App, Envelope, Hello, Message, PROTOCOL};
     use weacon_testing::TempDir;
 
     fn weacon(args: &[&str], state_dir: &str) -> Output {
@@ -173,9 +175,9 @@ mod tests {
     }
 
     // Chrome's frames: a native-endian length, then that many bytes of JSON.
-    fn frame(json: &str) -> Vec<u8> {
+    fn frame(json: &[u8]) -> Vec<u8> {
         let mut frame = u32::try_from(json.len()).unwrap().to_ne_bytes().to_vec();
-        frame.extend(json.as_bytes());
+        frame.extend(json);
         frame
     }
 
@@ -202,8 +204,19 @@ mod tests {
             .unwrap();
         let mut stdin = host.stdin.take().unwrap();
         let mut stdout = host.stdout.take().unwrap();
-        let hello = r#"{"id":1,"type":"hello","protocol":1,"app":{"name":"weacon-extension","version":"0.1.0","commit":"1a2b3c4"}}"#;
-        stdin.write_all(&frame(hello)).unwrap();
+        let hello = Envelope {
+            id: 1,
+            message: Message::Hello(Hello {
+                protocol: PROTOCOL,
+                app: App {
+                    name: "weacon-extension".to_owned(),
+                    version: "0.1.0".to_owned(),
+                    commit: "1a2b3c4".to_owned(),
+                },
+                capabilities: Vec::new(),
+            }),
+        };
+        stdin.write_all(&frame(&hello.to_json().unwrap())).unwrap();
         let mut length = [0; 4];
         stdout.read_exact(&mut length).unwrap();
         let mut reply = vec![0; usize::try_from(u32::from_ne_bytes(length)).unwrap()];
