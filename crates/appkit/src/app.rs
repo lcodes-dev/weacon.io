@@ -20,12 +20,6 @@ pub fn build(version: &Version) -> App {
     }
 }
 
-/// `0.1.0 (1a2b3c4)`
-#[must_use]
-pub fn version_text(version: &Version) -> String {
-    format!("{} ({})", version.version, version.commit)
-}
-
 /// An app's root logger: info and up, with its build on every record.
 #[must_use]
 pub fn root_logger(sink: Sink, version: &Version) -> Logger {
@@ -107,7 +101,6 @@ mod tests {
             (app.name.as_str(), app.version.as_str(), app.commit.as_str()),
             ("weacon-core", "0.1.0", "1a2b3c4")
         );
-        assert_eq!(version_text(&VERSION), "0.1.0 (1a2b3c4)");
     }
 
     #[test]
