@@ -1,4 +1,4 @@
-import type { Outcome, RunEvent } from "./protocol.ts";
+import type { Outcome, RunEvent } from "../protocol.ts";
 
 export type ToolState = "running" | "done" | "failed";
 
@@ -66,29 +66,5 @@ function step(rows: Row[], writing: boolean, event: RunEvent): boolean {
     default:
       // Other events, and a newer server's, leave the rows as they are.
       return writing;
-  }
-}
-
-/** Whether `event` is a run event whose fields this app reads are all there; others it ignores. */
-export function isRunEvent(event: unknown): event is RunEvent {
-  if (typeof event !== "object" || event === null) {
-    return false;
-  }
-  const fields = event as Record<string, unknown>;
-  const text = (key: string) => typeof fields[key] === "string";
-  switch (fields["event"]) {
-    case "text_delta":
-    case "text":
-      return text("text");
-    case "tool_call":
-      return text("call") && text("tool");
-    case "tool_done":
-      return text("call") && typeof fields["failed"] === "boolean";
-    case "finished": {
-      const outcome = fields["outcome"] as Record<string, unknown> | null | undefined;
-      return typeof outcome === "object" && outcome !== null && typeof outcome["state"] === "string";
-    }
-    default:
-      return typeof fields["event"] === "string";
   }
 }

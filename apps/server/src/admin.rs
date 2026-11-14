@@ -1,5 +1,4 @@
 use std::io::Write;
-use std::path::Path;
 
 use weacon_observability::Fault;
 use weacon_protocol::{AccountId, MemberId, WorkspaceId, code};
@@ -16,15 +15,24 @@ pub(crate) async fn run(
     new_id: &dyn Fn() -> String,
     out: &mut dyn Write,
 ) -> Result<(), Fault> {
+    // Input is checked and ids made before the file is opened, so a mistake touches nothing.
     let printed = match command {
         AdminCommand::CreateWorkspace { db, name } => {
             let name = workspace_name(&name)?;
             let id: WorkspaceId = fresh(new_id)?;
-            let db = Db::create(&db).await?;
-            let created = db.create_workspace(&id, name).await;
-            closed(db, created.map(|_| format!("{}\n", id.as_str()))).await
+            closed(Db::create(&db).await?, async |db| {
+                create_workspace(db, &id, name).await
+            })
+            .await
         }
-        AdminCommand::AddAccount { db, email } => add_account(&db, &email, new_id).await,
+        AdminCommand::AddAccount { db, email } => {
+            let email = Email::parse(&email)?;
+            let id: AccountId = fresh(new_id)?;
+            closed(Db::open(&db).await?, async |db| {
+                add_account(db, &id, &email).await
+            })
+            .await
+        }
         AdminCommand::AddMember {
             db,
             workspace,
@@ -33,31 +41,20 @@ pub(crate) async fn run(
             let email = Email::parse(&email)?;
             let id: MemberId = fresh(new_id)?;
             let account: AccountId = fresh(new_id)?;
-            let db = Db::open(&db).await?;
-            let added = match db.workspace(&workspace).await {
-                Ok(workspace) => workspace.add_member(&id, &account, &email).await,
-                Err(fault) => Err(fault),
-            };
-            closed(db, added.map(|()| format!("{}\n", id.as_str()))).await
+            let added = async |db: &Db| add_member(db, &workspace, &id, &account, &email).await;
+            closed(Db::open(&db).await?, added).await
         }
         AdminCommand::Members { db, workspace } => {
-            let db = Db::open(&db).await?;
-            let members = match db.workspace(&workspace).await {
-                Ok(workspace) => workspace.members().await,
-                Err(fault) => Err(fault),
-            };
-            let lines = members.map(|members| {
-                members
-                    .iter()
-                    .map(|member| [member.id.as_str(), " ", member.email.as_str(), "\n"].concat())
-                    .collect()
-            });
-            closed(db, lines).await
+            closed(Db::open(&db).await?, async |db| {
+                members(db, &workspace).await
+            })
+            .await
         }
         AdminCommand::Backup { db, to } => {
-            let db = Db::open(&db).await?;
-            let backed_up = db.backup(&to).await;
-            closed(db, backed_up.map(|()| String::new())).await
+            closed(Db::open(&db).await?, async |db| {
+                db.backup(&to).await.map(|()| String::new())
+            })
+            .await
         }
         AdminCommand::Restore { from, db } => db::restore(&from, &db).await.map(|()| String::new()),
     }?;
@@ -66,16 +63,48 @@ pub(crate) async fn run(
     })
 }
 
-async fn add_account(db: &Path, email: &str, new_id: &dyn Fn() -> String) -> Result<String, Fault> {
-    let email = Email::parse(email)?;
-    let id: AccountId = fresh(new_id)?;
-    let db = Db::open(db).await?;
-    let added = db.add_account(&id, &email).await;
-    closed(db, added.map(|()| format!("{}\n", id.as_str()))).await
+async fn create_workspace(db: &Db, id: &WorkspaceId, name: &str) -> Result<String, Fault> {
+    db.create_workspace(id, name).await?;
+    Ok(line(id.as_str()))
 }
 
-/// Closes `db`, which checkpoints its write-ahead log into the file, then gives `result`.
-async fn closed(db: Db, result: Result<String, Fault>) -> Result<String, Fault> {
+async fn add_account(db: &Db, id: &AccountId, email: &Email) -> Result<String, Fault> {
+    db.add_account(id, email).await?;
+    Ok(line(id.as_str()))
+}
+
+async fn add_member(
+    db: &Db,
+    workspace: &WorkspaceId,
+    id: &MemberId,
+    account: &AccountId,
+    email: &Email,
+) -> Result<String, Fault> {
+    db.workspace(workspace)
+        .await?
+        .add_member(id, account, email)
+        .await?;
+    Ok(line(id.as_str()))
+}
+
+async fn members(db: &Db, workspace: &WorkspaceId) -> Result<String, Fault> {
+    let members = db.workspace(workspace).await?.members().await?;
+    Ok(members
+        .iter()
+        .map(|member| [member.id.as_str(), " ", member.email.as_str(), "\n"].concat())
+        .collect())
+}
+
+fn line(id: &str) -> String {
+    format!("{id}\n")
+}
+
+/// Runs `work` on `db`, then closes it, which checkpoints its write-ahead log into the file.
+async fn closed(
+    db: Db,
+    work: impl AsyncFnOnce(&Db) -> Result<String, Fault>,
+) -> Result<String, Fault> {
+    let result = work(&db).await;
     db.close().await;
     result
 }
@@ -192,6 +221,7 @@ mod tests {
 
             assert_eq!(error.code().as_str(), "workspace.name_invalid", "{name}");
         }
+        assert!(!dir.join("weacon.db").exists());
         assert_eq!(
             workspace_name(&"é".repeat(MAX_NAME))
                 .unwrap()
@@ -213,6 +243,37 @@ mod tests {
 
         assert_eq!(error.code().as_str(), "db.not_found");
         assert!(!dir.join("wecon.db").exists());
+    }
+
+    #[tokio::test]
+    async fn bad_input_or_a_bad_id_touches_no_file() {
+        let dir = TempDir::new().unwrap();
+        let db = dir.join("weacon.db");
+        let account = admin(AdminCommand::AddAccount {
+            db: db.clone(),
+            email: "ada".to_owned(),
+        })
+        .await
+        .unwrap_err();
+        let member = admin(AdminCommand::AddMember {
+            db: db.clone(),
+            workspace: workspace_id("id1"),
+            email: "ada".to_owned(),
+        })
+        .await
+        .unwrap_err();
+        let create = AdminCommand::CreateWorkspace {
+            db: db.clone(),
+            name: "Team".to_owned(),
+        };
+        let bad_id = run(create, &|| "a b".to_owned(), &mut Vec::new())
+            .await
+            .unwrap_err();
+
+        assert_eq!(account.code().as_str(), "email.invalid");
+        assert_eq!(member.code().as_str(), "email.invalid");
+        assert_eq!(bad_id.code().as_str(), "id.invalid");
+        assert!(!db.exists());
     }
 
     #[tokio::test]

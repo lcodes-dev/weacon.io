@@ -17,8 +17,10 @@ mod run;
 mod settings;
 mod task;
 mod team;
+mod terminal;
 mod token;
 mod update;
+mod worktree;
 
 pub use access::AccessLevel;
 pub use capability::Capability;
@@ -62,9 +64,25 @@ pub use team::{
     SignInFinish, SignInStart, SignInStarted, SignedIn, WorkspaceChange, WorkspaceCreate,
     WorkspaceId, WorkspaceList, WorkspaceRole, WorkspaceSummary, WorkspaceUpdate,
 };
+pub use terminal::{
+    Bytes, NOISE_MAX, SEALED_MAX, TERMINAL_NOISE, TerminalAction, TerminalCommand, TerminalEvent,
+    TerminalId, TerminalInput, TerminalOutput, TerminalUpdate,
+};
 pub use update::{
     BuildTarget, Commit, DownloadUrl, ReleaseBuild, ReleaseManifest, ReleaseVersion, Sha256,
 };
+pub use worktree::{
+    WorktreeAction, WorktreeAnswer, WorktreeAnswerKind, WorktreeCommand, WorktreeQuery,
+    WorktreeQueryKind,
+};
+
+/// `bytes` as lowercase hex.
+pub(crate) fn to_hex(bytes: &[u8]) -> String {
+    let nibbles = bytes.iter().flat_map(|byte| [byte >> 4, byte & 0xf]);
+    nibbles
+        .filter_map(|nibble| char::from_digit(u32::from(nibble), 16))
+        .collect()
+}
 
 #[cfg(test)]
 mod tests {
@@ -105,6 +123,8 @@ mod tests {
         generator.subschema_for::<DocRevise>();
         generator.subschema_for::<DocHistory>();
         generator.subschema_for::<ReleaseManifest>();
+        generator.subschema_for::<TerminalInput>();
+        generator.subschema_for::<TerminalOutput>();
         let schema = generator.into_root_schema_for::<Envelope>();
         let current = serde_json::to_string_pretty(&schema).unwrap() + "\n";
         let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("schema.json");

@@ -5,13 +5,19 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use tokio::io::{AsyncReadExt, AsyncWrite, AsyncWriteExt};
-use tokio::task::JoinSet;
+use tokio::sync::mpsc;
+use tokio::task::{JoinHandle, JoinSet};
 use tokio::time::Instant;
+use weacon_agents::SpawnPolicy;
+pub(crate) use weacon_appkit::build;
 use weacon_observability::{Fault, Field, Logger};
 use weacon_protocol::{
-    App, Envelope, LineDecoder, Message, Outcome, Pick, Receipt, code, encode_line,
+    App, ChatAnswer, ChatCommand, ChatQuery, Envelope, LineDecoder, Message, Outcome, Pick,
+    Receipt, code, encode_line,
 };
 
+use crate::chats::feed::{self, Client};
+use crate::chats::{self, Chats, Places};
 use crate::disk;
 use crate::memory;
 use crate::picks::{KeepError, Picks};
@@ -28,20 +34,10 @@ pub(crate) fn socket_path(state_dir: &Path) -> PathBuf {
     state_dir.join("weacon.sock")
 }
 
-pub(crate) use weacon_appkit::build;
-
-/// The single-threaded async runtime the core's commands run on.
-pub(crate) fn runtime() -> Result<tokio::runtime::Runtime, Fault> {
-    weacon_appkit::runtime(tokio::runtime::Builder::new_current_thread())
-}
-
 /// Runs the daemon until Ctrl-C or the system asks it to stop.
 pub(crate) fn run(app: &crate::app::App) -> Result<(), Fault> {
-    let state_dir = app
-        .state_dir
-        .as_deref()
-        .ok_or_else(crate::app::state_unavailable)?;
-    runtime()?.block_on(async {
+    let state_dir = app.state_dir()?;
+    crate::app::runtime()?.block_on(async {
         let signals = weacon_appkit::Signals::new().map_err(|error| {
             Fault::new(
                 code!("daemon.signals_failed"),
@@ -49,7 +45,16 @@ pub(crate) fn run(app: &crate::app::App) -> Result<(), Fault> {
             )
             .because(error)
         })?;
-        let daemon = Daemon::start(state_dir, build(&app.version), app.log.clone())?;
+        let daemon = Daemon::start(
+            state_dir,
+            build(&app.version),
+            app.spawn.clone(),
+            Places {
+                path: app.path.clone(),
+                work_root: app.work_root.clone(),
+            },
+            app.log.clone(),
+        )?;
         let serve = daemon.serve(signals.wait());
         crate::reports::following(state_dir, &app.reporter, &app.log, serve).await;
         Ok(())
@@ -60,6 +65,7 @@ pub(crate) fn run(app: &crate::app::App) -> Result<(), Fault> {
 struct Shared {
     app: App,
     picks: Picks,
+    chats: Chats,
     log: Logger,
 }
 
@@ -71,13 +77,20 @@ pub(crate) struct Daemon {
     shared: Shared,
     disk: disk::Watch,
     memory: memory::Watch,
+    engine: JoinHandle<()>,
     // Held for the daemon's life, so a second daemon can't start.
     _lock: File,
 }
 
 impl Daemon {
     /// Locks `state_dir`, replaces a stale socket and listens; must run inside a tokio runtime.
-    pub(crate) fn start(state_dir: &Path, app: App, log: Logger) -> Result<Self, Fault> {
+    pub(crate) fn start(
+        state_dir: &Path,
+        app: App,
+        spawn: SpawnPolicy,
+        places: Places,
+        log: Logger,
+    ) -> Result<Self, Fault> {
         let failed = |error: io::Error| {
             Fault::new(code!("daemon.start_failed"), "The daemon couldn't start").because(error)
         };
@@ -104,7 +117,9 @@ impl Daemon {
         {
             return Err(failed(error));
         }
+        let (chats, engine) = chats::start(state_dir, places, app.clone(), spawn, log.clone())?;
         let listener = platform::bind(&socket).map_err(failed)?;
+        let engine = tokio::spawn(engine.run());
         log.info("daemon started", &[]);
         Ok(Self {
             listener,
@@ -113,10 +128,12 @@ impl Daemon {
             shared: Shared {
                 app,
                 picks: Picks::new(state_dir),
+                chats,
                 log,
             },
             disk: disk::Watch::new(state_dir.to_owned(), platform::free_space),
             memory: memory::Watch::new(platform::processes),
+            engine,
             _lock: lock,
         })
     }
@@ -146,7 +163,13 @@ impl Daemon {
         drop(self.listener);
         drop(fs::remove_file(&self.socket));
         clients.shutdown().await;
-        self.shared.log.info("daemon stopped", &[]);
+        // The engine stops once the last way to it is gone; its writes end before the lock goes.
+        let log = self.shared.log.clone();
+        drop(self.shared);
+        if self.engine.await.is_err() {
+            log.error("engine failed", &[]);
+        }
+        log.info("daemon stopped", &[]);
     }
 
     fn admit(&self, stream: Stream, clients: &mut JoinSet<()>) {
@@ -164,24 +187,44 @@ impl Daemon {
     }
 }
 
+/// One client's connection: where it is in the conversation, and where events it subscribed to
+/// are pushed.
+struct Connection {
+    session: Session,
+    decoder: LineDecoder,
+    client: Client,
+}
+
 async fn serve_client(stream: Stream, shared: &Shared) -> io::Result<()> {
     let (mut reader, mut writer) = tokio::io::split(stream);
-    let mut session = Session::default();
-    let mut decoder = LineDecoder::default();
     let mut buf = [0; READ_CHUNK];
     let deadline = Instant::now() + HANDSHAKE_TIMEOUT;
+    let (push, mut pushed) = mpsc::channel(feed::QUEUE);
+    let mut connection = Connection {
+        session: Session::default(),
+        decoder: LineDecoder::default(),
+        client: Client { push },
+    };
     loop {
-        // Until the hello, reading and answering both count against the deadline.
-        let limit = (!session.greeted()).then_some(deadline);
-        let Some(read) = within(limit, reader.read(&mut buf)).await.transpose()? else {
+        // Until the hello, reading counts against the deadline, as `answer`'s replies do.
+        let limit = (!connection.session.greeted()).then_some(deadline);
+        let read = tokio::select! {
+            read = within(limit, reader.read(&mut buf)) => read,
+            Some(message) = pushed.recv() => {
+                if let Ok(line) = encode_line(&Envelope { id: 0, message }) {
+                    writer.write_all(&line).await?;
+                }
+                continue;
+            }
+        };
+        let Some(read) = read.transpose()? else {
             return Ok(());
         };
         if read == 0 {
             return Ok(());
         }
         let bytes = buf.get(..read).unwrap_or_default();
-        let answered = answer(&mut session, &mut decoder, bytes, shared, &mut writer);
-        if !within(limit, answered).await.transpose()?.unwrap_or(false) {
+        if !answer(&mut connection, bytes, shared, &mut writer, deadline).await? {
             return Ok(());
         }
     }
@@ -195,15 +238,22 @@ async fn within<F: Future>(deadline: Option<Instant>, future: F) -> Option<F::Ou
     }
 }
 
-// Answers what `bytes` completes; false once the connection should close.
+// Answers what `bytes` completes; false once the connection should close. Replies before the
+// hello count against `deadline`; what follows the hello, even in the same read, doesn't.
 async fn answer(
-    session: &mut Session,
-    decoder: &mut LineDecoder,
+    connection: &mut Connection,
     bytes: &[u8],
     shared: &Shared,
     writer: &mut (impl AsyncWrite + Unpin),
+    deadline: Instant,
 ) -> io::Result<bool> {
+    let Connection {
+        session,
+        decoder,
+        client,
+    } = connection;
     for received in decoder.push(bytes) {
+        let limit = (!session.greeted()).then_some(deadline);
         if let Ok(Envelope {
             message: Message::Error(body),
             ..
@@ -220,18 +270,74 @@ async fn answer(
                 id,
                 message: Message::Pick(pick),
             }) if session.greeted() => keep(shared, id, pick).await,
+            Ok(Envelope {
+                id,
+                message: Message::ChatCommand(command),
+            }) if session.greeted() => command_chat(shared, id, command).await,
+            Ok(Envelope {
+                id,
+                message: Message::ChatQuery(query),
+            }) if session.greeted() => query_chat(shared, id, query, client).await,
             received => session.answer(received, &shared.app),
         };
         if let Some(envelope) = reply.envelope
             && let Ok(line) = encode_line(&envelope)
         {
-            writer.write_all(&line).await?;
+            let Some(written) = within(limit, writer.write_all(&line)).await else {
+                return Ok(false);
+            };
+            written?;
         }
         if reply.close {
             return Ok(false);
         }
     }
     Ok(true)
+}
+
+// The reply to a chat command: nothing when it was taken, since its receipts are events in the
+// chat's log, or the error that refused it.
+async fn command_chat(shared: &Shared, id: u32, command: ChatCommand) -> Reply {
+    let fields = [
+        ("request_id", command.request.as_str().into()),
+        ("workspace_id", command.workspace.as_str().into()),
+        ("chat_id", command.chat.as_str().into()),
+    ];
+    match shared.chats.command(command).await {
+        Ok(()) => {
+            shared.log.info("chat command taken", &fields);
+            Reply {
+                envelope: None,
+                close: false,
+            }
+        }
+        Err(fault) => refused(shared, id, &fault),
+    }
+}
+
+async fn query_chat(shared: &Shared, id: u32, query: ChatQuery, client: &Client) -> Reply {
+    let (workspace, chat) = (query.workspace.clone(), query.chat.clone());
+    match shared.chats.query(query, client).await {
+        Ok(answer) => Reply {
+            envelope: answer.map(|answer| Envelope {
+                id,
+                message: Message::ChatAnswer(ChatAnswer {
+                    workspace,
+                    chat,
+                    answer,
+                }),
+            }),
+            close: false,
+        },
+        Err(fault) => refused(shared, id, &fault),
+    }
+}
+
+fn refused(shared: &Shared, id: u32, fault: &Fault) -> Reply {
+    shared
+        .log
+        .warn("chat request refused", &[("err", Field::error(fault))]);
+    Reply::error(id, fault.code().clone(), false)
 }
 
 // Keeps `pick` off the runtime's thread and answers with its receipt.
@@ -271,7 +377,6 @@ async fn keep(shared: &Shared, id: u32, pick: Pick) -> Reply {
 mod tests {
     use tokio::io::{AsyncBufReadExt, AsyncRead};
     use tokio::sync::oneshot;
-    use tokio::task::JoinHandle;
     use tokio::time::timeout;
     use weacon_protocol::{ErrorBody, Hello, PROTOCOL, Welcome};
     use weacon_testing::TempDir;
@@ -301,7 +406,13 @@ mod tests {
     // Starts a daemon, letting `change` adjust it before it serves.
     fn start_as(dir: &Path, change: impl FnOnce(&mut Daemon)) -> Result<Running, Fault> {
         let (log, records) = recording_logger();
-        let mut daemon = Daemon::start(dir, build(&VERSION), log)?;
+        let mut daemon = Daemon::start(
+            dir,
+            build(&VERSION),
+            SpawnPolicy::default(),
+            Places::default(),
+            log,
+        )?;
         change(&mut daemon);
         let socket = daemon.socket.clone();
         let (stop, stopped) = oneshot::channel();
@@ -572,7 +683,7 @@ mod tests {
         let kept = Picks::new(&dir).read(&"p-1".to_owned().try_into().unwrap());
 
         assert!(matches!(&replies[0], Message::Welcome(welcome)
-            if welcome.capabilities == [code!("element.pick").into()]));
+            if welcome.capabilities.contains(&code!("element.pick").into())));
         assert_eq!(receipt(&replies[1]), Some(&Outcome::Completed));
         assert_eq!(receipt(&replies[2]), Some(&Outcome::Completed));
         assert_eq!(error_code(&replies[3]), Some("request.conflict"));
@@ -673,5 +784,117 @@ mod tests {
             .unwrap()
             .unwrap_err();
         running.stop().await;
+    }
+
+    #[tokio::test]
+    async fn chat_commands_and_queries_reach_the_engine_and_its_events_come_back() {
+        use crate::chats::test_support::{bench, brief, prompt, query, soon};
+        use weacon_protocol::ChatQueryKind;
+
+        let dir = TempDir::new().unwrap();
+        let mut bench = bench();
+        let chats = bench.chats.clone();
+        let running = start_as(&dir, |daemon| daemon.shared.chats = chats).unwrap();
+        let line = |id, message| encode_line(&Envelope { id, message }).unwrap();
+        let subscribe = query("c-1", ChatQueryKind::Subscribe { after: 0 });
+        let bytes = [
+            hello(PROTOCOL),
+            line(2, Message::ChatQuery(subscribe)),
+            line(3, Message::ChatCommand(prompt("r-1", "MARKER-PROMPT"))),
+            line(4, Message::ChatCommand(prompt("r-2", " "))),
+            line(5, Message::ChatQuery(query("c-1", ChatQueryKind::Snapshot))),
+        ]
+        .concat();
+
+        let (replies, _stream) = exchange(connect(&running.socket).await, &bytes, 7).await;
+        let records = running.stop().await;
+
+        let offered = [
+            code!("chat.send"),
+            code!("chat.events"),
+            code!("run.stream"),
+        ];
+        let Message::Welcome(welcome) = &replies[0] else {
+            panic!("no welcome");
+        };
+        for capability in offered {
+            assert!(welcome.capabilities.contains(&capability.into()));
+        }
+        assert_eq!(error_code(&replies[1]), Some("chat.empty_prompt"));
+        assert!(matches!(&replies[2], Message::ChatAnswer(answer)
+            if matches!(answer.answer, weacon_protocol::ChatAnswerKind::Snapshot { seq: 4, .. })));
+        assert_eq!(
+            replies[3..].iter().map(brief).collect::<Vec<_>>(),
+            [
+                "1 prompt r-1 MARKER-PROMPT",
+                "2 receipt r-1 accepted",
+                "3 run-1 is Starting",
+                "4 run-1 is Running",
+            ]
+        );
+        assert!(soon(bench.started.recv()).await.is_some());
+        let logged = serde_json::to_string(&*records.lock().unwrap()).unwrap();
+        assert!(logged.contains("chat command taken"), "{logged}");
+        assert!(logged.contains("chat request refused"), "{logged}");
+        assert!(logged.contains("r-1"), "{logged}");
+        assert!(!logged.contains("MARKER"), "{logged}");
+    }
+
+    #[tokio::test]
+    async fn chat_messages_before_the_hello_are_refused_like_any_other() {
+        use crate::chats::test_support::{bench, prompt, query};
+        use weacon_protocol::ChatQueryKind;
+
+        let dir = TempDir::new().unwrap();
+        let mut bench = bench();
+        let chats = bench.chats.clone();
+        let running = start_as(&dir, |daemon| daemon.shared.chats = chats).unwrap();
+        let line = |id, message| encode_line(&Envelope { id, message }).unwrap();
+
+        for first in [
+            Message::ChatCommand(prompt("r-1", "Hi")),
+            Message::ChatQuery(query("c-1", ChatQueryKind::Snapshot)),
+        ] {
+            let stream = connect(&running.socket).await;
+            let (replies, _stream) = exchange(stream, &line(1, first), 1).await;
+            assert_eq!(error_code(&replies[0]), Some("handshake.required"));
+        }
+        running.stop().await;
+        bench.started.try_recv().unwrap_err();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_command_read_with_the_hello_isnt_held_to_the_handshake_deadline() {
+        use crate::chats::test_support::{parts, prompt};
+
+        let dir = TempDir::new().unwrap();
+        // An engine that never runs: a command waits for its answer for good.
+        let (bench, _engine) = parts();
+        let chats = bench.chats.clone();
+        let running = start_as(&dir, |daemon| daemon.shared.chats = chats).unwrap();
+        let command = Message::ChatCommand(prompt("r-1", "Hi"));
+        let command = encode_line(&Envelope {
+            id: 2,
+            message: command,
+        })
+        .unwrap();
+
+        let stream = connect(&running.socket).await;
+        let (replies, mut stream) = exchange(stream, &[hello(PROTOCOL), command].concat(), 1).await;
+
+        assert!(matches!(replies[0], Message::Welcome(_)));
+        let read = timeout(HANDSHAKE_TIMEOUT * 2, stream.read(&mut [0; 16])).await;
+        assert!(read.is_err(), "the daemon hung up: {read:?}");
+        running.stop().await;
+    }
+
+    #[tokio::test]
+    async fn the_engine_stops_before_the_daemon_lets_go_of_its_lock() {
+        let dir = TempDir::new().unwrap();
+        let records = start(&dir).unwrap().stop().await;
+
+        let logged = messages(&records);
+        let at = |message| logged.iter().position(|logged| *logged == message);
+        assert!(at("engine stopped").unwrap() < at("daemon stopped").unwrap());
     }
 }
