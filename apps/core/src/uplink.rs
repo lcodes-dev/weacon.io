@@ -1,7 +1,7 @@
 //! The daemon's connection to the server it is paired with: it dials out, proves the machine
 //! with its token, and dials again with backoff whenever the connection drops.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
@@ -25,6 +25,8 @@ const LOOK_EVERY: Duration = Duration::from_secs(30);
 const FIRST_WAIT: Duration = Duration::from_secs(1);
 const LONGEST_WAIT: Duration = Duration::from_mins(1);
 const HELLO_WITHIN: Duration = Duration::from_secs(10);
+/// How many messages wait to cross between the daemon and the uplink.
+const QUEUE: usize = 64;
 
 /// How long a connection may stay quiet, and how long it must last to count as steady.
 #[derive(Clone, Copy, Debug)]
@@ -351,6 +353,23 @@ async fn send(socket: &mut Socket, envelope: &Envelope) {
         return;
     };
     drop(socket.send(Wire::text(text)).await);
+}
+
+/// The daemon's uplink while nothing routes the server's messages to the chat engine, so the
+/// owner's commands are answered `chat.unavailable`, and the daemon sends nothing up it.
+pub(crate) fn unrouted(app: &crate::app::App, state_dir: &Path) -> (Uplink, FromDaemon) {
+    let (to_daemon, _) = mpsc::channel(QUEUE);
+    let (_, from_daemon) = mpsc::channel(QUEUE);
+    let uplink = Uplink {
+        state_dir: state_dir.to_owned(),
+        app: weacon_appkit::build(&app.version),
+        capabilities: crate::session::CAPABILITIES.to_vec(),
+        log: app.log.child(&[("component", "uplink".into())]),
+        to_daemon,
+        timing: TIMING,
+        random: weacon_appkit::random_id,
+    };
+    (uplink, from_daemon)
 }
 
 #[cfg(test)]

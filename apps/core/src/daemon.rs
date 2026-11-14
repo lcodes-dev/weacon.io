@@ -23,8 +23,8 @@ use crate::mcp;
 use crate::memory;
 use crate::picks::{KeepError, Picks};
 use crate::platform::{self, Listener, Owner, Stream};
-use crate::session::{CAPABILITIES, Reply, Session};
-use crate::uplink::{self, Uplink};
+use crate::session::{Reply, Session};
+use crate::uplink;
 
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
 pub(crate) const READ_CHUNK: usize = 8192;
@@ -58,19 +58,7 @@ pub(crate) fn run(app: &crate::app::App) -> Result<(), Fault> {
             },
             app.log.clone(),
         )?;
-        // Nothing routes the server's messages to the chat engine yet, so the owner's commands
-        // are answered `chat.unavailable`.
-        let (to_daemon, _) = mpsc::channel(64);
-        let (_, from_daemon) = mpsc::channel(64);
-        let uplink = Uplink {
-            state_dir: state_dir.to_owned(),
-            app: build(&app.version),
-            capabilities: CAPABILITIES.to_vec(),
-            log: app.log.child(&[("component", "uplink".into())]),
-            to_daemon,
-            timing: uplink::TIMING,
-            random: weacon_appkit::random_id,
-        };
+        let (uplink, from_daemon) = uplink::unrouted(app, state_dir);
         let serve = async {
             tokio::select! {
                 () = daemon.serve(signals.wait()) => {}
