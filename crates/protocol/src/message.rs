@@ -20,7 +20,6 @@ pub struct Envelope {
     pub message: Message,
 }
 
-/// The body of an [`Envelope`], tagged by `type`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Message {

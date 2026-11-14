@@ -41,8 +41,8 @@ pub enum Level {
     Fatal,
 }
 
-/// A log record from a client that has no log of its own, such as the web app, sent only to a
-/// peer that offers `log.forward`: an event name and typed ids. The receiver logs only events
+/// A log record from a client that has no log of its own, such as the web app: an event name
+/// and typed ids, sent only to a peer that offers `log.forward`. The receiver logs only events
 /// it knows, so no other text reaches its log.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ClientLog {

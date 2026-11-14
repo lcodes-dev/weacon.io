@@ -395,8 +395,8 @@ export type ChatUpdate = {
 };
 
 /**
- * A log record from a client that has no log of its own, such as the web app, sent only to a
- * peer that offers `log.forward`: an event name and typed ids. The receiver logs only events
+ * A log record from a client that has no log of its own, such as the web app: an event name
+ * and typed ids, sent only to a peer that offers `log.forward`. The receiver logs only events
  * it knows, so no other text reaches its log.
  */
 export type ClientLog = {
@@ -1132,8 +1132,7 @@ export type ProposalVerdict = (
 );
 
 /**
- * The word of the core or server that runs a command, sent when it accepts the command and
- * again when it ends.
+ * The core's or server's word on a command, sent when it accepts it and again when it ends.
  */
 export type Receipt = {
   request: RequestId;
@@ -1356,9 +1355,9 @@ export type SignInFinish = {
 };
 
 /**
- * Sign-in to one workspace, for a client that doesn't send [`AccountSignInStart`]: asks the
- * server to send a one-time code to `email`, if it is a member of `workspace`. The answer, a
- * [`SignInStarted`], is the same either way.
+ * Sign-in to one workspace, which [`AccountSignInStart`] replaces: asks the server to send a
+ * one-time code to `email`, if it is a member of `workspace`. The answer, a [`SignInStarted`],
+ * is the same either way.
  */
 export type SignInStart = {
   email: string;
@@ -1481,8 +1480,8 @@ export type TerminalAction = (
 
 /**
  * A sign-in terminal's sealed input, from the owner of `machine`'s browser to its core, which
- * offers `terminal.sign_in`. The server relays it only if it offers `terminal.relay` and only
- * from the machine's owner, and the core acts only when `by` is its owner and refuses a
+ * offers `terminal.sign_in`. The server relays it only when it offers `terminal.relay`, and
+ * only from the machine's owner, and the core acts only when `by` is its owner and refuses a
  * terminal id it has already seen.
  */
 export type TerminalCommand = {

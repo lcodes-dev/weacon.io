@@ -27,8 +27,8 @@ pub const NOISE_MAX: usize = 65535;
 pub const SEALED_MAX: usize = NOISE_MAX - 16;
 
 /// A sign-in terminal's sealed input, from the owner of `machine`'s browser to its core, which
-/// offers `terminal.sign_in`. The server relays it only if it offers `terminal.relay` and only
-/// from the machine's owner, and the core acts only when `by` is its owner and refuses a
+/// offers `terminal.sign_in`. The server relays it only when it offers `terminal.relay`, and
+/// only from the machine's owner, and the core acts only when `by` is its owner and refuses a
 /// terminal id it has already seen.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct TerminalCommand {
