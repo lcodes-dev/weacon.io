@@ -5,6 +5,7 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
+use serde_json::value::RawValue;
 use weacon_observability::Fault;
 use weacon_protocol::{
     AgentKind, AgentSession, ChatId, RequestId, RunId, RunState, WorkspaceId, code,
@@ -18,11 +19,36 @@ pub(crate) struct Runs {
     journal: Journal,
 }
 
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+/// The journal as it is on disk, where each chat's record is read on its own.
+#[derive(Default, Serialize, Deserialize)]
+struct Stored {
+    issued: u64,
+    chats: Vec<Box<RawValue>>,
+}
+
+#[derive(Clone, Debug, Default)]
 struct Journal {
     /// How many run ids were ever issued; it only grows, so no id comes back.
     issued: u64,
     chats: Vec<Record>,
+    /// Records this core can't read in full, as a newer one writes; kept as found.
+    newer: Vec<Kept>,
+}
+
+/// A record kept as the JSON it was read as, and the chat it is for when that much is known.
+#[derive(Clone)]
+struct Kept {
+    key: Option<ChatKey>,
+    json: Box<RawValue>,
+}
+
+// The JSON holds prompts, which never reach a log line, even through `{:?}`.
+impl fmt::Debug for Kept {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Kept")
+            .field("key", &self.key)
+            .finish_non_exhaustive()
+    }
 }
 
 /// Which chat: its workspace and its id.
@@ -83,10 +109,42 @@ impl Runs {
     pub(crate) fn load(state_dir: &Path) -> Result<Self, Fault> {
         let path = state_dir.join("runs.json");
         let unreadable = || Fault::new(code!("runs.unreadable"), "The runs journal can't be read");
-        let journal = read_json(&path)
+        let stored: Stored = read_json(&path)
             .map_err(|error| unreadable().because(error))?
             .unwrap_or_default();
+        let mut journal = Journal {
+            issued: stored.issued,
+            ..Journal::default()
+        };
+        for json in stored.chats {
+            match serde_json::from_str::<Record>(json.get()) {
+                Ok(record) if !record.is_newer() => journal.chats.push(record),
+                _ => journal.newer.push(Kept {
+                    key: serde_json::from_str(json.get()).ok(),
+                    json,
+                }),
+            }
+        }
         Ok(Self { path, journal })
+    }
+
+    /// Refuses a chat whose record only a newer core can read, which is left to it.
+    ///
+    /// # Errors
+    /// `runs.newer_record` for such a chat.
+    pub(crate) fn refuse_newer(&self, key: &ChatKey) -> Result<(), Fault> {
+        if self
+            .journal
+            .newer
+            .iter()
+            .any(|kept| kept.key.as_ref() == Some(key))
+        {
+            return Err(Fault::new(
+                code!("runs.newer_record"),
+                "A newer core last ran this chat",
+            ));
+        }
+        Ok(())
     }
 
     pub(crate) fn of(&self, key: &ChatKey) -> Option<&Record> {
@@ -103,6 +161,7 @@ impl Runs {
         now: u64,
     ) -> Result<RunId, Fault> {
         let no_id = || Fault::new(code!("runs.no_id"), "No run id could be made");
+        self.refuse_newer(key)?;
         // Kept even when the save fails, so the id is never tried again.
         self.journal.issued = self.journal.issued.checked_add(1).ok_or_else(no_id)?;
         let run = RunId::try_from(format!("run-{}", self.journal.issued)).map_err(|_| no_id())?;
@@ -140,6 +199,7 @@ impl Runs {
         prompt: Queued,
         now: u64,
     ) -> Result<(), Fault> {
+        self.refuse_newer(key)?;
         let mut next = self.journal.clone();
         let at = self.position(key).unwrap_or(next.chats.len());
         if at == next.chats.len() {
@@ -176,6 +236,7 @@ impl Runs {
         key: &ChatKey,
         change: impl FnOnce(&mut Record),
     ) -> Result<(), Fault> {
+        self.refuse_newer(key)?;
         let mut next = self.journal.clone();
         let at = self.position(key);
         let Some(record) = at.and_then(|at| next.chats.get_mut(at)) else {
@@ -210,7 +271,7 @@ impl Runs {
 
     async fn save(&mut self, next: Journal) -> Result<(), Fault> {
         let not_saved = || Fault::new(code!("runs.not_saved"), "The runs journal can't be saved");
-        let json = serde_json::to_vec(&next).map_err(|error| not_saved().because(error))?;
+        let json = stored(&next).map_err(|error| not_saved().because(error))?;
         let path = self.path.clone();
         blocking(move || weacon_appkit::write_whole(&path, &json))
             .await
@@ -220,12 +281,27 @@ impl Runs {
     }
 }
 
+impl Record {
+    const fn is_newer(&self) -> bool {
+        matches!(self.agent, AgentKind::Newer) || matches!(self.state, RunState::Newer)
+    }
+}
+
+// The journal's bytes: the records this core can read, then the kept ones as they were found.
+fn stored(journal: &Journal) -> serde_json::Result<Vec<u8>> {
+    let read = journal.chats.iter().map(serde_json::value::to_raw_value);
+    let mut chats = read.collect::<serde_json::Result<Vec<_>>>()?;
+    chats.extend(journal.newer.iter().map(|kept| kept.json.clone()));
+    let issued = journal.issued;
+    serde_json::to_vec(&Stored { issued, chats })
+}
+
 #[cfg(test)]
 mod tests {
     use weacon_testing::TempDir;
 
     use super::*;
-    use crate::chats::test_support::session;
+    use crate::chats::test_support::{run, session};
 
     fn key(workspace: &str, chat: &str) -> ChatKey {
         ChatKey {
@@ -479,5 +555,59 @@ mod tests {
         assert_eq!(runs.of(&c2).unwrap().queue, [queued("r-1")]);
         assert_eq!(begin(&mut runs, "c-1").await.as_str(), "run-1");
         assert_eq!(runs.of(&c1).unwrap().queue, [queued("r-2")]);
+    }
+
+    // What beginning, queueing for and changing `key`'s record each fail with.
+    async fn refusals(runs: &mut Runs, key: &ChatKey) -> Vec<String> {
+        let queued = Queued {
+            request: RequestId::try_from("r-2".to_owned()).unwrap(),
+            text: "More".to_owned(),
+        };
+        let tries = [
+            runs.begin(key, AgentKind::Claude, 9).await.map(drop),
+            runs.enqueue(key, AgentKind::Claude, queued, 9).await,
+            runs.update(key, |record| record.active_at = 9).await,
+        ];
+        let code = |tried: Result<(), Fault>| tried.unwrap_err().code().as_str().to_owned();
+        tries.into_iter().map(code).collect()
+    }
+
+    // A record a newer core wrote: an agent and a field this core doesn't know.
+    const NEWER: &str = r#"{"workspace":"w-1","chat":"c-9","agent":"gemini","run":"run-2","state":"idle","session":null,"turn":null,"queue":[{"request":"r-1","text":"Hi"}],"active_at":5,"colour":"blue"}"#;
+
+    #[tokio::test]
+    async fn a_record_only_a_newer_core_reads_is_kept_as_found_and_its_chat_left_to_it() {
+        let dir = TempDir::new().unwrap();
+        let broken = r#"{"workspace":"w-1","chat":"c-8","state":"paused"}"#;
+        let nameless = r#"{"shape":"unknown"}"#;
+        let journal = format!(r#"{{"issued":3,"chats":[{NEWER},{broken},{nameless}]}}"#);
+        std::fs::write(dir.join("runs.json"), journal).unwrap();
+
+        let mut runs = Runs::load(&dir).unwrap();
+        for chat in ["c-9", "c-8"] {
+            let kept = key("w-1", chat);
+            assert_eq!(runs.of(&kept), None);
+            assert_eq!(refusals(&mut runs, &kept).await, ["runs.newer_record"; 3]);
+        }
+
+        assert_eq!(begin(&mut runs, "c-1").await.as_str(), "run-4");
+        let raw = std::fs::read_to_string(dir.join("runs.json")).unwrap();
+        for kept in [NEWER, broken, nameless] {
+            assert!(raw.contains(kept), "{kept} was rewritten");
+        }
+        let restarted = Runs::load(&dir).unwrap();
+        assert_eq!(latest(&restarted, &key("w-1", "c-1")), Some(run("run-4")));
+        assert_eq!(restarted.of(&key("w-1", "c-9")), None);
+    }
+
+    #[test]
+    fn a_kept_record_stays_out_of_debug_output() {
+        let dir = TempDir::new().unwrap();
+        let journal = format!(r#"{{"issued":3,"chats":[{NEWER}]}}"#);
+        std::fs::write(dir.join("runs.json"), journal).unwrap();
+
+        let runs = Runs::load(&dir).unwrap();
+
+        assert!(!format!("{runs:?}").contains("Hi"));
     }
 }
