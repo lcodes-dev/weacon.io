@@ -1,6 +1,6 @@
 use std::fs;
 use std::net::SocketAddr;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, UNIX_EPOCH};
@@ -131,11 +131,16 @@ impl Fixture {
     pub(crate) async fn letter(&self) -> (String, String) {
         self.settled().await;
         let [file] = self.letters().try_into().unwrap();
-        let letter: Value = serde_json::from_slice(&fs::read(&file).unwrap()).unwrap();
-        fs::remove_file(&file).unwrap();
-        let text = |key: &str| letter[key].as_str().unwrap().to_owned();
-        (text("to"), text("code"))
+        letter_in(&file)
     }
+}
+
+/// Who the letter in `file` is for and its code, taking it out of the outbox.
+pub(crate) fn letter_in(file: &Path) -> (String, String) {
+    let letter: Value = serde_json::from_slice(&fs::read(file).unwrap()).unwrap();
+    fs::remove_file(file).unwrap();
+    let text = |key: &str| letter[key].as_str().unwrap().to_owned();
+    (text("to"), text("code"))
 }
 
 /// A server running on a port of its own until `stop` is sent.

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import type { DiffContent, FileChange } from "../protocol.ts";
+import type { DiffContent, FileChange, LineOp } from "../protocol.ts";
 import { NO_CHANGES, ask, rows } from "./changes.ts";
 import { changeText, contentText, hunkText, linesText, summary } from "./labels.ts";
 
@@ -30,6 +30,10 @@ test("files say how they changed, and why they show no lines when they don't", (
   const contents: [DiffContent, string | undefined][] = [
     [{ kind: "text", hunks: [{ old_start: 1, new_start: 1, lines: [] }] }, undefined],
     [{ kind: "text", hunks: [] }, "Only the file's mode changed."],
+    [
+      { kind: "text", hunks: [{ old_start: 1, new_start: 1, lines: [{ op: "moved" as LineOp, text: "x" }] }] },
+      "This app can't show this file.",
+    ],
     [{ kind: "binary" }, "Binary file."],
     [{ kind: "too_large" }, "Too large to show."],
     [{ kind: "symlink" } as unknown as DiffContent, "This app can't show this file."],
