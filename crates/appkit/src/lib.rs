@@ -16,5 +16,7 @@ pub use deliver::http;
 pub use exit::{Ending, finish};
 pub use id::random_id;
 pub use logs::RotatingFile;
-pub use platform::{Signals, owner_only, private_append, sync_dir, write_whole};
+pub use platform::{
+    Signals, create_private, owner_only, private_append, sync_dir, write_private, write_whole,
+};
 pub use runtime::runtime;
