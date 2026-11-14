@@ -15,6 +15,7 @@ use weacon_protocol::{
 };
 
 use crate::shared::Shared;
+use crate::socket::refusal;
 
 /// How many asks may wait for their answers at once, server-wide.
 const MOST_WAITING: usize = 4096;
@@ -50,12 +51,17 @@ struct Asked {
 }
 
 impl Waiter {
-    // The asker that left, or reads too slowly, misses it.
+    // The asker that left, or reads too slowly, misses it; an answer this server can't send on
+    // is told as `relay.unsendable`, so the asker's connection goes on.
     fn tell(self, message: Message) {
-        drop(self.back.try_send(Envelope {
+        let mut envelope = Envelope {
             id: self.id,
             message,
-        }));
+        };
+        if envelope.to_json().is_err() {
+            envelope.message = refusal(code!("relay.unsendable"));
+        }
+        drop(self.back.try_send(envelope));
     }
 }
 
@@ -90,10 +96,11 @@ pub(crate) const fn carries(message: &Message) -> bool {
 
 /// Forwards `envelope` to the machine its message names, if the message is for the asker's
 /// workspace and the machine is the asker's own. The answer reaches `back` under the
-/// envelope's id, or `machine.no_answer` once it has waited too long.
+/// envelope's id, `relay.unsendable` if this server can't send it on, or `machine.no_answer`
+/// once it has waited too long.
 ///
 /// # Errors
-/// `relay.unknown` for a kind the relay doesn't carry, `machine.not_found` for a machine that
+/// `relay.unknown` for a kind the relay doesn't carry or a value it can't send on, `machine.not_found` for a machine that
 /// isn't the asker's or another workspace, `machine.offline` and `relay.busy`, which may pass,
 /// and the database's failure.
 pub(crate) async fn forward(
@@ -102,8 +109,14 @@ pub(crate) async fn forward(
     envelope: Envelope,
     back: &mpsc::Sender<Envelope>,
 ) -> Result<(), Refusal> {
-    let (asked, message) =
-        stamped(envelope.message, ask.asker).ok_or(refused(code!("relay.unknown"), false))?;
+    let unknown = || refused(code!("relay.unknown"), false);
+    let (asked, message) = stamped(envelope.message, ask.asker).ok_or_else(unknown)?;
+    // A newer client's ask this server can't send on would drop the machine's connection.
+    let probe = Envelope { id: 0, message };
+    if probe.to_json().is_err() {
+        return Err(unknown());
+    }
+    let message = probe.message;
     let machine = asked.machine.clone();
     if asked.workspace != *ask.workspace {
         return Err(refused(code!("machine.not_found"), false));
@@ -124,7 +137,7 @@ pub(crate) async fn forward(
     };
     if shared
         .links
-        .send(&machine, &Capability::from(SETTINGS), sent)
+        .send(&machine, &Capability::new(SETTINGS), sent)
         .is_err()
     {
         shared.relay.lock().remove(&relayed);
@@ -609,6 +622,20 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn an_answer_this_server_cant_send_on_is_refused_to_the_asker() {
+        let one = MachineId::try_from("mc-1".to_owned()).unwrap();
+        let (relay, mut answers) = waiting_on(&one);
+        let newer = changed(&one, |answer| {
+            answer.answer = MachineSettingsAnswerKind::Newer;
+        });
+
+        assert!(relay.answered(&one, envelope(7, newer)));
+
+        let refused = heard(&mut answers).await;
+        assert_eq!(error_of(&refused), (41, "relay.unsendable", false));
+    }
+
+    #[tokio::test]
     async fn an_error_from_the_asked_machine_comes_back() {
         let one = MachineId::try_from("mc-1".to_owned()).unwrap();
         let (relay, mut answers) = waiting_on(&one);
@@ -633,7 +660,7 @@ mod tests {
             machine: machine.clone(),
             owner: account.clone(),
         };
-        let attached = (fixture.shared.links).open(connected, vec![Capability::from(SETTINGS)]);
+        let attached = (fixture.shared.links).open(connected, vec![Capability::new(SETTINGS)]);
         let asker = Asker {
             account,
             member: member_id("m1"),
@@ -784,7 +811,15 @@ mod tests {
 
         let sent = envelope(1, settings_answer(&machine));
         let result = forward(&fixture.shared, &ask, sent, &mpsc::channel(4).0).await;
+        let Message::MachineSettingsQuery(mut newer) = query(&machine, "w1") else {
+            panic!();
+        };
+        newer.query = MachineSettingsQueryKind::Newer;
+        let sent = envelope(2, Message::MachineSettingsQuery(newer));
+        let unsendable = forward(&fixture.shared, &ask, sent, &mpsc::channel(4).0).await;
 
+        assert_eq!(code_of(unsendable), Some("relay.unknown".to_owned()));
+        assert!(fixture.shared.relay.lock().is_empty());
         assert!(carries(&query(&machine, "w1")));
         assert!(carries(&command(&machine)));
         assert!(!carries(&settings_answer(&machine)));

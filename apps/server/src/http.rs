@@ -19,6 +19,7 @@ use crate::connections;
 use crate::docs;
 use crate::feed;
 use crate::pairing;
+use crate::proposals;
 use crate::shared::Shared;
 use crate::sign_in;
 use crate::tasks;
@@ -94,6 +95,7 @@ fn router(shared: Shared) -> Router {
         .merge(feed::routes())
         .merge(tasks::routes())
         .merge(docs::routes())
+        .merge(proposals::routes())
         .merge(chats::routes())
         .merge(web::routes(shared.web))
         .layer(DefaultBodyLimit::max(MAX_BODY))

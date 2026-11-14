@@ -101,11 +101,11 @@ async fn run(
     shared: &Shared,
     link: &mut Link,
 ) -> Result<Infallible, Closed> {
-    let offer = Capability::from(CONNECT);
+    let offer = Capability::new(CONNECT);
     let offers = vec![
         offer.clone(),
-        Capability::from(SETTINGS),
-        Capability::from(chats::upload::UPLOAD),
+        Capability::new(SETTINGS),
+        Capability::new(chats::upload::UPLOAD),
     ];
     let greeted = greet(socket, shared, offers, &offer);
     let hello = timeout(shared.sockets.hello_within, greeted)
@@ -188,9 +188,9 @@ mod tests {
         assert!(
             matches!(&welcome, Message::Welcome(Welcome { capabilities, .. })
             if *capabilities == [
-                Capability::from(CONNECT),
-                Capability::from(SETTINGS),
-                Capability::from(chats::upload::UPLOAD),
+                Capability::new(CONNECT),
+                Capability::new(SETTINGS),
+                Capability::new(chats::upload::UPLOAD),
             ]),
             "{welcome:?}"
         );

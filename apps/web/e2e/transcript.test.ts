@@ -9,14 +9,14 @@ import { fakeServer, start } from "./harness.ts";
 const MESSAGES = 33;
 
 test("text stays selected while the run streams, and following waits for the reader", { timeout: 180_000 }, async (t) => {
-  const harness = await start(fakeServer(100_000, 1));
+  const harness = await start(fakeServer(100_000, 1), { query: "&workspace=w-1&chat=c-1" });
   t.after(() => harness.close());
   const { page } = harness;
   // A few more than the selection, so it ends well above the row being written.
   await waitForRows(page, ".row.text", MESSAGES + 6);
 
   // Finished messages show their Markdown; the session has inline code in each pass.
-  assert.ok(await page.evaluate(() => document.querySelector(".row.text p code") !== null));
+  await page.waitForSelector(".row.text p code");
 
   const writing = await page.evaluate(selectInWritingRow);
   await page.waitForFunction(() => !document.querySelector("[data-picked]")?.hasAttribute("data-writing"));
@@ -70,7 +70,7 @@ test("text stays selected while the run streams, and following waits for the rea
 });
 
 test("a reader at the bottom of a finished run is still there after Settings", { timeout: 60_000 }, async (t) => {
-  const harness = await start(fakeServer(20_000, 0));
+  const harness = await start(fakeServer(20_000, 0), { query: "&workspace=w-1&chat=c-1" });
   t.after(() => harness.close());
   const { page } = harness;
   await page.waitForSelector(".row.finished");

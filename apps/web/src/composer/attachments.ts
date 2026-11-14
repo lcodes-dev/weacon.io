@@ -7,10 +7,10 @@ export const MAX_BYTES = 10 * 1024 * 1024;
 /** A message's files, why any were left out, and the id the next one takes. */
 export type Attached = { attachments: Attachment[]; refused: string | undefined; next: number };
 
-export const NONE: Attached = { attachments: [], refused: undefined, next: 1 };
+export const NO_ATTACHMENTS: Attached = { attachments: [], refused: undefined, next: 1 };
 
 /** Adds `files`. Empty files, files over `MAX_BYTES`, and files beyond `MAX_FILES` are left out. */
-export function add({ attachments, next }: Attached, files: readonly File[]): Attached {
+export function attachFiles({ attachments, next }: Attached, files: readonly File[]): Attached {
   const fit = files.filter((file) => file.size > 0 && file.size <= MAX_BYTES);
   const room = MAX_FILES - attachments.length;
   const added = fit.slice(0, room).map((file, at) => ({ id: next + at, file }));
@@ -27,7 +27,7 @@ export function settled(attached: Attached): Attached {
 }
 
 /** The files without the one numbered `id`; what was left out before no longer matters. */
-export function remove({ attachments, next }: Attached, id: number): Attached {
+export function removeAttachment({ attachments, next }: Attached, id: number): Attached {
   return { attachments: attachments.filter((attachment) => attachment.id !== id), refused: undefined, next };
 }
 

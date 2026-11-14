@@ -9,6 +9,7 @@ use weacon_protocol::{
 
 pub(crate) use events::{Incoming, chat_quota_full, turns};
 pub(crate) use ledger::{NewRequest, Recorded};
+pub(crate) use runs::Snapshot;
 
 use super::changes::Versioned;
 use super::{Workspace, failed, stored, unreadable};

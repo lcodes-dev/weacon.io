@@ -9,6 +9,7 @@ export type WebCapability =
   | "workspace.chats"
   | "diff.view"
   | "chat.send"
+  | "chat.events"
   | "log.forward"
   | "machine.settings";
 
@@ -98,6 +99,12 @@ export class Connection {
     }
   }
 
+  /** Closes the socket, telling the listener nothing more, as when the page that opened it is gone. */
+  close(): void {
+    this.#listener = { status: () => {}, message: () => {} };
+    this.#socket.close();
+  }
+
   #welcome(envelope: Incoming | undefined): void {
     if (envelope?.type !== "welcome") {
       const other = envelope?.type === "error" && envelope.code === "protocol.unsupported";
@@ -125,11 +132,11 @@ export class Connection {
 }
 
 const ENDINGS: Record<End, string> = {
-  "connection.lost": "The server closed the connection",
-  "connection.refused": "The server can't be reached",
-  "connection.no_answer": "The server didn't answer",
-  "connection.other_protocol": "The server runs another version of Weacon; reload the page",
-  "connection.server_too_old": "The server is too old for this app",
+  "connection.lost": "The server closed the connection.",
+  "connection.refused": "The server can't be reached.",
+  "connection.no_answer": "The server didn't answer.",
+  "connection.other_protocol": "The server runs another version of Weacon. Reload the page.",
+  "connection.server_too_old": "The server is too old for this app.",
 };
 
 /** What the header says about the connection. */

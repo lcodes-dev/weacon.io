@@ -58,7 +58,7 @@ impl Connection {
     ) -> Result<(Welcome, Self), Fault> {
         tokio::time::timeout(TIMEOUT, Self::greet(socket, me, capabilities))
             .await
-            .unwrap_or_else(|_| Err(no_answer(io::Error::from(io::ErrorKind::TimedOut))))
+            .map_err(no_answer)?
     }
 
     async fn greet(
@@ -234,7 +234,7 @@ mod tests {
         bytes.extend(b"not json\n");
         bytes.extend(line(update("llo")));
         let daemon = send_after_hello(&socket, bytes);
-        let offered = vec![Capability::from(code!("run.stream"))];
+        let offered = vec![Capability::new(code!("run.stream"))];
 
         let (welcomed, mut connection) =
             Connection::open(&socket, app("weacon-extension"), offered.clone())
@@ -264,6 +264,26 @@ mod tests {
         drop(daemon.await);
 
         assert_eq!(error.code().as_str(), "daemon.no_answer");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_daemon_that_never_welcomes_gave_no_answer_in_time() {
+        let dir = TempDir::new().unwrap();
+        let socket = dir.join("weacon.sock");
+        let server = Server::bind(&socket).unwrap();
+        let daemon = tokio::spawn(async move {
+            let mut stream = server.accept().await.unwrap();
+            stream.read_to_end(&mut Vec::new()).await.unwrap();
+        });
+        let started = tokio::time::Instant::now();
+
+        let error = handshake(&socket, app("weacon-extension"))
+            .await
+            .unwrap_err();
+        daemon.await.unwrap();
+
+        assert_eq!(error.code().as_str(), "daemon.no_answer");
+        assert!(started.elapsed() >= TIMEOUT);
     }
 
     #[test]

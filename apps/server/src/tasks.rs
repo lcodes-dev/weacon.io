@@ -13,7 +13,7 @@ use weacon_protocol::{
 
 use crate::app::new_id;
 use crate::auth::Member;
-use crate::db::task_not_found;
+use crate::db::{no_room, task_not_found};
 use crate::http::{self, Body, Refusals, Unreadable, parsed};
 use crate::shared::Shared;
 
@@ -102,8 +102,7 @@ fn place(
     let after = at.checked_sub(1).and_then(|at| others.get(at));
     let lo = after.map(|task| &task.order);
     let hi = others.get(at).map(|task| &task.order);
-    OrderKey::between(lo, hi)
-        .ok_or_else(|| Fault::new(code!("task.no_room"), "There is no room for the task there"))
+    OrderKey::between(lo, hi).ok_or_else(no_room)
 }
 
 fn title(text: String) -> Result<Title, Fault> {

@@ -152,3 +152,14 @@ pub(crate) async fn output_until(events: &mut crate::Events, seen: &mut String, 
         }
     }
 }
+
+pub(crate) const SESSION: &str = "0b7c6a52-3f1e-4d2a-9c8b-5e4f3a2b1c0d";
+pub(crate) const OTHER_SESSION: &str = "1c8d7b63-4a2f-4e3b-8d9c-6f5a4b3c2d1e";
+
+pub(crate) fn tool_call(call: &str, tool: &str, input: Value) -> RunEvent {
+    RunEvent::ToolCall {
+        call: call.to_owned(),
+        tool: tool.to_owned(),
+        input,
+    }
+}

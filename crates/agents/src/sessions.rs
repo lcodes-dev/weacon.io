@@ -128,8 +128,8 @@ pub fn find(files: &impl Files, agent: AgentKind, config_dir: &Path) -> Vec<Sess
 
 fn dirs(files: &impl Files, dir: &Path, named: impl Fn(&str) -> bool) -> Vec<PathBuf> {
     entries(files, dir)
-        .filter(|entry| entry.kind == Kind::Dir)
-        .filter_map(|entry| Some(dir.join(entry.name.to_str().filter(|name| named(name))?)))
+        .filter(|entry| entry.kind == Kind::Dir && entry.name.to_str().is_some_and(&named))
+        .map(|entry| dir.join(entry.name))
         .collect()
 }
 
@@ -192,9 +192,7 @@ mod tests {
     use weacon_testing::TempDir;
 
     use super::*;
-
-    const ONE: &str = "0b7c6a52-3f1e-4d2a-9c8b-5e4f3a2b1c0d";
-    const TWO: &str = "1c8d7b63-4a2f-4e3b-8d9c-6f5a4b3c2d1e";
+    use crate::test_support::{OTHER_SESSION, SESSION};
 
     /// The real disk, recording every folder listed and every file read.
     #[derive(Default)]
@@ -242,17 +240,17 @@ mod tests {
         let (app, web) = (projects.join("-work-app"), projects.join("-work-web"));
         write(&dir.join(".credentials.json"), "secret", 0);
         write(&projects.join(".credentials.json"), "secret", 0);
-        write(&session(&app, ONE), "one\n", 9);
-        write(&session(&web, TWO), "two\n", 1);
+        write(&session(&app, SESSION), "one\n", 9);
+        write(&session(&web, OTHER_SESSION), "two\n", 1);
         write(&session(&web, "notes"), "", 0);
-        write(&session(&web, &ONE.to_uppercase()), "", 0);
-        write(&web.join(TWO).join("sub.json"), "", 0);
-        write(&session(&projects.join(".hidden"), TWO), "", 0);
+        write(&session(&web, &SESSION.to_uppercase()), "", 0);
+        write(&web.join(OTHER_SESSION).join("sub.json"), "", 0);
+        write(&session(&projects.join(".hidden"), OTHER_SESSION), "", 0);
         let files = Recording::default();
 
         let found = find(&files, AgentKind::Claude, &dir);
 
-        assert_eq!(sessions_of(&found), [TWO, ONE]);
+        assert_eq!(sessions_of(&found), [OTHER_SESSION, SESSION]);
         assert_eq!(found.first().unwrap().read(&files, 1, 2).unwrap(), b"wo");
         let listed = files.listed.borrow();
         assert_eq!(listed.first(), Some(&projects));
@@ -263,13 +261,17 @@ mod tests {
                 .all(|dir| dir.parent() == Some(&*projects))
         );
         assert_eq!(listed.len(), 3);
-        assert_eq!(*files.read.borrow(), [session(&web, TWO)]);
+        assert_eq!(*files.read.borrow(), [session(&web, OTHER_SESSION)]);
     }
 
     #[test]
     fn a_found_session_says_what_its_file_is() {
         let dir = TempDir::new().unwrap();
-        write(&session(&dir.join("projects").join("-w"), ONE), "one\n", 9);
+        write(
+            &session(&dir.join("projects").join("-w"), SESSION),
+            "one\n",
+            9,
+        );
 
         let found = find(&Disk, AgentKind::Claude, &dir);
 
@@ -289,8 +291,12 @@ mod tests {
         let day = dir.join("sessions").join("2026").join("11").join("13");
         write(&dir.join("auth.json"), "secret", 0);
         write(&day.join("auth.json"), "secret", 0);
-        write(&rollout(&day, ONE), "", 5);
-        write(&rollout(&dir.join("archived_sessions"), TWO), "", 7);
+        write(&rollout(&day, SESSION), "", 5);
+        write(
+            &rollout(&dir.join("archived_sessions"), OTHER_SESSION),
+            "",
+            7,
+        );
         for (year, month, day) in [
             ("202", "11", "13"),
             ("20261", "11", "13"),
@@ -299,12 +305,12 @@ mod tests {
             ("2026", "11", "1x"),
         ] {
             let folder = dir.join("sessions").join(year).join(month).join(day);
-            write(&rollout(&folder, TWO), "", 0);
+            write(&rollout(&folder, OTHER_SESSION), "", 0);
         }
 
         let found = find(&Disk, AgentKind::Codex, &dir);
 
-        assert_eq!(sessions_of(&found), [ONE, TWO]);
+        assert_eq!(sessions_of(&found), [SESSION, OTHER_SESSION]);
         assert!(found.iter().all(|file| file.agent == AgentKind::Codex));
     }
 
@@ -313,13 +319,13 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let archive = dir.join("archived_sessions");
         for name in [
-            format!("{ONE}.jsonl"),
-            format!("rollout-{ONE}.jsonl"),
-            format!("rollout--{ONE}.jsonl"),
-            format!("rollout-2026x-{ONE}.jsonl"),
-            format!("rollout-2026-11-13T10-00-00{ONE}.jsonl"),
-            format!("rollout-2026-11-13T10-00-00-{ONE}.json"),
-            format!("session-2026-11-13T10-00-00-{ONE}.jsonl"),
+            format!("{SESSION}.jsonl"),
+            format!("rollout-{SESSION}.jsonl"),
+            format!("rollout--{SESSION}.jsonl"),
+            format!("rollout-2026x-{SESSION}.jsonl"),
+            format!("rollout-2026-11-13T10-00-00{SESSION}.jsonl"),
+            format!("rollout-2026-11-13T10-00-00-{SESSION}.json"),
+            format!("session-2026-11-13T10-00-00-{SESSION}.jsonl"),
             "rollout-2026-11-13T10-00-00-x.jsonl".to_owned(),
         ] {
             write(&archive.join(name), "", 0);
@@ -332,7 +338,9 @@ mod tests {
     fn a_missing_folder_or_an_agent_this_build_doesnt_know_finds_nothing() {
         let dir = TempDir::new().unwrap();
         write(
-            &dir.join("projects").join("-w").join(format!("{ONE}.jsonl")),
+            &dir.join("projects")
+                .join("-w")
+                .join(format!("{SESSION}.jsonl")),
             "",
             0,
         );
@@ -349,11 +357,11 @@ mod tests {
         write(&secret, "secret", 0);
         let project = dir.join("projects").join("-w");
         fs::create_dir_all(&project).unwrap();
-        fs::hard_link(&secret, project.join(format!("{ONE}.jsonl"))).unwrap();
+        fs::hard_link(&secret, project.join(format!("{SESSION}.jsonl"))).unwrap();
 
         let found = find(&Disk, AgentKind::Claude, &dir);
 
-        assert_eq!(sessions_of(&found), [ONE]);
+        assert_eq!(sessions_of(&found), [SESSION]);
         found.first().unwrap().read(&Disk, 0, 100).unwrap_err();
     }
 
@@ -366,10 +374,14 @@ mod tests {
         let secret = dir.join(".credentials.json");
         write(&secret, "secret", 0);
         let elsewhere = dir.join("elsewhere");
-        write(&elsewhere.join(format!("{TWO}.jsonl")), "", 0);
+        write(&elsewhere.join(format!("{OTHER_SESSION}.jsonl")), "", 0);
         let projects = dir.join("projects");
         fs::create_dir_all(projects.join("-w")).unwrap();
-        symlink(&secret, projects.join("-w").join(format!("{ONE}.jsonl"))).unwrap();
+        symlink(
+            &secret,
+            projects.join("-w").join(format!("{SESSION}.jsonl")),
+        )
+        .unwrap();
         symlink(&elsewhere, projects.join("-linked")).unwrap();
 
         assert_eq!(find(&Disk, AgentKind::Claude, &dir), []);
@@ -378,7 +390,11 @@ mod tests {
             entries.iter().map(|entry| entry.kind).collect::<Vec<_>>(),
             [Kind::Other]
         );
-        Disk.read(&projects.join("-w").join(format!("{ONE}.jsonl")), 0, 100)
-            .unwrap_err();
+        Disk.read(
+            &projects.join("-w").join(format!("{SESSION}.jsonl")),
+            0,
+            100,
+        )
+        .unwrap_err();
     }
 }

@@ -323,7 +323,7 @@ mod tests {
     use super::*;
     use crate::test_support::{
         self, Done, FakeRun, answer, app, ended, ends_as_recorded, is_asked, is_finished,
-        is_started, next, started, text, tool_done, until,
+        is_started, next, started, text, tool_call, tool_done, until,
     };
     use crate::wire::Wire as RunWire;
 
@@ -352,11 +352,11 @@ mod tests {
             Some(
                 [
                     started(THREAD),
-                    RunEvent::ToolCall {
-                        call: "item-1".to_owned(),
-                        tool: "command".to_owned(),
-                        input: json!({ "command": "cargo test -p parser" }),
-                    },
+                    tool_call(
+                        "item-1",
+                        "command",
+                        json!({ "command": "cargo test -p parser" })
+                    ),
                 ]
                 .as_slice()
             )

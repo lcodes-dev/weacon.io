@@ -2,41 +2,47 @@ import { type KeyboardEvent, type RefObject, useEffect, useLayoutEffect, useRef,
 
 import { newRequestId } from "../ids.ts";
 import "./composer.css";
-import { NONE, add, remove, settled } from "./attachments.ts";
-import { type Draft, EMPTY, type Item, type Placed, edit, pick, query } from "./draft.ts";
-import { AttachButton, Files } from "./files.tsx";
+import { NO_ATTACHMENTS, attachFiles, removeAttachment, settled } from "./attachments.ts";
+import { type Draft, EMPTY_DRAFT, type MentionItem, type Placed, editDraft, pickMention, query } from "./draft.ts";
+import { AttachButton, Files, useFileDrop } from "./files.tsx";
 import { composing, picker, sends } from "./keys.ts";
 import { offered } from "./mentionables.ts";
-import { type Retry, type Send, after, requestFor } from "./prompt.ts";
+import { type Late, type Retry, type Send, after, afterLate, requestFor } from "./prompt.ts";
 
 /**
  * The message box. While `blocked` says why, it still takes text, but can't send it. It keeps the
- * text until the server accepts it, and says so when it doesn't.
+ * text until the server accepts it, and says so when it doesn't; a `late` receipt settles it.
  */
-export function Composer({ send, blocked, hidden }: { send: Send; blocked: string | undefined; hidden: boolean }) {
-  const [placed, setPlaced] = useState<Placed>({ draft: EMPTY, caret: 0 });
+export function Composer({
+  send,
+  blocked,
+  hidden,
+  late,
+}: {
+  send: Send;
+  blocked: string | undefined;
+  hidden: boolean;
+  late: Late | undefined;
+}) {
+  const [placed, setPlaced] = useState<Placed>({ draft: EMPTY_DRAFT, caret: 0 });
   const [active, setActive] = useState(0);
   const [dismissed, setDismissed] = useState<number>();
   const [sending, setSending] = useState(false);
   const [problem, setProblem] = useState<string>();
   const retry = useRef<Retry>(undefined);
-  const [files, setFiles] = useState(NONE);
-  const [dropping, setDropping] = useState(false);
+  const [files, setFiles] = useState(NO_ATTACHMENTS);
   const box = useRef<HTMLTextAreaElement>(null);
   useEffect(() => {
-    // A file dropped beside the box would otherwise open in place of the app, losing the draft.
-    const keep = (event: DragEvent) => {
-      if (event.dataTransfer?.types.includes("Files")) {
-        event.preventDefault();
-      }
-    };
-    document.addEventListener("dragover", keep);
-    document.addEventListener("drop", keep);
-    return () => {
-      document.removeEventListener("dragover", keep);
-      document.removeEventListener("drop", keep);
-    };
-  }, []);
+    const next = late === undefined || sending ? undefined : afterLate(retry.current, placed.draft.text, late);
+    if (next === undefined) {
+      return;
+    }
+    setProblem(next.problem);
+    retry.current = next.retry;
+    if (next.text === "") {
+      setPlaced({ draft: EMPTY_DRAFT, caret: 0 });
+    }
+  }, [late]);
   const backdrop = useRef<HTMLDivElement>(null);
   const { draft, caret } = placed;
   const at = query(draft, caret);
@@ -72,13 +78,14 @@ export function Composer({ send, blocked, hidden }: { send: Send; blocked: strin
     setProblem(next.problem);
     retry.current = next.retry;
     if (next.text === "") {
-      place({ draft: EMPTY, caret: 0 });
+      place({ draft: EMPTY_DRAFT, caret: 0 });
     }
   };
-  const attach = (added: File[]) => setFiles((before) => add(before, added));
-  const choose = (item: Item | undefined) => {
+  const attach = (added: File[]) => setFiles((before) => attachFiles(before, added));
+  const drop = useFileDrop(attach);
+  const choose = (item: MentionItem | undefined) => {
     if (at !== undefined && item !== undefined) {
-      place(pick(draft, at, item));
+      place(pickMention(draft, at, item));
     }
   };
   const keyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -105,26 +112,7 @@ export function Composer({ send, blocked, hidden }: { send: Send; blocked: strin
     <form
       className="composer"
       hidden={hidden}
-      data-dropping={dropping || undefined}
-      onDragOver={(event) => {
-        if (event.dataTransfer.types.includes("Files")) {
-          event.preventDefault();
-          setDropping(true);
-        }
-      }}
-      onDragLeave={(event) => {
-        if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
-          setDropping(false);
-        }
-      }}
-      onDrop={(event) => {
-        setDropping(false);
-        // Dropped text goes into the box as usual.
-        if (event.dataTransfer.types.includes("Files")) {
-          event.preventDefault();
-          attach(dropped(event.dataTransfer));
-        }
-      }}
+      {...drop}
       onSubmit={(event) => {
         event.preventDefault();
         void submit();
@@ -143,7 +131,7 @@ export function Composer({ send, blocked, hidden }: { send: Send; blocked: strin
           value={draft.text}
           readOnly={sending}
           onChange={(event) => {
-            place(edit(draft, event.target.value, event.target.selectionEnd, (event.nativeEvent as InputEvent).isComposing));
+            place(editDraft(draft, event.target.value, event.target.selectionEnd, (event.nativeEvent as InputEvent).isComposing));
             setFiles(settled);
             setProblem(undefined);
           }}
@@ -169,19 +157,11 @@ export function Composer({ send, blocked, hidden }: { send: Send; blocked: strin
       <button type="submit" disabled={!ready}>
         Send
       </button>
-      {files.attachments.length > 0 && <Files attachments={files.attachments} remove={(id) => setFiles((before) => remove(before, id))} />}
+      {files.attachments.length > 0 && <Files attachments={files.attachments} remove={(id) => setFiles((before) => removeAttachment(before, id))} />}
       {options.length > 0 && <Options options={options} active={active} choose={choose} />}
       {hint !== undefined && <p className="hint muted">{hint}</p>}
     </form>
   );
-}
-
-// The files dropped, without folders.
-function dropped(data: DataTransfer): File[] {
-  return [...data.items].flatMap((item) => {
-    const file = item.kind === "file" && item.webkitGetAsEntry()?.isDirectory !== true ? item.getAsFile() : null;
-    return file === null ? [] : [file];
-  });
 }
 
 // The draft's text behind the box, so its mentions show; the box's own text is drawn over it.
@@ -206,9 +186,9 @@ function Options({
   active,
   choose,
 }: {
-  options: Item[];
+  options: MentionItem[];
   active: number;
-  choose: (item: Item) => void;
+  choose: (item: MentionItem) => void;
 }) {
   return (
     <ul className="mentions" id="mentions" role="listbox" aria-label="People and agents">

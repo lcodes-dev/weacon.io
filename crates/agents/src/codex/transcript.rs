@@ -126,7 +126,7 @@ mod tests {
     use weacon_protocol::AgentKind;
 
     use super::*;
-    use crate::test_support::{jsonl, text, tool_done};
+    use crate::test_support::{jsonl, text, tool_call, tool_done};
 
     fn read(lines: &[Value]) -> Transcript {
         Transcript::read(AgentKind::Codex, jsonl(lines).as_bytes()).unwrap()
@@ -170,17 +170,9 @@ mod tests {
                 cwd: Some(PathBuf::from("/work/app")),
                 steps: vec![
                     Step::Prompt("Fix the build".to_owned()),
-                    Step::Event(RunEvent::ToolCall {
-                        call: "c1".to_owned(),
-                        tool: "shell".to_owned(),
-                        input: json!({ "command": ["make"] }),
-                    }),
+                    Step::Event(tool_call("c1", "shell", json!({ "command": ["make"] }))),
                     Step::Event(tool_done("c1", false)),
-                    Step::Event(RunEvent::ToolCall {
-                        call: "c2".to_owned(),
-                        tool: "apply_patch".to_owned(),
-                        input: json!("*** Begin Patch"),
-                    }),
+                    Step::Event(tool_call("c2", "apply_patch", json!("*** Begin Patch"))),
                     Step::Event(tool_done("c2", false)),
                     Step::Event(text("Fixed")),
                 ],
@@ -205,11 +197,7 @@ mod tests {
         assert_eq!(transcript.cwd, Some(PathBuf::from("/first")));
         assert_eq!(
             transcript.steps,
-            vec![Step::Event(RunEvent::ToolCall {
-                call: "c1".to_owned(),
-                tool: "shell".to_owned(),
-                input: json!("make"),
-            })]
+            vec![Step::Event(tool_call("c1", "shell", json!("make")))]
         );
     }
 

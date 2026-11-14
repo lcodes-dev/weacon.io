@@ -41,7 +41,7 @@ test("a fetch shows its value, a failed one keeps it with the problem, and tryin
 
   assert.deepEqual(shown, [
     { value: ["a"], problem: undefined },
-    { value: ["a"], problem: "The server can't be reached" },
+    { value: ["a"], problem: "The server can't be reached." },
     { value: ["a"], problem: undefined },
     { value: ["a", "b"], problem: undefined },
   ]);
