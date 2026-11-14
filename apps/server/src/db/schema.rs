@@ -264,6 +264,11 @@ CREATE TABLE pairings (
     claimed INTEGER NOT NULL DEFAULT 0
 ) STRICT;
 ",
+    // Which agent made a version, as its JSON, when its author names one.
+    "
+ALTER TABLE task_versions ADD COLUMN agent TEXT;
+ALTER TABLE doc_versions ADD COLUMN agent TEXT;
+",
 ];
 
 /// Applies the steps the database hasn't had yet, each in its own transaction that holds the

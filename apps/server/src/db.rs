@@ -20,7 +20,9 @@ use sqlx::SqlitePool;
 use sqlx::sqlite::{SqliteConnectOptions, SqliteConnection, SqlitePoolOptions, SqliteSynchronous};
 use weacon_model::Revision;
 use weacon_observability::Fault;
-use weacon_protocol::{AccountId, Author, MemberId, WorkspaceId, code};
+use weacon_protocol::{
+    AccountId, AgentKind, AgentOwner, AgentRef, Author, MemberId, WorkspaceId, code,
+};
 
 #[cfg(test)]
 pub(crate) use account::CODE_LIFETIME;
@@ -173,16 +175,42 @@ fn stored_version(version: i64) -> Result<Revision, Fault> {
 fn author_columns(author: &Author) -> Option<(&'static str, &MemberId)> {
     match author {
         Author::Person { member } => Some(("person", member)),
-        Author::Agent { owner } => Some(("agent", owner)),
+        Author::Agent { owner, .. } => Some(("agent", owner)),
         Author::Newer => None,
     }
+}
+
+/// The JSON that the agent `author` names is stored as, or `Ok(None)` when it names none; an
+/// agent from a newer peer can't be stored.
+fn agent_column(author: &Author) -> Result<Option<String>, ()> {
+    let Author::Agent {
+        agent: Some(agent), ..
+    } = author
+    else {
+        return Ok(None);
+    };
+    let newer = matches!(agent.kind, AgentKind::Newer) || matches!(agent.owner, AgentOwner::Newer);
+    if newer {
+        return Err(());
+    }
+    serde_json::to_string(agent).map(Some).map_err(|_| ())
+}
+
+/// The agent stored as `agent`, which an older build may have left empty.
+fn stored_agent(agent: Option<&str>) -> Result<Option<AgentRef>, Fault> {
+    agent
+        .map(|json| serde_json::from_str(json).map_err(|_| unreadable()))
+        .transpose()
 }
 
 fn stored_author(kind: &str, member: String) -> Result<Author, Fault> {
     let member = stored(member)?;
     match kind {
         "person" => Ok(Author::Person { member }),
-        "agent" => Ok(Author::Agent { owner: member }),
+        "agent" => Ok(Author::Agent {
+            owner: member,
+            agent: None,
+        }),
         _ => Err(unreadable()),
     }
 }
