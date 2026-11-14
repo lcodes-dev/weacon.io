@@ -94,22 +94,42 @@ impl Map {
         Ok(generation)
     }
 
-    /// Marks the layer named `name` as current for refresh `generation`, so an earlier refresh
-    /// can't replace it.
-    pub(crate) async fn touch(&self, name: &str, generation: i64) -> Result<(), Fault> {
+    /// Marks the layer named `name`, while it is still the one read at `commit`, as current for
+    /// refresh `generation`, so an earlier refresh can't replace it; whether it still was.
+    pub(crate) async fn touch(
+        &self,
+        name: &str,
+        commit: &str,
+        generation: i64,
+    ) -> Result<bool, Fault> {
         let (workspace, repo) = self.keys();
-        sqlx::query(
+        let touched = sqlx::query(
             "UPDATE map_layers SET generation = max(generation, ?) \
-             WHERE workspace_id = ? AND repo = ? AND layer = ?",
+             WHERE workspace_id = ? AND repo = ? AND layer = ? AND commit_id = ?",
         )
         .bind(generation)
         .bind(workspace)
         .bind(repo)
         .bind(name)
+        .bind(commit)
         .execute(&self.workspace.db.pool)
         .await
         .map_err(failed)?;
-        Ok(())
+        Ok(touched.rows_affected() == 1)
+    }
+
+    /// The commit the layer named `name` was read at, if it has been stored.
+    pub(crate) async fn commit_of(&self, name: &str) -> Result<Option<String>, Fault> {
+        let (workspace, repo) = self.keys();
+        sqlx::query_scalar(
+            "SELECT commit_id FROM map_layers WHERE workspace_id = ? AND repo = ? AND layer = ?",
+        )
+        .bind(workspace)
+        .bind(repo)
+        .bind(name)
+        .fetch_optional(&self.workspace.db.pool)
+        .await
+        .map_err(failed)
     }
 
     /// The layer named `name`, if it has been stored.
@@ -557,6 +577,29 @@ mod tests {
         assert_eq!((stored.commit.as_str(), stored.generation), ("b", later));
         map.replace(&read("c", later), &[], &[]).await.unwrap();
         assert_eq!(map.layer(BASE).await.unwrap().unwrap().commit, "c");
+    }
+
+    #[tokio::test]
+    async fn touches_a_layer_only_while_it_holds_the_commit_seen() {
+        let dir = TempDir::new().unwrap();
+        let map = map(&dir, "one").await;
+        assert_eq!(map.commit_of(BASE).await.unwrap(), None);
+        assert!(!map.touch(BASE, "a", 5).await.unwrap());
+        let stored = Layer {
+            commit: "a".to_owned(),
+            generation: 1,
+            ..layer(BASE, vec![])
+        };
+        map.replace(&stored, &[], &[]).await.unwrap();
+        assert_eq!(map.commit_of(BASE).await.unwrap().as_deref(), Some("a"));
+        let generation = || async { map.layer(BASE).await.unwrap().unwrap().generation };
+
+        assert!(!map.touch(BASE, "b", 5).await.unwrap());
+        assert_eq!(generation().await, 1);
+        assert!(map.touch(BASE, "a", 5).await.unwrap());
+        assert_eq!(generation().await, 5);
+        assert!(map.touch(BASE, "a", 3).await.unwrap());
+        assert_eq!(generation().await, 5);
     }
 
     #[tokio::test]

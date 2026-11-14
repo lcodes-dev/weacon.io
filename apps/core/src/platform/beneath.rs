@@ -9,7 +9,8 @@ use unix::open_parts;
 #[cfg(windows)]
 use windows::open_parts;
 
-/// The file at `relative`, a `/`-separated path, beneath the folder `root`, opened to read. A
+/// The file at `relative`, a `/`-separated path, beneath the folder `root`, an absolute path
+/// with no link in it such as a canonical one, opened to read. A
 /// link anywhere on the way, a part that isn't one plain name, and a path that isn't there are
 /// refused.
 pub(crate) fn open_beneath(root: &Path, relative: &str) -> io::Result<File> {
@@ -35,7 +36,8 @@ mod unix {
     use std::fs::File;
     use std::io;
     use std::os::fd::{AsRawFd, FromRawFd};
-    use std::path::Path;
+    use std::os::unix::ffi::OsStrExt;
+    use std::path::{Component, Path};
 
     use libc::{O_CLOEXEC, O_DIRECTORY, O_NOFOLLOW, O_NONBLOCK, O_RDONLY, c_int};
 
@@ -43,14 +45,35 @@ mod unix {
     /// Non-blocking, so a pipe can't hold the open.
     const FILE: c_int = O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK;
 
-    /// Each part is opened from the folder before it with `O_NOFOLLOW`, so a link swapped in
-    /// at any time is refused rather than followed.
+    /// Every part, the root's own from `/` included, is opened from the folder before it with
+    /// `O_NOFOLLOW`, so a link swapped in anywhere at any time is refused rather than followed.
     #[expect(unsafe_code, reason = "std has no openat")]
     pub(super) fn open_parts(root: &Path, parts: &[&str]) -> io::Result<File> {
-        let mut opened = File::open(root)?;
-        let last = parts.len().saturating_sub(1);
-        for (at, part) in parts.iter().enumerate() {
-            let name = CString::new(*part)?;
+        let mut names = Vec::new();
+        for component in root.components() {
+            match component {
+                Component::RootDir => {}
+                Component::Normal(name) => names.push(CString::new(name.as_bytes())?),
+                Component::Prefix(_) | Component::CurDir | Component::ParentDir => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "not a plain root",
+                    ));
+                }
+            }
+        }
+        if !root.has_root() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "not a plain root",
+            ));
+        }
+        for part in parts {
+            names.push(CString::new(*part)?);
+        }
+        let mut opened = File::open("/")?;
+        let last = names.len().saturating_sub(1);
+        for (at, name) in names.iter().enumerate() {
             let flags = if at == last { FILE } else { FOLDER };
             // SAFETY: the folder's descriptor stays open for the call, and `name` ends in NUL.
             let fd = unsafe { libc::openat(opened.as_raw_fd(), name.as_ptr(), flags) };
@@ -114,6 +137,7 @@ mod tests {
         fs::create_dir_all(root.join("a/b")).unwrap();
         fs::write(root.join("a/b/c.md"), "inside").unwrap();
         fs::write(dir.join("outside.md"), "outside").unwrap();
+        let root = root.canonicalize().unwrap();
         assert_eq!(read(&root, "a/b/c.md").as_deref(), Some("inside"));
         for refused in [
             "a//b/c.md",
@@ -146,7 +170,13 @@ mod tests {
         fs::write(root.join("real/c.md"), "inside").unwrap();
         symlink(root.join("real"), root.join("folder")).unwrap();
         symlink(root.join("real/c.md"), root.join("file.md")).unwrap();
+        let root = root.canonicalize().unwrap();
         assert_eq!(read(&root, "real/c.md").as_deref(), Some("inside"));
+        let linked = root.with_file_name("linked");
+        symlink(&root, &linked).unwrap();
+        assert_eq!(read(&linked, "real/c.md"), None);
+        assert_eq!(read(&root.join("..").join("root"), "real/c.md"), None);
+        assert_eq!(read(Path::new("root"), "real/c.md"), None);
         assert_eq!(read(&root, "folder/c.md"), None);
         assert_eq!(read(&root, "file.md"), None);
 
