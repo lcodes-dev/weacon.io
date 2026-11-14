@@ -14,6 +14,8 @@ mod doctor;
     )
 )]
 mod git;
+mod hook;
+mod integrations;
 mod map;
 mod mcp;
 mod memory;
@@ -22,6 +24,7 @@ mod native_host;
 mod picks;
 mod platform;
 mod reports;
+mod resume;
 mod runs;
 mod service;
 mod session;
@@ -89,8 +92,10 @@ fn run(app: &App, command: Command, env: platform::Env<'_>) -> Result<Ending, Fa
         } => workspaces::access(app, &workspace, level, team, &mut io::stdout().lock()),
         Command::Repo(command) => git::repos::run(app, command, &mut io::stdout().lock()),
         Command::Reports { answer } => reports::run(app, answer, &mut io::stdout().lock()),
+        Command::Resume { workspace, chat } => resume::run(app, &workspace, &chat),
         Command::ConnectChrome => native_host::connect_chrome(app, env, &mut io::stdout().lock()),
         Command::NativeHost { origin } => native_host::run(app, &origin),
+        Command::Hook(command) => return Ok(hook::run(app, command, &mut io::stdout().lock())),
         Command::Map(command) => {
             return map::run(
                 app,

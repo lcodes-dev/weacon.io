@@ -75,6 +75,10 @@ pub(crate) fn command(launch: &Launch, session: Option<&AgentSession>) -> Comman
         command.args(["--allowedTools", &tools.join(",")]);
         command.env(TOKEN_VARIABLE, &mcp.token);
     }
+    // An absolute path can't be read as an option.
+    if let Some(plugin) = launch.plugin.as_ref().filter(|plugin| plugin.is_absolute()) {
+        command.arg("--plugin-dir").arg(plugin);
+    }
     if let Some(session) = session {
         command.args(["--resume", session.as_str()]);
     }
@@ -119,6 +123,15 @@ pub(crate) fn own_sign_in(status: &[u8]) -> bool {
 pub(crate) fn login(launch: &Launch) -> Command {
     let mut command = with_workspace_sign_in(launch);
     command.args(["auth", "login"]);
+    command
+}
+
+/// `claude` on `session`, for a person to carry on by hand in their terminal, in the folder the
+/// chat works in. Weacon's own limits are left out: the person answers its prompts.
+pub(crate) fn resume(launch: &Launch, session: &AgentSession) -> Command {
+    let mut command = with_workspace_sign_in(launch);
+    command.args(["--resume", session.as_str()]);
+    command.current_dir(&launch.cwd);
     command
 }
 
@@ -201,6 +214,7 @@ mod tests {
                 cwd: dir.to_path_buf(),
                 access: AccessLevel::AskFirst,
                 mcp: None,
+                plugin: None,
             }
         }
 
@@ -237,6 +251,7 @@ mod tests {
                 cwd: dir.to_owned(),
                 access: AccessLevel::AskFirst,
                 mcp: None,
+                plugin: None,
             }
         }
 
@@ -337,6 +352,7 @@ mod tests {
             cwd: PathBuf::from("/work"),
             access: AccessLevel::AskFirst,
             mcp: None,
+            plugin: None,
         };
         let check = status(&claude);
         assert_eq!(
@@ -349,7 +365,14 @@ mod tests {
             login.as_std().get_args().collect::<Vec<_>>(),
             ["auth", "login"]
         );
-        for command in [command(&claude, None), check, login] {
+        let session = AgentSession::try_from("0b7c6a52-3f1e-4d2a-9c8b-5e4f3a2b1c0d".to_owned());
+        let by_hand = resume(&claude, &session.unwrap());
+        assert_eq!(
+            by_hand.as_std().get_args().collect::<Vec<_>>(),
+            ["--resume", "0b7c6a52-3f1e-4d2a-9c8b-5e4f3a2b1c0d"]
+        );
+        assert_eq!(by_hand.as_std().get_current_dir(), Some(Path::new("/work")));
+        for command in [command(&claude, None), check, login, by_hand] {
             let config = (
                 OsStr::new("CLAUDE_CONFIG_DIR"),
                 Some(OsStr::new("/work/config")),
@@ -386,6 +409,7 @@ mod tests {
                 cwd: PathBuf::from("/work"),
                 access,
                 mcp: None,
+                plugin: None,
             };
             let command = command(&launch, None);
             let args: Vec<_> = command.as_std().get_args().map(ToOwned::to_owned).collect();
@@ -405,7 +429,7 @@ mod tests {
         }
     }
 
-    fn with_mcp(mcp: Option<McpServer>) -> (Command, Vec<String>) {
+    fn launched(mcp: Option<McpServer>, plugin: Option<PathBuf>) -> (Command, Vec<String>) {
         let launch = Launch {
             agent: AgentKind::Claude,
             program: PathBuf::from("claude"),
@@ -413,6 +437,7 @@ mod tests {
             cwd: PathBuf::from("/work"),
             access: AccessLevel::ReadOnly,
             mcp,
+            plugin,
         };
         let command = command(&launch, None);
         let args = command.as_std().get_args();
@@ -433,7 +458,7 @@ mod tests {
             token: "secret-token".into(),
             tools: vec!["map".into(), "symbol".into()],
         };
-        let (with, given) = with_mcp(Some(server));
+        let (with, given) = launched(Some(server), None);
         let after = |flag: &str| {
             let at = given.iter().position(|arg| arg == flag)?;
             given.get(at + 1).cloned()
@@ -457,11 +482,28 @@ mod tests {
 
     #[test]
     fn a_run_without_the_mcp_gets_neither_its_flags_nor_a_token() {
-        let (without, plain) = with_mcp(None);
+        let (without, plain) = launched(None, None);
 
         let flags = ["--mcp-config", "--allowedTools"];
         assert!(!plain.iter().any(|arg| flags.contains(&arg.as_str())));
         assert_eq!(token(&without), None);
+    }
+
+    #[test]
+    fn only_an_absolute_plugin_folder_is_given_to_claude() {
+        let plugin = std::env::temp_dir().join("weacon-plugin");
+        let (_, given) = launched(None, Some(plugin.clone()));
+        let at = given.iter().position(|arg| arg == "--plugin-dir").unwrap();
+        assert_eq!(given.get(at + 1).map(PathBuf::from), Some(plugin));
+
+        for plugin in [
+            None,
+            Some(PathBuf::from("--plugin")),
+            Some(PathBuf::from("plugin")),
+        ] {
+            let (_, given) = launched(None, plugin);
+            assert!(!given.iter().any(|arg| arg.contains("plugin")), "{given:?}");
+        }
     }
 
     #[test]

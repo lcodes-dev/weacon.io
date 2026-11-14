@@ -58,6 +58,7 @@ pub(crate) fn run(app: &crate::app::App) -> Result<(), Fault> {
                 path: app.path.clone(),
                 work_root: app.work_root.clone(),
                 mcp: None,
+                plugin: crate::integrations::Plugin::new(state_dir, &app.version, &app.log),
             },
             app.log.clone(),
         )?;
