@@ -21,14 +21,18 @@ pub(crate) type Body = Box<dyn Read + Send>;
 /// Opens the body at an `https://` address; tests pass a fake.
 pub(crate) type Get<'a> = &'a dyn Fn(&str) -> Result<Body, Fault>;
 
-/// Gets over HTTPS only, following redirects only to HTTPS.
-pub(crate) fn https() -> impl Fn(&str) -> Result<Body, Fault> {
+/// How long a manifest or its signature may take to arrive, and a build.
+pub(crate) const MANIFEST_WITHIN: Duration = Duration::from_secs(30);
+pub(crate) const DOWNLOAD_WITHIN: Duration = Duration::from_mins(10);
+
+/// Gets over HTTPS only, following redirects only to HTTPS, each body within `body_within`.
+pub(crate) fn https(body_within: Duration) -> impl Fn(&str) -> Result<Body, Fault> {
     let agent: ureq::Agent = ureq::Agent::config_builder()
         .https_only(true)
         .user_agent("weacon")
         .timeout_connect(Some(Duration::from_secs(15)))
         .timeout_recv_response(Some(Duration::from_secs(30)))
-        .timeout_recv_body(Some(Duration::from_mins(10)))
+        .timeout_recv_body(Some(body_within))
         .build()
         .into();
     move |url: &str| {
@@ -118,6 +122,9 @@ mod tests {
         let long: &'static str = "x".repeat(5 * 1024).leak();
         let fault = release(&serving(MANIFEST, long.as_bytes()), &[TEST_KEY]).unwrap_err();
         assert_eq!(fault.code().as_str(), "update.too_large");
+        // Minisign ignores the padding, so only the size limit could refuse it.
+        let padded: &'static str = format!("{SIGNATURE:<4096}").leak();
+        release(&serving(MANIFEST, padded.as_bytes()), &[TEST_KEY]).unwrap();
         let exact: &'static str = "x".repeat(64 * 1024).leak();
         let fault = release(&serving(exact, SIGNATURE.as_bytes()), &[TEST_KEY]).unwrap_err();
         assert_eq!(fault.code().as_str(), "update.unsigned");
@@ -142,7 +149,9 @@ mod tests {
 
     #[test]
     fn plain_http_is_refused() {
-        let fault = https()("http://127.0.0.1:9/manifest.json").err().unwrap();
+        let fault = https(MANIFEST_WITHIN)("http://127.0.0.1:9/manifest.json")
+            .err()
+            .unwrap();
         assert_eq!(fault.code().as_str(), "update.fetch_failed");
     }
 }
