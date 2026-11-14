@@ -8,6 +8,7 @@ mod disk;
 mod doctor;
 mod map;
 mod memory;
+mod names;
 mod native_host;
 mod picks;
 mod platform;

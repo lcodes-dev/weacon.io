@@ -119,20 +119,6 @@ pub(crate) fn work_root(env: Env<'_>) -> Option<PathBuf> {
     home_dir(env).map(|home| home.join("Weacon"))
 }
 
-/// A file or folder name for `id`, a token id, after `prefix`. A capital becomes `.` and its
-/// small letter, so ids differing only in case don't share a name; the prefix keeps Windows'
-/// device names, such as `CON`, out.
-pub(crate) fn case_safe_name(prefix: &str, id: &str) -> String {
-    let mut name = String::from(prefix);
-    for letter in id.chars() {
-        if letter.is_ascii_uppercase() {
-            name.push('.');
-        }
-        name.push(letter.to_ascii_lowercase());
-    }
-    name
-}
-
 /// Creates `dir` and any missing parents readable only by this user; existing folders keep
 /// their permissions.
 pub(crate) fn private_dir(dir: &Path) -> io::Result<()> {
