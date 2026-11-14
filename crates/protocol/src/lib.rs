@@ -19,6 +19,8 @@ mod settings;
 mod task;
 mod team;
 mod terminal;
+#[cfg(test)]
+mod test_support;
 mod token;
 mod update;
 mod worktree;

@@ -373,3 +373,17 @@ pub(crate) fn new_task(id: &str, title: &str, order: &str) -> weacon_model::Task
         weacon_model::OrderKey::try_from(order.to_owned()).unwrap(),
     )
 }
+
+/// An agent of `kind`, whose owner is `owner`, on the machine called `machine` when known.
+pub(crate) fn agent(
+    kind: weacon_protocol::AgentKind,
+    owner: weacon_protocol::AgentOwner,
+    machine: Option<&str>,
+) -> weacon_protocol::AgentRef {
+    weacon_protocol::AgentRef {
+        kind,
+        owner,
+        machine: machine
+            .map(|name| weacon_protocol::MachineName::try_from(name.to_owned()).unwrap()),
+    }
+}

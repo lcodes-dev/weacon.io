@@ -1,40 +1,20 @@
-use std::panic::PanicHookInfo;
-use std::process::ExitCode;
 use std::sync::Arc;
 
-use weacon_appkit::{Ending, panic_hook, random_id, reporter, reports, root_logger};
-use weacon_observability::{Deliver, Fault, Logger, Reporter, Sink};
+use weacon_appkit::{App, random_id, reporter, reports, root_logger};
+use weacon_observability::{Deliver, Fault, Sink};
 use weacon_protocol::code;
 use weacon_version::Version;
 
-/// What the server runs with: its build, logger and error reporter.
-pub(crate) struct App {
-    pub(crate) version: Version,
-    pub(crate) log: Logger,
-    pub(crate) reporter: Arc<Reporter>,
-}
-
-impl App {
-    /// Logs to `logs`, and sends error reports when `dsn` is set.
-    pub(crate) fn start(version: Version, logs: Sink, deliver: Deliver, dsn: Option<&str>) -> Self {
-        let log = root_logger(logs, &version);
-        log.info("app started", &[]);
-        let client = format!("{}/{}", version.name, version.version);
-        let reports = dsn.and_then(|dsn| reports(dsn, &client, &version, "", &log));
-        Self {
-            version,
-            reporter: Arc::new(reporter(reports, true, deliver)),
-            log,
-        }
-    }
-
-    /// Logs and reports how the server ended, and gives its exit code.
-    pub(crate) fn finish(&self, result: Result<(), Fault>) -> ExitCode {
-        weacon_appkit::finish(&self.log, &self.reporter, result.map(Ending::from))
-    }
-
-    pub(crate) fn panic_hook(&self) -> Box<dyn Fn(&PanicHookInfo<'_>) + Send + Sync> {
-        panic_hook(self.log.clone(), Arc::clone(&self.reporter), panicked)
+/// Starts the server's app: it logs to `logs`, and sends error reports when `dsn` is set.
+pub(crate) fn start(version: Version, logs: Sink, deliver: Deliver, dsn: Option<&str>) -> App {
+    let log = root_logger(logs, &version);
+    log.info("app started", &[]);
+    let client = format!("{}/{}", version.name, version.version);
+    let reports = dsn.and_then(|dsn| reports(dsn, &client, &version, "", &log));
+    App {
+        version,
+        reporter: Arc::new(reporter(reports, true, deliver)),
+        log,
     }
 }
 
@@ -55,6 +35,7 @@ pub(crate) fn panicked() -> Fault {
 #[cfg(test)]
 mod tests {
     use std::io;
+    use std::process::ExitCode;
     use std::sync::Mutex;
 
     use weacon_observability::Upload;
@@ -64,7 +45,7 @@ mod tests {
 
     const DSN: &str = "https://key@sentry.example.com/1";
 
-    fn start(dsn: Option<&str>) -> (App, Records, Arc<Mutex<Vec<Upload>>>) {
+    fn started(dsn: Option<&str>) -> (App, Records, Arc<Mutex<Vec<Upload>>>) {
         let (logs, records) = recording_sink();
         let uploads = Arc::new(Mutex::new(Vec::new()));
         let seen = Arc::clone(&uploads);
@@ -72,12 +53,12 @@ mod tests {
             seen.lock().unwrap().push(upload.clone());
             Ok(())
         });
-        (App::start(VERSION, logs, deliver, dsn), records, uploads)
+        (start(VERSION, logs, deliver, dsn), records, uploads)
     }
 
     #[test]
     fn logs_start_with_the_build() {
-        let (_, records, _) = start(None);
+        let (_, records, _) = started(None);
         let first = records.lock().unwrap()[0].clone();
 
         assert_eq!(first.msg, "app started");
@@ -88,8 +69,10 @@ mod tests {
 
     #[test]
     fn a_bad_dsn_turns_reports_off_with_a_warning() {
-        let (app, records, uploads) = start(Some("not a dsn"));
-        app.finish(Err(Fault::new(code!("store.full"), "The store is full")));
+        let (app, records, uploads) = started(Some("not a dsn"));
+        let exit = app.finish(Err(Fault::new(code!("store.full"), "The store is full")));
+
+        assert_eq!(exit, ExitCode::from(2));
 
         assert_eq!(
             messages(&records),
@@ -100,9 +83,9 @@ mod tests {
 
     #[test]
     fn success_exits_cleanly_and_reports_nothing() {
-        let (app, records, uploads) = start(Some(DSN));
+        let (app, records, uploads) = started(Some(DSN));
 
-        assert_eq!(app.finish(Ok(())), ExitCode::SUCCESS);
+        assert_eq!(app.finish(Ok(().into())), ExitCode::SUCCESS);
         assert_eq!(messages(&records), ["app started", "app stopped"]);
         assert!(uploads.lock().unwrap().is_empty());
     }
@@ -114,7 +97,7 @@ mod tests {
 
     #[test]
     fn no_content_reaches_a_log_line_or_an_error_report() {
-        let (app, records, uploads) = start(Some(DSN));
+        let (app, records, uploads) = started(Some(DSN));
         let leak =
             io::Error::other("could not open /srv/MARKER-PATH: token MARKER-TOKEN, MARKER-MESSAGE");
         let fault = Fault::new(code!("store.full"), "The store is full").because(leak);

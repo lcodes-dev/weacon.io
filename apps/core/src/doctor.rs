@@ -117,7 +117,7 @@ mod tests {
     use weacon_testing::TempDir;
 
     use super::*;
-    use crate::test_support;
+    use crate::test_support::{self, Broken};
 
     fn app(state_dir: Option<&str>, log_file: Option<&str>) -> App {
         test_support::app(state_dir.map(Path::new), log_file.map(Path::new))
@@ -285,18 +285,9 @@ mod tests {
 
     #[test]
     fn fails_when_it_cant_print() {
-        struct Closed;
-        impl Write for Closed {
-            fn write(&mut self, _: &[u8]) -> io::Result<usize> {
-                Err(io::ErrorKind::BrokenPipe.into())
-            }
-            fn flush(&mut self) -> io::Result<()> {
-                Ok(())
-            }
-        }
         let error = run(
             &app(Some("/srv"), Some("/srv/logs/weacon.log")),
-            &mut Closed,
+            &mut Broken,
         )
         .unwrap_err();
 
