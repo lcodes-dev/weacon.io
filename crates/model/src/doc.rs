@@ -20,7 +20,8 @@ pub struct DocText {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DocTextError {
     TooLarge,
-    /// The body links to an anchor without a pin.
+    /// The body links to an anchor without a pin, or writes one with an escape or a
+    /// character reference.
     Unpinned,
     /// A pin or a commit that no link needs, or two pins for one anchor.
     Unlinked,
@@ -52,7 +53,9 @@ impl DocText {
         }
         let pinned: BTreeSet<&str> = pins.iter().map(DocPin::anchor).collect();
         let linked = links(&body);
-        if !linked.is_subset(&pinned) {
+        // Markdown decodes escapes and references, so such a target can't be held to a pin.
+        let encoded = linked.iter().any(|target| target.contains(['\\', '&']));
+        if encoded || !linked.is_subset(&pinned) {
             return Err(DocTextError::Unpinned);
         }
         // With every link pinned, as many links as pins leaves no pin spare or repeated.
@@ -229,6 +232,9 @@ mod tests {
             ("[a](sym&colon;a)", &[][..]),
             ("[a](sym\\:a)", &[][..]),
             ("[a](sym:a(b))", &["sym:a(b"][..]),
+            ("[a](sym:a\\(b)", &["sym:a\\(b"][..]),
+            ("[a](sym:a\\_b)", &["sym:a\\_b"][..]),
+            ("[a](sym:a&amp;b)", &["sym:a&amp;b"][..]),
             ("[a](sym:a) <area:b>", &["sym:a"][..]),
             ("[a](sym:a)\n[b](flow:a->b)", &["sym:a"][..]),
         ] {
