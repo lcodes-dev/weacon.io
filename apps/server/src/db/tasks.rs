@@ -119,18 +119,21 @@ impl Workspace {
         task: &Task,
         attribution: &Attribution,
     ) -> Result<(), Fault> {
-        let (kind, author) = author_columns(attribution.author()).ok_or_else(unknown_value)?;
+        let (kind, author, agent) =
+            author_columns(attribution.author()).ok_or_else(unknown_value)?;
         let version = version_number(task.version)?;
         sqlx::query(
             "INSERT INTO task_versions
-                 (workspace_id, task_id, version, author_kind, author_member, accepted_by, at)
-             VALUES (?, ?, ?, ?, ?, ?, ?)",
+                 (workspace_id, task_id, version, author_kind, author_member, agent, accepted_by,
+                  at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(self.id.as_str())
         .bind(task.id.as_str())
         .bind(version)
         .bind(kind)
         .bind(author.as_str())
+        .bind(agent)
         .bind(attribution.accepted_by().as_str())
         .bind(attribution.at())
         .execute(&mut *transaction)
@@ -207,11 +210,12 @@ fn stored_status(text: &str) -> Result<TaskStatus, Fault> {
 #[cfg(test)]
 mod tests {
     use weacon_model::{OrderKey, Title};
-    use weacon_protocol::Author;
+    use weacon_protocol::{AgentKind, AgentOwner, Author};
     use weacon_testing::TempDir;
 
     use super::*;
-    use crate::test_support::{member_id, new_task, two_teams};
+    use crate::db::stored_author;
+    use crate::test_support::{agent, member_id, new_task, two_teams};
 
     const NOW: i64 = 1_762_077_600;
 
@@ -363,13 +367,66 @@ mod tests {
         assert_eq!(changes(&one).await.len(), 2);
     }
 
+    async fn authors(workspace: &Workspace) -> Vec<Author> {
+        sqlx::query_as::<_, (String, String, Option<String>)>(
+            "SELECT author_kind, author_member, agent FROM task_versions
+             WHERE workspace_id = ? ORDER BY version",
+        )
+        .bind(workspace.id.as_str())
+        .fetch_all(&workspace.db.readers)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|(kind, member, agent)| stored_author(&kind, member, agent.as_deref()).unwrap())
+        .collect()
+    }
+
+    #[tokio::test]
+    async fn a_version_an_agent_made_keeps_which_agent_when_known() {
+        let dir = TempDir::new().unwrap();
+        let (one, _) = two_teams(&dir).await;
+        let task = new_task("t1", "Write", "V");
+        one.add_task(&task, &by("m1")).await.unwrap();
+        let own = AgentOwner::Member {
+            member: member_id("m1"),
+        };
+        let attributions = [
+            Some(agent(AgentKind::Codex, own, Some("Ada's laptop"))),
+            Some(agent(AgentKind::Claude, AgentOwner::Shared, None)),
+            None,
+        ]
+        .map(|agent| Attribution::accepted(member_id("m1"), agent, member_id("m3"), NOW));
+        let mut read_at = Revision::FIRST;
+        for attribution in &attributions {
+            let edited = one.edit_task(&task.id, read_at, rename("Ship"), attribution);
+            read_at = edited.await.unwrap().version;
+        }
+        let someone_elses = AgentOwner::Member {
+            member: member_id("m3"),
+        };
+        let refused = [
+            agent(AgentKind::Newer, AgentOwner::Shared, None),
+            agent(AgentKind::Codex, AgentOwner::Newer, None),
+            agent(AgentKind::Codex, someone_elses, None),
+        ]
+        .map(|newer| Attribution::accepted(member_id("m1"), Some(newer), member_id("m3"), NOW));
+        for attribution in &refused {
+            let late = one.edit_task(&task.id, read_at, rename("Late"), attribution);
+            assert_eq!(code(&late.await.unwrap_err()), "task.unknown_value");
+        }
+
+        let mut expected = vec![by("m1").author().clone()];
+        expected.extend(attributions.iter().map(|made| made.author().clone()));
+        assert_eq!(authors(&one).await, expected);
+    }
+
     #[tokio::test]
     async fn every_version_records_who_made_it_and_who_accepted_it() {
         let dir = TempDir::new().unwrap();
         let (one, _) = two_teams(&dir).await;
         let task = new_task("t1", "Write", "V");
         one.add_task(&task, &by("m1")).await.unwrap();
-        let agents = Attribution::accepted(member_id("m1"), member_id("m3"), NOW + 5);
+        let agents = Attribution::accepted(member_id("m1"), None, member_id("m3"), NOW + 5);
         one.edit_task(&task.id, Revision::FIRST, rename("Ship"), &agents)
             .await
             .unwrap();

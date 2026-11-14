@@ -4,7 +4,6 @@
 pub(crate) mod task;
 
 use std::fmt;
-use std::io;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -12,6 +11,8 @@ use weacon_observability::Fault;
 use weacon_protocol::{
     AgentKind, AgentSession, ChatId, RequestId, RunId, RunState, WorkspaceId, code,
 };
+
+use crate::app::{blocking, read_json};
 
 #[derive(Debug)]
 pub(crate) struct Runs {
@@ -68,13 +69,9 @@ impl Runs {
     pub(crate) fn load(state_dir: &Path) -> Result<Self, Fault> {
         let path = state_dir.join("runs.json");
         let unreadable = || Fault::new(code!("runs.unreadable"), "The runs journal can't be read");
-        let journal = match std::fs::read(&path) {
-            Ok(json) => {
-                serde_json::from_slice(&json).map_err(|error| unreadable().because(error))?
-            }
-            Err(error) if error.kind() == io::ErrorKind::NotFound => Journal::default(),
-            Err(error) => return Err(unreadable().because(error)),
-        };
+        let journal = read_json(&path)
+            .map_err(|error| unreadable().because(error))?
+            .unwrap_or_default();
         Ok(Self { path, journal })
     }
 
@@ -211,9 +208,8 @@ impl Runs {
         let not_saved = || Fault::new(code!("runs.not_saved"), "The runs journal can't be saved");
         let json = serde_json::to_vec(&next).map_err(|error| not_saved().because(error))?;
         let path = self.path.clone();
-        tokio::task::spawn_blocking(move || weacon_appkit::write_whole(&path, &json))
+        blocking(move || weacon_appkit::write_whole(&path, &json))
             .await
-            .unwrap_or_else(|error| Err(io::Error::other(error)))
             .map_err(|error| not_saved().because(error))?;
         self.journal = next;
         Ok(())

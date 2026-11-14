@@ -77,7 +77,7 @@ pub(crate) fn is_runnable(file: &Path) -> bool {
 /// The user that owns `dir`, when only that user can reach it.
 pub(crate) fn private_owner(dir: &Path) -> io::Result<Option<Owner>> {
     let metadata = fs::metadata(dir)?;
-    let private = metadata.is_dir() && weacon_appkit::owner_only(&metadata) == Some(true);
+    let private = metadata.is_dir() && weacon_appkit::is_private(&metadata) == Some(true);
     Ok(private.then(|| metadata.uid()))
 }
 

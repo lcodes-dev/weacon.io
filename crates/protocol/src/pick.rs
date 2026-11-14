@@ -35,7 +35,7 @@ mod tests {
         let envelope = Envelope {
             id: 2,
             message: Message::Pick(Pick {
-                request: RequestId::try_from("p-1".to_owned()).unwrap(),
+                request: "p-1".parse().unwrap(),
                 url: "http://localhost:3000/".to_owned(),
                 title: "Home".to_owned(),
                 selector: "main > button".to_owned(),
