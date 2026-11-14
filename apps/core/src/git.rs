@@ -11,6 +11,8 @@ use weacon_protocol::{ChatId, code};
 
 use crate::platform;
 
+pub(crate) mod removal;
+
 // Variables that would point git at another repository, or stand in for `-c` options.
 const REDIRECTS: [&str; 9] = [
     "GIT_ALTERNATE_OBJECT_DIRECTORIES",
