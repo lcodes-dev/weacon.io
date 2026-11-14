@@ -220,7 +220,9 @@ mod tests {
         assert_eq!(found(""), None);
         assert_eq!(found(&first.as_str().to_uppercase()), None);
 
+        assert_eq!(grants.live(), 2);
         drop(revoke_first);
+        assert_eq!(grants.live(), 1);
         assert_eq!(found(first.as_str()), None);
         assert_eq!(found(second.as_str()).as_deref(), Some("run-2"));
     }
