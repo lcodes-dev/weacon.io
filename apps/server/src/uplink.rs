@@ -11,12 +11,12 @@ use axum::routing::get;
 use tokio::sync::broadcast::{Receiver, error::RecvError};
 use tokio::time::timeout;
 use weacon_observability::{Field, Logger};
-use weacon_protocol::{Capability, Code, Envelope, MAX_FRAME, MachineId, Message, code};
+use weacon_protocol::{Capability, Code, Envelope, MAX_FRAME, MachineId, code};
 
 use crate::auth::Machine;
 use crate::connections::Place;
 use crate::links::Connected;
-use crate::relay::SETTINGS;
+use crate::relay::RELAYED;
 use crate::shared::Shared;
 use crate::socket::{Closed, Pings, greet, refusal, reply, send};
 
@@ -101,7 +101,9 @@ async fn run(
     link: &mut Link,
 ) -> Result<Infallible, Closed> {
     let offer = Capability::from(CONNECT);
-    let offers = vec![offer.clone(), Capability::from(SETTINGS)];
+    let offers = std::iter::once(offer.clone())
+        .chain(RELAYED.map(Capability::from))
+        .collect();
     let greeted = greet(socket, shared, offers, &offer);
     let hello = timeout(shared.sockets.hello_within, greeted)
         .await
@@ -143,13 +145,8 @@ async fn run(
 
 /// Gives what `machine` sent to the feature it is for.
 fn hand_off(shared: &Shared, machine: &MachineId, envelope: Envelope) {
-    if matches!(
-        envelope.message,
-        Message::MachineSettingsAnswer(_) | Message::Error(_)
-    ) {
-        // An error the relay doesn't claim is for no other feature yet.
-        let _claimed = shared.relay.answered(machine, envelope);
-    }
+    // The relay drops what isn't an answer it waits for; no other feature hears machines yet.
+    let _claimed = shared.relay.answered(machine, envelope);
 }
 
 #[cfg(test)]
@@ -161,6 +158,7 @@ mod tests {
     use weacon_protocol::{AccountId, Message, Welcome};
 
     use super::*;
+    use crate::relay::{SESSIONS, SETTINGS};
     use crate::test_support::socket::{
         Socket, ends, frame, next, open, pongs, say, upgrade_status,
     };
@@ -177,7 +175,7 @@ mod tests {
         let welcome = next(&mut client).await;
         assert!(
             matches!(&welcome, Message::Welcome(Welcome { capabilities, .. })
-                if *capabilities == [Capability::from(CONNECT), Capability::from(SETTINGS)]),
+                if *capabilities == [CONNECT, SETTINGS, SESSIONS].map(Capability::from)),
             "{welcome:?}"
         );
         (paired, client)

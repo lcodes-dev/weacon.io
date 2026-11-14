@@ -18,7 +18,7 @@ use weacon_protocol::{
 use crate::auth::{Member, Session};
 use crate::connections::Place;
 use crate::http::failure;
-use crate::relay::{self, Ask, Refusal, SETTINGS};
+use crate::relay::{self, Ask, RELAYED, Refusal};
 use crate::shared::Shared;
 use crate::socket::{Closed, Pings, greet, reply};
 
@@ -102,7 +102,8 @@ struct Feed {
 struct Offers {
     tasks: bool,
     docs: bool,
-    settings: bool,
+    /// Everything it offered, of which the relay forwards what it carries.
+    relayed: Vec<Capability>,
 }
 
 impl Feed {
@@ -143,13 +144,11 @@ async fn run(
     shared: &Shared,
     feed: &mut Feed,
 ) -> Result<Infallible, Closed> {
-    let [feed_offer, tasks, docs, settings] = [FEED, TASKS, DOCS, SETTINGS].map(Capability::from);
-    let offered = vec![
-        feed_offer.clone(),
-        tasks.clone(),
-        docs.clone(),
-        settings.clone(),
-    ];
+    let [feed_offer, tasks, docs] = [FEED, TASKS, DOCS].map(Capability::from);
+    let offered = [feed_offer.clone(), tasks.clone(), docs.clone()]
+        .into_iter()
+        .chain(RELAYED.map(Capability::from))
+        .collect();
     let greeted = greet(socket, shared, offered, &feed_offer);
     let hello = timeout(shared.sockets.hello_within, greeted)
         .await
@@ -157,7 +156,7 @@ async fn run(
     feed.offers = Offers {
         tasks: hello.capabilities.contains(&tasks),
         docs: hello.capabilities.contains(&docs),
-        settings: hello.capabilities.contains(&settings),
+        relayed: hello.capabilities,
     };
     catch_up(socket, shared, feed).await?;
     let mut pings = Pings::new(shared.sockets.ping_every);
@@ -195,7 +194,9 @@ async fn received(
     feed: &Feed,
     envelope: Envelope,
 ) -> Result<(), Closed> {
-    if feed.offers.settings && relay::carries(&envelope.message) {
+    let offered = relay::needs(&envelope.message)
+        .is_some_and(|needs| feed.offers.relayed.contains(&Capability::from(needs)));
+    if offered {
         return relay(socket, shared, feed, envelope).await;
     }
     Ok(())
@@ -278,6 +279,7 @@ mod tests {
     use super::*;
     use crate::auth::SESSION_COOKIE;
     use crate::db::Workspace;
+    use crate::relay::{SESSIONS, SETTINGS};
     use crate::sign_in::SESSION_LIFETIME;
     use crate::socket::refusal;
     use crate::test_support::socket::{
@@ -363,7 +365,7 @@ mod tests {
         };
         assert_eq!(
             welcome.capabilities,
-            [FEED, TASKS, DOCS, SETTINGS].map(Capability::from)
+            [FEED, TASKS, DOCS, SETTINGS, SESSIONS].map(Capability::from)
         );
         assert_eq!(missed, joined(1, "m1"));
         assert_eq!(live, joined(2, "m2"));
