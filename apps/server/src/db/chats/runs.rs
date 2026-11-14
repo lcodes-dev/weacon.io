@@ -107,8 +107,8 @@ mod tests {
     use weacon_protocol::{ChatEvent, PermissionAnswer, RunEvent, RunId, RunState, RunUpdate};
     use weacon_testing::TempDir;
 
-    use super::super::test_support::{NOW, append, id, make};
     use super::*;
+    use crate::db::test_support::{NOW, append, id, make};
     use crate::test_support::two_teams;
 
     fn status(state: RunState) -> ChatEvent {

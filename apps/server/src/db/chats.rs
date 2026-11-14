@@ -67,7 +67,7 @@ impl Workspace {
         .await
         .map_err(failed)?;
         self.insert_request(&mut transaction, request).await?;
-        self.changed(&mut transaction, Versioned::Chat(chat.id), chat.owner)
+        self.record_change(&mut transaction, Versioned::Chat(chat.id), chat.owner)
             .await?;
         transaction.commit().await.map_err(failed)
     }
@@ -190,119 +190,13 @@ fn stored_state(text: &str) -> Result<ChatState, Fault> {
 }
 
 #[cfg(test)]
-pub(crate) mod test_support {
-    use weacon_protocol::{
-        ChatAction, ChatCommand, ChatEntry, ChatEvent, RequestId, RunEvent, RunId, RunUpdate,
-    };
-
-    use super::*;
-    use crate::test_support::member_id;
-
-    pub(crate) const NOW: i64 = 1_762_077_600;
-
-    pub(crate) fn id<T: TryFrom<String>>(text: &str) -> T
-    where
-        T::Error: std::fmt::Debug,
-    {
-        T::try_from(text.to_owned()).unwrap()
-    }
-
-    pub(crate) fn code(fault: &Fault) -> &str {
-        fault.code().as_str()
-    }
-
-    pub(crate) async fn make(
-        workspace: &Workspace,
-        chat: &str,
-        owner: &str,
-        at: i64,
-    ) -> Result<(), Fault> {
-        let request = id::<RequestId>(&format!("r-{chat}"));
-        let (chat, owner) = (id::<ChatId>(chat), member_id(owner));
-        let (machine_id, machine) = (id::<MachineId>("mc-1"), id::<MachineName>("Ada's laptop"));
-        let repo = id::<RepoId>("site");
-        let new = NewChat {
-            id: &chat,
-            owner: &owner,
-            title: "Fix the build",
-            repo: Some(&repo),
-            machine_id: &machine_id,
-            machine: &machine,
-            at,
-        };
-        let asked = command(request.as_str(), chat.as_str(), "Fix the build");
-        let first = NewRequest {
-            command: &asked,
-            member: &owner,
-            at,
-        };
-        workspace.add_chat(&new, &first).await
-    }
-
-    pub(crate) fn status(state: weacon_protocol::RunState) -> ChatEvent {
-        let status = weacon_protocol::RunStatus {
-            run: id("run-1"),
-            state,
-            agent: None,
-        };
-        ChatEvent::RunStatus { status }
-    }
-
-    /// The prompt `text` to `chat` under `request`, as a member of w1 sent it.
-    pub(crate) fn command(request: &str, chat: &str, text: &str) -> ChatCommand {
-        ChatCommand {
-            request: id(request),
-            workspace: id("w1"),
-            chat: id(chat),
-            action: ChatAction::Prompt {
-                text: text.to_owned(),
-                repo: None,
-                machine: None,
-            },
-            by: None,
-        }
-    }
-
-    pub(crate) fn said(text: &str) -> ChatEvent {
-        ChatEvent::Run {
-            update: RunUpdate {
-                run: id::<RunId>("run-1"),
-                event: RunEvent::Text {
-                    text: text.to_owned(),
-                },
-            },
-        }
-    }
-
-    pub(crate) async fn append(
-        workspace: &Workspace,
-        chat: &str,
-        events: &[(Option<u64>, ChatEvent)],
-    ) -> Result<u64, Fault> {
-        let incoming: Vec<_> = events
-            .iter()
-            .map(|(core_seq, event)| Incoming {
-                core_seq: *core_seq,
-                event,
-                at: NOW,
-            })
-            .collect();
-        workspace.append_events(&id(chat), &incoming).await
-    }
-
-    pub(crate) fn seqs(entries: &[ChatEntry]) -> Vec<u64> {
-        entries.iter().map(|entry| entry.seq).collect()
-    }
-}
-
-#[cfg(test)]
 mod tests {
     use weacon_testing::TempDir;
 
     use weacon_protocol::RunState;
 
-    use super::test_support::{NOW, append, code, id, make, status};
     use super::*;
+    use crate::db::test_support::{NOW, append, code, id, make, status};
     use crate::test_support::{member_id, two_teams};
 
     #[tokio::test]

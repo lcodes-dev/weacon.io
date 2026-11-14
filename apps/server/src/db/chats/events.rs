@@ -116,7 +116,7 @@ impl Workspace {
         .fetch_one(&mut *transaction)
         .await
         .map_err(failed)?;
-        self.changed(transaction, Versioned::Chat(chat), &stored(owner)?)
+        self.record_change(transaction, Versioned::Chat(chat), &stored(owner)?)
             .await
     }
 
@@ -291,8 +291,8 @@ mod tests {
     use weacon_protocol::{Receipt, WorkspaceChange};
     use weacon_testing::TempDir;
 
-    use super::super::test_support::{NOW, append, code, id, make, said, seqs};
     use super::*;
+    use crate::db::test_support::{NOW, append, code, id, make, said, seqs};
     use crate::test_support::two_teams;
 
     #[tokio::test]

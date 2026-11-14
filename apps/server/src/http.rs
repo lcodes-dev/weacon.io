@@ -179,7 +179,7 @@ fn router(shared: Shared) -> Router {
             "/api/workspaces",
             get(workspaces::list).post(workspaces::create),
         )
-        .route("/api/machines", get(pairing::list))
+        .route("/api/machines", get(pairing::machines))
         .route("/api/machines/{machine}", delete(pairing::unpair))
         .route("/api/machines/connect", get(uplink::connect))
         .route("/api/machines/pair", post(pairing::start))

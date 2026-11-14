@@ -97,11 +97,12 @@ struct Feed {
 
 /// Which features the client offered besides the feed; it hears only of their changes.
 #[derive(Default)]
-struct Offers {
-    tasks: bool,
-    docs: bool,
-    chats: bool,
-    settings: bool,
+struct Offers(Vec<Capability>);
+
+impl Offers {
+    fn has(&self, feature: Code) -> bool {
+        self.0.contains(&Capability::from(feature))
+    }
 }
 
 impl Feed {
@@ -142,25 +143,15 @@ async fn run(
     shared: &Shared,
     feed: &mut Feed,
 ) -> Result<Infallible, Closed> {
-    let [feed_offer, tasks, docs, settings, chats] =
-        [FEED, TASKS, DOCS, SETTINGS, CHATS].map(Capability::from);
-    let offered = vec![
-        feed_offer.clone(),
-        tasks.clone(),
-        docs.clone(),
-        settings.clone(),
-        chats.clone(),
-    ];
+    let feed_offer = Capability::from(FEED);
+    let offered = [FEED, TASKS, DOCS, SETTINGS, CHATS]
+        .map(Capability::from)
+        .to_vec();
     let greeted = greet(socket, shared, offered, &feed_offer);
     let hello = timeout(shared.sockets.hello_within, greeted)
         .await
         .map_err(|_| Closed)??;
-    feed.offers = Offers {
-        tasks: hello.capabilities.contains(&tasks),
-        docs: hello.capabilities.contains(&docs),
-        settings: hello.capabilities.contains(&settings),
-        chats: hello.capabilities.contains(&chats),
-    };
+    feed.offers = Offers(hello.capabilities);
     catch_up(socket, shared, feed).await?;
     let mut pings = Pings::new(shared.sockets.ping_every);
     loop {
@@ -230,10 +221,10 @@ async fn received(
     feed: &mut Feed,
     envelope: Envelope,
 ) -> Result<(), Closed> {
-    if feed.offers.settings && relay::carries(&envelope.message) {
+    if feed.offers.has(SETTINGS) && relay::carries(&envelope.message) {
         return relay(socket, shared, feed, envelope).await;
     }
-    if feed.offers.chats && chats::carries(&envelope.message) {
+    if feed.offers.has(CHATS) && chats::carries(&envelope.message) {
         let answers = feed
             .chats
             .heard(envelope, &feed.member, &feed.asker, shared)
@@ -277,9 +268,9 @@ async fn catch_up(socket: &mut WebSocket, shared: &Shared, feed: &mut Feed) -> R
         for update in page {
             feed.last_seq = update.seq;
             let wanted = match update.change {
-                WorkspaceChange::TaskChanged { .. } => feed.offers.tasks,
-                WorkspaceChange::DocChanged { .. } => feed.offers.docs,
-                WorkspaceChange::ChatChanged { .. } => feed.offers.chats,
+                WorkspaceChange::TaskChanged { .. } => feed.offers.has(TASKS),
+                WorkspaceChange::DocChanged { .. } => feed.offers.has(DOCS),
+                WorkspaceChange::ChatChanged { .. } => feed.offers.has(CHATS),
                 // No feed offers `workspace.proposals` yet.
                 WorkspaceChange::ProposalChanged { .. } => false,
                 WorkspaceChange::MemberJoined { .. } | WorkspaceChange::Newer => true,

@@ -125,8 +125,8 @@ fn stored_command(json: &str) -> Result<ChatCommand, Fault> {
 mod tests {
     use weacon_testing::TempDir;
 
-    use super::super::test_support::{NOW, command, id, make};
     use super::*;
+    use crate::db::test_support::{NOW, command, id, make};
     use crate::test_support::{member_id, two_teams};
 
     async fn record(

@@ -1,6 +1,6 @@
 //! What a machine sends of the chats it runs: their events, stored in the order they come.
 
-use weacon_observability::{Fault, Field};
+use weacon_observability::Field;
 use weacon_protocol::{ChatUpdate, MachineId};
 
 use crate::db::Incoming;
