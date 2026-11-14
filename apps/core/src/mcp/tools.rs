@@ -17,6 +17,10 @@ const MOST: u32 = 16_000;
 
 const NO_MAP: &str = "No code map for this folder.\n";
 
+/// Longer than any item's path, and too long to echo back within a budget.
+const LONGEST_PATH: usize = 500;
+const NO_ITEM: &str = "No item has this path.\n";
+
 /// The tools Claude may call without asking.
 pub(crate) const UP_FRONT: [&str; 2] = ["map", "symbol"];
 
@@ -97,6 +101,7 @@ fn answer_from(call: &McpCall, map: &Index) -> String {
     }
     match call {
         McpCall::Map(args) => map.start_here(budget(args.budget)),
+        McpCall::Symbol(args) if args.path.len() > LONGEST_PATH => NO_ITEM.to_owned(),
         McpCall::Symbol(args) => map.item(&args.path, budget(args.budget)),
         McpCall::Flow(args) => map.flows(budget(args.budget)),
         McpCall::Newer => String::new(),
@@ -221,18 +226,44 @@ mod tests {
 
     #[test]
     fn an_answer_ends_with_a_whole_line_within_its_budget() {
-        let items = (0..400).fold(String::new(), |items, n| {
-            items + &format!("pub fn item_{n}() {{}}\n")
+        let calls = (0..400).fold("pub fn hub() {}\n".to_owned(), |text, n| {
+            text + &format!("pub fn item_{n}() {{ hub(); }}\n")
+        });
+        let pins = (0..400).fold(String::new(), |text, n| {
+            text + &format!("flow:a_b::item_{n}->a_b::item_{}\n", n + 1)
         });
         let large = index(&[
             file("Cargo.toml", "[package]\nname = \"a-b\"\n"),
-            file("src/lib.rs", &items),
+            file("src/lib.rs", &calls),
+            file("docs/flows.md", &pins),
         ])
         .unwrap();
+        let symbol = McpCall::Symbol(SymbolArgs {
+            path: "a_b::hub".to_owned(),
+            budget: Some(1000),
+        });
+        let flow = McpCall::Flow(FlowArgs { budget: Some(1000) });
 
-        for call in [map(Some(1000)), symbol_call("item_1")] {
+        let start = answer_from(&map(Some(1000)), &large);
+        assert!(start.len() <= 1000 && start.ends_with('\n'), "{start}");
+        // Too many lines for the budget, so each ends by counting those it left out.
+        for call in [symbol, flow] {
             let answer = answer_from(&call, &large);
-            assert!(answer.len() <= 1000 && answer.ends_with('\n'), "{answer}");
+            assert!(answer.len() <= 1000, "{answer}");
+            let last = answer.lines().last().unwrap();
+            assert!(last.starts_with("… ") && answer.ends_with('\n'), "{answer}");
         }
+    }
+
+    #[test]
+    fn a_path_too_long_to_echo_has_no_item() {
+        let at_most = symbol_call(&"x".repeat(LONGEST_PATH));
+        let longer = symbol_call(&"x".repeat(LONGEST_PATH + 1));
+
+        assert_eq!(
+            answer_from(&at_most, &repo()),
+            format!("No item {}.\n", "x".repeat(500))
+        );
+        assert_eq!(answer_from(&longer, &repo()), NO_ITEM);
     }
 }

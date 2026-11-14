@@ -535,8 +535,7 @@ mod tests {
         assert_eq!(host.status, 403);
         assert_eq!(origin.status, 403);
         assert_eq!(too_large.status, 413);
-        // Too long to echo within the budget, so only the count of what was left out.
-        assert_eq!(answer_text(&large_enough), "… 1 more line\n");
+        assert_eq!(answer_text(&large_enough), "No item has this path.\n");
     }
 
     #[tokio::test]

@@ -32,6 +32,7 @@ impl McpCall {
     }
 }
 
+/// From a run's agent, under `McpCall::Map`: how much of the map it wants.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MapArgs {
     /// The most bytes the answer may hold; the core clamps it to its own bounds.
@@ -39,6 +40,7 @@ pub struct MapArgs {
     pub budget: Option<u32>,
 }
 
+/// From a run's agent, under `McpCall::Flow`: how much of the flows it wants.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FlowArgs {
     /// The most bytes the answer may hold; the core clamps it to its own bounds.
@@ -46,6 +48,7 @@ pub struct FlowArgs {
     pub budget: Option<u32>,
 }
 
+/// From a run's agent, under `McpCall::Symbol`: the item it asks about.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SymbolArgs {
     /// The item's path, `weacon_protocol::frame::Envelope`.

@@ -32,13 +32,21 @@ pub(crate) fn run(
         }
         Some(MapSubcommand::Flows) => tools::answer(&McpCall::Flow(FlowArgs { budget }), &root)?,
         Some(MapSubcommand::Architecture) => tools::answered(&root, budget, Index::architecture)?,
-        Some(MapSubcommand::Contracts) => {
-            tools::answered(&root, budget, |map, budget| map.contracts(None, budget))?
-        }
+        Some(MapSubcommand::Contracts) => tools::answered(&root, budget, contracts)?,
         None => tools::answer(&McpCall::Map(MapArgs { budget }), &root)?,
     };
     print(out, &text)?;
     Ok(Ending::Done)
+}
+
+/// The code's contracts, or a line saying it declares none.
+fn contracts(map: &Index, budget: usize) -> String {
+    let listed = map.contracts(None, budget);
+    if listed.is_empty() {
+        "No contracts.\n".to_owned()
+    } else {
+        listed
+    }
 }
 
 /// Prints each pin read from `input` that no longer matches the repository at `root`.
@@ -274,10 +282,15 @@ mod tests {
             view(&root, MapSubcommand::Architecture),
             index.architecture(6000)
         );
-        assert_eq!(
-            view(&root, MapSubcommand::Contracts),
-            index.contracts(None, 6000)
-        );
+        assert_eq!(view(&root, MapSubcommand::Contracts), "No contracts.\n");
+        let serde = repo(&[
+            ("Cargo.toml", "[package]\nname = \"a\"\n"),
+            ("src/lib.rs", "#[derive(Serialize)]\npub struct Reply;\n"),
+        ]);
+        let (declared, _) = index_folder(&serde).unwrap();
+        let contracts = declared.contracts(None, 6000);
+        assert!(!contracts.is_empty());
+        assert_eq!(view(&serde, MapSubcommand::Contracts), contracts);
         let views = [
             MapSubcommand::Flows,
             MapSubcommand::Architecture,
