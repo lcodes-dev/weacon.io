@@ -268,13 +268,12 @@ mod tests {
         assert_eq!(read(&dir).unwrap(), Some(newer));
     }
 
-    #[cfg(unix)]
     #[test]
     fn a_pairing_is_kept_only_in_a_folder_others_cant_reach() {
-        use std::os::unix::fs::PermissionsExt;
-
         let dir = TempDir::new().unwrap();
-        fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).unwrap();
+        if !platform::open_to_others(&dir) {
+            return;
+        }
 
         assert_eq!(
             write(&dir, &paired()).unwrap_err().code().as_str(),

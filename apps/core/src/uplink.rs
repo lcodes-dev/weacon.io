@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
 use tokio::sync::mpsc;
-use tokio::time::{Instant, sleep, timeout};
+use tokio::time::{Instant, sleep, timeout, timeout_at};
 use tokio_tungstenite::tungstenite::{Message as Wire, Utf8Bytes};
 use weacon_observability::{Fault, Field, Logger};
 use weacon_protocol::{
@@ -195,17 +195,25 @@ impl Uplink {
         owner: &AccountId,
         from_daemon: &mut FromDaemon,
     ) -> bool {
+        // Only what the server sends keeps the connection alive, and no send outlasts it.
+        let mut quiet_at = Instant::now() + self.timing.quiet_within;
         loop {
-            tokio::select! {
-                frame = timeout(self.timing.quiet_within, socket.next()) => {
+            let reply = tokio::select! {
+                frame = timeout_at(quiet_at, socket.next()) => {
                     let Ok(Some(Ok(frame))) = frame else { return false };
+                    quiet_at = Instant::now() + self.timing.quiet_within;
                     match self.answer(frame, owner) {
                         Step::Unpaired => return true,
-                        Step::Reply(reply) => send(socket, &reply).await,
-                        Step::Nothing => {}
+                        Step::Reply(reply) => Some(*reply),
+                        Step::Nothing => None,
                     }
                 }
-                Some(envelope) = from_daemon.recv() => send(socket, &envelope).await,
+                Some(envelope) = from_daemon.recv() => Some(envelope),
+            };
+            if let Some(envelope) = reply
+                && timeout_at(quiet_at, send(socket, &envelope)).await.is_err()
+            {
+                return false;
             }
         }
     }
@@ -309,29 +317,29 @@ fn asking(message: &Message) -> Asking<'_> {
 
 /// An error under the envelope `id` it answers.
 fn failure(id: u32, code: Code) -> Step {
-    Step::Reply(Envelope {
+    Step::Reply(Box::new(Envelope {
         id,
         message: Message::Error(ErrorBody {
             code,
             retryable: false,
         }),
-    })
+    }))
 }
 
 /// A receipt that fails `command` with `code`, under the envelope `id` it came in.
 fn refusal(id: u32, command: &ChatCommand, code: Code) -> Step {
-    Step::Reply(Envelope {
+    Step::Reply(Box::new(Envelope {
         id,
         message: Message::Receipt(Receipt {
             request: command.request.clone(),
             outcome: Outcome::Failed { code },
         }),
-    })
+    }))
 }
 
 enum Step {
     Unpaired,
-    Reply(Envelope),
+    Reply(Box<Envelope>),
     Nothing,
 }
 
@@ -660,14 +668,17 @@ mod tests {
     // What the uplink answers `message` under id 9 with: `None` when it passes it on.
     fn answered(link: &Uplink, message: Message) -> Option<String> {
         let frame = text(&Envelope { id: 9, message });
-        match link.answer(frame, &owner()) {
-            Step::Nothing => None,
-            Step::Unpaired => Some("unpaired".to_owned()),
-            Step::Reply(Envelope {
+        let reply = match link.answer(frame, &owner()) {
+            Step::Nothing => return None,
+            Step::Unpaired => return Some("unpaired".to_owned()),
+            Step::Reply(reply) => *reply,
+        };
+        match reply {
+            Envelope {
                 id: 9,
                 message: Message::Error(ErrorBody { code, .. }),
-            }) => Some(code.as_str().to_owned()),
-            Step::Reply(other) => Some(format!("{other:?}")),
+            } => Some(code.as_str().to_owned()),
+            other => Some(format!("{other:?}")),
         }
     }
 
@@ -828,6 +839,46 @@ mod tests {
 
         assert_eq!(at_once.unwrap(), Ended::Unwelcome);
         assert_eq!(quiet.unwrap(), Ended::Lost);
+    }
+
+    // Reads all the core sends, saying nothing, until it leaves.
+    async fn drain(mut peer: Peer) {
+        while let Some(Ok(_)) = peer.next().await {}
+    }
+
+    // A daemon that sends to the server for as long as it can.
+    async fn chatter(outgoing: mpsc::Sender<Envelope>) {
+        let receipt = Envelope {
+            id: 5,
+            message: Message::Receipt(Receipt {
+                request: RequestId::try_from("r-1".to_owned()).unwrap(),
+                outcome: Outcome::Accepted,
+            }),
+        };
+        while outgoing.send(receipt.clone()).await.is_ok() {
+            tokio::task::yield_now().await;
+        }
+    }
+
+    #[tokio::test]
+    async fn a_server_gone_quiet_is_lost_however_much_the_daemon_sends() {
+        let (dir, tls) = (TempDir::new().unwrap(), Tls::new().await);
+        let mut link = uplink(&dir);
+        link.timing = Timing {
+            quiet_within: Duration::from_millis(100),
+            steady_after: Duration::ZERO,
+        };
+        let pairing = paired(&tls);
+        let (outgoing, mut from_daemon) = mpsc::channel(4);
+        let chatter = tokio::spawn(chatter(outgoing));
+
+        // The server welcomes the core, then reads all it sends but says nothing more.
+        let connection = link.connection(&pairing, &link.log, &mut from_daemon);
+        let listening = async { drain(welcoming(&tls, &[CONNECT]).await).await };
+        let (ended, ()) = tokio::join!(timeout(Duration::from_secs(10), connection), listening);
+        chatter.abort();
+
+        assert_eq!(ended.unwrap().unwrap(), Ended::Lost);
     }
 
     #[tokio::test]
