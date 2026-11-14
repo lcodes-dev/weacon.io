@@ -11,13 +11,14 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use weacon_agents::SpawnPolicy;
+use weacon_agents::{Launch, SpawnPolicy};
 use weacon_observability::{Fault, Logger};
 use weacon_protocol::{App, ChatId, code};
 
 pub(crate) use engine::Chats;
 use engine::{Engine, Host, RunAs};
 
+use crate::integrations::Plugin;
 use crate::mcp::grants::Granted;
 use crate::mcp::{self, Mcp};
 use crate::platform;
@@ -33,6 +34,8 @@ pub(crate) struct Places {
     pub(crate) work_root: Option<PathBuf>,
     /// The core's MCP, which runs reach with a token of their own.
     pub(crate) mcp: Option<Mcp>,
+    /// The Claude Code plugin each run is given.
+    pub(crate) plugin: Option<Plugin>,
 }
 
 /// The clients' way to the chats in `state_dir`, and the engine to run behind it, which starts
@@ -66,14 +69,21 @@ fn launch(
     app: &App,
     run_as: &RunAs,
 ) -> Result<Granted, Fault> {
-    let cwd = work_dir(places.work_root.as_deref(), &run_as.key)?;
-    let launch = roots.launch(&run_as.key.workspace, run_as.agent, cwd)?;
+    let launch = prepared(roots, places, run_as)?;
     let (launch, revoke) = mcp::grant(places.mcp.as_ref(), launch, run_as)?;
     let agent = launch.start(policy, app, run_as.run.clone(), run_as.session.as_ref())?;
     Ok(Granted {
         agent,
         _revoke: revoke,
     })
+}
+
+/// `run_as`'s agent in its chat's folder, given the core's plugin.
+fn prepared(roots: &Workspaces, places: &Places, run_as: &RunAs) -> Result<Launch, Fault> {
+    let cwd = work_dir(places.work_root.as_deref(), &run_as.key)?;
+    let mut launch = roots.launch(&run_as.key.workspace, run_as.agent, cwd)?;
+    launch.plugin = places.plugin.as_ref().and_then(Plugin::folder);
+    Ok(launch)
 }
 
 /// The name of a chat's own files and folders.
@@ -169,6 +179,7 @@ mod tests {
             path: Some(dir.join(bin).into_os_string()),
             work_root: Some(dir.join("Weacon")),
             mcp: Some(mcp.clone()),
+            plugin: None,
         };
         let run_as = RunAs {
             key: key(),
@@ -191,6 +202,37 @@ mod tests {
     }
 
     #[test]
+    fn each_agent_is_given_the_cores_plugin() {
+        let dir = TempDir::new().unwrap();
+        platform::plant_program(&dir.join("bin"), "claude", 0o755);
+        let (log, _records) = recording_logger();
+        let plugin = Plugin::at(&dir.join("state"), Path::new("/opt/weacon"), &VERSION, &log);
+        let places = Places {
+            path: Some(dir.join("bin").into_os_string()),
+            work_root: Some(dir.join("Weacon")),
+            mcp: None,
+            plugin: Some(plugin.unwrap()),
+        };
+        let roots = Workspaces::new(&dir.join("state"), places.path.clone());
+        let run_as = RunAs {
+            key: key(),
+            agent: AgentKind::Claude,
+            run: weacon_protocol::RunId::try_from("run-1".to_owned()).unwrap(),
+            session: None,
+        };
+
+        let launch = prepared(&roots, &places, &run_as).unwrap();
+
+        let plugin = launch.plugin.unwrap();
+        assert!(
+            plugin.join("hooks/hooks.json").is_file(),
+            "{}",
+            plugin.display()
+        );
+        assert_eq!(launch.cwd, dir.join("Weacon/w-w-1/c-c-1"));
+    }
+
+    #[test]
     fn the_clock_is_todays() {
         assert!(unix_now() > 1_700_000_000);
     }
@@ -204,6 +246,7 @@ mod tests {
             path: None,
             work_root: Some(dir.join("Weacon")),
             mcp: None,
+            plugin: None,
         };
         let (chats, engine) = start(&dir, places, app, SpawnPolicy::default(), log).unwrap();
         tokio::spawn(engine.serve());

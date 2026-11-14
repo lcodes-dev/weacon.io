@@ -721,6 +721,7 @@ mod tests {
             cwd: PathBuf::from("/work"),
             access: weacon_protocol::AccessLevel::AskFirst,
             mcp: None,
+            plugin: None,
         };
         let run_as = RunAs {
             key: crate::chats::test_support::key(),

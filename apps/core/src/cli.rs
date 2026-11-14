@@ -72,6 +72,15 @@ pub(crate) enum Command {
     NativeHost { origin: String },
     /// Print the text the MCP's `map` tool answers: where to begin in a repository's code.
     Map(MapCommand),
+    /// Print what an agent's hook adds; the plugin the core gives its runs calls it.
+    #[command(subcommand, hide = true)]
+    Hook(HookCommand),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Subcommand)]
+pub(crate) enum HookCommand {
+    /// Print where to begin in the current folder's code, or nothing.
+    SessionStart,
 }
 
 fn agent(name: &str) -> Result<AgentKind, &'static str> {
@@ -129,7 +138,8 @@ impl Command {
             | Self::Pair { .. }
             | Self::Reports { .. }
             | Self::ConnectChrome
-            | Self::Map(_) => "cli.log",
+            | Self::Map(_)
+            | Self::Hook(_) => "cli.log",
             Self::NativeHost { .. } => "native-host.log",
         }
     }
@@ -147,6 +157,7 @@ impl Command {
             Self::ConnectChrome => "connect-chrome",
             Self::NativeHost { .. } => "native-host",
             Self::Map(_) => "map",
+            Self::Hook(_) => "hook",
         }
     }
 }

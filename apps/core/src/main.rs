@@ -14,6 +14,8 @@ mod doctor;
     )
 )]
 mod git;
+mod hook;
+mod integrations;
 mod machine;
 mod map;
 mod mcp;
@@ -97,6 +99,7 @@ fn run(app: &App, command: Command, env: platform::Env<'_>) -> Result<Ending, Fa
         Command::Reports { answer } => reports::run(app, answer, &mut io::stdout().lock()),
         Command::ConnectChrome => native_host::connect_chrome(app, env, &mut io::stdout().lock()),
         Command::NativeHost { origin } => native_host::run(app, &origin),
+        Command::Hook(command) => return Ok(hook::run(app, command, &mut io::stdout().lock())),
         Command::Map(command) => {
             return map::run(
                 app,
