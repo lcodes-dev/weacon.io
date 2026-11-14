@@ -19,10 +19,21 @@ pub enum AgentKind {
 
 /// An agent's own id for a conversation, a lowercase UUID, which resumes it later.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, JsonSchema)]
-pub struct AgentSession(#[schemars(regex(pattern = PATTERN))] String);
+pub struct AgentSession(#[schemars(regex(pattern = SESSION_PATTERN))] String);
 
 // The schema's form of `is_uuid`; a test keeps the two in step.
-const PATTERN: &str = r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$";
+const SESSION_PATTERN: &str = r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$";
+
+fn is_uuid(id: &str) -> bool {
+    id.len() == 36
+        && id.bytes().enumerate().all(|(at, byte)| {
+            if matches!(at, 8 | 13 | 18 | 23) {
+                byte == b'-'
+            } else {
+                matches!(byte, b'0'..=b'9' | b'a'..=b'f')
+            }
+        })
+}
 
 impl AgentSession {
     #[must_use]
@@ -52,17 +63,6 @@ token_id!(
     RunId,
     "not a run id"
 );
-
-fn is_uuid(id: &str) -> bool {
-    id.len() == 36
-        && id.bytes().enumerate().all(|(at, byte)| {
-            if matches!(at, 8 | 13 | 18 | 23) {
-                byte == b'-'
-            } else {
-                matches!(byte, b'0'..=b'9' | b'a'..=b'f')
-            }
-        })
-}
 
 /// What an agent's run reports, in order. Each turn ends with `finished`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -179,7 +179,7 @@ mod tests {
 
     #[test]
     fn sessions_are_lowercase_uuids() {
-        let pattern = regex::Regex::new(PATTERN).unwrap();
+        let pattern = regex::Regex::new(SESSION_PATTERN).unwrap();
         let good = "0b7c6a52-3f1e-4d2a-9c8b-5e4f3a2b1c0d";
         assert!(is_uuid(good));
         assert!(pattern.is_match(good));
