@@ -328,6 +328,7 @@ mod tests {
                 cwd: PathBuf::from("/work"),
                 access: AccessLevel::AskFirst,
                 mcp: None,
+                plugin: None,
             }
         );
         assert_eq!(codex.program, program(&dir, "codex"));
@@ -598,6 +599,7 @@ mod tests {
             cwd: dir.to_path_buf(),
             access: AccessLevel::AskFirst,
             mcp: None,
+            plugin: None,
         };
         let launches = ["true", "/missing/codex", "false"].map(launch);
 
@@ -631,6 +633,7 @@ mod tests {
             cwd: dir.to_path_buf(),
             access: AccessLevel::AskFirst,
             mcp: None,
+            plugin: None,
         };
         let launches = vec![hanging; AT_ONCE + 1];
         let started = tokio::time::Instant::now();

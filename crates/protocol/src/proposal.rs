@@ -237,16 +237,8 @@ mod tests {
     use serde_json::{Value, json};
 
     use super::*;
-    use crate::test_support::{envelope, never_sent, request, travels, workspace};
+    use crate::test_support::{envelope, never_sent, request, round_trips, travels, workspace};
     use crate::{AgentOwner, AgentRef, Envelope, Message};
-
-    fn round_trip<T>(value: &T, wire: Value)
-    where
-        T: Serialize + for<'de> Deserialize<'de> + PartialEq + std::fmt::Debug,
-    {
-        assert_eq!(serde_json::to_value(value).unwrap(), wire);
-        assert_eq!(&serde_json::from_value::<T>(wire).unwrap(), value);
-    }
 
     fn content() -> DocContent {
         DocContent {
@@ -431,7 +423,7 @@ mod tests {
             doc: id.parse().unwrap(),
         };
 
-        round_trip(&open, open_wire);
+        round_trips(&open, open_wire);
         for (record, wire) in [
             (
                 record(
@@ -454,7 +446,7 @@ mod tests {
                 ),
             ),
         ] {
-            round_trip(&record, wire);
+            round_trips(&record, wire);
         }
     }
 
@@ -474,7 +466,7 @@ mod tests {
         };
         let withdrawn = || json!({ "state": "withdrawn" });
 
-        round_trip(
+        round_trips(
             &list,
             json!({ "proposals": [
                 record_wire(json!({ "kind": "new_doc", "doc": "d-1" }), withdrawn()),
@@ -506,13 +498,13 @@ mod tests {
             (ProposalVerdict::Accept, "accept"),
             (ProposalVerdict::Reject, "reject"),
         ] {
-            round_trip(&ProposalDecision { verdict }, json!({ "verdict": wire }));
+            round_trips(&ProposalDecision { verdict }, json!({ "verdict": wire }));
         }
-        round_trip(
+        round_trips(
             &ProposalOutcome::Accepted { version: 4 },
             json!({ "outcome": "accepted", "version": 4 }),
         );
-        round_trip(&ProposalOutcome::Rejected, json!({ "outcome": "rejected" }));
+        round_trips(&ProposalOutcome::Rejected, json!({ "outcome": "rejected" }));
         let hunks = vec![
             MergeHunk::Agreed {
                 text: "# Plan\n".to_owned(),
@@ -528,7 +520,7 @@ mod tests {
             { "kind": "agreed", "text": "# Plan\n" },
             { "kind": "conflict", "base": "a\n", "current": "b\n", "proposed": "c\n" },
         ]);
-        round_trip(
+        round_trips(
             &ProposalOutcome::DocConflict {
                 hunks,
                 title: false,
@@ -536,7 +528,7 @@ mod tests {
             },
             conflict,
         );
-        round_trip(
+        round_trips(
             &ProposalOutcome::TaskConflict {
                 edits: vec![TaskEditBody::Move { before: None }],
             },
