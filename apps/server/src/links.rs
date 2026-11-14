@@ -78,27 +78,32 @@ impl Links {
         }
     }
 
-    /// Sends `envelope` to `machine` over its open connection.
+    /// Sends `envelope` to `machine` over its open connection, if its core offers `needs`.
     ///
     /// # Errors
-    /// [`Offline`] when it isn't connected, or its queue is full.
-    pub(crate) fn send(&self, machine: &MachineId, envelope: Envelope) -> Result<(), Offline> {
+    /// [`Offline`] when it isn't connected, its core doesn't offer `needs`, or its queue is
+    /// full.
+    pub(crate) fn send(
+        &self,
+        machine: &MachineId,
+        needs: &Capability,
+        envelope: Envelope,
+    ) -> Result<(), Offline> {
         let open = self.lock();
-        let link = open.get(machine).ok_or(Offline)?;
+        let link = open
+            .get(machine)
+            .filter(|link| link.offers.contains(needs))
+            .ok_or(Offline)?;
         link.to_machine.try_send(envelope).map_err(|_| Offline)
     }
 
     /// The id for an envelope sent to a machine, unique among those its answers may name for
     /// a long while; never 0, which the server and the core use for messages of their own.
     pub(crate) fn next_id(&self) -> u32 {
-        self.last_id.fetch_add(1, Ordering::Relaxed).wrapping_add(1).max(1)
-    }
-
-    /// Whether `machine` is connected, and its core offers `capability`.
-    pub(crate) fn offers(&self, machine: &MachineId, capability: &Capability) -> bool {
-        self.lock()
-            .get(machine)
-            .is_some_and(|link| link.offers.contains(capability))
+        self.last_id
+            .fetch_add(1, Ordering::Relaxed)
+            .wrapping_add(1)
+            .max(1)
     }
 
     /// Each machine connected from now on.
@@ -154,22 +159,29 @@ mod tests {
         }
     }
 
+    fn settings() -> Capability {
+        Capability::from(code!("machine.settings"))
+    }
+
+    fn sent(links: &Links, to: &str, id: u32) -> Result<(), Offline> {
+        links.send(&machine(to), &settings(), envelope(id))
+    }
+
     #[test]
-    fn only_an_open_machine_is_sent_to_and_it_says_what_it_offers() {
+    fn only_an_open_machine_that_offers_what_a_message_needs_is_sent_it() {
         let links = Arc::new(Links::default());
-        let settings = Capability::from(code!("machine.settings"));
         let mut subscriber = links.connected();
 
-        let not_yet = links.send(&machine("mc-1"), envelope(1));
-        let mut attached = links.open(connected("mc-1"), vec![settings.clone()]);
-        let _bare = links.open(connected("mc-2"), Vec::new());
+        let not_yet = sent(&links, "mc-1", 1);
+        let mut attached = links.open(connected("mc-1"), vec![settings()]);
+        let mut bare = links.open(connected("mc-2"), Vec::new());
 
         assert_eq!(not_yet, Err(Offline));
-        assert_eq!(links.send(&machine("mc-1"), envelope(2)), Ok(()));
+        assert_eq!(sent(&links, "mc-1", 2), Ok(()));
         assert_eq!(attached.incoming.try_recv().unwrap(), envelope(2));
-        assert!(links.offers(&machine("mc-1"), &settings));
-        assert!(!links.offers(&machine("mc-2"), &settings));
-        assert!(!links.offers(&machine("mc-3"), &settings));
+        assert_eq!(sent(&links, "mc-2", 3), Err(Offline));
+        bare.incoming.try_recv().unwrap_err();
+        assert_eq!(sent(&links, "mc-3", 4), Err(Offline));
         assert_eq!(subscriber.try_recv().unwrap(), connected("mc-1"));
         assert_eq!(subscriber.try_recv().unwrap(), connected("mc-2"));
     }
@@ -190,30 +202,29 @@ mod tests {
     fn a_newer_connection_takes_over_and_an_older_one_leaving_keeps_it() {
         let links = Arc::new(Links::default());
 
-        let settings = Capability::from(code!("machine.settings"));
-        let older = links.open(connected("mc-1"), vec![settings.clone()]);
-        let newer = links.open(connected("mc-1"), vec![settings.clone()]);
+        let older = links.open(connected("mc-1"), vec![settings()]);
+        let newer = links.open(connected("mc-1"), vec![settings()]);
         drop(older);
-        let still = links.send(&machine("mc-1"), envelope(1));
+        let still = sent(&links, "mc-1", 1);
         drop(newer);
 
         assert_eq!(still, Ok(()));
-        assert_eq!(links.send(&machine("mc-1"), envelope(2)), Err(Offline));
-        assert!(!links.offers(&machine("mc-1"), &settings));
+        assert_eq!(sent(&links, "mc-1", 2), Err(Offline));
+        assert!(links.lock().is_empty());
     }
 
     #[test]
     fn a_machine_that_doesnt_keep_up_is_offline_until_it_does() {
         let links = Arc::new(Links::default());
-        let mut attached = links.open(connected("mc-1"), Vec::new());
+        let mut attached = links.open(connected("mc-1"), vec![settings()]);
 
-        let sent: Vec<_> = (0..=QUEUE)
-            .map(|id| links.send(&machine("mc-1"), envelope(u32::try_from(id).unwrap())))
+        let queued: Vec<_> = (0..=QUEUE)
+            .map(|id| sent(&links, "mc-1", u32::try_from(id).unwrap()))
             .collect();
         drop(attached.incoming.try_recv());
 
-        assert!(sent.iter().take(QUEUE).all(Result::is_ok));
-        assert_eq!(sent.last(), Some(&Err(Offline)));
-        assert_eq!(links.send(&machine("mc-1"), envelope(99)), Ok(()));
+        assert!(queued.iter().take(QUEUE).all(Result::is_ok));
+        assert_eq!(queued.last(), Some(&Err(Offline)));
+        assert_eq!(sent(&links, "mc-1", 99), Ok(()));
     }
 }

@@ -116,19 +116,19 @@ pub(crate) async fn forward(
     if !theirs {
         return Err(refused(code!("machine.not_found"), false));
     }
-    let offline = || refused(code!("machine.offline"), true);
-    if !shared.links.offers(&machine, &Capability::from(SETTINGS)) {
-        return Err(offline());
-    }
     let relayed = shared.links.next_id();
     shared.relay.wait(relayed, asked, envelope.id, back)?;
     let sent = Envelope {
         id: relayed,
         message,
     };
-    if shared.links.send(&machine, sent).is_err() {
+    if shared
+        .links
+        .send(&machine, &Capability::from(SETTINGS), sent)
+        .is_err()
+    {
         shared.relay.lock().remove(&relayed);
-        return Err(offline());
+        return Err(refused(code!("machine.offline"), true));
     }
     Ok(())
 }
@@ -168,9 +168,8 @@ impl Relay {
         if asked.machine != *machine || !answers {
             return true;
         }
-        let waiter = entry.remove();
-        drop(waiting);
-        waiter.tell(envelope.message);
+        // Told before the lock goes, as in `expire`.
+        entry.remove().tell(envelope.message);
         true
     }
 
@@ -211,8 +210,9 @@ impl Relay {
 
     /// Tells the ask under `relayed`, if it still waits, that no answer came.
     fn expire(&self, relayed: u32) {
-        let waiter = self.lock().waiting.remove(&relayed);
-        if let Some(waiter) = waiter {
+        let mut waiting = self.lock();
+        // Told before the lock goes, so no ask is let in ahead of the answer it takes room for.
+        if let Some(waiter) = waiting.remove(&relayed) {
             waiter.tell(Message::Error(ErrorBody {
                 code: code!("machine.no_answer"),
                 retryable: true,
@@ -638,7 +638,7 @@ mod tests {
             retryable: false,
         });
 
-        assert!(relay.answered(&one, envelope(7, refused.clone()));
+        assert!(relay.answered(&one, envelope(7, refused.clone())));
 
         assert_eq!(heard(&mut answers).await, envelope(41, refused));
     }
@@ -775,8 +775,8 @@ mod tests {
         let first = heard(&mut attached.incoming).await.id;
         let second = heard(&mut attached.incoming).await.id;
         let relay = &fixture.shared.relay;
-        assert!(relay.answered(&machine, envelope(second, failed(code!("test.second"))));
-        assert!(relay.answered(&machine, envelope(first, failed(code!("test.first"))));
+        assert!(relay.answered(&machine, envelope(second, failed(code!("test.second")))));
+        assert!(relay.answered(&machine, envelope(first, failed(code!("test.first")))));
 
         assert_eq!(refusal(&heard(&mut to_one).await), (1, "test.first", false));
         assert_eq!(
