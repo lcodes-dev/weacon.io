@@ -14,7 +14,6 @@ const DEVICES: [&str; 5] = ["/dev/null", "/dev/stdout", "/dev/stderr", "/dev/tty
 // Of the variables that point git at another repository or have it run a command, these do
 // neither.
 const GIT_HARMLESS: [&str; 2] = ["GIT_PAGER", "GIT_TERMINAL_PROMPT"];
-// Variables that choose which programs run or how the shell splits words.
 // Variables that choose which programs run or how the shell splits words; an editor or pager
 // is a program the command then runs.
 const SHELL_SETTINGS: [&str; 8] = [
@@ -29,10 +28,6 @@ const SHELL_SETTINGS: [&str; 8] = [
 ];
 // Programs that print their words and read no file they name, so an expansion there is only text.
 const TEXT_ONLY: [&str; 3] = ["echo", "printf", "git"];
-// Programs that read through every folder they're given.
-const DEEP: [&str; 11] = [
-    "tar", "zip", "7z", "rsync", "rg", "ag", "ack", "scp", "rclone", "restic", "borg",
-];
 
 /// What `simple`, run in `cwd`, needs a person for; a `cd` moves `cwd` for what follows.
 pub(super) fn judge(simple: &Simple, context: &Context, cwd: &mut PathBuf) -> Option<Reason> {
@@ -87,12 +82,12 @@ pub(super) fn judge(simple: &Simple, context: &Context, cwd: &mut PathBuf) -> Op
     call.judge(cwd).or(reads)
 }
 
-// Whether the program reads through the folders it's given, so naming one above a credential
+// Whether the program reads through the folders it's given (`rg` always does), so naming one above a credential
 // folder reaches it.
 fn goes_deep(name: &str, args: &[Word]) -> bool {
     // `find` only lists what it finds; running commands on it asks anyway.
     name != "find"
-        && (DEEP.contains(&name)
+        && (name == "rg"
             || args.iter().any(|arg| {
                 // `--recursive` and `--dereference-recursive`, shortened as the tools allow.
                 (arg.text.starts_with("--") && arg.text.contains("rec"))
@@ -180,10 +175,10 @@ struct Call<'a> {
 impl Call<'_> {
     fn judge(&self, cwd: &mut PathBuf) -> Option<Reason> {
         match self.name {
+            // In a shell of its own, a `cd` moves nothing after it.
             "cd" | "pushd" if self.simple.apart => Some(Reason::Unsure),
             "cd" | "pushd" => self.change_folder(cwd),
-            "git" => git::judge(self.args, self.context, cwd)
-                .or_else(|| safe::judge(self.name, self.args, self.context, cwd)),
+            "git" => git::judge(self.args, self.context, cwd),
             "cp" | "mv" | "ln" => self
                 .landed(cwd)
                 .or_else(|| safe::judge(self.name, self.args, self.context, cwd)),
@@ -191,7 +186,6 @@ impl Call<'_> {
         }
     }
 
-    // Into an existing folder, each source lands at its own name there, which may be a symlink.
     fn landed(&self, cwd: &Path) -> Option<Reason> {
         let named = positional(self.args);
         let (folder, sources) = named.split_last()?;

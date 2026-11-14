@@ -4,7 +4,7 @@
 use std::path::Path;
 
 use super::shell::Word;
-use super::words::{positional, short_flags};
+use super::words::{has, positional, short_flags};
 use super::{Context, Reason, check_word};
 
 /// Programs that only read, each with the options that would make it write or run something.
@@ -32,7 +32,7 @@ const READERS: [(&str, Forbids); 33] = [
     (
         "date",
         Forbids {
-            short: "s",
+            short: &['s'],
             long: &["--set"],
             operands: usize::MAX,
         },
@@ -46,7 +46,7 @@ const READERS: [(&str, Forbids); 33] = [
     (
         "rg",
         Forbids {
-            short: "",
+            short: &[],
             long: &["--pre", "--pre-glob"],
             operands: usize::MAX,
         },
@@ -54,7 +54,7 @@ const READERS: [(&str, Forbids); 33] = [
     (
         "diff",
         Forbids {
-            short: "",
+            short: &[],
             long: &["--to-file", "--from-file"],
             operands: usize::MAX,
         },
@@ -64,7 +64,7 @@ const READERS: [(&str, Forbids); 33] = [
     (
         "sort",
         Forbids {
-            short: "oT",
+            short: &['o', 'T'],
             long: &["--output", "--temporary-directory"],
             operands: usize::MAX,
         },
@@ -73,7 +73,7 @@ const READERS: [(&str, Forbids); 33] = [
     (
         "uniq",
         Forbids {
-            short: "",
+            short: &[],
             long: &[],
             operands: 1,
         },
@@ -94,6 +94,8 @@ const FIND_FORBIDS: [&str; 9] = [
     "-fls",
     "-files0-from",
 ];
+// Options that follow symlinks, so `-delete` could reach past the folders it starts from.
+const FIND_FOLLOWS: [&str; 2] = ["-L", "-follow"];
 
 /// Programs that change files, each with the options it may take; every word that isn't an
 /// option must name a path inside the chat's worktree.
@@ -144,8 +146,9 @@ const BUILD_AND_TEST: [&[&str]; 30] = [
     &["bun", "test"],
 ];
 
-/// The git subcommands that run without asking, once git's own checks pass.
-const GIT_SAFE: [&str; 26] = [
+/// The git subcommands that run without asking, once git's own checks pass; `git.rs` asks
+/// about every other.
+pub(super) const GIT_SAFE: [&str; 26] = [
     "status",
     "diff",
     "log",
@@ -174,7 +177,7 @@ const GIT_SAFE: [&str; 26] = [
     "tag",
 ];
 // Git options that run a command or write a file of their own.
-const GIT_FORBIDS: [&str; 5] = [
+pub(super) const GIT_FORBIDS: [&str; 5] = [
     "--receive-pack",
     "--upload-pack",
     "--exec",
@@ -185,13 +188,13 @@ const GIT_FORBIDS: [&str; 5] = [
 /// Options that make a reader write or run something, and how many operands it may take.
 #[derive(Clone, Copy)]
 struct Forbids {
-    short: &'static str,
+    short: &'static [char],
     long: &'static [&'static str],
     operands: usize,
 }
 
 const NONE: Forbids = Forbids {
-    short: "",
+    short: &[],
     long: &[],
     operands: usize::MAX,
 };
@@ -200,7 +203,7 @@ const NONE: Forbids = Forbids {
 /// table entry allows it. Git's own checks have already run.
 pub(super) fn judge(name: &str, args: &[Word], context: &Context, cwd: &Path) -> Option<Reason> {
     if let Some((_, forbids)) = READERS.iter().find(|(reader, _)| *reader == name) {
-        return reads(args, forbids).then_some(Reason::NotListed);
+        return writes_or_runs(args, forbids).then_some(Reason::NotListed);
     }
     if name == "find" {
         return find(args, context, cwd);
@@ -208,26 +211,21 @@ pub(super) fn judge(name: &str, args: &[Word], context: &Context, cwd: &Path) ->
     if let Some((_, letters, outside)) = WRITERS.iter().find(|(writer, ..)| *writer == name) {
         return writes(args, letters, *outside, context, cwd);
     }
-    if name == "git" {
-        return git(args);
-    }
     if BUILD_AND_TEST.iter().any(|entry| leads(name, args, entry)) {
         return builds(args, context, cwd);
     }
     Some(Reason::NotListed)
 }
 
-// Options that follow symlinks, so `-delete` could reach past the folders it starts from.
-const FIND_FOLLOWS: [&str; 2] = ["-L", "-follow"];
-
 // `find` lists; with `-delete` it deletes below the folders it starts from, which must then be
 // inside the worktree.
 fn find(args: &[Word], context: &Context, cwd: &Path) -> Option<Reason> {
     let named = |names: &[&str]| args.iter().any(|arg| names.contains(&arg.text.as_str()));
-    if named(&FIND_FORBIDS) || (named(&["-delete"]) && named(&FIND_FOLLOWS)) {
+    let deletes = named(&["-delete"]);
+    if named(&FIND_FORBIDS) || (deletes && named(&FIND_FOLLOWS)) {
         return Some(Reason::NotListed);
     }
-    if !named(&["-delete"]) {
+    if !deletes {
         return None;
     }
     // Options about links and debugging come before the folders to start from.
@@ -241,39 +239,19 @@ fn find(args: &[Word], context: &Context, cwd: &Path) -> Option<Reason> {
             _ => break,
         };
     }
-    let starts: Vec<&Word> = rest
+    let starts = rest
         .iter()
-        .take_while(|arg| !arg.text.starts_with(['-', '(', '!']))
-        .collect();
-    let here = Word::default();
-    let starts = if starts.is_empty() {
-        vec![&here]
-    } else {
-        starts
-    };
-    starts
-        .iter()
-        .find_map(|start| check_word(start, context, cwd, Reason::DeleteOutside))
+        .take_while(|arg| !arg.text.starts_with(['-', '(', '!']));
+    let mut starts = starts.peekable();
+    if starts.peek().is_none() {
+        return check_word(&Word::default(), context, cwd, Reason::DeleteOutside);
+    }
+    starts.find_map(|start| check_word(start, context, cwd, Reason::DeleteOutside))
 }
 
 // Whether a reader's arguments use one of its writing options or too many operands.
-fn reads(args: &[Word], forbids: &Forbids) -> bool {
-    positional(args).len() > forbids.operands || args.iter().any(|arg| forbidden(arg, forbids))
-}
-
-// A long option counts when written in full, with `=`, or shortened as the tools allow.
-fn forbidden(arg: &Word, forbids: &Forbids) -> bool {
-    let given = arg
-        .text
-        .split_once('=')
-        .map_or(arg.text.as_str(), |(given, _)| given);
-    let shortened = given.len() > 2 && given.starts_with("--");
-    let long = forbids
-        .long
-        .iter()
-        .any(|option| given == *option || (shortened && option.starts_with(given)));
-    long || short_flags(&arg.text)
-        .is_some_and(|flags| flags.contains(|flag| forbids.short.contains(flag)))
+fn writes_or_runs(args: &[Word], forbids: &Forbids) -> bool {
+    positional(args).len() > forbids.operands || has(args, forbids.long, forbids.short)
 }
 
 // Every option one of `letters` and every other word a path inside the worktree.
@@ -300,29 +278,6 @@ fn writes(
         }
     }
     None
-}
-
-fn git(args: &[Word]) -> Option<Reason> {
-    let runs = args.iter().any(|arg| {
-        GIT_FORBIDS
-            .iter()
-            .any(|option| arg.text.starts_with(option))
-    });
-    // The first word that isn't a global option or its value.
-    let mut words = args.iter();
-    let mut subcommand = None;
-    while let Some(word) = words.next() {
-        match word.text.as_str() {
-            "-C" | "-c" => drop(words.next()),
-            text if text.starts_with('-') => {}
-            _ => {
-                subcommand = Some(word);
-                break;
-            }
-        }
-    }
-    let listed = subcommand.is_some_and(|word| GIT_SAFE.contains(&word.text.as_str()));
-    (runs || !listed).then_some(Reason::NotListed)
 }
 
 // The entry's words lead the command exactly, so no option comes before them.

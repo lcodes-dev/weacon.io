@@ -12,11 +12,9 @@ const WRAPPERS: [(&str, &[&str], usize); 4] = [
     ("timeout", &["-s", "-k", "--signal", "--kill-after"], 1),
 ];
 
-// Wrappers' options that name a file they write.
-const WRITES_TO: [(&str, &str); 2] = [("time", "-o"), ("time", "--output")];
-
-// Options of the wrappers that change folder or read a command line from text.
-const MOVING: [&str; 4] = ["-C", "--chdir", "-S", "--split-string"];
+// Options of the wrappers that change folder, read a command line from text, or write a file
+// (`time -o`).
+const MOVING: [&str; 6] = ["-C", "--chdir", "-S", "--split-string", "-o", "--output"];
 
 // Words that start or join shell constructs rather than name a program.
 const KEYWORDS: [&str; 14] = [
@@ -59,7 +57,7 @@ pub(super) fn command(words: &[Word]) -> Command<'_> {
         let (skipped, after) = skip_options(after, with_value);
         if skipped
             .iter()
-            .any(|option| unclear(&name, &option.text, with_value))
+            .any(|option| unclear(&option.text, with_value))
         {
             return Command::Unsure;
         }
@@ -70,15 +68,12 @@ pub(super) fn command(words: &[Word]) -> Command<'_> {
     }
 }
 
-// Whether a wrapper's option moves the command elsewhere, names a file the wrapper writes, or
+// Whether a wrapper's option moves the command elsewhere or writes a file (see `MOVING`), or
 // is a long one that may take the next word as its value without the guard knowing.
-fn unclear(wrapper: &str, option: &str, with_value: &[&str]) -> bool {
+fn unclear(option: &str, with_value: &[&str]) -> bool {
     let unknown =
         option.starts_with("--") && !option.contains('=') && !with_value.contains(&option);
-    let writes = WRITES_TO
-        .iter()
-        .any(|(writer, writing)| *writer == wrapper && option.starts_with(writing));
-    moves(option) || unknown || writes
+    moves(option) || unknown
 }
 
 // A short option may carry its value or sit among others, as in `-C/tmp` or `-iC`.
@@ -168,4 +163,19 @@ pub(super) fn positional(args: &[Word]) -> Vec<&Word> {
 pub(super) fn short_flags(text: &str) -> Option<&str> {
     text.strip_prefix('-')
         .filter(|flags| !flags.starts_with('-'))
+}
+
+// Whether any of `args` is one of the `long` options, alone, with `=`, or shortened as the
+// tools allow, or holds one of the `short` ones.
+pub(super) fn has(args: &[Word], long: &[&str], short: &[char]) -> bool {
+    args.iter().any(|arg| {
+        let given = arg
+            .text
+            .split_once('=')
+            .map_or(arg.text.as_str(), |(given, _)| given);
+        let shortened = given.len() > 2 && given.starts_with("--");
+        long.iter()
+            .any(|option| given == *option || (shortened && option.starts_with(given)))
+            || short_flags(&arg.text).is_some_and(|flags| flags.contains(short))
+    })
 }
