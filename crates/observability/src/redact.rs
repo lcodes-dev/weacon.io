@@ -1,10 +1,11 @@
 use std::collections::BTreeMap;
+use std::error::Error;
 use std::sync::LazyLock;
 
 use regex::{Captures, Regex};
 use serde_json::{Map, Value};
 
-use crate::errors::{AsError, ErrorInfo, describe_error};
+use crate::errors::{ErrorInfo, describe_error};
 
 // Matched against a key's letters run together, so "apiKey" and "api_key" both match.
 static SECRET_IN_KEY: LazyLock<Regex> = LazyLock::new(|| {
@@ -118,7 +119,7 @@ enum Kind {
 
 impl Field {
     /// An error without its message, unless it is a [`Fault`](crate::Fault).
-    pub fn error<E: AsError + ?Sized>(error: &E) -> Self {
+    pub fn error<E: Error + 'static>(error: &E) -> Self {
         Self(Kind::Error(describe_error(error)))
     }
 }

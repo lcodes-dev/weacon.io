@@ -1,11 +1,12 @@
 use std::borrow::Cow;
+use std::error::Error;
 use std::time::SystemTime;
 
 use sentry_types::protocol::v7::{Envelope, Event, Exception, Map, Uuid, Values};
 use sentry_types::{Dsn, Scheme};
 use weacon_protocol::{Code, code};
 
-use crate::errors::{AsError, ErrorInfo, Fault, describe_error};
+use crate::errors::{ErrorInfo, Fault, describe_error};
 use crate::scrub::scrub_event;
 
 /// Where error reports go, from a Sentry DSN.
@@ -54,7 +55,7 @@ impl Reports {
 
     /// A scrubbed report of `error`, tagged with `code`, without any error message. The caller
     /// picks the id and the time.
-    pub fn upload<E: AsError + ?Sized>(
+    pub fn upload<E: Error + 'static>(
         &self,
         error: &E,
         code: &Code,
@@ -118,7 +119,7 @@ mod tests {
         }
     }
 
-    impl std::error::Error for Leaky {}
+    impl Error for Leaky {}
 
     fn time() -> SystemTime {
         SystemTime::UNIX_EPOCH + Duration::from_hours(489_466)
