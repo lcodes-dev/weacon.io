@@ -99,7 +99,7 @@ impl FakeChat {
         {
             if !self.is(workspace, chat) {
                 let refused = ErrorBody {
-                    code: code!("chat.unknown"),
+                    code: code!("chat.not_found"),
                     retryable: false,
                 };
                 return vec![Envelope {
@@ -838,17 +838,23 @@ mod tests {
     #[test]
     fn another_chats_queries_are_refused_and_other_messages_get_nothing() {
         let mut fake = fake();
+        let mut elsewhere = query(2, "c-1", ChatQueryKind::Snapshot);
+        if let Message::ChatQuery(query) = &mut elsewhere.message {
+            query.workspace = WorkspaceId::try_from("w-2".to_owned()).unwrap();
+        }
+        let refused = |id| Envelope {
+            id,
+            message: Message::Error(ErrorBody {
+                code: code!("chat.not_found"),
+                retryable: false,
+            }),
+        };
 
         assert_eq!(
             fake.answer(&query(1, "c-2", ChatQueryKind::Snapshot)),
-            [Envelope {
-                id: 1,
-                message: Message::Error(ErrorBody {
-                    code: code!("chat.unknown"),
-                    retryable: false,
-                }),
-            }]
+            [refused(1)]
         );
+        assert_eq!(fake.answer(&elsewhere), [refused(2)]);
         assert!(
             fake.answer(&played(RunEvent::Text {
                 text: "x".to_owned()
