@@ -5,7 +5,7 @@ use std::path::Path;
 
 use syn::buffer::{Cursor, TokenBuffer};
 use syn::visit::{self, Visit};
-use syn::{Attribute, Ident, ItemFn, ItemMod, ItemUse, Macro, Meta, UseTree};
+use syn::{Attribute, Ident, ItemFn, ItemMod, ItemUse, Lit, Macro, Meta, UseTree};
 
 use crate::SourceFile;
 use crate::rules::{
@@ -177,7 +177,7 @@ impl Uses {
                 && bang.as_char() == '!'
                 && let Some((inside, ..)) = after.any_group()
             {
-                self.includes_integrations |= names_integrations(&inside.token_stream());
+                self.includes_integrations |= names_integrations(inside);
             }
             if colons == ALIAS {
                 return 0;
@@ -299,25 +299,41 @@ impl<'ast> Visit<'ast> for Uses {
         if mac.path.is_ident("cfg") {
             self.os_cfg |= names_os(&mac.tokens.to_string());
         }
-        if INCLUDES.iter().any(|name| mac.path.is_ident(name)) {
-            self.includes_integrations |= names_integrations(&mac.tokens);
+        let tokens = TokenBuffer::new2(mac.tokens.clone());
+        if mac
+            .path
+            .segments
+            .last()
+            .is_some_and(|last| INCLUDES.iter().any(|name| last.ident == name))
+        {
+            self.includes_integrations |= names_integrations(tokens.begin());
         }
-        self.note_tokens(TokenBuffer::new2(mac.tokens.clone()).begin(), &[]);
+        self.note_tokens(tokens.begin(), &[]);
         visit::visit_macro(self, mac);
     }
 }
 
 const INCLUDES: [&str; 3] = ["include", "include_str", "include_bytes"];
 
-fn names_integrations(tokens: &impl ToString) -> bool {
-    let tokens = tokens.to_string();
-    [
-        format!("/{INTEGRATIONS_FOLDER}/"),
-        format!("\"{INTEGRATIONS_FOLDER}/"),
-        format!("\"{INTEGRATIONS_FOLDER}\""),
-    ]
-    .iter()
-    .any(|named| tokens.contains(named))
+/// Whether the string literals in an include's tokens, joined as `concat!` would, name the folder.
+fn names_integrations(tokens: Cursor<'_>) -> bool {
+    let mut path = String::new();
+    join_literals(tokens, &mut path);
+    path.split(['/', '\\'])
+        .any(|part| part == INTEGRATIONS_FOLDER)
+}
+
+fn join_literals(mut cursor: Cursor<'_>, path: &mut String) {
+    while let Some((_, next)) = cursor.token_tree() {
+        if let Some((literal, _)) = cursor.literal()
+            && let Lit::Str(text) = Lit::new(literal)
+        {
+            path.push_str(&text.value());
+        } else if let Some((inside, ..)) = cursor.any_group() {
+            join_literals(inside, path);
+        }
+        cursor = next;
+    }
 }
 
 #[cfg(test)]
@@ -358,6 +374,9 @@ mod tests {
             "const D: &str = include_str!(concat!(\"../../\", \"integrations\", \"/x.md\"));",
             "const E: &str = include_str![\"integrations/x.md\"];",
             "const F: &str = concat!(include_str!(\"../../integrations/x.md\"), \"\\n\");",
+            "const G: &str = include_str!(concat!(\"../../../integrations\", \"/x.md\"));",
+            "const H: &str = std::include_str!(\"../../integrations/x.md\");",
+            "const I: &str = include_str!(r\"..\\integrations\\x.md\");",
         ];
         let refused = "includes integrations/ files, which only weacon-core reads";
 
@@ -372,6 +391,7 @@ mod tests {
             "const A: &str = m!(include_str + (\"integrations/a.md\"));",
             "const A: &str = m!(concat!(\"integrations/\", \"a.md\"));",
             "const V: &str = include_str!(\"../assets/vendor_integrations/a.json\");",
+            "const W: &str = include_str!(\"../docs/integrations.md\");",
             "#[cfg(test)]\nfn helper() { include_str!(\"integrations/a.md\"); }",
         ];
         for text in elsewhere {
