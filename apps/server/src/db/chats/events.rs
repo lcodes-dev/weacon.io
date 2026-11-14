@@ -702,4 +702,17 @@ mod tests {
         assert_eq!((chat.state, chat.seq), (ChatState::Full, next - 1));
         assert_eq!(one.changes_since(0, 50).await.unwrap().len(), changes + 1);
     }
+
+    #[tokio::test]
+    async fn a_prompt_asked_before_any_run_status_leaves_the_chat_storing() {
+        let dir = TempDir::new().unwrap();
+        let (one, _) = two_teams(&dir).await;
+        make(&one, "c-1", "m1", NOW).await.unwrap();
+
+        append(&one, "c-1", &[(Some(1), asks(1))]).await.unwrap();
+
+        let next = append(&one, "c-1", &[(Some(2), said("a"))]).await;
+        assert_eq!(next.unwrap(), 2);
+        assert_eq!(one.chat_runs(&id("c-1")).await.unwrap().waiting_seqs(), [1]);
+    }
 }

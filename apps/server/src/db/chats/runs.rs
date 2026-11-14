@@ -100,7 +100,7 @@ impl Workspace {
             })
         })
         .collect::<Result<_, Fault>>()?;
-        ChatRuns::restored(runs, waiting).ok_or_else(unreadable)
+        Ok(ChatRuns::restored(runs, waiting))
     }
 
     /// Keeps `runs` as the chat's latest run and waiting prompts, in place of what was there.
