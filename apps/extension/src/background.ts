@@ -1,8 +1,9 @@
 import { Failure, HOST, app, deliver, report } from "./core.ts";
 import { reported, title } from "./feedback.ts";
-import { base64, crop, fit, type Rect } from "./fit.ts";
+import { fit } from "./fit.ts";
 import { isLocal } from "./local.ts";
 import type { Picked, Picker } from "./picker.ts";
+import { base64, crop, type Rect } from "./screenshot.ts";
 
 const ME = app(chrome.runtime.getManifest());
 const picking = new Set<number>();
