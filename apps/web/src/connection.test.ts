@@ -34,7 +34,7 @@ function open(): { socket: FakeSocket; connection: Connection; statuses: Status[
   const statuses: Status[] = [];
   const messages: Envelope[] = [];
   const listener: Listener = { status: (status) => statuses.push(status), message: (envelope) => messages.push(envelope) };
-  const connection = new Connection(socket, ME, listener);
+  const connection = new Connection(socket, ME, listener, { needs: "run.stream", offers: ["diff.view"] });
   socket.fire("open");
   return { socket, connection, statuses, messages };
 }
@@ -91,6 +91,28 @@ test("only a server that streams runs is welcome, and refusals say why", () => {
     ],
   );
   assert.ok(ends.every(({ closed, sent }) => closed && sent === 1));
+});
+
+test("a connection that needs another capability asks for it and takes only a server that offers it", () => {
+  const welcomed = ["workspace.feed", "run.stream"].map((offered) => {
+    const socket = new FakeSocket();
+    const statuses: Status[] = [];
+    new Connection(socket, ME, { status: (status) => statuses.push(status), message: () => {} }, { needs: "workspace.feed", offers: [] });
+    socket.fire("open");
+    socket.fire("message", welcome([offered]));
+    return { hello: socket.sent[0], statuses };
+  });
+
+  assert.deepEqual(welcomed, [
+    {
+      hello: { id: 1, type: "hello", protocol: 1, app: ME, capabilities: ["workspace.feed"] },
+      statuses: [{ state: "live", server: SERVER, capabilities: ["workspace.feed"] }],
+    },
+    {
+      hello: { id: 1, type: "hello", protocol: 1, app: ME, capabilities: ["workspace.feed"] },
+      statuses: [{ state: "ended", code: "connection.server_too_old" }],
+    },
+  ]);
 });
 
 test("a socket that closes before any answer is refused", () => {

@@ -6,8 +6,9 @@ import { Api, type Fetch, MALFORMED, UNREACHABLE } from "./api.ts";
 type Sent = { path: string; method: string; headers?: Record<string, string>; body?: string };
 
 /** An `Api` whose server answers each request with the next of `answers`, recording what it was sent. */
-function serve(...answers: Array<{ status: number; body?: unknown } | "unreachable">): { api: Api; sent: Sent[] } {
+function serve(...answers: Array<{ status: number; body?: unknown } | "unreachable">): { api: Api; sent: Sent[]; ended: () => number } {
   const sent: Sent[] = [];
+  let ends = 0;
   const fetch: Fetch = (path, init) => {
     sent.push({ path, ...init });
     const answer = answers.shift();
@@ -19,7 +20,7 @@ function serve(...answers: Array<{ status: number; body?: unknown } | "unreachab
       json: () => ("body" in answer ? Promise.resolve(answer.body) : Promise.reject(new SyntaxError("no body"))),
     });
   };
-  return { api: new Api(fetch), sent };
+  return { api: new Api(fetch, () => ends++), sent, ended: () => ends };
 }
 
 const ADA = { account: "acc-1", email: "ada@example.com" };
@@ -80,4 +81,39 @@ test("a refusal carries the server's code, and anything else that goes wrong a c
   assert.deepEqual(await finish(), { ok: false, code: MALFORMED });
   assert.deepEqual(await finish(), { ok: false, code: MALFORMED });
   assert.deepEqual(await api.start("ada@example.com"), { ok: false, code: MALFORMED });
+});
+
+test("workspaces are listed and made, and an answer of the wrong shape is refused", async () => {
+  const personal = { id: "ws-1", name: "Personal", role: "owner" };
+  const { api, sent } = serve(
+    { status: 200, body: { workspaces: [personal] } },
+    { status: 201, body: { id: "ws-2", name: "Made up", role: "owner" } },
+    { status: 422, body: { code: "workspace.name_invalid", retryable: false } },
+    { status: 200, body: { workspaces: [{ id: "ws-1", name: "Personal" }] } },
+    { status: 200, body: { workspaces: "none" } },
+    { status: 200, body: { workspaces: [{ ...personal, id: "a/b" }] } },
+  );
+
+  assert.deepEqual(await api.workspaces(), { ok: true, value: { workspaces: [personal] } });
+  assert.deepEqual(await api.create("Made up"), { ok: true, value: { id: "ws-2", name: "Made up", role: "owner" } });
+  assert.deepEqual(await api.create(" "), { ok: false, code: "workspace.name_invalid" });
+  assert.deepEqual(await api.workspaces(), { ok: false, code: MALFORMED });
+  assert.deepEqual(await api.workspaces(), { ok: false, code: MALFORMED });
+  assert.deepEqual(await api.workspaces(), { ok: false, code: MALFORMED });
+  assert.deepEqual(sent.slice(0, 2), [
+    { path: "/api/workspaces", method: "GET" },
+    { path: "/api/workspaces", method: "POST", headers: { "content-type": "application/json" }, body: '{"name":"Made up"}' },
+  ]);
+});
+
+test("whenever the server says the session is over, the page is told", async () => {
+  const over = { status: 401, body: { code: "sign_in.required", retryable: false } };
+  const { api, ended } = serve(over, { status: 401, body: { code: "sign_in.failed", retryable: false } }, over);
+
+  assert.deepEqual(await api.workspaces(), { ok: false, code: "sign_in.required" });
+  assert.equal(ended(), 1);
+  await api.finish({ email: "ada@example.com", code: "1", challenge: "ch-1" });
+  assert.equal(ended(), 1);
+  await api.create("Made up");
+  assert.equal(ended(), 2);
 });
