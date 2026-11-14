@@ -133,6 +133,7 @@ mod tests {
                 cwd: dir.to_path_buf(),
                 access: AccessLevel::AskFirst,
                 mcp: None,
+                plugin: None,
             }
         }
 
