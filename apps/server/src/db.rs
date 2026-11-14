@@ -20,9 +20,7 @@ use sqlx::SqlitePool;
 use sqlx::sqlite::{SqliteConnectOptions, SqliteConnection, SqlitePoolOptions, SqliteSynchronous};
 use weacon_model::Revision;
 use weacon_observability::Fault;
-use weacon_protocol::{
-    AccountId, AgentKind, AgentOwner, AgentRef, Author, MemberId, WorkspaceId, code,
-};
+use weacon_protocol::{AccountId, AgentOwner, AgentRef, Author, MemberId, WorkspaceId, code};
 
 #[cfg(test)]
 pub(crate) use account::CODE_LIFETIME;
@@ -172,7 +170,8 @@ fn stored_version(version: i64) -> Result<Revision, Fault> {
 }
 
 /// How `author` is stored: its kind, its member and, for an agent that names one, the agent
-/// as JSON; `None` for an author or agent from a newer peer.
+/// as JSON. `None` for an author or agent from a newer peer, or an agent that isn't `owner`'s
+/// own or the shared one, whose member the row's reference wouldn't cover.
 fn author_columns(author: &Author) -> Option<(&'static str, &MemberId, Option<String>)> {
     match author {
         Author::Person { member } => Some(("person", member, None)),
@@ -180,13 +179,17 @@ fn author_columns(author: &Author) -> Option<(&'static str, &MemberId, Option<St
         Author::Agent {
             owner,
             agent: Some(agent),
-        } => {
-            let newer =
-                matches!(agent.kind, AgentKind::Newer) || matches!(agent.owner, AgentOwner::Newer);
-            let json = serde_json::to_string(agent).ok().filter(|_| !newer)?;
-            Some(("agent", owner, Some(json)))
+        } if !agent.is_newer() && answers_to(agent, owner) => {
+            Some(("agent", owner, Some(serde_json::to_string(agent).ok()?)))
         }
-        Author::Newer => None,
+        Author::Agent { .. } | Author::Newer => None,
+    }
+}
+
+fn answers_to(agent: &AgentRef, owner: &MemberId) -> bool {
+    match &agent.owner {
+        AgentOwner::Member { member } => member == owner,
+        AgentOwner::Shared | AgentOwner::Newer => true,
     }
 }
 
@@ -198,7 +201,7 @@ fn stored_author(kind: &str, member: String, agent: Option<&str>) -> Result<Auth
         ("agent", agent) => Ok(Author::Agent {
             owner: member,
             agent: agent
-                .map(|json| serde_json::from_str::<AgentRef>(json).map_err(|_| unreadable()))
+                .map(|json| serde_json::from_str(json).map_err(|_| unreadable()))
                 .transpose()?,
         }),
         _ => Err(unreadable()),

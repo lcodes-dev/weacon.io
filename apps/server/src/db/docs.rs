@@ -202,7 +202,7 @@ impl Workspace {
         let (kind, author, agent) = author_columns(attribution.author()).ok_or_else(unknown)?;
         let version = version_number(doc.version)?;
         let anchors = doc.text.anchors();
-        let size = size(&doc.text);
+        let size = size(&doc.text, agent.as_deref());
         self.charge(transaction, size).await?;
         sqlx::query(
             "INSERT INTO doc_versions (workspace_id, doc_id, version, title, body, commit_id,
@@ -245,8 +245,9 @@ impl Workspace {
     }
 }
 
-/// The bytes a revision of `text` counts: its title, body, commit and pins, and its rows.
-fn size(text: &DocText) -> i64 {
+/// The bytes a revision of `text` by an author whose agent is stored as `agent` counts: its
+/// title, body, commit, pins and agent, and its rows.
+fn size(text: &DocText, agent: Option<&str>) -> i64 {
     let anchors = text.anchors();
     let commit = anchors.map_or(0, |anchors| anchors.commit.as_str().len());
     let pins: usize = anchors
@@ -254,7 +255,9 @@ fn size(text: &DocText) -> i64 {
         .flat_map(|anchors| &anchors.pins)
         .map(|pin| pin.as_str().len())
         .sum();
-    let size = REVISION_OVERHEAD + text.title().as_str().len() + text.body().len() + commit + pins;
+    let agent = agent.map_or(0, str::len);
+    let size =
+        REVISION_OVERHEAD + text.title().as_str().len() + text.body().len() + commit + pins + agent;
     i64::try_from(size).unwrap_or(i64::MAX)
 }
 
@@ -313,15 +316,13 @@ fn version_number(version: Revision) -> Result<i64, Fault> {
 #[cfg(test)]
 mod tests {
     use weacon_model::Title;
-    use weacon_protocol::{
-        AgentKind, AgentOwner, AgentRef, Author, CommitId, DocPin, MachineName, WorkspaceChange,
-    };
+    use weacon_protocol::{AgentKind, AgentOwner, Author, CommitId, DocPin, WorkspaceChange};
     use weacon_testing::TempDir;
 
     use super::*;
     use crate::db::Db;
     use crate::db::schema::database_before;
-    use crate::test_support::{member_id, two_teams, workspace_id};
+    use crate::test_support::{agent, member_id, two_teams, workspace_id};
 
     const NOW: i64 = 1_762_077_600;
 
@@ -359,14 +360,6 @@ mod tests {
 
     fn by(member: &str) -> Attribution {
         Attribution::by(member_id(member), NOW)
-    }
-
-    fn shared_agent(kind: AgentKind, machine: Option<&str>) -> AgentRef {
-        AgentRef {
-            kind,
-            owner: AgentOwner::Shared,
-            machine: machine.map(|name| MachineName::try_from(name.to_owned()).unwrap()),
-        }
     }
 
     fn code(fault: &Fault) -> &str {
@@ -411,7 +404,7 @@ mod tests {
         let (one, _) = two_teams(&dir).await;
         let first = new_doc("d1", "Framing");
         one.add_doc(&first, &by("m1")).await.unwrap();
-        let codex = shared_agent(AgentKind::Codex, Some("Build box"));
+        let codex = agent(AgentKind::Codex, AgentOwner::Shared, Some("Build box"));
         let agents = Attribution::accepted(member_id("m1"), Some(codex), member_id("m3"), NOW + 1);
 
         let second = one
@@ -623,7 +616,7 @@ mod tests {
         database_before(&path, "ADD COLUMN agent TEXT", rows).await;
         let db = Db::open(&path).await.unwrap();
         let one = db.workspace(&workspace_id("w1")).await.unwrap();
-        let newer = shared_agent(AgentKind::Newer, None);
+        let newer = agent(AgentKind::Newer, AgentOwner::Shared, None);
         let agents = Attribution::accepted(member_id("m1"), Some(newer), member_id("m1"), NOW);
 
         let refused = one
@@ -671,6 +664,9 @@ mod tests {
             .await
             .unwrap();
         one.add_doc(&new_doc("d2", "Two"), &by("m1")).await.unwrap();
+        let codex = agent(AgentKind::Codex, AgentOwner::Shared, None);
+        let agents = Attribution::accepted(member_id("m1"), Some(codex), member_id("m1"), NOW);
+        one.add_doc(&new_doc("d3", "Three"), &agents).await.unwrap();
 
         let pinned = 256
             + "Framing".len()
@@ -679,9 +675,11 @@ mod tests {
             + "sym:a#0123456789abcdef".len()
             + "area:b#0123456789abcdef".len();
         let plain = 256 + "Two".len() + "Plain.".len();
+        let agent = r#"{"kind":"codex","owner":{"kind":"shared"}}"#;
+        let by_agent = 256 + "Three".len() + "Plain.".len() + agent.len();
         assert_eq!(
             doc_bytes(&one).await,
-            i64::try_from(pinned + plain).unwrap()
+            i64::try_from(pinned + plain + by_agent).unwrap()
         );
         assert_eq!(doc_bytes(&two).await, 0);
     }
@@ -693,7 +691,7 @@ mod tests {
         let first = new_doc("d1", "Framing");
         one.add_doc(&first, &by("m1")).await.unwrap();
         let next = linked();
-        set_doc_bytes(&one, DOC_QUOTA - size(&next)).await;
+        set_doc_bytes(&one, DOC_QUOTA - size(&next, None)).await;
 
         let fits = one
             .revise_doc(&first.id, Revision::FIRST, next, &by("m1"))
@@ -749,6 +747,9 @@ mod tests {
         let one = db.workspace(&workspace_id("w1")).await.unwrap();
 
         let unicode = text("Ünïcode", "Plain.", &[]);
-        assert_eq!(doc_bytes(&one).await, size(&linked()) + size(&unicode));
+        assert_eq!(
+            doc_bytes(&one).await,
+            size(&linked(), None) + size(&unicode, None)
+        );
     }
 }

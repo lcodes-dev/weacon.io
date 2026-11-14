@@ -210,12 +210,12 @@ fn stored_status(text: &str) -> Result<TaskStatus, Fault> {
 #[cfg(test)]
 mod tests {
     use weacon_model::{OrderKey, Title};
-    use weacon_protocol::{AgentKind, AgentOwner, AgentRef, Author, MachineName};
+    use weacon_protocol::{AgentKind, AgentOwner, Author};
     use weacon_testing::TempDir;
 
     use super::*;
     use crate::db::stored_author;
-    use crate::test_support::{member_id, new_task, two_teams};
+    use crate::test_support::{agent, member_id, new_task, two_teams};
 
     const NOW: i64 = 1_762_077_600;
 
@@ -367,7 +367,6 @@ mod tests {
         assert_eq!(changes(&one).await.len(), 2);
     }
 
-    // Each version's author, read back through the shared helpers.
     async fn authors(workspace: &Workspace) -> Vec<Author> {
         sqlx::query_as::<_, (String, String, Option<String>)>(
             "SELECT author_kind, author_member, agent FROM task_versions
@@ -380,14 +379,6 @@ mod tests {
         .into_iter()
         .map(|(kind, member, agent)| stored_author(&kind, member, agent.as_deref()).unwrap())
         .collect()
-    }
-
-    fn agent(kind: AgentKind, owner: AgentOwner, machine: Option<&str>) -> AgentRef {
-        AgentRef {
-            kind,
-            owner,
-            machine: machine.map(|name| MachineName::try_from(name.to_owned()).unwrap()),
-        }
     }
 
     #[tokio::test]
@@ -410,9 +401,13 @@ mod tests {
             let edited = one.edit_task(&task.id, read_at, rename("Ship"), attribution);
             read_at = edited.await.unwrap().version;
         }
+        let someone_elses = AgentOwner::Member {
+            member: member_id("m3"),
+        };
         let refused = [
             agent(AgentKind::Newer, AgentOwner::Shared, None),
             agent(AgentKind::Codex, AgentOwner::Newer, None),
+            agent(AgentKind::Codex, someone_elses, None),
         ]
         .map(|newer| Attribution::accepted(member_id("m1"), Some(newer), member_id("m3"), NOW));
         for attribution in &refused {
