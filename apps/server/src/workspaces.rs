@@ -2,6 +2,7 @@ use axum::Json;
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
+use weacon_model::Title;
 use weacon_observability::Fault;
 use weacon_protocol::{WorkspaceCreate, WorkspaceList, code};
 
@@ -68,17 +69,12 @@ fn new_workspace(name: &str) -> Result<NewWorkspace, Fault> {
     })
 }
 
-/// `name` trimmed, if it is one short line.
+/// `name` trimmed, if it is a title of at most [`MAX_NAME`] characters.
 pub(crate) fn workspace_name(name: &str) -> Result<&str, Fault> {
     let name = name.trim();
-    let fits = (1..=MAX_NAME).contains(&name.chars().count()) && !name.contains(breaks_line);
+    let fits = name.chars().count() <= MAX_NAME && Title::try_from(name.to_owned()).is_ok();
     fits.then_some(name)
         .ok_or_else(|| Fault::new(code!("workspace.name_invalid"), "That name can't be used"))
-}
-
-// Control characters, and the two separators Unicode doesn't count among them.
-fn breaks_line(letter: char) -> bool {
-    letter.is_control() || matches!(letter, '\u{2028}' | '\u{2029}')
 }
 
 #[cfg(test)]
@@ -270,5 +266,17 @@ mod tests {
                 .count(),
             MAX_NAME
         );
+    }
+
+    #[test]
+    fn a_name_that_turns_text_around_or_is_too_long_is_refused() {
+        let long = "a".repeat(MAX_NAME + 1);
+        Title::try_from(long.clone()).unwrap();
+
+        for name in ["a\u{202E}b", "a\u{2066}b", long.as_str()] {
+            let refused = workspace_name(name).unwrap_err();
+            assert_eq!(refused.code(), &code!("workspace.name_invalid"), "{name}");
+        }
+        assert_eq!(workspace_name(" Team\u{200F} ").unwrap(), "Team\u{200F}");
     }
 }
