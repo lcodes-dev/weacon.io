@@ -15,6 +15,7 @@ mod limit;
 mod links;
 mod outbox;
 mod pairing;
+mod proposals;
 mod relay;
 mod secret;
 mod shared;

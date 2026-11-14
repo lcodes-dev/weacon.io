@@ -57,12 +57,12 @@ export class Api {
   }
 
   /** Asks for a code to be sent to `email`; the answer is the same for addresses with no account. */
-  start(email: string): Promise<Answer<SignInStarted>> {
+  startSignIn(email: string): Promise<Answer<SignInStarted>> {
     const body: AccountSignInStart = { email };
     return this.#ask("POST", "/api/sign-in", body, isStarted);
   }
 
-  async finish(body: AccountSignInFinish): Promise<Answer<AccountSignedIn>> {
+  async finishSignIn(body: AccountSignInFinish): Promise<Answer<AccountSignedIn>> {
     const answer = await this.#ask("POST", "/api/sign-in/finish", body, isAccount);
     if (answer.ok) {
       this.#signIns++;
@@ -79,7 +79,7 @@ export class Api {
   }
 
   /** Makes a workspace the signed-in account owns. */
-  create(name: string): Promise<Answer<WorkspaceSummary>> {
+  createWorkspace(name: string): Promise<Answer<WorkspaceSummary>> {
     const body: WorkspaceCreate = { name };
     return this.#ask("POST", "/api/workspaces", body, isWorkspace);
   }
@@ -95,18 +95,20 @@ export class Api {
   }
 
   /** The machine waiting to be paired under `code`, as the person typed it: the server reads it loosely. */
-  lookup(code: string): Promise<Answer<PairPending>> {
+  lookUpPairing(code: string): Promise<Answer<PairPending>> {
     const body: PairLookup = { code };
     return this.#ask("POST", "/api/machines/pair/lookup", body, isPending);
   }
 
-  /** Pairs the machine `lookup` found with the signed-in account. */
-  confirm(body: PairConfirm): Promise<Answer<MachineSummary>> {
+  /** Pairs the machine `lookUpPairing` found with the signed-in account. */
+  confirmPairing(body: PairConfirm): Promise<Answer<MachineSummary>> {
     return this.#ask("POST", "/api/machines/pair/confirm", body, isMachine);
   }
 
-  unpair(machine: MachineId): Promise<Answer<undefined>> {
-    return this.#ask("DELETE", `/api/machines/${encodeURIComponent(machine)}`, undefined, isEmpty);
+  /** Unpairs `machine`; one already unpaired elsewhere is as gone as one unpaired here. */
+  async unpair(machine: MachineId): Promise<Answer<undefined>> {
+    const answer = await this.#ask("DELETE", `/api/machines/${encodeURIComponent(machine)}`, undefined, isEmpty);
+    return !answer.ok && answer.code === "machine.not_found" ? { ok: true, value: undefined } : answer;
   }
 
   async #ask<T>(method: string, path: string, body: object | undefined, fits: (value: unknown) => value is T): Promise<Answer<T>> {

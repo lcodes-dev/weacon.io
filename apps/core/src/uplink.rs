@@ -246,7 +246,7 @@ impl Uplink {
         matches!(
             Envelope::from_json(text.as_bytes()),
             Ok(Envelope { message: Message::Welcome(welcome), .. })
-                if welcome.capabilities.contains(&Capability::from(CONNECT))
+                if welcome.capabilities.contains(&Capability::new(CONNECT))
         )
     }
 }
@@ -433,7 +433,7 @@ mod tests {
         Uplink {
             state_dir: dir.to_path_buf(),
             app: weacon_appkit::build(&VERSION),
-            capabilities: vec![Capability::from(CONNECT)],
+            capabilities: vec![Capability::new(CONNECT)],
             log: recording_logger().0,
             to_daemon,
             timing: Timing {
@@ -479,10 +479,10 @@ mod tests {
             panic!("no hello");
         };
         assert_eq!(hello.protocol, PROTOCOL);
-        assert_eq!(hello.capabilities, [Capability::from(CONNECT)]);
+        assert_eq!(hello.capabilities, [Capability::new(CONNECT)]);
         let welcome = Welcome {
             app: weacon_appkit::build(&VERSION),
-            capabilities: offers.iter().cloned().map(Capability::from).collect(),
+            capabilities: offers.iter().cloned().map(Capability::new).collect(),
         };
         let envelope = Envelope {
             id: 1,
@@ -931,7 +931,7 @@ mod tests {
             heard(&mut peer).await;
             let welcome = Welcome {
                 app: weacon_appkit::build(&VERSION),
-                capabilities: vec![Capability::from(CONNECT)],
+                capabilities: vec![Capability::new(CONNECT)],
             };
             let envelope = Envelope {
                 id: 1,
