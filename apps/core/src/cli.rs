@@ -83,7 +83,9 @@ pub(crate) enum GuardCommand {
     },
     /// Stop asking about commands added with `weacon guard add`.
     Remove {
+        /// The workspace's id.
         workspace: WorkspaceId,
+        /// The command's first words, as they were added.
         #[arg(required = true, num_args = 1..)]
         words: Vec<String>,
     },
@@ -95,10 +97,10 @@ pub(crate) enum GuardCommand {
 pub(crate) struct CheckCommand {
     /// The workspace of the Weacon run the agent is in.
     #[arg(long)]
-    pub(crate) workspace: Option<WorkspaceId>,
-    /// The chat's worktree; the call's own folder when left out.
+    pub(crate) workspace: WorkspaceId,
+    /// The chat's worktree.
     #[arg(long)]
-    pub(crate) worktree: Option<PathBuf>,
+    pub(crate) worktree: PathBuf,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Subcommand)]
@@ -377,11 +379,8 @@ mod tests {
             panic!("not a guard check");
         };
 
-        assert_eq!(hook.workspace.as_ref().map(WorkspaceId::as_str), Some("w1"));
-        assert_eq!(
-            hook.worktree.as_deref(),
-            Some(std::path::Path::new("/work"))
-        );
+        assert_eq!(hook.workspace.as_str(), "w1");
+        assert_eq!(hook.worktree, std::path::Path::new("/work"));
         assert_eq!(
             (check.command.name(), check.command.log_name()),
             ("guard", "cli.log")
@@ -392,6 +391,6 @@ mod tests {
             Command::Guard(GuardCommand::Add { ref words, .. }) if words == &["terraform", "destroy"]
         ));
         run(&["weacon", "guard", "add", "w1"]).unwrap_err();
-        run(&["weacon", "guard", "check", "claude"]).unwrap_err();
+        run(&["weacon", "guard", "check", "--workspace=w1"]).unwrap_err();
     }
 }

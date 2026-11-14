@@ -9,7 +9,7 @@ use super::words::{
 };
 use super::{Context, Reason, check_word, code, git, path_of, reading};
 
-const DELETERS: [&str; 7] = [
+const DELETERS: [&str; 8] = [
     "rm",
     "rmdir",
     "unlink",
@@ -17,8 +17,19 @@ const DELETERS: [&str; 7] = [
     "srm",
     "trash",
     "trash-put",
+    "rimraf",
 ];
 const COPIERS: [&str; 4] = ["cp", "install", "rsync", "ln"];
+// Programs whose option names the file or folder they write.
+const OUTPUTS: [(&str, &[&str]); 4] = [
+    ("curl", &["-o", "--output", "--output-dir"]),
+    (
+        "wget",
+        &["-O", "--output-document", "-P", "--directory-prefix"],
+    ),
+    ("tar", &["-C", "--directory"]),
+    ("unzip", &["-d"]),
+];
 const WRITERS: [&str; 9] = [
     "tee", "touch", "mkdir", "truncate", "chmod", "chown", "chgrp", "chattr", "setfacl",
 ];
@@ -48,8 +59,8 @@ pub(super) fn judge(simple: &Simple, context: &Context, cwd: &mut PathBuf) -> Op
                 .find_map(|source| read(source, context, cwd, false))
         })
         .or_else(|| assignments(simple, context, cwd));
-    if redirected.is_some() {
-        return redirected;
+    if let Some(reason) = redirected {
+        return Some(reason);
     }
     let (words, partial) = match command(&simple.words) {
         Command::Empty => return None,
@@ -118,9 +129,43 @@ fn assignments(simple: &Simple, context: &Context, cwd: &Path) -> Option<Reason>
         })
 }
 
-// A wildcard can match a credential folder below where it starts.
+// A word may name a file itself, or as an option's value, as in `--file=…` or `-d @…`.
 fn read(word: &Word, context: &Context, cwd: &Path, deep: bool) -> Option<Reason> {
-    reading(&path_of(word, context, cwd)?, context, deep || word.glob)
+    let value = word.text.split_once('=').map(|(_, value)| value);
+    let value = value
+        .or_else(|| word.text.strip_prefix('@'))
+        .filter(|value| !value.is_empty());
+    let inner = value.map(|value| Word {
+        text: value.to_owned(),
+        tilde: value.starts_with('~'),
+        ..word.clone()
+    });
+    inner
+        .and_then(|inner| read_path(&inner, context, cwd, deep))
+        .or_else(|| read_path(word, context, cwd, deep))
+}
+
+// A wildcard can match a credential folder below where it starts, and so can an expansion
+// below the folder written before it.
+fn read_path(word: &Word, context: &Context, cwd: &Path, deep: bool) -> Option<Reason> {
+    if let Some(path) = path_of(word, context, cwd) {
+        return reading(&path, context, deep || word.glob);
+    }
+    if !word.dynamic {
+        return Some(Reason::Unsure);
+    }
+    let (folder, _) = word.text.rsplit_once('/')?;
+    let known = Word {
+        text: if folder.is_empty() {
+            "/".to_owned()
+        } else {
+            folder.to_owned()
+        },
+        dynamic: false,
+        glob: false,
+        ..word.clone()
+    };
+    reading(&path_of(&known, context, cwd)?, context, true)
 }
 
 struct Call<'a> {
@@ -139,6 +184,7 @@ impl Call<'_> {
             "weacon" => Some(Reason::Weacon),
             "cd" | "pushd" => self.change_folder(cwd),
             "popd" => Some(Reason::Unsure),
+            "git" if self.partial => Some(Reason::Unsure),
             "git" => git::judge(self.args, self.context, cwd),
             "mv" => {
                 let mut targets = positional(self.args);
@@ -155,6 +201,10 @@ impl Call<'_> {
             _ if WRITERS.contains(&name) || (name == "sed" && in_place(self.args)) => {
                 self.targets(cwd, Reason::WriteOutside, &positional(self.args))
             }
+            _ if let Some((_, options)) = OUTPUTS.iter().find(|(program, _)| *program == name) => {
+                let output = value_of(self.args, options);
+                output.and_then(|word| self.targets(cwd, Reason::WriteOutside, &[&word]))
+            }
             _ => code::judge(name, self.args, self.simple),
         }
     }
@@ -170,8 +220,18 @@ impl Call<'_> {
 
     // A `cd` that fails leaves the folder as it was, so one into a folder that isn't there
     // can't be followed.
+    // `cd -` goes back to a folder only the shell knows, and with `CDPATH` a plain name may be
+    // found elsewhere.
     fn change_folder(&self, cwd: &mut PathBuf) -> Option<Reason> {
         let target = positional(self.args);
+        let searched = |word: &&&Word| {
+            self.context.cdpath && !word.tilde && !word.text.starts_with(['.', '/'])
+        };
+        if self.args.iter().any(|arg| arg.text == "-")
+            || target.first().is_some_and(|word| searched(&word))
+        {
+            return Some(Reason::Unsure);
+        }
         let folder = match target.first() {
             Some(word) => path_of(word, self.context, cwd),
             None => self.context.home.clone(),
@@ -225,7 +285,7 @@ impl Call<'_> {
         while let Some((first, after)) = rest.split_first() {
             let text = first.text.as_str();
             rest = match text {
-                "-H" | "-L" | "-P" => after,
+                "-H" | "-L" | "-P" | "--" => after,
                 "-D" => after.get(1..).unwrap_or_default(),
                 _ if text.starts_with("-O") => after,
                 _ => break,

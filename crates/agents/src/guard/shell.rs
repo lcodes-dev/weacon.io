@@ -1,5 +1,7 @@
 //! Splits a shell command line into the simple commands it would run, without running it.
 
+mod quoting;
+
 /// One word of a command, with what the shell would do to it before running it.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct Word {
@@ -180,6 +182,8 @@ impl Parser {
         end_word(simple, word);
         self.advance(1);
         if self.peek() == Some('(') {
+            // What `<(…)` prints is read as a file, which may be the program's code.
+            simple.fed |= char == '<';
             self.advance(1);
             self.list(Some(')'))?;
             return Some(());
@@ -292,122 +296,6 @@ impl Parser {
         Some(line)
     }
 
-    fn word_part(&mut self, word: &mut Word) -> Option<()> {
-        let char = self.next()?;
-        match char {
-            '\'' => word.text.push_str(&self.until('\'')?),
-            '"' => return self.double_quoted(word),
-            '\\' => {
-                let escaped = self.next()?;
-                if escaped != '\n' {
-                    word.text.push(escaped);
-                }
-            }
-            '$' => self.expansion(word)?,
-            '`' => self.backquoted(word)?,
-            '~' if word.text.is_empty() && !word.dynamic => {
-                word.tilde = true;
-                word.text.push(char);
-            }
-            '*' | '?' | '[' => {
-                word.glob = true;
-                word.text.push(char);
-            }
-            '{' => {
-                // With a `,` or `..` inside, the shell expands it to several words.
-                let rest = self.chars.get(self.at..).unwrap_or_default();
-                let inside: String = rest
-                    .iter()
-                    .take_while(|next| !matches!(next, '}' | ' ' | '\t' | '\n' | ';' | '|' | '&'))
-                    .collect();
-                word.dynamic |= inside.contains(',') || inside.contains("..");
-                word.text.push(char);
-            }
-            _ => word.text.push(char),
-        }
-        Some(())
-    }
-
-    fn double_quoted(&mut self, word: &mut Word) -> Option<()> {
-        loop {
-            let before = self.at;
-            match self.next()? {
-                '"' => return Some(()),
-                '\\' => self.escaped_in_quotes(word)?,
-                '$' => self.expansion(word)?,
-                '`' => self.backquoted(word)?,
-                char => word.text.push(char),
-            }
-            if self.at <= before {
-                return None;
-            }
-        }
-    }
-
-    // Inside double quotes a backslash only escapes what the shell would read otherwise.
-    fn escaped_in_quotes(&mut self, word: &mut Word) -> Option<()> {
-        let escaped = self.next()?;
-        if !matches!(escaped, '$' | '`' | '"' | '\\' | '\n') {
-            word.text.push('\\');
-        }
-        if escaped != '\n' {
-            word.text.push(escaped);
-        }
-        Some(())
-    }
-
-    // After a `$`: a substitution's commands run, and any expansion makes the word unknown.
-    fn expansion(&mut self, word: &mut Word) -> Option<()> {
-        match self.peek() {
-            Some('(') if self.peek_at(1) == Some('(') => {
-                self.advance(2);
-                self.list(Some(')'))?;
-                if self.next()? != ')' {
-                    return None;
-                }
-            }
-            Some('(') => {
-                self.advance(1);
-                self.list(Some(')'))?;
-            }
-            Some('{') => {
-                self.advance(1);
-                let name = self.until('}')?;
-                // A default value can hold a substitution, which this doesn't follow.
-                if name.contains(['$', '`']) {
-                    return None;
-                }
-                home_or_unknown(word, &name);
-                return Some(());
-            }
-            Some(char) if char.is_ascii_alphanumeric() || char == '_' => {
-                let start = self.at;
-                self.skip_while(|char| char.is_ascii_alphanumeric() || char == '_');
-                let name: String = self.chars.get(start..self.at)?.iter().collect();
-                home_or_unknown(word, &name);
-                return Some(());
-            }
-            Some(char) if "@*#?$!-".contains(char) => self.advance(1),
-            Some('\'') => {
-                self.advance(1);
-                self.until('\'')?;
-            }
-            _ => {
-                word.text.push('$');
-                return Some(());
-            }
-        }
-        word.dynamic = true;
-        Some(())
-    }
-
-    fn backquoted(&mut self, word: &mut Word) -> Option<()> {
-        let inner = self.until('`')?;
-        self.found.extend(parse_nested(&inner, self.depth + 1)?);
-        word.dynamic = true;
-        Some(())
-    }
-
     fn finish(&mut self, simple: &mut Simple, word: &mut Option<Word>) {
         end_word(simple, word);
         let done = std::mem::take(simple);
@@ -418,16 +306,6 @@ impl Parser {
         if !done.words.is_empty() || !done.writes.is_empty() || !done.reads.is_empty() {
             self.found.push(done);
         }
-    }
-}
-
-// `$HOME` at the start of a word is the home folder, as `~` is; any other variable is unknown.
-fn home_or_unknown(word: &mut Word, name: &str) {
-    if name == "HOME" && word.text.is_empty() && !word.dynamic {
-        word.tilde = true;
-        word.text.push('~');
-    } else {
-        word.dynamic = true;
     }
 }
 
@@ -528,10 +406,12 @@ mod tests {
             "echo $(open",
             "echo `open",
             "echo \\",
-            "a )",
         ] {
-            assert!(parse(line).is_none() || line == "a )", "{line}");
+            assert!(parse(line).is_none(), "{line}");
         }
+        // A stray `)` ends nothing, so the words before it still count.
+        let stray = parse("a )").unwrap();
+        assert_eq!(stray.iter().map(texts).collect::<Vec<_>>(), [vec!["a"]]);
         assert!(parse("cat <<EOF\nnever ends").is_none());
     }
 
@@ -566,5 +446,33 @@ mod tests {
                 .collect::<Vec<_>>(),
             [3, 3]
         );
+    }
+
+    #[test]
+    fn nesting_is_bounded_and_counted_from_where_it_is() {
+        let nested = |depth: usize, inner: &str| {
+            format!(
+                "echo {}{inner}{}",
+                "$(echo ".repeat(depth),
+                ")".repeat(depth)
+            )
+        };
+
+        assert!(parse(&nested(MAX_DEPTH, "x")).is_some());
+        assert!(parse(&nested(MAX_DEPTH + 1, "x")).is_none());
+        assert!(parse(&nested(MAX_DEPTH - 2, "`x`")).is_some());
+        assert!(parse(&nested(MAX_DEPTH - 1, "`x`")).is_none());
+        assert!(parse(&format!("echo {}", "$(a) ".repeat(MAX_DEPTH * 2))).is_some());
+    }
+
+    #[test]
+    fn a_case_asks_only_inside_a_substitution_and_a_lone_redirection_counts() {
+        let top = parse("case x in a) echo a;; esac").unwrap();
+        let alone = parse("> out.txt").unwrap();
+
+        assert!(!top.is_empty());
+        assert_eq!(alone.len(), 1);
+        assert_eq!(alone.first().unwrap().writes.len(), 1);
+        assert!(parse("echo $(case x in a) echo a;; esac)").is_none());
     }
 }

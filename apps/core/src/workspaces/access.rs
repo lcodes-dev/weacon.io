@@ -103,23 +103,17 @@ pub(crate) fn run(
 ) -> Result<(), Fault> {
     let state_dir = app.state_dir.as_deref().ok_or_else(state_unavailable)?;
     let workspaces = Workspaces::new(state_dir, None);
-    let file = workspaces.settings_file(workspace);
+    let current = workspaces.settings(workspace);
     // Saying whether it's a team replaces settings that can't be read.
-    let current = Settings::read(&file);
-    let team = match (team, &current) {
-        (Some(team), _) => team,
-        (None, Ok(current)) => current.team,
-        (None, Err(_)) => return current.map(drop),
+    let settings = match team {
+        Some(team) => Settings {
+            access,
+            team,
+            ..current.unwrap_or_default()
+        },
+        None => Settings { access, ..current? },
     };
-    let settings = Settings {
-        access,
-        team,
-        ..current.unwrap_or_default()
-    };
-    // The workspace's folder makes it one this machine knows.
-    let saved =
-        platform::private_dir(&workspaces.root(workspace)).and_then(|()| settings.write(&file));
-    saved.map_err(|error| {
+    workspaces.save(workspace, &settings).map_err(|error| {
         Fault::new(
             code!("access.not_saved"),
             "The access level couldn't be saved",

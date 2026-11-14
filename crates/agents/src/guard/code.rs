@@ -100,7 +100,14 @@ fn database(name: &str, args: &[Word], simple: &Simple) -> Option<Reason> {
     match name {
         "dropdb" => return Some(Reason::DropDatabase),
         "mysqladmin" => return says(&["drop"]).then_some(Reason::DropDatabase),
-        "redis-cli" => return says(&["flushall", "flushdb"]).then_some(Reason::DropDatabase),
+        "redis-cli" if says(&["flushall", "flushdb"]) => return Some(Reason::DropDatabase),
+        "redis-cli" => return simple.fed.then_some(Reason::Unsure),
+        "rails" | "rake" if says(&["db:drop", "db:reset", "db:purge"]) => {
+            return Some(Reason::DropDatabase);
+        }
+        "prisma" if says(&["--force-reset"]) || (says(&["migrate"]) && says(&["reset"])) => {
+            return Some(Reason::DropDatabase);
+        }
         _ => {}
     }
     if !DATABASES.contains(&family(name)) {

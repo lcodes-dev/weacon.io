@@ -29,59 +29,66 @@ pub(crate) fn run(
     out: &mut impl Write,
 ) -> Result<(), Fault> {
     match command {
-        GuardCommand::Check(hook) => {
-            check(app, &hook, env, input, out);
-            Ok(())
+        GuardCommand::Check(hook) => check(app, &hook, env, input, out),
+        GuardCommand::Add { workspace, words } => {
+            edit(app, &workspace, Some(Change::Add(words)), out)
         }
-        GuardCommand::Add { workspace, words } => edit(app, &workspace, Some((words, true)), out),
         GuardCommand::Remove { workspace, words } => {
-            edit(app, &workspace, Some((words, false)), out)
+            edit(app, &workspace, Some(Change::Remove(words)), out)
         }
         GuardCommand::List { workspace } => edit(app, &workspace, None, out),
     }
 }
 
-/// Answers the hook on `input` on `out`, never failing, since the hook's command blocks the
-/// agent when it fails. A call the guard can't read asks only in a run Weacon started.
+enum Change {
+    Add(Vec<String>),
+    Remove(Vec<String>),
+}
+
+/// Answers the hook on `input` on `out`; a call the guard can't read asks.
+///
+/// # Errors
+/// When the answer can't be written, so the hook's command fails and the tool is blocked.
 fn check(
     app: &App,
     hook: &CheckCommand,
     env: Env<'_>,
     input: &mut impl Read,
     out: &mut impl Write,
-) {
+) -> Result<(), Fault> {
     let mut call = Vec::new();
     let read = input.take(INPUT_LIMIT).read_to_end(&mut call);
     let answer = read.ok().and_then(|_| {
-        let context = |cwd: &Path| {
-            let worktree = hook.worktree.clone().unwrap_or_else(|| cwd.to_path_buf());
-            Context {
-                cwd: cwd.to_path_buf(),
-                main_checkout: main_checkout(&worktree),
-                worktree,
-                additions: hook
-                    .workspace
-                    .as_ref()
-                    .map(|workspace| added(app, workspace))
-                    .unwrap_or_default(),
-                ..protected(app, env)
-            }
+        let context = |cwd: &Path| Context {
+            cwd: cwd.to_path_buf(),
+            worktree: hook.worktree.clone(),
+            main_checkout: main_checkout(&hook.worktree),
+            cdpath: platform::var(env, "CDPATH").is_some_and(|value| !value.is_empty()),
+            additions: added(app, &hook.workspace),
+            ..protected(app, env)
         };
         guard::claude_hook(&call, context).ok()
     });
-    let reason = match answer {
-        Some(reason) => reason,
-        None => hook.workspace.is_some().then_some(Reason::Unsure),
+    let Some(reason) = answer.unwrap_or(Some(Reason::Unsure)) else {
+        return Ok(());
     };
-    if let Some(reason) = reason {
-        // Nothing more can be done if the agent stopped reading.
-        drop(out.write_all(guard::claude_ask(reason).as_bytes()));
-    }
+    out.write_all(guard::claude_ask(reason).as_bytes())
+        .map_err(|error| output_failed().because(error))
+}
+
+fn output_failed() -> Fault {
+    Fault::new(
+        code!("guard.output_failed"),
+        "The guard's answer couldn't be written",
+    )
 }
 
 // The checkout a git worktree was added from: its `.git` file names a folder inside the main
 // checkout's `.git`. A folder with a `.git` folder of its own is a main checkout.
-fn main_checkout(worktree: &Path) -> Option<PathBuf> {
+fn main_checkout(folder: &Path) -> Option<PathBuf> {
+    let worktree = folder
+        .ancestors()
+        .find(|folder| folder.join(".git").exists())?;
     let dot_git = worktree.join(".git");
     if dot_git.is_dir() {
         return Some(worktree.to_path_buf());
@@ -111,23 +118,21 @@ fn added(app: &App, workspace: &WorkspaceId) -> Vec<Vec<String>> {
 fn edit(
     app: &App,
     workspace: &WorkspaceId,
-    change: Option<(Vec<String>, bool)>,
+    change: Option<Change>,
     out: &mut impl Write,
 ) -> Result<(), Fault> {
     let state_dir = app.state_dir.as_deref().ok_or_else(state_unavailable)?;
     let workspaces = Workspaces::new(state_dir, None);
     let mut settings = workspaces.settings(workspace)?;
-    if let Some((words, add)) = change {
+    if let Some(change) = change {
         let before = settings.additions.clone();
-        settings.additions.retain(|known| *known != words);
-        if add {
+        let (Change::Add(words) | Change::Remove(words)) = &change;
+        settings.additions.retain(|known| known != words);
+        if let Change::Add(words) = change {
             settings.additions.push(words);
         }
         if settings.additions != before {
-            let file = workspaces.settings_file(workspace);
-            let saved = platform::private_dir(&workspaces.root(workspace))
-                .and_then(|()| settings.write(&file));
-            saved.map_err(|error| {
+            workspaces.save(workspace, &settings).map_err(|error| {
                 Fault::new(
                     code!("guard.not_saved"),
                     "The guard's list couldn't be saved",
@@ -184,16 +189,52 @@ mod tests {
     use super::*;
     use crate::test_support::{self, env};
 
-    fn check(app: &App, home: &Path, workspace: Option<&str>, input: &str) -> String {
-        let command = GuardCommand::Check(CheckCommand {
-            workspace: workspace.map(|id| WorkspaceId::try_from(id.to_owned()).unwrap()),
-            worktree: None,
-        });
+    // Output to an agent that stopped reading.
+    struct Closed;
+
+    impl Write for Closed {
+        fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+            Err(std::io::ErrorKind::BrokenPipe.into())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    fn hook(workspace: &str, worktree: &Path) -> GuardCommand {
+        GuardCommand::Check(CheckCommand {
+            workspace: WorkspaceId::try_from(workspace.to_owned()).unwrap(),
+            worktree: worktree.to_path_buf(),
+        })
+    }
+
+    fn check_in(
+        app: &App,
+        home: &Path,
+        workspace: &str,
+        vars: &[(&str, &str)],
+        input: &str,
+    ) -> String {
+        let work = home.join("work");
+        fs::create_dir_all(&work).unwrap();
         let home = home.to_str().unwrap();
-        let vars = env(&[("HOME", home), ("USERPROFILE", home)]);
+        let mut vars = vars.to_vec();
+        vars.extend([("HOME", home), ("USERPROFILE", home)]);
         let mut out = Vec::new();
-        run(app, command, &vars, &mut input.as_bytes(), &mut out).unwrap();
+        let vars = env(&vars);
+        run(
+            app,
+            hook(workspace, &work),
+            &vars,
+            &mut input.as_bytes(),
+            &mut out,
+        )
+        .unwrap();
         String::from_utf8(out).unwrap()
+    }
+
+    fn check(app: &App, home: &Path, workspace: &str, input: &str) -> String {
+        check_in(app, home, workspace, &[], input)
     }
 
     fn bash(cwd: &Path, command: &str) -> String {
@@ -211,34 +252,56 @@ mod tests {
             answer["hookSpecificOutput"]["permissionDecisionReason"].clone()
         };
 
-        let outside = check(&app, &dir, None, &bash(&work, "rm -rf /etc"));
+        let outside = check(&app, &dir, "w1", &bash(&work, "rm -rf /etc"));
         let secret = check(
             &app,
             &dir,
-            None,
+            "w1",
             &bash(&work, "cat ~/.claude/.credentials.json"),
         );
         let state = format!("echo x > {}", dir.join("state/settings/w.json").display());
-        let weacon = check(&app, &dir, None, &bash(&work, &state));
+        let weacon = check(&app, &dir, "w1", &bash(&work, &state));
         let config = format!(
             "cat {}",
             dir.join("state/workspaces/w-w1/claude/x").display()
         );
-        let config = check(&app, &dir, None, &bash(&work, &config));
+        let config = check(&app, &dir, "w1", &bash(&work, &config));
 
         assert_eq!(reason(&outside), Reason::DeleteOutside.text());
         assert_eq!(reason(&secret), Reason::Credentials.text());
         assert_eq!(reason(&weacon), Reason::WeaconFolder.text());
         assert_eq!(reason(&config), Reason::Credentials.text());
-        assert_eq!(check(&app, &dir, None, &bash(&work, "cargo test")), "");
+        assert_eq!(check(&app, &dir, "w1", &bash(&work, "cargo test")), "");
     }
 
     #[test]
-    fn a_call_it_cant_read_asks_only_in_a_weacon_run() {
+    fn a_call_it_cant_read_or_answer_blocks_the_tool() {
         let dir = TempDir::new().unwrap();
         let app = test_support::app(Some(&dir), None);
-        assert_eq!(check(&app, &dir, None, "not json"), "");
-        assert!(check(&app, &dir, Some("w1"), "not json").contains("\"ask\""));
+        let unanswered = run(
+            &app,
+            hook("w1", &dir),
+            &env(&[]),
+            &mut "x".as_bytes(),
+            &mut Closed,
+        );
+
+        assert!(check(&app, &dir, "w1", "not json").contains("\"ask\""));
+        assert_eq!(
+            unanswered.unwrap_err().code().as_str(),
+            "guard.output_failed"
+        );
+    }
+
+    #[test]
+    fn a_cdpath_in_the_agents_environment_asks_before_a_plain_cd() {
+        let dir = TempDir::new().unwrap();
+        let app = test_support::app(Some(&dir.join("state")), None);
+        fs::create_dir_all(dir.join("work/src")).unwrap();
+        let call = bash(&dir.join("work"), "cd src");
+
+        assert!(check_in(&app, &dir, "w1", &[("CDPATH", "/elsewhere")], &call).contains("\"ask\""));
+        assert_eq!(check_in(&app, &dir, "w1", &[("CDPATH", "")], &call), "");
     }
 
     fn change(app: &App, command: GuardCommand) -> Result<String, Fault> {
@@ -322,22 +385,12 @@ mod tests {
         change(&app, add).unwrap();
         let call = bash(&work, "terraform destroy -auto-approve");
 
-        assert!(check(&app, &dir, Some("w1"), &call).contains(Reason::Addition.text()));
-        assert_eq!(check(&app, &dir, Some("w2"), &call), "");
-        assert_eq!(check(&app, &dir, None, &call), "");
+        assert!(check(&app, &dir, "w1", &call).contains(Reason::Addition.text()));
+        assert_eq!(check(&app, &dir, "w2", &call), "");
     }
 
     #[test]
     fn additions_that_cant_be_read_saved_or_printed_are_errors() {
-        struct Closed;
-        impl Write for Closed {
-            fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
-                Err(std::io::ErrorKind::BrokenPipe.into())
-            }
-            fn flush(&mut self) -> std::io::Result<()> {
-                Ok(())
-            }
-        }
         let dir = TempDir::new().unwrap();
         fs::create_dir_all(dir.join("settings/w-w1.json")).unwrap();
         fs::write(dir.join("workspaces"), "").unwrap();
@@ -382,6 +435,8 @@ mod tests {
         fs::write(dir.join("plain/.git"), "nothing").unwrap();
 
         assert_eq!(main_checkout(&dir.join("chat")), Some(dir.join("main")));
+        fs::create_dir_all(dir.join("chat/src")).unwrap();
+        assert_eq!(main_checkout(&dir.join("chat/src")), Some(dir.join("main")));
         assert_eq!(main_checkout(&dir.join("main")), Some(dir.join("main")));
         assert_eq!(main_checkout(&dir.join("plain")), None);
         assert_eq!(main_checkout(&dir.join("missing")), None);

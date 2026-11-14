@@ -148,6 +148,12 @@ impl Workspaces {
         Settings::read(&self.settings_file(workspace))
     }
 
+    /// Saves `settings` for `workspace`; its folder makes it one this machine knows.
+    pub(crate) fn save(&self, workspace: &WorkspaceId, settings: &Settings) -> io::Result<()> {
+        platform::private_dir(&self.root(workspace))?;
+        settings.write(&self.settings_file(workspace))
+    }
+
     /// How to start `agent` in `cwd` with `workspace`'s own config folder; the only place runs
     /// get an agent, and none when the workspace's access level doesn't let agents run.
     #[cfg_attr(

@@ -1,5 +1,6 @@
 //! The driver for Claude Code, through its stream-json mode.
 
+pub(crate) mod hook;
 mod wire;
 
 use std::path::PathBuf;
@@ -21,16 +22,21 @@ const FILE_TOOLS: [(&str, &str); 4] = [
     ("Write", "file_path"),
 ];
 
+/// Whether `tool` only changes a file.
+fn changes_file(tool: &str) -> bool {
+    FILE_TOOLS.iter().any(|(name, _)| *name == tool)
+}
+
 /// The file a prompt for `tool` would change, when it only changes a file.
 pub(crate) fn changed_file(tool: &str, input: &Value) -> Option<PathBuf> {
     let (_, key) = FILE_TOOLS.iter().find(|(name, _)| *name == tool)?;
     input.get(key)?.as_str().map(PathBuf::from)
 }
 
-// Its config folder's variable, and the sign-ins and providers that would win over it.
 /// The folders and files under home that hold its sign-in.
 pub(crate) const CREDENTIALS: [&str; 2] = [".claude", ".claude.json"];
 
+// Its config folder's variable, and the sign-ins and providers that would win over it.
 const SIGN_IN_ENV: SignInEnv = SignInEnv {
     config_var: "CLAUDE_CONFIG_DIR",
     prefixes: &["ANTHROPIC_", "CLAUDE_"],

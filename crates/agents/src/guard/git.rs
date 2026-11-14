@@ -3,7 +3,7 @@
 use std::path::{Path, PathBuf};
 
 use super::shell::Word;
-use super::words::short_flags;
+use super::words::{positional, short_flags};
 use super::{Context, Reason, check_word, path_of};
 use crate::access::resolve;
 
@@ -21,6 +21,34 @@ const SAFE_SETTINGS: [&str; 9] = [
     "log.",
     "diff.renames",
 ];
+// Global options that take no value; any other could hide the subcommand.
+const PLAIN: [&str; 12] = [
+    "-p",
+    "-P",
+    "--paginate",
+    "--no-pager",
+    "--bare",
+    "--no-replace-objects",
+    "--literal-pathspecs",
+    "--glob-pathspecs",
+    "--noglob-pathspecs",
+    "--icase-pathspecs",
+    "--no-optional-locks",
+    "--no-advice",
+];
+// Subcommands that, in the main checkout, can throw away its changes or files.
+const DISCARDING: [&str; 8] = [
+    "checkout",
+    "switch",
+    "restore",
+    "rm",
+    "mv",
+    "read-tree",
+    "checkout-index",
+    "stash",
+];
+// What `stash` does that keeps everything.
+const STASH_KEEPS: [&str; 4] = ["list", "show", "push", "save"];
 
 /// What `git` with `args`, run in `cwd`, needs a person for.
 pub(super) fn judge(args: &[Word], context: &Context, cwd: &Path) -> Option<Reason> {
@@ -36,52 +64,75 @@ pub(super) fn judge(args: &[Word], context: &Context, cwd: &Path) -> Option<Reas
             };
             repo = folder;
             rest = after;
-        } else if ["--git-dir", "--work-tree", "--config-env", "--exec-path"]
-            .iter()
-            .any(|option| text.starts_with(option))
-        {
-            return Some(Reason::Unsure);
         } else if text == "-c" {
             let (setting, after) = after.split_first()?;
             if !safe_setting(setting) {
                 return Some(Reason::Unsure);
             }
             rest = after;
-        } else if text.starts_with('-') {
+        } else if PLAIN.contains(&text) {
             rest = after;
+        } else if text.starts_with('-') {
+            return Some(Reason::Unsure);
         } else {
             return subcommand(text, after, context, &repo);
         }
     }
 }
 
+// Whether any of `args` is one of the `long` options, alone, with `=`, or shortened as git
+// allows, or holds one of the `short` ones.
+fn has(args: &[Word], long: &[&str], short: &[char]) -> bool {
+    args.iter().any(|arg| {
+        let given = arg
+            .text
+            .split_once('=')
+            .map_or(arg.text.as_str(), |(given, _)| given);
+        let shortened = given.len() > 2 && given.starts_with("--");
+        long.iter()
+            .any(|option| given == *option || (shortened && option.starts_with(given)))
+            || short_flags(&arg.text).is_some_and(|flags| flags.contains(short))
+    })
+}
+
 fn subcommand(name: &str, args: &[Word], context: &Context, repo: &Path) -> Option<Reason> {
-    let has = |long: &[&str], short: &[char]| {
-        args.iter().any(|arg| {
-            long.iter()
-                .any(|option| arg.text == *option || arg.text.starts_with(&format!("{option}=")))
-                || short_flags(&arg.text).is_some_and(|flags| flags.contains(short))
-        })
-    };
+    let has = |long: &[&str], short: &[char]| has(args, long, short);
     match name {
-        "push" => push(args, has),
+        "push" => push(args),
         "branch" if has(&["--delete", "--force"], &['d', 'D', 'f', 'M', 'C']) => {
             Some(Reason::DeleteBranch)
         }
         "update-ref" if has(&[], &['d']) => Some(Reason::DeleteBranch),
         "checkout" if has(&[], &['B']) => Some(Reason::DeleteBranch),
         "switch" if has(&["--force-create"], &['C']) => Some(Reason::DeleteBranch),
-        "reset" if has(&["--hard"], &[]) => main_checkout(repo, context),
-        "checkout" if discards(args) => main_checkout(repo, context),
-        "restore" => main_checkout(repo, context),
+        "reset" if has(&["--hard", "--merge", "--keep"], &[]) => main_checkout(repo, context),
         "stash"
             if args
                 .first()
-                .is_some_and(|action| ["clear", "drop"].contains(&action.text.as_str())) =>
+                .is_none_or(|action| STASH_KEEPS.contains(&action.text.as_str())) =>
         {
-            main_checkout(repo, context)
+            None
         }
-        "clean" if !has(&["--dry-run"], &['n']) => {
+        // A new branch keeps the checkout's changes.
+        "checkout" if has(&[], &['b']) && !has(&["--force"], &['f']) => None,
+        "switch"
+            if has(&["--create"], &['c']) && !has(&["--discard-changes", "--force"], &['f']) =>
+        {
+            None
+        }
+        "clone" => {
+            let named = positional(args);
+            let folder = named.last().filter(|_| named.len() > 1);
+            folder.and_then(|folder| check_word(folder, context, repo, Reason::WriteOutside))
+        }
+        _ if DISCARDING.contains(&name) => main_checkout(repo, context),
+        // Only the full option counts here: a shortened one could be another.
+        "clean"
+            if !args.iter().any(|arg| {
+                arg.text == "--dry-run"
+                    || short_flags(&arg.text).is_some_and(|flags| flags.contains('n'))
+            }) =>
+        {
             (!own_checkout(repo, context)).then_some(Reason::CleanMainCheckout)
         }
         "worktree" => worktree(args, context, repo),
@@ -90,12 +141,12 @@ fn subcommand(name: &str, args: &[Word], context: &Context, repo: &Path) -> Opti
     }
 }
 
-fn push(args: &[Word], has: impl Fn(&[&str], &[char]) -> bool) -> Option<Reason> {
-    if has(&["--delete", "--prune", "--mirror"], &['d']) {
+fn push(args: &[Word]) -> Option<Reason> {
+    if has(args, &["--delete", "--prune", "--mirror"], &['d']) {
         return Some(Reason::DeleteBranch);
     }
     let forced = ["--force", "--force-with-lease", "--force-if-includes"];
-    if has(&forced, &['f']) {
+    if has(args, &forced, &['f']) {
         return Some(Reason::ForcePush);
     }
     let mut refspecs = Vec::new();
@@ -132,18 +183,6 @@ fn worktree(args: &[Word], context: &Context, repo: &Path) -> Option<Reason> {
     rest.iter()
         .filter(|arg| !arg.text.starts_with('-'))
         .find_map(|folder| check_word(folder, context, repo, Reason::DeleteOutside))
-}
-
-// `git checkout -- file` and `git checkout .` throw away changes to files.
-fn discards(args: &[Word]) -> bool {
-    args.iter()
-        .any(|arg| matches!(arg.text.as_str(), "--" | "." | "--force") || arg.dynamic)
-        || has_short(args, 'f')
-}
-
-fn has_short(args: &[Word], flag: char) -> bool {
-    args.iter()
-        .any(|arg| short_flags(&arg.text).is_some_and(|flags| flags.contains(flag)))
 }
 
 fn safe_setting(setting: &Word) -> bool {

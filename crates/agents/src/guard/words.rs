@@ -4,7 +4,7 @@ use super::shell::Word;
 
 // Programs that run the command after them; each with its options that take a value, and how
 // many words it takes before the command.
-const WRAPPERS: [(&str, &[&str], usize); 20] = [
+const WRAPPERS: [(&str, &[&str], usize); 25] = [
     ("sudo", &["-u", "-g", "-h", "-p", "-r", "-t", "-U"], 0),
     ("doas", &["-u"], 0),
     ("env", &["-u", "--unset"], 0),
@@ -19,7 +19,6 @@ const WRAPPERS: [(&str, &[&str], usize); 20] = [
     ("ionice", &["-c", "-n", "-p"], 0),
     ("setsid", &[], 0),
     ("unbuffer", &[], 0),
-    ("flock", &["-w", "-E", "--timeout"], 1),
     (
         "xargs",
         &["-I", "-n", "-P", "-L", "-d", "-E", "-s", "-a"],
@@ -29,6 +28,12 @@ const WRAPPERS: [(&str, &[&str], usize); 20] = [
     ("coproc", &[], 0),
     ("unshare", &[], 0),
     ("strace", &["-o", "-e", "-p", "-s", "-u"], 0),
+    ("chrt", &[], 1),
+    ("pkexec", &["--user"], 0),
+    ("fakeroot", &[], 0),
+    ("ltrace", &["-o", "-e", "-p", "-s", "-u"], 0),
+    ("npx", &["-p", "--package"], 0),
+    ("bunx", &[], 0),
 ];
 
 // Options of the wrappers that change folder or root, or read a command line from text.
@@ -43,9 +48,9 @@ const MOVING: [&str; 7] = [
 ];
 
 // Programs that run a command given as text, which the guard doesn't follow.
-const RUNNERS: [&str; 11] = [
+const RUNNERS: [&str; 13] = [
     "su", "runuser", "script", "parallel", "trap", "alias", "chroot", "watch", "ssh", "nsenter",
-    "eval",
+    "eval", "flock", "taskset",
 ];
 
 // Words that start or join shell constructs rather than name a program.
@@ -93,9 +98,7 @@ pub(super) fn command(words: &[Word]) -> Command<'_> {
         };
         partial |= name == "xargs";
         let after = rest.get(1..).unwrap_or_default();
-        let Some((skipped, after)) = skip_options(after, with_value) else {
-            return Command::Unsure;
-        };
+        let (skipped, after) = skip_options(after, with_value);
         if skipped.iter().any(|option| moves(&option.text)) {
             return Command::Unsure;
         }
@@ -113,25 +116,27 @@ fn moves(option: &str) -> bool {
 }
 
 // The options at the start of `rest`, and what follows them.
-fn skip_options<'a>(rest: &'a [Word], with_value: &[&str]) -> Option<(&'a [Word], &'a [Word])> {
+fn skip_options<'a>(rest: &'a [Word], with_value: &[&str]) -> (&'a [Word], &'a [Word]) {
     let mut at = 0;
-    while let Some(word) = rest.get(at) {
+    for (index, word) in rest.iter().enumerate() {
+        if index < at {
+            continue;
+        }
         if word.text == "--" {
-            return Some((rest.get(..at)?, rest.get(at + 1..)?));
+            let (options, after) = rest.split_at_checked(index).unwrap_or((rest, &[]));
+            return (options, after.get(1..).unwrap_or_default());
         }
         if !word.text.starts_with('-') || word.text == "-" {
             break;
         }
-        at += if with_value.contains(&word.text.as_str()) {
-            2
-        } else {
-            1
-        };
+        at = index
+            + if with_value.contains(&word.text.as_str()) {
+                2
+            } else {
+                1
+            };
     }
-    Some((
-        rest.get(..at.min(rest.len()))?,
-        rest.get(at.min(rest.len())..)?,
-    ))
+    rest.split_at_checked(at).unwrap_or((rest, &[]))
 }
 
 /// Whether `word` sets a variable, as `NAME=value` does.
@@ -161,15 +166,14 @@ pub(super) fn family(name: &str) -> &str {
     name.trim_end_matches(|char: char| char.is_ascii_digit() || char == '.')
 }
 
-/// Whether the command is `pattern`'s program with its words first among its arguments.
+/// Whether the command is `pattern`'s program with its words, in order, among its arguments;
+/// an option's value may come between them.
 pub(super) fn begins(name: &str, args: &[Word], pattern: &[String]) -> bool {
     let Some((first, rest)) = pattern.split_first() else {
         return false;
     };
-    let named = positional(args);
-    program_name(first) == name
-        && rest.len() <= named.len()
-        && rest.iter().zip(named).all(|(want, arg)| *want == arg.text)
+    let mut named = positional(args).into_iter();
+    program_name(first) == name && rest.iter().all(|want| named.any(|arg| arg.text == *want))
 }
 
 /// Arguments that aren't options; everything after `--` counts.
@@ -196,7 +200,12 @@ pub(super) fn value_of(args: &[Word], options: &[&str]) -> Option<Word> {
             if arg.text == *option {
                 return args.get(at + 1).cloned();
             }
-            let value = arg.text.strip_prefix(&format!("{option}="))?;
+            // A short option's value may follow it at once, as in `-t/etc`.
+            let value = arg.text.strip_prefix(&format!("{option}=")).or_else(|| {
+                (option.len() == 2)
+                    .then(|| arg.text.strip_prefix(option))
+                    .flatten()
+            })?;
             Some(Word {
                 text: value.to_owned(),
                 ..arg.clone()
