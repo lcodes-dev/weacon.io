@@ -374,7 +374,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_body_past_the_size_limit_is_too_large() {
+    async fn a_body_past_the_size_limit_is_too_large_and_one_under_it_is_read() {
         let fixture = Fixture::new().await;
         let (_server, ada) = ada(&fixture).await;
         let write = ada.create("Write", None).await;
@@ -385,12 +385,21 @@ mod tests {
         let huge = serde_json::to_string(&huge).unwrap();
         let change = format!("POST /api/workspaces/w1/tasks/{}", write.id.as_str());
 
+        let ship = TaskCreate {
+            title: "Ship".to_owned(),
+            before: None,
+        };
+        // Spaces are JSON too, so this body is just under the limit and still read.
+        let padded = format!("{:<16000}", serde_json::to_string(&ship).unwrap());
+
         for head in ["POST /api/workspaces/w1/tasks", change.as_str()] {
             let (status, body) = ada.send(head, &huge).await;
             assert_eq!(status, "http/1.1 413 payload too large", "{head}");
             assert_eq!(refusal(&body), "task.too_large");
         }
         assert_eq!(ada.list().await, [write]);
+        let (status, _) = ada.send("POST /api/workspaces/w1/tasks", &padded).await;
+        assert_eq!(status, "http/1.1 201 created");
     }
 
     #[tokio::test]
