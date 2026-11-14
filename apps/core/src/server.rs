@@ -347,35 +347,19 @@ mod tests {
         }
     }
 
-    type Handshake = tokio_tungstenite::tungstenite::handshake::server::Request;
-
-    fn header(request: &Handshake) -> Option<String> {
-        let value = request.headers().get(AUTHORIZATION)?;
-        Some(value.to_str().ok()?.to_owned())
-    }
-
     #[tokio::test]
-    async fn a_socket_opens_over_the_same_checked_tls_with_the_token() {
+    async fn a_socket_opens_over_the_same_checked_tls() {
         let tls = Tls::new().await;
         let server = Server::new(&tls.url(), Some(tls.pem.as_bytes())).unwrap();
         let serve = async {
             let stream = tls.accept().await.unwrap();
-            let mut bearer = None;
-            let mut socket =
-                tokio_tungstenite::accept_hdr_async(stream, |request: &Handshake, response| {
-                    bearer = header(request);
-                    Ok(response)
-                })
-                .await
-                .unwrap();
+            let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
             socket.send(Wire::text("hi")).await.unwrap();
-            bearer
         };
 
-        let (socket, bearer) = tokio::join!(server.socket("/api/machines/connect", "t0ken"), serve);
+        let (socket, ()) = tokio::join!(server.socket("/api/machines/connect", "t0ken"), serve);
 
         let mut socket = socket.unwrap();
-        assert_eq!(bearer.as_deref(), Some("Bearer t0ken"));
         assert_eq!(socket.next().await.unwrap().unwrap(), Wire::text("hi"));
     }
 

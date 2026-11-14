@@ -203,8 +203,8 @@ mod tests {
         assert_eq!(fingerprint.replace(' ', ""), expected);
         assert_eq!(fingerprint.len(), 39);
         assert!(fingerprint.split(' ').all(|group| group.len() == 4));
-        assert!(Key("zz".repeat(32)).public().is_err());
-        assert!(Key("ab".repeat(31)).public().is_err());
+        Key("zz".repeat(32)).public().unwrap_err();
+        Key("ab".repeat(31)).public().unwrap_err();
     }
 
     #[test]

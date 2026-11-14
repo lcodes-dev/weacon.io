@@ -83,10 +83,16 @@ fn run(app: &App, command: Command, env: platform::Env<'_>) -> Result<Outcome, F
             team,
         } => workspaces::access(app, &workspace, level, team, &mut io::stdout().lock())
             .map(Outcome::from),
-        Command::Pair { server, name, pin } => {
-            let pairing = pair::Pairing { server, name, pin };
-            pair::run(app, pairing, &mut io::stdout().lock()).map(Outcome::from)
-        }
+        Command::Pair { server, name, pin } => pair::pinned(pin.as_deref())
+            .and_then(|pinned| {
+                let pairing = pair::Pairing {
+                    server,
+                    name,
+                    pinned,
+                };
+                pair::run(app, &pairing, &mut io::stdout().lock())
+            })
+            .map(Outcome::from),
         Command::Reports { answer } => {
             reports::run(app, answer, &mut io::stdout().lock()).map(Outcome::from)
         }

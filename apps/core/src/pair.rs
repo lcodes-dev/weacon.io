@@ -2,7 +2,7 @@
 //! web app.
 
 use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::Duration;
 
 use hyper::StatusCode;
@@ -25,8 +25,17 @@ const CLAIM_EVERY: Duration = Duration::from_secs(2);
 pub(crate) struct Pairing {
     pub(crate) server: String,
     pub(crate) name: Option<String>,
-    /// A PEM file of certificates to trust for the server in place of the public roots.
-    pub(crate) pin: Option<PathBuf>,
+    /// The certificates to trust for the server in place of the public roots, as PEM.
+    pub(crate) pinned: Option<String>,
+}
+
+/// Reads the PEM file `pin`, if one was given.
+///
+/// # Errors
+/// When it can't be read.
+pub(crate) fn pinned(pin: Option<&Path>) -> Result<Option<String>, Fault> {
+    pin.map(|path| std::fs::read_to_string(path).map_err(|error| bad_pin().because(error)))
+        .transpose()
 }
 
 /// Pairs this machine, printing the code to confirm and the key's fingerprint to `out`.
@@ -34,28 +43,21 @@ pub(crate) struct Pairing {
 /// # Errors
 /// When the server can't be reached or refuses, the person doesn't confirm in time, or the
 /// pairing can't be kept.
-pub(crate) fn run(app: &App, pairing: Pairing, out: &mut impl Write) -> Result<(), Fault> {
+pub(crate) fn run(app: &App, pairing: &Pairing, out: &mut impl Write) -> Result<(), Fault> {
     let state_dir = app.state_dir.as_deref().ok_or_else(state_unavailable)?;
-    let pinned = match &pairing.pin {
-        Some(path) => {
-            Some(std::fs::read_to_string(path).map_err(|error| bad_pin().because(error))?)
-        }
-        None => None,
-    };
-    let random = random_key()?;
-    runtime()?.block_on(pair(state_dir, &pairing, pinned, random, CLAIM_EVERY, out))
+    let key = Key::from_random(random_key()?);
+    runtime()?.block_on(pair(state_dir, pairing, key, CLAIM_EVERY, out))
 }
 
 async fn pair(
     state_dir: &Path,
     pairing: &Pairing,
-    pinned: Option<String>,
-    random: [u8; 32],
+    key: Key,
     every: Duration,
     out: &mut impl Write,
 ) -> Result<(), Fault> {
+    let pinned = pairing.pinned.clone();
     let server = Server::new(&pairing.server, pinned.as_deref().map(str::as_bytes))?;
-    let key = Key::from_random(random);
     let name = pairing
         .name
         .clone()
@@ -167,7 +169,9 @@ fn not_printed() -> Fault {
 #[cfg(test)]
 mod tests {
     use serde::Serialize;
+    use std::fs;
     use weacon_protocol::{ErrorBody, MachineOs, PairingId};
+
     use weacon_testing::TempDir;
 
     use super::*;
@@ -225,17 +229,11 @@ mod tests {
         let pairing = Pairing {
             server: tls.url(),
             name: name.map(str::to_owned),
-            pin: None,
+            pinned: Some(tls.pem.clone()),
         };
         let mut out = Vec::new();
-        let paired_up = pair(
-            dir,
-            &pairing,
-            Some(tls.pem.clone()),
-            [7; 32],
-            Duration::ZERO,
-            &mut out,
-        );
+        let key = Key::from_random([7; 32]);
+        let paired_up = pair(dir, &pairing, key, Duration::ZERO, &mut out);
         let (done, requests) = tokio::join!(paired_up, serve(tls, answers));
         Outcome {
             done,
@@ -332,6 +330,25 @@ mod tests {
             "pairing.name_invalid"
         );
         assert_eq!(machine::read(&dir).unwrap(), None);
+    }
+
+    #[test]
+    fn a_pin_is_read_from_its_file() {
+        let dir = TempDir::new().unwrap();
+        fs::write(dir.join("server.pem"), "PEM").unwrap();
+
+        assert_eq!(pinned(None).unwrap(), None);
+        assert_eq!(
+            pinned(Some(&dir.join("server.pem"))).unwrap().as_deref(),
+            Some("PEM")
+        );
+        assert_eq!(
+            pinned(Some(&dir.join("missing.pem")))
+                .unwrap_err()
+                .code()
+                .as_str(),
+            "server.pin_unreadable"
+        );
     }
 
     #[test]
