@@ -94,6 +94,24 @@ impl Map {
         Ok(generation)
     }
 
+    /// Marks the layer named `name` as current for refresh `generation`, so an earlier refresh
+    /// can't replace it.
+    pub(crate) async fn touch(&self, name: &str, generation: i64) -> Result<(), Fault> {
+        let (workspace, repo) = self.keys();
+        sqlx::query(
+            "UPDATE map_layers SET generation = max(generation, ?) \
+             WHERE workspace_id = ? AND repo = ? AND layer = ?",
+        )
+        .bind(generation)
+        .bind(workspace)
+        .bind(repo)
+        .bind(name)
+        .execute(&self.workspace.db.pool)
+        .await
+        .map_err(failed)?;
+        Ok(())
+    }
+
     /// The layer named `name`, if it has been stored.
     pub(crate) async fn layer(&self, name: &str) -> Result<Option<Layer>, Fault> {
         let (workspace, repo) = self.keys();
@@ -133,11 +151,12 @@ impl Map {
         }))
     }
 
-    /// The facts stored for each `(path, blob)`, by that pair; pairs without any are left out.
+    /// The facts stored for each `(path, blob)`, by that pair: `None` for text that gives none,
+    /// and pairs never read are left out.
     pub(crate) async fn facts(
         &self,
         wanted: &[(String, String)],
-    ) -> Result<BTreeMap<(String, String), Facts>, Fault> {
+    ) -> Result<BTreeMap<(String, String), Option<Facts>>, Fault> {
         let (workspace, repo) = self.keys();
         let mut found = BTreeMap::new();
         for batch in wanted.chunks(BATCH) {
@@ -176,7 +195,7 @@ impl Map {
     pub(crate) async fn replace(
         &self,
         layer: &Layer,
-        facts: &[(String, String, Facts)],
+        facts: &[(String, String, Option<Facts>)],
         entries: &[Entry],
     ) -> Result<(), Fault> {
         let (workspace, repo) = self.keys();
@@ -341,12 +360,12 @@ mod tests {
         }
     }
 
-    fn facts(path: &str, text: &str) -> Facts {
+    fn facts(path: &str, text: &str) -> Option<Facts> {
         let file = SourceFile {
             path: path.to_owned(),
             text: text.to_owned(),
         };
-        Reader::new().unwrap().facts(&file).unwrap().unwrap()
+        Reader::new().unwrap().facts(&file).unwrap()
     }
 
     #[tokio::test]

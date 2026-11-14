@@ -3,7 +3,7 @@ import { test } from "node:test";
 
 import type { Envelope } from "../protocol.ts";
 import { Receipts } from "../receipts.ts";
-import { after, blocked, deliver, prompt, requestFor } from "./prompt.ts";
+import { after, afterLate, blocked, deliver, prompt, requestFor } from "./prompt.ts";
 
 test("a prompt is a chat command for the chat, under its request", () => {
   assert.deepEqual(prompt(3, { workspace: "w-1", chat: "c-1" }, "r-1", "日本語"), {
@@ -85,4 +85,22 @@ test("a prompt the socket can't take is lost", async () => {
   const waiting = deliver(retry, receipts, () => {});
   receipts.take({ id: 3, type: "error", code: "request.conflict", retryable: false });
   assert.equal(await waiting, "refused");
+});
+
+test("a late receipt settles the send the box may retry, keeping text edited since", () => {
+  const retry = { text: "Ship it", request: "q-1" };
+
+  assert.deepEqual(afterLate(retry, "Ship it", { request: "q-1", settled: "accepted" }), { text: "", problem: undefined, retry: undefined });
+  assert.deepEqual(afterLate(retry, "Ship it now", { request: "q-1", settled: "accepted" }), {
+    text: "Ship it now",
+    problem: undefined,
+    retry: undefined,
+  });
+  assert.deepEqual(afterLate(retry, "Ship it", { request: "q-1", settled: "refused" }), {
+    text: "Ship it",
+    problem: "The message wasn't sent",
+    retry: undefined,
+  });
+  assert.equal(afterLate(retry, "Ship it", { request: "q-2", settled: "accepted" }), undefined);
+  assert.equal(afterLate(undefined, "Ship it", { request: "q-1", settled: "accepted" }), undefined);
 });

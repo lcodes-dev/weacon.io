@@ -10,16 +10,23 @@ use unix::open_parts;
 use windows::open_parts;
 
 /// The file at `relative`, a `/`-separated path, beneath the folder `root`, opened to read. A
-/// link anywhere on the way, an empty, `.` or `..` part, and a path that isn't there are refused.
+/// link anywhere on the way, a part that isn't one plain name, and a path that isn't there are
+/// refused.
 pub(crate) fn open_beneath(root: &Path, relative: &str) -> io::Result<File> {
     let parts: Vec<&str> = relative.split('/').collect();
-    if parts.iter().any(|part| matches!(*part, "" | "." | "..")) {
+    if !parts.iter().all(|part| is_name(part)) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "not a plain path",
         ));
     }
     open_parts(root, &parts)
+}
+
+/// One file or folder name, the same on every system: `\` and `:` separate or root a path on
+/// Windows, so they're refused everywhere.
+fn is_name(part: &str) -> bool {
+    !matches!(part, "" | "." | "..") && !part.contains(['\\', ':', '\0'])
 }
 
 #[cfg(unix)]
@@ -115,8 +122,17 @@ mod tests {
             "../outside.md",
             "",
             "a/b/x.md",
+            "..\\outside.md",
+            "C:outside.md",
+            "a/b\0/c.md",
         ] {
             assert_eq!(read(&root, refused), None, "{refused}");
+        }
+        // Plain names on Unix, but a path on Windows: refused everywhere alike.
+        #[cfg(unix)]
+        for name in ["a\\b\\c.md", "a:b.md"] {
+            fs::write(root.join(name), "inside").unwrap();
+            assert_eq!(read(&root, name), None, "{name}");
         }
     }
 

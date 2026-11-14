@@ -58,7 +58,7 @@ impl<S: Source> Watch<S> {
         let base = self.base.insert(base);
         let changed = self.repo.changed(base, &self.worktree).await?;
         let mut state = base.commit.as_str().to_owned();
-        for (path, text) in &changed {
+        for (path, text) in &changed.files {
             let key = text.as_deref().map(content_key).unwrap_or_default();
             state.extend(["\0", path, "\0", &key]);
         }

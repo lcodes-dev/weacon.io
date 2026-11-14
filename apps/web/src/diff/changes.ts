@@ -1,5 +1,6 @@
 import { type Status, offers } from "../connection.ts";
 import type { ChatId, DiffFile, Envelope, Hunk, LineOp, RequestId, WorkspaceId } from "../protocol.ts";
+import { record } from "../fields.ts";
 
 /** What the core has sent of a chat's changes under the latest request. */
 export type Changes = {
@@ -148,6 +149,3 @@ function isHunk(hunk: unknown): boolean {
   );
 }
 
-function record(value: unknown): Record<string, unknown> | undefined {
-  return typeof value === "object" && value !== null ? (value as Record<string, unknown>) : undefined;
-}
