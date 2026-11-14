@@ -165,10 +165,15 @@ impl Uses {
             if colons == ALIAS {
                 return 0;
             }
+            let alias = ident == "as"
+                && prefix
+                    .first()
+                    .or_else(|| path.first())
+                    .is_some_and(|first| first == "use");
             if colons != 2 || ident == "as" {
                 self.note_path(prefix, path);
             }
-            if ident == "as" {
+            if alias {
                 return ALIAS;
             }
             // After `use`, even one segment names a crate, as in `use sqlx as db;`.
@@ -217,7 +222,7 @@ impl Uses {
     }
 }
 
-// Stands in for a colon count after `as`: the next name is an alias, not a path.
+// Stands in for a colon count after `as` in a `use`: the next name is an alias, not a path.
 const ALIAS: u8 = u8::MAX;
 
 // `path` without a leading `use`, and whether it had one.
@@ -423,6 +428,7 @@ mod tests {
             "macro_rules! driver { () => { use sqlx; }; }",
             "macro_rules! driver { () => { use sqlx::{self as db}; }; }",
             "macro_rules! driver { () => { use {sqlx as db, std::fmt}; }; }",
+            "fn f() { m!(<T as sqlx::Type<Db>>::type_info()) }",
         ] {
             assert_eq!(
                 check(&IO, "src/chats.rs", text),
