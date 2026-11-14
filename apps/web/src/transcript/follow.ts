@@ -20,3 +20,8 @@ export function selectingIn(
 export function touches(selection: Pick<Selection, "rangeCount" | "getRangeAt"> | null, node: Node): boolean {
   return selection !== null && selection.rangeCount > 0 && selection.getRangeAt(0).intersectsNode(node);
 }
+
+/** Whether the view follows after a scroll: at the bottom it does; elsewhere only a scroll up stops it. */
+export function followsAfter(following: boolean, bottom: boolean, up: boolean): boolean {
+  return bottom || (following && !up);
+}

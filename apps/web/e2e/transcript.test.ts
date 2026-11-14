@@ -77,6 +77,19 @@ test("a reader at the bottom of a finished run is still there after Settings", {
   // The rows near the end grow to their real height once shown, after the view first followed.
   await page.evaluate(settled);
   assert.ok(atBottom(await page.evaluate(scrollOf)), "the run's end stopped short of the bottom");
+  // The pane shrinks, as when the message box comes back, and the browser moves the view down a
+  // little before the view catches up; that is no reader leaving the bottom.
+  await page.evaluate(() => {
+    const view = document.querySelector<HTMLElement>(".transcript");
+    if (view !== null) {
+      view.style.height = "50%";
+      view.scrollTop += 1;
+      view.dispatchEvent(new Event("scroll"));
+    }
+  });
+  await page.evaluate(settled);
+  assert.ok(atBottom(await page.evaluate(scrollOf)), "a scroll the browser made stopped the view following");
+  await page.evaluate(() => document.querySelector<HTMLElement>(".transcript")?.style.removeProperty("height"));
   await page.getByRole("button", { name: "Settings" }).click();
   await page.getByRole("button", { name: "Back" }).click();
   await page.evaluate(settled);

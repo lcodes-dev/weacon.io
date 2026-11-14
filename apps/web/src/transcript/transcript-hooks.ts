@@ -1,6 +1,6 @@
 import { type RefObject, type UIEventHandler, useEffect, useLayoutEffect, useReducer, useRef } from "react";
 
-import { atBottom, selectingIn, touches } from "./follow.ts";
+import { atBottom, followsAfter, selectingIn, touches } from "./follow.ts";
 import type { Row } from "./transcript.ts";
 
 /**
@@ -13,9 +13,9 @@ export function useFollow(
   { rows, refreshes, away }: { rows: readonly Row[]; refreshes: number; away: boolean },
 ): UIEventHandler<HTMLDivElement> {
   const following = useRef(true);
-  // Where the view last scrolled itself. Its scroll event comes a frame later, maybe after the
-  // pane has shrunk, as when the message box comes back, so it says nothing about the reader.
-  const followedTo = useRef<number | undefined>(undefined);
+  // Where the last scroll left the view. Only a scroll up from there is the reader leaving: the
+  // browser moves the view too, down as rows reach their height, before the view catches up.
+  const lastTop = useRef(0);
   const awayNow = useRef(away);
   useLayoutEffect(() => {
     awayNow.current = away;
@@ -30,7 +30,6 @@ export function useFollow(
       following.current = atBottom(element);
     } else {
       element.scrollTop = element.scrollHeight;
-      followedTo.current = element.scrollTop;
     }
   });
   useLayoutEffect(() => keepAtBottom.current(), [rows, refreshes]);
@@ -50,10 +49,9 @@ export function useFollow(
   }, [empty]);
 
   return ({ currentTarget: element }) => {
-    if (element.scrollTop !== followedTo.current) {
-      followedTo.current = undefined;
-      following.current = atBottom(element);
-    }
+    const top = element.scrollTop;
+    following.current = followsAfter(following.current, atBottom(element), top < lastTop.current);
+    lastTop.current = top;
   };
 }
 
