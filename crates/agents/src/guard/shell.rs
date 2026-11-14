@@ -1,59 +1,9 @@
 //! Splits a shell command line into the simple commands it would run, without running it.
 
 mod quoting;
+mod types;
 
-/// One word of a command, with what the shell would do to it before running it.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub(crate) struct Word {
-    /// The text with quotes removed.
-    pub(crate) text: String,
-    /// Holds an expansion, such as `$HOME` or `$(…)`, so its value isn't known here.
-    pub(crate) dynamic: bool,
-    /// Holds an unquoted `*`, `?` or `[`, which the shell expands to file names.
-    pub(crate) glob: bool,
-    /// Starts with an unquoted `~`, the home folder.
-    pub(crate) tilde: bool,
-    /// When `dynamic`, how much of `text` came before the first expansion.
-    pub(crate) known: usize,
-}
-
-impl Word {
-    // From here on the word holds what only the shell knows.
-    pub(crate) fn unknown(&mut self) {
-        if !self.dynamic {
-            self.known = self.text.len();
-        }
-        self.dynamic = true;
-    }
-
-    /// The word made of `value`, the end of this word's text, as after an option's `=`; the
-    /// shell expands a `~` that starts it.
-    pub(crate) fn tail(&self, value: &str) -> Self {
-        Self {
-            text: value.to_owned(),
-            tilde: value.starts_with('~'),
-            known: self
-                .known
-                .saturating_sub(self.text.len().saturating_sub(value.len())),
-            ..self.clone()
-        }
-    }
-}
-
-/// One command with its words and where its output goes.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub(crate) struct Simple {
-    pub(crate) words: Vec<Word>,
-    /// Files its output is written to.
-    pub(crate) writes: Vec<Word>,
-    /// Files its input is read from.
-    pub(crate) reads: Vec<Word>,
-    /// Reads its input from a file, a pipe or text in the command line.
-    pub(crate) fed: bool,
-    /// A `cd` in it may not move the commands after it: it runs in a shell of its own, as in a
-    /// pipeline, `( … )`, `$( … )` or with `&`, or only on some paths, beside `||` or in a block.
-    pub(crate) apart: bool,
-}
+pub(crate) use types::{Simple, Word};
 
 /// The simple commands in `line`, those inside substitutions included; `None` when it can't be
 /// split for sure, as with an unclosed quote.
@@ -229,7 +179,6 @@ impl Parser {
             ')' => self.parens = self.parens.saturating_sub(1),
             _ => {}
         }
-        simple.fed = pipe;
         // What follows `&&` or `||` runs only if what came before did or didn't.
         simple.apart = pipe || or || and;
         if char == '\n' {
@@ -247,8 +196,6 @@ impl Parser {
         end_word(simple, word);
         self.advance(1);
         if self.peek() == Some('(') {
-            // What `<(…)` prints is read as a file, which may be the program's code.
-            simple.fed |= char == '<';
             self.advance(1);
             self.list(Some(')'))?;
             return Some(());
@@ -259,7 +206,6 @@ impl Parser {
             }
             return self.redirect_target(simple, word, true);
         }
-        simple.fed = true;
         if self.peek() == Some('<') {
             self.advance(1);
             if self.peek() == Some('<') {
@@ -445,8 +391,6 @@ mod tests {
             programs("g && h || i | j & k\nl"),
             ["g", "h", "i", "j", "k", "l"]
         );
-        assert!(parse("i | j").unwrap()[1].fed);
-        assert!(!parse("i || j").unwrap()[1].fed);
         assert_eq!(programs("echo hi # rm -rf /"), ["echo"]);
     }
 
@@ -472,15 +416,12 @@ mod tests {
             .collect();
         assert_eq!(writes, ["out.log", "all.log", "both", "err"]);
         assert_eq!(texts(simple), ["make"]);
-        assert!(simple.fed);
-        assert!(parse("cat <<< text").unwrap()[0].fed);
     }
 
     #[test]
     fn here_document_text_is_input_and_never_a_command() {
         assert_eq!(programs("cat <<EOF > f\nrm -rf /\nEOF\nls"), ["cat", "ls"]);
         assert_eq!(programs("cat <<-'END'\n\trm x\n\tEND\nls"), ["cat", "ls"]);
-        assert!(parse("sh <<EOF\nrm x\nEOF").unwrap()[0].fed);
     }
 
     #[test]
@@ -515,10 +456,7 @@ mod tests {
     #[test]
     fn operators_comments_and_empty_commands_split_as_a_shell_does() {
         assert_eq!(texts(&parse("echo a#b #c").unwrap()[0]), ["echo", "a#b"]);
-        let piped = parse("a |& b").unwrap();
         assert_eq!(programs("a |& b"), ["a", "b"]);
-        assert!(piped[1].fed);
-        assert!(!parse("a && b").unwrap()[1].fed);
         assert_eq!(parse("a;").unwrap().len(), 1);
         assert!(parse(";;").unwrap().is_empty());
         assert_eq!(texts(&parse("echo \"\">out").unwrap()[0]), ["echo", ""]);

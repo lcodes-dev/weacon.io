@@ -90,10 +90,10 @@ const MAX_LINE: usize = 64 << 10;
 /// Whether `line`, a shell command run in `context.cwd`, needs a person first.
 #[must_use]
 pub fn check_command(line: &str, context: &Context) -> Option<Reason> {
-    let commands = (line.len() <= MAX_LINE)
+    let Some(commands) = (line.len() <= MAX_LINE)
         .then(|| shell::parse(line))
-        .flatten();
-    let Some(commands) = commands else {
+        .flatten()
+    else {
         return Some(Reason::Unsure);
     };
     let context = &Context {
@@ -137,10 +137,20 @@ pub(crate) fn check_path(file: &Path, context: &Context, outside: Reason) -> Opt
         return Some(outside);
     }
     // Writing a file with another name writes it wherever that name is.
-    let aliased = outside == Reason::WriteOutside
-        && std::fs::metadata(&file).is_ok_and(|meta| meta.is_file())
-        && crate::platform::links(&file).is_ok_and(|links| links > 1);
+    let aliased = outside == Reason::WriteOutside && has_other_name(&file, true);
     aliased.then_some(Reason::Unsure)
+}
+
+// Whether `path` is a file reachable under more than one name, so touching it touches wherever
+// its other names are; `follow` resolves a final symlink first, as a write would.
+fn has_other_name(path: &Path, follow: bool) -> bool {
+    let meta = if follow {
+        std::fs::metadata(path)
+    } else {
+        std::fs::symlink_metadata(path)
+    };
+    meta.is_ok_and(|meta| meta.is_file())
+        && crate::platform::links(path).is_ok_and(|links| links > 1)
 }
 
 // Asks about a path inside a credential folder, or, for a `deep` read that goes through
@@ -237,10 +247,8 @@ fn leads_out(folder: &Path, context: &Context) -> bool {
     entries.into_iter().any(|entry| {
         entry.map_or(true, |entry| {
             let path = entry.path();
-            let aliased = std::fs::symlink_metadata(&path).is_ok_and(|meta| meta.is_file())
-                && crate::platform::links(&path).is_ok_and(|links| links > 1);
             let link = entry.file_type().is_ok_and(|kind| kind.is_symlink());
-            aliased || (link && !inside(&path))
+            has_other_name(&path, false) || (link && !inside(&path))
         })
     })
 }
