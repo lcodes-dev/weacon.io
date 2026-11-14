@@ -397,7 +397,7 @@ mod tests {
     async fn a_status_command_that_never_ends_is_given_up_on() {
         let dir = TempDir::new().unwrap();
         let program = dir.join("codex");
-        crate::test_support::write_program(&program, "#!/bin/sh\nexec sleep 3600\n");
+        crate::platform::scripts::write_program(&program, "#!/bin/sh\nexec sleep 3600\n");
         let hanging = Launch {
             program,
             ..launch(AgentKind::Codex, &dir)
