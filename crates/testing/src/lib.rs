@@ -12,5 +12,3 @@ mod temp;
 pub use logs::{Records, messages, recording_logger, recording_sink};
 pub use replay::{Replay, replay};
 pub use temp::TempDir;
-
-pub(crate) use replay::{BUFFER, play};

@@ -1,4 +1,4 @@
-//! A made-up agent session, streamed as the lines a core sends.
+//! A made-up agent session, streamed as the lines a core sends, and the fakes' command line.
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -17,7 +17,7 @@ const BYTES_PER_TOKEN: usize = 4;
 const DELTA_BYTES: usize = 24;
 
 /// The lines a core sends to stream `session` until at least `tokens` tokens of text have gone
-/// out, as a recording for [`crate::replay`]. Each text block is streamed as deltas, then sent
+/// out, as a recording for [`crate::replay()`]. Each text block is streamed as deltas, then sent
 /// whole; the session repeats from the start as often as it takes.
 ///
 /// # Errors
@@ -89,10 +89,13 @@ fn line(run: RunId, event: RunEvent) -> Result<String, String> {
         id: 0,
         message: Message::Run(RunUpdate { run, event }),
     };
+    envelope_text(&envelope).map(|json| format!("< {json}"))
+}
+
+/// `envelope` as the text of one frame.
+pub(crate) fn envelope_text(envelope: &Envelope) -> Result<String, String> {
     let json = envelope.to_json().map_err(|error| error.to_string())?;
-    String::from_utf8(json)
-        .map(|json| format!("< {json}"))
-        .map_err(|error| error.to_string())
+    String::from_utf8(json).map_err(|error| error.to_string())
 }
 
 #[cfg(test)]

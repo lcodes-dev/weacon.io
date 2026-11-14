@@ -5,7 +5,7 @@ use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
 use weacon_protocol::{App, Capability, Envelope, Message, code, encode_line};
 
-use crate::play;
+use crate::replay::play;
 
 /// Answers the hello that `stream`'s client sends, then plays `recording` to it, waiting `pace`
 /// after each line.

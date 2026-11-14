@@ -14,7 +14,9 @@ use weacon_protocol::{
     Capability, ChatAction, ChatCommand, Envelope, Message, Outcome, Receipt, code,
 };
 
-use crate::{BUFFER, fake_core, fake_diff, play};
+use crate::recording::envelope_text;
+use crate::replay::{BUFFER, play};
+use crate::{fake_core, fake_diff};
 
 /// Plays `recording` to the client on `stream`, waiting `pace` after each message, and appends
 /// each text frame the client sends after its hello to `received`, one per line. It offers
@@ -142,12 +144,6 @@ async fn next_text(
         }
     }
     Ok(None)
-}
-
-/// `envelope` as the text of one frame.
-fn envelope_text(envelope: &Envelope) -> Result<String, String> {
-    let json = envelope.to_json().map_err(|error| error.to_string())?;
-    String::from_utf8(json).map_err(|error| error.to_string())
 }
 
 #[cfg(test)]
