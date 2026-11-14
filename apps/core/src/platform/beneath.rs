@@ -41,6 +41,10 @@ mod unix {
 
     use libc::{O_CLOEXEC, O_DIRECTORY, O_NOFOLLOW, O_NONBLOCK, O_RDONLY, c_int};
 
+    /// A folder needs only search permission on the way, not read, where the system allows.
+    #[cfg(target_os = "linux")]
+    const FOLDER: c_int = libc::O_PATH | O_NOFOLLOW | O_CLOEXEC | O_DIRECTORY;
+    #[cfg(not(target_os = "linux"))]
     const FOLDER: c_int = O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_DIRECTORY;
     /// Non-blocking, so a pipe can't hold the open.
     const FILE: c_int = O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK;
@@ -200,6 +204,22 @@ mod tests {
             fs::write(root.join(name), "inside").unwrap();
             assert_eq!(read(&root, name), None, "{name}");
         }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn passes_through_a_folder_it_may_only_search() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = TempDir::new().unwrap();
+        let root = dir.join("search/root");
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("c.md"), "inside").unwrap();
+        let search = fs::Permissions::from_mode(0o311);
+        fs::set_permissions(dir.join("search"), search).unwrap();
+        let root = root.canonicalize().unwrap();
+        let text = read(&root, "c.md");
+        fs::set_permissions(dir.join("search"), fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(text.as_deref(), Some("inside"));
     }
 
     #[cfg(windows)]
