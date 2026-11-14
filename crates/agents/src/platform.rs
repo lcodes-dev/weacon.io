@@ -1,7 +1,12 @@
 //! What differs between operating systems.
 
+mod pty;
+
+pub(crate) use pty::Pty;
 #[cfg(unix)]
 pub(crate) use unix::links;
+#[cfg(all(test, unix))]
+pub(crate) use unix::write_program;
 #[cfg(unix)]
 use unix::{links_of, open_unfollowed};
 #[cfg(windows)]
@@ -51,6 +56,23 @@ mod unix {
     pub(super) fn links_of(opened: &File) -> io::Result<u64> {
         Ok(opened.metadata()?.nlink())
     }
+
+    /// Writes an executable `script` to `path` from a child shell, so this process never holds a
+    /// write handle that another test's fork could inherit, which makes running it fail as busy.
+    #[cfg(test)]
+    pub(crate) fn write_program(path: &Path, script: &str) {
+        let written = std::process::Command::new("sh")
+            .args([
+                "-c",
+                "printf '%s' \"$1\" > \"$2\" && chmod 755 \"$2\"",
+                "sh",
+                script,
+            ])
+            .arg(path)
+            .status()
+            .unwrap();
+        assert!(written.success());
+    }
 }
 
 #[cfg(windows)]
@@ -89,29 +111,6 @@ mod windows {
             return Err(io::Error::last_os_error());
         }
         Ok(u64::from(info.nNumberOfLinks))
-    }
-}
-
-/// Test helpers that only one operating system has.
-#[cfg(test)]
-#[cfg(unix)]
-pub(crate) mod scripts {
-    use std::path::Path;
-
-    /// Writes an executable `script` to `path` from a child shell, so this process never holds a
-    /// write handle that another test's fork could inherit, which makes running it fail as busy.
-    pub(crate) fn write_program(path: &Path, script: &str) {
-        let written = std::process::Command::new("sh")
-            .args([
-                "-c",
-                "printf '%s' \"$1\" > \"$2\" && chmod 755 \"$2\"",
-                "sh",
-                script,
-            ])
-            .arg(path)
-            .status()
-            .unwrap();
-        assert!(written.success());
     }
 }
 

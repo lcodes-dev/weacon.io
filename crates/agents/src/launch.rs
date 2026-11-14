@@ -11,8 +11,10 @@ use weacon_observability::Fault;
 use weacon_protocol::{AccessLevel, AgentKind, AgentSession, App, RunId, code};
 
 use crate::access::Rules;
+use crate::platform;
 use crate::run::{self, AgentRun};
 use crate::spawn_policy::SpawnPolicy;
+use crate::terminal::{Events, Size, Terminal};
 use crate::wire::Wire;
 use crate::{claude, codex};
 
@@ -138,16 +140,40 @@ impl Launch {
     /// When this build doesn't know the agent, its program can't be run, or the sign-in ends
     /// without success.
     pub async fn log_in(&self) -> Result<(), Fault> {
-        let mut command = match self.agent {
-            AgentKind::Claude => claude::login(self),
-            AgentKind::Codex => codex::login(self),
-            AgentKind::Newer => return Err(unknown()),
-        };
+        let mut command = self.vendors(claude::login, codex::login)?;
         let failed = || Fault::new(code!("agent.login_failed"), "The sign-in didn't finish");
         match command.status().await {
             Ok(exit) if exit.success() => Ok(()),
             Ok(_) => Err(failed()),
             Err(error) => Err(failed().because(error)),
+        }
+    }
+
+    /// Runs the vendor's own sign-in in a new terminal of `size`: the same program, fixed
+    /// arguments and config folder as [`Launch::log_in`], and no shell.
+    ///
+    /// # Errors
+    /// When this build doesn't know the agent, or its program can't be started.
+    pub fn log_in_terminal(&self, size: Size) -> Result<(Terminal, Events), Fault> {
+        let mut command = self.vendors(claude::login, codex::login)?;
+        // What the browser's terminal emulates, whatever this process runs under.
+        command.env("TERM", "xterm-256color");
+        let (pty, events) = platform::Pty::spawn(command, size).map_err(|error| {
+            Fault::new(code!("agent.login_failed"), "The sign-in couldn't start").because(error)
+        })?;
+        Ok((Terminal { pty }, Events(events)))
+    }
+
+    // The command of this launch's vendor.
+    fn vendors(
+        &self,
+        claude: fn(&Self) -> Command,
+        codex: fn(&Self) -> Command,
+    ) -> Result<Command, Fault> {
+        match self.agent {
+            AgentKind::Claude => Ok(claude(self)),
+            AgentKind::Codex => Ok(codex(self)),
+            AgentKind::Newer => Err(unknown()),
         }
     }
 
@@ -397,7 +423,7 @@ mod tests {
     async fn a_status_command_that_never_ends_is_given_up_on() {
         let dir = TempDir::new().unwrap();
         let program = dir.join("codex");
-        crate::platform::scripts::write_program(&program, "#!/bin/sh\nexec sleep 3600\n");
+        platform::write_program(&program, "#!/bin/sh\nexec sleep 3600\n");
         let hanging = Launch {
             program,
             ..launch(AgentKind::Codex, &dir)

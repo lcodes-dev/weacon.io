@@ -153,6 +153,7 @@ mod tests {
         use super::*;
         use weacon_testing::TempDir;
 
+        use crate::platform::write_program;
         use crate::run::AgentRun;
         use crate::spawn_policy::SpawnPolicy;
         use crate::test_support::{app, run_id, started};
@@ -197,7 +198,7 @@ mod tests {
 
         fn status_script(dir: &Path, number: usize, status: &str, code: u8) -> Launch {
             let program = dir.join(format!("claude-{number}"));
-            crate::platform::scripts::write_program(
+            write_program(
                 &program,
                 &format!("#!/bin/sh\nprintf '%s' '{status}'\nexit {code}\n"),
             );
@@ -215,7 +216,7 @@ mod tests {
         // inherited, then prints its workspace's session.
         fn fake_claude(dir: &Path) -> PathBuf {
             let program = dir.join("claude");
-            crate::platform::scripts::write_program(
+            write_program(
                 &program,
                 "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$CLAUDE_CONFIG_DIR/args\"\nread -r line\n\
                  sh -c 'cat /proc/self/oom_score_adj; echo \"$CARGO_BUILD_JOBS $CLAUDE_CONFIG_DIR\"' \
