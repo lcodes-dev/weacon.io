@@ -456,6 +456,10 @@ mod tests {
             error["error"]["message"],
             "These arguments don't fit the tool"
         );
+        let later = call("later", json!({}));
+        let unknown = post(&mcp, &[("Authorization", &auth)], &later).await;
+        let error: Value = serde_json::from_str(&unknown.body).unwrap();
+        assert_eq!(error["error"]["message"], "No such tool");
     }
 
     #[test]
