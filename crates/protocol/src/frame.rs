@@ -84,6 +84,8 @@ fn only_received(message: &Message) -> bool {
         Message::MachineSettingsAnswer(answer) => answer.answer.is_newer(),
         Message::SessionsQuery(query) => query.query.is_newer(),
         Message::SessionsAnswer(answer) => answer.answer.is_newer(),
+        Message::TerminalCommand(command) => command.is_newer(),
+        Message::Terminal(update) => update.is_newer(),
         Message::Hello(_)
         | Message::Welcome(_)
         | Message::Error(_)

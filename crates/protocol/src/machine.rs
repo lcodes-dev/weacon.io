@@ -4,6 +4,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Deserializer, Serialize, de};
 
 use crate::AccountId;
+use crate::to_hex;
 use crate::token::token_id;
 
 token_id!(
@@ -29,12 +30,7 @@ const KEY_PATTERN: &str = r"^[0-9a-f]{64}$";
 impl MachineKey {
     #[must_use]
     pub fn from_bytes(key: [u8; 32]) -> Self {
-        let nibbles = key.iter().flat_map(|byte| [byte >> 4, byte & 0xf]);
-        Self(
-            nibbles
-                .filter_map(|nibble| char::from_digit(u32::from(nibble), 16))
-                .collect(),
-        )
+        Self(to_hex(&key))
     }
 
     #[must_use]
