@@ -41,6 +41,7 @@ struct Place {
 
 pub(crate) fn read_line(line: &[u8], transcript: &mut Transcript) -> serde_json::Result<()> {
     let parsed = serde_json::from_slice::<Line>(line)?;
+    // Any line may name the folder, also kinds this build doesn't read.
     if transcript.cwd.is_none() {
         transcript.cwd = serde_json::from_slice::<Place>(line)
             .ok()
@@ -73,31 +74,33 @@ fn from_person(message: Message, transcript: &mut Transcript) {
         return;
     }
     // One prompt, where its first text was.
-    let mut prompt: Option<(usize, Vec<String>)> = None;
+    let mut texts = Vec::new();
+    let mut first_text_at = 0;
     for block in message.blocks() {
         match block {
             Block::Text { text } => {
-                let at = transcript.steps.len();
-                prompt.get_or_insert((at, Vec::new())).1.push(text);
+                if texts.is_empty() {
+                    first_text_at = transcript.steps.len();
+                }
+                texts.push(text);
             }
             Block::ToolResult { .. } => transcript.steps.extend(event(block).map(Step::Event)),
             Block::ToolUse { .. } | Block::Other => {}
         }
     }
-    if let Some((at, texts)) = prompt {
-        transcript
-            .steps
-            .insert(at, Step::Prompt(texts.join("\n\n")));
+    if !texts.is_empty() {
+        let prompt = Step::Prompt(texts.join("\n\n"));
+        transcript.steps.insert(first_text_at, prompt);
     }
 }
 
 #[cfg(test)]
 mod tests {
     use serde_json::json;
-    use weacon_protocol::{AgentKind, RunEvent};
+    use weacon_protocol::AgentKind;
 
     use super::*;
-    use crate::test_support::{jsonl, text, tool_done};
+    use crate::test_support::{jsonl, text, tool_call, tool_done};
 
     fn read(lines: &[Value]) -> Transcript {
         Transcript::read(AgentKind::Claude, jsonl(lines).as_bytes()).unwrap()
@@ -130,11 +133,7 @@ mod tests {
                 steps: vec![
                     Step::Prompt("Fix the build".to_owned()),
                     Step::Event(text("Looking")),
-                    Step::Event(RunEvent::ToolCall {
-                        call: "t1".to_owned(),
-                        tool: "Bash".to_owned(),
-                        input: json!({ "command": "make" }),
-                    }),
+                    Step::Event(tool_call("t1", "Bash", json!({ "command": "make" }))),
                     Step::Event(tool_done("t1", true)),
                     Step::Prompt("Try again\n\nwith this".to_owned()),
                 ],
