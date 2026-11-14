@@ -12,7 +12,7 @@ use weacon_protocol::{
 use super::{PAGE, PAGE_BYTES, read};
 use crate::auth::Member;
 use crate::db::{Workspace, chat_not_found};
-use crate::http::Shared;
+use crate::shared::Shared;
 use crate::socket::Closed;
 
 /// The chats one socket follows, and which of them have events it hasn't sent yet.
@@ -156,7 +156,7 @@ mod tests {
 
     use super::*;
     use crate::db::test_support::{NOW, append, id, make, said};
-    use crate::test_support::socket::{self, Client, next, open, say};
+    use crate::test_support::socket::{self, Socket, next, open, say};
     use crate::test_support::{self, Fixture, Running, request_with, run};
 
     async fn w1(fixture: &Fixture) -> Workspace {
@@ -175,7 +175,7 @@ mod tests {
         (server, body["token"].as_str().unwrap().to_owned())
     }
 
-    async fn feed(server: &Running, token: &str, offers: &[&str]) -> Client {
+    async fn feed(server: &Running, token: &str, offers: &[&str]) -> Socket {
         let mut client = open(server.address, "/api/workspaces/w1/feed", token)
             .await
             .unwrap();
@@ -184,12 +184,12 @@ mod tests {
         client
     }
 
-    async fn ask(client: &mut Client, id: u32, message: Message) {
+    async fn ask(client: &mut Socket, id: u32, message: Message) {
         socket::send(client, Envelope { id, message }).await;
     }
 
     // The next message about a chat, or an error, past the workspace's own changes.
-    async fn heard(client: &mut Client) -> Message {
+    async fn heard(client: &mut Socket) -> Message {
         loop {
             let message = next(client).await;
             if !matches!(message, Message::Workspace(_)) {

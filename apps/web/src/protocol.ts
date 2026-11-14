@@ -723,6 +723,10 @@ export type MachineSettingsAnswerKind = (
   | {
     kind: "current";
   } & MachineSettings
+  | {
+    kind: "repos";
+    repos: Array<RepoId>;
+  }
 );
 
 /**
@@ -762,6 +766,9 @@ export type MachineSettingsQuery = {
 export type MachineSettingsQueryKind = (
   | {
     kind: "current";
+  }
+  | {
+    kind: "repos";
   }
 );
 

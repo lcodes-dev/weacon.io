@@ -12,7 +12,8 @@ use tokio::sync::broadcast;
 use weacon_protocol::{ChatId, ChatList, Message, WorkspaceId};
 
 use crate::auth::Member;
-use crate::http::{Shared, failure};
+use crate::http::failure;
+use crate::shared::Shared;
 
 /// The most events of one chat sent at a time.
 const PAGE: u32 = 200;

@@ -1843,6 +1843,26 @@
           "required": [
             "kind"
           ]
+        },
+        {
+          "description": "The ids of the workspace's repositories, sorted. Where each is on the machine is never\nsaid: everyone who may ask would see it.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "repos"
+            },
+            "repos": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/RepoId"
+              }
+            }
+          },
+          "required": [
+            "kind",
+            "repos"
+          ]
         }
       ]
     },
@@ -1911,6 +1931,19 @@
             "kind": {
               "type": "string",
               "const": "current"
+            }
+          },
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "description": "The repositories the owner registered for the workspace, of a core that offers\n`repo.list`; an older core answers `request.unknown`.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "repos"
             }
           },
           "required": [

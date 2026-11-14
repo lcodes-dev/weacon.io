@@ -28,7 +28,7 @@ use weacon_protocol::{AccountId, AgentOwner, AgentRef, Author, MemberId, Workspa
 
 pub(crate) use account::{Account, NewWorkspace};
 pub(crate) use backup::restore;
-pub(crate) use machine::{Claim, Confirmation, NewPairing};
+pub(crate) use machine::{Claim, Claiming, Confirmation, NewPairing};
 pub(crate) use sign_in::{Attempt, NewChallenge};
 pub(crate) use workspace::Workspace;
 
