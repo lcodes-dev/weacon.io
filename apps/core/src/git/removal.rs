@@ -12,14 +12,16 @@ use weacon_protocol::{ChatId, WorkspaceId, code};
 
 use crate::platform::trash::{self, Trashed};
 
-/// A worktree in the Trash.
+/// A worktree in the Trash, or on its way there.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct Removal {
     pub(crate) workspace: WorkspaceId,
     pub(crate) chat: ChatId,
     /// Where the worktree was, and comes back to.
     pub(crate) worktree: PathBuf,
-    pub(crate) trashed: Trashed,
+    /// Where it went; none while the move is under way, so a removal cut short there left the
+    /// worktree in place, or in the Trash with only the Trash's own record of it.
+    pub(crate) trashed: Option<Trashed>,
     /// The worktree's `.git` file, which names it alone, to know it again in the Trash.
     pub(crate) git_file: String,
     /// Unix seconds, for showing when it was removed.
@@ -50,46 +52,54 @@ impl Journal {
         now: SystemTime,
     ) -> Result<Removal, Fault> {
         let mut removals = self.load()?;
+        if let Some(at) = self.find(&removals, chat)
+            && removals.get(at).is_some_and(stale)
+        {
+            removals.remove(at);
+        }
         if self.find(&removals, chat).is_some() {
             return Err(Fault::new(
                 code!("worktree.already_removed"),
                 "The chat's worktree is already in the Trash",
             ));
         }
-        let git_file = read_git_file(worktree).map_err(|error| {
-            Fault::new(
-                code!("worktree.not_a_worktree"),
-                "That folder isn't a git worktree",
-            )
-            .because(error)
-        })?;
-        let trashed = to_trash(worktree).map_err(|error| {
-            Fault::new(
-                code!("worktree.trash_failed"),
-                "The worktree couldn't be moved to the Trash",
-            )
-            .because(error)
-        })?;
-        let removal = Removal {
+        let git_file = worktree_git_file(worktree)?;
+        let mut removal = Removal {
             workspace: self.workspace.clone(),
             chat: chat.clone(),
             worktree: worktree.to_owned(),
-            trashed,
+            trashed: None,
             git_file,
             at: now
                 .duration_since(UNIX_EPOCH)
                 .map_or(0, |since| since.as_secs()),
         };
         removals.push(removal.clone());
+        self.save(&removals)?;
+        let trashed = match to_trash(worktree) {
+            Ok(trashed) => trashed,
+            Err(error) => {
+                removals.pop();
+                drop(self.save(&removals));
+                return Err(Fault::new(
+                    code!("worktree.trash_failed"),
+                    "The worktree couldn't be moved to the Trash",
+                )
+                .because(error));
+            }
+        };
+        removal.trashed = Some(trashed.clone());
+        if let Some(last) = removals.last_mut() {
+            *last = removal.clone();
+        }
         if let Err(error) = self.save(&removals) {
             // Unjournaled, it couldn't be undone here: put it back.
-            return Err(match trash::restore(&removal.trashed, worktree) {
-                Ok(()) => error,
-                Err(_) => Fault::new(
-                    code!("worktree.unjournaled"),
-                    "The worktree is in the Trash, but Weacon couldn't note it; restore it from there",
-                ),
-            });
+            if trash::restore(&trashed, worktree).is_err() {
+                return Err(unjournaled());
+            }
+            removals.pop();
+            drop(self.save(&removals));
+            return Err(error);
         }
         Ok(removal)
     }
@@ -99,14 +109,20 @@ impl Journal {
     pub(crate) fn restore(&self, chat: &ChatId) -> Result<Removal, Fault> {
         let mut removals = self.load()?;
         let Some(at) = self.find(&removals, chat) else {
-            return Err(Fault::new(
-                code!("worktree.not_removed"),
-                "The chat's worktree isn't in the Trash",
-            ));
+            return Err(not_removed());
         };
         let removal = removals.remove(at);
+        let Some(trashed) = &removal.trashed else {
+            // Cut short: the move either never happened or isn't on record.
+            self.save(&removals)?;
+            return Err(if stale(&removal) {
+                not_removed()
+            } else {
+                unjournaled()
+            });
+        };
         // A Trash that won't be read, as macOS's may not, is left to the move to refuse.
-        let gone = match read_git_file(&removal.trashed.item) {
+        let gone = match read_git_file(&trashed.item) {
             Ok(git_file) => git_file != removal.git_file,
             Err(error) => error.kind() != io::ErrorKind::PermissionDenied,
         };
@@ -117,7 +133,7 @@ impl Journal {
                 "The worktree is no longer in the Trash",
             ));
         }
-        trash::restore(&removal.trashed, &removal.worktree).map_err(|error| {
+        trash::restore(trashed, &removal.worktree).map_err(|error| {
             let fault = if error.kind() == io::ErrorKind::PermissionDenied {
                 Fault::new(code!("worktree.restore_refused"), trash::REFUSED)
             } else {
@@ -138,7 +154,9 @@ impl Journal {
         let removals = self.load()?;
         Ok(self
             .find(&removals, chat)
-            .and_then(|at| removals.get(at).cloned()))
+            .and_then(|at| removals.get(at))
+            .filter(|removal| !stale(removal))
+            .cloned())
     }
 
     // Where `chat`'s removal is; another workspace's never count, even in this file.
@@ -178,6 +196,36 @@ fn read_git_file(worktree: &Path) -> io::Result<String> {
     Ok(text)
 }
 
+// A removal cut short before its worktree moved: the worktree is still where it was.
+fn stale(removal: &Removal) -> bool {
+    removal.trashed.is_none()
+        && read_git_file(&removal.worktree).is_ok_and(|git_file| git_file == removal.git_file)
+}
+
+fn worktree_git_file(worktree: &Path) -> Result<String, Fault> {
+    read_git_file(worktree).map_err(|error| {
+        Fault::new(
+            code!("worktree.not_a_worktree"),
+            "That folder isn't a git worktree",
+        )
+        .because(error)
+    })
+}
+
+fn not_removed() -> Fault {
+    Fault::new(
+        code!("worktree.not_removed"),
+        "The chat's worktree isn't in the Trash",
+    )
+}
+
+fn unjournaled() -> Fault {
+    Fault::new(
+        code!("worktree.unjournaled"),
+        "Weacon lost track of the worktree on its way to the Trash; look for it there",
+    )
+}
+
 fn journal_failed() -> Fault {
     Fault::new(
         code!("worktree.journal_failed"),
@@ -197,6 +245,10 @@ mod tests {
 
     fn chat(id: &str) -> ChatId {
         ChatId::try_from(id.to_owned()).unwrap()
+    }
+
+    fn item(removal: &Removal) -> PathBuf {
+        removal.trashed.as_ref().unwrap().item.clone()
     }
 
     fn code(fault: &Fault) -> &str {
@@ -236,10 +288,10 @@ mod tests {
             workspace: workspace("w-2"),
             chat: chat("c-1"),
             worktree: dir.join("trees/c-1"),
-            trashed: Trashed {
+            trashed: Some(Trashed {
                 item: dir.join("Trash/files/c-1"),
                 info: None,
-            },
+            }),
             git_file: "gitdir: /repo/.git/worktrees/c-1\n".to_owned(),
             at: 7,
         };
@@ -316,7 +368,7 @@ mod tests {
         let removal = journal.remove(&one, &path, bin(&dir), at).unwrap();
 
         assert!(!path.exists());
-        let moved = removal.trashed.item.join("work.txt");
+        let moved = item(&removal).join("work.txt");
         assert_eq!(fs::read_to_string(moved).unwrap(), "c-1");
         assert_eq!((removal.at, &removal.worktree), (9, &path));
         assert_eq!(removal.workspace, workspace("w-1"));
@@ -349,7 +401,7 @@ mod tests {
     }
 
     #[test]
-    fn a_worktree_that_cant_be_journaled_is_put_back() {
+    fn a_journal_that_cant_be_read_moves_nothing() {
         let dir = TempDir::new().unwrap();
         // A folder where the journal's file should be.
         fs::create_dir_all(dir.join("removed.json")).unwrap();
@@ -385,13 +437,13 @@ mod tests {
         let path = worktree(&dir, "c-1");
         let removal = journal.remove(&one, &path, bin(&dir), UNIX_EPOCH).unwrap();
         // The Trash emptied, and another folder trashed under the same name.
-        fs::write(removal.trashed.item.join(".git"), "gitdir: /other\n").unwrap();
+        fs::write(item(&removal).join(".git"), "gitdir: /other\n").unwrap();
 
         let error = journal.restore(&one).unwrap_err();
 
         assert_eq!(code(&error), "worktree.gone_from_trash");
         assert!(!path.exists());
-        assert!(removal.trashed.item.exists());
+        assert!(item(&removal).exists());
         assert_eq!(journal.removed(&one).unwrap(), None);
     }
 
@@ -402,7 +454,7 @@ mod tests {
         let path = worktree(&dir, "c-1");
         let removal = journal.remove(&one, &path, bin(&dir), UNIX_EPOCH).unwrap();
         // Moved back, but stopped before the journal was saved.
-        trash::restore(&removal.trashed, &path).unwrap();
+        trash::restore(removal.trashed.as_ref().unwrap(), &path).unwrap();
 
         let error = journal.restore(&one).unwrap_err();
 
@@ -443,13 +495,146 @@ mod tests {
         let path = worktree(&dir, "c-1");
         let removal = journal.remove(&one, &path, bin(&dir), UNIX_EPOCH).unwrap();
         // The Trash emptied, and a clone, whose `.git` is a folder, trashed under the name.
-        fs::remove_file(removal.trashed.item.join(".git")).unwrap();
-        fs::create_dir(removal.trashed.item.join(".git")).unwrap();
+        fs::remove_file(item(&removal).join(".git")).unwrap();
+        fs::create_dir(item(&removal).join(".git")).unwrap();
 
         let error = journal.restore(&one).unwrap_err();
 
         assert_eq!(code(&error), "worktree.gone_from_trash");
         assert!(!path.exists());
+    }
+
+    #[test]
+    fn a_removal_is_on_record_before_the_worktree_moves() {
+        let dir = TempDir::new().unwrap();
+        let path = worktree(&dir, "c-1");
+        let file = dir.join("removed.json");
+        let to_bin = bin(&dir);
+        let watched = |moving: &Path| {
+            let pending: Vec<Removal> = serde_json::from_slice(&fs::read(&file).unwrap()).unwrap();
+            assert_eq!(pending.len(), 1);
+            assert_eq!(pending[0].trashed, None);
+            to_bin(moving)
+        };
+
+        let removal = journal(&dir, "w-1")
+            .remove(&chat("c-1"), &path, watched, UNIX_EPOCH)
+            .unwrap();
+
+        let saved: Vec<Removal> = serde_json::from_slice(&fs::read(&file).unwrap()).unwrap();
+        assert_eq!(saved, [removal]);
+    }
+
+    #[test]
+    fn a_removal_cut_short_is_tidied_where_the_worktree_is() {
+        let dir = TempDir::new().unwrap();
+        let (journal, one) = (journal(&dir, "w-1"), chat("c-1"));
+        let path = worktree(&dir, "c-1");
+        let pending = Removal {
+            workspace: workspace("w-1"),
+            chat: one.clone(),
+            worktree: path.clone(),
+            trashed: None,
+            git_file: fs::read_to_string(path.join(".git")).unwrap(),
+            at: 0,
+        };
+        fs::write(
+            dir.join("removed.json"),
+            serde_json::to_vec(&[&pending]).unwrap(),
+        )
+        .unwrap();
+
+        // Stopped before the move: the worktree is where it was.
+        assert_eq!(
+            code(&journal.restore(&one).unwrap_err()),
+            "worktree.not_removed"
+        );
+        assert_eq!(journal.removed(&one).unwrap(), None);
+        assert!(path.join("work.txt").exists());
+
+        // Stopped after it: the worktree is in the Trash with only the Trash's own record.
+        fs::write(
+            dir.join("removed.json"),
+            serde_json::to_vec(&[&pending]).unwrap(),
+        )
+        .unwrap();
+        bin(&dir)(&path).unwrap();
+        assert_eq!(
+            code(&journal.restore(&one).unwrap_err()),
+            "worktree.unjournaled"
+        );
+        assert_eq!(journal.removed(&one).unwrap(), None);
+    }
+
+    #[test]
+    fn a_worktree_moved_but_not_journaled_is_put_back() {
+        let dir = TempDir::new().unwrap();
+        let path = worktree(&dir, "c-1");
+        let file = dir.join("removed.json");
+        let to_bin = bin(&dir);
+        // The move works, then the journal can't be written.
+        let breaks = |moving: &Path| {
+            let moved = to_bin(moving);
+            fs::remove_file(&file).unwrap();
+            fs::create_dir(&file).unwrap();
+            moved
+        };
+
+        let error = journal(&dir, "w-1")
+            .remove(&chat("c-1"), &path, breaks, UNIX_EPOCH)
+            .unwrap_err();
+
+        assert_eq!(code(&error), "worktree.journal_failed");
+        assert_eq!(fs::read_to_string(path.join("work.txt")).unwrap(), "c-1");
+    }
+
+    #[test]
+    fn a_worktree_that_cant_be_put_back_is_said_to_be_lost() {
+        let dir = TempDir::new().unwrap();
+        let path = worktree(&dir, "c-1");
+        let file = dir.join("removed.json");
+        let to_bin = bin(&dir);
+        let breaks = |moving: &Path| {
+            let moved = to_bin(moving);
+            fs::remove_file(&file).unwrap();
+            fs::create_dir(&file).unwrap();
+            // Something takes the worktree's place, so it can't come back.
+            fs::create_dir_all(moving.join("new")).unwrap();
+            moved
+        };
+
+        let error = journal(&dir, "w-1")
+            .remove(&chat("c-1"), &path, breaks, UNIX_EPOCH)
+            .unwrap_err();
+
+        assert_eq!(code(&error), "worktree.unjournaled");
+        assert!(dir.join("bin/c-1/work.txt").exists());
+    }
+
+    #[test]
+    fn a_removal_cut_short_before_the_move_never_blocks_the_chat() {
+        let dir = TempDir::new().unwrap();
+        let (journal, one) = (journal(&dir, "w-1"), chat("c-1"));
+        let path = worktree(&dir, "c-1");
+        let pending = Removal {
+            workspace: workspace("w-1"),
+            chat: one.clone(),
+            worktree: path.clone(),
+            trashed: None,
+            git_file: fs::read_to_string(path.join(".git")).unwrap(),
+            at: 0,
+        };
+        fs::write(
+            dir.join("removed.json"),
+            serde_json::to_vec(&[&pending]).unwrap(),
+        )
+        .unwrap();
+
+        assert_eq!(journal.removed(&one).unwrap(), None);
+        let removal = journal.remove(&one, &path, bin(&dir), UNIX_EPOCH).unwrap();
+
+        assert!(removal.trashed.is_some());
+        assert_eq!(journal.removed(&one).unwrap(), Some(removal));
     }
 
     #[test]
@@ -476,7 +661,7 @@ mod tests {
         let (journal, one) = (journal(&dir, "w-1"), chat("c-1"));
         let path = worktree(&dir, "c-1");
         let removal = journal.remove(&one, &path, bin(&dir), UNIX_EPOCH).unwrap();
-        fs::remove_dir_all(&removal.trashed.item).unwrap();
+        fs::remove_dir_all(item(&removal)).unwrap();
 
         let error = journal.restore(&one).unwrap_err();
 
@@ -499,7 +684,7 @@ mod tests {
         let error = journal.restore(&one).unwrap_err();
 
         assert_eq!(code(&error), "worktree.restore_failed");
-        assert!(removal.trashed.item.join("work.txt").exists());
+        assert!(item(&removal).join("work.txt").exists());
         assert_eq!(journal.removed(&one).unwrap(), Some(removal));
     }
 }
