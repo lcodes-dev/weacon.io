@@ -162,8 +162,14 @@ impl Uses {
             return colons.saturating_add(1);
         }
         if let Some((ident, _)) = cursor.ident() {
-            if colons != 2 {
+            if colons == ALIAS {
+                return 0;
+            }
+            if colons != 2 || ident == "as" {
                 self.note_path(prefix, path);
+            }
+            if ident == "as" {
+                return ALIAS;
             }
             // After `use`, even one segment names a crate, as in `use sqlx as db;`.
             let used = ident == "use";
@@ -210,6 +216,9 @@ impl Uses {
         }
     }
 }
+
+// Stands in for a colon count after `as`: the next name is an alias, not a path.
+const ALIAS: u8 = u8::MAX;
 
 // `path` without a leading `use`, and whether it had one.
 fn used(path: &[Ident]) -> (&[Ident], bool) {
@@ -420,6 +429,12 @@ mod tests {
                 ["uses sqlx outside the db module"],
                 "{text}"
             );
+        }
+        for text in [
+            "macro_rules! imports { () => { use std::{fmt as fs}; }; }",
+            "macro_rules! imports { () => { use {std::fmt as sqlx}; }; }",
+        ] {
+            assert!(check(&PURE, "src/chats.rs", text).is_empty(), "{text}");
         }
     }
 
