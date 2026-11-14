@@ -1,12 +1,12 @@
 use weacon_protocol::{App, Capability, Code, Envelope, ErrorBody, FrameError, Message, code};
 
 /// What the daemon offers its clients; each feature adds its capability here.
-pub(crate) const CAPABILITIES: &[Code] = &[
-    code!("element.pick"),
-    code!("chat.send"),
-    code!("chat.events"),
-    code!("run.stream"),
-    code!("machine.connect"),
+pub(crate) const CAPABILITIES: &[Capability] = &[
+    Capability::new(code!("element.pick")),
+    Capability::new(code!("chat.send")),
+    Capability::new(code!("chat.events")),
+    Capability::new(code!("run.stream")),
+    Capability::new(code!("machine.connect")),
 ];
 
 /// One client's place in the conversation with the daemon.
@@ -51,7 +51,7 @@ impl Session {
         let id = envelope.id;
         match (self.greeted, envelope.message) {
             (false, Message::Hello(hello)) => {
-                let capabilities = CAPABILITIES.iter().cloned().map(Capability::from).collect();
+                let capabilities = CAPABILITIES.to_vec();
                 let message = hello.answer(app.clone(), capabilities);
                 self.greeted = matches!(message, Message::Welcome(_));
                 Reply {
@@ -72,22 +72,11 @@ impl Session {
 
 #[cfg(test)]
 mod tests {
-    use weacon_protocol::{Hello, PROTOCOL, Welcome};
+    use weacon_protocol::{PROTOCOL, Welcome};
 
     use super::*;
     use crate::daemon::build;
-    use crate::test_support::{self, VERSION};
-
-    fn hello(id: u32, protocol: u32) -> Envelope {
-        Envelope {
-            id,
-            message: Message::Hello(Hello {
-                protocol,
-                app: build(&VERSION),
-                capabilities: Vec::new(),
-            }),
-        }
-    }
+    use crate::test_support::{self, VERSION, client_hello};
 
     fn error_code(reply: &Reply) -> Option<&str> {
         test_support::error_code(&reply.envelope.as_ref()?.message)
@@ -96,8 +85,8 @@ mod tests {
     #[test]
     fn a_matching_hello_is_welcomed_once() {
         let mut session = Session::default();
-        let welcome = session.answer(Ok(hello(1, PROTOCOL)), &build(&VERSION));
-        let again = session.answer(Ok(hello(2, PROTOCOL)), &build(&VERSION));
+        let welcome = session.answer(Ok(client_hello(1, PROTOCOL, [])), &build(&VERSION));
+        let again = session.answer(Ok(client_hello(2, PROTOCOL, [])), &build(&VERSION));
 
         assert_eq!(
             welcome,
@@ -126,7 +115,7 @@ mod tests {
     #[test]
     fn another_protocol_is_refused_and_hung_up_on() {
         let mut session = Session::default();
-        let reply = session.answer(Ok(hello(1, PROTOCOL + 1)), &build(&VERSION));
+        let reply = session.answer(Ok(client_hello(1, PROTOCOL + 1, [])), &build(&VERSION));
 
         assert_eq!(error_code(&reply), Some("protocol.unsupported"));
         assert!(reply.close);
@@ -152,7 +141,7 @@ mod tests {
     #[test]
     fn after_the_hello_unknown_messages_get_an_error_and_errors_get_nothing() {
         let mut session = Session::default();
-        session.answer(Ok(hello(1, PROTOCOL)), &build(&VERSION));
+        session.answer(Ok(client_hello(1, PROTOCOL, [])), &build(&VERSION));
         let unknown = session.answer(
             Ok(Envelope {
                 id: 5,

@@ -11,6 +11,7 @@ use weacon_protocol::{
     code,
 };
 
+use crate::app::blocking;
 use crate::platform;
 
 // An entry, and a window of entries, each fit one frame with room for what travels with them.
@@ -231,7 +232,7 @@ impl Log {
             (earlier, action),
             (
                 Some(ChatEvent::Prompt { text: was_text, repo: was_repo, .. }),
-                ChatAction::Prompt { text, repo },
+                ChatAction::Prompt { text, repo, .. },
             ) if was_text == *text && was_repo == *repo
         );
         Ok(match (same, asked.receipted) {
@@ -292,14 +293,6 @@ impl Log {
             .copied()
             .unwrap_or(self.end)
     }
-}
-
-async fn blocking<T: Send + 'static>(
-    work: impl FnOnce() -> io::Result<T> + Send + 'static,
-) -> io::Result<T> {
-    tokio::task::spawn_blocking(work)
-        .await
-        .unwrap_or_else(|error| Err(io::Error::other(error)))
 }
 
 #[cfg(test)]
@@ -371,6 +364,7 @@ mod tests {
         ChatAction::Prompt {
             text: text.to_owned(),
             repo: None,
+            machine: None,
         }
     }
 
@@ -616,6 +610,7 @@ mod tests {
         let elsewhere = ChatAction::Prompt {
             text: "Hi".to_owned(),
             repo: Some(RepoId::try_from("site".to_owned()).unwrap()),
+            machine: None,
         };
         assert_eq!(seen(&log, "r-1", elsewhere).await, Seen::Other);
         assert_eq!(seen(&log, "r-1", ChatAction::Interrupt).await, Seen::Other);

@@ -1,14 +1,16 @@
 use std::collections::HashMap;
 use std::ffi::OsString;
+use std::io::{self, Read, Write};
 use std::path::Path;
 use std::time::SystemTime;
 
 use weacon_observability::Reporter;
-use weacon_protocol::{Pick, RequestId};
+use weacon_protocol::{Message, Pick, RequestId};
 use weacon_version::Version;
 
 pub(crate) mod tls;
 
+pub(crate) use weacon_testing::fake_core::client_hello;
 pub(crate) use weacon_testing::{Records, messages, recording_logger, recording_sink};
 
 use crate::app::App;
@@ -31,16 +33,18 @@ pub(crate) fn env(vars: &[(&str, &str)]) -> impl Fn(&str) -> Option<OsString> + 
 /// An app whose state is in `state_dir`, logging nowhere and reporting nothing.
 pub(crate) fn app(state_dir: Option<&Path>, log_file: Option<&Path>) -> App {
     App {
-        version: VERSION,
-        log: recording_logger().0,
-        reporter: Reporter::new(
-            None,
-            true,
-            Box::new(|_| Ok(())),
-            Box::new(|| 0),
-            Box::new(SystemTime::now),
-        )
-        .into(),
+        base: weacon_appkit::App {
+            version: VERSION,
+            log: recording_logger().0,
+            reporter: Reporter::new(
+                None,
+                true,
+                Box::new(|_| Ok(())),
+                Box::new(|| 0),
+                Box::new(SystemTime::now),
+            )
+            .into(),
+        },
         state_dir: state_dir.map(Path::to_path_buf),
         work_root: None,
         log_file: log_file.map(Path::to_path_buf),
@@ -61,9 +65,28 @@ pub(crate) fn pick(request: &str, html: &str) -> Pick {
     }
 }
 
+/// A reader and writer whose every read and write fails.
+pub(crate) struct Broken;
+
+impl Read for Broken {
+    fn read(&mut self, _: &mut [u8]) -> io::Result<usize> {
+        Err(io::ErrorKind::BrokenPipe.into())
+    }
+}
+
+impl Write for Broken {
+    fn write(&mut self, _: &[u8]) -> io::Result<usize> {
+        Err(io::ErrorKind::BrokenPipe.into())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
 /// The code of an error message, if it is one.
-pub(crate) fn error_code(message: &weacon_protocol::Message) -> Option<&str> {
-    let weacon_protocol::Message::Error(body) = message else {
+pub(crate) fn error_code(message: &Message) -> Option<&str> {
+    let Message::Error(body) = message else {
         return None;
     };
     Some(body.code.as_str())
