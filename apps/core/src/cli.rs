@@ -84,20 +84,15 @@ pub(crate) struct MapCommand {
     /// The repository's root folder.
     #[arg(long, global = true, default_value = ".")]
     pub(crate) root: PathBuf,
-    /// The most bytes the answer may hold.
-    #[arg(long)]
+    /// The most bytes the answer may hold, for the map and `symbol`.
+    #[arg(long, global = true)]
     pub(crate) budget: Option<u32>,
 }
 
 #[derive(Debug, PartialEq, Eq, Subcommand)]
 pub(crate) enum MapSubcommand {
     /// Print the text the MCP's `symbol` tool answers for an item's full path.
-    Symbol {
-        path: String,
-        /// The most bytes the answer may hold.
-        #[arg(long)]
-        budget: Option<u32>,
-    },
+    Symbol { path: String },
     /// Read pinned anchors on stdin, one per line, and print those that no longer match.
     CheckAnchors,
 }
@@ -209,7 +204,7 @@ mod tests {
     }
 
     #[test]
-    fn map_reads_take_a_root_anywhere_and_a_budget_where_they_answer() {
+    fn map_commands_take_a_root_and_a_budget_before_or_after_their_subcommand() {
         let map = |args: &[&str]| {
             let args = [["weacon", "map"].as_slice(), args].concat();
             run(&args).map(|cli| cli.command).ok()
@@ -221,21 +216,23 @@ mod tests {
                 budget,
             }))
         };
-        let symbol = |budget| {
+        let symbol = || {
             let path = "a::b".to_owned();
-            Some(MapSubcommand::Symbol { path, budget })
+            Some(MapSubcommand::Symbol { path })
         };
         let check = || Some(MapSubcommand::CheckAnchors);
 
         let outline = map(&["--budget", "2000"]);
         let item = map(&["--root", "r", "symbol", "a::b", "--budget", "1500"]);
+        let early = map(&["--budget", "1500", "symbol", "a::b"]);
         let checked = map(&["check-anchors"]).unwrap();
 
         assert_eq!(outline, map_of(None, ".", Some(2000)));
-        assert_eq!(item, map_of(symbol(Some(1500)), "r", None));
+        assert_eq!(item, map_of(symbol(), "r", Some(1500)));
+        assert_eq!(early, map_of(symbol(), ".", Some(1500)));
         assert_eq!(
             map(&["symbol", "a::b", "--root", "r"]),
-            map_of(symbol(None), "r", None)
+            map_of(symbol(), "r", None)
         );
         assert_eq!((checked.name(), checked.log_name()), ("map", "cli.log"));
         assert_eq!(Some(checked), map_of(check(), ".", None));
@@ -247,8 +244,10 @@ mod tests {
             map(&["check-anchors", "--root", "/srv"]),
             map_of(check(), "/srv", None)
         );
-        let ignored = run(&["weacon", "map", "check-anchors", "--budget", "3"]).unwrap_err();
-        assert_eq!(ignored.kind(), ErrorKind::UnknownArgument);
+        assert_eq!(
+            map(&["--budget", "3", "check-anchors"]),
+            map_of(check(), ".", Some(3))
+        );
     }
 
     #[test]

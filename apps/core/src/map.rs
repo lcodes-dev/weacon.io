@@ -26,10 +26,14 @@ pub(crate) fn run(
         budget,
     } = command;
     let call = match command {
-        Some(MapSubcommand::CheckAnchors) => return check_anchors(app, &root, input, out),
-        Some(MapSubcommand::Symbol { path, budget }) => {
-            McpCall::Symbol(SymbolArgs { path, budget })
+        Some(MapSubcommand::CheckAnchors) if budget.is_some() => {
+            return Err(Fault::new(
+                code!("map.budget_unused"),
+                "Only the map and symbol take a budget",
+            ));
         }
+        Some(MapSubcommand::CheckAnchors) => return check_anchors(app, &root, input, out),
+        Some(MapSubcommand::Symbol { path }) => McpCall::Symbol(SymbolArgs { path, budget }),
         None => McpCall::Map(MapArgs { budget }),
     };
     print(out, &tools::answer(&call, &root)?)?;
@@ -257,7 +261,7 @@ mod tests {
 
     fn symbol(path: &str) -> MapSubcommand {
         let path = path.to_owned();
-        MapSubcommand::Symbol { path, budget: None }
+        MapSubcommand::Symbol { path }
     }
 
     #[test]
@@ -315,9 +319,16 @@ mod tests {
         let dir = TempDir::new().unwrap();
 
         let unread = run(command(dir.join("nowhere")), &mut Vec::new());
+        let budgeted = MapCommand {
+            command: Some(MapSubcommand::CheckAnchors),
+            root: repo(CRATE).to_path_buf(),
+            budget: Some(1000),
+        };
+        let unused = run(budgeted, &mut Vec::new());
         let unprinted = run(command(repo(CRATE).to_path_buf()), &mut Broken);
 
         assert_eq!(unread.code().as_str(), "map.read_failed");
+        assert_eq!(unused.code().as_str(), "map.budget_unused");
         assert_eq!(unprinted.code().as_str(), "map.output_failed");
     }
 
