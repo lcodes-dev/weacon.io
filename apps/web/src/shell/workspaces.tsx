@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { type ReactNode, useEffect, useRef, useState } from "react";
 
 import { ME } from "../build.ts";
 import { Connection, type Status, statusText } from "../connection.ts";
@@ -6,14 +6,19 @@ import { workspaceOf } from "../place.ts";
 import type { WorkspaceId, WorkspaceSummary } from "../protocol.ts";
 import type { Api } from "./api.ts";
 import { useAsk } from "./ask.ts";
+import { Frame } from "./frame.tsx";
+import { STORE, opening, remember } from "./last-workspace.ts";
 import { problemText } from "./problems.ts";
 import { FEED, feedUrl } from "./workspace-feed.ts";
 
-/** The signed-in person's workspaces, and the one `?workspace=` names, open on its feed. */
-export function Workspaces({ api }: { api: Api }) {
+/**
+ * The signed-in person's workspaces, and the one `?workspace=` names, or else the last one opened
+ * here, open on its feed with a selector in the header; `who` is the header's account part.
+ */
+export function Workspaces({ api, who }: { api: Api; who: ReactNode }) {
   const [list, setList] = useState<WorkspaceSummary[]>();
   const [problem, setProblem] = useState<string>();
-  const [open, setOpen] = useState(() => workspaceOf(window.location.search));
+  const [open, setOpen] = useState(() => opening(window.location.search, STORE));
   // Each fetch and each made workspace takes a number; an answer older than the list is dropped.
   const changes = useRef(0);
   const load = async () => {
@@ -39,6 +44,13 @@ export function Workspaces({ api }: { api: Api }) {
       window.removeEventListener("popstate", follow);
     };
   }, [api]);
+  useEffect(() => {
+    remember(STORE, open);
+    // One opened from memory takes its place in the address, so Back and links find it.
+    if (open !== undefined && workspaceOf(window.location.search) !== open) {
+      window.history.replaceState(null, "", `?workspace=${open}`);
+    }
+  }, [open]);
   const choose = (id: WorkspaceId | undefined) => {
     window.history.pushState(null, "", id === undefined ? window.location.pathname : `?workspace=${id}`);
     setOpen(id);
@@ -53,46 +65,63 @@ export function Workspaces({ api }: { api: Api }) {
       listing.current = false;
     };
   }, [shown]);
-  if (workspace !== undefined) {
-    return <Workspace key={workspace.id} workspace={workspace} leave={() => choose(undefined)} />;
-  }
+  const selector = list !== undefined && workspace !== undefined && (
+    <span className="selector">
+      <select aria-label="Workspace" value={workspace.id} onChange={(event) => choose(event.target.value)}>
+        {list.map(({ id, name }) => (
+          <option key={id} value={id}>
+            {name}
+          </option>
+        ))}
+      </select>
+      <button type="button" onClick={() => choose(undefined)}>
+        All workspaces
+      </button>
+    </span>
+  );
   return (
-    <section className="page workspaces">
-      <h1>Workspaces</h1>
-      {list === undefined && problem === undefined && <p className="muted">Loading</p>}
-      {list !== undefined && (
-        <ul>
-          {list.map(({ id, name, role }) => (
-            <li key={id}>
-              <button type="button" onClick={() => choose(id)}>
-                {name}
+    <Frame middle={selector} right={who}>
+      {workspace !== undefined ? (
+        <Workspace key={workspace.id} workspace={workspace} />
+      ) : (
+        <section className="page workspaces">
+          <h1>Workspaces</h1>
+          {list === undefined && problem === undefined && <p className="muted">Loading</p>}
+          {list !== undefined && (
+            <ul>
+              {list.map(({ id, name, role }) => (
+                <li key={id}>
+                  <button type="button" onClick={() => choose(id)}>
+                    {name}
+                  </button>
+                  {role === "owner" && <span className="muted">Owner</span>}
+                </li>
+              ))}
+            </ul>
+          )}
+          {problem !== undefined && (
+            <>
+              <p role="alert">{problem}</p>
+              <button type="button" onClick={() => void load()}>
+                Try again
               </button>
-              {role === "owner" && <span className="muted">Owner</span>}
-            </li>
-          ))}
-        </ul>
+            </>
+          )}
+          {list !== undefined && (
+            <NewWorkspace
+              api={api}
+              made={(made) => {
+                changes.current++;
+                setList((before) => [...(before ?? []), made]);
+                if (listing.current) {
+                  choose(made.id);
+                }
+              }}
+            />
+          )}
+        </section>
       )}
-      {problem !== undefined && (
-        <>
-          <p role="alert">{problem}</p>
-          <button type="button" onClick={() => void load()}>
-            Try again
-          </button>
-        </>
-      )}
-      {list !== undefined && (
-        <NewWorkspace
-          api={api}
-          made={(made) => {
-            changes.current++;
-            setList((before) => [...(before ?? []), made]);
-            if (listing.current) {
-              choose(made.id);
-            }
-          }}
-        />
-      )}
-    </section>
+    </Frame>
   );
 }
 
@@ -125,16 +154,19 @@ function NewWorkspace({ api, made }: { api: Api; made(workspace: WorkspaceSummar
   );
 }
 
-function Workspace({ workspace, leave }: { workspace: WorkspaceSummary; leave(): void }) {
+function Workspace({ workspace }: { workspace: WorkspaceSummary }) {
   const status = useFeed(workspace.id);
   return (
-    <section className="page">
-      <button type="button" onClick={leave}>
-        All workspaces
-      </button>
-      <h1>{workspace.name}</h1>
-      <p className="status">{statusText(status)}</p>
-    </section>
+    <div className="workspace">
+      <nav className="chats" aria-label="Chats">
+        <h2>Chats</h2>
+        <p className="muted">No chats yet. Connect a machine to start one.</p>
+      </nav>
+      <section className="page">
+        <h1>{workspace.name}</h1>
+        <p className="status">{statusText(status)}</p>
+      </section>
+    </div>
   );
 }
 

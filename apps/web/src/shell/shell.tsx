@@ -3,6 +3,8 @@ import { useEffect, useMemo, useState } from "react";
 import type { AccountSignedIn, Code } from "../protocol.ts";
 import { Api, type Fetch } from "./api.ts";
 import { useAsk } from "./ask.ts";
+import { Frame } from "./frame.tsx";
+import { STORE, remember } from "./last-workspace.ts";
 import { problemText } from "./problems.ts";
 import "./shell.css";
 import { SignIn } from "./sign-in.tsx";
@@ -37,32 +39,46 @@ export function Shell({ fetch }: { fetch: Fetch }) {
       current = false;
     };
   }, [api]);
+  if (screen.name === "signed in") {
+    const who = (
+      <span className="who">
+        {signingOut.problem !== undefined && <span role="alert">{signingOut.problem}</span>}
+        <span className="muted">{screen.account.email}</span>
+        <button
+          type="button"
+          disabled={signingOut.busy}
+          onClick={() =>
+            void signingOut.ask(
+              () => api.signOut(),
+              () => {
+                remember(STORE, undefined);
+                setScreen({ name: "signed out" });
+              },
+            )
+          }
+        >
+          Sign out
+        </button>
+      </span>
+    );
+    return <Workspaces api={api} who={who} />;
+  }
   return (
-    <div className="app">
-      <header>
-        <span>Weacon</span>
-        {screen.name === "signed in" && (
-          <span className="who">
-            <span className="muted">{screen.account.email}</span>
-            <button
-              type="button"
-              disabled={signingOut.busy}
-              onClick={() => void signingOut.ask(() => api.signOut(), () => setScreen({ name: "signed out" }))}
-            >
-              Sign out
-            </button>
-          </span>
-        )}
-      </header>
-      {signingOut.problem !== undefined && <p role="alert">{signingOut.problem}</p>}
-      <main>
-        <Body screen={screen} api={api} signedIn={(account) => setScreen({ name: "signed in", account })} />
-      </main>
-    </div>
+    <Frame>
+      <Body screen={screen} api={api} signedIn={(account) => setScreen({ name: "signed in", account })} />
+    </Frame>
   );
 }
 
-function Body({ screen, api, signedIn }: { screen: Screen; api: Api; signedIn(account: AccountSignedIn): void }) {
+function Body({
+  screen,
+  api,
+  signedIn,
+}: {
+  screen: Exclude<Screen, { name: "signed in" }>;
+  api: Api;
+  signedIn(account: AccountSignedIn): void;
+}) {
   switch (screen.name) {
     case "loading":
       return <p className="page muted">Loading</p>;
@@ -77,7 +93,5 @@ function Body({ screen, api, signedIn }: { screen: Screen; api: Api; signedIn(ac
       );
     case "signed out":
       return <SignIn api={api} signedIn={signedIn} />;
-    case "signed in":
-      return <Workspaces api={api} />;
   }
 }

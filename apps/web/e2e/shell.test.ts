@@ -1,9 +1,18 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { serve } from "./server.ts";
+import { type Served, serve } from "./server.ts";
 
 const EMAIL = "ada@example.com";
+
+async function signIn(served: Served): Promise<void> {
+  const { page } = served;
+  await served.admin("add-account", "--email", EMAIL);
+  await page.getByLabel("Email").fill(EMAIL);
+  await page.getByRole("button", { name: "Send code" }).click();
+  await page.getByLabel("Code").fill(await served.code(EMAIL));
+  await page.getByRole("button", { name: "Sign in" }).click();
+}
 
 test("a person signs in with the code sent to them, stays signed in, and signs out", { timeout: 600_000 }, async () => {
   const served = await serve();
@@ -44,11 +53,7 @@ test("a signed-in person makes a workspace, opens its feed, and finds it again a
   const served = await serve();
   try {
     const { page } = served;
-    await served.admin("add-account", "--email", EMAIL);
-    await page.getByLabel("Email").fill(EMAIL);
-    await page.getByRole("button", { name: "Send code" }).click();
-    await page.getByLabel("Code").fill(await served.code(EMAIL));
-    await page.getByRole("button", { name: "Sign in" }).click();
+    await signIn(served);
 
     await page.getByLabel("Name").fill(" ");
     await page.getByRole("button", { name: "Create" }).click();
@@ -114,6 +119,58 @@ test("a signed-in person makes a workspace, opens its feed, and finds it again a
     );
     await page.reload();
     await page.getByRole("heading", { name: "Sign in" }).waitFor();
+  } finally {
+    await served.close();
+  }
+});
+
+test("the header switches workspaces, and the page reopens the last one", { timeout: 600_000 }, async () => {
+  const served = await serve();
+  try {
+    const { page } = served;
+    await signIn(served);
+    await page.getByLabel("Name").fill("Made-up team");
+    await page.getByRole("button", { name: "Create" }).click();
+    await page.getByRole("heading", { name: "Made-up team" }).waitFor();
+    const chats = page.getByRole("navigation", { name: "Chats" });
+    assert.equal(await chats.getByText("No chats yet. Connect a machine to start one.").count(), 1);
+
+    const selector = page.getByLabel("Workspace");
+    assert.deepEqual((await selector.locator("option").allInnerTexts()).toSorted(), ["Made-up team", "Personal"]);
+    await selector.selectOption({ label: "Personal" });
+    await page.getByRole("heading", { name: "Personal" }).waitFor();
+    await page.getByText("Connected").waitFor();
+    assert.match(page.url(), /\?workspace=[A-Za-z0-9_-]+$/);
+    await page.goBack();
+    await page.getByRole("heading", { name: "Made-up team" }).waitFor();
+    await page.goForward();
+    await page.getByRole("heading", { name: "Personal" }).waitFor();
+
+    const home = new URL("/", page.url()).href;
+    await page.goto(home);
+    await page.getByRole("heading", { name: "Personal" }).waitFor();
+    await page.getByText("Connected").waitFor();
+    assert.match(page.url(), /\?workspace=/);
+    await selector.selectOption({ label: "Made-up team" });
+    await page.getByRole("heading", { name: "Made-up team" }).waitFor();
+    await page.goBack();
+    await page.getByRole("heading", { name: "Personal" }).waitFor();
+
+    await page.getByRole("button", { name: "All workspaces" }).click();
+    await page.getByRole("heading", { name: "Workspaces" }).waitFor();
+    await page.goto(home);
+    await page.getByRole("heading", { name: "Workspaces" }).waitFor();
+
+    // Signing out forgets the last workspace, so the next person here starts at the list.
+    await page.getByRole("button", { name: "Personal" }).click();
+    await page.getByRole("button", { name: "Sign out" }).click();
+    await page.getByRole("heading", { name: "Sign in" }).waitFor();
+    await page.goto(home);
+    await page.getByLabel("Email").fill(EMAIL);
+    await page.getByRole("button", { name: "Send code" }).click();
+    await page.getByLabel("Code").fill(await served.code(EMAIL));
+    await page.getByRole("button", { name: "Sign in" }).click();
+    await page.getByRole("heading", { name: "Workspaces" }).waitFor();
   } finally {
     await served.close();
   }
