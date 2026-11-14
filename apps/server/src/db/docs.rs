@@ -22,6 +22,17 @@ impl Workspace {
     /// `db.exists`.
     pub(crate) async fn add_doc(&self, doc: &Doc, attribution: &Attribution) -> Result<(), Fault> {
         let mut transaction = self.db.write().await?;
+        self.insert_doc(&mut transaction, doc, attribution).await?;
+        transaction.commit().await.map_err(failed)
+    }
+
+    /// [`Self::add_doc`], inside the caller's transaction.
+    pub(super) async fn insert_doc(
+        &self,
+        transaction: &mut SqliteConnection,
+        doc: &Doc,
+        attribution: &Attribution,
+    ) -> Result<(), Fault> {
         sqlx::query("INSERT INTO docs (workspace_id, doc_id, version) VALUES (?, ?, ?)")
             .bind(self.id.as_str())
             .bind(doc.id.as_str())
@@ -29,8 +40,7 @@ impl Workspace {
             .execute(&mut *transaction)
             .await
             .map_err(failed)?;
-        self.record_doc(&mut transaction, doc, attribution).await?;
-        transaction.commit().await.map_err(failed)
+        self.record_doc(transaction, doc, attribution).await
     }
 
     /// The docs, by title.
@@ -75,7 +85,23 @@ impl Workspace {
         attribution: &Attribution,
     ) -> Result<Doc, Fault> {
         let mut transaction = self.db.write().await?;
-        let current = self.read_doc(&mut transaction, id, None).await?;
+        let revised = self
+            .update_doc(&mut transaction, id, read_at, text, attribution)
+            .await?;
+        transaction.commit().await.map_err(failed)?;
+        Ok(revised)
+    }
+
+    /// [`Self::revise_doc`], inside the caller's transaction.
+    pub(super) async fn update_doc(
+        &self,
+        transaction: &mut SqliteConnection,
+        id: &DocId,
+        read_at: Revision,
+        text: DocText,
+        attribution: &Attribution,
+    ) -> Result<Doc, Fault> {
+        let current = self.read_doc(transaction, id, None).await?;
         let revised = current.revise(read_at, text).map_err(refused)?;
         sqlx::query("UPDATE docs SET version = ? WHERE workspace_id = ? AND doc_id = ?")
             .bind(version_number(revised.version, last_version)?)
@@ -84,9 +110,7 @@ impl Workspace {
             .execute(&mut *transaction)
             .await
             .map_err(failed)?;
-        self.record_doc(&mut transaction, &revised, attribution)
-            .await?;
-        transaction.commit().await.map_err(failed)?;
+        self.record_doc(transaction, &revised, attribution).await?;
         Ok(revised)
     }
 
@@ -123,7 +147,7 @@ impl Workspace {
             .collect()
     }
 
-    async fn read_doc(
+    pub(super) async fn read_doc(
         &self,
         connection: &mut SqliteConnection,
         id: &DocId,
@@ -167,7 +191,11 @@ impl Workspace {
 
     /// Counts `size` more bytes against the workspace's quota, or refuses a revision it has
     /// no room left for.
-    async fn charge(&self, transaction: &mut SqliteConnection, size: i64) -> Result<(), Fault> {
+    pub(super) async fn charge(
+        &self,
+        transaction: &mut SqliteConnection,
+        size: i64,
+    ) -> Result<(), Fault> {
         let charged = sqlx::query(
             "UPDATE workspaces SET doc_bytes = doc_bytes + ?2
              WHERE workspace_id = ?1 AND doc_bytes + ?2 <= ?3",

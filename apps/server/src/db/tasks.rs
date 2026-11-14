@@ -22,6 +22,18 @@ impl Workspace {
         attribution: &Attribution,
     ) -> Result<(), Fault> {
         let mut transaction = self.db.write().await?;
+        self.insert_task(&mut transaction, task, attribution)
+            .await?;
+        transaction.commit().await.map_err(failed)
+    }
+
+    /// [`Self::add_task`], inside the caller's transaction.
+    pub(super) async fn insert_task(
+        &self,
+        transaction: &mut SqliteConnection,
+        task: &Task,
+        attribution: &Attribution,
+    ) -> Result<(), Fault> {
         let added = sqlx::query(
             "INSERT INTO tasks (workspace_id, task_id, title, status, order_key, version)
              SELECT ?1, ?2, ?3, ?4, ?5, ?6
@@ -43,9 +55,7 @@ impl Workspace {
                 "The workspace has as many tasks as it can hold",
             ));
         }
-        self.record_version(&mut transaction, task, attribution)
-            .await?;
-        transaction.commit().await.map_err(failed)
+        self.record_version(transaction, task, attribution).await
     }
 
     /// The tasks, in their order.
@@ -74,6 +84,20 @@ impl Workspace {
         attribution: &Attribution,
     ) -> Result<Task, Fault> {
         let mut transaction = self.db.write().await?;
+        let edited = self
+            .update_task(&mut transaction, id, read_at, edit, attribution)
+            .await?;
+        transaction.commit().await.map_err(failed)?;
+        Ok(edited)
+    }
+
+    /// The task `id` as it is now, inside the caller's transaction; `task.not_found` when
+    /// there's none.
+    pub(super) async fn read_task(
+        &self,
+        transaction: &mut SqliteConnection,
+        id: &TaskId,
+    ) -> Result<Task, Fault> {
         let row = sqlx::query_as::<_, Row>(
             "SELECT task_id, title, status, order_key, version FROM tasks
              WHERE workspace_id = ? AND task_id = ?",
@@ -84,7 +108,20 @@ impl Workspace {
         .await
         .map_err(failed)?
         .ok_or_else(task_not_found)?;
-        let edited = stored_task(row)?.edit(read_at, edit).map_err(refused)?;
+        stored_task(row)
+    }
+
+    /// [`Self::edit_task`], inside the caller's transaction.
+    pub(super) async fn update_task(
+        &self,
+        transaction: &mut SqliteConnection,
+        id: &TaskId,
+        read_at: Revision,
+        edit: TaskEdit,
+        attribution: &Attribution,
+    ) -> Result<Task, Fault> {
+        let task = self.read_task(transaction, id).await?;
+        let edited = task.edit(read_at, edit).map_err(refused)?;
         sqlx::query(
             "UPDATE tasks SET title = ?, status = ?, order_key = ?, version = ?
              WHERE workspace_id = ? AND task_id = ?",
@@ -98,9 +135,8 @@ impl Workspace {
         .execute(&mut *transaction)
         .await
         .map_err(failed)?;
-        self.record_version(&mut transaction, &edited, attribution)
+        self.record_version(transaction, &edited, attribution)
             .await?;
-        transaction.commit().await.map_err(failed)?;
         Ok(edited)
     }
 
