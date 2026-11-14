@@ -4,6 +4,7 @@ use std::fs;
 use std::future::Future;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 use clap::ValueEnum;
@@ -43,7 +44,7 @@ const CHECK: Duration = Duration::from_secs(10);
 /// command that runs for long stops sending as soon as the person says no.
 pub(crate) async fn following<T>(
     state_dir: &Path,
-    reporter: &Reporter,
+    reporter: &Arc<Reporter>,
     log: &Logger,
     work: impl Future<Output = T>,
 ) -> T {
@@ -67,7 +68,7 @@ impl Watch {
     }
 
     /// Checks the answer every few seconds, forever.
-    async fn follow(mut self, reporter: &Reporter, log: &Logger) -> ! {
+    async fn follow(mut self, reporter: &Arc<Reporter>, log: &Logger) -> ! {
         let mut tick = tokio::time::interval(CHECK);
         loop {
             tick.tick().await;
@@ -77,16 +78,19 @@ impl Watch {
 
     /// Reads the answer off the async runtime; one that can't be read sends nothing, and is
     /// logged once until a reading succeeds.
-    async fn check(&mut self, reporter: &Reporter, log: &Logger) {
-        let dir = self.state_dir.clone();
-        let read = tokio::task::spawn_blocking(move || read(&dir))
-            .await
-            .unwrap_or_else(|error| Err(unreadable().because(error)));
+    async fn check(&mut self, reporter: &Arc<Reporter>, log: &Logger) {
+        let (dir, following) = (self.state_dir.clone(), Arc::clone(reporter));
+        let read = tokio::task::spawn_blocking(move || {
+            settled(|| {
+                let read = read(&dir);
+                following.set_agreed(matches!(read, Ok(Some(true))));
+                read
+            })
+        })
+        .await
+        .unwrap_or_else(|error| Err(unreadable().because(error)));
         match read {
-            Ok(answer) => {
-                self.failing = false;
-                reporter.set_agreed(answer == Some(true));
-            }
+            Ok(_) => self.failing = false,
             Err(error) => {
                 reporter.set_agreed(false);
                 if !self.failing {
@@ -140,16 +144,33 @@ pub(crate) fn store(
     reporter: &Reporter,
     log: &Logger,
 ) -> Result<(), Fault> {
-    write(state_dir, send).map_err(|error| {
-        Fault::new(
-            code!("reports.not_saved"),
-            "The answer to error reports couldn't be saved",
-        )
-        .because(error)
-    })?;
-    reporter.set_agreed(send);
+    saved(state_dir, send, |send| reporter.set_agreed(send))?;
     log.info("reports chosen", &[("send", send.into())]);
     Ok(())
+}
+
+// Saves the answer, then hands it to `agree`, as one step: the answer a reporter follows is
+// always the one saved last, and one that couldn't be saved changes nothing.
+fn saved(state_dir: &Path, send: bool, agree: impl FnOnce(bool)) -> Result<(), Fault> {
+    settled(|| {
+        write(state_dir, send).map_err(|error| {
+            Fault::new(
+                code!("reports.not_saved"),
+                "The answer to error reports couldn't be saved",
+            )
+            .because(error)
+        })?;
+        agree(send);
+        Ok(())
+    })
+}
+
+// Held while the saved answer and a reporter are brought into line, by a change or by the watch.
+static SETTLING: Mutex<()> = Mutex::new(());
+
+fn settled<T>(step: impl FnOnce() -> T) -> T {
+    let _held = SETTLING.lock().unwrap_or_else(PoisonError::into_inner);
+    step()
 }
 
 /// Stores `answer` when given, applies it to this run, and says what the answer is now.
@@ -192,6 +213,27 @@ mod tests {
         let mut out = Vec::new();
         run(&app, answer, &mut out)?;
         Ok(String::from_utf8(out).unwrap())
+    }
+
+    #[test]
+    fn an_answer_is_saved_and_applied_as_one_step_and_one_not_saved_changes_nothing() {
+        let dir = TempDir::new().unwrap();
+        let mut applied = None;
+        saved(&dir, true, |send| {
+            // Nothing else can save or read an answer until this one is applied.
+            assert!(SETTLING.try_lock().is_err(), "applied outside the lock");
+            assert_eq!(current(&dir), Some(true));
+            applied = Some(send);
+        })
+        .unwrap();
+        let blocked = TempDir::new().unwrap();
+        fs::create_dir_all(file(&blocked)).unwrap();
+        let mut reached = false;
+        let unsaved = saved(&blocked, true, |_| reached = true).unwrap_err();
+
+        assert_eq!(applied, Some(true));
+        assert_eq!(unsaved.code().as_str(), "reports.not_saved");
+        assert!(!reached);
     }
 
     #[test]
