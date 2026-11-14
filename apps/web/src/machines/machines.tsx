@@ -5,7 +5,7 @@ import type { MachineId, MachineSummary, PairPending } from "../protocol.ts";
 import type { Api } from "../shell/api.ts";
 import { useAsk } from "../shell/ask.ts";
 import { useLoaded } from "../shell/loaded.ts";
-import { WorkspaceSocketContext } from "../shell/workspace-socket.ts";
+import { WorkspaceSocketContext, useOffers } from "../shell/workspace-socket.ts";
 import { waitForClaim } from "./claim.ts";
 import { fingerprint } from "./fingerprint.ts";
 import { keep } from "./keep.ts";
@@ -88,6 +88,7 @@ function Machine({
   const [open, setOpen] = useState(false);
   // A machine's settings are kept for each workspace, so they show only while one is open.
   const socket = useContext(WorkspaceSocketContext);
+  const settable = useOffers(socket, "machine.settings");
   const { busy, problem, ask } = useAsk();
   const paired = new Date(machine.paired_at * 1000).toLocaleDateString();
   return (
@@ -125,12 +126,12 @@ function Machine({
         </button>
       )}
       {problem !== undefined && <span role="alert">{problem}</span>}
-      {socket?.offers("machine.settings") && (
+      {socket !== undefined && settable && (
         <button type="button" aria-label={`${machine.name} settings`} aria-expanded={open} onClick={() => setOpen(!open)}>
           {open ? "Hide settings" : "Settings"}
         </button>
       )}
-      {socket?.offers("machine.settings") && open && (
+      {socket !== undefined && settable && open && (
         <MachineSettingsView key={socket.workspace} machine={machine} link={socket} later={later} />
       )}
     </li>

@@ -3,6 +3,7 @@ import { test } from "node:test";
 
 import type { MachineSettings } from "../src/protocol.ts";
 import { core, pair } from "./pairing.ts";
+import { waitFor } from "./harness.ts";
 import { serve, signIn } from "./server.ts";
 
 const START: MachineSettings = {
@@ -57,8 +58,9 @@ test("a person reads and changes a machine's settings for the open workspace, th
 
   // The warning is for full access in a team workspace only.
   await level.selectOption("full");
-  await settings.getByRole("button", { name: "Turn off" }).waitFor();
-  assert.equal(machine.settings.access, "full");
+  await waitFor(() => machine.settings.access === "full");
+  // The page shows the core's answer before the next change is built from it.
+  await page.waitForFunction((select) => (select as HTMLSelectElement | null)?.value === "full", await level.elementHandle());
   assert.equal(await warning.count(), 0);
   // The box shows what the core holds, so it ticks once the core has answered.
   await team.click();

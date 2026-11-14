@@ -1,4 +1,4 @@
-import { createContext, useContext } from "react";
+import { createContext, useContext, useSyncExternalStore } from "react";
 
 import { HELLO_ID } from "../connection.ts";
 import type { Incoming } from "../incoming.ts";
@@ -11,6 +11,7 @@ export class WorkspaceSocket {
   #handlers = new Set<(message: Incoming) => void>();
   #lastId = HELLO_ID;
   #offered: readonly string[] = [];
+  #watchers = new Set<() => void>();
 
   constructor(workspace: WorkspaceId) {
     this.workspace = workspace;
@@ -22,7 +23,18 @@ export class WorkspaceSocket {
    */
   attach(send: ((envelope: Envelope) => void) | undefined, offered?: readonly string[]): void {
     this.#send = send;
-    this.#offered = offered ?? this.#offered;
+    if (offered !== undefined && offered !== this.#offered) {
+      this.#offered = offered;
+      for (const watcher of [...this.#watchers]) {
+        watcher();
+      }
+    }
+  }
+
+  /** Calls `watcher` each time what the server offers changes, until the returned function is called. */
+  watch(watcher: () => void): () => void {
+    this.#watchers.add(watcher);
+    return () => this.#watchers.delete(watcher);
   }
 
   /** Whether the server offered `capability` when it last welcomed the feed. */
@@ -65,4 +77,12 @@ export function useWorkspaceSocket(): WorkspaceSocket {
     throw new Error("useWorkspaceSocket outside an open workspace");
   }
   return socket;
+}
+
+/** Whether the server offers `capability` on `socket`, kept current as welcomes change it. */
+export function useOffers(socket: WorkspaceSocket | undefined, capability: string): boolean {
+  return useSyncExternalStore(
+    (changed) => socket?.watch(changed) ?? (() => {}),
+    () => socket?.offers(capability) ?? false,
+  );
 }

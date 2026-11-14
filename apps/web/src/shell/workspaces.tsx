@@ -10,7 +10,7 @@ import { Frame } from "./frame.tsx";
 import { STORE, opening, remember } from "./last-workspace.ts";
 import { useLoaded } from "./loaded.ts";
 import { useBurst, useFeed } from "./feed-hooks.ts";
-import { WorkspaceSocket, WorkspaceSocketContext, useWorkspaceSocket } from "./workspace-socket.ts";
+import { WorkspaceSocket, WorkspaceSocketContext, useOffers, useWorkspaceSocket } from "./workspace-socket.ts";
 
 /**
  * The signed-in person's workspaces, and the one `?workspace=` names, or else the last one opened
@@ -178,7 +178,7 @@ function Workspace({
   const socket = useWorkspaceSocket();
   const status = useFeed(workspace.id, api, socket);
   // Whether the server serves chats, known once the feed is welcomed.
-  const chats = socket.offers("workspace.chats");
+  const chats = useOffers(socket, "workspace.chats");
   const page = (title: string) => (
     <section className="page">
       <h1>{title}</h1>

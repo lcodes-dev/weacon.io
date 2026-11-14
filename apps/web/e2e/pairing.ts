@@ -51,7 +51,9 @@ export async function pair(page: Page): Promise<string> {
   const { pairing, code, secret } = await startPairing(page);
   await page.getByLabel("Code").fill(code);
   await page.getByRole("button", { name: "Look up" }).click();
+  const confirmed = page.waitForResponse((response) => response.url().endsWith("/api/machines/pair/confirm") && response.ok());
   await page.getByRole("button", { name: "Confirm" }).click();
+  await confirmed;
   return (await claim(page, { pairing, secret })).token;
 }
 

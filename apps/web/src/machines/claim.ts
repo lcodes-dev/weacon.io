@@ -13,7 +13,9 @@ export function waitForClaim(look: () => Promise<unknown>, later: Later, gaveUp:
   const again = () =>
     later(() => {
       if (!stopped) {
-        void look().then(() => stopped || again());
+        // A read that fails is just one look; the next one still comes.
+        const next = () => stopped || again();
+        void look().then(next, next);
       }
     }, LOOK_AGAIN_MS);
   again();

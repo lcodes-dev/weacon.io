@@ -69,3 +69,18 @@ test("a socket offers what the server offered when it last welcomed the feed, ac
   assert.equal(socket.offers("machine.settings"), false);
   assert.equal(socket.offers("workspace.chats"), true);
 });
+
+test("watchers hear each change of what is offered, until they stop watching", () => {
+  const socket = new WorkspaceSocket("w-1");
+  let heard = 0;
+  const stop = socket.watch(() => heard++);
+  const offered = ["workspace.chats"];
+  socket.attach(() => {}, offered);
+  socket.attach(undefined);
+  socket.attach(() => {}, offered);
+  socket.attach(() => {}, ["machine.settings"]);
+  stop();
+  socket.attach(() => {}, ["workspace.chats"]);
+
+  assert.equal(heard, 2);
+});

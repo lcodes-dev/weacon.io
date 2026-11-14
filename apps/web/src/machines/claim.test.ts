@@ -60,6 +60,24 @@ test("the list is read again every two seconds, each time after the last answer,
   assert.equal(looks, 2);
 });
 
+test("a read that fails doesn't end the waiting", async () => {
+  const { later, tick } = clock();
+  let looks = 0;
+  const stop = waitForClaim(
+    () => {
+      looks++;
+      return Promise.reject(new Error("offline"));
+    },
+    later,
+    () => assert.fail("gave up"),
+  );
+
+  await tick(LOOK_AGAIN_MS * 3);
+  stop();
+
+  assert.equal(looks, 3);
+});
+
 test("after two minutes without being stopped it gives up once and looks no more", async () => {
   const { later, tick } = clock();
   let looks = 0;
