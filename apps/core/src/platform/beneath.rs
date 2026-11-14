@@ -41,6 +41,10 @@ mod unix {
 
     use libc::{O_CLOEXEC, O_DIRECTORY, O_NOFOLLOW, O_NONBLOCK, O_RDONLY, c_int};
 
+    /// A folder needs only search permission on the way, not read, where the system allows.
+    #[cfg(target_os = "linux")]
+    const FOLDER: c_int = libc::O_PATH | O_NOFOLLOW | O_CLOEXEC | O_DIRECTORY;
+    #[cfg(not(target_os = "linux"))]
     const FOLDER: c_int = O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_DIRECTORY;
     /// Non-blocking, so a pipe can't hold the open.
     const FILE: c_int = O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK;
@@ -89,26 +93,60 @@ mod unix {
 
 #[cfg(windows)]
 mod windows {
+    use std::ffi::OsString;
     use std::fs::{File, OpenOptions};
     use std::io;
+    use std::os::windows::ffi::OsStringExt;
     use std::os::windows::fs::OpenOptionsExt;
-    use std::path::Path;
+    use std::os::windows::io::AsRawHandle;
+    use std::path::{Path, PathBuf};
 
-    use windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT;
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_FLAG_OPEN_REPARSE_POINT, FILE_NAME_NORMALIZED, GetFinalPathNameByHandleW,
+        VOLUME_NAME_DOS,
+    };
 
-    /// Every folder on the way must be no reparse point, and the file is opened as itself.
+    /// The file is opened as itself, then refused when it is a link or when Windows says it
+    /// is anywhere but `root`, which is canonical, joined with `parts`, as after a folder
+    /// swapped for a junction.
     pub(super) fn open_parts(root: &Path, parts: &[&str]) -> io::Result<File> {
         let mut path = root.to_path_buf();
-        for part in parts {
-            path.push(part);
-            if std::fs::symlink_metadata(&path)?.file_type().is_symlink() {
-                return Err(io::Error::new(io::ErrorKind::InvalidInput, "a link"));
-            }
-        }
-        OpenOptions::new()
+        path.extend(parts);
+        let opened = OpenOptions::new()
             .read(true)
             .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
-            .open(path)
+            .open(&path)?;
+        // Compared exactly: a folder may tell case apart, and both paths carry the case on disk.
+        if opened.metadata()?.file_type().is_symlink() || final_path(&opened)? != path {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "not beneath its root",
+            ));
+        }
+        Ok(opened)
+    }
+
+    #[expect(unsafe_code, reason = "std can't say which file a handle opened")]
+    fn final_path(opened: &File) -> io::Result<PathBuf> {
+        let mut buffer = vec![0_u16; 512];
+        loop {
+            let room = u32::try_from(buffer.len()).map_err(io::Error::other)?;
+            let flags = FILE_NAME_NORMALIZED | VOLUME_NAME_DOS;
+            // SAFETY: the handle stays open for the call, and `buffer` holds `room` units.
+            let written = unsafe {
+                GetFinalPathNameByHandleW(opened.as_raw_handle(), buffer.as_mut_ptr(), room, flags)
+            };
+            let written = usize::try_from(written).map_err(io::Error::other)?;
+            if written == 0 {
+                return Err(io::Error::last_os_error());
+            }
+            // Too small, Windows answers with the room it needs, its NUL included.
+            if written < buffer.len() {
+                buffer.truncate(written);
+                return Ok(OsString::from_wide(&buffer).into());
+            }
+            buffer.resize(written, 0);
+        }
     }
 }
 
@@ -158,6 +196,43 @@ mod tests {
             fs::write(root.join(name), "inside").unwrap();
             assert_eq!(read(&root, name), None, "{name}");
         }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn passes_through_a_folder_it_may_only_search() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = TempDir::new().unwrap();
+        let root = dir.join("search/root");
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("c.md"), "inside").unwrap();
+        let search = fs::Permissions::from_mode(0o311);
+        fs::set_permissions(dir.join("search"), search).unwrap();
+        let root = root.canonicalize().unwrap();
+        let text = read(&root, "c.md");
+        fs::set_permissions(dir.join("search"), fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(text.as_deref(), Some("inside"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn follows_no_junction_at_any_step() {
+        let dir = TempDir::new().unwrap();
+        let root = dir.join("root");
+        fs::create_dir_all(root.join("real")).unwrap();
+        fs::write(root.join("real/c.md"), "inside").unwrap();
+        let made = std::process::Command::new("cmd")
+            .args(["/C", "mklink", "/J"])
+            .arg(root.join("folder"))
+            .arg(root.join("real"))
+            .output()
+            .unwrap();
+        assert!(made.status.success());
+        let root = root.canonicalize().unwrap();
+        assert_eq!(read(&root, "real/c.md").as_deref(), Some("inside"));
+        assert_eq!(read(&root, "REAL/c.md"), None);
+        assert_eq!(read(&root, "folder/c.md"), None);
+        assert_eq!(read(&root, "folder"), None);
     }
 
     #[cfg(unix)]

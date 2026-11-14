@@ -33,7 +33,7 @@ use weacon_protocol::{McpCall, code};
 use deadline::Deadline;
 use grants::{Grant, Grants, Revoke};
 use weacon_agents::{Launch, McpServer};
-use weacon_protocol::{AgentKind, App};
+use weacon_protocol::App;
 
 use crate::app::WarnOnce;
 use crate::chats::engine::RunAs;
@@ -104,14 +104,14 @@ impl Drop for Server {
     }
 }
 
-/// Points a Claude Code `launch` at the MCP with a token for `run_as`'s run, which works until
-/// the [`Revoke`] is dropped. Other agents are left as they are.
+/// Points `launch`, if its agent takes the MCP, at it with a token for `run_as`'s run, which
+/// works until the [`Revoke`] is dropped.
 pub(crate) fn grant(
     mcp: Option<&Mcp>,
     launch: Launch,
     run_as: &RunAs,
 ) -> Result<(Launch, Option<Revoke>), Fault> {
-    let Some(mcp) = mcp.filter(|_| launch.agent == AgentKind::Claude) else {
+    let Some(mcp) = mcp.filter(|_| launch.takes_mcp()) else {
         return Ok((launch, None));
     };
     let grant = Grant::new(
@@ -350,6 +350,7 @@ mod tests {
 
     use super::*;
     use crate::test_support::VERSION;
+    use weacon_protocol::AgentKind;
 
     struct Reply {
         status: u16,

@@ -1,5 +1,4 @@
 import type { RequestId, RunId } from "../protocol.ts";
-import type { Sent } from "../composer/prompt.ts";
 import type { Settled } from "../receipts.ts";
 
 /** A person's answer to the prompt `prompt` of `run`, on its way or not taken. */
@@ -34,11 +33,6 @@ export function sending(
   return { answers: new Map(answers).set(key, { run, prompt, allow, request, settled: undefined }), request };
 }
 
-/** The answer sent under `request`, if one was. */
-export function answeredUnder(answers: Answers, request: RequestId): Answering | undefined {
-  return [...answers.values()].find((answering) => answering.request === request);
-}
-
 /** `answers` once the answer sent under `request` for `key` ended as `settled`. */
 export function settle(answers: Answers, key: string, request: RequestId, settled: Settled): Answers {
   const before = answers.get(key);
@@ -53,10 +47,16 @@ export function settle(answers: Answers, key: string, request: RequestId, settle
   return next.set(key, { ...before, settled });
 }
 
-/** `answers` once a receipt that came after its wait says the answer under `request` ended as `settled`. */
-export function settleLate(answers: Answers, request: RequestId, settled: Settled): Answers {
-  const answering = answeredUnder(answers, request);
-  return answering === undefined ? answers : settle(answers, askKey(answering.run, answering.prompt), request, settled);
+/** Every answer sent, by request, with the prompt it answers. */
+export type SentAnswers = ReadonlyMap<RequestId, { run: RunId; prompt: number }>;
+
+/**
+ * `answers` once the answer sent under `request` ended as `settled`, on time or late; a request
+ * that sent no answer changes nothing, and one a later answer replaced changes only its prompt.
+ */
+export function settleAnswer(answers: Answers, sent: SentAnswers, request: RequestId, settled: Settled): Answers {
+  const answer = sent.get(request);
+  return answer === undefined ? answers : settle(answers, askKey(answer.run, answer.prompt), request, settled);
 }
 
 const PROBLEMS: Record<Exclude<Settled, "accepted">, string> = {
@@ -65,16 +65,15 @@ const PROBLEMS: Record<Exclude<Settled, "accepted">, string> = {
   unsure: "The server didn't answer. The answer may not have been sent.",
 };
 
-const STOP_PROBLEMS: Record<Exclude<Sent, "accepted">, string> = {
+const STOP_PROBLEMS: Record<Exclude<Settled, "accepted">, string> = {
   refused: "The agent wasn't stopped.",
-  too_long: "The agent wasn't stopped.",
   lost: "The connection closed. The agent may not have stopped.",
   unsure: "The server didn't answer. The agent may not have stopped.",
 };
 
-/** What Stop says once its interrupt ended as `sent`: nothing when it was taken. */
-export function stopProblem(sent: Sent): string | undefined {
-  return sent === "accepted" ? undefined : STOP_PROBLEMS[sent];
+/** What Stop says once its interrupt ended as `settled`: nothing when it was taken. */
+export function stopProblem(settled: Settled): string | undefined {
+  return settled === "accepted" ? undefined : STOP_PROBLEMS[settled];
 }
 
 /** What a prompt says about its answer: nothing, or why it may not have been taken. */
