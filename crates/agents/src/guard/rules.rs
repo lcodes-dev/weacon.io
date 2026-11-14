@@ -166,16 +166,7 @@ impl Call<'_> {
         }
         let destination = value_of(self.args, &["-t", "--target-directory"])
             .or_else(|| positional(self.args).last().copied());
-        let remote = destination.is_some_and(|word| {
-            word.text
-                .split('/')
-                .next()
-                .is_some_and(|host| host.contains(':'))
-        });
-        match destination {
-            Some(word) if !remote => self.targets(cwd, Reason::WriteOutside, &[word]),
-            _ => None,
-        }
+        destination.and_then(|word| self.targets(cwd, Reason::WriteOutside, &[word]))
     }
 
     fn dd(&self, cwd: &Path) -> Option<Reason> {
@@ -206,10 +197,7 @@ impl Call<'_> {
             .iter()
             .take_while(|arg| !arg.text.starts_with(['-', '(', '!']))
             .collect();
-        let here = Word {
-            text: ".".to_owned(),
-            ..Word::default()
-        };
+        let here = Word::default();
         let starts = if starts.is_empty() {
             vec![&here]
         } else {
@@ -283,7 +271,6 @@ impl Call<'_> {
 fn credentials(words: &[Word], context: &Context, cwd: &Path) -> Option<Reason> {
     words
         .iter()
-        .filter(|word| word.tilde || word.text.contains(['/', '\\']) || word.text.starts_with('.'))
         .filter_map(|word| path_of(word, context, cwd))
         .find_map(|path| reading(&path, context))
 }

@@ -121,7 +121,7 @@ pub(super) fn positional(args: &[Word]) -> Vec<&Word> {
                 after_dashes = true;
                 return false;
             }
-            !arg.text.starts_with('-') || arg.text == "-"
+            !arg.text.starts_with('-')
         })
         .collect()
 }

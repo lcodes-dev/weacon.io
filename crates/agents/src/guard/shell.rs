@@ -55,7 +55,7 @@ impl Parser {
     }
 
     fn next(&mut self) -> Option<char> {
-        let char = self.peek()?;
+        let char = self.chars.get(self.at).copied()?;
         self.advance(1);
         Some(char)
     }
@@ -131,8 +131,11 @@ impl Parser {
             self.advance(1);
             return self.redirect_target(simple, word, true);
         }
-        let pipe = char == '|' && !matches!(self.peek(), Some('|'));
-        if matches!(self.peek(), Some('&' | '|')) && matches!(char, '&' | '|') {
+        let pipe = char == '|' && self.peek() != Some('|');
+        if matches!(
+            (char, self.peek()),
+            ('&', Some('&')) | ('|', Some('|' | '&'))
+        ) {
             self.advance(1);
         }
         self.finish(simple, word);
@@ -482,5 +485,38 @@ mod tests {
             assert!(parse(line).is_none() || line == "a )", "{line}");
         }
         assert!(parse("cat <<EOF\nnever ends").is_none());
+    }
+
+    #[test]
+    fn operators_comments_and_empty_commands_split_as_a_shell_does() {
+        assert_eq!(texts(&parse("echo a#b #c").unwrap()[0]), ["echo", "a#b"]);
+        let piped = parse("a |& b").unwrap();
+        assert_eq!(programs("a |& b"), ["a", "b"]);
+        assert!(piped[1].fed);
+        assert!(!parse("a && b").unwrap()[1].fed);
+        assert_eq!(parse("a;").unwrap().len(), 1);
+        assert!(parse(";;").unwrap().is_empty());
+        assert_eq!(texts(&parse("echo \"\" >out").unwrap()[0]), ["echo", ""]);
+    }
+
+    #[test]
+    fn quotes_and_expansions_read_as_a_shell_reads_them() {
+        let word = |line: &str| parse(line).unwrap().remove(0).words.remove(1);
+
+        assert_eq!(word("echo \"a\\\"b\\$c\\\\d\\e\"").text, "a\"b$c\\d\\e");
+        assert_eq!(word("echo \"a\\\nb\"").text, "ab");
+        assert!(word("echo $'a b'").dynamic);
+        assert!(word("echo $_a").dynamic);
+        assert!(word("echo $?").dynamic);
+        let literal = word("echo a$/b");
+        assert_eq!((literal.text.as_str(), literal.dynamic), ("a$/b", false));
+        let arithmetic = parse("echo $((1 + 2)) x").unwrap();
+        assert_eq!(
+            arithmetic
+                .iter()
+                .map(|simple| simple.words.len())
+                .collect::<Vec<_>>(),
+            [3, 3]
+        );
     }
 }

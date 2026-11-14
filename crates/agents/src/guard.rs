@@ -402,4 +402,139 @@ mod tests {
             Some(Reason::DeleteOutside)
         );
     }
+
+    #[test]
+    fn writes_copies_links_and_deletes_follow_each_programs_own_arguments() {
+        let dir = TempDir::new().unwrap();
+        let context = context(&dir);
+        let check = |line: &str| check_command(line, &context);
+
+        assert_eq!(check("touch /tmp/x"), Some(Reason::WriteOutside));
+        assert_eq!(check("chmod 644 /etc/hosts"), Some(Reason::WriteOutside));
+        assert_eq!(
+            check("sed -i s/a/b/ /etc/hosts"),
+            Some(Reason::WriteOutside)
+        );
+        assert_eq!(
+            check("sed --in-place=.bak s/a/b/ /etc/hosts"),
+            Some(Reason::WriteOutside)
+        );
+        assert_eq!(check("sed -n p /etc/hosts"), None);
+        assert_eq!(check("ln --symbolic / out"), Some(Reason::Unsure));
+        assert_eq!(check("ln notes.md copy.md"), None);
+        assert_eq!(check("cp -s notes.md copy.md"), None);
+        assert_eq!(check("find / -name core"), None);
+        assert_eq!(check("rm /*"), Some(Reason::DeleteOutside));
+        assert_eq!(check("rm -rf ../*"), Some(Reason::DeleteOutside));
+        assert_eq!(check("rm -rf /tmp/*"), Some(Reason::DeleteOutside));
+        assert_eq!(check("rm -rf src/*/../../.."), Some(Reason::Unsure));
+        assert_eq!(check("rm *.o"), None);
+        assert_eq!(check("eval 'rm -rf /'"), Some(Reason::DeleteOutside));
+        assert_eq!(
+            check("cd .. && bash -c 'rm -rf main'"),
+            Some(Reason::DeleteOutside)
+        );
+        assert_eq!(check("mysqladmin status"), None);
+        assert_eq!(check("mysqladmin drop app"), Some(Reason::DropDatabase));
+    }
+
+    #[test]
+    fn assignments_are_skipped_only_when_they_are_assignments() {
+        let dir = TempDir::new().unwrap();
+        let context = context(&dir);
+        let check = |line: &str| check_command(line, &context);
+
+        assert_eq!(check("_X=1 rm -rf /"), Some(Reason::DeleteOutside));
+        assert_eq!(check("X_Y=1 rm -rf /"), Some(Reason::DeleteOutside));
+        assert_eq!(check("1X=1 rm -rf /"), None);
+        let home = Context {
+            cwd: dir.join("home"),
+            ..context.clone()
+        };
+        assert_eq!(
+            check_command("ls .claude", &home),
+            Some(Reason::Credentials)
+        );
+    }
+
+    #[test]
+    fn git_subcommands_ask_only_for_what_they_change() {
+        let dir = TempDir::new().unwrap();
+        let context = context(&dir);
+        let check = |line: &str| check_command(line, &context);
+        let main = Context {
+            cwd: dir.join("main"),
+            ..context.clone()
+        };
+        let in_main = |line: &str| check_command(line, &main);
+
+        assert_eq!(
+            check("git worktree remove ../main"),
+            Some(Reason::DeleteOutside)
+        );
+        assert_eq!(
+            check("git worktree remove --force ../main"),
+            Some(Reason::DeleteOutside)
+        );
+        assert_eq!(check("git worktree remove src"), None);
+        assert_eq!(check("git worktree add ../other"), None);
+        assert_eq!(
+            check("git update-ref -d refs/heads/old"),
+            Some(Reason::DeleteBranch)
+        );
+        assert_eq!(check("git update-ref refs/heads/new HEAD"), None);
+        assert_eq!(in_main("git reset HEAD~1"), None);
+        assert_eq!(in_main("git clean -n"), None);
+        assert_eq!(in_main("git clean --dry-run"), None);
+        assert_eq!(check("git config --get user.name"), None);
+        assert_eq!(check("git config user.name"), None);
+        assert_eq!(check("git config --list"), None);
+        assert_eq!(
+            check("git config user.name Ada"),
+            Some(Reason::WriteOutside)
+        );
+        assert_eq!(
+            check("git config --unset core.pager"),
+            Some(Reason::WriteOutside)
+        );
+        assert_eq!(check("git config --add a.b c"), Some(Reason::WriteOutside));
+        assert_eq!(
+            check("git config set user.name"),
+            Some(Reason::WriteOutside)
+        );
+    }
+
+    #[test]
+    fn every_reason_says_something_of_its_own() {
+        let reasons = [
+            Reason::Weacon,
+            Reason::WeaconFolder,
+            Reason::DeleteOutside,
+            Reason::WriteOutside,
+            Reason::ForcePush,
+            Reason::DeleteBranch,
+            Reason::ResetMainCheckout,
+            Reason::CleanMainCheckout,
+            Reason::DropDatabase,
+            Reason::Credentials,
+            Reason::Extension,
+            Reason::Unsure,
+        ];
+        let texts: std::collections::BTreeSet<&str> =
+            reasons.iter().map(|reason| reason.text()).collect();
+
+        assert_eq!(texts.len(), reasons.len());
+        assert!(texts.iter().all(|text| text.ends_with('.')));
+        assert_eq!(Reason::ForcePush.text(), "It force-pushes.");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_path_through_a_file_cant_be_resolved() {
+        let dir = TempDir::new().unwrap();
+        fs::write(dir.join("file"), "").unwrap();
+
+        assert_eq!(resolve(&dir.join("file/inside")), None);
+        assert!(resolve(&dir.join("missing/inside")).is_some());
+    }
 }
