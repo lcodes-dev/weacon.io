@@ -2,7 +2,7 @@
 //! build's version and this program's path filled in.
 
 use std::fs;
-use std::io;
+use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 
 use serde_json::Value;
@@ -122,7 +122,18 @@ fn holds(dir: &Path, files: &[(&str, String)]) -> bool {
     found == expected
         && files
             .iter()
-            .all(|(path, text)| fs::read_to_string(dir.join(path)).is_ok_and(|held| held == *text))
+            .all(|(path, text)| same_text(&dir.join(path), text))
+}
+
+/// Whether `path` holds exactly `text`, reading at most one byte more than it.
+fn same_text(path: &Path, text: &str) -> bool {
+    let limit = u64::try_from(text.len())
+        .unwrap_or(u64::MAX)
+        .saturating_add(1);
+    let mut held = Vec::new();
+    fs::File::open(path)
+        .and_then(|file| file.take(limit).read_to_end(&mut held))
+        .is_ok_and(|_| held == text.as_bytes())
 }
 
 fn listed(root: &Path, dir: &Path, found: &mut Vec<PathBuf>) -> io::Result<()> {
@@ -188,6 +199,12 @@ mod tests {
         serde_json::from_str(&fs::read_to_string(dir.join(path)).unwrap()).unwrap()
     }
 
+    // The files are read-only, so one is changed by replacing it.
+    fn replace(file: &Path, text: &str) {
+        fs::remove_file(file).unwrap();
+        fs::write(file, text).unwrap();
+    }
+
     fn plugin(state: &Path, program: &str, version: &Version) -> Plugin {
         Plugin::at(state, Path::new(program), version, &recording_logger().0).unwrap()
     }
@@ -248,14 +265,21 @@ mod tests {
         assert_eq!(plugin.folder().unwrap(), dir);
         fs::write(dir.join("hooks/more.json"), "{}").unwrap();
         assert_eq!(plugin.folder().unwrap(), dir);
+        let skill = dir.join("skills/weacon-map/SKILL.md");
+        let mut longer = fs::read_to_string(&skill).unwrap();
+        longer.push('!');
+        replace(&skill, &longer);
+        assert_eq!(plugin.folder().unwrap(), dir);
+        assert_eq!(fs::read_to_string(&skill).unwrap(), SKILL);
 
         assert!(!dir.join("hooks/more.json").exists());
         assert_eq!(
             json(&dir, "hooks/hooks.json").pointer(COMMAND).unwrap(),
             "'/opt/weacon' hook session-start"
         );
+        // The plugin and the three it replaced.
         let folders = fs::read_dir(state.join("integrations/claude")).unwrap();
-        assert_eq!(folders.count(), 3);
+        assert_eq!(folders.count(), 4);
     }
 
     #[test]
