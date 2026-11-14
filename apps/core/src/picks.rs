@@ -69,9 +69,9 @@ impl Picks {
         published
     }
 
-    // Request ids are plain tokens; the prefix keeps Windows' device names, such as `CON`, out.
     fn path(&self, request: &RequestId) -> PathBuf {
-        self.dir.join(format!("pick-{}.json", request.as_str()))
+        self.dir
+            .join(platform::case_safe_name("pick-", request.as_str()) + ".json")
     }
 }
 
@@ -152,6 +152,30 @@ mod tests {
         );
         assert_eq!(picks.read(&won[0].request).unwrap().as_ref(), Some(won[0]));
         assert_eq!(fs::read_dir(dir.join("picks")).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn requests_differing_only_in_case_keep_their_own_files() {
+        let dir = TempDir::new().unwrap();
+        let picks = Picks::new(&dir);
+        let upper = pick("p-Ab", "<p>upper</p>");
+        let lower = pick("p-ab", "<p>lower</p>");
+        picks.keep(&upper).unwrap();
+        picks.keep(&lower).unwrap();
+        let mut names: Vec<_> = fs::read_dir(dir.join("picks"))
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_ascii_lowercase())
+            .collect();
+        names.sort();
+        names.dedup();
+
+        assert_eq!(picks.read(&upper.request).unwrap(), Some(upper));
+        assert_eq!(picks.read(&lower.request).unwrap(), Some(lower));
+        assert_eq!(
+            names.len(),
+            2,
+            "names stay apart on a case-insensitive disk"
+        );
     }
 
     #[test]
