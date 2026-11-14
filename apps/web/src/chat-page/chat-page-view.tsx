@@ -1,17 +1,17 @@
 import { useState } from "react";
 
-import { Composer } from "./composer/composer.tsx";
-import { type Late, type Send, blocked } from "./composer/prompt.ts";
-import { type Status, statusText } from "./connection.ts";
-import { type Changes, canAsk } from "./diff/changes.ts";
-import type { Comment } from "./diff/comments.ts";
-import { DiffView } from "./diff/diff-view.tsx";
-import type { ChatRef } from "./chat-ref.ts";
-import type { App as Build } from "./protocol.ts";
-import type { Line } from "./chat/lines.ts";
-import { StopButton } from "./chat/parts.tsx";
-import { Settings } from "./settings/settings.tsx";
-import { type Answerer, TranscriptView } from "./transcript/transcript-view.tsx";
+import { Composer } from "../composer/composer.tsx";
+import { type Late, type Send, blocked } from "../composer/prompt.ts";
+import { type Status, statusText } from "../connection.ts";
+import { type Changes, canAsk } from "../diff/changes.ts";
+import type { Comment } from "../diff/comments.ts";
+import { DiffView } from "../diff/diff-view.tsx";
+import type { ChatRef } from "../chat-ref.ts";
+import type { App as Build } from "../protocol.ts";
+import type { Line } from "../chat/lines.ts";
+import { StopButton } from "../chat/parts.tsx";
+import { Settings } from "../settings/settings.tsx";
+import { type Answerer, TranscriptView } from "../transcript/transcript-view.tsx";
 
 type Shown = "run" | "changes" | "settings";
 
@@ -28,7 +28,7 @@ export type ChatView = {
 };
 
 /** The page: a header with Stop, Changes and Settings, over the chat's transcript and the message box, its changes, or Settings. */
-export function App({
+export function ChatPageView({
   me,
   status,
   chat,
