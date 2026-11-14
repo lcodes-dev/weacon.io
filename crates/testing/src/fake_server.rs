@@ -159,7 +159,7 @@ mod tests {
 
     use serde_json::{Value, json};
     use tokio::net::{TcpListener, TcpStream};
-    use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async};
+    use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, client_async, connect_async};
 
     use super::*;
     use weacon_protocol::PROTOCOL;
@@ -188,7 +188,10 @@ mod tests {
         Frame::text(envelope_text(&hello).unwrap())
     }
 
-    async fn texts(client: &mut Client, count: usize) -> Vec<Value> {
+    async fn texts(
+        client: &mut (impl Stream<Item = tungstenite::Result<Frame>> + Unpin),
+        count: usize,
+    ) -> Vec<Value> {
         let mut texts = Vec::new();
         while texts.len() < count {
             if let Frame::Text(text) = client.next().await.unwrap().unwrap() {
@@ -210,7 +213,11 @@ mod tests {
         let (mut client, served) = start(recording, received.clone()).await;
         client.send(hello(PROTOCOL)).await.unwrap();
         let welcome = texts(&mut client, 1).await;
-        let streamed = texts(&mut client, expected.len()).await;
+        // A deadline, so a server that never streams fails the test instead of hanging it.
+        let streamed =
+            tokio::time::timeout(Duration::from_secs(30), texts(&mut client, expected.len()))
+                .await
+                .unwrap();
         let log = r#"{"id":0,"type":"log","level":"warn","msg":"feed lost"}"#;
         client.send(Frame::text(log)).await.unwrap();
         client.send(Frame::Ping(Vec::new().into())).await.unwrap();
@@ -251,21 +258,23 @@ mod tests {
         }
     }
 
+    // In memory rather than over TCP, so the paused clock only moves once both sides are idle.
     #[tokio::test(start_paused = true)]
     async fn a_client_can_leave_mid_stream_and_its_close_is_answered() {
         let dir = TempDir::new().unwrap();
         let received = dir.join("received.jsonl");
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let url = format!("ws://{}/", listener.local_addr().unwrap());
+        let (stream, server_end) = duplex(BUFFER);
         let kept = received.clone();
         let served = tokio::spawn(async move {
-            let (stream, _) = listener.accept().await.unwrap();
             let recording = recording(SESSION, 100_000).unwrap();
-            serve(stream, recording, Duration::from_secs(1), &kept).await
+            serve(server_end, recording, Duration::from_secs(1), &kept).await
         });
-        let (mut client, _) = connect_async(url).await.unwrap();
+        let (mut client, _) = client_async("ws://fake/", stream).await.unwrap();
         client.send(hello(PROTOCOL)).await.unwrap();
-        let first = texts(&mut client, 2).await;
+        // A deadline, so a server that never streams fails the test instead of hanging it.
+        let first = tokio::time::timeout(Duration::from_secs(30), texts(&mut client, 2))
+            .await
+            .unwrap();
         let log = r#"{"id":0,"type":"log","level":"info","msg":"run shown"}"#;
         client.send(Frame::text(log)).await.unwrap();
         client.close(None).await.unwrap();
