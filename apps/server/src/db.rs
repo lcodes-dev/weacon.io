@@ -1,13 +1,13 @@
 //! The server's `SQLite` database. Only this module uses the driver, and every query
 //! about a workspace goes through its [`Workspace`] handle.
 
-mod account;
 mod backup;
 mod changes;
 mod docs;
 mod machine;
 mod owned;
 mod schema;
+mod sign_in;
 mod tasks;
 mod workspace;
 
@@ -22,12 +22,12 @@ use weacon_model::Revision;
 use weacon_observability::Fault;
 use weacon_protocol::{AccountId, AgentOwner, AgentRef, Author, MemberId, WorkspaceId, code};
 
-#[cfg(test)]
-pub(crate) use account::CODE_LIFETIME;
-pub(crate) use account::{Account, Attempt};
 pub(crate) use backup::restore;
 pub(crate) use machine::{Claim, Confirmation, NewPairing};
 pub(crate) use owned::NewWorkspace;
+#[cfg(test)]
+pub(crate) use sign_in::CODE_LIFETIME;
+pub(crate) use sign_in::{Account, Attempt};
 pub(crate) use workspace::Workspace;
 
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);

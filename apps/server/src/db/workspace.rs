@@ -1,7 +1,7 @@
 use weacon_observability::Fault;
 use weacon_protocol::{AccountId, MemberId, WorkspaceId};
 
-use super::account::insert_account;
+use super::sign_in::insert_account;
 use super::{Db, failed, stored, unreadable};
 use crate::email::Email;
 
