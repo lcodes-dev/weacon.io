@@ -16,6 +16,7 @@ use crate::workspaces::resolved;
 pub(crate) mod chats;
 pub(crate) mod diff;
 pub(crate) mod removal;
+pub(crate) mod repos;
 mod state;
 
 // Variables that would point git at another repository, or stand in for `-c` options.
@@ -63,6 +64,33 @@ impl Git {
     pub(crate) fn find(path: &OsStr, no_hooks: PathBuf) -> Option<Self> {
         let program = platform::find_program("git", path)?;
         Some(Self { program, no_hooks })
+    }
+
+    /// Git for this core: the first on `path`, with an empty hooks folder of its own in
+    /// `state_dir`.
+    pub(crate) fn open(state_dir: &Path, path: Option<&OsStr>) -> Result<Self, Fault> {
+        let no_hooks = state_dir.join("git/no-hooks");
+        platform::private_dir(&no_hooks).map_err(|error| {
+            Fault::new(
+                code!("git.folder_failed"),
+                "Git's own folder couldn't be created",
+            )
+            .because(error)
+        })?;
+        Self::find(path.unwrap_or_default(), no_hooks)
+            .ok_or_else(|| Fault::new(code!("git.missing"), "Git isn't installed here"))
+    }
+
+    /// The top folder of the repository holding `folder`, its links resolved.
+    pub(crate) fn top_level(&self, folder: &Path) -> Result<PathBuf, Fault> {
+        let top = text(run(self
+            .command(folder)
+            .args(["rev-parse", "--show-toplevel"]))?)?;
+        PathBuf::from(top.trim_end())
+            .canonicalize()
+            .map_err(|error| {
+                Fault::new(code!("git.unreadable"), "Git's answer wasn't a folder").because(error)
+            })
     }
 
     /// Every working tree of `repo` that still has its folder, the main one first.

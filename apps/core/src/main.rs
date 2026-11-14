@@ -88,6 +88,9 @@ fn run(app: &App, command: Command, env: platform::Env<'_>) -> Result<Outcome, F
             team,
         } => workspaces::access(app, &workspace, level, team, &mut io::stdout().lock())
             .map(Outcome::from),
+        Command::Repo(command) => {
+            git::repos::run(app, command, &mut io::stdout().lock()).map(Outcome::from)
+        }
         Command::Reports { answer } => {
             reports::run(app, answer, &mut io::stdout().lock()).map(Outcome::from)
         }

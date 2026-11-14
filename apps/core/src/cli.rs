@@ -3,7 +3,7 @@ use std::path::PathBuf;
 
 use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
 use weacon_appkit::version_text;
-use weacon_protocol::{AccessLevel, AgentKind, WorkspaceId};
+use weacon_protocol::{AccessLevel, AgentKind, RepoId, WorkspaceId};
 use weacon_version::Version;
 
 /// Weacon's core: runs agents for your chats and tasks.
@@ -48,6 +48,9 @@ pub(crate) enum Command {
         #[arg(long)]
         team: Option<bool>,
     },
+    /// Add a git repository a workspace's chats may work in, or list them.
+    #[command(subcommand)]
+    Repo(RepoCommand),
     /// Choose whether this core sends error reports, or show the answer.
     Reports {
         /// on or off; left out, shows the answer.
@@ -69,6 +72,26 @@ fn agent(name: &str) -> Result<AgentKind, &'static str> {
         .ok()
         .filter(|agent| *agent != AgentKind::Newer)
         .ok_or("not an agent this core runs")
+}
+
+#[derive(Debug, PartialEq, Eq, Subcommand)]
+pub(crate) enum RepoCommand {
+    /// Add the repository whose top folder is `path`, as `id`.
+    Add {
+        /// The workspace's id.
+        #[arg(long)]
+        workspace: WorkspaceId,
+        /// What the workspace calls the repository.
+        id: RepoId,
+        /// The repository's top folder.
+        path: PathBuf,
+    },
+    /// List a workspace's repositories, with their folders.
+    List {
+        /// The workspace's id.
+        #[arg(long)]
+        workspace: WorkspaceId,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Subcommand)]
@@ -106,6 +129,7 @@ impl Command {
             | Self::Service(_)
             | Self::Login { .. }
             | Self::Access { .. }
+            | Self::Repo(_)
             | Self::Reports { .. }
             | Self::ConnectChrome
             | Self::Map(_) => "cli.log",
@@ -121,6 +145,7 @@ impl Command {
             Self::Service(_) => "service",
             Self::Login { .. } => "login",
             Self::Access { .. } => "access",
+            Self::Repo(_) => "repo",
             Self::Reports { .. } => "reports",
             Self::ConnectChrome => "connect-chrome",
             Self::NativeHost { .. } => "native-host",
@@ -233,6 +258,48 @@ mod tests {
         ] {
             run(bad).unwrap_err();
         }
+    }
+
+    #[test]
+    fn repo_adds_by_id_and_path_and_lists_by_workspace() {
+        let add = run(&[
+            "weacon",
+            "repo",
+            "add",
+            "--workspace",
+            "w-1",
+            "site",
+            "/src/site",
+        ])
+        .unwrap();
+        let Command::Repo(RepoCommand::Add {
+            workspace,
+            id,
+            path,
+        }) = add.command
+        else {
+            panic!("not repo add");
+        };
+        assert_eq!((workspace.as_str(), id.as_str()), ("w-1", "site"));
+        assert_eq!(path, PathBuf::from("/src/site"));
+        let list = run(&["weacon", "repo", "list", "--workspace", "w-1"]).unwrap();
+        assert!(matches!(
+            list.command,
+            Command::Repo(RepoCommand::List { .. })
+        ));
+        assert_eq!(list.command.name(), "repo");
+        assert_eq!(list.command.log_name(), "cli.log");
+        run(&[
+            "weacon",
+            "repo",
+            "add",
+            "--workspace",
+            "w-1",
+            "--bad",
+            "/src",
+        ])
+        .unwrap_err();
+        run(&["weacon", "repo", "add", "--workspace", "w-1", "a/b", "/src"]).unwrap_err();
     }
 
     #[test]
