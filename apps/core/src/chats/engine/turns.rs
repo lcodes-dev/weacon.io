@@ -287,7 +287,7 @@ mod tests {
             .unwrap();
         on.engine.open_chats.remove(&key());
 
-        waiting_in(&mut on.engine).await;
+        on.engine.reconcile().await;
 
         let status = RunStatus {
             run: run("run-1"),
@@ -306,7 +306,15 @@ mod tests {
         assert_eq!(waiting_in(&mut on.engine).await.len(), 1);
         // As after a restart: the log is all that is left of the chat.
         on.engine.open_chats.remove(&key());
+        let seq = on.engine.open(&key()).await.unwrap().events.seq();
+        assert_eq!(
+            waiting_in(&mut on.engine).await.len(),
+            1,
+            "a read changes nothing"
+        );
+        assert_eq!(on.engine.open(&key()).await.unwrap().events.seq(), seq);
 
+        on.engine.reconcile().await;
         assert!(waiting_in(&mut on.engine).await.is_empty());
         let first = prompt("r-1", "Hi").request;
         assert_eq!(

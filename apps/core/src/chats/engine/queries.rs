@@ -21,8 +21,6 @@ impl<A: Agent> Engine<A> {
         if matches!(query, ChatQueryKind::Subscribe { .. }) {
             self.sweep();
         }
-        // A run cut off, as by a restart, isn't shown as working.
-        self.save_ended(key).await?;
         let chat = self.open(key).await?;
         match query {
             ChatQueryKind::Subscribe { after } => {
