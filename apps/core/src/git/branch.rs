@@ -8,7 +8,7 @@ use std::process::{Command, Stdio};
 use weacon_observability::Fault;
 use weacon_protocol::{DownloadUrl, code};
 
-use super::diff::is_commit_id;
+use super::diff::CommitId;
 use super::{Git, not_run, run, text};
 use crate::platform;
 
@@ -34,20 +34,14 @@ pub(crate) struct Unsaved {
 impl Git {
     /// What `worktree` holds that isn't committed, or is committed since `base` but pushed
     /// nowhere.
-    pub(crate) fn unsaved(&self, worktree: &Path, base: &str) -> Result<Unsaved, Fault> {
-        if !is_commit_id(base) {
-            return Err(Fault::new(
-                code!("git.not_a_commit"),
-                "That isn't a commit id",
-            ));
-        }
+    pub(crate) fn unsaved(&self, worktree: &Path, base: &CommitId) -> Result<Unsaved, Fault> {
         let status = run(self.command(worktree).args([
             "status",
             "--porcelain",
             "-z",
             "--untracked-files=normal",
         ]))?;
-        let range = format!("{base}..HEAD");
+        let range = format!("{}..HEAD", base.as_str());
         let ahead = text(run(self.command(worktree).args([
             "rev-list",
             "--count",
@@ -117,8 +111,8 @@ pub(crate) struct Gh {
 
 impl Gh {
     /// The first `gh` in `path`, a `PATH` value, using `config` for its sign-in.
-    pub(crate) fn find(path: &OsStr, config: PathBuf) -> Option<Self> {
-        let program = platform::find_program("gh", path)?;
+    pub(crate) fn find(path: Option<&OsStr>, config: PathBuf) -> Option<Self> {
+        let program = platform::find_program("gh", path.unwrap_or_default())?;
         Some(Self { program, config })
     }
 
@@ -131,7 +125,7 @@ impl Gh {
             .is_ok_and(|status| status.success())
     }
 
-    /// Opens `draft` and gives its page.
+    /// Opens `draft` and gives its page; one already open for its branch is given instead.
     pub(crate) fn open_draft(
         &self,
         worktree: &Path,
@@ -148,6 +142,9 @@ impl Gh {
                 code!("pr.no_title"),
                 "A pull request needs a title",
             ));
+        }
+        if let Some(open) = self.open_for(worktree, branch) {
+            return Ok(open);
         }
         let mut child = self
             .command(worktree)
@@ -173,11 +170,19 @@ impl Gh {
         if !out.status.success() {
             return Err(opened());
         }
-        let page = String::from_utf8(out.stdout).map_err(|_| opened())?;
-        page.lines()
-            .rev()
-            .find_map(|line| DownloadUrl::try_from(line.trim().to_owned()).ok())
-            .ok_or_else(opened)
+        last_page(out.stdout).ok_or_else(opened)
+    }
+
+    // The page of the pull request already open for `branch`, if gh can say.
+    fn open_for(&self, worktree: &Path, branch: &str) -> Option<DownloadUrl> {
+        let out = self
+            .command(worktree)
+            .args(["pr", "list", "--state=open", "--json=url", "--jq=.[].url"])
+            .arg(format!("--head={branch}"))
+            .output()
+            .ok()?;
+        out.status.success().then_some(())?;
+        last_page(out.stdout)
     }
 
     fn command(&self, worktree: &Path) -> Command {
@@ -197,12 +202,26 @@ impl Gh {
     }
 }
 
+// The last line of gh's output that is a page's address.
+fn last_page(out: Vec<u8>) -> Option<DownloadUrl> {
+    String::from_utf8(out)
+        .ok()?
+        .lines()
+        .rev()
+        .find_map(|line| DownloadUrl::try_from(line.trim().to_owned()).ok())
+}
+
 // A branch name that reads the same in a page's address.
 fn is_plain_branch(name: &str) -> bool {
-    !name.is_empty()
-        && name
+    plain(name, b"._/-")
+}
+
+// Not empty, and only ASCII letters, digits and the bytes in `also`.
+fn plain(text: &str, also: &[u8]) -> bool {
+    !text.is_empty()
+        && text
             .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || b"._/-".contains(&byte))
+            .all(|byte| byte.is_ascii_alphanumeric() || also.contains(&byte))
 }
 
 // The owner and name of a repository on GitHub, from a remote's address in any of git's
@@ -218,13 +237,7 @@ fn github_repo(remote: &str) -> Option<(String, String)> {
         })?;
     let (owner, repo) = rest.trim_end_matches('/').split_once('/')?;
     let repo = repo.strip_suffix(".git").unwrap_or(repo);
-    let plain = |part: &str| {
-        !part.is_empty()
-            && part
-                .bytes()
-                .all(|byte| byte.is_ascii_alphanumeric() || b"._-".contains(&byte))
-    };
-    (plain(owner) && plain(repo)).then(|| (owner.to_owned(), repo.to_owned()))
+    (plain(owner, b"._-") && plain(repo, b"._-")).then(|| (owner.to_owned(), repo.to_owned()))
 }
 
 #[cfg(test)]
@@ -237,7 +250,7 @@ mod tests {
     use crate::git::tests::{chat, fixture, git, repo};
 
     // A chat's worktree whose repository's `origin` is a bare one beside it, and its start.
-    fn with_origin(dir: &Path) -> (Git, PathBuf, PathBuf, String) {
+    fn with_origin(dir: &Path) -> (Git, PathBuf, PathBuf, CommitId) {
         let (git, repo) = (git(dir), repo(dir));
         let origin = dir.join("origin.git");
         fixture(
@@ -257,7 +270,7 @@ mod tests {
             .unwrap()
             .start
             .unwrap();
-        (git, path, origin, start.commit)
+        (git, path, origin, CommitId::parse(&start.commit).unwrap())
     }
 
     #[test]
@@ -284,8 +297,6 @@ mod tests {
             &origin,
             &["rev-parse", "--verify", "--quiet", "refs/heads/weacon/p"],
         );
-        let error = git.unsaved(&path, "HEAD").unwrap_err();
-        assert_eq!(error.code().as_str(), "git.not_a_commit");
     }
 
     #[test]
@@ -365,12 +376,62 @@ mod tests {
         assert_eq!(error.code().as_str(), "pr.no_title");
     }
 
+    // Signed in; notes its arguments one to a line, and lists the draft once it's opened.
+    #[cfg(unix)]
+    const FAKE_GH: &str = r#"#!/bin/sh
+printf '%s\n' "$@" >> "$GH_CONFIG_DIR/args"
+case "$1 $2" in
+"auth status") exit 0 ;;
+"pr list") cat "$GH_CONFIG_DIR/open" 2>/dev/null; exit 0 ;;
+"pr create")
+    cat > "$GH_CONFIG_DIR/body"
+    printf 'Creating draft\nhttps://github.com/acme/site/pull/7\n' | tee "$GH_CONFIG_DIR/open"
+    ;;
+*) exit 1 ;;
+esac
+"#;
+
+    #[cfg(unix)]
+    #[test]
+    fn a_draft_is_opened_once_with_each_value_one_argument() {
+        let dir = TempDir::new().unwrap();
+        let config = dir.join("gh");
+        fs::create_dir_all(&config).unwrap();
+        let program = dir.join("bin/gh");
+        fs::create_dir_all(dir.join("bin")).unwrap();
+        platform::write_program(&program, FAKE_GH);
+        let gh = Gh {
+            program,
+            config: config.clone(),
+        };
+        let draft = Draft {
+            base: "main",
+            branch: "weacon/c-1",
+            title: "Fix it --draft",
+            body: "Line one\n--title=x\n",
+        };
+        assert!(gh.signed_in(&dir));
+
+        let first = gh.open_draft(&dir, &draft).unwrap();
+        let again = gh.open_draft(&dir, &draft).unwrap();
+
+        assert_eq!(first.as_str(), "https://github.com/acme/site/pull/7");
+        assert_eq!(again, first);
+        assert_eq!(fs::read_to_string(config.join("body")).unwrap(), draft.body);
+        let args = fs::read_to_string(config.join("args")).unwrap();
+        let args: Vec<&str> = args.lines().collect();
+        assert_eq!(args.iter().filter(|arg| **arg == "create").count(), 1);
+        for arg in ["--base=main", "--head=weacon/c-1", "--title=Fix it --draft"] {
+            assert!(args.contains(&arg), "{arg}: {args:?}");
+        }
+    }
+
     #[test]
     fn gh_is_found_only_on_the_path() {
         let dir = TempDir::new().unwrap();
-        assert!(Gh::find(dir.as_os_str(), dir.join("gh")).is_none());
+        assert!(Gh::find(Some(dir.as_os_str()), dir.join("gh")).is_none());
         let planted = platform::plant_program(&dir, "gh", 0o755);
-        let gh = Gh::find(dir.as_os_str(), dir.join("gh")).unwrap();
+        let gh = Gh::find(Some(dir.as_os_str()), dir.join("gh")).unwrap();
         assert_eq!(gh.program, planted);
         // A gh that won't run is no sign-in.
         assert!(!gh.signed_in(&dir));

@@ -99,8 +99,7 @@ fn work_dir(
     Ok(dir)
 }
 
-/// The folder a chat's agents work in under `work_root`: its worktree when its first prompt
-/// named a repository, else a plain folder.
+/// The folder a chat's agents work in under `work_root`.
 pub(crate) fn chat_folder(work_root: &Path, workspace: &WorkspaceId, chat: &ChatId) -> PathBuf {
     work_root
         .join(crate::names::case_safe_name("w-", workspace.as_str()))

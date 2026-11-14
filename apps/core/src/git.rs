@@ -122,7 +122,7 @@ impl Git {
             .collect())
     }
 
-    /// The worktree at `path` on [`branch`]`(chat)`, made from `repo`'s head if it's missing. A
+    /// The worktree at `path` on the chat's [`branch()`], made from `repo`'s head if it's missing. A
     /// branch or folder of that name that isn't this chat's worktree is never taken over.
     pub(crate) fn chat_worktree(
         &self,

@@ -6,8 +6,6 @@ const CAPABILITIES: &[Capability] = &[
     Capability::new(code!("chat.send")),
     Capability::new(code!("chat.events")),
     Capability::new(code!("run.stream")),
-    Capability::new(code!("diff.view")),
-    Capability::new(code!("worktree.manage")),
 ];
 
 /// One client's place in the conversation with the daemon.
@@ -101,8 +99,6 @@ mod tests {
                             code!("chat.send").into(),
                             code!("chat.events").into(),
                             code!("run.stream").into(),
-                            code!("diff.view").into(),
-                            code!("worktree.manage").into(),
                         ],
                     }),
                 }),

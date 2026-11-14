@@ -1,7 +1,6 @@
 //! The core's answers to its clients about chats' worktrees: their changes, where they stand,
 //! and what a person asks of them. The daemon's clients are its owner's alone.
 
-use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -11,23 +10,19 @@ use std::time::SystemTime;
 use weacon_observability::Fault;
 use weacon_protocol::{
     ChatId, DiffAnswer, DiffAnswerKind, DiffContent, DiffQuery, DiffQueryKind, Envelope,
-    FrameError, Message, RequestId, WorkspaceId, WorktreeAction, WorktreeAnswer,
-    WorktreeAnswerKind, WorktreeCommand, WorktreeQuery, WorktreeQueryKind, code,
+    FrameError, Message, WorkspaceId, WorktreeAction, WorktreeAnswer, WorktreeAnswerKind,
+    WorktreeCommand, WorktreeQuery, WorktreeQueryKind, code,
 };
 
 use super::branch::{Draft, Gh};
 use super::chats::{ChatRepo, ChatRepos};
 use super::removal::Journal;
-use super::{Git, branch};
-use crate::platform::Env;
+use super::{Git, branch, diff};
 use crate::platform::trash::Trashed;
 use crate::workspaces::Workspaces;
 
-// The variables the Trash reads to find the person's own.
-const TRASH_VARS: [&str; 3] = ["HOME", "USERPROFILE", "XDG_DATA_HOME"];
-
-/// Moves an item to the Trash, as `platform::trash::trash`; tests pass one of their own.
-pub(crate) type ToTrash = fn(&Path, Env<'_>, SystemTime) -> io::Result<Trashed>;
+/// Moves an item to the person's Trash; tests pass one of their own.
+pub(crate) type ToTrash = fn(&Path, SystemTime) -> io::Result<Trashed>;
 
 /// What answers about worktrees: one call at a time, as their journals need.
 #[derive(Clone)]
@@ -46,7 +41,6 @@ struct Inner {
     state_dir: PathBuf,
     path: Option<OsString>,
     work_root: Option<PathBuf>,
-    vars: BTreeMap<String, OsString>,
     to_trash: ToTrash,
     busy: Mutex<()>,
 }
@@ -58,18 +52,12 @@ impl Worktrees {
         state_dir: &Path,
         path: Option<OsString>,
         work_root: Option<PathBuf>,
-        env: Env<'_>,
         to_trash: ToTrash,
     ) -> Self {
-        let vars = TRASH_VARS
-            .iter()
-            .filter_map(|name| Some(((*name).to_owned(), env(name)?)))
-            .collect();
         let inner = Inner {
             state_dir: state_dir.to_owned(),
             path,
             work_root,
-            vars,
             to_trash,
             busy: Mutex::new(()),
         };
@@ -89,21 +77,32 @@ impl Worktrees {
                 WorktreeQueryKind::State => inner.state(&query.workspace, &query.chat)?,
                 WorktreeQueryKind::Newer => return Err(unknown()),
             };
-            Ok(answered(query.request, query.workspace, query.chat, answer))
+            Ok(WorktreeAnswer {
+                request: query.request,
+                workspace: query.workspace,
+                chat: query.chat,
+                answer,
+            })
         })
         .await
     }
 
     pub(crate) async fn command(&self, command: WorktreeCommand) -> Result<WorktreeAnswer, Fault> {
         self.blocking(move |inner| {
-            let (workspace, chat) = (&command.workspace, &command.chat);
-            let answer = inner.act(workspace, chat, command.action.clone())?;
-            Ok(answered(
-                command.request,
-                command.workspace,
-                command.chat,
+            let WorktreeCommand {
+                request,
+                workspace,
+                chat,
+                action,
+                ..
+            } = command;
+            let answer = inner.act(&workspace, &chat, action)?;
+            Ok(WorktreeAnswer {
+                request,
+                workspace,
+                chat,
                 answer,
-            ))
+            })
         })
         .await
     }
@@ -141,15 +140,10 @@ impl Inner {
             chat: query.chat.clone(),
             answer,
         };
-        let Ok(count) = u32::try_from(files.len()) else {
-            return Err(Fault::new(
-                code!("diff.too_many"),
-                "Too many files changed to list",
-            ));
-        };
-        if count == 0 {
+        if files.is_empty() {
             return Ok(vec![answer(DiffAnswerKind::Unchanged)]);
         }
+        let count = u32::try_from(files.len()).map_err(|_| diff::too_many())?;
         Ok(files
             .into_iter()
             .map(|file| answer(DiffAnswerKind::File { files: count, file }))
@@ -191,9 +185,8 @@ impl Inner {
         match action {
             WorktreeAction::Remove => {
                 if journal.removed(chat)?.is_none() {
-                    let env = |key: &str| self.vars.get(key).cloned();
                     let now = SystemTime::now();
-                    let to_trash = |path: &Path| (self.to_trash)(path, &env, now);
+                    let to_trash = |path: &Path| (self.to_trash)(path, now);
                     journal.remove(chat, &found.worktree, to_trash, now)?;
                 }
                 self.state(workspace, chat)
@@ -230,7 +223,7 @@ impl Inner {
         let branch = branch(&record.chat);
         git.push(worktree, &branch)?;
         let config = self.root(&record.workspace).join("gh");
-        let gh = Gh::find(self.path.as_deref().unwrap_or_default(), config);
+        let gh = Gh::find(self.path.as_deref(), config);
         if let Some(gh) = gh.filter(|gh| gh.signed_in(worktree)) {
             let draft = Draft {
                 base,
@@ -287,20 +280,6 @@ fn fitted(mut answer: DiffAnswer) -> DiffAnswer {
     answer
 }
 
-fn answered(
-    request: RequestId,
-    workspace: WorkspaceId,
-    chat: ChatId,
-    answer: WorktreeAnswerKind,
-) -> WorktreeAnswer {
-    WorktreeAnswer {
-        request,
-        workspace,
-        chat,
-        answer,
-    }
-}
-
 fn unknown() -> Fault {
     Fault::new(
         code!("request.unknown"),
@@ -316,7 +295,7 @@ fn failed() -> Fault {
 }
 
 /// Answers for a chat `c-1` in workspace `w-1` whose first prompt named a repository, with its
-/// worktree made and recorded under `dir`; its Trash is a folder there too.
+/// worktree made and recorded under `dir`; its Trash is `dir/bin`.
 #[cfg(test)]
 pub(crate) fn with_chat(dir: &Path) -> (Worktrees, WorkspaceId, ChatId, PathBuf) {
     use weacon_protocol::RepoId;
@@ -341,16 +320,15 @@ pub(crate) fn with_chat(dir: &Path) -> (Worktrees, WorkspaceId, ChatId, PathBuf)
             start,
         )
         .unwrap();
-    let trash = dir.join("bin");
-    let env = |key: &str| (key == "XDG_DATA_HOME").then(|| trash.clone().into_os_string());
-    let worktrees = Worktrees::new(&state, std::env::var_os("PATH"), Some(work), &env, bin);
+    let worktrees = Worktrees::new(&state, std::env::var_os("PATH"), Some(work), bin);
     (worktrees, workspace, chat_id, worktree)
 }
 
 #[cfg(test)]
-// A Trash of the test's own, in the folder its `XDG_DATA_HOME` names.
-fn bin(path: &Path, env: Env<'_>, _: SystemTime) -> io::Result<Trashed> {
-    let bin = PathBuf::from(env("XDG_DATA_HOME").ok_or(io::ErrorKind::NotFound)?);
+// A Trash of the test's own: `bin` in the folder above `work/<workspace>/<chat>`.
+fn bin(path: &Path, _: SystemTime) -> io::Result<Trashed> {
+    let dir = path.ancestors().nth(3).ok_or(io::ErrorKind::InvalidInput)?;
+    let bin = dir.join("bin");
     std::fs::create_dir_all(&bin)?;
     let item = bin.join(path.file_name().ok_or(io::ErrorKind::InvalidInput)?);
     std::fs::rename(path, &item)?;
@@ -361,7 +339,7 @@ fn bin(path: &Path, env: Env<'_>, _: SystemTime) -> io::Result<Trashed> {
 mod tests {
     use std::fs;
 
-    use weacon_protocol::{DiffFile, WorktreeAction as Action};
+    use weacon_protocol::{DiffFile, RequestId, WorktreeAction as Action};
     use weacon_testing::TempDir;
 
     use super::*;

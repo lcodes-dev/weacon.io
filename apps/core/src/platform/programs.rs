@@ -25,6 +25,24 @@ pub(crate) fn plant_link(target: &std::path::Path, link: &std::path::Path) -> bo
     made.is_ok()
 }
 
+/// Writes an executable `script` to `path` from a child shell, so this process never holds a
+/// write handle that another test's fork could inherit, which makes running it fail as busy.
+#[cfg(test)]
+#[cfg(unix)]
+pub(crate) fn write_program(path: &std::path::Path, script: &str) {
+    let written = std::process::Command::new("sh")
+        .args([
+            "-c",
+            "printf '%s' \"$1\" > \"$2\" && chmod 755 \"$2\"",
+            "sh",
+            script,
+        ])
+        .arg(path)
+        .status()
+        .unwrap();
+    assert!(written.success());
+}
+
 /// Writes an empty program `name` into `dir`, with Unix permissions `mode`.
 #[cfg(test)]
 pub(crate) fn plant_program(dir: &std::path::Path, name: &str, mode: u32) -> PathBuf {

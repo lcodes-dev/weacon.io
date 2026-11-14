@@ -12,8 +12,8 @@ use weacon_agents::SpawnPolicy;
 pub(crate) use weacon_appkit::build;
 use weacon_observability::{Fault, Field, Logger};
 use weacon_protocol::{
-    App, ChatAnswer, ChatCommand, ChatQuery, DiffAnswer, DiffQuery, Envelope, FrameError,
-    LineDecoder, Message, Outcome, Pick, Receipt, WorktreeAnswer, code, encode_line,
+    App, ChatAnswer, ChatCommand, ChatQuery, Envelope, LineDecoder, Message, Outcome, Pick,
+    Receipt, code, encode_line,
 };
 
 use crate::chats::feed::{self, Client};
@@ -26,6 +26,9 @@ use crate::picks::{KeepError, Picks};
 use crate::platform::{self, Listener, Owner, Stream};
 use crate::session::{Reply, Session};
 
+mod route;
+mod worktrees;
+
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
 pub(crate) const READ_CHUNK: usize = 8192;
 pub(crate) const ACCEPT_BACKOFF: Duration = Duration::from_millis(100);
@@ -34,13 +37,6 @@ const MEMORY_SAMPLE: Duration = Duration::from_mins(5);
 
 pub(crate) fn socket_path(state_dir: &Path) -> PathBuf {
     state_dir.join("weacon.sock")
-}
-
-// The worktree answers, with this process's environment and the person's own Trash.
-fn worktrees(state_dir: &Path, places: &Places) -> Worktrees {
-    let env = |key: &str| std::env::var_os(key);
-    let (path, work_root) = (places.path.clone(), places.work_root.clone());
-    Worktrees::new(state_dir, path, work_root, &env, platform::trash::trash)
 }
 
 /// Runs the daemon until Ctrl-C or the system asks it to stop.
@@ -131,7 +127,7 @@ impl Daemon {
         }
         let (mcp, mcp_server) = mcp::start(&app, &log)?;
         places.mcp = Some(mcp);
-        let worktrees = worktrees(state_dir, &places);
+        let worktrees = worktrees::worktrees(state_dir, &places);
         let (chats, engine) = chats::start(state_dir, places, app.clone(), spawn, log.clone())?;
         let listener = platform::bind(&socket).map_err(failed)?;
         let engine = tokio::spawn(engine.run());
@@ -211,6 +207,7 @@ struct Connection {
     session: Session,
     decoder: LineDecoder,
     client: Client,
+    late: worktrees::Late,
 }
 
 async fn serve_client(stream: Stream, shared: &Shared) -> io::Result<()> {
@@ -218,10 +215,12 @@ async fn serve_client(stream: Stream, shared: &Shared) -> io::Result<()> {
     let mut buf = [0; READ_CHUNK];
     let deadline = Instant::now() + HANDSHAKE_TIMEOUT;
     let (push, mut pushed) = mpsc::channel(feed::QUEUE);
+    let (late, mut answered) = mpsc::channel(worktrees::LATE);
     let mut connection = Connection {
         session: Session::default(),
         decoder: LineDecoder::default(),
         client: Client { push },
+        late,
     };
     loop {
         // Until the hello, reading counts against the deadline, as `answer`'s replies do.
@@ -230,6 +229,12 @@ async fn serve_client(stream: Stream, shared: &Shared) -> io::Result<()> {
             read = within(limit, reader.read(&mut buf)) => read,
             Some(message) = pushed.recv() => {
                 if let Ok(line) = encode_line(&Envelope { id: 0, message }) {
+                    writer.write_all(&line).await?;
+                }
+                continue;
+            }
+            Some(envelope) = answered.recv() => {
+                if let Ok(line) = encode_line(&envelope) {
                     writer.write_all(&line).await?;
                 }
                 continue;
@@ -269,6 +274,7 @@ async fn answer(
         session,
         decoder,
         client,
+        late,
     } = connection;
     for received in decoder.push(bytes) {
         let limit = (!session.greeted()).then_some(deadline);
@@ -283,7 +289,7 @@ async fn answer(
                 .log
                 .warn("client reported an error", &[("code", code)]);
         }
-        let reply = route(shared, session, received, client).await;
+        let reply = route::route(shared, session, received, client, late).await;
         if let Some(envelope) = reply.envelope
             && let Ok(line) = encode_line(&envelope)
         {
@@ -297,48 +303,6 @@ async fn answer(
         }
     }
     Ok(true)
-}
-
-// The reply to one message from a client; only a greeted one is served.
-async fn route(
-    shared: &Shared,
-    session: &mut Session,
-    received: Result<Envelope, FrameError>,
-    client: &Client,
-) -> Reply {
-    match received {
-        Ok(Envelope {
-            id,
-            message: Message::Pick(pick),
-        }) if session.greeted() => keep(shared, id, pick).await,
-        Ok(Envelope {
-            id,
-            message: Message::ChatCommand(command),
-        }) if session.greeted() => command_chat(shared, id, command).await,
-        Ok(Envelope {
-            id,
-            message: Message::ChatQuery(query),
-        }) if session.greeted() => query_chat(shared, id, query, client).await,
-        Ok(Envelope {
-            id,
-            message: Message::DiffQuery(query),
-        }) if session.greeted() => diff(shared, id, query, client).await,
-        Ok(Envelope {
-            id,
-            message: Message::WorktreeQuery(query),
-        }) if session.greeted() => {
-            let answer = shared.worktrees.query(query).await;
-            answer_worktree(shared, id, answer)
-        }
-        Ok(Envelope {
-            id,
-            message: Message::WorktreeCommand(command),
-        }) if session.greeted() => {
-            let answer = shared.worktrees.command(command).await;
-            answer_worktree(shared, id, answer)
-        }
-        received => session.answer(received, &shared.app),
-    }
 }
 
 // The reply to a chat command: nothing when it was taken, since its receipts are events in the
@@ -372,42 +336,6 @@ async fn query_chat(shared: &Shared, id: u32, query: ChatQuery, client: &Client)
                     chat,
                     answer,
                 }),
-            }),
-            close: false,
-        },
-        Err(fault) => refused(shared, id, &fault),
-    }
-}
-
-// A chat's changes, pushed one file at a time by a task of their own, so a long list never
-// waits on the queue this connection drains.
-async fn diff(shared: &Shared, id: u32, query: DiffQuery, client: &Client) -> Reply {
-    match shared.worktrees.diff(query).await {
-        Ok(answers) => {
-            tokio::spawn(push_all(client.push.clone(), answers));
-            Reply {
-                envelope: None,
-                close: false,
-            }
-        }
-        Err(fault) => refused(shared, id, &fault),
-    }
-}
-
-async fn push_all(push: mpsc::Sender<Message>, answers: Vec<DiffAnswer>) {
-    for answer in answers {
-        if push.send(Message::DiffAnswer(answer)).await.is_err() {
-            return;
-        }
-    }
-}
-
-fn answer_worktree(shared: &Shared, id: u32, answer: Result<WorktreeAnswer, Fault>) -> Reply {
-    match answer {
-        Ok(answer) => Reply {
-            envelope: Some(Envelope {
-                id,
-                message: Message::WorktreeAnswer(answer),
             }),
             close: false,
         },
@@ -684,7 +612,8 @@ mod tests {
         running.stop().await;
     }
 
-    #[tokio::test(start_paused = true)]
+    // In real time: a hang-up can take a moment to arrive, which a paused clock would skip past.
+    #[tokio::test]
     async fn another_protocol_is_hung_up_on_at_once() {
         let dir = TempDir::new().unwrap();
         let running = start(&dir).unwrap();
@@ -726,7 +655,10 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let running = start(&dir).unwrap();
         let mut client = connect(&running.socket).await;
-        let read = timeout(HANDSHAKE_TIMEOUT * 2, client.read(&mut [0; 16])).await;
+        tokio::time::sleep(HANDSHAKE_TIMEOUT).await;
+        // The hang-up itself comes in real time.
+        tokio::time::resume();
+        let read = timeout(HANDSHAKE_TIMEOUT, client.read(&mut [0; 16])).await;
 
         assert_eq!(read.unwrap().unwrap(), 0);
         running.stop().await;
@@ -852,18 +784,20 @@ mod tests {
         let running = start(&dir).unwrap();
         let client = connect(&running.socket).await;
 
-        // The daemon stops reading while its replies back up, then hangs up at the deadline.
-        timeout(HANDSHAKE_TIMEOUT * 2, flood(client))
-            .await
-            .unwrap()
-            .unwrap_err();
+        // The daemon stops reading while its replies back up, then hangs up at the deadline,
+        // which comes in real time.
+        let flooding = tokio::spawn(flood(client));
+        tokio::time::sleep(HANDSHAKE_TIMEOUT).await;
+        tokio::time::resume();
+        let flooded = timeout(HANDSHAKE_TIMEOUT, flooding).await;
+        flooded.unwrap().unwrap().unwrap_err();
         running.stop().await;
     }
 
     // A diff of `chat`, then a diff, a state query and a removal of `c-2`, which has no worktree.
     fn worktree_asks(workspace: &WorkspaceId, chat: &ChatId) -> Vec<u8> {
         use weacon_protocol::{
-            DiffQueryKind, RequestId, WorktreeAction, WorktreeCommand, WorktreeQuery,
+            DiffQuery, DiffQueryKind, RequestId, WorktreeAction, WorktreeCommand, WorktreeQuery,
             WorktreeQueryKind,
         };
 
@@ -956,14 +890,16 @@ mod tests {
             code!("chat.send"),
             code!("chat.events"),
             code!("run.stream"),
-            code!("diff.view"),
-            code!("worktree.manage"),
         ];
         let Message::Welcome(welcome) = &replies[0] else {
             panic!("no welcome");
         };
         for capability in offered {
             assert!(welcome.capabilities.contains(&capability.into()));
+        }
+        // Not until chats are given worktrees.
+        for capability in [code!("diff.view"), code!("worktree.manage")] {
+            assert!(!welcome.capabilities.contains(&capability.into()));
         }
         assert_eq!(error_code(&replies[1]), Some("chat.empty_prompt"));
         assert!(matches!(&replies[2], Message::ChatAnswer(answer)

@@ -282,7 +282,6 @@ mod tests {
     // A real process: a shell script stands in for `claude`.
     #[cfg(unix)]
     mod with_a_program {
-        use std::path::Path;
         use std::time::Duration;
 
         use weacon_agents::{Launch, SpawnPolicy};
@@ -290,6 +289,7 @@ mod tests {
         use weacon_testing::TempDir;
 
         use super::super::*;
+        use crate::platform::write_program;
         use crate::test_support::VERSION;
 
         const SESSION: &str = "0b7c6a52-3f1e-4d2a-9c8b-5e4f3a2b1c0d";
@@ -302,22 +302,6 @@ printf '%s\n' '{"type":"assistant","message":{"role":"assistant","content":[{"ty
 read -r interrupt
 printf '%s\n' '{"type":"result","subtype":"error_during_execution","is_error":true}'
 "#;
-
-        // Written from a child shell, so this process never holds a write handle that another
-        // test's fork could inherit, which makes running it fail as busy.
-        fn write_program(path: &Path, script: &str) {
-            let written = std::process::Command::new("sh")
-                .args([
-                    "-c",
-                    "printf '%s' \"$1\" > \"$2\" && chmod 755 \"$2\"",
-                    "sh",
-                    script,
-                ])
-                .arg(path)
-                .status()
-                .unwrap();
-            assert!(written.success());
-        }
 
         async fn next(agent: &mut AgentRun) -> Option<RunEvent> {
             let event = tokio::time::timeout(Duration::from_secs(30), Agent::next(agent));

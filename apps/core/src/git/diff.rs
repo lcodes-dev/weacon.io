@@ -1,35 +1,32 @@
 //! What a chat's agents changed in its worktree since its branch began, committed or not.
 
-use std::fs;
 use std::io::Read as _;
 use std::path::Path;
+use std::process::{Command, Stdio};
 
 use weacon_observability::Fault;
 use weacon_protocol::{DiffContent, DiffFile, DiffLine, FileChange, Hunk, LineOp, MAX_FRAME, code};
 
-use super::{Git, Start, run, text};
+use super::{Git, Start, failed, not_run, run, text};
 
 // A file's changes past this many bytes of patch are only said to be too large, so each still
 // fits one frame with room for its JSON.
 const MAX_PATCH: usize = MAX_FRAME / 4;
 
+// More changed files than this are refused rather than listed.
+const MAX_FILES: usize = 500;
+
 impl Git {
     /// Every file changed in `worktree` since the commit `base`, untracked ones included, in
     /// the order of their paths.
-    pub(crate) fn changes(&self, worktree: &Path, base: &str) -> Result<Vec<DiffFile>, Fault> {
-        if !is_commit_id(base) {
-            return Err(Fault::new(
-                code!("git.not_a_commit"),
-                "That isn't a commit id",
-            ));
-        }
+    pub(crate) fn changes(&self, worktree: &Path, base: &CommitId) -> Result<Vec<DiffFile>, Fault> {
         let listed = text(run(self.command(worktree).args([
             "diff",
             "--name-status",
             "-z",
             "-M",
             "--no-ext-diff",
-            base,
+            base.as_str(),
             "--",
         ]))?)?;
         let untracked = text(run(self.command(worktree).args([
@@ -38,8 +35,16 @@ impl Git {
             "--exclude-standard",
             "-z",
         ]))?)?;
+        let changed = name_status(&listed);
+        let untracked: Vec<&str> = untracked
+            .split('\0')
+            .filter(|path| !path.is_empty())
+            .collect();
+        if changed.len().saturating_add(untracked.len()) > MAX_FILES {
+            return Err(too_many());
+        }
         let mut files = Vec::new();
-        for (change, path) in name_status(&listed) {
+        for (change, path) in changed {
             let content = self.patch(worktree, base, &change, &path)?;
             files.push(DiffFile {
                 path,
@@ -47,7 +52,7 @@ impl Git {
                 content,
             });
         }
-        for path in untracked.split('\0').filter(|path| !path.is_empty()) {
+        for path in untracked {
             files.push(DiffFile {
                 path: path.to_owned(),
                 change: FileChange::Added,
@@ -61,61 +66,98 @@ impl Git {
     /// Where `worktree`'s changes count from: where its branch meets the one it began from,
     /// while that one is there, so merging or rebasing on it adds no one else's changes; else
     /// the commit it began at.
-    pub(crate) fn base(&self, worktree: &Path, start: &Start) -> Result<String, Fault> {
+    pub(crate) fn base(&self, worktree: &Path, start: &Start) -> Result<CommitId, Fault> {
         let merged = start.branch.as_ref().and_then(|branch| {
             let full = format!("refs/heads/{branch}");
             run(self.command(worktree).args(["merge-base", &full, "HEAD"])).ok()
         });
-        let found = match merged {
-            Some(out) => Some(out),
-            None if is_commit_id(&start.commit) => {
-                let commit = format!("{}^{{commit}}", start.commit);
-                run(self
-                    .command(worktree)
-                    .args(["rev-parse", "--verify", "--quiet", &commit]))
-                .ok()
-            }
-            None => None,
-        };
-        let base = found.ok_or_else(|| {
+        let found = merged.or_else(|| {
+            let commit = format!("{}^{{commit}}", CommitId::parse(&start.commit)?.as_str());
+            let verify = ["rev-parse", "--verify", "--quiet", &commit];
+            run(self.command(worktree).args(verify)).ok()
+        });
+        let gone = || {
             Fault::new(
                 code!("git.base_gone"),
                 "Neither the branch the chat began from nor the commit it began at is there",
             )
-        })?;
-        Ok(text(base)?.trim_end().to_owned())
+        };
+        let out = text(found.ok_or_else(gone)?)?;
+        CommitId::parse(out.trim_end()).ok_or_else(gone)
     }
 
     fn patch(
         &self,
         worktree: &Path,
-        base: &str,
+        base: &CommitId,
         change: &FileChange,
         path: &str,
     ) -> Result<DiffContent, Fault> {
         let mut command = self.command(worktree);
         command.args([
+            // Else blank lines of context would arrive as nothing at all.
+            "-c",
+            "diff.suppressBlankEmpty=false",
             "diff",
             "-M",
             "--no-color",
             "--no-ext-diff",
             "--no-textconv",
-            base,
+            base.as_str(),
             "--",
         ]);
         if let FileChange::Renamed { from } = change {
             command.arg(from);
         }
-        let out = run(command.arg(path))?;
-        if out.len() > MAX_PATCH {
+        let Some(out) = run_within(command.arg(path), MAX_PATCH)? else {
             return Ok(DiffContent::TooLarge);
-        }
+        };
         Ok(String::from_utf8(out).map_or(DiffContent::Binary, |patch| content(&patch)))
     }
 }
 
-// A full SHA-1 or SHA-256 commit id, in lowercase hex.
-pub(super) fn is_commit_id(id: &str) -> bool {
+pub(crate) fn too_many() -> Fault {
+    Fault::new(code!("diff.too_many"), "Too many files changed to list")
+}
+
+// Git's output on success, or None once it passes `limit` bytes, when git is stopped.
+fn run_within(command: &mut Command, limit: usize) -> Result<Option<Vec<u8>>, Fault> {
+    let mut child = command
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(not_run)?;
+    let mut out = Vec::new();
+    let most = u64::try_from(limit).unwrap_or(u64::MAX).saturating_add(1);
+    if let Some(stdout) = child.stdout.take() {
+        stdout.take(most).read_to_end(&mut out).map_err(not_run)?;
+    }
+    if out.len() > limit {
+        // It may have finished already; either way it is waited for.
+        let _gone = child.kill();
+        child.wait().map_err(not_run)?;
+        return Ok(None);
+    }
+    let status = child.wait().map_err(not_run)?;
+    status.success().then_some(Some(out)).ok_or_else(failed)
+}
+
+/// A full SHA-1 or SHA-256 commit id in lowercase hex, which a command line never reads as an
+/// option.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct CommitId(String);
+
+impl CommitId {
+    pub(super) fn parse(id: &str) -> Option<Self> {
+        is_commit_id(id).then(|| Self(id.to_owned()))
+    }
+
+    pub(crate) fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+fn is_commit_id(id: &str) -> bool {
     matches!(id.len(), 40 | 64)
         && id
             .bytes()
@@ -203,23 +245,27 @@ fn hunk_start(header: &str) -> Option<Hunk> {
 
 // An untracked file, read only when it's a plain file: a link's target never is.
 fn added(file: &Path) -> DiffContent {
-    let Ok(meta) = file.symlink_metadata() else {
+    // Opened once, never through a link, and checked on what was opened.
+    let Ok(opened) = weacon_agents::open_plain(file) else {
         return DiffContent::Binary;
     };
-    if !meta.is_file() {
+    let Ok(meta) = opened.metadata() else {
         return DiffContent::Binary;
-    }
+    };
     if usize::try_from(meta.len()).map_or(true, |len| len > MAX_PATCH) {
         return DiffContent::TooLarge;
     }
     let mut bytes = Vec::new();
     let limit = u64::try_from(MAX_PATCH).unwrap_or(u64::MAX);
-    let read = fs::File::open(file).and_then(|opened| opened.take(limit).read_to_end(&mut bytes));
-    match String::from_utf8(bytes) {
-        Ok(text) if read.is_ok() && !text.contains('\0') => DiffContent::Text {
-            hunks: added_hunks(&text),
-        },
-        _ => DiffContent::Binary,
+    let read = opened.take(limit).read_to_end(&mut bytes);
+    let (Ok(_), Ok(text)) = (read, String::from_utf8(bytes)) else {
+        return DiffContent::Binary;
+    };
+    if text.contains('\0') {
+        return DiffContent::Binary;
+    }
+    DiffContent::Text {
+        hunks: added_hunks(&text),
     }
 }
 
@@ -250,6 +296,8 @@ fn added_hunks(text: &str) -> Vec<Hunk> {
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+
     use weacon_testing::TempDir;
 
     use super::*;
@@ -257,7 +305,7 @@ mod tests {
     use crate::git::tests::{chat, fixture, git, repo};
 
     // A chat's worktree, the commit it began at, and its git.
-    fn begun(dir: &Path) -> (Git, std::path::PathBuf, String) {
+    fn begun(dir: &Path) -> (Git, std::path::PathBuf, CommitId) {
         let (git, repo) = (git(dir), repo(dir));
         fs::write(repo.join("lib.rs"), "fn a() {}\nfn b() {}\n").unwrap();
         fs::write(repo.join("old.txt"), "moved\nas it is\n").unwrap();
@@ -267,7 +315,7 @@ mod tests {
         let path = dir.join("trees/c-d");
         git.chat_worktree(&repo, &chat("d"), &path).unwrap();
         let base = text(run(git.command(&path).args(["rev-parse", "HEAD"])).unwrap()).unwrap();
-        (git, path, base.trim_end().to_owned())
+        (git, path, CommitId::parse(base.trim_end()).unwrap())
     }
 
     fn line(op: LineOp, text: &str) -> DiffLine {
@@ -312,7 +360,7 @@ mod tests {
         let (git, repo, path, start) = started(&dir);
         others(&dir, &repo);
 
-        assert_eq!(git.base(&path, &start).unwrap(), start.commit);
+        assert_eq!(git.base(&path, &start).unwrap().as_str(), start.commit);
         assert_eq!(changed(&git, &path, &start), ["agent.txt"]);
     }
 
@@ -349,7 +397,7 @@ mod tests {
         fs::write(path.join("agent.txt"), "mine\n").unwrap();
 
         assert_eq!(start.branch.as_deref(), Some("dev"));
-        assert_eq!(git.base(&path, &start).unwrap(), start.commit);
+        assert_eq!(git.base(&path, &start).unwrap().as_str(), start.commit);
         assert_eq!(changed(&git, &path, &start), ["agent.txt"]);
     }
 
@@ -476,7 +524,8 @@ mod tests {
         fs::write(path.join("[ab]"), "new\n").unwrap();
         fs::write(path.join("a"), "other\n").unwrap();
 
-        let files = git.changes(&path, base.trim_end()).unwrap();
+        let base = CommitId::parse(base.trim_end()).unwrap();
+        let files = git.changes(&path, &base).unwrap();
 
         let pair = files.iter().find(|file| file.path == "[ab]").unwrap();
         let lines = vec![line(LineOp::Removed, "old"), line(LineOp::Added, "new")];
@@ -504,6 +553,58 @@ mod tests {
     }
 
     #[test]
+    fn an_untracked_file_swapped_for_a_link_to_another_is_never_read() {
+        let dir = TempDir::new().unwrap();
+        let (git, path, base) = begun(&dir);
+        fs::write(dir.join("secret"), "token\n").unwrap();
+        fs::write(path.join("notes.md"), "mine\n").unwrap();
+        fs::remove_file(path.join("notes.md")).unwrap();
+        fs::hard_link(dir.join("secret"), path.join("notes.md")).unwrap();
+
+        let files = git.changes(&path, &base).unwrap();
+
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].content, DiffContent::Binary);
+    }
+
+    #[test]
+    fn more_files_than_a_list_holds_are_refused() {
+        let dir = TempDir::new().unwrap();
+        let (git, path, base) = begun(&dir);
+        for index in 0..MAX_FILES {
+            fs::write(path.join(format!("{index}.txt")), "").unwrap();
+        }
+        assert_eq!(git.changes(&path, &base).unwrap().len(), MAX_FILES);
+
+        fs::write(path.join("lib.rs"), "fn c() {}\n").unwrap();
+
+        let error = git.changes(&path, &base).unwrap_err();
+        assert_eq!(error.code().as_str(), "diff.too_many");
+    }
+
+    #[test]
+    fn a_blank_line_of_context_stays_a_line() {
+        let dir = TempDir::new().unwrap();
+        let (git, path, _) = begun(&dir);
+        fs::write(path.join("lib.rs"), "one\n\ntwo\n").unwrap();
+        fixture(&dir, &path, &["commit", "--quiet", "-am", "Blank"]);
+        fixture(&dir, &path, &["config", "diff.suppressBlankEmpty", "true"]);
+        let base = text(run(git.command(&path).args(["rev-parse", "HEAD"])).unwrap()).unwrap();
+        fs::write(path.join("lib.rs"), "one\n\nthree\n").unwrap();
+
+        let files = git
+            .changes(&path, &CommitId::parse(base.trim_end()).unwrap())
+            .unwrap();
+
+        let DiffContent::Text { hunks } = &files[0].content else {
+            panic!("not text: {files:?}");
+        };
+        let lines = &hunks[0].lines;
+        assert_eq!(lines[1], line(LineOp::Context, ""));
+        assert_eq!(lines.len(), 4, "{lines:?}");
+    }
+
+    #[test]
     fn a_file_too_large_for_a_frame_says_so() {
         let dir = TempDir::new().unwrap();
         let (git, path, base) = begun(&dir);
@@ -524,14 +625,18 @@ mod tests {
 
     #[test]
     fn only_a_full_commit_id_is_a_base() {
-        let dir = TempDir::new().unwrap();
-        let (git, path, _) = begun(&dir);
-
-        for base in ["HEAD", "--output=x", "abc", &"A".repeat(40)] {
-            let error = git.changes(&path, base).unwrap_err();
-            assert_eq!(error.code().as_str(), "git.not_a_commit", "{base}");
+        for id in [
+            "HEAD",
+            "--output=x",
+            "abc",
+            &"A".repeat(40),
+            &"a".repeat(41),
+        ] {
+            assert_eq!(CommitId::parse(id), None, "{id}");
         }
-        assert!(is_commit_id(&"a1".repeat(20)) && is_commit_id(&"f".repeat(64)));
+        for id in ["a1".repeat(20), "f".repeat(64)] {
+            assert_eq!(CommitId::parse(&id).unwrap().as_str(), id);
+        }
     }
 
     #[test]
