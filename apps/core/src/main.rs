@@ -10,6 +10,14 @@ mod cli;
 mod daemon;
 mod disk;
 mod doctor;
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "the server's uplink, which uses it, comes with pairing"
+    )
+)]
+mod machine_settings;
 mod map;
 mod memory;
 mod native_host;

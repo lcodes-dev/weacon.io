@@ -1,13 +1,13 @@
 use std::io::{self, Write};
 use std::path::Path;
 
-use weacon_agents::{Launch, SignIn, SpawnPolicy};
+use weacon_agents::{Launch, SpawnPolicy};
 use weacon_appkit::version_text;
 use weacon_observability::{Fault, Field, Logger};
 use weacon_protocol::code;
 
 use crate::app::{App, runtime, state_unavailable};
-use crate::workspaces::Workspaces;
+use crate::workspaces::{Workspaces, sign_ins};
 use crate::{disk, platform};
 
 /// Prints the build and where this install keeps its state, and fails when it has nowhere to.
@@ -34,37 +34,6 @@ pub(crate) fn run(app: &App, out: &mut impl Write) -> Result<(), Fault> {
         return Err(state_unavailable());
     }
     Ok(())
-}
-
-// Vendor programs asked at once: enough that a slow one doesn't hold up a report, few enough
-// for a small machine.
-const AT_ONCE: usize = 8;
-
-// A check that fails is logged here, once, and shows as unknown.
-async fn sign_ins(log: &Logger, launches: &[Launch]) -> Vec<Option<SignIn>> {
-    let failed = |err: Field| log.warn("sign-in check failed", &[("err", err)]);
-    let mut answers = Vec::new();
-    for together in launches.chunks(AT_ONCE) {
-        let checks: Vec<_> = together
-            .iter()
-            .cloned()
-            .map(|launch| tokio::spawn(async move { launch.sign_in().await }))
-            .collect();
-        for check in checks {
-            answers.push(match check.await {
-                Ok(Ok(sign_in)) => Some(sign_in),
-                Ok(Err(error)) => {
-                    failed(Field::error(&error));
-                    None
-                }
-                Err(error) => {
-                    failed(Field::error(&error));
-                    None
-                }
-            });
-        }
-    }
-    answers
 }
 
 // Workspaces that can't be listed are said to be, never left out.
@@ -191,71 +160,6 @@ mod tests {
         assert!(report(&app, platform::free_space).ends_with(
             "Error reports: off\nAgent tools: OOM score 500 CARGO_BUILD_JOBS=2 GOMAXPROCS=2\n"
         ));
-    }
-
-    // `true` and `false` stand in for a vendor's status command.
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn every_sign_in_is_checked_in_order_and_a_failed_check_is_logged_once_and_unknown() {
-        use weacon_protocol::AgentKind;
-
-        let dir = TempDir::new().unwrap();
-        let (log, records) = test_support::recording_logger();
-        let launch = |program: &str| Launch {
-            agent: AgentKind::Codex,
-            program: program.into(),
-            config_dir: dir.to_path_buf(),
-            cwd: dir.to_path_buf(),
-            access: weacon_protocol::AccessLevel::AskFirst,
-        };
-        let launches = ["true", "/missing/codex", "false"].map(launch);
-
-        let answers = sign_ins(&log, &launches).await;
-
-        assert_eq!(
-            answers,
-            [Some(SignIn::SignedIn), None, Some(SignIn::SignedOut)]
-        );
-        assert_eq!(test_support::messages(&records), ["sign-in check failed"]);
-    }
-
-    // The script never exits in time. With time paused, the clock moves only when every check
-    // is waiting, so it shows how many waits there were, one after another.
-    #[cfg(unix)]
-    #[tokio::test(start_paused = true)]
-    async fn checks_run_a_few_at_once_so_slow_ones_dont_add_up() {
-        use std::time::Duration;
-
-        use weacon_protocol::AgentKind;
-
-        let dir = TempDir::new().unwrap();
-        let (log, records) = test_support::recording_logger();
-        let program = dir.join("hang");
-        // Written from a child shell, so no fork of this process inherits a write handle.
-        let script = "printf '#!/bin/sh\\nexec sleep 1000\\n' > \"$1\" && chmod 755 \"$1\"";
-        let written = std::process::Command::new("sh")
-            .args(["-c", script, "sh"])
-            .arg(&program)
-            .status()
-            .unwrap();
-        assert!(written.success());
-        let hanging = Launch {
-            agent: AgentKind::Claude,
-            program,
-            config_dir: dir.to_path_buf(),
-            cwd: dir.to_path_buf(),
-            access: weacon_protocol::AccessLevel::AskFirst,
-        };
-        let launches = vec![hanging; AT_ONCE + 1];
-        let started = tokio::time::Instant::now();
-
-        let answers = sign_ins(&log, &launches).await;
-
-        let waits = started.elapsed().as_secs() / 30;
-        assert_eq!(waits, 2);
-        assert!(started.elapsed() < Duration::from_secs(61));
-        assert_eq!(answers, vec![None; AT_ONCE + 1]);
-        assert_eq!(test_support::messages(&records).len(), AT_ONCE + 1);
     }
 
     #[test]

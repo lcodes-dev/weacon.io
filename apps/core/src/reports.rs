@@ -106,7 +106,7 @@ fn unreadable() -> Fault {
 }
 
 // `None` until the person answers; a state folder that is a file holds no answer either.
-fn read(state_dir: &Path) -> Result<Option<bool>, Fault> {
+pub(crate) fn read(state_dir: &Path) -> Result<Option<bool>, Fault> {
     match fs::read(file(state_dir)) {
         Ok(json) => serde_json::from_slice::<Stored>(&json)
             .map(|stored| Some(stored.send))
@@ -128,21 +128,32 @@ fn write(state_dir: &Path, send: bool) -> io::Result<()> {
     weacon_appkit::write_whole(&file(state_dir), &serde_json::to_vec(&Stored { send })?)
 }
 
+/// Stores the person's answer and applies it to `reporter` at once.
+pub(crate) fn store(
+    state_dir: &Path,
+    send: bool,
+    reporter: &Reporter,
+    log: &Logger,
+) -> Result<(), Fault> {
+    write(state_dir, send).map_err(|error| {
+        Fault::new(
+            code!("reports.not_saved"),
+            "The answer to error reports couldn't be saved",
+        )
+        .because(error)
+    })?;
+    reporter.set_agreed(send);
+    log.info("reports chosen", &[("send", send.into())]);
+    Ok(())
+}
+
 /// Stores `answer` when given, applies it to this run, and says what the answer is now.
 pub(crate) fn run(app: &App, answer: Option<Answer>, out: &mut impl Write) -> Result<(), Fault> {
     let state_dir = app.state_dir.as_deref().ok_or_else(state_unavailable)?;
     let send = match answer {
         Some(answer) => {
             let send = answer == Answer::On;
-            write(state_dir, send).map_err(|error| {
-                Fault::new(
-                    code!("reports.not_saved"),
-                    "The answer to error reports couldn't be saved",
-                )
-                .because(error)
-            })?;
-            app.reporter.set_agreed(send);
-            app.log.info("reports chosen", &[("send", send.into())]);
+            store(state_dir, send, &app.reporter, &app.log)?;
             Some(send)
         }
         // `App::start` has already warned about an answer it couldn't read.

@@ -9,11 +9,11 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 use weacon_agents::{Launch, SignIn};
-use weacon_observability::Fault;
+use weacon_observability::{Fault, Field, Logger};
 use weacon_protocol::{AccessLevel, AgentKind, WorkspaceId, code};
 
-use access::Settings;
-pub(crate) use access::{parse_level, run as access};
+pub(crate) use access::Settings;
+pub(crate) use access::{parse_level, run as access, store as store_access};
 
 use crate::app::{App, runtime};
 use crate::platform;
@@ -94,10 +94,7 @@ impl Workspaces {
         // to ask, which is the only way the lookup fails for a known agent.
         let places: Vec<Option<Launch>> = known
             .iter()
-            .flat_map(|workspace| {
-                let root = self.root(workspace);
-                AGENTS.map(|(agent, _)| self.located(workspace, agent, root.clone()).ok())
-            })
+            .flat_map(|workspace| self.places(workspace).map(|(_, launch)| launch))
             .collect();
         let asked: Vec<Launch> = places.iter().flatten().cloned().collect();
         let mut answers = sign_ins(&asked).into_iter();
@@ -118,6 +115,13 @@ impl Workspaces {
             }
         });
         Ok(lines.collect())
+    }
+
+    /// Each agent this core runs, and how to ask it about `workspace`; none for an agent whose
+    /// program isn't installed, which is the only way the lookup fails for a known agent.
+    pub(crate) fn places(&self, workspace: &WorkspaceId) -> [(AgentKind, Option<Launch>); 2] {
+        let root = self.root(workspace);
+        AGENTS.map(|(agent, _)| (agent, self.located(workspace, agent, root.clone()).ok()))
     }
 
     /// The folder for everything this machine keeps for `workspace` but its settings.
@@ -214,6 +218,37 @@ fn resolved(path: &Path) -> Option<PathBuf> {
     }
 }
 
+// Vendor programs asked at once: enough that a slow one doesn't hold up a report, few enough
+// for a small machine.
+const AT_ONCE: usize = 8;
+
+// A check that fails is logged here, once, and shows as unknown.
+pub(crate) async fn sign_ins(log: &Logger, launches: &[Launch]) -> Vec<Option<SignIn>> {
+    let failed = |err: Field| log.warn("sign-in check failed", &[("err", err)]);
+    let mut answers = Vec::new();
+    for together in launches.chunks(AT_ONCE) {
+        let checks: Vec<_> = together
+            .iter()
+            .cloned()
+            .map(|launch| tokio::spawn(async move { launch.sign_in().await }))
+            .collect();
+        for check in checks {
+            answers.push(match check.await {
+                Ok(Ok(sign_in)) => Some(sign_in),
+                Ok(Err(error)) => {
+                    failed(Field::error(&error));
+                    None
+                }
+                Err(error) => {
+                    failed(Field::error(&error));
+                    None
+                }
+            });
+        }
+    }
+    answers
+}
+
 const AGENTS: [(AgentKind, &str); 2] = [
     (AgentKind::Claude, "Claude Code"),
     (AgentKind::Codex, "Codex"),
@@ -252,6 +287,7 @@ mod tests {
     use weacon_testing::TempDir;
 
     use super::*;
+    use crate::test_support;
 
     fn id(id: &str) -> WorkspaceId {
         WorkspaceId::try_from(id.to_owned()).unwrap()
@@ -548,5 +584,66 @@ mod tests {
             blocked.unwrap_err().code().as_str(),
             "workspace.cwd_refused"
         );
+    }
+
+    // `true` and `false` stand in for a vendor's status command.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn every_sign_in_is_checked_in_order_and_a_failed_check_is_logged_once_and_unknown() {
+        let dir = TempDir::new().unwrap();
+        let (log, records) = test_support::recording_logger();
+        let launch = |program: &str| Launch {
+            agent: AgentKind::Codex,
+            program: program.into(),
+            config_dir: dir.to_path_buf(),
+            cwd: dir.to_path_buf(),
+            access: AccessLevel::AskFirst,
+        };
+        let launches = ["true", "/missing/codex", "false"].map(launch);
+
+        let answers = sign_ins(&log, &launches).await;
+
+        assert_eq!(
+            answers,
+            [Some(SignIn::SignedIn), None, Some(SignIn::SignedOut)]
+        );
+        assert_eq!(test_support::messages(&records), ["sign-in check failed"]);
+    }
+
+    // The script never exits in time. With time paused, the clock moves only when every check
+    // is waiting, so it shows how many waits there were, one after another.
+    #[cfg(unix)]
+    #[tokio::test(start_paused = true)]
+    async fn checks_run_a_few_at_once_so_slow_ones_dont_add_up() {
+        use std::time::Duration;
+
+        let dir = TempDir::new().unwrap();
+        let (log, records) = test_support::recording_logger();
+        let program = dir.join("hang");
+        // Written from a child shell, so no fork of this process inherits a write handle.
+        let script = "printf '#!/bin/sh\\nexec sleep 1000\\n' > \"$1\" && chmod 755 \"$1\"";
+        let written = std::process::Command::new("sh")
+            .args(["-c", script, "sh"])
+            .arg(&program)
+            .status()
+            .unwrap();
+        assert!(written.success());
+        let hanging = Launch {
+            agent: AgentKind::Claude,
+            program,
+            config_dir: dir.to_path_buf(),
+            cwd: dir.to_path_buf(),
+            access: AccessLevel::AskFirst,
+        };
+        let launches = vec![hanging; AT_ONCE + 1];
+        let started = tokio::time::Instant::now();
+
+        let answers = sign_ins(&log, &launches).await;
+
+        let waits = started.elapsed().as_secs() / 30;
+        assert_eq!(waits, 2);
+        assert!(started.elapsed() < Duration::from_secs(61));
+        assert_eq!(answers, vec![None; AT_ONCE + 1]);
+        assert_eq!(test_support::messages(&records).len(), AT_ONCE + 1);
     }
 }
