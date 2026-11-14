@@ -7,6 +7,7 @@ mod launch;
 mod lines;
 mod platform;
 mod run;
+pub mod sessions;
 mod spawn;
 #[cfg(test)]
 mod test_support;
