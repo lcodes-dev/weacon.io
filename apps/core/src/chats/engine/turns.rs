@@ -59,22 +59,8 @@ impl<A: Agent> Engine<A> {
             RunEvent::PermissionAsked { prompt, .. } => {
                 self.asked(key, run, prompt, committed).await
             }
-            // Tried again after a failed write, which reopens the log, so it never shows the
-            // prompt still waiting.
             RunEvent::PermissionWithdrawn { prompt, .. } => {
-                // An answer still on its way to a withdrawn prompt is never given, even if the
-                // withdrawal can't be written.
-                let answers = &mut self.chat(key).await?.answers;
-                answers.retain(|answered| answered.answer.prompt != prompt);
-                if committed.is_err() {
-                    self.commit_said(key, run, &event).await?;
-                }
-                let log = &self.chat(key).await?.log;
-                let asks = log.runs().waiting.iter().any(|waits| waits.run == *run);
-                if !asks && self.turn(key).is_some() {
-                    self.state(key, run, RunState::Running).await?;
-                }
-                Ok(())
+                self.withdrawn(key, run, prompt, committed.map(drop)).await
             }
             // An agent that leaves its turn unknown is exiting; nothing more goes to it.
             RunEvent::Finished {
@@ -96,6 +82,33 @@ impl<A: Agent> Engine<A> {
             | RunEvent::PermissionAnswered { .. }
             | RunEvent::Newer => committed.map(drop),
         }
+    }
+
+    // The agent no longer asks. An answer still on its way is never given, and a failed write
+    // is tried again, which reopens the log, unless the log has the withdrawal all the same.
+    async fn withdrawn(
+        &mut self,
+        key: &Key,
+        run: &RunId,
+        prompt: u32,
+        committed: Result<(), Fault>,
+    ) -> Result<(), Fault> {
+        let answers = &mut self.chat(key).await?.answers;
+        answers.retain(|answered| answered.answer.prompt != prompt);
+        let logged = !self.chat(key).await?.log.runs().waits(run, prompt);
+        if committed.is_err() && !logged {
+            let event = RunEvent::PermissionWithdrawn {
+                run: run.clone(),
+                prompt,
+            };
+            self.commit_said(key, run, &event).await?;
+        }
+        let log = &self.chat(key).await?.log;
+        let asks = log.runs().waiting.iter().any(|waits| waits.run == *run);
+        if !asks && self.turn(key).is_some() {
+            self.state(key, run, RunState::Running).await?;
+        }
+        Ok(())
     }
 
     // A prompt a person can't be shown in full is refused for them; it never waits unseen.
@@ -1040,6 +1053,33 @@ mod tests {
 
         assert_eq!(lost.unwrap_err().code().as_str(), "chat.log_not_written");
         assert!(engine.chat(&key()).await.unwrap().answers.is_empty());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_withdrawal_whose_write_landed_is_not_written_again() {
+        let (mut engine, _agent, _bench) = on_ask().await;
+        // As when the withdrawal reached the disk but its write was reported failed.
+        let event = RunEvent::PermissionWithdrawn {
+            run: run("run-1"),
+            prompt: 1,
+        };
+        hear(&mut engine, event).await.unwrap();
+        let failed = Fault::new(
+            code!("chat.log_not_written"),
+            "The chat's log can't be written",
+        );
+
+        engine
+            .withdrawn(&key(), &run("run-1"), 1, Err(failed))
+            .await
+            .unwrap();
+
+        let log = &engine.chat(&key()).await.unwrap().log;
+        let entries = log.window(u64::MAX, 64).await.unwrap();
+        let withdrawals = entries.iter().filter(|entry| {
+            matches!(&entry.event, ChatEvent::Run { update } if matches!(update.event, RunEvent::PermissionWithdrawn { .. }))
+        });
+        assert_eq!(withdrawals.count(), 1);
     }
 
     #[tokio::test(start_paused = true)]
