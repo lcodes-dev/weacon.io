@@ -121,4 +121,18 @@ mod tests {
         listen(&path).unwrap();
         listen(&dir.join("taken")).unwrap_err();
     }
+
+    #[cfg(unix)]
+    #[test]
+    fn writes_a_program_anyone_may_run_and_says_when_it_cant() {
+        let dir = crate::TempDir::new().unwrap();
+        let path = dir.join("hello");
+
+        write_program(&path, "#!/bin/sh\necho hi\n").unwrap();
+
+        assert_eq!(fs::read_to_string(&path).unwrap(), "#!/bin/sh\necho hi\n");
+        let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o755);
+        write_program(&dir.join("missing/hello"), "").unwrap_err();
+    }
 }
