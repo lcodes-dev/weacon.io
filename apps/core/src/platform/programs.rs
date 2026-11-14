@@ -14,6 +14,17 @@ pub(crate) fn find_program(name: &str, path: &OsStr) -> Option<PathBuf> {
         .find(|file| super::is_runnable(file))
 }
 
+/// Makes `link` a symbolic link to the file `target`; false where this user may not, as on
+/// Windows without developer mode.
+#[cfg(test)]
+pub(crate) fn plant_link(target: &std::path::Path, link: &std::path::Path) -> bool {
+    #[cfg(unix)]
+    let made = std::os::unix::fs::symlink(target, link);
+    #[cfg(windows)]
+    let made = std::os::windows::fs::symlink_file(target, link);
+    made.is_ok()
+}
+
 /// Writes an empty program `name` into `dir`, with Unix permissions `mode`.
 #[cfg(test)]
 pub(crate) fn plant_program(dir: &std::path::Path, name: &str, mode: u32) -> PathBuf {

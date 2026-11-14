@@ -6,13 +6,21 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
+use serde::{Deserialize, Serialize};
 use weacon_observability::Fault;
 use weacon_protocol::{ChatId, code};
 
 use crate::platform;
 use crate::workspaces::resolved;
 
+pub(crate) mod branch;
+pub(crate) mod chats;
+pub(crate) mod diff;
 pub(crate) mod removal;
+pub(crate) mod repos;
+pub(crate) mod service;
+mod state;
+mod tree;
 
 // Variables that would point git at another repository, or stand in for `-c` options.
 const REDIRECTS: [&str; 9] = [
@@ -32,6 +40,8 @@ const REDIRECTS: [&str; 9] = [
 pub(crate) struct Git {
     program: PathBuf,
     no_hooks: PathBuf,
+    // Set for a chat's worktree, so its `.git` file is never followed.
+    folder: Option<PathBuf>,
 }
 
 /// One of a repository's working trees.
@@ -40,6 +50,17 @@ pub(crate) struct Worktree {
     pub(crate) path: PathBuf,
     /// The branch checked out, such as `refs/heads/main`; none when its head is detached.
     pub(crate) branch: Option<String>,
+    /// Where its branch began, when the call that returns it made the branch.
+    pub(crate) start: Option<Start>,
+}
+
+/// The commit a chat's branch began at, and the branch the repository had checked out then,
+/// such as `main`; the chat keeps it to measure its changes from.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct Start {
+    pub(crate) commit: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) branch: Option<String>,
 }
 
 impl Git {
@@ -47,7 +68,38 @@ impl Git {
     /// repository's hooks.
     pub(crate) fn find(path: &OsStr, no_hooks: PathBuf) -> Option<Self> {
         let program = platform::find_program("git", path)?;
-        Some(Self { program, no_hooks })
+        Some(Self {
+            program,
+            no_hooks,
+            folder: None,
+        })
+    }
+
+    /// Git for this core: the first on `path`, with an empty hooks folder of its own in
+    /// `state_dir`.
+    pub(crate) fn open(state_dir: &Path, path: Option<&OsStr>) -> Result<Self, Fault> {
+        let no_hooks = state_dir.join("git/no-hooks");
+        platform::private_dir(&no_hooks).map_err(|error| {
+            Fault::new(
+                code!("git.folder_failed"),
+                "Git's own folder couldn't be created",
+            )
+            .because(error)
+        })?;
+        Self::find(path.unwrap_or_default(), no_hooks)
+            .ok_or_else(|| Fault::new(code!("git.missing"), "Git isn't installed here"))
+    }
+
+    /// The top folder of the repository holding `folder`, its links resolved.
+    pub(crate) fn top_level(&self, folder: &Path) -> Result<PathBuf, Fault> {
+        let top = text(run(self
+            .command(folder)
+            .args(["rev-parse", "--show-toplevel"]))?)?;
+        PathBuf::from(top.trim_end())
+            .canonicalize()
+            .map_err(|error| {
+                Fault::new(code!("git.unreadable"), "Git's answer wasn't a folder").because(error)
+            })
     }
 
     /// Locks `worktree` against `git worktree prune`, which would forget it while its folder is
@@ -77,7 +129,7 @@ impl Git {
             .collect())
     }
 
-    /// The worktree at `path` on [`branch`]`(chat)`, made from `repo`'s head if it's missing. A
+    /// The worktree at `path` on the chat's [`branch()`], made from `repo`'s head if it's missing. A
     /// branch or folder of that name that isn't this chat's worktree is never taken over.
     pub(crate) fn chat_worktree(
         &self,
@@ -105,6 +157,7 @@ impl Git {
                 return Ok(Worktree {
                     path: path.to_owned(),
                     branch: tree.branch.clone(),
+                    start: None,
                 });
             }
             // Its folder was deleted, and no other worktree has its branch: check it out again.
@@ -120,14 +173,16 @@ impl Git {
             None => true,
         };
         make_parent(path)?;
-        if fresh {
-            self.new_branch(repo, path, &branch, &full)?;
+        let start = if fresh {
+            Some(self.new_branch(repo, path, &branch, &full)?)
         } else {
             self.add(repo, path, &["--force"], &branch)?;
-        }
+            None
+        };
         Ok(Worktree {
             path: path.to_owned(),
             branch: Some(full),
+            start,
         })
     }
 
@@ -144,7 +199,19 @@ impl Git {
 
     // The branch is made only where none has its name, so the one deleted again when the
     // checkout fails is always this call's.
-    fn new_branch(&self, repo: &Path, path: &Path, branch: &str, full: &str) -> Result<(), Fault> {
+    fn new_branch(
+        &self,
+        repo: &Path,
+        path: &Path,
+        branch: &str,
+        full: &str,
+    ) -> Result<Start, Fault> {
+        let on = run(self
+            .command(repo)
+            .args(["symbolic-ref", "--quiet", "--short", "HEAD"]))
+        .ok()
+        .and_then(|out| text(out).ok())
+        .map(|name| name.trim_end().to_owned());
         let head = text(run(self.command(repo).args([
             "rev-parse",
             "--verify",
@@ -159,6 +226,10 @@ impl Git {
                 full,
                 head,
             ])));
+        })?;
+        Ok(Start {
+            commit: head.to_owned(),
+            branch: on,
         })
     }
 
@@ -203,14 +274,22 @@ impl Git {
         let mut hooks = OsString::from("core.hooksPath=");
         hooks.push(&self.no_hooks);
         let mut command = Command::new(&self.program);
+        command.arg("-C").arg(repo);
+        if let Some(dir) = &self.folder {
+            let (mut git_dir, mut work_tree) =
+                (OsString::from("--git-dir="), OsString::from("--work-tree="));
+            git_dir.push(dir);
+            work_tree.push(repo);
+            command.arg(git_dir).arg(work_tree);
+        }
         command
-            .arg("-C")
-            .arg(repo)
             .arg("-c")
             .arg(hooks)
             .args(["-c", "core.fsmonitor=false"])
             .env("GIT_TERMINAL_PROMPT", "0")
             .env("GIT_OPTIONAL_LOCKS", "0")
+            // Paths are only ever paths, never patterns.
+            .env("GIT_LITERAL_PATHSPECS", "1")
             .stdin(Stdio::null())
             .stderr(Stdio::piped());
         for name in REDIRECTS {
@@ -290,6 +369,7 @@ fn parse_worktree(record: &str) -> Option<(Worktree, bool)> {
         Worktree {
             path: path?,
             branch,
+            start: None,
         },
         prunable,
     ))
@@ -365,7 +445,19 @@ mod tests {
 
         assert_eq!(real(&made.path), real(&path));
         assert_eq!(made.branch.as_deref(), Some("refs/heads/weacon/a-1"));
-        assert_eq!(again, made);
+        let head = text(run(git.command(&repo).args(["rev-parse", "HEAD"])).unwrap()).unwrap();
+        let start = Start {
+            commit: head.trim_end().to_owned(),
+            branch: Some("main".to_owned()),
+        };
+        assert_eq!(made.start, Some(start));
+        assert_eq!(
+            again,
+            Worktree {
+                start: None,
+                ..made
+            }
+        );
         assert_eq!(again.path, path);
         assert_eq!(
             fs::read_to_string(path.join("README.md")).unwrap(),
@@ -455,6 +547,7 @@ mod tests {
         let git = Git {
             program: PathBuf::from("git"),
             no_hooks: PathBuf::from("/state/no-hooks"),
+            folder: None,
         };
         let command = git.command(Path::new("/src/site"));
 
@@ -470,6 +563,7 @@ mod tests {
         }
         assert!(envs.contains(&("GIT_TERMINAL_PROMPT".as_ref(), Some("0".as_ref()))));
         assert!(envs.contains(&("GIT_OPTIONAL_LOCKS".as_ref(), Some("0".as_ref()))));
+        assert!(envs.contains(&("GIT_LITERAL_PATHSPECS".as_ref(), Some("1".as_ref()))));
     }
 
     #[test]
@@ -495,6 +589,7 @@ mod tests {
         let tree = |path: &str, branch: Option<&str>| Worktree {
             path: PathBuf::from(path),
             branch: branch.map(str::to_owned),
+            start: None,
         };
 
         assert_eq!(
@@ -614,6 +709,19 @@ mod tests {
 
         assert_eq!(error.code().as_str(), "git.failed");
         assert!(!path.exists());
+    }
+
+    #[test]
+    fn a_branch_made_from_a_detached_head_starts_at_its_commit_alone() {
+        let dir = TempDir::new().unwrap();
+        let (git, repo) = (git(&dir), repo(&dir));
+        fixture(&dir, &repo, &["checkout", "--quiet", "--detach"]);
+
+        let made = git
+            .chat_worktree(&repo, &chat("e"), &dir.join("trees/c-e"))
+            .unwrap();
+
+        assert_eq!(made.start.unwrap().branch, None);
     }
 
     #[test]

@@ -29,7 +29,11 @@ pub(crate) fn interrupts() -> io::Result<tokio::signal::windows::CtrlC> {
 }
 
 /// `file` opened to read, when it is a regular file with one link and not a symlink.
-pub(crate) fn open_plain(file: &Path) -> io::Result<File> {
+///
+/// # Errors
+///
+/// When `file` can't be opened, or is anything else.
+pub fn open_plain(file: &Path) -> io::Result<File> {
     let opened = open_unfollowed(file)?;
     if opened.metadata()?.is_file() && links_of(&opened)? == 1 {
         Ok(opened)

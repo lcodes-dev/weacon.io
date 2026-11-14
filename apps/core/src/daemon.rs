@@ -19,11 +19,16 @@ use weacon_protocol::{
 use crate::chats::feed::{self, Client};
 use crate::chats::{self, Chats, Places};
 use crate::disk;
+use crate::git::service::Worktrees;
 use crate::mcp;
 use crate::memory;
 use crate::picks::{KeepError, Picks};
 use crate::platform::{self, Listener, Owner, Stream};
 use crate::session::{Reply, Session};
+use crate::uplink;
+
+mod route;
+mod worktrees;
 
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
 pub(crate) const READ_CHUNK: usize = 8192;
@@ -58,7 +63,13 @@ pub(crate) fn run(app: &crate::app::App) -> Result<(), Fault> {
             },
             app.log.clone(),
         )?;
-        let serve = daemon.serve(signals.wait());
+        let (uplink, from_daemon) = uplink::unrouted(app, state_dir);
+        let serve = async {
+            tokio::select! {
+                () = daemon.serve(signals.wait()) => {}
+                never = Box::pin(uplink.run(from_daemon)) => match never {},
+            }
+        };
         crate::reports::following(state_dir, &app.reporter, &app.log, serve).await;
         Ok(())
     })
@@ -69,6 +80,7 @@ struct Shared {
     app: App,
     picks: Picks,
     chats: Chats,
+    worktrees: Worktrees,
     log: Logger,
 }
 
@@ -123,6 +135,7 @@ impl Daemon {
         }
         let (mcp, mcp_server) = mcp::start(&app, &log)?;
         places.mcp = Some(mcp);
+        let worktrees = worktrees::worktrees(state_dir, &places);
         let (chats, engine) = chats::start(state_dir, places, app.clone(), spawn, log.clone())?;
         let listener = platform::bind(&socket).map_err(failed)?;
         let engine = tokio::spawn(engine.serve());
@@ -135,6 +148,7 @@ impl Daemon {
                 app,
                 picks: Picks::new(state_dir),
                 chats,
+                worktrees,
                 log,
             },
             disk: disk::Watch::new(state_dir.to_owned(), platform::free_space),
@@ -170,6 +184,8 @@ impl Daemon {
         drop(self.listener);
         drop(fs::remove_file(&self.socket));
         clients.shutdown().await;
+        // Worktree work outlives its asker; it ends before the lock goes.
+        self.shared.worktrees.drain().await;
         drop(self.mcp);
         // The engine stops once the last way to it is gone; its writes end before the lock goes.
         let log = self.shared.log.clone();
@@ -201,6 +217,7 @@ struct Connection {
     session: Session,
     decoder: LineDecoder,
     client: Client,
+    late: worktrees::Late,
 }
 
 async fn serve_client(stream: Stream, shared: &Shared) -> io::Result<()> {
@@ -208,10 +225,12 @@ async fn serve_client(stream: Stream, shared: &Shared) -> io::Result<()> {
     let mut buf = [0; READ_CHUNK];
     let deadline = Instant::now() + HANDSHAKE_TIMEOUT;
     let (push, mut pushed) = mpsc::channel(feed::QUEUE);
+    let (late, mut answered) = mpsc::channel(worktrees::LATE);
     let mut connection = Connection {
         session: Session::default(),
         decoder: LineDecoder::default(),
         client: Client { push },
+        late,
     };
     loop {
         // Until the hello, reading counts against the deadline, as `answer`'s replies do.
@@ -220,6 +239,12 @@ async fn serve_client(stream: Stream, shared: &Shared) -> io::Result<()> {
             read = within(limit, reader.read(&mut buf)) => read,
             Some(message) = pushed.recv() => {
                 if let Ok(line) = encode_line(&Envelope { id: 0, message }) {
+                    writer.write_all(&line).await?;
+                }
+                continue;
+            }
+            Some(envelope) = answered.recv() => {
+                if let Ok(line) = encode_line(&envelope) {
                     writer.write_all(&line).await?;
                 }
                 continue;
@@ -259,6 +284,7 @@ async fn answer(
         session,
         decoder,
         client,
+        late,
     } = connection;
     for received in decoder.push(bytes) {
         let limit = (!session.greeted()).then_some(deadline);
@@ -273,21 +299,7 @@ async fn answer(
                 .log
                 .warn("client reported an error", &[("code", code)]);
         }
-        let reply = match received {
-            Ok(Envelope {
-                id,
-                message: Message::Pick(pick),
-            }) if session.greeted() => keep(shared, id, pick).await,
-            Ok(Envelope {
-                id,
-                message: Message::ChatCommand(command),
-            }) if session.greeted() => command_chat(shared, id, command).await,
-            Ok(Envelope {
-                id,
-                message: Message::ChatQuery(query),
-            }) if session.greeted() => query_chat(shared, id, query, client).await,
-            received => session.answer(received, &shared.app),
-        };
+        let reply = route::route(shared, session, received, client, late).await;
         if let Some(envelope) = reply.envelope
             && let Ok(line) = encode_line(&envelope)
         {
@@ -386,7 +398,7 @@ mod tests {
     use tokio::io::{AsyncBufReadExt, AsyncRead};
     use tokio::sync::oneshot;
     use tokio::time::timeout;
-    use weacon_protocol::{Capability, ErrorBody, PROTOCOL, Welcome};
+    use weacon_protocol::{Capability, ChatId, ErrorBody, PROTOCOL, Welcome, WorkspaceId};
     use weacon_testing::TempDir;
 
     use super::*;
@@ -610,7 +622,8 @@ mod tests {
         running.stop().await;
     }
 
-    #[tokio::test(start_paused = true)]
+    // In real time: a hang-up can take a moment to arrive, which a paused clock would skip past.
+    #[tokio::test]
     async fn another_protocol_is_hung_up_on_at_once() {
         let dir = TempDir::new().unwrap();
         let running = start(&dir).unwrap();
@@ -652,7 +665,10 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let running = start(&dir).unwrap();
         let mut client = connect(&running.socket).await;
-        let read = timeout(HANDSHAKE_TIMEOUT * 2, client.read(&mut [0; 16])).await;
+        tokio::time::sleep(HANDSHAKE_TIMEOUT).await;
+        // The hang-up itself comes in real time.
+        tokio::time::resume();
+        let read = timeout(HANDSHAKE_TIMEOUT, client.read(&mut [0; 16])).await;
 
         assert_eq!(read.unwrap().unwrap(), 0);
         running.stop().await;
@@ -778,12 +794,84 @@ mod tests {
         let running = start(&dir).unwrap();
         let client = connect(&running.socket).await;
 
-        // The daemon stops reading while its replies back up, then hangs up at the deadline.
-        timeout(HANDSHAKE_TIMEOUT * 2, flood(client))
-            .await
-            .unwrap()
-            .unwrap_err();
+        // The daemon stops reading while its replies back up, then hangs up at the deadline,
+        // which comes in real time.
+        let flooding = tokio::spawn(flood(client));
+        tokio::time::sleep(HANDSHAKE_TIMEOUT).await;
+        tokio::time::resume();
+        let flooded = timeout(HANDSHAKE_TIMEOUT, flooding).await;
+        flooded.unwrap().unwrap().unwrap_err();
         running.stop().await;
+    }
+
+    // A diff of `chat`, then a diff, a state query and a removal of `c-2`, which has no worktree.
+    fn worktree_asks(workspace: &WorkspaceId, chat: &ChatId) -> Vec<u8> {
+        use weacon_protocol::{
+            DiffQuery, DiffQueryKind, RequestId, WorktreeAction, WorktreeCommand, WorktreeQuery,
+            WorktreeQueryKind,
+        };
+
+        let line = |id, message| encode_line(&Envelope { id, message }).unwrap();
+        let request = RequestId::try_from("r-1".to_owned()).unwrap();
+        let other = ChatId::try_from("c-2".to_owned()).unwrap();
+        let diff = |chat: &ChatId| DiffQuery {
+            request: request.clone(),
+            workspace: workspace.clone(),
+            chat: chat.clone(),
+            query: DiffQueryKind::Changes,
+            by: None,
+        };
+        let query = WorktreeQuery {
+            request: request.clone(),
+            workspace: workspace.clone(),
+            chat: other.clone(),
+            query: WorktreeQueryKind::State,
+            by: None,
+        };
+        let command = WorktreeCommand {
+            request: request.clone(),
+            workspace: workspace.clone(),
+            chat: other.clone(),
+            action: WorktreeAction::Remove,
+            by: None,
+        };
+        [
+            hello(PROTOCOL),
+            line(2, Message::DiffQuery(diff(chat))),
+            line(3, Message::DiffQuery(diff(&other))),
+            line(4, Message::WorktreeQuery(query)),
+            line(5, Message::WorktreeCommand(command)),
+        ]
+        .concat()
+    }
+
+    fn diff_answer(message: &Message) -> Option<&weacon_protocol::DiffAnswerKind> {
+        let Message::DiffAnswer(answer) = message else {
+            return None;
+        };
+        Some(&answer.answer)
+    }
+
+    #[tokio::test]
+    async fn a_chats_changes_are_pushed_and_one_without_a_worktree_is_refused() {
+        use weacon_protocol::DiffAnswerKind;
+
+        let dir = TempDir::new().unwrap();
+        let (worktrees, workspace, chat, worktree) = crate::git::service::with_chat(&dir);
+        fs::write(worktree.join("agent.txt"), "mine\n").unwrap();
+        let running = start_as(&dir, |daemon| daemon.shared.worktrees = worktrees).unwrap();
+        let bytes = worktree_asks(&workspace, &chat);
+
+        let (replies, _stream) = exchange(connect(&running.socket).await, &bytes, 5).await;
+        running.stop().await;
+
+        let pushed = replies.iter().find_map(diff_answer);
+        let Some(DiffAnswerKind::File { files: 1, file }) = pushed else {
+            panic!("no change pushed: {replies:?}");
+        };
+        assert_eq!(file.path, "agent.txt");
+        let refused: Vec<&str> = replies.iter().filter_map(error_code).collect();
+        assert_eq!(refused, ["worktree.none"; 3]);
     }
 
     #[tokio::test]
@@ -821,6 +909,9 @@ mod tests {
         for capability in offered {
             assert!(welcome.capabilities.contains(&Capability::new(capability)));
         }
+        // Not until chats are given worktrees.
+        let early = [code!("diff.view"), code!("worktree.manage")].map(Capability::new);
+        assert!(!early.iter().any(|it| welcome.capabilities.contains(it)));
         assert_eq!(error_code(&replies[1]), Some("chat.empty_prompt"));
         assert!(matches!(&replies[2], Message::ChatAnswer(answer)
             if matches!(answer.answer, weacon_protocol::ChatAnswerKind::Snapshot { seq: 4, .. })));
