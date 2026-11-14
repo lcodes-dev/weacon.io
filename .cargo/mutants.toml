@@ -4,8 +4,8 @@
 # flags `open_pair` opens with, where `&` leaves the master blocking: a test catches that, but
 # the terminal tests hang on it instead of failing.
 # A `Lines::next` that always returns a line never ends, so every reader spins instead of failing.
-# `depth * 1` in `full_names` never deepens, so a self-nesting subcommand expands until memory
-# runs out and the runner dies instead of the test.
+# `depth * 1` in `full_names` isn't equivalent: it never deepens, so a self-nesting subcommand
+# expands until the test is killed for memory, which takes CI's runner with it.
 # Windows code isn't built on Linux, where mutation tests run; the Windows CI job tests it.
 # Nor is the macOS pty, macOS's or other systems' `trash`; the rest of macOS's Trash is tested
 # on Linux.
