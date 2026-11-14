@@ -127,10 +127,8 @@ fn replies_to(text: &str) -> Vec<String> {
                 outcome: Outcome::Accepted,
             }),
         }]
-    } else if matches!(envelope.message, Message::DiffQuery(_)) {
-        fake_diff::answers(&envelope)
     } else {
-        Vec::new()
+        fake_diff::answers(&envelope)
     };
     replies
         .iter()
