@@ -1,4 +1,5 @@
 import type { Loaded } from "../api/loaded.ts";
+import { Problem } from "../api/problem.tsx";
 import type { ChatId, ChatList } from "../protocol.ts";
 import { newestFirst, stateNote } from "./chat-list.ts";
 
@@ -8,7 +9,7 @@ export function ChatsNav({
   chosen,
   choose,
 }: {
-  loaded: Loaded<ChatList> & { load(): Promise<void> };
+  loaded: Loaded<ChatList> & { loading: boolean; load(): Promise<void> };
   chosen: ChatId | undefined;
   choose: (chat: ChatId) => void;
 }) {
@@ -16,7 +17,7 @@ export function ChatsNav({
   return (
     <nav className="chats" aria-label="Chats">
       <h2>Chats</h2>
-      {chats === undefined && loaded.problem === undefined && <p className="muted">Loading</p>}
+      {loaded.loading && <p className="muted">Loading</p>}
       {chats?.length === 0 && <p className="muted">No chats yet. Connect a machine to start one.</p>}
       {chats !== undefined && chats.length > 0 && (
         <ul>
@@ -36,14 +37,7 @@ export function ChatsNav({
           })}
         </ul>
       )}
-      {loaded.problem !== undefined && (
-        <>
-          <p role="alert">{loaded.problem}</p>
-          <button type="button" onClick={() => void loaded.load()}>
-            Try again
-          </button>
-        </>
-      )}
+      {loaded.problem !== undefined && <Problem text={loaded.problem} retry={() => void loaded.load()} />}
     </nav>
   );
 }

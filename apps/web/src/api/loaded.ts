@@ -87,14 +87,14 @@ export class Loader<T> {
 }
 
 /**
- * What `fetch` answers, fetched on mount, on each `load` (one fetch at a time), and afresh whenever `key` changes. A
- * refresh clears nothing but the last problem: loading is when `value` and `problem` are both
- * undefined.
+ * What `fetch` answers, fetched on mount, on each `load` (one fetch at a time), and afresh whenever
+ * `key` changes. A refresh clears nothing but the last problem, so `loading` holds only while there
+ * is neither a value nor a problem to show.
  */
 export function useLoaded<T>(
   fetch: () => Promise<Answer<T>>,
   key: unknown,
-): Loaded<T> & Pick<Loader<T>, "change"> & { load(): Promise<void> } {
+): Loaded<T> & Pick<Loader<T>, "change"> & { loading: boolean; load(): Promise<void> } {
   const [shown, setShown] = useState<Loaded<T>>({ value: undefined, problem: undefined });
   const [loader] = useState(() => new Loader<T>(setShown));
   const latest = useRef(fetch);
@@ -104,5 +104,10 @@ export function useLoaded<T>(
     void loader.load(latest.current);
     return () => loader.stop();
   }, [key]);
-  return { ...shown, load: () => loader.load(latest.current), change: (update) => loader.change(update) };
+  return {
+    ...shown,
+    loading: shown.value === undefined && shown.problem === undefined,
+    load: () => loader.load(latest.current),
+    change: (update) => loader.change(update),
+  };
 }

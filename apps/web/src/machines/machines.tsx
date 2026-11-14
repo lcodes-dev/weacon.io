@@ -5,6 +5,7 @@ import type { MachineId, MachineSummary, PairPending } from "../protocol.ts";
 import type { Api } from "../api/api.ts";
 import { useAsk } from "../api/ask.ts";
 import { useLoaded } from "../api/loaded.ts";
+import { Problem } from "../api/problem.tsx";
 import { WorkspaceSocketContext, useOffers } from "../shell/workspace-socket.ts";
 import { waitForClaim } from "./claim.ts";
 import { fingerprint } from "./fingerprint.ts";
@@ -15,7 +16,7 @@ import type { Pins } from "./pins.ts";
 
 /** The signed-in account's machines: pairing one by its code, the list, and unpairing. */
 export function Machines({ api, pins, later }: { api: Api; pins: Pins; later: Later }) {
-  const { value, problem, load } = useLoaded(() => api.machines(), api);
+  const { value, problem, loading, load } = useLoaded(() => api.machines(), api);
   const list = value?.machines;
   const [waiting, setWaiting] = useState<MachineId>();
   const [stalled, setStalled] = useState(false);
@@ -36,7 +37,7 @@ export function Machines({ api, pins, later }: { api: Api; pins: Pins; later: La
   return (
     <>
       <h2>Machines</h2>
-      {list === undefined && problem === undefined && <p className="muted">Loading</p>}
+      {loading && <p className="muted">Loading</p>}
       {list?.length === 0 && waiting === undefined && (
         <p className="muted">No machines yet. Run weacon pair on one, then enter the code it shows.</p>
       )}
@@ -47,14 +48,7 @@ export function Machines({ api, pins, later }: { api: Api; pins: Pins; later: La
           ))}
         </ul>
       )}
-      {problem !== undefined && (
-        <p role="alert">
-          {problem}{" "}
-          <button type="button" onClick={() => void load()}>
-            Try again
-          </button>
-        </p>
-      )}
+      {problem !== undefined && <Problem text={problem} retry={() => void load()} />}
       {waiting !== undefined && <p className="muted">Waiting for the machine to connect.</p>}
       {stalled && <p role="alert">The machine didn't connect. Check that weacon pair is still running there.</p>}
       <Pair

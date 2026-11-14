@@ -3,9 +3,10 @@ import { type ReactNode, useEffect, useRef, useState } from "react";
 import type { Api } from "../api/api.ts";
 import { useAsk } from "../api/ask.ts";
 import { useLoaded } from "../api/loaded.ts";
+import { Problem } from "../api/problem.tsx";
 import { chatRefOf, workspaceOf } from "../chat-ref.ts";
 import { statusText } from "../connection.ts";
-import type { ChatId, WorkspaceId, WorkspaceSummary } from "../protocol.ts";
+import type { ChatId, WorkspaceId, WorkspaceList, WorkspaceSummary } from "../protocol.ts";
 import { ChatsNav } from "./chats.tsx";
 import { useBurst, useFeed } from "./feed-hooks.ts";
 import { Frame } from "./frame.tsx";
@@ -18,8 +19,42 @@ import { WorkspaceSocket, WorkspaceSocketContext, useOffers, useWorkspaceSocket 
  * `page`, such as Settings, shows in their place while they stay open beneath it.
  */
 export function Workspaces({ api, who, page }: { api: Api; who: ReactNode; page?: ReactNode }) {
-  const { value, problem, load, change } = useLoaded(() => api.workspaces(), api);
-  const list = value?.workspaces;
+  const loaded = useLoaded(() => api.workspaces(), api);
+  const list = loaded.value?.workspaces;
+  const { open, chat, choose, chooseChat } = useOpenWorkspace();
+  const workspace = list?.find(({ id }) => id === open);
+  const selector = list !== undefined && workspace !== undefined && (
+    <span className="selector">
+      <select aria-label="Workspace" value={workspace.id} onChange={(event) => choose(event.target.value)}>
+        {list.map(({ id, name }) => (
+          <option key={id} value={id}>
+            {name}
+          </option>
+        ))}
+      </select>
+      <button type="button" onClick={() => choose(undefined)}>
+        All workspaces
+      </button>
+    </span>
+  );
+  return (
+    <Frame middle={page === undefined && selector} right={who}>
+      <SocketScope workspace={workspace?.id}>
+        {page}
+        <div style={{ display: page === undefined ? "contents" : "none" }}>
+          {workspace !== undefined ? (
+            <Workspace key={workspace.id} api={api} workspace={workspace} chosen={chat} choose={chooseChat} />
+          ) : (
+            <AllWorkspaces api={api} loaded={loaded} covered={page !== undefined} choose={choose} />
+          )}
+        </div>
+      </SocketScope>
+    </Frame>
+  );
+}
+
+// The workspace and chat the address names, kept in step with Back and Forward and remembered here.
+function useOpenWorkspace() {
   const [open, setOpen] = useState(() => opening(window.location.search, STORE));
   const [chat, setChat] = useState(() => chatRefOf(window.location.search)?.chat);
   useEffect(() => {
@@ -48,78 +83,59 @@ export function Workspaces({ api, who, page }: { api: Api; who: ReactNode; page?
       setChat(id);
     }
   };
-  const workspace = list?.find(({ id }) => id === open);
+  return { open, chat, choose, chooseChat };
+}
+
+// Every workspace, to open one, and a form to make another.
+function AllWorkspaces({
+  api,
+  loaded,
+  covered,
+  choose,
+}: {
+  api: Api;
+  loaded: ReturnType<typeof useLoaded<WorkspaceList>>;
+  covered: boolean;
+  choose(id: WorkspaceId): void;
+}) {
+  const list = loaded.value?.workspaces;
   // Whether the list is on screen, so a workspace made after the person moved on doesn't pull them back.
   const listing = useRef(false);
-  const shown = workspace?.id;
-  const covered = page !== undefined;
   useEffect(() => {
-    listing.current = shown === undefined && !covered;
+    listing.current = !covered;
     return () => {
       listing.current = false;
     };
-  }, [shown, covered]);
-  const selector = list !== undefined && workspace !== undefined && (
-    <span className="selector">
-      <select aria-label="Workspace" value={workspace.id} onChange={(event) => choose(event.target.value)}>
-        {list.map(({ id, name }) => (
-          <option key={id} value={id}>
-            {name}
-          </option>
-        ))}
-      </select>
-      <button type="button" onClick={() => choose(undefined)}>
-        All workspaces
-      </button>
-    </span>
-  );
+  }, [covered]);
   return (
-    <Frame middle={page === undefined && selector} right={who}>
-      <SocketScope workspace={workspace?.id}>
-      {page}
-      <div style={{ display: page === undefined ? "contents" : "none" }}>
-      {workspace !== undefined ? (
-        <Workspace key={workspace.id} api={api} workspace={workspace} chosen={chat} choose={chooseChat} />
-      ) : (
-        <section className="page workspaces">
-          <h1>Workspaces</h1>
-          {list === undefined && problem === undefined && <p className="muted">Loading</p>}
-          {list !== undefined && (
-            <ul>
-              {list.map(({ id, name, role }) => (
-                <li key={id}>
-                  <button type="button" onClick={() => choose(id)}>
-                    {name}
-                  </button>
-                  {role === "owner" && <span className="muted">Owner</span>}
-                </li>
-              ))}
-            </ul>
-          )}
-          {problem !== undefined && (
-            <>
-              <p role="alert">{problem}</p>
-              <button type="button" onClick={() => void load()}>
-                Try again
+    <section className="page workspaces">
+      <h1>Workspaces</h1>
+      {loaded.loading && <p className="muted">Loading</p>}
+      {list !== undefined && (
+        <ul>
+          {list.map(({ id, name, role }) => (
+            <li key={id}>
+              <button type="button" onClick={() => choose(id)}>
+                {name}
               </button>
-            </>
-          )}
-          {list !== undefined && (
-            <NewWorkspace
-              api={api}
-              made={(made) => {
-                change((before) => ({ workspaces: [...(before?.workspaces ?? []), made] }));
-                if (listing.current) {
-                  choose(made.id);
-                }
-              }}
-            />
-          )}
-        </section>
+              {role === "owner" && <span className="muted">Owner</span>}
+            </li>
+          ))}
+        </ul>
       )}
-      </div>
-      </SocketScope>
-    </Frame>
+      {loaded.problem !== undefined && <Problem text={loaded.problem} retry={() => void loaded.load()} />}
+      {list !== undefined && (
+        <NewWorkspace
+          api={api}
+          made={(made) => {
+            loaded.change((before) => ({ workspaces: [...(before?.workspaces ?? []), made] }));
+            if (listing.current) {
+              choose(made.id);
+            }
+          }}
+        />
+      )}
+    </section>
   );
 }
 

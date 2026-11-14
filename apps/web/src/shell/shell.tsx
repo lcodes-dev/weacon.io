@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { Api, type Fetch } from "../api/api.ts";
 import { useAsk } from "../api/ask.ts";
+import { Problem } from "../api/problem.tsx";
 import { problemText } from "../api/problems.ts";
 import type { Later } from "../connection.ts";
 import { Machines } from "../machines/machines.tsx";
@@ -114,10 +115,7 @@ function Body({
     case "failed":
       return (
         <section className="page">
-          <p role="alert">{problemText(screen.code)}</p>
-          <button type="button" onClick={() => window.location.reload()}>
-            Try again
-          </button>
+          <Problem text={problemText(screen.code)} retry={() => window.location.reload()} />
         </section>
       );
     case "signed out":
