@@ -163,7 +163,10 @@ mod tests {
     use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async};
 
     use super::*;
+    use weacon_protocol::PROTOCOL;
+
     use crate::TempDir;
+    use crate::fake_core::client_hello;
     use crate::recording::{SESSION, recording};
 
     type Client = WebSocketStream<MaybeTlsStream<TcpStream>>;
@@ -181,12 +184,9 @@ mod tests {
         (connect_async(url).await.unwrap().0, served)
     }
 
-    fn hello(protocol: u32, capabilities: &[&str]) -> Frame {
-        Frame::text(
-            json!({ "id": 1, "type": "hello", "protocol": protocol, "capabilities": capabilities,
-                    "app": { "name": "weacon-web", "version": "0.1.0", "commit": "1a2b3c4" } })
-            .to_string(),
-        )
+    fn hello(protocol: u32) -> Frame {
+        let hello = client_hello(1, protocol, [code!("run.stream")]);
+        Frame::text(envelope_text(&hello).unwrap())
     }
 
     async fn texts(client: &mut Client, count: usize) -> Vec<Value> {
@@ -209,7 +209,7 @@ mod tests {
             .collect();
         let received = dir.join("received.jsonl");
         let (mut client, served) = start(recording, received.clone()).await;
-        client.send(hello(1, &["run.stream"])).await.unwrap();
+        client.send(hello(PROTOCOL)).await.unwrap();
         let welcome = texts(&mut client, 1).await;
         let streamed = texts(&mut client, expected.len()).await;
         let log = r#"{"id":0,"type":"log","level":"warn","msg":"feed lost"}"#;
@@ -231,7 +231,7 @@ mod tests {
     async fn a_diff_query_is_answered_one_file_a_frame_under_its_request() {
         let dir = TempDir::new().unwrap();
         let (mut client, served) = start(String::new(), dir.join("received.jsonl")).await;
-        client.send(hello(1, &["run.stream"])).await.unwrap();
+        client.send(hello(PROTOCOL)).await.unwrap();
         texts(&mut client, 1).await;
         let query = json!({ "id": 9, "type": "diff_query", "request": "q-1",
                             "workspace": "w-1", "chat": "c-1", "query": { "kind": "changes" } });
@@ -265,7 +265,7 @@ mod tests {
             serve(stream, recording, Duration::from_secs(1), &kept).await
         });
         let (mut client, _) = connect_async(url).await.unwrap();
-        client.send(hello(1, &["run.stream"])).await.unwrap();
+        client.send(hello(PROTOCOL)).await.unwrap();
         let first = texts(&mut client, 2).await;
         let log = r#"{"id":0,"type":"log","level":"info","msg":"run shown"}"#;
         client.send(Frame::text(log)).await.unwrap();
@@ -288,7 +288,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let received = dir.join("received.jsonl");
         let (mut client, served) = start(String::new(), received.clone()).await;
-        client.send(hello(1, &["run.stream"])).await.unwrap();
+        client.send(hello(PROTOCOL)).await.unwrap();
         texts(&mut client, 1).await;
         let command = |id: u32, request: &str, action: Value| {
             json!({ "id": id, "type": "chat_command", "request": request, "workspace": "w-1",
@@ -334,7 +334,7 @@ mod tests {
     async fn a_client_on_another_protocol_is_refused() {
         let dir = TempDir::new().unwrap();
         let (mut client, served) = start(String::new(), dir.join("received.jsonl")).await;
-        client.send(hello(99, &["run.stream"])).await.unwrap();
+        client.send(hello(PROTOCOL + 1)).await.unwrap();
         let answer = texts(&mut client, 1).await;
         drop(client.close(None).await);
 
