@@ -207,6 +207,15 @@ mod tests {
         )
     }
 
+    // The texts the client gets, up to the first that `done` holds for.
+    async fn until(client: &mut Client, done: impl Fn(&Value) -> bool) -> Vec<Value> {
+        let mut seen = texts(client, 1).await;
+        while !seen.last().is_some_and(&done) {
+            seen.extend(texts(client, 1).await);
+        }
+        seen
+    }
+
     async fn texts(client: &mut Client, count: usize) -> Vec<Value> {
         let mut texts = Vec::new();
         while texts.len() < count {
@@ -271,14 +280,14 @@ mod tests {
         };
         let subscribe = fake_core::text(&subscribe).unwrap();
         client.send(Frame::text(subscribe)).await.unwrap();
-        let mut seen = Vec::new();
         let played = |text: &Value| {
             let update = &text["entry"]["event"]["update"];
             update["run"] == "r-1" && text["entry"]["seq"].as_u64() > Some(SEEDED)
         };
-        while !seen.iter().any(played) {
-            seen.extend(texts(&mut client, 1).await);
-        }
+        // A deadline, so a server that never tells fails the test instead of hanging it.
+        let seen = tokio::time::timeout(Duration::from_secs(10), until(&mut client, played))
+            .await
+            .unwrap();
         client.close(None).await.unwrap();
         served.await.unwrap().unwrap();
 
