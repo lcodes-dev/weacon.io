@@ -437,15 +437,18 @@ mod tests {
 
     // The core's next message; a core that leaves or goes quiet first fails the test.
     async fn heard(peer: &mut Peer) -> Message {
-        let text = async {
-            loop {
-                if let Wire::Text(text) = peer.next().await.unwrap().unwrap() {
-                    return text;
-                }
-            }
-        };
-        let text = timeout(Duration::from_secs(10), text).await.unwrap();
+        let text = timeout(Duration::from_secs(10), next_text(peer))
+            .await
+            .unwrap();
         Envelope::from_json(text.as_bytes()).unwrap().message
+    }
+
+    async fn next_text(peer: &mut Peer) -> Utf8Bytes {
+        loop {
+            if let Wire::Text(text) = peer.next().await.unwrap().unwrap() {
+                return text;
+            }
+        }
     }
 
     // A server that takes the socket, checks the hello and welcomes it with `offers`.
