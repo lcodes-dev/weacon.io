@@ -19,7 +19,7 @@ use crate::app::{fresh, new_id};
 use crate::auth::Session;
 use crate::client::Client;
 use crate::db::{Claim, Confirmation, NewPairing};
-use crate::http::{Shared, failure, invalid, not_found, too_many};
+use crate::http::{Shared, error, failure, not_found, too_many};
 use crate::limit::Limit;
 use crate::secret::os_secrets;
 use crate::sign_in::{hex, token_hash};
@@ -55,13 +55,13 @@ pub(crate) async fn start(
     body: Result<Json<PairStart>, JsonRejection>,
 ) -> Response {
     let Ok(Json(body)) = body else {
-        return invalid(code!("pairing.invalid"));
+        return bad_input();
     };
     if !shared.pair_starts.allow(from, Instant::now()) {
         return too_many(code!("pairing.too_many"));
     }
     if body.os == MachineOs::Newer {
-        return invalid(code!("pairing.invalid"));
+        return bad_input();
     }
     match started(&shared, &body).await {
         Ok(Some(started)) => (StatusCode::CREATED, Json(started)).into_response(),
@@ -102,7 +102,7 @@ pub(crate) async fn lookup(
     body: Result<Json<PairLookup>, JsonRejection>,
 ) -> Response {
     let Ok(Json(body)) = body else {
-        return invalid(code!("pairing.invalid"));
+        return bad_input();
     };
     if !shared.pair_tries.allow(from, Instant::now()) {
         return too_many(code!("pairing.too_many"));
@@ -124,7 +124,7 @@ pub(crate) async fn confirm(
     body: Result<Json<PairConfirm>, JsonRejection>,
 ) -> Response {
     let Ok(Json(body)) = body else {
-        return invalid(code!("pairing.invalid"));
+        return bad_input();
     };
     if !shared.pair_tries.allow(from, Instant::now()) {
         return too_many(code!("pairing.too_many"));
@@ -158,7 +158,7 @@ pub(crate) async fn claim(
     body: Result<Json<PairClaim>, JsonRejection>,
 ) -> Response {
     let Ok(Json(body)) = body else {
-        return invalid(code!("pairing.invalid"));
+        return bad_input();
     };
     if !shared.pair_claims.allow(from, Instant::now()) {
         return too_many(code!("pairing.too_many"));
@@ -219,6 +219,11 @@ pub(crate) async fn unpair(
         Ok(false) => not_found(code!("machine.not_found")),
         Err(fault) => failure(&shared, fault),
     }
+}
+
+/// Answers that the body isn't a pairing body this server takes.
+fn bad_input() -> Response {
+    error(StatusCode::BAD_REQUEST, code!("pairing.invalid"), false)
 }
 
 /// A code of eight letters from [`ALPHABET`]: 40 random bits.
@@ -406,7 +411,7 @@ mod tests {
 
         let (status, refusal) = start_pairing(server.address, "plan9").await;
 
-        assert_eq!(status, "http/1.1 422 unprocessable entity");
+        assert_eq!(status, "http/1.1 400 bad request");
         assert_eq!(refusal["code"], "pairing.invalid");
     }
 
@@ -472,7 +477,7 @@ mod tests {
         let (bad_body, refusal) = ask(server.address, "POST /api/machines/pair", "", "{").await;
         let (bad_id, missing) = ask(server.address, &path, &bearer(&ada), "").await;
 
-        assert_eq!(bad_body, "http/1.1 422 unprocessable entity");
+        assert_eq!(bad_body, "http/1.1 400 bad request");
         assert_eq!(refusal["code"], "pairing.invalid");
         assert_eq!(bad_id, "http/1.1 404 not found");
         assert_eq!(missing["code"], "machine.not_found");
