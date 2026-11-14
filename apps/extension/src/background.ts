@@ -5,7 +5,7 @@ import { isLocal } from "./local.ts";
 import type { Picked, Picker } from "./picker.ts";
 import { base64, crop, type Rect } from "./screenshot.ts";
 
-const ME = app(chrome.runtime.getManifest());
+const ME = app();
 const picking = new Set<number>();
 
 chrome.action.onClicked.addListener(async (tab) => {
