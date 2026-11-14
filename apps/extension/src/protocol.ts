@@ -246,6 +246,12 @@ export type ChatAction = (
   | {
     kind: "interrupt";
   }
+  | {
+    kind: "hold";
+  }
+  | {
+    kind: "release";
+  }
 );
 
 /**

@@ -254,7 +254,8 @@ impl FakeChat {
                     self.stopped.push(run);
                 }
             }
-            ChatAction::Newer => {}
+            // Only a local client holds a chat; the server never relays it.
+            ChatAction::Hold | ChatAction::Release | ChatAction::Newer => {}
         }
         told
     }

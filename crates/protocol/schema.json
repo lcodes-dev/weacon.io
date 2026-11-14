@@ -667,6 +667,32 @@
           "required": [
             "kind"
           ]
+        },
+        {
+          "description": "Holds the chat for a person carrying its session on by hand: while the connection that\nsent it is open, no run starts and prompts queue. Sent by a local client under\n`chat.hold`, never through the server.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "hold"
+            }
+          },
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "description": "Ends the hold this connection placed; the chat's queued prompts then go on. Sent by a\nlocal client under `chat.hold`, never through the server.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "release"
+            }
+          },
+          "required": [
+            "kind"
+          ]
         }
       ]
     },

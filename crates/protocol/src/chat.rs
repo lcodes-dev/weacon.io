@@ -50,6 +50,13 @@ pub enum ChatAction {
     Permission { answer: PermissionAnswer },
     /// Stops the turn that is running.
     Interrupt,
+    /// Holds the chat for a person carrying its session on by hand: while the connection that
+    /// sent it is open, no run starts and prompts queue. Sent by a local client under
+    /// `chat.hold`, never through the server.
+    Hold,
+    /// Ends the hold this connection placed; the chat's queued prompts then go on. Sent by a
+    /// local client under `chat.hold`, never through the server.
+    Release,
     /// An action this build doesn't know, from a newer peer; only ever received.
     #[serde(other)]
     #[schemars(skip)]
@@ -208,7 +215,7 @@ impl ChatAction {
     pub(crate) const fn is_newer(&self) -> bool {
         match self {
             Self::Prompt { agent, .. } => matches!(agent, Some(AgentKind::Newer)),
-            Self::Permission { .. } | Self::Interrupt => false,
+            Self::Permission { .. } | Self::Interrupt | Self::Hold | Self::Release => false,
             Self::Newer => true,
         }
     }
@@ -353,6 +360,8 @@ mod tests {
                         "answer": { "run": "run-7", "prompt": 2, "allow": true } }),
             ),
             (ChatAction::Interrupt, json!({ "kind": "interrupt" })),
+            (ChatAction::Hold, json!({ "kind": "hold" })),
+            (ChatAction::Release, json!({ "kind": "release" })),
         ];
 
         for (action, wire) in cases {
