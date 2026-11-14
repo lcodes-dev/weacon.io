@@ -5,6 +5,7 @@ import { useAsk } from "../api/ask.ts";
 import { Problem } from "../api/problem.tsx";
 import { problemText } from "../api/problems.ts";
 import type { Later } from "../connection.ts";
+import type { Log } from "../log.ts";
 import { Machines } from "../machines/machines.tsx";
 import { Pins, browserStore } from "../machines/pins.ts";
 import { ME } from "../me.ts";
@@ -28,7 +29,7 @@ const later: Later = (run, ms) => setTimeout(run, ms);
 const PINS = new Pins(browserStore());
 
 /** The app as the server serves it: sign-in, then the signed-in person's screens. */
-export function Shell({ fetch }: { fetch: Fetch }) {
+export function Shell({ fetch, log }: { fetch: Fetch; log: Log }) {
   const [screen, setScreen] = useState<Screen>({ name: "loading" });
   // However a session ends, the workspace it last opened is forgotten, so the next person starts afresh.
   const signedOut = useCallback(() => {
@@ -56,7 +57,7 @@ export function Shell({ fetch }: { fetch: Fetch }) {
     };
   }, [api, signedOut]);
   if (screen.name === "signed in") {
-    return <SignedIn api={api} account={screen.account} signedOut={signedOut} />;
+    return <SignedIn api={api} log={log} account={screen.account} signedOut={signedOut} />;
   }
   return (
     <Frame>
@@ -66,7 +67,7 @@ export function Shell({ fetch }: { fetch: Fetch }) {
 }
 
 // The signed-in person's workspaces, or their settings, with who they are and Sign out.
-function SignedIn({ api, account, signedOut }: { api: Api; account: AccountSignedIn; signedOut(): void }) {
+function SignedIn({ api, log, account, signedOut }: { api: Api; log: Log; account: AccountSignedIn; signedOut(): void }) {
   const [settings, setSettings] = useState(false);
   const signingOut = useAsk();
   const signOut = () => void signingOut.ask(() => api.signOut(), signedOut);
@@ -97,7 +98,7 @@ function SignedIn({ api, account, signedOut }: { api: Api; account: AccountSigne
       <Machines api={api} pins={PINS} later={later} />
     </Settings>
   ) : undefined;
-  return <Workspaces api={api} who={who} page={page} />;
+  return <Workspaces api={api} log={log} who={who} page={page} />;
 }
 
 function Body({

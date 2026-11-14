@@ -25,7 +25,7 @@ const root = document.getElementById("root");
 if (root !== null) {
   createRoot(root).render(
     <StrictMode>
-      {fake === undefined ? <Shell fetch={fetch.bind(window)} /> : <ChatPage url={fake} log={log} />}
+      {fake === undefined ? <Shell fetch={fetch.bind(window)} log={log} /> : <ChatPage url={fake} log={log} />}
     </StrictMode>,
   );
 }

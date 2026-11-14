@@ -6,6 +6,7 @@ import { useLoaded } from "../api/loaded.ts";
 import { Problem } from "../api/problem.tsx";
 import { chatRefOf, workspaceOf } from "../chat-ref.ts";
 import { statusText } from "../connection.ts";
+import type { Log } from "../log.ts";
 import type { ChatId, WorkspaceId, WorkspaceList, WorkspaceSummary } from "../protocol.ts";
 import { ChatsNav } from "./chats.tsx";
 import { useBurst, useFeed } from "./feed-hooks.ts";
@@ -18,7 +19,7 @@ import { WorkspaceSocket, WorkspaceSocketContext, useOffers, useWorkspaceSocket 
  * here, open on its feed with a selector in the header; `who` is the header's account part. A
  * `page`, such as Settings, shows in their place while they stay open beneath it.
  */
-export function Workspaces({ api, who, page }: { api: Api; who: ReactNode; page?: ReactNode }) {
+export function Workspaces({ api, log, who, page }: { api: Api; log: Log; who: ReactNode; page?: ReactNode }) {
   const loaded = useLoaded(() => api.workspaces(), api);
   const list = loaded.value?.workspaces;
   const { open, chat, choose, chooseChat } = useOpenWorkspace();
@@ -43,7 +44,7 @@ export function Workspaces({ api, who, page }: { api: Api; who: ReactNode; page?
         {page}
         <div style={{ display: page === undefined ? "contents" : "none" }}>
           {workspace !== undefined ? (
-            <Workspace key={workspace.id} api={api} workspace={workspace} chosen={chat} choose={chooseChat} />
+            <Workspace key={workspace.id} api={api} log={log} workspace={workspace} chosen={chat} choose={chooseChat} />
           ) : (
             <AllWorkspaces api={api} loaded={loaded} covered={page !== undefined} choose={choose} />
           )}
@@ -182,17 +183,19 @@ function SocketScope({ workspace, children }: { workspace: WorkspaceId | undefin
 
 function Workspace({
   api,
+  log,
   workspace,
   chosen,
   choose,
 }: {
   api: Api;
+  log: Log;
   workspace: WorkspaceSummary;
   chosen: ChatId | undefined;
   choose: (chat: ChatId) => void;
 }) {
   const socket = useWorkspaceSocket();
-  const status = useFeed(workspace.id, api, socket);
+  const status = useFeed(workspace.id, api, socket, log);
   // Whether the server serves chats, known once the feed is welcomed.
   const chats = useOffers(socket, "workspace.chats");
   const page = (title: string) => (

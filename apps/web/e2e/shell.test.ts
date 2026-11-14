@@ -10,23 +10,31 @@ import { EMAIL, serve, signIn, signInAgain } from "./server.ts";
 const CHANGE_AFTER_MS = 500;
 
 /**
- * Stands in for every workspace's feed: welcomes it offering chats, then sends what `changes` gives
- * the nth socket for its workspace, closing it after when `close` says so. Gives the addresses opened.
- * Only pages loaded after this have their sockets routed, so it reloads the page.
+ * Stands in for every workspace's feed: welcomes it offering chats and `also`, then sends what
+ * `changes` gives the nth socket for its workspace, closing it after when `close` says so. Gives the
+ * addresses opened and what the page sent after its hellos. Only pages loaded after this have their
+ * sockets routed, so it reloads the page.
  */
 async function serveFeed(
   page: Page,
   changes: (opened: number, workspace: string) => Envelope[] = () => [],
   close: (opened: number) => boolean = () => false,
-): Promise<string[]> {
+  also: string[] = [],
+): Promise<{ opened: string[]; sent: Envelope[] }> {
   const opened: string[] = [];
+  const sent: Envelope[] = [];
   await page.routeWebSocket(/\/api\/workspaces\/[^/]+\/feed/, (socket) => {
     opened.push(new URL(socket.url()).search);
     const nth = opened.length;
     socket.onMessage((text) => {
       const hello = JSON.parse(String(text)) as Envelope;
+      if (hello.type !== "hello") {
+        sent.push(hello);
+        return;
+      }
       const app = { name: "weacon-server", version: "0.0.0", commit: "0000000" };
-      const welcome: Envelope = { id: hello.id, type: "welcome", app, capabilities: ["workspace.feed", "workspace.chats"] };
+      const capabilities = ["workspace.feed", "workspace.chats", ...also];
+      const welcome: Envelope = { id: hello.id, type: "welcome", app, capabilities };
       socket.send(JSON.stringify(welcome));
       const workspace = /workspaces\/([^/]+)\/feed/.exec(socket.url())?.[1] ?? "";
       // Changes come a moment after the welcome, as a server's would once something changes.
@@ -41,7 +49,7 @@ async function serveFeed(
     });
   });
   await page.reload();
-  return opened;
+  return { opened, sent };
 }
 
 // Lists `list(n)` as every workspace's chats the nth time they are asked for; gives how often they were.
@@ -345,7 +353,7 @@ test("a chat change on the feed reloads the list, and a feed that ends opens aga
   }));
   const change = (workspace: string, seq: number): Envelope => ({ id: 0, type: "workspace", workspace, seq, change: { kind: "chat_changed", chat: "c-9" } });
   // A burst of two changes and one of another workspace, then, once reopened, the same two again and one more.
-  const opened = await serveFeed(
+  const { opened } = await serveFeed(
     page,
     (nth, workspace) => [change(workspace, 7), change(workspace, 8), change("someone-else", 9), ...(nth > 1 ? [change(workspace, 9)] : [])],
     (nth) => nth === 1,
@@ -360,4 +368,23 @@ test("a chat change on the feed reloads the list, and a feed that ends opens aga
   assert.deepEqual(opened, ["?since=0", "?since=8"]);
   // Once on opening, once for the first burst, once for the change after the replay.
   assert.equal(listed(), 3);
+});
+
+test("the served app forwards its logs and crash reports on a feed that offers it", { timeout: 600_000 }, async (t) => {
+  const served = await serve();
+  t.after(() => served.close());
+  const { page } = served;
+  const { sent } = await serveFeed(page, undefined, undefined, ["log.forward"]);
+  await signIn(served);
+  await page.getByRole("button", { name: "Personal" }).click();
+  await page.getByText("Connected").waitFor();
+  await page.evaluate(() =>
+    setTimeout(() => {
+      throw new Error("MARKER-MESSAGE in /home/ada/MARKER-PATH with token MARKER-TOKEN");
+    }),
+  );
+  await waitFor(() => sent.some((envelope) => JSON.stringify(envelope).includes("web.crashed")));
+
+  assert.deepEqual(sent[0], { id: 0, type: "log", level: "info", msg: "app started" });
+  assert.doesNotMatch(JSON.stringify(sent), /MARKER/);
 });
