@@ -149,13 +149,7 @@ impl Workspace {
         .collect()
     }
 
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "the relay detaches a chat whose machine was unpaired"
-        )
-    )]
+    #[cfg(test)]
     pub(crate) async fn set_chat_state(&self, id: &ChatId, state: ChatState) -> Result<(), Fault> {
         sqlx::query("UPDATE chats SET state = ? WHERE workspace_id = ? AND chat_id = ?")
             .bind(state_text(state)?)
@@ -184,6 +178,7 @@ fn number(seq: u64) -> Result<i64, Fault> {
     i64::try_from(seq).map_err(|_| unstorable())
 }
 
+#[cfg(test)]
 fn state_text(state: ChatState) -> Result<&'static str, Fault> {
     match state {
         ChatState::Open => Ok("open"),
