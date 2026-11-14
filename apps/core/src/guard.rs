@@ -247,10 +247,10 @@ mod tests {
             "w1",
             &bash(&work, "cat ~/.claude/.credentials.json"),
         );
-        let state = format!("echo x > {}", dir.join("state/settings/w.json").display());
+        let state = format!("echo x > '{}'", dir.join("state/settings/w.json").display());
         let weacon = check(&app, &dir, "w1", &bash(&work, &state));
         let config = format!(
-            "cat {}",
+            "cat '{}'",
             dir.join("state/workspaces/w-w1/claude/x").display()
         );
         let config = check(&app, &dir, "w1", &bash(&work, &config));

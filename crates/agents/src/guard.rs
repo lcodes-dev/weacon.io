@@ -277,7 +277,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let context = context(&dir);
         let state = dir.join("state/settings/w-w1.json");
-        let in_state = format!("echo '{{}}' > {}", state.display());
+        let in_state = format!("echo '{{}}' > '{}'", state.display());
 
         for (line, reason) in [
             ("rm -rf /", Reason::DeleteOutside),
@@ -896,7 +896,7 @@ mod tests {
             ("ln ../main/src/lib.rs h", Reason::WriteOutside),
             ("cp -l ../main/src/lib.rs h", Reason::WriteOutside),
             ("cp --link ../main/src/lib.rs h", Reason::WriteOutside),
-            ("cd /tmp; printf x >123", Reason::WriteOutside),
+            ("cd ..; printf x >123", Reason::WriteOutside),
             ("echo x >&/etc/x", Reason::WriteOutside),
             ("echo `r\\m -rf ../main`", Reason::DeleteOutside),
         ] {
@@ -984,5 +984,23 @@ mod tests {
         );
         assert_eq!(check_command("printf x > plain", &context), None);
         assert_eq!(check_command("rm alias", &context), None);
+    }
+
+    #[test]
+    fn a_continued_line_in_a_here_document_and_a_variable_after_an_ampersand_ask() {
+        let dir = TempDir::new().unwrap();
+        let context = context(&dir);
+        let check = |line: &str| check_command(line, &context);
+
+        assert_eq!(
+            check("cat <<EOF\nEO\\\nF\nrm -rf ../main\nEOF"),
+            Some(Reason::Unsure)
+        );
+        assert_eq!(
+            check("DEST=/tmp/guard-victim; printf x >&\"$DEST\""),
+            Some(Reason::Unsure)
+        );
+        assert_eq!(check("cat <<EOF\nplain text\nEOF"), None);
+        assert_eq!(check("echo x >&2"), None);
     }
 }

@@ -245,7 +245,10 @@ impl Parser {
             self.advance(1);
         }
         let target = self.target()?;
+        // A word from an expansion may name a file, so only a written number or `-` is a descriptor.
         let descriptor = duplicates
+            && !target.dynamic
+            && !target.text.is_empty()
             && target
                 .text
                 .chars()
@@ -297,8 +300,9 @@ impl Parser {
             if line.trim_start_matches('\t') == delimiter {
                 return Some(());
             }
-            // The shell runs substitutions in the text unless its delimiter was quoted.
-            if line.contains("$(") || line.contains('`') {
+            // The shell runs substitutions in the text unless its delimiter was quoted, and joins a
+            // line ending in `\` to the next, which may then be the delimiter.
+            if line.contains("$(") || line.contains('`') || line.ends_with('\\') {
                 return None;
             }
             if self.at <= before {

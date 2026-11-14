@@ -373,7 +373,7 @@ mod tests {
         for command in [command(&claude, None), check, login] {
             let config = (
                 OsStr::new("CLAUDE_CONFIG_DIR"),
-                Some(OsStr::new("/work/config")),
+                Some(claude.config_dir.as_os_str()),
             );
             assert!(command.as_std().get_envs().any(|env| env == config));
         }

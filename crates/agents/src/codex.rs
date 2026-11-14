@@ -65,7 +65,10 @@ mod tests {
         assert_eq!(login.as_std().get_args().collect::<Vec<_>>(), ["login"]);
         for command in [command(&launch), status(&launch), login] {
             let command = command.as_std();
-            let config = (OsStr::new("CODEX_HOME"), Some(OsStr::new("/work/config")));
+            let config = (
+                OsStr::new("CODEX_HOME"),
+                Some(launch.config_dir.as_os_str()),
+            );
             assert!(command.get_envs().any(|env| env == config));
         }
         let run = command(&launch);
