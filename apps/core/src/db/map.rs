@@ -1,3 +1,5 @@
+mod write;
+
 use std::collections::BTreeMap;
 use std::path::Path;
 
@@ -5,15 +7,15 @@ use sha2::{Digest, Sha256};
 use sqlx::{QueryBuilder, Sqlite};
 use weacon_codemap::{Entry, Facts};
 use weacon_observability::Fault;
-use weacon_protocol::{Sha256 as Sha256Hex, code};
+use weacon_protocol::Sha256 as Sha256Hex;
 
 use super::{Workspace, failed};
+use write::{
+    BATCH, add_repo, drop_unused_facts, insert_entries, insert_facts, insert_files, newer_than,
+};
 
 /// The base layer: the repository at a commit. Every other layer is one worktree's changes.
 pub(crate) const BASE: &str = "base";
-
-/// How many rows one insert carries, well within `SQLite`'s limit on bound values.
-const BATCH: usize = 100;
 
 /// A repository on this machine, known by its main worktree's canonical path; its map is kept
 /// under a hash of that path.
@@ -34,11 +36,13 @@ pub(crate) struct Map {
     repo: LocalRepo,
 }
 
-/// A layer as it is stored: its name, the commit it was read at, and its files.
+/// A layer as it is stored: its name, the base commit it was read at, the refresh that read
+/// it, and its files.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Layer {
     pub(crate) name: String,
     pub(crate) commit: String,
+    pub(crate) generation: i64,
     pub(crate) files: Vec<Stored>,
 }
 
@@ -71,12 +75,32 @@ impl Map {
         (self.workspace.id.as_str(), self.repo.0.as_str())
     }
 
+    /// A number for a refresh about to start, above every earlier one's, so the layer it reads
+    /// never replaces one a later refresh stored.
+    pub(crate) async fn begin(&self) -> Result<i64, Fault> {
+        let (workspace, repo) = self.keys();
+        let mut transaction = self.workspace.db.pool.begin().await.map_err(failed)?;
+        add_repo(&mut transaction, (workspace, repo)).await?;
+        let generation = sqlx::query_scalar(
+            "UPDATE map_repos SET generation = generation + 1 \
+             WHERE workspace_id = ? AND repo = ? RETURNING generation",
+        )
+        .bind(workspace)
+        .bind(repo)
+        .fetch_one(&mut *transaction)
+        .await
+        .map_err(failed)?;
+        transaction.commit().await.map_err(failed)?;
+        Ok(generation)
+    }
+
     /// The layer named `name`, if it has been stored.
     pub(crate) async fn layer(&self, name: &str) -> Result<Option<Layer>, Fault> {
         let (workspace, repo) = self.keys();
         let mut transaction = self.workspace.db.pool.begin().await.map_err(failed)?;
-        let commit: Option<String> = sqlx::query_scalar(
-            "SELECT commit_id FROM map_layers WHERE workspace_id = ? AND repo = ? AND layer = ?",
+        let stored: Option<(String, i64)> = sqlx::query_as(
+            "SELECT commit_id, generation FROM map_layers \
+             WHERE workspace_id = ? AND repo = ? AND layer = ?",
         )
         .bind(workspace)
         .bind(repo)
@@ -84,7 +108,7 @@ impl Map {
         .fetch_optional(&mut *transaction)
         .await
         .map_err(failed)?;
-        let Some(commit) = commit else {
+        let Some((commit, generation)) = stored else {
             return Ok(None);
         };
         let rows: Vec<(String, Option<String>)> = sqlx::query_as(
@@ -104,6 +128,7 @@ impl Map {
         Ok(Some(Layer {
             name: name.to_owned(),
             commit,
+            generation,
             files,
         }))
     }
@@ -147,7 +172,7 @@ impl Map {
     }
 
     /// Stores `layer` in place of what was there, with the facts of files new to this repo's
-    /// map and what search finds in the layer.
+    /// map and what search finds in the layer; nothing when a later refresh stored it already.
     pub(crate) async fn replace(
         &self,
         layer: &Layer,
@@ -156,12 +181,16 @@ impl Map {
     ) -> Result<(), Fault> {
         let (workspace, repo) = self.keys();
         let mut transaction = self.workspace.db.pool.begin().await.map_err(failed)?;
-        sqlx::query("INSERT OR IGNORE INTO map_repos (workspace_id, repo) VALUES (?, ?)")
-            .bind(workspace)
-            .bind(repo)
-            .execute(&mut *transaction)
-            .await
-            .map_err(failed)?;
+        add_repo(&mut transaction, (workspace, repo)).await?;
+        if newer_than(
+            &mut transaction,
+            (workspace, repo, &layer.name),
+            layer.generation,
+        )
+        .await?
+        {
+            return Ok(());
+        }
         for statement in [
             "DELETE FROM map_layers WHERE workspace_id = ? AND repo = ? AND layer = ?",
             "DELETE FROM map_search WHERE workspace_id = ? AND repo = ? AND layer = ?",
@@ -175,12 +204,14 @@ impl Map {
                 .map_err(failed)?;
         }
         sqlx::query(
-            "INSERT INTO map_layers (workspace_id, repo, layer, commit_id) VALUES (?, ?, ?, ?)",
+            "INSERT INTO map_layers (workspace_id, repo, layer, commit_id, generation) \
+             VALUES (?, ?, ?, ?, ?)",
         )
         .bind(workspace)
         .bind(repo)
         .bind(&layer.name)
         .bind(&layer.commit)
+        .bind(layer.generation)
         .execute(&mut *transaction)
         .await
         .map_err(failed)?;
@@ -188,21 +219,13 @@ impl Map {
         insert_files(&mut transaction, keys, &layer.files).await?;
         insert_facts(&mut transaction, (workspace, repo), facts).await?;
         insert_entries(&mut transaction, keys, entries).await?;
-        sqlx::query(
-            "DELETE FROM map_facts WHERE workspace_id = ?1 AND repo = ?2 AND NOT EXISTS \
-             (SELECT 1 FROM map_files WHERE workspace_id = ?1 AND repo = ?2 \
-              AND path = map_facts.path AND blob = map_facts.blob)",
-        )
-        .bind(workspace)
-        .bind(repo)
-        .execute(&mut *transaction)
-        .await
-        .map_err(failed)?;
+        drop_unused_facts(&mut transaction, (workspace, repo)).await?;
         transaction.commit().await.map_err(failed)
     }
 
     /// What matches every word of `words` in `layer`, best first: a worktree's layer finds its
-    /// own files and the base's files it didn't change.
+    /// own files and the base's files it didn't change, and nothing once the base has moved on
+    /// from the commit it was read at.
     pub(crate) async fn search(
         &self,
         layer: &str,
@@ -218,6 +241,10 @@ impl Map {
              WHERE map_search MATCH ?1 AND workspace_id = ?2 AND repo = ?3 \
              AND (layer = ?4 OR (layer = ?6 AND path NOT IN (SELECT path FROM map_files \
                  WHERE workspace_id = ?2 AND repo = ?3 AND layer = ?4))) \
+             AND EXISTS (SELECT 1 FROM map_layers AS overlay JOIN map_layers AS base \
+                 ON base.workspace_id = overlay.workspace_id AND base.repo = overlay.repo \
+                 AND base.layer = ?6 AND base.commit_id = overlay.commit_id \
+                 WHERE overlay.workspace_id = ?2 AND overlay.repo = ?3 AND overlay.layer = ?4) \
              ORDER BY rank LIMIT ?5",
         )
         .bind(query)
@@ -233,6 +260,15 @@ impl Map {
             .into_iter()
             .map(|(path, kind, name)| Hit { path, kind, name })
             .collect())
+    }
+
+    /// Makes every stored facts row one this build can't read.
+    #[cfg(test)]
+    pub(crate) async fn spoil_facts(&self) {
+        sqlx::query("UPDATE map_facts SET facts = '{'")
+            .execute(&self.workspace.db.pool)
+            .await
+            .unwrap();
     }
 
     /// Removes this repository's map, every layer of it.
@@ -254,92 +290,6 @@ impl Map {
     }
 }
 
-type Transaction<'a> = sqlx::Transaction<'a, Sqlite>;
-
-async fn insert_files(
-    transaction: &mut Transaction<'_>,
-    (workspace, repo, layer): (&str, &str, &str),
-    files: &[Stored],
-) -> Result<(), Fault> {
-    for batch in files.chunks(BATCH) {
-        let mut query = QueryBuilder::<Sqlite>::new(
-            "INSERT INTO map_files (workspace_id, repo, layer, path, blob) ",
-        );
-        query.push_values(batch, |mut row, file| {
-            row.push_bind(workspace)
-                .push_bind(repo)
-                .push_bind(layer)
-                .push_bind(&file.path)
-                .push_bind(&file.blob);
-        });
-        query
-            .build()
-            .execute(&mut **transaction)
-            .await
-            .map_err(failed)?;
-    }
-    Ok(())
-}
-
-async fn insert_facts(
-    transaction: &mut Transaction<'_>,
-    (workspace, repo): (&str, &str),
-    facts: &[(String, String, Facts)],
-) -> Result<(), Fault> {
-    for batch in facts.chunks(BATCH) {
-        let rows = batch
-            .iter()
-            .map(|(path, blob, facts)| {
-                let json = serde_json::to_string(facts).map_err(|_| unwritable())?;
-                Ok((path, blob, json))
-            })
-            .collect::<Result<Vec<_>, Fault>>()?;
-        let mut query = QueryBuilder::<Sqlite>::new(
-            "INSERT OR REPLACE INTO map_facts (workspace_id, repo, path, blob, facts) ",
-        );
-        query.push_values(rows, |mut row, (path, blob, json)| {
-            row.push_bind(workspace)
-                .push_bind(repo)
-                .push_bind(path)
-                .push_bind(blob)
-                .push_bind(json);
-        });
-        query
-            .build()
-            .execute(&mut **transaction)
-            .await
-            .map_err(failed)?;
-    }
-    Ok(())
-}
-
-async fn insert_entries(
-    transaction: &mut Transaction<'_>,
-    (workspace, repo, layer): (&str, &str, &str),
-    entries: &[Entry],
-) -> Result<(), Fault> {
-    for batch in entries.chunks(BATCH) {
-        let mut query = QueryBuilder::<Sqlite>::new(
-            "INSERT INTO map_search (workspace_id, repo, layer, path, kind, name, body) ",
-        );
-        query.push_values(batch, |mut row, entry| {
-            row.push_bind(workspace)
-                .push_bind(repo)
-                .push_bind(layer)
-                .push_bind(&entry.file)
-                .push_bind(&entry.kind)
-                .push_bind(&entry.name)
-                .push_bind(&entry.body);
-        });
-        query
-            .build()
-            .execute(&mut **transaction)
-            .await
-            .map_err(failed)?;
-    }
-    Ok(())
-}
-
 /// Each word as a quoted FTS5 prefix term, so no input reads as query syntax; `None` without
 /// words.
 fn match_query(words: &str) -> Option<String> {
@@ -348,10 +298,6 @@ fn match_query(words: &str) -> Option<String> {
         .map(|word| format!("\"{}\"*", word.replace('"', "\"\"")))
         .collect();
     (!terms.is_empty()).then(|| terms.join(" "))
-}
-
-fn unwritable() -> Fault {
-    Fault::new(code!("db.unwritable"), "A value can't be stored")
 }
 
 #[cfg(test)]
@@ -381,6 +327,7 @@ mod tests {
         Layer {
             name: name.to_owned(),
             commit: "c0ffee".to_owned(),
+            generation: 0,
             files,
         }
     }
@@ -485,6 +432,7 @@ mod tests {
         one.replace(&mine, &new, &[entry("src/lib.rs", "a::run", "secret")])
             .await
             .unwrap();
+        one.replace(&layer(BASE, vec![]), &[], &[]).await.unwrap();
         let theirs = layer("wt:theirs", vec![stored("src/x.rs", Some("b9"))]);
         two.replace(&theirs, &[], &[]).await.unwrap();
 
@@ -571,6 +519,57 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(rows, 1);
+    }
+
+    #[tokio::test]
+    async fn an_earlier_refresh_never_replaces_a_later_ones_layer() {
+        let dir = TempDir::new().unwrap();
+        let map = map(&dir, "one").await;
+        let (earlier, later) = (map.begin().await.unwrap(), map.begin().await.unwrap());
+        assert!(later > earlier);
+        let read = |commit: &str, generation| Layer {
+            commit: commit.to_owned(),
+            generation,
+            ..layer(BASE, vec![])
+        };
+        map.replace(&read("b", later), &[], &[]).await.unwrap();
+        map.replace(&read("a", earlier), &[], &[]).await.unwrap();
+        let stored = map.layer(BASE).await.unwrap().unwrap();
+        assert_eq!((stored.commit.as_str(), stored.generation), ("b", later));
+        map.replace(&read("c", later), &[], &[]).await.unwrap();
+        assert_eq!(map.layer(BASE).await.unwrap().unwrap().commit, "c");
+    }
+
+    #[tokio::test]
+    async fn a_worktree_finds_nothing_once_the_base_moved_on() {
+        let dir = TempDir::new().unwrap();
+        let map = map(&dir, "one").await;
+        let at = |name: &str, commit: &str, files| Layer {
+            commit: commit.to_owned(),
+            ..layer(name, files)
+        };
+        map.replace(
+            &at(BASE, "a", vec![]),
+            &[],
+            &[entry("src/lib.rs", "a::run", "x")],
+        )
+        .await
+        .unwrap();
+        let worktree = at("wt:mine", "a", vec![stored("src/new.rs", Some("k"))]);
+        map.replace(&worktree, &[], &[entry("src/new.rs", "a::runner", "y")])
+            .await
+            .unwrap();
+        assert_eq!(map.search("wt:mine", "run", 10).await.unwrap().len(), 2);
+
+        map.replace(
+            &at(BASE, "b", vec![]),
+            &[],
+            &[entry("src/lib.rs", "a::run", "x")],
+        )
+        .await
+        .unwrap();
+        assert!(map.search("wt:mine", "run", 10).await.unwrap().is_empty());
+        assert_eq!(map.search(BASE, "run", 10).await.unwrap().len(), 1);
     }
 
     #[test]
