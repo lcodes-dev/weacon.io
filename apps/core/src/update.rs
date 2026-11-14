@@ -17,7 +17,7 @@ use std::process::{Command, Stdio};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
-use weacon_appkit::Outcome;
+use weacon_appkit::Ending;
 use weacon_observability::Fault;
 use weacon_protocol::{
     BuildTarget, Commit, PROTOCOL, ReleaseManifest, ReleaseVersion, UpdateSchedule, code,
@@ -68,7 +68,7 @@ pub(crate) fn run(
     command: UpdateCommand,
     env: Env<'_>,
     out: &mut impl Write,
-) -> Result<Outcome, Fault> {
+) -> Result<Ending, Fault> {
     let state_dir = app.state_dir.as_deref().ok_or_else(state_unavailable)?;
     let exe = std::env::current_exe().map_err(|error| no_exe().because(error))?;
     let download = fetch::https(fetch::DOWNLOAD_WITHIN);
@@ -100,7 +100,7 @@ pub(crate) fn update(
     own: ReleaseVersion,
     world: &World<'_>,
     out: &mut impl Write,
-) -> Result<Outcome, Fault> {
+) -> Result<Ending, Fault> {
     let file = settings::file(state_dir);
     let _lock = lock(state_dir)?;
     if let Some(UpdateAction::Schedule { schedule }) = command.action {
@@ -110,7 +110,7 @@ pub(crate) fn update(
             ..Settings::read(&file).unwrap_or_default()
         };
         settings.write(&file)?;
-        return say(out, &format!("Updates: {}.", schedule_name(schedule))).map(Outcome::from);
+        return say(out, &format!("Updates: {}.", schedule_name(schedule))).map(Ending::from);
     }
     let mut settings = Settings::read(&file)?;
     let release = (world.release)()?;
@@ -118,14 +118,14 @@ pub(crate) fn update(
     settings.write(&file)?;
     let version = release.version;
     if version <= own {
-        return say(out, "weacon is up to date.").map(Outcome::from);
+        return say(out, "weacon is up to date.").map(Ending::from);
     }
     if command.action == Some(UpdateAction::Check) {
         say(
             out,
             &format!("weacon {version} is out. Run `weacon update` to install it."),
         )?;
-        return Ok(Outcome::Findings);
+        return Ok(Ending::Findings);
     }
     if release.protocol != PROTOCOL && !command.yes {
         say(
@@ -135,7 +135,7 @@ pub(crate) fn update(
                  hasn't been updated. Run `weacon update --yes` to install it anyway."
             ),
         )?;
-        return Ok(Outcome::Findings);
+        return Ok(Ending::Findings);
     }
     install_release(&release, world)?;
     let then = if world.restart.is_some() {
@@ -143,7 +143,7 @@ pub(crate) fn update(
     } else {
         "Restart the daemon to run it."
     };
-    say(out, &format!("Installed weacon {version}. {then}")).map(Outcome::from)
+    say(out, &format!("Installed weacon {version}. {then}")).map(Ending::from)
 }
 
 fn install_release(release: &ReleaseManifest, world: &World<'_>) -> Result<(), Fault> {
@@ -363,8 +363,7 @@ mod tests {
                 target: BuildTarget::try_from(LINUX.to_owned()).unwrap(),
                 url: DownloadUrl::try_from("https://example.com/weacon".to_owned()).unwrap(),
                 size: 3,
-                sha256: weacon_protocol::Sha256::try_from(format!("{:x}", Sha256::digest(body)))
-                    .unwrap(),
+                sha256: weacon_protocol::Sha256::from_bytes(Sha256::digest(body).into()),
             }],
         }
     }
@@ -403,7 +402,7 @@ mod tests {
             command: UpdateCommand,
             offered: Result<ReleaseManifest, Fault>,
             service: Option<bool>,
-        ) -> (Result<Outcome, Fault>, String) {
+        ) -> (Result<Ending, Fault>, String) {
             let offered = std::cell::RefCell::new(Some(offered));
             let release = || offered.borrow_mut().take().unwrap();
             let get = |_: &str| -> Result<fetch::Body, Fault> { Ok(Box::new(Cursor::new("new"))) };
@@ -440,7 +439,7 @@ mod tests {
         action: Some(UpdateAction::Check),
     };
 
-    fn code(result: Result<Outcome, Fault>) -> String {
+    fn code(result: Result<Ending, Fault>) -> String {
         result.unwrap_err().code().as_str().to_owned()
     }
 
@@ -448,7 +447,7 @@ mod tests {
     fn a_newer_release_is_installed_and_the_service_restarted() {
         let machine = Machine::new();
         let (result, out) = machine.update(NOW, Ok(release("1.2.3", 10, PROTOCOL)), Some(true));
-        assert_eq!(result.unwrap(), Outcome::Done);
+        assert_eq!(result.unwrap(), Ending::Done);
         assert_eq!(out, "Installed weacon 1.2.3. The daemon runs it now.\n");
         assert_eq!(machine.binary(), "new");
         assert_eq!(machine.restarts.get(), 1);
@@ -459,7 +458,7 @@ mod tests {
     fn without_a_service_the_person_restarts_the_daemon() {
         let machine = Machine::new();
         let (result, out) = machine.update(NOW, Ok(release("1.2.3", 10, PROTOCOL)), None);
-        assert_eq!(result.unwrap(), Outcome::Done);
+        assert_eq!(result.unwrap(), Ending::Done);
         assert_eq!(
             out,
             "Installed weacon 1.2.3. Restart the daemon to run it.\n"
@@ -500,7 +499,7 @@ mod tests {
         for version in ["1.0.0", "0.9.9"] {
             let machine = Machine::new();
             let (result, out) = machine.update(NOW, Ok(release(version, 10, PROTOCOL)), None);
-            assert_eq!(result.unwrap(), Outcome::Done);
+            assert_eq!(result.unwrap(), Ending::Done);
             assert_eq!(out, "weacon is up to date.\n");
             assert_eq!(machine.binary(), "old");
             assert_eq!(machine.settings().last_published, 10);
@@ -519,14 +518,14 @@ mod tests {
         assert_eq!(code(result), "update.stale");
         assert_eq!(machine.binary(), "old");
         let (result, _) = machine.update(NOW, Ok(release("1.2.3", 10, PROTOCOL)), None);
-        assert_eq!(result.unwrap(), Outcome::Done);
+        assert_eq!(result.unwrap(), Ending::Done);
     }
 
     #[test]
     fn a_check_only_says_what_is_out() {
         let machine = Machine::new();
         let (result, out) = machine.update(CHECK, Ok(release("1.2.3", 10, PROTOCOL)), Some(true));
-        assert_eq!(result.unwrap(), Outcome::Findings);
+        assert_eq!(result.unwrap(), Ending::Findings);
         assert_eq!(
             out,
             "weacon 1.2.3 is out. Run `weacon update` to install it.\n"
@@ -540,7 +539,7 @@ mod tests {
         let machine = Machine::new();
         let newer = PROTOCOL + 1;
         let (result, out) = machine.update(NOW, Ok(release("2.0.0", 10, newer)), None);
-        assert_eq!(result.unwrap(), Outcome::Findings);
+        assert_eq!(result.unwrap(), Ending::Findings);
         assert!(out.contains("Run `weacon update --yes`"), "{out}");
         assert_eq!(machine.binary(), "old");
         let yes = UpdateCommand {
@@ -548,7 +547,7 @@ mod tests {
             action: None,
         };
         let (result, _) = machine.update(yes, Ok(release("2.0.0", 10, newer)), None);
-        assert_eq!(result.unwrap(), Outcome::Done);
+        assert_eq!(result.unwrap(), Ending::Done);
         assert_eq!(machine.binary(), "new");
     }
 
@@ -591,7 +590,7 @@ mod tests {
         };
         let failed = Err(Fault::new(code!("update.fetch_failed"), "x"));
         let (result, out) = machine.update(weekly, failed, None);
-        assert_eq!(result.unwrap(), Outcome::Done);
+        assert_eq!(result.unwrap(), Ending::Done);
         assert_eq!(out, "Updates: install each week.\n");
         assert_eq!(machine.settings().schedule, UpdateSchedule::Weekly);
     }
@@ -680,7 +679,7 @@ mod tests {
         };
         let failed = || Err(Fault::new(code!("update.fetch_failed"), "x"));
         let (result, _) = machine.update(off, failed(), None);
-        assert_eq!(result.unwrap(), Outcome::Done);
+        assert_eq!(result.unwrap(), Ending::Done);
         assert_eq!(machine.settings().schedule, UpdateSchedule::Off);
         let (result, _) = machine.update(NOW, failed(), None);
         assert_eq!(code(result), "update.fetch_failed");

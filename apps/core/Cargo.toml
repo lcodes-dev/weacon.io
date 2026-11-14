@@ -17,6 +17,7 @@ minisign-verify.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
+snow.workspace = true
 tokio = { workspace = true, features = ["sync"] }
 ureq.workspace = true
 weacon-agents.workspace = true
@@ -26,6 +27,7 @@ weacon-codemap.workspace = true
 weacon-observability.workspace = true
 weacon-protocol.workspace = true
 weacon-version.workspace = true
+x25519-dalek.workspace = true
 
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true

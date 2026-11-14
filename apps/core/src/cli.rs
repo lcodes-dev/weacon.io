@@ -2,7 +2,6 @@ use std::ffi::OsString;
 use std::path::PathBuf;
 
 use clap::{Args, CommandFactory, FromArgMatches, Parser, Subcommand};
-use weacon_appkit::version_text;
 use weacon_protocol::{AccessLevel, AgentKind, UpdateSchedule, WorkspaceId};
 use weacon_version::Version;
 
@@ -167,7 +166,7 @@ pub(crate) fn parse<I: IntoIterator<Item = OsString>>(
     version: &Version,
 ) -> Result<Cli, clap::Error> {
     let matches = Cli::command()
-        .version(version_text(version))
+        .version(version.with_commit())
         .try_get_matches_from(from_chrome(args.into_iter().collect()))?;
     Cli::from_arg_matches(&matches)
 }

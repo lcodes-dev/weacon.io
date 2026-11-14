@@ -4,7 +4,7 @@ use std::fs::{self, File};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 
-use hmac::{Hmac, Mac};
+use hmac::{Hmac, KeyInit, Mac};
 use sha2::Sha256;
 use weacon_appkit::{owner_only, private_append, sync_dir};
 use weacon_observability::{Fault, Logger};
@@ -70,6 +70,24 @@ impl Secret {
         // An address never holds a zero byte, so this keeps the two apart.
         mac.update(&[0]);
         mac.update(code.as_bytes());
+        mac.finalize().into_bytes().into()
+    }
+
+    /// What is stored for a pairing's `code`, which is looked up by it. No address is a word
+    /// without an `@`, so no sign-in code is stored the same.
+    pub(crate) fn pairing_code_hash(&self, code: &str) -> [u8; 32] {
+        let mut mac = self.0.clone();
+        mac.update(b"pairing.code\0");
+        mac.update(code.as_bytes());
+        mac.finalize().into_bytes().into()
+    }
+
+    /// The token of the machine whose pairing is claimed with `secret`, the same each time so
+    /// that a core may claim again when an answer was lost.
+    pub(crate) fn machine_token(&self, secret: &str) -> [u8; 32] {
+        let mut mac = self.0.clone();
+        mac.update(b"machine.token\0");
+        mac.update(secret.as_bytes());
         mac.finalize().into_bytes().into()
     }
 }
@@ -152,6 +170,46 @@ mod tests {
             .collect();
         names.sort();
         names
+    }
+
+    #[test]
+    fn pairing_codes_and_machine_tokens_are_keyed_and_kept_apart() {
+        let dir = TempDir::new().unwrap();
+        let (one, two) = (
+            open(&dir.join("one")).unwrap(),
+            open(&dir.join("two")).unwrap(),
+        );
+        let email = Email::parse("pairing.code@example.com").unwrap();
+
+        assert_eq!(one.machine_token("s"), one.machine_token("s"));
+        assert_ne!(one.machine_token("s"), one.machine_token("t"));
+        assert_ne!(one.machine_token("s"), two.machine_token("s"));
+        assert_eq!(one.pairing_code_hash("c"), one.pairing_code_hash("c"));
+        assert_ne!(one.pairing_code_hash("c"), one.pairing_code_hash("d"));
+        assert_ne!(one.pairing_code_hash("c"), two.pairing_code_hash("c"));
+        assert_ne!(one.pairing_code_hash("c"), one.machine_token("c"));
+        assert_ne!(one.pairing_code_hash("c"), one.code_hash(&email, "c"));
+        assert_ne!(one.machine_token("c"), one.code_hash(&email, "c"));
+        Email::parse("pairing.code").unwrap_err();
+        Email::parse("machine.token").unwrap_err();
+    }
+
+    #[test]
+    fn pairing_codes_and_machine_tokens_keep_their_digests() {
+        let dir = TempDir::new().unwrap();
+        let key: Vec<u8> = (0..32).collect();
+        let secret = open(&stored(&dir, "secret", &key)).unwrap();
+        let hex = |digest: [u8; 32]| digest.map(|byte| format!("{byte:02x}")).concat();
+
+        // HMAC-SHA256 of each one's prefix and input, under the bytes 0 to 31.
+        assert_eq!(
+            hex(secret.pairing_code_hash("ABCD-1234")),
+            "a8e23ba6ef0ef2afc01c96adf9a45091de5578f6289c08589434b0809af699d8"
+        );
+        assert_eq!(
+            hex(secret.machine_token("secret")),
+            "dfa64f2eb1af8f2fec07c7fa779c2c8312fbdd7e2ed666a94fded34db17b9c07"
+        );
     }
 
     #[test]
