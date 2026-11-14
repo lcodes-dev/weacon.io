@@ -76,6 +76,16 @@ pub struct OutsideSession {
     pub modified_at: i64,
 }
 
+impl SessionsQueryKind {
+    pub(crate) fn is_newer(&self) -> bool {
+        match self {
+            Self::List => false,
+            Self::Open { agent, .. } => *agent == AgentKind::Newer,
+            Self::Newer => true,
+        }
+    }
+}
+
 impl SessionsAnswerKind {
     pub(crate) fn is_newer(&self) -> bool {
         match self {
@@ -216,6 +226,11 @@ mod tests {
         let newer_session = json!({ "agent": "amp", "session": SESSION, "modified_at": 0 });
         let newer = [
             wire("sessions_query", "query", json!({ "kind": "search" })),
+            wire(
+                "sessions_query",
+                "query",
+                json!({ "kind": "open", "agent": "amp", "session": SESSION, "after": 0 }),
+            ),
             wire("sessions_answer", "answer", json!({ "kind": "found" })),
             wire(
                 "sessions_answer",
