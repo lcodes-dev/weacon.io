@@ -1,5 +1,8 @@
 //! What differs between operating systems.
 
+mod pty;
+
+pub(crate) use pty::Pty;
 #[cfg(unix)]
 pub(crate) use unix::links;
 #[cfg(unix)]

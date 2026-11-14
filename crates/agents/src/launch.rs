@@ -142,7 +142,7 @@ impl Launch {
     }
 
     // The command of this launch's vendor.
-    fn vendors(
+    pub(crate) fn vendors(
         &self,
         claude: fn(&Self) -> Command,
         codex: fn(&Self) -> Command,
