@@ -3,7 +3,7 @@
 use weacon_observability::Fault;
 use weacon_protocol::{
     AgentKind, ChatAction, ChatCommand, ChatEvent, Outcome, PermissionAnswer, RepoId, RequestId,
-    RunState, code,
+    RunEvent, RunState, RunUpdate, code,
 };
 
 use super::{Engine, Key, Waiting, unsupported};
@@ -129,6 +129,14 @@ impl<A: Agent> Engine<A> {
         if !waits || !self.runs.is_latest(&key.0, &key.1, &answer.run) {
             return Ok(());
         }
+        // In the log before the agent is told, so a crash between the two leaves the truth there.
+        let update = RunUpdate {
+            run: answer.run.clone(),
+            event: RunEvent::PermissionAnswered {
+                answer: answer.clone(),
+            },
+        };
+        self.commit(key, ChatEvent::Run { update }).await?;
         let waiting = &mut self.chat(key).await?.waiting;
         waiting.retain(|waiting| waiting.prompt != answer.prompt);
         let (resumed, run) = (waiting.is_empty(), answer.run.clone());

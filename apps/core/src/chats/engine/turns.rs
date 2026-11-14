@@ -87,6 +87,7 @@ impl<A: Agent> Engine<A> {
             | RunEvent::Text { .. }
             | RunEvent::ToolCall { .. }
             | RunEvent::ToolDone { .. }
+            | RunEvent::PermissionAnswered { .. }
             | RunEvent::Newer => committed.map(drop),
         }
     }
@@ -99,14 +100,9 @@ impl<A: Agent> Engine<A> {
         prompt: u32,
         committed: Result<(ChatEntry, bool), Fault>,
     ) -> Result<(), Fault> {
-        if let Ok((entry, true)) = &committed {
-            let seq = entry.seq;
+        if let Ok((_, true)) = &committed {
             let answered = None;
-            let waiting = Waiting {
-                prompt,
-                seq,
-                answered,
-            };
+            let waiting = Waiting { prompt, answered };
             self.chat(key).await?.waiting.push(waiting);
             return self.state(key, run, RunState::Waiting).await;
         }
@@ -848,6 +844,30 @@ mod tests {
         };
         hear(&mut engine, asks).await.unwrap();
         (engine, agent, bench)
+    }
+
+    // What the chat's snapshot says waits for a person.
+    async fn waiting_in(engine: &mut Engine<FakeAgent>) -> Vec<u64> {
+        let (anyone, _pushes) = client(1);
+        let snapshot = engine.query(&key(), ChatQueryKind::Snapshot, &anyone).await;
+        let Ok(Some(ChatAnswerKind::Snapshot { waiting, .. })) = snapshot else {
+            panic!("no snapshot");
+        };
+        waiting
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn prompts_cut_off_by_a_restart_wait_until_their_turn_ends() {
+        let (mut engine, _agent, _bench) = on_ask().await;
+        let asked = waiting_in(&mut engine).await;
+        assert_eq!(asked.len(), 1);
+        // As after a restart: the log is all that is left of the chat.
+        engine.chats.remove(&key());
+        assert_eq!(waiting_in(&mut engine).await, asked);
+
+        engine.command(&key(), prompt("r-2", "More")).await.unwrap();
+
+        assert!(waiting_in(&mut engine).await.is_empty());
     }
 
     // The outcomes of `request`'s receipts in the log, in order.

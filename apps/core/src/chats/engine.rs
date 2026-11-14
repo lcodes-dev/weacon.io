@@ -126,10 +126,9 @@ impl Chat {
     }
 }
 
-/// A permission prompt still waiting for a person, and its place in the log.
+/// A permission prompt still waiting for a person.
 struct Waiting {
     prompt: u32,
-    seq: u64,
     /// The request, and whether it allowed, that answered it once its receipt is written.
     answered: Option<(RequestId, bool)>,
 }
@@ -340,6 +339,7 @@ fn update(key: &Key, entry: ChatEntry) -> Message {
 mod tests {
     use std::sync::atomic::Ordering;
 
+    use weacon_model::ChatState;
     use weacon_protocol::{
         AgentSession, ChatAction, ChatAnswerKind, ChatQueryKind, PermissionAnswer, RunEvent,
     };
@@ -385,6 +385,22 @@ mod tests {
     }
 
     // A client subscribed to chat c-1 from its start.
+    // The chat's snapshot: its runs, its waiting prompts and its latest events.
+    async fn snapshot(bench: &Bench) -> (Vec<RunStatus>, Vec<u64>, Vec<ChatEntry>) {
+        let (anyone, _pushes) = client(1);
+        let asked = query("c-1", ChatQueryKind::Snapshot);
+        let Ok(Some(ChatAnswerKind::Snapshot {
+            runs,
+            waiting,
+            events,
+            ..
+        })) = bench.chats.query(asked, &anyone).await
+        else {
+            panic!("no snapshot");
+        };
+        (runs, waiting, events)
+    }
+
     async fn watch(bench: &Bench) -> mpsc::Receiver<Message> {
         let (client, pushes) = client(64);
         let subscribe = query("c-1", ChatQueryKind::Subscribe { after: 0 });
@@ -556,8 +572,12 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(
-            pushed(&mut pushes, 2).await,
-            ["8 receipt r-2 completed", "9 run-1 is Running"]
+            pushed(&mut pushes, 3).await,
+            [
+                "8 receipt r-2 completed",
+                "9 run-1 answered 1",
+                "10 run-1 is Running"
+            ]
         );
         assert!(
             matches!(soon(agent.told.recv()).await, Some(Told::Answer(answer)) if answer.allow)
@@ -802,17 +822,25 @@ mod tests {
 
         let first = allow("r-2", "c-1", "run-1", 1);
         bench.chats.command(first).await.unwrap();
+        // Of the two prompts, only the second still waits, as the fold of the log says.
+        let (runs, waiting, events) = snapshot(&bench).await;
+        let folded = ChatState::fold(&events);
+        assert_eq!((waiting.as_slice(), runs.len()), ([7].as_slice(), 1));
+        assert_eq!((folded.runs(), folded.waiting()), (runs, waiting));
         let second = allow("r-3", "c-1", "run-1", 2);
         bench.chats.command(second).await.unwrap();
 
         assert_eq!(
-            pushed(&mut pushes, 3).await,
+            pushed(&mut pushes, 5).await,
             [
                 "9 receipt r-2 completed",
-                "10 receipt r-3 completed",
-                "11 run-1 is Running",
+                "10 run-1 answered 1",
+                "11 receipt r-3 completed",
+                "12 run-1 answered 2",
+                "13 run-1 is Running",
             ]
         );
+        assert!(snapshot(&bench).await.1.is_empty());
         assert!(
             matches!(soon(agent.told.recv()).await, Some(Told::Answer(answer)) if answer.prompt == 1)
         );

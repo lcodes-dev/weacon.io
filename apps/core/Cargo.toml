@@ -21,6 +21,7 @@ tokio = { workspace = true, features = ["sync"] }
 weacon-agents.workspace = true
 weacon-appkit.workspace = true
 weacon-client.workspace = true
+weacon-model.workspace = true
 weacon-codemap.workspace = true
 weacon-observability.workspace = true
 weacon-protocol.workspace = true

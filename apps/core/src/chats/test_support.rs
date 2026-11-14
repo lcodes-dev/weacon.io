@@ -230,6 +230,7 @@ fn said(event: &RunEvent) -> String {
         RunEvent::ToolDone { .. } => "tool done".to_owned(),
         RunEvent::PermissionAsked { prompt, .. } => format!("asks {prompt}"),
         RunEvent::PermissionWithdrawn { prompt, .. } => format!("withdraws {prompt}"),
+        RunEvent::PermissionAnswered { answer } => format!("answered {}", answer.prompt),
         RunEvent::Finished { outcome: ended } => format!("finished {}", outcome(ended)),
         RunEvent::Newer => "newer".to_owned(),
     }

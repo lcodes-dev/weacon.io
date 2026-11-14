@@ -1,7 +1,7 @@
 //! What clients ask about a chat's log.
 
 use weacon_observability::Fault;
-use weacon_protocol::{ChatAnswerKind, ChatQueryKind, RunStatus};
+use weacon_protocol::{ChatAnswerKind, ChatQueryKind};
 
 use super::{Engine, Key, unsupported, update};
 use crate::chats::feed::{Client, Subscriber};
@@ -19,8 +19,6 @@ impl<A: Agent> Engine<A> {
         if matches!(query, ChatQueryKind::Subscribe { .. }) {
             self.sweep();
         }
-        let record = self.runs.of(&key.0, &key.1);
-        let run = record.and_then(|record| Some((record.run.clone()?, record.state)));
         let chat = self.chat(key).await?;
         match query {
             ChatQueryKind::Subscribe { after } => {
@@ -40,13 +38,11 @@ impl<A: Agent> Engine<A> {
                 chat.subscribers.extend(caught_up);
                 Ok(None)
             }
+            // What the log says, as the server, folding the same entries, also says.
             ChatQueryKind::Snapshot => Ok(Some(ChatAnswerKind::Snapshot {
                 seq: chat.log.seq(),
-                runs: run
-                    .map(|(run, state)| RunStatus { run, state })
-                    .into_iter()
-                    .collect(),
-                waiting: chat.waiting.iter().map(|waiting| waiting.seq).collect(),
+                runs: chat.log.state().runs(),
+                waiting: chat.log.state().waiting(),
                 events: chat.log.window(u64::MAX, SNAPSHOT_EVENTS).await?,
             })),
             ChatQueryKind::Window { before, limit } => Ok(Some(ChatAnswerKind::Window {
