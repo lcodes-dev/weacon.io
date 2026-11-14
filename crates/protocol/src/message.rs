@@ -4,7 +4,8 @@ use serde::{Deserialize, Serialize};
 use crate::{
     Capability, ChatAnswer, ChatCommand, ChatQuery, ChatUpdate, ClientLog, Code, DiffAnswer,
     DiffQuery, MachineSettingsAnswer, MachineSettingsCommand, MachineSettingsQuery, Pick, Receipt,
-    RunUpdate, SessionsAnswer, SessionsQuery, WorkspaceUpdate, code,
+    RunUpdate, SessionsAnswer, SessionsQuery, TerminalCommand, TerminalUpdate, WorkspaceUpdate,
+    WorktreeAnswer, WorktreeCommand, WorktreeQuery, code,
 };
 
 /// The protocol version this build speaks. Only a breaking change raises it; peers must match
@@ -64,6 +65,21 @@ pub enum Message {
     SessionsQuery(SessionsQuery),
     /// The core's answer to a [`SessionsQuery`], to a client that has `sessions.read`.
     SessionsAnswer(SessionsAnswer),
+    /// A sign-in terminal's sealed input, from a browser through the server to a core that
+    /// offers `terminal.sign_in`; the server relays it only if it offers `terminal.relay`.
+    TerminalCommand(TerminalCommand),
+    /// A sign-in terminal's sealed output, from a core that offers `terminal.sign_in` through
+    /// the server to the browser that opened it.
+    Terminal(TerminalUpdate),
+    /// A question about a chat's worktree, from a client to a core that offers
+    /// `worktree.manage`.
+    WorktreeQuery(WorktreeQuery),
+    /// What a person asks of a chat's worktree, from a client to a core that offers
+    /// `worktree.manage`.
+    WorktreeCommand(WorktreeCommand),
+    /// The core's answer to a [`WorktreeQuery`] or a [`WorktreeCommand`], to a client that has
+    /// `worktree.manage`.
+    WorktreeAnswer(WorktreeAnswer),
     /// A message type this build doesn't know, from a newer peer.
     #[serde(other)]
     #[schemars(skip)]
@@ -123,7 +139,7 @@ mod tests {
     use serde_json::json;
 
     use super::*;
-    use crate::{RunEvent, RunId};
+    use crate::RunEvent;
 
     fn app(name: &str) -> App {
         App {
@@ -182,7 +198,7 @@ mod tests {
                 Envelope {
                     id: 0,
                     message: Message::Run(RunUpdate {
-                        run: RunId::try_from("r-1".to_owned()).unwrap(),
+                        run: "r-1".parse().unwrap(),
                         event: RunEvent::TextDelta {
                             text: "Hel".to_owned(),
                         },

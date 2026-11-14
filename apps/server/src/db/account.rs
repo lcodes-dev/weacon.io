@@ -8,12 +8,20 @@ use super::{Db, exists, failed, stored, unreadable};
 use crate::email::Email;
 
 /// How long a code works, in seconds.
-pub(crate) const CODE_LIFETIME: i64 = 600;
+pub(crate) const CODE_LIFETIME: i64 = 10 * 60;
 /// How many wrong tries end a challenge.
 const MAX_ATTEMPTS: i64 = 5;
 /// How many live codes are mailed to one address, so a server open to sign-up can't flood an
 /// inbox; `ada+1@` and `ada+2@` count apart, though they may reach the same one.
 const MAX_LIVE: i64 = 3;
+
+/// One account's view of the database: what belongs to it alone, and the workspaces it is a
+/// member of. Its queries reach no other account's rows.
+#[derive(Debug)]
+pub(crate) struct Account {
+    pub(super) db: Db,
+    pub(super) id: AccountId,
+}
 
 /// One try at finishing a sign-in. Times are seconds since the Unix epoch.
 pub(crate) struct Attempt<'a> {
@@ -280,7 +288,7 @@ mod tests {
     use weacon_testing::TempDir;
 
     use super::*;
-    use crate::test_support::{member_id, workspace_id};
+    use crate::test_support::{email, member_id, workspace_id};
 
     fn personal(name: &str) -> NewWorkspace {
         NewWorkspace {
@@ -291,10 +299,6 @@ mod tests {
     }
 
     const NOW: i64 = 100_000;
-
-    fn email(text: &str) -> Email {
-        Email::parse(text).unwrap()
-    }
 
     fn id<T: TryFrom<String>>(text: &str) -> T {
         T::try_from(text.to_owned()).ok().unwrap()
@@ -444,6 +448,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_code_works_for_ten_minutes_and_ended_ones_are_cleared() {
+        assert_eq!(CODE_LIFETIME, 600);
         let dir = TempDir::new().unwrap();
         let db = people(&dir).await;
         challenge(&db, "ada@example.com", "c1", b"k1", NOW).await;

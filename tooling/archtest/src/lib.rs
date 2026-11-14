@@ -122,42 +122,35 @@ fn read_metadata(root: &Path) -> Result<Metadata, String> {
 }
 
 fn read_manifest(path: &Path) -> Result<Table, String> {
-    let text = fs::read_to_string(path).map_err(|error| format!("{}: {error}", path.display()))?;
+    let text = read(path)?;
     toml::from_str(&text).map_err(|error| format!("{}: {error}", path.display()))
 }
 
 fn read_sources(dir: &Path) -> Result<Vec<SourceFile>, String> {
     let mut sources = Vec::new();
-    let mut pending: Vec<PathBuf> = ["src", "tests", "benches"]
+    let mut pending: Vec<PathBuf> = ["build.rs", "src", "tests", "benches"]
         .iter()
         .map(|name| dir.join(name))
-        .filter(|path| path.is_dir())
+        .filter(|path| path.exists())
         .collect();
-    let build = dir.join("build.rs");
-    if build.is_file() {
-        let text =
-            fs::read_to_string(&build).map_err(|error| format!("{}: {error}", build.display()))?;
-        sources.push(SourceFile {
-            path: "build.rs".into(),
-            text,
-        });
-    }
     while let Some(path) = pending.pop() {
-        let entries =
-            fs::read_dir(&path).map_err(|error| format!("{}: {error}", path.display()))?;
-        for entry in entries {
-            let path = entry.map_err(|error| error.to_string())?.path();
-            if path.is_dir() {
-                pending.push(path);
-            } else if path.extension().is_some_and(|extension| extension == "rs") {
-                let text = fs::read_to_string(&path)
-                    .map_err(|error| format!("{}: {error}", path.display()))?;
-                let path = path.strip_prefix(dir).unwrap_or(&path).to_path_buf();
-                sources.push(SourceFile { path, text });
+        if path.is_dir() {
+            let entries =
+                fs::read_dir(&path).map_err(|error| format!("{}: {error}", path.display()))?;
+            for entry in entries {
+                pending.push(entry.map_err(|error| error.to_string())?.path());
             }
+        } else if path.extension().is_some_and(|extension| extension == "rs") {
+            let text = read(&path)?;
+            let path = path.strip_prefix(dir).unwrap_or(&path).to_path_buf();
+            sources.push(SourceFile { path, text });
         }
     }
     Ok(sources)
+}
+
+fn read(path: &Path) -> Result<String, String> {
+    fs::read_to_string(path).map_err(|error| format!("{}: {error}", path.display()))
 }
 
 #[cfg(test)]
@@ -174,6 +167,15 @@ mod tests {
 
     #[test]
     fn a_folder_without_a_workspace_is_an_error() {
-        violations(&std::env::temp_dir()).unwrap_err();
+        use std::hash::{BuildHasher, RandomState};
+
+        // archtest may use nothing in the repo, so not weacon_testing's TempDir.
+        let id = RandomState::new().hash_one(std::process::id());
+        let dir = std::env::temp_dir().join(format!("weacon-archtest-{id:016x}"));
+        fs::create_dir(&dir).unwrap();
+        let found = violations(&dir);
+        fs::remove_dir(&dir).unwrap();
+
+        found.unwrap_err();
     }
 }
