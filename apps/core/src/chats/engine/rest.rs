@@ -53,14 +53,18 @@ impl<A: Agent> Engine<A> {
 
     // A disk no longer full lets every chat with prompts queued go on.
     pub(super) async fn set_disk_full(&mut self, full: bool) {
-        if std::mem::replace(&mut self.disk_full, full) == full {
-            return;
-        }
+        // A disk that filled and cleared between two passes may have queued a prompt, so
+        // every `false` goes on with what is queued; only a change is logged.
+        let was = std::mem::replace(&mut self.disk_full, full);
         if full {
-            self.log.warn("turns paused", &[]);
+            if !was {
+                self.log.warn("turns paused", &[]);
+            }
             return;
         }
-        self.log.info("turns resumed", &[]);
+        if was {
+            self.log.info("turns resumed", &[]);
+        }
         let queued: Vec<ChatKey> = self
             .runs
             .records()
@@ -140,8 +144,39 @@ mod tests {
 
     use super::super::by_hand::{OnTurn, hear, launched, on_ask, on_turn};
     use super::*;
-    use crate::chats::test_support::{FakeAgent, Told, chat, key, prompt, run, session, soon};
+    use crate::chats::test_support::{
+        FakeAgent, Told, chat, key, parts, prompt, run, session, soon,
+    };
     use crate::runs::Queued;
+
+    #[tokio::test(start_paused = true)]
+    async fn a_disk_full_and_clear_again_before_the_engine_looks_still_starts_the_queued_turn() {
+        let (bench, mut engine) = parts();
+        bench.chats.disk_full(true);
+        engine.command(&key(), prompt("r-1", "Hi")).await.unwrap();
+        bench.chats.disk_full(false);
+
+        engine.set_disk_full(false).await;
+
+        launched(&mut engine).await;
+        assert!(!messages(&bench.records).contains(&"turns resumed"));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn only_a_change_of_the_disk_is_logged() {
+        let (bench, mut engine) = parts();
+
+        for full in [true, true, false, false] {
+            engine.set_disk_full(full).await;
+        }
+
+        let logged = messages(&bench.records);
+        let turns: Vec<_> = logged
+            .iter()
+            .filter(|message| message.starts_with("turns "))
+            .collect();
+        assert_eq!(turns, [&"turns paused", &"turns resumed"]);
+    }
 
     // Makes chat `c-1`'s last turn start or end `ago` seconds before now.
     async fn active_ago(engine: &mut Engine<FakeAgent>, ago: u64) {
