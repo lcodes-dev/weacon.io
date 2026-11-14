@@ -14,6 +14,7 @@ use std::fs::{File, TryLockError};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use weacon_appkit::Outcome;
@@ -186,6 +187,7 @@ fn version_of(binary: &Path) -> io::Result<String> {
 }
 
 /// What `command` prints, up to 64 KiB, once it ends; it is killed if it takes over `within`.
+/// Its output must end within that time too, even when a process it started holds it open.
 fn output_within(command: &mut Command, within: Duration) -> io::Result<String> {
     let mut child = command
         .stdin(Stdio::null())
@@ -196,12 +198,17 @@ fn output_within(command: &mut Command, within: Duration) -> io::Result<String> 
         .stdout
         .take()
         .ok_or_else(|| io::Error::other("no stdout"))?;
-    let read = std::thread::spawn(move || {
-        let mut printed = Vec::new();
-        stdout
-            .take(64 * 1024)
-            .read_to_end(&mut printed)
-            .map(|_| printed)
+    let (sent, printed) = mpsc::channel();
+    std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        drop(
+            sent.send(
+                stdout
+                    .take(64 * 1024)
+                    .read_to_end(&mut bytes)
+                    .map(|_| bytes),
+            ),
+        );
     });
     let started = Instant::now();
     while child.try_wait()?.is_none() {
@@ -212,10 +219,11 @@ fn output_within(command: &mut Command, within: Duration) -> io::Result<String> 
         }
         std::thread::sleep(Duration::from_millis(10));
     }
-    let printed = read
-        .join()
-        .map_err(|_| io::Error::other("the output reader stopped"))??;
-    Ok(String::from_utf8_lossy(&printed).into_owned())
+    let left = within.saturating_sub(started.elapsed());
+    let bytes = printed
+        .recv_timeout(left)
+        .map_err(|_| io::Error::from(io::ErrorKind::TimedOut))??;
+    Ok(String::from_utf8_lossy(&bytes).into_owned())
 }
 
 /// A line saying which newer release the daemon found, if it found one.
@@ -557,6 +565,13 @@ mod tests {
         let fast = answering(&dir, "quick");
         let printed = output_within(&mut Command::new(&fast), Duration::from_secs(30)).unwrap();
         assert_eq!(printed, "quick\n");
+        // A process left running with the output open doesn't hold the answer past its time.
+        let leaves = dir.join("leaves");
+        fs::write(&leaves, "#!/bin/sh\necho started\nsleep 2 &\n").unwrap();
+        crate::platform::make_runnable(&leaves).unwrap();
+        let error =
+            output_within(&mut Command::new(&leaves), Duration::from_millis(500)).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::TimedOut);
         let long = answering(&dir, &"x".repeat(5000));
         let printed = output_within(&mut Command::new(&long), Duration::from_secs(30)).unwrap();
         assert_eq!(printed.len(), 5001);
