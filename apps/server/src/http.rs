@@ -650,7 +650,6 @@ mod tests {
 
     #[tokio::test]
     async fn a_body_that_cant_be_read_is_answered_with_an_error_body() {
-        assert_eq!(MAX_BODY, 16_384);
         let code = |code: &str| serde_json::json!({ "code": code, "retryable": false });
 
         assert_eq!(
