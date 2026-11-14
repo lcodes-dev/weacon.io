@@ -7,7 +7,7 @@ use serde_json::{Value, json};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 
-use super::{Fixture, Running};
+use super::Fixture;
 
 /// One HTTP/1.1 exchange: the response's lowercased head lines, and its body.
 pub(crate) async fn request(address: SocketAddr, head: &str, body: &str) -> (Vec<String>, String) {
@@ -142,26 +142,17 @@ pub(crate) async fn pair_machine(fixture: &Fixture, address: SocketAddr) -> Pair
     }
 }
 
-/// Someone who asks with `auth`, the header proving their sign-in or none, at `address`.
-pub(crate) struct Ada {
+/// A client of the server at `address` that proves a sign-in with `auth`, or sends no proof
+/// when it is empty.
+pub(crate) struct Client {
     pub(crate) address: SocketAddr,
     pub(crate) auth: String,
 }
 
-impl Ada {
+impl Client {
     /// One request: the answer's status line, and its body.
     pub(crate) async fn send(&self, head: &str, body: &str) -> (String, String) {
         let (head, body) = request_with(self.address, head, &self.auth, body).await;
         (status(&head).to_owned(), body)
     }
-}
-
-/// The running server, which stops once dropped, and ada signed in to it.
-pub(crate) async fn ada(fixture: &Fixture) -> (Running, Ada) {
-    let (server, body) = fixture.signed_in("ada@example.com").await;
-    let ada = Ada {
-        address: server.address,
-        auth: bearer(&body),
-    };
-    (server, ada)
 }

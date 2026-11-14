@@ -181,7 +181,7 @@ mod tests {
     use weacon_protocol::{Author, CommitId, DocAnchors, DocPin, DocSummary, WorkspaceChange};
 
     use super::*;
-    use crate::test_support::{Ada, Fixture, ada, refusal, workspace_id};
+    use crate::test_support::{Client, Fixture, refusal, workspace_id};
 
     trait Docs {
         async fn ok<T: serde::de::DeserializeOwned>(&self, head: &str, body: &str, want: &str)
@@ -191,7 +191,7 @@ mod tests {
         async fn get<T: serde::de::DeserializeOwned>(&self, path: &str) -> T;
     }
 
-    impl Docs for Ada {
+    impl Docs for Client {
         async fn ok<T: serde::de::DeserializeOwned>(
             &self,
             head: &str,
@@ -258,7 +258,7 @@ mod tests {
     #[tokio::test]
     async fn a_doc_is_made_listed_and_read_and_the_feed_hears_of_it() {
         let fixture = Fixture::new().await;
-        let (_server, ada) = ada(&fixture).await;
+        let (_server, ada) = fixture.client("ada@example.com").await;
         let mut changes = fixture.shared.changes.subscribe();
 
         let made = ada.create(&linked()).await;
@@ -292,7 +292,7 @@ mod tests {
     #[tokio::test]
     async fn a_revision_answers_the_doc_at_its_next_version_and_keeps_the_old_one() {
         let fixture = Fixture::new().await;
-        let (_server, ada) = ada(&fixture).await;
+        let (_server, ada) = fixture.client("ada@example.com").await;
         let first = ada.create(&content("Framing", "Draft.", &[])).await;
 
         let (status, body) = ada.revise(&first, &linked()).await;
@@ -332,7 +332,7 @@ mod tests {
     #[tokio::test]
     async fn a_doc_or_version_there_isnt_is_not_found() {
         let fixture = Fixture::new().await;
-        let (_server, ada) = ada(&fixture).await;
+        let (_server, ada) = fixture.client("ada@example.com").await;
         let doc = ada.create(&linked()).await;
         let id = doc.id.as_str();
         let gone = DocRecord {
@@ -366,7 +366,7 @@ mod tests {
     #[tokio::test]
     async fn bad_or_mismatched_content_is_refused_and_nothing_changes() {
         let fixture = Fixture::new().await;
-        let (_server, ada) = ada(&fixture).await;
+        let (_server, ada) = fixture.client("ada@example.com").await;
         let doc = ada.create(&linked()).await;
         let huge = content("Huge", &"a".repeat(300 * 1024), &[]);
 
@@ -408,7 +408,7 @@ mod tests {
     #[tokio::test]
     async fn a_request_that_isnt_a_doc_request_is_invalid() {
         let fixture = Fixture::new().await;
-        let (_server, ada) = ada(&fixture).await;
+        let (_server, ada) = fixture.client("ada@example.com").await;
         let doc = ada.create(&linked()).await;
         let head = format!("POST /api/workspaces/w1/docs/{}", doc.id.as_str());
 
@@ -439,7 +439,7 @@ mod tests {
     #[tokio::test]
     async fn a_doc_larger_than_other_requests_or_heavy_with_escapes_fits() {
         let fixture = Fixture::new().await;
-        let (_server, ada) = ada(&fixture).await;
+        let (_server, ada) = fixture.client("ada@example.com").await;
         let large = content("Large", &"a".repeat(100 * 1024), &[]);
         let escaped = content("Escaped", &"\u{1}".repeat(256 * 1024), &[]);
 
@@ -454,7 +454,7 @@ mod tests {
     #[tokio::test]
     async fn a_body_over_the_route_limit_is_too_large() {
         let fixture = Fixture::new().await;
-        let (_server, ada) = ada(&fixture).await;
+        let (_server, ada) = fixture.client("ada@example.com").await;
         let body = serde_json::to_string(&content("Huge", &"a".repeat(MAX_BODY), &[])).unwrap();
 
         let (status, answer) = ada.send("POST /api/workspaces/w1/docs", &body).await;
@@ -468,14 +468,14 @@ mod tests {
     #[tokio::test]
     async fn only_a_signed_in_member_reaches_the_docs() {
         let fixture = Fixture::new().await;
-        let (_server, ada) = ada(&fixture).await;
+        let (_server, ada) = fixture.client("ada@example.com").await;
         fixture
             .shared
             .db
             .create_workspace(&workspace_id("w2"), "Other")
             .await
             .unwrap();
-        let stranger = Ada {
+        let stranger = Client {
             address: ada.address,
             auth: String::new(),
         };
@@ -512,7 +512,7 @@ mod tests {
     #[tokio::test]
     async fn a_full_workspace_takes_no_more_docs_and_the_operator_hears_of_it() {
         let fixture = Fixture::new().await;
-        let (_server, ada) = ada(&fixture).await;
+        let (_server, ada) = fixture.client("ada@example.com").await;
         let doc = ada.create(&linked()).await;
         let w1 = fixture
             .shared

@@ -161,7 +161,7 @@ mod tests {
     use weacon_protocol::TaskStatus;
 
     use super::*;
-    use crate::test_support::{Ada, Fixture, ada, refusal, workspace_id};
+    use crate::test_support::{Client, Fixture, refusal, workspace_id};
 
     trait Tasks {
         async fn list(&self) -> Vec<TaskRecord>;
@@ -170,7 +170,7 @@ mod tests {
         async fn changed(&self, task: &TaskRecord, edit: TaskEditBody) -> TaskRecord;
     }
 
-    impl Tasks for Ada {
+    impl Tasks for Client {
         async fn list(&self) -> Vec<TaskRecord> {
             let (status, body) = self.send("GET /api/workspaces/w1/tasks", "").await;
             assert_eq!(status, "http/1.1 200 ok");
@@ -212,7 +212,7 @@ mod tests {
     #[tokio::test]
     async fn new_tasks_go_last_or_in_front_of_one_and_the_feed_hears_of_each() {
         let fixture = Fixture::new().await;
-        let (_server, ada) = ada(&fixture).await;
+        let (_server, ada) = fixture.client("ada@example.com").await;
         let mut changes = fixture.shared.changes.subscribe();
 
         let write = ada.create("Write", None).await;
@@ -247,7 +247,7 @@ mod tests {
     #[tokio::test]
     async fn an_edit_answers_the_task_at_its_next_version() {
         let fixture = Fixture::new().await;
-        let (_server, ada) = ada(&fixture).await;
+        let (_server, ada) = fixture.client("ada@example.com").await;
         let write = ada.create("Write", None).await;
         let ship = ada.create("Ship", None).await;
 
@@ -289,7 +289,7 @@ mod tests {
     #[tokio::test]
     async fn a_stale_or_missing_task_is_refused_and_nothing_changes() {
         let fixture = Fixture::new().await;
-        let (_server, ada) = ada(&fixture).await;
+        let (_server, ada) = fixture.client("ada@example.com").await;
         let write = ada.create("Write", None).await;
         ada.changed(
             &write,
@@ -340,7 +340,7 @@ mod tests {
     #[tokio::test]
     async fn a_body_past_the_size_limit_is_too_large_and_one_under_it_is_read() {
         let fixture = Fixture::new().await;
-        let (_server, ada) = ada(&fixture).await;
+        let (_server, ada) = fixture.client("ada@example.com").await;
         let write = ada.create("Write", None).await;
         let huge = TaskCreate {
             title: "x".repeat(20_000),
@@ -369,7 +369,7 @@ mod tests {
     #[tokio::test]
     async fn bad_input_is_refused_as_a_bad_request() {
         let fixture = Fixture::new().await;
-        let (_server, ada) = ada(&fixture).await;
+        let (_server, ada) = fixture.client("ada@example.com").await;
         let write = ada.create("Write", None).await;
         let current = TaskRecord {
             version: 1,
@@ -421,14 +421,14 @@ mod tests {
     #[tokio::test]
     async fn only_a_signed_in_member_reaches_the_tasks() {
         let fixture = Fixture::new().await;
-        let (_server, ada) = ada(&fixture).await;
+        let (_server, ada) = fixture.client("ada@example.com").await;
         fixture
             .shared
             .db
             .create_workspace(&workspace_id("w2"), "Other")
             .await
             .unwrap();
-        let stranger = Ada {
+        let stranger = Client {
             address: ada.address,
             auth: String::new(),
         };

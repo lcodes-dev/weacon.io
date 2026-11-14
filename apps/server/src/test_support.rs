@@ -18,7 +18,7 @@ pub(crate) mod socket;
 
 pub(crate) use data::{agent, email, fresh_account, member_id, new_task, two_teams, workspace_id};
 pub(crate) use requests::{
-    Ada, Paired, ada, ask, bearer, finish_body, header, pair_machine, pairing_start, refusal,
+    Client, Paired, ask, bearer, finish_body, header, pair_machine, pairing_start, refusal,
     request, request_with, sign_in, start_sign_in, status,
 };
 pub(crate) use weacon_testing::{Records, messages, recording_logger, recording_sink};
@@ -120,6 +120,17 @@ impl Fixture {
         let server = self.run().await;
         let (_, body) = sign_in(self, server.address, address).await;
         (server, body)
+    }
+
+    /// A server running on the fixture's state, which stops once dropped, and a client that
+    /// `email` signed in to it.
+    pub(crate) async fn client(&self, email: &str) -> (Running, Client) {
+        let (server, body) = self.signed_in(email).await;
+        let client = Client {
+            address: server.address,
+            auth: bearer(&body),
+        };
+        (server, client)
     }
 
     /// Moves the clock on by `seconds`.
