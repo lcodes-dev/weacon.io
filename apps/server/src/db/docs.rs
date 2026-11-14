@@ -7,7 +7,7 @@ use super::changes::Versioned;
 use super::{Workspace, author_columns, failed, stored, stored_author, stored_version, unreadable};
 
 /// How many bytes of doc revisions a workspace may hold.
-const QUOTA: i64 = 1 << 30;
+const DOC_QUOTA: i64 = 1 << 30;
 /// What each revision counts besides its text: its rows, keys and feed entry.
 const REVISION_OVERHEAD: usize = 256;
 
@@ -181,7 +181,7 @@ impl Workspace {
         )
         .bind(self.id.as_str())
         .bind(size)
-        .bind(QUOTA)
+        .bind(DOC_QUOTA)
         .execute(&mut *transaction)
         .await
         .map_err(failed)?;
@@ -262,7 +262,7 @@ fn size(text: &DocText) -> i64 {
 impl Workspace {
     pub(crate) async fn fill_doc_quota(&self) {
         sqlx::query("UPDATE workspaces SET doc_bytes = ? WHERE workspace_id = ?")
-            .bind(QUOTA)
+            .bind(DOC_QUOTA)
             .bind(self.id.as_str())
             .execute(&self.db.writer)
             .await
@@ -635,7 +635,7 @@ mod tests {
         let first = new_doc("d1", "Framing");
         one.add_doc(&first, &by("m1")).await.unwrap();
         let next = linked();
-        set_doc_bytes(&one, QUOTA - size(&next)).await;
+        set_doc_bytes(&one, DOC_QUOTA - size(&next)).await;
 
         let fits = one
             .revise_doc(&first.id, Revision::FIRST, next, &by("m1"))
@@ -657,7 +657,7 @@ mod tests {
 
         assert_eq!(code(&revised), "doc.quota_full");
         assert_eq!(code(&made), "doc.quota_full");
-        assert_eq!(doc_bytes(&one).await, QUOTA);
+        assert_eq!(doc_bytes(&one).await, DOC_QUOTA);
         assert_eq!(one.doc(&first.id, None).await.unwrap(), fits);
         assert_eq!(one.docs().await.unwrap(), [summary(&fits)]);
         assert_eq!(one.doc_history(&first.id, 10).await.unwrap().len(), 2);
