@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
+import { hex } from "../hex.ts";
 import { type PinStore, Pins } from "../machines/pins.ts";
 import type { MachineSummary, TerminalCommand, TerminalEvent } from "../protocol.ts";
 import { SignInTerminal, type TerminalState, prologue } from "./sign-in-terminal.ts";
@@ -121,7 +122,7 @@ test("anything that doesn't check out closes the terminal, which then shows noth
   await receive({ kind: "accepted", handshake: message(1).ciphertext });
   const tampered = bytes(message(3).ciphertext);
   tampered[0] = (tampered[0] ?? 0) ^ 1;
-  await receive({ kind: "frame", sealed: Array.from(tampered, (byte) => byte.toString(16).padStart(2, "0")).join("") });
+  await receive({ kind: "frame", sealed: hex(tampered) });
   assert.deepEqual(states.at(-1), { kind: "closed", problem: "broken" });
   assert.equal(sent.at(-1)?.action.kind, "close");
 

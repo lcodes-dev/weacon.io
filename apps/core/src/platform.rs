@@ -61,6 +61,8 @@ pub(crate) use procs::{PROCESSES, Process, processes};
 pub(crate) use programs::find_program;
 #[cfg(test)]
 pub(crate) use programs::plant_program;
+#[cfg(all(test, unix))]
+pub(crate) use programs::write_program;
 pub(crate) use runnable::make_runnable;
 
 /// Reads an environment variable; tests pass a fake.

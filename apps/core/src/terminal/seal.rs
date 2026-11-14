@@ -206,41 +206,8 @@ impl Dh for X25519 {
     }
 }
 
-/// The browser's end, for tests that play it: a snow initiator.
 #[cfg(test)]
-pub(super) struct Browser(Option<snow::HandshakeState>, Option<TransportState>);
-
-#[cfg(test)]
-impl Browser {
-    /// Starts a handshake with the machine whose public key is `remote`; its first message.
-    pub(super) fn start(remote: &[u8], prologue: &[u8], payload: &[u8]) -> (Self, Vec<u8>) {
-        let mut state = builder(prologue)
-            .and_then(|builder| builder.remote_public_key(remote))
-            .and_then(Builder::build_initiator)
-            .unwrap();
-        let message = buffered(|buffer| state.write_message(payload, buffer)).unwrap();
-        (Self(Some(state), None), message)
-    }
-
-    pub(super) fn finish(&mut self, reply: &[u8]) {
-        let mut state = self.0.take().unwrap();
-        state.read_message(reply, &mut [0; 64]).unwrap();
-        self.1 = Some(state.into_transport_mode().unwrap());
-    }
-
-    pub(super) fn seal(&mut self, plaintext: &[u8]) -> Vec<u8> {
-        let transport = self.1.as_mut().unwrap();
-        buffered(|buffer| transport.write_message(plaintext, buffer)).unwrap()
-    }
-
-    pub(super) fn open(&mut self, message: &[u8]) -> Vec<u8> {
-        let transport = self.1.as_mut().unwrap();
-        buffered(|buffer| transport.read_message(message, buffer)).unwrap()
-    }
-}
-
-#[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use std::fmt::Write;
     use std::fs;
     use std::path::Path;
@@ -305,7 +272,12 @@ mod tests {
             .to_vec()
     }
 
-    fn initiator(prologue: &[u8], remote: &[u8], ephemeral: Option<&[u8]>) -> HandshakeState {
+    /// The browser's end of a handshake with the machine whose key is `remote`.
+    pub(in crate::terminal) fn initiator(
+        prologue: &[u8],
+        remote: &[u8],
+        ephemeral: Option<&[u8]>,
+    ) -> HandshakeState {
         let builder = builder(prologue)
             .unwrap()
             .remote_public_key(remote)
@@ -317,17 +289,30 @@ mod tests {
         builder.build_initiator().unwrap()
     }
 
-    fn write(state: &mut HandshakeState, payload: &[u8]) -> Vec<u8> {
+    pub(in crate::terminal) fn write(state: &mut HandshakeState, payload: &[u8]) -> Vec<u8> {
         buffered(|buffer| state.write_message(payload, buffer)).unwrap()
     }
 
     /// The browser's end after the handshake, and the core's.
+    /// The browser's end once the core's `reply` is in.
+    pub(in crate::terminal) fn finish(mut state: HandshakeState, reply: &[u8]) -> TransportState {
+        state.read_message(reply, &mut [0; 64]).unwrap();
+        state.into_transport_mode().unwrap()
+    }
+
+    pub(in crate::terminal) fn sealed(browser: &mut TransportState, plaintext: &[u8]) -> Vec<u8> {
+        buffered(|buffer| browser.write_message(plaintext, buffer)).unwrap()
+    }
+
+    pub(in crate::terminal) fn opened(browser: &mut TransportState, message: &[u8]) -> Vec<u8> {
+        buffered(|buffer| browser.read_message(message, buffer)).unwrap()
+    }
+
     fn connected(prologue: &[u8], remote: &[u8], first: &[u8]) -> (TransportState, Seal) {
         let mut browser = initiator(prologue, remote, None);
         let handshake = write(&mut browser, first);
         let accepted = accept(&machine_key(), prologue, &handshake).unwrap();
-        browser.read_message(&accepted.reply, &mut [0; 64]).unwrap();
-        (browser.into_transport_mode().unwrap(), accepted.seal)
+        (finish(browser, &accepted.reply), accepted.seal)
     }
 
     // Plays `vector`'s payloads through both ends with its keys and checks each arrives; the

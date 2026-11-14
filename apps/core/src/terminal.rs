@@ -18,7 +18,7 @@ use x25519_dalek::StaticSecret;
 use crate::workspaces::Workspaces;
 use session::{Input, Session};
 
-// Frames waiting for a terminal that hasn't taken them yet; more closes it.
+// Frames waiting for a terminal that hasn't taken them yet.
 const WAITING: usize = 64;
 
 /// Who this machine is: its id, its owner and the private half of its key.
@@ -74,32 +74,24 @@ impl Terminals {
             return self.refuse(command, code!("terminal.refused")).await;
         }
         self.open.retain(|_, open| !open.inputs.is_closed());
-        let prologue = command.prologue();
         let open = self.open.get(&command.terminal);
         let ours = open.filter(|open| open.workspace == command.workspace);
         match (&command.action, ours) {
             (TerminalAction::Open { agent, handshake }, None) => {
                 let (agent, handshake) = (*agent, handshake.clone());
-                self.start(command, agent, &handshake, prologue).await;
+                self.start(command, agent, &handshake).await;
             }
+            // A frame that finds the terminal's queue full is dropped, so the next one fails
+            // to open and the terminal closes as any other does.
             (TerminalAction::Frame { sealed }, Some(open)) => {
-                let waiting = open.inputs.try_send(Input::Frame(sealed.clone()));
-                if waiting.is_err() {
-                    self.open.remove(&command.terminal);
-                }
+                drop(open.inputs.try_send(Input::Frame(sealed.clone())));
             }
             (TerminalAction::Close, Some(open)) => drop(open.inputs.try_send(Input::Close)),
             _ => self.refuse(command, code!("terminal.unknown")).await,
         }
     }
 
-    async fn start(
-        &mut self,
-        command: TerminalCommand,
-        agent: AgentKind,
-        handshake: &Bytes,
-        prologue: Option<Vec<u8>>,
-    ) {
+    async fn start(&mut self, command: TerminalCommand, agent: AgentKind, handshake: &Bytes) {
         if !self.seen.insert(command.terminal.clone()) {
             return self.refuse(command, code!("terminal.refused")).await;
         }
@@ -110,19 +102,18 @@ impl Terminals {
         if busy {
             return self.refuse(command, code!("terminal.busy")).await;
         }
-        let Some(prologue) = prologue else {
+        let Some(prologue) = command.prologue() else {
             return self.refuse(command, code!("terminal.unknown")).await;
         };
+        let log = self.log.child(&ids(&command.terminal, &command.workspace));
         let session = match self.session(&command, agent, handshake, &prologue) {
             Ok(session) => session,
             Err(fault) => {
-                let log = self.log.child(&ids(&command.terminal, &command.workspace));
                 log.warn("terminal refused", &[("err", Field::error(&fault))]);
                 return self.refuse(command, fault.code().clone()).await;
             }
         };
         let (inputs, received) = mpsc::channel(WAITING);
-        let log = self.log.child(&ids(&command.terminal, &command.workspace));
         log.info(
             "terminal opened",
             &[("agent", agent.name().unwrap_or("").into())],
@@ -187,7 +178,9 @@ mod tests {
     use x25519_dalek::PublicKey;
 
     use super::*;
-    use crate::terminal::seal::Browser;
+    use snow::{HandshakeState, TransportState};
+
+    use crate::terminal::seal::tests::{finish, initiator, opened, sealed, write};
     use crate::test_support;
 
     const PRINTED: &str = "MARKER-PRINTED-9d1e";
@@ -204,17 +197,7 @@ mod tests {
              echo \"Got $code\"\n",
             ran.display()
         );
-        let written = std::process::Command::new("sh")
-            .args([
-                "-c",
-                "printf '%s' \"$1\" > \"$2\" && chmod 755 \"$2\"",
-                "sh",
-            ])
-            .arg(script)
-            .arg(bin.join("claude"))
-            .status()
-            .unwrap();
-        assert!(written.success());
+        crate::platform::write_program(&bin.join("claude"), &script);
     }
 
     struct Machine {
@@ -277,7 +260,7 @@ mod tests {
         remote: &[u8],
         terminal: &str,
         payload: &TerminalInput,
-    ) -> (Browser, TerminalCommand) {
+    ) -> (HandshakeState, TerminalCommand) {
         let open = |handshake| {
             command(
                 terminal,
@@ -288,11 +271,12 @@ mod tests {
             )
         };
         let prologue = open(Vec::new()).prologue().unwrap();
-        let (browser, first) = Browser::start(remote, &prologue, &payload.to_json().unwrap());
+        let mut browser = initiator(&prologue, remote, None);
+        let first = write(&mut browser, &payload.to_json().unwrap());
         (browser, open(first))
     }
 
-    fn opening(machine: &Machine, terminal: &str) -> (Browser, TerminalCommand) {
+    fn opening(machine: &Machine, terminal: &str) -> (HandshakeState, TerminalCommand) {
         sealed_to(
             &machine.public,
             terminal,
@@ -300,37 +284,35 @@ mod tests {
         )
     }
 
-    async fn next(machine: &mut Machine) -> TerminalEvent {
-        let update = timeout(Duration::from_secs(30), machine.updates.recv())
-            .await
-            .unwrap()
-            .unwrap();
-        update.event
+    async fn next_update(machine: &mut Machine) -> TerminalUpdate {
+        let update = timeout(Duration::from_secs(30), machine.updates.recv());
+        update.await.unwrap().unwrap()
     }
 
-    fn frame(browser: &mut Browser, input: &TerminalInput) -> TerminalAction {
+    async fn next(machine: &mut Machine) -> TerminalEvent {
+        next_update(machine).await.event
+    }
+
+    fn frame(browser: &mut TransportState, input: &TerminalInput) -> TerminalAction {
         TerminalAction::Frame {
-            sealed: bytes(browser.seal(&input.to_json().unwrap())),
+            sealed: bytes(sealed(browser, &input.to_json().unwrap())),
         }
     }
 
     // What the terminal showed until its login ended, and the sign-in it ended with.
     async fn shown_until_ended(
         machine: &mut Machine,
-        browser: &mut Browser,
+        browser: &mut TransportState,
         relayed: &mut String,
     ) -> (String, SignInState) {
         let mut shown = String::new();
         loop {
-            let update = timeout(Duration::from_secs(30), machine.updates.recv())
-                .await
-                .unwrap()
-                .unwrap();
+            let update = next_update(machine).await;
             relayed.push_str(&serde_json::to_string(&update).unwrap());
             let TerminalEvent::Frame { sealed } = update.event else {
                 panic!("{:?} after {shown:?}", update.event);
             };
-            match TerminalOutput::from_json(&browser.open(sealed.as_slice())).unwrap() {
+            match TerminalOutput::from_json(&opened(browser, sealed.as_slice())).unwrap() {
                 TerminalOutput::Output { data } => {
                     shown.push_str(&String::from_utf8_lossy(data.as_slice()));
                 }
@@ -345,13 +327,13 @@ mod tests {
     async fn the_login_runs_sealed_and_neither_the_relay_nor_the_logs_see_what_passes() {
         let mut machine = machine();
         let mut relayed = String::new();
-        let (mut browser, open) = opening(&machine, "t-1");
+        let (handshaking, open) = opening(&machine, "t-1");
         relayed.push_str(&serde_json::to_string(&open).unwrap());
         machine.terminals.handle(open).await;
         let TerminalEvent::Accepted { handshake } = next(&mut machine).await else {
             panic!("not accepted");
         };
-        browser.finish(handshake.as_slice());
+        let mut browser = finish(handshaking, handshake.as_slice());
         let typed = TerminalInput::Input {
             data: bytes(format!("{TYPED}\r").into_bytes()),
         };
@@ -516,13 +498,13 @@ mod tests {
     #[tokio::test]
     async fn a_tampered_frame_closes_the_terminal_before_its_login_starts() {
         let mut machine = machine();
-        let (mut browser, open) = opening(&machine, "t-1");
+        let (handshaking, open) = opening(&machine, "t-1");
         machine.terminals.handle(open).await;
         let TerminalEvent::Accepted { handshake } = next(&mut machine).await else {
             panic!("not accepted");
         };
-        browser.finish(handshake.as_slice());
-        let mut tampered = browser.seal(b"{}");
+        let mut browser = finish(handshaking, handshake.as_slice());
+        let mut tampered = sealed(&mut browser, b"{}");
         if let Some(byte) = tampered.first_mut() {
             *byte ^= 1;
         }

@@ -109,9 +109,7 @@ export class SignInTerminal {
     }
     const event = update.event;
     if (event.kind === "closed") {
-      this.#done = true;
-      this.#channel?.close();
-      return this.#options.screen.state({ kind: "closed", ...(event.code === undefined ? {} : { problem: event.code }) });
+      return this.#close(event.code);
     }
     try {
       if (event.kind === "accepted") {
@@ -134,10 +132,7 @@ export class SignInTerminal {
 
   /** Ends the sign-in, if it still runs. */
   close(): void {
-    if (!this.#done) {
-      this.#send({ kind: "close" });
-      this.#close();
-    }
+    this.#end();
   }
 
   async #open(): Promise<void> {
@@ -174,7 +169,7 @@ export class SignInTerminal {
     await this.resize(this.#options.size);
   }
 
-  async #opened(sealed: string): Promise<TerminalOutput | undefined> {
+  async #opened(sealed: string): Promise<Shown | undefined> {
     const message = fromHex(sealed);
     if (this.#channel === undefined || message === undefined) {
       throw new Error("no channel");
@@ -182,12 +177,12 @@ export class SignInTerminal {
     return outputOf(new TextDecoder("utf-8", { fatal: true }).decode(await this.#channel.open(message)));
   }
 
-  #show(output: TerminalOutput | undefined): void {
+  #show(output: Shown | undefined): void {
     if (this.#done || output === undefined) {
       return;
     }
     if (output.kind === "output") {
-      this.#options.screen.write(fromHex(output.data) ?? new Uint8Array());
+      this.#options.screen.write(output.data);
     } else {
       this.#options.screen.state({ kind: "ended", signIn: output.sign_in });
     }
@@ -217,9 +212,13 @@ export class SignInTerminal {
 
   // Shows nothing more once anything fails, and asks the core to stop too.
   #fail(): void {
+    this.#end("broken");
+  }
+
+  #end(problem?: Problem): void {
     if (!this.#done) {
       this.#send({ kind: "close" });
-      this.#close("broken");
+      this.#close(problem);
     }
   }
 
@@ -239,19 +238,23 @@ function json(input: TerminalInput): Uint8Array<ArrayBuffer> {
   return new TextEncoder().encode(JSON.stringify(input));
 }
 
+// What the core sent, with its bytes read.
+type Shown = { kind: "output"; data: Uint8Array } | Extract<TerminalOutput, { kind: "ended" }>;
+
 // The core's output, checked where it arrives: `undefined` for a kind from a newer core, and
 // an error for anything else that isn't one.
-function outputOf(text: string): TerminalOutput | undefined {
+function outputOf(text: string): Shown | undefined {
   const parsed: unknown = JSON.parse(text);
   if (typeof parsed !== "object" || parsed === null || !("kind" in parsed) || typeof parsed.kind !== "string") {
     throw new Error("not an output");
   }
   const output = parsed as Record<string, unknown>;
   if (output.kind === "output") {
-    if (typeof output.data !== "string" || fromHex(output.data) === undefined) {
+    const data = typeof output.data === "string" ? fromHex(output.data) : undefined;
+    if (data === undefined) {
       throw new Error("not an output");
     }
-    return { kind: "output", data: output.data };
+    return { kind: "output", data };
   }
   if (output.kind === "ended") {
     const known: readonly unknown[] = ["signed_in", "signed_out", "not_installed", "unknown"];
