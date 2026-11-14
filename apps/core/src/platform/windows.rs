@@ -100,6 +100,15 @@ pub(crate) fn private_dir(dir: &Path) -> io::Result<()> {
     Ok(())
 }
 
+/// Windows runs any file whose name ends in `.exe`.
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "the same call as on Unix, where it can fail"
+)]
+pub(crate) fn make_runnable(_file: &Path) -> io::Result<()> {
+    Ok(())
+}
+
 pub(crate) fn is_runnable(file: &Path) -> bool {
     file.is_file()
 }

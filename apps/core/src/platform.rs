@@ -4,7 +4,6 @@ use std::path::PathBuf;
 mod chrome;
 mod procs;
 mod programs;
-mod runnable;
 mod spawn_policy;
 #[cfg(unix)]
 mod unix;
@@ -16,7 +15,6 @@ pub(crate) use procs::{PROCESSES, Process, processes};
 pub(crate) use programs::find_program;
 #[cfg(test)]
 pub(crate) use programs::plant_program;
-pub(crate) use runnable::make_runnable;
 pub(crate) use spawn_policy::spawn_policy;
 #[cfg(unix)]
 pub(crate) use unix::*;

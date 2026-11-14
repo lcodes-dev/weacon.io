@@ -53,6 +53,11 @@ pub(crate) fn private_dir(dir: &Path) -> io::Result<()> {
         .create(dir)
 }
 
+/// Lets anyone run `file`, and only its owner change it.
+pub(crate) fn make_runnable(file: &Path) -> io::Result<()> {
+    fs::set_permissions(file, fs::Permissions::from_mode(0o755))
+}
+
 /// Whether `file` is a file this user may run.
 #[expect(unsafe_code, reason = "faccessat has no safe API in std")]
 pub(crate) fn is_runnable(file: &Path) -> bool {
