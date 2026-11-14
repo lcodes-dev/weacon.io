@@ -123,13 +123,17 @@ impl Fixture {
     /// `email` signed in to it.
     pub(crate) async fn client(&self, email: &str) -> (Running, Client) {
         let server = self.run().await;
-        let (_, body) = sign_in(self, server.address, email).await;
-        let client = Client {
-            address: server.address,
-            auth: bearer(&body),
-            token: body["token"].as_str().unwrap().to_owned(),
-        };
+        let client = self.sign_in_client(server.address, email).await;
         (server, client)
+    }
+
+    /// A client that `email` signed in to the server at `address`.
+    pub(crate) async fn sign_in_client(&self, address: SocketAddr, email: &str) -> Client {
+        let (_, body) = sign_in(self, address, email).await;
+        Client {
+            address,
+            token: body["token"].as_str().unwrap().to_owned(),
+        }
     }
 
     /// Moves the clock on by `seconds`.

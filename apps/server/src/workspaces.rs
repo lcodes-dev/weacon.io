@@ -100,7 +100,7 @@ mod tests {
     };
 
     async fn listed(who: &Client) -> Vec<Value> {
-        let (_, list) = ask(who.address, "GET /api/workspaces", &who.auth, "").await;
+        let (_, list) = ask(who.address, "GET /api/workspaces", &who.proof(), "").await;
         list["workspaces"].as_array().unwrap().clone()
     }
 
@@ -110,12 +110,12 @@ mod tests {
         let (_server, ada) = fixture.client("ada@example.com").await;
         let create = json!({ "name": "  Team two " }).to_string();
 
-        let (created, made) = ask(ada.address, "POST /api/workspaces", &ada.auth, &create).await;
+        let (created, made) = ask(ada.address, "POST /api/workspaces", &ada.proof(), &create).await;
         let id = made["id"].as_str().unwrap();
         let read = ask(
             ada.address,
             &format!("GET /api/workspaces/{id}"),
-            &ada.auth,
+            &ada.proof(),
             "",
         )
         .await;
@@ -153,7 +153,8 @@ mod tests {
         let (_server, ada) = fixture.client("ada@example.com").await;
         let mut kept = Vec::new();
         for path in ["/api/workspaces", "/api/workspaces/w1", "/api/session"] {
-            let (head, _) = request_with(ada.address, &format!("GET {path}"), &ada.auth, "").await;
+            let (head, _) =
+                request_with(ada.address, &format!("GET {path}"), &ada.proof(), "").await;
             assert_eq!(status(&head), "http/1.1 200 ok", "{path}");
             kept.push(
                 header(&head, "cache-control")
@@ -187,10 +188,10 @@ mod tests {
             .chain(["w9"])
         {
             let read = format!("GET /api/workspaces/{id}");
-            refusals.push(ask(bo.address, &read, &bo.auth, "").await);
+            refusals.push(ask(bo.address, &read, &bo.proof(), "").await);
             refusals.push(ask(ada.address, &read, "", "").await);
         }
-        let bad_id = ask(ada.address, "GET /api/workspaces/w.1", &ada.auth, "").await;
+        let bad_id = ask(ada.address, "GET /api/workspaces/w.1", &ada.proof(), "").await;
         let (nobody, _) = ask(ada.address, "GET /api/workspaces", "", "").await;
 
         assert_eq!(theirs.len(), 2);
@@ -225,7 +226,7 @@ mod tests {
             assert_eq!(made, "http/1.1 201 created");
         }
 
-        let more = ask(ada.address, "POST /api/workspaces", &ada.auth, &create).await;
+        let more = ask(ada.address, "POST /api/workspaces", &ada.proof(), &create).await;
 
         let refused = json!({ "code": "workspace.too_many", "retryable": false });
         assert_eq!(
@@ -254,7 +255,7 @@ mod tests {
         ];
         for name in refused_names {
             let create = json!({ "name": name }).to_string();
-            let answer = ask(ada.address, "POST /api/workspaces", &ada.auth, &create).await;
+            let answer = ask(ada.address, "POST /api/workspaces", &ada.proof(), &create).await;
             assert_eq!(
                 answer,
                 (

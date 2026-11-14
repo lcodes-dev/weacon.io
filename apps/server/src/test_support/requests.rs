@@ -89,7 +89,14 @@ pub(crate) fn refusal(body: &str) -> String {
 
 /// The header that proves a sign-in whose answer was `body`.
 pub(crate) fn bearer(body: &Value) -> String {
-    let token = body["token"].as_str().unwrap();
+    authorization(body["token"].as_str().unwrap())
+}
+
+/// The header that proves the sign-in whose session token is `token`, or none when it is empty.
+fn authorization(token: &str) -> String {
+    if token.is_empty() {
+        return String::new();
+    }
     format!("authorization: Bearer {token}\r\n")
 }
 
@@ -149,18 +156,22 @@ pub(crate) async fn pair_machine(fixture: &Fixture, address: SocketAddr) -> Pair
     }
 }
 
-/// A client of the server at `address` that proves a sign-in with `auth`, or sends no proof
-/// when it is empty, and the sign-in's session token.
+/// A client of the server at `address` that proves the sign-in whose session token is
+/// `token`, or sends no proof when it is empty.
 pub(crate) struct Client {
     pub(crate) address: SocketAddr,
-    pub(crate) auth: String,
     pub(crate) token: String,
 }
 
 impl Client {
+    /// The header that proves the client's sign-in, if it has one.
+    pub(crate) fn proof(&self) -> String {
+        authorization(&self.token)
+    }
+
     /// One request: the answer's status line, and its body.
     pub(crate) async fn send(&self, head: &str, body: &str) -> (String, String) {
-        let (head, body) = request_with(self.address, head, &self.auth, body).await;
+        let (head, body) = request_with(self.address, head, &self.proof(), body).await;
         (status(&head).to_owned(), body)
     }
 }

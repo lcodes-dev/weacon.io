@@ -421,7 +421,6 @@ mod tests {
             .unwrap();
         let stranger = Client {
             address: ada.address,
-            auth: String::new(),
             token: String::new(),
         };
 

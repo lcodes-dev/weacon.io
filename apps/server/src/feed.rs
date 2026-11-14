@@ -301,8 +301,8 @@ mod tests {
             )
             .await
             .unwrap();
-        let (_, body) = test_support::sign_in(fixture, address, email).await;
-        greeted(address, body["token"].as_str().unwrap(), 0).await;
+        let member = fixture.sign_in_client(address, email).await;
+        greeted(address, &member.token, 0).await;
     }
 
     // A feed of w1 for `token` after `since`, past its welcome.
@@ -493,10 +493,9 @@ mod tests {
         let bo = test_support::email("bo@example.com");
         let db = &fixture.shared.db;
         db.add_account(&fresh_account(), &bo).await.unwrap();
-        let (_, stranger) = test_support::sign_in(&fixture, address, "bo@example.com").await;
-        let stranger = stranger["token"].as_str().unwrap();
+        let stranger = fixture.sign_in_client(address, "bo@example.com").await;
         assert_eq!(
-            refused(open(address, "/api/workspaces/w1/feed", stranger).await),
+            refused(open(address, "/api/workspaces/w1/feed", &stranger.token).await),
             401
         );
         fixture.advance(SESSION_LIFETIME);
@@ -691,7 +690,7 @@ mod tests {
             "authorization: Bearer \r\n".to_owned(),
             format!("authorization: Basic {}\r\n", ada.token),
             format!("authorization: bearer{}\r\n", ada.token),
-            ada.auth.clone(),
+            format!("authorization: Bearer {}\r\n", ada.token),
         ] {
             let headers = format!("{authorization}{upgrade}");
             let feed = "GET /api/workspaces/w1/feed";
