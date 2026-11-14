@@ -117,7 +117,8 @@ test("run updates are heard whatever chat they belong to, when well-formed", () 
   assert.equal(about(frame({ type: "run", run: "r-1", event: { event: "text_delta" } }), place), undefined);
   const asked = { event: "permission_asked", run: "r-1", prompt: 2, tool: "Bash", input: {} };
   const withdrawn = { event: "permission_withdrawn", run: "r-1", prompt: 2 };
-  for (const event of [asked, withdrawn]) {
+  const bare = { event: "permission_asked", run: "r-1", prompt: 3, tool: "Bash", input: null };
+  for (const event of [asked, bare, withdrawn]) {
     assert.deepEqual(about(frame({ type: "run", run: "r-1", event }), place), { kind: "run", run: "r-1", event });
   }
   const broken = [
