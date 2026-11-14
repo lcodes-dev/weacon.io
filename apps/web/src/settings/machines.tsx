@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 
 import { fingerprint } from "../machines/fingerprint.ts";
 import { osName } from "../machines/os.ts";
@@ -7,7 +7,7 @@ import { unpair } from "../machines/unpair.ts";
 import type { MachineId, MachineSummary, PairPending } from "../protocol.ts";
 import type { Api } from "../shell/api.ts";
 import { useAsk } from "../shell/ask.ts";
-import { problemText } from "../shell/problems.ts";
+import { useLoaded } from "../shell/loaded.ts";
 
 // A confirmed machine shows once its core claims it, which it does within two minutes.
 const LOOK_AGAIN_MS = 2000;
@@ -15,30 +15,10 @@ const GIVE_UP_MS = 120_000;
 
 /** The signed-in account's machines: pairing one by its code, the list, and unpairing. */
 export function Machines({ api, pins }: { api: Api; pins: Pins }) {
-  const [list, setList] = useState<MachineSummary[]>();
-  const [problem, setProblem] = useState<string>();
+  const { value, problem, load } = useLoaded(() => api.machines(), api);
+  const list = value?.machines;
   const [waiting, setWaiting] = useState<MachineId>();
-  // An answer older than the latest fetch is dropped, as is one after the page is gone.
-  const loads = useRef(0);
-  const load = async () => {
-    const asked = ++loads.current;
-    const answer = await api.machines();
-    if (asked !== loads.current) {
-      return;
-    }
-    if (answer.ok) {
-      setList(answer.value.machines);
-      setProblem(undefined);
-    } else {
-      setProblem(problemText(answer.code));
-    }
-  };
-  useEffect(() => {
-    void load();
-    return () => {
-      loads.current++;
-    };
-  }, [api]);
+  const [stalled, setStalled] = useState(false);
   useEffect(() => {
     if (waiting === undefined) {
       return;
@@ -52,7 +32,7 @@ export function Machines({ api, pins }: { api: Api; pins: Pins }) {
     look();
     const giveUp = setTimeout(() => {
       setWaiting(undefined);
-      setProblem("The machine didn't connect. Check that weacon pair is still running there.");
+      setStalled(true);
     }, GIVE_UP_MS);
     return () => {
       stopped = true;
@@ -88,10 +68,12 @@ export function Machines({ api, pins }: { api: Api; pins: Pins }) {
         </p>
       )}
       {waiting !== undefined && <p className="muted">Waiting for the machine to connect.</p>}
+      {stalled && <p role="alert">The machine didn't connect. Check that weacon pair is still running there.</p>}
       <Pair
         api={api}
         pins={pins}
         paired={(id) => {
+          setStalled(false);
           setWaiting(id);
           void load();
         }}
