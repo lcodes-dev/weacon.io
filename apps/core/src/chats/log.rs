@@ -142,12 +142,11 @@ impl ChatLog {
                 ..
             } => {
                 self.requests.entry(request.clone()).or_default().prompt = Some(entry.seq);
+                // The first prompt names the chat's agent and repository; later ones can't.
                 if self.agent.is_none() {
+                    self.agent = Some(agent.unwrap_or(AgentKind::Claude));
                     self.repo.clone_from(repo);
                 }
-                self.agent = self
-                    .agent
-                    .or_else(|| Some(agent.unwrap_or(AgentKind::Claude)));
             }
             ChatEvent::Receipt { receipt } => {
                 let commanded = self.requests.entry(receipt.request.clone()).or_default();

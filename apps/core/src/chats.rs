@@ -72,6 +72,7 @@ fn launch(
 ) -> Result<Granted, Fault> {
     let launch = prepared(roots, places, run_as)?;
     workspaces::require_sign_in(&launch)?;
+    made(roots, places, run_as)?;
     let (launch, revoke) = mcp::grant(places.mcp.as_ref(), launch, run_as)?;
     let agent = launch.start(policy, app, run_as.run.clone(), run_as.session.as_ref())?;
     Ok(Granted {
@@ -80,16 +81,10 @@ fn launch(
     })
 }
 
-/// `run_as`'s agent in its chat's folder, given the core's plugin: the chat's worktree when its
-/// first prompt named a repository.
+/// `run_as`'s agent in its chat's folder, given the core's plugin; the folder isn't made yet.
 fn prepared(roots: &Workspaces, places: &Places, run_as: &RunAs) -> Result<Launch, Fault> {
-    let work_root = places.work_root.as_deref();
-    let cwd = match (&run_as.repo, work_root) {
-        (Some(repo), Some(work_root)) => {
-            git::launch::chat_tree(roots, places.path.as_deref(), work_root, &run_as.key, repo)?
-        }
-        _ => work_dir(work_root, &run_as.key)?,
-    };
+    let work_root = places.work_root.as_deref().ok_or_else(folder_failed)?;
+    let cwd = chat_folder(work_root, &run_as.key.workspace, &run_as.key.chat);
     let mut launch = roots.launch(&run_as.key.workspace, run_as.agent, cwd)?;
     launch.plugin = places.plugin.as_ref().and_then(Plugin::folder);
     Ok(launch)
@@ -100,17 +95,34 @@ pub(crate) fn file_stem(chat: &ChatId) -> String {
     crate::names::case_safe_name("c-", chat.as_str())
 }
 
+// Makes `run_as`'s chat's folder: its worktree when its first prompt named a repository.
+fn made(roots: &Workspaces, places: &Places, run_as: &RunAs) -> Result<PathBuf, Fault> {
+    let work_root = places.work_root.as_deref();
+    if let Some(repo) = &run_as.repo
+        && let Some(work_root) = work_root
+    {
+        git::launch::chat_tree(roots, work_root, &run_as.key, repo)
+    } else {
+        work_dir(work_root, &run_as.key)
+    }
+}
+
 // A chat's agent works in a folder made for it under the work folder, out of the core's state.
 pub(crate) fn work_dir(work_root: Option<&Path>, key: &ChatKey) -> Result<PathBuf, Fault> {
-    let failed = || {
-        Fault::new(
-            code!("chat.folder_failed"),
-            "The chat's working folder couldn't be created",
-        )
-    };
-    let dir = chat_folder(work_root.ok_or_else(failed)?, &key.workspace, &key.chat);
-    platform::private_dir(&dir).map_err(|error| failed().because(error))?;
+    let dir = chat_folder(
+        work_root.ok_or_else(folder_failed)?,
+        &key.workspace,
+        &key.chat,
+    );
+    platform::private_dir(&dir).map_err(|error| folder_failed().because(error))?;
     Ok(dir)
+}
+
+fn folder_failed() -> Fault {
+    Fault::new(
+        code!("chat.folder_failed"),
+        "The chat's working folder couldn't be created",
+    )
 }
 
 /// The folder a chat's agents work in under `work_root`.
@@ -155,7 +167,7 @@ mod tests {
     }
 
     #[test]
-    fn a_chat_that_named_a_repository_runs_in_its_worktree_or_not_at_all() {
+    fn a_chat_that_named_a_repository_gets_it_from_the_registry() {
         let dir = TempDir::new().unwrap();
         let workspaces = Workspaces::new(&dir.join("state"), None);
         let places = Places {
@@ -170,7 +182,7 @@ mod tests {
             repo: Some("site".parse().unwrap()),
         };
 
-        let error = prepared(&workspaces, &places, &run_as).unwrap_err();
+        let error = made(&workspaces, &places, &run_as).unwrap_err();
 
         assert_eq!(error.code().as_str(), "repo.unknown");
         assert!(!dir.join("Weacon").exists());
@@ -292,7 +304,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_daemons_engine_starts_agents_in_the_chats_folder_or_fails_the_prompt() {
+    async fn an_agent_that_cant_start_fails_the_prompt_and_makes_no_folder() {
         let dir = TempDir::new().unwrap();
         let app = weacon_appkit::build(&VERSION);
         let (log, _records) = recording_logger();
@@ -302,13 +314,10 @@ mod tests {
             mcp: None,
             plugin: None,
         };
-        let (chats, engine) = start(&dir, places, app, SpawnPolicy::default(), log).unwrap();
+        let state = dir.join("state");
+        let (chats, engine) = start(&state, places, app, SpawnPolicy::default(), log).unwrap();
         tokio::spawn(engine.serve());
-        // A file where the chat's working folder would go: its agent can't be started.
-        let work = dir.join("Weacon/w-w-1");
-        std::fs::create_dir_all(&work).unwrap();
-        std::fs::write(work.join("c-c-1"), b"").unwrap();
-
+        // No agent on the path: checked before the chat's folder is made, so none is.
         chats.command(prompt("r-1", "Hi")).await.unwrap();
 
         let (anyone, _pushes) = client(1);
@@ -322,12 +331,13 @@ mod tests {
             receipt: Receipt {
                 request: prompt("r-1", "Hi").request,
                 outcome: Outcome::Failed {
-                    code: code!("chat.folder_failed"),
+                    code: code!("agent.not_installed"),
                 },
             },
         };
         assert_eq!(events.last().map(|entry| &entry.event), Some(&failed));
-        let journal = Runs::load(&dir).unwrap();
+        assert!(!dir.join("Weacon").exists());
+        let journal = Runs::load(&state).unwrap();
         let record = journal.of(&key()).unwrap();
         assert!(record.active_at > 1_700_000_000);
     }

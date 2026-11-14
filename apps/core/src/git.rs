@@ -185,12 +185,7 @@ impl Git {
         branch: &str,
         full: &str,
     ) -> Result<Start, Fault> {
-        let on = run(self
-            .command(repo)
-            .args(["symbolic-ref", "--quiet", "--short", "HEAD"]))
-        .ok()
-        .and_then(|out| text(out).ok())
-        .map(|name| name.trim_end().to_owned());
+        let on = self.checked_out(repo);
         let head = text(run(self.command(repo).args([
             "rev-parse",
             "--verify",
@@ -210,6 +205,14 @@ impl Git {
             commit: head.to_owned(),
             branch: on,
         })
+    }
+
+    // The branch `repo` has checked out, such as `main`; none when its head is detached.
+    fn checked_out(&self, repo: &Path) -> Option<String> {
+        let out = run(self
+            .command(repo)
+            .args(["symbolic-ref", "--quiet", "--short", "HEAD"]));
+        Some(text(out.ok()?).ok()?.trim_end().to_owned())
     }
 
     // Every worktree git knows of, and whether its folder is missing.

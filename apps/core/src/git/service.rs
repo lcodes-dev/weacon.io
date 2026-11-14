@@ -18,7 +18,6 @@ use weacon_protocol::{
 
 use super::branch::{Draft, Gh};
 use super::chats::ChatRepo;
-use super::removal::Journal;
 use super::state::Stores;
 use super::{Git, branch, diff};
 use crate::platform::trash::Trashed;
@@ -44,8 +43,7 @@ struct Chat {
 }
 
 struct Inner {
-    state_dir: PathBuf,
-    path: Option<OsString>,
+    workspaces: Workspaces,
     work_root: Option<PathBuf>,
     to_trash: ToTrash,
     workers: Arc<Semaphore>,
@@ -63,8 +61,7 @@ impl Worktrees {
         to_trash: ToTrash,
     ) -> Self {
         let inner = Inner {
-            state_dir: state_dir.to_owned(),
-            path,
+            workspaces: Workspaces::new(state_dir, path),
             work_root,
             to_trash,
             workers: Arc::new(Semaphore::new(WORKERS)),
@@ -181,7 +178,12 @@ impl Inner {
             record,
             worktree,
         } = self.chat(workspace, chat)?;
-        if self.journal(workspace, &git).removed(chat)?.is_some() {
+        if self
+            .stores(workspace)
+            .removed(git.clone())
+            .removed(chat)?
+            .is_some()
+        {
             // What it holds stays as it was, in the Trash.
             return Ok(WorktreeAnswerKind::State {
                 removed: true,
@@ -205,7 +207,7 @@ impl Inner {
         action: WorktreeAction,
     ) -> Result<WorktreeAnswerKind, Fault> {
         let found = self.chat(workspace, chat)?;
-        let journal = self.journal(workspace, &found.git);
+        let journal = self.stores(workspace).removed(found.git.clone());
         match action {
             WorktreeAction::Remove => {
                 let _changing = self.journals.lock().unwrap_or_else(PoisonError::into_inner);
@@ -249,8 +251,8 @@ impl Inner {
         })?;
         let branch = branch(&record.chat);
         git.push(worktree, &branch)?;
-        let config = self.workspaces().root(&record.workspace).join("gh");
-        let gh = Gh::find(self.path.as_deref(), config).map(|gh| gh.in_tree(git));
+        let config = self.workspaces.root(&record.workspace).join("gh");
+        let gh = Gh::find(self.workspaces.path(), config).map(|gh| gh.in_tree(git));
         if let Some(gh) = gh.filter(|gh| gh.signed_in(worktree)) {
             let draft = Draft {
                 base,
@@ -273,8 +275,8 @@ impl Inner {
         let work_root = self.work_root.as_deref().ok_or_else(none)?;
         let worktree = crate::chats::chat_folder(work_root, workspace, chat);
         let repo = stores.repo(&record.repo)?;
-        let git =
-            Git::open(&self.state_dir, self.path.as_deref())?.in_tree(&repo.path, &worktree)?;
+        let git = Git::open(self.workspaces.state_dir(), self.workspaces.path())?
+            .in_tree(&repo.path, &worktree)?;
         Ok(Chat {
             git,
             record,
@@ -282,16 +284,8 @@ impl Inner {
         })
     }
 
-    fn journal(&self, workspace: &WorkspaceId, git: &Git) -> Journal {
-        self.stores(workspace).removed(git.clone())
-    }
-
     fn stores(&self, workspace: &WorkspaceId) -> Stores {
-        Stores::new(&self.workspaces(), workspace)
-    }
-
-    fn workspaces(&self) -> Workspaces {
-        Workspaces::new(&self.state_dir, self.path.clone())
+        Stores::new(&self.workspaces, workspace)
     }
 }
 
@@ -336,15 +330,14 @@ pub(crate) fn with_chat(dir: &Path) -> (Worktrees, WorkspaceId, ChatId, PathBuf)
     let chat_id = chat("c-1");
     let repo = repo(dir);
     let workspaces = Workspaces::new(&state, None);
+    let with_path = Workspaces::new(&state, std::env::var_os("PATH"));
     let site = RepoId::try_from("site".to_owned()).unwrap();
     Stores::new(&workspaces, &workspace)
         .repos()
         .add(&git(dir), site.clone(), &repo)
         .unwrap();
     let key = crate::runs::ChatKey::new(&workspace, &chat_id);
-    let path = std::env::var_os("PATH");
-    let worktree =
-        super::launch::chat_tree(&workspaces, path.as_deref(), &work, &key, &site).unwrap();
+    let worktree = super::launch::chat_tree(&with_path, &work, &key, &site).unwrap();
     let worktrees = Worktrees::new(&state, std::env::var_os("PATH"), Some(work), bin);
     (worktrees, workspace, chat_id, worktree)
 }
