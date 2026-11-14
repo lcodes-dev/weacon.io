@@ -119,7 +119,7 @@ const root = document.getElementById("root");
 if (root !== null) {
   createRoot(root).render(
     <StrictMode>
-      {fake === undefined ? <Shell api={new Api(fetch.bind(window))} /> : <Root url={fake} />}
+      {fake === undefined ? <Shell api={new Api(fetch.bind(window))} me={ME} /> : <Root url={fake} />}
     </StrictMode>,
   );
 }

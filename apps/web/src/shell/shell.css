@@ -1,9 +1,3 @@
-.who {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
-
 .sign-in form {
   display: flex;
   flex-direction: column;

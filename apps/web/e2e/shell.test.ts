@@ -9,6 +9,7 @@ test("a person signs in with the code sent to them, stays signed in, and signs o
   const served = await serve();
   try {
     const { page } = served;
+    const email = page.locator("dt:text-is('Email') + dd");
     await served.admin("add-account", "--email", EMAIL);
     await page.getByLabel("Email").fill(EMAIL);
     await page.getByRole("button", { name: "Send code" }).click();
@@ -19,20 +20,29 @@ test("a person signs in with the code sent to them, stays signed in, and signs o
     await page.getByLabel("Code").fill(await served.code(EMAIL));
     await page.getByRole("button", { name: "Sign in" }).click();
     await page.getByText("You're signed in.").waitFor();
-    assert.equal(await page.locator("header .who .muted").innerText(), EMAIL);
+    await page.getByRole("button", { name: "Settings" }).click();
+    await page.getByRole("heading", { name: "Account" }).waitFor();
+    assert.equal(await email.innerText(), EMAIL);
+    await page.getByRole("button", { name: "Back" }).click();
+    await page.getByText("You're signed in.").waitFor();
 
     // The session is in a cookie the page's scripts can't read.
     assert.equal(await page.evaluate(() => document.cookie), "");
     await page.reload();
     await page.getByText("You're signed in.").waitFor();
 
+    await page.getByRole("button", { name: "Settings" }).click();
     await page.route("**/api/sign-out", (route) => route.abort());
     await page.getByRole("button", { name: "Sign out" }).click();
     await page.getByRole("alert").getByText("The server can't be reached").waitFor();
-    assert.equal(await page.locator("header .who .muted").innerText(), EMAIL);
+    assert.equal(await email.innerText(), EMAIL);
+    await page.getByRole("button", { name: "Back" }).click();
+    assert.equal(await page.getByRole("alert").count(), 0);
+    await page.getByRole("button", { name: "Settings" }).click();
     await page.unroute("**/api/sign-out");
     await page.getByRole("button", { name: "Sign out" }).click();
     await page.getByRole("heading", { name: "Sign in" }).waitFor();
+    assert.equal(await page.getByRole("button", { name: "Settings" }).count(), 0);
     await page.reload();
     await page.getByLabel("Email").waitFor();
   } finally {

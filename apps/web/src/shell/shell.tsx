@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 
-import type { AccountSignedIn, Code } from "../protocol.ts";
+import type { AccountSignedIn, App as Build, Code } from "../protocol.ts";
+import { Settings } from "../settings/settings.tsx";
 import type { Api } from "./api.ts";
 import { problemText } from "./problems.ts";
 import "./shell.css";
@@ -10,10 +11,10 @@ type Screen =
   | { name: "loading" }
   | { name: "failed"; code: Code }
   | { name: "signed out" }
-  | { name: "signed in"; account: AccountSignedIn };
+  | { name: "signed in"; account: AccountSignedIn; settings: boolean };
 
 /** The app as the server serves it: sign-in, then the signed-in person's screens. */
-export function Shell({ api }: { api: Api }) {
+export function Shell({ api, me }: { api: Api; me: Build }) {
   const [screen, setScreen] = useState<Screen>({ name: "loading" });
   const [problem, setProblem] = useState<string>();
   const [signingOut, setSigningOut] = useState(false);
@@ -27,7 +28,7 @@ export function Shell({ api }: { api: Api }) {
             ? { name: "failed", code: answer.code }
             : answer.value === undefined
               ? { name: "signed out" }
-              : { name: "signed in", account: answer.value },
+              : { name: "signed in", account: answer.value, settings: false },
         );
       }
     });
@@ -46,22 +47,30 @@ export function Shell({ api }: { api: Api }) {
       setProblem(problemText(answer.code));
     }
   };
+  const toggleSettings = () => {
+    setProblem(undefined);
+    setScreen((before) => (before.name === "signed in" ? { ...before, settings: !before.settings } : before));
+  };
   return (
     <div className="app">
       <header>
         <span>Weacon</span>
         {screen.name === "signed in" && (
-          <span className="who">
-            <span className="muted">{screen.account.email}</span>
-            <button type="button" disabled={signingOut} onClick={() => void signOut()}>
-              Sign out
-            </button>
-          </span>
+          <button type="button" onClick={toggleSettings}>
+            {screen.settings ? "Back" : "Settings"}
+          </button>
         )}
       </header>
       {problem !== undefined && <p role="alert">{problem}</p>}
       <main>
-        <Body screen={screen} api={api} signedIn={(account) => setScreen({ name: "signed in", account })} />
+        {screen.name === "signed in" && screen.settings ? (
+          <Settings
+            me={me}
+            account={{ email: screen.account.email, signOut: () => void signOut(), signingOut }}
+          />
+        ) : (
+          <Body screen={screen} api={api} signedIn={(account) => setScreen({ name: "signed in", account, settings: false })} />
+        )}
       </main>
     </div>
   );
