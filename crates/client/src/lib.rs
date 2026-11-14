@@ -26,14 +26,16 @@ pub async fn handshake(socket: &Path, me: App) -> Result<Welcome, Fault> {
     Ok(Connection::open(socket, me, Vec::new()).await?.0)
 }
 
-/// A raw connection to the daemon at `socket`, before any handshake, such as for protocol tests.
+/// A raw connection to the daemon at `socket`, before any handshake, for relaying another app's
+/// frames.
 ///
 /// # Errors
 /// When no daemon listens there, or it doesn't answer in time.
-pub async fn connect(socket: &Path) -> io::Result<impl AsyncRead + AsyncWrite + Unpin + use<>> {
+pub async fn connect(socket: &Path) -> Result<impl AsyncRead + AsyncWrite + Unpin + use<>, Fault> {
     tokio::time::timeout(TIMEOUT, platform::connect(socket))
         .await
-        .unwrap_or_else(|_| Err(io::Error::from(io::ErrorKind::TimedOut)))
+        .map_err(no_answer)?
+        .map_err(not_running)
 }
 
 /// A connection to the daemon after a welcome, which yields what the daemon sends next.
@@ -296,8 +298,10 @@ mod tests {
 
         for path in [socket.as_path(), Path::new("/nonexistent/weacon.sock")] {
             let error = handshake(path, app("weacon-extension")).await.unwrap_err();
+            let raw = connect(path).await.err().unwrap();
 
             assert_eq!(error.code().as_str(), "daemon.not_running");
+            assert_eq!(raw.code().as_str(), "daemon.not_running");
         }
     }
 }
