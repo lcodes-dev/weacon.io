@@ -169,9 +169,10 @@ async fn run(
                 Ok(_) | Err(RecvError::Lagged(_)) => catch_up(socket, shared, feed).await?,
                 Err(RecvError::Closed) => return Err(Closed),
             },
-            changed = feed.chats.changed(feed.member.workspace.id()) => {
-                changed?;
-                send_chats(socket, shared, feed, None).await?;
+            notice = feed.chats.notices.recv() => {
+                if feed.chats.noticed(notice, feed.member.workspace.id())? {
+                    send_chats(socket, shared, feed, None).await?;
+                }
             }
             () = pings.due() => pings.ping(socket, feed.allowed(shared)).await?,
             Some(answer) = feed.answers.recv() => {

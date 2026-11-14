@@ -17,7 +17,8 @@ use crate::socket::Closed;
 
 /// The chats one socket follows, and which of them have events it hasn't sent yet.
 pub(crate) struct Watch {
-    notices: Receiver<(WorkspaceId, ChatId)>,
+    /// Which chats have new events, for [`Watch::noticed`].
+    pub(crate) notices: Receiver<(WorkspaceId, ChatId)>,
     /// Each chat followed, with the last of its events sent.
     following: HashMap<ChatId, u64>,
     behind: HashSet<ChatId>,
@@ -32,22 +33,24 @@ impl Watch {
         }
     }
 
-    /// Waits until a chat it follows in `workspace` has new events; safe to cancel.
-    pub(crate) async fn changed(&mut self, workspace: &WorkspaceId) -> Result<(), Closed> {
-        loop {
-            match self.notices.recv().await {
-                Ok((place, chat)) if place == *workspace && self.following.contains_key(&chat) => {
-                    self.behind.insert(chat);
-                    return Ok(());
-                }
-                Ok(_) => {}
-                // A notice missed may have been for any of them.
-                Err(RecvError::Lagged(_)) => {
-                    self.behind.extend(self.following.keys().cloned());
-                    return Ok(());
-                }
-                Err(RecvError::Closed) => return Err(Closed),
+    /// Takes in a notice from `notices`: whether a chat it follows in `workspace` is behind.
+    pub(crate) fn noticed(
+        &mut self,
+        notice: Result<(WorkspaceId, ChatId), RecvError>,
+        workspace: &WorkspaceId,
+    ) -> Result<bool, Closed> {
+        match notice {
+            Ok((place, chat)) if place == *workspace && self.following.contains_key(&chat) => {
+                self.behind.insert(chat);
+                Ok(true)
             }
+            Ok(_) => Ok(false),
+            // A notice missed may have been for any of them.
+            Err(RecvError::Lagged(_)) => {
+                self.behind.extend(self.following.keys().cloned());
+                Ok(true)
+            }
+            Err(RecvError::Closed) => Err(Closed),
         }
     }
 
@@ -151,7 +154,6 @@ fn refusal(log: &Logger, workspace: &WorkspaceId, fault: &Fault) -> Message {
 
 #[cfg(test)]
 mod tests {
-    use futures_util::FutureExt as _;
     use weacon_protocol::TaskCreate;
 
     use super::*;
@@ -330,6 +332,15 @@ mod tests {
 
         let at_end = query("w1", ChatQueryKind::Subscribe { after: 1 });
         ask(&mut client, 2, at_end).await;
+        // Answered after the subscription, so the next event is stored only once it is taken.
+        ask(&mut client, 3, query("w1", ChatQueryKind::Snapshot)).await;
+        assert!(matches!(
+            heard(&mut client).await,
+            Message::ChatAnswer(ChatAnswer {
+                answer: ChatAnswerKind::Snapshot { seq: 1, .. },
+                ..
+            })
+        ));
         append(&workspace, "c-1", &[(Some(2), said("b"))])
             .await
             .unwrap();
@@ -339,22 +350,36 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_watch_wakes_only_for_the_chats_it_follows_in_its_workspace() {
+    async fn a_watch_is_behind_only_on_its_chats_in_its_workspace_or_when_it_missed_notices() {
         let fixture = Fixture::new().await;
         let mut watch = Watch::new(&fixture.shared);
         watch.following.insert(id("c-1"), 0);
-        let chats = &fixture.shared.chats;
-        chats.stored(id("w2"), id("c-1"));
-        chats.stored(id("w1"), id("c-2"));
-        assert!(watch.changed(&id("w1")).now_or_never().is_none());
-
-        chats.stored(id("w1"), id("c-1"));
+        watch.following.insert(id("c-2"), 0);
+        let w1 = id("w1");
 
         assert!(matches!(
-            watch.changed(&id("w1")).now_or_never(),
-            Some(Ok(()))
+            watch.noticed(Ok((id("w2"), id("c-1"))), &w1),
+            Ok(false)
+        ));
+        assert!(matches!(
+            watch.noticed(Ok((id("w1"), id("c-3"))), &w1),
+            Ok(false)
+        ));
+        assert!(watch.behind.is_empty());
+        assert!(matches!(
+            watch.noticed(Ok((id("w1"), id("c-1"))), &w1),
+            Ok(true)
         ));
         assert_eq!(watch.behind, HashSet::from([id("c-1")]));
+        assert!(matches!(
+            watch.noticed(Err(RecvError::Lagged(1)), &w1),
+            Ok(true)
+        ));
+        assert_eq!(watch.behind, HashSet::from([id("c-1"), id("c-2")]));
+        assert!(matches!(
+            watch.noticed(Err(RecvError::Closed), &w1),
+            Err(Closed)
+        ));
     }
 
     #[test]
