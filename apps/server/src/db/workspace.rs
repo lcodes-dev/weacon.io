@@ -133,7 +133,7 @@ mod tests {
     use weacon_protocol::ChallengeId;
 
     use super::*;
-    use crate::db::schema::STEPS;
+    use crate::db::schema::{steps, steps_before};
     use crate::db::{Attempt, NewWorkspace};
     use crate::test_support::{email, fresh_account, member_id, two_teams, workspace_id};
 
@@ -270,7 +270,7 @@ mod tests {
             .connect()
             .await
             .unwrap();
-        for step in &STEPS[..3] {
+        for step in steps_before(steps::ACCOUNTS) {
             raw_sql(*step).execute(&mut old).await.unwrap();
         }
         raw_sql(

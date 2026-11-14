@@ -321,7 +321,7 @@ mod tests {
 
     use super::*;
     use crate::db::Db;
-    use crate::db::schema::database_before;
+    use crate::db::schema::{database_before, steps};
     use crate::test_support::{agent, member_id, two_teams, workspace_id};
 
     const NOW: i64 = 1_762_077_600;
@@ -613,7 +613,7 @@ mod tests {
              INSERT INTO doc_versions (workspace_id, doc_id, version, title, body, author_kind,
                  author_member, accepted_by, at)
                  VALUES ('w1', 'd1', 1, 'Framing', 'Plain.', 'agent', 'm1', 'm1', 0);";
-        database_before(&path, "ADD COLUMN agent TEXT", rows).await;
+        database_before(&path, steps::VERSION_AGENTS, rows).await;
         let db = Db::open(&path).await.unwrap();
         let one = db.workspace(&workspace_id("w1")).await.unwrap();
         let newer = agent(AgentKind::Newer, AgentOwner::Shared, None);
@@ -741,7 +741,7 @@ mod tests {
              ",
             commit = "c".repeat(40),
         );
-        database_before(&path, "ADD COLUMN doc_bytes", &rows).await;
+        database_before(&path, steps::DOC_BYTES, &rows).await;
 
         let db = Db::open(&path).await.unwrap();
         let one = db.workspace(&workspace_id("w1")).await.unwrap();

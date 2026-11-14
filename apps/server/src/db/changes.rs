@@ -136,7 +136,7 @@ mod tests {
 
     use super::*;
     use crate::db::Db;
-    use crate::db::schema::database_before;
+    use crate::db::schema::{database_before, steps};
     use crate::test_support::{member_id, new_task, two_teams, workspace_id};
 
     fn joined(seq: u64, member: &str) -> WorkspaceUpdate {
@@ -240,7 +240,7 @@ mod tests {
              INSERT INTO changes VALUES
                  ('w1', 1, 'member_joined', 'm1', NULL, NULL),
                  ('w1', 2, 'task_changed', 'm1', 't1', 1)";
-        database_before(&path, "changes_with_docs", rows).await;
+        database_before(&path, steps::DOCS, rows).await;
 
         let db = Db::open(&path).await.unwrap();
         let w1 = db.workspace(&workspace_id("w1")).await.unwrap();
