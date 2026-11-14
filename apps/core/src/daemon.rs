@@ -9,14 +9,15 @@ use tokio::task::JoinSet;
 use tokio::time::Instant;
 use weacon_observability::{Fault, Field, Logger};
 use weacon_protocol::{
-    App, Envelope, LineDecoder, Message, Outcome, Pick, Receipt, code, encode_line,
+    App, Capability, Envelope, LineDecoder, Message, Outcome, Pick, Receipt, code, encode_line,
 };
 
 use crate::disk;
 use crate::memory;
 use crate::picks::{KeepError, Picks};
 use crate::platform::{self, Listener, Owner, Stream};
-use crate::session::{Reply, Session};
+use crate::session::{CAPABILITIES, Reply, Session};
+use crate::uplink::{self, Uplink};
 
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
 pub(crate) const READ_CHUNK: usize = 8192;
@@ -50,7 +51,22 @@ pub(crate) fn run(app: &crate::app::App) -> Result<(), Fault> {
             .because(error)
         })?;
         let daemon = Daemon::start(state_dir, build(&app.version), app.log.clone())?;
-        let serve = daemon.serve(signals.wait());
+        // Nothing takes the owner's commands yet, so each is answered `chat.unavailable`.
+        let (commands, _) = tokio::sync::mpsc::channel(16);
+        let uplink = Uplink {
+            state_dir: state_dir.to_owned(),
+            app: build(&app.version),
+            capabilities: CAPABILITIES.iter().cloned().map(Capability::from).collect(),
+            log: app.log.child(&[("component", "uplink".into())]),
+            commands,
+            random: uplink::random,
+        };
+        let serve = async {
+            tokio::select! {
+                () = daemon.serve(signals.wait()) => {}
+                never = Box::pin(uplink.run()) => match never {},
+            }
+        };
         crate::reports::following(state_dir, &app.reporter, &app.log, serve).await;
         Ok(())
     })
@@ -572,7 +588,7 @@ mod tests {
         let kept = Picks::new(&dir).read(&"p-1".to_owned().try_into().unwrap());
 
         assert!(matches!(&replies[0], Message::Welcome(welcome)
-            if welcome.capabilities == [code!("element.pick").into()]));
+            if welcome.capabilities == [code!("element.pick").into(), code!("machine.connect").into()]));
         assert_eq!(receipt(&replies[1]), Some(&Outcome::Completed));
         assert_eq!(receipt(&replies[2]), Some(&Outcome::Completed));
         assert_eq!(error_code(&replies[3]), Some("request.conflict"));

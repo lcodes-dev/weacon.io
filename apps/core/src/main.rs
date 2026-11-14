@@ -29,6 +29,7 @@ mod session;
 mod status;
 #[cfg(test)]
 mod test_support;
+mod uplink;
 mod workspaces;
 
 use std::io::{self, IsTerminal};

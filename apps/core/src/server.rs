@@ -21,7 +21,7 @@ use tokio_rustls::rustls::{ClientConfig, RootCertStore};
 use tokio_tungstenite::WebSocketStream;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use weacon_observability::Fault;
-use weacon_protocol::{Code, ErrorBody, MAX_FRAME, code};
+use weacon_protocol::{MAX_FRAME, code};
 
 /// How long connecting, the TLS handshake, and each request may take.
 const WITHIN: Duration = Duration::from_secs(20);
@@ -42,8 +42,8 @@ pub(crate) struct Server {
 pub(crate) enum Failure {
     /// The server couldn't be reached, or broke off; worth trying again later.
     Unreachable(Fault),
-    /// The server answered with an error: its status, and its code when it gave one.
-    Refused(StatusCode, Option<Code>),
+    /// The server answered with an error status.
+    Refused(StatusCode),
 }
 
 impl Server {
@@ -100,10 +100,7 @@ impl Server {
             serde_json::from_slice(&answer)
                 .map_err(|error| Failure::Unreachable(odd().because(error)))
         } else {
-            let code = serde_json::from_slice::<ErrorBody>(&answer)
-                .ok()
-                .map(|body| body.code);
-            Err(Failure::Refused(status, code))
+            Err(Failure::Refused(status))
         }
     }
 
@@ -128,7 +125,7 @@ impl Server {
         match timeout(WITHIN, opened).await {
             Ok(Ok((socket, _))) => Ok(socket),
             Ok(Err(tokio_tungstenite::tungstenite::Error::Http(response))) => {
-                Err(Failure::Refused(response.status(), None))
+                Err(Failure::Refused(response.status()))
             }
             Ok(Err(error)) => Err(Failure::Unreachable(unreachable().because(error))),
             Err(_) => Err(Failure::Unreachable(unreachable())),
@@ -307,7 +304,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_refusal_gives_its_status_and_code() {
+    async fn a_refusal_gives_its_status() {
         let tls = Tls::new().await;
         let server = Server::new(&tls.url(), Some(tls.pem.as_bytes())).unwrap();
         let serve = async {
@@ -323,11 +320,10 @@ mod tests {
 
         let (answered, ()) = tokio::join!(server.post::<_, Value>("/x", &Value::Null), serve);
 
-        let Err(Failure::Refused(status, code)) = answered else {
-            panic!("{answered:?}");
-        };
-        assert_eq!(status, StatusCode::NOT_FOUND);
-        assert_eq!(code, Some(code!("pairing.not_found")));
+        assert!(
+            matches!(answered, Err(Failure::Refused(StatusCode::NOT_FOUND))),
+            "{answered:?}"
+        );
     }
 
     #[tokio::test]
@@ -382,7 +378,7 @@ mod tests {
 
         assert!(matches!(
             socket,
-            Err(Failure::Refused(StatusCode::UNAUTHORIZED, _))
+            Err(Failure::Refused(StatusCode::UNAUTHORIZED))
         ));
     }
 }

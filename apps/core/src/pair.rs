@@ -113,8 +113,8 @@ async fn claimed(
                 token,
             }) => return Ok((machine, owner, token)),
             Ok(PairClaimed::Waiting) | Err(Failure::Unreachable(_)) => {}
-            Ok(PairClaimed::Newer) => return Err(failed(Failure::Refused(StatusCode::OK, None))),
-            Err(Failure::Refused(StatusCode::NOT_FOUND, _)) => return Err(expired()),
+            Ok(PairClaimed::Newer) => return Err(failed(Failure::Refused(StatusCode::OK))),
+            Err(Failure::Refused(StatusCode::NOT_FOUND)) => return Err(expired()),
             Err(refused) => return Err(failed(refused)),
         }
         tokio::time::sleep(every).await;
