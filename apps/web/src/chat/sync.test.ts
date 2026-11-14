@@ -138,8 +138,35 @@ test("text streams onto the chat it shows, and the end of the connection keeps i
   const unopened = hear(START, { kind: "run", run: "r-1", event: { event: "text_delta", text: "He" } }, place, ids());
   const gone = ended(open(streamed.sync, place, ids()).sync);
 
-  assert.equal(streamed.sync.chat?.live.get("r-1")?.length, 1);
+  assert.equal(streamed.sync.chat?.items.length, 2);
   assert.equal(unopened.sync, START);
-  assert.deepEqual(gone, { chat: streamed.sync.chat, snapshot: undefined, window: undefined, live: false });
+  assert.deepEqual(gone, { chat: streamed.sync.chat, snapshot: undefined, window: undefined, live: false, failed: false });
   assert.equal(ended(gone), gone);
+});
+
+test("a refused snapshot leaves the chat shown and says so; a refused window can be asked again", () => {
+  const live = opened(300, range(250, 300));
+  const id = ids(70);
+  const asking = open(live, place, id);
+  const refused = hear(asking.sync, { kind: "refused", id: 70 }, place, id);
+  const again = open(refused.sync, place, id);
+  const scrolled = more(live, place, id);
+  const noWindow = hear(scrolled.sync, { kind: "refused", id: 72 }, place, id);
+  const other = hear(live, { kind: "refused", id: 9 }, place, id);
+
+  assert.deepEqual(refused, { sync: { ...asking.sync, snapshot: undefined, failed: true }, send: [] });
+  assert.equal(refused.sync.chat, live.chat);
+  assert.equal(again.sync.failed, false);
+  assert.deepEqual(noWindow.sync, { ...scrolled.sync, window: undefined });
+  assert.deepEqual(queries(more(noWindow.sync, place, id)), [[73, { kind: "window", before: 250, limit: 100 }]]);
+  assert.equal(other.sync, live);
+});
+
+test("a window that adds nothing doesn't ask again", () => {
+  const id = ids();
+  const answered = hear(open(START, place, id).sync, snapshot(10, 20, range(18, 20), [9]), place, id);
+  const misplaced = hear(answered.sync, { kind: "window", id: 12, events: range(5, 8) }, place, id);
+
+  assert.deepEqual(queries(misplaced), []);
+  assert.equal(misplaced.sync.chat, answered.sync.chat);
 });

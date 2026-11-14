@@ -20,6 +20,9 @@ export type ChatView = {
   lines: readonly Line[];
   older: (() => void) | undefined;
   answering: Answerer;
+  loading: boolean;
+  /** Asks for the chat again, when the server refused it. */
+  retry: (() => void) | undefined;
   /** Stops the agent's turn, while one is running. */
   stop: { stopping: boolean; stop: () => void } | undefined;
 };
@@ -78,7 +81,14 @@ export function App({
       </header>
       <main>
         <div className={shown === "run" ? "pane" : "pane away"}>
-          <TranscriptView lines={chat.lines} older={chat.older} answering={chat.answering} away={shown !== "run"} />
+          <TranscriptView
+            lines={chat.lines}
+            older={chat.older}
+            answering={chat.answering}
+            loading={chat.loading}
+            retry={chat.retry}
+            away={shown !== "run"}
+          />
         </div>
         {shown === "changes" && (
           <div className="pane">

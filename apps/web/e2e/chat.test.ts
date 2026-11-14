@@ -29,12 +29,28 @@ test("a chat shows its prompts and labelled turns, and a waiting prompt is answe
   await page.getByRole("button", { name: "Allow" }).click();
   await page.getByText("The tests pass.").waitFor();
   await page.getByText("Asked to use Bash").waitFor();
+  assert.equal(await page.getByRole("alert").count(), 0);
 
   assert.deepEqual(
     actions(harness).filter((action) => action.kind === "permission"),
     [{ kind: "permission", answer: { run: "r-2", prompt: 1, allow: true } }],
   );
   assert.equal(await page.getByRole("button", { name: "Allow" }).count(), 0);
+});
+
+test("a chat the server refuses says so, and asks again on request", { timeout: 120_000 }, async (t) => {
+  const harness = await start(fakeServer(1_000, 0), { query: "&workspace=w-1&chat=c-2" });
+  t.after(() => harness.close());
+  const { page } = harness;
+  const again = page.getByRole("button", { name: "Try again" });
+  await page.getByText("The chat couldn't load.").waitFor();
+
+  await again.click();
+  await waitFor(() => queries(harness).length === 2);
+  await page.getByText("The chat couldn't load.").waitFor();
+
+  assert.deepEqual(queries(harness), ["snapshot", "snapshot"]);
+  assert.equal(await page.getByText("No messages yet.").count(), 0);
 });
 
 test("Stop interrupts the turns that run, then goes away", { timeout: 120_000 }, async (t) => {

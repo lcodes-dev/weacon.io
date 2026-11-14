@@ -11,9 +11,7 @@ use tokio::fs::OpenOptions;
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader, duplex};
 use tokio::sync::mpsc::{UnboundedSender, unbounded_channel};
 use tokio_tungstenite::tungstenite::{self, Message as Frame};
-use weacon_protocol::{
-    Capability, ChatAction, ChatCommand, Envelope, Message, Outcome, Receipt, code,
-};
+use weacon_protocol::{Capability, ChatCommand, Envelope, Message, Outcome, Receipt, code};
 
 use crate::fake_chat::FakeChat;
 use crate::{BUFFER, fake_core, fake_diff, play};
@@ -130,18 +128,13 @@ fn send_all(replies: &UnboundedSender<String>, envelopes: &[Envelope]) {
     }
 }
 
-// Sends what answers `text` to `replies`: a receipt that accepts a prompt, the answers to a
+// Sends what answers `text` to `replies`: a receipt that accepts a chat command, the answers to a
 // diff query, and what the chat says to a query or a command.
 fn reply_to(text: &str, chat: &Mutex<FakeChat>, replies: &UnboundedSender<String>) {
     let Ok(envelope) = Envelope::from_json(text.as_bytes()) else {
         return;
     };
-    if let Message::ChatCommand(ChatCommand {
-        request,
-        action: ChatAction::Prompt { .. },
-        ..
-    }) = &envelope.message
-    {
+    if let Message::ChatCommand(ChatCommand { request, .. }) = &envelope.message {
         let receipt = Message::Receipt(Receipt {
             request: request.clone(),
             outcome: Outcome::Accepted,
@@ -359,7 +352,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_prompt_is_kept_and_accepted_under_its_request() {
+    async fn chat_commands_are_kept_and_accepted_under_their_requests() {
         let dir = TempDir::new().unwrap();
         let received = dir.join("received.jsonl");
         let (mut client, served) = start(String::new(), received.clone()).await;
@@ -377,7 +370,7 @@ mod tests {
         client.send(Frame::text(interrupt.clone())).await.unwrap();
         client.send(Frame::text(prompt.clone())).await.unwrap();
         // A deadline, so a server that never answers fails the test instead of hanging it.
-        let answers = tokio::time::timeout(Duration::from_secs(30), texts(&mut client, 1))
+        let answers = tokio::time::timeout(Duration::from_secs(30), texts(&mut client, 2))
             .await
             .unwrap();
         client.close(None).await.unwrap();
@@ -385,7 +378,10 @@ mod tests {
 
         assert_eq!(
             answers,
-            [json!({ "id": 3, "type": "receipt", "request": "r-2", "state": "accepted" })]
+            [
+                json!({ "id": 2, "type": "receipt", "request": "r-1", "state": "accepted" }),
+                json!({ "id": 3, "type": "receipt", "request": "r-2", "state": "accepted" })
+            ]
         );
         assert_eq!(
             fs::read_to_string(&received).unwrap(),

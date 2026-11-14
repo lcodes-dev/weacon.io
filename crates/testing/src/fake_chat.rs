@@ -1,14 +1,15 @@
 //! A made-up chat log that the fake server keeps for its client: a person's prompt and a long
 //! answer, another prompt, a member's Claude run that plays the recording, and a shared Codex run
 //! waiting on a permission prompt. It answers the client's chat queries and commands, and commits the recording's
-//! events as they play. A prompt of exactly [`LOSE`] makes it tell the client it lost events.
+//! events as they play. A prompt of exactly [`LOSE`] makes it tell the client it lost events, and a
+//! query about any other chat is refused.
 
 use serde_json::Value;
 use weacon_protocol::{
     AgentKind, AgentOwner, AgentRef, ChatAction, ChatAnswer, ChatAnswerKind, ChatCommand,
-    ChatEntry, ChatEvent, ChatId, ChatQuery, ChatQueryKind, ChatUpdate, Envelope, MachineName,
-    MemberId, Message, Outcome, RequestId, RunEvent, RunId, RunState, RunStatus, RunUpdate,
-    WorkspaceId,
+    ChatEntry, ChatEvent, ChatId, ChatQuery, ChatQueryKind, ChatUpdate, Envelope, ErrorBody,
+    MachineName, MemberId, Message, Outcome, RequestId, RunEvent, RunId, RunState, RunStatus,
+    RunUpdate, WorkspaceId, code,
 };
 
 /// The prompt text that makes the fake drop its client's subscription.
@@ -90,8 +91,17 @@ impl FakeChat {
             chat,
             query,
         }) = &envelope.message
-            && self.is(workspace, chat)
         {
+            if !self.is(workspace, chat) {
+                let refused = ErrorBody {
+                    code: code!("chat.unknown"),
+                    retryable: false,
+                };
+                return vec![Envelope {
+                    id: envelope.id,
+                    message: Message::Error(refused),
+                }];
+            }
             return self.query(envelope.id, query);
         }
         if let Message::ChatCommand(ChatCommand {
@@ -629,12 +639,18 @@ mod tests {
     }
 
     #[test]
-    fn another_chats_queries_and_other_messages_get_nothing() {
+    fn another_chats_queries_are_refused_and_other_messages_get_nothing() {
         let mut fake = fake();
 
-        assert!(
-            fake.answer(&query(1, "c-2", ChatQueryKind::Snapshot))
-                .is_empty()
+        assert_eq!(
+            fake.answer(&query(1, "c-2", ChatQueryKind::Snapshot)),
+            [Envelope {
+                id: 1,
+                message: Message::Error(ErrorBody {
+                    code: code!("chat.unknown"),
+                    retryable: false,
+                }),
+            }]
         );
         assert!(
             fake.answer(&played(RunEvent::Text {

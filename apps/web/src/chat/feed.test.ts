@@ -47,7 +47,8 @@ test("a burst of messages is shown once, as it stands at the flush", () => {
   assert.equal(shown.length, 0);
   flushes[0]?.();
   assert.equal(shown.length, 1);
-  assert.equal(shown[0]?.chat?.live.get("r-1")?.length, 2);
+  const turn = shown[0]?.chat?.items.at(-1);
+  assert.deepEqual(turn?.kind === "turn" && turn.turn.transcript.rows, [{ kind: "text", pieces: ["He", "llo"] }]);
 
   flushes[0]?.();
   assert.equal(shown.length, 1);

@@ -109,7 +109,7 @@ test("each message goes to the handlers it may be for; an error to both a prompt
     route(message, routes);
   }
 
-  assert.deepEqual(seen, ["run run", "answers receipt", "changes diff_answer", "answers error", "changes error",
+  assert.deepEqual(seen, ["run run", "answers receipt", "changes diff_answer", "answers error", "changes error", "chat error",
     "chat chat", "chat chat_answer"]);
 });
 

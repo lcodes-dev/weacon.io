@@ -17,8 +17,8 @@ export type Item = { kind: "prompt"; seq: number; text: string } | { kind: "turn
 export type Run = { state: RunState; agent: AgentRef | undefined };
 
 /**
- * A chat's log from `first` to `seq` with no gaps, its runs, and the text they stream that isn't
- * committed yet. A prompt at or before `base` was waiting at the snapshot only if `waiting` has it.
+ * A chat's log from `first` to `seq` with no gaps, its runs, and what it shows, streamed text
+ * included. A prompt at or before `base` was waiting at the snapshot only if `waiting` has it.
  */
 export type Chat = {
   first: number;
@@ -27,7 +27,6 @@ export type Chat = {
   waiting: ReadonlySet<number>;
   entries: readonly ChatEntry[];
   runs: ReadonlyMap<RunId, Run>;
-  live: ReadonlyMap<RunId, readonly RunEvent[]>;
   items: readonly Item[];
 };
 
@@ -49,7 +48,6 @@ export function fromSnapshot(snapshot: Snapshot): Chat {
     waiting: new Set(snapshot.waiting),
     entries,
     runs: snapshot.runs,
-    live: new Map(),
     items: [],
   };
   return { ...chat, items: fold(chat, entries) };
@@ -73,16 +71,13 @@ export function commit(chat: Chat, entry: ChatEntry): Chat | undefined {
     return undefined;
   }
   const items = [...chat.items];
-  const live = new Map(chat.live);
   const runs = new Map(chat.runs);
   const { event } = entry;
   if (event.kind === "run_status") {
     runs.set(event.status.run, { state: event.status.state, agent: agentOf(event.status, runs) });
-  } else if (event.kind === "run" && ends(event.update.event)) {
-    live.delete(event.update.run);
   }
   step(items, entry, true);
-  return { ...chat, seq: entry.seq, entries: [...chat.entries, entry], runs, live, items };
+  return { ...chat, seq: entry.seq, entries: [...chat.entries, entry], runs, items };
 }
 
 /** `chat` with the text a run streams, when the run is one of the chat's. */
@@ -92,8 +87,7 @@ export function stream(chat: Chat, run: RunId, event: RunEvent): Chat {
   }
   const items = [...chat.items];
   addTo(items, run, turnKey(chat.seq, run), (turn) => ({ ...turn, transcript: apply(turn.transcript, [event]) }));
-  const live = new Map(chat.live).set(run, [...(chat.live.get(run) ?? []), event]);
-  return { ...chat, live, items };
+  return { ...chat, items };
 }
 
 /**
@@ -162,7 +156,12 @@ function step(items: Item[], entry: ChatEntry, waiting: boolean): void {
     return;
   }
   if (event.kind === "run_status" && event.status.state !== "waiting") {
-    update(items, event.status.run, (turn) => closing(turn, () => true));
+    // A run that stops without a finished event, as when its core crashed, ends its turn too.
+    const over = !["starting", "running"].includes(event.status.state);
+    update(items, event.status.run, (turn) => {
+      const closed = closing(turn, () => true);
+      return over ? { ...closed, open: false } : closed;
+    });
   }
   if (event.kind !== "run") {
     return;
@@ -216,9 +215,6 @@ function turnKey(seq: number, run: RunId): string {
   return `t${seq}-${run}`;
 }
 
-function ends(event: RunEvent): boolean {
-  return event.event === "text" || event.event === "finished";
-}
 
 // A status that names no agent keeps the one the run had.
 function agentOf(status: RunStatus, runs: ReadonlyMap<RunId, Run>): AgentRef | undefined {

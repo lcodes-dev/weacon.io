@@ -35,6 +35,12 @@ export function settle(answers: Answers, key: string, request: RequestId, settle
   return next.set(key, { ...before, settled });
 }
 
+/** `answers` once a receipt that came after its wait says the answer under `request` ended as `settled`. */
+export function settleLate(answers: Answers, request: RequestId, settled: Settled): Answers {
+  const key = [...answers].find(([, answering]) => answering.request === request)?.[0];
+  return key === undefined ? answers : settle(answers, key, request, settled);
+}
+
 const PROBLEMS: Record<Exclude<Settled, "accepted">, string> = {
   refused: "The answer wasn't taken",
   lost: "The connection closed; the answer may not have been sent",

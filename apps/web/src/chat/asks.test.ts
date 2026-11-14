@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { type Answers, answerProblem, askKey, sending, settle } from "./asks.ts";
+import { type Answers, answerProblem, askKey, sending, settle, settleLate } from "./asks.ts";
 import { chatCommand } from "../composer/prompt.ts";
 
 const key = askKey("r-1", 2);
@@ -69,4 +69,13 @@ test("a chat command carries its chat, request and action", () => {
     request: "s-1",
     action: { kind: "interrupt" },
   });
+});
+
+test("a late receipt settles the answer sent under its request", () => {
+  const ids = fresh();
+  const unsure = settle(sending(none, key, true, ids).answers, key, "a-1", "unsure");
+
+  assert.equal(settleLate(unsure, "a-1", "accepted").size, 0);
+  assert.equal(answerProblem(settleLate(unsure, "a-1", "refused").get(key)), "The answer wasn't taken");
+  assert.equal(settleLate(unsure, "a-9", "accepted"), unsure);
 });

@@ -43,4 +43,5 @@ test("another chat's or workspace's messages aren't heard, and run updates alway
   assert.equal(heard({ ...update, workspace: "w-2" }, ref), undefined);
   assert.equal(heard({ ...answer({ kind: "events_lost" }), chat: "c-2" }, ref), undefined);
   assert.deepEqual(heard({ id: 0, type: "run", run: "r-9", event: delta }, ref), { kind: "run", run: "r-9", event: delta });
+  assert.deepEqual(heard({ id: 6, type: "error", code: "chat.unknown", retryable: false }, ref), { kind: "refused", id: 6 });
 });

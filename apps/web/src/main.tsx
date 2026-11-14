@@ -7,7 +7,7 @@ import { chatRefOf } from "./chat-ref.ts";
 import { type Late, type Send, type Sent, chatCommand, deliver } from "./composer/prompt.ts";
 import { type Asks, Connection, type Later, type Status, offers } from "./connection.ts";
 import { NO_CHANGES, ask, cut, needsAsking, receive } from "./diff/changes.ts";
-import { type Answers, askKey, sending, settle } from "./chat/asks.ts";
+import { type Answers, askKey, sending, settle, settleLate } from "./chat/asks.ts";
 import { working } from "./chat/chat.ts";
 import { ChatFeed, nextFrame } from "./chat/feed.ts";
 import { lines } from "./chat/lines.ts";
@@ -64,7 +64,12 @@ function Root({ url }: { url: string }) {
       return;
     }
     const later: Later = (run, ms) => setTimeout(run, ms);
-    const receipts = new Receipts(later, (request, settled) => current && setLate({ request, settled }));
+    const receipts = new Receipts(later, (request, settled) => {
+      if (current) {
+        setLate({ request, settled });
+        setAnswers((before) => settleLate(before, request, settled));
+      }
+    });
     const schedule = nextFrame(
       () => document.hidden,
       (run) => requestAnimationFrame(run),
@@ -151,6 +156,9 @@ function Root({ url }: { url: string }) {
     lines: chat === undefined ? [] : lines(chat, NO_MEMBERS),
     older: chat !== undefined && sync.live && chat.first > 1 ? () => live.current?.feed?.more() : undefined,
     answering,
+    // A chat is on its way while the connection is made, then only from a server that serves chats.
+    loading: chatRef !== undefined && chat === undefined && !sync.failed && (status.state === "connecting" || offers(status, "chat.events")),
+    retry: sync.failed ? () => live.current?.feed?.open() : undefined,
     stop: chat !== undefined && working(chat) ? { stopping, stop } : undefined,
   };
   const openChanges = () => {

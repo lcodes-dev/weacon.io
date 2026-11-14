@@ -10,6 +10,9 @@ export type RunMessage = Extract<Incoming, { type: "run" }>;
 /** A chat's committed event or an answer about its log, checked. */
 export type ChatMessage = Extract<Incoming, { type: "chat" | "chat_answer" }>;
 
+/** An error, which may answer a query, a command or a diff query. */
+export type ErrorMessage = Extract<Incoming, { type: "error" }>;
+
 /** The message `data` holds, or `undefined` when it holds none this app acts on, or a malformed one. */
 export function parse(data: unknown): Incoming | undefined {
   if (typeof data !== "string") {
@@ -29,10 +32,10 @@ export type Routes = {
   run(message: RunMessage): void;
   answers(message: Extract<Incoming, { type: "receipt" | "error" }>): void;
   changes(message: Extract<Incoming, { type: "diff_answer" | "error" }>): void;
-  chat(message: ChatMessage): void;
+  chat(message: ChatMessage | ErrorMessage): void;
 };
 
-/** Hands `message` to the handlers it may be for; an error may answer a prompt or the diff query. */
+/** Hands `message` to the handlers it may be for; an error may answer a command, a chat query or the diff query. */
 export function route(message: Incoming, to: Routes): void {
   switch (message.type) {
     case "run":
@@ -51,6 +54,7 @@ export function route(message: Incoming, to: Routes): void {
     case "error":
       to.answers(message);
       to.changes(message);
+      to.chat(message);
       return;
     case "welcome":
       return;

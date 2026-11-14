@@ -1,5 +1,5 @@
 import type { ChatRef } from "../chat-ref.ts";
-import type { ChatMessage, RunMessage } from "../incoming.ts";
+import type { ChatMessage, ErrorMessage, RunMessage } from "../incoming.ts";
 import type { Envelope, RunId } from "../protocol.ts";
 import { answered } from "./chat.ts";
 import { heard } from "./heard.ts";
@@ -52,7 +52,7 @@ export class ChatFeed {
   }
 
   /** Hears `message`, when it is about this chat. */
-  push(message: ChatMessage | RunMessage): void {
+  push(message: ChatMessage | RunMessage | ErrorMessage): void {
     const about = heard(message, this.#ref);
     if (about !== undefined) {
       this.#take(hear(this.#sync, about, this.#ref, this.#wiring.id));

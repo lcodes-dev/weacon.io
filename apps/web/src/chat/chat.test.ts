@@ -98,7 +98,6 @@ test("streamed text shows in the run's turn until the committed text replaces it
   assert.ok(committed !== undefined);
   // The same text keeps its pieces, so a selection in them survives.
   assert.deepEqual(shown(committed.items), ["> Hi", "r-1: Hel|lo"]);
-  assert.equal(committed.live.size, 0);
   assert.equal(committed.items[1]?.kind === "turn" && committed.items[1].turn.transcript.writing, false);
 });
 
@@ -160,6 +159,19 @@ test("an answered prompt stops being answerable, and only that one", () => {
   assert.deepEqual(shown(done.items), ["r-1: ask 1@0, ask 2@0 open", "r-2: ask 1@0 open"]);
   assert.equal(done.items[1], waiting.items[1]);
   assert.equal(answered(done, "r-1", 9).items[0], done.items[0]);
+});
+
+test("a run that stops without finishing ends its turn, so its next one starts after the prompt", () => {
+  const screen = commitAll(chat([]), [
+    text(1, "r-1", "Working."),
+    status(2, "r-1", "idle"),
+    said(3, "Go on"),
+    text(4, "r-1", "Going on."),
+    status(5, "r-1", "running"),
+    text(6, "r-1", "Still going."),
+  ]);
+
+  assert.deepEqual(shown(screen.items), ["r-1 done: Working.", "> Go on", "r-1: Going on., Still going."]);
 });
 
 test("a status keeps the agent the run had when it names none", () => {

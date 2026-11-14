@@ -1,5 +1,5 @@
 import type { ChatRef } from "../chat-ref.ts";
-import type { ChatMessage, RunMessage } from "../incoming.ts";
+import type { ChatMessage, ErrorMessage, RunMessage } from "../incoming.ts";
 import type { ChatEntry, RunEvent, RunId } from "../protocol.ts";
 import type { Run, Snapshot } from "./chat.ts";
 
@@ -9,10 +9,17 @@ export type Heard =
   | { kind: "lost" }
   | { kind: "snapshot"; id: number; snapshot: Snapshot }
   | { kind: "window"; id: number; events: ChatEntry[] }
-  | { kind: "run"; run: RunId; event: RunEvent };
+  | { kind: "run"; run: RunId; event: RunEvent }
+  | { kind: "refused"; id: number };
 
-/** What `message` says about the chat `ref`, or `undefined` when it is about another one. */
-export function heard(message: ChatMessage | RunMessage, ref: ChatRef): Heard | undefined {
+/**
+ * What `message` says about the chat `ref`, or `undefined` when it is about another one. An error
+ * is heard by its envelope id, which says which query, if any, it refuses.
+ */
+export function heard(message: ChatMessage | RunMessage | ErrorMessage, ref: ChatRef): Heard | undefined {
+  if (message.type === "error") {
+    return { kind: "refused", id: message.id };
+  }
   if (message.type === "run") {
     return { kind: "run", run: message.run, event: message.event };
   }

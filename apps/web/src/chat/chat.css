@@ -40,3 +40,7 @@
   display: block;
   margin: 0 auto 12px;
 }
+
+.row.problem {
+  color: #c4372b;
+}

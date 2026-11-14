@@ -20,24 +20,39 @@ export function TranscriptView({
   away,
   answering,
   older,
+  loading,
+  retry,
 }: {
   lines: readonly Line[];
   away: boolean;
   answering: Answerer;
   /** Shows the events before the first one shown, when there are any. */
   older: (() => void) | undefined;
+  /** Whether the chat's first snapshot is on its way. */
+  loading: boolean;
+  /** Asks for the chat again, when the server refused it. */
+  retry: (() => void) | undefined;
 }) {
   const scroller = useRef<HTMLDivElement>(null);
   const content = useRef<HTMLDivElement>(null);
   const { mayFormat, refreshes } = useHeldFormatting(scroller, away);
   const onScroll = useFollow(scroller, content, { rows: lines, refreshes, away });
 
+  const problem = retry !== undefined && (
+    <p className="row problem" role="alert">
+      The chat couldn't load.{" "}
+      <button type="button" onClick={retry}>
+        Try again
+      </button>
+    </p>
+  );
   if (lines.length === 0 && older === undefined) {
-    return <p className="page muted">No messages yet.</p>;
+    return problem || <p className="page muted">{loading ? "Loading" : "No messages yet."}</p>;
   }
   return (
     <div className="page transcript" ref={scroller} onScroll={onScroll}>
       <div ref={content}>
+        {problem}
         {older !== undefined && (
           <button type="button" className="older" onClick={older}>
             Show earlier messages
