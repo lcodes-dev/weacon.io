@@ -122,7 +122,7 @@ async fn serve(app: &App, args: Serve) -> Result<(), Fault> {
         connections: Arc::new(Semaphore::new(max_connections)),
         sockets: socket::TIMING,
         changes: broadcast::channel(CHANGES).0,
-        chats: broadcast::channel(CHANGES).0,
+        chats: chats::Hub::default(),
         unpaired: broadcast::channel(CHANGES).0,
         sign_ins: Arc::new(Semaphore::new(sign_in::AT_ONCE)),
         finish_within: sign_in::FINISH_WITHIN,

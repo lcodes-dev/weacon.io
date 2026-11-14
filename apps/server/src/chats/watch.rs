@@ -32,7 +32,7 @@ pub(crate) struct Watch {
 impl Watch {
     pub(crate) fn new(shared: &Shared) -> Self {
         Self {
-            notices: shared.chats.subscribe(),
+            notices: shared.chats.notices(),
             following: HashMap::new(),
             behind: HashSet::new(),
         }
@@ -257,7 +257,7 @@ mod tests {
         append(&workspace, "c-1", &[(Some(3), said("c"))])
             .await
             .unwrap();
-        drop(fixture.shared.chats.send((id("w1"), id("c-1"))));
+        fixture.shared.chats.stored(id("w1"), id("c-1"));
         assert_eq!(seq_of(&heard(&mut client).await), 3);
 
         ask(&mut client, 3, query("w1", ChatQueryKind::Snapshot)).await;

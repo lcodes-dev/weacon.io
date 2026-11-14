@@ -8,16 +8,51 @@ mod watch;
 
 pub(crate) use watch::Watch;
 
-use axum::Json;
 use axum::response::{IntoResponse, Response};
-use weacon_protocol::ChatList;
+use axum::routing::get;
+use axum::{Json, Router};
+use tokio::sync::broadcast;
+use weacon_protocol::{ChatId, ChatList, WorkspaceId};
 
 use crate::auth::Member;
-use crate::http::failure;
+use crate::http::{Shared, failure};
+
+/// How many chats' new events a socket may fall behind by before it reads them all again.
+const NOTICES: usize = 256;
+
+/// What the server's connections share of its chats.
+#[derive(Clone, Debug)]
+pub(crate) struct Hub {
+    stored: broadcast::Sender<(WorkspaceId, ChatId)>,
+}
+
+impl Default for Hub {
+    fn default() -> Self {
+        Self {
+            stored: broadcast::channel(NOTICES).0,
+        }
+    }
+}
+
+impl Hub {
+    /// Tells the sockets that follow `chat` that it has new events.
+    pub(crate) fn stored(&self, workspace: WorkspaceId, chat: ChatId) {
+        // No socket follows it: no one to tell.
+        drop(self.stored.send((workspace, chat)));
+    }
+
+    pub(crate) fn notices(&self) -> broadcast::Receiver<(WorkspaceId, ChatId)> {
+        self.stored.subscribe()
+    }
+}
+
+pub(crate) fn routes() -> Router<Shared> {
+    Router::new().route("/api/workspaces/{workspace}/chats", get(list))
+}
 
 /// `GET /api/workspaces/{workspace}/chats`: every chat in the workspace, the latest updated
 /// first.
-pub(crate) async fn list(member: Member) -> Response {
+async fn list(member: Member) -> Response {
     match member.workspace.chats().await {
         Ok(chats) => Json(ChatList { chats }).into_response(),
         Err(fault) => failure(fault),

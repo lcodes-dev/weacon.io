@@ -37,7 +37,7 @@ pub(crate) async fn chat(shared: &Shared, machine: &MachineId, update: ChatUpdat
         ("chat_id", chat.as_str().into()),
     ];
     match stored.await {
-        Ok(true) => drop(shared.chats.send((workspace, chat))),
+        Ok(true) => shared.chats.stored(workspace, chat),
         Ok(false) => shared.log.warn("chat upload refused", &fields),
         Err(fault) => {
             let [machine, workspace, chat] = fields;
@@ -77,7 +77,7 @@ mod tests {
         let shared = &fixture.shared;
         let workspace = shared.db.workspace(&id::<WorkspaceId>("w1")).await.unwrap();
         make(&workspace, "c-1", "m1", NOW).await.unwrap();
-        let mut notices = shared.chats.subscribe();
+        let mut notices = shared.chats.notices();
         let (ours, other) = (id::<MachineId>("mc-1"), id::<MachineId>("mc-2"));
 
         chat(shared, &ours, update("w1", "c-1", 4, "MARKER-TEXT")).await;

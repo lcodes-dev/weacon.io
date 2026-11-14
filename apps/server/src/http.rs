@@ -14,7 +14,7 @@ use tokio::net::TcpListener;
 use tokio::sync::{Semaphore, broadcast, watch};
 use tokio::time::timeout;
 use weacon_observability::{Clock, Fault, Field, Logger, Reporter};
-use weacon_protocol::{App, ChatId, Code, ErrorBody, MachineId, WorkspaceId, code};
+use weacon_protocol::{App, Code, ErrorBody, MachineId, WorkspaceId, code};
 
 use crate::chats;
 use crate::client::Net;
@@ -71,8 +71,7 @@ pub(crate) struct Shared {
     pub(crate) unpaired: broadcast::Sender<MachineId>,
     /// Which workspace just changed, for the feeds.
     pub(crate) changes: broadcast::Sender<WorkspaceId>,
-    /// Which chat just got events, for the sockets that follow it.
-    pub(crate) chats: broadcast::Sender<(WorkspaceId, ChatId)>,
+    pub(crate) chats: chats::Hub,
     /// Room for sign-ins being worked on after their answer; when it's full, more are dropped.
     pub(crate) sign_ins: Arc<Semaphore>,
     /// How long finishing a sign-in takes at least, so its timing gives nothing away.
@@ -182,7 +181,6 @@ fn router(shared: Shared) -> Router {
         .route("/api/machines/pair/confirm", post(pairing::confirm))
         .route("/api/machines/pair/claim", post(pairing::claim))
         .route("/api/workspaces/{workspace}", get(workspaces::read))
-        .route("/api/workspaces/{workspace}/chats", get(chats::list))
         .route("/api/workspaces/{workspace}/feed", get(feed::feed))
         .route(
             "/api/workspaces/{workspace}/tasks",
@@ -193,6 +191,7 @@ fn router(shared: Shared) -> Router {
             post(tasks::change),
         )
         .merge(doc_routes())
+        .merge(chats::routes())
         .merge(web::routes(shared.web))
         .layer(DefaultBodyLimit::max(MAX_BODY))
         .layer(middleware::map_response(uncached))
