@@ -47,7 +47,6 @@ pub enum Level {
 pub struct ClientLog {
     pub level: Level,
     pub msg: LogEvent,
-    // These are left out rather than null, so the schema and the generated types say so too.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(with = "RunId")]
     pub run_id: Option<RunId>,
