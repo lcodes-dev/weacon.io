@@ -907,10 +907,10 @@
       ]
     },
     "DownloadUrl": {
-      "description": "An `https://` address of printable ASCII, at most 2,048 bytes.",
+      "description": "An `https://` address of printable ASCII, at most 2,048 bytes, with a plain host name and\noptionally a port: no user name or password.",
       "type": "string",
       "maxLength": 2048,
-      "pattern": "^https://[!-~]+$"
+      "pattern": "^https://[A-Za-z0-9.-]+(:[0-9]{1,5})?([/?#][!-~]*)?$"
     },
     "ErrorBody": {
       "type": "object",

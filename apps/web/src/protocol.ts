@@ -323,7 +323,8 @@ export type DiffQueryKind = (
 );
 
 /**
- * An `https://` address of printable ASCII, at most 2,048 bytes.
+ * An `https://` address of printable ASCII, at most 2,048 bytes, with a plain host name and
+ * optionally a port: no user name or password.
  */
 export type DownloadUrl = string;
 
