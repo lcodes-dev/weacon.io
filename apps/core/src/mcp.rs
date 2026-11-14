@@ -116,10 +116,7 @@ pub(crate) fn grant(
     let server = McpServer {
         url: mcp.url.clone(),
         token: token.as_str().to_owned(),
-        tools: tools::listed()
-            .into_iter()
-            .map(|tool| tool.name.into_owned())
-            .collect(),
+        tools: tools::UP_FRONT.map(str::to_owned).to_vec(),
     };
     Ok((
         Launch {
@@ -289,6 +286,7 @@ impl ServerHandler for Handler {
         let tool = match &call {
             McpCall::Map(_) => "map",
             McpCall::Symbol(_) => "symbol",
+            McpCall::Flow(_) => "flow",
             McpCall::Newer => return Err(ErrorData::invalid_params("No such tool", None)),
         };
         let Ok(_permit) = grant.calls.try_acquire() else {
@@ -441,12 +439,42 @@ mod tests {
         assert_eq!((one.status, two.status), (200, 200));
         assert_eq!(
             answer_text(&one),
-            "one .: 1 module\n  (root) src/lib.rs: 1 item\n"
+            "Start here: 1 crates, 1 items.\nEntry points:\nMost central items:\n\
+             - fn one::run  src/lib.rs:1\nCrates:\n- one  .  1 items\n"
         );
         assert_eq!(
             answer_text(&two),
-            "two .: 1 module\n  (root) src/lib.rs: 1 item\n"
+            "Start here: 1 crates, 1 items.\nEntry points:\nMost central items:\n\
+             - fn two::run  src/lib.rs:1\nCrates:\n- two  .  1 items\n"
         );
+    }
+
+    #[tokio::test]
+    async fn only_claude_is_granted_the_mcp_with_only_the_up_front_tools() {
+        let (log, _records) = recording_logger();
+        let (mcp, _server) = start(&weacon_appkit::build(&VERSION), &log).unwrap();
+        let launch = |agent| Launch {
+            agent,
+            program: PathBuf::from("agent"),
+            config_dir: PathBuf::from("/work/config"),
+            cwd: PathBuf::from("/work"),
+            access: weacon_protocol::AccessLevel::AskFirst,
+            mcp: None,
+        };
+        let start = |agent| Start {
+            workspace: WorkspaceId::try_from("w-1".to_owned()).unwrap(),
+            chat: weacon_protocol::ChatId::try_from("c-1".to_owned()).unwrap(),
+            agent,
+            run: RunId::try_from("run-1".to_owned()).unwrap(),
+            session: None,
+        };
+        let granted = |agent| grant(Some(&mcp), launch(agent), &start(agent)).unwrap();
+
+        let (claude, revoke) = granted(AgentKind::Claude);
+        assert_eq!(claude.mcp.unwrap().tools, ["map", "symbol"]);
+        drop(revoke);
+        let (codex, none) = granted(AgentKind::Codex);
+        assert!(codex.mcp.is_none() && none.is_none());
     }
 
     #[tokio::test]

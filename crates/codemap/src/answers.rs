@@ -21,6 +21,17 @@ const TAIL: usize = "… 4294967295 more lines\n".len();
 /// How many of a list's entries are named before the rest are counted.
 const NAMED: usize = 5;
 
+/// `lines` as an answer within `budget` bytes, as every answer here is cut: each line whole,
+/// and a last line saying how many were left out.
+#[must_use]
+pub fn fit(lines: impl IntoIterator<Item = String>, budget: usize) -> String {
+    let mut text = Text::new(budget);
+    for line in lines {
+        text.line(&line);
+    }
+    text.finish()
+}
+
 /// Lines that stop before the budget, then say how many were left out; that last line is kept
 /// even when the budget is smaller than it.
 struct Text {
@@ -383,6 +394,13 @@ mod tests {
             text(first_and_tail, 2),
             "a line of twenty-six bytes\n… 1 more line\n"
         );
+    }
+
+    #[test]
+    fn fits_any_lines_the_same_way() {
+        let lines = || ["one".to_owned(), "two".to_owned()];
+        assert_eq!(fit(lines(), 100), "one\ntwo\n");
+        assert_eq!(fit(lines(), 7), "… 2 more lines\n");
     }
 
     #[test]

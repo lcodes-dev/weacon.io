@@ -1,3 +1,4 @@
+use serde::{Deserialize, Serialize};
 use tree_sitter::Node;
 
 use crate::syntax::{name, preorder, push_reversed, test_only};
@@ -6,7 +7,7 @@ use crate::syntax::{name, preorder, push_reversed, test_only};
 pub(crate) type Segments = Vec<String>;
 
 /// A path, and the inline modules around it within its file.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct NamedPath {
     pub(crate) within: Segments,
     pub(crate) segments: Segments,
@@ -14,7 +15,7 @@ pub(crate) struct NamedPath {
     pub(crate) bound: Option<Bound>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum Bound {
     /// The name it is known by: the path's last segment, or its `as` alias.
     Name(String),

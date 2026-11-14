@@ -4,7 +4,7 @@
 # flags `open_pair` opens with, where `&` leaves the master blocking: a test catches that, but
 # the terminal tests hang on it instead of failing.
 # `open_unfollowed`'s two flags share no bits either, so `^` gives the same flags; `&` drops both,
-# and the pipe test then hangs instead of failing.
+# and the pipe test then hangs instead of failing. The same holds for `open_beneath`'s flags.
 # A `Lines::next` that always returns a line never ends, so every reader spins instead of failing.
 # `depth * 1` in `full_names` isn't equivalent: it never deepens, so a self-nesting subcommand
 # expands until the test is killed for memory, which takes CI's runner with it.
@@ -27,6 +27,7 @@ exclude_re = [
     "replace \\| with \\^ in random_id",
     "replace \\| with (\\^|&) in open_pair",
     "replace \\| with (\\^|&) in unix::open_unfollowed",
+    "platform/beneath\\.rs:.*: replace \\| with (\\^|&)$",
     "windows::",
     "platform/trash(/macos|/linux)?\\.rs:.*(replace trash ->| in trash$|replace own_uid ->)",
     "replace match guard error.kind\\(\\) == io::ErrorKind::NotFound with true in place$",
