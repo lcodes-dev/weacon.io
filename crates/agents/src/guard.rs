@@ -1,4 +1,8 @@
 //! The guardrail: the operations a person is always asked about, whatever the access level.
+//!
+//! It asks before the operations on its list when it can read them from the command line, and
+//! asks whenever it can't read a line exactly. It is not a sandbox: a script, a build tool or a
+//! file written earlier that does the same harm when run is beyond what it reads.
 
 mod code;
 mod git;
@@ -1089,6 +1093,8 @@ mod tests {
                 Reason::WriteOutside,
             ),
             ("cd ..; rm -rf '123'>/dev/null", Reason::DeleteOutside),
+            ("X=~/.claude/$Y cat notes.md", Reason::Credentials),
+            ("stdbuf -oL rm -rf ../main", Reason::DeleteOutside),
         ] {
             assert_eq!(check(line), Some(reason), "{line}");
         }
@@ -1131,5 +1137,7 @@ mod tests {
             Some(Reason::WriteOutside)
         );
         assert_eq!(check_command("cp input src", &context), None);
+        assert_eq!(check_command("cp src/$NAME out", &context), Some(Reason::Unsure));
+        assert_eq!(check_command("cp in* out", &context), Some(Reason::Unsure));
     }
 }
