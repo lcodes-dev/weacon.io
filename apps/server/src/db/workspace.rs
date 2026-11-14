@@ -1,7 +1,8 @@
 use weacon_observability::Fault;
-use weacon_protocol::{AccountId, MemberId, WorkspaceId};
+use weacon_protocol::{AccountId, MemberId, WorkspaceId, WorkspaceSummary};
 
-use super::account::insert_account;
+use super::account::summary;
+use super::sign_in::insert_account;
 use super::{Db, failed, stored, unreadable};
 use crate::email::Email;
 
@@ -102,19 +103,36 @@ impl Workspace {
         })
         .collect()
     }
+
+    /// The workspace as `member` sees it, if they are still one.
+    pub(crate) async fn summary(
+        &self,
+        member: &MemberId,
+    ) -> Result<Option<WorkspaceSummary>, Fault> {
+        sqlx::query_as::<_, (String, String)>(
+            "SELECT w.name, m.role
+             FROM members AS m JOIN workspaces AS w ON w.workspace_id = m.workspace_id
+             WHERE m.workspace_id = ? AND m.member_id = ?",
+        )
+        .bind(self.id.as_str())
+        .bind(member.as_str())
+        .fetch_optional(&self.db.readers)
+        .await
+        .map_err(failed)?
+        .map(|(name, role)| summary(self.id.clone(), name, &role))
+        .transpose()
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use sqlx::sqlite::SqliteConnectOptions;
-    use sqlx::{ConnectOptions, raw_sql};
     use weacon_testing::TempDir;
 
     use weacon_protocol::ChallengeId;
 
     use super::*;
-    use crate::db::schema::STEPS;
-    use crate::db::{Attempt, NewWorkspace};
+    use crate::db::schema::{database_before, steps};
+    use crate::db::{Attempt, NewChallenge, NewWorkspace};
     use crate::test_support::{email, fresh_account, member_id, two_teams, workspace_id};
 
     async fn accounts(db: &Db) -> Vec<(String, String)> {
@@ -187,9 +205,14 @@ mod tests {
     async fn session(db: &Db, address: &str, token: &[u8]) {
         let (address, challenge) = (email(address), ChallengeId::try_from("c".to_owned()));
         let challenge = challenge.unwrap();
-        db.start_challenge(&address, &challenge, b"code", 100)
-            .await
-            .unwrap();
+        let new = NewChallenge {
+            email: &address,
+            id: &challenge,
+            code_hash: b"code",
+            now: 100,
+            expires_at: 700,
+        };
+        db.start_challenge(&new).await.unwrap();
         let attempt = Attempt {
             email: &address,
             challenge: &challenge,
@@ -244,28 +267,13 @@ mod tests {
     // A database at `path` from before accounts: ada in w1 and w2, bo in w1, and a session
     // and a sign-in of ada's in w1.
     async fn old_database(path: &std::path::Path) {
-        let mut old = SqliteConnectOptions::new()
-            .filename(path)
-            .create_if_missing(true)
-            .connect()
-            .await
-            .unwrap();
-        for step in &STEPS[..3] {
-            raw_sql(*step).execute(&mut old).await.unwrap();
-        }
-        raw_sql(
-            "INSERT INTO workspaces VALUES ('w1', 'One'), ('w2', 'Two');
+        let rows = "INSERT INTO workspaces VALUES ('w1', 'One'), ('w2', 'Two');
              INSERT INTO members VALUES
                  ('w1', 'm1', 'ada@example.com'), ('w2', 'm1', 'ada@example.com'),
                  ('w1', 'm2', 'bo@example.com');
              INSERT INTO sessions VALUES ('w1', x'01', 'm1', 9999999999);
-             INSERT INTO sign_in_challenges VALUES ('w1', 'c1', 'm1', x'02', 9999999999, 0);
-             PRAGMA user_version = 3;",
-        )
-        .execute(&mut old)
-        .await
-        .unwrap();
-        drop(old);
+             INSERT INTO sign_in_challenges VALUES ('w1', 'c1', 'm1', x'02', 9999999999, 0)";
+        database_before(path, steps::ACCOUNTS, rows).await;
     }
 
     #[tokio::test]

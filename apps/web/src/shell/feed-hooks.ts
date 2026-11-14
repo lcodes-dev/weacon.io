@@ -9,13 +9,12 @@ import { FEED, STAYED_MS, failedAfter, feedUrl, heardAfter, retries, retryAfter 
 import type { WorkspaceSocket } from "./workspace-socket.ts";
 
 /**
- * Where `workspace`'s feed stands, and what its server offered when it last welcomed it; it hands
+ * Where `workspace`'s feed stands; it gives `socket` what the server offered at each welcome, hands
  * each message to `socket`, a workspace change only once, and opens again after the last one heard.
  */
-export function useFeed(workspace: WorkspaceId, api: Api, socket: WorkspaceSocket): { status: Status; offered: readonly string[] | undefined } {
+export function useFeed(workspace: WorkspaceId, api: Api, socket: WorkspaceSocket): Status {
   const [status, setStatus] = useState<Status>({ state: "connecting" });
   // Kept apart from `status`, which a feed that ends at once may replace before it is shown.
-  const [offered, setOffered] = useState<readonly string[]>();
   useEffect(() => {
     let current = true;
     let since = 0;
@@ -38,10 +37,9 @@ export function useFeed(workspace: WorkspaceId, api: Api, socket: WorkspaceSocke
           }
           setStatus(next);
           if (next.state === "live") {
-            setOffered(next.capabilities);
             stayed = false;
             staying = setTimeout(() => (stayed = true), STAYED_MS);
-            socket.attach((envelope) => connection.send(envelope));
+            socket.attach((envelope) => connection.send(envelope), next.capabilities);
           } else if (next.state === "ended") {
             clearTimeout(staying);
             socket.attach(undefined);
@@ -75,7 +73,7 @@ export function useFeed(workspace: WorkspaceId, api: Api, socket: WorkspaceSocke
       opened?.close();
     };
   }, [workspace, api, socket]);
-  return { status, offered };
+  return status;
 }
 
 const BURST_MS = 250;

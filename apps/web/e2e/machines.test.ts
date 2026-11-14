@@ -1,41 +1,9 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import type { Page } from "playwright-core";
-
-import type { MachineSummary, PairClaim, PairClaimed, PairStart, PairStarted } from "../src/protocol.ts";
+import type { MachineSummary } from "../src/protocol.ts";
+import { FINGERPRINT, KEY, claim, pinned, startPairing } from "./pairing.ts";
 import { serve, signIn } from "./server.ts";
-
-// The core's own test key, and the fingerprint the core prints for it.
-const KEY = "8520f0098930a754748b7ddcb43ef75a0dbf3a0d26381af4eba4a98eaa9b4e6a";
-const FINGERPRINT = "300c 9c96 03b9 2a4b 39ed 3958 bf92 4011";
-
-/** What a core sends to start pairing, as `weacon pair` does. */
-async function startPairing(page: Page): Promise<PairStarted> {
-  const start: PairStart = { name: "Studio", os: "linux", key: KEY };
-  const started = await page.request.post(new URL("/api/machines/pair", page.url()).href, { data: start });
-  assert.equal(started.status(), 201);
-  return (await started.json()) as PairStarted;
-}
-
-/** The key this browser pinned for `machine`, read straight from its IndexedDB. */
-function pinned(page: Page, machine: string): Promise<unknown> {
-  return page.evaluate(
-    (machine) =>
-      new Promise((resolve, reject) => {
-        const open = indexedDB.open("weacon", 1);
-        open.onerror = () => reject(open.error);
-        open.onsuccess = () => {
-          const read = open.result.transaction("pins").objectStore("pins").get(machine);
-          read.onsuccess = () => {
-            open.result.close();
-            resolve(read.result);
-          };
-        };
-      }),
-    machine,
-  );
-}
 
 test("a person pairs a machine by its code after checking its fingerprint, then unpairs it", { timeout: 600_000 }, async (t) => {
   const served = await serve();
@@ -58,10 +26,7 @@ test("a person pairs a machine by its code after checking its fingerprint, then 
   await page.getByRole("button", { name: "Confirm" }).click();
   await page.getByText("Waiting for the machine to connect.").waitFor();
 
-  const claim: PairClaim = { pairing, secret };
-  const claimed = await page.request.post(new URL("/api/machines/pair/claim", page.url()).href, { data: claim });
-  const paired = (await claimed.json()) as PairClaimed;
-  assert.ok(paired.state === "paired");
+  const paired = await claim(page, { pairing, secret });
   const machines = page.getByRole("list", { name: "Machines" });
   await machines.getByText("Studio").waitFor();
   await page.getByText("Waiting for the machine to connect.").waitFor({ state: "detached" });

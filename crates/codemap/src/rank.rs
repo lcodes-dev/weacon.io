@@ -1,20 +1,23 @@
+use std::collections::BTreeMap;
+
 use crate::graph::Links;
+use crate::{Edge, EdgeKind};
 
 const DAMPING: f64 = 0.85;
-const ROUNDS: usize = 100;
+const ITERATIONS: usize = 100;
 
 /// Page rank over weighted links; the ranks sum to 1, and a node without links shares its rank
 /// with every node. A fixed number of rounds keeps the result the same on every run.
 pub(crate) fn page_rank(links: &Links) -> Vec<f64> {
     let count = as_float(links.len());
     let mut ranks = vec![1.0 / count; links.len()];
-    for _ in 0..ROUNDS {
-        ranks = round(links, &ranks, count);
+    for _ in 0..ITERATIONS {
+        ranks = next_ranks(links, &ranks, count);
     }
     ranks
 }
 
-fn round(links: &Links, ranks: &[f64], count: f64) -> Vec<f64> {
+fn next_ranks(links: &Links, ranks: &[f64], count: f64) -> Vec<f64> {
     let mut next = vec![0.0; ranks.len()];
     let mut shared = 1.0 - DAMPING;
     for (targets, rank) in links.iter().zip(ranks) {
@@ -32,6 +35,42 @@ fn round(links: &Links, ranks: &[f64], count: f64) -> Vec<f64> {
     next.iter().map(|rank| rank + shared / count).collect()
 }
 
+/// Ranks this close count as a tie, so rounding can't decide what leads.
+const SAME_RANK: f64 = 1e-9;
+
+/// The names, highest rank first, ties in name order.
+pub(crate) fn by_rank(mut ranked: Vec<(&str, f64)>) -> Vec<&str> {
+    let rounded = |rank: f64| (rank / SAME_RANK).round();
+    ranked.sort_by(|(name, rank), (other_name, other_rank)| {
+        rounded(*other_rank)
+            .total_cmp(&rounded(*rank))
+            .then_with(|| name.cmp(other_name))
+    });
+    ranked.into_iter().map(|(name, _)| name).collect()
+}
+
+/// The items' paths, most central first: an item gains from those that call, use or implement it.
+pub(crate) fn central<T>(items: &BTreeMap<String, T>, edges: &[Edge]) -> Vec<String> {
+    let items: Vec<&String> = items.keys().collect();
+    let numbers: BTreeMap<&str, usize> = (0..)
+        .zip(&items)
+        .map(|(number, path)| (path.as_str(), number))
+        .collect();
+    let mut links: Links = vec![BTreeMap::new(); items.len()];
+    for edge in edges.iter().filter(|edge| edge.kind != EdgeKind::Tests) {
+        if let (Some(from), Some(to)) = (
+            numbers.get(edge.from.as_str()),
+            numbers.get(edge.to.as_str()),
+        ) && let Some(targets) = links.get_mut(*from)
+        {
+            *targets.entry(*to).or_insert(0.0) += 1.0;
+        }
+    }
+    let ranks = page_rank(&links);
+    let ranked = items.iter().map(|path| path.as_str()).zip(ranks).collect();
+    by_rank(ranked).into_iter().map(str::to_owned).collect()
+}
+
 /// `count` as a float, saturating far beyond any repository's size.
 fn as_float(count: usize) -> f64 {
     u32::try_from(count).map_or_else(|_| f64::from(u32::MAX), f64::from)
@@ -39,16 +78,11 @@ fn as_float(count: usize) -> f64 {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeMap;
-
     use super::*;
+    use crate::test_support;
 
     fn links(edges: &[(usize, usize, f64)], nodes: usize) -> Links {
-        let mut links = vec![BTreeMap::new(); nodes];
-        for &(from, to, weight) in edges {
-            links[from].insert(to, weight);
-        }
-        links
+        test_support::links(edges.iter().copied(), nodes)
     }
 
     fn close(one: f64, other: f64) -> bool {
@@ -108,5 +142,19 @@ mod tests {
     fn counts_as_floats() {
         assert!(close(as_float(3), 3.0));
         assert!(close(as_float(usize::MAX), f64::from(u32::MAX)));
+    }
+
+    #[test]
+    fn ranks_the_items_others_rely_on_first() {
+        let files = test_support::files(&[
+            ("a/Cargo.toml", "[package]\nname = \"a\"\n"),
+            (
+                "a/src/lib.rs",
+                "pub fn core() {}\npub fn b() { core(); }\npub fn c() { core(); b(); }\n\
+                 pub fn lone() {}\n#[cfg(test)]\nmod tests { #[test]\n fn t() { super::lone(); } }\n",
+            ),
+        ]);
+        let index = crate::index(&files).unwrap();
+        assert_eq!(index.central, ["a::core", "a::b", "a::c", "a::lone"]);
     }
 }
