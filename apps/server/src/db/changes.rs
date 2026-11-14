@@ -134,12 +134,9 @@ mod tests {
 
     use weacon_model::{Attribution, OrderKey, Task, Title};
 
-    use sqlx::sqlite::SqliteConnectOptions;
-    use sqlx::{AssertSqlSafe, ConnectOptions, raw_sql};
-
     use super::*;
     use crate::db::Db;
-    use crate::db::schema::STEPS;
+    use crate::db::schema::database_before;
     use crate::test_support::{member_id, two_teams, workspace_id};
 
     fn joined(seq: u64, member: &str) -> WorkspaceUpdate {
@@ -238,21 +235,7 @@ mod tests {
     async fn changes_from_before_docs_are_kept() {
         let dir = TempDir::new().unwrap();
         let path = dir.join("weacon.db");
-        let mut old = SqliteConnectOptions::new()
-            .filename(&path)
-            .create_if_missing(true)
-            .connect()
-            .await
-            .unwrap();
-        let docs = STEPS
-            .iter()
-            .position(|step| step.contains("changes_with_docs"));
-        let before_docs = docs.unwrap();
-        for step in &STEPS[..before_docs] {
-            raw_sql(*step).execute(&mut old).await.unwrap();
-        }
-        let rows = format!(
-            "INSERT INTO workspaces VALUES ('w1', 'One');
+        let rows = "INSERT INTO workspaces VALUES ('w1', 'One');
              INSERT INTO accounts (account_id, email) VALUES ('a1', 'ada@example.com');
              INSERT INTO members (workspace_id, member_id, email, account_id)
                  VALUES ('w1', 'm1', 'ada@example.com', 'a1');
@@ -260,14 +243,8 @@ mod tests {
              INSERT INTO task_versions VALUES ('w1', 't1', 1, 'person', 'm1', 'm1', 0);
              INSERT INTO changes VALUES
                  ('w1', 1, 'member_joined', 'm1', NULL, NULL),
-                 ('w1', 2, 'task_changed', 'm1', 't1', 1);
-             PRAGMA user_version = {before_docs};"
-        );
-        raw_sql(AssertSqlSafe(rows))
-            .execute(&mut old)
-            .await
-            .unwrap();
-        drop(old);
+                 ('w1', 2, 'task_changed', 'm1', 't1', 1)";
+        database_before(&path, "changes_with_docs", rows).await;
 
         let db = Db::open(&path).await.unwrap();
         let w1 = db.workspace(&workspace_id("w1")).await.unwrap();

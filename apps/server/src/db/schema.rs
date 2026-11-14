@@ -258,6 +258,29 @@ pub(super) async fn migrate(writer: &SqlitePool) -> Result<(), Fault> {
     }
 }
 
+/// Makes a database at `path` from before the first step that contains `marker`, holding
+/// `rows`, for tests of what that step and the ones after it do to existing data.
+#[cfg(test)]
+pub(super) async fn database_before(path: &std::path::Path, marker: &str, rows: &str) {
+    use sqlx::ConnectOptions;
+
+    let mut old = sqlx::sqlite::SqliteConnectOptions::new()
+        .filename(path)
+        .create_if_missing(true)
+        .connect()
+        .await
+        .unwrap();
+    let before = STEPS.iter().position(|step| step.contains(marker)).unwrap();
+    for step in &STEPS[..before] {
+        sqlx::raw_sql(*step).execute(&mut old).await.unwrap();
+    }
+    let rows = format!("{rows}; PRAGMA user_version = {before};");
+    sqlx::raw_sql(AssertSqlSafe(rows))
+        .execute(&mut old)
+        .await
+        .unwrap();
+}
+
 fn too_new() -> Fault {
     Fault::new(
         code!("db.too_new"),

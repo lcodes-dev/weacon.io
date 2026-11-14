@@ -6,8 +6,7 @@ use weacon_protocol::{DocAnchors, DocId, DocRevision, DocSummary, code};
 use super::changes::Versioned;
 use super::{Workspace, author_columns, failed, stored, stored_author, stored_version, unreadable};
 
-/// How many bytes of doc revisions a workspace may hold. Revisions are never pruned, so a
-/// workspace that reaches it can still read its docs but not revise them.
+/// How many bytes of doc revisions a workspace may hold.
 const QUOTA: i64 = 1 << 30;
 
 type VersionRow = (i64, String, String, Option<String>);
@@ -171,9 +170,8 @@ impl Workspace {
         })
     }
 
-    /// Refuses, as `doc.quota_full`, a revision of `size` bytes that the workspace has no
-    /// room left for.
-    async fn make_room(&self, transaction: &mut SqliteConnection, size: i64) -> Result<(), Fault> {
+    /// Refuses a revision of `size` bytes that the workspace has no room left for.
+    async fn check_room(&self, transaction: &mut SqliteConnection, size: i64) -> Result<(), Fault> {
         let used: i64 = sqlx::query_scalar(
             "SELECT COALESCE(SUM(size), 0) FROM doc_versions WHERE workspace_id = ?",
         )
@@ -182,10 +180,7 @@ impl Workspace {
         .await
         .map_err(failed)?;
         if used.saturating_add(size) > QUOTA {
-            return Err(Fault::new(
-                code!("doc.quota_full"),
-                "The workspace has no room left for docs",
-            ));
+            return Err(quota_full());
         }
         Ok(())
     }
@@ -201,8 +196,8 @@ impl Workspace {
         let (kind, author) = author_columns(attribution.author()).ok_or_else(unknown)?;
         let version = version_number(doc.version)?;
         let anchors = doc.text.anchors();
-        let size = size(&doc.text)?;
-        self.make_room(transaction, size).await?;
+        let size = size(&doc.text);
+        self.check_room(transaction, size).await?;
         sqlx::query(
             "INSERT INTO doc_versions (workspace_id, doc_id, version, title, body, commit_id,
                  author_kind, author_member, accepted_by, at, size)
@@ -245,7 +240,7 @@ impl Workspace {
 }
 
 /// The bytes `text` takes as stored: its title, body, commit and pins.
-fn size(text: &DocText) -> Result<i64, Fault> {
+fn size(text: &DocText) -> i64 {
     let anchors = text.anchors();
     let commit = anchors.map_or(0, |anchors| anchors.commit.as_str().len());
     let pins: usize = anchors
@@ -254,7 +249,14 @@ fn size(text: &DocText) -> Result<i64, Fault> {
         .map(|pin| pin.as_str().len())
         .sum();
     let size = text.title().as_str().len() + text.body().len() + commit + pins;
-    i64::try_from(size).map_err(|_| unreadable())
+    i64::try_from(size).unwrap_or(i64::MAX)
+}
+
+pub(crate) fn quota_full() -> Fault {
+    Fault::new(
+        code!("doc.quota_full"),
+        "The workspace has no room left for docs",
+    )
 }
 
 fn doc_not_found() -> Fault {
@@ -295,13 +297,10 @@ mod tests {
     use weacon_protocol::{Author, CommitId, DocPin, WorkspaceChange};
     use weacon_testing::TempDir;
 
-    use sqlx::sqlite::SqliteConnectOptions;
-    use sqlx::{AssertSqlSafe, ConnectOptions, raw_sql};
-
     use super::*;
     use crate::db::Db;
-    use crate::db::schema::STEPS;
-    use crate::test_support::{member_id, two_teams};
+    use crate::db::schema::database_before;
+    use crate::test_support::{member_id, two_teams, workspace_id};
 
     const NOW: i64 = 1_762_077_600;
 
@@ -598,7 +597,6 @@ mod tests {
         let plain = "Two".len() + "Plain.".len();
         let expected = [pinned, plain].map(|size| i64::try_from(size).unwrap());
         assert_eq!(sizes(&one).await, expected);
-        assert_eq!(size(&linked()).unwrap(), expected[0]);
     }
 
     #[tokio::test]
@@ -608,7 +606,7 @@ mod tests {
         let first = new_doc("d1", "Framing");
         one.add_doc(&first, &by("m1")).await.unwrap();
         let next = linked();
-        let room = QUOTA - size(&next).unwrap();
+        let room = QUOTA - size(&next);
         sqlx::query("UPDATE doc_versions SET size = ? WHERE workspace_id = 'w1'")
             .bind(room)
             .execute(&one.db.writer)
@@ -646,19 +644,6 @@ mod tests {
     async fn revisions_from_before_the_quota_are_sized_as_the_server_sizes_them() {
         let dir = TempDir::new().unwrap();
         let path = dir.join("weacon.db");
-        let mut old = SqliteConnectOptions::new()
-            .filename(&path)
-            .create_if_missing(true)
-            .connect()
-            .await
-            .unwrap();
-        let quota = STEPS
-            .iter()
-            .position(|step| step.contains("ADD COLUMN size"));
-        let before_quota = quota.unwrap();
-        for step in &STEPS[..before_quota] {
-            raw_sql(*step).execute(&mut old).await.unwrap();
-        }
         let rows = format!(
             "INSERT INTO workspaces VALUES ('w1', 'One');
              INSERT INTO accounts (account_id, email) VALUES ('a1', 'ada@example.com');
@@ -672,25 +657,40 @@ mod tests {
              INSERT INTO doc_pins VALUES
                  ('w1', 'd1', 1, 0, 'sym:a#0123456789abcdef'),
                  ('w1', 'd1', 1, 1, 'area:b#0123456789abcdef');
-             PRAGMA user_version = {before_quota};",
+             ",
             commit = "c".repeat(40),
         );
-        raw_sql(AssertSqlSafe(rows))
-            .execute(&mut old)
-            .await
-            .unwrap();
-        drop(old);
+        database_before(&path, "ADD COLUMN size", &rows).await;
 
         let db = Db::open(&path).await.unwrap();
-        let one = db
-            .workspace(&crate::test_support::workspace_id("w1"))
-            .await
-            .unwrap();
+        let one = db.workspace(&workspace_id("w1")).await.unwrap();
 
         let unicode = text("Ünïcode", "Plain.", &[]);
-        assert_eq!(
-            sizes(&one).await,
-            [size(&linked()).unwrap(), size(&unicode).unwrap()]
+        assert_eq!(sizes(&one).await, [size(&linked()), size(&unicode)]);
+    }
+
+    #[tokio::test]
+    async fn a_workspace_s_usage_is_read_from_the_index_alone() {
+        let dir = TempDir::new().unwrap();
+        let (one, _) = two_teams(&dir).await;
+
+        let plan: Vec<(i64, i64, i64, String)> = sqlx::query_as(
+            "EXPLAIN QUERY PLAN
+             SELECT COALESCE(SUM(size), 0) FROM doc_versions WHERE workspace_id = 'w1'",
+        )
+        .fetch_all(&one.db.readers)
+        .await
+        .unwrap();
+
+        let detail = plan
+            .into_iter()
+            .map(|(_, _, _, detail)| detail)
+            .collect::<Vec<_>>();
+        assert!(
+            detail
+                .iter()
+                .any(|step| step.contains("COVERING INDEX doc_versions_size")),
+            "{detail:?}"
         );
     }
 }

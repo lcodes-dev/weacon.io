@@ -539,10 +539,7 @@ mod tests {
     #[tokio::test]
     async fn a_full_workspace_is_answered_like_a_doc_too_large() {
         let fixture = Fixture::new().await;
-        let full = Fault::new(
-            code!("doc.quota_full"),
-            "The workspace has no room left for docs",
-        );
+        let full = crate::db::quota_full();
 
         let answer = answer(&fixture.shared, full);
 

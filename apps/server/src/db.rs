@@ -10,6 +10,8 @@ mod schema;
 mod tasks;
 mod workspace;
 
+#[cfg(test)]
+pub(crate) use docs::quota_full;
 pub(crate) use tasks::task_not_found;
 
 use std::path::{Path, PathBuf};
