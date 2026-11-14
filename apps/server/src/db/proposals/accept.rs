@@ -698,4 +698,43 @@ mod tests {
         assert_eq!(cost(&lines, &lines), 1);
         assert_eq!(cost("a\nb\nc\n", "a\nx\ny\nc\n"), 2);
     }
+
+    #[tokio::test]
+    async fn an_edit_lands_when_the_task_changed_only_elsewhere_or_the_same_way() {
+        let dir = TempDir::new().unwrap();
+        let (one, _) = workspaces(&dir).await;
+        let done = |task: &str| ProposalChange::TaskEdit {
+            task: id(task),
+            base: 1,
+            edits: vec![TaskEditBody::Status {
+                status: TaskStatus::Done,
+            }],
+        };
+        one.add_task(&crate::test_support::new_task("t2", "Test", "b"), &by("m1"))
+            .await
+            .unwrap();
+        one.propose(&proposed("p1", "mc1", done("t1")))
+            .await
+            .unwrap();
+        one.propose(&proposed("p2", "mc1", done("t2")))
+            .await
+            .unwrap();
+        let renamed = TaskEdit::Title(id("Write more"));
+        one.edit_task(&id("t1"), Revision::FIRST, renamed, &by("m3"))
+            .await
+            .unwrap();
+        let finished = TaskEdit::Status(TaskStatus::Done);
+        one.edit_task(&id("t2"), Revision::FIRST, finished, &by("m3"))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            accepted(&one, "p1").await,
+            ProposalOutcome::Accepted { version: 3 }
+        );
+        assert_eq!(
+            accepted(&one, "p2").await,
+            ProposalOutcome::Accepted { version: 3 }
+        );
+    }
 }

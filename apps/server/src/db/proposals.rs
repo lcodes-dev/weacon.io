@@ -745,4 +745,23 @@ mod tests {
         let older = one.proposal(&id("edit")).await.unwrap();
         assert_eq!(older.state, ProposalState::Superseded);
     }
+
+    #[tokio::test]
+    async fn a_withdrawn_proposal_reads_as_withdrawn() {
+        let dir = TempDir::new().unwrap();
+        let (one, _) = workspaces(&dir).await;
+        one.propose(&proposed("p1", "mc1", revise("d1", 1, "A\n")))
+            .await
+            .unwrap();
+        sqlx::query("UPDATE proposals SET state = 'withdrawn', change = NULL")
+            .execute(&one.db.writer)
+            .await
+            .unwrap();
+
+        let record = one.proposal(&id("p1")).await.unwrap();
+        assert_eq!(
+            (record.state, record.change),
+            (ProposalState::Withdrawn, None)
+        );
+    }
 }
