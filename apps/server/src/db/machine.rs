@@ -9,7 +9,7 @@ use weacon_protocol::{
     PairingId, code,
 };
 
-use super::{Db, failed, stored};
+use super::{Db, failed, stored, unreadable};
 
 /// How long a core has to claim its machine once the person confirms, in seconds.
 const CLAIM_WITHIN: i64 = 120;
@@ -33,6 +33,13 @@ pub(crate) struct Confirmation<'a> {
     pub(crate) machine: &'a MachineId,
 }
 
+/// A core's claim of a pairing, with the hash of the token its machine gets.
+pub(crate) struct Claiming<'a> {
+    pub(crate) pairing: &'a PairingId,
+    pub(crate) secret_hash: &'a [u8],
+    pub(crate) token_hash: &'a [u8],
+}
+
 /// What a core's claim finds.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum Claim {
@@ -50,8 +57,8 @@ pub(crate) enum Claim {
 type Row = (String, String, String, String, i64);
 
 /// A pairing's secret hash, and once it is confirmed its account, machine, when it was
-/// confirmed and whether it was claimed.
-type Confirmed = (Vec<u8>, Option<String>, Option<String>, Option<i64>, bool);
+/// confirmed and whether it was claimed, as stored.
+type PairingRow = (Vec<u8>, Option<String>, Option<String>, Option<i64>, bool);
 
 impl Db {
     /// Records `pairing`, and ends the expired ones so they don't pile up; `false`, recording
@@ -62,11 +69,7 @@ impl Db {
         now: i64,
         most: i64,
     ) -> Result<bool, Fault> {
-        let mut transaction = self
-            .writer
-            .begin_with("BEGIN IMMEDIATE")
-            .await
-            .map_err(failed)?;
+        let mut transaction = self.write().await?;
         sqlx::query("DELETE FROM pairings WHERE expires_at <= ?")
             .bind(now)
             .execute(&mut *transaction)
@@ -118,7 +121,7 @@ impl Db {
                 Ok(PairPending {
                     pairing: stored(pairing)?,
                     name: stored(name)?,
-                    os: os_of(&os)?,
+                    os: stored_os(&os)?,
                     key: stored(key)?,
                 })
             })
@@ -138,11 +141,7 @@ impl Db {
             code_hash,
             machine,
         } = *confirmation;
-        let mut transaction = self
-            .writer
-            .begin_with("BEGIN IMMEDIATE")
-            .await
-            .map_err(failed)?;
+        let mut transaction = self.write().await?;
         let Some((stored_hash, name, os, key)) =
             sqlx::query_as::<_, (Vec<u8>, String, String, String)>(
                 "SELECT code_hash, name, os, machine_key FROM pairings
@@ -172,26 +171,24 @@ impl Db {
         .await
         .map_err(failed)?;
         transaction.commit().await.map_err(failed)?;
-        summary((machine.as_str().to_owned(), name, os, key, now)).map(Some)
+        stored_machine((machine.as_str().to_owned(), name, os, key, now)).map(Some)
     }
 
-    /// The core's claim of `pairing` with the secret hashed as `secret_hash`. Once the person
-    /// has confirmed, the first claim pairs the machine with the token hashed as `token_hash`,
-    /// and later ones until the pairing expires find it paired.
+    /// A core's claim. Once the person has confirmed, the first claim pairs the machine with
+    /// its token, and later ones until the pairing expires find it paired.
     pub(crate) async fn claim_pairing(
         &self,
-        pairing: &PairingId,
-        secret_hash: &[u8],
-        token_hash: &[u8],
+        claiming: &Claiming<'_>,
         now: i64,
     ) -> Result<Claim, Fault> {
-        let mut transaction = self
-            .writer
-            .begin_with("BEGIN IMMEDIATE")
-            .await
-            .map_err(failed)?;
+        let Claiming {
+            pairing,
+            secret_hash,
+            token_hash,
+        } = *claiming;
+        let mut transaction = self.write().await?;
         let Some((stored_hash, owner, machine, confirmed_at, claimed)) =
-            sqlx::query_as::<_, Confirmed>(
+            sqlx::query_as::<_, PairingRow>(
                 "SELECT secret_hash, account_id, machine_id, confirmed_at, claimed FROM pairings
              WHERE pairing_id = ? AND expires_at > ?",
             )
@@ -234,7 +231,7 @@ impl Db {
         .await
         .map_err(failed)?
         .into_iter()
-        .map(summary)
+        .map(stored_machine)
         .collect()
     }
 
@@ -321,11 +318,11 @@ async fn add_machine(
     Ok(())
 }
 
-fn summary((id, name, os, key, paired_at): Row) -> Result<MachineSummary, Fault> {
+fn stored_machine((id, name, os, key, paired_at): Row) -> Result<MachineSummary, Fault> {
     Ok(MachineSummary {
         id: stored(id)?,
         name: stored(name)?,
-        os: os_of(&os)?,
+        os: stored_os(&os)?,
         key: stored(key)?,
         paired_at,
     })
@@ -336,20 +333,20 @@ fn os_text(os: MachineOs) -> Result<&'static str, Fault> {
         MachineOs::Macos => Ok("macos"),
         MachineOs::Linux => Ok("linux"),
         MachineOs::Windows => Ok("windows"),
-        MachineOs::Newer => Err(unknown()),
+        MachineOs::Newer => Err(unknown_value()),
     }
 }
 
-fn os_of(text: &str) -> Result<MachineOs, Fault> {
+fn stored_os(text: &str) -> Result<MachineOs, Fault> {
     match text {
         "macos" => Ok(MachineOs::Macos),
         "linux" => Ok(MachineOs::Linux),
         "windows" => Ok(MachineOs::Windows),
-        _ => Err(unknown()),
+        _ => Err(unreadable()),
     }
 }
 
-fn unknown() -> Fault {
+fn unknown_value() -> Fault {
     Fault::new(
         code!("machine.unknown_value"),
         "The machine has a value this version doesn't know",
@@ -361,10 +358,8 @@ mod tests {
     use weacon_testing::TempDir;
 
     use super::*;
-    use crate::email::Email;
-    use crate::test_support::fresh_account;
-
-    const NOW: i64 = 1_762_077_600;
+    use crate::db::test_support::{NOW, code, id};
+    use crate::test_support::{email, fresh_account};
 
     struct Setup {
         _dir: TempDir,
@@ -377,9 +372,8 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let db = Db::create(&dir.join("weacon.db")).await.unwrap();
         let (ada, bo) = (fresh_account(), fresh_account());
-        for (account, email) in [(&ada, "ada@example.com"), (&bo, "bo@example.com")] {
-            let email = Email::parse(email).unwrap();
-            db.add_account(account, &email).await.unwrap();
+        for (account, address) in [(&ada, "ada@example.com"), (&bo, "bo@example.com")] {
+            db.add_account(account, &email(address)).await.unwrap();
         }
         Setup {
             _dir: dir,
@@ -387,10 +381,6 @@ mod tests {
             ada,
             bo,
         }
-    }
-
-    fn id<T: TryFrom<String>>(id: &str) -> T {
-        T::try_from(id.to_owned()).ok().unwrap()
     }
 
     fn key() -> MachineKey {
@@ -425,9 +415,12 @@ mod tests {
     }
 
     async fn claim(db: &Db, pairing: &str, secret: &[u8], now: i64) -> Claim {
-        db.claim_pairing(&id(pairing), secret, b"token", now)
-            .await
-            .unwrap()
+        let claiming = Claiming {
+            pairing: &id(pairing),
+            secret_hash: secret,
+            token_hash: b"token",
+        };
+        db.claim_pairing(&claiming, now).await.unwrap()
     }
 
     #[tokio::test]
@@ -539,9 +532,10 @@ mod tests {
     #[test]
     fn every_known_system_is_stored_and_read_back() {
         for os in [MachineOs::Macos, MachineOs::Linux, MachineOs::Windows] {
-            assert_eq!(os_of(os_text(os).unwrap()).unwrap(), os);
+            assert_eq!(stored_os(os_text(os).unwrap()).unwrap(), os);
         }
-        os_text(MachineOs::Newer).unwrap_err();
-        os_of("plan9").unwrap_err();
+        let (newer, damaged) = (os_text(MachineOs::Newer), stored_os("plan9"));
+        assert_eq!(code(&newer.unwrap_err()), "machine.unknown_value");
+        assert_eq!(code(&damaged.unwrap_err()), "db.unreadable");
     }
 }

@@ -17,7 +17,7 @@ use crate::app::{fresh, new_id};
 use crate::auth::Session;
 use crate::auth::token_hash;
 use crate::client::Client;
-use crate::db::{Claim, Confirmation, NewPairing};
+use crate::db::{Claim, Claiming, Confirmation, NewPairing};
 use crate::http::{Body, Shared, error, failure, not_found, too_many};
 use crate::limit::{HOUR, Limit};
 use crate::secret::{random_token, random_u64};
@@ -157,15 +157,12 @@ pub(crate) async fn claim(
 
 async fn claimed(shared: &Shared, body: &PairClaim) -> Result<Option<PairClaimed>, Fault> {
     let token = to_hex(&shared.secret.machine_token(&body.secret));
-    let claim = shared
-        .db
-        .claim_pairing(
-            &body.pairing,
-            &token_hash(&body.secret),
-            &token_hash(&token),
-            shared.now(),
-        )
-        .await?;
+    let claiming = Claiming {
+        pairing: &body.pairing,
+        secret_hash: &token_hash(&body.secret),
+        token_hash: &token_hash(&token),
+    };
+    let claim = shared.db.claim_pairing(&claiming, shared.now()).await?;
     Ok(match claim {
         Claim::Unknown => None,
         Claim::Waiting => Some(PairClaimed::Waiting),
