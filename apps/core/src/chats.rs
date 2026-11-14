@@ -85,8 +85,7 @@ pub(crate) fn file_stem(chat: &ChatId) -> String {
     crate::names::case_safe_name("c-", chat.as_str())
 }
 
-// Until a chat belongs to a project with a folder of its own, its agent works in one made for
-// it under the work folder, where it can't reach the core's state.
+// A chat's agent works in a folder made for it under the work folder, out of the core's state.
 fn work_dir(
     work_root: Option<&Path>,
     workspace: &WorkspaceId,
@@ -100,7 +99,7 @@ fn work_dir(
     };
     let dir = work_root
         .ok_or_else(failed)?
-        .join(crate::names::case_safe_name("w-", workspace.as_str()))
+        .join(crate::workspaces::folder_name(workspace))
         .join(file_stem(chat));
     platform::private_dir(&dir).map_err(|error| failed().because(error))?;
     Ok(dir)

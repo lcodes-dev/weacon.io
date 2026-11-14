@@ -16,6 +16,8 @@ impl<A: Agent> Engine<A> {
         query: ChatQueryKind,
         client: &Client,
     ) -> Result<Option<ChatAnswerKind>, Fault> {
+        // A client that hung up is noticed only when told something, so each subscription first
+        // closes chats only gone clients watched, before opening one more.
         if matches!(query, ChatQueryKind::Subscribe { .. }) {
             self.sweep();
         }

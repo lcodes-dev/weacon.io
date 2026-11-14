@@ -104,7 +104,8 @@ impl Chats {
 struct Chat {
     log: ChatLog,
     subscribers: Vec<Subscriber>,
-    /// The way to the chat's running agent.
+    /// The way to the chat's agent: none without one, closed once it stopped reading, until
+    /// its exit is reported.
     orders: Option<mpsc::UnboundedSender<Order>>,
     pending_answers: Vec<PendingAnswer>,
     pending_end: Option<PendingEnd>,

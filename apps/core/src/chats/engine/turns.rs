@@ -1,4 +1,6 @@
-//! What the engine does with a chat's turns: end each one, then give the next its run.
+//! What the engine does with a chat's turns. A prompt is logged, queued in the journal and
+//! accepted, then given its turn, which ends with a receipt. Each step is saved before the next;
+//! `advance` finishes what a failed write or a restart left half done.
 
 use weacon_observability::Fault;
 use weacon_protocol::{Outcome, RunId, RunState, RunStatus};
