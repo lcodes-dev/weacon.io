@@ -8,6 +8,9 @@ const PROBLEMS = new Map<Code, string>([
   ["sign_in.too_many", "Too many tries. Wait a while, then try again."],
   ["workspace.name_invalid", "Give it a name of one short line."],
   ["workspace.too_many", "You can't make more workspaces."],
+  ["pairing.not_found", "No machine is waiting under that code. Check it, or run weacon pair again."],
+  ["pairing.too_many", "Too many tries. Wait a while, then try again."],
+  ["machine.not_found", "That machine isn't paired any more."],
 ]);
 
 /** What the page says when a request fails with `code`; codes it doesn't know get a general line. */
