@@ -161,26 +161,26 @@ fn stored_state(text: &str) -> Result<ChatState, Fault> {
 }
 
 #[cfg(test)]
-pub(super) mod test_support {
+pub(crate) mod test_support {
     use weacon_protocol::{ChatEntry, ChatEvent, RequestId, RunEvent, RunId, RunUpdate};
 
     use super::*;
     use crate::test_support::member_id;
 
-    pub(super) const NOW: i64 = 1_762_077_600;
+    pub(crate) const NOW: i64 = 1_762_077_600;
 
-    pub(super) fn id<T: TryFrom<String>>(text: &str) -> T
+    pub(crate) fn id<T: TryFrom<String>>(text: &str) -> T
     where
         T::Error: std::fmt::Debug,
     {
         T::try_from(text.to_owned()).unwrap()
     }
 
-    pub(super) fn code(fault: &Fault) -> &str {
+    pub(crate) fn code(fault: &Fault) -> &str {
         fault.code().as_str()
     }
 
-    pub(super) async fn make(
+    pub(crate) async fn make(
         workspace: &Workspace,
         chat: &str,
         owner: &str,
@@ -209,7 +209,7 @@ pub(super) mod test_support {
         workspace.add_chat(&new, &first).await
     }
 
-    pub(super) fn said(text: &str) -> ChatEvent {
+    pub(crate) fn said(text: &str) -> ChatEvent {
         ChatEvent::Run {
             update: RunUpdate {
                 run: id::<RunId>("run-1"),
@@ -220,7 +220,7 @@ pub(super) mod test_support {
         }
     }
 
-    pub(super) async fn append(
+    pub(crate) async fn append(
         workspace: &Workspace,
         chat: &str,
         events: &[(Option<u64>, ChatEvent)],
@@ -236,7 +236,7 @@ pub(super) mod test_support {
         workspace.append_events(&id(chat), &incoming).await
     }
 
-    pub(super) fn seqs(entries: &[ChatEntry]) -> Vec<u64> {
+    pub(crate) fn seqs(entries: &[ChatEntry]) -> Vec<u64> {
         entries.iter().map(|entry| entry.seq).collect()
     }
 }

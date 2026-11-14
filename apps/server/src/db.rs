@@ -12,6 +12,8 @@ mod schema;
 mod tasks;
 mod workspace;
 
+#[cfg(test)]
+pub(crate) use chats::test_support;
 pub(crate) use chats::{
     CHAT_QUOTA, Chat, Incoming, NewChat, NewRequest, Recorded, chat_not_found, chat_quota_full,
 };

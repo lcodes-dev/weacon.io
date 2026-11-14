@@ -1,6 +1,7 @@
 //! A workspace's chats, which its members' machines run.
 
 mod admit;
+mod read;
 
 use axum::Json;
 use axum::response::{IntoResponse, Response};
