@@ -2,8 +2,8 @@
 
 use weacon_observability::Fault;
 use weacon_protocol::{
-    AgentKind, ChatAction, ChatCommand, ChatEvent, Outcome, PermissionAnswer, RepoId, RequestId,
-    RunEvent, RunState, RunUpdate, code,
+    AgentKind, ChatAction, ChatCommand, ChatEvent, Outcome, PermissionAnswer, RequestId, RunEvent,
+    RunState, RunUpdate, code,
 };
 
 use super::{Answered, Engine, Key, unsupported};
