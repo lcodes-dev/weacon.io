@@ -114,8 +114,7 @@ fn step(state_dir: &Path, own: ReleaseVersion, hooks: Hooks, busy: bool) -> Resu
     if !due(settings, now) {
         return Ok(Found::Nothing);
     }
-    // Not stamped, so the next tick looks again.
-    if installs(settings.schedule) && busy {
+    if waits(settings.schedule, busy) {
         return Ok(Found::Nothing);
     }
     let tick = Tick { now, busy };
@@ -127,6 +126,11 @@ fn step(state_dir: &Path, own: ReleaseVersion, hooks: Hooks, busy: bool) -> Resu
 struct Tick {
     now: u64,
     busy: bool,
+}
+
+/// Whether a check waits, unstamped so the next tick looks again, until no agent is busy.
+fn waits(schedule: UpdateSchedule, busy: bool) -> bool {
+    installs(schedule) && busy
 }
 
 fn installs(schedule: UpdateSchedule) -> bool {
@@ -144,7 +148,6 @@ fn record(
     launch: Launch,
     tick: Tick,
 ) -> Result<Found, Fault> {
-    let now = tick.now;
     let file = settings::file(state_dir);
     let lock = match super::lock(state_dir) {
         Err(fault) if fault.code().as_str() == "update.busy" => return Ok(Found::Nothing),
@@ -155,12 +158,12 @@ fn record(
     if settings.schedule.effective() == UpdateSchedule::Off {
         return Ok(Found::Nothing);
     }
-    // A schedule turned to installing during the fetch waits, unstamped, for an idle tick.
-    if installs(settings.schedule) && tick.busy {
+    // Checked again, for a schedule turned to installing during the fetch.
+    if waits(settings.schedule, tick.busy) {
         return Ok(Found::Nothing);
     }
     let checked_before = settings.last_checked;
-    settings.last_checked = now;
+    settings.last_checked = tick.now;
     let accepted = settings.accept(release);
     let newer = accepted.is_ok() && release.version > own;
     // A refused manifest keeps the offer there was.
@@ -182,7 +185,7 @@ fn record(
         Ok(false) => Ok(Found::Offered(release.version)),
         Err(fault) => {
             // Unstamped, so the next tick tries again instead of a day or a week later.
-            unstamp(state_dir, checked_before, now)?;
+            unstamp(state_dir, checked_before, tick.now)?;
             Err(fault)
         }
     }

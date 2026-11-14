@@ -408,6 +408,21 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
+    async fn a_turns_end_kept_only_in_memory_keeps_the_engine_busy() {
+        let mut on = on_turn().await;
+        let chat = on.engine.open(&key()).await.unwrap();
+        chat.orders = None;
+        chat.pending_end = Some(PendingEnd {
+            turn: prompt("r-1", "Hi").request,
+            outcome: Outcome::Completed,
+        });
+        assert!(on.engine.busy());
+
+        on.engine.open(&key()).await.unwrap().pending_end = None;
+        assert!(!on.engine.busy());
+    }
+
+    #[tokio::test(start_paused = true)]
     async fn an_outcome_left_by_another_turn_doesnt_end_this_one() {
         let mut on = on_turn().await;
         let other = PendingEnd {

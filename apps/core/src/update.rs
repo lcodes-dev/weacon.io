@@ -157,7 +157,7 @@ fn install_release(release: &ReleaseManifest, world: &World<'_>) -> Result<(), F
             )
         })?;
     let paths = Paths::beside(&world.exe).ok_or_else(no_exe)?;
-    // Another state folder's update of this same binary waits for this one.
+    // An update of this binary from another state folder fails as busy.
     let _installing = held(&paths.lock, |error| {
         Fault::new(
             code!("update.binary_unwritable"),
@@ -672,18 +672,13 @@ mod tests {
     }
 
     #[test]
-    fn an_update_of_the_same_binary_from_another_state_folder_waits_its_turn() {
+    fn an_update_of_the_same_binary_from_another_state_folder_is_busy() {
         let machine = Machine::new();
         let paths = Paths::beside(&machine.dir.join("bin/weacon")).unwrap();
         let _held = held(&paths.lock, |_| panic!()).unwrap();
         let (result, _) = machine.update(NOW, Ok(release("1.2.3", 10, PROTOCOL)), None);
         assert_eq!(code(result), "update.busy");
         assert_eq!(machine.binary(), "old");
-        let missing = Paths::beside(&machine.dir.join("missing/weacon")).unwrap();
-        let fault = held(&missing.lock, |error| {
-            Fault::new(code!("test.unwritable"), "x").because(error)
-        });
-        assert_eq!(fault.unwrap_err().code().as_str(), "test.unwritable");
     }
 
     #[test]

@@ -88,8 +88,8 @@ impl Chats {
         answered.await.map_err(|_| stopped())?
     }
 
-    /// Whether an agent is on a turn or waits on a person, or a session the journal couldn't
-    /// save yet is only in memory, which a restart would cut off or lose.
+    /// Whether an agent is on a turn or waits on a person, or a session or a turn's end the
+    /// journal couldn't save yet is only in memory, which a restart would cut off or lose.
     pub(crate) async fn busy(&self) -> Result<bool, Fault> {
         let (answer, answered) = oneshot::channel();
         self.asks
@@ -211,6 +211,7 @@ impl<A: Agent> Engine<A> {
                         key
                     }
                     Some(Ask::Busy(answer)) => {
+                        self.save_pending_sessions().await;
                         // An asker that's gone needs no answer.
                         answer.send(self.busy()).unwrap_or_default();
                         continue;
@@ -320,14 +321,13 @@ impl<A: Agent> Engine<A> {
             .is_some_and(|orders| orders.send(order).is_ok())
     }
 
-    // Whether a live run is on a turn or waits on a person, or a session waits to be saved.
     fn busy(&self) -> bool {
         self.open_chats.iter().any(|(key, chat)| {
-            chat.pending_session.is_some()
-                || chat.orders.is_some()
-                    && self.runs.of(key).is_some_and(|record| {
-                        record.turn.is_some() || record.state == RunState::Waiting
-                    })
+            let live = chat.orders.is_some()
+                && self.runs.of(key).is_some_and(|record| {
+                    record.turn.is_some() || record.state == RunState::Waiting
+                });
+            live || chat.pending_session.is_some() || chat.pending_end.is_some()
         })
     }
 
