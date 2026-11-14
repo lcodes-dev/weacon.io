@@ -28,7 +28,7 @@ impl fmt::Debug for SourceFile {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Index {
     /// Sorted by folder.
-    pub(crate) crates: Vec<Crate>,
+    pub crates: Vec<Crate>,
     /// Sorted by id.
     pub(crate) areas: Vec<Area>,
     /// Sorted.
@@ -61,21 +61,21 @@ impl Located {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct Crate {
+pub struct Crate {
     /// The name code uses, `weacon_protocol` for the package `weacon-protocol`.
-    pub(crate) name: String,
+    pub name: String,
     /// The folder holding `Cargo.toml`, empty at the repository root.
-    pub(crate) folder: String,
+    pub folder: String,
     /// One per file under `src/`, sorted by file.
-    pub(crate) modules: Vec<Module>,
+    pub modules: Vec<Module>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct Module {
+pub struct Module {
     /// Within the crate, `frame::codec`; empty for the crate's root.
-    pub(crate) path: String,
-    pub(crate) file: String,
-    pub(crate) symbols: Vec<Symbol>,
+    pub path: String,
+    pub file: String,
+    pub symbols: Vec<Symbol>,
 }
 
 /// Outlines every crate whose `Cargo.toml` is among `files`, from the `.rs` files under its `src/`.
@@ -211,8 +211,16 @@ fn module_path(folder: &str, file: &str) -> Option<String> {
 impl Index {
     /// The item at `crate_name::module::path::Name`.
     #[must_use]
-    pub(crate) fn symbol(&self, path: &str) -> Option<&Symbol> {
-        self.items.get(path).map(|found| &found.symbol)
+    pub fn symbol(&self, path: &str) -> Option<&Symbol> {
+        let (name, rest) = path.split_once("::")?;
+        let krate = self.crates.iter().find(|krate| krate.name == name)?;
+        krate.modules.iter().find_map(|module| {
+            let name = match module.path.as_str() {
+                "" => Some(rest),
+                prefix => rest.strip_prefix(prefix)?.strip_prefix("::"),
+            }?;
+            module.symbols.iter().find(|symbol| symbol.name == name)
+        })
     }
 
     #[must_use]
