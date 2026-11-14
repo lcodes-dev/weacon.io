@@ -1,3 +1,4 @@
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fmt;
 
@@ -12,7 +13,7 @@ use crate::refs::{Ref, refs};
 use crate::syntax::{line, preorder, push_reversed, test_only, text};
 
 /// An item declared in a module, named relative to it: `Frame`, `Frame::new`, `tests::helper`.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct Symbol {
     pub(crate) kind: Kind,
     pub(crate) name: String,
@@ -22,7 +23,7 @@ pub(crate) struct Symbol {
     pub(crate) fingerprint: Fingerprint,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum Kind {
     Const,
     Enum,
@@ -72,7 +73,7 @@ impl fmt::Display for Kind {
 }
 
 /// A symbol, where it sits in its file, and what its code refers to.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct Item {
     pub(crate) symbol: Symbol,
     /// The inline modules around it, outermost first.
@@ -86,7 +87,7 @@ pub(crate) struct Item {
 }
 
 /// A file's items, its trait impls, and its tests.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct Outline {
     pub(crate) items: Vec<Item>,
     pub(crate) impls: Vec<Impl>,
@@ -95,7 +96,7 @@ pub(crate) struct Outline {
 }
 
 /// An `impl Trait for Type`.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct Impl {
     pub(crate) within: Vec<String>,
     pub(crate) owner: String,
