@@ -12,7 +12,8 @@ test("Send review sends every comment as one prompt, and clears them once it is 
   const { page } = harness;
   await page.getByRole("button", { name: "Changes" }).click();
   const file = page.locator(".diff .file").first();
-  const path = await file.locator("h2 .path").innerText();
+  // A file's section shows before its name does.
+  const path = await file.locator("h2 .path", { hasText: /\S/ }).innerText();
   assert.equal(await page.getByRole("button", { name: "Send review" }).count(), 0);
 
   await dragGutter(page, file, 4, 9);
