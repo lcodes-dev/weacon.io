@@ -39,6 +39,9 @@ export type Status =
   | { state: "live"; server: App; capabilities: string[] }
   | { state: "ended"; code: End };
 
+/** Runs `run` once `ms` have passed; injected, so tests can run it at will. */
+export type Later = (run: () => void, ms: number) => void;
+
 /** Told each change of status, and each message after the welcome. */
 export type Listener = {
   status(status: Status): void;
@@ -48,14 +51,15 @@ export type Listener = {
 /** Says hello as `me` once `socket` opens, then passes on what the server sends. */
 export class Connection {
   #socket: Socket;
+  #listener: Listener;
   #status: Status = { state: "connecting" };
-  #deadline: ReturnType<typeof setTimeout>;
 
-  constructor(socket: Socket, me: App, listener: Listener) {
+  constructor(socket: Socket, me: App, listener: Listener, later: Later) {
     this.#socket = socket;
-    this.#deadline = setTimeout(() => {
+    this.#listener = listener;
+    later(() => {
       if (this.#status.state === "connecting") {
-        this.#end(listener, "connection.no_answer");
+        this.#end("connection.no_answer");
       }
     }, WELCOME_MS);
     socket.addEventListener("open", () => {
@@ -64,14 +68,14 @@ export class Connection {
     socket.addEventListener("message", ({ data }) => {
       const envelope = parse(data);
       if (this.#status.state === "connecting") {
-        this.#welcome(envelope, listener);
+        this.#welcome(envelope);
       } else if (this.#status.state === "live" && envelope !== undefined) {
-        listener.message(envelope);
+        this.#listener.message(envelope);
       }
     });
     socket.addEventListener("close", () => {
       if (this.#status.state !== "ended") {
-        this.#end(listener, this.#status.state === "live" ? "connection.lost" : "connection.refused");
+        this.#end(this.#status.state === "live" ? "connection.lost" : "connection.refused");
       }
     });
   }
@@ -83,31 +87,29 @@ export class Connection {
     }
   }
 
-  #welcome(envelope: Envelope | undefined, listener: Listener): void {
+  #welcome(envelope: Envelope | undefined): void {
     if (envelope?.type !== "welcome") {
       const other = envelope?.type === "error" && envelope.code === "protocol.unsupported";
-      this.#end(listener, other ? "connection.other_protocol" : "connection.refused");
+      this.#end(other ? "connection.other_protocol" : "connection.refused");
       return;
     }
     const capabilities: unknown = envelope.capabilities ?? [];
     if (!isApp(envelope.app) || !isStrings(capabilities)) {
-      this.#end(listener, "connection.refused");
+      this.#end("connection.refused");
       return;
     }
     if (!capabilities.includes(NEEDS)) {
-      this.#end(listener, "connection.server_too_old");
+      this.#end("connection.server_too_old");
       return;
     }
-    clearTimeout(this.#deadline);
     this.#status = { state: "live", server: envelope.app, capabilities };
-    listener.status(this.#status);
+    this.#listener.status(this.#status);
   }
 
-  #end(listener: Listener, code: End): void {
-    clearTimeout(this.#deadline);
+  #end(code: End): void {
     this.#status = { state: "ended", code };
     this.#socket.close();
-    listener.status(this.#status);
+    this.#listener.status(this.#status);
   }
 
   #send(envelope: Envelope): void {

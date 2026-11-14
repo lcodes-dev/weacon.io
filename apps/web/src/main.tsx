@@ -3,14 +3,14 @@ import { createRoot } from "react-dom/client";
 
 import "./app.css";
 import { App } from "./app.tsx";
-import { ME } from "./build.ts";
 import { chatRefOf } from "./chat-ref.ts";
 import { type Send, deliver, prompt } from "./composer/prompt.ts";
-import { Connection, type Status, offers } from "./connection.ts";
+import { Connection, type Later, type Status, offers } from "./connection.ts";
 import { NO_CHANGES, ask, cut, needsAsking, receive } from "./diff/changes.ts";
 import { Feed, nextFrame } from "./feed.ts";
 import { newRequestId } from "./ids.ts";
 import { Log } from "./log.ts";
+import { ME } from "./me.ts";
 import { Receipts } from "./receipts.ts";
 import { fakeServerUrl } from "./server.ts";
 import { Api } from "./shell/api.ts";
@@ -53,13 +53,14 @@ function Root({ url }: { url: string }) {
       setStatus({ state: "ended", code: "connection.refused" });
       return;
     }
-    const receipts = new Receipts((run, ms) => setTimeout(run, ms));
+    const later: Later = (run, ms) => setTimeout(run, ms);
+    const receipts = new Receipts(later);
     const feed = new Feed(
       nextFrame(
         () => document.hidden,
         (run) => requestAnimationFrame(run),
         (frame) => cancelAnimationFrame(frame),
-        (run) => setTimeout(run, HIDDEN_MS),
+        (run) => later(run, HIDDEN_MS),
       ),
       (events) => {
         if (current) {
@@ -108,7 +109,7 @@ function Root({ url }: { url: string }) {
             return;
         }
       },
-    });
+    }, later);
     return () => {
       current = false;
       live.current = undefined;
@@ -131,7 +132,7 @@ function Root({ url }: { url: string }) {
     }
   };
   return (
-    <App me={ME} status={status} transcript={transcript} chatRef={chatRef} send={send} review={{ changes, openChanges }} />
+    <App me={ME} status={status} transcript={transcript} chatRef={chatRef} send={send} changes={changes} openChanges={openChanges} />
   );
 }
 

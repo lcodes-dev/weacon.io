@@ -29,14 +29,22 @@ class FakeSocket implements Socket {
   }
 }
 
-function open(): { socket: FakeSocket; connection: Connection; statuses: Status[]; messages: Envelope[] } {
+type Opened = { socket: FakeSocket; connection: Connection; statuses: Status[]; messages: Envelope[]; deadline: () => void };
+
+// A connection whose welcome deadline runs only when the test calls it.
+function open(): Opened {
   const socket = new FakeSocket();
   const statuses: Status[] = [];
   const messages: Envelope[] = [];
+  const deadlines: Array<{ run: () => void; ms: number }> = [];
   const listener: Listener = { status: (status) => statuses.push(status), message: (envelope) => messages.push(envelope) };
-  const connection = new Connection(socket, ME, listener);
+  const connection = new Connection(socket, ME, listener, (run, ms) => deadlines.push({ run, ms }));
   socket.fire("open");
-  return { socket, connection, statuses, messages };
+  assert.deepEqual(
+    deadlines.map(({ ms }) => ms),
+    [10_000],
+  );
+  return { socket, connection, statuses, messages, deadline: () => deadlines.forEach(({ run }) => run()) };
 }
 
 const welcome = (capabilities: string[]) => JSON.stringify({ id: 1, type: "welcome", app: SERVER, capabilities });
@@ -108,13 +116,12 @@ test("frames that aren't messages are dropped", () => {
   assert.deepEqual(parse('{"id":0,"type":"newer"}'), { id: 0, type: "newer" });
 });
 
-test("a server that doesn't welcome the app in time ends the connection", (context) => {
-  context.mock.timers.enable({ apis: ["setTimeout"] });
+test("a server that doesn't welcome the app in time ends the connection", () => {
   const late = open();
   const prompt = open();
-  context.mock.timers.tick(9_999);
   prompt.socket.fire("message", welcome(["run.stream"]));
-  context.mock.timers.tick(1);
+  late.deadline();
+  prompt.deadline();
 
   assert.deepEqual(late.statuses, [{ state: "ended", code: "connection.no_answer" }]);
   assert.ok(late.socket.closed);

@@ -1,3 +1,4 @@
+import type { Later } from "./connection.ts";
 import type { Envelope, RequestId } from "./protocol.ts";
 
 /** How a command ended for its sender; `lost` and `unsure` may or may not have run. */
@@ -23,9 +24,9 @@ type Waiting = { id: number; settled: Promise<Settled>; resolve: (settled: Settl
  */
 export class Receipts {
   #waiting = new Map<RequestId, Waiting>();
-  #later: (run: () => void, ms: number) => void;
+  #later: Later;
 
-  constructor(later: (run: () => void, ms: number) => void) {
+  constructor(later: Later) {
     this.#later = later;
   }
 

@@ -13,9 +13,6 @@ import { TranscriptView } from "./transcript-view.tsx";
 
 type Shown = "run" | "changes" | "settings";
 
-/** The chat's changes, and what opening them asks of the server. */
-export type Review = { changes: Changes; openChanges: () => void };
-
 /** The page: a header with Changes and Settings, over the run's transcript and the message box, its changes, or Settings. */
 export function App({
   me,
@@ -23,14 +20,17 @@ export function App({
   transcript,
   chatRef,
   send,
-  review,
+  changes,
+  openChanges,
 }: {
   me: Build;
   status: Status;
   transcript: Transcript;
   chatRef: ChatRef | undefined;
   send: Send;
-  review: Review;
+  changes: Changes;
+  /** Asks the server for the chat's changes, when they need asking. */
+  openChanges: () => void;
 }) {
   const [shown, setShown] = useState<Shown>("run");
   const [comments, setComments] = useState<readonly Comment[]>([]);
@@ -44,7 +44,7 @@ export function App({
               <button
                 type="button"
                 onClick={() => {
-                  review.openChanges();
+                  openChanges();
                   setShown("changes");
                 }}
               >
@@ -67,7 +67,7 @@ export function App({
         </div>
         {shown === "changes" && (
           <div className="pane">
-            <DiffView changes={review.changes} comments={comments} setComments={setComments} />
+            <DiffView changes={changes} comments={comments} setComments={setComments} />
           </div>
         )}
         {shown === "settings" && (
