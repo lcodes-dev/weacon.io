@@ -66,11 +66,11 @@ impl Session {
 
 #[cfg(test)]
 mod tests {
+    use weacon_appkit::build;
     use weacon_protocol::{Hello, PROTOCOL, Welcome};
 
     use super::*;
     use crate::test_support::{self, VERSION};
-    use weacon_appkit::build;
 
     fn hello(id: u32, protocol: u32) -> Envelope {
         Envelope {

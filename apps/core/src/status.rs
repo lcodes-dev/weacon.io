@@ -1,5 +1,6 @@
 use std::io::Write;
 
+use weacon_appkit::build;
 use weacon_observability::Fault;
 use weacon_protocol::code;
 
@@ -10,10 +11,7 @@ use crate::daemon::socket_path;
 pub(crate) fn run(app: &App, out: &mut impl Write) -> Result<(), Fault> {
     let state_dir = app.state_dir()?;
     let socket = socket_path(state_dir);
-    let daemon = runtime()?.block_on(weacon_client::handshake(
-        &socket,
-        weacon_appkit::build(&app.version),
-    ))?;
+    let daemon = runtime()?.block_on(weacon_client::handshake(&socket, build(&app.version)))?;
     writeln!(
         out,
         "Daemon: running, weacon {} ({})",

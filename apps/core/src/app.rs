@@ -154,6 +154,15 @@ mod tests {
 
     const DSN: &str = "https://key@sentry.example.com/1";
 
+    #[tokio::test]
+    async fn blocking_work_that_panics_fails_with_io() {
+        let answer = blocking(|| Ok(7)).await.unwrap();
+        let failed = blocking(|| -> io::Result<()> { panic!("work failed") }).await;
+
+        assert_eq!(answer, 7);
+        assert_eq!(failed.unwrap_err().kind(), io::ErrorKind::Other);
+    }
+
     fn start(vars: &[(&str, &str)], verbose: bool) -> (App, Records, Arc<Mutex<Vec<Upload>>>) {
         let env = env(vars);
         let (stderr, records) = recording_sink();
