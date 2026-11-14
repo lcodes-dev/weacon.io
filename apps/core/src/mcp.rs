@@ -108,7 +108,7 @@ pub(crate) fn grant(
         return Ok((launch, None));
     };
     let grant = Grant::new(
-        run_as.chat.workspace.clone(),
+        run_as.key.workspace.clone(),
         run_as.run.clone(),
         launch.cwd.clone(),
     );
@@ -723,7 +723,7 @@ mod tests {
             mcp: None,
         };
         let run_as = RunAs {
-            chat: crate::chats::test_support::key(),
+            key: crate::chats::test_support::key(),
             agent: AgentKind::Claude,
             run: RunId::try_from("run-1".to_owned()).unwrap(),
             session: None,

@@ -67,8 +67,8 @@ impl<A: Agent> Engine<A> {
         let Some(record) = self.runs.of(key) else {
             return Ok(());
         };
-        // `save_ended` has ended a turn whose agent is gone, so one still here is running.
-        if record.turn.is_some() {
+        // A turn whose agent is gone is over, even one `save_ended` couldn't end for want of a run.
+        if record.turn.is_some() && self.is_live(key) {
             return Ok(());
         }
         let Some(next) = record.queue.first().cloned() else {
@@ -169,10 +169,9 @@ mod tests {
     use weacon_protocol::{ChatEvent, Receipt, RequestId, RunEvent, code};
 
     use super::super::agent::Heard;
-    use super::super::by_hand::{hear, latest, on_ask, on_turn, waiting_in};
+    use super::super::by_hand::{hear, latest, on_ask, on_turn, until_deaf, waiting_in};
     use super::*;
     use crate::chats::test_support::{FakeAgent, Told, key, prompt, run, soon};
-    use crate::runs::Queued;
 
     // The outcomes of `request`'s receipts in the log, in order.
     async fn outcomes(engine: &mut Engine<FakeAgent>, request: &RequestId) -> Vec<Outcome> {
@@ -203,14 +202,14 @@ mod tests {
 
         assert_eq!(lost.unwrap_err().code().as_str(), "chat.log_not_written");
         assert_eq!(on.engine.turn(&key()), None);
-        let receipt = ChatEvent::RunStatus {
+        let idle = ChatEvent::RunStatus {
             status: RunStatus {
                 run: run("run-1"),
                 state: RunState::Idle,
                 agent: None,
             },
         };
-        assert_eq!(latest(&mut on.engine).await, receipt);
+        assert_eq!(latest(&mut on.engine).await, idle);
     }
 
     #[tokio::test(start_paused = true)]
@@ -241,12 +240,7 @@ mod tests {
             .unwrap();
         // The agent exits; its report of that isn't handled yet.
         drop(on.agent.say);
-        let mut tries = 0;
-        while on.engine.takes_orders(&key()) && tries < 1000 {
-            tries += 1;
-            tokio::task::yield_now().await;
-        }
-        assert!(!on.engine.takes_orders(&key()));
+        until_deaf(&on.engine).await;
 
         let outcome = Outcome::Completed;
         hear(&mut on.engine, RunEvent::Finished { outcome })
@@ -277,10 +271,9 @@ mod tests {
             .await
             .unwrap();
         // As when the core stopped right after starting a run, before it got a turn.
-        let (run_1, running) = (run("run-1"), RunState::Running);
         let status = RunStatus {
-            run: run_1,
-            state: running,
+            run: run("run-1"),
+            state: RunState::Running,
             agent: None,
         };
         on.engine

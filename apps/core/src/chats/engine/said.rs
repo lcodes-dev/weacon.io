@@ -7,7 +7,13 @@ use weacon_protocol::{
 
 use super::agent::{Agent, Heard, Order};
 use super::cut::cut;
-use super::{ChatKey, Engine, Logged, about, failed};
+use super::{ChatKey, Engine, about, failed};
+
+/// How a run's event reached the log: whole, or cut down to fit one frame.
+enum Logged {
+    Whole,
+    Cut,
+}
 
 impl<A: Agent> Engine<A> {
     pub(super) async fn heard(
@@ -382,7 +388,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn an_answer_on_its_way_to_a_withdrawn_prompt_is_never_given() {
         let mut on = on_ask().await;
-        let answers = on_its_way(&mut on.engine).await;
+        let (answers, _) = on_its_way(&mut on.engine, 1).await;
         let withdrawn = RunEvent::PermissionWithdrawn {
             run: run("run-1"),
             prompt: 1,
@@ -397,7 +403,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn a_withdrawal_that_cant_be_written_still_drops_the_answers_on_their_way() {
         let mut on = on_ask().await;
-        on_its_way(&mut on.engine).await;
+        on_its_way(&mut on.engine, 1).await;
         // Both writes fail: the log is broken, and a folder where its file was keeps it so.
         let file = on
             .engine

@@ -35,7 +35,7 @@ const SAYS: usize = 256;
 /// Which agent to start, and as what.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct RunAs {
-    pub(crate) chat: ChatKey,
+    pub(crate) key: ChatKey,
     pub(crate) agent: AgentKind,
     pub(crate) run: RunId,
     pub(crate) session: Option<AgentSession>,
@@ -119,8 +119,7 @@ impl Chat {
         self.subscribers.retain(|subscriber| !subscriber.is_gone());
     }
 
-    // Whether nothing needs the chat open: no agent, answer, outcome or session still to save,
-    // or subscriber.
+    // Whether nothing needs the chat open.
     fn is_unused(&self) -> bool {
         self.orders.is_none()
             && self.subscribers.is_empty()
@@ -142,12 +141,6 @@ struct PendingAnswer {
 struct PendingEnd {
     turn: RequestId,
     outcome: Outcome,
-}
-
-/// How a run's event reached the log: whole, or cut down to fit one frame.
-enum Logged {
-    Whole,
-    Cut,
 }
 
 /// An interrupt committed and not yet sent, and the turn it stops.
@@ -196,19 +189,19 @@ impl<A: Agent> Engine<A> {
             let key = tokio::select! {
                 ask = self.asked.recv() => match ask {
                     Some(Ask::Command(command, answer)) => {
-                        let key = ChatKey { workspace: command.workspace.clone(), chat: command.chat.clone() };
+                        let key = ChatKey::new(&command.workspace, &command.chat);
                         drop(answer.send(self.command(&key, command).await));
                         key
                     }
                     Some(Ask::Query(query, client, answer)) => {
-                        let key = ChatKey { workspace: query.workspace.clone(), chat: query.chat.clone() };
+                        let key = ChatKey::new(&query.workspace, &query.chat);
                         drop(answer.send(self.query(&key, query.query, &client).await));
                         key
                     }
                     None => return self.log.info("engine stopped", &[]),
                 },
                 Some(said) = self.incoming.recv() => {
-                    let key = said.of.chat;
+                    let key = said.of.key;
                     if let Err(fault) = self.heard(&key, &said.of.run, said.heard).await {
                         let fields = failed(&key, &said.of.run, &fault);
                         self.log.error("run event not committed", &fields);
@@ -333,6 +326,10 @@ impl<A: Agent> Engine<A> {
         self.runs.of(key)?.turn.clone()
     }
 
+    fn run_of(&self, key: &ChatKey) -> Option<RunId> {
+        self.runs.of(key)?.run.clone()
+    }
+
     async fn open(&mut self, key: &ChatKey) -> Result<&mut Chat, Fault> {
         let root = self.workspaces.root(&key.workspace);
         match self.open_chats.entry(key.clone()) {
@@ -368,8 +365,8 @@ impl<A: Agent> Engine<A> {
 }
 
 // What names a chat's run on a log line.
-fn about(key: &ChatKey, run: &RunId) -> Vec<(&'static str, Field)> {
-    vec![
+fn about(key: &ChatKey, run: &RunId) -> [(&'static str, Field); 3] {
+    [
         ("workspace_id", key.workspace.as_str().into()),
         ("chat_id", key.chat.as_str().into()),
         ("run_id", run.as_str().into()),
@@ -377,10 +374,9 @@ fn about(key: &ChatKey, run: &RunId) -> Vec<(&'static str, Field)> {
 }
 
 // What names a chat's run on a log line, and the fault it met.
-fn failed(key: &ChatKey, run: &RunId, fault: &Fault) -> Vec<(&'static str, Field)> {
-    let mut fields = about(key, run);
-    fields.push(("err", Field::error(fault)));
-    fields
+fn failed(key: &ChatKey, run: &RunId, fault: &Fault) -> [(&'static str, Field); 4] {
+    let [workspace, chat, run] = about(key, run);
+    [workspace, chat, run, ("err", Field::error(fault))]
 }
 
 fn update(key: &ChatKey, entry: ChatEntry) -> Message {
@@ -467,7 +463,7 @@ mod tests {
         assert_eq!(
             agent.run_as,
             RunAs {
-                chat: key(),
+                key: key(),
                 agent: AgentKind::Claude,
                 run: run("run-1"),
                 session: None,

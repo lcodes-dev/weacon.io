@@ -13,7 +13,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use weacon_agents::SpawnPolicy;
 use weacon_observability::{Fault, Logger};
-use weacon_protocol::{App, ChatId, WorkspaceId, code};
+use weacon_protocol::{App, ChatId, code};
 
 pub(crate) use engine::Chats;
 use engine::{Engine, Host, RunAs};
@@ -21,7 +21,7 @@ use engine::{Engine, Host, RunAs};
 use crate::mcp::grants::Granted;
 use crate::mcp::{self, Mcp};
 use crate::platform;
-use crate::runs::Runs;
+use crate::runs::{ChatKey, Runs};
 use crate::workspaces::Workspaces;
 
 /// Where the engine finds things on this machine, beside its state folder.
@@ -66,12 +66,8 @@ fn launch(
     app: &App,
     run_as: &RunAs,
 ) -> Result<Granted, Fault> {
-    let cwd = work_dir(
-        places.work_root.as_deref(),
-        &run_as.chat.workspace,
-        &run_as.chat.chat,
-    )?;
-    let launch = roots.launch(&run_as.chat.workspace, run_as.agent, cwd)?;
+    let cwd = work_dir(places.work_root.as_deref(), &run_as.key)?;
+    let launch = roots.launch(&run_as.key.workspace, run_as.agent, cwd)?;
     let (launch, revoke) = mcp::grant(places.mcp.as_ref(), launch, run_as)?;
     let agent = launch.start(policy, app, run_as.run.clone(), run_as.session.as_ref())?;
     Ok(Granted {
@@ -86,11 +82,7 @@ pub(crate) fn file_stem(chat: &ChatId) -> String {
 }
 
 // A chat's agent works in a folder made for it under the work folder, out of the core's state.
-fn work_dir(
-    work_root: Option<&Path>,
-    workspace: &WorkspaceId,
-    chat: &ChatId,
-) -> Result<PathBuf, Fault> {
+fn work_dir(work_root: Option<&Path>, key: &ChatKey) -> Result<PathBuf, Fault> {
     let failed = || {
         Fault::new(
             code!("chat.folder_failed"),
@@ -99,8 +91,8 @@ fn work_dir(
     };
     let dir = work_root
         .ok_or_else(failed)?
-        .join(crate::workspaces::folder_name(workspace))
-        .join(file_stem(chat));
+        .join(crate::workspaces::folder_name(&key.workspace))
+        .join(file_stem(&key.chat));
     platform::private_dir(&dir).map_err(|error| failed().because(error))?;
     Ok(dir)
 }
@@ -126,15 +118,15 @@ mod tests {
         let root = dir.join("Weacon");
         let work = root.join("w-w-1");
 
-        let upper = work_dir(Some(&root), &workspace(), &chat("Ab")).unwrap();
-        let lower = work_dir(Some(&root), &workspace(), &chat("ab")).unwrap();
+        let upper = work_dir(Some(&root), &ChatKey::new(&workspace(), &chat("Ab"))).unwrap();
+        let lower = work_dir(Some(&root), &ChatKey::new(&workspace(), &chat("ab"))).unwrap();
 
         assert_eq!(upper, work.join("c-.ab"));
         assert_eq!(lower, work.join("c-ab"));
         assert!(upper.is_dir() && lower.is_dir());
         std::fs::write(work.join("c-x"), b"").unwrap();
         for root in [Some(root.as_path()), None] {
-            let blocked = work_dir(root, &workspace(), &chat("x")).unwrap_err();
+            let blocked = work_dir(root, &ChatKey::new(&workspace(), &chat("x"))).unwrap_err();
             assert_eq!(blocked.code().as_str(), "chat.folder_failed");
         }
     }
@@ -145,12 +137,15 @@ mod tests {
         platform::plant_program(&dir.join("bin"), "claude", 0o755);
         let state = dir.join("state");
         let workspaces = Workspaces::new(&state, Some(dir.join("bin").into_os_string()));
-        let cwd = work_dir(Some(&dir.join("Weacon")), &workspace(), &chat("c-1")).unwrap();
+        let cwd = work_dir(
+            Some(&dir.join("Weacon")),
+            &ChatKey::new(&workspace(), &chat("c-1")),
+        )
+        .unwrap();
 
         let launch = workspaces.launch(&workspace(), AgentKind::Claude, cwd.clone());
 
         assert_eq!(launch.unwrap().cwd, cwd);
-        // A folder inside the state folder is refused.
         let inside = workspaces.root(&workspace()).join("work");
         std::fs::create_dir_all(&inside).unwrap();
         let refused = workspaces.launch(&workspace(), AgentKind::Claude, inside);
@@ -176,7 +171,7 @@ mod tests {
             mcp: Some(mcp.clone()),
         };
         let run_as = RunAs {
-            chat: key(),
+            key: key(),
             agent: AgentKind::Claude,
             run: weacon_protocol::RunId::try_from("run-1".to_owned()).unwrap(),
             session: None,

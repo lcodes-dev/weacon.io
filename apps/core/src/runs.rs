@@ -32,6 +32,15 @@ pub(crate) struct ChatKey {
     pub(crate) chat: ChatId,
 }
 
+impl ChatKey {
+    pub(crate) fn new(workspace: &WorkspaceId, chat: &ChatId) -> Self {
+        Self {
+            workspace: workspace.clone(),
+            chat: chat.clone(),
+        }
+    }
+}
+
 /// A chat's latest run.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct Record {

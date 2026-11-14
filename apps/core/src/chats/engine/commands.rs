@@ -59,15 +59,21 @@ impl<A: Agent> Engine<A> {
                 agent: named,
                 ..
             } => {
-                let agent = self.agent_of(key, named).await?;
-                if seen != Seen::Pending {
+                let (agent, fresh) = (self.agent_of(key, named).await?, seen != Seen::Pending);
+                if fresh && text.trim().is_empty() {
+                    return Err(Fault::new(
+                        code!("chat.empty_prompt"),
+                        "The prompt is empty",
+                    ));
+                }
+                if fresh {
                     let prompt = ChatEvent::Prompt {
                         request: request.clone(),
                         text: text.clone(),
                         repo,
                         agent: named,
                     };
-                    self.log_prompt(key, prompt).await?;
+                    self.commit(key, prompt).await?;
                 }
                 self.prompt(key, request, text, agent).await
             }
@@ -75,18 +81,6 @@ impl<A: Agent> Engine<A> {
             ChatAction::Interrupt => self.interrupt(key, request).await,
             ChatAction::Newer => Err(unsupported()),
         }
-    }
-
-    // A prompt is in the log before it is queued, and queued before it is accepted. Whichever
-    // step a first try stopped at, sending it again takes it from there.
-    async fn log_prompt(&mut self, key: &ChatKey, prompt: ChatEvent) -> Result<(), Fault> {
-        if matches!(&prompt, ChatEvent::Prompt { text, .. } if text.trim().is_empty()) {
-            return Err(Fault::new(
-                code!("chat.empty_prompt"),
-                "The prompt is empty",
-            ));
-        }
-        self.commit(key, prompt).await
     }
 
     // The chat's agent is the one its first logged prompt named; a later prompt can't change it.
@@ -162,14 +156,9 @@ impl<A: Agent> Engine<A> {
         let live = self.is_live(key);
         let chat = self.open(key).await?;
         let pending = |other: &PendingAnswer| other.request == *request && other.answer == answer;
-        let Some(at) = chat
-            .pending_answers
-            .iter()
-            .position(pending)
-            .filter(|_| live)
-        else {
+        if !live || !chat.pending_answers.iter().any(pending) {
             return Ok(());
-        };
+        }
         if chat.events.runs().waits(&answer.run, answer.prompt) {
             // In the log before the agent is told, so a crash between the two leaves the truth.
             let update = RunUpdate {
@@ -181,7 +170,7 @@ impl<A: Agent> Engine<A> {
             self.commit(key, ChatEvent::Run { update }).await?;
         }
         let chat = self.open(key).await?;
-        chat.pending_answers.remove(at);
+        chat.pending_answers.retain(|other| !pending(other));
         let run = answer.run.clone();
         let resumed = !chat
             .events
@@ -230,16 +219,11 @@ impl<A: Agent> Engine<A> {
 
 #[cfg(test)]
 mod tests {
-
-    use weacon_protocol::{ChatAction, ChatCommand};
-
-    use super::super::PendingAnswer;
     use super::super::by_hand::{allow_one, hear, on_ask, on_its_way, on_turn, waiting_in};
     use super::*;
     use crate::chats::test_support::{
         Told, asks, command, key, logged_prompt, parts, prompt, prompt_naming, run, soon,
     };
-    use crate::runs::Queued;
 
     #[tokio::test(start_paused = true)]
     async fn the_agent_a_logged_first_prompt_named_holds_even_if_it_wasnt_queued() {
@@ -387,7 +371,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn a_retry_naming_another_run_gives_nothing_and_changes_no_run() {
         let mut on = on_ask().await;
-        let mut answers = on_its_way(&mut on.engine).await;
+        let (mut answers, _) = on_its_way(&mut on.engine, 1).await;
         if let ChatAction::Permission { answer } = &mut answers.action {
             answer.run = run("run-9");
         }
@@ -403,27 +387,8 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn an_answer_already_in_the_log_reaches_its_run_once_and_is_logged_once() {
         let mut on = on_ask().await;
-        let (answers, answer) = allow_one("r-2");
-        let answered = PendingAnswer {
-            request: answers.request.clone(),
-            answer: PermissionAnswer {
-                run: run("run-1"),
-                prompt: 1,
-                allow: true,
-            },
-        };
         // As when its receipt and its answer reached the disk but the write was reported failed.
-        on.engine
-            .open(&key())
-            .await
-            .unwrap()
-            .pending_answers
-            .push(answered);
-        let receipt = Outcome::Completed;
-        on.engine
-            .commit_receipt(&key(), &answers.request, receipt)
-            .await
-            .unwrap();
+        let (answers, answer) = on_its_way(&mut on.engine, 1).await;
         let event = RunEvent::PermissionAnswered {
             answer: answer.clone(),
         };
@@ -458,45 +423,17 @@ mod tests {
         let mut on = on_ask().await;
         let asks = asks("run-1", 2);
         hear(&mut on.engine, asks).await.unwrap();
-        let (second, given) = allow_one("r-2");
-        let second = ChatCommand {
-            action: ChatAction::Permission {
-                answer: PermissionAnswer {
-                    prompt: 2,
-                    ..given.clone()
-                },
-            },
-            ..second
-        };
         // As when its receipt was written but its delivery was cut short.
-        let pending = PendingAnswer {
-            request: second.request.clone(),
-            answer: PermissionAnswer {
-                run: run("run-1"),
-                prompt: 2,
-                allow: true,
-            },
-        };
-        on.engine
-            .open(&key())
-            .await
-            .unwrap()
-            .pending_answers
-            .push(pending);
-        let receipt = Outcome::Completed;
-        on.engine
-            .commit_receipt(&key(), &second.request, receipt)
-            .await
-            .unwrap();
+        let (second, two) = on_its_way(&mut on.engine, 2).await;
 
         on.engine.command(&key(), allow_one("r-3").0).await.unwrap();
         on.engine.command(&key(), second).await.unwrap();
 
-        assert_eq!(
-            soon(on.agent.told.recv()).await,
-            Some(Told::Answer(given.clone()))
-        );
-        let two = PermissionAnswer { prompt: 2, ..given };
+        let one = PermissionAnswer {
+            prompt: 1,
+            ..two.clone()
+        };
+        assert_eq!(soon(on.agent.told.recv()).await, Some(Told::Answer(one)));
         assert_eq!(soon(on.agent.told.recv()).await, Some(Told::Answer(two)));
     }
 

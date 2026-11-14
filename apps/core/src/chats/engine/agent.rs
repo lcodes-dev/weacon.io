@@ -53,7 +53,7 @@ pub(crate) enum Order {
 /// Which run of which chat.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct RunOf {
-    pub(crate) chat: ChatKey,
+    pub(crate) key: ChatKey,
     pub(crate) run: RunId,
 }
 
@@ -142,7 +142,14 @@ mod tests {
     use std::time::Duration;
 
     use super::*;
-    use crate::chats::test_support::key;
+    use crate::chats::test_support::{key, run};
+
+    fn of() -> RunOf {
+        RunOf {
+            key: key(),
+            run: run("run-1"),
+        }
+    }
 
     // Says one text, then exits; it panics if asked for more after that.
     struct Brief {
@@ -176,10 +183,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_run_passes_on_what_its_agent_says_then_its_exit_once_and_stops() {
-        let of = RunOf {
-            chat: key(),
-            run: RunId::try_from("run-1".to_owned()).unwrap(),
-        };
+        let of = of();
         let (_orders, ordered) = mpsc::unbounded_channel();
         let (says, mut heard) = mpsc::channel(8);
 
@@ -231,10 +235,7 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn an_agent_whose_pipes_break_is_stopped_once_it_has_said_its_last_words() {
-        let of = RunOf {
-            chat: key(),
-            run: RunId::try_from("run-1".to_owned()).unwrap(),
-        };
+        let of = of();
         let (orders, ordered) = mpsc::unbounded_channel();
         let (says, mut heard) = mpsc::channel(8);
         orders.send(Order::Send("busy".to_owned())).unwrap();
@@ -259,10 +260,7 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn an_agent_that_stops_reading_its_orders_is_stopped() {
-        let of = RunOf {
-            chat: key(),
-            run: RunId::try_from("run-1".to_owned()).unwrap(),
-        };
+        let of = of();
         let (orders, ordered) = mpsc::unbounded_channel();
         let (says, mut heard) = mpsc::channel(8);
         orders.send(Order::Send("stuck".to_owned())).unwrap();
@@ -319,7 +317,7 @@ printf '%s\n' '{"type":"result","subtype":"error_during_execution","is_error":tr
                 access: AccessLevel::AskFirst,
                 mcp: None,
             };
-            let run = RunId::try_from("run-1".to_owned()).unwrap();
+            let run = crate::chats::test_support::run("run-1");
             let app = weacon_appkit::build(&VERSION);
             let mut agent = launch
                 .start(&SpawnPolicy::default(), &app, run.clone(), None)

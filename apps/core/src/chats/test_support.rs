@@ -134,7 +134,7 @@ pub(crate) fn chat(id: &str) -> ChatId {
     ChatId::try_from(id.to_owned()).unwrap()
 }
 
-/// Chat `c-1` in the workspace `workspace` names.
+/// Chat `c-1` in `w-1`.
 pub(crate) fn key() -> ChatKey {
     ChatKey {
         workspace: workspace(),

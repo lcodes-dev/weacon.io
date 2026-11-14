@@ -30,7 +30,7 @@ impl<A: Agent> Engine<A> {
                 chat.subscribers
                     .retain(|subscriber| !subscriber.is_for(client));
                 let missed = chat.events.since(after).await?;
-                let subscriber = Subscriber::new(client, &key.workspace, &key.chat);
+                let subscriber = Subscriber::new(client, key);
                 let (Some(missed), Some(subscriber)) = (missed, subscriber) else {
                     return Ok(Some(ChatAnswerKind::EventsLost));
                 };
