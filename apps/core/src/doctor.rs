@@ -2,7 +2,6 @@ use std::io::{self, Write};
 use std::path::Path;
 
 use weacon_agents::{Launch, SignIn, SpawnPolicy};
-use weacon_appkit::version_text;
 use weacon_observability::{Fault, Field, Logger};
 use weacon_protocol::code;
 
@@ -91,7 +90,7 @@ fn report(app: &App, free_space: disk::FreeSpace) -> String {
         .map_or_else(|| "unavailable".to_owned(), disk::describe);
     format!(
         "weacon {}\nState folder: {}\nLog file: {}\nDisk: {disk}\nError reports: {reports}\n{}",
-        version_text(&app.version),
+        app.version.with_commit(),
         path(app.state_dir.as_deref()),
         path(app.log_file.as_deref()),
         agent_tools(&app.spawn),
@@ -161,7 +160,7 @@ mod tests {
             "",
         )
         .ok();
-        app.reporter = std::sync::Arc::new(weacon_appkit::reporter(
+        app.base.reporter = std::sync::Arc::new(weacon_appkit::reporter(
             reports,
             false,
             Box::new(|_| Ok(())),

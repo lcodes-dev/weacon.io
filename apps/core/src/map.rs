@@ -3,7 +3,7 @@ use std::io::{self, Read, Write};
 use std::path::Path;
 use std::time::Instant;
 
-use weacon_appkit::Outcome;
+use weacon_appkit::Ending;
 use weacon_codemap::{SourceFile, index};
 use weacon_observability::Fault;
 use weacon_protocol::code;
@@ -17,13 +17,13 @@ pub(crate) fn run(
     command: MapCommand,
     input: &mut impl Read,
     out: &mut impl Write,
-) -> Result<Outcome, Fault> {
+) -> Result<Ending, Fault> {
     let MapCommand::CheckAnchors { root } = command;
     let clean = check_anchors(app, &root, input, out)?;
     Ok(if clean {
-        Outcome::Done
+        Ending::Done
     } else {
-        Outcome::Findings
+        Ending::Findings
     })
 }
 
@@ -131,13 +131,13 @@ mod tests {
         root
     }
 
-    fn check(root: &Path, pins: &str) -> (Result<Outcome, Fault>, String) {
+    fn check(root: &Path, pins: &str) -> (Result<Ending, Fault>, String) {
         let mut out = Vec::new();
         let command = MapCommand::CheckAnchors {
             root: root.to_owned(),
         };
-        let outcome = run(&app(None, None), command, &mut pins.as_bytes(), &mut out);
-        (outcome, String::from_utf8(out).unwrap())
+        let ending = run(&app(None, None), command, &mut pins.as_bytes(), &mut out);
+        (ending, String::from_utf8(out).unwrap())
     }
 
     const CRATE: &[(&str, &str)] = &[
@@ -150,16 +150,16 @@ mod tests {
     fn prints_missing_changed_and_malformed_pins() {
         let root = repo(CRATE);
         let pins = "sym:a::m::go#0000000000000000\nsym:a::gone#0000000000000000\nnot a pin\n";
-        let (outcome, found) = check(&root, pins);
-        assert_eq!(outcome.unwrap(), Outcome::Findings);
+        let (ending, found) = check(&root, pins);
+        assert_eq!(ending.unwrap(), Ending::Findings);
         let lines: Vec<&str> = found.lines().collect();
         assert_eq!(lines.len(), 3, "{found}");
         assert!(lines[0].starts_with("changed sym:a::m::go#"), "{found}");
         assert_eq!(lines[1..], ["missing sym:a::gone", "malformed line 3"]);
 
         let current = lines[0].trim_start_matches("changed ");
-        let (outcome, found) = check(&root, current);
-        assert_eq!((outcome.unwrap(), found), (Outcome::Done, String::new()));
+        let (ending, found) = check(&root, current);
+        assert_eq!((ending.unwrap(), found), (Ending::Done, String::new()));
     }
 
     #[test]
