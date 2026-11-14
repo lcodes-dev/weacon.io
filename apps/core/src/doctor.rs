@@ -26,7 +26,7 @@ pub(crate) fn run(app: &App, out: &mut impl Write) -> Result<(), Fault> {
     if let Some(dir) = &app.state_dir {
         let runtime = runtime()?;
         let all = |launches: &[Launch]| runtime.block_on(sign_ins(&app.log, launches));
-        print(workspaces(
+        print(or_unavailable(
             &app.log,
             Workspaces::new(dir, app.path.clone()).describe(all),
         ))?;
@@ -69,7 +69,7 @@ async fn sign_ins(log: &Logger, launches: &[Launch]) -> Vec<Option<SignIn>> {
 }
 
 // Workspaces that can't be listed are said to be, never left out.
-fn workspaces(log: &Logger, lines: io::Result<String>) -> String {
+fn or_unavailable(log: &Logger, lines: io::Result<String>) -> String {
     lines.unwrap_or_else(|error| {
         log.warn("workspaces unreadable", &[("err", Field::error(&error))]);
         "Workspaces: unavailable\n".to_owned()
@@ -262,8 +262,8 @@ mod tests {
     #[test]
     fn workspaces_that_cant_be_listed_are_said_to_be() {
         let (log, records) = test_support::recording_logger();
-        let listed = workspaces(&log, Ok("Workspace w1: Codex signed in\n".to_owned()));
-        let unlisted = workspaces(&log, Err(io::ErrorKind::PermissionDenied.into()));
+        let listed = or_unavailable(&log, Ok("Workspace w1: Codex signed in\n".to_owned()));
+        let unlisted = or_unavailable(&log, Err(io::ErrorKind::PermissionDenied.into()));
 
         assert_eq!(listed, "Workspace w1: Codex signed in\n");
         assert_eq!(unlisted, "Workspaces: unavailable\n");

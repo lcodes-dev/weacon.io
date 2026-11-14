@@ -42,7 +42,7 @@ pub(crate) enum Command {
         /// The workspace's id.
         workspace: WorkspaceId,
         /// What its agents may do: off, read-only, ask-first or full.
-        #[arg(value_parser = crate::workspaces::parse_level)]
+        #[arg(value_parser = crate::workspaces::access::parse_level)]
         level: AccessLevel,
         /// Whether other people are in the workspace; kept as it was when left out.
         #[arg(long)]

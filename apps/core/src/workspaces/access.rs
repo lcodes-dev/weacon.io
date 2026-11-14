@@ -53,10 +53,6 @@ impl Settings {
         weacon_appkit::write_whole(file, &serde_json::to_vec(&self)?)
     }
 
-    pub(crate) const fn level(self) -> &'static str {
-        level_name(self.access)
-    }
-
     /// A line of warning for full access in a team workspace, or nothing.
     pub(crate) fn warning(self) -> &'static str {
         if self.team && self.access == AccessLevel::Full {
@@ -70,7 +66,7 @@ impl Settings {
 
 /// The name `weacon access` takes and shows for `level`; one this build doesn't know allows
 /// nothing.
-const fn level_name(level: AccessLevel) -> &'static str {
+pub(crate) const fn level_name(level: AccessLevel) -> &'static str {
     match level {
         AccessLevel::Off | AccessLevel::Newer => "off",
         AccessLevel::ReadOnly => "read-only",
@@ -121,7 +117,11 @@ pub(crate) fn run(
     })?;
     let ids = [("workspace_id", workspace.as_str().into())];
     app.log.info("access set", &ids);
-    let (id, level, warning) = (workspace.as_str(), settings.level(), settings.warning());
+    let (id, level, warning) = (
+        workspace.as_str(),
+        level_name(settings.access),
+        settings.warning(),
+    );
     write!(out, "Workspace {id}: access {level}\n{warning}").map_err(|error| {
         Fault::new(
             code!("access.output_failed"),
@@ -234,7 +234,7 @@ mod tests {
         );
         let newer = read(r#"{"access":"sandboxed"}"#).unwrap();
         assert_eq!(newer.access, AccessLevel::Newer);
-        assert_eq!((newer.level(), newer.warning()), ("off", ""));
+        assert_eq!((level_name(newer.access), newer.warning()), ("off", ""));
         let broken = read("not json").unwrap_err();
         assert_eq!(broken.code().as_str(), "workspace.settings_unreadable");
     }

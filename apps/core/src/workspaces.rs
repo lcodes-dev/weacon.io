@@ -1,19 +1,18 @@
 //! What this machine keeps for each workspace: a folder of its own, holding each agent's
 //! config folder and so its sign-in.
 
-mod access;
+pub(crate) mod access;
 
 use std::ffi::OsString;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
-use weacon_agents::{Launch, SignIn};
+use weacon_agents::{Launch, SignIn, resolve};
 use weacon_observability::Fault;
 use weacon_protocol::{AccessLevel, AgentKind, WorkspaceId, code};
 
-use access::Settings;
-pub(crate) use access::{parse_level, run as access};
+use access::{Settings, level_name};
 
 use crate::app::{App, state_unavailable};
 use crate::daemon::runtime;
@@ -33,19 +32,19 @@ pub(crate) fn login(app: &App, agent: AgentKind, workspace: &WorkspaceId) -> Res
 
 #[derive(Debug)]
 pub(crate) struct Workspaces {
-    state: PathBuf,
-    dir: PathBuf,
-    settings: PathBuf,
-    path: Option<OsString>,
+    state_dir: PathBuf,
+    roots_dir: PathBuf,
+    settings_dir: PathBuf,
+    env_path: Option<OsString>,
 }
 
 impl Workspaces {
     pub(crate) fn new(state_dir: &Path, path: Option<OsString>) -> Self {
         Self {
-            state: state_dir.to_path_buf(),
-            dir: state_dir.join("workspaces"),
-            settings: state_dir.join("settings"),
-            path,
+            state_dir: state_dir.to_path_buf(),
+            roots_dir: state_dir.join("workspaces"),
+            settings_dir: state_dir.join("settings"),
+            env_path: path,
         }
     }
 
@@ -56,13 +55,13 @@ impl Workspaces {
         agent: AgentKind,
         cwd: PathBuf,
     ) -> Result<Launch, Fault> {
-        let find = |name: &str| platform::find_program(name, self.path.as_deref()?);
+        let find = |name: &str| platform::find_program(name, self.env_path.as_deref()?);
         Launch::new(agent, find, &self.root(workspace), cwd)
     }
 
     /// The workspaces this machine has a folder for, sorted by id; none before the first.
     fn known(&self) -> io::Result<Vec<WorkspaceId>> {
-        let entries = match fs::read_dir(&self.dir) {
+        let entries = match fs::read_dir(&self.roots_dir) {
             Ok(entries) => entries,
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
             Err(error) => return Err(error),
@@ -102,33 +101,45 @@ impl Workspaces {
             .collect();
         let asked: Vec<Launch> = places.iter().flatten().cloned().collect();
         let mut answers = sign_ins(&asked).into_iter();
-        let mut states = places.iter().map(|place| match place {
-            Some(_) => state(answers.next().flatten()),
-            None => "not installed",
-        });
-        let lines = known.iter().map(|workspace| {
-            let agents =
-                AGENTS.map(|(_, name)| format!("{name} {}", states.next().unwrap_or(state(None))));
-            let (id, agents) = (workspace.as_str(), agents.join(", "));
-            match Settings::read(&self.settings_file(workspace)) {
-                Ok(settings) => {
-                    let (level, warning) = (settings.level(), settings.warning());
-                    format!("Workspace {id}: access {level}; {agents}\n{warning}")
-                }
-                Err(_) => format!("Workspace {id}: access unknown; {agents}\n"),
+        let labels: Vec<&str> = places
+            .iter()
+            .map(|place| match place {
+                Some(_) => sign_in_label(answers.next().flatten()),
+                None => "not installed",
+            })
+            .collect();
+        Ok(known
+            .iter()
+            .zip(labels.chunks(AGENTS.len()))
+            .map(|(workspace, labels)| self.line(workspace, labels))
+            .collect())
+    }
+
+    // A workspace's access level and the sign-in of each of its agents, then any warning.
+    fn line(&self, workspace: &WorkspaceId, labels: &[&str]) -> String {
+        let agents: Vec<String> = AGENTS
+            .iter()
+            .zip(labels)
+            .map(|((_, name), label)| format!("{name} {label}"))
+            .collect();
+        let (id, agents) = (workspace.as_str(), agents.join(", "));
+        match Settings::read(&self.settings_file(workspace)) {
+            Ok(settings) => {
+                let (level, warning) = (level_name(settings.access), settings.warning());
+                format!("Workspace {id}: access {level}; {agents}\n{warning}")
             }
-        });
-        Ok(lines.collect())
+            Err(_) => format!("Workspace {id}: access unknown; {agents}\n"),
+        }
     }
 
     /// The folder for everything this machine keeps for `workspace` but its settings.
     pub(crate) fn root(&self, workspace: &WorkspaceId) -> PathBuf {
-        self.dir.join(folder_name(workspace))
+        self.roots_dir.join(folder_name(workspace))
     }
 
     /// The file of `workspace`'s settings, outside every folder an agent is given.
     pub(crate) fn settings_file(&self, workspace: &WorkspaceId) -> PathBuf {
-        self.settings
+        self.settings_dir
             .join(format!("{}.json", folder_name(workspace)))
     }
 
@@ -166,7 +177,7 @@ impl Workspaces {
     // Whether `cwd` is inside the state folder or holds it, so a run could reach the settings;
     // a folder that can't be resolved counts as one that does.
     fn overlaps_state(&self, cwd: &Path) -> bool {
-        let (Some(state), Some(cwd)) = (resolved(&self.state), resolved(cwd)) else {
+        let (Some(state), Some(cwd)) = (resolve(&self.state_dir), resolve(cwd)) else {
             return true;
         };
         cwd.starts_with(&state) || state.starts_with(&cwd)
@@ -191,30 +202,6 @@ impl Workspaces {
     }
 }
 
-// `path` with its deepest existing folder resolved, so a missing path compares like an existing
-// one; `None` when something on the way exists but can't be resolved, such as a dangling symlink.
-fn resolved(path: &Path) -> Option<PathBuf> {
-    let mut missing = Vec::new();
-    let mut base = path;
-    loop {
-        match base.canonicalize() {
-            Ok(found) => {
-                return Some(
-                    missing
-                        .iter()
-                        .rev()
-                        .fold(found, |path, name| path.join(name)),
-                );
-            }
-            Err(error) if error.kind() != io::ErrorKind::NotFound => return None,
-            Err(_) if base.symlink_metadata().is_ok() => return None,
-            Err(_) => {}
-        }
-        missing.push(base.file_name()?);
-        base = base.parent()?;
-    }
-}
-
 const AGENTS: [(AgentKind, &str); 2] = [
     (AgentKind::Claude, "Claude Code"),
     (AgentKind::Codex, "Codex"),
@@ -224,7 +211,7 @@ fn folder_name(workspace: &WorkspaceId) -> String {
     platform::case_safe_name("w-", workspace.as_str())
 }
 
-const fn state(sign_in: Option<SignIn>) -> &'static str {
+const fn sign_in_label(sign_in: Option<SignIn>) -> &'static str {
     match sign_in {
         Some(SignIn::SignedIn) => "signed in",
         Some(SignIn::SignedOut) => "signed out",
