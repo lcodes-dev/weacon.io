@@ -1,8 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { type Answers, answerProblem, answeredUnder, askKey, sending, settle, settleLate, stopProblem } from "./asks.ts";
-import { chatCommand } from "../composer/prompt.ts";
+import { type Answers, answerProblem, askKey, sending, settle, settleAnswer, stopProblem } from "./asks.ts";
 
 const key = askKey("r-1", 2);
 const mine = (allow: boolean) => ({ run: "r-1", prompt: 2, allow });
@@ -51,36 +50,22 @@ test("a prompt says why its answer may not have been taken", () => {
   assert.equal(answerProblem(settle(first, key, "a-1", "unsure").get(key)), "The server didn't answer. The answer may not have been sent.");
 });
 
-test("a chat command carries its chat, request and action", () => {
-  const ref = { workspace: "w-1", chat: "c-1" };
-
-  assert.deepEqual(chatCommand(4, ref, "a-1", { kind: "permission", answer: { run: "r-1", prompt: 2, allow: false } }), {
-    id: 4,
-    type: "chat_command",
-    workspace: "w-1",
-    chat: "c-1",
-    request: "a-1",
-    action: { kind: "permission", answer: { run: "r-1", prompt: 2, allow: false } },
-  });
-  assert.deepEqual(chatCommand(5, ref, "s-1", { kind: "interrupt" }), {
-    id: 5,
-    type: "chat_command",
-    workspace: "w-1",
-    chat: "c-1",
-    request: "s-1",
-    action: { kind: "interrupt" },
-  });
-});
-
-test("a late receipt settles the answer sent under its request", () => {
+test("an answer settles under the prompt it was sent for, on time or late, and only its own", () => {
   const ids = fresh();
-  const unsure = settle(sending(none, mine(true), ids).answers, key, "a-1", "unsure");
+  const first = sending(none, mine(true), ids);
+  const sent = new Map([
+    ["a-1", { run: "r-1", prompt: 2 }],
+    ["a-2", { run: "r-1", prompt: 2 }],
+  ]);
+  const unsure = settleAnswer(first.answers, sent, "a-1", "unsure");
+  const replaced = sending(unsure, mine(false), ids).answers;
 
-  assert.equal(settleLate(unsure, "a-1", "accepted").size, 0);
-  assert.equal(answerProblem(settleLate(unsure, "a-1", "refused").get(key)), "The answer wasn't taken.");
-  assert.equal(settleLate(unsure, "a-9", "accepted"), unsure);
-  assert.equal(answeredUnder(unsure, "a-1")?.prompt, 2);
-  assert.equal(answeredUnder(unsure, "a-9"), undefined);
+  assert.equal(settleAnswer(unsure, sent, "a-1", "accepted").size, 0);
+  assert.equal(answerProblem(settleAnswer(unsure, sent, "a-1", "refused").get(key)), "The answer wasn't taken.");
+  assert.equal(settleAnswer(unsure, sent, "q-9", "accepted"), unsure);
+  // The late word on the first answer leaves the one that replaced it.
+  assert.equal(settleAnswer(replaced, sent, "a-1", "accepted"), replaced);
+  assert.equal(settleAnswer(replaced, sent, "a-2", "accepted").size, 0);
 });
 
 test("Stop says why it may not have worked", () => {
