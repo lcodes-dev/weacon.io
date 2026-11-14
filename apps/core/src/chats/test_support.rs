@@ -226,6 +226,7 @@ fn event(event: &ChatEvent) -> String {
         ChatEvent::RunStatus { status } => {
             format!("{} is {:?}", status.run.as_str(), status.state)
         }
+        ChatEvent::OutsidePrompt { text } => format!("outside prompt {text}"),
         ChatEvent::Newer => "newer".to_owned(),
     }
 }
@@ -239,6 +240,7 @@ fn said(event: &RunEvent) -> String {
         RunEvent::ToolDone { .. } => "tool done".to_owned(),
         RunEvent::PermissionAsked { prompt, .. } => format!("asks {prompt}"),
         RunEvent::PermissionWithdrawn { prompt, .. } => format!("withdraws {prompt}"),
+        RunEvent::PermissionAnswered { answer } => format!("answered {}", answer.prompt),
         RunEvent::Finished { outcome: ended } => format!("finished {}", outcome(ended)),
         RunEvent::Newer => "newer".to_owned(),
     }

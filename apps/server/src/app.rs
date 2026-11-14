@@ -36,23 +36,17 @@ pub(crate) fn panicked() -> Fault {
 mod tests {
     use std::io;
     use std::process::ExitCode;
-    use std::sync::Mutex;
 
-    use weacon_observability::Upload;
+    use weacon_testing::{Uploads, recording_deliver};
 
     use super::*;
     use crate::test_support::{Records, VERSION, messages, recording_sink};
 
     const DSN: &str = "https://key@sentry.example.com/1";
 
-    fn started(dsn: Option<&str>) -> (App, Records, Arc<Mutex<Vec<Upload>>>) {
+    fn started(dsn: Option<&str>) -> (App, Records, Uploads) {
         let (logs, records) = recording_sink();
-        let uploads = Arc::new(Mutex::new(Vec::new()));
-        let seen = Arc::clone(&uploads);
-        let deliver: Deliver = Box::new(move |upload| {
-            seen.lock().unwrap().push(upload.clone());
-            Ok(())
-        });
+        let (deliver, uploads) = recording_deliver();
         (start(VERSION, logs, deliver, dsn), records, uploads)
     }
 

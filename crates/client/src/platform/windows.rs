@@ -184,7 +184,7 @@ pub fn make_private(dir: &Path) -> io::Result<()> {
 ///
 /// # Errors
 /// When Windows won't say.
-pub(crate) fn current_user() -> io::Result<String> {
+pub fn current_user() -> io::Result<String> {
     // Room for a TOKEN_USER and the longest SID, aligned for the struct.
     let mut buffer = [0_u64; 16];
     let len = size_of_val(&buffer);

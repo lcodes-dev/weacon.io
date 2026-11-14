@@ -104,6 +104,10 @@ pub enum ChatEvent {
     RunStatus {
         status: RunStatus,
     },
+    /// A prompt typed outside Weacon, read from an agent's own session file.
+    OutsidePrompt {
+        text: String,
+    },
     /// An event this build doesn't know, from a newer peer; only ever received.
     #[serde(other)]
     #[schemars(skip)]
@@ -207,7 +211,7 @@ pub struct ChatList {
 impl ChatEvent {
     pub(crate) const fn is_newer(&self) -> bool {
         match self {
-            Self::Prompt { .. } => false,
+            Self::Prompt { .. } | Self::OutsidePrompt { .. } => false,
             Self::Receipt { receipt } => receipt.outcome.is_newer(),
             Self::Run { update } => update.event.is_newer(),
             Self::RunStatus { status } => status.is_newer(),
@@ -229,7 +233,7 @@ impl ChatAnswerKind {
     }
 }
 
-fn any_newer(entries: &[ChatEntry]) -> bool {
+pub(crate) fn any_newer(entries: &[ChatEntry]) -> bool {
     entries.iter().any(|entry| entry.event.is_newer())
 }
 
@@ -238,30 +242,11 @@ mod tests {
     use serde_json::{Value, json};
 
     use super::*;
-    use crate::{Envelope, FrameError, Message, Outcome, RunEvent, RunId, RunState};
-
-    fn run() -> RunId {
-        RunId::try_from("run-7".to_owned()).unwrap()
-    }
+    use crate::test_support::{chat, envelope, never_sent, request, run, travels, workspace};
+    use crate::{Envelope, Message, Outcome, RunEvent, RunState};
 
     fn repo() -> RepoId {
-        RepoId::try_from("site".to_owned()).unwrap()
-    }
-
-    fn workspace() -> WorkspaceId {
-        WorkspaceId::try_from("w-1".to_owned()).unwrap()
-    }
-
-    fn chat() -> ChatId {
-        ChatId::try_from("c-1".to_owned()).unwrap()
-    }
-
-    fn request() -> RequestId {
-        RequestId::try_from("r-1".to_owned()).unwrap()
-    }
-
-    fn envelope(message: Message) -> Envelope {
-        Envelope { id: 4, message }
+        "site".parse().unwrap()
     }
 
     fn command(action: ChatAction) -> Envelope {
@@ -328,28 +313,6 @@ mod tests {
         about("chat", "entry", &json!({ "seq": 9, "event": event }))
     }
 
-    fn travels(envelope: &Envelope, wire: Value) {
-        assert_eq!(serde_json::to_value(envelope).unwrap(), wire);
-        assert_eq!(
-            Envelope::from_json(&envelope.to_json().unwrap()).unwrap(),
-            *envelope
-        );
-        assert_eq!(serde_json::from_value::<Envelope>(wire).unwrap(), *envelope);
-    }
-
-    fn never_sent(received: impl IntoIterator<Item = Value>) {
-        for wire in received {
-            let envelope: Envelope = serde_json::from_value(wire.clone()).unwrap();
-            assert_eq!(envelope.to_json(), Err(FrameError::Invalid), "{wire}");
-        }
-    }
-
-    #[test]
-    fn chat_ids_are_plain_tokens_checked_on_arrival() {
-        assert_eq!(ChatId::try_from("a b".to_owned()), Err("a b".to_owned()));
-        serde_json::from_value::<ChatId>(json!("a/b")).unwrap_err();
-    }
-
     #[test]
     fn commands_have_a_tagged_shape() {
         let answer = PermissionAnswer {
@@ -371,7 +334,7 @@ mod tests {
                 ChatAction::Prompt {
                     text: "Fix the build".to_owned(),
                     repo: Some(repo()),
-                    machine: Some(MachineId::try_from("mc-1".to_owned()).unwrap()),
+                    machine: Some("mc-1".parse().unwrap()),
                     agent: Some(AgentKind::Codex),
                 },
                 json!({ "kind": "prompt", "text": "Fix the build", "repo": "site",
@@ -398,8 +361,8 @@ mod tests {
             chat: chat(),
             action: ChatAction::Interrupt,
             by: Some(Asker {
-                account: AccountId::try_from("a-1".to_owned()).unwrap(),
-                member: MemberId::try_from("m-1".to_owned()).unwrap(),
+                account: "a-1".parse().unwrap(),
+                member: "m-1".parse().unwrap(),
             }),
         }));
         let mut wire = command_wire(&json!({ "kind": "interrupt" }));
@@ -545,12 +508,12 @@ mod tests {
 
     #[test]
     fn a_newer_peers_actions_events_and_queries_parse_and_are_never_sent() {
-        let newer: Envelope =
-            serde_json::from_value(command_wire(&json!({ "kind": "fork", "at": 3 }))).unwrap();
-        assert_eq!(newer, command(ChatAction::Newer));
+        assert_eq!(
+            never_sent(command_wire(&json!({ "kind": "fork", "at": 3 }))),
+            command(ChatAction::Newer)
+        );
 
-        never_sent([
-            command_wire(&json!({ "kind": "fork", "at": 3 })),
+        let received = [
             entry_wire(&json!({ "kind": "note" })),
             entry_wire(&json!({ "kind": "run_status",
                                 "status": { "run": "run-7", "state": "paused" } })),
@@ -567,7 +530,10 @@ mod tests {
                                 "agent": { "kind": "claude", "owner": { "kind": "team" } } } }),
             ),
             about("chat_query", "query", &json!({ "kind": "search" })),
-        ]);
+        ];
+        for wire in received {
+            never_sent(wire);
+        }
     }
 
     #[test]
@@ -576,16 +542,15 @@ mod tests {
         let state = json!({ "run": "run-7", "state": "paused" });
         let snapshot = |runs: Value, events: Value| json!({ "kind": "snapshot", "seq": 1, "runs": runs, "waiting": [], "events": events });
 
-        never_sent(
-            [
-                json!({ "kind": "moved" }),
-                json!({ "kind": "window", "events": [event] }),
-                snapshot(json!([state]), json!([])),
-                snapshot(json!([]), json!([event])),
-            ]
-            .iter()
-            .map(|answer| about("chat_answer", "answer", answer)),
-        );
+        let answers = [
+            json!({ "kind": "moved" }),
+            json!({ "kind": "window", "events": [event] }),
+            snapshot(json!([state]), json!([])),
+            snapshot(json!([]), json!([event])),
+        ];
+        for answer in answers {
+            never_sent(about("chat_answer", "answer", &answer));
+        }
     }
 
     #[test]
@@ -594,7 +559,7 @@ mod tests {
             chats: vec![ChatSummary {
                 id: chat(),
                 title: "Fix the build".to_owned(),
-                owner: MemberId::try_from("m-1".to_owned()).unwrap(),
+                owner: "m-1".parse().unwrap(),
                 machine: MachineName::try_from("Ada's laptop".to_owned()).unwrap(),
                 state: ChatState::Full,
                 updated_at: 1_700_000_000,

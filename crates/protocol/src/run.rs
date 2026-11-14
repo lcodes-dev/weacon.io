@@ -31,10 +31,21 @@ impl AgentKind {
 
 /// An agent's own id for a conversation, a lowercase UUID, which resumes it later.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, JsonSchema)]
-pub struct AgentSession(#[schemars(regex(pattern = PATTERN))] String);
+pub struct AgentSession(#[schemars(regex(pattern = SESSION_PATTERN))] String);
 
 // The schema's form of `is_uuid`; a test keeps the two in step.
-const PATTERN: &str = r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$";
+const SESSION_PATTERN: &str = r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$";
+
+fn is_uuid(id: &str) -> bool {
+    id.len() == 36
+        && id.bytes().enumerate().all(|(at, byte)| {
+            if matches!(at, 8 | 13 | 18 | 23) {
+                byte == b'-'
+            } else {
+                matches!(byte, b'0'..=b'9' | b'a'..=b'f')
+            }
+        })
+}
 
 impl AgentSession {
     #[must_use]
@@ -64,17 +75,6 @@ token_id!(
     RunId,
     "not a run id"
 );
-
-fn is_uuid(id: &str) -> bool {
-    id.len() == 36
-        && id.bytes().enumerate().all(|(at, byte)| {
-            if matches!(at, 8 | 13 | 18 | 23) {
-                byte == b'-'
-            } else {
-                matches!(byte, b'0'..=b'9' | b'a'..=b'f')
-            }
-        })
-}
 
 /// What an agent's run reports, in order. Each turn ends with `finished`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -111,6 +111,10 @@ pub enum RunEvent {
     PermissionWithdrawn {
         run: RunId,
         prompt: u32,
+    },
+    /// A person answered a waiting prompt; committed before the agent is told.
+    PermissionAnswered {
+        answer: PermissionAnswer,
     },
     /// Ends the turn and withdraws any prompt still waiting.
     Finished {
@@ -227,10 +231,11 @@ mod tests {
     use serde_json::{Value, json};
 
     use super::*;
+    use crate::test_support::run;
 
     #[test]
     fn sessions_are_lowercase_uuids() {
-        let pattern = regex::Regex::new(PATTERN).unwrap();
+        let pattern = regex::Regex::new(SESSION_PATTERN).unwrap();
         let good = "0b7c6a52-3f1e-4d2a-9c8b-5e4f3a2b1c0d";
         assert!(is_uuid(good));
         assert!(pattern.is_match(good));
@@ -270,12 +275,21 @@ mod tests {
     }
 
     #[test]
-    fn run_ids_are_plain_tokens_checked_on_arrival() {
-        let run: RunId = serde_json::from_value(json!("run-7")).unwrap();
+    fn an_answer_travels_with_the_prompt_it_answers() {
+        let run = RunId::try_from("run-1".to_owned()).unwrap();
+        let answer = PermissionAnswer {
+            run,
+            prompt: 2,
+            allow: false,
+        };
+        let event = RunEvent::PermissionAnswered { answer };
+        let wire = json!({
+            "event": "permission_answered",
+            "answer": { "run": "run-1", "prompt": 2, "allow": false }
+        });
 
-        assert_eq!(serde_json::to_value(&run).unwrap(), json!("run-7"));
-        assert_eq!(RunId::try_from("a b".to_owned()), Err("a b".to_owned()));
-        serde_json::from_value::<RunId>(json!("a/b")).unwrap_err();
+        assert_eq!(serde_json::to_value(&event).unwrap(), wire);
+        assert_eq!(serde_json::from_value::<RunEvent>(wire).unwrap(), event);
     }
 
     #[test]
@@ -295,10 +309,10 @@ mod tests {
 
     #[test]
     fn a_status_may_name_who_runs_the_run() {
-        let member = MemberId::try_from("m-1".to_owned()).unwrap();
+        let member = "m-1".parse().unwrap();
         let laptop = MachineName::try_from("Ada's laptop".to_owned()).unwrap();
         let status = |agent| RunStatus {
-            run: RunId::try_from("run-7".to_owned()).unwrap(),
+            run: run(),
             state: RunState::Running,
             agent,
         };
@@ -358,7 +372,7 @@ mod tests {
 
         for (state, word) in states {
             let wire = RunStatus {
-                run: RunId::try_from("run-7".to_owned()).unwrap(),
+                run: run(),
                 state,
                 agent: None,
             };

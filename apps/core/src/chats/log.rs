@@ -5,6 +5,7 @@ use std::fs::{File, OpenOptions};
 use std::io::{self, BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::Path;
 
+use weacon_model::ChatRuns;
 use weacon_observability::Fault;
 use weacon_protocol::{
     AgentKind, ChatAction, ChatEntry, ChatEvent, ChatId, MAX_FRAME, Outcome, RequestId, RunEvent,
@@ -33,6 +34,7 @@ pub(crate) struct Log {
     broken: bool,
     /// The agent the chat's first prompt named, Claude when it named none.
     agent: Option<AgentKind>,
+    runs: ChatRuns,
 }
 
 /// What the log holds of one command.
@@ -80,6 +82,7 @@ impl Log {
                 requests: HashMap::new(),
                 broken: false,
                 agent: None,
+                runs: ChatRuns::default(),
             };
             weacon_appkit::sync_dir(&dir)?;
             weacon_appkit::sync_dir(&workspace_root)?;
@@ -119,6 +122,7 @@ impl Log {
     }
 
     fn keep(&mut self, entry: &ChatEntry, len: usize) {
+        self.runs.apply(entry);
         match &entry.event {
             ChatEvent::Prompt { request, agent, .. } => {
                 self.requests.entry(request.clone()).or_default().prompt = Some(entry.seq);
@@ -131,7 +135,10 @@ impl Log {
                 asked.receipted = true;
                 asked.ended |= receipt.outcome != Outcome::Accepted;
             }
-            ChatEvent::Run { .. } | ChatEvent::RunStatus { .. } | ChatEvent::Newer => {}
+            ChatEvent::Run { .. }
+            | ChatEvent::RunStatus { .. }
+            | ChatEvent::OutsidePrompt { .. }
+            | ChatEvent::Newer => {}
         }
         self.starts.push(self.end);
         self.end += u64::try_from(len).unwrap_or(u64::MAX);
@@ -140,6 +147,11 @@ impl Log {
     /// The chat's agent, once a prompt is in the log.
     pub(crate) const fn agent(&self) -> Option<AgentKind> {
         self.agent
+    }
+
+    /// Where the chat's runs stand, as its entries say.
+    pub(crate) const fn runs(&self) -> &ChatRuns {
+        &self.runs
     }
 
     /// The last entry's place, 0 while the log is empty.

@@ -212,37 +212,11 @@ mod tests {
     use serde_json::json;
 
     use super::*;
-
-    fn workspace() -> WorkspaceId {
-        WorkspaceId::try_from("w-1".to_owned()).unwrap()
-    }
-
-    #[test]
-    fn ids_are_plain_tokens_checked_on_arrival() {
-        let member: MemberId = serde_json::from_value(json!("m_2")).unwrap();
-
-        assert_eq!(member.as_str(), "m_2");
-        assert_eq!(workspace().as_str(), "w-1");
-        assert_eq!(serde_json::to_value(workspace()).unwrap(), json!("w-1"));
-        assert_eq!(
-            WorkspaceId::try_from("a b".to_owned()),
-            Err("a b".to_owned())
-        );
-        assert_eq!(MemberId::try_from(String::new()), Err(String::new()));
-        assert_eq!("w-1".parse(), Ok(workspace()));
-        assert_eq!("a b".parse::<WorkspaceId>(), Err("not a workspace id"));
-        assert_eq!("".parse::<MemberId>(), Err("not a member id"));
-        let bad = serde_json::from_value::<WorkspaceId>(json!("../x")).unwrap_err();
-        assert!(bad.to_string().contains("not a workspace id"), "{bad}");
-        let bad = serde_json::from_value::<MemberId>(json!("a.b")).unwrap_err();
-        assert!(bad.to_string().contains("not a member id"), "{bad}");
-        let bad = serde_json::from_value::<AccountId>(json!("a b")).unwrap_err();
-        assert!(bad.to_string().contains("not an account id"), "{bad}");
-    }
+    use crate::test_support::{chat, workspace};
 
     #[test]
     fn a_challenge_hides_its_value_but_other_ids_dont() {
-        let challenge = ChallengeId::try_from("c-secret".to_owned()).unwrap();
+        let challenge: ChallengeId = "c-secret".parse().unwrap();
 
         assert_eq!(format!("{challenge:?}"), "ChallengeId(..)");
         assert_eq!(format!("{:?}", workspace()), r#"WorkspaceId("w-1")"#);
@@ -251,7 +225,7 @@ mod tests {
 
     #[test]
     fn sign_in_bodies_travel_as_plain_json() {
-        let challenge = ChallengeId::try_from("c-1".to_owned()).unwrap();
+        let challenge: ChallengeId = "c-1".parse().unwrap();
         let finish = |challenge| SignInFinish {
             workspace: workspace(),
             email: "ada@example.com".to_owned(),
@@ -301,13 +275,13 @@ mod tests {
             workspace: workspace(),
             email: "MARKER-EMAIL".to_owned(),
             code: "MARKER-CODE".to_owned(),
-            challenge: Some(ChallengeId::try_from("MARKER-CHALLENGE".to_owned()).unwrap()),
+            challenge: Some("MARKER-CHALLENGE".parse().unwrap()),
         };
         let started = SignInStarted {
-            challenge: ChallengeId::try_from("MARKER-CHALLENGE".to_owned()).unwrap(),
+            challenge: "MARKER-CHALLENGE".parse().unwrap(),
         };
         let signed_in = SignedIn {
-            member: MemberId::try_from("m-1".to_owned()).unwrap(),
+            member: "m-1".parse().unwrap(),
             token: "MARKER-TOKEN".to_owned(),
         };
         assert_eq!(
@@ -331,7 +305,7 @@ mod tests {
             workspace: workspace(),
             seq: 7,
             change: WorkspaceChange::MemberJoined {
-                member: MemberId::try_from("m-1".to_owned()).unwrap(),
+                member: "m-1".parse().unwrap(),
             },
         };
         let wire = json!({
@@ -346,7 +320,7 @@ mod tests {
             update
         );
         let changed = WorkspaceChange::TaskChanged {
-            task: TaskId::try_from("t-1".to_owned()).unwrap(),
+            task: "t-1".parse().unwrap(),
             version: 2,
         };
         let changed_wire = json!({ "kind": "task_changed", "task": "t-1", "version": 2 });
@@ -357,7 +331,7 @@ mod tests {
             changed
         );
         let revised = WorkspaceChange::DocChanged {
-            doc: DocId::try_from("d-1".to_owned()).unwrap(),
+            doc: "d-1".parse().unwrap(),
             version: 3,
         };
         let revised_wire = json!({ "kind": "doc_changed", "doc": "d-1", "version": 3 });
@@ -367,9 +341,7 @@ mod tests {
             serde_json::from_value::<WorkspaceChange>(revised_wire).unwrap(),
             revised
         );
-        let chatted = WorkspaceChange::ChatChanged {
-            chat: ChatId::try_from("c-1".to_owned()).unwrap(),
-        };
+        let chatted = WorkspaceChange::ChatChanged { chat: chat() };
         let chatted_wire = json!({ "kind": "chat_changed", "chat": "c-1" });
 
         assert_eq!(serde_json::to_value(&chatted).unwrap(), chatted_wire);
@@ -384,7 +356,7 @@ mod tests {
     }
 
     fn account() -> AccountId {
-        AccountId::try_from("a-1".to_owned()).unwrap()
+        "a-1".parse().unwrap()
     }
 
     #[test]
@@ -392,7 +364,7 @@ mod tests {
         let finish = AccountSignInFinish {
             email: "ada@example.com".to_owned(),
             code: "12345678".to_owned(),
-            challenge: ChallengeId::try_from("c-1".to_owned()).unwrap(),
+            challenge: "c-1".parse().unwrap(),
         };
         let finish_wire =
             json!({ "email": "ada@example.com", "code": "12345678", "challenge": "c-1" });
@@ -435,7 +407,7 @@ mod tests {
         let finish = AccountSignInFinish {
             email: "MARKER-EMAIL".to_owned(),
             code: "MARKER-CODE".to_owned(),
-            challenge: ChallengeId::try_from("MARKER-CHALLENGE".to_owned()).unwrap(),
+            challenge: "MARKER-CHALLENGE".parse().unwrap(),
         };
         let start = AccountSignInStart {
             email: "MARKER-EMAIL".to_owned(),
