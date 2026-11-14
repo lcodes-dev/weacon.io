@@ -4,9 +4,9 @@
 //! asks whenever it can't read a line exactly. It is not a sandbox: a script, a build tool or a
 //! file written earlier that does the same harm when run is beyond what it reads.
 
-mod code;
 mod git;
 mod rules;
+mod safe;
 mod shell;
 mod words;
 
@@ -52,6 +52,7 @@ pub enum Reason {
     DropDatabase,
     Credentials,
     Addition,
+    NotListed,
     Unsure,
 }
 
@@ -71,6 +72,7 @@ impl Reason {
             Self::DropDatabase => "It drops a database.",
             Self::Credentials => "It reaches an agent's credentials.",
             Self::Addition => "This workspace asks about it.",
+            Self::NotListed => "It isn't on the list of commands that run without asking.",
             Self::Unsure => "Weacon can't tell what it does.",
         }
     }

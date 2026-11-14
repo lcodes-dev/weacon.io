@@ -2,64 +2,21 @@
 
 use super::shell::Word;
 
-// Programs that run the command after them; each with its options that take a value, and how
-// many words it takes before the command.
-const WRAPPERS: [(&str, &[&str], usize); 24] = [
-    ("sudo", &["-u", "-g", "-h", "-p", "-r", "-t", "-U"], 0),
-    ("doas", &["-u"], 0),
+// Programs that run the command after them and do nothing else, each with its options that
+// take a value, and how many words it takes before the command. Any other wrapper isn't on the
+// table of what's known safe, so it asks.
+const WRAPPERS: [(&str, &[&str], usize); 4] = [
     ("env", &["-u", "--unset"], 0),
-    ("command", &[], 0),
-    ("builtin", &[], 0),
-    ("exec", &["-a"], 0),
-    ("nohup", &[], 0),
     ("nice", &["-n"], 0),
     ("time", &["-f", "-o"], 0),
     ("timeout", &["-s", "-k", "--signal", "--kill-after"], 1),
-    ("stdbuf", &["-i", "-o", "-e"], 0),
-    ("ionice", &["-c", "-n", "-p"], 0),
-    ("setsid", &[], 0),
-    ("unbuffer", &[], 0),
-    (
-        "xargs",
-        &["-I", "-n", "-P", "-L", "-d", "-E", "-s", "-a"],
-        0,
-    ),
-    ("busybox", &[], 0),
-    ("unshare", &[], 0),
-    ("strace", &["-o", "-e", "-p", "-s", "-u"], 0),
-    ("chrt", &[], 1),
-    ("pkexec", &["--user"], 0),
-    ("fakeroot", &[], 0),
-    ("ltrace", &["-o", "-e", "-p", "-s", "-u"], 0),
-    ("npx", &["-p", "--package"], 0),
-    ("bunx", &[], 0),
 ];
 
 // Wrappers' options that name a file they write.
-const WRITES_TO: [(&str, &str); 5] = [
-    ("strace", "-o"),
-    ("ltrace", "-o"),
-    ("time", "-o"),
-    ("time", "--output"),
-    ("strace", "--output"),
-];
+const WRITES_TO: [(&str, &str); 2] = [("time", "-o"), ("time", "--output")];
 
-// Options of the wrappers that change folder or root, or read a command line from text.
-const MOVING: [&str; 7] = [
-    "-C",
-    "--chdir",
-    "-D",
-    "-S",
-    "--split-string",
-    "-R",
-    "--root",
-];
-
-// Programs that run a command given as text, which the guard doesn't follow.
-const RUNNERS: [&str; 18] = [
-    "su", "runuser", "script", "parallel", "trap", "alias", "chroot", "watch", "ssh", "nsenter",
-    "eval", "flock", "taskset", "coproc", "let", "hash", "enable", "shopt",
-];
+// Options of the wrappers that change folder or read a command line from text.
+const MOVING: [&str; 4] = ["-C", "--chdir", "-S", "--split-string"];
 
 // Words that start or join shell constructs rather than name a program.
 const KEYWORDS: [&str; 14] = [
@@ -70,18 +27,14 @@ const KEYWORDS: [&str; 14] = [
 pub(super) enum Command<'a> {
     /// Only assignments or keywords.
     Empty,
-    /// The program and its words; `partial` when `xargs` adds words of its own.
-    Runs {
-        words: &'a [Word],
-        partial: bool,
-    },
+    /// The program and its words.
+    Runs(&'a [Word]),
     Unsure,
 }
 
 /// The program and its words, past assignments, keywords and wrappers.
 pub(super) fn command(words: &[Word]) -> Command<'_> {
     let mut rest = words;
-    let mut partial = false;
     loop {
         let start = rest
             .iter()
@@ -95,17 +48,13 @@ pub(super) fn command(words: &[Word]) -> Command<'_> {
         };
         // A wildcard in the program's name is expanded to a program the guard can't name.
         let name = program_name(&program.text);
-        if program.dynamic || program.glob || RUNNERS.contains(&name.as_str()) {
+        if program.dynamic || program.glob {
             return Command::Unsure;
         }
         let Some((_, with_value, before)) = WRAPPERS.iter().find(|(wrapper, ..)| *wrapper == name)
         else {
-            return Command::Runs {
-                words: rest,
-                partial,
-            };
+            return Command::Runs(rest);
         };
-        partial |= name == "xargs";
         let after = rest.get(1..).unwrap_or_default();
         let (skipped, after) = skip_options(after, with_value);
         if skipped

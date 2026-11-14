@@ -1,4 +1,5 @@
-//! What each simple command does that a person must be asked about.
+//! What each simple command does that a person must be asked about: its redirections, its
+//! variables and the files it reads, then the table of what is known safe.
 
 use std::path::{Path, PathBuf};
 
@@ -7,32 +8,8 @@ use super::words::{
     Command, begins, command, in_place, is_assignment, positional, program_name, short_flags,
     value_of, values_of,
 };
-use super::{Context, Reason, check_word, code, git, path_of, reading};
+use super::{Context, Reason, check_word, git, path_of, reading, safe};
 
-const DELETERS: [&str; 7] = [
-    "rm",
-    "rmdir",
-    "unlink",
-    "srm",
-    "trash",
-    "trash-put",
-    "rimraf",
-];
-const COPIERS: [&str; 4] = ["cp", "install", "rsync", "ln"];
-// Programs whose option names the file or folder they write.
-const OUTPUTS: [(&str, &[&str]); 4] = [
-    ("curl", &["-o", "--output", "--output-dir"]),
-    (
-        "wget",
-        &["-O", "--output-document", "-P", "--directory-prefix"],
-    ),
-    ("tar", &["-C", "--directory"]),
-    ("unzip", &["-d"]),
-];
-// `shred` overwrites what it names before it removes anything.
-const WRITERS: [&str; 10] = [
-    "tee", "touch", "mkdir", "truncate", "chmod", "chown", "chgrp", "chattr", "setfacl", "shred",
-];
 // Output that goes to no file.
 const DEVICES: [&str; 5] = ["/dev/null", "/dev/stdout", "/dev/stderr", "/dev/tty", "nul"];
 // Of the variables that point git at another repository or have it run a command, these do
@@ -42,12 +19,10 @@ const GIT_HARMLESS: [&str; 2] = ["GIT_PAGER", "GIT_TERMINAL_PROMPT"];
 const SHELL_SETTINGS: [&str; 4] = ["PATH", "BASH_ENV", "ENV", "IFS"];
 // Programs that print their words and read no file they name, so an expansion there is only text.
 const TEXT_ONLY: [&str; 3] = ["echo", "printf", "git"];
-const FIND_RUNS: [&str; 4] = ["-exec", "-execdir", "-ok", "-okdir"];
 // Programs that read through every folder they're given.
 const DEEP: [&str; 11] = [
     "tar", "zip", "7z", "rsync", "rg", "ag", "ack", "scp", "rclone", "restic", "borg",
 ];
-const FIND_WRITES: [&str; 4] = ["-fprint", "-fprint0", "-fprintf", "-fls"];
 
 /// What `simple`, run in `cwd`, needs a person for; a `cd` moves `cwd` for what follows.
 pub(super) fn judge(simple: &Simple, context: &Context, cwd: &mut PathBuf) -> Option<Reason> {
@@ -66,10 +41,10 @@ pub(super) fn judge(simple: &Simple, context: &Context, cwd: &mut PathBuf) -> Op
     if let Some(reason) = redirected {
         return Some(reason);
     }
-    let (words, partial) = match command(&simple.words) {
+    let words = match command(&simple.words) {
         Command::Empty => return None,
         Command::Unsure => return Some(Reason::Unsure),
-        Command::Runs { words, partial } => (words, partial),
+        Command::Runs(words) => words,
     };
     let program = words.first()?;
     if program.dynamic {
@@ -98,7 +73,6 @@ pub(super) fn judge(simple: &Simple, context: &Context, cwd: &mut PathBuf) -> Op
         args,
         simple,
         context,
-        partial,
     };
     call.judge(cwd).or(reads)
 }
@@ -190,59 +164,31 @@ struct Call<'a> {
     args: &'a [Word],
     simple: &'a Simple,
     context: &'a Context,
-    // Run through `xargs`, so some of its words come from its input.
-    partial: bool,
 }
 
 impl Call<'_> {
     fn judge(&self, cwd: &mut PathBuf) -> Option<Reason> {
-        let name = self.name;
-        match name {
-            "weacon" => Some(Reason::Weacon),
-            // In a shell of its own, a `cd` moves nothing after it.
+        match self.name {
             "cd" | "pushd" if self.simple.apart => Some(Reason::Unsure),
             "cd" | "pushd" => self.change_folder(cwd),
-            "popd" => Some(Reason::Unsure),
-            "git" if self.partial => Some(Reason::Unsure),
-            "git" => git::judge(self.args, self.context, cwd),
-            "mv" => {
-                let mut targets = positional(self.args);
-                let into = value_of(self.args, &["-t", "--target-directory"]);
-                targets.extend(into.as_ref());
-                self.targets(cwd, Reason::DeleteOutside, &targets)
-            }
-            "dd" => self.dd(cwd),
-            "find" => self.find(cwd),
-            _ if DELETERS.contains(&name) => {
-                self.targets(cwd, Reason::DeleteOutside, &positional(self.args))
-            }
-            _ if COPIERS.contains(&name) => self.copy(cwd),
-            _ if WRITERS.contains(&name) || (name == "sed" && in_place(self.args)) => {
-                self.targets(cwd, Reason::WriteOutside, &positional(self.args))
-            }
-            _ if let Some((_, options)) = OUTPUTS.iter().find(|(program, _)| *program == name) => {
-                let outputs = values_of(self.args, options);
-                self.targets(
-                    cwd,
-                    Reason::WriteOutside,
-                    &outputs.iter().collect::<Vec<_>>(),
-                )
-            }
-            _ => code::judge(name, self.args, self.simple),
+            "git" => git::judge(self.args, self.context, cwd)
+                .or_else(|| safe::judge(self.name, self.args, self.context, cwd)),
+            "cp" | "mv" | "ln" => self
+                .landed(cwd)
+                .or_else(|| safe::judge(self.name, self.args, self.context, cwd)),
+            _ => safe::judge(self.name, self.args, self.context, cwd),
         }
     }
 
-    fn targets(&self, cwd: &Path, outside: Reason, targets: &[&Word]) -> Option<Reason> {
-        if self.partial {
-            return Some(Reason::Unsure);
-        }
-        targets
+    // Into an existing folder, each source lands at its own name there, which may be a symlink.
+    fn landed(&self, cwd: &Path) -> Option<Reason> {
+        let named = positional(self.args);
+        let (folder, sources) = named.split_last()?;
+        self.landing(folder, sources, cwd)
             .iter()
-            .find_map(|target| check_word(target, self.context, cwd, outside))
+            .find_map(|target| check_word(target, self.context, cwd, Reason::WriteOutside))
     }
 
-    // A `cd` that fails leaves the folder as it was, so one into a folder that isn't there
-    // can't be followed.
     // `cd -` goes back to a folder only the shell knows, and with `CDPATH` a plain name may be
     // found elsewhere.
     fn change_folder(&self, cwd: &mut PathBuf) -> Option<Reason> {
@@ -264,41 +210,6 @@ impl Call<'_> {
         };
         *cwd = folder;
         None
-    }
-
-    fn copy(&self, cwd: &Path) -> Option<Reason> {
-        let symbolic = self.args.iter().any(|arg| {
-            arg.text == "--symbolic"
-                || short_flags(&arg.text).is_some_and(|flags| flags.contains('s'))
-        });
-        if self.name == "ln" && symbolic {
-            // A link can lead anywhere once it exists.
-            return Some(Reason::Unsure);
-        }
-        let into = value_of(self.args, &["-t", "--target-directory"]);
-        let named = positional(self.args);
-        let destination = into.as_ref().or_else(|| named.last().copied());
-        // A hard link is the file it links to, so writing it later writes that file.
-        let linked = self.name == "ln"
-            || self.args.iter().any(|arg| {
-                arg.text == "--link"
-                    || short_flags(&arg.text).is_some_and(|flags| flags.contains('l'))
-            });
-        let sources: Vec<&Word> = named
-            .iter()
-            .copied()
-            .filter(|word| Some(*word) != destination)
-            .collect();
-        let inside = destination
-            .map(|folder| self.landing(folder, &sources, cwd))
-            .unwrap_or_default();
-        let linked_sources = sources.iter().copied().filter(|_| linked);
-        let targets: Vec<&Word> = destination
-            .into_iter()
-            .chain(inside.iter())
-            .chain(linked_sources)
-            .collect();
-        self.targets(cwd, Reason::WriteOutside, &targets)
     }
 
     // Into an existing folder, each source lands at its own name there, which may be a symlink.
@@ -326,50 +237,4 @@ impl Call<'_> {
             .collect()
     }
 
-    fn dd(&self, cwd: &Path) -> Option<Reason> {
-        self.args.iter().find_map(|arg| {
-            let file = arg.text.strip_prefix("of=")?;
-            self.targets(cwd, Reason::WriteOutside, &[&arg.tail(file)])
-        })
-    }
-
-    fn find(&self, cwd: &Path) -> Option<Reason> {
-        let named = |names: &[&str]| {
-            self.args
-                .iter()
-                .any(|arg| names.contains(&arg.text.as_str()))
-        };
-        if named(&FIND_RUNS) || named(&FIND_WRITES) {
-            return Some(Reason::Unsure);
-        }
-        if !named(&["-delete"]) {
-            return None;
-        }
-        // Following symlinks, it can reach and delete what lies outside.
-        if named(&["-L", "-follow"]) {
-            return Some(Reason::Unsure);
-        }
-        // Options about links and debugging come before the folders to start from.
-        let mut rest = self.args;
-        while let Some((first, after)) = rest.split_first() {
-            let text = first.text.as_str();
-            rest = match text {
-                "-H" | "-L" | "-P" | "--" => after,
-                "-D" => after.get(1..).unwrap_or_default(),
-                _ if text.starts_with("-O") => after,
-                _ => break,
-            };
-        }
-        let starts: Vec<&Word> = rest
-            .iter()
-            .take_while(|arg| !arg.text.starts_with(['-', '(', '!']))
-            .collect();
-        let here = Word::default();
-        let starts = if starts.is_empty() {
-            vec![&here]
-        } else {
-            starts
-        };
-        self.targets(cwd, Reason::DeleteOutside, &starts)
-    }
 }
