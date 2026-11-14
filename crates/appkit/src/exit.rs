@@ -22,20 +22,21 @@ impl From<()> for Ending {
 /// Logs how a command ended, reports a failure, and gives the exit code: 0 when it's done,
 /// 1 when a check found something, 2 when it failed.
 pub fn finish(log: &Logger, reporter: &Reporter, result: Result<Ending, Fault>) -> ExitCode {
-    let fault = match result {
+    match result {
         Ok(Ending::Done) => {
             log.info("app stopped", &[]);
-            return ExitCode::SUCCESS;
+            ExitCode::SUCCESS
         }
         Ok(Ending::Findings) => {
             log.info("app stopped", &[("findings", true.into())]);
-            return ExitCode::from(FINDINGS);
+            ExitCode::from(FINDINGS)
         }
-        Err(fault) => fault,
-    };
-    log.fatal("app failed", &[("err", Field::error(&fault))]);
-    reporter.capture_error(&fault, fault.code(), log);
-    ExitCode::from(FAILED)
+        Err(fault) => {
+            log.fatal("app failed", &[("err", Field::error(&fault))]);
+            reporter.capture_error(&fault, fault.code(), log);
+            ExitCode::from(FAILED)
+        }
+    }
 }
 
 #[cfg(test)]
