@@ -1,12 +1,13 @@
 use std::collections::BTreeSet;
 
+use serde::{Deserialize, Serialize};
 use tree_sitter::Node;
 
 use crate::paths::{Segments, segments};
 use crate::syntax::{name, preorder, text};
 
 /// A name an item's code refers to, as written.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub(crate) enum Ref {
     /// `f()`, `a::f()` or `m!()`.
     Call(Segments),
