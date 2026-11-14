@@ -10,5 +10,5 @@ pub use errors::Fault;
 pub use logger::{Clock, Logger, LoggerOptions, Record, Sink, json_lines, tee};
 pub use redact::Field;
 pub use report::{Reports, Upload};
-pub use reporter::{Deliver, Ids, Reporter};
+pub use reporter::{Deliver, NewId, Reporter};
 pub use weacon_protocol::Level;
