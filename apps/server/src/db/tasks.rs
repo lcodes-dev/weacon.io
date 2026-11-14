@@ -7,9 +7,12 @@ use super::{Workspace, failed, stored, unreadable};
 
 type Row = (String, String, String, String, i64);
 
+/// The most tasks a workspace holds, since making or moving one reads them all.
+const MAX_TASKS: u32 = 2_000;
+
 impl Workspace {
     /// Stores a new task, made as `attribution` says. An id or order key already in this
-    /// workspace is `db.exists`.
+    /// workspace is `db.exists`, and a workspace with [`MAX_TASKS`] already is `task.too_many`.
     pub(crate) async fn add_task(
         &self,
         task: &Task,
@@ -21,9 +24,10 @@ impl Workspace {
             .begin_with("BEGIN IMMEDIATE")
             .await
             .map_err(failed)?;
-        sqlx::query(
+        let added = sqlx::query(
             "INSERT INTO tasks (workspace_id, task_id, title, status, order_key, version)
-             VALUES (?, ?, ?, ?, ?, ?)",
+             SELECT ?1, ?2, ?3, ?4, ?5, ?6
+             WHERE (SELECT COUNT(*) FROM tasks WHERE workspace_id = ?1) < ?7",
         )
         .bind(self.id.as_str())
         .bind(task.id.as_str())
@@ -31,10 +35,18 @@ impl Workspace {
         .bind(status_text(task.status)?)
         .bind(task.order.as_str())
         .bind(version_number(task.version)?)
+        .bind(MAX_TASKS)
         .execute(&mut *transaction)
         .await
         .map_err(failed)?;
-        self.record(&mut transaction, task, attribution).await?;
+        if added.rows_affected() == 0 {
+            return Err(Fault::new(
+                code!("task.too_many"),
+                "The workspace has as many tasks as it can hold",
+            ));
+        }
+        self.record_version(&mut transaction, task, attribution)
+            .await?;
         transaction.commit().await.map_err(failed)
     }
 
@@ -93,13 +105,14 @@ impl Workspace {
         .execute(&mut *transaction)
         .await
         .map_err(failed)?;
-        self.record(&mut transaction, &edited, attribution).await?;
+        self.record_version(&mut transaction, &edited, attribution)
+            .await?;
         transaction.commit().await.map_err(failed)?;
         Ok(edited)
     }
 
     /// Records who is behind the version `task` is now at, and the change for the feed.
-    async fn record(
+    async fn record_version(
         &self,
         transaction: &mut SqliteConnection,
         task: &Task,
@@ -145,17 +158,17 @@ pub(crate) fn task_not_found() -> Fault {
 
 fn refused(error: EditError) -> Fault {
     match error {
-        EditError::Stale { .. } => Fault::new(
+        EditError::Stale => Fault::new(
             code!("task.stale"),
             "The task has changed since it was read",
         ),
-        EditError::UnknownStatus => unknown(),
+        EditError::UnknownStatus => unknown_value(),
         EditError::LastVersion => last_version(),
     }
 }
 
 /// A status or an author from a newer peer, which this build can't store.
-fn unknown() -> Fault {
+fn unknown_value() -> Fault {
     Fault::new(
         code!("task.unknown_value"),
         "The task has a value this version doesn't know",
@@ -178,7 +191,7 @@ fn status_text(status: TaskStatus) -> Result<&'static str, Fault> {
         TaskStatus::Todo => Ok("todo"),
         TaskStatus::InProgress => Ok("in_progress"),
         TaskStatus::Done => Ok("done"),
-        TaskStatus::Newer => Err(unknown()),
+        TaskStatus::Newer => Err(unknown_value()),
     }
 }
 
@@ -195,7 +208,7 @@ fn author_columns(author: &Author) -> Result<(&'static str, &MemberId), Fault> {
     match author {
         Author::Person { member } => Ok(("person", member)),
         Author::Agent { owner } => Ok(("agent", owner)),
-        Author::Newer => Err(unknown()),
+        Author::Newer => Err(unknown_value()),
     }
 }
 
@@ -205,17 +218,9 @@ mod tests {
     use weacon_testing::TempDir;
 
     use super::*;
-    use crate::test_support::{member_id, two_teams};
+    use crate::test_support::{member_id, new_task, two_teams};
 
     const NOW: i64 = 1_762_077_600;
-
-    fn new_task(id: &str, title: &str, order: &str) -> Task {
-        Task::new(
-            TaskId::try_from(id.to_owned()).unwrap(),
-            Title::try_from(title.to_owned()).unwrap(),
-            OrderKey::try_from(order.to_owned()).unwrap(),
-        )
-    }
 
     fn by(member: &str) -> Attribution {
         Attribution::by(member_id(member), NOW)
@@ -304,6 +309,44 @@ mod tests {
         };
         assert_eq!(moved, expected);
         assert_eq!(one.tasks().await.unwrap(), [expected]);
+    }
+
+    // Fills `workspace` with `count` tasks, keyed `a11`, `a21` and on.
+    async fn fill(workspace: &Workspace, count: u32) {
+        sqlx::query(
+            "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < ?2)
+             INSERT INTO tasks (workspace_id, task_id, title, status, order_key, version)
+             SELECT ?1, 'f' || i, 'Filler', 'todo', 'a' || i || '1', 1 FROM n",
+        )
+        .bind(workspace.id.as_str())
+        .bind(count)
+        .execute(&workspace.db.writer)
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_workspace_holds_up_to_its_most_tasks_and_no_more() {
+        let dir = TempDir::new().unwrap();
+        let (one, two) = two_teams(&dir).await;
+        fill(&one, MAX_TASKS - 1).await;
+
+        one.add_task(&new_task("t1", "Last", "z"), &by("m1"))
+            .await
+            .unwrap();
+        let full = one
+            .add_task(&new_task("t2", "Over", "zz"), &by("m1"))
+            .await
+            .unwrap_err();
+
+        assert_eq!(code(&full), "task.too_many");
+        assert_eq!(
+            one.tasks().await.unwrap().len(),
+            usize::try_from(MAX_TASKS).unwrap()
+        );
+        two.add_task(&new_task("t2", "Elsewhere", "V"), &by("m2"))
+            .await
+            .unwrap();
     }
 
     #[tokio::test]

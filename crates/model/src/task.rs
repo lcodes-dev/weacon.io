@@ -1,5 +1,3 @@
-use std::fmt;
-
 use weacon_protocol::{TaskId, TaskStatus};
 
 use crate::{OrderKey, Revision, Title};
@@ -23,24 +21,12 @@ pub enum TaskEdit {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EditError {
     /// The task changed since the version the edit was made against.
-    Stale { current: Revision },
+    Stale,
     /// The status is one this build doesn't know.
     UnknownStatus,
     /// The task is at the last version there is.
     LastVersion,
 }
-
-impl fmt::Display for EditError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(match self {
-            Self::Stale { .. } => "the task has changed since it was read",
-            Self::UnknownStatus => "the status isn't one this version knows",
-            Self::LastVersion => "the task can't be changed any more",
-        })
-    }
-}
-
-impl std::error::Error for EditError {}
 
 impl Task {
     /// A new task, to do, at its first version.
@@ -63,9 +49,7 @@ impl Task {
     /// know, or no version is left.
     pub fn edit(mut self, read_at: Revision, edit: TaskEdit) -> Result<Self, EditError> {
         if read_at != self.version {
-            return Err(EditError::Stale {
-                current: self.version,
-            });
+            return Err(EditError::Stale);
         }
         match edit {
             TaskEdit::Title(title) => self.title = title,
@@ -156,13 +140,9 @@ mod tests {
         let task = task()
             .edit(Revision::FIRST, TaskEdit::Status(TaskStatus::Done))
             .unwrap();
-        let stale = EditError::Stale {
-            current: Revision::new(2),
-        };
-
         for read_at in [Revision::FIRST, Revision::new(3)] {
             let edit = TaskEdit::Title(title("Ship"));
-            assert_eq!(task.clone().edit(read_at, edit), Err(stale));
+            assert_eq!(task.clone().edit(read_at, edit), Err(EditError::Stale));
         }
     }
 
@@ -187,23 +167,6 @@ mod tests {
         assert_eq!(
             task.edit(last, TaskEdit::Status(TaskStatus::Done)),
             Err(EditError::LastVersion)
-        );
-    }
-
-    #[test]
-    fn edit_errors_say_what_went_wrong() {
-        let stale: Box<dyn std::error::Error> = Box::new(EditError::Stale {
-            current: Revision::FIRST,
-        });
-
-        assert_eq!(stale.to_string(), "the task has changed since it was read");
-        assert_eq!(
-            EditError::UnknownStatus.to_string(),
-            "the status isn't one this version knows"
-        );
-        assert_eq!(
-            EditError::LastVersion.to_string(),
-            "the task can't be changed any more"
         );
     }
 }

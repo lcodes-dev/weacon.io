@@ -1,12 +1,16 @@
+//! Builds error reports: a scrubbed Sentry event for an error, ready to upload.
+
 use std::borrow::Cow;
+use std::error::Error;
 use std::time::SystemTime;
 
 use sentry_types::protocol::v7::{Envelope, Event, Exception, Map, Uuid, Values};
 use sentry_types::{Dsn, Scheme};
 use weacon_protocol::{Code, code};
 
-use crate::errors::{AsError, ErrorInfo, Fault, describe_error};
-use crate::scrub::scrub_event;
+use crate::errors::{ErrorInfo, Fault, describe_error};
+
+mod scrub;
 
 /// Where error reports go, from a Sentry DSN.
 #[derive(Clone, Debug)]
@@ -54,7 +58,7 @@ impl Reports {
 
     /// A scrubbed report of `error`, tagged with `code`, without any error message. The caller
     /// picks the id and the time.
-    pub fn upload<E: AsError + ?Sized>(
+    pub fn upload<E: Error + 'static>(
         &self,
         error: &E,
         code: &Code,
@@ -71,7 +75,7 @@ impl Reports {
             tags: Map::from([("code".to_owned(), code.as_str().to_owned())]),
             ..Event::default()
         };
-        scrub_event(&mut event, &self.home_dir);
+        scrub::scrub_event(&mut event, &self.home_dir);
         let mut envelope = Envelope::new();
         envelope.add_item(event);
         let mut body = Vec::new();
@@ -87,9 +91,9 @@ impl Reports {
 
 // Sentry lists the root cause first and the error itself last.
 fn exceptions(info: &ErrorInfo) -> Vec<Exception> {
-    let mut chain: Vec<Exception> = std::iter::successors(Some(info), |info| info.cause())
+    let mut chain: Vec<Exception> = std::iter::successors(Some(info), |info| info.cause.as_deref())
         .map(|info| Exception {
-            ty: info.type_name().unwrap_or("Error").to_owned(),
+            ty: info.name.as_deref().unwrap_or("Error").to_owned(),
             ..Exception::default()
         })
         .collect();
@@ -118,7 +122,7 @@ mod tests {
         }
     }
 
-    impl std::error::Error for Leaky {}
+    impl Error for Leaky {}
 
     fn time() -> SystemTime {
         SystemTime::UNIX_EPOCH + Duration::from_hours(489_466)

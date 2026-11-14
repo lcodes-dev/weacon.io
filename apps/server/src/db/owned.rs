@@ -147,8 +147,7 @@ mod tests {
     use weacon_testing::TempDir;
 
     use super::*;
-    use crate::email::Email;
-    use crate::test_support::{member_id, two_teams, workspace_id};
+    use crate::test_support::{email, member_id, two_teams, workspace_id};
 
     fn account(id: &str) -> AccountId {
         AccountId::try_from(id.to_owned()).unwrap()
@@ -175,10 +174,8 @@ mod tests {
     async fn people(dir: &TempDir) -> (Db, AccountId) {
         let (one, _) = two_teams(dir).await;
         let db = one.db.clone();
-        let ada = db
-            .account_with(&Email::parse("ada@example.com").unwrap())
-            .await;
-        db.add_account(&account("a2"), &Email::parse("cy@example.com").unwrap())
+        let ada = db.account_with(&email("ada@example.com")).await;
+        db.add_account(&account("a2"), &email("cy@example.com"))
             .await
             .unwrap();
         (db, ada.unwrap().unwrap())
