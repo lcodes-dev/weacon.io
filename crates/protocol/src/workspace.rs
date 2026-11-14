@@ -98,7 +98,7 @@ mod tests {
     use serde_json::json;
 
     use super::*;
-    use crate::test_support::{chat, workspace};
+    use crate::test_support::{chat, round_trips, workspace};
 
     #[test]
     fn an_update_carries_its_workspace_and_order() {
@@ -113,11 +113,7 @@ mod tests {
             "change": { "kind": "chat_changed", "chat": "c-1" },
         });
 
-        assert_eq!(serde_json::to_value(&update).unwrap(), wire);
-        assert_eq!(
-            serde_json::from_value::<WorkspaceUpdate>(wire).unwrap(),
-            update
-        );
+        round_trips(&update, wire);
     }
 
     #[test]
@@ -155,11 +151,7 @@ mod tests {
             ),
         ];
         for (change, wire) in changes {
-            assert_eq!(serde_json::to_value(&change).unwrap(), wire);
-            assert_eq!(
-                serde_json::from_value::<WorkspaceChange>(wire).unwrap(),
-                change
-            );
+            round_trips(&change, wire);
         }
         assert_eq!(
             serde_json::from_value::<WorkspaceChange>(json!({ "kind": "renamed" })).unwrap(),
@@ -182,40 +174,14 @@ mod tests {
             name: "Team".to_owned(),
         };
 
-        assert_eq!(serde_json::to_value(&summary).unwrap(), wire);
+        round_trips(&summary, wire.clone());
+        round_trips(&list, json!({ "workspaces": [wire] }));
+        round_trips(&create, json!({ "name": "Team" }));
+        round_trips(&WorkspaceRole::Owner, json!("owner"));
+        round_trips(&WorkspaceRole::Member, json!("member"));
         assert_eq!(
-            serde_json::from_value::<WorkspaceSummary>(wire.clone()).unwrap(),
-            summary
-        );
-        assert_eq!(
-            serde_json::to_value(&list).unwrap(),
-            json!({ "workspaces": [wire] })
-        );
-        assert_eq!(
-            serde_json::from_value::<WorkspaceList>(json!({ "workspaces": [wire] })).unwrap(),
-            list
-        );
-        assert_eq!(
-            serde_json::to_value(&create).unwrap(),
-            json!({ "name": "Team" })
-        );
-        assert_eq!(
-            serde_json::from_value::<WorkspaceCreate>(json!({ "name": "Team" })).unwrap(),
-            create
-        );
-        for (wire, role) in [
-            ("owner", WorkspaceRole::Owner),
-            ("member", WorkspaceRole::Member),
-            ("auditor", WorkspaceRole::Newer),
-        ] {
-            assert_eq!(
-                serde_json::from_value::<WorkspaceRole>(json!(wire)).unwrap(),
-                role
-            );
-        }
-        assert_eq!(
-            serde_json::to_value(WorkspaceRole::Member).unwrap(),
-            json!("member")
+            serde_json::from_value::<WorkspaceRole>(json!("auditor")).unwrap(),
+            WorkspaceRole::Newer
         );
     }
 }

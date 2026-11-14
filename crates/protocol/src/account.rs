@@ -136,7 +136,7 @@ mod tests {
     use serde_json::json;
 
     use super::*;
-    use crate::test_support::workspace;
+    use crate::test_support::{round_trips, workspace};
 
     #[test]
     fn a_challenge_hides_its_value_but_other_ids_dont() {
@@ -164,27 +164,9 @@ mod tests {
             challenge: challenge.clone(),
         };
 
-        assert_eq!(
-            serde_json::to_value(finish(Some(challenge.clone()))).unwrap(),
-            wire
-        );
-        assert_eq!(
-            serde_json::from_value::<SignInFinish>(wire).unwrap(),
-            finish(Some(challenge))
-        );
-        assert_eq!(
-            serde_json::from_value::<SignInFinish>(older.clone()).unwrap(),
-            finish(None)
-        );
-        assert_eq!(serde_json::to_value(finish(None)).unwrap(), older);
-        assert_eq!(
-            serde_json::to_value(&started).unwrap(),
-            json!({ "challenge": "c-1" })
-        );
-        assert_eq!(
-            serde_json::from_value::<SignInStarted>(json!({ "challenge": "c-1" })).unwrap(),
-            started
-        );
+        round_trips(&finish(Some(challenge)), wire);
+        round_trips(&finish(None), older);
+        round_trips(&started, json!({ "challenge": "c-1" }));
         serde_json::from_value::<SignInStarted>(json!({ "challenge": "c.1" })).unwrap_err();
         serde_json::from_value::<SignInStarted>(json!({})).unwrap_err();
     }
@@ -243,31 +225,16 @@ mod tests {
         };
         let browser = json!({ "account": "a-1", "email": "ada@example.com" });
         let other = json!({ "account": "a-1", "email": "ada@example.com", "token": "t" });
-        let start: AccountSignInStart =
-            serde_json::from_value(json!({ "email": "ada@example.com" })).unwrap();
+        let start = AccountSignInStart {
+            email: "ada@example.com".to_owned(),
+        };
 
-        assert_eq!(start.email, "ada@example.com");
-        assert_eq!(
-            serde_json::to_value(&start).unwrap(),
-            json!({ "email": "ada@example.com" })
-        );
-        assert_eq!(serde_json::to_value(&finish).unwrap(), finish_wire);
-        assert_eq!(
-            serde_json::from_value::<AccountSignInFinish>(finish_wire).unwrap(),
-            finish
-        );
+        round_trips(&start, json!({ "email": "ada@example.com" }));
+        round_trips(&finish, finish_wire);
         let unchallenged = json!({ "email": "ada@example.com", "code": "12345678" });
         serde_json::from_value::<AccountSignInFinish>(unchallenged).unwrap_err();
-        assert_eq!(serde_json::to_value(signed_in(None)).unwrap(), browser);
-        assert_eq!(
-            serde_json::from_value::<AccountSignedIn>(browser).unwrap(),
-            signed_in(None)
-        );
-        assert_eq!(serde_json::to_value(signed_in(Some("t"))).unwrap(), other);
-        assert_eq!(
-            serde_json::from_value::<AccountSignedIn>(other).unwrap(),
-            signed_in(Some("t"))
-        );
+        round_trips(&signed_in(None), browser);
+        round_trips(&signed_in(Some("t")), other);
     }
 
     #[test]
