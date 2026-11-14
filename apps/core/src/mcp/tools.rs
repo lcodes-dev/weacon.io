@@ -2,8 +2,8 @@
 
 use std::path::Path;
 
-use rmcp::model::Tool;
-use serde_json::json;
+use rmcp::model::{JsonObject, Tool, ToolAnnotations};
+use serde_json::{Value, json};
 use weacon_codemap::Index;
 use weacon_observability::{Fault, Field, Logger};
 use weacon_protocol::McpCall;
@@ -26,40 +26,63 @@ pub(crate) const UP_FRONT: [&str; 2] = ["map", "symbol"];
 
 /// The tools every run sees from its first call, as `tools/list` sends them.
 pub(crate) fn listed() -> Vec<Tool> {
-    let budget = json!({"type": "integer", "minimum": LEAST, "maximum": MOST});
-    let read_only = json!({"readOnlyHint": true, "openWorldHint": false});
-    let tools = json!([
-        {
-            "name": "map",
-            "description": format!(
+    let budget = || {
+        (
+            "budget",
+            json!({"type": "integer", "minimum": LEAST, "maximum": MOST}),
+        )
+    };
+    let path = ("path", json!({"type": "string"}));
+    vec![
+        tool(
+            "map",
+            format!(
                 "Where to begin in the code of this chat's folder: its entry points, its most \
                  central items and its crates. Call it before reading files. Plain text within \
                  `budget` bytes, {BUDGET} unless given."
             ),
-            "inputSchema": {"type": "object", "properties": {"budget": budget}},
-            "annotations": read_only,
-        },
-        {
-            "name": "symbol",
-            "description": "One item by its path, such as `weacon_protocol::message::Envelope`: \
-                where it is, what calls, uses and tests it, and what it calls. A partial path \
-                lists the items it ends.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {"path": {"type": "string"}, "budget": budget},
-                "required": ["path"],
-            },
-            "annotations": read_only,
-        },
-        {
-            "name": "flow",
-            "description": "The flows the docs pin and where the code breaks them; call it \
-                before changing code a flow passes through.",
-            "inputSchema": {"type": "object", "properties": {"budget": budget}},
-            "annotations": read_only,
-        },
-    ]);
-    serde_json::from_value(tools).unwrap_or_default()
+            vec![budget()],
+            &[],
+        ),
+        tool(
+            "symbol",
+            "One item by its path, such as `weacon_protocol::message::Envelope`: where it is, \
+             what calls, uses and tests it, and what it calls. A partial path lists the items it \
+             ends."
+                .to_owned(),
+            vec![path, budget()],
+            &["path"],
+        ),
+        tool(
+            "flow",
+            "The flows the docs pin and where the code breaks them; call it before changing \
+             code a flow passes through."
+                .to_owned(),
+            vec![budget()],
+            &[],
+        ),
+    ]
+}
+
+/// A read-only tool taking an object with `properties`, of which `required` must be given.
+fn tool(
+    name: &'static str,
+    description: String,
+    properties: Vec<(&str, Value)>,
+    required: &[&str],
+) -> Tool {
+    let properties = properties
+        .into_iter()
+        .map(|(name, schema)| (name.to_owned(), schema))
+        .collect();
+    let mut schema = JsonObject::new();
+    schema.insert("type".to_owned(), "object".into());
+    schema.insert("properties".to_owned(), Value::Object(properties));
+    if !required.is_empty() {
+        schema.insert("required".to_owned(), json!(required));
+    }
+    let hints = ToolAnnotations::new().read_only(true).open_world(false);
+    Tool::new(name, description, schema).annotate(hints)
 }
 
 /// The answer to `call` from the code in `folder`; it reads the folder, so it blocks.

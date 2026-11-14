@@ -8,8 +8,7 @@ pub(crate) mod tools;
 use std::convert::Infallible;
 use std::io;
 use std::net::{Ipv4Addr, SocketAddr};
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use http_body_util::combinators::BoxBody;
@@ -38,6 +37,7 @@ use grants::{Grant, Grants, Revoke};
 use weacon_agents::{Launch, McpServer};
 use weacon_protocol::{AgentKind, App};
 
+use crate::app::WarnOnce;
 use crate::chats::engine::RunAs;
 use crate::daemon::ACCEPT_BACKOFF;
 
@@ -152,6 +152,7 @@ async fn serve(
         grants,
         rmcp,
         log,
+        refusals: Mutex::new(WarnOnce::default()),
     });
     accept(&listener, &front).await;
 }
@@ -188,10 +189,9 @@ async fn next(
 }
 
 async fn connection(stream: TcpStream, front: Arc<Front>, _slot: OwnedSemaphorePermit) {
-    let warned = Arc::new(AtomicBool::new(false));
     let service = service_fn(|request| {
-        let (front, warned) = (Arc::clone(&front), Arc::clone(&warned));
-        async move { Ok::<_, Infallible>(front.answer(request, &warned).await) }
+        let front = Arc::clone(&front);
+        async move { Ok::<_, Infallible>(front.answer(request).await) }
     });
     // A client that hangs up mid-request, or never sends one, is no fault of the core's.
     drop(
@@ -209,11 +209,13 @@ struct Front {
     grants: Grants,
     rmcp: StreamableHttpService<Handler, LocalSessionManager>,
     log: Logger,
+    refusals: Mutex<WarnOnce>,
 }
 
 impl Front {
-    /// Answers one request; a connection's refusals are logged only once, so none floods the log.
-    async fn answer(&self, mut request: Request<Incoming>, warned: &AtomicBool) -> Response<Body> {
+    /// Answers one request; only the first refusal since a request was let in is logged, so
+    /// no number of refused connections floods the log.
+    async fn answer(&self, mut request: Request<Incoming>) -> Response<Body> {
         if request.uri().path() != "/mcp" {
             return empty(StatusCode::NOT_FOUND);
         }
@@ -222,15 +224,22 @@ impl Front {
             .get(header::AUTHORIZATION)
             .and_then(|value| value.to_str().ok())
             .and_then(|value| value.strip_prefix("Bearer "));
-        let Some(grant) = token.and_then(|token| self.grants.find(token)) else {
-            let reason = if token.is_some() {
-                "unknown"
-            } else {
-                "missing"
-            };
-            if !warned.swap(true, Ordering::Relaxed) {
-                self.log.warn("mcp refused", &[("reason", reason.into())]);
-            }
+        let found = match token {
+            Some(token) => self.grants.find(token).ok_or_else(|| {
+                Fault::new(code!("mcp.token_unknown"), "The token isn't a live run's")
+            }),
+            None => Err(Fault::new(
+                code!("mcp.token_missing"),
+                "The request has no token",
+            )),
+        };
+        // Only a flag is guarded, so a poisoned lock still holds a usable one.
+        let grant = self
+            .refusals
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .check(found, &self.log, "mcp refused");
+        let Some(grant) = grant else {
             return empty(StatusCode::UNAUTHORIZED);
         };
         request.extensions_mut().insert(grant);
@@ -461,8 +470,9 @@ mod tests {
         drop(revoke);
         let map = call("map", json!({}));
 
-        let missing = post(&mcp, &[], &map).await;
+        // The one refusal logged is the one carrying a token.
         let unknown = post(&mcp, &[("Authorization", "Bearer marker-token-1")], &map).await;
+        let missing = post(&mcp, &[], &map).await;
         let gone = post(&mcp, &[("Authorization", &bearer(&ended))], &map).await;
         let basic = post(&mcp, &[("Authorization", "Basic marker-token-2")], &map).await;
 
@@ -470,7 +480,8 @@ mod tests {
             assert_eq!((reply.status, reply.body.as_str()), (401, ""));
         }
         let logged = format!("{:?}", records.lock().unwrap());
-        assert_eq!(logged.matches("mcp refused").count(), 4);
+        assert_eq!(logged.matches("mcp refused").count(), 1);
+        assert!(logged.contains("mcp.token_unknown"), "{logged}");
         for marker in ["marker-token", ended.as_str()] {
             assert!(!logged.contains(marker), "{marker}");
         }
@@ -706,6 +717,34 @@ mod tests {
             weacon_testing::messages(&records),
             ["mcp started", "mcp refused"]
         );
+    }
+
+    #[tokio::test]
+    async fn refusals_warn_once_across_connections_until_a_request_is_let_in() {
+        let dir = TempDir::new().unwrap();
+        let (log, records) = recording_logger();
+        let (mcp, _server) = start(&weacon_appkit::build(&VERSION), &log).unwrap();
+        let (token, _revoke) = mcp
+            .grants
+            .issue(run_grant("w-1", "run-1", repo(&dir, "one")))
+            .unwrap();
+        let map = call("map", json!({}));
+        let unknown = [("Authorization", "Bearer marker-token-3")];
+
+        for _ in 0..3 {
+            assert_eq!(post(&mcp, &unknown, &map).await.status, 401);
+        }
+        assert_eq!(post(&mcp, &[], &map).await.status, 401);
+        let let_in = post(&mcp, &[("Authorization", &bearer(&token))], &map).await;
+        assert_eq!(post(&mcp, &unknown, &map).await.status, 401);
+
+        assert_eq!(let_in.status, 200);
+        let messages = weacon_testing::messages(&records);
+        let warned = messages
+            .iter()
+            .filter(|message| **message == "mcp refused")
+            .count();
+        assert_eq!(warned, 2);
     }
 
     #[test]
