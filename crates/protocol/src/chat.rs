@@ -3,8 +3,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::token::token_id;
 use crate::{
-    AccountId, MachineId, MachineName, MemberId, PermissionAnswer, Receipt, RepoId, RequestId,
-    RunStatus, RunUpdate, WorkspaceId,
+    AccountId, AgentKind, MachineId, MachineName, MemberId, PermissionAnswer, Receipt, RepoId,
+    RequestId, RunStatus, RunUpdate, WorkspaceId,
 };
 
 token_id!(
@@ -39,7 +39,9 @@ pub struct Asker {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ChatAction {
     /// Starts or queues a turn. Only a chat's first prompt has `repo` and `machine`, one of the
-    /// sender's; the server drops `machine` before relaying.
+    /// sender's; the server drops `machine` before relaying. `agent` fixes the chat's agent on
+    /// its first prompt, Claude when missing; a later prompt naming another agent is refused as
+    /// `chat.agent_conflict`, and an agent the core doesn't know as `message.unsupported`.
     Prompt {
         text: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -48,6 +50,9 @@ pub enum ChatAction {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[schemars(with = "MachineId")]
         machine: Option<MachineId>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[schemars(with = "AgentKind")]
+        agent: Option<AgentKind>,
     },
     /// Answers a permission prompt of one of the chat's runs.
     Permission { answer: PermissionAnswer },
@@ -77,13 +82,17 @@ pub struct ChatEntry {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ChatEvent {
-    /// A person's prompt, accepted under `request`, with the repository it fixed, if any.
+    /// A person's prompt, accepted under `request`, with the repository and the agent it
+    /// named, if any.
     Prompt {
         request: RequestId,
         text: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[schemars(with = "RepoId")]
         repo: Option<RepoId>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[schemars(with = "AgentKind")]
+        agent: Option<AgentKind>,
     },
     /// Where a chat command stands; written once per state.
     Receipt {
@@ -94,6 +103,10 @@ pub enum ChatEvent {
     },
     RunStatus {
         status: RunStatus,
+    },
+    /// A prompt typed outside Weacon, read from an agent's own session file.
+    OutsidePrompt {
+        text: String,
     },
     /// An event this build doesn't know, from a newer peer; only ever received.
     #[serde(other)]
@@ -195,10 +208,21 @@ pub struct ChatList {
     pub chats: Vec<ChatSummary>,
 }
 
+impl ChatAction {
+    pub(crate) const fn is_newer(&self) -> bool {
+        match self {
+            Self::Prompt { agent, .. } => matches!(agent, Some(AgentKind::Newer)),
+            Self::Permission { .. } | Self::Interrupt => false,
+            Self::Newer => true,
+        }
+    }
+}
+
 impl ChatEvent {
     pub(crate) const fn is_newer(&self) -> bool {
         match self {
-            Self::Prompt { .. } => false,
+            Self::Prompt { agent, .. } => matches!(agent, Some(AgentKind::Newer)),
+            Self::OutsidePrompt { .. } => false,
             Self::Receipt { receipt } => receipt.outcome.is_newer(),
             Self::Run { update } => update.event.is_newer(),
             Self::RunStatus { status } => status.is_newer(),
@@ -220,7 +244,7 @@ impl ChatAnswerKind {
     }
 }
 
-fn any_newer(entries: &[ChatEntry]) -> bool {
+pub(crate) fn any_newer(entries: &[ChatEntry]) -> bool {
     entries.iter().any(|entry| entry.event.is_newer())
 }
 
@@ -313,6 +337,7 @@ mod tests {
                     text: "Run the tests".to_owned(),
                     repo: None,
                     machine: None,
+                    agent: None,
                 },
                 json!({ "kind": "prompt", "text": "Run the tests" }),
             ),
@@ -321,9 +346,10 @@ mod tests {
                     text: "Fix the build".to_owned(),
                     repo: Some(repo()),
                     machine: Some("mc-1".parse().unwrap()),
+                    agent: Some(AgentKind::Codex),
                 },
                 json!({ "kind": "prompt", "text": "Fix the build", "repo": "site",
-                        "machine": "mc-1" }),
+                        "machine": "mc-1", "agent": "codex" }),
             ),
             (
                 ChatAction::Permission { answer },
@@ -376,6 +402,7 @@ mod tests {
                     request: request(),
                     text: "Run the tests".to_owned(),
                     repo: None,
+                    agent: None,
                 },
                 json!({ "kind": "prompt", "request": "r-1", "text": "Run the tests" }),
             ),
@@ -418,17 +445,18 @@ mod tests {
     }
 
     #[test]
-    fn a_prompt_event_keeps_the_repo_it_fixed() {
+    fn a_prompt_event_keeps_the_repo_and_the_agent_it_fixed() {
         let event = ChatEvent::Prompt {
             request: request(),
             text: "Fix the build".to_owned(),
             repo: Some(repo()),
+            agent: Some(AgentKind::Codex),
         };
         travels(
             &update(event),
             entry_wire(
                 &json!({ "kind": "prompt", "request": "r-1", "text": "Fix the build",
-                                "repo": "site" }),
+                                "repo": "site", "agent": "codex" }),
             ),
         );
     }

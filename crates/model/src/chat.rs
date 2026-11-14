@@ -40,7 +40,10 @@ impl ChatRuns {
             ChatEvent::Run {
                 update: RunUpdate { run, event },
             } => self.said(run, event, entry.seq),
-            ChatEvent::Prompt { .. } | ChatEvent::Receipt { .. } | ChatEvent::Newer => {}
+            ChatEvent::Prompt { .. }
+            | ChatEvent::Receipt { .. }
+            | ChatEvent::OutsidePrompt { .. }
+            | ChatEvent::Newer => {}
         }
     }
 
@@ -169,6 +172,7 @@ mod tests {
                 request: weacon_protocol::RequestId::try_from("r-1".to_owned()).unwrap(),
                 text: "Hi".to_owned(),
                 repo: None,
+                agent: None,
             },
             status("run-1", RunState::Running),
             said(

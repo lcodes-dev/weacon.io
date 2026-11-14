@@ -1,51 +1,63 @@
 //! Pairing a machine with an account: its core starts and claims, and a signed-in person
 //! confirms the code the core shows.
 
-use std::time::Duration;
-
 use axum::Json;
+use axum::Router;
 use axum::extract::rejection::PathRejection;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
+use axum::routing::{delete, get, post};
 use tokio::time::Instant;
 use weacon_observability::Fault;
 use weacon_protocol::{
     MachineId, MachineList, MachineOs, MachineSummary, PairClaim, PairClaimed, PairConfirm,
-    PairLookup, PairStart, PairStarted, code,
+    PairLookup, PairStart, PairStarted, code, to_hex,
 };
 
 use crate::app::{fresh, new_id};
 use crate::auth::Session;
 use crate::auth::token_hash;
 use crate::client::Client;
-use crate::db::{Claim, Confirmation, NewPairing};
-use crate::http::{Body, Shared, error, failure, not_found, too_many};
-use crate::limit::Limit;
-use crate::secret::random_bytes;
-use crate::sign_in::hex;
+use crate::db::{Claim, Claiming, Confirmation, NewPairing};
+use crate::http::{Body, error, failure, not_found, too_many};
+use crate::limit::{HOUR, Limit};
+use crate::secret::{random_token, random_u64};
+use crate::shared::Shared;
 
 /// How long a person has to confirm a pairing, in seconds.
 const PAIRING_LIFETIME: i64 = 600;
-/// How many pairings may be under way at once, server-wide, as anyone may start one.
-const MOST_UNDER_WAY: i64 = 1000;
-const HOUR: Duration = Duration::from_hours(1);
+/// How long a core has to claim its machine once the person confirms, in seconds.
+const CLAIM_WITHIN: i64 = 120;
 /// Crockford's base 32: no I, L, O or U, which read like other letters.
 const ALPHABET: &[u8; 32] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ";
 
-/// How many pairings each client may start.
-pub(crate) fn starts() -> Limit {
-    Limit::new(5, HOUR)
+/// How often each client may ask each pairing step.
+pub(crate) struct Limits {
+    /// How many pairings each client may start.
+    pub(crate) starts: Limit,
+    /// How many codes each client may look up or confirm.
+    pub(crate) tries: Limit,
+    /// How many claims each client may make; a core claims every few seconds while it waits.
+    pub(crate) claims: Limit,
 }
 
-/// How many codes each client may look up or confirm.
-pub(crate) fn tries() -> Limit {
-    Limit::new(60, HOUR)
+pub(crate) fn limits() -> Limits {
+    Limits {
+        starts: Limit::new(5, HOUR),
+        tries: Limit::new(60, HOUR),
+        claims: Limit::new(1200, HOUR),
+    }
 }
 
-/// How many claims each client may make; a core claims every few seconds while it waits.
-pub(crate) fn claims() -> Limit {
-    Limit::new(1200, HOUR)
+pub(crate) fn routes() -> Router<Shared> {
+    Router::new()
+        .route("/api/machines", get(machines))
+        .route("/api/machines/{machine}", delete(unpair))
+        .route("/api/machines/pair", post(start))
+        .route("/api/machines/pair/lookup", post(lookup))
+        .route("/api/machines/pair/confirm", post(confirm))
+        .route("/api/machines/pair/claim", post(claim))
 }
 
 /// `POST /api/machines/pair`: records a machine waiting to be paired, and answers with the
@@ -55,11 +67,11 @@ pub(crate) async fn start(
     Client(from): Client,
     Body(body): Body<PairStart>,
 ) -> Response {
-    if !shared.pair_starts.allow(from, Instant::now()) {
+    if !shared.pairing_limits.starts.allow(from, Instant::now()) {
         return too_many(code!("pairing.too_many"));
     }
     if body.os == MachineOs::Newer {
-        return bad_input();
+        return error(StatusCode::BAD_REQUEST, code!("pairing.invalid"), false);
     }
     match started(&shared, &body).await {
         Ok(Some(started)) => (StatusCode::CREATED, Json(started)).into_response(),
@@ -69,7 +81,7 @@ pub(crate) async fn start(
 }
 
 async fn started(shared: &Shared, body: &PairStart) -> Result<Option<PairStarted>, Fault> {
-    let (code, secret) = (code_text(&random_bytes()?), hex(&random_bytes()?));
+    let (code, secret) = (code_text(random_u64()?), random_token()?);
     let pairing = fresh(&new_id)?;
     let now = shared.now();
     let expires_at = now.saturating_add(PAIRING_LIFETIME);
@@ -82,7 +94,7 @@ async fn started(shared: &Shared, body: &PairStart) -> Result<Option<PairStarted
         key: &body.key,
         expires_at,
     };
-    let recorded = shared.db.start_pairing(&new, now, MOST_UNDER_WAY).await?;
+    let recorded = shared.db.start_pairing(&new, now).await?;
     Ok(recorded.then(|| PairStarted {
         pairing,
         code: shown(&code),
@@ -99,10 +111,10 @@ pub(crate) async fn lookup(
     _: Session,
     Body(body): Body<PairLookup>,
 ) -> Response {
-    if !shared.pair_tries.allow(from, Instant::now()) {
+    if !shared.pairing_limits.tries.allow(from, Instant::now()) {
         return too_many(code!("pairing.too_many"));
     }
-    let code_hash = shared.secret.pairing_code_hash(&typed(&body.code));
+    let code_hash = shared.secret.pairing_code_hash(&normalised(&body.code));
     match shared.db.pending_pairing(&code_hash, shared.now()).await {
         Ok(Some(pending)) => Json(pending).into_response(),
         Ok(None) => not_found(code!("pairing.not_found")),
@@ -118,7 +130,7 @@ pub(crate) async fn confirm(
     session: Session,
     Body(body): Body<PairConfirm>,
 ) -> Response {
-    if !shared.pair_tries.allow(from, Instant::now()) {
+    if !shared.pairing_limits.tries.allow(from, Instant::now()) {
         return too_many(code!("pairing.too_many"));
     }
     match confirmed(&shared, &session, &body).await {
@@ -133,13 +145,15 @@ async fn confirmed(
     session: &Session,
     body: &PairConfirm,
 ) -> Result<Option<MachineSummary>, Fault> {
+    let now = shared.now();
     let confirmation = Confirmation {
         account: &session.account,
         pairing: &body.pairing,
-        code_hash: &shared.secret.pairing_code_hash(&typed(&body.code)),
+        code_hash: &shared.secret.pairing_code_hash(&normalised(&body.code)),
         machine: &fresh(&new_id)?,
+        claim_by: now.saturating_add(CLAIM_WITHIN),
     };
-    shared.db.confirm_pairing(&confirmation, shared.now()).await
+    shared.db.confirm_pairing(&confirmation, now).await
 }
 
 /// `POST /api/machines/pair/claim`: whether the person has confirmed the pairing yet, and
@@ -149,7 +163,7 @@ pub(crate) async fn claim(
     Client(from): Client,
     Body(body): Body<PairClaim>,
 ) -> Response {
-    if !shared.pair_claims.allow(from, Instant::now()) {
+    if !shared.pairing_limits.claims.allow(from, Instant::now()) {
         return too_many(code!("pairing.too_many"));
     }
     match claimed(&shared, &body).await {
@@ -160,16 +174,13 @@ pub(crate) async fn claim(
 }
 
 async fn claimed(shared: &Shared, body: &PairClaim) -> Result<Option<PairClaimed>, Fault> {
-    let token = hex(&shared.secret.machine_token(&body.secret));
-    let claim = shared
-        .db
-        .claim_pairing(
-            &body.pairing,
-            &token_hash(&body.secret),
-            &token_hash(&token),
-            shared.now(),
-        )
-        .await?;
+    let token = to_hex(&shared.secret.machine_token(&body.secret));
+    let claiming = Claiming {
+        pairing: &body.pairing,
+        secret_hash: &token_hash(&body.secret),
+        token_hash: &token_hash(&token),
+    };
+    let claim = shared.db.claim_pairing(&claiming, shared.now()).await?;
     Ok(match claim {
         Claim::Unknown => None,
         Claim::Waiting => Some(PairClaimed::Waiting),
@@ -182,7 +193,7 @@ async fn claimed(shared: &Shared, body: &PairClaim) -> Result<Option<PairClaimed
 }
 
 /// `GET /api/machines`: the machines paired with the signed-in account.
-pub(crate) async fn list(State(shared): State<Shared>, session: Session) -> Response {
+pub(crate) async fn machines(State(shared): State<Shared>, session: Session) -> Response {
     match shared.db.machines_of(&session.account).await {
         Ok(machines) => Json(MachineList { machines }).into_response(),
         Err(fault) => failure(fault),
@@ -210,14 +221,8 @@ pub(crate) async fn unpair(
     }
 }
 
-/// Answers that the pairing names a system this server doesn't know.
-fn bad_input() -> Response {
-    error(StatusCode::BAD_REQUEST, code!("pairing.invalid"), false)
-}
-
 /// A code of eight letters from [`ALPHABET`]: 40 random bits.
-fn code_text(secret: &[u8; 32]) -> String {
-    let word = u64::from_le_bytes(secret.first_chunk().copied().unwrap_or_default());
+fn code_text(word: u64) -> String {
     (0..8)
         .filter_map(|place| {
             let index = usize::try_from((word >> (5 * place)) & 31).ok()?;
@@ -234,7 +239,7 @@ fn shown(code: &str) -> String {
 
 /// A code as a person typed it, read as its letters: any case, with or without spaces and
 /// dashes, and the letters that look like digits taken for them.
-fn typed(code: &str) -> String {
+fn normalised(code: &str) -> String {
     code.chars()
         .filter(|letter| !letter.is_whitespace() && *letter != '-')
         .map(|letter| match letter.to_ascii_uppercase() {
@@ -254,7 +259,7 @@ mod tests {
     use std::sync::Arc;
 
     use super::*;
-    use crate::test_support::{Fixture, ask, bearer, pair_machine, pairing_start, run, sign_in};
+    use crate::test_support::{Fixture, ask, bearer, pair_machine, pairing_start, sign_in};
 
     async fn start_pairing(address: SocketAddr, os: &str) -> (String, Value) {
         ask(address, "POST /api/machines/pair", "", &pairing_start(os)).await
@@ -266,18 +271,18 @@ mod tests {
 
     #[test]
     fn codes_are_eight_letters_read_as_typed() {
-        assert_eq!(code_text(&[0; 32]), "00000000");
-        assert_eq!(code_text(&[0xff; 32]), "ZZZZZZZZ");
-        assert_eq!(code_text(&[1; 32]), "1802G040");
+        assert_eq!(code_text(0), "00000000");
+        assert_eq!(code_text(u64::MAX), "ZZZZZZZZ");
+        assert_eq!(code_text(u64::from_le_bytes([1; 8])), "1802G040");
         assert_eq!(shown("ABCDEFGH"), "ABCD-EFGH");
-        assert_eq!(typed(" abcd-efgh "), "ABCDEFGH");
-        assert_eq!(typed("oO iI lL"), "001111");
+        assert_eq!(normalised(" abcd-efgh "), "ABCDEFGH");
+        assert_eq!(normalised("oO iI lL"), "001111");
     }
 
     #[tokio::test]
     async fn a_person_pairs_the_machine_whose_code_they_enter() {
         let fixture = Fixture::new().await;
-        let server = run(fixture.shared.clone()).await;
+        let server = fixture.run().await;
         let (_, ada) = sign_in(&fixture, server.address, "ada@example.com").await;
         let ada_proof = bearer(&ada);
         let (started, pairing) = start_pairing(server.address, "macos").await;
@@ -332,7 +337,7 @@ mod tests {
     #[tokio::test]
     async fn a_person_unpairs_their_machine() {
         let fixture = Fixture::new().await;
-        let server = run(fixture.shared.clone()).await;
+        let server = fixture.run().await;
         let paired = pair_machine(&fixture, server.address).await;
         assert_eq!((paired.session.len(), paired.token.len()), (64, 64));
         let (ada_proof, machine) = (paired.proof, paired.machine);
@@ -352,7 +357,7 @@ mod tests {
     #[tokio::test]
     async fn only_a_signed_in_person_with_the_right_code_confirms() {
         let fixture = Fixture::new().await;
-        let server = run(fixture.shared.clone()).await;
+        let server = fixture.run().await;
         let (_, ada) = sign_in(&fixture, server.address, "ada@example.com").await;
         let (_, pairing) = start_pairing(server.address, "linux").await;
         let code = pairing["code"].clone();
@@ -395,9 +400,37 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_confirmed_pairing_is_claimed_only_until_its_deadline() {
+        let fixture = Fixture::new().await;
+        let server = fixture.run().await;
+        let (_, ada) = sign_in(&fixture, server.address, "ada@example.com").await;
+        let mut claims = Vec::new();
+        for _ in 0..2 {
+            let (_, pairing) = start_pairing(server.address, "linux").await;
+            let confirm = json!({ "pairing": pairing["pairing"], "code": pairing["code"] });
+            post(
+                server.address,
+                "/api/machines/pair/confirm",
+                &bearer(&ada),
+                &confirm,
+            )
+            .await;
+            claims.push(json!({ "pairing": pairing["pairing"], "secret": pairing["secret"] }));
+        }
+
+        fixture.advance(CLAIM_WITHIN - 1);
+        let (_, in_time) = post(server.address, "/api/machines/pair/claim", "", &claims[0]).await;
+        fixture.advance(1);
+        let (_, late) = post(server.address, "/api/machines/pair/claim", "", &claims[1]).await;
+
+        assert_eq!(in_time["state"], "paired");
+        assert_eq!(late["code"], "pairing.not_found");
+    }
+
+    #[tokio::test]
     async fn a_system_this_server_doesnt_know_is_refused() {
         let fixture = Fixture::new().await;
-        let server = run(fixture.shared.clone()).await;
+        let server = fixture.run().await;
 
         let (status, refusal) = start_pairing(server.address, "plan9").await;
 
@@ -408,7 +441,7 @@ mod tests {
     #[tokio::test]
     async fn each_client_starts_only_so_many_pairings() {
         let fixture = Fixture::new().await;
-        let server = run(fixture.shared.clone()).await;
+        let server = fixture.run().await;
         for _ in 0..5 {
             let (status, _) = start_pairing(server.address, "linux").await;
             assert_eq!(status, "http/1.1 201 created");
@@ -423,9 +456,12 @@ mod tests {
     #[tokio::test]
     async fn each_client_tries_and_claims_only_so_many_times() {
         let mut fixture = Fixture::new().await;
-        fixture.shared.pair_tries = Arc::new(Limit::new(2, HOUR));
-        fixture.shared.pair_claims = Arc::new(Limit::new(1, HOUR));
-        let server = run(fixture.shared.clone()).await;
+        fixture.shared.pairing_limits = Arc::new(Limits {
+            tries: Limit::new(2, HOUR),
+            claims: Limit::new(1, HOUR),
+            ..limits()
+        });
+        let server = fixture.run().await;
         let (_, ada) = sign_in(&fixture, server.address, "ada@example.com").await;
         let (_, pairing) = start_pairing(server.address, "linux").await;
         let lookup = json!({ "code": pairing["code"] });
@@ -460,7 +496,7 @@ mod tests {
     #[tokio::test]
     async fn a_malformed_body_or_id_is_answered_as_an_error() {
         let fixture = Fixture::new().await;
-        let server = run(fixture.shared.clone()).await;
+        let server = fixture.run().await;
         let (_, ada) = sign_in(&fixture, server.address, "ada@example.com").await;
         let path = format!("DELETE /api/machines/{}", "a".repeat(65));
 
