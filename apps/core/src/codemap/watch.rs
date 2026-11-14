@@ -76,7 +76,7 @@ impl<S: Source> Watch<S> {
 
 #[cfg(test)]
 mod tests {
-    use weacon_protocol::{RepoId, WorkspaceId};
+    use weacon_protocol::WorkspaceId;
     use weacon_testing::{TempDir, messages, recording_logger};
 
     use super::*;
@@ -88,7 +88,7 @@ mod tests {
     async fn watch(dir: &TempDir) -> (Watch<Fake>, Fake) {
         let db = Db::open(dir).await.unwrap();
         let workspace = db.workspace(&WorkspaceId::try_from("one".to_owned()).unwrap());
-        let map = workspace.map(&RepoId::try_from("repo".to_owned()).unwrap());
+        let map = workspace.map(&crate::db::LocalRepo::at(std::path::Path::new("/repo")));
         let source = Fake::default();
         let repo = RepoMap {
             map,

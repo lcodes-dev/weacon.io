@@ -1,9 +1,11 @@
 use std::collections::BTreeMap;
+use std::path::Path;
 
+use sha2::{Digest, Sha256};
 use sqlx::{QueryBuilder, Row, Sqlite};
 use weacon_codemap::{Entry, Facts};
 use weacon_observability::Fault;
-use weacon_protocol::RepoId;
+use weacon_protocol::Sha256 as Sha256Hex;
 
 use super::{Workspace, failed, unreadable};
 
@@ -13,11 +15,23 @@ pub(crate) const BASE: &str = "base";
 /// How many rows one insert carries, well within `SQLite`'s limit on bound values.
 const BATCH: usize = 100;
 
+/// A repository on this machine, known by its main worktree's canonical path; its map is kept
+/// under a hash of that path.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct LocalRepo(String);
+
+impl LocalRepo {
+    pub(crate) fn at(main_worktree: &Path) -> Self {
+        let digest = Sha256::digest(main_worktree.as_os_str().as_encoded_bytes());
+        Self(Sha256Hex::from_bytes(digest.into()).as_str().to_owned())
+    }
+}
+
 /// One repository's code map within a workspace.
 #[derive(Clone, Debug)]
 pub(crate) struct Map {
     workspace: Workspace,
-    repo: RepoId,
+    repo: LocalRepo,
 }
 
 /// A layer as it is stored: its name, the commit it was read at, and its files.
@@ -44,7 +58,7 @@ pub(crate) struct Hit {
 }
 
 impl Workspace {
-    pub(crate) fn map(&self, repo: &RepoId) -> Map {
+    pub(crate) fn map(&self, repo: &LocalRepo) -> Map {
         Map {
             workspace: self.clone(),
             repo: repo.clone(),
@@ -54,7 +68,7 @@ impl Workspace {
 
 impl Map {
     fn keys(&self) -> (&str, &str) {
-        (self.workspace.id.as_str(), self.repo.as_str())
+        (self.workspace.id.as_str(), self.repo.0.as_str())
     }
 
     /// The layer named `name`, if it has been stored.
@@ -351,7 +365,7 @@ mod tests {
         let db = Db::open(dir).await.unwrap();
         let workspace = WorkspaceId::try_from(workspace.to_owned()).unwrap();
         db.workspace(&workspace)
-            .map(&RepoId::try_from("repo".to_owned()).unwrap())
+            .map(&LocalRepo::at(Path::new("/repo")))
     }
 
     fn stored(path: &str, blob: Option<&str>) -> Stored {
@@ -494,6 +508,37 @@ mod tests {
                 .await
                 .unwrap()
                 .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn each_repository_has_its_own_map() {
+        let dir = TempDir::new().unwrap();
+        let db = Db::open(&dir).await.unwrap();
+        let workspace = db.workspace(&WorkspaceId::try_from("one".to_owned()).unwrap());
+        let (one, two) = (Path::new("/one"), Path::new("/two"));
+        assert_eq!(LocalRepo::at(one), LocalRepo::at(one));
+        let mine = layer(BASE, vec![stored("src/lib.rs", Some("b1"))]);
+        workspace
+            .map(&LocalRepo::at(one))
+            .replace(&mine, &[], &[])
+            .await
+            .unwrap();
+        assert_eq!(
+            workspace
+                .map(&LocalRepo::at(two))
+                .layer(BASE)
+                .await
+                .unwrap(),
+            None
+        );
+        assert_eq!(
+            workspace
+                .map(&LocalRepo::at(one))
+                .layer(BASE)
+                .await
+                .unwrap(),
+            Some(mine)
         );
     }
 
