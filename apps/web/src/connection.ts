@@ -3,12 +3,10 @@ import { type Incoming, parse } from "./incoming.ts";
 import type { App, Envelope } from "./protocol.ts";
 
 /** Every capability the web app speaks of, in its hello or in the server's welcome. */
-export type WebCapability = "run.stream" | "diff.view" | "chat.send" | "log.forward";
+export type WebCapability = "run.stream" | "workspace.feed" | "diff.view" | "chat.send" | "log.forward";
 
-// What the web app needs the server to offer.
-const NEEDS: WebCapability = "run.stream";
-// What else it can do with a server that offers the same.
-const OFFERS: WebCapability[] = ["diff.view"];
+/** What a connection asks of the server: what it must offer, and what else this app can use. */
+export type Asks = { needs: WebCapability; offers: WebCapability[] };
 
 /** Whether the server is live and offers `capability`. */
 export function offers(status: Status, capability: WebCapability): boolean {
@@ -49,22 +47,24 @@ export type Listener = {
   message(envelope: Incoming): void;
 };
 
-/** Says hello as `me` once `socket` opens, then passes on what the server sends. */
+/** Says hello as `me`, with what it `asks`, once `socket` opens, then passes on what the server sends. */
 export class Connection {
   #socket: Socket;
   #listener: Listener;
+  #needs: WebCapability;
   #status: Status = { state: "connecting" };
 
-  constructor(socket: Socket, me: App, listener: Listener, later: Later) {
+  constructor(socket: Socket, me: App, listener: Listener, asks: Asks, later: Later) {
     this.#socket = socket;
     this.#listener = listener;
+    this.#needs = asks.needs;
     later(() => {
       if (this.#status.state === "connecting") {
         this.#end("connection.no_answer");
       }
     }, WELCOME_MS);
     socket.addEventListener("open", () => {
-      this.#send({ id: 1, type: "hello", protocol: PROTOCOL, app: me, capabilities: [NEEDS, ...OFFERS] });
+      this.#send({ id: 1, type: "hello", protocol: PROTOCOL, app: me, capabilities: [asks.needs, ...asks.offers] });
     });
     socket.addEventListener("message", ({ data }) => {
       const envelope = parse(data);
@@ -95,7 +95,7 @@ export class Connection {
       return;
     }
     const capabilities = envelope.capabilities ?? [];
-    if (!capabilities.includes(NEEDS)) {
+    if (!capabilities.includes(this.#needs)) {
       this.#end("connection.server_too_old");
       return;
     }

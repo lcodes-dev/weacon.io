@@ -7,11 +7,14 @@ mod launch;
 mod lines;
 mod platform;
 mod run;
+pub mod sessions;
 mod spawn;
 #[cfg(test)]
 mod test_support;
+mod transcript;
 mod wire;
 
 pub use launch::{Launch, SignIn};
 pub use run::{AgentRun, Run};
 pub use spawn::SpawnPolicy;
+pub use transcript::{Said, Transcript};

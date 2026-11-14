@@ -914,6 +914,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d5848f5a9e8117cf94f2f90faac24a87ff81600ff8628c1e3deaab572e76bfa1"
 
 [[package]]
+name = "minisign-verify"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "871285dc19d8d0ebe0eef3d0e99a205f2a71363b122632cbbfa4a6c370a960ce"
+
+[[package]]
 name = "mio"
 version = "1.2.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2045,6 +2051,7 @@ dependencies = [
 name = "weacon-agents"
 version = "0.0.0"
 dependencies = [
+ "libc",
  "serde",
  "serde_json",
  "tokio",
@@ -2104,8 +2111,10 @@ version = "0.0.0"
 dependencies = [
  "clap",
  "libc",
+ "minisign-verify",
  "serde",
  "serde_json",
+ "sha2",
  "tokio",
  "weacon-agents",
  "weacon-appkit",
@@ -2187,6 +2196,9 @@ dependencies = [
 [[package]]
 name = "weacon-version"
 version = "0.0.0"
+dependencies = [
+ "weacon-testing",
+]
 
 [[package]]
 name = "webpki-roots"

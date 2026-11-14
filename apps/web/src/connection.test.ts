@@ -38,7 +38,9 @@ function open(): Opened {
   const messages: Envelope[] = [];
   const deadlines: Array<{ run: () => void; ms: number }> = [];
   const listener: Listener = { status: (status) => statuses.push(status), message: (envelope) => messages.push(envelope) };
-  const connection = new Connection(socket, ME, listener, (run, ms) => deadlines.push({ run, ms }));
+  const connection = new Connection(socket, ME, listener, { needs: "run.stream", offers: ["diff.view"] }, (run, ms) =>
+    deadlines.push({ run, ms }),
+  );
   socket.fire("open");
   assert.deepEqual(
     deadlines.map(({ ms }) => ms),
@@ -139,4 +141,27 @@ test("a capability counts only while the server is live and offers it", () => {
   assert.equal(offers(live, "diff.view"), false);
   assert.equal(offers({ state: "connecting" }, "chat.send"), false);
   assert.equal(offers({ state: "ended", code: "connection.lost" }, "chat.send"), false);
+});
+
+test("a connection that needs another capability asks for it and takes only a server that offers it", () => {
+  const welcomed = ["workspace.feed", "run.stream"].map((offered) => {
+    const socket = new FakeSocket();
+    const statuses: Status[] = [];
+    const listener: Listener = { status: (status) => statuses.push(status), message: () => {} };
+    new Connection(socket, ME, listener, { needs: "workspace.feed", offers: [] }, () => {});
+    socket.fire("open");
+    socket.fire("message", welcome([offered]));
+    return { hello: socket.sent[0], statuses };
+  });
+
+  assert.deepEqual(welcomed, [
+    {
+      hello: { id: 1, type: "hello", protocol: 1, app: ME, capabilities: ["workspace.feed"] },
+      statuses: [{ state: "live", server: SERVER, capabilities: ["workspace.feed"] }],
+    },
+    {
+      hello: { id: 1, type: "hello", protocol: 1, app: ME, capabilities: ["workspace.feed"] },
+      statuses: [{ state: "ended", code: "connection.server_too_old" }],
+    },
+  ]);
 });

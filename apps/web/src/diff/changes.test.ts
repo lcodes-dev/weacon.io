@@ -54,13 +54,13 @@ test("files arrive one answer each, and only the latest request's for its chat c
   assert.equal(receive(NO_CHANGES, unasked), NO_CHANGES);
 });
 
-test("unchanged counts only before any file, and a line this app can't number hides its file's lines", () => {
+test("unchanged counts only before any file, and a file with a newer line op is kept as it came", () => {
   const { changes } = ask(5, "q-1", "w-1", "c-1", NO_CHANGES);
   const one = receive(changes, answer("q-1", { kind: "file", files: 2, file: file("a.rs") }));
   const moved = { ...file("b.rs"), content: { kind: "text", hunks: [{ old_start: 1, new_start: 1, lines: [{ op: "moved", text: "x" }] }] } };
 
   assert.equal(receive(one, answer("q-1", { kind: "unchanged" })), one);
-  assert.deepEqual(receive(one, answer("q-1", { kind: "file", files: 2, file: moved })).files[1], { ...moved, content: { kind: "newer" } });
+  assert.deepEqual(receive(one, answer("q-1", { kind: "file", files: 2, file: moved })).files[1], moved);
 });
 
 test("an error under the query's id cuts the changes short, so opening them asks again", () => {

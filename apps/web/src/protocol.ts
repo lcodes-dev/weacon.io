@@ -48,6 +48,27 @@ export type Envelope = {
   | {
     type: "diff_answer";
   } & DiffAnswer
+  | {
+    type: "machine_settings_query";
+  } & MachineSettingsQuery
+  | {
+    type: "machine_settings_command";
+  } & MachineSettingsCommand
+  | {
+    type: "machine_settings_answer";
+  } & MachineSettingsAnswer
+);
+
+/**
+ * What a workspace's agents may do on one machine, chosen by the machine's owner.
+ */
+export type AccessLevel = (
+  | (
+    | "read_only"
+  )
+  | "off"
+  | "ask_first"
+  | "full"
 );
 
 /**
@@ -84,9 +105,24 @@ export type AccountSignedIn = {
 };
 
 /**
+ * Which vendor's agent.
+ */
+export type AgentKind = (
+  | (
+    | "claude"
+    | "codex"
+  )
+);
+
+/**
  * An agent's own id for a conversation, a lowercase UUID, which resumes it later.
  */
 export type AgentSession = string;
+
+export type AgentSignIn = {
+  agent: AgentKind;
+  state: SignInState;
+};
 
 /**
  * A program, such as `weacon-core`, and the exact build it is.
@@ -548,6 +584,94 @@ export type MachineOs = (
 );
 
 /**
+ * What a machine keeps for one workspace, and whether it sends error reports.
+ */
+export type MachineSettings = {
+  access: AccessLevel;
+  /**
+   * The owner's answer to error reports; absent until they give one, when none are sent.
+   */
+  reports?: boolean;
+  /**
+   * Each agent the core runs, signed in or not with the workspace's own config folder.
+   */
+  sign_ins: Array<AgentSignIn>;
+  /**
+   * Whether other people are in the workspace.
+   */
+  team: boolean;
+};
+
+export type MachineSettingsAction = (
+  | {
+    kind: "set_reports";
+    send: boolean;
+  }
+  | {
+    kind: "set_access";
+    level: AccessLevel;
+    team?: boolean;
+  }
+);
+
+/**
+ * From the core to a client that has `machine.settings`, in answer to a
+ * [`MachineSettingsQuery`] or a [`MachineSettingsCommand`].
+ */
+export type MachineSettingsAnswer = {
+  answer: MachineSettingsAnswerKind;
+  machine: MachineId;
+  request: RequestId;
+  workspace: WorkspaceId;
+};
+
+export type MachineSettingsAnswerKind = (
+  | {
+    kind: "current";
+  } & MachineSettings
+);
+
+/**
+ * From the owner of `machine` to its core, which offers `machine.settings`: changes what the
+ * machine keeps for `workspace`. The server relays it only from the machine's owner, and the
+ * core acts only when `by` is its owner; the answer is a [`MachineSettingsAnswer`] that echoes
+ * `request` and holds the settings after the change.
+ */
+export type MachineSettingsCommand = {
+  action: MachineSettingsAction;
+  /**
+   * Who asked, when the server relays the message to a machine.
+   */
+  by?: Asker;
+  machine: MachineId;
+  request: RequestId;
+  workspace: WorkspaceId;
+};
+
+/**
+ * From the owner of `machine` to its core, which offers `machine.settings`: what the machine
+ * keeps for `workspace`. The server relays it only from the machine's owner, and the core
+ * answers only when `by` is its owner; the answer is a [`MachineSettingsAnswer`] that echoes
+ * `request`.
+ */
+export type MachineSettingsQuery = {
+  /**
+   * Who asked, when the server relays the message to a machine.
+   */
+  by?: Asker;
+  machine: MachineId;
+  query: MachineSettingsQueryKind;
+  request: RequestId;
+  workspace: WorkspaceId;
+};
+
+export type MachineSettingsQueryKind = (
+  | {
+    kind: "current";
+  }
+);
+
+/**
  * A machine paired with the signed-in account, at `paired_at`, in seconds since the Unix
  * epoch.
  */
@@ -880,6 +1004,18 @@ export type SignInStart = {
 export type SignInStarted = {
   challenge: ChallengeId;
 };
+
+/**
+ * Only whether an agent is signed in: never its credentials.
+ */
+export type SignInState = (
+  | (
+    | "signed_in"
+    | "signed_out"
+    | "not_installed"
+  )
+  | "unknown"
+);
 
 /**
  * A signed-in member and the session token that proves it, sent as a bearer token.

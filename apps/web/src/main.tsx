@@ -5,7 +5,7 @@ import "./app.css";
 import { App } from "./app.tsx";
 import { chatRefOf } from "./chat-ref.ts";
 import { type Send, deliver, prompt } from "./composer/prompt.ts";
-import { Connection, type Later, type Status, offers } from "./connection.ts";
+import { type Asks, Connection, type Later, type Status, offers } from "./connection.ts";
 import { NO_CHANGES, ask, cut, needsAsking, receive } from "./diff/changes.ts";
 import { Feed, nextFrame } from "./feed.ts";
 import { newRequestId } from "./ids.ts";
@@ -14,7 +14,6 @@ import { Log } from "./log.ts";
 import { ME } from "./me.ts";
 import { Receipts } from "./receipts.ts";
 import { fakeServerUrl } from "./server.ts";
-import { Api } from "./shell/api.ts";
 import { Shell } from "./shell/shell.tsx";
 import { EMPTY, apply } from "./transcript/transcript.ts";
 
@@ -34,6 +33,7 @@ log.info("app started");
 const chatRef = chatRefOf(window.location.search);
 // How long a hidden tab waits for a frame before its batch of run events goes out anyway.
 const HIDDEN_MS = 250;
+const TRANSCRIPT: Asks = { needs: "run.stream", offers: ["diff.view"] };
 
 function Root({ url }: { url: string }) {
   const [status, setStatus] = useState<Status>({ state: "connecting" });
@@ -97,7 +97,7 @@ function Root({ url }: { url: string }) {
           },
         });
       },
-    }, later);
+    }, TRANSCRIPT, later);
     return () => {
       current = false;
       live.current = undefined;
@@ -129,7 +129,7 @@ const root = document.getElementById("root");
 if (root !== null) {
   createRoot(root).render(
     <StrictMode>
-      {fake === undefined ? <Shell api={new Api(fetch.bind(window))} /> : <Root url={fake} />}
+      {fake === undefined ? <Shell fetch={fetch.bind(window)} /> : <Root url={fake} />}
     </StrictMode>,
   );
 }

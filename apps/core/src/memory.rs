@@ -5,6 +5,7 @@ use std::io;
 
 use weacon_observability::{Field, Logger};
 
+use crate::app::blocking;
 use crate::platform::Process;
 
 /// The core's own memory and its descendants', such as agents and their tools.
@@ -57,9 +58,7 @@ impl Watch {
 
     /// Lists processes off the async runtime, since `/proc` can be slow to read.
     pub(crate) async fn record(&mut self, log: &Logger) {
-        let listed = tokio::task::spawn_blocking(self.processes)
-            .await
-            .unwrap_or_else(|error| Err(io::Error::other(error)));
+        let listed = blocking(self.processes).await;
         // Not found means /proc can't see this process, as in another PID namespace.
         let sampled = listed.and_then(|processes| {
             sample(&processes, std::process::id()).ok_or_else(|| io::ErrorKind::NotFound.into())
