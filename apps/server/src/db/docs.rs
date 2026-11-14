@@ -4,7 +4,10 @@ use weacon_observability::Fault;
 use weacon_protocol::{DocAnchors, DocId, DocRevision, DocSummary, code};
 
 use super::changes::Versioned;
-use super::{Workspace, author_columns, failed, stored, stored_author, stored_version, unreadable};
+use super::{
+    Workspace, author_columns, failed, stored, stored_author, stored_version, unreadable,
+    version_number,
+};
 
 /// How many bytes of doc revisions a workspace may hold.
 const DOC_QUOTA: i64 = 1 << 30;
@@ -22,7 +25,7 @@ impl Workspace {
         sqlx::query("INSERT INTO docs (workspace_id, doc_id, version) VALUES (?, ?, ?)")
             .bind(self.id.as_str())
             .bind(doc.id.as_str())
-            .bind(version_number(doc.version)?)
+            .bind(version_number(doc.version, last_version)?)
             .execute(&mut *transaction)
             .await
             .map_err(failed)?;
@@ -56,7 +59,7 @@ impl Workspace {
     /// isn't is `doc.not_found`.
     pub(crate) async fn doc(&self, id: &DocId, version: Option<Revision>) -> Result<Doc, Fault> {
         let version = version
-            .map(|version| i64::try_from(version.get()).map_err(|_| doc_not_found()))
+            .map(|version| version_number(version, doc_not_found))
             .transpose()?;
         let mut reader = self.db.readers.acquire().await.map_err(failed)?;
         self.read_doc(&mut reader, id, version).await
@@ -75,7 +78,7 @@ impl Workspace {
         let current = self.read_doc(&mut transaction, id, None).await?;
         let revised = current.revise(read_at, text).map_err(refused)?;
         sqlx::query("UPDATE docs SET version = ? WHERE workspace_id = ? AND doc_id = ?")
-            .bind(version_number(revised.version)?)
+            .bind(version_number(revised.version, last_version)?)
             .bind(self.id.as_str())
             .bind(id.as_str())
             .execute(&mut *transaction)
@@ -190,7 +193,7 @@ impl Workspace {
         attribution: &Attribution,
     ) -> Result<(), Fault> {
         let (kind, author, agent) = author_columns(attribution.author()).ok_or_else(unknown)?;
-        let version = version_number(doc.version)?;
+        let version = version_number(doc.version, last_version)?;
         let anchors = doc.text.anchors();
         let size = size(&doc.text, agent.as_deref());
         self.charge(transaction, size).await?;
@@ -297,10 +300,6 @@ fn last_version() -> Fault {
         code!("doc.last_version"),
         "The doc can't be revised any more",
     )
-}
-
-fn version_number(version: Revision) -> Result<i64, Fault> {
-    i64::try_from(version.get()).map_err(|_| last_version())
 }
 
 #[cfg(test)]

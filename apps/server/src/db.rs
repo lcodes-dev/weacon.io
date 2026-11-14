@@ -173,6 +173,11 @@ fn stored<T: TryFrom<String>>(value: String) -> Result<T, Fault> {
     T::try_from(value).map_err(|_| unreadable())
 }
 
+/// `version` as stored, or `too_big` when it doesn't fit in an `i64`.
+fn version_number(version: Revision, too_big: fn() -> Fault) -> Result<i64, Fault> {
+    i64::try_from(version.get()).map_err(|_| too_big())
+}
+
 fn stored_version(version: i64) -> Result<Revision, Fault> {
     u64::try_from(version)
         .map(Revision::new)

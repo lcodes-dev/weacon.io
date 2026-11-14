@@ -4,7 +4,9 @@ use weacon_observability::Fault;
 use weacon_protocol::{TaskId, TaskStatus, code};
 
 use super::changes::Versioned;
-use super::{Workspace, author_columns, failed, stored, stored_version, unreadable};
+use super::{
+    Workspace, author_columns, failed, stored, stored_version, unreadable, version_number,
+};
 
 type Row = (String, String, String, String, i64);
 
@@ -30,7 +32,7 @@ impl Workspace {
         .bind(task.title.as_str())
         .bind(status_text(task.status)?)
         .bind(task.order.as_str())
-        .bind(version_number(task.version)?)
+        .bind(version_number(task.version, last_version)?)
         .bind(MAX_TASKS)
         .execute(&mut *transaction)
         .await
@@ -90,7 +92,7 @@ impl Workspace {
         .bind(edited.title.as_str())
         .bind(status_text(edited.status)?)
         .bind(edited.order.as_str())
-        .bind(version_number(edited.version)?)
+        .bind(version_number(edited.version, last_version)?)
         .bind(self.id.as_str())
         .bind(id.as_str())
         .execute(&mut *transaction)
@@ -111,7 +113,7 @@ impl Workspace {
     ) -> Result<(), Fault> {
         let (kind, author, agent) =
             author_columns(attribution.author()).ok_or_else(unknown_value)?;
-        let version = version_number(task.version)?;
+        let version = version_number(task.version, last_version)?;
         sqlx::query(
             "INSERT INTO task_versions
                  (workspace_id, task_id, version, author_kind, author_member, agent, accepted_by,
@@ -173,10 +175,6 @@ fn last_version() -> Fault {
         code!("task.last_version"),
         "The task can't be changed any more",
     )
-}
-
-fn version_number(version: Revision) -> Result<i64, Fault> {
-    i64::try_from(version.get()).map_err(|_| last_version())
 }
 
 fn status_text(status: TaskStatus) -> Result<&'static str, Fault> {
