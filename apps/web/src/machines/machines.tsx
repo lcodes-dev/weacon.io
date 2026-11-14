@@ -20,6 +20,7 @@ export function Machines({ api, pins, later }: { api: Api; pins: Pins; later: La
   const list = value?.machines;
   const [waiting, setWaiting] = useState<MachineId>();
   const [stalled, setStalled] = useState(false);
+  const [justPaired, setJustPaired] = useState<MachineId>();
   useEffect(() => {
     if (waiting === undefined) {
       return;
@@ -31,6 +32,7 @@ export function Machines({ api, pins, later }: { api: Api; pins: Pins; later: La
   }, [waiting]);
   useEffect(() => {
     if (list?.some(({ id }) => id === waiting)) {
+      setJustPaired(waiting);
       setWaiting(undefined);
     }
   }, [list, waiting]);
@@ -44,7 +46,7 @@ export function Machines({ api, pins, later }: { api: Api; pins: Pins; later: La
       {list !== undefined && list.length > 0 && (
         <ul aria-label="Machines">
           {list.map((machine) => (
-            <Machine key={machine.id} api={api} pins={pins} later={later} machine={machine} unpaired={() => void load()} />
+            <Machine key={machine.id} api={api} pins={pins} later={later} machine={machine} justPaired={machine.id === justPaired} unpaired={() => void load()} />
           ))}
         </ul>
       )}
@@ -69,16 +71,24 @@ function Machine({
   pins,
   later,
   machine,
+  justPaired,
   unpaired,
 }: {
   api: Api;
   pins: Pins;
   later: Later;
   machine: MachineSummary;
+  justPaired: boolean;
   unpaired(): void;
 }) {
   const [confirming, setConfirming] = useState(false);
   const [open, setOpen] = useState(false);
+  // Its settings open by themselves once, so the person is asked about error reports at once.
+  useEffect(() => {
+    if (justPaired) {
+      setOpen(true);
+    }
+  }, [justPaired]);
   // A machine's settings are kept for each workspace, so they show only while one is open.
   const socket = useContext(WorkspaceSocketContext);
   const settable = useOffers(socket, "machine.settings");
