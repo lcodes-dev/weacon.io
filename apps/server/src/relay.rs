@@ -14,7 +14,7 @@ use weacon_protocol::{
     Asker, Capability, Code, Envelope, ErrorBody, MachineId, Message, RequestId, WorkspaceId, code,
 };
 
-use crate::http::Shared;
+use crate::shared::Shared;
 
 /// How many asks may wait for their answers at once, server-wide.
 const MOST_WAITING: usize = 4096;

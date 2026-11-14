@@ -17,6 +17,7 @@ mod outbox;
 mod pairing;
 mod relay;
 mod secret;
+mod shared;
 mod sign_in;
 mod sign_up;
 mod socket;
@@ -42,9 +43,9 @@ use weacon_protocol::code;
 
 use crate::cli::{Command, Serve};
 use crate::db::Db;
-use crate::http::Shared;
 use crate::outbox::Outbox;
 use crate::secret::Secret;
+use crate::shared::Shared;
 
 /// How many wake-ups a feed may miss before it rereads the database.
 const CHANGES: usize = 256;

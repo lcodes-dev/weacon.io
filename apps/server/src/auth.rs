@@ -11,7 +11,8 @@ use weacon_protocol::{AccountId, MachineId, MemberId, WorkspaceId, code};
 
 use crate::db::Workspace;
 use crate::email::Email;
-use crate::http::{Shared, cross_site, error, failure, unauthorized};
+use crate::http::{cross_site, error, failure, unauthorized};
+use crate::shared::Shared;
 
 /// The browser's session cookie; the prefix ties it to this host.
 pub(crate) const SESSION_COOKIE: &str = "__Host-weacon_session";

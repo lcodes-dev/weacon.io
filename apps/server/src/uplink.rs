@@ -13,9 +13,9 @@ use weacon_protocol::{Capability, Code, Envelope, MAX_FRAME, MachineId, Message,
 
 use crate::auth::Machine;
 use crate::connections::Place;
-use crate::http::Shared;
 use crate::links::Connected;
 use crate::relay::SETTINGS;
+use crate::shared::Shared;
 use crate::socket::{Closed, Pings, error, greet, reply, send};
 
 /// What a core must offer, and the server offers, to keep a machine's connection.

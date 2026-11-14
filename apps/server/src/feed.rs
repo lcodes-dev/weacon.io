@@ -15,8 +15,9 @@ use weacon_protocol::{
 
 use crate::auth::{Member, Session};
 use crate::connections::Place;
-use crate::http::{Shared, failure};
+use crate::http::failure;
 use crate::relay::{self, Ask, Refusal, SETTINGS};
+use crate::shared::Shared;
 use crate::socket::{Closed, Pings, greet, reply};
 
 /// What a client must offer, and the server offers, to get a workspace's changes.

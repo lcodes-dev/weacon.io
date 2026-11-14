@@ -18,10 +18,11 @@ use crate::auth::{Sender, Session, Unproven, proof, sender, set_session_cookie, 
 use crate::client::Client;
 use crate::db::{Attempt, NewChallenge};
 use crate::email::Email;
-use crate::http::{Body, Shared, cross_site, failure, report, too_many, unauthorized};
+use crate::http::{Body, cross_site, failure, report, too_many, unauthorized};
 use crate::limit::{HOUR, Limit};
 use crate::outbox::mail_failed;
 use crate::secret::{random_failed, random_token, random_u64};
+use crate::shared::Shared;
 use crate::sign_up;
 use crate::workspaces;
 

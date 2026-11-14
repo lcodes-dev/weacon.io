@@ -25,10 +25,11 @@ pub(crate) use weacon_testing::{Records, messages, recording_logger, recording_s
 
 use crate::connections;
 use crate::db::Db;
-use crate::http::{self, Shared};
+use crate::http;
 use crate::outbox::Outbox;
 use crate::pairing;
 use crate::secret::Secret;
+use crate::shared::Shared;
 use crate::sign_in;
 
 pub(crate) const VERSION: Version = Version {

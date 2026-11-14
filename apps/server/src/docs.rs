@@ -11,7 +11,8 @@ use weacon_protocol::{
 
 use crate::app::new_id;
 use crate::auth::Member;
-use crate::http::{self, Body, Refusals, Shared, Unreadable, parsed};
+use crate::http::{self, Body, Refusals, Unreadable, parsed};
+use crate::shared::Shared;
 
 /// The most a doc request's body may be: room for the largest doc the model allows, even
 /// when JSON escapes each byte of its Markdown as `\u00XX`, with its pins.

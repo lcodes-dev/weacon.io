@@ -7,7 +7,7 @@ use futures_util::{Sink, SinkExt};
 use tokio::time::{Instant, Interval, MissedTickBehavior, interval_at, timeout};
 use weacon_protocol::{Capability, Code, Envelope, ErrorBody, Hello, Message, code};
 
-use crate::http::Shared;
+use crate::shared::Shared;
 
 /// How long a web socket waits for the client's hello, and how often it checks that the
 /// client answers and may still have it; a send that takes longer than that ends it.

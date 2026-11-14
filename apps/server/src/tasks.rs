@@ -12,7 +12,8 @@ use weacon_protocol::{
 use crate::app::new_id;
 use crate::auth::Member;
 use crate::db::task_not_found;
-use crate::http::{self, Body, Refusals, Shared, Unreadable, parsed};
+use crate::http::{self, Body, Refusals, Unreadable, parsed};
+use crate::shared::Shared;
 
 /// `GET /api/workspaces/{workspace}/tasks`: the workspace's tasks, in their order.
 pub(crate) async fn list(member: Member) -> Result<Json<TaskList>, Refused> {

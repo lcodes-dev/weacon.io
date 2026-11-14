@@ -18,9 +18,10 @@ use crate::auth::Session;
 use crate::auth::token_hash;
 use crate::client::Client;
 use crate::db::{Claim, Confirmation, NewPairing};
-use crate::http::{Body, Shared, error, failure, not_found, too_many};
+use crate::http::{Body, error, failure, not_found, too_many};
 use crate::limit::{HOUR, Limit};
 use crate::secret::{random_token, random_u64};
+use crate::shared::Shared;
 
 /// How long a person has to confirm a pairing, in seconds.
 const PAIRING_LIFETIME: i64 = 600;

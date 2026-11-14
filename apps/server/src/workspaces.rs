@@ -9,7 +9,8 @@ use weacon_protocol::{WorkspaceCreate, WorkspaceList, WorkspaceSummary, code};
 use crate::app::{fresh, new_id};
 use crate::auth::{Member, Session};
 use crate::db::NewWorkspace;
-use crate::http::{Body, Shared, failure, invalid, unauthorized};
+use crate::http::{Body, failure, invalid, unauthorized};
+use crate::shared::Shared;
 
 pub(crate) const MAX_NAME: usize = 100;
 /// What an account's own workspace is called when it is made.
