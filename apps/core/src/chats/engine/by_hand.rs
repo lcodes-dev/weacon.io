@@ -11,19 +11,31 @@ use weacon_protocol::{
 use super::agent::Heard;
 use super::{Engine, PendingAnswer};
 use crate::chats::test_support::{
-    Bench, FakeAgent, Started, Told, client, command, key, parts, prompt, pushed, run, soon,
+    Bench, FakeAgent, Started, Told, client, command, key, parts, prompt, run, skip, soon,
 };
 
-// An engine driven by hand, on its first turn, with the client watching the chat.
-pub(super) async fn on_turn() -> (Bench, Engine<FakeAgent>, Started, mpsc::Receiver<Message>) {
+/// An engine driven by hand, on its first turn, with a client watching the chat.
+pub(super) struct OnTurn {
+    pub(super) bench: Bench,
+    pub(super) engine: Engine<FakeAgent>,
+    pub(super) agent: Started,
+    pub(super) pushes: mpsc::Receiver<Message>,
+}
+
+pub(super) async fn on_turn() -> OnTurn {
     let (mut bench, mut engine) = parts();
     let (client, mut pushes) = client(64);
     let subscribe = ChatQueryKind::Subscribe { after: 0 };
     engine.query(&key(), subscribe, &client).await.unwrap();
     engine.command(&key(), prompt("r-1", "Hi")).await.unwrap();
-    assert_eq!(pushed(&mut pushes, 4).await.len(), 4);
-    let started = soon(bench.started.recv()).await.unwrap();
-    (bench, engine, started, pushes)
+    skip(&mut pushes, 4).await;
+    let agent = soon(bench.started.recv()).await.unwrap();
+    OnTurn {
+        bench,
+        engine,
+        agent,
+        pushes,
+    }
 }
 
 pub(super) async fn hear(engine: &mut Engine<FakeAgent>, event: RunEvent) -> Result<(), Fault> {
@@ -43,10 +55,10 @@ pub(super) fn session() -> AgentSession {
 }
 
 // A run on its turn, waiting for a person to answer its prompt 1.
-pub(super) async fn on_ask() -> (Engine<FakeAgent>, Started, Bench) {
-    let (bench, mut engine, mut agent, _pushes) = on_turn().await;
+pub(super) async fn on_ask() -> OnTurn {
+    let mut on = on_turn().await;
     assert_eq!(
-        soon(agent.told.recv()).await,
+        soon(on.agent.told.recv()).await,
         Some(Told::Send("Hi".to_owned()))
     );
     let asks = RunEvent::PermissionAsked {
@@ -55,8 +67,8 @@ pub(super) async fn on_ask() -> (Engine<FakeAgent>, Started, Bench) {
         tool: "Write".to_owned(),
         input: json!({}),
     };
-    hear(&mut engine, asks).await.unwrap();
-    (engine, agent, bench)
+    hear(&mut on.engine, asks).await.unwrap();
+    on
 }
 
 // What the chat's snapshot says waits for a person.

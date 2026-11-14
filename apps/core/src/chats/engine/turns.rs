@@ -192,14 +192,14 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn a_turn_ends_even_when_its_last_event_cant_be_committed() {
-        let (_bench, mut engine, _agent, _pushes) = on_turn().await;
-        engine.open(&key()).await.unwrap().log.jam();
+        let mut on = on_turn().await;
+        on.engine.open(&key()).await.unwrap().log.jam();
 
         let outcome = Outcome::Completed;
-        let lost = hear(&mut engine, RunEvent::Finished { outcome }).await;
+        let lost = hear(&mut on.engine, RunEvent::Finished { outcome }).await;
 
         assert_eq!(lost.unwrap_err().code().as_str(), "chat.log_not_written");
-        assert_eq!(engine.turn(&key()), None);
+        assert_eq!(on.engine.turn(&key()), None);
         let receipt = ChatEvent::RunStatus {
             status: RunStatus {
                 run: run("run-1"),
@@ -207,18 +207,21 @@ mod tests {
                 agent: None,
             },
         };
-        assert_eq!(latest(&mut engine).await, receipt);
+        assert_eq!(latest(&mut on.engine).await, receipt);
     }
 
     #[tokio::test(start_paused = true)]
     async fn a_turn_whose_agent_is_gone_doesnt_hold_up_the_next_prompt() {
-        let (mut bench, mut engine, _agent, _pushes) = on_turn().await;
+        let mut on = on_turn().await;
         // As when the agent exited and the journal couldn't be told the turn was over.
-        engine.open(&key()).await.unwrap().orders = None;
+        on.engine.open(&key()).await.unwrap().orders = None;
 
-        engine.command(&key(), prompt("r-2", "More")).await.unwrap();
+        on.engine
+            .command(&key(), prompt("r-2", "More"))
+            .await
+            .unwrap();
 
-        let mut next = soon(bench.started.recv()).await.unwrap();
+        let mut next = soon(on.bench.started.recv()).await.unwrap();
         assert_eq!(next.start.run, run("run-2"));
         assert_eq!(
             soon(next.told.recv()).await,
@@ -228,23 +231,26 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn a_run_that_stopped_reading_gets_no_turn_and_the_prompt_goes_to_a_new_run() {
-        let (mut bench, mut engine, agent, _pushes) = on_turn().await;
-        engine.command(&key(), prompt("r-2", "More")).await.unwrap();
+        let mut on = on_turn().await;
+        on.engine
+            .command(&key(), prompt("r-2", "More"))
+            .await
+            .unwrap();
         // The agent exits; its report of that isn't handled yet.
-        drop(agent.say);
+        drop(on.agent.say);
         let mut tries = 0;
-        while engine.takes_orders(&key()) && tries < 1000 {
+        while on.engine.takes_orders(&key()) && tries < 1000 {
             tries += 1;
             tokio::task::yield_now().await;
         }
-        assert!(!engine.takes_orders(&key()));
+        assert!(!on.engine.takes_orders(&key()));
 
         let outcome = Outcome::Completed;
-        hear(&mut engine, RunEvent::Finished { outcome })
+        hear(&mut on.engine, RunEvent::Finished { outcome })
             .await
             .unwrap();
 
-        let mut next = soon(bench.started.recv()).await.unwrap();
+        let mut next = soon(on.bench.started.recv()).await.unwrap();
         assert_eq!(next.start.run, run("run-2"));
         assert_eq!(
             soon(next.told.recv()).await,
@@ -252,16 +258,19 @@ mod tests {
         );
         // The old run's exit, heard late, leaves the new one alone.
         let exited = Heard::Exited(None);
-        engine.heard(&key(), &run("run-1"), exited).await.unwrap();
-        assert!(engine.takes_orders(&key()));
-        assert_eq!(engine.turn(&key()), Some(prompt("r-2", "More").request));
+        on.engine
+            .heard(&key(), &run("run-1"), exited)
+            .await
+            .unwrap();
+        assert!(on.engine.takes_orders(&key()));
+        assert_eq!(on.engine.turn(&key()), Some(prompt("r-2", "More").request));
     }
 
     #[tokio::test(start_paused = true)]
     async fn a_working_run_with_no_turn_left_after_a_restart_sleeps() {
-        let (_bench, mut engine, _agent, _pushes) = on_turn().await;
+        let mut on = on_turn().await;
         let outcome = Outcome::Completed;
-        hear(&mut engine, RunEvent::Finished { outcome })
+        hear(&mut on.engine, RunEvent::Finished { outcome })
             .await
             .unwrap();
         // As when the core stopped right after starting a run, before it got a turn.
@@ -271,33 +280,36 @@ mod tests {
             state: running,
             agent: None,
         };
-        engine
+        on.engine
             .commit(&key(), ChatEvent::RunStatus { status })
             .await
             .unwrap();
-        engine.chats.remove(&key());
+        on.engine.chats.remove(&key());
 
-        waiting_in(&mut engine).await;
+        waiting_in(&mut on.engine).await;
 
         let status = RunStatus {
             run: run("run-1"),
             state: RunState::Sleeping,
             agent: None,
         };
-        assert_eq!(latest(&mut engine).await, ChatEvent::RunStatus { status });
+        assert_eq!(
+            latest(&mut on.engine).await,
+            ChatEvent::RunStatus { status }
+        );
     }
 
     #[tokio::test(start_paused = true)]
     async fn a_run_cut_off_by_a_restart_ends_and_leaves_no_prompt_waiting() {
-        let (mut engine, _agent, _bench) = on_ask().await;
-        assert_eq!(waiting_in(&mut engine).await.len(), 1);
+        let mut on = on_ask().await;
+        assert_eq!(waiting_in(&mut on.engine).await.len(), 1);
         // As after a restart: the log is all that is left of the chat.
-        engine.chats.remove(&key());
+        on.engine.chats.remove(&key());
 
-        assert!(waiting_in(&mut engine).await.is_empty());
+        assert!(waiting_in(&mut on.engine).await.is_empty());
         let first = prompt("r-1", "Hi").request;
         assert_eq!(
-            outcomes(&mut engine, &first).await,
+            outcomes(&mut on.engine, &first).await,
             [Outcome::Accepted, Outcome::Unknown]
         );
         let status = RunStatus {
@@ -305,75 +317,87 @@ mod tests {
             state: RunState::Sleeping,
             agent: None,
         };
-        assert_eq!(latest(&mut engine).await, ChatEvent::RunStatus { status });
+        assert_eq!(
+            latest(&mut on.engine).await,
+            ChatEvent::RunStatus { status }
+        );
     }
 
     #[tokio::test(start_paused = true)]
     async fn a_turn_whose_receipt_cant_be_committed_ends_as_reported_on_the_next_prompt() {
-        let (_bench, mut engine, mut agent, _pushes) = on_turn().await;
+        let mut on = on_turn().await;
         assert_eq!(
-            soon(agent.told.recv()).await,
+            soon(on.agent.told.recv()).await,
             Some(Told::Send("Hi".to_owned()))
         );
         let request = prompt("r-1", "Hi").request;
-        engine.open(&key()).await.unwrap().log.jam();
+        on.engine.open(&key()).await.unwrap().log.jam();
         let run_1 = run("run-1");
-        let lost = engine.end_turn(&key(), &run_1, Outcome::Completed).await;
+        let lost = on.engine.end_turn(&key(), &run_1, Outcome::Completed).await;
         assert_eq!(lost.unwrap_err().code().as_str(), "chat.log_not_written");
-        assert_eq!(engine.turn(&key()), Some(request.clone()));
+        assert_eq!(on.engine.turn(&key()), Some(request.clone()));
 
-        engine.command(&key(), prompt("r-2", "More")).await.unwrap();
+        on.engine
+            .command(&key(), prompt("r-2", "More"))
+            .await
+            .unwrap();
 
         assert_eq!(
-            soon(agent.told.recv()).await,
+            soon(on.agent.told.recv()).await,
             Some(Told::Send("More".to_owned()))
         );
         assert_eq!(
-            outcomes(&mut engine, &request).await,
+            outcomes(&mut on.engine, &request).await,
             [Outcome::Accepted, Outcome::Completed]
         );
     }
 
     #[tokio::test(start_paused = true)]
     async fn a_queued_prompt_whose_end_is_in_the_log_never_runs() {
-        let (_bench, mut engine, mut agent, _pushes) = on_turn().await;
+        let mut on = on_turn().await;
         assert_eq!(
-            soon(agent.told.recv()).await,
+            soon(on.agent.told.recv()).await,
             Some(Told::Send("Hi".to_owned()))
         );
-        engine.command(&key(), prompt("r-2", "More")).await.unwrap();
+        on.engine
+            .command(&key(), prompt("r-2", "More"))
+            .await
+            .unwrap();
         // As when its failure was committed but it couldn't leave the queue.
         let code = code!("agent.not_started");
         let request = prompt("r-2", "More").request;
-        engine
+        on.engine
             .commit_receipt(&key(), &request, Outcome::Failed { code })
             .await
             .unwrap();
 
         let outcome = Outcome::Completed;
-        hear(&mut engine, RunEvent::Finished { outcome })
+        hear(&mut on.engine, RunEvent::Finished { outcome })
             .await
             .unwrap();
 
-        assert_eq!(soon(agent.told.recv()).await, None);
-        assert!(engine.runs.of(&key()).unwrap().queue.is_empty());
+        assert_eq!(soon(on.agent.told.recv()).await, None);
+        assert!(on.engine.runs.of(&key()).unwrap().queue.is_empty());
     }
 
     #[tokio::test(start_paused = true)]
     async fn an_exit_whose_receipt_failed_is_ended_before_the_next_run_starts() {
-        let (mut bench, mut engine, agent, _pushes) = on_turn().await;
-        engine.open(&key()).await.unwrap().log.jam();
-        drop(agent);
+        let mut on = on_turn().await;
+        on.engine.open(&key()).await.unwrap().log.jam();
+        drop(on.agent);
         let exited = Heard::Exited(None);
-        let lost = engine.heard(&key(), &run("run-1"), exited).await;
+        let lost = on.engine.heard(&key(), &run("run-1"), exited).await;
         assert_eq!(lost.unwrap_err().code().as_str(), "chat.log_not_written");
         // Its outcome keeps the chat open, though nothing else does.
-        engine.settle(&key());
-        assert!(engine.chats.contains_key(&key()));
+        on.engine.settle(&key());
+        assert!(on.engine.chats.contains_key(&key()));
 
-        engine.command(&key(), prompt("r-2", "More")).await.unwrap();
+        on.engine
+            .command(&key(), prompt("r-2", "More"))
+            .await
+            .unwrap();
 
-        let mut next = soon(bench.started.recv()).await.unwrap();
+        let mut next = soon(on.bench.started.recv()).await.unwrap();
         assert_eq!(next.start.run, run("run-2"));
         assert_eq!(
             soon(next.told.recv()).await,
@@ -381,48 +405,51 @@ mod tests {
         );
         let first = prompt("r-1", "Hi").request;
         assert_eq!(
-            outcomes(&mut engine, &first).await,
+            outcomes(&mut on.engine, &first).await,
             [Outcome::Accepted, Outcome::Unknown]
         );
-        assert!(engine.open(&key()).await.unwrap().pending_end.is_none());
+        assert!(on.engine.open(&key()).await.unwrap().pending_end.is_none());
     }
 
     #[tokio::test(start_paused = true)]
     async fn an_outcome_left_by_another_turn_doesnt_end_this_one() {
-        let (_bench, mut engine, _agent, _pushes) = on_turn().await;
+        let mut on = on_turn().await;
         let other = PendingEnd {
             turn: prompt("r-0", "Earlier").request,
             outcome: Outcome::Completed,
         };
-        engine.open(&key()).await.unwrap().pending_end = Some(other);
+        on.engine.open(&key()).await.unwrap().pending_end = Some(other);
 
         let run_1 = run("run-1");
-        engine
+        on.engine
             .end_turn(&key(), &run_1, Outcome::Interrupted)
             .await
             .unwrap();
 
         let first = prompt("r-1", "Hi").request;
         assert_eq!(
-            outcomes(&mut engine, &first).await,
+            outcomes(&mut on.engine, &first).await,
             [Outcome::Accepted, Outcome::Interrupted]
         );
     }
 
     #[tokio::test(start_paused = true)]
     async fn a_turn_whose_run_is_gone_ends_unknown_on_the_next_prompt() {
-        let (mut bench, mut engine, _agent, _pushes) = on_turn().await;
+        let mut on = on_turn().await;
         // As after a restart: nothing of the chat or its run is in memory.
-        engine.chats.remove(&key());
+        on.engine.chats.remove(&key());
 
-        engine.command(&key(), prompt("r-2", "More")).await.unwrap();
+        on.engine
+            .command(&key(), prompt("r-2", "More"))
+            .await
+            .unwrap();
 
         let first = prompt("r-1", "Hi").request;
         assert_eq!(
-            outcomes(&mut engine, &first).await,
+            outcomes(&mut on.engine, &first).await,
             [Outcome::Accepted, Outcome::Unknown]
         );
-        let mut next = soon(bench.started.recv()).await.unwrap();
+        let mut next = soon(on.bench.started.recv()).await.unwrap();
         assert_eq!(next.start.run, run("run-2"));
         assert_eq!(
             soon(next.told.recv()).await,
@@ -432,26 +459,26 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn a_prompt_its_run_never_got_goes_back_to_the_queue() {
-        let (_bench, mut engine, _agent, _pushes) = on_turn().await;
+        let mut on = on_turn().await;
         let outcome = Outcome::Completed;
-        hear(&mut engine, RunEvent::Finished { outcome })
+        hear(&mut on.engine, RunEvent::Finished { outcome })
             .await
             .unwrap();
         // The run stopped reading while its next turn was being saved.
         let (closed, gone) = mpsc::unbounded_channel();
         drop(gone);
-        engine.open(&key()).await.unwrap().orders = Some(closed);
+        on.engine.open(&key()).await.unwrap().orders = Some(closed);
         let next = Queued {
             request: prompt("r-2", "More").request,
             text: "More".to_owned(),
         };
 
-        engine
+        on.engine
             .give_turn(&key(), &run("run-1"), next.clone())
             .await
             .unwrap();
 
-        let record = engine.runs.of(&key()).unwrap();
+        let record = on.engine.runs.of(&key()).unwrap();
         assert_eq!(
             (record.turn.as_ref(), record.queue.as_slice()),
             (None, [next].as_slice())

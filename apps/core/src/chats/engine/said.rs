@@ -180,11 +180,11 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn an_event_too_large_for_a_frame_is_committed_without_what_made_it_so() {
-        let (_bench, mut engine, _agent, mut pushes) = on_turn().await;
+        let mut on = on_turn().await;
         let large = "é".repeat(700_000);
 
-        hear(&mut engine, text(large.clone())).await.unwrap();
-        let ChatEvent::Run { update } = latest(&mut engine).await else {
+        hear(&mut on.engine, text(large.clone())).await.unwrap();
+        let ChatEvent::Run { update } = latest(&mut on.engine).await else {
             panic!("no run event");
         };
         let RunEvent::Text { text: kept } = update.event else {
@@ -198,7 +198,7 @@ mod tests {
             tool: "Write".to_owned(),
             input: json!({ "content": large }),
         };
-        hear(&mut engine, call).await.unwrap();
+        hear(&mut on.engine, call).await.unwrap();
         let cut = RunEvent::ToolCall {
             call: "toolu_01".to_owned(),
             tool: "Write".to_owned(),
@@ -208,9 +208,9 @@ mod tests {
             run: run("run-1"),
             event: cut,
         };
-        assert_eq!(latest(&mut engine).await, ChatEvent::Run { update });
+        assert_eq!(latest(&mut on.engine).await, ChatEvent::Run { update });
         assert_eq!(
-            pushed(&mut pushes, 2).await,
+            pushed(&mut on.pushes, 2).await,
             [
                 format!("5 run-1 text {kept}"),
                 "6 run-1 calls Write".to_owned()
@@ -220,9 +220,9 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn a_prompt_too_large_to_show_is_refused_for_the_person_and_never_waits() {
-        let (bench, mut engine, mut agent, mut pushes) = on_turn().await;
+        let mut on = on_turn().await;
         assert_eq!(
-            soon(agent.told.recv()).await,
+            soon(on.agent.told.recv()).await,
             Some(Told::Send("Hi".to_owned()))
         );
         let asks = RunEvent::PermissionAsked {
@@ -232,53 +232,56 @@ mod tests {
             input: json!({ "content": "a".repeat(1 << 20) }),
         };
 
-        hear(&mut engine, asks).await.unwrap();
+        hear(&mut on.engine, asks).await.unwrap();
 
         assert_eq!(
-            pushed(&mut pushes, 2).await,
+            pushed(&mut on.pushes, 2).await,
             ["5 run-1 asks 1", "6 run-1 withdraws 1"]
         );
         assert!(
-            matches!(soon(agent.told.recv()).await, Some(Told::Answer(answer))
+            matches!(soon(on.agent.told.recv()).await, Some(Told::Answer(answer))
             if !answer.allow && answer.prompt == 1 && answer.run == run("run-1"))
         );
         let (anyone, _pushes) = client(1);
         let snapshot = ChatQueryKind::Snapshot;
-        let snapshot = engine.query(&key(), snapshot, &anyone).await;
+        let snapshot = on.engine.query(&key(), snapshot, &anyone).await;
         assert!(
             matches!(snapshot, Ok(Some(ChatAnswerKind::Snapshot { waiting, runs, .. }))
             if waiting.is_empty() && runs[0].state == RunState::Running)
         );
-        assert!(messages(&bench.records).contains(&"permission prompt refused unseen"));
+        assert!(messages(&on.bench.records).contains(&"permission prompt refused unseen"));
     }
 
     #[tokio::test(start_paused = true)]
     async fn a_failed_log_write_keeps_the_agent_and_its_subscribers_start_over() {
-        let (bench, mut engine, mut agent, mut pushes) = on_turn().await;
+        let mut on = on_turn().await;
         assert_eq!(
-            soon(agent.told.recv()).await,
+            soon(on.agent.told.recv()).await,
             Some(Told::Send("Hi".to_owned()))
         );
-        engine.open(&key()).await.unwrap().log.jam();
+        on.engine.open(&key()).await.unwrap().log.jam();
 
-        let refused = engine.command(&key(), prompt("r-2", "More")).await;
+        let refused = on.engine.command(&key(), prompt("r-2", "More")).await;
         assert_eq!(refused.unwrap_err().code().as_str(), "chat.log_not_written");
-        assert_eq!(pushed(&mut pushes, 1).await, ["events lost"]);
-        assert!(engine.is_live(&key()));
+        assert_eq!(pushed(&mut on.pushes, 1).await, ["events lost"]);
+        assert!(on.engine.is_live(&key()));
 
         // The log was opened again: the same request now gets its receipt and its turn.
-        engine.command(&key(), prompt("r-2", "More")).await.unwrap();
+        on.engine
+            .command(&key(), prompt("r-2", "More"))
+            .await
+            .unwrap();
         let outcome = Outcome::Completed;
-        hear(&mut engine, RunEvent::Finished { outcome })
+        hear(&mut on.engine, RunEvent::Finished { outcome })
             .await
             .unwrap();
         assert_eq!(
-            soon(agent.told.recv()).await,
+            soon(on.agent.told.recv()).await,
             Some(Told::Send("More".to_owned()))
         );
         let (again, mut caught_up) = client(64);
         let subscribe = ChatQueryKind::Subscribe { after: 4 };
-        engine.query(&key(), subscribe, &again).await.unwrap();
+        on.engine.query(&key(), subscribe, &again).await.unwrap();
         assert_eq!(
             pushed(&mut caught_up, 6).await,
             [
@@ -290,65 +293,65 @@ mod tests {
                 "10 run-1 is Running",
             ]
         );
-        drop(bench);
+        drop(on.bench);
     }
 
     #[tokio::test(start_paused = true)]
     async fn an_agents_session_is_kept_even_when_its_event_cant_be_committed() {
-        let (_bench, mut engine, _agent, _pushes) = on_turn().await;
+        let mut on = on_turn().await;
         let session = session();
-        engine.open(&key()).await.unwrap().log.jam();
+        on.engine.open(&key()).await.unwrap().log.jam();
 
         let started = RunEvent::Started {
             session: session.clone(),
         };
-        let lost = hear(&mut engine, started).await;
+        let lost = hear(&mut on.engine, started).await;
 
         assert_eq!(lost.unwrap_err().code().as_str(), "chat.log_not_written");
-        let record = engine.runs.of(&key()).unwrap();
+        let record = on.engine.runs.of(&key()).unwrap();
         assert_eq!(record.session, Some(session));
     }
 
     #[tokio::test(start_paused = true)]
     async fn a_withdrawal_whose_write_fails_is_written_again_and_the_prompt_stops_waiting() {
-        let (mut engine, _agent, _bench) = on_ask().await;
-        engine.open(&key()).await.unwrap().log.jam();
+        let mut on = on_ask().await;
+        on.engine.open(&key()).await.unwrap().log.jam();
         let withdrawn = RunEvent::PermissionWithdrawn {
             run: run("run-1"),
             prompt: 1,
         };
 
-        hear(&mut engine, withdrawn).await.unwrap();
+        hear(&mut on.engine, withdrawn).await.unwrap();
 
-        assert!(waiting_in(&mut engine).await.is_empty());
-        let refused = engine.command(&key(), allow("r-2").0).await;
+        assert!(waiting_in(&mut on.engine).await.is_empty());
+        let refused = on.engine.command(&key(), allow("r-2").0).await;
         assert_eq!(refused.unwrap_err().code().as_str(), "agent.no_such_prompt");
     }
 
     #[tokio::test(start_paused = true)]
     async fn what_another_run_says_is_ignored_and_a_read_failure_is_logged_once() {
-        let (bench, mut engine, _agent, _pushes) = on_turn().await;
+        let mut on = on_turn().await;
         let stale = Heard::Event(text("Old".to_owned()));
-        engine.heard(&key(), &run("run-9"), stale).await.unwrap();
+        on.engine.heard(&key(), &run("run-9"), stale).await.unwrap();
         let other = ChatKey {
             chat: chat("c-2"),
             ..key()
         };
         let elsewhere = Heard::Event(text("Other".to_owned()));
-        engine
+        on.engine
             .heard(&other, &run("run-1"), elsewhere)
             .await
             .unwrap();
-        assert_eq!(engine.open(&key()).await.unwrap().log.seq(), 4);
-        assert!(!engine.chats.contains_key(&other));
+        assert_eq!(on.engine.open(&key()).await.unwrap().log.seq(), 4);
+        assert!(!on.engine.chats.contains_key(&other));
 
         let fault = Fault::new(code!("agent.io_failed"), "The agent's pipes failed");
         let gone = Heard::Exited(Some(fault));
-        engine.heard(&key(), &run("run-1"), gone).await.unwrap();
+        on.engine.heard(&key(), &run("run-1"), gone).await.unwrap();
 
-        assert!(!engine.is_live(&key()));
-        assert_eq!(engine.turn(&key()), None);
-        let logged = messages(&bench.records);
+        assert!(!on.engine.is_live(&key()));
+        assert_eq!(on.engine.turn(&key()), None);
+        let logged = messages(&on.bench.records);
         assert_eq!(
             logged
                 .iter()
@@ -356,50 +359,51 @@ mod tests {
                 .count(),
             1
         );
-        engine
+        on.engine
             .heard(&key(), &run("run-1"), Heard::Exited(None))
             .await
             .unwrap();
-        assert_eq!(engine.open(&key()).await.unwrap().log.seq(), 6);
+        assert_eq!(on.engine.open(&key()).await.unwrap().log.seq(), 6);
     }
 
     #[tokio::test(start_paused = true)]
     async fn an_answer_on_its_way_to_a_withdrawn_prompt_is_never_given() {
-        let (mut engine, mut agent, _bench) = on_ask().await;
-        let answers = on_its_way(&mut engine).await;
+        let mut on = on_ask().await;
+        let answers = on_its_way(&mut on.engine).await;
         let withdrawn = RunEvent::PermissionWithdrawn {
             run: run("run-1"),
             prompt: 1,
         };
-        hear(&mut engine, withdrawn).await.unwrap();
+        hear(&mut on.engine, withdrawn).await.unwrap();
 
-        engine.command(&key(), answers).await.unwrap();
+        on.engine.command(&key(), answers).await.unwrap();
 
-        assert_eq!(soon(agent.told.recv()).await, None);
+        assert_eq!(soon(on.agent.told.recv()).await, None);
     }
 
     #[tokio::test(start_paused = true)]
     async fn a_withdrawal_that_cant_be_written_still_drops_the_answers_on_their_way() {
-        let (mut engine, _agent, _bench) = on_ask().await;
-        on_its_way(&mut engine).await;
+        let mut on = on_ask().await;
+        on_its_way(&mut on.engine).await;
         // Both writes fail: the log is broken, and a folder where its file was keeps it so.
-        let file = engine
+        let file = on
+            .engine
             .workspaces
             .root(&key().workspace)
             .join("chats/c-c-1.jsonl");
         std::fs::rename(&file, file.with_extension("moved")).unwrap();
         std::fs::create_dir(&file).unwrap();
-        engine.open(&key()).await.unwrap().log.jam();
+        on.engine.open(&key()).await.unwrap().log.jam();
         let withdrawn = RunEvent::PermissionWithdrawn {
             run: run("run-1"),
             prompt: 1,
         };
 
-        let lost = hear(&mut engine, withdrawn).await;
+        let lost = hear(&mut on.engine, withdrawn).await;
 
         assert_eq!(lost.unwrap_err().code().as_str(), "chat.log_not_written");
         assert!(
-            engine
+            on.engine
                 .open(&key())
                 .await
                 .unwrap()
@@ -410,24 +414,24 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn a_withdrawal_whose_write_landed_is_not_written_again() {
-        let (mut engine, _agent, _bench) = on_ask().await;
+        let mut on = on_ask().await;
         // As when the withdrawal reached the disk but its write was reported failed.
         let event = RunEvent::PermissionWithdrawn {
             run: run("run-1"),
             prompt: 1,
         };
-        hear(&mut engine, event).await.unwrap();
+        hear(&mut on.engine, event).await.unwrap();
         let failed = Fault::new(
             code!("chat.log_not_written"),
             "The chat's log can't be written",
         );
 
-        engine
+        on.engine
             .withdrawn(&key(), &run("run-1"), 1, Err(failed))
             .await
             .unwrap();
 
-        let log = &engine.open(&key()).await.unwrap().log;
+        let log = &on.engine.open(&key()).await.unwrap().log;
         let entries = log.window(u64::MAX, 64).await.unwrap();
         let withdrawals = entries.iter().filter(|entry| {
             matches!(&entry.event, ChatEvent::Run { update } if matches!(update.event, RunEvent::PermissionWithdrawn { .. }))
@@ -437,9 +441,9 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn a_refused_prompt_whose_write_landed_is_withdrawn_in_the_log() {
-        let (_bench, mut engine, mut agent, _pushes) = on_turn().await;
+        let mut on = on_turn().await;
         assert_eq!(
-            soon(agent.told.recv()).await,
+            soon(on.agent.told.recv()).await,
             Some(Told::Send("Hi".to_owned()))
         );
         // As when the prompt reached the disk but its write was reported failed.
@@ -449,18 +453,18 @@ mod tests {
             tool: "Write".to_owned(),
             input: json!({}),
         };
-        hear(&mut engine, asks).await.unwrap();
+        hear(&mut on.engine, asks).await.unwrap();
         let failed = Fault::new(
             code!("chat.log_not_written"),
             "The chat's log can't be written",
         );
 
-        let refused = engine.asked(&key(), &run("run-1"), 1, Err(failed)).await;
+        let refused = on.engine.asked(&key(), &run("run-1"), 1, Err(failed)).await;
 
         assert_eq!(refused.unwrap_err().code().as_str(), "chat.log_not_written");
         assert!(
-            matches!(soon(agent.told.recv()).await, Some(Told::Answer(answer)) if !answer.allow)
+            matches!(soon(on.agent.told.recv()).await, Some(Told::Answer(answer)) if !answer.allow)
         );
-        assert!(waiting_in(&mut engine).await.is_empty());
+        assert!(waiting_in(&mut on.engine).await.is_empty());
     }
 }

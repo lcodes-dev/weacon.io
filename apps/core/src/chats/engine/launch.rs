@@ -100,45 +100,54 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn a_session_the_journal_couldnt_save_is_resumed_by_the_next_run() {
-        let (mut bench, mut engine, agent, pushes) = on_turn().await;
-        let path = engine.runs.jam();
+        let mut on = on_turn().await;
+        let path = on.engine.runs.jam();
         let started = RunEvent::Started { session: session() };
-        let lost = hear(&mut engine, started).await;
+        let lost = hear(&mut on.engine, started).await;
         assert_eq!(lost.unwrap_err().code().as_str(), "runs.not_saved");
-        engine.runs.unjam(path);
+        on.engine.runs.unjam(path);
 
         // The agent exits and nobody watches: the chat stays open for its session.
-        drop((agent, pushes));
+        drop((on.agent, on.pushes));
         let exited = Heard::Exited(None);
-        engine.heard(&key(), &run("run-1"), exited).await.unwrap();
-        engine.settle(&key());
-        engine.command(&key(), prompt("r-2", "More")).await.unwrap();
+        on.engine
+            .heard(&key(), &run("run-1"), exited)
+            .await
+            .unwrap();
+        on.engine.settle(&key());
+        on.engine
+            .command(&key(), prompt("r-2", "More"))
+            .await
+            .unwrap();
 
-        let next = soon(bench.started.recv()).await.unwrap();
+        let next = soon(on.bench.started.recv()).await.unwrap();
         assert_eq!(next.start.run, run("run-2"));
         assert_eq!(next.start.session, Some(session()));
     }
 
     #[tokio::test(start_paused = true)]
     async fn a_chat_whose_new_run_cant_start_lets_go_of_the_old_one_and_closes() {
-        let (bench, mut engine, agent, pushes) = on_turn().await;
-        drop((agent, pushes));
+        let mut on = on_turn().await;
+        drop((on.agent, on.pushes));
         let mut tries = 0;
-        while engine.takes_orders(&key()) && tries < 1000 {
+        while on.engine.takes_orders(&key()) && tries < 1000 {
             tries += 1;
             tokio::task::yield_now().await;
         }
-        bench
+        on.bench
             .broken
             .store(true, std::sync::atomic::Ordering::SeqCst);
 
         let outcome = Outcome::Completed;
-        hear(&mut engine, RunEvent::Finished { outcome })
+        hear(&mut on.engine, RunEvent::Finished { outcome })
             .await
             .unwrap();
-        engine.command(&key(), prompt("r-2", "More")).await.unwrap();
-        engine.settle(&key());
+        on.engine
+            .command(&key(), prompt("r-2", "More"))
+            .await
+            .unwrap();
+        on.engine.settle(&key());
 
-        assert!(!engine.chats.contains_key(&key()));
+        assert!(!on.engine.chats.contains_key(&key()));
     }
 }

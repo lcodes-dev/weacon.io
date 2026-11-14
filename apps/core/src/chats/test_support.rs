@@ -204,6 +204,13 @@ pub(crate) async fn pushed(from: &mut mpsc::Receiver<Message>, count: usize) -> 
     briefs
 }
 
+/// Passes over the next `count` pushed messages, failing unless each one arrives.
+pub(crate) async fn skip(from: &mut mpsc::Receiver<Message>, count: usize) {
+    let briefs = pushed(from, count).await;
+    let missing = |brief: &String| brief == "nothing" || brief == "closed";
+    assert!(!briefs.iter().any(missing), "{briefs:?}");
+}
+
 /// A pushed message in a few words, such as `2 receipt r-1 accepted`.
 pub(crate) fn brief(message: &Message) -> String {
     if let Message::Chat(update) = message {
