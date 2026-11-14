@@ -14,7 +14,7 @@ pub struct KnownLogs {
     pub codes: &'static [Code],
 }
 
-/// Writes one client's forwarded logs, at most [`BURST`] at once and one a second after that.
+/// Writes one client's forwarded logs, at most 20 at once and one a second after that.
 /// Only a known event is written, as the receiver's own string; a known code may go with it.
 #[derive(Debug)]
 pub struct Forwarded {
