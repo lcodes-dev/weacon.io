@@ -134,8 +134,8 @@ impl<T: Into<Value>> From<T> for Field {
 pub(crate) fn redact_fields(fields: &[(&str, Field)]) -> Map<String, Value> {
     let kept = fields.iter().take(MAX_ITEMS).map(|(key, Field(kind))| {
         let value = match kind {
-            Kind::Value(value) => copy_entry(key, value, 0),
-            Kind::Error(info) => replacement(key, false).map_or_else(
+            Kind::Value(value) => redact_entry(key, value, 0),
+            Kind::Error(info) => replacement(key).map_or_else(
                 || serde_json::to_value(info).unwrap_or(Value::Null),
                 Value::from,
             ),
@@ -147,7 +147,7 @@ pub(crate) fn redact_fields(fields: &[(&str, Field)]) -> Map<String, Value> {
 
 /// [`redact_fields`] for a JSON object, such as a report's extra data.
 pub(crate) fn redact_in_place(fields: &mut BTreeMap<String, Value>) {
-    *fields = copy_entries(fields.iter(), 0).collect();
+    *fields = redact_entries(fields.iter(), 0).collect();
 }
 
 /// A URL without its credentials, query or fragment; relative URLs work too.
@@ -164,7 +164,7 @@ pub(crate) fn safe_url(url: &str) -> String {
 }
 
 /// Redacts one string. It is cut to length last, so a cut can't hide a secret from the patterns.
-pub(crate) fn copy_string(value: &str) -> String {
+pub(crate) fn redact_string(value: &str) -> String {
     let text = SECRET_ASSIGNMENT.replace_all(value, "${1}[redacted]");
     let text = CREDENTIAL_IN_TEXT.replace_all(&text, "${1} [redacted]");
     let text = USERINFO_IN_TEXT.replace_all(&text, "${1}");
@@ -174,10 +174,7 @@ pub(crate) fn copy_string(value: &str) -> String {
 }
 
 /// "[redacted]" or "[omitted]" when a field named `key` must not be kept.
-pub(crate) fn replacement(key: &str, count_or_flag: bool) -> Option<&'static str> {
-    if count_or_flag {
-        return None;
-    }
+pub(crate) fn replacement(key: &str) -> Option<&'static str> {
     let words = words(key);
     let joined = words.concat();
     let last = words.last().map_or("", String::as_str);
@@ -236,24 +233,24 @@ fn words(key: &str) -> Vec<String> {
         .collect()
 }
 
-fn copy_value(value: &Value, depth: usize) -> Value {
+fn redact_value(value: &Value, depth: usize) -> Value {
     match value {
-        Value::String(text) => copy_string(text).into(),
+        Value::String(text) => redact_string(text).into(),
         Value::Array(_) | Value::Object(_) if depth >= MAX_DEPTH => "[too deep]".into(),
         Value::Array(items) => {
             let kept = items
                 .iter()
                 .take(MAX_ITEMS)
-                .map(|item| copy_value(item, depth + 1));
+                .map(|item| redact_value(item, depth + 1));
             let more = excess(items.len()).map(|more| format!("[{more} more]").into());
             Value::Array(kept.chain(more).collect())
         }
-        Value::Object(entries) => Value::Object(copy_entries(entries.iter(), depth).collect()),
+        Value::Object(entries) => Value::Object(redact_entries(entries.iter(), depth).collect()),
         Value::Null | Value::Bool(_) | Value::Number(_) => value.clone(),
     }
 }
 
-fn copy_entries<'a>(
+fn redact_entries<'a>(
     entries: impl ExactSizeIterator<Item = (&'a String, &'a Value)>,
     depth: usize,
 ) -> impl Iterator<Item = (String, Value)> {
@@ -262,17 +259,19 @@ fn copy_entries<'a>(
         .take(MAX_ITEMS)
         .map(move |(key, value)| {
             (
-                truncate(&copy_string(key), MAX_KEY),
-                copy_entry(key, value, depth),
+                truncate(&redact_string(key), MAX_KEY),
+                redact_entry(key, value, depth),
             )
         })
         .chain(more)
 }
 
 // Numbers and flags are counts and switches, never secrets or content.
-fn copy_entry(key: &str, value: &Value, depth: usize) -> Value {
-    replacement(key, value.is_number() || value.is_boolean())
-        .map_or_else(|| copy_value(value, depth + 1), Value::from)
+fn redact_entry(key: &str, value: &Value, depth: usize) -> Value {
+    if value.is_number() || value.is_boolean() {
+        return value.clone();
+    }
+    replacement(key).map_or_else(|| redact_value(value, depth + 1), Value::from)
 }
 
 fn more_entries(count: usize) -> Option<(String, Value)> {
@@ -484,6 +483,20 @@ mod tests {
         assert_eq!(out["wide"].as_object().unwrap().len(), 101);
         assert_eq!(out["wide"]["[more]"], 5);
         assert!(out["deep"].to_string().contains("[too deep]"));
+    }
+
+    #[test]
+    fn cuts_lists_nested_too_deep() {
+        let mut deep = json!([true]);
+        for _ in 0..10 {
+            deep = json!([deep]);
+        }
+
+        assert!(
+            redacted(&[("deep", deep.into())])["deep"]
+                .to_string()
+                .contains("[too deep]")
+        );
     }
 
     #[test]

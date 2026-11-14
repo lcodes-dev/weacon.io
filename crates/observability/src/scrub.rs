@@ -5,7 +5,7 @@ use sentry_types::protocol::v7::{
     Breadcrumb, Context, DebugImage, Event, Frame, Map, Request, Stacktrace, Url, User, Value,
 };
 
-use crate::redact::{copy_string, redact_in_place, replacement, safe_url};
+use crate::redact::{redact_in_place, redact_string, replacement, safe_url};
 
 const NAVIGATION: [&str; 3] = ["url", "from", "to"];
 
@@ -133,22 +133,26 @@ impl Scrubber {
     fn object(&self, fields: &mut Map<String, Value>) {
         redact_in_place(fields);
         for value in fields.values_mut() {
-            self.tidy_value(value);
+            self.shorten_homes_in(value);
         }
     }
 
     fn strings(&self, fields: &mut Map<String, String>) {
         for (key, value) in fields.iter_mut() {
-            *value = replacement(key, false)
-                .map_or_else(|| self.tidy(&copy_string(value)), str::to_owned);
+            *value = replacement(key)
+                .map_or_else(|| self.shorten_home(&redact_string(value)), str::to_owned);
         }
     }
 
-    fn tidy_value(&self, value: &mut Value) {
+    fn shorten_homes_in(&self, value: &mut Value) {
         match value {
-            Value::String(text) => *text = self.tidy(text),
-            Value::Array(items) => items.iter_mut().for_each(|item| self.tidy_value(item)),
-            Value::Object(entries) => entries.values_mut().for_each(|item| self.tidy_value(item)),
+            Value::String(text) => *text = self.shorten_home(text),
+            Value::Array(items) => items
+                .iter_mut()
+                .for_each(|item| self.shorten_homes_in(item)),
+            Value::Object(entries) => entries
+                .values_mut()
+                .for_each(|item| self.shorten_homes_in(item)),
             Value::Null | Value::Bool(_) | Value::Number(_) => {}
         }
     }
@@ -168,26 +172,32 @@ impl Scrubber {
             .into_iter()
             .flatten()
         {
-            *path = self.tidy(path);
+            *path = self.shorten_home(path);
         }
     }
 
     fn image(&self, image: &mut DebugImage) {
         match image {
-            DebugImage::Apple(apple) => apple.name = self.tidy(&apple.name),
+            DebugImage::Apple(apple) => apple.name = self.shorten_home(&apple.name),
             DebugImage::Symbolic(symbolic) => {
-                symbolic.name = self.tidy(&symbolic.name);
-                symbolic.debug_file = symbolic.debug_file.as_deref().map(|path| self.tidy(path));
+                symbolic.name = self.shorten_home(&symbolic.name);
+                symbolic.debug_file = symbolic
+                    .debug_file
+                    .as_deref()
+                    .map(|path| self.shorten_home(path));
             }
             DebugImage::Wasm(wasm) => {
-                wasm.code_file = self.tidy(&wasm.code_file);
-                wasm.debug_file = wasm.debug_file.as_deref().map(|path| self.tidy(path));
+                wasm.code_file = self.shorten_home(&wasm.code_file);
+                wasm.debug_file = wasm
+                    .debug_file
+                    .as_deref()
+                    .map(|path| self.shorten_home(path));
             }
             DebugImage::Proguard(_) => {}
         }
     }
 
-    fn tidy(&self, text: &str) -> String {
+    fn shorten_home(&self, text: &str) -> String {
         self.home.as_ref().map_or_else(
             || text.to_owned(),
             |home| home.replace_all(text, "${1}~${2}").into_owned(),
@@ -467,12 +477,12 @@ mod tests {
     }
 
     #[test]
-    fn tidies_home_folders_in_any_case_and_with_either_slash() {
+    fn shortens_home_folders_in_any_case_and_with_either_slash() {
         let scrub = Scrubber {
             home: home_pattern(r"C:\Users\Ada\"),
         };
 
-        for (path, tidied) in [
+        for (path, shortened) in [
             (r"C:\Users\Ada\dev\main.rs", r"~\dev\main.rs"),
             ("c:/users/ada/dev/main.rs", "~/dev/main.rs"),
             (r"\\?\C:\Users\Ada\dev\main.rs", r"\\?\~\dev\main.rs"),
@@ -480,13 +490,13 @@ mod tests {
             (r"C:\Users\Adam\main.rs", r"C:\Users\Adam\main.rs"),
             (r"D:\backup\C:\Users\Ada\x", r"D:\backup\C:\Users\Ada\x"),
         ] {
-            assert_eq!(scrub.tidy(path), tidied, "{path}");
+            assert_eq!(scrub.shorten_home(path), shortened, "{path}");
         }
         assert_eq!(
             Scrubber {
                 home: home_pattern("")
             }
-            .tidy("/srv/main.rs"),
+            .shorten_home("/srv/main.rs"),
             "/srv/main.rs"
         );
     }
