@@ -28,7 +28,7 @@ const OFFERED: &[Capability] = &[
 
 /// Plays `recording` to the client on `stream`, waiting `pace` after each message, and appends
 /// each text frame the client sends after its hello to `received`, one per line. It offers
-/// `chat.send` and answers each prompt with a receipt that accepts it, and offers `diff.view`.
+/// `chat.send`, committing a receipt that accepts each command to the chat, and `diff.view`.
 ///
 /// # Errors
 /// When the handshake fails, the client's first frame isn't a hello on this protocol that offers
@@ -58,9 +58,7 @@ pub async fn serve(
     let sending = async {
         drop(tokio::join!(
             playing,
-            send_all(&mut sink, run_lines, replies, |line| commit_played(
-                &chat, &committed, line
-            ))
+            send_all(&mut sink, run_lines, replies, &chat, &committed)
         ));
     };
     let keeping = keep(&mut frames, received, &chat, reply_sender);
@@ -71,18 +69,19 @@ pub async fn serve(
     }
 }
 
-// Sends each of the run's lines that `played` passes on, and each reply, as a text frame,
-// until both end or a send fails, such as when the client leaves mid-stream.
+// Sends each of the run's lines the chat still plays, and each reply, as a text frame, until
+// both end or a send fails, such as when the client leaves mid-stream.
 async fn send_all(
     sink: &mut (impl Sink<Frame> + Unpin),
     run_lines: impl AsyncRead + Unpin,
     mut replies: UnboundedReceiver<String>,
-    played: impl Fn(String) -> Option<String>,
+    chat: &Mutex<FakeChat>,
+    committed: &UnboundedSender<String>,
 ) {
     let mut run_lines = BufReader::new(run_lines).lines();
     loop {
         let text = tokio::select! {
-            Ok(Some(line)) = run_lines.next_line() => played(line),
+            Ok(Some(line)) = run_lines.next_line() => commit_played(chat, committed, line),
             Some(reply) = replies.recv() => Some(reply),
             else => break,
         };
@@ -127,10 +126,7 @@ fn commit_played(
     if let Ok(envelope) = Envelope::from_json(line.as_bytes())
         && let Ok(mut chat) = chat.lock()
     {
-        if !chat.plays(&envelope) {
-            return None;
-        }
-        send_texts(replies, &chat.played(&envelope));
+        send_texts(replies, &chat.played(&envelope)?);
     }
     Some(line)
 }
@@ -182,12 +178,15 @@ mod tests {
     use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, client_async, connect_async};
 
     use super::*;
-    use weacon_protocol::{ChatId, ChatQuery, ChatQueryKind, PROTOCOL, WorkspaceId};
+    use weacon_protocol::{
+        ChatAction, ChatCommand, ChatId, ChatQuery, ChatQueryKind, DiffQuery, DiffQueryKind,
+        PROTOCOL, RequestId, WorkspaceId,
+    };
 
     use crate::TempDir;
     use crate::fake_chat::SEEDED;
     use crate::fake_core::client_hello;
-    use crate::recording::{SESSION, recording};
+    use crate::recording::{TRANSCRIPT, recording};
 
     type Client = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
@@ -234,7 +233,7 @@ mod tests {
     #[tokio::test]
     async fn streams_the_recording_one_message_per_frame_and_keeps_what_the_client_sends() {
         let dir = TempDir::new().unwrap();
-        let recording = recording(SESSION, 2_000).unwrap();
+        let recording = recording(TRANSCRIPT, 2_000).unwrap();
         let expected: Vec<Value> = recording
             .lines()
             .map(|line| serde_json::from_str(line.strip_prefix("< ").unwrap()).unwrap())
@@ -272,20 +271,11 @@ mod tests {
     #[tokio::test]
     async fn a_subscribed_client_hears_the_chat_commit_what_plays_and_what_it_asks() {
         let dir = TempDir::new().unwrap();
-        let recording = recording(SESSION, 1).unwrap();
+        let recording = recording(TRANSCRIPT, 1).unwrap();
         let (mut client, served) = start(recording, dir.join("received.jsonl")).await;
         client.send(hello(PROTOCOL)).await.unwrap();
         texts(&mut client, 1).await;
-        let subscribe = Envelope {
-            id: 7,
-            message: Message::ChatQuery(ChatQuery {
-                workspace: WorkspaceId::try_from("w-1".to_owned()).unwrap(),
-                chat: ChatId::try_from("c-1".to_owned()).unwrap(),
-                query: ChatQueryKind::Subscribe { after: 0 },
-            }),
-        };
-        let subscribe = envelope_text(&subscribe).unwrap();
-        client.send(Frame::text(subscribe)).await.unwrap();
+        client.send(Frame::text(subscription(7, 0))).await.unwrap();
         let played = |text: &Value| {
             let update = &text["entry"]["event"]["update"];
             update["run"] == "r-1" && text["entry"]["seq"].as_u64() > Some(SEEDED)
@@ -316,9 +306,18 @@ mod tests {
         let (mut client, served) = start(String::new(), dir.join("received.jsonl")).await;
         client.send(hello(PROTOCOL)).await.unwrap();
         texts(&mut client, 1).await;
-        let query = json!({ "id": 9, "type": "diff_query", "request": "q-1",
-                            "workspace": "w-1", "chat": "c-1", "query": { "kind": "changes" } });
-        client.send(Frame::text(query.to_string())).await.unwrap();
+        let query = Message::DiffQuery(DiffQuery {
+            request: request("q-1"),
+            workspace: workspace(),
+            chat: chat(),
+            query: DiffQueryKind::Changes,
+        });
+        let query = envelope_text(&Envelope {
+            id: 9,
+            message: query,
+        })
+        .unwrap();
+        client.send(Frame::text(query)).await.unwrap();
         let files = usize::try_from(fake_diff::FILES).unwrap();
         // A deadline, so a server that never answers fails the test instead of hanging it.
         let answers = tokio::time::timeout(Duration::from_secs(30), texts(&mut client, files))
@@ -343,7 +342,7 @@ mod tests {
         let (stream, server_end) = duplex(BUFFER);
         let kept = received.clone();
         let served = tokio::spawn(async move {
-            let recording = recording(SESSION, 100_000).unwrap();
+            let recording = recording(TRANSCRIPT, 100_000).unwrap();
             serve(server_end, recording, Duration::from_secs(1), &kept).await
         });
         let (mut client, _) = client_async("ws://fake/", stream).await.unwrap();
@@ -368,21 +367,45 @@ mod tests {
         assert_eq!(fs::read_to_string(&received).unwrap(), format!("{log}\n"));
     }
 
-    fn subscription(id: u32) -> String {
+    fn workspace() -> WorkspaceId {
+        WorkspaceId::try_from("w-1".to_owned()).unwrap()
+    }
+
+    fn chat() -> ChatId {
+        ChatId::try_from("c-1".to_owned()).unwrap()
+    }
+
+    fn request(id: &str) -> RequestId {
+        RequestId::try_from(id.to_owned()).unwrap()
+    }
+
+    fn subscription(id: u32, after: u64) -> String {
+        let query = Message::ChatQuery(ChatQuery {
+            workspace: workspace(),
+            chat: chat(),
+            query: ChatQueryKind::Subscribe { after },
+        });
+        envelope_text(&Envelope { id, message: query }).unwrap()
+    }
+
+    fn command(id: u32, request: RequestId, action: ChatAction) -> String {
+        let command = Message::ChatCommand(ChatCommand {
+            request,
+            workspace: workspace(),
+            chat: chat(),
+            action,
+            by: None,
+        });
         envelope_text(&Envelope {
             id,
-            message: Message::ChatQuery(ChatQuery {
-                workspace: WorkspaceId::try_from("w-1".to_owned()).unwrap(),
-                chat: ChatId::try_from("c-1".to_owned()).unwrap(),
-                query: ChatQueryKind::Subscribe { after: SEEDED },
-            }),
+            message: command,
         })
         .unwrap()
     }
 
-    /// The receipts in the chat updates up to the one for `r-2`, each with the id it answers.
+    /// The receipts in the chat updates up to the one for `q-2`, each with the id it answers.
     async fn receipts(client: &mut Client) -> Vec<(Value, Value)> {
-        let last = |text: &Value| text["entry"]["event"]["receipt"]["request"] == "r-2";
+        let last = |text: &Value| text["entry"]["event"]["receipt"]["request"] == "q-2";
         // A deadline, so a server that never answers fails the test instead of hanging it.
         let seen = tokio::time::timeout(Duration::from_secs(30), until(client, last))
             .await
@@ -406,16 +429,17 @@ mod tests {
         let (mut client, served) = start(String::new(), received.clone()).await;
         client.send(hello(PROTOCOL)).await.unwrap();
         texts(&mut client, 1).await;
-        let command = |id: u32, request: &str, action: Value| {
-            json!({ "id": id, "type": "chat_command", "request": request, "workspace": "w-1",
-                    "chat": "c-1", "action": action })
-            .to_string()
+        let interrupt = command(2, request("q-1"), ChatAction::Interrupt);
+        let prompt = ChatAction::Prompt {
+            text: "hi".to_owned(),
+            repo: None,
+            machine: None,
+            agent: None,
         };
-        let interrupt = command(2, "r-1", json!({ "kind": "interrupt" }));
-        let prompt = command(3, "r-2", json!({ "kind": "prompt", "text": "hi" }));
+        let prompt = command(3, request("q-2"), prompt);
         let log = r#"{"id":0,"type":"log","level":"info","msg":"sent"}"#;
         for text in [
-            subscription(7),
+            subscription(7, SEEDED),
             log.to_owned(),
             interrupt.clone(),
             prompt.clone(),
@@ -423,25 +447,28 @@ mod tests {
             client.send(Frame::text(text)).await.unwrap();
         }
         let live = receipts(&mut client).await;
-        client.send(Frame::text(subscription(8))).await.unwrap();
+        client
+            .send(Frame::text(subscription(8, SEEDED)))
+            .await
+            .unwrap();
         let replayed = receipts(&mut client).await;
         client.close(None).await.unwrap();
         served.await.unwrap().unwrap();
 
         let accepted = |id: u32| {
             [
-                (json!(id), json!({ "request": "r-1", "state": "accepted" })),
-                (json!(id), json!({ "request": "r-2", "state": "accepted" })),
+                (json!(id), json!({ "request": "q-1", "state": "accepted" })),
+                (json!(id), json!({ "request": "q-2", "state": "accepted" })),
             ]
         };
         assert_eq!(live, accepted(7));
         assert_eq!(replayed, accepted(8));
         let sent = [
-            subscription(7),
+            subscription(7, SEEDED),
             log.to_owned(),
             interrupt,
             prompt,
-            subscription(8),
+            subscription(8, SEEDED),
         ];
         assert_eq!(
             fs::read_to_string(&received).unwrap(),

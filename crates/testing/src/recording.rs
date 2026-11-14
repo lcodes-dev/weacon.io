@@ -8,7 +8,7 @@ use weacon_protocol::{Envelope, Message, RunEvent, RunId, RunUpdate};
 use crate::Failure;
 
 /// A made-up session of one agent run, one `RunEvent` of JSON per line, with whole text blocks.
-pub const SESSION: &str = include_str!("../sessions/transcript.jsonl");
+pub const TRANSCRIPT: &str = include_str!("../replays/transcript.jsonl");
 
 // The run every replayed event belongs to.
 const RUN: &str = "r-1";
@@ -164,7 +164,7 @@ mod tests {
 
     #[test]
     fn the_recorded_session_has_text_and_tools() {
-        let recorded = events(&recording(SESSION, 100_000).unwrap());
+        let recorded = events(&recording(TRANSCRIPT, 100_000).unwrap());
         let count = |kind: &str| {
             recorded
                 .iter()
