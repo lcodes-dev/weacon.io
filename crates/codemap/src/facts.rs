@@ -25,8 +25,11 @@ pub(crate) enum FileKind {
         outline: Outline,
         named_paths: Vec<NamedPath>,
     },
-    /// A Markdown file, and the flows it pins with their lines.
-    Doc(Vec<(Vec<String>, usize)>),
+    /// A Markdown file: the flows it pins with their lines, and its text for search.
+    Doc {
+        flows: Vec<(Vec<String>, usize)>,
+        text: String,
+    },
 }
 
 /// Reads files into `Facts`, reusing one parser.
@@ -68,7 +71,10 @@ impl Reader {
         let kind = if name == "Cargo.toml" {
             manifest(&file.text)
         } else if extension == Some("md") {
-            Some(FileKind::Doc(written(&file.text)))
+            Some(FileKind::Doc {
+                flows: written(&file.text),
+                text: file.text.clone(),
+            })
         } else if extension == Some("rs") {
             let tree = parse(&mut self.parser, &file.text)?;
             let source = file.text.as_bytes();
@@ -143,7 +149,10 @@ mod tests {
         let doc = read("docs/a.md", "See `flow:a::run->a::serve`.\n").unwrap();
         assert_eq!(
             doc.kind,
-            FileKind::Doc(vec![(vec!["a::run".to_owned(), "a::serve".to_owned()], 1)])
+            FileKind::Doc {
+                flows: vec![(vec!["a::run".to_owned(), "a::serve".to_owned()], 1)],
+                text: "See `flow:a::run->a::serve`.\n".to_owned(),
+            }
         );
         assert_eq!(read("src/lib.rs.bak", "fn top() {}"), None);
     }
