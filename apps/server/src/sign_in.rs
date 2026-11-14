@@ -257,7 +257,7 @@ mod tests {
     #[tokio::test]
     async fn a_person_signs_in_with_the_code_sent_to_them() {
         let fixture = Fixture::new().await;
-        let server = run(fixture.shared.clone()).await;
+        let server = fixture.run().await;
         let (started, challenge) = start_sign_in(server.address, " Ada@Example.com ").await;
         let (to, code) = fixture.letter().await;
         let finish = finish_body("ada@example.com", &challenge, &code);
@@ -310,7 +310,7 @@ mod tests {
     #[tokio::test]
     async fn a_browser_gets_its_session_as_a_cookie_its_scripts_cant_read() {
         let fixture = Fixture::new().await;
-        let server = run(fixture.shared.clone()).await;
+        let server = fixture.run().await;
         let (head, body) = browser_sign_in(&fixture, server.address).await;
         let set = head
             .iter()
@@ -336,7 +336,7 @@ mod tests {
     #[tokio::test]
     async fn another_sites_page_cant_sign_in_or_use_the_cookie() {
         let fixture = Fixture::new().await;
-        let server = run(fixture.shared.clone()).await;
+        let server = fixture.run().await;
         let (_, challenge) = start_sign_in(server.address, "ada@example.com").await;
         let (_, code) = fixture.letter().await;
         let finish = finish_body("ada@example.com", &challenge, &code);
@@ -379,7 +379,7 @@ mod tests {
     #[tokio::test]
     async fn signing_out_ends_the_session_here_and_in_the_browser() {
         let fixture = Fixture::new().await;
-        let server = run(fixture.shared.clone()).await;
+        let server = fixture.run().await;
         let (head, _) = browser_sign_in(&fixture, server.address).await;
         let cookie = cookie(&head);
         let (_, other) = sign_in(&fixture, server.address, "ada@example.com").await;
@@ -417,7 +417,7 @@ mod tests {
     #[tokio::test]
     async fn nobody_is_signed_in_without_a_live_token() {
         let fixture = Fixture::new().await;
-        let server = run(fixture.shared.clone()).await;
+        let server = fixture.run().await;
         let (_, body) = sign_in(&fixture, server.address, "ada@example.com").await;
         let bearer = bearer(&body);
         let required = json!({ "code": "sign_in.required", "retryable": false });
@@ -449,7 +449,7 @@ mod tests {
             .add_account(&fresh_account(), &bo)
             .await
             .unwrap();
-        let server = run(fixture.shared.clone()).await;
+        let server = fixture.run().await;
 
         let (finished, _) = sign_in(&fixture, server.address, "bo@example.com").await;
 
@@ -459,7 +459,7 @@ mod tests {
     #[tokio::test]
     async fn a_code_sent_under_another_secret_is_refused() {
         let mut fixture = Fixture::new().await;
-        let server = run(fixture.shared.clone()).await;
+        let server = fixture.run().await;
         let (_, challenge) = start_sign_in(server.address, "ada@example.com").await;
         let (_, code) = fixture.letter().await;
         let dir = TempDir::new().unwrap();
@@ -470,7 +470,7 @@ mod tests {
             )
             .unwrap(),
         );
-        let rotated = run(fixture.shared.clone()).await;
+        let rotated = fixture.run().await;
         let finish = finish_body("ada@example.com", &challenge, &code);
 
         let (refused, _) = finish_with(rotated.address, &finish).await;
@@ -483,7 +483,7 @@ mod tests {
     #[tokio::test]
     async fn strangers_get_the_same_answer_and_no_code() {
         let fixture = Fixture::new().await;
-        let server = run(fixture.shared.clone()).await;
+        let server = fixture.run().await;
         let mut challenges = Vec::new();
         for body in [
             json!({ "email": "bo@example.com" }),
@@ -513,7 +513,7 @@ mod tests {
     async fn an_address_the_operator_allows_signs_up_with_its_code() {
         let mut fixture = Fixture::new().await;
         fixture.shared.sign_up = Arc::new([sign_up::SignUp::Domain("example.org".to_owned())]);
-        let server = run(fixture.shared.clone()).await;
+        let server = fixture.run().await;
         let (stranger, _) = start_sign_in(server.address, "cy@example.net").await;
         fixture.settled().await;
         let none = fixture.letters();
@@ -542,7 +542,7 @@ mod tests {
     #[tokio::test]
     async fn past_its_live_codes_an_address_gets_the_same_answer_and_no_more_mail() {
         let fixture = Fixture::new().await;
-        let server = run(fixture.shared.clone()).await;
+        let server = fixture.run().await;
         let mut answers = Vec::new();
         for _ in 0..4 {
             answers.push(start_sign_in(server.address, "ada@example.com").await.0);
@@ -556,7 +556,7 @@ mod tests {
     #[tokio::test]
     async fn codes_someone_else_asked_for_still_sign_the_owner_in() {
         let fixture = Fixture::new().await;
-        let server = run(fixture.shared.clone()).await;
+        let server = fixture.run().await;
         for _ in 0..3 {
             start_sign_in(server.address, "ada@example.com").await;
         }
@@ -581,7 +581,7 @@ mod tests {
     #[tokio::test]
     async fn a_wrong_or_late_code_is_refused() {
         let fixture = Fixture::new().await;
-        let server = run(fixture.shared.clone()).await;
+        let server = fixture.run().await;
         let (_, challenge) = start_sign_in(server.address, "ada@example.com").await;
         let (_, code) = fixture.letter().await;
         let finish = |email: &str, code: &str| finish_body(email, &challenge, code);
@@ -611,7 +611,7 @@ mod tests {
     #[tokio::test]
     async fn a_strangers_guesses_cant_stop_a_member_signing_in() {
         let fixture = Fixture::new().await;
-        let server = run(fixture.shared.clone()).await;
+        let server = fixture.run().await;
         let (_, theirs) = start_sign_in(server.address, "ada@example.com").await;
         fixture.letter().await;
         let (_, mine) = start_sign_in(server.address, "ada@example.com").await;
@@ -635,7 +635,7 @@ mod tests {
         let mut fixture = Fixture::new().await;
         fixture.shared.starts = Arc::new(Limit::new(1, HOUR));
         fixture.shared.tries = Arc::new(Limit::new(1, HOUR));
-        let server = run(fixture.shared.clone()).await;
+        let server = fixture.run().await;
         let (first, challenge) = start_sign_in(server.address, "ada@example.com").await;
         let (_, code) = fixture.letter().await;
         let (head, body) = request(
@@ -724,7 +724,7 @@ mod tests {
             start_sign_in(failing.address, "ada@example.com").await;
         }
         fixture.settled().await;
-        let server = run(fixture.shared.clone()).await;
+        let server = fixture.run().await;
         start_sign_in(server.address, "ada@example.com").await;
         fixture.settled().await;
 
@@ -734,7 +734,7 @@ mod tests {
     #[tokio::test]
     async fn when_too_many_are_waiting_more_are_dropped_with_the_same_answer() {
         let fixture = Fixture::new().await;
-        let server = run(fixture.shared.clone()).await;
+        let server = fixture.run().await;
         let every = u32::try_from(AT_ONCE).unwrap();
         let busy = Arc::clone(&fixture.shared.sign_ins)
             .try_acquire_many_owned(every)
@@ -751,7 +751,7 @@ mod tests {
     async fn finishing_takes_the_same_time_for_a_stranger() {
         let mut fixture = Fixture::new().await;
         fixture.shared.finish_within = Duration::from_millis(200);
-        let server = run(fixture.shared.clone()).await;
+        let server = fixture.run().await;
         let stranger = finish_body("bo@example.com", &json!("0".repeat(64)), "00000000");
         let started = std::time::Instant::now();
         let (head, _) = request(server.address, "POST /api/sign-in/finish", &stranger).await;
@@ -763,7 +763,7 @@ mod tests {
     #[tokio::test]
     async fn a_failing_database_is_answered_as_worth_trying_again() {
         let fixture = Fixture::new().await;
-        let server = run(fixture.shared.clone()).await;
+        let server = fixture.run().await;
         fixture.shared.db.close().await;
         let finish = finish_body("ada@example.com", &json!("0".repeat(64)), "00000000");
         let (head, body) = request(server.address, "POST /api/sign-in/finish", &finish).await;

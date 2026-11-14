@@ -254,7 +254,7 @@ mod tests {
     use std::sync::Arc;
 
     use super::*;
-    use crate::test_support::{Fixture, ask, bearer, pair_machine, pairing_start, run, sign_in};
+    use crate::test_support::{Fixture, ask, bearer, pair_machine, pairing_start, sign_in};
 
     async fn start_pairing(address: SocketAddr, os: &str) -> (String, Value) {
         ask(address, "POST /api/machines/pair", "", &pairing_start(os)).await
@@ -277,7 +277,7 @@ mod tests {
     #[tokio::test]
     async fn a_person_pairs_the_machine_whose_code_they_enter() {
         let fixture = Fixture::new().await;
-        let server = run(fixture.shared.clone()).await;
+        let server = fixture.run().await;
         let (_, ada) = sign_in(&fixture, server.address, "ada@example.com").await;
         let ada_proof = bearer(&ada);
         let (started, pairing) = start_pairing(server.address, "macos").await;
@@ -332,7 +332,7 @@ mod tests {
     #[tokio::test]
     async fn a_person_unpairs_their_machine() {
         let fixture = Fixture::new().await;
-        let server = run(fixture.shared.clone()).await;
+        let server = fixture.run().await;
         let paired = pair_machine(&fixture, server.address).await;
         assert_eq!((paired.session.len(), paired.token.len()), (64, 64));
         let (ada_proof, machine) = (paired.proof, paired.machine);
@@ -352,7 +352,7 @@ mod tests {
     #[tokio::test]
     async fn only_a_signed_in_person_with_the_right_code_confirms() {
         let fixture = Fixture::new().await;
-        let server = run(fixture.shared.clone()).await;
+        let server = fixture.run().await;
         let (_, ada) = sign_in(&fixture, server.address, "ada@example.com").await;
         let (_, pairing) = start_pairing(server.address, "linux").await;
         let code = pairing["code"].clone();
@@ -397,7 +397,7 @@ mod tests {
     #[tokio::test]
     async fn a_system_this_server_doesnt_know_is_refused() {
         let fixture = Fixture::new().await;
-        let server = run(fixture.shared.clone()).await;
+        let server = fixture.run().await;
 
         let (status, refusal) = start_pairing(server.address, "plan9").await;
 
@@ -408,7 +408,7 @@ mod tests {
     #[tokio::test]
     async fn each_client_starts_only_so_many_pairings() {
         let fixture = Fixture::new().await;
-        let server = run(fixture.shared.clone()).await;
+        let server = fixture.run().await;
         for _ in 0..5 {
             let (status, _) = start_pairing(server.address, "linux").await;
             assert_eq!(status, "http/1.1 201 created");
@@ -425,7 +425,7 @@ mod tests {
         let mut fixture = Fixture::new().await;
         fixture.shared.pair_tries = Arc::new(Limit::new(2, HOUR));
         fixture.shared.pair_claims = Arc::new(Limit::new(1, HOUR));
-        let server = run(fixture.shared.clone()).await;
+        let server = fixture.run().await;
         let (_, ada) = sign_in(&fixture, server.address, "ada@example.com").await;
         let (_, pairing) = start_pairing(server.address, "linux").await;
         let lookup = json!({ "code": pairing["code"] });
@@ -460,7 +460,7 @@ mod tests {
     #[tokio::test]
     async fn a_malformed_body_or_id_is_answered_as_an_error() {
         let fixture = Fixture::new().await;
-        let server = run(fixture.shared.clone()).await;
+        let server = fixture.run().await;
         let (_, ada) = sign_in(&fixture, server.address, "ada@example.com").await;
         let path = format!("DELETE /api/machines/{}", "a".repeat(65));
 
