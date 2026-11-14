@@ -32,7 +32,7 @@ use weacon_observability::{Fault, json_lines};
 
 use crate::app::{App, Setup};
 use crate::cli::Command;
-use weacon_appkit::Outcome;
+use weacon_appkit::Ending;
 
 fn main() -> ExitCode {
     let version = weacon_version::version!();
@@ -55,35 +55,35 @@ fn main() -> ExitCode {
             log_name: cli.command.log_name(),
         },
     );
-    std::panic::set_hook(app.panic_hook());
+    std::panic::set_hook(app.panic_hook(app::panicked));
     let result = run(&app, cli.command, &env);
     app.finish(result)
 }
 
-fn run(app: &App, command: Command, env: platform::Env<'_>) -> Result<Outcome, Fault> {
+fn run(app: &App, command: Command, env: platform::Env<'_>) -> Result<Ending, Fault> {
     match command {
-        Command::Daemon => daemon::run(app).map(Outcome::from),
-        Command::Status => status::run(app, &mut io::stdout().lock()).map(Outcome::from),
-        Command::Doctor => doctor::run(app, &mut io::stdout().lock()).map(Outcome::from),
+        Command::Daemon => daemon::run(app).map(Ending::from),
+        Command::Status => status::run(app, &mut io::stdout().lock()).map(Ending::from),
+        Command::Doctor => doctor::run(app, &mut io::stdout().lock()).map(Ending::from),
         Command::Service(command) => {
-            service::run(app, command, env, &mut service::system).map(Outcome::from)
+            service::run(app, command, env, &mut service::system).map(Ending::from)
         }
         Command::Login { agent, workspace } => {
-            workspaces::login(app, agent, &workspace).map(Outcome::from)
+            workspaces::login(app, agent, &workspace).map(Ending::from)
         }
         Command::Access {
             workspace,
             level,
             team,
         } => workspaces::access(app, &workspace, level, team, &mut io::stdout().lock())
-            .map(Outcome::from),
+            .map(Ending::from),
         Command::Reports { answer } => {
-            reports::run(app, answer, &mut io::stdout().lock()).map(Outcome::from)
+            reports::run(app, answer, &mut io::stdout().lock()).map(Ending::from)
         }
         Command::ConnectChrome => {
-            native_host::connect_chrome(app, env, &mut io::stdout().lock()).map(Outcome::from)
+            native_host::connect_chrome(app, env, &mut io::stdout().lock()).map(Ending::from)
         }
-        Command::NativeHost { origin } => native_host::run(app, &origin).map(Outcome::from),
+        Command::NativeHost { origin } => native_host::run(app, &origin).map(Ending::from),
         Command::Map(command) => map::run(
             app,
             command,
