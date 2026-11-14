@@ -813,6 +813,18 @@ export type TaskStatus = (
 );
 
 /**
+ * When a core looks for a release, chosen by its owner. Only `off` keeps it from ever asking.
+ */
+export type UpdateSchedule = (
+  | (
+    | "off"
+  )
+  | "notify"
+  | "daily"
+  | "weekly"
+);
+
+/**
  * The answer to a [`Hello`] that speaks the same protocol.
  */
 export type Welcome = {
