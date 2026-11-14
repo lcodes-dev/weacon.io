@@ -2313,6 +2313,32 @@
         }
       ]
     },
+    "UpdateSchedule": {
+      "description": "When a core looks for a release, chosen by its owner. Only `off` keeps it from ever asking.",
+      "oneOf": [
+        {
+          "type": "string",
+          "enum": [
+            "off"
+          ]
+        },
+        {
+          "description": "Look once a day and say when one is out; install only when asked.",
+          "type": "string",
+          "const": "notify"
+        },
+        {
+          "description": "Look once a day and install what's out.",
+          "type": "string",
+          "const": "daily"
+        },
+        {
+          "description": "Look once a week and install what's out.",
+          "type": "string",
+          "const": "weekly"
+        }
+      ]
+    },
     "Welcome": {
       "description": "The answer to a [`Hello`] that speaks the same protocol.",
       "type": "object",
