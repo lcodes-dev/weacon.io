@@ -1,16 +1,8 @@
 //! A workspace's chats, which its members' machines run.
 
-mod admit;
-mod command;
-mod link;
 mod read;
-mod reconnect;
-#[cfg(test)]
-mod test_support;
-pub(crate) mod upload;
 mod watch;
 
-pub(crate) use reconnect::follow_machines;
 pub(crate) use watch::Watch;
 
 use axum::response::{IntoResponse, Response};
@@ -46,6 +38,13 @@ impl Default for Hub {
 
 impl Hub {
     /// Tells the sockets that follow `chat` that it has new events.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "a machine's upload tells the sockets that follow its chat"
+        )
+    )]
     pub(crate) fn stored(&self, workspace: WorkspaceId, chat: ChatId) {
         // No socket follows it: no one to tell.
         drop(self.stored.send((workspace, chat)));
@@ -65,7 +64,7 @@ pub(crate) fn unsupported() -> weacon_observability::Fault {
 
 /// Whether `message` is one a client sends about a chat.
 pub(crate) const fn carries(message: &Message) -> bool {
-    matches!(message, Message::ChatQuery(_) | Message::ChatCommand(_))
+    matches!(message, Message::ChatQuery(_))
 }
 
 pub(crate) fn routes() -> Router<Shared> {
@@ -141,5 +140,21 @@ mod tests {
 
         assert_eq!(status(&head), "http/1.1 401 unauthorized");
         assert!(!body.contains("c-1"), "{body}");
+    }
+
+    #[test]
+    fn only_chat_queries_are_the_watchs_to_answer() {
+        let query = Message::ChatQuery(weacon_protocol::ChatQuery {
+            workspace: id("w1"),
+            chat: id("c-1"),
+            query: weacon_protocol::ChatQueryKind::Snapshot,
+        });
+        assert!(carries(&query));
+        let answer = Message::ChatAnswer(weacon_protocol::ChatAnswer {
+            workspace: id("w1"),
+            chat: id("c-1"),
+            answer: weacon_protocol::ChatAnswerKind::EventsLost,
+        });
+        assert!(!carries(&answer));
     }
 }

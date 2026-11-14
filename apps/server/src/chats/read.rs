@@ -109,4 +109,33 @@ mod tests {
         assert_eq!(events.len(), usize::try_from(PAGE).unwrap());
         assert_eq!(events.first().map(|entry| entry.seq), Some(6));
     }
+
+    #[tokio::test]
+    async fn a_window_leaves_room_in_its_frame_for_what_travels_with_it() {
+        let dir = TempDir::new().unwrap();
+        let (one, _) = two_teams(&dir).await;
+        make(&one, "c-1", "m1", NOW).await.unwrap();
+        // Together just under a frame: one of them fits, with the answer around it.
+        let half = "x".repeat(weacon_protocol::MAX_FRAME / 2 - 200);
+        let events = [(Some(1), said(&half)), (Some(2), said(&half))];
+        append(&one, "c-1", &events).await.unwrap();
+
+        let all = ChatQueryKind::Window {
+            before: u64::MAX,
+            limit: PAGE,
+        };
+        let answer = answer(&one, &id("c-1"), &all).await.unwrap();
+
+        let ChatAnswerKind::Window { events } = &answer else {
+            panic!("not a window");
+        };
+        assert_eq!(seqs(events), [2]);
+        let message = weacon_protocol::Message::ChatAnswer(weacon_protocol::ChatAnswer {
+            workspace: id("w1"),
+            chat: id("c-1"),
+            answer,
+        });
+        let envelope = weacon_protocol::Envelope { id: 1, message };
+        envelope.to_json().unwrap();
+    }
 }

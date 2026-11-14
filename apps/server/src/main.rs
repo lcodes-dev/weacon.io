@@ -131,7 +131,6 @@ async fn serve(app: &App, args: Serve) -> Result<(), Fault> {
         pair_claims: Arc::new(pairing::claims()),
         web: web::FILES,
     };
-    tokio::spawn(chats::follow_machines(shared.clone()));
     http::serve(listener, shared, signals.wait()).await;
     db.close().await;
     Ok(())

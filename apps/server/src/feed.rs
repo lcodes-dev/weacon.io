@@ -226,10 +226,7 @@ async fn received(
     }
     if feed.offers.has(CHATS) && chats::carries(&envelope.message) {
         feed.allowed(shared).await?;
-        let answer = feed
-            .chats
-            .heard(envelope, &feed.member, &feed.asker, shared)
-            .await;
+        let answer = feed.chats.heard(envelope, &feed.member, shared).await;
         return send_chats(socket, shared, feed, answer).await;
     }
     Ok(())
