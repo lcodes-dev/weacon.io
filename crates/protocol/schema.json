@@ -1542,6 +1542,7 @@
       "type": "object",
       "properties": {
         "builds": {
+          "description": "At most one for each target.",
           "type": "array",
           "items": {
             "$ref": "#/$defs/ReleaseBuild"
