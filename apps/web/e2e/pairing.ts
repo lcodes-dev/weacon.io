@@ -55,13 +55,17 @@ export async function pair(page: Page): Promise<string> {
   return (await claim(page, { pairing, secret })).token;
 }
 
-/** A machine's core, connected to the server, that keeps `settings` and answers for them. */
-export async function core(page: Page, token: string, settings: MachineSettings): Promise<{ settings: MachineSettings; close(): void }> {
+/** A machine's core, connected to the server, that keeps `settings` and answers for them; once told to refuse, it refuses changes as a core does a stranger's. */
+export async function core(
+  page: Page,
+  token: string,
+  settings: MachineSettings,
+): Promise<{ settings: MachineSettings; refuse(): void; close(): void }> {
   const url = new URL("/api/machines/connect", page.url());
   url.protocol = "ws:";
   // Node's WebSocket takes headers, as the core's own client sends its bearer token.
   const socket = new WebSocket(url, { headers: { authorization: `Bearer ${token}` } } as unknown as string[]);
-  const held = { settings };
+  const held = { settings, refusing: false };
   const send = (envelope: Envelope) => socket.send(JSON.stringify(envelope));
   await new Promise<void>((resolve, reject) => {
     socket.onerror = () => reject(new Error("the core couldn't connect"));
@@ -72,6 +76,9 @@ export async function core(page: Page, token: string, settings: MachineSettings)
       const envelope = JSON.parse(String(data)) as Envelope;
       if (envelope.type === "welcome") {
         resolve();
+      } else if (envelope.type === "machine_settings_command" && held.refusing) {
+        send({ id: envelope.id, type: "error", code: "settings.not_owner", retryable: false });
+        return;
       } else if (envelope.type === "machine_settings_command") {
         const { action } = envelope;
         if (action.kind === "set_reports") {
@@ -89,6 +96,9 @@ export async function core(page: Page, token: string, settings: MachineSettings)
   return {
     get settings() {
       return held.settings;
+    },
+    refuse: () => {
+      held.refusing = true;
     },
     close: () => socket.close(),
   };

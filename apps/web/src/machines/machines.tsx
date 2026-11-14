@@ -125,12 +125,12 @@ function Machine({
         </button>
       )}
       {problem !== undefined && <span role="alert">{problem}</span>}
-      {socket !== undefined && (
-        <button type="button" aria-expanded={open} onClick={() => setOpen(!open)}>
+      {socket?.offers("machine.settings") && (
+        <button type="button" aria-label={`${machine.name} settings`} aria-expanded={open} onClick={() => setOpen(!open)}>
           {open ? "Hide settings" : "Settings"}
         </button>
       )}
-      {socket !== undefined && open && (
+      {socket?.offers("machine.settings") && open && (
         <MachineSettingsView key={socket.workspace} machine={machine} link={socket} later={later} />
       )}
     </li>

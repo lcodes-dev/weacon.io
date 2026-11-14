@@ -56,3 +56,13 @@ test("envelope ids count up from the hello's", () => {
 
   assert.deepEqual([socket.nextId(), socket.nextId(), socket.nextId()], [2, 3, 4]);
 });
+
+test("a socket offers what the server offered while live, and nothing once the feed ends", () => {
+  const socket = new WorkspaceSocket("w-1");
+  assert.equal(socket.offers("machine.settings"), false);
+  socket.attach(() => {}, ["workspace.chats", "machine.settings"]);
+  assert.equal(socket.offers("machine.settings"), true);
+  assert.equal(socket.offers("chat.send"), false);
+  socket.attach(undefined, ["machine.settings"]);
+  assert.equal(socket.offers("machine.settings"), false);
+});

@@ -58,15 +58,19 @@ function Shown({ settings, busy, set }: { settings: MachineSettings; busy: boole
   return (
     <>
       <h4>Error reports</h4>
+      <p className="muted">Reports say what went wrong in this machine's core. They hold no messages, prompts, code or file contents.</p>
       <p>
-        {reports === undefined
-          ? "Not chosen yet, so none are sent."
-          : reports
-            ? "On. They hold no messages, prompts, code or file contents."
-            : "Off."}{" "}
-        <button type="button" disabled={busy} onClick={() => set({ kind: "set_reports", send: reports !== true })}>
-          {reports === true ? "Turn off" : "Turn on"}
-        </button>
+        <span>{reports === undefined ? "Not chosen yet, so none are sent." : reports ? "On." : "Off."}</span>{" "}
+        {reports !== true && (
+          <button type="button" disabled={busy} onClick={() => set({ kind: "set_reports", send: true })}>
+            Turn on
+          </button>
+        )}
+        {reports !== false && (
+          <button type="button" disabled={busy} onClick={() => set({ kind: "set_reports", send: false })}>
+            {reports === undefined ? "Keep off" : "Turn off"}
+          </button>
+        )}
       </p>
       <h4>Agent access</h4>
       <label>

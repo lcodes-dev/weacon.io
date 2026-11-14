@@ -41,7 +41,7 @@ export function useFeed(workspace: WorkspaceId, api: Api, socket: WorkspaceSocke
             setOffered(next.capabilities);
             stayed = false;
             staying = setTimeout(() => (stayed = true), STAYED_MS);
-            socket.attach((envelope) => connection.send(envelope));
+            socket.attach((envelope) => connection.send(envelope), next.capabilities);
           } else if (next.state === "ended") {
             clearTimeout(staying);
             socket.attach(undefined);

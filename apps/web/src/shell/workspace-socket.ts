@@ -10,14 +10,21 @@ export class WorkspaceSocket {
   #send: ((envelope: Envelope) => void) | undefined;
   #handlers = new Set<(message: Incoming) => void>();
   #lastId = HELLO_ID;
+  #offered: readonly string[] = [];
 
   constructor(workspace: WorkspaceId) {
     this.workspace = workspace;
   }
 
-  /** Sends through `send` from now on, as when the feed goes live; `undefined` when it ends. */
-  attach(send: ((envelope: Envelope) => void) | undefined): void {
+  /** Sends through `send` from now on, as when the feed goes live with `offered`; `undefined` when it ends. */
+  attach(send: ((envelope: Envelope) => void) | undefined, offered: readonly string[] = []): void {
     this.#send = send;
+    this.#offered = send === undefined ? [] : offered;
+  }
+
+  /** Whether the server offered `capability` when the feed last went live, and still is. */
+  offers(capability: string): boolean {
+    return this.#offered.includes(capability);
   }
 
   /** Hands `message` to every page that subscribed. */
