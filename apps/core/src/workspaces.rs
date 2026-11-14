@@ -240,13 +240,16 @@ pub(crate) async fn sign_ins(log: &Logger, launches: &[Launch]) -> Vec<Option<Si
     answers
 }
 
+const FOLDER_PREFIX: &str = "w-";
+
 const AGENTS: [(AgentKind, &str); 2] = [
     (AgentKind::Claude, "Claude Code"),
     (AgentKind::Codex, "Codex"),
 ];
 
-fn folder_name(workspace: &WorkspaceId) -> String {
-    names::case_safe_name("w-", workspace.as_str())
+/// What a workspace's folders are called, wherever they are.
+pub(crate) fn folder_name(workspace: &WorkspaceId) -> String {
+    names::case_safe_name(FOLDER_PREFIX, workspace.as_str())
 }
 
 /// Each place's sign-in, given `answers` for the places that have a launch, in their order.
@@ -276,7 +279,7 @@ const fn state_name(state: SignInState) -> &'static str {
 
 /// The workspace that `name` is the folder of, if any.
 fn workspace_id(name: &str) -> Option<WorkspaceId> {
-    WorkspaceId::try_from(names::case_safe_id("w-", name)?).ok()
+    WorkspaceId::try_from(names::case_safe_id(FOLDER_PREFIX, name)?).ok()
 }
 
 #[cfg(test)]
@@ -620,14 +623,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let (log, records) = crate::test_support::recording_logger();
         let program = dir.join("hang");
-        // Written from a child shell, so no fork of this process inherits a write handle.
-        let script = "printf '#!/bin/sh\\nexec sleep 1000\\n' > \"$1\" && chmod 755 \"$1\"";
-        let written = std::process::Command::new("sh")
-            .args(["-c", script, "sh"])
-            .arg(&program)
-            .status()
-            .unwrap();
-        assert!(written.success());
+        weacon_testing::platform::write_program(&program, "#!/bin/sh\nexec sleep 1000\n").unwrap();
         let hanging = Launch {
             agent: AgentKind::Claude,
             program,

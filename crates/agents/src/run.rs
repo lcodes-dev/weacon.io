@@ -136,8 +136,7 @@ impl<W: AsyncWrite + Unpin, R: AsyncBufRead + Unpin> Run<W, R> {
                 )
             })?;
         let prompt = self.prompts.swap_remove(at);
-        let effects = self.wire.answer(&prompt.asked, answer.allow);
-        self.apply(effects);
+        self.reply(&prompt.asked, answer.allow);
         self.flush().await
     }
 
@@ -193,6 +192,10 @@ impl<W: AsyncWrite + Unpin, R: AsyncBufRead + Unpin> Run<W, R> {
         }
     }
 
+    fn reply(&mut self, asked: &Asked, allow: bool) {
+        self.apply(self.wire.answer(asked, allow));
+    }
+
     fn started(&mut self, session: AgentSession) {
         if self.session.as_ref() != Some(&session) {
             self.session = Some(session.clone());
@@ -203,10 +206,7 @@ impl<W: AsyncWrite + Unpin, R: AsyncBufRead + Unpin> Run<W, R> {
     fn settle(&mut self, asked: Asked) {
         match self.rules.decide(self.wire.changed_file(&asked)) {
             Decision::Ask => self.ask_person(asked),
-            Decision::Refuse => {
-                let effects = self.wire.answer(&asked, false);
-                self.apply(effects);
-            }
+            Decision::Refuse => self.reply(&asked, false),
             Decision::Check(file) => self.checks.push_back((asked, file)),
         }
     }
@@ -222,8 +222,7 @@ impl<W: AsyncWrite + Unpin, R: AsyncBufRead + Unpin> Run<W, R> {
                 return;
             };
             if allowed {
-                let effects = self.wire.answer(&asked, true);
-                self.apply(effects);
+                self.reply(&asked, true);
             } else {
                 self.ask_person(asked);
             }
@@ -304,11 +303,9 @@ mod tests {
     use super::*;
     use crate::claude;
     use crate::test_support::{
-        self, Done, FakeRun, answer, ended, ends_as_recorded, is_asked, is_finished, run_id, text,
-        tool_done, until,
+        self, Done, FakeRun, SESSION, answer, ended, ends_as_recorded, is_asked, is_finished,
+        run_id, text, tool_call, tool_done, until,
     };
-
-    const SESSION: &str = "0b7c6a52-3f1e-4d2a-9c8b-5e4f3a2b1c0d";
 
     fn claude_wire() -> Wire {
         Wire::Claude(claude::Wire::default())
@@ -333,11 +330,7 @@ mod tests {
             [
                 started(),
                 text("I'll run them."),
-                RunEvent::ToolCall {
-                    call: "toolu_01".to_owned(),
-                    tool: "Bash".to_owned(),
-                    input: command.clone(),
-                },
+                tool_call("toolu_01", "Bash", command.clone()),
                 RunEvent::PermissionAsked {
                     run: run_id("run-1"),
                     prompt: 1,
@@ -360,14 +353,6 @@ mod tests {
         let again = run.answer(&answer("run-1", true)).await.unwrap_err();
         assert_eq!(again.code().as_str(), "agent.no_such_prompt");
         ends_as_recorded(run, done).await;
-    }
-
-    fn tool_call(call: &str, tool: &str, input: Value) -> RunEvent {
-        RunEvent::ToolCall {
-            call: call.to_owned(),
-            tool: tool.to_owned(),
-            input,
-        }
     }
 
     #[tokio::test(start_paused = true)]

@@ -42,7 +42,7 @@ test("a person pairs a machine by its code after checking its fingerprint, then 
   await page.route("**/api/machines/*", (route) => (route.request().method() === "DELETE" ? route.abort() : route.continue()));
   await row.getByRole("button", { name: "Unpair" }).click();
   await row.getByRole("button", { name: "Unpair" }).click();
-  await row.getByRole("alert").getByText("The server can't be reached").waitFor();
+  await row.getByRole("alert").getByText("The server can't be reached.").waitFor();
   assert.equal(await pinned(page, paired.machine), KEY);
   await page.unroute("**/api/machines/*");
   await row.getByRole("button", { name: "Unpair" }).click();
