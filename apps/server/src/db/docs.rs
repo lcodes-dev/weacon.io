@@ -8,6 +8,8 @@ use super::{Workspace, author_columns, failed, stored, stored_author, stored_ver
 
 /// How many bytes of doc revisions a workspace may hold.
 const QUOTA: i64 = 1 << 30;
+/// What each revision counts besides its text: its rows, keys and feed entry.
+const REVISION_OVERHEAD: usize = 256;
 
 type VersionRow = (i64, String, String, Option<String>);
 type RevisionRow = (i64, String, String, String, i64);
@@ -170,16 +172,20 @@ impl Workspace {
         })
     }
 
-    /// Refuses a revision of `size` bytes that the workspace has no room left for.
-    async fn check_room(&self, transaction: &mut SqliteConnection, size: i64) -> Result<(), Fault> {
-        let used: i64 = sqlx::query_scalar(
-            "SELECT COALESCE(SUM(size), 0) FROM doc_versions WHERE workspace_id = ?",
+    /// Counts `size` more bytes against the workspace's quota, or refuses a revision it has
+    /// no room left for.
+    async fn charge(&self, transaction: &mut SqliteConnection, size: i64) -> Result<(), Fault> {
+        let charged = sqlx::query(
+            "UPDATE workspaces SET doc_bytes = doc_bytes + ?2
+             WHERE workspace_id = ?1 AND doc_bytes + ?2 <= ?3",
         )
         .bind(self.id.as_str())
-        .fetch_one(&mut *transaction)
+        .bind(size)
+        .bind(QUOTA)
+        .execute(&mut *transaction)
         .await
         .map_err(failed)?;
-        if used.saturating_add(size) > QUOTA {
+        if charged.rows_affected() == 0 {
             return Err(quota_full());
         }
         Ok(())
@@ -197,11 +203,11 @@ impl Workspace {
         let version = version_number(doc.version)?;
         let anchors = doc.text.anchors();
         let size = size(&doc.text);
-        self.check_room(transaction, size).await?;
+        self.charge(transaction, size).await?;
         sqlx::query(
             "INSERT INTO doc_versions (workspace_id, doc_id, version, title, body, commit_id,
-                 author_kind, author_member, accepted_by, at, size)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                 author_kind, author_member, accepted_by, at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(self.id.as_str())
         .bind(doc.id.as_str())
@@ -213,7 +219,6 @@ impl Workspace {
         .bind(author.as_str())
         .bind(attribution.accepted_by().as_str())
         .bind(attribution.at())
-        .bind(size)
         .execute(&mut *transaction)
         .await
         .map_err(failed)?;
@@ -239,7 +244,7 @@ impl Workspace {
     }
 }
 
-/// The bytes `text` takes as stored: its title, body, commit and pins.
+/// The bytes a revision of `text` counts: its title, body, commit and pins, and its rows.
 fn size(text: &DocText) -> i64 {
     let anchors = text.anchors();
     let commit = anchors.map_or(0, |anchors| anchors.commit.as_str().len());
@@ -248,11 +253,24 @@ fn size(text: &DocText) -> i64 {
         .flat_map(|anchors| &anchors.pins)
         .map(|pin| pin.as_str().len())
         .sum();
-    let size = text.title().as_str().len() + text.body().len() + commit + pins;
+    let size = REVISION_OVERHEAD + text.title().as_str().len() + text.body().len() + commit + pins;
     i64::try_from(size).unwrap_or(i64::MAX)
 }
 
-pub(crate) fn quota_full() -> Fault {
+/// Fills the workspace's quota, for tests of what a full one answers.
+#[cfg(test)]
+impl Workspace {
+    pub(crate) async fn fill_doc_quota(&self) {
+        sqlx::query("UPDATE workspaces SET doc_bytes = ? WHERE workspace_id = ?")
+            .bind(QUOTA)
+            .bind(self.id.as_str())
+            .execute(&self.db.writer)
+            .await
+            .unwrap();
+    }
+}
+
+fn quota_full() -> Fault {
     Fault::new(
         code!("doc.quota_full"),
         "The workspace has no room left for docs",
@@ -570,33 +588,44 @@ mod tests {
         assert_eq!(code(&robot), "db.unreadable");
     }
 
-    async fn sizes(workspace: &Workspace) -> Vec<i64> {
-        sqlx::query_scalar(
-            "SELECT size FROM doc_versions WHERE workspace_id = ? ORDER BY doc_id, version",
-        )
-        .bind(workspace.id.as_str())
-        .fetch_all(&workspace.db.readers)
-        .await
-        .unwrap()
+    async fn doc_bytes(workspace: &Workspace) -> i64 {
+        sqlx::query_scalar("SELECT doc_bytes FROM workspaces WHERE workspace_id = ?")
+            .bind(workspace.id.as_str())
+            .fetch_one(&workspace.db.readers)
+            .await
+            .unwrap()
+    }
+
+    async fn set_doc_bytes(workspace: &Workspace, bytes: i64) {
+        sqlx::query("UPDATE workspaces SET doc_bytes = ? WHERE workspace_id = ?")
+            .bind(bytes)
+            .bind(workspace.id.as_str())
+            .execute(&workspace.db.writer)
+            .await
+            .unwrap();
     }
 
     #[tokio::test]
-    async fn each_revision_counts_its_bytes_toward_the_quota() {
+    async fn each_revision_counts_its_bytes_and_its_rows_toward_the_quota() {
         let dir = TempDir::new().unwrap();
-        let (one, _) = two_teams(&dir).await;
+        let (one, two) = two_teams(&dir).await;
         one.add_doc(&Doc::new(doc_id("d1"), linked()), &by("m1"))
             .await
             .unwrap();
         one.add_doc(&new_doc("d2", "Two"), &by("m1")).await.unwrap();
 
-        let pinned = "Framing".len()
+        let pinned = 256
+            + "Framing".len()
             + "See [a](sym:a) and [b](area:b).".len()
             + 40
             + "sym:a#0123456789abcdef".len()
             + "area:b#0123456789abcdef".len();
-        let plain = "Two".len() + "Plain.".len();
-        let expected = [pinned, plain].map(|size| i64::try_from(size).unwrap());
-        assert_eq!(sizes(&one).await, expected);
+        let plain = 256 + "Two".len() + "Plain.".len();
+        assert_eq!(
+            doc_bytes(&one).await,
+            i64::try_from(pinned + plain).unwrap()
+        );
+        assert_eq!(doc_bytes(&two).await, 0);
     }
 
     #[tokio::test]
@@ -606,12 +635,7 @@ mod tests {
         let first = new_doc("d1", "Framing");
         one.add_doc(&first, &by("m1")).await.unwrap();
         let next = linked();
-        let room = QUOTA - size(&next);
-        sqlx::query("UPDATE doc_versions SET size = ? WHERE workspace_id = 'w1'")
-            .bind(room)
-            .execute(&one.db.writer)
-            .await
-            .unwrap();
+        set_doc_bytes(&one, QUOTA - size(&next)).await;
 
         let fits = one
             .revise_doc(&first.id, Revision::FIRST, next, &by("m1"))
@@ -633,6 +657,7 @@ mod tests {
 
         assert_eq!(code(&revised), "doc.quota_full");
         assert_eq!(code(&made), "doc.quota_full");
+        assert_eq!(doc_bytes(&one).await, QUOTA);
         assert_eq!(one.doc(&first.id, None).await.unwrap(), fits);
         assert_eq!(one.docs().await.unwrap(), [summary(&fits)]);
         assert_eq!(one.doc_history(&first.id, 10).await.unwrap().len(), 2);
@@ -641,7 +666,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn revisions_from_before_the_quota_are_sized_as_the_server_sizes_them() {
+    async fn revisions_from_before_the_quota_count_as_the_server_counts_them() {
         let dir = TempDir::new().unwrap();
         let path = dir.join("weacon.db");
         let rows = format!(
@@ -660,37 +685,12 @@ mod tests {
              ",
             commit = "c".repeat(40),
         );
-        database_before(&path, "ADD COLUMN size", &rows).await;
+        database_before(&path, "ADD COLUMN doc_bytes", &rows).await;
 
         let db = Db::open(&path).await.unwrap();
         let one = db.workspace(&workspace_id("w1")).await.unwrap();
 
         let unicode = text("Ünïcode", "Plain.", &[]);
-        assert_eq!(sizes(&one).await, [size(&linked()), size(&unicode)]);
-    }
-
-    #[tokio::test]
-    async fn a_workspace_s_usage_is_read_from_the_index_alone() {
-        let dir = TempDir::new().unwrap();
-        let (one, _) = two_teams(&dir).await;
-
-        let plan: Vec<(i64, i64, i64, String)> = sqlx::query_as(
-            "EXPLAIN QUERY PLAN
-             SELECT COALESCE(SUM(size), 0) FROM doc_versions WHERE workspace_id = 'w1'",
-        )
-        .fetch_all(&one.db.readers)
-        .await
-        .unwrap();
-
-        let detail = plan
-            .into_iter()
-            .map(|(_, _, _, detail)| detail)
-            .collect::<Vec<_>>();
-        assert!(
-            detail
-                .iter()
-                .any(|step| step.contains("COVERING INDEX doc_versions_size")),
-            "{detail:?}"
-        );
+        assert_eq!(doc_bytes(&one).await, size(&linked()) + size(&unicode));
     }
 }
