@@ -1,6 +1,6 @@
 use sqlx::SqliteConnection;
 use weacon_observability::Fault;
-use weacon_protocol::{ChatEntry, ChatEvent, ChatId, ChatState, Outcome, RequestId, code};
+use weacon_protocol::{ChatEntry, ChatEvent, ChatId, Outcome, RequestId, code};
 
 use super::super::changes::Versioned;
 use super::super::{Workspace, failed, stored, unreadable};
@@ -20,21 +20,16 @@ pub(crate) struct Incoming<'a> {
 impl Workspace {
     /// Stores `events` after the chat's last, in order, and gives the chat's seq after them.
     /// Those from its machine at or before the last one stored are replays and are skipped.
-    /// Events that would take the workspace past [`CHAT_QUOTA`] make the chat `full` and are
-    /// `chat.quota_full`, with none of them stored.
+    /// Events that would take the workspace past [`CHAT_QUOTA`] make an open chat `full`, and
+    /// they and every later event of a full chat are `chat.quota_full`, with none stored.
     pub(crate) async fn append_events(
         &self,
         chat: &ChatId,
         events: &[Incoming<'_>],
     ) -> Result<u64, Fault> {
-        let mut transaction = self
-            .db
-            .writer
-            .begin_with("BEGIN IMMEDIATE")
-            .await
-            .map_err(failed)?;
-        let (seq, core_seq) = sqlx::query_as::<_, (i64, i64)>(
-            "SELECT seq, core_seq FROM chats WHERE workspace_id = ? AND chat_id = ?",
+        let mut transaction = self.db.write().await?;
+        let (seq, core_seq, state) = sqlx::query_as::<_, (i64, i64, String)>(
+            "SELECT seq, core_seq, state FROM chats WHERE workspace_id = ? AND chat_id = ?",
         )
         .bind(self.id.as_str())
         .bind(chat.as_str())
@@ -42,10 +37,22 @@ impl Workspace {
         .await
         .map_err(failed)?
         .ok_or_else(chat_not_found)?;
+        // Once one event didn't fit, none after it is stored, so the log has no hole.
+        if state == "full" {
+            return Err(chat_quota_full());
+        }
         let (rows, seq, core_seq) = numbered(events, seq, core_seq)?;
         if !self.charge_chats(&mut transaction, size(&rows)?).await? {
-            drop(transaction);
-            self.set_chat_state(chat, ChatState::Full).await?;
+            sqlx::query(
+                "UPDATE chats SET state = 'full' WHERE workspace_id = ? AND chat_id = ?
+                     AND state = 'open'",
+            )
+            .bind(self.id.as_str())
+            .bind(chat.as_str())
+            .execute(&mut *transaction)
+            .await
+            .map_err(failed)?;
+            transaction.commit().await.map_err(failed)?;
             return Err(chat_quota_full());
         }
         self.store(&mut transaction, chat, &rows).await?;
@@ -84,9 +91,11 @@ impl Workspace {
         self.keep_runs(&mut *transaction, chat, &runs).await?;
         for request in rows.iter().filter_map(|row| ended(row.event)) {
             sqlx::query(
-                "UPDATE chat_requests SET open = 0 WHERE workspace_id = ? AND request_id = ?",
+                "UPDATE chat_requests SET open = 0
+                 WHERE workspace_id = ? AND chat_id = ? AND request_id = ?",
             )
             .bind(self.id.as_str())
+            .bind(chat.as_str())
             .bind(request.as_str())
             .execute(&mut *transaction)
             .await
@@ -288,7 +297,7 @@ pub(crate) fn chat_quota_full() -> Fault {
 
 #[cfg(test)]
 mod tests {
-    use weacon_protocol::{Receipt, WorkspaceChange};
+    use weacon_protocol::{ChatState, Receipt, WorkspaceChange};
     use weacon_testing::TempDir;
 
     use super::*;
@@ -430,6 +439,47 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn a_full_chat_stores_nothing_more_and_only_an_open_chat_fills() {
+        let dir = TempDir::new().unwrap();
+        let (one, _) = two_teams(&dir).await;
+        make(&one, "c-1", "m1", NOW).await.unwrap();
+        make(&one, "c-2", "m1", NOW).await.unwrap();
+        one.set_chat_state(&id("c-2"), ChatState::Detached)
+            .await
+            .unwrap();
+        sqlx::query("UPDATE workspaces SET chat_bytes = ? WHERE workspace_id = 'w1'")
+            .bind(CHAT_QUOTA - 1)
+            .execute(&one.db.writer)
+            .await
+            .unwrap();
+
+        let big = append(&one, "c-1", &[(Some(1), said("a"))]).await;
+        assert_eq!(code(&big.unwrap_err()), "chat.quota_full");
+        sqlx::query("UPDATE workspaces SET chat_bytes = 0 WHERE workspace_id = 'w1'")
+            .execute(&one.db.writer)
+            .await
+            .unwrap();
+        let after = append(&one, "c-1", &[(Some(2), said("b"))]).await;
+        assert_eq!(code(&after.unwrap_err()), "chat.quota_full");
+        let chat = one.chat(&id("c-1")).await.unwrap().unwrap();
+        assert_eq!(
+            (chat.state, chat.seq, chat.core_seq),
+            (ChatState::Full, 0, 0)
+        );
+
+        sqlx::query("UPDATE workspaces SET chat_bytes = ? WHERE workspace_id = 'w1'")
+            .bind(CHAT_QUOTA - 1)
+            .execute(&one.db.writer)
+            .await
+            .unwrap();
+        append(&one, "c-2", &[(Some(1), said("a"))])
+            .await
+            .unwrap_err();
+        let detached = one.chat(&id("c-2")).await.unwrap().unwrap().state;
+        assert_eq!(detached, ChatState::Detached);
+    }
+
     fn receipt(request: &str, outcome: Outcome) -> ChatEvent {
         ChatEvent::Receipt {
             receipt: Receipt {
@@ -481,5 +531,10 @@ mod tests {
         assert_eq!(updated_at(&one).await, NOW + 40);
         assert_eq!(two.open_requests(&id("c-1")).await.unwrap().len(), 1);
         assert_eq!(changed_chats(&two).await.len(), 1);
+
+        make(&one, "c-2", "m1", NOW).await.unwrap();
+        let elsewhere = [(Some(10), receipt("r-c-2", Outcome::Completed))];
+        append(&one, "c-1", &elsewhere).await.unwrap();
+        assert_eq!(one.open_requests(&id("c-2")).await.unwrap().len(), 1);
     }
 }

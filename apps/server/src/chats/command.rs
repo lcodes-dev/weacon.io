@@ -161,7 +161,7 @@ fn conflict() -> Fault {
 
 #[cfg(test)]
 mod tests {
-    use weacon_protocol::{ChatQuery, ChatQueryKind, MachineId};
+    use weacon_protocol::{ChatQuery, ChatQueryKind};
 
     use super::*;
     use crate::chats::test_support::{ada, attach, sent};

@@ -167,7 +167,7 @@ fn refusal(shared: &Shared, member: &Member, fault: &Fault) -> Message {
 mod tests {
     use futures_util::SinkExt;
     use tokio_tungstenite::tungstenite::Message as Wire;
-    use weacon_protocol::{Capability, ChatAction, ChatCommand, ChatState, RequestId, TaskCreate};
+    use weacon_protocol::{Capability, ChatState, TaskCreate};
 
     use super::*;
     use crate::db::test_support::{NOW, append, id, make, said};

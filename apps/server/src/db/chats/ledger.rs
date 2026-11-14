@@ -28,12 +28,7 @@ pub(crate) enum Recorded {
 impl Workspace {
     /// Records `request` in the ledger, unless it is there already.
     pub(crate) async fn record_request(&self, request: &NewRequest<'_>) -> Result<Recorded, Fault> {
-        let mut transaction = self
-            .db
-            .writer
-            .begin_with("BEGIN IMMEDIATE")
-            .await
-            .map_err(failed)?;
+        let mut transaction = self.db.write().await?;
         let earlier = sqlx::query_as::<_, (String, i64)>(
             "SELECT command, open FROM chat_requests WHERE workspace_id = ? AND request_id = ?",
         )
