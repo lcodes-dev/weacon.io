@@ -216,7 +216,7 @@ fn code_text(secret: &[u8; 32]) -> String {
 }
 
 // A lookup table, as clippy refuses `format!` collected into a string.
-fn hex(bytes: &[u8]) -> String {
+pub(crate) fn hex(bytes: &[u8]) -> String {
     const DIGITS: &[u8; 16] = b"0123456789abcdef";
     bytes
         .iter()

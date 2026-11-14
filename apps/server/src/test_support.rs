@@ -21,6 +21,7 @@ use crate::email::Email;
 use crate::feed;
 use crate::http::{self, Shared};
 use crate::mail::Outbox;
+use crate::pairing;
 use crate::secret::Secret;
 use crate::sign_in;
 
@@ -94,6 +95,9 @@ impl Fixture {
             starts: Arc::new(sign_in::starts()),
             tries: Arc::new(sign_in::tries()),
             sign_up: Arc::new([]),
+            pair_starts: Arc::new(pairing::starts()),
+            pair_tries: Arc::new(pairing::tries()),
+            pair_claims: Arc::new(pairing::claims()),
             web: WEB,
         };
         Self {

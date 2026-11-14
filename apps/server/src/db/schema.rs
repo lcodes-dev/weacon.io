@@ -177,6 +177,33 @@ CREATE UNIQUE INDEX accounts_owner ON accounts (owner) WHERE owner = 1;
 ALTER TABLE sign_in_challenges ADD COLUMN mailed INTEGER NOT NULL DEFAULT 1;
 CREATE INDEX sign_in_challenges_email ON sign_in_challenges (email);
 ",
+    // Machines paired with an account, and the pairings under way. A confirmed pairing names
+    // its account and machine, and stays until it expires so that its core may claim again.
+    "
+CREATE TABLE machines (
+    machine_id TEXT PRIMARY KEY,
+    account_id TEXT NOT NULL REFERENCES accounts (account_id),
+    name TEXT NOT NULL,
+    os TEXT NOT NULL,
+    machine_key TEXT NOT NULL,
+    token_hash BLOB NOT NULL UNIQUE,
+    paired_at INTEGER NOT NULL
+) STRICT;
+
+CREATE TABLE pairings (
+    pairing_id TEXT PRIMARY KEY,
+    code_hash BLOB NOT NULL UNIQUE,
+    secret_hash BLOB NOT NULL,
+    name TEXT NOT NULL,
+    os TEXT NOT NULL,
+    machine_key TEXT NOT NULL,
+    expires_at INTEGER NOT NULL,
+    account_id TEXT REFERENCES accounts (account_id),
+    machine_id TEXT,
+    confirmed_at INTEGER,
+    claimed INTEGER NOT NULL DEFAULT 0
+) STRICT;
+",
 ];
 
 /// Applies the steps the database hasn't had yet, each in its own transaction that holds the
