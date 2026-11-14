@@ -14,8 +14,8 @@ import {
 import "./diff.css";
 
 import type { DiffFile } from "../protocol.ts";
-import { type Changes, type Row, rows } from "./changes.ts";
-import { type Comment, type Selection, add, edit, pick, remove, span } from "./comments.ts";
+import { type Changes, type DiffRow, rows } from "./changes.ts";
+import { type Comment, type Selection, addComment, editComment, selectRows, removeComment, span } from "./comments.ts";
 import { changeText, contentText, hunkText, linesText, summary } from "./labels.ts";
 import { CommentBox, CommentView } from "./review.tsx";
 
@@ -128,8 +128,8 @@ const FileView = memo(function FileView({
             key={comment.id}
             comment={comment}
             label={linesText(lines, comment.first, comment.last)}
-            onEdit={(text) => review.setComments((before) => edit(before, comment.id, text))}
-            onRemove={() => review.setComments((before) => remove(before, comment.id))}
+            onEdit={(text) => review.setComments((before) => editComment(before, comment.id, text))}
+            onRemove={() => review.setComments((before) => removeComment(before, comment.id))}
           />
         ))}
       {box && boxAt?.last === at && (
@@ -139,7 +139,7 @@ const FileView = memo(function FileView({
           action="Comment"
           onChange={review.setDraft}
           onSave={() => {
-            review.setComments((before) => add(before, box, draft));
+            review.setComments((before) => addComment(before, box, draft));
             close();
           }}
           onCancel={close}
@@ -169,7 +169,7 @@ const FileView = memo(function FileView({
   );
 });
 
-const RowView = memo(function RowView({ row, at, mark }: { row: Row; at: number; mark: "selected" | "commented" | undefined }) {
+const RowView = memo(function RowView({ row, at, mark }: { row: DiffRow; at: number; mark: "selected" | "commented" | undefined }) {
   if (row.kind === "hunk") {
     return <div className="note">{hunkText(row.old, row.new)}</div>;
   }
@@ -195,7 +195,7 @@ function press(event: MouseEvent, path: string, review: Review): void {
   }
   event.preventDefault();
   review.dragging.current = path;
-  review.setPicking(({ live, box }) => ({ live: pick(live, path, rowOf(target), event.shiftKey), box }));
+  review.setPicking(({ live, box }) => ({ live: selectRows(live, path, rowOf(target), event.shiftKey), box }));
 }
 
 function drag(event: MouseEvent, path: string, review: Review): void {
@@ -209,5 +209,5 @@ function drag(event: MouseEvent, path: string, review: Review): void {
     review.setPicking(({ live }) => ({ live, box: live }));
     return;
   }
-  review.setPicking(({ live, box }) => ({ live: pick(live, path, rowOf(line), true), box }));
+  review.setPicking(({ live, box }) => ({ live: selectRows(live, path, rowOf(line), true), box }));
 }

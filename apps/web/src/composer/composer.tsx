@@ -2,8 +2,8 @@ import { type KeyboardEvent, type RefObject, useEffect, useLayoutEffect, useRef,
 
 import { newRequestId } from "../ids.ts";
 import "./composer.css";
-import { NONE, add, remove, settled } from "./attachments.ts";
-import { type Draft, EMPTY, type Item, type Placed, edit, pick, query } from "./draft.ts";
+import { NO_ATTACHMENTS, attachFiles, removeAttachment, settled } from "./attachments.ts";
+import { type Draft, EMPTY_DRAFT, type Item, type Placed, editDraft, pickMention, query } from "./draft.ts";
 import { AttachButton, Files } from "./files.tsx";
 import { composing, picker, sends } from "./keys.ts";
 import { offered } from "./mentionables.ts";
@@ -24,13 +24,13 @@ export function Composer({
   hidden: boolean;
   late: Late | undefined;
 }) {
-  const [placed, setPlaced] = useState<Placed>({ draft: EMPTY, caret: 0 });
+  const [placed, setPlaced] = useState<Placed>({ draft: EMPTY_DRAFT, caret: 0 });
   const [active, setActive] = useState(0);
   const [dismissed, setDismissed] = useState<number>();
   const [sending, setSending] = useState(false);
   const [problem, setProblem] = useState<string>();
   const retry = useRef<Retry>(undefined);
-  const [files, setFiles] = useState(NONE);
+  const [files, setFiles] = useState(NO_ATTACHMENTS);
   const [dropping, setDropping] = useState(false);
   const box = useRef<HTMLTextAreaElement>(null);
   useEffect(() => {
@@ -55,7 +55,7 @@ export function Composer({
     setProblem(next.problem);
     retry.current = next.retry;
     if (next.text === "") {
-      setPlaced({ draft: EMPTY, caret: 0 });
+      setPlaced({ draft: EMPTY_DRAFT, caret: 0 });
     }
   }, [late]);
   const backdrop = useRef<HTMLDivElement>(null);
@@ -93,13 +93,13 @@ export function Composer({
     setProblem(next.problem);
     retry.current = next.retry;
     if (next.text === "") {
-      place({ draft: EMPTY, caret: 0 });
+      place({ draft: EMPTY_DRAFT, caret: 0 });
     }
   };
-  const attach = (added: File[]) => setFiles((before) => add(before, added));
+  const attach = (added: File[]) => setFiles((before) => attachFiles(before, added));
   const choose = (item: Item | undefined) => {
     if (at !== undefined && item !== undefined) {
-      place(pick(draft, at, item));
+      place(pickMention(draft, at, item));
     }
   };
   const keyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -164,7 +164,7 @@ export function Composer({
           value={draft.text}
           readOnly={sending}
           onChange={(event) => {
-            place(edit(draft, event.target.value, event.target.selectionEnd, (event.nativeEvent as InputEvent).isComposing));
+            place(editDraft(draft, event.target.value, event.target.selectionEnd, (event.nativeEvent as InputEvent).isComposing));
             setFiles(settled);
             setProblem(undefined);
           }}
@@ -190,7 +190,7 @@ export function Composer({
       <button type="submit" disabled={!ready}>
         Send
       </button>
-      {files.attachments.length > 0 && <Files attachments={files.attachments} remove={(id) => setFiles((before) => remove(before, id))} />}
+      {files.attachments.length > 0 && <Files attachments={files.attachments} remove={(id) => setFiles((before) => removeAttachment(before, id))} />}
       {options.length > 0 && <Options options={options} active={active} choose={choose} />}
       {hint !== undefined && <p className="hint muted">{hint}</p>}
     </form>
