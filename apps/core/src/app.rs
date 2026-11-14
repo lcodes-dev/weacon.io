@@ -24,7 +24,7 @@ pub(crate) struct App {
     pub(crate) reporter: Arc<Reporter>,
     pub(crate) state_dir: Option<PathBuf>,
     /// Where chats' working folders go, apart from the state.
-    pub(crate) data_dir: Option<PathBuf>,
+    pub(crate) work_root: Option<PathBuf>,
     pub(crate) log_file: Option<PathBuf>,
     pub(crate) spawn: SpawnPolicy,
     /// The person's `PATH`, where their agents' programs are found.
@@ -72,7 +72,7 @@ impl App {
             reporter: Arc::new(weacon_appkit::reporter(reports, agreed, setup.deliver)),
             log,
             state_dir,
-            data_dir: platform::data_dir(setup.env),
+            work_root: platform::work_root(setup.env),
             log_file,
             spawn: platform::spawn_policy(setup.env),
             path: (setup.env)("PATH"),

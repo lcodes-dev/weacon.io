@@ -60,7 +60,7 @@ pub(crate) fn run(app: &crate::app::App) -> Result<(), Fault> {
             app.spawn.clone(),
             Places {
                 path: app.path.clone(),
-                data_dir: app.data_dir.clone(),
+                work_root: app.work_root.clone(),
             },
             app.log.clone(),
         )?;

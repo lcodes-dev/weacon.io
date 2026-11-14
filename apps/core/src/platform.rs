@@ -100,27 +100,21 @@ pub(crate) fn state_dir(env: Env<'_>) -> Option<PathBuf> {
     xdg_dir(env, "XDG_STATE_HOME", ".local/state").map(|dir| dir.join("weacon"))
 }
 
-/// Where the core keeps what agents work in, apart from its state so no agent reaches that;
-/// `WEACON_DATA_DIR` overrides it, and a set `WEACON_STATE_DIR` moves it beside that.
-pub(crate) fn data_dir(env: Env<'_>) -> Option<PathBuf> {
-    if let Some(dir) = var(env, "WEACON_DATA_DIR") {
+/// The visible folder in the home folder where agents work, never in or above the state, so
+/// no agent reaches that; `WEACON_WORK_DIR` overrides it, and a set `WEACON_STATE_DIR` moves it
+/// beside that.
+pub(crate) fn work_root(env: Env<'_>) -> Option<PathBuf> {
+    if let Some(dir) = var(env, "WEACON_WORK_DIR") {
         return std::path::absolute(dir).ok();
     }
-    // A state folder of its own, as per worktree, gets a data folder of its own beside it.
+    // A state folder of its own, as per worktree, gets a work folder of its own beside it.
     if var(env, "WEACON_STATE_DIR").is_some() {
         let state = state_dir(env)?;
         let mut name = state.file_name()?.to_os_string();
-        name.push("-data");
+        name.push("-work");
         return Some(state.with_file_name(name));
     }
-    // Not `Weacon`: that is the state folder there.
-    if cfg!(windows) {
-        return var(env, "LOCALAPPDATA").map(|dir| PathBuf::from(dir).join("Weacon Data"));
-    }
-    if cfg!(target_os = "macos") {
-        return home_dir(env).map(|home| home.join("Library/Application Support/Weacon Data"));
-    }
-    xdg_dir(env, "XDG_DATA_HOME", ".local/share").map(|dir| dir.join("weacon"))
+    home_dir(env).map(|home| home.join("Weacon"))
 }
 
 /// A file or folder name for `id`, a token id, after `prefix`. A capital becomes `.` and its
@@ -406,43 +400,44 @@ mod tests {
     }
 
     #[test]
-    fn the_data_folder_can_be_set_and_is_never_the_state_folder() {
-        let set = env(&[("WEACON_DATA_DIR", "/srv/work"), ("HOME", "/home/ada")]);
-        let relative = env(&[("WEACON_DATA_DIR", ".dev/data")]);
-        let home = env(&[
-            ("HOME", "/home/ada"),
-            ("LOCALAPPDATA", "C:/Users/ada/AppData"),
-        ]);
-
-        assert_eq!(data_dir(&set), Some(PathBuf::from("/srv/work")));
+    fn the_work_folder_is_in_the_home_folder_unless_set() {
+        let home = env(&[("HOME", "/home/ada"), ("USERPROFILE", "/home/ada")]);
+        let set = env(&[("WEACON_WORK_DIR", "/srv/work"), ("HOME", "/home/ada")]);
         let own_state = env(&[("WEACON_STATE_DIR", "/srv/weacon"), ("HOME", "/home/ada")]);
+        let relative = env(&[("WEACON_WORK_DIR", ".dev/work")]);
+
+        assert_eq!(work_root(&home), Some(PathBuf::from("/home/ada/Weacon")));
+        assert_eq!(work_root(&set), Some(PathBuf::from("/srv/work")));
         assert_eq!(
-            data_dir(&own_state),
-            Some(PathBuf::from("/srv/weacon-data"))
+            work_root(&own_state),
+            Some(PathBuf::from("/srv/weacon-work"))
         );
         assert_eq!(
-            data_dir(&relative),
-            Some(std::env::current_dir().unwrap().join(".dev/data"))
+            work_root(&relative),
+            Some(std::env::current_dir().unwrap().join(".dev/work"))
         );
-        if let (Some(state), Some(data)) = (state_dir(&home), data_dir(&home)) {
-            assert!(!data.starts_with(&state) && !state.starts_with(&data));
-        }
+        assert_eq!(work_root(&env(&[])), None);
     }
 
-    #[cfg(target_os = "linux")]
     #[test]
-    fn on_linux_the_data_folder_follows_xdg() {
-        let data = |vars: &[(&str, &str)]| data_dir(&env(vars));
+    fn the_work_folder_is_never_in_or_above_the_state_folder() {
         let home = ("HOME", "/home/ada");
-
-        assert_eq!(
-            data(&[home]),
-            Some(PathBuf::from("/home/ada/.local/share/weacon"))
-        );
-        assert_eq!(
-            data(&[home, ("XDG_DATA_HOME", "/data")]),
-            Some(PathBuf::from("/data/weacon"))
-        );
+        let profile = ("USERPROFILE", "C:/Users/ada");
+        let local = ("LOCALAPPDATA", "C:/Users/ada/AppData/Local");
+        let systems: [&[(&str, &str)]; 4] = [
+            &[home, profile, local],
+            &[home, profile, local, ("XDG_STATE_HOME", "/home/ada")],
+            &[home, profile, ("WEACON_STATE_DIR", "/home/ada/Weacon")],
+            &[home, profile, ("WEACON_STATE_DIR", "/home/ada")],
+        ];
+        for vars in systems {
+            let vars = env(vars);
+            let (Some(state), Some(work)) = (state_dir(&vars), work_root(&vars)) else {
+                panic!("no folders");
+            };
+            let apart = !work.starts_with(&state) && !state.starts_with(&work);
+            assert!(apart, "{work:?} and {state:?} overlap");
+        }
     }
 
     #[cfg(target_os = "linux")]

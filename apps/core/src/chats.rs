@@ -28,7 +28,7 @@ pub(crate) struct Places {
     /// The `PATH` vendors' programs are found on.
     pub(crate) path: Option<OsString>,
     /// Where chats' working folders go; with none, no agent can start.
-    pub(crate) data_dir: Option<PathBuf>,
+    pub(crate) work_root: Option<PathBuf>,
 }
 
 /// The clients' way to the chats in `state_dir`, and the engine to run behind it, which starts
@@ -48,7 +48,7 @@ pub(crate) fn start(
     let roots = workspaces.clone();
     let host = Host {
         start: Arc::new(move |start: &Start| {
-            let cwd = work_dir(places.data_dir.as_deref(), &start.workspace, &start.chat)?;
+            let cwd = work_dir(places.work_root.as_deref(), &start.workspace, &start.chat)?;
             let launch = roots.launch(&start.workspace, start.agent, cwd)?;
             launch.start(&policy, &app, start.run.clone(), start.session.as_ref())
         }),
@@ -63,9 +63,9 @@ pub(crate) fn file_stem(chat: &ChatId) -> String {
 }
 
 // Until a chat belongs to a project with a folder of its own, its agent works in one made for
-// it under the data folder, where it can't reach the core's state.
+// it under the work folder, where it can't reach the core's state.
 fn work_dir(
-    data_dir: Option<&Path>,
+    work_root: Option<&Path>,
     workspace: &WorkspaceId,
     chat: &ChatId,
 ) -> Result<PathBuf, Fault> {
@@ -75,9 +75,8 @@ fn work_dir(
             "The chat's working folder couldn't be created",
         )
     };
-    let dir = data_dir
+    let dir = work_root
         .ok_or_else(failed)?
-        .join("work")
         .join(platform::case_safe_name("w-", workspace.as_str()))
         .join(file_stem(chat));
     platform::private_dir(&dir).map_err(|error| failed().because(error))?;
@@ -100,20 +99,20 @@ mod tests {
     use crate::test_support::VERSION;
 
     #[test]
-    fn a_chat_works_in_a_private_folder_of_its_own_under_the_data_folder() {
+    fn a_chat_works_in_a_private_folder_of_its_own_under_the_work_folder() {
         let dir = TempDir::new().unwrap();
-        let data = dir.join("data");
-        let work = data.join("work").join("w-w-1");
+        let root = dir.join("Weacon");
+        let work = root.join("w-w-1");
 
-        let upper = work_dir(Some(&data), &workspace(), &chat("Ab")).unwrap();
-        let lower = work_dir(Some(&data), &workspace(), &chat("ab")).unwrap();
+        let upper = work_dir(Some(&root), &workspace(), &chat("Ab")).unwrap();
+        let lower = work_dir(Some(&root), &workspace(), &chat("ab")).unwrap();
 
         assert_eq!(upper, work.join("c-.ab"));
         assert_eq!(lower, work.join("c-ab"));
         assert!(upper.is_dir() && lower.is_dir());
         std::fs::write(work.join("c-x"), b"").unwrap();
-        for data in [Some(data.as_path()), None] {
-            let blocked = work_dir(data, &workspace(), &chat("x")).unwrap_err();
+        for root in [Some(root.as_path()), None] {
+            let blocked = work_dir(root, &workspace(), &chat("x")).unwrap_err();
             assert_eq!(blocked.code().as_str(), "chat.folder_failed");
         }
     }
@@ -124,7 +123,7 @@ mod tests {
         platform::plant_program(&dir.join("bin"), "claude", 0o755);
         let state = dir.join("state");
         let workspaces = Workspaces::new(&state, Some(dir.join("bin").into_os_string()));
-        let cwd = work_dir(Some(&dir.join("data")), &workspace(), &chat("c-1")).unwrap();
+        let cwd = work_dir(Some(&dir.join("Weacon")), &workspace(), &chat("c-1")).unwrap();
 
         let launch = workspaces.launch(&workspace(), AgentKind::Claude, cwd.clone());
 
@@ -151,12 +150,12 @@ mod tests {
         let (log, _records) = recording_logger();
         let places = Places {
             path: None,
-            data_dir: Some(dir.join("data")),
+            work_root: Some(dir.join("Weacon")),
         };
         let (chats, engine) = start(&dir, places, app, SpawnPolicy::default(), log).unwrap();
         tokio::spawn(engine.run());
         // A file where the chat's working folder would go: its agent can't be started.
-        let work = dir.join("data/work/w-w-1");
+        let work = dir.join("Weacon/w-w-1");
         std::fs::create_dir_all(&work).unwrap();
         std::fs::write(work.join("c-c-1"), b"").unwrap();
 
