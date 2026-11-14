@@ -264,14 +264,13 @@ mod tests {
     use std::sync::Arc;
 
     use super::*;
-    use crate::test_support::{Fixture, ask, bearer, pair_machine, pairing_start, sign_in};
+    use crate::test_support::{
+        Fixture, ask, bearer, claim_body, confirm_body, lookup_body, pair_machine, pairing_start,
+        sign_in, start_pairing,
+    };
 
-    async fn start_pairing(address: SocketAddr, os: MachineOs) -> (String, Value) {
-        ask(address, "POST /api/machines/pair", "", &pairing_start(os)).await
-    }
-
-    async fn post(address: SocketAddr, path: &str, headers: &str, body: &Value) -> (String, Value) {
-        ask(address, &format!("POST {path}"), headers, &body.to_string()).await
+    async fn post(address: SocketAddr, path: &str, headers: &str, body: &str) -> (String, Value) {
+        ask(address, &format!("POST {path}"), headers, body).await
     }
 
     #[test]
@@ -291,11 +290,11 @@ mod tests {
         let (_, ada) = sign_in(&fixture, server.address, "ada@example.com").await;
         let ada_proof = bearer(&ada);
         let (started, pairing) = start_pairing(server.address, MachineOs::Macos).await;
-        let code = pairing["code"].as_str().unwrap().to_owned();
-        let claim = json!({ "pairing": pairing["pairing"], "secret": pairing["secret"] });
+        let code = &pairing.code;
+        let claim = claim_body(&pairing);
         let (_, waiting) = post(server.address, "/api/machines/pair/claim", "", &claim).await;
         let typed_code = code.to_lowercase().replace('-', " ");
-        let lookup = json!({ "code": typed_code });
+        let lookup = lookup_body(&typed_code);
         let (looked, pending) = post(
             server.address,
             "/api/machines/pair/lookup",
@@ -303,7 +302,7 @@ mod tests {
             &lookup,
         )
         .await;
-        let confirm = json!({ "pairing": pairing["pairing"], "code": code });
+        let confirm = confirm_body(&pairing);
         let (confirmed, machine) = post(
             server.address,
             "/api/machines/pair/confirm",
@@ -318,16 +317,13 @@ mod tests {
         assert_eq!(started, "http/1.1 201 created");
         assert_eq!(code.len(), 9);
         assert_eq!(code.as_bytes().get(4), Some(&b'-'));
-        assert_eq!(
-            pairing["expires_at"],
-            fixture.shared.now() + PAIRING_LIFETIME
-        );
-        assert_eq!(pairing["secret"].as_str().unwrap().len(), 64);
+        assert_eq!(pairing.expires_at, fixture.shared.now() + PAIRING_LIFETIME);
+        assert_eq!(pairing.secret.len(), 64);
         assert_eq!(waiting, json!({ "state": "waiting" }));
         assert_eq!(looked, "http/1.1 200 ok");
         assert_eq!(
             pending,
-            json!({ "pairing": pairing["pairing"], "name": "Studio", "os": "macos", "key": "ab".repeat(32) })
+            json!({ "pairing": pairing.pairing, "name": "Studio", "os": "macos", "key": "ab".repeat(32) })
         );
         assert_eq!(confirmed, "http/1.1 201 created");
         assert_eq!(machine["name"], "Studio");
@@ -365,10 +361,9 @@ mod tests {
         let server = fixture.run().await;
         let (_, ada) = sign_in(&fixture, server.address, "ada@example.com").await;
         let (_, pairing) = start_pairing(server.address, MachineOs::Linux).await;
-        let code = pairing["code"].clone();
-        let lookup = json!({ "code": code });
-        let wrong = json!({ "pairing": pairing["pairing"], "code": "0000-0000" });
-        let right = json!({ "pairing": pairing["pairing"], "code": code });
+        let lookup = lookup_body(&pairing.code);
+        let wrong = json!({ "pairing": pairing.pairing, "code": "0000-0000" }).to_string();
+        let right = confirm_body(&pairing);
 
         let (anonymous, _) = post(server.address, "/api/machines/pair/lookup", "", &lookup).await;
         let (stranger, _) = post(server.address, "/api/machines/pair/confirm", "", &right).await;
@@ -379,7 +374,8 @@ mod tests {
             &wrong,
         )
         .await;
-        let bad_secret = json!({ "pairing": pairing["pairing"], "secret": "ab".repeat(32) });
+        let bad_secret =
+            json!({ "pairing": pairing.pairing, "secret": "ab".repeat(32) }).to_string();
         let (_, guessed) = post(server.address, "/api/machines/pair/claim", "", &bad_secret).await;
         fixture.advance(PAIRING_LIFETIME);
         let (_, late) = post(
@@ -412,7 +408,7 @@ mod tests {
         let mut claims = Vec::new();
         for _ in 0..2 {
             let (_, pairing) = start_pairing(server.address, MachineOs::Linux).await;
-            let confirm = json!({ "pairing": pairing["pairing"], "code": pairing["code"] });
+            let confirm = confirm_body(&pairing);
             post(
                 server.address,
                 "/api/machines/pair/confirm",
@@ -420,7 +416,7 @@ mod tests {
                 &confirm,
             )
             .await;
-            claims.push(json!({ "pairing": pairing["pairing"], "secret": pairing["secret"] }));
+            claims.push(claim_body(&pairing));
         }
 
         fixture.advance(CLAIM_WITHIN - 1);
@@ -437,7 +433,7 @@ mod tests {
         let fixture = Fixture::new().await;
         let server = fixture.run().await;
 
-        let start = json!({ "name": "Studio", "os": "plan9", "key": "ab".repeat(32) });
+        let start = json!({ "name": "Studio", "os": "plan9", "key": "ab".repeat(32) }).to_string();
         let (status, refusal) = post(server.address, "/api/machines/pair", "", &start).await;
 
         assert_eq!(status, "http/1.1 400 bad request");
@@ -450,7 +446,7 @@ mod tests {
         let server = fixture.run().await;
 
         for name in ["   ", " Studio", "Studio\u{a0}", "Studio\n"] {
-            let start = json!({ "name": name, "os": "macos", "key": "ab".repeat(32) });
+            let start = json!({ "name": name, "os": "macos", "key": "ab".repeat(32) }).to_string();
             let (status, refusal) = post(server.address, "/api/machines/pair", "", &start).await;
 
             assert_eq!(status, "http/1.1 400 bad request", "{name:?}");
@@ -467,7 +463,8 @@ mod tests {
             assert_eq!(status, "http/1.1 201 created");
         }
 
-        let (status, refusal) = start_pairing(server.address, MachineOs::Linux).await;
+        let start = pairing_start(MachineOs::Linux);
+        let (status, refusal) = ask(server.address, "POST /api/machines/pair", "", &start).await;
 
         assert_eq!(status, "http/1.1 429 too many requests");
         assert_eq!(refusal["code"], "pairing.too_many");
@@ -484,9 +481,9 @@ mod tests {
         let server = fixture.run().await;
         let (_, ada) = sign_in(&fixture, server.address, "ada@example.com").await;
         let (_, pairing) = start_pairing(server.address, MachineOs::Linux).await;
-        let lookup = json!({ "code": pairing["code"] });
-        let confirm = json!({ "pairing": pairing["pairing"], "code": pairing["code"] });
-        let claim = json!({ "pairing": pairing["pairing"], "secret": pairing["secret"] });
+        let lookup = lookup_body(&pairing.code);
+        let confirm = confirm_body(&pairing);
+        let claim = claim_body(&pairing);
         let mut answers = Vec::new();
         for (path, body) in [
             ("/api/machines/pair/lookup", &lookup),

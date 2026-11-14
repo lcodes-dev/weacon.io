@@ -252,6 +252,10 @@ mod tests {
         ask(address, "POST /api/sign-in/finish", "", body).await
     }
 
+    fn unknown_challenge() -> ChallengeId {
+        "0".repeat(64).parse().unwrap()
+    }
+
     #[test]
     fn codes_are_eight_digits_and_tokens_are_hex() {
         assert_eq!(code_text(u64::from_le_bytes([1; 8])), "38076673");
@@ -616,7 +620,7 @@ mod tests {
         fixture.letter().await;
         let (_, mine) = start_sign_in(server.address, "ada@example.com").await;
         let (_, code) = fixture.letter().await;
-        let unknown = ChallengeId::try_from("0".repeat(64)).unwrap();
+        let unknown = unknown_challenge();
         for (guess, challenge) in (0..10).zip([&theirs, &unknown].into_iter().cycle()) {
             let wrong = finish_body("ada@example.com", challenge, &format!("{guess:08}"));
             finish_with(server.address, &wrong).await;
@@ -759,11 +763,7 @@ mod tests {
         let mut fixture = Fixture::new().await;
         fixture.shared.finish_takes = Duration::from_millis(200);
         let server = fixture.run().await;
-        let stranger = finish_body(
-            "bo@example.com",
-            &ChallengeId::try_from("0".repeat(64)).unwrap(),
-            "00000000",
-        );
+        let stranger = finish_body("bo@example.com", &unknown_challenge(), "00000000");
         let started = std::time::Instant::now();
         let (head, _) = request(server.address, "POST /api/sign-in/finish", &stranger).await;
 
@@ -776,11 +776,7 @@ mod tests {
         let fixture = Fixture::new().await;
         let server = fixture.run().await;
         fixture.shared.db.close().await;
-        let finish = finish_body(
-            "ada@example.com",
-            &ChallengeId::try_from("0".repeat(64)).unwrap(),
-            "00000000",
-        );
+        let finish = finish_body("ada@example.com", &unknown_challenge(), "00000000");
         let (head, body) = request(server.address, "POST /api/sign-in/finish", &finish).await;
 
         let records = fixture.records.lock().unwrap().clone();
