@@ -13,6 +13,7 @@ mod terminal;
 #[cfg(test)]
 mod test_support;
 mod transcript;
+mod vendor;
 mod wire;
 
 pub use launch::{Launch, McpServer, SignIn};

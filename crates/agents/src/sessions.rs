@@ -145,9 +145,10 @@ fn sessions(
                 return None;
             };
             let name = entry.name.to_str()?;
+            let session = session_of(name)?;
             Some(SessionFile {
                 agent,
-                session: session_of(name)?,
+                session,
                 path: dir.join(name),
                 len,
                 modified,
@@ -337,13 +338,7 @@ mod tests {
     #[test]
     fn a_missing_folder_or_an_agent_this_build_doesnt_know_finds_nothing() {
         let dir = TempDir::new().unwrap();
-        write(
-            &dir.join("projects")
-                .join("-w")
-                .join(format!("{SESSION}.jsonl")),
-            "",
-            0,
-        );
+        write(&session(&dir.join("projects").join("-w"), SESSION), "", 0);
 
         assert_eq!(find(&Disk, AgentKind::Newer, &dir), []);
         assert_eq!(find(&Disk, AgentKind::Codex, &dir), []);
@@ -357,7 +352,7 @@ mod tests {
         write(&secret, "secret", 0);
         let project = dir.join("projects").join("-w");
         fs::create_dir_all(&project).unwrap();
-        fs::hard_link(&secret, project.join(format!("{SESSION}.jsonl"))).unwrap();
+        fs::hard_link(&secret, session(&project, SESSION)).unwrap();
 
         let found = find(&Disk, AgentKind::Claude, &dir);
 
@@ -374,14 +369,10 @@ mod tests {
         let secret = dir.join(".credentials.json");
         write(&secret, "secret", 0);
         let elsewhere = dir.join("elsewhere");
-        write(&elsewhere.join(format!("{OTHER_SESSION}.jsonl")), "", 0);
+        write(&session(&elsewhere, OTHER_SESSION), "", 0);
         let projects = dir.join("projects");
         fs::create_dir_all(projects.join("-w")).unwrap();
-        symlink(
-            &secret,
-            projects.join("-w").join(format!("{SESSION}.jsonl")),
-        )
-        .unwrap();
+        symlink(&secret, session(&projects.join("-w"), SESSION)).unwrap();
         symlink(&elsewhere, projects.join("-linked")).unwrap();
 
         assert_eq!(find(&Disk, AgentKind::Claude, &dir), []);
@@ -390,11 +381,7 @@ mod tests {
             entries.iter().map(|entry| entry.kind).collect::<Vec<_>>(),
             [Kind::Other]
         );
-        Disk.read(
-            &projects.join("-w").join(format!("{SESSION}.jsonl")),
-            0,
-            100,
-        )
-        .unwrap_err();
+        Disk.read(&session(&projects.join("-w"), SESSION), 0, 100)
+            .unwrap_err();
     }
 }
