@@ -37,6 +37,10 @@ const TARGET: &str = env!("WEACON_TARGET");
 const HEALTH_TRIES: u32 = 60;
 const HEALTH_PAUSE: Duration = Duration::from_millis(500);
 
+/// How often, and how far apart, the update lock is tried before it counts as taken: 1 s.
+const LOCK_TRIES: u32 = 50;
+const LOCK_PAUSE: Duration = Duration::from_millis(20);
+
 /// How long a binary has to answer `--version` or `status` before it is killed.
 const ANSWER_WITHIN: Duration = Duration::from_secs(10);
 
@@ -180,11 +184,18 @@ fn lock(state_dir: &Path) -> Result<File, Fault> {
         .because(error)
     };
     let file = File::create(state_dir.join("update.lock")).map_err(unwritable)?;
-    file.try_lock().map_err(|error| match error {
-        TryLockError::WouldBlock => Fault::new(code!("update.busy"), "Another update is running"),
-        TryLockError::Error(error) => unwritable(error),
-    })?;
-    Ok(file)
+    // A process forked just then holds the lock until it starts its program, so wait a moment.
+    for _ in 0..LOCK_TRIES {
+        match file.try_lock() {
+            Ok(()) => return Ok(file),
+            Err(TryLockError::WouldBlock) => std::thread::sleep(LOCK_PAUSE),
+            Err(TryLockError::Error(error)) => return Err(unwritable(error)),
+        }
+    }
+    Err(Fault::new(
+        code!("update.busy"),
+        "Another update is running",
+    ))
 }
 
 fn version_of(binary: &Path) -> io::Result<String> {
@@ -237,6 +248,40 @@ pub(crate) fn offer(state_dir: &Path, own: &str) -> Option<String> {
     let offered = Settings::read(&settings::file(state_dir)).ok()?.offered?;
     (offered > own)
         .then(|| format!("Update: weacon {offered} is out. Run `weacon update` to install it."))
+}
+
+/// The daemon's update schedule; none for a build whose version isn't a release's
+/// `major.minor.patch`.
+pub(crate) fn watch(state_dir: &Path, version: &str) -> Option<Watch> {
+    let own = version.parse().ok()?;
+    let hooks = Hooks {
+        latest,
+        launch: |dir| {
+            let env = |key: &str| std::env::var_os(key);
+            service::launch_with(dir, &env, &mut service::system)
+        },
+        // A journal that can't be read might hold a turn.
+        busy: |dir| crate::runs::Runs::load(dir).map_or(true, |runs| runs.any_busy()),
+        now: unix_now,
+    };
+    Some(Watch::new(state_dir.to_owned(), own, hooks))
+}
+
+/// A running check's result; never, when none runs. Awaiting a task by reference can be
+/// cancelled, so it fits a `select!` branch.
+pub(crate) async fn finished<T>(
+    task: &mut Option<tokio::task::JoinHandle<T>>,
+) -> Result<T, tokio::task::JoinError> {
+    match task {
+        Some(task) => task.await,
+        None => std::future::pending().await,
+    }
+}
+
+fn unix_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |since| since.as_secs())
 }
 
 /// The latest release, fetched and checked against the keys every build trusts.
@@ -643,6 +688,18 @@ mod tests {
         assert_eq!(offer(&machine.dir, "1.0.0").as_deref(), Some(line));
         assert_eq!(offer(&machine.dir, "1.2.3"), None);
         assert_eq!(offer(&machine.dir, "dev"), None);
+    }
+
+    #[test]
+    fn only_a_build_numbered_like_a_release_watches_for_updates() {
+        let dir = TempDir::new().unwrap();
+        assert!(watch(&dir, "1.2.3").is_some());
+        assert!(watch(&dir, "dev").is_none());
+    }
+
+    #[test]
+    fn the_clock_reads_seconds_since_the_epoch() {
+        assert!((1_700_000_000..4_000_000_000).contains(&unix_now()));
     }
 
     #[test]

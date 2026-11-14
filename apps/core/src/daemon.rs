@@ -35,36 +35,6 @@ pub(crate) fn socket_path(state_dir: &Path) -> PathBuf {
     state_dir.join("weacon.sock")
 }
 
-/// None for a build whose version isn't a release's `major.minor.patch`.
-fn updates(state_dir: &Path, app: &App) -> Option<update::Watch> {
-    let own = app.version.parse().ok()?;
-    let hooks = update::Hooks {
-        latest: update::latest,
-        launch: |dir| {
-            let env = |key: &str| std::env::var_os(key);
-            crate::service::launch_with(dir, &env, &mut crate::service::system)
-        },
-        // A journal that can't be read might hold a turn.
-        busy: |dir| crate::runs::Runs::load(dir).map_or(true, |runs| runs.any_busy()),
-        now: unix_now,
-    };
-    Some(update::Watch::new(state_dir.to_owned(), own, hooks))
-}
-
-// A running check's result; never, when none runs. Polling a task by reference can be cancelled.
-async fn finish<T>(task: &mut Option<JoinHandle<T>>) -> Result<T, tokio::task::JoinError> {
-    match task {
-        Some(task) => task.await,
-        None => std::future::pending().await,
-    }
-}
-
-fn unix_now() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |since| since.as_secs())
-}
-
 /// Runs the daemon until Ctrl-C or the system asks it to stop.
 pub(crate) fn run(app: &crate::app::App) -> Result<(), Fault> {
     let state_dir = app.state_dir()?;
@@ -153,7 +123,7 @@ impl Daemon {
         let listener = platform::bind(&socket).map_err(failed)?;
         let engine = tokio::spawn(engine.run());
         log.info("daemon started", &[]);
-        let updates = updates(state_dir, &app);
+        let updates = update::watch(state_dir, &app.version);
         Ok(Self {
             listener,
             socket,
@@ -195,7 +165,7 @@ impl Daemon {
                 _ = update_check.tick(), if checking.is_none() => {
                     checking = self.updates.as_ref().map(update::Watch::start);
                 }
-                joined = finish(&mut checking), if checking.is_some() => {
+                joined = update::finished(&mut checking), if checking.is_some() => {
                     checking = None;
                     if let Some(updates) = &mut self.updates {
                         updates.finished(joined, &self.shared.log);
@@ -558,26 +528,6 @@ mod tests {
         .unwrap();
         logs(&running.records, "update check failed").await;
         running.stop().await;
-    }
-
-    #[test]
-    fn only_a_build_numbered_like_a_release_watches_for_updates() {
-        let dir = TempDir::new().unwrap();
-        let released = App {
-            version: "1.2.3".to_owned(),
-            ..build(&VERSION)
-        };
-        assert!(updates(&dir, &released).is_some());
-        let local = App {
-            version: "dev".to_owned(),
-            ..build(&VERSION)
-        };
-        assert!(updates(&dir, &local).is_none());
-    }
-
-    #[test]
-    fn the_clock_reads_seconds_since_the_epoch() {
-        assert!((1_700_000_000..4_000_000_000).contains(&unix_now()));
     }
 
     #[tokio::test(start_paused = true)]
