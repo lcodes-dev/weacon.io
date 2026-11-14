@@ -120,8 +120,8 @@ mod tests {
     use weacon_protocol::ChallengeId;
 
     use super::*;
-    use crate::db::Attempt;
     use crate::db::schema::STEPS;
+    use crate::db::{Attempt, NewWorkspace};
     use crate::test_support::{fresh_account, member_id, two_teams, workspace_id};
 
     fn email(text: &str) -> Email {
@@ -209,6 +209,11 @@ mod tests {
             token_hash: token,
             now: 100,
             token_expires_at: 200,
+            personal: &NewWorkspace {
+                id: workspace_id(&format!("p-{}", token.len())),
+                name: "Personal".to_owned(),
+                owner: member_id("owner"),
+            },
         };
         db.finish_sign_in(&attempt).await.unwrap().unwrap();
     }
@@ -232,12 +237,19 @@ mod tests {
         assert_eq!(two.session_member(b"ada", 100).await.unwrap(), member("m2"));
     }
 
-    #[tokio::test]
-    async fn members_from_before_accounts_get_one_per_address() {
-        let dir = TempDir::new().unwrap();
-        let path = dir.join("weacon.db");
+    async fn rows(db: &Db, table: &str) -> i64 {
+        let count = format!("SELECT count(*) FROM {table}");
+        sqlx::query_scalar(sqlx::AssertSqlSafe(count))
+            .fetch_one(&db.readers)
+            .await
+            .unwrap()
+    }
+
+    // A database at `path` from before accounts: ada in w1 and w2, bo in w1, and a session
+    // and a sign-in of ada's in w1.
+    async fn old_database(path: &std::path::Path) {
         let mut old = SqliteConnectOptions::new()
-            .filename(&path)
+            .filename(path)
             .create_if_missing(true)
             .connect()
             .await
@@ -258,6 +270,13 @@ mod tests {
         .await
         .unwrap();
         drop(old);
+    }
+
+    #[tokio::test]
+    async fn members_from_before_accounts_get_one_per_address() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.join("weacon.db");
+        old_database(&path).await;
 
         let db = Db::open(&path).await.unwrap();
         let [(ada, ada_email), (bo, bo_email)] = accounts(&db).await.try_into().unwrap();
@@ -272,19 +291,24 @@ mod tests {
         assert_ne!(ada, bo);
         AccountId::try_from(ada.clone()).unwrap();
         assert_eq!(of, [ada.clone(), ada.clone(), bo]);
+        // Members from before may do what any member may.
+        let ada_id = AccountId::try_from(ada.clone()).unwrap();
+        let roles = db.workspaces_of(&ada_id).await.unwrap();
+        assert!(
+            roles
+                .iter()
+                .all(|seen| seen.role == weacon_protocol::WorkspaceRole::Member)
+        );
         // Sign-ins from before were to one workspace, and don't carry over.
-        for table in ["sessions", "sign_in_challenges"] {
-            let rows: i64 =
-                sqlx::query_scalar(sqlx::AssertSqlSafe(format!("SELECT count(*) FROM {table}")))
-                    .fetch_one(&db.readers)
-                    .await
-                    .unwrap();
-            assert_eq!(rows, 0, "{table}");
-        }
-        let twice = sqlx::query("INSERT INTO members VALUES ('w1', 'm9', 'x@example.com', ?)")
-            .bind(ada)
-            .execute(&db.writer)
-            .await;
+        assert_eq!(rows(&db, "sessions").await, 0);
+        assert_eq!(rows(&db, "sign_in_challenges").await, 0);
+        let twice = sqlx::query(
+            "INSERT INTO members (workspace_id, member_id, email, account_id)
+             VALUES ('w1', 'm9', 'x@example.com', ?)",
+        )
+        .bind(ada)
+        .execute(&db.writer)
+        .await;
         assert_eq!(failed(twice.unwrap_err()).code().as_str(), "db.exists");
     }
 }
