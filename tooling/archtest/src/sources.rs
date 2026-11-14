@@ -3,6 +3,7 @@
 use std::collections::BTreeSet;
 use std::path::Path;
 
+use syn::buffer::{Cursor, TokenBuffer};
 use syn::visit::{self, Visit};
 use syn::{Attribute, Ident, ItemFn, ItemMod, ItemUse, Macro, Meta, UseTree};
 
@@ -104,7 +105,6 @@ fn names_os(arguments: &str) -> bool {
 }
 
 /// What a file's code refers to outside `#[cfg(test)]` modules, functions and `use`s.
-/// Macro bodies other than `cfg!` aren't seen.
 #[derive(Default)]
 struct Uses {
     /// The first segment of every `use` and of every path with two or more segments.
@@ -131,6 +131,57 @@ impl Uses {
             self.std_modules.insert(module.to_string());
         }
         self.roots.insert(root);
+    }
+
+    /// Notes the paths in a macro's tokens, which `syn` leaves unparsed, each after `prefix`.
+    fn note_tokens(&mut self, mut cursor: Cursor<'_>, prefix: &[Ident]) {
+        let mut path = Vec::new();
+        let mut colons = 0;
+        while let Some((_, next)) = cursor.token_tree() {
+            colons = self.note_token(cursor, prefix, &mut path, colons);
+            cursor = next;
+        }
+        self.note_path(prefix, &mut path);
+    }
+
+    // Takes the token at `cursor` into `path`, and returns how many colons now end it.
+    fn note_token(
+        &mut self,
+        cursor: Cursor<'_>,
+        prefix: &[Ident],
+        path: &mut Vec<Ident>,
+        colons: u8,
+    ) -> u8 {
+        if let Some((punct, _)) = cursor.punct()
+            && punct.as_char() == ':'
+        {
+            return colons.saturating_add(1);
+        }
+        if let Some((ident, _)) = cursor.ident() {
+            if colons != 2 {
+                self.note_path(prefix, path);
+            }
+            path.push(ident);
+            return 0;
+        }
+        // A group straight after `::` continues the path, as in `std::{fs, env}`.
+        let outer = if colons == 2 {
+            [prefix, path].concat()
+        } else {
+            Vec::new()
+        };
+        self.note_path(prefix, path);
+        if let Some((inside, ..)) = cursor.any_group() {
+            self.note_tokens(inside, &outer);
+        }
+        0
+    }
+
+    fn note_path(&mut self, prefix: &[Ident], path: &mut Vec<Ident>) {
+        if prefix.len() + path.len() > 1 {
+            self.note(prefix.iter().chain(path.iter()));
+        }
+        path.clear();
     }
 
     fn note_tree(&mut self, tree: &UseTree, prefix: &mut Vec<Ident>) {
@@ -201,6 +252,7 @@ impl<'ast> Visit<'ast> for Uses {
         if mac.path.is_ident("cfg") {
             self.os_cfg |= names_os(&mac.tokens.to_string());
         }
+        self.note_tokens(TokenBuffer::new2(mac.tokens.clone()).begin(), &[]);
         visit::visit_macro(self, mac);
     }
 }
@@ -277,6 +329,47 @@ mod tests {
     }
 
     #[test]
+    fn finds_io_modules_inside_macro_calls() {
+        let io = |module: &str| format!("uses std::{module}, but its package does no I/O");
+        let cases = [
+            (
+                "fn home() -> String { format!(\"home\", std::env::var(\"HOME\")) }",
+                vec![io("env")],
+            ),
+            (
+                "fn all() -> Vec<u8> { vec![std::fs::read(\"x\").map(|_| 0).unwrap_or(1)] }",
+                vec![io("fs")],
+            ),
+            (
+                "fn check() { assert!(matches!(Some(1), Some(_)), \"pid\", { std::process::id() }); }",
+                vec![io("process")],
+            ),
+            (
+                "fn f() { assert!(std :: net :: Ipv4Addr::LOCALHOST.is_loopback()); }",
+                vec![io("net")],
+            ),
+            (
+                "fn f() -> String { format!(\"std::fs\", std::fmt::Error) }",
+                vec![],
+            ),
+            ("fn f() { let x: fs::File; m!(std: fs::File); }", vec![]),
+            ("fn f() { m!(std::fs::File); }", vec![io("fs")]),
+            (
+                "fn f() { m!(std::{fs::File, env}, net); }",
+                vec![io("env"), io("fs")],
+            ),
+            (
+                "macro_rules! t { () => { use std::{process}; }; }",
+                vec![io("process")],
+            ),
+        ];
+
+        for (text, found) in cases {
+            assert_eq!(check(&PURE, "src/lib.rs", text), found, "{text}");
+        }
+    }
+
+    #[test]
     fn database_drivers_stay_in_the_db_module() {
         let text = "use sqlx::PgPool;\nfn rows() { tokio_postgres::connect(); }";
 
@@ -290,13 +383,15 @@ mod tests {
         assert!(check(&IO, "src/db.rs", text).is_empty());
         assert!(check(&IO, "src/db/chats.rs", text).is_empty());
         assert!(check(&IO, "tests/store.rs", text).is_empty());
-        assert!(
-            check(
-                &IO,
-                "src/chats.rs",
-                "fn rows(postgres: u8) -> u8 { postgres }"
-            )
-            .is_empty()
+        for text in [
+            "fn rows(postgres: u8) -> u8 { postgres }",
+            "fn rows(postgres: u8) -> String { format!(\"rows\", postgres) }",
+        ] {
+            assert!(check(&IO, "src/chats.rs", text).is_empty(), "{text}");
+        }
+        assert_eq!(
+            check(&IO, "src/chats.rs", "fn rows() { m!(a::b sqlx::query) }"),
+            ["uses sqlx outside the db module"]
         );
     }
 
