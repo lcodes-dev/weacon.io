@@ -332,5 +332,9 @@ mod tests {
     fn a_token_hashes_the_same_each_time_and_apart_from_others() {
         assert_eq!(token_hash("a"), token_hash("a"));
         assert_ne!(token_hash("a"), token_hash("b"));
+        assert_eq!(
+            token_hash("abc").map(|byte| format!("{byte:02x}")).concat(),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
     }
 }

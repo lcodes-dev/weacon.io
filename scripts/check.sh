@@ -47,6 +47,11 @@ else
 fi
 cargo test --workspace --all-features --locked --doc
 
+# CI's runner can't hold the coverage build beside the copy the mutation tests build.
+if [ -n "${CI:-}" ]; then
+  rm -rf "${CARGO_TARGET_DIR:-target}/llvm-cov-target"
+fi
+
 # The Rust changes against main, untracked files included.
 changes() {
   local plain=(--no-ext-diff --no-color --src-prefix=a/ --dst-prefix=b/)
