@@ -605,4 +605,46 @@ mod tests {
         }
         pages
     }
+
+    #[tokio::test]
+    async fn a_chat_subscribed_twice_on_one_feed_is_heard_once_and_on_each_feed() {
+        let fixture = Fixture::new().await;
+        let (server, token) = ada(&fixture).await;
+        let workspace = w1(&fixture).await;
+        make(&workspace, "c-1", "m1", NOW).await.unwrap();
+        append(&workspace, "c-1", &[(Some(1), said("a"))])
+            .await
+            .unwrap();
+        let offers = ["workspace.feed", "workspace.chats"];
+        let (mut one, mut two) = (
+            feed(&server, &token, &offers).await,
+            feed(&server, &token, &offers).await,
+        );
+        subscribe(&mut one, 2).await;
+        subscribe(&mut one, 3).await;
+        subscribe(&mut two, 2).await;
+
+        append(&workspace, "c-1", &[(Some(2), said("b"))])
+            .await
+            .unwrap();
+        fixture.shared.chats.stored(id("w1"), id("c-1"));
+
+        for client in [&mut one, &mut two] {
+            assert_eq!(seq_of(&heard(client).await), 2);
+            // Taken after any page that was due, so a pong first means nothing came twice.
+            assert!(socket::pongs(client).await);
+        }
+    }
+
+    // Follows c-1 after its first event under `id`, and waits until the feed has taken it.
+    async fn subscribe(client: &mut Socket, id: u32) {
+        ask(
+            client,
+            id,
+            query("w1", ChatQueryKind::Subscribe { after: 1 }),
+        )
+        .await;
+        ask(client, id + 10, query("w1", ChatQueryKind::Snapshot)).await;
+        assert!(matches!(heard(client).await, Message::ChatAnswer(_)));
+    }
 }

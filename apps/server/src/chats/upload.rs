@@ -1,7 +1,10 @@
 //! What a machine sends of the chats it runs: their events, stored in the order they come.
 
+use serde_json::Value;
 use weacon_observability::{Fault, Field};
-use weacon_protocol::{ChatUpdate, Code, MachineId, code};
+use weacon_protocol::{
+    ChatEntry, ChatEvent, ChatUpdate, Code, MachineId, RunEvent, RunUpdate, code,
+};
 
 use crate::db::{Incoming, turns};
 use crate::shared::Shared;
@@ -9,9 +12,24 @@ use crate::shared::Shared;
 /// What the server offers to cores whose chats' events it stores.
 pub(crate) const UPLOAD: Code = code!("chat.upload");
 
-/// Stores `update` from `machine`, and tells the sockets that follow its chat. An event of a
-/// chat that isn't on `machine`, or whose owner no longer owns it there, is dropped.
+/// Stores what is [`kept`] of `update` from `machine`, and tells the sockets that follow its
+/// chat. An event of a chat that isn't on `machine`, or whose owner no longer owns it there, is
+/// dropped.
 pub(crate) async fn store(shared: &Shared, machine: &MachineId, update: ChatUpdate) {
+    let ChatUpdate {
+        workspace,
+        chat,
+        entry,
+    } = update;
+    let Some(event) = kept(entry.event) else {
+        return;
+    };
+    let seq = entry.seq;
+    let update = ChatUpdate {
+        workspace,
+        chat,
+        entry: ChatEntry { seq, event },
+    };
     let fields = [
         ("machine_id", machine.as_str().into()),
         ("workspace_id", update.workspace.as_str().into()),
@@ -34,6 +52,46 @@ pub(crate) async fn store(shared: &Shared, machine: &MachineId, update: ChatUpda
             let fields = [&fields[..], &[("err", Field::error(&fault))]].concat();
             shared.log.warn("chat upload failed", &fields);
         }
+    }
+}
+
+/// What the server keeps of a chat event: its messages, never a tool's name or input.
+fn kept(event: ChatEvent) -> Option<ChatEvent> {
+    match event {
+        ChatEvent::Run { update } => {
+            let RunUpdate { run, event } = update;
+            let event = kept_run(event)?;
+            Some(ChatEvent::Run {
+                update: RunUpdate { run, event },
+            })
+        }
+        ChatEvent::Prompt { .. }
+        | ChatEvent::OutsidePrompt { .. }
+        | ChatEvent::Receipt { .. }
+        | ChatEvent::RunStatus { .. } => Some(event),
+        // What a newer core sends may hold anything.
+        ChatEvent::Newer => None,
+    }
+}
+
+fn kept_run(event: RunEvent) -> Option<RunEvent> {
+    match event {
+        RunEvent::Text { .. }
+        | RunEvent::PermissionWithdrawn { .. }
+        | RunEvent::PermissionAnswered { .. }
+        | RunEvent::Finished { .. } => Some(event),
+        // Kept so it can be answered, without what the tool would do.
+        RunEvent::PermissionAsked { run, prompt, .. } => Some(RunEvent::PermissionAsked {
+            run,
+            prompt,
+            tool: String::new(),
+            input: Value::Null,
+        }),
+        RunEvent::Started { .. }
+        | RunEvent::TextDelta { .. }
+        | RunEvent::ToolCall { .. }
+        | RunEvent::ToolDone { .. }
+        | RunEvent::Newer => None,
     }
 }
 
@@ -145,5 +203,75 @@ mod tests {
         assert_eq!(feeds.try_recv().unwrap(), id::<WorkspaceId>("w1"));
         let logged = crate::test_support::messages(&fixture.records);
         assert!(logged.contains(&"chat upload failed"), "{logged:?}");
+    }
+
+    #[tokio::test]
+    async fn only_messages_are_stored_and_no_tools_name_or_input() {
+        let fixture = Fixture::new().await;
+        let (shared, ada) = (&fixture.shared, ada_chatting(&fixture).await);
+        let workspace = &ada.member.workspace;
+        let run = |event| ChatEvent::Run {
+            update: RunUpdate {
+                run: id("run-1"),
+                event,
+            },
+        };
+        let marked = || serde_json::json!({ "path": "MARKER-INPUT" });
+        let call = RunEvent::ToolCall {
+            call: "call-1".to_owned(),
+            tool: "MARKER-TOOL".to_owned(),
+            input: marked(),
+        };
+        let asked = RunEvent::PermissionAsked {
+            run: id("run-1"),
+            prompt: 1,
+            tool: "MARKER-TOOL".to_owned(),
+            input: marked(),
+        };
+
+        for (seq, event) in [(1, run(call)), (2, run(asked)), (3, said("MARKER-TEXT"))] {
+            store(shared, &ada.machine, update("w1", "c-1", seq, event)).await;
+        }
+
+        let events = workspace.events_after(&id("c-1"), 0, 10, usize::MAX).await;
+        let stored: Vec<_> = events
+            .unwrap()
+            .into_iter()
+            .map(|entry| entry.event)
+            .collect();
+        let blank = RunEvent::PermissionAsked {
+            run: id("run-1"),
+            prompt: 1,
+            tool: String::new(),
+            input: Value::Null,
+        };
+        assert_eq!(stored, [run(blank), said("MARKER-TEXT")]);
+        let logged = serde_json::to_string(&*fixture.records.lock().unwrap()).unwrap();
+        assert!(!logged.contains("chat upload refused"), "{logged}");
+    }
+
+    #[test]
+    fn what_a_newer_core_sends_or_a_tool_does_is_not_kept() {
+        let run = |event| ChatEvent::Run {
+            update: RunUpdate {
+                run: id("run-1"),
+                event,
+            },
+        };
+        let done = RunEvent::ToolDone {
+            call: "call-1".to_owned(),
+            failed: false,
+        };
+        let finished = RunEvent::Finished {
+            outcome: Outcome::Completed,
+        };
+        assert_eq!(kept(ChatEvent::Newer), None);
+        assert_eq!(kept(run(RunEvent::Newer)), None);
+        assert_eq!(kept(run(done)), None);
+        assert_eq!(kept(run(finished.clone())), Some(run(finished)));
+        let outside = ChatEvent::OutsidePrompt {
+            text: "Go".to_owned(),
+        };
+        assert_eq!(kept(outside.clone()), Some(outside));
     }
 }
