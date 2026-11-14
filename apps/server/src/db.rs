@@ -4,11 +4,13 @@
 mod account;
 mod backup;
 mod changes;
+mod chats;
 mod owned;
 mod schema;
 mod tasks;
 mod workspace;
 
+pub(crate) use chats::{CHAT_QUOTA, Chat, Incoming, NewChat, NewRequest, Recorded, chat_not_found};
 pub(crate) use tasks::task_not_found;
 
 use std::path::{Path, PathBuf};

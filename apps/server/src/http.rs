@@ -15,6 +15,7 @@ use tokio::time::timeout;
 use weacon_observability::{Clock, Fault, Field, Logger, Reporter};
 use weacon_protocol::{App, Code, ErrorBody, WorkspaceId, code};
 
+use crate::chats;
 use crate::client::Net;
 use crate::connections;
 use crate::db::Db;
@@ -138,6 +139,7 @@ fn router(shared: Shared) -> Router {
             get(workspaces::list).post(workspaces::create),
         )
         .route("/api/workspaces/{workspace}", get(workspaces::read))
+        .route("/api/workspaces/{workspace}/chats", get(chats::list))
         .route("/api/workspaces/{workspace}/feed", get(feed::feed))
         .route(
             "/api/workspaces/{workspace}/tasks",

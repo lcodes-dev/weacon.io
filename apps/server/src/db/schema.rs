@@ -177,6 +177,56 @@ CREATE UNIQUE INDEX accounts_owner ON accounts (owner) WHERE owner = 1;
 ALTER TABLE sign_in_challenges ADD COLUMN mailed INTEGER NOT NULL DEFAULT 1;
 CREATE INDEX sign_in_challenges_email ON sign_in_challenges (email);
 ",
+    // Chats, the events their machines report, and the commands their owners sent them. A
+    // workspace counts the bytes its chats' events take.
+    "
+ALTER TABLE workspaces ADD COLUMN chat_bytes INTEGER NOT NULL DEFAULT 0;
+
+CREATE TABLE chats (
+    workspace_id TEXT NOT NULL REFERENCES workspaces (workspace_id),
+    chat_id TEXT NOT NULL,
+    owner_member TEXT NOT NULL,
+    title TEXT NOT NULL,
+    repo TEXT,
+    machine_name TEXT NOT NULL,
+    state TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    seq INTEGER NOT NULL DEFAULT 0,
+    core_seq INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (workspace_id, chat_id),
+    FOREIGN KEY (workspace_id, owner_member) REFERENCES members (workspace_id, member_id)
+) STRICT;
+
+CREATE INDEX chats_updated ON chats (workspace_id, updated_at);
+
+CREATE TABLE chat_events (
+    workspace_id TEXT NOT NULL,
+    chat_id TEXT NOT NULL,
+    seq INTEGER NOT NULL,
+    core_seq INTEGER,
+    body TEXT NOT NULL,
+    at INTEGER NOT NULL,
+    PRIMARY KEY (workspace_id, chat_id, seq),
+    UNIQUE (workspace_id, chat_id, core_seq),
+    FOREIGN KEY (workspace_id, chat_id) REFERENCES chats (workspace_id, chat_id)
+) STRICT;
+
+CREATE TABLE chat_requests (
+    workspace_id TEXT NOT NULL,
+    request_id TEXT NOT NULL,
+    chat_id TEXT NOT NULL,
+    member_id TEXT NOT NULL,
+    action_hash BLOB NOT NULL,
+    sent_at INTEGER NOT NULL,
+    open INTEGER NOT NULL DEFAULT 1,
+    PRIMARY KEY (workspace_id, request_id),
+    FOREIGN KEY (workspace_id, chat_id) REFERENCES chats (workspace_id, chat_id),
+    FOREIGN KEY (workspace_id, member_id) REFERENCES members (workspace_id, member_id)
+) STRICT;
+
+CREATE INDEX chat_requests_open ON chat_requests (workspace_id, chat_id) WHERE open = 1;
+",
 ];
 
 /// Applies the steps the database hasn't had yet, each in its own transaction that holds the

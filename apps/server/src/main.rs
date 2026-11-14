@@ -3,6 +3,7 @@
 mod admin;
 mod app;
 mod auth;
+mod chats;
 mod cli;
 mod client;
 mod connections;
