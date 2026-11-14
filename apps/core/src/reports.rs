@@ -80,19 +80,19 @@ impl Watch {
     /// logged once until a reading succeeds.
     async fn check(&mut self, reporter: &Arc<Reporter>, log: &Logger) {
         let (dir, following) = (self.state_dir.clone(), Arc::clone(reporter));
-        let read = tokio::task::spawn_blocking(move || {
-            settled(|| {
-                let read = read(&dir);
-                following.set_agreed(matches!(read, Ok(Some(true))));
-                read
-            })
-        })
-        .await
-        .unwrap_or_else(|error| Err(unreadable().because(error)));
+        // A read that never ran applied nothing, so the reporter keeps the answer applied last.
+        let read = tokio::task::spawn_blocking(move || applied(&dir, &following))
+            .await
+            .unwrap_or_else(|error| Err(unreadable().because(error)));
+        self.observe(read.map(drop), log);
+    }
+
+    // Only logs: the reporter was brought into line under the lock, and a change saved since
+    // must stand.
+    fn observe(&mut self, read: Result<(), Fault>, log: &Logger) {
         match read {
-            Ok(_) => self.failing = false,
+            Ok(()) => self.failing = false,
             Err(error) => {
-                reporter.set_agreed(false);
                 if !self.failing {
                     log.warn("reports unreadable", &[("err", Field::error(&error))]);
                 }
@@ -100,6 +100,15 @@ impl Watch {
             }
         }
     }
+}
+
+// Reads the saved answer and applies it, as one step; one that can't be read sends nothing.
+fn applied(state_dir: &Path, reporter: &Reporter) -> Result<Option<bool>, Fault> {
+    settled(|| {
+        let read = read(state_dir);
+        reporter.set_agreed(matches!(read, Ok(Some(true))));
+        read
+    })
 }
 
 fn unreadable() -> Fault {
@@ -213,6 +222,28 @@ mod tests {
         let mut out = Vec::new();
         run(&app, answer, &mut out)?;
         Ok(String::from_utf8(out).unwrap())
+    }
+
+    #[test]
+    fn a_change_saved_after_a_failed_read_stands() {
+        let dir = TempDir::new().unwrap();
+        let app = test_support::app(Some(&dir), None);
+        let (log, records) = test_support::recording_logger();
+        fs::write(file(&dir), "not json").unwrap();
+        let mut watch = Watch::new(dir.to_path_buf());
+        app.reporter.set_agreed(true);
+
+        let read = applied(&dir, &app.reporter);
+        assert!(!app.reporter.agreed());
+        store(&dir, true, &app.reporter, &log).unwrap();
+        watch.observe(read.map(drop), &log);
+
+        assert!(app.reporter.agreed());
+        assert_eq!(current(&dir), Some(true));
+        assert_eq!(
+            test_support::messages(&records),
+            ["reports chosen", "reports unreadable"]
+        );
     }
 
     #[test]
