@@ -1,6 +1,6 @@
 use sqlx::SqliteConnection;
 use weacon_observability::Fault;
-use weacon_protocol::{AccountId, MemberId, WorkspaceId, WorkspaceRole, WorkspaceSummary};
+use weacon_protocol::{AccountId, MemberId, WorkspaceId, WorkspaceRole, WorkspaceSummary, code};
 
 use super::{Db, failed, stored, unreadable};
 
@@ -25,12 +25,12 @@ pub(crate) struct Account {
 }
 
 impl Account {
-    /// Makes a workspace that the account owns, as its first member; `None` when it owns as
-    /// many as it may.
+    /// Makes a workspace that the account owns, as its first member: `workspace.too_many` when
+    /// it owns as many as it may, and `db.exists` when the id is taken.
     pub(crate) async fn create_workspace(
         &self,
         new: NewWorkspace,
-    ) -> Result<Option<WorkspaceSummary>, Fault> {
+    ) -> Result<WorkspaceSummary, Fault> {
         let account = &self.id;
         let mut transaction = self.db.write().await?;
         let owned: i64 =
@@ -41,15 +41,15 @@ impl Account {
                 .await
                 .map_err(failed)?;
         if owned >= MAX_OWNED {
-            return Ok(None);
+            return Err(too_many());
         }
         insert_owned(&mut transaction, account, &new).await?;
         transaction.commit().await.map_err(failed)?;
-        Ok(Some(WorkspaceSummary {
+        Ok(WorkspaceSummary {
             id: new.id,
             name: new.name,
             role: WorkspaceRole::Owner,
-        }))
+        })
     }
 
     /// The workspaces the account is a member of, oldest membership first.
@@ -126,6 +126,13 @@ pub(super) fn summary(
     Ok(WorkspaceSummary { id, name, role })
 }
 
+fn too_many() -> Fault {
+    Fault::new(
+        code!("workspace.too_many"),
+        "The account owns as many workspaces as it may",
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use weacon_testing::TempDir;
@@ -176,10 +183,7 @@ mod tests {
         let taken = bo.create_workspace(new("w3", "Again")).await;
         let nobody = stranger.create_workspace(new("w4", "Four")).await;
 
-        assert_eq!(
-            made.unwrap(),
-            Some(seen("w3", "Three", WorkspaceRole::Owner))
-        );
+        assert_eq!(made.unwrap(), seen("w3", "Three", WorkspaceRole::Owner));
         assert_eq!(taken.unwrap_err().code().as_str(), "db.exists");
         assert_eq!(nobody.unwrap_err().code().as_str(), "db.unreadable");
         assert!(
@@ -232,7 +236,7 @@ mod tests {
             .create_workspace(new("w-y", "Other"))
             .await;
 
-        assert_eq!(more.unwrap(), None);
+        assert_eq!(more.unwrap_err().code().as_str(), "workspace.too_many");
         assert_eq!(others.unwrap_err().code().as_str(), "db.unreadable");
     }
 
