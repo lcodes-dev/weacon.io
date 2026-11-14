@@ -1,6 +1,7 @@
+import { type Command, deliver } from "../chat/commands.ts";
 import { type Status, offers } from "../connection.ts";
 import type { ChatRef } from "../chat-ref.ts";
-import type { ChatAction, Envelope, RequestId } from "../protocol.ts";
+import type { Envelope, RequestId } from "../protocol.ts";
 import type { Receipts, Settled } from "../receipts.ts";
 
 /** How sending a prompt ended: as its command did, or refused here for its size. */
@@ -12,32 +13,12 @@ export type Send = (text: string, request: RequestId) => Promise<Sent>;
 // The server's limit on one message from a browser, in bytes: `MAX_MESSAGE` in its feed.
 const FEED_LIMIT = 16_384;
 
-/** A command to a chat. */
-export type Command = Extract<Envelope, { type: "chat_command" }>;
-
-/** The command that asks `action` of the chat at `chatRef`, under `request`. */
-export function chatCommand(id: number, chatRef: ChatRef, request: RequestId, action: ChatAction): Command {
-  return { id, type: "chat_command", ...chatRef, request, action };
-}
-
-/** The command that sends `text` to the chat at `chatRef`, under `request`. */
-export function prompt(id: number, chatRef: ChatRef, request: RequestId, text: string): Command {
-  return chatCommand(id, chatRef, request, { kind: "prompt", text });
-}
-
-/** Sends `command` through `send` and waits for its receipt, unless it is too long to send. */
-export function deliver(command: Command, receipts: Receipts, send: (envelope: Envelope) => void): Promise<Sent> {
+/** Sends the prompt `command` through `send` and waits for its receipt, unless it is too long to send. */
+export function deliverPrompt(command: Command, receipts: Receipts, send: (envelope: Envelope) => void): Promise<Sent> {
   if (new TextEncoder().encode(JSON.stringify(command)).length > FEED_LIMIT) {
     return Promise.resolve("too_long");
   }
-  const settled = receipts.wait(command.request, command.id);
-  try {
-    send(command);
-  } catch {
-    // A retry then waits afresh, under its own envelope and deadline.
-    receipts.settle(command.request, "lost");
-  }
-  return settled;
+  return deliver(command, receipts, send);
 }
 
 /** A prompt that may have run, kept with its request so sending it again can't run it twice. */
