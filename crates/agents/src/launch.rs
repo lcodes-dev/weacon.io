@@ -149,7 +149,9 @@ impl Launch {
     /// # Errors
     /// When this build doesn't know the agent, or its program can't be started.
     pub fn log_in_terminal(&self, size: Size) -> Result<(Terminal, Events), Fault> {
-        let command = self.vendors(claude::login, codex::login)?;
+        let mut command = self.vendors(claude::login, codex::login)?;
+        // What the browser's terminal emulates, whatever this process runs under.
+        command.env("TERM", "xterm-256color");
         let (pty, events) = platform::Pty::spawn(command, size).map_err(|error| {
             Fault::new(code!("agent.login_failed"), "The sign-in couldn't start").because(error)
         })?;

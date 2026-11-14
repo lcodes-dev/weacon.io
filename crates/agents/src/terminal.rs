@@ -1,6 +1,6 @@
 //! A vendor's sign-in in a pseudo-terminal, for a person to finish from their browser.
 
-use std::io;
+use std::{fmt, io};
 
 use tokio::sync::mpsc;
 
@@ -39,8 +39,8 @@ pub struct Terminal {
 /// What the sign-in does, in order: all it prints, then its end.
 pub struct Events(pub(crate) mpsc::Receiver<Event>);
 
-/// One thing the sign-in did.
-#[derive(Debug, PartialEq, Eq)]
+/// One thing the sign-in did. Its `Debug` shows only how much was printed.
+#[derive(PartialEq, Eq)]
 pub enum Event {
     /// What it printed; nothing in Weacon reads it.
     Output(Vec<u8>),
@@ -48,8 +48,18 @@ pub enum Event {
     Exited { success: bool },
 }
 
+impl fmt::Debug for Event {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Output(data) => write!(f, "Output({} bytes)", data.len()),
+            Self::Exited { success } => f.debug_struct("Exited").field("success", success).finish(),
+        }
+    }
+}
+
 impl Terminal {
-    /// Passes on what the person typed.
+    /// Passes on what the person typed. Not safe to cancel: part of `data` may have been
+    /// passed on, or may still be.
     ///
     /// # Errors
     /// When the sign-in can't take it, such as after it ended.
@@ -87,6 +97,16 @@ mod tests {
         }
     }
 
+    #[test]
+    fn what_was_printed_never_shows_in_debug() {
+        let shown = format!("{:?}", Event::Output(b"MARKER-CODE-4821".to_vec()));
+        assert_eq!(shown, "Output(16 bytes)");
+        assert_eq!(
+            format!("{:?}", Event::Exited { success: true }),
+            "Exited { success: true }"
+        );
+    }
+
     // A script stands in for each vendor and prints how it was started.
     #[cfg(unix)]
     mod vendors {
@@ -97,13 +117,13 @@ mod tests {
 
         use super::*;
         use crate::Launch;
-        use crate::test_support::{after_output, next_event, write_program};
+        use crate::test_support::{after_output, next_event, output_until, write_program};
 
         fn launch(agent: AgentKind, dir: &Path) -> Launch {
             let program = dir.join("vendor");
             write_program(
                 &program,
-                "#!/bin/sh\necho \"args [$*] claude [$CLAUDE_CONFIG_DIR] codex [$CODEX_HOME]\"\n",
+                "#!/bin/sh\necho \"args [$*] claude [$CLAUDE_CONFIG_DIR] codex [$CODEX_HOME] term [$TERM]\"\n",
             );
             Launch {
                 agent,
@@ -118,7 +138,7 @@ mod tests {
             let (_terminal, mut events) =
                 launch.log_in_terminal(Size::new(80, 24).unwrap()).unwrap();
             let mut seen = String::new();
-            match after_output(&mut events.0, &mut seen).await {
+            match after_output(&mut events, &mut seen).await {
                 Some(Event::Exited { success }) => (seen, success),
                 other => panic!("{other:?} after {seen:?}"),
             }
@@ -131,12 +151,16 @@ mod tests {
             let (claude, success) = printed(&launch(AgentKind::Claude, &dir)).await;
             assert!(success);
             assert!(
-                claude.contains(&format!("args [auth login] claude [{config}] codex []")),
+                claude.contains(&format!(
+                    "args [auth login] claude [{config}] codex [] term [xterm-256color]"
+                )),
                 "{claude}"
             );
             let (codex, _) = printed(&launch(AgentKind::Codex, &dir)).await;
             assert!(
-                codex.contains(&format!("args [login] claude [] codex [{config}]")),
+                codex.contains(&format!(
+                    "args [login] claude [] codex [{config}] term [xterm-256color]"
+                )),
                 "{codex}"
             );
             launch(AgentKind::Newer, &dir)
@@ -166,10 +190,35 @@ mod tests {
             };
             let (terminal, mut events) =
                 launch.log_in_terminal(Size::new(80, 24).unwrap()).unwrap();
-            let ready = next_event(&mut events.0).await;
+            let ready = next_event(&mut events).await;
             assert!(matches!(ready, Some(Event::Output(_))), "{ready:?}");
             drop(terminal);
-            assert_eq!(after_output(&mut events.0, &mut String::new()).await, None);
+            assert_eq!(after_output(&mut events, &mut String::new()).await, None);
+        }
+
+        #[tokio::test]
+        async fn what_the_person_types_and_their_terminals_size_reach_the_sign_in() {
+            let dir = TempDir::new().unwrap();
+            let asking = dir.join("asking");
+            write_program(
+                &asking,
+                "#!/bin/sh\necho ready\nIFS= read -r line\necho \"got $line\"\nstty size\n",
+            );
+            let launch = Launch {
+                program: asking,
+                ..launch(AgentKind::Claude, &dir)
+            };
+            let (terminal, mut events) =
+                launch.log_in_terminal(Size::new(80, 24).unwrap()).unwrap();
+            let mut seen = String::new();
+            output_until(&mut events, &mut seen, "ready").await;
+            terminal.resize(Size::new(90, 20).unwrap()).unwrap();
+            terminal.input(b"MARKER-51c2\r").await.unwrap();
+            output_until(&mut events, &mut seen, "got MARKER-51c2").await;
+            output_until(&mut events, &mut seen, "20 90").await;
+            let end = after_output(&mut events, &mut seen).await;
+            assert_eq!(end, Some(Event::Exited { success: true }));
+            assert_eq!(next_event(&mut events).await, None);
         }
     }
 }

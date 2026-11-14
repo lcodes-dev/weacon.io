@@ -74,7 +74,7 @@ impl Pty {
             )
         };
         if created < 0 {
-            return Err(io::Error::from_raw_os_error(created));
+            return Err(failed(created));
         }
         drop((input_read, output_write));
         let console = Arc::new(Console(Mutex::new(Some(handle))));
@@ -107,14 +107,18 @@ impl Pty {
     }
 
     pub(crate) fn resize(&self, size: Size) -> io::Result<()> {
-        let open = self.console.0.lock().ok().and_then(|handle| *handle);
-        let Some(handle) = open else {
+        let open = self
+            .console
+            .0
+            .lock()
+            .map_err(|_| io::ErrorKind::BrokenPipe)?;
+        let Some(handle) = *open else {
             return Err(io::ErrorKind::BrokenPipe.into());
         };
-        // SAFETY: the console stays open while the lock's value says so.
+        // SAFETY: the lock is held, so the console can't close during the call.
         let resized = unsafe { ResizePseudoConsole(handle, coord(size)) };
         if resized < 0 {
-            return Err(io::Error::from_raw_os_error(resized));
+            return Err(failed(resized));
         }
         Ok(())
     }
@@ -275,6 +279,11 @@ impl Drop for Attributes {
         // SAFETY: the list was initialized in this room, which is still here.
         unsafe { DeleteProcThreadAttributeList(self.list()) };
     }
+}
+
+// An HRESULT is no OS error code, so it travels as a number only.
+fn failed(result: i32) -> io::Error {
+    io::Error::other(format!("HRESULT {result:#010x}"))
 }
 
 fn check(succeeded: i32) -> io::Result<()> {

@@ -18,6 +18,10 @@ use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
 use super::CHUNK;
+#[cfg(not(target_os = "macos"))]
+use super::linux::{name_into, set_controlling};
+#[cfg(target_os = "macos")]
+use super::macos::{name_into, set_controlling};
 use crate::terminal::{Event, Size};
 
 /// The program's side ends when it does; dropping this kills it.
@@ -76,38 +80,75 @@ impl Drop for Pty {
     }
 }
 
-// Sends the output until the program's side closes, then how the program ended.
+// Sends the output, then how the program ended. The end comes when the program ends, even if
+// something it started still holds its side open.
 async fn pump(master: Arc<AsyncFd<File>>, mut child: Child, events: mpsc::Sender<Event>) {
     let mut buffer = vec![0; CHUNK];
-    loop {
-        let Ok(mut ready) = master.readable().await else {
-            break;
+    let success = loop {
+        let read = tokio::select! {
+            status = child.wait() => break status.is_ok_and(|status| status.success()),
+            read = read(&master, &mut buffer) => read,
         };
-        match ready.try_io(|master| master.get_ref().read(&mut buffer)) {
-            Err(_would_block) => {}
-            Ok(Err(error)) if error.kind() == io::ErrorKind::Interrupted => {}
-            // Linux reports the closed side as an error, macOS as the end.
-            Ok(Ok(0) | Err(_)) => break,
-            Ok(Ok(read)) => {
-                let chunk = buffer.get(..read).unwrap_or_default().to_vec();
-                if events.send(Event::Output(chunk)).await.is_err() {
+        match read {
+            Reading::Later => {}
+            Reading::End => break child.wait().await.is_ok_and(|status| status.success()),
+            Reading::Data(read) => {
+                if !send(&events, &buffer, read).await {
                     return;
                 }
             }
         }
+    };
+    // What the program wrote just before it ended is still to be read.
+    loop {
+        match master.get_ref().read(&mut buffer) {
+            Ok(0) | Err(_) => break,
+            Ok(read) if !send(&events, &buffer, read).await => return,
+            Ok(_) => {}
+        }
     }
-    let success = child.wait().await.is_ok_and(|status| status.success());
     drop(events.send(Event::Exited { success }).await);
+}
+
+enum Reading {
+    Data(usize),
+    Later,
+    End,
+}
+
+async fn read(master: &AsyncFd<File>, buffer: &mut [u8]) -> Reading {
+    let Ok(mut ready) = master.readable().await else {
+        return Reading::End;
+    };
+    match ready.try_io(|master| master.get_ref().read(buffer)) {
+        Err(_would_block) => Reading::Later,
+        // Linux reports the closed side as an error, macOS as the end.
+        Ok(Ok(0) | Err(_)) => Reading::End,
+        Ok(Ok(read)) => Reading::Data(read),
+    }
+}
+
+// Whether the receiver still listens.
+async fn send(events: &mpsc::Sender<Event>, buffer: &[u8], read: usize) -> bool {
+    let chunk = buffer.get(..read).unwrap_or_default().to_vec();
+    events.send(Event::Output(chunk)).await.is_ok()
 }
 
 // Runs in the child between fork and exec, after its stdio is the terminal.
 fn take_terminal() -> io::Result<()> {
     // SAFETY: plain system calls on this process and its stdin.
-    let taken = unsafe { libc::setsid() != -1 && libc::ioctl(0, set_controlling(), 0) != -1 };
-    if taken {
-        Ok(())
-    } else {
+    checked(unsafe { libc::setsid() })?;
+    // SAFETY: as above.
+    checked(unsafe { libc::ioctl(0, set_controlling(), 0) })?;
+    Ok(())
+}
+
+// A system call's result, or the error it set; allocates nothing.
+fn checked(result: i32) -> io::Result<i32> {
+    if result == -1 {
         Err(io::Error::last_os_error())
+    } else {
+        Ok(result)
     }
 }
 
@@ -121,9 +162,9 @@ fn open_pair() -> io::Result<(OwnedFd, OwnedFd)> {
         .open("/dev/ptmx")?;
     let fd = master.as_raw_fd();
     // SAFETY: `fd` is the open master of a pseudo-terminal.
-    if unsafe { libc::grantpt(fd) != 0 || libc::unlockpt(fd) != 0 } {
-        return Err(io::Error::last_os_error());
-    }
+    checked(unsafe { libc::grantpt(fd) })?;
+    // SAFETY: as above.
+    checked(unsafe { libc::unlockpt(fd) })?;
     let slave = OpenOptions::new()
         .read(true)
         .write(true)
@@ -140,9 +181,7 @@ fn set_size(master: &impl AsRawFd, size: Size) -> io::Result<()> {
         ws_ypixel: 0,
     };
     // SAFETY: the master is open, and `size` outlives the call.
-    if unsafe { libc::ioctl(master.as_raw_fd(), libc::TIOCSWINSZ, &raw const size) } == -1 {
-        return Err(io::Error::last_os_error());
-    }
+    checked(unsafe { libc::ioctl(master.as_raw_fd(), libc::TIOCSWINSZ, &raw const size) })?;
     Ok(())
 }
 
@@ -155,42 +194,6 @@ fn slave_name(fd: i32) -> io::Result<OsString> {
     Ok(OsStr::from_bytes(name.to_bytes()).to_owned())
 }
 
-#[cfg(target_os = "macos")]
-fn name_into(fd: i32, name: &mut [u8; 128]) -> io::Result<()> {
-    // SAFETY: TIOCPTYGNAME writes at most 128 bytes, the size of `name`.
-    let named = unsafe {
-        libc::ioctl(
-            fd,
-            libc::TIOCPTYGNAME.into(),
-            name.as_mut_ptr().cast::<libc::c_char>(),
-        )
-    };
-    if named == -1 {
-        return Err(io::Error::last_os_error());
-    }
-    Ok(())
-}
-
-#[cfg(not(target_os = "macos"))]
-fn name_into(fd: i32, name: &mut [u8; 128]) -> io::Result<()> {
-    // SAFETY: `ptsname_r` writes at most `name.len()` bytes into `name`.
-    let failed = unsafe { libc::ptsname_r(fd, name.as_mut_ptr().cast(), name.len()) };
-    if failed != 0 {
-        return Err(io::Error::from_raw_os_error(failed));
-    }
-    Ok(())
-}
-
-#[cfg(target_os = "macos")]
-fn set_controlling() -> libc::c_ulong {
-    libc::TIOCSCTTY.into()
-}
-
-#[cfg(not(target_os = "macos"))]
-const fn set_controlling() -> libc::Ioctl {
-    libc::TIOCSCTTY
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -198,6 +201,15 @@ mod tests {
     fn flags(fd: &OwnedFd, which: i32) -> i32 {
         // SAFETY: `fd` is open for the call.
         unsafe { libc::fcntl(fd.as_raw_fd(), which) }
+    }
+
+    #[test]
+    fn a_file_that_isnt_a_terminal_is_an_error() {
+        let dir = weacon_testing::TempDir::new().unwrap();
+        let file = File::create(dir.join("plain")).unwrap();
+        set_size(&file, Size::new(80, 24).unwrap()).unwrap_err();
+        name_into(file.as_raw_fd(), &mut [0; 128]).unwrap_err();
+        assert_eq!(checked(7).unwrap(), 7);
     }
 
     #[test]
