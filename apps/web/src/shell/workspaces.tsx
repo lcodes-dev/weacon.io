@@ -17,9 +17,8 @@ import { FEED, feedUrl } from "./workspace-feed.ts";
  * `page`, such as Settings, shows in their place while they stay open beneath it.
  */
 export function Workspaces({ api, who, page }: { api: Api; who: ReactNode; page?: ReactNode }) {
-  const workspaces = useLoaded(() => api.workspaces(), api);
-  const list = workspaces.value?.workspaces;
-  const { problem } = workspaces;
+  const { value, problem, load, change } = useLoaded(() => api.workspaces(), api);
+  const list = value?.workspaces;
   const [open, setOpen] = useState(() => opening(window.location.search, STORE));
   useEffect(() => {
     const follow = () => setOpen(workspaceOf(window.location.search));
@@ -87,7 +86,7 @@ export function Workspaces({ api, who, page }: { api: Api; who: ReactNode; page?
           {problem !== undefined && (
             <>
               <p role="alert">{problem}</p>
-              <button type="button" onClick={() => void workspaces.load()}>
+              <button type="button" onClick={() => void load()}>
                 Try again
               </button>
             </>
@@ -96,7 +95,7 @@ export function Workspaces({ api, who, page }: { api: Api; who: ReactNode; page?
             <NewWorkspace
               api={api}
               made={(made) => {
-                workspaces.change((before) => ({ workspaces: [...(before?.workspaces ?? []), made] }));
+                change((before) => ({ workspaces: [...(before?.workspaces ?? []), made] }));
                 if (listing.current) {
                   choose(made.id);
                 }
