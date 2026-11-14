@@ -119,8 +119,10 @@ impl Worktrees {
     pub(crate) async fn drain(&self) {
         let workers = &self.inner.workers;
         let all = u32::try_from(WORKERS).unwrap_or(u32::MAX);
-        drop(workers.acquire_many(all).await);
+        // Kept until closed, so no call queued behind them starts in between.
+        let held = workers.acquire_many(all).await;
         workers.close();
+        drop(held);
     }
 
     // Runs `work` off the runtime once a worker is free. It runs to its end even when its
@@ -406,14 +408,7 @@ mod tests {
         }
 
         async fn state(&self) -> Result<WorktreeAnswerKind, Fault> {
-            let query = WorktreeQuery {
-                request: request(),
-                workspace: self.workspace.clone(),
-                chat: self.chat.clone(),
-                query: WorktreeQueryKind::State,
-                by: None,
-            };
-            Ok(self.worktrees.query(query).await?.answer)
+            Ok(self.worktrees.query(state_query(self)).await?.answer)
         }
 
         async fn act(&self, action: Action) -> Result<WorktreeAnswerKind, Fault> {
@@ -505,8 +500,15 @@ mod tests {
             tokio::task::yield_now().await;
         }
         assert!(!draining.is_finished());
+        let (queued, query) = (bench.worktrees.clone(), state_query(&bench));
+        let queued = tokio::spawn(async move { queued.query(query).await });
+        for _ in 0..20 {
+            tokio::task::yield_now().await;
+        }
         release.send(()).unwrap();
         draining.await.unwrap();
+        let refused = queued.await.unwrap().unwrap_err();
+        assert_eq!(code(&refused), "worktree.failed");
 
         assert!(done.load(std::sync::atomic::Ordering::SeqCst));
         assert_eq!(code(&bench.state().await.unwrap_err()), "worktree.failed");
@@ -527,6 +529,16 @@ mod tests {
             bench.act(Action::Remove).await.unwrap(),
             state(true, false, false)
         );
+    }
+
+    fn state_query(bench: &Bench) -> WorktreeQuery {
+        WorktreeQuery {
+            request: request(),
+            workspace: bench.workspace.clone(),
+            chat: bench.chat.clone(),
+            query: WorktreeQueryKind::State,
+            by: None,
+        }
     }
 
     // The path of a file that's one of two changed.

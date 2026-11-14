@@ -10,7 +10,7 @@ use weacon_observability::Fault;
 use weacon_protocol::{DownloadUrl, code};
 
 use super::diff::CommitId;
-use super::{Git, not_run, run, text};
+use super::{Git, REDIRECTS, not_run, run, text};
 use crate::platform;
 
 // A push and each gh call reach the network: past these they're stopped.
@@ -198,7 +198,8 @@ impl Gh {
             .env("NO_COLOR", "1")
             .stdin(Stdio::null())
             .stderr(Stdio::null());
-        for name in GH_OVERRIDES {
+        // Nor another repository's state, which git's own variables would point it at.
+        for name in GH_OVERRIDES.iter().chain(&REDIRECTS) {
             command.env_remove(name);
         }
         command
@@ -397,7 +398,7 @@ mod tests {
         let envs: Vec<(&OsStr, Option<&OsStr>)> = command.get_envs().collect();
         assert!(envs.contains(&("GH_CONFIG_DIR".as_ref(), Some("/state/w-1/gh".as_ref()))));
         assert!(envs.contains(&("GH_PROMPT_DISABLED".as_ref(), Some("1".as_ref()))));
-        for name in GH_OVERRIDES {
+        for name in GH_OVERRIDES.iter().chain(&REDIRECTS) {
             assert!(envs.contains(&(name.as_ref(), None)), "{name}");
         }
         assert_eq!(command.get_current_dir(), Some(Path::new("/trees/c-1")));
