@@ -233,6 +233,7 @@ export type ChallengeId = string;
 
 export type ChatAction = (
   | {
+    agent?: AgentKind;
     kind: "prompt";
     machine?: MachineId;
     repo?: RepoId;
@@ -294,6 +295,7 @@ export type ChatEntry = {
 
 export type ChatEvent = (
   | {
+    agent?: AgentKind;
     kind: "prompt";
     repo?: RepoId;
     request: RequestId;
