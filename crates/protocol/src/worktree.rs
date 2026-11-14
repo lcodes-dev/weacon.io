@@ -107,25 +107,39 @@ mod tests {
         wire
     }
 
-    fn answer(answer: WorktreeAnswerKind) -> Message {
-        Message::WorktreeAnswer(WorktreeAnswer {
+    fn query(by: Option<Asker>) -> Envelope {
+        envelope(Message::WorktreeQuery(WorktreeQuery {
+            request: request(),
+            workspace: workspace(),
+            chat: chat(),
+            query: WorktreeQueryKind::State,
+            by,
+        }))
+    }
+
+    fn command(action: WorktreeAction, by: Option<Asker>) -> Envelope {
+        envelope(Message::WorktreeCommand(WorktreeCommand {
+            request: request(),
+            workspace: workspace(),
+            chat: chat(),
+            action,
+            by,
+        }))
+    }
+
+    fn answer(answer: WorktreeAnswerKind) -> Envelope {
+        envelope(Message::WorktreeAnswer(WorktreeAnswer {
             request: request(),
             workspace: workspace(),
             chat: chat(),
             answer,
-        })
+        }))
     }
 
     #[test]
     fn queries_and_commands_have_a_tagged_shape() {
         travels(
-            &envelope(Message::WorktreeQuery(WorktreeQuery {
-                request: request(),
-                workspace: workspace(),
-                chat: chat(),
-                query: WorktreeQueryKind::State,
-                by: None,
-            })),
+            &query(None),
             wire("worktree_query", "query", json!({ "kind": "state" })),
         );
         let actions = [
@@ -141,15 +155,8 @@ mod tests {
             ),
         ];
         for (action, body) in actions {
-            let command = WorktreeCommand {
-                request: request(),
-                workspace: workspace(),
-                chat: chat(),
-                action,
-                by: None,
-            };
             travels(
-                &envelope(Message::WorktreeCommand(command)),
+                &command(action, None),
                 wire("worktree_command", "action", body),
             );
         }
@@ -179,10 +186,7 @@ mod tests {
             ),
         ];
         for (kind, body) in cases {
-            travels(
-                &envelope(answer(kind)),
-                wire("worktree_answer", "answer", body),
-            );
+            travels(&answer(kind), wire("worktree_answer", "answer", body));
         }
     }
 
@@ -210,30 +214,12 @@ mod tests {
             member: "m-1".parse().unwrap(),
         });
         let asked = json!({ "account": "a-1", "member": "m-1" });
-        let mut query = wire("worktree_query", "query", json!({ "kind": "state" }));
-        query["by"] = asked.clone();
-        travels(
-            &envelope(Message::WorktreeQuery(WorktreeQuery {
-                request: request(),
-                workspace: workspace(),
-                chat: chat(),
-                query: WorktreeQueryKind::State,
-                by: by.clone(),
-            })),
-            query,
-        );
-        let mut command = wire("worktree_command", "action", json!({ "kind": "remove" }));
-        command["by"] = asked;
-        travels(
-            &envelope(Message::WorktreeCommand(WorktreeCommand {
-                request: request(),
-                workspace: workspace(),
-                chat: chat(),
-                action: WorktreeAction::Remove,
-                by,
-            })),
-            command,
-        );
+        let mut query_wire = wire("worktree_query", "query", json!({ "kind": "state" }));
+        query_wire["by"] = asked.clone();
+        travels(&query(by.clone()), query_wire);
+        let mut command_wire = wire("worktree_command", "action", json!({ "kind": "remove" }));
+        command_wire["by"] = asked;
+        travels(&command(WorktreeAction::Remove, by), command_wire);
     }
 
     #[test]
