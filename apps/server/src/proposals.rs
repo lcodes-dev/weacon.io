@@ -244,13 +244,28 @@ mod tests {
 
     #[test]
     fn refusals_answer_with_their_status_and_nothing_else_is_a_failure() {
-        let answer =
-            |fault: Fault| axum::response::IntoResponse::into_response(Refused::from(fault));
-        for (refused, status, _) in Proposals::REFUSALS {
-            let fault = Fault::new(refused.clone(), "Refused");
-            assert_eq!(answer(fault).status(), *status, "{refused:?}");
-        }
-        let failed = Fault::new(code!("db.failed"), "The database failed");
-        assert_eq!(answer(failed).status(), StatusCode::INTERNAL_SERVER_ERROR);
+        let answer = |fault: Fault| {
+            let response = axum::response::IntoResponse::into_response(Refused::from(fault));
+            response.status().as_u16()
+        };
+        let expected = [
+            ("proposal.invalid", 400),
+            ("proposal.not_found", 404),
+            ("proposal.closed", 409),
+            ("doc.too_large", 413),
+            ("doc.quota_full", 413),
+            ("task.too_many", 409),
+            ("task.no_room", 409),
+            ("db.failed", 500),
+        ];
+        let answered: Vec<(&str, u16)> = expected
+            .iter()
+            .map(|(refused, _)| {
+                let code: Code = serde_json::from_value(serde_json::json!(refused)).unwrap();
+                (*refused, answer(Fault::new(code, "Refused")))
+            })
+            .collect();
+
+        assert_eq!(answered, expected);
     }
 }
