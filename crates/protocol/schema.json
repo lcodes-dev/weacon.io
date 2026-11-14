@@ -290,6 +290,22 @@
         "commit"
       ]
     },
+    "Asker": {
+      "description": "Who asked for a command, stamped by the server on what it relays to a machine and never\ntaken from a client. The core acts only when `account` is its owner's, and records only\n`member`.",
+      "type": "object",
+      "properties": {
+        "account": {
+          "$ref": "#/$defs/AccountId"
+        },
+        "member": {
+          "$ref": "#/$defs/MemberId"
+        }
+      },
+      "required": [
+        "account",
+        "member"
+      ]
+    },
     "Author": {
       "description": "Who made a change, such as one to a task.",
       "oneOf": [
@@ -495,6 +511,10 @@
       "properties": {
         "action": {
           "$ref": "#/$defs/ChatAction"
+        },
+        "by": {
+          "description": "Who asked, when the server relays the command to a machine.",
+          "$ref": "#/$defs/Asker"
         },
         "chat": {
           "$ref": "#/$defs/ChatId"
@@ -1288,6 +1308,80 @@
       "maxLength": 40,
       "pattern": "^[a-z][a-z_]*( [a-z_]+){0,3}$"
     },
+    "MachineId": {
+      "description": "A machine paired with an account, 1–64 ASCII letters, digits, `-` or `_`.",
+      "type": "string",
+      "maxLength": 64,
+      "pattern": "^[A-Za-z0-9_-]+$"
+    },
+    "MachineKey": {
+      "description": "A machine's public X25519 key, the static key of its sealed channels, as 64 lowercase hex\ndigits. A browser pins it when the person confirms the pairing.",
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "MachineList": {
+      "description": "The machines paired with the signed-in account.",
+      "type": "object",
+      "properties": {
+        "machines": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/MachineSummary"
+          }
+        }
+      },
+      "required": [
+        "machines"
+      ]
+    },
+    "MachineName": {
+      "description": "What a machine is called: 1–64 characters, none of them control or bidirectional\nformatting characters, so it shows the same wherever it is shown.",
+      "type": "string",
+      "maxLength": 64,
+      "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F\\u061C\\u200E\\u200F\\u202A-\\u202E\\u2066-\\u2069]+$"
+    },
+    "MachineOs": {
+      "description": "The operating system a machine runs.",
+      "oneOf": [
+        {
+          "type": "string",
+          "enum": [
+            "macos",
+            "linux",
+            "windows"
+          ]
+        }
+      ]
+    },
+    "MachineSummary": {
+      "description": "A machine paired with the signed-in account, at `paired_at`, in seconds since the Unix\nepoch.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/MachineId"
+        },
+        "key": {
+          "$ref": "#/$defs/MachineKey"
+        },
+        "name": {
+          "$ref": "#/$defs/MachineName"
+        },
+        "os": {
+          "$ref": "#/$defs/MachineOs"
+        },
+        "paired_at": {
+          "type": "integer",
+          "format": "int64"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "os",
+        "key",
+        "paired_at"
+      ]
+    },
     "MemberId": {
       "description": "A member of a workspace, 1–64 ASCII letters, digits, `-` or `_`.",
       "type": "string",
@@ -1362,6 +1456,168 @@
           ]
         }
       ]
+    },
+    "PairClaim": {
+      "description": "From the core that started `pairing`: whether the person has confirmed it yet. The answer\nis a [`PairClaimed`].",
+      "type": "object",
+      "properties": {
+        "pairing": {
+          "$ref": "#/$defs/PairingId"
+        },
+        "secret": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "pairing",
+        "secret"
+      ]
+    },
+    "PairClaimed": {
+      "description": "The answer to a [`PairClaim`].",
+      "oneOf": [
+        {
+          "description": "Not confirmed yet: claim again later.",
+          "type": "object",
+          "properties": {
+            "state": {
+              "type": "string",
+              "const": "waiting"
+            }
+          },
+          "required": [
+            "state"
+          ]
+        },
+        {
+          "description": "Paired with `owner`'s account. The core proves itself with `token`, sent as a bearer\ntoken, which the server hands out only once.",
+          "type": "object",
+          "properties": {
+            "machine": {
+              "$ref": "#/$defs/MachineId"
+            },
+            "owner": {
+              "$ref": "#/$defs/AccountId"
+            },
+            "state": {
+              "type": "string",
+              "const": "paired"
+            },
+            "token": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "state",
+            "machine",
+            "owner",
+            "token"
+          ]
+        }
+      ]
+    },
+    "PairConfirm": {
+      "description": "From the web app, signed in: pairs the machine waiting under `code` with the signed-in\naccount. The answer is its [`MachineSummary`].",
+      "type": "object",
+      "properties": {
+        "code": {
+          "type": "string"
+        },
+        "pairing": {
+          "$ref": "#/$defs/PairingId"
+        }
+      },
+      "required": [
+        "pairing",
+        "code"
+      ]
+    },
+    "PairLookup": {
+      "description": "From the web app, signed in: the machine waiting under `code`. The answer is a\n[`PairPending`].",
+      "type": "object",
+      "properties": {
+        "code": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "code"
+      ]
+    },
+    "PairPending": {
+      "description": "A machine waiting to be paired, for the person to check against what its terminal shows.",
+      "type": "object",
+      "properties": {
+        "key": {
+          "$ref": "#/$defs/MachineKey"
+        },
+        "name": {
+          "$ref": "#/$defs/MachineName"
+        },
+        "os": {
+          "$ref": "#/$defs/MachineOs"
+        },
+        "pairing": {
+          "$ref": "#/$defs/PairingId"
+        }
+      },
+      "required": [
+        "pairing",
+        "name",
+        "os",
+        "key"
+      ]
+    },
+    "PairStart": {
+      "description": "From a core to the server, unauthenticated: starts pairing the machine. The answer is a\n[`PairStarted`]; the server refuses an `os` it doesn't know.",
+      "type": "object",
+      "properties": {
+        "key": {
+          "$ref": "#/$defs/MachineKey"
+        },
+        "name": {
+          "$ref": "#/$defs/MachineName"
+        },
+        "os": {
+          "$ref": "#/$defs/MachineOs"
+        }
+      },
+      "required": [
+        "name",
+        "os",
+        "key"
+      ]
+    },
+    "PairStarted": {
+      "description": "The answer to a [`PairStart`]: the single-use `code` the person enters in the web app, and\nthe `secret` only the core that started may claim the machine with, until `expires_at`, in\nseconds since the Unix epoch.",
+      "type": "object",
+      "properties": {
+        "code": {
+          "type": "string"
+        },
+        "expires_at": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "pairing": {
+          "$ref": "#/$defs/PairingId"
+        },
+        "secret": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "pairing",
+        "code",
+        "secret",
+        "expires_at"
+      ]
+    },
+    "PairingId": {
+      "description": "One pairing of a machine, from its start to its claim; 1–64 ASCII letters, digits, `-`\nor `_`.",
+      "type": "string",
+      "maxLength": 64,
+      "pattern": "^[A-Za-z0-9_-]+$"
     },
     "PermissionAnswer": {
       "description": "A person's answer to a [`RunEvent::PermissionAsked`].",

@@ -8,6 +8,7 @@ mod diff;
 mod doc;
 mod frame;
 mod log;
+mod machine;
 mod message;
 mod pick;
 mod receipt;
@@ -20,8 +21,8 @@ mod token;
 pub use access::AccessLevel;
 pub use capability::Capability;
 pub use chat::{
-    ChatAction, ChatAnswer, ChatAnswerKind, ChatCommand, ChatEntry, ChatEvent, ChatId, ChatQuery,
-    ChatQueryKind, ChatUpdate,
+    Asker, ChatAction, ChatAnswer, ChatAnswerKind, ChatCommand, ChatEntry, ChatEvent, ChatId,
+    ChatQuery, ChatQueryKind, ChatUpdate,
 };
 pub use code::Code;
 pub use diff::{
@@ -34,6 +35,10 @@ pub use doc::{
 };
 pub use frame::{FrameError, LineDecoder, MAX_FRAME, encode_line};
 pub use log::{ClientLog, Level, LogEvent};
+pub use machine::{
+    MachineId, MachineKey, MachineList, MachineName, MachineOs, MachineSummary, PairClaim,
+    PairClaimed, PairConfirm, PairLookup, PairPending, PairStart, PairStarted, PairingId,
+};
 pub use message::{App, Envelope, ErrorBody, Hello, Message, PROTOCOL, Welcome};
 pub use pick::Pick;
 pub use receipt::{Outcome, Receipt, RequestId};
@@ -76,6 +81,14 @@ mod tests {
         generator.subschema_for::<TaskList>();
         generator.subschema_for::<TaskCreate>();
         generator.subschema_for::<TaskChange>();
+        generator.subschema_for::<PairStart>();
+        generator.subschema_for::<PairStarted>();
+        generator.subschema_for::<PairLookup>();
+        generator.subschema_for::<PairPending>();
+        generator.subschema_for::<PairConfirm>();
+        generator.subschema_for::<PairClaim>();
+        generator.subschema_for::<PairClaimed>();
+        generator.subschema_for::<MachineList>();
         generator.subschema_for::<DocList>();
         generator.subschema_for::<DocRecord>();
         generator.subschema_for::<DocRevise>();

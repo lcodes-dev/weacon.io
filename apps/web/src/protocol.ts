@@ -98,6 +98,16 @@ export type App = {
 };
 
 /**
+ * Who asked for a command, stamped by the server on what it relays to a machine and never
+ * taken from a client. The core acts only when `account` is its owner's, and records only
+ * `member`.
+ */
+export type Asker = {
+  account: AccountId;
+  member: MemberId;
+};
+
+/**
  * Who made a change, such as one to a task.
  */
 export type Author = (
@@ -166,6 +176,10 @@ export type ChatAnswerKind = (
  */
 export type ChatCommand = {
   action: ChatAction;
+  /**
+   * Who asked, when the server relays the command to a machine.
+   */
+  by?: Asker;
   chat: ChatId;
   request: RequestId;
   workspace: WorkspaceId;
@@ -483,6 +497,53 @@ export type LineOp = (
 export type LogEvent = string;
 
 /**
+ * A machine paired with an account, 1–64 ASCII letters, digits, `-` or `_`.
+ */
+export type MachineId = string;
+
+/**
+ * A machine's public X25519 key, the static key of its sealed channels, as 64 lowercase hex
+ * digits. A browser pins it when the person confirms the pairing.
+ */
+export type MachineKey = string;
+
+/**
+ * The machines paired with the signed-in account.
+ */
+export type MachineList = {
+  machines: Array<MachineSummary>;
+};
+
+/**
+ * What a machine is called: 1–64 characters, none of them control or bidirectional
+ * formatting characters, so it shows the same wherever it is shown.
+ */
+export type MachineName = string;
+
+/**
+ * The operating system a machine runs.
+ */
+export type MachineOs = (
+  | (
+    | "macos"
+    | "linux"
+    | "windows"
+  )
+);
+
+/**
+ * A machine paired with the signed-in account, at `paired_at`, in seconds since the Unix
+ * epoch.
+ */
+export type MachineSummary = {
+  id: MachineId;
+  key: MachineKey;
+  name: MachineName;
+  os: MachineOs;
+  paired_at: number;
+};
+
+/**
  * A member of a workspace, 1–64 ASCII letters, digits, `-` or `_`.
  */
 export type MemberId = string;
@@ -510,6 +571,85 @@ export type Outcome = (
     state: "unknown";
   }
 );
+
+/**
+ * From the core that started `pairing`: whether the person has confirmed it yet. The answer
+ * is a [`PairClaimed`].
+ */
+export type PairClaim = {
+  pairing: PairingId;
+  secret: string;
+};
+
+/**
+ * The answer to a [`PairClaim`].
+ */
+export type PairClaimed = (
+  | {
+    state: "waiting";
+  }
+  | {
+    machine: MachineId;
+    owner: AccountId;
+    state: "paired";
+    token: string;
+  }
+);
+
+/**
+ * From the web app, signed in: pairs the machine waiting under `code` with the signed-in
+ * account. The answer is its [`MachineSummary`].
+ */
+export type PairConfirm = {
+  code: string;
+  pairing: PairingId;
+};
+
+/**
+ * From the web app, signed in: the machine waiting under `code`. The answer is a
+ * [`PairPending`].
+ */
+export type PairLookup = {
+  code: string;
+};
+
+/**
+ * A machine waiting to be paired, for the person to check against what its terminal shows.
+ */
+export type PairPending = {
+  key: MachineKey;
+  name: MachineName;
+  os: MachineOs;
+  pairing: PairingId;
+};
+
+/**
+ * From a core to the server, unauthenticated: starts pairing the machine. The answer is a
+ * [`PairStarted`]; the server refuses an `os` it doesn't know.
+ */
+export type PairStart = {
+  key: MachineKey;
+  name: MachineName;
+  os: MachineOs;
+};
+
+/**
+ * The answer to a [`PairStart`]: the single-use `code` the person enters in the web app, and
+ * the `secret` only the core that started may claim the machine with, until `expires_at`, in
+ * seconds since the Unix epoch.
+ */
+export type PairStarted = {
+  code: string;
+  expires_at: number;
+  pairing: PairingId;
+  secret: string;
+};
+
+/**
+ * One pairing of a machine, from its start to its claim; 1–64 ASCII letters, digits, `-`
+ * or `_`.
+ */
+export type PairingId = string;
 
 /**
  * A person's answer to a [`RunEvent::PermissionAsked`].
