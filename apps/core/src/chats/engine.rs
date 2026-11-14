@@ -57,6 +57,7 @@ pub(crate) struct Chats {
 
 enum Ask {
     Command(ChatCommand, oneshot::Sender<Result<(), Fault>>),
+    Busy(oneshot::Sender<bool>),
     Query(
         ChatQuery,
         Client,
@@ -83,6 +84,16 @@ impl Chats {
         let ask = Ask::Command(command, answer);
         self.asks.send(ask).await.map_err(|_| stopped())?;
         answered.await.map_err(|_| stopped())?
+    }
+
+    /// Whether an agent is on a turn or waits on a person, which a restart would cut off.
+    pub(crate) async fn busy(&self) -> Result<bool, Fault> {
+        let (answer, answered) = oneshot::channel();
+        self.asks
+            .send(Ask::Busy(answer))
+            .await
+            .map_err(|_| stopped())?;
+        answered.await.map_err(|_| stopped())
     }
 
     /// The answer to `query`, if it has one; a subscription's events go to `client`.
@@ -182,6 +193,11 @@ impl<A: Agent> Engine<A> {
                         drop(answer.send(self.query(&key, query.query, &client).await));
                         key
                     }
+                    Some(Ask::Busy(answer)) => {
+                        // An asker that's gone needs no answer.
+                        answer.send(self.busy()).unwrap_or_default();
+                        continue;
+                    }
                     None => return self.log.info("engine stopped", &[]),
                 },
                 Some(report) = self.reports.recv() => {
@@ -278,6 +294,13 @@ impl<A: Agent> Engine<A> {
             .get(key)
             .and_then(|chat| chat.orders.as_ref())
             .is_some_and(|orders| orders.send(order).is_ok())
+    }
+
+    // Whether a live run is on a turn or waits on a person.
+    fn busy(&self) -> bool {
+        self.chats.iter().any(|(key, chat)| {
+            chat.orders.is_some() && (self.turn(key).is_some() || !chat.waiting.is_empty())
+        })
     }
 
     // Whether the chat's run hasn't yet reported its exit.
@@ -414,6 +437,19 @@ mod tests {
 
     fn code_of(refused: Result<(), Fault>) -> String {
         refused.unwrap_err().code().as_str().to_owned()
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn the_engine_is_busy_only_while_a_live_run_is_on_a_turn() {
+        let mut bench = bench();
+        let mut pushes = watch(&bench).await;
+        assert!(!bench.chats.busy().await.unwrap(), "no run");
+
+        let agent = first_turn(&mut bench, &mut pushes).await;
+        assert!(bench.chats.busy().await.unwrap(), "on a turn");
+        agent.say.send(done(Outcome::Completed)).unwrap();
+        pushed(&mut pushes, 3).await;
+        assert!(!bench.chats.busy().await.unwrap(), "idle between turns");
     }
 
     #[tokio::test(start_paused = true)]

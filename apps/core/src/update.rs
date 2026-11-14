@@ -164,17 +164,21 @@ fn install_release(release: &ReleaseManifest, world: &World<'_>) -> Result<(), F
     if restarted.is_ok() && (world.healthy)(&release.commit) {
         return Ok(());
     }
-    let fault = install::roll_back(&paths);
-    // The old build is back; starting it again is all that's left to try.
+    let rolled_back = install::roll_back(&paths);
+    // Whichever build is in place, starting it again is all that's left to try.
     drop(restart());
-    // A failed rollback keeps its own cause; a good one says why the restart failed.
+    rolled_back?;
+    let unhealthy = Fault::new(
+        code!("update.unhealthy"),
+        "The new build didn't start, so the old one is back",
+    );
     Err(match restarted {
-        Err(cause) if fault.code().as_str() == "update.unhealthy" => fault.because(cause),
-        _ => fault,
+        Err(cause) => unhealthy.because(cause),
+        Ok(()) => unhealthy,
     })
 }
 
-/// Holds the update lock until dropped; whoever comes second fails at once with `update.busy`.
+/// Holds the update lock until dropped; whoever comes second fails with `update.busy`.
 fn lock(state_dir: &Path) -> Result<File, Fault> {
     let unwritable = |error| {
         Fault::new(
@@ -260,8 +264,6 @@ pub(crate) fn watch(state_dir: &Path, version: &str) -> Option<Watch> {
             let env = |key: &str| std::env::var_os(key);
             service::launch_with(dir, &env, &mut service::system)
         },
-        // A journal that can't be read might hold a turn.
-        busy: |dir| crate::runs::Runs::load(dir).map_or(true, |runs| runs.any_busy()),
         now: unix_now,
     };
     Some(Watch::new(state_dir.to_owned(), own, hooks))

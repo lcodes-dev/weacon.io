@@ -126,22 +126,17 @@ pub(crate) fn swap(paths: &Paths) -> Result<(), Fault> {
     Ok(())
 }
 
-/// Puts the old binary back after the new one didn't come up once restarted; the error says
-/// whether that worked. The new one is moved aside first, so this works while it still runs.
-pub(crate) fn roll_back(paths: &Paths) -> Fault {
+/// Puts the old binary back after the new one didn't come up once restarted. The new one is
+/// moved aside first, so this works while it still runs.
+pub(crate) fn roll_back(paths: &Paths) -> Result<(), Fault> {
     remove(&paths.new);
-    if let Err(error) = fs::rename(&paths.exe, &paths.new) {
-        return rollback_failed(error);
-    }
+    fs::rename(&paths.exe, &paths.new).map_err(rollback_failed)?;
     if let Err(error) = fs::rename(&paths.old, &paths.exe) {
         drop(fs::rename(&paths.new, &paths.exe));
-        return rollback_failed(error);
+        return Err(rollback_failed(error));
     }
     remove(&paths.new);
-    Fault::new(
-        code!("update.unhealthy"),
-        "The new build didn't start, so the old one is back",
-    )
+    Ok(())
 }
 
 fn rollback_failed(error: io::Error) -> Fault {
@@ -323,8 +318,7 @@ mod tests {
         let paths = installed(&dir);
         fs::write(&paths.new, "new").unwrap();
         swap(&paths).unwrap();
-        let fault = roll_back(&paths);
-        assert_eq!(fault.code().as_str(), "update.unhealthy");
+        roll_back(&paths).unwrap();
         assert_eq!(files(&dir), [pair("weacon", "old")]);
     }
 
@@ -342,7 +336,7 @@ mod tests {
     fn a_rollback_without_the_old_binary_says_so() {
         let dir = TempDir::new().unwrap();
         let paths = installed(&dir);
-        let fault = roll_back(&paths);
+        let fault = roll_back(&paths).unwrap_err();
         assert_eq!(fault.code().as_str(), "update.rollback_failed");
         assert_eq!(files(&dir), [pair("weacon", "old")]);
     }
