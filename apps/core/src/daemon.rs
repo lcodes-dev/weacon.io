@@ -819,6 +819,7 @@ mod tests {
             workspace: workspace.clone(),
             chat: chat.clone(),
             query: DiffQueryKind::Changes,
+            by: None,
         };
         let query = WorktreeQuery {
             request: request.clone(),

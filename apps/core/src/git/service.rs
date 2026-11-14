@@ -414,6 +414,7 @@ mod tests {
                 workspace: self.workspace.clone(),
                 chat: self.chat.clone(),
                 query: DiffQueryKind::Changes,
+                by: None,
             };
             let answers = self.worktrees.diff(query).await?;
             Ok(answers.into_iter().map(|answer| answer.answer).collect())
@@ -724,6 +725,7 @@ mod tests {
             workspace: bench.workspace.clone(),
             chat: chat("c-2"),
             query: DiffQueryKind::Changes,
+            by: None,
         };
 
         let error = bench.worktrees.diff(other).await.unwrap_err();
