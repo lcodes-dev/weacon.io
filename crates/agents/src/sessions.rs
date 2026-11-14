@@ -192,9 +192,7 @@ mod tests {
     use weacon_testing::TempDir;
 
     use super::*;
-    use crate::test_support::SESSION;
-
-    const OTHER_SESSION: &str = "1c8d7b63-4a2f-4e3b-8d9c-6f5a4b3c2d1e";
+    use crate::test_support::{OTHER_SESSION, SESSION};
 
     /// The real disk, recording every folder listed and every file read.
     #[derive(Default)]

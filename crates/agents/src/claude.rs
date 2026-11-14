@@ -153,9 +153,7 @@ mod tests {
         use crate::platform::write_program;
         use crate::run::AgentRun;
         use crate::spawn::SpawnPolicy;
-        use crate::test_support::{SESSION, app, run_id, started};
-
-        const OTHER_SESSION: &str = "5d4c3b2a-1f0e-4d9c-8b7a-6f5e4d3c2b1a";
+        use crate::test_support::{OTHER_SESSION, SESSION, app, run_id, started};
 
         // Scripts stand in for `claude auth status`, printing `status` and exiting `code`.
         #[tokio::test]

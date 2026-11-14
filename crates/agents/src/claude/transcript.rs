@@ -41,7 +41,7 @@ struct Place {
 
 pub(crate) fn read_line(line: &[u8], transcript: &mut Transcript) -> serde_json::Result<()> {
     let parsed = serde_json::from_slice::<Line>(line)?;
-    // Any line may name the folder, also kinds this build doesn't read.
+    // Any line may carry the cwd, even a kind this build skips.
     if transcript.cwd.is_none() {
         transcript.cwd = serde_json::from_slice::<Place>(line)
             .ok()
