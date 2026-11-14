@@ -125,3 +125,15 @@ test("a batch goes out on the next frame, or on the timer once the tab is hidden
   assert.deepEqual(sent, ["shown", "hidden"]);
   assert.deepEqual([...frames.keys()], [1]);
 });
+
+test("once closed, a live chat sends and shows nothing more, a flush to come included", () => {
+  const { live, sent, shown, flushes } = wired();
+  live.open();
+  live.close();
+  live.push(answer(1, 4));
+  live.more();
+  flushes.forEach((flush) => flush());
+
+  assert.equal(sent.length, 1);
+  assert.deepEqual(shown, []);
+});

@@ -39,10 +39,10 @@ test("Enter during a composition neither sends nor clears, and Enter after it se
   const long = "a".repeat(17_000);
   await box.fill(long);
   await box.press("Enter");
-  await page.getByText("Too long to send; shorten it and try again").waitFor();
+  await page.getByText("It's too long to send. Shorten it and try again.").waitFor();
   assert.equal(await box.inputValue(), long);
   await box.press("Backspace");
-  assert.equal(await page.getByText("Too long to send; shorten it and try again").count(), 0);
+  assert.equal(await page.getByText("It's too long to send. Shorten it and try again.").count(), 0);
 
   const send = page.getByRole("button", { name: "Send" });
   await box.fill("   ");
@@ -68,7 +68,7 @@ test("without a chat, the box keeps what is typed and Send stays off", { timeout
 
   assert.equal(await box.inputValue(), "hi");
   assert.equal(await page.getByRole("button", { name: "Send" }).isDisabled(), true);
-  await page.getByText("Pick a chat to send").waitFor();
+  await page.getByText("Pick a chat to send to.").waitFor();
   assert.deepEqual(prompts(harness.received()), []);
 });
 

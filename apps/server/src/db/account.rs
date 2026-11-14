@@ -49,13 +49,14 @@ impl Account {
             id: new.id,
             name: new.name,
             role: WorkspaceRole::Owner,
+            member: Some(new.owner),
         })
     }
 
     /// The workspaces the account is a member of, oldest membership first.
     pub(crate) async fn workspaces(&self) -> Result<Vec<WorkspaceSummary>, Fault> {
-        sqlx::query_as::<_, (String, String, String)>(
-            "SELECT w.workspace_id, w.name, m.role
+        sqlx::query_as::<_, (String, String, String, String)>(
+            "SELECT w.workspace_id, w.name, m.role, m.member_id
              FROM members AS m JOIN workspaces AS w ON w.workspace_id = m.workspace_id
              WHERE m.account_id = ? ORDER BY m.rowid",
         )
@@ -64,7 +65,7 @@ impl Account {
         .await
         .map_err(failed)?
         .into_iter()
-        .map(|(id, name, role)| summary(stored(id)?, name, &role))
+        .map(|(id, name, role, member)| summary(stored(id)?, name, &role, stored(member)?))
         .collect()
     }
 }
@@ -116,6 +117,7 @@ pub(super) fn summary(
     id: WorkspaceId,
     name: String,
     role: &str,
+    member: MemberId,
 ) -> Result<WorkspaceSummary, Fault> {
     let role = match role {
         OWNER => WorkspaceRole::Owner,
@@ -123,7 +125,12 @@ pub(super) fn summary(
         // This server writes every role it stores, so another is damage, not news.
         _ => return Err(unreadable()),
     };
-    Ok(WorkspaceSummary { id, name, role })
+    Ok(WorkspaceSummary {
+        id,
+        name,
+        role,
+        member: Some(member),
+    })
 }
 
 fn too_many() -> Fault {
@@ -153,11 +160,12 @@ mod tests {
         }
     }
 
-    fn seen(id: &str, name: &str, role: WorkspaceRole) -> WorkspaceSummary {
+    fn seen(id: &str, name: &str, role: WorkspaceRole, member: &str) -> WorkspaceSummary {
         WorkspaceSummary {
             id: workspace_id(id),
             name: name.to_owned(),
             role,
+            member: Some(member_id(member)),
         }
     }
 
@@ -183,7 +191,10 @@ mod tests {
         let taken = bo.create_workspace(new("w3", "Again")).await;
         let nobody = stranger.create_workspace(new("w4", "Four")).await;
 
-        assert_eq!(made.unwrap(), seen("w3", "Three", WorkspaceRole::Owner));
+        assert_eq!(
+            made.unwrap(),
+            seen("w3", "Three", WorkspaceRole::Owner, "o-w3")
+        );
         assert_eq!(taken.unwrap_err().code().as_str(), "db.exists");
         assert_eq!(nobody.unwrap_err().code().as_str(), "db.unreadable");
         assert!(
@@ -194,13 +205,13 @@ mod tests {
         );
         assert_eq!(
             bo.workspaces().await.unwrap(),
-            [seen("w3", "Three", WorkspaceRole::Owner)]
+            [seen("w3", "Three", WorkspaceRole::Owner, "o-w3")]
         );
         assert_eq!(
             db.account(ada.clone()).workspaces().await.unwrap(),
             [
-                seen("w1", "One", WorkspaceRole::Member),
-                seen("w2", "Two", WorkspaceRole::Member)
+                seen("w1", "One", WorkspaceRole::Member, "m1"),
+                seen("w2", "Two", WorkspaceRole::Member, "m2")
             ]
         );
         assert!(stranger.workspaces().await.unwrap().is_empty());
@@ -209,8 +220,12 @@ mod tests {
         assert_eq!(owner.role, WorkspaceRole::Owner);
         let w1 = db.workspace(&workspace_id("w1")).await.unwrap();
         assert_eq!(
-            w1.summary(&member_id("m1")).await.unwrap().unwrap().name,
-            "One"
+            w1.summary(&member_id("m1")).await.unwrap(),
+            Some(seen("w1", "One", WorkspaceRole::Member, "m1"))
+        );
+        assert_eq!(
+            w1.summary(&member_id("m3")).await.unwrap(),
+            Some(seen("w1", "One", WorkspaceRole::Member, "m3"))
         );
         assert_eq!(w1.summary(&member_id("m2")).await.unwrap(), None);
     }
@@ -258,7 +273,7 @@ mod tests {
 
         assert_eq!(
             db.account(account("a2")).workspaces().await.unwrap(),
-            [seen("p1", "Personal", WorkspaceRole::Owner)]
+            [seen("p1", "Personal", WorkspaceRole::Owner, "o-p1")]
         );
         for id in ["p2", "p3"] {
             assert!(

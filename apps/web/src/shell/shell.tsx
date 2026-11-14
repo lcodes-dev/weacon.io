@@ -1,9 +1,11 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { Api, type Fetch } from "../api/api.ts";
 import { useAsk } from "../api/ask.ts";
+import { Problem } from "../api/problem.tsx";
 import { problemText } from "../api/problems.ts";
 import type { Later } from "../connection.ts";
+import type { Log } from "../log.ts";
 import { Machines } from "../machines/machines.tsx";
 import { Pins, browserStore } from "../machines/pins.ts";
 import { ME } from "../me.ts";
@@ -19,7 +21,7 @@ type Screen =
   | { name: "loading" }
   | { name: "failed"; code: Code }
   | { name: "signed out" }
-  | { name: "signed in"; account: AccountSignedIn; settings: boolean };
+  | { name: "signed in"; account: AccountSignedIn };
 
 const later: Later = (run, ms) => setTimeout(run, ms);
 
@@ -27,72 +29,77 @@ const later: Later = (run, ms) => setTimeout(run, ms);
 const PINS = new Pins(browserStore());
 
 /** The app as the server serves it: sign-in, then the signed-in person's screens. */
-export function Shell({ fetch }: { fetch: Fetch }) {
+export function Shell({ fetch, log }: { fetch: Fetch; log: Log }) {
   const [screen, setScreen] = useState<Screen>({ name: "loading" });
-  const api = useMemo(() => new Api(fetch, () => setScreen({ name: "signed out" })), [fetch]);
-  const signingOut = useAsk();
+  // However a session ends, the workspace it last opened is forgotten, so the next person starts afresh.
+  const signedOut = useCallback(() => {
+    remember(STORE, undefined);
+    window.history.replaceState(null, "", window.location.pathname);
+    setScreen({ name: "signed out" });
+  }, []);
+  const api = useMemo(() => new Api(fetch, signedOut), [fetch, signedOut]);
   useEffect(() => {
     // An answer that comes after the page moved on must not take it back.
     let current = true;
     void api.session().then((answer) => {
-      if (current) {
-        setScreen(
-          !answer.ok
-            ? { name: "failed", code: answer.code }
-            : answer.value === undefined
-              ? { name: "signed out" }
-              : { name: "signed in", account: answer.value, settings: false },
-        );
+      if (!current) {
+        return;
+      }
+      if (!answer.ok) {
+        setScreen({ name: "failed", code: answer.code });
+      } else if (answer.value === undefined) {
+        signedOut();
+      } else {
+        setScreen({ name: "signed in", account: answer.value });
       }
     });
     return () => {
       current = false;
     };
-  }, [api]);
+  }, [api, signedOut]);
   if (screen.name === "signed in") {
-    const signOut = () =>
-      void signingOut.ask(
-        () => api.signOut(),
-        () => {
-          remember(STORE, undefined);
-          setScreen({ name: "signed out" });
-        },
-      );
-    const who = (
-      <span className="who">
-        {signingOut.problem !== undefined && <span role="alert">{signingOut.problem}</span>}
-        {!screen.settings && (
-          <>
-            <span className="muted">{screen.account.email}</span>
-            <button type="button" disabled={signingOut.busy} onClick={signOut}>
-              Sign out
-            </button>
-          </>
-        )}
-        <button
-          type="button"
-          onClick={() => {
-            signingOut.clear();
-            setScreen({ ...screen, settings: !screen.settings });
-          }}
-        >
-          {screen.settings ? "Back" : "Settings"}
-        </button>
-      </span>
-    );
-    const account = { email: screen.account.email, signOut, signingOut: signingOut.busy };
-    const page = screen.settings ? (
-      <Settings me={ME} account={account}>
-        <Machines api={api} pins={PINS} later={later} />
-      </Settings>
-    ) : undefined;
-    return <Workspaces api={api} who={who} page={page} />;
+    return <SignedIn api={api} log={log} account={screen.account} signedOut={signedOut} />;
   }
   return (
     <Frame>
-      <Body screen={screen} api={api} signedIn={(account) => setScreen({ name: "signed in", account, settings: false })} />
+      <Body screen={screen} api={api} signedIn={(account) => setScreen({ name: "signed in", account })} />
     </Frame>
   );
+}
+
+// The signed-in person's workspaces, or their settings, with who they are and Sign out.
+function SignedIn({ api, log, account, signedOut }: { api: Api; log: Log; account: AccountSignedIn; signedOut(): void }) {
+  const [settings, setSettings] = useState(false);
+  const signingOut = useAsk();
+  const signOut = () => void signingOut.ask(() => api.signOut(), signedOut);
+  const who = (
+    <span className="who">
+      {signingOut.problem !== undefined && <span role="alert">{signingOut.problem}</span>}
+      {!settings && (
+        <>
+          <span className="muted">{account.email}</span>
+          <button type="button" disabled={signingOut.busy} onClick={signOut}>
+            Sign out
+          </button>
+        </>
+      )}
+      <button
+        type="button"
+        onClick={() => {
+          signingOut.clear();
+          setSettings(!settings);
+        }}
+      >
+        {settings ? "Back" : "Settings"}
+      </button>
+    </span>
+  );
+  const page = settings ? (
+    <Settings me={ME} account={{ email: account.email, signOut, signingOut: signingOut.busy }}>
+      <Machines api={api} pins={PINS} later={later} />
+    </Settings>
+  ) : undefined;
+  return <Workspaces api={api} log={log} who={who} page={page} />;
 }
 
 function Body({
@@ -110,10 +117,7 @@ function Body({
     case "failed":
       return (
         <section className="page">
-          <p role="alert">{problemText(screen.code)}</p>
-          <button type="button" onClick={() => window.location.reload()}>
-            Try again
-          </button>
+          <Problem text={problemText(screen.code)} retry={() => window.location.reload()} />
         </section>
       );
     case "signed out":

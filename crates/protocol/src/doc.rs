@@ -1,7 +1,8 @@
 use schemars::JsonSchema;
-use serde::{Deserialize, Deserializer, Serialize, de};
+use serde::{Deserialize, Serialize};
 
-use crate::token::token_id;
+use crate::hex::is_lower_hex;
+use crate::token::{checked_string, token_id};
 use crate::{Author, MemberId};
 
 token_id!(
@@ -22,12 +23,9 @@ const COMMIT_PATTERN: &str = r"^([0-9a-f]{40}|[0-9a-f]{64})$";
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, JsonSchema)]
 pub struct DocPin(#[schemars(regex(pattern = PIN_PATTERN), length(max = PIN_MAX))] String);
 
-impl DocPin {
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
+checked_string!(DocPin, is_pin, "not an anchor pin");
 
+impl DocPin {
     /// The pin without its fingerprint, as a doc links to it.
     #[must_use]
     pub fn anchor(&self) -> &str {
@@ -43,25 +41,6 @@ pub fn links_to_code(target: &str) -> bool {
     target
         .split_once(':')
         .is_some_and(|(kind, _)| matches!(kind, "sym" | "flow" | "area"))
-}
-
-impl TryFrom<String> for DocPin {
-    type Error = String;
-
-    fn try_from(pin: String) -> Result<Self, Self::Error> {
-        if is_pin(&pin) {
-            Ok(Self(pin))
-        } else {
-            Err(pin)
-        }
-    }
-}
-
-impl<'de> Deserialize<'de> for DocPin {
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        Self::try_from(String::deserialize(deserializer)?)
-            .map_err(|_| de::Error::custom("not an anchor pin"))
-    }
 }
 
 fn is_pin(pin: &str) -> bool {
@@ -83,39 +62,10 @@ fn is_pin(pin: &str) -> bool {
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, JsonSchema)]
 pub struct CommitId(#[schemars(regex(pattern = COMMIT_PATTERN))] String);
 
-impl CommitId {
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-impl TryFrom<String> for CommitId {
-    type Error = String;
-
-    fn try_from(commit: String) -> Result<Self, Self::Error> {
-        if is_commit(&commit) {
-            Ok(Self(commit))
-        } else {
-            Err(commit)
-        }
-    }
-}
-
-impl<'de> Deserialize<'de> for CommitId {
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        Self::try_from(String::deserialize(deserializer)?)
-            .map_err(|_| de::Error::custom("not a commit id"))
-    }
-}
+checked_string!(CommitId, is_commit, "not a commit id");
 
 fn is_commit(commit: &str) -> bool {
     matches!(commit.len(), 40 | 64) && is_lower_hex(commit)
-}
-
-fn is_lower_hex(text: &str) -> bool {
-    text.bytes()
-        .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
 }
 
 /// What one revision of a doc says: its title, its Markdown, and the anchors it links to,
@@ -193,7 +143,7 @@ mod tests {
     const COMMIT: &str = "89abcdef0123456789abcdef0123456789abcdef";
 
     fn pin(text: &str) -> DocPin {
-        DocPin::try_from(text.to_owned()).unwrap()
+        text.parse().unwrap()
     }
 
     #[test]
@@ -300,7 +250,7 @@ mod tests {
             title: "Framing".to_owned(),
             body: "See [encode](sym:weacon_protocol::frame::encode_line).".to_owned(),
             anchors: Some(DocAnchors {
-                commit: CommitId::try_from(COMMIT.to_owned()).unwrap(),
+                commit: COMMIT.parse().unwrap(),
                 pins: vec![pin(PIN)],
             }),
         }

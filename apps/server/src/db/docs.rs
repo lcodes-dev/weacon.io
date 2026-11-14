@@ -68,9 +68,6 @@ impl Workspace {
     /// The doc `id` at `version`, or as it is now without one. A doc or a version there
     /// isn't is `doc.not_found`.
     pub(crate) async fn doc(&self, id: &DocId, version: Option<Revision>) -> Result<Doc, Fault> {
-        let version = version
-            .map(|version| version_number(version, doc_not_found))
-            .transpose()?;
         let mut reader = self.db.readers.acquire().await.map_err(failed)?;
         self.read_doc(&mut reader, id, version).await
     }
@@ -148,8 +145,9 @@ impl Workspace {
         &self,
         connection: &mut SqliteConnection,
         id: &DocId,
-        version: Option<i64>,
+        at: Option<Revision>,
     ) -> Result<Doc, Fault> {
+        let at = at.map(|at| version_number(at, doc_not_found)).transpose()?;
         let (version, title, body, commit) = sqlx::query_as::<_, VersionRow>(
             "SELECT version, title, body, commit_id FROM doc_versions
              WHERE workspace_id = ?1 AND doc_id = ?2 AND version = COALESCE(?3,
@@ -157,7 +155,7 @@ impl Workspace {
         )
         .bind(self.id.as_str())
         .bind(id.as_str())
-        .bind(version)
+        .bind(at)
         .fetch_optional(&mut *connection)
         .await
         .map_err(failed)?

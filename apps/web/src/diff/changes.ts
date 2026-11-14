@@ -1,6 +1,5 @@
 import { type Status, offers } from "../connection.ts";
 import type { ChatId, DiffFile, Envelope, Hunk, LineOp, RequestId, WorkspaceId } from "../protocol.ts";
-import { record } from "../fields.ts";
 
 /** What the core has sent of a chat's changes under the latest request. */
 export type Changes = {
@@ -40,7 +39,7 @@ export function needsAsking(changes: Changes): boolean {
   return changes.asked === undefined || changes.cut;
 }
 
-/** `changes` with `envelope` taken in when it answers the latest request; a stale, extra or malformed one is dropped. */
+/** `changes` with `envelope` taken in when it answers the latest request; a stale or extra one is dropped. */
 export function receive(changes: Changes, envelope: Envelope): Changes {
   const { asked } = changes;
   const { files, total } = changes.held ? NO_CHANGES : changes;
@@ -58,12 +57,9 @@ export function receive(changes: Changes, envelope: Envelope): Changes {
   ) {
     return changes;
   }
-  const answer: unknown = envelope.answer;
-  if (record(answer)?.["kind"] === "unchanged") {
+  const { answer } = envelope;
+  if (answer.kind === "unchanged") {
     return total === undefined ? { ...changes, files: [], total: 0, held: false } : changes;
-  }
-  if (!isFileAnswer(answer)) {
-    return changes;
   }
   return { ...changes, files: [...files, answer.file], total: total ?? answer.files, held: false };
 }
@@ -100,52 +96,3 @@ export function rows(hunks: readonly Hunk[]): DiffRow[] {
     return [{ kind: "hunk", old: hunk.old_start, new: hunk.new_start }, ...lines];
   });
 }
-
-// The answer's fields are checked here, where it arrives; the view then trusts them.
-function isFileAnswer(answer: unknown): answer is { kind: "file"; files: number; file: DiffFile } {
-  const fields = record(answer);
-  const file = record(fields?.["file"]);
-  const files = fields?.["files"];
-  return (
-    fields?.["kind"] === "file" &&
-    typeof files === "number" &&
-    Number.isSafeInteger(files) &&
-    files >= 1 &&
-    typeof file?.["path"] === "string" &&
-    isChange(file["change"]) &&
-    isContent(file["content"])
-  );
-}
-
-function isChange(change: unknown): boolean {
-  const fields = record(change);
-  const kind = fields?.["kind"];
-  return typeof kind === "string" && (kind !== "renamed" || typeof fields?.["from"] === "string");
-}
-
-function isContent(content: unknown): boolean {
-  const fields = record(content);
-  switch (fields?.["kind"]) {
-    case "text": {
-      const hunks = fields["hunks"];
-      return Array.isArray(hunks) && hunks.every(isHunk);
-    }
-    default:
-      return typeof fields?.["kind"] === "string";
-  }
-}
-
-function isHunk(hunk: unknown): boolean {
-  const fields = record(hunk);
-  const lines = fields?.["lines"];
-  return (
-    Number.isSafeInteger(fields?.["old_start"]) &&
-    Number.isSafeInteger(fields?.["new_start"]) &&
-    Array.isArray(lines) &&
-    lines.every((line) => {
-      const parts = record(line);
-      return typeof parts?.["op"] === "string" && typeof parts["text"] === "string";
-    })
-  );
-}
-

@@ -4,7 +4,7 @@ import { test } from "node:test";
 import type { Later } from "../connection.ts";
 import type { Incoming } from "../incoming.ts";
 import type { Envelope, MachineSettings } from "../protocol.ts";
-import { type Link, NO_ANSWER, RECONNECTING, change, current } from "./link.ts";
+import { type SettingsSocket, NO_ANSWER, RECONNECTING, change, current } from "./remote-settings.ts";
 
 const PLACE = { machine: "mc-1", workspace: "w-1" };
 const SETTINGS: MachineSettings = {
@@ -14,13 +14,13 @@ const SETTINGS: MachineSettings = {
   sign_ins: [{ agent: "claude", state: "signed_in" }],
 };
 
-/** A link to the open workspace `w-1` whose core the test plays, and a clock it runs by hand. */
+/** A socket to the open workspace `w-1` whose core the test plays, and a clock it runs by hand. */
 function fake(how: { send?: "throws" | "dropped" } = {}) {
   const sent: Envelope[] = [];
   const handles = new Set<(message: Incoming) => void>();
   const timers: Array<() => void> = [];
   let ids = 10;
-  const link: Link = {
+  const socket: SettingsSocket = {
     workspace: "w-1",
     send: (envelope) => {
       if (how.send === "throws") throw new Error("closed");
@@ -38,7 +38,7 @@ function fake(how: { send?: "throws" | "dropped" } = {}) {
     timers.push(run);
   };
   return {
-    link,
+    socket,
     later,
     sent,
     deliver: (message: Incoming) => {
@@ -56,9 +56,9 @@ function request(envelope: Envelope | undefined): string {
   return envelope.request;
 }
 
-test("a query names the machine and the link's workspace, and takes the answer to its own request", async () => {
+test("a query names the machine and the socket's workspace, and takes the answer to its own request", async () => {
   const core = fake();
-  const asked = current(core.link, "mc-1", core.later);
+  const asked = current(core.socket, "mc-1", core.later);
   const [query] = core.sent;
   core.deliver({ id: 1, type: "machine_settings_answer", request: "someone-else", ...PLACE, answer: { kind: "current", ...SETTINGS, reports: false } });
   core.deliver({ id: 2, type: "machine_settings_answer", request: request(query), ...PLACE, answer: { kind: "current", ...SETTINGS } });
@@ -71,7 +71,7 @@ test("a query names the machine and the link's workspace, and takes the answer t
 
 test("a command carries its action, and an error for its envelope answers it", async () => {
   const core = fake();
-  const changed = change(core.link, "mc-1", { kind: "set_access", level: "full" }, core.later);
+  const changed = change(core.socket, "mc-1", { kind: "set_access", level: "full" }, core.later);
   const [command] = core.sent;
   core.deliver({ id: 99, type: "error", code: "settings.unrelated", retryable: false });
   core.deliver({ id: command?.id ?? 0, type: "error", code: "settings.not_owner", retryable: false });
@@ -85,18 +85,18 @@ test("a command carries its action, and an error for its envelope answers it", a
 
 test("no answer in time, a newer answer, a closed socket or a reconnecting one each end the request", async () => {
   const silent = fake();
-  const waiting = current(silent.link, "mc-1", silent.later);
+  const waiting = current(silent.socket, "mc-1", silent.later);
   silent.expire();
   const newer = fake();
-  const odd = current(newer.link, "mc-1", newer.later);
+  const odd = current(newer.socket, "mc-1", newer.later);
   newer.deliver({ id: 3, type: "machine_settings_answer", request: request(newer.sent[0]), ...PLACE, answer: { kind: "later" } as never });
   const closed = fake({ send: "throws" });
   const dropped = fake({ send: "dropped" });
 
   assert.deepEqual(await waiting, { ok: false, code: NO_ANSWER });
   assert.deepEqual(await odd, { ok: false, code: "answer.malformed" });
-  assert.deepEqual(await current(closed.link, "mc-1", closed.later), { ok: false, code: "connection.refused" });
-  assert.deepEqual(await change(dropped.link, "mc-1", { kind: "set_reports", send: true }, dropped.later), {
+  assert.deepEqual(await current(closed.socket, "mc-1", closed.later), { ok: false, code: "connection.refused" });
+  assert.deepEqual(await change(dropped.socket, "mc-1", { kind: "set_reports", send: true }, dropped.later), {
     ok: false,
     code: RECONNECTING,
   });

@@ -2,7 +2,8 @@ import type { Later } from "../connection.ts";
 import type { AccessLevel, AgentKind, MachineSettings, MachineSettingsAction, MachineSummary, SignInState } from "../protocol.ts";
 import { useAsk } from "../api/ask.ts";
 import { useLoaded } from "../api/loaded.ts";
-import { type Link, change, current } from "./link.ts";
+import { Problem } from "../api/problem.tsx";
+import { type SettingsSocket, change, current } from "./remote-settings.ts";
 
 const LEVELS: Array<[AccessLevel, string]> = [
   ["off", "Off"],
@@ -26,27 +27,20 @@ const STATES = new Map<SignInState | string, string>([
  * What one of the person's machines keeps for the open workspace, asked of its core: error
  * reports, what the workspace's agents may do there, and whether they are signed in.
  */
-export function MachineSettingsView({ machine, link, later }: { machine: MachineSummary; link: Link; later: Later }) {
-  const settings = useLoaded(() => current(link, machine.id, later), `${machine.id} ${link.workspace}`);
+export function MachineSettingsView({ machine, socket, later }: { machine: MachineSummary; socket: SettingsSocket; later: Later }) {
+  const settings = useLoaded(() => current(socket, machine.id, later), `${machine.id} ${socket.workspace}`);
   const changing = useAsk();
   const set = (action: MachineSettingsAction) =>
     void changing.ask(
-      () => change(link, machine.id, action, later),
+      () => change(socket, machine.id, action, later),
       (after) => settings.change(() => after),
     );
   const shown = settings.value;
   return (
     <section aria-label={`${machine.name} settings`}>
       <h3>{machine.name}</h3>
-      {shown === undefined && settings.problem === undefined && <p className="muted">Loading</p>}
-      {settings.problem !== undefined && (
-        <p role="alert">
-          {settings.problem}{" "}
-          <button type="button" onClick={() => void settings.load()}>
-            Try again
-          </button>
-        </p>
-      )}
+      {settings.loading && <p className="muted">Loading</p>}
+      {settings.problem !== undefined && <Problem text={settings.problem} retry={() => void settings.load()} />}
       {shown !== undefined && <Shown settings={shown} busy={changing.busy} set={set} />}
       {changing.problem !== undefined && <p role="alert">{changing.problem}</p>}
     </section>

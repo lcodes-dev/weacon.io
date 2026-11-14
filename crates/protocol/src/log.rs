@@ -1,6 +1,7 @@
 use schemars::JsonSchema;
-use serde::{Deserialize, Deserializer, Serialize, de};
+use serde::{Deserialize, Serialize};
 
+use crate::token::checked_string;
 use crate::{Code, RequestId, RunId};
 
 const EVENT_MAX: usize = 40;
@@ -64,31 +65,7 @@ pub struct ClientLog {
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, JsonSchema)]
 pub struct LogEvent(#[schemars(regex(pattern = EVENT_PATTERN), length(max = EVENT_MAX))] String);
 
-impl LogEvent {
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-impl TryFrom<String> for LogEvent {
-    type Error = String;
-
-    fn try_from(event: String) -> Result<Self, Self::Error> {
-        if is_event(&event) {
-            Ok(Self(event))
-        } else {
-            Err(event)
-        }
-    }
-}
-
-impl<'de> Deserialize<'de> for LogEvent {
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        Self::try_from(String::deserialize(deserializer)?)
-            .map_err(|_| de::Error::custom("not a log event"))
-    }
-}
+checked_string!(LogEvent, is_event, "not a log event");
 
 fn is_event(event: &str) -> bool {
     let word = |word: &str| {

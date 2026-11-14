@@ -54,6 +54,7 @@ pub(crate) fn run(app: &crate::app::App) -> Result<(), Fault> {
                 path: app.path.clone(),
                 work_root: app.work_root.clone(),
                 mcp: None,
+                plugin: crate::integrations::Plugin::new(state_dir, &app.version, &app.log),
             },
             app.log.clone(),
         )?;
@@ -388,7 +389,7 @@ mod tests {
     use tokio::io::{AsyncBufReadExt, AsyncRead};
     use tokio::sync::oneshot;
     use tokio::time::timeout;
-    use weacon_protocol::{ErrorBody, PROTOCOL, Welcome};
+    use weacon_protocol::{Capability, ErrorBody, PROTOCOL, Welcome};
     use weacon_testing::TempDir;
 
     use super::*;
@@ -692,7 +693,7 @@ mod tests {
         let kept = Picks::new(&dir).read(&"p-1".to_owned().try_into().unwrap());
 
         assert!(matches!(&replies[0], Message::Welcome(welcome)
-            if welcome.capabilities.contains(&code!("element.pick").into())));
+            if welcome.capabilities.contains(&Capability::new(code!("element.pick")))));
         assert_eq!(receipt(&replies[1]), Some(&Outcome::Completed));
         assert_eq!(receipt(&replies[2]), Some(&Outcome::Completed));
         assert_eq!(error_code(&replies[3]), Some("request.conflict"));
@@ -839,7 +840,7 @@ mod tests {
             panic!("no welcome");
         };
         for capability in offered {
-            assert!(welcome.capabilities.contains(&capability.into()));
+            assert!(welcome.capabilities.contains(&Capability::new(capability)));
         }
         let (events, answers) = events_and_answers(&replies[1..]);
         assert_eq!(error_code(answers[0]), Some("chat.empty_prompt"));

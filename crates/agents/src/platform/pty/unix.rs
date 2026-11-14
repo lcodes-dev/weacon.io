@@ -17,11 +17,11 @@ use tokio::process::{Child, Command};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
-use super::CHUNK;
 #[cfg(not(target_os = "macos"))]
 use super::linux::{name_into, set_controlling};
 #[cfg(target_os = "macos")]
 use super::macos::{name_into, set_controlling};
+use super::{CHUNK, WAITING, output};
 use crate::terminal::{Event, Size};
 
 /// The program's side ends when it does; dropping this kills it.
@@ -53,7 +53,7 @@ impl Pty {
         // SAFETY: the file owns the master, and nothing closes or replaces it while it is
         // registered.
         let master = Arc::new(unsafe { AsyncFd::register(File::from(master))? });
-        let (events, received) = mpsc::channel(8);
+        let (events, received) = mpsc::channel(WAITING);
         let task = tokio::spawn(pump(Arc::clone(&master), child, events));
         Ok((Self { master, task }, received))
     }
@@ -101,19 +101,16 @@ async fn pump(master: Arc<AsyncFd<File>>, mut child: Child, events: mpsc::Sender
     };
     // What the program wrote just before it ended is still to be read, but no more than
     // that: something it left running may never stop printing.
-    for _ in 0..DRAINED {
+    for _ in 0..LAST_READS {
         match master.get_ref().read(&mut buffer) {
             Ok(0) | Err(_) => break,
-            Ok(read) => {
-                let chunk = buffer.get(..read).unwrap_or_default().to_vec();
-                drop(events.send(Event::Output(chunk)).await);
-            }
+            Ok(read) => drop(events.send(output(&buffer, read)).await),
         }
     }
     drop(events.send(Event::Exited { success }).await);
 }
 
-const DRAINED: usize = 4;
+const LAST_READS: usize = 4;
 
 enum Reading {
     Data(usize),
@@ -135,8 +132,7 @@ async fn read(master: &AsyncFd<File>, buffer: &mut [u8]) -> Reading {
 
 // Whether the receiver still listens.
 async fn send(events: &mpsc::Sender<Event>, buffer: &[u8], read: usize) -> bool {
-    let chunk = buffer.get(..read).unwrap_or_default().to_vec();
-    events.send(Event::Output(chunk)).await.is_ok()
+    events.send(output(buffer, read)).await.is_ok()
 }
 
 // Runs in the child between fork and exec, after its stdio is the terminal.
@@ -149,11 +145,11 @@ fn take_terminal() -> io::Result<()> {
 }
 
 // A system call's result, or the error it set; allocates nothing.
-fn checked(result: i32) -> io::Result<i32> {
+fn checked(result: i32) -> io::Result<()> {
     if result == -1 {
         Err(io::Error::last_os_error())
     } else {
-        Ok(result)
+        Ok(())
     }
 }
 
@@ -214,7 +210,8 @@ mod tests {
         let file = File::create(dir.join("plain")).unwrap();
         set_size(&file, Size::new(80, 24).unwrap()).unwrap_err();
         name_into(file.as_raw_fd(), &mut [0; 128]).unwrap_err();
-        assert_eq!(checked(7).unwrap(), 7);
+        checked(7).unwrap();
+        checked(-1).unwrap_err();
     }
 
     #[test]
