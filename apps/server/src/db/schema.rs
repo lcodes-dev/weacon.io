@@ -172,6 +172,11 @@ UPDATE accounts SET owner = 1 WHERE account_id = coalesce(
 );
 CREATE UNIQUE INDEX accounts_owner ON accounts (owner) WHERE owner = 1;
 ",
+    // Only so many live codes are mailed to an address; its other challenges take those codes.
+    "
+ALTER TABLE sign_in_challenges ADD COLUMN mailed INTEGER NOT NULL DEFAULT 1;
+CREATE INDEX sign_in_challenges_email ON sign_in_challenges (email);
+",
 ];
 
 /// Applies the steps the database hasn't had yet, each in its own transaction that holds the
