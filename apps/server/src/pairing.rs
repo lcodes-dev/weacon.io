@@ -211,7 +211,11 @@ pub(crate) async fn unpair(
         return not_found(code!("machine.not_found"));
     };
     match shared.db.unpair(&session.account, &machine).await {
-        Ok(true) => StatusCode::NO_CONTENT.into_response(),
+        Ok(true) => {
+            // Nobody listening is fine: a connection also checks at each ping.
+            drop(shared.unpaired.send(machine));
+            StatusCode::NO_CONTENT.into_response()
+        }
         Ok(false) => not_found(code!("machine.not_found")),
         Err(fault) => failure(&shared, fault),
     }
@@ -261,14 +265,10 @@ mod tests {
     use std::sync::Arc;
 
     use super::*;
-    use crate::test_support::{Fixture, ask, bearer, run, sign_in};
-
-    fn start_body(os: &str) -> String {
-        json!({ "name": "Studio", "os": os, "key": "ab".repeat(32) }).to_string()
-    }
+    use crate::test_support::{Fixture, ask, bearer, pair_machine, pairing_start, run, sign_in};
 
     async fn start_pairing(address: SocketAddr, os: &str) -> (String, Value) {
-        ask(address, "POST /api/machines/pair", "", &start_body(os)).await
+        ask(address, "POST /api/machines/pair", "", &pairing_start(os)).await
     }
 
     async fn post(address: SocketAddr, path: &str, headers: &str, body: &Value) -> (String, Value) {
@@ -340,29 +340,12 @@ mod tests {
         assert_eq!(list, json!({ "machines": [machine] }));
     }
 
-    // Pairs a machine with ada, and claims it: the header proving her sign-in, and the
-    // machine.
-    async fn paired(fixture: &Fixture, address: SocketAddr) -> (String, Value) {
-        let (_, ada) = sign_in(fixture, address, "ada@example.com").await;
-        let (_, pairing) = start_pairing(address, "linux").await;
-        let confirm = json!({ "pairing": pairing["pairing"], "code": pairing["code"] });
-        let (_, machine) = post(
-            address,
-            "/api/machines/pair/confirm",
-            &bearer(&ada),
-            &confirm,
-        )
-        .await;
-        let claim = json!({ "pairing": pairing["pairing"], "secret": pairing["secret"] });
-        post(address, "/api/machines/pair/claim", "", &claim).await;
-        (bearer(&ada), machine)
-    }
-
     #[tokio::test]
     async fn a_person_unpairs_their_machine() {
         let fixture = Fixture::new().await;
         let server = run(fixture.shared.clone()).await;
-        let (ada_proof, machine) = paired(&fixture, server.address).await;
+        let paired = pair_machine(&fixture, server.address).await;
+        let (ada_proof, machine) = (paired.proof, paired.machine);
         let path = format!("DELETE /api/machines/{}", machine["id"].as_str().unwrap());
         let (unpaired, _) = ask(server.address, &path, &ada_proof, "").await;
         let (twice, refusal) = ask(server.address, &path, &ada_proof, "").await;

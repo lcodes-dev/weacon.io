@@ -13,12 +13,13 @@ use tokio::task::JoinHandle;
 use weacon_testing::TempDir;
 use weacon_version::Version;
 
+pub(crate) mod socket;
+
 pub(crate) use weacon_testing::{Records, messages, recording_logger, recording_sink};
 
 use crate::connections;
 use crate::db::{Db, Workspace};
 use crate::email::Email;
-use crate::feed;
 use crate::http::{self, Shared};
 use crate::mail::Outbox;
 use crate::pairing;
@@ -57,14 +58,7 @@ pub(crate) struct Fixture {
 impl Fixture {
     pub(crate) async fn new() -> Self {
         let dir = TempDir::new().unwrap();
-        let db = Db::create(&dir.join("weacon.db")).await.unwrap();
-        let workspace = db
-            .create_workspace(&workspace_id("w1"), "Team")
-            .await
-            .unwrap();
-        let ada = Email::parse("ada@example.com").unwrap();
-        let (m1, account) = (member_id("m1"), fresh_account());
-        workspace.add_member(&m1, &account, &ada).await.unwrap();
+        let db = with_ada(&dir).await;
         let (log, records) = recording_logger();
         // Its own logger: off Unix it warns, and tests read the fixture's records.
         let secret = Secret::open(&dir.join("secret"), &recording_logger().0).unwrap();
@@ -82,7 +76,7 @@ impl Fixture {
             proxies: Arc::new([]),
             connections: Arc::new(Semaphore::new(64)),
             // Short, so tests that wait for the feed's checks don't wait long.
-            feed: feed::Timing {
+            sockets: crate::socket::Timing {
                 hello_within: Duration::from_millis(100),
                 ping_every: Duration::from_millis(100),
             },
@@ -90,6 +84,7 @@ impl Fixture {
                 UNIX_EPOCH + Duration::from_secs(now.load(Ordering::Relaxed))
             })),
             changes: broadcast::channel(16).0,
+            unpaired: broadcast::channel(16).0,
             sign_ins: Arc::new(Semaphore::new(sign_in::AT_ONCE)),
             finish_within: Duration::ZERO,
             starts: Arc::new(sign_in::starts()),
@@ -145,6 +140,19 @@ pub(crate) fn letter_in(file: &Path) -> (String, String) {
     fs::remove_file(file).unwrap();
     let text = |key: &str| letter[key].as_str().unwrap().to_owned();
     (text("to"), text("code"))
+}
+
+/// A database holding workspace `w1`, whose member `m1` is ada@example.com.
+async fn with_ada(dir: &TempDir) -> Db {
+    let db = Db::create(&dir.join("weacon.db")).await.unwrap();
+    let workspace = db
+        .create_workspace(&workspace_id("w1"), "Team")
+        .await
+        .unwrap();
+    let ada = Email::parse("ada@example.com").unwrap();
+    let (m1, account) = (member_id("m1"), fresh_account());
+    workspace.add_member(&m1, &account, &ada).await.unwrap();
+    db
 }
 
 /// A server running on a port of its own until `stop` is sent.
@@ -256,6 +264,43 @@ pub(crate) async fn ask(
     let (head, body) = request_with(address, head, headers, body).await;
     let body = serde_json::from_str(&body).unwrap_or_default();
     (status(&head).to_owned(), body)
+}
+
+/// A machine paired with ada: the header proving her sign-in, her session's token, the
+/// machine as the confirmation gave it, and its token.
+pub(crate) struct Paired {
+    pub(crate) proof: String,
+    pub(crate) session: String,
+    pub(crate) machine: Value,
+    pub(crate) token: String,
+}
+
+/// A `POST /api/machines/pair` body.
+pub(crate) fn pairing_start(os: &str) -> String {
+    json!({ "name": "Studio", "os": os, "key": "ab".repeat(32) }).to_string()
+}
+
+/// Pairs a machine with ada, and claims it.
+pub(crate) async fn pair_machine(fixture: &Fixture, address: SocketAddr) -> Paired {
+    let (_, ada) = sign_in(fixture, address, "ada@example.com").await;
+    let proof = bearer(&ada);
+    let (_, pairing) = ask(
+        address,
+        "POST /api/machines/pair",
+        "",
+        &pairing_start("linux"),
+    )
+    .await;
+    let confirm = json!({ "pairing": pairing["pairing"], "code": pairing["code"] }).to_string();
+    let (_, machine) = ask(address, "POST /api/machines/pair/confirm", &proof, &confirm).await;
+    let claim = json!({ "pairing": pairing["pairing"], "secret": pairing["secret"] }).to_string();
+    let (_, claimed) = ask(address, "POST /api/machines/pair/claim", "", &claim).await;
+    Paired {
+        proof,
+        session: ada["token"].as_str().unwrap_or_default().to_owned(),
+        machine,
+        token: claimed["token"].as_str().unwrap_or_default().to_owned(),
+    }
 }
 
 /// Workspaces w1 and w2 on a new database. ada@example.com is m1 in w1 and m2 in w2, and
