@@ -208,10 +208,21 @@ pub struct ChatList {
     pub chats: Vec<ChatSummary>,
 }
 
+impl ChatAction {
+    pub(crate) const fn is_newer(&self) -> bool {
+        match self {
+            Self::Prompt { agent, .. } => matches!(agent, Some(AgentKind::Newer)),
+            Self::Permission { .. } | Self::Interrupt => false,
+            Self::Newer => true,
+        }
+    }
+}
+
 impl ChatEvent {
     pub(crate) const fn is_newer(&self) -> bool {
         match self {
-            Self::Prompt { .. } | Self::OutsidePrompt { .. } => false,
+            Self::Prompt { agent, .. } => matches!(agent, Some(AgentKind::Newer)),
+            Self::OutsidePrompt { .. } => false,
             Self::Receipt { receipt } => receipt.outcome.is_newer(),
             Self::Run { update } => update.event.is_newer(),
             Self::RunStatus { status } => status.is_newer(),
