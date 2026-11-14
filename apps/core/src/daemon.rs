@@ -424,6 +424,8 @@ mod tests {
             Places::default(),
             log,
         )?;
+        // The machine's own disk may be nearly full; a test reads its disk from a fake.
+        daemon.disk = disk::Watch::new(dir.to_path_buf(), |_| Ok(8 << 30));
         change(&mut daemon);
         let socket = daemon.socket.clone();
         let (stop, stopped) = oneshot::channel();

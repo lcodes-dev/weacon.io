@@ -289,9 +289,14 @@ impl Runs {
         let not_saved = || Fault::new(code!("runs.not_saved"), "The runs journal can't be saved");
         let json = stored(&next).map_err(|error| not_saved().because(error))?;
         let path = self.path.clone();
-        blocking(move || weacon_appkit::write_private(&path, &json))
-            .await
-            .map_err(|error| not_saved().because(error))?;
+        blocking(move || {
+            if let Some(dir) = path.parent() {
+                crate::platform::private_dir(dir)?;
+            }
+            weacon_appkit::write_private(&path, &json)
+        })
+        .await
+        .map_err(|error| not_saved().because(error))?;
         self.journal = next;
         Ok(())
     }
@@ -658,18 +663,19 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
-    async fn the_journal_is_readable_only_by_its_user() {
+    async fn the_journal_and_a_folder_it_makes_are_readable_only_by_its_user() {
         use std::os::unix::fs::PermissionsExt;
 
         let dir = TempDir::new().unwrap();
-        let mut runs = Runs::load(&dir).unwrap();
+        let state = dir.join("state");
+        let mut runs = Runs::load(&state).unwrap();
 
         begin(&mut runs, "c-1").await;
 
-        let mode = std::fs::metadata(dir.join("runs.json"))
-            .unwrap()
-            .permissions()
-            .mode();
-        assert_eq!(mode & 0o777, 0o600);
+        let mode = |path: &Path| std::fs::metadata(path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(
+            (mode(&state), mode(&state.join("runs.json"))),
+            (0o700, 0o600)
+        );
     }
 }
