@@ -89,26 +89,68 @@ mod unix {
 
 #[cfg(windows)]
 mod windows {
+    use std::ffi::OsString;
     use std::fs::{File, OpenOptions};
     use std::io;
+    use std::os::windows::ffi::OsStringExt;
     use std::os::windows::fs::OpenOptionsExt;
-    use std::path::Path;
+    use std::os::windows::io::AsRawHandle;
+    use std::path::{Path, PathBuf};
 
-    use windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT;
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_FLAG_OPEN_REPARSE_POINT, FILE_NAME_NORMALIZED, GetFinalPathNameByHandleW,
+        VOLUME_NAME_DOS,
+    };
 
-    /// Every folder on the way must be no reparse point, and the file is opened as itself.
+    /// The file is opened as itself, then refused when it is a link or when Windows says it
+    /// is anywhere but `root` joined with `parts`, as after a folder swapped for a junction.
     pub(super) fn open_parts(root: &Path, parts: &[&str]) -> io::Result<File> {
         let mut path = root.to_path_buf();
-        for part in parts {
-            path.push(part);
-            if std::fs::symlink_metadata(&path)?.file_type().is_symlink() {
-                return Err(io::Error::new(io::ErrorKind::InvalidInput, "a link"));
-            }
-        }
-        OpenOptions::new()
+        path.extend(parts);
+        let opened = OpenOptions::new()
             .read(true)
             .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
-            .open(path)
+            .open(&path)?;
+        if opened.metadata()?.file_type().is_symlink() || !same(&final_path(&opened)?, &path) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "not beneath its root",
+            ));
+        }
+        Ok(opened)
+    }
+
+    #[expect(unsafe_code, reason = "std can't say which file a handle opened")]
+    fn final_path(opened: &File) -> io::Result<PathBuf> {
+        let mut buffer = vec![0_u16; 512];
+        loop {
+            let room = u32::try_from(buffer.len()).map_err(io::Error::other)?;
+            let flags = FILE_NAME_NORMALIZED | VOLUME_NAME_DOS;
+            // SAFETY: the handle stays open for the call, and `buffer` holds `room` units.
+            let written = unsafe {
+                GetFinalPathNameByHandleW(opened.as_raw_handle(), buffer.as_mut_ptr(), room, flags)
+            };
+            let written = usize::try_from(written).map_err(io::Error::other)?;
+            if written == 0 {
+                return Err(io::Error::last_os_error());
+            }
+            // Too small, Windows answers with the room it needs, its NUL included.
+            if written < buffer.len() {
+                buffer.truncate(written);
+                return Ok(OsString::from_wide(&buffer).into());
+            }
+            buffer.resize(written, 0);
+        }
+    }
+
+    /// Whether two paths name the same file, as Windows compares names: without the `\\?\`
+    /// prefix and ignoring case.
+    fn same(one: &Path, other: &Path) -> bool {
+        let plain = |path: &Path| {
+            let text = path.to_string_lossy();
+            text.strip_prefix(r"\\?\").unwrap_or(&text).to_lowercase()
+        };
+        plain(one) == plain(other)
     }
 }
 
@@ -158,6 +200,27 @@ mod tests {
             fs::write(root.join(name), "inside").unwrap();
             assert_eq!(read(&root, name), None, "{name}");
         }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn follows_no_junction_at_any_step() {
+        let dir = TempDir::new().unwrap();
+        let root = dir.join("root");
+        fs::create_dir_all(root.join("real")).unwrap();
+        fs::write(root.join("real/c.md"), "inside").unwrap();
+        let made = std::process::Command::new("cmd")
+            .args(["/C", "mklink", "/J"])
+            .arg(root.join("folder"))
+            .arg(root.join("real"))
+            .output()
+            .unwrap();
+        assert!(made.status.success());
+        let root = root.canonicalize().unwrap();
+        assert_eq!(read(&root, "real/c.md").as_deref(), Some("inside"));
+        assert_eq!(read(&root, "REAL/c.md").as_deref(), Some("inside"));
+        assert_eq!(read(&root, "folder/c.md"), None);
+        assert_eq!(read(&root, "folder"), None);
     }
 
     #[cfg(unix)]
