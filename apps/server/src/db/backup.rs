@@ -150,8 +150,7 @@ mod tests {
     use weacon_testing::TempDir;
 
     use super::*;
-    use crate::email::Email;
-    use crate::test_support::{fresh_account, member_id, workspace_id};
+    use crate::test_support::{email, fresh_account, member_id, workspace_id};
 
     async fn team(dir: &TempDir) -> Db {
         let db = Db::create(&dir.join("weacon.db")).await.unwrap();
@@ -162,7 +161,7 @@ mod tests {
         team.add_member(
             &member_id("m1"),
             &fresh_account(),
-            &Email::parse("ada@example.com").unwrap(),
+            &email("ada@example.com"),
         )
         .await
         .unwrap();
@@ -178,11 +177,7 @@ mod tests {
         db.workspace(&workspace_id("w1"))
             .await
             .unwrap()
-            .add_member(
-                &member_id("m2"),
-                &fresh_account(),
-                &Email::parse("bo@example.com").unwrap(),
-            )
+            .add_member(&member_id("m2"), &fresh_account(), &email("bo@example.com"))
             .await
             .unwrap();
         restore(&backup, &restored).await.unwrap();

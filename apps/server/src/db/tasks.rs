@@ -213,17 +213,9 @@ mod tests {
     use weacon_testing::TempDir;
 
     use super::*;
-    use crate::test_support::{member_id, two_teams};
+    use crate::test_support::{member_id, new_task, two_teams};
 
     const NOW: i64 = 1_762_077_600;
-
-    fn new_task(id: &str, title: &str, order: &str) -> Task {
-        Task::new(
-            TaskId::try_from(id.to_owned()).unwrap(),
-            Title::try_from(title.to_owned()).unwrap(),
-            OrderKey::try_from(order.to_owned()).unwrap(),
-        )
-    }
 
     fn by(member: &str) -> Change {
         Change::by(member_id(member), NOW)

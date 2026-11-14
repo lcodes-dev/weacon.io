@@ -64,12 +64,13 @@ mod tests {
     use weacon_testing::TempDir;
 
     use super::*;
+    use crate::test_support::email;
 
     #[test]
     fn each_code_waits_whole_in_the_outbox() {
         let dir = TempDir::new().unwrap();
         Outbox::new(dir.to_path_buf())
-            .send(&Email::parse("ada@example.com").unwrap(), "123456")
+            .send(&email("ada@example.com"), "123456")
             .unwrap();
         let files: Vec<PathBuf> = fs::read_dir(&*dir)
             .unwrap()
@@ -105,7 +106,7 @@ mod tests {
     fn a_missing_outbox_is_a_failure() {
         let dir = TempDir::new().unwrap();
         let error = Outbox::new(dir.join("missing"))
-            .send(&Email::parse("ada@example.com").unwrap(), "123456")
+            .send(&email("ada@example.com"), "123456")
             .unwrap_err();
 
         assert_eq!(error.code().as_str(), "mail.failed");

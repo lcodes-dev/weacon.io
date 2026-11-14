@@ -179,7 +179,7 @@ mod tests {
     use weacon_protocol::TaskStatus;
 
     use super::*;
-    use crate::test_support::{self, Fixture, Running, request_with, run, status, workspace_id};
+    use crate::test_support::{Fixture, Running, bearer, request_with, status, workspace_id};
 
     struct Ada {
         address: SocketAddr,
@@ -228,12 +228,10 @@ mod tests {
 
     /// The running server, which stops once dropped, and ada signed in to it.
     async fn ada(fixture: &Fixture) -> (Running, Ada) {
-        let server = run(fixture.shared.clone()).await;
-        let (_, body) = test_support::sign_in(fixture, server.address, "ada@example.com").await;
-        let token = body["token"].as_str().unwrap();
+        let (server, body) = fixture.signed_in("ada@example.com").await;
         let ada = Ada {
             address: server.address,
-            auth: format!("authorization: Bearer {token}\r\n"),
+            auth: bearer(&body),
         };
         (server, ada)
     }

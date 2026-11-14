@@ -256,7 +256,7 @@ mod tests {
     use tokio::net::TcpStream;
 
     use super::*;
-    use crate::test_support::{Fixture, Running, header, messages, request, run};
+    use crate::test_support::{Fixture, Running, header, messages, request};
 
     struct Server {
         running: Running,
@@ -270,7 +270,7 @@ mod tests {
     async fn start_with(change: impl FnOnce(&mut Shared)) -> Server {
         let mut fixture = Fixture::new().await;
         change(&mut fixture.shared);
-        let running = run(fixture.shared.clone()).await;
+        let running = fixture.run().await;
         Server { running, fixture }
     }
 

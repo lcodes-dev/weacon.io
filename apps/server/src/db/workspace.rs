@@ -122,11 +122,7 @@ mod tests {
     use super::*;
     use crate::db::schema::STEPS;
     use crate::db::{Attempt, NewWorkspace};
-    use crate::test_support::{fresh_account, member_id, two_teams, workspace_id};
-
-    fn email(text: &str) -> Email {
-        Email::parse(text).unwrap()
-    }
+    use crate::test_support::{email, fresh_account, member_id, two_teams, workspace_id};
 
     async fn accounts(db: &Db) -> Vec<(String, String)> {
         sqlx::query_as("SELECT account_id, email FROM accounts ORDER BY email")

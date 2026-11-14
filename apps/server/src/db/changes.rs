@@ -102,10 +102,10 @@ impl Workspace {
 mod tests {
     use weacon_testing::TempDir;
 
-    use weacon_model::{Change, OrderKey, Task, Title};
+    use weacon_model::Change;
 
     use super::*;
-    use crate::test_support::{member_id, two_teams, workspace_id};
+    use crate::test_support::{member_id, new_task, two_teams, workspace_id};
 
     fn joined(seq: u64, member: &str) -> WorkspaceUpdate {
         WorkspaceUpdate {
@@ -160,11 +160,7 @@ mod tests {
     async fn a_task_change_names_its_task_and_version_and_needs_both() {
         let dir = TempDir::new().unwrap();
         let (one, _) = two_teams(&dir).await;
-        let task = Task::new(
-            TaskId::try_from("t1".to_owned()).unwrap(),
-            Title::try_from("Write".to_owned()).unwrap(),
-            OrderKey::try_from("V".to_owned()).unwrap(),
-        );
+        let task = new_task("t1", "Write", "V");
         one.add_task(&task, &Change::by(member_id("m1"), 0))
             .await
             .unwrap();

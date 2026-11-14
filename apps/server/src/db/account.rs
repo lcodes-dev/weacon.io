@@ -183,7 +183,7 @@ mod tests {
     use weacon_testing::TempDir;
 
     use super::*;
-    use crate::test_support::{member_id, workspace_id};
+    use crate::test_support::{email, member_id, workspace_id};
 
     fn personal(name: &str) -> NewWorkspace {
         NewWorkspace {
@@ -194,10 +194,6 @@ mod tests {
     }
 
     const NOW: i64 = 100_000;
-
-    fn email(text: &str) -> Email {
-        Email::parse(text).unwrap()
-    }
 
     fn id<T: TryFrom<String>>(text: &str) -> T {
         T::try_from(text.to_owned()).ok().unwrap()
