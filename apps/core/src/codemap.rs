@@ -14,6 +14,8 @@ mod fake;
 mod repo;
 mod watch;
 
+pub(crate) use repo::LARGEST;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
