@@ -13,6 +13,35 @@ token_id!(
     "not a build target"
 );
 
+/// When a core looks for a release, chosen by its owner. Only `off` keeps it from ever asking.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum UpdateSchedule {
+    Off,
+    /// Look once a day and say when one is out; install only when asked.
+    #[default]
+    Notify,
+    /// Look once a day and install what's out.
+    Daily,
+    /// Look once a week and install what's out.
+    Weekly,
+    /// A schedule this build doesn't know, from a newer one; only ever received.
+    #[serde(other)]
+    #[schemars(skip)]
+    Newer,
+}
+
+impl UpdateSchedule {
+    /// The schedule to act on: one this build doesn't know only notifies.
+    #[must_use]
+    pub const fn effective(self) -> Self {
+        match self {
+            Self::Newer => Self::Notify,
+            Self::Off | Self::Notify | Self::Daily | Self::Weekly => self,
+        }
+    }
+}
+
 /// A release, as its signed manifest describes it; a core reads it to update itself.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ReleaseManifest {
@@ -252,6 +281,23 @@ mod tests {
                 "sha256": SHA,
             }],
         })
+    }
+
+    #[test]
+    fn schedules_travel_as_names_and_unknown_ones_only_notify() {
+        let schedules = [
+            (UpdateSchedule::Off, "off"),
+            (UpdateSchedule::Notify, "notify"),
+            (UpdateSchedule::Daily, "daily"),
+            (UpdateSchedule::Weekly, "weekly"),
+        ];
+        for (schedule, name) in schedules {
+            assert_eq!(serde_json::to_value(schedule).unwrap(), json!(name));
+            assert_eq!(schedule.effective(), schedule);
+        }
+        let newer: UpdateSchedule = serde_json::from_value(json!("hourly")).unwrap();
+        assert_eq!(newer.effective(), UpdateSchedule::Notify);
+        assert_eq!(UpdateSchedule::default(), UpdateSchedule::Notify);
     }
 
     #[test]
