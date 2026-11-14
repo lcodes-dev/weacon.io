@@ -13,6 +13,7 @@ use weacon_protocol::{AccessLevel, AgentKind, AgentSession, App, RunId, code};
 use crate::access::Rules;
 use crate::run::{self, AgentRun};
 use crate::spawn::SpawnPolicy;
+use crate::wire::Wire;
 use crate::{claude, codex};
 
 /// How to start one of the person's own agents for one workspace.
@@ -153,19 +154,15 @@ impl Launch {
         }
     }
 
-    fn command(
-        &self,
-        app: &App,
-        session: Option<&AgentSession>,
-    ) -> Result<(Command, run::Wire), Fault> {
+    fn command(&self, app: &App, session: Option<&AgentSession>) -> Result<(Command, Wire), Fault> {
         match self.agent {
             AgentKind::Claude => Ok((
                 claude::command(self, session),
-                run::Wire::Claude(claude::Wire::default()),
+                Wire::Claude(claude::Wire::default()),
             )),
             AgentKind::Codex => Ok((
                 codex::command(self),
-                run::Wire::Codex(codex::Wire::new(session.cloned(), app, self.access)),
+                Wire::Codex(codex::Wire::new(session.cloned(), app, self.access)),
             )),
             AgentKind::Newer => Err(unknown()),
         }
@@ -287,8 +284,8 @@ mod tests {
 
         assert_eq!(claude.as_deref(), Some("--print".as_ref()));
         assert_eq!(codex.as_deref(), Some("app-server".as_ref()));
-        assert!(matches!(claude_wire, run::Wire::Claude(_)));
-        assert!(matches!(codex_wire, run::Wire::Codex(_)));
+        assert!(matches!(claude_wire, Wire::Claude(_)));
+        assert!(matches!(codex_wire, Wire::Codex(_)));
     }
 
     #[test]

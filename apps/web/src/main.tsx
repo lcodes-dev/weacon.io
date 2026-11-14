@@ -5,13 +5,14 @@ import "./app.css";
 import { App } from "./app.tsx";
 import { ME } from "./build.ts";
 import { type Send, deliver, prompt, requestId } from "./composer/prompt.ts";
-import { Connection, type Status } from "./connection.ts";
-import { NO_CHANGES, ask, cut, needsAsking, receive } from "./diff/changes.ts";
+import { type Asks, Connection, type Status } from "./connection.ts";
+import { DIFF_VIEW, NO_CHANGES, ask, cut, needsAsking, receive } from "./diff/changes.ts";
 import { Feed, nextFrame } from "./feed.ts";
 import { Log } from "./log.ts";
 import { placeOf } from "./place.ts";
 import { Receipts } from "./receipts.ts";
-import { serverUrl } from "./server.ts";
+import { fakeServerUrl } from "./server.ts";
+import { Shell } from "./shell/shell.tsx";
 import { EMPTY, apply } from "./transcript.ts";
 
 const log = new Log();
@@ -28,8 +29,9 @@ window.addEventListener("error", crash);
 window.addEventListener("unhandledrejection", crash);
 log.info("app started");
 const place = placeOf(window.location.search);
+const TRANSCRIPT: Asks = { needs: "run.stream", offers: [DIFF_VIEW] };
 
-function Root() {
+function Root({ url }: { url: string }) {
   const [status, setStatus] = useState<Status>({ state: "connecting" });
   const [transcript, setTranscript] = useState(EMPTY);
   const [send, setSend] = useState<Send>();
@@ -42,7 +44,7 @@ function Root() {
     let current = true;
     let socket: WebSocket;
     try {
-      socket = new WebSocket(serverUrl(window.location));
+      socket = new WebSocket(url);
     } catch {
       // Only a malformed `?server=` gets here.
       setStatus({ state: "ended", code: "connection.refused" });
@@ -91,18 +93,18 @@ function Root() {
           feed.push(envelope);
         }
       },
-    });
+    }, TRANSCRIPT);
     connected.current = connection;
     return () => {
       current = false;
       socket.close();
     };
-  }, []);
+  }, [url]);
   const openChanges = () => {
     // Asked the first time they are opened, and again after answers were cut short.
     if (needsAsking(changes) && place !== undefined && connected.current !== undefined) {
       const request = requestId(crypto.getRandomValues(new Uint8Array(16)));
-      const { query, changes: asked } = ask(++lastId.current, request, place.workspace, place.chat);
+      const { query, changes: asked } = ask(++lastId.current, request, place.workspace, place.chat, changes);
       setChanges(asked);
       connected.current.send(query);
     }
@@ -112,11 +114,12 @@ function Root() {
   );
 }
 
+const fake = fakeServerUrl(window.location);
 const root = document.getElementById("root");
 if (root !== null) {
   createRoot(root).render(
     <StrictMode>
-      <Root />
+      {fake === undefined ? <Shell fetch={fetch.bind(window)} /> : <Root url={fake} />}
     </StrictMode>,
   );
 }
