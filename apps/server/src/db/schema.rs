@@ -389,13 +389,59 @@ mod tests {
         "pairings",
     ];
 
+    // The tables FTS5 makes for a virtual table's rows, named after it, which can't lead with
+    // the workspace; they are left out only beside a virtual table whose first column does.
+    const SHADOWS: [&str; 5] = ["data", "idx", "content", "docsize", "config"];
+
     async fn tables(db: &Db) -> Vec<String> {
-        sqlx::query_scalar(
-            "SELECT name FROM sqlite_schema WHERE type = 'table' AND name NOT LIKE 'sqlite_%'",
+        let all: Vec<(String, bool)> = sqlx::query_as(
+            "SELECT name, sql LIKE 'CREATE VIRTUAL TABLE %' FROM sqlite_schema \
+             WHERE type = 'table' AND name NOT LIKE 'sqlite_%'",
         )
         .fetch_all(&db.readers)
         .await
-        .unwrap()
+        .unwrap();
+        let mut shadows = Vec::new();
+        for (name, virtual_table) in &all {
+            let first = "SELECT name FROM pragma_table_info(?) WHERE cid = 0";
+            if *virtual_table && first_columns(db, first, name).await == ["workspace_id"] {
+                shadows.extend(SHADOWS.map(|shadow| format!("{name}_{shadow}")));
+            }
+        }
+        all.into_iter()
+            .map(|(name, _)| name)
+            .filter(|name| !shadows.contains(name))
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn only_a_virtual_table_led_by_the_workspace_hides_its_shadow_tables() {
+        let dir = TempDir::new().unwrap();
+        let db = Db::create(&dir.join("weacon.db")).await.unwrap();
+        let before = tables(&db).await;
+        sqlx::raw_sql(
+            "CREATE VIRTUAL TABLE led USING fts5(workspace_id UNINDEXED, body); \
+             CREATE VIRTUAL TABLE stray USING fts5(body, workspace_id UNINDEXED); \
+             CREATE TABLE led_extra (body TEXT)",
+        )
+        .execute(&db.writer)
+        .await
+        .unwrap();
+
+        let added: Vec<String> = tables(&db).await.split_off(before.len());
+        assert_eq!(
+            added,
+            [
+                "led",
+                "stray",
+                "stray_data",
+                "stray_idx",
+                "stray_content",
+                "stray_docsize",
+                "stray_config",
+                "led_extra"
+            ]
+        );
     }
 
     #[tokio::test]
