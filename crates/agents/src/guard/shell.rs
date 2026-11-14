@@ -19,6 +19,8 @@ pub(crate) struct Simple {
     pub(crate) words: Vec<Word>,
     /// Files its output is written to.
     pub(crate) writes: Vec<Word>,
+    /// Files its input is read from.
+    pub(crate) reads: Vec<Word>,
     /// Reads its input from a file, a pipe or text in the command line.
     pub(crate) fed: bool,
 }
@@ -26,15 +28,23 @@ pub(crate) struct Simple {
 /// The simple commands in `line`, those inside substitutions included; `None` when it can't be
 /// split for sure, as with an unclosed quote.
 pub(crate) fn parse(line: &str) -> Option<Vec<Simple>> {
-    let chars: Vec<char> = line.chars().collect();
+    parse_nested(line, 0)
+}
+
+// Far deeper than any real command; deeper nesting would exhaust the stack.
+const MAX_DEPTH: usize = 32;
+
+fn parse_nested(line: &str, depth: usize) -> Option<Vec<Simple>> {
     let mut parser = Parser {
-        chars,
+        chars: line.chars().collect(),
         at: 0,
         found: Vec::new(),
         heredocs: Vec::new(),
+        depth,
+        unsure: false,
     };
     parser.list(None)?;
-    Some(parser.found)
+    (!parser.unsure).then_some(parser.found)
 }
 
 struct Parser {
@@ -43,6 +53,10 @@ struct Parser {
     found: Vec<Simple>,
     // Delimiters of here-documents whose text starts at the next line.
     heredocs: Vec<String>,
+    // How many substitutions this text is inside.
+    depth: usize,
+    // Met something it can split but not follow, such as a `case` inside a substitution.
+    unsure: bool,
 }
 
 impl Parser {
@@ -85,6 +99,16 @@ impl Parser {
 
     // Commands up to `end`, or the end of the line.
     fn list(&mut self, end: Option<char>) -> Option<()> {
+        if self.depth > MAX_DEPTH {
+            return None;
+        }
+        self.depth += 1;
+        let listed = self.commands(end);
+        self.depth -= 1;
+        listed
+    }
+
+    fn commands(&mut self, end: Option<char>) -> Option<()> {
         let mut simple = Simple::default();
         let mut word: Option<Word> = None;
         loop {
@@ -99,7 +123,7 @@ impl Parser {
             }
             let before = self.at;
             self.step(char, &mut simple, &mut word)?;
-            // Every step reads something; one that didn't would never end.
+            // Every step reads something; this bounds the loop should one ever not.
             if self.at <= before {
                 return None;
             }
@@ -195,13 +219,14 @@ impl Parser {
             self.advance(1);
         }
         let target = self.target()?;
-        if writes
-            && !target
-                .text
-                .chars()
-                .all(|char| char.is_ascii_digit() || char == '-')
-        {
+        let descriptor = target
+            .text
+            .chars()
+            .all(|char| char.is_ascii_digit() || char == '-');
+        if writes && !descriptor {
             simple.writes.push(target);
+        } else if !writes {
+            simple.reads.push(target);
         }
         Some(())
     }
@@ -241,8 +266,13 @@ impl Parser {
     fn skip_heredoc(&mut self, delimiter: &str) -> Option<()> {
         loop {
             let before = self.at;
-            if self.line()?.trim_start_matches('\t') == delimiter {
+            let line = self.line()?;
+            if line.trim_start_matches('\t') == delimiter {
                 return Some(());
+            }
+            // The shell runs substitutions in the text unless its delimiter was quoted.
+            if line.contains("$(") || line.contains('`') {
+                return None;
             }
             if self.at <= before {
                 return None;
@@ -281,6 +311,16 @@ impl Parser {
             }
             '*' | '?' | '[' => {
                 word.glob = true;
+                word.text.push(char);
+            }
+            '{' => {
+                // With a `,` or `..` inside, the shell expands it to several words.
+                let rest = self.chars.get(self.at..).unwrap_or_default();
+                let inside: String = rest
+                    .iter()
+                    .take_while(|next| !matches!(next, '}' | ' ' | '\t' | '\n' | ';' | '|' | '&'))
+                    .collect();
+                word.dynamic |= inside.contains(',') || inside.contains("..");
                 word.text.push(char);
             }
             _ => word.text.push(char),
@@ -333,6 +373,10 @@ impl Parser {
             Some('{') => {
                 self.advance(1);
                 let name = self.until('}')?;
+                // A default value can hold a substitution, which this doesn't follow.
+                if name.contains(['$', '`']) {
+                    return None;
+                }
                 home_or_unknown(word, &name);
                 return Some(());
             }
@@ -359,7 +403,7 @@ impl Parser {
 
     fn backquoted(&mut self, word: &mut Word) -> Option<()> {
         let inner = self.until('`')?;
-        self.found.extend(parse(&inner)?);
+        self.found.extend(parse_nested(&inner, self.depth + 1)?);
         word.dynamic = true;
         Some(())
     }
@@ -367,7 +411,11 @@ impl Parser {
     fn finish(&mut self, simple: &mut Simple, word: &mut Option<Word>) {
         end_word(simple, word);
         let done = std::mem::take(simple);
-        if !done.words.is_empty() || !done.writes.is_empty() {
+        // A `case` pattern's `)` would close the substitution it's in too early.
+        if self.depth > 1 && done.words.first().is_some_and(|word| word.text == "case") {
+            self.unsure = true;
+        }
+        if !done.words.is_empty() || !done.writes.is_empty() || !done.reads.is_empty() {
             self.found.push(done);
         }
     }

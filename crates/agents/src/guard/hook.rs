@@ -17,7 +17,7 @@ struct ToolUse {
 }
 
 /// The reason to ask about the tool call in `input`, a pre-tool hook's JSON, with the
-/// context `context` builds for the folder the call runs in; `Err` when `input` isn't one.
+/// context `context` builds for the folder the call runs in.
 ///
 /// # Errors
 /// When `input` isn't a pre-tool hook's JSON.

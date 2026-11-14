@@ -1,0 +1,158 @@
+//! Programs that run code or queries given in their arguments: shells, interpreters and
+//! database clients.
+
+use std::path::Path;
+
+use super::shell::{Simple, Word};
+use super::words::{family, short_flags};
+use super::{Context, Reason, check_command};
+
+const SHELLS: [&str; 6] = ["sh", "bash", "zsh", "dash", "ksh", "fish"];
+// Shells whose code isn't the POSIX shell's, so the guard can't read it.
+const OTHER_SHELLS: [&str; 4] = ["pwsh", "powershell", "cmd", "csh"];
+const INTERPRETERS: [&str; 10] = [
+    "python",
+    "node",
+    "perl",
+    "ruby",
+    "deno",
+    "bun",
+    "php",
+    "lua",
+    "osascript",
+    "rscript",
+];
+const AWKS: [&str; 4] = ["awk", "gawk", "mawk", "nawk"];
+const DATABASES: [&str; 10] = [
+    "psql",
+    "mysql",
+    "mariadb",
+    "sqlite",
+    "mongo",
+    "mongosh",
+    "cqlsh",
+    "clickhouse-client",
+    "duckdb",
+    "sqlcmd",
+];
+// Short options that make an interpreter run text from the command line, and long ones.
+const INLINE: [char; 5] = ['c', 'e', 'E', 'p', 'r'];
+const INLINE_LONG: [&str; 4] = ["--eval", "--print", "--command", "--exec"];
+const DROPS: [&str; 6] = [
+    "drop database",
+    "drop schema",
+    "drop table",
+    "drop collection",
+    "dropdatabase",
+    "truncate ",
+];
+
+/// What a program that runs code needs a person for; nothing when it isn't one.
+pub(super) fn judge(
+    name: &str,
+    args: &[Word],
+    simple: &Simple,
+    context: &Context,
+    cwd: &Path,
+) -> Option<Reason> {
+    let kind = family(name);
+    if SHELLS.contains(&kind) {
+        return shell(args, simple, context, cwd);
+    }
+    if OTHER_SHELLS.contains(&kind) {
+        return (!args.is_empty() || simple.fed).then_some(Reason::Unsure);
+    }
+    if INTERPRETERS.contains(&kind) {
+        return interpreter(args, simple);
+    }
+    if AWKS.contains(&kind) {
+        return awk(args);
+    }
+    database(name, args, simple)
+}
+
+// `-c` may come alone or among other short options, as in `bash -lc`, and the code is the
+// first word after it that isn't an option.
+fn shell(args: &[Word], simple: &Simple, context: &Context, cwd: &Path) -> Option<Reason> {
+    let inline = args
+        .iter()
+        .position(|arg| short_flags(&arg.text).is_some_and(|flags| flags.contains('c')));
+    let Some(inline) = inline else {
+        // Commands from a pipe or a here-document aren't in the command line.
+        return simple.fed.then_some(Reason::Unsure);
+    };
+    let code = args
+        .get(inline + 1..)
+        .and_then(|rest| rest.iter().find(|arg| !arg.text.starts_with('-')));
+    let Some(code) = code.filter(|code| !code.dynamic) else {
+        return Some(Reason::Unsure);
+    };
+    let inner = Context {
+        cwd: cwd.to_path_buf(),
+        ..context.clone()
+    };
+    check_command(&code.text, &inner)
+}
+
+fn interpreter(args: &[Word], simple: &Simple) -> Option<Reason> {
+    let inline = args.iter().any(|arg| {
+        short_flags(&arg.text).is_some_and(|flags| flags.contains(INLINE))
+            || INLINE_LONG
+                .iter()
+                .any(|option| arg.text.starts_with(option))
+    });
+    (inline || simple.fed).then_some(Reason::Unsure)
+}
+
+// An awk program can run commands and write files; a plain one only reads.
+fn awk(args: &[Word]) -> Option<Reason> {
+    let risky = args.iter().any(|arg| {
+        arg.dynamic
+            || ["-i", "-f", "--include", "--file"].contains(&arg.text.as_str())
+            || ["system", "getline", "|", ">"]
+                .iter()
+                .any(|part| arg.text.contains(part))
+    });
+    risky.then_some(Reason::Unsure)
+}
+
+fn database(name: &str, args: &[Word], simple: &Simple) -> Option<Reason> {
+    let words: Vec<String> = args.iter().map(|arg| statement(&arg.text)).collect();
+    let says = |action: &[&str]| words.iter().any(|word| action.contains(&word.trim()));
+    match name {
+        "dropdb" => return Some(Reason::DropDatabase),
+        "mysqladmin" => return says(&["drop"]).then_some(Reason::DropDatabase),
+        "redis-cli" => return says(&["flushall", "flushdb"]).then_some(Reason::DropDatabase),
+        _ => {}
+    }
+    if !DATABASES.contains(&family(name)) {
+        return None;
+    }
+    if words
+        .iter()
+        .any(|word| DROPS.iter().any(|drop| word.contains(drop)))
+    {
+        return Some(Reason::DropDatabase);
+    }
+    let unknown = args.iter().any(|arg| arg.dynamic);
+    (simple.fed || unknown).then_some(Reason::Unsure)
+}
+
+// A statement lowercase, with comments gone and each run of space as one, so spacing can't
+// hide what it does.
+fn statement(text: &str) -> String {
+    let mut plain = String::new();
+    let mut rest = text;
+    while let Some((before, after)) = rest.split_once("/*") {
+        plain.push_str(before);
+        plain.push(' ');
+        rest = after.split_once("*/").map_or("", |(_, after)| after);
+    }
+    plain.push_str(rest);
+    plain
+        .to_ascii_lowercase()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        + " "
+}

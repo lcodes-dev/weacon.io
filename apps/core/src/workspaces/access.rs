@@ -21,7 +21,7 @@ pub(crate) struct Settings {
     team: bool,
     /// Commands the guard also asks about, each as its first words.
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub(crate) guard: Vec<String>,
+    pub(crate) additions: Vec<Vec<String>>,
 }
 
 impl Default for Settings {
@@ -29,7 +29,7 @@ impl Default for Settings {
         Self {
             access: AccessLevel::AskFirst,
             team: false,
-            guard: Vec::new(),
+            additions: Vec::new(),
         }
     }
 }
@@ -111,11 +111,10 @@ pub(crate) fn run(
         (None, Ok(current)) => current.team,
         (None, Err(_)) => return current.map(drop),
     };
-    let guard = current.map(|current| current.guard).unwrap_or_default();
     let settings = Settings {
         access,
         team,
-        guard,
+        ..current.unwrap_or_default()
     };
     // The workspace's folder makes it one this machine knows.
     let saved =
@@ -178,7 +177,7 @@ mod tests {
             Settings {
                 access: AccessLevel::ReadOnly,
                 team: false,
-                guard: Vec::new(),
+                additions: Vec::new(),
             }
         );
         assert_eq!(
@@ -218,7 +217,7 @@ mod tests {
             Settings {
                 access,
                 team,
-                guard: Vec::new(),
+                additions: Vec::new(),
             }
             .warning()
         };
@@ -250,7 +249,7 @@ mod tests {
             Settings {
                 access: AccessLevel::Full,
                 team: true,
-                guard: Vec::new(),
+                additions: Vec::new(),
             }
         );
         let newer = read(r#"{"access":"sandboxed"}"#).unwrap();

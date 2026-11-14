@@ -1,18 +1,20 @@
 //! The guardrail: the operations a person is always asked about, whatever the access level.
 
+mod code;
 mod git;
 mod hook;
 mod rules;
 mod shell;
 mod words;
 
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 
 use serde_json::Value;
 
 pub use hook::{claude_ask, claude_hook};
 
 use crate::access::resolve;
+use crate::{claude, codex};
 use shell::Word;
 
 /// Where an agent works and what it must never touch without asking.
@@ -29,8 +31,8 @@ pub struct Context {
     pub weacon: Vec<PathBuf>,
     /// The vendors' credential folders and files, which no agent reads or writes.
     pub credentials: Vec<PathBuf>,
-    /// The workspace's own additions: each the first words of a command to ask about.
-    pub extensions: Vec<Vec<String>>,
+    /// The workspace's additions: each the first words of a command to ask about.
+    pub additions: Vec<Vec<String>>,
 }
 
 /// Why a person is asked.
@@ -46,7 +48,7 @@ pub enum Reason {
     CleanMainCheckout,
     DropDatabase,
     Credentials,
-    Extension,
+    Addition,
     Unsure,
 }
 
@@ -65,7 +67,7 @@ impl Reason {
             Self::CleanMainCheckout => "It cleans the main checkout.",
             Self::DropDatabase => "It drops a database.",
             Self::Credentials => "It reaches an agent's credentials.",
-            Self::Extension => "This workspace asks about it.",
+            Self::Addition => "This workspace asks about it.",
             Self::Unsure => "Weacon can't tell what it does.",
         }
     }
@@ -91,21 +93,37 @@ pub fn check_tool(tool: &str, input: &Value, context: &Context) -> Option<Reason
         "Bash" => path("command").map_or(Some(Reason::Unsure), |line| check_command(line, context)),
         "Edit" | "MultiEdit" | "Write" | "NotebookEdit" => {
             let file = path("file_path").or_else(|| path("notebook_path"));
-            let file = file.and_then(|file| absolute(&context.cwd, file));
             file.map_or(Some(Reason::Unsure), |file| {
-                changing(&file, context, Reason::WriteOutside)
+                check_path(&context.cwd.join(file), context, Reason::WriteOutside)
             })
         }
-        "Read" | "NotebookRead" | "Grep" | "Glob" | "LS" => ["file_path", "notebook_path", "path"]
-            .into_iter()
-            .filter_map(path)
-            .find_map(|file| reading(&absolute(&context.cwd, file)?, context)),
+        "Read" | "NotebookRead" | "Grep" | "Glob" | "LS" => {
+            let deep = matches!(tool, "Grep" | "Glob");
+            ["file_path", "notebook_path", "path"]
+                .into_iter()
+                .filter_map(path)
+                .find_map(|file| reading(&context.cwd.join(file), context, deep))
+        }
         _ => None,
     }
 }
 
+/// The vendors' folders and files under `home` that hold a sign-in.
+#[must_use]
+pub fn credential_folders(home: &Path) -> Vec<PathBuf> {
+    claude::CREDENTIALS
+        .iter()
+        .chain(&codex::CREDENTIALS)
+        .chain(&GH_CREDENTIALS)
+        .map(|name| home.join(name))
+        .collect()
+}
+
+// The GitHub CLI's sign-in, which agents use too.
+const GH_CREDENTIALS: [&str; 1] = [".config/gh"];
+
 // Asks unless `file` is inside the worktree and outside Weacon's and the vendors' folders.
-fn changing(file: &Path, context: &Context, outside: Reason) -> Option<Reason> {
+fn check_path(file: &Path, context: &Context, outside: Reason) -> Option<Reason> {
     let Some(file) = resolve(file) else {
         return Some(Reason::Unsure);
     };
@@ -118,9 +136,17 @@ fn changing(file: &Path, context: &Context, outside: Reason) -> Option<Reason> {
     (!under(&file, &context.worktree)).then_some(outside)
 }
 
-fn reading(file: &Path, context: &Context) -> Option<Reason> {
-    let file = resolve(file).unwrap_or_else(|| file.to_path_buf());
-    under_any(&file, &context.credentials).then_some(Reason::Credentials)
+// Asks about a path inside a credential folder, or, for a `deep` read that goes through
+// folders, above one.
+fn reading(file: &Path, context: &Context, deep: bool) -> Option<Reason> {
+    let Some(file) = resolve(file) else {
+        return Some(Reason::Unsure);
+    };
+    let near = context.credentials.iter().any(|folder| {
+        under(&file, folder)
+            || (deep && resolve(folder).is_some_and(|folder| starts_with(&folder, &file)))
+    });
+    near.then_some(Reason::Credentials)
 }
 
 fn under_any(file: &Path, folders: &[PathBuf]) -> bool {
@@ -128,56 +154,45 @@ fn under_any(file: &Path, folders: &[PathBuf]) -> bool {
 }
 
 fn under(file: &Path, folder: &Path) -> bool {
-    resolve(folder).is_some_and(|folder| file.starts_with(folder))
+    resolve(folder).is_some_and(|folder| starts_with(file, &folder))
 }
 
-/// `text` as an absolute path from `cwd`, `..` worked out; `None` if it climbs above the root.
-fn absolute(cwd: &Path, text: &str) -> Option<PathBuf> {
-    let mut path = PathBuf::new();
-    for part in cwd.join(text).components() {
-        match part {
-            Component::ParentDir => {
-                if !path.pop() {
-                    return None;
-                }
-            }
-            Component::CurDir => {}
-            other @ (Component::Prefix(_) | Component::RootDir | Component::Normal(_)) => {
-                path.push(other);
-            }
-        }
-    }
-    Some(path)
-}
-
-/// What a person must be asked before `word`, a file the command changes, is changed.
-fn changed(word: &Word, context: &Context, cwd: &Path, outside: Reason) -> Option<Reason> {
-    path_of(word, context, cwd).map_or(Some(Reason::Unsure), |path| {
-        changing(&path, context, outside)
+// Some file systems ignore case, so `.Claude` may be `.claude`.
+fn starts_with(path: &Path, prefix: &Path) -> bool {
+    let mut parts = path.components();
+    prefix.components().all(|part| {
+        parts
+            .next()
+            .is_some_and(|other| other.as_os_str().eq_ignore_ascii_case(part.as_os_str()))
     })
 }
 
-/// The absolute path `word` names, or `None` when the command line doesn't say.
+/// What a person must be asked before `word`, a file the command changes, is changed.
+fn check_word(word: &Word, context: &Context, cwd: &Path, outside: Reason) -> Option<Reason> {
+    path_of(word, context, cwd).map_or(Some(Reason::Unsure), |path| {
+        check_path(&path, context, outside)
+    })
+}
+
+/// The path `word` names from `cwd`, `..` left for the file system to follow after any
+/// symlink, or `None` when the command line doesn't say.
 fn path_of(word: &Word, context: &Context, cwd: &Path) -> Option<PathBuf> {
     if word.dynamic {
         return None;
     }
-    let text = if word.tilde {
-        let rest = word.text.strip_prefix('~')?;
-        if !(rest.is_empty() || rest.starts_with('/')) {
-            return None;
-        }
-        context
-            .home
-            .as_ref()?
-            .join(rest.trim_start_matches('/'))
-            .to_str()?
-            .to_owned()
+    let text = if word.glob {
+        before_glob(&word.text)?
     } else {
         word.text.clone()
     };
-    let text = if word.glob { before_glob(&text)? } else { text };
-    absolute(cwd, &text)
+    if !word.tilde {
+        return Some(cwd.join(text));
+    }
+    let rest = text.strip_prefix('~')?;
+    if !(rest.is_empty() || rest.starts_with('/')) {
+        return None;
+    }
+    Some(context.home.as_ref()?.join(rest.trim_start_matches('/')))
 }
 
 // The folders before the first part with a wildcard; `None` if a later part climbs with `..`.
@@ -227,7 +242,7 @@ mod tests {
             home: Some(dir.join("home")),
             weacon: vec![dir.join("state")],
             credentials: vec![dir.join("home/.claude"), dir.join("home/.codex")],
-            extensions: vec![vec!["terraform".to_owned(), "destroy".to_owned()]],
+            additions: vec![vec!["terraform".to_owned(), "destroy".to_owned()]],
         }
     }
 
@@ -296,7 +311,7 @@ mod tests {
                 Reason::Weacon,
             ),
             (in_state.as_str(), Reason::WeaconFolder),
-            ("terraform destroy -auto-approve", Reason::Extension),
+            ("terraform destroy -auto-approve", Reason::Addition),
             ("bash -c 'rm -rf /'", Reason::DeleteOutside),
             ("echo $(rm -rf /)", Reason::DeleteOutside),
         ] {
@@ -449,7 +464,7 @@ mod tests {
 
         assert_eq!(check("_X=1 rm -rf /"), Some(Reason::DeleteOutside));
         assert_eq!(check("X_Y=1 rm -rf /"), Some(Reason::DeleteOutside));
-        assert_eq!(check("1X=1 rm -rf /"), None);
+        assert_eq!(check("1X=1 rm /tmp/x"), None);
         let home = Context {
             cwd: dir.join("home"),
             ..context.clone()
@@ -520,7 +535,7 @@ mod tests {
             Reason::CleanMainCheckout,
             Reason::DropDatabase,
             Reason::Credentials,
-            Reason::Extension,
+            Reason::Addition,
             Reason::Unsure,
         ];
         let texts: std::collections::BTreeSet<&str> =
@@ -539,5 +554,183 @@ mod tests {
 
         assert_eq!(resolve(&dir.join("file/inside")), None);
         assert!(resolve(&dir.join("missing/inside")).is_some());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_parent_after_a_symlink_is_the_symlinks_parent() {
+        let dir = TempDir::new().unwrap();
+        let context = context(&dir);
+        std::os::unix::fs::symlink(dir.join("main/src"), dir.join("wt/up")).unwrap();
+        fs::create_dir_all(dir.join("main/src")).unwrap();
+
+        assert_eq!(
+            check_command("rm -rf up/../keep", &context),
+            Some(Reason::DeleteOutside)
+        );
+    }
+
+    #[test]
+    fn code_hidden_in_expansions_asks() {
+        let dir = TempDir::new().unwrap();
+        let context = context(&dir);
+        let check = |line: &str| check_command(line, &context);
+        let deep = format!("{}rm -rf /{}", "echo $(".repeat(5000), ")".repeat(5000));
+
+        assert_eq!(check(&deep), Some(Reason::Unsure));
+        for line in [
+            "rm -rf ${X:-$(echo /)}",
+            "rm -rf ${X:-`echo /`}",
+            "cat <<EOF > notes.md\n$(rm -rf /)\nEOF",
+            "cat <<EOF > notes.md\n`rm -rf /`\nEOF",
+            "rm -rf {/,x}",
+            "rm -rf /{a..c}",
+            "echo $(case x in x) rm -rf /;; esac)",
+            "cd nowhere && rm -rf x",
+            "find / -fprint out",
+            "env -C / rm -rf x",
+            "env --chdir=/ rm -rf x",
+            "env -S 'rm -rf /'",
+            "sudo -D / rm -rf x",
+            "ssh host rm -rf /",
+            "GIT_DIR=/elsewhere git reset --hard",
+            "python3 -c 'print(1)'",
+            "python3.12 -Ic 'print(1)'",
+            "node -e 1",
+            "perl -pe 1 notes.md",
+            "ruby --eval=1",
+            "pwsh -Command 'Remove-Item -Recurse /'",
+            "awk -i inplace 1 notes.md",
+            "awk '{ system(\"rm -rf /\") }' notes.md",
+            "ln -s / out",
+            "git -c alias.st='!rm -rf /' st",
+            "git -c core.fsmonitor=evil status",
+            "git --config-env=core.pager=X log",
+        ] {
+            assert_eq!(check(line), Some(Reason::Unsure), "{line}");
+        }
+        for line in [
+            "GIT_PAGER=cat git log",
+            "git -c user.name=me commit -m x",
+            "pwsh",
+            "awk '{ print $1 }' notes.md",
+            "python3 script.py",
+        ] {
+            assert_eq!(check(line), None, "{line}");
+        }
+    }
+
+    #[test]
+    fn wrappers_and_their_options_are_seen_through() {
+        let dir = TempDir::new().unwrap();
+        let context = context(&dir);
+        let check = |line: &str| check_command(line, &context);
+
+        for line in [
+            "find -L / -delete",
+            "find -D tree / -delete",
+            "strace -o trace.log rm -rf /",
+            "busybox rm -rf /",
+            "bash -lc 'rm -rf /'",
+            "cd .. && rm -rf main",
+        ] {
+            assert_eq!(check(line), Some(Reason::DeleteOutside), "{line}");
+        }
+        for line in [
+            "cp --target-directory=/etc notes.md",
+            "sed -ni s/a/b/p /etc/hosts",
+            "echo x > /etc/hosts",
+        ] {
+            assert_eq!(check(line), Some(Reason::WriteOutside), "{line}");
+        }
+        assert_eq!(
+            check("terraform -chdir=infra destroy"),
+            Some(Reason::Addition)
+        );
+    }
+
+    #[test]
+    fn reads_that_reach_credentials_ask() {
+        let dir = TempDir::new().unwrap();
+        let context = context(&dir);
+        let check = |line: &str| check_command(line, &context);
+
+        for line in [
+            "cat < ~/.claude/token",
+            "cat ~/.cl*/token",
+            "cat ~/*/token",
+            "X=~/.claude/token wc -c",
+            "tar czf out.tgz ~",
+            "grep -r token ~",
+            "cp -a ~ backup",
+            "cat ~/.CLAUDE/token",
+        ] {
+            assert_eq!(check(line), Some(Reason::Credentials), "{line}");
+        }
+        assert_eq!(check("ls ~"), None);
+        let home = dir.join("home").display().to_string();
+        assert_eq!(
+            check_tool("Grep", &json!({"pattern": "x", "path": home}), &context),
+            Some(Reason::Credentials)
+        );
+        assert_eq!(check_tool("LS", &json!({"path": home}), &context), None);
+    }
+
+    #[test]
+    fn databases_drop_however_the_statement_is_spaced() {
+        let dir = TempDir::new().unwrap();
+        let context = context(&dir);
+        let check = |line: &str| check_command(line, &context);
+
+        for line in [
+            "psql -c 'DROP   DATABASE app'",
+            "psql -c 'drop/* x */database app'",
+            "mysql -e 'Drop\nTable users'",
+            "dropdb app",
+            "redis-cli FLUSHALL",
+        ] {
+            assert_eq!(check(line), Some(Reason::DropDatabase), "{line}");
+        }
+        assert_eq!(check("psql -c 'select 1'"), None);
+        assert_eq!(check("psql < dump.sql"), Some(Reason::Unsure));
+    }
+
+    #[test]
+    fn git_overwrites_and_discards_ask_in_the_main_checkout() {
+        let dir = TempDir::new().unwrap();
+        let worktree = context(&dir);
+        let main = Context {
+            cwd: dir.join("main"),
+            ..worktree.clone()
+        };
+
+        for line in [
+            "git checkout -B main",
+            "git switch -C main",
+            "git switch --force-create=main",
+        ] {
+            assert_eq!(
+                check_command(line, &worktree),
+                Some(Reason::DeleteBranch),
+                "{line}"
+            );
+        }
+        for line in [
+            "git restore .",
+            "git checkout -- notes.md",
+            "git checkout .",
+            "git checkout -f main",
+            "git stash clear",
+            "git stash drop",
+        ] {
+            assert_eq!(
+                check_command(line, &main),
+                Some(Reason::ResetMainCheckout),
+                "{line}"
+            );
+            assert_eq!(check_command(line, &worktree), None, "{line}");
+        }
+        assert_eq!(check_command("git checkout -b feature", &main), None);
+        assert_eq!(check_command("git stash list", &main), None);
     }
 }

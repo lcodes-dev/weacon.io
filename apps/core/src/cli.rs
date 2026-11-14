@@ -1,7 +1,7 @@
 use std::ffi::OsString;
 use std::path::PathBuf;
 
-use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
+use clap::{Args, CommandFactory, FromArgMatches, Parser, Subcommand};
 use weacon_appkit::version_text;
 use weacon_protocol::{AccessLevel, AgentKind, WorkspaceId};
 use weacon_version::Version;
@@ -70,21 +70,9 @@ fn agent(name: &str) -> Result<AgentKind, &'static str> {
 
 #[derive(Debug, PartialEq, Eq, Subcommand)]
 pub(crate) enum GuardCommand {
-    /// Read a pre-tool hook's call on stdin, and ask a person first if it's on the guard's list.
-    Check {
-        /// The agent whose hook this is: claude or codex.
-        #[arg(value_parser = agent)]
-        agent: AgentKind,
-        /// The workspace of the Weacon run the agent is in.
-        #[arg(long)]
-        workspace: Option<WorkspaceId>,
-        /// The chat's worktree; the call's own folder when left out.
-        #[arg(long)]
-        worktree: Option<PathBuf>,
-        /// The repository's main checkout, when the worktree belongs to one.
-        #[arg(long)]
-        main_checkout: Option<PathBuf>,
-    },
+    /// Read Claude Code's pre-tool hook call on stdin, and ask a person first if it's on the
+    /// guard's list.
+    Check(CheckCommand),
     /// Also ask before commands that start with these words in this workspace.
     Add {
         /// The workspace's id.
@@ -101,6 +89,16 @@ pub(crate) enum GuardCommand {
     },
     /// List the commands this workspace added.
     List { workspace: WorkspaceId },
+}
+
+#[derive(Debug, PartialEq, Eq, Args)]
+pub(crate) struct CheckCommand {
+    /// The workspace of the Weacon run the agent is in.
+    #[arg(long)]
+    pub(crate) workspace: Option<WorkspaceId>,
+    /// The chat's worktree; the call's own folder when left out.
+    #[arg(long)]
+    pub(crate) worktree: Option<PathBuf>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Subcommand)]
@@ -366,34 +364,23 @@ mod tests {
     }
 
     #[test]
-    fn guard_takes_a_hooks_agent_and_its_runs_folders_or_a_workspaces_additions() {
+    fn guard_takes_a_hooks_run_or_a_workspaces_additions() {
         let check = run(&[
             "weacon",
             "guard",
             "check",
-            "claude",
             "--workspace=w1",
             "--worktree=/work",
-            "--main-checkout",
-            "/main",
         ])
         .unwrap();
-        let Command::Guard(GuardCommand::Check {
-            agent,
-            workspace,
-            worktree,
-            main_checkout,
-        }) = &check.command
-        else {
+        let Command::Guard(GuardCommand::Check(hook)) = &check.command else {
             panic!("not a guard check");
         };
 
-        assert_eq!(*agent, AgentKind::Claude);
-        assert_eq!(workspace.as_ref().map(WorkspaceId::as_str), Some("w1"));
-        assert_eq!(worktree.as_deref(), Some(std::path::Path::new("/work")));
+        assert_eq!(hook.workspace.as_ref().map(WorkspaceId::as_str), Some("w1"));
         assert_eq!(
-            main_checkout.as_deref(),
-            Some(std::path::Path::new("/main"))
+            hook.worktree.as_deref(),
+            Some(std::path::Path::new("/work"))
         );
         assert_eq!(
             (check.command.name(), check.command.log_name()),
@@ -405,6 +392,6 @@ mod tests {
             Command::Guard(GuardCommand::Add { ref words, .. }) if words == &["terraform", "destroy"]
         ));
         run(&["weacon", "guard", "add", "w1"]).unwrap_err();
-        run(&["weacon", "guard", "check", "amp"]).unwrap_err();
+        run(&["weacon", "guard", "check", "claude"]).unwrap_err();
     }
 }

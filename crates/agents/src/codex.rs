@@ -9,6 +9,9 @@ pub(crate) use wire::{Wire, answer};
 use crate::launch::{Launch, SignInEnv};
 
 // Its config folder's variable, and the sign-ins and providers that would win over it.
+/// The folders and files under home that hold its sign-in.
+pub(crate) const CREDENTIALS: [&str; 1] = [".codex"];
+
 const SIGN_IN_ENV: SignInEnv = SignInEnv {
     config_var: "CODEX_HOME",
     prefixes: &["CODEX_", "OPENAI_"],

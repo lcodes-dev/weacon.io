@@ -123,7 +123,7 @@ impl Workspaces {
             .map(|((_, name), label)| format!("{name} {label}"))
             .collect();
         let (id, agents) = (workspace.as_str(), agents.join(", "));
-        match Settings::read(&self.settings_file(workspace)) {
+        match self.settings(workspace) {
             Ok(settings) => {
                 let (level, warning) = (level_name(settings.access), settings.warning());
                 format!("Workspace {id}: access {level}; {agents}\n{warning}")
@@ -141,6 +141,11 @@ impl Workspaces {
     pub(crate) fn settings_file(&self, workspace: &WorkspaceId) -> PathBuf {
         self.settings_dir
             .join(format!("{}.json", folder_name(workspace)))
+    }
+
+    /// What this machine's owner chose for `workspace`.
+    pub(crate) fn settings(&self, workspace: &WorkspaceId) -> Result<Settings, Fault> {
+        Settings::read(&self.settings_file(workspace))
     }
 
     /// How to start `agent` in `cwd` with `workspace`'s own config folder; the only place runs
@@ -161,7 +166,7 @@ impl Workspaces {
                 "Agents can't work in or above Weacon's own folder",
             ));
         }
-        let access = Settings::read(&self.settings_file(workspace))?.access;
+        let access = self.settings(workspace)?.access;
         if matches!(access, AccessLevel::Off | AccessLevel::Newer) {
             return Err(Fault::new(
                 code!("access.off"),
@@ -224,7 +229,6 @@ fn guard_hook(workspace: &WorkspaceId, cwd: &Path) -> Result<Vec<String>, Fault>
         exe.to_owned(),
         "guard".to_owned(),
         "check".to_owned(),
-        "claude".to_owned(),
         format!("--workspace={}", workspace.as_str()),
         format!("--worktree={cwd}"),
     ])
@@ -320,13 +324,7 @@ mod tests {
         );
         assert_eq!(
             &hook[1..],
-            [
-                "guard",
-                "check",
-                "claude",
-                "--workspace=w1",
-                "--worktree=/work"
-            ]
+            ["guard", "check", "--workspace=w1", "--worktree=/work"]
         );
         assert_eq!(codex.hook, None);
         assert_eq!(codex.program, program(&dir, "codex"));

@@ -28,6 +28,9 @@ pub(crate) fn changed_file(tool: &str, input: &Value) -> Option<PathBuf> {
 }
 
 // Its config folder's variable, and the sign-ins and providers that would win over it.
+/// The folders and files under home that hold its sign-in.
+pub(crate) const CREDENTIALS: [&str; 2] = [".claude", ".claude.json"];
+
 const SIGN_IN_ENV: SignInEnv = SignInEnv {
     config_var: "CLAUDE_CONFIG_DIR",
     prefixes: &["ANTHROPIC_", "CLAUDE_"],
@@ -71,7 +74,9 @@ pub(crate) fn command(launch: &Launch, session: Option<&AgentSession>) -> Comman
 // hook's "ask" outweighs any rule that would allow the call.
 fn hook_settings(hook: &[String]) -> String {
     let command: Vec<String> = hook.iter().map(|word| shell_quoted(word)).collect();
-    let hooks = json!([{ "type": "command", "command": command.join(" ") }]);
+    // Claude Code goes on when a hook fails in any other way than exiting with 2.
+    let command = format!("{} || exit 2", command.join(" "));
+    let hooks = json!([{ "type": "command", "command": command }]);
     json!({ "hooks": { "PreToolUse": [{ "matcher": "*", "hooks": hooks }] } }).to_string()
 }
 
@@ -381,13 +386,7 @@ mod tests {
 
     #[test]
     fn a_launch_with_a_hook_runs_it_before_every_tool() {
-        let words = [
-            "/opt/weacon",
-            "guard",
-            "check",
-            "claude",
-            "--worktree=/it's here",
-        ];
+        let words = ["/opt/weacon", "guard", "check", "--worktree=/it's here"];
         let hooked = Launch {
             hook: Some(words.map(str::to_owned).to_vec()),
             ..crate::test_support::launch(AgentKind::Claude, Path::new("/work"))
@@ -411,7 +410,7 @@ mod tests {
         assert_eq!(hook["hooks"][0]["type"], "command");
         assert_eq!(
             line,
-            "'/opt/weacon' 'guard' 'check' 'claude' '--worktree=/it'\\''s here'"
+            "'/opt/weacon' 'guard' 'check' '--worktree=/it'\\''s here' || exit 2"
         );
         let plain = args(&crate::test_support::launch(
             AgentKind::Claude,
@@ -428,6 +427,12 @@ mod tests {
                 String::from_utf8(echoed.stdout).unwrap(),
                 words.join("\n") + "\n"
             );
+            // A guard that can't start blocks the tool.
+            let missing = std::process::Command::new("sh")
+                .args(["-c", line])
+                .status()
+                .unwrap();
+            assert_eq!(missing.code(), Some(2));
         }
     }
 
