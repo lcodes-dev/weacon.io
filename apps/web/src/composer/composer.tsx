@@ -1,18 +1,19 @@
 import { type KeyboardEvent, type RefObject, useEffect, useLayoutEffect, useRef, useState } from "react";
 
+import { newRequestId } from "../ids.ts";
 import "./composer.css";
 import { NONE, add, remove, settled } from "./attachments.ts";
 import { type Draft, EMPTY, type Item, type Placed, edit, pick, query } from "./draft.ts";
 import { AttachButton, Files } from "./files.tsx";
 import { composing, picker, sends } from "./keys.ts";
 import { offered } from "./mentionables.ts";
-import { type Retry, type Send, after, requestFor, requestId } from "./prompt.ts";
+import { type Retry, type Send, after, requestFor } from "./prompt.ts";
 
 /**
  * The message box. While `blocked` says why, it still takes text, but can't send it. It keeps the
  * text until the server accepts it, and says so when it doesn't.
  */
-export function Composer({ send, blocked, hidden }: { send: Send | undefined; blocked: string | undefined; hidden: boolean }) {
+export function Composer({ send, blocked, hidden }: { send: Send; blocked: string | undefined; hidden: boolean }) {
   const [placed, setPlaced] = useState<Placed>({ draft: EMPTY, caret: 0 });
   const [active, setActive] = useState(0);
   const [dismissed, setDismissed] = useState<number>();
@@ -42,7 +43,7 @@ export function Composer({ send, blocked, hidden }: { send: Send | undefined; bl
   const options = offered(at, dismissed, sending);
   const unsent = files.attachments.length > 0 ? "Files can't be sent yet; remove them to send the message" : undefined;
   const hint = problem ?? blocked ?? files.refused ?? unsent;
-  const ready = !sending && unsent === undefined && blocked === undefined && send !== undefined && draft.text.trim() !== "";
+  const ready = !sending && unsent === undefined && blocked === undefined && draft.text.trim() !== "";
 
   useLayoutEffect(() => {
     const element = box.current;
@@ -63,7 +64,7 @@ export function Composer({ send, blocked, hidden }: { send: Send | undefined; bl
       return;
     }
     const { text } = draft;
-    const request = requestFor(retry.current, text, () => requestId(crypto.getRandomValues(new Uint8Array(16))));
+    const request = requestFor(retry.current, text, newRequestId);
     setSending(true);
     setProblem(undefined);
     const next = after(await send(text, request), text, request);

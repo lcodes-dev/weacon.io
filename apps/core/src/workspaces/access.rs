@@ -135,7 +135,7 @@ mod tests {
     use weacon_testing::TempDir;
 
     use super::*;
-    use crate::test_support;
+    use crate::test_support::{self, Broken};
 
     fn id(id: &str) -> WorkspaceId {
         WorkspaceId::try_from(id.to_owned()).unwrap()
@@ -266,19 +266,10 @@ mod tests {
 
     #[test]
     fn a_report_that_cant_be_printed_is_an_error_after_the_level_is_saved() {
-        struct Closed;
-        impl Write for Closed {
-            fn write(&mut self, _: &[u8]) -> io::Result<usize> {
-                Err(io::ErrorKind::BrokenPipe.into())
-            }
-            fn flush(&mut self) -> io::Result<()> {
-                Ok(())
-            }
-        }
         let dir = TempDir::new().unwrap();
         let app = test_support::app(Some(&dir), None);
 
-        let error = run(&app, &id("w1"), AccessLevel::Off, None, &mut Closed).unwrap_err();
+        let error = run(&app, &id("w1"), AccessLevel::Off, None, &mut Broken).unwrap_err();
 
         assert_eq!(error.code().as_str(), "access.output_failed");
         let saved = Settings::read(&dir.join(FILE)).unwrap();

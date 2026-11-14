@@ -1,4 +1,4 @@
-use weacon_protocol::{Author, MemberId};
+use weacon_protocol::{AgentRef, Author, MemberId};
 
 /// How many changes made something what it is, its creation being the first.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -25,13 +25,13 @@ impl Revision {
 /// Who is behind one revision, and when. An agent's change takes effect only once a person
 /// accepts it, so every change names that person; for a person's own it is them.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Change {
+pub struct Attribution {
     author: Author,
     accepted_by: MemberId,
     at: i64,
 }
 
-impl Change {
+impl Attribution {
     /// A change a person made themselves, at `at` seconds since the Unix epoch.
     #[must_use]
     pub fn by(member: MemberId, at: i64) -> Self {
@@ -45,12 +45,17 @@ impl Change {
         }
     }
 
-    /// A change that the agent of `owner` proposed and `accepted_by` accepted, at `at`
-    /// seconds since the Unix epoch.
+    /// A change that the agent of `owner`, `agent` when known, proposed and `accepted_by`
+    /// accepted, at `at` seconds since the Unix epoch.
     #[must_use]
-    pub const fn accepted(owner: MemberId, accepted_by: MemberId, at: i64) -> Self {
+    pub const fn accepted(
+        owner: MemberId,
+        agent: Option<AgentRef>,
+        accepted_by: MemberId,
+        at: i64,
+    ) -> Self {
         Self {
-            author: Author::Agent { owner },
+            author: Author::Agent { owner, agent },
             accepted_by,
             at,
         }
@@ -74,13 +79,27 @@ impl Change {
 
 #[cfg(test)]
 mod tests {
+    use weacon_protocol::{AgentKind, AgentOwner};
+
     use super::*;
 
     #[test]
     fn a_change_names_who_made_it_and_who_accepted_it() {
         let member = |id: &str| MemberId::try_from(id.to_owned()).unwrap();
-        let own = Change::by(member("m-1"), 1_700_000_000);
-        let agents = Change::accepted(member("m-1"), member("m-2"), 1_700_000_001);
+        let own = Attribution::by(member("m-1"), 1_700_000_000);
+        let codex = AgentRef {
+            kind: AgentKind::Codex,
+            owner: AgentOwner::Member {
+                member: member("m-1"),
+            },
+            machine: None,
+        };
+        let agents = Attribution::accepted(
+            member("m-1"),
+            Some(codex.clone()),
+            member("m-2"),
+            1_700_000_001,
+        );
 
         assert_eq!(
             own.author(),
@@ -95,7 +114,8 @@ mod tests {
         assert_eq!(
             agents.author(),
             &Author::Agent {
-                owner: member("m-1")
+                owner: member("m-1"),
+                agent: Some(codex),
             }
         );
         assert_eq!(

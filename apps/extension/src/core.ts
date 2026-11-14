@@ -1,4 +1,4 @@
-import { PROTOCOL, isCommit } from "../../../tooling/ts/version.ts";
+import { PROTOCOL } from "../../../tooling/ts/version.ts";
 import type { App, Envelope, Pick } from "./protocol.ts";
 
 /** The native host's name, as `weacon connect-chrome` registers it. */
@@ -23,13 +23,6 @@ export type Port = {
   onMessage: { addListener(listener: (message: unknown) => void): void };
   onDisconnect: { addListener(listener: () => void): void };
 };
-
-/** How the extension introduces itself, from its manifest's `version_name`, `0.1.0 (<commit>)`. */
-export function app(manifest: { version: string; version_name?: string | undefined }): App {
-  const named = manifest.version_name?.match(/\((\S+)\)$/)?.[1] ?? "";
-  const commit = isCommit(named) ? named : "unknown";
-  return { name: "weacon-extension", version: manifest.version, commit };
-}
 
 /** The message that carries `pick`, as the core receives it. */
 export function pickEnvelope(pick: Pick): Envelope {

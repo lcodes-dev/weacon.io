@@ -13,14 +13,16 @@ use tokio::task::JoinHandle;
 use weacon_testing::TempDir;
 use weacon_version::Version;
 
+pub(crate) mod socket;
+
 pub(crate) use weacon_testing::{Records, messages, recording_logger, recording_sink};
 
 use crate::connections;
 use crate::db::{Db, Workspace};
 use crate::email::Email;
-use crate::feed;
 use crate::http::{self, Shared};
-use crate::mail::Outbox;
+use crate::outbox::Outbox;
+use crate::pairing;
 use crate::secret::Secret;
 use crate::sign_in;
 
@@ -56,14 +58,7 @@ pub(crate) struct Fixture {
 impl Fixture {
     pub(crate) async fn new() -> Self {
         let dir = TempDir::new().unwrap();
-        let db = Db::create(&dir.join("weacon.db")).await.unwrap();
-        let workspace = db
-            .create_workspace(&workspace_id("w1"), "Team")
-            .await
-            .unwrap();
-        let ada = Email::parse("ada@example.com").unwrap();
-        let (m1, account) = (member_id("m1"), fresh_account());
-        workspace.add_member(&m1, &account, &ada).await.unwrap();
+        let db = with_ada(&dir).await;
         let (log, records) = recording_logger();
         // Its own logger: off Unix it warns, and tests read the fixture's records.
         let secret = Secret::open(&dir.join("secret"), &recording_logger().0).unwrap();
@@ -81,7 +76,7 @@ impl Fixture {
             proxies: Arc::new([]),
             connections: Arc::new(Semaphore::new(64)),
             // Short, so tests that wait for the feed's checks don't wait long.
-            feed: feed::Timing {
+            sockets: crate::socket::Timing {
                 hello_within: Duration::from_millis(100),
                 ping_every: Duration::from_millis(100),
             },
@@ -89,11 +84,15 @@ impl Fixture {
                 UNIX_EPOCH + Duration::from_secs(now.load(Ordering::Relaxed))
             })),
             changes: broadcast::channel(16).0,
+            unpaired: broadcast::channel(16).0,
             sign_ins: Arc::new(Semaphore::new(sign_in::AT_ONCE)),
             finish_within: Duration::ZERO,
             starts: Arc::new(sign_in::starts()),
             tries: Arc::new(sign_in::tries()),
             sign_up: Arc::new([]),
+            pair_starts: Arc::new(pairing::starts()),
+            pair_tries: Arc::new(pairing::tries()),
+            pair_claims: Arc::new(pairing::claims()),
             web: WEB,
         };
         Self {
@@ -102,6 +101,19 @@ impl Fixture {
             records,
             clock,
         }
+    }
+
+    /// A server running on the fixture's state.
+    pub(crate) async fn run(&self) -> Running {
+        run(self.shared.clone()).await
+    }
+
+    /// A server running on the fixture's state that `address` has signed in to, and the
+    /// sign-in's answer.
+    pub(crate) async fn signed_in(&self, address: &str) -> (Running, Value) {
+        let server = self.run().await;
+        let (_, body) = sign_in(self, server.address, address).await;
+        (server, body)
     }
 
     /// Moves the clock on by `seconds`.
@@ -141,6 +153,19 @@ pub(crate) fn letter_in(file: &Path) -> (String, String) {
     fs::remove_file(file).unwrap();
     let text = |key: &str| letter[key].as_str().unwrap().to_owned();
     (text("to"), text("code"))
+}
+
+/// A database holding workspace `w1`, whose member `m1` is ada@example.com.
+async fn with_ada(dir: &TempDir) -> Db {
+    let db = Db::create(&dir.join("weacon.db")).await.unwrap();
+    let workspace = db
+        .create_workspace(&workspace_id("w1"), "Team")
+        .await
+        .unwrap();
+    let ada = Email::parse("ada@example.com").unwrap();
+    let (m1, account) = (member_id("m1"), fresh_account());
+    workspace.add_member(&m1, &account, &ada).await.unwrap();
+    db
 }
 
 /// A server running on a port of its own until `stop` is sent.
@@ -235,6 +260,12 @@ pub(crate) async fn sign_in(
     )
 }
 
+/// The code of the refusal whose JSON body is `body`.
+pub(crate) fn refusal(body: &str) -> String {
+    let error: weacon_protocol::ErrorBody = serde_json::from_str(body).unwrap();
+    error.code.as_str().to_owned()
+}
+
 /// The header that proves a sign-in whose answer was `body`.
 pub(crate) fn bearer(body: &Value) -> String {
     let token = body["token"].as_str().unwrap();
@@ -252,6 +283,43 @@ pub(crate) async fn ask(
     let (head, body) = request_with(address, head, headers, body).await;
     let body = serde_json::from_str(&body).unwrap_or_default();
     (status(&head).to_owned(), body)
+}
+
+/// A machine paired with ada: the header proving her sign-in, her session's token, the
+/// machine as the confirmation gave it, and its token.
+pub(crate) struct Paired {
+    pub(crate) proof: String,
+    pub(crate) session: String,
+    pub(crate) machine: Value,
+    pub(crate) token: String,
+}
+
+/// A `POST /api/machines/pair` body.
+pub(crate) fn pairing_start(os: &str) -> String {
+    json!({ "name": "Studio", "os": os, "key": "ab".repeat(32) }).to_string()
+}
+
+/// Pairs a machine with ada, and claims it.
+pub(crate) async fn pair_machine(fixture: &Fixture, address: SocketAddr) -> Paired {
+    let (_, ada) = sign_in(fixture, address, "ada@example.com").await;
+    let proof = bearer(&ada);
+    let (_, pairing) = ask(
+        address,
+        "POST /api/machines/pair",
+        "",
+        &pairing_start("linux"),
+    )
+    .await;
+    let confirm = json!({ "pairing": pairing["pairing"], "code": pairing["code"] }).to_string();
+    let (_, machine) = ask(address, "POST /api/machines/pair/confirm", &proof, &confirm).await;
+    let claim = json!({ "pairing": pairing["pairing"], "secret": pairing["secret"] }).to_string();
+    let (_, claimed) = ask(address, "POST /api/machines/pair/claim", "", &claim).await;
+    Paired {
+        proof,
+        session: ada["token"].as_str().unwrap_or_default().to_owned(),
+        machine,
+        token: claimed["token"].as_str().unwrap_or_default().to_owned(),
+    }
 }
 
 /// Workspaces w1 and w2 on a new database. ada@example.com is m1 in w1 and m2 in w2, and
@@ -291,4 +359,31 @@ pub(crate) fn member_id(id: &str) -> weacon_protocol::MemberId {
 /// An account id nothing else has.
 pub(crate) fn fresh_account() -> weacon_protocol::AccountId {
     weacon_protocol::AccountId::try_from(crate::app::new_id()).unwrap()
+}
+
+pub(crate) fn email(address: &str) -> Email {
+    Email::parse(address).unwrap()
+}
+
+/// A task to do, at its first version.
+pub(crate) fn new_task(id: &str, title: &str, order: &str) -> weacon_model::Task {
+    weacon_model::Task::new(
+        weacon_protocol::TaskId::try_from(id.to_owned()).unwrap(),
+        weacon_model::Title::try_from(title.to_owned()).unwrap(),
+        weacon_model::OrderKey::try_from(order.to_owned()).unwrap(),
+    )
+}
+
+/// An agent of `kind`, whose owner is `owner`, on the machine called `machine` when known.
+pub(crate) fn agent(
+    kind: weacon_protocol::AgentKind,
+    owner: weacon_protocol::AgentOwner,
+    machine: Option<&str>,
+) -> weacon_protocol::AgentRef {
+    weacon_protocol::AgentRef {
+        kind,
+        owner,
+        machine: machine
+            .map(|name| weacon_protocol::MachineName::try_from(name.to_owned()).unwrap()),
+    }
 }

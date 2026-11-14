@@ -1,5 +1,3 @@
-use std::collections::hash_map::RandomState;
-use std::hash::{BuildHasher, Hasher};
 use std::time::Duration;
 
 use weacon_observability::{Deliver, Fault};
@@ -7,18 +5,9 @@ use weacon_protocol::code;
 
 const TIMEOUT: Duration = Duration::from_secs(5);
 
-/// An id for a request, a report or a row; it is unique, not secret, so never use it as a
-/// token or code.
-// Each `RandomState` gets new keys; the first on each thread come from the operating system.
-#[must_use]
-pub fn random_id() -> u128 {
-    let half = || RandomState::new().build_hasher().finish();
-    u128::from(half()) << 64 | u128::from(half())
-}
-
 /// Sends reports over HTTPS, so their auth header never travels in the clear.
 #[must_use]
-pub fn http() -> Deliver {
+pub fn deliver_over_https() -> Deliver {
     over(true)
 }
 
@@ -64,16 +53,6 @@ mod tests {
 
     type Request = (Vec<String>, Vec<u8>);
 
-    #[test]
-    fn ids_are_random_in_both_halves() {
-        let id = random_id();
-        let (high, low) = (id >> 64, id & u128::from(u64::MAX));
-
-        assert_ne!(id, random_id());
-        assert_ne!(high, 0);
-        assert_ne!(high, low);
-    }
-
     // Answers one request with `status`, and hands back its head lines and body.
     fn serve_once(status: String) -> (u16, thread::JoinHandle<Request>) {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -114,7 +93,7 @@ mod tests {
     }
 
     #[test]
-    fn http_posts_the_envelope_with_its_auth() {
+    fn delivery_posts_the_envelope_with_its_auth() {
         let (port, server) = serve_once("200 OK".to_owned());
         over(false)(&upload(port)).unwrap();
         let (head, body) = server.join().unwrap();
@@ -130,7 +109,7 @@ mod tests {
     }
 
     #[test]
-    fn http_reports_a_refused_report() {
+    fn delivery_fails_for_a_refused_report() {
         let (port, server) = serve_once("500 Internal Server Error".to_owned());
         let error = over(false)(&upload(port)).unwrap_err();
         drop(server.join().unwrap());
@@ -139,11 +118,11 @@ mod tests {
     }
 
     #[test]
-    fn http_refuses_to_send_in_the_clear() {
+    fn delivery_refuses_to_send_in_the_clear() {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         listener.set_nonblocking(true).unwrap();
         let port = listener.local_addr().unwrap().port();
-        let error = http()(&upload(port)).unwrap_err();
+        let error = deliver_over_https()(&upload(port)).unwrap_err();
 
         assert_eq!(error.code().as_str(), "report.send_failed");
         assert_eq!(

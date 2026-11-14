@@ -5,25 +5,37 @@ use std::time::SystemTime;
 use weacon_observability::{
     Deliver, Fault, Field, Level, Logger, LoggerOptions, Reporter, Reports, Sink,
 };
-use weacon_protocol::App;
 use weacon_version::Version;
 
 use crate::random_id;
 
+/// What every app runs with: its build, logger and error reporter.
+pub struct App {
+    pub version: Version,
+    pub log: Logger,
+    pub reporter: Arc<Reporter>,
+}
+
+impl App {
+    /// Logs and reports a panic as `fault`, without its message or location.
+    #[must_use]
+    pub fn panic_hook(
+        &self,
+        fault: fn() -> Fault,
+    ) -> Box<dyn Fn(&PanicHookInfo<'_>) + Send + Sync> {
+        let (log, reporter) = (self.log.clone(), Arc::clone(&self.reporter));
+        Box::new(move |_| panicked(&log, &reporter, &fault()))
+    }
+}
+
 /// How a build introduces itself to other programs.
 #[must_use]
-pub fn build(version: &Version) -> App {
-    App {
+pub fn build(version: &Version) -> weacon_protocol::App {
+    weacon_protocol::App {
         name: version.name.to_owned(),
         version: version.version.to_owned(),
         commit: version.commit.to_owned(),
     }
-}
-
-/// `0.1.0 (1a2b3c4)`
-#[must_use]
-pub fn version_text(version: &Version) -> String {
-    format!("{} ({})", version.version, version.commit)
 }
 
 /// An app's root logger: info and up, with its build on every record.
@@ -67,16 +79,6 @@ pub fn reporter(reports: Option<Reports>, agreed: bool, deliver: Deliver) -> Rep
     )
 }
 
-/// Logs and reports a panic as `fault`, without its message or location.
-#[must_use]
-pub fn panic_hook(
-    log: Logger,
-    reporter: Arc<Reporter>,
-    fault: fn() -> Fault,
-) -> Box<dyn Fn(&PanicHookInfo<'_>) + Send + Sync> {
-    Box::new(move |_| panicked(&log, &reporter, &fault()))
-}
-
 fn panicked(log: &Logger, reporter: &Reporter, fault: &Fault) {
     // An app survives a panic in one task, so this is an error, not fatal.
     log.error("panicked", &[("err", Field::error(fault))]);
@@ -107,7 +109,6 @@ mod tests {
             (app.name.as_str(), app.version.as_str(), app.commit.as_str()),
             ("weacon-core", "0.1.0", "1a2b3c4")
         );
-        assert_eq!(version_text(&VERSION), "0.1.0 (1a2b3c4)");
     }
 
     #[test]
