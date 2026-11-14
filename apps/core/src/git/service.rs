@@ -487,12 +487,14 @@ mod tests {
     async fn a_drain_waits_for_the_work_under_way_then_refuses_more() {
         let bench = bench();
         let (release, held) = std::sync::mpsc::channel::<()>();
-        let worktrees = bench.worktrees.clone();
-        let working = tokio::spawn(async move {
-            worktrees
-                .blocking(move |_| held.recv().map_err(|_| failed()))
-                .await
-        });
+        let done = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let (worktrees, marked) = (bench.worktrees.clone(), Arc::clone(&done));
+        let work = move |_: &Inner| {
+            held.recv().map_err(|_| failed())?;
+            marked.store(true, std::sync::atomic::Ordering::SeqCst);
+            Ok(())
+        };
+        tokio::spawn(async move { worktrees.blocking(work).await });
         while bench.worktrees.inner.workers.available_permits() == WORKERS {
             tokio::task::yield_now().await;
         }
@@ -506,7 +508,7 @@ mod tests {
         release.send(()).unwrap();
         draining.await.unwrap();
 
-        assert!(working.is_finished());
+        assert!(done.load(std::sync::atomic::Ordering::SeqCst));
         assert_eq!(code(&bench.state().await.unwrap_err()), "worktree.failed");
     }
 
