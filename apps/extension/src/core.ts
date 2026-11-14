@@ -1,10 +1,13 @@
-import { PROTOCOL, isCommit } from "../../../tooling/ts/version.ts";
+import { PROTOCOL } from "../../../tooling/ts/version.ts";
 import type { App, Envelope, Pick } from "./protocol.ts";
 
 /** The native host's name, as `weacon connect-chrome` registers it. */
 export const HOST = "io.weacon.core";
 
 const DEADLINE_MS = 30_000;
+
+declare const WEACON_VERSION: string;
+declare const WEACON_COMMIT: string;
 
 /** A failure named by a dotted code, the only part of it that reaches the core's log. */
 export class Failure extends Error {
@@ -24,11 +27,9 @@ export type Port = {
   onDisconnect: { addListener(listener: () => void): void };
 };
 
-/** How the extension introduces itself, from its manifest's `version_name`, `0.1.0 (<commit>)`. */
-export function app(manifest: { version: string; version_name?: string | undefined }): App {
-  const named = manifest.version_name?.match(/\((\S+)\)$/)?.[1] ?? "";
-  const commit = isCommit(named) ? named : "unknown";
-  return { name: "weacon-extension", version: manifest.version, commit };
+/** How the extension introduces itself; `tools/build.ts` defines both values. */
+export function app(): App {
+  return { name: "weacon-extension", version: WEACON_VERSION, commit: WEACON_COMMIT };
 }
 
 /** The message that carries `pick`, as the core receives it. */
