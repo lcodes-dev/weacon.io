@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
+use serde::{Deserialize, Serialize};
 use tree_sitter::Node;
 
 use super::{Contract, Declared, Declares, declared, literal};
@@ -10,7 +11,7 @@ use crate::syntax::{attributes, text};
 const DEPTH: usize = 8;
 
 /// A subcommand as its enum declares it.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct Variant {
     pub(crate) name: String,
     /// The enum it holds, whose subcommands go under it, or beside it when flattened.

@@ -22,7 +22,8 @@ test("a chat shows its prompts and labelled turns, and a waiting prompt is answe
   t.after(() => harness.close());
   const { page } = harness;
   await page.getByText(LATEST).waitFor();
-  await page.getByText("Claude · laptop").first().waitFor();
+  await page.getByText("Shared Codex · team VPS").waitFor();
+  await page.getByText("Claude Code · laptop").first().waitFor();
   await page.getByText("Asks to use Bash").waitFor();
 
   await page.getByRole("button", { name: "Allow" }).click();
