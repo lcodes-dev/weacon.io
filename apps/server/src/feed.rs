@@ -258,6 +258,7 @@ mod tests {
     #[tokio::test]
     async fn a_feed_keeps_its_place_among_the_connections() {
         let mut fixture = Fixture::new().await;
+        fixture.shared.sockets.ping_every = QUIET;
         let room = Arc::new(Semaphore::new(2));
         fixture.shared.connections = Arc::clone(&room);
         let (server, token) = signed_in(&fixture).await;
@@ -300,7 +301,8 @@ mod tests {
 
     #[tokio::test]
     async fn only_a_client_that_offers_tasks_hears_of_task_changes() {
-        let fixture = Fixture::new().await;
+        let mut fixture = Fixture::new().await;
+        fixture.shared.sockets.ping_every = QUIET;
         let (server, token) = signed_in(&fixture).await;
         let mut plain = greeted(server.address, &token, 0).await;
         let first = next(&mut plain).await;
@@ -558,9 +560,11 @@ mod tests {
         let fixture = Fixture::new().await;
         let (server, token) = signed_in(&fixture).await;
         let mut client = greeted(server.address, &token, 1).await;
-        w1(&fixture).await.unlink(&member_id("m1")).await;
+        // Read meanwhile, so it's the unlinking that ends the feed, not unanswered pings.
+        let unlink = async { w1(&fixture).await.unlink(&member_id("m1")).await };
 
-        assert!(ends(&mut client).await);
+        let ((), ended) = tokio::join!(unlink, ends(&mut client));
+        assert!(ended);
         let again = open(server.address, "/api/workspaces/w1/feed", &token).await;
         again.unwrap_err();
     }
@@ -572,9 +576,11 @@ mod tests {
         let mut client = greeted(server.address, &token, 1).await;
         let bearer = format!("authorization: Bearer {token}\r\n");
 
-        test_support::request_with(server.address, "POST /api/sign-out", &bearer, "").await;
+        let sign_out =
+            test_support::request_with(server.address, "POST /api/sign-out", &bearer, "");
 
-        assert!(ends(&mut client).await);
+        let (_, ended) = tokio::join!(sign_out, ends(&mut client));
+        assert!(ended);
     }
 
     #[tokio::test]
