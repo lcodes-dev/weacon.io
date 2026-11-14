@@ -165,3 +165,19 @@ test("a connection that needs another capability asks for it and takes only a se
     },
   ]);
 });
+
+test("once closed, it closes the socket and tells nothing more of it", () => {
+  const { socket, connection, statuses, messages, deadline } = open();
+  socket.fire("message", welcome(["run.stream"]));
+  connection.close();
+  socket.fire("message", JSON.stringify({ id: 0, type: "run", run: "r-1", event: { event: "text_delta", text: "Hi" } }));
+  socket.fire("close");
+  deadline();
+
+  assert.equal(socket.closed, true);
+  assert.deepEqual(
+    statuses.map(({ state }) => state),
+    ["live"],
+  );
+  assert.deepEqual(messages, []);
+});

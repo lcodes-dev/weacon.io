@@ -46,6 +46,11 @@ export class LiveChat {
     }
   }
 
+  /** Sends and shows nothing more, a flush still to come included, as when the page is gone. */
+  close(): void {
+    this.#wiring = { ...this.#wiring, send: () => {}, show: () => {} };
+  }
+
   /** Stops waiting for answers, keeping the chat, as when the connection ends. */
   end(): void {
     this.#change(ended(this.#sync));

@@ -99,6 +99,12 @@ export class Connection {
     }
   }
 
+  /** Closes the socket, telling the listener nothing more, as when the page that opened it is gone. */
+  close(): void {
+    this.#listener = { status: () => {}, message: () => {} };
+    this.#socket.close();
+  }
+
   #welcome(envelope: Incoming | undefined): void {
     if (envelope?.type !== "welcome") {
       const other = envelope?.type === "error" && envelope.code === "protocol.unsupported";
