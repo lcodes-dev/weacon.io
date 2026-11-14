@@ -105,8 +105,10 @@ export class Api {
     return this.#ask("POST", "/api/machines/pair/confirm", body, isMachine);
   }
 
-  unpair(machine: MachineId): Promise<Answer<undefined>> {
-    return this.#ask("DELETE", `/api/machines/${encodeURIComponent(machine)}`, undefined, isEmpty);
+  /** Unpairs `machine`; one already unpaired elsewhere is as gone as one unpaired here. */
+  async unpair(machine: MachineId): Promise<Answer<undefined>> {
+    const answer = await this.#ask("DELETE", `/api/machines/${encodeURIComponent(machine)}`, undefined, isEmpty);
+    return !answer.ok && answer.code === "machine.not_found" ? { ok: true, value: undefined } : answer;
   }
 
   async #ask<T>(method: string, path: string, body: object | undefined, fits: (value: unknown) => value is T): Promise<Answer<T>> {

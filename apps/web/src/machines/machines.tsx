@@ -12,7 +12,6 @@ import { keep } from "./keep.ts";
 import { MachineSettingsView } from "./machine-settings.tsx";
 import { osName } from "./os.ts";
 import type { Pins } from "./pins.ts";
-import { unpair } from "./unpair.ts";
 
 /** The signed-in account's machines: pairing one by its code, the list, and unpairing. */
 export function Machines({ api, pins, later }: { api: Api; pins: Pins; later: Later }) {
@@ -105,7 +104,7 @@ function Machine({
             disabled={busy}
             onClick={() =>
               void ask(
-                () => unpair(api, machine.id),
+                () => api.unpair(machine.id),
                 () => {
                   // The key goes with the pairing; a failure to forget it leaves a key no one shows.
                   void pins.unpin(machine.id).catch(() => {});

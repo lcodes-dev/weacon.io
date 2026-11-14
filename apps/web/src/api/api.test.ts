@@ -203,3 +203,11 @@ test("a workspace's chats are listed, and an answer of the wrong shape is refuse
   assert.deepEqual(await api.chats("ws-1"), { ok: false, code: "workspace.not_member" });
   assert.deepEqual(sent[0], { path: "/api/workspaces/ws-1/chats", method: "GET" });
 });
+
+test("a machine already unpaired elsewhere counts as unpaired, and other failures stay failures", async () => {
+  const { api } = serve({ status: 404, body: { code: "machine.not_found", retryable: false } }, { status: 409, body: { code: "machine.busy", retryable: false } }, "unreachable");
+
+  assert.deepEqual(await api.unpair("mc-1"), { ok: true, value: undefined });
+  assert.deepEqual(await api.unpair("mc-1"), { ok: false, code: "machine.busy" });
+  assert.deepEqual(await api.unpair("mc-1"), { ok: false, code: UNREACHABLE });
+});
