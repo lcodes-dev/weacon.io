@@ -1,8 +1,6 @@
 //! Pairing a machine with an account: its core starts and claims, and a signed-in person
 //! confirms the code the core shows.
 
-use std::time::Duration;
-
 use axum::Json;
 use axum::extract::rejection::PathRejection;
 use axum::extract::{Path, State};
@@ -21,14 +19,13 @@ use crate::auth::token_hash;
 use crate::client::Client;
 use crate::db::{Claim, Confirmation, NewPairing};
 use crate::http::{Body, Shared, error, failure, not_found, too_many};
-use crate::limit::Limit;
+use crate::limit::{HOUR, Limit};
 use crate::secret::{random_token, random_u64};
 
 /// How long a person has to confirm a pairing, in seconds.
 const PAIRING_LIFETIME: i64 = 600;
 /// How many pairings may be under way at once, server-wide, as anyone may start one.
 const MOST_UNDER_WAY: i64 = 1000;
-const HOUR: Duration = Duration::from_hours(1);
 /// Crockford's base 32: no I, L, O or U, which read like other letters.
 const ALPHABET: &[u8; 32] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ";
 

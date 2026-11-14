@@ -19,7 +19,7 @@ use crate::client::Client;
 use crate::db::Attempt;
 use crate::email::Email;
 use crate::http::{Body, Shared, cross_site, failure, report, too_many, unauthorized};
-use crate::limit::Limit;
+use crate::limit::{HOUR, Limit};
 use crate::outbox::mail_failed;
 use crate::secret::{random_failed, random_token, random_u64};
 use crate::sign_up;
@@ -31,7 +31,6 @@ pub(crate) const SESSION_LIFETIME: i64 = 30 * 24 * 60 * 60;
 pub(crate) const AT_ONCE: usize = 64;
 /// How long finishing a sign-in takes at least: longer than any of its database work.
 pub(crate) const FINISH_WITHIN: Duration = Duration::from_millis(250);
-const HOUR: Duration = Duration::from_hours(1);
 
 /// How many sign-ins each client may start.
 pub(crate) fn starts() -> Limit {
