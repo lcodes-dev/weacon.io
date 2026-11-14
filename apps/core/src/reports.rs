@@ -4,6 +4,7 @@ use std::fs;
 use std::future::Future;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 use clap::ValueEnum;
@@ -43,7 +44,7 @@ const CHECK: Duration = Duration::from_secs(10);
 /// command that runs for long stops sending as soon as the person says no.
 pub(crate) async fn following<T>(
     state_dir: &Path,
-    reporter: &Reporter,
+    reporter: &Arc<Reporter>,
     log: &Logger,
     work: impl Future<Output = T>,
 ) -> T {
@@ -67,7 +68,7 @@ impl Watch {
     }
 
     /// Checks the answer every few seconds, forever.
-    async fn follow(mut self, reporter: &Reporter, log: &Logger) -> ! {
+    async fn follow(mut self, reporter: &Arc<Reporter>, log: &Logger) -> ! {
         let mut tick = tokio::time::interval(CHECK);
         loop {
             tick.tick().await;
@@ -77,18 +78,21 @@ impl Watch {
 
     /// Reads the answer off the async runtime; one that can't be read sends nothing, and is
     /// logged once until a reading succeeds.
-    async fn check(&mut self, reporter: &Reporter, log: &Logger) {
-        let dir = self.state_dir.clone();
-        let read = tokio::task::spawn_blocking(move || read(&dir))
+    async fn check(&mut self, reporter: &Arc<Reporter>, log: &Logger) {
+        let (dir, following) = (self.state_dir.clone(), Arc::clone(reporter));
+        // A read that never ran applied nothing, so the reporter keeps the answer applied last.
+        let read = tokio::task::spawn_blocking(move || applied(&dir, &following))
             .await
             .unwrap_or_else(|error| Err(unreadable().because(error)));
+        self.observe(read.map(drop), log);
+    }
+
+    // Only logs: the reporter was brought into line under the lock, and a change saved since
+    // must stand.
+    fn observe(&mut self, read: Result<(), Fault>, log: &Logger) {
         match read {
-            Ok(answer) => {
-                self.failing = false;
-                reporter.set_agreed(answer == Some(true));
-            }
+            Ok(()) => self.failing = false,
             Err(error) => {
-                reporter.set_agreed(false);
                 if !self.failing {
                     log.warn("reports unreadable", &[("err", Field::error(&error))]);
                 }
@@ -96,6 +100,15 @@ impl Watch {
             }
         }
     }
+}
+
+// Reads the saved answer and applies it, as one step; one that can't be read sends nothing.
+fn applied(state_dir: &Path, reporter: &Reporter) -> Result<Option<bool>, Fault> {
+    settled(|| {
+        let read = read(state_dir);
+        reporter.set_agreed(matches!(read, Ok(Some(true))));
+        read
+    })
 }
 
 fn unreadable() -> Fault {
@@ -128,25 +141,57 @@ fn write(state_dir: &Path, send: bool) -> io::Result<()> {
     weacon_appkit::write_whole(&file(state_dir), &serde_json::to_vec(&Stored { send })?)
 }
 
+/// The stored answer; one that can't be read counts as none, as `App::start` warned.
+pub(crate) fn current(state_dir: &Path) -> Option<bool> {
+    read(state_dir).unwrap_or(None)
+}
+
+/// Stores the person's answer and applies it to `reporter` at once.
+pub(crate) fn store(
+    state_dir: &Path,
+    send: bool,
+    reporter: &Reporter,
+    log: &Logger,
+) -> Result<(), Fault> {
+    saved(state_dir, send, |send| reporter.set_agreed(send))?;
+    log.info("reports chosen", &[("send", send.into())]);
+    Ok(())
+}
+
+// Saves the answer, then hands it to `agree`, as one step: the answer a reporter follows is
+// always the one saved last, and one that couldn't be saved changes nothing.
+fn saved(state_dir: &Path, send: bool, agree: impl FnOnce(bool)) -> Result<(), Fault> {
+    settled(|| {
+        write(state_dir, send).map_err(|error| {
+            Fault::new(
+                code!("reports.not_saved"),
+                "The answer to error reports couldn't be saved",
+            )
+            .because(error)
+        })?;
+        agree(send);
+        Ok(())
+    })
+}
+
+// Held while the saved answer and a reporter are brought into line, by a change or by the watch.
+static SETTLING: Mutex<()> = Mutex::new(());
+
+fn settled<T>(step: impl FnOnce() -> T) -> T {
+    let _held = SETTLING.lock().unwrap_or_else(PoisonError::into_inner);
+    step()
+}
+
 /// Stores `answer` when given, applies it to this run, and says what the answer is now.
 pub(crate) fn run(app: &App, answer: Option<Answer>, out: &mut impl Write) -> Result<(), Fault> {
     let state_dir = app.state_dir.as_deref().ok_or_else(state_unavailable)?;
     let send = match answer {
         Some(answer) => {
             let send = answer == Answer::On;
-            write(state_dir, send).map_err(|error| {
-                Fault::new(
-                    code!("reports.not_saved"),
-                    "The answer to error reports couldn't be saved",
-                )
-                .because(error)
-            })?;
-            app.reporter.set_agreed(send);
-            app.log.info("reports chosen", &[("send", send.into())]);
+            store(state_dir, send, &app.reporter, &app.log)?;
             Some(send)
         }
-        // `App::start` has already warned about an answer it couldn't read.
-        None => read(state_dir).unwrap_or(None),
+        None => current(state_dir),
     };
     out.write_all(describe(send).as_bytes()).map_err(|error| {
         Fault::new(
@@ -177,6 +222,49 @@ mod tests {
         let mut out = Vec::new();
         run(&app, answer, &mut out)?;
         Ok(String::from_utf8(out).unwrap())
+    }
+
+    #[test]
+    fn a_change_saved_after_a_failed_read_stands() {
+        let dir = TempDir::new().unwrap();
+        let app = test_support::app(Some(&dir), None);
+        let (log, records) = test_support::recording_logger();
+        fs::write(file(&dir), "not json").unwrap();
+        let mut watch = Watch::new(dir.to_path_buf());
+        app.reporter.set_agreed(true);
+
+        let read = applied(&dir, &app.reporter);
+        assert!(!app.reporter.agreed());
+        store(&dir, true, &app.reporter, &log).unwrap();
+        watch.observe(read.map(drop), &log);
+
+        assert!(app.reporter.agreed());
+        assert_eq!(current(&dir), Some(true));
+        assert_eq!(
+            test_support::messages(&records),
+            ["reports chosen", "reports unreadable"]
+        );
+    }
+
+    #[test]
+    fn an_answer_is_saved_and_applied_as_one_step_and_one_not_saved_changes_nothing() {
+        let dir = TempDir::new().unwrap();
+        let mut applied = None;
+        saved(&dir, true, |send| {
+            // Nothing else can save or read an answer until this one is applied.
+            assert!(SETTLING.try_lock().is_err(), "applied outside the lock");
+            assert_eq!(current(&dir), Some(true));
+            applied = Some(send);
+        })
+        .unwrap();
+        let blocked = TempDir::new().unwrap();
+        fs::create_dir_all(file(&blocked)).unwrap();
+        let mut reached = false;
+        let unsaved = saved(&blocked, true, |_| reached = true).unwrap_err();
+
+        assert_eq!(applied, Some(true));
+        assert_eq!(unsaved.code().as_str(), "reports.not_saved");
+        assert!(!reached);
     }
 
     #[test]

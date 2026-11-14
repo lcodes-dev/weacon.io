@@ -19,6 +19,7 @@ pub(crate) struct Links {
 }
 
 struct Open {
+    /// The only sender to its connection, so replacing it ends that connection.
     to_machine: mpsc::Sender<Envelope>,
     offers: Vec<Capability>,
 }
@@ -38,8 +39,8 @@ pub(crate) struct Offline;
 pub(crate) struct Attached {
     links: Arc<Links>,
     machine: MachineId,
-    to_machine: mpsc::Sender<Envelope>,
-    /// What the server sends the machine.
+    to_machine: mpsc::WeakSender<Envelope>,
+    /// What the server sends the machine; it ends once a newer connection takes over.
     pub(crate) incoming: mpsc::Receiver<Envelope>,
 }
 
@@ -55,17 +56,16 @@ impl Default for Links {
 
 impl Links {
     /// Opens `connected`'s machine, whose core `offers` these capabilities, and tells the
-    /// subscribers; a newer connection of the same machine takes over from an older one.
+    /// subscribers; a newer connection of the same machine takes over from an older one, whose
+    /// `incoming` then ends.
     pub(crate) fn open(
         self: &Arc<Self>,
         connected: Connected,
         offers: Vec<Capability>,
     ) -> Attached {
         let (to_machine, incoming) = mpsc::channel(QUEUE);
-        let open = Open {
-            to_machine: to_machine.clone(),
-            offers,
-        };
+        let ours = to_machine.downgrade();
+        let open = Open { to_machine, offers };
         self.lock().insert(connected.machine.clone(), open);
         let machine = connected.machine.clone();
         // No subscriber is no one to tell.
@@ -73,7 +73,7 @@ impl Links {
         Attached {
             links: Arc::clone(self),
             machine,
-            to_machine,
+            to_machine: ours,
             incoming,
         }
     }
@@ -131,7 +131,8 @@ impl Drop for Attached {
         let mut open = self.links.lock();
         let ours = open
             .get(&self.machine)
-            .is_some_and(|link| link.to_machine.same_channel(&self.to_machine));
+            .zip(self.to_machine.upgrade())
+            .is_some_and(|(link, ours)| link.to_machine.same_channel(&ours));
         if ours {
             open.remove(&self.machine);
         }
@@ -205,12 +206,14 @@ mod tests {
     fn a_newer_connection_takes_over_and_an_older_one_leaving_keeps_it() {
         let links = Arc::new(Links::default());
 
-        let older = links.open(connected("mc-1"), vec![settings()]);
+        let mut older = links.open(connected("mc-1"), vec![settings()]);
         let newer = links.open(connected("mc-1"), vec![settings()]);
+        let replaced = older.incoming.try_recv();
         drop(older);
         let still = sent(&links, "mc-1", 1);
         drop(newer);
 
+        assert_eq!(replaced, Err(mpsc::error::TryRecvError::Disconnected));
         assert_eq!(still, Ok(()));
         assert_eq!(sent(&links, "mc-1", 2), Err(Offline));
         assert!(links.lock().is_empty());
