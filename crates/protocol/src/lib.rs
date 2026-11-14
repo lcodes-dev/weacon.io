@@ -14,6 +14,7 @@ mod pick;
 mod receipt;
 mod repo;
 mod run;
+mod settings;
 mod task;
 mod team;
 mod token;
@@ -47,6 +48,11 @@ pub use repo::RepoId;
 pub use run::{
     AgentKind, AgentOwner, AgentRef, AgentSession, PermissionAnswer, RunEvent, RunId, RunState,
     RunStatus, RunUpdate,
+};
+pub use settings::{
+    AgentSignIn, MachineSettings, MachineSettingsAction, MachineSettingsAnswer,
+    MachineSettingsAnswerKind, MachineSettingsCommand, MachineSettingsQuery,
+    MachineSettingsQueryKind, SignInState,
 };
 pub use task::{
     Author, TaskChange, TaskCreate, TaskEditBody, TaskId, TaskList, TaskRecord, TaskStatus,

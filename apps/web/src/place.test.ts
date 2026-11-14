@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { isId, placeOf } from "./place.ts";
+import { isId, placeOf, workspaceOf } from "./place.ts";
 
 test("a chat is named by a workspace and a chat in the query", () => {
   assert.deepEqual(placeOf("?server=x&workspace=w-1&chat=c_2"), { workspace: "w-1", chat: "c_2" });
@@ -18,4 +18,12 @@ test("ids are 1 to 64 ASCII letters, digits, dashes or underscores", () => {
   assert.equal(isId(""), false);
   assert.equal(isId("é"), false);
   assert.equal(isId("a b"), false);
+});
+
+test("a workspace alone is named by a well-formed `?workspace=`", () => {
+  assert.equal(workspaceOf("?workspace=w-1"), "w-1");
+  assert.equal(workspaceOf("?chat=c-1&workspace=w_2"), "w_2");
+  assert.equal(workspaceOf("?workspace=a%2Fb"), undefined);
+  assert.equal(workspaceOf("?workspace="), undefined);
+  assert.equal(workspaceOf(""), undefined);
 });
