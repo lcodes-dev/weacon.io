@@ -4,6 +4,7 @@
 //! It does no I/O: the caller reads the files and passes their contents in.
 
 mod anchor;
+mod answers;
 mod area;
 mod contracts;
 mod edges;
@@ -23,6 +24,7 @@ mod test_support;
 use std::fmt;
 
 pub use anchor::{Anchor, Finding, Pin};
+pub use answers::Churn;
 pub use area::Area;
 pub use contracts::{Contract, ContractKind};
 pub use edges::{Edge, EdgeKind};

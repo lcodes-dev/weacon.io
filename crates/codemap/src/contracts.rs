@@ -28,6 +28,21 @@ pub struct Contract {
     pub line: usize,
 }
 
+impl Contract {
+    /// `route GET /version`, `command map check-anchors`, `code store.full`.
+    #[must_use]
+    pub fn describe(&self) -> String {
+        let kind = match self.kind {
+            ContractKind::Command => "command",
+            ContractKind::ErrorCode => "code",
+            ContractKind::Route => "route",
+            ContractKind::Serde => "serde",
+            ContractKind::Table => "table",
+        };
+        format!("{kind} {}", self.name)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum ContractKind {
     /// A subcommand, after the subcommands above it.

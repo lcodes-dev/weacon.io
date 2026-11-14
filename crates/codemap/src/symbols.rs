@@ -269,7 +269,6 @@ fn impl_owner(item: Node<'_>, source: &[u8]) -> (String, String) {
 fn trait_path(node: Node<'_>, source: &[u8]) -> Option<Segments> {
     match node.kind() {
         "generic_type" => trait_path(node.child_by_field_name("type")?, source),
-        "type_identifier" => Some(vec![text(node, source).to_owned()]),
         _ => segments(node, source),
     }
 }

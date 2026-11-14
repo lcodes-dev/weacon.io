@@ -6,6 +6,7 @@ use crate::contracts::{self, Contract};
 use crate::edges::{Edge, edges};
 use crate::facts::{Facts, FileKind, Reader};
 use crate::graph::{file_links, nodes};
+use crate::rank::central;
 use crate::{Area, Error, Symbol};
 
 /// A file as the caller read it, its path relative to the repository root with `/` separators.
@@ -33,6 +34,8 @@ pub struct Index {
     pub edges: Vec<Edge>,
     /// Sorted.
     pub contracts: Vec<Contract>,
+    /// Every item's path, most central first.
+    pub(crate) central: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -111,11 +114,13 @@ pub(crate) fn assemble(facts: &[Facts]) -> Index {
     let areas = areas(&nodes, &file_links(&nodes, &named_by_file));
     let edges = edges(&crates, &named_by_file, &outlines);
     let contracts = contracts::assemble(&crates, &outlines);
+    let central = central(&nodes, &edges);
     Index {
         crates,
         areas,
         edges,
         contracts,
+        central,
     }
 }
 

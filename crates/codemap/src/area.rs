@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use crate::Fingerprint;
 use crate::graph::{Links, ModuleNode};
 use crate::louvain::communities;
-use crate::rank::page_rank;
+use crate::rank::{by_rank, page_rank};
 
 /// Files that name each other more than they name the rest.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -30,20 +30,12 @@ pub(crate) fn areas(nodes: &[ModuleNode<'_>], links: &Links) -> Vec<Area> {
     areas
 }
 
-/// Ranks this close count as a tie, so rounding can't decide which file leads.
-const SAME_RANK: f64 = 1e-9;
-
-fn area(mut files: Vec<(&str, f64)>) -> Area {
-    let rounded = |rank: f64| (rank / SAME_RANK).round();
-    files.sort_by(|(file, rank), (other_file, other_rank)| {
-        rounded(*other_rank)
-            .total_cmp(&rounded(*rank))
-            .then_with(|| file.cmp(other_file))
-    });
-    let top = files.first().map_or("", |(file, _)| file);
+fn area(files: Vec<(&str, f64)>) -> Area {
+    let files = by_rank(files);
+    let top = files.first().copied().unwrap_or_default();
     Area {
         id: top.strip_suffix(".rs").unwrap_or(top).to_owned(),
-        files: files.into_iter().map(|(file, _)| file.to_owned()).collect(),
+        files: files.into_iter().map(str::to_owned).collect(),
     }
 }
 

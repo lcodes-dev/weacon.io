@@ -196,7 +196,9 @@ impl<'a> Scope<'a> {
         if let Some(exact) = self.find(krate, &segments, HOPS) {
             return Some((exact, true));
         }
-        let within = (1..segments.len()).rev().find_map(|length| {
+        // Only what was written is dropped from the end: never the module it was written in.
+        let shortest = (segments.len() + 1).saturating_sub(path.len()).max(1);
+        let within = (shortest..segments.len()).rev().find_map(|length| {
             let found = self.find(krate, segments.get(..length)?, HOPS)?;
             (self.ids.get(&found) != Some(&Kind::Mod)).then_some(found)
         });
@@ -414,7 +416,8 @@ mod tests {
             ("a/Cargo.toml", CRATE_A),
             (
                 "a/src/lib.rs",
-                "mod m;\npub trait Show {}\npub struct X;\nimpl Show for X {}\n\
+                "mod m;\npub trait Show {}\npub trait Wrap<T> {}\npub struct X;\nimpl Show for X {}\n\
+                 impl Wrap<u8> for X {}\n\
                  impl std::fmt::Debug for X {}\nimpl<T> From<T> for X {}\n\
                  pub fn run() {}\n#[cfg(test)]\nmod tests {\n use super::*;\n\
                  fn helper() { run(); }\n #[test]\n fn runs() { run(); m::go(); let _x: X; }\n\
@@ -430,6 +433,7 @@ mod tests {
             found,
             [
                 "a::X Implements a::Show",
+                "a::X Implements a::Wrap",
                 "a::m::Y Implements a::m::inner::Shown",
                 "a::tests::deeper::shows Tests a::m::Y::show",
                 "a::tests::runs Tests a::X",
@@ -437,6 +441,19 @@ mod tests {
                 "a::tests::runs Tests a::run",
             ]
         );
+    }
+
+    #[test]
+    fn a_name_alone_does_not_fall_back_to_its_module() {
+        let found = edges(&[
+            ("a/Cargo.toml", CRATE_A),
+            ("a/src/lib.rs", "mod index;\npub use index::index;\n"),
+            (
+                "a/src/index.rs",
+                "pub fn index() {}\npub struct File { text: String }\n",
+            ),
+        ]);
+        assert!(found.is_empty(), "{found:?}");
     }
 
     #[test]

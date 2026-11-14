@@ -1,4 +1,8 @@
-use crate::graph::Links;
+use std::collections::BTreeMap;
+
+use crate::edges::id;
+use crate::graph::{Links, ModuleNode};
+use crate::{Edge, EdgeKind, Symbol};
 
 const DAMPING: f64 = 0.85;
 const ITERATIONS: usize = 100;
@@ -30,6 +34,48 @@ fn next_ranks(links: &Links, ranks: &[f64], count: f64) -> Vec<f64> {
         }
     }
     next.iter().map(|rank| rank + shared / count).collect()
+}
+
+/// Ranks this close count as a tie, so rounding can't decide what leads.
+const SAME_RANK: f64 = 1e-9;
+
+/// The names, highest rank first, ties in name order.
+pub(crate) fn by_rank(mut ranked: Vec<(&str, f64)>) -> Vec<&str> {
+    let rounded = |rank: f64| (rank / SAME_RANK).round();
+    ranked.sort_by(|(name, rank), (other_name, other_rank)| {
+        rounded(*other_rank)
+            .total_cmp(&rounded(*rank))
+            .then_with(|| name.cmp(other_name))
+    });
+    ranked.into_iter().map(|(name, _)| name).collect()
+}
+
+/// The nodes' items, most central first: an item gains from those that call, use or implement it.
+pub(crate) fn central(nodes: &[ModuleNode<'_>], edges: &[Edge]) -> Vec<String> {
+    let items: Vec<String> = nodes
+        .iter()
+        .flat_map(|&ModuleNode { krate, module }| {
+            let path = |symbol: &Symbol| id(&krate.name, &module.path, &symbol.name);
+            module.symbols.iter().map(path)
+        })
+        .collect();
+    let numbers: BTreeMap<&str, usize> = (0..)
+        .zip(&items)
+        .map(|(number, id)| (id.as_str(), number))
+        .collect();
+    let mut links: Links = vec![BTreeMap::new(); items.len()];
+    for edge in edges.iter().filter(|edge| edge.kind != EdgeKind::Tests) {
+        if let (Some(from), Some(to)) = (
+            numbers.get(edge.from.as_str()),
+            numbers.get(edge.to.as_str()),
+        ) && let Some(targets) = links.get_mut(*from)
+        {
+            *targets.entry(*to).or_insert(0.0) += 1.0;
+        }
+    }
+    let ranks = page_rank(&links);
+    let ranked = items.iter().map(String::as_str).zip(ranks).collect();
+    by_rank(ranked).into_iter().map(str::to_owned).collect()
 }
 
 /// `count` as a float, saturating far beyond any repository's size.
@@ -103,5 +149,19 @@ mod tests {
     fn counts_as_floats() {
         assert!(close(as_float(3), 3.0));
         assert!(close(as_float(usize::MAX), f64::from(u32::MAX)));
+    }
+
+    #[test]
+    fn ranks_the_items_others_rely_on_first() {
+        let files = test_support::files(&[
+            ("a/Cargo.toml", "[package]\nname = \"a\"\n"),
+            (
+                "a/src/lib.rs",
+                "pub fn core() {}\npub fn b() { core(); }\npub fn c() { core(); b(); }\n\
+                 pub fn lone() {}\n#[cfg(test)]\nmod tests { #[test]\n fn t() { super::lone(); } }\n",
+            ),
+        ]);
+        let index = crate::index(&files).unwrap();
+        assert_eq!(index.central, ["a::core", "a::b", "a::c", "a::lone"]);
     }
 }
