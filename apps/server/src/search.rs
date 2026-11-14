@@ -149,6 +149,10 @@ mod tests {
         );
         assert_eq!(titles(&ada.hits("the").await).len(), 2);
         assert!(ada.hits("to").await.is_empty());
+        assert_eq!(
+            titles(&ada.hits("rel\0ease").await),
+            ["Write the release notes"]
+        );
         let hits = ada.hits("launch").await;
         let SearchHit::Task { snippet, .. } = &hits[0] else {
             panic!("{hits:?}");

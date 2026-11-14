@@ -21,7 +21,11 @@ pub(crate) struct TooLong;
 
 /// The query for `text`, or none when no word in it is long enough to look up.
 pub(crate) fn parse(text: &str) -> Result<Option<Query>, TooLong> {
-    let words: Vec<&str> = text.split_whitespace().collect();
+    // FTS5 reads its query up to a NUL, so a control character separates words too.
+    let words: Vec<&str> = text
+        .split(|ch: char| ch.is_whitespace() || ch.is_control())
+        .filter(|word| !word.is_empty())
+        .collect();
     if text.len() > MAX_TEXT || words.len() > MAX_WORDS {
         return Err(TooLong);
     }
@@ -72,6 +76,14 @@ mod tests {
         assert_eq!(query("café").words, "\"café\"");
         assert_eq!(query("ab éé abc").short, ["%ab%", "%éé%"]);
         assert_eq!(parse("éé"), Ok(None));
+    }
+
+    #[test]
+    fn control_characters_part_words_and_never_reach_a_phrase() {
+        let parsed = query("rel\0ease\u{1}notes\tok");
+
+        assert_eq!(parsed.words, r#""rel" "ease" "notes""#);
+        assert_eq!(parsed.short, ["%ok%"]);
     }
 
     #[test]

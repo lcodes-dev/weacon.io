@@ -4,8 +4,9 @@ use serde::{Deserialize, Serialize};
 use crate::{DocId, TaskId};
 
 /// Asks the server, under the capability `workspace.search`, for what in the workspace holds
-/// every word of `text`, at most 8 words in 256 bytes. Text without a word of three or more
-/// characters finds nothing. `limit` is 20 without one, and at most 50.
+/// every word of `text`, at most 8 words in 256 bytes. Words of three or more characters match
+/// whatever their case and accents; shorter ones match as typed, ignoring only ASCII case, and
+/// text without a longer word finds nothing. `limit` is 20 without one, and at most 50.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct SearchQuery {
     pub text: String,

@@ -121,7 +121,7 @@ impl Workspace {
         let short = serde_json::to_string(&query.short).map_err(|_| unreadable())?;
         sqlx::query_as::<_, HitRow>(
             "SELECT search.kind, search.item, search.title,
-                 snippet(search, -1, char(1), char(2), '…', 24)
+                 snippet(search, -1, char(1), char(2), '…', 64)
              FROM search
              JOIN search_rows AS rows
                  ON rows.workspace_id = search.workspace_id AND rows.row = search.rowid
@@ -129,7 +129,8 @@ impl Workspace {
                  AND NOT EXISTS (SELECT 1 FROM json_each(?3)
                      WHERE search.title || char(10) || search.body NOT LIKE value ESCAPE '\\')
              ORDER BY search.rowid IN
-                     (SELECT rowid FROM search WHERE search MATCH 'title : (' || ?1 || ')') DESC,
+                     (SELECT rowid FROM search
+                      WHERE search MATCH 'title : (' || ?1 || ')' AND workspace_id = ?2) DESC,
                  rows.at DESC, search.rowid DESC
              LIMIT ?4",
         )
@@ -195,7 +196,7 @@ fn utf16_len(text: &str) -> u32 {
 #[cfg(test)]
 mod tests {
     use weacon_model::{Attribution, Doc, DocText, Revision, TaskEdit, Title};
-    use weacon_protocol::{CommitId, DocAnchors, DocId, DocPin};
+    use weacon_protocol::{CommitId, DocAnchors, DocId, DocPin, TaskId};
     use weacon_testing::TempDir;
 
     use super::*;
@@ -282,6 +283,15 @@ mod tests {
         assert_eq!(found(&one, "release").await, ["t1"]);
         assert_eq!(one.search(&query, 1).await.unwrap().len(), 1);
         assert_eq!(found(&two, "release").await, ["d1", "t1"]);
+        // Reindexing w2's t1 leaves w1's alone.
+        let task = TaskId::try_from("t1".to_owned()).unwrap();
+        let retitled = TaskEdit::Title(Title::try_from("Shipped".to_owned()).unwrap());
+        two.edit_task(&task, Revision::FIRST, retitled, &in_two(4))
+            .await
+            .unwrap();
+        assert_eq!(found(&one, "release").await, ["t1"]);
+        assert!(found(&one, "shipped").await.is_empty());
+        assert_eq!(found(&two, "shipped").await, ["t1"]);
     }
 
     #[tokio::test]
@@ -385,6 +395,37 @@ mod tests {
                 marks: vec![]
             }
         );
+    }
+
+    #[tokio::test]
+    async fn a_snippet_shows_the_whole_match_and_text_around_it() {
+        let dir = TempDir::new().unwrap();
+        let (one, _) = two_teams(&dir).await;
+        let body = format!(
+            "{} internationalization_of_everything {}",
+            "x ".repeat(40),
+            "y ".repeat(40)
+        );
+        one.add_doc(&doc("d1", "Notes", &body, &[]), &by(1))
+            .await
+            .unwrap();
+        let query = parse("internationalization_of_everything")
+            .unwrap()
+            .unwrap();
+
+        let hits = one.search(&query, 1).await.unwrap();
+        let SearchHit::Doc { snippet, .. } = &hits[0] else {
+            panic!("{hits:?}");
+        };
+        let word = "internationalization_of_everything";
+        let [Mark { start, end }] = snippet.marks[..] else {
+            panic!("{snippet:?}");
+        };
+        let units: Vec<u16> = snippet.text.encode_utf16().collect();
+        let range = usize::try_from(start).unwrap()..usize::try_from(end).unwrap();
+        assert_eq!(String::from_utf16(&units[range]).unwrap(), word);
+        assert!(snippet.text.starts_with("… x x"), "{snippet:?}");
+        assert!(snippet.text.ends_with("y y…"), "{snippet:?}");
     }
 
     #[tokio::test]

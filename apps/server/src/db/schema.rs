@@ -320,9 +320,9 @@ FROM docs JOIN doc_versions USING (workspace_id, doc_id, version);
 
 INSERT INTO search_rows (workspace_id, kind, item, row, at)
 SELECT workspace_id, kind, item, rowid, COALESCE(
-    (SELECT MAX(at) FROM task_versions
-     WHERE kind = 'task' AND task_versions.workspace_id = search.workspace_id
-         AND task_versions.task_id = search.item),
+    (SELECT at FROM tasks JOIN task_versions USING (workspace_id, task_id, version)
+     WHERE kind = 'task' AND tasks.workspace_id = search.workspace_id
+         AND tasks.task_id = search.item),
     (SELECT at FROM docs JOIN doc_versions USING (workspace_id, doc_id, version)
      WHERE kind = 'doc' AND docs.workspace_id = search.workspace_id
          AND docs.doc_id = search.item),
