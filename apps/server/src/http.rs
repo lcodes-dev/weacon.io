@@ -22,8 +22,10 @@ use crate::db::Db;
 use crate::docs;
 use crate::feed;
 use crate::limit::Limit;
+use crate::links::Links;
 use crate::outbox::Outbox;
 use crate::pairing;
+use crate::relay::Relay;
 use crate::secret::Secret;
 use crate::sign_in;
 use crate::sign_up::SignUp;
@@ -66,6 +68,10 @@ pub(crate) struct Shared {
     /// Room for open connections, feeds included; when it's full, more wait to be accepted.
     pub(crate) connections: Arc<Semaphore>,
     pub(crate) sockets: socket::Timing,
+    /// The machines whose connections are open.
+    pub(crate) links: Arc<Links>,
+    /// The asks waiting for their machines' answers.
+    pub(crate) relay: Arc<Relay>,
     /// Which machine was just unpaired, for its open connection.
     pub(crate) unpaired: broadcast::Sender<MachineId>,
     /// Which workspace just changed, for the feeds.
