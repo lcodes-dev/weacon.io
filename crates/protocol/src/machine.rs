@@ -1,11 +1,11 @@
 use std::fmt;
 
 use schemars::JsonSchema;
-use serde::{Deserialize, Deserializer, Serialize, de};
+use serde::{Deserialize, Serialize};
 
 use crate::AccountId;
-use crate::to_hex;
-use crate::token::token_id;
+use crate::hex::{is_lower_hex, to_hex};
+use crate::token::{checked_string, token_id};
 
 token_id!(
     /// A machine paired with an account, 1–64 ASCII letters, digits, `-` or `_`.
@@ -24,7 +24,7 @@ token_id!(
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, JsonSchema)]
 pub struct MachineKey(#[schemars(regex(pattern = KEY_PATTERN))] String);
 
-// The schema's form of the check in `deserialize`; a test keeps the two in step.
+// The schema's form of the check below; a test keeps the two in step.
 const KEY_PATTERN: &str = r"^[0-9a-f]{64}$";
 
 impl MachineKey {
@@ -32,34 +32,13 @@ impl MachineKey {
     pub fn from_bytes(key: [u8; 32]) -> Self {
         Self(to_hex(&key))
     }
-
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
 }
 
-impl TryFrom<String> for MachineKey {
-    type Error = String;
-
-    fn try_from(key: String) -> Result<Self, Self::Error> {
-        let hex = key
-            .bytes()
-            .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'));
-        if key.len() == 64 && hex {
-            Ok(Self(key))
-        } else {
-            Err(key)
-        }
-    }
-}
-
-impl<'de> Deserialize<'de> for MachineKey {
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        Self::try_from(String::deserialize(deserializer)?)
-            .map_err(|_| de::Error::custom("not a machine key"))
-    }
-}
+checked_string!(
+    MachineKey,
+    |key: &str| key.len() == 64 && is_lower_hex(key),
+    "not a machine key"
+);
 
 /// What a machine is called: 1–64 characters, none of them control or bidirectional
 /// formatting characters, so it shows the same wherever it is shown.
@@ -68,38 +47,20 @@ pub struct MachineName(#[schemars(regex(pattern = NAME_PATTERN), length(max = NA
 
 const NAME_MAX: usize = 64;
 
-// The schema's form of the check in `try_from`; a test keeps the two in step.
+// The schema's form of `is_machine_name`; a test keeps the two in step.
 const NAME_PATTERN: &str =
     r"^[^\u0000-\u001F\u007F-\u009F\u061C\u200E\u200F\u202A-\u202E\u2066-\u2069]+$";
 
-impl MachineName {
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
+checked_string!(MachineName, is_machine_name, "not a machine name");
+
+fn is_machine_name(name: &str) -> bool {
+    let shown = |character: char| !character.is_control() && !is_bidi_control(character);
+    (1..=NAME_MAX).contains(&name.chars().count()) && name.chars().all(shown)
 }
 
-impl TryFrom<String> for MachineName {
-    type Error = String;
-
-    fn try_from(name: String) -> Result<Self, Self::Error> {
-        let shown = |character: char| {
-            !character.is_control()
-                && !matches!(character, '\u{061c}' | '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')
-        };
-        if (1..=NAME_MAX).contains(&name.chars().count()) && name.chars().all(shown) {
-            Ok(Self(name))
-        } else {
-            Err(name)
-        }
-    }
-}
-
-impl<'de> Deserialize<'de> for MachineName {
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        Self::try_from(String::deserialize(deserializer)?)
-            .map_err(|_| de::Error::custom("not a machine name"))
-    }
+/// Whether `character` reorders the text around it, so that what is shown isn't what is stored.
+fn is_bidi_control(character: char) -> bool {
+    matches!(character, '\u{061c}' | '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')
 }
 
 /// The operating system a machine runs.

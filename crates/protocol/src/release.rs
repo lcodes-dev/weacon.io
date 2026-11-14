@@ -5,7 +5,8 @@ use std::str::FromStr;
 use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 
-use crate::token::token_id;
+use crate::hex::{is_lower_hex, to_hex};
+use crate::token::{checked_string, token_id};
 
 token_id!(
     /// A Rust target a release is built for, such as `x86_64-unknown-linux-musl`.
@@ -139,33 +140,11 @@ macro_rules! hex_string {
         pub struct $name(#[schemars(regex(pattern = Self::PATTERN))] String);
 
         impl $name {
-            // The schema's form of `try_from`; a test keeps the two in step.
+            // The schema's form of the check below; a test keeps the two in step.
             const PATTERN: &str = concat!("^[0-9a-f]{", stringify!($len), "}$");
-
-            #[must_use]
-            pub fn as_str(&self) -> &str {
-                &self.0
-            }
         }
 
-        impl TryFrom<String> for $name {
-            type Error = String;
-
-            fn try_from(text: String) -> Result<Self, Self::Error> {
-                if text.len() == $len && text.bytes().all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f')) {
-                    Ok(Self(text))
-                } else {
-                    Err(text)
-                }
-            }
-        }
-
-        impl<'de> Deserialize<'de> for $name {
-            fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-                Self::try_from(String::deserialize(deserializer)?)
-                    .map_err(|_| de::Error::custom($what))
-            }
-        }
+        checked_string!($name, |text: &str| text.len() == $len && is_lower_hex(text), $what);
     };
 }
 
@@ -186,7 +165,7 @@ hex_string!(
 impl Sha256 {
     #[must_use]
     pub fn from_bytes(digest: [u8; 32]) -> Self {
-        Self(crate::to_hex(&digest))
+        Self(to_hex(&digest))
     }
 }
 
@@ -197,43 +176,26 @@ pub struct DownloadUrl(#[schemars(regex(pattern = URL_PATTERN), length(max = URL
 
 const URL_MAX: usize = 2048;
 
-// The schema's form of `DownloadUrl::try_from`; a test keeps the two in step.
+// The schema's form of `is_https_url`; a test keeps the two in step.
 const URL_PATTERN: &str = r"^https://[A-Za-z0-9.-]+(:[0-9]{1,5})?([/?#][!-~]*)?$";
 
-impl DownloadUrl {
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
+checked_string!(DownloadUrl, is_https_url, "not an https address");
 
-impl TryFrom<String> for DownloadUrl {
-    type Error = String;
-
-    fn try_from(text: String) -> Result<Self, Self::Error> {
-        let valid = text.len() <= URL_MAX
-            && text.strip_prefix("https://").is_some_and(|rest| {
-                let (authority, path) = rest
-                    .find(['/', '?', '#'])
-                    .map_or((rest, ""), |at| rest.split_at(at));
-                let (host, port) = authority.split_once(':').unwrap_or((authority, "0"));
-                let host_ok = !host.is_empty()
-                    && host
-                        .bytes()
-                        .all(|byte| byte.is_ascii_alphanumeric() || b".-".contains(&byte));
-                let port_ok =
-                    (1..=5).contains(&port.len()) && port.bytes().all(|byte| byte.is_ascii_digit());
-                host_ok && port_ok && path.bytes().all(|byte| byte.is_ascii_graphic())
-            });
-        if valid { Ok(Self(text)) } else { Err(text) }
-    }
-}
-
-impl<'de> Deserialize<'de> for DownloadUrl {
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        Self::try_from(String::deserialize(deserializer)?)
-            .map_err(|_| de::Error::custom("not an https address"))
-    }
+fn is_https_url(text: &str) -> bool {
+    text.len() <= URL_MAX
+        && text.strip_prefix("https://").is_some_and(|rest| {
+            let (authority, path) = rest
+                .find(['/', '?', '#'])
+                .map_or((rest, ""), |at| rest.split_at(at));
+            let (host, port) = authority.split_once(':').unwrap_or((authority, "0"));
+            let host_ok = !host.is_empty()
+                && host
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || b".-".contains(&byte));
+            let port_ok =
+                (1..=5).contains(&port.len()) && port.bytes().all(|byte| byte.is_ascii_digit());
+            host_ok && port_ok && path.bytes().all(|byte| byte.is_ascii_graphic())
+        })
 }
 
 #[cfg(test)]

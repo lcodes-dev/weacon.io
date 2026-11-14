@@ -1,8 +1,9 @@
 use schemars::JsonSchema;
-use serde::{Deserialize, Deserializer, Serialize, de};
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::token::token_id;
+use crate::hex::is_lower_hex;
+use crate::token::{checked_string, token_id};
 use crate::{MachineName, MemberId, Outcome};
 
 /// Which vendor's agent.
@@ -37,37 +38,10 @@ pub struct AgentSession(#[schemars(regex(pattern = SESSION_PATTERN))] String);
 const SESSION_PATTERN: &str = r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$";
 
 fn is_uuid(id: &str) -> bool {
-    id.len() == 36
-        && id.bytes().enumerate().all(|(at, byte)| {
-            if matches!(at, 8 | 13 | 18 | 23) {
-                byte == b'-'
-            } else {
-                matches!(byte, b'0'..=b'9' | b'a'..=b'f')
-            }
-        })
+    id.split('-').map(str::len).eq([8, 4, 4, 4, 12]) && id.split('-').all(is_lower_hex)
 }
 
-impl AgentSession {
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-impl TryFrom<String> for AgentSession {
-    type Error = String;
-
-    fn try_from(id: String) -> Result<Self, Self::Error> {
-        if is_uuid(&id) { Ok(Self(id)) } else { Err(id) }
-    }
-}
-
-impl<'de> Deserialize<'de> for AgentSession {
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        Self::try_from(String::deserialize(deserializer)?)
-            .map_err(|_| de::Error::custom("not an agent session id"))
-    }
-}
+checked_string!(AgentSession, is_uuid, "not an agent session id");
 
 token_id!(
     /// The core's id for one run of an agent process, 1–64 ASCII letters, digits, `-` or `_`.

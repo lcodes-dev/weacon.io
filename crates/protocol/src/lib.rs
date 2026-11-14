@@ -8,6 +8,7 @@ mod code;
 mod diff;
 mod doc;
 mod frame;
+mod hex;
 mod log;
 mod machine;
 mod mcp;
@@ -48,6 +49,7 @@ pub use doc::{
     DocRevision, DocSummary, links_to_code,
 };
 pub use frame::{FrameError, LineDecoder, MAX_FRAME, encode_line};
+pub use hex::to_hex;
 pub use log::{ClientLog, Level, LogEvent};
 pub use machine::{
     MachineId, MachineKey, MachineList, MachineName, MachineOs, MachineSummary, PairClaim,
@@ -92,15 +94,6 @@ pub use worktree::{
     WorktreeAction, WorktreeAnswer, WorktreeAnswerKind, WorktreeCommand, WorktreeQuery,
     WorktreeQueryKind,
 };
-
-/// `bytes` as lowercase hex.
-#[must_use]
-pub fn to_hex(bytes: &[u8]) -> String {
-    let nibbles = bytes.iter().flat_map(|byte| [byte >> 4, byte & 0xf]);
-    nibbles
-        .filter_map(|nibble| char::from_digit(u32::from(nibble), 16))
-        .collect()
-}
 
 #[cfg(test)]
 mod tests {

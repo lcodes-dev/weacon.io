@@ -6,8 +6,9 @@ use std::fmt;
 use schemars::JsonSchema;
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 
+use crate::hex::{from_hex, to_hex};
 use crate::token::token_id;
-use crate::{AgentKind, Asker, Code, FrameError, MachineId, SignInState, WorkspaceId, to_hex};
+use crate::{AgentKind, Asker, Code, FrameError, MachineId, SignInState, WorkspaceId};
 
 token_id!(
     /// One sign-in terminal, chosen by the browser that opens it; 1–64 ASCII letters, digits,
@@ -239,19 +240,7 @@ impl Serialize for Bytes {
 
 impl<'de> Deserialize<'de> for Bytes {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let hex = String::deserialize(deserializer)?;
-        let nibble = |digit: u8| match digit {
-            b'0'..=b'9' => Some(digit - b'0'),
-            b'a'..=b'f' => Some(digit - b'a' + 10),
-            _ => None,
-        };
-        let pairs = hex.as_bytes().chunks(2);
-        let bytes = pairs
-            .map(|pair| match pair {
-                [high, low] => Some(nibble(*high)? * 16 + nibble(*low)?),
-                _ => None,
-            })
-            .collect::<Option<Vec<u8>>>()
+        let bytes = from_hex(&String::deserialize(deserializer)?)
             .ok_or_else(|| de::Error::custom("not lowercase hex bytes"))?;
         Self::new(bytes).ok_or_else(|| de::Error::custom("more bytes than a Noise message"))
     }
