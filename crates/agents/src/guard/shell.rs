@@ -56,8 +56,31 @@ impl Parser {
 
     fn next(&mut self) -> Option<char> {
         let char = self.peek()?;
-        self.at += 1;
+        self.advance(1);
         Some(char)
+    }
+
+    fn advance(&mut self, by: usize) {
+        self.at += by;
+    }
+
+    // Moves past the characters `keep` accepts, in one search rather than a loop.
+    fn skip_while(&mut self, keep: impl Fn(char) -> bool) {
+        let rest = self.chars.get(self.at..).unwrap_or_default();
+        self.advance(
+            rest.iter()
+                .position(|char| !keep(*char))
+                .unwrap_or(rest.len()),
+        );
+    }
+
+    // The text up to `end`, moving past it; `None` if `end` never comes.
+    fn until(&mut self, end: char) -> Option<String> {
+        let rest = self.chars.get(self.at..)?;
+        let length = rest.iter().position(|char| *char == end)?;
+        let text = rest.get(..length)?.iter().collect();
+        self.advance(length + 1);
+        Some(text)
     }
 
     // Commands up to `end`, or the end of the line.
@@ -70,18 +93,23 @@ impl Parser {
                 return end.is_none().then_some(());
             };
             if Some(char) == end {
-                self.at += 1;
+                self.advance(1);
                 self.finish(&mut simple, &mut word);
                 return Some(());
             }
+            let before = self.at;
             self.step(char, &mut simple, &mut word)?;
+            // Every step reads something; one that didn't would never end.
+            if self.at <= before {
+                return None;
+            }
         }
     }
 
     fn step(&mut self, char: char, simple: &mut Simple, word: &mut Option<Word>) -> Option<()> {
         match char {
             ' ' | '\t' => {
-                self.at += 1;
+                self.advance(1);
                 end_word(simple, word);
             }
             '\n' | ';' | '&' | '|' | '(' | ')' => self.separator(char, simple, word)?,
@@ -98,14 +126,14 @@ impl Parser {
         simple: &mut Simple,
         word: &mut Option<Word>,
     ) -> Option<()> {
-        self.at += 1;
+        self.advance(1);
         if char == '&' && self.peek() == Some('>') {
-            self.at += 1;
+            self.advance(1);
             return self.redirect_target(simple, word, true);
         }
         let pipe = char == '|' && !matches!(self.peek(), Some('|'));
         if matches!(self.peek(), Some('&' | '|')) && matches!(char, '&' | '|') {
-            self.at += 1;
+            self.advance(1);
         }
         self.finish(simple, word);
         simple.fed = pipe;
@@ -123,27 +151,27 @@ impl Parser {
             *word = None;
         }
         end_word(simple, word);
-        self.at += 1;
+        self.advance(1);
         if self.peek() == Some('(') {
-            self.at += 1;
+            self.advance(1);
             self.list(Some(')'))?;
             return Some(());
         }
         if char == '>' {
             if matches!(self.peek(), Some('>' | '|')) {
-                self.at += 1;
+                self.advance(1);
             }
             return self.redirect_target(simple, word, true);
         }
         simple.fed = true;
         if self.peek() == Some('<') {
-            self.at += 1;
+            self.advance(1);
             if self.peek() == Some('<') {
-                self.at += 1;
+                self.advance(1);
                 return self.redirect_target(simple, word, false);
             }
             if self.peek() == Some('-') {
-                self.at += 1;
+                self.advance(1);
             }
             let delimiter = self.target()?;
             self.heredocs.push(delimiter.text);
@@ -161,7 +189,7 @@ impl Parser {
         end_word(simple, word);
         if self.peek() == Some('&') {
             // `>&2` copies a descriptor; `>&-` closes one.
-            self.at += 1;
+            self.advance(1);
         }
         let target = self.target()?;
         if writes
@@ -177,9 +205,7 @@ impl Parser {
 
     // The word after a redirection.
     fn target(&mut self) -> Option<Word> {
-        while matches!(self.peek(), Some(' ' | '\t')) {
-            self.at += 1;
-        }
+        self.skip_while(|char| matches!(char, ' ' | '\t'));
         let mut word = Word::default();
         while let Some(char) = self.peek() {
             if matches!(
@@ -188,31 +214,43 @@ impl Parser {
             ) {
                 break;
             }
+            let before = self.at;
             self.word_part(&mut word)?;
+            if self.at <= before {
+                return None;
+            }
         }
         (!word.text.is_empty() || word.dynamic).then_some(word)
     }
 
     fn comment(&mut self) {
-        while self.peek().is_some_and(|char| char != '\n') {
-            self.at += 1;
-        }
+        self.skip_while(|char| char != '\n');
     }
 
     // Here-document text is input, not commands, so it is skipped.
     fn skip_heredocs(&mut self) -> Option<()> {
         for delimiter in std::mem::take(&mut self.heredocs) {
-            while self.line()?.trim_start_matches('\t') != delimiter {}
+            self.skip_heredoc(&delimiter)?;
         }
         Some(())
+    }
+
+    fn skip_heredoc(&mut self, delimiter: &str) -> Option<()> {
+        loop {
+            let before = self.at;
+            if self.line()?.trim_start_matches('\t') == delimiter {
+                return Some(());
+            }
+            if self.at <= before {
+                return None;
+            }
+        }
     }
 
     // The rest of the line, and its end.
     fn line(&mut self) -> Option<String> {
         let start = self.at;
-        while self.peek().is_some_and(|char| char != '\n') {
-            self.at += 1;
-        }
+        self.skip_while(|char| char != '\n');
         let line: String = self.chars.get(start..self.at)?.iter().collect();
         // The last line may end the text instead; a delimiter never found leaves nothing.
         if self.next().is_none() && start == self.at {
@@ -224,16 +262,7 @@ impl Parser {
     fn word_part(&mut self, word: &mut Word) -> Option<()> {
         let char = self.next()?;
         match char {
-            '\'' => {
-                let start = self.at;
-                while self.next()? != '\'' {}
-                let quoted: String = self
-                    .chars
-                    .get(start..self.at.checked_sub(1)?)?
-                    .iter()
-                    .collect();
-                word.text.push_str(&quoted);
-            }
+            '\'' => word.text.push_str(&self.until('\'')?),
             '"' => return self.double_quoted(word),
             '\\' => {
                 let escaped = self.next()?;
@@ -258,12 +287,16 @@ impl Parser {
 
     fn double_quoted(&mut self, word: &mut Word) -> Option<()> {
         loop {
+            let before = self.at;
             match self.next()? {
                 '"' => return Some(()),
                 '\\' => self.escaped_in_quotes(word)?,
                 '$' => self.expansion(word)?,
                 '`' => self.backquoted(word)?,
                 char => word.text.push(char),
+            }
+            if self.at <= before {
+                return None;
             }
         }
     }
@@ -284,43 +317,33 @@ impl Parser {
     fn expansion(&mut self, word: &mut Word) -> Option<()> {
         match self.peek() {
             Some('(') if self.peek_at(1) == Some('(') => {
-                self.at += 2;
+                self.advance(2);
                 self.list(Some(')'))?;
                 if self.next()? != ')' {
                     return None;
                 }
             }
             Some('(') => {
-                self.at += 1;
+                self.advance(1);
                 self.list(Some(')'))?;
             }
             Some('{') => {
-                let start = self.at + 1;
-                while self.next()? != '}' {}
-                let name: String = self
-                    .chars
-                    .get(start..self.at.checked_sub(1)?)?
-                    .iter()
-                    .collect();
+                self.advance(1);
+                let name = self.until('}')?;
                 home_or_unknown(word, &name);
                 return Some(());
             }
             Some(char) if char.is_ascii_alphanumeric() || char == '_' => {
                 let start = self.at;
-                while self
-                    .peek()
-                    .is_some_and(|char| char.is_ascii_alphanumeric() || char == '_')
-                {
-                    self.at += 1;
-                }
+                self.skip_while(|char| char.is_ascii_alphanumeric() || char == '_');
                 let name: String = self.chars.get(start..self.at)?.iter().collect();
                 home_or_unknown(word, &name);
                 return Some(());
             }
-            Some(char) if "@*#?$!-".contains(char) => self.at += 1,
+            Some(char) if "@*#?$!-".contains(char) => self.advance(1),
             Some('\'') => {
-                self.at += 1;
-                while self.next()? != '\'' {}
+                self.advance(1);
+                self.until('\'')?;
             }
             _ => {
                 word.text.push('$');
@@ -332,13 +355,7 @@ impl Parser {
     }
 
     fn backquoted(&mut self, word: &mut Word) -> Option<()> {
-        let start = self.at;
-        while self.next()? != '`' {}
-        let inner: String = self
-            .chars
-            .get(start..self.at.checked_sub(1)?)?
-            .iter()
-            .collect();
+        let inner = self.until('`')?;
         self.found.extend(parse(&inner)?);
         word.dynamic = true;
         Some(())
