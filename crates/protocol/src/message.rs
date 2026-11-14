@@ -3,7 +3,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     Capability, ChatAnswer, ChatCommand, ChatQuery, ChatUpdate, ClientLog, Code, DiffAnswer,
-    DiffQuery, Pick, Receipt, RunUpdate, WorkspaceUpdate, code,
+    DiffQuery, MachineSettingsAnswer, MachineSettingsCommand, MachineSettingsQuery, Pick, Receipt,
+    RunUpdate, TerminalCommand, TerminalUpdate, WorkspaceUpdate, code,
 };
 
 /// The protocol version this build speaks. Only a breaking change raises it; peers must match
@@ -49,6 +50,21 @@ pub enum Message {
     /// The core's answer to a [`DiffQuery`], one changed file at a time, to a client that has
     /// `diff.view`.
     DiffAnswer(DiffAnswer),
+    /// A question about what a machine keeps for a workspace, from a client to a core that
+    /// offers `machine.settings`.
+    MachineSettingsQuery(MachineSettingsQuery),
+    /// A change to what a machine keeps for a workspace, from a client to a core that offers
+    /// `machine.settings`.
+    MachineSettingsCommand(MachineSettingsCommand),
+    /// The core's answer to a [`MachineSettingsQuery`] or a [`MachineSettingsCommand`], to a
+    /// client that has `machine.settings`.
+    MachineSettingsAnswer(MachineSettingsAnswer),
+    /// A sign-in terminal's sealed input, from a browser through the server to a core that
+    /// offers `terminal.sign_in`; the server relays it only if it offers `terminal.relay`.
+    TerminalCommand(TerminalCommand),
+    /// A sign-in terminal's sealed output, from a core that offers `terminal.sign_in` through
+    /// the server to the browser that opened it.
+    Terminal(TerminalUpdate),
     /// A message type this build doesn't know, from a newer peer.
     #[serde(other)]
     #[schemars(skip)]

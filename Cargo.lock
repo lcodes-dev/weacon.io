@@ -2051,6 +2051,7 @@ dependencies = [
 name = "weacon-agents"
 version = "0.0.0"
 dependencies = [
+ "libc",
  "serde",
  "serde_json",
  "tokio",
@@ -2196,6 +2197,9 @@ dependencies = [
 [[package]]
 name = "weacon-version"
 version = "0.0.0"
+dependencies = [
+ "weacon-testing",
+]
 
 [[package]]
 name = "webpki-roots"

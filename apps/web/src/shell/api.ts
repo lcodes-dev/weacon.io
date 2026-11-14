@@ -1,5 +1,15 @@
 import type { End } from "../connection.ts";
-import type { AccountSignedIn, AccountSignInFinish, AccountSignInStart, Code, SignInStarted } from "../protocol.ts";
+import { isId } from "../ids.ts";
+import type {
+  AccountSignedIn,
+  AccountSignInFinish,
+  AccountSignInStart,
+  Code,
+  SignInStarted,
+  WorkspaceCreate,
+  WorkspaceList,
+  WorkspaceSummary,
+} from "../protocol.ts";
 
 /** The part of the browser's `fetch` this file uses. */
 export type Fetch = (path: string, init: { method: string; headers?: Record<string, string>; body?: string }) => Promise<{
@@ -13,6 +23,7 @@ export type Answer<T> = { ok: true; value: T } | { ok: false; code: Code };
 /** Why there's no answer: the request never reached the server, or its answer wasn't one. */
 export const UNREACHABLE: End = "connection.refused";
 export const MALFORMED: Code = "answer.malformed";
+const SIGNED_OUT: Code = "sign_in.required";
 
 /**
  * The server's API, on this page's own origin. The browser keeps the session cookie, which this
@@ -20,15 +31,19 @@ export const MALFORMED: Code = "answer.malformed";
  */
 export class Api {
   #fetch: Fetch;
+  #signedOut: () => void;
+  #signIns = 0;
 
-  constructor(fetch: Fetch) {
+  /** `signedOut` is told when the server answers that the current session is over. */
+  constructor(fetch: Fetch, signedOut: () => void) {
     this.#fetch = fetch;
+    this.#signedOut = signedOut;
   }
 
   /** Who is signed in, or `undefined` when nobody is. */
   async session(): Promise<Answer<AccountSignedIn | undefined>> {
     const answer = await this.#ask("GET", "/api/session", undefined, isAccount);
-    return !answer.ok && answer.code === "sign_in.required" ? { ok: true, value: undefined } : answer;
+    return !answer.ok && answer.code === SIGNED_OUT ? { ok: true, value: undefined } : answer;
   }
 
   /** Asks for a code to be sent to `email`; the answer is the same for addresses with no account. */
@@ -37,15 +52,30 @@ export class Api {
     return this.#ask("POST", "/api/sign-in", body, isStarted);
   }
 
-  finish(body: AccountSignInFinish): Promise<Answer<AccountSignedIn>> {
-    return this.#ask("POST", "/api/sign-in/finish", body, isAccount);
+  async finish(body: AccountSignInFinish): Promise<Answer<AccountSignedIn>> {
+    const answer = await this.#ask("POST", "/api/sign-in/finish", body, isAccount);
+    if (answer.ok) {
+      this.#signIns++;
+    }
+    return answer;
   }
 
   signOut(): Promise<Answer<undefined>> {
     return this.#ask("POST", "/api/sign-out", undefined, (value): value is undefined => value === undefined);
   }
 
+  workspaces(): Promise<Answer<WorkspaceList>> {
+    return this.#ask("GET", "/api/workspaces", undefined, isList);
+  }
+
+  /** Makes a workspace the signed-in account owns. */
+  create(name: string): Promise<Answer<WorkspaceSummary>> {
+    const body: WorkspaceCreate = { name };
+    return this.#ask("POST", "/api/workspaces", body, isWorkspace);
+  }
+
   async #ask<T>(method: string, path: string, body: object | undefined, fits: (value: unknown) => value is T): Promise<Answer<T>> {
+    const signIns = this.#signIns;
     const init = body === undefined ? { method } : { method, headers: { "content-type": "application/json" }, body: JSON.stringify(body) };
     const response = await this.#fetch(path, init).catch(() => undefined);
     if (response === undefined) {
@@ -55,7 +85,11 @@ export class Api {
     if (response.status >= 200 && response.status < 300) {
       return fits(value) ? { ok: true, value } : { ok: false, code: MALFORMED };
     }
-    return { ok: false, code: isError(value) ? value.code : MALFORMED };
+    const code = isError(value) ? value.code : MALFORMED;
+    if (code === SIGNED_OUT && signIns === this.#signIns) {
+      this.#signedOut();
+    }
+    return { ok: false, code };
   }
 }
 
@@ -73,3 +107,11 @@ function fields(value: unknown, keys: string[]): boolean {
 const isAccount = (value: unknown): value is AccountSignedIn => fields(value, ["account", "email"]);
 const isStarted = (value: unknown): value is SignInStarted => fields(value, ["challenge"]);
 const isError = (value: unknown): value is { code: Code } => fields(value, ["code"]);
+const isWorkspace = (value: unknown): value is WorkspaceSummary =>
+  fields(value, ["id", "name", "role"]) && isId((value as WorkspaceSummary).id);
+const isList = (value: unknown): value is WorkspaceList =>
+  typeof value === "object" &&
+  value !== null &&
+  "workspaces" in value &&
+  Array.isArray(value.workspaces) &&
+  value.workspaces.every(isWorkspace);

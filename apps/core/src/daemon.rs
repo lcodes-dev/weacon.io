@@ -7,6 +7,7 @@ use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::task::JoinSet;
 use tokio::time::Instant;
+pub(crate) use weacon_appkit::build;
 use weacon_observability::{Fault, Field, Logger};
 use weacon_protocol::{
     App, Envelope, LineDecoder, Message, Outcome, Pick, Receipt, code, encode_line,
@@ -27,13 +28,6 @@ const MEMORY_SAMPLE: Duration = Duration::from_mins(5);
 
 pub(crate) fn socket_path(state_dir: &Path) -> PathBuf {
     state_dir.join("weacon.sock")
-}
-
-pub(crate) use weacon_appkit::build;
-
-/// The single-threaded async runtime the core's commands run on.
-pub(crate) fn runtime() -> Result<tokio::runtime::Runtime, Fault> {
-    weacon_appkit::runtime(tokio::runtime::Builder::new_current_thread())
 }
 
 /// None for a build whose version isn't a release's `major.minor.patch`.
@@ -71,11 +65,8 @@ fn unix_now() -> u64 {
 
 /// Runs the daemon until Ctrl-C or the system asks it to stop.
 pub(crate) fn run(app: &crate::app::App) -> Result<(), Fault> {
-    let state_dir = app
-        .state_dir
-        .as_deref()
-        .ok_or_else(crate::app::state_unavailable)?;
-    runtime()?.block_on(async {
+    let state_dir = app.state_dir()?;
+    crate::app::runtime()?.block_on(async {
         let signals = weacon_appkit::Signals::new().map_err(|error| {
             Fault::new(
                 code!("daemon.signals_failed"),

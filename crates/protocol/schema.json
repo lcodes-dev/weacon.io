@@ -202,12 +202,108 @@
       "required": [
         "type"
       ]
+    },
+    {
+      "description": "A question about what a machine keeps for a workspace, from a client to a core that\noffers `machine.settings`.",
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "machine_settings_query"
+        }
+      },
+      "$ref": "#/$defs/MachineSettingsQuery",
+      "required": [
+        "type"
+      ]
+    },
+    {
+      "description": "A change to what a machine keeps for a workspace, from a client to a core that offers\n`machine.settings`.",
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "machine_settings_command"
+        }
+      },
+      "$ref": "#/$defs/MachineSettingsCommand",
+      "required": [
+        "type"
+      ]
+    },
+    {
+      "description": "The core's answer to a [`MachineSettingsQuery`] or a [`MachineSettingsCommand`], to a\nclient that has `machine.settings`.",
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "machine_settings_answer"
+        }
+      },
+      "$ref": "#/$defs/MachineSettingsAnswer",
+      "required": [
+        "type"
+      ]
+    },
+    {
+      "description": "A sign-in terminal's sealed input, from a browser through the server to a core that\noffers `terminal.sign_in`; the server relays it only if it offers `terminal.relay`.",
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "terminal_command"
+        }
+      },
+      "$ref": "#/$defs/TerminalCommand",
+      "required": [
+        "type"
+      ]
+    },
+    {
+      "description": "A sign-in terminal's sealed output, from a core that offers `terminal.sign_in` through\nthe server to the browser that opened it.",
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "terminal"
+        }
+      },
+      "$ref": "#/$defs/TerminalUpdate",
+      "required": [
+        "type"
+      ]
     }
   ],
   "required": [
     "id"
   ],
   "$defs": {
+    "AccessLevel": {
+      "description": "What a workspace's agents may do on one machine, chosen by the machine's owner.",
+      "oneOf": [
+        {
+          "type": "string",
+          "enum": [
+            "read_only"
+          ]
+        },
+        {
+          "description": "No agent runs.",
+          "type": "string",
+          "const": "off"
+        },
+        {
+          "description": "Agents ask a person before each change.",
+          "type": "string",
+          "const": "ask_first"
+        },
+        {
+          "description": "Agents change things without asking; destructive operations still ask.",
+          "type": "string",
+          "const": "full"
+        }
+      ]
+    },
     "AccountId": {
       "description": "A person's account on the server, 1–64 ASCII letters, digits, `-` or `_`.",
       "type": "string",
@@ -265,10 +361,37 @@
         "email"
       ]
     },
+    "AgentKind": {
+      "description": "Which vendor's agent.",
+      "oneOf": [
+        {
+          "type": "string",
+          "enum": [
+            "claude",
+            "codex"
+          ]
+        }
+      ]
+    },
     "AgentSession": {
       "description": "An agent's own id for a conversation, a lowercase UUID, which resumes it later.",
       "type": "string",
       "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+    },
+    "AgentSignIn": {
+      "type": "object",
+      "properties": {
+        "agent": {
+          "$ref": "#/$defs/AgentKind"
+        },
+        "state": {
+          "$ref": "#/$defs/SignInState"
+        }
+      },
+      "required": [
+        "agent",
+        "state"
+      ]
     },
     "App": {
       "description": "A program, such as `weacon-core`, and the exact build it is.",
@@ -349,6 +472,12 @@
       "type": "string",
       "maxLength": 64,
       "pattern": "^[A-Za-z0-9_-]+$"
+    },
+    "Bytes": {
+      "description": "Bytes that travel as lowercase hex, at most [`NOISE_MAX`] of them. Its `Debug` shows only\nhow many, since they are sealed or terminal content.",
+      "type": "string",
+      "maxLength": 131070,
+      "pattern": "^([0-9a-f]{2})*$"
     },
     "Capability": {
       "description": "A feature a peer supports, such as `chat.send`, named like a [`Code`]. A peer keeps the ones\nit doesn't know, so a newer peer's list still parses.",
@@ -1370,6 +1499,190 @@
         }
       ]
     },
+    "MachineSettings": {
+      "description": "What a machine keeps for one workspace, and whether it sends error reports.",
+      "type": "object",
+      "properties": {
+        "access": {
+          "$ref": "#/$defs/AccessLevel"
+        },
+        "reports": {
+          "description": "The owner's answer to error reports; absent until they give one, when none are sent.",
+          "type": "boolean"
+        },
+        "sign_ins": {
+          "description": "Each agent the core runs, signed in or not with the workspace's own config folder.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/AgentSignIn"
+          }
+        },
+        "team": {
+          "description": "Whether other people are in the workspace.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "access",
+        "team",
+        "sign_ins"
+      ]
+    },
+    "MachineSettingsAction": {
+      "oneOf": [
+        {
+          "description": "Whether the machine sends error reports; for the whole machine, not one workspace.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "set_reports"
+            },
+            "send": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "kind",
+            "send"
+          ]
+        },
+        {
+          "description": "What `workspace`'s agents may do on the machine, and whether other people are in it;\n`team` is kept as it was when left out.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "set_access"
+            },
+            "level": {
+              "$ref": "#/$defs/AccessLevel"
+            },
+            "team": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "kind",
+            "level"
+          ]
+        }
+      ]
+    },
+    "MachineSettingsAnswer": {
+      "description": "From the core to a client that has `machine.settings`, in answer to a\n[`MachineSettingsQuery`] or a [`MachineSettingsCommand`].",
+      "type": "object",
+      "properties": {
+        "answer": {
+          "$ref": "#/$defs/MachineSettingsAnswerKind"
+        },
+        "machine": {
+          "$ref": "#/$defs/MachineId"
+        },
+        "request": {
+          "$ref": "#/$defs/RequestId"
+        },
+        "workspace": {
+          "$ref": "#/$defs/WorkspaceId"
+        }
+      },
+      "required": [
+        "request",
+        "machine",
+        "workspace",
+        "answer"
+      ]
+    },
+    "MachineSettingsAnswerKind": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "current"
+            }
+          },
+          "$ref": "#/$defs/MachineSettings",
+          "required": [
+            "kind"
+          ]
+        }
+      ]
+    },
+    "MachineSettingsCommand": {
+      "description": "From the owner of `machine` to its core, which offers `machine.settings`: changes what the\nmachine keeps for `workspace`. The server relays it only from the machine's owner, and the\ncore acts only when `by` is its owner; the answer is a [`MachineSettingsAnswer`] that echoes\n`request` and holds the settings after the change.",
+      "type": "object",
+      "properties": {
+        "action": {
+          "$ref": "#/$defs/MachineSettingsAction"
+        },
+        "by": {
+          "description": "Who asked, when the server relays the message to a machine.",
+          "$ref": "#/$defs/Asker"
+        },
+        "machine": {
+          "$ref": "#/$defs/MachineId"
+        },
+        "request": {
+          "$ref": "#/$defs/RequestId"
+        },
+        "workspace": {
+          "$ref": "#/$defs/WorkspaceId"
+        }
+      },
+      "required": [
+        "request",
+        "machine",
+        "workspace",
+        "action"
+      ]
+    },
+    "MachineSettingsQuery": {
+      "description": "From the owner of `machine` to its core, which offers `machine.settings`: what the machine\nkeeps for `workspace`. The server relays it only from the machine's owner, and the core\nanswers only when `by` is its owner; the answer is a [`MachineSettingsAnswer`] that echoes\n`request`.",
+      "type": "object",
+      "properties": {
+        "by": {
+          "description": "Who asked, when the server relays the message to a machine.",
+          "$ref": "#/$defs/Asker"
+        },
+        "machine": {
+          "$ref": "#/$defs/MachineId"
+        },
+        "query": {
+          "$ref": "#/$defs/MachineSettingsQueryKind"
+        },
+        "request": {
+          "$ref": "#/$defs/RequestId"
+        },
+        "workspace": {
+          "$ref": "#/$defs/WorkspaceId"
+        }
+      },
+      "required": [
+        "request",
+        "machine",
+        "workspace",
+        "query"
+      ]
+    },
+    "MachineSettingsQueryKind": {
+      "oneOf": [
+        {
+          "description": "The settings as they are now.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "current"
+            }
+          },
+          "required": [
+            "kind"
+          ]
+        }
+      ]
+    },
     "MachineSummary": {
       "description": "A machine paired with the signed-in account, at `paired_at`, in seconds since the Unix\nepoch.",
       "type": "object",
@@ -2147,6 +2460,24 @@
         "challenge"
       ]
     },
+    "SignInState": {
+      "description": "Only whether an agent is signed in: never its credentials.",
+      "oneOf": [
+        {
+          "type": "string",
+          "enum": [
+            "signed_in",
+            "signed_out",
+            "not_installed"
+          ]
+        },
+        {
+          "description": "The vendor's tool didn't say.",
+          "type": "string",
+          "const": "unknown"
+        }
+      ]
+    },
     "SignedIn": {
       "description": "A signed-in member and the session token that proves it, sent as a bearer token.",
       "type": "object",
@@ -2311,6 +2642,255 @@
             "done"
           ]
         }
+      ]
+    },
+    "TerminalAction": {
+      "oneOf": [
+        {
+          "description": "Runs `agent`'s login, with the first handshake message, whose payload is a\n[`TerminalInput::Resize`].",
+          "type": "object",
+          "properties": {
+            "agent": {
+              "$ref": "#/$defs/AgentKind"
+            },
+            "handshake": {
+              "$ref": "#/$defs/Bytes"
+            },
+            "kind": {
+              "type": "string",
+              "const": "open"
+            }
+          },
+          "required": [
+            "kind",
+            "agent",
+            "handshake"
+          ]
+        },
+        {
+          "description": "A sealed [`TerminalInput`].",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "frame"
+            },
+            "sealed": {
+              "$ref": "#/$defs/Bytes"
+            }
+          },
+          "required": [
+            "kind",
+            "sealed"
+          ]
+        },
+        {
+          "description": "Ends the login, if it still runs.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "close"
+            }
+          },
+          "required": [
+            "kind"
+          ]
+        }
+      ]
+    },
+    "TerminalCommand": {
+      "description": "From the owner of `machine`'s browser to its core, which offers `terminal.sign_in`. The\nserver relays it only from the machine's owner, and the core acts only when `by` is its\nowner and refuses a terminal id it has already seen.",
+      "type": "object",
+      "properties": {
+        "action": {
+          "$ref": "#/$defs/TerminalAction"
+        },
+        "by": {
+          "description": "Who asked, when the server relays the message to a machine.",
+          "$ref": "#/$defs/Asker"
+        },
+        "machine": {
+          "$ref": "#/$defs/MachineId"
+        },
+        "terminal": {
+          "$ref": "#/$defs/TerminalId"
+        },
+        "workspace": {
+          "$ref": "#/$defs/WorkspaceId"
+        }
+      },
+      "required": [
+        "terminal",
+        "machine",
+        "workspace",
+        "action"
+      ]
+    },
+    "TerminalEvent": {
+      "oneOf": [
+        {
+          "description": "The second handshake message, with an empty payload.",
+          "type": "object",
+          "properties": {
+            "handshake": {
+              "$ref": "#/$defs/Bytes"
+            },
+            "kind": {
+              "type": "string",
+              "const": "accepted"
+            }
+          },
+          "required": [
+            "kind",
+            "handshake"
+          ]
+        },
+        {
+          "description": "A sealed [`TerminalOutput`].",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "frame"
+            },
+            "sealed": {
+              "$ref": "#/$defs/Bytes"
+            }
+          },
+          "required": [
+            "kind",
+            "sealed"
+          ]
+        },
+        {
+          "description": "The terminal is gone; nothing more comes. `code` says why, unless it ended as asked.",
+          "type": "object",
+          "properties": {
+            "code": {
+              "$ref": "#/$defs/Code"
+            },
+            "kind": {
+              "type": "string",
+              "const": "closed"
+            }
+          },
+          "required": [
+            "kind"
+          ]
+        }
+      ]
+    },
+    "TerminalId": {
+      "description": "One sign-in terminal, chosen by the browser that opens it; 1–64 ASCII letters, digits,\n`-` or `_`.",
+      "type": "string",
+      "maxLength": 64,
+      "pattern": "^[A-Za-z0-9_-]+$"
+    },
+    "TerminalInput": {
+      "description": "From the browser to the core, only inside the seal.",
+      "oneOf": [
+        {
+          "description": "What the person typed or pasted.",
+          "type": "object",
+          "properties": {
+            "data": {
+              "$ref": "#/$defs/Bytes"
+            },
+            "kind": {
+              "type": "string",
+              "const": "input"
+            }
+          },
+          "required": [
+            "kind",
+            "data"
+          ]
+        },
+        {
+          "description": "The terminal's size in characters.",
+          "type": "object",
+          "properties": {
+            "cols": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "kind": {
+              "type": "string",
+              "const": "resize"
+            },
+            "rows": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            }
+          },
+          "required": [
+            "kind",
+            "cols",
+            "rows"
+          ]
+        }
+      ]
+    },
+    "TerminalOutput": {
+      "description": "From the core to the browser, only inside the seal.",
+      "oneOf": [
+        {
+          "description": "What the login printed.",
+          "type": "object",
+          "properties": {
+            "data": {
+              "$ref": "#/$defs/Bytes"
+            },
+            "kind": {
+              "type": "string",
+              "const": "output"
+            }
+          },
+          "required": [
+            "kind",
+            "data"
+          ]
+        },
+        {
+          "description": "The login ended, and then the vendor's status command said this.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "ended"
+            },
+            "sign_in": {
+              "$ref": "#/$defs/SignInState"
+            }
+          },
+          "required": [
+            "kind",
+            "sign_in"
+          ]
+        }
+      ]
+    },
+    "TerminalUpdate": {
+      "description": "From a core that offers `terminal.sign_in`, through the server, to the browser that opened\n`terminal`.",
+      "type": "object",
+      "properties": {
+        "event": {
+          "$ref": "#/$defs/TerminalEvent"
+        },
+        "terminal": {
+          "$ref": "#/$defs/TerminalId"
+        },
+        "workspace": {
+          "$ref": "#/$defs/WorkspaceId"
+        }
+      },
+      "required": [
+        "terminal",
+        "workspace",
+        "event"
       ]
     },
     "UpdateSchedule": {

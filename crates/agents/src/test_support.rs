@@ -2,6 +2,7 @@
 
 use std::time::Duration;
 
+use serde_json::Value;
 use tokio::io::{BufReader, DuplexStream};
 use tokio::task::JoinHandle;
 use tokio::time::timeout;
@@ -113,4 +114,11 @@ pub(crate) fn tool_done(call: &str, failed: bool) -> RunEvent {
 
 pub(crate) const fn ended(outcome: Outcome) -> RunEvent {
     RunEvent::Finished { outcome }
+}
+
+/// `lines` as a file of JSON lines.
+pub(crate) fn jsonl(lines: &[Value]) -> String {
+    lines
+        .iter()
+        .fold(String::new(), |file, line| file + &line.to_string() + "\n")
 }
