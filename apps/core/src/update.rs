@@ -156,13 +156,18 @@ fn install_release(release: &ReleaseManifest, world: &World<'_>) -> Result<(), F
     let Some(restart) = world.restart else {
         return Ok(());
     };
-    if restart().is_ok() && (world.healthy)(&release.commit) {
+    let restarted = restart();
+    if restarted.is_ok() && (world.healthy)(&release.commit) {
         return Ok(());
     }
     let fault = install::roll_back(&paths);
     // The old build is back; starting it again is all that's left to try.
     drop(restart());
-    Err(fault)
+    // A failed rollback keeps its own cause; a good one says why the restart failed.
+    Err(match restarted {
+        Err(cause) if fault.code().as_str() == "update.unhealthy" => fault.because(cause),
+        _ => fault,
+    })
 }
 
 /// Holds the update lock until dropped; whoever comes second fails at once with `update.busy`.
@@ -312,6 +317,7 @@ mod tests {
     struct Machine {
         dir: TempDir,
         restarts: Cell<u32>,
+        restart_fails: bool,
     }
 
     impl Machine {
@@ -322,6 +328,7 @@ mod tests {
             Self {
                 dir,
                 restarts: Cell::new(0),
+                restart_fails: false,
             }
         }
 
@@ -347,7 +354,8 @@ mod tests {
             let version_of = |_: &Path| Ok(format!("weacon 1.2.3 ({COMMIT})\n"));
             let restart = || {
                 self.restarts.set(self.restarts.get() + 1);
-                Ok(())
+                let failed = Fault::new(code!("test.restart_failed"), "x");
+                (!self.restart_fails).then_some(()).ok_or(failed)
             };
             let healthy = |_: &Commit| service.unwrap_or(false);
             let restart: &dyn Fn() -> Result<(), Fault> = &restart;
@@ -409,6 +417,24 @@ mod tests {
         let (result, out) = machine.update(NOW, Ok(release("1.2.3", 10, PROTOCOL)), Some(false));
         assert_eq!(code(result), "update.unhealthy");
         assert_eq!(out, "");
+        assert_eq!(machine.binary(), "old");
+        assert_eq!(machine.restarts.get(), 2);
+    }
+
+    #[test]
+    fn a_failed_restart_is_rolled_back_and_named_as_the_cause() {
+        use std::error::Error as _;
+
+        let mut machine = Machine::new();
+        machine.restart_fails = true;
+        let (result, _) = machine.update(NOW, Ok(release("1.2.3", 10, PROTOCOL)), Some(true));
+        let fault = result.unwrap_err();
+        assert_eq!(fault.code().as_str(), "update.unhealthy");
+        let cause = fault
+            .source()
+            .and_then(|cause| cause.downcast_ref::<Fault>())
+            .unwrap();
+        assert_eq!(cause.code().as_str(), "test.restart_failed");
         assert_eq!(machine.binary(), "old");
         assert_eq!(machine.restarts.get(), 2);
     }
