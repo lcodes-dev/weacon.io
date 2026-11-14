@@ -3,7 +3,7 @@
 use weacon_observability::Fault;
 use weacon_protocol::{
     AgentKind, ChatAction, ChatCommand, ChatEvent, Outcome, PermissionAnswer, RequestId, RunEvent,
-    RunState, RunUpdate, code,
+    RunUpdate, code,
 };
 
 use super::agent::{Agent, Order};
@@ -52,6 +52,8 @@ impl<A: Agent> Engine<A> {
         action: ChatAction,
         seen: Seen,
     ) -> Result<(), Fault> {
+        // Before the log, so a chat a newer core runs gets nothing from this one.
+        self.runs.refuse_newer(key)?;
         match action {
             ChatAction::Prompt {
                 text,
@@ -158,8 +160,12 @@ impl<A: Agent> Engine<A> {
         let live = self.is_live(key);
         let chat = self.open(key).await?;
         let pending = |other: &PendingAnswer| other.request == *request && other.answer == answer;
-        if !live || !chat.pending_answers.iter().any(pending) {
+        if !live {
             return Ok(());
+        }
+        // Given already: only its run's state may still need saving.
+        if !chat.pending_answers.iter().any(pending) {
+            return self.running_again(key, &answer.run).await;
         }
         if chat.events.runs().waits(&answer.run, answer.prompt) {
             // In the log before the agent is told, so a crash between the two leaves the truth.
@@ -178,33 +184,27 @@ impl<A: Agent> Engine<A> {
         };
         chat.pending_answers.retain(|other| !answered(other));
         let run = answer.run.clone();
-        let resumed = !chat
-            .events
-            .runs()
-            .waiting
-            .iter()
-            .any(|waits| waits.run == run);
         self.order(key, Order::Answer(answer));
-        if resumed {
-            self.set_state(key, &run, RunState::Running).await?;
-        }
-        Ok(())
+        self.running_again(key, &run).await
     }
 
     // Committed first and bound to the turn it stops, so a retry after a failed write still
     // stops that turn and never a later one.
     async fn interrupt(&mut self, key: &ChatKey, request: RequestId) -> Result<(), Fault> {
-        let turn = self.turn(key);
+        // While its run starts, a chat's turn is the prompt that run will take first.
+        let starting = self.is_launching(key).then(|| self.runs.of(key)).flatten();
+        let first = starting.and_then(|record| record.queue.first());
+        let turn = self
+            .turn(key)
+            .or_else(|| first.map(|queued| queued.request.clone()));
         let chat = self.open(key).await?;
-        // A retry keeps the turn its first try was bound to.
-        let retried = chat
-            .pending_interrupt
-            .as_ref()
-            .is_some_and(|stops| stops.request == request);
-        if !retried {
-            chat.pending_interrupt = Some(PendingInterrupt {
+        // A retry keeps the turn its first try was bound to, whatever was interrupted since.
+        let stops = &mut chat.pending_interrupts;
+        if !stops.iter().any(|stop| stop.request == request) {
+            stops.push(PendingInterrupt {
                 request: request.clone(),
                 turn,
+                committed: false,
             });
         }
         self.commit_receipt(key, &request, Outcome::Completed)
@@ -214,30 +214,81 @@ impl<A: Agent> Engine<A> {
 
     // Sends the interrupt `request` committed, while the turn it stops is still running.
     async fn stop_turn(&mut self, key: &ChatKey, request: &RequestId) -> Result<(), Fault> {
-        let Some(turn) = self.turn(key) else {
+        let turn = self.turn(key);
+        let queued = self.runs.of(key).map(|record| record.queue.clone());
+        let stops = &mut self.open(key).await?.pending_interrupts;
+        let Some(at) = stops.iter().position(|stop| stop.request == *request) else {
             return Ok(());
         };
-        let stops = Some(PendingInterrupt {
-            request: request.clone(),
-            turn: Some(turn),
-        });
-        let chat = self.open(key).await?;
-        if chat.pending_interrupt != stops {
+        let bound = stops.get(at).and_then(|stop| stop.turn.clone());
+        let waits = queued.unwrap_or_default();
+        // A turn not yet begun is stopped as it begins; one ended since, never.
+        if bound
+            .as_ref()
+            .is_some_and(|bound| waits.iter().any(|queued| queued.request == *bound))
+        {
+            if let Some(stop) = stops.get_mut(at) {
+                stop.committed = true;
+            }
             return Ok(());
         }
-        chat.pending_interrupt = None;
-        self.order(key, Order::Interrupt);
+        stops.retain(|stop| stop.request != *request);
+        if bound.is_some_and(|bound| Some(bound) == turn) {
+            self.order(key, Order::Interrupt);
+        }
         Ok(())
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::super::by_hand::{allow_one, hear, on_ask, on_its_way, on_turn, waiting_in};
+    use weacon_protocol::RunState;
+    use weacon_testing::{TempDir, messages};
+
+    use super::super::by_hand::{
+        allow_one, hear, launched, on_ask, on_its_way, on_turn, waiting_in,
+    };
     use super::*;
     use crate::chats::test_support::{
-        Told, allow, asks, command, key, logged_prompt, parts, prompt, prompt_naming, run, soon,
+        Told, allow, asks, chat, command, key, logged_prompt, parts, prompt, prompt_naming, run,
+        soon,
     };
+    use crate::runs::Runs;
+
+    #[tokio::test(start_paused = true)]
+    async fn a_chat_a_newer_core_ran_takes_no_prompt_and_another_still_runs() {
+        let (mut bench, mut engine) = parts();
+        let dir = TempDir::new().unwrap();
+        let newer = r#"{"workspace":"w-1","chat":"c-1","agent":"gemini","state":"idle"}"#;
+        let journal = format!(r#"{{"issued":3,"chats":[{newer}]}}"#);
+        std::fs::write(dir.join("runs.json"), journal).unwrap();
+        engine.runs = Runs::load(&dir).unwrap();
+        engine.reconcile().await;
+        assert!(messages(&bench.records).contains(&"runs records kept unread"));
+
+        let interrupt = command("r-0", "c-1", ChatAction::Interrupt);
+        for asked in [
+            prompt("r-1", "Hi"),
+            allow("r-2", "c-1", "run-2", 1),
+            interrupt,
+        ] {
+            let refused = engine.command(&key(), asked).await;
+            assert_eq!(refused.unwrap_err().code().as_str(), "runs.newer_record");
+        }
+        assert_eq!(engine.open(&key()).await.unwrap().events.seq(), 0);
+
+        let other = ChatKey {
+            chat: chat("c-2"),
+            ..key()
+        };
+        let next = command("r-2", "c-2", prompt("r-2", "More").action);
+        engine.command(&other, next).await.unwrap();
+        let started = soon(bench.started.recv()).await.unwrap();
+        assert_eq!(
+            (started.run_as.key, started.run_as.run),
+            (other, run("run-4"))
+        );
+    }
 
     #[tokio::test(start_paused = true)]
     async fn the_agent_a_logged_first_prompt_named_holds_even_if_it_wasnt_queued() {
@@ -270,6 +321,7 @@ mod tests {
             .await
             .unwrap();
         engine.command(&key(), prompt("r-1", "Hi")).await.unwrap();
+        launched(&mut engine).await;
         let mut started = soon(bench.started.recv()).await.unwrap();
         assert_eq!(
             soon(started.told.recv()).await,
@@ -393,8 +445,11 @@ mod tests {
         on.engine.command(&key(), answers).await.unwrap();
 
         assert_eq!(soon(on.agent.told.recv()).await, None);
-        let runs = &on.engine.open(&key()).await.unwrap().events.runs().runs;
-        assert_eq!(runs[0].run, run("run-1"));
+        let log = &on.engine.open(&key()).await.unwrap().events;
+        assert_eq!(
+            log.runs().run().map(|status| &status.run),
+            Some(&run("run-1"))
+        );
         assert_eq!(waiting_in(&mut on.engine).await.len(), 1);
     }
 
@@ -553,5 +608,70 @@ mod tests {
         on.engine.command(&key(), interrupt).await.unwrap();
 
         assert_eq!(soon(on.agent.told.recv()).await, None);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn an_interrupt_whose_receipt_failed_outlasts_a_later_one_and_stops_no_later_turn() {
+        let mut on = on_turn().await;
+        let told = soon(on.agent.told.recv()).await;
+        assert_eq!(told, Some(Told::Send("Hi".to_owned())));
+        on.engine.open(&key()).await.unwrap().events.jam();
+        let first = command("r-2", "c-1", ChatAction::Interrupt);
+        let failed = on.engine.command(&key(), first.clone()).await;
+        assert_eq!(failed.unwrap_err().code().as_str(), "chat.log_not_written");
+
+        // Another interrupt stops the turn, and the next prompt gets one of its own.
+        let second = command("r-3", "c-1", ChatAction::Interrupt);
+        on.engine.command(&key(), second).await.unwrap();
+        assert_eq!(soon(on.agent.told.recv()).await, Some(Told::Interrupt));
+        let outcome = Outcome::Interrupted;
+        hear(&mut on.engine, RunEvent::Finished { outcome })
+            .await
+            .unwrap();
+        let next = prompt("r-4", "More");
+        on.engine.command(&key(), next).await.unwrap();
+        let told = soon(on.agent.told.recv()).await;
+        assert_eq!(told, Some(Told::Send("More".to_owned())));
+
+        on.engine.command(&key(), first).await.unwrap();
+
+        assert_eq!(soon(on.agent.told.recv()).await, None);
+        assert_eq!(on.engine.turn(&key()), Some(prompt("r-4", "More").request));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn an_answer_given_whose_run_state_wasnt_saved_saves_it_when_sent_again() {
+        let mut on = on_ask().await;
+        let path = on.engine.runs.jam();
+        let (answers, answer) = allow_one("r-2");
+
+        let failed = on.engine.command(&key(), answers.clone()).await;
+        assert_eq!(failed.unwrap_err().code().as_str(), "runs.not_saved");
+        assert_eq!(soon(on.agent.told.recv()).await, Some(Told::Answer(answer)));
+        on.engine.runs.unjam(path);
+        on.engine.command(&key(), answers).await.unwrap();
+
+        assert_eq!(soon(on.agent.told.recv()).await, None);
+        let state = on.engine.runs.of(&key()).unwrap().state;
+        assert_eq!(state, RunState::Running);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn an_interrupt_whose_receipt_failed_while_the_agent_started_stops_nothing() {
+        let (mut bench, mut engine) = parts();
+        let release = bench.hold_next_start();
+        engine.command(&key(), prompt("r-1", "Hi")).await.unwrap();
+        engine.open(&key()).await.unwrap().events.jam();
+        let interrupt = command("r-2", "c-1", ChatAction::Interrupt);
+
+        let failed = engine.command(&key(), interrupt).await;
+        assert_eq!(failed.unwrap_err().code().as_str(), "chat.log_not_written");
+        drop(release);
+        launched(&mut engine).await;
+
+        let mut started = soon(bench.started.recv()).await.unwrap();
+        let told = soon(started.told.recv()).await;
+        assert_eq!(told, Some(Told::Send("Hi".to_owned())));
+        assert_eq!(soon(started.told.recv()).await, None);
     }
 }

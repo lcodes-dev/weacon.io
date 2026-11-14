@@ -140,10 +140,10 @@ fn unix_now() -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use weacon_protocol::{AgentKind, ChatAnswerKind, ChatEvent, ChatQueryKind, Outcome, Receipt};
+    use weacon_protocol::{AgentKind, ChatEvent, ChatQueryKind, Message, Outcome, Receipt};
     use weacon_testing::{TempDir, recording_logger};
 
-    use super::test_support::{chat, client, key, prompt, query, workspace};
+    use super::test_support::{chat, client, key, prompt, query, soon, workspace};
     use super::*;
     use crate::test_support::VERSION;
 
@@ -318,15 +318,11 @@ mod tests {
         let (chats, engine) = start(&state, places, app, SpawnPolicy::default(), log).unwrap();
         tokio::spawn(engine.serve());
         // No agent on the path: checked before the chat's folder is made, so none is.
+        let (watcher, mut pushes) = client(16);
+        let subscribe = query("c-1", ChatQueryKind::Subscribe { after: 0 });
+        chats.query(subscribe, &watcher).await.unwrap();
         chats.command(prompt("r-1", "Hi")).await.unwrap();
 
-        let (anyone, _pushes) = client(1);
-        let snapshot = query("c-1", ChatQueryKind::Snapshot);
-        let Ok(Some(ChatAnswerKind::Snapshot { events, .. })) =
-            chats.query(snapshot, &anyone).await
-        else {
-            panic!("no snapshot");
-        };
         let failed = ChatEvent::Receipt {
             receipt: Receipt {
                 request: prompt("r-1", "Hi").request,
@@ -335,7 +331,13 @@ mod tests {
                 },
             },
         };
-        assert_eq!(events.last().map(|entry| &entry.event), Some(&failed));
+        let mut last = None;
+        while last.as_ref() != Some(&failed)
+            && let Some(Message::Chat(update)) = soon(pushes.recv()).await
+        {
+            last = Some(update.entry.event);
+        }
+        assert_eq!(last, Some(failed));
         assert!(!dir.join("Weacon").exists());
         let journal = Runs::load(&state).unwrap();
         let record = journal.of(&key()).unwrap();
