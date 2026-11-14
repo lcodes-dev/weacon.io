@@ -11,6 +11,15 @@ use weacon_protocol::{CommitId, code};
 
 use super::{Git, failed, not_run, run, text};
 
+/// A regular file in a commit's tree: its path from the repository's root, its blob and its
+/// size in bytes.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct TreeFile {
+    pub(crate) path: String,
+    pub(crate) blob: String,
+    pub(crate) size: u64,
+}
+
 impl Git {
     /// The commit `repo`'s worktree has checked out.
     pub(crate) fn head(&self, repo: &Path) -> Result<CommitId, Fault> {
@@ -20,25 +29,25 @@ impl Git {
         CommitId::try_from(text(out)?.trim().to_owned()).map_err(|_| unexpected())
     }
 
-    /// Each file at `commit`, by its path from the repository's root, with its blob; paths that
-    /// aren't UTF-8 are left out.
-    pub(crate) fn tree(
-        &self,
-        repo: &Path,
-        commit: &CommitId,
-    ) -> Result<Vec<(String, String)>, Fault> {
+    /// Each regular file at `commit`, links left out; paths that aren't UTF-8 are left out.
+    pub(crate) fn tree(&self, repo: &Path, commit: &CommitId) -> Result<Vec<TreeFile>, Fault> {
         let out = run(self
             .command(repo)
-            .args(["ls-tree", "-r", "-z", "--full-tree"])
+            .args(["ls-tree", "-r", "-z", "--long", "--full-tree"])
             .arg(commit.as_str()))?;
         Ok(out
             .split(|byte| *byte == 0)
             .filter_map(|record| {
                 let record = std::str::from_utf8(record).ok()?;
                 let (about, path) = record.split_once('\t')?;
-                let mut about = about.split(' ');
-                let (_, kind, blob) = (about.next()?, about.next()?, about.next()?);
-                (kind == "blob").then(|| (path.to_owned(), blob.to_owned()))
+                let mut about = about.split_whitespace();
+                let (mode, kind, blob) = (about.next()?, about.next()?, about.next()?);
+                let size = about.next()?.parse().ok()?;
+                (kind == "blob" && matches!(mode, "100644" | "100755")).then(|| TreeFile {
+                    path: path.to_owned(),
+                    blob: blob.to_owned(),
+                    size,
+                })
             })
             .collect())
     }
@@ -108,18 +117,24 @@ fn batch(mut out: &[u8]) -> BTreeMap<String, String> {
         let header = std::str::from_utf8(out.get(..end).unwrap_or_default()).unwrap_or_default();
         let mut fields = header.split(' ');
         let (id, kind, size) = (fields.next(), fields.next(), fields.next());
-        let size: usize = size.and_then(|size| size.parse().ok()).unwrap_or(0);
-        let body = out.get(end + 1..end + 1 + size).unwrap_or_default();
-        if let (Some(id), Some("blob"), Ok(body)) = (id, kind, std::str::from_utf8(body)) {
-            found.insert(id.to_owned(), body.to_owned());
-        }
         // A missing object has a header alone; anything else has its bytes and a newline.
-        let next = if kind == Some("missing") {
-            end + 1
+        let missing = kind == Some("missing");
+        let size = if missing {
+            Some(0)
         } else {
-            end + 1 + size + 1
+            size.and_then(|size| size.parse::<usize>().ok())
         };
-        out = out.get(next..).unwrap_or_default();
+        let start = end + 1;
+        let body = size.and_then(|size| out.get(start..start.checked_add(size)?));
+        let Some(body) = body else {
+            break;
+        };
+        if let (Some(id), Some("blob"), Ok(text)) = (id, kind, std::str::from_utf8(body)) {
+            found.insert(id.to_owned(), text.to_owned());
+        }
+        out = out
+            .get(start + body.len() + usize::from(!missing)..)
+            .unwrap_or_default();
     }
     found
 }
@@ -147,24 +162,28 @@ mod tests {
         fs::create_dir_all(repo.join("src")).unwrap();
         fs::write(repo.join("src/lib.rs"), "fn a() {}\n").unwrap();
         fs::write(repo.join("bytes.bin"), [0xff, 0xfe, b'\n']).unwrap();
-        fixture(&dir, &repo, &["add", "src/lib.rs", "bytes.bin"]);
+        #[cfg(unix)]
+        std::os::unix::fs::symlink("README.md", repo.join("link.md")).unwrap();
+        fixture(&dir, &repo, &["add", "--all"]);
         fixture(&dir, &repo, &["commit", "--quiet", "-m", "Add"]);
         let git = git(&dir);
 
         let head = git.head(&repo).unwrap();
         let tree = git.tree(&repo, &head).unwrap();
-        let paths: Vec<&str> = tree.iter().map(|(path, _)| path.as_str()).collect();
+        let paths: Vec<&str> = tree.iter().map(|file| file.path.as_str()).collect();
         assert_eq!(
             paths,
             [".gitattributes", "README.md", "bytes.bin", "src/lib.rs"]
         );
 
-        let mut ids: Vec<String> = tree.iter().map(|(_, blob)| blob.clone()).collect();
+        let lib = tree.iter().find(|file| file.path == "src/lib.rs").unwrap();
+        assert_eq!(lib.size, 10);
+        let mut ids: Vec<String> = tree.iter().map(|file| file.blob.clone()).collect();
         ids.push("0".repeat(40));
         let texts = git.blobs(&repo, &ids).unwrap();
         let by_path = |path: &str| {
-            let (_, blob) = tree.iter().find(|(name, _)| name == path).unwrap();
-            texts.get(blob).cloned()
+            let file = tree.iter().find(|file| file.path == path).unwrap();
+            texts.get(&file.blob).cloned()
         };
         assert_eq!(by_path("src/lib.rs").as_deref(), Some("fn a() {}\n"));
         assert_eq!(by_path("README.md").as_deref(), Some("# Site\n"));
@@ -211,5 +230,12 @@ mod tests {
             .map(|(id, text)| (id.as_str(), text.as_str()))
             .collect();
         assert_eq!(found, [("a", "hi"), ("e", "yes")]);
+        for cut in [
+            &b"a blob 2\nhi\nb blob 9\nshort\n"[..],
+            b"a blob 2\nhi\nb blob 18446744073709551615\nx\n",
+            b"a blob 2\nhi\nb blob two\nab\n",
+        ] {
+            assert_eq!(batch(cut).into_keys().collect::<Vec<_>>(), ["a"]);
+        }
     }
 }

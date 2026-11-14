@@ -73,7 +73,3 @@ impl Db {
 fn failed(error: sqlx::Error) -> Fault {
     Fault::new(code!("db.failed"), "The database couldn't do that").because(error)
 }
-
-fn unreadable() -> Fault {
-    Fault::new(code!("db.unreadable"), "A stored value can't be read")
-}
