@@ -12,6 +12,7 @@ export class WorkspaceSocket {
   #lastId = HELLO_ID;
   #offered: readonly string[] = [];
   #watchers = new Set<() => void>();
+  #connection = 0;
 
   constructor(workspace: WorkspaceId) {
     this.workspace = workspace;
@@ -23,6 +24,9 @@ export class WorkspaceSocket {
    */
   attach(send: ((envelope: Envelope) => void) | undefined, offered?: readonly string[]): void {
     this.#send = send;
+    if (send !== undefined) {
+      this.#connection += 1;
+    }
     if (offered !== undefined && offered !== this.#offered) {
       this.#offered = offered;
       for (const watcher of [...this.#watchers]) {
@@ -35,6 +39,11 @@ export class WorkspaceSocket {
   watch(watcher: () => void): () => void {
     this.#watchers.add(watcher);
     return () => this.#watchers.delete(watcher);
+  }
+
+  /** Counts the connections attached so far, so what one connection holds isn't taken for the next's. */
+  get connection(): number {
+    return this.#connection;
   }
 
   /** Whether the server offered `capability` when it last welcomed the feed. */

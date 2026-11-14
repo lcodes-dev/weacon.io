@@ -556,4 +556,10 @@ test("picking another chat shows that one, and sends only to it", { timeout: 600
     commands(sent).map(({ chat, action }) => ({ chat, action })),
     [{ chat: "c-2", action: { kind: "prompt", text: "Only the ferns." } }],
   );
+
+  // Back on the first chat, its subscription is still the one it had.
+  await nav(page).getByRole("button", { name: /Sort the pantry/ }).click();
+  await page.getByText("Sorting the shelves now.").waitFor();
+  const subscribed = sent.flatMap((envelope) => (envelope.type === "chat_query" && envelope.query.kind === "subscribe" ? [envelope.chat] : []));
+  assert.deepEqual(subscribed.toSorted(), ["c-1", "c-2"]);
 });

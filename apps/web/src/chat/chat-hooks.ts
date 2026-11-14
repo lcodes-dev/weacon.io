@@ -11,11 +11,32 @@ import type { WorkspaceSocket } from "../shell/workspace-socket.ts";
 import { type Answers, sending, settleAnswer, stopProblem } from "./asks.ts";
 import { type Command, chatCommand, deliver } from "./commands.ts";
 import { receiptsIn } from "./heard.ts";
-import { LiveChat, nextFrame } from "./live-chat.ts";
+import { ChatFeeds } from "./chat-feeds.ts";
+import { type LiveChat, nextFrame } from "./live-chat.ts";
 import { START, type Sync, ended } from "./sync.ts";
 
 // How long a hidden tab waits for a frame before its batch of run events goes out anyway.
 const HIDDEN_MS = 250;
+
+// Each socket's chats, kept for as long as the socket is.
+const FEEDS = new WeakMap<WorkspaceSocket, ChatFeeds>();
+
+function feedsOf(link: WorkspaceSocket): ChatFeeds {
+  const known = FEEDS.get(link);
+  if (known !== undefined) {
+    return known;
+  }
+  const schedule = () =>
+    nextFrame(
+      () => document.hidden,
+      (run) => requestAnimationFrame(run),
+      (frame) => cancelAnimationFrame(frame),
+      (run) => later(run, HIDDEN_MS),
+    );
+  const made = new ChatFeeds(link, schedule);
+  FEEDS.set(link, made);
+  return made;
+}
 
 /**
  * The chat at `chatRef`, kept in step over `link` while it is `live` and the server lets this
@@ -24,35 +45,16 @@ const HIDDEN_MS = 250;
 export function useLiveChat(link: WorkspaceSocket, chatRef: ChatRef | undefined, live: boolean, readable: boolean) {
   const [sync, setSync] = useState<Sync>(START);
   const current = useRef<LiveChat>(undefined);
-  // What was last shown, and for which chat, so reconnecting keeps it on screen.
-  const shown = useRef<{ key: string; sync: Sync }>(undefined);
   const workspace = chatRef?.workspace;
   const chat = chatRef?.chat;
   useEffect(() => {
     if (workspace === undefined || chat === undefined || !live || !readable) {
       return;
     }
-    const schedule = nextFrame(
-      () => document.hidden,
-      (run) => requestAnimationFrame(run),
-      (frame) => cancelAnimationFrame(frame),
-      (run) => later(run, HIDDEN_MS),
-    );
-    const key = `${workspace}/${chat}`;
-    const show = (next: Sync) => {
-      shown.current = { key, sync: next };
-      setSync(next);
-    };
-    const from = shown.current?.key === key ? shown.current.sync : START;
-    const liveChat = new LiveChat({ workspace, chat }, { id: () => link.nextId(), send: (envelope) => link.send(envelope), schedule, show }, from);
+    const { chat: liveChat, hide } = feedsOf(link).show({ workspace, chat }, setSync);
     current.current = liveChat;
-    const unsubscribe = link.subscribe((message) =>
-      route(message, { run: (run) => liveChat.push(run), chat: (said) => liveChat.push(said) }),
-    );
-    liveChat.open();
     return () => {
-      unsubscribe();
-      liveChat.close();
+      hide();
       current.current = undefined;
       setSync(ended);
     };
