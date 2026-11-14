@@ -140,4 +140,21 @@ mod tests {
         );
         assert_eq!(key_id(TEST_KEY), "377D1E2DAE6ACDC6");
     }
+
+    // The release script's sign step reads the keys out of this file at the tag it signs.
+    #[cfg(unix)]
+    #[test]
+    fn the_release_script_reads_the_trusted_keys_out_of_this_file() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let script = "eval \"$(sed -n '/^trusted_keys() {/,/^}/p' scripts/release.sh)\"
+            trusted_keys <apps/core/src/update/verify.rs";
+        let output = std::process::Command::new("bash")
+            .args(["-c", script])
+            .current_dir(root)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+        let keys = String::from_utf8(output.stdout).unwrap();
+        assert_eq!(keys.lines().collect::<Vec<_>>(), TRUSTED);
+    }
 }
