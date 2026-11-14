@@ -2668,7 +2668,7 @@
       ]
     },
     "SearchQuery": {
-      "description": "Asks the server, under the capability `workspace.search`, for what in the workspace holds\nevery word of `text`, at most 8 words in 256 bytes. Words of three or more characters match\nwhatever their case and accents; shorter ones match as typed, ignoring only ASCII case, and\ntext without a longer word finds nothing. `limit` is 20 without one, and at most 50.",
+      "description": "Asks the server, under the capability `workspace.search`, for what in the workspace holds\nevery word of `text`, at most 8 words of at most 64 characters, in 256 bytes. Words of three\nor more characters match\nwhatever their case and accents; shorter ones match as typed, ignoring only ASCII case, and\ntext without a longer word finds nothing. `limit` is 20 without one, and at most 50.",
       "type": "object",
       "properties": {
         "limit": {

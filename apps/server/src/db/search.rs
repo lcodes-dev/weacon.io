@@ -202,7 +202,7 @@ mod tests {
     use super::*;
     use crate::db::Db;
     use crate::db::schema::database_before;
-    use crate::search::query::parse;
+    use crate::search::query::{MAX_WORD, parse};
     use crate::test_support::{email, fresh_account, member_id, new_task, two_teams, workspace_id};
 
     fn by(at: i64) -> Attribution {
@@ -397,35 +397,36 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn a_snippet_shows_the_whole_match_and_text_around_it() {
-        let dir = TempDir::new().unwrap();
-        let (one, _) = two_teams(&dir).await;
-        let body = format!(
-            "{} internationalization_of_everything {}",
-            "x ".repeat(40),
-            "y ".repeat(40)
-        );
-        one.add_doc(&doc("d1", "Notes", &body, &[]), &by(1))
-            .await
-            .unwrap();
-        let query = parse("internationalization_of_everything")
-            .unwrap()
-            .unwrap();
-
-        let hits = one.search(&query, 1).await.unwrap();
+    async fn marked(workspace: &Workspace, word: &str) -> (String, String) {
+        let query = parse(word).unwrap().unwrap();
+        let hits = workspace.search(&query, 1).await.unwrap();
         let SearchHit::Doc { snippet, .. } = &hits[0] else {
             panic!("{hits:?}");
         };
-        let word = "internationalization_of_everything";
         let [Mark { start, end }] = snippet.marks[..] else {
             panic!("{snippet:?}");
         };
         let units: Vec<u16> = snippet.text.encode_utf16().collect();
         let range = usize::try_from(start).unwrap()..usize::try_from(end).unwrap();
-        assert_eq!(String::from_utf16(&units[range]).unwrap(), word);
-        assert!(snippet.text.starts_with("… x x"), "{snippet:?}");
-        assert!(snippet.text.ends_with("y y…"), "{snippet:?}");
+        let marked = String::from_utf16(&units[range]).unwrap();
+        (marked, snippet.text.clone())
+    }
+
+    #[tokio::test]
+    async fn a_snippet_shows_the_whole_match_and_text_around_it() {
+        let dir = TempDir::new().unwrap();
+        let (one, _) = two_teams(&dir).await;
+        let longest = "a".repeat(MAX_WORD);
+        let body = format!("{}release {longest} {}", "x ".repeat(40), "y ".repeat(40));
+        one.add_doc(&doc("d1", "Notes", &body, &[]), &by(1))
+            .await
+            .unwrap();
+
+        let (word, around) = marked(&one, "release").await;
+        assert_eq!(word, "release");
+        assert!(around.starts_with("… x x"), "{around:?}");
+        let (word, _) = marked(&one, &longest).await;
+        assert_eq!(word, longest);
     }
 
     #[tokio::test]

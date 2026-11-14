@@ -4,6 +4,9 @@ pub(crate) const MAX_TEXT: usize = 256;
 const MAX_WORDS: usize = 8;
 /// A trigram index finds only words of at least this many characters.
 const MIN_WORD: usize = 3;
+/// The most characters a word may hold: one longer has more trigrams than a snippet shows, so
+/// its match would come back unmarked.
+pub(crate) const MAX_WORD: usize = 64;
 
 /// A search's words, ready for the index. Each long word is quoted as an FTS5 phrase, so that
 /// nothing in it is read as query syntax; each short one is an escaped `LIKE` pattern.
@@ -15,7 +18,8 @@ pub(crate) struct Query {
     pub(crate) short: Vec<String>,
 }
 
-/// Text past [`MAX_TEXT`] bytes or [`MAX_WORDS`] words.
+/// Text past [`MAX_TEXT`] bytes or [`MAX_WORDS`] words, or with a word past [`MAX_WORD`]
+/// characters.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct TooLong;
 
@@ -26,7 +30,8 @@ pub(crate) fn parse(text: &str) -> Result<Option<Query>, TooLong> {
         .split(|ch: char| ch.is_whitespace() || ch.is_control())
         .filter(|word| !word.is_empty())
         .collect();
-    if text.len() > MAX_TEXT || words.len() > MAX_WORDS {
+    let too_long = |word: &&str| word.chars().count() > MAX_WORD;
+    if text.len() > MAX_TEXT || words.len() > MAX_WORDS || words.iter().any(too_long) {
         return Err(TooLong);
     }
     let (long, short): (Vec<&str>, Vec<&str>) = words
@@ -103,12 +108,20 @@ mod tests {
 
     #[test]
     fn text_is_bounded_in_bytes_and_words() {
-        let longest = "a".repeat(MAX_TEXT);
+        // Four words of 63 or 64 bytes and three spaces: 256 bytes.
+        let longest = format!(
+            "{} {}",
+            vec!["a".repeat(MAX_WORD - 1); 3].join(" "),
+            "a".repeat(MAX_WORD)
+        );
         let words = ["word"; MAX_WORDS];
 
+        assert_eq!(longest.len(), MAX_TEXT);
         parse(&longest).unwrap().unwrap();
-        assert_eq!(parse(&format!("{longest}a")), Err(TooLong));
+        assert_eq!(parse(&format!("{longest} b")), Err(TooLong));
         parse(&words.join(" ")).unwrap().unwrap();
+        parse(&"é".repeat(MAX_WORD)).unwrap().unwrap();
+        assert_eq!(parse(&"é".repeat(MAX_WORD + 1)), Err(TooLong));
         assert_eq!(parse(&format!("{} more", words.join(" "))), Err(TooLong));
     }
 }

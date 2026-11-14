@@ -1092,7 +1092,8 @@ export type SearchHit = (
 
 /**
  * Asks the server, under the capability `workspace.search`, for what in the workspace holds
- * every word of `text`, at most 8 words in 256 bytes. Words of three or more characters match
+ * every word of `text`, at most 8 words of at most 64 characters, in 256 bytes. Words of three
+ * or more characters match
  * whatever their case and accents; shorter ones match as typed, ignoring only ASCII case, and
  * text without a longer word finds nothing. `limit` is 20 without one, and at most 50.
  */
