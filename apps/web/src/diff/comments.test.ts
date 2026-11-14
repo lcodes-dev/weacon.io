@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { type Comment, addComment, editComment, selectRows, removeComment, span } from "./comments.ts";
+import { type Comment, addComment, editComment, removeComment, selectRows, span } from "./comments.ts";
 
 test("a pick starts a selection, and an extending pick in the same file moves its end", () => {
   const one = selectRows(undefined, "a.rs", 5, false);

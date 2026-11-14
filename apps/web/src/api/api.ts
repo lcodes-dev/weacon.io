@@ -100,7 +100,7 @@ export class Api {
     return this.#ask("POST", "/api/machines/pair/lookup", body, isPending);
   }
 
-  /** Pairs the machine `lookup` found with the signed-in account. */
+  /** Pairs the machine `lookUpPairing` found with the signed-in account. */
   confirmPairing(body: PairConfirm): Promise<Answer<MachineSummary>> {
     return this.#ask("POST", "/api/machines/pair/confirm", body, isMachine);
   }

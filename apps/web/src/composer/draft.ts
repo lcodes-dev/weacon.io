@@ -1,8 +1,8 @@
 /** Someone or something a message can mention. The kinds aren't settled, so `kind` is open. */
-export type Item = { kind: string; id: string; label: string };
+export type MentionItem = { kind: string; id: string; label: string };
 
 /** A picked item, kept as the text `@label` at `[start, end)` of the draft. */
-export type Mention = { start: number; end: number; item: Item };
+export type Mention = { start: number; end: number; item: MentionItem };
 
 /** What the box holds: its text, and the mentions in it, in order. */
 export type Draft = { text: string; mentions: readonly Mention[] };
@@ -54,7 +54,7 @@ export function query(draft: Draft, caret: number): Query | undefined {
 }
 
 /** The draft with `item` in place of the query, and a space after it. */
-export function pickMention(draft: Draft, at: Query, item: Item): Placed {
+export function pickMention(draft: Draft, at: Query, item: MentionItem): Placed {
   const mention = `@${item.label}`;
   const end = at.start + 1 + at.text.length;
   const placed = editDraft(draft, draft.text.slice(0, at.start) + mention + " " + draft.text.slice(end), at.start + mention.length + 1);

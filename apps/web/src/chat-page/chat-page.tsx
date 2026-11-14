@@ -1,22 +1,22 @@
 import { useEffect, useRef, useState } from "react";
 
-import { ChatPageView } from "./chat-page-view.tsx";
 import { chatRefOf } from "../chat-ref.ts";
+import { type Answers, askKey, sending, settle, settleLate, stopProblem } from "../chat/asks.ts";
+import { working } from "../chat/chat.ts";
+import { receiptsIn } from "../chat/heard.ts";
+import { lines } from "../chat/lines.ts";
+import { LiveChat, nextFrame } from "../chat/live-chat.ts";
+import { START, type Sync } from "../chat/sync.ts";
 import { type Late, type Send, type Sent, chatCommand, deliver } from "../composer/prompt.ts";
 import { type Asks, Connection, HELLO_ID, type Later, type Status, offers } from "../connection.ts";
 import { NO_CHANGES, ask, cut, needsAsking, receive } from "../diff/changes.ts";
-import { type Answers, askKey, sending, settle, settleLate, stopProblem } from "../chat/asks.ts";
-import { working } from "../chat/chat.ts";
-import { LiveChat, nextFrame } from "../chat/live-chat.ts";
-import { receiptsIn } from "../chat/heard.ts";
-import { lines } from "../chat/lines.ts";
-import { START, type Sync } from "../chat/sync.ts";
 import { newRequestId } from "../ids.ts";
 import { route } from "../incoming.ts";
 import type { Log } from "../log.ts";
 import { ME } from "../me.ts";
 import type { ChatAction, RequestId, RunId } from "../protocol.ts";
 import { Receipts } from "../receipts.ts";
+import { ChatPageView } from "./chat-page-view.tsx";
 
 const chatRef = chatRefOf(window.location.search);
 // How long a hidden tab waits for a frame before its batch of run events goes out anyway.
@@ -38,7 +38,7 @@ export function ChatPage({ url, log }: { url: string; log: Log }) {
   const [late, setLate] = useState<Late>();
   const [changes, setChanges] = useState(NO_CHANGES);
   // The connection while it is live, and the commands sent on it that wait for an answer.
-  const live = useRef<{ connection: Connection; receipts: Receipts; chat: LiveChat | undefined }>(undefined);
+  const live = useRef<{ connection: Connection; receipts: Receipts; liveChat: LiveChat | undefined }>(undefined);
   const lastId = useRef(HELLO_ID);
   useEffect(() => {
     // A closed socket's last news must not overwrite the next socket's.
@@ -59,7 +59,7 @@ export function ChatPage({ url, log }: { url: string; log: Log }) {
       setLate({ request, settled });
       const answer = answered.current.get(request);
       if (answer !== undefined && settled === "accepted") {
-        live.current?.chat?.answered(answer.run, answer.prompt);
+        live.current?.liveChat?.answered(answer.run, answer.prompt);
       }
       setAnswers((before) => settleLate(before, request, settled));
     });
@@ -85,11 +85,11 @@ export function ChatPage({ url, log }: { url: string; log: Log }) {
                   schedule,
                   show: (shown) => current && setSync(shown),
                 });
-          live.current = { connection, receipts, chat: liveChat };
+          live.current = { connection, receipts, liveChat };
           liveChat?.open();
           log.attach((envelope) => connection.send(envelope), offers(next, "log.forward"));
         } else if (next.state === "ended") {
-          live.current?.chat?.end();
+          live.current?.liveChat?.end();
           live.current = undefined;
           setChanges(cut);
           log.detach();
@@ -99,12 +99,12 @@ export function ChatPage({ url, log }: { url: string; log: Log }) {
       },
       message(envelope) {
         route(envelope, {
-          run: (message) => live.current?.chat?.push(message),
+          run: (message) => live.current?.liveChat?.push(message),
           chat: (message) => {
             for (const receipt of receiptsIn(message)) {
               receipts.take(receipt);
             }
-            live.current?.chat?.push(message);
+            live.current?.liveChat?.push(message);
           },
           answers: (message) => receipts.take(message),
           changes: (message) => {
@@ -141,7 +141,7 @@ export function ChatPage({ url, log }: { url: string; log: Log }) {
         const settled = sent === "too_long" ? "refused" : sent;
         setAnswers((before) => settle(before, key, request, settled));
         if (settled === "accepted") {
-          live.current?.chat?.answered(run, prompt);
+          live.current?.liveChat?.answered(run, prompt);
         }
       });
     },
@@ -157,11 +157,11 @@ export function ChatPage({ url, log }: { url: string; log: Log }) {
   const { chat } = sync;
   const shown = {
     lines: chat === undefined ? [] : lines(chat, NO_MEMBERS),
-    older: chat !== undefined && sync.live && chat.first > 1 ? () => live.current?.chat?.more() : undefined,
+    older: chat !== undefined && sync.live && chat.first > 1 ? () => live.current?.liveChat?.more() : undefined,
     answering,
     // A chat is on its way while the connection is made, then only from a server that serves chats.
     loading: chatRef !== undefined && chat === undefined && !sync.failed && (status.state === "connecting" || offers(status, "chat.events")),
-    retry: sync.failed ? () => live.current?.chat?.open() : undefined,
+    retry: sync.failed ? () => live.current?.liveChat?.open() : undefined,
     stop: chat !== undefined && working(chat) ? { stopping, problem: stopFailed, stop } : undefined,
   };
   const openChanges = () => {

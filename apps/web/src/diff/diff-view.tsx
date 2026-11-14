@@ -15,7 +15,7 @@ import "./diff.css";
 
 import type { DiffFile } from "../protocol.ts";
 import { type Changes, type DiffRow, rows } from "./changes.ts";
-import { type Comment, type Selection, addComment, editComment, selectRows, removeComment, span } from "./comments.ts";
+import { type Comment, type Selection, addComment, editComment, removeComment, selectRows, span } from "./comments.ts";
 import { changeText, contentText, hunkText, linesText, summary } from "./labels.ts";
 import { CommentBox, CommentView } from "./review.tsx";
 

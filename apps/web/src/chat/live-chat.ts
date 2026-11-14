@@ -14,7 +14,7 @@ export type Wiring = {
 };
 
 /**
- * Keeps the chat at `place` in step with the server, and shows it at most once per scheduled
+ * Keeps the chat at `ref` in step with the server, and shows it at most once per scheduled
  * flush, so a burst of messages costs one render.
  */
 export class LiveChat {

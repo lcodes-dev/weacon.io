@@ -3,7 +3,7 @@ import { type KeyboardEvent, type RefObject, useEffect, useLayoutEffect, useRef,
 import { newRequestId } from "../ids.ts";
 import "./composer.css";
 import { NO_ATTACHMENTS, attachFiles, removeAttachment, settled } from "./attachments.ts";
-import { type Draft, EMPTY_DRAFT, type Item, type Placed, editDraft, pickMention, query } from "./draft.ts";
+import { type Draft, EMPTY_DRAFT, type MentionItem, type Placed, editDraft, pickMention, query } from "./draft.ts";
 import { AttachButton, Files } from "./files.tsx";
 import { composing, picker, sends } from "./keys.ts";
 import { offered } from "./mentionables.ts";
@@ -97,7 +97,7 @@ export function Composer({
     }
   };
   const attach = (added: File[]) => setFiles((before) => attachFiles(before, added));
-  const choose = (item: Item | undefined) => {
+  const choose = (item: MentionItem | undefined) => {
     if (at !== undefined && item !== undefined) {
       place(pickMention(draft, at, item));
     }
@@ -227,9 +227,9 @@ function Options({
   active,
   choose,
 }: {
-  options: Item[];
+  options: MentionItem[];
   active: number;
-  choose: (item: Item) => void;
+  choose: (item: MentionItem) => void;
 }) {
   return (
     <ul className="mentions" id="mentions" role="listbox" aria-label="People and agents">
