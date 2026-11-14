@@ -4,12 +4,11 @@ use minisign_verify::{PublicKey, Signature};
 use weacon_observability::Fault;
 use weacon_protocol::{ReleaseManifest, code};
 
-/// The public keys a manifest may be signed with, in minisign's format; their secret halves
-/// never leave the owner's machine.
+/// The public keys a manifest may be signed with, in minisign's format.
 pub(crate) const TRUSTED: [&str; 2] = [
     // The release key, which signs every release. Id 4D9033C9C7C1F681.
     "RWSB9sHHyTOQTbnTpivUps8H0c7vyKe+aYHpqByk9GXM84xHLYOMcUtn",
-    // The backup key, kept offline, which signs only to replace the release key. Id FC5980A8D9FB8637.
+    // The backup key, kept offline for when the release key is lost or leaked. Id FC5980A8D9FB8637.
     "RWQ3hvvZqIBZ/IE1a44x0Z7bIskcOI2qzIXhZ4TLj0qxk0bLLox687ph",
 ];
 
@@ -27,20 +26,12 @@ pub(crate) fn verified(
         )
     };
     let signature = Signature::decode(signature).map_err(|_| unsigned())?;
-    let keys: Vec<PublicKey> = keys
+    // A key that doesn't parse trusts nothing; a test checks the shipped ones.
+    let trusted = keys
         .iter()
-        .map(|key| PublicKey::from_base64(key))
-        .collect::<Result<_, _>>()
-        .map_err(|_| {
-            Fault::new(
-                code!("update.no_keys"),
-                "This build has no keys to check releases with",
-            )
-        })?;
-    if !keys
-        .iter()
-        .any(|key| key.verify(bytes, &signature, false).is_ok())
-    {
+        .filter_map(|key| PublicKey::from_base64(key).ok())
+        .any(|key| key.verify(bytes, &signature, false).is_ok());
+    if !trusted {
         return Err(unsigned());
     }
     serde_json::from_slice(bytes).map_err(|error| {
@@ -131,11 +122,12 @@ trusted comment: not a manifest
             code(verified(MANIFEST.as_bytes(), SIGNATURE, &[])),
             "update.unsigned"
         );
-        let broken = ["not a key", TEST_KEY];
+        let broken = ["not a key"];
         assert_eq!(
             code(verified(MANIFEST.as_bytes(), SIGNATURE, &broken)),
-            "update.no_keys"
+            "update.unsigned"
         );
+        verified(MANIFEST.as_bytes(), SIGNATURE, &["not a key", TEST_KEY]).unwrap();
     }
 
     #[test]
