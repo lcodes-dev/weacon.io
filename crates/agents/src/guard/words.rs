@@ -35,6 +35,15 @@ const WRAPPERS: [(&str, &[&str], usize); 24] = [
     ("bunx", &[], 0),
 ];
 
+// Wrappers' options that name a file they write.
+const WRITES_TO: [(&str, &str); 5] = [
+    ("strace", "-o"),
+    ("ltrace", "-o"),
+    ("time", "-o"),
+    ("time", "--output"),
+    ("strace", "--output"),
+];
+
 // Options of the wrappers that change folder or root, or read a command line from text.
 const MOVING: [&str; 7] = [
     "-C",
@@ -101,7 +110,7 @@ pub(super) fn command(words: &[Word]) -> Command<'_> {
         let (skipped, after) = skip_options(after, with_value);
         if skipped
             .iter()
-            .any(|option| unclear(&option.text, with_value))
+            .any(|option| unclear(&name, &option.text, with_value))
         {
             return Command::Unsure;
         }
@@ -112,12 +121,15 @@ pub(super) fn command(words: &[Word]) -> Command<'_> {
     }
 }
 
-// Whether a wrapper's option moves the command elsewhere, or is a long one that may take the
-// next word as its value without the guard knowing.
-fn unclear(option: &str, with_value: &[&str]) -> bool {
+// Whether a wrapper's option moves the command elsewhere, names a file the wrapper writes, or
+// is a long one that may take the next word as its value without the guard knowing.
+fn unclear(wrapper: &str, option: &str, with_value: &[&str]) -> bool {
     let unknown =
         option.starts_with("--") && !option.contains('=') && !with_value.contains(&option);
-    moves(option) || unknown
+    let writes = WRITES_TO
+        .iter()
+        .any(|(writer, writing)| *writer == wrapper && option.starts_with(writing));
+    moves(option) || unknown || writes
 }
 
 // A short option may carry its value or sit among others, as in `-C/tmp` or `-iC`.
@@ -210,20 +222,28 @@ pub(super) fn positional(args: &[Word]) -> Vec<&Word> {
 
 /// The value of the first of `options`, given as the next word or after `=`.
 pub(super) fn value_of(args: &[Word], options: &[&str]) -> Option<Word> {
-    args.iter().enumerate().find_map(|(at, arg)| {
-        options.iter().find_map(|option| {
-            if arg.text == *option {
-                return args.get(at + 1).cloned();
-            }
-            // A short option's value may follow it at once, as in `-t/etc`.
-            let value = arg.text.strip_prefix(&format!("{option}=")).or_else(|| {
-                (option.len() == 2)
-                    .then(|| arg.text.strip_prefix(option))
-                    .flatten()
-            })?;
-            Some(arg.tail(value))
+    values_of(args, options).into_iter().next()
+}
+
+/// The values of every one of `options`, in order.
+pub(super) fn values_of(args: &[Word], options: &[&str]) -> Vec<Word> {
+    args.iter()
+        .enumerate()
+        .filter_map(|(at, arg)| {
+            options.iter().find_map(|option| {
+                if arg.text == *option {
+                    return args.get(at + 1).cloned();
+                }
+                // A short option's value may follow it at once, as in `-t/etc`.
+                let value = arg.text.strip_prefix(&format!("{option}=")).or_else(|| {
+                    (option.len() == 2)
+                        .then(|| arg.text.strip_prefix(option))
+                        .flatten()
+                })?;
+                Some(arg.tail(value))
+            })
         })
-    })
+        .collect()
 }
 
 /// The letters of a cluster of short options, such as `rf` in `-rf`.

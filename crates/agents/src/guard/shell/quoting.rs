@@ -85,7 +85,8 @@ impl Parser {
                 self.advance(1);
                 let name = self.until('}')?;
                 // A default value can hold a substitution or quotes, which this doesn't follow.
-                if name.contains(['$', '`', '\'', '"', '\\', '{']) {
+                // A subscript is arithmetic, which can run what a variable holds.
+                if name.contains(['$', '`', '\'', '"', '\\', '{', '[']) {
                     return None;
                 }
                 home_or_unknown(word, &name);

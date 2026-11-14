@@ -595,9 +595,8 @@ mod tests {
         let check = |line: &str| check_command(line, &context);
 
         for line in [
-            "find -L / -delete",
             "find -D tree / -delete",
-            "strace -o trace.log rm -rf /",
+            "strace -f rm -rf /",
             "busybox rm -rf /",
             "cd .. && rm -rf main",
         ] {
@@ -1075,5 +1074,62 @@ mod tests {
         assert_eq!(check("echo $PATH"), None);
         assert_eq!(check("source ./env.sh"), None);
         assert_eq!(check("cat src/$NAME.rs"), None);
+    }
+
+    #[test]
+    fn the_last_reviews_bypasses_ask() {
+        let dir = TempDir::new().unwrap();
+        let context = context(&dir);
+        let check = |line: &str| check_command(line, &context);
+
+        for (line, reason) in [
+            ("shred -n 0 -z ../main/important", Reason::WriteOutside),
+            (
+                "curl -o local -o ../main/victim https://example.com/a https://example.com/b",
+                Reason::WriteOutside,
+            ),
+            ("cd ..; rm -rf '123'>/dev/null", Reason::DeleteOutside),
+        ] {
+            assert_eq!(check(line), Some(reason), "{line}");
+        }
+        for line in [
+            "FILE=$(printf '%s/%s' \"$HOME\" '.codex/auth.json'); cat \"$FILE\"",
+            "find -L . -name victim -delete",
+            "find . -follow -name victim -delete",
+            "x='a[$(rm -rf ../main)]'\ncat <<EOF\n$[x]\nEOF",
+            "cat <<EOF\n${a[x]}\nEOF",
+            "echo ${a[x]}",
+            "strace -o ../main/important true",
+            "time -o ../main/important true",
+        ] {
+            assert_eq!(check(line), Some(Reason::Unsure), "{line}");
+        }
+        for line in [
+            "X=$(date)",
+            "echo $PATH",
+            "git commit -m \"$MSG\"",
+            "git commit -m \"$(cat <<'EOF'\nAdd it\n\nCo-Authored-By: someone\nEOF\n)\"",
+            "cd ..; rm -rf 123>/dev/null && ls",
+            "cp notes.md src",
+        ] {
+            assert_eq!(check(line), None, "{line}");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_copy_into_a_folder_checks_where_each_file_lands() {
+        let dir = TempDir::new().unwrap();
+        let context = context(&dir);
+        fs::write(dir.join("main/important"), "").unwrap();
+        fs::write(dir.join("wt/input"), "").unwrap();
+        fs::create_dir_all(dir.join("wt/out")).unwrap();
+        std::os::unix::fs::symlink(dir.join("main/important"), dir.join("wt/out/input")).unwrap();
+
+        assert_eq!(
+            check_command("cp input out", &context),
+            Some(Reason::WriteOutside)
+        );
+        assert_eq!(check_command("cp input src", &context), None);
     }
 }

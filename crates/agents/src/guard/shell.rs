@@ -77,6 +77,7 @@ fn parse_nested(line: &str, depth: usize) -> Option<Vec<Simple>> {
         unsure: false,
         parens: 0,
         blocks: 0,
+        word_start: 0,
     };
     parser.list(None)?;
     (!parser.unsure).then_some(parser.found)
@@ -93,6 +94,8 @@ struct Parser {
     depth: usize,
     // How many `(` are open.
     parens: usize,
+    // Where the word being read began, so a redirection can see how it was written.
+    word_start: usize,
     // How many `if`, loops and `case`s are open, whose commands may not run.
     blocks: usize,
     // Met something it can split but not follow, such as a `case` inside a substitution.
@@ -181,7 +184,12 @@ impl Parser {
             '#' if word.is_none() => self.comment(),
             // A line continuation before a word starts makes no word.
             '\\' if word.is_none() && self.peek_at(1) == Some('\n') => self.advance(2),
-            _ => self.word_part(word.get_or_insert_with(Word::default))?,
+            _ => {
+                if word.is_none() {
+                    self.word_start = self.at;
+                }
+                self.word_part(word.get_or_insert_with(Word::default))?;
+            }
         }
         Some(())
     }
@@ -228,10 +236,9 @@ impl Parser {
     }
 
     fn redirect(&mut self, char: char, simple: &mut Simple, word: &mut Option<Word>) -> Option<()> {
-        // A number just before is the file descriptor, not a word.
-        if word.as_ref().is_some_and(|word| {
-            !word.text.is_empty() && word.text.chars().all(|digit| digit.is_ascii_digit())
-        }) {
+        // A number written just before, unquoted, is the file descriptor, not a word.
+        let written = self.chars.get(self.word_start..self.at).unwrap_or_default();
+        if word.is_some() && !written.is_empty() && written.iter().all(char::is_ascii_digit) {
             *word = None;
         }
         end_word(simple, word);
@@ -346,7 +353,11 @@ impl Parser {
             }
             // The shell runs substitutions in the text unless its delimiter was quoted, and joins a
             // line ending in `\` to the next, which may then be the delimiter.
-            if line.contains("$(") || line.contains('`') || line.ends_with('\\') {
+            // Arithmetic and subscripts in `$[…]` and `${…}` can run what a variable holds.
+            let runs = ["$(", "`", "$[", "${"]
+                .iter()
+                .any(|part| line.contains(part));
+            if runs || line.ends_with('\\') {
                 return None;
             }
             if self.at <= before {

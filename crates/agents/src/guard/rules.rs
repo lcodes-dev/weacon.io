@@ -5,15 +5,14 @@ use std::path::{Path, PathBuf};
 use super::shell::{Simple, Word};
 use super::words::{
     Command, begins, command, in_place, is_assignment, positional, program_name, short_flags,
-    value_of,
+    value_of, values_of,
 };
 use super::{Context, Reason, check_word, code, git, path_of, reading};
 
-const DELETERS: [&str; 8] = [
+const DELETERS: [&str; 7] = [
     "rm",
     "rmdir",
     "unlink",
-    "shred",
     "srm",
     "trash",
     "trash-put",
@@ -30,8 +29,9 @@ const OUTPUTS: [(&str, &[&str]); 4] = [
     ("tar", &["-C", "--directory"]),
     ("unzip", &["-d"]),
 ];
-const WRITERS: [&str; 9] = [
-    "tee", "touch", "mkdir", "truncate", "chmod", "chown", "chgrp", "chattr", "setfacl",
+// `shred` overwrites what it names before it removes anything.
+const WRITERS: [&str; 10] = [
+    "tee", "touch", "mkdir", "truncate", "chmod", "chown", "chgrp", "chattr", "setfacl", "shred",
 ];
 // Output that goes to no file.
 const DEVICES: [&str; 5] = ["/dev/null", "/dev/stdout", "/dev/stderr", "/dev/tty", "nul"];
@@ -40,6 +40,8 @@ const DEVICES: [&str; 5] = ["/dev/null", "/dev/stdout", "/dev/stderr", "/dev/tty
 const GIT_HARMLESS: [&str; 2] = ["GIT_PAGER", "GIT_TERMINAL_PROMPT"];
 // Variables that choose which programs run or how the shell splits words.
 const SHELL_SETTINGS: [&str; 4] = ["PATH", "BASH_ENV", "ENV", "IFS"];
+// Programs that print their words and read no file they name, so an expansion there is only text.
+const TEXT_ONLY: [&str; 3] = ["echo", "printf", "git"];
 const FIND_RUNS: [&str; 4] = ["-exec", "-execdir", "-ok", "-okdir"];
 // Programs that read through every folder they're given.
 const DEEP: [&str; 11] = [
@@ -58,7 +60,7 @@ pub(super) fn judge(simple: &Simple, context: &Context, cwd: &mut PathBuf) -> Op
             simple
                 .reads
                 .iter()
-                .find_map(|source| read(source, context, cwd, false))
+                .find_map(|source| read(source, context, cwd, false, true))
         })
         .or_else(|| assignments(simple, context, cwd));
     if let Some(reason) = redirected {
@@ -83,8 +85,13 @@ pub(super) fn judge(simple: &Simple, context: &Context, cwd: &mut PathBuf) -> Op
         return Some(Reason::Addition);
     }
     let deep = goes_deep(&name, args);
+    let strict = !TEXT_ONLY.contains(&name.as_str());
     let reads = (!matches!(name.as_str(), "cd" | "pushd"))
-        .then(|| words.iter().find_map(|word| read(word, context, cwd, deep)))
+        .then(|| {
+            words
+                .iter()
+                .find_map(|word| read(word, context, cwd, deep, strict))
+        })
         .flatten();
     let call = Call {
         name: &name,
@@ -122,25 +129,37 @@ fn assignments(simple: &Simple, context: &Context, cwd: &Path) -> Option<Reason>
             if redirects_git || SHELL_SETTINGS.contains(&name) {
                 return Some(Reason::Unsure);
             }
-            read(word, context, cwd, false)
+            // A value made wholly by the shell is checked where it is used.
+            let value = word.tail(word.text.get(name.len() + 1..)?);
+            if value.dynamic && value.known == 0 {
+                return None;
+            }
+            read_path(&value, context, cwd, false, false)
         })
 }
 
 // A word may name a file itself, or as an option's value, as in `--file=…` or `-d @…`.
-fn read(word: &Word, context: &Context, cwd: &Path, deep: bool) -> Option<Reason> {
+// `strict` when the program may read a file it's given, so a word only the shell can spell asks.
+fn read(word: &Word, context: &Context, cwd: &Path, deep: bool, strict: bool) -> Option<Reason> {
     let value = word.text.split_once('=').map(|(_, value)| value);
     let value = value
         .or_else(|| word.text.strip_prefix('@'))
         .filter(|value| !value.is_empty());
     let inner = value.map(|value| word.tail(value));
     inner
-        .and_then(|inner| read_path(&inner, context, cwd, deep))
-        .or_else(|| read_path(word, context, cwd, deep))
+        .and_then(|inner| read_path(&inner, context, cwd, deep, strict))
+        .or_else(|| read_path(word, context, cwd, deep, strict))
 }
 
 // A wildcard can match a credential folder below where it starts, and so can an expansion
 // below the folder written before it.
-fn read_path(word: &Word, context: &Context, cwd: &Path, deep: bool) -> Option<Reason> {
+fn read_path(
+    word: &Word,
+    context: &Context,
+    cwd: &Path,
+    deep: bool,
+    strict: bool,
+) -> Option<Reason> {
     if let Some(path) = path_of(word, context, cwd) {
         return reading(&path, context, deep || word.glob);
     }
@@ -150,7 +169,8 @@ fn read_path(word: &Word, context: &Context, cwd: &Path, deep: bool) -> Option<R
     // Only the text before the first expansion is known; one that starts a path may be anywhere.
     let before = word.text.get(..word.known)?;
     let Some((folder, _)) = before.rsplit_once('/') else {
-        return word.text.contains('/').then_some(Reason::Unsure);
+        let anywhere = word.text.contains('/') || (strict && before.is_empty());
+        return anywhere.then_some(Reason::Unsure);
     };
     let known = Word {
         text: if folder.is_empty() {
@@ -201,8 +221,12 @@ impl Call<'_> {
                 self.targets(cwd, Reason::WriteOutside, &positional(self.args))
             }
             _ if let Some((_, options)) = OUTPUTS.iter().find(|(program, _)| *program == name) => {
-                let output = value_of(self.args, options);
-                output.and_then(|word| self.targets(cwd, Reason::WriteOutside, &[&word]))
+                let outputs = values_of(self.args, options);
+                self.targets(
+                    cwd,
+                    Reason::WriteOutside,
+                    &outputs.iter().collect::<Vec<_>>(),
+                )
             }
             _ => code::judge(name, self.args, self.simple),
         }
@@ -260,9 +284,46 @@ impl Call<'_> {
                 arg.text == "--link"
                     || short_flags(&arg.text).is_some_and(|flags| flags.contains('l'))
             });
-        let sources = named.iter().copied().filter(|_| linked);
-        let targets: Vec<&Word> = destination.into_iter().chain(sources).collect();
+        let sources: Vec<&Word> = named
+            .iter()
+            .copied()
+            .filter(|word| Some(*word) != destination)
+            .collect();
+        let inside = destination
+            .map(|folder| self.landing(folder, &sources, cwd))
+            .unwrap_or_default();
+        let linked_sources = sources.iter().copied().filter(|_| linked);
+        let targets: Vec<&Word> = destination
+            .into_iter()
+            .chain(inside.iter())
+            .chain(linked_sources)
+            .collect();
         self.targets(cwd, Reason::WriteOutside, &targets)
+    }
+
+    // Into an existing folder, each source lands at its own name there, which may be a symlink.
+    fn landing(&self, folder: &Word, sources: &[&Word], cwd: &Path) -> Vec<Word> {
+        let is_folder = path_of(folder, self.context, cwd).is_some_and(|path| path.is_dir());
+        if !is_folder {
+            return Vec::new();
+        }
+        sources
+            .iter()
+            .map(|source| {
+                let name = source
+                    .text
+                    .trim_end_matches('/')
+                    .rsplit('/')
+                    .next()
+                    .unwrap_or_default();
+                Word {
+                    text: format!("{}/{name}", folder.text.trim_end_matches('/')),
+                    dynamic: folder.dynamic || source.dynamic,
+                    glob: folder.glob || source.glob,
+                    ..folder.clone()
+                }
+            })
+            .collect()
     }
 
     fn dd(&self, cwd: &Path) -> Option<Reason> {
@@ -283,6 +344,10 @@ impl Call<'_> {
         }
         if !named(&["-delete"]) {
             return None;
+        }
+        // Following symlinks, it can reach and delete what lies outside.
+        if named(&["-L", "-follow"]) {
+            return Some(Reason::Unsure);
         }
         // Options about links and debugging come before the folders to start from.
         let mut rest = self.args;
