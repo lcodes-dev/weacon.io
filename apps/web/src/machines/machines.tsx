@@ -1,21 +1,19 @@
 import { useEffect, useState } from "react";
 
+import type { Later } from "../connection.ts";
+import type { MachineId, MachineSummary, PairPending } from "../protocol.ts";
+import type { Api } from "../shell/api.ts";
+import { useAsk } from "../shell/ask.ts";
+import { useLoaded } from "../shell/loaded.ts";
+import { waitForClaim } from "./claim.ts";
 import { fingerprint } from "./fingerprint.ts";
 import { keep } from "./keep.ts";
 import { osName } from "./os.ts";
 import type { Pins } from "./pins.ts";
 import { unpair } from "./unpair.ts";
-import type { MachineId, MachineSummary, PairPending } from "../protocol.ts";
-import type { Api } from "../shell/api.ts";
-import { useAsk } from "../shell/ask.ts";
-import { useLoaded } from "../shell/loaded.ts";
-
-// A confirmed machine shows once its core claims it, which it does within two minutes.
-const LOOK_AGAIN_MS = 2000;
-const GIVE_UP_MS = 120_000;
 
 /** The signed-in account's machines: pairing one by its code, the list, and unpairing. */
-export function Machines({ api, pins }: { api: Api; pins: Pins }) {
+export function Machines({ api, pins, later }: { api: Api; pins: Pins; later: Later }) {
   const { value, problem, load } = useLoaded(() => api.machines(), api);
   const list = value?.machines;
   const [waiting, setWaiting] = useState<MachineId>();
@@ -24,22 +22,10 @@ export function Machines({ api, pins }: { api: Api; pins: Pins }) {
     if (waiting === undefined) {
       return;
     }
-    // The next look waits for the last answer, so a slow one is never cut short by the next.
-    let stopped = false;
-    let again: ReturnType<typeof setTimeout>;
-    const look = () => {
-      again = setTimeout(() => void load().then(() => stopped || look()), LOOK_AGAIN_MS);
-    };
-    look();
-    const giveUp = setTimeout(() => {
+    return waitForClaim(load, later, () => {
       setWaiting(undefined);
       setStalled(true);
-    }, GIVE_UP_MS);
-    return () => {
-      stopped = true;
-      clearTimeout(again);
-      clearTimeout(giveUp);
-    };
+    });
   }, [waiting]);
   useEffect(() => {
     if (list?.some(({ id }) => id === waiting)) {
