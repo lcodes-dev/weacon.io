@@ -1,7 +1,7 @@
 use tree_sitter::Node;
 
 use super::{Item, Kind, Place, Symbol, fingerprint, join, plain};
-use crate::paths;
+use crate::paths::{self, Bound, Segments};
 use crate::refs::refs;
 use crate::syntax::{attributes, line, text};
 
@@ -23,13 +23,19 @@ pub(super) fn tests(item: Node<'_>, place: &Place, source: &[u8]) -> Vec<Item> {
                 };
                 let mut cursor = body.walk();
                 let children: Vec<Node<'_>> = body.named_children(&mut cursor).collect();
-                let mut imports = Vec::new();
-                for child in children
+                let own = children
                     .iter()
                     .filter(|child| child.kind() == "use_declaration")
-                {
-                    imports.extend(paths::imports(*child, source));
+                    .flat_map(|child| paths::imports(*child, source));
+                let mut own: Vec<(Segments, Bound)> = own.collect();
+                // `use super::*` brings in what the module around it brought in, after its own.
+                let glob = own
+                    .iter()
+                    .any(|(path, bound)| *bound == Bound::Glob && path == &["super"]);
+                if glob {
+                    own.extend(imports.iter().filter_map(from_child));
                 }
+                let imports = own;
                 modules.extend(
                     children
                         .into_iter()
@@ -53,6 +59,23 @@ pub(super) fn tests(item: Node<'_>, place: &Place, source: &[u8]) -> Vec<Item> {
         }
     }
     found
+}
+
+/// A name its parent module's `use` binds, as a child module reaches it: relative paths
+/// gain a `super`.
+fn from_child((path, bound): &(Segments, Bound)) -> Option<(Segments, Bound)> {
+    let Bound::Name(_) = bound else {
+        return None;
+    };
+    let relative = path
+        .first()
+        .is_some_and(|first| first == "self" || first == "super");
+    let path = if relative {
+        [&["super".to_owned()][..], path].concat()
+    } else {
+        path.clone()
+    };
+    Some((path, bound.clone()))
 }
 
 /// Whether `function` has `#[test]`, or a test attribute such as `#[tokio::test(...)]`.

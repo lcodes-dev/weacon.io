@@ -1,4 +1,6 @@
 use std::collections::BTreeMap;
+use std::iter::Peekable;
+use std::str::Chars;
 
 /// The tables some SQL leaves in place, by name, with the line each was last made on.
 #[derive(Debug, Default)]
@@ -9,7 +11,8 @@ impl Tables {
     /// a table; a statement may span lines.
     pub(crate) fn apply(&mut self, sql: &str, line: usize) {
         let mut line = line;
-        for statement in sql.split(';') {
+        for statement in statements(sql) {
+            let statement = statement.as_str();
             let leading = statement.len() - statement.trim_start().len();
             let before = statement.get(..leading).unwrap_or_default();
             let starts = line + before.matches('\n').count();
@@ -59,6 +62,43 @@ impl Tables {
 
     pub(crate) fn into_lines(self) -> impl Iterator<Item = (String, usize)> {
         self.0.into_iter()
+    }
+}
+
+/// The statements of `sql`, split at semicolons outside quotes, with comments and quoted
+/// strings blanked out but their line breaks kept.
+fn statements(sql: &str) -> Vec<String> {
+    let mut found = vec![String::new()];
+    let mut chars = sql.chars().peekable();
+    while let Some(ch) = chars.next() {
+        let Some(current) = found.last_mut() else {
+            break;
+        };
+        match ch {
+            '\'' => blank(&mut chars, current, |_, inside| inside == '\''),
+            '-' if chars.peek() == Some(&'-') => {
+                blank(&mut chars, current, |_, inside| inside == '\n');
+            }
+            '/' if chars.peek() == Some(&'*') => blank(&mut chars, current, |previous, inside| {
+                previous == '*' && inside == '/'
+            }),
+            ';' => found.push(String::new()),
+            _ => current.push(ch),
+        }
+    }
+    found
+}
+
+/// Blanks out what follows up to and including the character that `ends` it, given the one
+/// before, keeping line breaks.
+fn blank(chars: &mut Peekable<Chars<'_>>, out: &mut String, ends: impl Fn(char, char) -> bool) {
+    let mut previous = '\0';
+    for inside in chars.by_ref() {
+        out.push(if inside == '\n' { '\n' } else { ' ' });
+        if ends(previous, inside) {
+            break;
+        }
+        previous = inside;
     }
 }
 
@@ -114,6 +154,19 @@ mod tests {
             ]),
             named(&[("b", 4), ("notes", 2)])
         );
+    }
+
+    #[test]
+    fn leaves_out_comments_and_quoted_text() {
+        let found = left(&[
+            "-- the first step",
+            "CREATE TABLE notes(body TEXT); /* not;",
+            "DROP TABLE notes; */ INSERT INTO notes VALUES ('', 'x; DROP TABLE notes;');",
+            "CREATE TABLE \"main\".\"quoted\" (id); CREATE TABLE b (x); -- DROP TABLE b",
+            "CREATE TABLE c (x DEFAULT -1, y DEFAULT 4/2); CREATE TABLE d (z);",
+        ]);
+        let tables = [("b", 4), ("c", 5), ("d", 5), ("notes", 2), ("quoted", 4)];
+        assert_eq!(found, named(&tables));
     }
 
     #[test]
