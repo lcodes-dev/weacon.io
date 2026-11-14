@@ -177,6 +177,105 @@ CREATE UNIQUE INDEX accounts_owner ON accounts (owner) WHERE owner = 1;
 ALTER TABLE sign_in_challenges ADD COLUMN mailed INTEGER NOT NULL DEFAULT 1;
 CREATE INDEX sign_in_challenges_email ON sign_in_challenges (email);
 ",
+    // Docs, each revision whole, with the pins it links to.
+    "
+CREATE TABLE docs (
+    workspace_id TEXT NOT NULL REFERENCES workspaces (workspace_id),
+    doc_id TEXT NOT NULL,
+    version INTEGER NOT NULL,
+    PRIMARY KEY (workspace_id, doc_id)
+) STRICT;
+
+CREATE TABLE doc_versions (
+    workspace_id TEXT NOT NULL,
+    doc_id TEXT NOT NULL,
+    version INTEGER NOT NULL,
+    title TEXT NOT NULL,
+    body TEXT NOT NULL,
+    commit_id TEXT,
+    author_kind TEXT NOT NULL,
+    author_member TEXT NOT NULL,
+    accepted_by TEXT NOT NULL,
+    at INTEGER NOT NULL,
+    PRIMARY KEY (workspace_id, doc_id, version),
+    FOREIGN KEY (workspace_id, doc_id) REFERENCES docs (workspace_id, doc_id),
+    FOREIGN KEY (workspace_id, author_member) REFERENCES members (workspace_id, member_id),
+    FOREIGN KEY (workspace_id, accepted_by) REFERENCES members (workspace_id, member_id)
+) STRICT;
+
+CREATE TABLE doc_pins (
+    workspace_id TEXT NOT NULL,
+    doc_id TEXT NOT NULL,
+    version INTEGER NOT NULL,
+    position INTEGER NOT NULL,
+    pin TEXT NOT NULL,
+    PRIMARY KEY (workspace_id, doc_id, version, position),
+    FOREIGN KEY (workspace_id, doc_id, version)
+        REFERENCES doc_versions (workspace_id, doc_id, version)
+) STRICT;
+
+CREATE TABLE changes_with_docs (
+    workspace_id TEXT NOT NULL,
+    seq INTEGER NOT NULL,
+    kind TEXT NOT NULL,
+    member_id TEXT NOT NULL,
+    task_id TEXT,
+    task_version INTEGER,
+    doc_id TEXT,
+    doc_version INTEGER,
+    PRIMARY KEY (workspace_id, seq),
+    FOREIGN KEY (workspace_id, member_id) REFERENCES members (workspace_id, member_id),
+    FOREIGN KEY (workspace_id, task_id, task_version)
+        REFERENCES task_versions (workspace_id, task_id, version),
+    FOREIGN KEY (workspace_id, doc_id, doc_version)
+        REFERENCES doc_versions (workspace_id, doc_id, version)
+) STRICT;
+
+INSERT INTO changes_with_docs (workspace_id, seq, kind, member_id, task_id, task_version)
+SELECT workspace_id, seq, kind, member_id, task_id, task_version FROM changes;
+
+DROP TABLE changes;
+ALTER TABLE changes_with_docs RENAME TO changes;
+",
+    // Machines paired with an account, and the pairings under way. A confirmed pairing names
+    // its account and machine, and stays until it expires so that its core may claim again.
+    "
+CREATE TABLE machines (
+    machine_id TEXT PRIMARY KEY,
+    account_id TEXT NOT NULL REFERENCES accounts (account_id),
+    name TEXT NOT NULL,
+    os TEXT NOT NULL,
+    machine_key TEXT NOT NULL,
+    token_hash BLOB NOT NULL UNIQUE,
+    paired_at INTEGER NOT NULL
+) STRICT;
+
+CREATE TABLE pairings (
+    pairing_id TEXT PRIMARY KEY,
+    code_hash BLOB NOT NULL UNIQUE,
+    secret_hash BLOB NOT NULL,
+    name TEXT NOT NULL,
+    os TEXT NOT NULL,
+    machine_key TEXT NOT NULL,
+    expires_at INTEGER NOT NULL,
+    account_id TEXT REFERENCES accounts (account_id),
+    machine_id TEXT,
+    confirmed_at INTEGER,
+    claimed INTEGER NOT NULL DEFAULT 0
+) STRICT;
+",
+    // The bytes of doc revisions each workspace holds, which its quota bounds. Each revision
+    // also counts 256 bytes for its rows, as `db::docs` counts them.
+    "
+ALTER TABLE workspaces ADD COLUMN doc_bytes INTEGER NOT NULL DEFAULT 0;
+
+UPDATE workspaces SET doc_bytes =
+    (SELECT COALESCE(SUM(256 + length(CAST(title AS BLOB)) + length(CAST(body AS BLOB))
+         + COALESCE(length(commit_id), 0)), 0)
+     FROM doc_versions WHERE doc_versions.workspace_id = workspaces.workspace_id)
+    + (SELECT COALESCE(SUM(length(pin)), 0)
+       FROM doc_pins WHERE doc_pins.workspace_id = workspaces.workspace_id);
+",
 ];
 
 /// Applies the steps the database hasn't had yet, each in its own transaction that holds the
@@ -209,9 +308,160 @@ pub(super) async fn migrate(writer: &SqlitePool) -> Result<(), Fault> {
     }
 }
 
+/// Makes a database at `path` from before the first step that contains `marker`, holding
+/// `rows`, for tests of what that step and the ones after it do to existing data.
+#[cfg(test)]
+pub(super) async fn database_before(path: &std::path::Path, marker: &str, rows: &str) {
+    use sqlx::ConnectOptions;
+
+    let mut old = sqlx::sqlite::SqliteConnectOptions::new()
+        .filename(path)
+        .create_if_missing(true)
+        .connect()
+        .await
+        .unwrap();
+    let before = STEPS.iter().position(|step| step.contains(marker)).unwrap();
+    for step in &STEPS[..before] {
+        sqlx::raw_sql(*step).execute(&mut old).await.unwrap();
+    }
+    let rows = format!("{rows}; PRAGMA user_version = {before};");
+    sqlx::raw_sql(AssertSqlSafe(rows))
+        .execute(&mut old)
+        .await
+        .unwrap();
+}
+
 fn too_new() -> Fault {
     Fault::new(
         code!("db.too_new"),
         "The database is from a newer version of the server",
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use weacon_testing::TempDir;
+
+    use crate::db::Db;
+
+    #[tokio::test]
+    async fn a_schema_newer_than_this_build_is_refused() {
+        let dir = TempDir::new().unwrap();
+        let db = Db::create(&dir.join("weacon.db")).await.unwrap();
+        sqlx::raw_sql("PRAGMA user_version = 1000")
+            .execute(&db.writer)
+            .await
+            .unwrap();
+        db.close().await;
+
+        let error = Db::open(&dir.join("weacon.db")).await.unwrap_err();
+        assert_eq!(error.code().as_str(), "db.too_new");
+    }
+
+    #[tokio::test]
+    async fn two_openings_of_a_new_file_both_get_its_schema() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.join("weacon.db");
+        let (one, two) = tokio::join!(Db::create(&path), Db::create(&path));
+
+        one.unwrap();
+        two.unwrap();
+    }
+
+    async fn first_columns(db: &Db, sql: &'static str, table: &str) -> Vec<String> {
+        sqlx::query_scalar(sql)
+            .bind(table)
+            .fetch_all(&db.readers)
+            .await
+            .unwrap()
+    }
+
+    const SERVER_WIDE: [&str; 5] = [
+        "accounts",
+        "sign_in_challenges",
+        "sessions",
+        "machines",
+        "pairings",
+    ];
+
+    async fn tables(db: &Db) -> Vec<String> {
+        sqlx::query_scalar(
+            "SELECT name FROM sqlite_schema WHERE type = 'table' AND name NOT LIKE 'sqlite_%'",
+        )
+        .fetch_all(&db.readers)
+        .await
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_persons_own_tables_hold_nothing_of_a_workspace() {
+        let dir = TempDir::new().unwrap();
+        let db = Db::create(&dir.join("weacon.db")).await.unwrap();
+        let workspace = "SELECT name FROM pragma_table_info(?) WHERE name = 'workspace_id'";
+
+        assert_eq!(
+            tables(&db).await,
+            [
+                "workspaces",
+                "members",
+                "accounts",
+                "sessions",
+                "tasks",
+                "task_versions",
+                "sign_in_challenges",
+                "docs",
+                "doc_versions",
+                "doc_pins",
+                "changes",
+                "machines",
+                "pairings"
+            ]
+        );
+        for table in SERVER_WIDE {
+            assert!(
+                first_columns(&db, workspace, table).await.is_empty(),
+                "{table}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn every_other_table_index_and_reference_leads_with_the_workspace() {
+        let dir = TempDir::new().unwrap();
+        let db = Db::create(&dir.join("weacon.db")).await.unwrap();
+        let tables = tables(&db).await;
+        let in_workspaces = |table: &&String| !SERVER_WIDE.contains(&table.as_str());
+        for table in tables.iter().filter(in_workspaces) {
+            let columns = first_columns(
+                &db,
+                "SELECT name FROM pragma_table_info(?) WHERE cid = 0",
+                table,
+            )
+            .await;
+            let indexes = first_columns(
+                &db,
+                "SELECT ii.name FROM pragma_index_list(?1) AS il \
+                 JOIN pragma_index_info(il.name) AS ii WHERE ii.seqno = 0",
+                table,
+            )
+            .await;
+            let references = first_columns(
+                &db,
+                "SELECT \"from\" FROM pragma_foreign_key_list(?) \
+                 WHERE seq = 0 AND \"table\" != 'accounts'",
+                table,
+            )
+            .await;
+
+            assert_eq!(columns, ["workspace_id"], "{table}");
+            assert!(
+                indexes.iter().all(|column| column == "workspace_id"),
+                "{table}: {indexes:?}"
+            );
+            assert!(
+                references.iter().all(|column| column == "workspace_id"),
+                "{table}: {references:?}"
+            );
+        }
+    }
 }

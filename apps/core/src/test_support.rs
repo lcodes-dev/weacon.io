@@ -29,17 +29,20 @@ pub(crate) fn env(vars: &[(&str, &str)]) -> impl Fn(&str) -> Option<OsString> + 
 /// An app whose state is in `state_dir`, logging nowhere and reporting nothing.
 pub(crate) fn app(state_dir: Option<&Path>, log_file: Option<&Path>) -> App {
     App {
-        version: VERSION,
-        log: recording_logger().0,
-        reporter: Reporter::new(
-            None,
-            true,
-            Box::new(|_| Ok(())),
-            Box::new(|| 0),
-            Box::new(SystemTime::now),
-        )
-        .into(),
+        base: weacon_appkit::App {
+            version: VERSION,
+            log: recording_logger().0,
+            reporter: Reporter::new(
+                None,
+                true,
+                Box::new(|_| Ok(())),
+                Box::new(|| 0),
+                Box::new(SystemTime::now),
+            )
+            .into(),
+        },
         state_dir: state_dir.map(Path::to_path_buf),
+        work_root: None,
         log_file: log_file.map(Path::to_path_buf),
         spawn: weacon_agents::SpawnPolicy::default(),
         path: None,
