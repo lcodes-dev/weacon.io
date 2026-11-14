@@ -24,6 +24,7 @@ struct State {
     blobs_read: Vec<String>,
     texts_read: Vec<String>,
     heads_read: usize,
+    trees_read: usize,
 }
 
 pub(crate) fn blob(text: &str) -> String {
@@ -51,6 +52,10 @@ impl Fake {
             .iter()
             .map(|(path, text)| ((*path).to_owned(), text.map(str::to_owned)));
         self.state.lock().unwrap().changed = changed.collect();
+    }
+
+    pub(crate) fn trees_read(&self) -> usize {
+        std::mem::take(&mut self.state.lock().unwrap().trees_read)
     }
 
     pub(crate) fn heads_read(&self) -> usize {
@@ -81,7 +86,8 @@ impl Source for Fake {
     }
 
     fn tree(&self, commit: &CommitId) -> Result<Vec<(String, String)>, Fault> {
-        let state = self.state.lock().unwrap();
+        let mut state = self.state.lock().unwrap();
+        state.trees_read += 1;
         let files = state
             .commits
             .get(commit.as_str())

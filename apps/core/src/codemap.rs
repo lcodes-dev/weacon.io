@@ -55,12 +55,14 @@ pub(crate) struct Base {
     pub(crate) entries: BTreeSet<Entry>,
 }
 
-/// What a worktree changed, each file with its text now, `None` once deleted or when it can't
-/// be read, and the refresh that read it.
+/// What a worktree changed from a base, as the refresh numbered `generation` read it: each file
+/// with the key and text it has now, `None` once deleted or when it can't be read, and one key
+/// for the base's commit and all of them.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Changes {
     pub(crate) generation: i64,
-    pub(crate) files: Vec<(String, Option<String>)>,
+    pub(crate) files: Vec<(String, Option<(String, String)>)>,
+    pub(crate) state: String,
 }
 
 /// One repository's code map, read from `source` and kept in `map`.
@@ -83,10 +85,10 @@ impl<S: Source> RepoMap<S> {
         let commit = self.head().await?;
         if let Some(layer) = self.map.layer(BASE).await?
             && layer.commit == commit.as_str()
+            && self.map.touch(BASE, commit.as_str(), generation).await?
             && let (facts, missing) = self.cached(&layer.files).await?
             && missing.is_empty()
         {
-            self.map.touch(BASE, generation).await?;
             let (facts, entries) = off_runtime(move || {
                 let entries = entries_of(&facts);
                 Ok((facts, entries))
@@ -152,20 +154,30 @@ impl<S: Source> RepoMap<S> {
     pub(crate) async fn changed(&self, base: &Base, path: &Path) -> Result<Changes, Fault> {
         let generation = self.map.begin().await?;
         let (path, commit) = (path.to_owned(), base.commit.clone());
-        let files = self
+        let (files, state) = self
             .blocking(move |source| {
                 let changed = source.changed(&path, &commit)?;
-                Ok(changed
+                let files: Vec<(String, Option<(String, String)>)> = changed
                     .into_iter()
                     .filter(|file| is_mapped(file))
                     .map(|file| {
                         let text = source.text(&path, &file);
-                        (file, text)
+                        (file, text.map(|text| (content_key(&text), text)))
                     })
-                    .collect())
+                    .collect();
+                let mut state = commit.as_str().to_owned();
+                for (file, text) in &files {
+                    let key = text.as_ref().map_or("", |(key, _)| key.as_str());
+                    state.extend(["\0", file, "\0", key]);
+                }
+                Ok((files, content_key(&state)))
             })
             .await?;
-        Ok(Changes { generation, files })
+        Ok(Changes {
+            generation,
+            files,
+            state,
+        })
     }
 
     /// The facts of every file as the worktree at `path` has it: `base`'s, with what the
@@ -176,11 +188,11 @@ impl<S: Source> RepoMap<S> {
         path: &Path,
         changed: Changes,
     ) -> Result<Vec<Facts>, Fault> {
-        let Changes { generation, files } = changed;
-        let keyed: Vec<(String, Option<(String, String)>)> = files
-            .into_iter()
-            .map(|(path, text)| (path, text.map(|text| (content_key(&text), text))))
-            .collect();
+        let Changes {
+            generation,
+            files: keyed,
+            ..
+        } = changed;
         let changed: Vec<Stored> = keyed
             .iter()
             .map(|(path, text)| Stored {
@@ -352,9 +364,11 @@ fn content_key(text: &str) -> String {
     format!("sha256:{}", digest.as_str())
 }
 
-/// The layer that holds what the worktree at `path` changed.
+/// The layer that holds what the worktree at `path` changed, named by a hash of the path's
+/// bytes, so paths that aren't UTF-8 stay apart.
 fn layer_name(path: &Path) -> String {
-    format!("worktree:{}", path.display())
+    let digest = Sha256::digest(path.as_os_str().as_encoded_bytes());
+    format!("worktree:{}", Sha256Hex::from_bytes(digest.into()).as_str())
 }
 
 #[cfg(test)]
@@ -435,8 +449,14 @@ mod tests {
         );
         assert_eq!(repo.base().await.unwrap().facts.len(), 2);
         assert_eq!(source.blobs_read().len(), 2);
+        source.trees_read();
         assert_eq!(repo.base().await.unwrap().facts.len(), 2);
         assert!(source.blobs_read().is_empty());
+        assert_eq!(
+            source.trees_read(),
+            0,
+            "a current base listed its tree again"
+        );
 
         repo.map.spoil_facts().await;
         assert_eq!(repo.base().await.unwrap().facts.len(), 2);
@@ -608,6 +628,16 @@ mod tests {
     #[test]
     fn keys_text_by_its_hash_and_layers_by_their_worktree() {
         assert!(content_key("a").starts_with("sha256:ca978112"));
-        assert_eq!(layer_name(Path::new("/w/chat")), "worktree:/w/chat");
+        let name = layer_name(Path::new("/w/chat"));
+        assert!(name.starts_with("worktree:"), "{name}");
+        assert_eq!(name, layer_name(Path::new("/w/chat")));
+        assert_ne!(name, layer_name(Path::new("/w/chats")));
+        #[cfg(unix)]
+        {
+            use std::ffi::OsStr;
+            use std::os::unix::ffi::OsStrExt;
+            let (ff, fe) = (OsStr::from_bytes(b"/w/\xff"), OsStr::from_bytes(b"/w/\xfe"));
+            assert_ne!(layer_name(Path::new(ff)), layer_name(Path::new(fe)));
+        }
     }
 }
