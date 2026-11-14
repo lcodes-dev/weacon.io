@@ -90,7 +90,8 @@ mod tests {
         assert_eq!(next_event(&mut events).await, None);
     }
 
-    // Something the program starts may keep the terminal open after the program ends.
+    // Something the program starts may keep the terminal open after the program ends. Here it
+    // waits on the terminal, so it ends as soon as the terminal does, with the test.
     #[cfg(unix)]
     #[tokio::test]
     async fn the_end_comes_when_the_program_ends_whatever_it_left_running() {
@@ -98,15 +99,16 @@ mod tests {
         let path = dir.join("leaves");
         weacon_testing::platform::write_program(
             &path,
-            "#!/bin/sh\n(trap '' HUP; exec sleep 30) &\necho left\nexit 0\n",
+            "#!/bin/sh\n(trap '' HUP; read -r line < /dev/tty) &\necho left\nexit 0\n",
         )
         .unwrap();
-        let (_pty, events) = Pty::spawn(Command::new(path), Size::new(80, 24).unwrap()).unwrap();
+        let (pty, events) = Pty::spawn(Command::new(path), Size::new(80, 24).unwrap()).unwrap();
         let mut events = Events(events);
         let mut seen = String::new();
         let end = after_output(&mut events, &mut seen).await;
         assert_eq!(end, Some(Event::Exited { success: true }));
         assert!(seen.contains("left"), "{seen:?}");
+        drop(pty);
     }
 
     // A terminal printing without end, dropped once its events fill up unread.
