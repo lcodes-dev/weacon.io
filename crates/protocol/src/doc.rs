@@ -143,7 +143,7 @@ mod tests {
     const COMMIT: &str = "89abcdef0123456789abcdef0123456789abcdef";
 
     fn pin(text: &str) -> DocPin {
-        DocPin::try_from(text.to_owned()).unwrap()
+        text.parse().unwrap()
     }
 
     #[test]
@@ -250,7 +250,7 @@ mod tests {
             title: "Framing".to_owned(),
             body: "See [encode](sym:weacon_protocol::frame::encode_line).".to_owned(),
             anchors: Some(DocAnchors {
-                commit: CommitId::try_from(COMMIT.to_owned()).unwrap(),
+                commit: COMMIT.parse().unwrap(),
                 pins: vec![pin(PIN)],
             }),
         }

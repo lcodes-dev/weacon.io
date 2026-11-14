@@ -250,7 +250,7 @@ mod tests {
 
     #[test]
     fn an_answer_travels_with_the_prompt_it_answers() {
-        let run = RunId::try_from("run-1".to_owned()).unwrap();
+        let run = "run-1".parse().unwrap();
         let answer = PermissionAnswer {
             run,
             prompt: 2,
@@ -284,7 +284,7 @@ mod tests {
     #[test]
     fn a_status_may_name_who_runs_the_run() {
         let member = "m-1".parse().unwrap();
-        let laptop = MachineName::try_from("Ada's laptop".to_owned()).unwrap();
+        let laptop = "Ada's laptop".parse().unwrap();
         let status = |agent| RunStatus {
             run: run(),
             state: RunState::Running,

@@ -223,7 +223,7 @@ mod tests {
     }
 
     fn name(name: &str) -> MachineName {
-        MachineName::try_from(name.to_owned()).unwrap()
+        name.parse().unwrap()
     }
 
     #[test]

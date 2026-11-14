@@ -227,7 +227,7 @@ mod tests {
     fn a_manifest_round_trips_and_finds_its_target() {
         let parsed: ReleaseManifest = serde_json::from_value(manifest()).unwrap();
         assert_eq!(serde_json::to_value(&parsed).unwrap(), manifest());
-        let target = |name: &str| BuildTarget::try_from(name.to_owned()).unwrap();
+        let target = |name: &str| name.parse().unwrap();
         let build = parsed
             .build_for(&target("x86_64-unknown-linux-musl"))
             .unwrap();

@@ -105,7 +105,7 @@ mod tests {
     use serde_json::json;
 
     use super::*;
-    use crate::{AgentKind, AgentOwner, MachineName};
+    use crate::{AgentKind, AgentOwner};
 
     fn member() -> MemberId {
         "m-1".parse().unwrap()
@@ -161,7 +161,7 @@ mod tests {
             agent: Some(AgentRef {
                 kind: AgentKind::Codex,
                 owner: AgentOwner::Member { member: member() },
-                machine: Some(MachineName::try_from("Ada's laptop".to_owned()).unwrap()),
+                machine: Some("Ada's laptop".parse().unwrap()),
             }),
         };
         let wire = json!({ "kind": "agent", "owner": "m-1", "agent": { "kind": "codex",

@@ -562,7 +562,7 @@ mod tests {
                 id: chat(),
                 title: "Fix the build".to_owned(),
                 owner: "m-1".parse().unwrap(),
-                machine: MachineName::try_from("Ada's laptop".to_owned()).unwrap(),
+                machine: "Ada's laptop".parse().unwrap(),
                 state: ChatState::Full,
                 updated_at: 1_700_000_000,
             }],
