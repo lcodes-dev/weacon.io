@@ -20,7 +20,7 @@ use crate::db::{Db, Workspace};
 use crate::email::Email;
 use crate::feed;
 use crate::http::{self, Shared};
-use crate::mail::Outbox;
+use crate::outbox::Outbox;
 use crate::secret::Secret;
 use crate::sign_in;
 
@@ -102,6 +102,19 @@ impl Fixture {
             records,
             clock,
         }
+    }
+
+    /// A server running on the fixture's state.
+    pub(crate) async fn run(&self) -> Running {
+        run(self.shared.clone()).await
+    }
+
+    /// A server running on the fixture's state that `address` has signed in to, and the
+    /// sign-in's answer.
+    pub(crate) async fn signed_in(&self, address: &str) -> (Running, Value) {
+        let server = self.run().await;
+        let (_, body) = sign_in(self, server.address, address).await;
+        (server, body)
     }
 
     /// Moves the clock on by `seconds`.
@@ -235,6 +248,12 @@ pub(crate) async fn sign_in(
     )
 }
 
+/// The code of the refusal whose JSON body is `body`.
+pub(crate) fn refusal(body: &str) -> String {
+    let error: weacon_protocol::ErrorBody = serde_json::from_str(body).unwrap();
+    error.code.as_str().to_owned()
+}
+
 /// The header that proves a sign-in whose answer was `body`.
 pub(crate) fn bearer(body: &Value) -> String {
     let token = body["token"].as_str().unwrap();
@@ -291,4 +310,17 @@ pub(crate) fn member_id(id: &str) -> weacon_protocol::MemberId {
 /// An account id nothing else has.
 pub(crate) fn fresh_account() -> weacon_protocol::AccountId {
     weacon_protocol::AccountId::try_from(crate::app::new_id()).unwrap()
+}
+
+pub(crate) fn email(address: &str) -> Email {
+    Email::parse(address).unwrap()
+}
+
+/// A task to do, at its first version.
+pub(crate) fn new_task(id: &str, title: &str, order: &str) -> weacon_model::Task {
+    weacon_model::Task::new(
+        weacon_protocol::TaskId::try_from(id.to_owned()).unwrap(),
+        weacon_model::Title::try_from(title.to_owned()).unwrap(),
+        weacon_model::OrderKey::try_from(order.to_owned()).unwrap(),
+    )
 }

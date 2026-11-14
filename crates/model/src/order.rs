@@ -25,27 +25,29 @@ impl OrderKey {
         {
             return None;
         }
-        let ends = (lo.is_none(), hi.is_none());
-        let mut lo = lo.into_iter().flat_map(Self::digits);
-        let mut hi = hi.map(Self::digits);
+        let (first, last) = (lo.is_none(), hi.is_none());
+        let mut lo_digits = lo.into_iter().flat_map(Self::digits);
+        let mut hi_digits = hi.map(Self::digits);
         let mut key = String::new();
         for _ in 0..MAX_LEN {
-            let low = lo.next().unwrap_or(0);
-            let high = hi.as_mut().and_then(Iterator::next);
-            let above = high.unwrap_or(DIGITS.len());
-            if above > low + 1 {
-                let free = match ends {
-                    (true, false) => above - 1,
-                    (false, true) => low + 1,
-                    _ => low + (above - low) / 2,
+            let floor = lo_digits.next().unwrap_or(0);
+            let ceiling = hi_digits
+                .as_mut()
+                .and_then(Iterator::next)
+                .unwrap_or(DIGITS.len());
+            if ceiling > floor + 1 {
+                let free = match (first, last) {
+                    (true, false) => ceiling - 1,
+                    (false, true) => floor + 1,
+                    _ => floor + (ceiling - floor) / 2,
                 };
                 key.push(char::from(*DIGITS.get(free)?));
                 return Some(Self(key));
             }
-            key.push(char::from(*DIGITS.get(low)?));
+            key.push(char::from(*DIGITS.get(floor)?));
             // Past a digit where `hi` is the greater, any further digits sort before it.
-            if above > low {
-                hi = None;
+            if ceiling > floor {
+                hi_digits = None;
             }
         }
         None

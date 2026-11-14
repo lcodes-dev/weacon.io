@@ -244,6 +244,76 @@
       "required": [
         "type"
       ]
+    },
+    {
+      "description": "A sign-in terminal's sealed input, from a browser through the server to a core that\noffers `terminal.sign_in`; the server relays it only if it offers `terminal.relay`.",
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "terminal_command"
+        }
+      },
+      "$ref": "#/$defs/TerminalCommand",
+      "required": [
+        "type"
+      ]
+    },
+    {
+      "description": "A sign-in terminal's sealed output, from a core that offers `terminal.sign_in` through\nthe server to the browser that opened it.",
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "terminal"
+        }
+      },
+      "$ref": "#/$defs/TerminalUpdate",
+      "required": [
+        "type"
+      ]
+    },
+    {
+      "description": "A question about a chat's worktree, from a client to a core that offers\n`worktree.manage`.",
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "worktree_query"
+        }
+      },
+      "$ref": "#/$defs/WorktreeQuery",
+      "required": [
+        "type"
+      ]
+    },
+    {
+      "description": "What a person asks of a chat's worktree, from a client to a core that offers\n`worktree.manage`.",
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "worktree_command"
+        }
+      },
+      "$ref": "#/$defs/WorktreeCommand",
+      "required": [
+        "type"
+      ]
+    },
+    {
+      "description": "The core's answer to a [`WorktreeQuery`] or a [`WorktreeCommand`], to a client that has\n`worktree.manage`.",
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "worktree_answer"
+        }
+      },
+      "$ref": "#/$defs/WorktreeAnswer",
+      "required": [
+        "type"
+      ]
     }
   ],
   "required": [
@@ -444,6 +514,12 @@
       "type": "string",
       "maxLength": 64,
       "pattern": "^[A-Za-z0-9_-]+$"
+    },
+    "Bytes": {
+      "description": "Bytes that travel as lowercase hex, at most [`NOISE_MAX`] of them. Its `Debug` shows only\nhow many, since they are sealed or terminal content.",
+      "type": "string",
+      "maxLength": 131070,
+      "pattern": "^([0-9a-f]{2})*$"
     },
     "Capability": {
       "description": "A feature a peer supports, such as `chat.send`, named like a [`Code`]. A peer keeps the ones\nit doesn't know, so a newer peer's list still parses.",
@@ -2610,6 +2686,255 @@
         }
       ]
     },
+    "TerminalAction": {
+      "oneOf": [
+        {
+          "description": "Runs `agent`'s login, with the first handshake message, whose payload is a\n[`TerminalInput::Resize`].",
+          "type": "object",
+          "properties": {
+            "agent": {
+              "$ref": "#/$defs/AgentKind"
+            },
+            "handshake": {
+              "$ref": "#/$defs/Bytes"
+            },
+            "kind": {
+              "type": "string",
+              "const": "open"
+            }
+          },
+          "required": [
+            "kind",
+            "agent",
+            "handshake"
+          ]
+        },
+        {
+          "description": "A sealed [`TerminalInput`].",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "frame"
+            },
+            "sealed": {
+              "$ref": "#/$defs/Bytes"
+            }
+          },
+          "required": [
+            "kind",
+            "sealed"
+          ]
+        },
+        {
+          "description": "Ends the login, if it still runs.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "close"
+            }
+          },
+          "required": [
+            "kind"
+          ]
+        }
+      ]
+    },
+    "TerminalCommand": {
+      "description": "From the owner of `machine`'s browser to its core, which offers `terminal.sign_in`. The\nserver relays it only from the machine's owner, and the core acts only when `by` is its\nowner and refuses a terminal id it has already seen.",
+      "type": "object",
+      "properties": {
+        "action": {
+          "$ref": "#/$defs/TerminalAction"
+        },
+        "by": {
+          "description": "Who asked, when the server relays the message to a machine.",
+          "$ref": "#/$defs/Asker"
+        },
+        "machine": {
+          "$ref": "#/$defs/MachineId"
+        },
+        "terminal": {
+          "$ref": "#/$defs/TerminalId"
+        },
+        "workspace": {
+          "$ref": "#/$defs/WorkspaceId"
+        }
+      },
+      "required": [
+        "terminal",
+        "machine",
+        "workspace",
+        "action"
+      ]
+    },
+    "TerminalEvent": {
+      "oneOf": [
+        {
+          "description": "The second handshake message, with an empty payload.",
+          "type": "object",
+          "properties": {
+            "handshake": {
+              "$ref": "#/$defs/Bytes"
+            },
+            "kind": {
+              "type": "string",
+              "const": "accepted"
+            }
+          },
+          "required": [
+            "kind",
+            "handshake"
+          ]
+        },
+        {
+          "description": "A sealed [`TerminalOutput`].",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "frame"
+            },
+            "sealed": {
+              "$ref": "#/$defs/Bytes"
+            }
+          },
+          "required": [
+            "kind",
+            "sealed"
+          ]
+        },
+        {
+          "description": "The terminal is gone; nothing more comes. `code` says why, unless it ended as asked.",
+          "type": "object",
+          "properties": {
+            "code": {
+              "$ref": "#/$defs/Code"
+            },
+            "kind": {
+              "type": "string",
+              "const": "closed"
+            }
+          },
+          "required": [
+            "kind"
+          ]
+        }
+      ]
+    },
+    "TerminalId": {
+      "description": "One sign-in terminal, chosen by the browser that opens it; 1–64 ASCII letters, digits,\n`-` or `_`.",
+      "type": "string",
+      "maxLength": 64,
+      "pattern": "^[A-Za-z0-9_-]+$"
+    },
+    "TerminalInput": {
+      "description": "From the browser to the core, only inside the seal.",
+      "oneOf": [
+        {
+          "description": "What the person typed or pasted.",
+          "type": "object",
+          "properties": {
+            "data": {
+              "$ref": "#/$defs/Bytes"
+            },
+            "kind": {
+              "type": "string",
+              "const": "input"
+            }
+          },
+          "required": [
+            "kind",
+            "data"
+          ]
+        },
+        {
+          "description": "The terminal's size in characters.",
+          "type": "object",
+          "properties": {
+            "cols": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "kind": {
+              "type": "string",
+              "const": "resize"
+            },
+            "rows": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            }
+          },
+          "required": [
+            "kind",
+            "cols",
+            "rows"
+          ]
+        }
+      ]
+    },
+    "TerminalOutput": {
+      "description": "From the core to the browser, only inside the seal.",
+      "oneOf": [
+        {
+          "description": "What the login printed.",
+          "type": "object",
+          "properties": {
+            "data": {
+              "$ref": "#/$defs/Bytes"
+            },
+            "kind": {
+              "type": "string",
+              "const": "output"
+            }
+          },
+          "required": [
+            "kind",
+            "data"
+          ]
+        },
+        {
+          "description": "The login ended, and then the vendor's status command said this.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "ended"
+            },
+            "sign_in": {
+              "$ref": "#/$defs/SignInState"
+            }
+          },
+          "required": [
+            "kind",
+            "sign_in"
+          ]
+        }
+      ]
+    },
+    "TerminalUpdate": {
+      "description": "From a core that offers `terminal.sign_in`, through the server, to the browser that opened\n`terminal`.",
+      "type": "object",
+      "properties": {
+        "event": {
+          "$ref": "#/$defs/TerminalEvent"
+        },
+        "terminal": {
+          "$ref": "#/$defs/TerminalId"
+        },
+        "workspace": {
+          "$ref": "#/$defs/WorkspaceId"
+        }
+      },
+      "required": [
+        "terminal",
+        "workspace",
+        "event"
+      ]
+    },
     "Welcome": {
       "description": "The answer to a [`Hello`] that speaks the same protocol.",
       "type": "object",
@@ -2784,6 +3109,218 @@
         "workspace",
         "seq",
         "change"
+      ]
+    },
+    "WorktreeAction": {
+      "oneOf": [
+        {
+          "description": "Moves the worktree to the Trash; its branch stays.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "remove"
+            }
+          },
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "description": "Brings the worktree back from the Trash to where it was.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "restore"
+            }
+          },
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "description": "Pushes the chat's branch and opens a draft pull request from it.",
+          "type": "object",
+          "properties": {
+            "body": {
+              "type": "string"
+            },
+            "kind": {
+              "type": "string",
+              "const": "open_pull_request"
+            },
+            "title": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "title",
+            "body"
+          ]
+        }
+      ]
+    },
+    "WorktreeAnswer": {
+      "description": "From the core to a client that has `worktree.manage`, in answer to a [`WorktreeQuery`] or a\n[`WorktreeCommand`].",
+      "type": "object",
+      "properties": {
+        "answer": {
+          "$ref": "#/$defs/WorktreeAnswerKind"
+        },
+        "chat": {
+          "$ref": "#/$defs/ChatId"
+        },
+        "request": {
+          "$ref": "#/$defs/RequestId"
+        },
+        "workspace": {
+          "$ref": "#/$defs/WorkspaceId"
+        }
+      },
+      "required": [
+        "request",
+        "workspace",
+        "chat",
+        "answer"
+      ]
+    },
+    "WorktreeAnswerKind": {
+      "oneOf": [
+        {
+          "description": "Where the worktree stands, in the Trash or not. A chat with no worktree yet gets the\nerror `worktree.none`.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "state"
+            },
+            "removed": {
+              "description": "In the Trash.",
+              "type": "boolean"
+            },
+            "uncommitted": {
+              "type": "boolean"
+            },
+            "unpushed": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "kind",
+            "removed",
+            "uncommitted",
+            "unpushed"
+          ]
+        },
+        {
+          "description": "The branch was pushed and a draft pull request opened at `url`.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "pull_request_opened"
+            },
+            "url": {
+              "$ref": "#/$defs/DownloadUrl"
+            }
+          },
+          "required": [
+            "kind",
+            "url"
+          ]
+        },
+        {
+          "description": "The branch was pushed, but no pull request could be opened from here; `url` is the\npage where the person can open one.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "pull_request_page"
+            },
+            "url": {
+              "$ref": "#/$defs/DownloadUrl"
+            }
+          },
+          "required": [
+            "kind",
+            "url"
+          ]
+        }
+      ]
+    },
+    "WorktreeCommand": {
+      "description": "From a client to a core that offers `worktree.manage`: what a person asks of a chat's\nworktree. The core acts only for someone who may act on the chat, and a client asks the\nperson before `remove`, whatever the access level. The answer is a [`WorktreeAnswer`] that\nechoes `request`: the worktree's state after `remove` or `restore`, which a repeated one\nanswers too.",
+      "type": "object",
+      "properties": {
+        "action": {
+          "$ref": "#/$defs/WorktreeAction"
+        },
+        "by": {
+          "description": "Who asked, when the server relays the command to a machine.",
+          "$ref": "#/$defs/Asker"
+        },
+        "chat": {
+          "$ref": "#/$defs/ChatId"
+        },
+        "request": {
+          "$ref": "#/$defs/RequestId"
+        },
+        "workspace": {
+          "$ref": "#/$defs/WorkspaceId"
+        }
+      },
+      "required": [
+        "request",
+        "workspace",
+        "chat",
+        "action"
+      ]
+    },
+    "WorktreeQuery": {
+      "description": "From a client to a core that offers `worktree.manage`: a question about a chat's worktree.\nThe answer is a [`WorktreeAnswer`] that echoes `request`.",
+      "type": "object",
+      "properties": {
+        "by": {
+          "description": "Who asked, when the server relays the query to a machine.",
+          "$ref": "#/$defs/Asker"
+        },
+        "chat": {
+          "$ref": "#/$defs/ChatId"
+        },
+        "query": {
+          "$ref": "#/$defs/WorktreeQueryKind"
+        },
+        "request": {
+          "$ref": "#/$defs/RequestId"
+        },
+        "workspace": {
+          "$ref": "#/$defs/WorkspaceId"
+        }
+      },
+      "required": [
+        "request",
+        "workspace",
+        "chat",
+        "query"
+      ]
+    },
+    "WorktreeQueryKind": {
+      "oneOf": [
+        {
+          "description": "Whether the worktree is in the Trash, and what removing it would set aside.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "state"
+            }
+          },
+          "required": [
+            "kind"
+          ]
+        }
       ]
     }
   }
