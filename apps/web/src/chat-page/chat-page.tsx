@@ -1,21 +1,22 @@
 import { useEffect, useRef, useState } from "react";
 
 import { chatRefOf } from "../chat-ref.ts";
-import { type Answers, askKey, sending, settle, settleLate, stopProblem } from "../chat/asks.ts";
+import { type Answers, askKey, sending, settle, stopProblem } from "../chat/asks.ts";
+import { type Command, chatCommand, deliver } from "../chat/commands.ts";
 import { working } from "../chat/chat.ts";
 import { receiptsIn } from "../chat/heard.ts";
 import { lines } from "../chat/lines.ts";
 import { LiveChat, nextFrame } from "../chat/live-chat.ts";
 import { START, type Sync } from "../chat/sync.ts";
-import { type Late, type Send, type Sent, chatCommand, deliver } from "../composer/prompt.ts";
+import { type Late, type Send, deliverPrompt } from "../composer/prompt.ts";
 import { type Asks, Connection, HELLO_ID, type Later, type Status, offers } from "../connection.ts";
 import { NO_CHANGES, ask, cut, needsAsking, receive } from "../diff/changes.ts";
 import { newRequestId } from "../ids.ts";
 import { route } from "../incoming.ts";
 import type { Log } from "../log.ts";
 import { ME } from "../me.ts";
-import type { ChatAction, RequestId, RunId } from "../protocol.ts";
-import { Receipts } from "../receipts.ts";
+import type { ChatAction, Envelope, RequestId, RunId } from "../protocol.ts";
+import { Receipts, type Settled } from "../receipts.ts";
 import { ChatPageView } from "./chat-page-view.tsx";
 
 const chatRef = chatRefOf(window.location.search);
@@ -24,6 +25,8 @@ const HIDDEN_MS = 250;
 const TRANSCRIPT: Asks = { needs: "run.stream", offers: ["diff.view", "chat.events", "log.forward"] };
 // No message carries members' names, so labels leave them out.
 const NO_MEMBERS = new Map<string, string>();
+
+type Through<T> = (command: Command, receipts: Receipts, send: (envelope: Envelope) => void) => Promise<T>;
 
 /** A chat served by the fake server, with its own connection, for development and the end-to-end tests. */
 export function ChatPage({ url, log }: { url: string; log: Log }) {
@@ -40,6 +43,17 @@ export function ChatPage({ url, log }: { url: string; log: Log }) {
   // The connection while it is live, and the commands sent on it that wait for an answer.
   const live = useRef<{ connection: Connection; receipts: Receipts; liveChat: LiveChat | undefined }>(undefined);
   const lastId = useRef(HELLO_ID);
+  // How an answer ended, on time or late: an accepted one closes its prompt.
+  const answerSettled = (request: RequestId, settled: Settled) => {
+    const answer = answered.current.get(request);
+    if (answer === undefined) {
+      return;
+    }
+    if (settled === "accepted") {
+      live.current?.liveChat?.answered(answer.run, answer.prompt);
+    }
+    setAnswers((before) => settle(before, askKey(answer.run, answer.prompt), request, settled));
+  };
   useEffect(() => {
     let socket: WebSocket;
     try {
@@ -52,11 +66,7 @@ export function ChatPage({ url, log }: { url: string; log: Log }) {
     const later: Later = (run, ms) => setTimeout(run, ms);
     const receipts = new Receipts(later, (request, settled) => {
       setLate({ request, settled });
-      const answer = answered.current.get(request);
-      if (answer !== undefined && settled === "accepted") {
-        live.current?.liveChat?.answered(answer.run, answer.prompt);
-      }
-      setAnswers((before) => settleLate(before, request, settled));
+      answerSettled(request, settled);
     });
     const schedule = nextFrame(
       () => document.hidden,
@@ -113,37 +123,31 @@ export function ChatPage({ url, log }: { url: string; log: Log }) {
       connection.close();
     };
   }, [url]);
-  const command = (action: ChatAction, request: RequestId): Promise<Sent> => {
+  // Sends `action` through `through`: `deliver`, or the message box's `deliverPrompt`.
+  const command = <T,>(action: ChatAction, request: RequestId, through: Through<T>): Promise<T | "lost"> => {
     const now = live.current;
     if (now === undefined || chatRef === undefined) {
       return Promise.resolve("lost");
     }
-    return deliver(chatCommand(++lastId.current, chatRef, request, action), now.receipts, (envelope) => now.connection.send(envelope));
+    return through(chatCommand(++lastId.current, chatRef, request, action), now.receipts, (envelope) => now.connection.send(envelope));
   };
-  const send: Send = (text, request) => command({ kind: "prompt", text }, request);
+  const send: Send = (text, request) => command({ kind: "prompt", text }, request, deliverPrompt);
+  const act = (action: ChatAction, request: RequestId) => command(action, request, deliver);
   const answering = {
     answers,
     answer(run: RunId, prompt: number, allow: boolean) {
-      const key = askKey(run, prompt);
       const { answers: next, request } = sending(answers, { run, prompt, allow }, newRequestId);
       answered.current.set(request, { run, prompt });
       setAnswers(next);
-      void command({ kind: "permission", answer: { run, prompt, allow } }, request).then((sent) => {
-        // An answer is far too short to be refused for its size.
-        const settled = sent === "too_long" ? "refused" : sent;
-        setAnswers((before) => settle(before, key, request, settled));
-        if (settled === "accepted") {
-          live.current?.liveChat?.answered(run, prompt);
-        }
-      });
+      void act({ kind: "permission", answer: { run, prompt, allow } }, request).then((settled) => answerSettled(request, settled));
     },
   };
   const stop = () => {
     setStopping(true);
     setStopFailed(undefined);
-    void command({ kind: "interrupt" }, newRequestId()).then((sent) => {
+    void act({ kind: "interrupt" }, newRequestId()).then((settled) => {
       setStopping(false);
-      setStopFailed(stopProblem(sent));
+      setStopFailed(stopProblem(settled));
     });
   };
   const { chat } = sync;

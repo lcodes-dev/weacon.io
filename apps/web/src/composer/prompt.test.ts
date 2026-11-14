@@ -3,7 +3,7 @@ import { test } from "node:test";
 
 import type { Envelope } from "../protocol.ts";
 import { Receipts } from "../receipts.ts";
-import { after, blocked, deliver, prompt } from "./prompt.ts";
+import { after, blocked, deliverPrompt, prompt } from "./prompt.ts";
 
 test("a prompt is a chat command for the chat, under its request", () => {
   assert.deepEqual(prompt(3, { workspace: "w-1", chat: "c-1" }, "r-1", "日本語"), {
@@ -36,8 +36,8 @@ test("a prompt is sent and waits for its receipt, unless it is over the server's
   const fits = prompt(2, chatRef, "r-1", `${"あ".repeat(5_423)}a`);
   const over = prompt(2, chatRef, "r-2", `${"あ".repeat(5_423)}ab`);
 
-  const waiting = deliver(fits, receipts, (envelope) => sent.push(envelope));
-  assert.equal(await deliver(over, receipts, (envelope) => sent.push(envelope)), "too_long");
+  const waiting = deliverPrompt(fits, receipts, (envelope) => sent.push(envelope));
+  assert.equal(await deliverPrompt(over, receipts, (envelope) => sent.push(envelope)), "too_long");
   receipts.take({ id: 2, type: "receipt", request: "r-1", state: "accepted" });
 
   assert.equal(await waiting, "accepted");
@@ -71,10 +71,10 @@ test("a prompt the socket can't take is lost", async () => {
     throw new Error("closed");
   };
   const receipts = new Receipts(() => {});
-  assert.equal(await deliver(command, receipts, failing), "lost");
+  assert.equal(await deliverPrompt(command, receipts, failing), "lost");
 
   const retry = prompt(3, { workspace: "w-1", chat: "c-1" }, "r-1", "hi");
-  const waiting = deliver(retry, receipts, () => {});
+  const waiting = deliverPrompt(retry, receipts, () => {});
   receipts.take({ id: 3, type: "error", code: "request.conflict", retryable: false });
   assert.equal(await waiting, "refused");
 });
