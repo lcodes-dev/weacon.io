@@ -112,6 +112,10 @@ pub enum RunEvent {
         run: RunId,
         prompt: u32,
     },
+    /// A person answered a waiting prompt; committed before the agent is told.
+    PermissionAnswered {
+        answer: PermissionAnswer,
+    },
     /// Ends the turn and withdraws any prompt still waiting.
     Finished {
         outcome: Outcome,
@@ -271,6 +275,24 @@ mod tests {
     }
 
     #[test]
+    fn an_answer_travels_with_the_prompt_it_answers() {
+        let run = RunId::try_from("run-1".to_owned()).unwrap();
+        let answer = PermissionAnswer {
+            run,
+            prompt: 2,
+            allow: false,
+        };
+        let event = RunEvent::PermissionAnswered { answer };
+        let wire = json!({
+            "event": "permission_answered",
+            "answer": { "run": "run-1", "prompt": 2, "allow": false }
+        });
+
+        assert_eq!(serde_json::to_value(&event).unwrap(), wire);
+        assert_eq!(serde_json::from_value::<RunEvent>(wire).unwrap(), event);
+    }
+
+    #[test]
     fn events_are_tagged_and_a_newer_one_still_parses() {
         let event = RunEvent::Finished {
             outcome: Outcome::Unknown,
@@ -287,10 +309,10 @@ mod tests {
 
     #[test]
     fn a_status_may_name_who_runs_the_run() {
-        let member = MemberId::try_from("m-1".to_owned()).unwrap();
+        let member = "m-1".parse().unwrap();
         let laptop = MachineName::try_from("Ada's laptop".to_owned()).unwrap();
         let status = |agent| RunStatus {
-            run: RunId::try_from("run-7".to_owned()).unwrap(),
+            run: run(),
             state: RunState::Running,
             agent,
         };

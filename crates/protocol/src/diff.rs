@@ -151,8 +151,8 @@ mod tests {
     use serde_json::{Value, json};
 
     use super::*;
-    use crate::test_support::{chat, envelope, request, travels, workspace};
-    use crate::{Envelope, FrameError, Message};
+    use crate::test_support::{chat, envelope, never_sent, request, travels, workspace};
+    use crate::{Envelope, Message};
 
     fn query(query: DiffQueryKind) -> Envelope {
         envelope(Message::DiffQuery(DiffQuery {
@@ -287,8 +287,7 @@ mod tests {
             file_wire(&modified, &text("moved")),
         ];
         for wire in newer {
-            let envelope: Envelope = serde_json::from_value(wire.clone()).unwrap();
-            assert_eq!(envelope.to_json(), Err(FrameError::Invalid), "{wire}");
+            never_sent(wire);
         }
 
         let known: Envelope = serde_json::from_value(file_wire(&modified, &text("added"))).unwrap();
