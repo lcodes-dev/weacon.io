@@ -7,7 +7,7 @@ import { working } from "../chat/chat.ts";
 import { receiptsIn } from "../chat/heard.ts";
 import { lines } from "../chat/lines.ts";
 import { LiveChat, nextFrame } from "../chat/live-chat.ts";
-import { START, type Sync } from "../chat/sync.ts";
+import { START, type Sync, subscribed } from "../chat/sync.ts";
 import { type Late, type Send, deliverPrompt } from "../composer/prompt.ts";
 import { type Asks, Connection, HELLO_ID, type Later, type Status, offers } from "../connection.ts";
 import { NO_CHANGES, ask, cut, needsAsking, receive } from "../diff/changes.ts";
@@ -153,11 +153,11 @@ export function ChatPage({ url, log }: { url: string; log: Log }) {
   const { chat } = sync;
   const shown = {
     lines: chat === undefined ? [] : lines(chat, NO_MEMBERS),
-    older: chat !== undefined && sync.live && chat.first > 1 ? () => live.current?.liveChat?.more() : undefined,
+    older: chat !== undefined && subscribed(sync) && chat.first > 1 ? () => live.current?.liveChat?.more() : undefined,
     answering,
     // A chat is on its way while the connection is made, then only from a server that serves chats.
-    loading: chatRef !== undefined && chat === undefined && !sync.failed && (status.state === "connecting" || offers(status, "chat.events")),
-    retry: sync.failed ? () => live.current?.liveChat?.open() : undefined,
+    loading: chatRef !== undefined && chat === undefined && sync.state.kind !== "failed" && (status.state === "connecting" || offers(status, "chat.events")),
+    retry: sync.state.kind === "failed" ? () => live.current?.liveChat?.open() : undefined,
     stop: chat !== undefined && working(chat) ? { stopping, problem: stopFailed, stop } : undefined,
   };
   const openChanges = () => {

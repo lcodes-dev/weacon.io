@@ -3,7 +3,7 @@ import { EMPTY_TRANSCRIPT, type Transcript, apply } from "../transcript/transcri
 
 /** A permission prompt, shown after `at` rows of its turn. */
 /** A permission prompt, and how it was answered once the log says. */
-export type Ask = { prompt: number; tool: string; at: number; open: boolean; allowed?: boolean };
+export type Ask = { prompt: number; tool: string; at: number; state: "open" | "closed" | "allowed" | "denied" };
 
 /**
  * What one run did from its first event after a prompt until it finished; `key` names it for
@@ -175,7 +175,7 @@ function step(items: Item[], entry: ChatEntry, waiting: boolean): void {
   const { run, event: done } = event.update;
   addTo(items, run, turnKey(entry.seq - 1, run), (turn) => {
     if (done.event === "permission_asked") {
-      const ask = { prompt: done.prompt, tool: done.tool, at: turn.transcript.rows.length, open: waiting };
+      const ask: Ask = { prompt: done.prompt, tool: done.tool, at: turn.transcript.rows.length, state: waiting ? "open" : "closed" };
       return { ...turn, asks: [...turn.asks, ask] };
     }
     const transcript = apply(turn.transcript, [done]);
@@ -224,13 +224,13 @@ function closeBy(items: Item[], entry: ChatEntry): void {
 function showAnswer(items: Item[], { event }: ChatEntry): void {
   if (event.kind === "run" && event.update.event.event === "permission_answered") {
     const { prompt, allow } = event.update.event.answer;
-    changeAsks(items, event.update.run, (ask) => (ask.prompt === prompt ? { ...ask, open: false, allowed: allow } : ask));
+    changeAsks(items, event.update.run, (ask) => (ask.prompt === prompt ? { ...ask, state: allow ? "allowed" : "denied" } : ask));
   }
 }
 
 // Closes the open prompts `which` picks in every turn of `run`, such as one cut in two by a window.
 function closeAsks(items: Item[], run: RunId, which: (ask: Ask) => boolean): void {
-  changeAsks(items, run, (ask) => (ask.open && which(ask) ? { ...ask, open: false } : ask));
+  changeAsks(items, run, (ask) => (ask.state === "open" && which(ask) ? { ...ask, state: "closed" } : ask));
 }
 
 // Changes the prompts of every turn of `run`; a turn whose prompts `change` all keeps stays the same.

@@ -78,7 +78,7 @@ test("a taken answer stops its prompt being answerable", () => {
   flushes[0]?.();
   const turn = shown[0]?.chat?.items[0];
 
-  assert.equal(turn?.kind === "turn" && turn.turn.asks[0]?.open, false);
+  assert.equal(turn?.kind === "turn" && turn.turn.asks[0]?.state, "closed");
 });
 
 test("what changes nothing schedules nothing, and other chats' messages aren't taken", () => {
@@ -97,7 +97,7 @@ test("the end of the connection keeps the chat but drops what was asked", () => 
   live.push(answer(1, 9));
   flushes[0]?.();
 
-  assert.equal(shown[0]?.live, false);
+  assert.equal(shown[0]?.state.kind, "idle");
   assert.equal(shown[0]?.chat?.seq, 4);
 });
 

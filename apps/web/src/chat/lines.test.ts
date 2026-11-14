@@ -36,7 +36,7 @@ test("a chat's lines are its prompts and its turns under their labels, with prom
     ],
   );
   assert.deepEqual(lines(chat, new Map()).at(1), { key: "t2-r-1", kind: "agent", label: "Claude · laptop" });
-  assert.deepEqual(lines(chat, members).at(-1), { key: "t2-r-1.a1", kind: "ask", run: "r-1", ask: { prompt: 1, tool: "Bash", at: 1, open: true } });
+  assert.deepEqual(lines(chat, members).at(-1), { key: "t2-r-1.a1", kind: "ask", run: "r-1", ask: { prompt: 1, tool: "Bash", at: 1, state: "open" } });
 });
 
 test("lines keep their keys as older events load before them and as text commits", () => {

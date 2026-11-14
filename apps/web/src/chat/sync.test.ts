@@ -4,7 +4,7 @@ import { test } from "node:test";
 import type { ChatRef } from "../chat-ref.ts";
 import type { ChatEntry, Envelope } from "../protocol.ts";
 import type { Heard } from "./heard.ts";
-import { START, type Step, type Sync, ended, hear, more, open } from "./sync.ts";
+import { START, type Step, type Sync, ended, hear, more, open, subscribed } from "./sync.ts";
 
 const place: ChatRef = { workspace: "w-1", chat: "c-1" };
 
@@ -23,6 +23,11 @@ const snapshot = (id: number, seq: number, events: ChatEntry[], waiting: number[
 const queries = (step: Step) => step.send.map((envelope) => (envelope.type === "chat_query" ? [envelope.id, envelope.query] : envelope));
 
 // Opens the chat and lets its snapshot arrive.
+// The envelope id the chat is subscribed under, if it is.
+function subscription(sync: Sync): number | undefined {
+  return sync.state.kind === "live" ? sync.state.subscription : undefined;
+}
+
 function opened(seq: number, events: ChatEntry[], waiting: number[] = []): Sync {
   const id = ids(1);
   const asked = open(START, place, id);
@@ -35,9 +40,9 @@ test("opening asks for a snapshot, then subscribes after it", () => {
   const answered = hear(asked.sync, snapshot(10, 5, range(4, 5)), place, id);
 
   assert.deepEqual(asked.send, [{ id: 10, type: "chat_query", workspace: "w-1", chat: "c-1", query: { kind: "snapshot" } } satisfies Envelope]);
-  assert.equal(asked.sync.live, false);
+  assert.equal(subscribed(asked.sync), false);
   assert.deepEqual(queries(answered), [[11, { kind: "subscribe", after: 5 }]]);
-  assert.equal(answered.sync.live, true);
+  assert.equal(subscribed(answered.sync), true);
   assert.equal(answered.sync.chat?.seq, 5);
 });
 
@@ -72,8 +77,8 @@ test("events commit while subscribed, and a gap or lost events take a new snapsh
   const id = ids(50);
   const next = hear(live, { kind: "entry", entry: said(4) }, place, id);
   const gap = hear(next.sync, { kind: "entry", entry: said(6) }, place, ids(50));
-  const lost = hear(next.sync, { kind: "lost", id: live.subscription ?? 0 }, place, ids(50));
-  const stale = hear(next.sync, { kind: "lost", id: (live.subscription ?? 0) - 1 }, place, ids(50));
+  const lost = hear(next.sync, { kind: "lost", id: subscription(live) ?? 0 }, place, ids(50));
+  const stale = hear(next.sync, { kind: "lost", id: (subscription(live) ?? 0) - 1 }, place, ids(50));
 
   assert.deepEqual(next.send, []);
   // Word from a subscription given up on changes nothing.
@@ -82,7 +87,7 @@ test("events commit while subscribed, and a gap or lost events take a new snapsh
   assert.equal(next.sync.chat?.seq, 4);
   for (const step of [gap, lost]) {
     assert.deepEqual(queries(step), [[50, { kind: "snapshot" }]]);
-    assert.equal(step.sync.live, false);
+    assert.equal(subscribed(step.sync), false);
     // The screen keeps what it shows until the snapshot arrives.
     assert.equal(step.sync.chat, next.sync.chat);
   }
@@ -94,7 +99,7 @@ test("while a snapshot is on its way, events and lost word are dropped", () => {
   const asking = open(live, place, id).sync;
 
   const entry = hear(asking, { kind: "entry", entry: said(4) }, place, id);
-  const lost = hear(asking, { kind: "lost", id: live.subscription ?? 0 }, place, id);
+  const lost = hear(asking, { kind: "lost", id: subscription(live) ?? 0 }, place, id);
   const unopened = hear(START, { kind: "entry", entry: said(1) }, place, id);
 
   assert.equal(entry.sync, asking);
@@ -144,7 +149,7 @@ test("text streams onto the chat it shows, and the end of the connection keeps i
 
   assert.equal(streamed.sync.chat?.items.length, 2);
   assert.equal(unopened.sync, START);
-  assert.deepEqual(gone, { chat: streamed.sync.chat, snapshot: undefined, window: undefined, subscription: undefined, live: false, failed: false });
+  assert.deepEqual(gone, { chat: streamed.sync.chat, state: { kind: "idle" }, window: undefined });
   assert.equal(ended(gone), gone);
 });
 
@@ -158,9 +163,9 @@ test("a refused snapshot leaves the chat shown and says so; a refused window can
   const noWindow = hear(scrolled.sync, { kind: "refused", id: 72 }, place, id);
   const other = hear(live, { kind: "refused", id: 9 }, place, id);
 
-  assert.deepEqual(refused, { sync: { ...asking.sync, snapshot: undefined, failed: true }, send: [] });
+  assert.deepEqual(refused, { sync: { ...asking.sync, state: { kind: "failed" } }, send: [] });
   assert.equal(refused.sync.chat, live.chat);
-  assert.equal(again.sync.failed, false);
+  assert.equal(again.sync.state.kind, "asking");
   assert.deepEqual(noWindow.sync, { ...scrolled.sync, window: undefined });
   assert.deepEqual(queries(more(noWindow.sync, place, id)), [[73, { kind: "window", before: 250, limit: 100 }]]);
   assert.equal(other.sync, live);
@@ -181,9 +186,9 @@ test("a refused subscription ends it and says so, keeping the chat", () => {
   const refused = hear(answered.sync, { kind: "refused", id: 11 }, place, id);
   const after = hear(refused.sync, { kind: "entry", entry: said(4) }, place, id);
 
-  assert.equal(answered.sync.subscription, 11);
-  assert.deepEqual(refused.sync, { ...answered.sync, subscription: undefined, live: false, failed: true });
+  assert.equal(subscription(answered.sync), 11);
+  assert.deepEqual(refused.sync, { ...answered.sync, state: { kind: "failed" } });
   assert.equal(after.sync, refused.sync);
-  assert.equal(open(refused.sync, place, id).sync.failed, false);
-  assert.equal(ended(answered.sync).subscription, undefined);
+  assert.equal(open(refused.sync, place, id).sync.state.kind, "asking");
+  assert.equal(subscription(ended(answered.sync)), undefined);
 });
