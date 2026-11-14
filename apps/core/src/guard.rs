@@ -441,4 +441,23 @@ mod tests {
         assert_eq!(main_checkout(&dir.join("plain")), None);
         assert_eq!(main_checkout(&dir.join("missing")), None);
     }
+
+    #[test]
+    fn a_hook_judges_from_its_runs_worktree_and_main_checkout() {
+        let dir = TempDir::new().unwrap();
+        let app = test_support::app(Some(&dir.join("state")), None);
+        fs::create_dir_all(dir.join("main/.git/worktrees/work")).unwrap();
+        fs::create_dir_all(dir.join("work/src")).unwrap();
+        let pointer = format!(
+            "gitdir: {}\n",
+            dir.join("main/.git/worktrees/work").display()
+        );
+        fs::write(dir.join("work/.git"), pointer).unwrap();
+
+        let inside = bash(&dir.join("work/src"), "rm -rf ../old && git reset --hard");
+        let main = bash(&dir.join("main"), "git reset --hard");
+
+        assert_eq!(check(&app, &dir, "w1", &inside), "");
+        assert!(check(&app, &dir, "w1", &main).contains(Reason::ResetMainCheckout.text()));
+    }
 }
