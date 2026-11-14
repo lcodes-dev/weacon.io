@@ -190,30 +190,17 @@ pub(crate) async fn pushed(from: &mut mpsc::Receiver<Message>, count: usize) -> 
 
 /// A pushed message in a few words, such as `2 receipt r-1 accepted`.
 pub(crate) fn brief(message: &Message) -> String {
-    match message {
-        Message::Chat(update) => {
-            format!("{} {}", update.entry.seq, event(&update.entry.event))
-        }
-        Message::Run(update) => format!("live {} {}", update.run.as_str(), said(&update.event)),
-        Message::ChatAnswer(answer) => match &answer.answer {
-            ChatAnswerKind::EventsLost => "events lost".to_owned(),
-            ChatAnswerKind::Snapshot { .. }
-            | ChatAnswerKind::Window { .. }
-            | ChatAnswerKind::Newer => "an answer".to_owned(),
-        },
-        Message::Hello(_)
-        | Message::Welcome(_)
-        | Message::Error(_)
-        | Message::Receipt(_)
-        | Message::Pick(_)
-        | Message::Workspace(_)
-        | Message::Log(_)
-        | Message::ChatCommand(_)
-        | Message::ChatQuery(_)
-        | Message::DiffQuery(_)
-        | Message::DiffAnswer(_)
-        | Message::Unknown => "another message".to_owned(),
+    if let Message::Chat(update) = message {
+        return format!("{} {}", update.entry.seq, event(&update.entry.event));
     }
+    if let Message::Run(update) = message {
+        return format!("live {} {}", update.run.as_str(), said(&update.event));
+    }
+    if let Message::ChatAnswer(answer) = message {
+        let lost = matches!(answer.answer, ChatAnswerKind::EventsLost);
+        return if lost { "events lost" } else { "an answer" }.to_owned();
+    }
+    "another message".to_owned()
 }
 
 fn event(event: &ChatEvent) -> String {

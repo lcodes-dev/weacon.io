@@ -2,16 +2,18 @@
 
 #[cfg(test)]
 mod tests {
+    use std::ffi::OsStr;
     use std::io::{BufRead, BufReader};
-    use std::process::{Command, Output, Stdio};
+    use std::path::Path;
+    use std::process::{Child, Command, Output, Stdio};
     use std::{env, fs};
     use weacon_testing::TempDir;
 
-    fn weacon(args: &[&str], state_dir: &str) -> Output {
+    fn weacon(args: &[&str], state_dir: impl AsRef<OsStr>) -> Output {
         command(args, state_dir).output().unwrap()
     }
 
-    fn command(args: &[&str], state_dir: &str) -> Command {
+    fn command(args: &[&str], state_dir: impl AsRef<OsStr>) -> Command {
         let mut command = Command::new(env!("CARGO_BIN_EXE_weacon"));
         command
             .args(args)
@@ -37,9 +39,9 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let file = dir.join("a-file");
         fs::write(&file, "").unwrap();
-        let good = weacon(&["doctor"], dir.to_str().unwrap());
+        let good = weacon(&["doctor"], &*dir);
         // A folder can't be made inside a file.
-        let blocked = weacon(&["doctor"], file.join("state").to_str().unwrap());
+        let blocked = weacon(&["doctor"], file.join("state"));
 
         assert!(good.status.success());
         assert!(dir.join("logs/cli.log").exists());
@@ -52,7 +54,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         fs::create_dir_all(dir.join("workspaces/w-w1")).unwrap();
         // No vendor's program is on an empty PATH.
-        let output = command(&["doctor"], dir.to_str().unwrap())
+        let output = command(&["doctor"], &*dir)
             .env("PATH", dir.join("empty"))
             .output()
             .unwrap();
@@ -66,14 +68,11 @@ mod tests {
 
     fn login(dir: &TempDir, agent: &str) -> Output {
         let state = dir.join("state");
-        command(
-            &["login", agent, "--workspace", "w1"],
-            state.to_str().unwrap(),
-        )
-        .env("PATH", dir.join("bin"))
-        .stdin(Stdio::null())
-        .output()
-        .unwrap()
+        command(&["login", agent, "--workspace", "w1"], &state)
+            .env("PATH", dir.join("bin"))
+            .stdin(Stdio::null())
+            .output()
+            .unwrap()
     }
 
     #[test]
@@ -107,7 +106,7 @@ mod tests {
         }
 
         let state = dir.join("state");
-        let off = weacon(&["access", "w1", "off"], state.to_str().unwrap());
+        let off = weacon(&["access", "w1", "off"], &state);
         // Signing in doesn't depend on the access level.
         let signed_in = login(&dir, "claude");
         let gave_up = login(&dir, "codex");
@@ -125,7 +124,7 @@ mod tests {
     fn status_says_when_no_daemon_is_running() {
         let dir = TempDir::new().unwrap();
         // A first run, before the state folder exists.
-        let output = weacon(&["status"], dir.join("state").to_str().unwrap());
+        let output = weacon(&["status"], dir.join("state"));
 
         assert_eq!(output.status.code(), Some(2));
         assert!(String::from_utf8_lossy(&output.stderr).contains("daemon.not_running"));
@@ -134,15 +133,8 @@ mod tests {
     #[test]
     fn the_daemon_serves_status() {
         let dir = TempDir::new().unwrap();
-        let mut daemon = Command::new(env!("CARGO_BIN_EXE_weacon"))
-            .args(["daemon", "--verbose"])
-            .env("WEACON_STATE_DIR", &*dir)
-            .stderr(Stdio::piped())
-            .spawn()
-            .unwrap();
-        let mut stderr = BufReader::new(daemon.stderr.take().unwrap()).lines();
-        while !stderr.next().unwrap().unwrap().contains("daemon started") {}
-        let status = weacon(&["status"], dir.to_str().unwrap());
+        let daemon = daemon(&dir);
+        let status = weacon(&["status"], &*dir);
 
         assert!(status.status.success());
         assert!(
@@ -153,8 +145,20 @@ mod tests {
         stop(daemon, &dir);
     }
 
+    // Started, and its log still read so it never writes into a closed pipe.
+    fn daemon(dir: &Path) -> Child {
+        let mut daemon = command(&["daemon", "--verbose"], dir)
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut stderr = BufReader::new(daemon.stderr.take().unwrap()).lines();
+        while !stderr.next().unwrap().unwrap().contains("daemon started") {}
+        std::thread::spawn(move || stderr.for_each(drop));
+        daemon
+    }
+
     #[cfg(unix)]
-    fn stop(mut daemon: std::process::Child, dir: &std::path::Path) {
+    fn stop(mut daemon: Child, dir: &Path) {
         let term = Command::new("kill")
             .args(["-TERM", &daemon.id().to_string()])
             .status()
@@ -167,7 +171,7 @@ mod tests {
 
     // Windows has no SIGTERM to send another process; the daemon is just ended.
     #[cfg(windows)]
-    fn stop(mut daemon: std::process::Child, _: &std::path::Path) {
+    fn stop(mut daemon: Child, _: &Path) {
         daemon.kill().unwrap();
         daemon.wait().unwrap();
     }
@@ -184,22 +188,16 @@ mod tests {
         use std::io::{Read, Write};
 
         let dir = TempDir::new().unwrap();
-        let mut daemon = Command::new(env!("CARGO_BIN_EXE_weacon"))
-            .args(["daemon", "--verbose"])
-            .env("WEACON_STATE_DIR", &*dir)
-            .stderr(Stdio::piped())
-            .spawn()
-            .unwrap();
-        let mut stderr = BufReader::new(daemon.stderr.take().unwrap()).lines();
-        while !stderr.next().unwrap().unwrap().contains("daemon started") {}
-        let mut host = Command::new(env!("CARGO_BIN_EXE_weacon"))
-            .arg("chrome-extension://phnfnmnpncfhkhlkmglnlhlkaaociaij/")
-            .env("WEACON_STATE_DIR", &*dir)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()
-            .unwrap();
+        let daemon = daemon(&dir);
+        let mut host = command(
+            &["chrome-extension://phnfnmnpncfhkhlkmglnlhlkaaociaij/"],
+            &*dir,
+        )
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
         let mut stdin = host.stdin.take().unwrap();
         let mut stdout = host.stdout.take().unwrap();
         let hello = r#"{"id":1,"type":"hello","protocol":1,"app":{"name":"weacon-extension","version":"0.1.0","commit":"1a2b3c4"}}"#;
@@ -227,9 +225,7 @@ mod tests {
     #[test]
     fn connect_chrome_registers_this_program() {
         let dir = TempDir::new().unwrap();
-        let output = Command::new(env!("CARGO_BIN_EXE_weacon"))
-            .arg("connect-chrome")
-            .env("WEACON_STATE_DIR", dir.join("state"))
+        let output = command(&["connect-chrome"], dir.join("state"))
             .env("HOME", &*dir)
             .env_remove("XDG_CONFIG_HOME")
             .output()
@@ -257,8 +253,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn service_install_needs_a_home() {
-        let output = Command::new(env!("CARGO_BIN_EXE_weacon"))
-            .args(["service", "install"])
+        let output = command(&["service", "install"], "/unused")
             .env_clear()
             .output()
             .unwrap();

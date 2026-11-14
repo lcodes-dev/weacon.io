@@ -1,11 +1,8 @@
 import { PROTOCOL } from "../../../tooling/ts/version.ts";
-import { DIFF_VIEW } from "./diff/changes.ts";
 import type { App, Envelope } from "./protocol.ts";
 
-// What the web app needs the server to offer.
-const NEEDS = "run.stream";
-// What else it can do with a server that offers the same.
-const OFFERS = [DIFF_VIEW];
+/** What a connection asks of the server: what it must offer, and what else this app can use. */
+export type Asks = { needs: string; offers: string[] };
 
 /** Why a connection ended. */
 export type End =
@@ -38,21 +35,23 @@ export type Listener = {
   message(envelope: Envelope): void;
 };
 
-/** Says hello as `me` once `socket` opens, then passes on what the server sends. */
+/** Says hello as `me`, with what it `asks`, once `socket` opens, then passes on what the server sends. */
 export class Connection {
   #socket: Socket;
+  #needs: string;
   #status: Status = { state: "connecting" };
   #deadline: ReturnType<typeof setTimeout>;
 
-  constructor(socket: Socket, me: App, listener: Listener) {
+  constructor(socket: Socket, me: App, listener: Listener, asks: Asks) {
     this.#socket = socket;
+    this.#needs = asks.needs;
     this.#deadline = setTimeout(() => {
       if (this.#status.state === "connecting") {
         this.#end(listener, "connection.no_answer");
       }
     }, WELCOME_MS);
     socket.addEventListener("open", () => {
-      this.#send({ id: 1, type: "hello", protocol: PROTOCOL, app: me, capabilities: [NEEDS, ...OFFERS] });
+      this.#send({ id: 1, type: "hello", protocol: PROTOCOL, app: me, capabilities: [asks.needs, ...asks.offers] });
     });
     socket.addEventListener("message", ({ data }) => {
       const envelope = parse(data);
@@ -87,7 +86,7 @@ export class Connection {
       this.#end(listener, "connection.refused");
       return;
     }
-    if (!capabilities.includes(NEEDS)) {
+    if (!capabilities.includes(this.#needs)) {
       this.#end(listener, "connection.server_too_old");
       return;
     }

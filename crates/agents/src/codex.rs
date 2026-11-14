@@ -1,5 +1,6 @@
 //! The driver for Codex, through its app server.
 
+pub(crate) mod rollout;
 mod wire;
 
 use tokio::process::Command;

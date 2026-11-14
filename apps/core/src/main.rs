@@ -18,6 +18,11 @@ mod session;
 mod status;
 #[cfg(test)]
 mod test_support;
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "`weacon update`, which uses it, comes next")
+)]
+mod update;
 mod workspaces;
 
 use std::io::{self, IsTerminal};

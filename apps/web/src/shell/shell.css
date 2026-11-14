@@ -4,7 +4,8 @@
   gap: 12px;
 }
 
-.sign-in form {
+.sign-in form,
+.workspaces form {
   display: flex;
   flex-direction: column;
   align-items: flex-start;
@@ -12,14 +13,17 @@
   max-width: 320px;
 }
 
-.sign-in label {
+.sign-in label,
+.workspaces label {
   display: flex;
   flex-direction: column;
   gap: 4px;
   align-self: stretch;
 }
 
-.sign-in input {
+.sign-in input,
+.workspaces input,
+.selector select {
   font: inherit;
   color: inherit;
   background: none;
@@ -30,4 +34,47 @@
 
 [role="alert"] {
   margin: 8px 16px;
+}
+
+.workspaces ul {
+  list-style: none;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.workspaces li,
+.selector {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.selector select {
+  background: var(--bg);
+  padding: 4px 8px;
+}
+
+.workspace {
+  display: flex;
+  height: 100%;
+}
+
+.chats {
+  width: 240px;
+  flex-shrink: 0;
+  padding: 16px;
+  box-sizing: border-box;
+  border-right: 1px solid var(--border);
+  overflow-y: auto;
+}
+
+.chats h2 {
+  margin-top: 0;
+  font-size: 1em;
+}
+
+.workspace .page {
+  flex: 1;
 }
