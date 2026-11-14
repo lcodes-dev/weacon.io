@@ -115,80 +115,41 @@ function Machine({ api, pins, machine, unpaired }: { api: Api; pins: Pins; machi
 type Found = { pending: PairPending; code: string; fingerprint: string };
 
 function Pair({ api, pins, paired }: { api: Api; pins: Pins; paired(id: MachineId): void }) {
+  // The code outlives Cancel, so a mistyped look-up can be fixed rather than typed again.
   const [code, setCode] = useState("");
   const [found, setFound] = useState<Found>();
-  const [local, setLocal] = useState<string>();
-  const [unchecked, setUnchecked] = useState(false);
-  const [saving, setSaving] = useState(false);
-  const looking = useAsk();
-  const confirming = useAsk();
-  const reset = () => {
-    setFound(undefined);
-    setLocal(undefined);
-    looking.clear();
-    confirming.clear();
-  };
-  // The server has paired the machine by now: whatever happens here, the list shows it.
-  const confirmed = async (machine: MachineSummary, shown: PairPending) => {
-    setSaving(true);
-    const problem = await keep(pins, machine, shown);
-    setSaving(false);
-    paired(machine.id);
-    if (problem === undefined) {
-      setCode("");
-      reset();
-    } else {
-      setLocal(problem);
-    }
-  };
-  if (found !== undefined) {
-    const { pending } = found;
-    const alert = confirming.problem ?? local;
-    return (
-      <section aria-label="Pair a machine">
-        <h3>Pair {pending.name}?</h3>
-        <dl>
-          <dt>Name</dt>
-          <dd>{pending.name}</dd>
-          <dt>System</dt>
-          <dd>{osName(pending.os)}</dd>
-          <dt>Fingerprint</dt>
-          <dd>{found.fingerprint}</dd>
-        </dl>
-        <p>Check that the machine's terminal shows the same fingerprint.</p>
-        {local === undefined ? (
-          <>
-            <button
-              type="button"
-              disabled={confirming.busy || saving}
-              onClick={() =>
-                void confirming.ask(
-                  () => api.confirm({ pairing: pending.pairing, code: found.code }),
-                  (machine) => void confirmed(machine, pending),
-                )
-              }
-            >
-              Confirm
-            </button>{" "}
-            <button type="button" disabled={confirming.busy || saving} onClick={reset}>
-              Cancel
-            </button>
-          </>
-        ) : (
-          <button
-            type="button"
-            onClick={() => {
-              setCode("");
-              reset();
-            }}
-          >
-            Close
-          </button>
-        )}
-        {alert !== undefined && <p role="alert">{alert}</p>}
-      </section>
-    );
+  if (found === undefined) {
+    return <LookUp api={api} code={code} setCode={setCode} found={setFound} />;
   }
+  return (
+    <ConfirmPairing
+      api={api}
+      pins={pins}
+      found={found}
+      paired={paired}
+      close={(done) => {
+        if (done) {
+          setCode("");
+        }
+        setFound(undefined);
+      }}
+    />
+  );
+}
+
+function LookUp({
+  api,
+  code,
+  setCode,
+  found,
+}: {
+  api: Api;
+  code: string;
+  setCode(code: string): void;
+  found(found: Found): void;
+}) {
+  const looking = useAsk();
+  const [unchecked, setUnchecked] = useState(false);
   return (
     <form
       aria-label="Pair a machine"
@@ -199,7 +160,7 @@ function Pair({ api, pins, paired }: { api: Api; pins: Pins; paired(id: MachineI
           () => api.lookup(code),
           (pending) =>
             void fingerprint(pending.key).then(
-              (shown) => setFound({ pending, code, fingerprint: shown }),
+              (shown) => found({ pending, code, fingerprint: shown }),
               () => setUnchecked(true),
             ),
         );
@@ -216,5 +177,76 @@ function Pair({ api, pins, paired }: { api: Api; pins: Pins; paired(id: MachineI
       {looking.problem !== undefined && <p role="alert">{looking.problem}</p>}
       {unchecked && <p role="alert">This browser can't check a machine's key on this page. Open Weacon over HTTPS.</p>}
     </form>
+  );
+}
+
+function ConfirmPairing({
+  api,
+  pins,
+  found,
+  paired,
+  close,
+}: {
+  api: Api;
+  pins: Pins;
+  found: Found;
+  paired(id: MachineId): void;
+  close(done: boolean): void;
+}) {
+  const { pending } = found;
+  const confirming = useAsk();
+  const [saving, setSaving] = useState(false);
+  const [local, setLocal] = useState<string>();
+  // The server has paired the machine by now: whatever happens here, the list shows it.
+  const confirmed = async (machine: MachineSummary) => {
+    setSaving(true);
+    const problem = await keep(pins, machine, pending);
+    setSaving(false);
+    paired(machine.id);
+    if (problem === undefined) {
+      close(true);
+    } else {
+      setLocal(problem);
+    }
+  };
+  const busy = confirming.busy || saving;
+  const alert = confirming.problem ?? local;
+  return (
+    <section aria-label="Pair a machine">
+      <h3>Pair {pending.name}?</h3>
+      <dl>
+        <dt>Name</dt>
+        <dd>{pending.name}</dd>
+        <dt>System</dt>
+        <dd>{osName(pending.os)}</dd>
+        <dt>Fingerprint</dt>
+        <dd>{found.fingerprint}</dd>
+      </dl>
+      <p>Check that the machine's terminal shows the same fingerprint.</p>
+      {local === undefined ? (
+        <>
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() =>
+              void confirming.ask(
+                () => api.confirm({ pairing: pending.pairing, code: found.code }),
+                (machine) => void confirmed(machine),
+              )
+            }
+          >
+            Confirm
+          </button>{" "}
+          <button type="button" disabled={busy} onClick={() => close(false)}>
+            Cancel
+          </button>
+        </>
+      ) : (
+        <button type="button" onClick={() => close(true)}>
+          Close
+        </button>
+      )}
+      {alert !== undefined && <p role="alert">{alert}</p>}
+    </section>
   );
 }
