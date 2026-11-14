@@ -91,9 +91,9 @@ impl Reports {
 
 // Sentry lists the root cause first and the error itself last.
 fn exceptions(info: &ErrorInfo) -> Vec<Exception> {
-    let mut chain: Vec<Exception> = std::iter::successors(Some(info), |info| info.cause())
+    let mut chain: Vec<Exception> = std::iter::successors(Some(info), |info| info.cause.as_deref())
         .map(|info| Exception {
-            ty: info.type_name().unwrap_or("Error").to_owned(),
+            ty: info.name.as_deref().unwrap_or("Error").to_owned(),
             ..Exception::default()
         })
         .collect();

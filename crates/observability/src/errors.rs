@@ -53,32 +53,22 @@ impl Error for Fault {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub(crate) struct ErrorInfo {
     #[serde(skip_serializing_if = "Option::is_none")]
-    name: Option<String>,
+    pub(crate) name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    code: Option<Code>,
+    pub(crate) code: Option<Code>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    message: Option<&'static str>,
+    pub(crate) message: Option<&'static str>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    kind: Option<String>,
+    pub(crate) kind: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    cause: Option<Box<Self>>,
-}
-
-impl ErrorInfo {
-    pub(crate) fn type_name(&self) -> Option<&str> {
-        self.name.as_deref()
-    }
-
-    pub(crate) fn cause(&self) -> Option<&Self> {
-        self.cause.as_deref()
-    }
+    pub(crate) cause: Option<Box<Self>>,
 }
 
 /// Describes an error without its message, which can hold paths and input; only a [`Fault`]
 /// keeps its own.
 pub(crate) fn describe_error<E: Error + 'static>(error: &E) -> ErrorInfo {
     ErrorInfo {
-        name: Some(type_path::<E>()),
+        name: Some(name_of::<E>()),
         ..describe(error, 0)
     }
 }
@@ -92,8 +82,8 @@ fn describe(error: &(dyn Error + 'static), depth: usize) -> ErrorInfo {
         .map(|source| Box::new(describe(source, depth + 1)));
     ErrorInfo {
         name: fault
-            .map(|_| type_path::<Fault>())
-            .or_else(|| io_kind.map(|_| type_path::<io::Error>())),
+            .map(|_| name_of::<Fault>())
+            .or_else(|| io_kind.map(|_| name_of::<io::Error>())),
         code: fault.map(|fault| fault.code().clone()),
         message: fault.map(|fault| fault.message),
         kind: io_kind.map(|kind| format!("{kind:?}")),
@@ -102,7 +92,7 @@ fn describe(error: &(dyn Error + 'static), depth: usize) -> ErrorInfo {
 }
 
 // Generic arguments can name user types in odd places and add nothing to a report.
-fn type_path<T>() -> String {
+fn name_of<T>() -> String {
     let name = std::any::type_name::<T>();
     name.split('<').next().unwrap_or(name).to_owned()
 }
