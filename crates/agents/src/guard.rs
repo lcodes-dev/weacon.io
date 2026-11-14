@@ -285,6 +285,69 @@ mod tests {
     use crate::test_support::guard_context as context;
 
     #[test]
+    fn each_decision_in_a_rule_changes_an_answer() {
+        let dir = TempDir::new().unwrap();
+        let context = context(&dir);
+        let main = Context {
+            cwd: dir.join("main"),
+            ..context.clone()
+        };
+        let check = |line: &str| check_command(line, &context);
+        let in_main = |line: &str| check_command(line, &main);
+
+        // git.rs: the `switch --create` arm, by reason in the main checkout.
+        assert_eq!(in_main("git switch -c feature"), Some(Reason::WriteOutside));
+        assert_eq!(
+            in_main("git switch -c -f feature"),
+            Some(Reason::ResetMainCheckout)
+        );
+        assert_eq!(in_main("git switch other"), Some(Reason::ResetMainCheckout));
+
+        // rules.rs goes_deep: find is never deep; a recursive read above credentials asks.
+        assert_eq!(check("grep token ../home"), None);
+        assert_eq!(
+            check("grep --recursive token ../home"),
+            Some(Reason::Credentials)
+        );
+        // rules.rs read: an option's non-empty value is read where it points.
+        assert_eq!(
+            check("cat @../home/.codex/auth.json"),
+            Some(Reason::Credentials)
+        );
+        // rules.rs landing: a copy into a folder keeps the source's unknown name.
+        assert_eq!(check("cp $X src"), Some(Reason::Unsure));
+        // rules.rs changes_program: a non-display variable before a reader asks.
+        assert_eq!(check("LC_ALL=C grep x notes.md"), None);
+        assert_eq!(check("GScript=x grep x notes.md"), Some(Reason::NotListed));
+
+        // safe.rs reader: uniq's one operand runs, a second is a file it writes.
+        assert_eq!(check("uniq notes.md"), None);
+        assert_eq!(check("uniq notes.md ../main/out"), Some(Reason::NotListed));
+        // safe.rs builds: an option's attached path is checked.
+        assert_eq!(
+            check("cargo build --target-dir=/etc"),
+            Some(Reason::WriteOutside)
+        );
+
+        // words.rs: an unknown wrapper option, a valued one, and a non-assignment.
+        assert_eq!(check("env --foo rm -rf /"), Some(Reason::Unsure));
+        assert_eq!(check("timeout -s 9 60 rm -rf /"), Some(Reason::DeleteOutside));
+
+        // shell.rs: a line continuation before the first word is skipped.
+        assert_eq!(check("\\\nrm -rf /"), Some(Reason::DeleteOutside));
+
+        // quoting.rs: $HOME at a word's start is the home folder.
+        assert_eq!(
+            check("cat $HOME/.claude/auth.json"),
+            Some(Reason::Credentials)
+        );
+        assert_eq!(
+            check("cat @$HOME/.codex/auth.json"),
+            Some(Reason::Credentials)
+        );
+    }
+
+    #[test]
     fn work_inside_the_worktree_needs_no_one() {
         let dir = TempDir::new().unwrap();
         let context = context(&dir);
