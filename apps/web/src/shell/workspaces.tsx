@@ -176,9 +176,9 @@ function Workspace({
   choose: (chat: ChatId) => void;
 }) {
   const socket = useWorkspaceSocket();
-  const { status, offered } = useFeed(workspace.id, api, socket);
+  const status = useFeed(workspace.id, api, socket);
   // Whether the server serves chats, known once the feed is welcomed.
-  const chats = offered?.includes("workspace.chats");
+  const chats = socket.offers("workspace.chats");
   const page = (title: string) => (
     <section className="page">
       <h1>{title}</h1>

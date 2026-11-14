@@ -16,13 +16,16 @@ export class WorkspaceSocket {
     this.workspace = workspace;
   }
 
-  /** Sends through `send` from now on, as when the feed goes live with `offered`; `undefined` when it ends. */
-  attach(send: ((envelope: Envelope) => void) | undefined, offered: readonly string[] = []): void {
+  /**
+   * Sends through `send` from now on, as when the feed goes live with what the server `offered`;
+   * `undefined` when it ends, keeping what was offered until the next welcome says otherwise.
+   */
+  attach(send: ((envelope: Envelope) => void) | undefined, offered?: readonly string[]): void {
     this.#send = send;
-    this.#offered = send === undefined ? [] : offered;
+    this.#offered = offered ?? this.#offered;
   }
 
-  /** Whether the server offered `capability` when the feed last went live, and still is. */
+  /** Whether the server offered `capability` when it last welcomed the feed. */
   offers(capability: string): boolean {
     return this.#offered.includes(capability);
   }
