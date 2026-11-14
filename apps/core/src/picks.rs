@@ -5,6 +5,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use weacon_protocol::{Pick, RequestId};
 
+use crate::app::read_json;
 use crate::platform;
 
 /// Elements picked in Chrome, one file per request.
@@ -45,11 +46,7 @@ impl Picks {
 
     /// The pick kept for `request`, if any.
     pub(crate) fn read(&self, request: &RequestId) -> io::Result<Option<Pick>> {
-        match fs::read(self.path(request)) {
-            Ok(json) => Ok(Some(serde_json::from_slice(&json)?)),
-            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
-            Err(error) => Err(error),
-        }
+        read_json(&self.path(request))
     }
 
     // Written aside under a name of its own, then linked into place: a reader never sees half a

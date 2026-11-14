@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::Arc;
 
+use serde::de::DeserializeOwned;
 use weacon_agents::SpawnPolicy;
 use weacon_appkit::{KEEP, MAX_BYTES, RotatingFile, panic_hook, root_logger};
 use weacon_observability::{
@@ -115,6 +116,15 @@ pub(crate) async fn blocking<T: Send + 'static>(
     tokio::task::spawn_blocking(work)
         .await
         .unwrap_or_else(|error| Err(io::Error::other(error)))
+}
+
+/// The JSON in `path`, or `None` when there is no such file.
+pub(crate) fn read_json<T: DeserializeOwned>(path: &Path) -> io::Result<Option<T>> {
+    match std::fs::read(path) {
+        Ok(json) => Ok(Some(serde_json::from_slice(&json)?)),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error),
+    }
 }
 
 fn open_log(state_dir: &Path, name: &str) -> io::Result<(PathBuf, RotatingFile)> {

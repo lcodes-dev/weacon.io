@@ -1,6 +1,5 @@
 //! What a workspace's agents may do on this machine, kept apart from its folder.
 
-use std::fs;
 use std::io::{self, Write};
 use std::path::Path;
 
@@ -9,7 +8,7 @@ use weacon_observability::Fault;
 use weacon_protocol::{AccessLevel, WorkspaceId, code};
 
 use super::Workspaces;
-use crate::app::App;
+use crate::app::{App, read_json};
 use crate::platform;
 
 /// What this machine's owner chose for one workspace; a workspace without a choice asks first.
@@ -39,11 +38,9 @@ impl Settings {
                 "The workspace's settings couldn't be read",
             )
         };
-        match fs::read(file) {
-            Ok(json) => serde_json::from_slice(&json).map_err(|error| unreadable().because(error)),
-            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(Self::default()),
-            Err(error) => Err(unreadable().because(error)),
-        }
+        read_json(file)
+            .map(Option::unwrap_or_default)
+            .map_err(|error| unreadable().because(error))
     }
 
     fn write(self, file: &Path) -> io::Result<()> {
@@ -133,6 +130,8 @@ pub(crate) fn run(
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+
     use weacon_testing::TempDir;
 
     use super::*;
