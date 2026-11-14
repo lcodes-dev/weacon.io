@@ -1,12 +1,13 @@
 import { type KeyboardEvent, type RefObject, useEffect, useLayoutEffect, useRef, useState } from "react";
 
+import { newRequestId } from "../ids.ts";
 import "./composer.css";
 import { NONE, add, remove, settled } from "./attachments.ts";
 import { type Draft, EMPTY, type Item, type Placed, edit, pick, query } from "./draft.ts";
 import { AttachButton, Files } from "./files.tsx";
 import { composing, picker, sends } from "./keys.ts";
 import { offered } from "./mentionables.ts";
-import { type Retry, type Send, after, requestFor, requestId } from "./prompt.ts";
+import { type Retry, type Send, after, requestFor } from "./prompt.ts";
 
 /**
  * The message box. While `blocked` says why, it still takes text, but can't send it. It keeps the
@@ -63,7 +64,7 @@ export function Composer({ send, blocked, hidden }: { send: Send; blocked: strin
       return;
     }
     const { text } = draft;
-    const request = requestFor(retry.current, text, () => requestId(crypto.getRandomValues(new Uint8Array(16))));
+    const request = requestFor(retry.current, text, newRequestId);
     setSending(true);
     setProblem(undefined);
     const next = after(await send(text, request), text, request);

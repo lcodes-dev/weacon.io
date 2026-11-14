@@ -4,12 +4,13 @@ import { createRoot } from "react-dom/client";
 import "./app.css";
 import { App } from "./app.tsx";
 import { ME } from "./build.ts";
-import { type Send, deliver, prompt, requestId } from "./composer/prompt.ts";
+import { chatRefOf } from "./chat-ref.ts";
+import { type Send, deliver, prompt } from "./composer/prompt.ts";
 import { Connection, type Status, offers } from "./connection.ts";
 import { NO_CHANGES, ask, cut, needsAsking, receive } from "./diff/changes.ts";
 import { Feed, nextFrame } from "./feed.ts";
+import { newRequestId } from "./ids.ts";
 import { Log } from "./log.ts";
-import { placeOf } from "./place.ts";
 import { Receipts } from "./receipts.ts";
 import { fakeServerUrl } from "./server.ts";
 import { Api } from "./shell/api.ts";
@@ -29,7 +30,7 @@ const crash = () => {
 window.addEventListener("error", crash);
 window.addEventListener("unhandledrejection", crash);
 log.info("app started");
-const place = placeOf(window.location.search);
+const chatRef = chatRefOf(window.location.search);
 // How long a hidden tab waits for a frame before its batch of run events goes out anyway.
 const HIDDEN_MS = 250;
 
@@ -116,22 +117,21 @@ function Root({ url }: { url: string }) {
   }, [url]);
   const send: Send = (text, request) => {
     const now = live.current;
-    if (now === undefined || place === undefined) {
+    if (now === undefined || chatRef === undefined) {
       return Promise.resolve("lost");
     }
-    return deliver(prompt(++lastId.current, place, request, text), now.receipts, (envelope) => now.connection.send(envelope));
+    return deliver(prompt(++lastId.current, chatRef, request, text), now.receipts, (envelope) => now.connection.send(envelope));
   };
   const openChanges = () => {
     // Asked the first time they are opened, and again after answers were cut short.
-    if (needsAsking(changes) && place !== undefined && live.current !== undefined) {
-      const request = requestId(crypto.getRandomValues(new Uint8Array(16)));
-      const { query, changes: asked } = ask(++lastId.current, request, place.workspace, place.chat, changes);
+    if (needsAsking(changes) && chatRef !== undefined && live.current !== undefined) {
+      const { query, changes: asked } = ask(++lastId.current, newRequestId(), chatRef.workspace, chatRef.chat, changes);
       setChanges(asked);
       live.current.connection.send(query);
     }
   };
   return (
-    <App me={ME} status={status} transcript={transcript} place={place} send={send} review={{ changes, openChanges }} />
+    <App me={ME} status={status} transcript={transcript} chatRef={chatRef} send={send} review={{ changes, openChanges }} />
   );
 }
 

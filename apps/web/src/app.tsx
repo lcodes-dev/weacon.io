@@ -6,7 +6,7 @@ import { type Status, statusText } from "./connection.ts";
 import { type Changes, canAsk } from "./diff/changes.ts";
 import type { Comment } from "./diff/comments.ts";
 import { DiffView } from "./diff/diff-view.tsx";
-import type { Place } from "./place.ts";
+import type { ChatRef } from "./chat-ref.ts";
 import type { App as Build } from "./protocol.ts";
 import type { Transcript } from "./transcript.ts";
 import { TranscriptView } from "./transcript-view.tsx";
@@ -21,14 +21,14 @@ export function App({
   me,
   status,
   transcript,
-  place,
+  chatRef,
   send,
   review,
 }: {
   me: Build;
   status: Status;
   transcript: Transcript;
-  place: Place | undefined;
+  chatRef: ChatRef | undefined;
   send: Send;
   review: Review;
 }) {
@@ -40,7 +40,7 @@ export function App({
         <span className="status">{statusText(status)}</span>
         {shown === "run" ? (
           <span className="actions">
-            {place !== undefined && canAsk(status) && (
+            {chatRef !== undefined && canAsk(status) && (
               <button
                 type="button"
                 onClick={() => {
@@ -76,7 +76,7 @@ export function App({
           </div>
         )}
       </main>
-      <Composer send={send} blocked={blocked(status, place)} hidden={shown !== "run"} />
+      <Composer send={send} blocked={blocked(status, chatRef)} hidden={shown !== "run"} />
     </div>
   );
 }
