@@ -468,6 +468,23 @@ mod tests {
         assert!(!marker.exists(), "the agent's filter ran");
     }
 
+    // As git writes it with `worktree.useRelativePaths`: from its own folder, four below `dir`.
+    #[tokio::test]
+    async fn a_worktree_the_repository_names_relatively_is_found() {
+        let bench = bench();
+        let admins = fs::read_dir(bench.dir.join("repo/.git/worktrees")).unwrap();
+        let admin = admins.flatten().next().unwrap().path();
+        let below = bench
+            .worktree
+            .strip_prefix(&*bench.dir)
+            .unwrap()
+            .join(".git");
+        let relative = Path::new("../../../..").join(below);
+        fs::write(admin.join("gitdir"), format!("{}\n", relative.display())).unwrap();
+
+        assert_eq!(bench.state().await.unwrap(), state(false, false, false));
+    }
+
     #[tokio::test]
     async fn a_worktree_its_repository_doesnt_list_is_refused() {
         let bench = bench();

@@ -44,8 +44,39 @@ impl Git {
     }
 }
 
-// The `.git` file of the worktree a git folder of `worktrees/` belongs to.
+// The `.git` file of the worktree a git folder of `worktrees/` belongs to. Git may write it
+// relative to that folder.
 fn names(dir: &Path) -> Option<PathBuf> {
     let named = fs::read_to_string(dir.join("gitdir")).ok()?;
-    Some(PathBuf::from(named.trim_end()))
+    Some(dir.join(named.trim_end()))
+}
+
+#[cfg(test)]
+mod tests {
+    use weacon_testing::TempDir;
+
+    use super::*;
+    use crate::git::tests::{chat, git, repo};
+
+    #[test]
+    fn each_worktree_gets_its_own_git_folder() {
+        let dir = TempDir::new().unwrap();
+        let (git, repo) = (git(&dir), repo(&dir));
+        let trees = ["a", "b"].map(|id| {
+            let path = dir.join(format!("trees/c-{id}"));
+            git.chat_worktree(&repo, &chat(id), &path).unwrap();
+            path
+        });
+
+        for tree in trees {
+            let told = git.in_tree(&repo, &tree).unwrap();
+            let folder = told.folder().unwrap();
+            assert_eq!(
+                resolved(&names(folder).unwrap()),
+                resolved(&tree.join(".git"))
+            );
+        }
+        let error = git.in_tree(&repo, &dir.join("trees/c-x")).unwrap_err();
+        assert_eq!(error.code().as_str(), "worktree.unregistered");
+    }
 }

@@ -420,11 +420,17 @@ mod tests {
             assert!(envs.contains(&(name.as_ref(), None)), "{name}");
         }
         assert_eq!(command.get_current_dir(), Some(Path::new("/trees/c-1")));
+        let git = Git {
+            program: PathBuf::from("git"),
+            no_hooks: PathBuf::from("/state/no-hooks"),
+            folder: Some(PathBuf::from("/src/site/.git/worktrees/c-1")),
+        };
         let told = Gh {
             program: PathBuf::from("gh"),
             config: PathBuf::from("/state/w-1/gh"),
-            folder: Some(PathBuf::from("/src/site/.git/worktrees/c-1")),
-        };
+            folder: None,
+        }
+        .in_tree(&git);
         let envs: Vec<(String, Option<String>)> = told
             .command(Path::new("/trees/c-1"))
             .get_envs()
