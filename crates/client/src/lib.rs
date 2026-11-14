@@ -266,6 +266,26 @@ mod tests {
         assert_eq!(error.code().as_str(), "daemon.no_answer");
     }
 
+    #[tokio::test(start_paused = true)]
+    async fn a_daemon_that_never_welcomes_gave_no_answer_in_time() {
+        let dir = TempDir::new().unwrap();
+        let socket = dir.join("weacon.sock");
+        let server = Server::bind(&socket).unwrap();
+        let daemon = tokio::spawn(async move {
+            let mut stream = server.accept().await.unwrap();
+            stream.read_to_end(&mut Vec::new()).await.unwrap();
+        });
+        let started = tokio::time::Instant::now();
+
+        let error = handshake(&socket, app("weacon-extension"))
+            .await
+            .unwrap_err();
+        daemon.await.unwrap();
+
+        assert_eq!(error.code().as_str(), "daemon.no_answer");
+        assert!(started.elapsed() >= TIMEOUT);
+    }
+
     #[test]
     fn a_refusal_says_why() {
         let refusal = |code| {

@@ -526,12 +526,20 @@ mod tests {
             check(&IO, "src/chats.rs", "fn rows() { m!(a::b sqlx::query) }"),
             ["uses sqlx outside the db module"]
         );
+        // Three colons end a path rather than join one, and so do colons after a `use` alias.
+        for text in [
+            "fn rows() { m!(sqlx:::query) }",
+            "macro_rules! imports { () => { use std::fmt as ::sqlx; }; }",
+        ] {
+            assert!(check(&IO, "src/chats.rs", text).is_empty(), "{text}");
+        }
         for text in [
             "macro_rules! driver { () => { use sqlx as db; }; }",
             "macro_rules! driver { () => { use sqlx; }; }",
             "macro_rules! driver { () => { use sqlx::{self as db}; }; }",
             "macro_rules! driver { () => { use {sqlx as db, std::fmt}; }; }",
             "fn f() { m!(<T as sqlx::Type<Db>>::type_info()) }",
+            "macro_rules! driver { () => { use sqlx as db::query; }; }",
         ] {
             assert_eq!(
                 check(&IO, "src/chats.rs", text),
@@ -542,6 +550,7 @@ mod tests {
         for text in [
             "macro_rules! imports { () => { use std::{fmt as fs}; }; }",
             "macro_rules! imports { () => { use {std::fmt as sqlx}; }; }",
+            "macro_rules! imports { () => { use std::fmt as fs::File; }; }",
         ] {
             assert!(check(&PURE, "src/chats.rs", text).is_empty(), "{text}");
         }
