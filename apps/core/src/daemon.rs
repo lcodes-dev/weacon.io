@@ -378,7 +378,7 @@ mod tests {
     use tokio::io::{AsyncBufReadExt, AsyncRead};
     use tokio::sync::oneshot;
     use tokio::time::timeout;
-    use weacon_protocol::{ErrorBody, Hello, PROTOCOL, Welcome};
+    use weacon_protocol::{ErrorBody, PROTOCOL, Welcome};
     use weacon_testing::TempDir;
 
     use super::*;
@@ -430,15 +430,7 @@ mod tests {
     }
 
     fn hello(protocol: u32) -> Vec<u8> {
-        encode_line(&Envelope {
-            id: 1,
-            message: Message::Hello(Hello {
-                protocol,
-                app: build(&VERSION),
-                capabilities: Vec::new(),
-            }),
-        })
-        .unwrap()
+        encode_line(&test_support::client_hello(1, protocol, [])).unwrap()
     }
 
     // Sends `bytes` and reads replies until the daemon hangs up or `count` arrive.

@@ -26,14 +26,16 @@ pub async fn handshake(socket: &Path, me: App) -> Result<Welcome, Fault> {
     Ok(Connection::open(socket, me, Vec::new()).await?.0)
 }
 
-/// A raw connection to the daemon at `socket`, before any handshake, such as for protocol tests.
+/// A raw connection to the daemon at `socket`, before any handshake, for relaying another app's
+/// frames.
 ///
 /// # Errors
 /// When no daemon listens there, or it doesn't answer in time.
-pub async fn connect(socket: &Path) -> io::Result<impl AsyncRead + AsyncWrite + Unpin + use<>> {
+pub async fn connect(socket: &Path) -> Result<impl AsyncRead + AsyncWrite + Unpin + use<>, Fault> {
     tokio::time::timeout(TIMEOUT, platform::connect(socket))
         .await
-        .unwrap_or_else(|_| Err(io::Error::from(io::ErrorKind::TimedOut)))
+        .map_err(no_answer)?
+        .map_err(not_running)
 }
 
 /// A connection to the daemon after a welcome, which yields what the daemon sends next.
@@ -162,22 +164,16 @@ mod tests {
         }
     }
 
-    // A one-connection daemon that reads the hello, then sends a bad frame and `reply`, or hangs up.
-    fn serve_once(socket: &Path, reply: Option<Message>) -> JoinHandle<Envelope> {
+    // A daemon that reads the hello, sends `bytes` and hangs up, handing back the hello.
+    fn send_after_hello(socket: &Path, bytes: Vec<u8>) -> JoinHandle<Envelope> {
         let server = Server::bind(socket).unwrap();
-        tokio::spawn(serve(server, reply))
-    }
-
-    async fn serve(server: Server, reply: Option<Message>) -> Envelope {
-        let mut stream = BufReader::new(server.accept().await.unwrap());
-        let mut line = String::new();
-        stream.read_line(&mut line).await.unwrap();
-        if let Some(message) = reply {
-            stream.write_all(b"not json\n").await.unwrap();
-            let reply = encode_line(&Envelope { id: 1, message }).unwrap();
-            stream.write_all(&reply).await.unwrap();
-        }
-        serde_json::from_str(&line).unwrap()
+        tokio::spawn(async move {
+            let mut stream = BufReader::new(server.accept().await.unwrap());
+            let mut hello = String::new();
+            stream.read_line(&mut hello).await.unwrap();
+            stream.write_all(&bytes).await.unwrap();
+            serde_json::from_str(&hello).unwrap()
+        })
     }
 
     #[tokio::test]
@@ -188,7 +184,15 @@ mod tests {
             app: app("weacon-core"),
             capabilities: serde_json::from_str(r#"["chat.send"]"#).unwrap(),
         };
-        let daemon = serve_once(&socket, Some(Message::Welcome(welcome.clone())));
+        let mut bytes = b"not json\n".to_vec();
+        bytes.extend(
+            encode_line(&Envelope {
+                id: 1,
+                message: Message::Welcome(welcome.clone()),
+            })
+            .unwrap(),
+        );
+        let daemon = send_after_hello(&socket, bytes);
 
         assert_eq!(
             handshake(&socket, app("weacon-extension")).await.unwrap(),
@@ -213,18 +217,6 @@ mod tests {
             event: RunEvent::TextDelta {
                 text: text.to_owned(),
             },
-        })
-    }
-
-    // A daemon that reads the hello, sends `bytes` and hangs up, handing back the hello.
-    fn send_after_hello(socket: &Path, bytes: Vec<u8>) -> JoinHandle<Envelope> {
-        let server = Server::bind(socket).unwrap();
-        tokio::spawn(async move {
-            let mut stream = BufReader::new(server.accept().await.unwrap());
-            let mut hello = String::new();
-            stream.read_line(&mut hello).await.unwrap();
-            stream.write_all(&bytes).await.unwrap();
-            serde_json::from_str(&hello).unwrap()
         })
     }
 
@@ -265,7 +257,7 @@ mod tests {
     async fn a_daemon_that_hangs_up_gave_no_answer() {
         let dir = TempDir::new().unwrap();
         let socket = dir.join("weacon.sock");
-        let daemon = serve_once(&socket, None);
+        let daemon = send_after_hello(&socket, Vec::new());
         let error = handshake(&socket, app("weacon-extension"))
             .await
             .unwrap_err();
@@ -306,8 +298,10 @@ mod tests {
 
         for path in [socket.as_path(), Path::new("/nonexistent/weacon.sock")] {
             let error = handshake(path, app("weacon-extension")).await.unwrap_err();
+            let raw = connect(path).await.err().unwrap();
 
             assert_eq!(error.code().as_str(), "daemon.not_running");
+            assert_eq!(raw.code().as_str(), "daemon.not_running");
         }
     }
 }

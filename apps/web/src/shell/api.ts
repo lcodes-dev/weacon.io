@@ -1,5 +1,6 @@
 import type { End } from "../connection.ts";
 import { isId } from "../ids.ts";
+import { isMachineKey } from "../machines/fingerprint.ts";
 import type {
   AccountSignedIn,
   AccountSignInFinish,
@@ -7,6 +8,12 @@ import type {
   ChatList,
   ChatSummary,
   Code,
+  MachineId,
+  MachineList,
+  MachineSummary,
+  PairConfirm,
+  PairLookup,
+  PairPending,
   SignInStarted,
   WorkspaceCreate,
   WorkspaceId,
@@ -64,7 +71,7 @@ export class Api {
   }
 
   signOut(): Promise<Answer<undefined>> {
-    return this.#ask("POST", "/api/sign-out", undefined, (value): value is undefined => value === undefined);
+    return this.#ask("POST", "/api/sign-out", undefined, isEmpty);
   }
 
   workspaces(): Promise<Answer<WorkspaceList>> {
@@ -80,6 +87,26 @@ export class Api {
   /** The chats of `workspace` the signed-in member can see. */
   chats(workspace: WorkspaceId): Promise<Answer<ChatList>> {
     return this.#ask("GET", `/api/workspaces/${workspace}/chats`, undefined, isChats);
+  }
+
+  /** The machines paired with the signed-in account, oldest first. */
+  machines(): Promise<Answer<MachineList>> {
+    return this.#ask("GET", "/api/machines", undefined, isMachineList);
+  }
+
+  /** The machine waiting to be paired under `code`, as the person typed it: the server reads it loosely. */
+  lookup(code: string): Promise<Answer<PairPending>> {
+    const body: PairLookup = { code };
+    return this.#ask("POST", "/api/machines/pair/lookup", body, isPending);
+  }
+
+  /** Pairs the machine `lookup` found with the signed-in account. */
+  confirm(body: PairConfirm): Promise<Answer<MachineSummary>> {
+    return this.#ask("POST", "/api/machines/pair/confirm", body, isMachine);
+  }
+
+  unpair(machine: MachineId): Promise<Answer<undefined>> {
+    return this.#ask("DELETE", `/api/machines/${encodeURIComponent(machine)}`, undefined, isEmpty);
   }
 
   async #ask<T>(method: string, path: string, body: object | undefined, fits: (value: unknown) => value is T): Promise<Answer<T>> {
@@ -112,23 +139,33 @@ function fields(value: unknown, keys: string[]): boolean {
   );
 }
 
-/** Whether a value is an object whose `key` holds a list of items `isItem` takes. */
-function listOf<T>(key: string, isItem: (item: unknown) => boolean): (value: unknown) => value is T {
-  return (value): value is T => {
-    const items = typeof value === "object" && value !== null ? (value as Record<string, unknown>)[key] : undefined;
-    return Array.isArray(items) && items.every(isItem);
-  };
-}
-
 const isAccount = (value: unknown): value is AccountSignedIn => fields(value, ["account", "email"]);
 const isStarted = (value: unknown): value is SignInStarted => fields(value, ["challenge"]);
 const isError = (value: unknown): value is { code: Code } => fields(value, ["code"]);
 const isWorkspace = (value: unknown): value is WorkspaceSummary =>
   fields(value, ["id", "name", "role"]) && isId((value as WorkspaceSummary).id);
-const isList = listOf<WorkspaceList>("workspaces", isWorkspace);
+/** A guard for an object whose `key` holds a list of items that `item` accepts. */
+function listOf<T>(key: string, item: (value: unknown) => boolean): (value: unknown) => value is T {
+  return (value): value is T => {
+    const items = typeof value === "object" && value !== null ? (value as Record<string, unknown>)[key] : undefined;
+    return Array.isArray(items) && items.every(item);
+  };
+}
 
+const isList = listOf<WorkspaceList>("workspaces", isWorkspace);
 const isChat = (value: unknown): value is ChatSummary =>
   fields(value, ["id", "machine", "owner", "state", "title"]) &&
   isId((value as ChatSummary).id) &&
   Number.isSafeInteger((value as ChatSummary).updated_at);
 const isChats = listOf<ChatList>("chats", isChat);
+const isEmpty = (value: unknown): value is undefined => value === undefined;
+const isPending = (value: unknown): value is PairPending =>
+  fields(value, ["pairing", "name", "os", "key"]) &&
+  isId((value as PairPending).pairing) &&
+  isMachineKey((value as PairPending).key);
+const isMachine = (value: unknown): value is MachineSummary =>
+  fields(value, ["id", "name", "os", "key"]) &&
+  isId((value as MachineSummary).id) &&
+  isMachineKey((value as MachineSummary).key) &&
+  typeof (value as MachineSummary).paired_at === "number";
+const isMachineList = listOf<MachineList>("machines", isMachine);

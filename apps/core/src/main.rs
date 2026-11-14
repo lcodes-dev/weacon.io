@@ -8,6 +8,7 @@ mod disk;
 mod doctor;
 mod map;
 mod memory;
+mod names;
 mod native_host;
 mod picks;
 mod platform;
@@ -33,11 +34,11 @@ mod workspaces;
 use std::io::{self, IsTerminal};
 use std::process::ExitCode;
 
+use weacon_appkit::Ending;
 use weacon_observability::{Fault, json_lines};
 
 use crate::app::{App, Setup};
 use crate::cli::Command;
-use weacon_appkit::Ending;
 
 fn main() -> ExitCode {
     let version = weacon_version::version!();
@@ -54,7 +55,7 @@ fn main() -> ExitCode {
         Setup {
             env: &env,
             stderr: json_lines(io::stderr()),
-            deliver: weacon_appkit::http(),
+            deliver: weacon_appkit::deliver_over_https(),
             verbose: cli.prints_info(io::stderr().is_terminal()),
             mode: cli.command.name(),
             log_name: cli.command.log_name(),
@@ -66,34 +67,28 @@ fn main() -> ExitCode {
 }
 
 fn run(app: &App, command: Command, env: platform::Env<'_>) -> Result<Ending, Fault> {
-    match command {
-        Command::Daemon => daemon::run(app).map(Ending::from),
-        Command::Status => status::run(app, &mut io::stdout().lock()).map(Ending::from),
-        Command::Doctor => doctor::run(app, &mut io::stdout().lock()).map(Ending::from),
-        Command::Service(command) => {
-            service::run(app, command, env, &mut service::system).map(Ending::from)
-        }
-        Command::Login { agent, workspace } => {
-            workspaces::login(app, agent, &workspace).map(Ending::from)
-        }
+    let done = match command {
+        Command::Daemon => daemon::run(app),
+        Command::Status => status::run(app, &mut io::stdout().lock()),
+        Command::Doctor => doctor::run(app, &mut io::stdout().lock()),
+        Command::Service(command) => service::run(app, command, env, &mut service::system),
+        Command::Login { agent, workspace } => workspaces::login(app, agent, &workspace),
         Command::Access {
             workspace,
             level,
             team,
-        } => workspaces::access(app, &workspace, level, team, &mut io::stdout().lock())
-            .map(Ending::from),
-        Command::Reports { answer } => {
-            reports::run(app, answer, &mut io::stdout().lock()).map(Ending::from)
+        } => workspaces::access(app, &workspace, level, team, &mut io::stdout().lock()),
+        Command::Reports { answer } => reports::run(app, answer, &mut io::stdout().lock()),
+        Command::ConnectChrome => native_host::connect_chrome(app, env, &mut io::stdout().lock()),
+        Command::NativeHost { origin } => native_host::run(app, &origin),
+        Command::Map(command) => {
+            return map::run(
+                app,
+                command,
+                &mut io::stdin().lock(),
+                &mut io::stdout().lock(),
+            );
         }
-        Command::ConnectChrome => {
-            native_host::connect_chrome(app, env, &mut io::stdout().lock()).map(Ending::from)
-        }
-        Command::NativeHost { origin } => native_host::run(app, &origin).map(Ending::from),
-        Command::Map(command) => map::run(
-            app,
-            command,
-            &mut io::stdin().lock(),
-            &mut io::stdout().lock(),
-        ),
-    }
+    };
+    done.map(Ending::from)
 }

@@ -5,9 +5,8 @@ import type { Page } from "playwright-core";
 
 import type { ChatList, Envelope } from "../src/protocol.ts";
 import { waitFor } from "./harness.ts";
-import { type Served, serve } from "./server.ts";
+import { EMAIL, serve, signIn } from "./server.ts";
 
-const EMAIL = "ada@example.com";
 const CHANGE_AFTER_MS = 500;
 
 /**
@@ -53,15 +52,6 @@ async function listChats(page: Page, list: (asked: number) => ChatList): Promise
     return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(list(asked)) });
   });
   return () => asked;
-}
-
-async function signIn(served: Served): Promise<void> {
-  const { page } = served;
-  await served.admin("add-account", "--email", EMAIL);
-  await page.getByLabel("Email").fill(EMAIL);
-  await page.getByRole("button", { name: "Send code" }).click();
-  await page.getByLabel("Code").fill(await served.code(EMAIL));
-  await page.getByRole("button", { name: "Sign in" }).click();
 }
 
 test("a person signs in with the code sent to them, stays signed in, and signs out", { timeout: 600_000 }, async (t) => {

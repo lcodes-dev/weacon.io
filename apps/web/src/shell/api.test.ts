@@ -143,6 +143,48 @@ test("a request sent before a newer sign-in can't end it, but one before a faile
   }
 });
 
+const KEY = "ab".repeat(32);
+const MACHINE = { id: "mc-1", name: "Studio", os: "linux", key: KEY, paired_at: 1_763_000_000 };
+const PENDING = { pairing: "p-1", name: "Studio", os: "macos", key: KEY };
+
+test("machines are listed, looked up by code, confirmed and unpaired", async () => {
+  const { api, sent } = serve(
+    { status: 200, body: { machines: [MACHINE] } },
+    { status: 200, body: PENDING },
+    { status: 201, body: MACHINE },
+    { status: 204 },
+  );
+
+  assert.deepEqual(await api.machines(), { ok: true, value: { machines: [MACHINE] } });
+  assert.deepEqual(await api.lookup(" abcd-1234 "), { ok: true, value: PENDING });
+  assert.deepEqual(await api.confirm({ pairing: "p-1", code: "abcd-1234" }), { ok: true, value: MACHINE });
+  assert.deepEqual(await api.unpair("mc-1"), { ok: true, value: undefined });
+  const json = { "content-type": "application/json" };
+  assert.deepEqual(sent, [
+    { path: "/api/machines", method: "GET" },
+    { path: "/api/machines/pair/lookup", method: "POST", headers: json, body: '{"code":" abcd-1234 "}' },
+    { path: "/api/machines/pair/confirm", method: "POST", headers: json, body: '{"pairing":"p-1","code":"abcd-1234"}' },
+    { path: "/api/machines/mc-1", method: "DELETE" },
+  ]);
+});
+
+test("a machine whose id, key or date isn't one is a malformed answer, and a newer system is kept", async () => {
+  const bad = [{ ...MACHINE, id: "../x" }, { ...MACHINE, key: "AB".repeat(32) }, { ...MACHINE, paired_at: "today" }];
+  const { api } = serve(
+    ...bad.map((machine) => ({ status: 200, body: { machines: [machine] } })),
+    { status: 200, body: { ...PENDING, key: "short" } },
+    { status: 200, body: { machines: [{ ...MACHINE, os: "plan9" }] } },
+    { status: 404, body: { code: "pairing.not_found", retryable: false } },
+  );
+
+  for (const _ of bad) {
+    assert.deepEqual(await api.machines(), { ok: false, code: MALFORMED });
+  }
+  assert.deepEqual(await api.lookup("abcd"), { ok: false, code: MALFORMED });
+  assert.deepEqual(await api.machines(), { ok: true, value: { machines: [{ ...MACHINE, os: "plan9" }] } });
+  assert.deepEqual(await api.confirm({ pairing: "p-1", code: "abcd" }), { ok: false, code: "pairing.not_found" });
+});
+
 test("a workspace's chats are listed, and an answer of the wrong shape is refused", async () => {
   const chat = { id: "c-1", title: "Merge the lists", owner: "m-1", machine: "laptop", state: "open", updated_at: 1_800_000_000 };
   const { api, sent } = serve(
