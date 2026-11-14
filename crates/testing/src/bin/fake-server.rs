@@ -11,11 +11,11 @@ use tokio::io::AsyncWriteExt;
 use tokio::net::TcpListener;
 use weacon_testing::Failure;
 use weacon_testing::fake_server::serve;
-use weacon_testing::recording::{SESSION, args, recording};
+use weacon_testing::recording::{FakeArgs, SESSION, args, recording};
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> ExitCode {
-    let Some((dir, tokens, pace)) = args(std::env::args().skip(1)) else {
+    let Some(FakeArgs { dir, tokens, pace }) = args(std::env::args().skip(1)) else {
         return ExitCode::from(2);
     };
     match run(&dir, tokens, pace).await {
