@@ -15,7 +15,7 @@ use std::sync::{Arc, Mutex};
 use tokio::process::Command;
 use tokio::sync::{mpsc, watch};
 use tokio::task;
-use windows_sys::Win32::Foundation::{INVALID_HANDLE_VALUE, WAIT_OBJECT_0};
+use windows_sys::Win32::Foundation::WAIT_OBJECT_0;
 use windows_sys::Win32::System::Console::{
     COORD, ClosePseudoConsole, CreatePseudoConsole, HPCON, ResizePseudoConsole,
 };
@@ -129,7 +129,10 @@ impl Drop for Pty {
         // Not left to `supervise`, which a runtime that is stopping no longer runs: until the
         // console closes, the thread reading its output can't end, nor can the runtime.
         let console = Arc::clone(&self.console);
-        std::thread::spawn(move || console.close());
+        let closing = std::thread::Builder::new().spawn(move || console.close());
+        if closing.is_err() {
+            self.console.close();
+        }
     }
 }
 
@@ -204,11 +207,12 @@ fn start(
     let startup = STARTUPINFOEXW {
         StartupInfo: STARTUPINFOW {
             cb: u32::try_from(size_of::<STARTUPINFOEXW>()).map_err(io::Error::other)?,
-            // Otherwise the program could get this process's own standard handles.
+            // Null, so the console gives the program its own standard handles rather than it
+            // getting this process's.
             dwFlags: STARTF_USESTDHANDLES,
-            hStdInput: INVALID_HANDLE_VALUE,
-            hStdOutput: INVALID_HANDLE_VALUE,
-            hStdError: INVALID_HANDLE_VALUE,
+            hStdInput: ptr::null_mut(),
+            hStdOutput: ptr::null_mut(),
+            hStdError: ptr::null_mut(),
             ..STARTUPINFOW::default()
         },
         lpAttributeList: attributes.list(),
