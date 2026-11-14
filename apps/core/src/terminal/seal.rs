@@ -12,14 +12,14 @@ use x25519_dalek::{PublicKey, StaticSecret};
 /// A handshake the core accepted: its channel, the first message's payload, and the reply to
 /// send back.
 pub(crate) struct Accepted {
-    pub(crate) seal: Seal,
+    pub(crate) channel: Channel,
     pub(crate) first: Vec<u8>,
     pub(crate) reply: Vec<u8>,
 }
 
 /// One terminal's channel once the handshake is done. After any failure it refuses everything,
 /// so the terminal closes.
-pub(crate) struct Seal {
+pub(crate) struct Channel {
     transport: TransportState,
     broken: bool,
 }
@@ -47,7 +47,7 @@ fn accept_with(
         let first = buffered(|buffer| state.read_message(handshake, buffer))?;
         let reply = buffered(|buffer| state.write_message(payload, buffer))?;
         Ok(Accepted {
-            seal: Seal {
+            channel: Channel {
                 transport: state.into_transport_mode()?,
                 broken: false,
             },
@@ -58,7 +58,7 @@ fn accept_with(
     run().map_err(|error: snow::Error| handshake_failed().because(error))
 }
 
-impl Seal {
+impl Channel {
     /// `plaintext` as the next message to send.
     ///
     /// # Errors
@@ -208,7 +208,6 @@ impl Dh for X25519 {
 
 #[cfg(test)]
 pub(super) mod tests {
-    use std::fmt::Write;
     use std::fs;
     use std::path::Path;
 
@@ -249,10 +248,7 @@ pub(super) mod tests {
     }
 
     fn hex(bytes: &[u8]) -> String {
-        bytes.iter().fold(String::new(), |mut hex, byte| {
-            write!(hex, "{byte:02x}").unwrap();
-            hex
-        })
+        weacon_protocol::to_hex(bytes)
     }
 
     fn unhex(hex: &str) -> Vec<u8> {
@@ -308,11 +304,11 @@ pub(super) mod tests {
         buffered(|buffer| browser.read_message(message, buffer)).unwrap()
     }
 
-    fn connected(prologue: &[u8], remote: &[u8], first: &[u8]) -> (TransportState, Seal) {
+    fn connected(prologue: &[u8], remote: &[u8], first: &[u8]) -> (TransportState, Channel) {
         let mut browser = initiator(prologue, remote, None);
         let handshake = write(&mut browser, first);
         let accepted = accept(&machine_key(), prologue, &handshake).unwrap();
-        (finish(browser, &accepted.reply), accepted.seal)
+        (finish(browser, &accepted.reply), accepted.channel)
     }
 
     // Plays `vector`'s payloads through both ends with its keys and checks each arrives; the
@@ -348,7 +344,7 @@ pub(super) mod tests {
         let handshake_hash = hex(initiator.get_handshake_hash());
         let mut browser = initiator.into_transport_mode().unwrap();
         let mut made = vec![first, accepted.reply];
-        made.extend(exchange(&mut browser, &mut accepted.seal, &payloads));
+        made.extend(exchange(&mut browser, &mut accepted.channel, &payloads));
         let messages = made.iter().zip(&vector.messages);
         Vector {
             handshake_hash,
@@ -365,16 +361,16 @@ pub(super) mod tests {
     // Sends the payloads after the handshake's two, alternating from the browser; what was sent.
     fn exchange(
         browser: &mut TransportState,
-        seal: &mut Seal,
+        channel: &mut Channel,
         payloads: &[Vec<u8>],
     ) -> Vec<Vec<u8>> {
         let sent = payloads.iter().enumerate().skip(2).map(|(index, payload)| {
             if index % 2 == 0 {
                 let sealed = buffered(|buffer| browser.write_message(payload, buffer)).unwrap();
-                assert_eq!(seal.open(&sealed).unwrap(), *payload);
+                assert_eq!(channel.open(&sealed).unwrap(), *payload);
                 sealed
             } else {
-                let sealed = seal.seal(payload).unwrap();
+                let sealed = channel.seal(payload).unwrap();
                 let opened = buffered(|buffer| browser.read_message(&sealed, buffer)).unwrap();
                 assert_eq!(opened, *payload);
                 sealed
@@ -489,35 +485,35 @@ pub(super) mod tests {
 
     #[test]
     fn a_tampered_replayed_or_reordered_frame_breaks_the_channel_for_good() {
-        let (mut browser, mut seal) = connected(&prologue(), &public(&machine_key()), b"{}");
+        let (mut browser, mut channel) = connected(&prologue(), &public(&machine_key()), b"{}");
         let mut frame =
             |text: &[u8]| buffered(|buffer| browser.write_message(text, buffer)).unwrap();
         let (one, two) = (frame(b"one"), frame(b"two"));
-        assert_eq!(seal.open(&one).unwrap(), b"one");
-        seal.open(&one).err().unwrap();
-        seal.open(&two).err().unwrap();
-        seal.seal(b"after").unwrap_err();
+        assert_eq!(channel.open(&one).unwrap(), b"one");
+        channel.open(&one).err().unwrap();
+        channel.open(&two).err().unwrap();
+        channel.seal(b"after").unwrap_err();
 
-        let (mut browser, mut seal) = connected(&prologue(), &public(&machine_key()), b"{}");
+        let (mut browser, mut channel) = connected(&prologue(), &public(&machine_key()), b"{}");
         let mut tampered = buffered(|buffer| browser.write_message(b"one", buffer)).unwrap();
         tampered[0] ^= 1;
-        seal.open(&tampered).err().unwrap();
+        channel.open(&tampered).err().unwrap();
 
-        let (mut browser, mut seal) = connected(&prologue(), &public(&machine_key()), b"{}");
+        let (mut browser, mut channel) = connected(&prologue(), &public(&machine_key()), b"{}");
         buffered(|buffer| browser.write_message(b"skipped", buffer)).unwrap();
         let second = buffered(|buffer| browser.write_message(b"two", buffer)).unwrap();
-        seal.open(&second).err().unwrap();
+        channel.open(&second).err().unwrap();
     }
 
     #[test]
     fn a_plaintext_too_long_for_one_frame_is_refused_and_breaks_the_channel() {
-        let (mut browser, mut seal) = connected(&prologue(), &public(&machine_key()), b"{}");
-        let full = seal.seal(&vec![7; SEALED_MAX]).unwrap();
+        let (mut browser, mut channel) = connected(&prologue(), &public(&machine_key()), b"{}");
+        let full = channel.seal(&vec![7; SEALED_MAX]).unwrap();
         assert_eq!(full.len(), NOISE_MAX);
         let opened = buffered(|buffer| browser.read_message(&full, buffer)).unwrap();
         assert_eq!(opened.len(), SEALED_MAX);
-        seal.seal(&vec![7; SEALED_MAX + 1]).err().unwrap();
-        seal.seal(b"short").err().unwrap();
+        channel.seal(&vec![7; SEALED_MAX + 1]).err().unwrap();
+        channel.seal(b"short").err().unwrap();
     }
 
     #[test]

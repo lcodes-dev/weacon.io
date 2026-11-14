@@ -12,14 +12,14 @@ use weacon_protocol::{
     WorkspaceId, code,
 };
 
-use super::seal::{Seal, seal_failed};
+use super::seal::{Channel, seal_failed};
 
 /// A terminal whose handshake the core accepted, before its login starts.
 pub(super) struct Session {
     pub(super) terminal: TerminalId,
     pub(super) workspace: WorkspaceId,
     pub(super) launch: Launch,
-    pub(super) seal: Seal,
+    pub(super) channel: Channel,
     pub(super) size: Size,
     pub(super) reply: Bytes,
 }
@@ -73,7 +73,7 @@ async fn serve(
     let Some(first) = first.map_err(|_| timed_out())? else {
         return Ok(());
     };
-    let first = session.seal.open(first.as_slice())?;
+    let first = session.channel.open(first.as_slice())?;
     let (terminal, mut events) = session.launch.log_in_terminal(session.size)?;
     apply(&terminal, &first).await?;
     loop {
@@ -90,7 +90,7 @@ async fn serve(
                 let Some(sealed) = sealed else {
                     return Ok(());
                 };
-                apply(&terminal, &session.seal.open(sealed.as_slice())?).await?;
+                apply(&terminal, &session.channel.open(sealed.as_slice())?).await?;
             }
         }
     }
@@ -135,7 +135,7 @@ async fn output(
     let plaintext = output
         .to_json()
         .map_err(|error| seal_failed().because(error))?;
-    let sealed = Bytes::new(session.seal.seal(&plaintext)?).ok_or_else(seal_failed)?;
+    let sealed = Bytes::new(session.channel.seal(&plaintext)?).ok_or_else(seal_failed)?;
     send(updates, update(session, TerminalEvent::Frame { sealed })).await
 }
 

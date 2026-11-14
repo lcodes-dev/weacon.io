@@ -159,7 +159,7 @@ impl Terminals {
             terminal: command.terminal.clone(),
             workspace: command.workspace.clone(),
             launch: self.workspaces.sign_in(&command.workspace, agent)?,
-            seal: accepted.seal,
+            channel: accepted.channel,
             size,
             reply: Bytes::new(accepted.reply).ok_or_else(seal::seal_failed)?,
         })
@@ -537,11 +537,23 @@ mod tests {
         let mut machine = machine();
         let (_browser, open) = opening(&machine, "t-1");
         machine.terminals.handle(open.clone()).await;
-        assert!(matches!(next(&mut machine).await, TerminalEvent::Accepted { .. }));
+        assert!(matches!(
+            next(&mut machine).await,
+            TerminalEvent::Accepted { .. }
+        ));
         machine.terminals.handle(open).await;
-        machine.terminals.handle(command("t-1", TerminalAction::Close)).await;
-        machine.terminals.handle(command("t-1", TerminalAction::Close)).await;
-        assert_eq!(next(&mut machine).await, TerminalEvent::Closed { code: None });
+        machine
+            .terminals
+            .handle(command("t-1", TerminalAction::Close))
+            .await;
+        machine
+            .terminals
+            .handle(command("t-1", TerminalAction::Close))
+            .await;
+        assert_eq!(
+            next(&mut machine).await,
+            TerminalEvent::Closed { code: None }
+        );
         machine.updates.try_recv().unwrap_err();
     }
 
