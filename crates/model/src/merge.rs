@@ -118,17 +118,23 @@ fn align(old: &[&str], new: &[&str], at: usize, found: &mut [Option<usize>]) {
     } else if !old.is_empty() && !new.is_empty() {
         let half = old.len() / 2;
         let (top, bottom) = old.split_at(half);
-        let down = lengths(top.iter(), &new.iter());
-        let up = lengths(bottom.iter().rev(), &new.iter().rev());
-        let split = (0..=new.len())
-            .zip(down.iter().zip(up.iter().rev()))
-            .max_by_key(|(_, (down, up))| *down + *up)
-            .map_or(0, |(split, _)| split);
+        let split = split(top, bottom, new);
         let (left, right) = new.split_at(split);
         let (found_top, found_bottom) = found.split_at_mut(half);
         align(top, left, at, found_top);
         align(bottom, right, at + split, found_bottom);
     }
+}
+
+/// Where to cut `new` so that its two parts, aligned with `top` and `bottom`, give a longest
+/// common subsequence.
+fn split(top: &[&str], bottom: &[&str], new: &[&str]) -> usize {
+    let down = lengths(top.iter(), &new.iter());
+    let up = lengths(bottom.iter().rev(), &new.iter().rev());
+    (0..=new.len())
+        .zip(down.iter().zip(up.iter().rev()))
+        .max_by_key(|(_, (down, up))| *down + *up)
+        .map_or(0, |(split, _)| split)
 }
 
 /// The lengths of the longest common subsequences of all of `old` and each start of `new`.
