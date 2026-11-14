@@ -15,16 +15,14 @@ use std::path::Path;
 
 /// `file` opened to read, when it is a regular file with one link and not a symlink.
 pub(crate) fn open_plain(file: &Path) -> io::Result<File> {
-    let refused = || io::Error::new(io::ErrorKind::InvalidInput, "not a plain file");
-    // A pipe would hold the open until something wrote to it.
-    if !std::fs::symlink_metadata(file)?.is_file() {
-        return Err(refused());
-    }
     let opened = open_unfollowed(file)?;
     if opened.metadata()?.is_file() && links_of(&opened)? == 1 {
         Ok(opened)
     } else {
-        Err(refused())
+        Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "not a plain file",
+        ))
     }
 }
 
@@ -32,6 +30,7 @@ pub(crate) fn open_plain(file: &Path) -> io::Result<File> {
 mod unix {
     use std::fs::{File, OpenOptions};
     use std::io;
+    use std::ops::BitOr;
     use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
     use std::path::Path;
 
@@ -40,11 +39,12 @@ mod unix {
         Ok(std::fs::metadata(file)?.nlink())
     }
 
-    /// `file` opened to read, a symlink refused.
+    /// `file` opened to read, a symlink refused. Non-blocking, so a pipe can't hold the open.
     pub(super) fn open_unfollowed(file: &Path) -> io::Result<File> {
+        let flags = [libc::O_NOFOLLOW, libc::O_NONBLOCK];
         OpenOptions::new()
             .read(true)
-            .custom_flags(libc::O_NOFOLLOW)
+            .custom_flags(flags.into_iter().fold(0, BitOr::bitor))
             .open(file)
     }
 
@@ -136,17 +136,17 @@ mod tests {
         std::os::unix::fs::symlink(&file, &link).unwrap();
 
         open_plain(&link).unwrap_err();
+        let refused = open_unfollowed(&link).unwrap_err();
+        assert_ne!(refused.kind(), io::ErrorKind::InvalidInput);
     }
 
     #[cfg(unix)]
     #[test]
-    fn a_pipe_is_refused() {
+    fn a_pipe_is_refused_without_waiting_for_a_writer() {
         let dir = TempDir::new().unwrap();
         let pipe = dir.join("pipe.jsonl");
         let made = std::process::Command::new("mkfifo").arg(&pipe).status();
         assert!(made.unwrap().success());
-        // Held open both ways, so a wrong open in a mutation test returns instead of waiting.
-        let _held = File::options().read(true).write(true).open(&pipe).unwrap();
 
         let refused = open_plain(&pipe).unwrap_err();
         assert_eq!(refused.kind(), io::ErrorKind::InvalidInput);
