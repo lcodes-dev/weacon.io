@@ -328,22 +328,25 @@ mod tests {
             check("cargo build --target-dir=/etc"),
             Some(Reason::WriteOutside)
         );
+    }
 
-        // words.rs: an unknown wrapper option, a valued one, and a non-assignment.
+    #[test]
+    fn each_decision_in_the_parser_changes_an_answer() {
+        let dir = TempDir::new().unwrap();
+        let context = context(&dir);
+        let check = |line: &str| check_command(line, &context);
+
+        // words.rs: an unknown wrapper option asks.
         assert_eq!(check("env --foo rm -rf /"), Some(Reason::Unsure));
+        // words.rs skip_options: a wrapper's valued options are stepped over to reach the command.
         assert_eq!(
-            check("timeout -s 9 60 rm -rf /"),
+            check("timeout -k 1 -s 9 60 rm -rf /"),
             Some(Reason::DeleteOutside)
         );
 
         // shell.rs: a `(` after a word is a definition, `((` is arithmetic — both can't be read.
         assert_eq!(check("f() { rm -rf /; }"), Some(Reason::Unsure));
         assert_eq!(check("((rm -rf /))"), Some(Reason::Unsure));
-        // words.rs skip_options: a wrapper's valued options are stepped over to reach the command.
-        assert_eq!(
-            check("timeout -k 1 -s 9 60 rm -rf /"),
-            Some(Reason::DeleteOutside)
-        );
 
         // quoting.rs: $HOME at a word's start is the home folder.
         assert_eq!(
