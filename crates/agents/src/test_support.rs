@@ -6,7 +6,7 @@ use tokio::io::{BufReader, DuplexStream};
 use tokio::task::JoinHandle;
 use tokio::time::timeout;
 use weacon_protocol::{AgentSession, App, Outcome, PermissionAnswer, RunEvent, RunId};
-use weacon_testing::replay;
+use weacon_testing::{Failure, replay};
 
 use crate::access::Rules;
 use crate::run::Run;
@@ -14,7 +14,7 @@ use crate::wire::Wire;
 
 pub(crate) type FakeRun = Run<DuplexStream, BufReader<DuplexStream>>;
 
-pub(crate) type Done = JoinHandle<Result<(), String>>;
+pub(crate) type Done = JoinHandle<Result<(), Failure>>;
 
 /// A run speaking `wire` to a fake agent replaying `recording`.
 pub(crate) fn fake(wire: Wire, recording: &str) -> (FakeRun, Done) {

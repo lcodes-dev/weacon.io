@@ -9,6 +9,8 @@ use tokio::io::{
 };
 use tokio::task::JoinHandle;
 
+use crate::Failure;
+
 pub(crate) const BUFFER: usize = 1 << 16;
 
 /// A fake agent process that replays a recorded session.
@@ -20,7 +22,7 @@ pub struct Replay {
     pub stdout: BufReader<DuplexStream>,
     /// Ends once the recording has played and the driver has closed `stdin`, with the first
     /// way the driver strayed from the recording.
-    pub done: JoinHandle<Result<(), String>>,
+    pub done: JoinHandle<Result<(), Failure>>,
 }
 
 /// Replays `recording` on the current tokio runtime. A line starting `< ` is one the agent
@@ -49,44 +51,35 @@ pub(crate) async fn play(
     mut input: impl AsyncBufRead + Unpin,
     mut output: impl AsyncWrite + Unpin,
     pace: Duration,
-) -> Result<(), String> {
+) -> Result<(), Failure> {
     for step in recording.lines().filter(|line| !line.trim().is_empty()) {
         if let Some(line) = step.strip_prefix("< ") {
-            output
-                .write_all(format!("{line}\n").as_bytes())
-                .await
-                .map_err(|error| error.to_string())?;
+            output.write_all(format!("{line}\n").as_bytes()).await?;
             if !pace.is_zero() {
                 tokio::time::sleep(pace).await;
             }
         } else if let Some(expected) = step.strip_prefix("> ") {
             let mut sent = String::new();
-            input
-                .read_line(&mut sent)
-                .await
-                .map_err(|error| error.to_string())?;
+            input.read_line(&mut sent).await?;
             if serde_json::from_str::<Value>(&sent).ok() != Some(json(expected)?) {
-                return Err(format!("expected {expected}\nbut got {sent}"));
+                return Err(format!("expected {expected}\nbut got {sent}").into());
             }
         } else {
-            return Err(format!("not a recorded line: {step}"));
+            return Err(format!("not a recorded line: {step}").into());
         }
     }
-    output.shutdown().await.map_err(|error| error.to_string())?;
+    output.shutdown().await?;
     let mut rest = String::new();
-    input
-        .read_to_string(&mut rest)
-        .await
-        .map_err(|error| error.to_string())?;
+    input.read_to_string(&mut rest).await?;
     if rest.is_empty() {
         Ok(())
     } else {
-        Err(format!("sent after the agent exited: {rest}"))
+        Err(format!("sent after the agent exited: {rest}").into())
     }
 }
 
-fn json(line: &str) -> Result<Value, String> {
-    serde_json::from_str(line).map_err(|error| format!("{error} in the recording: {line}"))
+fn json(line: &str) -> Result<Value, Failure> {
+    serde_json::from_str(line).map_err(|error| format!("{error} in the recording: {line}").into())
 }
 
 #[cfg(test)]
@@ -104,7 +97,8 @@ mod tests {
         while let Some(line) = lines.next_line().await.unwrap() {
             printed.push(line);
         }
-        (printed, fake.done.await.unwrap())
+        let done = fake.done.await.unwrap();
+        (printed, done.map_err(|error| error.to_string()))
     }
 
     #[tokio::test]
