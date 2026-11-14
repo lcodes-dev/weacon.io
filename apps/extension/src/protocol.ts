@@ -126,6 +126,7 @@ export type ChallengeId = string;
 export type ChatAction = (
   | {
     kind: "prompt";
+    repo?: RepoId;
     text: string;
   }
   | {
@@ -181,6 +182,7 @@ export type ChatEntry = {
 export type ChatEvent = (
   | {
     kind: "prompt";
+    repo?: RepoId;
     request: RequestId;
     text: string;
   }
@@ -567,6 +569,12 @@ export type Receipt = {
     state: "unknown";
   }
 );
+
+/**
+ * A git repository the owner registered for a workspace on their machine, 1–64 ASCII
+ * letters, digits, `-` or `_`.
+ */
+export type RepoId = string;
 
 /**
  * A command's id, chosen by the client and kept across reconnects and retries. Sending the

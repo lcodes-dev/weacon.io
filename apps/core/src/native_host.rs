@@ -82,7 +82,13 @@ pub(crate) fn run(app: &App, origin: &str) -> Result<(), Fault> {
     let runtime = runtime()?;
     let relayed = runtime.block_on(async {
         let daemon = weacon_client::connect(&socket).await?;
-        relay(tokio::io::stdin(), tokio::io::stdout(), daemon, &app.log)
+        let relay = Box::pin(relay(
+            tokio::io::stdin(),
+            tokio::io::stdout(),
+            daemon,
+            &app.log,
+        ));
+        crate::reports::following(state_dir, &app.reporter, &app.log, relay)
             .await
             .map_err(|error| {
                 Fault::new(code!("native_host.failed"), "The native host stopped").because(error)

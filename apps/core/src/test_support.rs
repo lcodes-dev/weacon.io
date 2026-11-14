@@ -92,21 +92,8 @@ pub(crate) fn hello(id: u32, protocol: u32) -> Envelope {
 
 /// The code of an error message, if it is one.
 pub(crate) fn error_code(message: &Message) -> Option<&str> {
-    match message {
-        Message::Error(body) => Some(body.code.as_str()),
-        Message::Hello(_)
-        | Message::Welcome(_)
-        | Message::Receipt(_)
-        | Message::Pick(_)
-        | Message::Run(_)
-        | Message::Workspace(_)
-        | Message::Log(_)
-        | Message::ChatCommand(_)
-        | Message::Chat(_)
-        | Message::ChatQuery(_)
-        | Message::ChatAnswer(_)
-        | Message::DiffQuery(_)
-        | Message::DiffAnswer(_)
-        | Message::Unknown => None,
-    }
+    let Message::Error(body) = message else {
+        return None;
+    };
+    Some(body.code.as_str())
 }

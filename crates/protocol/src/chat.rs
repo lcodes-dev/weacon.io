@@ -2,7 +2,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::token::token_id;
-use crate::{PermissionAnswer, Receipt, RequestId, RunStatus, RunUpdate, WorkspaceId};
+use crate::{PermissionAnswer, Receipt, RepoId, RequestId, RunStatus, RunUpdate, WorkspaceId};
 
 token_id!(
     /// A chat in a workspace, 1–64 ASCII letters, digits, `-` or `_`.
@@ -22,8 +22,14 @@ pub struct ChatCommand {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ChatAction {
-    /// Starts a turn with `text`, or queues it behind the turn that is running.
-    Prompt { text: String },
+    /// Starts a turn with `text`, or queues it behind the turn that is running. On a chat's
+    /// first prompt, `repo` fixes the repository its agents work in; later prompts leave it out.
+    Prompt {
+        text: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[schemars(with = "RepoId")]
+        repo: Option<RepoId>,
+    },
     /// Answers a permission prompt of one of the chat's runs.
     Permission { answer: PermissionAnswer },
     /// Stops the turn that is running.
@@ -52,10 +58,13 @@ pub struct ChatEntry {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ChatEvent {
-    /// A person's prompt, accepted under `request`.
+    /// A person's prompt, accepted under `request`, with the repository it fixed, if any.
     Prompt {
         request: RequestId,
         text: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[schemars(with = "RepoId")]
+        repo: Option<RepoId>,
     },
     /// Where a chat command stands; written once per state.
     Receipt {
@@ -169,6 +178,10 @@ mod tests {
     use crate::test_support::{chat, envelope, request, run, travels, workspace};
     use crate::{Envelope, FrameError, Message, Outcome, RunEvent, RunState};
 
+    fn repo() -> RepoId {
+        "site".parse().unwrap()
+    }
+
     fn command(action: ChatAction) -> Envelope {
         envelope(Message::ChatCommand(ChatCommand {
             request: request(),
@@ -249,8 +262,16 @@ mod tests {
             (
                 ChatAction::Prompt {
                     text: "Run the tests".to_owned(),
+                    repo: None,
                 },
                 json!({ "kind": "prompt", "text": "Run the tests" }),
+            ),
+            (
+                ChatAction::Prompt {
+                    text: "Fix the build".to_owned(),
+                    repo: Some(repo()),
+                },
+                json!({ "kind": "prompt", "text": "Fix the build", "repo": "site" }),
             ),
             (
                 ChatAction::Permission { answer },
@@ -266,8 +287,14 @@ mod tests {
     }
 
     #[test]
-    fn a_known_action_without_its_fields_is_refused() {
-        serde_json::from_value::<Envelope>(command_wire(&json!({ "kind": "prompt" }))).unwrap_err();
+    fn a_known_action_without_its_fields_or_with_a_bad_repo_is_refused() {
+        let refused = [
+            json!({ "kind": "prompt" }),
+            json!({ "kind": "prompt", "text": "Go", "repo": "--upload-pack=x" }),
+        ];
+        for action in refused {
+            serde_json::from_value::<Envelope>(command_wire(&action)).unwrap_err();
+        }
     }
 
     #[test]
@@ -277,6 +304,7 @@ mod tests {
                 ChatEvent::Prompt {
                     request: request(),
                     text: "Run the tests".to_owned(),
+                    repo: None,
                 },
                 json!({ "kind": "prompt", "request": "r-1", "text": "Run the tests" }),
             ),
@@ -315,6 +343,22 @@ mod tests {
         for (event, wire) in cases {
             travels(&update(event), entry_wire(&wire));
         }
+    }
+
+    #[test]
+    fn a_prompt_event_keeps_the_repo_it_fixed() {
+        let event = ChatEvent::Prompt {
+            request: request(),
+            text: "Fix the build".to_owned(),
+            repo: Some(repo()),
+        };
+        travels(
+            &update(event),
+            entry_wire(
+                &json!({ "kind": "prompt", "request": "r-1", "text": "Fix the build",
+                                "repo": "site" }),
+            ),
+        );
     }
 
     #[test]
