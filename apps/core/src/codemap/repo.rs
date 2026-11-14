@@ -1,16 +1,21 @@
 //! The code map's source for a repository on this machine, read through git.
 
 use std::collections::BTreeMap;
+use std::fs::File;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use weacon_codemap::Index;
 use weacon_observability::Fault;
 use weacon_protocol::{CommitId, code};
 
-use super::{RepoMap, Source};
+use super::{RepoMap, Source, off_runtime};
 use crate::app::blocking;
 use crate::db::{LocalRepo, Workspace};
 use crate::git::Git;
+
+/// The largest file the map reads; a larger one is left out, likely generated or not code.
+pub(crate) const LARGEST: u64 = 1 << 20;
 
 /// A repository on disk, its main worktree at `repo`.
 #[derive(Clone, Debug)]
@@ -25,26 +30,37 @@ impl Source for Repo {
     }
 
     fn tree(&self, commit: &CommitId) -> Result<Vec<(String, String)>, Fault> {
-        self.git.tree(&self.repo, commit)
+        let tree = self.git.tree(&self.repo, commit)?;
+        Ok(tree
+            .into_iter()
+            .filter(|file| file.size <= LARGEST)
+            .map(|file| (file.path, file.blob))
+            .collect())
     }
 
     fn blobs(&self, blobs: &[String]) -> Result<BTreeMap<String, String>, Fault> {
         self.git.blobs(&self.repo, blobs)
     }
 
-    fn changed(
-        &self,
-        path: &Path,
-        commit: &CommitId,
-    ) -> Result<Vec<(String, Option<String>)>, Fault> {
-        let changed = self.git.changed(path, commit)?;
-        Ok(changed
-            .into_iter()
-            .map(|file| {
-                let text = text_at(&path.join(&file));
-                (file, text)
-            })
-            .collect())
+    fn changed(&self, path: &Path, commit: &CommitId) -> Result<Vec<String>, Fault> {
+        self.git.changed(path, commit)
+    }
+
+    /// Only a regular file of at most [`LARGEST`] bytes reached through no link, inside the
+    /// worktree, has text.
+    fn text(&self, path: &Path, file: &str) -> Option<String> {
+        let path = path.canonicalize().ok()?.join(file);
+        if path.canonicalize().ok()? != path {
+            return None;
+        }
+        let file = File::open(&path).ok()?;
+        let about = file.metadata().ok()?;
+        if !about.is_file() || about.len() > LARGEST {
+            return None;
+        }
+        let mut text = String::new();
+        file.take(LARGEST).read_to_string(&mut text).ok()?;
+        Some(text)
     }
 }
 
@@ -71,7 +87,7 @@ pub(crate) async fn folder_index(
     let base = repo.base().await?;
     let changed = repo.changed(&base, &worktree).await?;
     let facts = repo.worktree(&base, &worktree, changed).await?;
-    Ok(weacon_codemap::assemble(&facts))
+    off_runtime(move || Ok(weacon_codemap::assemble(&facts))).await
 }
 
 /// The canonical paths of the main worktree of `folder`'s repository and of the worktree
@@ -101,13 +117,6 @@ fn not_a_repo() -> Fault {
     )
 }
 
-/// The text of the regular file at `path`; a link, a folder, a missing file and one that isn't
-/// UTF-8 have none.
-fn text_at(path: &Path) -> Option<String> {
-    let kind = std::fs::symlink_metadata(path).ok()?;
-    kind.is_file().then(|| std::fs::read_to_string(path).ok())?
-}
-
 #[cfg(test)]
 mod tests {
     use std::fs;
@@ -135,22 +144,54 @@ mod tests {
 
         fs::write(path.join("README.md"), "# Changed\n").unwrap();
         fs::write(path.join("bytes.md"), [0xff]).unwrap();
+        fs::write(
+            path.join("big.md"),
+            "x".repeat(usize::try_from(LARGEST).unwrap() + 1),
+        )
+        .unwrap();
         fs::remove_file(path.join(".gitattributes")).unwrap();
-        fs::create_dir(path.join("linked")).unwrap();
-        #[cfg(unix)]
-        std::os::unix::fs::symlink("/etc/hostname", path.join("link.md")).unwrap();
-        fixture(&dir, &path, &["add", "--all"]);
-
+        let text = |file: &str| source.text(&path, file);
+        assert_eq!(text("README.md").as_deref(), Some("# Changed\n"));
+        assert_eq!(text("bytes.md"), None);
+        assert_eq!(text("big.md"), None);
+        assert_eq!(text(".gitattributes"), None);
         let changed = source.changed(&path, &head).unwrap();
-        let mut expected = vec![
-            (".gitattributes".to_owned(), None),
-            ("README.md".to_owned(), Some("# Changed\n".to_owned())),
-            ("bytes.md".to_owned(), None),
-        ];
-        if cfg!(unix) {
-            expected.push(("link.md".to_owned(), None));
+        assert_eq!(
+            changed,
+            [".gitattributes", "README.md", "big.md", "bytes.md"]
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn reads_nothing_through_a_link() {
+        use std::os::unix::fs::symlink;
+        let dir = TempDir::new().unwrap();
+        let path = repo(&dir);
+        let source = Repo {
+            git: git(&dir),
+            repo: path.clone(),
+        };
+        let outside = dir.join("outside");
+        fs::create_dir_all(outside.join("src")).unwrap();
+        fs::write(outside.join("secret.md"), "outside").unwrap();
+        fs::write(outside.join("src/lib.rs"), "outside").unwrap();
+        fs::write(path.join("inside.md"), "inside").unwrap();
+        symlink(outside.join("secret.md"), path.join("link.md")).unwrap();
+        symlink(&outside, path.join("docs")).unwrap();
+        symlink(path.join("inside.md"), path.join("near.md")).unwrap();
+
+        assert_eq!(source.text(&path, "inside.md").as_deref(), Some("inside"));
+        for file in [
+            "link.md",
+            "docs/secret.md",
+            "docs/src/lib.rs",
+            "near.md",
+            "docs",
+            "../outside/secret.md",
+        ] {
+            assert_eq!(source.text(&path, file), None, "{file}");
         }
-        assert_eq!(changed, expected);
     }
 
     #[tokio::test]

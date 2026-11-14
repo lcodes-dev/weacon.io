@@ -7,7 +7,7 @@ use weacon_codemap::{Entry, Facts};
 use weacon_observability::Fault;
 use weacon_protocol::{Sha256 as Sha256Hex, code};
 
-use super::{Workspace, failed, unreadable};
+use super::{Workspace, failed};
 
 /// The base layer: the repository at a commit. Every other layer is one worktree's changes.
 pub(crate) const BASE: &str = "base";
@@ -74,14 +74,14 @@ impl Map {
     /// The layer named `name`, if it has been stored.
     pub(crate) async fn layer(&self, name: &str) -> Result<Option<Layer>, Fault> {
         let (workspace, repo) = self.keys();
-        let pool = &self.workspace.db.pool;
+        let mut transaction = self.workspace.db.pool.begin().await.map_err(failed)?;
         let commit: Option<String> = sqlx::query_scalar(
             "SELECT commit_id FROM map_layers WHERE workspace_id = ? AND repo = ? AND layer = ?",
         )
         .bind(workspace)
         .bind(repo)
         .bind(name)
-        .fetch_optional(pool)
+        .fetch_optional(&mut *transaction)
         .await
         .map_err(failed)?;
         let Some(commit) = commit else {
@@ -94,7 +94,7 @@ impl Map {
         .bind(workspace)
         .bind(repo)
         .bind(name)
-        .fetch_all(pool)
+        .fetch_all(&mut *transaction)
         .await
         .map_err(failed)?;
         let files = rows
@@ -138,10 +138,10 @@ impl Map {
                 .fetch_all(&self.workspace.db.pool)
                 .await
                 .map_err(failed)?;
-            for (path, blob, json) in rows {
-                let facts = serde_json::from_str(&json).map_err(|_| unreadable())?;
-                found.insert((path, blob), facts);
-            }
+            // A row this build can't read counts as missing, so the file is read again.
+            found.extend(rows.into_iter().filter_map(|(path, blob, json)| {
+                Some(((path, blob), serde_json::from_str(&json).ok()?))
+            }));
         }
         Ok(found)
     }
@@ -188,6 +188,16 @@ impl Map {
         insert_files(&mut transaction, keys, &layer.files).await?;
         insert_facts(&mut transaction, (workspace, repo), facts).await?;
         insert_entries(&mut transaction, keys, entries).await?;
+        sqlx::query(
+            "DELETE FROM map_facts WHERE workspace_id = ?1 AND repo = ?2 AND NOT EXISTS \
+             (SELECT 1 FROM map_files WHERE workspace_id = ?1 AND repo = ?2 \
+              AND path = map_facts.path AND blob = map_facts.blob)",
+        )
+        .bind(workspace)
+        .bind(repo)
+        .execute(&mut *transaction)
+        .await
+        .map_err(failed)?;
         transaction.commit().await.map_err(failed)
     }
 
@@ -532,6 +542,35 @@ mod tests {
                 .unwrap(),
             Some(mine)
         );
+    }
+
+    #[tokio::test]
+    async fn rereads_what_it_cant_parse_and_drops_what_nothing_uses() {
+        let dir = TempDir::new().unwrap();
+        let map = map(&dir, "one").await;
+        let lib = facts("src/lib.rs", "fn run() {}\n");
+        let first = layer(BASE, vec![stored("src/lib.rs", Some("b1"))]);
+        let new = [("src/lib.rs".to_owned(), "b1".to_owned(), lib.clone())];
+        map.replace(&first, &new, &[]).await.unwrap();
+        let one = [("src/lib.rs".to_owned(), "b1".to_owned())];
+        assert_eq!(map.facts(&one).await.unwrap().len(), 1);
+
+        sqlx::query("UPDATE map_facts SET facts = '{'")
+            .execute(&map.workspace.db.pool)
+            .await
+            .unwrap();
+        assert!(map.facts(&one).await.unwrap().is_empty());
+
+        let second = layer(BASE, vec![stored("src/lib.rs", Some("b2"))]);
+        let new = [("src/lib.rs".to_owned(), "b2".to_owned(), lib)];
+        map.replace(&second, &new, &[]).await.unwrap();
+        let two = [("src/lib.rs".to_owned(), "b2".to_owned())];
+        assert_eq!(map.facts(&two).await.unwrap().len(), 1);
+        let rows: i64 = sqlx::query_scalar("SELECT count(*) FROM map_facts")
+            .fetch_one(&map.workspace.db.pool)
+            .await
+            .unwrap();
+        assert_eq!(rows, 1);
     }
 
     #[test]

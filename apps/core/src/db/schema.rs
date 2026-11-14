@@ -32,6 +32,8 @@ CREATE TABLE map_files (
         REFERENCES map_layers (workspace_id, repo, layer) ON DELETE CASCADE
 ) STRICT;
 
+CREATE INDEX map_files_by_blob ON map_files (workspace_id, repo, path, blob);
+
 CREATE TABLE map_facts (
     workspace_id TEXT NOT NULL,
     repo TEXT NOT NULL,

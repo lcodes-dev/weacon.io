@@ -5,7 +5,7 @@ use crate::facts::{Facts, FileKind};
 
 /// What search finds: an item by its path and the contracts it declares, or a document by
 /// its text.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Entry {
     pub file: String,
     /// `fn`, `struct` and the other kinds of item, or `doc`.

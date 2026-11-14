@@ -18,7 +18,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use sha2::{Digest, Sha256};
-use weacon_codemap::{Facts, Reader, SourceFile, is_mapped};
+use weacon_codemap::{Entry, Facts, Reader, SourceFile, is_mapped};
 use weacon_observability::Fault;
 use weacon_protocol::{CommitId, Sha256 as Sha256Hex, code};
 
@@ -36,20 +36,21 @@ pub(crate) trait Source: Clone + Send + Sync + 'static {
     fn tree(&self, commit: &CommitId) -> Result<Vec<(String, String)>, Fault>;
     /// The text of each blob that is UTF-8, by blob.
     fn blobs(&self, blobs: &[String]) -> Result<BTreeMap<String, String>, Fault>;
-    /// Each file that differs in the worktree at `path` from `commit`, committed or not, with
-    /// its text now, `None` once deleted or when it isn't UTF-8.
-    fn changed(
-        &self,
-        path: &Path,
-        commit: &CommitId,
-    ) -> Result<Vec<(String, Option<String>)>, Fault>;
+    /// Each file that differs in the worktree at `path` from `commit`, committed or not.
+    fn changed(&self, path: &Path, commit: &CommitId) -> Result<Vec<String>, Fault>;
+    /// The text of `file` in the worktree at `path`; none once deleted, or when the map can't
+    /// take it.
+    fn text(&self, path: &Path, file: &str) -> Option<String>;
 }
 
 /// The base layer's commit and the facts of its files.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Base {
     pub(crate) commit: CommitId,
+    pub(crate) files: Vec<Stored>,
     pub(crate) facts: Vec<Facts>,
+    /// What search finds in the base.
+    pub(crate) entries: BTreeSet<Entry>,
 }
 
 /// One repository's code map, read from `source` and kept in `map`.
@@ -73,8 +74,23 @@ impl<S: Source> RepoMap<S> {
             && layer.commit == commit.as_str()
         {
             let (facts, _) = self.cached(&layer.files).await?;
-            return Ok(Base { commit, facts });
+            let (facts, entries) = off_runtime(move || {
+                let entries = entries_of(&facts);
+                Ok((facts, entries))
+            })
+            .await?;
+            return Ok(Base {
+                commit,
+                files: layer.files,
+                facts,
+                entries,
+            });
         }
+        self.read_base(commit).await
+    }
+
+    /// The base at `commit`, reading the blobs the map hasn't seen, then stored.
+    async fn read_base(&self, commit: CommitId) -> Result<Base, Fault> {
         let tree = {
             let commit = commit.clone();
             self.blocking(move |source| source.tree(&commit)).await?
@@ -87,22 +103,33 @@ impl<S: Source> RepoMap<S> {
                 blob: Some(blob),
             })
             .collect();
-        let (mut facts, missing) = self.cached(&files).await?;
+        let (facts, missing) = self.cached(&files).await?;
         let blobs: Vec<String> = missing.iter().map(|(_, blob)| blob.clone()).collect();
         let texts = self.blocking(move |source| source.blobs(&blobs)).await?;
-        let read = read(missing.into_iter().filter_map(|(path, blob)| {
-            let text = texts.get(&blob)?.clone();
-            Some((path, blob, text))
-        }))?;
-        facts.extend(read.iter().map(|(_, _, facts)| facts.clone()));
+        let (read, facts, entries) = off_runtime(move || {
+            let read = read(missing.into_iter().filter_map(|(path, blob)| {
+                let text = texts.get(&blob)?.clone();
+                Some((path, blob, text))
+            }))?;
+            let mut facts = facts;
+            facts.extend(read.iter().map(|(_, _, facts)| facts.clone()));
+            let entries = entries_of(&facts);
+            Ok((read, facts, entries))
+        })
+        .await?;
         let layer = Layer {
             name: BASE.to_owned(),
             commit: commit.as_str().to_owned(),
             files,
         };
-        let entries = weacon_codemap::assemble(&facts).entries();
-        self.map.replace(&layer, &read, &entries).await?;
-        Ok(Base { commit, facts })
+        let stored: Vec<Entry> = entries.iter().cloned().collect();
+        self.map.replace(&layer, &read, &stored).await?;
+        Ok(Base {
+            commit,
+            files: layer.files,
+            facts,
+            entries,
+        })
     }
 
     /// What the worktree at `path` changed from `base`'s commit.
@@ -112,13 +139,18 @@ impl<S: Source> RepoMap<S> {
         path: &Path,
     ) -> Result<Vec<(String, Option<String>)>, Fault> {
         let (path, commit) = (path.to_owned(), base.commit.clone());
-        let changed = self
-            .blocking(move |source| source.changed(&path, &commit))
-            .await?;
-        Ok(changed
-            .into_iter()
-            .filter(|(path, _)| is_mapped(path))
-            .collect())
+        self.blocking(move |source| {
+            let changed = source.changed(&path, &commit)?;
+            Ok(changed
+                .into_iter()
+                .filter(|file| is_mapped(file))
+                .map(|file| {
+                    let text = source.text(&path, &file);
+                    (file, text)
+                })
+                .collect())
+        })
+        .await
     }
 
     /// The facts of every file as the worktree at `path` has it: `base`'s, with what the
@@ -133,38 +165,40 @@ impl<S: Source> RepoMap<S> {
             .into_iter()
             .map(|(path, text)| (path, text.map(|text| (content_key(&text), text))))
             .collect();
-        let files: Vec<Stored> = keyed
+        let changed: Vec<Stored> = keyed
             .iter()
             .map(|(path, text)| Stored {
                 path: path.clone(),
                 blob: text.as_ref().map(|(key, _)| key.clone()),
             })
             .collect();
-        let (mut overlay, missing) = self.cached(&files).await?;
-        let missing: BTreeSet<(String, String)> = missing.into_iter().collect();
-        let read = read(keyed.into_iter().filter_map(|(path, text)| {
-            let (key, text) = text?;
-            missing
-                .contains(&(path.clone(), key.clone()))
-                .then_some((path, key, text))
-        }))?;
-        overlay.extend(read.iter().map(|(_, _, facts)| facts.clone()));
-        let shadowed: BTreeSet<&str> = files.iter().map(|file| file.path.as_str()).collect();
-        let mut facts: Vec<Facts> = base
-            .facts
-            .iter()
-            .filter(|facts| !shadowed.contains(facts.path()))
-            .cloned()
-            .collect();
-        facts.extend(overlay);
-        let entries: Vec<_> = weacon_codemap::assemble(&facts)
-            .entries()
-            .into_iter()
-            .filter(|entry| shadowed.contains(entry.file.as_str()))
-            .collect();
+        let (overlay, missing) = self.cached(&changed).await?;
+        let commit = base.commit.as_str().to_owned();
+        let base = base.clone();
+        let (read, facts, files, entries) = off_runtime(move || {
+            let missing: BTreeSet<(String, String)> = missing.into_iter().collect();
+            let read = read(keyed.into_iter().filter_map(|(path, text)| {
+                let (key, text) = text?;
+                missing
+                    .contains(&(path.clone(), key.clone()))
+                    .then_some((path, key, text))
+            }))?;
+            let shadowed: BTreeSet<&str> = changed.iter().map(|file| file.path.as_str()).collect();
+            let mut facts: Vec<Facts> = base
+                .facts
+                .iter()
+                .filter(|facts| !shadowed.contains(facts.path()))
+                .cloned()
+                .collect();
+            facts.extend(overlay);
+            facts.extend(read.iter().map(|(_, _, facts)| facts.clone()));
+            let (files, entries) = overlay_of(&base, changed, &facts);
+            Ok((read, facts, files, entries))
+        })
+        .await?;
         let layer = Layer {
             name: layer_name(path),
-            commit: base.commit.as_str().to_owned(),
+            commit,
             files,
         };
         self.map.replace(&layer, &read, &entries).await?;
@@ -218,6 +252,48 @@ impl<S: Source> RepoMap<S> {
             .await
             .map_err(|error| read_failed().because(error))?
     }
+}
+
+/// A worktree's layer over `base`: the files it `changed`, and those whose search entries its
+/// changes moved, since a change can rename what other files hold, such as their crate; and
+/// what search finds in them.
+fn overlay_of(base: &Base, changed: Vec<Stored>, facts: &[Facts]) -> (Vec<Stored>, Vec<Entry>) {
+    let entries = entries_of(facts);
+    let moved: BTreeSet<String> = entries
+        .symmetric_difference(&base.entries)
+        .map(|entry| entry.file.clone())
+        .chain(changed.iter().map(|file| file.path.clone()))
+        .collect();
+    let changed_paths: BTreeSet<String> = changed.iter().map(|file| file.path.clone()).collect();
+    let mut files = changed;
+    files.extend(
+        base.files
+            .iter()
+            .filter(|file| moved.contains(&file.path) && !changed_paths.contains(&file.path))
+            .cloned(),
+    );
+    let entries = entries
+        .into_iter()
+        .filter(|entry| moved.contains(&entry.file))
+        .collect();
+    (files, entries)
+}
+
+/// What search finds in a repository with `facts`.
+fn entries_of(facts: &[Facts]) -> BTreeSet<Entry> {
+    weacon_codemap::assemble(facts)
+        .entries()
+        .into_iter()
+        .collect()
+}
+
+/// Runs `work`, which is CPU-bound, off the async runtime.
+pub(crate) async fn off_runtime<T: Send + 'static>(
+    work: impl FnOnce() -> Result<T, Fault> + Send + 'static,
+) -> Result<T, Fault> {
+    blocking(move || Ok(work()))
+        .await
+        .map_err(|error| index_failed().because(error))?
 }
 
 /// The facts of each `(path, key, text)`, with the path and key they're stored under; text
@@ -304,7 +380,7 @@ mod tests {
                 ("web/app.ts", "x"),
             ],
         );
-        let Base { commit, facts } = repo.base().await.unwrap();
+        let Base { commit, facts, .. } = repo.base().await.unwrap();
         assert_eq!((commit, facts.len()), (fake::commit_id("c1"), 3));
         assert_eq!(source.blobs_read().len(), 3);
         assert!(items(&facts, "a::run").contains("calls fn a::m::go"));
@@ -344,10 +420,12 @@ mod tests {
             ("src/m.rs", Some("pub fn go() {}\npub fn stop() {}\n")),
             ("README.md", None),
             ("src/new.rs", Some("fn x() {}")),
+            ("dump.sql", Some("huge")),
         ]);
         let worktree = Path::new("/w/chat");
         let base = repo.base().await.unwrap();
         let changed = repo.changed(&base, worktree).await.unwrap();
+        assert_eq!(source.texts_read(), ["src/m.rs", "README.md", "src/new.rs"]);
         let facts = repo.worktree(&base, worktree, changed).await.unwrap();
         let paths: BTreeSet<&str> = facts.iter().map(Facts::path).collect();
         assert_eq!(
@@ -368,6 +446,29 @@ mod tests {
         assert_eq!(repo.map.search(&layer, "old", 10).await.unwrap(), []);
         assert_eq!(repo.map.search(BASE, "old", 10).await.unwrap().len(), 1);
         assert_eq!(repo.map.search(&layer, "run", 10).await.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_worktree_finds_what_its_changes_renamed_in_other_files() {
+        let dir = TempDir::new().unwrap();
+        let (repo, source) = repo(&dir).await;
+        source.commit(
+            "c1",
+            &[
+                ("Cargo.toml", MANIFEST),
+                ("src/lib.rs", "pub fn run() {}\n"),
+            ],
+        );
+        source.change(&[("Cargo.toml", Some("[package]\nname = \"b\"\n"))]);
+        let base = repo.base().await.unwrap();
+        let worktree = Path::new("/w/chat");
+        let changed = repo.changed(&base, worktree).await.unwrap();
+        repo.worktree(&base, worktree, changed).await.unwrap();
+
+        let found = repo.search(Some(worktree), "run", 10_000).await.unwrap();
+        assert_eq!(found, "Found 1:\n- fn b::run  src/lib.rs\n");
+        let found = repo.search(None, "run", 10_000).await.unwrap();
+        assert_eq!(found, "Found 1:\n- fn a::run  src/lib.rs\n");
     }
 
     #[tokio::test]

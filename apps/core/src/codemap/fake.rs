@@ -22,6 +22,7 @@ struct State {
     commits: BTreeMap<String, BTreeMap<String, String>>,
     changed: Vec<(String, Option<String>)>,
     blobs_read: Vec<String>,
+    texts_read: Vec<String>,
 }
 
 pub(crate) fn blob(text: &str) -> String {
@@ -49,6 +50,10 @@ impl Fake {
             .iter()
             .map(|(path, text)| ((*path).to_owned(), text.map(str::to_owned)));
         self.state.lock().unwrap().changed = changed.collect();
+    }
+
+    pub(crate) fn texts_read(&self) -> Vec<String> {
+        std::mem::take(&mut self.state.lock().unwrap().texts_read)
     }
 
     pub(crate) fn blobs_read(&self) -> Vec<String> {
@@ -96,7 +101,15 @@ impl Source for Fake {
             .collect())
     }
 
-    fn changed(&self, _: &Path, _: &CommitId) -> Result<Vec<(String, Option<String>)>, Fault> {
-        Ok(self.state.lock().unwrap().changed.clone())
+    fn changed(&self, _: &Path, _: &CommitId) -> Result<Vec<String>, Fault> {
+        let state = self.state.lock().unwrap();
+        Ok(state.changed.iter().map(|(file, _)| file.clone()).collect())
+    }
+
+    fn text(&self, _: &Path, file: &str) -> Option<String> {
+        let mut state = self.state.lock().unwrap();
+        state.texts_read.push(file.to_owned());
+        let (_, text) = state.changed.iter().find(|(changed, _)| changed == file)?;
+        text.clone()
     }
 }
