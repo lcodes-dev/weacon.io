@@ -4,22 +4,22 @@ import { type Chat, commit, fromSnapshot, missing, older, stream } from "./chat.
 import type { Heard } from "./heard.ts";
 
 /**
- * Where the chat stands with the server: asked for its snapshot, subscribed under the envelope id
- * of each, or refused one of them.
+ * Where the chat stands with the server, each query by its envelope id: not waiting, waiting on
+ * its snapshot, subscribed (with a window of older events on its way, perhaps), or refused.
  */
-export type SyncState =
+type SyncState =
   | { kind: "idle" }
   | { kind: "asking"; snapshot: number }
-  | { kind: "live"; subscription: number }
+  | { kind: "live"; subscription: number; window: number | undefined }
   | { kind: "failed" };
 
-/** The chat shown, where it stands, and the window of older events asked for, by envelope id. */
-export type Sync = { chat: Chat | undefined; state: SyncState; window: number | undefined };
+/** The chat shown, and where it stands with the server. */
+export type Sync = { chat: Chat | undefined; state: SyncState };
 
 /** The queries to send, and the state they leave. */
 export type Step = { sync: Sync; send: Envelope[] };
 
-export const START: Sync = { chat: undefined, state: { kind: "idle" }, window: undefined };
+export const START: Sync = { chat: undefined, state: { kind: "idle" } };
 
 // How many older events scrolling up asks for at a time.
 const PAGE = 100;
@@ -27,88 +27,83 @@ const PAGE = 100;
 /** Asks for the chat afresh, keeping what it shows until the answer comes, as on opening it. */
 export function open(sync: Sync, ref: ChatRef, id: () => number): Step {
   const query = ask(ref, id(), { kind: "snapshot" });
-  return { sync: { ...sync, state: { kind: "asking", snapshot: query.id }, window: undefined }, send: [query] };
+  return { sync: { ...sync, state: { kind: "asking", snapshot: query.id } }, send: [query] };
 }
 
 /** Stops waiting for answers, keeping the chat, as when the connection ends. */
 export function ended(sync: Sync): Sync {
   const waiting = sync.state.kind === "asking" || sync.state.kind === "live";
-  return waiting ? { ...sync, state: { kind: "idle" }, window: undefined } : sync;
-}
-
-/** Whether the chat is subscribed, so new events reach it. */
-export function subscribed(sync: Sync): boolean {
-  return sync.state.kind === "live";
+  return waiting ? { ...sync, state: { kind: "idle" } } : sync;
 }
 
 /** Asks for the page of events before the oldest the chat holds, unless one is on its way. */
 export function more(sync: Sync, ref: ChatRef, id: () => number): Step {
-  const { chat } = sync;
-  if (chat === undefined || !subscribed(sync) || sync.window !== undefined || chat.first <= 1) {
+  const { chat, state } = sync;
+  if (chat === undefined || state.kind !== "live" || state.window !== undefined || chat.first <= 1) {
     return { sync, send: [] };
   }
-  return windowTo(sync, chat, ref, id, Math.max(1, chat.first - PAGE));
+  return windowTo(chat, state.subscription, ref, id, Math.max(1, chat.first - PAGE));
 }
 
 /** What hearing `heard` does to `sync`. */
 export function hear(sync: Sync, heard: Heard, ref: ChatRef, id: () => number): Step {
-  const { chat } = sync;
+  const { chat, state } = sync;
   switch (heard.kind) {
     case "snapshot": {
-      if (sync.state.kind !== "asking" || heard.id !== sync.state.snapshot) {
+      if (state.kind !== "asking" || heard.id !== state.snapshot) {
         return { sync, send: [] };
       }
       const fresh = fromSnapshot(heard.snapshot);
       const subscribe = ask(ref, id(), { kind: "subscribe", after: fresh.seq });
-      const next: Sync = { chat: fresh, state: { kind: "live", subscription: subscribe.id }, window: undefined };
-      return fetchWaiting(next, ref, id, [subscribe]);
+      return fetchWaiting(fresh, subscribe.id, ref, id, [subscribe]);
     }
     case "entry": {
-      if (chat === undefined || !subscribed(sync)) {
+      if (chat === undefined || state.kind !== "live") {
         return { sync, send: [] };
       }
       const next = commit(chat, heard.entry);
       return next === undefined ? open(sync, ref, id) : { sync: { ...sync, chat: next }, send: [] };
     }
     case "lost":
-      return sync.state.kind === "live" && heard.id === sync.state.subscription ? open(sync, ref, id) : { sync, send: [] };
+      return state.kind === "live" && heard.id === state.subscription ? open(sync, ref, id) : { sync, send: [] };
     case "window": {
-      if (chat === undefined || heard.id !== sync.window) {
+      if (chat === undefined || state.kind !== "live" || heard.id !== state.window) {
         return { sync, send: [] };
       }
-      const next = { ...sync, chat: older(chat, heard.events), window: undefined };
+      const next = older(chat, heard.events);
       // An answer that adds nothing can't bring the oldest waiting prompt any closer.
-      return next.chat === chat ? { sync: next, send: [] } : fetchWaiting(next, ref, id, []);
+      return next === chat
+        ? { sync: { chat, state: { ...state, window: undefined } }, send: [] }
+        : fetchWaiting(next, state.subscription, ref, id, []);
     }
     case "refused":
-      if (heard.id === asked(sync.state)) {
-        return { sync: { ...sync, state: { kind: "failed" }, window: undefined }, send: [] };
+      if (state.kind === "asking" ? heard.id === state.snapshot : state.kind === "live" && heard.id === state.subscription) {
+        // A window on its way goes with the subscription; asking again starts afresh.
+        return { sync: { ...sync, state: { kind: "failed" } }, send: [] };
       }
-      return { sync: heard.id === sync.window ? { ...sync, window: undefined } : sync, send: [] };
+      if (state.kind === "live" && heard.id === state.window) {
+        return { sync: { ...sync, state: { ...state, window: undefined } }, send: [] };
+      }
+      return { sync, send: [] };
     case "run":
       return chat === undefined ? { sync, send: [] } : { sync: { ...sync, chat: stream(chat, heard.run, heard.event) }, send: [] };
   }
 }
 
-// Asks for every event back to the oldest waiting prompt the chat doesn't hold yet.
-function fetchWaiting(sync: Sync, ref: ChatRef, id: () => number, send: Envelope[]): Step {
-  const { chat } = sync;
-  const oldest = chat && missing(chat);
-  if (chat === undefined || oldest === undefined) {
-    return { sync, send };
+// `chat`, subscribed under `subscription`, asking for every event back to the oldest waiting
+// prompt it doesn't hold yet.
+function fetchWaiting(chat: Chat, subscription: number, ref: ChatRef, id: () => number, send: Envelope[]): Step {
+  const oldest = missing(chat);
+  if (oldest === undefined) {
+    return { sync: { chat, state: { kind: "live", subscription, window: undefined } }, send };
   }
-  const step = windowTo(sync, chat, ref, id, oldest);
+  const step = windowTo(chat, subscription, ref, id, oldest);
   return { sync: step.sync, send: [...send, ...step.send] };
 }
 
-function windowTo(sync: Sync, chat: Chat, ref: ChatRef, id: () => number, from: number): Step {
+function windowTo(chat: Chat, subscription: number, ref: ChatRef, id: () => number, from: number): Step {
   const query = ask(ref, id(), { kind: "window", before: chat.first, limit: chat.first - from });
-  return { sync: { ...sync, window: query.id }, send: [query] };
-}
-
-// The envelope id of the snapshot or subscription `state` waits on, if any.
-function asked(state: SyncState): number | undefined {
-  return state.kind === "asking" ? state.snapshot : state.kind === "live" ? state.subscription : undefined;
+  return { sync: { chat, state: { kind: "live", subscription, window: query.id } }, send: [query] };
 }
 
 function ask(ref: ChatRef, id: number, query: ChatQueryKind): Envelope {

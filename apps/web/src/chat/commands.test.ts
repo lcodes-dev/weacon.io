@@ -36,4 +36,8 @@ test("a command waits for its receipt, and one the socket can't take is lost", a
 
   assert.equal(await taken, "accepted");
   assert.equal(await deliver(chatCommand(3, ref, "s-2", { kind: "interrupt" }), receipts, failing), "lost");
+  // Sent again under the same request, it waits afresh, under its own envelope.
+  const retry = deliver(chatCommand(4, ref, "s-2", { kind: "interrupt" }), receipts, () => {});
+  receipts.take({ id: 4, type: "error", code: "request.conflict", retryable: false });
+  assert.equal(await retry, "refused");
 });

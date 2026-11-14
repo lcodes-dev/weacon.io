@@ -1,8 +1,7 @@
 import type { AgentRef, ChatEntry, RunEvent, RunId, RunState, RunStatus } from "../protocol.ts";
 import { EMPTY_TRANSCRIPT, type Transcript, apply } from "../transcript/transcript.ts";
 
-/** A permission prompt, shown after `at` rows of its turn. */
-/** A permission prompt, and how it was answered once the log says. */
+/** A permission prompt, shown after `at` rows of its turn, and how the log says it ended. */
 export type Ask = { prompt: number; tool: string; at: number; state: "open" | "closed" | "allowed" | "denied" };
 
 /**

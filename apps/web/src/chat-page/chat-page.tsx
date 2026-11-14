@@ -1,13 +1,13 @@
 import { useEffect, useRef, useState } from "react";
 
 import { chatRefOf } from "../chat-ref.ts";
-import { type Answers, askKey, sending, settle, stopProblem } from "../chat/asks.ts";
+import { type Answers, sending, settleAnswer, stopProblem } from "../chat/asks.ts";
 import { type Command, chatCommand, deliver } from "../chat/commands.ts";
 import { working } from "../chat/chat.ts";
 import { receiptsIn } from "../chat/heard.ts";
 import { lines } from "../chat/lines.ts";
 import { LiveChat, nextFrame } from "../chat/live-chat.ts";
-import { START, type Sync, subscribed } from "../chat/sync.ts";
+import { START, type Sync } from "../chat/sync.ts";
 import { type Late, type Send, deliverPrompt } from "../composer/prompt.ts";
 import { type Asks, Connection, HELLO_ID, type Later, type Status, offers } from "../connection.ts";
 import { NO_CHANGES, ask, cut, needsAsking, receive } from "../diff/changes.ts";
@@ -43,16 +43,13 @@ export function ChatPage({ url, log }: { url: string; log: Log }) {
   // The connection while it is live, and the commands sent on it that wait for an answer.
   const live = useRef<{ connection: Connection; receipts: Receipts; liveChat: LiveChat | undefined }>(undefined);
   const lastId = useRef(HELLO_ID);
-  // How an answer ended, on time or late: an accepted one closes its prompt.
+  // An accepted answer closes its prompt, on time or late.
   const answerSettled = (request: RequestId, settled: Settled) => {
     const answer = answered.current.get(request);
-    if (answer === undefined) {
-      return;
-    }
-    if (settled === "accepted") {
+    if (answer !== undefined && settled === "accepted") {
       live.current?.liveChat?.answered(answer.run, answer.prompt);
     }
-    setAnswers((before) => settle(before, askKey(answer.run, answer.prompt), request, settled));
+    setAnswers((before) => settleAnswer(before, answered.current, request, settled));
   };
   useEffect(() => {
     let socket: WebSocket;
@@ -123,7 +120,6 @@ export function ChatPage({ url, log }: { url: string; log: Log }) {
       connection.close();
     };
   }, [url]);
-  // Sends `action` through `through`: `deliver`, or the message box's `deliverPrompt`.
   const command = <T,>(action: ChatAction, request: RequestId, through: Through<T>): Promise<T | "lost"> => {
     const now = live.current;
     if (now === undefined || chatRef === undefined) {
@@ -153,7 +149,7 @@ export function ChatPage({ url, log }: { url: string; log: Log }) {
   const { chat } = sync;
   const shown = {
     lines: chat === undefined ? [] : lines(chat, NO_MEMBERS),
-    older: chat !== undefined && subscribed(sync) && chat.first > 1 ? () => live.current?.liveChat?.more() : undefined,
+    older: chat !== undefined && sync.state.kind === "live" && chat.first > 1 ? () => live.current?.liveChat?.more() : undefined,
     answering,
     // A chat is on its way while the connection is made, then only from a server that serves chats.
     loading: chatRef !== undefined && chat === undefined && sync.state.kind !== "failed" && (status.state === "connecting" || offers(status, "chat.events")),

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { type Answers, answerProblem, askKey, sending, settle, stopProblem } from "./asks.ts";
+import { type Answers, answerProblem, askKey, sending, settle, settleAnswer, stopProblem } from "./asks.ts";
 
 const key = askKey("r-1", 2);
 const mine = (allow: boolean) => ({ run: "r-1", prompt: 2, allow });
@@ -48,6 +48,24 @@ test("a prompt says why its answer may not have been taken", () => {
   assert.equal(answerProblem(first.get(key)), undefined);
   assert.equal(answerProblem(settle(first, key, "a-1", "refused").get(key)), "The answer wasn't taken.");
   assert.equal(answerProblem(settle(first, key, "a-1", "unsure").get(key)), "The server didn't answer. The answer may not have been sent.");
+});
+
+test("an answer settles under the prompt it was sent for, on time or late, and only its own", () => {
+  const ids = fresh();
+  const first = sending(none, mine(true), ids);
+  const sent = new Map([
+    ["a-1", { run: "r-1", prompt: 2 }],
+    ["a-2", { run: "r-1", prompt: 2 }],
+  ]);
+  const unsure = settleAnswer(first.answers, sent, "a-1", "unsure");
+  const replaced = sending(unsure, mine(false), ids).answers;
+
+  assert.equal(settleAnswer(unsure, sent, "a-1", "accepted").size, 0);
+  assert.equal(answerProblem(settleAnswer(unsure, sent, "a-1", "refused").get(key)), "The answer wasn't taken.");
+  assert.equal(settleAnswer(unsure, sent, "q-9", "accepted"), unsure);
+  // The late word on the first answer leaves the one that replaced it.
+  assert.equal(settleAnswer(replaced, sent, "a-1", "accepted"), replaced);
+  assert.equal(settleAnswer(replaced, sent, "a-2", "accepted").size, 0);
 });
 
 test("Stop says why it may not have worked", () => {

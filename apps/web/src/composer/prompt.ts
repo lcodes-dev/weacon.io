@@ -1,4 +1,4 @@
-import { type Command, chatCommand, deliver } from "../chat/commands.ts";
+import { type Command, deliver } from "../chat/commands.ts";
 import { type Status, offers } from "../connection.ts";
 import type { ChatRef } from "../chat-ref.ts";
 import type { Envelope, RequestId } from "../protocol.ts";
@@ -12,11 +12,6 @@ export type Send = (text: string, request: RequestId) => Promise<Sent>;
 
 // The server's limit on one message from a browser, in bytes: `MAX_MESSAGE` in its feed.
 const FEED_LIMIT = 16_384;
-
-/** The command that sends `text` to the chat at `chatRef`, under `request`. */
-export function prompt(id: number, chatRef: ChatRef, request: RequestId, text: string): Command {
-  return chatCommand(id, chatRef, request, { kind: "prompt", text });
-}
 
 /** Sends the prompt `command` through `send` and waits for its receipt, unless it is too long to send. */
 export function deliverPrompt(command: Command, receipts: Receipts, send: (envelope: Envelope) => void): Promise<Sent> {

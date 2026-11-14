@@ -47,6 +47,18 @@ export function settle(answers: Answers, key: string, request: RequestId, settle
   return next.set(key, { ...before, settled });
 }
 
+/** Every answer sent, by request, with the prompt it answers. */
+export type SentAnswers = ReadonlyMap<RequestId, { run: RunId; prompt: number }>;
+
+/**
+ * `answers` once the answer sent under `request` ended as `settled`, on time or late; a request
+ * that sent no answer changes nothing, and one a later answer replaced changes only its prompt.
+ */
+export function settleAnswer(answers: Answers, sent: SentAnswers, request: RequestId, settled: Settled): Answers {
+  const answer = sent.get(request);
+  return answer === undefined ? answers : settle(answers, askKey(answer.run, answer.prompt), request, settled);
+}
+
 const PROBLEMS: Record<Exclude<Settled, "accepted">, string> = {
   refused: "The answer wasn't taken.",
   lost: "The connection closed. The answer may not have been sent.",
