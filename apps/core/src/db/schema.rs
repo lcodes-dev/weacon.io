@@ -9,6 +9,7 @@ const STEPS: &[&str] = &["
 CREATE TABLE map_repos (
     workspace_id TEXT NOT NULL,
     repo TEXT NOT NULL,
+    generation INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (workspace_id, repo)
 ) STRICT;
 
@@ -17,6 +18,7 @@ CREATE TABLE map_layers (
     repo TEXT NOT NULL,
     layer TEXT NOT NULL,
     commit_id TEXT NOT NULL,
+    generation INTEGER NOT NULL,
     PRIMARY KEY (workspace_id, repo, layer),
     FOREIGN KEY (workspace_id, repo) REFERENCES map_repos (workspace_id, repo) ON DELETE CASCADE
 ) STRICT;

@@ -69,13 +69,15 @@ impl<S: Source> RepoMap<S> {
     }
 
     /// The facts of every file at the main worktree's commit, reading only files whose blob
-    /// the map hasn't seen.
+    /// the map hasn't seen or can't read back.
     pub(crate) async fn base(&self) -> Result<Base, Fault> {
+        let generation = self.map.begin().await?;
         let commit = self.head().await?;
         if let Some(layer) = self.map.layer(BASE).await?
             && layer.commit == commit.as_str()
+            && let (facts, missing) = self.cached(&layer.files).await?
+            && missing.is_empty()
         {
-            let (facts, _) = self.cached(&layer.files).await?;
             let (facts, entries) = off_runtime(move || {
                 let entries = entries_of(&facts);
                 Ok((facts, entries))
@@ -88,11 +90,12 @@ impl<S: Source> RepoMap<S> {
                 entries,
             });
         }
-        self.read_base(commit).await
+        self.read_base(commit, generation).await
     }
 
-    /// The base at `commit`, reading the blobs the map hasn't seen, then stored.
-    async fn read_base(&self, commit: CommitId) -> Result<Base, Fault> {
+    /// The base at `commit`, reading the blobs the map hasn't seen, then stored as refresh
+    /// `generation` read it.
+    async fn read_base(&self, commit: CommitId, generation: i64) -> Result<Base, Fault> {
         let tree = {
             let commit = commit.clone();
             self.blocking(move |source| source.tree(&commit)).await?
@@ -122,6 +125,7 @@ impl<S: Source> RepoMap<S> {
         let layer = Layer {
             name: BASE.to_owned(),
             commit: commit.as_str().to_owned(),
+            generation,
             files,
         };
         let stored: Vec<Entry> = entries.iter().cloned().collect();
@@ -163,6 +167,7 @@ impl<S: Source> RepoMap<S> {
         path: &Path,
         changed: Vec<(String, Option<String>)>,
     ) -> Result<Vec<Facts>, Fault> {
+        let generation = self.map.begin().await?;
         let keyed: Vec<(String, Option<(String, String)>)> = changed
             .into_iter()
             .map(|(path, text)| (path, text.map(|text| (content_key(&text), text))))
@@ -201,6 +206,7 @@ impl<S: Source> RepoMap<S> {
         let layer = Layer {
             name: layer_name(path),
             commit,
+            generation,
             files,
         };
         self.map.replace(&layer, &read, &entries).await?;
@@ -402,6 +408,29 @@ mod tests {
         let facts = repo.base().await.unwrap().facts;
         assert_eq!(source.blobs_read(), [blob(moved)]);
         assert!(items(&facts, "a::m::went").starts_with("fn a::m::went"));
+    }
+
+    #[tokio::test]
+    async fn a_stored_base_reads_again_what_it_cant_read_back() {
+        let dir = TempDir::new().unwrap();
+        let (repo, source) = repo(&dir).await;
+        source.commit(
+            "c1",
+            &[
+                ("Cargo.toml", MANIFEST),
+                ("src/lib.rs", "pub fn run() {}\n"),
+            ],
+        );
+        assert_eq!(repo.base().await.unwrap().facts.len(), 2);
+        assert_eq!(source.blobs_read().len(), 2);
+        assert_eq!(repo.base().await.unwrap().facts.len(), 2);
+        assert!(source.blobs_read().is_empty());
+
+        repo.map.spoil_facts().await;
+        assert_eq!(repo.base().await.unwrap().facts.len(), 2);
+        assert_eq!(source.blobs_read().len(), 2);
+        assert_eq!(repo.base().await.unwrap().facts.len(), 2);
+        assert!(source.blobs_read().is_empty());
     }
 
     #[tokio::test]

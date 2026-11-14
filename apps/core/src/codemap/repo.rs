@@ -1,7 +1,6 @@
 //! The code map's source for a repository on this machine, read through git.
 
 use std::collections::BTreeMap;
-use std::fs::File;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
@@ -13,6 +12,7 @@ use super::{RepoMap, Source, off_runtime};
 use crate::app::blocking;
 use crate::db::{LocalRepo, Workspace};
 use crate::git::Git;
+use crate::platform;
 
 /// The largest file the map reads; a larger one is left out, likely generated or not code.
 pub(crate) const LARGEST: u64 = 1 << 20;
@@ -49,11 +49,7 @@ impl Source for Repo {
     /// Only a regular file of at most [`LARGEST`] bytes reached through no link, inside the
     /// worktree, has text.
     fn text(&self, path: &Path, file: &str) -> Option<String> {
-        let path = path.canonicalize().ok()?.join(file);
-        if path.canonicalize().ok()? != path {
-            return None;
-        }
-        let file = File::open(&path).ok()?;
+        let file = platform::open_beneath(&path.canonicalize().ok()?, file).ok()?;
         let about = file.metadata().ok()?;
         if !about.is_file() || about.len() > LARGEST {
             return None;
