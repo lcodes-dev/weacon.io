@@ -59,7 +59,7 @@ impl App {
         if let Some(error) = failure {
             log.warn("log file unavailable", &[("err", Field::error(&error))]);
         }
-        let reports = reports(setup.env, &version, &log);
+        let reports = reports_from_env(setup.env, &version, &log);
         let agreed = state_dir
             .as_deref()
             .is_some_and(|dir| crate::reports::agreed(dir, &log));
@@ -167,7 +167,7 @@ fn nothing() -> Sink {
     Box::new(|_| {})
 }
 
-fn reports(env: Env<'_>, version: &Version, log: &Logger) -> Option<Reports> {
+fn reports_from_env(env: Env<'_>, version: &Version, log: &Logger) -> Option<Reports> {
     let dsn = platform::var(env, "WEACON_SENTRY_DSN")?;
     let home_dir = platform::home_dir(env).unwrap_or_default();
     weacon_appkit::reports(
