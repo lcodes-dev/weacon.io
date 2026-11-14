@@ -199,14 +199,14 @@ macro_rules! hex_string {
 }
 
 hex_string!(
-    /// A full git commit id: 40 lowercase hex digits.
+    /// A full git commit id: 40 lowercase hex digits. Unlike a doc's `CommitId`, not 64.
     Commit,
     40,
     "not a full commit id"
 );
 
 hex_string!(
-    /// A SHA-256 digest: 64 lowercase hex digits.
+    /// A SHA-256 digest: 64 lowercase hex digits. Not the `sha2::Sha256` hasher.
     Sha256,
     64,
     "not a SHA-256 digest"

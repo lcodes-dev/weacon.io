@@ -1069,7 +1069,7 @@
       "pattern": "^[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)+$"
     },
     "Commit": {
-      "description": "A full git commit id: 40 lowercase hex digits.",
+      "description": "A full git commit id: 40 lowercase hex digits. Unlike a doc's `CommitId`, not 64.",
       "type": "string",
       "pattern": "^[0-9a-f]{40}$"
     },
@@ -2577,7 +2577,7 @@
       ]
     },
     "Sha256": {
-      "description": "A SHA-256 digest: 64 lowercase hex digits.",
+      "description": "A SHA-256 digest: 64 lowercase hex digits. Not the `sha2::Sha256` hasher.",
       "type": "string",
       "pattern": "^[0-9a-f]{64}$"
     },

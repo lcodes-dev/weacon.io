@@ -390,7 +390,7 @@ export type ClientLog = {
 export type Code = string;
 
 /**
- * A full git commit id: 40 lowercase hex digits.
+ * A full git commit id: 40 lowercase hex digits. Unlike a doc's `CommitId`, not 64.
  */
 export type Commit = string;
 
@@ -1055,7 +1055,7 @@ export type RunUpdate = {
 };
 
 /**
- * A SHA-256 digest: 64 lowercase hex digits.
+ * A SHA-256 digest: 64 lowercase hex digits. Not the `sha2::Sha256` hasher.
  */
 export type Sha256 = string;
 
