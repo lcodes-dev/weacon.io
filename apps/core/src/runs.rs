@@ -611,13 +611,16 @@ mod tests {
         let broken = r#"{"workspace":"w-1","chat":"c-8","state":"paused"}"#;
         let nameless = r#"{"shape":"unknown"}"#;
         let more = r#"{"workspace":"w-1","chat":"c-7","agent":"claude","run":null,"state":"idle","session":null,"turn":null,"queue":[],"active_at":5,"model":"next"}"#;
+        let agent = r#"{"workspace":"w-1","chat":"c-6","agent":"gemini","run":null,"state":"idle","session":null,"turn":null,"queue":[],"active_at":5}"#;
+        let state = r#"{"workspace":"w-1","chat":"c-5","agent":"claude","run":null,"state":"paused","session":null,"turn":null,"queue":[],"active_at":5}"#;
         let journal = format!(
-            r#"{{"issued":3,"chats":[{NEWER},{broken},{nameless},{more}],"limits":{{"runs":9}}}}"#
+            r#"{{"issued":3,"chats":[{NEWER},{broken},{nameless},{more},{agent},{state}],"limits":{{"runs":9}}}}"#
         );
         std::fs::write(dir.join("runs.json"), journal).unwrap();
 
         let mut runs = Runs::load(&dir).unwrap();
-        for chat in ["c-9", "c-8", "c-7"] {
+        assert_eq!(runs.kept(), 6);
+        for chat in ["c-9", "c-8", "c-7", "c-6", "c-5"] {
             let kept = key("w-1", chat);
             assert_eq!(runs.of(&kept), None);
             assert_eq!(refusals(&mut runs, &kept).await, ["runs.newer_record"; 2]);
@@ -625,7 +628,15 @@ mod tests {
 
         assert_eq!(begin(&mut runs, "c-1").await.as_str(), "run-4");
         let raw = std::fs::read_to_string(dir.join("runs.json")).unwrap();
-        for kept in [NEWER, broken, nameless, more, r#""limits":{"runs":9}"#] {
+        for kept in [
+            NEWER,
+            broken,
+            nameless,
+            more,
+            agent,
+            state,
+            r#""limits":{"runs":9}"#,
+        ] {
             assert!(raw.contains(kept), "{kept} was rewritten");
         }
         let restarted = Runs::load(&dir).unwrap();
@@ -641,7 +652,8 @@ mod tests {
 
         let runs = Runs::load(&dir).unwrap();
 
-        assert!(!format!("{runs:?}").contains("Hi"));
+        let debug = format!("{runs:?}");
+        assert!(debug.contains("c-9") && !debug.contains("Hi"), "{debug}");
     }
 
     #[cfg(unix)]

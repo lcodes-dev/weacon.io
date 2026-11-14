@@ -655,4 +655,23 @@ mod tests {
         let state = on.engine.runs.of(&key()).unwrap().state;
         assert_eq!(state, RunState::Running);
     }
+
+    #[tokio::test(start_paused = true)]
+    async fn an_interrupt_whose_receipt_failed_while_the_agent_started_stops_nothing() {
+        let (mut bench, mut engine) = parts();
+        let release = bench.hold_next_start();
+        engine.command(&key(), prompt("r-1", "Hi")).await.unwrap();
+        engine.open(&key()).await.unwrap().events.jam();
+        let interrupt = command("r-2", "c-1", ChatAction::Interrupt);
+
+        let failed = engine.command(&key(), interrupt).await;
+        assert_eq!(failed.unwrap_err().code().as_str(), "chat.log_not_written");
+        drop(release);
+        launched(&mut engine).await;
+
+        let mut started = soon(bench.started.recv()).await.unwrap();
+        let told = soon(started.told.recv()).await;
+        assert_eq!(told, Some(Told::Send("Hi".to_owned())));
+        assert_eq!(soon(started.told.recv()).await, None);
+    }
 }

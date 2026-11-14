@@ -136,10 +136,12 @@ fn chat_fields(key: &ChatKey, fault: &Fault) -> [(&'static str, Field); 3] {
 #[cfg(test)]
 mod tests {
     use weacon_protocol::{AgentKind, Outcome, RunEvent};
+    use weacon_testing::messages;
 
     use super::super::by_hand::{OnTurn, hear, launched, on_ask, on_turn};
     use super::*;
     use crate::chats::test_support::{FakeAgent, Told, chat, key, prompt, run, session, soon};
+    use crate::runs::Queued;
 
     // Makes chat `c-1`'s last turn start or end `ago` seconds before now.
     async fn active_ago(engine: &mut Engine<FakeAgent>, ago: u64) {
@@ -165,6 +167,11 @@ mod tests {
             .await
             .unwrap();
         on
+    }
+
+    #[test]
+    fn idle_is_half_an_hour() {
+        assert_eq!(IDLE, 1800);
     }
 
     #[tokio::test(start_paused = true)]
@@ -225,14 +232,23 @@ mod tests {
         let more = prompt("r-2", "More");
         on.engine.command(&key(), more).await.unwrap();
         let recent = left(&mut on.engine, "c-2", RunState::Idle, 60).await;
-        let old = left(&mut on.engine, "c-3", RunState::Idle, IDLE + 1).await;
+        let old = left(&mut on.engine, "c-3", RunState::Idle, IDLE).await;
         let asleep = left(&mut on.engine, "c-4", RunState::Sleeping, 60).await;
+        let waits = left(&mut on.engine, "c-5", RunState::Sleeping, IDLE * 2).await;
+        let queued = Queued {
+            request: prompt("r-9", "Later").request,
+            text: "Later".to_owned(),
+        };
+        let enqueue = on.engine.runs.enqueue(&waits, AgentKind::Claude, queued, 1);
+        enqueue.await.unwrap();
         // As after a restart: nothing of any chat or its run is in memory.
         on.engine.open_chats.clear();
 
         on.engine.reconcile().await;
-        launched(&mut on.engine).await;
-        launched(&mut on.engine).await;
+        for _ in 0..3 {
+            launched(&mut on.engine).await;
+        }
+        assert!(!messages(&on.bench.records).contains(&"runs records kept unread"));
 
         let first = prompt("r-1", "Hi").request;
         let ended = on
@@ -249,7 +265,7 @@ mod tests {
         }
         started.sort_by_key(|next| next.run_as.key.chat.as_str().to_owned());
         let keys: Vec<_> = started.iter().map(|next| next.run_as.key.clone()).collect();
-        assert_eq!(keys, [key(), recent.clone()]);
+        assert_eq!(keys, [key(), recent.clone(), waits]);
         let told = soon(started[0].told.recv()).await;
         assert_eq!(told, Some(Told::Send("More".to_owned())));
         let states = [&recent, &old, &asleep].map(|chat| on.engine.runs.of(chat).unwrap().state);

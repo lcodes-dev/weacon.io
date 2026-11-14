@@ -81,12 +81,12 @@ impl ChatRuns {
 
     // Another run's prompts can no longer be answered, nor its own once it stops working.
     fn status(&mut self, status: &RunStatus) {
-        let working = matches!(
+        let may_ask = matches!(
             status.state,
             RunState::Running | RunState::Waiting | RunState::Newer
         );
         self.waiting
-            .retain(|waits| working && waits.run == status.run);
+            .retain(|waits| may_ask && waits.run == status.run);
         self.run = Some(status.clone());
     }
 
@@ -208,6 +208,15 @@ mod tests {
         let state = ChatRuns::fold(&entries);
 
         assert_eq!(state.waiting_seqs(), [5]);
+        assert_eq!(
+            state
+                .waiting()
+                .iter()
+                .map(|waits| waits.prompt)
+                .collect::<Vec<_>>(),
+            [2]
+        );
+        assert!(state.asks(&run("run-1")) && !state.asks(&run("run-2")));
         assert!(state.waits(&run("run-1"), 2));
         assert!(!state.waits(&run("run-1"), 1) && !state.waits(&run("run-2"), 2));
         assert_eq!(
