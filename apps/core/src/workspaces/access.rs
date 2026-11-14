@@ -13,12 +13,15 @@ use crate::app::{App, state_unavailable};
 use crate::platform;
 
 /// What this machine's owner chose for one workspace; a workspace without a choice asks first.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub(crate) struct Settings {
     pub(crate) access: AccessLevel,
     /// Whether other people are in the workspace.
     team: bool,
+    /// Commands the guard also asks about, each as its first words.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub(crate) guard: Vec<String>,
 }
 
 impl Default for Settings {
@@ -26,6 +29,7 @@ impl Default for Settings {
         Self {
             access: AccessLevel::AskFirst,
             team: false,
+            guard: Vec::new(),
         }
     }
 }
@@ -46,7 +50,8 @@ impl Settings {
         }
     }
 
-    fn write(self, file: &Path) -> io::Result<()> {
+    /// Saves the settings in `file`, making its folder private to this user.
+    pub(crate) fn write(&self, file: &Path) -> io::Result<()> {
         if let Some(folder) = file.parent() {
             platform::private_dir(folder)?;
         }
@@ -54,7 +59,7 @@ impl Settings {
     }
 
     /// A line of warning for full access in a team workspace, or nothing.
-    pub(crate) fn warning(self) -> &'static str {
+    pub(crate) fn warning(&self) -> &'static str {
         if self.team && self.access == AccessLevel::Full {
             "Warning: full access is on in a team workspace. Its agents change files on this \
              machine without asking.\n"
@@ -100,11 +105,18 @@ pub(crate) fn run(
     let workspaces = Workspaces::new(state_dir, None);
     let file = workspaces.settings_file(workspace);
     // Saying whether it's a team replaces settings that can't be read.
-    let team = match team {
-        Some(team) => team,
-        None => Settings::read(&file)?.team,
+    let current = Settings::read(&file);
+    let team = match (team, &current) {
+        (Some(team), _) => team,
+        (None, Ok(current)) => current.team,
+        (None, Err(_)) => return current.map(drop),
     };
-    let settings = Settings { access, team };
+    let guard = current.map(|current| current.guard).unwrap_or_default();
+    let settings = Settings {
+        access,
+        team,
+        guard,
+    };
     // The workspace's folder makes it one this machine knows.
     let saved =
         platform::private_dir(&workspaces.root(workspace)).and_then(|()| settings.write(&file));
@@ -165,7 +177,8 @@ mod tests {
             Settings::read(&file).unwrap(),
             Settings {
                 access: AccessLevel::ReadOnly,
-                team: false
+                team: false,
+                guard: Vec::new(),
             }
         );
         assert_eq!(
@@ -201,7 +214,14 @@ mod tests {
 
     #[test]
     fn only_full_access_in_a_team_workspace_has_a_warning() {
-        let warning = |access, team| Settings { access, team }.warning();
+        let warning = |access, team| {
+            Settings {
+                access,
+                team,
+                guard: Vec::new(),
+            }
+            .warning()
+        };
 
         assert!(warning(AccessLevel::Full, true).starts_with("Warning: full access"));
         assert_eq!(warning(AccessLevel::Full, false), "");
@@ -229,7 +249,8 @@ mod tests {
             read(r#"{"access":"full","team":true,"later":1}"#).unwrap(),
             Settings {
                 access: AccessLevel::Full,
-                team: true
+                team: true,
+                guard: Vec::new(),
             }
         );
         let newer = read(r#"{"access":"sandboxed"}"#).unwrap();

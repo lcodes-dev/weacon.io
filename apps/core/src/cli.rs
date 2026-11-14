@@ -85,6 +85,22 @@ pub(crate) enum GuardCommand {
         #[arg(long)]
         main_checkout: Option<PathBuf>,
     },
+    /// Also ask before commands that start with these words in this workspace.
+    Add {
+        /// The workspace's id.
+        workspace: WorkspaceId,
+        /// The command's first words, such as: terraform destroy.
+        #[arg(required = true, num_args = 1..)]
+        words: Vec<String>,
+    },
+    /// Stop asking about commands added with `weacon guard add`.
+    Remove {
+        workspace: WorkspaceId,
+        #[arg(required = true, num_args = 1..)]
+        words: Vec<String>,
+    },
+    /// List the commands this workspace added.
+    List { workspace: WorkspaceId },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Subcommand)]
@@ -347,5 +363,48 @@ mod tests {
             run(&["weacon", "fly"]).unwrap_err().kind(),
             ErrorKind::InvalidSubcommand
         );
+    }
+
+    #[test]
+    fn guard_takes_a_hooks_agent_and_its_runs_folders_or_a_workspaces_additions() {
+        let check = run(&[
+            "weacon",
+            "guard",
+            "check",
+            "claude",
+            "--workspace=w1",
+            "--worktree=/work",
+            "--main-checkout",
+            "/main",
+        ])
+        .unwrap();
+        let Command::Guard(GuardCommand::Check {
+            agent,
+            workspace,
+            worktree,
+            main_checkout,
+        }) = &check.command
+        else {
+            panic!("not a guard check");
+        };
+
+        assert_eq!(*agent, AgentKind::Claude);
+        assert_eq!(workspace.as_ref().map(WorkspaceId::as_str), Some("w1"));
+        assert_eq!(worktree.as_deref(), Some(std::path::Path::new("/work")));
+        assert_eq!(
+            main_checkout.as_deref(),
+            Some(std::path::Path::new("/main"))
+        );
+        assert_eq!(
+            (check.command.name(), check.command.log_name()),
+            ("guard", "cli.log")
+        );
+        let add = run(&["weacon", "guard", "add", "w1", "terraform", "destroy"]).unwrap();
+        assert!(matches!(
+            add.command,
+            Command::Guard(GuardCommand::Add { ref words, .. }) if words == &["terraform", "destroy"]
+        ));
+        run(&["weacon", "guard", "add", "w1"]).unwrap_err();
+        run(&["weacon", "guard", "check", "amp"]).unwrap_err();
     }
 }
