@@ -13,9 +13,10 @@ import { FEED, feedUrl } from "./workspace-feed.ts";
 
 /**
  * The signed-in person's workspaces, and the one `?workspace=` names, or else the last one opened
- * here, open on its feed with a selector in the header; `who` is the header's account part.
+ * here, open on its feed with a selector in the header; `who` is the header's account part. A
+ * `page`, such as Settings, shows in their place while they stay open beneath it.
  */
-export function Workspaces({ api, who }: { api: Api; who: ReactNode }) {
+export function Workspaces({ api, who, page }: { api: Api; who: ReactNode; page?: ReactNode }) {
   const [list, setList] = useState<WorkspaceSummary[]>();
   const [problem, setProblem] = useState<string>();
   const [open, setOpen] = useState(() => opening(window.location.search, STORE));
@@ -80,7 +81,9 @@ export function Workspaces({ api, who }: { api: Api; who: ReactNode }) {
     </span>
   );
   return (
-    <Frame middle={selector} right={who}>
+    <Frame middle={page === undefined && selector} right={who}>
+      {page}
+      <div style={{ display: page === undefined ? "contents" : "none" }}>
       {workspace !== undefined ? (
         <Workspace key={workspace.id} api={api} workspace={workspace} />
       ) : (
@@ -121,6 +124,7 @@ export function Workspaces({ api, who }: { api: Api; who: ReactNode }) {
           )}
         </section>
       )}
+      </div>
     </Frame>
   );
 }
