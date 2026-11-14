@@ -49,7 +49,10 @@ pub(crate) fn run(app: &App, workspace: &WorkspaceId, chat: &ChatId) -> Result<(
         ("chat_id", chat.as_str().into()),
     ];
     app.log.info("resume started", &ids);
-    runtime()?.block_on(launch.resume_by_hand(&session))?;
+    runtime()?.block_on(async {
+        launch.require_sign_in().await?;
+        launch.resume_by_hand(&session).await
+    })?;
     app.log.info("resume ended", &ids);
     Ok(())
 }
@@ -159,6 +162,28 @@ mod tests {
         assert!(!dir.join("work").exists());
     }
 
+    // A stand-in for Claude Code: signed in from its config folder, or not.
+    #[cfg(unix)]
+    const SIGNED_IN: &str =
+        "[ \"$1\" = auth ] && { printf '{\"authMethod\":\"claude.ai\"}'; exit 0; }";
+    #[cfg(unix)]
+    const RECORDS: &str = "printf '%s %s %s' \"$*\" \"$PWD\" \"$CLAUDE_CONFIG_DIR\" > \"$0.ran\"\n";
+
+    #[cfg(unix)]
+    #[test]
+    fn a_chat_whose_agent_isnt_signed_in_from_its_workspace_isnt_carried_on() {
+        use weacon_testing::platform::write_program;
+
+        let dir = TempDir::new().unwrap();
+        chat_left(&dir.join("state"), RunState::Sleeping, Some(SESSION));
+        let script = format!("#!/bin/sh\n[ \"$1\" = auth ] && exit 1\n{RECORDS}");
+        std::fs::create_dir_all(dir.join("bin")).unwrap();
+        write_program(&dir.join("bin/claude"), &script).unwrap();
+
+        assert_eq!(code_of(resume(&dir)), "agent.signed_out");
+        assert!(!dir.join("bin/claude.ran").exists());
+    }
+
     #[cfg(unix)]
     #[test]
     fn a_sleeping_chat_is_carried_on_in_its_folder_with_the_workspaces_sign_in() {
@@ -169,9 +194,9 @@ mod tests {
         for state in [RunState::Sleeping, RunState::Ended] {
             let dir = TempDir::new().unwrap();
             chat_left(&dir.join("state"), state, Some(SESSION));
-            let script = "#!/bin/sh\nprintf '%s %s %s' \"$*\" \"$PWD\" \"$CLAUDE_CONFIG_DIR\" > \"$0.ran\"\n";
+            let script = format!("#!/bin/sh\n{SIGNED_IN}\n{RECORDS}");
             fs::create_dir_all(dir.join("bin")).unwrap();
-            write_program(&dir.join("bin/claude"), script).unwrap();
+            write_program(&dir.join("bin/claude"), &script).unwrap();
             resume(&dir).unwrap();
             let ran = fs::read_to_string(dir.join("bin/claude.ran")).unwrap();
             let (workspace, chat) = ids();
