@@ -191,7 +191,7 @@ pub(crate) fn replacement(key: &str) -> Option<&'static str> {
     }
 }
 
-pub(crate) fn truncate(text: &str, max: usize) -> String {
+fn truncate(text: &str, max: usize) -> String {
     let length = text.chars().count();
     if length <= max {
         return text.to_owned();
