@@ -7,6 +7,8 @@ use weacon_observability::Reporter;
 use weacon_protocol::{Pick, RequestId};
 use weacon_version::Version;
 
+pub(crate) mod tls;
+
 pub(crate) use weacon_testing::{Records, messages, recording_logger, recording_sink};
 
 use crate::app::App;
