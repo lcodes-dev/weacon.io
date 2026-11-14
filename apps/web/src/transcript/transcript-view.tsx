@@ -1,4 +1,4 @@
-import { memo, useRef } from "react";
+import { type RefObject, memo, useLayoutEffect, useRef } from "react";
 
 import { type Answers, askKey } from "../chat/asks.ts";
 import type { Line } from "../chat/lines.ts";
@@ -37,6 +37,7 @@ export function TranscriptView({
   const content = useRef<HTMLDivElement>(null);
   const { mayFormat, refreshes } = useHeldFormatting(scroller, away);
   const onScroll = useFollow(scroller, content, { rows: lines, refreshes, away });
+  const kept = useKeptPlace(scroller, content, lines);
 
   const problem = retry !== undefined && (
     <p className="row problem" role="alert">
@@ -54,7 +55,14 @@ export function TranscriptView({
       <div ref={content}>
         {problem}
         {older !== undefined && (
-          <button type="button" className="older" onClick={older}>
+          <button
+            type="button"
+            className="older"
+            onClick={() => {
+              kept();
+              older();
+            }}
+          >
             Show earlier messages
           </button>
         )}
@@ -69,6 +77,33 @@ export function TranscriptView({
       </div>
     </div>
   );
+}
+
+/**
+ * Keeps the first row in view where it is once older lines come in above it, so loading earlier
+ * messages doesn't move what the reader sees. Call the result just before asking for them.
+ */
+function useKeptPlace(
+  scroller: RefObject<HTMLDivElement | null>,
+  content: RefObject<HTMLDivElement | null>,
+  lines: readonly Line[],
+): () => void {
+  const place = useRef<{ first: string | undefined; row: Element; top: number }>(undefined);
+  // After `useFollow`'s own layout effect, so this has the last word on where the view is.
+  useLayoutEffect(() => {
+    const [element, kept] = [scroller.current, place.current];
+    if (element === null || kept === undefined || lines[0]?.key === kept.first) {
+      return;
+    }
+    place.current = undefined;
+    element.scrollTop = kept.row.getBoundingClientRect().top - element.getBoundingClientRect().top + element.scrollTop - kept.top;
+  }, [lines]);
+  return () => {
+    const [element, row] = [scroller.current, content.current?.querySelector(".row")];
+    if (element !== null && row !== null && row !== undefined) {
+      place.current = { first: lines[0]?.key, row, top: row.getBoundingClientRect().top - element.getBoundingClientRect().top };
+    }
+  };
 }
 
 function LineView({ line, formatted, answering }: { line: Line; formatted: boolean; answering: Answerer }) {

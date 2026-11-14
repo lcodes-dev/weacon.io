@@ -94,6 +94,28 @@ test("earlier messages load a page at a time, back to the chat's first prompt", 
   await page.getByText("Asks to use Bash").waitFor();
   assert.equal(await prompts.filter({ hasText: FIRST }).count(), 0);
 
+  // The row the reader sees stays where it is as earlier messages come in above it.
+  const placeOf = () =>
+    page.evaluate(() => {
+      const view = document.querySelector(".transcript")?.getBoundingClientRect().top ?? 0;
+      return (document.querySelector("[data-anchor]")?.getBoundingClientRect().top ?? NaN) - view;
+    });
+  await page.evaluate(async () => {
+    const view = document.querySelector(".transcript");
+    if (view !== null) {
+      view.scrollTop = 0;
+      view.dispatchEvent(new Event("scroll"));
+    }
+    await new Promise((resolve) => requestAnimationFrame(resolve));
+    document.querySelector(".transcript .row")?.setAttribute("data-anchor", "");
+  });
+  const before = await placeOf();
+  const asked = queries(harness).length;
+  await earlier.click();
+  await waitFor(() => queries(harness).length > asked);
+  await page.waitForFunction(() => document.querySelector(".transcript .row")?.hasAttribute("data-anchor") === false);
+  assert.ok(Math.abs((await placeOf()) - before) < 2, `the row moved from ${before} to ${await placeOf()}`);
+
   while ((await earlier.count()) > 0) {
     const [asked, rows] = [queries(harness).length, await page.locator(".row").count()];
     await earlier.click();

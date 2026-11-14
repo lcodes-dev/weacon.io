@@ -197,3 +197,16 @@ test("a chat is working while one of its runs starts, runs or waits", () => {
     assert.equal(working(one), expected, state);
   }
 });
+
+test("a prompt loaded with older events still closes when it is withdrawn or its run moves on", () => {
+  const start = chat([text(5, "r-1", "Later."), text(6, "r-2", "Other.")], 6, [3, 4]);
+  const loaded = older(start, [asked(3, "r-1", 1), asked(4, "r-2", 1)]);
+  const withdrawn = commitAll(loaded, [ran(7, "r-1", { event: "permission_withdrawn", run: "r-1", prompt: 1 })]);
+  const moved = commitAll(loaded, [status(7, "r-2", "running")]);
+  const ended = commitAll(loaded, [finished(7, "r-1")]);
+
+  assert.deepEqual(shown(loaded.items), ["r-1 done: ask 1@0 open", "r-2 done: ask 1@0 open", "r-1: Later.", "r-2: Other."]);
+  assert.deepEqual(shown(withdrawn.items).slice(0, 2), ["r-1 done: ask 1@0", "r-2 done: ask 1@0 open"]);
+  assert.deepEqual(shown(moved.items).slice(0, 2), ["r-1 done: ask 1@0 open", "r-2 done: ask 1@0"]);
+  assert.deepEqual(shown(ended.items).slice(0, 2), ["r-1 done: ask 1@0", "r-2 done: ask 1@0 open"]);
+});

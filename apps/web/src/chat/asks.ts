@@ -1,8 +1,14 @@
 import type { RequestId, RunId } from "../protocol.ts";
 import type { Settled } from "../receipts.ts";
 
-/** A person's answer to a permission prompt, on its way or not taken. */
-export type Answering = { allow: boolean; request: RequestId; settled: Exclude<Settled, "accepted"> | undefined };
+/** A person's answer to the prompt `prompt` of `run`, on its way or not taken. */
+export type Answering = {
+  run: RunId;
+  prompt: number;
+  allow: boolean;
+  request: RequestId;
+  settled: Exclude<Settled, "accepted"> | undefined;
+};
 
 /** Answers by prompt, keyed by `askKey`. */
 export type Answers = ReadonlyMap<string, Answering>;
@@ -12,13 +18,24 @@ export function askKey(run: RunId, prompt: number): string {
 }
 
 /**
- * `answers` with the answer to `key` on its way, and the request it goes under. The same answer
- * again, after one that may have been taken, goes under the same request, so it can't run twice.
+ * `answers` with the answer to the prompt `prompt` of `run` on its way, and the request it goes
+ * under. The same answer again, after one that may have been taken, goes under the same request,
+ * so it can't run twice.
  */
-export function sending(answers: Answers, key: string, allow: boolean, fresh: () => RequestId): { answers: Answers; request: RequestId } {
+export function sending(
+  answers: Answers,
+  { run, prompt, allow }: { run: RunId; prompt: number; allow: boolean },
+  fresh: () => RequestId,
+): { answers: Answers; request: RequestId } {
+  const key = askKey(run, prompt);
   const before = answers.get(key);
   const request = before !== undefined && before.settled !== "refused" && before.allow === allow ? before.request : fresh();
-  return { answers: new Map(answers).set(key, { allow, request, settled: undefined }), request };
+  return { answers: new Map(answers).set(key, { run, prompt, allow, request, settled: undefined }), request };
+}
+
+/** The answer sent under `request`, if one was. */
+export function answeredUnder(answers: Answers, request: RequestId): Answering | undefined {
+  return [...answers.values()].find((answering) => answering.request === request);
 }
 
 /** `answers` once the answer sent under `request` for `key` ended as `settled`. */
@@ -37,8 +54,8 @@ export function settle(answers: Answers, key: string, request: RequestId, settle
 
 /** `answers` once a receipt that came after its wait says the answer under `request` ended as `settled`. */
 export function settleLate(answers: Answers, request: RequestId, settled: Settled): Answers {
-  const key = [...answers].find(([, answering]) => answering.request === request)?.[0];
-  return key === undefined ? answers : settle(answers, key, request, settled);
+  const answering = answeredUnder(answers, request);
+  return answering === undefined ? answers : settle(answers, askKey(answering.run, answering.prompt), request, settled);
 }
 
 const PROBLEMS: Record<Exclude<Settled, "accepted">, string> = {

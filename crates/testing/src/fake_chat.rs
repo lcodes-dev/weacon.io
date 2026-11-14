@@ -126,9 +126,30 @@ impl FakeChat {
         if matches!(update.event, RunEvent::TextDelta { .. }) {
             return Vec::new();
         }
-        self.commit(ChatEvent::Run {
+        let run = update.run.clone();
+        let event = ChatEvent::Run {
             update: update.clone(),
-        })
+        };
+        let Some(agent) = self.agent_of(&run) else {
+            return self.commit(event);
+        };
+        // The recording's run goes idle at the end of each pass, and runs again with the next.
+        if matches!(update.event, RunEvent::Finished { .. }) {
+            let mut told = self.commit(event);
+            told.extend(self.status(&run, RunState::Idle, agent));
+            return told;
+        }
+        let idle = self
+            .runs
+            .iter()
+            .any(|status| status.run == run && status.state == RunState::Idle);
+        let mut told = if idle {
+            self.status(&run, RunState::Running, agent)
+        } else {
+            Vec::new()
+        };
+        told.extend(self.commit(event));
+        told
     }
 
     fn is(&self, workspace: &WorkspaceId, chat: &ChatId) -> bool {
@@ -636,6 +657,50 @@ mod tests {
         );
         assert!(after.is_empty());
         assert!(fake.answer(&prompt(LOSE)).is_empty());
+    }
+
+    #[test]
+    fn the_recorded_run_goes_idle_when_it_finishes_and_runs_again_with_its_next_event() {
+        let mut fake = fake();
+        fake.answer(&query(4, "c-1", ChatQueryKind::Subscribe { after: SEEDED }));
+        let finished = fake.played(&played(RunEvent::Finished {
+            outcome: Outcome::Completed,
+        }));
+        let again = fake.played(&played(RunEvent::Text {
+            text: "Next pass.".to_owned(),
+        }));
+        let more = fake.played(&played(RunEvent::Text {
+            text: "More.".to_owned(),
+        }));
+
+        assert_eq!(
+            shape(&finished),
+            [
+                (4, "70 r-1 finished".to_owned()),
+                (4, "71 r-1 Idle".to_owned())
+            ]
+        );
+        assert_eq!(
+            shape(&again),
+            [
+                (4, "72 r-1 Running".to_owned()),
+                (4, "73 r-1 text".to_owned())
+            ]
+        );
+        assert_eq!(shape(&more), [(4, "74 r-1 text".to_owned())]);
+        let stranger = Envelope {
+            id: 0,
+            message: Message::Run(RunUpdate {
+                run: run("r-9").unwrap(),
+                event: RunEvent::Finished {
+                    outcome: Outcome::Completed,
+                },
+            }),
+        };
+        assert_eq!(
+            shape(&fake.played(&stranger)),
+            [(4, "75 r-9 finished".to_owned())]
+        );
     }
 
     #[test]

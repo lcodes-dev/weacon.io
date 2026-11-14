@@ -127,3 +127,19 @@ test("a receipt that comes after the wait ran out is heard as late, once", async
   assert.equal(await again, "accepted");
   assert.deepEqual(late, ["r-1 accepted", "r-3 refused"]);
 });
+
+test("an error that answers a command after its wait ran out is heard as a late refusal", async () => {
+  const deadlines: Array<() => void> = [];
+  const late: string[] = [];
+  const all = new Receipts((run) => deadlines.push(run), (request, settled) => late.push(`${request} ${settled}`));
+  const slow = all.wait("r-1", 2);
+  deadlines.shift()?.();
+  assert.equal(await slow, "unsure");
+
+  all.take({ id: 9, type: "error", code: "request.conflict", retryable: false });
+  all.take({ id: 2, type: "error", code: "request.conflict", retryable: false });
+  all.take({ id: 2, type: "error", code: "request.conflict", retryable: false });
+  all.take(receipt("r-1", "accepted"));
+
+  assert.deepEqual(late, ["r-1 refused"]);
+});

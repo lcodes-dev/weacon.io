@@ -109,13 +109,8 @@ export function older(chat: Chat, events: readonly ChatEntry[]): Chat {
 
 /** `chat` with the prompt `prompt` of `run` no longer answerable, as once its answer is taken. */
 export function answered(chat: Chat, run: RunId, prompt: number): Chat {
-  const items = chat.items.map((item) => {
-    if (item.kind !== "turn" || item.turn.run !== run) {
-      return item;
-    }
-    const turn = closing(item.turn, (ask) => ask.prompt === prompt);
-    return turn === item.turn ? item : { ...item, turn };
-  });
+  const items = [...chat.items];
+  closeAsks(items, run, (ask) => ask.prompt === prompt);
   return { ...chat, items };
 }
 
@@ -156,20 +151,22 @@ function step(items: Item[], entry: ChatEntry, waiting: boolean): void {
     return;
   }
   if (event.kind === "run_status" && event.status.state !== "waiting") {
+    closeAsks(items, event.status.run, () => true);
     // A run that stops without a finished event, as when its core crashed, ends its turn too.
-    const over = !["starting", "running"].includes(event.status.state);
-    update(items, event.status.run, (turn) => {
-      const closed = closing(turn, () => true);
-      return over ? { ...closed, open: false } : closed;
-    });
+    if (!["starting", "running"].includes(event.status.state)) {
+      update(items, event.status.run, (turn) => ({ ...turn, open: false }));
+    }
   }
   if (event.kind !== "run") {
     return;
   }
   const { run, event: done } = event.update;
   if (done.event === "permission_withdrawn") {
-    update(items, run, (turn) => closing(turn, (ask) => ask.prompt === done.prompt));
+    closeAsks(items, run, (ask) => ask.prompt === done.prompt);
     return;
+  }
+  if (done.event === "finished") {
+    closeAsks(items, run, () => true);
   }
   addTo(items, run, turnKey(entry.seq - 1, run), (turn) => {
     if (done.event === "permission_asked") {
@@ -180,7 +177,7 @@ function step(items: Item[], entry: ChatEntry, waiting: boolean): void {
     if (done.event !== "finished") {
       return { ...turn, transcript };
     }
-    return { ...closing(turn, () => true), transcript, open: false };
+    return { ...turn, transcript, open: false };
   });
 }
 
@@ -200,6 +197,18 @@ function update(items: Item[], run: RunId, change: (turn: Turn) => Turn): boolea
   }
   items[at] = { kind: "turn", turn: change(item.turn) };
   return true;
+}
+
+// Closes the open prompts `which` picks in every turn of `run`, such as one cut in two by a window.
+function closeAsks(items: Item[], run: RunId, which: (ask: Ask) => boolean): void {
+  for (const [at, item] of items.entries()) {
+    if (item.kind === "turn" && item.turn.run === run) {
+      const turn = closing(item.turn, which);
+      if (turn !== item.turn) {
+        items[at] = { kind: "turn", turn };
+      }
+    }
+  }
 }
 
 // `turn` with the open prompts `which` picks closed; the same turn when it picks none.

@@ -140,7 +140,7 @@ test("text streams onto the chat it shows, and the end of the connection keeps i
 
   assert.equal(streamed.sync.chat?.items.length, 2);
   assert.equal(unopened.sync, START);
-  assert.deepEqual(gone, { chat: streamed.sync.chat, snapshot: undefined, window: undefined, live: false, failed: false });
+  assert.deepEqual(gone, { chat: streamed.sync.chat, snapshot: undefined, window: undefined, subscription: undefined, live: false, failed: false });
   assert.equal(ended(gone), gone);
 });
 
@@ -169,4 +169,17 @@ test("a window that adds nothing doesn't ask again", () => {
 
   assert.deepEqual(queries(misplaced), []);
   assert.equal(misplaced.sync.chat, answered.sync.chat);
+});
+
+test("a refused subscription ends it and says so, keeping the chat", () => {
+  const id = ids();
+  const answered = hear(open(START, place, id).sync, snapshot(10, 3, range(1, 3)), place, id);
+  const refused = hear(answered.sync, { kind: "refused", id: 11 }, place, id);
+  const after = hear(refused.sync, { kind: "entry", entry: said(4) }, place, id);
+
+  assert.equal(answered.sync.subscription, 11);
+  assert.deepEqual(refused.sync, { ...answered.sync, subscription: undefined, live: false, failed: true });
+  assert.equal(after.sync, refused.sync);
+  assert.equal(open(refused.sync, place, id).sync.failed, false);
+  assert.equal(ended(answered.sync).subscription, undefined);
 });

@@ -7,7 +7,7 @@ import { chatRefOf } from "./chat-ref.ts";
 import { type Late, type Send, type Sent, chatCommand, deliver } from "./composer/prompt.ts";
 import { type Asks, Connection, type Later, type Status, offers } from "./connection.ts";
 import { NO_CHANGES, ask, cut, needsAsking, receive } from "./diff/changes.ts";
-import { type Answers, askKey, sending, settle, settleLate } from "./chat/asks.ts";
+import { type Answers, answeredUnder, askKey, sending, settle, settleLate } from "./chat/asks.ts";
 import { working } from "./chat/chat.ts";
 import { ChatFeed, nextFrame } from "./chat/feed.ts";
 import { lines } from "./chat/lines.ts";
@@ -45,6 +45,9 @@ function Root({ url }: { url: string }) {
   const [status, setStatus] = useState<Status>({ state: "connecting" });
   const [sync, setSync] = useState<Sync>(START);
   const [answers, setAnswers] = useState<Answers>(new Map());
+  // The answers as last shown, for a late receipt to find which prompt it settles.
+  const sent = useRef(answers);
+  sent.current = answers;
   const [stopping, setStopping] = useState(false);
   const [late, setLate] = useState<Late>();
   const [changes, setChanges] = useState(NO_CHANGES);
@@ -65,10 +68,15 @@ function Root({ url }: { url: string }) {
     }
     const later: Later = (run, ms) => setTimeout(run, ms);
     const receipts = new Receipts(later, (request, settled) => {
-      if (current) {
-        setLate({ request, settled });
-        setAnswers((before) => settleLate(before, request, settled));
+      if (!current) {
+        return;
       }
+      setLate({ request, settled });
+      const answer = answeredUnder(sent.current, request);
+      if (answer !== undefined && settled === "accepted") {
+        live.current?.feed?.answered(answer.run, answer.prompt);
+      }
+      setAnswers((before) => settleLate(before, request, settled));
     });
     const schedule = nextFrame(
       () => document.hidden,
@@ -135,7 +143,7 @@ function Root({ url }: { url: string }) {
     answers,
     answer(run: RunId, prompt: number, allow: boolean) {
       const key = askKey(run, prompt);
-      const { answers: next, request } = sending(answers, key, allow, newRequestId);
+      const { answers: next, request } = sending(answers, { run, prompt, allow }, newRequestId);
       setAnswers(next);
       void command({ kind: "permission", answer: { run, prompt, allow } }, request).then((sent) => {
         // An answer is far too short to be refused for its size.
