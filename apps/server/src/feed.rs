@@ -22,6 +22,8 @@ use crate::http::{Shared, failure};
 const FEED: Code = code!("workspace.feed");
 /// What the server offers to clients that read and change tasks.
 const TASKS: Code = code!("workspace.tasks");
+/// What the server offers to clients that read and revise docs.
+const DOCS: Code = code!("workspace.docs");
 
 /// How long a feed waits for the client's hello, and how often it checks that the client
 /// answers and its session hasn't ended; a send that takes longer than that ends the feed.
@@ -66,7 +68,7 @@ pub(crate) async fn feed(
         member,
         changes,
         last_seq: since,
-        hears_tasks: false,
+        offers: Offers::default(),
     };
     upgrade
         .max_message_size(MAX_MESSAGE)
@@ -81,8 +83,14 @@ struct Feed {
     /// Which workspace changed; the changes themselves are read from the database, in order.
     changes: Receiver<WorkspaceId>,
     last_seq: u64,
-    /// Whether the client offered `workspace.tasks`, without which it gets no task changes.
-    hears_tasks: bool,
+    offers: Offers,
+}
+
+/// Which features the client offered besides the feed; it hears only of their changes.
+#[derive(Default)]
+struct Offers {
+    tasks: bool,
+    docs: bool,
 }
 
 /// The feed has ended: its client left, its member is one no more, or something failed.
@@ -130,7 +138,7 @@ async fn run(
         hello_within,
         ping_every,
     } = shared.feed;
-    feed.hears_tasks = timeout(hello_within, greet(socket, shared))
+    feed.offers = timeout(hello_within, greet(socket, shared))
         .await
         .map_err(|_| Closed)??;
     catch_up(socket, shared, feed).await?;
@@ -174,8 +182,12 @@ async fn catch_up(socket: &mut WebSocket, shared: &Shared, feed: &mut Feed) -> R
         let more = usize::try_from(PAGE).is_ok_and(|full| page.len() == full);
         for update in page {
             feed.last_seq = update.seq;
-            let task = matches!(update.change, WorkspaceChange::TaskChanged { .. });
-            if task && !feed.hears_tasks {
+            let wanted = match update.change {
+                WorkspaceChange::TaskChanged { .. } => feed.offers.tasks,
+                WorkspaceChange::DocChanged { .. } => feed.offers.docs,
+                WorkspaceChange::MemberJoined { .. } | WorkspaceChange::Newer => true,
+            };
+            if !wanted {
                 continue;
             }
             // Before each one, not each page: a member removed meanwhile gets nothing more.
@@ -189,8 +201,8 @@ async fn catch_up(socket: &mut WebSocket, shared: &Shared, feed: &mut Feed) -> R
 }
 
 /// Answers the client's hello. The feed goes on only for a client that offers it, and then
-/// says whether the client also offered tasks.
-async fn greet(socket: &mut WebSocket, shared: &Shared) -> Result<bool, Closed> {
+/// says which other features the client offered.
+async fn greet(socket: &mut WebSocket, shared: &Shared) -> Result<Offers, Closed> {
     let Some(Ok(Frame::Text(text))) = socket.recv().await else {
         return Err(Closed);
     };
@@ -202,18 +214,22 @@ async fn greet(socket: &mut WebSocket, shared: &Shared) -> Result<bool, Closed> 
         reply(socket, shared, 0, error(code!("handshake.required"))).await?;
         return Err(Closed);
     };
-    let (feed, tasks) = (Capability::from(FEED), Capability::from(TASKS));
-    let answer = hello.answer(shared.app.clone(), vec![feed.clone(), tasks.clone()]);
+    let offered = [FEED, TASKS, DOCS].map(Capability::from);
+    let answer = hello.answer(shared.app.clone(), offered.to_vec());
+    let offers = |code| hello.capabilities.contains(&Capability::from(code));
     if !matches!(answer, Message::Welcome(_)) {
         reply(socket, shared, id, answer).await?;
         return Err(Closed);
     }
-    if !hello.capabilities.contains(&feed) {
+    if !offers(FEED) {
         reply(socket, shared, id, error(code!("capability.missing"))).await?;
         return Err(Closed);
     }
     reply(socket, shared, id, answer).await?;
-    Ok(hello.capabilities.contains(&tasks))
+    Ok(Offers {
+        tasks: offers(TASKS),
+        docs: offers(DOCS),
+    })
 }
 
 fn error(code: Code) -> Message {
@@ -263,8 +279,8 @@ mod tests {
     use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async};
     use weacon_protocol::{Hello, MemberId, PROTOCOL, WorkspaceChange, WorkspaceUpdate};
 
-    use weacon_model::{Attribution, OrderKey, Task, Title};
-    use weacon_protocol::TaskId;
+    use weacon_model::{Attribution, Doc, DocText, OrderKey, Task, Title};
+    use weacon_protocol::{DocId, TaskId};
 
     use super::*;
     use crate::auth::SESSION_COOKIE;
@@ -441,7 +457,7 @@ mod tests {
         };
         assert_eq!(
             welcome.capabilities,
-            [Capability::from(FEED), Capability::from(TASKS)]
+            [FEED, TASKS, DOCS].map(Capability::from)
         );
         assert_eq!(missed, joined(1, "m1"));
         assert_eq!(live, joined(2, "m2"));
@@ -484,6 +500,49 @@ mod tests {
         assert_eq!(next(&mut both).await, joined(1, "m1"));
         assert_eq!(next(&mut both).await, task_changed);
         assert_eq!(next(&mut both).await, joined(3, "m2"));
+    }
+
+    #[tokio::test]
+    async fn only_a_client_that_offers_docs_hears_of_doc_changes() {
+        let fixture = Fixture::new().await;
+        let (server, token) = signed_in(&fixture).await;
+        let mut plain = greeted(server.address, &token, 0).await;
+        next(&mut plain).await;
+        let doc = Doc::new(
+            DocId::try_from("d1".to_owned()).unwrap(),
+            DocText::new(
+                Title::try_from("Framing".to_owned()).unwrap(),
+                String::new(),
+                None,
+            )
+            .unwrap(),
+        );
+        let attribution = Attribution::by(member_id("m1"), 0);
+        w1(&fixture)
+            .await
+            .add_doc(&doc, &attribution)
+            .await
+            .unwrap();
+        fixture.shared.changed(&workspace_id("w1"));
+        join(&fixture, server.address, "m2", "bo@example.com").await;
+        let after_the_doc = next(&mut plain).await;
+        let path = "/api/workspaces/w1/feed";
+        let mut docs = open(server.address, path, &token).await.unwrap();
+        say(&mut docs, &["workspace.feed", "workspace.docs"]).await;
+        next(&mut docs).await;
+
+        let doc_changed = Message::Workspace(WorkspaceUpdate {
+            workspace: workspace_id("w1"),
+            seq: 2,
+            change: WorkspaceChange::DocChanged {
+                doc: doc.id,
+                version: 1,
+            },
+        });
+        assert_eq!(after_the_doc, joined(3, "m2"));
+        assert_eq!(next(&mut docs).await, joined(1, "m1"));
+        assert_eq!(next(&mut docs).await, doc_changed);
+        assert_eq!(next(&mut docs).await, joined(3, "m2"));
     }
 
     #[tokio::test]

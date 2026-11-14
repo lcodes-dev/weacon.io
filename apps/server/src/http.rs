@@ -19,6 +19,7 @@ use weacon_protocol::{App, Code, ErrorBody, WorkspaceId, code};
 use crate::client::Net;
 use crate::connections;
 use crate::db::Db;
+use crate::docs;
 use crate::feed;
 use crate::limit::Limit;
 use crate::outbox::Outbox;
@@ -126,6 +127,28 @@ pub(crate) async fn serve(
     }
 }
 
+/// The doc routes, whose bodies may be larger than others.
+fn doc_routes() -> Router<Shared> {
+    Router::new()
+        .route(
+            "/api/workspaces/{workspace}/docs",
+            get(docs::list).post(docs::create),
+        )
+        .route(
+            "/api/workspaces/{workspace}/docs/{doc}",
+            get(docs::read).post(docs::revise),
+        )
+        .route(
+            "/api/workspaces/{workspace}/docs/{doc}/revisions",
+            get(docs::history),
+        )
+        .route(
+            "/api/workspaces/{workspace}/docs/{doc}/revisions/{version}",
+            get(docs::revision),
+        )
+        .layer(DefaultBodyLimit::max(docs::MAX_BODY))
+}
+
 fn router(shared: Shared) -> Router {
     Router::new()
         .route("/version", get(version))
@@ -147,6 +170,7 @@ fn router(shared: Shared) -> Router {
             "/api/workspaces/{workspace}/tasks/{task}",
             post(tasks::change),
         )
+        .merge(doc_routes())
         .merge(web::routes(shared.web))
         .layer(DefaultBodyLimit::max(MAX_BODY))
         .layer(middleware::map_response(uncached))
