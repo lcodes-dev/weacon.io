@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use weacon_observability::{Fault, Field, Logger, Reporter};
 use weacon_protocol::code;
 
-use crate::app::{App, read_json};
+use crate::app::{App, WarnOnce, read_json};
 use crate::platform;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
@@ -55,14 +55,14 @@ pub(crate) async fn following<T>(
 
 struct Watch {
     state_dir: PathBuf,
-    failing: bool,
+    failures: WarnOnce,
 }
 
 impl Watch {
-    const fn new(state_dir: PathBuf) -> Self {
+    fn new(state_dir: PathBuf) -> Self {
         Self {
             state_dir,
-            failing: false,
+            failures: WarnOnce::default(),
         }
     }
 
@@ -89,15 +89,7 @@ impl Watch {
     // Only logs: the reporter was brought into line under the lock, and a change saved since
     // must stand.
     fn observe(&mut self, read: Result<(), Fault>, log: &Logger) {
-        match read {
-            Ok(()) => self.failing = false,
-            Err(error) => {
-                if !self.failing {
-                    log.warn("reports unreadable", &[("err", Field::error(&error))]);
-                }
-                self.failing = true;
-            }
-        }
+        self.failures.check(read, log, "reports unreadable");
     }
 }
 
