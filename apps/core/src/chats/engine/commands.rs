@@ -419,8 +419,11 @@ mod tests {
         on.engine.command(&key(), answers).await.unwrap();
 
         assert_eq!(soon(on.agent.told.recv()).await, None);
-        let runs = &on.engine.open(&key()).await.unwrap().events.runs().runs;
-        assert_eq!(runs[0].run, run("run-1"));
+        let log = &on.engine.open(&key()).await.unwrap().events;
+        assert_eq!(
+            log.runs().run().map(|status| &status.run),
+            Some(&run("run-1"))
+        );
         assert_eq!(waiting_in(&mut on.engine).await.len(), 1);
     }
 

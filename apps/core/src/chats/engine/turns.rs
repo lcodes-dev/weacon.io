@@ -129,7 +129,7 @@ impl<A: Agent> Engine<A> {
                 RunState::Starting | RunState::Running | RunState::Waiting
             )
         };
-        let cut_off = !live && chat.events.runs().runs.iter().any(working);
+        let cut_off = !live && chat.events.runs().run().is_some_and(working);
         let ended: Vec<_> = queue
             .into_iter()
             .map(|queued| queued.request)

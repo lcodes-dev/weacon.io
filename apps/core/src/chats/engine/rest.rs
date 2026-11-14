@@ -35,7 +35,7 @@ impl<A: Agent> Engine<A> {
         chat.orders.is_some()
             && chat.launching.is_none()
             && record.turn.is_none()
-            && chat.events.runs().waiting.is_empty()
+            && chat.events.runs().waiting().is_empty()
             && chat.pending_answers.is_empty()
             && chat.pending_end.is_none()
             && record.active_at.saturating_add(IDLE) <= now

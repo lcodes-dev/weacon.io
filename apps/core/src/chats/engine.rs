@@ -202,7 +202,7 @@ impl<A: Agent> Engine<A> {
     // Once nothing of `run`, the chat's own run, waits for a person, its turn is running again.
     async fn running_again(&mut self, key: &ChatKey, run: &RunId) -> Result<(), Fault> {
         let log = &self.open(key).await?.events;
-        let asks = log.runs().waiting.iter().any(|waits| waits.run == *run);
+        let asks = log.runs().asks(run);
         let running = self
             .runs
             .of(key)
@@ -934,7 +934,8 @@ mod tests {
         let (runs, waiting, events) = snapshot(&bench).await;
         let folded = ChatRuns::fold(&events);
         assert_eq!((waiting.as_slice(), runs.len()), ([7].as_slice(), 1));
-        assert_eq!((folded.waiting_seqs(), folded.runs), (waiting, runs));
+        let folded_runs: Vec<_> = folded.run().cloned().into_iter().collect();
+        assert_eq!((folded.waiting_seqs(), folded_runs), (waiting, runs));
         let second = allow("r-3", "c-1", "run-1", 2);
         bench.chats.command(second).await.unwrap();
 

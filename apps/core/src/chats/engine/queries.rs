@@ -42,7 +42,7 @@ impl<A: Agent> Engine<A> {
             }
             ChatQueryKind::Snapshot => Ok(Some(ChatAnswerKind::Snapshot {
                 seq: chat.events.seq(),
-                runs: chat.events.runs().runs.clone(),
+                runs: chat.events.runs().run().cloned().into_iter().collect(),
                 waiting: chat.events.runs().waiting_seqs(),
                 events: chat.events.window(u64::MAX, SNAPSHOT_EVENTS).await?,
             })),
