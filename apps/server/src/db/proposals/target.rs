@@ -28,7 +28,7 @@ pub(super) struct Snapshot {
 
 impl Workspace {
     /// Checks `proposed`'s change against the workspace as it is now.
-    pub(super) async fn target<'a>(
+    pub(super) async fn proposal_target<'a>(
         &self,
         transaction: &mut SqliteConnection,
         proposed: &'a Proposed,
@@ -40,7 +40,11 @@ impl Workspace {
                 let base = i64::try_from(*base).map_err(|_| invalid())?;
                 // A revision there isn't, and an edit that changes nothing, are both refused.
                 let was = self.read_doc(transaction, doc, Some(base)).await;
-                if was.map_err(|_| invalid())?.text == text {
+                if was
+                    .map_err(|fault| invalid_if(fault, "doc.not_found"))?
+                    .text
+                    == text
+                {
                     return Err(invalid());
                 }
                 Ok(Target {
@@ -87,7 +91,7 @@ impl Workspace {
         let found = self
             .read_task(transaction, task)
             .await
-            .map_err(|_| invalid())?;
+            .map_err(|fault| invalid_if(fault, "task.not_found"))?;
         if found.version.get() != base {
             return Err(Fault::new(
                 code!("proposal.stale"),
@@ -106,6 +110,16 @@ impl Workspace {
             snapshot: Some(serde_json::to_string(&snapshot).map_err(|_| invalid())?),
             ..Target::default()
         })
+    }
+}
+
+/// `proposal.invalid` for a doc or task there isn't, whose code is `missing`; any other
+/// fault stays itself, to be logged where it is handled.
+fn invalid_if(fault: Fault, missing: &str) -> Fault {
+    if fault.code().as_str() == missing {
+        invalid()
+    } else {
+        fault
     }
 }
 

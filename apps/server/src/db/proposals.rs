@@ -72,11 +72,12 @@ impl Workspace {
         if self.sent_before(&mut transaction, proposed, &hash).await? {
             return Ok(());
         }
-        let target = self.target(&mut transaction, proposed).await?;
+        let target = self.proposal_target(&mut transaction, proposed).await?;
         if target.base.is_some() {
             self.supersede(&mut transaction, proposed, &target).await?;
         }
-        self.room_for(&mut transaction, &proposed.owner).await?;
+        self.room_for_proposal(&mut transaction, &proposed.owner)
+            .await?;
         // At least what its revision will count, so that accepting it fits in what it frees.
         let bytes = i64::try_from(OVERHEAD + change.len() + agent.len()).map_err(|_| invalid())?;
         self.charge(&mut transaction, bytes).await?;
@@ -138,7 +139,7 @@ impl Workspace {
     }
 
     /// Refuses a proposal from a member whose agents have [`MAX_OPEN`] open already.
-    async fn room_for(
+    async fn room_for_proposal(
         &self,
         transaction: &mut SqliteConnection,
         owner: &MemberId,
@@ -186,12 +187,7 @@ impl Workspace {
         .map_err(failed)?;
         for older in older {
             let older: ProposalId = stored(older)?;
-            let closing = Closing {
-                state: SUPERSEDED,
-                by: None,
-                version: None,
-            };
-            self.close(transaction, &older, closing, &proposed.owner)
+            self.close_proposal(transaction, &older, Closing::Superseded, &proposed.owner)
                 .await?;
         }
         Ok(())
@@ -199,7 +195,7 @@ impl Workspace {
 
     /// Takes the open proposal `id`'s bytes off the quota; `proposal.not_found` when there's
     /// no such proposal, and `proposal.closed` when it isn't open.
-    async fn release(
+    async fn release_charge(
         &self,
         transaction: &mut SqliteConnection,
         id: &ProposalId,
@@ -227,22 +223,23 @@ impl Workspace {
 
     /// Closes the open proposal `id` as `closing` says: its bytes leave the quota, its change
     /// goes, and the feed hears of it through `member`.
-    async fn close(
+    async fn close_proposal(
         &self,
         transaction: &mut SqliteConnection,
         id: &ProposalId,
         closing: Closing<'_>,
         member: &MemberId,
     ) -> Result<(), Fault> {
-        self.release(transaction, id).await?;
+        self.release_charge(transaction, id).await?;
+        let (state, by, version) = closing.columns();
         sqlx::query(
             "UPDATE proposals SET state = ?, decided_by = ?, version = ?, change = NULL,
                  snapshot = NULL
              WHERE workspace_id = ? AND proposal_id = ?",
         )
-        .bind(closing.state)
-        .bind(closing.by.map(MemberId::as_str))
-        .bind(closing.version)
+        .bind(state)
+        .bind(by.map(MemberId::as_str))
+        .bind(version)
         .bind(self.id.as_str())
         .bind(id.as_str())
         .execute(&mut *transaction)
@@ -255,12 +252,9 @@ impl Workspace {
     /// Rejects the open proposal `id` on behalf of `by`.
     pub(crate) async fn reject(&self, id: &ProposalId, by: &MemberId) -> Result<(), Fault> {
         let mut transaction = self.db.write().await?;
-        let closing = Closing {
-            state: REJECTED,
-            by: Some(by),
-            version: None,
-        };
-        self.close(&mut transaction, id, closing, by).await?;
+        let rejected = Closing::Rejected { by };
+        self.close_proposal(&mut transaction, id, rejected, by)
+            .await?;
         transaction.commit().await.map_err(failed)
     }
 }
@@ -279,10 +273,21 @@ fn stored_agent(proposed: &Proposed) -> Result<String, Fault> {
 }
 
 /// How an open proposal closes.
-struct Closing<'a> {
-    state: &'static str,
-    by: Option<&'a MemberId>,
-    version: Option<i64>,
+enum Closing<'a> {
+    Accepted { by: &'a MemberId, version: i64 },
+    Rejected { by: &'a MemberId },
+    Superseded,
+}
+
+impl Closing<'_> {
+    /// The state, the member who decided and the version made, as stored.
+    const fn columns(&self) -> (&'static str, Option<&MemberId>, Option<i64>) {
+        match *self {
+            Self::Accepted { by, version } => (ACCEPTED, Some(by), Some(version)),
+            Self::Rejected { by } => (REJECTED, Some(by), None),
+            Self::Superseded => (SUPERSEDED, None, None),
+        }
+    }
 }
 
 fn invalid() -> Fault {
@@ -764,5 +769,25 @@ mod tests {
             (record.state, record.change),
             (ProposalState::Withdrawn, None)
         );
+    }
+
+    #[tokio::test]
+    async fn a_database_fault_reading_what_a_proposal_changes_stays_a_fault() {
+        let dir = TempDir::new().unwrap();
+        let (one, _) = workspaces(&dir).await;
+        for gone in [
+            "ALTER TABLE doc_pins RENAME TO doc_pins_gone",
+            "ALTER TABLE tasks RENAME TO tasks_gone",
+        ] {
+            sqlx::query(gone).execute(&one.db.writer).await.unwrap();
+        }
+
+        for change in [revise("d1", 1, "A\n"), retitle("t1", 1, "A")] {
+            let fault = one
+                .propose(&proposed("p1", "mc1", change))
+                .await
+                .unwrap_err();
+            assert_eq!(code(&fault), "db.failed");
+        }
     }
 }
