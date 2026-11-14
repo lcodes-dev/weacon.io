@@ -48,12 +48,10 @@ pub(crate) fn run(app: &App, workspace: &WorkspaceId, chat: &ChatId) -> Result<(
 
 #[cfg(test)]
 mod tests {
-    use std::fs;
     use std::path::Path;
 
     use weacon_protocol::{AgentKind, AgentSession};
     use weacon_testing::TempDir;
-    use weacon_testing::platform::write_program;
 
     use super::*;
     use crate::test_support;
@@ -121,6 +119,10 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn a_sleeping_chat_is_carried_on_in_its_folder_with_the_workspaces_sign_in() {
+        use std::fs;
+
+        use weacon_testing::platform::write_program;
+
         for state in [RunState::Sleeping, RunState::Ended] {
             let dir = TempDir::new().unwrap();
             chat_left(&dir.join("state"), state, Some(SESSION));
