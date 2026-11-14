@@ -282,7 +282,8 @@ ALTER TABLE task_versions ADD COLUMN agent TEXT;
 ALTER TABLE doc_versions ADD COLUMN agent TEXT;
 ",
     // Chats, the events their machines report, the prompts that wait for their owners and the
-    // commands their owners sent them. A workspace counts the bytes its chats' events take.
+    // commands their owners sent them, and the feed's changes to them. A workspace counts the
+    // bytes its chats' events take.
     "
 ALTER TABLE workspaces ADD COLUMN chat_bytes INTEGER NOT NULL DEFAULT 0;
 
@@ -344,6 +345,33 @@ CREATE TABLE chat_requests (
 ) STRICT;
 
 CREATE INDEX chat_requests_open ON chat_requests (workspace_id, chat_id) WHERE open = 1;
+
+CREATE TABLE changes_with_chats (
+    workspace_id TEXT NOT NULL,
+    seq INTEGER NOT NULL,
+    kind TEXT NOT NULL,
+    member_id TEXT NOT NULL,
+    task_id TEXT,
+    task_version INTEGER,
+    doc_id TEXT,
+    doc_version INTEGER,
+    chat_id TEXT,
+    PRIMARY KEY (workspace_id, seq),
+    FOREIGN KEY (workspace_id, member_id) REFERENCES members (workspace_id, member_id),
+    FOREIGN KEY (workspace_id, task_id, task_version)
+        REFERENCES task_versions (workspace_id, task_id, version),
+    FOREIGN KEY (workspace_id, doc_id, doc_version)
+        REFERENCES doc_versions (workspace_id, doc_id, version),
+    FOREIGN KEY (workspace_id, chat_id) REFERENCES chats (workspace_id, chat_id)
+) STRICT;
+
+INSERT INTO changes_with_chats
+    (workspace_id, seq, kind, member_id, task_id, task_version, doc_id, doc_version)
+SELECT workspace_id, seq, kind, member_id, task_id, task_version, doc_id, doc_version
+FROM changes;
+
+DROP TABLE changes;
+ALTER TABLE changes_with_chats RENAME TO changes;
 ",
 ];
 
@@ -481,13 +509,13 @@ mod tests {
                 "docs",
                 "doc_versions",
                 "doc_pins",
-                "changes",
                 "machines",
                 "pairings",
                 "chats",
                 "chat_events",
                 "chat_waiting",
-                "chat_requests"
+                "chat_requests",
+                "changes"
             ]
         );
         for table in SERVER_WIDE {

@@ -1,8 +1,9 @@
 use sqlx::SqliteConnection;
 use weacon_observability::Fault;
-use weacon_protocol::{ChatEntry, ChatEvent, ChatId, ChatState, code};
+use weacon_protocol::{ChatEntry, ChatEvent, ChatId, ChatState, Outcome, RequestId, code};
 
-use super::super::{Workspace, failed, unreadable};
+use super::super::changes::Versioned;
+use super::super::{Workspace, failed, stored, unreadable};
 use super::{chat_not_found, count, number, unstorable};
 
 /// The most bytes of chat events a workspace keeps: 512 MiB.
@@ -80,7 +81,43 @@ impl Workspace {
                 event: row.event.clone(),
             });
         }
-        self.keep_runs(transaction, chat, &runs).await
+        self.keep_runs(&mut *transaction, chat, &runs).await?;
+        for request in rows.iter().filter_map(|row| ended(row.event)) {
+            sqlx::query(
+                "UPDATE chat_requests SET open = 0 WHERE workspace_id = ? AND request_id = ?",
+            )
+            .bind(self.id.as_str())
+            .bind(request.as_str())
+            .execute(&mut *transaction)
+            .await
+            .map_err(failed)?;
+        }
+        let turned = rows.iter().filter(|row| turns(row.event)).map(|row| row.at);
+        match turned.last() {
+            Some(at) => self.turned(transaction, chat, at).await,
+            None => Ok(()),
+        }
+    }
+
+    // A turn began or ended at `at`: the chat is updated then, and the feed hears of it.
+    async fn turned(
+        &self,
+        transaction: &mut SqliteConnection,
+        chat: &ChatId,
+        at: i64,
+    ) -> Result<(), Fault> {
+        let owner = sqlx::query_scalar::<_, String>(
+            "UPDATE chats SET updated_at = ? WHERE workspace_id = ? AND chat_id = ?
+             RETURNING owner_member",
+        )
+        .bind(at)
+        .bind(self.id.as_str())
+        .bind(chat.as_str())
+        .fetch_one(&mut *transaction)
+        .await
+        .map_err(failed)?;
+        self.changed(transaction, Versioned::Chat(chat), &stored(owner)?)
+            .await
     }
 
     async fn advance(
@@ -205,6 +242,18 @@ fn numbered<'a>(
     Ok((rows, seq, core_seq))
 }
 
+/// The request a receipt in `event` ends, when it ends one.
+fn ended(event: &ChatEvent) -> Option<&RequestId> {
+    let ChatEvent::Receipt { receipt } = event else {
+        return None;
+    };
+    (!matches!(receipt.outcome, Outcome::Accepted)).then_some(&receipt.request)
+}
+
+fn turns(event: &ChatEvent) -> bool {
+    matches!(event, ChatEvent::Prompt { .. }) || ended(event).is_some()
+}
+
 fn size(rows: &[Row<'_>]) -> Result<i64, Fault> {
     rows.iter().try_fold(0_i64, |sum, row| {
         let len = i64::try_from(row.body.len()).map_err(|_| unstorable())?;
@@ -239,7 +288,7 @@ pub(crate) fn chat_quota_full() -> Fault {
 
 #[cfg(test)]
 mod tests {
-    use weacon_protocol::{Outcome, Receipt};
+    use weacon_protocol::{Receipt, WorkspaceChange};
     use weacon_testing::TempDir;
 
     use super::super::test_support::{NOW, append, code, id, make, said, seqs};
@@ -379,5 +428,58 @@ mod tests {
             append(&two, "c-1", &[(Some(1), said("a"))]).await.unwrap(),
             1
         );
+    }
+
+    fn receipt(request: &str, outcome: Outcome) -> ChatEvent {
+        ChatEvent::Receipt {
+            receipt: Receipt {
+                request: id(request),
+                outcome,
+            },
+        }
+    }
+
+    async fn changed_chats(workspace: &Workspace) -> Vec<WorkspaceChange> {
+        let changes = workspace.changes_since(0, 100).await.unwrap();
+        let chats = changes.into_iter().map(|update| update.change);
+        chats
+            .filter(|change| matches!(change, WorkspaceChange::ChatChanged { .. }))
+            .collect()
+    }
+
+    async fn updated_at(workspace: &Workspace) -> i64 {
+        workspace.chats().await.unwrap().first().unwrap().updated_at
+    }
+
+    #[tokio::test]
+    async fn a_turn_ending_closes_its_request_and_tells_the_feed_and_the_list() {
+        let dir = TempDir::new().unwrap();
+        let (one, two) = two_teams(&dir).await;
+        make(&one, "c-1", "m1", NOW).await.unwrap();
+        make(&two, "c-1", "m2", NOW).await.unwrap();
+        let made = WorkspaceChange::ChatChanged { chat: id("c-1") };
+        assert_eq!(changed_chats(&one).await, [made.clone()]);
+
+        let accepted = receipt("r-c-1", Outcome::Accepted);
+        let events = [(Some(1), accepted), (Some(2), said("working"))];
+        append(&one, "c-1", &events).await.unwrap();
+        assert_eq!(one.open_requests(&id("c-1")).await.unwrap().len(), 1);
+        assert_eq!(
+            (changed_chats(&one).await.len(), updated_at(&one).await),
+            (1, NOW)
+        );
+
+        let done = Incoming {
+            core_seq: Some(3),
+            event: &receipt("r-c-1", Outcome::Completed),
+            at: NOW + 40,
+        };
+        one.append_events(&id("c-1"), &[done]).await.unwrap();
+
+        assert!(one.open_requests(&id("c-1")).await.unwrap().is_empty());
+        assert_eq!(changed_chats(&one).await, [made.clone(), made]);
+        assert_eq!(updated_at(&one).await, NOW + 40);
+        assert_eq!(two.open_requests(&id("c-1")).await.unwrap().len(), 1);
+        assert_eq!(changed_chats(&two).await.len(), 1);
     }
 }

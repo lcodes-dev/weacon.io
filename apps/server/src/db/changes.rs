@@ -1,19 +1,21 @@
 use sqlx::SqliteConnection;
 use weacon_model::Revision;
 use weacon_observability::Fault;
-use weacon_protocol::{DocId, MemberId, TaskId, WorkspaceChange, WorkspaceUpdate};
+use weacon_protocol::{ChatId, DocId, MemberId, TaskId, WorkspaceChange, WorkspaceUpdate};
 
 use super::{Workspace, failed, stored, stored_version, unreadable};
 
 const MEMBER_JOINED: &str = "member_joined";
 const TASK_CHANGED: &str = "task_changed";
 const DOC_CHANGED: &str = "doc_changed";
+const CHAT_CHANGED: &str = "chat_changed";
 
-/// A task or a doc, at the version it now has as stored.
+/// A task or a doc, at the version it now has as stored, or a chat.
 #[derive(Clone, Copy, Debug)]
 pub(super) enum Versioned<'a> {
     Task(&'a TaskId, i64),
     Doc(&'a DocId, i64),
+    Chat(&'a ChatId),
 }
 
 type Row = (
@@ -24,6 +26,7 @@ type Row = (
     Option<i64>,
     Option<String>,
     Option<i64>,
+    Option<String>,
 );
 
 impl Workspace {
@@ -53,14 +56,18 @@ impl Workspace {
         versioned: Versioned<'_>,
         member: &MemberId,
     ) -> Result<(), Fault> {
-        let (kind, task, doc) = match versioned {
-            Versioned::Task(id, version) => (TASK_CHANGED, Some((id.as_str(), version)), None),
-            Versioned::Doc(id, version) => (DOC_CHANGED, None, Some((id.as_str(), version))),
+        let (kind, task, doc, chat) = match versioned {
+            Versioned::Task(id, version) => {
+                (TASK_CHANGED, Some((id.as_str(), version)), None, None)
+            }
+            Versioned::Doc(id, version) => (DOC_CHANGED, None, Some((id.as_str(), version)), None),
+            Versioned::Chat(id) => (CHAT_CHANGED, None, None, Some(id.as_str())),
         };
         sqlx::query(
             "INSERT INTO changes
-                 (workspace_id, seq, kind, member_id, task_id, task_version, doc_id, doc_version)
-             SELECT ?1, COALESCE(MAX(seq), 0) + 1, ?2, ?3, ?4, ?5, ?6, ?7 FROM changes
+                 (workspace_id, seq, kind, member_id, task_id, task_version, doc_id, doc_version,
+                     chat_id)
+             SELECT ?1, COALESCE(MAX(seq), 0) + 1, ?2, ?3, ?4, ?5, ?6, ?7, ?8 FROM changes
              WHERE workspace_id = ?1",
         )
         .bind(self.id.as_str())
@@ -70,6 +77,7 @@ impl Workspace {
         .bind(task.map(|(_, version)| version))
         .bind(doc.map(|(id, _)| id))
         .bind(doc.map(|(_, version)| version))
+        .bind(chat)
         .execute(transaction)
         .await
         .map_err(failed)?;
@@ -84,7 +92,8 @@ impl Workspace {
     ) -> Result<Vec<WorkspaceUpdate>, Fault> {
         let after = i64::try_from(seq).unwrap_or(i64::MAX);
         sqlx::query_as::<_, Row>(
-            "SELECT seq, kind, member_id, task_id, task_version, doc_id, doc_version FROM changes
+            "SELECT seq, kind, member_id, task_id, task_version, doc_id, doc_version, chat_id
+             FROM changes
              WHERE workspace_id = ? AND seq > ? ORDER BY seq LIMIT ?",
         )
         .bind(self.id.as_str())
@@ -99,24 +108,27 @@ impl Workspace {
     }
 
     fn stored_update(&self, row: Row) -> Result<WorkspaceUpdate, Fault> {
-        let (seq, kind, member, task, task_version, doc, doc_version) = row;
+        let (seq, kind, member, task, task_version, doc, doc_version, chat) = row;
         let version = |version| stored_version(version).map(Revision::get);
-        let change = match (kind.as_str(), task, task_version, doc, doc_version) {
-            (MEMBER_JOINED, None, None, None, None) => WorkspaceChange::MemberJoined {
+        let task = task.zip(task_version);
+        let doc = doc.zip(doc_version);
+        let change = match (kind.as_str(), task, doc, chat) {
+            (MEMBER_JOINED, None, None, None) => WorkspaceChange::MemberJoined {
                 member: stored(member)?,
             },
-            (TASK_CHANGED, Some(task), Some(task_version), None, None) => {
+            (TASK_CHANGED, Some((task, task_version)), None, None) => {
                 WorkspaceChange::TaskChanged {
                     task: stored(task)?,
                     version: version(task_version)?,
                 }
             }
-            (DOC_CHANGED, None, None, Some(doc), Some(doc_version)) => {
-                WorkspaceChange::DocChanged {
-                    doc: stored(doc)?,
-                    version: version(doc_version)?,
-                }
-            }
+            (DOC_CHANGED, None, Some((doc, doc_version)), None) => WorkspaceChange::DocChanged {
+                doc: stored(doc)?,
+                version: version(doc_version)?,
+            },
+            (CHAT_CHANGED, None, None, Some(chat)) => WorkspaceChange::ChatChanged {
+                chat: stored(chat)?,
+            },
             // This server writes every kind it stores, so another is damage, not news.
             _ => return Err(unreadable()),
         };
@@ -257,5 +269,23 @@ mod tests {
             w1.changes_since(0, 10).await.unwrap(),
             [joined(1, "m1"), task_changed]
         );
+    }
+
+    #[tokio::test]
+    async fn changes_from_before_chats_are_kept() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.join("weacon.db");
+        let rows = "INSERT INTO workspaces (workspace_id, name) VALUES ('w1', 'One');
+             INSERT INTO accounts (account_id, email) VALUES ('a1', 'ada@example.com');
+             INSERT INTO members (workspace_id, member_id, email, account_id)
+                 VALUES ('w1', 'm1', 'ada@example.com', 'a1');
+             INSERT INTO changes (workspace_id, seq, kind, member_id)
+                 VALUES ('w1', 1, 'member_joined', 'm1')";
+        database_before(&path, "changes_with_chats", rows).await;
+
+        let db = Db::open(&path).await.unwrap();
+        let w1 = db.workspace(&workspace_id("w1")).await.unwrap();
+
+        assert_eq!(w1.changes_since(0, 10).await.unwrap(), [joined(1, "m1")]);
     }
 }

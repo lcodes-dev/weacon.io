@@ -10,6 +10,7 @@ use weacon_protocol::{
 pub(crate) use events::{CHAT_QUOTA, Incoming, chat_quota_full};
 pub(crate) use ledger::{NewRequest, Recorded};
 
+use super::changes::Versioned;
 use super::{Workspace, failed, stored, unreadable};
 
 /// A chat as its first prompt makes it.
@@ -66,6 +67,8 @@ impl Workspace {
         .await
         .map_err(failed)?;
         self.insert_request(&mut transaction, request).await?;
+        self.changed(&mut transaction, Versioned::Chat(chat.id), chat.owner)
+            .await?;
         transaction.commit().await.map_err(failed)
     }
 
