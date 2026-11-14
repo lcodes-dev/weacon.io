@@ -351,12 +351,21 @@ mod tests {
             ["--resume", "0b7c6a52-3f1e-4d2a-9c8b-5e4f3a2b1c0d"]
         );
         assert_eq!(by_hand.as_std().get_current_dir(), Some(Path::new("/work")));
-        for command in [command(&claude, None), check, login, by_hand] {
+        let commands = [
+            ("run", command(&claude, None)),
+            ("status", check),
+            ("login", login),
+            ("resume", by_hand),
+        ];
+        for (name, command) in commands {
             let config = (
                 OsStr::new("CLAUDE_CONFIG_DIR"),
-                Some(OsStr::new("/work/config")),
+                Some(claude.config_dir.as_os_str()),
             );
-            assert!(command.as_std().get_envs().any(|env| env == config));
+            assert!(
+                command.as_std().get_envs().any(|env| env == config),
+                "{name}"
+            );
         }
         let run = command(&claude, None);
         assert_eq!(run.as_std().get_current_dir(), Some(Path::new("/work")));

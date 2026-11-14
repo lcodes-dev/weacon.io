@@ -59,9 +59,15 @@ mod tests {
         assert_eq!(args(&status), ["login", "status"]);
         assert_eq!(args(&login), ["login"]);
         assert_eq!(args(&run), ["app-server"]);
-        for command in [&run, &status, &login] {
-            let config = (OsStr::new("CODEX_HOME"), Some(OsStr::new("/work/config")));
-            assert!(command.as_std().get_envs().any(|env| env == config));
+        for (name, command) in [("run", &run), ("status", &status), ("login", &login)] {
+            let config = (
+                OsStr::new("CODEX_HOME"),
+                Some(launch.config_dir.as_os_str()),
+            );
+            assert!(
+                command.as_std().get_envs().any(|env| env == config),
+                "{name}"
+            );
         }
         assert_eq!(run.as_std().get_current_dir(), Some(Path::new("/work")));
         assert_eq!(status.as_std().get_current_dir(), None);
