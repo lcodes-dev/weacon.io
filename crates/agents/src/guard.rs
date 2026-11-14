@@ -863,6 +863,7 @@ mod tests {
             ("cp -l ../main/src/lib.rs h", Reason::WriteOutside),
             ("cp --link ../main/src/lib.rs h", Reason::WriteOutside),
             ("cd /tmp; printf x >123", Reason::WriteOutside),
+            ("echo x >&/etc/x", Reason::WriteOutside),
             ("echo `r\\m -rf ../main`", Reason::DeleteOutside),
         ] {
             assert_eq!(check(line), Some(reason), "{line}");
@@ -874,6 +875,8 @@ mod tests {
             "make 2>&1 >build.log",
             "echo hi >&2",
             "cd src && ls",
+            "cd /tmp; echo x >&-",
+            "(echo a); cd src && rm -rf x",
         ] {
             assert_eq!(check(line), None, "{line}");
         }
