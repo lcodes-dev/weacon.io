@@ -6,6 +6,7 @@
 mod anchor;
 mod area;
 mod cfg;
+mod contracts;
 mod edges;
 mod facts;
 mod fingerprint;
@@ -22,6 +23,7 @@ use std::fmt;
 
 pub use anchor::{Anchor, Finding, Pin};
 pub use area::Area;
+pub use contracts::{Contract, ContractKind};
 pub use edges::{Edge, EdgeKind};
 pub use fingerprint::Fingerprint;
 pub use index::{Crate, Index, Module, SourceFile, index};

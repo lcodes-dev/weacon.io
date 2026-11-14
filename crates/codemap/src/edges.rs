@@ -42,7 +42,7 @@ pub(crate) fn edges(
 }
 
 /// `crate::module::Name`, leaving out an empty module.
-fn id(krate: &str, module: &str, name: &str) -> String {
+pub(crate) fn id(krate: &str, module: &str, name: &str) -> String {
     join([krate, module, name])
 }
 

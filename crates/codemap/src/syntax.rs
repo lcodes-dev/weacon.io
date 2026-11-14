@@ -35,7 +35,8 @@ pub(crate) fn push_reversed<T>(stack: &mut Vec<T>, items: impl IntoIterator<Item
     }
 }
 
-pub(crate) fn test_only(item: Node<'_>, source: &[u8]) -> bool {
+/// The attributes on `item`, nearest first.
+pub(crate) fn attributes(item: Node<'_>) -> impl Iterator<Item = Node<'_>> {
     std::iter::successors(item.prev_named_sibling(), Node::prev_named_sibling)
         .take_while(|node| {
             matches!(
@@ -43,13 +44,22 @@ pub(crate) fn test_only(item: Node<'_>, source: &[u8]) -> bool {
                 "attribute_item" | "line_comment" | "block_comment"
             )
         })
-        .any(|node| {
-            let attribute = compact(text(node, source));
-            let predicate = attribute
-                .strip_prefix("#[cfg(")
-                .and_then(|it| it.strip_suffix(")]"));
-            predicate.is_some_and(implies_test)
-        })
+        .filter(|node| node.kind() == "attribute_item")
+}
+
+/// The line `node` starts on, counting from 1.
+pub(crate) fn line(node: Node<'_>) -> usize {
+    node.start_position().row.saturating_add(1)
+}
+
+pub(crate) fn test_only(item: Node<'_>, source: &[u8]) -> bool {
+    attributes(item).any(|node| {
+        let attribute = compact(text(node, source));
+        let predicate = attribute
+            .strip_prefix("#[cfg(")
+            .and_then(|it| it.strip_suffix(")]"));
+        predicate.is_some_and(implies_test)
+    })
 }
 
 pub(crate) fn text<'a>(node: Node<'_>, source: &'a [u8]) -> &'a str {

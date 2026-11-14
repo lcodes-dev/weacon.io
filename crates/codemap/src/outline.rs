@@ -4,8 +4,9 @@ use std::fmt;
 use tree_sitter::{Node, Tree};
 
 use crate::Fingerprint;
+use crate::contracts::{Declared, contracts};
 use crate::refs::{Ref, refs};
-use crate::syntax::{preorder, push_reversed, test_only, text};
+use crate::syntax::{line, preorder, push_reversed, test_only, text};
 
 /// An item declared in a module, named relative to it: `Frame`, `Frame::new`, `tests::helper`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -76,6 +77,7 @@ pub(crate) struct Item {
     /// The type or trait it belongs to, which `Self` names, as written in `within`.
     pub(crate) owner: Option<String>,
     pub(crate) refs: Vec<Ref>,
+    pub(crate) contracts: Vec<Declared>,
 }
 
 /// Where items sit: the inline modules around them, their owner, and the prefix of their names.
@@ -139,16 +141,17 @@ fn visit<'tree>(
         fingerprint: fingerprint(item, source),
     };
     let inside = place.inside(kind, name, full);
-    let refs = if inside.is_some() {
-        Vec::new()
+    let (refs, contracts) = if inside.is_some() {
+        (Vec::new(), Vec::new())
     } else {
-        refs(item, source)
+        (refs(item, source), contracts(item, source))
     };
     found.push(Item {
         symbol,
         within: place.within.clone(),
         owner: place.owner.clone(),
         refs,
+        contracts,
     });
     if let Some(inside) = inside {
         push_items(pending, body, &inside);
@@ -203,7 +206,7 @@ fn impl_owner(item: Node<'_>, source: &[u8]) -> (String, String) {
 }
 
 /// `Frame` for `fmt::Frame`, `Frame<T>`, `&mut Frame` or `dyn Frame`; `T` for `[T]`.
-fn base_name(node: Node<'_>, source: &[u8]) -> String {
+pub(crate) fn base_name(node: Node<'_>, source: &[u8]) -> String {
     let mut base = node;
     while let Some(inner) = match base.kind() {
         "generic_type" | "reference_type" | "pointer_type" => base.child_by_field_name("type"),
@@ -257,10 +260,6 @@ fn join(prefix: &str, name: &str) -> String {
     } else {
         format!("{prefix}::{name}")
     }
-}
-
-fn line(node: Node<'_>) -> usize {
-    node.start_position().row.saturating_add(1)
 }
 
 #[cfg(test)]

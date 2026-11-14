@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 use std::fmt;
 
 use crate::area::areas;
+use crate::contracts::{self, Contract};
 use crate::edges::{Edge, edges};
 use crate::facts::{Facts, FileKind, Reader};
 use crate::graph::{file_links, nodes};
@@ -30,6 +31,8 @@ pub struct Index {
     pub areas: Vec<Area>,
     /// Sorted.
     pub edges: Vec<Edge>,
+    /// Sorted.
+    pub contracts: Vec<Contract>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -99,10 +102,12 @@ pub(crate) fn assemble(facts: &[Facts]) -> Index {
     let nodes = nodes(&crates);
     let areas = areas(&nodes, &file_links(&nodes, &named_by_file));
     let edges = edges(&crates, &named_by_file, &items_by_file);
+    let contracts = contracts::assemble(&crates, &items_by_file);
     Index {
         crates,
         areas,
         edges,
+        contracts,
     }
 }
 
