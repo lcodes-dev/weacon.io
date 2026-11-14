@@ -83,7 +83,7 @@ impl DocText {
 }
 
 /// The code anchors `body` may link to: each target after `](`, `<` or `]:`, up to a space
-/// or the `)` or `>` that closes it, whose kind is code in any case. It finds at least what Markdown links, so
+/// or the `)` or `>` that closes it, that [`may_link_to_code`]. It finds at least what Markdown links, so
 /// a doubtful link is asked for a pin rather than missed.
 fn links(body: &str) -> BTreeSet<&str> {
     [("](", ')'), ("<", '>'), ("]:", ' ')]
@@ -94,8 +94,16 @@ fn links(body: &str) -> BTreeSet<&str> {
                 .split(|char: char| char.is_whitespace() || char == end)
                 .next()
         })
-        .filter(|target| links_to_code(&target.to_ascii_lowercase()))
+        .filter(|target| may_link_to_code(target))
         .collect()
+}
+
+/// Whether Markdown could render `target` as a link to code: its kind is code in any case,
+/// or what precedes its first `:` holds an escape or a character reference, which Markdown
+/// decodes.
+fn may_link_to_code(target: &str) -> bool {
+    let scheme = target.split_once(':').map_or(target, |(scheme, _)| scheme);
+    links_to_code(&target.to_ascii_lowercase()) || scheme.contains(['&', '\\'])
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -184,7 +192,7 @@ mod tests {
     fn every_anchor_link_has_one_pin_and_every_pin_a_link() {
         let body = "See [encode](sym:a::encode \"Encode\"), the [flow](flow:a::b->c::d) and <sym:a::encode>\n\
                     [the area](area:crates/protocol/src/lib) again: [x](sym:a::encode).\n\
-                    Plain [links](https://example.com) and <b>tags</b> need no pin.";
+                    Plain [links](https://example.com/?a=1&b=2) and <b>tags</b> need no pin.";
         let all = [
             "sym:a::encode",
             "flow:a::b->c::d",
@@ -204,6 +212,10 @@ mod tests {
             ("[r]:sym:a", &[][..]),
             ("<SYM:a>", &[][..]),
             ("[a](Area:a)", &["area:a"][..]),
+            ("[a](sym&#58;a)", &[][..]),
+            ("[a](&#115;ym:a)", &[][..]),
+            ("[a](sym&colon;a)", &[][..]),
+            ("[a](sym\\:a)", &[][..]),
             ("[a](sym:a) <area:b>", &["sym:a"][..]),
             ("[a](sym:a)\n[b](flow:a->b)", &["sym:a"][..]),
         ] {
