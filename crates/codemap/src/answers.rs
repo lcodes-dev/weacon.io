@@ -400,7 +400,7 @@ mod tests {
     fn fits_any_lines_the_same_way() {
         let lines = || ["one".to_owned(), "two".to_owned()];
         assert_eq!(fit(lines(), 100), "one\ntwo\n");
-        assert_eq!(fit(lines(), 4 + TAIL), "one\n… 1 more line\n");
+        assert_eq!(fit(lines(), 7), "… 2 more lines\n");
     }
 
     #[test]
