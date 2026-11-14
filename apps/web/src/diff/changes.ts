@@ -1,8 +1,5 @@
-import type { Status } from "../connection.ts";
+import { type Status, offers } from "../connection.ts";
 import type { ChatId, DiffFile, Envelope, Hunk, LineOp, RequestId, WorkspaceId } from "../protocol.ts";
-
-/** The capability under which a server answers diff queries. */
-export const DIFF_VIEW = "diff.view";
 
 /** What the core has sent of a chat's changes under the latest request. */
 export type Changes = {
@@ -20,7 +17,7 @@ export const NO_CHANGES: Changes = { asked: undefined, files: [], total: undefin
 
 /** Whether `status` is a connection that can ask for changes. */
 export function canAsk(status: Status): boolean {
-  return status.state === "live" && status.capabilities.includes(DIFF_VIEW);
+  return offers(status, "diff.view");
 }
 
 /** The query, as message `id`, for `chat`'s changes under `request`; what is `shown` stays until its first answer. */

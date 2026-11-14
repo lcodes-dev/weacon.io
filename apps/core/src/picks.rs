@@ -5,6 +5,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use weacon_protocol::{Pick, RequestId};
 
+use crate::app::read_json;
 use crate::platform;
 
 /// Elements picked in Chrome, one file per request.
@@ -45,11 +46,7 @@ impl Picks {
 
     /// The pick kept for `request`, if any.
     pub(crate) fn read(&self, request: &RequestId) -> io::Result<Option<Pick>> {
-        match fs::read(self.path(request)) {
-            Ok(json) => Ok(Some(serde_json::from_slice(&json)?)),
-            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
-            Err(error) => Err(error),
-        }
+        read_json(&self.path(request))
     }
 
     // Written aside under a name of its own, then linked into place: a reader never sees half a
@@ -57,8 +54,8 @@ impl Picks {
     fn publish(&self, request: &RequestId, json: &[u8]) -> io::Result<()> {
         platform::private_dir(&self.dir)?;
         let partial = self.dir.join(format!(
-            "pick-{}.{}-{}.partial",
-            request.as_str(),
+            "{}.{}-{}.partial",
+            name(request),
             std::process::id(),
             NEXT.fetch_add(1, Ordering::Relaxed)
         ));
@@ -69,10 +66,13 @@ impl Picks {
         published
     }
 
-    // Request ids are plain tokens; the prefix keeps Windows' device names, such as `CON`, out.
     fn path(&self, request: &RequestId) -> PathBuf {
-        self.dir.join(format!("pick-{}.json", request.as_str()))
+        self.dir.join(name(request) + ".json")
     }
+}
+
+fn name(request: &RequestId) -> String {
+    platform::case_safe_name("pick-", request.as_str())
 }
 
 static NEXT: AtomicU64 = AtomicU64::new(0);
@@ -152,6 +152,21 @@ mod tests {
         );
         assert_eq!(picks.read(&won[0].request).unwrap().as_ref(), Some(won[0]));
         assert_eq!(fs::read_dir(dir.join("picks")).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn requests_differing_only_in_case_keep_their_own_files() {
+        let dir = TempDir::new().unwrap();
+        let picks = Picks::new(&dir);
+        let upper = pick("p-Ab", "<p>upper</p>");
+        let lower = pick("p-ab", "<p>lower</p>");
+        picks.keep(&upper).unwrap();
+        picks.keep(&lower).unwrap();
+
+        assert_eq!(picks.read(&upper.request).unwrap(), Some(upper));
+        assert_eq!(picks.read(&lower.request).unwrap(), Some(lower));
+        assert!(dir.join("picks/pick-p-.ab.json").exists());
+        assert!(dir.join("picks/pick-p-ab.json").exists());
     }
 
     #[test]

@@ -1,21 +1,24 @@
+//! Decides whether each report goes out, and hands it to the sender.
+
+use std::error::Error;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use weacon_protocol::Code;
 
-use crate::{AsError, Clock, Fault, Field, Logger, Reports, Upload};
+use crate::{Clock, Fault, Field, Logger, Reports, Upload};
 
 /// Delivers one report; the real one POSTs it, tests record it.
 pub type Deliver = Box<dyn Fn(&Upload) -> Result<(), Fault> + Send + Sync>;
 
 /// Gives each report a new random id.
-pub type Ids = Box<dyn Fn() -> u128 + Send + Sync>;
+pub type NewId = Box<dyn Fn() -> u128 + Send + Sync>;
 
 /// Sends error reports when a DSN is set and the person has agreed, and does nothing otherwise.
 pub struct Reporter {
     reports: Option<Reports>,
     agreed: AtomicBool,
     deliver: Deliver,
-    ids: Ids,
+    new_id: NewId,
     now: Clock,
 }
 
@@ -27,14 +30,14 @@ impl Reporter {
         reports: Option<Reports>,
         agreed: bool,
         deliver: Deliver,
-        ids: Ids,
+        new_id: NewId,
         now: Clock,
     ) -> Self {
         Self {
             reports,
             agreed: AtomicBool::new(agreed),
             deliver,
-            ids,
+            new_id,
             now,
         }
     }
@@ -56,11 +59,11 @@ impl Reporter {
     }
 
     /// Reports `error` under `code`; a report that can't be sent is logged and dropped.
-    pub fn capture_error<E: AsError + ?Sized>(&self, error: &E, code: &Code, log: &Logger) {
+    pub fn capture_error<E: Error + 'static>(&self, error: &E, code: &Code, log: &Logger) {
         let Some(reports) = self.reports.as_ref().filter(|_| self.agreed()) else {
             return;
         };
-        let upload = reports.upload(error, code, (self.ids)(), (self.now)());
+        let upload = reports.upload(error, code, (self.new_id)(), (self.now)());
         if let Err(error) = (self.deliver)(&upload) {
             log.warn("report failed", &[("err", Field::error(&error))]);
         }

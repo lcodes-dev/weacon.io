@@ -1,8 +1,8 @@
 import { type ReactNode, useEffect, useRef, useState } from "react";
 
-import { ME } from "../build.ts";
+import { workspaceOf } from "../chat-ref.ts";
 import { Connection, type Status, statusText } from "../connection.ts";
-import { workspaceOf } from "../place.ts";
+import { ME } from "../me.ts";
 import type { WorkspaceId, WorkspaceSummary } from "../protocol.ts";
 import type { Api } from "./api.ts";
 import { useAsk } from "./ask.ts";
@@ -185,7 +185,7 @@ function useFeed(workspace: WorkspaceId, api: Api): Status {
         void api.session();
       }
     };
-    new Connection(socket, ME, { status: onStatus, message: () => {} }, FEED);
+    new Connection(socket, ME, { status: onStatus, message: () => {} }, FEED, (run, ms) => setTimeout(run, ms));
     return () => {
       current = false;
       socket.close();
