@@ -23,7 +23,10 @@ export class Loader<T> {
     this.#show = show;
   }
 
-  /** Settles once no fetch is left to run, so later loads asked meanwhile can keep it waiting. */
+  /**
+   * Settles once no fetch is left to run, so later loads asked meanwhile can keep it waiting; fails
+   * if one of those fetches threw.
+   */
   load(fetch: () => Promise<Answer<T>>): Promise<void> {
     this.#next = fetch;
     this.#running ??= this.#run();
@@ -32,15 +35,16 @@ export class Loader<T> {
 
   async #run(): Promise<void> {
     const era = this.#era;
-    try {
-      for (let fetch = this.#next; fetch !== undefined && era === this.#era; fetch = this.#next) {
-        this.#next = undefined;
-        await this.#fetch(fetch);
-      }
-    } finally {
-      if (era === this.#era) {
-        this.#running = undefined;
-      }
+    const thrown: unknown[] = [];
+    for (let fetch = this.#next; fetch !== undefined && era === this.#era; fetch = this.#next) {
+      this.#next = undefined;
+      await this.#fetch(fetch).catch((error: unknown) => thrown.push(error));
+    }
+    if (era === this.#era) {
+      this.#running = undefined;
+    }
+    if (thrown.length > 0) {
+      throw thrown[0];
     }
   }
 

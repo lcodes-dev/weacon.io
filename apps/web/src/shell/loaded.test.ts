@@ -82,12 +82,22 @@ test("loads asked during a fetch run as one more fetch, once its answer is shown
   assert.deepEqual(values(), [["one"], ["third"], ["after"]]);
 });
 
-test("a fetch that throws fails its load, and the next load still fetches", async () => {
+test("a fetch that throws fails its load, and the load waiting behind it and the next one still fetch", async () => {
   const { list, shown } = recorded();
-  await assert.rejects(list.load(() => Promise.reject(new Error("thrown"))));
-  await list.load(async () => ({ ok: true, value: ["a"] }));
+  const thrown = held<string[]>();
+  const asked: string[] = [];
+  const throwing = list.load(() => thrown.fetch().then(() => Promise.reject(new Error("thrown"))));
+  const waiting = list.load(named(asked, "waiting"));
+  thrown.answer({ ok: true, value: [] });
+  await assert.rejects(throwing);
+  await assert.rejects(waiting);
+  await list.load(named(asked, "next"));
 
-  assert.deepEqual(shown, [{ value: ["a"], problem: undefined }]);
+  assert.deepEqual(asked, ["waiting", "next"]);
+  assert.deepEqual(
+    shown.map(({ value }) => value),
+    [["waiting"], ["next"]],
+  );
 });
 
 test("after a reset, the next loads run one at a time and the old fetch takes none of them", async () => {
