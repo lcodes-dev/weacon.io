@@ -146,6 +146,7 @@ fn record(
     if settings.schedule.effective() == UpdateSchedule::Off {
         return Ok(Found::Nothing);
     }
+    let checked_before = settings.last_checked;
     settings.last_checked = now;
     let accepted = settings.accept(release);
     let newer = accepted.is_ok() && release.version > own;
@@ -160,10 +161,30 @@ fn record(
         return Ok(Found::Nothing);
     }
     // A new protocol always waits for its owner to say yes.
-    if installs(settings.schedule) && release.protocol == PROTOCOL && launched(launch, state_dir)? {
-        return Ok(Found::Started(release.version));
+    if !installs(settings.schedule) || release.protocol != PROTOCOL {
+        return Ok(Found::Offered(release.version));
     }
-    Ok(Found::Offered(release.version))
+    match launched(launch, state_dir) {
+        Ok(true) => Ok(Found::Started(release.version)),
+        Ok(false) => Ok(Found::Offered(release.version)),
+        Err(fault) => {
+            // Unstamped, so the next tick tries again instead of a day or a week later.
+            unstamp(state_dir, checked_before, now)?;
+            Err(fault)
+        }
+    }
+}
+
+/// Puts back the check before `now`, unless another has been stamped since.
+fn unstamp(state_dir: &Path, before: u64, now: u64) -> Result<(), Fault> {
+    let _lock = super::lock(state_dir)?;
+    let file = settings::file(state_dir);
+    let mut settings = Settings::read(&file)?;
+    if settings.last_checked != now {
+        return Ok(());
+    }
+    settings.last_checked = before;
+    settings.write(&file)
 }
 
 /// Whether `settings` call for a check at `now`; a check stamped in the future counts as due.
@@ -300,8 +321,14 @@ mod tests {
             run(&dir, NEWER, CANNOT_START).unwrap(),
             Found::Offered(version("2.0.0"))
         );
-        with(&dir, UpdateSchedule::Daily, 0);
+        with(&dir, UpdateSchedule::Daily, 7);
         let fault = run(&dir, NEWER, FAILS_TO_START).unwrap_err();
+        let settings = Settings::read(&settings::file(&dir)).unwrap();
+        assert_eq!(
+            settings.last_checked, 7,
+            "unstamped, so the next tick tries again"
+        );
+        assert_eq!(settings.offered, Some(version("2.0.0")));
         assert_eq!(fault.code().as_str(), "update.launch_failed");
     }
 
@@ -352,6 +379,15 @@ mod tests {
             run(&dir, NEWER, STARTS).unwrap(),
             Found::Started(version("2.0.0"))
         );
+    }
+
+    #[test]
+    fn an_unstamp_leaves_a_later_check_alone() {
+        let dir = TempDir::new().unwrap();
+        with(&dir, UpdateSchedule::Daily, NOW + 5);
+        unstamp(&dir, 7, NOW).unwrap();
+        let settings = Settings::read(&settings::file(&dir)).unwrap();
+        assert_eq!(settings.last_checked, NOW + 5);
     }
 
     #[test]
