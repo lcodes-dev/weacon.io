@@ -21,7 +21,7 @@ use crate::email::Email;
 use crate::http::{Body, Shared, cross_site, failure, report, too_many, unauthorized};
 use crate::limit::Limit;
 use crate::outbox::mail_failed;
-use crate::secret::{random_bytes, random_failed};
+use crate::secret::{random_failed, random_token, random_u64};
 use crate::sign_up;
 use crate::workspaces;
 
@@ -82,7 +82,7 @@ async fn send_code(
     {
         return Ok(());
     }
-    let code = code_text(&random_bytes()?);
+    let code = code_text(random_u64()?);
     let code_hash = shared.secret.code_hash(&email, &code);
     let now = shared.now();
     if !shared
@@ -177,7 +177,7 @@ async fn signed_in(
     let Ok(email) = Email::parse(&body.email) else {
         return Ok(None);
     };
-    let token = hex(&random_bytes()?);
+    let token = random_token()?;
     let now = shared.now();
     let new_account: Option<AccountId> = sign_up::allows(&shared.sign_up, &email)
         .then(|| fresh(&new_id))
@@ -203,25 +203,14 @@ async fn signed_in(
     }))
 }
 
-/// A challenge nobody can guess: 32 random bytes, in hex.
+/// A challenge nobody can guess.
 fn new_challenge() -> Result<ChallengeId, Fault> {
-    ChallengeId::try_from(hex(&random_bytes()?)).map_err(|_| random_failed())
+    ChallengeId::try_from(random_token()?).map_err(|_| random_failed())
 }
 
 /// A one-time code: eight digits.
-fn code_text(secret: &[u8; 32]) -> String {
-    let word = secret.first_chunk().copied().unwrap_or_default();
-    format!("{:08}", u64::from_le_bytes(word) % 100_000_000)
-}
-
-// A lookup table, as clippy refuses `format!` collected into a string.
-pub(crate) fn hex(bytes: &[u8]) -> String {
-    const DIGITS: &[u8; 16] = b"0123456789abcdef";
-    bytes
-        .iter()
-        .flat_map(|byte| [byte >> 4, byte & 0xf])
-        .filter_map(|nibble| DIGITS.get(usize::from(nibble)).copied().map(char::from))
-        .collect()
+fn code_text(word: u64) -> String {
+    format!("{:08}", word % 100_000_000)
 }
 
 #[cfg(test)]
@@ -248,9 +237,8 @@ mod tests {
 
     #[test]
     fn codes_are_eight_digits_and_tokens_are_hex() {
-        assert_eq!(code_text(&[1; 32]), "38076673");
-        assert_eq!(code_text(&[0; 32]), "00000000");
-        assert_eq!(hex(&[0, 10, 255]), "000aff");
+        assert_eq!(code_text(u64::from_le_bytes([1; 8])), "38076673");
+        assert_eq!(code_text(0), "00000000");
         assert_eq!(new_challenge().unwrap().as_str().len(), 64);
     }
 

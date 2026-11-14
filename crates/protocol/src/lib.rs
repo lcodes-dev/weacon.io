@@ -79,7 +79,8 @@ pub use worktree::{
 };
 
 /// `bytes` as lowercase hex.
-pub(crate) fn to_hex(bytes: &[u8]) -> String {
+#[must_use]
+pub fn to_hex(bytes: &[u8]) -> String {
     let nibbles = bytes.iter().flat_map(|byte| [byte >> 4, byte & 0xf]);
     nibbles
         .filter_map(|nibble| char::from_digit(u32::from(nibble), 16))

@@ -7,7 +7,7 @@ use hmac::{Hmac, KeyInit, Mac};
 use sha2::Sha256;
 use weacon_appkit::{create_private, is_private, sync_dir};
 use weacon_observability::{Fault, Logger};
-use weacon_protocol::code;
+use weacon_protocol::{code, to_hex};
 
 use crate::email::Email;
 
@@ -63,36 +63,34 @@ impl Secret {
     /// What is stored for a code mailed to `email`, which is part of it so that the same code
     /// for two addresses is stored differently; any of the address's challenges can check it.
     pub(crate) fn code_hash(&self, email: &Email, code: &str) -> [u8; 32] {
-        let mut mac = self.0.clone();
-        mac.update(email.as_str().as_bytes());
         // An address never holds a zero byte, so this keeps the two apart.
-        mac.update(&[0]);
-        mac.update(code.as_bytes());
-        mac.finalize().into_bytes().into()
+        self.mac(&[email.as_str().as_bytes(), &[0], code.as_bytes()])
     }
 
     /// What is stored for a pairing's `code`, which is looked up by it. No address is a word
     /// without an `@`, so no sign-in code is stored the same.
     pub(crate) fn pairing_code_hash(&self, code: &str) -> [u8; 32] {
-        let mut mac = self.0.clone();
-        mac.update(b"pairing.code\0");
-        mac.update(code.as_bytes());
-        mac.finalize().into_bytes().into()
+        self.mac(&[b"pairing.code\0", code.as_bytes()])
     }
 
     /// The token of the machine whose pairing is claimed with `secret`, the same each time so
     /// that a core may claim again when an answer was lost.
     pub(crate) fn machine_token(&self, secret: &str) -> [u8; 32] {
+        self.mac(&[b"machine.token\0", secret.as_bytes()])
+    }
+
+    fn mac(&self, parts: &[&[u8]]) -> [u8; 32] {
         let mut mac = self.0.clone();
-        mac.update(b"machine.token\0");
-        mac.update(secret.as_bytes());
+        for part in parts {
+            mac.update(part);
+        }
         mac.finalize().into_bytes().into()
     }
 }
 
 /// Makes a key at `path`, whole or not at all; a file already there is left as it is.
 fn create(path: &Path) -> Result<(), Fault> {
-    let key = random_bytes()?;
+    let key = random::<32>()?;
     match create_private(path, &key) {
         // Another server made the file first; then its key is the one read.
         Err(error) if error.kind() == io::ErrorKind::AlreadyExists => Ok(()),
@@ -101,10 +99,20 @@ fn create(path: &Path) -> Result<(), Fault> {
 }
 
 /// The operating system's random bytes.
-pub(crate) fn random_bytes() -> Result<[u8; 32], Fault> {
-    let mut bytes = [0; 32];
+fn random<const N: usize>() -> Result<[u8; N], Fault> {
+    let mut bytes = [0; N];
     getrandom::fill(&mut bytes).map_err(|_| random_failed())?;
     Ok(bytes)
+}
+
+/// A token nobody can guess: 32 random bytes, in hex.
+pub(crate) fn random_token() -> Result<String, Fault> {
+    Ok(to_hex(&random::<32>()?))
+}
+
+/// A random number, for a code's digits or letters.
+pub(crate) fn random_u64() -> Result<u64, Fault> {
+    Ok(u64::from_le_bytes(random()?))
 }
 
 pub(crate) fn random_failed() -> Fault {
@@ -291,8 +299,12 @@ mod tests {
     }
 
     #[test]
-    fn random_bytes_differ() {
-        assert_ne!(random_bytes().unwrap(), random_bytes().unwrap());
+    fn random_values_differ() {
+        assert_ne!(random::<32>().unwrap(), random::<32>().unwrap());
+        assert_ne!(random_u64().unwrap(), random_u64().unwrap());
+        let token = random_token().unwrap();
+        assert_eq!(token.len(), 64);
+        assert_ne!(token, random_token().unwrap());
     }
 
     #[test]

@@ -12,7 +12,7 @@ use tokio::time::Instant;
 use weacon_observability::Fault;
 use weacon_protocol::{
     MachineId, MachineList, MachineOs, MachineSummary, PairClaim, PairClaimed, PairConfirm,
-    PairLookup, PairStart, PairStarted, code,
+    PairLookup, PairStart, PairStarted, code, to_hex,
 };
 
 use crate::app::{fresh, new_id};
@@ -22,8 +22,7 @@ use crate::client::Client;
 use crate::db::{Claim, Confirmation, NewPairing};
 use crate::http::{Body, Shared, error, failure, not_found, too_many};
 use crate::limit::Limit;
-use crate::secret::random_bytes;
-use crate::sign_in::hex;
+use crate::secret::{random_token, random_u64};
 
 /// How long a person has to confirm a pairing, in seconds.
 const PAIRING_LIFETIME: i64 = 600;
@@ -69,7 +68,7 @@ pub(crate) async fn start(
 }
 
 async fn started(shared: &Shared, body: &PairStart) -> Result<Option<PairStarted>, Fault> {
-    let (code, secret) = (code_text(&random_bytes()?), hex(&random_bytes()?));
+    let (code, secret) = (code_text(random_u64()?), random_token()?);
     let pairing = fresh(&new_id)?;
     let now = shared.now();
     let expires_at = now.saturating_add(PAIRING_LIFETIME);
@@ -160,7 +159,7 @@ pub(crate) async fn claim(
 }
 
 async fn claimed(shared: &Shared, body: &PairClaim) -> Result<Option<PairClaimed>, Fault> {
-    let token = hex(&shared.secret.machine_token(&body.secret));
+    let token = to_hex(&shared.secret.machine_token(&body.secret));
     let claim = shared
         .db
         .claim_pairing(
@@ -216,8 +215,7 @@ fn bad_input() -> Response {
 }
 
 /// A code of eight letters from [`ALPHABET`]: 40 random bits.
-fn code_text(secret: &[u8; 32]) -> String {
-    let word = u64::from_le_bytes(secret.first_chunk().copied().unwrap_or_default());
+fn code_text(word: u64) -> String {
     (0..8)
         .filter_map(|place| {
             let index = usize::try_from((word >> (5 * place)) & 31).ok()?;
@@ -266,9 +264,9 @@ mod tests {
 
     #[test]
     fn codes_are_eight_letters_read_as_typed() {
-        assert_eq!(code_text(&[0; 32]), "00000000");
-        assert_eq!(code_text(&[0xff; 32]), "ZZZZZZZZ");
-        assert_eq!(code_text(&[1; 32]), "1802G040");
+        assert_eq!(code_text(0), "00000000");
+        assert_eq!(code_text(u64::MAX), "ZZZZZZZZ");
+        assert_eq!(code_text(u64::from_le_bytes([1; 8])), "1802G040");
         assert_eq!(shown("ABCDEFGH"), "ABCD-EFGH");
         assert_eq!(typed(" abcd-efgh "), "ABCDEFGH");
         assert_eq!(typed("oO iI lL"), "001111");
