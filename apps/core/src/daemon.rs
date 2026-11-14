@@ -811,6 +811,7 @@ mod tests {
         let offered = [
             code!("chat.send"),
             code!("chat.events"),
+            code!("chat.agent"),
             code!("run.stream"),
         ];
         let Message::Welcome(welcome) = &replies[0] else {
