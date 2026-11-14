@@ -2,7 +2,7 @@ use std::{fmt, mem};
 
 use crate::{
     ChatAction, ChatQueryKind, Code, DiffQueryKind, Envelope, MachineSettingsQueryKind, Message,
-    WorkspaceChange, code,
+    SessionsQueryKind, WorkspaceChange, code,
 };
 
 /// The largest frame accepted or sent on any transport: one message's JSON, plus its newline on
@@ -82,6 +82,8 @@ fn only_received(message: &Message) -> bool {
         }
         Message::MachineSettingsCommand(command) => command.action.is_newer(),
         Message::MachineSettingsAnswer(answer) => answer.answer.is_newer(),
+        Message::SessionsQuery(query) => matches!(query.query, SessionsQueryKind::Newer),
+        Message::SessionsAnswer(answer) => answer.answer.is_newer(),
         Message::Hello(_)
         | Message::Welcome(_)
         | Message::Error(_)

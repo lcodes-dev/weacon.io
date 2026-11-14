@@ -57,6 +57,12 @@ export type Envelope = {
   | {
     type: "machine_settings_answer";
   } & MachineSettingsAnswer
+  | {
+    type: "sessions_query";
+  } & SessionsQuery
+  | {
+    type: "sessions_answer";
+  } & SessionsAnswer
 );
 
 /**
@@ -252,6 +258,10 @@ export type ChatEvent = (
   | {
     kind: "run_status";
     status: RunStatus;
+  }
+  | {
+    kind: "outside_prompt";
+    text: string;
   }
 );
 
@@ -713,6 +723,23 @@ export type Outcome = (
 );
 
 /**
+ * A session a person ran with their own agent outside Weacon, last changed at `modified_at`,
+ * in seconds since the Unix epoch.
+ */
+export type OutsideSession = {
+  agent: AgentKind;
+  /**
+   * The folder it ran in, when its file names one.
+   */
+  folder?: (
+    | string
+    | null
+  );
+  modified_at: number;
+  session: AgentSession;
+};
+
+/**
  * From the core that started `pairing`: whether the person has confirmed it yet. The answer
  * is a [`PairClaimed`].
  */
@@ -971,6 +998,57 @@ export type RunUpdate = {
   event: RunEvent;
   run: RunId;
 };
+
+/**
+ * The core's answer to a [`SessionsQuery`] under the same `request`, to a client that has
+ * `sessions.read`.
+ */
+export type SessionsAnswer = {
+  answer: SessionsAnswerKind;
+  machine: MachineId;
+  request: RequestId;
+};
+
+export type SessionsAnswerKind = (
+  | {
+    kind: "list";
+    sessions: Array<OutsideSession>;
+  }
+  | {
+    events: Array<ChatEntry>;
+    kind: "opened";
+    more: boolean;
+  }
+  | {
+    kind: "missing";
+  }
+);
+
+/**
+ * A person asks their own machine about the agent sessions they ran outside Weacon, from a
+ * client to a core that offers `sessions.read`. No workspace holds these sessions.
+ */
+export type SessionsQuery = {
+  /**
+   * Who asked, when the server relays the message to a machine.
+   */
+  by?: Asker;
+  machine: MachineId;
+  query: SessionsQueryKind;
+  request: RequestId;
+};
+
+export type SessionsQueryKind = (
+  | {
+    kind: "list";
+  }
+  | {
+    after: number;
+    agent: AgentKind;
+    kind: "open";
+    session: AgentSession;
+  }
+);
 
 /**
  * A SHA-256 digest: 64 lowercase hex digits.

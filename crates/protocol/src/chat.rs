@@ -92,6 +92,10 @@ pub enum ChatEvent {
     RunStatus {
         status: RunStatus,
     },
+    /// A prompt typed outside Weacon, read from an agent's own session file.
+    OutsidePrompt {
+        text: String,
+    },
     /// An event this build doesn't know, from a newer peer; only ever received.
     #[serde(other)]
     #[schemars(skip)]
@@ -160,7 +164,7 @@ pub enum ChatAnswerKind {
 impl ChatEvent {
     pub(crate) const fn is_newer(&self) -> bool {
         match self {
-            Self::Prompt { .. } => false,
+            Self::Prompt { .. } | Self::OutsidePrompt { .. } => false,
             Self::Receipt { receipt } => receipt.outcome.is_newer(),
             Self::Run { update } => update.event.is_newer(),
             Self::RunStatus { status } => status.is_newer(),
@@ -182,7 +186,7 @@ impl ChatAnswerKind {
     }
 }
 
-fn any_newer(entries: &[ChatEntry]) -> bool {
+pub(crate) fn any_newer(entries: &[ChatEntry]) -> bool {
     entries.iter().any(|entry| entry.event.is_newer())
 }
 

@@ -110,7 +110,10 @@ impl Log {
             ChatEvent::Receipt { receipt } => {
                 self.requests.entry(receipt.request.clone()).or_insert(None);
             }
-            ChatEvent::Run { .. } | ChatEvent::RunStatus { .. } | ChatEvent::Newer => {}
+            ChatEvent::Run { .. }
+            | ChatEvent::RunStatus { .. }
+            | ChatEvent::OutsidePrompt { .. }
+            | ChatEvent::Newer => {}
         }
         self.starts.push(self.end);
         self.end += u64::try_from(len).unwrap_or(u64::MAX);

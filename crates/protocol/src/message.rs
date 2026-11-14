@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
     Capability, ChatAnswer, ChatCommand, ChatQuery, ChatUpdate, ClientLog, Code, DiffAnswer,
     DiffQuery, MachineSettingsAnswer, MachineSettingsCommand, MachineSettingsQuery, Pick, Receipt,
-    RunUpdate, WorkspaceUpdate, code,
+    RunUpdate, SessionsAnswer, SessionsQuery, WorkspaceUpdate, code,
 };
 
 /// The protocol version this build speaks. Only a breaking change raises it; peers must match
@@ -59,6 +59,11 @@ pub enum Message {
     /// The core's answer to a [`MachineSettingsQuery`] or a [`MachineSettingsCommand`], to a
     /// client that has `machine.settings`.
     MachineSettingsAnswer(MachineSettingsAnswer),
+    /// A question about the sessions a person ran outside Weacon, from a client to their own
+    /// core that offers `sessions.read`.
+    SessionsQuery(SessionsQuery),
+    /// The core's answer to a [`SessionsQuery`], to a client that has `sessions.read`.
+    SessionsAnswer(SessionsAnswer),
     /// A message type this build doesn't know, from a newer peer.
     #[serde(other)]
     #[schemars(skip)]
