@@ -212,11 +212,11 @@ mod tests {
     use serde_json::json;
 
     use super::*;
-    use crate::test_support::workspace;
+    use crate::test_support::{chat, workspace};
 
     #[test]
     fn a_challenge_hides_its_value_but_other_ids_dont() {
-        let challenge = ChallengeId::try_from("c-secret".to_owned()).unwrap();
+        let challenge: ChallengeId = "c-secret".parse().unwrap();
 
         assert_eq!(format!("{challenge:?}"), "ChallengeId(..)");
         assert_eq!(format!("{:?}", workspace()), r#"WorkspaceId("w-1")"#);
@@ -341,9 +341,7 @@ mod tests {
             serde_json::from_value::<WorkspaceChange>(revised_wire).unwrap(),
             revised
         );
-        let chatted = WorkspaceChange::ChatChanged {
-            chat: ChatId::try_from("c-1".to_owned()).unwrap(),
-        };
+        let chatted = WorkspaceChange::ChatChanged { chat: chat() };
         let chatted_wire = json!({ "kind": "chat_changed", "chat": "c-1" });
 
         assert_eq!(serde_json::to_value(&chatted).unwrap(), chatted_wire);

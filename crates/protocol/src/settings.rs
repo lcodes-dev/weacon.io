@@ -153,31 +153,21 @@ mod tests {
     use serde_json::{Value, json};
 
     use super::*;
-    use crate::{AccountId, Envelope, FrameError, MemberId, Message};
-
-    fn envelope(message: Message) -> Envelope {
-        Envelope { id: 4, message }
-    }
-
-    fn id<T: TryFrom<String>>(id: &str) -> T
-    where
-        T::Error: std::fmt::Debug,
-    {
-        T::try_from(id.to_owned()).unwrap()
-    }
+    use crate::test_support::{envelope, request, travels, workspace};
+    use crate::{Envelope, FrameError, Message};
 
     fn asker() -> Asker {
         Asker {
-            account: id::<AccountId>("a-1"),
-            member: id::<MemberId>("m-1"),
+            account: "a-1".parse().unwrap(),
+            member: "m-1".parse().unwrap(),
         }
     }
 
     fn query(query: MachineSettingsQueryKind, by: Option<Asker>) -> Envelope {
         envelope(Message::MachineSettingsQuery(MachineSettingsQuery {
-            request: id("r-1"),
-            machine: id("mc-1"),
-            workspace: id("w-1"),
+            request: request(),
+            machine: "mc-1".parse().unwrap(),
+            workspace: workspace(),
             query,
             by,
         }))
@@ -185,9 +175,9 @@ mod tests {
 
     fn command(action: MachineSettingsAction) -> Envelope {
         envelope(Message::MachineSettingsCommand(MachineSettingsCommand {
-            request: id("r-1"),
-            machine: id("mc-1"),
-            workspace: id("w-1"),
+            request: request(),
+            machine: "mc-1".parse().unwrap(),
+            workspace: workspace(),
             action,
             by: Some(asker()),
         }))
@@ -195,9 +185,9 @@ mod tests {
 
     fn answer(answer: MachineSettingsAnswerKind) -> Envelope {
         envelope(Message::MachineSettingsAnswer(MachineSettingsAnswer {
-            request: id("r-1"),
-            machine: id("mc-1"),
-            workspace: id("w-1"),
+            request: request(),
+            machine: "mc-1".parse().unwrap(),
+            workspace: workspace(),
             answer,
         }))
     }
@@ -207,18 +197,6 @@ mod tests {
                                "machine": "mc-1", "workspace": "w-1" });
         wire[field] = body;
         wire
-    }
-
-    fn travels(envelope: &Envelope, wire: &Value) {
-        assert_eq!(serde_json::to_value(envelope).unwrap(), *wire);
-        assert_eq!(
-            serde_json::from_value::<Envelope>(wire.clone()).unwrap(),
-            *envelope
-        );
-        assert_eq!(
-            Envelope::from_json(&envelope.to_json().unwrap()).unwrap(),
-            *envelope
-        );
     }
 
     fn stamped(mut wire: Value) -> Value {
@@ -243,10 +221,13 @@ mod tests {
             json!({ "kind": "current" }),
         );
 
-        travels(&query(MachineSettingsQueryKind::Current, None), &unstamped);
+        travels(
+            &query(MachineSettingsQueryKind::Current, None),
+            unstamped.clone(),
+        );
         travels(
             &query(MachineSettingsQueryKind::Current, Some(asker())),
-            &stamped(unstamped),
+            stamped(unstamped),
         );
     }
 
@@ -256,21 +237,21 @@ mod tests {
 
         travels(
             &command(MachineSettingsAction::SetReports { send: false }),
-            &action(json!({ "kind": "set_reports", "send": false })),
+            action(json!({ "kind": "set_reports", "send": false })),
         );
         travels(
             &command(MachineSettingsAction::SetAccess {
                 level: AccessLevel::Full,
                 team: Some(true),
             }),
-            &action(json!({ "kind": "set_access", "level": "full", "team": true })),
+            action(json!({ "kind": "set_access", "level": "full", "team": true })),
         );
         travels(
             &command(MachineSettingsAction::SetAccess {
                 level: AccessLevel::ReadOnly,
                 team: None,
             }),
-            &action(json!({ "kind": "set_access", "level": "read_only" })),
+            action(json!({ "kind": "set_access", "level": "read_only" })),
         );
     }
 
@@ -302,7 +283,7 @@ mod tests {
                     reports,
                     sign_ins.clone(),
                 ))),
-                &wire("machine_settings_answer", "answer", body(reports)),
+                wire("machine_settings_answer", "answer", body(reports)),
             );
         }
         let states = ["signed_out", "unknown"]

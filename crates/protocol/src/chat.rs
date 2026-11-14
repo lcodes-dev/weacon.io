@@ -327,7 +327,7 @@ mod tests {
                 ChatAction::Prompt {
                     text: "Fix the build".to_owned(),
                     repo: Some(repo()),
-                    machine: Some(MachineId::try_from("mc-1".to_owned()).unwrap()),
+                    machine: Some("mc-1".parse().unwrap()),
                 },
                 json!({ "kind": "prompt", "text": "Fix the build", "repo": "site",
                         "machine": "mc-1" }),
@@ -353,8 +353,8 @@ mod tests {
             chat: chat(),
             action: ChatAction::Interrupt,
             by: Some(Asker {
-                account: AccountId::try_from("a-1".to_owned()).unwrap(),
-                member: MemberId::try_from("m-1".to_owned()).unwrap(),
+                account: "a-1".parse().unwrap(),
+                member: "m-1".parse().unwrap(),
             }),
         }));
         let mut wire = command_wire(&json!({ "kind": "interrupt" }));
@@ -547,7 +547,7 @@ mod tests {
             chats: vec![ChatSummary {
                 id: chat(),
                 title: "Fix the build".to_owned(),
-                owner: MemberId::try_from("m-1".to_owned()).unwrap(),
+                owner: "m-1".parse().unwrap(),
                 machine: MachineName::try_from("Ada's laptop".to_owned()).unwrap(),
                 state: ChatState::Full,
                 updated_at: 1_700_000_000,
