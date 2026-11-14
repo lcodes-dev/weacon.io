@@ -97,7 +97,11 @@ export function stream(chat: Chat, run: RunId, event: RunEvent): Chat {
   return { ...chat, live, items };
 }
 
-/** `chat` with the older `events` that end just before its first, as a window answers. */
+/**
+ * `chat` with the older `events` that end just before its first, as a window answers. The turns
+ * shown already stay as they are, so a selection in them survives; a run's turn the window cuts
+ * in two shows as two.
+ */
 export function older(chat: Chat, events: readonly ChatEntry[]): Chat {
   const before = contiguous(
     events.filter((entry) => entry.seq < chat.first),
@@ -106,9 +110,8 @@ export function older(chat: Chat, events: readonly ChatEntry[]): Chat {
   if (before.length === 0) {
     return chat;
   }
-  const entries = [...before, ...chat.entries];
-  const next = { ...chat, first: before[0]?.seq ?? chat.first, entries };
-  return { ...next, items: fold(next, entries) };
+  const earlier = fold(chat, before).map((item) => (item.kind === "turn" ? { ...item, turn: { ...item.turn, open: false } } : item));
+  return { ...chat, first: before[0]?.seq ?? chat.first, entries: [...before, ...chat.entries], items: [...earlier, ...chat.items] };
 }
 
 /** `chat` with the prompt `prompt` of `run` no longer answerable, as once its answer is taken. */
@@ -141,14 +144,11 @@ function contiguous(events: readonly ChatEntry[], last: number): ChatEntry[] {
   return kept.reverse();
 }
 
-// The items `entries` make, with the text still streaming after them.
+// The items `entries` make.
 function fold(chat: Chat, entries: readonly ChatEntry[]): Item[] {
   const items: Item[] = [];
   for (const entry of entries) {
     step(items, entry, entry.seq > chat.base || chat.waiting.has(entry.seq));
-  }
-  for (const [run, events] of chat.live) {
-    addTo(items, run, turnKey(chat.seq, run), (turn) => ({ ...turn, transcript: apply(turn.transcript, events) }));
   }
   return items;
 }

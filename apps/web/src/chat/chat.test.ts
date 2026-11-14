@@ -107,7 +107,7 @@ test("text still streaming survives a window of older events", () => {
   const streaming = stream(start, "r-1", delta("Hel"));
   const widened = older(streaming, [said(1, "First"), text(2, "r-2", "Sure.")]);
 
-  assert.deepEqual(shown(widened.items), ["> First", "r-2: Sure.", "> Hi", "r-1: Hel"]);
+  assert.deepEqual(shown(widened.items), ["> First", "r-2 done: Sure.", "> Hi", "r-1: Hel"]);
   assert.equal(widened.first, 1);
 });
 
