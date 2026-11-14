@@ -34,6 +34,7 @@ export function Shell({ fetch, log }: { fetch: Fetch; log: Log }) {
   // However a session ends, the workspace it last opened is forgotten, so the next person starts afresh.
   const signedOut = useCallback(() => {
     remember(STORE, undefined);
+    window.history.replaceState(null, "", window.location.pathname);
     setScreen({ name: "signed out" });
   }, []);
   const api = useMemo(() => new Api(fetch, signedOut), [fetch, signedOut]);

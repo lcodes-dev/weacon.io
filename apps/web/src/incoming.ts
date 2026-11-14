@@ -76,7 +76,8 @@ const CHECKS: { [T in Incoming["type"]]: (fields: Fields) => boolean } = {
   error: (fields) => text(fields, "code"),
   receipt: (fields) => text(fields, "request") && text(fields, "state"),
   run: (fields) => text(fields, "run") && isRunEvent(fields["event"]),
-  diff_answer: (fields) => text(fields, "request") && text(fields, "workspace") && text(fields, "chat") && isDiffAnswer(fields["answer"]),
+  diff_answer: (fields) =>
+    text(fields, "request") && text(fields, "workspace") && text(fields, "chat") && isDiffAnswer(fields["answer"]),
   chat: (fields) => text(fields, "workspace") && text(fields, "chat") && isEntry(fields["entry"]),
   chat_answer: (fields) => text(fields, "workspace") && text(fields, "chat") && isChatAnswer(fields["answer"]),
   workspace: (fields) => text(fields, "workspace") && Number.isSafeInteger(fields["seq"]) && isChange(fields["change"]),

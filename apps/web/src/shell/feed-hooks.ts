@@ -65,7 +65,6 @@ export function useFeed(workspace: WorkspaceId, api: Api, socket: WorkspaceSocke
       opened = connection;
     };
     open();
-    // A closed connection tells nothing more, so it can't attach the socket or retry.
     return () => {
       clearTimeout(retry);
       clearTimeout(staying);

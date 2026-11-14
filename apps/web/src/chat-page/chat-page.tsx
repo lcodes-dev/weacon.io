@@ -21,7 +21,7 @@ import { ChatPageView } from "./chat-page-view.tsx";
 const chatRef = chatRefOf(window.location.search);
 // How long a hidden tab waits for a frame before its batch of run events goes out anyway.
 const HIDDEN_MS = 250;
-const TRANSCRIPT: Asks = { needs: "run.stream", offers: ["diff.view", "chat.events"] };
+const TRANSCRIPT: Asks = { needs: "run.stream", offers: ["diff.view", "chat.events", "log.forward"] };
 // No message carries members' names, so labels leave them out.
 const NO_MEMBERS = new Map<string, string>();
 
@@ -64,6 +64,12 @@ export function ChatPage({ url, log }: { url: string; log: Log }) {
       (frame) => cancelAnimationFrame(frame),
       (run) => later(run, HIDDEN_MS),
     );
+    // What ends with the connection, however it ends.
+    const stop = () => {
+      live.current = undefined;
+      log.detach();
+      receipts.end();
+    };
     const connection = new Connection(socket, ME, {
       status(next) {
         setStatus(next);
@@ -82,10 +88,8 @@ export function ChatPage({ url, log }: { url: string; log: Log }) {
           log.attach((envelope) => connection.send(envelope), offers(next, "log.forward"));
         } else if (next.state === "ended") {
           live.current?.liveChat?.end();
-          live.current = undefined;
+          stop();
           setChanges(cut);
-          log.detach();
-          receipts.end();
           log.warn(next.code === "connection.lost" ? "connection lost" : "connection refused", { code: next.code });
         }
       },
@@ -103,12 +107,9 @@ export function ChatPage({ url, log }: { url: string; log: Log }) {
         });
       },
     }, TRANSCRIPT, later);
-    // A closed connection tells nothing more, so its last news can't overwrite the next one's.
     return () => {
       live.current?.liveChat?.close();
-      live.current = undefined;
-      log.detach();
-      receipts.end();
+      stop();
       connection.close();
     };
   }, [url]);

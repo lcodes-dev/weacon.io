@@ -232,17 +232,28 @@ test("signing out, or a session that ends, forgets the last workspace for the ne
   await signIn(served);
   const home = new URL("/", page.url()).href;
 
-  await page.getByRole("button", { name: "Personal" }).click();
-  await page.getByText("Connected").waitFor();
+  const personal = async () => {
+    await page.getByRole("button", { name: "Personal" }).click();
+    await page.getByText("Connected").waitFor();
+  };
+  await personal();
   await page.getByRole("button", { name: "Sign out" }).click();
   await page.getByRole("heading", { name: "Sign in" }).waitFor();
-  await page.goto(home);
   await signInAgain(served);
   await page.getByRole("heading", { name: "Workspaces" }).waitFor();
 
   // A feed refused for want of a session sends the page back to sign-in, forgetting it too.
-  await page.getByRole("button", { name: "Personal" }).click();
+  await page.getByLabel("Name").fill("Made-up team");
+  await page.getByRole("button", { name: "Create" }).click();
   await page.getByText("Connected").waitFor();
+  await page.context().clearCookies();
+  await page.getByLabel("Workspace").selectOption({ label: "Personal" });
+  await page.getByRole("heading", { name: "Sign in" }).waitFor();
+  await signInAgain(served);
+  await page.getByRole("heading", { name: "Workspaces" }).waitFor();
+
+  // A session found ended when the page loads forgets it as well.
+  await personal();
   await page.context().clearCookies();
   await page.reload();
   await page.getByRole("heading", { name: "Sign in" }).waitFor();

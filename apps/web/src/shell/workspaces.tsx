@@ -2,7 +2,7 @@ import { type ReactNode, useEffect, useRef, useState } from "react";
 
 import type { Api } from "../api/api.ts";
 import { useAsk } from "../api/ask.ts";
-import { useLoaded } from "../api/loaded.ts";
+import { type Loading, useLoaded } from "../api/loaded.ts";
 import { Problem } from "../api/problem.tsx";
 import { chatRefOf, workspaceOf } from "../chat-ref.ts";
 import { statusText } from "../connection.ts";
@@ -95,7 +95,7 @@ function AllWorkspaces({
   choose,
 }: {
   api: Api;
-  loaded: ReturnType<typeof useLoaded<WorkspaceList>>;
+  loaded: Loading<WorkspaceList>;
   covered: boolean;
   choose(id: WorkspaceId): void;
 }) {
@@ -209,7 +209,7 @@ function Workspace({
       <div className="workspace">
         <nav className="chats" aria-label="Chats">
           <h2>Chats</h2>
-          <p className="muted">{chats === undefined ? "Loading" : "No chats yet. Connect a machine to start one."}</p>
+          <p className="muted">{status.state === "connecting" ? "Loading" : "No chats yet. Connect a machine to start one."}</p>
         </nav>
         {page(workspace.name)}
       </div>

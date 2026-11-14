@@ -39,7 +39,7 @@ export function MachineSettingsView({ machine, link, later }: { machine: Machine
   return (
     <section aria-label={`${machine.name} settings`}>
       <h3>{machine.name}</h3>
-      {shown === undefined && settings.problem === undefined && <p className="muted">Loading</p>}
+      {settings.loading && <p className="muted">Loading</p>}
       {settings.problem !== undefined && <Problem text={settings.problem} retry={() => void settings.load()} />}
       {shown !== undefined && <Shown settings={shown} busy={changing.busy} set={set} />}
       {changing.problem !== undefined && <p role="alert">{changing.problem}</p>}

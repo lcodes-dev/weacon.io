@@ -1,4 +1,4 @@
-import type { Loaded } from "../api/loaded.ts";
+import type { Loading } from "../api/loaded.ts";
 import { Problem } from "../api/problem.tsx";
 import type { ChatId, ChatList } from "../protocol.ts";
 import { newestFirst, stateNote } from "./chat-list.ts";
@@ -9,7 +9,7 @@ export function ChatsNav({
   chosen,
   choose,
 }: {
-  loaded: Loaded<ChatList> & { loading: boolean; load(): Promise<void> };
+  loaded: Loading<ChatList>;
   chosen: ChatId | undefined;
   choose: (chat: ChatId) => void;
 }) {
