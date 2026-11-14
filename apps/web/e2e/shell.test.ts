@@ -659,3 +659,36 @@ test("someone else's chat shows no worktree bar, and asks nothing of it", { time
   );
 });
 
+test("the worktree's state is asked again on each opening of the changes, and after a failure on Try again", { timeout: 600_000 }, async (t) => {
+  const served = await serve();
+  t.after(() => served.close());
+  const { page } = served;
+  // The first ask fails, the next finds no worktree yet, and every later one finds the one made since.
+  let asked = 0;
+  await serveFeed(page, {
+    also: WORKTREES,
+    answer: (envelope) => {
+      if (envelope.type !== "worktree_query") {
+        return snapshot(envelope);
+      }
+      asked += 1;
+      if (asked === 1) {
+        return [{ id: envelope.id, type: "error", code: "machine.offline", retryable: true }];
+      }
+      return asked === 2 ? [{ id: envelope.id, type: "error", code: "worktree.none", retryable: false }] : worktreeServer(envelope);
+    },
+  });
+  await openChats(served, [{ id: "c-1", title: "Sort the pantry" }], (member) => member);
+  await nav(page).getByRole("button", { name: /Sort the pantry/ }).click();
+  await page.getByRole("button", { name: "Changes" }).click();
+  const bar = page.getByRole("region", { name: "Worktree" });
+
+  await bar.getByRole("alert").getByText("The worktree's state didn't come. Try again.").waitFor();
+  await bar.getByRole("button", { name: "Try again" }).click();
+  await bar.getByText("This chat has no worktree yet.").waitFor();
+  await page.getByRole("button", { name: "Back" }).click();
+  await page.getByRole("button", { name: "Changes" }).click();
+  await bar.getByText("Uncommitted changes").waitFor();
+  assert.equal(asked, 3);
+});
+

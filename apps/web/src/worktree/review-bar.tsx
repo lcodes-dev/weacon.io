@@ -36,7 +36,12 @@ export function ReviewBar({ bar, title }: { bar: ReturnType<typeof useWorktree>;
                 Restore
               </button>
             )}
-            {terminals && standing.kind !== "unknown" && (
+            {standing.kind === "unknown" && outcome?.kind === "problem" && !waiting && (
+            <button type="button" onClick={bar.refresh}>
+              Try again
+            </button>
+          )}
+          {terminals && standing.kind !== "unknown" && (
               <button type="button" disabled={waiting} onClick={bar.openTerminal}>
                 Open terminal
               </button>
