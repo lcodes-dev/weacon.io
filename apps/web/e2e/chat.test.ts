@@ -46,7 +46,7 @@ test("Stop interrupts the turns that run, then goes away", { timeout: 120_000 },
 
   await stop.click();
   await waitFor(() => actions(harness).some((action) => action.kind === "interrupt"));
-  await page.getByText("Turn ended: interrupted").first().waitFor();
+  await page.locator(".row.finished", { hasText: "Stopped" }).first().waitFor();
   await stop.waitFor({ state: "detached" });
 });
 

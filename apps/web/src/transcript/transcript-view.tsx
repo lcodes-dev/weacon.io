@@ -104,6 +104,15 @@ function toolText(tool: string, state: ToolState): string {
   return { running: `Running ${tool}`, done: `Ran ${tool}`, failed: `${tool} failed` }[state];
 }
 
+// Row labels have no full stop; whole sentences, such as the empty transcript's, have one.
+const ENDINGS: Record<Outcome["state"], string> = {
+  completed: "Done",
+  interrupted: "Stopped",
+  failed: "Failed",
+  accepted: "Ended",
+  unknown: "Ended",
+};
+
 function finishedText(state: Outcome["state"]): string {
-  return state === "completed" ? "Done" : `Turn ended: ${state}`;
+  return ENDINGS[state] ?? "Ended";
 }
