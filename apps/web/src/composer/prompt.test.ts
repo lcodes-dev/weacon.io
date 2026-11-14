@@ -45,6 +45,16 @@ test("an accepted prompt empties the box; any other keeps it and says why", () =
     retry,
   });
   assert.deepEqual(after("refused", "hi", "r-1"), { text: "hi", problem: "The message wasn't sent.", retry: undefined });
+  assert.deepEqual(after("offline", "hi", "r-1"), {
+    text: "hi",
+    problem: "The machine is offline, so the message wasn't sent. Try again once it's back.",
+    retry: undefined,
+  });
+  assert.deepEqual(after("detached", "hi", "r-1"), {
+    text: "hi",
+    problem: "This chat's machine is gone, so it can be read but takes no messages.",
+    retry: undefined,
+  });
   assert.deepEqual(after("too_long", "hi", "r-1"), {
     text: "hi",
     problem: "It's too long to send. Shorten it and try again.",
