@@ -45,7 +45,8 @@ pub use pick::Pick;
 pub use receipt::{Outcome, Receipt, RequestId};
 pub use repo::RepoId;
 pub use run::{
-    AgentKind, AgentSession, PermissionAnswer, RunEvent, RunId, RunState, RunStatus, RunUpdate,
+    AgentKind, AgentOwner, AgentRef, AgentSession, PermissionAnswer, RunEvent, RunId, RunState,
+    RunStatus, RunUpdate,
 };
 pub use task::{
     Author, TaskChange, TaskCreate, TaskEditBody, TaskId, TaskList, TaskRecord, TaskStatus,
