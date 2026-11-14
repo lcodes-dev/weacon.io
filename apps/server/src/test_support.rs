@@ -85,6 +85,8 @@ impl Fixture {
             })),
             changes: broadcast::channel(16).0,
             unpaired: broadcast::channel(16).0,
+            links: Arc::default(),
+            relay: Arc::default(),
             sign_ins: Arc::new(Semaphore::new(sign_in::AT_ONCE)),
             finish_within: Duration::ZERO,
             starts: Arc::new(sign_in::starts()),

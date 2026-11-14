@@ -9,11 +9,13 @@ use axum::response::Response;
 use tokio::sync::broadcast::{Receiver, error::RecvError};
 use tokio::time::timeout;
 use weacon_observability::{Field, Logger};
-use weacon_protocol::{Capability, Code, MAX_FRAME, MachineId, code};
+use weacon_protocol::{Capability, Code, Envelope, MAX_FRAME, MachineId, Message, code};
 
 use crate::auth::Machine;
 use crate::connections::Place;
 use crate::http::Shared;
+use crate::links::Connected;
+use crate::relay::SETTINGS;
 use crate::socket::{Closed, Pings, error, greet, reply, send};
 
 /// What a core must offer, and the server offers, to keep a machine's connection.
@@ -93,14 +95,20 @@ async fn run(
     link: &mut Link,
 ) -> Result<Infallible, Closed> {
     let offer = Capability::from(CONNECT);
-    let greeted = greet(socket, shared, vec![offer.clone()], &offer);
-    timeout(shared.sockets.hello_within, greeted)
+    let offers = vec![offer.clone(), Capability::from(SETTINGS)];
+    let greeted = greet(socket, shared, offers, &offer);
+    let hello = timeout(shared.sockets.hello_within, greeted)
         .await
         .map_err(|_| Closed)??;
     // It may have been unpaired since it was let in, before it could hear of it.
     link.paired(shared).await?;
     link.connected = true;
     link.log.info("machine connected", &[]);
+    let connected = Connected {
+        machine: link.machine.id.clone(),
+        owner: link.machine.owner.clone(),
+    };
+    let mut attached = shared.links.open(connected, hello.capabilities);
     let mut pings = Pings::new(shared.sockets.ping_every);
     loop {
         tokio::select! {
@@ -111,8 +119,29 @@ async fn run(
                 Err(RecvError::Closed) => return Err(Closed),
             },
             () = pings.due() => pings.ping(socket, link.paired(shared)).await?,
-            frame = socket.recv() => pings.heard(&frame.ok_or(Closed)?)?,
+            Some(relayed) = attached.incoming.recv() => {
+                reply(socket, shared, relayed.id, relayed.message).await?;
+            }
+            frame = socket.recv() => {
+                let frame = frame.ok_or(Closed)?;
+                pings.heard(&frame)?;
+                if let Ok(Frame::Text(text)) = &frame
+                    && let Ok(envelope) = Envelope::from_json(text.as_bytes())
+                {
+                    hand_off(shared, &link.machine.id, envelope);
+                }
+            }
         }
+    }
+}
+
+/// Gives what `machine` sent to the feature it is for.
+fn hand_off(shared: &Shared, machine: &MachineId, envelope: Envelope) {
+    if matches!(
+        envelope.message,
+        Message::MachineSettingsAnswer(_) | Message::Error(_)
+    ) {
+        shared.relay.answered(machine, envelope);
     }
 }
 
@@ -141,7 +170,7 @@ mod tests {
         let welcome = next(&mut client).await;
         assert!(
             matches!(&welcome, Message::Welcome(Welcome { capabilities, .. })
-                if *capabilities == [Capability::from(CONNECT)]),
+                if *capabilities == [Capability::from(CONNECT), Capability::from(SETTINGS)]),
             "{welcome:?}"
         );
         (paired, client)

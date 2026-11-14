@@ -238,15 +238,35 @@ impl Db {
         .collect()
     }
 
-    /// The paired machine whose token is hashed as `token_hash`.
-    pub(crate) async fn machine_with(&self, token_hash: &[u8]) -> Result<Option<MachineId>, Fault> {
-        sqlx::query_scalar::<_, String>("SELECT machine_id FROM machines WHERE token_hash = ?")
-            .bind(token_hash)
+    /// The paired machine whose token is hashed as `token_hash`, and its owner.
+    pub(crate) async fn machine_with(
+        &self,
+        token_hash: &[u8],
+    ) -> Result<Option<(MachineId, AccountId)>, Fault> {
+        sqlx::query_as::<_, (String, String)>(
+            "SELECT machine_id, account_id FROM machines WHERE token_hash = ?",
+        )
+        .bind(token_hash)
+        .fetch_optional(&self.readers)
+        .await
+        .map_err(failed)?
+        .map(|(machine, owner)| Ok((stored(machine)?, stored(owner)?)))
+        .transpose()
+    }
+
+    /// Whether `machine` is paired with `account`.
+    pub(crate) async fn has_machine(
+        &self,
+        account: &AccountId,
+        machine: &MachineId,
+    ) -> Result<bool, Fault> {
+        let found = sqlx::query("SELECT 1 FROM machines WHERE machine_id = ? AND account_id = ?")
+            .bind(machine.as_str())
+            .bind(account.as_str())
             .fetch_optional(&self.readers)
             .await
-            .map_err(failed)?
-            .map(stored)
-            .transpose()
+            .map_err(failed)?;
+        Ok(found.is_some())
     }
 
     /// Unpairs `machine` from `account`, its pairing too, so it can't be claimed again;
