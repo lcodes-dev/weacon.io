@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 use weacon_observability::Fault;
 use weacon_protocol::{ChatId, WorkspaceId, code};
 
+use super::state;
 use crate::platform::trash::{self, Trashed};
 
 /// A worktree in the Trash.
@@ -149,19 +150,11 @@ impl Journal {
     }
 
     fn load(&self) -> Result<Vec<Removal>, Fault> {
-        match fs::read(&self.file) {
-            Ok(json) => {
-                serde_json::from_slice(&json).map_err(|error| journal_failed().because(error))
-            }
-            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(Vec::new()),
-            Err(error) => Err(journal_failed().because(error)),
-        }
+        state::load(&self.file).map_err(|error| journal_failed().because(error))
     }
 
     fn save(&self, removals: &[Removal]) -> Result<(), Fault> {
-        let json = serde_json::to_vec(removals).map_err(|error| journal_failed().because(error))?;
-        weacon_appkit::write_whole(&self.file, &json)
-            .map_err(|error| journal_failed().because(error))
+        state::save(&self.file, removals).map_err(|error| journal_failed().because(error))
     }
 }
 

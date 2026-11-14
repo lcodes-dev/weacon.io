@@ -6,14 +6,17 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
+use serde::{Deserialize, Serialize};
 use weacon_observability::Fault;
 use weacon_protocol::{ChatId, code};
 
 use crate::platform;
 use crate::workspaces::resolved;
 
+pub(crate) mod chats;
 pub(crate) mod diff;
 pub(crate) mod removal;
+mod state;
 
 // Variables that would point git at another repository, or stand in for `-c` options.
 const REDIRECTS: [&str; 9] = [
@@ -47,9 +50,10 @@ pub(crate) struct Worktree {
 
 /// The commit a chat's branch began at, and the branch the repository had checked out then,
 /// such as `main`; the chat keeps it to measure its changes from.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct Start {
     pub(crate) commit: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) branch: Option<String>,
 }
 
