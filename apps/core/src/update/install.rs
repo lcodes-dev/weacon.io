@@ -41,7 +41,11 @@ impl Paths {
 
 /// Writes the download in `body` to `paths.new`, then checks its size and SHA-256 against
 /// `build`. Nothing is left behind when it fails.
-pub(crate) fn stage(paths: &Paths, body: &mut dyn Read, build: &ReleaseBuild) -> Result<(), Fault> {
+pub(crate) fn stage(
+    paths: &Paths,
+    body: &mut impl Read,
+    build: &ReleaseBuild,
+) -> Result<(), Fault> {
     let result = write_checked(&paths.new, body, build);
     if result.is_err() {
         remove(&paths.new);
@@ -49,7 +53,7 @@ pub(crate) fn stage(paths: &Paths, body: &mut dyn Read, build: &ReleaseBuild) ->
     result
 }
 
-fn write_checked(file: &Path, body: &mut dyn Read, build: &ReleaseBuild) -> Result<(), Fault> {
+fn write_checked(file: &Path, body: &mut impl Read, build: &ReleaseBuild) -> Result<(), Fault> {
     remove(file);
     let mut out = File::create_new(file).map_err(|error| {
         Fault::new(
@@ -61,15 +65,23 @@ fn write_checked(file: &Path, body: &mut dyn Read, build: &ReleaseBuild) -> Resu
     // One byte more than the build's size shows a download that is too long.
     let mut body = body.take(build.size.saturating_add(1));
     let size = io::copy(&mut body, &mut out).map_err(download_failed)?;
-    out.sync_all().map_err(download_failed)?;
-    let digest: [u8; 32] = Sha256::digest(fs::read(file).map_err(download_failed)?).into();
+    out.sync_all().map_err(stage_failed)?;
+    let digest: [u8; 32] = Sha256::digest(fs::read(file).map_err(stage_failed)?).into();
     if size != build.size || build.sha256 != Sha256Hex::from_bytes(digest) {
         return Err(Fault::new(
             code!("update.corrupt"),
             "The downloaded build doesn't match its release",
         ));
     }
-    platform::make_runnable(file).map_err(download_failed)
+    platform::make_runnable(file).map_err(stage_failed)
+}
+
+fn stage_failed(error: io::Error) -> Fault {
+    Fault::new(
+        code!("update.stage_failed"),
+        "The downloaded build couldn't be saved beside the binary",
+    )
+    .because(error)
 }
 
 fn download_failed(error: io::Error) -> Fault {
@@ -82,7 +94,7 @@ fn download_failed(error: io::Error) -> Fault {
 
 /// Checks that the staged binary is the release's build from its `--version` answer, which
 /// names its commit as `weacon_version::Version` prints it. A wrong one is removed.
-pub(crate) fn probe(
+pub(crate) fn check_version(
     paths: &Paths,
     commit: &Commit,
     answer: io::Result<String>,
@@ -216,7 +228,7 @@ mod tests {
         let build = build_of(b"new");
         stage(&paths, &mut Cursor::new("new"), &build).unwrap();
         let answer = Ok(format!("weacon 1.2.3 ({RELEASE})\n"));
-        probe(&paths, &commit(), answer).unwrap();
+        check_version(&paths, &commit(), answer).unwrap();
         swap(&paths).unwrap();
         assert_eq!(
             files(&dir),
@@ -305,7 +317,7 @@ mod tests {
             let dir = TempDir::new().unwrap();
             let paths = installed(&dir);
             fs::write(&paths.new, "new").unwrap();
-            let fault = probe(&paths, &commit(), Ok(answer.to_owned())).unwrap_err();
+            let fault = check_version(&paths, &commit(), Ok(answer.to_owned())).unwrap_err();
             assert_eq!(fault.code().as_str(), "update.wrong_build", "{answer}");
             assert_eq!(files(&dir), [pair("weacon", "old")], "{answer}");
         }
@@ -317,7 +329,7 @@ mod tests {
         let paths = installed(&dir);
         fs::write(&paths.new, "new").unwrap();
         let fails = Err(io::Error::from(io::ErrorKind::PermissionDenied));
-        let fault = probe(&paths, &commit(), fails).unwrap_err();
+        let fault = check_version(&paths, &commit(), fails).unwrap_err();
         assert_eq!(fault.code().as_str(), "update.wrong_build");
         assert_eq!(files(&dir), [pair("weacon", "old")]);
     }

@@ -4,8 +4,8 @@ mod fetch;
 #[cfg(test)]
 mod fixtures;
 mod install;
+mod manifest;
 mod settings;
-mod verify;
 mod watch;
 
 pub(crate) use watch::{CHECK_EVERY, Check, Hooks, Watch};
@@ -158,7 +158,7 @@ fn install_release(release: &ReleaseManifest, world: &World<'_>) -> Result<(), F
         })?;
     let paths = Paths::beside(&world.exe).ok_or_else(no_exe)?;
     install::stage(&paths, &mut (world.get)(build.url.as_str())?, &build)?;
-    install::probe(&paths, &release.commit, (world.version_of)(&paths.new))?;
+    install::check_version(&paths, &release.commit, (world.version_of)(&paths.new))?;
     install::swap(&paths)?;
     let Some(restart) = world.restart else {
         return Ok(());
@@ -297,7 +297,7 @@ fn unix_now() -> u64 {
 
 /// The latest release, fetched and checked against the keys every build trusts.
 pub(crate) fn latest() -> Result<ReleaseManifest, Fault> {
-    fetch::release(&fetch::https(fetch::MANIFEST_WITHIN), &verify::TRUSTED)
+    fetch::release(&fetch::https(fetch::MANIFEST_WITHIN), &manifest::TRUSTED)
 }
 
 /// Asks `status` of the binary at `exe` up to `tries` times, `pause` apart, until it names

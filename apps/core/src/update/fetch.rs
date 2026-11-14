@@ -7,7 +7,7 @@ use std::time::Duration;
 use weacon_observability::Fault;
 use weacon_protocol::{ReleaseManifest, code};
 
-use super::verify;
+use super::manifest;
 
 pub(crate) const MANIFEST_URL: &str = "https://weacon.io/releases/stable/manifest.json";
 pub(crate) const SIGNATURE_URL: &str = "https://weacon.io/releases/stable/manifest.json.minisig";
@@ -60,7 +60,7 @@ pub(crate) fn release(get: Get<'_>, keys: &[&str]) -> Result<ReleaseManifest, Fa
             "The release isn't signed by a key this build trusts",
         )
     })?;
-    verify::verified(&manifest, &signature, keys)
+    manifest::verified(&manifest, &signature, keys)
 }
 
 fn read_capped(body: Body, max: u64) -> Result<Vec<u8>, Fault> {
@@ -110,7 +110,7 @@ mod tests {
         let manifest = release(&serving(MANIFEST, SIGNATURE.as_bytes()), &[TEST_KEY]).unwrap();
         assert_eq!(manifest.version.to_string(), "1.2.3");
         let fault =
-            release(&serving(MANIFEST, SIGNATURE.as_bytes()), &verify::TRUSTED).unwrap_err();
+            release(&serving(MANIFEST, SIGNATURE.as_bytes()), &manifest::TRUSTED).unwrap_err();
         assert_eq!(fault.code().as_str(), "update.unsigned");
     }
 
