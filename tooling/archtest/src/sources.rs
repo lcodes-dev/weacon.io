@@ -169,10 +169,6 @@ impl Uses {
         if let Some((punct, _)) = cursor.punct()
             && punct.as_char() == ':'
         {
-            // A leading `::`, as in `use ::sqlx;`, still names a crate after `use`.
-            if path.last().is_some_and(|ident| ident == "use") {
-                return Last::PathSep;
-            }
             return last.colon();
         }
         if let Some((ident, next)) = cursor.ident() {
@@ -191,7 +187,7 @@ impl Uses {
                     .first()
                     .or_else(|| path.first())
                     .is_some_and(|first| first == "use");
-            if last != Last::PathSep || ident == "as" {
+            if !last.continues_path() || ident == "as" {
                 self.note_path(prefix, path);
             }
             if alias {
@@ -200,10 +196,10 @@ impl Uses {
             // After `use`, even one segment names a crate, as in `use sqlx as db;`.
             let used = ident == "use";
             path.push(ident);
-            return if used { Last::PathSep } else { Last::Other };
+            return if used { Last::Use } else { Last::Other };
         }
         // A group straight after `::` continues the path, as in `std::{fs, env}`.
-        let outer = if last == Last::PathSep {
+        let outer = if last.continues_path() {
             [prefix, path].concat()
         } else {
             Vec::new()
@@ -252,16 +248,26 @@ enum Last {
     ManyColons,
     // `as` in a `use`: the next name is an alias, not a path.
     Alias,
+    // `use`, which a name, a group or a leading `::` continues, as in `use ::sqlx;`.
+    Use,
+    // One colon after `use`, which a macro matcher such as `(use: $x)` writes.
+    UseColon,
 }
 
 impl Last {
     const fn colon(self) -> Self {
         match self {
             Self::Other => Self::Colon,
-            Self::Colon => Self::PathSep,
+            Self::Colon | Self::UseColon => Self::PathSep,
             Self::PathSep | Self::ManyColons => Self::ManyColons,
             Self::Alias => Self::Alias,
+            Self::Use => Self::UseColon,
         }
+    }
+
+    // Whether a name or group that comes next is part of the same path.
+    fn continues_path(self) -> bool {
+        matches!(self, Self::PathSep | Self::Use)
     }
 }
 
@@ -530,6 +536,10 @@ mod tests {
             check(&IO, "src/chats.rs", "fn rows() { m!(a::b sqlx::query) }"),
             ["uses sqlx outside the db module"]
         );
+    }
+
+    #[test]
+    fn database_drivers_in_macro_bodies_are_found() {
         // Three colons end a path rather than join one, and so do colons after a `use` alias.
         for text in [
             "fn rows() { m!(sqlx:::query) }",
@@ -557,6 +567,7 @@ mod tests {
             "macro_rules! imports { () => { use std::{fmt as fs}; }; }",
             "macro_rules! imports { () => { use {std::fmt as sqlx}; }; }",
             "macro_rules! imports { () => { use std::fmt as fs::File; }; }",
+            "macro_rules! example { (use: sqlx) => { () }; }",
         ] {
             assert!(check(&PURE, "src/chats.rs", text).is_empty(), "{text}");
         }
