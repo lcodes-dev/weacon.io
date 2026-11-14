@@ -212,6 +212,20 @@ SELECT workspace_id, seq, kind, member_id, task_id, task_version FROM changes;
 DROP TABLE changes;
 ALTER TABLE changes_with_docs RENAME TO changes;
 ",
+    // The bytes each doc revision takes, which count toward its workspace's quota.
+    "
+ALTER TABLE doc_versions ADD COLUMN size INTEGER NOT NULL DEFAULT 0;
+
+-- Sums a workspace's sizes from the index alone, without reading any body.
+CREATE INDEX doc_versions_size ON doc_versions (workspace_id, size);
+
+UPDATE doc_versions SET size = length(CAST(title AS BLOB)) + length(CAST(body AS BLOB))
+    + COALESCE(length(commit_id), 0)
+    + (SELECT COALESCE(SUM(length(pin)), 0) FROM doc_pins
+       WHERE doc_pins.workspace_id = doc_versions.workspace_id
+           AND doc_pins.doc_id = doc_versions.doc_id
+           AND doc_pins.version = doc_versions.version);
+",
 ];
 
 /// Applies the steps the database hasn't had yet, each in its own transaction that holds the

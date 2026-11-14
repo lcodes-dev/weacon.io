@@ -244,7 +244,10 @@ mod tests {
             .connect()
             .await
             .unwrap();
-        let before_docs = STEPS.len() - 1;
+        let docs = STEPS
+            .iter()
+            .position(|step| step.contains("changes_with_docs"));
+        let before_docs = docs.unwrap();
         for step in &STEPS[..before_docs] {
             raw_sql(*step).execute(&mut old).await.unwrap();
         }

@@ -182,7 +182,7 @@ fn answer(shared: &Shared, fault: Fault) -> Response {
         "doc.invalid" | "doc.unpinned" | "doc.unlinked" | "doc.unknown_value" => {
             StatusCode::BAD_REQUEST
         }
-        "doc.too_large" => StatusCode::PAYLOAD_TOO_LARGE,
+        "doc.too_large" | "doc.quota_full" => StatusCode::PAYLOAD_TOO_LARGE,
         "doc.not_found" => StatusCode::NOT_FOUND,
         "doc.stale" | "doc.last_version" => StatusCode::CONFLICT,
         _ => return failure(shared, fault),
@@ -534,5 +534,18 @@ mod tests {
         let answer = answer(&fixture.shared, broken);
 
         assert_eq!(answer.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    #[tokio::test]
+    async fn a_full_workspace_is_answered_like_a_doc_too_large() {
+        let fixture = Fixture::new().await;
+        let full = Fault::new(
+            code!("doc.quota_full"),
+            "The workspace has no room left for docs",
+        );
+
+        let answer = answer(&fixture.shared, full);
+
+        assert_eq!(answer.status(), StatusCode::PAYLOAD_TOO_LARGE);
     }
 }
