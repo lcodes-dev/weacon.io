@@ -359,7 +359,7 @@ mod tests {
             .expect("the feed went quiet")
     }
 
-    // The client's next message, pings aside: they come every 100 ms.
+    // The client's next message, pings aside.
     async fn next(client: &mut Client) -> Message {
         let text = timeout(Duration::from_secs(10), text(client))
             .await
@@ -666,9 +666,11 @@ mod tests {
         let fixture = Fixture::new().await;
         let (server, token) = signed_in(&fixture).await;
         let mut client = greeted(server.address, &token, 1).await;
-        w1(&fixture).await.unlink(&member_id("m1")).await;
+        // Read meanwhile, so it's the unlinking that ends the feed, not unanswered pings.
+        let unlink = async { w1(&fixture).await.unlink(&member_id("m1")).await };
 
-        assert!(closed(&mut client).await);
+        let ((), ended) = tokio::join!(unlink, closed(&mut client));
+        assert!(ended);
         let again = open(server.address, "/api/workspaces/w1/feed", &token).await;
         again.unwrap_err();
     }
@@ -680,9 +682,11 @@ mod tests {
         let mut client = greeted(server.address, &token, 1).await;
         let bearer = format!("authorization: Bearer {token}\r\n");
 
-        test_support::request_with(server.address, "POST /api/sign-out", &bearer, "").await;
+        let sign_out =
+            test_support::request_with(server.address, "POST /api/sign-out", &bearer, "");
 
-        assert!(closed(&mut client).await);
+        let (_, ended) = tokio::join!(sign_out, closed(&mut client));
+        assert!(ended);
     }
 
     #[tokio::test]
