@@ -237,8 +237,8 @@ SELECT workspace_id, seq, kind, member_id, task_id, task_version FROM changes;
 DROP TABLE changes;
 ALTER TABLE changes_with_docs RENAME TO changes;
 ",
-    // Chats, the events their machines report, and the commands their owners sent them. A
-    // workspace counts the bytes its chats' events take.
+    // Chats, the events their machines report, the prompts that wait for their owners and the
+    // commands their owners sent them. A workspace counts the bytes its chats' events take.
     "
 ALTER TABLE workspaces ADD COLUMN chat_bytes INTEGER NOT NULL DEFAULT 0;
 
@@ -254,6 +254,8 @@ CREATE TABLE chats (
     updated_at INTEGER NOT NULL,
     seq INTEGER NOT NULL DEFAULT 0,
     core_seq INTEGER NOT NULL DEFAULT 0,
+    run_id TEXT,
+    run_status TEXT,
     PRIMARY KEY (workspace_id, chat_id),
     FOREIGN KEY (workspace_id, owner_member) REFERENCES members (workspace_id, member_id)
 ) STRICT;
@@ -270,6 +272,16 @@ CREATE TABLE chat_events (
     PRIMARY KEY (workspace_id, chat_id, seq),
     UNIQUE (workspace_id, chat_id, core_seq),
     FOREIGN KEY (workspace_id, chat_id) REFERENCES chats (workspace_id, chat_id)
+) STRICT;
+
+CREATE TABLE chat_waiting (
+    workspace_id TEXT NOT NULL,
+    chat_id TEXT NOT NULL,
+    run_id TEXT NOT NULL,
+    prompt INTEGER NOT NULL,
+    seq INTEGER NOT NULL,
+    PRIMARY KEY (workspace_id, chat_id, run_id, prompt),
+    FOREIGN KEY (workspace_id, chat_id, seq) REFERENCES chat_events (workspace_id, chat_id, seq)
 ) STRICT;
 
 CREATE TABLE chat_requests (
@@ -397,6 +409,7 @@ mod tests {
                 "changes",
                 "chats",
                 "chat_events",
+                "chat_waiting",
                 "chat_requests"
             ]
         );
