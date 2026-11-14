@@ -23,7 +23,7 @@ use crate::platform;
 pub(crate) fn login(app: &App, agent: AgentKind, workspace: &WorkspaceId) -> Result<(), Fault> {
     let state_dir = app.state_dir()?;
     let workspaces = Workspaces::new(state_dir, app.path.clone());
-    let launch = workspaces.prepared(workspace, agent, workspaces.root(workspace))?;
+    let launch = workspaces.sign_in(workspace, agent)?;
     runtime()?.block_on(launch.log_in())?;
     let ids = [("workspace_id", workspace.as_str().into())];
     app.log.info("login finished", &ids);
@@ -169,6 +169,15 @@ impl Workspaces {
             return true;
         };
         cwd.starts_with(&state) || state.starts_with(&cwd)
+    }
+
+    /// How to run `agent`'s own sign-in for `workspace`, in the workspace's own folder.
+    pub(crate) fn sign_in(
+        &self,
+        workspace: &WorkspaceId,
+        agent: AgentKind,
+    ) -> Result<Launch, Fault> {
+        self.prepared(workspace, agent, self.root(workspace))
     }
 
     // A launch whose config folder exists, private to this user.

@@ -113,7 +113,7 @@ fn handshake_failed() -> Fault {
     )
 }
 
-fn seal_failed() -> Fault {
+pub(super) fn seal_failed() -> Fault {
     Fault::new(code!("terminal.seal_failed"), "The terminal's seal failed")
 }
 
@@ -203,6 +203,39 @@ impl Dh for X25519 {
         }
         out.copy_from_slice(shared.as_bytes());
         Ok(())
+    }
+}
+
+/// The browser's end, for tests that play it: a snow initiator.
+#[cfg(test)]
+pub(super) struct Browser(Option<snow::HandshakeState>, Option<TransportState>);
+
+#[cfg(test)]
+impl Browser {
+    /// Starts a handshake with the machine whose public key is `remote`; its first message.
+    pub(super) fn start(remote: &[u8], prologue: &[u8], payload: &[u8]) -> (Self, Vec<u8>) {
+        let mut state = builder(prologue)
+            .and_then(|builder| builder.remote_public_key(remote))
+            .and_then(Builder::build_initiator)
+            .unwrap();
+        let message = buffered(|buffer| state.write_message(payload, buffer)).unwrap();
+        (Self(Some(state), None), message)
+    }
+
+    pub(super) fn finish(&mut self, reply: &[u8]) {
+        let mut state = self.0.take().unwrap();
+        state.read_message(reply, &mut [0; 64]).unwrap();
+        self.1 = Some(state.into_transport_mode().unwrap());
+    }
+
+    pub(super) fn seal(&mut self, plaintext: &[u8]) -> Vec<u8> {
+        let transport = self.1.as_mut().unwrap();
+        buffered(|buffer| transport.write_message(plaintext, buffer)).unwrap()
+    }
+
+    pub(super) fn open(&mut self, message: &[u8]) -> Vec<u8> {
+        let transport = self.1.as_mut().unwrap();
+        buffered(|buffer| transport.read_message(message, buffer)).unwrap()
     }
 }
 
