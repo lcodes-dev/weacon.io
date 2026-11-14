@@ -5,24 +5,29 @@
 
 mod anchor;
 mod area;
-mod cfg;
+mod contracts;
+mod edges;
 mod facts;
 mod fingerprint;
 mod graph;
 mod index;
 mod louvain;
-mod outline;
 mod paths;
 mod rank;
+mod refs;
+mod symbols;
 mod syntax;
+#[cfg(test)]
+mod test_support;
 
 use std::fmt;
 
 pub use anchor::{Anchor, Finding, Pin};
-pub use area::Area;
+pub(crate) use area::Area;
 pub use fingerprint::Fingerprint;
-pub use index::{Crate, Index, Module, SourceFile, index};
-pub use outline::{Kind, Symbol};
+pub(crate) use index::{Crate, Module};
+pub use index::{Index, SourceFile, index};
+pub(crate) use symbols::{Kind, Symbol};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Error {
