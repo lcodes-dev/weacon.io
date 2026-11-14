@@ -88,9 +88,18 @@ build_name() {
   esac
 }
 
+# A file's size and SHA-256 on one line; shasum, unlike sha256sum, comes with macOS too.
+size_and_sha256() {
+  local size sha256
+  size=$(wc -c <"$1" | tr -d ' ')
+  sha256=$(shasum -a 256 "$1" | cut -d ' ' -f 1)
+  [[ $sha256 =~ ^[0-9a-f]{64}$ ]] || return 1
+  printf '%s %s\n' "$size" "$sha256"
+}
+
 # Writes <folder>/manifest.json for the core's builds there. It is dated when it's signed.
 write_manifest() {
-  local tag=${1:-} dir=${2:-} base=${3:-} protocol target name builds=()
+  local tag=${1:-} dir=${2:-} base=${3:-} protocol target name size sha256 builds=()
   if [ "$tag" != "v$(workspace_version)" ] || ! [ -d "$dir" ] || [[ $base != https://* ]]; then
     die "usage: scripts/release.sh manifest v$(workspace_version) <folder> <https base URL>"
   fi
@@ -99,9 +108,9 @@ write_manifest() {
   for target in "${CORE_TARGETS[@]}"; do
     name=$(build_name "$target")
     [ -f "$dir/$name" ] || die "$dir has no $name"
+    read -r size sha256 < <(size_and_sha256 "$dir/$name") || die "$name couldn't be read"
     builds+=("$(jq -cn --arg target "$target" --arg url "${base%/}/$name" \
-      --argjson size "$(wc -c <"$dir/$name" | tr -d ' ')" \
-      --arg sha256 "$(sha256sum "$dir/$name" | cut -d ' ' -f 1)" \
+      --argjson size "$size" --arg sha256 "$sha256" \
       '{target: $target, url: $url, size: $size, sha256: $sha256}')")
   done
   printf '%s\n' "${builds[@]}" | jq -cs --arg version "${tag#v}" --arg commit "$(git rev-parse HEAD)" \
@@ -113,7 +122,7 @@ write_manifest() {
 
 # Signs the draft release of <tag> once its manifest and builds match the tag.
 sign_release() {
-  local tag=${1:-} key=${2:-} tool commit repo keys target public trusted=
+  local tag=${1:-} key=${2:-} tool commit repo keys target name public trusted=
   [[ $key == /* ]] || key="$caller/$key"
   if ! [[ $tag =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || ! [ -f "$key" ]; then
     die "usage: scripts/release.sh sign <vX.Y.Z> <secret key file>"
@@ -141,10 +150,12 @@ sign_release() {
         + (if .target | test("-windows-") then ".exe" else "" end))' \
     "$work/manifest.json" >/dev/null || die "the draft's manifest doesn't describe $tag's builds"
   for target in "${CORE_TARGETS[@]}"; do
-    gh release download "$tag" --repo "$repo" --dir "$work" --pattern "$(build_name "$target")"
+    name=$(build_name "$target")
+    gh release download "$tag" --repo "$repo" --dir "$work" --pattern "$name"
+    [ "$(size_and_sha256 "$work/$name")" = "$(jq -r --arg target "$target" \
+      '.builds[] | select(.target == $target) | "\(.size) \(.sha256)"' "$work/manifest.json")" ] \
+      || die "$name doesn't match the draft's manifest"
   done
-  (cd "$work" && jq -r '.builds[] | "\(.sha256)  \(.url | split("/") | last)"' manifest.json \
-    | shasum -a 256 -c --quiet) || die "a build of the draft doesn't match its manifest"
 
   mkdir "$work/signed"
   jq -c --argjson now "$(date +%s)" '.published_at = $now' "$work/manifest.json" \
