@@ -1,6 +1,5 @@
 //! The person's answer to whether this core sends error reports, kept in the state folder.
 
-use std::fs;
 use std::future::Future;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -12,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use weacon_observability::{Fault, Field, Logger, Reporter};
 use weacon_protocol::code;
 
-use crate::app::{App, state_unavailable};
+use crate::app::{App, read_json};
 use crate::platform;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
@@ -120,18 +119,9 @@ fn unreadable() -> Fault {
 
 // `None` until the person answers; a state folder that is a file holds no answer either.
 fn read(state_dir: &Path) -> Result<Option<bool>, Fault> {
-    match fs::read(file(state_dir)) {
-        Ok(json) => serde_json::from_slice::<Stored>(&json)
-            .map(|stored| Some(stored.send))
-            .map_err(|error| unreadable().because(error)),
-        Err(error)
-            if matches!(
-                error.kind(),
-                io::ErrorKind::NotFound | io::ErrorKind::NotADirectory
-            ) =>
-        {
-            Ok(None)
-        }
+    match read_json::<Stored>(&file(state_dir)) {
+        Ok(stored) => Ok(stored.map(|stored| stored.send)),
+        Err(error) if error.kind() == io::ErrorKind::NotADirectory => Ok(None),
         Err(error) => Err(unreadable().because(error)),
     }
 }
@@ -184,7 +174,7 @@ fn settled<T>(step: impl FnOnce() -> T) -> T {
 
 /// Stores `answer` when given, applies it to this run, and says what the answer is now.
 pub(crate) fn run(app: &App, answer: Option<Answer>, out: &mut impl Write) -> Result<(), Fault> {
-    let state_dir = app.state_dir.as_deref().ok_or_else(state_unavailable)?;
+    let state_dir = app.state_dir()?;
     let send = match answer {
         Some(answer) => {
             let send = answer == Answer::On;
@@ -212,6 +202,8 @@ fn describe(send: Option<bool>) -> &'static str {
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+
     use weacon_testing::TempDir;
 
     use super::*;
