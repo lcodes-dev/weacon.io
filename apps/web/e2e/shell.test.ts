@@ -597,3 +597,65 @@ test("open changes cut short by a lost connection are asked for again once it is
   await page.getByText("src/pantry.rs").waitFor();
 });
 
+// A worktree as a core answers it: c-1's has uncommitted work, any other chat has none yet.
+function worktreeServer(asked: Envelope): Envelope[] {
+  if (asked.type !== "worktree_query") {
+    return snapshot(asked);
+  }
+  if (asked.chat !== "c-1") {
+    return [{ id: asked.id, type: "error", code: "worktree.none", retryable: false }];
+  }
+  const answer = { kind: "state" as const, removed: false, uncommitted: true, unpushed: false };
+  return [{ id: asked.id, type: "worktree_answer", workspace: asked.workspace, chat: asked.chat, request: asked.request, answer }];
+}
+
+const WORKTREES = ["diff.view", "worktree.manage", "worktree.open_terminal"];
+
+test("a chat's owner gets its worktree's bar, with its title to start a pull request and a terminal where offered", { timeout: 600_000 }, async (t) => {
+  const served = await serve();
+  t.after(() => served.close());
+  const { page } = served;
+  await serveFeed(page, { also: WORKTREES, answer: worktreeServer });
+  await openChats(
+    served,
+    [
+      { id: "c-1", title: "Sort the pantry" },
+      { id: "c-2", title: "Water the plants" },
+    ],
+    (member) => member,
+  );
+  await nav(page).getByRole("button", { name: /Sort the pantry/ }).click();
+  await page.getByRole("button", { name: "Changes" }).click();
+  const bar = page.getByRole("region", { name: "Worktree" });
+
+  await bar.getByText("Uncommitted changes").waitFor();
+  await bar.getByRole("button", { name: "Open terminal" }).waitFor();
+  const withButtons = (await bar.boundingBox())?.height;
+  await bar.getByRole("button", { name: "Open pull request" }).click();
+  assert.equal(await bar.getByLabel("Title").inputValue(), "Sort the pantry");
+
+  await nav(page).getByRole("button", { name: /Water the plants/ }).click();
+  await page.getByRole("button", { name: "Changes" }).click();
+  await bar.getByText("This chat has no worktree yet.").waitFor();
+  assert.equal(await bar.getByRole("button", { name: "Remove" }).count(), 0);
+  // The bar is as tall without its buttons as with them, so the diff below doesn't move as they come.
+  assert.equal((await bar.boundingBox())?.height, withButtons);
+});
+
+test("someone else's chat shows no worktree bar, and asks nothing of it", { timeout: 600_000 }, async (t) => {
+  const served = await serve();
+  t.after(() => served.close());
+  const { page } = served;
+  const { sent } = await serveFeed(page, { also: WORKTREES, answer: worktreeServer });
+  await openChats(served, [{ id: "c-1", title: "Sort the pantry" }], () => "m-someone-else");
+  await nav(page).getByRole("button", { name: /Sort the pantry/ }).click();
+  await page.getByRole("button", { name: "Changes" }).click();
+  await page.locator(".chat-changes").waitFor();
+
+  assert.equal(await page.getByRole("region", { name: "Worktree" }).count(), 0);
+  assert.deepEqual(
+    sent.filter((envelope) => envelope.type === "worktree_query" || envelope.type === "worktree_command"),
+    [],
+  );
+});
+

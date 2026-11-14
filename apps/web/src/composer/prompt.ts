@@ -50,6 +50,21 @@ export function after(sent: Sent, text: string, request: RequestId): After {
 /** How a command ended, heard after its wait ran out. */
 export type Late = { request: RequestId; settled: Settled };
 
+/** Hands `listener` each late receipt until the returned function is called, so none is lost in a batch. */
+export type Lates = (listener: (late: Late) => void) => () => void;
+
+/** Late receipts as `Lates`: each one `hear` takes reaches every listener at once. */
+export function lateFeed(): { lates: Lates; hear: (late: Late) => void } {
+  const listeners = new Set<(late: Late) => void>();
+  return {
+    lates: (listener) => {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
+    hear: (late) => [...listeners].forEach((listener) => listener(late)),
+  };
+}
+
 /** Why the box can't send to `chatRef` now, or `undefined` when it can. */
 export function blocked(live: boolean, chatRef: ChatRef | undefined, sends: boolean): string | undefined {
   if (chatRef === undefined) {
