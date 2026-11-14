@@ -7,19 +7,44 @@ import { problemText } from "./problems.ts";
 export type Loaded<T> = { value: T | undefined; problem: string | undefined };
 
 /**
- * Keeps one fetched thing: an older fetch's answer never replaces a newer one or a change made
- * here, and a failed fetch keeps the value shown.
+ * Keeps one fetched thing: one fetch at a time, with loads asked meanwhile run as one more fetch
+ * once its answer is shown; an answer never replaces a change made here, and a failed fetch keeps
+ * the value shown.
  */
 export class Loader<T> {
   #shown: Loaded<T> = { value: undefined, problem: undefined };
   #latest = 0;
   #show: (loaded: Loaded<T>) => void;
+  #next: (() => Promise<Answer<T>>) | undefined;
+  #running: Promise<void> | undefined;
+  #era = 0;
 
   constructor(show: (loaded: Loaded<T>) => void) {
     this.#show = show;
   }
 
-  async load(fetch: () => Promise<Answer<T>>): Promise<void> {
+  /** Settles once no fetch is left to run, so later loads asked meanwhile can keep it waiting. */
+  load(fetch: () => Promise<Answer<T>>): Promise<void> {
+    this.#next = fetch;
+    this.#running ??= this.#run();
+    return this.#running;
+  }
+
+  async #run(): Promise<void> {
+    const era = this.#era;
+    try {
+      for (let fetch = this.#next; fetch !== undefined && era === this.#era; fetch = this.#next) {
+        this.#next = undefined;
+        await this.#fetch(fetch);
+      }
+    } finally {
+      if (era === this.#era) {
+        this.#running = undefined;
+      }
+    }
+  }
+
+  async #fetch(fetch: () => Promise<Answer<T>>): Promise<void> {
     const asked = ++this.#latest;
     if (this.#shown.problem !== undefined) {
       this.#put({ ...this.#shown, problem: undefined });
@@ -36,14 +61,16 @@ export class Loader<T> {
     this.#put({ ...this.#shown, value: update(this.#shown.value) });
   }
 
-  /** Drops every answer still on its way, as when the page that asked is gone. */
+  /** Drops the answer on its way and the load waiting for it, as when the page that asked is gone. */
   stop(): void {
     this.#latest++;
+    this.#era++;
+    this.#running = undefined;
   }
 
-  /** Forgets what is shown, for a fetch of something else. */
+  /** Forgets what is shown and stops, for a fetch of something else. */
   reset(): void {
-    this.#latest++;
+    this.stop();
     if (this.#shown.value !== undefined || this.#shown.problem !== undefined) {
       this.#put({ value: undefined, problem: undefined });
     }
@@ -56,7 +83,7 @@ export class Loader<T> {
 }
 
 /**
- * What `fetch` answers, fetched on mount, on each `load`, and afresh whenever `key` changes. A
+ * What `fetch` answers, fetched on mount, on each `load` (one fetch at a time), and afresh whenever `key` changes. A
  * refresh clears nothing but the last problem: loading is when `value` and `problem` are both
  * undefined.
  */
