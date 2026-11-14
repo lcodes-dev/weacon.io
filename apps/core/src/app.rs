@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use serde::de::DeserializeOwned;
 use weacon_agents::SpawnPolicy;
-use weacon_appkit::{Ending, KEEP, MAX_BYTES, RotatingFile, panic_hook, root_logger};
+use weacon_appkit::{Ending, RotatingFile, panic_hook, root_logger};
 use weacon_observability::{
     Deliver, Fault, Field, Level, Logger, Reporter, Reports, Sink, json_lines, tee,
 };
@@ -130,7 +130,7 @@ fn open_log(state_dir: &Path, name: &str) -> io::Result<(PathBuf, RotatingFile)>
     platform::private_dir(state_dir)?;
     platform::private_dir(&dir)?;
     let path = dir.join(name);
-    let file = RotatingFile::open(path.clone(), MAX_BYTES, KEEP)?;
+    let file = RotatingFile::open(path.clone())?;
     Ok((path, file))
 }
 
