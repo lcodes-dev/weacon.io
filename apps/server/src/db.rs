@@ -171,45 +171,35 @@ fn stored_version(version: i64) -> Result<Revision, Fault> {
         .map_err(|_| unreadable())
 }
 
-/// How `author` is stored, unless it is one from a newer peer.
-fn author_columns(author: &Author) -> Option<(&'static str, &MemberId)> {
+/// How `author` is stored: its kind, its member and, for an agent that names one, the agent
+/// as JSON; `None` for an author or agent from a newer peer.
+fn author_columns(author: &Author) -> Option<(&'static str, &MemberId, Option<String>)> {
     match author {
-        Author::Person { member } => Some(("person", member)),
-        Author::Agent { owner, .. } => Some(("agent", owner)),
+        Author::Person { member } => Some(("person", member, None)),
+        Author::Agent { owner, agent: None } => Some(("agent", owner, None)),
+        Author::Agent {
+            owner,
+            agent: Some(agent),
+        } => {
+            let newer =
+                matches!(agent.kind, AgentKind::Newer) || matches!(agent.owner, AgentOwner::Newer);
+            let json = serde_json::to_string(agent).ok().filter(|_| !newer)?;
+            Some(("agent", owner, Some(json)))
+        }
         Author::Newer => None,
     }
 }
 
-/// The JSON that the agent `author` names is stored as, or `Ok(None)` when it names none; an
-/// agent from a newer peer can't be stored.
-fn agent_column(author: &Author) -> Result<Option<String>, ()> {
-    let Author::Agent {
-        agent: Some(agent), ..
-    } = author
-    else {
-        return Ok(None);
-    };
-    let newer = matches!(agent.kind, AgentKind::Newer) || matches!(agent.owner, AgentOwner::Newer);
-    if newer {
-        return Err(());
-    }
-    serde_json::to_string(agent).map(Some).map_err(|_| ())
-}
-
-/// The agent stored as `agent`, which an older build may have left empty.
-fn stored_agent(agent: Option<&str>) -> Result<Option<AgentRef>, Fault> {
-    agent
-        .map(|json| serde_json::from_str(json).map_err(|_| unreadable()))
-        .transpose()
-}
-
-fn stored_author(kind: &str, member: String) -> Result<Author, Fault> {
+/// The author stored in [`author_columns`]' columns; a row an older build wrote has no agent.
+fn stored_author(kind: &str, member: String, agent: Option<&str>) -> Result<Author, Fault> {
     let member = stored(member)?;
-    match kind {
-        "person" => Ok(Author::Person { member }),
-        "agent" => Ok(Author::Agent {
+    match (kind, agent) {
+        ("person", None) => Ok(Author::Person { member }),
+        ("agent", agent) => Ok(Author::Agent {
             owner: member,
-            agent: None,
+            agent: agent
+                .map(|json| serde_json::from_str::<AgentRef>(json).map_err(|_| unreadable()))
+                .transpose()?,
         }),
         _ => Err(unreadable()),
     }

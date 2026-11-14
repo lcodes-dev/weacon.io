@@ -4,7 +4,7 @@ use weacon_observability::Fault;
 use weacon_protocol::{TaskId, TaskStatus, code};
 
 use super::changes::Versioned;
-use super::{Workspace, agent_column, author_columns, failed, stored, stored_version, unreadable};
+use super::{Workspace, author_columns, failed, stored, stored_version, unreadable};
 
 type Row = (String, String, String, String, i64);
 
@@ -119,8 +119,8 @@ impl Workspace {
         task: &Task,
         attribution: &Attribution,
     ) -> Result<(), Fault> {
-        let (kind, author) = author_columns(attribution.author()).ok_or_else(unknown_value)?;
-        let agent = agent_column(attribution.author()).map_err(|()| unknown_value())?;
+        let (kind, author, agent) =
+            author_columns(attribution.author()).ok_or_else(unknown_value)?;
         let version = version_number(task.version)?;
         sqlx::query(
             "INSERT INTO task_versions
@@ -214,7 +214,7 @@ mod tests {
     use weacon_testing::TempDir;
 
     use super::*;
-    use crate::db::{stored_agent, stored_author};
+    use crate::db::stored_author;
     use crate::test_support::{member_id, new_task, two_teams};
 
     const NOW: i64 = 1_762_077_600;
@@ -378,15 +378,7 @@ mod tests {
         .await
         .unwrap()
         .into_iter()
-        .map(
-            |(kind, member, agent)| match stored_author(&kind, member).unwrap() {
-                Author::Agent { owner, .. } => Author::Agent {
-                    owner,
-                    agent: stored_agent(agent.as_deref()).unwrap(),
-                },
-                person @ (Author::Person { .. } | Author::Newer) => person,
-            },
-        )
+        .map(|(kind, member, agent)| stored_author(&kind, member, agent.as_deref()).unwrap())
         .collect()
     }
 
