@@ -23,8 +23,12 @@ use crate::mcp;
 use crate::memory;
 use crate::picks::{KeepError, Picks};
 use crate::platform::{self, Listener, Owner, Stream};
-use crate::session::{Reply, Session};
 use crate::uplink;
+
+mod session;
+
+pub(crate) use session::CAPABILITIES;
+use session::{Reply, Session};
 
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
 pub(crate) const READ_CHUNK: usize = 8192;

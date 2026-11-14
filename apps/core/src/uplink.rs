@@ -363,7 +363,7 @@ pub(crate) fn unrouted(app: &crate::app::App, state_dir: &Path) -> (Uplink, From
     let uplink = Uplink {
         state_dir: state_dir.to_owned(),
         app: weacon_appkit::build(&app.version),
-        capabilities: crate::session::CAPABILITIES.to_vec(),
+        capabilities: crate::daemon::CAPABILITIES.to_vec(),
         log: app.log.child(&[("component", "uplink".into())]),
         to_daemon,
         timing: TIMING,

@@ -27,7 +27,6 @@ mod reports;
 mod runs;
 mod server;
 mod service;
-mod session;
 mod status;
 #[cfg_attr(
     not(test),
