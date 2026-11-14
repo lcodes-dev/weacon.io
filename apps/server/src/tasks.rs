@@ -15,13 +15,13 @@ use crate::db::task_not_found;
 use crate::http::{Body, Shared, error, failure};
 
 /// `GET /api/workspaces/{workspace}/tasks`: the workspace's tasks, in their order.
-pub(crate) async fn list(State(shared): State<Shared>, member: Member) -> Response {
+pub(crate) async fn list(member: Member) -> Response {
     match member.workspace.tasks().await {
         Ok(tasks) => Json(TaskList {
             tasks: tasks.into_iter().map(record).collect(),
         })
         .into_response(),
-        Err(fault) => answer(&shared, fault),
+        Err(fault) => answer(fault),
     }
 }
 
@@ -48,7 +48,7 @@ pub(crate) async fn create(
             shared.changed(member.workspace.id());
             (StatusCode::CREATED, Json(record(task))).into_response()
         }
-        Err(fault) => answer(&shared, fault),
+        Err(fault) => answer(fault),
     }
 }
 
@@ -84,7 +84,7 @@ pub(crate) async fn change(
             shared.changed(member.workspace.id());
             Json(record(task)).into_response()
         }
-        Err(fault) => answer(&shared, fault),
+        Err(fault) => answer(fault),
     }
 }
 
@@ -134,14 +134,14 @@ fn invalid() -> Fault {
 }
 
 /// Answers a refusal with its status, and anything else as the server failing.
-fn answer(shared: &Shared, fault: Fault) -> Response {
+fn answer(fault: Fault) -> Response {
     let status = match fault.code().as_str() {
         "task.invalid" | "task.unknown_value" => StatusCode::BAD_REQUEST,
         "task.not_found" => StatusCode::NOT_FOUND,
         "task.stale" | "task.no_room" | "task.last_version" => StatusCode::CONFLICT,
         // Another change took the same place at the same moment; reading again finds a free one.
         "db.exists" => return error(StatusCode::CONFLICT, fault.code().clone(), true),
-        _ => return failure(shared, fault),
+        _ => return failure(fault),
     };
     error(status, fault.code().clone(), false)
 }
@@ -434,10 +434,9 @@ mod tests {
 
     #[tokio::test]
     async fn a_place_another_change_took_meanwhile_is_a_conflict_worth_retrying() {
-        let fixture = Fixture::new().await;
         let taken = Fault::new(code!("db.exists"), "It already exists");
 
-        let answer = answer(&fixture.shared, taken);
+        let answer = answer(taken);
 
         assert_eq!(answer.status(), StatusCode::CONFLICT);
         let body = axum::body::to_bytes(answer.into_body(), 1024)

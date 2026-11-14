@@ -60,7 +60,7 @@ pub(crate) async fn feed(
     match member.workspace.join(&member.id).await {
         Ok(true) => shared.changed(member.workspace.id()),
         Ok(false) => {}
-        Err(fault) => return failure(&shared, fault),
+        Err(fault) => return failure(fault),
     }
     let feed = Feed {
         _place: place,

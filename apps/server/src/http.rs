@@ -192,6 +192,10 @@ async fn log_request(State(shared): State<Shared>, request: Request, next: Next)
         .map_or("unmatched", MatchedPath::as_str)
         .to_owned();
     let mut response = next.run(request).await;
+    if let Some(Failed(fault)) = response.extensions_mut().remove::<Failed>() {
+        let id = [("request_id", request_id.as_str().into())];
+        report(&shared, "request failed", fault, &id);
+    }
     let duration_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
     if let Ok(value) = HeaderValue::from_str(&request_id) {
         response.headers_mut().insert(REQUEST_ID, value);
@@ -256,22 +260,35 @@ pub(crate) fn too_many(code: Code) -> Response {
     error(StatusCode::TOO_MANY_REQUESTS, code, true)
 }
 
-/// Logs and reports `fault`, and answers that the server failed.
-pub(crate) fn failure(shared: &Shared, fault: Fault) -> Response {
-    let code = fault.code().clone();
-    report(shared, fault);
-    error(StatusCode::INTERNAL_SERVER_ERROR, code, true)
+/// Answers that the server failed with `fault`, which the request's log record logs and
+/// reports, with its id.
+pub(crate) fn failure(fault: Fault) -> Response {
+    let mut response = error(
+        StatusCode::INTERNAL_SERVER_ERROR,
+        fault.code().clone(),
+        true,
+    );
+    response.extensions_mut().insert(Failed(Arc::new(fault)));
+    response
 }
+
+/// The fault a response answers, until `log_request` takes it.
+#[derive(Clone)]
+struct Failed(Arc<Fault>);
 
 pub(crate) fn error(status: StatusCode, code: Code, retryable: bool) -> Response {
     (status, Json(ErrorBody { code, retryable })).into_response()
 }
 
-/// Logs and reports `fault`.
-pub(crate) fn report(shared: &Shared, fault: Fault) {
-    shared
-        .log
-        .error("request failed", &[("err", Field::error(&fault))]);
+/// Logs `fault` as `event`, with `fields`, and reports it.
+pub(crate) fn report(
+    shared: &Shared,
+    event: &'static str,
+    fault: Arc<Fault>,
+    fields: &[(&'static str, Field)],
+) {
+    let err = [("err", Field::error(&*fault))];
+    shared.log.error(event, &[fields, &err].concat());
     let (reporter, log) = (Arc::clone(&shared.reporter), shared.log.clone());
     // Sending a report blocks, so it runs beside the request rather than holding it up.
     drop(tokio::task::spawn_blocking(move || {

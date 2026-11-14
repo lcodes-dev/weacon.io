@@ -33,7 +33,7 @@ pub(crate) async fn create(
     match made {
         Ok(Some(summary)) => (StatusCode::CREATED, Json(summary)).into_response(),
         Ok(None) => invalid(code!("workspace.too_many")),
-        Err(fault) => failure(&shared, fault),
+        Err(fault) => failure(fault),
     }
 }
 
@@ -41,17 +41,17 @@ pub(crate) async fn create(
 pub(crate) async fn list(State(shared): State<Shared>, session: Session) -> Response {
     match shared.db.account(session.account).workspaces().await {
         Ok(workspaces) => Json(WorkspaceList { workspaces }).into_response(),
-        Err(fault) => failure(&shared, fault),
+        Err(fault) => failure(fault),
     }
 }
 
 /// `GET /api/workspaces/{workspace}`: one workspace, to one of its members.
-pub(crate) async fn read(State(shared): State<Shared>, member: Member) -> Response {
+pub(crate) async fn read(member: Member) -> Response {
     match member.workspace.summary(&member.id).await {
         Ok(Some(summary)) => Json(summary).into_response(),
         // Someone else ended the membership since it was checked.
         Ok(None) => refused(code!("sign_in.required")),
-        Err(fault) => failure(&shared, fault),
+        Err(fault) => failure(fault),
     }
 }
 

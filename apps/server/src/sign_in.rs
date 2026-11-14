@@ -56,13 +56,13 @@ pub(crate) async fn start(
     }
     let challenge = match new_challenge() {
         Ok(challenge) => challenge,
-        Err(fault) => return failure(&shared, fault),
+        Err(fault) => return failure(fault),
     };
     if let Ok(room) = Arc::clone(&shared.sign_ins).try_acquire_owned() {
         let sent = challenge.clone();
         drop(tokio::spawn(async move {
             if let Err(fault) = send_code(&shared, &body, &sent).await {
-                report(&shared, fault);
+                report(&shared, "sign-in failed", Arc::new(fault), &[]);
             }
             drop(room);
         }));
@@ -132,7 +132,7 @@ pub(crate) async fn finish(
         })
         .into_response(),
         Ok(None) => refused(code!("sign_in.failed")),
-        Err(fault) => failure(&shared, fault),
+        Err(fault) => failure(fault),
     };
     sleep_until(now + shared.finish_within).await;
     answer
@@ -165,7 +165,7 @@ pub(crate) async fn sign_out(
             let cookie = set_session_cookie("", 0);
             (StatusCode::NO_CONTENT, [(SET_COOKIE, cookie)]).into_response()
         }
-        Err(fault) => failure(&shared, fault),
+        Err(fault) => failure(fault),
     }
 }
 
@@ -707,7 +707,7 @@ mod tests {
             .lock()
             .unwrap()
             .iter()
-            .find(|record| record.msg == "request failed")
+            .find(|record| record.msg == "sign-in failed")
             .map(|record| record.fields["err"]["code"].clone());
 
         assert_eq!(started, "http/1.1 202 accepted");
@@ -768,10 +768,22 @@ mod tests {
         let finish = finish_body("ada@example.com", &json!("0".repeat(64)), "00000000");
         let (head, body) = request(server.address, "POST /api/sign-in/finish", &finish).await;
 
+        let records = fixture.records.lock().unwrap().clone();
+        let ids = |event: &str| -> Vec<_> {
+            records
+                .iter()
+                .filter(|record| record.msg == event)
+                .map(|record| record.fields["request_id"].clone())
+                .collect()
+        };
+
         assert_eq!(status(&head), "http/1.1 500 internal server error");
         assert_eq!(
             serde_json::from_str::<Value>(&body).unwrap(),
             json!({ "code": "db.failed", "retryable": true })
         );
+        // Logged once, with the id that joins it to the request's own record.
+        assert_eq!(ids("request failed"), ids("request handled"));
+        assert_eq!(ids("request failed").len(), 1);
     }
 }

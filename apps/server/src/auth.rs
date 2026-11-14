@@ -46,7 +46,7 @@ impl FromRequestParts<Shared> for Session {
             .db
             .session(&token_hash, shared.now())
             .await
-            .map_err(|fault| failure(shared, fault))?;
+            .map_err(failure)?;
         let (account, email) = found.ok_or_else(required)?;
         Ok(Self { account, email })
     }
@@ -70,7 +70,7 @@ impl FromRequestParts<Shared> for Member {
             .db
             .member_workspace(&workspace, &token_hash, shared.now())
             .await
-            .map_err(|fault| failure(shared, fault))?;
+            .map_err(failure)?;
         let (workspace, id) = found.ok_or_else(required)?;
         Ok(Self {
             workspace,
