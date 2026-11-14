@@ -1,6 +1,7 @@
-use serde::de::DeserializeOwned;
 use sqlx::SqliteConnection;
-use weacon_model::{Attribution, Doc, DocText, Merge, OrderKey, Task, TaskEdit, Title};
+use weacon_model::{
+    Attribution, Doc, DocText, DocTextError, Merge, OrderKey, Task, TaskEdit, Title,
+};
 use weacon_observability::Fault;
 use weacon_protocol::{
     AgentRef, DocContent, DocId, MemberId, MergeHunk, ProposalChange, ProposalId, ProposalOutcome,
@@ -8,21 +9,29 @@ use weacon_protocol::{
 };
 
 use super::super::docs::refused as revise_refused;
-use super::super::tasks::refused as edit_refused;
-use super::super::{Workspace, failed, stored, unreadable};
-use super::target::doc_text;
-use super::{Closing, invalid};
+use super::super::tasks::{no_room, refused as edit_refused};
+use super::super::{Workspace, failed, parsed, stored, unreadable};
+use super::target::{Snapshot, doc_text};
+use super::{ACCEPTED, Closing, OPEN, closed, not_found};
 
-/// The most lines times lines the merge of a doc edit may compare, so that accepting one
-/// takes a bounded time; a larger merge is answered as a conflict of the whole body.
+/// The most lines times lines a doc edit's merge may compare once the start and end both
+/// sides share are set aside, so that accepting one takes a bounded time; a larger merge is
+/// answered as a conflict of the whole body.
 const MAX_MERGE: usize = 4_000_000;
 
-type OpenRow = (String, Option<String>, Option<String>, String, String);
+type OpenRow = (
+    String,
+    String,
+    Option<String>,
+    Option<String>,
+    String,
+    String,
+);
 
 /// An open proposal, as accepting it needs it.
 struct Open {
     change: ProposalChange,
-    snapshot: Option<Vec<TaskEditBody>>,
+    snapshot: Option<Snapshot>,
     new_id: Option<String>,
     attribution: Attribution,
 }
@@ -38,12 +47,14 @@ impl Workspace {
     ) -> Result<ProposalOutcome, Fault> {
         let mut transaction = self.db.write().await?;
         let open = self.open(&mut transaction, id, by, at).await?;
+        // Its own bytes leave the quota first, so that a full workspace can still accept it.
+        self.release(&mut transaction, id).await?;
         let outcome = self.make(&mut transaction, open).await?;
         let ProposalOutcome::Accepted { version } = outcome else {
             return Ok(outcome);
         };
         let closing = Closing {
-            state: "accepted",
+            state: ACCEPTED,
             by: Some(by),
             version: Some(i64::try_from(version).map_err(|_| unreadable())?),
         };
@@ -59,14 +70,14 @@ impl Workspace {
         open: Open,
     ) -> Result<ProposalOutcome, Fault> {
         let attribution = &open.attribution;
-        let outcome = match open.change {
+        match open.change {
             ProposalChange::DocEdit { doc, base, content } => {
                 let edit = DocChange {
                     doc: &doc,
                     base,
                     content: &content,
                 };
-                self.accept_doc_edit(transaction, edit, attribution).await?
+                self.accept_doc_edit(transaction, edit, attribution).await
             }
             ProposalChange::TaskEdit { task, edits, .. } => {
                 let snapshot = open.snapshot.ok_or_else(unreadable)?;
@@ -75,14 +86,13 @@ impl Workspace {
                     snapshot: &snapshot,
                     edits: &edits,
                 };
-                self.accept_task_edit(transaction, edit, attribution)
-                    .await?
+                self.accept_task_edit(transaction, edit, attribution).await
             }
             ProposalChange::NewDoc { content } => {
                 let id: DocId = stored(open.new_id.ok_or_else(unreadable)?)?;
                 let doc = Doc::new(id, doc_text(&content).map_err(|_| unreadable())?);
                 self.insert_doc(transaction, &doc, attribution).await?;
-                ProposalOutcome::Accepted { version: 1 }
+                Ok(ProposalOutcome::Accepted { version: 1 })
             }
             ProposalChange::NewTask { title } => {
                 let id: TaskId = stored(open.new_id.ok_or_else(unreadable)?)?;
@@ -90,14 +100,14 @@ impl Workspace {
                 let title = Title::try_from(title).map_err(|_| unreadable())?;
                 self.insert_task(transaction, &Task::new(id, title, order), attribution)
                     .await?;
-                ProposalOutcome::Accepted { version: 1 }
+                Ok(ProposalOutcome::Accepted { version: 1 })
             }
-            ProposalChange::Newer => return Err(unreadable()),
-        };
-        Ok(outcome)
+            ProposalChange::Newer => Err(unreadable()),
+        }
     }
 
-    /// The open proposal `id`, with the attribution its change takes once `by` accepts it.
+    /// The open proposal `id`, with the attribution its change takes once `by` accepts it;
+    /// `proposal.not_found` when there's none, and `proposal.closed` when it isn't open.
     async fn open(
         &self,
         transaction: &mut SqliteConnection,
@@ -105,16 +115,19 @@ impl Workspace {
         by: &MemberId,
         at: i64,
     ) -> Result<Open, Fault> {
-        self.state_of(transaction, id).await?;
-        let (change, snapshot, new_id, owner, agent) = sqlx::query_as::<_, OpenRow>(
-            "SELECT change, snapshot, new_id, author_member, agent FROM proposals
-             WHERE workspace_id = ? AND proposal_id = ?",
+        let (state, change, snapshot, new_id, owner, agent) = sqlx::query_as::<_, OpenRow>(
+            "SELECT state, COALESCE(change, ''), snapshot, new_id, author_member, agent
+             FROM proposals WHERE workspace_id = ? AND proposal_id = ?",
         )
         .bind(self.id.as_str())
         .bind(id.as_str())
-        .fetch_one(&mut *transaction)
+        .fetch_optional(&mut *transaction)
         .await
-        .map_err(failed)?;
+        .map_err(failed)?
+        .ok_or_else(not_found)?;
+        if state != OPEN {
+            return Err(closed());
+        }
         let agent: AgentRef = parsed(&agent)?;
         Ok(Open {
             change: parsed(&change)?,
@@ -124,7 +137,7 @@ impl Workspace {
         })
     }
 
-    /// Merges a doc edit written from revision `base` into the doc as it is now.
+    /// Merges a doc edit into the doc as it is now.
     async fn accept_doc_edit(
         &self,
         transaction: &mut SqliteConnection,
@@ -149,13 +162,22 @@ impl Workspace {
                 anchors: anchors.is_none(),
             });
         };
-        let Ok(text) = DocText::new(title.clone(), body.clone(), anchors.cloned()) else {
+        let text = match DocText::new(title.clone(), body.clone(), anchors.cloned()) {
+            Ok(text) => text,
+            Err(DocTextError::TooLarge) => {
+                return Err(Fault::new(
+                    code!("doc.too_large"),
+                    "The merged doc is larger than the limit",
+                ));
+            }
             // Each side's links matched its pins, but the merged ones don't.
-            return Ok(ProposalOutcome::DocConflict {
-                hunks: vec![MergeHunk::Agreed { text: body.clone() }],
-                title: false,
-                anchors: true,
-            });
+            Err(DocTextError::Unpinned | DocTextError::Unlinked) => {
+                return Ok(ProposalOutcome::DocConflict {
+                    hunks: vec![MergeHunk::Agreed { text: body.clone() }],
+                    title: false,
+                    anchors: true,
+                });
+            }
         };
         let version = current.version;
         let revised = current.revise(version, text).map_err(revise_refused)?;
@@ -205,8 +227,7 @@ impl Workspace {
         .await
         .map_err(failed)?;
         let last: Option<OrderKey> = last.map(stored).transpose()?;
-        OrderKey::between(last.as_ref(), None)
-            .ok_or_else(|| Fault::new(code!("task.no_room"), "There is no room for the task there"))
+        OrderKey::between(last.as_ref(), None).ok_or_else(no_room)
     }
 }
 
@@ -220,7 +241,7 @@ struct DocChange<'a> {
 /// A task edit to accept: the task's fields when it was proposed, and the edits.
 struct TaskChange<'a> {
     task: &'a TaskId,
-    snapshot: &'a [TaskEditBody],
+    snapshot: &'a Snapshot,
     edits: &'a [TaskEditBody],
 }
 
@@ -236,11 +257,14 @@ fn settled<'a, T: PartialEq + ?Sized>(was: &T, current: &'a T, proposed: &'a T) 
     }
 }
 
-/// The merge of a doc's bodies, off the async threads; one too large to compare in bounded
-/// time is a conflict of the whole body.
+/// The merge of a doc's bodies: one side when only the other kept the base, else the merge,
+/// off the async threads; one too large to compare in bounded time is a conflict of the whole
+/// body.
 async fn merged(was: &str, current: &str, proposed: &str) -> Result<Merge, Fault> {
-    let lines = |text: &str| text.lines().count().max(1);
-    if lines(was).saturating_mul(lines(current).max(lines(proposed))) > MAX_MERGE {
+    if let Some(body) = settled(was, current, proposed) {
+        return Ok(Merge::Clean(body.to_owned()));
+    }
+    if cost(was, current).max(cost(was, proposed)) > MAX_MERGE {
         return Ok(Merge::Conflicted(vec![weacon_model::MergeHunk::Conflict {
             base: was.to_owned(),
             current: current.to_owned(),
@@ -251,6 +275,28 @@ async fn merged(was: &str, current: &str, proposed: &str) -> Result<Merge, Fault
     tokio::task::spawn_blocking(move || weacon_model::merge(&was, &current, &proposed))
         .await
         .map_err(|_| Fault::new(code!("proposal.merge_failed"), "The merge failed"))
+}
+
+/// The lines times lines aligning `other` with `base` compares, past the start and end they
+/// share.
+fn cost(base: &str, other: &str) -> usize {
+    let (base, other): (Vec<&str>, Vec<&str>) = (
+        base.split_inclusive('\n').collect(),
+        other.split_inclusive('\n').collect(),
+    );
+    let start = base
+        .iter()
+        .zip(&other)
+        .take_while(|(one, two)| one == two)
+        .count();
+    let (base_rest, other_rest) = (base.iter().skip(start), other.iter().skip(start));
+    let end = base_rest
+        .rev()
+        .zip(other_rest.rev())
+        .take_while(|(one, two)| one == two)
+        .count();
+    let middle = |lines: &[&str]| lines.len().saturating_sub(start + end).max(1);
+    middle(&base).saturating_mul(middle(&other))
 }
 
 /// The hunks of `merge` as the protocol sends them.
@@ -277,25 +323,12 @@ fn hunks(merge: &Merge) -> Vec<MergeHunk> {
 
 /// Whether `edit` changes a field the task has changed in since `snapshot`, to something
 /// other than what the edit proposes.
-fn conflicts(task: &Task, snapshot: &[TaskEditBody], edit: &TaskEditBody) -> bool {
-    let was = |wanted: fn(&TaskEditBody) -> bool| snapshot.iter().find(|field| wanted(field));
+fn conflicts(task: &Task, snapshot: &Snapshot, edit: &TaskEditBody) -> bool {
     match edit {
         TaskEditBody::Title { title } => {
-            let Some(TaskEditBody::Title { title: was }) =
-                was(|field| matches!(field, TaskEditBody::Title { .. }))
-            else {
-                return true;
-            };
-            task.title.as_str() != was && task.title.as_str() != title
+            task.title.as_str() != snapshot.title && task.title.as_str() != title
         }
-        TaskEditBody::Status { status } => {
-            let Some(TaskEditBody::Status { status: was }) =
-                was(|field| matches!(field, TaskEditBody::Status { .. }))
-            else {
-                return true;
-            };
-            task.status != *was && task.status != *status
-        }
+        TaskEditBody::Status { status } => task.status != snapshot.status && task.status != *status,
         TaskEditBody::Move { .. } | TaskEditBody::Newer => true,
     }
 }
@@ -305,14 +338,10 @@ fn model_edit(edit: &TaskEditBody) -> Result<TaskEdit, Fault> {
     match edit {
         TaskEditBody::Title { title } => Title::try_from(title.clone())
             .map(TaskEdit::Title)
-            .map_err(|_| invalid()),
+            .map_err(|_| unreadable()),
         TaskEditBody::Status { status } => Ok(TaskEdit::Status(*status)),
         TaskEditBody::Move { .. } | TaskEditBody::Newer => Err(unreadable()),
     }
-}
-
-fn parsed<T: DeserializeOwned>(json: &str) -> Result<T, Fault> {
-    serde_json::from_str(json).map_err(|_| unreadable())
 }
 
 #[cfg(test)]
@@ -321,10 +350,11 @@ mod tests {
     use weacon_protocol::{Author, ProposalState, TaskStatus, WorkspaceChange};
     use weacon_testing::TempDir;
 
-    use super::super::tests::{content, proposed, retitle, revise, workspaces};
+    use super::super::tests::{content, retitle, revise, workspaces};
     use super::*;
     use crate::db::test_support::{NOW, by, code, id};
     use crate::test_support::member_id;
+    use crate::test_support::proposals::proposed;
 
     async fn accepted(workspace: &Workspace, proposal: &str) -> ProposalOutcome {
         workspace
@@ -560,5 +590,112 @@ mod tests {
         assert_eq!(settled("a", "b", "a"), Some("b"));
         assert_eq!(settled("a", "b", "b"), Some("b"));
         assert_eq!(settled("a", "b", "c"), None);
+    }
+
+    #[tokio::test]
+    async fn a_new_task_goes_after_every_other() {
+        let dir = TempDir::new().unwrap();
+        let (one, _) = workspaces(&dir).await;
+        for (task, title, order) in [("t2", "Test", "b"), ("t3", "Plan", "c")] {
+            let task = crate::test_support::new_task(task, title, order);
+            one.add_task(&task, &by("m1")).await.unwrap();
+        }
+        let new_task = ProposalChange::NewTask {
+            title: "Ship".to_owned(),
+        };
+        one.propose(&proposed("p1", "mc1", new_task)).await.unwrap();
+
+        accepted(&one, "p1").await;
+        let tasks = one.tasks().await.unwrap();
+        let titles: Vec<&str> = tasks.iter().map(|task| task.title.as_str()).collect();
+        assert_eq!(titles, ["Write", "Test", "Plan", "Ship"]);
+    }
+
+    #[tokio::test]
+    async fn a_proposal_a_full_workspace_holds_can_still_be_accepted() {
+        let dir = TempDir::new().unwrap();
+        let (one, _) = workspaces(&dir).await;
+        one.propose(&proposed("p1", "mc1", revise("d1", 1, "One\nTwo\n")))
+            .await
+            .unwrap();
+        one.fill_doc_quota().await;
+
+        assert_eq!(
+            accepted(&one, "p1").await,
+            ProposalOutcome::Accepted { version: 2 }
+        );
+    }
+
+    #[tokio::test]
+    async fn a_merge_past_the_doc_limit_is_refused_and_changes_nothing() {
+        let dir = TempDir::new().unwrap();
+        let (one, _) = workspaces(&dir).await;
+        let big = "x".repeat(130 * 1024);
+        let ours = format!("{big}\nOne\nTwo\nThree\n");
+        let theirs = format!("One\nTwo\nThree\n{big}\n");
+        one.propose(&proposed("p1", "mc1", revise("d1", 1, &theirs)))
+            .await
+            .unwrap();
+        revised_by_a_person(&one, &ours).await;
+
+        let fault = one
+            .accept(&id("p1"), &member_id("m3"), NOW)
+            .await
+            .unwrap_err();
+        assert_eq!(code(&fault), "doc.too_large");
+        assert_eq!(
+            one.proposal(&id("p1")).await.unwrap().state,
+            ProposalState::Open
+        );
+    }
+
+    // A body of `lines` lines between a first and last line that stay, each made of `side`.
+    fn rewritten(side: &str, lines: usize) -> String {
+        let middle: String = (0..lines)
+            .flat_map(|line| [side.to_owned(), line.to_string(), "\n".to_owned()])
+            .collect();
+        format!("first\n{middle}last\n")
+    }
+
+    #[tokio::test]
+    async fn a_merge_only_compares_so_many_rewritten_lines() {
+        let side = MAX_MERGE.isqrt();
+        let mut outcomes = Vec::new();
+        for lines in [side, side + 1] {
+            let (was, current, proposed) = (
+                rewritten("b", lines),
+                rewritten("c", lines),
+                rewritten("p", lines),
+            );
+            outcomes.push(merged(&was, &current, &proposed).await.unwrap());
+        }
+
+        let Merge::Conflicted(compared) = &outcomes[0] else {
+            panic!("{:?}", outcomes[0]);
+        };
+        assert_eq!(compared.len(), 3);
+        let Merge::Conflicted(whole) = &outcomes[1] else {
+            panic!("{:?}", outcomes[1]);
+        };
+        assert!(matches!(
+            whole.as_slice(),
+            [weacon_model::MergeHunk::Conflict { .. }]
+        ));
+    }
+
+    #[tokio::test]
+    async fn a_long_doc_with_small_changes_on_both_sides_merges() {
+        let lines: String = (0..5_000)
+            .flat_map(|line| ["line ".to_owned(), line.to_string(), "\n".to_owned()])
+            .collect();
+        let current = lines.replacen("line 10\n", "line ten\n", 1);
+        let proposed = lines.replacen("line 4990\n", "line 4990, done\n", 1);
+
+        let Merge::Clean(body) = merged(&lines, &current, &proposed).await.unwrap() else {
+            panic!("conflict");
+        };
+        assert!(body.contains("line ten\n") && body.contains("line 4990, done\n"));
+        assert_eq!(cost(&lines, &lines), 1);
+        assert_eq!(cost("a\nb\nc\n", "a\nx\ny\nc\n"), 2);
     }
 }

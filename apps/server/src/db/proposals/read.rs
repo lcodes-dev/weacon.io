@@ -1,8 +1,11 @@
 use weacon_observability::Fault;
 use weacon_protocol::{ProposalAbout, ProposalId, ProposalRecord, ProposalState};
 
-use super::super::{Workspace, failed, stored, stored_author, stored_version, unreadable};
-use super::{PAGE, not_found};
+use super::super::{Workspace, failed, parsed, stored, stored_author, stored_version, unreadable};
+use super::{
+    ACCEPTED, DOC_EDIT, NEW_DOC, NEW_TASK, OPEN, PAGE, REJECTED, SUPERSEDED, TASK_EDIT, WITHDRAWN,
+    not_found,
+};
 
 type RecordRow = (
     String,
@@ -58,36 +61,33 @@ impl Workspace {
 fn record(row: RecordRow) -> Result<ProposalRecord, Fault> {
     let (id, kind, doc, task, new_id, change, author, agent, state, by, version, at) = row;
     let about = match (kind.as_str(), doc, task, new_id) {
-        ("doc_edit", Some(doc), None, None) => ProposalAbout::Doc { doc: stored(doc)? },
-        ("task_edit", None, Some(task), None) => ProposalAbout::Task {
+        (DOC_EDIT, Some(doc), None, None) => ProposalAbout::Doc { doc: stored(doc)? },
+        (TASK_EDIT, None, Some(task), None) => ProposalAbout::Task {
             task: stored(task)?,
         },
-        ("new_doc", None, None, Some(doc)) => ProposalAbout::NewDoc { doc: stored(doc)? },
-        ("new_task", None, None, Some(task)) => ProposalAbout::NewTask {
+        (NEW_DOC, None, None, Some(doc)) => ProposalAbout::NewDoc { doc: stored(doc)? },
+        (NEW_TASK, None, None, Some(task)) => ProposalAbout::NewTask {
             task: stored(task)?,
         },
         _ => return Err(unreadable()),
     };
     let state = match (state.as_str(), by, version) {
-        ("open", None, None) => ProposalState::Open,
-        ("accepted", Some(by), Some(version)) => ProposalState::Accepted {
+        (OPEN, None, None) => ProposalState::Open,
+        (ACCEPTED, Some(by), Some(version)) => ProposalState::Accepted {
             version: stored_version(version)?.get(),
             by: stored(by)?,
         },
-        ("rejected", Some(by), None) => ProposalState::Rejected { by: stored(by)? },
-        ("superseded", None, None) => ProposalState::Superseded,
-        ("withdrawn", None, None) => ProposalState::Withdrawn,
+        (REJECTED, Some(by), None) => ProposalState::Rejected { by: stored(by)? },
+        (SUPERSEDED, None, None) => ProposalState::Superseded,
+        (WITHDRAWN, None, None) => ProposalState::Withdrawn,
         _ => return Err(unreadable()),
     };
-    let change = change
-        .map(|change| serde_json::from_str(&change).map_err(|_| unreadable()))
-        .transpose()?;
     Ok(ProposalRecord {
         id: stored(id)?,
         about,
         author: stored_author("agent", author, Some(&agent))?,
         state,
         at,
-        change,
+        change: change.as_deref().map(parsed).transpose()?,
     })
 }

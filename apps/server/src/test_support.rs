@@ -13,6 +13,7 @@ use tokio::task::JoinHandle;
 use weacon_testing::TempDir;
 use weacon_version::Version;
 
+pub(crate) mod proposals;
 pub(crate) mod socket;
 
 pub(crate) use weacon_testing::{Records, messages, recording_logger, recording_sink};

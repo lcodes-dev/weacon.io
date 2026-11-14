@@ -115,14 +115,11 @@ fn answer(fault: Fault) -> Response {
 mod tests {
     use std::net::SocketAddr;
 
-    use weacon_protocol::{
-        AgentKind, AgentOwner, AgentRef, ProposalChange, ProposalRecord, ProposalState, TaskStatus,
-    };
+    use weacon_protocol::{ProposalChange, ProposalRecord, ProposalState, TaskStatus};
 
     use super::*;
-    use crate::db::Proposed;
     use crate::test_support::{
-        Fixture, Running, bearer, member_id, refusal, request_with, status, workspace_id,
+        self, Fixture, Running, bearer, member_id, refusal, request_with, status, workspace_id,
     };
 
     struct Ada {
@@ -160,23 +157,10 @@ mod tests {
             .workspace(&workspace_id("w1"))
             .await
             .unwrap();
-        let proposed = Proposed {
-            id: ProposalId::try_from(proposal.to_owned()).unwrap(),
-            change: ProposalChange::NewTask {
-                title: title.to_owned(),
-            },
-            owner: member_id("m1"),
-            agent: AgentRef {
-                kind: AgentKind::Codex,
-                owner: AgentOwner::Member {
-                    member: member_id("m1"),
-                },
-                machine: None,
-            },
-            machine: "mc1".parse().unwrap(),
-            fresh: format!("t-{proposal}"),
-            at: 7,
+        let change = ProposalChange::NewTask {
+            title: title.to_owned(),
         };
+        let proposed = test_support::proposals::proposed(proposal, "mc1", change);
         workspace.propose(&proposed).await.unwrap();
     }
 

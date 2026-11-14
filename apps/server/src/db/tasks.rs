@@ -179,6 +179,11 @@ fn stored_task((id, title, status, order, version): Row) -> Result<Task, Fault> 
     })
 }
 
+/// No order key fits between the task's neighbours.
+pub(crate) fn no_room() -> Fault {
+    Fault::new(code!("task.no_room"), "There is no room for the task there")
+}
+
 pub(crate) fn task_not_found() -> Fault {
     Fault::new(code!("task.not_found"), "There is no such task")
 }

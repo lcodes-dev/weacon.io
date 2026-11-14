@@ -110,40 +110,37 @@ impl Workspace {
     fn stored_update(&self, row: Row) -> Result<WorkspaceUpdate, Fault> {
         let (seq, kind, member, task, task_version, doc, doc_version, proposal) = row;
         let version = |version| stored_version(version).map(Revision::get);
-        if let Some(proposal) = proposal {
-            return match (kind.as_str(), task, doc) {
-                (PROPOSAL_CHANGED, None, None) => self.update(
-                    seq,
-                    WorkspaceChange::ProposalChanged {
-                        proposal: stored(proposal)?,
-                    },
-                ),
-                _ => Err(unreadable()),
-            };
-        }
-        let change = match (kind.as_str(), task, task_version, doc, doc_version) {
-            (MEMBER_JOINED, None, None, None, None) => WorkspaceChange::MemberJoined {
+        let change = match (
+            kind.as_str(),
+            task,
+            task_version,
+            doc,
+            doc_version,
+            proposal,
+        ) {
+            (MEMBER_JOINED, None, None, None, None, None) => WorkspaceChange::MemberJoined {
                 member: stored(member)?,
             },
-            (TASK_CHANGED, Some(task), Some(task_version), None, None) => {
+            (TASK_CHANGED, Some(task), Some(task_version), None, None, None) => {
                 WorkspaceChange::TaskChanged {
                     task: stored(task)?,
                     version: version(task_version)?,
                 }
             }
-            (DOC_CHANGED, None, None, Some(doc), Some(doc_version)) => {
+            (DOC_CHANGED, None, None, Some(doc), Some(doc_version), None) => {
                 WorkspaceChange::DocChanged {
                     doc: stored(doc)?,
                     version: version(doc_version)?,
                 }
             }
+            (PROPOSAL_CHANGED, None, None, None, None, Some(proposal)) => {
+                WorkspaceChange::ProposalChanged {
+                    proposal: stored(proposal)?,
+                }
+            }
             // This server writes every kind it stores, so another is damage, not news.
             _ => return Err(unreadable()),
         };
-        self.update(seq, change)
-    }
-
-    fn update(&self, seq: i64, change: WorkspaceChange) -> Result<WorkspaceUpdate, Fault> {
         Ok(WorkspaceUpdate {
             workspace: self.id.clone(),
             seq: u64::try_from(seq).map_err(|_| unreadable())?,
@@ -280,6 +277,59 @@ mod tests {
         assert_eq!(
             w1.changes_since(0, 10).await.unwrap(),
             [joined(1, "m1"), task_changed]
+        );
+    }
+
+    #[tokio::test]
+    async fn changes_from_before_proposals_are_kept() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.join("weacon.db");
+        let rows = "INSERT INTO workspaces (workspace_id, name) VALUES ('w1', 'One');
+             INSERT INTO accounts (account_id, email) VALUES ('a1', 'ada@example.com');
+             INSERT INTO members (workspace_id, member_id, email, account_id)
+                 VALUES ('w1', 'm1', 'ada@example.com', 'a1');
+             INSERT INTO tasks VALUES ('w1', 't1', 'Write', 'todo', 'V', 1);
+             INSERT INTO task_versions (workspace_id, task_id, version, author_kind,
+                 author_member, accepted_by, at) VALUES ('w1', 't1', 1, 'person', 'm1', 'm1', 0);
+             INSERT INTO docs VALUES ('w1', 'd1', 1);
+             INSERT INTO doc_versions (workspace_id, doc_id, version, title, body, author_kind,
+                 author_member, accepted_by, at)
+                 VALUES ('w1', 'd1', 1, 'Plan', '', 'person', 'm1', 'm1', 0);
+             INSERT INTO changes VALUES
+                 ('w1', 1, 'member_joined', 'm1', NULL, NULL, NULL, NULL),
+                 ('w1', 2, 'task_changed', 'm1', 't1', 1, NULL, NULL),
+                 ('w1', 3, 'doc_changed', 'm1', NULL, NULL, 'd1', 1)";
+        database_before(&path, steps::PROPOSALS, rows).await;
+
+        let db = Db::open(&path).await.unwrap();
+        let w1 = db.workspace(&workspace_id("w1")).await.unwrap();
+
+        let changes: Vec<_> = w1
+            .changes_since(0, 10)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|update| (update.seq, update.change))
+            .collect();
+        assert_eq!(
+            changes,
+            [
+                (1, joined(1, "m1").change),
+                (
+                    2,
+                    WorkspaceChange::TaskChanged {
+                        task: TaskId::try_from("t1".to_owned()).unwrap(),
+                        version: 1,
+                    }
+                ),
+                (
+                    3,
+                    WorkspaceChange::DocChanged {
+                        doc: DocId::try_from("d1".to_owned()).unwrap(),
+                        version: 1,
+                    }
+                ),
+            ]
         );
     }
 }

@@ -199,9 +199,7 @@ mod tests {
     use weacon_protocol::{MemberId, PROTOCOL, WorkspaceChange, WorkspaceUpdate};
 
     use weacon_model::{Attribution, Doc, DocText, OrderKey, Task, Title};
-    use weacon_protocol::{
-        AgentKind, AgentOwner, AgentRef, DocId, ProposalChange, ProposalId, TaskId,
-    };
+    use weacon_protocol::{DocId, ProposalChange, ProposalId, TaskId};
 
     use super::*;
     use crate::auth::SESSION_COOKIE;
@@ -403,23 +401,10 @@ mod tests {
         let mut plain = greeted(server.address, &token, 0).await;
         next(&mut plain).await;
         let proposal = ProposalId::try_from("p1".to_owned()).unwrap();
-        let proposed = crate::db::Proposed {
-            id: proposal.clone(),
-            change: ProposalChange::NewTask {
-                title: "Ship".to_owned(),
-            },
-            owner: member_id("m1"),
-            agent: AgentRef {
-                kind: AgentKind::Claude,
-                owner: AgentOwner::Member {
-                    member: member_id("m1"),
-                },
-                machine: None,
-            },
-            machine: "mc1".parse().unwrap(),
-            fresh: "t1".to_owned(),
-            at: 0,
+        let task = ProposalChange::NewTask {
+            title: "Ship".to_owned(),
         };
+        let proposed = test_support::proposals::proposed("p1", "mc1", task);
         w1(&fixture).await.propose(&proposed).await.unwrap();
         fixture.shared.changed(&workspace_id("w1"));
         join(&fixture, server.address, "m2", "bo@example.com").await;
