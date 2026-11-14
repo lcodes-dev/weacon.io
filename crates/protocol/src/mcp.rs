@@ -13,6 +13,8 @@ pub enum McpCall {
     Map(MapArgs),
     /// One item of that code.
     Symbol(SymbolArgs),
+    /// The flows the folder's docs pin, and where each breaks.
+    Flow(FlowArgs),
     /// A tool this build doesn't offer; only ever received.
     #[serde(other)]
     Newer,
@@ -30,6 +32,7 @@ impl McpCall {
     }
 }
 
+/// From a run's agent, under `McpCall::Map`: how much of the map it wants.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MapArgs {
     /// The most bytes the answer may hold; the core clamps it to its own bounds.
@@ -37,6 +40,15 @@ pub struct MapArgs {
     pub budget: Option<u32>,
 }
 
+/// From a run's agent, under `McpCall::Flow`: how much of the flows it wants.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FlowArgs {
+    /// The most bytes the answer may hold; the core clamps it to its own bounds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub budget: Option<u32>,
+}
+
+/// From a run's agent, under `McpCall::Symbol`: the item it asks about.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SymbolArgs {
     /// The item's path, `weacon_protocol::frame::Envelope`.
@@ -73,6 +85,11 @@ mod tests {
         );
         let bare = McpCall::parse("map", None).unwrap();
         assert_eq!(bare, McpCall::Map(MapArgs::default()));
+        let flow = call("flow", json!({"budget": 3000}));
+        assert_eq!(
+            flow.unwrap(),
+            McpCall::Flow(FlowArgs { budget: Some(3000) })
+        );
     }
 
     #[test]

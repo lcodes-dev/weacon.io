@@ -40,7 +40,7 @@ impl Workspace {
             return Ok(None);
         };
         let runs = self.read_runs(&mut reader, chat).await?;
-        let room = max_bytes.saturating_sub(WAITING_BYTES.saturating_mul(runs.waiting.len()));
+        let room = max_bytes.saturating_sub(WAITING_BYTES.saturating_mul(runs.waiting().len()));
         let latest = Read {
             chat,
             place: Place::Before(u64::MAX),
@@ -100,10 +100,7 @@ impl Workspace {
             })
         })
         .collect::<Result<_, Fault>>()?;
-        Ok(ChatRuns {
-            runs: runs.into_iter().collect(),
-            waiting,
-        })
+        ChatRuns::restored(runs, waiting).ok_or_else(unreadable)
     }
 
     /// Keeps `runs` as the chat's latest run and waiting prompts, in place of what was there.
@@ -113,7 +110,7 @@ impl Workspace {
         chat: &ChatId,
         runs: &ChatRuns,
     ) -> Result<(), Fault> {
-        let latest = runs.runs.last();
+        let latest = runs.run();
         let status = latest
             .map(serde_json::to_string)
             .transpose()
@@ -134,7 +131,7 @@ impl Workspace {
             .execute(&mut *transaction)
             .await
             .map_err(failed)?;
-        for waits in &runs.waiting {
+        for waits in runs.waiting() {
             sqlx::query(
                 "INSERT INTO chat_waiting (workspace_id, chat_id, run_id, prompt, seq)
                  VALUES (?, ?, ?, ?, ?)",
@@ -162,7 +159,7 @@ mod tests {
     use crate::test_support::two_teams;
 
     fn waits(runs: &ChatRuns) -> Vec<(u32, u64)> {
-        runs.waiting
+        runs.waiting()
             .iter()
             .map(|waits| (waits.prompt, waits.seq))
             .collect()
@@ -182,10 +179,7 @@ mod tests {
         append(&one, "c-1", &first).await.unwrap();
 
         let runs = one.chat_runs(&id("c-1")).await.unwrap();
-        assert_eq!(
-            runs.runs.first().map(|run| run.state),
-            Some(RunState::Running)
-        );
+        assert_eq!(runs.run().map(|run| run.state), Some(RunState::Running));
         assert_eq!(waits(&runs), [(1, 2), (2, 3)]);
         assert_eq!(
             two.chat_runs(&id("c-1")).await.unwrap(),
@@ -199,8 +193,8 @@ mod tests {
             .unwrap();
 
         let runs = one.chat_runs(&id("c-1")).await.unwrap();
-        assert_eq!(runs.runs.first().map(|run| run.state), Some(RunState::Idle));
-        assert!(runs.waiting.is_empty());
+        assert_eq!(runs.run().map(|run| run.state), Some(RunState::Idle));
+        assert!(runs.waiting().is_empty());
         let run_id: Option<String> =
             sqlx::query_scalar("SELECT run_id FROM chats WHERE workspace_id = 'w1'")
                 .fetch_one(&one.db.readers)

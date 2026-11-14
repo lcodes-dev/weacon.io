@@ -1,9 +1,8 @@
 import type { AgentRef, ChatEntry, RunEvent, RunId, RunState, RunStatus } from "../protocol.ts";
 import { EMPTY_TRANSCRIPT, type Transcript, apply } from "../transcript/transcript.ts";
 
-/** A permission prompt, shown after `at` rows of its turn. */
-/** A permission prompt, and how it was answered once the log says. */
-export type Ask = { prompt: number; tool: string; at: number; open: boolean; allowed?: boolean };
+/** A permission prompt, shown after `at` rows of its turn, and how the log says it ended. */
+export type Ask = { prompt: number; tool: string; at: number; state: "open" | "closed" | "allowed" | "denied" };
 
 /**
  * What one run did from its first event after a prompt until it finished; `key` names it for
@@ -48,7 +47,7 @@ export function fromSnapshot(snapshot: Snapshot): Chat {
     base: snapshot.seq,
     waiting: new Set(snapshot.waiting),
     entries,
-    runs: snapshot.runs,
+    runs: logged(snapshot.runs, entries),
     items: [],
   };
   return { ...chat, items: fold(chat, entries) };
@@ -115,7 +114,13 @@ export function older(chat: Chat, events: readonly ChatEntry[]): Chat {
       showAnswer(earlier, entry);
     }
   }
-  return { ...chat, first: before[0]?.seq ?? chat.first, entries: [...before, ...chat.entries], items: [...earlier, ...chat.items] };
+  return {
+    ...chat,
+    first: before[0]?.seq ?? chat.first,
+    entries: [...before, ...chat.entries],
+    runs: logged(chat.runs, before),
+    items: [...earlier, ...chat.items],
+  };
 }
 
 /** `chat` with the prompt `prompt` of `run` no longer answerable, as once its answer is taken. */
@@ -175,7 +180,7 @@ function step(items: Item[], entry: ChatEntry, waiting: boolean): void {
   const { run, event: done } = event.update;
   addTo(items, run, turnKey(entry.seq - 1, run), (turn) => {
     if (done.event === "permission_asked") {
-      const ask = { prompt: done.prompt, tool: done.tool, at: turn.transcript.rows.length, open: waiting };
+      const ask: Ask = { prompt: done.prompt, tool: done.tool, at: turn.transcript.rows.length, state: waiting ? "open" : "closed" };
       return { ...turn, asks: [...turn.asks, ask] };
     }
     const transcript = apply(turn.transcript, [done]);
@@ -224,13 +229,13 @@ function closeBy(items: Item[], entry: ChatEntry): void {
 function showAnswer(items: Item[], { event }: ChatEntry): void {
   if (event.kind === "run" && event.update.event.event === "permission_answered") {
     const { prompt, allow } = event.update.event.answer;
-    changeAsks(items, event.update.run, (ask) => (ask.prompt === prompt ? { ...ask, open: false, allowed: allow } : ask));
+    changeAsks(items, event.update.run, (ask) => (ask.prompt === prompt ? { ...ask, state: allow ? "allowed" : "denied" } : ask));
   }
 }
 
 // Closes the open prompts `which` picks in every turn of `run`, such as one cut in two by a window.
 function closeAsks(items: Item[], run: RunId, which: (ask: Ask) => boolean): void {
-  changeAsks(items, run, (ask) => (ask.open && which(ask) ? { ...ask, open: false } : ask));
+  changeAsks(items, run, (ask) => (ask.state === "open" && which(ask) ? { ...ask, state: "closed" } : ask));
 }
 
 // Changes the prompts of every turn of `run`; a turn whose prompts `change` all keeps stays the same.
@@ -250,6 +255,20 @@ function turnKey(seq: number, run: RunId): string {
   return `t${seq}-${run}`;
 }
 
+/**
+ * `runs` with the runs whose statuses `entries` log, so an earlier run's turns name its agent. A
+ * run `runs` already holds keeps its state; one only the log knows is over, since `runs` has every run still on.
+ */
+function logged(runs: ReadonlyMap<RunId, Run>, entries: readonly ChatEntry[]): ReadonlyMap<RunId, Run> {
+  const next = new Map(runs);
+  for (const { event } of entries) {
+    if (event.kind === "run_status") {
+      const known = runs.get(event.status.run);
+      next.set(event.status.run, { state: known?.state ?? "ended", agent: known?.agent ?? agentOf(event.status, next) });
+    }
+  }
+  return next;
+}
 
 // A status that names no agent keeps the one the run had.
 function agentOf(status: RunStatus, runs: ReadonlyMap<RunId, Run>): AgentRef | undefined {

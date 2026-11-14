@@ -43,7 +43,10 @@ pub(crate) fn admit(
             machine.take()
         }
         ChatAction::Permission { .. } | ChatAction::Interrupt => None,
-        ChatAction::Newer => return Err(super::unsupported()),
+        // A person's own terminal holds and releases a chat; no one else's command does.
+        ChatAction::Hold | ChatAction::Release | ChatAction::Newer => {
+            return Err(super::unsupported());
+        }
     };
     let Some(chat) = chat else {
         let ChatAction::Prompt { text, repo, .. } = &command.action else {

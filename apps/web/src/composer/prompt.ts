@@ -1,7 +1,7 @@
-import { type Status, offers } from "../connection.ts";
+import { type Command, deliver } from "../chat/commands.ts";
 import type { ChatRef } from "../chat-ref.ts";
-import type { ChatAction, Envelope, RequestId } from "../protocol.ts";
-import type { Receipts, Settled } from "../receipts.ts";
+import type { Envelope, RequestId } from "../protocol.ts";
+import { type Receipts, type Settled, mayHaveRun } from "../receipts.ts";
 
 /** How sending a prompt ended: as its command did, or refused here for its size. */
 export type Sent = Settled | "too_long";
@@ -12,32 +12,12 @@ export type Send = (text: string, request: RequestId) => Promise<Sent>;
 // The server's limit on one message from a browser, in bytes: `MAX_MESSAGE` in its feed.
 const FEED_LIMIT = 16_384;
 
-/** A command to a chat. */
-export type Command = Extract<Envelope, { type: "chat_command" }>;
-
-/** The command that asks `action` of the chat at `chatRef`, under `request`. */
-export function chatCommand(id: number, chatRef: ChatRef, request: RequestId, action: ChatAction): Command {
-  return { id, type: "chat_command", ...chatRef, request, action };
-}
-
-/** The command that sends `text` to the chat at `chatRef`, under `request`. */
-export function prompt(id: number, chatRef: ChatRef, request: RequestId, text: string): Command {
-  return chatCommand(id, chatRef, request, { kind: "prompt", text });
-}
-
-/** Sends `command` through `send` and waits for its receipt, unless it is too long to send. */
-export function deliver(command: Command, receipts: Receipts, send: (envelope: Envelope) => void): Promise<Sent> {
+/** Sends the prompt `command` through `send` and waits for its receipt, unless it is too long to send. */
+export function deliverPrompt(command: Command, receipts: Receipts, send: (envelope: Envelope) => void): Promise<Sent> {
   if (new TextEncoder().encode(JSON.stringify(command)).length > FEED_LIMIT) {
     return Promise.resolve("too_long");
   }
-  const settled = receipts.wait(command.request, command.id);
-  try {
-    send(command);
-  } catch {
-    // A retry then waits afresh, under its own envelope and deadline.
-    receipts.settle(command.request, "lost");
-  }
-  return settled;
+  return deliver(command, receipts, send);
 }
 
 /** A prompt that may have run, kept with its request so sending it again can't run it twice. */
@@ -46,6 +26,8 @@ export type Retry = { text: string; request: RequestId };
 const PROBLEMS: Record<Exclude<Sent, "accepted">, string> = {
   too_long: "It's too long to send. Shorten it and try again.",
   refused: "The message wasn't sent.",
+  offline: "The machine is offline, so the message wasn't sent. Try again once it's back.",
+  detached: "This chat's machine is gone, so it can be read but takes no messages.",
   lost: "The connection closed. The message may not have been sent.",
   unsure: "The server didn't answer. The message may not have been sent.",
 };
@@ -61,7 +43,7 @@ export function after(sent: Sent, text: string, request: RequestId): After {
   if (sent === "accepted") {
     return { text: "", problem: undefined, retry: undefined };
   }
-  const retry = sent === "lost" || sent === "unsure" ? { text, request } : undefined;
+  const retry = sent !== "too_long" && mayHaveRun(sent) ? { text, request } : undefined;
   return { text, problem: PROBLEMS[sent], retry };
 }
 
@@ -69,12 +51,12 @@ export function after(sent: Sent, text: string, request: RequestId): After {
 export type Late = { request: RequestId; settled: Settled };
 
 /** Why the box can't send to `chatRef` now, or `undefined` when it can. */
-export function blocked(status: Status, chatRef: ChatRef | undefined): string | undefined {
+export function blocked(live: boolean, chatRef: ChatRef | undefined, sends: boolean): string | undefined {
   if (chatRef === undefined) {
     return "Pick a chat to send to.";
   }
-  if (status.state !== "live") {
+  if (!live) {
     return "Messages send once the server is connected.";
   }
-  return offers(status, "chat.send") ? undefined : "This server can't take messages yet.";
+  return sends ? undefined : "This server can't take messages yet.";
 }

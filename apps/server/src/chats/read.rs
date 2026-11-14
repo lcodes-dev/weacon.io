@@ -25,7 +25,7 @@ pub(crate) async fn answer(
             Ok(ChatAnswerKind::Snapshot {
                 seq,
                 waiting: runs.waiting_seqs(),
-                runs: runs.runs,
+                runs: runs.run().cloned().into_iter().collect(),
                 events,
             })
         }

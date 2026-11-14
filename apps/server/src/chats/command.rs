@@ -326,15 +326,18 @@ mod tests {
         make(workspace, "c-1", "m1", NOW).await.unwrap();
         workspace.move_chats_to(&ada.machine).await;
         let mut serving = attach(shared, &ada, &["chat.serve"]);
-        // A terminal's own action, such as holding the chat, reads here as one not listed.
-        let hold: ChatAction = serde_json::from_str(r#"{"kind":"hold"}"#).unwrap();
         let mut asked = prompt("r-2", "c-1", "Go", None);
-        asked.action = hold;
+        asked.action = ChatAction::Hold;
 
         let refused = take(&ada.member, &ada.asker, shared, asked).await;
 
         assert_eq!(refused.unwrap_err().code().as_str(), "message.unsupported");
         assert!(sent(&mut serving).is_empty());
         assert!(!workspace.has_request(&id("r-2")).await.unwrap());
+        let mut released = prompt("r-3", "c-1", "Go", None);
+        released.action = ChatAction::Release;
+        let refused = take(&ada.member, &ada.asker, shared, released).await;
+        assert_eq!(refused.unwrap_err().code().as_str(), "message.unsupported");
+        assert!(sent(&mut serving).is_empty());
     }
 }
