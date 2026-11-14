@@ -77,7 +77,8 @@ struct Chat {
     launching: Option<RunId>,
     pending_answers: Vec<PendingAnswer>,
     pending_end: Option<PendingEnd>,
-    pending_interrupt: Option<PendingInterrupt>,
+    /// Interrupts committed or tried and not yet sent, each bound to the turn it stops.
+    pending_interrupts: Vec<PendingInterrupt>,
     /// The agent's session when the runs journal couldn't save it.
     pending_session: Option<AgentSession>,
 }
@@ -91,6 +92,7 @@ impl Chat {
     fn is_unused(&self) -> bool {
         self.orders.is_none()
             && self.launching.is_none()
+            && self.pending_interrupts.is_empty()
             && self.subscribers.is_empty()
             && self.pending_answers.is_empty()
             && self.pending_end.is_none()
@@ -197,11 +199,16 @@ impl<A: Agent> Engine<A> {
         self.tell_state(key, run, state).await
     }
 
-    // Once nothing of `run` waits for a person, its turn is running again.
+    // Once nothing of `run`, the chat's own run, waits for a person, its turn is running again.
     async fn running_again(&mut self, key: &ChatKey, run: &RunId) -> Result<(), Fault> {
         let log = &self.open(key).await?.events;
         let asks = log.runs().waiting.iter().any(|waits| waits.run == *run);
-        if asks || self.turn(key).is_none() {
+        let running = self
+            .runs
+            .of(key)
+            .is_some_and(|record| record.state == RunState::Running);
+        let current = self.run_of(key).as_ref() == Some(run);
+        if asks || running || !current || self.turn(key).is_none() {
             return Ok(());
         }
         self.set_state(key, run, RunState::Running).await
@@ -325,7 +332,7 @@ impl<A: Agent> Engine<A> {
                 launching: None,
                 pending_answers: Vec::new(),
                 pending_end: None,
-                pending_interrupt: None,
+                pending_interrupts: Vec::new(),
                 pending_session: None,
             })),
         }
