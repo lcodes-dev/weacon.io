@@ -124,6 +124,7 @@ mod tests {
             text: text.to_owned(),
             repo: None,
             machine: machine.map(id),
+            agent: None,
         }
     }
 

@@ -95,6 +95,7 @@ pub(crate) fn prompt(
             text: text.to_owned(),
             repo: None,
             machine: machine.cloned(),
+            agent: None,
         },
         by: None,
     }

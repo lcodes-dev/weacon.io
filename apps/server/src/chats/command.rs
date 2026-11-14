@@ -161,12 +161,20 @@ fn conflict() -> Fault {
 
 #[cfg(test)]
 mod tests {
-    use weacon_protocol::{ChatQuery, ChatQueryKind};
+    use weacon_protocol::{AgentKind, ChatAction, ChatQuery, ChatQueryKind};
 
     use super::*;
     use crate::chats::test_support::{ada, attach, sent};
     use crate::db::test_support::{NOW, id, make, prompt};
     use crate::test_support::Fixture;
+
+    // `command`, a prompt, naming the agent to run; the server passes it on as it is.
+    fn with_codex(mut command: ChatCommand) -> ChatCommand {
+        if let ChatAction::Prompt { agent, .. } = &mut command.action {
+            *agent = Some(AgentKind::Codex);
+        }
+        command
+    }
 
     fn accepted(request: &str) -> Message {
         Message::Receipt(Receipt {
@@ -182,11 +190,11 @@ mod tests {
         let ada = ada(&fixture).await;
         let mut attached = attach(shared, &ada, &["machine.connect", "chat.serve"]);
 
-        let asked = prompt("r-1", "c-1", "Fix it", Some(&ada.machine));
+        let asked = with_codex(prompt("r-1", "c-1", "Fix it", Some(&ada.machine)));
         let answer = take(&ada.member, &ada.asker, shared, asked).await.unwrap();
 
         assert_eq!(answer, accepted("r-1"));
-        let mut relayed = prompt("r-1", "c-1", "Fix it", None);
+        let mut relayed = with_codex(prompt("r-1", "c-1", "Fix it", None));
         relayed.by = Some(ada.asker.clone());
         let follow = ChatQuery {
             workspace: id("w1"),
