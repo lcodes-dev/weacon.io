@@ -22,7 +22,7 @@ const LONGEST_PATH: usize = 500;
 const NO_ITEM: &str = "No item has this path.\n";
 
 /// The tools Claude may call without asking.
-pub(crate) const UP_FRONT: [&str; 2] = ["map", "symbol"];
+pub(crate) const UP_FRONT: [&str; 2] = [McpCall::MAP, McpCall::SYMBOL];
 
 /// The tools every run sees from its first call, as `tools/list` sends them.
 pub(crate) fn listed() -> Vec<Tool> {
@@ -35,7 +35,7 @@ pub(crate) fn listed() -> Vec<Tool> {
     let path = ("path", json!({"type": "string"}));
     vec![
         tool(
-            "map",
+            McpCall::MAP,
             format!(
                 "Where to begin in the code of this chat's folder: its entry points, its most \
                  central items and its crates. Call it before reading files. Plain text within \
@@ -45,7 +45,7 @@ pub(crate) fn listed() -> Vec<Tool> {
             &[],
         ),
         tool(
-            "symbol",
+            McpCall::SYMBOL,
             "One item by its path, such as `weacon_protocol::message::Envelope`: where it is, \
              what calls, uses and tests it, and what it calls. A partial path lists the items it \
              ends."
@@ -54,7 +54,7 @@ pub(crate) fn listed() -> Vec<Tool> {
             &["path"],
         ),
         tool(
-            "flow",
+            McpCall::FLOW,
             "The flows the docs pin and where the code breaks them; call it before changing \
              code a flow passes through."
                 .to_owned(),
