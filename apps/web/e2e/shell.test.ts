@@ -5,7 +5,7 @@ import type { Page } from "playwright-core";
 
 import type { ChatList, Envelope } from "../src/protocol.ts";
 import { waitFor } from "./harness.ts";
-import { EMAIL, serve, signIn } from "./server.ts";
+import { EMAIL, serve, signIn, signInAgain } from "./server.ts";
 
 const CHANGE_AFTER_MS = 500;
 
@@ -197,24 +197,32 @@ test("the header switches workspaces, and the page reopens the last one", { time
   await page.getByRole("heading", { name: "Workspaces" }).waitFor();
   await page.goto(home);
   await page.getByRole("heading", { name: "Workspaces" }).waitFor();
+});
 
-  // Signing out forgets the last workspace, so the next person here starts at the list.
+test("signing out, or a session that ends, forgets the last workspace for the next person", { timeout: 600_000 }, async (t) => {
+  const served = await serve();
+  t.after(() => served.close());
+  const { page } = served;
+  await signIn(served);
+  const home = new URL("/", page.url()).href;
+
   await page.getByRole("button", { name: "Personal" }).click();
+  await page.getByText("Connected").waitFor();
   await page.getByRole("button", { name: "Sign out" }).click();
   await page.getByRole("heading", { name: "Sign in" }).waitFor();
   await page.goto(home);
-  await page.getByLabel("Email").fill(EMAIL);
-  await page.getByRole("button", { name: "Send code" }).click();
-  await page.getByLabel("Code").fill(await served.code(EMAIL));
-  await page.getByRole("button", { name: "Sign in" }).click();
+  await signInAgain(served);
   await page.getByRole("heading", { name: "Workspaces" }).waitFor();
 
-  // A feed refused for want of a session sends the page back to sign-in.
+  // A feed refused for want of a session sends the page back to sign-in, forgetting it too.
   await page.getByRole("button", { name: "Personal" }).click();
   await page.getByText("Connected").waitFor();
   await page.context().clearCookies();
-  await page.getByLabel("Workspace").selectOption({ label: "Made-up team" });
+  await page.reload();
   await page.getByRole("heading", { name: "Sign in" }).waitFor();
+  await page.goto(home);
+  await signInAgain(served);
+  await page.getByRole("heading", { name: "Workspaces" }).waitFor();
 });
 
 test("Settings shows the account and this build, and signs out from there", { timeout: 600_000 }, async (t) => {
