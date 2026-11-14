@@ -90,7 +90,7 @@ pub(super) async fn newer_than(
 pub(super) async fn insert_facts(
     transaction: &mut Transaction<'_>,
     (workspace, repo): (&str, &str),
-    facts: &[(String, String, Facts)],
+    facts: &[(String, String, Option<Facts>)],
 ) -> Result<(), Fault> {
     for batch in facts.chunks(BATCH) {
         let rows = batch

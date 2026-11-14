@@ -55,6 +55,14 @@ pub(crate) struct Base {
     pub(crate) entries: BTreeSet<Entry>,
 }
 
+/// What a worktree changed, each file with its text now, `None` once deleted or when it can't
+/// be read, and the refresh that read it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Changes {
+    pub(crate) generation: i64,
+    pub(crate) files: Vec<(String, Option<String>)>,
+}
+
 /// One repository's code map, read from `source` and kept in `map`.
 #[derive(Clone, Debug)]
 pub(crate) struct RepoMap<S> {
@@ -78,6 +86,7 @@ impl<S: Source> RepoMap<S> {
             && let (facts, missing) = self.cached(&layer.files).await?
             && missing.is_empty()
         {
+            self.map.touch(BASE, generation).await?;
             let (facts, entries) = off_runtime(move || {
                 let entries = entries_of(&facts);
                 Ok((facts, entries))
@@ -112,12 +121,12 @@ impl<S: Source> RepoMap<S> {
         let blobs: Vec<String> = missing.iter().map(|(_, blob)| blob.clone()).collect();
         let texts = self.blocking(move |source| source.blobs(&blobs)).await?;
         let (read, facts, entries) = off_runtime(move || {
-            let read = read(missing.into_iter().filter_map(|(path, blob)| {
-                let text = texts.get(&blob)?.clone();
-                Some((path, blob, text))
+            let read = read(missing.into_iter().map(|(path, blob)| {
+                let text = texts.get(&blob).cloned();
+                (path, blob, text)
             }))?;
             let mut facts = facts;
-            facts.extend(read.iter().map(|(_, _, facts)| facts.clone()));
+            facts.extend(read.iter().filter_map(|(_, _, facts)| facts.clone()));
             let entries = entries_of(&facts);
             Ok((read, facts, entries))
         })
@@ -138,25 +147,25 @@ impl<S: Source> RepoMap<S> {
         })
     }
 
-    /// What the worktree at `path` changed from `base`'s commit.
-    pub(crate) async fn changed(
-        &self,
-        base: &Base,
-        path: &Path,
-    ) -> Result<Vec<(String, Option<String>)>, Fault> {
+    /// What the worktree at `path` changed from `base`'s commit, as a refresh numbered before
+    /// it read anything.
+    pub(crate) async fn changed(&self, base: &Base, path: &Path) -> Result<Changes, Fault> {
+        let generation = self.map.begin().await?;
         let (path, commit) = (path.to_owned(), base.commit.clone());
-        self.blocking(move |source| {
-            let changed = source.changed(&path, &commit)?;
-            Ok(changed
-                .into_iter()
-                .filter(|file| is_mapped(file))
-                .map(|file| {
-                    let text = source.text(&path, &file);
-                    (file, text)
-                })
-                .collect())
-        })
-        .await
+        let files = self
+            .blocking(move |source| {
+                let changed = source.changed(&path, &commit)?;
+                Ok(changed
+                    .into_iter()
+                    .filter(|file| is_mapped(file))
+                    .map(|file| {
+                        let text = source.text(&path, &file);
+                        (file, text)
+                    })
+                    .collect())
+            })
+            .await?;
+        Ok(Changes { generation, files })
     }
 
     /// The facts of every file as the worktree at `path` has it: `base`'s, with what the
@@ -165,10 +174,10 @@ impl<S: Source> RepoMap<S> {
         &self,
         base: &Base,
         path: &Path,
-        changed: Vec<(String, Option<String>)>,
+        changed: Changes,
     ) -> Result<Vec<Facts>, Fault> {
-        let generation = self.map.begin().await?;
-        let keyed: Vec<(String, Option<(String, String)>)> = changed
+        let Changes { generation, files } = changed;
+        let keyed: Vec<(String, Option<(String, String)>)> = files
             .into_iter()
             .map(|(path, text)| (path, text.map(|text| (content_key(&text), text))))
             .collect();
@@ -188,7 +197,7 @@ impl<S: Source> RepoMap<S> {
                 let (key, text) = text?;
                 missing
                     .contains(&(path.clone(), key.clone()))
-                    .then_some((path, key, text))
+                    .then_some((path, key, Some(text)))
             }))?;
             let shadowed: BTreeSet<&str> = changed.iter().map(|file| file.path.as_str()).collect();
             let mut facts: Vec<Facts> = base
@@ -198,7 +207,7 @@ impl<S: Source> RepoMap<S> {
                 .cloned()
                 .collect();
             facts.extend(overlay);
-            facts.extend(read.iter().map(|(_, _, facts)| facts.clone()));
+            facts.extend(read.iter().filter_map(|(_, _, facts)| facts.clone()));
             let (files, entries) = overlay_of(&base, changed, &facts);
             Ok((read, facts, files, entries))
         })
@@ -233,7 +242,7 @@ impl<S: Source> RepoMap<S> {
         ))
     }
 
-    /// The stored facts of `files`, and the files with text that has none yet.
+    /// The stored facts of `files`, and the files whose text hasn't been read yet.
     async fn cached(&self, files: &[Stored]) -> Result<(Vec<Facts>, Vec<(String, String)>), Fault> {
         let wanted: Vec<(String, String)> = files
             .iter()
@@ -244,7 +253,7 @@ impl<S: Source> RepoMap<S> {
         let mut facts = Vec::new();
         for key in wanted {
             match found.remove(&key) {
-                Some(stored) => facts.push(stored),
+                Some(stored) => facts.extend(stored),
                 None => missing.push(key),
             }
         }
@@ -304,24 +313,27 @@ pub(crate) async fn off_runtime<T: Send + 'static>(
         .map_err(|error| index_failed().because(error))?
 }
 
-/// The facts of each `(path, key, text)`, with the path and key they're stored under; text
-/// that adds nothing, such as a broken manifest, gives none.
+/// The facts of each `(path, key, text)`, with the path and key they're stored under; no text,
+/// or text that adds nothing such as a broken manifest, gives none, which is kept too.
 fn read(
-    texts: impl Iterator<Item = (String, String, String)>,
-) -> Result<Vec<(String, String, Facts)>, Fault> {
+    texts: impl Iterator<Item = (String, String, Option<String>)>,
+) -> Result<Vec<(String, String, Option<Facts>)>, Fault> {
     let mut reader = Reader::new().map_err(|error| index_failed().because(error))?;
     let mut found = Vec::new();
     for (path, key, text) in texts {
-        let file = SourceFile {
-            path: path.clone(),
-            text,
+        let facts = match text {
+            Some(text) => {
+                let file = SourceFile {
+                    path: path.clone(),
+                    text,
+                };
+                reader
+                    .facts(&file)
+                    .map_err(|error| index_failed().because(error))?
+            }
+            None => None,
         };
-        if let Some(facts) = reader
-            .facts(&file)
-            .map_err(|error| index_failed().because(error))?
-        {
-            found.push((path, key, facts));
-        }
+        found.push((path, key, facts));
     }
     Ok(found)
 }
@@ -431,6 +443,54 @@ mod tests {
         assert_eq!(source.blobs_read().len(), 2);
         assert_eq!(repo.base().await.unwrap().facts.len(), 2);
         assert!(source.blobs_read().is_empty());
+    }
+
+    #[tokio::test]
+    async fn text_with_no_facts_is_read_once() {
+        let dir = TempDir::new().unwrap();
+        let (repo, source) = repo(&dir).await;
+        source.commit("c1", &[("Cargo.toml", "[package"), ("README.md", "# A\n")]);
+        assert_eq!(repo.base().await.unwrap().facts.len(), 1);
+        assert_eq!(source.blobs_read().len(), 2);
+        assert_eq!(repo.base().await.unwrap().facts.len(), 1);
+        assert!(source.blobs_read().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_refresh_that_started_earlier_stores_nothing_over_a_later_one() {
+        let dir = TempDir::new().unwrap();
+        let (repo, source) = repo(&dir).await;
+        source.commit("c1", &[("Cargo.toml", MANIFEST)]);
+        let base = repo.base().await.unwrap();
+        let earlier = repo.map.begin().await.unwrap();
+        repo.base().await.unwrap();
+        let stale = Layer {
+            name: BASE.to_owned(),
+            commit: "other".to_owned(),
+            generation: earlier,
+            files: Vec::new(),
+        };
+        repo.map.replace(&stale, &[], &[]).await.unwrap();
+        assert_eq!(
+            repo.map.layer(BASE).await.unwrap().unwrap().commit,
+            base.commit.as_str()
+        );
+
+        let worktree = Path::new("/w/chat");
+        source.change(&[("src/old.rs", Some("fn old() {}"))]);
+        let older = repo.changed(&base, worktree).await.unwrap();
+        source.change(&[("src/new.rs", Some("fn new() {}"))]);
+        let newer = repo.changed(&base, worktree).await.unwrap();
+        repo.worktree(&base, worktree, newer).await.unwrap();
+        repo.worktree(&base, worktree, older).await.unwrap();
+        let layer = repo
+            .map
+            .layer(&layer_name(worktree))
+            .await
+            .unwrap()
+            .unwrap();
+        let paths: Vec<&str> = layer.files.iter().map(|file| file.path.as_str()).collect();
+        assert_eq!(paths, ["src/new.rs"]);
     }
 
     #[tokio::test]
