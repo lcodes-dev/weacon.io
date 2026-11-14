@@ -177,27 +177,21 @@ fn answer(fault: Fault) -> Response {
 
 #[cfg(test)]
 mod tests {
-    use std::net::SocketAddr;
-
     use serde_json::json;
     use weacon_protocol::{Author, CommitId, DocAnchors, DocPin, DocSummary, WorkspaceChange};
 
     use super::*;
-    use crate::test_support::{
-        Fixture, Running, bearer, refusal, request_with, status, workspace_id,
-    };
+    use crate::test_support::{Ada, Fixture, ada, refusal, workspace_id};
 
-    struct Ada {
-        address: SocketAddr,
-        auth: String,
+    trait Docs {
+        async fn ok<T: serde::de::DeserializeOwned>(&self, head: &str, body: &str, want: &str)
+        -> T;
+        async fn create(&self, content: &DocContent) -> DocRecord;
+        async fn revise(&self, doc: &DocRecord, content: &DocContent) -> (String, String);
+        async fn get<T: serde::de::DeserializeOwned>(&self, path: &str) -> T;
     }
 
-    impl Ada {
-        async fn send(&self, head: &str, body: &str) -> (String, String) {
-            let (head, body) = request_with(self.address, head, &self.auth, body).await;
-            (status(&head).to_owned(), body)
-        }
-
+    impl Docs for Ada {
         async fn ok<T: serde::de::DeserializeOwned>(
             &self,
             head: &str,
@@ -237,15 +231,6 @@ mod tests {
             )
             .await
         }
-    }
-
-    async fn ada(fixture: &Fixture) -> (Running, Ada) {
-        let (server, body) = fixture.signed_in("ada@example.com").await;
-        let ada = Ada {
-            address: server.address,
-            auth: bearer(&body),
-        };
-        (server, ada)
     }
 
     fn content(title: &str, body: &str, pinned: &[&str]) -> DocContent {

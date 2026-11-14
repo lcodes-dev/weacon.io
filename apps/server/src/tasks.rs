@@ -156,28 +156,21 @@ fn answer(fault: Fault) -> Response {
 
 #[cfg(test)]
 mod tests {
-    use std::net::SocketAddr;
-
     use weacon_protocol::{ErrorBody, WorkspaceChange};
 
     use weacon_protocol::TaskStatus;
 
     use super::*;
-    use crate::test_support::{
-        Fixture, Running, bearer, refusal, request_with, status, workspace_id,
-    };
+    use crate::test_support::{Ada, Fixture, ada, refusal, workspace_id};
 
-    struct Ada {
-        address: SocketAddr,
-        auth: String,
+    trait Tasks {
+        async fn list(&self) -> Vec<TaskRecord>;
+        async fn create(&self, title: &str, before: Option<&TaskRecord>) -> TaskRecord;
+        async fn change(&self, task: &TaskRecord, edit: TaskEditBody) -> (String, String);
+        async fn changed(&self, task: &TaskRecord, edit: TaskEditBody) -> TaskRecord;
     }
 
-    impl Ada {
-        async fn send(&self, head: &str, body: &str) -> (String, String) {
-            let (head, body) = request_with(self.address, head, &self.auth, body).await;
-            (status(&head).to_owned(), body)
-        }
-
+    impl Tasks for Ada {
         async fn list(&self) -> Vec<TaskRecord> {
             let (status, body) = self.send("GET /api/workspaces/w1/tasks", "").await;
             assert_eq!(status, "http/1.1 200 ok");
@@ -210,16 +203,6 @@ mod tests {
             assert_eq!(status, "http/1.1 200 ok", "{body}");
             serde_json::from_str(&body).unwrap()
         }
-    }
-
-    /// The running server, which stops once dropped, and ada signed in to it.
-    async fn ada(fixture: &Fixture) -> (Running, Ada) {
-        let (server, body) = fixture.signed_in("ada@example.com").await;
-        let ada = Ada {
-            address: server.address,
-            auth: bearer(&body),
-        };
-        (server, ada)
     }
 
     fn titles(tasks: &[TaskRecord]) -> Vec<&str> {
