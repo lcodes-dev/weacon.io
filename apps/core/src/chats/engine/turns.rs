@@ -546,6 +546,7 @@ mod tests {
             status: weacon_protocol::RunStatus {
                 run: run("run-1"),
                 state: RunState::Idle,
+                agent: None,
             },
         };
         assert_eq!(latest(&mut engine).await, receipt);
