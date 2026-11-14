@@ -314,6 +314,20 @@
       "required": [
         "type"
       ]
+    },
+    {
+      "description": "What a core asks of the server for its owner's agents, under `workspace.proposals`.",
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "proposal_command"
+        }
+      },
+      "$ref": "#/$defs/ProposalCommand",
+      "required": [
+        "type"
+      ]
     }
   ],
   "required": [
@@ -1889,6 +1903,53 @@
       "maxLength": 64,
       "pattern": "^[A-Za-z0-9_-]+$"
     },
+    "MergeHunk": {
+      "description": "A run of a doc's body in a [`ProposalOutcome::DocConflict`]; the hunks in order are the\nwhole body.",
+      "oneOf": [
+        {
+          "description": "Lines both sides agree on.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "same"
+            },
+            "text": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "text"
+          ]
+        },
+        {
+          "description": "Lines the doc and the proposal both changed since `base`, each in its own way.",
+          "type": "object",
+          "properties": {
+            "base": {
+              "type": "string"
+            },
+            "current": {
+              "type": "string"
+            },
+            "kind": {
+              "type": "string",
+              "const": "conflict"
+            },
+            "proposed": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "base",
+            "current",
+            "proposed"
+          ]
+        }
+      ]
+    },
     "Outcome": {
       "description": "Where an accepted command stands. It ends `completed`, `interrupted`, `failed` or `unknown`.\n`unknown` means it may or may not have run, as when a restart cut it off; the client must not\nsend it again under a new id.",
       "oneOf": [
@@ -2177,6 +2238,471 @@
         "title",
         "selector",
         "html"
+      ]
+    },
+    "ProposalAbout": {
+      "description": "The doc or task a proposal is about; a new one has the id it gets once accepted.",
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "doc": {
+              "$ref": "#/$defs/DocId"
+            },
+            "kind": {
+              "type": "string",
+              "const": "doc"
+            }
+          },
+          "required": [
+            "kind",
+            "doc"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "task"
+            },
+            "task": {
+              "$ref": "#/$defs/TaskId"
+            }
+          },
+          "required": [
+            "kind",
+            "task"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "doc": {
+              "$ref": "#/$defs/DocId"
+            },
+            "kind": {
+              "type": "string",
+              "const": "new_doc"
+            }
+          },
+          "required": [
+            "kind",
+            "doc"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "new_task"
+            },
+            "task": {
+              "$ref": "#/$defs/TaskId"
+            }
+          },
+          "required": [
+            "kind",
+            "task"
+          ]
+        }
+      ]
+    },
+    "ProposalAction": {
+      "oneOf": [
+        {
+          "description": "Proposes `change`, made by an agent of `agent`'s kind, which the server can't check. It\ntakes the place of the same machine's open proposal to the same doc or task.",
+          "type": "object",
+          "properties": {
+            "agent": {
+              "$ref": "#/$defs/AgentKind"
+            },
+            "change": {
+              "$ref": "#/$defs/ProposalChange"
+            },
+            "kind": {
+              "type": "string",
+              "const": "propose"
+            },
+            "proposal": {
+              "$ref": "#/$defs/ProposalId"
+            }
+          },
+          "required": [
+            "kind",
+            "proposal",
+            "agent",
+            "change"
+          ]
+        },
+        {
+          "description": "Withdraws one of the same machine's open proposals.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "withdraw"
+            },
+            "proposal": {
+              "$ref": "#/$defs/ProposalId"
+            }
+          },
+          "required": [
+            "kind",
+            "proposal"
+          ]
+        }
+      ]
+    },
+    "ProposalChange": {
+      "description": "What a proposal would change once a person accepts it.",
+      "oneOf": [
+        {
+          "description": "The doc's whole new content, written from its revision `base`.",
+          "type": "object",
+          "properties": {
+            "base": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            },
+            "content": {
+              "$ref": "#/$defs/DocContent"
+            },
+            "doc": {
+              "$ref": "#/$defs/DocId"
+            },
+            "kind": {
+              "type": "string",
+              "const": "doc_edit"
+            }
+          },
+          "required": [
+            "kind",
+            "doc",
+            "base",
+            "content"
+          ]
+        },
+        {
+          "description": "New values for the task's fields, read at its version `base`; one left out stays as it\nis.",
+          "type": "object",
+          "properties": {
+            "base": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            },
+            "kind": {
+              "type": "string",
+              "const": "task_edit"
+            },
+            "status": {
+              "$ref": "#/$defs/TaskStatus"
+            },
+            "task": {
+              "$ref": "#/$defs/TaskId"
+            },
+            "title": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "kind",
+            "task",
+            "base"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "content": {
+              "$ref": "#/$defs/DocContent"
+            },
+            "kind": {
+              "type": "string",
+              "const": "new_doc"
+            }
+          },
+          "required": [
+            "kind",
+            "content"
+          ]
+        },
+        {
+          "description": "A task to do, placed last.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "new_task"
+            },
+            "title": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "title"
+          ]
+        }
+      ]
+    },
+    "ProposalCommand": {
+      "description": "What an agent asks the server for, from a core to a server that offers\n`workspace.proposals`, for one of its owner's agents. The server answers with receipts under\n`request`, and names the owner and machine itself.",
+      "type": "object",
+      "properties": {
+        "action": {
+          "$ref": "#/$defs/ProposalAction"
+        },
+        "request": {
+          "$ref": "#/$defs/RequestId"
+        },
+        "workspace": {
+          "$ref": "#/$defs/WorkspaceId"
+        }
+      },
+      "required": [
+        "request",
+        "workspace",
+        "action"
+      ]
+    },
+    "ProposalDecision": {
+      "description": "A member's decision on an open proposal, from a client to the server. The answer is a\n[`ProposalOutcome`].",
+      "type": "object",
+      "properties": {
+        "verdict": {
+          "$ref": "#/$defs/ProposalVerdict"
+        }
+      },
+      "required": [
+        "verdict"
+      ]
+    },
+    "ProposalId": {
+      "description": "A proposal in a workspace, chosen by the core that proposes it and kept across\nreconnects, so that sending it again is the same proposal; 1–64 ASCII letters, digits,\n`-` or `_`.",
+      "type": "string",
+      "maxLength": 64,
+      "pattern": "^[A-Za-z0-9_-]+$"
+    },
+    "ProposalList": {
+      "description": "A workspace's proposals, newest first, from the server.",
+      "type": "object",
+      "properties": {
+        "proposals": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ProposalRecord"
+          }
+        }
+      },
+      "required": [
+        "proposals"
+      ]
+    },
+    "ProposalOutcome": {
+      "description": "What a [`ProposalDecision`] came to. A conflict changes nothing: the proposal stays open,\nand the person edits the doc or task themselves, then rejects it.",
+      "oneOf": [
+        {
+          "description": "The doc or task is now at `version`.",
+          "type": "object",
+          "properties": {
+            "outcome": {
+              "type": "string",
+              "const": "accepted"
+            },
+            "version": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            }
+          },
+          "required": [
+            "outcome",
+            "version"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "outcome": {
+              "type": "string",
+              "const": "rejected"
+            }
+          },
+          "required": [
+            "outcome"
+          ]
+        },
+        {
+          "description": "The doc changed since the proposal's base where the proposal changed it too: in its\nbody, as `hunks` show, its title, or the anchors it links to.",
+          "type": "object",
+          "properties": {
+            "anchors": {
+              "type": "boolean"
+            },
+            "hunks": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/MergeHunk"
+              }
+            },
+            "outcome": {
+              "type": "string",
+              "const": "doc_conflict"
+            },
+            "title": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "outcome",
+            "hunks",
+            "title",
+            "anchors"
+          ]
+        },
+        {
+          "description": "The task's `fields` changed since the proposal's base, and the proposal changes them\ntoo.",
+          "type": "object",
+          "properties": {
+            "fields": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/TaskField"
+              }
+            },
+            "outcome": {
+              "type": "string",
+              "const": "task_conflict"
+            }
+          },
+          "required": [
+            "outcome",
+            "fields"
+          ]
+        }
+      ]
+    },
+    "ProposalRecord": {
+      "description": "A proposal, from the server to clients that have the capability `workspace.proposals`, at\n`at` seconds since the Unix epoch. Its author's machine is a name, never an id, and only an\nopen proposal still holds its `change`.",
+      "type": "object",
+      "properties": {
+        "about": {
+          "$ref": "#/$defs/ProposalAbout"
+        },
+        "at": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "author": {
+          "$ref": "#/$defs/Author"
+        },
+        "change": {
+          "$ref": "#/$defs/ProposalChange"
+        },
+        "id": {
+          "$ref": "#/$defs/ProposalId"
+        }
+      },
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "state": {
+              "type": "string",
+              "const": "open"
+            }
+          },
+          "required": [
+            "state"
+          ]
+        },
+        {
+          "description": "Accepted by `by`, which made the doc or task `version`.",
+          "type": "object",
+          "properties": {
+            "by": {
+              "$ref": "#/$defs/MemberId"
+            },
+            "state": {
+              "type": "string",
+              "const": "accepted"
+            },
+            "version": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            }
+          },
+          "required": [
+            "state",
+            "version",
+            "by"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "by": {
+              "$ref": "#/$defs/MemberId"
+            },
+            "state": {
+              "type": "string",
+              "const": "rejected"
+            }
+          },
+          "required": [
+            "state",
+            "by"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "state": {
+              "type": "string",
+              "const": "superseded"
+            }
+          },
+          "required": [
+            "state"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "state": {
+              "type": "string",
+              "const": "withdrawn"
+            }
+          },
+          "required": [
+            "state"
+          ]
+        }
+      ],
+      "required": [
+        "id",
+        "about",
+        "author",
+        "at"
+      ]
+    },
+    "ProposalVerdict": {
+      "oneOf": [
+        {
+          "type": "string",
+          "enum": [
+            "accept",
+            "reject"
+          ]
+        }
       ]
     },
     "Receipt": {
@@ -2755,6 +3281,18 @@
         }
       ]
     },
+    "TaskField": {
+      "description": "A task's field a proposal can change.",
+      "oneOf": [
+        {
+          "type": "string",
+          "enum": [
+            "title",
+            "status"
+          ]
+        }
+      ]
+    },
     "TaskId": {
       "description": "A task in a workspace, 1–64 ASCII letters, digits, `-` or `_`.",
       "type": "string",
@@ -3167,6 +3705,23 @@
           "required": [
             "kind",
             "chat"
+          ]
+        },
+        {
+          "description": "A proposal was made or decided, or left open no more. Only for clients that have the\ncapability `workspace.proposals`, which read the proposals again.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "proposal_changed"
+            },
+            "proposal": {
+              "$ref": "#/$defs/ProposalId"
+            }
+          },
+          "required": [
+            "kind",
+            "proposal"
           ]
         }
       ]

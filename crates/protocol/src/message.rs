@@ -3,9 +3,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     Capability, ChatAnswer, ChatCommand, ChatQuery, ChatUpdate, ClientLog, Code, DiffAnswer,
-    DiffQuery, MachineSettingsAnswer, MachineSettingsCommand, MachineSettingsQuery, Pick, Receipt,
-    RunUpdate, TerminalCommand, TerminalUpdate, WorkspaceUpdate, WorktreeAnswer, WorktreeCommand,
-    WorktreeQuery, code,
+    DiffQuery, MachineSettingsAnswer, MachineSettingsCommand, MachineSettingsQuery, Pick,
+    ProposalCommand, Receipt, RunUpdate, TerminalCommand, TerminalUpdate, WorkspaceUpdate,
+    WorktreeAnswer, WorktreeCommand, WorktreeQuery, code,
 };
 
 /// The protocol version this build speaks. Only a breaking change raises it; peers must match
@@ -75,6 +75,8 @@ pub enum Message {
     /// The core's answer to a [`WorktreeQuery`] or a [`WorktreeCommand`], to a client that has
     /// `worktree.manage`.
     WorktreeAnswer(WorktreeAnswer),
+    /// What a core asks of the server for its owner's agents, under `workspace.proposals`.
+    ProposalCommand(ProposalCommand),
     /// A message type this build doesn't know, from a newer peer.
     #[serde(other)]
     #[schemars(skip)]
