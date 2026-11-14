@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 use weacon_observability::Fault;
 use weacon_protocol::{ChatId, WorkspaceId, code};
 
+use super::Git;
 use crate::platform::trash::{self, Trashed};
 
 /// A worktree in the Trash, or on its way there.
@@ -34,11 +35,16 @@ pub(crate) struct Removal {
 pub(crate) struct Journal {
     workspace: WorkspaceId,
     file: PathBuf,
+    git: Git,
 }
 
 impl Journal {
-    pub(crate) const fn new(workspace: WorkspaceId, file: PathBuf) -> Self {
-        Self { workspace, file }
+    pub(crate) const fn new(workspace: WorkspaceId, file: PathBuf, git: Git) -> Self {
+        Self {
+            workspace,
+            file,
+            git,
+        }
     }
 
     /// Moves `chat`'s worktree to the Trash with `to_trash`, as `platform::trash::trash`; a
@@ -64,7 +70,7 @@ impl Journal {
             ));
         }
         let git_file = worktree_git_file(worktree)?;
-        let mut removal = Removal {
+        let removal = Removal {
             workspace: self.workspace.clone(),
             chat: chat.clone(),
             worktree: worktree.to_owned(),
@@ -74,6 +80,29 @@ impl Journal {
                 .duration_since(UNIX_EPOCH)
                 .map_or(0, |since| since.as_secs()),
         };
+        self.git.lock(worktree).map_err(|error| {
+            Fault::new(
+                code!("worktree.lock_failed"),
+                "The worktree couldn't be locked, so it wasn't moved",
+            )
+            .because(error)
+        })?;
+        let moved = self.move_locked(removals, removal, worktree, to_trash);
+        if moved.is_err() {
+            // Only one still in place can be unlocked; git can't reach one in the Trash.
+            self.git.unlock(worktree);
+        }
+        moved
+    }
+
+    // `remove` once the worktree is locked: on record as pending, moved, then on record where.
+    fn move_locked(
+        &self,
+        mut removals: Vec<Removal>,
+        mut removal: Removal,
+        worktree: &Path,
+        to_trash: impl FnOnce(&Path) -> io::Result<Trashed>,
+    ) -> Result<Removal, Fault> {
         removals.push(removal.clone());
         self.save(&removals)?;
         let trashed = match to_trash(worktree) {
@@ -116,15 +145,16 @@ impl Journal {
             // Cut short: the move either never happened or isn't on record.
             self.save(&removals)?;
             return Err(if stale(&removal) {
+                self.git.unlock(&removal.worktree);
                 not_removed()
             } else {
                 unjournaled()
             });
         };
-        // A Trash that won't be read, as macOS's may not, is left to the move to refuse.
-        let gone = match read_git_file(&trashed.item) {
-            Ok(git_file) => git_file != removal.git_file,
-            Err(error) => error.kind() != io::ErrorKind::PermissionDenied,
+        let gone = match gone(read_git_file(&trashed.item), &removal.git_file) {
+            Ok(gone) => gone,
+            // Can't tell, so the entry stays for another try.
+            Err(error) => return Err(restore_failed().because(error)),
         };
         if gone {
             self.save(&removals)?;
@@ -137,13 +167,11 @@ impl Journal {
             let fault = if error.kind() == io::ErrorKind::PermissionDenied {
                 Fault::new(code!("worktree.restore_refused"), trash::REFUSED)
             } else {
-                Fault::new(
-                    code!("worktree.restore_failed"),
-                    "The worktree couldn't be brought back from the Trash",
-                )
+                restore_failed()
             };
             fault.because(error)
         })?;
+        self.git.unlock(&removal.worktree);
         // If this save fails, the next restore finds the worktree gone and drops the entry.
         self.save(&removals)?;
         Ok(removal)
@@ -212,6 +240,33 @@ fn worktree_git_file(worktree: &Path) -> Result<String, Fault> {
     })
 }
 
+// Whether a trashed item, by its `.git` file as read, is no longer the worktree: nothing is
+// there, or something else is. A Trash that won't be read, as macOS's may not, is left to the
+// move to refuse; any other failure to read can't tell.
+fn gone(read: io::Result<String>, git_file: &str) -> io::Result<bool> {
+    use io::ErrorKind::{InvalidData, IsADirectory, NotADirectory, NotFound, PermissionDenied};
+    match read {
+        Ok(read) => Ok(read != git_file),
+        Err(error)
+            if matches!(
+                error.kind(),
+                NotFound | InvalidData | NotADirectory | IsADirectory
+            ) =>
+        {
+            Ok(true)
+        }
+        Err(error) if error.kind() == PermissionDenied => Ok(false),
+        Err(error) => Err(error),
+    }
+}
+
+fn restore_failed() -> Fault {
+    Fault::new(
+        code!("worktree.restore_failed"),
+        "The worktree couldn't be brought back from the Trash",
+    )
+}
+
 fn not_removed() -> Fault {
     Fault::new(
         code!("worktree.not_removed"),
@@ -238,6 +293,8 @@ mod tests {
     use weacon_testing::TempDir;
 
     use super::*;
+    use crate::git::run;
+    use crate::git::tests as git_tests;
 
     fn workspace(id: &str) -> WorkspaceId {
         WorkspaceId::try_from(id.to_owned()).unwrap()
@@ -258,7 +315,11 @@ mod tests {
     #[test]
     fn a_chat_with_nothing_in_the_trash_has_nothing_to_restore() {
         let dir = TempDir::new().unwrap();
-        let journal = Journal::new(workspace("w-1"), dir.join("removed.json"));
+        let journal = Journal::new(
+            workspace("w-1"),
+            dir.join("removed.json"),
+            git_tests::git(&dir),
+        );
 
         assert_eq!(journal.removed(&chat("c-1")).unwrap(), None);
         let error = journal.restore(&chat("c-1")).unwrap_err();
@@ -268,7 +329,11 @@ mod tests {
     #[test]
     fn a_folder_that_isnt_a_worktree_is_never_trashed() {
         let dir = TempDir::new().unwrap();
-        let journal = Journal::new(workspace("w-1"), dir.join("removed.json"));
+        let journal = Journal::new(
+            workspace("w-1"),
+            dir.join("removed.json"),
+            git_tests::git(&dir),
+        );
         fs::create_dir_all(dir.join("plain")).unwrap();
 
         let error = journal
@@ -297,8 +362,8 @@ mod tests {
         };
         fs::write(&file, serde_json::to_vec(&[&removal]).unwrap()).unwrap();
 
-        let ours = Journal::new(workspace("w-1"), file.clone());
-        let theirs = Journal::new(workspace("w-2"), file);
+        let ours = Journal::new(workspace("w-1"), file.clone(), git_tests::git(&dir));
+        let theirs = Journal::new(workspace("w-2"), file, git_tests::git(&dir));
 
         assert_eq!(ours.removed(&chat("c-1")).unwrap(), None);
         assert_eq!(theirs.removed(&chat("c-1")).unwrap(), Some(removal));
@@ -310,7 +375,7 @@ mod tests {
         let file = dir.join("removed.json");
         fs::write(&file, "[{").unwrap();
 
-        let error = Journal::new(workspace("w-1"), file)
+        let error = Journal::new(workspace("w-1"), file, git_tests::git(&dir))
             .removed(&chat("c-1"))
             .unwrap_err();
 
@@ -322,7 +387,11 @@ mod tests {
         let dir = TempDir::new().unwrap();
         // A folder where the journal's file should be.
         fs::create_dir_all(dir.join("removed.json")).unwrap();
-        let journal = Journal::new(workspace("w-1"), dir.join("removed.json"));
+        let journal = Journal::new(
+            workspace("w-1"),
+            dir.join("removed.json"),
+            git_tests::git(&dir),
+        );
 
         assert_eq!(
             code(&journal.removed(&chat("c-1")).unwrap_err()),
@@ -334,12 +403,17 @@ mod tests {
         );
     }
 
+    // A real worktree of the test's repository, made on first use, holding `work.txt`.
     fn worktree(dir: &Path, name: &str) -> PathBuf {
+        let repo = dir.join("repo");
+        if !repo.exists() {
+            git_tests::repo(dir);
+        }
         let path = dir.join("trees").join(name);
-        fs::create_dir_all(&path).unwrap();
+        git_tests::git(dir)
+            .chat_worktree(&repo, &chat(name), &path)
+            .unwrap();
         fs::write(path.join("work.txt"), name).unwrap();
-        let gitdir = format!("gitdir: /repo/.git/worktrees/{name}\n");
-        fs::write(path.join(".git"), gitdir).unwrap();
         path
     }
 
@@ -355,7 +429,7 @@ mod tests {
     }
 
     fn journal(dir: &Path, id: &str) -> Journal {
-        Journal::new(workspace(id), dir.join("removed.json"))
+        Journal::new(workspace(id), dir.join("removed.json"), git_tests::git(dir))
     }
 
     #[test]
@@ -475,9 +549,7 @@ mod tests {
         fs::write(long.join(".git"), "g".repeat(4097)).unwrap();
         let longest = worktree(&dir, "c-3");
         fs::write(longest.join(".git"), "g".repeat(4096)).unwrap();
-        journal
-            .remove(&chat("c-3"), &longest, bin(&dir), UNIX_EPOCH)
-            .unwrap();
+        assert_eq!(read_git_file(&longest).unwrap().len(), 4096);
 
         for (chat_id, path) in [("c-1", &clone), ("c-2", &long)] {
             let error = journal
@@ -638,6 +710,63 @@ mod tests {
     }
 
     #[test]
+    fn a_worktree_is_locked_while_in_the_trash_and_unlocked_once_back() {
+        let dir = TempDir::new().unwrap();
+        let (journal, one) = (journal(&dir, "w-1"), chat("c-1"));
+        let path = worktree(&dir, "c-1");
+        let git = git_tests::git(&dir);
+        let locked = || {
+            let listed =
+                run(git
+                    .command(&dir.join("repo"))
+                    .args(["worktree", "list", "--porcelain"]));
+            String::from_utf8(listed.unwrap())
+                .unwrap()
+                .contains("locked In the Trash")
+        };
+
+        journal.remove(&one, &path, bin(&dir), UNIX_EPOCH).unwrap();
+        assert!(locked());
+
+        journal.restore(&one).unwrap();
+        assert!(!locked());
+        // A removal that fails leaves no lock behind.
+        let refuse = |_: &Path| Err(io::ErrorKind::Unsupported.into());
+        journal.remove(&one, &path, refuse, UNIX_EPOCH).unwrap_err();
+        assert!(!locked());
+    }
+
+    #[test]
+    fn only_absence_or_replacement_forgets_a_trashed_worktree() {
+        let dir = TempDir::new().unwrap();
+        let (journal, one) = (journal(&dir, "w-1"), chat("c-1"));
+        let removal = journal
+            .remove(&one, &worktree(&dir, "c-1"), bin(&dir), UNIX_EPOCH)
+            .unwrap();
+        // A `.git` this long reads as nothing like the worktree's own.
+        fs::write(item(&removal).join(".git"), "g".repeat(5000)).unwrap();
+
+        let error = journal.restore(&one).unwrap_err();
+
+        assert_eq!(code(&error), "worktree.gone_from_trash");
+        let failed = |kind: io::ErrorKind| gone(Err(kind.into()), "gitdir: x\n");
+        assert!(gone(Ok("gitdir: x\n".to_owned()), "gitdir: x\n").is_ok_and(|gone| !gone));
+        assert!(gone(Ok("gitdir: y\n".to_owned()), "gitdir: x\n").is_ok_and(|gone| gone));
+        for absent in [
+            io::ErrorKind::NotFound,
+            io::ErrorKind::InvalidData,
+            io::ErrorKind::IsADirectory,
+        ] {
+            assert!(failed(absent).is_ok_and(|gone| gone), "{absent:?}");
+        }
+        assert!(failed(io::ErrorKind::PermissionDenied).is_ok_and(|gone| !gone));
+        assert_eq!(
+            failed(io::ErrorKind::TimedOut).unwrap_err().kind(),
+            io::ErrorKind::TimedOut
+        );
+    }
+
+    #[test]
     fn another_workspaces_removals_stay_in_the_file() {
         let dir = TempDir::new().unwrap();
         let theirs = journal(&dir, "w-2")
@@ -669,7 +798,7 @@ mod tests {
         assert_eq!(journal.removed(&one).unwrap(), None);
         assert!(!path.exists());
         journal
-            .remove(&one, &worktree(&dir, "c-1"), bin(&dir), UNIX_EPOCH)
+            .remove(&one, &worktree(&dir, "c-2"), bin(&dir), UNIX_EPOCH)
             .unwrap();
     }
 
@@ -679,7 +808,7 @@ mod tests {
         let (journal, one) = (journal(&dir, "w-1"), chat("c-1"));
         let path = worktree(&dir, "c-1");
         let removal = journal.remove(&one, &path, bin(&dir), UNIX_EPOCH).unwrap();
-        worktree(&dir, "c-1");
+        fs::create_dir_all(path.join("new")).unwrap();
 
         let error = journal.restore(&one).unwrap_err();
 

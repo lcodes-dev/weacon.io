@@ -28,7 +28,7 @@ const REDIRECTS: [&str; 9] = [
 ];
 
 /// Git, found on the person's `PATH`. Every call blocks until git exits.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub(crate) struct Git {
     program: PathBuf,
     no_hooks: PathBuf,
@@ -48,6 +48,24 @@ impl Git {
     pub(crate) fn find(path: &OsStr, no_hooks: PathBuf) -> Option<Self> {
         let program = platform::find_program("git", path)?;
         Some(Self { program, no_hooks })
+    }
+
+    /// Locks `worktree` against `git worktree prune`, which would forget it while its folder is
+    /// in the Trash.
+    pub(crate) fn lock(&self, worktree: &Path) -> Result<(), Fault> {
+        run(self
+            .command(worktree)
+            .args(["worktree", "lock", "--reason", "In the Trash"])
+            .arg(worktree))
+        .map(drop)
+    }
+
+    /// Unlocks `worktree` once it's back; one already unlocked stays so.
+    pub(crate) fn unlock(&self, worktree: &Path) {
+        drop(run(self
+            .command(worktree)
+            .args(["worktree", "unlock"])
+            .arg(worktree)));
     }
 
     /// Every working tree of `repo` that still has its folder, the main one first.
@@ -285,18 +303,18 @@ mod tests {
 
     use super::*;
 
-    fn chat(id: &str) -> ChatId {
+    pub(super) fn chat(id: &str) -> ChatId {
         ChatId::try_from(id.to_owned()).unwrap()
     }
 
-    fn git(dir: &Path) -> Git {
+    pub(super) fn git(dir: &Path) -> Git {
         let no_hooks = dir.join("no-hooks");
         fs::create_dir_all(&no_hooks).unwrap();
         Git::find(&std::env::var_os("PATH").unwrap(), no_hooks).unwrap()
     }
 
     // Runs the fixture's own git in `repo`, without the person's configuration or redirects.
-    fn fixture(dir: &Path, repo: &Path, args: &[&str]) {
+    pub(super) fn fixture(dir: &Path, repo: &Path, args: &[&str]) {
         let mut command = Command::new("git");
         for name in REDIRECTS {
             command.env_remove(name);
@@ -319,7 +337,7 @@ mod tests {
     }
 
     // A repository with one commit.
-    fn repo(dir: &Path) -> PathBuf {
+    pub(super) fn repo(dir: &Path) -> PathBuf {
         let repo = dir.join("repo");
         fs::create_dir_all(&repo).unwrap();
         let git = |args: &[&str]| fixture(dir, &repo, args);
