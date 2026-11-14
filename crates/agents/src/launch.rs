@@ -28,6 +28,8 @@ pub struct Launch {
     pub cwd: PathBuf,
     /// What the agent may do on this machine, which decides the prompts no person is asked.
     pub access: AccessLevel,
+    /// The command, word by word, that answers the agent's pre-tool hook, when it has one.
+    pub hook: Option<Vec<String>>,
 }
 
 // A status command that hangs is given up on, so a report still prints.
@@ -65,6 +67,7 @@ impl Launch {
             config_dir: workspace_dir.join(name),
             cwd,
             access: AccessLevel::AskFirst,
+            hook: None,
         })
     }
 
@@ -300,6 +303,7 @@ mod tests {
                 config_dir: PathBuf::from("/state/w/claude"),
                 cwd: PathBuf::from("/work"),
                 access: AccessLevel::AskFirst,
+                hook: None,
             }
         );
         assert_eq!(

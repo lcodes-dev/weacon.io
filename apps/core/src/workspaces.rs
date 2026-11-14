@@ -168,8 +168,13 @@ impl Workspaces {
                 "This workspace's agents are turned off on this machine",
             ));
         }
+        let hook = match agent {
+            AgentKind::Claude => Some(guard_hook(workspace, &cwd)?),
+            AgentKind::Codex | AgentKind::Newer => None,
+        };
         Ok(Launch {
             access,
+            hook,
             ..self.prepared(workspace, agent, cwd)?
         })
     }
@@ -200,6 +205,29 @@ impl Workspaces {
         })?;
         Ok(launch)
     }
+}
+
+// The core's own `guard check` for the run's hook; a run without its guard doesn't start.
+fn guard_hook(workspace: &WorkspaceId, cwd: &Path) -> Result<Vec<String>, Fault> {
+    let unavailable = || {
+        Fault::new(
+            code!("workspace.guard_unavailable"),
+            "The guard for the agent's run couldn't be set up",
+        )
+    };
+    let exe = std::env::current_exe().map_err(|error| unavailable().because(error))?;
+    let (Some(exe), Some(cwd)) = (exe.to_str(), cwd.to_str()) else {
+        return Err(unavailable());
+    };
+    // Each value joined to its option, so none can be read as an option of its own.
+    Ok(vec![
+        exe.to_owned(),
+        "guard".to_owned(),
+        "check".to_owned(),
+        "claude".to_owned(),
+        format!("--workspace={}", workspace.as_str()),
+        format!("--worktree={cwd}"),
+    ])
 }
 
 const AGENTS: [(AgentKind, &str); 2] = [
@@ -271,16 +299,36 @@ mod tests {
         let codex = launch("w1", AgentKind::Codex);
         let other = launch("w2", AgentKind::Claude);
 
+        let hook = claude.hook.clone().unwrap();
         assert_eq!(
-            claude,
+            Launch {
+                hook: None,
+                ..claude.clone()
+            },
             Launch {
                 agent: AgentKind::Claude,
                 program: program(&dir, "claude"),
                 config_dir: dir.join("workspaces/w-w1/claude"),
                 cwd: PathBuf::from("/work"),
                 access: AccessLevel::AskFirst,
+                hook: None,
             }
         );
+        assert_eq!(
+            hook.first().map(PathBuf::from),
+            std::env::current_exe().ok()
+        );
+        assert_eq!(
+            &hook[1..],
+            [
+                "guard",
+                "check",
+                "claude",
+                "--workspace=w1",
+                "--worktree=/work"
+            ]
+        );
+        assert_eq!(codex.hook, None);
         assert_eq!(codex.program, program(&dir, "codex"));
         assert_eq!(codex.config_dir, dir.join("workspaces/w-w1/codex"));
         assert_eq!(other.config_dir, dir.join("workspaces/w-w2/claude"));

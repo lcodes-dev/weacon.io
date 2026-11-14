@@ -1,6 +1,7 @@
 //! The guardrail: the operations a person is always asked about, whatever the access level.
 
 mod git;
+mod hook;
 mod rules;
 mod shell;
 mod words;
@@ -8,6 +9,8 @@ mod words;
 use std::path::{Component, Path, PathBuf};
 
 use serde_json::Value;
+
+pub use hook::{claude_ask, claude_hook};
 
 use crate::access::resolve;
 use shell::Word;

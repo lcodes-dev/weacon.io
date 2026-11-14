@@ -48,6 +48,9 @@ pub(crate) enum Command {
         #[arg(long)]
         team: Option<bool>,
     },
+    /// Answer an agent's hooks.
+    #[command(subcommand)]
+    Guard(GuardCommand),
     /// Let Weacon's Chrome extension reach this core.
     ConnectChrome,
     /// Relay messages between Chrome's extension and the daemon; Chrome starts it.
@@ -63,6 +66,25 @@ fn agent(name: &str) -> Result<AgentKind, &'static str> {
         .ok()
         .filter(|agent| *agent != AgentKind::Newer)
         .ok_or("not an agent this core runs")
+}
+
+#[derive(Debug, PartialEq, Eq, Subcommand)]
+pub(crate) enum GuardCommand {
+    /// Read a pre-tool hook's call on stdin, and ask a person first if it's on the guard's list.
+    Check {
+        /// The agent whose hook this is: claude or codex.
+        #[arg(value_parser = agent)]
+        agent: AgentKind,
+        /// The workspace of the Weacon run the agent is in.
+        #[arg(long)]
+        workspace: Option<WorkspaceId>,
+        /// The chat's worktree; the call's own folder when left out.
+        #[arg(long)]
+        worktree: Option<PathBuf>,
+        /// The repository's main checkout, when the worktree belongs to one.
+        #[arg(long)]
+        main_checkout: Option<PathBuf>,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Subcommand)]
@@ -100,6 +122,7 @@ impl Command {
             | Self::Service(_)
             | Self::Login { .. }
             | Self::Access { .. }
+            | Self::Guard(_)
             | Self::ConnectChrome
             | Self::Map(_) => "cli.log",
             Self::NativeHost { .. } => "native-host.log",
@@ -114,6 +137,7 @@ impl Command {
             Self::Service(_) => "service",
             Self::Login { .. } => "login",
             Self::Access { .. } => "access",
+            Self::Guard(_) => "guard",
             Self::ConnectChrome => "connect-chrome",
             Self::NativeHost { .. } => "native-host",
             Self::Map(_) => "map",

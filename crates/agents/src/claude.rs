@@ -5,7 +5,7 @@ mod wire;
 use std::path::PathBuf;
 
 use serde::Deserialize;
-use serde_json::Value;
+use serde_json::{Value, json};
 use tokio::process::Command;
 use weacon_protocol::{AccessLevel, AgentSession};
 
@@ -57,11 +57,27 @@ pub(crate) fn command(launch: &Launch, session: Option<&AgentSession>) -> Comman
         let tools = FILE_TOOLS.map(|(tool, _)| tool);
         command.args(["--disallowedTools", &format!("Bash,{}", tools.join(","))]);
     }
+    if let Some(hook) = &launch.hook {
+        command.args(["--settings", &hook_settings(hook)]);
+    }
     if let Some(session) = session {
         command.args(["--resume", session.as_str()]);
     }
     command.current_dir(&launch.cwd);
     command
+}
+
+// Settings that run `hook` before every tool; flag settings load with the user's alone, and a
+// hook's "ask" outweighs any rule that would allow the call.
+fn hook_settings(hook: &[String]) -> String {
+    let command: Vec<String> = hook.iter().map(|word| shell_quoted(word)).collect();
+    let hooks = json!([{ "type": "command", "command": command.join(" ") }]);
+    json!({ "hooks": { "PreToolUse": [{ "matcher": "*", "hooks": hooks }] } }).to_string()
+}
+
+// Claude Code runs a hook's command through a shell, which reads a single-quoted word as is.
+fn shell_quoted(word: &str) -> String {
+    format!("'{}'", word.replace('\'', "'\\''"))
 }
 
 /// `claude`'s own check of its sign-in, which exits with success when signed in and prints
@@ -195,6 +211,7 @@ mod tests {
                 config_dir: dir.to_path_buf(),
                 cwd: dir.to_path_buf(),
                 access: AccessLevel::AskFirst,
+                hook: None,
             }
         }
 
@@ -229,6 +246,7 @@ mod tests {
                 config_dir,
                 cwd: dir.to_owned(),
                 access: AccessLevel::AskFirst,
+                hook: None,
             }
         }
 
@@ -358,6 +376,58 @@ mod tests {
         }
         for name in ["PATH", "HOME", "AWS_REGION"] {
             assert!(!SIGN_IN_ENV.matches(OsStr::new(name)), "{name}");
+        }
+    }
+
+    #[test]
+    fn a_launch_with_a_hook_runs_it_before_every_tool() {
+        let words = [
+            "/opt/weacon",
+            "guard",
+            "check",
+            "claude",
+            "--worktree=/it's here",
+        ];
+        let hooked = Launch {
+            hook: Some(words.map(str::to_owned).to_vec()),
+            ..crate::test_support::launch(AgentKind::Claude, Path::new("/work"))
+        };
+        let args = |launch: &Launch| -> Vec<String> {
+            let command = command(launch, None);
+            command
+                .as_std()
+                .get_args()
+                .map(|arg| arg.to_str().unwrap().to_owned())
+                .collect()
+        };
+
+        let hooked = args(&hooked);
+        let at = hooked.iter().position(|arg| arg == "--settings").unwrap();
+        let settings: Value = serde_json::from_str(&hooked[at + 1]).unwrap();
+        let hook = &settings["hooks"]["PreToolUse"][0];
+        let line = hook["hooks"][0]["command"].as_str().unwrap();
+
+        assert_eq!(hook["matcher"], "*");
+        assert_eq!(hook["hooks"][0]["type"], "command");
+        assert_eq!(
+            line,
+            "'/opt/weacon' 'guard' 'check' 'claude' '--worktree=/it'\\''s here'"
+        );
+        let plain = args(&crate::test_support::launch(
+            AgentKind::Claude,
+            Path::new("/work"),
+        ));
+        assert!(!plain.contains(&"--settings".to_owned()));
+        // A shell reads the words back as they were.
+        if cfg!(unix) {
+            let echoed = std::process::Command::new("sh")
+                .args(["-c", &format!("printf '%s\\n' {line}")])
+                .output()
+                .unwrap();
+            assert_eq!(
+                String::from_utf8(echoed.stdout).unwrap(),
+                words.join("\n") + "\n"
+            );
         }
     }
 

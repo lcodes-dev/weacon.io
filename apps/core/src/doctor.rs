@@ -208,6 +208,7 @@ mod tests {
             config_dir: dir.to_path_buf(),
             cwd: dir.to_path_buf(),
             access: weacon_protocol::AccessLevel::AskFirst,
+            hook: None,
         };
         let launches = ["true", "/missing/codex", "false"].map(launch);
 
@@ -246,6 +247,7 @@ mod tests {
             config_dir: dir.to_path_buf(),
             cwd: dir.to_path_buf(),
             access: weacon_protocol::AccessLevel::AskFirst,
+            hook: None,
         };
         let launches = vec![hanging; AT_ONCE + 1];
         let started = tokio::time::Instant::now();

@@ -132,6 +132,7 @@ pub(crate) fn launch(agent: AgentKind, dir: &Path) -> Launch {
         config_dir: dir.join("config"),
         cwd: dir.to_path_buf(),
         access: AccessLevel::AskFirst,
+        hook: None,
     }
 }
 

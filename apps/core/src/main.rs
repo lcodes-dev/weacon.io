@@ -10,6 +10,7 @@ mod cli;
 mod daemon;
 mod disk;
 mod doctor;
+mod guard;
 mod map;
 mod memory;
 mod native_host;
@@ -79,6 +80,16 @@ fn run(app: &App, command: Command, env: platform::Env<'_>) -> Result<Outcome, F
             team,
         } => workspaces::access::run(app, &workspace, level, team, &mut io::stdout().lock())
             .map(Outcome::from),
+        Command::Guard(command) => {
+            guard::run(
+                app,
+                command,
+                env,
+                &mut io::stdin().lock(),
+                &mut io::stdout().lock(),
+            );
+            Ok(Outcome::from(()))
+        }
         Command::ConnectChrome => {
             native_host::connect_chrome(app, env, &mut io::stdout().lock()).map(Outcome::from)
         }

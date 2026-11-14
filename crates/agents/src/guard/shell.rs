@@ -496,7 +496,7 @@ mod tests {
         assert!(!parse("a && b").unwrap()[1].fed);
         assert_eq!(parse("a;").unwrap().len(), 1);
         assert!(parse(";;").unwrap().is_empty());
-        assert_eq!(texts(&parse("echo \"\" >out").unwrap()[0]), ["echo", ""]);
+        assert_eq!(texts(&parse("echo \"\">out").unwrap()[0]), ["echo", ""]);
     }
 
     #[test]
