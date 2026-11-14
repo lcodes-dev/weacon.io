@@ -263,7 +263,8 @@ mod tests {
     use serde_json::{Value, json};
 
     use super::*;
-    use crate::{AccountId, Envelope, MemberId, Message};
+    use crate::test_support::{envelope, never_sent, travels, workspace};
+    use crate::{Envelope, Message};
 
     fn bytes(raw: &[u8]) -> Bytes {
         Bytes::new(raw.to_vec()).unwrap()
@@ -271,46 +272,35 @@ mod tests {
 
     fn command(action: TerminalAction) -> TerminalCommand {
         TerminalCommand {
-            terminal: TerminalId::try_from("t-1".to_owned()).unwrap(),
-            machine: MachineId::try_from("m-1".to_owned()).unwrap(),
-            workspace: WorkspaceId::try_from("w-1".to_owned()).unwrap(),
+            terminal: "t-1".parse().unwrap(),
+            machine: "m-1".parse().unwrap(),
+            workspace: workspace(),
             action,
             by: None,
         }
     }
 
     fn update(event: TerminalEvent) -> Envelope {
-        Envelope {
-            id: 3,
-            message: Message::Terminal(TerminalUpdate {
-                terminal: TerminalId::try_from("t-1".to_owned()).unwrap(),
-                workspace: WorkspaceId::try_from("w-1".to_owned()).unwrap(),
-                event,
-            }),
-        }
-    }
-
-    fn travels(envelope: &Envelope, wire: &Value) {
-        assert_eq!(serde_json::to_value(envelope).unwrap(), *wire);
-        assert_eq!(
-            Envelope::from_json(&envelope.to_json().unwrap()).unwrap(),
-            *envelope
-        );
+        envelope(Message::Terminal(TerminalUpdate {
+            terminal: "t-1".parse().unwrap(),
+            workspace: workspace(),
+            event,
+        }))
     }
 
     #[test]
     fn commands_have_a_flat_tagged_shape() {
         let open = TerminalCommand {
             by: Some(Asker {
-                account: AccountId::try_from("a-1".to_owned()).unwrap(),
-                member: MemberId::try_from("p-1".to_owned()).unwrap(),
+                account: "a-1".parse().unwrap(),
+                member: "p-1".parse().unwrap(),
             }),
             ..command(TerminalAction::Open {
                 agent: AgentKind::Codex,
                 handshake: bytes(&[0, 0xab, 0xff]),
             })
         };
-        let ids = json!({ "id": 3, "type": "terminal_command", "terminal": "t-1",
+        let ids = json!({ "id": 4, "type": "terminal_command", "terminal": "t-1",
             "machine": "m-1", "workspace": "w-1" });
         let with = |action: Value, extra: Value| {
             let mut wire = ids.clone();
@@ -338,17 +328,13 @@ mod tests {
             ),
         ];
         for (command, wire) in cases {
-            let envelope = Envelope {
-                id: 3,
-                message: Message::TerminalCommand(command),
-            };
-            travels(&envelope, &wire);
+            travels(&envelope(Message::TerminalCommand(command)), wire);
         }
     }
 
     #[test]
     fn updates_have_a_flat_tagged_shape() {
-        let ids = json!({ "id": 3, "type": "terminal", "terminal": "t-1", "workspace": "w-1" });
+        let ids = json!({ "id": 4, "type": "terminal", "terminal": "t-1", "workspace": "w-1" });
         let events = [
             (
                 TerminalEvent::Accepted {
@@ -376,24 +362,23 @@ mod tests {
         for (event, body) in events {
             let mut wire = ids.clone();
             wire["event"] = body;
-            travels(&update(event), &wire);
+            travels(&update(event), wire);
         }
     }
 
     #[test]
     fn what_a_newer_peer_sends_is_received_but_never_sent() {
         let received = [
-            json!({ "id": 3, "type": "terminal_command", "terminal": "t-1", "machine": "m-1",
+            json!({ "id": 4, "type": "terminal_command", "terminal": "t-1", "machine": "m-1",
                 "workspace": "w-1", "action": { "kind": "rewind" } }),
-            json!({ "id": 3, "type": "terminal_command", "terminal": "t-1", "machine": "m-1",
+            json!({ "id": 4, "type": "terminal_command", "terminal": "t-1", "machine": "m-1",
                 "workspace": "w-1", "action": { "kind": "open", "agent": "amp",
                 "handshake": "" } }),
-            json!({ "id": 3, "type": "terminal", "terminal": "t-1", "workspace": "w-1",
+            json!({ "id": 4, "type": "terminal", "terminal": "t-1", "workspace": "w-1",
                 "event": { "kind": "paused" } }),
         ];
         for wire in received {
-            let envelope: Envelope = serde_json::from_value(wire.clone()).unwrap();
-            assert_eq!(envelope.to_json(), Err(FrameError::Invalid), "{wire}");
+            never_sent(wire);
         }
         assert_eq!(
             TerminalInput::from_json(br#"{"kind":"paste"}"#).unwrap(),
@@ -522,7 +507,7 @@ mod tests {
         assert_eq!(open(AgentKind::Newer).prologue(), None);
         assert_eq!(command(TerminalAction::Close).prologue(), None);
         let other = TerminalCommand {
-            workspace: WorkspaceId::try_from("w-2".to_owned()).unwrap(),
+            workspace: "w-2".parse().unwrap(),
             ..open(AgentKind::Claude)
         };
         assert_ne!(other.prologue(), open(AgentKind::Claude).prologue());
