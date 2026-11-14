@@ -206,8 +206,8 @@ test("the header switches workspaces, and the page reopens the last one", { time
   await page.getByRole("heading", { name: "Made-up team" }).waitFor();
   const chats = page.getByRole("navigation", { name: "Chats" });
   await chats.getByText("No chats yet. Connect a machine to start one.").waitFor();
-  // This server doesn't offer chats, so nobody asks it for them.
-  assert.equal(listed(), 0);
+  // The server offers chats, so the workspace asks it for them.
+  assert.ok(listed() > 0);
 
   const selector = page.getByLabel("Workspace");
   assert.deepEqual((await selector.locator("option").allInnerTexts()).toSorted(), ["Made-up team", "Personal"]);
