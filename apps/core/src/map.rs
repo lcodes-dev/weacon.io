@@ -290,14 +290,11 @@ mod tests {
         let contracts = declared.contracts(None, 6000);
         assert!(!contracts.is_empty());
         assert_eq!(view(&serde, MapSubcommand::Contracts), contracts);
-        let views = [
-            MapSubcommand::Flows,
-            MapSubcommand::Architecture,
-            MapSubcommand::Contracts,
-        ];
-        for subcommand in views {
+        for subcommand in [MapSubcommand::Architecture, MapSubcommand::Contracts] {
             assert_eq!(view(&empty, subcommand), "No code map for this folder.\n");
         }
+        let none = "Flows pinned in the docs: 0.\n";
+        assert_eq!(view(&empty, MapSubcommand::Flows), none);
     }
 
     #[test]
@@ -317,6 +314,11 @@ mod tests {
              - docs/run.md:1  a::run -> a::gone: breaks: no item a::gone\n"
         );
         assert_eq!(printed(&root, Some(MapSubcommand::Flows), None), flows);
+        let docs_only = repo(&[("docs/run.md", "Runs flow:a::run->a::gone.\n")]);
+        assert_eq!(
+            printed(&docs_only, Some(MapSubcommand::Flows), None),
+            "Flows pinned in the docs: 1.\n- docs/run.md:1  a::run -> a::gone: breaks: no item a::run\n"
+        );
     }
 
     fn symbol(path: &str) -> MapSubcommand {

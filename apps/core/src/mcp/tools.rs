@@ -95,15 +95,14 @@ pub(crate) fn answer_or_none(call: &McpCall, folder: &Path, log: &Logger) -> Str
     })
 }
 
+// Docs can pin flows in a folder with no crate, so `flow` answers even without a code map.
 fn answer_from(call: &McpCall, map: &Index) -> String {
-    if map.crates.is_empty() {
-        return NO_MAP.to_owned();
-    }
     match call {
+        McpCall::Flow(args) => map.flows(budget(args.budget)),
+        _ if map.crates.is_empty() => NO_MAP.to_owned(),
         McpCall::Map(args) => map.start_here(budget(args.budget)),
         McpCall::Symbol(args) if args.path.len() > LONGEST_PATH => NO_ITEM.to_owned(),
         McpCall::Symbol(args) => map.item(&args.path, budget(args.budget)),
-        McpCall::Flow(args) => map.flows(budget(args.budget)),
         McpCall::Newer => String::new(),
     }
 }
