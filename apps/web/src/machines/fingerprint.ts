@@ -1,4 +1,4 @@
-import { hex } from "../hex.ts";
+import { hex, unhex } from "../hex.ts";
 import type { MachineKey } from "../protocol.ts";
 
 /** Whether `key` is 64 lowercase hex digits, the only form a machine key takes. */
@@ -14,7 +14,6 @@ export async function fingerprint(key: MachineKey): Promise<string> {
   if (!isMachineKey(key)) {
     throw new RangeError("not a machine key");
   }
-  const bytes = Uint8Array.from(key.match(/../g) ?? [], (pair) => Number.parseInt(pair, 16));
-  const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes));
+  const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", unhex(key)));
   return Array.from({ length: 8 }, (_, group) => hex(digest.subarray(2 * group, 2 * group + 2))).join(" ");
 }

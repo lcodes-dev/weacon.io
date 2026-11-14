@@ -49,10 +49,10 @@ export function requestFor(retry: Retry | undefined, text: string, fresh: () => 
 }
 
 const PROBLEMS: Record<Exclude<Sent, "accepted">, string> = {
-  too_long: "Too long to send; shorten it and try again",
-  refused: "The message wasn't sent",
-  lost: "The connection closed; the message may not have been sent",
-  unsure: "The server didn't answer; the message may not have been sent",
+  too_long: "It's too long to send. Shorten it and try again.",
+  refused: "The message wasn't sent.",
+  lost: "The connection closed. The message may not have been sent.",
+  unsure: "The server didn't answer. The message may not have been sent.",
 };
 
 /** What the box holds after a send. */
@@ -88,10 +88,10 @@ export function afterLate(retry: Retry | undefined, text: string, late: Late): A
 /** Why the box can't send to `chatRef` now, or `undefined` when it can. */
 export function blocked(status: Status, chatRef: ChatRef | undefined): string | undefined {
   if (chatRef === undefined) {
-    return "Pick a chat to send";
+    return "Pick a chat to send to.";
   }
   if (status.state !== "live") {
-    return "Messages send once the server is connected";
+    return "Messages send once the server is connected.";
   }
-  return offers(status, "chat.send") ? undefined : "This server can't take messages yet";
+  return offers(status, "chat.send") ? undefined : "This server can't take messages yet.";
 }

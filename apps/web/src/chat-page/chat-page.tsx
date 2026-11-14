@@ -21,7 +21,7 @@ import { ChatPageView } from "./chat-page-view.tsx";
 const chatRef = chatRefOf(window.location.search);
 // How long a hidden tab waits for a frame before its batch of run events goes out anyway.
 const HIDDEN_MS = 250;
-const TRANSCRIPT: Asks = { needs: "run.stream", offers: ["diff.view", "chat.events"] };
+const TRANSCRIPT: Asks = { needs: "run.stream", offers: ["diff.view", "chat.events", "log.forward"] };
 // No message carries members' names, so labels leave them out.
 const NO_MEMBERS = new Map<string, string>();
 
@@ -41,8 +41,6 @@ export function ChatPage({ url, log }: { url: string; log: Log }) {
   const live = useRef<{ connection: Connection; receipts: Receipts; liveChat: LiveChat | undefined }>(undefined);
   const lastId = useRef(HELLO_ID);
   useEffect(() => {
-    // A closed socket's last news must not overwrite the next socket's.
-    let current = true;
     let socket: WebSocket;
     try {
       socket = new WebSocket(url);
@@ -53,9 +51,6 @@ export function ChatPage({ url, log }: { url: string; log: Log }) {
     }
     const later: Later = (run, ms) => setTimeout(run, ms);
     const receipts = new Receipts(later, (request, settled) => {
-      if (!current) {
-        return;
-      }
       setLate({ request, settled });
       const answer = answered.current.get(request);
       if (answer !== undefined && settled === "accepted") {
@@ -69,11 +64,14 @@ export function ChatPage({ url, log }: { url: string; log: Log }) {
       (frame) => cancelAnimationFrame(frame),
       (run) => later(run, HIDDEN_MS),
     );
+    // What ends with the connection, however it ends.
+    const stop = () => {
+      live.current = undefined;
+      log.detach();
+      receipts.end();
+    };
     const connection = new Connection(socket, ME, {
       status(next) {
-        if (!current) {
-          return;
-        }
         setStatus(next);
         if (next.state === "live") {
           const liveChat =
@@ -83,17 +81,15 @@ export function ChatPage({ url, log }: { url: string; log: Log }) {
                   id: () => ++lastId.current,
                   send: (envelope) => connection.send(envelope),
                   schedule,
-                  show: (shown) => current && setSync(shown),
+                  show: setSync,
                 });
           live.current = { connection, receipts, liveChat };
           liveChat?.open();
           log.attach((envelope) => connection.send(envelope), offers(next, "log.forward"));
         } else if (next.state === "ended") {
           live.current?.liveChat?.end();
-          live.current = undefined;
+          stop();
           setChanges(cut);
-          log.detach();
-          receipts.end();
           log.warn(next.code === "connection.lost" ? "connection lost" : "connection refused", { code: next.code });
         }
       },
@@ -107,18 +103,14 @@ export function ChatPage({ url, log }: { url: string; log: Log }) {
             live.current?.liveChat?.push(message);
           },
           answers: (message) => receipts.take(message),
-          changes: (message) => {
-            if (current) {
-              setChanges((before) => receive(before, message));
-            }
-          },
+          changes: (message) => setChanges((before) => receive(before, message)),
         });
       },
     }, TRANSCRIPT, later);
     return () => {
-      current = false;
-      live.current = undefined;
-      socket.close();
+      live.current?.liveChat?.close();
+      stop();
+      connection.close();
     };
   }, [url]);
   const command = (action: ChatAction, request: RequestId): Promise<Sent> => {
