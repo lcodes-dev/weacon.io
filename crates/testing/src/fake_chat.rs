@@ -254,7 +254,8 @@ impl FakeChat {
                     self.stopped.push(run);
                 }
             }
-            ChatAction::Newer => {}
+            // A hold comes only from a local client, never through the server.
+            ChatAction::Hold | ChatAction::Release | ChatAction::Newer => {}
         }
         told
     }

@@ -202,10 +202,7 @@ mod tests {
         append(&one, "c-1", &first).await.unwrap();
 
         let runs = one.chat_runs(&id("c-1")).await.unwrap();
-        assert_eq!(
-            runs.run().map(|run| run.state),
-            Some(RunState::Running)
-        );
+        assert_eq!(runs.run().map(|run| run.state), Some(RunState::Running));
         assert_eq!(waits(&runs), [(1, 2), (2, 3)]);
         assert_eq!(
             two.chat_runs(&id("c-1")).await.unwrap(),
