@@ -52,6 +52,10 @@ pub struct WorkspaceSummary {
     pub id: WorkspaceId,
     pub name: String,
     pub role: WorkspaceRole,
+    /// The signed-in person's own member in this workspace, sent by the server.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "MemberId")]
+    pub member: Option<MemberId>,
 }
 
 /// The workspaces the signed-in account is a member of.
@@ -165,8 +169,9 @@ mod tests {
             id: workspace(),
             name: "Personal".to_owned(),
             role: WorkspaceRole::Owner,
+            member: Some("m-1".parse().unwrap()),
         };
-        let wire = json!({ "id": "w-1", "name": "Personal", "role": "owner" });
+        let wire = json!({ "id": "w-1", "name": "Personal", "role": "owner", "member": "m-1" });
         let list = WorkspaceList {
             workspaces: vec![summary.clone()],
         };

@@ -23,7 +23,7 @@ use crate::mcp::grants::Granted;
 use crate::mcp::{self, Mcp};
 use crate::platform;
 use crate::runs::{ChatKey, Runs};
-use crate::workspaces::Workspaces;
+use crate::workspaces::{self, Workspaces};
 
 /// Where the engine finds things on this machine, beside its state folder.
 #[derive(Clone, Debug, Default)]
@@ -70,6 +70,7 @@ fn launch(
     run_as: &RunAs,
 ) -> Result<Granted, Fault> {
     let launch = prepared(roots, places, run_as)?;
+    workspaces::require_sign_in(&launch)?;
     let (launch, revoke) = mcp::grant(places.mcp.as_ref(), launch, run_as)?;
     let agent = launch.start(policy, app, run_as.run.clone(), run_as.session.as_ref())?;
     Ok(Granted {
@@ -101,7 +102,7 @@ fn work_dir(work_root: Option<&Path>, key: &ChatKey) -> Result<PathBuf, Fault> {
     };
     let dir = work_root
         .ok_or_else(failed)?
-        .join(crate::workspaces::folder_name(&key.workspace))
+        .join(workspaces::folder_name(&key.workspace))
         .join(file_stem(&key.chat));
     platform::private_dir(&dir).map_err(|error| failed().because(error))?;
     Ok(dir)
@@ -169,9 +170,22 @@ mod tests {
     #[tokio::test]
     async fn a_runs_token_lives_as_long_as_its_agent_and_a_failed_start_keeps_none() {
         let dir = TempDir::new().unwrap();
-        let claude = platform::plant_program(&dir.join("bin"), "claude", 0o755);
-        std::fs::write(&claude, "#!/bin/sh\nexec sleep 30\n").unwrap();
-        platform::plant_program(&dir.join("broken"), "claude", 0o755);
+        // Signed in from its own folder when asked, and otherwise a run that waits; the second
+        // is gone once it has answered, so its start fails; the third isn't signed in.
+        let answer = "printf '{\"authMethod\":\"claude.ai\"}'; exit 0";
+        let signed_in = format!("[ \"$1\" = auth ] && {{ {answer}; }}");
+        let broken = format!("[ \"$1\" = auth ] && {{ rm -- \"$0\"; {answer}; }}");
+        let signed_out = "[ \"$1\" = auth ] && exit 1".to_owned();
+        for (bin, check) in [
+            ("bin", signed_in),
+            ("broken", broken),
+            ("signed-out", signed_out),
+        ] {
+            std::fs::create_dir_all(dir.join(bin)).unwrap();
+            let script = format!("#!/bin/sh\n{check}\nexec sleep 30\n");
+            weacon_testing::platform::write_program(&dir.join(bin).join("claude"), &script)
+                .unwrap();
+        }
         let app = weacon_appkit::build(&VERSION);
         let (log, _records) = recording_logger();
         let (mcp, _server) = mcp::start(&app, &log).unwrap();
@@ -197,7 +211,11 @@ mod tests {
         assert_eq!(mcp.grants.live(), 1);
         drop(agent);
         assert_eq!(mcp.grants.live(), 0);
-        run("broken").map(drop).unwrap_err();
+        let broken = run("broken").map(drop).unwrap_err();
+        assert_eq!(broken.code().as_str(), "agent.not_started");
+        assert_eq!(mcp.grants.live(), 0);
+        let refused = run("signed-out").map(drop).unwrap_err();
+        assert_eq!(refused.code().as_str(), "agent.signed_out");
         assert_eq!(mcp.grants.live(), 0);
     }
 

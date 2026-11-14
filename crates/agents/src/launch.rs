@@ -152,6 +152,21 @@ impl Launch {
         }
     }
 
+    /// Refuses unless the agent is signed in only from the workspace's own config folder,
+    /// checked afresh on every call.
+    ///
+    /// # Errors
+    /// `agent.signed_out` when it isn't; the check's own fault when it can't run.
+    pub async fn require_sign_in(&self) -> Result<(), Fault> {
+        match self.sign_in().await? {
+            SignIn::SignedIn => Ok(()),
+            SignIn::SignedOut => Err(Fault::new(
+                code!("agent.signed_out"),
+                "The agent isn't signed in for this workspace on this machine",
+            )),
+        }
+    }
+
     /// Runs the vendor's own sign-in in the terminal this process has, for the person to
     /// finish there. Nothing that passes between them is read.
     ///
@@ -448,6 +463,21 @@ mod tests {
         let error = hanging.sign_in().await.unwrap_err();
 
         assert_eq!(error.code().as_str(), "agent.status_failed");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_run_is_refused_unless_the_workspace_is_signed_in_on_its_own() {
+        let dir = TempDir::new().unwrap();
+        let with = |program: &str| Launch {
+            program: PathBuf::from(program),
+            ..launch(AgentKind::Codex, &dir)
+        };
+
+        let refused = with("false").require_sign_in().await.unwrap_err();
+
+        with("true").require_sign_in().await.unwrap();
+        assert_eq!(refused.code().as_str(), "agent.signed_out");
     }
 
     async fn log_in_code(launch: Launch) -> Option<String> {
