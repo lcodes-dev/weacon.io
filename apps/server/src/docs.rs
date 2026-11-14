@@ -199,7 +199,7 @@ mod tests {
 
     use super::*;
     use crate::test_support::{
-        self, Fixture, Running, refusal, request_with, status, workspace_id,
+        Fixture, Running, bearer, refusal, request_with, status, workspace_id,
     };
 
     struct Ada {
@@ -255,8 +255,12 @@ mod tests {
     }
 
     async fn ada(fixture: &Fixture) -> (Running, Ada) {
-        let (server, address, auth) = test_support::ada(fixture).await;
-        (server, Ada { address, auth })
+        let (server, body) = fixture.signed_in("ada@example.com").await;
+        let ada = Ada {
+            address: server.address,
+            auth: bearer(&body),
+        };
+        (server, ada)
     }
 
     fn content(title: &str, body: &str, pinned: &[&str]) -> DocContent {

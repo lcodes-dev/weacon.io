@@ -5,6 +5,8 @@ use std::path::{Path, PathBuf};
 
 use weacon_observability::{Field, Logger};
 
+use crate::app::blocking;
+
 const MIB: u64 = 1 << 20;
 const GIB: u64 = 1 << 30;
 const LOW: u64 = 5 * GIB;
@@ -66,9 +68,7 @@ impl Watch {
     /// Reads the free space off the async runtime, since a slow disk can block.
     pub(crate) async fn check(&mut self, log: &Logger) {
         let (dir, free_space) = (self.dir.clone(), self.free_space);
-        let free = tokio::task::spawn_blocking(move || free_space(&dir))
-            .await
-            .unwrap_or_else(|error| Err(io::Error::other(error)));
+        let free = blocking(move || free_space(&dir)).await;
         self.observe(free, log);
     }
 

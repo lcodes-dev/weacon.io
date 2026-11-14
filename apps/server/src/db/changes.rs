@@ -94,11 +94,11 @@ impl Workspace {
         .await
         .map_err(failed)?
         .into_iter()
-        .map(|row| self.update(row))
+        .map(|row| self.stored_update(row))
         .collect()
     }
 
-    fn update(&self, row: Row) -> Result<WorkspaceUpdate, Fault> {
+    fn stored_update(&self, row: Row) -> Result<WorkspaceUpdate, Fault> {
         let (seq, kind, member, task, task_version, doc, doc_version) = row;
         let version = |version| stored_version(version).map(Revision::get);
         let change = match (kind.as_str(), task, task_version, doc, doc_version) {
@@ -132,15 +132,14 @@ impl Workspace {
 mod tests {
     use weacon_testing::TempDir;
 
-    use weacon_model::{Attribution, OrderKey, Task, Title};
-
     use sqlx::sqlite::SqliteConnectOptions;
     use sqlx::{AssertSqlSafe, ConnectOptions, raw_sql};
+    use weacon_model::Attribution;
 
     use super::*;
     use crate::db::Db;
     use crate::db::schema::STEPS;
-    use crate::test_support::{member_id, two_teams, workspace_id};
+    use crate::test_support::{member_id, new_task, two_teams, workspace_id};
 
     fn joined(seq: u64, member: &str) -> WorkspaceUpdate {
         WorkspaceUpdate {
@@ -195,11 +194,7 @@ mod tests {
     async fn a_task_change_names_its_task_and_version_and_needs_both() {
         let dir = TempDir::new().unwrap();
         let (one, _) = two_teams(&dir).await;
-        let task = Task::new(
-            TaskId::try_from("t1".to_owned()).unwrap(),
-            Title::try_from("Write".to_owned()).unwrap(),
-            OrderKey::try_from("V".to_owned()).unwrap(),
-        );
+        let task = new_task("t1", "Write", "V");
         one.add_task(&task, &Attribution::by(member_id("m1"), 0))
             .await
             .unwrap();

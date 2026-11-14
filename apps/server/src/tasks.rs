@@ -6,7 +6,7 @@ use axum::response::{IntoResponse, Response};
 use weacon_model::{Attribution, OrderKey, Revision, Task, TaskEdit, Title};
 use weacon_observability::Fault;
 use weacon_protocol::{
-    TaskChange, TaskCreate, TaskEditBody, TaskId, TaskList, TaskRecord, WorkspaceId, code,
+    Code, TaskChange, TaskCreate, TaskEditBody, TaskId, TaskList, TaskRecord, WorkspaceId, code,
 };
 
 use crate::app::new_id;
@@ -33,7 +33,7 @@ pub(crate) async fn create(
     body: Result<Json<TaskCreate>, JsonRejection>,
 ) -> Response {
     let made = async {
-        let Json(body) = body.map_err(|_| invalid())?;
+        let body = parsed(body)?;
         let title = title(body.title)?;
         let tasks = member.workspace.tasks().await?;
         let order = place(&tasks, None, body.before.as_ref())?;
@@ -62,7 +62,7 @@ pub(crate) async fn change(
 ) -> Response {
     let edited = async {
         let Path((_, id)) = path.map_err(|_| invalid())?;
-        let Json(body) = body.map_err(|_| invalid())?;
+        let body = parsed(body)?;
         let edit = match body.edit {
             TaskEditBody::Title { title: text } => TaskEdit::Title(title(text)?),
             TaskEditBody::Status { status } => TaskEdit::Status(status),
@@ -129,21 +129,45 @@ fn record(task: Task) -> TaskRecord {
     }
 }
 
+/// A request's body, or `task.too_large` past the size limit and `task.invalid` otherwise.
+fn parsed<T>(body: Result<Json<T>, JsonRejection>) -> Result<T, Fault> {
+    match body {
+        Ok(Json(body)) => Ok(body),
+        Err(rejection) if rejection.status() == StatusCode::PAYLOAD_TOO_LARGE => Err(Fault::new(
+            code!("task.too_large"),
+            "The task request is too large",
+        )),
+        Err(_) => Err(invalid()),
+    }
+}
+
 fn invalid() -> Fault {
     Fault::new(code!("task.invalid"), "The task request isn't valid")
 }
 
+/// The refusals the task routes answer, with their status; anything else is the server failing.
+const REFUSALS: [(Code, StatusCode); 8] = [
+    (code!("task.invalid"), StatusCode::BAD_REQUEST),
+    (code!("task.unknown_value"), StatusCode::BAD_REQUEST),
+    (code!("task.not_found"), StatusCode::NOT_FOUND),
+    (code!("task.stale"), StatusCode::CONFLICT),
+    (code!("task.no_room"), StatusCode::CONFLICT),
+    (code!("task.last_version"), StatusCode::CONFLICT),
+    (code!("task.too_many"), StatusCode::CONFLICT),
+    (code!("task.too_large"), StatusCode::PAYLOAD_TOO_LARGE),
+];
+
 /// Answers a refusal with its status, and anything else as the server failing.
 fn answer(shared: &Shared, fault: Fault) -> Response {
-    let status = match fault.code().as_str() {
-        "task.invalid" | "task.unknown_value" => StatusCode::BAD_REQUEST,
-        "task.not_found" => StatusCode::NOT_FOUND,
-        "task.stale" | "task.no_room" | "task.last_version" => StatusCode::CONFLICT,
-        // Another change took the same place at the same moment; reading again finds a free one.
-        "db.exists" => return error(StatusCode::CONFLICT, fault.code().clone(), true),
-        _ => return failure(shared, fault),
-    };
-    error(status, fault.code().clone(), false)
+    let code = fault.code().clone();
+    // Another change took the same place at the same moment; reading again finds a free one.
+    if code == code!("db.exists") {
+        return error(StatusCode::CONFLICT, code, true);
+    }
+    match REFUSALS.iter().find(|(refusal, _)| *refusal == code) {
+        Some((_, status)) => error(*status, code, false),
+        None => failure(shared, fault),
+    }
 }
 
 #[cfg(test)]
@@ -156,7 +180,7 @@ mod tests {
 
     use super::*;
     use crate::test_support::{
-        self, Fixture, Running, refusal, request_with, status, workspace_id,
+        Fixture, Running, bearer, refusal, request_with, status, workspace_id,
     };
 
     struct Ada {
@@ -204,9 +228,14 @@ mod tests {
         }
     }
 
+    /// The running server, which stops once dropped, and ada signed in to it.
     async fn ada(fixture: &Fixture) -> (Running, Ada) {
-        let (server, address, auth) = test_support::ada(fixture).await;
-        (server, Ada { address, auth })
+        let (server, body) = fixture.signed_in("ada@example.com").await;
+        let ada = Ada {
+            address: server.address,
+            auth: bearer(&body),
+        };
+        (server, ada)
     }
 
     fn titles(tasks: &[TaskRecord]) -> Vec<&str> {
@@ -342,6 +371,35 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_body_past_the_size_limit_is_too_large_and_one_under_it_is_read() {
+        let fixture = Fixture::new().await;
+        let (_server, ada) = ada(&fixture).await;
+        let write = ada.create("Write", None).await;
+        let huge = TaskCreate {
+            title: "x".repeat(20_000),
+            before: None,
+        };
+        let huge = serde_json::to_string(&huge).unwrap();
+        let change = format!("POST /api/workspaces/w1/tasks/{}", write.id.as_str());
+
+        let ship = TaskCreate {
+            title: "Ship".to_owned(),
+            before: None,
+        };
+        // Spaces are JSON too, so this body is just under the limit and still read.
+        let padded = format!("{:<16000}", serde_json::to_string(&ship).unwrap());
+
+        for head in ["POST /api/workspaces/w1/tasks", change.as_str()] {
+            let (status, body) = ada.send(head, &huge).await;
+            assert_eq!(status, "http/1.1 413 payload too large", "{head}");
+            assert_eq!(refusal(&body), "task.too_large");
+        }
+        assert_eq!(ada.list().await, [write]);
+        let (status, _) = ada.send("POST /api/workspaces/w1/tasks", &padded).await;
+        assert_eq!(status, "http/1.1 201 created");
+    }
+
+    #[tokio::test]
     async fn bad_input_is_refused_as_a_bad_request() {
         let fixture = Fixture::new().await;
         let (_server, ada) = ada(&fixture).await;
@@ -423,17 +481,25 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_place_another_change_took_meanwhile_is_a_conflict_worth_retrying() {
+    async fn a_full_workspace_or_a_taken_place_is_a_conflict() {
         let fixture = Fixture::new().await;
-        let taken = Fault::new(code!("db.exists"), "It already exists");
+        for (fault, retryable) in [
+            (Fault::new(code!("db.exists"), "It already exists"), true),
+            (Fault::new(code!("task.too_many"), "Full"), false),
+        ] {
+            let code = fault.code().as_str().to_owned();
 
-        let answer = answer(&fixture.shared, taken);
+            let answer = answer(&fixture.shared, fault);
 
-        assert_eq!(answer.status(), StatusCode::CONFLICT);
-        let body = axum::body::to_bytes(answer.into_body(), 1024)
-            .await
-            .unwrap();
-        let error: ErrorBody = serde_json::from_slice(&body).unwrap();
-        assert_eq!((error.code.as_str(), error.retryable), ("db.exists", true));
+            assert_eq!(answer.status(), StatusCode::CONFLICT, "{code}");
+            let body = axum::body::to_bytes(answer.into_body(), 1024)
+                .await
+                .unwrap();
+            let error: ErrorBody = serde_json::from_slice(&body).unwrap();
+            assert_eq!(
+                (error.code.as_str(), error.retryable),
+                (code.as_str(), retryable)
+            );
+        }
     }
 }

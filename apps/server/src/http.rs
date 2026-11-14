@@ -33,8 +33,7 @@ const REQUEST_ID: &str = "x-request-id";
 const GRACE: Duration = Duration::from_secs(10);
 /// How long a request may take from its head to its answer, its body included.
 const ANSWER_WITHIN: Duration = Duration::from_secs(30);
-/// 16 KiB.
-const MAX_BODY: usize = 16_384;
+const MAX_BODY: usize = 16 * 1024;
 static METHODS: [Method; 9] = [
     Method::GET,
     Method::POST,
@@ -284,7 +283,7 @@ mod tests {
     use tokio::net::TcpStream;
 
     use super::*;
-    use crate::test_support::{Fixture, Running, header, messages, request, run};
+    use crate::test_support::{Fixture, Running, header, messages, request};
 
     struct Server {
         running: Running,
@@ -298,7 +297,7 @@ mod tests {
     async fn start_with(change: impl FnOnce(&mut Shared)) -> Server {
         let mut fixture = Fixture::new().await;
         change(&mut fixture.shared);
-        let running = run(fixture.shared.clone()).await;
+        let running = fixture.run().await;
         Server { running, fixture }
     }
 

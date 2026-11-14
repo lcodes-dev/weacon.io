@@ -1,8 +1,8 @@
 import { useState } from "react";
 
 import type { AccountSignedIn, ChallengeId } from "../protocol.ts";
-import type { Answer, Api } from "./api.ts";
-import { problemText } from "./problems.ts";
+import type { Api } from "./api.ts";
+import { useAsk } from "./ask.ts";
 
 /**
  * Asks for an email, then the code sent to it. Every address gets the same answer, so the page
@@ -13,22 +13,10 @@ export function SignIn({ api, signedIn }: { api: Api; signedIn(account: AccountS
   const [code, setCode] = useState("");
   // The address the code was sent to, and the challenge to finish with.
   const [sent, setSent] = useState<{ email: string; challenge: ChallengeId }>();
-  const [busy, setBusy] = useState(false);
-  const [problem, setProblem] = useState<string>();
-  const ask = async <T,>(request: Promise<Answer<T>>, then: (value: T) => void) => {
-    setBusy(true);
-    setProblem(undefined);
-    const answer = await request;
-    setBusy(false);
-    if (answer.ok) {
-      then(answer.value);
-    } else {
-      setProblem(problemText(answer.code));
-    }
-  };
+  const { busy, problem, ask, clear } = useAsk();
   const send = () => {
     const to = email.trim();
-    void ask(api.start(to), ({ challenge }) => {
+    void ask(() => api.start(to), ({ challenge }) => {
       setCode("");
       setSent({ email: to, challenge });
     });
@@ -55,7 +43,7 @@ export function SignIn({ api, signedIn }: { api: Api; signedIn(account: AccountS
         <form
           onSubmit={(event) => {
             event.preventDefault();
-            void ask(api.finish({ ...sent, code: code.trim() }), signedIn);
+            void ask(() => api.finish({ ...sent, code: code.trim() }), signedIn);
           }}
         >
           <p>If {sent.email} can sign in here, we sent it a code.</p>
@@ -77,7 +65,7 @@ export function SignIn({ api, signedIn }: { api: Api; signedIn(account: AccountS
             disabled={busy}
             onClick={() => {
               setSent(undefined);
-              setProblem(undefined);
+              clear();
             }}
           >
             Use another email
