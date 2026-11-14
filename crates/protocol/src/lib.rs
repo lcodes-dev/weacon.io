@@ -48,7 +48,7 @@ pub use machine::{
     MachineId, MachineKey, MachineList, MachineName, MachineOs, MachineSummary, PairClaim,
     PairClaimed, PairConfirm, PairLookup, PairPending, PairStart, PairStarted, PairingId,
 };
-pub use mcp::{MapArgs, McpCall, SymbolArgs};
+pub use mcp::{FlowArgs, MapArgs, McpCall, SymbolArgs};
 pub use message::{App, Envelope, ErrorBody, Hello, Message, PROTOCOL, Welcome};
 pub use pick::Pick;
 pub use proposal::{

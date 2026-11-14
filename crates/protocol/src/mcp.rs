@@ -13,6 +13,8 @@ pub enum McpCall {
     Map(MapArgs),
     /// One item of that code.
     Symbol(SymbolArgs),
+    /// The flows the folder's docs pin, and where each breaks.
+    Flow(FlowArgs),
     /// A tool this build doesn't offer; only ever received.
     #[serde(other)]
     Newer,
@@ -32,6 +34,13 @@ impl McpCall {
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MapArgs {
+    /// The most bytes the answer may hold; the core clamps it to its own bounds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub budget: Option<u32>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FlowArgs {
     /// The most bytes the answer may hold; the core clamps it to its own bounds.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub budget: Option<u32>,
@@ -73,6 +82,11 @@ mod tests {
         );
         let bare = McpCall::parse("map", None).unwrap();
         assert_eq!(bare, McpCall::Map(MapArgs::default()));
+        let flow = call("flow", json!({"budget": 3000}));
+        assert_eq!(
+            flow.unwrap(),
+            McpCall::Flow(FlowArgs { budget: Some(3000) })
+        );
     }
 
     #[test]

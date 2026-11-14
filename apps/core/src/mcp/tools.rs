@@ -17,6 +17,9 @@ const MOST: u32 = 16_000;
 
 const NO_MAP: &str = "No code map for this folder.\n";
 
+/// The tools Claude may call without asking.
+pub(crate) const UP_FRONT: [&str; 2] = ["map", "symbol"];
+
 /// The tools every run sees from its first call, as `tools/list` sends them.
 pub(crate) fn listed() -> Vec<Tool> {
     let budget = json!({"type": "integer", "minimum": LEAST, "maximum": MOST});
@@ -44,6 +47,13 @@ pub(crate) fn listed() -> Vec<Tool> {
             },
             "annotations": read_only,
         },
+        {
+            "name": "flow",
+            "description": "The flows the docs pin and where the code breaks them; call it \
+                before changing code a flow passes through.",
+            "inputSchema": {"type": "object", "properties": {"budget": budget}},
+            "annotations": read_only,
+        },
     ]);
     serde_json::from_value(tools).unwrap_or_default()
 }
@@ -54,6 +64,23 @@ pub(crate) fn listed() -> Vec<Tool> {
 /// When the folder can't be read.
 pub(crate) fn answer(call: &McpCall, folder: &Path) -> Result<String, Fault> {
     index_folder(folder).map(|(map, _)| answer_from(call, &map))
+}
+
+/// What `answer` gives the index of `folder` within `budget`, or that it has no map; it blocks.
+///
+/// # Errors
+/// When the folder can't be read.
+pub(crate) fn answered(
+    folder: &Path,
+    budget: Option<u32>,
+    answer: impl FnOnce(&Index, usize) -> String,
+) -> Result<String, Fault> {
+    let (map, _) = index_folder(folder)?;
+    Ok(if map.crates.is_empty() {
+        NO_MAP.to_owned()
+    } else {
+        answer(&map, self::budget(budget))
+    })
 }
 
 /// [`answer`], with a folder that can't be read logged and answered as having no map.
@@ -71,6 +98,7 @@ fn answer_from(call: &McpCall, map: &Index) -> String {
     match call {
         McpCall::Map(args) => map.start_here(budget(args.budget)),
         McpCall::Symbol(args) => map.item(&args.path, budget(args.budget)),
+        McpCall::Flow(args) => map.flows(budget(args.budget)),
         McpCall::Newer => String::new(),
     }
 }
@@ -84,7 +112,7 @@ fn budget(asked: Option<u32>) -> usize {
 #[cfg(test)]
 mod tests {
     use weacon_codemap::{SourceFile, index};
-    use weacon_protocol::{MapArgs, SymbolArgs};
+    use weacon_protocol::{FlowArgs, MapArgs, SymbolArgs};
     use weacon_testing::{TempDir, recording_logger};
 
     use super::*;
@@ -125,9 +153,10 @@ mod tests {
             .map(|tool| tool.description.as_deref().map(str::len))
             .collect();
 
-        assert_eq!(names, ["map", "symbol"]);
-        assert_eq!(sizes, [Some(189), Some(170)]);
-        assert_eq!(serde_json::to_string(&tools).unwrap().len(), 800);
+        assert_eq!(names, ["map", "symbol", "flow"]);
+        assert_eq!(names.get(..2), Some(UP_FRONT.as_slice()));
+        assert_eq!(sizes, [Some(189), Some(170), Some(106)]);
+        assert_eq!(serde_json::to_string(&tools).unwrap().len(), 1103);
     }
 
     #[test]
@@ -163,6 +192,23 @@ mod tests {
         let gone = answer(&map(None), &dir.join("gone")).unwrap_err();
         assert_eq!(gone.code().as_str(), "map.read_failed");
         assert_eq!(weacon_testing::messages(&records), ["mcp map failed"]);
+    }
+
+    #[test]
+    fn flow_says_where_each_pinned_flow_breaks() {
+        let docs = index(&[
+            file("Cargo.toml", "[package]\nname = \"a-b\"\n"),
+            file("src/lib.rs", "pub fn run() {}\npub fn go() {}\n"),
+            file("docs/a.md", "See flow:a_b::run->a_b::gone.\n"),
+        ])
+        .unwrap();
+
+        let flows = answer_from(&McpCall::Flow(FlowArgs::default()), &docs);
+
+        assert_eq!(
+            flows,
+            "Flows pinned in the docs: 1.\n- docs/a.md:1  a_b::run -> a_b::gone: breaks: no item a_b::gone\n"
+        );
     }
 
     #[test]

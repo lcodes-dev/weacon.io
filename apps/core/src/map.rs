@@ -6,7 +6,7 @@ use std::time::Instant;
 use weacon_appkit::Ending;
 use weacon_codemap::{Index, SourceFile, index};
 use weacon_observability::Fault;
-use weacon_protocol::{MapArgs, McpCall, SymbolArgs, code};
+use weacon_protocol::{FlowArgs, MapArgs, McpCall, SymbolArgs, code};
 
 use crate::app::App;
 use crate::cli::{MapCommand, MapSubcommand};
@@ -25,12 +25,19 @@ pub(crate) fn run(
         root,
         budget,
     } = command;
-    let call = match command {
+    let text = match command {
         Some(MapSubcommand::CheckAnchors) => return check_anchors(app, &root, input, out),
-        Some(MapSubcommand::Symbol { path }) => McpCall::Symbol(SymbolArgs { path, budget }),
-        None => McpCall::Map(MapArgs { budget }),
+        Some(MapSubcommand::Symbol { path }) => {
+            tools::answer(&McpCall::Symbol(SymbolArgs { path, budget }), &root)?
+        }
+        Some(MapSubcommand::Flows) => tools::answer(&McpCall::Flow(FlowArgs { budget }), &root)?,
+        Some(MapSubcommand::Architecture) => tools::answered(&root, budget, Index::architecture)?,
+        Some(MapSubcommand::Contracts) => {
+            tools::answered(&root, budget, |map, budget| map.contracts(None, budget))?
+        }
+        None => tools::answer(&McpCall::Map(MapArgs { budget }), &root)?,
     };
-    print(out, &tools::answer(&call, &root)?)?;
+    print(out, &text)?;
     Ok(Ending::Done)
 }
 
@@ -137,12 +144,9 @@ fn skipped(folder: &Path, name: &str) -> bool {
     name == "node_modules" || folder.join("CACHEDIR.TAG").is_file()
 }
 
-/// Manifests, Rust under a `src` folder, and Markdown, whose flows the map checks.
 fn is_source(path: &str, name: &str) -> bool {
-    let extension = Path::new(name).extension();
-    let rust = extension.is_some_and(|it| it == "rs");
-    let doc = extension.is_some_and(|it| it == "md");
-    name == "Cargo.toml" || doc || (rust && path.split('/').any(|part| part == "src"))
+    let rust = Path::new(name).extension().is_some_and(|it| it == "rs");
+    name == "Cargo.toml" || (rust && path.split('/').any(|part| part == "src"))
 }
 
 #[cfg(test)]
@@ -196,7 +200,7 @@ mod tests {
     }
 
     #[test]
-    fn reads_only_crate_sources_and_docs() {
+    fn reads_only_crate_sources() {
         let mut files = CRATE.to_vec();
         files.extend([
             ("a/src/notes.md", "fn hidden() {}"),
@@ -224,7 +228,6 @@ mod tests {
                 "a/Cargo.toml",
                 "a/src/lib.rs",
                 "a/src/m.rs",
-                "a/src/notes.md",
                 "a/src/target/x.rs"
             ]
         );
@@ -255,6 +258,34 @@ mod tests {
         let ending = run(&app(None, None), command, &mut io::empty(), &mut out);
         assert_eq!(ending.unwrap(), Ending::Done);
         String::from_utf8(out).unwrap()
+    }
+
+    #[test]
+    fn each_view_prints_its_answer_and_the_tools_views_match_them() {
+        let root = repo(CRATE);
+        let empty = TempDir::new().unwrap();
+        let (index, _) = index_folder(&root).unwrap();
+        let tool = |call: McpCall| tools::answer(&call, &root).unwrap();
+        let view = |root: &Path, view| printed(root, Some(view), None);
+
+        let flows = tool(McpCall::Flow(FlowArgs::default()));
+        assert_eq!(view(&root, MapSubcommand::Flows), flows);
+        assert_eq!(
+            view(&root, MapSubcommand::Architecture),
+            index.architecture(6000)
+        );
+        assert_eq!(
+            view(&root, MapSubcommand::Contracts),
+            index.contracts(None, 6000)
+        );
+        let views = [
+            MapSubcommand::Flows,
+            MapSubcommand::Architecture,
+            MapSubcommand::Contracts,
+        ];
+        for subcommand in views {
+            assert_eq!(view(&empty, subcommand), "No code map for this folder.\n");
+        }
     }
 
     fn symbol(path: &str) -> MapSubcommand {
