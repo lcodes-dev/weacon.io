@@ -3,7 +3,7 @@
 use std::time::Duration;
 
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
-use weacon_protocol::{App, Capability, Envelope, Message, code, encode_line};
+use weacon_protocol::{App, Capability, Code, Envelope, Hello, Message, code, encode_line};
 
 use crate::Failure;
 use crate::replay::play;
@@ -56,28 +56,37 @@ pub(crate) fn answer(line: &str, more: &[Capability]) -> Result<Envelope, Failur
     })
 }
 
+/// The hello a test's client sends first, under `id`, speaking `protocol` and offering
+/// `capabilities`.
+pub fn client_hello(
+    id: u32,
+    protocol: u32,
+    capabilities: impl IntoIterator<Item = Code>,
+) -> Envelope {
+    Envelope {
+        id,
+        message: Message::Hello(Hello {
+            protocol,
+            app: App {
+                name: "weacon-web".to_owned(),
+                version: "0.1.0".to_owned(),
+                commit: "1a2b3c4".to_owned(),
+            },
+            capabilities: capabilities.into_iter().map(Capability::from).collect(),
+        }),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use serde_json::{Value, json};
     use tokio::io::{AsyncReadExt, duplex};
-    use weacon_protocol::{Hello, PROTOCOL};
+    use weacon_protocol::PROTOCOL;
 
     use super::*;
 
-    fn hello(id: u32, protocol: u32, capabilities: &[&str]) -> Vec<u8> {
-        encode_line(&Envelope {
-            id,
-            message: Message::Hello(Hello {
-                protocol,
-                app: App {
-                    name: "weacon-extension".to_owned(),
-                    version: "0.1.0".to_owned(),
-                    commit: "1a2b3c4".to_owned(),
-                },
-                capabilities: serde_json::from_value(json!(capabilities)).unwrap(),
-            }),
-        })
-        .unwrap()
+    fn hello(id: u32, protocol: u32, capabilities: impl IntoIterator<Item = Code>) -> Vec<u8> {
+        encode_line(&client_hello(id, protocol, capabilities)).unwrap()
     }
 
     #[tokio::test]
@@ -85,7 +94,7 @@ mod tests {
         let (mut client, core) = duplex(4096);
         let served = tokio::spawn(serve(core, "< {\"a\":1}".to_owned(), Duration::ZERO));
         client
-            .write_all(&hello(7, PROTOCOL, &["run.stream"]))
+            .write_all(&hello(7, PROTOCOL, [code!("run.stream")]))
             .await
             .unwrap();
         client.shutdown().await.unwrap();
@@ -108,7 +117,7 @@ mod tests {
         let (mut client, core) = duplex(4096);
         let served = tokio::spawn(serve(core, String::new(), Duration::ZERO));
         client
-            .write_all(&hello(1, PROTOCOL, &["chat.send"]))
+            .write_all(&hello(1, PROTOCOL, [code!("chat.send")]))
             .await
             .unwrap();
         client.shutdown().await.unwrap();
@@ -142,10 +151,7 @@ mod tests {
     async fn another_protocol_is_refused_before_the_run_plays() {
         let (mut client, core) = duplex(4096);
         let served = tokio::spawn(serve(core, "< {\"a\":1}".to_owned(), Duration::ZERO));
-        client
-            .write_all(&hello(1, PROTOCOL + 1, &[]))
-            .await
-            .unwrap();
+        client.write_all(&hello(1, PROTOCOL + 1, [])).await.unwrap();
         client.shutdown().await.unwrap();
         let mut sent = String::new();
         client.read_to_string(&mut sent).await.unwrap();
@@ -168,7 +174,7 @@ mod tests {
             Duration::from_millis(5),
         ));
         client
-            .write_all(&hello(1, PROTOCOL, &["run.stream"]))
+            .write_all(&hello(1, PROTOCOL, [code!("run.stream")]))
             .await
             .unwrap();
         client.shutdown().await.unwrap();
