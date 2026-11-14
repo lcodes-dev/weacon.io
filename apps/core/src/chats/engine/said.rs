@@ -102,12 +102,7 @@ impl<A: Agent> Engine<A> {
             };
             self.commit_said(key, run, &event).await?;
         }
-        let log = &self.open(key).await?.events;
-        let asks = log.runs().waiting.iter().any(|waits| waits.run == *run);
-        if !asks && self.turn(key).is_some() {
-            self.set_state(key, run, RunState::Running).await?;
-        }
-        Ok(())
+        self.running_again(key, run).await
     }
 
     // A prompt a person can't be shown in full is refused for them; it never waits unseen.
