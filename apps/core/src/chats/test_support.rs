@@ -15,7 +15,7 @@ use weacon_protocol::{
 use weacon_testing::{Records, TempDir, recording_logger};
 
 use super::engine::agent::Agent;
-use super::engine::{Chats, Engine, Host, Start};
+use super::engine::{Chats, Engine, Host, RunAs};
 use super::feed::Client;
 use crate::runs::{ChatKey, Runs};
 use crate::workspaces::Workspaces;
@@ -66,7 +66,7 @@ impl Agent for FakeAgent {
 /// The test's end of a started fake agent; dropping `say` makes the agent exit.
 #[derive(Debug)]
 pub(crate) struct Started {
-    pub(crate) start: Start,
+    pub(crate) run_as: RunAs,
     pub(crate) say: mpsc::UnboundedSender<RunEvent>,
     pub(crate) told: mpsc::UnboundedReceiver<Told>,
 }
@@ -94,7 +94,7 @@ pub(crate) fn parts() -> (Bench, Engine<FakeAgent>) {
     let broken = Arc::new(AtomicBool::new(false));
     let fails = Arc::clone(&broken);
     let host = Host {
-        start: Arc::new(move |start: &Start| {
+        launch: Arc::new(move |run_as: &RunAs| {
             if fails.load(Ordering::SeqCst) {
                 return Err(Fault::new(
                     code!("agent.not_started"),
@@ -103,8 +103,8 @@ pub(crate) fn parts() -> (Bench, Engine<FakeAgent>) {
             }
             let (say, says) = mpsc::unbounded_channel();
             let (told_by, told) = mpsc::unbounded_channel();
-            let start = start.clone();
-            drop(starts.send(Started { start, say, told }));
+            let run_as = run_as.clone();
+            drop(starts.send(Started { run_as, say, told }));
             Ok(FakeAgent {
                 says,
                 told: told_by,

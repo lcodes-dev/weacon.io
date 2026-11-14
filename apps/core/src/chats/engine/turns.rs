@@ -35,7 +35,7 @@ impl<A: Agent> Engine<A> {
         if let Some(request) = turn
             && let Err(fault) = self.commit_receipt(key, &request, outcome.clone()).await
         {
-            if let Some(chat) = self.chats.get_mut(key) {
+            if let Some(chat) = self.open_chats.get_mut(key) {
                 chat.pending_end = Some(PendingEnd {
                     turn: request,
                     outcome,
@@ -117,19 +117,20 @@ impl<A: Agent> Engine<A> {
         let live = self.is_live(key);
         let chat = self.open(key).await?;
         // A turn whose run is gone, as after a restart, is over too, and so is that run.
-        let turn_ended = turn
-            .is_some_and(|turn| !live || chat.pending_end.is_some() || chat.log.has_ended(&turn));
+        let turn_ended = turn.is_some_and(|turn| {
+            !live || chat.pending_end.is_some() || chat.events.has_ended(&turn)
+        });
         let working = |status: &RunStatus| {
             matches!(
                 status.state,
                 RunState::Starting | RunState::Running | RunState::Waiting
             )
         };
-        let cut_off = !live && chat.log.runs().runs.iter().any(working);
+        let cut_off = !live && chat.events.runs().runs.iter().any(working);
         let ended: Vec<_> = queue
             .into_iter()
             .map(|queued| queued.request)
-            .filter(|request| chat.log.has_ended(request))
+            .filter(|request| chat.events.has_ended(request))
             .collect();
         if !ended.is_empty() {
             self.runs
@@ -175,7 +176,7 @@ mod tests {
 
     // The outcomes of `request`'s receipts in the log, in order.
     async fn outcomes(engine: &mut Engine<FakeAgent>, request: &RequestId) -> Vec<Outcome> {
-        let log = &engine.open(&key()).await.unwrap().log;
+        let log = &engine.open(&key()).await.unwrap().events;
         let window = log.window(u64::MAX, 64).await.unwrap();
         window
             .into_iter()
@@ -195,7 +196,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn a_turn_ends_even_when_its_last_event_cant_be_committed() {
         let mut on = on_turn().await;
-        on.engine.open(&key()).await.unwrap().log.jam();
+        on.engine.open(&key()).await.unwrap().events.jam();
 
         let outcome = Outcome::Completed;
         let lost = hear(&mut on.engine, RunEvent::Finished { outcome }).await;
@@ -224,7 +225,7 @@ mod tests {
             .unwrap();
 
         let mut next = soon(on.bench.started.recv()).await.unwrap();
-        assert_eq!(next.start.run, run("run-2"));
+        assert_eq!(next.run_as.run, run("run-2"));
         assert_eq!(
             soon(next.told.recv()).await,
             Some(Told::Send("More".to_owned()))
@@ -253,7 +254,7 @@ mod tests {
             .unwrap();
 
         let mut next = soon(on.bench.started.recv()).await.unwrap();
-        assert_eq!(next.start.run, run("run-2"));
+        assert_eq!(next.run_as.run, run("run-2"));
         assert_eq!(
             soon(next.told.recv()).await,
             Some(Told::Send("More".to_owned()))
@@ -286,7 +287,7 @@ mod tests {
             .commit(&key(), ChatEvent::RunStatus { status })
             .await
             .unwrap();
-        on.engine.chats.remove(&key());
+        on.engine.open_chats.remove(&key());
 
         waiting_in(&mut on.engine).await;
 
@@ -306,7 +307,7 @@ mod tests {
         let mut on = on_ask().await;
         assert_eq!(waiting_in(&mut on.engine).await.len(), 1);
         // As after a restart: the log is all that is left of the chat.
-        on.engine.chats.remove(&key());
+        on.engine.open_chats.remove(&key());
 
         assert!(waiting_in(&mut on.engine).await.is_empty());
         let first = prompt("r-1", "Hi").request;
@@ -333,7 +334,7 @@ mod tests {
             Some(Told::Send("Hi".to_owned()))
         );
         let request = prompt("r-1", "Hi").request;
-        on.engine.open(&key()).await.unwrap().log.jam();
+        on.engine.open(&key()).await.unwrap().events.jam();
         let run_1 = run("run-1");
         let lost = on.engine.end_turn(&key(), &run_1, Outcome::Completed).await;
         assert_eq!(lost.unwrap_err().code().as_str(), "chat.log_not_written");
@@ -385,14 +386,14 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn an_exit_whose_receipt_failed_is_ended_before_the_next_run_starts() {
         let mut on = on_turn().await;
-        on.engine.open(&key()).await.unwrap().log.jam();
+        on.engine.open(&key()).await.unwrap().events.jam();
         drop(on.agent);
         let exited = Heard::Exited(None);
         let lost = on.engine.heard(&key(), &run("run-1"), exited).await;
         assert_eq!(lost.unwrap_err().code().as_str(), "chat.log_not_written");
         // Its outcome keeps the chat open, though nothing else does.
         on.engine.settle(&key());
-        assert!(on.engine.chats.contains_key(&key()));
+        assert!(on.engine.open_chats.contains_key(&key()));
 
         on.engine
             .command(&key(), prompt("r-2", "More"))
@@ -400,7 +401,7 @@ mod tests {
             .unwrap();
 
         let mut next = soon(on.bench.started.recv()).await.unwrap();
-        assert_eq!(next.start.run, run("run-2"));
+        assert_eq!(next.run_as.run, run("run-2"));
         assert_eq!(
             soon(next.told.recv()).await,
             Some(Told::Send("More".to_owned()))
@@ -439,7 +440,7 @@ mod tests {
     async fn a_turn_whose_run_is_gone_ends_unknown_on_the_next_prompt() {
         let mut on = on_turn().await;
         // As after a restart: nothing of the chat or its run is in memory.
-        on.engine.chats.remove(&key());
+        on.engine.open_chats.remove(&key());
 
         on.engine
             .command(&key(), prompt("r-2", "More"))
@@ -452,7 +453,7 @@ mod tests {
             [Outcome::Accepted, Outcome::Unknown]
         );
         let mut next = soon(on.bench.started.recv()).await.unwrap();
-        assert_eq!(next.start.run, run("run-2"));
+        assert_eq!(next.run_as.run, run("run-2"));
         assert_eq!(
             soon(next.told.recv()).await,
             Some(Told::Send("More".to_owned()))

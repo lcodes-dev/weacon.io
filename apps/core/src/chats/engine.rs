@@ -23,30 +23,30 @@ use weacon_protocol::{
     code,
 };
 
-use self::agent::{Agent, Order, Report};
+use self::agent::{Agent, Order, Said};
 use super::feed::{Client, Subscriber};
 use super::log::ChatLog;
 use crate::runs::{ChatKey, Runs};
 use crate::workspaces::Workspaces;
 
 const ASKS: usize = 64;
-const REPORTS: usize = 256;
+const SAYS: usize = 256;
 
 /// Which agent to start, and as what.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct Start {
+pub(crate) struct RunAs {
     pub(crate) chat: ChatKey,
     pub(crate) agent: AgentKind,
     pub(crate) run: RunId,
     pub(crate) session: Option<AgentSession>,
 }
 
-type Starter<A> = Arc<dyn Fn(&Start) -> Result<A, Fault> + Send + Sync>;
+type Launcher<A> = Arc<dyn Fn(&RunAs) -> Result<A, Fault> + Send + Sync>;
 
 /// What the engine takes from the machine; the daemon wires the real ones.
 pub(crate) struct Host<A> {
     /// Starts an agent; may block, so it is called off the runtime.
-    pub(crate) start: Starter<A>,
+    pub(crate) launch: Launcher<A>,
     /// Unix seconds.
     pub(crate) now: fn() -> u64,
 }
@@ -102,7 +102,7 @@ impl Chats {
 
 /// A chat the engine has open: one with a running agent, a waiting prompt or a subscriber.
 struct Chat {
-    log: ChatLog,
+    events: ChatLog,
     subscribers: Vec<Subscriber>,
     /// The way to the chat's agent: none without one, closed once it stopped reading, until
     /// its exit is reported.
@@ -160,11 +160,11 @@ struct PendingInterrupt {
 pub(crate) struct Engine<A> {
     runs: Runs,
     workspaces: Workspaces,
-    chats: HashMap<ChatKey, Chat>,
+    open_chats: HashMap<ChatKey, Chat>,
     host: Host<A>,
-    asks: mpsc::Receiver<Ask>,
-    reports: mpsc::Receiver<Report>,
-    reporter: mpsc::Sender<Report>,
+    asked: mpsc::Receiver<Ask>,
+    incoming: mpsc::Receiver<Said>,
+    says: mpsc::Sender<Said>,
     log: Logger,
 }
 
@@ -175,26 +175,26 @@ impl<A: Agent> Engine<A> {
         host: Host<A>,
         log: Logger,
     ) -> (Chats, Self) {
-        let (asks_in, asks) = mpsc::channel(ASKS);
-        let (reporter, reports) = mpsc::channel(REPORTS);
+        let (asks, asked) = mpsc::channel(ASKS);
+        let (says, incoming) = mpsc::channel(SAYS);
         let engine = Self {
             runs,
             workspaces,
-            chats: HashMap::new(),
+            open_chats: HashMap::new(),
             host,
-            asks,
-            reports,
-            reporter,
+            asked,
+            incoming,
+            says,
             log,
         };
-        (Chats { asks: asks_in }, engine)
+        (Chats { asks }, engine)
     }
 
     /// Serves until every [`Chats`] is dropped; the agents stop with it.
     pub(crate) async fn serve(mut self) {
         loop {
             let key = tokio::select! {
-                ask = self.asks.recv() => match ask {
+                ask = self.asked.recv() => match ask {
                     Some(Ask::Command(command, answer)) => {
                         let key = ChatKey { workspace: command.workspace.clone(), chat: command.chat.clone() };
                         drop(answer.send(self.command(&key, command).await));
@@ -207,10 +207,10 @@ impl<A: Agent> Engine<A> {
                     }
                     None => return self.log.info("engine stopped", &[]),
                 },
-                Some(report) = self.reports.recv() => {
-                    let key = report.of.chat;
-                    if let Err(fault) = self.heard(&key, &report.of.run, report.heard).await {
-                        let fields = failed(&key, &report.of.run, &fault);
+                Some(said) = self.incoming.recv() => {
+                    let key = said.of.chat;
+                    if let Err(fault) = self.heard(&key, &said.of.run, said.heard).await {
+                        let fields = failed(&key, &said.of.run, &fault);
                         self.log.error("run event not committed", &fields);
                     }
                     key
@@ -252,7 +252,7 @@ impl<A: Agent> Engine<A> {
         outcome: Outcome,
     ) -> Result<(), Fault> {
         // A command's end is told once, whichever path gets there first.
-        if self.open(key).await?.log.has_ended(request) {
+        if self.open(key).await?.events.has_ended(request) {
             return Ok(());
         }
         let receipt = Receipt {
@@ -265,7 +265,7 @@ impl<A: Agent> Engine<A> {
     // Commits `event` to the chat's log, then tells its subscribers.
     async fn commit(&mut self, key: &ChatKey, event: ChatEvent) -> Result<(), Fault> {
         let chat = self.open(key).await?;
-        match chat.log.append(event).await {
+        match chat.events.append(event).await {
             Ok(entry) => {
                 self.publish(key, &update(key, entry));
                 Ok(())
@@ -282,19 +282,19 @@ impl<A: Agent> Engine<A> {
     // Opens a log again after a failed write; its subscribers start over from a snapshot.
     async fn mend(&mut self, key: &ChatKey) {
         let root = self.workspaces.root(&key.workspace);
-        let Some(chat) = self.chats.get_mut(key) else {
+        let Some(chat) = self.open_chats.get_mut(key) else {
             return;
         };
         for subscriber in chat.subscribers.drain(..) {
             subscriber.end();
         }
         if let Ok(log) = ChatLog::open(&root, &key.chat).await {
-            chat.log = log;
+            chat.events = log;
         }
     }
 
     fn publish(&mut self, key: &ChatKey, message: &Message) {
-        if let Some(chat) = self.chats.get_mut(key) {
+        if let Some(chat) = self.open_chats.get_mut(key) {
             chat.subscribers = std::mem::take(&mut chat.subscribers)
                 .into_iter()
                 .filter_map(|subscriber| subscriber.tell(message.clone()))
@@ -304,7 +304,7 @@ impl<A: Agent> Engine<A> {
 
     // Whether the order reached the run; a run that is gone says so itself, in its last report.
     fn order(&self, key: &ChatKey, order: Order) -> bool {
-        self.chats
+        self.open_chats
             .get(key)
             .and_then(|chat| chat.orders.as_ref())
             .is_some_and(|orders| orders.send(order).is_ok())
@@ -312,14 +312,14 @@ impl<A: Agent> Engine<A> {
 
     // Whether the chat's run hasn't yet reported its exit.
     fn is_live(&self, key: &ChatKey) -> bool {
-        self.chats
+        self.open_chats
             .get(key)
             .is_some_and(|chat| chat.orders.is_some())
     }
 
     // Whether the chat's run still reads orders: one that stopped reading reports its exit next.
     fn takes_orders(&self, key: &ChatKey) -> bool {
-        self.chats
+        self.open_chats
             .get(key)
             .and_then(|chat| chat.orders.as_ref())
             .is_some_and(|orders| !orders.is_closed())
@@ -335,10 +335,10 @@ impl<A: Agent> Engine<A> {
 
     async fn open(&mut self, key: &ChatKey) -> Result<&mut Chat, Fault> {
         let root = self.workspaces.root(&key.workspace);
-        match self.chats.entry(key.clone()) {
+        match self.open_chats.entry(key.clone()) {
             Entry::Occupied(open) => Ok(open.into_mut()),
             Entry::Vacant(closed) => Ok(closed.insert(Chat {
-                log: ChatLog::open(&root, &key.chat).await?,
+                events: ChatLog::open(&root, &key.chat).await?,
                 subscribers: Vec::new(),
                 orders: None,
                 pending_answers: Vec::new(),
@@ -351,19 +351,19 @@ impl<A: Agent> Engine<A> {
 
     // Closes a chat nobody is using, so its log doesn't stay open for good.
     fn settle(&mut self, key: &ChatKey) {
-        let Some(chat) = self.chats.get_mut(key) else {
+        let Some(chat) = self.open_chats.get_mut(key) else {
             return;
         };
         chat.forget_gone();
         if chat.is_unused() {
-            self.chats.remove(key);
+            self.open_chats.remove(key);
         }
     }
 
     // Lets go of clients that hung up, and of the chats only they were watching.
     fn sweep(&mut self) {
-        self.chats.values_mut().for_each(Chat::forget_gone);
-        self.chats.retain(|_, chat| !chat.is_unused());
+        self.open_chats.values_mut().for_each(Chat::forget_gone);
+        self.open_chats.retain(|_, chat| !chat.is_unused());
     }
 }
 
@@ -465,8 +465,8 @@ mod tests {
 
         let mut agent = first_turn(&mut bench, &mut pushes).await;
         assert_eq!(
-            agent.start,
-            Start {
+            agent.run_as,
+            RunAs {
                 chat: key(),
                 agent: AgentKind::Claude,
                 run: run("run-1"),
@@ -612,7 +612,7 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn a_prompt_cut_off_with_its_run_is_never_answered_in_the_chats_next_run() {
+    async fn a_permission_cut_off_with_its_run_is_never_answered_in_the_chats_next_run() {
         let mut bench = bench();
         let mut pushes = watch(&bench).await;
         let agent = first_turn(&mut bench, &mut pushes).await;
@@ -634,7 +634,7 @@ mod tests {
         bench.chats.command(prompt("r-4", "Again")).await.unwrap();
         let mut next = soon(bench.started.recv()).await.unwrap();
         assert_eq!(
-            (next.start.run.as_str(), next.start.session.clone()),
+            (next.run_as.run.as_str(), next.run_as.session.clone()),
             ("run-2", Some(session()))
         );
         assert_eq!(
@@ -647,7 +647,7 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn a_withdrawn_prompt_stops_waiting_and_an_interrupt_ends_the_turn() {
+    async fn a_withdrawn_permission_stops_waiting_and_an_interrupt_ends_the_turn() {
         let mut bench = bench();
         let mut pushes = watch(&bench).await;
         let mut agent = first_turn(&mut bench, &mut pushes).await;
@@ -698,7 +698,7 @@ mod tests {
         bench.chats.command(first).await.unwrap();
 
         let started = soon(bench.started.recv()).await.unwrap();
-        assert_eq!(started.start.agent, AgentKind::Codex);
+        assert_eq!(started.run_as.agent, AgentKind::Codex);
         skip(&mut pushes, 4).await;
         let other = prompt_naming("r-2", "More", AgentKind::Claude);
         assert_eq!(
@@ -743,7 +743,7 @@ mod tests {
 
         // The failed prompt left the queue: the new run gets only the next one.
         let mut started = soon(bench.started.recv()).await.unwrap();
-        assert_eq!(started.start.run, run("run-2"));
+        assert_eq!(started.run_as.run, run("run-2"));
         assert_eq!(
             soon(started.told.recv()).await,
             Some(Told::Send("Again".to_owned()))
@@ -909,7 +909,7 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn a_withdrawn_prompt_leaves_the_run_waiting_while_another_waits() {
+    async fn a_withdrawn_permission_leaves_the_run_waiting_while_another_waits() {
         let mut bench = bench();
         let mut pushes = watch(&bench).await;
         let agent = first_turn(&mut bench, &mut pushes).await;
@@ -999,7 +999,9 @@ mod tests {
 
         on.engine.settle(&key());
         on.engine.settle(&other);
-        assert!(on.engine.chats.contains_key(&key()) && on.engine.chats.contains_key(&other));
+        assert!(
+            on.engine.open_chats.contains_key(&key()) && on.engine.open_chats.contains_key(&other)
+        );
 
         // The agent exits, and both clients hang up.
         drop(on.agent);
@@ -1009,15 +1011,15 @@ mod tests {
             .unwrap();
         on.engine.settle(&key());
         assert!(
-            on.engine.chats.contains_key(&key()),
+            on.engine.open_chats.contains_key(&key()),
             "a client still watches it"
         );
         drop((on.pushes, watching));
         on.engine.settle(&key());
-        assert!(!on.engine.chats.contains_key(&key()));
+        assert!(!on.engine.open_chats.contains_key(&key()));
 
         // A hung-up client's chat is let go when anyone subscribes anywhere.
-        assert!(on.engine.chats.contains_key(&other));
+        assert!(on.engine.open_chats.contains_key(&other));
         let (third, _watching) = client(4);
         let elsewhere = ChatKey {
             chat: chat("c-3"),
@@ -1027,7 +1029,7 @@ mod tests {
             .query(&elsewhere, subscribe(), &third)
             .await
             .unwrap();
-        assert!(!on.engine.chats.contains_key(&other));
-        assert!(on.engine.chats.contains_key(&elsewhere));
+        assert!(!on.engine.open_chats.contains_key(&other));
+        assert!(on.engine.open_chats.contains_key(&elsewhere));
     }
 }

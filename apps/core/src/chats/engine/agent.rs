@@ -1,5 +1,5 @@
-//! The task that owns one running agent: it passes the engine's orders on and reports what
-//! the agent says.
+//! The task that owns one running agent: it passes the engine's orders to it, and what it says
+//! back to the engine.
 
 use std::future::Future;
 use std::time::Duration;
@@ -43,7 +43,7 @@ impl Agent for AgentRun {
     }
 }
 
-// Orders and reports carry prompts and agent output, so neither has a `Debug`.
+// Orders and what a run says carry prompts and agent output, so neither has a `Debug`.
 pub(crate) enum Order {
     Send(String),
     Answer(PermissionAnswer),
@@ -58,7 +58,7 @@ pub(crate) struct RunOf {
 }
 
 /// What a run's agent said, for the engine.
-pub(crate) struct Report {
+pub(crate) struct Said {
     pub(crate) of: RunOf,
     pub(crate) heard: Heard,
 }
@@ -79,7 +79,7 @@ pub(crate) async fn drive<A: Agent>(
     mut agent: A,
     of: RunOf,
     mut orders: mpsc::UnboundedReceiver<Order>,
-    reports: mpsc::Sender<Report>,
+    says: mpsc::Sender<Said>,
 ) {
     // Once its pipes break, the agent takes no more orders and has a while to finish speaking.
     let mut broken: Option<(Fault, Instant)> = None;
@@ -109,11 +109,11 @@ pub(crate) async fn drive<A: Agent>(
             },
         };
         let exited = matches!(heard, Heard::Exited(_));
-        let report = Report {
+        let said = Said {
             of: of.clone(),
             heard,
         };
-        if reports.send(report).await.is_err() || exited {
+        if says.send(said).await.is_err() || exited {
             return;
         }
     }
@@ -175,24 +175,24 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_run_reports_what_its_agent_says_then_its_exit_once_and_stops() {
+    async fn a_run_passes_on_what_its_agent_says_then_its_exit_once_and_stops() {
         let of = RunOf {
             chat: key(),
             run: RunId::try_from("run-1".to_owned()).unwrap(),
         };
         let (_orders, ordered) = mpsc::unbounded_channel();
-        let (reporter, mut reports) = mpsc::channel(8);
+        let (says, mut heard) = mpsc::channel(8);
 
-        let driven = drive(Brief { said: 0 }, of.clone(), ordered, reporter);
+        let driven = drive(Brief { said: 0 }, of.clone(), ordered, says);
         tokio::time::timeout(Duration::from_secs(5), driven)
             .await
             .unwrap();
 
-        let first = reports.recv().await.unwrap();
+        let first = heard.recv().await.unwrap();
         assert!(first.of == of && matches!(first.heard, Heard::Event(RunEvent::Text { .. })));
-        let last = reports.recv().await.unwrap();
+        let last = heard.recv().await.unwrap();
         assert!(matches!(last.heard, Heard::Exited(None)));
-        assert!(reports.recv().await.is_none());
+        assert!(heard.recv().await.is_none());
     }
 
     // Refuses every prompt: as busy, with broken pipes, or by never reading it, as the prompt
@@ -236,21 +236,21 @@ mod tests {
             run: RunId::try_from("run-1".to_owned()).unwrap(),
         };
         let (orders, ordered) = mpsc::unbounded_channel();
-        let (reporter, mut reports) = mpsc::channel(8);
+        let (says, mut heard) = mpsc::channel(8);
         orders.send(Order::Send("busy".to_owned())).unwrap();
         orders.send(Order::Send("broken".to_owned())).unwrap();
 
-        let driven = tokio::spawn(drive(Refuses { said: false }, of, ordered, reporter));
+        let driven = tokio::spawn(drive(Refuses { said: false }, of, ordered, says));
 
-        let said = reports.recv().await.unwrap();
+        let said = heard.recv().await.unwrap();
         assert!(matches!(said.heard, Heard::Event(RunEvent::Text { .. })));
         // Still speaking, it takes no more orders.
         assert!(!driven.is_finished() && orders.is_closed());
-        let last = reports.recv().await.unwrap();
+        let last = heard.recv().await.unwrap();
         assert!(
             matches!(&last.heard, Heard::Exited(Some(fault)) if fault.code().as_str() == "agent.io_failed")
         );
-        assert!(reports.recv().await.is_none());
+        assert!(heard.recv().await.is_none());
         tokio::time::timeout(LAST_WORDS, driven)
             .await
             .unwrap()
@@ -264,15 +264,15 @@ mod tests {
             run: RunId::try_from("run-1".to_owned()).unwrap(),
         };
         let (orders, ordered) = mpsc::unbounded_channel();
-        let (reporter, mut reports) = mpsc::channel(8);
+        let (says, mut heard) = mpsc::channel(8);
         orders.send(Order::Send("stuck".to_owned())).unwrap();
 
-        let driven = drive(Refuses { said: true }, of, ordered, reporter);
+        let driven = drive(Refuses { said: true }, of, ordered, says);
         tokio::time::timeout(ORDER_WRITE + LAST_WORDS * 2, driven)
             .await
             .unwrap();
 
-        let last = reports.recv().await.unwrap();
+        let last = heard.recv().await.unwrap();
         assert!(
             matches!(&last.heard, Heard::Exited(Some(fault)) if fault.code().as_str() == "agent.io_failed")
         );

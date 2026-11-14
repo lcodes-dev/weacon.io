@@ -19,7 +19,7 @@ impl<A: Agent> Engine<A> {
     ) -> Result<(), Fault> {
         let request = command.request;
         let action = command.action;
-        let seen = self.open(key).await?.log.seen(&request, &action).await?;
+        let seen = self.open(key).await?.events.seen(&request, &action).await?;
         match seen {
             Seen::Same => self.resume(key, &request, action).await,
             Seen::Other => Err(Fault::new(
@@ -95,7 +95,7 @@ impl<A: Agent> Engine<A> {
         key: &ChatKey,
         named: Option<AgentKind>,
     ) -> Result<AgentKind, Fault> {
-        let chosen = self.open(key).await?.log.agent();
+        let chosen = self.open(key).await?.events.agent();
         match (named, chosen) {
             (Some(AgentKind::Newer), _) => Err(unsupported()),
             (Some(named), Some(chosen)) if named != chosen => Err(Fault::new(
@@ -134,7 +134,7 @@ impl<A: Agent> Engine<A> {
         let live = self.is_live(key);
         let chat = self.open(key).await?;
         // The log forgets another run's prompts as soon as a newer run reports.
-        if !live || !chat.log.runs().waits(&answer.run, answer.prompt) {
+        if !live || !chat.events.runs().waits(&answer.run, answer.prompt) {
             return Err(Fault::new(
                 code!("agent.no_such_prompt"),
                 "That permission prompt isn't waiting",
@@ -170,7 +170,7 @@ impl<A: Agent> Engine<A> {
         else {
             return Ok(());
         };
-        if chat.log.runs().waits(&answer.run, answer.prompt) {
+        if chat.events.runs().waits(&answer.run, answer.prompt) {
             // In the log before the agent is told, so a crash between the two leaves the truth.
             let update = RunUpdate {
                 run: answer.run.clone(),
@@ -183,7 +183,12 @@ impl<A: Agent> Engine<A> {
         let chat = self.open(key).await?;
         chat.pending_answers.remove(at);
         let run = answer.run.clone();
-        let resumed = !chat.log.runs().waiting.iter().any(|waits| waits.run == run);
+        let resumed = !chat
+            .events
+            .runs()
+            .waiting
+            .iter()
+            .any(|waits| waits.run == run);
         self.order(key, Order::Answer(answer));
         if resumed {
             self.set_state(key, &run, RunState::Running).await?;
@@ -252,7 +257,7 @@ mod tests {
         engine.command(&key(), first).await.unwrap();
 
         let started = soon(bench.started.recv()).await.unwrap();
-        assert_eq!(started.start.agent, AgentKind::Codex);
+        assert_eq!(started.run_as.agent, AgentKind::Codex);
     }
 
     #[tokio::test(start_paused = true)]
@@ -272,10 +277,10 @@ mod tests {
             soon(started.told.recv()).await,
             Some(Told::Send("Hi".to_owned()))
         );
-        assert_eq!(engine.open(&key()).await.unwrap().log.seq(), 4);
+        assert_eq!(engine.open(&key()).await.unwrap().events.seq(), 4);
         engine.command(&key(), prompt("r-1", "Hi")).await.unwrap();
         started.told.try_recv().unwrap_err();
-        assert_eq!(engine.open(&key()).await.unwrap().log.seq(), 4);
+        assert_eq!(engine.open(&key()).await.unwrap().events.seq(), 4);
         let outcome = Outcome::Completed;
         hear(&mut engine, RunEvent::Finished { outcome })
             .await
@@ -346,7 +351,7 @@ mod tests {
         };
         let action = ChatAction::Permission { answer };
         let allow = || command("r-2", "c-1", action.clone());
-        on.engine.open(&key()).await.unwrap().log.jam();
+        on.engine.open(&key()).await.unwrap().events.jam();
 
         let refused = on.engine.command(&key(), allow()).await;
         assert_eq!(refused.unwrap_err().code().as_str(), "chat.log_not_written");
@@ -362,7 +367,7 @@ mod tests {
     async fn an_answer_whose_receipt_was_written_reaches_its_run_when_sent_again() {
         let mut on = on_ask().await;
         let (answers, answer) = allow_one("r-2");
-        on.engine.open(&key()).await.unwrap().log.jam();
+        on.engine.open(&key()).await.unwrap().events.jam();
         let failed = on.engine.command(&key(), answers.clone()).await;
         assert_eq!(failed.unwrap_err().code().as_str(), "chat.log_not_written");
         // As when its receipt reached the disk all the same.
@@ -390,7 +395,7 @@ mod tests {
         on.engine.command(&key(), answers).await.unwrap();
 
         assert_eq!(soon(on.agent.told.recv()).await, None);
-        let runs = &on.engine.open(&key()).await.unwrap().log.runs().runs;
+        let runs = &on.engine.open(&key()).await.unwrap().events.runs().runs;
         assert_eq!(runs[0].run, run("run-1"));
         assert_eq!(waiting_in(&mut on.engine).await.len(), 1);
     }
@@ -429,7 +434,7 @@ mod tests {
 
         assert_eq!(soon(on.agent.told.recv()).await, Some(Told::Answer(answer)));
         assert_eq!(soon(on.agent.told.recv()).await, None);
-        let log = &on.engine.open(&key()).await.unwrap().log;
+        let log = &on.engine.open(&key()).await.unwrap().events;
         let entries = log.window(u64::MAX, 64).await.unwrap();
         let logged = entries.iter().filter(|entry| {
             matches!(&entry.event, ChatEvent::Run { update } if matches!(update.event, RunEvent::PermissionAnswered { .. }))
@@ -438,10 +443,10 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn a_prompt_of_a_run_cut_off_by_a_restart_takes_no_answer() {
+    async fn a_permission_of_a_run_cut_off_by_a_restart_takes_no_answer() {
         let mut on = on_ask().await;
         // As after a restart: the log still shows the prompt, but its run is gone.
-        on.engine.chats.remove(&key());
+        on.engine.open_chats.remove(&key());
 
         let refused = on.engine.command(&key(), allow_one("r-2").0).await;
 
@@ -515,7 +520,7 @@ mod tests {
             Some(Told::Send("Hi".to_owned()))
         );
         let interrupt = command("r-2", "c-1", ChatAction::Interrupt);
-        on.engine.open(&key()).await.unwrap().log.jam();
+        on.engine.open(&key()).await.unwrap().events.jam();
         let failed = on.engine.command(&key(), interrupt.clone()).await;
         assert_eq!(failed.unwrap_err().code().as_str(), "chat.log_not_written");
         // As when its receipt reached the disk all the same.
@@ -539,7 +544,7 @@ mod tests {
             soon(on.agent.told.recv()).await,
             Some(Told::Send("Hi".to_owned()))
         );
-        on.engine.open(&key()).await.unwrap().log.jam();
+        on.engine.open(&key()).await.unwrap().events.jam();
 
         let interrupt = command("r-2", "c-1", ChatAction::Interrupt);
         let refused = on.engine.command(&key(), interrupt).await;

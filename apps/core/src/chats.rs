@@ -16,7 +16,7 @@ use weacon_observability::{Fault, Logger};
 use weacon_protocol::{App, ChatId, WorkspaceId, code};
 
 pub(crate) use engine::Chats;
-use engine::{Engine, Host, Start};
+use engine::{Engine, Host, RunAs};
 
 use crate::mcp::grants::Granted;
 use crate::mcp::{self, Mcp};
@@ -51,29 +51,29 @@ pub(crate) fn start(
     let workspaces = Workspaces::new(state_dir, places.path.clone());
     let roots = workspaces.clone();
     let host = Host {
-        start: Arc::new(move |start: &Start| launch(&roots, &places, &policy, &app, start)),
+        launch: Arc::new(move |run_as: &RunAs| launch(&roots, &places, &policy, &app, run_as)),
         now: unix_now,
     };
     Ok(Engine::new(runs, workspaces, host, log))
 }
 
-/// Starts `start`'s agent in its chat's folder, with a token for the core's MCP that ends with
+/// Launches `run_as`'s agent in its chat's folder, with a token for the core's MCP that ends with
 /// the agent.
 fn launch(
     roots: &Workspaces,
     places: &Places,
     policy: &SpawnPolicy,
     app: &App,
-    start: &Start,
+    run_as: &RunAs,
 ) -> Result<Granted, Fault> {
     let cwd = work_dir(
         places.work_root.as_deref(),
-        &start.chat.workspace,
-        &start.chat.chat,
+        &run_as.chat.workspace,
+        &run_as.chat.chat,
     )?;
-    let launch = roots.launch(&start.chat.workspace, start.agent, cwd)?;
-    let (launch, revoke) = mcp::grant(places.mcp.as_ref(), launch, start)?;
-    let agent = launch.start(policy, app, start.run.clone(), start.session.as_ref())?;
+    let launch = roots.launch(&run_as.chat.workspace, run_as.agent, cwd)?;
+    let (launch, revoke) = mcp::grant(places.mcp.as_ref(), launch, run_as)?;
+    let agent = launch.start(policy, app, run_as.run.clone(), run_as.session.as_ref())?;
     Ok(Granted {
         agent,
         _revoke: revoke,
@@ -175,7 +175,7 @@ mod tests {
             work_root: Some(dir.join("Weacon")),
             mcp: Some(mcp.clone()),
         };
-        let start = Start {
+        let run_as = RunAs {
             chat: key(),
             agent: AgentKind::Claude,
             run: weacon_protocol::RunId::try_from("run-1".to_owned()).unwrap(),
@@ -184,7 +184,7 @@ mod tests {
         let run = |bin: &str| {
             let places = places(bin);
             let roots = Workspaces::new(&dir.join("state"), places.path.clone());
-            launch(&roots, &places, &SpawnPolicy::default(), &app, &start)
+            launch(&roots, &places, &SpawnPolicy::default(), &app, &run_as)
         };
 
         let agent = run("bin").unwrap();

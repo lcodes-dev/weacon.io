@@ -7,7 +7,7 @@ use weacon_observability::Fault;
 use weacon_protocol::{AgentSession, RunId, RunState, code};
 
 use super::agent::{Agent, RunOf, drive};
-use super::{ChatKey, Engine, Start, about, failed};
+use super::{ChatKey, Engine, RunAs, about, failed};
 
 fn not_started() -> Fault {
     Fault::new(code!("agent.not_started"), "The agent couldn't start")
@@ -43,13 +43,13 @@ impl<A: Agent> Engine<A> {
         let kind = self.runs.of(key).ok_or_else(not_started)?.agent;
         let run = self.runs.begin(key, kind, self.now()).await?;
         let session = self.runs.of(key).and_then(|record| record.session.clone());
-        let run_as = Start {
+        let run_as = RunAs {
             chat: key.clone(),
             agent: kind,
             run: run.clone(),
             session,
         };
-        match self.start_agent(run_as).await {
+        match self.launch_agent(run_as).await {
             Ok(agent) => self.attach(key, &run, agent).await?,
             Err(fault) => {
                 self.log.warn("run not started", &failed(key, &run, &fault));
@@ -63,8 +63,8 @@ impl<A: Agent> Engine<A> {
     }
 
     // Starting an agent may block, so it runs off the runtime.
-    async fn start_agent(&self, run_as: Start) -> Result<A, Fault> {
-        let start = Arc::clone(&self.host.start);
+    async fn launch_agent(&self, run_as: RunAs) -> Result<A, Fault> {
+        let start = Arc::clone(&self.host.launch);
         tokio::task::spawn_blocking(move || start(&run_as))
             .await
             .unwrap_or_else(|_| Err(not_started()))
@@ -77,7 +77,7 @@ impl<A: Agent> Engine<A> {
             chat: key.clone(),
             run: run.clone(),
         };
-        tokio::spawn(drive(agent, of, ordered, self.reporter.clone()));
+        tokio::spawn(drive(agent, of, ordered, self.says.clone()));
         self.open(key).await?.orders = Some(orders);
         self.log.info("run started", &about(key, run));
         // The agent is up: a status that can't be committed doesn't stop its turn.
@@ -124,8 +124,8 @@ mod tests {
             .unwrap();
 
         let next = soon(on.bench.started.recv()).await.unwrap();
-        assert_eq!(next.start.run, run("run-2"));
-        assert_eq!(next.start.session, Some(session()));
+        assert_eq!(next.run_as.run, run("run-2"));
+        assert_eq!(next.run_as.session, Some(session()));
     }
 
     #[tokio::test(start_paused = true)]
@@ -151,6 +151,6 @@ mod tests {
             .unwrap();
         on.engine.settle(&key());
 
-        assert!(!on.engine.chats.contains_key(&key()));
+        assert!(!on.engine.open_chats.contains_key(&key()));
     }
 }

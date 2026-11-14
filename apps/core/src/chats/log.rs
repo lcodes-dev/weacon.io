@@ -29,7 +29,7 @@ pub(crate) struct ChatLog {
     /// Where each entry starts in the file; the entry `seq` starts at `starts[seq - 1]`.
     starts: Vec<u64>,
     end: u64,
-    requests: HashMap<RequestId, Asked>,
+    requests: HashMap<RequestId, Commanded>,
     /// Set by a failed write, which may have left half an entry; opening the log again mends it.
     broken: bool,
     /// The agent the chat's first prompt named, Claude when it named none.
@@ -39,7 +39,7 @@ pub(crate) struct ChatLog {
 
 /// What the log holds of one command.
 #[derive(Debug, Default)]
-struct Asked {
+struct Commanded {
     /// The place of its prompt, when it was one.
     prompt: Option<u64>,
     stage: Stage,
@@ -139,13 +139,13 @@ impl ChatLog {
                     .or_else(|| Some(agent.unwrap_or(AgentKind::Claude)));
             }
             ChatEvent::Receipt { receipt } => {
-                let asked = self.requests.entry(receipt.request.clone()).or_default();
+                let commanded = self.requests.entry(receipt.request.clone()).or_default();
                 let stage = if receipt.outcome == Outcome::Accepted {
                     Stage::Accepted
                 } else {
                     Stage::Ended
                 };
-                asked.stage = asked.stage.max(stage);
+                commanded.stage = commanded.stage.max(stage);
             }
             ChatEvent::Run { .. }
             | ChatEvent::RunStatus { .. }
@@ -255,10 +255,10 @@ impl ChatLog {
         request: &RequestId,
         action: &ChatAction,
     ) -> Result<Seen, Fault> {
-        let Some(asked) = self.requests.get(request) else {
+        let Some(commanded) = self.requests.get(request) else {
             return Ok(Seen::Never);
         };
-        let Some(seq) = asked.prompt else {
+        let Some(seq) = commanded.prompt else {
             let same = !matches!(action, ChatAction::Prompt { .. });
             return Ok(if same { Seen::Same } else { Seen::Other });
         };
@@ -277,7 +277,7 @@ impl ChatLog {
                 },
             ) if was_text == *text && was_repo == *repo && was_agent == *agent
         );
-        Ok(match (same, asked.stage) {
+        Ok(match (same, commanded.stage) {
             (true, Stage::Logged) => Seen::Pending,
             (true, Stage::Accepted | Stage::Ended) => Seen::Same,
             (false, _) => Seen::Other,
@@ -288,7 +288,7 @@ impl ChatLog {
     pub(crate) fn has_ended(&self, request: &RequestId) -> bool {
         self.requests
             .get(request)
-            .is_some_and(|asked| asked.stage == Stage::Ended)
+            .is_some_and(|commanded| commanded.stage == Stage::Ended)
     }
 
     async fn read(&self, first: u64, last: u64) -> Result<Vec<ChatEntry>, Fault> {
