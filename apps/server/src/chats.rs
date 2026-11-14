@@ -1,7 +1,11 @@
 //! A workspace's chats, which its members' machines run.
 
 mod admit;
+mod command;
 mod read;
+mod watch;
+
+pub(crate) use watch::Watch;
 
 use axum::Json;
 use axum::response::{IntoResponse, Response};

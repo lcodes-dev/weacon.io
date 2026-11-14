@@ -62,10 +62,7 @@ pub(crate) fn admit(
         });
     };
     if chat.owner != by.member {
-        return Err(Fault::new(
-            code!("chat.not_owner"),
-            "Only the chat's owner can ask its agent",
-        ));
+        return Err(not_owner());
     }
     if machine.is_some() {
         return Err(Fault::new(
@@ -76,15 +73,24 @@ pub(crate) fn admit(
     match chat.state {
         ChatState::Open => {}
         ChatState::Full => return Err(crate::db::chat_quota_full()),
-        ChatState::Detached | ChatState::Newer => {
-            return Err(Fault::new(
-                code!("chat.detached"),
-                "The chat can be read but no longer run",
-            ));
-        }
+        ChatState::Detached | ChatState::Newer => return Err(detached()),
     }
     command.by = Some(by);
     Ok(Admitted::Existing(command))
+}
+
+pub(super) fn not_owner() -> Fault {
+    Fault::new(
+        code!("chat.not_owner"),
+        "Only the chat's owner can ask its agent",
+    )
+}
+
+pub(super) fn detached() -> Fault {
+    Fault::new(
+        code!("chat.detached"),
+        "The chat can be read but no longer run",
+    )
 }
 
 fn title(text: &str) -> String {
@@ -133,6 +139,7 @@ mod tests {
     fn chat(state: ChatState) -> Chat {
         Chat {
             owner: id("m1"),
+            machine: id("mc-1"),
             state,
             seq: 3,
             core_seq: 3,

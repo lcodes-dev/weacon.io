@@ -4,7 +4,7 @@ mod runs;
 
 use weacon_observability::Fault;
 use weacon_protocol::{
-    ChatId, ChatState, ChatSummary, MachineId, MachineName, MemberId, RepoId, code,
+    Asker, ChatId, ChatState, ChatSummary, MachineId, MachineName, MemberId, RepoId, code,
 };
 
 pub(crate) use events::{CHAT_QUOTA, Incoming, chat_quota_full};
@@ -29,13 +29,14 @@ pub(crate) struct NewChat<'a> {
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct Chat {
     pub(crate) owner: MemberId,
+    pub(crate) machine: MachineId,
     pub(crate) state: ChatState,
     pub(crate) seq: u64,
     /// The last of its machine's events it has.
     pub(crate) core_seq: u64,
 }
 
-type ChatRow = (String, String, i64, i64);
+type ChatRow = (String, String, String, i64, i64);
 type SummaryRow = (String, String, String, String, String, i64);
 
 impl Workspace {
@@ -71,7 +72,7 @@ impl Workspace {
     /// The chat `id`, if this workspace has it.
     pub(crate) async fn chat(&self, id: &ChatId) -> Result<Option<Chat>, Fault> {
         sqlx::query_as::<_, ChatRow>(
-            "SELECT owner_member, state, seq, core_seq FROM chats
+            "SELECT owner_member, machine_id, state, seq, core_seq FROM chats
              WHERE workspace_id = ? AND chat_id = ?",
         )
         .bind(self.id.as_str())
@@ -79,9 +80,10 @@ impl Workspace {
         .fetch_optional(&self.db.readers)
         .await
         .map_err(failed)?
-        .map(|(owner, state, seq, core_seq)| {
+        .map(|(owner, machine, state, seq, core_seq)| {
             Ok(Chat {
                 owner: stored(owner)?,
+                machine: stored(machine)?,
                 state: stored_state(&state)?,
                 seq: count(seq)?,
                 core_seq: count(core_seq)?,
@@ -123,6 +125,26 @@ impl Workspace {
             .await
             .map_err(failed)?;
         Ok(())
+    }
+
+    /// Who `member` is when they ask a chat's agent: none once their membership has ended.
+    pub(crate) async fn asker(&self, member: &MemberId) -> Result<Option<Asker>, Fault> {
+        sqlx::query_scalar::<_, Option<String>>(
+            "SELECT account_id FROM members WHERE workspace_id = ? AND member_id = ?",
+        )
+        .bind(self.id.as_str())
+        .bind(member.as_str())
+        .fetch_optional(&self.db.readers)
+        .await
+        .map_err(failed)?
+        .flatten()
+        .map(|account| {
+            Ok(Asker {
+                account: stored(account)?,
+                member: member.clone(),
+            })
+        })
+        .transpose()
     }
 }
 
@@ -275,6 +297,7 @@ mod tests {
         assert_eq!(code(&stranger), "db.failed");
         let chat = Chat {
             owner: member_id("m1"),
+            machine: id("mc-1"),
             state: ChatState::Open,
             seq: 0,
             core_seq: 0,

@@ -14,7 +14,7 @@ use tokio::net::TcpListener;
 use tokio::sync::{Semaphore, broadcast, watch};
 use tokio::time::timeout;
 use weacon_observability::{Clock, Fault, Field, Logger, Reporter};
-use weacon_protocol::{App, Code, ErrorBody, MachineId, WorkspaceId, code};
+use weacon_protocol::{App, ChatId, Code, ErrorBody, MachineId, WorkspaceId, code};
 
 use crate::chats;
 use crate::client::Net;
@@ -71,6 +71,8 @@ pub(crate) struct Shared {
     pub(crate) unpaired: broadcast::Sender<MachineId>,
     /// Which workspace just changed, for the feeds.
     pub(crate) changes: broadcast::Sender<WorkspaceId>,
+    /// Which chat just got events, for the sockets that follow it.
+    pub(crate) chats: broadcast::Sender<(WorkspaceId, ChatId)>,
     /// Room for sign-ins being worked on after their answer; when it's full, more are dropped.
     pub(crate) sign_ins: Arc<Semaphore>,
     /// How long finishing a sign-in takes at least, so its timing gives nothing away.
