@@ -28,8 +28,9 @@ token_id!(
     "not a challenge id"
 );
 
-/// Sign-in to one workspace, which [`AccountSignInStart`] replaces: asks the server to send
-/// a one-time code to `email`, if it is a member of `workspace`. The answer, a [`SignInStarted`], is the same either way.
+/// Sign-in to one workspace, for a client that doesn't send [`AccountSignInStart`]: asks the
+/// server to send a one-time code to `email`, if it is a member of `workspace`. The answer, a
+/// [`SignInStarted`], is the same either way.
 #[derive(PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct SignInStart {
     pub workspace: WorkspaceId,
@@ -201,8 +202,8 @@ pub enum WorkspaceChange {
     Newer,
 }
 
-/// One change to `workspace`. `seq` grows strictly within a workspace, and a feed opened with
-/// `since=N` sends every change after `N`.
+/// One change to `workspace`, from the server to clients that have `workspace.feed`. `seq` grows
+/// strictly within a workspace, and a feed opened with `since=N` sends every change after `N`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct WorkspaceUpdate {
     pub workspace: WorkspaceId,

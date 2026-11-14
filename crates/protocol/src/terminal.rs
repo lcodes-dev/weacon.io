@@ -26,9 +26,10 @@ pub const NOISE_MAX: usize = 65535;
 /// The largest plaintext one sealed frame holds: a Noise message less its tag.
 pub const SEALED_MAX: usize = NOISE_MAX - 16;
 
-/// From the owner of `machine`'s browser to its core, which offers `terminal.sign_in`. The
-/// server relays it only from the machine's owner, and the core acts only when `by` is its
-/// owner and refuses a terminal id it has already seen.
+/// A sign-in terminal's sealed input, from the owner of `machine`'s browser to its core, which
+/// offers `terminal.sign_in`. The server relays it only if it offers `terminal.relay` and only
+/// from the machine's owner, and the core acts only when `by` is its owner and refuses a
+/// terminal id it has already seen.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct TerminalCommand {
     pub terminal: TerminalId,
@@ -57,8 +58,8 @@ pub enum TerminalAction {
     Newer,
 }
 
-/// From a core that offers `terminal.sign_in`, through the server, to the browser that opened
-/// `terminal`.
+/// A sign-in terminal's sealed output, from a core that offers `terminal.sign_in`, through the
+/// server, to the browser that opened `terminal`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct TerminalUpdate {
     pub terminal: TerminalId,
