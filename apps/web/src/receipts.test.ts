@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import type { Envelope } from "./protocol.ts";
+import type { Incoming } from "./incoming.ts";
 import { Receipts } from "./receipts.ts";
 
-const receipt = (request: string, state: "accepted" | "completed" | "interrupted" | "unknown"): Envelope => ({
+const receipt = (request: string, state: "accepted" | "completed" | "interrupted" | "unknown"): Incoming => ({
   id: 2,
   type: "receipt",
   request,
@@ -23,10 +23,10 @@ test("a command ends with its first receipt, matched by request", async () => {
   const third = all.wait("r-3", 4);
   const fourth = all.wait("r-4", 5);
 
-  assert.equal(all.take(receipt("r-2", "interrupted")), true);
-  assert.equal(all.take(receipt("r-1", "accepted")), true);
-  assert.equal(all.take(receipt("r-1", "unknown")), true);
-  assert.equal(all.take({ id: 2, type: "receipt", request: "r-3", state: "failed", code: "run.failed" }), true);
+  all.take(receipt("r-2", "interrupted"));
+  all.take(receipt("r-1", "accepted"));
+  all.take(receipt("r-1", "unknown"));
+  all.take({ id: 2, type: "receipt", request: "r-3", state: "failed", code: "run.failed" });
   assert.equal(await first, "accepted");
   assert.equal(await second, "refused");
   assert.equal(await third, "refused");
@@ -41,10 +41,12 @@ test("a command that ends at once counts as accepted", async () => {
   assert.equal(await done, "accepted");
 });
 
-test("other messages pass through", () => {
+test("other messages settle nothing", async () => {
   const { receipts: all } = setup();
-  assert.equal(all.take({ id: 0, type: "log", level: "info", msg: "app started" }), false);
-  assert.equal(all.take({ id: 2, type: "receipt", state: "accepted" } as unknown as Envelope), false);
+  const waiting = all.wait("r-1", 2);
+  all.take({ id: 3, type: "error", code: "request.conflict", retryable: false });
+  all.end();
+  assert.equal(await waiting, "lost");
 });
 
 test("a command is lost when the connection ends, and unsure after the deadline", async () => {
@@ -66,8 +68,8 @@ test("an error in answer to a command's envelope refuses it", async () => {
   const refused = all.wait("r-1", 7);
   const other = all.wait("r-2", 8);
 
-  assert.equal(all.take({ id: 9, type: "error", code: "request.conflict", retryable: false }), false);
-  assert.equal(all.take({ id: 7, type: "error", code: "request.conflict", retryable: false }), true);
+  all.take({ id: 9, type: "error", code: "request.conflict", retryable: false });
+  all.take({ id: 7, type: "error", code: "request.conflict", retryable: false });
   all.end();
   assert.equal(await refused, "refused");
   assert.equal(await other, "lost");
@@ -97,6 +99,6 @@ test("an earlier send's deadline doesn't end a later send of the same request", 
 test("a state this build doesn't know is unsure, whatever its name", async () => {
   const { receipts: all } = setup();
   const odd = all.wait("r-1", 2);
-  all.take({ id: 2, type: "receipt", request: "r-1", state: "constructor" } as unknown as Envelope);
+  all.take({ id: 2, type: "receipt", request: "r-1", state: "constructor" } as unknown as Incoming);
   assert.equal(await odd, "unsure");
 });

@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 
+import { ME } from "../me.ts";
 import type { AccountSignedIn, Code } from "../protocol.ts";
+import { Settings } from "../settings/settings.tsx";
 import { Api, type Fetch } from "./api.ts";
 import { useAsk } from "./ask.ts";
 import { Frame } from "./frame.tsx";
@@ -14,7 +16,7 @@ type Screen =
   | { name: "loading" }
   | { name: "failed"; code: Code }
   | { name: "signed out" }
-  | { name: "signed in"; account: AccountSignedIn };
+  | { name: "signed in"; account: AccountSignedIn; settings: boolean };
 
 /** The app as the server serves it: sign-in, then the signed-in person's screens. */
 export function Shell({ fetch }: { fetch: Fetch }) {
@@ -31,7 +33,7 @@ export function Shell({ fetch }: { fetch: Fetch }) {
             ? { name: "failed", code: answer.code }
             : answer.value === undefined
               ? { name: "signed out" }
-              : { name: "signed in", account: answer.value },
+              : { name: "signed in", account: answer.value, settings: false },
         );
       }
     });
@@ -40,32 +42,43 @@ export function Shell({ fetch }: { fetch: Fetch }) {
     };
   }, [api]);
   if (screen.name === "signed in") {
+    const signOut = () =>
+      void signingOut.ask(
+        () => api.signOut(),
+        () => {
+          remember(STORE, undefined);
+          setScreen({ name: "signed out" });
+        },
+      );
     const who = (
       <span className="who">
         {signingOut.problem !== undefined && <span role="alert">{signingOut.problem}</span>}
-        <span className="muted">{screen.account.email}</span>
+        {!screen.settings && (
+          <>
+            <span className="muted">{screen.account.email}</span>
+            <button type="button" disabled={signingOut.busy} onClick={signOut}>
+              Sign out
+            </button>
+          </>
+        )}
         <button
           type="button"
-          disabled={signingOut.busy}
-          onClick={() =>
-            void signingOut.ask(
-              () => api.signOut(),
-              () => {
-                remember(STORE, undefined);
-                setScreen({ name: "signed out" });
-              },
-            )
-          }
+          onClick={() => {
+            signingOut.clear();
+            setScreen({ ...screen, settings: !screen.settings });
+          }}
         >
-          Sign out
+          {screen.settings ? "Back" : "Settings"}
         </button>
       </span>
     );
-    return <Workspaces api={api} who={who} />;
+    const account = { email: screen.account.email, signOut, signingOut: signingOut.busy };
+    const page = screen.settings ? <Settings me={ME} account={account} /> : undefined;
+    return <Workspaces api={api} who={who} page={page} />;
   }
   return (
     <Frame>
-      <Body screen={screen} api={api} signedIn={(account) => setScreen({ name: "signed in", account })} />
+      <Body screen={screen} api={api} signedIn={(account) => setScreen({ name: "signed in", account, settings: false })} />
     </Frame>
   );
 }

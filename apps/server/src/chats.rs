@@ -3,19 +3,18 @@
 mod admit;
 
 use axum::Json;
-use axum::extract::State;
 use axum::response::{IntoResponse, Response};
 use weacon_protocol::ChatList;
 
 use crate::auth::Member;
-use crate::http::{Shared, failure};
+use crate::http::failure;
 
 /// `GET /api/workspaces/{workspace}/chats`: every chat in the workspace, the latest updated
 /// first.
-pub(crate) async fn list(State(shared): State<Shared>, member: Member) -> Response {
+pub(crate) async fn list(member: Member) -> Response {
     match member.workspace.chats().await {
         Ok(chats) => Json(ChatList { chats }).into_response(),
-        Err(fault) => failure(&shared, fault),
+        Err(fault) => failure(fault),
     }
 }
 
