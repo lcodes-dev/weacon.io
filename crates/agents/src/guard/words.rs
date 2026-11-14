@@ -95,7 +95,7 @@ pub(super) fn command(words: &[Word]) -> Command<'_> {
         };
         // A wildcard in the program's name is expanded to a program the guard can't name.
         let name = program_name(&program.text);
-        if program.glob || RUNNERS.contains(&name.as_str()) {
+        if program.dynamic || program.glob || RUNNERS.contains(&name.as_str()) {
             return Command::Unsure;
         }
         let Some((_, with_value, before)) = WRAPPERS.iter().find(|(wrapper, ..)| *wrapper == name)
@@ -227,7 +227,13 @@ pub(super) fn value_of(args: &[Word], options: &[&str]) -> Option<Word> {
 
 /// The values of every one of `options`, in order.
 pub(super) fn values_of(args: &[Word], options: &[&str]) -> Vec<Word> {
+    // Past `--`, words are operands, not options.
+    let options_end = args
+        .iter()
+        .position(|arg| arg.text == "--")
+        .unwrap_or(args.len());
     args.iter()
+        .take(options_end)
         .enumerate()
         .filter_map(|(at, arg)| {
             options.iter().find_map(|option| {

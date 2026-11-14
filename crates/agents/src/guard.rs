@@ -168,6 +168,17 @@ fn starts_with(path: &Path, prefix: &Path) -> bool {
 
 // What a person must be asked before `word`, a file the command changes, is changed.
 fn check_word(word: &Word, context: &Context, cwd: &Path, outside: Reason) -> Option<Reason> {
+    // Below a wildcard, a file it writes may have a second name the guard doesn't list.
+    let deep_glob = word.glob
+        && word
+            .text
+            .split('/')
+            .skip_while(|part| !part.contains(['*', '?', '[']))
+            .nth(1)
+            .is_some();
+    if outside == Reason::WriteOutside && deep_glob {
+        return Some(Reason::Unsure);
+    }
     path_of(word, context, cwd).map_or(Some(Reason::Unsure), |path| {
         check_path(&path, context, outside)
     })
@@ -197,8 +208,8 @@ fn path_of(word: &Word, context: &Context, cwd: &Path) -> Option<PathBuf> {
     (!(word.glob && leads_out(&path, context))).then_some(path)
 }
 
-// Whether `folder`, inside the worktree, holds a symlink to somewhere outside it; one it can't
-// list may. A folder outside is judged as outside already.
+// Whether `folder`, inside the worktree, holds a symlink to somewhere outside it or a file with a
+// second name; one it can't list may. A folder outside is judged as outside already.
 fn leads_out(folder: &Path, context: &Context) -> bool {
     let worktree = resolve(&context.worktree);
     let inside = |path: &Path| {
@@ -215,7 +226,11 @@ fn leads_out(folder: &Path, context: &Context) -> bool {
     };
     entries.into_iter().any(|entry| {
         entry.map_or(true, |entry| {
-            entry.file_type().is_ok_and(|kind| kind.is_symlink()) && !inside(&entry.path())
+            let path = entry.path();
+            let aliased = std::fs::symlink_metadata(&path).is_ok_and(|meta| meta.is_file())
+                && crate::platform::links(&path).is_ok_and(|links| links > 1);
+            let link = entry.file_type().is_ok_and(|kind| kind.is_symlink());
+            aliased || (link && !inside(&path))
         })
     })
 }
@@ -1137,7 +1152,50 @@ mod tests {
             Some(Reason::WriteOutside)
         );
         assert_eq!(check_command("cp input src", &context), None);
-        assert_eq!(check_command("cp src/$NAME out", &context), Some(Reason::Unsure));
+        assert_eq!(
+            check_command("cp src/$NAME out", &context),
+            Some(Reason::Unsure)
+        );
         assert_eq!(check_command("cp in* out", &context), Some(Reason::Unsure));
+    }
+
+    #[test]
+    fn reading_mistakes_from_the_branch_review_ask() {
+        let dir = TempDir::new().unwrap();
+        let context = context(&dir);
+        let check = |line: &str| check_command(line, &context);
+
+        for line in [
+            "false && cd ..; rm -rf main",
+            "{ cd ..; } & rm -rf main",
+            "{ cd ..; }; rm -rf main",
+            "env$X rm -rf ../main",
+            "git $ACTION --force",
+            "git p* --force",
+            "printf x > */notes.md",
+        ] {
+            assert_eq!(check(line), Some(Reason::Unsure), "{line}");
+        }
+        assert_eq!(
+            check("cp -- -t notes.md ../main/x"),
+            Some(Reason::WriteOutside)
+        );
+        assert_eq!(check("cd src && rm -rf x"), None);
+        assert_eq!(check("rm -rf */node_modules"), None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_wildcard_write_beside_a_file_with_two_names_asks() {
+        let dir = TempDir::new().unwrap();
+        let context = context(&dir);
+        fs::write(dir.join("main/important"), "").unwrap();
+        fs::hard_link(dir.join("main/important"), dir.join("wt/src/alias")).unwrap();
+
+        assert_eq!(
+            check_command("printf x > src/ali*", &context),
+            Some(Reason::Unsure)
+        );
+        assert_eq!(check_command("printf x > wt*", &context), None);
     }
 }

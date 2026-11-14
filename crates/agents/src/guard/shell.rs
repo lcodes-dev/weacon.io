@@ -61,8 +61,9 @@ pub(crate) fn parse(line: &str) -> Option<Vec<Simple>> {
     parse_nested(line, 0)
 }
 
-const OPENS: [&str; 6] = ["if", "while", "until", "for", "select", "case"];
-const CLOSES: [&str; 3] = ["fi", "done", "esac"];
+// A `{ … }` group may run in the background or a pipeline, which only its end shows.
+const OPENS: [&str; 7] = ["if", "while", "until", "for", "select", "case", "{"];
+const CLOSES: [&str; 4] = ["fi", "done", "esac", "}"];
 
 // Far deeper than any real command; deeper nesting would exhaust the stack.
 const MAX_DEPTH: usize = 32;
@@ -214,6 +215,7 @@ impl Parser {
         let pipe = char == '|' && self.peek() != Some('|');
         let or = char == '|' && !pipe;
         let background = char == '&' && self.peek() != Some('&');
+        let and = char == '&' && !background;
         if matches!(
             (char, self.peek()),
             ('&', Some('&')) | ('|', Some('|' | '&'))
@@ -228,7 +230,8 @@ impl Parser {
             _ => {}
         }
         simple.fed = pipe;
-        simple.apart = pipe || or;
+        // What follows `&&` or `||` runs only if what came before did or didn't.
+        simple.apart = pipe || or || and;
         if char == '\n' {
             self.skip_heredocs()?;
         }

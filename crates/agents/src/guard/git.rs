@@ -56,6 +56,9 @@ pub(super) fn judge(args: &[Word], context: &Context, cwd: &Path) -> Option<Reas
     let mut rest = args;
     loop {
         let (first, after) = rest.split_first()?;
+        if first.dynamic || first.glob {
+            return Some(Reason::Unsure);
+        }
         let text = first.text.as_str();
         if text == "-C" {
             let (folder, after) = after.split_first()?;
