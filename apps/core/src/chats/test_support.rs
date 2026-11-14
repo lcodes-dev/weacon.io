@@ -82,7 +82,7 @@ pub(crate) struct Bench {
 /// An engine with its state in a new folder, running on the current runtime.
 pub(crate) fn bench() -> Bench {
     let (bench, engine) = parts();
-    tokio::spawn(engine.run());
+    tokio::spawn(engine.serve());
     bench
 }
 

@@ -14,7 +14,7 @@ use crate::runs::task::{Agent, Order};
 impl<A: Agent> Engine<A> {
     pub(super) async fn command(&mut self, key: &Key, command: ChatCommand) -> Result<(), Fault> {
         let request = command.request;
-        let seen = self.chat(key).await?.log.seen(&request, &command.action);
+        let seen = self.open(key).await?.log.seen(&request, &command.action);
         let seen = seen.await?;
         match seen {
             Seen::Never | Seen::Pending => {}
@@ -80,7 +80,8 @@ impl<A: Agent> Engine<A> {
         self.runs
             .enqueue((&key.0, &key.1), agent, queued, now)
             .await?;
-        self.receipt(key, &request, Outcome::Accepted).await?;
+        self.commit_receipt(key, &request, Outcome::Accepted)
+            .await?;
         self.advance(key).await
     }
 
@@ -102,10 +103,11 @@ impl<A: Agent> Engine<A> {
             request: request.clone(),
             answer: answer.clone(),
         };
-        let answers = &mut self.chat(key).await?.answers;
+        let answers = &mut self.open(key).await?.answers;
         answers.retain(|other| other.answer.prompt != answer.prompt);
         answers.push(answered);
-        self.receipt(key, &request, Outcome::Completed).await?;
+        self.commit_receipt(key, &request, Outcome::Completed)
+            .await?;
         self.deliver(key, &request, answer).await
     }
 
@@ -113,7 +115,7 @@ impl<A: Agent> Engine<A> {
     async fn waits_for(&mut self, key: &Key, answer: &PermissionAnswer) -> Result<bool, Fault> {
         // The log forgets another run's prompts as soon as a newer run reports.
         let live = self.is_live(key);
-        let log = &self.chat(key).await?.log;
+        let log = &self.open(key).await?.log;
         Ok(live && log.runs().waits(&answer.run, answer.prompt))
     }
 
@@ -130,7 +132,7 @@ impl<A: Agent> Engine<A> {
             answer: answer.clone(),
         };
         let live = self.is_live(key);
-        let chat = self.chat(key).await?;
+        let chat = self.open(key).await?;
         if !live || !chat.answers.contains(&given) {
             return Ok(());
         }
@@ -144,13 +146,13 @@ impl<A: Agent> Engine<A> {
             };
             self.commit(key, ChatEvent::Run { update }).await?;
         }
-        let chat = self.chat(key).await?;
+        let chat = self.open(key).await?;
         chat.answers.retain(|other| *other != given);
         let run = answer.run.clone();
         let resumed = !chat.log.runs().waiting.iter().any(|waits| waits.run == run);
         self.order(key, Order::Answer(answer));
         if resumed {
-            self.state(key, &run, RunState::Running).await?;
+            self.set_state(key, &run, RunState::Running).await?;
         }
         Ok(())
     }
@@ -159,8 +161,9 @@ impl<A: Agent> Engine<A> {
     // stops that turn and never a later one.
     async fn interrupt(&mut self, key: &Key, request: RequestId) -> Result<(), Fault> {
         let stops = self.turn(key).map(|turn| (request.clone(), turn));
-        self.chat(key).await?.interrupting = stops;
-        self.receipt(key, &request, Outcome::Completed).await?;
+        self.open(key).await?.interrupting = stops;
+        self.commit_receipt(key, &request, Outcome::Completed)
+            .await?;
         self.stop_turn(key, &request).await
     }
 
@@ -170,7 +173,7 @@ impl<A: Agent> Engine<A> {
             return Ok(());
         };
         let stops = Some((request.clone(), turn));
-        let chat = self.chat(key).await?;
+        let chat = self.open(key).await?;
         if chat.interrupting != stops {
             return Ok(());
         }

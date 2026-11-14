@@ -114,10 +114,13 @@ struct Chat {
 }
 
 impl Chat {
-    // Whether nothing needs the chat open: no agent, answer, outcome or session still to save,
-    // or connected subscriber.
-    fn is_idle(&mut self) -> bool {
+    fn forget_gone(&mut self) {
         self.subscribers.retain(|subscriber| !subscriber.is_gone());
+    }
+
+    // Whether nothing needs the chat open: no agent, answer, outcome or session still to save,
+    // or subscriber.
+    fn is_unused(&self) -> bool {
         self.orders.is_none()
             && self.subscribers.is_empty()
             && self.answers.is_empty()
@@ -167,7 +170,7 @@ impl<A: Agent> Engine<A> {
     }
 
     /// Serves until every [`Chats`] is dropped; the agents stop with it.
-    pub(crate) async fn run(mut self) {
+    pub(crate) async fn serve(mut self) {
         loop {
             let key = tokio::select! {
                 ask = self.asks.recv() => match ask {
@@ -199,7 +202,7 @@ impl<A: Agent> Engine<A> {
         }
     }
 
-    async fn state(&mut self, key: &Key, run: &RunId, state: RunState) -> Result<(), Fault> {
+    async fn set_state(&mut self, key: &Key, run: &RunId, state: RunState) -> Result<(), Fault> {
         self.runs
             .update(&key.0, &key.1, |record| record.state = state)
             .await?;
@@ -213,14 +216,14 @@ impl<A: Agent> Engine<A> {
             .map(drop)
     }
 
-    async fn receipt(
+    async fn commit_receipt(
         &mut self,
         key: &Key,
         request: &RequestId,
         outcome: Outcome,
     ) -> Result<(), Fault> {
         // A command's end is told once, whichever path gets there first.
-        if self.chat(key).await?.log.has_ended(request) {
+        if self.open(key).await?.log.has_ended(request) {
             return Ok(());
         }
         let receipt = Receipt {
@@ -234,7 +237,7 @@ impl<A: Agent> Engine<A> {
 
     // Commits `event` to the chat's log, then tells its subscribers.
     async fn commit(&mut self, key: &Key, event: ChatEvent) -> Result<ChatEntry, Fault> {
-        let chat = self.chat(key).await?;
+        let chat = self.open(key).await?;
         match chat.log.append(event).await {
             Ok(entry) => {
                 self.publish(key, &update(key, entry.clone()));
@@ -299,7 +302,7 @@ impl<A: Agent> Engine<A> {
         self.runs.of(&key.0, &key.1)?.turn.clone()
     }
 
-    async fn chat(&mut self, key: &Key) -> Result<&mut Chat, Fault> {
+    async fn open(&mut self, key: &Key) -> Result<&mut Chat, Fault> {
         let root = self.workspaces.root(&key.0);
         match self.chats.entry(key.clone()) {
             Entry::Occupied(open) => Ok(open.into_mut()),
@@ -317,14 +320,19 @@ impl<A: Agent> Engine<A> {
 
     // Closes a chat nobody is using, so its log doesn't stay open for good.
     fn settle(&mut self, key: &Key) {
-        if self.chats.get_mut(key).is_some_and(Chat::is_idle) {
+        let Some(chat) = self.chats.get_mut(key) else {
+            return;
+        };
+        chat.forget_gone();
+        if chat.is_unused() {
             self.chats.remove(key);
         }
     }
 
     // Lets go of clients that hung up, and of the chats only they were watching.
     fn sweep(&mut self) {
-        self.chats.retain(|_, chat| !chat.is_idle());
+        self.chats.values_mut().for_each(Chat::forget_gone);
+        self.chats.retain(|_, chat| !chat.is_unused());
     }
 }
 

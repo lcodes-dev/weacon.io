@@ -115,7 +115,7 @@ impl Runs {
             queue,
             active_at: now,
         });
-        self.commit(next).await?;
+        self.save(next).await?;
         Ok(run)
     }
 
@@ -155,7 +155,7 @@ impl Runs {
             return Ok(());
         }
         record.queue.push(prompt);
-        self.commit(next).await
+        self.save(next).await
     }
 
     /// Changes the chat's record and saves it; a change that can't be saved isn't made. Does
@@ -172,7 +172,7 @@ impl Runs {
             return Ok(());
         };
         change(record);
-        self.commit(next).await
+        self.save(next).await
     }
 
     fn position(&self, workspace: &WorkspaceId, chat: &ChatId) -> Option<usize> {
@@ -198,7 +198,7 @@ impl Runs {
         self.path = path;
     }
 
-    async fn commit(&mut self, next: Journal) -> Result<(), Fault> {
+    async fn save(&mut self, next: Journal) -> Result<(), Fault> {
         let not_saved = || Fault::new(code!("runs.not_saved"), "The runs journal can't be saved");
         let json = serde_json::to_vec(&next).map_err(|error| not_saved().because(error))?;
         let path = self.path.clone();

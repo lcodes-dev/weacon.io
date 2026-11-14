@@ -93,9 +93,9 @@ impl<A: Agent> Engine<A> {
         prompt: u32,
         committed: Result<(), Fault>,
     ) -> Result<(), Fault> {
-        let answers = &mut self.chat(key).await?.answers;
+        let answers = &mut self.open(key).await?.answers;
         answers.retain(|answered| answered.answer.prompt != prompt);
-        let logged = !self.chat(key).await?.log.runs().waits(run, prompt);
+        let logged = !self.open(key).await?.log.runs().waits(run, prompt);
         if committed.is_err() && !logged {
             let event = RunEvent::PermissionWithdrawn {
                 run: run.clone(),
@@ -103,10 +103,10 @@ impl<A: Agent> Engine<A> {
             };
             self.commit_said(key, run, &event).await?;
         }
-        let log = &self.chat(key).await?.log;
+        let log = &self.open(key).await?.log;
         let asks = log.runs().waiting.iter().any(|waits| waits.run == *run);
         if !asks && self.turn(key).is_some() {
-            self.state(key, run, RunState::Running).await?;
+            self.set_state(key, run, RunState::Running).await?;
         }
         Ok(())
     }
@@ -120,7 +120,7 @@ impl<A: Agent> Engine<A> {
         committed: Result<(ChatEntry, bool), Fault>,
     ) -> Result<(), Fault> {
         if let Ok((_, true)) = &committed {
-            return self.state(key, run, RunState::Waiting).await;
+            return self.set_state(key, run, RunState::Waiting).await;
         }
         let answer = PermissionAnswer {
             run: run.clone(),
@@ -133,7 +133,7 @@ impl<A: Agent> Engine<A> {
             &[("run_id", run.as_str().into())],
         );
         // Withdrawn wherever it reached the log, even by a write reported failed.
-        let logged = self.chat(key).await?.log.runs().waits(run, prompt);
+        let logged = self.open(key).await?.log.runs().waits(run, prompt);
         if committed.is_ok() || logged {
             let event = RunEvent::PermissionWithdrawn {
                 run: run.clone(),
@@ -175,7 +175,7 @@ impl<A: Agent> Engine<A> {
         state: RunState,
     ) -> Result<(), Fault> {
         let (turn, now) = (self.turn(key), (self.host.now)());
-        let chat = self.chat(key).await?;
+        let chat = self.open(key).await?;
         chat.answers.clear();
         // What the run reported first wins over a later end, such as its exit.
         let outcome = match chat.unended.take() {
@@ -184,7 +184,7 @@ impl<A: Agent> Engine<A> {
         };
         // The turn stays in the journal until its receipt is in the log; `advance` retries it.
         if let Some(request) = turn
-            && let Err(fault) = self.receipt(key, &request, outcome.clone()).await
+            && let Err(fault) = self.commit_receipt(key, &request, outcome.clone()).await
         {
             if let Some(chat) = self.chats.get_mut(key) {
                 chat.unended = Some((request, outcome));
@@ -199,12 +199,12 @@ impl<A: Agent> Engine<A> {
                 record.active_at = now;
             })
             .await?;
-        self.state(key, run, state).await
+        self.set_state(key, run, state).await
     }
 
     // The agent is gone: its turn ends unknown, and what is queued goes to the chat's next run.
     async fn exited(&mut self, key: &Key, run: &RunId) -> Result<(), Fault> {
-        self.chat(key).await?.orders = None;
+        self.open(key).await?.orders = None;
         self.finished(key, run, Outcome::Unknown, RunState::Sleeping)
             .await?;
         self.advance(key).await
@@ -253,7 +253,7 @@ impl<A: Agent> Engine<A> {
                 })
                 .await;
         }
-        self.state(key, run, RunState::Running).await
+        self.set_state(key, run, RunState::Running).await
     }
 
     // Saves the ends a failed write or an exit left unsaved: the turn's, and those of queued
@@ -264,7 +264,7 @@ impl<A: Agent> Engine<A> {
         };
         let (turn, queue) = (record.turn.clone(), record.queue.clone());
         let live = self.is_live(key);
-        let chat = self.chat(key).await?;
+        let chat = self.open(key).await?;
         // A turn whose run is gone, as after a restart, is over too, and so is that run.
         let turn_ended =
             turn.is_some_and(|turn| !live || chat.unended.is_some() || chat.log.has_ended(&turn));
@@ -311,7 +311,7 @@ impl<A: Agent> Engine<A> {
         // Each one leaves the queue only once its receipt is in the log.
         for queued in queue {
             let code = fault.code().clone();
-            self.receipt(key, &queued.request, Outcome::Failed { code })
+            self.commit_receipt(key, &queued.request, Outcome::Failed { code })
                 .await?;
         }
         self.save_ended(key).await
@@ -325,12 +325,12 @@ impl<A: Agent> Engine<A> {
             .runs
             .update(&key.0, &key.1, |record| record.session = Some(given))
             .await;
-        self.chat(key).await?.unsaved = kept.is_err().then_some(session);
+        self.open(key).await?.unsaved = kept.is_err().then_some(session);
         kept
     }
 
     async fn save_unsaved(&mut self, key: &Key) -> Result<(), Fault> {
-        match self.chat(key).await?.unsaved.take() {
+        match self.open(key).await?.unsaved.take() {
             Some(session) => self.keep_session(key, session).await,
             None => Ok(()),
         }
@@ -364,8 +364,8 @@ impl<A: Agent> Engine<A> {
                 ];
                 self.log.warn("run not started", &fields);
                 // A run that stopped reading is let go of too, so the chat can close.
-                self.chat(key).await?.orders = None;
-                self.state(key, &run, RunState::Ended).await?;
+                self.open(key).await?.orders = None;
+                self.set_state(key, &run, RunState::Ended).await?;
                 return Err(fault);
             }
         };
@@ -376,11 +376,11 @@ impl<A: Agent> Engine<A> {
             run: run.clone(),
         };
         tokio::spawn(drive(agent, of, ordered, self.reporter.clone()));
-        self.chat(key).await?.orders = Some(orders);
+        self.open(key).await?.orders = Some(orders);
         self.log
             .info("run started", &[("run_id", run.as_str().into())]);
         // The agent is up: a status that can't be committed doesn't stop its turn.
-        if let Err(fault) = self.state(key, &run, RunState::Starting).await {
+        if let Err(fault) = self.set_state(key, &run, RunState::Starting).await {
             let fields = [
                 ("run_id", run.as_str().into()),
                 ("err", Field::error(&fault)),
@@ -438,7 +438,7 @@ mod tests {
     }
 
     async fn latest(engine: &mut Engine<FakeAgent>) -> ChatEvent {
-        let log = &engine.chat(&key()).await.unwrap().log;
+        let log = &engine.open(&key()).await.unwrap().log;
         let mut window = log.window(u64::MAX, 1).await.unwrap();
         window.pop().unwrap().event
     }
@@ -524,7 +524,7 @@ mod tests {
             soon(agent.told.recv()).await,
             Some(Told::Send("Hi".to_owned()))
         );
-        engine.chat(&key()).await.unwrap().log.jam();
+        engine.open(&key()).await.unwrap().log.jam();
 
         let refused = engine.command(&key(), prompt("r-2", "More")).await;
         assert_eq!(refused.unwrap_err().code().as_str(), "chat.log_not_written");
@@ -561,7 +561,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn a_turn_ends_even_when_its_last_event_cant_be_committed() {
         let (_bench, mut engine, _agent, _pushes) = on_turn().await;
-        engine.chat(&key()).await.unwrap().log.jam();
+        engine.open(&key()).await.unwrap().log.jam();
 
         let outcome = Outcome::Completed;
         let lost = hear(&mut engine, RunEvent::Finished { outcome }).await;
@@ -600,10 +600,10 @@ mod tests {
             soon(started.told.recv()).await,
             Some(Told::Send("Hi".to_owned()))
         );
-        assert_eq!(engine.chat(&key()).await.unwrap().log.seq(), 4);
+        assert_eq!(engine.open(&key()).await.unwrap().log.seq(), 4);
         engine.command(&key(), prompt("r-1", "Hi")).await.unwrap();
         started.told.try_recv().unwrap_err();
-        assert_eq!(engine.chat(&key()).await.unwrap().log.seq(), 4);
+        assert_eq!(engine.open(&key()).await.unwrap().log.seq(), 4);
         let outcome = Outcome::Completed;
         hear(&mut engine, RunEvent::Finished { outcome })
             .await
@@ -656,7 +656,7 @@ mod tests {
     async fn a_turn_whose_agent_is_gone_doesnt_hold_up_the_next_prompt() {
         let (mut bench, mut engine, _agent, _pushes) = on_turn().await;
         // As when the agent exited and the journal couldn't be told the turn was over.
-        engine.chat(&key()).await.unwrap().orders = None;
+        engine.open(&key()).await.unwrap().orders = None;
 
         engine.command(&key(), prompt("r-2", "More")).await.unwrap();
 
@@ -689,7 +689,7 @@ mod tests {
         };
         let action = ChatAction::Permission { answer };
         let allow = || command("r-2", "c-1", action.clone());
-        engine.chat(&key()).await.unwrap().log.jam();
+        engine.open(&key()).await.unwrap().log.jam();
 
         let refused = engine.command(&key(), allow()).await;
         assert_eq!(refused.unwrap_err().code().as_str(), "chat.log_not_written");
@@ -705,7 +705,7 @@ mod tests {
     async fn an_agents_session_is_kept_even_when_its_event_cant_be_committed() {
         let (_bench, mut engine, _agent, _pushes) = on_turn().await;
         let session = session();
-        engine.chat(&key()).await.unwrap().log.jam();
+        engine.open(&key()).await.unwrap().log.jam();
 
         let started = RunEvent::Started {
             session: session.clone(),
@@ -745,7 +745,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn a_withdrawal_whose_write_fails_is_written_again_and_the_prompt_stops_waiting() {
         let (mut engine, _agent, _bench) = on_ask().await;
-        engine.chat(&key()).await.unwrap().log.jam();
+        engine.open(&key()).await.unwrap().log.jam();
         let withdrawn = RunEvent::PermissionWithdrawn {
             run: run("run-1"),
             prompt: 1,
@@ -805,7 +805,7 @@ mod tests {
             .heard(&other, &run("run-1"), elsewhere)
             .await
             .unwrap();
-        assert_eq!(engine.chat(&key()).await.unwrap().log.seq(), 4);
+        assert_eq!(engine.open(&key()).await.unwrap().log.seq(), 4);
         assert!(!engine.chats.contains_key(&other));
 
         let fault = Fault::new(code!("agent.io_failed"), "The agent's pipes failed");
@@ -826,7 +826,7 @@ mod tests {
             .heard(&key(), &run("run-1"), Heard::Exited(None))
             .await
             .unwrap();
-        assert_eq!(engine.chat(&key()).await.unwrap().log.seq(), 6);
+        assert_eq!(engine.open(&key()).await.unwrap().log.seq(), 6);
     }
 
     #[tokio::test(start_paused = true)]
@@ -940,7 +940,7 @@ mod tests {
 
     // The outcomes of `request`'s receipts in the log, in order.
     async fn outcomes(engine: &mut Engine<FakeAgent>, request: &RequestId) -> Vec<Outcome> {
-        let log = &engine.chat(&key()).await.unwrap().log;
+        let log = &engine.open(&key()).await.unwrap().log;
         let window = log.window(u64::MAX, 64).await.unwrap();
         window
             .into_iter()
@@ -973,13 +973,13 @@ mod tests {
     async fn an_answer_whose_receipt_was_written_reaches_its_run_when_sent_again() {
         let (mut engine, mut agent, _bench) = on_ask().await;
         let (answers, answer) = allow("r-2");
-        engine.chat(&key()).await.unwrap().log.jam();
+        engine.open(&key()).await.unwrap().log.jam();
         let failed = engine.command(&key(), answers.clone()).await;
         assert_eq!(failed.unwrap_err().code().as_str(), "chat.log_not_written");
         // As when its receipt reached the disk all the same.
         let request = answers.request.clone();
         engine
-            .receipt(&key(), &request, Outcome::Completed)
+            .commit_receipt(&key(), &request, Outcome::Completed)
             .await
             .unwrap();
 
@@ -998,9 +998,12 @@ mod tests {
             request: request.clone(),
             answer,
         };
-        engine.chat(&key()).await.unwrap().answers.push(answered);
+        engine.open(&key()).await.unwrap().answers.push(answered);
         let receipt = Outcome::Completed;
-        engine.receipt(&key(), &request, receipt).await.unwrap();
+        engine
+            .commit_receipt(&key(), &request, receipt)
+            .await
+            .unwrap();
         answers
     }
 
@@ -1015,7 +1018,7 @@ mod tests {
         engine.command(&key(), answers).await.unwrap();
 
         assert_eq!(soon(agent.told.recv()).await, None);
-        let runs = &engine.chat(&key()).await.unwrap().log.runs().runs;
+        let runs = &engine.open(&key()).await.unwrap().log.runs().runs;
         assert_eq!(runs[0].run, run("run-1"));
         assert_eq!(waiting_in(&mut engine).await.len(), 1);
     }
@@ -1043,7 +1046,7 @@ mod tests {
         let file = engine.workspaces.root(&key().0).join("chats/c-c-1.jsonl");
         std::fs::rename(&file, file.with_extension("moved")).unwrap();
         std::fs::create_dir(&file).unwrap();
-        engine.chat(&key()).await.unwrap().log.jam();
+        engine.open(&key()).await.unwrap().log.jam();
         let withdrawn = RunEvent::PermissionWithdrawn {
             run: run("run-1"),
             prompt: 1,
@@ -1052,7 +1055,7 @@ mod tests {
         let lost = hear(&mut engine, withdrawn).await;
 
         assert_eq!(lost.unwrap_err().code().as_str(), "chat.log_not_written");
-        assert!(engine.chat(&key()).await.unwrap().answers.is_empty());
+        assert!(engine.open(&key()).await.unwrap().answers.is_empty());
     }
 
     #[tokio::test(start_paused = true)]
@@ -1074,7 +1077,7 @@ mod tests {
             .await
             .unwrap();
 
-        let log = &engine.chat(&key()).await.unwrap().log;
+        let log = &engine.open(&key()).await.unwrap().log;
         let entries = log.window(u64::MAX, 64).await.unwrap();
         let withdrawals = entries.iter().filter(|entry| {
             matches!(&entry.event, ChatEvent::Run { update } if matches!(update.event, RunEvent::PermissionWithdrawn { .. }))
@@ -1124,10 +1127,10 @@ mod tests {
             },
         };
         // As when its receipt and its answer reached the disk but the write was reported failed.
-        engine.chat(&key()).await.unwrap().answers.push(answered);
+        engine.open(&key()).await.unwrap().answers.push(answered);
         let receipt = Outcome::Completed;
         engine
-            .receipt(&key(), &answers.request, receipt)
+            .commit_receipt(&key(), &answers.request, receipt)
             .await
             .unwrap();
         let event = RunEvent::PermissionAnswered {
@@ -1140,7 +1143,7 @@ mod tests {
 
         assert_eq!(soon(agent.told.recv()).await, Some(Told::Answer(answer)));
         assert_eq!(soon(agent.told.recv()).await, None);
-        let log = &engine.chat(&key()).await.unwrap().log;
+        let log = &engine.open(&key()).await.unwrap().log;
         let entries = log.window(u64::MAX, 64).await.unwrap();
         let logged = entries.iter().filter(|entry| {
             matches!(&entry.event, ChatEvent::Run { update } if matches!(update.event, RunEvent::PermissionAnswered { .. }))
@@ -1188,10 +1191,10 @@ mod tests {
                 allow: true,
             },
         };
-        engine.chat(&key()).await.unwrap().answers.push(pending);
+        engine.open(&key()).await.unwrap().answers.push(pending);
         let receipt = Outcome::Completed;
         engine
-            .receipt(&key(), &second.request, receipt)
+            .commit_receipt(&key(), &second.request, receipt)
             .await
             .unwrap();
 
@@ -1226,13 +1229,13 @@ mod tests {
             Some(Told::Send("Hi".to_owned()))
         );
         let interrupt = command("r-2", "c-1", ChatAction::Interrupt);
-        engine.chat(&key()).await.unwrap().log.jam();
+        engine.open(&key()).await.unwrap().log.jam();
         let failed = engine.command(&key(), interrupt.clone()).await;
         assert_eq!(failed.unwrap_err().code().as_str(), "chat.log_not_written");
         // As when its receipt reached the disk all the same.
         let request = interrupt.request.clone();
         engine
-            .receipt(&key(), &request, Outcome::Completed)
+            .commit_receipt(&key(), &request, Outcome::Completed)
             .await
             .unwrap();
 
@@ -1250,7 +1253,7 @@ mod tests {
             soon(agent.told.recv()).await,
             Some(Told::Send("Hi".to_owned()))
         );
-        engine.chat(&key()).await.unwrap().log.jam();
+        engine.open(&key()).await.unwrap().log.jam();
 
         let interrupt = command("r-2", "c-1", ChatAction::Interrupt);
         let refused = engine.command(&key(), interrupt).await;
@@ -1267,7 +1270,7 @@ mod tests {
             Some(Told::Send("Hi".to_owned()))
         );
         let request = prompt("r-1", "Hi").request;
-        engine.chat(&key()).await.unwrap().log.jam();
+        engine.open(&key()).await.unwrap().log.jam();
         let (run_1, idle) = (run("run-1"), RunState::Idle);
         let lost = engine
             .finished(&key(), &run_1, Outcome::Completed, idle)
@@ -1299,7 +1302,7 @@ mod tests {
         let code = code!("agent.not_started");
         let request = prompt("r-2", "More").request;
         engine
-            .receipt(&key(), &request, Outcome::Failed { code })
+            .commit_receipt(&key(), &request, Outcome::Failed { code })
             .await
             .unwrap();
 
@@ -1315,7 +1318,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn an_exit_whose_receipt_failed_is_ended_before_the_next_run_starts() {
         let (mut bench, mut engine, agent, _pushes) = on_turn().await;
-        engine.chat(&key()).await.unwrap().log.jam();
+        engine.open(&key()).await.unwrap().log.jam();
         drop(agent);
         let exited = Heard::Exited(None);
         let lost = engine.heard(&key(), &run("run-1"), exited).await;
@@ -1337,14 +1340,14 @@ mod tests {
             outcomes(&mut engine, &first).await,
             [Outcome::Accepted, Outcome::Unknown]
         );
-        assert!(engine.chat(&key()).await.unwrap().unended.is_none());
+        assert!(engine.open(&key()).await.unwrap().unended.is_none());
     }
 
     #[tokio::test(start_paused = true)]
     async fn an_outcome_left_by_another_turn_doesnt_end_this_one() {
         let (_bench, mut engine, _agent, _pushes) = on_turn().await;
         let other = (prompt("r-0", "Earlier").request, Outcome::Completed);
-        engine.chat(&key()).await.unwrap().unended = Some(other);
+        engine.open(&key()).await.unwrap().unended = Some(other);
 
         let (run_1, idle) = (run("run-1"), RunState::Idle);
         engine
@@ -1390,7 +1393,7 @@ mod tests {
         // The run stopped reading while its next turn was being saved.
         let (closed, gone) = mpsc::unbounded_channel();
         drop(gone);
-        engine.chat(&key()).await.unwrap().orders = Some(closed);
+        engine.open(&key()).await.unwrap().orders = Some(closed);
         let next = Queued {
             request: prompt("r-2", "More").request,
             text: "More".to_owned(),

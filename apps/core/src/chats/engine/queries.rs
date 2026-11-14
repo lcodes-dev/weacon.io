@@ -21,7 +21,7 @@ impl<A: Agent> Engine<A> {
         }
         // A run cut off, as by a restart, isn't shown as working.
         self.save_ended(key).await?;
-        let chat = self.chat(key).await?;
+        let chat = self.open(key).await?;
         match query {
             ChatQueryKind::Subscribe { after } => {
                 // A client has one subscription to a chat: its latest.

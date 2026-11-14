@@ -153,7 +153,7 @@ mod tests {
             work_root: Some(dir.join("Weacon")),
         };
         let (chats, engine) = start(&dir, places, app, SpawnPolicy::default(), log).unwrap();
-        tokio::spawn(engine.run());
+        tokio::spawn(engine.serve());
         // A file where the chat's working folder would go: its agent can't be started.
         let work = dir.join("Weacon/w-w-1");
         std::fs::create_dir_all(&work).unwrap();
