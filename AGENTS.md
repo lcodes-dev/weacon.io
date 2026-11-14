@@ -112,7 +112,7 @@ Every program logs, reports errors and says which build it is from its first com
 | --- | --- |
 | `scripts/setup.sh` | Installs or updates everything; safe to run again |
 | `scripts/fix.sh` | Formats and applies the lint fixes clippy is sure of |
-| `scripts/check.sh` | What CI runs: rustfmt, clippy with warnings as errors, docs, cargo-machete, cargo-deny, all tests with the 90% line-coverage floor, doc tests, mutation tests on the code changed against `origin/main`, the extension's type check, tests and build, the shared TypeScript tooling's tests, the web app's type check, build, tests and end-to-end tests in Chromium against `fake-server`, and ShellCheck. CI also lints and tests on Windows |
+| `scripts/check.sh` | What CI runs: rustfmt, clippy with warnings as errors, docs, cargo-machete, cargo-deny, all tests with the 90% line-coverage floor, doc tests, mutation tests on the code changed against `origin/main` (in CI each test binary gets at most 4 GiB of memory), the extension's type check, tests and build, the shared TypeScript tooling's tests, the web app's type check, build, tests and end-to-end tests in Chromium against `fake-server`, and ShellCheck. CI also lints and tests on Windows |
 | `cargo test -p <crate> [name]` | Focused tests while iterating |
 | `WEACON_STATE_DIR=.dev/state cargo run -p weacon-core -- doctor` | Runs the core with this worktree's own state folder |
 | `UPDATE_SCHEMA=1 cargo test -p weacon-protocol` | Regenerates `crates/protocol/schema.json` after a message changes |

@@ -287,7 +287,7 @@ fn doc_not_found() -> Fault {
 
 fn refused(error: ReviseError) -> Fault {
     match error {
-        ReviseError::Stale { .. } => {
+        ReviseError::Stale => {
             Fault::new(code!("doc.stale"), "The doc has changed since it was read")
         }
         ReviseError::LastVersion => last_version(),
