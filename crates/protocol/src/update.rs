@@ -45,9 +45,9 @@ impl ReleaseManifest {
 /// A release's `major.minor.patch`, ordered by its numbers.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct ReleaseVersion {
-    pub major: u32,
-    pub minor: u32,
-    pub patch: u32,
+    major: u32,
+    minor: u32,
+    patch: u32,
 }
 
 // The schema's form of `ReleaseVersion::from_str`; a test keeps the two in step.
@@ -168,14 +168,15 @@ hex_string!(
     "not a SHA-256 digest"
 );
 
-/// An `https://` address of printable ASCII, at most 2,048 bytes.
+/// An `https://` address of printable ASCII, at most 2,048 bytes, with a plain host name and
+/// optionally a port: no user name or password.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, JsonSchema)]
 pub struct DownloadUrl(#[schemars(regex(pattern = URL_PATTERN), length(max = URL_MAX))] String);
 
 const URL_MAX: usize = 2048;
 
 // The schema's form of `DownloadUrl::try_from`; a test keeps the two in step.
-const URL_PATTERN: &str = r"^https://[!-~]+$";
+const URL_PATTERN: &str = r"^https://[A-Za-z0-9.-]+(:[0-9]{1,5})?([/?#][!-~]*)?$";
 
 impl DownloadUrl {
     #[must_use]
@@ -188,13 +189,21 @@ impl TryFrom<String> for DownloadUrl {
     type Error = String;
 
     fn try_from(text: String) -> Result<Self, Self::Error> {
-        let printable =
-            |rest: &str| !rest.is_empty() && rest.bytes().all(|byte| byte.is_ascii_graphic());
-        if text.len() <= URL_MAX && text.strip_prefix("https://").is_some_and(printable) {
-            Ok(Self(text))
-        } else {
-            Err(text)
-        }
+        let valid = text.len() <= URL_MAX
+            && text.strip_prefix("https://").is_some_and(|rest| {
+                let (authority, path) = rest
+                    .find(['/', '?', '#'])
+                    .map_or((rest, ""), |at| rest.split_at(at));
+                let (host, port) = authority.split_once(':').unwrap_or((authority, "0"));
+                let host_ok = !host.is_empty()
+                    && host
+                        .bytes()
+                        .all(|byte| byte.is_ascii_alphanumeric() || b".-".contains(&byte));
+                let port_ok =
+                    (1..=5).contains(&port.len()) && port.bytes().all(|byte| byte.is_ascii_digit());
+                host_ok && port_ok && path.bytes().all(|byte| byte.is_ascii_graphic())
+            });
+        if valid { Ok(Self(text)) } else { Err(text) }
     }
 }
 
@@ -348,6 +357,16 @@ mod tests {
             "https://a\n",
             "https://é",
             " https://a",
+            "https://#",
+            "https:///x",
+            "https://user:pw@example.com/x",
+            "https://user@example.com",
+            "https://example.com:443/x",
+            "https://example.com:/x",
+            "https://example.com:123456",
+            "https://example.com#part",
+            "https://a:1",
+            "https://a:b",
         ];
         let parses = |text: &str| DownloadUrl::try_from(text.to_owned()).is_ok();
         matches_its_parser(URL_PATTERN, parses, &samples);
