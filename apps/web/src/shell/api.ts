@@ -112,21 +112,23 @@ function fields(value: unknown, keys: string[]): boolean {
   );
 }
 
+/** Whether a value is an object whose `key` holds a list of items `isItem` takes. */
+function listOf<T>(key: string, isItem: (item: unknown) => boolean): (value: unknown) => value is T {
+  return (value): value is T => {
+    const items = typeof value === "object" && value !== null ? (value as Record<string, unknown>)[key] : undefined;
+    return Array.isArray(items) && items.every(isItem);
+  };
+}
+
 const isAccount = (value: unknown): value is AccountSignedIn => fields(value, ["account", "email"]);
 const isStarted = (value: unknown): value is SignInStarted => fields(value, ["challenge"]);
 const isError = (value: unknown): value is { code: Code } => fields(value, ["code"]);
 const isWorkspace = (value: unknown): value is WorkspaceSummary =>
   fields(value, ["id", "name", "role"]) && isId((value as WorkspaceSummary).id);
-const isList = (value: unknown): value is WorkspaceList =>
-  typeof value === "object" &&
-  value !== null &&
-  "workspaces" in value &&
-  Array.isArray(value.workspaces) &&
-  value.workspaces.every(isWorkspace);
+const isList = listOf<WorkspaceList>("workspaces", isWorkspace);
 
 const isChat = (value: unknown): value is ChatSummary =>
   fields(value, ["id", "machine", "owner", "state", "title"]) &&
   isId((value as ChatSummary).id) &&
   Number.isSafeInteger((value as ChatSummary).updated_at);
-const isChats = (value: unknown): value is ChatList =>
-  typeof value === "object" && value !== null && "chats" in value && Array.isArray(value.chats) && value.chats.every(isChat);
+const isChats = listOf<ChatList>("chats", isChat);

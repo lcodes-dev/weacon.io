@@ -1,23 +1,14 @@
 import { createContext, useContext } from "react";
 
+import { HELLO_ID } from "../connection.ts";
 import type { Incoming } from "../incoming.ts";
 import type { Envelope } from "../protocol.ts";
 
-/** The open workspace's one socket, as a page uses it. */
-export type WorkspaceSocket = {
-  /** Sends `envelope`; while the feed isn't live it is dropped, and this says so with `false`. */
-  send(envelope: Envelope): boolean;
-  /** Calls `handle` with each checked message from the feed, until the returned function is called. */
-  subscribe(handle: (message: Incoming) => void): () => void;
-  /** The next envelope id for a request; the hello takes 1. */
-  nextId(): number;
-};
-
-/** A `WorkspaceSocket` that lives as long as its workspace is open, across the feed's reconnects. */
-export class FeedSocket implements WorkspaceSocket {
+/** The open workspace's one socket, which its pages send on and listen to, across the feed's reconnects. */
+export class WorkspaceSocket {
   #send: ((envelope: Envelope) => void) | undefined;
   #handlers = new Set<(message: Incoming) => void>();
-  #lastId = 1;
+  #lastId = HELLO_ID;
 
   /** Sends through `send` from now on, as when the feed goes live; `undefined` when it ends. */
   attach(send: ((envelope: Envelope) => void) | undefined): void {
@@ -31,18 +22,19 @@ export class FeedSocket implements WorkspaceSocket {
     }
   }
 
+  /** Sends `envelope`; while the feed isn't live it is dropped, and this says so with `false`. */
   send(envelope: Envelope): boolean {
     this.#send?.(envelope);
     return this.#send !== undefined;
   }
 
+  /** Calls `handle` with each checked message from the feed, until the returned function is called. */
   subscribe(handle: (message: Incoming) => void): () => void {
-    // Each subscription is its own, so ending one leaves another of the same handler.
-    const own = (message: Incoming) => handle(message);
-    this.#handlers.add(own);
-    return () => this.#handlers.delete(own);
+    this.#handlers.add(handle);
+    return () => this.#handlers.delete(handle);
   }
 
+  /** The next envelope id for a request. */
   nextId(): number {
     return ++this.#lastId;
   }

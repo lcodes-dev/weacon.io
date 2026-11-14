@@ -3,9 +3,6 @@ import type { App, Envelope, RunEvent } from "./protocol.ts";
 /** A message from the server that this app acts on, its fields checked where it arrives. */
 export type Incoming = Extract<Envelope, { type: "welcome" | "error" | "receipt" | "run" | "diff_answer" | "workspace" }>;
 
-/** A change to a workspace, from its feed, checked. */
-export type WorkspaceMessage = Extract<Incoming, { type: "workspace" }>;
-
 /** A run message, checked. */
 export type RunMessage = Extract<Incoming, { type: "run" }>;
 
@@ -56,7 +53,7 @@ type Fields = Record<string, unknown>;
 
 const text = (fields: Fields, key: string) => typeof fields[key] === "string";
 
-// The fields each message this app acts on must have; one more type is one line here and in `Incoming`.
+// The fields each message this app acts on must have.
 const CHECKS: { [T in Incoming["type"]]: (fields: Fields) => boolean } = {
   welcome: (fields) => isApp(fields["app"]) && (fields["capabilities"] === undefined || isStrings(fields["capabilities"])),
   error: (fields) => text(fields, "code"),
@@ -122,6 +119,6 @@ function isChange(value: unknown): boolean {
   if (typeof value !== "object" || value === null) {
     return false;
   }
-  const fields = value as Record<string, unknown>;
+  const fields = value as Fields;
   return fields["kind"] === "chat_changed" ? typeof fields["chat"] === "string" : typeof fields["kind"] === "string";
 }

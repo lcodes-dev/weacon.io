@@ -8,11 +8,14 @@ import { type Served, serve } from "./server.ts";
 
 const EMAIL = "ada@example.com";
 
-// Lists `list` as every workspace's chats, until the server serves its own.
-async function listChats(page: Page, list: ChatList): Promise<void> {
-  await page.route("**/api/workspaces/*/chats", (route) =>
-    route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(list) }),
-  );
+// Lists `list(n)` as every workspace's chats the nth time they are asked for; gives how often they were.
+async function listChats(page: Page, list: (asked: number) => ChatList): Promise<() => number> {
+  let asked = 0;
+  await page.route("**/api/workspaces/*/chats", (route) => {
+    asked += 1;
+    return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(list(asked)) });
+  });
+  return () => asked;
 }
 
 async function signIn(served: Served): Promise<void> {
@@ -132,7 +135,7 @@ test("the header switches workspaces, and the page reopens the last one", { time
   const served = await serve();
   t.after(() => served.close());
   const { page } = served;
-  await listChats(page, { chats: [] });
+  await listChats(page, () => ({ chats: [] }));
   await signIn(served);
   await page.getByLabel("Name").fill("Made-up team");
   await page.getByRole("button", { name: "Create" }).click();
@@ -273,13 +276,13 @@ test("a workspace lists its chats newest first, and opens one in the address", {
   const served = await serve();
   t.after(() => served.close());
   const { page } = served;
-  await listChats(page, {
+  await listChats(page, () => ({
     chats: [
       { id: "c-1", title: "Merge the shopping lists", owner: "m-1", machine: "laptop", state: "open", updated_at: 1_800_000_000 },
       { id: "c-2", title: "Sort the pantry", owner: "m-1", machine: "team VPS", state: "full", updated_at: 1_800_000_100 },
       { id: "c-3", title: "Old notes", owner: "m-1", machine: "desktop", state: "detached", updated_at: 1_700_000_000 },
     ],
-  });
+  }));
   await signIn(served);
   await page.getByRole("button", { name: "Personal" }).click();
   const chats = page.getByRole("navigation", { name: "Chats" });
@@ -299,12 +302,9 @@ test("a chat change on the feed reloads the list, and a feed that ends opens aga
   const served = await serve();
   t.after(() => served.close());
   const { page } = served;
-  let listed = 0;
-  await page.route("**/api/workspaces/*/chats", (route) => {
-    listed += 1;
-    const chats: ChatList = { chats: listed === 1 ? [] : [{ id: "c-9", title: "A new chat", owner: "m-1", machine: "laptop", state: "open", updated_at: 1 }] };
-    return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(chats) });
-  });
+  const listed = await listChats(page, (asked) => ({
+    chats: asked === 1 ? [] : [{ id: "c-9", title: "A new chat", owner: "m-1", machine: "laptop", state: "open", updated_at: 1 }],
+  }));
   const opened: string[] = [];
   await page.routeWebSocket(/\/api\/workspaces\/[^/]+\/feed/, (socket) => {
     opened.push(new URL(socket.url()).search);
@@ -331,5 +331,5 @@ test("a chat change on the feed reloads the list, and a feed that ends opens aga
   await chats.getByText("A new chat").waitFor();
   await page.waitForFunction(() => document.querySelector(".status")?.textContent === "Connected");
   assert.deepEqual(opened, ["?since=0", "?since=7"]);
-  assert.equal(listed, 2);
+  assert.equal(listed(), 2);
 });

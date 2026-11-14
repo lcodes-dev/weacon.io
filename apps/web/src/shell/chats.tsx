@@ -20,17 +20,20 @@ export function ChatsNav({
       {chats?.length === 0 && <p className="muted">No chats yet. Connect a machine to start one.</p>}
       {chats !== undefined && chats.length > 0 && (
         <ul>
-          {chats.map(({ id, title, machine, state }) => (
-            <li key={id}>
-              <button type="button" aria-current={id === chosen ? "page" : undefined} onClick={() => choose(id)}>
-                <span className="title">{title}</span>
-                <span className="muted">
-                  {machine}
-                  {stateNote(state) !== undefined && ` · ${stateNote(state)}`}
-                </span>
-              </button>
-            </li>
-          ))}
+          {chats.map(({ id, title, machine, state }) => {
+            const note = stateNote(state);
+            return (
+              <li key={id}>
+                <button type="button" aria-current={id === chosen ? "page" : undefined} onClick={() => choose(id)}>
+                  <span className="title">{title}</span>
+                  <span className="muted">
+                    {machine}
+                    {note !== undefined && ` · ${note}`}
+                  </span>
+                </button>
+              </li>
+            );
+          })}
         </ul>
       )}
       {loaded.problem !== undefined && (
