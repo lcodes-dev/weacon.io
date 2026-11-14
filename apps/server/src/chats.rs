@@ -3,6 +3,7 @@
 mod admit;
 mod command;
 mod read;
+mod upload;
 mod watch;
 
 pub(crate) use watch::Watch;
