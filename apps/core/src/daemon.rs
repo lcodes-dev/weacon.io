@@ -19,14 +19,16 @@ use weacon_protocol::{
 use crate::chats::feed::{self, Client};
 use crate::chats::{self, Chats, Places};
 use crate::disk;
+use crate::mcp;
 use crate::memory;
 use crate::picks::{KeepError, Picks};
 use crate::platform::{self, Listener, Owner, Stream};
 use crate::session::{Reply, Session};
+use crate::uplink;
 
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
 pub(crate) const READ_CHUNK: usize = 8192;
-const ACCEPT_BACKOFF: Duration = Duration::from_millis(100);
+pub(crate) const ACCEPT_BACKOFF: Duration = Duration::from_millis(100);
 const DISK_CHECK: Duration = Duration::from_mins(1);
 const MEMORY_SAMPLE: Duration = Duration::from_mins(5);
 
@@ -52,10 +54,18 @@ pub(crate) fn run(app: &crate::app::App) -> Result<(), Fault> {
             Places {
                 path: app.path.clone(),
                 work_root: app.work_root.clone(),
+                mcp: None,
+                plugin: crate::integrations::Plugin::new(state_dir, &app.version, &app.log),
             },
             app.log.clone(),
         )?;
-        let serve = daemon.serve(signals.wait());
+        let (uplink, from_daemon) = uplink::unrouted(app, state_dir);
+        let serve = async {
+            tokio::select! {
+                () = daemon.serve(signals.wait()) => {}
+                never = Box::pin(uplink.run(from_daemon)) => match never {},
+            }
+        };
         crate::reports::following(state_dir, &app.reporter, &app.log, serve).await;
         Ok(())
     })
@@ -78,6 +88,7 @@ pub(crate) struct Daemon {
     disk: disk::Watch,
     memory: memory::Watch,
     engine: JoinHandle<()>,
+    mcp: mcp::Server,
     // Held for the daemon's life, so a second daemon can't start.
     _lock: File,
 }
@@ -88,7 +99,7 @@ impl Daemon {
         state_dir: &Path,
         app: App,
         spawn: SpawnPolicy,
-        places: Places,
+        mut places: Places,
         log: Logger,
     ) -> Result<Self, Fault> {
         let failed = |error: io::Error| {
@@ -117,9 +128,11 @@ impl Daemon {
         {
             return Err(failed(error));
         }
+        let (mcp, mcp_server) = mcp::start(&app, &log)?;
+        places.mcp = Some(mcp);
         let (chats, engine) = chats::start(state_dir, places, app.clone(), spawn, log.clone())?;
         let listener = platform::bind(&socket).map_err(failed)?;
-        let engine = tokio::spawn(engine.run());
+        let engine = tokio::spawn(engine.serve());
         log.info("daemon started", &[]);
         Ok(Self {
             listener,
@@ -134,6 +147,7 @@ impl Daemon {
             disk: disk::Watch::new(state_dir.to_owned(), platform::free_space),
             memory: memory::Watch::new(platform::processes),
             engine,
+            mcp: mcp_server,
             _lock: lock,
         })
     }
@@ -163,6 +177,7 @@ impl Daemon {
         drop(self.listener);
         drop(fs::remove_file(&self.socket));
         clients.shutdown().await;
+        drop(self.mcp);
         // The engine stops once the last way to it is gone; its writes end before the lock goes.
         let log = self.shared.log.clone();
         drop(self.shared);
@@ -378,7 +393,7 @@ mod tests {
     use tokio::io::{AsyncBufReadExt, AsyncRead};
     use tokio::sync::oneshot;
     use tokio::time::timeout;
-    use weacon_protocol::{ErrorBody, Hello, PROTOCOL, Welcome};
+    use weacon_protocol::{Capability, ErrorBody, PROTOCOL, Welcome};
     use weacon_testing::TempDir;
 
     use super::*;
@@ -430,15 +445,7 @@ mod tests {
     }
 
     fn hello(protocol: u32) -> Vec<u8> {
-        encode_line(&Envelope {
-            id: 1,
-            message: Message::Hello(Hello {
-                protocol,
-                app: build(&VERSION),
-                capabilities: Vec::new(),
-            }),
-        })
-        .unwrap()
+        encode_line(&test_support::client_hello(1, protocol, [])).unwrap()
     }
 
     // Sends `bytes` and reads replies until the daemon hangs up or `count` arrive.
@@ -683,7 +690,7 @@ mod tests {
         let kept = Picks::new(&dir).read(&"p-1".to_owned().try_into().unwrap());
 
         assert!(matches!(&replies[0], Message::Welcome(welcome)
-            if welcome.capabilities.contains(&code!("element.pick").into())));
+            if welcome.capabilities.contains(&Capability::new(code!("element.pick")))));
         assert_eq!(receipt(&replies[1]), Some(&Outcome::Completed));
         assert_eq!(receipt(&replies[2]), Some(&Outcome::Completed));
         assert_eq!(error_code(&replies[3]), Some("request.conflict"));
@@ -812,13 +819,14 @@ mod tests {
         let offered = [
             code!("chat.send"),
             code!("chat.events"),
+            code!("chat.agent"),
             code!("run.stream"),
         ];
         let Message::Welcome(welcome) = &replies[0] else {
             panic!("no welcome");
         };
         for capability in offered {
-            assert!(welcome.capabilities.contains(&capability.into()));
+            assert!(welcome.capabilities.contains(&Capability::new(capability)));
         }
         assert_eq!(error_code(&replies[1]), Some("chat.empty_prompt"));
         assert!(matches!(&replies[2], Message::ChatAnswer(answer)

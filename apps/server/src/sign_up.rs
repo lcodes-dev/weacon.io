@@ -34,13 +34,14 @@ pub(crate) fn allows(rules: &[SignUp], email: &Email) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::email;
 
     fn rules(texts: &[&str]) -> Vec<SignUp> {
         texts.iter().map(|text| text.parse().unwrap()).collect()
     }
 
     fn allowed(texts: &[&str], address: &str) -> bool {
-        allows(&rules(texts), &Email::parse(address).unwrap())
+        allows(&rules(texts), &email(address))
     }
 
     #[test]

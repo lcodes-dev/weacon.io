@@ -2,14 +2,15 @@
 
 pub(crate) mod query;
 
-use axum::Json;
 use axum::http::StatusCode;
-use axum::response::{IntoResponse, Response};
+use axum::routing::post;
+use axum::{Json, Router};
 use weacon_observability::Fault;
-use weacon_protocol::{Code, SearchAnswer, SearchHit, SearchQuery, code};
+use weacon_protocol::{Code, SearchAnswer, SearchQuery, code};
 
 use crate::auth::Member;
-use crate::http::{Body, Unreadable, error, failure};
+use crate::http::{self, Body, Refusals, Unreadable, parsed};
+use crate::shared::Shared;
 
 /// What the server offers to clients that search a workspace.
 pub(crate) const SEARCH: Code = code!("workspace.search");
@@ -17,37 +18,27 @@ pub(crate) const SEARCH: Code = code!("workspace.search");
 const LIMIT: u32 = 20;
 const MAX_LIMIT: u32 = 50;
 
-/// `POST /api/workspaces/{workspace}/search`: what in the workspace matches the query's text.
-/// Every member reads every task and doc, so membership is the only check.
-pub(crate) async fn search(
-    member: Member,
-    body: Result<Body<SearchQuery>, Unreadable>,
-) -> Response {
-    match found(&member, body).await {
-        Ok(hits) => Json(SearchAnswer { hits }).into_response(),
-        Err(fault) => answer(fault),
-    }
+pub(crate) fn routes() -> Router<Shared> {
+    Router::new().route("/api/workspaces/{workspace}/search", post(search))
 }
 
-async fn found(
-    member: &Member,
+/// `POST /api/workspaces/{workspace}/search`: what in the workspace matches the query's text.
+/// Every member reads every task and doc, so membership is the only check.
+async fn search(
+    member: Member,
     body: Result<Body<SearchQuery>, Unreadable>,
-) -> Result<Vec<SearchHit>, Fault> {
-    let Body(asked) = body.map_err(|unreadable| match unreadable {
-        Unreadable::TooLarge => {
-            Fault::new(code!("search.too_large"), "The search request is too large")
-        }
-        Unreadable::NotJson | Unreadable::Invalid => invalid(),
-    })?;
+) -> Result<Json<SearchAnswer>, Refused> {
+    let asked = parsed(body, too_large, invalid)?;
     let limit = match asked.limit {
         None => LIMIT,
         Some(limit @ 1..=MAX_LIMIT) => limit,
-        Some(_) => return Err(invalid()),
+        Some(_) => return Err(invalid().into()),
     };
     let Some(query) = query::parse(&asked.text).map_err(|_| too_long())? else {
-        return Ok(Vec::new());
+        return Ok(Json(SearchAnswer { hits: Vec::new() }));
     };
-    member.workspace.search(&query, limit).await
+    let hits = member.workspace.search(&query, limit).await?;
+    Ok(Json(SearchAnswer { hits }))
 }
 
 fn invalid() -> Fault {
@@ -58,39 +49,39 @@ fn too_long() -> Fault {
     Fault::new(code!("search.too_long"), "The search text is too long")
 }
 
-const REFUSALS: [(Code, StatusCode); 3] = [
-    (code!("search.invalid"), StatusCode::BAD_REQUEST),
-    (code!("search.too_long"), StatusCode::BAD_REQUEST),
-    (code!("search.too_large"), StatusCode::PAYLOAD_TOO_LARGE),
-];
+fn too_large() -> Fault {
+    Fault::new(code!("search.too_large"), "The search request is too large")
+}
 
-/// Answers a refusal with its status, and anything else as the server failing.
-fn answer(fault: Fault) -> Response {
-    let code = fault.code().clone();
-    match REFUSALS.iter().find(|(refusal, _)| *refusal == code) {
-        Some((_, status)) => error(*status, code, false),
-        None => failure(fault),
-    }
+type Refused = http::Refused<Search>;
+
+/// The search feature's refusals.
+pub(crate) struct Search;
+
+impl Refusals for Search {
+    const REFUSALS: &'static [(Code, StatusCode, bool)] = &[
+        (code!("search.invalid"), StatusCode::BAD_REQUEST, false),
+        (code!("search.too_long"), StatusCode::BAD_REQUEST, false),
+        (
+            code!("search.too_large"),
+            StatusCode::PAYLOAD_TOO_LARGE,
+            false,
+        ),
+    ];
 }
 
 #[cfg(test)]
 mod tests {
-    use std::net::SocketAddr;
-
-    use weacon_protocol::TaskCreate;
+    use weacon_protocol::{SearchHit, TaskCreate};
 
     use super::*;
-    use crate::test_support::{Fixture, Running, bearer, refusal, request_with, status};
+    use crate::test_support::{Client, Fixture, Running, error_code, request_with, status};
 
-    struct Ada {
-        address: SocketAddr,
-        auth: String,
-    }
+    struct Ada(Client);
 
     impl Ada {
         async fn send(&self, head: &str, body: &str) -> (String, String) {
-            let (head, body) = request_with(self.address, head, &self.auth, body).await;
-            (status(&head).to_owned(), body)
+            self.0.send(head, body).await
         }
 
         async fn task(&self, title: &str) {
@@ -119,12 +110,8 @@ mod tests {
     }
 
     async fn ada(fixture: &Fixture) -> (Running, Ada) {
-        let (server, body) = fixture.signed_in("ada@example.com").await;
-        let ada = Ada {
-            address: server.address,
-            auth: bearer(&body),
-        };
-        (server, ada)
+        let (server, client) = fixture.client("ada@example.com").await;
+        (server, Ada(client))
     }
 
     fn titles(hits: &[SearchHit]) -> Vec<&str> {
@@ -195,11 +182,11 @@ mod tests {
         ] {
             let (refused, answer) = ada.search(&body).await;
             assert_eq!(refused, "http/1.1 400 bad request", "{code}");
-            assert_eq!(refusal(&answer), code);
+            assert_eq!(error_code(&answer), code);
         }
         let (refused, answer) = ada.search(&huge).await;
         assert_eq!(refused, "http/1.1 413 payload too large");
-        assert_eq!(refusal(&answer), "search.too_large");
+        assert_eq!(error_code(&answer), "search.too_large");
         assert!(
             ada.search(&asked("release", Some(MAX_LIMIT)))
                 .await

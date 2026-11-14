@@ -1,47 +1,68 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::paths::Named;
+use crate::paths::NamedPath;
 use crate::{Crate, Module};
 
 /// Weighted links from each node to others, by node number.
 pub(crate) type Links = Vec<BTreeMap<usize, f64>>;
 
 /// A graph node: a module and its crate.
-pub(crate) type Node<'a> = (&'a Crate, &'a Module);
+#[derive(Clone, Copy)]
+pub(crate) struct ModuleNode<'a> {
+    pub(crate) krate: &'a Crate,
+    pub(crate) module: &'a Module,
+}
 
 /// The modules in index order, numbered as graph nodes.
-pub(crate) fn nodes(crates: &[Crate]) -> Vec<Node<'_>> {
+pub(crate) fn nodes(crates: &[Crate]) -> Vec<ModuleNode<'_>> {
     crates
         .iter()
-        .flat_map(|krate| krate.modules.iter().map(move |module| (krate, module)))
+        .flat_map(|krate| {
+            krate
+                .modules
+                .iter()
+                .map(move |module| ModuleNode { krate, module })
+        })
         .collect()
 }
 
 /// A link from each file to each other file it names, weighted by how often it names it.
-pub(crate) fn file_links(nodes: &[Node<'_>], named: &BTreeMap<&str, &[Named]>) -> Links {
+pub(crate) fn file_links(
+    nodes: &[ModuleNode<'_>],
+    named_paths: &BTreeMap<&str, &[NamedPath]>,
+) -> Links {
     let numbers: BTreeMap<(&str, &str), usize> = nodes
         .iter()
         .enumerate()
-        .map(|(number, (krate, module))| ((krate.name.as_str(), module.path.as_str()), number))
+        .map(|(number, ModuleNode { krate, module })| {
+            ((krate.name.as_str(), module.path.as_str()), number)
+        })
         .collect();
-    let crate_names: BTreeSet<&str> = nodes.iter().map(|(krate, _)| krate.name.as_str()).collect();
+    let crate_names: BTreeSet<&str> = nodes.iter().map(|node| node.krate.name.as_str()).collect();
     let deepest = nodes
         .iter()
-        .map(|(_, module)| depth(&module.path))
+        .map(|node| depth(&node.module.path))
         .max()
         .unwrap_or(0);
     nodes
         .iter()
         .enumerate()
-        .map(|(number, (krate, module))| {
-            let targets = named
+        .map(|(number, ModuleNode { krate, module })| {
+            let targets = named_paths
                 .get(module.file.as_str())
                 .copied()
                 .unwrap_or_default()
                 .iter()
                 .filter_map(|path| {
-                    let (owner, segments) = absolute(&crate_names, &krate.name, &module.path, path);
-                    longest_module(&numbers, owner, &segments, deepest)
+                    let mut here = segments_of(&module.path);
+                    here.extend(path.within.iter().map(String::as_str));
+                    let segments = path.segments.iter().map(String::as_str);
+                    let (owner, segments) = absolute(&crate_names, &krate.name, here, segments);
+                    let module = |length| segments.get(..length).map(|start| start.join("::"));
+                    let length = longest_module(&segments, deepest, |module| {
+                        numbers.contains_key(&(owner, module))
+                    })?;
+                    numbers.get(&(owner, module(length)?.as_str())).copied()
                 });
             let mut weights = BTreeMap::new();
             for target in targets.filter(|target| *target != number) {
@@ -52,16 +73,15 @@ pub(crate) fn file_links(nodes: &[Node<'_>], named: &BTreeMap<&str, &[Named]>) -
         .collect()
 }
 
-/// The crate a path starts in, and its segments from that crate's root.
-fn absolute<'a>(
+/// The crate a path written in module `here` of `krate` starts in, and its segments from that
+/// crate's root.
+pub(crate) fn absolute<'a>(
     crates: &BTreeSet<&str>,
     krate: &'a str,
-    module: &'a str,
-    path: &'a Named,
+    mut here: Vec<&'a str>,
+    segments: impl IntoIterator<Item = &'a str>,
 ) -> (&'a str, Vec<&'a str>) {
-    let mut here: Vec<&str> = module.split("::").filter(|it| !it.is_empty()).collect();
-    here.extend(path.within.iter().map(String::as_str));
-    let mut segments = path.segments.iter().map(String::as_str).peekable();
+    let mut segments = segments.into_iter().peekable();
     match segments.peek().copied() {
         Some("crate") => {
             segments.next();
@@ -85,20 +105,25 @@ fn absolute<'a>(
     (krate, here)
 }
 
-fn depth(module: &str) -> usize {
-    module.split("::").filter(|it| !it.is_empty()).count()
+/// `["a", "b"]` for the module path `a::b`; none for the crate's root.
+pub(crate) fn segments_of(module: &str) -> Vec<&str> {
+    module.split("::").filter(|part| !part.is_empty()).collect()
 }
 
-/// The deepest module that `segments` passes through, if any; no module is deeper than `deepest`.
-fn longest_module(
-    numbers: &BTreeMap<(&str, &str), usize>,
-    krate: &str,
+fn depth(module: &str) -> usize {
+    segments_of(module).len()
+}
+
+/// The length of the longest start of `segments`, at most `deepest` long, that `is_module`.
+pub(crate) fn longest_module(
     segments: &[&str],
     deepest: usize,
+    is_module: impl Fn(&str) -> bool,
 ) -> Option<usize> {
-    (0..=segments.len().min(deepest)).rev().find_map(|length| {
-        let module = segments.get(..length)?.join("::");
-        numbers.get(&(krate, module.as_str())).copied()
+    (0..=segments.len().min(deepest)).rev().find(|length| {
+        segments
+            .get(..*length)
+            .is_some_and(|start| is_module(&start.join("::")))
     })
 }
 
@@ -123,15 +148,16 @@ mod tests {
     }
 
     /// `inner/super::y` is `super::y` written inside the inline module `inner`.
-    fn path(text: &str) -> Named {
+    fn path(text: &str) -> NamedPath {
         let (within, segments) = text.rsplit_once('/').unwrap_or(("", text));
-        Named {
+        NamedPath {
             within: within
                 .split('/')
-                .filter(|it| !it.is_empty())
+                .filter(|part| !part.is_empty())
                 .map(str::to_owned)
                 .collect(),
             segments: segments.split("::").map(str::to_owned).collect(),
+            bound: None,
         }
     }
 
@@ -147,9 +173,9 @@ mod tests {
             ),
             krate("b", vec![module("", "b.rs")]),
         ];
-        let parsed: Vec<(&str, Vec<Named>)> = named
+        let parsed: Vec<(&str, Vec<NamedPath>)> = named
             .iter()
-            .map(|(file, paths)| (*file, paths.iter().map(|it| path(it)).collect()))
+            .map(|(file, paths)| (*file, paths.iter().map(|text| path(text)).collect()))
             .collect();
         let paths = parsed
             .iter()

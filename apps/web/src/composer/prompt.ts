@@ -1,3 +1,4 @@
+import { type Command, deliver } from "../chat/commands.ts";
 import { type Status, offers } from "../connection.ts";
 import type { ChatRef } from "../chat-ref.ts";
 import type { Envelope, RequestId } from "../protocol.ts";
@@ -12,42 +13,22 @@ export type Send = (text: string, request: RequestId) => Promise<Sent>;
 // The server's limit on one message from a browser, in bytes: `MAX_MESSAGE` in its feed.
 const FEED_LIMIT = 16_384;
 
-/** A command to a chat. */
-export type Command = Extract<Envelope, { type: "chat_command" }>;
-
-/** The command that sends `text` to the chat at `chatRef`, under `request`. */
-export function prompt(id: number, chatRef: ChatRef, request: RequestId, text: string): Command {
-  return { id, type: "chat_command", ...chatRef, request, action: { kind: "prompt", text } };
-}
-
-/** Sends `command` through `send` and waits for its receipt, unless it is too long to send. */
-export function deliver(command: Command, receipts: Receipts, send: (envelope: Envelope) => void): Promise<Sent> {
+/** Sends the prompt `command` through `send` and waits for its receipt, unless it is too long to send. */
+export function deliverPrompt(command: Command, receipts: Receipts, send: (envelope: Envelope) => void): Promise<Sent> {
   if (new TextEncoder().encode(JSON.stringify(command)).length > FEED_LIMIT) {
     return Promise.resolve("too_long");
   }
-  const settled = receipts.wait(command.request, command.id);
-  try {
-    send(command);
-  } catch {
-    // A retry then waits afresh, under its own envelope and deadline.
-    receipts.settle(command.request, "lost");
-  }
-  return settled;
+  return deliver(command, receipts, send);
 }
 
 /** A prompt that may have run, kept with its request so sending it again can't run it twice. */
 export type Retry = { text: string; request: RequestId };
 
-/** The request to send `text` under: the retry's when it is the same text, else `fresh`. */
-export function requestFor(retry: Retry | undefined, text: string, fresh: () => RequestId): RequestId {
-  return retry?.text === text ? retry.request : fresh();
-}
-
 const PROBLEMS: Record<Exclude<Sent, "accepted">, string> = {
-  too_long: "Too long to send; shorten it and try again",
-  refused: "The message wasn't sent",
-  lost: "The connection closed; the message may not have been sent",
-  unsure: "The server didn't answer; the message may not have been sent",
+  too_long: "It's too long to send. Shorten it and try again.",
+  refused: "The message wasn't sent.",
+  lost: "The connection closed. The message may not have been sent.",
+  unsure: "The server didn't answer. The message may not have been sent.",
 };
 
 /** What the box holds after a send. */
@@ -65,13 +46,16 @@ export function after(sent: Sent, text: string, request: RequestId): After {
   return { text, problem: PROBLEMS[sent], retry };
 }
 
+/** How a command ended, heard after its wait ran out. */
+export type Late = { request: RequestId; settled: Settled };
+
 /** Why the box can't send to `chatRef` now, or `undefined` when it can. */
 export function blocked(status: Status, chatRef: ChatRef | undefined): string | undefined {
   if (chatRef === undefined) {
-    return "Pick a chat to send";
+    return "Pick a chat to send to.";
   }
   if (status.state !== "live") {
-    return "Messages send once the server is connected";
+    return "Messages send once the server is connected.";
   }
-  return offers(status, "chat.send") ? undefined : "This server can't take messages yet";
+  return offers(status, "chat.send") ? undefined : "This server can't take messages yet.";
 }

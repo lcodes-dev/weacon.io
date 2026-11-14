@@ -1,10 +1,13 @@
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::SystemTime;
 
-use weacon_observability::{Level, Logger, LoggerOptions, Record, Sink};
+use weacon_observability::{Deliver, Level, Logger, LoggerOptions, Record, Sink, Upload};
 
 /// The records a recording sink has seen.
 pub type Records = Arc<Mutex<Vec<Record>>>;
+
+/// The error reports a recording `Deliver` has been given.
+pub type Uploads = Arc<Mutex<Vec<Upload>>>;
 
 /// A sink that keeps every record it is given.
 #[must_use]
@@ -17,6 +20,20 @@ pub fn recording_sink() -> (Sink, Records) {
             .push(record.clone());
     });
     (sink, records)
+}
+
+/// A `Deliver` that keeps every report instead of sending it.
+#[must_use]
+pub fn recording_deliver() -> (Deliver, Uploads) {
+    let uploads = Uploads::default();
+    let seen = Arc::clone(&uploads);
+    let deliver: Deliver = Box::new(move |upload| {
+        seen.lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(upload.clone());
+        Ok(())
+    });
+    (deliver, uploads)
 }
 
 /// An info-level logger that keeps every record.
@@ -54,5 +71,20 @@ mod tests {
         log.warn("sync failed", &[]);
 
         assert_eq!(messages(&records), ["run started", "sync failed"]);
+    }
+
+    #[test]
+    fn keeps_each_report_in_order() {
+        let (deliver, uploads) = recording_deliver();
+        let upload = |body: &str| Upload {
+            url: "https://sentry.example.com/api/1/envelope/".to_owned(),
+            auth: "Sentry sentry_key=key".to_owned(),
+            body: body.as_bytes().to_vec(),
+        };
+
+        deliver(&upload("one")).unwrap();
+        deliver(&upload("two")).unwrap();
+
+        assert_eq!(*uploads.lock().unwrap(), [upload("one"), upload("two")]);
     }
 }

@@ -7,7 +7,10 @@ mod tests {
     use std::path::Path;
     use std::process::{Child, Command, Output, Stdio};
     use std::{env, fs};
+
+    use weacon_protocol::PROTOCOL;
     use weacon_testing::TempDir;
+    use weacon_testing::fake_core::client_hello;
 
     fn weacon(args: &[&str], state_dir: impl AsRef<OsStr>) -> Output {
         command(args, state_dir).output().unwrap()
@@ -85,24 +88,15 @@ mod tests {
         assert!(!dir.join("state/workspaces").exists());
     }
 
-    // Scripts stand in for the vendors' programs; a child shell writes them, so this process
-    // never holds a write handle a fork could inherit, which makes running one fail as busy.
+    // Scripts stand in for the vendors' programs.
     #[cfg(unix)]
     #[test]
     fn login_ends_as_the_vendors_own_sign_in_does() {
         let dir = TempDir::new().unwrap();
         fs::create_dir(dir.join("bin")).unwrap();
         for (name, exit) in [("claude", "0"), ("codex", "1")] {
-            let written = Command::new("sh")
-                .args([
-                    "-c",
-                    "printf '#!/bin/sh\\nexit %s\\n' \"$1\" > \"$2\" && chmod 755 \"$2\"",
-                ])
-                .args(["sh", exit])
-                .arg(dir.join("bin").join(name))
-                .status()
-                .unwrap();
-            assert!(written.success());
+            let script = format!("#!/bin/sh\nexit {exit}\n");
+            weacon_testing::platform::write_program(&dir.join("bin").join(name), &script).unwrap();
         }
 
         let state = dir.join("state");
@@ -177,9 +171,9 @@ mod tests {
     }
 
     // Chrome's frames: a native-endian length, then that many bytes of JSON.
-    fn frame(json: &str) -> Vec<u8> {
+    fn frame(json: &[u8]) -> Vec<u8> {
         let mut frame = u32::try_from(json.len()).unwrap().to_ne_bytes().to_vec();
-        frame.extend(json.as_bytes());
+        frame.extend(json);
         frame
     }
 
@@ -200,8 +194,8 @@ mod tests {
         .unwrap();
         let mut stdin = host.stdin.take().unwrap();
         let mut stdout = host.stdout.take().unwrap();
-        let hello = r#"{"id":1,"type":"hello","protocol":1,"app":{"name":"weacon-extension","version":"0.1.0","commit":"1a2b3c4"}}"#;
-        stdin.write_all(&frame(hello)).unwrap();
+        let hello = client_hello(1, PROTOCOL, []);
+        stdin.write_all(&frame(&hello.to_json().unwrap())).unwrap();
         let mut length = [0; 4];
         stdout.read_exact(&mut length).unwrap();
         let mut reply = vec![0; usize::try_from(u32::from_ne_bytes(length)).unwrap()];

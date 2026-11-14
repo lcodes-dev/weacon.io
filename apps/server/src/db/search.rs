@@ -201,7 +201,7 @@ mod tests {
 
     use super::*;
     use crate::db::Db;
-    use crate::db::schema::database_before;
+    use crate::db::schema::{database_before, steps};
     use crate::search::query::{MAX_WORD, parse};
     use crate::test_support::{email, fresh_account, member_id, new_task, two_teams, workspace_id};
 
@@ -486,7 +486,7 @@ mod tests {
     async fn what_was_stored_before_search_is_indexed_as_a_write_indexes_it() {
         let dir = TempDir::new().unwrap();
         let path = dir.join("old.db");
-        database_before(&path, "CREATE VIRTUAL TABLE search", &stored_before()).await;
+        database_before(&path, steps::SEARCH, &stored_before()).await;
         let old = Db::open(&path).await.unwrap();
         let new = Db::create(&dir.join("new.db")).await.unwrap();
         let one = new

@@ -6,7 +6,7 @@ use axum::extract::{ConnectInfo, FromRequestParts};
 use axum::http::HeaderMap;
 use axum::http::request::Parts;
 
-use crate::http::Shared;
+use crate::shared::Shared;
 
 const FORWARDED_FOR: &str = "x-forwarded-for";
 

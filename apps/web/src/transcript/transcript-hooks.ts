@@ -1,7 +1,6 @@
 import { type RefObject, type UIEventHandler, useEffect, useLayoutEffect, useReducer, useRef } from "react";
 
 import { atBottom, selectingIn, touches } from "./follow.ts";
-import type { Row } from "./transcript.ts";
 
 /**
  * Keeps `scroller` at the bottom as `rows` grow or `refreshes` counts up, unless the reader has
@@ -10,7 +9,7 @@ import type { Row } from "./transcript.ts";
 export function useFollow(
   scroller: RefObject<HTMLDivElement | null>,
   content: RefObject<HTMLDivElement | null>,
-  { rows, refreshes, away }: { rows: readonly Row[]; refreshes: number; away: boolean },
+  { rows, refreshes, away }: { rows: readonly unknown[]; refreshes: number; away: boolean },
 ): UIEventHandler<HTMLDivElement> {
   const following = useRef(true);
   // Where the last scroll left the view. The browser also moves the view, down as rows reach their
@@ -63,8 +62,8 @@ export function useFollow(
 export function useHeldFormatting(
   scroller: RefObject<HTMLDivElement | null>,
   away: boolean,
-): { mayFormat: (at: number) => boolean; refreshes: number } {
-  const formatted = useRef(new Set<number>());
+): { mayFormat: (key: string) => boolean; refreshes: number } {
+  const formatted = useRef(new Set<string>());
   const held = useRef(false);
   const pressed = useRef(false);
   const [refreshes, refresh] = useReducer((count: number) => count + 1, 0);
@@ -96,16 +95,16 @@ export function useHeldFormatting(
   held.current = false;
   // Once formatted, a row stays so, as reformatting would undo a selection in it. A row the
   // selection touches waits until it leaves; a bare caret holds it only while a button is down.
-  const mayFormat = (at: number): boolean => {
-    if (formatted.current.has(at)) {
+  const mayFormat = (key: string): boolean => {
+    if (formatted.current.has(key)) {
       return true;
     }
-    const element = scroller.current?.querySelector(`[data-index="${at}"]`);
+    const element = scroller.current?.querySelector(`[data-key="${CSS.escape(key)}"]`);
     if (element && (selectingIn(selection, element) || (pressed.current && touches(selection, element)))) {
       held.current = true;
       return false;
     }
-    formatted.current.add(at);
+    formatted.current.add(key);
     return true;
   };
   return { mayFormat, refreshes };

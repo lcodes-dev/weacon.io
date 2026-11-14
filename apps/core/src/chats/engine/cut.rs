@@ -35,6 +35,7 @@ pub(super) fn cut(event: &RunEvent) -> RunEvent {
         | RunEvent::TextDelta { .. }
         | RunEvent::ToolDone { .. }
         | RunEvent::PermissionWithdrawn { .. }
+        | RunEvent::PermissionAnswered { .. }
         | RunEvent::Finished { .. }
         | RunEvent::Newer) => whole,
     }

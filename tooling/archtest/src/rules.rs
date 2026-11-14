@@ -151,6 +151,13 @@ pub(crate) const IO_PACKAGES: &[&str] = &[
     "walkdir",
 ];
 
+/// The folder of plugin files, hooks and skills Weacon gives people's agents.
+pub(crate) const INTEGRATIONS_FOLDER: &str = "integrations";
+/// The only package that includes the integrations folder's files.
+pub(crate) const INTEGRATIONS_READER: &str = "weacon-core";
+/// The kinds of file the integrations folder may hold: data, never code.
+pub(crate) const INTEGRATIONS_DATA: &[&str] = &["json", "md"];
+
 /// The most lines a source file may hold before its test module.
 pub(crate) const MAX_CODE_LINES: usize = 400;
 

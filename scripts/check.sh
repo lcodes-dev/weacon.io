@@ -71,6 +71,11 @@ else
   changes "$base" >.dev/changes.diff
   if [ -s .dev/changes.diff ]; then
     need mutants
+    if [ -n "${CI:-}" ]; then
+      # A mutant that allocates without end must fail as a test, not kill the runner.
+      host=$(rustc -vV | sed -n 's/^host: //p' | tr 'a-z-' 'A-Z_')
+      export "CARGO_TARGET_${host}_RUNNER=$PWD/scripts/limit-memory.sh"
+    fi
     cargo mutants --in-diff .dev/changes.diff --output .dev --no-shuffle
   else
     step "Skipped: no Rust changes against origin/main"

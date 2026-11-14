@@ -105,20 +105,11 @@ mod tests {
     use serde_json::json;
 
     use super::*;
-    use crate::{AgentKind, AgentOwner, MachineName};
+    use crate::test_support::round_trips;
+    use crate::{AgentKind, AgentOwner};
 
     fn member() -> MemberId {
-        MemberId::try_from("m-1".to_owned()).unwrap()
-    }
-
-    #[test]
-    fn task_ids_are_plain_tokens_checked_on_arrival() {
-        let task: TaskId = serde_json::from_value(json!("t_1")).unwrap();
-
-        assert_eq!(task.as_str(), "t_1");
-        assert_eq!(TaskId::try_from("a b".to_owned()), Err("a b".to_owned()));
-        let bad = serde_json::from_value::<TaskId>(json!("../x")).unwrap_err();
-        assert!(bad.to_string().contains("not a task id"), "{bad}");
+        "m-1".parse().unwrap()
     }
 
     #[test]
@@ -128,11 +119,7 @@ mod tests {
             (TaskStatus::InProgress, "in_progress"),
             (TaskStatus::Done, "done"),
         ] {
-            assert_eq!(serde_json::to_value(status).unwrap(), json!(wire));
-            assert_eq!(
-                serde_json::from_value::<TaskStatus>(json!(wire)).unwrap(),
-                status
-            );
+            round_trips(&status, json!(wire));
         }
         assert_eq!(
             serde_json::from_value::<TaskStatus>(json!("blocked")).unwrap(),
@@ -150,13 +137,8 @@ mod tests {
         let person_wire = json!({ "kind": "person", "member": "m-1" });
         let agent_wire = json!({ "kind": "agent", "owner": "m-1" });
 
-        assert_eq!(serde_json::to_value(&person).unwrap(), person_wire);
-        assert_eq!(serde_json::to_value(&agent).unwrap(), agent_wire);
-        assert_eq!(
-            serde_json::from_value::<Author>(person_wire).unwrap(),
-            person
-        );
-        assert_eq!(serde_json::from_value::<Author>(agent_wire).unwrap(), agent);
+        round_trips(&person, person_wire);
+        round_trips(&agent, agent_wire);
         assert_eq!(
             serde_json::from_value::<Author>(json!({ "kind": "robot", "x": 1 })).unwrap(),
             Author::Newer
@@ -171,19 +153,18 @@ mod tests {
             agent: Some(AgentRef {
                 kind: AgentKind::Codex,
                 owner: AgentOwner::Member { member: member() },
-                machine: Some(MachineName::try_from("Ada's laptop".to_owned()).unwrap()),
+                machine: Some("Ada's laptop".parse().unwrap()),
             }),
         };
         let wire = json!({ "kind": "agent", "owner": "m-1", "agent": { "kind": "codex",
             "owner": { "kind": "member", "member": "m-1" }, "machine": "Ada's laptop" } });
 
-        assert_eq!(serde_json::to_value(&named).unwrap(), wire);
-        assert_eq!(serde_json::from_value::<Author>(wire).unwrap(), named);
+        round_trips(&named, wire);
     }
 
     fn record() -> TaskRecord {
         TaskRecord {
-            id: TaskId::try_from("t-1".to_owned()).unwrap(),
+            id: "t-1".parse().unwrap(),
             title: "Write the docs".to_owned(),
             status: TaskStatus::InProgress,
             order: "V".to_owned(),
@@ -202,11 +183,7 @@ mod tests {
         };
         let list_wire = json!({ "tasks": [wire] });
 
-        assert_eq!(serde_json::to_value(record()).unwrap(), wire);
-        assert_eq!(
-            serde_json::from_value::<TaskRecord>(wire).unwrap(),
-            record()
-        );
+        round_trips(&record(), wire);
         let newer = json!({
             "id": "t-1", "title": "Write the docs", "status": "in_progress", "order": "V",
             "version": 3, "due": "soon",
@@ -215,13 +192,12 @@ mod tests {
             serde_json::from_value::<TaskRecord>(newer).unwrap(),
             record()
         );
-        assert_eq!(serde_json::to_value(&list).unwrap(), list_wire);
-        assert_eq!(serde_json::from_value::<TaskList>(list_wire).unwrap(), list);
+        round_trips(&list, list_wire);
     }
 
     #[test]
     fn a_new_task_names_the_one_it_goes_in_front_of_or_none() {
-        let before = TaskId::try_from("t-2".to_owned()).unwrap();
+        let before: TaskId = "t-2".parse().unwrap();
         let create = |before| TaskCreate {
             title: "Ship".to_owned(),
             before,
@@ -229,26 +205,15 @@ mod tests {
         let last = json!({ "title": "Ship" });
         let placed = json!({ "title": "Ship", "before": "t-2" });
 
-        assert_eq!(serde_json::to_value(create(None)).unwrap(), last);
-        assert_eq!(
-            serde_json::from_value::<TaskCreate>(last).unwrap(),
-            create(None)
-        );
-        assert_eq!(
-            serde_json::to_value(create(Some(before.clone()))).unwrap(),
-            placed
-        );
-        assert_eq!(
-            serde_json::from_value::<TaskCreate>(placed).unwrap(),
-            create(Some(before))
-        );
+        round_trips(&create(None), last);
+        round_trips(&create(Some(before)), placed);
         serde_json::from_value::<TaskCreate>(json!({ "title": "Ship", "before": "a b" }))
             .unwrap_err();
     }
 
     #[test]
     fn a_change_names_the_version_read_and_one_tagged_edit() {
-        let before = TaskId::try_from("t-2".to_owned()).unwrap();
+        let before: TaskId = "t-2".parse().unwrap();
         for (edit, wire) in [
             (
                 TaskEditBody::Title {
@@ -276,8 +241,7 @@ mod tests {
             let change = TaskChange { version: 3, edit };
             let wire = json!({ "version": 3, "edit": wire });
 
-            assert_eq!(serde_json::to_value(&change).unwrap(), wire);
-            assert_eq!(serde_json::from_value::<TaskChange>(wire).unwrap(), change);
+            round_trips(&change, wire);
         }
         assert_eq!(
             serde_json::from_value::<TaskEditBody>(json!({ "kind": "archive" })).unwrap(),

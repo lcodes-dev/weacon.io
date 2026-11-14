@@ -38,6 +38,7 @@ The default branch is `main`: start from it and open draft PRs against it. This 
 | `tooling/ts` | nothing in the repo; reads `crates/protocol`'s schema, `Cargo.toml` and git | yes |
 | `apps/web` | TypeScript and React, built into the server's binary; only the types generated from `protocol`, and `tooling/ts` | — |
 | `apps/extension` | TypeScript; only the types generated from `protocol`, and `tooling/ts` | — |
+| `integrations/` | no code: the plugin files, hooks and skills Weacon gives people's agents, one folder per vendor; only `apps/core` reads them, built into its binary | — |
 
 - Apps never depend on other apps, except that the server embeds the web app's built files. The web app and the core reach the server only through its API, defined in `protocol`; the extension reaches the core only through native messaging.
 - Besides its API and MCP endpoint, the server serves only the web app's static files: no server-rendered pages.
@@ -46,6 +47,7 @@ The default branch is `main`: start from it and open draft PRs against it. This 
 - Only the `db` module (`src/db.rs` or `src/db/`) of `apps/core` and `apps/server` uses a database driver, and only those apps may depend on one. The database is SQLite.
 - Only a `platform` module (`src/platform.rs` or `src/platform/`) selects an operating system with `cfg`; in the core that is `apps/core/src/platform`.
 - Only `crates/agents` starts agent processes.
+- `integrations/` holds only JSON and Markdown. Its text reaches people's agents, so it follows the UI copy rules and names no real project.
 - Only `crates/observability` depends on Sentry's crates.
 - A source file holds at most 400 lines before its test module, and no TODO or FIXME: finish the work, or leave the note out.
 
@@ -64,7 +66,7 @@ The default branch is `main`: start from it and open draft PRs against it. This 
 - **Command lines:** ids and paths are checked before they reach a command line, so none can be read as an option.
 - **Exit codes:** every Rust app ends through appkit's `App::finish`, which logs `app stopped` or `app failed` and exits 0 on success, 1 when a check finds something (such as `map check-anchors` finding stale pins), and 2 when a command fails, so hooks can tell the two apart. Help, the version and usage errors answer before the app starts, so they log nothing.
 - **App wiring is shared.** Startup, the root logger, log files, error reporting, signals, the runtime and the exit live in `crates/appkit`, their pure parts in `crates/observability`. A second app uses them and never copies the first one's. On people's devices a `Reporter` sends nothing until the person has agreed, so the core starts with agreement off; the server starts with it on, because its operator set the DSN.
-- **Protocol messages:** one `Message` variant for each role a feature's messages play (a command, an event, a query, an answer), never one per action: actions are a tagged enum inside the body. Each body is a named struct in that feature's module, with a doc line saying who sends it and under which capability. A nested enum ends in `#[serde(other)] Newer`, which `to_json` refuses to send. Ids are token newtypes made with `token_id!`, and a type that holds a secret has a `Debug` that hides it.
+- **Protocol messages:** one `Message` variant for each role a feature's messages play (a command, an event, a query, an answer), never one per action: actions are a tagged enum inside the body. Each body is a named struct in that feature's module, with a doc line saying who sends it and under which capability. A nested enum ends in `#[serde(other)] Newer`, which `to_json` refuses to send. Ids are token newtypes made with `token_id!`, and a type that holds a secret has a `Debug` that hides it. A new command is `XCommand { action: XAction }` and a new query `XQuery { query: XQueryKind }`, each enum tagged `kind`. An optional field takes `#[serde(default, skip_serializing_if = "Option::is_none")]` and `#[schemars(with = "T")]`, so it is left out, never null.
 - **Capabilities:** a program advertises a capability in the same change that implements it; the core's are in its one `CAPABILITIES` list.
 - **Subcommands:** one `Command` variant each, `Name(NameCommand)` when it nests, and one `module::run(&app, …)` call in `main.rs`; side effects such as `current_exe` stay inside the module.
 - **Background watches,** such as disk space and memory, are a `Watch` with an injected reader, run through `spawn_blocking`. A failed reading warns once until one succeeds, and events start with the area (`disk low`, `memory sampled`).
@@ -112,9 +114,11 @@ Every program logs, reports errors and says which build it is from its first com
 | --- | --- |
 | `scripts/setup.sh` | Installs or updates everything; safe to run again |
 | `scripts/fix.sh` | Formats and applies the lint fixes clippy is sure of |
-| `scripts/check.sh` | What CI runs: rustfmt, clippy with warnings as errors, docs, cargo-machete, cargo-deny, all tests with the 90% line-coverage floor, doc tests, mutation tests on the code changed against `origin/main`, the extension's type check, tests and build, the shared TypeScript tooling's tests, the web app's type check, build, tests and end-to-end tests in Chromium against `fake-server`, and ShellCheck. CI also lints and tests on Windows |
+| `scripts/check.sh` | What CI runs: rustfmt, clippy with warnings as errors, docs, cargo-machete, cargo-deny, all tests with the 90% line-coverage floor, doc tests, mutation tests on the code changed against `origin/main` (in CI each test binary gets at most 4 GiB of memory), the extension's type check, tests and build, the shared TypeScript tooling's tests, the web app's type check, build, tests and end-to-end tests in Chromium against `fake-server`, and ShellCheck. CI also lints and tests on Windows |
 | `cargo test -p <crate> [name]` | Focused tests while iterating |
 | `WEACON_STATE_DIR=.dev/state cargo run -p weacon-core -- doctor` | Runs the core with this worktree's own state folder |
+| `cargo run -p weacon-core -- map [symbol <path>] [--root <folder>] [--budget <bytes>]` | Prints where to begin in a repository's code, or where one item is, exactly as the local MCP's `map` and `symbol` tools answer |
+| `cargo run -p weacon-core -- hook session-start` | What the core's Claude Code plugin adds at session start: the current folder's map within 4,000 bytes, or nothing and exit 0 if it can't answer within 5 seconds |
 | `UPDATE_SCHEMA=1 cargo test -p weacon-protocol` | Regenerates `crates/protocol/schema.json` after a message changes |
 | `UPDATE_VECTORS=1 cargo test --locked -p weacon-core seal` | Regenerates the sign-in terminal's Noise vectors in `crates/protocol/noise-vectors.json` after its messages change |
 | `npm --prefix apps/extension run update-types`, `npm --prefix apps/web run update-types` | Regenerates each app's `src/protocol.ts` from `schema.json` |

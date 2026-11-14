@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use crate::graph::Links;
 
 /// How much better a community must be before a node moves, so rounding never moves it back.
-const BETTER: f64 = 1e-12;
+const MIN_GAIN: f64 = 1e-12;
 const MAX_LEVELS: usize = 100;
 const MAX_PASSES: usize = 100;
 
@@ -13,15 +13,18 @@ const MAX_PASSES: usize = 100;
 /// so the same links always give the same communities.
 pub(crate) fn communities(links: &Links) -> Vec<usize> {
     let mut graph = undirected(links);
-    let mut membership: Vec<usize> = (0..links.len()).collect();
+    let mut community_of: Vec<usize> = (0..links.len()).collect();
     for _ in 0..MAX_LEVELS {
         let Some(local) = one_level(&graph) else {
             break;
         };
-        membership = membership.iter().map(|it| at(&local, *it)).collect();
+        community_of = community_of
+            .iter()
+            .map(|community| at(&local, *community))
+            .collect();
         graph = aggregate(&graph, &local);
     }
-    renumber(&membership)
+    renumber(&community_of)
 }
 
 fn undirected(links: &Links) -> Links {
@@ -38,36 +41,39 @@ fn undirected(links: &Links) -> Links {
 /// Moves nodes between communities while that raises modularity; `None` when none moved.
 fn one_level(graph: &Links) -> Option<Vec<usize>> {
     let degrees: Vec<f64> = graph.iter().map(|targets| targets.values().sum()).collect();
-    let total: f64 = degrees.iter().sum();
-    if total <= 0.0 {
+    let total_degree: f64 = degrees.iter().sum();
+    if total_degree <= 0.0 {
         return None;
     }
     let start: Vec<usize> = (0..graph.len()).collect();
-    let mut community = start.clone();
-    let mut totals = degrees.clone();
+    let mut community_of = start.clone();
+    let mut community_degree = degrees.clone();
     for _ in 0..MAX_PASSES {
-        let before = community.clone();
+        let before = community_of.clone();
         for (node, (targets, &degree)) in graph.iter().zip(&degrees).enumerate() {
-            let current = at(&community, node);
-            add_to(&mut totals, current, -degree);
+            let current = at(&community_of, node);
+            add_to(&mut community_degree, current, -degree);
+            // Modularity gained by joining `to`: the weight linking the node into it, less what
+            // chance alone would give.
             let gain = |to: usize, inside: f64| {
-                inside - totals.get(to).copied().unwrap_or(0.0) * degree / total
+                inside - community_degree.get(to).copied().unwrap_or(0.0) * degree / total_degree
             };
-            let best = best_community(current, &community_weights(targets, &community, node), gain);
-            add_to(&mut totals, best, degree);
-            if let Some(slot) = community.get_mut(node) {
+            let weights = community_weights(targets, &community_of, node);
+            let best = best_community(current, &weights, gain);
+            add_to(&mut community_degree, best, degree);
+            if let Some(slot) = community_of.get_mut(node) {
                 *slot = best;
             }
         }
-        if community == before {
+        if community_of == before {
             break;
         }
     }
-    (community != start).then(|| renumber(&community))
+    (community_of != start).then(|| renumber(&community_of))
 }
 
-fn add_to(totals: &mut [f64], community: usize, degree: f64) {
-    if let Some(slot) = totals.get_mut(community) {
+fn add_to(community_degree: &mut [f64], community: usize, degree: f64) {
+    if let Some(slot) = community_degree.get_mut(community) {
         *slot += degree;
     }
 }
@@ -78,51 +84,54 @@ fn best_community(
     weights: &BTreeMap<usize, f64>,
     gain: impl Fn(usize, f64) -> f64,
 ) -> usize {
-    let mut best = (
-        current,
-        gain(current, weights.get(&current).copied().unwrap_or(0.0)),
-    );
+    let mut best = current;
+    let mut best_gain = gain(current, weights.get(&current).copied().unwrap_or(0.0));
     for (&to, &inside) in weights {
         let candidate = gain(to, inside);
-        if candidate > best.1 + BETTER {
-            best = (to, candidate);
+        if candidate > best_gain + MIN_GAIN {
+            (best, best_gain) = (to, candidate);
         }
     }
-    best.0
+    best
 }
 
 /// The weight from `node` into each community of its neighbours, its own loop left out.
 fn community_weights(
     targets: &BTreeMap<usize, f64>,
-    community: &[usize],
+    community_of: &[usize],
     node: usize,
 ) -> BTreeMap<usize, f64> {
     let mut weights = BTreeMap::new();
     for (&target, &weight) in targets.iter().filter(|(target, _)| **target != node) {
-        *weights.entry(at(community, target)).or_insert(0.0) += weight;
+        *weights.entry(at(community_of, target)).or_insert(0.0) += weight;
     }
     weights
 }
 
 /// One node per community, with the links between communities summed.
-fn aggregate(graph: &Links, community: &[usize]) -> Links {
-    let size = community.iter().max().map_or(0, |last| last + 1);
+fn aggregate(graph: &Links, community_of: &[usize]) -> Links {
+    let size = community_of.iter().max().map_or(0, |last| last + 1);
     let mut next = vec![BTreeMap::new(); size];
     for (from, targets) in graph.iter().enumerate() {
         for (&to, &weight) in targets {
-            add(&mut next, at(community, from), at(community, to), weight);
+            add(
+                &mut next,
+                at(community_of, from),
+                at(community_of, to),
+                weight,
+            );
         }
     }
     next
 }
 
-fn renumber(membership: &[usize]) -> Vec<usize> {
+fn renumber(community_of: &[usize]) -> Vec<usize> {
     let mut numbers = BTreeMap::new();
-    membership
+    community_of
         .iter()
-        .map(|it| {
+        .map(|community| {
             let next = numbers.len();
-            *numbers.entry(*it).or_insert(next)
+            *numbers.entry(*community).or_insert(next)
         })
         .collect()
 }
@@ -140,13 +149,11 @@ fn at(values: &[usize], index: usize) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support;
 
     fn links(edges: &[(usize, usize)], nodes: usize) -> Links {
-        let mut links = vec![BTreeMap::new(); nodes];
-        for &(from, to) in edges {
-            links[from].insert(to, 1.0);
-        }
-        links
+        let weighted = edges.iter().map(|&(from, to)| (from, to, 1.0));
+        test_support::links(weighted, nodes)
     }
 
     /// Two triangles, 0-1-2 and 3-4-5, and a bridge from 2 to 3.
@@ -177,7 +184,10 @@ mod tests {
         let distinct: std::collections::BTreeSet<_> = found.iter().collect();
         assert!(distinct.len() < triangles, "{found:?}");
         for group in found.chunks(3) {
-            assert!(group.iter().all(|it| *it == group[0]), "{found:?}");
+            assert!(
+                group.iter().all(|community| *community == group[0]),
+                "{found:?}"
+            );
         }
     }
 
@@ -243,10 +253,10 @@ mod tests {
         assert_eq!(best_community(5, &even, gain), 1);
         let with_own = BTreeMap::from([(1, 1.0), (5, 1.0)]);
         assert_eq!(best_community(5, &with_own, gain), 5);
-        assert_eq!(best_community(5, &BTreeMap::from([(1, BETTER)]), gain), 5);
-        let barely = BTreeMap::from([(1, 1.0), (2, 1.0 + BETTER / 2.0)]);
+        assert_eq!(best_community(5, &BTreeMap::from([(1, MIN_GAIN)]), gain), 5);
+        let barely = BTreeMap::from([(1, 1.0), (2, 1.0 + MIN_GAIN / 2.0)]);
         assert_eq!(best_community(5, &barely, gain), 1);
-        let clearly = BTreeMap::from([(1, 1.0), (2, 1.0 + BETTER * 4.0)]);
+        let clearly = BTreeMap::from([(1, 1.0), (2, 1.0 + MIN_GAIN * 4.0)]);
         assert_eq!(best_community(5, &clearly, gain), 2);
     }
 
