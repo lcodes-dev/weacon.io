@@ -16,6 +16,8 @@ const HOOKS: &str = include_str!("../../../integrations/claude/hooks/hooks.json"
 const SKILL: &str = include_str!("../../../integrations/claude/skills/weacon-map/SKILL.md");
 
 const COMMAND: &str = "/hooks/SessionStart/0/hooks/0/command";
+// So a program that moved or was removed still prints nothing and succeeds.
+const QUIET: &str = "2>/dev/null || true";
 
 /// The plugin each run is given, checked before every launch.
 #[derive(Clone, Debug)]
@@ -85,7 +87,7 @@ fn render(program: &Path, version: &Version) -> Result<[(&'static str, String); 
     *manifest.get_mut("version").ok_or_else(failed)? = version.version.into();
     let mut hooks: Value = serde_json::from_str(HOOKS).map_err(|_| failed())?;
     *hooks.pointer_mut(COMMAND).ok_or_else(failed)? =
-        format!("{} hook session-start", quoted(program)).into();
+        format!("{} hook session-start {QUIET}", quoted(program)).into();
     Ok([
         (".claude-plugin/plugin.json", manifest.to_string()),
         ("hooks/hooks.json", hooks.to_string()),
@@ -225,11 +227,35 @@ mod tests {
         assert_eq!(json(&dir, ".claude-plugin/plugin.json")["version"], "0.1.0");
         let hooks = json(&dir, "hooks/hooks.json");
         let command = hooks.pointer(COMMAND).unwrap();
-        assert_eq!(command, r"'/opt/it'\''s here/weacon' hook session-start");
+        assert_eq!(
+            command,
+            r"'/opt/it'\''s here/weacon' hook session-start 2>/dev/null || true"
+        );
         let skill = fs::read_to_string(dir.join("skills/weacon-map/SKILL.md")).unwrap();
         assert_eq!(skill, SKILL);
         let manifest = dir.join(".claude-plugin/plugin.json");
         assert!(fs::metadata(manifest).unwrap().permissions().readonly());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_program_that_is_gone_prints_nothing_and_succeeds() {
+        let temp = TempDir::new().unwrap();
+        let state: &Path = &temp;
+        let gone = state.join("gone/weacon");
+        let dir = plugin(state, gone.to_str().unwrap(), &VERSION)
+            .folder()
+            .unwrap();
+        let hooks = json(&dir, "hooks/hooks.json");
+        let command = hooks.pointer(COMMAND).and_then(Value::as_str).unwrap();
+
+        let ran = std::process::Command::new("sh")
+            .args(["-c", command])
+            .output()
+            .unwrap();
+
+        assert!(ran.status.success());
+        assert!(ran.stdout.is_empty() && ran.stderr.is_empty(), "{ran:?}");
     }
 
     #[test]
@@ -275,7 +301,7 @@ mod tests {
         assert!(!dir.join("hooks/more.json").exists());
         assert_eq!(
             json(&dir, "hooks/hooks.json").pointer(COMMAND).unwrap(),
-            "'/opt/weacon' hook session-start"
+            "'/opt/weacon' hook session-start 2>/dev/null || true"
         );
         // The plugin and the three it replaced.
         let folders = fs::read_dir(state.join("integrations/claude")).unwrap();
