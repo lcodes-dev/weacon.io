@@ -48,7 +48,7 @@ pub(crate) fn fresh<T: TryFrom<String>>(new_id: &dyn Fn() -> String) -> Result<T
     T::try_from(new_id()).map_err(|_| Fault::new(code!("id.invalid"), "A new id isn't valid"))
 }
 
-fn panicked() -> Fault {
+pub(crate) fn panicked() -> Fault {
     Fault::new(code!("server.panicked"), "The server panicked")
 }
 
