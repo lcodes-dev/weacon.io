@@ -7,7 +7,7 @@ use axum::http::{HeaderMap, HeaderValue, Method, StatusCode};
 use axum::response::Response;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
-use weacon_protocol::{AccountId, MemberId, WorkspaceId, code};
+use weacon_protocol::{AccountId, MachineId, MemberId, WorkspaceId, code};
 
 use crate::db::Workspace;
 use crate::email::Email;
@@ -35,6 +35,27 @@ pub(crate) struct Member {
     pub(crate) id: MemberId,
     /// The hash of the session token that proved it.
     pub(crate) token_hash: [u8; 32],
+}
+
+/// A paired machine, proved by the bearer token its core got when it claimed the pairing.
+/// Only a bearer token counts: no page acts as a machine.
+pub(crate) struct Machine {
+    pub(crate) id: MachineId,
+    pub(crate) token_hash: [u8; 32],
+}
+
+impl FromRequestParts<Shared> for Machine {
+    type Rejection = Response;
+
+    async fn from_request_parts(parts: &mut Parts, shared: &Shared) -> Result<Self, Response> {
+        let unpaired = || unauthorized(code!("machine.unpaired"));
+        let token_hash = bearer(&parts.headers)
+            .map(token_hash)
+            .ok_or_else(unpaired)?;
+        let found = shared.db.machine_with(&token_hash).await.map_err(failure)?;
+        let id = found.ok_or_else(unpaired)?;
+        Ok(Self { id, token_hash })
+    }
 }
 
 impl FromRequestParts<Shared> for Session {
@@ -105,11 +126,7 @@ impl From<Unproven> for Response {
 /// cookie. The cookie counts only from the server's own pages; a request no page sent may use
 /// it to read.
 pub(crate) fn proof(method: &Method, headers: &HeaderMap) -> Result<[u8; 32], Unproven> {
-    let bearer = headers
-        .get(AUTHORIZATION)
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.strip_prefix("Bearer "));
-    if let Some(token) = bearer {
+    if let Some(token) = bearer(headers) {
         return Ok(token_hash(token));
     }
     let token = session_cookie(headers).ok_or(Unproven::Missing)?;
@@ -119,6 +136,14 @@ pub(crate) fn proof(method: &Method, headers: &HeaderMap) -> Result<[u8; 32], Un
         Sender::NoPage if reads => Ok(token_hash(token)),
         Sender::NoPage | Sender::OtherSite => Err(Unproven::CrossSite),
     }
+}
+
+fn bearer(headers: &HeaderMap) -> Option<&str> {
+    headers
+        .get(AUTHORIZATION)?
+        .to_str()
+        .ok()?
+        .strip_prefix("Bearer ")
 }
 
 fn session_cookie(headers: &HeaderMap) -> Option<&str> {
@@ -307,5 +332,9 @@ mod tests {
     fn a_token_hashes_the_same_each_time_and_apart_from_others() {
         assert_eq!(token_hash("a"), token_hash("a"));
         assert_ne!(token_hash("a"), token_hash("b"));
+        assert_eq!(
+            token_hash("abc").map(|byte| format!("{byte:02x}")).concat(),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
     }
 }

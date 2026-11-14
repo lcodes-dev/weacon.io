@@ -2,7 +2,7 @@ use std::panic::PanicHookInfo;
 use std::process::ExitCode;
 use std::sync::Arc;
 
-use weacon_appkit::{Outcome, panic_hook, random_id, reporter, reports, root_logger};
+use weacon_appkit::{Ending, panic_hook, random_id, reporter, reports, root_logger};
 use weacon_observability::{Deliver, Fault, Logger, Reporter, Sink};
 use weacon_protocol::code;
 use weacon_version::Version;
@@ -30,7 +30,7 @@ impl App {
 
     /// Logs and reports how the server ended, and gives its exit code.
     pub(crate) fn finish(&self, result: Result<(), Fault>) -> ExitCode {
-        weacon_appkit::finish(&self.log, &self.reporter, result.map(Outcome::from))
+        weacon_appkit::finish(&self.log, &self.reporter, result.map(Ending::from))
     }
 
     pub(crate) fn panic_hook(&self) -> Box<dyn Fn(&PanicHookInfo<'_>) + Send + Sync> {

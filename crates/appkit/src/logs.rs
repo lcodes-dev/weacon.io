@@ -6,11 +6,11 @@ use std::path::{Path, PathBuf};
 use crate::platform;
 
 /// How large a log file grows before it moves aside.
-pub const MAX_BYTES: u64 = 10 * 1024 * 1024;
+const MAX_BYTES: u64 = 10 * 1024 * 1024;
 /// How many moved-aside log files are kept.
-pub const KEEP: u32 = 5;
+const KEEP: u32 = 5;
 
-/// A log file that moves to `name.1`, `name.2` and so on as it fills, keeping `keep` old ones.
+/// A log file that moves to `name.1`, `name.2` and so on as it fills, keeping a few old ones.
 pub struct RotatingFile {
     path: PathBuf,
     max_bytes: u64,
@@ -24,7 +24,11 @@ impl RotatingFile {
     ///
     /// # Errors
     /// When the file can't be opened or read.
-    pub fn open(path: PathBuf, max_bytes: u64, keep: u32) -> io::Result<Self> {
+    pub fn open(path: PathBuf) -> io::Result<Self> {
+        Self::open_with(path, MAX_BYTES, KEEP)
+    }
+
+    fn open_with(path: PathBuf, max_bytes: u64, keep: u32) -> io::Result<Self> {
         let file = platform::private_append(&path)?;
         let size = file.metadata()?.len();
         Ok(Self {
@@ -38,18 +42,12 @@ impl RotatingFile {
 
     fn rotate(&mut self) -> io::Result<()> {
         for older in (1..self.keep).rev() {
-            if let Err(error) =
-                fs::rename(numbered(&self.path, older), numbered(&self.path, older + 1))
-                && error.kind() != io::ErrorKind::NotFound
-            {
-                return Err(error);
-            }
+            rename_if_there(
+                &numbered(&self.path, older),
+                &numbered(&self.path, older + 1),
+            )?;
         }
-        if let Err(error) = fs::rename(&self.path, numbered(&self.path, 1))
-            && error.kind() != io::ErrorKind::NotFound
-        {
-            return Err(error);
-        }
+        rename_if_there(&self.path, &numbered(&self.path, 1))?;
         self.file = platform::private_append(&self.path)?;
         self.size = 0;
         Ok(())
@@ -72,6 +70,13 @@ impl Write for RotatingFile {
     }
 }
 
+fn rename_if_there(from: &Path, to: &Path) -> io::Result<()> {
+    match fs::rename(from, to) {
+        Err(error) if error.kind() != io::ErrorKind::NotFound => Err(error),
+        _ => Ok(()),
+    }
+}
+
 fn numbered(path: &Path, number: u32) -> PathBuf {
     let mut name = OsString::from(path);
     name.push(format!(".{number}"));
@@ -91,7 +96,7 @@ mod tests {
     fn a_full_file_moves_aside_and_only_the_newest_are_kept() {
         let dir = TempDir::new().unwrap();
         let path = dir.join("weacon.log");
-        let mut file = RotatingFile::open(path.clone(), 10, 2).unwrap();
+        let mut file = RotatingFile::open_with(path.clone(), 10, 2).unwrap();
         for line in ["one\n", "two\n", "three\n", "four\n"] {
             file.write_all(line.as_bytes()).unwrap();
         }
@@ -107,7 +112,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let path = dir.join("weacon.log");
         fs::write(&path, "older\n").unwrap();
-        let mut file = RotatingFile::open(path.clone(), 10, 1).unwrap();
+        let mut file = RotatingFile::open_with(path.clone(), 10, 1).unwrap();
         file.write_all(b"newer\n").unwrap();
         file.flush().unwrap();
 
@@ -116,14 +121,34 @@ mod tests {
     }
 
     #[test]
+    fn a_log_file_keeps_five_of_up_to_ten_megabytes() {
+        let dir = TempDir::new().unwrap();
+        let file = RotatingFile::open(dir.join("weacon.log")).unwrap();
+
+        assert_eq!((file.max_bytes, file.keep), (10 << 20, 5));
+    }
+
+    #[test]
+    fn a_rotation_that_cant_move_the_file_fails() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.join("weacon.log");
+        let mut file = RotatingFile::open_with(path.clone(), 4, 1).unwrap();
+        fs::create_dir(numbered(&path, 1)).unwrap();
+        fs::write(numbered(&path, 1).join("held"), "").unwrap();
+        file.write_all(b"one\n").unwrap();
+
+        file.write_all(b"two\n").unwrap_err();
+        assert_eq!(read(&path), "one\n");
+    }
+
+    #[test]
     fn a_file_may_reach_the_limit_exactly() {
         let dir = TempDir::new().unwrap();
         let path = dir.join("weacon.log");
-        let mut file = RotatingFile::open(path.clone(), 8, 1).unwrap();
+        let mut file = RotatingFile::open_with(path.clone(), 8, 1).unwrap();
         file.write_all(b"one\n").unwrap();
         file.write_all(b"two\n").unwrap();
 
-        assert_eq!(MAX_BYTES, 10 << 20);
         assert_eq!(read(&path), "one\ntwo\n");
         assert!(!numbered(&path, 1).exists());
     }
@@ -132,7 +157,7 @@ mod tests {
     fn a_deleted_file_is_created_again() {
         let dir = TempDir::new().unwrap();
         let path = dir.join("weacon.log");
-        let mut file = RotatingFile::open(path.clone(), 8, 1).unwrap();
+        let mut file = RotatingFile::open_with(path.clone(), 8, 1).unwrap();
         file.write_all(b"one\n").unwrap();
         fs::remove_file(&path).unwrap();
         file.write_all(b"three\n").unwrap();
@@ -144,7 +169,7 @@ mod tests {
     fn a_line_longer_than_the_limit_is_still_written() {
         let dir = TempDir::new().unwrap();
         let path = dir.join("weacon.log");
-        let mut file = RotatingFile::open(path.clone(), 4, 1).unwrap();
+        let mut file = RotatingFile::open_with(path.clone(), 4, 1).unwrap();
         file.write_all(b"much too long\n").unwrap();
 
         assert_eq!(read(&path), "much too long\n");
