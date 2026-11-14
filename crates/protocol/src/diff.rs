@@ -151,23 +151,8 @@ mod tests {
     use serde_json::{Value, json};
 
     use super::*;
+    use crate::test_support::{chat, envelope, request, travels, workspace};
     use crate::{Envelope, FrameError, Message};
-
-    fn envelope(message: Message) -> Envelope {
-        Envelope { id: 4, message }
-    }
-
-    fn request() -> RequestId {
-        RequestId::try_from("r-1".to_owned()).unwrap()
-    }
-
-    fn workspace() -> WorkspaceId {
-        WorkspaceId::try_from("w-1".to_owned()).unwrap()
-    }
-
-    fn chat() -> ChatId {
-        ChatId::try_from("c-1".to_owned()).unwrap()
-    }
 
     fn query(query: DiffQueryKind) -> Envelope {
         envelope(Message::DiffQuery(DiffQuery {
@@ -201,15 +186,6 @@ mod tests {
             json!({ "kind": "file", "files": 2,
                     "file": { "path": "src/b.rs", "change": change, "content": content } }),
         )
-    }
-
-    fn travels(envelope: &Envelope, wire: Value) {
-        assert_eq!(serde_json::to_value(envelope).unwrap(), wire);
-        assert_eq!(
-            Envelope::from_json(&envelope.to_json().unwrap()).unwrap(),
-            *envelope
-        );
-        assert_eq!(serde_json::from_value::<Envelope>(wire).unwrap(), *envelope);
     }
 
     fn file(change: FileChange, content: DiffContent) -> DiffAnswerKind {

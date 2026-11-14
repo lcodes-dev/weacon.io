@@ -187,19 +187,7 @@ mod tests {
     use weacon_testing::TempDir;
 
     use super::*;
-    use crate::test_support::{self, env};
-
-    // Output to an agent that stopped reading.
-    struct Closed;
-
-    impl Write for Closed {
-        fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
-            Err(std::io::ErrorKind::BrokenPipe.into())
-        }
-        fn flush(&mut self) -> std::io::Result<()> {
-            Ok(())
-        }
-    }
+    use crate::test_support::{self, Broken, env};
 
     fn hook(workspace: &str, worktree: &Path) -> GuardCommand {
         GuardCommand::Check(CheckCommand {
@@ -283,7 +271,7 @@ mod tests {
             hook("w1", &dir),
             &env(&[]),
             &mut "x".as_bytes(),
-            &mut Closed,
+            &mut Broken,
         );
 
         assert!(check(&app, &dir, "w1", "not json").contains("\"ask\""));
@@ -402,7 +390,7 @@ mod tests {
         let list = |workspace: &str| GuardCommand::List {
             workspace: id(workspace),
         };
-        let mut closed = Closed;
+        let mut closed = Broken;
 
         let unreadable = code(change(&app, list("w1")));
         let unsaved = code(change(

@@ -1,10 +1,17 @@
 import type { End } from "../connection.ts";
 import { isId } from "../ids.ts";
+import { isMachineKey } from "../machines/fingerprint.ts";
 import type {
   AccountSignedIn,
   AccountSignInFinish,
   AccountSignInStart,
   Code,
+  MachineId,
+  MachineList,
+  MachineSummary,
+  PairConfirm,
+  PairLookup,
+  PairPending,
   SignInStarted,
   WorkspaceCreate,
   WorkspaceList,
@@ -61,7 +68,7 @@ export class Api {
   }
 
   signOut(): Promise<Answer<undefined>> {
-    return this.#ask("POST", "/api/sign-out", undefined, (value): value is undefined => value === undefined);
+    return this.#ask("POST", "/api/sign-out", undefined, isEmpty);
   }
 
   workspaces(): Promise<Answer<WorkspaceList>> {
@@ -72,6 +79,26 @@ export class Api {
   create(name: string): Promise<Answer<WorkspaceSummary>> {
     const body: WorkspaceCreate = { name };
     return this.#ask("POST", "/api/workspaces", body, isWorkspace);
+  }
+
+  /** The machines paired with the signed-in account, oldest first. */
+  machines(): Promise<Answer<MachineList>> {
+    return this.#ask("GET", "/api/machines", undefined, isMachineList);
+  }
+
+  /** The machine waiting to be paired under `code`, as the person typed it: the server reads it loosely. */
+  lookup(code: string): Promise<Answer<PairPending>> {
+    const body: PairLookup = { code };
+    return this.#ask("POST", "/api/machines/pair/lookup", body, isPending);
+  }
+
+  /** Pairs the machine `lookup` found with the signed-in account. */
+  confirm(body: PairConfirm): Promise<Answer<MachineSummary>> {
+    return this.#ask("POST", "/api/machines/pair/confirm", body, isMachine);
+  }
+
+  unpair(machine: MachineId): Promise<Answer<undefined>> {
+    return this.#ask("DELETE", `/api/machines/${encodeURIComponent(machine)}`, undefined, isEmpty);
   }
 
   async #ask<T>(method: string, path: string, body: object | undefined, fits: (value: unknown) => value is T): Promise<Answer<T>> {
@@ -109,9 +136,23 @@ const isStarted = (value: unknown): value is SignInStarted => fields(value, ["ch
 const isError = (value: unknown): value is { code: Code } => fields(value, ["code"]);
 const isWorkspace = (value: unknown): value is WorkspaceSummary =>
   fields(value, ["id", "name", "role"]) && isId((value as WorkspaceSummary).id);
-const isList = (value: unknown): value is WorkspaceList =>
-  typeof value === "object" &&
-  value !== null &&
-  "workspaces" in value &&
-  Array.isArray(value.workspaces) &&
-  value.workspaces.every(isWorkspace);
+/** A guard for an object whose `key` holds a list of items that `item` accepts. */
+function listOf<T>(key: string, item: (value: unknown) => boolean): (value: unknown) => value is T {
+  return (value): value is T => {
+    const items = typeof value === "object" && value !== null ? (value as Record<string, unknown>)[key] : undefined;
+    return Array.isArray(items) && items.every(item);
+  };
+}
+
+const isList = listOf<WorkspaceList>("workspaces", isWorkspace);
+const isEmpty = (value: unknown): value is undefined => value === undefined;
+const isPending = (value: unknown): value is PairPending =>
+  fields(value, ["pairing", "name", "os", "key"]) &&
+  isId((value as PairPending).pairing) &&
+  isMachineKey((value as PairPending).key);
+const isMachine = (value: unknown): value is MachineSummary =>
+  fields(value, ["id", "name", "os", "key"]) &&
+  isId((value as MachineSummary).id) &&
+  isMachineKey((value as MachineSummary).key) &&
+  typeof (value as MachineSummary).paired_at === "number";
+const isMachineList = listOf<MachineList>("machines", isMachine);

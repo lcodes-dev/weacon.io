@@ -65,3 +65,15 @@ function listening(line: string): string | undefined {
     return undefined;
   }
 }
+
+export const EMAIL = "ada@example.com";
+
+/** Makes an account for `EMAIL` and signs the page in with the code sent to it. */
+export async function signIn(served: Served): Promise<void> {
+  const { page } = served;
+  await served.admin("add-account", "--email", EMAIL);
+  await page.getByLabel("Email").fill(EMAIL);
+  await page.getByRole("button", { name: "Send code" }).click();
+  await page.getByLabel("Code").fill(await served.code(EMAIL));
+  await page.getByRole("button", { name: "Sign in" }).click();
+}
