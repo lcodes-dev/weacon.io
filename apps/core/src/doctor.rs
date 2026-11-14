@@ -2,7 +2,6 @@ use std::io::{self, Write};
 use std::path::Path;
 
 use weacon_agents::{Launch, SpawnPolicy};
-use weacon_appkit::version_text;
 use weacon_observability::{Fault, Field, Logger};
 use weacon_protocol::code;
 
@@ -60,7 +59,7 @@ fn report(app: &App, free_space: disk::FreeSpace) -> String {
         .map_or_else(|| "unavailable".to_owned(), disk::describe);
     format!(
         "weacon {}\nState folder: {}\nLog file: {}\nDisk: {disk}\nError reports: {reports}\n{}",
-        version_text(&app.version),
+        app.version.with_commit(),
         path(app.state_dir.as_deref()),
         path(app.log_file.as_deref()),
         agent_tools(&app.spawn),
@@ -87,7 +86,7 @@ mod tests {
     use weacon_testing::TempDir;
 
     use super::*;
-    use crate::test_support;
+    use crate::test_support::{self, Broken};
 
     fn app(state_dir: Option<&str>, log_file: Option<&str>) -> App {
         test_support::app(state_dir.map(Path::new), log_file.map(Path::new))
@@ -130,7 +129,7 @@ mod tests {
             "",
         )
         .ok();
-        app.reporter = std::sync::Arc::new(weacon_appkit::reporter(
+        app.base.reporter = std::sync::Arc::new(weacon_appkit::reporter(
             reports,
             false,
             Box::new(|_| Ok(())),
@@ -188,18 +187,9 @@ mod tests {
 
     #[test]
     fn fails_when_it_cant_print() {
-        struct Closed;
-        impl Write for Closed {
-            fn write(&mut self, _: &[u8]) -> io::Result<usize> {
-                Err(io::ErrorKind::BrokenPipe.into())
-            }
-            fn flush(&mut self) -> io::Result<()> {
-                Ok(())
-            }
-        }
         let error = run(
             &app(Some("/srv"), Some("/srv/logs/weacon.log")),
-            &mut Closed,
+            &mut Broken,
         )
         .unwrap_err();
 

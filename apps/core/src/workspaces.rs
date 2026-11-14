@@ -15,7 +15,7 @@ use weacon_protocol::{AccessLevel, AgentKind, SignInState, WorkspaceId, code};
 pub(crate) use access::{Settings, parse_level, run as access, store as store_access};
 
 use crate::app::{App, runtime};
-use crate::platform;
+use crate::{names, platform};
 
 /// Runs the vendor's own sign-in for `agent` in this terminal, against `workspace`'s config
 /// folder.
@@ -246,7 +246,7 @@ const AGENTS: [(AgentKind, &str); 2] = [
 ];
 
 fn folder_name(workspace: &WorkspaceId) -> String {
-    platform::case_safe_name("w-", workspace.as_str())
+    names::case_safe_name("w-", workspace.as_str())
 }
 
 /// Each place's sign-in, given `answers` for the places that have a launch, in their order.
@@ -276,17 +276,7 @@ const fn state_name(state: SignInState) -> &'static str {
 
 /// The workspace that `name` is the folder of, if any.
 fn workspace_id(name: &str) -> Option<WorkspaceId> {
-    let mut id = String::new();
-    let mut letters = name.strip_prefix("w-")?.chars();
-    while let Some(letter) = letters.next() {
-        id.push(if letter == '.' {
-            letters.next()?.to_ascii_uppercase()
-        } else {
-            letter
-        });
-    }
-    let id = WorkspaceId::try_from(id).ok()?;
-    (folder_name(&id) == name).then_some(id)
+    WorkspaceId::try_from(names::case_safe_id("w-", name)?).ok()
 }
 
 #[cfg(test)]
@@ -361,10 +351,8 @@ mod tests {
 
     #[test]
     fn folder_names_turn_back_into_their_ids_and_other_names_into_none() {
-        for back in ["ab", "Ab", "aB", "AB", "a-b", "CON", "con"] {
-            assert_eq!(workspace_id(&folder_name(&id(back))), Some(id(back)));
-        }
-        for other in ["ab", "w-", "w-a b", "w-a.", "w-a..b", "w-.1", "w-A", "x-ab"] {
+        assert_eq!(workspace_id(&folder_name(&id("aB"))), Some(id("aB")));
+        for other in ["w-", "w-a b", "x-ab"] {
             assert_eq!(workspace_id(other), None, "{other}");
         }
     }

@@ -12,6 +12,9 @@ pub(crate) const FILES: u32 = 40;
 const PER_FILE: usize = 125;
 // The hunks of an edited file.
 const HUNKS: usize = 6;
+// The files whose content isn't text.
+const BINARY: usize = 19;
+const TOO_LARGE: usize = 39;
 
 const WORDS: [&str; 12] = [
     "meadow", "harbor", "lantern", "orchard", "pebble", "quill", "river", "saddle", "thistle",
@@ -56,23 +59,23 @@ pub(crate) fn answers(envelope: &Envelope) -> Vec<Envelope> {
 /// The change's files, in path order.
 pub(crate) fn change() -> Vec<DiffFile> {
     let mut files: Vec<DiffFile> = (0..FILES)
-        .map(|at| {
-            let at = usize::try_from(at).unwrap_or(0);
-            let kind = if at == 19 { "png" } else { "rs" };
-            let path = format!("src/{}/part_{at:02}.{kind}", word(at));
-            let (change, content) = match at {
-                19 => (FileChange::Modified, DiffContent::Binary),
-                39 => (FileChange::Modified, DiffContent::TooLarge),
-                _ => match at % 10 {
-                    3 => (FileChange::Added, one_sided(at, LineOp::Added)),
-                    6 => (FileChange::Removed, one_sided(at, LineOp::Removed)),
+        .map(|index| {
+            let index = usize::try_from(index).unwrap_or(0);
+            let kind = if index == BINARY { "png" } else { "rs" };
+            let path = format!("src/{}/part_{index:02}.{kind}", word(index));
+            let (change, content) = match index {
+                BINARY => (FileChange::Modified, DiffContent::Binary),
+                TOO_LARGE => (FileChange::Modified, DiffContent::TooLarge),
+                _ => match index % 10 {
+                    3 => (FileChange::Added, one_sided(index, LineOp::Added)),
+                    6 => (FileChange::Removed, one_sided(index, LineOp::Removed)),
                     8 => (
                         FileChange::Renamed {
-                            from: format!("src/{}/old_{at:02}.rs", word(at)),
+                            from: format!("src/{}/old_{index:02}.rs", word(index)),
                         },
-                        edited(at),
+                        edited(index),
                     ),
-                    _ => (FileChange::Modified, edited(at)),
+                    _ => (FileChange::Modified, edited(index)),
                 },
             };
             DiffFile {
@@ -86,13 +89,15 @@ pub(crate) fn change() -> Vec<DiffFile> {
     files
 }
 
-fn word(at: usize) -> &'static str {
-    WORDS.get(at % WORDS.len()).copied().unwrap_or("misc")
+fn word(index: usize) -> &'static str {
+    WORDS.get(index % WORDS.len()).copied().unwrap_or("misc")
 }
 
 // A whole file added or removed: one hunk, the last line without its newline.
 fn one_sided(file: usize, op: LineOp) -> DiffContent {
-    let mut lines: Vec<DiffLine> = (1..=PER_FILE).map(|at| line(op, file, at)).collect();
+    let mut lines: Vec<DiffLine> = (1..=PER_FILE)
+        .map(|line_number| line(op, file, line_number))
+        .collect();
     if let Some(last) = lines.last_mut() {
         last.no_newline = true;
     }
@@ -125,8 +130,8 @@ fn hunk(file: usize, old: &mut u32, new: &mut u32) -> Hunk {
     let mut lines = Vec::new();
     for (op, count) in SHAPE {
         for _ in 0..count {
-            let at = if op == LineOp::Removed { *old } else { *new };
-            lines.push(line(op, file, usize::try_from(at).unwrap_or(0)));
+            let line_number = if op == LineOp::Removed { *old } else { *new };
+            lines.push(line(op, file, usize::try_from(line_number).unwrap_or(0)));
             *old += u32::from(op != LineOp::Added);
             *new += u32::from(op != LineOp::Removed);
         }
@@ -139,23 +144,29 @@ fn hunk(file: usize, old: &mut u32, new: &mut u32) -> Hunk {
 }
 
 // A line of made-up Rust; every 50th is long, to need scrolling sideways.
-fn line(op: LineOp, file: usize, at: usize) -> DiffLine {
+fn line(op: LineOp, file: usize, line_number: usize) -> DiffLine {
     let call = if op == LineOp::Removed {
         "gather"
     } else {
         "collect"
     };
-    let mut text = match at % 7 {
-        0 => format!("fn {}_{at}(input: &str) -> usize {{", word(file + at)),
+    let mut text = match line_number % 7 {
+        0 => format!(
+            "fn {}_{line_number}(input: &str) -> usize {{",
+            word(file + line_number)
+        ),
         6 => "}".to_owned(),
         _ => format!(
-            "    let {}_{at} = {call}({}, {at});",
-            word(file + at + 1),
-            word(file + at + 2)
+            "    let {}_{line_number} = {call}({}, {line_number});",
+            word(file + line_number + 1),
+            word(file + line_number + 2)
         ),
     };
-    if at.is_multiple_of(50) {
-        text = format!("{text} // {}", [word(file + at + 3); 24].join(" then "));
+    if line_number.is_multiple_of(50) {
+        text = format!(
+            "{text} // {}",
+            [word(file + line_number + 3); 24].join(" then ")
+        );
     }
     DiffLine {
         op,
@@ -203,10 +214,13 @@ mod tests {
             );
         }
         assert!(files.windows(2).all(|pair| pair[0].path < pair[1].path));
-        let at = |path: &str| files.iter().find(|file| file.path == path).unwrap();
-        assert_eq!(at("src/saddle/part_19.png").content, DiffContent::Binary);
+        let by_path = |path: &str| files.iter().find(|file| file.path == path).unwrap();
         assert_eq!(
-            at("src/thistle/part_08.rs").change,
+            by_path("src/saddle/part_19.png").content,
+            DiffContent::Binary
+        );
+        assert_eq!(
+            by_path("src/thistle/part_08.rs").change,
             FileChange::Renamed {
                 from: "src/thistle/old_08.rs".to_owned()
             }
@@ -256,7 +270,7 @@ mod tests {
 
     #[test]
     fn lines_are_made_up_rust_that_differs_between_the_sides() {
-        let text = |op, at| line(op, 2, at).text;
+        let text = |op, line_number| line(op, 2, line_number).text;
 
         assert_eq!(
             text(LineOp::Context, 14),

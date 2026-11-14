@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::{env, fs, io, process};
 
-use crate::platform::create_own_dir;
+use crate::platform::create_private_dir;
 
 static NEXT: AtomicU64 = AtomicU64::new(0);
 const ATTEMPTS: u32 = 1000;
@@ -45,7 +45,7 @@ fn create_new(parent: &Path, next: &AtomicU64) -> io::Result<PathBuf> {
     for _ in 0..ATTEMPTS {
         let number = next.fetch_add(1, Ordering::Relaxed);
         let dir = parent.join(format!("weacon-test-{}-{number}", process::id()));
-        match create_own_dir(&dir) {
+        match create_private_dir(&dir) {
             Ok(()) => return Ok(dir),
             Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
             Err(error) => return Err(error),

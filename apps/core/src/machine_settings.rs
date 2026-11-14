@@ -190,8 +190,8 @@ mod tests {
         Host {
             state_dir: dir.to_path_buf(),
             path,
-            reporter: app.reporter,
-            log: app.log,
+            reporter: Arc::clone(&app.reporter),
+            log: app.log.clone(),
         }
     }
 
