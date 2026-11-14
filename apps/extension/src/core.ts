@@ -6,9 +6,6 @@ export const HOST = "io.weacon.core";
 
 const DEADLINE_MS = 30_000;
 
-declare const WEACON_VERSION: string;
-declare const WEACON_COMMIT: string;
-
 /** A failure named by a dotted code, the only part of it that reaches the core's log. */
 export class Failure extends Error {
   readonly code: string;
@@ -26,11 +23,6 @@ export type Port = {
   onMessage: { addListener(listener: (message: unknown) => void): void };
   onDisconnect: { addListener(listener: () => void): void };
 };
-
-/** How the extension introduces itself; `tools/build.ts` defines both values. */
-export function app(): App {
-  return { name: "weacon-extension", version: WEACON_VERSION, commit: WEACON_COMMIT };
-}
 
 /** The message that carries `pick`, as the core receives it. */
 export function pickEnvelope(pick: Pick): Envelope {

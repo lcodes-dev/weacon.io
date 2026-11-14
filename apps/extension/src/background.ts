@@ -1,11 +1,11 @@
-import { Failure, HOST, app, deliver, report } from "./core.ts";
+import { ME } from "./build.ts";
+import { Failure, HOST, deliver, report } from "./core.ts";
 import { reported, title } from "./feedback.ts";
 import { fit } from "./fit.ts";
 import { isLocal } from "./local.ts";
 import type { Picked, Picker } from "./picker.ts";
 import { base64, crop, type Rect } from "./screenshot.ts";
 
-const ME = app();
 const picking = new Set<number>();
 
 chrome.action.onClicked.addListener(async (tab) => {

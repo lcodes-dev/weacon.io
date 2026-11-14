@@ -20,6 +20,9 @@ const options = {
 } as const;
 
 await build({ ...options, entryPoints: ["src/background.ts"], format: "esm" });
+if (/WEACON_(VERSION|COMMIT)/.test(readFileSync(new URL("background.js", dist), "utf8"))) {
+  throw new Error("the build left its version or commit undefined");
+}
 // Injected scripts can't be modules.
 await build({ ...options, entryPoints: ["src/picker.ts"], format: "iife" });
 

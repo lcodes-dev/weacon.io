@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import { PROTOCOL } from "../../../tooling/ts/version.ts";
-import { Failure, type Port, app, deliver, report } from "./core.ts";
+import { Failure, type Port, deliver, report } from "./core.ts";
 import type { Envelope, Pick } from "./protocol.ts";
 
 const ME = { name: "weacon-extension", version: "0.1.0", commit: "1a2b3c4" };
@@ -131,10 +131,4 @@ test("failures are reported by code after a hello, and quietly dropped without a
   assert.ok(told.disconnected());
   assert.equal(gone.sent.length, 1);
   assert.ok(gone.disconnected());
-});
-
-test("the extension names its build from the values the build defines", () => {
-  Object.assign(globalThis, { WEACON_VERSION: ME.version, WEACON_COMMIT: ME.commit });
-
-  assert.deepEqual(app(), ME);
 });
