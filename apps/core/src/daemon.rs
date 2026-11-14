@@ -785,9 +785,20 @@ mod tests {
         running.stop().await;
     }
 
+    // A chat's pushed events in brief, and the other replies. The run starts off the engine's
+    // loop, so a snapshot can come before it is up.
+    fn events_and_answers(replies: &[Message]) -> (Vec<String>, Vec<&Message>) {
+        use crate::chats::test_support::brief;
+
+        let (events, answers): (Vec<_>, Vec<_>) = replies
+            .iter()
+            .partition(|reply| matches!(reply, Message::Chat(_)));
+        (events.into_iter().map(brief).collect(), answers)
+    }
+
     #[tokio::test]
     async fn chat_commands_and_queries_reach_the_engine_and_its_events_come_back() {
-        use crate::chats::test_support::{bench, brief, prompt, query, soon};
+        use crate::chats::test_support::{bench, prompt, query, soon};
         use weacon_protocol::ChatQueryKind;
 
         let dir = TempDir::new().unwrap();
@@ -820,11 +831,12 @@ mod tests {
         for capability in offered {
             assert!(welcome.capabilities.contains(&capability.into()));
         }
-        assert_eq!(error_code(&replies[1]), Some("chat.empty_prompt"));
-        assert!(matches!(&replies[2], Message::ChatAnswer(answer)
-            if matches!(answer.answer, weacon_protocol::ChatAnswerKind::Snapshot { seq: 4, .. })));
+        let (events, answers) = events_and_answers(&replies[1..]);
+        assert_eq!(error_code(answers[0]), Some("chat.empty_prompt"));
+        assert!(matches!(answers[1], Message::ChatAnswer(answer)
+            if matches!(answer.answer, weacon_protocol::ChatAnswerKind::Snapshot { seq, .. } if seq >= 2)));
         assert_eq!(
-            replies[3..].iter().map(brief).collect::<Vec<_>>(),
+            events,
             [
                 "1 prompt r-1 MARKER-PROMPT",
                 "2 receipt r-1 accepted",

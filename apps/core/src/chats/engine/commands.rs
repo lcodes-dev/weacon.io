@@ -237,7 +237,9 @@ impl<A: Agent> Engine<A> {
 mod tests {
     use weacon_testing::TempDir;
 
-    use super::super::by_hand::{allow_one, hear, on_ask, on_its_way, on_turn, waiting_in};
+    use super::super::by_hand::{
+        allow_one, hear, launched, on_ask, on_its_way, on_turn, waiting_in,
+    };
     use super::*;
     use crate::chats::test_support::{
         Told, allow, asks, chat, command, key, logged_prompt, parts, prompt, prompt_naming, run,
@@ -302,6 +304,7 @@ mod tests {
             .await
             .unwrap();
         engine.command(&key(), prompt("r-1", "Hi")).await.unwrap();
+        launched(&mut engine).await;
         let mut started = soon(bench.started.recv()).await.unwrap();
         assert_eq!(
             soon(started.told.recv()).await,

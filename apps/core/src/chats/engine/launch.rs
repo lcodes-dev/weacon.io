@@ -9,11 +9,24 @@ use weacon_protocol::{AgentSession, RunId, RunState, code};
 use super::agent::{Agent, RunOf, drive};
 use super::{ChatKey, Engine, RunAs, about, failed};
 
+/// A run's agent, or why it didn't start, back from starting off the engine's loop.
+pub(super) struct Launched<A> {
+    pub(super) key: ChatKey,
+    pub(super) run: RunId,
+    pub(super) agent: Result<A, Fault>,
+}
+
 fn not_started() -> Fault {
     Fault::new(code!("agent.not_started"), "The agent couldn't start")
 }
 
 impl<A: Agent> Engine<A> {
+    pub(super) fn is_launching(&self, key: &ChatKey) -> bool {
+        self.open_chats
+            .get(key)
+            .is_some_and(|chat| chat.launching.is_some())
+    }
+
     // Saves the session the chat's next run resumes; one that can't be saved yet is kept, and
     // saved before that run starts.
     pub(super) async fn keep_session(
@@ -37,8 +50,9 @@ impl<A: Agent> Engine<A> {
         }
     }
 
-    // Starts the chat's agent as a new run, resuming its session when it has one.
-    pub(super) async fn launch(&mut self, key: &ChatKey) -> Result<RunId, Fault> {
+    // Starts the chat's agent as a new run, resuming its session when it has one. The agent
+    // starts off the engine's loop, which `finish_launch` then takes up.
+    pub(super) async fn launch(&mut self, key: &ChatKey) -> Result<(), Fault> {
         self.save_pending_session(key).await?;
         let kind = self.runs.of(key).ok_or_else(not_started)?.agent;
         let run = self.runs.begin(key, kind, self.now()).await?;
@@ -49,24 +63,42 @@ impl<A: Agent> Engine<A> {
             run: run.clone(),
             session,
         };
-        match self.launch_agent(run_as).await {
-            Ok(agent) => self.attach(key, &run, agent).await?,
-            Err(fault) => {
-                self.log.warn("run not started", &failed(key, &run, &fault));
-                // A run that stopped reading is let go of too, so the chat can close.
-                self.open(key).await?.orders = None;
-                self.set_state(key, &run, RunState::Ended).await?;
-                return Err(fault);
-            }
-        }
-        Ok(run)
+        self.open(key).await?.launching = Some(run.clone());
+        let (start, starts) = (Arc::clone(&self.host.launch), self.starts.clone());
+        let key = key.clone();
+        tokio::spawn(async move {
+            let agent = tokio::task::spawn_blocking(move || start(&run_as))
+                .await
+                .unwrap_or_else(|_| Err(not_started()));
+            drop(starts.send(Launched { key, run, agent }));
+        });
+        Ok(())
     }
 
-    async fn launch_agent(&self, run_as: RunAs) -> Result<A, Fault> {
-        let start = Arc::clone(&self.host.launch);
-        tokio::task::spawn_blocking(move || start(&run_as))
-            .await
-            .unwrap_or_else(|_| Err(not_started()))
+    // Attaches a started agent and gives it the chat's next turn; one that didn't start fails
+    // the queue. An agent for a run the chat no longer waits for is let go.
+    pub(super) async fn finish_launch(&mut self, launched: Launched<A>) -> Result<(), Fault> {
+        let Launched { key, run, agent } = launched;
+        let chat = self.open(&key).await?;
+        if chat.launching.as_ref() != Some(&run) {
+            return Ok(());
+        }
+        chat.launching = None;
+        match agent {
+            Ok(agent) => {
+                self.attach(&key, &run, agent).await?;
+                self.advance(&key).await
+            }
+            Err(fault) => {
+                self.log
+                    .warn("run not started", &failed(&key, &run, &fault));
+                // A run that stopped reading is let go of too, so the chat can close.
+                self.open(&key).await?.orders = None;
+                let ended = self.set_state(&key, &run, RunState::Ended).await;
+                let failed = self.fail_queue(&key, &fault).await;
+                ended.and(failed)
+            }
+        }
     }
 
     async fn attach(&mut self, key: &ChatKey, run: &RunId, agent: A) -> Result<(), Fault> {
@@ -92,7 +124,7 @@ mod tests {
     use weacon_protocol::{Outcome, RunEvent};
 
     use super::super::agent::Heard;
-    use super::super::by_hand::{hear, on_turn, until_deaf};
+    use super::super::by_hand::{hear, launched, on_turn, until_deaf};
     use crate::chats::test_support::{key, prompt, run, session, soon};
 
     #[tokio::test(start_paused = true)]
@@ -139,6 +171,7 @@ mod tests {
             .command(&key(), prompt("r-2", "More"))
             .await
             .unwrap();
+        launched(&mut on.engine).await;
         on.engine.settle(&key());
 
         assert!(!on.engine.open_chats.contains_key(&key()));

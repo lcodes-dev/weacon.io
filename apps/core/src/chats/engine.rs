@@ -7,6 +7,7 @@ mod by_hand;
 mod commands;
 mod cut;
 mod launch;
+mod pending;
 mod queries;
 mod said;
 mod turns;
@@ -19,11 +20,12 @@ use tokio::sync::{mpsc, oneshot};
 use weacon_observability::{Fault, Field, Logger};
 use weacon_protocol::{
     AgentKind, AgentSession, ChatAnswerKind, ChatCommand, ChatEntry, ChatEvent, ChatQuery,
-    ChatUpdate, Message, Outcome, PermissionAnswer, Receipt, RequestId, RunId, RunState, RunStatus,
-    code,
+    ChatUpdate, Message, Outcome, Receipt, RequestId, RunId, RunState, RunStatus, code,
 };
 
 use self::agent::{Agent, Order, Said};
+use self::launch::Launched;
+use self::pending::{PendingAnswer, PendingEnd, PendingInterrupt};
 use super::feed::{Client, Subscriber};
 use super::log::ChatLog;
 use crate::runs::{ChatKey, Runs};
@@ -107,6 +109,8 @@ struct Chat {
     /// The way to the chat's agent: none without one, closed once it stopped reading, until
     /// its exit is reported.
     orders: Option<mpsc::UnboundedSender<Order>>,
+    /// The run whose agent is starting, off the engine's loop.
+    launching: Option<RunId>,
     pending_answers: Vec<PendingAnswer>,
     pending_end: Option<PendingEnd>,
     pending_interrupt: Option<PendingInterrupt>,
@@ -122,32 +126,12 @@ impl Chat {
     // Whether nothing needs the chat open.
     fn is_unused(&self) -> bool {
         self.orders.is_none()
+            && self.launching.is_none()
             && self.subscribers.is_empty()
             && self.pending_answers.is_empty()
             && self.pending_end.is_none()
             && self.pending_session.is_none()
     }
-}
-
-/// An answer to a waiting prompt whose receipt is being written, so a retry delivers it.
-#[derive(Debug, PartialEq, Eq)]
-struct PendingAnswer {
-    request: RequestId,
-    answer: PermissionAnswer,
-}
-
-/// The outcome a turn's run reported, when the turn's receipt couldn't be written.
-#[derive(Debug, PartialEq, Eq)]
-struct PendingEnd {
-    turn: RequestId,
-    outcome: Outcome,
-}
-
-/// An interrupt committed and not yet sent, and the turn it stops.
-#[derive(Debug, PartialEq, Eq)]
-struct PendingInterrupt {
-    request: RequestId,
-    turn: Option<RequestId>,
 }
 
 pub(crate) struct Engine<A> {
@@ -158,6 +142,8 @@ pub(crate) struct Engine<A> {
     asked: mpsc::Receiver<Ask>,
     incoming: mpsc::Receiver<Said>,
     says: mpsc::Sender<Said>,
+    starts: mpsc::UnboundedSender<Launched<A>>,
+    started: mpsc::UnboundedReceiver<Launched<A>>,
     log: Logger,
 }
 
@@ -170,6 +156,7 @@ impl<A: Agent> Engine<A> {
     ) -> (Chats, Self) {
         let (asks, asked) = mpsc::channel(ASKS);
         let (says, incoming) = mpsc::channel(SAYS);
+        let (starts, started) = mpsc::unbounded_channel();
         let engine = Self {
             runs,
             workspaces,
@@ -178,6 +165,8 @@ impl<A: Agent> Engine<A> {
             asked,
             incoming,
             says,
+            starts,
+            started,
             log,
         };
         (Chats { asks }, engine)
@@ -205,6 +194,13 @@ impl<A: Agent> Engine<A> {
                     if let Err(fault) = self.heard(&key, &said.of.run, said.heard).await {
                         let fields = failed(&key, &said.of.run, &fault);
                         self.log.error("run event not committed", &fields);
+                    }
+                    key
+                }
+                Some(launched) = self.started.recv() => {
+                    let (key, run) = (launched.key.clone(), launched.run.clone());
+                    if let Err(fault) = self.finish_launch(launched).await {
+                        self.log.error("run start not handled", &failed(&key, &run, &fault));
                     }
                     key
                 }
@@ -338,6 +334,7 @@ impl<A: Agent> Engine<A> {
                 events: ChatLog::open(&root, &key.chat).await?,
                 subscribers: Vec::new(),
                 orders: None,
+                launching: None,
                 pending_answers: Vec::new(),
                 pending_end: None,
                 pending_interrupt: None,
@@ -816,6 +813,29 @@ mod tests {
         assert_eq!(
             pushed(&mut slowly, 2).await,
             ["7 run-1 text Three", "8 run-1 text Four"]
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_chat_whose_agent_is_slow_to_start_holds_up_no_other() {
+        let mut bench = bench();
+        let release = bench.hold_next_start();
+
+        let sent = soon(async { Some(bench.chats.command(prompt("r-1", "Hi")).await) }).await;
+        assert!(matches!(sent, Some(Ok(()))));
+        let (anyone, _pushes) = client(1);
+        let elsewhere = query("c-2", ChatQueryKind::Snapshot);
+        let answer = soon(async { Some(bench.chats.query(elsewhere, &anyone).await) }).await;
+        assert!(matches!(
+            answer,
+            Some(Ok(Some(ChatAnswerKind::Snapshot { seq: 0, .. })))
+        ));
+
+        drop(release);
+        let mut started = soon(bench.started.recv()).await.unwrap();
+        assert_eq!(
+            soon(started.told.recv()).await,
+            Some(Told::Send("Hi".to_owned()))
         );
     }
 

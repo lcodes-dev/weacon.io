@@ -74,12 +74,15 @@ impl<A: Agent> Engine<A> {
         let Some(next) = record.queue.first().cloned() else {
             return Ok(());
         };
-        let run = match self.run_of(key).filter(|_| self.takes_orders(key)) {
-            Some(run) => run,
-            None => match self.launch(key).await {
-                Ok(run) => run,
-                Err(fault) => return self.fail_queue(key, &fault).await,
-            },
+        // A run still starting takes the turn once it is up.
+        if self.is_launching(key) {
+            return Ok(());
+        }
+        let Some(run) = self.run_of(key).filter(|_| self.takes_orders(key)) else {
+            return match self.launch(key).await {
+                Ok(()) => Ok(()),
+                Err(fault) => self.fail_queue(key, &fault).await,
+            };
         };
         self.give_turn(key, &run, next).await
     }
@@ -148,7 +151,7 @@ impl<A: Agent> Engine<A> {
     }
 
     // Nothing can run them: each queued prompt fails rather than waits for ever.
-    async fn fail_queue(&mut self, key: &ChatKey, fault: &Fault) -> Result<(), Fault> {
+    pub(super) async fn fail_queue(&mut self, key: &ChatKey, fault: &Fault) -> Result<(), Fault> {
         let record = self.runs.of(key);
         let queue = record
             .map(|record| record.queue.clone())
@@ -169,7 +172,7 @@ mod tests {
     use weacon_protocol::{ChatEvent, Receipt, RequestId, RunEvent, code};
 
     use super::super::agent::Heard;
-    use super::super::by_hand::{hear, latest, on_ask, on_turn, until_deaf, waiting_in};
+    use super::super::by_hand::{hear, latest, launched, on_ask, on_turn, until_deaf, waiting_in};
     use super::*;
     use crate::chats::test_support::{FakeAgent, Told, key, prompt, run, soon};
 
@@ -223,6 +226,7 @@ mod tests {
             .await
             .unwrap();
 
+        launched(&mut on.engine).await;
         let mut next = soon(on.bench.started.recv()).await.unwrap();
         assert_eq!(next.run_as.run, run("run-2"));
         assert_eq!(
@@ -247,6 +251,7 @@ mod tests {
             .await
             .unwrap();
 
+        launched(&mut on.engine).await;
         let mut next = soon(on.bench.started.recv()).await.unwrap();
         assert_eq!(next.run_as.run, run("run-2"));
         assert_eq!(
@@ -393,6 +398,7 @@ mod tests {
             .await
             .unwrap();
 
+        launched(&mut on.engine).await;
         let mut next = soon(on.bench.started.recv()).await.unwrap();
         assert_eq!(next.run_as.run, run("run-2"));
         assert_eq!(
@@ -445,6 +451,7 @@ mod tests {
             outcomes(&mut on.engine, &first).await,
             [Outcome::Accepted, Outcome::Unknown]
         );
+        launched(&mut on.engine).await;
         let mut next = soon(on.bench.started.recv()).await.unwrap();
         assert_eq!(next.run_as.run, run("run-2"));
         assert_eq!(
