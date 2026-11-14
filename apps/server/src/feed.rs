@@ -185,6 +185,8 @@ async fn catch_up(socket: &mut WebSocket, shared: &Shared, feed: &mut Feed) -> R
             let wanted = match update.change {
                 WorkspaceChange::TaskChanged { .. } => feed.offers.tasks,
                 WorkspaceChange::DocChanged { .. } => feed.offers.docs,
+                // No feed offers `workspace.chats` yet.
+                WorkspaceChange::ChatChanged { .. } => false,
                 WorkspaceChange::MemberJoined { .. } | WorkspaceChange::Newer => true,
             };
             if !wanted {
