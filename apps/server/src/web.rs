@@ -40,12 +40,12 @@ fn file(kind: &'static str, bytes: &'static [u8]) -> Response {
 
 #[cfg(test)]
 mod tests {
-    use crate::test_support::{Fixture, header, request, run, status};
+    use crate::test_support::{Fixture, header, request, status};
 
     #[tokio::test]
     async fn each_built_file_is_served_with_its_type_and_no_cache() {
         let fixture = Fixture::new().await;
-        let server = run(fixture.shared.clone()).await;
+        let server = fixture.run().await;
         let mut kinds = Vec::new();
         for (path, body) in [
             ("/", "<!doctype html><title>Made up</title>"),
@@ -79,7 +79,7 @@ mod tests {
     async fn only_the_built_files_are_served() {
         let mut fixture = Fixture::new().await;
         fixture.shared.web = &[("/app.js", "text/javascript", b"made_up();")];
-        let server = run(fixture.shared.clone()).await;
+        let server = fixture.run().await;
         let mut statuses = Vec::new();
         for path in ["/", "/index.html", "/app.js", "/app.map"] {
             let (head, _) = request(server.address, &format!("GET {path}"), "").await;

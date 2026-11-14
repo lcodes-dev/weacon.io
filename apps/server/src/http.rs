@@ -23,6 +23,7 @@ use crate::limit::Limit;
 use crate::mail::Outbox;
 use crate::secret::Secret;
 use crate::sign_in;
+use crate::sign_up::SignUp;
 use crate::tasks;
 use crate::web::{self, WebFile};
 use crate::workspaces;
@@ -31,8 +32,7 @@ const REQUEST_ID: &str = "x-request-id";
 const GRACE: Duration = Duration::from_secs(10);
 /// How long a request may take from its head to its answer, its body included.
 const ANSWER_WITHIN: Duration = Duration::from_secs(30);
-/// 16 KiB.
-const MAX_BODY: usize = 16_384;
+const MAX_BODY: usize = 16 * 1024;
 static METHODS: [Method; 9] = [
     Method::GET,
     Method::POST,
@@ -71,6 +71,8 @@ pub(crate) struct Shared {
     pub(crate) starts: Arc<Limit>,
     /// How many codes each client may try.
     pub(crate) tries: Arc<Limit>,
+    /// Who may make an account by signing in.
+    pub(crate) sign_up: Arc<[SignUp]>,
     /// The web app's built files it serves.
     pub(crate) web: &'static [WebFile],
 }
@@ -257,7 +259,7 @@ mod tests {
     use tokio::net::TcpStream;
 
     use super::*;
-    use crate::test_support::{Fixture, Running, header, messages, request, run};
+    use crate::test_support::{Fixture, Running, header, messages, request};
 
     struct Server {
         running: Running,
@@ -271,7 +273,7 @@ mod tests {
     async fn start_with(change: impl FnOnce(&mut Shared)) -> Server {
         let mut fixture = Fixture::new().await;
         change(&mut fixture.shared);
-        let running = run(fixture.shared.clone()).await;
+        let running = fixture.run().await;
         Server { running, fixture }
     }
 

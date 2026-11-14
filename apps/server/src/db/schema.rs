@@ -152,6 +152,31 @@ ALTER TABLE changes_with_tasks RENAME TO changes;
 ALTER TABLE members ADD COLUMN role TEXT NOT NULL DEFAULT 'member';
 ALTER TABLE accounts ADD COLUMN personal_made INTEGER NOT NULL DEFAULT 0;
 ",
+    // A challenge is for an address, whose account a right code may make. A server's owner is
+    // its first account; one from before is that of the first member added.
+    "
+DROP TABLE sign_in_challenges;
+
+CREATE TABLE sign_in_challenges (
+    challenge_id TEXT PRIMARY KEY,
+    email TEXT NOT NULL,
+    code_hash BLOB NOT NULL,
+    expires_at INTEGER NOT NULL,
+    attempts INTEGER NOT NULL
+) STRICT;
+
+ALTER TABLE accounts ADD COLUMN owner INTEGER NOT NULL DEFAULT 0;
+UPDATE accounts SET owner = 1 WHERE account_id = coalesce(
+    (SELECT account_id FROM members ORDER BY rowid LIMIT 1),
+    (SELECT account_id FROM accounts ORDER BY rowid LIMIT 1)
+);
+CREATE UNIQUE INDEX accounts_owner ON accounts (owner) WHERE owner = 1;
+",
+    // Only so many live codes are mailed to an address; its other challenges take those codes.
+    "
+ALTER TABLE sign_in_challenges ADD COLUMN mailed INTEGER NOT NULL DEFAULT 1;
+CREATE INDEX sign_in_challenges_email ON sign_in_challenges (email);
+",
 ];
 
 /// Applies the steps the database hasn't had yet, each in its own transaction that holds the
@@ -189,4 +214,121 @@ fn too_new() -> Fault {
         code!("db.too_new"),
         "The database is from a newer version of the server",
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use weacon_testing::TempDir;
+
+    use crate::db::Db;
+
+    #[tokio::test]
+    async fn a_schema_newer_than_this_build_is_refused() {
+        let dir = TempDir::new().unwrap();
+        let db = Db::create(&dir.join("weacon.db")).await.unwrap();
+        sqlx::raw_sql("PRAGMA user_version = 1000")
+            .execute(&db.writer)
+            .await
+            .unwrap();
+        db.close().await;
+
+        let error = Db::open(&dir.join("weacon.db")).await.unwrap_err();
+        assert_eq!(error.code().as_str(), "db.too_new");
+    }
+
+    #[tokio::test]
+    async fn two_openings_of_a_new_file_both_get_its_schema() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.join("weacon.db");
+        let (one, two) = tokio::join!(Db::create(&path), Db::create(&path));
+
+        one.unwrap();
+        two.unwrap();
+    }
+
+    async fn first_columns(db: &Db, sql: &'static str, table: &str) -> Vec<String> {
+        sqlx::query_scalar(sql)
+            .bind(table)
+            .fetch_all(&db.readers)
+            .await
+            .unwrap()
+    }
+
+    const SERVER_WIDE: [&str; 3] = ["accounts", "sign_in_challenges", "sessions"];
+
+    async fn tables(db: &Db) -> Vec<String> {
+        sqlx::query_scalar(
+            "SELECT name FROM sqlite_schema WHERE type = 'table' AND name NOT LIKE 'sqlite_%'",
+        )
+        .fetch_all(&db.readers)
+        .await
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_persons_own_tables_hold_nothing_of_a_workspace() {
+        let dir = TempDir::new().unwrap();
+        let db = Db::create(&dir.join("weacon.db")).await.unwrap();
+        let workspace = "SELECT name FROM pragma_table_info(?) WHERE name = 'workspace_id'";
+
+        assert_eq!(
+            tables(&db).await,
+            [
+                "workspaces",
+                "members",
+                "accounts",
+                "sessions",
+                "tasks",
+                "task_versions",
+                "changes",
+                "sign_in_challenges"
+            ]
+        );
+        for table in SERVER_WIDE {
+            assert!(
+                first_columns(&db, workspace, table).await.is_empty(),
+                "{table}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn every_other_table_index_and_reference_leads_with_the_workspace() {
+        let dir = TempDir::new().unwrap();
+        let db = Db::create(&dir.join("weacon.db")).await.unwrap();
+        let tables = tables(&db).await;
+        let in_workspaces = |table: &&String| !SERVER_WIDE.contains(&table.as_str());
+        for table in tables.iter().filter(in_workspaces) {
+            let columns = first_columns(
+                &db,
+                "SELECT name FROM pragma_table_info(?) WHERE cid = 0",
+                table,
+            )
+            .await;
+            let indexes = first_columns(
+                &db,
+                "SELECT ii.name FROM pragma_index_list(?1) AS il \
+                 JOIN pragma_index_info(il.name) AS ii WHERE ii.seqno = 0",
+                table,
+            )
+            .await;
+            let references = first_columns(
+                &db,
+                "SELECT \"from\" FROM pragma_foreign_key_list(?) \
+                 WHERE seq = 0 AND \"table\" != 'accounts'",
+                table,
+            )
+            .await;
+
+            assert_eq!(columns, ["workspace_id"], "{table}");
+            assert!(
+                indexes.iter().all(|column| column == "workspace_id"),
+                "{table}: {indexes:?}"
+            );
+            assert!(
+                references.iter().all(|column| column == "workspace_id"),
+                "{table}: {references:?}"
+            );
+        }
+    }
 }

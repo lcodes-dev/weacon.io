@@ -1,10 +1,14 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 import type { AccountSignedIn, Code } from "../protocol.ts";
-import type { Api } from "./api.ts";
+import { Api, type Fetch } from "./api.ts";
+import { useAsk } from "./ask.ts";
+import { Frame } from "./frame.tsx";
+import { STORE, remember } from "./last-workspace.ts";
 import { problemText } from "./problems.ts";
 import "./shell.css";
 import { SignIn } from "./sign-in.tsx";
+import { Workspaces } from "./workspaces.tsx";
 
 type Screen =
   | { name: "loading" }
@@ -13,10 +17,10 @@ type Screen =
   | { name: "signed in"; account: AccountSignedIn };
 
 /** The app as the server serves it: sign-in, then the signed-in person's screens. */
-export function Shell({ api }: { api: Api }) {
+export function Shell({ fetch }: { fetch: Fetch }) {
   const [screen, setScreen] = useState<Screen>({ name: "loading" });
-  const [problem, setProblem] = useState<string>();
-  const [signingOut, setSigningOut] = useState(false);
+  const api = useMemo(() => new Api(fetch, () => setScreen({ name: "signed out" })), [fetch]);
+  const signingOut = useAsk();
   useEffect(() => {
     // An answer that comes after the page moved on must not take it back.
     let current = true;
@@ -35,39 +39,46 @@ export function Shell({ api }: { api: Api }) {
       current = false;
     };
   }, [api]);
-  const signOut = async () => {
-    setProblem(undefined);
-    setSigningOut(true);
-    const answer = await api.signOut();
-    setSigningOut(false);
-    if (answer.ok) {
-      setScreen({ name: "signed out" });
-    } else {
-      setProblem(problemText(answer.code));
-    }
-  };
+  if (screen.name === "signed in") {
+    const who = (
+      <span className="who">
+        {signingOut.problem !== undefined && <span role="alert">{signingOut.problem}</span>}
+        <span className="muted">{screen.account.email}</span>
+        <button
+          type="button"
+          disabled={signingOut.busy}
+          onClick={() =>
+            void signingOut.ask(
+              () => api.signOut(),
+              () => {
+                remember(STORE, undefined);
+                setScreen({ name: "signed out" });
+              },
+            )
+          }
+        >
+          Sign out
+        </button>
+      </span>
+    );
+    return <Workspaces api={api} who={who} />;
+  }
   return (
-    <div className="app">
-      <header>
-        <span>Weacon</span>
-        {screen.name === "signed in" && (
-          <span className="who">
-            <span className="muted">{screen.account.email}</span>
-            <button type="button" disabled={signingOut} onClick={() => void signOut()}>
-              Sign out
-            </button>
-          </span>
-        )}
-      </header>
-      {problem !== undefined && <p role="alert">{problem}</p>}
-      <main>
-        <Body screen={screen} api={api} signedIn={(account) => setScreen({ name: "signed in", account })} />
-      </main>
-    </div>
+    <Frame>
+      <Body screen={screen} api={api} signedIn={(account) => setScreen({ name: "signed in", account })} />
+    </Frame>
   );
 }
 
-function Body({ screen, api, signedIn }: { screen: Screen; api: Api; signedIn(account: AccountSignedIn): void }) {
+function Body({
+  screen,
+  api,
+  signedIn,
+}: {
+  screen: Exclude<Screen, { name: "signed in" }>;
+  api: Api;
+  signedIn(account: AccountSignedIn): void;
+}) {
   switch (screen.name) {
     case "loading":
       return <p className="page muted">Loading</p>;
@@ -82,7 +93,5 @@ function Body({ screen, api, signedIn }: { screen: Screen; api: Api; signedIn(ac
       );
     case "signed out":
       return <SignIn api={api} signedIn={signedIn} />;
-    case "signed in":
-      return <p className="page">You're signed in.</p>;
   }
 }
