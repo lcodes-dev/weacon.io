@@ -3,11 +3,11 @@
 use std::sync::Arc;
 
 use tokio::sync::mpsc;
-use weacon_observability::{Fault, Field};
+use weacon_observability::Fault;
 use weacon_protocol::{AgentSession, RunId, RunState, code};
 
 use super::agent::{Agent, RunOf, drive};
-use super::{ChatKey, Engine, Start};
+use super::{ChatKey, Engine, Start, about, failed};
 
 impl<A: Agent> Engine<A> {
     // Saves the session the chat's next run resumes; one that can't be saved yet is kept, and
@@ -54,10 +54,7 @@ impl<A: Agent> Engine<A> {
         let agent = match agent {
             Ok(agent) => agent,
             Err(fault) => {
-                let fields = [
-                    ("run_id", run.as_str().into()),
-                    ("err", Field::error(&fault)),
-                ];
+                let fields = failed(key, &run, &fault);
                 self.log.warn("run not started", &fields);
                 // A run that stopped reading is let go of too, so the chat can close.
                 self.open(key).await?.orders = None;
@@ -72,14 +69,10 @@ impl<A: Agent> Engine<A> {
         };
         tokio::spawn(drive(agent, of, ordered, self.reporter.clone()));
         self.open(key).await?.orders = Some(orders);
-        self.log
-            .info("run started", &[("run_id", run.as_str().into())]);
+        self.log.info("run started", &about(key, &run));
         // The agent is up: a status that can't be committed doesn't stop its turn.
         if let Err(fault) = self.set_state(key, &run, RunState::Starting).await {
-            let fields = [
-                ("run_id", run.as_str().into()),
-                ("err", Field::error(&fault)),
-            ];
+            let fields = failed(key, &run, &fault);
             self.log.warn("run status not committed", &fields);
         }
         Ok(run)

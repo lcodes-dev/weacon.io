@@ -209,10 +209,7 @@ impl<A: Agent> Engine<A> {
                 Some(report) = self.reports.recv() => {
                     let key = report.of.chat;
                     if let Err(fault) = self.heard(&key, &report.of.run, report.heard).await {
-                        let fields = [
-                            ("run_id", report.of.run.as_str().into()),
-                            ("err", Field::error(&fault)),
-                        ];
+                        let fields = failed(&key, &report.of.run, &fault);
                         self.log.error("run event not committed", &fields);
                     }
                     key
@@ -363,6 +360,22 @@ impl<A: Agent> Engine<A> {
         self.chats.values_mut().for_each(Chat::forget_gone);
         self.chats.retain(|_, chat| !chat.is_unused());
     }
+}
+
+// What names a chat's run on a log line.
+fn about(key: &ChatKey, run: &RunId) -> Vec<(&'static str, Field)> {
+    vec![
+        ("workspace_id", key.workspace.as_str().into()),
+        ("chat_id", key.chat.as_str().into()),
+        ("run_id", run.as_str().into()),
+    ]
+}
+
+// What names a chat's run on a log line, and the fault it met.
+fn failed(key: &ChatKey, run: &RunId, fault: &Fault) -> Vec<(&'static str, Field)> {
+    let mut fields = about(key, run);
+    fields.push(("err", Field::error(fault)));
+    fields
 }
 
 fn update(key: &ChatKey, entry: ChatEntry) -> Message {
