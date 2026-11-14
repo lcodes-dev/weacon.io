@@ -112,6 +112,7 @@ mod tests {
             .await
             .unwrap();
         on.engine.settle(&key());
+        assert!(on.engine.busy(), "its session is only in memory");
         on.engine
             .command(&key(), prompt("r-2", "More"))
             .await

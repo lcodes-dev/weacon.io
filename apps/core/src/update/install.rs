@@ -19,6 +19,8 @@ pub(crate) struct Paths {
     pub(crate) exe: PathBuf,
     pub(crate) new: PathBuf,
     pub(crate) old: PathBuf,
+    /// What every update of this binary locks, whatever its state folder.
+    pub(crate) lock: PathBuf,
 }
 
 impl Paths {
@@ -35,6 +37,7 @@ impl Paths {
             exe: exe.to_owned(),
             new: named("new"),
             old: named("old"),
+            lock: exe.with_file_name(format!("{stem}.update-lock")),
         })
     }
 }

@@ -118,7 +118,15 @@ fn step(state_dir: &Path, own: ReleaseVersion, hooks: Hooks, busy: bool) -> Resu
     if installs(settings.schedule) && busy {
         return Ok(Found::Nothing);
     }
-    record(state_dir, own, &(hooks.latest)()?, hooks.launch, now)
+    let tick = Tick { now, busy };
+    record(state_dir, own, &(hooks.latest)()?, hooks.launch, tick)
+}
+
+/// When a check ran, and whether an agent was busy then.
+#[derive(Clone, Copy)]
+struct Tick {
+    now: u64,
+    busy: bool,
 }
 
 fn installs(schedule: UpdateSchedule) -> bool {
@@ -134,8 +142,9 @@ fn record(
     own: ReleaseVersion,
     release: &ReleaseManifest,
     launch: Launch,
-    now: u64,
+    tick: Tick,
 ) -> Result<Found, Fault> {
+    let now = tick.now;
     let file = settings::file(state_dir);
     let lock = match super::lock(state_dir) {
         Err(fault) if fault.code().as_str() == "update.busy" => return Ok(Found::Nothing),
@@ -144,6 +153,10 @@ fn record(
     // Read again, so a choice its owner made during the fetch stands.
     let mut settings = Settings::read(&file)?;
     if settings.schedule.effective() == UpdateSchedule::Off {
+        return Ok(Found::Nothing);
+    }
+    // A schedule turned to installing during the fetch waits, unstamped, for an idle tick.
+    if installs(settings.schedule) && tick.busy {
         return Ok(Found::Nothing);
     }
     let checked_before = settings.last_checked;
@@ -400,6 +413,30 @@ mod tests {
         );
     }
 
+    const IDLE: Tick = Tick {
+        now: NOW,
+        busy: false,
+    };
+
+    #[test]
+    fn a_schedule_turned_to_installing_during_a_busy_fetch_waits() {
+        let dir = TempDir::new().unwrap();
+        with(&dir, UpdateSchedule::Daily, 3);
+        let busy = Tick { busy: true, ..IDLE };
+        let found = record(
+            &dir,
+            version("1.0.0"),
+            &release("2.0.0", PROTOCOL),
+            STARTS,
+            busy,
+        );
+        assert_eq!(found.unwrap(), Found::Nothing);
+        assert_eq!(
+            Settings::read(&settings::file(&dir)).unwrap().last_checked,
+            3
+        );
+    }
+
     #[test]
     fn turning_updates_off_during_a_fetch_stands() {
         let dir = TempDir::new().unwrap();
@@ -409,7 +446,7 @@ mod tests {
             version("1.0.0"),
             &release("2.0.0", PROTOCOL),
             STARTS,
-            NOW,
+            IDLE,
         );
         assert_eq!(found.unwrap(), Found::Nothing);
         let settings = Settings::read(&settings::file(&dir)).unwrap();
@@ -428,7 +465,7 @@ mod tests {
             version("1.0.0"),
             &release("2.0.0", PROTOCOL),
             STARTS,
-            NOW,
+            IDLE,
         );
         assert_eq!(
             found.unwrap_err().code().as_str(),
@@ -446,7 +483,7 @@ mod tests {
             version("1.0.0"),
             &release("2.0.0", PROTOCOL),
             STARTS,
-            NOW,
+            IDLE,
         );
         assert_eq!(found.unwrap(), Found::Nothing);
         assert_eq!(

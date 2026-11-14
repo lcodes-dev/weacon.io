@@ -157,6 +157,14 @@ fn install_release(release: &ReleaseManifest, world: &World<'_>) -> Result<(), F
             )
         })?;
     let paths = Paths::beside(&world.exe).ok_or_else(no_exe)?;
+    // Another state folder's update of this same binary waits for this one.
+    let _installing = held(&paths.lock, |error| {
+        Fault::new(
+            code!("update.binary_unwritable"),
+            "The update lock couldn't be made beside the binary",
+        )
+        .because(error)
+    })?;
     install::stage(&paths, &mut (world.get)(build.url.as_str())?, &build)?;
     install::check_version(&paths, &release.commit, (world.version_of)(&paths.new))?;
     install::swap(&paths)?;
@@ -183,14 +191,19 @@ fn install_release(release: &ReleaseManifest, world: &World<'_>) -> Result<(), F
 
 /// Holds the update lock until dropped; whoever comes second fails with `update.busy`.
 fn lock(state_dir: &Path) -> Result<File, Fault> {
-    let unwritable = |error| {
+    held(&state_dir.join("update.lock"), |error| {
         Fault::new(
             code!("update.state_unwritable"),
             "The update lock couldn't be made in the state folder",
         )
         .because(error)
-    };
-    let file = File::create(state_dir.join("update.lock")).map_err(unwritable)?;
+    })
+}
+
+/// Holds the lock in the file `path` until dropped, or fails with `unwritable` when it can't
+/// make it.
+fn held(path: &Path, unwritable: fn(io::Error) -> Fault) -> Result<File, Fault> {
+    let file = File::create(path).map_err(unwritable)?;
     // A process forked just then holds the lock until it starts its program, so wait a moment.
     for _ in 0..LOCK_TRIES {
         match file.try_lock() {
@@ -656,6 +669,21 @@ mod tests {
         let long = answering(&dir, &"x".repeat(5000));
         let printed = output_within(&mut Command::new(&long), Duration::from_secs(30)).unwrap();
         assert_eq!(printed.len(), 5001);
+    }
+
+    #[test]
+    fn an_update_of_the_same_binary_from_another_state_folder_waits_its_turn() {
+        let machine = Machine::new();
+        let paths = Paths::beside(&machine.dir.join("bin/weacon")).unwrap();
+        let _held = held(&paths.lock, |_| panic!()).unwrap();
+        let (result, _) = machine.update(NOW, Ok(release("1.2.3", 10, PROTOCOL)), None);
+        assert_eq!(code(result), "update.busy");
+        assert_eq!(machine.binary(), "old");
+        let missing = Paths::beside(&machine.dir.join("missing/weacon")).unwrap();
+        let fault = held(&missing.lock, |error| {
+            Fault::new(code!("test.unwritable"), "x").because(error)
+        });
+        assert_eq!(fault.unwrap_err().code().as_str(), "test.unwritable");
     }
 
     #[test]
