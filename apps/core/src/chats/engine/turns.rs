@@ -16,7 +16,7 @@ impl<A: Agent> Engine<A> {
         run: &RunId,
         outcome: Outcome,
     ) -> Result<(), Fault> {
-        let (turn, now) = (self.turn(key), (self.host.now)());
+        let (turn, now) = (self.turn(key), self.now());
         let state = if self.is_live(key) {
             RunState::Idle
         } else {
@@ -84,7 +84,7 @@ impl<A: Agent> Engine<A> {
 
     // Moves `next` from the queue to the turn and sends it to `run`.
     async fn give_turn(&mut self, key: &ChatKey, run: &RunId, next: Queued) -> Result<(), Fault> {
-        let now = (self.host.now)();
+        let now = self.now();
         self.runs
             .update(key, |record| {
                 record.queue.retain(|queued| queued.request != next.request);

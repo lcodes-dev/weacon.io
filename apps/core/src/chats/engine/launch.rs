@@ -9,6 +9,10 @@ use weacon_protocol::{AgentSession, RunId, RunState, code};
 use super::agent::{Agent, RunOf, drive};
 use super::{ChatKey, Engine, Start, about, failed};
 
+fn not_started() -> Fault {
+    Fault::new(code!("agent.not_started"), "The agent couldn't start")
+}
+
 impl<A: Agent> Engine<A> {
     // Saves the session the chat's next run resumes; one that can't be saved yet is kept, and
     // saved before that run starts.
@@ -35,33 +39,39 @@ impl<A: Agent> Engine<A> {
 
     // Starts the chat's agent as a new run, resuming its session when it has one.
     pub(super) async fn launch(&mut self, key: &ChatKey) -> Result<RunId, Fault> {
-        let not_started = || Fault::new(code!("agent.not_started"), "The agent couldn't start");
         self.save_unsaved(key).await?;
-        let agent = self.runs.of(key).ok_or_else(not_started)?.agent;
-        let now = (self.host.now)();
-        let run = self.runs.begin(key, agent, now).await?;
-        let record = self.runs.of(key);
+        let kind = self.runs.of(key).ok_or_else(not_started)?.agent;
+        let run = self.runs.begin(key, kind, self.now()).await?;
+        let session = self.runs.of(key).and_then(|record| record.session.clone());
         let run_as = Start {
             chat: key.clone(),
-            agent,
+            agent: kind,
             run: run.clone(),
-            session: record.and_then(|record| record.session.clone()),
+            session,
         };
-        let start = Arc::clone(&self.host.start);
-        let agent = tokio::task::spawn_blocking(move || start(&run_as))
-            .await
-            .unwrap_or_else(|_| Err(not_started()));
-        let agent = match agent {
-            Ok(agent) => agent,
+        match self.start_agent(run_as).await {
+            Ok(agent) => self.attach(key, &run, agent).await?,
             Err(fault) => {
-                let fields = failed(key, &run, &fault);
-                self.log.warn("run not started", &fields);
+                self.log.warn("run not started", &failed(key, &run, &fault));
                 // A run that stopped reading is let go of too, so the chat can close.
                 self.open(key).await?.orders = None;
                 self.set_state(key, &run, RunState::Ended).await?;
                 return Err(fault);
             }
-        };
+        }
+        Ok(run)
+    }
+
+    // Starting an agent may block, so it runs off the runtime.
+    async fn start_agent(&self, run_as: Start) -> Result<A, Fault> {
+        let start = Arc::clone(&self.host.start);
+        tokio::task::spawn_blocking(move || start(&run_as))
+            .await
+            .unwrap_or_else(|_| Err(not_started()))
+    }
+
+    // Hands the started agent to a task of its own, which the chat then orders.
+    async fn attach(&mut self, key: &ChatKey, run: &RunId, agent: A) -> Result<(), Fault> {
         let (orders, ordered) = mpsc::unbounded_channel();
         let of = RunOf {
             chat: key.clone(),
@@ -69,13 +79,13 @@ impl<A: Agent> Engine<A> {
         };
         tokio::spawn(drive(agent, of, ordered, self.reporter.clone()));
         self.open(key).await?.orders = Some(orders);
-        self.log.info("run started", &about(key, &run));
+        self.log.info("run started", &about(key, run));
         // The agent is up: a status that can't be committed doesn't stop its turn.
-        if let Err(fault) = self.set_state(key, &run, RunState::Starting).await {
-            let fields = failed(key, &run, &fault);
-            self.log.warn("run status not committed", &fields);
+        if let Err(fault) = self.set_state(key, run, RunState::Starting).await {
+            self.log
+                .warn("run status not committed", &failed(key, run, &fault));
         }
-        Ok(run)
+        Ok(())
     }
 
     pub(super) fn run_of(&self, key: &ChatKey) -> Option<RunId> {

@@ -200,7 +200,7 @@ impl ChatLog {
             ));
         }
         let len = line.len();
-        let written = match self.usable().and_then(|()| self.file.try_clone()) {
+        let written = match self.handle() {
             Ok(mut file) => {
                 blocking(move || file.write_all(&line).and_then(|()| file.sync_data())).await
             }
@@ -278,7 +278,7 @@ impl ChatLog {
             return Ok(Vec::new());
         }
         let (start, len) = (self.start_of(first), self.bytes(first, last));
-        let file = self.usable().and_then(|()| self.file.try_clone());
+        let file = self.handle();
         blocking(move || {
             let mut file = file?;
             let mut bytes = vec![0; len];
@@ -299,11 +299,12 @@ impl ChatLog {
         self.broken = true;
     }
 
-    fn usable(&self) -> io::Result<()> {
+    // A handle of its own on the log file, refused once a write has failed.
+    fn handle(&self) -> io::Result<File> {
         if self.broken {
             return Err(io::Error::other("a write to the log failed"));
         }
-        Ok(())
+        self.file.try_clone()
     }
 
     // How many bytes the entries `first..=last` take in the file.

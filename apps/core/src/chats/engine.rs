@@ -324,6 +324,10 @@ impl<A: Agent> Engine<A> {
             .is_some_and(|orders| !orders.is_closed())
     }
 
+    fn now(&self) -> u64 {
+        (self.host.now)()
+    }
+
     fn turn(&self, key: &ChatKey) -> Option<RequestId> {
         self.runs.of(key)?.turn.clone()
     }

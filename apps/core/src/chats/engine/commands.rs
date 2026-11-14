@@ -99,7 +99,7 @@ impl<A: Agent> Engine<A> {
             text,
         };
         // Until a prompt can name its agent, a new chat runs Claude.
-        let (agent, now) = (AgentKind::Claude, (self.host.now)());
+        let (agent, now) = (AgentKind::Claude, self.now());
         self.runs.enqueue(key, agent, queued, now).await?;
         self.commit_receipt(key, &request, Outcome::Accepted)
             .await?;
