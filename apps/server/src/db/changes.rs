@@ -99,7 +99,7 @@ impl Workspace {
 mod tests {
     use weacon_testing::TempDir;
 
-    use weacon_model::{Change, OrderKey, Task, Title};
+    use weacon_model::{Attribution, OrderKey, Task, Title};
 
     use super::*;
     use crate::test_support::{member_id, two_teams, workspace_id};
@@ -162,7 +162,7 @@ mod tests {
             Title::try_from("Write".to_owned()).unwrap(),
             OrderKey::try_from("V".to_owned()).unwrap(),
         );
-        one.add_task(&task, &Change::by(member_id("m1"), 0))
+        one.add_task(&task, &Attribution::by(member_id("m1"), 0))
             .await
             .unwrap();
         sqlx::query(

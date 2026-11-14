@@ -1,5 +1,5 @@
 use sqlx::SqliteConnection;
-use weacon_model::{Change, EditError, Revision, Task, TaskEdit};
+use weacon_model::{Attribution, EditError, Revision, Task, TaskEdit};
 use weacon_observability::Fault;
 use weacon_protocol::{Author, MemberId, TaskId, TaskStatus, code};
 
@@ -8,9 +8,13 @@ use super::{Workspace, failed, stored, unreadable};
 type Row = (String, String, String, String, i64);
 
 impl Workspace {
-    /// Stores a new task, made by `change`. An id or order key already in this workspace is
-    /// `db.exists`.
-    pub(crate) async fn add_task(&self, task: &Task, change: &Change) -> Result<(), Fault> {
+    /// Stores a new task, made as `attribution` says. An id or order key already in this
+    /// workspace is `db.exists`.
+    pub(crate) async fn add_task(
+        &self,
+        task: &Task,
+        attribution: &Attribution,
+    ) -> Result<(), Fault> {
         let mut transaction = self
             .db
             .writer
@@ -30,7 +34,7 @@ impl Workspace {
         .execute(&mut *transaction)
         .await
         .map_err(failed)?;
-        self.record(&mut transaction, task, change).await?;
+        self.record(&mut transaction, task, attribution).await?;
         transaction.commit().await.map_err(failed)
     }
 
@@ -57,7 +61,7 @@ impl Workspace {
         id: &TaskId,
         read_at: Revision,
         edit: TaskEdit,
-        change: &Change,
+        attribution: &Attribution,
     ) -> Result<Task, Fault> {
         let mut transaction = self
             .db
@@ -89,7 +93,7 @@ impl Workspace {
         .execute(&mut *transaction)
         .await
         .map_err(failed)?;
-        self.record(&mut transaction, &edited, change).await?;
+        self.record(&mut transaction, &edited, attribution).await?;
         transaction.commit().await.map_err(failed)?;
         Ok(edited)
     }
@@ -99,9 +103,9 @@ impl Workspace {
         &self,
         transaction: &mut SqliteConnection,
         task: &Task,
-        change: &Change,
+        attribution: &Attribution,
     ) -> Result<(), Fault> {
-        let (kind, author) = author_columns(change.author())?;
+        let (kind, author) = author_columns(attribution.author())?;
         let version = version_number(task.version)?;
         sqlx::query(
             "INSERT INTO task_versions
@@ -113,12 +117,12 @@ impl Workspace {
         .bind(version)
         .bind(kind)
         .bind(author.as_str())
-        .bind(change.accepted_by().as_str())
-        .bind(change.at())
+        .bind(attribution.accepted_by().as_str())
+        .bind(attribution.at())
         .execute(&mut *transaction)
         .await
         .map_err(failed)?;
-        self.task_changed(transaction, &task.id, version, change.accepted_by())
+        self.task_changed(transaction, &task.id, version, attribution.accepted_by())
             .await
     }
 }
@@ -213,8 +217,8 @@ mod tests {
         )
     }
 
-    fn by(member: &str) -> Change {
-        Change::by(member_id(member), NOW)
+    fn by(member: &str) -> Attribution {
+        Attribution::by(member_id(member), NOW)
     }
 
     fn rename(title: &str) -> TaskEdit {
@@ -329,7 +333,7 @@ mod tests {
         let (one, _) = two_teams(&dir).await;
         let task = new_task("t1", "Write", "V");
         one.add_task(&task, &by("m1")).await.unwrap();
-        let agents = Change::accepted(member_id("m1"), member_id("m3"), NOW + 5);
+        let agents = Attribution::accepted(member_id("m1"), member_id("m3"), NOW + 5);
         one.edit_task(&task.id, Revision::FIRST, rename("Ship"), &agents)
             .await
             .unwrap();
