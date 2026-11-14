@@ -10,9 +10,10 @@ pub enum Merge {
 /// A run of lines in a [`Merge::Conflicted`] doc.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum MergeHunk {
-    /// Lines the merge settled: the same on both sides, or changed on one only.
+    /// Lines the merge settled: unchanged, changed on one side only, or changed the same way on
+    /// both.
     Agreed(String),
-    /// Lines the doc and the proposal both changed, each in its own way.
+    /// Lines `current` and `proposed` both changed since `base`, each in its own way.
     Conflict {
         base: String,
         current: String,
@@ -21,7 +22,7 @@ pub enum MergeHunk {
 }
 
 /// A line number in each of the three texts.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Default)]
 struct At {
     base: usize,
     current: usize,
@@ -39,38 +40,35 @@ pub fn merge(base: &str, current: &str, proposed: &str) -> Merge {
         [base, current, proposed].map(|text| text.split_inclusive('\n').collect());
     let (in_current, in_proposed) = (matches(&base, &current), matches(&base, &proposed));
     // Lines of `base` that both sides kept cut the three texts into spans merged one by one.
-    let kept = in_current.iter().zip(&in_proposed).enumerate();
-    let kept = kept.filter_map(|(line, (current, proposed))| {
-        Some(At {
-            base: line,
-            current: (*current)?,
-            proposed: (*proposed)?,
-        })
-    });
+    let kept = in_current.iter().zip(&in_proposed).enumerate().filter_map(
+        |(line, (in_current, in_proposed))| {
+            Some(At {
+                base: line,
+                current: (*in_current)?,
+                proposed: (*in_proposed)?,
+            })
+        },
+    );
     let end = At {
         base: base.len(),
         current: current.len(),
         proposed: proposed.len(),
     };
     let mut hunks = Vec::new();
-    let mut from = At {
-        base: 0,
-        current: 0,
-        proposed: 0,
-    };
+    let mut from = At::default();
     for upto in kept.chain([end]) {
-        let was = span(&base, from.base, upto.base);
-        let now = span(&current, from.current, upto.current);
-        let wanted = span(&proposed, from.proposed, upto.proposed);
-        if now == was {
-            agree(&mut hunks, wanted);
-        } else if wanted == was || wanted == now {
-            agree(&mut hunks, now);
+        let base_span = span(&base, from.base, upto.base);
+        let current_span = span(&current, from.current, upto.current);
+        let proposed_span = span(&proposed, from.proposed, upto.proposed);
+        if current_span == base_span {
+            agree(&mut hunks, proposed_span);
+        } else if proposed_span == base_span || proposed_span == current_span {
+            agree(&mut hunks, current_span);
         } else {
             hunks.push(MergeHunk::Conflict {
-                base: was,
-                current: now,
-                proposed: wanted,
+                base: base_span,
+                current: current_span,
+                proposed: proposed_span,
             });
         }
         agree(&mut hunks, span(&base, upto.base, upto.base + 1));
@@ -110,20 +108,20 @@ fn matches(base: &[&str], other: &[&str]) -> Vec<Option<usize>> {
     found
 }
 
-/// Fills `found`, one slot for each line of `base`, with the lines of `other`, offset by `at`,
-/// that they match. It halves `base` instead of filling a table, so it needs memory only in
-/// proportion to the lines.
-fn align(base: &[&str], other: &[&str], at: usize, found: &mut [Option<usize>]) {
+/// Fills `found`, one slot for each line of `base`, with the lines of `other`, offset by
+/// `offset`, that they match. It halves `base` instead of filling a table, so it needs memory
+/// only in proportion to the lines.
+fn align(base: &[&str], other: &[&str], offset: usize, found: &mut [Option<usize>]) {
     let start = base
         .iter()
         .zip(other)
-        .take_while(|(one, two)| one == two)
+        .take_while(|(line, candidate)| line == candidate)
         .count();
     let (base_rest, other_rest) = (base.iter().skip(start), other.iter().skip(start));
     let end = base_rest
         .rev()
         .zip(other_rest.rev())
-        .take_while(|(one, two)| one == two)
+        .take_while(|(line, candidate)| line == candidate)
         .count();
     // A shared start and end match line for line; only the middle needs searching.
     let (Some(base_middle), Some(other_middle)) = (
@@ -132,14 +130,14 @@ fn align(base: &[&str], other: &[&str], at: usize, found: &mut [Option<usize>]) 
     ) else {
         return;
     };
-    for (line, slot) in found.iter_mut().take(start).enumerate() {
-        *slot = Some(at + line);
+    for (index, slot) in found.iter_mut().take(start).enumerate() {
+        *slot = Some(offset + index);
     }
     let tail = start + base_middle.len();
-    for (line, slot) in found.iter_mut().skip(tail).enumerate() {
-        *slot = Some(at + start + other_middle.len() + line);
+    for (index, slot) in found.iter_mut().skip(tail).enumerate() {
+        *slot = Some(offset + start + other_middle.len() + index);
     }
-    let (Some(middle), middle_at) = (found.get_mut(start..tail), at + start) else {
+    let (Some(middle), middle_at) = (found.get_mut(start..tail), offset + start) else {
         return;
     };
     if let [line] = base_middle {
@@ -152,11 +150,11 @@ fn align(base: &[&str], other: &[&str], at: usize, found: &mut [Option<usize>]) 
     } else if !base_middle.is_empty() && !other_middle.is_empty() {
         let half = base_middle.len() / 2;
         let (top, bottom) = base_middle.split_at(half);
-        let split = split(top, bottom, other_middle);
-        let (left, right) = other_middle.split_at(split);
+        let cut = split(top, bottom, other_middle);
+        let (left, right) = other_middle.split_at(cut);
         let (found_top, found_bottom) = middle.split_at_mut(half);
         align(top, left, middle_at, found_top);
-        align(bottom, right, middle_at + split, found_bottom);
+        align(bottom, right, middle_at + cut, found_bottom);
     }
 }
 
