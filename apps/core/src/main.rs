@@ -10,11 +10,20 @@ mod doctor;
     not(test),
     expect(
         dead_code,
+        reason = "chats start their agents in worktrees once wired in"
+    )
+)]
+mod git;
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
         reason = "the server's uplink, which uses it, comes with pairing"
     )
 )]
 mod machine_settings;
 mod map;
+mod mcp;
 mod memory;
 mod names;
 mod native_host;

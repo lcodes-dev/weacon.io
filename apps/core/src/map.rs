@@ -4,7 +4,7 @@ use std::path::Path;
 use std::time::Instant;
 
 use weacon_appkit::Ending;
-use weacon_codemap::{SourceFile, index};
+use weacon_codemap::{Index, SourceFile, index};
 use weacon_observability::Fault;
 use weacon_protocol::code;
 
@@ -40,17 +40,11 @@ fn check_anchors(
         Fault::new(code!("map.input_failed"), "The anchors couldn't be read").because(error)
     })?;
     let started = Instant::now();
-    let mut files = Vec::new();
-    source_files(root, "", &mut files).map_err(|error| {
-        Fault::new(code!("map.read_failed"), "The repository couldn't be read").because(error)
-    })?;
-    let index = index(&files).map_err(|error| {
-        Fault::new(code!("map.index_failed"), "The code map couldn't be built").because(error)
-    })?;
+    let (index, files) = index_folder(root)?;
     let millis = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
     app.log.info(
         "map indexed",
-        &[("files", files.len().into()), ("ms", millis.into())],
+        &[("files", files.into()), ("ms", millis.into())],
     );
     let findings = index.check(&pins);
     let report: String = findings
@@ -67,12 +61,26 @@ fn check_anchors(
     Ok(findings.is_empty())
 }
 
+/// The code map of the repository at `root`, and how many files it read; it blocks.
+pub(crate) fn index_folder(root: &Path) -> Result<(Index, usize), Fault> {
+    let mut files = Vec::new();
+    source_files(root, "", &mut files).map_err(|error| {
+        Fault::new(code!("map.read_failed"), "The repository couldn't be read").because(error)
+    })?;
+    let index = index(&files).map_err(|error| {
+        Fault::new(code!("map.index_failed"), "The code map couldn't be built").because(error)
+    })?;
+    Ok((index, files.len()))
+}
+
 /// Every `Cargo.toml`, and every `.rs` file inside a `src` folder, under `root/folder`, its path
 /// joined with `/`. Hidden entries, links, `node_modules`, Cargo's build folders and files
 /// that aren't UTF-8 are left out.
 fn source_files(root: &Path, folder: &str, files: &mut Vec<SourceFile>) -> io::Result<()> {
     for entry in fs::read_dir(root.join(folder))? {
-        let entry = entry?;
+        let Some(entry) = present(entry)? else {
+            continue;
+        };
         let name = entry.file_name();
         let Some(name) = name.to_str().filter(|name| !name.starts_with('.')) else {
             continue;
@@ -82,9 +90,11 @@ fn source_files(root: &Path, folder: &str, files: &mut Vec<SourceFile>) -> io::R
         } else {
             format!("{folder}/{name}")
         };
-        let kind = entry.file_type()?;
+        let Some(kind) = present(entry.file_type())? else {
+            continue;
+        };
         if kind.is_dir() && !skipped(&root.join(&path), name) {
-            source_files(root, &path, files)?;
+            present(source_files(root, &path, files))?;
         } else if kind.is_file()
             && is_source(&path, name)
             && let Some(text) = text_or_skip(fs::read_to_string(root.join(&path)))?
@@ -95,11 +105,19 @@ fn source_files(root: &Path, folder: &str, files: &mut Vec<SourceFile>) -> io::R
     Ok(())
 }
 
-/// A file's text, or `None` for a file that isn't UTF-8.
+/// A file's text, or `None` for a file that isn't UTF-8 or was removed while the folder was read.
 fn text_or_skip(read: io::Result<String>) -> io::Result<Option<String>> {
     match read {
-        Ok(text) => Ok(Some(text)),
         Err(error) if error.kind() == io::ErrorKind::InvalidData => Ok(None),
+        read => present(read),
+    }
+}
+
+/// What was read, or `None` for an entry removed while its folder was read.
+fn present<T>(read: io::Result<T>) -> io::Result<Option<T>> {
+    match read {
+        Ok(read) => Ok(Some(read)),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
         Err(error) => Err(error),
     }
 }
@@ -197,9 +215,16 @@ mod tests {
     }
 
     #[test]
-    fn skips_only_files_that_are_not_utf8() {
-        let skipped = text_or_skip(Err(io::ErrorKind::InvalidData.into())).unwrap();
-        assert_eq!(skipped, None);
+    fn skips_only_files_that_are_not_utf8_or_were_removed_meanwhile() {
+        for kind in [io::ErrorKind::InvalidData, io::ErrorKind::NotFound] {
+            assert_eq!(text_or_skip(Err(kind.into())).unwrap(), None);
+        }
+        assert_eq!(
+            present(Err::<(), _>(io::ErrorKind::NotFound.into())).unwrap(),
+            None
+        );
+        let denied = present(Err::<(), _>(io::ErrorKind::PermissionDenied.into())).unwrap_err();
+        assert_eq!(denied.kind(), io::ErrorKind::PermissionDenied);
         let failed = text_or_skip(Err(io::ErrorKind::PermissionDenied.into())).unwrap_err();
         assert_eq!(failed.kind(), io::ErrorKind::PermissionDenied);
     }
