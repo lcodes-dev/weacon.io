@@ -285,7 +285,6 @@ mod tests {
     use weacon_testing::TempDir;
 
     use super::*;
-    use crate::test_support;
 
     fn id(id: &str) -> WorkspaceId {
         WorkspaceId::try_from(id.to_owned()).unwrap()
@@ -587,7 +586,7 @@ mod tests {
     #[tokio::test]
     async fn every_sign_in_is_checked_in_order_and_a_failed_check_is_logged_once_and_unknown() {
         let dir = TempDir::new().unwrap();
-        let (log, records) = test_support::recording_logger();
+        let (log, records) = crate::test_support::recording_logger();
         let launch = |program: &str| Launch {
             agent: AgentKind::Codex,
             program: program.into(),
@@ -603,7 +602,10 @@ mod tests {
             answers,
             [Some(SignIn::SignedIn), None, Some(SignIn::SignedOut)]
         );
-        assert_eq!(test_support::messages(&records), ["sign-in check failed"]);
+        assert_eq!(
+            crate::test_support::messages(&records),
+            ["sign-in check failed"]
+        );
     }
 
     // The script never exits in time. With time paused, the clock moves only when every check
@@ -614,7 +616,7 @@ mod tests {
         use std::time::Duration;
 
         let dir = TempDir::new().unwrap();
-        let (log, records) = test_support::recording_logger();
+        let (log, records) = crate::test_support::recording_logger();
         let program = dir.join("hang");
         // Written from a child shell, so no fork of this process inherits a write handle.
         let script = "printf '#!/bin/sh\\nexec sleep 1000\\n' > \"$1\" && chmod 755 \"$1\"";
@@ -640,7 +642,7 @@ mod tests {
         assert_eq!(waits, 2);
         assert!(started.elapsed() < Duration::from_secs(61));
         assert_eq!(answers, vec![None; AT_ONCE + 1]);
-        assert_eq!(test_support::messages(&records).len(), AT_ONCE + 1);
+        assert_eq!(crate::test_support::messages(&records).len(), AT_ONCE + 1);
     }
 
     #[test]
