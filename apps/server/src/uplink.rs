@@ -139,7 +139,7 @@ async fn run(
 /// Gives what `machine` sent to the feature it is for, in the order it came.
 async fn hand_off(shared: &Shared, machine: &MachineId, envelope: Envelope) {
     if let Message::Chat(update) = envelope.message {
-        chats::upload(shared, machine, update).await;
+        chats::upload::store(shared, machine, update).await;
     } else if matches!(
         envelope.message,
         Message::MachineSettingsAnswer(_) | Message::Error(_)

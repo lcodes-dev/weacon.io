@@ -10,7 +10,7 @@ use crate::links::Connected;
 
 /// How long after it was first sent a command is sent again to its machine when it connects;
 /// older ones are left to their receipts, so nothing runs long after it was asked for.
-pub(crate) const RESEND_WITHIN: i64 = 10 * 60;
+const RESEND_WITHIN: i64 = 10 * 60;
 
 /// Picks up each machine's chats as it connects, for as long as the server runs.
 pub(crate) async fn follow_machines(shared: Shared) {
@@ -36,18 +36,16 @@ pub(crate) async fn follow_machines(shared: Shared) {
 /// Follows again the chats on `connected`'s machine whose turn may not be over, in each of its
 /// owner's workspaces, and sends again the commands to them sent within [`RESEND_WITHIN`]; the
 /// core does each command once, whatever number of times it is sent.
-pub(crate) async fn pick_up(shared: &Shared, connected: &Connected) -> Result<(), Fault> {
+async fn pick_up(shared: &Shared, connected: &Connected) -> Result<(), Fault> {
     let Connected { machine, owner } = connected;
     let workspaces = shared.db.account(owner.clone()).workspaces().await?;
     for summary in workspaces {
         let workspace = shared.db.workspace(&summary.id).await?;
         for (chat, core_seq) in workspace.unsettled_on(machine).await? {
             link::follow(shared, machine, workspace.id(), &chat, core_seq)?;
-            let recent = workspace
-                .open_requests(&chat)
-                .await?
-                .into_iter()
-                .filter(|(_, sent_at)| shared.now().saturating_sub(*sent_at) <= RESEND_WITHIN);
+            let since = shared.now().saturating_sub(RESEND_WITHIN);
+            let open = workspace.open_requests(&chat).await?.into_iter();
+            let recent = open.filter(|(_, sent_at)| *sent_at >= since);
             for (command, _) in recent {
                 link::send(shared, machine, Message::ChatCommand(command))?;
             }
@@ -76,7 +74,7 @@ mod tests {
             .await
             .unwrap();
         make(workspace, "c-3", "m1", NOW).await.unwrap();
-        workspace.end_request(&id("r-c-3")).await.unwrap();
+        workspace.close("c-3", "r-c-3").await;
         workspace.move_chats_to(&ada.machine).await;
         let mut attached = attach(shared, &ada, &["chat.serve"]);
         let connected = Connected {

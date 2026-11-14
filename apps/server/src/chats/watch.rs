@@ -143,8 +143,8 @@ impl Watch {
 /// What the client hears of `fault`; only a failure of the server's own is logged.
 fn refusal(shared: &Shared, member: &Member, fault: &Fault) -> Message {
     let code = fault.code();
-    let theirs = !code.as_str().starts_with("db.");
-    if !theirs {
+    let ours = code.as_str().starts_with("db.");
+    if ours {
         let workspace = member.workspace.id().as_str();
         let fields = [
             ("workspace_id", workspace.into()),
@@ -154,7 +154,7 @@ fn refusal(shared: &Shared, member: &Member, fault: &Fault) -> Message {
     }
     Message::Error(ErrorBody {
         code: code.clone(),
-        retryable: code.as_str() == "machine.offline" || !theirs,
+        retryable: ours || code.as_str() == "machine.offline",
     })
 }
 

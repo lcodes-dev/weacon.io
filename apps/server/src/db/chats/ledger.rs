@@ -80,15 +80,23 @@ impl Workspace {
         Ok(())
     }
 
-    /// Closes `request`, as its receipt does.
-    #[cfg(test)]
-    pub(crate) async fn end_request(&self, request: &RequestId) -> Result<(), Fault> {
-        sqlx::query("UPDATE chat_requests SET open = 0 WHERE workspace_id = ? AND request_id = ?")
-            .bind(self.id.as_str())
-            .bind(request.as_str())
-            .execute(&self.db.writer)
-            .await
-            .map_err(failed)?;
+    /// Closes `request` to `chat`, which its receipt ended.
+    pub(in crate::db) async fn end_request(
+        &self,
+        connection: &mut SqliteConnection,
+        chat: &ChatId,
+        request: &RequestId,
+    ) -> Result<(), Fault> {
+        sqlx::query(
+            "UPDATE chat_requests SET open = 0
+             WHERE workspace_id = ? AND chat_id = ? AND request_id = ?",
+        )
+        .bind(self.id.as_str())
+        .bind(chat.as_str())
+        .bind(request.as_str())
+        .execute(connection)
+        .await
+        .map_err(failed)?;
         Ok(())
     }
 
@@ -198,7 +206,7 @@ mod tests {
         let expected = [("r-c-1", NOW), ("r-2", NOW + 1), ("r-1", NOW + 2)];
         assert_eq!(open, expected.map(|(request, at)| (request.to_owned(), at)));
 
-        one.end_request(&id("r-1")).await.unwrap();
+        one.close("c-1", "r-1").await;
         assert_eq!(
             record(&one, "r-1", "c-1", "Go", NOW).await,
             Recorded::Same { open: false }

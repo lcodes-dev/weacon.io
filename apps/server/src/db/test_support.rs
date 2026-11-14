@@ -160,6 +160,15 @@ pub(crate) fn answers(prompt: u32) -> ChatEvent {
 }
 
 impl Workspace {
+    /// Ends `request` to `chat`, as its receipt would.
+    pub(crate) async fn close(&self, chat: &str, request: &str) {
+        let mut writer = self.db.writer.acquire().await.unwrap();
+        let request = id::<RequestId>(request);
+        self.end_request(&mut writer, &id(chat), &request)
+            .await
+            .unwrap();
+    }
+
     /// Puts every chat of the workspace on `machine`.
     pub(crate) async fn move_chats_to(&self, machine: &MachineId) {
         sqlx::query("UPDATE chats SET machine_id = ? WHERE workspace_id = ?")

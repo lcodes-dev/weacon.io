@@ -8,7 +8,7 @@ use crate::http::Shared;
 
 /// Stores `update` from `machine`, and tells the sockets that follow its chat. An event of a
 /// chat that isn't on `machine`, or whose owner no longer owns it there, is dropped.
-pub(crate) async fn chat(shared: &Shared, machine: &MachineId, update: ChatUpdate) {
+pub(crate) async fn store(shared: &Shared, machine: &MachineId, update: ChatUpdate) {
     let ChatUpdate {
         workspace,
         chat,
@@ -44,8 +44,7 @@ pub(crate) async fn chat(shared: &Shared, machine: &MachineId, update: ChatUpdat
         }
         Ok(false) => shared.log.warn("chat upload refused", &fields),
         Err(fault) => {
-            let [machine, workspace, chat] = fields;
-            let fields = [machine, workspace, chat, ("err", Field::error(&fault))];
+            let fields = [&fields[..], &[("err", Field::error(&fault))]].concat();
             shared.log.warn("chat upload failed", &fields);
         }
     }
@@ -84,12 +83,12 @@ mod tests {
         let mut notices = shared.chats.notices();
         let other = id::<MachineId>("mc-2");
 
-        chat(shared, ours, update("w1", "c-1", 4, said("MARKER-TEXT"))).await;
-        chat(shared, &other, update("w1", "c-1", 5, said("MARKER-TEXT"))).await;
-        chat(shared, ours, update("w1", "c-9", 6, said("MARKER-TEXT"))).await;
-        chat(shared, ours, update("w-9", "c-1", 7, said("MARKER-TEXT"))).await;
+        store(shared, ours, update("w1", "c-1", 4, said("MARKER-TEXT"))).await;
+        store(shared, &other, update("w1", "c-1", 5, said("MARKER-TEXT"))).await;
+        store(shared, ours, update("w1", "c-9", 6, said("MARKER-TEXT"))).await;
+        store(shared, ours, update("w-9", "c-1", 7, said("MARKER-TEXT"))).await;
         workspace.unlink(&member_id("m1")).await;
-        chat(shared, ours, update("w1", "c-1", 8, said("MARKER-TEXT"))).await;
+        store(shared, ours, update("w1", "c-1", 8, said("MARKER-TEXT"))).await;
 
         let events = workspace.events_after(&id("c-1"), 0, 10, usize::MAX).await;
         assert_eq!(events.unwrap().len(), 1);
@@ -120,7 +119,7 @@ mod tests {
             outcome: Outcome::Completed,
         };
         let ended = update("w1", "c-1", 2, ChatEvent::Receipt { receipt });
-        chat(shared, &ada.machine, ended).await;
+        store(shared, &ada.machine, ended).await;
 
         assert_eq!(feeds.try_recv().unwrap(), id::<WorkspaceId>("w1"));
     }

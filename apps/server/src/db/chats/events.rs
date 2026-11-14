@@ -7,7 +7,7 @@ use super::super::{Workspace, failed, stored, unreadable};
 use super::{chat_not_found, count, number, unstorable};
 
 /// The most bytes of chat events a workspace keeps: 512 MiB.
-pub(crate) const CHAT_QUOTA: i64 = 512 << 20;
+const CHAT_QUOTA: i64 = 512 << 20;
 
 /// An event to store, with its place in its machine's log, when it came from there.
 #[derive(Debug)]
@@ -90,16 +90,7 @@ impl Workspace {
         }
         self.keep_runs(&mut *transaction, chat, &runs).await?;
         for request in rows.iter().filter_map(|row| ended(row.event)) {
-            sqlx::query(
-                "UPDATE chat_requests SET open = 0
-                 WHERE workspace_id = ? AND chat_id = ? AND request_id = ?",
-            )
-            .bind(self.id.as_str())
-            .bind(chat.as_str())
-            .bind(request.as_str())
-            .execute(&mut *transaction)
-            .await
-            .map_err(failed)?;
+            self.end_request(&mut *transaction, chat, request).await?;
         }
         match rows.iter().rev().find(|row| turns(row.event)) {
             Some(row) => self.turned(transaction, chat, row.at).await,
@@ -182,7 +173,7 @@ impl Workspace {
         )
         .bind(self.id.as_str())
         .bind(chat.as_str())
-        .bind(number(after)?)
+        .bind(i64::try_from(after).unwrap_or(i64::MAX))
         .bind(limit)
         .fetch_all(&self.db.readers)
         .await

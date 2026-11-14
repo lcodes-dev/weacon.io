@@ -9,7 +9,7 @@ use weacon_protocol::{
 use crate::http::Shared;
 
 /// What a core must offer to be sent chats' commands and queries.
-pub(crate) const SERVE: Code = code!("chat.serve");
+const SERVE: Code = code!("chat.serve");
 
 /// Sends `message` to `machine`, or refuses with `machine.offline` when it isn't connected,
 /// doesn't serve chats or doesn't keep up.
@@ -40,7 +40,7 @@ pub(crate) fn follow(
     send(shared, machine, Message::ChatQuery(query))
 }
 
-pub(crate) fn offline() -> Fault {
+fn offline() -> Fault {
     Fault::new(
         code!("machine.offline"),
         "The chat's machine isn't connected",

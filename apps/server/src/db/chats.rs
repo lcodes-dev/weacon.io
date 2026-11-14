@@ -260,8 +260,8 @@ mod tests {
             updated_at: NOW + 5,
         };
         assert_eq!(listed.first(), Some(&summary));
-        assert_eq!(seqs_of_ids(&listed), ["c-2", "c-1"]);
-        assert_eq!(seqs_of_ids(&two.chats().await.unwrap()), ["c-1"]);
+        assert_eq!(ids(&listed), ["c-2", "c-1"]);
+        assert_eq!(ids(&two.chats().await.unwrap()), ["c-1"]);
         let again = make(&one, "c-1", "m1", NOW).await.unwrap_err();
         assert_eq!(code(&again), "db.exists");
         let stranger = make(&one, "c-3", "m2", NOW).await.unwrap_err();
@@ -288,7 +288,7 @@ mod tests {
         assert_eq!(code(&newer.unwrap_err()), "chat.unstorable");
     }
 
-    fn seqs_of_ids(list: &[ChatSummary]) -> Vec<&str> {
+    fn ids(list: &[ChatSummary]) -> Vec<&str> {
         list.iter().map(|chat| chat.id.as_str()).collect()
     }
 
@@ -301,7 +301,7 @@ mod tests {
         }
         make(&two, "c-1", "m2", NOW).await.unwrap();
         for chat in ["c-2", "c-3"] {
-            one.end_request(&id(&format!("r-{chat}"))).await.unwrap();
+            one.close(chat, &format!("r-{chat}")).await;
         }
         let running = status(RunState::Running);
         let idle = status(RunState::Idle);

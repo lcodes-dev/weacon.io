@@ -7,11 +7,10 @@ mod read;
 mod reconnect;
 #[cfg(test)]
 mod test_support;
-mod upload;
+pub(crate) mod upload;
 mod watch;
 
 pub(crate) use reconnect::follow_machines;
-pub(crate) use upload::chat as upload;
 pub(crate) use watch::Watch;
 
 use axum::response::{IntoResponse, Response};
