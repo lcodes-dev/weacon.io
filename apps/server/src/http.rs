@@ -24,6 +24,7 @@ use crate::limit::Limit;
 use crate::mail::Outbox;
 use crate::secret::Secret;
 use crate::sign_in;
+use crate::sign_up::SignUp;
 use crate::tasks;
 use crate::web::{self, WebFile};
 use crate::workspaces;
@@ -72,6 +73,8 @@ pub(crate) struct Shared {
     pub(crate) starts: Arc<Limit>,
     /// How many codes each client may try.
     pub(crate) tries: Arc<Limit>,
+    /// Who may make an account by signing in.
+    pub(crate) sign_up: Arc<[SignUp]>,
     /// The web app's built files it serves.
     pub(crate) web: &'static [WebFile],
 }

@@ -60,21 +60,8 @@ pub(crate) fn pick(request: &str, html: &str) -> Pick {
 
 /// The code of an error message, if it is one.
 pub(crate) fn error_code(message: &weacon_protocol::Message) -> Option<&str> {
-    match message {
-        weacon_protocol::Message::Error(body) => Some(body.code.as_str()),
-        weacon_protocol::Message::Hello(_)
-        | weacon_protocol::Message::Welcome(_)
-        | weacon_protocol::Message::Receipt(_)
-        | weacon_protocol::Message::Pick(_)
-        | weacon_protocol::Message::Run(_)
-        | weacon_protocol::Message::Workspace(_)
-        | weacon_protocol::Message::Log(_)
-        | weacon_protocol::Message::ChatCommand(_)
-        | weacon_protocol::Message::Chat(_)
-        | weacon_protocol::Message::ChatQuery(_)
-        | weacon_protocol::Message::ChatAnswer(_)
-        | weacon_protocol::Message::DiffQuery(_)
-        | weacon_protocol::Message::DiffAnswer(_)
-        | weacon_protocol::Message::Unknown => None,
-    }
+    let weacon_protocol::Message::Error(body) = message else {
+        return None;
+    };
+    Some(body.code.as_str())
 }

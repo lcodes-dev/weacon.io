@@ -11,6 +11,7 @@ mod log;
 mod message;
 mod pick;
 mod receipt;
+mod repo;
 mod run;
 mod task;
 mod team;
@@ -36,6 +37,7 @@ pub use log::{ClientLog, Level, LogEvent};
 pub use message::{App, Envelope, ErrorBody, Hello, Message, PROTOCOL, Welcome};
 pub use pick::Pick;
 pub use receipt::{Outcome, Receipt, RequestId};
+pub use repo::RepoId;
 pub use run::{
     AgentKind, AgentSession, PermissionAnswer, RunEvent, RunId, RunState, RunStatus, RunUpdate,
 };

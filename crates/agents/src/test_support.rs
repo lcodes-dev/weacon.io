@@ -9,7 +9,8 @@ use weacon_protocol::{AgentSession, App, Outcome, PermissionAnswer, RunEvent, Ru
 use weacon_testing::replay;
 
 use crate::access::Rules;
-use crate::run::{Run, Wire};
+use crate::run::Run;
+use crate::wire::Wire;
 
 pub(crate) type FakeRun = Run<DuplexStream, BufReader<DuplexStream>>;
 
