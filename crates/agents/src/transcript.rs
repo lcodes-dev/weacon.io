@@ -8,7 +8,7 @@ use crate::{claude, codex};
 
 /// One step of a session, in the order the file holds them.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Said {
+pub enum Step {
     /// What the person typed.
     Prompt(String),
     Event(RunEvent),
@@ -19,28 +19,32 @@ pub enum Said {
 pub struct Transcript {
     /// The folder the session ran in, when the file names it.
     pub cwd: Option<PathBuf>,
-    pub said: Vec<Said>,
+    pub steps: Vec<Step>,
     /// Complete lines that didn't parse.
     pub skipped: usize,
+    /// Where the complete lines end: a later read of the same file starts there.
+    pub end: u64,
 }
 
 impl Transcript {
     /// The complete lines of `agent`'s session `file`; a last line without its newline is still
-    /// being written, and is left for the next read. `None` for an agent this build doesn't know.
+    /// being written, and is left out of [`Transcript::end`]. `None` for an agent this build
+    /// doesn't know.
     #[must_use]
     pub fn read(agent: AgentKind, file: &[u8]) -> Option<Self> {
         let line = match agent {
-            AgentKind::Claude => claude::transcript::line,
-            AgentKind::Codex => codex::rollout::line,
+            AgentKind::Claude => claude::transcript::read_line,
+            AgentKind::Codex => codex::transcript::read_line,
             AgentKind::Newer => return None,
         };
         let mut transcript = Self::default();
         let complete = file
             .split_inclusive(|byte| *byte == b'\n')
-            .filter(|chunk| chunk.ends_with(b"\n"))
-            .filter(|chunk| !chunk.trim_ascii().is_empty());
+            .filter(|chunk| chunk.ends_with(b"\n"));
         for chunk in complete {
-            if !line(chunk, &mut transcript) {
+            let len = u64::try_from(chunk.len()).unwrap_or(u64::MAX);
+            transcript.end = transcript.end.saturating_add(len);
+            if !chunk.trim_ascii().is_empty() && line(chunk, &mut transcript).is_err() {
                 transcript.skipped += 1;
             }
         }
@@ -62,6 +66,7 @@ mod tests {
             transcript,
             Transcript {
                 skipped: 1,
+                end: 29,
                 ..Transcript::default()
             }
         );
