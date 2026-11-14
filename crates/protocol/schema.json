@@ -246,6 +246,34 @@
       ]
     },
     {
+      "description": "A question about the sessions a person ran outside Weacon, from a client to their own\ncore that offers `sessions.read`.",
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "sessions_query"
+        }
+      },
+      "$ref": "#/$defs/SessionsQuery",
+      "required": [
+        "type"
+      ]
+    },
+    {
+      "description": "The core's answer to a [`SessionsQuery`], to a client that has `sessions.read`.",
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "sessions_answer"
+        }
+      },
+      "$ref": "#/$defs/SessionsAnswer",
+      "required": [
+        "type"
+      ]
+    },
+    {
       "description": "A sign-in terminal's sealed input, from a browser through the server to a core that\noffers `terminal.sign_in`; the server relays it only if it offers `terminal.relay`.",
       "type": "object",
       "properties": {
@@ -862,6 +890,23 @@
           "required": [
             "kind",
             "status"
+          ]
+        },
+        {
+          "description": "A prompt typed outside Weacon, read from an agent's own session file.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "outside_prompt"
+            },
+            "text": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "text"
           ]
         }
       ]
@@ -1958,6 +2003,34 @@
         }
       ]
     },
+    "OutsideSession": {
+      "description": "A session a person ran with their own agent outside Weacon, last changed at `modified_at`,\nin seconds since the Unix epoch.",
+      "type": "object",
+      "properties": {
+        "agent": {
+          "$ref": "#/$defs/AgentKind"
+        },
+        "folder": {
+          "description": "The folder it ran in, when its file names one.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "modified_at": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "session": {
+          "$ref": "#/$defs/AgentSession"
+        }
+      },
+      "required": [
+        "agent",
+        "session",
+        "modified_at"
+      ]
+    },
     "PairClaim": {
       "description": "From the core that started `pairing`: whether the person has confirmed it yet. The answer\nis a [`PairClaimed`].",
       "type": "object",
@@ -2594,6 +2667,154 @@
       "required": [
         "run",
         "event"
+      ]
+    },
+    "SessionsAnswer": {
+      "description": "The core's answer to a [`SessionsQuery`] under the same `request`, to a client that has\n`sessions.read`.",
+      "type": "object",
+      "properties": {
+        "answer": {
+          "$ref": "#/$defs/SessionsAnswerKind"
+        },
+        "machine": {
+          "$ref": "#/$defs/MachineId"
+        },
+        "request": {
+          "$ref": "#/$defs/RequestId"
+        }
+      },
+      "required": [
+        "request",
+        "machine",
+        "answer"
+      ]
+    },
+    "SessionsAnswerKind": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "list"
+            },
+            "sessions": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/OutsideSession"
+              }
+            }
+          },
+          "required": [
+            "kind",
+            "sessions"
+          ]
+        },
+        {
+          "description": "Events in the file's order, each `seq` its place there, the agent's as runs whose id is\nthe session's; with `more`, ask again after the last `seq`.",
+          "type": "object",
+          "properties": {
+            "events": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/ChatEntry"
+              }
+            },
+            "kind": {
+              "type": "string",
+              "const": "opened"
+            },
+            "more": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "kind",
+            "events",
+            "more"
+          ]
+        },
+        {
+          "description": "No such session in the person's own config folders.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "missing"
+            }
+          },
+          "required": [
+            "kind"
+          ]
+        }
+      ]
+    },
+    "SessionsQuery": {
+      "description": "A person asks their own machine about the agent sessions they ran outside Weacon, from a\nclient to a core that offers `sessions.read`. No workspace holds these sessions.",
+      "type": "object",
+      "properties": {
+        "by": {
+          "description": "The account that asked, when the server relays the message to a machine; the core\nanswers only its owner.",
+          "$ref": "#/$defs/AccountId"
+        },
+        "machine": {
+          "$ref": "#/$defs/MachineId"
+        },
+        "query": {
+          "$ref": "#/$defs/SessionsQueryKind"
+        },
+        "request": {
+          "$ref": "#/$defs/RequestId"
+        }
+      },
+      "required": [
+        "request",
+        "machine",
+        "query"
+      ]
+    },
+    "SessionsQueryKind": {
+      "oneOf": [
+        {
+          "description": "The sessions in the person's own config folders, newest first.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "list"
+            }
+          },
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "description": "The session's events after `after`, as many as fit one frame.",
+          "type": "object",
+          "properties": {
+            "after": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            },
+            "agent": {
+              "$ref": "#/$defs/AgentKind"
+            },
+            "kind": {
+              "type": "string",
+              "const": "open"
+            },
+            "session": {
+              "$ref": "#/$defs/AgentSession"
+            }
+          },
+          "required": [
+            "kind",
+            "agent",
+            "session",
+            "after"
+          ]
+        }
       ]
     },
     "Sha256": {

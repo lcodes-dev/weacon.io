@@ -81,42 +81,18 @@ fn entry_of(entry: &std::fs::DirEntry) -> io::Result<Entry> {
     })
 }
 
-/// A session the person ran with their own agent, outside Weacon.
+/// A session the person ran with their own agent, outside Weacon. Only [`find`] makes one, so
+/// only a file named as a session is ever read.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SessionFile {
-    agent: AgentKind,
-    session: AgentSession,
+    pub agent: AgentKind,
+    pub session: AgentSession,
     path: PathBuf,
-    len: u64,
-    modified: SystemTime,
+    pub len: u64,
+    pub modified: SystemTime,
 }
 
 impl SessionFile {
-    #[must_use]
-    pub const fn agent(&self) -> AgentKind {
-        self.agent
-    }
-
-    #[must_use]
-    pub const fn session(&self) -> &AgentSession {
-        &self.session
-    }
-
-    #[must_use]
-    pub const fn len(&self) -> u64 {
-        self.len
-    }
-
-    #[must_use]
-    pub const fn is_empty(&self) -> bool {
-        self.len == 0
-    }
-
-    #[must_use]
-    pub const fn modified(&self) -> SystemTime {
-        self.modified
-    }
-
     /// At most `limit` bytes of the session's file from byte `from`.
     ///
     /// # Errors
@@ -252,7 +228,7 @@ mod tests {
     }
 
     fn sessions_of(found: &[SessionFile]) -> Vec<&str> {
-        found.iter().map(|file| file.session().as_str()).collect()
+        found.iter().map(|file| file.session.as_str()).collect()
     }
 
     fn session(dir: &Path, name: &str) -> PathBuf {
@@ -298,23 +274,9 @@ mod tests {
         let found = find(&Disk, AgentKind::Claude, &dir);
 
         let file = found.first().unwrap();
-        assert_eq!(
-            (file.agent(), file.len(), file.is_empty()),
-            (AgentKind::Claude, 4, false)
-        );
+        assert_eq!((file.agent, file.len), (AgentKind::Claude, 4));
         let modified = SystemTime::UNIX_EPOCH + Duration::from_secs(999_991);
-        assert_eq!(file.modified(), modified);
-    }
-
-    #[test]
-    fn a_session_with_nothing_written_yet_is_empty() {
-        let dir = TempDir::new().unwrap();
-        write(&session(&dir.join("projects").join("-w"), ONE), "", 0);
-
-        let found = find(&Disk, AgentKind::Claude, &dir);
-
-        let file = found.first().unwrap();
-        assert_eq!((file.len(), file.is_empty()), (0, true));
+        assert_eq!(file.modified, modified);
     }
 
     fn rollout(dir: &Path, session: &str) -> PathBuf {
@@ -343,7 +305,7 @@ mod tests {
         let found = find(&Disk, AgentKind::Codex, &dir);
 
         assert_eq!(sessions_of(&found), [ONE, TWO]);
-        assert!(found.iter().all(|file| file.agent() == AgentKind::Codex));
+        assert!(found.iter().all(|file| file.agent == AgentKind::Codex));
     }
 
     #[test]

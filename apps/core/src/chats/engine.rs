@@ -1,7 +1,7 @@
 //! The one task that owns every chat on this machine: it takes people's commands, starts and
 //! orders agents, commits what happens to each chat's log and then publishes it.
 
-pub(super) mod agent;
+pub(crate) mod agent;
 #[cfg(test)]
 mod by_hand;
 mod commands;

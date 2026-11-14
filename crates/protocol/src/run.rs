@@ -309,10 +309,10 @@ mod tests {
 
     #[test]
     fn a_status_may_name_who_runs_the_run() {
-        let member = MemberId::try_from("m-1".to_owned()).unwrap();
+        let member = "m-1".parse().unwrap();
         let laptop = MachineName::try_from("Ada's laptop".to_owned()).unwrap();
         let status = |agent| RunStatus {
-            run: RunId::try_from("run-7".to_owned()).unwrap(),
+            run: run(),
             state: RunState::Running,
             agent,
         };

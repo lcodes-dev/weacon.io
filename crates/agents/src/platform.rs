@@ -1,5 +1,8 @@
 //! What differs between operating systems.
 
+mod pty;
+
+pub(crate) use pty::Pty;
 #[cfg(unix)]
 pub(crate) use unix::links;
 #[cfg(unix)]
@@ -30,7 +33,6 @@ pub(crate) fn open_plain(file: &Path) -> io::Result<File> {
 mod unix {
     use std::fs::{File, OpenOptions};
     use std::io;
-    use std::ops::BitOr;
     use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
     use std::path::Path;
 
@@ -41,10 +43,9 @@ mod unix {
 
     /// `file` opened to read, a symlink refused. Non-blocking, so a pipe can't hold the open.
     pub(super) fn open_unfollowed(file: &Path) -> io::Result<File> {
-        let flags = [libc::O_NOFOLLOW, libc::O_NONBLOCK];
         OpenOptions::new()
             .read(true)
-            .custom_flags(flags.into_iter().fold(0, BitOr::bitor))
+            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
             .open(file)
     }
 

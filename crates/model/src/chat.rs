@@ -40,7 +40,10 @@ impl ChatRuns {
             ChatEvent::Run {
                 update: RunUpdate { run, event },
             } => self.said(run, event, entry.seq),
-            ChatEvent::Prompt { .. } | ChatEvent::Receipt { .. } | ChatEvent::Newer => {}
+            ChatEvent::Prompt { .. }
+            | ChatEvent::Receipt { .. }
+            | ChatEvent::OutsidePrompt { .. }
+            | ChatEvent::Newer => {}
         }
     }
 

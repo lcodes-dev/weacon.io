@@ -1,4 +1,5 @@
 use std::ffi::{OsStr, OsString};
+use std::fmt;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::process::{ExitStatus, Stdio};
@@ -11,8 +12,10 @@ use weacon_observability::Fault;
 use weacon_protocol::{AccessLevel, AgentKind, AgentSession, App, RunId, code};
 
 use crate::access::Rules;
+use crate::platform;
 use crate::run::{self, AgentRun};
 use crate::spawn::SpawnPolicy;
+use crate::terminal::{Events, Size, Terminal};
 use crate::wire::Wire;
 use crate::{claude, codex};
 
@@ -28,6 +31,26 @@ pub struct Launch {
     pub cwd: PathBuf,
     /// What the agent may do on this machine, which decides the prompts no person is asked.
     pub access: AccessLevel,
+    /// The core's MCP for this run; only Claude Code is pointed at it.
+    pub mcp: Option<McpServer>,
+}
+
+/// Where the core's MCP listens, and the token of the one run it serves.
+#[derive(Clone, PartialEq, Eq)]
+pub struct McpServer {
+    pub url: String,
+    pub token: String,
+    /// The names of its tools, which all only read.
+    pub tools: Vec<String>,
+}
+
+impl fmt::Debug for McpServer {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("McpServer")
+            .field("url", &self.url)
+            .field("tools", &self.tools)
+            .finish_non_exhaustive()
+    }
 }
 
 // A status command that hangs is given up on, so a report still prints.
@@ -65,6 +88,7 @@ impl Launch {
             config_dir: workspace_dir.join(name),
             cwd,
             access: AccessLevel::AskFirst,
+            mcp: None,
         })
     }
 
@@ -139,6 +163,21 @@ impl Launch {
             Ok(_) => Err(failed()),
             Err(error) => Err(failed().because(error)),
         }
+    }
+
+    /// Runs the vendor's own sign-in in a new terminal of `size`: the same program, fixed
+    /// arguments and config folder as [`Launch::log_in`], and no shell.
+    ///
+    /// # Errors
+    /// When this build doesn't know the agent, or its program can't be started.
+    pub fn log_in_terminal(&self, size: Size) -> Result<(Terminal, Events), Fault> {
+        let mut command = self.vendors(claude::login, codex::login)?;
+        // What the browser's terminal emulates, whatever this process runs under.
+        command.env("TERM", "xterm-256color");
+        let (pty, events) = platform::Pty::spawn(command, size).map_err(|error| {
+            Fault::new(code!("agent.login_failed"), "The sign-in couldn't start").because(error)
+        })?;
+        Ok((Terminal { pty }, Events(events)))
     }
 
     // The command of this launch's vendor.
@@ -232,6 +271,7 @@ mod tests {
             config_dir: dir.join("config"),
             cwd: dir.to_path_buf(),
             access: AccessLevel::AskFirst,
+            mcp: None,
         }
     }
 
@@ -306,6 +346,7 @@ mod tests {
                 config_dir: PathBuf::from("/state/w/claude"),
                 cwd: PathBuf::from("/work"),
                 access: AccessLevel::AskFirst,
+                mcp: None,
             }
         );
         assert_eq!(

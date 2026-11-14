@@ -6,7 +6,7 @@ use serde::Deserialize;
 use serde_json::Value;
 use weacon_protocol::RunEvent;
 
-use crate::transcript::{Said, Transcript};
+use crate::transcript::{Step, Transcript};
 
 #[derive(Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -67,30 +67,27 @@ enum Item {
     Other,
 }
 
-/// Adds `line` to `transcript`; false when it doesn't parse.
-pub(crate) fn line(line: &[u8], transcript: &mut Transcript) -> bool {
-    let Ok(parsed) = serde_json::from_slice::<Line>(line) else {
-        return false;
-    };
+pub(crate) fn read_line(line: &[u8], transcript: &mut Transcript) -> serde_json::Result<()> {
+    let parsed = serde_json::from_slice::<Line>(line)?;
     match parsed {
         Line::SessionMeta { payload } => {
             transcript.cwd.get_or_insert(payload.cwd);
         }
         Line::EventMsg {
             payload: Event::UserMessage { message },
-        } => transcript.said.push(Said::Prompt(message)),
+        } => transcript.steps.push(Step::Prompt(message)),
         Line::EventMsg {
             payload: Event::AgentMessage { message },
         } => transcript
-            .said
-            .push(Said::Event(RunEvent::Text { text: message })),
-        Line::ResponseItem { payload } => transcript.said.extend(event(payload).map(Said::Event)),
+            .steps
+            .push(Step::Event(RunEvent::Text { text: message })),
+        Line::ResponseItem { payload } => transcript.steps.extend(event(payload).map(Step::Event)),
         Line::EventMsg {
             payload: Event::Other,
         }
         | Line::Other => {}
     }
-    true
+    Ok(())
 }
 
 fn event(item: Item) -> Option<RunEvent> {
@@ -171,23 +168,24 @@ mod tests {
             transcript,
             Transcript {
                 cwd: Some(PathBuf::from("/work/app")),
-                said: vec![
-                    Said::Prompt("Fix the build".to_owned()),
-                    Said::Event(RunEvent::ToolCall {
+                steps: vec![
+                    Step::Prompt("Fix the build".to_owned()),
+                    Step::Event(RunEvent::ToolCall {
                         call: "c1".to_owned(),
                         tool: "shell".to_owned(),
                         input: json!({ "command": ["make"] }),
                     }),
-                    Said::Event(tool_done("c1", false)),
-                    Said::Event(RunEvent::ToolCall {
+                    Step::Event(tool_done("c1", false)),
+                    Step::Event(RunEvent::ToolCall {
                         call: "c2".to_owned(),
                         tool: "apply_patch".to_owned(),
                         input: json!("*** Begin Patch"),
                     }),
-                    Said::Event(tool_done("c2", false)),
-                    Said::Event(text("Fixed")),
+                    Step::Event(tool_done("c2", false)),
+                    Step::Event(text("Fixed")),
                 ],
                 skipped: 0,
+                end: 1343,
             }
         );
     }
@@ -206,8 +204,8 @@ mod tests {
 
         assert_eq!(transcript.cwd, Some(PathBuf::from("/first")));
         assert_eq!(
-            transcript.said,
-            vec![Said::Event(RunEvent::ToolCall {
+            transcript.steps,
+            vec![Step::Event(RunEvent::ToolCall {
                 call: "c1".to_owned(),
                 tool: "shell".to_owned(),
                 input: json!("make"),
@@ -228,6 +226,7 @@ mod tests {
             transcript,
             Transcript {
                 skipped: 3,
+                end: 291,
                 ..Transcript::default()
             }
         );
