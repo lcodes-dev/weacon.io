@@ -1,6 +1,6 @@
 import { type RefObject, type UIEventHandler, useEffect, useLayoutEffect, useReducer, useRef } from "react";
 
-import { atBottom, followsAfter, selectingIn, touches } from "./follow.ts";
+import { atBottom, selectingIn, touches } from "./follow.ts";
 import type { Row } from "./transcript.ts";
 
 /**
@@ -13,8 +13,8 @@ export function useFollow(
   { rows, refreshes, away }: { rows: readonly Row[]; refreshes: number; away: boolean },
 ): UIEventHandler<HTMLDivElement> {
   const following = useRef(true);
-  // Where the last scroll left the view. Only a scroll up from there is the reader leaving: the
-  // browser moves the view too, down as rows reach their height, before the view catches up.
+  // Where the last scroll left the view. The browser also moves the view, down as rows reach their
+  // height, so only a scroll up from there is the reader leaving the bottom.
   const lastTop = useRef(0);
   const awayNow = useRef(away);
   useLayoutEffect(() => {
@@ -30,6 +30,7 @@ export function useFollow(
       following.current = atBottom(element);
     } else {
       element.scrollTop = element.scrollHeight;
+      lastTop.current = element.scrollTop;
     }
   });
   useLayoutEffect(() => keepAtBottom.current(), [rows, refreshes]);
@@ -50,7 +51,7 @@ export function useFollow(
 
   return ({ currentTarget: element }) => {
     const top = element.scrollTop;
-    following.current = followsAfter(following.current, atBottom(element), top < lastTop.current);
+    following.current = atBottom(element) || (following.current && top >= lastTop.current);
     lastTop.current = top;
   };
 }
