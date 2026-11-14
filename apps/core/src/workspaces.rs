@@ -147,6 +147,22 @@ impl Workspaces {
         Settings::read(&self.settings_file(workspace))
     }
 
+    /// Holds `workspace`'s settings for one read, change and save at a time, across processes,
+    /// until the returned file is dropped.
+    pub(crate) fn hold(&self, workspace: &WorkspaceId) -> io::Result<fs::File> {
+        platform::private_dir(&self.settings_dir)?;
+        let lock = self
+            .settings_dir
+            .join(format!("{}.lock", folder_name(workspace)));
+        let file = fs::File::options()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(lock)?;
+        file.lock()?;
+        Ok(file)
+    }
+
     /// Saves `settings` for `workspace`; its folder makes it one this machine knows.
     pub(crate) fn save(&self, workspace: &WorkspaceId, settings: &Settings) -> io::Result<()> {
         platform::private_dir(&self.root(workspace))?;
@@ -572,5 +588,22 @@ mod tests {
             blocked.unwrap_err().code().as_str(),
             "workspace.cwd_refused"
         );
+    }
+
+    #[test]
+    fn a_workspaces_settings_are_held_by_one_change_at_a_time() {
+        let dir = TempDir::new().unwrap();
+        let workspaces = Workspaces::new(&dir.join("state"), None);
+
+        let held = workspaces.hold(&id("w1")).unwrap();
+        let lock = workspaces
+            .settings_dir
+            .join(format!("{}.lock", folder_name(&id("w1"))));
+        let again = fs::File::open(&lock).unwrap();
+
+        assert!(again.try_lock().is_err());
+        workspaces.hold(&id("w2")).unwrap();
+        drop(held);
+        again.try_lock().unwrap();
     }
 }

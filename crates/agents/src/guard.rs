@@ -1198,4 +1198,35 @@ mod tests {
         );
         assert_eq!(check_command("printf x > wt*", &context), None);
     }
+
+    #[test]
+    fn missing_entries_from_the_branch_review_ask() {
+        let dir = TempDir::new().unwrap();
+        let context = context(&dir);
+        let check = |line: &str| check_command(line, &context);
+
+        for line in [
+            "awk --include=inplace 1 ../main/important",
+            "awk -iinplace 1 ../main/important",
+            "psql -c 'DROP -- x\nTABLE users'",
+            "psql -c 'DROP/* /* */ */TABLE users'",
+            "mysql -e 'DROP # x\nTABLE users'",
+        ] {
+            assert_eq!(check(line), Some(Reason::Unsure), "{line}");
+        }
+        for line in [
+            "git config --remove-section core",
+            "git config --rename-section core x",
+            "git config -e",
+            "git config remove-section core",
+        ] {
+            assert_eq!(check(line), Some(Reason::WriteOutside), "{line}");
+        }
+        assert_eq!(
+            check("echo x | xargs dd if=/dev/zero of=out"),
+            Some(Reason::Unsure)
+        );
+        assert_eq!(check("psql --host db -c 'select 1'"), None);
+        assert_eq!(check("awk -F: '{ print $1 }' notes.md"), None);
+    }
 }

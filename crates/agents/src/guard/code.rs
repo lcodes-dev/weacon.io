@@ -88,10 +88,22 @@ fn interpreter(args: &[Word], simple: &Simple) -> Option<Reason> {
 }
 
 // An awk program can run commands and write files; a plain one only reads.
+// Options that load a program or an extension, alone or with their value attached.
+const AWK_LOADS: [&str; 8] = [
+    "-i",
+    "-f",
+    "--include",
+    "--file",
+    "-E",
+    "--exec",
+    "-l",
+    "--load",
+];
+
 fn awk(args: &[Word]) -> Option<Reason> {
     let risky = args.iter().any(|arg| {
         arg.dynamic
-            || ["-i", "-f", "--include", "--file"].contains(&arg.text.as_str())
+            || AWK_LOADS.iter().any(|option| arg.text.starts_with(option))
             || ["system", "getline", "|", ">"]
                 .iter()
                 .any(|part| arg.text.contains(part))
@@ -124,8 +136,15 @@ fn database(name: &str, args: &[Word], simple: &Simple) -> Option<Reason> {
     {
         return Some(Reason::DropDatabase);
     }
+    // Comments can split a statement in ways each server reads differently.
+    let commented = args.iter().any(|arg| {
+        !arg.text.starts_with('-')
+            && ["--", "#", "/*", "*/"]
+                .iter()
+                .any(|mark| arg.text.contains(mark))
+    });
     let unknown = args.iter().any(|arg| arg.dynamic);
-    (simple.fed || unknown).then_some(Reason::Unsure)
+    (simple.fed || unknown || commented).then_some(Reason::Unsure)
 }
 
 // A statement lowercase, with comments gone and each run of space as one, so spacing can't

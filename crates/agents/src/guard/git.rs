@@ -227,15 +227,26 @@ fn writes_config(args: &[Word]) -> bool {
         .iter()
         .filter(|arg| !arg.text.starts_with('-'))
         .collect();
+    let changes = [
+        "--unset",
+        "--add",
+        "--remove-section",
+        "--rename-section",
+        "--replace-all",
+        "--edit",
+    ];
     let unsets = args
         .iter()
-        .any(|arg| arg.text.starts_with("--unset") || arg.text == "--add");
+        .any(|arg| changes.iter().any(|change| arg.text.starts_with(change)) || arg.text == "-e");
     !args.iter().any(|arg| reads.contains(&arg.text.as_str()))
         && (unsets
             || named.len() >= 2
-            || named
-                .first()
-                .is_some_and(|name| matches!(name.text.as_str(), "set" | "unset")))
+            || named.first().is_some_and(|name| {
+                matches!(
+                    name.text.as_str(),
+                    "set" | "unset" | "rename-section" | "remove-section" | "edit"
+                )
+            }))
 }
 
 // Whether `repo` is in the chat's own worktree, which isn't the main checkout.

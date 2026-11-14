@@ -100,6 +100,13 @@ pub(crate) fn run(
 ) -> Result<(), Fault> {
     let state_dir = app.state_dir()?;
     let workspaces = Workspaces::new(state_dir, None);
+    let _held = workspaces.hold(workspace).map_err(|error| {
+        Fault::new(
+            code!("access.not_saved"),
+            "The access level couldn't be saved",
+        )
+        .because(error)
+    })?;
     let current = workspaces.settings(workspace);
     // Saying whether it's a team replaces settings that can't be read, guard additions too.
     let lost = if current.is_err() {

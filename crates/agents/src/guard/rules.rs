@@ -329,7 +329,7 @@ impl Call<'_> {
     fn dd(&self, cwd: &Path) -> Option<Reason> {
         self.args.iter().find_map(|arg| {
             let file = arg.text.strip_prefix("of=")?;
-            check_word(&arg.tail(file), self.context, cwd, Reason::WriteOutside)
+            self.targets(cwd, Reason::WriteOutside, &[&arg.tail(file)])
         })
     }
 

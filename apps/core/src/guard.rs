@@ -123,6 +123,13 @@ fn edit(
 ) -> Result<(), Fault> {
     let state_dir = app.state_dir.as_deref().ok_or_else(state_unavailable)?;
     let workspaces = Workspaces::new(state_dir, None);
+    let _held = workspaces.hold(workspace).map_err(|error| {
+        Fault::new(
+            code!("guard.not_saved"),
+            "The guard's list couldn't be saved",
+        )
+        .because(error)
+    })?;
     let mut settings = workspaces.settings(workspace)?;
     if let Some(change) = change {
         let before = settings.additions.clone();
