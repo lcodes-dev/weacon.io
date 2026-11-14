@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use sha2::{Digest, Sha256};
 use weacon_codemap::{Facts, Reader, SourceFile};
 use weacon_observability::Fault;
-use weacon_protocol::code;
+use weacon_protocol::{Sha256 as Sha256Hex, code};
 
 use crate::app::blocking;
 use crate::db::{BASE, Layer, Map, Stored};
@@ -245,7 +245,8 @@ fn is_mapped(path: &str) -> bool {
 
 /// What a worktree's text is stored under: its hash, which no git blob id looks like.
 fn content_key(text: &str) -> String {
-    format!("sha256:{:x}", Sha256::digest(text.as_bytes()))
+    let digest = Sha256Hex::from_bytes(Sha256::digest(text.as_bytes()).into());
+    format!("sha256:{}", digest.as_str())
 }
 
 /// The layer that holds what the worktree at `path` changed.
