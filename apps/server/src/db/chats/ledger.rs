@@ -122,6 +122,30 @@ mod tests {
     use super::*;
     use crate::test_support::{member_id, two_teams};
 
+    async fn record(
+        workspace: &Workspace,
+        request: &str,
+        chat: &ChatId,
+        hash: &[u8],
+        at: i64,
+    ) -> Recorded {
+        let (request, member) = (id::<RequestId>(request), member_id("m1"));
+        let new = NewRequest {
+            id: &request,
+            chat,
+            member: &member,
+            action_hash: hash,
+            at,
+        };
+        workspace.record_request(&new).await.unwrap()
+    }
+
+    fn opened(list: Vec<(RequestId, i64)>) -> Vec<(String, i64)> {
+        list.into_iter()
+            .map(|(request, at)| (request.as_str().to_owned(), at))
+            .collect()
+    }
+
     #[tokio::test]
     async fn the_ledger_tells_a_retry_from_another_command_and_keeps_what_is_open() {
         let dir = TempDir::new().unwrap();
@@ -129,20 +153,7 @@ mod tests {
         make(&one, "c-1", "m1", NOW).await.unwrap();
         make(&one, "c-2", "m1", NOW).await.unwrap();
         make(&two, "c-1", "m2", NOW).await.unwrap();
-        let (chat, other, member) = (id::<ChatId>("c-1"), id::<ChatId>("c-2"), member_id("m1"));
-        let record =
-            async |workspace: &Workspace, request: &str, chat: &ChatId, hash: &[u8], at| {
-                let (request, member) = (id::<RequestId>(request), member.clone());
-                let new = NewRequest {
-                    id: &request,
-                    chat,
-                    member: &member,
-                    action_hash: hash,
-                    at,
-                };
-                workspace.record_request(&new).await.unwrap()
-            };
-
+        let (chat, other) = (id::<ChatId>("c-1"), id::<ChatId>("c-2"));
         assert_eq!(
             record(&one, "r-1", &chat, b"h1", NOW + 2).await,
             Recorded::New
@@ -161,11 +172,6 @@ mod tests {
             record(&one, "r-1", &other, b"h1", NOW).await,
             Recorded::Conflict
         );
-        let opened = |list: Vec<(RequestId, i64)>| {
-            list.into_iter()
-                .map(|(request, at)| (request.as_str().to_owned(), at))
-                .collect::<Vec<_>>()
-        };
         let open = opened(one.open_requests(&chat).await.unwrap());
         let expected = [("r-c-1", NOW), ("r-2", NOW + 1), ("r-1", NOW + 2)];
         assert_eq!(open, expected.map(|(request, at)| (request.to_owned(), at)));

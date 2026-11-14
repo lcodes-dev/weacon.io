@@ -42,17 +42,26 @@ impl Workspace {
         .map_err(failed)?
         .ok_or_else(chat_not_found)?;
         let (rows, seq, core_seq) = numbered(events, seq, core_seq)?;
-        let bytes = rows.iter().try_fold(0_i64, |sum, row| {
-            i64::try_from(row.body.len()).map(|len| sum.saturating_add(len))
-        });
-        let bytes = bytes.map_err(|_| unstorable())?;
-        if !self.charge_chats(&mut transaction, bytes).await? {
+        if !self.charge_chats(&mut transaction, size(&rows)?).await? {
             drop(transaction);
             self.set_chat_state(chat, ChatState::Full).await?;
             return Err(chat_quota_full());
         }
-        let mut runs = self.read_runs(&mut transaction, chat).await?;
-        for row in &rows {
+        self.store(&mut transaction, chat, &rows).await?;
+        self.advance(&mut transaction, chat, seq, core_seq).await?;
+        transaction.commit().await.map_err(failed)?;
+        count(seq)
+    }
+
+    // Inserts `rows` and folds them into the chat's latest run and waiting prompts.
+    async fn store(
+        &self,
+        transaction: &mut SqliteConnection,
+        chat: &ChatId,
+        rows: &[Row<'_>],
+    ) -> Result<(), Fault> {
+        let mut runs = self.read_runs(&mut *transaction, chat).await?;
+        for row in rows {
             sqlx::query(
                 "INSERT INTO chat_events (workspace_id, chat_id, seq, core_seq, body, at)
                  VALUES (?, ?, ?, ?, ?, ?)",
@@ -71,10 +80,7 @@ impl Workspace {
                 event: row.event.clone(),
             });
         }
-        self.keep_runs(&mut transaction, chat, &runs).await?;
-        self.advance(&mut transaction, chat, seq, core_seq).await?;
-        transaction.commit().await.map_err(failed)?;
-        count(seq)
+        self.keep_runs(transaction, chat, &runs).await
     }
 
     async fn advance(
@@ -199,6 +205,13 @@ fn numbered<'a>(
     Ok((rows, seq, core_seq))
 }
 
+fn size(rows: &[Row<'_>]) -> Result<i64, Fault> {
+    rows.iter().try_fold(0_i64, |sum, row| {
+        let len = i64::try_from(row.body.len()).map_err(|_| unstorable())?;
+        Ok(sum.saturating_add(len))
+    })
+}
+
 // Takes rows in their order while they fit `max_bytes`, and the first one whatever its size.
 fn entries(rows: Vec<(i64, String)>, max_bytes: usize) -> Result<Vec<ChatEntry>, Fault> {
     let mut used = 0_usize;
@@ -258,12 +271,30 @@ mod tests {
 
         let chat = one.chat(&id("c-1")).await.unwrap().unwrap();
         assert_eq!((chat.seq, chat.core_seq), (4, 6));
+        let missing = append(&two, "c-2", &first).await.unwrap_err();
+        assert_eq!(code(&missing), "chat.not_found");
+    }
+
+    #[tokio::test]
+    async fn events_are_read_after_a_place_or_latest_first_before_one() {
+        let dir = TempDir::new().unwrap();
+        let (one, two) = two_teams(&dir).await;
+        make(&one, "c-1", "m1", NOW).await.unwrap();
+        make(&two, "c-1", "m2", NOW).await.unwrap();
+        let events = [
+            (None, said("a")),
+            (None, said("b")),
+            (None, said("c")),
+            (None, said("d")),
+        ];
+        append(&one, "c-1", &events).await.unwrap();
+
         let all = one
             .events_after(&id("c-1"), 0, 100, usize::MAX)
             .await
             .unwrap();
         assert_eq!(seqs(&all), [1, 2, 3, 4]);
-        assert_eq!(all.get(3).map(|entry| &entry.event), Some(&said("c")));
+        assert_eq!(all.get(3).map(|entry| &entry.event), Some(&said("d")));
         assert_eq!(
             seqs(
                 &one.events_after(&id("c-1"), 2, 1, usize::MAX)
@@ -288,8 +319,6 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
-        let missing = append(&two, "c-2", &first).await.unwrap_err();
-        assert_eq!(code(&missing), "chat.not_found");
     }
 
     #[tokio::test]
