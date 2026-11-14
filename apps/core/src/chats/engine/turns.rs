@@ -551,6 +551,7 @@ mod tests {
             status: RunStatus {
                 run: run("run-1"),
                 state: RunState::Idle,
+                agent: None,
             },
         };
         assert_eq!(latest(&mut engine).await, receipt);
@@ -877,6 +878,7 @@ mod tests {
         let status = RunStatus {
             run: run_1,
             state: running,
+            agent: None,
         };
         engine
             .commit(&key(), ChatEvent::RunStatus { status })
@@ -889,6 +891,7 @@ mod tests {
         let status = RunStatus {
             run: run("run-1"),
             state: RunState::Sleeping,
+            agent: None,
         };
         assert_eq!(latest(&mut engine).await, ChatEvent::RunStatus { status });
     }
@@ -909,6 +912,7 @@ mod tests {
         let status = RunStatus {
             run: run("run-1"),
             state: RunState::Sleeping,
+            agent: None,
         };
         assert_eq!(latest(&mut engine).await, ChatEvent::RunStatus { status });
     }

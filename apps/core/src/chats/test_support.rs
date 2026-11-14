@@ -149,7 +149,15 @@ pub(crate) fn command(request: &str, chat_id: &str, action: ChatAction) -> ChatC
 
 pub(crate) fn prompt(request: &str, text: &str) -> ChatCommand {
     let text = text.to_owned();
-    command(request, "c-1", ChatAction::Prompt { text, repo: None })
+    command(
+        request,
+        "c-1",
+        ChatAction::Prompt {
+            text,
+            repo: None,
+            machine: None,
+        },
+    )
 }
 
 pub(crate) fn query(chat_id: &str, query: ChatQueryKind) -> ChatQuery {

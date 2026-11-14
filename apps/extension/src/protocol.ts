@@ -130,6 +130,32 @@ export type AgentKind = (
 );
 
 /**
+ * Whose agent it is.
+ */
+export type AgentOwner = (
+  | {
+    kind: "member";
+    member: MemberId;
+  }
+  | {
+    kind: "shared";
+  }
+);
+
+/**
+ * An agent as people know it.
+ */
+export type AgentRef = {
+  kind: AgentKind;
+  /**
+   * What the machine it runs on is called, which the server stamps from its own record of
+   * the core that sent the status and never takes from the core; left out when not known.
+   */
+  machine?: MachineName;
+  owner: AgentOwner;
+};
+
+/**
  * An agent's own id for a conversation, a lowercase UUID, which resumes it later.
  */
 export type AgentSession = string;
@@ -198,6 +224,7 @@ export type ChallengeId = string;
 export type ChatAction = (
   | {
     kind: "prompt";
+    machine?: MachineId;
     repo?: RepoId;
     text: string;
   }
@@ -282,6 +309,14 @@ export type ChatEvent = (
 export type ChatId = string;
 
 /**
+ * A workspace's chats, from the server, to clients that have the capability
+ * `workspace.chats`.
+ */
+export type ChatList = {
+  chats: Array<ChatSummary>;
+};
+
+/**
  * The answer is a [`ChatAnswer`], or for `subscribe` the [`ChatUpdate`]s themselves.
  */
 export type ChatQuery = {
@@ -304,6 +339,28 @@ export type ChatQueryKind = (
     limit: number;
   }
 );
+
+/**
+ * What can still happen to a chat.
+ */
+export type ChatState = (
+  | "open"
+  | "full"
+  | "detached"
+);
+
+/**
+ * A chat in a [`ChatList`]: `machine` is a name, never an id, and `updated_at` is when its
+ * latest turn began or ended, in seconds since the Unix epoch.
+ */
+export type ChatSummary = {
+  id: ChatId;
+  machine: MachineName;
+  owner: MemberId;
+  state: ChatState;
+  title: string;
+  updated_at: number;
+};
 
 /**
  * Text deltas are never committed; they arrive only as run updates.
@@ -985,6 +1042,10 @@ export type RunState = (
  * Where a run stands, as its chat's log records it.
  */
 export type RunStatus = {
+  /**
+   * Who runs it; left out when not known.
+   */
+  agent?: AgentRef;
   run: RunId;
   state: RunState;
 };
@@ -1237,6 +1298,10 @@ export type WorkspaceChange = (
     doc: DocId;
     kind: "doc_changed";
     version: number;
+  }
+  | {
+    chat: ChatId;
+    kind: "chat_changed";
   }
 );
 

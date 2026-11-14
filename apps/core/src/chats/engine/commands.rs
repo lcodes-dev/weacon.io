@@ -35,7 +35,7 @@ impl<A: Agent> Engine<A> {
             }
         }
         match command.action {
-            ChatAction::Prompt { text, repo } => {
+            ChatAction::Prompt { text, repo, .. } => {
                 if seen != Seen::Pending {
                     self.log_prompt(key, &request, &text, repo).await?;
                 }

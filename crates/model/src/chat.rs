@@ -109,6 +109,7 @@ mod tests {
         let status = RunStatus {
             run: run(id),
             state,
+            agent: None,
         };
         ChatEvent::RunStatus { status }
     }
@@ -191,7 +192,8 @@ mod tests {
             state.runs,
             [RunStatus {
                 run: run("run-1"),
-                state: RunState::Waiting
+                state: RunState::Waiting,
+                agent: None
             }]
         );
     }
@@ -250,7 +252,8 @@ mod tests {
             state.runs,
             [RunStatus {
                 run: run("run-2"),
-                state: RunState::Starting
+                state: RunState::Starting,
+                agent: None
             }]
         );
     }
