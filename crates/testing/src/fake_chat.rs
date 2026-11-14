@@ -241,6 +241,10 @@ impl FakeChat {
     fn play(&mut self, update: &RunUpdate) {
         let run = &update.run;
         let known = self.last(run).map(|status| status.state);
+        // A real run waiting on a permission is blocked, and says nothing until it is answered.
+        if known == Some(RunState::Waiting) {
+            return;
+        }
         let finished = matches!(update.event, RunEvent::Finished { .. });
         if known == Some(RunState::Idle) && !finished {
             self.status(run, RunState::Running);
@@ -382,6 +386,25 @@ mod tests {
 
     fn fake() -> FakeChat {
         FakeChat::new().unwrap()
+    }
+
+    // The seq of the last event once the seeded prompt is allowed and its run is idle.
+    const ANSWERED: u64 = SEEDED + 6;
+
+    fn answered() -> FakeChat {
+        let mut fake = fake();
+        fake.answer(&allow("r-1", 1));
+        fake
+    }
+
+    fn allow(id: &str, prompt: u32) -> Envelope {
+        command(ChatAction::Permission {
+            answer: PermissionAnswer {
+                run: run(id).unwrap(),
+                prompt,
+                allow: true,
+            },
+        })
     }
 
     fn query(id: u32, chat: &str, query: ChatQueryKind) -> Envelope {
@@ -542,11 +565,13 @@ mod tests {
 
     #[test]
     fn a_subscription_gets_what_it_missed_then_each_new_event_under_its_id() {
-        let mut fake = fake();
+        let mut fake = answered();
         let missed = fake.answer(&query(
             4,
             "c-1",
-            ChatQueryKind::Subscribe { after: SEEDED - 2 },
+            ChatQueryKind::Subscribe {
+                after: ANSWERED - 2,
+            },
         ));
         let delta = tell(
             &mut fake,
@@ -564,17 +589,19 @@ mod tests {
         assert_eq!(
             shape(&missed),
             [
-                (4, "68 r-1 permission_asked".to_owned()),
-                (4, "69 r-1 Waiting".to_owned())
+                (4, "74 r-1 finished".to_owned()),
+                (4, "75 r-1 Idle".to_owned())
             ]
         );
-        assert!(delta.is_empty());
-        assert_eq!(shape(&text), [(4, "70 r-1 text".to_owned())]);
+        assert_eq!(shape(&delta), [(4, "76 r-1 Running".to_owned())]);
+        assert_eq!(shape(&text), [(4, "77 r-1 text".to_owned())]);
         assert_eq!(
             shape(&fake.answer(&query(
                 6,
                 "c-1",
-                ChatQueryKind::Subscribe { after: SEEDED + 9 }
+                ChatQueryKind::Subscribe {
+                    after: ANSWERED + 9
+                }
             ))),
             [(6, "lost".to_owned())]
         );
@@ -582,7 +609,7 @@ mod tests {
 
     #[test]
     fn events_played_before_a_subscription_are_kept_for_it() {
-        let mut fake = fake();
+        let mut fake = answered();
         assert!(
             tell(
                 &mut fake,
@@ -593,10 +620,14 @@ mod tests {
             .is_empty()
         );
 
-        assert_eq!(snapshot(&mut fake).0, 70);
+        assert_eq!(snapshot(&mut fake).0, ANSWERED + 2);
+        let after = ChatQueryKind::Subscribe { after: ANSWERED };
         assert_eq!(
-            shape(&fake.answer(&query(2, "c-1", ChatQueryKind::Subscribe { after: SEEDED }))),
-            [(2, "70 r-1 text".to_owned())]
+            shape(&fake.answer(&query(2, "c-1", after))),
+            [
+                (2, "76 r-1 Running".to_owned()),
+                (2, "77 r-1 text".to_owned())
+            ]
         );
     }
 
@@ -610,14 +641,6 @@ mod tests {
         assert_eq!(window(&mut fake, 4, 2), [(3, "window [2, 3]".to_owned())]);
         assert_eq!(window(&mut fake, 9, 1), [(3, "window [8]".to_owned())]);
         assert_eq!(window(&mut fake, 1, 9), [(3, "window []".to_owned())]);
-        for _ in 0..60 {
-            tell(
-                &mut fake,
-                &played(RunEvent::Text {
-                    text: "More.".to_owned(),
-                }),
-            );
-        }
         let Message::ChatAnswer(ChatAnswer {
             answer: ChatAnswerKind::Snapshot { events, .. },
             ..
@@ -626,7 +649,7 @@ mod tests {
             panic!("no snapshot");
         };
         assert_eq!(events.len(), PAGE);
-        assert_eq!(events.last().map(|entry| entry.seq), Some(129));
+        assert_eq!(events.last().map(|entry| entry.seq), Some(SEEDED));
     }
 
     #[test]
@@ -705,20 +728,11 @@ mod tests {
     fn an_answer_to_a_prompt_not_waiting_is_received_and_does_nothing() {
         let mut fake = fake();
         fake.answer(&query(4, "c-1", ChatQueryKind::Subscribe { after: SEEDED }));
-        let answer = |id: &str, prompt| {
-            command(ChatAction::Permission {
-                answer: PermissionAnswer {
-                    run: run(id).unwrap(),
-                    prompt,
-                    allow: true,
-                },
-            })
-        };
         // While r-1's prompt 1 waits: the same prompt of another run, another prompt of r-1.
-        let other_run = fake.answer(&answer("r-2", 1));
-        let other_prompt = fake.answer(&answer("r-1", 2));
+        let other_run = fake.answer(&allow("r-2", 1));
+        let other_prompt = fake.answer(&allow("r-1", 2));
         fake.answer(&command(ChatAction::Interrupt));
-        let late = fake.answer(&answer("r-1", 1));
+        let late = fake.answer(&allow("r-1", 1));
 
         assert_eq!(shape(&other_run), [(4, "70 receipt q-9".to_owned())]);
         assert_eq!(shape(&other_prompt), [(4, "71 receipt q-9".to_owned())]);
@@ -782,8 +796,12 @@ mod tests {
 
     #[test]
     fn the_recorded_run_goes_idle_when_it_finishes_and_runs_again_with_its_next_event() {
-        let mut fake = fake();
-        fake.answer(&query(4, "c-1", ChatQueryKind::Subscribe { after: SEEDED }));
+        let mut fake = answered();
+        fake.answer(&query(
+            4,
+            "c-1",
+            ChatQueryKind::Subscribe { after: ANSWERED },
+        ));
         let finished = tell(
             &mut fake,
             &played(RunEvent::Finished {
@@ -812,13 +830,13 @@ mod tests {
         assert_eq!(
             shape(&finished),
             [
-                (4, "70 r-1 finished".to_owned()),
-                (4, "71 r-1 Idle".to_owned())
+                (4, "76 r-1 finished".to_owned()),
+                (4, "77 r-1 Idle".to_owned())
             ]
         );
         // The next pass's first delta runs it again, so the client streams its text.
-        assert_eq!(shape(&delta), [(4, "72 r-1 Running".to_owned())]);
-        assert_eq!(shape(&again), [(4, "73 r-1 text".to_owned())]);
+        assert_eq!(shape(&delta), [(4, "78 r-1 Running".to_owned())]);
+        assert_eq!(shape(&again), [(4, "79 r-1 text".to_owned())]);
         assert!(more.is_empty());
     }
 
@@ -847,7 +865,7 @@ mod tests {
 
     #[test]
     fn a_replayed_permission_prompt_makes_its_run_wait() {
-        let mut fake = fake();
+        let mut fake = answered();
         let asked = tell(
             &mut fake,
             &played(RunEvent::PermissionAsked {
@@ -860,13 +878,49 @@ mod tests {
         let (seq, runs, waiting) = snapshot(&mut fake);
 
         assert_eq!(shape(&asked), []);
-        assert_eq!(seq, SEEDED + 2);
-        assert_eq!(waiting, [SEEDED - 1, SEEDED + 1]);
+        assert_eq!(seq, ANSWERED + 3);
+        assert_eq!(waiting, [ANSWERED + 2]);
         assert_eq!(
             runs.iter()
                 .map(|status| (status.run.as_str(), status.state))
                 .collect::<Vec<_>>(),
             [("r-1", RunState::Waiting)]
+        );
+    }
+
+    #[test]
+    fn a_waiting_runs_recorded_events_are_held_until_its_prompt_is_answered() {
+        let mut fake = fake();
+        fake.answer(&query(4, "c-1", ChatQueryKind::Subscribe { after: SEEDED }));
+        let recorded = [
+            RunEvent::Text {
+                text: "Merged.".to_owned(),
+            },
+            RunEvent::PermissionAsked {
+                run: run("r-1").unwrap(),
+                prompt: 2,
+                tool: "Edit".to_owned(),
+                input: Value::Null,
+            },
+            RunEvent::Finished {
+                outcome: Outcome::Completed,
+            },
+        ];
+        let held: Vec<_> = recorded
+            .iter()
+            .map(|event| fake.played(&played(event.clone())))
+            .collect();
+
+        assert_eq!(held, [Some(Vec::new()), Some(Vec::new()), Some(Vec::new())]);
+        let (seq, _, waiting) = snapshot(&mut fake);
+        assert_eq!((seq, waiting), (SEEDED, vec![SEEDED - 1]));
+        assert_eq!(fake.answer(&allow("r-1", 1)).len(), 6);
+        assert_eq!(
+            shape(&tell(&mut fake, &played(recorded[0].clone()))),
+            [
+                (4, "76 r-1 Running".to_owned()),
+                (4, "77 r-1 text".to_owned())
+            ]
         );
     }
 

@@ -180,7 +180,7 @@ mod tests {
     use super::*;
     use weacon_protocol::{
         ChatAction, ChatCommand, ChatId, ChatQuery, ChatQueryKind, DiffQuery, DiffQueryKind,
-        PROTOCOL, RequestId, WorkspaceId,
+        PROTOCOL, PermissionAnswer, RequestId, RunId, WorkspaceId,
     };
 
     use crate::TempDir;
@@ -269,13 +269,22 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_subscribed_client_hears_the_chat_commit_what_plays_and_what_it_asks() {
+    async fn a_subscribed_client_hears_every_commit_in_order_under_its_id() {
         let dir = TempDir::new().unwrap();
         let recording = recording(TRANSCRIPT, 1).unwrap();
         let (mut client, served) = start(recording, dir.join("received.jsonl")).await;
         client.send(hello(PROTOCOL)).await.unwrap();
         texts(&mut client, 1).await;
-        client.send(Frame::text(subscription(7, 0))).await.unwrap();
+        let allow = ChatAction::Permission {
+            answer: PermissionAnswer {
+                run: RunId::try_from("r-1".to_owned()).unwrap(),
+                prompt: 1,
+                allow: true,
+            },
+        };
+        for text in [subscription(7, 0), command(8, request("q-1"), allow)] {
+            client.send(Frame::text(text)).await.unwrap();
+        }
         let played = |text: &Value| {
             let update = &text["entry"]["event"]["update"];
             update["run"] == "r-1" && text["entry"]["seq"].as_u64() > Some(SEEDED)
