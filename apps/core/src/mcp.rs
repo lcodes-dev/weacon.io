@@ -721,6 +721,7 @@ mod tests {
             cwd: PathBuf::from("/work"),
             access: weacon_protocol::AccessLevel::AskFirst,
             mcp: None,
+            hook: None,
             plugin: None,
         };
         let start = Start {

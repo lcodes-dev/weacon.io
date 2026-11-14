@@ -6,11 +6,11 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
+use weacon_agents::resolve as resolved;
 use weacon_observability::Fault;
 use weacon_protocol::{ChatId, code};
 
 use crate::platform;
-use crate::workspaces::resolved;
 
 pub(crate) mod removal;
 

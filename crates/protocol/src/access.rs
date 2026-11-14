@@ -18,17 +18,6 @@ pub enum AccessLevel {
     Newer,
 }
 
-impl AccessLevel {
-    /// The level to act on: one this build doesn't know allows nothing.
-    #[must_use]
-    pub const fn effective(self) -> Self {
-        match self {
-            Self::Newer | Self::Off => Self::Off,
-            Self::ReadOnly | Self::AskFirst | Self::Full => self,
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use serde_json::json;
@@ -49,15 +38,13 @@ mod tests {
                 serde_json::from_value::<AccessLevel>(json!(name)).unwrap(),
                 level
             );
-            assert_eq!(level.effective(), level);
         }
     }
 
     #[test]
-    fn a_newer_level_parses_and_allows_nothing() {
+    fn a_newer_level_parses_as_newer() {
         let newer: AccessLevel = serde_json::from_value(json!("sandboxed")).unwrap();
 
         assert_eq!(newer, AccessLevel::Newer);
-        assert_eq!(newer.effective(), AccessLevel::Off);
     }
 }

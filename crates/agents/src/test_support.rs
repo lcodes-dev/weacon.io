@@ -1,15 +1,20 @@
 //! Helpers for the drivers' tests: a run over a replayed session, and the events it yields.
 
+use std::path::Path;
 use std::time::Duration;
 
 use serde_json::Value;
 use tokio::io::{BufReader, DuplexStream};
 use tokio::task::JoinHandle;
 use tokio::time::timeout;
-use weacon_protocol::{AgentSession, App, Outcome, PermissionAnswer, RunEvent, RunId};
+use weacon_protocol::{
+    AccessLevel, AgentKind, AgentSession, App, Outcome, PermissionAnswer, RunEvent, RunId,
+};
 use weacon_testing::{Failure, replay};
 
 use crate::access::Rules;
+use crate::guard::Context;
+use crate::launch::Launch;
 use crate::run::Run;
 use crate::wire::Wire;
 
@@ -112,7 +117,29 @@ pub(crate) fn tool_done(call: &str, failed: bool) -> RunEvent {
     }
 }
 
-pub(crate) const fn ended(outcome: Outcome) -> RunEvent {
+pub(crate) fn tool_call(call: &str, tool: &str, input: Value) -> RunEvent {
+    RunEvent::ToolCall {
+        call: call.to_owned(),
+        tool: tool.to_owned(),
+        input,
+    }
+}
+
+/// A launch of `agent` working in `dir`, with its program and config folder in it.
+pub(crate) fn launch(agent: AgentKind, dir: &Path) -> Launch {
+    Launch {
+        agent,
+        program: dir.join("agent"),
+        config_dir: dir.join("config"),
+        cwd: dir.to_path_buf(),
+        access: AccessLevel::AskFirst,
+        hook: None,
+        mcp: None,
+        plugin: None,
+    }
+}
+
+pub(crate) const fn finished(outcome: Outcome) -> RunEvent {
     RunEvent::Finished { outcome }
 }
 
@@ -121,6 +148,30 @@ pub(crate) fn jsonl(lines: &[Value]) -> String {
     lines
         .iter()
         .fold(String::new(), |file, line| file + &line.to_string() + "\n")
+}
+
+// A chat's worktree beside its main checkout, a home with an agent's credentials, and
+// Weacon's state.
+pub(crate) fn guard_context(dir: &Path) -> Context {
+    for folder in [
+        "main",
+        "wt/src",
+        "home/.claude",
+        "home/.codex",
+        "state/settings",
+    ] {
+        std::fs::create_dir_all(dir.join(folder)).unwrap();
+    }
+    Context {
+        cwd: dir.join("wt"),
+        worktree: dir.join("wt"),
+        main_checkout: Some(dir.join("main")),
+        home: Some(dir.join("home")),
+        weacon: vec![dir.join("state")],
+        credentials: vec![dir.join("home/.claude"), dir.join("home/.codex")],
+        cdpath: false,
+        additions: vec![vec!["terraform".to_owned(), "destroy".to_owned()]],
+    }
 }
 
 /// The next thing a terminal's program did, failing the test if nothing comes in time.

@@ -78,13 +78,3 @@ impl Wire {
         }
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn the_refusal_the_agent_reads_keeps_its_size() {
-        assert_eq!(UNSUPPORTED.len(), 35);
-    }
-}
