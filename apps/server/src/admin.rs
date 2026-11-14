@@ -113,11 +113,7 @@ async fn closed(
 mod tests {
     use std::cell::Cell;
 
-    use weacon_testing::TempDir;
-
-    use std::sync::{Arc, Mutex};
-
-    use weacon_observability::Deliver;
+    use weacon_testing::{TempDir, recording_deliver};
 
     use super::*;
     use crate::app;
@@ -354,12 +350,7 @@ mod tests {
     // What logging and reporting `failures` as the server does writes: its log, and each report.
     fn reported(failures: impl IntoIterator<Item = Fault>) -> (String, Vec<String>) {
         let (stdout, records) = recording_sink();
-        let uploads = Arc::new(Mutex::new(Vec::new()));
-        let seen = Arc::clone(&uploads);
-        let deliver: Deliver = Box::new(move |upload| {
-            seen.lock().unwrap().push(upload.clone());
-            Ok(())
-        });
+        let (deliver, uploads) = recording_deliver();
         let app = app::start(
             VERSION,
             stdout,

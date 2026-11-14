@@ -247,7 +247,7 @@ impl Uplink {
             return Step::Unpaired;
         }
         let owners = match asking(&envelope.message) {
-            Asking::By(by) => by.is_some_and(|by| by.account == *owner),
+            Asking::By(by) => by == Some(owner),
             Asking::NotAnAsk => true,
             Asking::Unknown => return failure(envelope.id, code!("uplink.unknown")),
         };
@@ -274,8 +274,8 @@ impl Uplink {
 
 /// Who asks the machine to act, in a message from the server.
 enum Asking<'a> {
-    /// The asker the server stamped, if it did.
-    By(Option<&'a Asker>),
+    /// The account the server stamped as the asker, if it did.
+    By(Option<&'a AccountId>),
     /// Something the server says of its own, such as an error.
     NotAnAsk,
     /// A kind with no arm in [`asking`], refused until one says where its asker is.
@@ -283,7 +283,7 @@ enum Asking<'a> {
 }
 
 fn asking(message: &Message) -> Asking<'_> {
-    let by = if let Message::ChatCommand(command) = message {
+    let asker = if let Message::ChatCommand(command) = message {
         &command.by
     } else if let Message::MachineSettingsQuery(query) = message {
         &query.by
@@ -295,12 +295,14 @@ fn asking(message: &Message) -> Asking<'_> {
         &query.by
     } else if let Message::WorktreeCommand(command) = message {
         &command.by
+    } else if let Message::SessionsQuery(query) = message {
+        return Asking::By(query.by.as_ref());
     } else if let Message::Error(_) = message {
         return Asking::NotAnAsk;
     } else {
         return Asking::Unknown;
     };
-    Asking::By(by.as_ref())
+    Asking::By(asker.as_ref().map(|asker: &Asker| &asker.account))
 }
 
 /// An error under the envelope `id` it answers.
@@ -357,9 +359,9 @@ mod tests {
     use tokio_tungstenite::WebSocketStream;
     use weacon_protocol::{
         ChatAction, ChatId, MachineId, MachineSettingsAction, MachineSettingsCommand,
-        MachineSettingsQuery, MachineSettingsQueryKind, MemberId, RequestId, TerminalAction,
-        TerminalCommand, TerminalId, Welcome, WorkspaceId, WorktreeAction, WorktreeCommand,
-        WorktreeQuery, WorktreeQueryKind,
+        MachineSettingsQuery, MachineSettingsQueryKind, MemberId, RequestId, SessionsQuery,
+        SessionsQueryKind, TerminalAction, TerminalCommand, TerminalId, Welcome, WorkspaceId,
+        WorktreeAction, WorktreeCommand, WorktreeQuery, WorktreeQueryKind,
     };
     use weacon_testing::TempDir;
 
@@ -564,6 +566,7 @@ mod tests {
 
     // Each kind the server relays to the machine, asked `by` someone or no one.
     fn every_ask(by: Option<&AccountId>) -> Vec<Message> {
+        let account = by.cloned();
         let by = by.map(|account| Asker {
             account: account.clone(),
             member: MemberId::try_from("m-1".to_owned()).unwrap(),
@@ -571,7 +574,6 @@ mod tests {
         let request = RequestId::try_from("r-1".to_owned()).unwrap();
         let workspace = WorkspaceId::try_from("w-1".to_owned()).unwrap();
         let machine = MachineId::try_from("mc-1".to_owned()).unwrap();
-        let chat = ChatId::try_from("c-1".to_owned()).unwrap();
         vec![
             Message::MachineSettingsQuery(MachineSettingsQuery {
                 request: request.clone(),
@@ -587,13 +589,30 @@ mod tests {
                 action: MachineSettingsAction::SetReports { send: true },
                 by: by.clone(),
             }),
+            Message::SessionsQuery(SessionsQuery {
+                request,
+                machine: machine.clone(),
+                query: SessionsQueryKind::List,
+                by: account,
+            }),
             Message::TerminalCommand(TerminalCommand {
                 terminal: TerminalId::try_from("t-1".to_owned()).unwrap(),
                 machine,
-                workspace: workspace.clone(),
+                workspace,
                 action: TerminalAction::Close,
                 by: by.clone(),
             }),
+        ]
+        .into_iter()
+        .chain(worktree_asks(by))
+        .collect()
+    }
+
+    fn worktree_asks(by: Option<Asker>) -> [Message; 2] {
+        let request = RequestId::try_from("r-1".to_owned()).unwrap();
+        let workspace = WorkspaceId::try_from("w-1".to_owned()).unwrap();
+        let chat = ChatId::try_from("c-1".to_owned()).unwrap();
+        [
             Message::WorktreeQuery(WorktreeQuery {
                 request: request.clone(),
                 workspace: workspace.clone(),
@@ -648,8 +667,8 @@ mod tests {
             .collect();
         let error = answered(&link, other_error.clone());
 
-        assert_eq!(owners, [None, None, None, None, None]);
-        assert_eq!(others, vec![not_owner; 10]);
+        assert_eq!(owners, [None, None, None, None, None, None]);
+        assert_eq!(others, vec![not_owner; 12]);
         // A kind this build doesn't know arrives as `Message::Unknown`.
         assert!(matches!(asking(&Message::Unknown), Asking::Unknown));
         assert_eq!(error, None);

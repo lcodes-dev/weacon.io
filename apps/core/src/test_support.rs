@@ -65,7 +65,7 @@ pub(crate) fn pick(request: &str, html: &str) -> Pick {
     }
 }
 
-/// A reader and writer whose every read and write fails.
+/// A reader and writer, sync or async, whose every read and write fails.
 pub(crate) struct Broken;
 
 impl Read for Broken {
@@ -81,6 +81,16 @@ impl Write for Broken {
 
     fn flush(&mut self) -> io::Result<()> {
         Ok(())
+    }
+}
+
+impl tokio::io::AsyncRead for Broken {
+    fn poll_read(
+        self: std::pin::Pin<&mut Self>,
+        _: &mut std::task::Context<'_>,
+        _: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<io::Result<()>> {
+        std::task::Poll::Ready(Err(io::ErrorKind::BrokenPipe.into()))
     }
 }
 

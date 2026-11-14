@@ -18,11 +18,13 @@ futures-util = { version = "0.3.31", default-features = false, features = ["sink
 getrandom = "0.4.3"
 hmac = "0.13.0"
 hyper = { version = "1.12.0", default-features = false, features = ["http1", "server"] }
+http-body-util = "0.1.5"
 hyper-util = { version = "0.1.21", default-features = false, features = ["service", "tokio"] }
 libc = "0.2.191"
 rcgen = { version = "0.14.10", default-features = false, features = ["ring", "pem"] }
 minisign-verify = "0.3.0"
 regex = { version = "1.13.1", default-features = false, features = ["std", "perf", "unicode-case", "unicode-perl"] }
+rmcp = { version = "3.9.0", default-features = false, features = ["server", "transport-streamable-http-server"] }
 schemars = "1.2.3"
 sentry-types = { version = "0.49.5", default-features = false, features = ["protocol"] }
 serde = { version = "1.0.229", features = ["derive"] }
@@ -49,8 +51,8 @@ weacon-observability = { path = "crates/observability" }
 weacon-protocol = { path = "crates/protocol" }
 weacon-testing = { path = "crates/testing" }
 weacon-version = { path = "crates/version" }
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_System_Console", "Win32_System_Threading"] }
 x25519-dalek = { version = "2.0.1", default-features = false, features = ["static_secrets", "zeroize"] }
-windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_System_Threading"] }
 
 [profile.release]
 codegen-units = 1
