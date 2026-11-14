@@ -414,6 +414,7 @@ mod tests {
         command(ChatAction::Prompt {
             text: text.to_owned(),
             repo: None,
+            machine: None,
         })
     }
 
