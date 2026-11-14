@@ -200,7 +200,11 @@ pub(crate) async fn unpair(
         return not_found(code!("machine.not_found"));
     };
     match shared.db.unpair(&session.account, &machine).await {
-        Ok(true) => StatusCode::NO_CONTENT.into_response(),
+        Ok(true) => {
+            // Nobody listening is fine: a connection also checks at each ping.
+            drop(shared.unpaired.send(machine));
+            StatusCode::NO_CONTENT.into_response()
+        }
         Ok(false) => not_found(code!("machine.not_found")),
         Err(fault) => failure(fault),
     }

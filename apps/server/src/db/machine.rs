@@ -238,6 +238,17 @@ impl Db {
         .collect()
     }
 
+    /// The paired machine whose token is hashed as `token_hash`.
+    pub(crate) async fn machine_with(&self, token_hash: &[u8]) -> Result<Option<MachineId>, Fault> {
+        sqlx::query_scalar::<_, String>("SELECT machine_id FROM machines WHERE token_hash = ?")
+            .bind(token_hash)
+            .fetch_optional(&self.readers)
+            .await
+            .map_err(failed)?
+            .map(stored)
+            .transpose()
+    }
+
     /// Unpairs `machine` from `account`, its pairing too, so it can't be claimed again;
     /// `false` when `account` has no such machine.
     pub(crate) async fn unpair(

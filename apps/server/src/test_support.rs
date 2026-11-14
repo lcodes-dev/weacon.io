@@ -13,12 +13,13 @@ use tokio::task::JoinHandle;
 use weacon_testing::TempDir;
 use weacon_version::Version;
 
+pub(crate) mod socket;
+
 pub(crate) use weacon_testing::{Records, messages, recording_logger, recording_sink};
 
 use crate::connections;
 use crate::db::{Db, Workspace};
 use crate::email::Email;
-use crate::feed;
 use crate::http::{self, Shared};
 use crate::outbox::Outbox;
 use crate::pairing;
@@ -57,14 +58,7 @@ pub(crate) struct Fixture {
 impl Fixture {
     pub(crate) async fn new() -> Self {
         let dir = TempDir::new().unwrap();
-        let db = Db::create(&dir.join("weacon.db")).await.unwrap();
-        let workspace = db
-            .create_workspace(&workspace_id("w1"), "Team")
-            .await
-            .unwrap();
-        let ada = Email::parse("ada@example.com").unwrap();
-        let (m1, account) = (member_id("m1"), fresh_account());
-        workspace.add_member(&m1, &account, &ada).await.unwrap();
+        let db = with_ada(&dir).await;
         let (log, records) = recording_logger();
         // Its own logger: off Unix it warns, and tests read the fixture's records.
         let secret = Secret::open(&dir.join("secret"), &recording_logger().0).unwrap();
@@ -82,7 +76,7 @@ impl Fixture {
             proxies: Arc::new([]),
             connections: Arc::new(Semaphore::new(64)),
             // Short, so tests that wait for the feed's checks don't wait long.
-            feed: feed::Timing {
+            sockets: crate::socket::Timing {
                 hello_within: Duration::from_millis(100),
                 ping_every: Duration::from_millis(100),
             },
@@ -90,6 +84,7 @@ impl Fixture {
                 UNIX_EPOCH + Duration::from_secs(now.load(Ordering::Relaxed))
             })),
             changes: broadcast::channel(16).0,
+            unpaired: broadcast::channel(16).0,
             sign_ins: Arc::new(Semaphore::new(sign_in::AT_ONCE)),
             finish_within: Duration::ZERO,
             starts: Arc::new(sign_in::starts()),
@@ -158,6 +153,19 @@ pub(crate) fn letter_in(file: &Path) -> (String, String) {
     fs::remove_file(file).unwrap();
     let text = |key: &str| letter[key].as_str().unwrap().to_owned();
     (text("to"), text("code"))
+}
+
+/// A database holding workspace `w1`, whose member `m1` is ada@example.com.
+async fn with_ada(dir: &TempDir) -> Db {
+    let db = Db::create(&dir.join("weacon.db")).await.unwrap();
+    let workspace = db
+        .create_workspace(&workspace_id("w1"), "Team")
+        .await
+        .unwrap();
+    let ada = Email::parse("ada@example.com").unwrap();
+    let (m1, account) = (member_id("m1"), fresh_account());
+    workspace.add_member(&m1, &account, &ada).await.unwrap();
+    db
 }
 
 /// A server running on a port of its own until `stop` is sent.

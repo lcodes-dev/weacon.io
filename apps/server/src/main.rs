@@ -16,9 +16,11 @@ mod pairing;
 mod secret;
 mod sign_in;
 mod sign_up;
+mod socket;
 mod tasks;
 #[cfg(test)]
 mod test_support;
+mod uplink;
 mod web;
 mod workspaces;
 
@@ -111,8 +113,9 @@ async fn serve(app: &App, args: Serve) -> Result<(), Fault> {
         proxies: trusted_proxy.into(),
         sign_up: sign_up.into(),
         connections: Arc::new(Semaphore::new(max_connections)),
-        feed: feed::TIMING,
+        sockets: socket::TIMING,
         changes: broadcast::channel(CHANGES).0,
+        unpaired: broadcast::channel(CHANGES).0,
         sign_ins: Arc::new(Semaphore::new(sign_in::AT_ONCE)),
         finish_within: sign_in::FINISH_WITHIN,
         starts: Arc::new(sign_in::starts()),
