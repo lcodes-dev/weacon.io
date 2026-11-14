@@ -694,28 +694,27 @@ mod tests {
     }
 
     #[test]
-    fn an_answer_to_a_prompt_no_longer_waiting_is_received_and_does_nothing() {
+    fn an_answer_to_a_prompt_not_waiting_is_received_and_does_nothing() {
         let mut fake = fake();
         fake.answer(&query(4, "c-1", ChatQueryKind::Subscribe { after: SEEDED }));
-        let answer = command(ChatAction::Permission {
-            answer: PermissionAnswer {
-                run: run("r-2").unwrap(),
-                prompt: 1,
-                allow: true,
-            },
-        });
+        let answer = |id: &str, prompt| {
+            command(ChatAction::Permission {
+                answer: PermissionAnswer {
+                    run: run(id).unwrap(),
+                    prompt,
+                    allow: true,
+                },
+            })
+        };
+        // While r-2's prompt 1 waits: the same prompt of another run, another prompt of r-2.
+        let other_run = fake.answer(&answer("r-1", 1));
+        let other_prompt = fake.answer(&answer("r-2", 2));
         fake.answer(&command(ChatAction::Interrupt));
-        let late = fake.answer(&answer);
-        let wrong = fake.answer(&command(ChatAction::Permission {
-            answer: PermissionAnswer {
-                run: run("r-1").unwrap(),
-                prompt: 1,
-                allow: true,
-            },
-        }));
+        let late = fake.answer(&answer("r-2", 1));
 
-        assert_eq!(shape(&late), [(4, "75 receipt q-9".to_owned())]);
-        assert_eq!(shape(&wrong), [(4, "76 receipt q-9".to_owned())]);
+        assert_eq!(shape(&other_run), [(4, "70 receipt q-9".to_owned())]);
+        assert_eq!(shape(&other_prompt), [(4, "71 receipt q-9".to_owned())]);
+        assert_eq!(shape(&late), [(4, "77 receipt q-9".to_owned())]);
     }
 
     #[test]
