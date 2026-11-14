@@ -37,8 +37,7 @@ use crate::workspaces::Workspaces;
 
 const ASKS: usize = 64;
 const SAYS: usize = 256;
-// How often the engine looks for idle agents.
-const TICK: std::time::Duration = std::time::Duration::from_mins(1);
+const IDLE_CHECK: std::time::Duration = std::time::Duration::from_mins(1);
 
 /// Which agent to start, and as what.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -144,7 +143,7 @@ impl<A: Agent> Engine<A> {
     /// Serves until every [`Chats`] is dropped; the agents stop with it.
     pub(crate) async fn serve(mut self) {
         self.reconcile().await;
-        let mut ticks = tokio::time::interval(TICK);
+        let mut ticks = tokio::time::interval(IDLE_CHECK);
         ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
             let key = tokio::select! {
@@ -358,10 +357,15 @@ impl<A: Agent> Engine<A> {
 
 // What names a chat's run on a log line.
 fn about(key: &ChatKey, run: &RunId) -> [(&'static str, Field); 3] {
+    let [workspace, chat] = chat_about(key);
+    [workspace, chat, ("run_id", run.as_str().into())]
+}
+
+// What names a chat on a log line.
+fn chat_about(key: &ChatKey) -> [(&'static str, Field); 2] {
     [
         ("workspace_id", key.workspace.as_str().into()),
         ("chat_id", key.chat.as_str().into()),
-        ("run_id", run.as_str().into()),
     ]
 }
 

@@ -4,7 +4,7 @@ use weacon_observability::{Fault, Field};
 use weacon_protocol::RunState;
 
 use super::agent::Agent;
-use super::{Chat, ChatKey, Engine, about};
+use super::{Chat, ChatKey, Engine, about, chat_about};
 
 /// How long, in seconds, an agent waits for its chat's next prompt before it is stopped.
 pub(super) const IDLE: u64 = 30 * 60;
@@ -56,15 +56,11 @@ impl<A: Agent> Engine<A> {
         if std::mem::replace(&mut self.disk_full, full) == full {
             return;
         }
-        let message = if full {
-            "turns paused"
-        } else {
-            "turns resumed"
-        };
-        self.log.warn(message, &[]);
         if full {
+            self.log.warn("turns paused", &[]);
             return;
         }
+        self.log.info("turns resumed", &[]);
         let queued: Vec<ChatKey> = self
             .runs
             .records()
@@ -133,11 +129,8 @@ impl<A: Agent> Engine<A> {
 }
 
 fn chat_fields(key: &ChatKey, fault: &Fault) -> [(&'static str, Field); 3] {
-    [
-        ("workspace_id", key.workspace.as_str().into()),
-        ("chat_id", key.chat.as_str().into()),
-        ("err", Field::error(fault)),
-    ]
+    let [workspace, chat] = chat_about(key);
+    [workspace, chat, ("err", Field::error(fault))]
 }
 
 #[cfg(test)]

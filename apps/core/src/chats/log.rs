@@ -71,7 +71,7 @@ pub(crate) enum Seen {
 }
 
 // Opens a log file to append, creating it and its folder private and synced when missing.
-fn create(path: &Path, workspace_root: &Path) -> io::Result<File> {
+fn open_or_create(path: &Path, workspace_root: &Path) -> io::Result<File> {
     let dir = path.parent().ok_or(io::ErrorKind::NotFound)?;
     platform::private_dir(dir)?;
     let file = weacon_appkit::private_append(path)?;
@@ -110,7 +110,7 @@ impl ChatLog {
             if !path.try_exists()? {
                 return Ok(log);
             }
-            let file = create(&path, &log.workspace_root)?;
+            let file = open_or_create(&path, &log.workspace_root)?;
             let len = file.metadata()?.len();
             log.replay(&file)?;
             log.file = Some(file);
@@ -229,7 +229,7 @@ impl ChatLog {
             ));
         }
         let len = line.len();
-        self.created()
+        self.ensure_file()
             .await
             .map_err(|error| not_written().because(error))?;
         let written = match self.handle() {
@@ -339,12 +339,12 @@ impl ChatLog {
     }
 
     // Creates the log file on the first entry of a chat that had none.
-    async fn created(&mut self) -> io::Result<()> {
+    async fn ensure_file(&mut self) -> io::Result<()> {
         if self.file.is_some() || self.broken {
             return Ok(());
         }
         let (path, root) = (self.path.clone(), self.workspace_root.clone());
-        self.file = Some(blocking(move || create(&path, &root)).await?);
+        self.file = Some(blocking(move || open_or_create(&path, &root)).await?);
         Ok(())
     }
 
