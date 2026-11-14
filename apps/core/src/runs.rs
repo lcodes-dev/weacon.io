@@ -24,6 +24,9 @@ pub(crate) struct Runs {
 struct Stored {
     issued: u64,
     chats: Vec<Box<RawValue>>,
+    /// What a newer core keeps beside them, written back as found.
+    #[serde(flatten)]
+    newer: serde_json::Map<String, serde_json::Value>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -33,6 +36,8 @@ struct Journal {
     chats: Vec<Record>,
     /// Records this core can't read in full, as a newer one writes; kept as found.
     newer: Vec<Kept>,
+    /// The rest of the journal that only a newer core knows.
+    newer_fields: serde_json::Map<String, serde_json::Value>,
 }
 
 /// A record kept as the JSON it was read as, and the chat it is for when that much is known.
@@ -114,11 +119,14 @@ impl Runs {
             .unwrap_or_default();
         let mut journal = Journal {
             issued: stored.issued,
+            newer_fields: stored.newer,
             ..Journal::default()
         };
         for json in stored.chats {
             match serde_json::from_str::<Record>(json.get()) {
-                Ok(record) if !record.is_newer() => journal.chats.push(record),
+                Ok(record) if !record.is_newer() && reads_whole(&record, &json) => {
+                    journal.chats.push(record);
+                }
                 _ => journal.newer.push(Kept {
                     key: serde_json::from_str(json.get()).ok(),
                     json,
@@ -145,6 +153,11 @@ impl Runs {
             ));
         }
         Ok(())
+    }
+
+    /// How many records were kept unread: written by a newer core, or damaged.
+    pub(crate) fn kept(&self) -> usize {
+        self.journal.newer.len()
     }
 
     pub(crate) fn records(&self) -> impl Iterator<Item = &Record> {
@@ -240,7 +253,6 @@ impl Runs {
         key: &ChatKey,
         change: impl FnOnce(&mut Record),
     ) -> Result<(), Fault> {
-        self.refuse_newer(key)?;
         let mut next = self.journal.clone();
         let at = self.position(key);
         let Some(record) = at.and_then(|at| next.chats.get_mut(at)) else {
@@ -296,8 +308,23 @@ fn stored(journal: &Journal) -> serde_json::Result<Vec<u8>> {
     let read = journal.chats.iter().map(serde_json::value::to_raw_value);
     let mut chats = read.collect::<serde_json::Result<Vec<_>>>()?;
     chats.extend(journal.newer.iter().map(|kept| kept.json.clone()));
-    let issued = journal.issued;
-    serde_json::to_vec(&Stored { issued, chats })
+    let (issued, newer) = (journal.issued, journal.newer_fields.clone());
+    serde_json::to_vec(&Stored {
+        issued,
+        chats,
+        newer,
+    })
+}
+
+// Whether `record` holds every field `json` has, so writing it back loses nothing.
+fn reads_whole(record: &Record, json: &RawValue) -> bool {
+    let found = serde_json::from_str::<serde_json::Value>(json.get());
+    let (Ok(serde_json::Value::Object(found)), Ok(serde_json::Value::Object(known))) =
+        (found, serde_json::to_value(record))
+    else {
+        return false;
+    };
+    found.keys().all(|field| known.contains_key(field))
 }
 
 #[cfg(test)]
@@ -561,7 +588,7 @@ mod tests {
         assert_eq!(runs.of(&c1).unwrap().queue, [queued("r-2")]);
     }
 
-    // What beginning, queueing for and changing `key`'s record each fail with.
+    // What beginning and queueing for `key`'s record each fail with.
     async fn refusals(runs: &mut Runs, key: &ChatKey) -> Vec<String> {
         let queued = Queued {
             request: RequestId::try_from("r-2".to_owned()).unwrap(),
@@ -570,7 +597,6 @@ mod tests {
         let tries = [
             runs.begin(key, AgentKind::Claude, 9).await.map(drop),
             runs.enqueue(key, AgentKind::Claude, queued, 9).await,
-            runs.update(key, |record| record.active_at = 9).await,
         ];
         let code = |tried: Result<(), Fault>| tried.unwrap_err().code().as_str().to_owned();
         tries.into_iter().map(code).collect()
@@ -584,19 +610,22 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let broken = r#"{"workspace":"w-1","chat":"c-8","state":"paused"}"#;
         let nameless = r#"{"shape":"unknown"}"#;
-        let journal = format!(r#"{{"issued":3,"chats":[{NEWER},{broken},{nameless}]}}"#);
+        let more = r#"{"workspace":"w-1","chat":"c-7","agent":"claude","run":null,"state":"idle","session":null,"turn":null,"queue":[],"active_at":5,"model":"next"}"#;
+        let journal = format!(
+            r#"{{"issued":3,"chats":[{NEWER},{broken},{nameless},{more}],"limits":{{"runs":9}}}}"#
+        );
         std::fs::write(dir.join("runs.json"), journal).unwrap();
 
         let mut runs = Runs::load(&dir).unwrap();
-        for chat in ["c-9", "c-8"] {
+        for chat in ["c-9", "c-8", "c-7"] {
             let kept = key("w-1", chat);
             assert_eq!(runs.of(&kept), None);
-            assert_eq!(refusals(&mut runs, &kept).await, ["runs.newer_record"; 3]);
+            assert_eq!(refusals(&mut runs, &kept).await, ["runs.newer_record"; 2]);
         }
 
         assert_eq!(begin(&mut runs, "c-1").await.as_str(), "run-4");
         let raw = std::fs::read_to_string(dir.join("runs.json")).unwrap();
-        for kept in [NEWER, broken, nameless] {
+        for kept in [NEWER, broken, nameless, more, r#""limits":{"runs":9}"#] {
             assert!(raw.contains(kept), "{kept} was rewritten");
         }
         let restarted = Runs::load(&dir).unwrap();

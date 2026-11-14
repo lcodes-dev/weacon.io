@@ -80,9 +80,16 @@ impl<A: Agent> Engine<A> {
         }
     }
 
-    // After a restart: a turn cut off ends `unknown`, queued prompts get a new run, and a run
-    // active within `IDLE` starts again to resume its session; the others sleep.
+    // After a restart: a turn cut off ends `unknown` and its run sleeps, queued prompts get a new
+    // run, and an idle run active within `IDLE` starts again to resume its session; the others
+    // sleep.
     pub(super) async fn reconcile(&mut self) {
+        let kept = self.runs.kept();
+        if kept > 0 {
+            let kept = u64::try_from(kept).unwrap_or(u64::MAX);
+            self.log
+                .warn("runs records kept unread", &[("count", kept.into())]);
+        }
         let now = self.now();
         let awake: Vec<(ChatKey, bool)> = self
             .runs

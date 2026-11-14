@@ -52,6 +52,8 @@ impl<A: Agent> Engine<A> {
         action: ChatAction,
         seen: Seen,
     ) -> Result<(), Fault> {
+        // Before the log, so a chat a newer core runs gets nothing from this one.
+        self.runs.refuse_newer(key)?;
         match action {
             ChatAction::Prompt {
                 text,
@@ -59,8 +61,6 @@ impl<A: Agent> Engine<A> {
                 agent: named,
                 ..
             } => {
-                // Before the log, so a chat a newer core runs gets nothing from this one.
-                self.runs.refuse_newer(key)?;
                 let (agent, fresh) = (self.agent_of(key, named).await?, seen != Seen::Pending);
                 if fresh && text.trim().is_empty() {
                     return Err(Fault::new(
@@ -226,7 +226,7 @@ impl<A: Agent> Engine<A> {
 #[cfg(test)]
 mod tests {
     use weacon_protocol::RunState;
-    use weacon_testing::TempDir;
+    use weacon_testing::{TempDir, messages};
 
     use super::super::by_hand::{
         allow_one, hear, launched, on_ask, on_its_way, on_turn, waiting_in,
@@ -246,9 +246,18 @@ mod tests {
         let journal = format!(r#"{{"issued":3,"chats":[{newer}]}}"#);
         std::fs::write(dir.join("runs.json"), journal).unwrap();
         engine.runs = Runs::load(&dir).unwrap();
+        engine.reconcile().await;
+        assert!(messages(&bench.records).contains(&"runs records kept unread"));
 
-        let refused = engine.command(&key(), prompt("r-1", "Hi")).await;
-        assert_eq!(refused.unwrap_err().code().as_str(), "runs.newer_record");
+        let interrupt = command("r-0", "c-1", ChatAction::Interrupt);
+        for asked in [
+            prompt("r-1", "Hi"),
+            allow("r-2", "c-1", "run-2", 1),
+            interrupt,
+        ] {
+            let refused = engine.command(&key(), asked).await;
+            assert_eq!(refused.unwrap_err().code().as_str(), "runs.newer_record");
+        }
         assert_eq!(engine.open(&key()).await.unwrap().events.seq(), 0);
 
         let other = ChatKey {
