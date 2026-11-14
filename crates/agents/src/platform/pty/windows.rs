@@ -126,11 +126,15 @@ impl Drop for Pty {
     fn drop(&mut self) {
         // SAFETY: the process handle is open; ending a program that already ended does nothing.
         unsafe { TerminateProcess(self.process.as_raw_handle(), 1) };
+        // Not left to `supervise`, which a runtime that is stopping no longer runs: until the
+        // console closes, the thread reading its output can't end, nor can the runtime.
+        let console = Arc::clone(&self.console);
+        std::thread::spawn(move || console.close());
     }
 }
 
 impl Console {
-    // Closing waits until the output is read, which `supervise` keeps doing.
+    // Closing waits until the output is read, which `pump` keeps doing.
     fn close(&self) {
         let taken = self.0.lock().ok().and_then(|mut handle| handle.take());
         if let Some(handle) = taken {
