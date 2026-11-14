@@ -170,28 +170,38 @@ async fn run(
             frame = socket.recv() => {
                 let frame = frame.ok_or(Closed)?;
                 pings.heard(&frame)?;
-                if let Ok(Frame::Text(text)) = &frame {
-                    relay(socket, shared, feed, text.as_bytes()).await?;
+                if let Ok(Frame::Text(text)) = &frame
+                    && let Ok(envelope) = Envelope::from_json(text.as_bytes())
+                {
+                    received(socket, shared, feed, envelope).await?;
                 }
             }
         }
     }
 }
 
-/// Relays a message the client sent for one of its machines, if it offered the machines'
-/// settings; the machine answers later, and a refusal answers at once.
+/// Gives what the client sent to the feature it is for, if the client offered that feature;
+/// anything else is dropped.
+async fn received(
+    socket: &mut WebSocket,
+    shared: &Shared,
+    feed: &Feed,
+    envelope: Envelope,
+) -> Result<(), Closed> {
+    if feed.offers.settings && relay::carries(&envelope.message) {
+        return relay(socket, shared, feed, envelope).await;
+    }
+    Ok(())
+}
+
+/// Relays a message the client sent for one of its machines; the machine answers later, and a
+/// refusal answers at once.
 async fn relay(
     socket: &mut WebSocket,
     shared: &Shared,
     feed: &Feed,
-    text: &[u8],
+    envelope: Envelope,
 ) -> Result<(), Closed> {
-    if !feed.offers.settings {
-        return Ok(());
-    }
-    let Ok(envelope) = Envelope::from_json(text) else {
-        return Ok(());
-    };
     feed.allowed(shared).await?;
     let id = envelope.id;
     let workspace = feed.member.workspace.id();

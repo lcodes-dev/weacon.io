@@ -85,6 +85,14 @@ pub(crate) enum Refusal {
     Failed(Fault),
 }
 
+/// Whether `message` is a kind the relay forwards.
+pub(crate) const fn carries(message: &Message) -> bool {
+    matches!(
+        message,
+        Message::MachineSettingsQuery(_) | Message::MachineSettingsCommand(_)
+    )
+}
+
 /// Forwards `envelope` to the machine its message names, if the message is for the asker's
 /// workspace and the machine is the asker's own. The answer reaches `back` under the
 /// envelope's id, or `machine.no_answer` once it has waited too long.
@@ -265,9 +273,9 @@ mod tests {
     use tokio::time::timeout;
 
     use weacon_protocol::{
-        AccessLevel, AccountId, ErrorBody, MachineSettings, MachineSettingsAnswer,
-        MachineSettingsAnswerKind, MachineSettingsQuery, MachineSettingsQueryKind, MemberId,
-        RequestId,
+        AccessLevel, AccountId, ErrorBody, MachineSettings, MachineSettingsAction,
+        MachineSettingsAnswer, MachineSettingsAnswerKind, MachineSettingsCommand,
+        MachineSettingsQuery, MachineSettingsQueryKind, MemberId, RequestId,
     };
 
     use super::*;
@@ -293,6 +301,20 @@ mod tests {
                 account: AccountId::try_from("a-forged".to_owned()).unwrap(),
                 member: MemberId::try_from("m-forged".to_owned()).unwrap(),
             }),
+        })
+    }
+
+    // A command to `machine` in w1, claiming to be from someone else.
+    fn command(machine: &MachineId) -> Message {
+        let Message::MachineSettingsQuery(query) = query(machine, "w1") else {
+            panic!();
+        };
+        Message::MachineSettingsCommand(MachineSettingsCommand {
+            request: query.request,
+            machine: query.machine,
+            workspace: query.workspace,
+            action: MachineSettingsAction::SetReports { send: true },
+            by: query.by,
         })
     }
 
@@ -386,21 +408,25 @@ mod tests {
         let relayed = next_envelope(&mut core).await;
         send(&mut core, envelope(relayed.id, settings_answer(&machine))).await;
         let answered = next_envelope(&mut browser).await;
-        send(&mut browser, envelope(42, query(&machine, "w1"))).await;
+        send(&mut browser, envelope(42, command(&machine))).await;
         let refused = Message::Error(ErrorBody {
             code: code!("settings.not_owner"),
             retryable: false,
         });
-        let asked_again = next_envelope(&mut core).await.id;
-        send(&mut core, envelope(asked_again, refused)).await;
+        let commanded = next_envelope(&mut core).await;
+        send(&mut core, envelope(commanded.id, refused)).await;
         let refusal_back = next_envelope(&mut browser).await;
 
         let Message::MachineSettingsQuery(query) = relayed.message else {
             panic!("{relayed:?}");
         };
-        let by = query.by.unwrap();
-        assert_eq!(by.account.as_str(), session["account"].as_str().unwrap());
-        assert_eq!(by.member.as_str(), "m1");
+        let Message::MachineSettingsCommand(command) = commanded.message else {
+            panic!("{commanded:?}");
+        };
+        for by in [query.by.unwrap(), command.by.unwrap()] {
+            assert_eq!(by.account.as_str(), session["account"].as_str().unwrap());
+            assert_eq!(by.member.as_str(), "m1");
+        }
         assert_ne!(relayed.id, 41);
         assert_eq!(answered, envelope(41, settings_answer(&machine)));
         assert_eq!(refusal(&refusal_back), (42, "settings.not_owner", false));
@@ -421,7 +447,6 @@ mod tests {
 
         let not_theirs = asked(&mut browser, 1, query(&stranger, "w1")).await;
         let elsewhere = asked(&mut browser, 2, query(&machine, "w9")).await;
-        let unknown = asked(&mut browser, 3, settings_answer(&machine)).await;
         // Ada's other machines: one whose core isn't connected, one that doesn't take settings.
         let unconnected = machine_of(&pair_machine(&fixture, server.address).await);
         let offline = asked(&mut browser, 4, query(&unconnected, "w1")).await;
@@ -432,7 +457,6 @@ mod tests {
 
         assert_eq!(refusal(&not_theirs), (1, "machine.not_found", false));
         assert_eq!(refusal(&elsewhere), (2, "machine.not_found", false));
-        assert_eq!(refusal(&unknown), (3, "relay.unknown", false));
         assert_eq!(refusal(&offline), (4, "machine.offline", true));
         assert_eq!(refusal(&unsettled), (5, "machine.offline", true));
     }
@@ -734,6 +758,25 @@ mod tests {
         );
         to_one.try_recv().unwrap_err();
         to_two.try_recv().unwrap_err();
+    }
+
+    #[tokio::test]
+    async fn only_queries_and_commands_are_carried() {
+        let fixture = Fixture::new().await;
+        let (machine, asker, _attached) = adas(&fixture).await;
+        let w1 = workspace_id("w1");
+        let ask = Ask {
+            asker: &asker,
+            workspace: &w1,
+        };
+
+        let sent = envelope(1, settings_answer(&machine));
+        let result = forward(&fixture.shared, &ask, sent, &mpsc::channel(4).0).await;
+
+        assert!(carries(&query(&machine, "w1")));
+        assert!(carries(&command(&machine)));
+        assert!(!carries(&settings_answer(&machine)));
+        assert_eq!(code_of(result), Some("relay.unknown".to_owned()));
     }
 
     #[tokio::test]
