@@ -17,7 +17,7 @@ minisign-verify.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
-tokio.workspace = true
+tokio = { workspace = true, features = ["sync"] }
 weacon-agents.workspace = true
 weacon-appkit.workspace = true
 weacon-client.workspace = true
@@ -33,7 +33,7 @@ libc.workspace = true
 windows-sys.workspace = true
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["sync", "test-util"] }
+tokio = { workspace = true, features = ["test-util"] }
 weacon-testing.workspace = true
 
 [build-dependencies]
