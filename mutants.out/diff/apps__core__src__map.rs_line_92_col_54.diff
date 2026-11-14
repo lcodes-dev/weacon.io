@@ -1,0 +1,21 @@
+--- apps/core/src/map.rs
++++ delete ! in source_files
+@@ -84,17 +84,17 @@
+ /// links, `node_modules`, Cargo's build folders, files over [`LARGEST`] bytes and files that
+ /// aren't UTF-8 are left out.
+ fn source_files(root: &Path, folder: &str, files: &mut Vec<SourceFile>) -> io::Result<()> {
+     for entry in fs::read_dir(root.join(folder))? {
+         let Some(entry) = present(entry)? else {
+             continue;
+         };
+         let name = entry.file_name();
+-        let Some(name) = name.to_str().filter(|name| !name.starts_with('.')) else {
++        let Some(name) = name.to_str().filter(|name|  /* ~ changed by cargo-mutants ~ */name.starts_with('.')) else {
+             continue;
+         };
+         let path = if folder.is_empty() {
+             name.to_owned()
+         } else {
+             format!("{folder}/{name}")
+         };
+         let Some(kind) = present(entry.file_type())? else {

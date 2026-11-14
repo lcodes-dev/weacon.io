@@ -1,0 +1,21 @@
+--- apps/core/src/map.rs
++++ delete ! in source_files
+@@ -95,17 +95,17 @@
+         let path = if folder.is_empty() {
+             name.to_owned()
+         } else {
+             format!("{folder}/{name}")
+         };
+         let Some(kind) = present(entry.file_type())? else {
+             continue;
+         };
+-        if kind.is_dir() && !skipped(&root.join(&path), name) {
++        if kind.is_dir() &&  /* ~ changed by cargo-mutants ~ */skipped(&root.join(&path), name) {
+             present(source_files(root, &path, files))?;
+         } else if kind.is_file()
+             && weacon_codemap::is_mapped(&path)
+             && present(entry.metadata())?.is_some_and(|about| about.len() <= LARGEST)
+             && let Some(text) = text_or_skip(fs::read_to_string(root.join(&path)))?
+         {
+             files.push(SourceFile { path, text });
+         }

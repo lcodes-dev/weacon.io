@@ -1,0 +1,7 @@
+crates/codemap/src/facts.rs:111:9: replace Facts::path -> &str with ""
+crates/codemap/src/facts.rs:111:9: replace Facts::path -> &str with "xyzzy"
+apps/core/src/codemap.rs:337:5: replace layer_name -> String with String::new()
+apps/core/src/codemap/repo.rs:58:44: replace > with >= in <impl Source for Repo>::text
+apps/core/src/codemap/watch.rs:55:27: replace match guard base.commit == head with true in Watch<S>::update
+apps/core/src/codemap/watch.rs:55:27: replace match guard base.commit == head with false in Watch<S>::update
+apps/core/src/codemap.rs:337:5: replace layer_name -> String with "xyzzy".into()

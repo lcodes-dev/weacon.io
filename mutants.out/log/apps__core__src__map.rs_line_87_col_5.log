@@ -1,0 +1,1288 @@
+
+*** apps/core/src/map.rs:87:5: replace source_files -> io::Result<()> with Ok(())
+
+*** mutation diff:
+--- apps/core/src/map.rs
++++ replace source_files -> io::Result<()> with Ok(())
+@@ -79,43 +79,17 @@
+     let index = index(&files).map_err(|error| index_failed().because(error))?;
+     Ok((index, files.len()))
+ }
+ 
+ /// Every file the code map takes under `root/folder`, its path joined with `/`. Hidden entries,
+ /// links, `node_modules`, Cargo's build folders, files over [`LARGEST`] bytes and files that
+ /// aren't UTF-8 are left out.
+ fn source_files(root: &Path, folder: &str, files: &mut Vec<SourceFile>) -> io::Result<()> {
+-    for entry in fs::read_dir(root.join(folder))? {
+-        let Some(entry) = present(entry)? else {
+-            continue;
+-        };
+-        let name = entry.file_name();
+-        let Some(name) = name.to_str().filter(|name| !name.starts_with('.')) else {
+-            continue;
+-        };
+-        let path = if folder.is_empty() {
+-            name.to_owned()
+-        } else {
+-            format!("{folder}/{name}")
+-        };
+-        let Some(kind) = present(entry.file_type())? else {
+-            continue;
+-        };
+-        if kind.is_dir() && !skipped(&root.join(&path), name) {
+-            present(source_files(root, &path, files))?;
+-        } else if kind.is_file()
+-            && weacon_codemap::is_mapped(&path)
+-            && present(entry.metadata())?.is_some_and(|about| about.len() <= LARGEST)
+-            && let Some(text) = text_or_skip(fs::read_to_string(root.join(&path)))?
+-        {
+-            files.push(SourceFile { path, text });
+-        }
+-    }
+-    Ok(())
++    Ok(()) /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ /// A file's text, or `None` for a file that isn't UTF-8 or was removed while the folder was read.
+ fn text_or_skip(read: io::Result<String>) -> io::Result<Option<String>> {
+     match read {
+         Err(error) if error.kind() == io::ErrorKind::InvalidData => Ok(None),
+         read => present(read),
+     }
+
+
+*** /root/.rustup/toolchains/1.97.0-x86_64-unknown-linux-gnu/bin/cargo test --no-run --verbose --package=weacon-core@0.0.0
+       Fresh unicode-ident v1.0.27
+       Fresh cfg-if v1.0.5
+       Fresh proc-macro2 v1.0.107
+       Fresh itoa v1.0.18
+       Fresh quote v1.0.47
+       Fresh libc v0.2.191
+       Fresh shlex v2.0.1
+       Fresh find-msvc-tools v0.1.15
+       Fresh syn v3.0.9
+       Fresh cc v1.11.0
+       Fresh stable_deref_trait v1.2.1
+       Fresh bytes v1.12.1
+       Fresh pin-project-lite v0.2.17
+       Fresh synstructure v0.14.0
+       Fresh zerovec-derive v0.11.7
+       Fresh typenum v1.20.1
+       Fresh displaydoc v0.2.7
+       Fresh zerofrom-derive v0.1.8
+       Fresh yoke-derive v0.8.4
+       Fresh serde_derive v1.0.229
+       Fresh smallvec v1.16.4
+       Fresh zerofrom v0.1.8
+       Fresh futures-core v0.3.34
+       Fresh serde v1.0.229
+       Fresh syn v2.0.119
+       Fresh yoke v0.8.4
+       Fresh writeable v0.6.4
+       Fresh litemap v0.8.3
+       Fresh utf_types v1.0.0
+       Fresh zerovec v0.11.9
+       Fresh zmij v1.0.23
+       Fresh autocfg v1.5.1
+       Fresh zerotrie v0.2.5
+       Fresh utf8_iter v1.1.0
+       Fresh tinystr v0.8.5
+       Fresh potential_utf v0.1.6
+       Fresh errno v0.3.14
+       Fresh icu_locale_core v2.4.0
+       Fresh icu_collections v2.4.0
+       Fresh signal-hook-registry v1.4.8
+       Fresh icu_provider v2.4.0
+       Fresh tokio-macros v2.7.2
+       Fresh mio v1.2.4
+       Fresh socket2 v0.6.5
+       Fresh rand_core v0.10.1
+       Fresh icu_properties_data v2.4.0
+       Fresh tokio v1.54.1
+       Fresh icu_normalizer_data v2.4.0
+       Fresh num-traits v0.2.19
+       Fresh thiserror-impl v2.0.21
+       Fresh futures-sink v0.3.34
+       Fresh equivalent v1.0.3
+       Fresh cpufeatures v0.3.1
+       Fresh getrandom v0.4.3
+       Fresh thiserror v2.0.21
+       Fresh icu_normalizer v2.4.0
+       Fresh icu_properties v2.4.0
+       Fresh http v1.5.0
+       Fresh percent-encoding v2.3.2
+       Fresh subtle v2.6.1
+       Fresh version_check v0.9.5
+       Fresh log v0.4.35
+       Fresh idna_adapter v1.2.2
+       Fresh hashbrown v0.17.1
+       Fresh idna v1.1.0
+       Fresh form_urlencoded v1.2.2
+       Fresh chacha20 v0.10.2
+       Fresh futures-channel v0.3.34
+       Fresh futures-macro v0.3.34
+       Fresh ref-cast-impl v1.0.27
+       Fresh serde_derive_internals v0.30.0
+       Fresh futures-io v0.3.34
+       Fresh slab v0.4.12
+       Fresh futures-task v0.3.34
+       Fresh foldhash v0.2.0
+       Fresh ref-cast v1.0.27
+       Fresh futures-util v0.3.34
+       Fresh schemars_derive v1.2.3
+       Fresh rand v0.10.3
+       Fresh generic-array v0.14.7
+       Fresh url v2.5.8
+       Fresh chrono v0.4.45
+       Fresh zeroize_derive v1.5.0
+       Fresh hybrid-array v0.4.15
+       Fresh aho-corasick v1.1.5
+       Fresh once_cell v1.21.4
+       Fresh dyn-clone v1.0.20
+       Fresh regex-syntax v0.8.11
+       Fresh schemars v1.2.3
+       Fresh regex-automata v0.4.18
+       Fresh zeroize v1.9.1
+       Fresh httparse v1.10.1
+       Fresh uuid v1.29.0
+       Fresh semver v1.0.28
+       Fresh scopeguard v1.2.0
+       Fresh regex v1.13.1
+       Fresh crypto-common v0.2.2
+       Fresh block-buffer v0.12.1
+       Fresh lock_api v0.4.14
+       Fresh rustc_version v0.4.1
+       Fresh crypto-common v0.1.7
+       Fresh block-buffer v0.10.4
+       Fresh powerfmt v0.2.1
+       Fresh num-conv v0.2.2
+       Fresh deranged v0.5.9
+       Fresh time-core v0.1.9
+       Fresh cpufeatures v0.2.17
+       Fresh const-oid v0.10.3
+       Fresh time v0.3.55
+       Fresh digest v0.11.3
+       Fresh digest v0.10.7
+       Fresh debugid v0.8.0
+       Fresh weacon-protocol v0.0.0 (/tmp/cargo-mutants-wt-store-U37r5e.tmp/crates/protocol)
+       Fresh getrandom v0.2.17
+       Fresh untrusted v0.9.0
+       Fresh hex v0.4.3
+       Fresh ring v0.17.14
+       Fresh parking_lot_core v0.9.12
+       Fresh sentry-types v0.49.5
+       Fresh serde_core v1.0.229
+       Fresh rustls-pki-types v1.15.1
+       Fresh tracing-core v0.1.36
+       Fresh http-body v1.1.0
+       Fresh tracing-attributes v0.1.31
+       Fresh pkg-config v0.3.34
+       Fresh memchr v2.8.3
+       Fresh allocator-api2 v0.2.21
+       Fresh vcpkg v0.2.15
+       Fresh tracing v0.1.44
+       Fresh serde_json v1.0.154
+       Fresh hashbrown v0.16.1
+       Fresh weacon-observability v0.0.0 (/tmp/cargo-mutants-wt-store-U37r5e.tmp/crates/observability)
+       Fresh parking_lot v0.12.5
+       Fresh crossbeam-utils v0.8.23
+       Fresh sha2 v0.10.9
+       Fresh futures-executor v0.3.34
+       Fresh indexmap v2.14.2
+       Fresh tokio-stream v0.1.19
+       Fresh crc-catalog v2.5.0
+       Fresh parking v2.2.1
+       Fresh base64 v0.23.1
+       Fresh utf8parse v0.2.2
+       Fresh crc v3.4.0
+       Fresh event-listener v5.4.2
+       Fresh crossbeam-queue v0.3.14
+       Fresh anstyle-parse v1.0.0
+       Fresh futures-intrusive v0.5.0
+       Fresh hashlink v0.11.1
+       Fresh rustls-webpki v0.103.16
+       Fresh tree-sitter-language v0.1.9
+       Fresh spin v0.9.9
+       Fresh is_terminal_polyfill v1.70.2
+       Fresh colorchoice v1.0.5
+       Fresh winnow v1.0.4
+       Fresh base64 v0.22.1
+       Fresh either v1.19.0
+       Fresh weacon-version v0.0.0 (/tmp/cargo-mutants-wt-store-U37r5e.tmp/crates/version)
+       Fresh anstyle v1.0.14
+       Fresh anstyle-query v1.1.5
+       Fresh sqlx-core v0.9.0
+       Fresh anstream v1.0.0
+       Fresh toml_parser v1.1.5+spec-1.1.0
+       Fresh rustls v0.23.46
+       Fresh flume v0.12.0
+       Fresh libsqlite3-sys v0.37.0
+       Fresh ureq-proto v0.7.1
+       Fresh http-body-util v0.1.5
+       Fresh webpki-roots v1.0.11
+       Fresh sha1 v0.11.0
+       Fresh atoi v2.0.0
+       Fresh curve25519-dalek-derive v0.1.1
+       Fresh toml_datetime v1.1.3+spec-1.1.0
+       Fresh serde_spanned v1.1.3
+       Fresh heck v0.5.0
+       Fresh clap_lex v1.1.1
+       Fresh strsim v0.11.1
+       Fresh httpdate v1.0.3
+       Fresh tower-service v0.3.3
+       Fresh atomic-waker v1.1.2
+       Fresh data-encoding v2.11.1
+       Fresh utf8-zero v0.8.1
+       Fresh streaming-iterator v0.1.9
+       Fresh hyper v1.12.0
+       Fresh tungstenite v0.30.0
+       Fresh ureq v3.5.1
+       Fresh tree-sitter v0.27.2
+       Fresh clap_builder v4.6.7
+       Fresh clap_derive v4.6.7
+       Fresh sqlx-sqlite v0.9.0
+       Fresh curve25519-dalek v4.1.3
+       Fresh toml v1.2.1+spec-1.1.0
+       Fresh sse-stream v0.2.6
+       Fresh tree-sitter-rust v0.24.2
+       Fresh getrandom v0.3.4
+       Fresh futures v0.3.34
+       Fresh sha2 v0.11.1
+       Fresh blake2 v0.10.6
+       Fresh tokio-util v0.7.20
+       Fresh async-trait v0.1.92
+       Fresh pastey v0.2.3
+       Fresh rand_core v0.6.4
+       Fresh snow v0.10.0
+       Fresh rmcp v3.9.0
+       Fresh weacon-codemap v0.0.0 (/tmp/cargo-mutants-wt-store-U37r5e.tmp/crates/codemap)
+       Fresh x25519-dalek v2.0.1
+       Fresh sqlx v0.9.0
+       Fresh clap v4.6.7
+       Fresh tokio-tungstenite v0.30.0
+       Fresh weacon-appkit v0.0.0 (/tmp/cargo-mutants-wt-store-U37r5e.tmp/crates/appkit)
+       Fresh hyper-util v0.1.21
+       Fresh weacon-agents v0.0.0 (/tmp/cargo-mutants-wt-store-U37r5e.tmp/crates/agents)
+       Fresh weacon-client v0.0.0 (/tmp/cargo-mutants-wt-store-U37r5e.tmp/crates/client)
+       Fresh weacon-model v0.0.0 (/tmp/cargo-mutants-wt-store-U37r5e.tmp/crates/model)
+       Fresh minisign-verify v0.3.0
+       Fresh weacon-testing v0.0.0 (/tmp/cargo-mutants-wt-store-U37r5e.tmp/crates/testing)
+       Dirty weacon-core v0.0.0 (/tmp/cargo-mutants-wt-store-U37r5e.tmp/apps/core): the file `apps/core/src/map.rs` has changed (1794640312.652811436s, 19s after last build at 1794640293.540810300s)
+   Compiling weacon-core v0.0.0 (/tmp/cargo-mutants-wt-store-U37r5e.tmp/apps/core)
+     Running `/root/.rustup/toolchains/1.97.0-x86_64-unknown-linux-gnu/bin/rustc --crate-name weacon --edition=2024 apps/core/src/main.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --emit=dep-info,link -C embed-bitcode=no -C debuginfo=2 --warn=rust_2018_idioms '--warn=clippy::pedantic' '--warn=clippy::wildcard_enum_match_arm' '--warn=clippy::verbose_file_reads' '--warn=clippy::useless_let_if_seq' '--warn=clippy::use_self' '--warn=clippy::unwrap_used' '--warn=clippy::unused_result_ok' --warn=unused_qualifications --warn=unused_lifetimes --warn=unused_import_braces --deny=unsafe_code --warn=unreachable_pub '--warn=clippy::unreachable' '--warn=clippy::unneeded_field_pattern' '--warn=clippy::unnecessary_struct_initialization' --warn=unit_bindings '--warn=clippy::unimplemented' '--warn=clippy::undocumented_unsafe_blocks' '--warn=clippy::type_repetition_in_bounds' '--warn=clippy::try_err' --warn=trivial_numeric_casts --warn=trivial_casts '--warn=clippy::trait_duplication_in_bounds' '--warn=clippy::todo' '--warn=clippy::tests_outside_test_module' '--warn=clippy::string_slice' '--warn=clippy::str_to_string' --warn=single_use_lifetimes '--warn=clippy::significant_drop_in_scrutinee' '--warn=clippy::rest_pat_in_fully_bound_structs' '--warn=clippy::redundant_type_annotations' '--warn=clippy::redundant_test_prefix' --warn=redundant_lifetimes '--warn=clippy::redundant_clone' '--warn=clippy::rc_mutex' '--warn=clippy::print_stdout' '--warn=clippy::print_stderr' '--warn=clippy::panic' '--warn=clippy::or_fun_call' --deny=non_ascii_idents '--warn=clippy::needless_pass_by_ref_mut' '--warn=clippy::needless_collect' '--warn=clippy::mod_module_files' '--warn=clippy::min_ident_chars' '--warn=clippy::mem_forget' '--warn=clippy::lossy_float_literal' '--warn=clippy::literal_string_with_formatting_args' '--warn=clippy::let_underscore_must_use' --warn=let_underscore_drop '--warn=clippy::iter_with_drain' '--warn=clippy::iter_over_hash_type' '--warn=clippy::iter_on_single_items' '--warn=clippy::infinite_loop' '--warn=clippy::indexing_slicing' '--warn=clippy::if_then_some_else_none' '--warn=clippy::get_unwrap' '--warn=clippy::format_push_string' '--warn=clippy::expect_used' '--warn=clippy::exit' '--warn=clippy::excessive_nesting' '--warn=clippy::equatable_if_let' '--warn=clippy::empty_structs_with_brackets' '--warn=clippy::derive_partial_eq_without_eq' '--warn=clippy::dbg_macro' '--warn=clippy::collection_is_never_read' '--warn=clippy::clone_on_ref_ptr' '--warn=clippy::branches_sharing_code' '--warn=clippy::assertions_on_result_states' '--warn=clippy::as_conversions' '--warn=clippy::allow_attributes_without_reason' '--warn=clippy::allow_attributes' --test --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=1352742af5242693 -C extra-filename=-51917bdc92f96f6c --out-dir /tmp/cargo-mutants-wt-store-U37r5e.tmp/target/debug/deps -C incremental=/tmp/cargo-mutants-wt-store-U37r5e.tmp/target/debug/incremental -L dependency=/tmp/cargo-mutants-wt-store-U37r5e.tmp/target/debug/deps --extern clap=/tmp/cargo-mutants-wt-store-U37r5e.tmp/target/debug/deps/libclap-c74e4cd993d3a71f.rlib --extern getrandom=/tmp/cargo-mutants-wt-store-U37r5e.tmp/target/debug/deps/libgetrandom-eef26d3f53c979b2.rlib --extern http_body_util=/tmp/cargo-mutants-wt-store-U37r5e.tmp/target/debug/deps/libhttp_body_util-a45be3188cc3a53c.rlib --extern hyper=/tmp/cargo-mutants-wt-store-U37r5e.tmp/target/debug/deps/libhyper-057640639417ce38.rlib --extern hyper_util=/tmp/cargo-mutants-wt-store-U37r5e.tmp/target/debug/deps/libhyper_util-3bf966490b70c5f6.rlib --extern libc=/tmp/cargo-mutants-wt-store-U37r5e.tmp/target/debug/deps/liblibc-ba57841a93caeb9f.rlib --extern minisign_verify=/tmp/cargo-mutants-wt-store-U37r5e.tmp/target/debug/deps/libminisign_verify-f6218f1677aea0bf.rlib --extern rmcp=/tmp/cargo-mutants-wt-store-U37r5e.tmp/target/debug/deps/librmcp-bbe5d1ea2c64b564.rlib --extern serde=/tmp/cargo-mutants-wt-store-U37r5e.tmp/target/debug/deps/libserde-2f9aed2f70f6bed6.rlib --extern serde_json=/tmp/cargo-mutants-wt-store-U37r5e.tmp/target/debug/deps/libserde_json-43686a25b3e0abb5.rlib --extern sha2=/tmp/cargo-mutants-wt-store-U37r5e.tmp/target/debug/deps/libsha2-cd77bb1a5fd67e55.rlib --extern snow=/tmp/cargo-mutants-wt-store-U37r5e.tmp/target/debug/deps/libsnow-ff40b2ec3a31c507.rlib --extern sqlx=/tmp/cargo-mutants-wt-store-U37r5e.tmp/target/debug/deps/libsqlx-cb77dcc45c0ed650.rlib --extern subtle=/tmp/cargo-mutants-wt-store-U37r5e.tmp/target/debug/deps/libsubtle-21fdd1ad8082ff4c.rlib --extern tokio=/tmp/cargo-mutants-wt-store-U37r5e.tmp/target/debug/deps/libtokio-23d3275e15ef89a7.rlib --extern weacon_agents=/tmp/cargo-mutants-wt-store-U37r5e.tmp/target/debug/deps/libweacon_agents-169f51dc667aaae4.rlib --extern weacon_appkit=/tmp/cargo-mutants-wt-store-U37r5e.tmp/target/debug/deps/libweacon_appkit-cef9ab0dfcf1b9ba.rlib --extern weacon_client=/tmp/cargo-mutants-wt-store-U37r5e.tmp/target/debug/deps/libweacon_client-48a9efeaabe489a2.rlib --extern weacon_codemap=/tmp/cargo-mutants-wt-store-U37r5e.tmp/target/debug/deps/libweacon_codemap-bf7c21c47d6359cf.rlib --extern weacon_model=/tmp/cargo-mutants-wt-store-U37r5e.tmp/target/debug/deps/libweacon_model-80d235c1d90260ba.rlib --extern weacon_observability=/tmp/cargo-mutants-wt-store-U37r5e.tmp/target/debug/deps/libweacon_observability-e6d3469c72ebc5cc.rlib --extern weacon_protocol=/tmp/cargo-mutants-wt-store-U37r5e.tmp/target/debug/deps/libweacon_protocol-02d7888e9ae5bdcd.rlib --extern weacon_testing=/tmp/cargo-mutants-wt-store-U37r5e.tmp/target/debug/deps/libweacon_testing-5e35680c5b8373c2.rlib --extern weacon_version=/tmp/cargo-mutants-wt-store-U37r5e.tmp/target/debug/deps/libweacon_version-1bf1695098049f3b.rlib --extern x25519_dalek=/tmp/cargo-mutants-wt-store-U37r5e.tmp/target/debug/deps/libx25519_dalek-62aacd633b2feae1.rlib -L native=/tmp/cargo-mutants-wt-store-U37r5e.tmp/target/debug/build/ring-0d7f8ea0b0235601/out -L native=/tmp/cargo-mutants-wt-store-U37r5e.tmp/target/debug/build/libsqlite3-sys-c0099c54494495dc/out -L native=/tmp/cargo-mutants-wt-store-U37r5e.tmp/target/debug/build/tree-sitter-feb6ce87a24a351a/out -L native=/tmp/cargo-mutants-wt-store-U37r5e.tmp/target/debug/build/tree-sitter-rust-e7b03b7b9740dfda/out`
+     Running `/root/.rustup/toolchains/1.97.0-x86_64-unknown-linux-gnu/bin/rustc --crate-name weacon --edition=2024 apps/core/src/main.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type bin --emit=dep-info,link -C embed-bitcode=no -C debuginfo=2 --warn=rust_2018_idioms '--warn=clippy::pedantic' '--warn=clippy::wildcard_enum_match_arm' '--warn=clippy::verbose_file_reads' '--warn=clippy::useless_let_if_seq' '--warn=clippy::use_self' '--warn=clippy::unwrap_used' '--warn=clippy::unused_result_ok' --warn=unused_qualifications --warn=unused_lifetimes --warn=unused_import_braces --deny=unsafe_code --warn=unreachable_pub '--warn=clippy::unreachable' '--warn=clippy::unneeded_field_pattern' '--warn=clippy::unnecessary_struct_initialization' --warn=unit_bindings '--warn=clippy::unimplemented' '--warn=clippy::undocumented_unsafe_blocks' '--warn=clippy::type_repetition_in_bounds' '--warn=clippy::try_err' --warn=trivial_numeric_casts --warn=trivial_casts '--warn=clippy::trait_duplication_in_bounds' '--warn=clippy::todo' '--warn=clippy::tests_outside_test_module' '--warn=clippy::string_slice' '--warn=clippy::str_to_string' --warn=single_use_lifetimes '--warn=clippy::significant_drop_in_scrutinee' '--warn=clippy::rest_pat_in_fully_bound_structs' '--warn=clippy::redundant_type_annotations' '--warn=clippy::redundant_test_prefix' --warn=redundant_lifetimes '--warn=clippy::redundant_clone' '--warn=clippy::rc_mutex' '--warn=clippy::print_stdout' '--warn=clippy::print_stderr' '--warn=clippy::panic' '--warn=clippy::or_fun_call' --deny=non_ascii_idents '--warn=clippy::needless_pass_by_ref_mut' '--warn=clippy::needless_collect' '--warn=clippy::mod_module_files' '--warn=clippy::min_ident_chars' '--warn=clippy::mem_forget' '--warn=clippy::lossy_float_literal' '--warn=clippy::literal_string_with_formatting_args' '--warn=clippy::let_underscore_must_use' --warn=let_underscore_drop '--warn=clippy::iter_with_drain' '--warn=clippy::iter_over_hash_type' '--warn=clippy::iter_on_single_items' '--warn=clippy::infinite_loop' '--warn=clippy::indexing_slicing' '--warn=clippy::if_then_some_else_none' '--warn=clippy::get_unwrap' '--warn=clippy::format_push_string' '--warn=clippy::expect_used' '--warn=clippy::exit' '--warn=clippy::excessive_nesting' '--warn=clippy::equatable_if_let' '--warn=clippy::empty_structs_with_brackets' '--warn=clippy::derive_partial_eq_without_eq' '--warn=clippy::dbg_macro' '--warn=clippy::collection_is_never_read' '--warn=clippy::clone_on_ref_ptr' '--warn=clippy::branches_sharing_code' '--warn=clippy::assertions_on_result_states' '--warn=clippy::as_conversions' '--warn=clippy::allow_attributes_without_reason' '--warn=clippy::allow_attributes' --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=6b036ac34a41a935 -C extra-filename=-67bccba32a94a817 --out-dir /tmp/cargo-mutants-wt-store-U37r5e.tmp/target/debug/deps -C incremental=/tmp/cargo-mutants-wt-store-U37r5e.tmp/target/debug/incremental -L dependency=/tmp/cargo-mutants-wt-store-U37r5e.tmp/target/debug/deps --extern clap=/tmp/cargo-mutants-wt-store-U37r5e.tmp/target/debug/deps/libclap-c74e4cd993d3a71f.rlib --extern getrandom=/tmp/cargo-mutants-wt-store-U37r5e.tmp/target/debug/deps/libgetrandom-eef26d3f53c979b2.rlib --extern http_body_util=/tmp/cargo-mutants-wt-store-U37r5e.tmp/target/debug/deps/libhttp_body_util-a45be3188cc3a53c.rlib --extern hyper=/tmp/cargo-mutants-wt-store-U37r5e.tmp/target/debug/deps/libhyper-057640639417ce38.rlib --extern hyper_util=/tmp/cargo-mutants-wt-store-U37r5e.tmp/target/debug/deps/libhyper_util-3bf966490b70c5f6.rlib --extern libc=/tmp/cargo-mutants-wt-store-U37r5e.tmp/target/debug/deps/liblibc-ba57841a93caeb9f.rlib --extern minisign_verify=/tmp/cargo-mutants-wt-store-U37r5e.tmp/target/debug/deps/libminisign_verify-f6218f1677aea0bf.rlib --extern rmcp=/tmp/cargo-mutants-wt-store-U37r5e.tmp/target/debug/deps/librmcp-bbe5d1ea2c64b564.rlib --extern serde=/tmp/cargo-mutants-wt-store-U37r5e.tmp/target/debug/deps/libserde-2f9aed2f70f6bed6.rlib --extern serde_json=/tmp/cargo-mutants-wt-store-U37r5e.tmp/target/debug/deps/libserde_json-43686a25b3e0abb5.rlib --extern sha2=/tmp/cargo-mutants-wt-store-U37r5e.tmp/target/debug/deps/libsha2-cd77bb1a5fd67e55.rlib --extern snow=/tmp/cargo-mutants-wt-store-U37r5e.tmp/target/debug/deps/libsnow-ff40b2ec3a31c507.rlib --extern sqlx=/tmp/cargo-mutants-wt-store-U37r5e.tmp/target/debug/deps/libsqlx-cb77dcc45c0ed650.rlib --extern subtle=/tmp/cargo-mutants-wt-store-U37r5e.tmp/target/debug/deps/libsubtle-21fdd1ad8082ff4c.rlib --extern tokio=/tmp/cargo-mutants-wt-store-U37r5e.tmp/target/debug/deps/libtokio-23d3275e15ef89a7.rlib --extern weacon_agents=/tmp/cargo-mutants-wt-store-U37r5e.tmp/target/debug/deps/libweacon_agents-169f51dc667aaae4.rlib --extern weacon_appkit=/tmp/cargo-mutants-wt-store-U37r5e.tmp/target/debug/deps/libweacon_appkit-cef9ab0dfcf1b9ba.rlib --extern weacon_client=/tmp/cargo-mutants-wt-store-U37r5e.tmp/target/debug/deps/libweacon_client-48a9efeaabe489a2.rlib --extern weacon_codemap=/tmp/cargo-mutants-wt-store-U37r5e.tmp/target/debug/deps/libweacon_codemap-bf7c21c47d6359cf.rlib --extern weacon_model=/tmp/cargo-mutants-wt-store-U37r5e.tmp/target/debug/deps/libweacon_model-80d235c1d90260ba.rlib --extern weacon_observability=/tmp/cargo-mutants-wt-store-U37r5e.tmp/target/debug/deps/libweacon_observability-e6d3469c72ebc5cc.rlib --extern weacon_protocol=/tmp/cargo-mutants-wt-store-U37r5e.tmp/target/debug/deps/libweacon_protocol-02d7888e9ae5bdcd.rlib --extern weacon_version=/tmp/cargo-mutants-wt-store-U37r5e.tmp/target/debug/deps/libweacon_version-1bf1695098049f3b.rlib --extern x25519_dalek=/tmp/cargo-mutants-wt-store-U37r5e.tmp/target/debug/deps/libx25519_dalek-62aacd633b2feae1.rlib -L native=/tmp/cargo-mutants-wt-store-U37r5e.tmp/target/debug/build/ring-0d7f8ea0b0235601/out -L native=/tmp/cargo-mutants-wt-store-U37r5e.tmp/target/debug/build/libsqlite3-sys-c0099c54494495dc/out -L native=/tmp/cargo-mutants-wt-store-U37r5e.tmp/target/debug/build/tree-sitter-feb6ce87a24a351a/out -L native=/tmp/cargo-mutants-wt-store-U37r5e.tmp/target/debug/build/tree-sitter-rust-e7b03b7b9740dfda/out`
+warning: unused import: `std::fs`
+ --> apps/core/src/map.rs:1:5
+  |
+1 | use std::fs;
+  |     ^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `LARGEST`
+  --> apps/core/src/map.rs:13:22
+   |
+13 | use crate::codemap::{LARGEST, index_failed, read_failed};
+   |                      ^^^^^^^
+
+warning: unused variable: `root`
+  --> apps/core/src/map.rs:86:17
+   |
+86 | fn source_files(root: &Path, folder: &str, files: &mut Vec<SourceFile>) -> io::Result<()> {
+   |                 ^^^^ help: if this is intentional, prefix it with an underscore: `_root`
+   |
+   = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `folder`
+  --> apps/core/src/map.rs:86:30
+   |
+86 | fn source_files(root: &Path, folder: &str, files: &mut Vec<SourceFile>) -> io::Result<()> {
+   |                              ^^^^^^ help: if this is intentional, prefix it with an underscore: `_folder`
+
+warning: unused variable: `files`
+  --> apps/core/src/map.rs:86:44
+   |
+86 | fn source_files(root: &Path, folder: &str, files: &mut Vec<SourceFile>) -> io::Result<()> {
+   |                                            ^^^^^ help: if this is intentional, prefix it with an underscore: `_files`
+
+warning: function `text_or_skip` is never used
+  --> apps/core/src/map.rs:91:4
+   |
+91 | fn text_or_skip(read: io::Result<String>) -> io::Result<Option<String>> {
+   |    ^^^^^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `present` is never used
+  --> apps/core/src/map.rs:99:4
+   |
+99 | fn present<T>(read: io::Result<T>) -> io::Result<Option<T>> {
+   |    ^^^^^^^
+
+warning: function `skipped` is never used
+   --> apps/core/src/map.rs:108:4
+    |
+108 | fn skipped(folder: &Path, name: &str) -> bool {
+    |    ^^^^^^^
+
+warning: function `skipped` is never used
+   --> apps/core/src/map.rs:108:4
+    |
+108 | fn skipped(folder: &Path, name: &str) -> bool {
+    |    ^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `weacon-core` (bin "weacon") generated 8 warnings (run `cargo fix --bin "weacon" -p weacon-core` to apply 5 suggestions)
+warning: `weacon-core` (bin "weacon" test) generated 4 warnings (3 duplicates)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 6.57s
+  Executable `/tmp/cargo-mutants-wt-store-U37r5e.tmp/target/debug/deps/weacon-51917bdc92f96f6c`
+  Executable `/tmp/cargo-mutants-wt-store-U37r5e.tmp/target/debug/deps/cli-3fa29b0a8c7c73e8`
+  Executable `/tmp/cargo-mutants-wt-store-U37r5e.tmp/target/debug/deps/release-5d515009e300419c`
+
+*** result: Success
+
+*** /root/.rustup/toolchains/1.97.0-x86_64-unknown-linux-gnu/bin/cargo test --verbose --package=weacon-core@0.0.0
+       Fresh unicode-ident v1.0.27
+       Fresh cfg-if v1.0.5
+       Fresh proc-macro2 v1.0.107
+       Fresh itoa v1.0.18
+       Fresh quote v1.0.47
+       Fresh libc v0.2.191
+       Fresh find-msvc-tools v0.1.15
+       Fresh syn v3.0.9
+       Fresh shlex v2.0.1
+       Fresh stable_deref_trait v1.2.1
+       Fresh bytes v1.12.1
+       Fresh synstructure v0.14.0
+       Fresh cc v1.11.0
+       Fresh pin-project-lite v0.2.17
+       Fresh zerovec-derive v0.11.7
+       Fresh typenum v1.20.1
+       Fresh zerofrom-derive v0.1.8
+       Fresh yoke-derive v0.8.4
+       Fresh displaydoc v0.2.7
+       Fresh serde_derive v1.0.229
+       Fresh zerofrom v0.1.8
+       Fresh smallvec v1.16.4
+       Fresh futures-core v0.3.34
+       Fresh yoke v0.8.4
+       Fresh serde v1.0.229
+       Fresh syn v2.0.119
+       Fresh writeable v0.6.4
+       Fresh zerovec v0.11.9
+       Fresh zmij v1.0.23
+       Fresh litemap v0.8.3
+       Fresh autocfg v1.5.1
+       Fresh utf_types v1.0.0
+       Fresh tinystr v0.8.5
+       Fresh utf8_iter v1.1.0
+       Fresh potential_utf v0.1.6
+       Fresh zerotrie v0.2.5
+       Fresh icu_locale_core v2.4.0
+       Fresh errno v0.3.14
+       Fresh icu_collections v2.4.0
+       Fresh icu_provider v2.4.0
+       Fresh signal-hook-registry v1.4.8
+       Fresh tokio-macros v2.7.2
+       Fresh mio v1.2.4
+       Fresh socket2 v0.6.5
+       Fresh rand_core v0.10.1
+       Fresh tokio v1.54.1
+       Fresh icu_normalizer_data v2.4.0
+       Fresh num-traits v0.2.19
+       Fresh icu_properties_data v2.4.0
+       Fresh thiserror-impl v2.0.21
+       Fresh cpufeatures v0.3.1
+       Fresh equivalent v1.0.3
+       Fresh futures-sink v0.3.34
+       Fresh icu_properties v2.4.0
+       Fresh thiserror v2.0.21
+       Fresh icu_normalizer v2.4.0
+       Fresh getrandom v0.4.3
+       Fresh http v1.5.0
+       Fresh version_check v0.9.5
+       Fresh log v0.4.35
+       Fresh subtle v2.6.1
+       Fresh percent-encoding v2.3.2
+       Fresh idna_adapter v1.2.2
+       Fresh hashbrown v0.17.1
+       Fresh idna v1.1.0
+       Fresh form_urlencoded v1.2.2
+       Fresh futures-channel v0.3.34
+       Fresh chacha20 v0.10.2
+       Fresh futures-macro v0.3.34
+       Fresh ref-cast-impl v1.0.27
+       Fresh serde_derive_internals v0.30.0
+       Fresh foldhash v0.2.0
+       Fresh futures-task v0.3.34
+       Fresh futures-io v0.3.34
+       Fresh slab v0.4.12
+       Fresh schemars_derive v1.2.3
+       Fresh rand v0.10.3
+       Fresh ref-cast v1.0.27
+       Fresh futures-util v0.3.34
+       Fresh url v2.5.8
+       Fresh generic-array v0.14.7
+       Fresh chrono v0.4.45
+       Fresh zeroize_derive v1.5.0
+       Fresh hybrid-array v0.4.15
+       Fresh aho-corasick v1.1.5
+       Fresh regex-syntax v0.8.11
+       Fresh dyn-clone v1.0.20
+       Fresh once_cell v1.21.4
+       Fresh schemars v1.2.3
+       Fresh regex-automata v0.4.18
+       Fresh zeroize v1.9.1
+       Fresh httparse v1.10.1
+       Fresh uuid v1.29.0
+       Fresh semver v1.0.28
+       Fresh scopeguard v1.2.0
+       Fresh regex v1.13.1
+       Fresh lock_api v0.4.14
+       Fresh rustc_version v0.4.1
+       Fresh crypto-common v0.2.2
+       Fresh block-buffer v0.12.1
+       Fresh block-buffer v0.10.4
+       Fresh crypto-common v0.1.7
+       Fresh powerfmt v0.2.1
+       Fresh cpufeatures v0.2.17
+       Fresh time-core v0.1.9
+       Fresh deranged v0.5.9
+       Fresh const-oid v0.10.3
+       Fresh num-conv v0.2.2
+       Fresh digest v0.11.3
+       Fresh time v0.3.55
+       Fresh digest v0.10.7
+       Fresh debugid v0.8.0
+       Fresh weacon-protocol v0.0.0 (/tmp/cargo-mutants-wt-store-U37r5e.tmp/crates/protocol)
+       Fresh getrandom v0.2.17
+       Fresh hex v0.4.3
+       Fresh untrusted v0.9.0
+       Fresh sentry-types v0.49.5
+       Fresh serde_core v1.0.229
+       Fresh ring v0.17.14
+       Fresh parking_lot_core v0.9.12
+       Fresh rustls-pki-types v1.15.1
+       Fresh tracing-core v0.1.36
+       Fresh http-body v1.1.0
+       Fresh tracing-attributes v0.1.31
+       Fresh pkg-config v0.3.34
+       Fresh memchr v2.8.3
+       Fresh vcpkg v0.2.15
+       Fresh allocator-api2 v0.2.21
+       Fresh tracing v0.1.44
+       Fresh crossbeam-utils v0.8.23
+       Fresh serde_json v1.0.154
+       Fresh hashbrown v0.16.1
+       Fresh parking_lot v0.12.5
+       Fresh weacon-observability v0.0.0 (/tmp/cargo-mutants-wt-store-U37r5e.tmp/crates/observability)
+       Fresh sha2 v0.10.9
+       Fresh futures-executor v0.3.34
+       Fresh indexmap v2.14.2
+       Fresh tokio-stream v0.1.19
+       Fresh base64 v0.23.1
+       Fresh crc-catalog v2.5.0
+       Fresh parking v2.2.1
+       Fresh utf8parse v0.2.2
+       Fresh futures-intrusive v0.5.0
+       Fresh event-listener v5.4.2
+       Fresh anstyle-parse v1.0.0
+       Fresh crc v3.4.0
+       Fresh hashlink v0.11.1
+       Fresh crossbeam-queue v0.3.14
+       Fresh rustls-webpki v0.103.16
+       Fresh tree-sitter-language v0.1.9
+       Fresh spin v0.9.9
+       Fresh base64 v0.22.1
+       Fresh colorchoice v1.0.5
+       Fresh anstyle v1.0.14
+       Fresh either v1.19.0
+       Fresh anstyle-query v1.1.5
+       Fresh winnow v1.0.4
+       Fresh is_terminal_polyfill v1.70.2
+       Fresh weacon-version v0.0.0 (/tmp/cargo-mutants-wt-store-U37r5e.tmp/crates/version)
+       Fresh toml_parser v1.1.5+spec-1.1.0
+       Fresh sqlx-core v0.9.0
+       Fresh flume v0.12.0
+       Fresh anstream v1.0.0
+       Fresh rustls v0.23.46
+       Fresh libsqlite3-sys v0.37.0
+       Fresh ureq-proto v0.7.1
+       Fresh http-body-util v0.1.5
+       Fresh webpki-roots v1.0.11
+       Fresh sha1 v0.11.0
+       Fresh atoi v2.0.0
+       Fresh curve25519-dalek-derive v0.1.1
+       Fresh toml_datetime v1.1.3+spec-1.1.0
+       Fresh serde_spanned v1.1.3
+       Fresh utf8-zero v0.8.1
+       Fresh clap_lex v1.1.1
+       Fresh tower-service v0.3.3
+       Fresh strsim v0.11.1
+       Fresh atomic-waker v1.1.2
+       Fresh streaming-iterator v0.1.9
+       Fresh heck v0.5.0
+       Fresh httpdate v1.0.3
+       Fresh data-encoding v2.11.1
+       Fresh clap_derive v4.6.7
+       Fresh clap_builder v4.6.7
+       Fresh tree-sitter v0.27.2
+       Fresh hyper v1.12.0
+       Fresh tungstenite v0.30.0
+       Fresh ureq v3.5.1
+       Fresh toml v1.2.1+spec-1.1.0
+       Fresh sqlx-sqlite v0.9.0
+       Fresh curve25519-dalek v4.1.3
+       Fresh sse-stream v0.2.6
+       Fresh tree-sitter-rust v0.24.2
+       Fresh getrandom v0.3.4
+       Fresh futures v0.3.34
+       Fresh sha2 v0.11.1
+       Fresh blake2 v0.10.6
+       Fresh tokio-util v0.7.20
+       Fresh async-trait v0.1.92
+       Fresh rand_core v0.6.4
+       Fresh pastey v0.2.3
+       Fresh snow v0.10.0
+       Fresh x25519-dalek v2.0.1
+       Fresh rmcp v3.9.0
+       Fresh weacon-codemap v0.0.0 (/tmp/cargo-mutants-wt-store-U37r5e.tmp/crates/codemap)
+       Fresh weacon-appkit v0.0.0 (/tmp/cargo-mutants-wt-store-U37r5e.tmp/crates/appkit)
+       Fresh tokio-tungstenite v0.30.0
+       Fresh sqlx v0.9.0
+       Fresh hyper-util v0.1.21
+       Fresh clap v4.6.7
+       Fresh weacon-client v0.0.0 (/tmp/cargo-mutants-wt-store-U37r5e.tmp/crates/client)
+       Fresh weacon-agents v0.0.0 (/tmp/cargo-mutants-wt-store-U37r5e.tmp/crates/agents)
+       Fresh weacon-model v0.0.0 (/tmp/cargo-mutants-wt-store-U37r5e.tmp/crates/model)
+       Fresh minisign-verify v0.3.0
+       Fresh weacon-testing v0.0.0 (/tmp/cargo-mutants-wt-store-U37r5e.tmp/crates/testing)
+warning: unused variable: `root`
+  --> apps/core/src/map.rs:86:17
+   |
+86 | fn source_files(root: &Path, folder: &str, files: &mut Vec<SourceFile>) -> io::Result<()> {
+   |                 ^^^^ help: if this is intentional, prefix it with an underscore: `_root`
+   |
+   = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `folder`
+  --> apps/core/src/map.rs:86:30
+   |
+86 | fn source_files(root: &Path, folder: &str, files: &mut Vec<SourceFile>) -> io::Result<()> {
+   |                              ^^^^^^ help: if this is intentional, prefix it with an underscore: `_folder`
+
+warning: unused variable: `files`
+  --> apps/core/src/map.rs:86:44
+   |
+86 | fn source_files(root: &Path, folder: &str, files: &mut Vec<SourceFile>) -> io::Result<()> {
+   |                                            ^^^^^ help: if this is intentional, prefix it with an underscore: `_files`
+
+warning: function `skipped` is never used
+   --> apps/core/src/map.rs:108:4
+    |
+108 | fn skipped(folder: &Path, name: &str) -> bool {
+    |    ^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `std::fs`
+ --> apps/core/src/map.rs:1:5
+  |
+1 | use std::fs;
+  |     ^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `LARGEST`
+  --> apps/core/src/map.rs:13:22
+   |
+13 | use crate::codemap::{LARGEST, index_failed, read_failed};
+   |                      ^^^^^^^
+
+warning: function `text_or_skip` is never used
+  --> apps/core/src/map.rs:91:4
+   |
+91 | fn text_or_skip(read: io::Result<String>) -> io::Result<Option<String>> {
+   |    ^^^^^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `present` is never used
+  --> apps/core/src/map.rs:99:4
+   |
+99 | fn present<T>(read: io::Result<T>) -> io::Result<Option<T>> {
+   |    ^^^^^^^
+
+warning: function `skipped` is never used
+   --> apps/core/src/map.rs:108:4
+    |
+108 | fn skipped(folder: &Path, name: &str) -> bool {
+    |    ^^^^^^^
+
+       Fresh weacon-core v0.0.0 (/tmp/cargo-mutants-wt-store-U37r5e.tmp/apps/core)
+warning: `weacon-core` (bin "weacon" test) generated 4 warnings (run `cargo fix --bin "weacon" -p weacon-core --tests` to apply 3 suggestions)
+warning: `weacon-core` (bin "weacon") generated 8 warnings (3 duplicates) (run `cargo fix --bin "weacon" -p weacon-core` to apply 2 suggestions)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.15s
+     Running `/tmp/cargo-mutants-wt-store-U37r5e.tmp/target/debug/deps/weacon-51917bdc92f96f6c`
+
+running 337 tests
+test app::tests::a_panic_is_reported_as_the_cores ... ok
+test app::tests::a_bad_dsn_turns_reports_off_with_a_warning ... ok
+test app::tests::a_dsn_alone_sends_nothing ... ok
+test app::tests::logs_go_to_the_state_folder_starting_with_the_build ... ok
+test app::tests::success_exits_cleanly_reports_nothing_and_says_nothing_on_stderr ... ok
+test app::tests::verbose_also_prints_info_logs ... ok
+test app::tests::a_stored_answer_decides_whether_reports_are_sent ... ok
+test app::tests::without_a_usable_state_folder_logs_still_reach_stderr ... ok
+test app::tests::no_content_reaches_a_log_line_or_an_error_report ... ok
+test chats::engine::tests::a_client_has_one_subscription_to_a_chat_and_a_full_queue_gets_none ... ok
+test chats::engine::tests::a_client_that_missed_events_is_told_and_subscribes_again ... ok
+test chats::engine::tests::a_chats_first_prompt_fixes_its_agent_and_a_later_one_cant_change_it ... ok
+test chats::engine::tests::a_permission_answer_only_reaches_the_run_that_asked ... ok
+test chats::engine::tests::a_prompt_sent_during_a_turn_waits_for_it_to_end ... ok
+test chats::engine::tests::a_prompt_cut_off_with_its_run_is_never_answered_in_the_chats_next_run ... ok
+test chats::engine::tests::a_repeated_request_does_nothing_and_a_conflicting_or_empty_one_is_refused ... ok
+test chats::engine::tests::a_prompt_starts_a_run_and_its_turn_is_committed_then_published_in_order ... ok
+test chats::engine::tests::a_run_keeps_waiting_until_its_last_prompt_is_answered ... ok
+test chats::engine::tests::a_snapshot_tells_the_runs_the_waiting_prompts_and_the_latest_events ... ok
+test chats::engine::tests::a_withdrawn_prompt_leaves_the_run_waiting_while_another_waits ... ok
+test chats::engine::tests::an_agent_that_cant_start_fails_the_prompt_and_the_next_one_tries_again ... ok
+test chats::engine::tests::a_withdrawn_prompt_stops_waiting_and_an_interrupt_ends_the_turn ... ok
+test chats::engine::tests::an_agent_this_build_doesnt_know_is_refused ... ok
+test chats::engine::tests::what_this_build_doesnt_know_is_refused_and_a_stopped_engine_says_so ... ok
+test chats::engine::turns::tests::a_chat_stays_open_only_while_an_agent_a_prompt_or_a_client_needs_it ... ok
+test chats::engine::tests::an_agent_that_exits_leaves_its_turn_unknown_and_queued_prompts_get_a_new_run ... ok
+test chats::engine::turns::tests::a_chat_whose_new_run_cant_start_lets_go_of_the_old_one_and_closes ... ok
+test chats::engine::turns::tests::a_failed_log_write_keeps_the_agent_and_its_subscribers_start_over ... ok
+test chats::engine::turns::tests::a_prompt_of_a_run_cut_off_by_a_restart_takes_no_answer ... ok
+test chats::engine::turns::tests::a_prompt_its_run_never_got_goes_back_to_the_queue ... ok
+test chats::engine::turns::tests::a_prompt_sent_again_goes_on_from_where_its_first_try_stopped ... ok
+test chats::engine::turns::tests::a_queued_prompt_whose_end_is_in_the_log_never_runs ... ok
+test chats::engine::turns::tests::a_prompt_too_large_to_show_is_refused_for_the_person_and_never_waits ... ok
+test chats::engine::turns::tests::a_refused_prompt_whose_write_landed_is_withdrawn_in_the_log ... ok
+test chats::engine::turns::tests::a_retry_naming_another_run_gives_nothing_and_changes_no_run ... ok
+test chats::engine::turns::tests::a_run_cut_off_by_a_restart_ends_and_leaves_no_prompt_waiting ... ok
+test chats::engine::turns::tests::a_run_that_stopped_reading_gets_no_turn_and_the_prompt_goes_to_a_new_run ... ok
+test chats::engine::turns::tests::a_prompt_too_large_for_the_log_is_refused_and_never_runs ... ok
+test chats::engine::turns::tests::a_session_the_journal_couldnt_save_is_resumed_by_the_next_run ... ok
+test chats::engine::turns::tests::a_turn_ends_even_when_its_last_event_cant_be_committed ... ok
+test chats::engine::turns::tests::a_turn_whose_agent_is_gone_doesnt_hold_up_the_next_prompt ... ok
+test chats::engine::turns::tests::a_turn_whose_receipt_cant_be_committed_ends_as_reported_on_the_next_prompt ... ok
+test chats::engine::turns::tests::a_turn_whose_run_is_gone_ends_unknown_on_the_next_prompt ... ok
+test chats::engine::turns::tests::a_withdrawal_that_cant_be_written_still_drops_the_answers_on_their_way ... ok
+test chats::engine::turns::tests::a_withdrawal_whose_write_landed_is_not_written_again ... ok
+test chats::engine::turns::tests::a_withdrawal_whose_write_fails_is_written_again_and_the_prompt_stops_waiting ... ok
+test chats::engine::turns::tests::a_working_run_with_no_turn_left_after_a_restart_sleeps ... ok
+test chats::engine::turns::tests::an_agents_session_is_kept_even_when_its_event_cant_be_committed ... ok
+test chats::engine::turns::tests::an_answer_already_in_the_log_reaches_its_run_once_and_is_logged_once ... ok
+test app::tests::blocking_work_that_panics_fails_with_io ... ok
+test chats::engine::turns::tests::an_answer_on_its_way_to_a_withdrawn_prompt_is_never_given ... ok
+test chats::engine::turns::tests::an_answer_that_gets_no_receipt_isnt_given_and_can_be_sent_again ... ok
+test chats::engine::turns::tests::an_answer_under_another_commands_request_never_reaches_the_run ... ok
+test chats::engine::turns::tests::an_answer_whose_receipt_was_written_reaches_its_run_when_sent_again ... ok
+test chats::engine::turns::tests::an_interrupt_that_cant_be_committed_isnt_sent ... ok
+test chats::engine::turns::tests::an_interrupt_whose_receipt_was_written_stops_its_turn_when_sent_again ... ok
+test chats::engine::turns::tests::an_outcome_left_by_another_turn_doesnt_end_this_one ... ok
+test chats::engine::turns::tests::an_exit_whose_receipt_failed_is_ended_before_the_next_run_starts ... ok
+test chats::engine::turns::tests::the_agent_a_logged_first_prompt_named_holds_even_if_it_wasnt_queued ... ok
+test chats::engine::turns::tests::what_another_run_says_is_ignored_and_a_read_failure_is_logged_once ... ok
+test chats::engine::turns::tests::answering_one_prompt_keeps_another_answer_still_on_its_way ... ok
+test chats::log::tests::a_failed_write_breaks_the_log_until_it_is_opened_again ... ok
+test chats::log::tests::a_repeated_request_is_the_same_or_another_command ... ok
+test chats::log::tests::an_entry_cut_short_is_dropped_and_a_damaged_one_before_it_stops_the_open ... ok
+test chats::log::tests::chats_keep_apart_by_workspace_and_by_case_in_private_files ... ok
+test chats::log::tests::entries_are_numbered_from_one_and_survive_a_restart ... ok
+test chats::engine::turns::tests::an_event_too_large_for_a_frame_is_committed_without_what_made_it_so ... ok
+test chats::tests::a_chat_works_in_a_private_folder_of_its_own_under_the_work_folder ... ok
+test chats::tests::a_real_launch_accepts_a_chats_folder ... ok
+test chats::tests::a_runs_token_lives_as_long_as_its_agent_and_a_failed_start_keeps_none ... ok
+test chats::tests::the_clock_is_todays ... ok
+test chats::tests::the_daemons_engine_starts_agents_in_the_chats_folder_or_fails_the_prompt ... ok
+test cli::tests::a_missing_or_unknown_command_is_an_error ... ok
+test cli::tests::access_takes_a_workspace_a_level_and_whether_its_a_team ... ok
+test cli::tests::chrome_starts_the_native_host_with_its_origin ... ok
+test cli::tests::commands_and_flags_parse ... ok
+test cli::tests::login_takes_a_known_agent_and_a_workspace_id ... ok
+test cli::tests::map_commands_take_a_root_and_a_budget_before_or_after_their_subcommand ... ok
+test cli::tests::reports_takes_on_off_or_nothing ... ok
+test cli::tests::the_daemon_logs_to_its_terminal_and_its_own_file ... ok
+test cli::tests::version_prints_the_version_and_commit ... ok
+test chats::log::tests::a_window_holds_the_latest_entries_before_a_place_up_to_a_count_and_a_frame ... ok
+test chats::log::tests::a_text_delta_or_an_event_too_large_for_a_frame_is_never_committed ... ok
+test codemap::repo::tests::reads_nothing_through_a_link ... ok
+test codemap::repo::tests::reads_a_repository_and_what_its_worktree_changed ... ok
+test codemap::tests::a_worktree_finds_what_its_changes_renamed_in_other_files ... ok
+test codemap::tests::keys_text_by_its_hash_and_layers_by_their_worktree ... ok
+test codemap::tests::a_worktree_sees_its_changes_over_the_base ... ok
+test codemap::tests::reads_only_blobs_it_has_not_seen ... ok
+test codemap::tests::searches_a_worktree_or_the_base_within_a_budget ... ok
+test codemap::repo::tests::indexes_a_folder_as_its_worktree_has_it ... ok
+test daemon::tests::a_client_shakes_hands_and_shutdown_cleans_up ... ok
+test codemap::watch::tests::warns_once_while_reading_fails ... ok
+test daemon::tests::a_client_that_floods_before_its_hello_is_hung_up_on ... ok
+test codemap::watch::tests::updates_only_when_the_base_or_the_worktree_moved ... ok
+test daemon::tests::a_client_that_never_says_hello_is_hung_up_on ... ok
+test daemon::tests::a_clients_errors_are_logged_by_code_after_its_hello ... ok
+test daemon::tests::a_pick_before_the_hello_is_refused ... ok
+test daemon::tests::a_pick_is_kept_and_answered_with_a_receipt ... ok
+test daemon::tests::a_command_read_with_the_hello_isnt_held_to_the_handshake_deadline ... ok
+test daemon::tests::a_state_folder_others_can_reach_is_refused ... ok
+test daemon::tests::a_hello_may_come_late_but_within_the_deadline ... ok
+test daemon::tests::a_pick_that_cant_be_kept_fails_its_receipt ... ok
+test daemon::tests::another_user_is_refused ... ok
+test daemon::tests::bad_frames_get_errors_and_the_connection_goes_on ... ok
+test daemon::tests::another_protocol_is_hung_up_on_at_once ... ok
+test daemon::tests::chat_messages_before_the_hello_are_refused_like_any_other ... ok
+test daemon::tests::one_daemon_per_state_folder_and_a_stale_socket_is_replaced ... ok
+test daemon::tests::shutdown_hangs_up_on_connected_clients ... ok
+test daemon::tests::memory_is_sampled_at_start_and_every_five_minutes ... ok
+test daemon::tests::the_disk_is_checked_at_start_and_again_each_minute ... ok
+test daemon::tests::the_engine_stops_before_the_daemon_lets_go_of_its_lock ... ok
+test daemon::tests::chat_commands_and_queries_reach_the_engine_and_its_events_come_back ... ok
+test db::map::tests::quotes_every_word_of_a_search ... ok
+test db::map::tests::rereads_what_it_cant_parse_and_drops_what_nothing_uses ... ok
+test db::map::tests::each_repository_has_its_own_map ... ok
+test db::map::tests::a_worktree_finds_its_own_files_and_the_base_files_it_kept ... ok
+test disk::tests::each_change_is_logged_once_and_failures_once_until_a_reading_works ... ok
+test disk::tests::free_space_reads_in_mib_or_gib ... ok
+test disk::tests::levels_follow_free_space_and_each_lifts_only_well_clear ... ok
+test db::map::tests::stores_and_replaces_layers_with_their_facts ... ok
+test doctor::tests::every_sign_in_is_checked_in_order_and_a_failed_check_is_logged_once_and_unknown ... ok
+test doctor::tests::fails_when_it_cant_print ... ok
+test doctor::tests::fails_without_a_usable_state_folder ... ok
+test doctor::tests::prints_how_agent_tools_start ... ok
+test doctor::tests::prints_the_build_and_the_state_folder ... ok
+test doctor::tests::prints_the_state_folders_free_space ... ok
+test doctor::tests::reports_are_on_only_with_a_dsn_and_consent ... ok
+test doctor::tests::checks_run_a_few_at_once_so_slow_ones_dont_add_up ... ok
+test doctor::tests::workspaces_that_cant_be_listed_are_said_to_be ... ok
+test git::reads::tests::a_folder_that_isnt_a_repository_fails ... ok
+test git::reads::tests::reads_a_batch_by_its_headers ... ok
+test db::map::tests::workspaces_never_see_each_others_maps ... ok
+test git::removal::tests::a_chat_with_nothing_in_the_trash_has_nothing_to_restore ... ok
+test git::removal::tests::a_folder_that_isnt_a_worktree_is_never_trashed ... ok
+test git::reads::tests::lists_what_a_worktree_changed_from_a_commit ... ok
+test git::removal::tests::a_journal_that_cant_be_read_is_an_error_not_an_empty_one ... ok
+test git::reads::tests::reads_the_head_its_tree_and_its_blobs ... ok
+test git::removal::tests::a_journal_that_doesnt_parse_is_an_error_not_an_empty_one ... ok
+test git::removal::tests::a_removal_cut_short_before_the_move_never_blocks_the_chat ... ok
+test git::removal::tests::a_git_file_that_isnt_a_short_plain_file_is_no_worktree ... ok
+test git::removal::tests::a_journal_that_cant_be_read_moves_nothing ... ok
+test git::removal::tests::a_removal_cut_short_is_tidied_where_the_worktree_is ... ok
+test git::removal::tests::a_removal_is_on_record_before_the_worktree_moves ... ok
+test chats::log::tests::entries_since_a_place_are_all_there_or_lost ... ok
+test git::removal::tests::a_removed_worktree_is_in_the_trash_until_it_is_restored ... ok
+test git::removal::tests::a_restore_cut_short_after_the_move_is_tidied_next_time ... ok
+test git::removal::tests::a_worktree_moved_but_not_journaled_is_put_back ... ok
+test git::removal::tests::a_worktree_gone_from_the_trash_is_forgotten ... ok
+test git::removal::tests::a_worktree_is_locked_while_in_the_trash_and_unlocked_once_back ... ok
+test git::removal::tests::a_worktree_replaced_in_the_trash_is_forgotten_not_restored ... ok
+test git::removal::tests::a_worktree_that_cant_be_put_back_is_said_to_be_lost ... ok
+test git::removal::tests::another_workspaces_removals_never_count ... ok
+test git::removal::tests::a_worktree_whose_place_is_taken_stays_in_the_trash ... ok
+test git::removal::tests::a_worktree_the_trash_refuses_stays_where_it_is ... ok
+test git::removal::tests::another_repository_in_the_trash_is_never_restored ... ok
+test git::removal::tests::only_absence_or_replacement_forgets_a_trashed_worktree ... ok
+test git::removal::tests::removals_never_mix_workspaces_or_chats ... ok
+test git::tests::a_branch_made_meanwhile_is_never_taken_back ... ok
+test git::removal::tests::another_workspaces_removals_stay_in_the_file ... ok
+test git::tests::a_chat_gets_a_worktree_on_its_own_branch_and_finds_it_again ... ok
+test git::tests::a_branch_or_folder_with_the_chats_name_is_never_taken_over ... ok
+test git::tests::a_chat_whose_worktree_and_the_folder_above_were_deleted_gets_it_back ... ok
+test git::tests::a_folder_that_isnt_a_repository_fails ... ok
+test git::tests::a_worktree_whose_folder_cant_be_made_fails ... ok
+test git::tests::chats_branches_are_named_after_their_ids ... ok
+test git::tests::git_is_found_only_on_the_path ... ok
+test git::tests::git_runs_on_the_repository_without_hooks_prompts_or_redirects ... ok
+test git::tests::listed_worktrees_skip_bare_ones_and_mark_missing_ones ... ok
+test git::tests::a_chat_whose_worktree_folder_was_deleted_gets_it_back_on_its_branch ... ok
+test git::tests::a_locked_worktree_whose_folder_is_gone_isnt_listed_or_used ... ok
+test git::tests::relative_paths_are_refused ... ok
+test git::tests::a_checkout_that_fails_leaves_no_branch_behind ... ok
+test map::tests::a_budget_reaches_the_map_tool ... FAILED
+test git::tests::the_repositorys_own_hooks_never_run ... ok
+test git::tests::the_folders_above_a_worktree_are_private ... ok
+test map::tests::a_root_that_cant_be_read_or_an_answer_that_cant_be_printed_is_an_error ... FAILED
+test map::tests::fails_when_it_cant_read_or_print ... ok
+test map::tests::fails_on_a_missing_root ... FAILED
+test map::tests::prints_missing_changed_and_malformed_pins ... FAILED
+test map::tests::skips_only_files_that_are_not_utf8_or_were_removed_meanwhile ... ok
+test map::tests::map_and_symbol_print_exactly_what_the_tools_answer ... FAILED
+test mcp::deadline::tests::a_write_nobody_reads_fails_after_the_limit ... ok
+test mcp::deadline::tests::a_stalled_flush_fails_and_a_failed_shutdown_says_so ... ok
+test mcp::grants::tests::a_granted_agent_passes_every_call_on ... ok
+test mcp::deadline::tests::writes_that_are_read_go_through_and_reads_pass_on ... ok
+test mcp::grants::tests::tokens_are_long_random_hex_and_their_debug_hides_them ... ok
+test mcp::grants::tests::a_token_finds_its_own_grant_until_it_is_revoked ... ok
+test map::tests::reads_only_crate_sources ... FAILED
+test mcp::tests::a_connection_is_warned_about_once_however_often_it_is_refused ... ok
+test git::tests::worktrees_list_the_main_one_first ... ok
+test mcp::tests::a_request_whose_run_ended_while_it_was_read_is_refused ... ok
+test mcp::tests::a_missing_unknown_or_ended_token_is_refused_and_never_logged ... ok
+test mcp::tests::a_run_gets_only_so_many_calls_at_once_and_bad_arguments_are_refused ... ok
+test mcp::tests::dropping_the_server_stops_it_and_its_open_connections ... ok
+test mcp::tests::another_host_an_origin_or_a_large_body_is_refused ... FAILED
+test mcp::tests::each_token_reads_only_its_own_runs_folder ... FAILED
+test mcp::tests::only_claude_gets_the_mcp_and_its_token_ends_with_the_revoke ... ok
+test mcp::tools::tests::a_budget_is_kept_within_its_bounds ... ok
+test mcp::tools::tests::a_folder_without_crates_has_no_map_and_one_that_cant_be_read_says_so_once ... FAILED
+test mcp::tools::tests::an_answer_ends_with_a_whole_line_within_its_budget ... ok
+test mcp::tests::it_names_itself_and_lists_its_tools ... ok
+test mcp::tools::tests::map_outlines_each_crate_and_its_modules ... ok
+test mcp::tools::tests::the_tool_list_and_each_description_keep_their_size ... ok
+test memory::tests::a_failure_is_logged_once_until_a_sample_works ... ok
+test memory::tests::the_core_and_everything_below_it_are_summed ... ok
+test mcp::tools::tests::symbol_says_where_an_item_is_or_that_none_has_the_path ... ok
+test names::tests::ids_differing_in_case_get_names_differing_in_more_than_case ... ok
+test names::tests::names_turn_back_into_their_ids_and_other_names_into_none ... ok
+test native_host::tests::a_failed_read_from_chrome_is_an_error_but_its_end_is_not ... ok
+test native_host::tests::a_frame_from_chrome_that_isnt_a_message_closes_the_port ... ok
+test native_host::tests::a_newer_extensions_messages_and_fields_reach_the_daemon ... ok
+test native_host::tests::connecting_chrome_registers_this_program_and_says_where ... ok
+test memory::tests::this_process_is_sampled_from_proc ... ok
+test native_host::tests::the_daemon_hanging_up_ends_the_relay ... ok
+test native_host::tests::frames_cross_both_ways_and_bad_lines_from_the_daemon_are_dropped ... ok
+test native_host::tests::the_manifest_lets_only_the_extension_start_this_program ... ok
+test native_host::tests::the_host_runs_only_for_the_extension_and_needs_the_daemon ... ok
+test picks::tests::a_pick_that_cant_be_written_or_read_fails_with_io ... ok
+test picks::tests::a_pick_is_kept_once_and_read_back ... ok
+test picks::tests::of_different_picks_kept_at_once_under_one_request_exactly_one_wins ... ok
+test platform::chrome::tests::on_linux_hosts_go_in_the_config_folder ... ok
+test platform::chrome::tests::on_windows_the_registry_points_each_browser_at_the_manifest ... ok
+test picks::tests::requests_differing_only_in_case_keep_their_own_files ... ok
+test platform::procs::tests::fields_are_read_from_a_status_file ... ok
+test platform::chrome::tests::the_manifest_is_written_for_each_browser ... ok
+test platform::programs::tests::folders_that_arent_absolute_are_skipped ... ok
+test platform::programs::tests::the_first_file_this_user_may_run_in_an_absolute_folder_is_found ... ok
+test platform::spawn_policy::tests::a_score_that_cant_be_written_is_left_alone ... ok
+test platform::spawn_policy::tests::on_linux_agents_start_under_a_policy ... ok
+test platform::spawn_policy::tests::the_cores_oom_score_is_read_when_there_is_one ... ok
+test platform::spawn_policy::tests::tools_get_the_cpu_count_and_a_higher_oom_score_than_the_core ... ok
+test platform::tests::free_space_is_read_for_a_folder_and_refused_for_a_missing_one ... ok
+test platform::tests::on_linux_the_state_folder_follows_xdg ... ok
+test platform::tests::the_state_folder_can_be_set ... ok
+test platform::tests::the_work_folder_is_in_the_home_folder_unless_set ... ok
+test platform::tests::the_work_folder_is_never_in_or_above_the_state_folder ... ok
+test platform::procs::tests::this_process_and_a_child_are_listed ... ok
+test platform::trash::linux::tests::on_linux_a_drives_own_trash_records_where_from_its_top ... ok
+test platform::trash::linux::tests::on_linux_a_name_taken_in_the_trash_is_skipped ... ok
+test platform::trash::linux::tests::on_linux_a_name_too_long_for_the_trash_fails_and_stays ... ok
+test platform::trash::linux::tests::on_linux_a_trash_another_user_owns_or_can_change_is_never_used ... ok
+test platform::trash::linux::tests::on_linux_an_item_that_cant_be_moved_stays_and_leaves_no_info_file ... ok
+test platform::trash::linux::tests::on_linux_items_go_to_the_home_trash_with_an_info_file_each ... ok
+test platform::trash::linux::tests::on_linux_paths_are_percent_encoded_and_times_are_local ... ok
+test platform::trash::linux::tests::on_linux_the_top_of_a_drive_is_its_highest_folder ... ok
+test platform::trash::linux::tests::on_linux_another_drive_uses_the_trash_at_its_top ... ok
+test platform::trash::macos::tests::a_taken_name_is_numbered_as_finder_does ... ok
+test platform::trash::macos::tests::a_trashes_folder_another_user_owns_or_can_change_is_never_used ... ok
+test platform::trash::macos::tests::items_on_another_drive_go_to_its_trashes_once_finder_made_them ... ok
+test platform::trash::tests::a_name_the_system_cant_check_is_an_error_not_a_free_one ... ok
+test platform::trash::macos::tests::items_on_the_homes_drive_go_to_the_home_trash ... ok
+test platform::trash::tests::only_an_absolute_path_that_exists_is_trashed ... ok
+test platform::trash::tests::a_restored_item_is_back_with_its_parents_made_and_its_info_gone ... ok
+test platform::trash::tests::restoring_never_replaces_what_is_there ... ok
+test platform::unix::tests::new_folders_are_private_and_existing_ones_kept ... ok
+test reports::tests::a_broken_or_newer_file_still_reads_or_is_an_error ... ok
+test reports::tests::a_watch_follows_the_stored_answer_and_warns_once_while_it_cant_be_read ... ok
+test reports::tests::an_answer_applies_to_the_run_that_gives_it ... ok
+test reports::tests::an_answer_that_cant_be_saved_or_printed_is_an_error ... ok
+test reports::tests::long_work_stops_sending_once_the_person_says_no ... ok
+test runs::task::tests::a_run_reports_what_its_agent_says_then_its_exit_once_and_stops ... ok
+test runs::task::tests::an_agent_that_stops_reading_its_orders_is_stopped ... ok
+test reports::tests::nothing_is_chosen_until_the_person_answers_and_the_answer_is_kept ... ok
+test runs::task::tests::an_agent_whose_pipes_break_is_stopped_once_it_has_said_its_last_words ... ok
+test runs::tests::a_change_that_cant_be_saved_isnt_made_and_its_id_is_never_issued_again ... ok
+test runs::task::tests::with_a_program::the_drivers_run_takes_orders_and_says_what_its_agent_does ... ok
+test runs::tests::a_counter_at_its_end_issues_no_more_ids ... ok
+test runs::tests::a_journal_that_cant_be_read_stops_the_start ... ok
+test runs::tests::a_chats_next_run_keeps_its_agent_session_and_queue ... ok
+test runs::tests::a_prompt_is_queued_once_and_a_new_chat_gets_a_record_without_a_run ... ok
+test runs::tests::a_run_id_is_never_issued_twice_even_after_a_restart ... ok
+test mcp::tests::a_connection_that_sends_nothing_is_closed ... ok
+test runs::tests::queued_text_stays_out_of_debug_output ... ok
+test mcp::tests::a_body_that_stops_arriving_is_given_up_on ... ok
+test service::tests::on_linux::install_writes_the_unit_then_lingers_enables_and_restarts ... ok
+test runs::tests::another_agent_doesnt_resume_the_first_ones_session ... ok
+test service::tests::on_linux::the_unit_goes_in_the_users_systemd_folder ... ok
+test service::tests::on_linux::without_a_home_there_is_nowhere_to_install ... ok
+test service::tests::on_linux::a_failed_step_stops_the_install_and_says_which ... ok
+test service::tests::the_unit_runs_the_daemon_at_its_quoted_path ... ok
+test session::tests::a_bad_frame_gets_its_error_and_the_connection_stays ... ok
+test session::tests::a_matching_hello_is_welcomed_once ... ok
+test session::tests::after_the_hello_unknown_messages_get_an_error_and_errors_get_nothing ... ok
+test session::tests::another_protocol_is_refused_and_hung_up_on ... ok
+test session::tests::anything_before_the_hello_is_refused_and_hung_up_on ... ok
+test service::tests::on_linux::uninstall_stops_and_removes_an_installed_service_only ... ok
+test service::tests::system_runs_a_program_and_says_whether_it_succeeded ... ok
+test runs::tests::each_chat_has_its_own_latest_run_and_keeps_it_across_a_restart ... ok
+test terminal::seal::tests::a_plaintext_too_long_for_one_frame_is_refused_and_breaks_the_channel ... ok
+test terminal::seal::tests::both_ends_match_the_published_vector_and_the_committed_one_of_weacons_messages ... ok
+test terminal::seal::tests::keys_snow_makes_are_x25519_pairs ... ok
+test update::install::tests::a_build_that_does_not_run_is_removed ... ok
+test update::install::tests::a_build_that_reports_another_commit_is_removed ... ok
+test update::install::tests::a_download_is_checked_against_its_releases_sha256 ... ok
+test update::install::tests::a_download_that_differs_from_its_release_is_refused_and_removed ... ok
+test update::install::tests::a_download_that_never_ends_is_cut_off ... ok
+test update::install::tests::a_failed_download_leaves_nothing_behind ... ok
+test update::install::tests::a_rollback_without_the_old_binary_says_so ... ok
+test update::install::tests::a_stale_staged_file_is_replaced ... ok
+test update::install::tests::a_swap_replaces_an_earlier_old_binary ... ok
+test update::install::tests::a_swap_that_cannot_place_the_new_binary_keeps_the_running_one ... ok
+test update::install::tests::a_swap_without_the_running_binary_removes_the_staged_one ... ok
+test update::install::tests::a_whole_update_keeps_the_old_binary_beside_the_new_one ... ok
+test update::install::tests::an_unhealthy_start_puts_the_old_binary_back ... ok
+test update::install::tests::an_unwritable_folder_is_refused_before_downloading ... ok
+test update::install::tests::the_staged_binary_can_run ... ok
+test update::install::tests::the_staged_files_sit_beside_the_binary_and_still_run_on_windows ... ok
+test update::verify::tests::a_legacy_or_garbled_signature_is_refused ... ok
+test update::verify::tests::a_manifest_signed_by_a_trusted_key_is_read ... ok
+test update::verify::tests::changed_bytes_are_refused ... ok
+test update::verify::tests::every_build_trusts_the_release_key_and_its_backup ... ok
+test update::verify::tests::signed_bytes_that_are_no_manifest_are_refused ... ok
+test update::verify::tests::the_shipped_keys_do_not_trust_a_test_signature ... ok
+test update::verify::tests::without_keys_nothing_is_trusted ... ok
+test workspaces::access::tests::a_report_that_cant_be_printed_is_an_error_after_the_level_is_saved ... ok
+test workspaces::access::tests::a_workspace_without_a_choice_asks_first_and_a_choice_is_kept ... ok
+test workspaces::access::tests::full_access_in_a_team_workspace_warns_and_the_team_mark_is_kept ... ok
+test workspaces::access::tests::older_and_newer_settings_files_still_read ... ok
+test workspaces::access::tests::only_full_access_in_a_team_workspace_has_a_warning ... ok
+test workspaces::access::tests::settings_that_cant_be_read_or_saved_are_errors ... ok
+test workspaces::access::tests::the_folders_made_for_a_workspaces_settings_are_private ... ok
+test workspaces::tests::a_missing_folder_reached_through_a_symlink_is_still_refused ... ok
+test workspaces::tests::a_program_that_isnt_on_the_path_is_not_installed_and_never_asked ... ok
+test workspaces::tests::agents_never_work_in_or_above_the_state_folder ... ok
+test workspaces::tests::agents_start_only_where_the_access_level_lets_them_and_carry_it ... ok
+test workspaces::tests::an_unknown_agent_or_an_unusable_folder_is_refused ... ok
+test workspaces::tests::config_folders_are_private_to_this_user ... ok
+test workspaces::tests::each_known_workspace_says_whether_its_agents_are_signed_in ... ok
+test workspaces::tests::each_known_workspace_shows_its_access_level_and_warnings ... ok
+test workspaces::tests::each_workspace_and_agent_gets_its_own_config_folder ... ok
+test workspaces::tests::folder_names_turn_back_into_their_ids_and_other_names_into_none ... ok
+test terminal::seal::tests::a_handshake_for_another_key_or_prologue_or_with_a_low_order_point_is_refused ... ok
+test workspaces::tests::ids_that_differ_only_in_case_or_name_a_device_get_folders_of_their_own ... ok
+test workspaces::tests::workspaces_that_cant_be_listed_are_an_error_not_an_empty_list ... ok
+test terminal::seal::tests::each_handshake_makes_fresh_keys ... ok
+test terminal::seal::tests::a_tampered_replayed_or_reordered_frame_breaks_the_channel_for_good ... ok
+
+failures:
+
+---- map::tests::a_budget_reaches_the_map_tool stdout ----
+
+thread 'map::tests::a_budget_reaches_the_map_tool' (32662) panicked at apps/core/src/map.rs:269:9:
+assertion `left != right` failed
+  left: "No code map for this folder.\n"
+ right: "No code map for this folder.\n"
+stack backtrace:
+   0: __rustc::rust_begin_unwind
+             at /rustc/2d8144b7880597b6e6d3dfd63a9a9efae3f533d3/library/std/src/panicking.rs:689:5
+   1: core::panicking::panic_fmt
+             at /rustc/2d8144b7880597b6e6d3dfd63a9a9efae3f533d3/library/core/src/panicking.rs:80:14
+   2: core::panicking::assert_failed_inner
+             at /rustc/2d8144b7880597b6e6d3dfd63a9a9efae3f533d3/library/core/src/panicking.rs:439:17
+   3: core::panicking::assert_failed::<alloc::string::String, alloc::string::String>
+             at /rustc/2d8144b7880597b6e6d3dfd63a9a9efae3f533d3/library/core/src/panicking.rs:394:5
+   4: weacon::map::tests::a_budget_reaches_the_map_tool
+             at ./src/map.rs:269:9
+   5: weacon::map::tests::a_budget_reaches_the_map_tool::{closure#0}
+             at ./src/map.rs:255:39
+   6: <weacon::map::tests::a_budget_reaches_the_map_tool::{closure#0} as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/2d8144b7880597b6e6d3dfd63a9a9efae3f533d3/library/core/src/ops/function.rs:250:5
+   7: <fn() -> core::result::Result<(), alloc::string::String> as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/2d8144b7880597b6e6d3dfd63a9a9efae3f533d3/library/core/src/ops/function.rs:250:5
+note: Some details are omitted, run with `RUST_BACKTRACE=full` for a verbose backtrace.
+
+---- map::tests::a_root_that_cant_be_read_or_an_answer_that_cant_be_printed_is_an_error stdout ----
+
+thread 'map::tests::a_root_that_cant_be_read_or_an_answer_that_cant_be_printed_is_an_error' (32672) panicked at apps/core/src/map.rs:284:78:
+called `Result::unwrap_err()` on an `Ok` value: Done
+stack backtrace:
+   0: __rustc::rust_begin_unwind
+             at /rustc/2d8144b7880597b6e6d3dfd63a9a9efae3f533d3/library/std/src/panicking.rs:689:5
+   1: core::panicking::panic_fmt
+             at /rustc/2d8144b7880597b6e6d3dfd63a9a9efae3f533d3/library/core/src/panicking.rs:80:14
+   2: core::result::unwrap_failed
+             at /rustc/2d8144b7880597b6e6d3dfd63a9a9efae3f533d3/library/core/src/result.rs:1867:5
+   3: <core::result::Result<weacon_appkit::exit::Ending, weacon_observability::errors::Fault>>::unwrap_err
+             at /rustc/2d8144b7880597b6e6d3dfd63a9a9efae3f533d3/library/core/src/result.rs:1329:22
+   4: weacon::map::tests::a_root_that_cant_be_read_or_an_answer_that_cant_be_printed_is_an_error::{closure#1}
+             at ./src/map.rs:284:78
+   5: weacon::map::tests::a_root_that_cant_be_read_or_an_answer_that_cant_be_printed_is_an_error
+             at ./src/map.rs:288:22
+   6: weacon::map::tests::a_root_that_cant_be_read_or_an_answer_that_cant_be_printed_is_an_error::{closure#0}
+             at ./src/map.rs:277:80
+   7: <weacon::map::tests::a_root_that_cant_be_read_or_an_answer_that_cant_be_printed_is_an_error::{closure#0} as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/2d8144b7880597b6e6d3dfd63a9a9efae3f533d3/library/core/src/ops/function.rs:250:5
+   8: <fn() -> core::result::Result<(), alloc::string::String> as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/2d8144b7880597b6e6d3dfd63a9a9efae3f533d3/library/core/src/ops/function.rs:250:5
+note: Some details are omitted, run with `RUST_BACKTRACE=full` for a verbose backtrace.
+
+---- map::tests::fails_on_a_missing_root stdout ----
+
+thread 'map::tests::fails_on_a_missing_root' (32673) panicked at apps/core/src/map.rs:300:57:
+called `Result::unwrap_err()` on an `Ok` value: ()
+stack backtrace:
+   0: __rustc::rust_begin_unwind
+             at /rustc/2d8144b7880597b6e6d3dfd63a9a9efae3f533d3/library/std/src/panicking.rs:689:5
+   1: core::panicking::panic_fmt
+             at /rustc/2d8144b7880597b6e6d3dfd63a9a9efae3f533d3/library/core/src/panicking.rs:80:14
+   2: core::result::unwrap_failed
+             at /rustc/2d8144b7880597b6e6d3dfd63a9a9efae3f533d3/library/core/src/result.rs:1867:5
+   3: <core::result::Result<(), std::io::error::Error>>::unwrap_err
+             at /rustc/2d8144b7880597b6e6d3dfd63a9a9efae3f533d3/library/core/src/result.rs:1329:22
+   4: weacon::map::tests::fails_on_a_missing_root
+             at ./src/map.rs:300:57
+   5: weacon::map::tests::fails_on_a_missing_root::{closure#0}
+             at ./src/map.rs:296:33
+   6: <weacon::map::tests::fails_on_a_missing_root::{closure#0} as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/2d8144b7880597b6e6d3dfd63a9a9efae3f533d3/library/core/src/ops/function.rs:250:5
+   7: <fn() -> core::result::Result<(), alloc::string::String> as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/2d8144b7880597b6e6d3dfd63a9a9efae3f533d3/library/core/src/ops/function.rs:250:5
+note: Some details are omitted, run with `RUST_BACKTRACE=full` for a verbose backtrace.
+
+---- map::tests::prints_missing_changed_and_malformed_pins stdout ----
+
+thread 'map::tests::prints_missing_changed_and_malformed_pins' (32677) panicked at apps/core/src/map.rs:154:9:
+missing sym:a::m::go
+missing sym:a::gone
+malformed line 3
+
+stack backtrace:
+   0: __rustc::rust_begin_unwind
+             at /rustc/2d8144b7880597b6e6d3dfd63a9a9efae3f533d3/library/std/src/panicking.rs:689:5
+   1: core::panicking::panic_fmt
+             at /rustc/2d8144b7880597b6e6d3dfd63a9a9efae3f533d3/library/core/src/panicking.rs:80:14
+   2: weacon::map::tests::prints_missing_changed_and_malformed_pins
+             at ./src/map.rs:154:9
+   3: weacon::map::tests::prints_missing_changed_and_malformed_pins::{closure#0}
+             at ./src/map.rs:147:51
+   4: <weacon::map::tests::prints_missing_changed_and_malformed_pins::{closure#0} as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/2d8144b7880597b6e6d3dfd63a9a9efae3f533d3/library/core/src/ops/function.rs:250:5
+   5: <fn() -> core::result::Result<(), alloc::string::String> as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/2d8144b7880597b6e6d3dfd63a9a9efae3f533d3/library/core/src/ops/function.rs:250:5
+note: Some details are omitted, run with `RUST_BACKTRACE=full` for a verbose backtrace.
+
+---- map::tests::map_and_symbol_print_exactly_what_the_tools_answer stdout ----
+
+thread 'map::tests::map_and_symbol_print_exactly_what_the_tools_answer' (32676) panicked at apps/core/src/map.rs:249:9:
+assertion `left == right` failed
+  left: "No code map for this folder.\n"
+ right: "a::m::go: Fn at a/src/m.rs:1\n"
+stack backtrace:
+   0: __rustc::rust_begin_unwind
+             at /rustc/2d8144b7880597b6e6d3dfd63a9a9efae3f533d3/library/std/src/panicking.rs:689:5
+   1: core::panicking::panic_fmt
+             at /rustc/2d8144b7880597b6e6d3dfd63a9a9efae3f533d3/library/core/src/panicking.rs:80:14
+   2: core::panicking::assert_failed_inner
+             at /rustc/2d8144b7880597b6e6d3dfd63a9a9efae3f533d3/library/core/src/panicking.rs:439:17
+   3: core::panicking::assert_failed::<alloc::string::String, &str>
+             at /rustc/2d8144b7880597b6e6d3dfd63a9a9efae3f533d3/library/core/src/panicking.rs:394:5
+   4: weacon::map::tests::map_and_symbol_print_exactly_what_the_tools_answer
+             at ./src/map.rs:249:9
+   5: weacon::map::tests::map_and_symbol_print_exactly_what_the_tools_answer::{closure#0}
+             at ./src/map.rs:235:60
+   6: <weacon::map::tests::map_and_symbol_print_exactly_what_the_tools_answer::{closure#0} as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/2d8144b7880597b6e6d3dfd63a9a9efae3f533d3/library/core/src/ops/function.rs:250:5
+   7: <fn() -> core::result::Result<(), alloc::string::String> as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/2d8144b7880597b6e6d3dfd63a9a9efae3f533d3/library/core/src/ops/function.rs:250:5
+note: Some details are omitted, run with `RUST_BACKTRACE=full` for a verbose backtrace.
+
+---- map::tests::reads_only_crate_sources stdout ----
+
+thread 'map::tests::reads_only_crate_sources' (32678) panicked at apps/core/src/map.rs:189:9:
+assertion `left == right` failed
+  left: []
+ right: ["a/Cargo.toml", "a/notes.md", "a/src/full.rs", "a/src/lib.rs", "a/src/m.rs", "a/src/target/x.rs"]
+stack backtrace:
+   0: __rustc::rust_begin_unwind
+             at /rustc/2d8144b7880597b6e6d3dfd63a9a9efae3f533d3/library/std/src/panicking.rs:689:5
+   1: core::panicking::panic_fmt
+             at /rustc/2d8144b7880597b6e6d3dfd63a9a9efae3f533d3/library/core/src/panicking.rs:80:14
+   2: core::panicking::assert_failed_inner
+             at /rustc/2d8144b7880597b6e6d3dfd63a9a9efae3f533d3/library/core/src/panicking.rs:439:17
+   3: core::panicking::assert_failed::<alloc::vec::Vec<alloc::string::String>, [&str; 6]>
+             at /rustc/2d8144b7880597b6e6d3dfd63a9a9efae3f533d3/library/core/src/panicking.rs:394:5
+   4: weacon::map::tests::reads_only_crate_sources
+             at ./src/map.rs:189:9
+   5: weacon::map::tests::reads_only_crate_sources::{closure#0}
+             at ./src/map.rs:163:34
+   6: <weacon::map::tests::reads_only_crate_sources::{closure#0} as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/2d8144b7880597b6e6d3dfd63a9a9efae3f533d3/library/core/src/ops/function.rs:250:5
+   7: <fn() -> core::result::Result<(), alloc::string::String> as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/2d8144b7880597b6e6d3dfd63a9a9efae3f533d3/library/core/src/ops/function.rs:250:5
+note: Some details are omitted, run with `RUST_BACKTRACE=full` for a verbose backtrace.
+
+---- mcp::tests::another_host_an_origin_or_a_large_body_is_refused stdout ----
+
+thread 'mcp::tests::another_host_an_origin_or_a_large_body_is_refused' (32692) panicked at apps/core/src/mcp.rs:510:9:
+assertion `left == right` failed
+  left: "No code map for this folder.\n"
+ right: "No item has this path.\n"
+stack backtrace:
+   0: __rustc::rust_begin_unwind
+             at /rustc/2d8144b7880597b6e6d3dfd63a9a9efae3f533d3/library/std/src/panicking.rs:689:5
+   1: core::panicking::panic_fmt
+             at /rustc/2d8144b7880597b6e6d3dfd63a9a9efae3f533d3/library/core/src/panicking.rs:80:14
+   2: core::panicking::assert_failed_inner
+             at /rustc/2d8144b7880597b6e6d3dfd63a9a9efae3f533d3/library/core/src/panicking.rs:439:17
+   3: core::panicking::assert_failed::<alloc::string::String, &str>
+             at /rustc/2d8144b7880597b6e6d3dfd63a9a9efae3f533d3/library/core/src/panicking.rs:394:5
+   4: weacon::mcp::tests::another_host_an_origin_or_a_large_body_is_refused::{closure#0}
+             at ./src/mcp.rs:510:9
+   5: <core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>> as core::future::future::Future>::poll
+             at /rustc/2d8144b7880597b6e6d3dfd63a9a9efae3f533d3/library/core/src/future/future.rs:133:9
+   6: <tokio::runtime::scheduler::current_thread::CoreGuard>::block_on::<core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>::{closure#0}::{closure#0}::{closure#0}
+             at /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.54.1/src/runtime/scheduler/current_thread/mod.rs:830:70
+   7: tokio::task::coop::with_budget::<core::task::poll::Poll<()>, <tokio::runtime::scheduler::current_thread::CoreGuard>::block_on<core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>::{closure#0}::{closure#0}::{closure#0}>
+             at /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.54.1/src/task/coop/mod.rs:167:5
+   8: tokio::task::coop::budget::<core::task::poll::Poll<()>, <tokio::runtime::scheduler::current_thread::CoreGuard>::block_on<core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>::{closure#0}::{closure#0}::{closure#0}>
+             at /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.54.1/src/task/coop/mod.rs:133:5
+   9: <tokio::runtime::scheduler::current_thread::CoreGuard>::block_on::<core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>::{closure#0}::{closure#0}
+             at /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.54.1/src/runtime/scheduler/current_thread/mod.rs:830:25
+  10: <tokio::runtime::scheduler::current_thread::Context>::enter::<core::task::poll::Poll<()>, <tokio::runtime::scheduler::current_thread::CoreGuard>::block_on<core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>::{closure#0}::{closure#0}>
+             at /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.54.1/src/runtime/scheduler/current_thread/mod.rs:486:19
+  11: <tokio::runtime::scheduler::current_thread::CoreGuard>::block_on::<core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>::{closure#0}
+             at /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.54.1/src/runtime/scheduler/current_thread/mod.rs:829:44
+  12: <tokio::runtime::scheduler::current_thread::CoreGuard>::enter::<<tokio::runtime::scheduler::current_thread::CoreGuard>::block_on<core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>::{closure#0}, core::option::Option<()>>::{closure#0}
+             at /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.54.1/src/runtime/scheduler/current_thread/mod.rs:906:68
+  13: <tokio::runtime::context::scoped::Scoped<tokio::runtime::scheduler::Context>>::set::<<tokio::runtime::scheduler::current_thread::CoreGuard>::enter<<tokio::runtime::scheduler::current_thread::CoreGuard>::block_on<core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>::{closure#0}, core::option::Option<()>>::{closure#0}, (alloc::boxed::Box<tokio::runtime::scheduler::current_thread::Core>, core::option::Option<()>)>
+             at /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.54.1/src/runtime/context/scoped.rs:40:9
+  14: tokio::runtime::context::set_scheduler::<(alloc::boxed::Box<tokio::runtime::scheduler::current_thread::Core>, core::option::Option<()>), <tokio::runtime::scheduler::current_thread::CoreGuard>::enter<<tokio::runtime::scheduler::current_thread::CoreGuard>::block_on<core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>::{closure#0}, core::option::Option<()>>::{closure#0}>::{closure#0}
+             at /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.54.1/src/runtime/context.rs:186:38
+  15: <std::thread::local::LocalKey<tokio::runtime::context::Context>>::try_with::<tokio::runtime::context::set_scheduler<(alloc::boxed::Box<tokio::runtime::scheduler::current_thread::Core>, core::option::Option<()>), <tokio::runtime::scheduler::current_thread::CoreGuard>::enter<<tokio::runtime::scheduler::current_thread::CoreGuard>::block_on<core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>::{closure#0}, core::option::Option<()>>::{closure#0}>::{closure#0}, (alloc::boxed::Box<tokio::runtime::scheduler::current_thread::Core>, core::option::Option<()>)>
+             at /rustc/2d8144b7880597b6e6d3dfd63a9a9efae3f533d3/library/std/src/thread/local.rs:462:12
+  16: <std::thread::local::LocalKey<tokio::runtime::context::Context>>::with::<tokio::runtime::context::set_scheduler<(alloc::boxed::Box<tokio::runtime::scheduler::current_thread::Core>, core::option::Option<()>), <tokio::runtime::scheduler::current_thread::CoreGuard>::enter<<tokio::runtime::scheduler::current_thread::CoreGuard>::block_on<core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>::{closure#0}, core::option::Option<()>>::{closure#0}>::{closure#0}, (alloc::boxed::Box<tokio::runtime::scheduler::current_thread::Core>, core::option::Option<()>)>
+             at /rustc/2d8144b7880597b6e6d3dfd63a9a9efae3f533d3/library/std/src/thread/local.rs:426:20
+  17: tokio::runtime::context::set_scheduler::<(alloc::boxed::Box<tokio::runtime::scheduler::current_thread::Core>, core::option::Option<()>), <tokio::runtime::scheduler::current_thread::CoreGuard>::enter<<tokio::runtime::scheduler::current_thread::CoreGuard>::block_on<core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>::{closure#0}, core::option::Option<()>>::{closure#0}>
+             at /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.54.1/src/runtime/context.rs:186:17
+  18: <tokio::runtime::scheduler::current_thread::CoreGuard>::enter::<<tokio::runtime::scheduler::current_thread::CoreGuard>::block_on<core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>::{closure#0}, core::option::Option<()>>
+             at /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.54.1/src/runtime/scheduler/current_thread/mod.rs:906:27
+  19: <tokio::runtime::scheduler::current_thread::CoreGuard>::block_on::<core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>
+             at /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.54.1/src/runtime/scheduler/current_thread/mod.rs:819:24
+  20: <tokio::runtime::scheduler::current_thread::CurrentThread>::block_on::<core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>::{closure#0}
+             at /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.54.1/src/runtime/scheduler/current_thread/mod.rs:216:33
+  21: tokio::runtime::context::runtime::enter_runtime::<<tokio::runtime::scheduler::current_thread::CurrentThread>::block_on<core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>::{closure#0}, ()>
+             at /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.54.1/src/runtime/context/runtime.rs:65:16
+  22: <tokio::runtime::scheduler::current_thread::CurrentThread>::block_on::<core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>
+             at /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.54.1/src/runtime/scheduler/current_thread/mod.rs:204:9
+  23: <tokio::runtime::runtime::Runtime>::block_on_inner::<core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>
+             at /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.54.1/src/runtime/runtime.rs:379:52
+  24: <tokio::runtime::runtime::Runtime>::block_on::<core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>
+             at /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.54.1/src/runtime/runtime.rs:348:18
+  25: weacon::mcp::tests::another_host_an_origin_or_a_large_body_is_refused
+             at ./src/mcp.rs:510:75
+  26: weacon::mcp::tests::another_host_an_origin_or_a_large_body_is_refused::{closure#0}
+             at ./src/mcp.rs:480:65
+  27: <weacon::mcp::tests::another_host_an_origin_or_a_large_body_is_refused::{closure#0} as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/2d8144b7880597b6e6d3dfd63a9a9efae3f533d3/library/core/src/ops/function.rs:250:5
+  28: <fn() -> core::result::Result<(), alloc::string::String> as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/2d8144b7880597b6e6d3dfd63a9a9efae3f533d3/library/core/src/ops/function.rs:250:5
+note: Some details are omitted, run with `RUST_BACKTRACE=full` for a verbose backtrace.
+
+---- mcp::tests::each_token_reads_only_its_own_runs_folder stdout ----
+
+thread 'mcp::tests::each_token_reads_only_its_own_runs_folder' (32694) panicked at apps/core/src/mcp.rs:442:9:
+assertion `left == right` failed
+  left: "No code map for this folder.\n"
+ right: "one .: 1 module\n  (root) src/lib.rs: 1 item\n"
+stack backtrace:
+   0: __rustc::rust_begin_unwind
+             at /rustc/2d8144b7880597b6e6d3dfd63a9a9efae3f533d3/library/std/src/panicking.rs:689:5
+   1: core::panicking::panic_fmt
+             at /rustc/2d8144b7880597b6e6d3dfd63a9a9efae3f533d3/library/core/src/panicking.rs:80:14
+   2: core::panicking::assert_failed_inner
+             at /rustc/2d8144b7880597b6e6d3dfd63a9a9efae3f533d3/library/core/src/panicking.rs:439:17
+   3: core::panicking::assert_failed::<alloc::string::String, &str>
+             at /rustc/2d8144b7880597b6e6d3dfd63a9a9efae3f533d3/library/core/src/panicking.rs:394:5
+   4: weacon::mcp::tests::each_token_reads_only_its_own_runs_folder::{closure#0}
+             at ./src/mcp.rs:442:9
+   5: <core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>> as core::future::future::Future>::poll
+             at /rustc/2d8144b7880597b6e6d3dfd63a9a9efae3f533d3/library/core/src/future/future.rs:133:9
+   6: <tokio::runtime::scheduler::current_thread::CoreGuard>::block_on::<core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>::{closure#0}::{closure#0}::{closure#0}
+             at /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.54.1/src/runtime/scheduler/current_thread/mod.rs:830:70
+   7: tokio::task::coop::with_budget::<core::task::poll::Poll<()>, <tokio::runtime::scheduler::current_thread::CoreGuard>::block_on<core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>::{closure#0}::{closure#0}::{closure#0}>
+             at /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.54.1/src/task/coop/mod.rs:167:5
+   8: tokio::task::coop::budget::<core::task::poll::Poll<()>, <tokio::runtime::scheduler::current_thread::CoreGuard>::block_on<core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>::{closure#0}::{closure#0}::{closure#0}>
+             at /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.54.1/src/task/coop/mod.rs:133:5
+   9: <tokio::runtime::scheduler::current_thread::CoreGuard>::block_on::<core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>::{closure#0}::{closure#0}
+             at /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.54.1/src/runtime/scheduler/current_thread/mod.rs:830:25
+  10: <tokio::runtime::scheduler::current_thread::Context>::enter::<core::task::poll::Poll<()>, <tokio::runtime::scheduler::current_thread::CoreGuard>::block_on<core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>::{closure#0}::{closure#0}>
+             at /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.54.1/src/runtime/scheduler/current_thread/mod.rs:486:19
+  11: <tokio::runtime::scheduler::current_thread::CoreGuard>::block_on::<core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>::{closure#0}
+             at /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.54.1/src/runtime/scheduler/current_thread/mod.rs:829:44
+  12: <tokio::runtime::scheduler::current_thread::CoreGuard>::enter::<<tokio::runtime::scheduler::current_thread::CoreGuard>::block_on<core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>::{closure#0}, core::option::Option<()>>::{closure#0}
+             at /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.54.1/src/runtime/scheduler/current_thread/mod.rs:906:68
+  13: <tokio::runtime::context::scoped::Scoped<tokio::runtime::scheduler::Context>>::set::<<tokio::runtime::scheduler::current_thread::CoreGuard>::enter<<tokio::runtime::scheduler::current_thread::CoreGuard>::block_on<core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>::{closure#0}, core::option::Option<()>>::{closure#0}, (alloc::boxed::Box<tokio::runtime::scheduler::current_thread::Core>, core::option::Option<()>)>
+             at /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.54.1/src/runtime/context/scoped.rs:40:9
+  14: tokio::runtime::context::set_scheduler::<(alloc::boxed::Box<tokio::runtime::scheduler::current_thread::Core>, core::option::Option<()>), <tokio::runtime::scheduler::current_thread::CoreGuard>::enter<<tokio::runtime::scheduler::current_thread::CoreGuard>::block_on<core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>::{closure#0}, core::option::Option<()>>::{closure#0}>::{closure#0}
+             at /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.54.1/src/runtime/context.rs:186:38
+  15: <std::thread::local::LocalKey<tokio::runtime::context::Context>>::try_with::<tokio::runtime::context::set_scheduler<(alloc::boxed::Box<tokio::runtime::scheduler::current_thread::Core>, core::option::Option<()>), <tokio::runtime::scheduler::current_thread::CoreGuard>::enter<<tokio::runtime::scheduler::current_thread::CoreGuard>::block_on<core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>::{closure#0}, core::option::Option<()>>::{closure#0}>::{closure#0}, (alloc::boxed::Box<tokio::runtime::scheduler::current_thread::Core>, core::option::Option<()>)>
+             at /rustc/2d8144b7880597b6e6d3dfd63a9a9efae3f533d3/library/std/src/thread/local.rs:462:12
+  16: <std::thread::local::LocalKey<tokio::runtime::context::Context>>::with::<tokio::runtime::context::set_scheduler<(alloc::boxed::Box<tokio::runtime::scheduler::current_thread::Core>, core::option::Option<()>), <tokio::runtime::scheduler::current_thread::CoreGuard>::enter<<tokio::runtime::scheduler::current_thread::CoreGuard>::block_on<core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>::{closure#0}, core::option::Option<()>>::{closure#0}>::{closure#0}, (alloc::boxed::Box<tokio::runtime::scheduler::current_thread::Core>, core::option::Option<()>)>
+             at /rustc/2d8144b7880597b6e6d3dfd63a9a9efae3f533d3/library/std/src/thread/local.rs:426:20
+  17: tokio::runtime::context::set_scheduler::<(alloc::boxed::Box<tokio::runtime::scheduler::current_thread::Core>, core::option::Option<()>), <tokio::runtime::scheduler::current_thread::CoreGuard>::enter<<tokio::runtime::scheduler::current_thread::CoreGuard>::block_on<core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>::{closure#0}, core::option::Option<()>>::{closure#0}>
+             at /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.54.1/src/runtime/context.rs:186:17
+  18: <tokio::runtime::scheduler::current_thread::CoreGuard>::enter::<<tokio::runtime::scheduler::current_thread::CoreGuard>::block_on<core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>::{closure#0}, core::option::Option<()>>
+             at /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.54.1/src/runtime/scheduler/current_thread/mod.rs:906:27
+  19: <tokio::runtime::scheduler::current_thread::CoreGuard>::block_on::<core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>
+             at /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.54.1/src/runtime/scheduler/current_thread/mod.rs:819:24
+  20: <tokio::runtime::scheduler::current_thread::CurrentThread>::block_on::<core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>::{closure#0}
+             at /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.54.1/src/runtime/scheduler/current_thread/mod.rs:216:33
+  21: tokio::runtime::context::runtime::enter_runtime::<<tokio::runtime::scheduler::current_thread::CurrentThread>::block_on<core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>::{closure#0}, ()>
+             at /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.54.1/src/runtime/context/runtime.rs:65:16
+  22: <tokio::runtime::scheduler::current_thread::CurrentThread>::block_on::<core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>
+             at /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.54.1/src/runtime/scheduler/current_thread/mod.rs:204:9
+  23: <tokio::runtime::runtime::Runtime>::block_on_inner::<core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>
+             at /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.54.1/src/runtime/runtime.rs:379:52
+  24: <tokio::runtime::runtime::Runtime>::block_on::<core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>
+             at /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.54.1/src/runtime/runtime.rs:348:18
+  25: weacon::mcp::tests::each_token_reads_only_its_own_runs_folder
+             at ./src/mcp.rs:449:10
+  26: weacon::mcp::tests::each_token_reads_only_its_own_runs_folder::{closure#0}
+             at ./src/mcp.rs:424:57
+  27: <weacon::mcp::tests::each_token_reads_only_its_own_runs_folder::{closure#0} as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/2d8144b7880597b6e6d3dfd63a9a9efae3f533d3/library/core/src/ops/function.rs:250:5
+  28: <fn() -> core::result::Result<(), alloc::string::String> as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/2d8144b7880597b6e6d3dfd63a9a9efae3f533d3/library/core/src/ops/function.rs:250:5
+note: Some details are omitted, run with `RUST_BACKTRACE=full` for a verbose backtrace.
+
+---- mcp::tools::tests::a_folder_without_crates_has_no_map_and_one_that_cant_be_read_says_so_once stdout ----
+
+thread 'mcp::tools::tests::a_folder_without_crates_has_no_map_and_one_that_cant_be_read_says_so_once' (32700) panicked at apps/core/src/mcp/tools.rs:223:58:
+called `Result::unwrap_err()` on an `Ok` value: "No code map for this folder.\n"
+stack backtrace:
+   0: __rustc::rust_begin_unwind
+             at /rustc/2d8144b7880597b6e6d3dfd63a9a9efae3f533d3/library/std/src/panicking.rs:689:5
+   1: core::panicking::panic_fmt
+             at /rustc/2d8144b7880597b6e6d3dfd63a9a9efae3f533d3/library/core/src/panicking.rs:80:14
+   2: core::result::unwrap_failed
+             at /rustc/2d8144b7880597b6e6d3dfd63a9a9efae3f533d3/library/core/src/result.rs:1867:5
+   3: <core::result::Result<alloc::string::String, weacon_observability::errors::Fault>>::unwrap_err
+             at /rustc/2d8144b7880597b6e6d3dfd63a9a9efae3f533d3/library/core/src/result.rs:1329:22
+   4: weacon::mcp::tools::tests::a_folder_without_crates_has_no_map_and_one_that_cant_be_read_says_so_once
+             at ./src/mcp/tools.rs:223:58
+   5: weacon::mcp::tools::tests::a_folder_without_crates_has_no_map_and_one_that_cant_be_read_says_so_once::{closure#0}
+             at ./src/mcp/tools.rs:216:83
+   6: <weacon::mcp::tools::tests::a_folder_without_crates_has_no_map_and_one_that_cant_be_read_says_so_once::{closure#0} as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/2d8144b7880597b6e6d3dfd63a9a9efae3f533d3/library/core/src/ops/function.rs:250:5
+   7: <fn() -> core::result::Result<(), alloc::string::String> as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/2d8144b7880597b6e6d3dfd63a9a9efae3f533d3/library/core/src/ops/function.rs:250:5
+note: Some details are omitted, run with `RUST_BACKTRACE=full` for a verbose backtrace.
+
+
+failures:
+    map::tests::a_budget_reaches_the_map_tool
+    map::tests::a_root_that_cant_be_read_or_an_answer_that_cant_be_printed_is_an_error
+    map::tests::fails_on_a_missing_root
+    map::tests::map_and_symbol_print_exactly_what_the_tools_answer
+    map::tests::prints_missing_changed_and_malformed_pins
+    map::tests::reads_only_crate_sources
+    mcp::tests::another_host_an_origin_or_a_large_body_is_refused
+    mcp::tests::each_token_reads_only_its_own_runs_folder
+    mcp::tools::tests::a_folder_without_crates_has_no_map_and_one_that_cant_be_read_says_so_once
+
+test result: FAILED. 328 passed; 9 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.17s
+
+error: test failed, to rerun pass `-p weacon-core --bin weacon`
+
+*** result: Failure(101)

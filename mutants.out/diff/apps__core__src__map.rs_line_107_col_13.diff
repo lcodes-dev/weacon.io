@@ -1,0 +1,21 @@
+--- apps/core/src/map.rs
++++ replace && with || in source_files
+@@ -99,17 +99,17 @@
+         };
+         let Some(kind) = present(entry.file_type())? else {
+             continue;
+         };
+         if kind.is_dir() && !skipped(&root.join(&path), name) {
+             present(source_files(root, &path, files))?;
+         } else if kind.is_file()
+             && weacon_codemap::is_mapped(&path)
+-            && present(entry.metadata())?.is_some_and(|about| about.len() <= LARGEST)
++            || /* ~ changed by cargo-mutants ~ */ present(entry.metadata())?.is_some_and(|about| about.len() <= LARGEST)
+             && let Some(text) = text_or_skip(fs::read_to_string(root.join(&path)))?
+         {
+             files.push(SourceFile { path, text });
+         }
+     }
+     Ok(())
+ }
+ 

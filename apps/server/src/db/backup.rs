@@ -42,10 +42,11 @@ pub(crate) async fn restore(from: &Path, to: &Path) -> Result<(), Fault> {
     }
     check(&from).await?;
     let partial = sidecar(&to, ".partial");
-    let restored = match copy(&from, &partial).await {
-        Ok(()) => link(partial.clone(), to).await,
-        Err(fault) => Err(fault),
-    };
+    let restored = async {
+        copy(&from, &partial).await?;
+        link(partial.clone(), to).await
+    }
+    .await;
     drop(fs::remove_file(&partial));
     restored
 }

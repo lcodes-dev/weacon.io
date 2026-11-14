@@ -1,0 +1,3 @@
+apps/core/src/map.rs:108:13: replace && with || in source_files
+apps/core/src/map.rs:107:13: replace && with || in source_files
+apps/core/src/map.rs:106:13: replace && with || in source_files

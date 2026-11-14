@@ -1,225 +1,257 @@
 [
   {
-    "diff": "--- crates/codemap/src/facts.rs\n+++ replace Facts::path -> &str with \"\"\n@@ -103,17 +103,17 @@\n         }))\n     }\n }\n \n impl Facts {\n     /// The file's path, relative to the repository's root.\n     #[must_use]\n     pub fn path(&self) -> &str {\n-        &self.path\n+        \"\" /* ~ changed by cargo-mutants ~ */\n     }\n }\n \n fn manifest(text: &str) -> Option<FileKind> {\n     let manifest: Manifest = toml::from_str(text).ok()?;\n     let package = manifest.package?;\n     Some(FileKind::Manifest(package.name.replace('-', \"_\")))\n }\n",
-    "file": "crates/codemap/src/facts.rs",
+    "diff": "--- apps/core/src/map.rs\n+++ replace source_files -> io::Result<()> with Ok(())\n@@ -79,43 +79,17 @@\n     let index = index(&files).map_err(|error| index_failed().because(error))?;\n     Ok((index, files.len()))\n }\n \n /// Every file the code map takes under `root/folder`, its path joined with `/`. Hidden entries,\n /// links, `node_modules`, Cargo's build folders, files over [`LARGEST`] bytes and files that\n /// aren't UTF-8 are left out.\n fn source_files(root: &Path, folder: &str, files: &mut Vec<SourceFile>) -> io::Result<()> {\n-    for entry in fs::read_dir(root.join(folder))? {\n-        let Some(entry) = present(entry)? else {\n-            continue;\n-        };\n-        let name = entry.file_name();\n-        let Some(name) = name.to_str().filter(|name| !name.starts_with('.')) else {\n-            continue;\n-        };\n-        let path = if folder.is_empty() {\n-            name.to_owned()\n-        } else {\n-            format!(\"{folder}/{name}\")\n-        };\n-        let Some(kind) = present(entry.file_type())? else {\n-            continue;\n-        };\n-        if kind.is_dir() && !skipped(&root.join(&path), name) {\n-            present(source_files(root, &path, files))?;\n-        } else if kind.is_file()\n-            && weacon_codemap::is_mapped(&path)\n-            && present(entry.metadata())?.is_some_and(|about| about.len() <= LARGEST)\n-            && let Some(text) = text_or_skip(fs::read_to_string(root.join(&path)))?\n-        {\n-            files.push(SourceFile { path, text });\n-        }\n-    }\n-    Ok(())\n+    Ok(()) /* ~ changed by cargo-mutants ~ */\n }\n \n /// A file's text, or `None` for a file that isn't UTF-8 or was removed while the folder was read.\n fn text_or_skip(read: io::Result<String>) -> io::Result<Option<String>> {\n     match read {\n         Err(error) if error.kind() == io::ErrorKind::InvalidData => Ok(None),\n         read => present(read),\n     }\n",
+    "file": "apps/core/src/map.rs",
     "function": {
-      "function_name": "Facts::path",
-      "return_type": "-> &str",
-      "span": {
-        "end": {
-          "column": 6,
-          "line": 112
-        },
-        "start": {
-          "column": 5,
-          "line": 108
-        }
-      }
-    },
-    "genre": "FnValue",
-    "name": "crates/codemap/src/facts.rs:111:9: replace Facts::path -> &str with \"\"",
-    "package": "weacon-codemap",
-    "replacement": "\"\"",
-    "span": {
-      "end": {
-        "column": 19,
-        "line": 111
-      },
-      "start": {
-        "column": 9,
-        "line": 111
-      }
-    }
-  },
-  {
-    "diff": "--- crates/codemap/src/facts.rs\n+++ replace Facts::path -> &str with \"xyzzy\"\n@@ -103,17 +103,17 @@\n         }))\n     }\n }\n \n impl Facts {\n     /// The file's path, relative to the repository's root.\n     #[must_use]\n     pub fn path(&self) -> &str {\n-        &self.path\n+        \"xyzzy\" /* ~ changed by cargo-mutants ~ */\n     }\n }\n \n fn manifest(text: &str) -> Option<FileKind> {\n     let manifest: Manifest = toml::from_str(text).ok()?;\n     let package = manifest.package?;\n     Some(FileKind::Manifest(package.name.replace('-', \"_\")))\n }\n",
-    "file": "crates/codemap/src/facts.rs",
-    "function": {
-      "function_name": "Facts::path",
-      "return_type": "-> &str",
-      "span": {
-        "end": {
-          "column": 6,
-          "line": 112
-        },
-        "start": {
-          "column": 5,
-          "line": 108
-        }
-      }
-    },
-    "genre": "FnValue",
-    "name": "crates/codemap/src/facts.rs:111:9: replace Facts::path -> &str with \"xyzzy\"",
-    "package": "weacon-codemap",
-    "replacement": "\"xyzzy\"",
-    "span": {
-      "end": {
-        "column": 19,
-        "line": 111
-      },
-      "start": {
-        "column": 9,
-        "line": 111
-      }
-    }
-  },
-  {
-    "diff": "--- apps/core/src/codemap.rs\n+++ replace layer_name -> String with String::new()\n@@ -329,17 +329,17 @@\n /// What a worktree's text is stored under: its hash, which no git blob id looks like.\n fn content_key(text: &str) -> String {\n     let digest = Sha256Hex::from_bytes(Sha256::digest(text.as_bytes()).into());\n     format!(\"sha256:{}\", digest.as_str())\n }\n \n /// The layer that holds what the worktree at `path` changed.\n fn layer_name(path: &Path) -> String {\n-    format!(\"worktree:{}\", path.display())\n+    String::new() /* ~ changed by cargo-mutants ~ */\n }\n \n #[cfg(test)]\n mod tests {\n     use weacon_protocol::WorkspaceId;\n     use weacon_testing::TempDir;\n \n     use super::fake::{Fake, blob};\n",
-    "file": "apps/core/src/codemap.rs",
-    "function": {
-      "function_name": "layer_name",
-      "return_type": "-> String",
+      "function_name": "source_files",
+      "return_type": "-> io::Result<()>",
       "span": {
         "end": {
           "column": 2,
-          "line": 338
+          "line": 114
         },
         "start": {
           "column": 1,
-          "line": 335
+          "line": 83
         }
       }
     },
     "genre": "FnValue",
-    "name": "apps/core/src/codemap.rs:337:5: replace layer_name -> String with String::new()",
+    "name": "apps/core/src/map.rs:87:5: replace source_files -> io::Result<()> with Ok(())",
     "package": "weacon-core",
-    "replacement": "String::new()",
+    "replacement": "Ok(())",
     "span": {
       "end": {
-        "column": 43,
-        "line": 337
+        "column": 11,
+        "line": 113
       },
       "start": {
         "column": 5,
-        "line": 337
+        "line": 87
       }
     }
   },
   {
-    "diff": "--- apps/core/src/codemap.rs\n+++ replace layer_name -> String with \"xyzzy\".into()\n@@ -329,17 +329,17 @@\n /// What a worktree's text is stored under: its hash, which no git blob id looks like.\n fn content_key(text: &str) -> String {\n     let digest = Sha256Hex::from_bytes(Sha256::digest(text.as_bytes()).into());\n     format!(\"sha256:{}\", digest.as_str())\n }\n \n /// The layer that holds what the worktree at `path` changed.\n fn layer_name(path: &Path) -> String {\n-    format!(\"worktree:{}\", path.display())\n+    \"xyzzy\".into() /* ~ changed by cargo-mutants ~ */\n }\n \n #[cfg(test)]\n mod tests {\n     use weacon_protocol::WorkspaceId;\n     use weacon_testing::TempDir;\n \n     use super::fake::{Fake, blob};\n",
-    "file": "apps/core/src/codemap.rs",
+    "diff": "--- apps/core/src/map.rs\n+++ delete ! in source_files\n@@ -84,17 +84,17 @@\n /// links, `node_modules`, Cargo's build folders, files over [`LARGEST`] bytes and files that\n /// aren't UTF-8 are left out.\n fn source_files(root: &Path, folder: &str, files: &mut Vec<SourceFile>) -> io::Result<()> {\n     for entry in fs::read_dir(root.join(folder))? {\n         let Some(entry) = present(entry)? else {\n             continue;\n         };\n         let name = entry.file_name();\n-        let Some(name) = name.to_str().filter(|name| !name.starts_with('.')) else {\n+        let Some(name) = name.to_str().filter(|name|  /* ~ changed by cargo-mutants ~ */name.starts_with('.')) else {\n             continue;\n         };\n         let path = if folder.is_empty() {\n             name.to_owned()\n         } else {\n             format!(\"{folder}/{name}\")\n         };\n         let Some(kind) = present(entry.file_type())? else {\n",
+    "file": "apps/core/src/map.rs",
     "function": {
-      "function_name": "layer_name",
-      "return_type": "-> String",
+      "function_name": "source_files",
+      "return_type": "-> io::Result<()>",
       "span": {
         "end": {
           "column": 2,
-          "line": 338
+          "line": 114
         },
         "start": {
           "column": 1,
-          "line": 335
+          "line": 83
         }
       }
     },
-    "genre": "FnValue",
-    "name": "apps/core/src/codemap.rs:337:5: replace layer_name -> String with \"xyzzy\".into()",
+    "genre": "UnaryOperator",
+    "name": "apps/core/src/map.rs:92:54: delete ! in source_files",
     "package": "weacon-core",
-    "replacement": "\"xyzzy\".into()",
+    "replacement": "",
     "span": {
       "end": {
-        "column": 43,
-        "line": 337
+        "column": 55,
+        "line": 92
       },
       "start": {
-        "column": 5,
-        "line": 337
+        "column": 54,
+        "line": 92
       }
     }
   },
   {
-    "diff": "--- apps/core/src/codemap/repo.rs\n+++ replace > with >= in <impl Source for Repo>::text\n@@ -50,17 +50,17 @@\n     /// worktree, has text.\n     fn text(&self, path: &Path, file: &str) -> Option<String> {\n         let path = path.canonicalize().ok()?.join(file);\n         if path.canonicalize().ok()? != path {\n             return None;\n         }\n         let file = File::open(&path).ok()?;\n         let about = file.metadata().ok()?;\n-        if !about.is_file() || about.len() > LARGEST {\n+        if !about.is_file() || about.len() >= /* ~ changed by cargo-mutants ~ */ LARGEST {\n             return None;\n         }\n         let mut text = String::new();\n         file.take(LARGEST).read_to_string(&mut text).ok()?;\n         Some(text)\n     }\n }\n \n",
-    "file": "apps/core/src/codemap/repo.rs",
+    "diff": "--- apps/core/src/map.rs\n+++ replace && with || in source_files\n@@ -95,17 +95,17 @@\n         let path = if folder.is_empty() {\n             name.to_owned()\n         } else {\n             format!(\"{folder}/{name}\")\n         };\n         let Some(kind) = present(entry.file_type())? else {\n             continue;\n         };\n-        if kind.is_dir() && !skipped(&root.join(&path), name) {\n+        if kind.is_dir() || /* ~ changed by cargo-mutants ~ */ !skipped(&root.join(&path), name) {\n             present(source_files(root, &path, files))?;\n         } else if kind.is_file()\n             && weacon_codemap::is_mapped(&path)\n             && present(entry.metadata())?.is_some_and(|about| about.len() <= LARGEST)\n             && let Some(text) = text_or_skip(fs::read_to_string(root.join(&path)))?\n         {\n             files.push(SourceFile { path, text });\n         }\n",
+    "file": "apps/core/src/map.rs",
     "function": {
-      "function_name": "<impl Source for Repo>::text",
-      "return_type": "-> Option<String>",
+      "function_name": "source_files",
+      "return_type": "-> io::Result<()>",
       "span": {
         "end": {
-          "column": 6,
-          "line": 64
+          "column": 2,
+          "line": 114
         },
         "start": {
-          "column": 5,
-          "line": 49
+          "column": 1,
+          "line": 83
         }
       }
     },
     "genre": "BinaryOperator",
-    "name": "apps/core/src/codemap/repo.rs:58:44: replace > with >= in <impl Source for Repo>::text",
+    "name": "apps/core/src/map.rs:103:26: replace && with || in source_files",
     "package": "weacon-core",
-    "replacement": ">=",
+    "replacement": "||",
     "span": {
       "end": {
-        "column": 45,
-        "line": 58
+        "column": 28,
+        "line": 103
       },
       "start": {
-        "column": 44,
-        "line": 58
+        "column": 26,
+        "line": 103
       }
     }
   },
   {
-    "diff": "--- apps/core/src/codemap/watch.rs\n+++ replace match guard base.commit == head with true in Watch<S>::update\n@@ -47,17 +47,17 @@\n                 None\n             }\n         }\n     }\n \n     async fn update(&mut self) -> Result<Option<Vec<Facts>>, Fault> {\n         let head = self.repo.head().await?;\n         let base = match self.base.take() {\n-            Some(base) if base.commit == head => base,\n+            Some(base) if true /* ~ changed by cargo-mutants ~ */ => base,\n             _ => self.repo.base().await?,\n         };\n         let base = self.base.insert(base);\n         let changed = self.repo.changed(base, &self.worktree).await?;\n         let mut state = base.commit.as_str().to_owned();\n         for (path, text) in &changed {\n             let key = text.as_deref().map(content_key).unwrap_or_default();\n             state.extend([\"\\0\", path, \"\\0\", &key]);\n",
-    "file": "apps/core/src/codemap/watch.rs",
+    "diff": "--- apps/core/src/map.rs\n+++ delete ! in source_files\n@@ -95,17 +95,17 @@\n         let path = if folder.is_empty() {\n             name.to_owned()\n         } else {\n             format!(\"{folder}/{name}\")\n         };\n         let Some(kind) = present(entry.file_type())? else {\n             continue;\n         };\n-        if kind.is_dir() && !skipped(&root.join(&path), name) {\n+        if kind.is_dir() &&  /* ~ changed by cargo-mutants ~ */skipped(&root.join(&path), name) {\n             present(source_files(root, &path, files))?;\n         } else if kind.is_file()\n             && weacon_codemap::is_mapped(&path)\n             && present(entry.metadata())?.is_some_and(|about| about.len() <= LARGEST)\n             && let Some(text) = text_or_skip(fs::read_to_string(root.join(&path)))?\n         {\n             files.push(SourceFile { path, text });\n         }\n",
+    "file": "apps/core/src/map.rs",
     "function": {
-      "function_name": "Watch<S>::update",
-      "return_type": "-> Result<Option<Vec<Facts>>, Fault>",
+      "function_name": "source_files",
+      "return_type": "-> io::Result<()>",
       "span": {
         "end": {
-          "column": 6,
-          "line": 72
+          "column": 2,
+          "line": 114
         },
         "start": {
-          "column": 5,
-          "line": 52
+          "column": 1,
+          "line": 83
         }
       }
     },
-    "genre": "MatchArmGuard",
-    "name": "apps/core/src/codemap/watch.rs:55:27: replace match guard base.commit == head with true in Watch<S>::update",
+    "genre": "UnaryOperator",
+    "name": "apps/core/src/map.rs:103:29: delete ! in source_files",
     "package": "weacon-core",
-    "replacement": "true",
+    "replacement": "",
     "span": {
       "end": {
-        "column": 46,
-        "line": 55
+        "column": 30,
+        "line": 103
       },
       "start": {
-        "column": 27,
-        "line": 55
+        "column": 29,
+        "line": 103
       }
     }
   },
   {
-    "diff": "--- apps/core/src/codemap/watch.rs\n+++ replace match guard base.commit == head with false in Watch<S>::update\n@@ -47,17 +47,17 @@\n                 None\n             }\n         }\n     }\n \n     async fn update(&mut self) -> Result<Option<Vec<Facts>>, Fault> {\n         let head = self.repo.head().await?;\n         let base = match self.base.take() {\n-            Some(base) if base.commit == head => base,\n+            Some(base) if false /* ~ changed by cargo-mutants ~ */ => base,\n             _ => self.repo.base().await?,\n         };\n         let base = self.base.insert(base);\n         let changed = self.repo.changed(base, &self.worktree).await?;\n         let mut state = base.commit.as_str().to_owned();\n         for (path, text) in &changed {\n             let key = text.as_deref().map(content_key).unwrap_or_default();\n             state.extend([\"\\0\", path, \"\\0\", &key]);\n",
-    "file": "apps/core/src/codemap/watch.rs",
+    "diff": "--- apps/core/src/map.rs\n+++ replace && with || in source_files\n@@ -100,17 +100,17 @@\n         let Some(kind) = present(entry.file_type())? else {\n             continue;\n         };\n         if kind.is_dir() && !skipped(&root.join(&path), name) {\n             present(source_files(root, &path, files))?;\n         } else if kind.is_file()\n             && weacon_codemap::is_mapped(&path)\n             && present(entry.metadata())?.is_some_and(|about| about.len() <= LARGEST)\n-            && let Some(text) = text_or_skip(fs::read_to_string(root.join(&path)))?\n+            || /* ~ changed by cargo-mutants ~ */ let Some(text) = text_or_skip(fs::read_to_string(root.join(&path)))?\n         {\n             files.push(SourceFile { path, text });\n         }\n     }\n     Ok(())\n }\n \n /// A file's text, or `None` for a file that isn't UTF-8 or was removed while the folder was read.\n",
+    "file": "apps/core/src/map.rs",
     "function": {
-      "function_name": "Watch<S>::update",
-      "return_type": "-> Result<Option<Vec<Facts>>, Fault>",
+      "function_name": "source_files",
+      "return_type": "-> io::Result<()>",
       "span": {
         "end": {
-          "column": 6,
-          "line": 72
+          "column": 2,
+          "line": 114
         },
         "start": {
-          "column": 5,
-          "line": 52
+          "column": 1,
+          "line": 83
         }
       }
     },
-    "genre": "MatchArmGuard",
-    "name": "apps/core/src/codemap/watch.rs:55:27: replace match guard base.commit == head with false in Watch<S>::update",
+    "genre": "BinaryOperator",
+    "name": "apps/core/src/map.rs:108:13: replace && with || in source_files",
     "package": "weacon-core",
-    "replacement": "false",
+    "replacement": "||",
     "span": {
       "end": {
-        "column": 46,
-        "line": 55
+        "column": 15,
+        "line": 108
       },
       "start": {
-        "column": 27,
-        "line": 55
+        "column": 13,
+        "line": 108
+      }
+    }
+  },
+  {
+    "diff": "--- apps/core/src/map.rs\n+++ replace && with || in source_files\n@@ -99,17 +99,17 @@\n         };\n         let Some(kind) = present(entry.file_type())? else {\n             continue;\n         };\n         if kind.is_dir() && !skipped(&root.join(&path), name) {\n             present(source_files(root, &path, files))?;\n         } else if kind.is_file()\n             && weacon_codemap::is_mapped(&path)\n-            && present(entry.metadata())?.is_some_and(|about| about.len() <= LARGEST)\n+            || /* ~ changed by cargo-mutants ~ */ present(entry.metadata())?.is_some_and(|about| about.len() <= LARGEST)\n             && let Some(text) = text_or_skip(fs::read_to_string(root.join(&path)))?\n         {\n             files.push(SourceFile { path, text });\n         }\n     }\n     Ok(())\n }\n \n",
+    "file": "apps/core/src/map.rs",
+    "function": {
+      "function_name": "source_files",
+      "return_type": "-> io::Result<()>",
+      "span": {
+        "end": {
+          "column": 2,
+          "line": 114
+        },
+        "start": {
+          "column": 1,
+          "line": 83
+        }
+      }
+    },
+    "genre": "BinaryOperator",
+    "name": "apps/core/src/map.rs:107:13: replace && with || in source_files",
+    "package": "weacon-core",
+    "replacement": "||",
+    "span": {
+      "end": {
+        "column": 15,
+        "line": 107
+      },
+      "start": {
+        "column": 13,
+        "line": 107
+      }
+    }
+  },
+  {
+    "diff": "--- apps/core/src/map.rs\n+++ replace && with || in source_files\n@@ -98,17 +98,17 @@\n             format!(\"{folder}/{name}\")\n         };\n         let Some(kind) = present(entry.file_type())? else {\n             continue;\n         };\n         if kind.is_dir() && !skipped(&root.join(&path), name) {\n             present(source_files(root, &path, files))?;\n         } else if kind.is_file()\n-            && weacon_codemap::is_mapped(&path)\n+            || /* ~ changed by cargo-mutants ~ */ weacon_codemap::is_mapped(&path)\n             && present(entry.metadata())?.is_some_and(|about| about.len() <= LARGEST)\n             && let Some(text) = text_or_skip(fs::read_to_string(root.join(&path)))?\n         {\n             files.push(SourceFile { path, text });\n         }\n     }\n     Ok(())\n }\n",
+    "file": "apps/core/src/map.rs",
+    "function": {
+      "function_name": "source_files",
+      "return_type": "-> io::Result<()>",
+      "span": {
+        "end": {
+          "column": 2,
+          "line": 114
+        },
+        "start": {
+          "column": 1,
+          "line": 83
+        }
+      }
+    },
+    "genre": "BinaryOperator",
+    "name": "apps/core/src/map.rs:106:13: replace && with || in source_files",
+    "package": "weacon-core",
+    "replacement": "||",
+    "span": {
+      "end": {
+        "column": 15,
+        "line": 106
+      },
+      "start": {
+        "column": 13,
+        "line": 106
+      }
+    }
+  },
+  {
+    "diff": "--- apps/core/src/map.rs\n+++ replace <= with > in source_files\n@@ -99,17 +99,17 @@\n         };\n         let Some(kind) = present(entry.file_type())? else {\n             continue;\n         };\n         if kind.is_dir() && !skipped(&root.join(&path), name) {\n             present(source_files(root, &path, files))?;\n         } else if kind.is_file()\n             && weacon_codemap::is_mapped(&path)\n-            && present(entry.metadata())?.is_some_and(|about| about.len() <= LARGEST)\n+            && present(entry.metadata())?.is_some_and(|about| about.len() > /* ~ changed by cargo-mutants ~ */ LARGEST)\n             && let Some(text) = text_or_skip(fs::read_to_string(root.join(&path)))?\n         {\n             files.push(SourceFile { path, text });\n         }\n     }\n     Ok(())\n }\n \n",
+    "file": "apps/core/src/map.rs",
+    "function": {
+      "function_name": "source_files",
+      "return_type": "-> io::Result<()>",
+      "span": {
+        "end": {
+          "column": 2,
+          "line": 114
+        },
+        "start": {
+          "column": 1,
+          "line": 83
+        }
+      }
+    },
+    "genre": "BinaryOperator",
+    "name": "apps/core/src/map.rs:107:75: replace <= with > in source_files",
+    "package": "weacon-core",
+    "replacement": ">",
+    "span": {
+      "end": {
+        "column": 77,
+        "line": 107
+      },
+      "start": {
+        "column": 75,
+        "line": 107
       }
     }
   }

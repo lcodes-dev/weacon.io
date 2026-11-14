@@ -3,7 +3,7 @@ use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use weacon_observability::Fault;
-use weacon_protocol::{WorkspaceCreate, WorkspaceList, code};
+use weacon_protocol::{WorkspaceCreate, WorkspaceList, WorkspaceSummary, code};
 
 use crate::app::{fresh, new_id};
 use crate::auth::{Member, Session};
@@ -30,9 +30,13 @@ pub(crate) async fn create(
         }
         Err(fault) => return invalid(fault.code().clone()),
     };
+    created(made)
+}
+
+fn created(made: Result<WorkspaceSummary, Fault>) -> Response {
     match made {
-        Ok(Some(summary)) => (StatusCode::CREATED, Json(summary)).into_response(),
-        Ok(None) => invalid(code!("workspace.too_many")),
+        Ok(summary) => (StatusCode::CREATED, Json(summary)).into_response(),
+        Err(fault) if *fault.code() == code!("workspace.too_many") => invalid(fault.code().clone()),
         Err(fault) => failure(fault),
     }
 }
@@ -270,5 +274,14 @@ mod tests {
                 .count(),
             MAX_NAME
         );
+    }
+
+    #[test]
+    fn only_a_full_account_is_refused_and_other_faults_fail() {
+        let full = created(Err(Fault::new(code!("workspace.too_many"), "Full")));
+        let broken = created(Err(Fault::new(code!("db.failed"), "Broken")));
+
+        assert_eq!(full.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(broken.status(), StatusCode::INTERNAL_SERVER_ERROR);
     }
 }

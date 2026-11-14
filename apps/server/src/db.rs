@@ -6,9 +6,11 @@ mod backup;
 mod changes;
 mod docs;
 mod machine;
-mod owned;
 mod schema;
+mod sign_in;
 mod tasks;
+#[cfg(test)]
+mod test_support;
 mod workspace;
 
 pub(crate) use tasks::task_not_found;
@@ -22,12 +24,10 @@ use weacon_model::Revision;
 use weacon_observability::Fault;
 use weacon_protocol::{AccountId, AgentOwner, AgentRef, Author, MemberId, WorkspaceId, code};
 
-#[cfg(test)]
-pub(crate) use account::CODE_LIFETIME;
-pub(crate) use account::{Account, Attempt};
+pub(crate) use account::{Account, NewWorkspace};
 pub(crate) use backup::restore;
-pub(crate) use machine::{Claim, Confirmation, NewPairing};
-pub(crate) use owned::NewWorkspace;
+pub(crate) use machine::{Claim, Claiming, Confirmation, NewPairing};
+pub(crate) use sign_in::{Attempt, NewChallenge};
 pub(crate) use workspace::Workspace;
 
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
@@ -43,6 +43,15 @@ pub(crate) struct Db {
 }
 
 impl Db {
+    /// A transaction that holds the write lock from the start, so nothing changes between its
+    /// reads and its writes.
+    async fn write(&self) -> Result<sqlx::Transaction<'static, sqlx::Sqlite>, Fault> {
+        self.writer
+            .begin_with("BEGIN IMMEDIATE")
+            .await
+            .map_err(failed)
+    }
+
     /// Opens the database at `path`, creating it if it's missing, and brings its schema up
     /// to date.
     pub(crate) async fn create(path: &Path) -> Result<Self, Fault> {
@@ -161,6 +170,11 @@ fn path_unusable() -> Fault {
 /// A value read back from the database, such as an id, checked like one that arrived.
 fn stored<T: TryFrom<String>>(value: String) -> Result<T, Fault> {
     T::try_from(value).map_err(|_| unreadable())
+}
+
+/// `version` as stored, or `too_big` when it doesn't fit in an `i64`.
+fn version_number(version: Revision, too_big: fn() -> Fault) -> Result<i64, Fault> {
+    i64::try_from(version.get()).map_err(|_| too_big())
 }
 
 fn stored_version(version: i64) -> Result<Revision, Fault> {

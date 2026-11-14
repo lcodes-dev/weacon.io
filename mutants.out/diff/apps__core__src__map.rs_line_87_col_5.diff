@@ -1,0 +1,47 @@
+--- apps/core/src/map.rs
++++ replace source_files -> io::Result<()> with Ok(())
+@@ -79,43 +79,17 @@
+     let index = index(&files).map_err(|error| index_failed().because(error))?;
+     Ok((index, files.len()))
+ }
+ 
+ /// Every file the code map takes under `root/folder`, its path joined with `/`. Hidden entries,
+ /// links, `node_modules`, Cargo's build folders, files over [`LARGEST`] bytes and files that
+ /// aren't UTF-8 are left out.
+ fn source_files(root: &Path, folder: &str, files: &mut Vec<SourceFile>) -> io::Result<()> {
+-    for entry in fs::read_dir(root.join(folder))? {
+-        let Some(entry) = present(entry)? else {
+-            continue;
+-        };
+-        let name = entry.file_name();
+-        let Some(name) = name.to_str().filter(|name| !name.starts_with('.')) else {
+-            continue;
+-        };
+-        let path = if folder.is_empty() {
+-            name.to_owned()
+-        } else {
+-            format!("{folder}/{name}")
+-        };
+-        let Some(kind) = present(entry.file_type())? else {
+-            continue;
+-        };
+-        if kind.is_dir() && !skipped(&root.join(&path), name) {
+-            present(source_files(root, &path, files))?;
+-        } else if kind.is_file()
+-            && weacon_codemap::is_mapped(&path)
+-            && present(entry.metadata())?.is_some_and(|about| about.len() <= LARGEST)
+-            && let Some(text) = text_or_skip(fs::read_to_string(root.join(&path)))?
+-        {
+-            files.push(SourceFile { path, text });
+-        }
+-    }
+-    Ok(())
++    Ok(()) /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ /// A file's text, or `None` for a file that isn't UTF-8 or was removed while the folder was read.
+ fn text_or_skip(read: io::Result<String>) -> io::Result<Option<String>> {
+     match read {
+         Err(error) if error.kind() == io::ErrorKind::InvalidData => Ok(None),
+         read => present(read),
+     }

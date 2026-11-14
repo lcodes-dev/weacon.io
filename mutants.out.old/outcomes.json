@@ -1,0 +1,501 @@
+{
+  "outcomes": [
+    {
+      "scenario": "Baseline",
+      "summary": "Success",
+      "log_path": "log/baseline.log",
+      "diff_path": null,
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 57.227046823,
+          "process_status": "Success",
+          "argv": [
+            "/root/.rustup/toolchains/1.97.0-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=weacon-codemap@0.0.0",
+            "--package=weacon-core@0.0.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 2.317463063,
+          "process_status": "Success",
+          "argv": [
+            "/root/.rustup/toolchains/1.97.0-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=weacon-codemap@0.0.0",
+            "--package=weacon-core@0.0.0"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "crates/codemap/src/facts.rs:111:9: replace Facts::path -> &str with \"\"",
+          "package": "weacon-codemap",
+          "file": "crates/codemap/src/facts.rs",
+          "function": {
+            "function_name": "Facts::path",
+            "return_type": "-> &str",
+            "span": {
+              "start": {
+                "line": 108,
+                "column": 5
+              },
+              "end": {
+                "line": 112,
+                "column": 6
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 111,
+              "column": 9
+            },
+            "end": {
+              "line": 111,
+              "column": 19
+            }
+          },
+          "replacement": "\"\"",
+          "genre": "FnValue"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/crates__codemap__src__facts.rs_line_111_col_9.log",
+      "diff_path": "diff/crates__codemap__src__facts.rs_line_111_col_9.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 14.39438718,
+          "process_status": "Success",
+          "argv": [
+            "/root/.rustup/toolchains/1.97.0-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=weacon-codemap@0.0.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 0.260360683,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/root/.rustup/toolchains/1.97.0-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=weacon-codemap@0.0.0"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "crates/codemap/src/facts.rs:111:9: replace Facts::path -> &str with \"xyzzy\"",
+          "package": "weacon-codemap",
+          "file": "crates/codemap/src/facts.rs",
+          "function": {
+            "function_name": "Facts::path",
+            "return_type": "-> &str",
+            "span": {
+              "start": {
+                "line": 108,
+                "column": 5
+              },
+              "end": {
+                "line": 112,
+                "column": 6
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 111,
+              "column": 9
+            },
+            "end": {
+              "line": 111,
+              "column": 19
+            }
+          },
+          "replacement": "\"xyzzy\"",
+          "genre": "FnValue"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/crates__codemap__src__facts.rs_line_111_col_9_001.log",
+      "diff_path": "diff/crates__codemap__src__facts.rs_line_111_col_9_001.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 19.552312095,
+          "process_status": "Success",
+          "argv": [
+            "/root/.rustup/toolchains/1.97.0-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=weacon-codemap@0.0.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 0.25685099,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/root/.rustup/toolchains/1.97.0-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=weacon-codemap@0.0.0"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "apps/core/src/codemap.rs:337:5: replace layer_name -> String with String::new()",
+          "package": "weacon-core",
+          "file": "apps/core/src/codemap.rs",
+          "function": {
+            "function_name": "layer_name",
+            "return_type": "-> String",
+            "span": {
+              "start": {
+                "line": 335,
+                "column": 1
+              },
+              "end": {
+                "line": 338,
+                "column": 2
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 337,
+              "column": 5
+            },
+            "end": {
+              "line": 337,
+              "column": 43
+            }
+          },
+          "replacement": "String::new()",
+          "genre": "FnValue"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/apps__core__src__codemap.rs_line_337_col_5.log",
+      "diff_path": "diff/apps__core__src__codemap.rs_line_337_col_5.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 6.555362422,
+          "process_status": "Success",
+          "argv": [
+            "/root/.rustup/toolchains/1.97.0-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=weacon-core@0.0.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 3.060667856,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/root/.rustup/toolchains/1.97.0-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=weacon-core@0.0.0"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "apps/core/src/codemap/repo.rs:58:44: replace > with >= in <impl Source for Repo>::text",
+          "package": "weacon-core",
+          "file": "apps/core/src/codemap/repo.rs",
+          "function": {
+            "function_name": "<impl Source for Repo>::text",
+            "return_type": "-> Option<String>",
+            "span": {
+              "start": {
+                "line": 49,
+                "column": 5
+              },
+              "end": {
+                "line": 64,
+                "column": 6
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 58,
+              "column": 44
+            },
+            "end": {
+              "line": 58,
+              "column": 45
+            }
+          },
+          "replacement": ">=",
+          "genre": "BinaryOperator"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/apps__core__src__codemap__repo.rs_line_58_col_44.log",
+      "diff_path": "diff/apps__core__src__codemap__repo.rs_line_58_col_44.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 13.357157793,
+          "process_status": "Success",
+          "argv": [
+            "/root/.rustup/toolchains/1.97.0-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=weacon-core@0.0.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 2.820339892,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/root/.rustup/toolchains/1.97.0-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=weacon-core@0.0.0"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "apps/core/src/codemap/watch.rs:55:27: replace match guard base.commit == head with true in Watch<S>::update",
+          "package": "weacon-core",
+          "file": "apps/core/src/codemap/watch.rs",
+          "function": {
+            "function_name": "Watch<S>::update",
+            "return_type": "-> Result<Option<Vec<Facts>>, Fault>",
+            "span": {
+              "start": {
+                "line": 52,
+                "column": 5
+              },
+              "end": {
+                "line": 72,
+                "column": 6
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 55,
+              "column": 27
+            },
+            "end": {
+              "line": 55,
+              "column": 46
+            }
+          },
+          "replacement": "true",
+          "genre": "MatchArmGuard"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/apps__core__src__codemap__watch.rs_line_55_col_27.log",
+      "diff_path": "diff/apps__core__src__codemap__watch.rs_line_55_col_27.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 14.601569211,
+          "process_status": "Success",
+          "argv": [
+            "/root/.rustup/toolchains/1.97.0-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=weacon-core@0.0.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 2.714419164,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/root/.rustup/toolchains/1.97.0-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=weacon-core@0.0.0"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "apps/core/src/codemap/watch.rs:55:27: replace match guard base.commit == head with false in Watch<S>::update",
+          "package": "weacon-core",
+          "file": "apps/core/src/codemap/watch.rs",
+          "function": {
+            "function_name": "Watch<S>::update",
+            "return_type": "-> Result<Option<Vec<Facts>>, Fault>",
+            "span": {
+              "start": {
+                "line": 52,
+                "column": 5
+              },
+              "end": {
+                "line": 72,
+                "column": 6
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 55,
+              "column": 27
+            },
+            "end": {
+              "line": 55,
+              "column": 46
+            }
+          },
+          "replacement": "false",
+          "genre": "MatchArmGuard"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/apps__core__src__codemap__watch.rs_line_55_col_27_001.log",
+      "diff_path": "diff/apps__core__src__codemap__watch.rs_line_55_col_27_001.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 9.466925108,
+          "process_status": "Success",
+          "argv": [
+            "/root/.rustup/toolchains/1.97.0-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=weacon-core@0.0.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 1.563971144,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/root/.rustup/toolchains/1.97.0-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=weacon-core@0.0.0"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "apps/core/src/codemap.rs:337:5: replace layer_name -> String with \"xyzzy\".into()",
+          "package": "weacon-core",
+          "file": "apps/core/src/codemap.rs",
+          "function": {
+            "function_name": "layer_name",
+            "return_type": "-> String",
+            "span": {
+              "start": {
+                "line": 335,
+                "column": 1
+              },
+              "end": {
+                "line": 338,
+                "column": 2
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 337,
+              "column": 5
+            },
+            "end": {
+              "line": 337,
+              "column": 43
+            }
+          },
+          "replacement": "\"xyzzy\".into()",
+          "genre": "FnValue"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/apps__core__src__codemap.rs_line_337_col_5_001.log",
+      "diff_path": "diff/apps__core__src__codemap.rs_line_337_col_5_001.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 68.440187264,
+          "process_status": "Success",
+          "argv": [
+            "/root/.rustup/toolchains/1.97.0-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=weacon-core@0.0.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 1.359550617,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/root/.rustup/toolchains/1.97.0-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=weacon-core@0.0.0"
+          ]
+        }
+      ]
+    }
+  ],
+  "total_mutants": 7,
+  "missed": 0,
+  "caught": 7,
+  "timeout": 0,
+  "unviable": 0,
+  "success": 0,
+  "start_time": "2026-11-14T06:38:58.87421611Z",
+  "end_time": "2026-11-14T06:41:29.494580806Z",
+  "cargo_mutants_version": "27.1.0"
+}
