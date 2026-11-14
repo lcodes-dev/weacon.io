@@ -1,5 +1,6 @@
 //! The fake chat's events, built and read.
 
+use serde_json::Value;
 use weacon_protocol::{
     AgentKind, AgentOwner, AgentRef, ChatEvent, MachineName, RunEvent, RunId, RunUpdate,
 };
@@ -22,6 +23,21 @@ pub(super) fn said(run: &RunId, text: &str) -> ChatEvent {
             run: run.clone(),
             event: RunEvent::Text {
                 text: text.to_owned(),
+            },
+        },
+    }
+}
+
+// The run's first permission prompt, to use Bash.
+pub(super) fn asks_bash(run: &RunId) -> ChatEvent {
+    ChatEvent::Run {
+        update: RunUpdate {
+            run: run.clone(),
+            event: RunEvent::PermissionAsked {
+                run: run.clone(),
+                prompt: 1,
+                tool: "Bash".to_owned(),
+                input: Value::Null,
             },
         },
     }

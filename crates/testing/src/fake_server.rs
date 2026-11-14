@@ -82,17 +82,24 @@ async fn send_all(
     committed: &UnboundedSender<String>,
 ) {
     let mut run_lines = BufReader::new(run_lines).lines();
+    let mut playing = true;
     loop {
-        let text = tokio::select! {
-            Ok(Some(line)) = run_lines.next_line() => commit_played(chat, committed, line),
-            Some(reply) = replies.recv() => Some(reply),
+        let texts = tokio::select! {
+            line = run_lines.next_line(), if playing => {
+                if let Ok(Some(line)) = line {
+                    commit_played(chat, committed, line).into_iter().collect()
+                } else {
+                    playing = false;
+                    ended(chat, committed)
+                }
+            }
+            Some(reply) = replies.recv() => vec![reply],
             else => break,
         };
-        let Some(text) = text else {
-            continue;
-        };
-        if sink.send(Frame::text(text)).await.is_err() {
-            break;
+        for text in texts {
+            if sink.send(Frame::text(text)).await.is_err() {
+                return;
+            }
         }
     }
 }
@@ -133,6 +140,14 @@ fn commit_played(
         send_texts(replies, &chat.played(&envelope)?);
     }
     Some(line)
+}
+
+// Once the recording has played, its run asks to use Bash; nothing to send at once.
+fn ended(chat: &Mutex<FakeChat>, replies: &UnboundedSender<String>) -> Vec<String> {
+    if let Ok(mut chat) = chat.lock() {
+        send_texts(replies, &chat.ended());
+    }
+    Vec::new()
 }
 
 fn send_texts(replies: &UnboundedSender<String>, envelopes: &[Envelope]) {

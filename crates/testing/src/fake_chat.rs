@@ -1,10 +1,9 @@
 //! A made-up chat log that the fake server keeps for its client: a person's prompt and a shared
-//! Codex run's long answer, then another prompt and a member's Claude run waiting on a permission
-//! prompt. It answers the client's chat queries and commands, and commits the recording's events,
-//! the Claude run's, as they play. A prompt of exactly [`LOSE`] makes it tell the client it lost events, and a
-//! query about any other chat is refused.
+//! Codex run's long answer, then another prompt and a member's Claude run. It commits the
+//! recording's events as that run's, which asks to use Bash once the recording ends, and answers
+//! the client's chat queries and commands. A prompt of exactly [`LOSE`] makes it tell the client
+//! it lost events, and a query about any other chat is refused.
 
-use serde_json::Value;
 use weacon_model::ChatRuns;
 use weacon_protocol::{
     AgentKind, AgentOwner, AgentRef, ChatAction, ChatAnswer, ChatAnswerKind, ChatCommand,
@@ -15,7 +14,7 @@ use weacon_protocol::{
 
 mod events;
 
-use events::{agent, run, said};
+use events::{agent, asks_bash, run, said};
 
 /// The prompt text that makes the fake drop its client's subscription.
 const LOSE: &str = "/lose";
@@ -28,7 +27,8 @@ const FIRST: &str = "Merge the duplicate lines in the shopping list.";
 // The steps of the turn that answered the first prompt.
 const EARLIER: u64 = 60;
 
-/// The seq of the made-up log's last event; the server's tests read it.
+/// The seq of the made-up log's last event once its run has asked to use Bash; the server's
+/// tests read it.
 #[cfg(test)]
 pub(crate) const SEEDED: u64 = 69;
 
@@ -76,18 +76,6 @@ impl FakeChat {
             &mine,
             "I'll run the unit tests before I change anything.",
         ));
-        fake.commit(ChatEvent::Run {
-            update: RunUpdate {
-                run: mine.clone(),
-                event: RunEvent::PermissionAsked {
-                    run: mine.clone(),
-                    prompt: 1,
-                    tool: "Bash".to_owned(),
-                    input: Value::Null,
-                },
-            },
-        });
-        fake.status(&mine, RunState::Waiting);
         Ok(fake)
     }
 
@@ -147,6 +135,23 @@ impl FakeChat {
         let seq = self.seq();
         self.play(update);
         Some(self.told_since(seq))
+    }
+
+    /// Once the recording has played, its run asks to use Bash, unless a person stopped it or
+    /// it already waits; what tells the client of it.
+    pub(crate) fn ended(&mut self) -> Vec<Envelope> {
+        let Some(status) = self.current() else {
+            return Vec::new();
+        };
+        if self.stopped.contains(&status.run) || status.state == RunState::Waiting {
+            return Vec::new();
+        }
+        let seq = self.seq();
+        if status.state != RunState::Running {
+            self.status(&status.run, RunState::Running);
+        }
+        self.ask(&status.run);
+        self.told_since(seq)
     }
 
     fn is(&self, workspace: &WorkspaceId, chat: &ChatId) -> bool {
@@ -263,6 +268,11 @@ impl FakeChat {
         } else if matches!(update.event, RunEvent::PermissionAsked { .. }) {
             self.status(run, RunState::Waiting);
         }
+    }
+
+    fn ask(&mut self, run: &RunId) {
+        self.commit(asks_bash(run));
+        self.status(run, RunState::Waiting);
     }
 
     fn prompt(&mut self, request: &str, text: &str) -> Result<(), String> {
@@ -382,10 +392,15 @@ impl FakeChat {
 
 #[cfg(test)]
 mod tests {
+    use serde_json::Value;
+
     use super::*;
 
+    // The seeded chat once its recording has played: the member's run waits on its Bash prompt.
     fn fake() -> FakeChat {
-        FakeChat::new().unwrap()
+        let mut fake = FakeChat::new().unwrap();
+        fake.ended();
+        fake
     }
 
     // The seq of the last event once the seeded prompt is allowed and its run is idle.
@@ -650,6 +665,51 @@ mod tests {
         };
         assert_eq!(events.len(), PAGE);
         assert_eq!(events.last().map(|entry| entry.seq), Some(SEEDED));
+    }
+
+    #[test]
+    fn the_seeded_run_asks_to_use_bash_only_once_its_recording_has_ended() {
+        let mut seeded = FakeChat::new().unwrap();
+        let before = snapshot(&mut seeded);
+        seeded.answer(&query(
+            4,
+            "c-1",
+            ChatQueryKind::Subscribe { after: SEEDED - 2 },
+        ));
+        let asked = seeded.ended();
+
+        assert_eq!(
+            (before.0, before.1[0].state, before.2),
+            (SEEDED - 2, RunState::Running, vec![])
+        );
+        assert_eq!(
+            shape(&asked),
+            [
+                (4, "68 r-1 permission_asked".to_owned()),
+                (4, "69 r-1 Waiting".to_owned())
+            ]
+        );
+        assert_eq!(seeded.ended(), Vec::new());
+        assert_eq!(snapshot(&mut seeded).2, vec![SEEDED - 1]);
+    }
+
+    #[test]
+    fn an_idle_run_runs_again_to_ask_and_a_stopped_one_asks_nothing() {
+        let mut idle = FakeChat::new().unwrap();
+        idle.played(&played_by(
+            "r-1",
+            RunEvent::Finished {
+                outcome: Outcome::Completed,
+            },
+        ));
+        idle.ended();
+        let mut stopped = FakeChat::new().unwrap();
+        stopped.answer(&command(ChatAction::Interrupt));
+
+        let (_, runs, waiting) = snapshot(&mut idle);
+        assert_eq!((runs[0].state, waiting.len()), (RunState::Waiting, 1));
+        assert_eq!(stopped.ended(), Vec::new());
+        assert_eq!(snapshot(&mut stopped).2, Vec::<u64>::new());
     }
 
     #[test]
