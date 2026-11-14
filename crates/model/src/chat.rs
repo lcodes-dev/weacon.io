@@ -33,6 +33,17 @@ impl ChatRuns {
         runs
     }
 
+    /// The fold again from what a store kept of it, for the server, which keeps the fold beside
+    /// the log; `None` when prompts wait that `run` could not have asked.
+    #[must_use]
+    pub fn restored(run: Option<RunStatus>, waiting: Vec<Waiting>) -> Option<Self> {
+        let asking = run.as_ref().filter(|status| may_ask(status.state));
+        let honest = waiting
+            .iter()
+            .all(|waits| asking.is_some_and(|status| status.run == waits.run));
+        honest.then_some(Self { run, waiting })
+    }
+
     /// Takes in the log's next entry.
     pub fn apply(&mut self, entry: &ChatEntry) {
         match &entry.event {
@@ -81,10 +92,7 @@ impl ChatRuns {
 
     // Another run's prompts can no longer be answered, nor its own once it stops working.
     fn status(&mut self, status: &RunStatus) {
-        let may_ask = matches!(
-            status.state,
-            RunState::Running | RunState::Waiting | RunState::Newer
-        );
+        let may_ask = may_ask(status.state);
         self.waiting
             .retain(|waits| may_ask && waits.run == status.run);
         self.run = Some(status.clone());
@@ -113,6 +121,13 @@ impl ChatRuns {
         self.waiting
             .retain(|waits| !(waits.run == *run && waits.prompt == prompt));
     }
+}
+
+const fn may_ask(state: RunState) -> bool {
+    matches!(
+        state,
+        RunState::Running | RunState::Waiting | RunState::Newer
+    )
 }
 
 #[cfg(test)]
@@ -287,5 +302,39 @@ mod tests {
                 agent: None
             })
         );
+    }
+
+    #[test]
+    fn a_fold_is_restored_only_from_what_it_could_have_been() {
+        let at = |id: &str, state| RunStatus {
+            run: run(id),
+            state,
+            agent: None,
+        };
+        let waiting = |id: &str| at(id, RunState::Waiting);
+        let asked = || {
+            vec![Waiting {
+                run: run("run-1"),
+                prompt: 1,
+                seq: 4,
+            }]
+        };
+
+        let restored = ChatRuns::restored(Some(waiting("run-1")), asked()).unwrap();
+        assert_eq!(restored.run(), Some(&waiting("run-1")));
+        assert_eq!(restored.waiting_seqs(), [4]);
+        assert!(restored.waits(&run("run-1"), 1));
+        assert_eq!(
+            ChatRuns::restored(None, Vec::new()),
+            Some(ChatRuns::default())
+        );
+        let idle = at("run-1", RunState::Idle);
+        assert_eq!(
+            ChatRuns::restored(Some(idle.clone()), Vec::new()).map(|runs| runs.run().cloned()),
+            Some(Some(idle.clone()))
+        );
+        assert_eq!(ChatRuns::restored(None, asked()), None);
+        assert_eq!(ChatRuns::restored(Some(idle), asked()), None);
+        assert_eq!(ChatRuns::restored(Some(waiting("run-2")), asked()), None);
     }
 }

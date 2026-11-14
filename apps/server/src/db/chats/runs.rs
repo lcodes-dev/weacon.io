@@ -1,34 +1,11 @@
 use sqlx::SqliteConnection;
 use weacon_model::{ChatRuns, Waiting};
 use weacon_observability::Fault;
-use weacon_protocol::{ChatEntry, ChatEvent, ChatId, RunEvent, RunStatus, RunUpdate};
+use weacon_protocol::{ChatEntry, ChatId, RunStatus};
 
 use super::super::{Workspace, failed, stored, unreadable};
 use super::events::{Place, Read};
 use super::{count, number};
-
-// The fold again, from what it left stored: its run's status, then each prompt still waiting.
-fn restored(run: Option<RunStatus>, waiting: Vec<Waiting>) -> ChatRuns {
-    let status = run.map(|status| ChatEntry {
-        seq: 0,
-        event: ChatEvent::RunStatus { status },
-    });
-    let asked = waiting.into_iter().map(|Waiting { run, prompt, seq }| {
-        let event = RunEvent::PermissionAsked {
-            run: run.clone(),
-            prompt,
-            tool: String::new(),
-            input: serde_json::Value::Null,
-        };
-        ChatEntry {
-            seq,
-            event: ChatEvent::Run {
-                update: RunUpdate { run, event },
-            },
-        }
-    });
-    ChatRuns::fold(&status.into_iter().chain(asked).collect::<Vec<_>>())
-}
 
 /// The most bytes a waiting prompt's place takes in a snapshot: a `u64` and its comma.
 const WAITING_BYTES: usize = 21;
@@ -123,7 +100,7 @@ impl Workspace {
             })
         })
         .collect::<Result<_, Fault>>()?;
-        Ok(restored(runs, waiting))
+        ChatRuns::restored(runs, waiting).ok_or_else(unreadable)
     }
 
     /// Keeps `runs` as the chat's latest run and waiting prompts, in place of what was there.
