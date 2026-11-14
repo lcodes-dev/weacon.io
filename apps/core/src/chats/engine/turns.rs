@@ -175,9 +175,11 @@ impl<A: Agent> Engine<A> {
             }
             return Err(fault);
         }
+        // The state goes in the same save, so no record is left running with no turn.
         self.runs
             .update(&key.0, &key.1, |record| {
                 record.turn = None;
+                record.state = state;
                 record.active_at = now;
             })
             .await?;
