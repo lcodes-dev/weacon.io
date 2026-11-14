@@ -33,7 +33,7 @@ test("a chat shows its prompts and labelled turns, and a waiting prompt is answe
 
   assert.deepEqual(
     actions(harness).filter((action) => action.kind === "permission"),
-    [{ kind: "permission", answer: { run: "r-2", prompt: 1, allow: true } }],
+    [{ kind: "permission", answer: { run: "r-1", prompt: 1, allow: true } }],
   );
   assert.equal(await page.getByRole("button", { name: "Allow" }).count(), 0);
 });

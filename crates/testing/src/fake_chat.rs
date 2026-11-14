@@ -1,5 +1,5 @@
-//! A made-up chat log that the fake server keeps for its client: a person's prompt and a member's
-//! Claude run's long answer, then another prompt and a shared Codex run waiting on a permission
+//! A made-up chat log that the fake server keeps for its client: a person's prompt and a shared
+//! Codex run's long answer, then another prompt and a member's Claude run waiting on a permission
 //! prompt. It answers the client's chat queries and commands, and commits the recording's events,
 //! the Claude run's, as they play. A prompt of exactly [`LOSE`] makes it tell the client it lost events, and a
 //! query about any other chat is refused.
@@ -55,37 +55,39 @@ impl FakeChat {
         };
         let (mine, shared) = (run("r-1")?, run("r-2")?);
         let member = MemberId::try_from("m-1".to_owned())?;
-        let claude = agent(AgentKind::Claude, AgentOwner::Member { member }, "laptop")?;
         fake.prompt("q-0", FIRST)?;
-        fake.start(&mine, claude);
-        for step in 1..=EARLIER {
-            fake.commit(said(
-                &mine,
-                &format!("Step {step} of the first pass is done."),
-            ));
-        }
-        fake.finish(&mine, Outcome::Completed);
-        fake.prompt("q-1", "Now merge across units too.")?;
         fake.start(
             &shared,
             agent(AgentKind::Codex, AgentOwner::Shared, "team VPS")?,
         );
+        for step in 1..=EARLIER {
+            fake.commit(said(
+                &shared,
+                &format!("Step {step} of the first pass is done."),
+            ));
+        }
+        fake.finish(&shared, Outcome::Completed);
+        fake.prompt("q-1", "Now merge across units too.")?;
+        fake.start(
+            &mine,
+            agent(AgentKind::Claude, AgentOwner::Member { member }, "laptop")?,
+        );
         fake.commit(said(
-            &shared,
+            &mine,
             "I'll run the unit tests before I change anything.",
         ));
         fake.commit(ChatEvent::Run {
             update: RunUpdate {
-                run: shared.clone(),
+                run: mine.clone(),
                 event: RunEvent::PermissionAsked {
-                    run: shared.clone(),
+                    run: mine.clone(),
                     prompt: 1,
                     tool: "Bash".to_owned(),
                     input: Value::Null,
                 },
             },
         });
-        fake.status(&shared, RunState::Waiting);
+        fake.status(&mine, RunState::Waiting);
         Ok(fake)
     }
 
@@ -495,7 +497,7 @@ mod tests {
     }
 
     #[test]
-    fn the_chat_starts_with_a_finished_turn_then_a_shared_run_waiting_on_a_prompt() {
+    fn the_chat_starts_with_a_finished_turn_then_a_members_run_waiting_on_a_prompt() {
         let mut fake = fake();
         let (seq, runs, waiting) = snapshot(&mut fake);
         let member = MemberId::try_from("m-1".to_owned()).unwrap();
@@ -505,7 +507,7 @@ mod tests {
             .entries
             .iter()
             .map(|entry| format!("{} {}", entry.seq, kind(&entry.event)))
-            .filter(|told| !told.ends_with("r-1 text"))
+            .filter(|told| !told.ends_with("r-2 text"))
             .collect();
         let agents: Vec<_> = fake.statuses().map(|status| status.agent.clone()).collect();
 
@@ -513,27 +515,27 @@ mod tests {
             log,
             [
                 format!("1 prompt {FIRST}"),
-                "2 r-1 Running".to_owned(),
-                "63 r-1 finished".to_owned(),
-                "64 r-1 Idle".to_owned(),
+                "2 r-2 Running".to_owned(),
+                "63 r-2 finished".to_owned(),
+                "64 r-2 Idle".to_owned(),
                 "65 prompt Now merge across units too.".to_owned(),
-                "66 r-2 Running".to_owned(),
-                "67 r-2 text".to_owned(),
-                "68 r-2 permission_asked".to_owned(),
-                format!("{SEEDED} r-2 Waiting"),
+                "66 r-1 Running".to_owned(),
+                "67 r-1 text".to_owned(),
+                "68 r-1 permission_asked".to_owned(),
+                format!("{SEEDED} r-1 Waiting"),
             ]
         );
         assert_eq!(
             agents,
-            [claude.clone(), claude, codex.clone(), codex.clone()].map(Some)
+            [codex.clone(), codex, claude.clone(), claude.clone()].map(Some)
         );
         assert_eq!((seq, waiting), (SEEDED, vec![SEEDED - 1]));
         assert_eq!(
             runs,
             [RunStatus {
-                run: run("r-2").unwrap(),
+                run: run("r-1").unwrap(),
                 state: RunState::Waiting,
-                agent: Some(codex)
+                agent: Some(claude)
             }]
         );
     }
@@ -562,12 +564,12 @@ mod tests {
         assert_eq!(
             shape(&missed),
             [
-                (4, "68 r-2 permission_asked".to_owned()),
-                (4, "69 r-2 Waiting".to_owned())
+                (4, "68 r-1 permission_asked".to_owned()),
+                (4, "69 r-1 Waiting".to_owned())
             ]
         );
-        assert_eq!(shape(&delta), [(4, "70 r-1 Running".to_owned())]);
-        assert_eq!(shape(&text), [(4, "71 r-1 text".to_owned())]);
+        assert!(delta.is_empty());
+        assert_eq!(shape(&text), [(4, "70 r-1 text".to_owned())]);
         assert_eq!(
             shape(&fake.answer(&query(
                 6,
@@ -591,13 +593,10 @@ mod tests {
             .is_empty()
         );
 
-        assert_eq!(snapshot(&mut fake).0, 71);
+        assert_eq!(snapshot(&mut fake).0, 70);
         assert_eq!(
             shape(&fake.answer(&query(2, "c-1", ChatQueryKind::Subscribe { after: SEEDED }))),
-            [
-                (2, "70 r-1 Running".to_owned()),
-                (2, "71 r-1 text".to_owned())
-            ]
+            [(2, "70 r-1 text".to_owned())]
         );
     }
 
@@ -627,7 +626,7 @@ mod tests {
             panic!("no snapshot");
         };
         assert_eq!(events.len(), PAGE);
-        assert_eq!(events.last().map(|entry| entry.seq), Some(130));
+        assert_eq!(events.last().map(|entry| entry.seq), Some(129));
     }
 
     #[test]
@@ -635,7 +634,7 @@ mod tests {
         let mut fake = fake();
         fake.answer(&query(4, "c-1", ChatQueryKind::Subscribe { after: SEEDED }));
         let recorded = played_by(
-            "r-2",
+            "r-1",
             RunEvent::Text {
                 text: "Merged.".to_owned(),
             },
@@ -646,8 +645,8 @@ mod tests {
             shape(&stopped),
             [
                 (4, "70 receipt q-9".to_owned()),
-                (4, "71 r-2 finished".to_owned()),
-                (4, "72 r-2 Idle".to_owned())
+                (4, "71 r-1 finished".to_owned()),
+                (4, "72 r-1 Idle".to_owned())
             ]
         );
         assert_eq!(snapshot(&mut fake).2, Vec::<u64>::new());
@@ -665,7 +664,7 @@ mod tests {
         let said = fake.answer(&prompt("Also sort them."));
         let allowed = fake.answer(&command(ChatAction::Permission {
             answer: PermissionAnswer {
-                run: run("r-2").unwrap(),
+                run: run("r-1").unwrap(),
                 prompt: 1,
                 allow: true,
             },
@@ -690,11 +689,11 @@ mod tests {
             shape(&allowed),
             [
                 (4, "72 receipt q-9".to_owned()),
-                (4, "73 r-2 permission_answered".to_owned()),
-                (4, "74 r-2 Running".to_owned()),
-                (4, "75 r-2 text".to_owned()),
-                (4, "76 r-2 finished".to_owned()),
-                (4, "77 r-2 Idle".to_owned())
+                (4, "73 r-1 permission_answered".to_owned()),
+                (4, "74 r-1 Running".to_owned()),
+                (4, "75 r-1 text".to_owned()),
+                (4, "76 r-1 finished".to_owned()),
+                (4, "77 r-1 Idle".to_owned())
             ]
         );
         assert_eq!(shape(&stopped), [(4, "78 receipt q-9".to_owned())]);
@@ -715,11 +714,11 @@ mod tests {
                 },
             })
         };
-        // While r-2's prompt 1 waits: the same prompt of another run, another prompt of r-2.
-        let other_run = fake.answer(&answer("r-1", 1));
-        let other_prompt = fake.answer(&answer("r-2", 2));
+        // While r-1's prompt 1 waits: the same prompt of another run, another prompt of r-1.
+        let other_run = fake.answer(&answer("r-2", 1));
+        let other_prompt = fake.answer(&answer("r-1", 2));
         fake.answer(&command(ChatAction::Interrupt));
-        let late = fake.answer(&answer("r-2", 1));
+        let late = fake.answer(&answer("r-1", 1));
 
         assert_eq!(shape(&other_run), [(4, "70 receipt q-9".to_owned())]);
         assert_eq!(shape(&other_prompt), [(4, "71 receipt q-9".to_owned())]);
@@ -861,8 +860,8 @@ mod tests {
         let (seq, runs, waiting) = snapshot(&mut fake);
 
         assert_eq!(shape(&asked), []);
-        assert_eq!(seq, SEEDED + 3);
-        assert_eq!(waiting, [SEEDED + 2]);
+        assert_eq!(seq, SEEDED + 2);
+        assert_eq!(waiting, [SEEDED - 1, SEEDED + 1]);
         assert_eq!(
             runs.iter()
                 .map(|status| (status.run.as_str(), status.state))
