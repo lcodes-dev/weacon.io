@@ -1,0 +1,190 @@
+//! The tokens that let a run reach the core's MCP: one per run, kept only in memory.
+
+use std::fmt;
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+
+use sha2::{Digest, Sha256};
+use subtle::ConstantTimeEq;
+use tokio::sync::Semaphore;
+use weacon_agents::AgentRun;
+use weacon_observability::Fault;
+use weacon_protocol::{PermissionAnswer, RunEvent, RunId, WorkspaceId, code};
+
+use crate::runs::task::Agent;
+
+/// How many of a run's tool calls may be answered at once, so a looping agent can't hold the
+/// daemon's threads.
+pub(crate) const CALLS_AT_ONCE: usize = 2;
+
+/// A run's token, which it sends as `Authorization: Bearer <token>`.
+pub(crate) struct Token(String);
+
+impl Token {
+    pub(crate) fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Debug for Token {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("Token(..)")
+    }
+}
+
+/// What a token lets its run read: the code of its own folder, in its own workspace.
+#[derive(Debug)]
+pub(crate) struct Grant {
+    pub(crate) workspace: WorkspaceId,
+    pub(crate) run: RunId,
+    pub(crate) folder: PathBuf,
+    pub(crate) calls: Arc<Semaphore>,
+}
+
+impl Grant {
+    pub(crate) fn new(workspace: WorkspaceId, run: RunId, folder: PathBuf) -> Self {
+        Self {
+            workspace,
+            run,
+            folder,
+            calls: Arc::new(Semaphore::new(CALLS_AT_ONCE)),
+        }
+    }
+}
+
+type Held = Vec<([u8; 32], Arc<Grant>)>;
+
+/// The tokens of the runs alive now, by their hash.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct Grants(Arc<Mutex<Held>>);
+
+impl Grants {
+    /// A new token for `grant`, which works until the [`Revoke`] is dropped.
+    pub(crate) fn issue(&self, grant: Grant) -> Result<(Token, Revoke), Fault> {
+        let mut bytes = [0; 32];
+        getrandom::fill(&mut bytes).map_err(|_| {
+            Fault::new(code!("random.failed"), "The core couldn't get random bytes")
+        })?;
+        let token = Token(bytes.iter().fold(String::new(), |mut hex, byte| {
+            hex.push(hex_digit(byte >> 4));
+            hex.push(hex_digit(byte & 0xf));
+            hex
+        }));
+        let hash = hash(token.as_str());
+        self.held().push((hash, Arc::new(grant)));
+        let revoke = Revoke {
+            grants: self.clone(),
+            hash,
+        };
+        Ok((token, revoke))
+    }
+
+    /// The grant of a live run's token. Every held hash is compared in constant time.
+    pub(crate) fn find(&self, token: &str) -> Option<Arc<Grant>> {
+        let hash = hash(token);
+        let held = self.held();
+        let mut found = None;
+        for (held, grant) in held.iter() {
+            if bool::from(held.ct_eq(&hash)) {
+                found = Some(Arc::clone(grant));
+            }
+        }
+        found
+    }
+
+    fn held(&self) -> MutexGuard<'_, Held> {
+        self.0.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+}
+
+fn hex_digit(nibble: u8) -> char {
+    char::from_digit(u32::from(nibble), 16).unwrap_or('0')
+}
+
+fn hash(token: &str) -> [u8; 32] {
+    Sha256::digest(token.as_bytes()).into()
+}
+
+/// Ends a token when dropped.
+#[derive(Debug)]
+pub(crate) struct Revoke {
+    grants: Grants,
+    hash: [u8; 32],
+}
+
+impl Drop for Revoke {
+    fn drop(&mut self) {
+        self.grants.held().retain(|(hash, _)| *hash != self.hash);
+    }
+}
+
+/// An agent whose token ends with it.
+pub(crate) struct Granted {
+    pub(crate) agent: AgentRun,
+    /// Held only so the token ends with the run.
+    pub(crate) _revoke: Option<Revoke>,
+}
+
+impl Agent for Granted {
+    async fn send(&mut self, prompt: &str) -> Result<(), Fault> {
+        self.agent.send(prompt).await
+    }
+
+    async fn answer(&mut self, answer: &PermissionAnswer) -> Result<(), Fault> {
+        self.agent.answer(answer).await
+    }
+
+    async fn interrupt(&mut self) -> Result<(), Fault> {
+        self.agent.interrupt().await
+    }
+
+    async fn next(&mut self) -> Result<Option<RunEvent>, Fault> {
+        self.agent.next().await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn grant(workspace: &str, run: &str) -> Grant {
+        Grant::new(
+            WorkspaceId::try_from(workspace.to_owned()).unwrap(),
+            RunId::try_from(run.to_owned()).unwrap(),
+            PathBuf::from("/work"),
+        )
+    }
+
+    #[test]
+    fn a_token_finds_its_own_grant_until_it_is_revoked() {
+        let grants = Grants::default();
+        let (first, revoke_first) = grants.issue(grant("w-1", "run-1")).unwrap();
+        let (second, _revoke_second) = grants.issue(grant("w-2", "run-2")).unwrap();
+
+        let found = |token: &str| {
+            grants
+                .find(token)
+                .map(|grant| grant.run.as_str().to_owned())
+        };
+        assert_eq!(found(first.as_str()).as_deref(), Some("run-1"));
+        assert_eq!(found(second.as_str()).as_deref(), Some("run-2"));
+        assert_eq!(found(""), None);
+        assert_eq!(found(&first.as_str().to_uppercase()), None);
+
+        drop(revoke_first);
+        assert_eq!(found(first.as_str()), None);
+        assert_eq!(found(second.as_str()).as_deref(), Some("run-2"));
+    }
+
+    #[test]
+    fn tokens_are_long_random_hex_and_their_debug_hides_them() {
+        let grants = Grants::default();
+        let (one, _a) = grants.issue(grant("w-1", "run-1")).unwrap();
+        let (two, _b) = grants.issue(grant("w-1", "run-1")).unwrap();
+
+        assert_eq!(one.as_str().len(), 64);
+        assert!(one.as_str().bytes().all(|byte| byte.is_ascii_hexdigit()));
+        assert_ne!(one.as_str(), two.as_str());
+        assert_eq!(format!("{one:?}"), "Token(..)");
+    }
+}

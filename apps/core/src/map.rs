@@ -70,7 +70,11 @@ fn check_anchors(
 /// Every `Cargo.toml`, and every `.rs` file inside a `src` folder, under `root/folder`, its path
 /// joined with `/`. Hidden entries, links, `node_modules`, Cargo's build folders and files
 /// that aren't UTF-8 are left out.
-fn source_files(root: &Path, folder: &str, files: &mut Vec<SourceFile>) -> io::Result<()> {
+pub(crate) fn source_files(
+    root: &Path,
+    folder: &str,
+    files: &mut Vec<SourceFile>,
+) -> io::Result<()> {
     for entry in fs::read_dir(root.join(folder))? {
         let entry = entry?;
         let name = entry.file_name();

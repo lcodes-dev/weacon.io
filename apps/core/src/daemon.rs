@@ -19,6 +19,7 @@ use weacon_protocol::{
 use crate::chats::feed::{self, Client};
 use crate::chats::{self, Chats, Places};
 use crate::disk;
+use crate::mcp;
 use crate::memory;
 use crate::picks::{KeepError, Picks};
 use crate::platform::{self, Listener, Owner, Stream};
@@ -26,7 +27,7 @@ use crate::session::{Reply, Session};
 
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
 pub(crate) const READ_CHUNK: usize = 8192;
-const ACCEPT_BACKOFF: Duration = Duration::from_millis(100);
+pub(crate) const ACCEPT_BACKOFF: Duration = Duration::from_millis(100);
 const DISK_CHECK: Duration = Duration::from_mins(1);
 const MEMORY_SAMPLE: Duration = Duration::from_mins(5);
 
@@ -52,6 +53,7 @@ pub(crate) fn run(app: &crate::app::App) -> Result<(), Fault> {
             Places {
                 path: app.path.clone(),
                 work_root: app.work_root.clone(),
+                mcp: None,
             },
             app.log.clone(),
         )?;
@@ -78,6 +80,7 @@ pub(crate) struct Daemon {
     disk: disk::Watch,
     memory: memory::Watch,
     engine: JoinHandle<()>,
+    mcp: JoinHandle<()>,
     // Held for the daemon's life, so a second daemon can't start.
     _lock: File,
 }
@@ -88,7 +91,7 @@ impl Daemon {
         state_dir: &Path,
         app: App,
         spawn: SpawnPolicy,
-        places: Places,
+        mut places: Places,
         log: Logger,
     ) -> Result<Self, Fault> {
         let failed = |error: io::Error| {
@@ -117,6 +120,8 @@ impl Daemon {
         {
             return Err(failed(error));
         }
+        let (mcp, mcp_server) = mcp::start(&log)?;
+        places.mcp = Some(mcp);
         let (chats, engine) = chats::start(state_dir, places, app.clone(), spawn, log.clone())?;
         let listener = platform::bind(&socket).map_err(failed)?;
         let engine = tokio::spawn(engine.run());
@@ -134,6 +139,7 @@ impl Daemon {
             disk: disk::Watch::new(state_dir.to_owned(), platform::free_space),
             memory: memory::Watch::new(platform::processes),
             engine,
+            mcp: mcp_server,
             _lock: lock,
         })
     }
@@ -163,6 +169,7 @@ impl Daemon {
         drop(self.listener);
         drop(fs::remove_file(&self.socket));
         clients.shutdown().await;
+        self.mcp.abort();
         // The engine stops once the last way to it is gone; its writes end before the lock goes.
         let log = self.shared.log.clone();
         drop(self.shared);

@@ -11,13 +11,15 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use weacon_agents::{AgentRun, SpawnPolicy};
+use weacon_agents::SpawnPolicy;
 use weacon_observability::{Fault, Logger};
 use weacon_protocol::{App, ChatId, WorkspaceId, code};
 
 pub(crate) use engine::Chats;
 use engine::{Engine, Host, Start};
 
+use crate::mcp::grants::Granted;
+use crate::mcp::{self, Mcp};
 use crate::platform;
 use crate::runs::Runs;
 use crate::workspaces::Workspaces;
@@ -29,6 +31,8 @@ pub(crate) struct Places {
     pub(crate) path: Option<OsString>,
     /// Where chats' working folders go; with none, no agent can start.
     pub(crate) work_root: Option<PathBuf>,
+    /// The core's MCP, which runs reach with a token of their own.
+    pub(crate) mcp: Option<Mcp>,
 }
 
 /// The clients' way to the chats in `state_dir`, and the engine to run behind it, which starts
@@ -42,7 +46,7 @@ pub(crate) fn start(
     app: App,
     policy: SpawnPolicy,
     log: Logger,
-) -> Result<(Chats, Engine<AgentRun>), Fault> {
+) -> Result<(Chats, Engine<Granted>), Fault> {
     let runs = Runs::load(state_dir)?;
     let workspaces = Workspaces::new(state_dir, places.path);
     let roots = workspaces.clone();
@@ -50,7 +54,12 @@ pub(crate) fn start(
         start: Arc::new(move |start: &Start| {
             let cwd = work_dir(places.work_root.as_deref(), &start.workspace, &start.chat)?;
             let launch = roots.launch(&start.workspace, start.agent, cwd)?;
-            launch.start(&policy, &app, start.run.clone(), start.session.as_ref())
+            let (launch, revoke) = mcp::grant(places.mcp.as_ref(), launch, start)?;
+            let agent = launch.start(&policy, &app, start.run.clone(), start.session.as_ref())?;
+            Ok(Granted {
+                agent,
+                _revoke: revoke,
+            })
         }),
         now: unix_now,
     };
@@ -151,6 +160,7 @@ mod tests {
         let places = Places {
             path: None,
             work_root: Some(dir.join("Weacon")),
+            mcp: None,
         };
         let (chats, engine) = start(&dir, places, app, SpawnPolicy::default(), log).unwrap();
         tokio::spawn(engine.run());

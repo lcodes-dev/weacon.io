@@ -7,6 +7,7 @@ mod daemon;
 mod disk;
 mod doctor;
 mod map;
+mod mcp;
 mod memory;
 mod native_host;
 mod picks;
