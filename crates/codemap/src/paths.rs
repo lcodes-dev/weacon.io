@@ -7,8 +7,8 @@ pub(crate) type Segments = Vec<String>;
 
 /// A path, and the inline modules around it within its file.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct Named {
-    pub(crate) within: Vec<String>,
+pub(crate) struct NamedPath {
+    pub(crate) within: Segments,
     pub(crate) segments: Segments,
     /// What a `use` brings into scope under this path; `None` for other paths.
     pub(crate) bound: Option<Bound>,
@@ -28,7 +28,7 @@ type Scopes<'tree> = Vec<(Node<'tree>, Vec<String>)>;
 
 /// Every path a file names outside its test-only items: in `use` trees, in qualified names
 /// such as `frame::Frame::new`, and in `mod frame;` declarations.
-pub(crate) fn paths(root: Node<'_>, source: &[u8]) -> Vec<Named> {
+pub(crate) fn named_paths(root: Node<'_>, source: &[u8]) -> Vec<NamedPath> {
     let mut found = Vec::new();
     let mut scopes = vec![(root, Vec::new())];
     while let Some((scope, within)) = scopes.pop() {
@@ -36,7 +36,7 @@ pub(crate) fn paths(root: Node<'_>, source: &[u8]) -> Vec<Named> {
         preorder(scope, |node| {
             visit(node, source, &within, &mut written, &mut scopes)
         });
-        found.extend(written.into_iter().map(|(segments, bound)| Named {
+        found.extend(written.into_iter().map(|(segments, bound)| NamedPath {
             within: within.clone(),
             segments,
             bound,
@@ -109,11 +109,11 @@ fn use_tree(root: Node<'_>, source: &[u8], found: &mut Found) {
             }
             "use_as_clause" => {
                 let alias = node.child_by_field_name("alias");
-                let alias = alias.map(|it| Bound::Name(text(it, source).to_owned()));
-                found.extend(path(node.child_by_field_name("path")).map(|it| (it, alias)));
+                let alias = alias.map(|alias| Bound::Name(text(alias, source).to_owned()));
+                found.extend(path(node.child_by_field_name("path")).map(|path| (path, alias)));
             }
             "use_wildcard" => {
-                found.extend(path(node.named_child(0)).map(|it| (it, Some(Bound::Glob))));
+                found.extend(path(node.named_child(0)).map(|path| (path, Some(Bound::Glob))));
             }
             "self" => found.extend(path(None).map(named_by_last)),
             _ => found.extend(path(Some(node)).map(named_by_last)),
@@ -151,11 +151,11 @@ pub(crate) fn segments(node: Node<'_>, source: &[u8]) -> Option<Segments> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::syntax::{parse, rust_parser};
+    use crate::test_support::tree;
 
     fn found(text: &str) -> Vec<String> {
-        let tree = parse(&mut rust_parser().unwrap(), text).unwrap();
-        paths(tree.root_node(), text.as_bytes())
+        let tree = tree(text);
+        named_paths(tree.root_node(), text.as_bytes())
             .into_iter()
             .map(|path| {
                 let mut parts = path.within;
@@ -192,12 +192,12 @@ mod tests {
     #[test]
     fn notes_what_each_use_brings_into_scope() {
         let text = "use a::{self, b::C, d as e, f::*};\nfn g() { h::I; }\n";
-        let tree = parse(&mut rust_parser().unwrap(), text).unwrap();
-        let bound: Vec<Option<Bound>> = paths(tree.root_node(), text.as_bytes())
+        let tree = tree(text);
+        let bound: Vec<Option<Bound>> = named_paths(tree.root_node(), text.as_bytes())
             .into_iter()
             .map(|path| path.bound)
             .collect();
-        let name = |it: &str| Some(Bound::Name(it.to_owned()));
+        let name = |name: &str| Some(Bound::Name(name.to_owned()));
         assert_eq!(
             bound,
             [name("a"), name("C"), name("e"), Some(Bound::Glob), None]

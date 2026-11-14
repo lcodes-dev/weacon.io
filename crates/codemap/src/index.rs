@@ -78,7 +78,7 @@ pub(crate) fn assemble(facts: &[Facts]) -> Index {
     let mut sources: Vec<&Facts> = facts.iter().collect();
     sources.sort_by_key(|facts| &facts.path);
     for facts in sources {
-        let FileKind::Rust { items, named } = &facts.kind else {
+        let FileKind::Rust { items, named_paths } = &facts.kind else {
             continue;
         };
         let file = facts.path.as_str();
@@ -86,11 +86,11 @@ pub(crate) fn assemble(facts: &[Facts]) -> Index {
         let Some((owner, path)) = crates
             .iter_mut()
             .rev()
-            .find_map(|it| module_path(&it.folder, file).map(|path| (it, path)))
+            .find_map(|krate| module_path(&krate.folder, file).map(|path| (krate, path)))
         else {
             continue;
         };
-        named_by_file.insert(file, &named[..]);
+        named_by_file.insert(file, &named_paths[..]);
         items_by_file.insert(file, &items[..]);
         owner.modules.push(Module {
             path,
@@ -177,13 +177,7 @@ impl Index {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn file(path: &str, text: &str) -> SourceFile {
-        SourceFile {
-            path: path.to_owned(),
-            text: text.to_owned(),
-        }
-    }
+    use crate::test_support::file;
 
     fn layout(index: &Index) -> Vec<String> {
         index
@@ -191,8 +185,11 @@ mod tests {
             .iter()
             .flat_map(|krate| {
                 krate.modules.iter().map(move |module| {
-                    let names: Vec<&str> =
-                        module.symbols.iter().map(|it| it.name.as_str()).collect();
+                    let names: Vec<&str> = module
+                        .symbols
+                        .iter()
+                        .map(|symbol| symbol.name.as_str())
+                        .collect();
                     format!(
                         "{} [{}] {} {}: {}",
                         krate.name,
@@ -310,10 +307,10 @@ mod tests {
         let mut reader = Reader::new().unwrap();
         let mut facts: Vec<Facts> = files
             .iter()
-            .filter_map(|it| reader.facts(it).unwrap())
+            .filter_map(|file| reader.facts(file).unwrap())
             .collect();
         let changed = file("a/src/m.rs", "pub fn went() {}\n");
-        facts.retain(|it| it.path != changed.path);
+        facts.retain(|kept| kept.path != changed.path);
         facts.extend(reader.facts(&changed).unwrap());
 
         let fresh = index(&[files[0].clone(), files[1].clone(), changed]).unwrap();

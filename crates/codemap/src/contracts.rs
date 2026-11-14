@@ -9,9 +9,9 @@ use commands::{Commands, Variant, full_names, variants};
 use tables::Tables;
 
 use crate::edges::id;
-use crate::graph::nodes;
-use crate::outline::Item;
+use crate::graph::{ModuleNode, nodes};
 use crate::paths::segments;
+use crate::symbols::Item;
 use crate::syntax::{attributes, line, preorder, text};
 use crate::{Crate, Module};
 
@@ -65,7 +65,7 @@ const METHODS: &[&str] = &["delete", "get", "head", "options", "patch", "post", 
 pub(crate) fn assemble(crates: &[Crate], items: &BTreeMap<&str, &[Item]>) -> Vec<Contract> {
     let mut found = BTreeSet::new();
     let mut commands = Commands::new();
-    for (krate, module) in nodes(crates) {
+    for ModuleNode { krate, module } in nodes(crates) {
         for item in items.get(module.file.as_str()).copied().unwrap_or_default() {
             declare(&mut found, &mut commands, krate, module, item);
         }
@@ -117,7 +117,7 @@ pub(crate) fn contracts(item: Node<'_>, source: &[u8]) -> Vec<Declared> {
     let mut found = Vec::new();
     if derives
         .iter()
-        .any(|it| matches!(*it, "Serialize" | "Deserialize"))
+        .any(|derive| matches!(*derive, "Serialize" | "Deserialize"))
     {
         found.push(declared(item, Declares::Serde));
     }
@@ -163,7 +163,7 @@ fn derives<'a>(item: Node<'_>, source: &'a [u8]) -> Vec<&'a str> {
         })
         .flat_map(|arguments| {
             text(arguments, source)
-                .split(|it: char| !(it.is_alphanumeric() || it == '_' || it == ':'))
+                .split(|ch: char| !(ch.is_alphanumeric() || ch == '_' || ch == ':'))
                 .map(last)
                 .filter(|name| !name.is_empty())
         })
@@ -178,11 +178,11 @@ fn error_code(node: Node<'_>, source: &[u8]) -> Option<Declared> {
     let mut cursor = node.walk();
     let tokens = node
         .named_children(&mut cursor)
-        .find(|it| it.kind() == "token_tree")?;
+        .find(|child| child.kind() == "token_tree")?;
     let mut cursor = tokens.walk();
     let code = tokens
         .named_children(&mut cursor)
-        .find(|it| it.kind() == "string_literal")?;
+        .find(|token| token.kind() == "string_literal")?;
     Some(declared(node, Declares::ErrorCode(literal(code, source))))
 }
 
@@ -197,14 +197,14 @@ fn routes(node: Node<'_>, source: &[u8]) -> Vec<Declared> {
     };
     let arguments = node.child_by_field_name("arguments");
     let Some(path) = arguments
-        .and_then(|it| it.named_child(0))
-        .filter(|it| it.kind() == "string_literal")
+        .and_then(|list| list.named_child(0))
+        .filter(|path| path.kind() == "string_literal")
     else {
         return Vec::new();
     };
     let path = literal(path, source);
     let mut methods = Vec::new();
-    if let Some(handlers) = arguments.and_then(|it| it.named_child(1)) {
+    if let Some(handlers) = arguments.and_then(|list| list.named_child(1)) {
         preorder(handlers, |node| {
             let name = (node.kind() == "call_expression")
                 .then(|| called(node, source))
@@ -239,30 +239,31 @@ fn called<'a>(call: Node<'_>, source: &'a [u8]) -> Option<&'a str> {
 pub(crate) fn literal(node: Node<'_>, source: &[u8]) -> String {
     let mut cursor = node.walk();
     node.named_children(&mut cursor)
-        .filter(|it| it.kind() == "string_content")
-        .map(|it| text(it, source))
+        .filter(|part| part.kind() == "string_content")
+        .map(|part| text(part, source))
         .collect()
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::{SourceFile, index};
+    use crate::index;
+    use crate::test_support::files;
 
     fn found(lib: &str) -> Vec<String> {
-        let files = [
+        index(&files(&[
             ("a/Cargo.toml", "[package]\nname = \"a\"\n"),
             ("a/src/lib.rs", lib),
-        ]
-        .map(|(path, text)| SourceFile {
-            path: path.to_owned(),
-            text: text.to_owned(),
-        });
-        index(&files)
-            .unwrap()
-            .contracts
-            .into_iter()
-            .map(|it| format!("{:?} {} @{}:{}", it.kind, it.name, it.item, it.line))
-            .collect()
+        ]))
+        .unwrap()
+        .contracts
+        .into_iter()
+        .map(|found| {
+            format!(
+                "{:?} {} @{}:{}",
+                found.kind, found.name, found.item, found.line
+            )
+        })
+        .collect()
     }
 
     #[test]
@@ -300,12 +301,12 @@ mod tests {
                    #[derive(Subcommand, other::Serialize)]\nenum Quiet { Quietly }\n\
                    #[derive(Not_Serialize)]\nenum Plain { Hidden }\n";
         let found = found(lib);
-        let depth = found.iter().map(|it| it.matches(" more").count()).max();
+        let depth = found.iter().map(|line| line.matches(" more").count()).max();
         assert_eq!(depth, Some(7), "{found:?}");
         assert_eq!(
             found
                 .iter()
-                .filter(|it| !it.contains(" more"))
+                .filter(|line| !line.contains(" more"))
                 .collect::<Vec<_>>(),
             [
                 "Command add-member @a::Admin:4",

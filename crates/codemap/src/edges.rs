@@ -1,10 +1,10 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::iter::once;
 
-use crate::graph::{absolute, longest_module, nodes, segments_of};
-use crate::outline::Item;
-use crate::paths::{Bound, Named};
+use crate::graph::{ModuleNode, absolute, longest_module, nodes, segments_of};
+use crate::paths::{Bound, NamedPath};
 use crate::refs::Ref;
+use crate::symbols::Item;
 use crate::{Crate, Kind};
 
 /// One item's code naming another item: `from` and `to` are paths such as `weacon_core::map::run`.
@@ -27,13 +27,13 @@ const HOPS: usize = 4;
 /// The edges between the crates' items, sorted, each once; a name traced to no item gives none.
 pub(crate) fn edges(
     crates: &[Crate],
-    named: &BTreeMap<&str, &[Named]>,
+    named_paths: &BTreeMap<&str, &[NamedPath]>,
     items: &BTreeMap<&str, &[Item]>,
 ) -> Vec<Edge> {
     let items_of = |file: &str| items.get(file).copied().unwrap_or_default();
-    let scope = Scope::new(crates, named, &items_of);
+    let scope = Scope::new(crates, named_paths, &items_of);
     let mut found = BTreeSet::new();
-    for (krate, module) in nodes(crates) {
+    for ModuleNode { krate, module } in nodes(crates) {
         for item in items_of(&module.file) {
             found.extend(scope.edges(&krate.name, &module.path, item));
         }
@@ -47,7 +47,7 @@ pub(crate) fn id(krate: &str, module: &str, name: &str) -> String {
 }
 
 fn join<'a>(parts: impl IntoIterator<Item = &'a str>) -> String {
-    let parts: Vec<&str> = parts.into_iter().filter(|it| !it.is_empty()).collect();
+    let parts: Vec<&str> = parts.into_iter().filter(|part| !part.is_empty()).collect();
     parts.join("::")
 }
 
@@ -61,7 +61,7 @@ struct Scope<'a> {
     /// Every item's path, and its kind.
     ids: BTreeMap<String, Kind>,
     /// The `use`s of every module, inline ones included, by crate and module path.
-    imports: BTreeMap<(&'a str, String), Vec<&'a Named>>,
+    imports: BTreeMap<(&'a str, String), Vec<&'a NamedPath>>,
     /// Methods by their own name, with the type they belong to.
     methods: BTreeMap<&'a str, Vec<(String, String)>>,
 }
@@ -69,7 +69,7 @@ struct Scope<'a> {
 impl<'a> Scope<'a> {
     fn new(
         crates: &'a [Crate],
-        named: &BTreeMap<&str, &'a [Named]>,
+        named_paths: &BTreeMap<&str, &'a [NamedPath]>,
         items_of: &impl Fn(&str) -> &'a [Item],
     ) -> Self {
         let mut scope = Self {
@@ -78,13 +78,16 @@ impl<'a> Scope<'a> {
             imports: BTreeMap::new(),
             methods: BTreeMap::new(),
         };
-        for (krate, module) in nodes(crates) {
+        for ModuleNode { krate, module } in nodes(crates) {
             let krate = krate.name.as_str();
             scope
                 .imports
                 .entry((krate, module.path.clone()))
                 .or_default();
-            let paths = named.get(module.file.as_str()).copied().unwrap_or_default();
+            let paths = named_paths
+                .get(module.file.as_str())
+                .copied()
+                .unwrap_or_default();
             for path in paths.iter().filter(|path| path.bound.is_some()) {
                 let key = (krate, inside(&module.path, &path.within));
                 scope.imports.entry(key).or_default().push(path);
@@ -115,8 +118,8 @@ impl<'a> Scope<'a> {
         let mut found: Vec<(String, EdgeKind)> = item
             .refs
             .iter()
-            .filter_map(|it| {
-                let (path, kind) = match it {
+            .filter_map(|named| {
+                let (path, kind) = match named {
                     Ref::Call(path) => (path, EdgeKind::Calls),
                     Ref::Use(path) => (path, EdgeKind::Uses),
                     Ref::Method(_) => return None,
@@ -128,7 +131,7 @@ impl<'a> Scope<'a> {
         let mut known: BTreeSet<String> = found.iter().map(|(to, _)| to.clone()).collect();
         let here = inside(module, &item.within);
         known.extend(item.owner.as_deref().map(|owner| id(krate, &here, owner)));
-        found.extend(item.refs.iter().filter_map(|it| match it {
+        found.extend(item.refs.iter().filter_map(|named| match named {
             Ref::Method(name) => Some((self.method(name, &known)?, EdgeKind::Calls)),
             Ref::Call(_) | Ref::Use(_) => None,
         }));
@@ -168,7 +171,7 @@ impl<'a> Scope<'a> {
             let found = self.find(krate, segments.get(..length)?, HOPS)?;
             (self.ids.get(&found) != Some(&Kind::Mod)).then_some(found)
         });
-        within.map(|it| (it, false))
+        within.map(|found| (found, false))
     }
 
     fn find(&self, krate: &'a str, segments: &[&'a str], hops: usize) -> Option<String> {
@@ -187,7 +190,7 @@ impl<'a> Scope<'a> {
             segments.get(length + 1..)?,
         );
         let imports = self.imports.get(&(krate, module.join("::")))?;
-        let through = |import: &&'a Named, name: Option<&'a str>| {
+        let through = |import: &&'a NamedPath, name: Option<&'a str>| {
             let written = import.segments.iter().map(String::as_str);
             let segments = written.chain(name).chain(rest.iter().copied());
             let (krate, segments) = absolute(&self.crates, krate, module.to_vec(), segments);
@@ -220,17 +223,11 @@ impl<'a> Scope<'a> {
 
 #[cfg(test)]
 mod tests {
-    use crate::{SourceFile, index};
+    use crate::index;
+    use crate::test_support::files;
 
-    fn edges(files: &[(&str, &str)]) -> Vec<String> {
-        let files: Vec<SourceFile> = files
-            .iter()
-            .map(|(path, text)| SourceFile {
-                path: (*path).to_owned(),
-                text: (*text).to_owned(),
-            })
-            .collect();
-        index(&files)
+    fn edges(list: &[(&str, &str)]) -> Vec<String> {
+        index(&files(list))
             .unwrap()
             .edges
             .into_iter()

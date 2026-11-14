@@ -1,20 +1,20 @@
 use crate::graph::Links;
 
 const DAMPING: f64 = 0.85;
-const ROUNDS: usize = 100;
+const ITERATIONS: usize = 100;
 
 /// Page rank over weighted links; the ranks sum to 1, and a node without links shares its rank
 /// with every node. A fixed number of rounds keeps the result the same on every run.
 pub(crate) fn page_rank(links: &Links) -> Vec<f64> {
     let count = as_float(links.len());
     let mut ranks = vec![1.0 / count; links.len()];
-    for _ in 0..ROUNDS {
-        ranks = round(links, &ranks, count);
+    for _ in 0..ITERATIONS {
+        ranks = next_ranks(links, &ranks, count);
     }
     ranks
 }
 
-fn round(links: &Links, ranks: &[f64], count: f64) -> Vec<f64> {
+fn next_ranks(links: &Links, ranks: &[f64], count: f64) -> Vec<f64> {
     let mut next = vec![0.0; ranks.len()];
     let mut shared = 1.0 - DAMPING;
     for (targets, rank) in links.iter().zip(ranks) {
@@ -39,16 +39,11 @@ fn as_float(count: usize) -> f64 {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeMap;
-
     use super::*;
+    use crate::test_support;
 
     fn links(edges: &[(usize, usize, f64)], nodes: usize) -> Links {
-        let mut links = vec![BTreeMap::new(); nodes];
-        for &(from, to, weight) in edges {
-            links[from].insert(to, weight);
-        }
-        links
+        test_support::links(edges.iter().copied(), nodes)
     }
 
     fn close(one: f64, other: f64) -> bool {

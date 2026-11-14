@@ -3,7 +3,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use tree_sitter::Node;
 
 use super::{Contract, Declared, Declares, declared, literal};
-use crate::outline::base_name;
+use crate::symbols::base_name;
 use crate::syntax::{attributes, text};
 
 /// How deep subcommands nest before the rest are left out, so a loop can't go on.
@@ -57,7 +57,7 @@ fn settings(variant: Node<'_>, source: &[u8]) -> (Option<String>, bool) {
     let mut name = None;
     let mut flatten = false;
     for attribute in attributes(variant).filter_map(|node| node.named_child(0)) {
-        let called = attribute.named_child(0).map(|it| text(it, source));
+        let called = attribute.named_child(0).map(|name| text(name, source));
         let Some(arguments) = attribute.child_by_field_name("arguments") else {
             continue;
         };

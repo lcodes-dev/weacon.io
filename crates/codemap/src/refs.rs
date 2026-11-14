@@ -34,7 +34,7 @@ pub(crate) fn refs(item: Node<'_>, source: &[u8]) -> Vec<Ref> {
             }
             "macro_invocation" => {
                 let name = node.child_by_field_name("macro");
-                found.extend(name.and_then(|it| segments(it, source)).map(Ref::Call));
+                found.extend(name.and_then(|name| segments(name, source)).map(Ref::Call));
                 false
             }
             "type_identifier" => {
@@ -92,14 +92,14 @@ fn call(function: Node<'_>, source: &[u8], called: &mut BTreeSet<usize>) -> Opti
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::syntax::{parse, rust_parser};
+    use crate::test_support::tree;
 
     fn found(text: &str) -> Vec<String> {
-        let tree = parse(&mut rust_parser().unwrap(), text).unwrap();
+        let tree = tree(text);
         let item = tree.root_node().named_child(0).unwrap();
         refs(item, text.as_bytes())
             .into_iter()
-            .map(|it| match it {
+            .map(|found| match found {
                 Ref::Call(path) => format!("call {}", path.join("::")),
                 Ref::Method(name) => format!("method {name}"),
                 Ref::Use(path) => format!("use {}", path.join("::")),

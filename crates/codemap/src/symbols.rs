@@ -193,12 +193,12 @@ fn push_items<'tree>(pending: &mut Pending<'tree>, list: Option<Node<'tree>>, pl
 /// The type an `impl` is for, and the prefix of its items' names: `Frame` for
 /// `impl<T> Frame<T>`, `Frame::Display` for `impl fmt::Display for Frame`.
 fn impl_owner(item: Node<'_>, source: &[u8]) -> (String, String) {
-    let named = |name| {
+    let base_of = |name| {
         item.child_by_field_name(name)
             .map(|node| base_name(node, source))
     };
-    let owner = named("type").unwrap_or_default();
-    let path = match named("trait") {
+    let owner = base_of("type").unwrap_or_default();
+    let path = match base_of("trait") {
         Some(name) => format!("{owner}::{name}"),
         None => owner.clone(),
     };
@@ -217,9 +217,9 @@ pub(crate) fn base_name(node: Node<'_>, source: &[u8]) -> String {
         base = inner;
     }
     let name = text(base, source);
-    let name = name.strip_prefix("r#").unwrap_or(name);
+    let name = plain(name);
     name.chars()
-        .filter(|it| it.is_alphanumeric() || *it == '_')
+        .filter(|ch| ch.is_alphanumeric() || *ch == '_')
         .collect()
 }
 
@@ -265,10 +265,10 @@ fn join(prefix: &str, name: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::syntax::{parse, rust_parser};
+    use crate::test_support::tree;
 
     fn symbols_in(text: &str) -> Vec<Symbol> {
-        let tree = parse(&mut rust_parser().unwrap(), text).unwrap();
+        let tree = tree(text);
         symbols(&tree, text.as_bytes())
             .into_iter()
             .map(|item| item.symbol)
@@ -282,7 +282,7 @@ mod tests {
             .collect()
     }
 
-    fn print(text: &str, name: &str) -> Fingerprint {
+    fn fingerprint_of(text: &str, name: &str) -> Fingerprint {
         symbols_in(text)
             .into_iter()
             .find(|symbol| symbol.name == name)
@@ -340,11 +340,15 @@ mod tests {
     }
 
     #[test]
-    fn leaves_out_items_whose_cfg_implies_test() {
+    fn leaves_out_items_whose_cfg_lists_test_in_all() {
         let text = "#[cfg(all(test, unix))]\nfn a() {}\n#[cfg(all(unix, all(windows, test)))]\nfn b() {}\n\
                     #[cfg(any(test, unix))]\nfn c() {}\n#[cfg(not(test))]\nfn d() {}\n\
-                    #[cfg(all(unix, any(test, windows)))]\nfn e() {}\n#[cfg(feature = \"test\")]\nfn f() {}\n";
-        assert_eq!(names(text), ["fn c 6", "fn d 8", "fn e 10", "fn f 12"]);
+                    #[cfg(all(unix, any(test, windows)))]\nfn e() {}\n#[cfg(feature = \"test\")]\nfn f() {}\n\
+                    #[cfg(all(unix,test))]\nfn g() {}\n";
+        assert_eq!(
+            names(text),
+            ["fn b 4", "fn c 6", "fn d 8", "fn e 10", "fn f 12"]
+        );
     }
 
     #[test]
@@ -355,14 +359,17 @@ mod tests {
 
     #[test]
     fn fingerprints_ignore_layout_comments_and_attributes() {
-        let plain = print("fn a(x: u8) -> u8 { x + 1 }", "a");
+        let plain = fingerprint_of("fn a(x: u8) -> u8 { x + 1 }", "a");
         let styled = "/// Adds one.\n#[must_use]\nfn a(\n    x: u8\n) -> u8 {\n    // add\n    x /* one */ + 1\n}\n";
-        assert_eq!(print(styled, "a"), plain);
-        assert_ne!(print("fn a(x: u8) -> u8 { x + 2 }", "a"), plain);
-        assert_ne!(print("fn a(x: u8) -> u8 { x + 1 } fn b() {}", "b"), plain);
-        let module = print("mod m { fn a() {} }", "m");
+        assert_eq!(fingerprint_of(styled, "a"), plain);
+        assert_ne!(fingerprint_of("fn a(x: u8) -> u8 { x + 2 }", "a"), plain);
+        assert_ne!(
+            fingerprint_of("fn a(x: u8) -> u8 { x + 1 } fn b() {}", "b"),
+            plain
+        );
+        let module = fingerprint_of("mod m { fn a() {} }", "m");
         assert_eq!(
-            print("mod m {\n#![allow(dead_code)]\n#[inline]\nfn a() {} }", "m"),
+            fingerprint_of("mod m {\n#![allow(dead_code)]\n#[inline]\nfn a() {} }", "m"),
             module
         );
     }
@@ -377,9 +384,12 @@ mod tests {
 
     #[test]
     fn a_fingerprint_covers_only_its_item() {
-        let alone = print("fn a() { 1 }", "a");
-        assert_eq!(print("fn a() { 1 }\nfn b() { 2 }", "a"), alone);
-        assert_eq!(print("mod m { fn a() { 1 } fn b() {} }", "m::a"), alone);
+        let alone = fingerprint_of("fn a() { 1 }", "a");
+        assert_eq!(fingerprint_of("fn a() { 1 }\nfn b() { 2 }", "a"), alone);
+        assert_eq!(
+            fingerprint_of("mod m { fn a() { 1 } fn b() {} }", "m::a"),
+            alone
+        );
     }
 
     #[test]
@@ -408,8 +418,8 @@ mod tests {
     #[test]
     fn fingerprints_see_string_contents() {
         assert_ne!(
-            print(r#"const A: &str = "x";"#, "A"),
-            print(r#"const A: &str = "y";"#, "A")
+            fingerprint_of(r#"const A: &str = "x";"#, "A"),
+            fingerprint_of(r#"const A: &str = "y";"#, "A")
         );
     }
 }

@@ -1,7 +1,6 @@
 use tree_sitter::{Node, Parser, Tree};
 
 use crate::Error;
-use crate::cfg::implies_test;
 
 pub(crate) fn rust_parser() -> Result<Parser, Error> {
     let mut parser = Parser::new();
@@ -52,13 +51,21 @@ pub(crate) fn line(node: Node<'_>) -> usize {
     node.start_position().row.saturating_add(1)
 }
 
+/// Whether `item` exists only in tests: its `cfg` is `test`, or an `all(..)` that lists `test`.
 pub(crate) fn test_only(item: Node<'_>, source: &[u8]) -> bool {
     attributes(item).any(|node| {
         let attribute = compact(text(node, source));
         let predicate = attribute
             .strip_prefix("#[cfg(")
-            .and_then(|it| it.strip_suffix(")]"));
-        predicate.is_some_and(implies_test)
+            .and_then(|rest| rest.strip_suffix(")]"));
+        let listed = |all: &str| all.split(',').any(|part| part == "test");
+        predicate.is_some_and(|predicate| {
+            predicate == "test"
+                || predicate
+                    .strip_prefix("all(")
+                    .and_then(|rest| rest.strip_suffix(')'))
+                    .is_some_and(listed)
+        })
     })
 }
 
@@ -77,14 +84,18 @@ mod tests {
     #[test]
     fn visits_in_source_order_and_skips_what_it_is_told_to() {
         let code = "fn a() { 1 } fn b() { 2 }";
-        let tree = parse(&mut rust_parser().unwrap(), code).unwrap();
+        let tree = crate::test_support::tree(code);
         let mut seen = Vec::new();
         preorder(tree.root_node(), |node| {
             let node = text(node, code.as_bytes());
             seen.push(node);
             node != "fn a() { 1 }"
         });
-        let leaves: Vec<&str> = seen.iter().copied().filter(|it| it.len() == 1).collect();
+        let leaves: Vec<&str> = seen
+            .iter()
+            .copied()
+            .filter(|leaf| leaf.len() == 1)
+            .collect();
         assert_eq!(leaves, ["b", "(", ")", "{", "2", "}"]);
         assert_eq!(seen[1..3], ["fn a() { 1 }", "fn b() { 2 }"]);
     }

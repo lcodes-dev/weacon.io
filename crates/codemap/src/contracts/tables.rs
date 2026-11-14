@@ -33,7 +33,9 @@ impl Tables {
         let name = |at: usize| words.get(at).map(|word| plain(word));
         if is(0, "CREATE") {
             let table = if is(1, "TABLE") { 1 } else { 2 };
-            let qualifier = ["VIRTUAL", "TEMP", "TEMPORARY"].iter().any(|it| is(1, it));
+            let qualifier = ["VIRTUAL", "TEMP", "TEMPORARY"]
+                .iter()
+                .any(|word| is(1, word));
             if !is(table, "TABLE") || (table == 2 && !qualifier) {
                 return;
             }

@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
 use crate::Fingerprint;
-use crate::graph::{Links, Node};
+use crate::graph::{Links, ModuleNode};
 use crate::louvain::communities;
 use crate::rank::page_rank;
 
@@ -16,14 +16,14 @@ pub struct Area {
 }
 
 /// Groups the nodes' files into areas, sorted by id.
-pub(crate) fn areas(nodes: &[Node<'_>], links: &Links) -> Vec<Area> {
+pub(crate) fn areas(nodes: &[ModuleNode<'_>], links: &Links) -> Vec<Area> {
     let mut groups: BTreeMap<usize, Vec<(&str, f64)>> = BTreeMap::new();
     let ranked = nodes.iter().zip(page_rank(links)).zip(communities(links));
-    for (((_, module), rank), community) in ranked {
+    for ((node, rank), community) in ranked {
         groups
             .entry(community)
             .or_default()
-            .push((&module.file, rank));
+            .push((&node.module.file, rank));
     }
     let mut areas: Vec<Area> = groups.into_values().map(area).collect();
     areas.sort_by(|one, other| one.id.cmp(&other.id));
@@ -60,7 +60,8 @@ impl Area {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Index, SourceFile, index};
+    use crate::test_support::file;
+    use crate::{Index, index};
 
     fn ids(areas: &[Area]) -> Vec<Vec<&str>> {
         areas
@@ -75,10 +76,6 @@ mod tests {
 
     /// Two crates whose modules use each other, joined by one path, with `extra` added to `a/src/x.rs`.
     fn repo(extra: &str) -> Index {
-        let file = |path: &str, text: &str| SourceFile {
-            path: path.to_owned(),
-            text: text.to_owned(),
-        };
         index(&[
             file("a/Cargo.toml", "[package]\nname = \"a\"\n"),
             file(
@@ -137,10 +134,10 @@ mod tests {
     fn fingerprints_follow_membership_only() {
         let before = repo("");
         let after = repo("pub fn more() { let x = 2; }\n");
-        let print = |index: &Index| index.area("a/src/lib").unwrap().fingerprint();
-        assert_eq!(print(&before), print(&after));
+        let fingerprint_of = |index: &Index| index.area("a/src/lib").unwrap().fingerprint();
+        assert_eq!(fingerprint_of(&before), fingerprint_of(&after));
         assert_ne!(
-            print(&before),
+            fingerprint_of(&before),
             before.area("b/src/lib").unwrap().fingerprint()
         );
         assert!(before.area("a/src/x").is_none());
