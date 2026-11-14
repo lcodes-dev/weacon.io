@@ -52,32 +52,33 @@ export function route(message: Incoming, to: Routes): void {
   }
 }
 
+type Fields = Record<string, unknown>;
+
+const text = (fields: Fields, key: string) => typeof fields[key] === "string";
+
+// The fields each message this app acts on must have; one more type is one line here and in `Incoming`.
+const CHECKS: { [T in Incoming["type"]]: (fields: Fields) => boolean } = {
+  welcome: (fields) => isApp(fields["app"]) && (fields["capabilities"] === undefined || isStrings(fields["capabilities"])),
+  error: (fields) => text(fields, "code"),
+  receipt: (fields) => text(fields, "request") && text(fields, "state"),
+  run: (fields) => text(fields, "run") && isRunEvent(fields["event"]),
+  // The answer itself is checked where the chat's changes take it.
+  diff_answer: (fields) => text(fields, "request") && text(fields, "workspace") && text(fields, "chat"),
+  workspace: (fields) => text(fields, "workspace") && Number.isSafeInteger(fields["seq"]) && isChange(fields["change"]),
+};
+
 function isIncoming(value: unknown): value is Incoming {
   if (typeof value !== "object" || value === null) {
     return false;
   }
-  const fields = value as Record<string, unknown>;
-  if (typeof fields["id"] !== "number") {
-    return false;
-  }
-  const text = (key: string) => typeof fields[key] === "string";
-  switch (fields["type"]) {
-    case "welcome":
-      return isApp(fields["app"]) && (fields["capabilities"] === undefined || isStrings(fields["capabilities"]));
-    case "workspace":
-      return text("workspace") && Number.isSafeInteger(fields["seq"]) && isChange(fields["change"]);
-    case "error":
-      return text("code");
-    case "receipt":
-      return text("request") && text("state");
-    case "run":
-      return text("run") && isRunEvent(fields["event"]);
-    case "diff_answer":
-      // The answer itself is checked where the chat's changes take it.
-      return text("request") && text("workspace") && text("chat");
-    default:
-      return false;
-  }
+  const fields = value as Fields;
+  const type = fields["type"];
+  return (
+    typeof fields["id"] === "number" &&
+    typeof type === "string" &&
+    Object.hasOwn(CHECKS, type) &&
+    CHECKS[type as Incoming["type"]](fields)
+  );
 }
 
 function isApp(app: unknown): app is App {

@@ -29,6 +29,8 @@ test("only the messages this app acts on pass, each with the fields it reads", (
     { id: 0, type: "workspace", workspace: "w-1", seq: 5, change: { kind: "newer" } },
   ];
   const bad = [
+    { id: 0, type: "constructor" },
+    { id: 0, type: "toString" },
     { id: 0, type: "workspace", seq: 3, change: { kind: "chat_changed", chat: "c-1" } },
     { id: 0, type: "workspace", workspace: "w-1", seq: 1.5, change: { kind: "chat_changed", chat: "c-1" } },
     { id: 0, type: "workspace", workspace: "w-1", seq: 3, change: { kind: "chat_changed" } },
