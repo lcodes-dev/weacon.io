@@ -20,8 +20,7 @@ pub(crate) struct Snapshot {
 
 impl Workspace {
     /// The chat `chat`, if this workspace has it, read in one transaction: at most `limit` of
-    /// its latest events, which with its waiting prompts' places fit `max_bytes`, though there
-    /// is always one event when there is one.
+    /// its latest events, which with its waiting prompts' places fit `max_bytes`.
     pub(crate) async fn snapshot(
         &self,
         chat: &ChatId,
@@ -47,6 +46,8 @@ impl Workspace {
             place: Place::Before(u64::MAX),
             limit,
             max_bytes: room,
+            // A snapshot that can't hold its latest event leaves it to a window.
+            at_least_one: false,
         };
         let events = self.read_events(&mut reader, latest).await?;
         Ok(Some(Snapshot {
@@ -240,6 +241,12 @@ mod tests {
         };
         assert_eq!(seqs(&fits), [2, 3]);
         assert_eq!(seqs(&short), [3]);
+        let none = one
+            .snapshot(&id("c-1"), 50, WAITING_BYTES)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(none.events.is_empty());
         assert!(one.snapshot(&id("c-9"), 50, both).await.unwrap().is_none());
     }
 }

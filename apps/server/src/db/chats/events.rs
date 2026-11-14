@@ -9,6 +9,9 @@ use super::{chat_not_found, count, number, unstorable};
 
 /// The most bytes of chat events a workspace keeps: 512 MiB.
 const CHAT_QUOTA: i64 = 512 << 20;
+/// The most bytes of one event, as the core bounds an entry of its log, so a page that holds
+/// only it still fits a frame.
+const EVENT_MAX: usize = weacon_protocol::MAX_FRAME - (32 << 10);
 
 /// An event to store, with its place in its machine's log, when it came from there.
 #[derive(Debug)]
@@ -21,16 +24,18 @@ pub(crate) struct Incoming<'a> {
 impl Workspace {
     /// Stores `events` after the chat's last, in order, and gives the chat's seq after them.
     /// Those from its machine at or before the last one stored are replays and are skipped.
-    /// Events that would take the workspace past [`CHAT_QUOTA`] make an open chat `full`, and
-    /// they and every later event of a full chat are `chat.quota_full`, with none stored.
+    /// Events that would take the workspace past [`CHAT_QUOTA`] make an open chat `full`, which
+    /// the feed hears, and they and every later event of a full chat are `chat.quota_full`,
+    /// with none stored. An event over [`EVENT_MAX`] is `chat.event_too_large`.
     pub(crate) async fn append_events(
         &self,
         chat: &ChatId,
         events: &[Incoming<'_>],
     ) -> Result<u64, Fault> {
         let mut transaction = self.db.write().await?;
-        let (seq, core_seq, state) = sqlx::query_as::<_, (i64, i64, String)>(
-            "SELECT seq, core_seq, state FROM chats WHERE workspace_id = ? AND chat_id = ?",
+        let (seq, core_seq, state, owner) = sqlx::query_as::<_, (i64, i64, String, String)>(
+            "SELECT seq, core_seq, state, owner_member FROM chats
+             WHERE workspace_id = ? AND chat_id = ?",
         )
         .bind(self.id.as_str())
         .bind(chat.as_str())
@@ -44,7 +49,7 @@ impl Workspace {
         }
         let (rows, seq, core_seq) = numbered(events, seq, core_seq)?;
         if !self.charge_chats(&mut transaction, size(&rows)?).await? {
-            sqlx::query(
+            let filled = sqlx::query(
                 "UPDATE chats SET state = 'full' WHERE workspace_id = ? AND chat_id = ?
                      AND state = 'open'",
             )
@@ -53,6 +58,11 @@ impl Workspace {
             .execute(&mut *transaction)
             .await
             .map_err(failed)?;
+            if filled.rows_affected() > 0 {
+                let owner = stored(owner)?;
+                self.record_change(&mut transaction, Versioned::Chat(chat), &owner)
+                    .await?;
+            }
             transaction.commit().await.map_err(failed)?;
             return Err(chat_quota_full());
         }
@@ -175,6 +185,7 @@ impl Workspace {
             place,
             limit,
             max_bytes,
+            at_least_one: true,
         };
         self.read_events(&mut reader, read).await
     }
@@ -195,11 +206,13 @@ impl Workspace {
             place,
             limit,
             max_bytes,
+            at_least_one: true,
         };
         self.read_events(&mut reader, read).await
     }
 
-    /// Reads rows only while they fit `max_bytes`, and the first one whatever its size.
+    /// Reads rows only while they fit `max_bytes`, and the first one whatever its size when
+    /// `at_least_one`.
     pub(super) async fn read_events(
         &self,
         connection: &mut SqliteConnection,
@@ -210,6 +223,7 @@ impl Workspace {
             place,
             limit,
             max_bytes,
+            at_least_one,
         } = read;
         let (sql, seq) = match place {
             Place::After(seq) => (
@@ -233,7 +247,7 @@ impl Workspace {
         let mut taken = Vec::new();
         while let Some((seq, body)) = rows.try_next().await.map_err(failed)? {
             used = used.saturating_add(body.len());
-            if used > max_bytes && !taken.is_empty() {
+            if used > max_bytes && (!at_least_one || !taken.is_empty()) {
                 break;
             }
             let event = serde_json::from_str(&body).map_err(|_| unreadable())?;
@@ -255,6 +269,7 @@ pub(super) struct Read<'a> {
     pub(super) place: Place,
     pub(super) limit: u32,
     pub(super) max_bytes: usize,
+    pub(super) at_least_one: bool,
 }
 
 /// Where in a chat's log a read starts, going forwards after it or backwards before it.
@@ -291,11 +306,21 @@ fn numbered<'a>(
             seq,
             core_seq: from_core,
             event: incoming.event,
-            body: serde_json::to_string(incoming.event).map_err(|_| unstorable())?,
+            body: sized(serde_json::to_string(incoming.event).map_err(|_| unstorable())?)?,
             at: incoming.at,
         });
     }
     Ok((rows, seq, core_seq))
+}
+
+fn sized(body: String) -> Result<String, Fault> {
+    if body.len() > EVENT_MAX {
+        return Err(Fault::new(
+            code!("chat.event_too_large"),
+            "The chat event is too large",
+        ));
+    }
+    Ok(body)
 }
 
 /// The request a receipt in `event` ends, when it ends one.
@@ -454,10 +479,17 @@ mod tests {
             append(&one, "c-1", &[(Some(2), said("a"))]).await.unwrap(),
             2
         );
+        let changes = one.changes_since(0, 50).await.unwrap().len();
         let over = append(&one, "c-1", &[(Some(3), said("a"))])
             .await
             .unwrap_err();
         assert_eq!(code(&over), "chat.quota_full");
+        // Filling it is news to the feed; being refused again is not.
+        assert_eq!(one.changes_since(0, 50).await.unwrap().len(), changes + 1);
+        append(&one, "c-1", &[(Some(4), said("a"))])
+            .await
+            .unwrap_err();
+        assert_eq!(one.changes_since(0, 50).await.unwrap().len(), changes + 1);
         let chat = one.chat(&id("c-1")).await.unwrap().unwrap();
         assert_eq!(
             (chat.state, chat.seq, chat.core_seq),
@@ -503,11 +535,13 @@ mod tests {
             .execute(&one.db.writer)
             .await
             .unwrap();
+        let changes = one.changes_since(0, 50).await.unwrap().len();
         append(&one, "c-2", &[(Some(1), said("a"))])
             .await
             .unwrap_err();
         let detached = one.chat(&id("c-2")).await.unwrap().unwrap().state;
         assert_eq!(detached, ChatState::Detached);
+        assert_eq!(one.changes_since(0, 50).await.unwrap().len(), changes);
     }
 
     fn receipt(request: &str, outcome: Outcome) -> ChatEvent {
@@ -566,5 +600,20 @@ mod tests {
         let elsewhere = [(Some(10), receipt("r-c-2", Outcome::Completed))];
         append(&one, "c-1", &elsewhere).await.unwrap();
         assert_eq!(one.open_requests(&id("c-2")).await.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn an_event_too_large_for_a_frame_of_its_own_is_refused_and_not_stored() {
+        let dir = TempDir::new().unwrap();
+        let (one, _) = two_teams(&dir).await;
+        make(&one, "c-1", "m1", NOW).await.unwrap();
+        let wrapping = serde_json::to_string(&said("")).unwrap().len();
+        let largest = said(&"x".repeat(EVENT_MAX - wrapping));
+
+        let too_large = said(&"x".repeat(EVENT_MAX - wrapping + 1));
+        let refused = append(&one, "c-1", &[(Some(1), too_large)]).await;
+
+        assert_eq!(code(&refused.unwrap_err()), "chat.event_too_large");
+        assert_eq!(append(&one, "c-1", &[(Some(1), largest)]).await.unwrap(), 1);
     }
 }

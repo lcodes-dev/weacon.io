@@ -55,6 +55,19 @@ pub(crate) fn answer(call: &McpCall, folder: &Path) -> Result<String, Fault> {
     index_folder(folder).map(|(map, _)| answer_from(call, &map))
 }
 
+/// [`answer`], or nothing when the folder has no code map.
+///
+/// # Errors
+/// When the folder can't be read.
+pub(crate) fn map_or_empty(call: &McpCall, folder: &Path) -> Result<String, Fault> {
+    let (map, _) = index_folder(folder)?;
+    Ok(if map.crates.is_empty() {
+        String::new()
+    } else {
+        answer_from(call, &map)
+    })
+}
+
 /// [`answer`], with a folder that can't be read logged and answered as having no map.
 pub(crate) fn answer_or_none(call: &McpCall, folder: &Path, log: &Logger) -> String {
     answer(call, folder).unwrap_or_else(|fault| {

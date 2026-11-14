@@ -4026,6 +4026,10 @@
         "id": {
           "$ref": "#/$defs/WorkspaceId"
         },
+        "member": {
+          "description": "The signed-in person's own member in this workspace, sent by the server.",
+          "$ref": "#/$defs/MemberId"
+        },
         "name": {
           "type": "string"
         },

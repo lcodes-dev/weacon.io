@@ -316,6 +316,7 @@ printf '%s\n' '{"type":"result","subtype":"error_during_execution","is_error":tr
                 cwd: dir.to_path_buf(),
                 access: AccessLevel::AskFirst,
                 mcp: None,
+                plugin: None,
             };
             let run = crate::chats::test_support::run("run-1");
             let app = weacon_appkit::build(&VERSION);
