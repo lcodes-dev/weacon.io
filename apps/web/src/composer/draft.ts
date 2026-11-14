@@ -23,8 +23,8 @@ export const EMPTY_DRAFT: Draft = { text: "", mentions: [] };
 export function editDraft(draft: Draft, next: string, caret: number, composing = false): Placed {
   const { text } = draft;
   // What was typed ends at the caret; the unchanged text around it bounds the edit.
-  const back = Math.min(next.length - caret, common(text, next, (at) => text.length - 1 - at, (at) => next.length - 1 - at));
-  const front = Math.min(caret, text.length - back, common(text, next, (at) => at, (at) => at));
+  const back = Math.min(next.length - caret, commonSuffix(text, next));
+  const front = Math.min(caret, text.length - back, commonPrefix(text, next));
   const inserted = next.slice(front, next.length - back);
   let from = front;
   let to = text.length - back;
@@ -63,11 +63,14 @@ export function pickMention(draft: Draft, at: Query, item: MentionItem): Placed 
   return { draft: { ...placed.draft, mentions }, caret: placed.caret };
 }
 
-// How many characters match, walking `text` by `a` and `next` by `b`.
-function common(text: string, next: string, a: (at: number) => number, b: (at: number) => number): number {
+function commonPrefix(a: string, b: string): number {
   let at = 0;
-  while (at < text.length && at < next.length && text[a(at)] === next[b(at)]) {
-    at += 1;
-  }
+  while (at < a.length && at < b.length && a[at] === b[at]) at += 1;
+  return at;
+}
+
+function commonSuffix(a: string, b: string): number {
+  let at = 0;
+  while (at < a.length && at < b.length && a[a.length - 1 - at] === b[b.length - 1 - at]) at += 1;
   return at;
 }

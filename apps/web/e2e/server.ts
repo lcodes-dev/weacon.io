@@ -70,8 +70,13 @@ export const EMAIL = "ada@example.com";
 
 /** Makes an account for `EMAIL` and signs the page in with the code sent to it. */
 export async function signIn(served: Served): Promise<void> {
-  const { page } = served;
   await served.admin("add-account", "--email", EMAIL);
+  await signInAgain(served);
+}
+
+/** Signs in as the account `signIn` added, from the sign-in page. */
+export async function signInAgain(served: Served): Promise<void> {
+  const { page } = served;
   await page.getByLabel("Email").fill(EMAIL);
   await page.getByRole("button", { name: "Send code" }).click();
   await page.getByLabel("Code").fill(await served.code(EMAIL));

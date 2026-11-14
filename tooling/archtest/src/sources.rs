@@ -150,26 +150,26 @@ impl Uses {
     /// Notes the paths in a macro's tokens, which `syn` leaves unparsed, each after `prefix`.
     fn note_tokens(&mut self, mut cursor: Cursor<'_>, prefix: &[Ident]) {
         let mut path = Vec::new();
-        let mut colons = 0;
+        let mut last = Last::Other;
         while let Some((_, next)) = cursor.token_tree() {
-            colons = self.note_token(cursor, prefix, &mut path, colons);
+            last = self.note_token(cursor, prefix, &mut path, last);
             cursor = next;
         }
         self.note_path(prefix, &mut path);
     }
 
-    // Takes the token at `cursor` into `path`, and returns how many colons now end it.
+    // Takes the token at `cursor` into `path`, and returns what now ends it.
     fn note_token(
         &mut self,
         cursor: Cursor<'_>,
         prefix: &[Ident],
         path: &mut Vec<Ident>,
-        colons: u8,
-    ) -> u8 {
+        last: Last,
+    ) -> Last {
         if let Some((punct, _)) = cursor.punct()
             && punct.as_char() == ':'
         {
-            return colons.saturating_add(1);
+            return last.colon();
         }
         if let Some((ident, next)) = cursor.ident() {
             if INCLUDES.iter().any(|name| ident == name)
@@ -179,27 +179,27 @@ impl Uses {
             {
                 self.includes_integrations |= names_integrations(inside);
             }
-            if colons == ALIAS {
-                return 0;
+            if last == Last::Alias {
+                return Last::Other;
             }
             let alias = ident == "as"
                 && prefix
                     .first()
                     .or_else(|| path.first())
                     .is_some_and(|first| first == "use");
-            if colons != 2 || ident == "as" {
+            if !last.continues_path() || ident == "as" {
                 self.note_path(prefix, path);
             }
             if alias {
-                return ALIAS;
+                return Last::Alias;
             }
             // After `use`, even one segment names a crate, as in `use sqlx as db;`.
             let used = ident == "use";
             path.push(ident);
-            return if used { 2 } else { 0 };
+            return if used { Last::Use } else { Last::Other };
         }
         // A group straight after `::` continues the path, as in `std::{fs, env}`.
-        let outer = if colons == 2 {
+        let outer = if last.continues_path() {
             [prefix, path].concat()
         } else {
             Vec::new()
@@ -208,7 +208,7 @@ impl Uses {
         if let Some((inside, ..)) = cursor.any_group() {
             self.note_tokens(inside, &outer);
         }
-        0
+        Last::Other
     }
 
     fn note_path(&mut self, prefix: &[Ident], path: &mut Vec<Ident>) {
@@ -239,8 +239,37 @@ impl Uses {
     }
 }
 
-// Stands in for a colon count after `as` in a `use`: the next name is an alias, not a path.
-const ALIAS: u8 = u8::MAX;
+// What ends the path so far, while reading a macro's tokens.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Last {
+    Other,
+    Colon,
+    PathSep,
+    ManyColons,
+    // `as` in a `use`: the next name is an alias, not a path.
+    Alias,
+    // `use`, which a name, a group or a leading `::` continues, as in `use ::sqlx;`.
+    Use,
+    // One colon after `use`, which a macro matcher such as `(use: $x)` writes.
+    UseColon,
+}
+
+impl Last {
+    const fn colon(self) -> Self {
+        match self {
+            Self::Other => Self::Colon,
+            Self::Colon | Self::UseColon => Self::PathSep,
+            Self::PathSep | Self::ManyColons => Self::ManyColons,
+            Self::Alias => Self::Alias,
+            Self::Use => Self::UseColon,
+        }
+    }
+
+    // Whether a name or group that comes next is part of the same path.
+    fn continues_path(self) -> bool {
+        matches!(self, Self::PathSep | Self::Use)
+    }
+}
 
 // `path` without a leading `use`, and whether it had one.
 fn used(path: &[Ident]) -> (&[Ident], bool) {
@@ -507,12 +536,26 @@ mod tests {
             check(&IO, "src/chats.rs", "fn rows() { m!(a::b sqlx::query) }"),
             ["uses sqlx outside the db module"]
         );
+    }
+
+    #[test]
+    fn database_drivers_in_macro_bodies_are_found() {
+        // Three colons end a path rather than join one, and so do colons after a `use` alias.
+        for text in [
+            "fn rows() { m!(sqlx:::query) }",
+            "macro_rules! imports { () => { use std::fmt as ::sqlx; }; }",
+        ] {
+            assert!(check(&IO, "src/chats.rs", text).is_empty(), "{text}");
+        }
         for text in [
             "macro_rules! driver { () => { use sqlx as db; }; }",
+            "macro_rules! driver { () => { use ::sqlx; }; }",
+            "macro_rules! driver { () => { use ::sqlx as db; }; }",
             "macro_rules! driver { () => { use sqlx; }; }",
             "macro_rules! driver { () => { use sqlx::{self as db}; }; }",
             "macro_rules! driver { () => { use {sqlx as db, std::fmt}; }; }",
             "fn f() { m!(<T as sqlx::Type<Db>>::type_info()) }",
+            "macro_rules! driver { () => { use sqlx as db::query; }; }",
         ] {
             assert_eq!(
                 check(&IO, "src/chats.rs", text),
@@ -523,6 +566,8 @@ mod tests {
         for text in [
             "macro_rules! imports { () => { use std::{fmt as fs}; }; }",
             "macro_rules! imports { () => { use {std::fmt as sqlx}; }; }",
+            "macro_rules! imports { () => { use std::fmt as fs::File; }; }",
+            "macro_rules! example { (use: sqlx) => { () }; }",
         ] {
             assert!(check(&PURE, "src/chats.rs", text).is_empty(), "{text}");
         }

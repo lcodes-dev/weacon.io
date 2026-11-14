@@ -96,11 +96,11 @@ mod tests {
                     message: Message::Welcome(Welcome {
                         app: build(&VERSION),
                         capabilities: vec![
-                            code!("element.pick").into(),
-                            code!("chat.send").into(),
-                            code!("chat.events").into(),
-                            code!("chat.agent").into(),
-                            code!("run.stream").into(),
+                            Capability::new(code!("element.pick")),
+                            Capability::new(code!("chat.send")),
+                            Capability::new(code!("chat.events")),
+                            Capability::new(code!("chat.agent")),
+                            Capability::new(code!("run.stream")),
                         ],
                     }),
                 }),
