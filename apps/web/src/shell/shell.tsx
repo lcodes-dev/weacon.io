@@ -3,7 +3,7 @@ import { useEffect, useMemo, useState } from "react";
 import { ME } from "../me.ts";
 import type { AccountSignedIn, Code } from "../protocol.ts";
 import { Pins, browserStore } from "../machines/pins.ts";
-import { Machines } from "../settings/machines.tsx";
+import { Machines } from "../machines/machines.tsx";
 import { Settings } from "../settings/settings.tsx";
 import { Api, type Fetch } from "./api.ts";
 import { useAsk } from "./ask.ts";

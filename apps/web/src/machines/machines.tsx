@@ -1,10 +1,10 @@
 import { useEffect, useState } from "react";
 
-import { fingerprint } from "../machines/fingerprint.ts";
-import { keep } from "../machines/keep.ts";
-import { osName } from "../machines/os.ts";
-import type { Pins } from "../machines/pins.ts";
-import { unpair } from "../machines/unpair.ts";
+import { fingerprint } from "./fingerprint.ts";
+import { keep } from "./keep.ts";
+import { osName } from "./os.ts";
+import type { Pins } from "./pins.ts";
+import { unpair } from "./unpair.ts";
 import type { MachineId, MachineSummary, PairPending } from "../protocol.ts";
 import type { Api } from "../shell/api.ts";
 import { useAsk } from "../shell/ask.ts";
