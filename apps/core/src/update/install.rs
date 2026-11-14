@@ -2,7 +2,7 @@
 //! keeping the old one, and put the old one back when the new one doesn't come up.
 
 use std::fs::{self, File};
-use std::io::{self, Read, Write};
+use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 
 use sha2::{Digest, Sha256};
@@ -12,7 +12,7 @@ use weacon_protocol::{Commit, ReleaseBuild, code};
 use crate::platform;
 
 /// The running binary and the two files an update keeps beside it.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub(crate) struct Paths {
     pub(crate) exe: PathBuf,
     pub(crate) new: PathBuf,
@@ -58,20 +58,13 @@ fn write_checked(file: &Path, body: &mut dyn Read, build: &ReleaseBuild) -> Resu
     })?;
     // One byte more than the build's size shows a download that is too long.
     let mut body = body.take(build.size.saturating_add(1));
-    let mut hasher = Sha256::new();
-    let mut buffer = vec![0; 64 * 1024];
-    let mut size: u64 = 0;
-    loop {
-        let read = body.read(&mut buffer).map_err(download_failed)?;
-        let Some(chunk) = buffer.get(..read).filter(|chunk| !chunk.is_empty()) else {
-            break;
-        };
-        hasher.update(chunk);
-        out.write_all(chunk).map_err(download_failed)?;
-        size = size.saturating_add(u64::try_from(read).unwrap_or(u64::MAX));
-    }
+    let size = io::copy(&mut body, &mut out).map_err(download_failed)?;
     out.sync_all().map_err(download_failed)?;
-    if size != build.size || hex(&hasher.finalize()) != build.sha256.as_str() {
+    // Hashes what reached the disk.
+    let mut hasher = Sha256::new();
+    io::copy(&mut File::open(file).map_err(download_failed)?, &mut hasher)
+        .map_err(download_failed)?;
+    if size != build.size || format!("{:x}", hasher.finalize()) != build.sha256.as_str() {
         return Err(Fault::new(
             code!("update.corrupt"),
             "The downloaded build doesn't match its release",
@@ -88,37 +81,24 @@ fn download_failed(error: io::Error) -> Fault {
     .because(error)
 }
 
-fn hex(bytes: &[u8]) -> String {
-    bytes
-        .iter()
-        .flat_map(|byte| [byte >> 4, byte & 0xf])
-        .filter_map(|digit| char::from_digit(digit.into(), 16))
-        .collect()
-}
-
-/// Checks that the staged binary is the release's build: `version_of` runs it with
-/// `--version`, and its answer must name `commit`. A wrong one is removed.
+/// Checks that the staged binary is the release's build from its `--version` answer, which
+/// names its commit as `weacon_version::Version` prints it. A wrong one is removed.
 pub(crate) fn probe(
     paths: &Paths,
     commit: &Commit,
-    version_of: &mut dyn FnMut(&Path) -> io::Result<String>,
+    answer: io::Result<String>,
 ) -> Result<(), Fault> {
-    let answer = version_of(&paths.new);
-    if answer
-        .as_ref()
-        .is_ok_and(|text| text.contains(&format!("({})", commit.as_str())))
-    {
-        return Ok(());
-    }
-    remove(&paths.new);
     let fault = Fault::new(
         code!("update.wrong_build"),
         "The downloaded build isn't the release's",
     );
-    Err(match answer {
-        Err(error) => fault.because(error),
+    let fault = match answer {
+        Ok(text) if text.contains(&format!("({})", commit.as_str())) => return Ok(()),
         Ok(_) => fault,
-    })
+        Err(error) => fault.because(error),
+    };
+    remove(&paths.new);
+    Err(fault)
 }
 
 /// Moves the running binary to `paths.old` and the staged one into its place. Renaming works
@@ -145,18 +125,16 @@ pub(crate) fn swap(paths: &Paths) -> Result<(), Fault> {
     Ok(())
 }
 
-/// Ends an update once the new binary has restarted: when `healthy` says it didn't come up,
-/// the old binary goes back in its place.
-pub(crate) fn confirm(paths: &Paths, healthy: bool) -> Result<(), Fault> {
-    if healthy {
-        return Ok(());
+/// Puts the old binary back after the new one didn't come up once restarted; the error says
+/// whether that worked.
+pub(crate) fn roll_back(paths: &Paths) -> Fault {
+    match fs::rename(&paths.old, &paths.exe) {
+        Ok(()) => Fault::new(
+            code!("update.unhealthy"),
+            "The new build didn't start, so the old one is back",
+        ),
+        Err(error) => rollback_failed(error),
     }
-    let unhealthy = Fault::new(
-        code!("update.unhealthy"),
-        "The new build didn't start, so the old one is back",
-    );
-    fs::rename(&paths.old, &paths.exe).map_err(rollback_failed)?;
-    Err(unhealthy)
 }
 
 fn rollback_failed(error: io::Error) -> Fault {
@@ -176,6 +154,7 @@ fn remove(file: &Path) {
 mod tests {
     use std::io::Cursor;
 
+    use weacon_protocol::{BuildTarget, DownloadUrl, Sha256 as Sha256Hex};
     use weacon_testing::TempDir;
 
     use super::*;
@@ -183,13 +162,12 @@ mod tests {
     const RELEASE: &str = "0123456789abcdef0123456789abcdef01234567";
 
     fn build_of(bytes: &[u8]) -> ReleaseBuild {
-        serde_json::from_value(serde_json::json!({
-            "target": "x86_64-unknown-linux-musl",
-            "url": "https://example.com/weacon",
-            "size": bytes.len(),
-            "sha256": hex(&Sha256::digest(bytes)),
-        }))
-        .unwrap()
+        ReleaseBuild {
+            target: BuildTarget::try_from("x86_64-unknown-linux-musl".to_owned()).unwrap(),
+            url: DownloadUrl::try_from("https://example.com/weacon".to_owned()).unwrap(),
+            size: u64::try_from(bytes.len()).unwrap(),
+            sha256: Sha256Hex::try_from(format!("{:x}", Sha256::digest(bytes))).unwrap(),
+        }
     }
 
     fn commit() -> Commit {
@@ -220,10 +198,6 @@ mod tests {
         (name.to_owned(), text.to_owned())
     }
 
-    fn version(text: &'static str) -> impl FnMut(&Path) -> io::Result<String> {
-        move |_| Ok(text.to_owned())
-    }
-
     #[test]
     fn the_staged_files_sit_beside_the_binary_and_still_run_on_windows() {
         let unix = Paths::beside(Path::new("/opt/bin/weacon")).unwrap();
@@ -241,15 +215,9 @@ mod tests {
         let paths = installed(&dir);
         let build = build_of(b"new");
         stage(&paths, &mut Cursor::new("new"), &build).unwrap();
-        let mut ran = Vec::new();
-        let mut version_of = |file: &Path| {
-            ran.push(file.to_owned());
-            Ok(format!("weacon 1.2.3 ({RELEASE})\n"))
-        };
-        probe(&paths, &commit(), &mut version_of).unwrap();
+        let answer = Ok(format!("weacon 1.2.3 ({RELEASE})\n"));
+        probe(&paths, &commit(), answer).unwrap();
         swap(&paths).unwrap();
-        confirm(&paths, true).unwrap();
-        assert_eq!(ran, [paths.new.as_path()]);
         assert_eq!(
             files(&dir),
             [pair("weacon", "new"), pair("weacon.old", "old")]
@@ -325,7 +293,7 @@ mod tests {
             let dir = TempDir::new().unwrap();
             let paths = installed(&dir);
             fs::write(&paths.new, "new").unwrap();
-            let fault = probe(&paths, &commit(), &mut version(answer)).unwrap_err();
+            let fault = probe(&paths, &commit(), Ok(answer.to_owned())).unwrap_err();
             assert_eq!(fault.code().as_str(), "update.wrong_build", "{answer}");
             assert_eq!(files(&dir), [pair("weacon", "old")], "{answer}");
         }
@@ -336,8 +304,8 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let paths = installed(&dir);
         fs::write(&paths.new, "new").unwrap();
-        let mut fails = |_: &Path| Err(io::Error::from(io::ErrorKind::PermissionDenied));
-        let fault = probe(&paths, &commit(), &mut fails).unwrap_err();
+        let fails = Err(io::Error::from(io::ErrorKind::PermissionDenied));
+        let fault = probe(&paths, &commit(), fails).unwrap_err();
         assert_eq!(fault.code().as_str(), "update.wrong_build");
         assert_eq!(files(&dir), [pair("weacon", "old")]);
     }
@@ -348,7 +316,7 @@ mod tests {
         let paths = installed(&dir);
         fs::write(&paths.new, "new").unwrap();
         swap(&paths).unwrap();
-        let fault = confirm(&paths, false).unwrap_err();
+        let fault = roll_back(&paths);
         assert_eq!(fault.code().as_str(), "update.unhealthy");
         assert_eq!(files(&dir), [pair("weacon", "old")]);
     }
@@ -357,7 +325,7 @@ mod tests {
     fn a_rollback_without_the_old_binary_says_so() {
         let dir = TempDir::new().unwrap();
         let paths = installed(&dir);
-        let fault = confirm(&paths, false).unwrap_err();
+        let fault = roll_back(&paths);
         assert_eq!(fault.code().as_str(), "update.rollback_failed");
         assert_eq!(files(&dir), [pair("weacon", "old")]);
     }
@@ -393,10 +361,5 @@ mod tests {
         let fault = swap(&paths).unwrap_err();
         assert_eq!(fault.code().as_str(), "update.swap_failed");
         assert_eq!(files(&dir), []);
-    }
-
-    #[test]
-    fn digests_are_lowercase_hex() {
-        assert_eq!(hex(&[0x00, 0x0f, 0xab, 0xff]), "000fabff");
     }
 }

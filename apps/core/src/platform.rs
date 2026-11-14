@@ -59,9 +59,9 @@ mod runnable;
 pub(crate) use chrome::{CHROME_HOST, register_chrome_host};
 pub(crate) use procs::{PROCESSES, Process, processes};
 pub(crate) use programs::find_program;
-pub(crate) use runnable::make_runnable;
 #[cfg(test)]
 pub(crate) use programs::plant_program;
+pub(crate) use runnable::make_runnable;
 
 /// Reads an environment variable; tests pass a fake.
 pub(crate) type Env<'a> = &'a dyn Fn(&str) -> Option<OsString>;
