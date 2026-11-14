@@ -30,7 +30,6 @@ pub(crate) const READ_CHUNK: usize = 8192;
 const ACCEPT_BACKOFF: Duration = Duration::from_millis(100);
 const DISK_CHECK: Duration = Duration::from_mins(1);
 const MEMORY_SAMPLE: Duration = Duration::from_mins(5);
-const ENGINE_ANSWERS_WITHIN: Duration = Duration::from_secs(5);
 
 pub(crate) fn socket_path(state_dir: &Path) -> PathBuf {
     state_dir.join("weacon.sock")
@@ -164,9 +163,7 @@ impl Daemon {
                 _ = disk_check.tick() => self.disk.check(&self.shared.log).await,
                 _ = memory_sample.tick(), if platform::PROCESSES => self.memory.record(&self.shared.log).await,
                 _ = update_check.tick(), if checking.is_none() && self.updates.is_some() => {
-                    // An engine that doesn't answer in time counts as busy.
-                    let busy = tokio::time::timeout(ENGINE_ANSWERS_WITHIN, self.shared.chats.busy());
-                    let busy = busy.await.map_or(true, |busy| busy.unwrap_or(true));
+                    let busy = update::agents_busy(&self.shared.chats).await;
                     checking = self.updates.as_ref().map(|updates| updates.start(busy));
                 }
                 joined = update::finished(&mut checking), if checking.is_some() => {

@@ -41,6 +41,9 @@ const HEALTH_PAUSE: Duration = Duration::from_millis(500);
 const LOCK_TRIES: u32 = 50;
 const LOCK_PAUSE: Duration = Duration::from_millis(20);
 
+/// How long the chat engine has to say whether an agent is busy.
+const ENGINE_ANSWERS_WITHIN: Duration = Duration::from_secs(5);
+
 /// How long a binary has to answer `--version` or `status` before it is killed.
 const ANSWER_WITHIN: Duration = Duration::from_secs(10);
 
@@ -267,6 +270,12 @@ pub(crate) fn watch(state_dir: &Path, version: &str) -> Option<Watch> {
         now: unix_now,
     };
     Some(Watch::new(state_dir.to_owned(), own, hooks))
+}
+
+/// Whether an agent is on a turn; an engine that doesn't answer in time counts as busy.
+pub(crate) async fn agents_busy(chats: &crate::chats::Chats) -> bool {
+    let answer = tokio::time::timeout(ENGINE_ANSWERS_WITHIN, chats.busy()).await;
+    answer.map_or(true, |busy| busy.unwrap_or(true))
 }
 
 /// A running check's result; never, when none runs. Awaiting a task by reference can be
@@ -690,6 +699,18 @@ mod tests {
         assert_eq!(offer(&machine.dir, "1.0.0").as_deref(), Some(line));
         assert_eq!(offer(&machine.dir, "1.2.3"), None);
         assert_eq!(offer(&machine.dir, "dev"), None);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn agents_count_as_busy_when_the_engine_says_so_or_doesnt_answer() {
+        use crate::chats::test_support::{bench, parts};
+
+        assert!(!agents_busy(&bench().chats).await);
+        let (silent, _engine) = parts();
+        assert!(agents_busy(&silent.chats).await);
+        let (stopped, engine) = parts();
+        drop(engine);
+        assert!(agents_busy(&stopped.chats).await);
     }
 
     #[test]
