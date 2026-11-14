@@ -107,7 +107,7 @@ mod tests {
         let (shared, ada) = (&fixture.shared, ada_chatting(&fixture).await);
         let mut feeds = shared.changes.subscribe();
 
-        chat(
+        store(
             shared,
             &ada.machine,
             update("w1", "c-1", 1, said("working")),
