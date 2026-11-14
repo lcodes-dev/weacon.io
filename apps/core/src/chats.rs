@@ -13,7 +13,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use weacon_agents::{Launch, SpawnPolicy};
 use weacon_observability::{Fault, Logger};
-use weacon_protocol::{App, ChatId, WorkspaceId, code};
+use weacon_protocol::{App, ChatId, RepoId, WorkspaceId, code};
 
 pub(crate) use engine::Chats;
 use engine::{Engine, Host, RunAs};
@@ -72,7 +72,12 @@ fn launch(
 ) -> Result<Granted, Fault> {
     let launch = prepared(roots, places, run_as)?;
     workspaces::require_sign_in(&launch)?;
-    made(roots, places, run_as)?;
+    chat_dir(
+        roots,
+        places.work_root.as_deref(),
+        &run_as.key,
+        run_as.repo.as_ref(),
+    )?;
     let (launch, revoke) = mcp::grant(places.mcp.as_ref(), launch, run_as)?;
     let agent = launch.start(policy, app, run_as.run.clone(), run_as.session.as_ref())?;
     Ok(Granted {
@@ -95,20 +100,25 @@ pub(crate) fn file_stem(chat: &ChatId) -> String {
     crate::names::case_safe_name("c-", chat.as_str())
 }
 
-// Makes `run_as`'s chat's folder: its worktree when its first prompt named a repository.
-fn made(roots: &Workspaces, places: &Places, run_as: &RunAs) -> Result<PathBuf, Fault> {
-    let work_root = places.work_root.as_deref();
-    if let Some(repo) = &run_as.repo
+/// Makes the folder `key`'s agent works in under `work_root`: its worktree of `repo`, the
+/// repository its first prompt named, if it named one.
+pub(crate) fn chat_dir(
+    roots: &Workspaces,
+    work_root: Option<&Path>,
+    key: &ChatKey,
+    repo: Option<&RepoId>,
+) -> Result<PathBuf, Fault> {
+    if let Some(repo) = repo
         && let Some(work_root) = work_root
     {
-        git::launch::chat_tree(roots, work_root, &run_as.key, repo)
+        git::launch::chat_tree(roots, work_root, key, repo)
     } else {
-        work_dir(work_root, &run_as.key)
+        work_dir(work_root, key)
     }
 }
 
 // A chat's agent works in a folder made for it under the work folder, out of the core's state.
-pub(crate) fn work_dir(work_root: Option<&Path>, key: &ChatKey) -> Result<PathBuf, Fault> {
+fn work_dir(work_root: Option<&Path>, key: &ChatKey) -> Result<PathBuf, Fault> {
     let dir = chat_folder(
         work_root.ok_or_else(folder_failed)?,
         &key.workspace,
@@ -182,7 +192,9 @@ mod tests {
             repo: Some("site".parse().unwrap()),
         };
 
-        let error = made(&workspaces, &places, &run_as).unwrap_err();
+        let repo = run_as.repo.as_ref();
+        let error =
+            chat_dir(&workspaces, places.work_root.as_deref(), &run_as.key, repo).unwrap_err();
 
         assert_eq!(error.code().as_str(), "repo.unknown");
         assert!(!dir.join("Weacon").exists());

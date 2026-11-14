@@ -16,7 +16,7 @@ pub(super) struct Launched<A> {
     pub(super) agent: Result<A, Fault>,
 }
 
-fn not_started() -> Fault {
+pub(super) fn not_started() -> Fault {
     Fault::new(code!("agent.not_started"), "The agent couldn't start")
 }
 
@@ -55,9 +55,10 @@ impl<A: Agent> Engine<A> {
     pub(super) async fn launch(&mut self, key: &ChatKey) -> Result<(), Fault> {
         self.save_pending_session(key).await?;
         let kind = self.runs.of(key).ok_or_else(not_started)?.agent;
+        // Read first, so a log that can't be opened leaves no run begun.
+        let repo = self.open(key).await?.events.repo().cloned();
         let run = self.runs.begin(key, kind, self.now()).await?;
         let session = self.runs.of(key).and_then(|record| record.session.clone());
-        let repo = self.open(key).await?.events.repo().cloned();
         let run_as = RunAs {
             key: key.clone(),
             agent: kind,

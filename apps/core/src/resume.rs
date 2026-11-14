@@ -6,6 +6,7 @@ use weacon_protocol::{ChatId, RunState, WorkspaceId, code};
 
 use crate::app::{App, runtime};
 use crate::chats;
+use crate::chats::log::ChatLog;
 use crate::runs::{ChatKey, Runs};
 use crate::workspaces::Workspaces;
 
@@ -35,9 +36,14 @@ pub(crate) fn run(app: &App, workspace: &WorkspaceId, chat: &ChatId) -> Result<(
             "The chat's agent is still running here; carry on once it sleeps",
         ));
     }
-    let cwd = chats::work_dir(app.work_root.as_deref(), &key)?;
-    let launch =
-        Workspaces::new(state_dir, app.path.clone()).launch(workspace, record.agent, cwd)?;
+    let workspaces = Workspaces::new(state_dir, app.path.clone());
+    let root = workspaces.root(workspace);
+    let repo = runtime()?
+        .block_on(ChatLog::open(&root, chat))?
+        .repo()
+        .cloned();
+    let cwd = chats::chat_dir(&workspaces, app.work_root.as_deref(), &key, repo.as_ref())?;
+    let launch = workspaces.launch(workspace, record.agent, cwd)?;
     let ids = [
         ("workspace_id", workspace.as_str().into()),
         ("chat_id", chat.as_str().into()),
@@ -128,6 +134,29 @@ mod tests {
             chat_left(&dir.join("state"), state, Some(SESSION));
             assert_eq!(code_of(resume(&dir)), "resume.agent_running", "{state:?}");
         }
+    }
+
+    #[test]
+    fn a_chat_in_a_repository_is_carried_on_only_in_its_worktree() {
+        let dir = TempDir::new().unwrap();
+        let state = dir.join("state");
+        chat_left(&state, RunState::Sleeping, Some(SESSION));
+        let (workspace, chat) = ids();
+        let root = Workspaces::new(&state, None).root(&workspace);
+        let first = weacon_protocol::ChatEvent::Prompt {
+            request: "r-1".parse().unwrap(),
+            text: "Go".to_owned(),
+            repo: Some("site".parse().unwrap()),
+            agent: None,
+        };
+        runtime().unwrap().block_on(async {
+            let mut log = ChatLog::open(&root, &chat).await.unwrap();
+            log.append(first).await.unwrap();
+        });
+
+        // Its repository is gone from the registry, so it has nowhere to carry on.
+        assert_eq!(code_of(resume(&dir)), "repo.unknown");
+        assert!(!dir.join("work").exists());
     }
 
     #[cfg(unix)]
