@@ -122,6 +122,15 @@ pub(crate) fn login(launch: &Launch) -> Command {
     command
 }
 
+/// `claude` on `session`, for a person to carry on by hand in their terminal, in the folder the
+/// chat works in. Weacon's own limits are left out: the person answers its prompts.
+pub(crate) fn resume(launch: &Launch, session: &AgentSession) -> Command {
+    let mut command = with_workspace_sign_in(launch);
+    command.args(["--resume", session.as_str()]);
+    command.current_dir(&launch.cwd);
+    command
+}
+
 fn with_workspace_sign_in(launch: &Launch) -> Command {
     let mut command = Command::new(&launch.program);
     OTHER_SIGN_INS.remove(&mut command, std::env::vars_os().map(|(name, _)| name));
@@ -350,7 +359,14 @@ mod tests {
             login.as_std().get_args().collect::<Vec<_>>(),
             ["auth", "login"]
         );
-        for command in [command(&claude, None), check, login] {
+        let session = AgentSession::try_from("0b7c6a52-3f1e-4d2a-9c8b-5e4f3a2b1c0d".to_owned());
+        let by_hand = resume(&claude, &session.unwrap());
+        assert_eq!(
+            by_hand.as_std().get_args().collect::<Vec<_>>(),
+            ["--resume", "0b7c6a52-3f1e-4d2a-9c8b-5e4f3a2b1c0d"]
+        );
+        assert_eq!(by_hand.as_std().get_current_dir(), Some(Path::new("/work")));
+        for command in [command(&claude, None), check, login, by_hand] {
             let config = (
                 OsStr::new("CLAUDE_CONFIG_DIR"),
                 Some(OsStr::new("/work/config")),

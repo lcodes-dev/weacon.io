@@ -83,7 +83,7 @@ pub(crate) fn file_stem(chat: &ChatId) -> String {
 
 // Until a chat belongs to a project with a folder of its own, its agent works in one made for
 // it under the work folder, where it can't reach the core's state.
-fn work_dir(
+pub(crate) fn work_dir(
     work_root: Option<&Path>,
     workspace: &WorkspaceId,
     chat: &ChatId,

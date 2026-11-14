@@ -165,6 +165,28 @@ impl Launch {
         }
     }
 
+    /// Runs the agent on `session` in the terminal this process has, for the person to carry on
+    /// by hand: the vendor's program unmodified, with the workspace's config folder and no
+    /// shell. Only Claude Code, whose `--resume` takes the session a chat holds.
+    ///
+    /// # Errors
+    /// When this agent can't be resumed by hand, or its program can't be run.
+    pub async fn resume_by_hand(&self, session: &AgentSession) -> Result<(), Fault> {
+        let mut command = match self.agent {
+            AgentKind::Claude => claude::resume(self, session),
+            AgentKind::Codex => {
+                return Err(Fault::new(
+                    code!("agent.no_resume_by_hand"),
+                    "This agent can't be carried on by hand yet",
+                ));
+            }
+            AgentKind::Newer => return Err(unknown()),
+        };
+        command.status().await.map(drop).map_err(|error| {
+            Fault::new(code!("agent.resume_failed"), "The agent couldn't start").because(error)
+        })
+    }
+
     /// Runs the vendor's own sign-in in a new terminal of `size`: the same program, fixed
     /// arguments and config folder as [`Launch::log_in`], and no shell.
     ///
@@ -277,6 +299,50 @@ mod tests {
 
     fn start(launch: &Launch) -> Result<AgentRun, Fault> {
         launch.start(&SpawnPolicy::default(), &app(), run_id("run-1"), None)
+    }
+
+    const SESSION: &str = "0b7c6a52-3f1e-4d2a-9c8b-5e4f3a2b1c0d";
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn claude_is_resumed_by_hand_on_the_session_in_the_chats_folder_with_its_own_config() {
+        let dir = TempDir::new().unwrap();
+        let claude = launch(AgentKind::Claude, &dir);
+        let script = "#!/bin/sh\nprintf '%s %s %s %s' \"$1\" \"$2\" \"$PWD\" \"$CLAUDE_CONFIG_DIR\" > ran\nexit 3\n";
+        platform::write_program(&claude.program, script);
+        let session = AgentSession::try_from(SESSION.to_owned()).unwrap();
+        // Whatever the agent exits with, the person ended it.
+        claude.resume_by_hand(&session).await.unwrap();
+        let ran = std::fs::read_to_string(dir.join("ran")).unwrap();
+        let expected = format!(
+            "--resume {SESSION} {} {}",
+            dir.display(),
+            claude.config_dir.display()
+        );
+        assert_eq!(ran, expected);
+        let missing = Launch {
+            program: dir.join("missing"),
+            ..claude
+        };
+        let fault = missing.resume_by_hand(&session).await.unwrap_err();
+        assert_eq!(fault.code().as_str(), "agent.resume_failed");
+    }
+
+    #[tokio::test]
+    async fn only_claude_is_resumed_by_hand_for_now() {
+        let dir = TempDir::new().unwrap();
+        let session = AgentSession::try_from(SESSION.to_owned()).unwrap();
+        let codex = launch(AgentKind::Codex, &dir)
+            .resume_by_hand(&session)
+            .await;
+        assert_eq!(
+            codex.unwrap_err().code().as_str(),
+            "agent.no_resume_by_hand"
+        );
+        let newer = launch(AgentKind::Newer, &dir)
+            .resume_by_hand(&session)
+            .await;
+        assert_eq!(newer.unwrap_err().code().as_str(), "agent.unknown");
     }
 
     #[test]
