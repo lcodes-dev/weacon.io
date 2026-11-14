@@ -15,6 +15,7 @@ mod pick;
 mod receipt;
 mod repo;
 mod run;
+mod sessions;
 mod settings;
 mod task;
 mod team;
@@ -54,6 +55,9 @@ pub use repo::RepoId;
 pub use run::{
     AgentKind, AgentOwner, AgentRef, AgentSession, PermissionAnswer, RunEvent, RunId, RunState,
     RunStatus, RunUpdate,
+};
+pub use sessions::{
+    OutsideSession, SessionsAnswer, SessionsAnswerKind, SessionsQuery, SessionsQueryKind,
 };
 pub use settings::{
     AgentSignIn, MachineSettings, MachineSettingsAction, MachineSettingsAnswer,
