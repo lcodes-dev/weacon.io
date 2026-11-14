@@ -409,11 +409,10 @@ mod tests {
         let relative = env(&[("WEACON_WORK_DIR", ".dev/work")]);
 
         assert_eq!(work_root(&home), Some(PathBuf::from("/home/ada/Weacon")));
-        assert_eq!(work_root(&set), Some(PathBuf::from("/srv/work")));
-        assert_eq!(
-            work_root(&own_state),
-            Some(PathBuf::from("/srv/weacon-work"))
-        );
+        // Absolute as the system makes it: on Windows, on the current drive.
+        let absolute = |path: &str| std::path::absolute(path).ok();
+        assert_eq!(work_root(&set), absolute("/srv/work"));
+        assert_eq!(work_root(&own_state), absolute("/srv/weacon-work"));
         assert_eq!(
             work_root(&relative),
             Some(std::env::current_dir().unwrap().join(".dev/work"))
