@@ -55,7 +55,7 @@ impl Picks {
 
     fn path(&self, request: &RequestId) -> PathBuf {
         self.dir
-            .join(platform::case_safe_name("pick-", request.as_str()) + ".json")
+            .join(crate::names::case_safe_name("pick-", request.as_str()) + ".json")
     }
 }
 

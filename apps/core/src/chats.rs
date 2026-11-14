@@ -59,7 +59,7 @@ pub(crate) fn start(
 
 /// The name of a chat's own files and folders.
 pub(crate) fn file_stem(chat: &ChatId) -> String {
-    platform::case_safe_name("c-", chat.as_str())
+    crate::names::case_safe_name("c-", chat.as_str())
 }
 
 // Until a chat belongs to a project with a folder of its own, its agent works in one made for
@@ -77,7 +77,7 @@ fn work_dir(
     };
     let dir = work_root
         .ok_or_else(failed)?
-        .join(platform::case_safe_name("w-", workspace.as_str()))
+        .join(crate::names::case_safe_name("w-", workspace.as_str()))
         .join(file_stem(chat));
     platform::private_dir(&dir).map_err(|error| failed().because(error))?;
     Ok(dir)
