@@ -116,6 +116,7 @@ Every program logs, reports errors and says which build it is from its first com
 | `cargo test -p <crate> [name]` | Focused tests while iterating |
 | `WEACON_STATE_DIR=.dev/state cargo run -p weacon-core -- doctor` | Runs the core with this worktree's own state folder |
 | `UPDATE_SCHEMA=1 cargo test -p weacon-protocol` | Regenerates `crates/protocol/schema.json` after a message changes |
+| `UPDATE_VECTORS=1 cargo test -p weacon-core seal` | Regenerates the sign-in terminal's Noise vectors in `crates/protocol/noise-vectors.json` after its messages change |
 | `npm --prefix apps/extension run update-types`, `npm --prefix apps/web run update-types` | Regenerates each app's `src/protocol.ts` from `schema.json` |
 | `npm --prefix apps/web run build` | Builds the web app into `apps/web/dist/` (`index.html`, `app.js`, `app.css`), with this commit in Settings › About |
 | `npm --prefix apps/web run measure` | Streams the 100,000-token session into the built web app in Chromium, then scrolls the 5,000-line diff, and prints frame gaps, memory and bundle size |

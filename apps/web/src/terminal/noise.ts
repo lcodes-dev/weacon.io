@@ -4,10 +4,12 @@
  * one from the wire. After any failure a channel refuses everything, so the terminal closes.
  */
 
-const PROTOCOL = "Noise_NK_25519_AESGCM_SHA256";
+export const PROTOCOL = "Noise_NK_25519_AESGCM_SHA256";
 /** The largest Noise message. */
 export const NOISE_MAX = 65535;
 const TAG = 16;
+/** The largest plaintext one sealed message holds. */
+export const SEALED_MAX = NOISE_MAX - TAG;
 const KEY = 32;
 const NONCE_LIMIT = 2n ** 64n - 1n;
 
@@ -29,7 +31,7 @@ export async function initiate(
   remote: Bytes,
   prologue: Bytes,
   payload: Bytes,
-  own: Ephemeral | Promise<Ephemeral> = ephemeral(),
+  own: Promise<Ephemeral> = ephemeral(),
 ): Promise<{ message: Bytes; pending: Pending }> {
   return sealing(async () => {
     if (remote.length !== KEY) {
@@ -60,7 +62,7 @@ export class Pending {
   }
 
   /** The channel once the core's `reply` checks out, and the reply's payload. */
-  finish(reply: Bytes): Promise<{ channel: Channel; payload: Bytes; hash: Bytes }> {
+  finish(reply: Bytes): Promise<{ channel: Channel; payload: Bytes }> {
     const state = this.#state;
     this.#state = undefined;
     return sealing(async () => {
@@ -72,7 +74,7 @@ export class Pending {
       await state.mixKey(await dh(this.#own, re));
       const payload = await state.decryptAndHash(reply.slice(KEY));
       const [send, receive] = await state.split();
-      return { channel: new Channel(send, receive), payload, hash: state.hash };
+      return { channel: new Channel(send, receive), payload };
     });
   }
 }
@@ -90,7 +92,7 @@ export class Channel {
 
   /** `plaintext` as the next message to send. */
   seal(plaintext: Bytes): Promise<Bytes> {
-    return this.#guard(plaintext.length > NOISE_MAX - TAG, () => this.#send.encrypt(new Uint8Array(), plaintext));
+    return this.#guard(plaintext.length > SEALED_MAX, () => this.#send.encrypt(new Uint8Array(), plaintext));
   }
 
   /** Refuses everything from now on. */
@@ -127,7 +129,6 @@ export class SealError extends Error {
   }
 }
 
-// Any failure as a `SealError`, which says nothing of what went wrong.
 async function sealing<T>(run: () => Promise<T>): Promise<T> {
   try {
     return await run();
@@ -138,15 +139,11 @@ async function sealing<T>(run: () => Promise<T>): Promise<T> {
 
 /** AES-256-GCM with Noise's nonces: four zero bytes, then the counter in big-endian. */
 class Cipher {
-  readonly #key: CryptoKey | undefined;
+  readonly #key: CryptoKey;
   #n = 0n;
 
-  constructor(key?: CryptoKey) {
+  constructor(key: CryptoKey) {
     this.#key = key;
-  }
-
-  get keyed(): boolean {
-    return this.#key !== undefined;
   }
 
   encrypt(ad: Bytes, plaintext: Bytes): Promise<Bytes> {
@@ -162,9 +159,6 @@ class Cipher {
     data: Bytes,
     run: (params: AesGcmParams, key: CryptoKey, data: Bytes) => Promise<ArrayBuffer>,
   ): Promise<Bytes> {
-    if (this.#key === undefined) {
-      return data;
-    }
     if (this.#n >= NONCE_LIMIT) {
       throw new SealError();
     }
@@ -179,17 +173,13 @@ class Cipher {
 class Symmetric {
   #ck: Bytes;
   #h: Bytes;
-  #cipher = new Cipher();
+  #cipher: Cipher | undefined;
 
   constructor() {
     const name = new TextEncoder().encode(PROTOCOL);
     this.#h = new Uint8Array(32);
     this.#h.set(name);
     this.#ck = this.#h.slice();
-  }
-
-  get hash(): Bytes {
-    return this.#h.slice();
   }
 
   async mixHash(data: Bytes): Promise<void> {
@@ -203,13 +193,16 @@ class Symmetric {
   }
 
   async encryptAndHash(plaintext: Bytes): Promise<Bytes> {
+    if (this.#cipher === undefined) {
+      throw new SealError();
+    }
     const ciphertext = await this.#cipher.encrypt(this.#h, plaintext);
     await this.mixHash(ciphertext);
     return ciphertext;
   }
 
   async decryptAndHash(ciphertext: Bytes): Promise<Bytes> {
-    if (!this.#cipher.keyed) {
+    if (this.#cipher === undefined) {
       throw new SealError();
     }
     const plaintext = await this.#cipher.decrypt(this.#h, ciphertext);

@@ -30,10 +30,9 @@ pub(crate) struct Seal {
 /// # Errors
 /// When the message wasn't sealed to this key, under this prologue, or isn't one at all.
 pub(crate) fn accept(key: &[u8; 32], prologue: &[u8], handshake: &[u8]) -> Result<Accepted, Fault> {
-    let failed = |error| handshake_failed().because(error);
     let responder = builder(prologue)
         .and_then(|builder| builder.local_private_key(key))
-        .map_err(failed)?;
+        .map_err(|error| handshake_failed().because(error))?;
     accept_with(responder, handshake, &[])
 }
 
@@ -45,8 +44,8 @@ fn accept_with(
 ) -> Result<Accepted, Fault> {
     let run = || {
         let mut state = responder.build_responder()?;
-        let first = read(|buffer| state.read_message(handshake, buffer))?;
-        let reply = read(|buffer| state.write_message(payload, buffer))?;
+        let first = buffered(|buffer| state.read_message(handshake, buffer))?;
+        let reply = buffered(|buffer| state.write_message(payload, buffer))?;
         Ok(Accepted {
             seal: Seal {
                 transport: state.into_transport_mode()?,
@@ -69,7 +68,7 @@ impl Seal {
             self.broken = true;
             return Err(seal_failed());
         }
-        let sealed = read(|buffer| self.transport.write_message(plaintext, buffer));
+        let sealed = buffered(|buffer| self.transport.write_message(plaintext, buffer));
         self.settle(sealed)
     }
 
@@ -81,7 +80,7 @@ impl Seal {
         if self.broken {
             return Err(seal_failed());
         }
-        let opened = read(|buffer| self.transport.read_message(message, buffer));
+        let opened = buffered(|buffer| self.transport.read_message(message, buffer));
         self.settle(opened)
     }
 
@@ -98,8 +97,7 @@ fn builder(prologue: &[u8]) -> Result<Builder<'_>, snow::Error> {
     Builder::with_resolver(params, Box::new(Resolver)).prologue(prologue)
 }
 
-// Runs a step of snow's into a buffer as large as a Noise message, cut to what it wrote.
-fn read(
+fn buffered(
     step: impl FnOnce(&mut [u8]) -> Result<usize, snow::Error>,
 ) -> Result<Vec<u8>, snow::Error> {
     let mut buffer = vec![0; NOISE_MAX];
@@ -286,7 +284,7 @@ mod tests {
     }
 
     fn write(state: &mut HandshakeState, payload: &[u8]) -> Vec<u8> {
-        read(|buffer| state.write_message(payload, buffer)).unwrap()
+        buffered(|buffer| state.write_message(payload, buffer)).unwrap()
     }
 
     /// The browser's end after the handshake, and the core's.
@@ -301,10 +299,10 @@ mod tests {
     // Plays `vector`'s payloads through both ends with its keys and checks each arrives; the
     // vector as these ends made it.
     fn replay(vector: &Vector) -> Vector {
-        let (init_ephemeral, resp_static) =
-            (unhex(&vector.init_ephemeral), unhex(&vector.resp_static));
-        let (resp_ephemeral, resp_prologue) =
-            (unhex(&vector.resp_ephemeral), unhex(&vector.resp_prologue));
+        let init_ephemeral = unhex(&vector.init_ephemeral);
+        let resp_static = unhex(&vector.resp_static);
+        let resp_ephemeral = unhex(&vector.resp_ephemeral);
+        let resp_prologue = unhex(&vector.resp_prologue);
         let payloads: Vec<Vec<u8>> = vector
             .messages
             .iter()
@@ -353,12 +351,12 @@ mod tests {
     ) -> Vec<Vec<u8>> {
         let sent = payloads.iter().enumerate().skip(2).map(|(index, payload)| {
             if index % 2 == 0 {
-                let sealed = read(|buffer| browser.write_message(payload, buffer)).unwrap();
+                let sealed = buffered(|buffer| browser.write_message(payload, buffer)).unwrap();
                 assert_eq!(seal.open(&sealed).unwrap(), *payload);
                 sealed
             } else {
                 let sealed = seal.seal(payload).unwrap();
-                let opened = read(|buffer| browser.read_message(&sealed, buffer)).unwrap();
+                let opened = buffered(|buffer| browser.read_message(&sealed, buffer)).unwrap();
                 assert_eq!(opened, *payload);
                 sealed
             }
@@ -466,7 +464,8 @@ mod tests {
     #[test]
     fn a_tampered_replayed_or_reordered_frame_breaks_the_channel_for_good() {
         let (mut browser, mut seal) = connected(&prologue(), &public(&machine_key()), b"{}");
-        let mut frame = |text: &[u8]| read(|buffer| browser.write_message(text, buffer)).unwrap();
+        let mut frame =
+            |text: &[u8]| buffered(|buffer| browser.write_message(text, buffer)).unwrap();
         let (one, two) = (frame(b"one"), frame(b"two"));
         assert_eq!(seal.open(&one).unwrap(), b"one");
         seal.open(&one).err().unwrap();
@@ -474,13 +473,13 @@ mod tests {
         seal.seal(b"after").unwrap_err();
 
         let (mut browser, mut seal) = connected(&prologue(), &public(&machine_key()), b"{}");
-        let mut tampered = read(|buffer| browser.write_message(b"one", buffer)).unwrap();
+        let mut tampered = buffered(|buffer| browser.write_message(b"one", buffer)).unwrap();
         tampered[0] ^= 1;
         seal.open(&tampered).err().unwrap();
 
         let (mut browser, mut seal) = connected(&prologue(), &public(&machine_key()), b"{}");
-        read(|buffer| browser.write_message(b"skipped", buffer)).unwrap();
-        let second = read(|buffer| browser.write_message(b"two", buffer)).unwrap();
+        buffered(|buffer| browser.write_message(b"skipped", buffer)).unwrap();
+        let second = buffered(|buffer| browser.write_message(b"two", buffer)).unwrap();
         seal.open(&second).err().unwrap();
     }
 
@@ -489,7 +488,7 @@ mod tests {
         let (mut browser, mut seal) = connected(&prologue(), &public(&machine_key()), b"{}");
         let full = seal.seal(&vec![7; SEALED_MAX]).unwrap();
         assert_eq!(full.len(), NOISE_MAX);
-        let opened = read(|buffer| browser.read_message(&full, buffer)).unwrap();
+        let opened = buffered(|buffer| browser.read_message(&full, buffer)).unwrap();
         assert_eq!(opened.len(), SEALED_MAX);
         seal.seal(&vec![7; SEALED_MAX + 1]).err().unwrap();
         seal.seal(b"short").err().unwrap();
@@ -500,8 +499,8 @@ mod tests {
         let remote = public(&machine_key());
         let (mut one, _) = connected(&prologue(), &remote, b"{}");
         let (mut two, _) = connected(&prologue(), &remote, b"{}");
-        let first = read(|buffer| one.write_message(b"same", buffer)).unwrap();
-        let second = read(|buffer| two.write_message(b"same", buffer)).unwrap();
+        let first = buffered(|buffer| one.write_message(b"same", buffer)).unwrap();
+        let second = buffered(|buffer| two.write_message(b"same", buffer)).unwrap();
         assert_ne!(first, second);
     }
 }

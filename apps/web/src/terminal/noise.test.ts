@@ -2,13 +2,13 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 
-import { type Channel, type Ephemeral, NOISE_MAX, SealError, ephemeral, initiate } from "./noise.ts";
+import { type Channel, type Ephemeral, NOISE_MAX, PROTOCOL, SEALED_MAX, SealError, ephemeral, initiate } from "./noise.ts";
 
 type Vector = {
+  protocol_name: string;
   init_prologue: string;
   init_ephemeral: string;
   init_remote_static: string;
-  handshake_hash: string;
   messages: { payload: string; ciphertext: string }[];
 };
 
@@ -47,7 +47,6 @@ async function handshake(vector: Vector): Promise<Channel> {
   assert.equal(hex(message), first.ciphertext);
   const finished = await pending.finish(bytes(reply.ciphertext));
   assert.equal(hex(finished.payload), reply.payload);
-  assert.equal(hex(finished.hash), vector.handshake_hash);
   return finished.channel;
 }
 
@@ -59,10 +58,8 @@ for (const name of ["published", "weacon"] as const) {
   test(`the browser's end matches the ${name} vector`, async () => {
     const vector = vectors[name];
     const channel = await handshake(vector);
-    for (const [index, message] of vector.messages.entries()) {
-      if (index < 2) {
-        continue;
-      }
+    assert.equal(vector.protocol_name, PROTOCOL);
+    for (const [index, message] of vector.messages.slice(2).entries()) {
       if (index % 2 === 0) {
         assert.equal(hex(await channel.seal(bytes(message.payload))), message.ciphertext);
       } else {
@@ -129,8 +126,8 @@ test("a closed channel or a message over the Noise limit is refused", async () =
   await refused(channel.seal(new Uint8Array()));
 
   channel = await handshake(vectors.weacon);
-  assert.equal((await channel.seal(new Uint8Array(NOISE_MAX - 16))).length, NOISE_MAX);
-  await refused(channel.seal(new Uint8Array(NOISE_MAX - 15)));
+  assert.equal((await channel.seal(new Uint8Array(SEALED_MAX))).length, NOISE_MAX);
+  await refused(channel.seal(new Uint8Array(SEALED_MAX + 1)));
   channel = await handshake(vectors.weacon);
   await refused(channel.open(new Uint8Array(NOISE_MAX + 1)));
   channel = await handshake(vectors.weacon);
@@ -152,4 +149,11 @@ test("a fresh ephemeral can't be exported", async () => {
   assert.equal(own.public.length, 32);
   assert.equal(own.privateKey.extractable, false);
   await assert.rejects(crypto.subtle.exportKey("pkcs8", own.privateKey));
+});
+
+test("the limit is the protocol's", () => {
+  const schema = JSON.parse(readFileSync(new URL("../../../../crates/protocol/schema.json", import.meta.url), "utf8")) as {
+    $defs: { Bytes: { maxLength: number } };
+  };
+  assert.equal(schema.$defs.Bytes.maxLength, 2 * NOISE_MAX);
 });
