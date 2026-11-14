@@ -195,3 +195,317 @@ impl<A: Agent> Engine<A> {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+    use weacon_protocol::{ChatAction, ChatCommand};
+
+    use super::super::PendingAnswer;
+    use super::super::by_hand::{allow, hear, on_ask, on_its_way, on_turn, waiting_in};
+    use super::*;
+    use crate::chats::test_support::{Told, command, key, parts, prompt, run, soon};
+    use crate::runs::Queued;
+
+    fn entry(request: &str, text: &str) -> ChatEvent {
+        ChatEvent::Prompt {
+            request: prompt(request, text).request,
+            text: text.to_owned(),
+            repo: None,
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_prompt_sent_again_goes_on_from_where_its_first_try_stopped() {
+        let (mut bench, mut engine) = parts();
+        let chat_of = key();
+        let agent = AgentKind::Claude;
+
+        // Stopped after the prompt reached the log, before it was queued.
+        engine.commit(&key(), entry("r-1", "Hi")).await.unwrap();
+        engine.command(&key(), prompt("r-1", "Hi")).await.unwrap();
+        let mut started = soon(bench.started.recv()).await.unwrap();
+        assert_eq!(
+            soon(started.told.recv()).await,
+            Some(Told::Send("Hi".to_owned()))
+        );
+        assert_eq!(engine.open(&key()).await.unwrap().log.seq(), 4);
+        engine.command(&key(), prompt("r-1", "Hi")).await.unwrap();
+        started.told.try_recv().unwrap_err();
+        assert_eq!(engine.open(&key()).await.unwrap().log.seq(), 4);
+        let outcome = Outcome::Completed;
+        hear(&mut engine, RunEvent::Finished { outcome })
+            .await
+            .unwrap();
+
+        // Stopped after it was queued, before it was accepted.
+        engine.commit(&key(), entry("r-2", "More")).await.unwrap();
+        let queued = Queued {
+            request: prompt("r-2", "More").request,
+            text: "More".to_owned(),
+        };
+        engine
+            .runs
+            .enqueue(&chat_of, agent, queued, 1)
+            .await
+            .unwrap();
+        engine.command(&key(), prompt("r-2", "More")).await.unwrap();
+        assert_eq!(
+            soon(started.told.recv()).await,
+            Some(Told::Send("More".to_owned()))
+        );
+        started.told.try_recv().unwrap_err();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_prompt_too_large_for_the_log_is_refused_and_never_runs() {
+        let (_bench, mut engine, mut agent, _pushes) = on_turn().await;
+        assert_eq!(
+            soon(agent.told.recv()).await,
+            Some(Told::Send("Hi".to_owned()))
+        );
+
+        let large = prompt("r-2", &"a".repeat(1 << 20));
+        let refused = engine.command(&key(), large).await;
+        engine.command(&key(), prompt("r-3", "Next")).await.unwrap();
+        let outcome = Outcome::Completed;
+        hear(&mut engine, RunEvent::Finished { outcome })
+            .await
+            .unwrap();
+
+        assert_eq!(refused.unwrap_err().code().as_str(), "chat.event_too_large");
+        assert_eq!(
+            soon(agent.told.recv()).await,
+            Some(Told::Send("Next".to_owned()))
+        );
+        assert!(engine.runs.of(&key()).unwrap().queue.is_empty());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn an_answer_that_gets_no_receipt_isnt_given_and_can_be_sent_again() {
+        let (_bench, mut engine, mut agent, _pushes) = on_turn().await;
+        assert_eq!(
+            soon(agent.told.recv()).await,
+            Some(Told::Send("Hi".to_owned()))
+        );
+        let asks = RunEvent::PermissionAsked {
+            run: run("run-1"),
+            prompt: 1,
+            tool: "Bash".to_owned(),
+            input: json!({ "command": "ls" }),
+        };
+        hear(&mut engine, asks).await.unwrap();
+        let answer = PermissionAnswer {
+            run: run("run-1"),
+            prompt: 1,
+            allow: true,
+        };
+        let action = ChatAction::Permission { answer };
+        let allow = || command("r-2", "c-1", action.clone());
+        engine.open(&key()).await.unwrap().log.jam();
+
+        let refused = engine.command(&key(), allow()).await;
+        assert_eq!(refused.unwrap_err().code().as_str(), "chat.log_not_written");
+        agent.told.try_recv().unwrap_err();
+
+        engine.command(&key(), allow()).await.unwrap();
+        assert!(
+            matches!(soon(agent.told.recv()).await, Some(Told::Answer(answer)) if answer.allow)
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn an_answer_whose_receipt_was_written_reaches_its_run_when_sent_again() {
+        let (mut engine, mut agent, _bench) = on_ask().await;
+        let (answers, answer) = allow("r-2");
+        engine.open(&key()).await.unwrap().log.jam();
+        let failed = engine.command(&key(), answers.clone()).await;
+        assert_eq!(failed.unwrap_err().code().as_str(), "chat.log_not_written");
+        // As when its receipt reached the disk all the same.
+        let request = answers.request.clone();
+        engine
+            .commit_receipt(&key(), &request, Outcome::Completed)
+            .await
+            .unwrap();
+
+        engine.command(&key(), answers.clone()).await.unwrap();
+        engine.command(&key(), answers).await.unwrap();
+
+        assert_eq!(soon(agent.told.recv()).await, Some(Told::Answer(answer)));
+        assert_eq!(soon(agent.told.recv()).await, None);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_retry_naming_another_run_gives_nothing_and_changes_no_run() {
+        let (mut engine, mut agent, _bench) = on_ask().await;
+        let mut answers = on_its_way(&mut engine).await;
+        if let ChatAction::Permission { answer } = &mut answers.action {
+            answer.run = run("run-9");
+        }
+
+        engine.command(&key(), answers).await.unwrap();
+
+        assert_eq!(soon(agent.told.recv()).await, None);
+        let runs = &engine.open(&key()).await.unwrap().log.runs().runs;
+        assert_eq!(runs[0].run, run("run-1"));
+        assert_eq!(waiting_in(&mut engine).await.len(), 1);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn an_answer_already_in_the_log_reaches_its_run_once_and_is_logged_once() {
+        let (mut engine, mut agent, _bench) = on_ask().await;
+        let (answers, answer) = allow("r-2");
+        let answered = PendingAnswer {
+            request: answers.request.clone(),
+            answer: PermissionAnswer {
+                run: run("run-1"),
+                prompt: 1,
+                allow: true,
+            },
+        };
+        // As when its receipt and its answer reached the disk but the write was reported failed.
+        engine
+            .open(&key())
+            .await
+            .unwrap()
+            .pending_answers
+            .push(answered);
+        let receipt = Outcome::Completed;
+        engine
+            .commit_receipt(&key(), &answers.request, receipt)
+            .await
+            .unwrap();
+        let event = RunEvent::PermissionAnswered {
+            answer: answer.clone(),
+        };
+        hear(&mut engine, event).await.unwrap();
+
+        engine.command(&key(), answers.clone()).await.unwrap();
+        engine.command(&key(), answers).await.unwrap();
+
+        assert_eq!(soon(agent.told.recv()).await, Some(Told::Answer(answer)));
+        assert_eq!(soon(agent.told.recv()).await, None);
+        let log = &engine.open(&key()).await.unwrap().log;
+        let entries = log.window(u64::MAX, 64).await.unwrap();
+        let logged = entries.iter().filter(|entry| {
+            matches!(&entry.event, ChatEvent::Run { update } if matches!(update.event, RunEvent::PermissionAnswered { .. }))
+        });
+        assert_eq!(logged.count(), 1);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_prompt_of_a_run_cut_off_by_a_restart_takes_no_answer() {
+        let (mut engine, _agent, _bench) = on_ask().await;
+        // As after a restart: the log still shows the prompt, but its run is gone.
+        engine.chats.remove(&key());
+
+        let refused = engine.command(&key(), allow("r-2").0).await;
+
+        assert_eq!(refused.unwrap_err().code().as_str(), "agent.no_such_prompt");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn answering_one_prompt_keeps_another_answer_still_on_its_way() {
+        let (mut engine, mut agent, _bench) = on_ask().await;
+        let asks = RunEvent::PermissionAsked {
+            run: run("run-1"),
+            prompt: 2,
+            tool: "Write".to_owned(),
+            input: json!({}),
+        };
+        hear(&mut engine, asks).await.unwrap();
+        let (second, given) = allow("r-2");
+        let second = ChatCommand {
+            action: ChatAction::Permission {
+                answer: PermissionAnswer {
+                    prompt: 2,
+                    ..given.clone()
+                },
+            },
+            ..second
+        };
+        // As when its receipt was written but its delivery was cut short.
+        let pending = PendingAnswer {
+            request: second.request.clone(),
+            answer: PermissionAnswer {
+                run: run("run-1"),
+                prompt: 2,
+                allow: true,
+            },
+        };
+        engine
+            .open(&key())
+            .await
+            .unwrap()
+            .pending_answers
+            .push(pending);
+        let receipt = Outcome::Completed;
+        engine
+            .commit_receipt(&key(), &second.request, receipt)
+            .await
+            .unwrap();
+
+        engine.command(&key(), allow("r-3").0).await.unwrap();
+        engine.command(&key(), second).await.unwrap();
+
+        assert_eq!(
+            soon(agent.told.recv()).await,
+            Some(Told::Answer(given.clone()))
+        );
+        let two = PermissionAnswer { prompt: 2, ..given };
+        assert_eq!(soon(agent.told.recv()).await, Some(Told::Answer(two)));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn an_answer_under_another_commands_request_never_reaches_the_run() {
+        let (mut engine, mut agent, _bench) = on_ask().await;
+        let interrupt = command("r-2", "c-1", ChatAction::Interrupt);
+        engine.command(&key(), interrupt).await.unwrap();
+        assert_eq!(soon(agent.told.recv()).await, Some(Told::Interrupt));
+
+        engine.command(&key(), allow("r-2").0).await.unwrap();
+
+        assert_eq!(soon(agent.told.recv()).await, None);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn an_interrupt_whose_receipt_was_written_stops_its_turn_when_sent_again() {
+        let (_bench, mut engine, mut agent, _pushes) = on_turn().await;
+        assert_eq!(
+            soon(agent.told.recv()).await,
+            Some(Told::Send("Hi".to_owned()))
+        );
+        let interrupt = command("r-2", "c-1", ChatAction::Interrupt);
+        engine.open(&key()).await.unwrap().log.jam();
+        let failed = engine.command(&key(), interrupt.clone()).await;
+        assert_eq!(failed.unwrap_err().code().as_str(), "chat.log_not_written");
+        // As when its receipt reached the disk all the same.
+        let request = interrupt.request.clone();
+        engine
+            .commit_receipt(&key(), &request, Outcome::Completed)
+            .await
+            .unwrap();
+
+        engine.command(&key(), interrupt.clone()).await.unwrap();
+        engine.command(&key(), interrupt).await.unwrap();
+
+        assert_eq!(soon(agent.told.recv()).await, Some(Told::Interrupt));
+        assert_eq!(soon(agent.told.recv()).await, None);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn an_interrupt_that_cant_be_committed_isnt_sent() {
+        let (_bench, mut engine, mut agent, _pushes) = on_turn().await;
+        assert_eq!(
+            soon(agent.told.recv()).await,
+            Some(Told::Send("Hi".to_owned()))
+        );
+        engine.open(&key()).await.unwrap().log.jam();
+
+        let interrupt = command("r-2", "c-1", ChatAction::Interrupt);
+        let refused = engine.command(&key(), interrupt).await;
+
+        assert_eq!(refused.unwrap_err().code().as_str(), "chat.log_not_written");
+        assert_eq!(soon(agent.told.recv()).await, None);
+    }
+}

@@ -1,9 +1,13 @@
 //! The one task that owns every chat on this machine: it takes people's commands, starts and
 //! orders agents, commits what happens to each chat's log and then publishes it.
 
+#[cfg(test)]
+mod by_hand;
 mod commands;
 mod cut;
+mod launch;
 mod queries;
+mod said;
 mod turns;
 
 use std::collections::HashMap;
@@ -224,6 +228,16 @@ impl<A: Agent> Engine<A> {
         state: RunState,
     ) -> Result<(), Fault> {
         self.runs.update(key, |record| record.state = state).await?;
+        self.tell_state(key, run, state).await
+    }
+
+    // Commits the run's state for the chat's subscribers; the journal already holds it.
+    async fn tell_state(
+        &mut self,
+        key: &ChatKey,
+        run: &RunId,
+        state: RunState,
+    ) -> Result<(), Fault> {
         let status = RunStatus {
             run: run.clone(),
             state,
@@ -367,10 +381,12 @@ mod tests {
         AgentSession, ChatAction, ChatAnswerKind, ChatQueryKind, PermissionAnswer, RunEvent,
     };
 
+    use super::by_hand::on_turn;
     use super::*;
     use crate::chats::test_support::{
-        Bench, Started, Told, bench, client, command, key, prompt, pushed, query, run, soon,
+        Bench, Started, Told, bench, chat, client, command, key, prompt, pushed, query, run, soon,
     };
+    use crate::runs::task::Heard;
 
     const SESSION: &str = "0b7c6a52-3f1e-4d2a-9c8b-5e4f3a2b1c0d";
 
@@ -944,5 +960,47 @@ mod tests {
         let snapshot = query("c-1", ChatQueryKind::Snapshot);
         let asked = stopped.chats.query(snapshot, &anyone).await;
         assert_eq!(asked.unwrap_err().code().as_str(), "chat.engine_stopped");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_chat_stays_open_only_while_an_agent_a_prompt_or_a_client_needs_it() {
+        let (_bench, mut engine, agent, pushes) = on_turn().await;
+        let other = ChatKey {
+            chat: chat("c-2"),
+            ..key()
+        };
+        let (watcher, watching) = client(4);
+        let subscribe = || ChatQueryKind::Subscribe { after: 0 };
+        engine.query(&other, subscribe(), &watcher).await.unwrap();
+
+        engine.settle(&key());
+        engine.settle(&other);
+        assert!(engine.chats.contains_key(&key()) && engine.chats.contains_key(&other));
+
+        // The agent exits, and both clients hang up.
+        drop(agent);
+        engine
+            .heard(&key(), &run("run-1"), Heard::Exited(None))
+            .await
+            .unwrap();
+        engine.settle(&key());
+        assert!(
+            engine.chats.contains_key(&key()),
+            "a client still watches it"
+        );
+        drop((pushes, watching));
+        engine.settle(&key());
+        assert!(!engine.chats.contains_key(&key()));
+
+        // A hung-up client's chat is let go when anyone subscribes anywhere.
+        assert!(engine.chats.contains_key(&other));
+        let (third, _watching) = client(4);
+        let elsewhere = ChatKey {
+            chat: chat("c-3"),
+            ..key()
+        };
+        engine.query(&elsewhere, subscribe(), &third).await.unwrap();
+        assert!(!engine.chats.contains_key(&other));
+        assert!(engine.chats.contains_key(&elsewhere));
     }
 }
