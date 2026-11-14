@@ -6,25 +6,38 @@ use std::time::Instant;
 use weacon_appkit::Ending;
 use weacon_codemap::{Index, SourceFile, index};
 use weacon_observability::Fault;
-use weacon_protocol::code;
+use weacon_protocol::{MapArgs, McpCall, SymbolArgs, code};
 
 use crate::app::App;
-use crate::cli::MapCommand;
+use crate::cli::{MapCommand, MapRead};
+use crate::mcp::tools;
 
-/// Checks the repository; `Findings` when a pin no longer matches.
+/// Prints what the MCP's tools answer, or checks the repository's pins: `Findings` when one
+/// no longer matches.
 pub(crate) fn run(
     app: &App,
     command: MapCommand,
     input: &mut impl Read,
     out: &mut impl Write,
 ) -> Result<Ending, Fault> {
-    let MapCommand::CheckAnchors { root } = command;
-    let clean = check_anchors(app, &root, input, out)?;
-    Ok(if clean {
-        Ending::Done
-    } else {
-        Ending::Findings
-    })
+    let MapCommand { read, root, budget } = command;
+    let call = match read {
+        Some(MapRead::CheckAnchors) => {
+            let clean = check_anchors(app, &root, input, out)?;
+            return Ok(if clean {
+                Ending::Done
+            } else {
+                Ending::Findings
+            });
+        }
+        Some(MapRead::Symbol { path }) => McpCall::Symbol(SymbolArgs { path, budget }),
+        None => McpCall::Map(MapArgs { budget }),
+    };
+    let text = tools::answer(&call, &root, &app.log);
+    out.write_all(text.as_bytes()).map_err(|error| {
+        Fault::new(code!("map.output_failed"), "The answer couldn't be printed").because(error)
+    })?;
+    Ok(Ending::Done)
 }
 
 /// Prints each pin read from `input` that no longer matches the repository at `root`, and
@@ -151,8 +164,10 @@ mod tests {
 
     fn check(root: &Path, pins: &str) -> (Result<Ending, Fault>, String) {
         let mut out = Vec::new();
-        let command = MapCommand::CheckAnchors {
+        let command = MapCommand {
+            read: Some(MapRead::CheckAnchors),
             root: root.to_owned(),
+            budget: None,
         };
         let ending = run(&app(None, None), command, &mut pins.as_bytes(), &mut out);
         (ending, String::from_utf8(out).unwrap())
@@ -227,6 +242,84 @@ mod tests {
         assert_eq!(denied.kind(), io::ErrorKind::PermissionDenied);
         let failed = text_or_skip(Err(io::ErrorKind::PermissionDenied.into())).unwrap_err();
         assert_eq!(failed.kind(), io::ErrorKind::PermissionDenied);
+    }
+
+    fn read(root: &Path, read: Option<MapRead>, budget: Option<u32>) -> String {
+        let mut out = Vec::new();
+        let command = MapCommand {
+            read,
+            root: root.to_owned(),
+            budget,
+        };
+        let ending = run(&app(None, None), command, &mut io::empty(), &mut out);
+        assert_eq!(ending.unwrap(), Ending::Done);
+        String::from_utf8(out).unwrap()
+    }
+
+    #[test]
+    fn map_and_symbol_print_exactly_what_the_tools_answer() {
+        let root = repo(CRATE);
+        let log = &app(None, None).log;
+        let symbol = |path: &str| SymbolArgs {
+            path: path.to_owned(),
+            budget: None,
+        };
+        let tool = |call: McpCall, root: &Path| tools::answer(&call, root, log);
+
+        let outline = read(&root, None, None);
+        let item = read(
+            &root,
+            Some(MapRead::Symbol {
+                path: "a::m::go".into(),
+            }),
+            None,
+        );
+        let empty = TempDir::new().unwrap();
+
+        assert_eq!(outline, tool(McpCall::Map(MapArgs::default()), &root));
+        assert_eq!(item, tool(McpCall::Symbol(symbol("a::m::go")), &root));
+        assert_eq!(item, "a::m::go: Fn at a/src/m.rs:1\n");
+        assert_eq!(read(&empty, None, None), "No code map for this folder.\n");
+    }
+
+    #[test]
+    fn a_budget_cuts_the_printed_answer() {
+        let modules = (0..80).fold(String::new(), |text, n| {
+            text + "mod module_number_" + &n.to_string() + ";\n"
+        });
+        let mut files = vec![
+            (
+                "a/Cargo.toml".to_owned(),
+                "[package]\nname = \"a\"\n".to_owned(),
+            ),
+            ("a/src/lib.rs".to_owned(), modules),
+        ];
+        files.extend((0..80).map(|n| (format!("a/src/module_number_{n}.rs"), String::new())));
+        let files: Vec<_> = files
+            .iter()
+            .map(|(path, text)| (path.as_str(), text.as_str()))
+            .collect();
+        let root = repo(&files);
+
+        let whole = read(&root, None, None);
+        let cut = read(&root, None, Some(1000));
+
+        assert!(whole.len() > 1000);
+        assert!(
+            cut.len() <= 1000 && cut.ends_with("lines left out.\n"),
+            "{cut}"
+        );
+    }
+
+    #[test]
+    fn an_answer_that_cant_be_printed_is_an_error() {
+        let command = MapCommand {
+            read: None,
+            root: repo(CRATE).to_path_buf(),
+            budget: None,
+        };
+        let error = run(&app(None, None), command, &mut io::empty(), &mut Broken).unwrap_err();
+        assert_eq!(error.code().as_str(), "map.output_failed");
     }
 
     #[test]

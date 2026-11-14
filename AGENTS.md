@@ -115,6 +115,7 @@ Every program logs, reports errors and says which build it is from its first com
 | `scripts/check.sh` | What CI runs: rustfmt, clippy with warnings as errors, docs, cargo-machete, cargo-deny, all tests with the 90% line-coverage floor, doc tests, mutation tests on the code changed against `origin/main`, the extension's type check, tests and build, the shared TypeScript tooling's tests, the web app's type check, build, tests and end-to-end tests in Chromium against `fake-server`, and ShellCheck. CI also lints and tests on Windows |
 | `cargo test -p <crate> [name]` | Focused tests while iterating |
 | `WEACON_STATE_DIR=.dev/state cargo run -p weacon-core -- doctor` | Runs the core with this worktree's own state folder |
+| `cargo run -p weacon-core -- map [symbol <path>] [--root <folder>] [--budget <bytes>]` | Prints where to begin in a repository's code, or where one item is, exactly as the local MCP's `map` and `symbol` tools answer; the `weacon-map` skill says when to use them |
 | `UPDATE_SCHEMA=1 cargo test -p weacon-protocol` | Regenerates `crates/protocol/schema.json` after a message changes |
 | `UPDATE_VECTORS=1 cargo test --locked -p weacon-core seal` | Regenerates the sign-in terminal's Noise vectors in `crates/protocol/noise-vectors.json` after its messages change |
 | `npm --prefix apps/extension run update-types`, `npm --prefix apps/web run update-types` | Regenerates each app's `src/protocol.ts` from `schema.json` |

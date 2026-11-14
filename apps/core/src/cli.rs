@@ -1,7 +1,7 @@
 use std::ffi::OsString;
 use std::path::PathBuf;
 
-use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
+use clap::{Args, CommandFactory, FromArgMatches, Parser, Subcommand};
 use weacon_protocol::{AccessLevel, AgentKind, WorkspaceId};
 use weacon_version::Version;
 
@@ -58,8 +58,7 @@ pub(crate) enum Command {
     /// Relay messages between Chrome's extension and the daemon; Chrome starts it.
     #[command(hide = true)]
     NativeHost { origin: String },
-    /// Work with the code map of a repository.
-    #[command(subcommand)]
+    /// Print where to begin in a repository's code, or work with its code map.
     Map(MapCommand),
 }
 
@@ -78,14 +77,25 @@ pub(crate) enum ServiceCommand {
     Uninstall,
 }
 
+/// Without a subcommand, prints the text the MCP's `map` tool answers.
+#[derive(Debug, PartialEq, Eq, Args)]
+pub(crate) struct MapCommand {
+    #[command(subcommand)]
+    pub(crate) read: Option<MapRead>,
+    /// The repository's root folder.
+    #[arg(long, global = true, default_value = ".")]
+    pub(crate) root: PathBuf,
+    /// The most bytes an answer may hold.
+    #[arg(long, global = true)]
+    pub(crate) budget: Option<u32>,
+}
+
 #[derive(Debug, PartialEq, Eq, Subcommand)]
-pub(crate) enum MapCommand {
+pub(crate) enum MapRead {
+    /// Print the text the MCP's `symbol` tool answers for an item's full path.
+    Symbol { path: String },
     /// Read pinned anchors on stdin, one per line, and print those that no longer match.
-    CheckAnchors {
-        /// The repository's root folder.
-        #[arg(long, default_value = ".")]
-        root: PathBuf,
-    },
+    CheckAnchors,
 }
 
 impl Cli {
@@ -182,6 +192,10 @@ mod tests {
         let uninstall = run(&["weacon", "service", "uninstall"]).unwrap().command;
         let map = run(&["weacon", "map", "check-anchors"]).unwrap().command;
         let rooted = run(&["weacon", "map", "check-anchors", "--root", "/srv/repo"]).unwrap();
+        let outline = run(&["weacon", "map", "--budget", "2000"]).unwrap().command;
+        let symbol = run(&["weacon", "map", "symbol", "a::b", "--root", "r"])
+            .unwrap()
+            .command;
         let verbose = run(&["weacon", "doctor", "--verbose"]).unwrap();
 
         assert_eq!(doctor.command, Command::Doctor);
@@ -192,17 +206,22 @@ mod tests {
         );
         let service = run(&["weacon", "service", "install"]).unwrap().command;
         assert_eq!((service.name(), service.log_name()), ("service", "cli.log"));
-        assert_eq!(
-            map,
-            Command::Map(MapCommand::CheckAnchors { root: ".".into() })
-        );
+        let map_of = |read, root: &str, budget| {
+            Command::Map(MapCommand {
+                read,
+                root: root.into(),
+                budget,
+            })
+        };
+        assert_eq!(map, map_of(Some(MapRead::CheckAnchors), ".", None));
         assert_eq!((map.name(), map.log_name()), ("map", "cli.log"));
         assert_eq!(
             rooted.command,
-            Command::Map(MapCommand::CheckAnchors {
-                root: "/srv/repo".into()
-            })
+            map_of(Some(MapRead::CheckAnchors), "/srv/repo", None)
         );
+        assert_eq!(outline, map_of(None, ".", Some(2000)));
+        let path = "a::b".to_owned();
+        assert_eq!(symbol, map_of(Some(MapRead::Symbol { path }), "r", None));
         assert!(!doctor.verbose);
         assert!(verbose.verbose);
     }
