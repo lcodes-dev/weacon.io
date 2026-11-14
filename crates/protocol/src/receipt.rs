@@ -50,11 +50,8 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+    use crate::test_support::request;
     use crate::{Envelope, Message, code};
-
-    fn request(id: &str) -> RequestId {
-        id.parse().unwrap()
-    }
 
     #[test]
     fn receipts_have_a_flat_tagged_shape() {
@@ -79,7 +76,7 @@ mod tests {
             let envelope = Envelope {
                 id: 3,
                 message: Message::Receipt(Receipt {
-                    request: request("r-1"),
+                    request: request(),
                     outcome,
                 }),
             };
@@ -96,7 +93,7 @@ mod tests {
         assert_eq!(
             serde_json::from_value::<Envelope>(wire).unwrap().message,
             Message::Receipt(Receipt {
-                request: request("r-1"),
+                request: request(),
                 outcome: Outcome::Newer,
             })
         );

@@ -176,6 +176,7 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+    use crate::test_support::run;
 
     #[test]
     fn sessions_are_lowercase_uuids() {
@@ -243,10 +244,7 @@ mod tests {
         ];
 
         for (state, word) in states {
-            let wire = RunStatus {
-                run: "run-7".parse().unwrap(),
-                state,
-            };
+            let wire = RunStatus { run: run(), state };
             assert_eq!(
                 serde_json::to_value(&wire).unwrap(),
                 json!({ "run": "run-7", "state": word })
