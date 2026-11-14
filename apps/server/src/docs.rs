@@ -1,5 +1,5 @@
 use axum::Json;
-use axum::extract::rejection::{JsonRejection, PathRejection};
+use axum::extract::rejection::PathRejection;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
@@ -11,7 +11,7 @@ use weacon_protocol::{
 
 use crate::app::new_id;
 use crate::auth::Member;
-use crate::http::{Shared, error, failure};
+use crate::http::{Body, Shared, Unreadable, error, failure};
 
 /// The most a doc request's body may be: room for the largest doc the model allows, even
 /// when JSON escapes each byte of its Markdown as `\u00XX`, with its pins.
@@ -31,10 +31,10 @@ pub(crate) async fn list(State(shared): State<Shared>, member: Member) -> Respon
 pub(crate) async fn create(
     State(shared): State<Shared>,
     member: Member,
-    body: Result<Json<DocContent>, JsonRejection>,
+    body: Result<Body<DocContent>, Unreadable>,
 ) -> Response {
     let made = async {
-        let Json(body) = body.map_err(|rejection| rejected(&rejection))?;
+        let body = parsed(body)?;
         let text = text(body)?;
         let id = DocId::try_from(new_id()).map_err(|_| invalid())?;
         let doc = Doc::new(id, text);
@@ -70,11 +70,11 @@ pub(crate) async fn revise(
     State(shared): State<Shared>,
     member: Member,
     path: Result<Path<(WorkspaceId, DocId)>, PathRejection>,
-    body: Result<Json<DocRevise>, JsonRejection>,
+    body: Result<Body<DocRevise>, Unreadable>,
 ) -> Response {
     let revised = async {
         let Path((_, id)) = path.map_err(|_| invalid())?;
-        let Json(body) = body.map_err(|rejection| rejected(&rejection))?;
+        let body = parsed(body)?;
         let text = text(body.content)?;
         let attribution = Attribution::by(member.id.clone(), shared.now());
         let read_at = Revision::new(body.version);
@@ -158,13 +158,12 @@ fn reply(shared: &Shared, doc: Result<Doc, Fault>) -> Response {
     }
 }
 
-/// A body over the limit is `doc.too_large`; any other that isn't a doc request is
-/// `doc.invalid`.
-fn rejected(rejection: &JsonRejection) -> Fault {
-    if rejection.status() == StatusCode::PAYLOAD_TOO_LARGE {
-        too_large()
-    } else {
-        invalid()
+/// A request's body, or `doc.too_large` past the size limit and `doc.invalid` otherwise.
+fn parsed<T>(body: Result<Body<T>, Unreadable>) -> Result<T, Fault> {
+    match body {
+        Ok(Body(body)) => Ok(body),
+        Err(Unreadable::TooLarge) => Err(too_large()),
+        Err(_) => Err(invalid()),
     }
 }
 

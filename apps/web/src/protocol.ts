@@ -57,6 +57,12 @@ export type Envelope = {
   | {
     type: "machine_settings_answer";
   } & MachineSettingsAnswer
+  | {
+    type: "terminal_command";
+  } & TerminalCommand
+  | {
+    type: "terminal";
+  } & TerminalUpdate
 );
 
 /**
@@ -161,6 +167,12 @@ export type Author = (
  * A Rust target a release is built for, such as `x86_64-unknown-linux-musl`.
  */
 export type BuildTarget = string;
+
+/**
+ * Bytes that travel as lowercase hex, at most [`NOISE_MAX`] of them. Its `Debug` shows only
+ * how many, since they are sealed or terminal content.
+ */
+export type Bytes = string;
 
 /**
  * A feature a peer supports, such as `chat.send`, named like a [`Code`]. A peer keeps the ones
@@ -1095,6 +1107,97 @@ export type TaskStatus = (
     | "done"
   )
 );
+
+export type TerminalAction = (
+  | {
+    agent: AgentKind;
+    handshake: Bytes;
+    kind: "open";
+  }
+  | {
+    kind: "frame";
+    sealed: Bytes;
+  }
+  | {
+    kind: "close";
+  }
+);
+
+/**
+ * From the owner of `machine`'s browser to its core, which offers `terminal.sign_in`. The
+ * server relays it only from the machine's owner, and the core acts only when `by` is its
+ * owner and refuses a terminal id it has already seen.
+ */
+export type TerminalCommand = {
+  action: TerminalAction;
+  /**
+   * Who asked, when the server relays the message to a machine.
+   */
+  by?: Asker;
+  machine: MachineId;
+  terminal: TerminalId;
+  workspace: WorkspaceId;
+};
+
+export type TerminalEvent = (
+  | {
+    handshake: Bytes;
+    kind: "accepted";
+  }
+  | {
+    kind: "frame";
+    sealed: Bytes;
+  }
+  | {
+    code?: Code;
+    kind: "closed";
+  }
+);
+
+/**
+ * One sign-in terminal, chosen by the browser that opens it; 1–64 ASCII letters, digits,
+ * `-` or `_`.
+ */
+export type TerminalId = string;
+
+/**
+ * From the browser to the core, only inside the seal.
+ */
+export type TerminalInput = (
+  | {
+    data: Bytes;
+    kind: "input";
+  }
+  | {
+    cols: number;
+    kind: "resize";
+    rows: number;
+  }
+);
+
+/**
+ * From the core to the browser, only inside the seal.
+ */
+export type TerminalOutput = (
+  | {
+    data: Bytes;
+    kind: "output";
+  }
+  | {
+    kind: "ended";
+    sign_in: SignInState;
+  }
+);
+
+/**
+ * From a core that offers `terminal.sign_in`, through the server, to the browser that opened
+ * `terminal`.
+ */
+export type TerminalUpdate = {
+  event: TerminalEvent;
+  terminal: TerminalId;
+  workspace: WorkspaceId;
+};
 
 /**
  * The answer to a [`Hello`] that speaks the same protocol.

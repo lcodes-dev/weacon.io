@@ -20,7 +20,7 @@ use crate::db::{Db, Workspace};
 use crate::email::Email;
 use crate::feed;
 use crate::http::{self, Shared};
-use crate::mail::Outbox;
+use crate::outbox::Outbox;
 use crate::secret::Secret;
 use crate::sign_in;
 

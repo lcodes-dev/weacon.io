@@ -76,7 +76,7 @@ impl Secret {
 
 /// Makes a key at `path`, whole or not at all; a file already there is left as it is.
 fn create(path: &Path) -> Result<(), Fault> {
-    let key = os_secrets()?;
+    let key = random_bytes()?;
     let mut new = OsString::from(path);
     new.push(format!(".{}.new", new_id()));
     let new = PathBuf::from(new);
@@ -93,7 +93,7 @@ fn create(path: &Path) -> Result<(), Fault> {
 }
 
 /// The operating system's random bytes.
-pub(crate) fn os_secrets() -> Result<[u8; 32], Fault> {
+pub(crate) fn random_bytes() -> Result<[u8; 32], Fault> {
     let mut bytes = [0; 32];
     getrandom::fill(&mut bytes).map_err(|_| random_failed())?;
     Ok(bytes)
@@ -231,7 +231,7 @@ mod tests {
 
     #[test]
     fn random_bytes_differ() {
-        assert_ne!(os_secrets().unwrap(), os_secrets().unwrap());
+        assert_ne!(random_bytes().unwrap(), random_bytes().unwrap());
     }
 
     #[test]

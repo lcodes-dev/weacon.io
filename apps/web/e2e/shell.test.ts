@@ -174,6 +174,61 @@ test("the header switches workspaces, and the page reopens the last one", { time
   await page.getByRole("heading", { name: "Sign in" }).waitFor();
 });
 
+test("Settings shows the account and this build, and signs out from there", { timeout: 600_000 }, async (t) => {
+  const served = await serve();
+  t.after(() => served.close());
+  const { page } = served;
+  const email = page.locator("dt:text-is('Email') + dd");
+  await signIn(served);
+  await page.getByRole("heading", { name: "Workspaces" }).waitFor();
+
+  // A workspace made while Settings covers the list joins it without opening.
+  let answer = () => {};
+  const held = new Promise<void>((resolve) => {
+    answer = resolve;
+  });
+  await page.route("**/api/workspaces", async (route) => {
+    if (route.request().method() === "POST") {
+      await held;
+    }
+    await route.continue();
+  });
+  await page.getByLabel("Name").fill("Made in passing");
+  await page.getByRole("button", { name: "Create" }).click();
+  await page.getByRole("button", { name: "Settings" }).click();
+  answer();
+  await page.waitForResponse((response) => response.request().method() === "POST");
+  await page.unroute("**/api/workspaces");
+  await page.getByRole("button", { name: "Back" }).click();
+  await page.getByRole("button", { name: "Made in passing" }).waitFor();
+  await page.getByRole("heading", { name: "Workspaces" }).waitFor();
+
+  await page.getByLabel("Name").fill("Half typed");
+  await page.getByRole("button", { name: "Settings" }).click();
+  await page.getByRole("heading", { name: "Account" }).waitFor();
+  assert.equal(await email.innerText(), EMAIL);
+  await page.getByRole("heading", { name: "About" }).waitFor();
+  assert.deepEqual(await page.locator("header button").allInnerTexts(), ["Back"]);
+  assert.equal(await page.locator("header .who .muted").count(), 0);
+  assert.equal(await page.getByRole("heading", { name: "Workspaces" }).isVisible(), false);
+  await page.getByRole("button", { name: "Back" }).click();
+  assert.equal(await page.getByLabel("Name").inputValue(), "Half typed");
+  assert.equal(await page.locator("header .who .muted").innerText(), EMAIL);
+
+  await page.getByRole("button", { name: "Settings" }).click();
+  await page.route("**/api/sign-out", (route) => route.abort());
+  await page.getByRole("button", { name: "Sign out" }).click();
+  await page.getByRole("alert").getByText("The server can't be reached").waitFor();
+  assert.equal(await email.innerText(), EMAIL);
+  await page.getByRole("button", { name: "Back" }).click();
+  assert.equal(await page.getByRole("alert").count(), 0);
+  await page.getByRole("button", { name: "Settings" }).click();
+  await page.unroute("**/api/sign-out");
+  await page.getByRole("button", { name: "Sign out" }).click();
+  await page.getByRole("heading", { name: "Sign in" }).waitFor();
+  assert.equal(await page.getByRole("button", { name: "Settings" }).count(), 0);
+});
+
 test("an address with no account gets the same answer and no code", { timeout: 600_000 }, async (t) => {
   const served = await serve();
   t.after(() => served.close());

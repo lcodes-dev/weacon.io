@@ -1,3 +1,4 @@
+use std::convert::Infallible;
 use std::time::Duration;
 
 use axum::Extension;
@@ -8,7 +9,7 @@ use futures_util::{Sink, SinkExt};
 use serde::Deserialize;
 use tokio::sync::broadcast::{Receiver, error::RecvError};
 use tokio::time::{Instant, MissedTickBehavior, interval_at, timeout};
-use weacon_observability::Field;
+use weacon_observability::{Fault, Field};
 use weacon_protocol::{
     Capability, Code, Envelope, ErrorBody, Message, WorkspaceChange, WorkspaceId, code,
 };
@@ -36,8 +37,7 @@ pub(crate) const TIMING: Timing = Timing {
     hello_within: Duration::from_secs(10),
     ping_every: Duration::from_secs(30),
 };
-/// 16 KiB.
-const MAX_MESSAGE: usize = 16_384;
+const MAX_MESSAGE: usize = 16 * 1024;
 const PAGE: u32 = 500;
 
 #[derive(Deserialize)]
@@ -61,7 +61,7 @@ pub(crate) async fn feed(
     match member.workspace.join(&member.id).await {
         Ok(true) => shared.changed(member.workspace.id()),
         Ok(false) => {}
-        Err(fault) => return failure(&shared, fault),
+        Err(fault) => return failure(fault),
     }
     let feed = Feed {
         _place: place,
@@ -93,89 +93,92 @@ struct Offers {
     docs: bool,
 }
 
+/// The feed has ended: its client left, its member is one no more, or something failed.
+struct Closed;
+
 impl Feed {
-    /// Whether the feed may go on: its session is live and its account still a member.
-    async fn allowed(&self, shared: &Shared) -> bool {
+    /// Goes on only while the feed's session is live and its account still a member.
+    async fn allowed(&self, shared: &Shared) -> Result<(), Closed> {
         let Member {
             workspace,
             token_hash,
             ..
         } = &self.member;
         match workspace.session_member(token_hash, shared.now()).await {
-            Ok(member) => member.is_some(),
-            Err(fault) => {
-                shared
-                    .log
-                    .warn("feed failed", &[("err", Field::error(&fault))]);
-                false
-            }
+            Ok(Some(_)) => Ok(()),
+            Ok(None) => Err(Closed),
+            Err(fault) => Err(feed_failed(shared, workspace.id(), &fault)),
         }
     }
 }
 
+/// Warns that the feed of `workspace` failed with `fault`, which ends it.
+fn feed_failed(shared: &Shared, workspace: &WorkspaceId, fault: &Fault) -> Closed {
+    shared.log.warn(
+        "feed failed",
+        &[
+            ("workspace_id", workspace.as_str().into()),
+            ("err", Field::error(fault)),
+        ],
+    );
+    Closed
+}
+
 async fn serve(mut socket: WebSocket, shared: Shared, mut feed: Feed) {
+    // However the feed ends, it just ends: the client sees its socket close.
+    let Err(Closed) = run(&mut socket, &shared, &mut feed).await;
+}
+
+async fn run(
+    socket: &mut WebSocket,
+    shared: &Shared,
+    feed: &mut Feed,
+) -> Result<Infallible, Closed> {
     let Timing {
         hello_within,
         ping_every,
     } = shared.feed;
-    let Ok(Some(offers)) = timeout(hello_within, greet(&mut socket, &shared)).await else {
-        return;
-    };
-    feed.offers = offers;
-    if !catch_up(&mut socket, &shared, &mut feed).await {
-        return;
-    }
+    feed.offers = timeout(hello_within, greet(socket, shared))
+        .await
+        .map_err(|_| Closed)??;
+    catch_up(socket, shared, feed).await?;
     let mut ping = interval_at(Instant::now() + ping_every, ping_every);
     // After a stall, one late tick rather than a burst that would count as missed answers.
     ping.set_missed_tick_behavior(MissedTickBehavior::Delay);
     let mut unanswered: u8 = 0;
     loop {
-        let open = tokio::select! {
+        tokio::select! {
             change = feed.changes.recv() => match change {
-                Ok(id) if id != *feed.member.workspace.id() => true,
+                Ok(id) if id != *feed.member.workspace.id() => {}
                 // A feed that fell behind just reads more from the database.
-                Ok(_) | Err(RecvError::Lagged(_)) => catch_up(&mut socket, &shared, &mut feed).await,
-                Err(RecvError::Closed) => false,
+                Ok(_) | Err(RecvError::Lagged(_)) => catch_up(socket, shared, feed).await?,
+                Err(RecvError::Closed) => return Err(Closed),
             },
             _ = ping.tick() => {
                 // Two pings unanswered: the client is gone, or its connection is.
-                let open = unanswered < 2
-                    && feed.allowed(&shared).await
-                    && send(&mut socket, ping_every, Frame::Ping(Vec::new().into())).await;
+                if unanswered >= 2 {
+                    return Err(Closed);
+                }
+                feed.allowed(shared).await?;
+                send(socket, ping_every, Frame::Ping(Vec::new().into())).await?;
                 unanswered = unanswered.saturating_add(1);
-                open
             },
             frame = socket.recv() => match frame {
-                Some(Ok(Frame::Close(_)) | Err(_)) | None => false,
-                Some(Ok(_)) => {
-                    unanswered = 0;
-                    true
-                }
+                Some(Ok(Frame::Close(_)) | Err(_)) | None => return Err(Closed),
+                Some(Ok(_)) => unanswered = 0,
             },
-        };
-        if !open {
-            return;
         }
     }
 }
 
 /// Sends every change after the last one sent, a page at a time, while its member still is one.
-async fn catch_up(socket: &mut WebSocket, shared: &Shared, feed: &mut Feed) -> bool {
+async fn catch_up(socket: &mut WebSocket, shared: &Shared, feed: &mut Feed) -> Result<(), Closed> {
     loop {
-        let page = match feed
-            .member
-            .workspace
+        let workspace = &feed.member.workspace;
+        let page = workspace
             .changes_since(feed.last_seq, PAGE)
             .await
-        {
-            Ok(page) => page,
-            Err(fault) => {
-                shared
-                    .log
-                    .warn("feed failed", &[("err", Field::error(&fault))]);
-                return false;
-            }
-        };
+            .map_err(|fault| feed_failed(shared, workspace.id(), &fault))?;
         let more = usize::try_from(PAGE).is_ok_and(|full| page.len() == full);
         for update in page {
             feed.last_seq = update.seq;
@@ -188,43 +191,42 @@ async fn catch_up(socket: &mut WebSocket, shared: &Shared, feed: &mut Feed) -> b
                 continue;
             }
             // Before each one, not each page: a member removed meanwhile gets nothing more.
-            if !feed.allowed(shared).await {
-                return false;
-            }
-            if !reply(socket, shared, 0, Message::Workspace(update)).await {
-                return false;
-            }
+            feed.allowed(shared).await?;
+            reply(socket, shared, 0, Message::Workspace(update)).await?;
         }
         if !more {
-            return true;
+            return Ok(());
         }
     }
 }
 
 /// Answers the client's hello. The feed goes on only for a client that offers it, and then
 /// says which other features the client offered.
-async fn greet(socket: &mut WebSocket, shared: &Shared) -> Option<Offers> {
+async fn greet(socket: &mut WebSocket, shared: &Shared) -> Result<Offers, Closed> {
     let Some(Ok(Frame::Text(text))) = socket.recv().await else {
-        return None;
+        return Err(Closed);
     };
     let Ok(Envelope {
         id,
         message: Message::Hello(hello),
     }) = Envelope::from_json(text.as_bytes())
     else {
-        reply(socket, shared, 0, error(code!("handshake.required"))).await;
-        return None;
+        reply(socket, shared, 0, error(code!("handshake.required"))).await?;
+        return Err(Closed);
     };
     let offered = [FEED, TASKS, DOCS].map(Capability::from);
     let answer = hello.answer(shared.app.clone(), offered.to_vec());
     let offers = |code| hello.capabilities.contains(&Capability::from(code));
-    let welcomed = matches!(answer, Message::Welcome(_));
-    if welcomed && !offers(FEED) {
-        reply(socket, shared, id, error(code!("capability.missing"))).await;
-        return None;
+    if !matches!(answer, Message::Welcome(_)) {
+        reply(socket, shared, id, answer).await?;
+        return Err(Closed);
     }
-    let sent = reply(socket, shared, id, answer).await;
-    (sent && welcomed).then(|| Offers {
+    if !offers(FEED) {
+        reply(socket, shared, id, error(code!("capability.missing"))).await?;
+        return Err(Closed);
+    }
+    reply(socket, shared, id, answer).await?;
+    Ok(Offers {
         tasks: offers(TASKS),
         docs: offers(DOCS),
     })
@@ -237,21 +239,28 @@ fn error(code: Code) -> Message {
     })
 }
 
-async fn reply(socket: &mut WebSocket, shared: &Shared, id: u32, message: Message) -> bool {
-    let Ok(json) = (Envelope { id, message }).to_json() else {
-        return false;
-    };
-    let Ok(text) = Utf8Bytes::try_from(json) else {
-        return false;
-    };
+async fn reply(
+    socket: &mut WebSocket,
+    shared: &Shared,
+    id: u32,
+    message: Message,
+) -> Result<(), Closed> {
+    let json = (Envelope { id, message }).to_json().map_err(|_| Closed)?;
+    let text = Utf8Bytes::try_from(json).map_err(|_| Closed)?;
     send(socket, shared.feed.ping_every, Frame::Text(text)).await
 }
 
 /// Sends `frame`, or gives up after `within`: a client that stops reading can't hold the feed.
-async fn send<S: Sink<Frame> + Unpin>(socket: &mut S, within: Duration, frame: Frame) -> bool {
+async fn send<S: Sink<Frame> + Unpin>(
+    socket: &mut S,
+    within: Duration,
+    frame: Frame,
+) -> Result<(), Closed> {
     timeout(within, socket.send(frame))
         .await
-        .is_ok_and(|sent| sent.is_ok())
+        .ok()
+        .and_then(Result::ok)
+        .ok_or(Closed)
 }
 
 #[cfg(test)]
@@ -281,6 +290,10 @@ mod tests {
     use crate::test_support::{
         self, Fixture, Running, VERSION, fresh_account, member_id, run, workspace_id,
     };
+
+    // For tests whose client stops reading, or that wait on something other than a ping: no
+    // ping comes while they run.
+    const QUIET: Duration = Duration::from_hours(1);
 
     type Client = WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>;
 
@@ -427,7 +440,8 @@ mod tests {
 
     #[tokio::test]
     async fn a_member_gets_what_they_missed_then_each_change() {
-        let fixture = Fixture::new().await;
+        let mut fixture = Fixture::new().await;
+        fixture.shared.feed.ping_every = QUIET;
         let (server, token) = signed_in(&fixture).await;
         let mut client = open(server.address, "/api/workspaces/w1/feed", &token)
             .await
@@ -533,7 +547,8 @@ mod tests {
 
     #[tokio::test]
     async fn changes_arrive_once_and_in_order_whatever_wakes_the_feed() {
-        let fixture = Fixture::new().await;
+        let mut fixture = Fixture::new().await;
+        fixture.shared.feed.ping_every = QUIET;
         let (server, token) = signed_in(&fixture).await;
         let mut client = greeted(server.address, &token, 1).await;
         join(&fixture, server.address, "m2", "bo@example.com").await;
@@ -628,6 +643,7 @@ mod tests {
 
     #[tokio::test]
     async fn an_oversized_message_ends_the_feed() {
+        assert_eq!(MAX_MESSAGE, 16_384);
         let fixture = Fixture::new().await;
         let (server, token) = signed_in(&fixture).await;
         let mut client = open(server.address, "/api/workspaces/w1/feed", &token)
@@ -659,8 +675,7 @@ mod tests {
     #[tokio::test]
     async fn a_change_reaches_no_feed_whose_member_is_one_no_more() {
         let mut fixture = Fixture::new().await;
-        // Too long for a ping to end the feed first.
-        fixture.shared.feed.ping_every = Duration::from_hours(1);
+        fixture.shared.feed.ping_every = QUIET;
         let (server, token) = signed_in(&fixture).await;
         let mut client = greeted(server.address, &token, 1).await;
         w1(&fixture).await.unlink(&member_id("m1")).await;
@@ -673,7 +688,7 @@ mod tests {
     #[tokio::test]
     async fn a_member_whose_session_ends_during_a_page_gets_no_more_of_it() {
         let mut fixture = Fixture::new().await;
-        fixture.shared.feed.ping_every = Duration::from_hours(1);
+        fixture.shared.feed.ping_every = QUIET;
         // The clock reads as usual for `checks` more readings, then past every session.
         let checks = Arc::new(AtomicU64::new(u64::MAX));
         let (left, clock) = (Arc::clone(&checks), Arc::clone(&fixture.shared.clock));
@@ -791,13 +806,13 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn a_send_the_client_never_takes_gives_up() {
         let mut stuck = futures_util::sink::unfold((), |(), _: Frame| {
-            std::future::pending::<Result<(), std::convert::Infallible>>()
+            std::future::pending::<Result<(), Infallible>>()
         });
         let mut taken = futures_util::sink::drain();
         let frame = || Frame::Ping(Vec::new().into());
 
-        assert!(!send(&mut stuck, TIMING.ping_every, frame()).await);
-        assert!(send(&mut taken, TIMING.ping_every, frame()).await);
+        assert!(send(&mut stuck, TIMING.ping_every, frame()).await.is_err());
+        assert!(send(&mut taken, TIMING.ping_every, frame()).await.is_ok());
     }
 
     #[tokio::test]
