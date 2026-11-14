@@ -57,8 +57,8 @@ impl Picks {
     fn publish(&self, request: &RequestId, json: &[u8]) -> io::Result<()> {
         platform::private_dir(&self.dir)?;
         let partial = self.dir.join(format!(
-            "pick-{}.{}-{}.partial",
-            request.as_str(),
+            "{}.{}-{}.partial",
+            name(request),
             std::process::id(),
             NEXT.fetch_add(1, Ordering::Relaxed)
         ));
@@ -70,9 +70,12 @@ impl Picks {
     }
 
     fn path(&self, request: &RequestId) -> PathBuf {
-        self.dir
-            .join(platform::case_safe_name("pick-", request.as_str()) + ".json")
+        self.dir.join(name(request) + ".json")
     }
+}
+
+fn name(request: &RequestId) -> String {
+    platform::case_safe_name("pick-", request.as_str())
 }
 
 static NEXT: AtomicU64 = AtomicU64::new(0);
@@ -162,20 +165,11 @@ mod tests {
         let lower = pick("p-ab", "<p>lower</p>");
         picks.keep(&upper).unwrap();
         picks.keep(&lower).unwrap();
-        let mut names: Vec<_> = fs::read_dir(dir.join("picks"))
-            .unwrap()
-            .map(|entry| entry.unwrap().file_name().to_ascii_lowercase())
-            .collect();
-        names.sort();
-        names.dedup();
 
         assert_eq!(picks.read(&upper.request).unwrap(), Some(upper));
         assert_eq!(picks.read(&lower.request).unwrap(), Some(lower));
-        assert_eq!(
-            names.len(),
-            2,
-            "names stay apart on a case-insensitive disk"
-        );
+        assert!(dir.join("picks/pick-p-.ab.json").exists());
+        assert!(dir.join("picks/pick-p-ab.json").exists());
     }
 
     #[test]
