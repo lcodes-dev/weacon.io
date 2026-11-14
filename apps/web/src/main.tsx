@@ -3,13 +3,12 @@ import { createRoot } from "react-dom/client";
 
 import "./app.css";
 import { App } from "./app.tsx";
-import { type ChatRef, chatRefOf } from "./chat-ref.ts";
-import { type Command, type Send, type Sent, deliver, prompt } from "./composer/prompt.ts";
+import { chatRefOf } from "./chat-ref.ts";
+import { type Send, type Sent, chatCommand, deliver } from "./composer/prompt.ts";
 import { type Asks, Connection, type Later, type Status, offers } from "./connection.ts";
 import { NO_CHANGES, ask, cut, needsAsking, receive } from "./diff/changes.ts";
 import { type Answers, askKey, sending, settle } from "./chat/asks.ts";
 import { working } from "./chat/chat.ts";
-import { answer, interrupt } from "./chat/commands.ts";
 import { ChatFeed, nextFrame } from "./chat/feed.ts";
 import { lines } from "./chat/lines.ts";
 import { START, type Sync } from "./chat/sync.ts";
@@ -17,6 +16,7 @@ import { newRequestId } from "./ids.ts";
 import { route } from "./incoming.ts";
 import { Log } from "./log.ts";
 import { ME } from "./me.ts";
+import type { ChatAction, RequestId, RunId } from "./protocol.ts";
 import { Receipts } from "./receipts.ts";
 import { fakeServerUrl } from "./server.ts";
 import { Shell } from "./shell/shell.tsx";
@@ -38,7 +38,7 @@ const chatRef = chatRefOf(window.location.search);
 // How long a hidden tab waits for a frame before its batch of run events goes out anyway.
 const HIDDEN_MS = 250;
 const TRANSCRIPT: Asks = { needs: "run.stream", offers: ["diff.view", "chat.events"] };
-// The members' names, which no message carries yet.
+// No message carries members' names, so labels leave them out.
 const NO_MEMBERS = new Map<string, string>();
 
 function Root({ url }: { url: string }) {
@@ -117,28 +117,21 @@ function Root({ url }: { url: string }) {
       socket.close();
     };
   }, [url]);
-  const send: Send = (text, request) => {
+  const command = (action: ChatAction, request: RequestId): Promise<Sent> => {
     const now = live.current;
     if (now === undefined || chatRef === undefined) {
       return Promise.resolve("lost");
     }
-    return deliver(prompt(++lastId.current, chatRef, request, text), now.receipts, (envelope) => now.connection.send(envelope));
+    return deliver(chatCommand(++lastId.current, chatRef, request, action), now.receipts, (envelope) => now.connection.send(envelope));
   };
-  const command = (build: (id: number, ref: ChatRef) => Command) => {
-    const now = live.current;
-    if (now === undefined || chatRef === undefined) {
-      return Promise.resolve<Sent>("lost");
-    }
-    return deliver(build(++lastId.current, chatRef), now.receipts, (envelope) => now.connection.send(envelope));
-  };
+  const send: Send = (text, request) => command({ kind: "prompt", text }, request);
   const answering = {
     answers,
-    answer(run: string, prompt: number, allow: boolean) {
+    answer(run: RunId, prompt: number, allow: boolean) {
       const key = askKey(run, prompt);
-      const next = sending(answers, key, allow, newRequestId);
-      const request = next.get(key)?.request ?? newRequestId();
+      const { answers: next, request } = sending(answers, key, allow, newRequestId);
       setAnswers(next);
-      void command((id, ref) => answer(id, ref, request, run, prompt, allow)).then((sent) => {
+      void command({ kind: "permission", answer: { run, prompt, allow } }, request).then((sent) => {
         // An answer is far too short to be refused for its size.
         const settled = sent === "too_long" ? "refused" : sent;
         setAnswers((before) => settle(before, key, request, settled));
@@ -150,7 +143,7 @@ function Root({ url }: { url: string }) {
   };
   const stop = () => {
     setStopping(true);
-    void command((id, ref) => interrupt(id, ref, newRequestId())).then(() => setStopping(false));
+    void command({ kind: "interrupt" }, newRequestId()).then(() => setStopping(false));
   };
   const { chat } = sync;
   const shown = {

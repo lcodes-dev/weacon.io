@@ -1,3 +1,4 @@
+import { record } from "./fields.ts";
 import type { App, ChatEntry, Envelope, RunEvent } from "./protocol.ts";
 
 /** A message from the server that this app acts on, its fields checked where it arrives. */
@@ -57,11 +58,8 @@ export function route(message: Incoming, to: Routes): void {
 }
 
 function isIncoming(value: unknown): value is Incoming {
-  if (typeof value !== "object" || value === null) {
-    return false;
-  }
-  const fields = value as Record<string, unknown>;
-  if (typeof fields["id"] !== "number") {
+  const fields = record(value);
+  if (typeof fields?.["id"] !== "number") {
     return false;
   }
   const text = (key: string) => typeof fields[key] === "string";
@@ -87,11 +85,8 @@ function isIncoming(value: unknown): value is Incoming {
 }
 
 function isApp(app: unknown): app is App {
-  return (
-    typeof app === "object" &&
-    app !== null &&
-    ["name", "version", "commit"].every((key) => typeof (app as Record<string, unknown>)[key] === "string")
-  );
+  const fields = record(app);
+  return ["name", "version", "commit"].every((key) => typeof fields?.[key] === "string");
 }
 
 function isStrings(list: unknown): list is string[] {
@@ -100,10 +95,10 @@ function isStrings(list: unknown): list is string[] {
 
 /** Whether `event` is a run event whose fields this app reads are all there; others it ignores. */
 function isRunEvent(event: unknown): event is RunEvent {
-  if (typeof event !== "object" || event === null) {
+  const fields = record(event);
+  if (fields === undefined) {
     return false;
   }
-  const fields = event as Record<string, unknown>;
   const text = (key: string) => typeof fields[key] === "string";
   switch (fields["event"]) {
     case "text_delta":
@@ -114,20 +109,14 @@ function isRunEvent(event: unknown): event is RunEvent {
     case "tool_done":
       return text("call") && typeof fields["failed"] === "boolean";
     case "permission_asked":
-      return text("run") && Number.isInteger(fields["prompt"]) && text("tool");
+      return text("run") && isSeq(fields["prompt"], 0) && text("tool");
     case "permission_withdrawn":
-      return text("run") && Number.isInteger(fields["prompt"]);
-    case "finished": {
-      const outcome = fields["outcome"] as Record<string, unknown> | null | undefined;
-      return typeof outcome === "object" && outcome !== null && typeof outcome["state"] === "string";
-    }
+      return text("run") && isSeq(fields["prompt"], 0);
+    case "finished":
+      return typeof record(fields["outcome"])?.["state"] === "string";
     default:
       return typeof fields["event"] === "string";
   }
-}
-
-function record(value: unknown): Record<string, unknown> | undefined {
-  return typeof value === "object" && value !== null && !Array.isArray(value) ? (value as Record<string, unknown>) : undefined;
 }
 
 function isSeq(value: unknown, least: number): value is number {
@@ -183,7 +172,8 @@ function isEntry(value: unknown): value is ChatEntry {
   }
 }
 
-// A malformed agent, or one whose owner is of a newer kind, is dropped; the status stays.
+// A malformed agent, or one whose owner is of a newer kind, is dropped as the message is parsed:
+// rejecting the status would leave a gap in the chat's log.
 function isStatus(value: unknown): boolean {
   const status = record(value);
   if (typeof status?.["run"] !== "string" || typeof status["state"] !== "string") {

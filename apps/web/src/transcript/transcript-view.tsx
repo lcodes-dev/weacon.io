@@ -1,16 +1,15 @@
 import { memo, useRef } from "react";
 
-import type { Answers } from "../chat/asks.ts";
-import { askKey } from "../chat/asks.ts";
+import { type Answers, askKey } from "../chat/asks.ts";
 import type { Line } from "../chat/lines.ts";
 import { AskView } from "../chat/parts.tsx";
-import type { Outcome } from "../protocol.ts";
+import type { Outcome, RunId } from "../protocol.ts";
 import { MarkdownView } from "./markdown-view.ts";
 import { useFollow, useHeldFormatting } from "./transcript-hooks.ts";
 import type { Row, ToolState } from "./transcript.ts";
 
 /** What answering a chat's permission prompts needs: the answers on their way, and a way to send one. */
-export type Answering = { answers: Answers; answer: (run: string, prompt: number, allow: boolean) => void };
+export type Answerer = { answers: Answers; answer: (run: RunId, prompt: number, allow: boolean) => void };
 
 /**
  * A chat's lines, following new ones down unless the reader has scrolled up or is selecting.
@@ -24,7 +23,7 @@ export function TranscriptView({
 }: {
   lines: readonly Line[];
   away: boolean;
-  answering: Answering;
+  answering: Answerer;
   /** Shows the events before the first one shown, when there are any. */
   older: (() => void) | undefined;
 }) {
@@ -57,7 +56,7 @@ export function TranscriptView({
   );
 }
 
-function LineView({ line, formatted, answering }: { line: Line; formatted: boolean; answering: Answering }) {
+function LineView({ line, formatted, answering }: { line: Line; formatted: boolean; answering: Answerer }) {
   switch (line.kind) {
     case "prompt":
       return <div className="row prompt">{line.text}</div>;
@@ -72,17 +71,17 @@ function LineView({ line, formatted, answering }: { line: Line; formatted: boole
         />
       );
     case "row":
-      return <RowView at={line.key} row={line.row} writing={line.writing} formatted={formatted} />;
+      return <RowView rowKey={line.key} row={line.row} writing={line.writing} formatted={formatted} />;
   }
 }
 
 const RowView = memo(function RowView({
-  at,
+  rowKey,
   row,
   writing,
   formatted,
 }: {
-  at: string;
+  rowKey: string;
   row: Row;
   writing: boolean;
   formatted: boolean;
@@ -90,7 +89,7 @@ const RowView = memo(function RowView({
   switch (row.kind) {
     case "text":
       return (
-        <div className="row text" data-key={at} data-writing={writing || undefined}>
+        <div className="row text" data-key={rowKey} data-writing={writing || undefined}>
           {formatted ? <MarkdownView source={row.pieces.join("")} /> : row.pieces}
         </div>
       );

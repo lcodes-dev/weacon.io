@@ -11,7 +11,7 @@ import type { App as Build } from "./protocol.ts";
 import type { Line } from "./chat/lines.ts";
 import { StopButton } from "./chat/parts.tsx";
 import { Settings } from "./settings/settings.tsx";
-import { type Answering, TranscriptView } from "./transcript/transcript-view.tsx";
+import { type Answerer, TranscriptView } from "./transcript/transcript-view.tsx";
 
 type Shown = "run" | "changes" | "settings";
 
@@ -19,7 +19,7 @@ type Shown = "run" | "changes" | "settings";
 export type ChatView = {
   lines: readonly Line[];
   older: (() => void) | undefined;
-  answering: Answering;
+  answering: Answerer;
   /** Stops the agent's turn, while one is running. */
   stop: { stopping: boolean; stop: () => void } | undefined;
 };

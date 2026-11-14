@@ -21,7 +21,7 @@ export class ChatFeed {
   #ref: ChatRef;
   #wiring: Wiring;
   #sync: Sync = START;
-  #shown = true;
+  #pending = false;
 
   constructor(ref: ChatRef, wiring: Wiring) {
     this.#ref = ref;
@@ -71,12 +71,12 @@ export class ChatFeed {
       return;
     }
     this.#sync = sync;
-    if (this.#shown) {
-      this.#shown = false;
+    if (!this.#pending) {
+      this.#pending = true;
       this.#wiring.schedule(() => {
         // A flush that runs twice, by frame and by timer, shows the chat once.
-        if (!this.#shown) {
-          this.#shown = true;
+        if (this.#pending) {
+          this.#pending = false;
           this.#wiring.show(this.#sync);
         }
       });

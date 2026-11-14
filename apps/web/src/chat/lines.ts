@@ -1,4 +1,4 @@
-import type { MemberId } from "../protocol.ts";
+import type { MemberId, RunId } from "../protocol.ts";
 import type { Row } from "../transcript/transcript.ts";
 import type { Ask, Chat } from "./chat.ts";
 import { label } from "./label.ts";
@@ -8,7 +8,7 @@ export type Line =
   | { key: string; kind: "prompt"; text: string }
   | { key: string; kind: "agent"; label: string }
   | { key: string; kind: "row"; row: Row; writing: boolean }
-  | { key: string; kind: "ask"; run: string; ask: Ask };
+  | { key: string; kind: "ask"; run: RunId; ask: Ask };
 
 /** The lines `chat` shows: each prompt, and each turn under its agent's label with its prompts in place. */
 export function lines(chat: Chat, members: ReadonlyMap<MemberId, string>): Line[] {

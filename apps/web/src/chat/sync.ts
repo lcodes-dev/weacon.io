@@ -3,11 +3,7 @@ import type { ChatQueryKind, Envelope } from "../protocol.ts";
 import { type Chat, commit, fromSnapshot, missing, older, stream } from "./chat.ts";
 import type { Heard } from "./heard.ts";
 
-/**
- * Where a chat's screen stands with the server: the chat it shows, the snapshot and window it
- * waits for, by envelope id, and whether it is subscribed. A new snapshot replaces the chat only
- * once it arrives, and an answer to a query that was given up on is dropped.
- */
+/** The chat shown, the snapshot and window awaited by envelope id, and whether it is subscribed. */
 export type Sync = { chat: Chat | undefined; snapshot: number | undefined; window: number | undefined; live: boolean };
 
 /** The queries to send, and the state they leave. */
@@ -19,8 +15,8 @@ export const START: Sync = { chat: undefined, snapshot: undefined, window: undef
 const PAGE = 100;
 
 /** Asks for the chat afresh, keeping what it shows until the answer comes, as on opening it. */
-export function open(sync: Sync, place: ChatRef, id: () => number): Step {
-  const query = ask(place, id(), { kind: "snapshot" });
+export function open(sync: Sync, ref: ChatRef, id: () => number): Step {
+  const query = ask(ref, id(), { kind: "snapshot" });
   return { sync: { ...sync, snapshot: query.id, window: undefined, live: false }, send: [query] };
 }
 
@@ -31,16 +27,16 @@ export function ended(sync: Sync): Sync {
 }
 
 /** Asks for the page of events before the oldest the chat holds, unless one is on its way. */
-export function more(sync: Sync, place: ChatRef, id: () => number): Step {
+export function more(sync: Sync, ref: ChatRef, id: () => number): Step {
   const { chat } = sync;
   if (chat === undefined || !sync.live || sync.window !== undefined || chat.first <= 1) {
     return { sync, send: [] };
   }
-  return windowTo(sync, chat, place, id, Math.max(1, chat.first - PAGE));
+  return windowTo(sync, chat, ref, id, Math.max(1, chat.first - PAGE));
 }
 
 /** What hearing `heard` does to `sync`. */
-export function hear(sync: Sync, heard: Heard, place: ChatRef, id: () => number): Step {
+export function hear(sync: Sync, heard: Heard, ref: ChatRef, id: () => number): Step {
   const { chat } = sync;
   switch (heard.kind) {
     case "snapshot": {
@@ -48,26 +44,26 @@ export function hear(sync: Sync, heard: Heard, place: ChatRef, id: () => number)
         return { sync, send: [] };
       }
       const fresh = fromSnapshot(heard.snapshot);
-      const subscribe = ask(place, id(), { kind: "subscribe", after: fresh.seq });
+      const subscribe = ask(ref, id(), { kind: "subscribe", after: fresh.seq });
       const next = { chat: fresh, snapshot: undefined, window: undefined, live: true };
-      return fetchWaiting(next, place, id, [subscribe]);
+      return fetchWaiting(next, ref, id, [subscribe]);
     }
     case "entry": {
       if (chat === undefined || !sync.live) {
         return { sync, send: [] };
       }
       const next = commit(chat, heard.entry);
-      return next === undefined ? open(sync, place, id) : { sync: { ...sync, chat: next }, send: [] };
+      return next === undefined ? open(sync, ref, id) : { sync: { ...sync, chat: next }, send: [] };
     }
     case "lost":
-      return sync.live ? open(sync, place, id) : { sync, send: [] };
+      return sync.live ? open(sync, ref, id) : { sync, send: [] };
     case "window": {
       if (chat === undefined || heard.id !== sync.window) {
         return { sync, send: [] };
       }
       const next = { ...sync, chat: older(chat, heard.events), window: undefined };
       // An empty answer can't bring the oldest waiting prompt any closer.
-      return heard.events.length === 0 ? { sync: next, send: [] } : fetchWaiting(next, place, id, []);
+      return heard.events.length === 0 ? { sync: next, send: [] } : fetchWaiting(next, ref, id, []);
     }
     case "run":
       return chat === undefined ? { sync, send: [] } : { sync: { ...sync, chat: stream(chat, heard.run, heard.event) }, send: [] };
@@ -75,21 +71,21 @@ export function hear(sync: Sync, heard: Heard, place: ChatRef, id: () => number)
 }
 
 // Asks for every event back to the oldest waiting prompt the chat doesn't hold yet.
-function fetchWaiting(sync: Sync, place: ChatRef, id: () => number, send: Envelope[]): Step {
+function fetchWaiting(sync: Sync, ref: ChatRef, id: () => number, send: Envelope[]): Step {
   const { chat } = sync;
-  const oldest = chat === undefined ? undefined : missing(chat);
+  const oldest = chat && missing(chat);
   if (chat === undefined || oldest === undefined) {
     return { sync, send };
   }
-  const step = windowTo(sync, chat, place, id, oldest);
+  const step = windowTo(sync, chat, ref, id, oldest);
   return { sync: step.sync, send: [...send, ...step.send] };
 }
 
-function windowTo(sync: Sync, chat: Chat, place: ChatRef, id: () => number, from: number): Step {
-  const query = ask(place, id(), { kind: "window", before: chat.first, limit: chat.first - from });
+function windowTo(sync: Sync, chat: Chat, ref: ChatRef, id: () => number, from: number): Step {
+  const query = ask(ref, id(), { kind: "window", before: chat.first, limit: chat.first - from });
   return { sync: { ...sync, window: query.id }, send: [query] };
 }
 
-function ask(place: ChatRef, id: number, query: ChatQueryKind): Envelope {
-  return { id, type: "chat_query", ...place, query };
+function ask(ref: ChatRef, id: number, query: ChatQueryKind): Envelope {
+  return { id, type: "chat_query", ...ref, query };
 }

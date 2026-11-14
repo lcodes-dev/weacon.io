@@ -1,8 +1,8 @@
 import type { AgentRef, ChatEntry, RunEvent, RunId, RunState, RunStatus } from "../protocol.ts";
 import { EMPTY, type Transcript, apply } from "../transcript/transcript.ts";
 
-/** A permission prompt, shown after `at` rows of its turn; `seq` is its place in the log. */
-export type Ask = { seq: number; prompt: number; tool: string; at: number; open: boolean };
+/** A permission prompt, shown after `at` rows of its turn. */
+export type Ask = { prompt: number; tool: string; at: number; open: boolean };
 
 /**
  * What one run did from its first event after a prompt until it finished; `key` names it for
@@ -17,9 +17,8 @@ export type Item = { kind: "prompt"; seq: number; text: string } | { kind: "turn
 export type Run = { state: RunState; agent: AgentRef | undefined };
 
 /**
- * A chat's log from `first` to `seq` with nothing missing, its runs, and the text its runs are
- * writing that isn't committed yet. Prompts at or before `base` were waiting as of the snapshot
- * only if `waiting` holds them.
+ * A chat's log from `first` to `seq` with no gaps, its runs, and the text they stream that isn't
+ * committed yet. A prompt at or before `base` was waiting at the snapshot only if `waiting` has it.
  */
 export type Chat = {
   first: number;
@@ -58,7 +57,7 @@ export function fromSnapshot(snapshot: Snapshot): Chat {
 
 /** The oldest prompt still waiting that the chat doesn't hold yet. */
 export function missing(chat: Chat): number | undefined {
-  const older = [...chat.waiting].filter((seq) => seq >= 1 && seq < chat.first);
+  const older = [...chat.waiting].filter((seq) => seq < chat.first);
   return older.length === 0 ? undefined : Math.min(...older);
 }
 
@@ -116,11 +115,13 @@ export function older(chat: Chat, events: readonly ChatEntry[]): Chat {
 
 /** `chat` with the prompt `prompt` of `run` no longer answerable, as once its answer is taken. */
 export function answered(chat: Chat, run: RunId, prompt: number): Chat {
-  const items = chat.items.map((item) =>
-    item.kind === "turn" && item.turn.run === run && item.turn.asks.some((ask) => ask.prompt === prompt && ask.open)
-      ? { ...item, turn: { ...item.turn, asks: item.turn.asks.map((ask) => (ask.prompt === prompt ? { ...ask, open: false } : ask)) } }
-      : item,
-  );
+  const items = chat.items.map((item) => {
+    if (item.kind !== "turn" || item.turn.run !== run) {
+      return item;
+    }
+    const turn = closing(item.turn, (ask) => ask.prompt === prompt);
+    return turn === item.turn ? item : { ...item, turn };
+  });
   return { ...chat, items };
 }
 
@@ -161,26 +162,26 @@ function step(items: Item[], entry: ChatEntry, waiting: boolean): void {
     return;
   }
   if (event.kind === "run_status" && event.status.state !== "waiting") {
-    closeAsks(items, event.status.run);
+    update(items, event.status.run, (turn) => closing(turn, () => true));
   }
   if (event.kind !== "run") {
     return;
   }
   const { run, event: done } = event.update;
   if (done.event === "permission_withdrawn") {
-    update(items, run, (turn) => ({ ...turn, asks: turn.asks.map((ask) => (ask.prompt === done.prompt ? { ...ask, open: false } : ask)) }));
+    update(items, run, (turn) => closing(turn, (ask) => ask.prompt === done.prompt));
     return;
   }
   addTo(items, run, turnKey(entry.seq - 1, run), (turn) => {
     if (done.event === "permission_asked") {
-      const ask = { seq: entry.seq, prompt: done.prompt, tool: done.tool, at: turn.transcript.rows.length, open: waiting };
+      const ask = { prompt: done.prompt, tool: done.tool, at: turn.transcript.rows.length, open: waiting };
       return { ...turn, asks: [...turn.asks, ask] };
     }
     const transcript = apply(turn.transcript, [done]);
     if (done.event !== "finished") {
       return { ...turn, transcript };
     }
-    return { ...turn, transcript, open: false, asks: turn.asks.map((ask) => ({ ...ask, open: false })) };
+    return { ...closing(turn, () => true), transcript, open: false };
   });
 }
 
@@ -202,10 +203,12 @@ function update(items: Item[], run: RunId, change: (turn: Turn) => Turn): boolea
   return true;
 }
 
-function closeAsks(items: Item[], run: RunId): void {
-  update(items, run, (turn) =>
-    turn.asks.some((ask) => ask.open) ? { ...turn, asks: turn.asks.map((ask) => ({ ...ask, open: false })) } : turn,
-  );
+// `turn` with the open prompts `which` picks closed; the same turn when it picks none.
+function closing(turn: Turn, which: (ask: Ask) => boolean): Turn {
+  if (!turn.asks.some((ask) => ask.open && which(ask))) {
+    return turn;
+  }
+  return { ...turn, asks: turn.asks.map((ask) => (ask.open && which(ask) ? { ...ask, open: false } : ask)) };
 }
 
 // The same for a turn whether its first event was streamed or committed after `seq`.

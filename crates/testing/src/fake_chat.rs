@@ -12,15 +12,19 @@ use weacon_protocol::{
 };
 
 /// The prompt text that makes the fake drop its client's subscription.
-pub(crate) const LOSE: &str = "/lose";
+const LOSE: &str = "/lose";
 
 // At most this many events go in a snapshot or a window.
 const PAGE: usize = 50;
 
 /// The chat's first prompt, more than a snapshot's worth of events before its latest.
-pub(crate) const FIRST: &str = "Merge the duplicate lines in the shopping list.";
+const FIRST: &str = "Merge the duplicate lines in the shopping list.";
 // The steps of the turn that answered the first prompt.
 const EARLIER: u64 = 60;
+
+/// The seq of the made-up log's last event; the server's tests read it.
+#[cfg(test)]
+pub(crate) const SEEDED: u64 = 69;
 
 /// One chat's log, and the envelope id of the client's subscription to it.
 #[derive(Debug)]
@@ -270,7 +274,7 @@ impl FakeChat {
         };
         self.entries
             .iter()
-            .filter(|entry| matches!(&entry.event, ChatEvent::Run { update } if matches!(update.event, RunEvent::PermissionAsked { .. }) && waits(&update.run)))
+            .filter(|entry| asked(entry).is_some_and(waits))
             .map(|entry| entry.seq)
             .collect()
     }
@@ -304,6 +308,14 @@ impl FakeChat {
             }),
         }
     }
+}
+
+// The run whose permission prompt `entry` is, if it is one.
+fn asked(entry: &ChatEntry) -> Option<&RunId> {
+    let ChatEvent::Run { update } = &entry.event else {
+        return None;
+    };
+    matches!(update.event, RunEvent::PermissionAsked { .. }).then_some(&update.run)
 }
 
 fn run(id: &str) -> Result<RunId, String> {
@@ -452,7 +464,7 @@ mod tests {
             },
         ));
 
-        assert_eq!((seq, waiting), (69, vec![69]));
+        assert_eq!((seq, waiting), (SEEDED, vec![SEEDED]));
         assert_eq!(shape(&first), [(1, "window [1]".to_owned())]);
         let agents: Vec<_> = runs
             .iter()
@@ -483,7 +495,11 @@ mod tests {
     #[test]
     fn a_subscription_gets_what_it_missed_then_each_new_event_under_its_id() {
         let mut fake = fake();
-        let missed = fake.answer(&query(4, "c-1", ChatQueryKind::Subscribe { after: 67 }));
+        let missed = fake.answer(&query(
+            4,
+            "c-1",
+            ChatQueryKind::Subscribe { after: SEEDED - 2 },
+        ));
         let delta = fake.played(&played(RunEvent::TextDelta {
             text: "Mer".to_owned(),
         }));
@@ -501,7 +517,11 @@ mod tests {
         assert!(delta.is_empty());
         assert_eq!(shape(&text), [(4, "70 r-1 text".to_owned())]);
         assert_eq!(
-            shape(&fake.answer(&query(6, "c-1", ChatQueryKind::Subscribe { after: 99 }))),
+            shape(&fake.answer(&query(
+                6,
+                "c-1",
+                ChatQueryKind::Subscribe { after: SEEDED + 9 }
+            ))),
             [(6, "lost".to_owned())]
         );
     }
@@ -518,7 +538,7 @@ mod tests {
 
         assert_eq!(snapshot(&mut fake).0, 70);
         assert_eq!(
-            shape(&fake.answer(&query(2, "c-1", ChatQueryKind::Subscribe { after: 69 }))),
+            shape(&fake.answer(&query(2, "c-1", ChatQueryKind::Subscribe { after: SEEDED }))),
             [(2, "70 r-1 text".to_owned())]
         );
     }
@@ -552,7 +572,7 @@ mod tests {
     #[test]
     fn prompts_answers_and_interrupts_are_committed_and_told() {
         let mut fake = fake();
-        fake.answer(&query(4, "c-1", ChatQueryKind::Subscribe { after: 69 }));
+        fake.answer(&query(4, "c-1", ChatQueryKind::Subscribe { after: SEEDED }));
         let said = fake.answer(&prompt("Also sort them."));
         let allowed = fake.answer(&command(ChatAction::Permission {
             answer: PermissionAnswer {
@@ -594,7 +614,7 @@ mod tests {
     #[test]
     fn the_lose_prompt_ends_the_subscription_with_lost_events() {
         let mut fake = fake();
-        fake.answer(&query(4, "c-1", ChatQueryKind::Subscribe { after: 69 }));
+        fake.answer(&query(4, "c-1", ChatQueryKind::Subscribe { after: SEEDED }));
         let lost = fake.answer(&prompt(LOSE));
         let after = fake.played(&played(RunEvent::Text {
             text: "Merged.".to_owned(),

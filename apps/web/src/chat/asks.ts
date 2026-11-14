@@ -1,4 +1,3 @@
-import { requestFor } from "../composer/prompt.ts";
 import type { RequestId, RunId } from "../protocol.ts";
 import type { Settled } from "../receipts.ts";
 
@@ -13,14 +12,13 @@ export function askKey(run: RunId, prompt: number): string {
 }
 
 /**
- * `answers` with the answer to `key` on its way. The same answer again, after one that may have
- * been taken, goes under the same request, so it can't be taken twice.
+ * `answers` with the answer to `key` on its way, and the request it goes under. The same answer
+ * again, after one that may have been taken, goes under the same request, so it can't run twice.
  */
-export function sending(answers: Answers, key: string, allow: boolean, fresh: () => RequestId): Answers {
+export function sending(answers: Answers, key: string, allow: boolean, fresh: () => RequestId): { answers: Answers; request: RequestId } {
   const before = answers.get(key);
-  const retry = before === undefined || before.settled === "refused" ? undefined : { text: String(before.allow), request: before.request };
-  const request = requestFor(retry, String(allow), fresh);
-  return new Map(answers).set(key, { allow, request, settled: undefined });
+  const request = before !== undefined && before.settled !== "refused" && before.allow === allow ? before.request : fresh();
+  return { answers: new Map(answers).set(key, { allow, request, settled: undefined }), request };
 }
 
 /** `answers` once the answer sent under `request` for `key` ended as `settled`. */

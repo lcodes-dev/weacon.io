@@ -6,7 +6,7 @@ use std::path::Path;
 use std::sync::Mutex;
 use std::time::Duration;
 
-use futures_util::{Sink, SinkExt, Stream, StreamExt};
+use futures_util::{SinkExt, Stream, StreamExt};
 use tokio::fs::OpenOptions;
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader, duplex};
 use tokio::sync::mpsc::{UnboundedSender, unbounded_channel};
@@ -60,12 +60,12 @@ pub async fn serve(
     let committed = replies.clone();
     let forward = async {
         loop {
-            let texts = tokio::select! {
+            let text = tokio::select! {
                 Ok(Some(line)) = lines.next_line() => commit_played(&chat, &committed, line),
-                Some(reply) = answered.recv() => vec![reply],
+                Some(reply) = answered.recv() => reply,
                 else => break,
             };
-            if send_each(&mut sink, texts).await.is_err() {
+            if sink.send(Frame::text(text)).await.is_err() {
                 break;
             }
         }
@@ -111,13 +111,13 @@ fn commit_played(
     chat: &Mutex<FakeChat>,
     replies: &UnboundedSender<String>,
     line: String,
-) -> Vec<String> {
+) -> String {
     if let Ok(envelope) = Envelope::from_json(line.as_bytes())
         && let Ok(mut chat) = chat.lock()
     {
         send_all(replies, &chat.played(&envelope));
     }
-    vec![line]
+    line
 }
 
 fn send_all(replies: &UnboundedSender<String>, envelopes: &[Envelope]) {
@@ -128,16 +128,6 @@ fn send_all(replies: &UnboundedSender<String>, envelopes: &[Envelope]) {
         // This fails only once `serve` is done with the client.
         drop(replies.send(text));
     }
-}
-
-async fn send_each<S: Sink<Frame> + Unpin>(
-    sink: &mut S,
-    texts: Vec<String>,
-) -> Result<(), S::Error> {
-    for text in texts {
-        sink.send(Frame::text(text)).await?;
-    }
-    Ok(())
 }
 
 // Sends what answers `text` to `replies`: a receipt that accepts a prompt, the answers to a
@@ -195,7 +185,10 @@ mod tests {
     use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async};
 
     use super::*;
+    use weacon_protocol::{ChatId, ChatQuery, ChatQueryKind, WorkspaceId};
+
     use crate::TempDir;
+    use crate::fake_chat::SEEDED;
     use crate::fake_core::{SESSION, recording};
 
     type Client = WebSocketStream<MaybeTlsStream<TcpStream>>;
@@ -275,16 +268,20 @@ mod tests {
             .await
             .unwrap();
         texts(&mut client, 1).await;
-        let subscribe = json!({ "id": 7, "type": "chat_query", "workspace": "w-1", "chat": "c-1",
-                                "query": { "kind": "subscribe", "after": 0 } });
-        client
-            .send(Frame::text(subscribe.to_string()))
-            .await
-            .unwrap();
+        let subscribe = Envelope {
+            id: 7,
+            message: Message::ChatQuery(ChatQuery {
+                workspace: WorkspaceId::try_from("w-1".to_owned()).unwrap(),
+                chat: ChatId::try_from("c-1".to_owned()).unwrap(),
+                query: ChatQueryKind::Subscribe { after: 0 },
+            }),
+        };
+        let subscribe = fake_core::text(&subscribe).unwrap();
+        client.send(Frame::text(subscribe)).await.unwrap();
         let mut seen = Vec::new();
         let played = |text: &Value| {
             let update = &text["entry"]["event"]["update"];
-            update["run"] == "r-1" && text["entry"]["seq"].as_u64() > Some(69)
+            update["run"] == "r-1" && text["entry"]["seq"].as_u64() > Some(SEEDED)
         };
         while !seen.iter().any(played) {
             seen.extend(texts(&mut client, 1).await);
@@ -302,7 +299,7 @@ mod tests {
             seqs,
             (1..=u64::try_from(seqs.len()).unwrap()).collect::<Vec<_>>()
         );
-        assert!(seqs.len() > 69);
+        assert!(seqs.len() > usize::try_from(SEEDED).unwrap());
     }
 
     #[tokio::test]

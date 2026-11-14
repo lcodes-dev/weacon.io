@@ -1,7 +1,6 @@
 import "./chat.css";
 
-import type { Answering } from "./asks.ts";
-import { answerProblem } from "./asks.ts";
+import { type Answering, answerProblem } from "./asks.ts";
 import type { Ask } from "./chat.ts";
 
 /** A permission prompt: the tool the agent asks to use, and Allow and Deny while it waits. */

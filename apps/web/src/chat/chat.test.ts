@@ -146,7 +146,7 @@ test("prompts the snapshot covers are open only if it says they wait", () => {
 });
 
 test("the oldest waiting prompt the chat doesn't hold is the one to fetch", () => {
-  const far = chat([said(9, "Hi")], 9, [9, 4, 6, 0]);
+  const far = chat([said(9, "Hi")], 9, [9, 4, 6]);
 
   assert.equal(missing(far), 4);
   assert.equal(missing(older(far, [said(4, "a"), said(5, "b"), said(6, "c"), said(7, "d"), said(8, "e")])), undefined);

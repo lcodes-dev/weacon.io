@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import { type Answers, answerProblem, askKey, sending, settle } from "./asks.ts";
-import { answer, interrupt } from "./commands.ts";
+import { chatCommand } from "../composer/prompt.ts";
 
 const key = askKey("r-1", 2);
 const none: Answers = new Map();
@@ -14,13 +14,14 @@ function fresh() {
 
 test("an answer that may have been taken goes again under its request, unless it changed", () => {
   const ids = fresh();
-  const first = sending(none, key, true, ids);
+  const first = sending(none, key, true, ids).answers;
   const lost = settle(first, key, "a-1", "lost");
-  const again = sending(lost, key, true, ids);
-  const changed = sending(lost, key, false, ids);
-  const refused = sending(settle(first, key, "a-1", "refused"), key, true, ids);
+  const again = sending(lost, key, true, ids).answers;
+  const changed = sending(lost, key, false, ids).answers;
+  const refused = sending(settle(first, key, "a-1", "refused"), key, true, ids).answers;
 
   assert.deepEqual(first.get(key), { allow: true, request: "a-1", settled: undefined });
+  assert.equal(sending(lost, key, true, ids).request, "a-1");
   assert.deepEqual(lost.get(key), { allow: true, request: "a-1", settled: "lost" });
   assert.equal(again.get(key)?.request, "a-1");
   assert.equal(changed.get(key)?.request, "a-2");
@@ -31,7 +32,7 @@ test("an answer that may have been taken goes again under its request, unless it
 
 test("a taken answer is forgotten, and a stale settling changes nothing", () => {
   const ids = fresh();
-  const first = sending(none, key, true, ids);
+  const first = sending(none, key, true, ids).answers;
 
   assert.equal(settle(first, key, "a-1", "accepted").size, 0);
   assert.equal(settle(first, key, "a-9", "refused"), first);
@@ -41,7 +42,7 @@ test("a taken answer is forgotten, and a stale settling changes nothing", () => 
 
 test("a prompt says why its answer may not have been taken", () => {
   const ids = fresh();
-  const first = sending(none, key, true, ids);
+  const first = sending(none, key, true, ids).answers;
 
   assert.equal(answerProblem(undefined), undefined);
   assert.equal(answerProblem(first.get(key)), undefined);
@@ -49,10 +50,10 @@ test("a prompt says why its answer may not have been taken", () => {
   assert.equal(answerProblem(settle(first, key, "a-1", "unsure").get(key)), "The server didn't answer; the answer may not have been sent");
 });
 
-test("answers and interrupts are commands to the chat", () => {
+test("a chat command carries its chat, request and action", () => {
   const ref = { workspace: "w-1", chat: "c-1" };
 
-  assert.deepEqual(answer(4, ref, "a-1", "r-1", 2, false), {
+  assert.deepEqual(chatCommand(4, ref, "a-1", { kind: "permission", answer: { run: "r-1", prompt: 2, allow: false } }), {
     id: 4,
     type: "chat_command",
     workspace: "w-1",
@@ -60,7 +61,7 @@ test("answers and interrupts are commands to the chat", () => {
     request: "a-1",
     action: { kind: "permission", answer: { run: "r-1", prompt: 2, allow: false } },
   });
-  assert.deepEqual(interrupt(5, ref, "s-1"), {
+  assert.deepEqual(chatCommand(5, ref, "s-1", { kind: "interrupt" }), {
     id: 5,
     type: "chat_command",
     workspace: "w-1",
