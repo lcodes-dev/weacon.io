@@ -212,10 +212,9 @@ impl Launch {
         let mut command = self.login_command(self.vendor()?);
         // What the browser's terminal emulates, whatever this process runs under.
         command.env("TERM", "xterm-256color");
-        let (pty, events) = platform::Pty::spawn(command, size).map_err(|error| {
+        Terminal::open(command, size).map_err(|error| {
             Fault::new(code!("agent.login_failed"), "The sign-in couldn't start").because(error)
-        })?;
-        Ok((Terminal { pty }, Events(events)))
+        })
     }
 
     /// Whether a run of this agent is pointed at the core's MCP.
