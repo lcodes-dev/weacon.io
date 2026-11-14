@@ -312,6 +312,7 @@ mod tests {
                 workspace: WorkspaceId::try_from("w-1".to_owned()).unwrap(),
                 chat: ChatId::try_from("c-1".to_owned()).unwrap(),
                 query: DiffQueryKind::Changes,
+                by: None,
             }),
         };
         let answers = answers(&query);

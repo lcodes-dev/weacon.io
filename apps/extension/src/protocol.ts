@@ -483,6 +483,11 @@ export type DiffLine = {
  * `request`.
  */
 export type DiffQuery = {
+  /**
+   * Who asked, stamped by the server when it relays the query to a machine; a client's own
+   * value is overwritten.
+   */
+  by?: Asker;
   chat: ChatId;
   query: DiffQueryKind;
   request: RequestId;
@@ -1624,6 +1629,10 @@ export type WorkspaceRole = (
  */
 export type WorkspaceSummary = {
   id: WorkspaceId;
+  /**
+   * The signed-in person's own member in this workspace, sent by the server.
+   */
+  member?: MemberId;
   name: string;
   role: WorkspaceRole;
 };
