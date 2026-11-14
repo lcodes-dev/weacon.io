@@ -22,6 +22,8 @@ pub struct ReleaseManifest {
     /// manifest that is being held back from the newest one.
     pub published_at: u64,
     pub protocol: u32,
+    /// At most one for each target.
+    #[serde(deserialize_with = "one_per_target")]
     pub builds: Vec<ReleaseBuild>,
 }
 
@@ -36,9 +38,22 @@ pub struct ReleaseBuild {
 
 impl ReleaseManifest {
     #[must_use]
-    /// The first build for `target`.
     pub fn build_for(&self, target: &BuildTarget) -> Option<&ReleaseBuild> {
         self.builds.iter().find(|build| &build.target == target)
+    }
+}
+
+fn one_per_target<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Vec<ReleaseBuild>, D::Error> {
+    let builds = Vec::<ReleaseBuild>::deserialize(deserializer)?;
+    let mut targets: Vec<_> = builds.iter().map(|build| build.target.as_str()).collect();
+    targets.sort_unstable();
+    targets.dedup();
+    if targets.len() == builds.len() {
+        Ok(builds)
+    } else {
+        Err(de::Error::custom("two builds for one target"))
     }
 }
 
@@ -259,14 +274,16 @@ mod tests {
     }
 
     #[test]
-    fn the_first_build_for_a_target_wins() {
+    fn two_builds_for_one_target_refuse_the_manifest() {
         let mut twice = manifest();
         let mut second = twice["builds"][0].clone();
         second["size"] = json!(1);
-        twice["builds"].as_array_mut().unwrap().push(second);
+        twice["builds"].as_array_mut().unwrap().push(second.clone());
+        serde_json::from_value::<ReleaseManifest>(twice.clone()).unwrap_err();
+        second["target"] = json!("aarch64-apple-darwin");
+        *twice["builds"].get_mut(1).unwrap() = second;
         let parsed: ReleaseManifest = serde_json::from_value(twice).unwrap();
-        let target = BuildTarget::try_from("x86_64-unknown-linux-musl".to_owned()).unwrap();
-        assert_eq!(parsed.build_for(&target).unwrap().size, 7_148_880);
+        assert_eq!(parsed.builds.len(), 2);
     }
 
     #[test]

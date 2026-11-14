@@ -598,6 +598,9 @@ export type ReleaseBuild = {
  * A release, as its signed manifest describes it; a core reads it to update itself.
  */
 export type ReleaseManifest = {
+  /**
+   * At most one for each target.
+   */
   builds: Array<ReleaseBuild>;
   commit: Commit;
   protocol: number;
