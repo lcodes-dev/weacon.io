@@ -9,7 +9,7 @@ use subtle::ConstantTimeEq;
 use tokio::sync::Semaphore;
 use weacon_agents::AgentRun;
 use weacon_observability::Fault;
-use weacon_protocol::{PermissionAnswer, RunEvent, RunId, WorkspaceId, code};
+use weacon_protocol::{PermissionAnswer, RunEvent, RunId, WorkspaceId, code, to_hex};
 
 use crate::runs::task::Agent;
 
@@ -38,7 +38,7 @@ pub(crate) struct Grant {
     pub(crate) workspace: WorkspaceId,
     pub(crate) run: RunId,
     pub(crate) folder: PathBuf,
-    pub(crate) calls: Arc<Semaphore>,
+    pub(crate) calls: Semaphore,
 }
 
 impl Grant {
@@ -47,7 +47,7 @@ impl Grant {
             workspace,
             run,
             folder,
-            calls: Arc::new(Semaphore::new(CALLS_AT_ONCE)),
+            calls: Semaphore::new(CALLS_AT_ONCE),
         }
     }
 }
@@ -65,11 +65,7 @@ impl Grants {
         getrandom::fill(&mut bytes).map_err(|_| {
             Fault::new(code!("random.failed"), "The core couldn't get random bytes")
         })?;
-        let token = Token(bytes.iter().fold(String::new(), |mut hex, byte| {
-            hex.push(hex_digit(byte >> 4));
-            hex.push(hex_digit(byte & 0xf));
-            hex
-        }));
+        let token = Token(to_hex(&bytes));
         let hash = hash(token.as_str());
         self.held().push((hash, Arc::new(grant)));
         let revoke = Revoke {
@@ -83,22 +79,19 @@ impl Grants {
     pub(crate) fn find(&self, token: &str) -> Option<Arc<Grant>> {
         let hash = hash(token);
         let held = self.held();
-        let mut found = None;
-        for (held, grant) in held.iter() {
+        // Every hash is compared, so the time taken says nothing about which one matched.
+        held.iter().fold(None, |found, (held, grant)| {
             if bool::from(held.ct_eq(&hash)) {
-                found = Some(Arc::clone(grant));
+                Some(Arc::clone(grant))
+            } else {
+                found
             }
-        }
-        found
+        })
     }
 
     fn held(&self) -> MutexGuard<'_, Held> {
         self.0.lock().unwrap_or_else(PoisonError::into_inner)
     }
-}
-
-fn hex_digit(nibble: u8) -> char {
-    char::from_digit(u32::from(nibble), 16).unwrap_or('0')
 }
 
 fn hash(token: &str) -> [u8; 32] {
@@ -121,7 +114,6 @@ impl Drop for Revoke {
 /// An agent whose token ends with it.
 pub(crate) struct Granted {
     pub(crate) agent: AgentRun,
-    /// Held only so the token ends with the run.
     pub(crate) _revoke: Option<Revoke>,
 }
 

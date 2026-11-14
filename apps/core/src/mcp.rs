@@ -31,12 +31,11 @@ use weacon_protocol::{McpCall, code};
 
 use grants::{Grant, Grants, Revoke};
 use weacon_agents::{Launch, McpServer};
-use weacon_protocol::AgentKind;
+use weacon_protocol::{AgentKind, App};
 
 use crate::chats::engine::Start;
 use crate::daemon::ACCEPT_BACKOFF;
 
-/// The largest request body read.
 const MAX_BODY: usize = 64 * 1024;
 
 /// The core's MCP, listening.
@@ -50,7 +49,7 @@ type Body = BoxBody<Bytes, Infallible>;
 
 /// Listens on a free port of 127.0.0.1 and serves until the returned task is aborted; must run
 /// inside a tokio runtime.
-pub(crate) fn start(log: &Logger) -> Result<(Mcp, JoinHandle<()>), Fault> {
+pub(crate) fn start(app: &App, log: &Logger) -> Result<(Mcp, JoinHandle<()>), Fault> {
     let failed = |error| {
         Fault::new(code!("mcp.start_failed"), "The local MCP couldn't start").because(error)
     };
@@ -60,8 +59,14 @@ pub(crate) fn start(log: &Logger) -> Result<(Mcp, JoinHandle<()>), Fault> {
     let address = listener.local_addr().map_err(failed)?;
     let grants = Grants::default();
     let log = log.child(&[("component", "mcp".into())]);
-    log.info("mcp started", &[("port", address.port().into())]);
-    let server = tokio::spawn(serve(listener, address, grants.clone(), log));
+    let handler = Handler {
+        version: app.version.clone(),
+        log,
+    };
+    handler
+        .log
+        .info("mcp started", &[("port", address.port().into())]);
+    let server = tokio::spawn(serve(listener, address, grants.clone(), handler));
     let mcp = Mcp {
         url: format!("http://{address}/mcp"),
         grants,
@@ -70,7 +75,7 @@ pub(crate) fn start(log: &Logger) -> Result<(Mcp, JoinHandle<()>), Fault> {
 }
 
 /// Points a Claude Code `launch` at the MCP with a token for `start`'s run, which works until
-/// the [`Revoke`] is dropped. Other agents are left as they are until their wiring is checked.
+/// the [`Revoke`] is dropped. Other agents are left as they are.
 pub(crate) fn grant(
     mcp: Option<&Mcp>,
     launch: Launch,
@@ -99,7 +104,7 @@ pub(crate) fn grant(
 }
 
 #[expect(clippy::infinite_loop, reason = "it serves until the daemon aborts it")]
-async fn serve(listener: TcpListener, address: SocketAddr, grants: Grants, log: Logger) {
+async fn serve(listener: TcpListener, address: SocketAddr, grants: Grants, handler: Handler) {
     // Stateless: each request stands alone, so no session outlives its run's token. No origin is
     // allowed, so any request that names one is refused.
     let config = StreamableHttpServerConfig::default()
@@ -108,7 +113,7 @@ async fn serve(listener: TcpListener, address: SocketAddr, grants: Grants, log: 
         .with_allowed_hosts([address.to_string()])
         .enforce_origin_validation()
         .with_max_request_body_bytes(MAX_BODY);
-    let handler = Handler { log: log.clone() };
+    let log = handler.log.clone();
     let rmcp = StreamableHttpService::new(
         move || Ok(handler.clone()),
         Arc::new(LocalSessionManager::default()),
@@ -132,20 +137,16 @@ async fn serve(listener: TcpListener, address: SocketAddr, grants: Grants, log: 
 }
 
 async fn connection(stream: TcpStream, front: Arc<Front>) {
-    let service = service_fn(|request| answer(Arc::clone(&front), request));
+    let service = service_fn(|request| {
+        let front = Arc::clone(&front);
+        async move { Ok::<_, Infallible>(front.answer(request).await) }
+    });
     // A client that hangs up mid-request is no fault of the core's.
     drop(
         http1::Builder::new()
             .serve_connection(TokioIo::new(stream), service)
             .await,
     );
-}
-
-async fn answer(
-    front: Arc<Front>,
-    request: Request<Incoming>,
-) -> Result<Response<Body>, Infallible> {
-    Ok(front.answer(request).await)
 }
 
 struct Front {
@@ -186,6 +187,7 @@ fn empty(status: StatusCode) -> Response<Body> {
 
 #[derive(Clone)]
 struct Handler {
+    version: String,
     log: Logger,
 }
 
@@ -193,7 +195,7 @@ impl ServerHandler for Handler {
     fn get_info(&self) -> InitializeResult {
         let capabilities = ServerCapabilities::builder().enable_tools().build();
         InitializeResult::new(capabilities)
-            .with_server_info(Implementation::new("weacon", env!("CARGO_PKG_VERSION")))
+            .with_server_info(Implementation::new("weacon", &self.version))
     }
 
     async fn list_tools(
@@ -217,14 +219,19 @@ impl ServerHandler for Handler {
             .ok_or_else(|| ErrorData::invalid_request("No run", None))?;
         let call = McpCall::parse(&request.name, request.arguments)
             .map_err(|_| ErrorData::invalid_params("These arguments don't fit the tool", None))?;
-        let Ok(_permit) = Arc::clone(&grant.calls).try_acquire_owned() else {
+        let tool = match &call {
+            McpCall::Map(_) => "map",
+            McpCall::Symbol(_) => "symbol",
+            McpCall::Newer => return Err(ErrorData::invalid_params("No such tool", None)),
+        };
+        let Ok(_permit) = grant.calls.try_acquire() else {
             let busy = ContentBlock::text("Too many calls at once: wait for one to end.");
             return Ok(CallToolResult::error(vec![busy]).into());
         };
         let started = Instant::now();
         let folder = grant.folder.clone();
-        let tool = tool_name(&call);
-        let text = tokio::task::spawn_blocking(move || tools::answer(&call, &folder))
+        let log = self.log.child(&[("run_id", grant.run.as_str().into())]);
+        let text = tokio::task::spawn_blocking(move || tools::answer(&call, &folder, &log))
             .await
             .map_err(|_| ErrorData::internal_error("The tool failed", None))?;
         let millis = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
@@ -237,14 +244,6 @@ impl ServerHandler for Handler {
         ];
         self.log.info("mcp answered", &fields);
         Ok(CallToolResult::success(vec![ContentBlock::text(text)]).into())
-    }
-}
-
-fn tool_name(call: &McpCall) -> &'static str {
-    match call {
-        McpCall::Map(_) => "map",
-        McpCall::Symbol(_) => "symbol",
-        McpCall::Newer => "newer",
     }
 }
 
@@ -264,6 +263,7 @@ mod tests {
     use weacon_testing::{TempDir, recording_logger};
 
     use super::*;
+    use crate::test_support::VERSION;
 
     struct Reply {
         status: u16,
@@ -341,7 +341,7 @@ mod tests {
     async fn each_token_reads_only_its_own_runs_folder() {
         let dir = TempDir::new().unwrap();
         let (log, _records) = recording_logger();
-        let (mcp, _server) = start(&log).unwrap();
+        let (mcp, _server) = start(&weacon_appkit::build(&VERSION), &log).unwrap();
         let (first, _a) = mcp
             .grants
             .issue(run_grant("w-1", "run-1", repo(&dir, "one")))
@@ -370,7 +370,7 @@ mod tests {
     async fn a_missing_unknown_or_ended_token_is_refused_and_never_logged() {
         let dir = TempDir::new().unwrap();
         let (log, records) = recording_logger();
-        let (mcp, _server) = start(&log).unwrap();
+        let (mcp, _server) = start(&weacon_appkit::build(&VERSION), &log).unwrap();
         let (ended, revoke) = mcp
             .grants
             .issue(run_grant("w-1", "run-1", repo(&dir, "one")))
@@ -397,7 +397,7 @@ mod tests {
     async fn another_host_an_origin_or_a_large_body_is_refused() {
         let dir = TempDir::new().unwrap();
         let (log, _records) = recording_logger();
-        let (mcp, _server) = start(&log).unwrap();
+        let (mcp, _server) = start(&weacon_appkit::build(&VERSION), &log).unwrap();
         let (token, _revoke) = mcp
             .grants
             .issue(run_grant("w-1", "run-1", repo(&dir, "one")))
@@ -428,14 +428,15 @@ mod tests {
     async fn a_run_gets_only_so_many_calls_at_once_and_bad_arguments_are_refused() {
         let dir = TempDir::new().unwrap();
         let (log, _records) = recording_logger();
-        let (mcp, _server) = start(&log).unwrap();
+        let (mcp, _server) = start(&weacon_appkit::build(&VERSION), &log).unwrap();
         let (token, _revoke) = mcp
             .grants
             .issue(run_grant("w-1", "run-1", repo(&dir, "one")))
             .unwrap();
         let auth = bearer(&token);
         let held = mcp.grants.find(token.as_str()).unwrap();
-        let permits = Arc::clone(&held.calls).acquire_many_owned(2).await.unwrap();
+        let all = u32::try_from(grants::CALLS_AT_ONCE).unwrap();
+        let permits = held.calls.acquire_many(all).await.unwrap();
 
         let busy = post(&mcp, &[("Authorization", &auth)], &call("map", json!({}))).await;
         drop(permits);

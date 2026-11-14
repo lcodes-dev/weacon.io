@@ -4,7 +4,7 @@ use std::path::Path;
 use std::time::Instant;
 
 use weacon_appkit::Outcome;
-use weacon_codemap::{SourceFile, index};
+use weacon_codemap::{Index, SourceFile, index};
 use weacon_observability::Fault;
 use weacon_protocol::code;
 
@@ -40,17 +40,11 @@ fn check_anchors(
         Fault::new(code!("map.input_failed"), "The anchors couldn't be read").because(error)
     })?;
     let started = Instant::now();
-    let mut files = Vec::new();
-    source_files(root, "", &mut files).map_err(|error| {
-        Fault::new(code!("map.read_failed"), "The repository couldn't be read").because(error)
-    })?;
-    let index = index(&files).map_err(|error| {
-        Fault::new(code!("map.index_failed"), "The code map couldn't be built").because(error)
-    })?;
+    let (index, files) = index_folder(root)?;
     let millis = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
     app.log.info(
         "map indexed",
-        &[("files", files.len().into()), ("ms", millis.into())],
+        &[("files", files.into()), ("ms", millis.into())],
     );
     let findings = index.check(&pins);
     let report: String = findings
@@ -67,14 +61,22 @@ fn check_anchors(
     Ok(findings.is_empty())
 }
 
+/// The code map of the repository at `root`, and how many files it read; it blocks.
+pub(crate) fn index_folder(root: &Path) -> Result<(Index, usize), Fault> {
+    let mut files = Vec::new();
+    source_files(root, "", &mut files).map_err(|error| {
+        Fault::new(code!("map.read_failed"), "The repository couldn't be read").because(error)
+    })?;
+    let index = index(&files).map_err(|error| {
+        Fault::new(code!("map.index_failed"), "The code map couldn't be built").because(error)
+    })?;
+    Ok((index, files.len()))
+}
+
 /// Every `Cargo.toml`, and every `.rs` file inside a `src` folder, under `root/folder`, its path
 /// joined with `/`. Hidden entries, links, `node_modules`, Cargo's build folders and files
 /// that aren't UTF-8 are left out.
-pub(crate) fn source_files(
-    root: &Path,
-    folder: &str,
-    files: &mut Vec<SourceFile>,
-) -> io::Result<()> {
+fn source_files(root: &Path, folder: &str, files: &mut Vec<SourceFile>) -> io::Result<()> {
     for entry in fs::read_dir(root.join(folder))? {
         let entry = entry?;
         let name = entry.file_name();

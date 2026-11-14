@@ -120,7 +120,7 @@ impl Daemon {
         {
             return Err(failed(error));
         }
-        let (mcp, mcp_server) = mcp::start(&log)?;
+        let (mcp, mcp_server) = mcp::start(&app, &log)?;
         places.mcp = Some(mcp);
         let (chats, engine) = chats::start(state_dir, places, app.clone(), spawn, log.clone())?;
         let listener = platform::bind(&socket).map_err(failed)?;

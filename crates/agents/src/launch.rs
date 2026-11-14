@@ -29,7 +29,7 @@ pub struct Launch {
     pub cwd: PathBuf,
     /// What the agent may do on this machine, which decides the prompts no person is asked.
     pub access: AccessLevel,
-    /// The core's MCP for this run, which only Claude Code is pointed at for now.
+    /// The core's MCP for this run; only Claude Code is pointed at it.
     pub mcp: Option<McpServer>,
 }
 

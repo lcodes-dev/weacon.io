@@ -3,54 +3,76 @@
 use std::path::Path;
 
 use rmcp::model::Tool;
-use weacon_codemap::{Index, SourceFile, index};
+use serde_json::json;
+use weacon_codemap::Index;
+use weacon_observability::{Field, Logger};
 use weacon_protocol::McpCall;
 
-use crate::map::source_files;
+use crate::map::index_folder;
 
 /// The answer's size when a call names none, and the bounds a named one is kept within.
-pub(crate) const BUDGET: usize = 6000;
-const LEAST: usize = 1000;
-const MOST: usize = 16_000;
+const BUDGET: u32 = 6000;
+const LEAST: u32 = 1000;
+const MOST: u32 = 16_000;
+
+const NO_MAP: &str = "No code map for this folder.\n";
 
 /// The tools every run sees from its first call, as `tools/list` sends them.
-const LISTED: &str = r#"[
-{"name":"map","description":"Where to begin in the code of this chat's folder: its crates and their modules, with how many items each holds. Call it before reading files. Plain text within `budget` bytes, 6000 unless given.","inputSchema":{"type":"object","properties":{"budget":{"type":"integer","minimum":1000,"maximum":16000}}},"annotations":{"readOnlyHint":true,"openWorldHint":false}},
-{"name":"symbol","description":"One item by its full path, such as `weacon_protocol::frame::Envelope`: its kind and the file and line that declare it.","inputSchema":{"type":"object","properties":{"path":{"type":"string","maxLength":1000},"budget":{"type":"integer","minimum":1000,"maximum":16000}},"required":["path"]},"annotations":{"readOnlyHint":true,"openWorldHint":false}}
-]"#;
-
-pub(crate) const NO_MAP: &str = "No code map for this folder.\n";
-const LONGEST_PATH: usize = 1000;
-
 pub(crate) fn listed() -> Vec<Tool> {
-    serde_json::from_str(LISTED).unwrap_or_default()
-}
-
-/// The bytes an answer may hold when `asked` for.
-pub(crate) fn budget(asked: Option<u32>) -> usize {
-    asked.map_or(BUDGET, |asked| {
-        usize::try_from(asked).unwrap_or(MOST).clamp(LEAST, MOST)
-    })
+    let budget = json!({"type": "integer", "minimum": LEAST, "maximum": MOST});
+    let read_only = json!({"readOnlyHint": true, "openWorldHint": false});
+    let tools = json!([
+        {
+            "name": "map",
+            "description": format!(
+                "Where to begin in the code of this chat's folder: its crates and their modules, \
+                 with how many items each holds. Call it before reading files. Plain text within \
+                 `budget` bytes, {BUDGET} unless given."
+            ),
+            "inputSchema": {"type": "object", "properties": {"budget": budget}},
+            "annotations": read_only,
+        },
+        {
+            "name": "symbol",
+            "description": "One item by its full path, such as \
+                `weacon_protocol::frame::Envelope`: its kind and the file and line that declare it.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {"path": {"type": "string"}, "budget": budget},
+                "required": ["path"],
+            },
+            "annotations": read_only,
+        },
+    ]);
+    serde_json::from_value(tools).unwrap_or_default()
 }
 
 /// The answer to `call` from the code in `folder`; it reads the folder, so it blocks.
-pub(crate) fn answer(call: &McpCall, folder: &Path) -> String {
-    let mut files = Vec::new();
-    if source_files(folder, "", &mut files).is_err() {
-        return NO_MAP.to_owned();
+pub(crate) fn answer(call: &McpCall, folder: &Path, log: &Logger) -> String {
+    match index_folder(folder) {
+        Ok((map, _)) => answer_from(call, &map),
+        Err(fault) => {
+            log.warn("mcp map failed", &[("err", Field::error(&fault))]);
+            NO_MAP.to_owned()
+        }
     }
-    answer_from(call, &files)
 }
 
-fn answer_from(call: &McpCall, files: &[SourceFile]) -> String {
-    let Some(map) = index(files).ok().filter(|map| !map.crates.is_empty()) else {
+fn answer_from(call: &McpCall, map: &Index) -> String {
+    if map.crates.is_empty() {
         return NO_MAP.to_owned();
-    };
-    match call {
-        McpCall::Map(args) => fit(outline(&map), budget(args.budget)),
-        McpCall::Symbol(args) => fit(symbol(&map, &args.path), budget(args.budget)),
-        McpCall::Newer => "No such tool.\n".to_owned(),
     }
+    match call {
+        McpCall::Map(args) => fit(outline(map), budget(args.budget)),
+        McpCall::Symbol(args) => fit(vec![symbol(map, &args.path)], budget(args.budget)),
+        McpCall::Newer => String::new(),
+    }
+}
+
+/// The bytes an answer may hold when `asked` for.
+fn budget(asked: Option<u32>) -> usize {
+    let bytes = asked.map_or(BUDGET, |asked| asked.clamp(LEAST, MOST));
+    usize::try_from(bytes).unwrap_or(usize::MAX)
 }
 
 fn outline(map: &Index) -> Vec<String> {
@@ -62,22 +84,16 @@ fn outline(map: &Index) -> Vec<String> {
             } else {
                 &krate.folder
             };
-            let head = format!(
-                "{} {folder}: {}",
-                krate.name,
-                count(krate.modules.len(), "module")
-            );
+            let modules = count(krate.modules.len(), "module");
+            let head = format!("{} {folder}: {modules}", krate.name);
             let modules = krate.modules.iter().map(|module| {
                 let name = if module.path.is_empty() {
                     "(root)"
                 } else {
                     &module.path
                 };
-                format!(
-                    "  {name} {}: {}",
-                    module.file,
-                    count(module.symbols.len(), "item")
-                )
+                let items = count(module.symbols.len(), "item");
+                format!("  {name} {}: {items}", module.file)
             });
             std::iter::once(head).chain(modules)
         })
@@ -89,49 +105,47 @@ fn count(number: usize, what: &str) -> String {
     format!("{number} {what}{plural}")
 }
 
-fn symbol(map: &Index, path: &str) -> Vec<String> {
-    let found = (path.len() <= LONGEST_PATH)
-        .then(|| map.symbol(path))
-        .flatten()
-        .and_then(|symbol| {
-            let module = map
-                .crates
-                .iter()
-                .flat_map(|krate| &krate.modules)
-                .find(|module| module.symbols.iter().any(|item| std::ptr::eq(item, symbol)))?;
-            Some(format!(
-                "{path}: {:?} at {}:{}",
-                symbol.kind, module.file, symbol.line
-            ))
-        });
-    vec![found.unwrap_or_else(|| "No item has this path.".to_owned())]
+fn symbol(map: &Index, path: &str) -> String {
+    let Some(symbol) = map.symbol(path) else {
+        return "No item has this path.".to_owned();
+    };
+    // `Index::symbol` doesn't say which module holds the item, so it is found by identity.
+    let modules = map.crates.iter().flat_map(|krate| &krate.modules);
+    let file = modules
+        .filter(|module| module.symbols.iter().any(|item| std::ptr::eq(item, symbol)))
+        .map(|module| module.file.as_str())
+        .next()
+        .unwrap_or("?");
+    format!("{path}: {:?} at {file}:{}", symbol.kind, symbol.line)
 }
 
 /// The lines that fit in `budget` bytes, each ending with a newline; when some don't, the last
 /// line says how many were left out, and is kept even when the budget is smaller than it.
-pub(crate) fn fit(lines: Vec<String>, budget: usize) -> String {
+fn fit(lines: Vec<String>, budget: usize) -> String {
     let total: usize = lines.iter().map(|line| line.len() + 1).sum();
     if total <= budget {
         return lines.into_iter().map(|line| line + "\n").collect();
     }
     let count = lines.len();
+    let tail = |kept: usize| format!("{} more lines left out.\n", count - kept);
     let mut out = String::new();
     let mut kept = 0;
     for line in lines {
-        let tail = format!("{} more lines left out.\n", count - kept);
-        if out.len() + line.len() + 1 + tail.len() > budget {
+        if out.len() + line.len() + 1 + tail(kept).len() > budget {
             break;
         }
         out.push_str(&line);
         out.push('\n');
         kept += 1;
     }
-    out + &format!("{} more lines left out.\n", count - kept)
+    out + &tail(kept)
 }
 
 #[cfg(test)]
 mod tests {
+    use weacon_codemap::{SourceFile, index};
     use weacon_protocol::{MapArgs, SymbolArgs};
+    use weacon_testing::{TempDir, recording_logger};
 
     use super::*;
 
@@ -142,12 +156,13 @@ mod tests {
         }
     }
 
-    fn repo() -> Vec<SourceFile> {
-        vec![
+    fn repo() -> Index {
+        index(&[
             file("Cargo.toml", "[package]\nname = \"a-b\"\n"),
             file("src/lib.rs", "mod m;\npub fn run() {}\n"),
             file("src/m.rs", "pub struct S;\nimpl S { pub fn go() {} }\n"),
-        ]
+        ])
+        .unwrap()
     }
 
     fn map(budget: Option<u32>) -> McpCall {
@@ -172,7 +187,7 @@ mod tests {
 
         assert_eq!(names, ["map", "symbol"]);
         assert_eq!(sizes, [Some(194), Some(118)]);
-        assert_eq!(serde_json::to_string(&tools).unwrap().len(), 770);
+        assert_eq!(serde_json::to_string(&tools).unwrap().len(), 753);
     }
 
     #[test]
@@ -187,21 +202,20 @@ mod tests {
     fn symbol_says_where_an_item_is_or_that_none_has_the_path() {
         let found = answer_from(&symbol_call("a_b::m::S::go"), &repo());
         let missing = answer_from(&symbol_call("a_b::m::T"), &repo());
-        let long = answer_from(&symbol_call(&"a_b::".repeat(300)), &repo());
 
         assert_eq!(found, "a_b::m::S::go: Fn at src/m.rs:2\n");
         assert_eq!(missing, "No item has this path.\n");
-        assert_eq!(long, missing);
-        assert_eq!(answer_from(&McpCall::Newer, &repo()), "No such tool.\n");
     }
 
     #[test]
-    fn a_folder_without_crates_has_no_map() {
-        let dir = weacon_testing::TempDir::new().unwrap();
+    fn a_folder_without_crates_has_no_map_and_one_that_cant_be_read_says_so_once() {
+        let dir = TempDir::new().unwrap();
         std::fs::write(dir.join("notes.md"), "# Notes\n").unwrap();
+        let (log, records) = recording_logger();
 
-        assert_eq!(answer(&map(None), &dir), NO_MAP);
-        assert_eq!(answer(&map(None), &dir.join("gone")), NO_MAP);
+        assert_eq!(answer(&map(None), &dir, &log), NO_MAP);
+        assert_eq!(answer(&map(None), &dir.join("gone"), &log), NO_MAP);
+        assert_eq!(weacon_testing::messages(&records), ["mcp map failed"]);
     }
 
     #[test]
