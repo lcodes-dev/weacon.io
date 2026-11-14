@@ -30,6 +30,34 @@ pub(crate) fn is_lower_hex(text: &str) -> bool {
         .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
 }
 
+/// Declares `$name`, a newtype around exactly `$len` lowercase hex digits, made from bytes with
+/// `from_bytes`; parsing anything else fails with `$what`.
+macro_rules! hex_string {
+    ($(#[$doc:meta])* $name:ident, $len:literal, $what:literal) => {
+        $(#[$doc])*
+        #[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, schemars::JsonSchema)]
+        pub struct $name(#[schemars(regex(pattern = Self::PATTERN))] String);
+
+        impl $name {
+            // The schema's form of the check below; a test keeps the two in step.
+            pub(crate) const PATTERN: &str = concat!("^[0-9a-f]{", stringify!($len), "}$");
+
+            #[must_use]
+            pub fn from_bytes(bytes: [u8; $len / 2]) -> Self {
+                Self($crate::hex::to_hex(&bytes))
+            }
+        }
+
+        $crate::token::checked_string!(
+            $name,
+            |text: &str| text.len() == $len && $crate::hex::is_lower_hex(text),
+            $what
+        );
+    };
+}
+
+pub(crate) use hex_string;
+
 #[cfg(test)]
 mod tests {
     use super::*;

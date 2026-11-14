@@ -4,7 +4,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::AccountId;
-use crate::hex::{is_lower_hex, to_hex};
+use crate::hex::hex_string;
 use crate::token::{checked_string, token_id};
 
 token_id!(
@@ -19,24 +19,11 @@ token_id!(
     "not a pairing id"
 );
 
-/// A machine's public X25519 key, the static key of its sealed channels, as 64 lowercase hex
-/// digits. A browser pins it when the person confirms the pairing.
-#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, JsonSchema)]
-pub struct MachineKey(#[schemars(regex(pattern = KEY_PATTERN))] String);
-
-// The schema's form of the check below; a test keeps the two in step.
-const KEY_PATTERN: &str = r"^[0-9a-f]{64}$";
-
-impl MachineKey {
-    #[must_use]
-    pub fn from_bytes(key: [u8; 32]) -> Self {
-        Self(to_hex(&key))
-    }
-}
-
-checked_string!(
+hex_string!(
+    /// A machine's public X25519 key, the static key of its sealed channels, as 64 lowercase hex
+    /// digits. A browser pins it when the person confirms the pairing.
     MachineKey,
-    |key: &str| key.len() == 64 && is_lower_hex(key),
+    64,
     "not a machine key"
 );
 
@@ -269,10 +256,8 @@ mod tests {
 
     #[test]
     fn a_key_is_64_lowercase_hex_digits_checked_on_arrival() {
-        let pattern = regex::Regex::new(KEY_PATTERN).unwrap();
         let hex = format!("ab{}0f", "0".repeat(60));
 
-        assert!(pattern.is_match(&hex));
         assert_eq!(MachineKey::try_from(hex.clone()), Ok(key()));
         assert_eq!(key().as_str(), hex);
         assert_eq!(serde_json::to_value(key()).unwrap(), json!(hex));
@@ -287,7 +272,6 @@ mod tests {
             format!("g{}", "0".repeat(63)),
             String::new(),
         ] {
-            assert!(!pattern.is_match(&bad), "{bad}");
             assert_eq!(MachineKey::try_from(bad.clone()), Err(bad.clone()));
             let error = serde_json::from_value::<MachineKey>(json!(bad)).unwrap_err();
             assert!(error.to_string().contains("not a machine key"), "{bad}");

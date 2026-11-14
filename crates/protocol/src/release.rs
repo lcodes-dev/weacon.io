@@ -5,7 +5,7 @@ use std::str::FromStr;
 use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 
-use crate::hex::{is_lower_hex, to_hex};
+use crate::hex::hex_string;
 use crate::token::{checked_string, token_id};
 
 token_id!(
@@ -132,22 +132,6 @@ impl JsonSchema for ReleaseVersion {
     }
 }
 
-/// Declares a string of `$len` lowercase hex digits; parsing anything else fails with `$what`.
-macro_rules! hex_string {
-    ($(#[$doc:meta])* $name:ident, $len:literal, $what:literal) => {
-        $(#[$doc])*
-        #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, JsonSchema)]
-        pub struct $name(#[schemars(regex(pattern = Self::PATTERN))] String);
-
-        impl $name {
-            // The schema's form of the check below; a test keeps the two in step.
-            const PATTERN: &str = concat!("^[0-9a-f]{", stringify!($len), "}$");
-        }
-
-        checked_string!($name, |text: &str| text.len() == $len && is_lower_hex(text), $what);
-    };
-}
-
 hex_string!(
     /// A full git commit id: 40 lowercase hex digits.
     Commit,
@@ -161,13 +145,6 @@ hex_string!(
     64,
     "not a SHA-256 digest"
 );
-
-impl Sha256 {
-    #[must_use]
-    pub fn from_bytes(digest: [u8; 32]) -> Self {
-        Self(to_hex(&digest))
-    }
-}
 
 /// An `https://` address of printable ASCII, at most 2,048 bytes, with a plain host name and
 /// optionally a port: no user name or password.
@@ -204,6 +181,7 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+    use crate::MachineKey;
 
     const COMMIT: &str = "0123456789abcdef0123456789abcdef01234567";
     const SHA: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
@@ -366,11 +344,14 @@ mod tests {
             "",
             "abc",
             "g123456789abcdef0123456789abcdef01234567",
+            "0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF",
         ];
         let commit = |text: &str| Commit::try_from(text.to_owned()).is_ok();
         let sha = |text: &str| Sha256::try_from(text.to_owned()).is_ok();
+        let key = |text: &str| MachineKey::try_from(text.to_owned()).is_ok();
         matches_its_parser(Commit::PATTERN, commit, &samples);
         matches_its_parser(Sha256::PATTERN, sha, &samples);
+        matches_its_parser(MachineKey::PATTERN, key, &samples);
     }
 
     #[test]
