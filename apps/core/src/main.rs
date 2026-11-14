@@ -21,6 +21,7 @@ mod reports;
     expect(dead_code, reason = "the chat engine, which uses it, comes next")
 )]
 mod runs;
+mod server;
 mod service;
 mod session;
 mod status;
