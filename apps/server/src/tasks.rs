@@ -6,7 +6,7 @@ use axum::response::{IntoResponse, Response};
 use weacon_model::{Change, OrderKey, Revision, Task, TaskEdit, Title};
 use weacon_observability::Fault;
 use weacon_protocol::{
-    TaskChange, TaskCreate, TaskEditBody, TaskId, TaskList, TaskRecord, WorkspaceId, code,
+    Code, TaskChange, TaskCreate, TaskEditBody, TaskId, TaskList, TaskRecord, WorkspaceId, code,
 };
 
 use crate::app::new_id;
@@ -145,20 +145,29 @@ fn invalid() -> Fault {
     Fault::new(code!("task.invalid"), "The task request isn't valid")
 }
 
+/// The refusals the task routes answer, with their status; anything else is the server failing.
+const REFUSALS: [(Code, StatusCode); 8] = [
+    (code!("task.invalid"), StatusCode::BAD_REQUEST),
+    (code!("task.unknown_value"), StatusCode::BAD_REQUEST),
+    (code!("task.not_found"), StatusCode::NOT_FOUND),
+    (code!("task.stale"), StatusCode::CONFLICT),
+    (code!("task.no_room"), StatusCode::CONFLICT),
+    (code!("task.last_version"), StatusCode::CONFLICT),
+    (code!("task.too_many"), StatusCode::CONFLICT),
+    (code!("task.too_large"), StatusCode::PAYLOAD_TOO_LARGE),
+];
+
 /// Answers a refusal with its status, and anything else as the server failing.
 fn answer(shared: &Shared, fault: Fault) -> Response {
-    let status = match fault.code().as_str() {
-        "task.invalid" | "task.unknown_value" => StatusCode::BAD_REQUEST,
-        "task.not_found" => StatusCode::NOT_FOUND,
-        "task.stale" | "task.no_room" | "task.last_version" | "task.too_many" => {
-            StatusCode::CONFLICT
-        }
-        "task.too_large" => StatusCode::PAYLOAD_TOO_LARGE,
-        // Another change took the same place at the same moment; reading again finds a free one.
-        "db.exists" => return error(StatusCode::CONFLICT, fault.code().clone(), true),
-        _ => return failure(shared, fault),
-    };
-    error(status, fault.code().clone(), false)
+    let code = fault.code().clone();
+    // Another change took the same place at the same moment; reading again finds a free one.
+    if code == code!("db.exists") {
+        return error(StatusCode::CONFLICT, code, true);
+    }
+    match REFUSALS.iter().find(|(refusal, _)| *refusal == code) {
+        Some((_, status)) => error(*status, code, false),
+        None => failure(shared, fault),
+    }
 }
 
 #[cfg(test)]

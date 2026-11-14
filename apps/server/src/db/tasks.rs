@@ -41,7 +41,7 @@ impl Workspace {
                 "The workspace has as many tasks as it can hold",
             ));
         }
-        self.record(&mut transaction, task, change).await?;
+        self.record_version(&mut transaction, task, change).await?;
         transaction.commit().await.map_err(failed)
     }
 
@@ -100,13 +100,14 @@ impl Workspace {
         .execute(&mut *transaction)
         .await
         .map_err(failed)?;
-        self.record(&mut transaction, &edited, change).await?;
+        self.record_version(&mut transaction, &edited, change)
+            .await?;
         transaction.commit().await.map_err(failed)?;
         Ok(edited)
     }
 
     /// Records who is behind the version `task` is now at, and the change for the feed.
-    async fn record(
+    async fn record_version(
         &self,
         transaction: &mut SqliteConnection,
         task: &Task,
@@ -156,13 +157,13 @@ fn refused(error: EditError) -> Fault {
             code!("task.stale"),
             "The task has changed since it was read",
         ),
-        EditError::UnknownStatus => unknown(),
+        EditError::UnknownStatus => unknown_value(),
         EditError::LastVersion => last_version(),
     }
 }
 
 /// A status or an author from a newer peer, which this build can't store.
-fn unknown() -> Fault {
+fn unknown_value() -> Fault {
     Fault::new(
         code!("task.unknown_value"),
         "The task has a value this version doesn't know",
@@ -185,7 +186,7 @@ fn status_text(status: TaskStatus) -> Result<&'static str, Fault> {
         TaskStatus::Todo => Ok("todo"),
         TaskStatus::InProgress => Ok("in_progress"),
         TaskStatus::Done => Ok("done"),
-        TaskStatus::Newer => Err(unknown()),
+        TaskStatus::Newer => Err(unknown_value()),
     }
 }
 
@@ -202,7 +203,7 @@ fn author_columns(author: &Author) -> Result<(&'static str, &MemberId), Fault> {
     match author {
         Author::Person { member } => Ok(("person", member)),
         Author::Agent { owner } => Ok(("agent", owner)),
-        Author::Newer => Err(unknown()),
+        Author::Newer => Err(unknown_value()),
     }
 }
 

@@ -71,11 +71,14 @@ impl Workspace {
         .await
         .map_err(failed)?
         .into_iter()
-        .map(|row| self.update(row))
+        .map(|row| self.stored_update(row))
         .collect()
     }
 
-    fn update(&self, (seq, kind, member, task, version): Row) -> Result<WorkspaceUpdate, Fault> {
+    fn stored_update(
+        &self,
+        (seq, kind, member, task, version): Row,
+    ) -> Result<WorkspaceUpdate, Fault> {
         let change = match (kind.as_str(), task, version) {
             (MEMBER_JOINED, None, None) => WorkspaceChange::MemberJoined {
                 member: stored(member)?,
