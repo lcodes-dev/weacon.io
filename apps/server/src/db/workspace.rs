@@ -119,7 +119,7 @@ impl Workspace {
         .fetch_optional(&self.db.readers)
         .await
         .map_err(failed)?
-        .map(|(name, role)| summary(self.id.clone(), name, &role))
+        .map(|(name, role)| summary(self.id.clone(), name, &role, member.clone()))
         .transpose()
     }
 }

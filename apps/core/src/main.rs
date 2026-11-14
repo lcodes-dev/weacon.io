@@ -26,6 +26,7 @@ mod pair;
 mod picks;
 mod platform;
 mod reports;
+mod resume;
 mod runs;
 mod server;
 mod service;
@@ -97,6 +98,7 @@ fn run(app: &App, command: Command, env: platform::Env<'_>) -> Result<Ending, Fa
             pair::run(app, &server, name, pin.as_deref(), &mut io::stdout().lock())
         }
         Command::Reports { answer } => reports::run(app, answer, &mut io::stdout().lock()),
+        Command::Resume { workspace, chat } => resume::run(app, &workspace, &chat),
         Command::ConnectChrome => native_host::connect_chrome(app, env, &mut io::stdout().lock()),
         Command::NativeHost { origin } => native_host::run(app, &origin),
         Command::Hook(command) => return Ok(hook::run(app, command, &mut io::stdout().lock())),
