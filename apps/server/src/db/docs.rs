@@ -6,6 +6,11 @@ use weacon_protocol::{DocAnchors, DocId, DocRevision, DocSummary, code};
 use super::changes::Versioned;
 use super::{Workspace, author_columns, failed, stored, stored_author, stored_version, unreadable};
 
+/// How many bytes of doc revisions a workspace may hold.
+const DOC_QUOTA: i64 = 1 << 30;
+/// What each revision counts besides its text: its rows, keys and feed entry.
+const REVISION_OVERHEAD: usize = 256;
+
 type VersionRow = (i64, String, String, Option<String>);
 type RevisionRow = (i64, String, String, String, i64);
 
@@ -167,6 +172,25 @@ impl Workspace {
         })
     }
 
+    /// Counts `size` more bytes against the workspace's quota, or refuses a revision it has
+    /// no room left for.
+    async fn charge(&self, transaction: &mut SqliteConnection, size: i64) -> Result<(), Fault> {
+        let charged = sqlx::query(
+            "UPDATE workspaces SET doc_bytes = doc_bytes + ?2
+             WHERE workspace_id = ?1 AND doc_bytes + ?2 <= ?3",
+        )
+        .bind(self.id.as_str())
+        .bind(size)
+        .bind(DOC_QUOTA)
+        .execute(&mut *transaction)
+        .await
+        .map_err(failed)?;
+        if charged.rows_affected() == 0 {
+            return Err(quota_full());
+        }
+        Ok(())
+    }
+
     /// Records the revision `doc` is now at, its pins, who is behind it, and the change for
     /// the feed.
     async fn record_doc(
@@ -178,6 +202,8 @@ impl Workspace {
         let (kind, author) = author_columns(attribution.author()).ok_or_else(unknown)?;
         let version = version_number(doc.version)?;
         let anchors = doc.text.anchors();
+        let size = size(&doc.text);
+        self.charge(transaction, size).await?;
         sqlx::query(
             "INSERT INTO doc_versions (workspace_id, doc_id, version, title, body, commit_id,
                  author_kind, author_member, accepted_by, at)
@@ -216,6 +242,39 @@ impl Workspace {
         self.changed(transaction, versioned, attribution.accepted_by())
             .await
     }
+}
+
+/// The bytes a revision of `text` counts: its title, body, commit and pins, and its rows.
+fn size(text: &DocText) -> i64 {
+    let anchors = text.anchors();
+    let commit = anchors.map_or(0, |anchors| anchors.commit.as_str().len());
+    let pins: usize = anchors
+        .iter()
+        .flat_map(|anchors| &anchors.pins)
+        .map(|pin| pin.as_str().len())
+        .sum();
+    let size = REVISION_OVERHEAD + text.title().as_str().len() + text.body().len() + commit + pins;
+    i64::try_from(size).unwrap_or(i64::MAX)
+}
+
+/// Fills the workspace's quota, for tests of what a full one answers.
+#[cfg(test)]
+impl Workspace {
+    pub(crate) async fn fill_doc_quota(&self) {
+        sqlx::query("UPDATE workspaces SET doc_bytes = ? WHERE workspace_id = ?")
+            .bind(DOC_QUOTA)
+            .bind(self.id.as_str())
+            .execute(&self.db.writer)
+            .await
+            .unwrap();
+    }
+}
+
+fn quota_full() -> Fault {
+    Fault::new(
+        code!("doc.quota_full"),
+        "The workspace has no room left for docs",
+    )
 }
 
 fn doc_not_found() -> Fault {
@@ -257,7 +316,9 @@ mod tests {
     use weacon_testing::TempDir;
 
     use super::*;
-    use crate::test_support::{member_id, two_teams};
+    use crate::db::Db;
+    use crate::db::schema::database_before;
+    use crate::test_support::{member_id, two_teams, workspace_id};
 
     const NOW: i64 = 1_762_077_600;
 
@@ -525,5 +586,111 @@ mod tests {
 
         assert_eq!(code(&unpinned), "db.unreadable");
         assert_eq!(code(&robot), "db.unreadable");
+    }
+
+    async fn doc_bytes(workspace: &Workspace) -> i64 {
+        sqlx::query_scalar("SELECT doc_bytes FROM workspaces WHERE workspace_id = ?")
+            .bind(workspace.id.as_str())
+            .fetch_one(&workspace.db.readers)
+            .await
+            .unwrap()
+    }
+
+    async fn set_doc_bytes(workspace: &Workspace, bytes: i64) {
+        sqlx::query("UPDATE workspaces SET doc_bytes = ? WHERE workspace_id = ?")
+            .bind(bytes)
+            .bind(workspace.id.as_str())
+            .execute(&workspace.db.writer)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn each_revision_counts_its_bytes_and_its_rows_toward_the_quota() {
+        let dir = TempDir::new().unwrap();
+        let (one, two) = two_teams(&dir).await;
+        one.add_doc(&Doc::new(doc_id("d1"), linked()), &by("m1"))
+            .await
+            .unwrap();
+        one.add_doc(&new_doc("d2", "Two"), &by("m1")).await.unwrap();
+
+        let pinned = 256
+            + "Framing".len()
+            + "See [a](sym:a) and [b](area:b).".len()
+            + 40
+            + "sym:a#0123456789abcdef".len()
+            + "area:b#0123456789abcdef".len();
+        let plain = 256 + "Two".len() + "Plain.".len();
+        assert_eq!(
+            doc_bytes(&one).await,
+            i64::try_from(pinned + plain).unwrap()
+        );
+        assert_eq!(doc_bytes(&two).await, 0);
+    }
+
+    #[tokio::test]
+    async fn a_full_workspace_keeps_its_docs_readable_but_takes_no_more() {
+        let dir = TempDir::new().unwrap();
+        let (one, two) = two_teams(&dir).await;
+        let first = new_doc("d1", "Framing");
+        one.add_doc(&first, &by("m1")).await.unwrap();
+        let next = linked();
+        set_doc_bytes(&one, DOC_QUOTA - size(&next)).await;
+
+        let fits = one
+            .revise_doc(&first.id, Revision::FIRST, next, &by("m1"))
+            .await
+            .unwrap();
+        let revised = one
+            .revise_doc(
+                &first.id,
+                fits.version,
+                text("More", "More.", &[]),
+                &by("m1"),
+            )
+            .await
+            .unwrap_err();
+        let made = one
+            .add_doc(&new_doc("d2", "Two"), &by("m1"))
+            .await
+            .unwrap_err();
+
+        assert_eq!(code(&revised), "doc.quota_full");
+        assert_eq!(code(&made), "doc.quota_full");
+        assert_eq!(doc_bytes(&one).await, DOC_QUOTA);
+        assert_eq!(one.doc(&first.id, None).await.unwrap(), fits);
+        assert_eq!(one.docs().await.unwrap(), [summary(&fits)]);
+        assert_eq!(one.doc_history(&first.id, 10).await.unwrap().len(), 2);
+        assert_eq!(one.changes_since(0, 10).await.unwrap().len(), 2);
+        two.add_doc(&new_doc("d2", "Two"), &by("m2")).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn revisions_from_before_the_quota_count_as_the_server_counts_them() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.join("weacon.db");
+        let rows = format!(
+            "INSERT INTO workspaces VALUES ('w1', 'One');
+             INSERT INTO accounts (account_id, email) VALUES ('a1', 'ada@example.com');
+             INSERT INTO members (workspace_id, member_id, email, account_id)
+                 VALUES ('w1', 'm1', 'ada@example.com', 'a1');
+             INSERT INTO docs VALUES ('w1', 'd1', 1), ('w1', 'd2', 1);
+             INSERT INTO doc_versions VALUES
+                 ('w1', 'd1', 1, 'Framing', 'See [a](sym:a) and [b](area:b).', '{commit}',
+                  'person', 'm1', 'm1', 0),
+                 ('w1', 'd2', 1, 'Ünïcode', 'Plain.', NULL, 'person', 'm1', 'm1', 0);
+             INSERT INTO doc_pins VALUES
+                 ('w1', 'd1', 1, 0, 'sym:a#0123456789abcdef'),
+                 ('w1', 'd1', 1, 1, 'area:b#0123456789abcdef');
+             ",
+            commit = "c".repeat(40),
+        );
+        database_before(&path, "ADD COLUMN doc_bytes", &rows).await;
+
+        let db = Db::open(&path).await.unwrap();
+        let one = db.workspace(&workspace_id("w1")).await.unwrap();
+
+        let unicode = text("Ünïcode", "Plain.", &[]);
+        assert_eq!(doc_bytes(&one).await, size(&linked()) + size(&unicode));
     }
 }

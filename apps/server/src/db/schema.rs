@@ -237,6 +237,45 @@ SELECT workspace_id, seq, kind, member_id, task_id, task_version FROM changes;
 DROP TABLE changes;
 ALTER TABLE changes_with_docs RENAME TO changes;
 ",
+    // Machines paired with an account, and the pairings under way. A confirmed pairing names
+    // its account and machine, and stays until it expires so that its core may claim again.
+    "
+CREATE TABLE machines (
+    machine_id TEXT PRIMARY KEY,
+    account_id TEXT NOT NULL REFERENCES accounts (account_id),
+    name TEXT NOT NULL,
+    os TEXT NOT NULL,
+    machine_key TEXT NOT NULL,
+    token_hash BLOB NOT NULL UNIQUE,
+    paired_at INTEGER NOT NULL
+) STRICT;
+
+CREATE TABLE pairings (
+    pairing_id TEXT PRIMARY KEY,
+    code_hash BLOB NOT NULL UNIQUE,
+    secret_hash BLOB NOT NULL,
+    name TEXT NOT NULL,
+    os TEXT NOT NULL,
+    machine_key TEXT NOT NULL,
+    expires_at INTEGER NOT NULL,
+    account_id TEXT REFERENCES accounts (account_id),
+    machine_id TEXT,
+    confirmed_at INTEGER,
+    claimed INTEGER NOT NULL DEFAULT 0
+) STRICT;
+",
+    // The bytes of doc revisions each workspace holds, which its quota bounds. Each revision
+    // also counts 256 bytes for its rows, as `db::docs` counts them.
+    "
+ALTER TABLE workspaces ADD COLUMN doc_bytes INTEGER NOT NULL DEFAULT 0;
+
+UPDATE workspaces SET doc_bytes =
+    (SELECT COALESCE(SUM(256 + length(CAST(title AS BLOB)) + length(CAST(body AS BLOB))
+         + COALESCE(length(commit_id), 0)), 0)
+     FROM doc_versions WHERE doc_versions.workspace_id = workspaces.workspace_id)
+    + (SELECT COALESCE(SUM(length(pin)), 0)
+       FROM doc_pins WHERE doc_pins.workspace_id = workspaces.workspace_id);
+",
 ];
 
 /// Applies the steps the database hasn't had yet, each in its own transaction that holds the
@@ -267,6 +306,29 @@ pub(super) async fn migrate(writer: &SqlitePool) -> Result<(), Fault> {
             .map_err(failed)?;
         transaction.commit().await.map_err(failed)?;
     }
+}
+
+/// Makes a database at `path` from before the first step that contains `marker`, holding
+/// `rows`, for tests of what that step and the ones after it do to existing data.
+#[cfg(test)]
+pub(super) async fn database_before(path: &std::path::Path, marker: &str, rows: &str) {
+    use sqlx::ConnectOptions;
+
+    let mut old = sqlx::sqlite::SqliteConnectOptions::new()
+        .filename(path)
+        .create_if_missing(true)
+        .connect()
+        .await
+        .unwrap();
+    let before = STEPS.iter().position(|step| step.contains(marker)).unwrap();
+    for step in &STEPS[..before] {
+        sqlx::raw_sql(*step).execute(&mut old).await.unwrap();
+    }
+    let rows = format!("{rows}; PRAGMA user_version = {before};");
+    sqlx::raw_sql(AssertSqlSafe(rows))
+        .execute(&mut old)
+        .await
+        .unwrap();
 }
 
 fn too_new() -> Fault {
@@ -314,7 +376,13 @@ mod tests {
             .unwrap()
     }
 
-    const SERVER_WIDE: [&str; 3] = ["accounts", "sign_in_challenges", "sessions"];
+    const SERVER_WIDE: [&str; 5] = [
+        "accounts",
+        "sign_in_challenges",
+        "sessions",
+        "machines",
+        "pairings",
+    ];
 
     async fn tables(db: &Db) -> Vec<String> {
         sqlx::query_scalar(
@@ -344,7 +412,9 @@ mod tests {
                 "docs",
                 "doc_versions",
                 "doc_pins",
-                "changes"
+                "changes",
+                "machines",
+                "pairings"
             ]
         );
         for table in SERVER_WIDE {

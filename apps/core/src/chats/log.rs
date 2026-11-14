@@ -232,7 +232,7 @@ impl Log {
             (earlier, action),
             (
                 Some(ChatEvent::Prompt { text: was_text, repo: was_repo, .. }),
-                ChatAction::Prompt { text, repo },
+                ChatAction::Prompt { text, repo, .. },
             ) if was_text == *text && was_repo == *repo
         );
         Ok(match (same, asked.receipted) {
@@ -364,6 +364,7 @@ mod tests {
         ChatAction::Prompt {
             text: text.to_owned(),
             repo: None,
+            machine: None,
         }
     }
 
@@ -609,6 +610,7 @@ mod tests {
         let elsewhere = ChatAction::Prompt {
             text: "Hi".to_owned(),
             repo: Some(RepoId::try_from("site".to_owned()).unwrap()),
+            machine: None,
         };
         assert_eq!(seen(&log, "r-1", elsewhere).await, Seen::Other);
         assert_eq!(seen(&log, "r-1", ChatAction::Interrupt).await, Seen::Other);
