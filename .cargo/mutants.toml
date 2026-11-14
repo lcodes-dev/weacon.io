@@ -6,7 +6,7 @@
 # A `Lines::next` that always returns a line never ends, so every reader spins instead of failing.
 # Windows and macOS code isn't built on Linux, where mutation tests run; the Windows CI job
 # tests the Windows code.
-exclude_globs = ["**/platform/windows.rs", "**/platform/pty/windows.rs", "**/platform/pty/macos.rs"]
+exclude_globs = ["**/platform/windows.rs", "**/platform/pty/windows.rs", "**/platform/pty/windows/*.rs", "**/platform/pty/macos.rs"]
 exclude_re = [
     "replace emit with \\(\\)",
     "replace <impl Write for RotatingFile>::flush",
