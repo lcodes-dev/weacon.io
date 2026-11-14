@@ -3,6 +3,7 @@
 use std::collections::BTreeSet;
 use std::path::Path;
 
+use syn::buffer::{Cursor, TokenBuffer};
 use syn::visit::{self, Visit};
 use syn::{Attribute, Ident, ItemFn, ItemMod, ItemUse, Macro, Meta, UseTree};
 
@@ -104,7 +105,6 @@ fn names_os(arguments: &str) -> bool {
 }
 
 /// What a file's code refers to outside `#[cfg(test)]` modules, functions and `use`s.
-/// Macro bodies other than `cfg!` aren't seen.
 #[derive(Default)]
 struct Uses {
     /// The first segment of every `use` and of every path with two or more segments.
@@ -131,6 +131,40 @@ impl Uses {
             self.std_modules.insert(module.to_string());
         }
         self.roots.insert(root);
+    }
+
+    /// Notes the paths in a macro's tokens, which `syn` leaves unparsed.
+    fn note_tokens(&mut self, mut cursor: Cursor<'_>) {
+        let mut path = Vec::new();
+        let mut colons = 0;
+        while let Some((_, next)) = cursor.token_tree() {
+            if let Some((ident, _)) = cursor.ident() {
+                if colons != 2 {
+                    self.note_path(&mut path);
+                }
+                path.push(ident);
+                colons = 0;
+            } else if let Some((punct, _)) = cursor.punct()
+                && punct.as_char() == ':'
+            {
+                colons += 1;
+            } else {
+                self.note_path(&mut path);
+                colons = 0;
+                if let Some((inside, ..)) = cursor.any_group() {
+                    self.note_tokens(inside);
+                }
+            }
+            cursor = next;
+        }
+        self.note_path(&mut path);
+    }
+
+    fn note_path(&mut self, path: &mut Vec<Ident>) {
+        if path.len() > 1 {
+            self.note(path.iter());
+        }
+        path.clear();
     }
 
     fn note_tree(&mut self, tree: &UseTree, prefix: &mut Vec<Ident>) {
@@ -201,6 +235,7 @@ impl<'ast> Visit<'ast> for Uses {
         if mac.path.is_ident("cfg") {
             self.os_cfg |= names_os(&mac.tokens.to_string());
         }
+        self.note_tokens(TokenBuffer::new2(mac.tokens.clone()).begin());
         visit::visit_macro(self, mac);
     }
 }
@@ -258,6 +293,27 @@ mod tests {
                 "mod spawn { use std::process::Child; }",
                 vec![io("process")],
             ),
+            (
+                "fn home() -> String { format!(\"{:?}\", std::env::var(\"HOME\")) }",
+                vec![io("env")],
+            ),
+            (
+                "fn all() -> Vec<u8> { vec![std::fs::read(\"x\").map(|_| 0).unwrap_or(1)] }",
+                vec![io("fs")],
+            ),
+            (
+                "fn check() { assert!(matches!(Some(1), Some(_)), \"{}\", { std::process::id() }); }",
+                vec![io("process")],
+            ),
+            (
+                "fn f() { assert!(std :: net :: Ipv4Addr::LOCALHOST.is_loopback()); }",
+                vec![io("net")],
+            ),
+            (
+                "fn f() -> String { format!(\"std::fs {}\", std::fmt::Error) }",
+                vec![],
+            ),
+            ("fn f() { let x: fs::File; m!(std: fs::File); }", vec![]),
             ("// std::process in a comment", vec![]),
             ("#[cfg(test)]\nuse std::net::TcpStream;", vec![]),
             (
