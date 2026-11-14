@@ -9,11 +9,14 @@ mod doc;
 mod frame;
 mod log;
 mod machine;
+mod mcp;
 mod message;
 mod pick;
+mod proposal;
 mod receipt;
 mod repo;
 mod run;
+mod sessions;
 mod settings;
 mod task;
 mod team;
@@ -45,13 +48,21 @@ pub use machine::{
     MachineId, MachineKey, MachineList, MachineName, MachineOs, MachineSummary, PairClaim,
     PairClaimed, PairConfirm, PairLookup, PairPending, PairStart, PairStarted, PairingId,
 };
+pub use mcp::{MapArgs, McpCall, SymbolArgs};
 pub use message::{App, Envelope, ErrorBody, Hello, Message, PROTOCOL, Welcome};
 pub use pick::Pick;
+pub use proposal::{
+    MergeHunk, ProposalAbout, ProposalAction, ProposalChange, ProposalCommand, ProposalDecision,
+    ProposalId, ProposalList, ProposalOutcome, ProposalRecord, ProposalState, ProposalVerdict,
+};
 pub use receipt::{Outcome, Receipt, RequestId};
 pub use repo::RepoId;
 pub use run::{
     AgentKind, AgentOwner, AgentRef, AgentSession, PermissionAnswer, RunEvent, RunId, RunState,
     RunStatus, RunUpdate,
+};
+pub use sessions::{
+    OutsideSession, SessionsAnswer, SessionsAnswerKind, SessionsQuery, SessionsQueryKind,
 };
 pub use settings::{
     AgentSignIn, MachineSettings, MachineSettingsAction, MachineSettingsAnswer,
@@ -126,6 +137,9 @@ mod tests {
         generator.subschema_for::<DocRecord>();
         generator.subschema_for::<DocRevise>();
         generator.subschema_for::<DocHistory>();
+        generator.subschema_for::<ProposalList>();
+        generator.subschema_for::<ProposalDecision>();
+        generator.subschema_for::<ProposalOutcome>();
         generator.subschema_for::<ReleaseManifest>();
         generator.subschema_for::<TerminalInput>();
         generator.subschema_for::<TerminalOutput>();
