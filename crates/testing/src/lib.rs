@@ -1,5 +1,6 @@
 //! Test helpers for Weacon's crates.
 
+mod fake_chat;
 pub mod fake_core;
 mod fake_diff;
 pub mod fake_server;

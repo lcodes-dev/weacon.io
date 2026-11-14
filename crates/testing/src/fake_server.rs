@@ -3,9 +3,10 @@
 //! answers its diff queries with a made-up change of 40 files.
 
 use std::path::Path;
+use std::sync::Mutex;
 use std::time::Duration;
 
-use futures_util::{SinkExt, Stream, StreamExt};
+use futures_util::{Sink, SinkExt, Stream, StreamExt};
 use tokio::fs::OpenOptions;
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader, duplex};
 use tokio::sync::mpsc::{UnboundedSender, unbounded_channel};
@@ -14,6 +15,7 @@ use weacon_protocol::{
     Capability, ChatAction, ChatCommand, Envelope, Message, Outcome, Receipt, code,
 };
 
+use crate::fake_chat::FakeChat;
 use crate::{BUFFER, fake_core, fake_diff, play};
 
 /// Plays `recording` to the client on `stream`, waiting `pace` after each message, and appends
@@ -36,9 +38,10 @@ pub async fn serve(
     let hello = next_text(&mut frames)
         .await?
         .ok_or("the client left before its hello")?;
-    let offered: [Capability; 3] = [
+    let offered: [Capability; 4] = [
         code!("log.forward").into(),
         code!("chat.send").into(),
+        code!("chat.events").into(),
         code!("diff.view").into(),
     ];
     let answer = fake_core::answer(&hello, &offered)?;
@@ -49,25 +52,26 @@ pub async fn serve(
     if !welcomed {
         return Err("the client speaks another protocol".to_owned());
     }
+    let chat = Mutex::new(FakeChat::new()?);
     // Sending stops at the first failure, such as the client leaving mid-stream.
     let (played, lines) = duplex(BUFFER);
     let mut lines = BufReader::new(lines).lines();
     let (replies, mut answered) = unbounded_channel();
     let forward = async {
         loop {
-            let text = tokio::select! {
-                Ok(Some(line)) = lines.next_line() => line,
-                Some(reply) = answered.recv() => reply,
+            let texts = tokio::select! {
+                Ok(Some(line)) = lines.next_line() => with_chat(&chat, line),
+                Some(reply) = answered.recv() => vec![reply],
                 else => break,
             };
-            if sink.send(Frame::text(text)).await.is_err() {
+            if send_each(&mut sink, texts).await.is_err() {
                 break;
             }
         }
     };
     let play = play(recording, BufReader::new(tokio::io::empty()), played, pace);
     let sending = async { drop(tokio::join!(play, forward)) };
-    let keeping = keep(&mut frames, received, replies);
+    let keeping = keep(&mut frames, received, &chat, replies);
     tokio::pin!(keeping);
     tokio::select! {
         kept = &mut keeping => kept,
@@ -80,6 +84,7 @@ pub async fn serve(
 async fn keep(
     frames: &mut (impl Stream<Item = tungstenite::Result<Frame>> + Unpin),
     received: &Path,
+    chat: &Mutex<FakeChat>,
     replies: UnboundedSender<String>,
 ) -> Result<(), String> {
     let mut file = OpenOptions::new()
@@ -94,7 +99,7 @@ async fn keep(
             .map_err(|error| error.to_string())?;
         // Tokio's file writes in the background; a reader may look at any moment.
         file.flush().await.map_err(|error| error.to_string())?;
-        for reply in replies_to(&text) {
+        for reply in replies_to(&text, chat) {
             // This fails only once `serve` is done with the client.
             drop(replies.send(reply));
         }
@@ -102,8 +107,31 @@ async fn keep(
     Ok(())
 }
 
-// What answers `text`: a receipt that accepts a prompt, or the answers to a diff query.
-fn replies_to(text: &str) -> Vec<String> {
+// A played line, and what tells the client the chat committed it.
+fn with_chat(chat: &Mutex<FakeChat>, line: String) -> Vec<String> {
+    let told = Envelope::from_json(line.as_bytes())
+        .ok()
+        .zip(chat.lock().ok())
+        .map(|(envelope, mut chat)| chat.played(&envelope))
+        .unwrap_or_default();
+    std::iter::once(line)
+        .chain(told.iter().filter_map(|told| fake_core::text(told).ok()))
+        .collect()
+}
+
+async fn send_each<S: Sink<Frame> + Unpin>(
+    sink: &mut S,
+    texts: Vec<String>,
+) -> Result<(), S::Error> {
+    for text in texts {
+        sink.send(Frame::text(text)).await?;
+    }
+    Ok(())
+}
+
+// What answers `text`: a receipt that accepts a prompt, the answers to a diff query, and what
+// the chat says to a query or a command.
+fn replies_to(text: &str, chat: &Mutex<FakeChat>) -> Vec<String> {
     let Ok(envelope) = Envelope::from_json(text.as_bytes()) else {
         return Vec::new();
     };
@@ -123,8 +151,13 @@ fn replies_to(text: &str) -> Vec<String> {
     } else {
         fake_diff::answers(&envelope)
     };
+    let told = chat
+        .lock()
+        .map(|mut chat| chat.answer(&envelope))
+        .unwrap_or_default();
     replies
         .iter()
+        .chain(&told)
         .filter_map(|reply| fake_core::text(reply).ok())
         .collect()
 }
@@ -212,10 +245,56 @@ mod tests {
         assert_eq!(welcome[0]["type"], "welcome");
         assert_eq!(
             welcome[0]["capabilities"],
-            json!(["run.stream", "log.forward", "chat.send", "diff.view"])
+            json!([
+                "run.stream",
+                "log.forward",
+                "chat.send",
+                "chat.events",
+                "diff.view"
+            ])
         );
         assert_eq!(streamed, expected);
         assert_eq!(fs::read_to_string(&received).unwrap(), format!("{log}\n"));
+    }
+
+    #[tokio::test]
+    async fn a_subscribed_client_hears_the_chat_commit_what_plays_and_what_it_asks() {
+        let dir = TempDir::new().unwrap();
+        let recording = recording(SESSION, 1).unwrap();
+        let (mut client, served) = start(recording, dir.join("received.jsonl")).await;
+        client
+            .send(hello(1, &["run.stream", "chat.events"]))
+            .await
+            .unwrap();
+        texts(&mut client, 1).await;
+        let subscribe = json!({ "id": 7, "type": "chat_query", "workspace": "w-1", "chat": "c-1",
+                                "query": { "kind": "subscribe", "after": 0 } });
+        client
+            .send(Frame::text(subscribe.to_string()))
+            .await
+            .unwrap();
+        let mut seen = Vec::new();
+        let played = |text: &Value| {
+            let update = &text["entry"]["event"]["update"];
+            update["run"] == "r-1" && update["event"]["event"] == "text"
+        };
+        while !seen.iter().any(played) {
+            seen.extend(texts(&mut client, 1).await);
+        }
+        client.close(None).await.unwrap();
+        served.await.unwrap().unwrap();
+
+        let updates: Vec<_> = seen.iter().filter(|text| text["type"] == "chat").collect();
+        assert!(updates.iter().all(|update| update["id"] == 7));
+        let seqs: Vec<_> = updates
+            .iter()
+            .map(|update| update["entry"]["seq"].as_u64().unwrap())
+            .collect();
+        assert_eq!(
+            seqs,
+            (1..=u64::try_from(seqs.len()).unwrap()).collect::<Vec<_>>()
+        );
+        assert!(seqs.len() > 5);
     }
 
     #[tokio::test]
