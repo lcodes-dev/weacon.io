@@ -287,6 +287,7 @@ mod tests {
                 config_dir: dir.join("workspaces/w-w1/claude"),
                 cwd: PathBuf::from("/work"),
                 access: AccessLevel::AskFirst,
+                mcp: None,
             }
         );
         assert_eq!(codex.program, program(&dir, "codex"));
