@@ -1,17 +1,15 @@
 use sqlx::SqliteConnection;
 use weacon_observability::Fault;
-use weacon_protocol::{ChatId, MemberId, RequestId};
+use weacon_protocol::{ChatCommand, ChatId, MemberId};
 
-use super::super::{Workspace, failed, stored};
+use super::super::{Workspace, failed, unreadable};
+use super::unstorable;
 
-/// A command a member sent a chat, as the ledger keeps it.
+/// A command a member sent a chat, as it is relayed, with `by` stamped.
 #[derive(Debug)]
 pub(crate) struct NewRequest<'a> {
-    pub(crate) id: &'a RequestId,
-    pub(crate) chat: &'a ChatId,
+    pub(crate) command: &'a ChatCommand,
     pub(crate) member: &'a MemberId,
-    /// Tells a retry from another command under the same id.
-    pub(crate) action_hash: &'a [u8],
     pub(crate) at: i64,
 }
 
@@ -36,12 +34,11 @@ impl Workspace {
             .begin_with("BEGIN IMMEDIATE")
             .await
             .map_err(failed)?;
-        let earlier = sqlx::query_as::<_, (String, Vec<u8>, i64)>(
-            "SELECT chat_id, action_hash, open FROM chat_requests
-             WHERE workspace_id = ? AND request_id = ?",
+        let earlier = sqlx::query_as::<_, (String, i64)>(
+            "SELECT command, open FROM chat_requests WHERE workspace_id = ? AND request_id = ?",
         )
         .bind(self.id.as_str())
-        .bind(request.id.as_str())
+        .bind(request.command.request.as_str())
         .fetch_optional(&mut *transaction)
         .await
         .map_err(failed)?;
@@ -50,19 +47,25 @@ impl Workspace {
                 self.insert_request(&mut transaction, request).await?;
                 Recorded::New
             }
-            Some((chat, hash, open))
-                if chat == request.chat.as_str() && hash == request.action_hash =>
-            {
-                Recorded::Same { open: open != 0 }
+            Some((earlier, open)) => {
+                let earlier = stored_command(&earlier)?;
+                let asked = request.command;
+                if earlier.chat == asked.chat && earlier.action == asked.action {
+                    Recorded::Same { open: open != 0 }
+                } else {
+                    Recorded::Conflict
+                }
             }
-            Some(_) => Recorded::Conflict,
         };
         transaction.commit().await.map_err(failed)?;
         Ok(recorded)
     }
 
     /// Closes `request`, whose receipt ended it.
-    pub(crate) async fn end_request(&self, request: &RequestId) -> Result<(), Fault> {
+    pub(crate) async fn end_request(
+        &self,
+        request: &weacon_protocol::RequestId,
+    ) -> Result<(), Fault> {
         sqlx::query("UPDATE chat_requests SET open = 0 WHERE workspace_id = ? AND request_id = ?")
             .bind(self.id.as_str())
             .bind(request.as_str())
@@ -72,13 +75,13 @@ impl Workspace {
         Ok(())
     }
 
-    /// The requests to `chat` no receipt has ended yet, oldest first, with when each was sent.
+    /// The commands to `chat` no receipt has ended yet, oldest first, with when each was sent.
     pub(crate) async fn open_requests(
         &self,
         chat: &ChatId,
-    ) -> Result<Vec<(RequestId, i64)>, Fault> {
+    ) -> Result<Vec<(ChatCommand, i64)>, Fault> {
         sqlx::query_as::<_, (String, i64)>(
-            "SELECT request_id, sent_at FROM chat_requests
+            "SELECT command, sent_at FROM chat_requests
              WHERE workspace_id = ? AND chat_id = ? AND open = 1 ORDER BY sent_at, rowid",
         )
         .bind(self.id.as_str())
@@ -87,7 +90,7 @@ impl Workspace {
         .await
         .map_err(failed)?
         .into_iter()
-        .map(|(id, sent_at)| Ok((stored(id)?, sent_at)))
+        .map(|(command, sent_at)| Ok((stored_command(&command)?, sent_at)))
         .collect()
     }
 
@@ -98,14 +101,14 @@ impl Workspace {
     ) -> Result<(), Fault> {
         sqlx::query(
             "INSERT INTO chat_requests
-                 (workspace_id, request_id, chat_id, member_id, action_hash, sent_at)
+                 (workspace_id, request_id, chat_id, member_id, command, sent_at)
              VALUES (?, ?, ?, ?, ?, ?)",
         )
         .bind(self.id.as_str())
-        .bind(request.id.as_str())
-        .bind(request.chat.as_str())
+        .bind(request.command.request.as_str())
+        .bind(request.command.chat.as_str())
         .bind(request.member.as_str())
-        .bind(request.action_hash)
+        .bind(serde_json::to_string(request.command).map_err(|_| unstorable())?)
         .bind(request.at)
         .execute(transaction)
         .await
@@ -114,35 +117,37 @@ impl Workspace {
     }
 }
 
+fn stored_command(json: &str) -> Result<ChatCommand, Fault> {
+    serde_json::from_str(json).map_err(|_| unreadable())
+}
+
 #[cfg(test)]
 mod tests {
     use weacon_testing::TempDir;
 
-    use super::super::test_support::{NOW, id, make};
+    use super::super::test_support::{NOW, command, id, make};
     use super::*;
     use crate::test_support::{member_id, two_teams};
 
     async fn record(
         workspace: &Workspace,
         request: &str,
-        chat: &ChatId,
-        hash: &[u8],
+        chat: &str,
+        text: &str,
         at: i64,
     ) -> Recorded {
-        let (request, member) = (id::<RequestId>(request), member_id("m1"));
+        let (command, member) = (command(request, chat, text), member_id("m1"));
         let new = NewRequest {
-            id: &request,
-            chat,
+            command: &command,
             member: &member,
-            action_hash: hash,
             at,
         };
         workspace.record_request(&new).await.unwrap()
     }
 
-    fn opened(list: Vec<(RequestId, i64)>) -> Vec<(String, i64)> {
+    fn opened(list: Vec<(ChatCommand, i64)>) -> Vec<(String, i64)> {
         list.into_iter()
-            .map(|(request, at)| (request.as_str().to_owned(), at))
+            .map(|(command, at)| (command.request.as_str().to_owned(), at))
             .collect()
     }
 
@@ -153,23 +158,23 @@ mod tests {
         make(&one, "c-1", "m1", NOW).await.unwrap();
         make(&one, "c-2", "m1", NOW).await.unwrap();
         make(&two, "c-1", "m2", NOW).await.unwrap();
-        let (chat, other) = (id::<ChatId>("c-1"), id::<ChatId>("c-2"));
+        let chat = id::<ChatId>("c-1");
         assert_eq!(
-            record(&one, "r-1", &chat, b"h1", NOW + 2).await,
+            record(&one, "r-1", "c-1", "Go", NOW + 2).await,
             Recorded::New
         );
         assert_eq!(
-            record(&one, "r-2", &chat, b"h2", NOW + 1).await,
+            record(&one, "r-2", "c-1", "Stop", NOW + 1).await,
             Recorded::New
         );
         let same = Recorded::Same { open: true };
-        assert_eq!(record(&one, "r-1", &chat, b"h1", NOW + 9).await, same);
+        assert_eq!(record(&one, "r-1", "c-1", "Go", NOW + 9).await, same);
         assert_eq!(
-            record(&one, "r-1", &chat, b"hx", NOW).await,
+            record(&one, "r-1", "c-1", "Other", NOW).await,
             Recorded::Conflict
         );
         assert_eq!(
-            record(&one, "r-1", &other, b"h1", NOW).await,
+            record(&one, "r-1", "c-2", "Go", NOW).await,
             Recorded::Conflict
         );
         let open = opened(one.open_requests(&chat).await.unwrap());
@@ -178,18 +183,16 @@ mod tests {
 
         one.end_request(&id("r-1")).await.unwrap();
         assert_eq!(
-            record(&one, "r-1", &chat, b"h1", NOW).await,
+            record(&one, "r-1", "c-1", "Go", NOW).await,
             Recorded::Same { open: false }
         );
         let open = opened(one.open_requests(&chat).await.unwrap());
         assert_eq!(open.len(), 2);
         assert_eq!(opened(two.open_requests(&chat).await.unwrap()).len(), 1);
-        let member = member_id("m2");
+        let (asked, member) = (command("r-1", "c-1", "Go"), member_id("m2"));
         let elsewhere = NewRequest {
-            id: &id("r-1"),
-            chat: &chat,
+            command: &asked,
             member: &member,
-            action_hash: b"h1",
             at: NOW,
         };
         assert_eq!(two.record_request(&elsewhere).await.unwrap(), Recorded::New);

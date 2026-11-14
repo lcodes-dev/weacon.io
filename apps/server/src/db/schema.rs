@@ -335,7 +335,7 @@ CREATE TABLE chat_requests (
     request_id TEXT NOT NULL,
     chat_id TEXT NOT NULL,
     member_id TEXT NOT NULL,
-    action_hash BLOB NOT NULL,
+    command TEXT NOT NULL,
     sent_at INTEGER NOT NULL,
     open INTEGER NOT NULL DEFAULT 1,
     PRIMARY KEY (workspace_id, request_id),

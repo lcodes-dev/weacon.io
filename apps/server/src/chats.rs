@@ -51,11 +51,10 @@ mod tests {
             machine: &machine,
             at,
         };
+        let asked = crate::db::test_support::command(request.as_str(), chat.as_str(), title);
         let first = NewRequest {
-            id: &request,
-            chat: &chat,
+            command: &asked,
             member: &owner,
-            action_hash: b"h",
             at,
         };
         workspace.add_chat(&new, &first).await.unwrap();

@@ -184,7 +184,9 @@ fn stored_state(text: &str) -> Result<ChatState, Fault> {
 
 #[cfg(test)]
 pub(crate) mod test_support {
-    use weacon_protocol::{ChatEntry, ChatEvent, RequestId, RunEvent, RunId, RunUpdate};
+    use weacon_protocol::{
+        ChatAction, ChatCommand, ChatEntry, ChatEvent, RequestId, RunEvent, RunId, RunUpdate,
+    };
 
     use super::*;
     use crate::test_support::member_id;
@@ -221,14 +223,28 @@ pub(crate) mod test_support {
             machine: &machine,
             at,
         };
+        let asked = command(request.as_str(), chat.as_str(), "Fix the build");
         let first = NewRequest {
-            id: &request,
-            chat: &chat,
+            command: &asked,
             member: &owner,
-            action_hash: b"h0",
             at,
         };
         workspace.add_chat(&new, &first).await
+    }
+
+    /// The prompt `text` to `chat` under `request`, as a member of w1 sent it.
+    pub(crate) fn command(request: &str, chat: &str, text: &str) -> ChatCommand {
+        ChatCommand {
+            request: id(request),
+            workspace: id("w1"),
+            chat: id(chat),
+            action: ChatAction::Prompt {
+                text: text.to_owned(),
+                repo: None,
+                machine: None,
+            },
+            by: None,
+        }
     }
 
     pub(crate) fn said(text: &str) -> ChatEvent {
