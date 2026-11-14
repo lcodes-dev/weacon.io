@@ -16,8 +16,9 @@ use weacon_protocol::{
 };
 
 use crate::auth::{Member, Session};
+use crate::client_log::{ClientLogs, LOG_FORWARD};
 use crate::connections::Place;
-use crate::http::failure;
+use crate::http::{RequestTag, failure};
 use crate::proposals::PROPOSALS;
 use crate::relay::{self, Ask, Refusal, SETTINGS};
 use crate::shared::Shared;
@@ -50,7 +51,7 @@ pub(crate) fn routes() -> Router<Shared> {
 pub(crate) async fn feed(
     State(shared): State<Shared>,
     Query(Since { since }): Query<Since>,
-    Extension(place): Extension<Place>,
+    (Extension(place), Extension(request)): (Extension<Place>, Extension<RequestTag>),
     (member, session): (Member, Session),
     upgrade: WebSocketUpgrade,
 ) -> Response {
@@ -69,6 +70,7 @@ pub(crate) async fn feed(
     let (answer_to, answers) = mpsc::channel(ANSWERS);
     let feed = Feed {
         _place: place,
+        logs: ClientLogs::new(&shared, &member, &request),
         member,
         asker,
         changes,
@@ -86,6 +88,8 @@ pub(crate) async fn feed(
 struct Feed {
     /// The feed's place among the open connections.
     _place: Place,
+    /// The logs the client forwards, if it offered to.
+    logs: ClientLogs,
     member: Member,
     /// Who the feed's client is, for the messages it relays to its machines.
     asker: Asker,
@@ -143,7 +147,7 @@ async fn run(
     feed: &mut Feed,
 ) -> Result<Infallible, Closed> {
     let feed_offer = Capability::from(FEED);
-    let offered = [FEED, TASKS, DOCS, SETTINGS, PROPOSALS]
+    let offered = [FEED, TASKS, DOCS, SETTINGS, PROPOSALS, LOG_FORWARD]
         .map(Capability::from)
         .to_vec();
     let greeted = greet(socket, shared, offered, &feed_offer);
@@ -184,9 +188,15 @@ async fn run(
 async fn received(
     socket: &mut WebSocket,
     shared: &Shared,
-    feed: &Feed,
+    feed: &mut Feed,
     envelope: Envelope,
 ) -> Result<(), Closed> {
+    if let Message::Log(record) = &envelope.message {
+        if feed.hears(LOG_FORWARD) {
+            feed.logs.take(shared, record);
+        }
+        return Ok(());
+    }
     if feed.hears(SETTINGS) && relay::carries(&envelope.message) {
         return relay(socket, shared, feed, envelope).await;
     }
@@ -354,7 +364,7 @@ mod tests {
         };
         assert_eq!(
             welcome.capabilities,
-            [FEED, TASKS, DOCS, SETTINGS, PROPOSALS].map(Capability::from)
+            [FEED, TASKS, DOCS, SETTINGS, PROPOSALS, LOG_FORWARD].map(Capability::from)
         );
         assert_eq!(missed, joined(1, "m1"));
         assert_eq!(live, joined(2, "m2"));
