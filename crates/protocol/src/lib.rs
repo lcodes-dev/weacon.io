@@ -14,6 +14,8 @@ mod receipt;
 mod run;
 mod task;
 mod team;
+#[cfg(test)]
+mod test_support;
 mod token;
 
 pub use access::AccessLevel;
