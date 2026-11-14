@@ -106,7 +106,7 @@ fn unreadable() -> Fault {
 }
 
 // `None` until the person answers; a state folder that is a file holds no answer either.
-pub(crate) fn read(state_dir: &Path) -> Result<Option<bool>, Fault> {
+fn read(state_dir: &Path) -> Result<Option<bool>, Fault> {
     match fs::read(file(state_dir)) {
         Ok(json) => serde_json::from_slice::<Stored>(&json)
             .map(|stored| Some(stored.send))
@@ -126,6 +126,11 @@ pub(crate) fn read(state_dir: &Path) -> Result<Option<bool>, Fault> {
 fn write(state_dir: &Path, send: bool) -> io::Result<()> {
     platform::private_dir(state_dir)?;
     weacon_appkit::write_whole(&file(state_dir), &serde_json::to_vec(&Stored { send })?)
+}
+
+/// The stored answer; one that can't be read counts as none, as `App::start` warned.
+pub(crate) fn current(state_dir: &Path) -> Option<bool> {
+    read(state_dir).unwrap_or(None)
 }
 
 /// Stores the person's answer and applies it to `reporter` at once.
@@ -156,8 +161,7 @@ pub(crate) fn run(app: &App, answer: Option<Answer>, out: &mut impl Write) -> Re
             store(state_dir, send, &app.reporter, &app.log)?;
             Some(send)
         }
-        // `App::start` has already warned about an answer it couldn't read.
-        None => read(state_dir).unwrap_or(None),
+        None => current(state_dir),
     };
     out.write_all(describe(send).as_bytes()).map_err(|error| {
         Fault::new(

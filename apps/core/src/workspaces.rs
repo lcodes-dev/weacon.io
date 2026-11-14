@@ -10,10 +10,9 @@ use std::path::{Path, PathBuf};
 
 use weacon_agents::{Launch, SignIn};
 use weacon_observability::{Fault, Field, Logger};
-use weacon_protocol::{AccessLevel, AgentKind, WorkspaceId, code};
+use weacon_protocol::{AccessLevel, AgentKind, SignInState, WorkspaceId, code};
 
-pub(crate) use access::Settings;
-pub(crate) use access::{parse_level, run as access, store as store_access};
+pub(crate) use access::{Settings, parse_level, run as access, store as store_access};
 
 use crate::app::{App, runtime};
 use crate::platform;
@@ -90,21 +89,17 @@ impl Workspaces {
         sign_ins: impl FnOnce(&[Launch]) -> Vec<Option<SignIn>>,
     ) -> io::Result<String> {
         let known = self.known()?;
-        // One place for each workspace and agent; a program that isn't installed has no launch
-        // to ask, which is the only way the lookup fails for a known agent.
         let places: Vec<Option<Launch>> = known
             .iter()
             .flat_map(|workspace| self.places(workspace).map(|(_, launch)| launch))
             .collect();
         let asked: Vec<Launch> = places.iter().flatten().cloned().collect();
-        let mut answers = sign_ins(&asked).into_iter();
-        let mut states = places.iter().map(|place| match place {
-            Some(_) => state(answers.next().flatten()),
-            None => "not installed",
-        });
+        let mut states = states(&places, sign_ins(&asked)).into_iter();
         let lines = known.iter().map(|workspace| {
-            let agents =
-                AGENTS.map(|(_, name)| format!("{name} {}", states.next().unwrap_or(state(None))));
+            let agents = AGENTS.map(|(_, name)| {
+                let state = states.next().unwrap_or(SignInState::Unknown);
+                format!("{name} {}", state_name(state))
+            });
             let (id, agents) = (workspace.as_str(), agents.join(", "));
             match Settings::read(&self.settings_file(workspace)) {
                 Ok(settings) => {
@@ -222,7 +217,7 @@ fn resolved(path: &Path) -> Option<PathBuf> {
 // for a small machine.
 const AT_ONCE: usize = 8;
 
-// A check that fails is logged here, once, and shows as unknown.
+/// Each launch's sign-in, a few at once; a check that fails is logged here, once, and is `None`.
 pub(crate) async fn sign_ins(log: &Logger, launches: &[Launch]) -> Vec<Option<SignIn>> {
     let failed = |err: Field| log.warn("sign-in check failed", &[("err", err)]);
     let mut answers = Vec::new();
@@ -258,11 +253,28 @@ fn folder_name(workspace: &WorkspaceId) -> String {
     platform::case_safe_name("w-", workspace.as_str())
 }
 
-const fn state(sign_in: Option<SignIn>) -> &'static str {
-    match sign_in {
-        Some(SignIn::SignedIn) => "signed in",
-        Some(SignIn::SignedOut) => "signed out",
-        None => "unknown",
+/// Each place's sign-in, given `answers` for the places that have a launch, in their order.
+pub(crate) fn states(places: &[Option<Launch>], answers: Vec<Option<SignIn>>) -> Vec<SignInState> {
+    let mut answers = answers.into_iter();
+    places
+        .iter()
+        .map(
+            |place| match place.as_ref().map(|_| answers.next().flatten()) {
+                None => SignInState::NotInstalled,
+                Some(Some(SignIn::SignedIn)) => SignInState::SignedIn,
+                Some(Some(SignIn::SignedOut)) => SignInState::SignedOut,
+                Some(None) => SignInState::Unknown,
+            },
+        )
+        .collect()
+}
+
+const fn state_name(state: SignInState) -> &'static str {
+    match state {
+        SignInState::SignedIn => "signed in",
+        SignInState::SignedOut => "signed out",
+        SignInState::NotInstalled => "not installed",
+        SignInState::Unknown | SignInState::Newer => "unknown",
     }
 }
 
@@ -645,5 +657,37 @@ mod tests {
         assert!(started.elapsed() < Duration::from_secs(61));
         assert_eq!(answers, vec![None; AT_ONCE + 1]);
         assert_eq!(test_support::messages(&records).len(), AT_ONCE + 1);
+    }
+
+    #[test]
+    fn each_installed_agent_takes_the_next_answer_in_order() {
+        let dir = TempDir::new().unwrap();
+        let installed = workspaces(&dir)
+            .located(&id("w1"), AgentKind::Claude, dir.to_path_buf())
+            .ok();
+        let places =
+            [&installed, &None, &installed, &installed, &None, &installed].map(Clone::clone);
+        let answers = vec![
+            Some(SignIn::SignedIn),
+            None,
+            Some(SignIn::SignedOut),
+            Some(SignIn::SignedIn),
+        ];
+
+        let shown = states(&places, answers).into_iter().map(state_name);
+
+        assert_eq!(
+            shown.collect::<Vec<_>>(),
+            [
+                "signed in",
+                "not installed",
+                "unknown",
+                "signed out",
+                "not installed",
+                "signed in"
+            ]
+        );
+        assert_eq!(states(&[installed], Vec::new()), [SignInState::Unknown]);
+        assert_eq!(state_name(SignInState::Newer), "unknown");
     }
 }

@@ -7,16 +7,17 @@ use std::sync::Arc;
 use weacon_agents::{Launch, SignIn};
 use weacon_observability::{Fault, Logger, Reporter};
 use weacon_protocol::{
-    AccessLevel, AccountId, AgentSignIn, Asker, MachineId, MachineSettings, MachineSettingsAction,
-    MachineSettingsAnswer, MachineSettingsAnswerKind, MachineSettingsCommand, MachineSettingsQuery,
-    MachineSettingsQueryKind, RequestId, SignInState, WorkspaceId, code,
+    AccessLevel, AccountId, AgentKind, AgentSignIn, Asker, MachineId, MachineSettings,
+    MachineSettingsAction, MachineSettingsAnswer, MachineSettingsAnswerKind,
+    MachineSettingsCommand, MachineSettingsQuery, MachineSettingsQueryKind, RequestId, WorkspaceId,
+    code,
 };
 
-use crate::reports;
-use crate::workspaces::{Settings, Workspaces, sign_ins, store_access};
+use crate::workspaces::{Settings, Workspaces, sign_ins, states, store_access};
+use crate::{app, reports};
 
 /// Who this core is, as pairing made it: the machine and its owner's account.
-pub(crate) struct Owner {
+pub(crate) struct Identity {
     pub(crate) machine: MachineId,
     pub(crate) account: AccountId,
 }
@@ -33,7 +34,7 @@ pub(crate) struct Host {
 /// Answers `query` with the settings as they are, for this machine's owner only.
 pub(crate) async fn query(
     host: &Host,
-    owner: &Owner,
+    owner: &Identity,
     query: MachineSettingsQuery,
 ) -> Result<MachineSettingsAnswer, Fault> {
     allowed(owner, &query.machine, query.by.as_ref())?;
@@ -47,7 +48,7 @@ pub(crate) async fn query(
 /// after the change.
 pub(crate) async fn command(
     host: &Host,
-    owner: &Owner,
+    owner: &Identity,
     command: MachineSettingsCommand,
 ) -> Result<MachineSettingsAnswer, Fault> {
     allowed(owner, &command.machine, command.by.as_ref())?;
@@ -58,8 +59,7 @@ pub(crate) async fn command(
     answer(host, command.request, command.machine, command.workspace).await
 }
 
-// Others' words never reach the settings, and neither does a request meant for another machine.
-fn allowed(owner: &Owner, machine: &MachineId, by: Option<&Asker>) -> Result<(), Fault> {
+fn allowed(owner: &Identity, machine: &MachineId, by: Option<&Asker>) -> Result<(), Fault> {
     if *machine != owner.machine {
         return Err(Fault::new(
             code!("settings.other_machine"),
@@ -82,14 +82,14 @@ fn change(
 ) -> Result<(), Fault> {
     match action {
         MachineSettingsAction::SetReports { send } => {
+            // Settings the answer couldn't then show stop the change before it is made.
+            let workspaces = Workspaces::new(&host.state_dir, None);
+            Settings::read(&workspaces.settings_file(workspace))?;
             reports::store(&host.state_dir, *send, &host.reporter, &host.log)
         }
         MachineSettingsAction::SetAccess { level, team } if *level != AccessLevel::Newer => {
             let workspaces = Workspaces::new(&host.state_dir, None);
-            store_access(&workspaces, workspace, *level, *team)?;
-            host.log
-                .info("access set", &[("workspace_id", workspace.as_str().into())]);
-            Ok(())
+            store_access(&workspaces, workspace, *level, *team, &host.log).map(drop)
         }
         MachineSettingsAction::SetAccess { .. } | MachineSettingsAction::Newer => Err(unknown()),
     }
@@ -103,28 +103,27 @@ async fn answer(
 ) -> Result<MachineSettingsAnswer, Fault> {
     let reading = host.clone();
     let asked = workspace.clone();
-    let (reports, settings, places) = blocking(move || {
+    let (reports, settings, places, known) = blocking(move || {
         let workspaces = Workspaces::new(&reading.state_dir, reading.path.clone());
-        // An answer that can't be read sends nothing; the core warned about it when it started.
-        let reports = reports::read(&reading.state_dir).unwrap_or(None);
+        let reports = reports::current(&reading.state_dir);
         let settings = Settings::read(&workspaces.settings_file(&asked))?;
-        Ok((reports, settings, workspaces.places(&asked)))
+        let known = workspaces.root(&asked).is_dir();
+        Ok((reports, settings, workspaces.places(&asked), known))
     })
     .await?;
-    let launches: Vec<Launch> = places
-        .iter()
-        .filter_map(|(_, launch)| launch.clone())
-        .collect();
-    let mut checked = sign_ins(&host.log, &launches).await.into_iter();
-    let sign_ins = places
-        .iter()
-        .map(|(agent, launch)| AgentSignIn {
-            agent: *agent,
-            state: match launch {
-                Some(_) => state(checked.next().flatten()),
-                None => SignInState::NotInstalled,
-            },
-        })
+    let (agents, launches): (Vec<AgentKind>, Vec<Option<Launch>>) = places.into_iter().unzip();
+    let asked: Vec<Launch> = launches.iter().flatten().cloned().collect();
+    // A workspace this machine has no folder for has no sign-in, and no vendor is run to make one.
+    let answers = if known {
+        sign_ins(&host.log, &asked).await
+    } else {
+        vec![Some(SignIn::SignedOut); asked.len()]
+    };
+    let states = states(&launches, answers);
+    let sign_ins = agents
+        .into_iter()
+        .zip(states)
+        .map(|(agent, state)| AgentSignIn { agent, state })
         .collect();
     Ok(MachineSettingsAnswer {
         request,
@@ -139,19 +138,11 @@ async fn answer(
     })
 }
 
-const fn state(sign_in: Option<SignIn>) -> SignInState {
-    match sign_in {
-        Some(SignIn::SignedIn) => SignInState::SignedIn,
-        Some(SignIn::SignedOut) => SignInState::SignedOut,
-        None => SignInState::Unknown,
-    }
-}
-
 // The settings are small files, but a slow disk still mustn't hold up the runtime.
 async fn blocking<T: Send + 'static>(
     work: impl FnOnce() -> Result<T, Fault> + Send + 'static,
 ) -> Result<T, Fault> {
-    tokio::task::spawn_blocking(work)
+    app::blocking(move || Ok(work()))
         .await
         .unwrap_or_else(|error| {
             Err(Fault::new(
@@ -173,7 +164,7 @@ fn unknown() -> Fault {
 mod tests {
     use std::fs;
 
-    use weacon_protocol::MemberId;
+    use weacon_protocol::{MemberId, SignInState};
     use weacon_testing::TempDir;
 
     use super::*;
@@ -186,8 +177,8 @@ mod tests {
         T::try_from(id.to_owned()).unwrap()
     }
 
-    fn owner() -> Owner {
-        Owner {
+    fn owner() -> Identity {
+        Identity {
             machine: id("mc-1"),
             account: id("a-1"),
         }
@@ -255,8 +246,6 @@ mod tests {
             .to_vec()
     }
 
-    use weacon_protocol::AgentKind;
-
     #[tokio::test]
     async fn the_owner_reads_the_settings_with_nothing_chosen_yet() {
         let dir = TempDir::new().unwrap();
@@ -313,7 +302,7 @@ mod tests {
             assert_eq!(code(read), expected);
             assert_eq!(code(changed), expected);
         }
-        assert_eq!(reports::read(&dir).unwrap(), None);
+        assert_eq!(reports::current(&dir), None);
         assert!(!host.reporter.agreed());
     }
 
@@ -359,7 +348,7 @@ mod tests {
         assert_eq!(off.request.as_str(), "r-2");
         assert_eq!(current(off).reports, Some(false));
         assert!(!host.reporter.agreed());
-        assert_eq!(reports::read(&dir).unwrap(), Some(false));
+        assert_eq!(reports::current(&dir), Some(false));
     }
 
     #[tokio::test]
@@ -391,36 +380,63 @@ mod tests {
         assert!(!dir.join("settings").exists());
     }
 
+    fn set_reports() -> MachineSettingsCommand {
+        told(
+            MachineSettingsAction::SetReports { send: true },
+            "mc-1",
+            Some(by("a-1")),
+        )
+    }
+
     #[tokio::test]
-    async fn settings_that_cant_be_read_or_saved_are_errors() {
+    async fn settings_that_cant_be_read_are_an_error_and_stop_a_change_first() {
         let dir = TempDir::new().unwrap();
         let host = host(&dir, None);
         fs::create_dir_all(dir.join("settings")).unwrap();
         fs::write(dir.join("settings/w-w1.json"), "not json").unwrap();
-        let read = query(
-            &host,
-            &owner(),
-            asked(MachineSettingsQueryKind::Current, "mc-1", Some(by("a-1"))),
-        )
-        .await;
-        fs::create_dir_all(dir.join("reports.json")).unwrap();
-        let unsaved = command(
-            &host,
-            &owner(),
-            told(
-                MachineSettingsAction::SetReports { send: true },
-                "mc-1",
-                Some(by("a-1")),
-            ),
-        )
-        .await;
+        let asking = asked(MachineSettingsQueryKind::Current, "mc-1", Some(by("a-1")));
 
-        assert_eq!(
-            read.unwrap_err().code().as_str(),
-            "workspace.settings_unreadable"
-        );
+        let read = query(&host, &owner(), asking).await;
+        let changed = command(&host, &owner(), set_reports()).await;
+
+        for result in [read, changed] {
+            let code = result.unwrap_err().code().as_str().to_owned();
+            assert_eq!(code, "workspace.settings_unreadable");
+        }
+        assert_eq!(reports::current(&dir), None);
+        assert!(!host.reporter.agreed());
+    }
+
+    #[tokio::test]
+    async fn an_answer_that_cant_be_saved_is_an_error() {
+        let dir = TempDir::new().unwrap();
+        let host = host(&dir, None);
+        fs::create_dir_all(dir.join("reports.json")).unwrap();
+
+        let unsaved = command(&host, &owner(), set_reports()).await;
+
         assert_eq!(unsaved.unwrap_err().code().as_str(), "reports.not_saved");
         assert!(!host.reporter.agreed());
+    }
+
+    #[tokio::test]
+    async fn a_workspace_this_machine_has_no_folder_for_is_signed_out_and_runs_nothing() {
+        let dir = TempDir::new().unwrap();
+        for name in ["claude", "codex"] {
+            platform::plant_program(&dir.join("bin"), name, 0o755);
+        }
+        let host = host(&dir, Some(dir.join("bin").into_os_string()));
+        let asking = asked(MachineSettingsQueryKind::Current, "mc-1", Some(by("a-1")));
+
+        let settings = current(query(&host, &owner(), asking).await.unwrap());
+
+        let states: Vec<_> = settings
+            .sign_ins
+            .iter()
+            .map(|sign_in| sign_in.state)
+            .collect();
+        assert_eq!(states, [SignInState::SignedOut, SignInState::SignedOut]);
+        assert!(!dir.join("workspaces").exists());
     }
 
     #[tokio::test]
@@ -430,6 +446,7 @@ mod tests {
         for name in ["claude", "codex"] {
             platform::plant_program(&dir.join("bin"), name, 0o755);
         }
+        fs::create_dir_all(dir.join("workspaces/w-w1")).unwrap();
         let host = host(&dir, Some(dir.join("bin").into_os_string()));
 
         let settings = current(
@@ -448,12 +465,5 @@ mod tests {
             .map(|sign_in| sign_in.state)
             .collect();
         assert_eq!(states, [SignInState::Unknown, SignInState::Unknown]);
-    }
-
-    #[test]
-    fn sign_ins_travel_as_their_state() {
-        assert_eq!(state(Some(SignIn::SignedIn)), SignInState::SignedIn);
-        assert_eq!(state(Some(SignIn::SignedOut)), SignInState::SignedOut);
-        assert_eq!(state(None), SignInState::Unknown);
     }
 }

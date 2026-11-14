@@ -4,7 +4,7 @@ use std::io::{self, Write};
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
-use weacon_observability::Fault;
+use weacon_observability::{Fault, Logger};
 use weacon_protocol::{AccessLevel, WorkspaceId, code};
 
 use super::Workspaces;
@@ -96,6 +96,7 @@ pub(crate) fn store(
     workspace: &WorkspaceId,
     access: AccessLevel,
     team: Option<bool>,
+    log: &Logger,
 ) -> Result<Settings, Fault> {
     let file = workspaces.settings_file(workspace);
     let team = match team {
@@ -113,6 +114,7 @@ pub(crate) fn store(
         )
         .because(error)
     })?;
+    log.info("access set", &[("workspace_id", workspace.as_str().into())]);
     Ok(settings)
 }
 
@@ -129,9 +131,8 @@ pub(crate) fn run(
         workspace,
         access,
         team,
+        &app.log,
     )?;
-    let ids = [("workspace_id", workspace.as_str().into())];
-    app.log.info("access set", &ids);
     let (id, level, warning) = (workspace.as_str(), settings.level(), settings.warning());
     write!(out, "Workspace {id}: access {level}\n{warning}").map_err(|error| {
         Fault::new(
