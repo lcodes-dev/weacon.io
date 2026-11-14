@@ -256,6 +256,11 @@ mod tests {
         .unwrap()
     }
 
+    // An answer well past a few kilobytes, which is still allowed.
+    fn long() -> Value {
+        json!({ "ok": "x".repeat(32 * 1024) })
+    }
+
     fn error_body(code: Code) -> String {
         serde_json::to_string(&ErrorBody {
             code,
@@ -310,12 +315,7 @@ mod tests {
         let serve = async {
             let mut stream = tls.accept().await.unwrap();
             let request = read_request(&mut stream).await;
-            answer(
-                &mut stream,
-                "201 Created",
-                &json!({ "ok": true }).to_string(),
-            )
-            .await;
+            answer(&mut stream, "201 Created", &long().to_string()).await;
             request
         };
 
@@ -325,7 +325,7 @@ mod tests {
             serve
         );
 
-        assert_eq!(answered.unwrap(), json!({ "ok": true }));
+        assert_eq!(answered.unwrap(), long());
         assert!(
             head.starts_with("POST /api/machines/pair HTTP/1.1"),
             "{head}"

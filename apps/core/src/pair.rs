@@ -193,6 +193,11 @@ mod tests {
         tls::{Tls, answer, nowhere, read_request},
     };
 
+    #[test]
+    fn each_key_is_new() {
+        assert_ne!(random_key().unwrap(), random_key().unwrap());
+    }
+
     fn started() -> PairStarted {
         PairStarted {
             pairing: PairingId::try_from("p-1".to_owned()).unwrap(),

@@ -2,13 +2,18 @@
 
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::Duration;
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
+use tokio::time::timeout;
 use tokio_rustls::TlsAcceptor;
 use tokio_rustls::rustls::ServerConfig;
 use tokio_rustls::rustls::pki_types::{PrivateKeyDer, PrivatePkcs8KeyDer};
 use tokio_rustls::server::TlsStream;
+
+/// How long the server waits for the client, so a client that gave up fails the test.
+const WAIT: Duration = Duration::from_secs(10);
 
 /// A server for `localhost` and the PEM of its certificate, which a client pins.
 pub(crate) struct Tls {
@@ -42,8 +47,11 @@ impl Tls {
 
     /// The next connection after its handshake; `None` when the client gave up on it.
     pub(crate) async fn accept(&self) -> Option<TlsStream<TcpStream>> {
-        let (tcp, _) = self.listener.accept().await.unwrap();
-        self.acceptor.accept(tcp).await.ok()
+        let (tcp, _) = timeout(WAIT, self.listener.accept())
+            .await
+            .unwrap()
+            .unwrap();
+        timeout(WAIT, self.acceptor.accept(tcp)).await.unwrap().ok()
     }
 }
 
@@ -60,7 +68,11 @@ pub(crate) async fn read_request(stream: &mut TlsStream<TcpStream>) -> (String, 
     let mut seen = Vec::new();
     let mut buffer = [0; 4096];
     loop {
-        let read = stream.read(&mut buffer).await.unwrap();
+        let read = timeout(WAIT, stream.read(&mut buffer))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_ne!(read, 0, "the client left before its request ended");
         seen.extend_from_slice(&buffer[..read]);
         let text = String::from_utf8_lossy(&seen).into_owned();
         if let Some((head, body)) = text.split_once("\r\n\r\n") {
@@ -73,7 +85,7 @@ pub(crate) async fn read_request(stream: &mut TlsStream<TcpStream>) -> (String, 
                         .ok()
                 })
                 .unwrap_or(0);
-            if body.len() >= length || read == 0 {
+            if body.len() >= length {
                 return (head.to_owned(), body.to_owned());
             }
         }

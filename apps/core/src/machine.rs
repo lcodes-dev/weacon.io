@@ -130,10 +130,7 @@ pub(crate) fn forget(state_dir: &Path, paired: &Paired) -> Result<(), Fault> {
     if !same {
         return Ok(());
     }
-    match fs::remove_file(file(state_dir)) {
-        Err(error) if error.kind() != io::ErrorKind::NotFound => Err(not_saved().because(error)),
-        _ => Ok(()),
-    }
+    fs::remove_file(file(state_dir)).map_err(|error| not_saved().because(error))
 }
 
 fn unreadable() -> Fault {
@@ -170,7 +167,7 @@ fn bytes(hex: &str) -> Option<[u8; 32]> {
     let bytes: Vec<u8> = digits
         .chunks(2)
         .map(|pair| match pair {
-            [high, low] => Some(high << 4 | low),
+            [high, low] => Some(high * 16 + low),
             _ => None,
         })
         .collect::<Option<_>>()?;
@@ -289,12 +286,16 @@ mod tests {
     #[test]
     fn a_damaged_pairing_is_an_error_not_an_absence() {
         let dir = TempDir::new().unwrap();
+        let folder = TempDir::new().unwrap();
         fs::write(file(&dir), "{").unwrap();
+        fs::create_dir(file(&folder)).unwrap();
 
-        assert_eq!(
-            read(&dir).unwrap_err().code().as_str(),
-            "machine.unreadable"
-        );
+        for state in [&dir, &folder] {
+            assert_eq!(
+                read(state).unwrap_err().code().as_str(),
+                "machine.unreadable"
+            );
+        }
     }
 
     #[test]
