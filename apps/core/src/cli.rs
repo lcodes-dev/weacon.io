@@ -1,6 +1,7 @@
 use std::ffi::OsString;
 use std::path::PathBuf;
 
+use clap::error::ErrorKind;
 use clap::{Args, CommandFactory, FromArgMatches, Parser, Subcommand};
 use weacon_protocol::{AccessLevel, AgentKind, WorkspaceId};
 use weacon_version::Version;
@@ -142,10 +143,19 @@ pub(crate) fn parse<I: IntoIterator<Item = OsString>>(
     args: I,
     version: &Version,
 ) -> Result<Cli, clap::Error> {
-    let matches = Cli::command()
-        .version(version.with_commit())
-        .try_get_matches_from(from_chrome(args.into_iter().collect()))?;
-    Cli::from_arg_matches(&matches)
+    let mut command = Cli::command().version(version.with_commit());
+    let matches = command.try_get_matches_from_mut(from_chrome(args.into_iter().collect()))?;
+    let cli = Cli::from_arg_matches(&matches)?;
+    if let Command::Map(MapCommand {
+        command: Some(MapSubcommand::CheckAnchors),
+        budget: Some(_),
+        ..
+    }) = cli.command
+    {
+        let refused = "only the map and `symbol` take --budget, not check-anchors";
+        return Err(command.error(ErrorKind::ArgumentConflict, refused));
+    }
+    Ok(cli)
 }
 
 // Chrome starts a native host with the extension's origin as its first argument, and on
@@ -164,8 +174,6 @@ fn from_chrome(mut args: Vec<OsString>) -> Vec<OsString> {
 
 #[cfg(test)]
 mod tests {
-    use clap::error::ErrorKind;
-
     use super::*;
     use crate::reports::Answer;
     use crate::test_support::VERSION;
@@ -244,10 +252,13 @@ mod tests {
             map(&["check-anchors", "--root", "/srv"]),
             map_of(check(), "/srv", None)
         );
-        assert_eq!(
-            map(&["--budget", "3", "check-anchors"]),
-            map_of(check(), ".", Some(3))
-        );
+        for args in [
+            ["--budget", "3", "check-anchors"],
+            ["check-anchors", "--budget", "3"],
+        ] {
+            let refused = run(&[["weacon", "map"].as_slice(), &args].concat()).unwrap_err();
+            assert_eq!(refused.kind(), ErrorKind::ArgumentConflict);
+        }
     }
 
     #[test]
