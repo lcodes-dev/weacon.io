@@ -1,7 +1,9 @@
 //! Which of a member's commands to a chat the server passes on to the chat's machine.
 
 use weacon_observability::Fault;
-use weacon_protocol::{Asker, ChatAction, ChatCommand, ChatState, MachineId, RepoId, code};
+use weacon_protocol::{
+    Asker, ChatAction, ChatCommand, ChatState, Envelope, MachineId, Message, RepoId, code,
+};
 
 use crate::db::Chat;
 
@@ -29,6 +31,7 @@ pub(crate) fn admit(
     by: Asker,
     mut command: ChatCommand,
 ) -> Result<Admitted, Fault> {
+    sendable(&command)?;
     let machine = match &mut command.action {
         ChatAction::Prompt { text, machine, .. } => {
             if text.trim().is_empty() {
@@ -61,7 +64,8 @@ pub(crate) fn admit(
     if chat.owner != by.member {
         return Err(not_owner());
     }
-    if machine.is_some() {
+    // A first prompt sent again names the machine its chat is on.
+    if machine.is_some_and(|machine| machine != chat.machine) {
         return Err(Fault::new(
             code!("chat.machine_fixed"),
             "A chat stays on the machine it started on",
@@ -74,6 +78,15 @@ pub(crate) fn admit(
     }
     command.by = Some(by);
     Ok(Admitted::Existing { chat, command })
+}
+
+// A newer client's command this server can't send on would drop the machine's connection.
+fn sendable(command: &ChatCommand) -> Result<(), Fault> {
+    let probe = Envelope {
+        id: 0,
+        message: Message::ChatCommand(command.clone()),
+    };
+    probe.to_json().map(drop).map_err(|_| super::unsupported())
 }
 
 pub(super) fn not_owner() -> Fault {
@@ -135,6 +148,7 @@ mod tests {
             state,
             seq: 3,
             core_seq: 3,
+            made: true,
         }
     }
 
@@ -202,6 +216,12 @@ mod tests {
             refused(Some(open.clone()), "m1", prompt("Go", Some("mc-2"))),
             "chat.machine_fixed"
         );
+        let again = admit(
+            Some(open.clone()),
+            asker("m1"),
+            command(prompt("Go", Some("mc-1"))),
+        );
+        assert!(matches!(again.unwrap(), Admitted::Existing { .. }));
         let later = admit(Some(open), asker("m1"), command(prompt("Go", None)));
         assert!(matches!(later.unwrap(), Admitted::Existing { .. }));
     }
@@ -227,5 +247,12 @@ mod tests {
             refused(None, "m1", ChatAction::Newer),
             "message.unsupported"
         );
+        let newer_agent = ChatAction::Prompt {
+            text: "Go".to_owned(),
+            repo: None,
+            machine: Some(id("mc-1")),
+            agent: Some(weacon_protocol::AgentKind::Newer),
+        };
+        assert_eq!(refused(None, "m1", newer_agent), "message.unsupported");
     }
 }

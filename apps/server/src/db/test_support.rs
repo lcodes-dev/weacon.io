@@ -43,6 +43,22 @@ pub(crate) async fn make_titled(
     title: &str,
     at: i64,
 ) -> Result<(), Fault> {
+    begin_titled(workspace, chat, owner, title, at).await?;
+    workspace.chat_made(&id(chat), &member_id(owner)).await
+}
+
+/// Begins chat `chat` as [`make`] does, its first prompt not yet sent.
+pub(crate) async fn begin(workspace: &Workspace, chat: &str, owner: &str) -> Result<(), Fault> {
+    begin_titled(workspace, chat, owner, "Fix the build", NOW).await
+}
+
+async fn begin_titled(
+    workspace: &Workspace,
+    chat: &str,
+    owner: &str,
+    title: &str,
+    at: i64,
+) -> Result<(), Fault> {
     let request = id::<RequestId>(&format!("r-{chat}"));
     let (chat, owner) = (id::<ChatId>(chat), member_id(owner));
     let (machine_id, machine) = (id::<MachineId>("mc-1"), id::<MachineName>("Ada's laptop"));
@@ -62,8 +78,7 @@ pub(crate) async fn make_titled(
         member: &owner,
         at,
     };
-    workspace.add_chat(&new, &first).await?;
-    workspace.chat_made(&chat, &owner).await
+    workspace.add_chat(&new, &first).await
 }
 
 pub(crate) fn status(state: RunState) -> ChatEvent {
@@ -178,5 +193,21 @@ impl Workspace {
             .execute(&self.db.writer)
             .await
             .unwrap();
+    }
+
+    /// Pairs `machine` to the account of `member`, as its own.
+    pub(crate) async fn pair_for(&self, member: &str, machine: &str) {
+        sqlx::query(
+            "INSERT INTO machines (machine_id, account_id, name, os, machine_key, token_hash,
+                 paired_at)
+             SELECT ?, account_id, 'Made-up machine', 'linux', 'key', randomblob(16), 0
+             FROM members WHERE workspace_id = ? AND member_id = ?",
+        )
+        .bind(machine)
+        .bind(self.id.as_str())
+        .bind(member)
+        .execute(&self.db.writer)
+        .await
+        .unwrap();
     }
 }

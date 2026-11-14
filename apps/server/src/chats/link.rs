@@ -40,7 +40,7 @@ pub(crate) fn follow(
     send(shared, machine, Message::ChatQuery(query))
 }
 
-fn offline() -> Fault {
+pub(super) fn offline() -> Fault {
     Fault::new(
         code!("machine.offline"),
         "The chat's machine isn't connected",

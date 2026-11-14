@@ -1,10 +1,7 @@
 //! A member's command to a chat: checked here, then relayed to the chat's machine.
 
 use weacon_observability::Fault;
-use weacon_protocol::{
-    Asker, ChatCommand, ChatState, MachineSummary, Message, Outcome, Receipt, RepoId, RequestId,
-    code,
-};
+use weacon_protocol::{Asker, ChatCommand, Message, Outcome, Receipt, code};
 
 use super::admit::{Admitted, admit, detached};
 use super::link;
@@ -20,51 +17,62 @@ pub(crate) async fn take(
     shared: &Shared,
     command: ChatCommand,
 ) -> Result<Message, Fault> {
+    let request = command.request.clone();
     let chat = member.workspace.chat(&command.chat).await?;
-    let owned = shared.db.machines_of(&asker.account).await?;
-    let request = match admit(chat, asker.clone(), command)? {
+    match admit(chat, asker.clone(), command)? {
         Admitted::New {
             title,
             machine,
             repo,
             command,
         } => {
+            let owned = shared.db.machines_of(&asker.account).await?;
             let Some(summary) = owned.iter().find(|summary| summary.id == machine) else {
                 return Err(Fault::new(
                     code!("machine.not_found"),
                     "There is no such machine",
                 ));
             };
-            let made = Made {
-                machine: summary,
+            let chat = NewChat {
+                id: &command.chat,
+                owner: &member.id,
                 title: &title,
                 repo: repo.as_ref(),
+                machine_id: &summary.id,
+                machine: &summary.name,
+                at: shared.now(),
             };
-            start(shared, member, &made, command).await?
-        }
-        Admitted::Existing { chat, command } => {
-            if !owned.iter().any(|summary| summary.id == chat.machine) {
-                // A chat whose machine was unpaired can still be read, never run.
-                let workspace = &member.workspace;
-                workspace
-                    .set_chat_state(&command.chat, ChatState::Detached)
-                    .await?;
-                return Err(detached());
+            match start(shared, member, &chat, &command).await {
+                // Made meanwhile, by this command sent again or by another.
+                Err(fault) if *fault.code() == code!("db.exists") => {
+                    again(member, asker, shared, command).await?;
+                }
+                started => started?,
             }
-            go_on(shared, member, &chat, command).await?
         }
-    };
+        Admitted::Existing { chat, command } => existing(shared, member, &chat, &command).await?,
+    }
     Ok(Message::Receipt(Receipt {
         request,
         outcome: Outcome::Accepted,
     }))
 }
 
-/// What a first prompt makes its chat with.
-struct Made<'a> {
-    machine: &'a MachineSummary,
-    title: &'a str,
-    repo: Option<&'a RepoId>,
+// A first prompt whose chat was made while it was on its way, taken as one to that chat.
+async fn again(
+    member: &Member,
+    asker: &Asker,
+    shared: &Shared,
+    command: ChatCommand,
+) -> Result<(), Fault> {
+    // Not made, so its request id is another chat's.
+    let Some(chat) = member.workspace.chat(&command.chat).await? else {
+        return Err(conflict());
+    };
+    match admit(Some(chat), asker.clone(), command)? {
+        Admitted::Existing { chat, command } => existing(shared, member, &chat, &command).await,
+        Admitted::New { .. } => Err(conflict()),
+    }
 }
 
 // A chat's first prompt: the chat is made before it is sent, so two at once can't both reach
@@ -72,32 +80,17 @@ struct Made<'a> {
 async fn start(
     shared: &Shared,
     member: &Member,
-    made: &Made<'_>,
-    command: ChatCommand,
-) -> Result<RequestId, Fault> {
-    let (workspace, at) = (&member.workspace, shared.now());
-    let chat = NewChat {
-        id: &command.chat,
-        owner: &member.id,
-        title: made.title,
-        repo: made.repo,
-        machine_id: &made.machine.id,
-        machine: &made.machine.name,
-        at,
-    };
+    chat: &NewChat<'_>,
+    command: &ChatCommand,
+) -> Result<(), Fault> {
+    let workspace = &member.workspace;
     let asked = NewRequest {
-        command: &command,
+        command,
         member: &member.id,
-        at,
+        at: chat.at,
     };
-    workspace.add_chat(&chat, &asked).await.map_err(|fault| {
-        if fault.code().as_str() == "db.exists" {
-            conflict()
-        } else {
-            fault
-        }
-    })?;
-    let machine = &made.machine.id;
+    workspace.add_chat(chat, &asked).await?;
+    let machine = chat.machine_id;
     if let Err(fault) = link::send(shared, machine, Message::ChatCommand(command.clone())) {
         workspace.forget_chat(&command.chat).await?;
         return Err(fault);
@@ -112,20 +105,41 @@ async fn start(
         &command.chat,
         0,
     ));
-    Ok(command.request)
+    Ok(())
 }
 
-// A command to a chat that exists: in the ledger before it is sent, and out of it again when
-// it can't be, so nothing waits to run later.
+// A command to a chat that exists, on a machine its owner still owns.
+async fn existing(
+    shared: &Shared,
+    member: &Member,
+    chat: &Chat,
+    command: &ChatCommand,
+) -> Result<(), Fault> {
+    let workspace = &member.workspace;
+    if !workspace.runs_on(&command.chat, &chat.machine).await? {
+        // A chat whose machine was unpaired can still be read, never run.
+        workspace.detach_chat(&command.chat, &member.id).await?;
+        shared.wake_feeds(workspace.id());
+        return Err(detached());
+    }
+    if !chat.made {
+        // Its first prompt is still on its way, and may yet be taken back.
+        return Err(link::offline());
+    }
+    go_on(shared, member, chat, command).await
+}
+
+// A command to a made chat: in the ledger before it is sent, and out of it again when it
+// can't be, so nothing waits to run later.
 async fn go_on(
     shared: &Shared,
     member: &Member,
     chat: &Chat,
-    command: ChatCommand,
-) -> Result<RequestId, Fault> {
+    command: &ChatCommand,
+) -> Result<(), Fault> {
     let workspace = &member.workspace;
     let asked = NewRequest {
-        command: &command,
+        command,
         member: &member.id,
         at: shared.now(),
     };
@@ -133,7 +147,7 @@ async fn go_on(
     match recorded {
         Recorded::Conflict => return Err(conflict()),
         // Its receipt has ended it: nothing more to send.
-        Recorded::Same { open: false } => return Ok(command.request),
+        Recorded::Same { open: false } => return Ok(()),
         Recorded::New | Recorded::Same { open: true } => {}
     }
     if let Err(fault) = link::send(shared, &chat.machine, Message::ChatCommand(command.clone())) {
@@ -149,7 +163,7 @@ async fn go_on(
         &command.chat,
         chat.core_seq,
     ));
-    Ok(command.request)
+    Ok(())
 }
 
 fn conflict() -> Fault {
@@ -165,7 +179,7 @@ mod tests {
 
     use super::*;
     use crate::chats::test_support::{ada, attach, sent};
-    use crate::db::test_support::{NOW, id, make, prompt};
+    use crate::db::test_support::{NOW, begin, id, make, prompt};
     use crate::test_support::Fixture;
 
     // `command`, a prompt, naming the agent to run; the server passes it on as it is.
@@ -257,5 +271,49 @@ mod tests {
         .await;
         assert_eq!(retried.unwrap(), accepted("r-2"));
         assert_eq!(sent(&mut serving).len(), 2);
+    }
+
+    #[tokio::test]
+    async fn a_first_prompt_sent_again_is_taken_as_itself_and_one_racing_its_chat_retries() {
+        let fixture = Fixture::new().await;
+        let shared = &fixture.shared;
+        let ada = ada(&fixture).await;
+        let workspace = &ada.member.workspace;
+        let mut serving = attach(shared, &ada, &["chat.serve"]);
+        let first = || prompt("r-1", "c-1", "Fix it", Some(&ada.machine));
+
+        let taken = take(&ada.member, &ada.asker, shared, first()).await;
+        assert_eq!(taken.unwrap(), accepted("r-1"));
+        assert_eq!(sent(&mut serving).len(), 2);
+        // Its receipt was lost: the same command again, which the core does once.
+        let again = take(&ada.member, &ada.asker, shared, first()).await;
+        assert_eq!(again.unwrap(), accepted("r-1"));
+        assert_eq!(sent(&mut serving).len(), 2);
+
+        begin(workspace, "c-2", "m1").await.unwrap();
+        workspace.move_chats_to(&ada.machine).await;
+        let racing = prompt("r-c-2", "c-2", "Fix the build", Some(&ada.machine));
+        let refused = take(&ada.member, &ada.asker, shared, racing).await;
+        assert_eq!(refused.unwrap_err().code().as_str(), "machine.offline");
+        assert!(sent(&mut serving).is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_chat_whose_machine_is_no_longer_its_owners_is_detached_and_the_feed_hears() {
+        let fixture = Fixture::new().await;
+        let shared = &fixture.shared;
+        let ada = ada(&fixture).await;
+        let workspace = &ada.member.workspace;
+        make(workspace, "c-1", "m1", NOW).await.unwrap();
+        let before = workspace.changes_since(0, 50).await.unwrap().len();
+
+        let asked = prompt("r-2", "c-1", "Go", None);
+        let refused = take(&ada.member, &ada.asker, shared, asked).await;
+
+        assert_eq!(refused.unwrap_err().code().as_str(), "chat.detached");
+        let chat = workspace.chat(&id("c-1")).await.unwrap().unwrap();
+        assert_eq!(chat.state, weacon_protocol::ChatState::Detached);
+        let changes = workspace.changes_since(0, 50).await.unwrap();
+        assert_eq!(changes.len(), before + 1);
     }
 }

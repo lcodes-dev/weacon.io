@@ -1,49 +1,29 @@
 //! What a machine sends of the chats it runs: their events, stored in the order they come.
 
 use weacon_observability::{Fault, Field};
-use weacon_protocol::{ChatUpdate, MachineId};
+use weacon_protocol::{ChatUpdate, Code, MachineId, code};
 
 use crate::db::{Incoming, turns};
+use crate::shared::Shared;
 
 /// What the server offers to cores whose chats' events it stores.
-pub(crate) const UPLOAD: weacon_protocol::Code = weacon_protocol::code!("chat.upload");
-use crate::shared::Shared;
+pub(crate) const UPLOAD: Code = code!("chat.upload");
 
 /// Stores `update` from `machine`, and tells the sockets that follow its chat. An event of a
 /// chat that isn't on `machine`, or whose owner no longer owns it there, is dropped.
 pub(crate) async fn store(shared: &Shared, machine: &MachineId, update: ChatUpdate) {
-    let ChatUpdate {
-        workspace,
-        chat,
-        entry,
-    } = update;
-    let stored = async {
-        let Some(place) = shared.db.find_workspace(&workspace).await? else {
-            return Ok(false);
-        };
-        if !place.runs_on(&chat, machine).await? {
-            return Ok(false);
-        }
-        let incoming = Incoming {
-            core_seq: Some(entry.seq),
-            event: &entry.event,
-            at: shared.now(),
-        };
-        place.append_events(&chat, &[incoming]).await?;
-        Ok::<_, Fault>(true)
-    };
     let fields = [
         ("machine_id", machine.as_str().into()),
-        ("workspace_id", workspace.as_str().into()),
-        ("chat_id", chat.as_str().into()),
+        ("workspace_id", update.workspace.as_str().into()),
+        ("chat_id", update.chat.as_str().into()),
     ];
-    match stored.await {
+    match append(shared, machine, &update).await {
         Ok(true) => {
             // A turn's start or end changes the chat's summary in the workspace's list.
-            if turns(&entry.event) {
-                shared.wake_feeds(&workspace);
+            if turns(&update.entry.event) {
+                shared.wake_feeds(&update.workspace);
             }
-            shared.chats.stored(workspace, chat);
+            shared.chats.stored(update.workspace, update.chat);
         }
         Ok(false) => shared.log.warn("chat upload refused", &fields),
         Err(fault) => {
@@ -51,6 +31,28 @@ pub(crate) async fn store(shared: &Shared, machine: &MachineId, update: ChatUpda
             shared.log.warn("chat upload failed", &fields);
         }
     }
+}
+
+// Whether `update` was one to store, which it then is.
+async fn append(shared: &Shared, machine: &MachineId, update: &ChatUpdate) -> Result<bool, Fault> {
+    let ChatUpdate {
+        workspace,
+        chat,
+        entry,
+    } = update;
+    let Some(place) = shared.db.find_workspace(workspace).await? else {
+        return Ok(false);
+    };
+    if !place.runs_on(chat, machine).await? {
+        return Ok(false);
+    }
+    let incoming = Incoming {
+        core_seq: Some(entry.seq),
+        event: &entry.event,
+        at: shared.now(),
+    };
+    place.append_events(chat, &[incoming]).await?;
+    Ok(true)
 }
 
 #[cfg(test)]

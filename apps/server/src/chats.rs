@@ -64,9 +64,14 @@ pub(crate) fn unsupported() -> weacon_observability::Fault {
     )
 }
 
-/// Whether `message` is one a client sends about a chat.
+/// Whether `message` is a client's question about a chat.
 pub(crate) const fn carries(message: &Message) -> bool {
     matches!(message, Message::ChatQuery(_))
+}
+
+/// Whether `message` is a client's command to a chat.
+pub(crate) const fn asks(message: &Message) -> bool {
+    matches!(message, Message::ChatCommand(_))
 }
 
 pub(crate) fn routes() -> Router<Shared> {
@@ -145,7 +150,7 @@ mod tests {
     }
 
     #[test]
-    fn only_chat_queries_are_the_watchs_to_answer() {
+    fn only_chat_queries_and_commands_are_the_watchs_to_answer() {
         let query = Message::ChatQuery(weacon_protocol::ChatQuery {
             workspace: id("w1"),
             chat: id("c-1"),
@@ -158,5 +163,8 @@ mod tests {
             answer: weacon_protocol::ChatAnswerKind::EventsLost,
         });
         assert!(!carries(&answer));
+        let command = crate::db::test_support::prompt("r-1", "c-1", "Go", None);
+        assert!(asks(&Message::ChatCommand(command)));
+        assert!(!asks(&query));
     }
 }

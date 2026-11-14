@@ -30,7 +30,7 @@ const FEED: Code = code!("workspace.feed");
 const TASKS: Code = code!("workspace.tasks");
 /// What the server offers to clients that read and revise docs.
 const DOCS: Code = code!("workspace.docs");
-/// What the server offers to clients that read chats and ask their agents.
+/// What the server offers to clients that read chats.
 const CHATS: Code = code!("workspace.chats");
 /// What the server offers to clients that ask chats' agents.
 const CHAT_COMMANDS: Code = code!("workspace.chat_commands");
@@ -229,7 +229,7 @@ async fn received(
         return relay(socket, shared, feed, envelope).await;
     }
     let reads = feed.hears(CHATS) && chats::carries(&envelope.message);
-    let asks = feed.hears(CHAT_COMMANDS) && matches!(envelope.message, Message::ChatCommand(_));
+    let asks = feed.hears(CHAT_COMMANDS) && chats::asks(&envelope.message);
     if reads || asks {
         feed.allowed(shared).await?;
         let answer = feed

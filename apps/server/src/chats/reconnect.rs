@@ -1,6 +1,8 @@
 //! A machine that connects again picks up its chats where it left them.
 
-use tokio::sync::broadcast::error::RecvError;
+use std::future::Future;
+
+use tokio::sync::broadcast::{Receiver, error::RecvError};
 use weacon_observability::{Fault, Field};
 use weacon_protocol::Message;
 
@@ -12,20 +14,16 @@ use crate::shared::Shared;
 /// older ones are left to their receipts, so nothing runs long after it was asked for.
 const RESEND_WITHIN: i64 = 10 * 60;
 
-/// Picks up each machine's chats as it connects, for as long as the server runs.
-pub(crate) async fn follow_machines(shared: Shared) {
-    let mut connected = shared.links.connected();
+/// Picks up each machine's chats as it connects, from now on, for as long as the server runs.
+pub(crate) fn follow_machines(shared: Shared) -> impl Future<Output = ()> {
+    let connected = shared.links.connected();
+    follow(shared, connected)
+}
+
+async fn follow(shared: Shared, mut connected: Receiver<Connected>) {
     loop {
         match connected.recv().await {
-            Ok(machine) => {
-                if let Err(fault) = pick_up(&shared, &machine).await {
-                    let fields = [
-                        ("machine_id", machine.machine.as_str().into()),
-                        ("err", Field::error(&fault)),
-                    ];
-                    shared.log.warn("chats not picked up", &fields);
-                }
-            }
+            Ok(machine) => pick_up(&shared, &machine).await,
             // A connection missed here picks up its chats the next time it connects.
             Err(RecvError::Lagged(_)) => {}
             Err(RecvError::Closed) => return,
@@ -33,25 +31,43 @@ pub(crate) async fn follow_machines(shared: Shared) {
     }
 }
 
-/// Follows again the chats on `connected`'s machine whose turn may not be over, in each of its
-/// owner's workspaces, and sends again the commands to them sent within [`RESEND_WITHIN`]; the
-/// core does each command once, whatever number of times it is sent.
-async fn pick_up(shared: &Shared, connected: &Connected) -> Result<(), Fault> {
+async fn pick_up(shared: &Shared, connected: &Connected) {
+    let (unsent, failed) = match resend(shared, connected).await {
+        Ok(unsent) => (unsent, None),
+        Err(fault) => (0, Some(fault)),
+    };
+    let machine = ("machine_id", connected.machine.as_str().into());
+    if let Some(fault) = failed {
+        let fields = [machine, ("err", Field::error(&fault))];
+        shared.log.warn("chats not picked up", &fields);
+    } else if unsent > 0 {
+        shared.log.warn(
+            "chats not all picked up",
+            &[machine, ("unsent", unsent.into())],
+        );
+    }
+}
+
+/// Follows again `connected`'s unsettled chats in its owner's workspaces and sends again their
+/// commands sent within [`RESEND_WITHIN`], which the core does once; gives how many weren't sent.
+async fn resend(shared: &Shared, connected: &Connected) -> Result<usize, Fault> {
     let Connected { machine, owner } = connected;
-    let workspaces = shared.db.account(owner.clone()).workspaces().await?;
-    for summary in workspaces {
+    let since = shared.now().saturating_sub(RESEND_WITHIN);
+    let mut unsent = 0_usize;
+    for summary in shared.db.account(owner.clone()).workspaces().await? {
         let workspace = shared.db.workspace(&summary.id).await?;
         for (chat, core_seq) in workspace.unsettled_on(machine).await? {
-            link::follow(shared, machine, workspace.id(), &chat, core_seq)?;
-            let since = shared.now().saturating_sub(RESEND_WITHIN);
+            // One that can't be sent now is sent the next time the machine connects.
+            let followed = link::follow(shared, machine, workspace.id(), &chat, core_seq);
+            unsent += usize::from(followed.is_err());
             let open = workspace.open_requests(&chat).await?.into_iter();
-            let recent = open.filter(|(_, sent_at)| *sent_at >= since);
-            for (command, _) in recent {
-                link::send(shared, machine, Message::ChatCommand(command))?;
+            for (command, _) in open.filter(|(_, sent_at)| *sent_at >= since) {
+                let sent = link::send(shared, machine, Message::ChatCommand(command));
+                unsent += usize::from(sent.is_err());
             }
         }
     }
-    Ok(())
+    Ok(unsent)
 }
 
 #[cfg(test)]
@@ -82,7 +98,7 @@ mod tests {
             owner: ada.asker.account.clone(),
         };
 
-        pick_up(shared, &connected).await.unwrap();
+        assert_eq!(resend(shared, &connected).await.unwrap(), 0);
 
         let follow = |chat: &str| {
             Message::ChatQuery(ChatQuery {
@@ -104,7 +120,36 @@ mod tests {
             machine: id("mc-other"),
             owner: ada.asker.account.clone(),
         };
-        pick_up(shared, &elsewhere).await.unwrap();
+        assert_eq!(resend(shared, &elsewhere).await.unwrap(), 0);
         assert!(sent(&mut attached).is_empty());
+    }
+
+    #[tokio::test]
+    async fn each_machine_that_connects_is_followed_and_what_it_cant_take_is_counted_once() {
+        let fixture = Fixture::new().await;
+        let shared = &fixture.shared;
+        let ada = ada(&fixture).await;
+        let workspace = &ada.member.workspace;
+        make(workspace, "c-1", "m1", NOW).await.unwrap();
+        make(workspace, "c-2", "m1", NOW).await.unwrap();
+        workspace.move_chats_to(&ada.machine).await;
+        tokio::spawn(follow_machines(shared.clone()));
+
+        let mut attached = attach(shared, &ada, &["chat.serve"]);
+
+        let first = attached.incoming.recv().await.unwrap();
+        assert!(matches!(first.message, Message::ChatQuery(_)), "{first:?}");
+        drop(attached);
+        let older = attach(shared, &ada, &["machine.connect"]);
+        let connected = Connected {
+            machine: ada.machine.clone(),
+            owner: ada.asker.account.clone(),
+        };
+        // Each chat's follow and its one open command, none of which this core serves.
+        assert_eq!(resend(shared, &connected).await.unwrap(), 4);
+        pick_up(shared, &connected).await;
+        let warned = crate::test_support::messages(&fixture.records);
+        assert!(warned.contains(&"chats not all picked up"), "{warned:?}");
+        drop(older);
     }
 }
