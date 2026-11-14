@@ -177,6 +177,7 @@ export type ChallengeId = string;
 export type ChatAction = (
   | {
     kind: "prompt";
+    machine?: MachineId;
     repo?: RepoId;
     text: string;
   }
@@ -261,6 +262,14 @@ export type ChatEvent = (
 export type ChatId = string;
 
 /**
+ * A workspace's chats, from the server, to clients that have the capability
+ * `workspace.chats`.
+ */
+export type ChatList = {
+  chats: Array<ChatSummary>;
+};
+
+/**
  * The answer is a [`ChatAnswer`], or for `subscribe` the [`ChatUpdate`]s themselves.
  */
 export type ChatQuery = {
@@ -283,6 +292,28 @@ export type ChatQueryKind = (
     limit: number;
   }
 );
+
+/**
+ * What can still happen to a chat.
+ */
+export type ChatState = (
+  | "open"
+  | "full"
+  | "detached"
+);
+
+/**
+ * A chat in a [`ChatList`]: `machine` is a name, never an id, and `updated_at` is when its
+ * latest turn began or ended, in seconds since the Unix epoch.
+ */
+export type ChatSummary = {
+  id: ChatId;
+  machine: MachineName;
+  owner: MemberId;
+  state: ChatState;
+  title: string;
+  updated_at: number;
+};
 
 /**
  * Text deltas are never committed; they arrive only as run updates.
@@ -1121,6 +1152,10 @@ export type WorkspaceChange = (
     doc: DocId;
     kind: "doc_changed";
     version: number;
+  }
+  | {
+    chat: ChatId;
+    kind: "chat_changed";
   }
 );
 

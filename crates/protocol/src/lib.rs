@@ -24,7 +24,7 @@ pub use access::AccessLevel;
 pub use capability::Capability;
 pub use chat::{
     Asker, ChatAction, ChatAnswer, ChatAnswerKind, ChatCommand, ChatEntry, ChatEvent, ChatId,
-    ChatQuery, ChatQueryKind, ChatUpdate,
+    ChatList, ChatQuery, ChatQueryKind, ChatState, ChatSummary, ChatUpdate,
 };
 pub use code::Code;
 pub use diff::{
@@ -99,6 +99,7 @@ mod tests {
         generator.subschema_for::<PairClaim>();
         generator.subschema_for::<PairClaimed>();
         generator.subschema_for::<MachineList>();
+        generator.subschema_for::<ChatList>();
         generator.subschema_for::<DocList>();
         generator.subschema_for::<DocRecord>();
         generator.subschema_for::<DocRevise>();

@@ -4,7 +4,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::token::token_id;
-use crate::{DocId, TaskId};
+use crate::{ChatId, DocId, TaskId};
 
 token_id!(
     /// A workspace on the server, 1–64 ASCII letters, digits, `-` or `_`.
@@ -189,6 +189,9 @@ pub enum WorkspaceChange {
     /// A doc was made, at version 1, or revised. Only for clients that have the capability
     /// `workspace.docs`, which read the doc again to see what it now says.
     DocChanged { doc: DocId, version: u64 },
+    /// A chat was made, or its title, state or latest turn changed. Only for clients that have
+    /// the capability `workspace.chats`, which read the chats again.
+    ChatChanged { chat: ChatId },
     /// A change this build doesn't know, from a newer peer; only ever received.
     #[serde(other)]
     #[schemars(skip)]
@@ -354,6 +357,16 @@ mod tests {
         assert_eq!(
             serde_json::from_value::<WorkspaceChange>(revised_wire).unwrap(),
             revised
+        );
+        let chatted = WorkspaceChange::ChatChanged {
+            chat: ChatId::try_from("c-1".to_owned()).unwrap(),
+        };
+        let chatted_wire = json!({ "kind": "chat_changed", "chat": "c-1" });
+
+        assert_eq!(serde_json::to_value(&chatted).unwrap(), chatted_wire);
+        assert_eq!(
+            serde_json::from_value::<WorkspaceChange>(chatted_wire).unwrap(),
+            chatted
         );
         assert_eq!(
             serde_json::from_value::<WorkspaceChange>(json!({ "kind": "renamed" })).unwrap(),
