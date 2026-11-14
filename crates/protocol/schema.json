@@ -3547,6 +3547,19 @@
             "title",
             "body"
           ]
+        },
+        {
+          "description": "Opens a terminal on the core's machine at the chat's worktree, or at its working folder\nwhen it has none. Only to a core that offers `worktree.open_terminal`, which its owner\nturns on there.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "open_terminal"
+            }
+          },
+          "required": [
+            "kind"
+          ]
         }
       ]
     },
@@ -3634,6 +3647,19 @@
           "required": [
             "kind",
             "url"
+          ]
+        },
+        {
+          "description": "A terminal was opened on the core's machine.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "terminal_opened"
+            }
+          },
+          "required": [
+            "kind"
           ]
         }
       ]

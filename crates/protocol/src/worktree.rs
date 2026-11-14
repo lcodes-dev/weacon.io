@@ -54,6 +54,10 @@ pub enum WorktreeAction {
     Restore,
     /// Pushes the chat's branch and opens a draft pull request from it.
     OpenPullRequest { title: String, body: String },
+    /// Opens a terminal on the core's machine at the chat's worktree, or at its working folder
+    /// when it has none. Only to a core that offers `worktree.open_terminal`, which its owner
+    /// turns on there.
+    OpenTerminal,
     /// An action this build doesn't know, from a newer peer; only ever received.
     #[serde(other)]
     #[schemars(skip)]
@@ -86,6 +90,8 @@ pub enum WorktreeAnswerKind {
     /// The branch was pushed, but no pull request could be opened from here; `url` is the
     /// page where the person can open one.
     PullRequestPage { url: DownloadUrl },
+    /// A terminal was opened on the core's machine.
+    TerminalOpened,
     /// An answer this build doesn't know, from a newer peer; only ever received.
     #[serde(other)]
     #[schemars(skip)]
@@ -153,6 +159,10 @@ mod tests {
                 json!({ "kind": "open_pull_request", "title": "Fix the build",
                         "body": "Pins the toolchain." }),
             ),
+            (
+                WorktreeAction::OpenTerminal,
+                json!({ "kind": "open_terminal" }),
+            ),
         ];
         for (action, body) in actions {
             travels(
@@ -183,6 +193,10 @@ mod tests {
             (
                 WorktreeAnswerKind::PullRequestPage { url },
                 json!({ "kind": "pull_request_page", "url": link }),
+            ),
+            (
+                WorktreeAnswerKind::TerminalOpened,
+                json!({ "kind": "terminal_opened" }),
             ),
         ];
         for (kind, body) in cases {
