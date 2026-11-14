@@ -67,6 +67,18 @@ test("text stays selected while the run streams, and following waits for the rea
   await page.evaluate(backAfterNextRow);
   await waitForRows(page, ".row", (await rowCount(page)) + 20);
   assert.ok(atBottom(await page.evaluate(scrollOf)), "it stopped following after a selection in Settings");
+
+  // Keys scroll as the reader means: Home leaves the bottom for good, End follows again.
+  await page.locator(".transcript").click();
+  const home = page.evaluate(scrollEnded, "up" as const);
+  await page.keyboard.press("Home");
+  await home;
+  const top = await page.evaluate(markShown);
+  await waitForRows(page, ".row", (await rowCount(page)) + 50);
+  assertStill(top, await page.evaluate(shownTop));
+  await page.keyboard.press("End");
+  await waitForRows(page, ".row", (await rowCount(page)) + 50);
+  assert.ok(atBottom(await page.evaluate(scrollOf)), "End didn't follow the rows again");
 });
 
 test("a reader at the bottom of a finished run is still there after Settings", { timeout: 60_000 }, async (t) => {
@@ -134,29 +146,36 @@ async function rowCount(page: Page): Promise<number> {
 }
 
 // Scrolls with the wheel, as a reader does: down past the end, which follows the rows as they come,
-// or up, waiting until the view has stopped.
+// or up, until that scroll has ended.
 async function scrollTo(page: Page, where: "bottom" | "up"): Promise<void> {
   const box = await page.locator(".transcript").boundingBox();
   if (box === null) {
     throw new Error("the transcript isn't shown");
   }
   await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
-  if (where === "bottom") {
-    await page.mouse.wheel(0, 1_000_000);
-    return;
-  }
-  await page.mouse.wheel(0, -2_000);
-  await page.evaluate(async () => {
+  const ended = page.evaluate(scrollEnded, where);
+  await page.mouse.wheel(0, where === "bottom" ? 1_000_000 : -2_000);
+  await ended;
+}
+
+// Waits for a scroll of the transcript to end at the bottom, or above it; the view's own scrolls
+// to follow end too, so only one that ends where the reader was going counts.
+function scrollEnded(where: "bottom" | "up"): Promise<void> {
+  return new Promise((resolve, reject) => {
     const view = document.querySelector(".transcript");
     if (view === null) {
-      throw new Error("the transcript isn't there");
+      reject(new Error("the transcript isn't there"));
+      return;
     }
-    const bottom = () => view.scrollHeight - view.scrollTop - view.clientHeight <= 32;
-    for (let still = 0, last = -1; still < 3 || bottom(); ) {
-      await new Promise(requestAnimationFrame);
-      still = view.scrollTop === last ? still + 1 : 0;
-      last = view.scrollTop;
-    }
+    const ended = () => {
+      const bottom = view.scrollHeight - view.scrollTop - view.clientHeight <= 32;
+      if (bottom === (where === "bottom")) {
+        view.removeEventListener("scrollend", ended);
+        resolve();
+      }
+    };
+    view.addEventListener("scrollend", ended);
+    setTimeout(() => reject(new Error(`the view never ended its scroll ${where === "bottom" ? "at the bottom" : "up"}`)), 10_000);
   });
 }
 

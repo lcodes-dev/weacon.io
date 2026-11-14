@@ -1,13 +1,12 @@
 import { type RefObject, type UIEventHandler, useEffect, useLayoutEffect, useReducer, useRef } from "react";
 
-import { atBottom, followsAfter, leavesBottom, reachesBottom, selectingIn, touches } from "./follow.ts";
+import { atBottom, followsAfter, reachesBottom, scrollKey, selectingIn, touches } from "./follow.ts";
 import type { Row } from "./transcript.ts";
 
 /**
  * Keeps `scroller` at the bottom as `rows` grow or `refreshes` counts up, until the reader scrolls
- * up or selects in it, and again once they are back at the bottom. Only the reader's own input
- * stops it: the browser also scrolls the view, as rows reach their height or the pane resizes.
- * While `away`, under Settings, selections don't count.
+ * up or selects in it, and again once they're back at the bottom. While `away`, under Settings,
+ * selections don't count.
  */
 export function useFollow(
   scroller: RefObject<HTMLDivElement | null>,
@@ -15,15 +14,19 @@ export function useFollow(
   { rows, refreshes, away }: { rows: readonly Row[]; refreshes: number; away: boolean },
 ): UIEventHandler<HTMLDivElement> {
   const following = useRef(true);
-  // The reader holds the scrollbar or a touch, so the view's scrolls are theirs.
-  const held = useRef(false);
+  // The reader is scrolling: from their input until the scroll it starts ends, or while they hold
+  // the scrollbar or a touch. Only their scrolls take the view off the bottom.
+  const reading = useRef(false);
+  const grabbed = useRef(false);
+  // Where the view was when the reader's input came: their scroll has begun once it leaves there.
+  const readFrom = useRef<number | undefined>(undefined);
   const awayNow = useRef(away);
   useLayoutEffect(() => {
     awayNow.current = away;
   }, [away]);
   const keepAtBottom = useRef(() => {
     const element = scroller.current;
-    if (element === null || !following.current || held.current) {
+    if (element === null || !following.current || reading.current || grabbed.current) {
       return;
     }
     if (selectingIn(awayNow.current ? null : document.getSelection(), element)) {
@@ -46,62 +49,83 @@ export function useFollow(
     const watch = new ResizeObserver(() => keepAtBottom.current());
     watch.observe(element);
     watch.observe(inner);
-    const leave = () => {
-      following.current = false;
+    const moved = () => readFrom.current !== undefined && element.scrollTop !== readFrom.current;
+    const settle = () => {
+      reading.current = false;
+      readFrom.current = undefined;
+      keepAtBottom.current();
+    };
+    const read = () => {
+      reading.current = true;
+      readFrom.current = element.scrollTop;
+      // Input that moves nothing, as a wheel up at the top, ends with no scroll to end it.
+      requestAnimationFrame(() =>
+        requestAnimationFrame(() => {
+          if (!moved()) {
+            settle();
+          }
+        }),
+      );
     };
     // The bottom moves while rows arrive, so a scroll aimed past it follows them at once.
     const follow = () => {
       following.current = true;
-      keepAtBottom.current();
+      settle();
     };
     const wheel = (event: WheelEvent) => {
-      if (event.deltaY < 0) {
-        leave();
-      } else if (reachesBottom(event.deltaY, element)) {
+      if (event.ctrlKey) {
+        return;
+      }
+      if (reachesBottom(event.deltaY, element)) {
         follow();
+      } else {
+        read();
       }
     };
     const key = (event: KeyboardEvent) => {
-      if (awayNow.current || editable(event.target)) {
-        return;
-      }
-      if (leavesBottom(event, false)) {
-        leave();
-      } else if (event.key === "End") {
+      const target = event.target;
+      const here = target === document.body || (target instanceof Node && element.contains(target));
+      const scrolls = awayNow.current || !here ? undefined : scrollKey(event);
+      if (scrolls === "end") {
         follow();
+      } else if (scrolls !== undefined) {
+        read();
       }
     };
-    const hold = () => {
-      held.current = true;
+    const grab = (event: PointerEvent) => {
+      grabbed.current = event.button === 0;
     };
-    const release = () => {
-      held.current = false;
+    const release = (event: Event) => {
+      if (grabbed.current) {
+        grabbed.current = false;
+        // A touch flicked away goes on scrolling after it lifts.
+        read();
+      }
+      if (event.type !== "pointerup") {
+        settle();
+      }
     };
-    element.addEventListener("wheel", wheel, { passive: true });
-    element.addEventListener("pointerdown", hold);
-    element.addEventListener("touchstart", hold, { passive: true });
-    document.addEventListener("pointerup", release);
-    document.addEventListener("touchend", release);
-    document.addEventListener("keydown", key);
+    const stop = new AbortController();
+    const { signal } = stop;
+    // Not passive, so it runs before the view moves and no row can snap it back first.
+    element.addEventListener("wheel", wheel, { passive: false, signal });
+    element.addEventListener("pointerdown", grab, { signal });
+    // A scroll the view made before the reader's input may still end after it.
+    element.addEventListener("scrollend", () => moved() && settle(), { signal });
+    for (const end of ["pointerup", "pointercancel", "contextmenu"]) {
+      document.addEventListener(end, release, { signal });
+    }
+    window.addEventListener("blur", release, { signal });
+    document.addEventListener("keydown", key, { signal });
     return () => {
       watch.disconnect();
-      element.removeEventListener("wheel", wheel);
-      element.removeEventListener("pointerdown", hold);
-      element.removeEventListener("touchstart", hold);
-      document.removeEventListener("pointerup", release);
-      document.removeEventListener("touchend", release);
-      document.removeEventListener("keydown", key);
+      stop.abort();
     };
   }, [empty]);
 
   return ({ currentTarget: element }) => {
-    following.current = followsAfter(following.current, atBottom(element), held.current);
+    following.current = followsAfter(following.current, atBottom(element), reading.current || grabbed.current);
   };
-}
-
-// Whether keys pressed at `target` edit text there rather than scroll the page.
-function editable(target: EventTarget | null): boolean {
-  return target instanceof HTMLElement && (target.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName));
 }
 
 /**

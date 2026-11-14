@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { atBottom, followsAfter, leavesBottom, reachesBottom, selectingIn, touches } from "./follow.ts";
+import { type Scroll, atBottom, followsAfter, reachesBottom, scrollKey, selectingIn, touches } from "./follow.ts";
 
 test("the bottom is within a line of the end", () => {
   assert.equal(atBottom({ scrollTop: 900, scrollHeight: 1600, clientHeight: 700 }), true);
@@ -38,16 +38,13 @@ test("a bare caret touches the row it sits in", () => {
   assert.equal(touches(caret(1, true), row), true);
 });
 
-test("only keys that scroll up, outside an editable field, leave the bottom", () => {
-  const key = (name: string, shiftKey = false) => ({ key: name, shiftKey });
-  for (const name of ["ArrowUp", "PageUp", "Home"]) {
-    assert.equal(leavesBottom(key(name), false), true, name);
-    assert.equal(leavesBottom(key(name), true), false, name);
+test("End goes to the end, the other scroll keys scroll, and the rest do neither", () => {
+  assert.equal(scrollKey({ key: "End" }), "end");
+  for (const key of ["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", " "]) {
+    assert.equal(scrollKey({ key }), "scroll", key);
   }
-  assert.equal(leavesBottom(key(" ", true), false), true);
-  assert.equal(leavesBottom(key(" "), false), false);
-  assert.equal(leavesBottom(key("ArrowDown"), false), false);
-  assert.equal(leavesBottom(key("a"), false), false);
+  assert.equal(scrollKey({ key: "a" }), undefined);
+  assert.equal(scrollKey({ key: "Enter" }), undefined);
 });
 
 test("a scroll stops following only when the reader makes it away from the bottom", () => {
@@ -68,4 +65,7 @@ test("a scroll down far enough to pass the bottom means to follow", () => {
   assert.equal(reachesBottom(467, scroll), false);
   assert.equal(reachesBottom(-1_000_000, scroll), false);
   assert.equal(reachesBottom(0, { scrollTop: 0, scrollHeight: 500, clientHeight: 700 }), false);
+  // An element's sizes are getters on its prototype, which a spread doesn't copy.
+  const element = Object.create({ scrollTop: 800, scrollHeight: 2000, clientHeight: 700 }) as Scroll;
+  assert.equal(reachesBottom(468, element), true);
 });
