@@ -31,6 +31,9 @@ test("a person reads and changes a machine's settings for the open workspace, th
   await page.getByRole("button", { name: "Personal" }).click();
   await page.getByRole("heading", { name: "Personal" }).waitFor();
   await page.getByRole("button", { name: "Settings" }).click();
+  // Paired with no workspace open, so they don't open by themselves once one is.
+  await row.getByRole("button", { name: "Studio settings" }).waitFor();
+  assert.equal(await row.getByRole("region", { name: "Studio settings" }).count(), 0);
   await row.getByRole("button", { name: "Studio settings" }).click();
   await row.getByText("This machine isn't connected. Start Weacon on it, then try again.").waitFor();
 

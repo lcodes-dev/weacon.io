@@ -98,7 +98,7 @@ function Machine({
   const [open, setOpen] = useState(false);
   // Its settings open by themselves once, so the person is asked about error reports at once.
   useEffect(() => {
-    if (justPaired) {
+    if (justPaired && socket !== undefined) {
       setOpen(true);
     }
   }, [justPaired]);
