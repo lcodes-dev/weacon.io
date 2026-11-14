@@ -4,6 +4,7 @@ import { Composer } from "./composer/composer.tsx";
 import { type Send, blocked } from "./composer/prompt.ts";
 import { type Status, statusText } from "./connection.ts";
 import { type Changes, canAsk } from "./diff/changes.ts";
+import type { Comment } from "./diff/comments.ts";
 import { DiffView } from "./diff/diff-view.tsx";
 import type { Place } from "./place.ts";
 import type { App as Build } from "./protocol.ts";
@@ -32,6 +33,7 @@ export function App({
   review: Review;
 }) {
   const [shown, setShown] = useState<Shown>("run");
+  const [comments, setComments] = useState<readonly Comment[]>([]);
   return (
     <div className="app">
       <header>
@@ -65,7 +67,7 @@ export function App({
         </div>
         {shown === "changes" && (
           <div className="pane">
-            <DiffView changes={review.changes} />
+            <DiffView changes={review.changes} comments={comments} setComments={setComments} />
           </div>
         )}
         {shown === "settings" && (
