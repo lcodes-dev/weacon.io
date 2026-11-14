@@ -390,7 +390,7 @@ mod tests {
     use tokio::io::{AsyncBufReadExt, AsyncRead};
     use tokio::sync::oneshot;
     use tokio::time::timeout;
-    use weacon_protocol::{ChatId, ErrorBody, PROTOCOL, Welcome, WorkspaceId};
+    use weacon_protocol::{Capability, ChatId, ErrorBody, PROTOCOL, Welcome, WorkspaceId};
     use weacon_testing::TempDir;
 
     use super::*;
@@ -691,7 +691,7 @@ mod tests {
         let kept = Picks::new(&dir).read(&"p-1".to_owned().try_into().unwrap());
 
         assert!(matches!(&replies[0], Message::Welcome(welcome)
-            if welcome.capabilities.contains(&code!("element.pick").into())));
+            if welcome.capabilities.contains(&Capability::new(code!("element.pick")))));
         assert_eq!(receipt(&replies[1]), Some(&Outcome::Completed));
         assert_eq!(receipt(&replies[2]), Some(&Outcome::Completed));
         assert_eq!(error_code(&replies[3]), Some("request.conflict"));
@@ -898,10 +898,10 @@ mod tests {
             panic!("no welcome");
         };
         for capability in offered {
-            assert!(welcome.capabilities.contains(&capability.into()));
+            assert!(welcome.capabilities.contains(&Capability::new(capability)));
         }
         // Not until chats are given worktrees.
-        let early = [code!("diff.view"), code!("worktree.manage")].map(Into::into);
+        let early = [code!("diff.view"), code!("worktree.manage")].map(Capability::new);
         assert!(!early.iter().any(|it| welcome.capabilities.contains(it)));
         assert_eq!(error_code(&replies[1]), Some("chat.empty_prompt"));
         assert!(matches!(&replies[2], Message::ChatAnswer(answer)
