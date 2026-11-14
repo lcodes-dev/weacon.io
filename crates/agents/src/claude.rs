@@ -11,7 +11,7 @@ use weacon_protocol::{AccessLevel, AgentSession};
 
 pub(crate) use wire::{Wire, answer, prompt, read};
 
-use crate::launch::{Launch, OtherSignIns};
+use crate::launch::{Launch, SignInEnv};
 
 /// The tools that only change files, and the input naming each one's file.
 const FILE_TOOLS: [(&str, &str); 4] = [
@@ -27,15 +27,16 @@ pub(crate) fn changed_file(tool: &str, input: &Value) -> Option<PathBuf> {
     input.get(key)?.as_str().map(PathBuf::from)
 }
 
-// Sign-ins and providers that would win over the workspace's own.
-const OTHER_SIGN_INS: OtherSignIns = OtherSignIns {
+// Its config folder's variable, and the sign-ins and providers that would win over it.
+const SIGN_IN_ENV: SignInEnv = SignInEnv {
+    config_var: "CLAUDE_CONFIG_DIR",
     prefixes: &["ANTHROPIC_", "CLAUDE_"],
     names: &["AWS_BEARER_TOKEN_BEDROCK"],
 };
 
 /// `claude` in its stream-json mode, resuming `session` when given.
 pub(crate) fn command(launch: &Launch, session: Option<&AgentSession>) -> Command {
-    let mut command = with_workspace_sign_in(launch);
+    let mut command = SIGN_IN_ENV.command(launch);
     command.args([
         "--print",
         "--verbose",
@@ -66,7 +67,7 @@ pub(crate) fn command(launch: &Launch, session: Option<&AgentSession>) -> Comman
 /// `claude`'s own check of its sign-in, which exits with success when signed in and prints
 /// how; it runs wherever Weacon does.
 pub(crate) fn status(launch: &Launch) -> Command {
-    let mut command = with_workspace_sign_in(launch);
+    let mut command = SIGN_IN_ENV.command(launch);
     command.args(["auth", "status", "--json"]);
     command
 }
@@ -80,10 +81,11 @@ struct Source {
     api_key_source: Option<String>,
 }
 
-/// Whether `status` printed a sign-in kept in the config folder: a claude.ai login, or a key
-/// that `claude auth login` stored. Anything else, such as a token from the host, isn't one.
-pub(crate) fn own_sign_in(status: &[u8]) -> bool {
-    let Ok(source) = serde_json::from_slice::<Source>(status) else {
+/// Whether `printed`, what `status` printed, shows a sign-in kept in the config folder: a
+/// claude.ai login, or a key `claude auth login` stored. Anything else, such as a host's token,
+/// isn't one.
+pub(crate) fn own_sign_in(printed: &[u8]) -> bool {
+    let Ok(source) = serde_json::from_slice::<Source>(printed) else {
         return false;
     };
     match (
@@ -98,15 +100,8 @@ pub(crate) fn own_sign_in(status: &[u8]) -> bool {
 
 /// `claude`'s own sign-in, for the person's terminal.
 pub(crate) fn login(launch: &Launch) -> Command {
-    let mut command = with_workspace_sign_in(launch);
+    let mut command = SIGN_IN_ENV.command(launch);
     command.args(["auth", "login"]);
-    command
-}
-
-fn with_workspace_sign_in(launch: &Launch) -> Command {
-    let mut command = Command::new(&launch.program);
-    OTHER_SIGN_INS.remove(&mut command, std::env::vars_os().map(|(name, _)| name));
-    command.env("CLAUDE_CONFIG_DIR", &launch.config_dir);
     command
 }
 
@@ -164,23 +159,26 @@ mod tests {
             let padded = |by: usize| format!("{}{own}", " ".repeat(by));
             let script = |number, status: &str, code| status_script(&dir, number, status, code);
 
-            assert_eq!(script(0, own, 0).sign_in().await.unwrap(), SignIn::SignedIn);
             assert_eq!(
-                script(1, own, 1).sign_in().await.unwrap(),
+                script(0, own, 0).sign_in_status().await.unwrap(),
+                SignIn::SignedIn
+            );
+            assert_eq!(
+                script(1, own, 1).sign_in_status().await.unwrap(),
                 SignIn::SignedOut
             );
             assert_eq!(
-                script(2, host, 0).sign_in().await.unwrap(),
+                script(2, host, 0).sign_in_status().await.unwrap(),
                 SignIn::SignedOut
             );
             assert_eq!(
-                script(3, &padded(4096), 0).sign_in().await.unwrap(),
+                script(3, &padded(4096), 0).sign_in_status().await.unwrap(),
                 SignIn::SignedIn
             );
             // Past the limit, so the answer is never read.
             let past = padded(70 * 1024);
             assert_eq!(
-                script(4, &past, 0).sign_in().await.unwrap(),
+                script(4, &past, 0).sign_in_status().await.unwrap(),
                 SignIn::SignedOut
             );
         }
@@ -362,10 +360,10 @@ mod tests {
             "CLAUDE_CODE_USE_BEDROCK",
             "AWS_BEARER_TOKEN_BEDROCK",
         ] {
-            assert!(OTHER_SIGN_INS.matches(OsStr::new(name)), "{name}");
+            assert!(SIGN_IN_ENV.matches(OsStr::new(name)), "{name}");
         }
         for name in ["PATH", "HOME", "AWS_REGION"] {
-            assert!(!OTHER_SIGN_INS.matches(OsStr::new(name)), "{name}");
+            assert!(!SIGN_IN_ENV.matches(OsStr::new(name)), "{name}");
         }
     }
 

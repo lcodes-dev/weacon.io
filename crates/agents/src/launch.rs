@@ -98,11 +98,12 @@ impl Launch {
     ///
     /// # Errors
     /// When this build doesn't know the agent, or the command can't be run or doesn't end.
-    pub async fn sign_in(&self) -> Result<SignIn, Fault> {
-        let mut command = self.vendors(claude::status, codex::status)?;
-        let own_sign_in = match self.agent {
-            AgentKind::Claude => claude::own_sign_in,
-            AgentKind::Codex | AgentKind::Newer => codex::own_sign_in,
+    pub async fn sign_in_status(&self) -> Result<SignIn, Fault> {
+        let (mut command, own_sign_in) = match self.agent {
+            AgentKind::Claude => (claude::status(self), Some(claude::own_sign_in)),
+            // Codex doesn't print where its sign-in comes from.
+            AgentKind::Codex => (codex::status(self), None),
+            AgentKind::Newer => return Err(unknown()),
         };
         command
             .stdin(Stdio::null())
@@ -116,7 +117,9 @@ impl Launch {
             )
         };
         match timeout(STATUS_TIMEOUT, status_of(command)).await {
-            Ok(Ok((exit, status))) if exit.success() && own_sign_in(&status) => {
+            Ok(Ok((exit, printed)))
+                if exit.success() && own_sign_in.is_none_or(|own| own(&printed)) =>
+            {
                 Ok(SignIn::SignedIn)
             }
             Ok(Ok(_)) => Ok(SignIn::SignedOut),
@@ -132,25 +135,16 @@ impl Launch {
     /// When this build doesn't know the agent, its program can't be run, or the sign-in ends
     /// without success.
     pub async fn log_in(&self) -> Result<(), Fault> {
-        let mut command = self.vendors(claude::login, codex::login)?;
+        let mut command = match self.agent {
+            AgentKind::Claude => claude::login(self),
+            AgentKind::Codex => codex::login(self),
+            AgentKind::Newer => return Err(unknown()),
+        };
         let failed = || Fault::new(code!("agent.login_failed"), "The sign-in didn't finish");
         match command.status().await {
             Ok(exit) if exit.success() => Ok(()),
             Ok(_) => Err(failed()),
             Err(error) => Err(failed().because(error)),
-        }
-    }
-
-    // The command of this launch's vendor.
-    fn vendors(
-        &self,
-        claude: fn(&Self) -> Command,
-        codex: fn(&Self) -> Command,
-    ) -> Result<Command, Fault> {
-        match self.agent {
-            AgentKind::Claude => Ok(claude(self)),
-            AgentKind::Codex => Ok(codex(self)),
-            AgentKind::Newer => Err(unknown()),
         }
     }
 
@@ -169,16 +163,25 @@ impl Launch {
     }
 }
 
-/// Variables that would sign a vendor's program in other than through the workspace's own
-/// config folder: any whose name starts with one of `prefixes` or is one of `names`.
-pub(crate) struct OtherSignIns {
+/// The variable naming a vendor's config folder, and those that would sign it in otherwise:
+/// any whose name starts with one of `prefixes` or is one of `names`.
+pub(crate) struct SignInEnv {
+    pub(crate) config_var: &'static str,
     pub(crate) prefixes: &'static [&'static str],
     pub(crate) names: &'static [&'static str],
 }
 
-impl OtherSignIns {
+impl SignInEnv {
+    /// `launch`'s program, signed in only through the workspace's own config folder.
+    pub(crate) fn command(&self, launch: &Launch) -> Command {
+        let mut command = Command::new(&launch.program);
+        self.remove(&mut command, std::env::vars_os().map(|(name, _)| name));
+        command.env(self.config_var, &launch.config_dir);
+        command
+    }
+
     /// Removes from `command` those of the `inherited` variables' names that match.
-    pub(crate) fn remove(&self, command: &mut Command, inherited: impl Iterator<Item = OsString>) {
+    fn remove(&self, command: &mut Command, inherited: impl Iterator<Item = OsString>) {
         for name in inherited.filter(|name| self.matches(name)) {
             command.env_remove(name);
         }
@@ -198,11 +201,11 @@ impl OtherSignIns {
 // rest.
 async fn status_of(mut command: Command) -> io::Result<(ExitStatus, Vec<u8>)> {
     let mut child = command.spawn()?;
-    let mut status = Vec::new();
+    let mut printed = Vec::new();
     if let Some(stdout) = child.stdout.take() {
-        stdout.take(STATUS_LIMIT).read_to_end(&mut status).await?;
+        stdout.take(STATUS_LIMIT).read_to_end(&mut printed).await?;
     }
-    Ok((child.wait().await?, status))
+    Ok((child.wait().await?, printed))
 }
 
 fn not_installed() -> Fault {
@@ -241,7 +244,8 @@ mod tests {
 
     #[test]
     fn inherited_variables_with_a_sign_in_prefix_or_name_are_removed_in_any_case() {
-        let other = OtherSignIns {
+        let other = SignInEnv {
+            config_var: "VENDOR_HOME",
             prefixes: &["VENDOR_"],
             names: &["TOKEN"],
         };
@@ -341,7 +345,7 @@ mod tests {
     }
 
     async fn sign_in_code(launch: Launch) -> String {
-        let error = launch.sign_in().await.unwrap_err();
+        let error = launch.sign_in_status().await.unwrap_err();
         error.code().as_str().to_owned()
     }
 
@@ -373,7 +377,7 @@ mod tests {
         ];
 
         for (agent, program, expected) in cases {
-            let answer = with(agent, program).sign_in().await.unwrap();
+            let answer = with(agent, program).sign_in_status().await.unwrap();
             assert_eq!(answer, expected, "{agent:?} {program}");
         }
     }
@@ -384,7 +388,10 @@ mod tests {
         let dir = TempDir::new().unwrap();
         std::fs::write(dir.join("agent"), "").unwrap();
 
-        let error = launch(AgentKind::Claude, &dir).sign_in().await.unwrap_err();
+        let error = launch(AgentKind::Claude, &dir)
+            .sign_in_status()
+            .await
+            .unwrap_err();
 
         assert_eq!(error.code().as_str(), "agent.status_failed");
     }
@@ -399,7 +406,7 @@ mod tests {
             ..launch(AgentKind::Codex, &dir)
         };
 
-        let error = hanging.sign_in().await.unwrap_err();
+        let error = hanging.sign_in_status().await.unwrap_err();
 
         assert_eq!(error.code().as_str(), "agent.status_failed");
     }
