@@ -332,6 +332,28 @@ pub(crate) fn failure(fault: Fault) -> Response {
     response
 }
 
+/// Answers `fault` with its status in `refusals`, or as the server failing when it isn't there.
+pub(crate) fn refuse(refusals: &[(Code, StatusCode)], fault: Fault) -> Response {
+    match refusals.iter().find(|(code, _)| code == fault.code()) {
+        Some((code, status)) => error(*status, code.clone(), false),
+        None => failure(fault),
+    }
+}
+
+/// A request's body, or the fault `too_large` makes past the size limit and `invalid` makes
+/// otherwise.
+pub(crate) fn parsed<T>(
+    body: Result<Body<T>, Unreadable>,
+    too_large: impl FnOnce() -> Fault,
+    invalid: impl FnOnce() -> Fault,
+) -> Result<T, Fault> {
+    match body {
+        Ok(Body(body)) => Ok(body),
+        Err(Unreadable::TooLarge) => Err(too_large()),
+        Err(_) => Err(invalid()),
+    }
+}
+
 /// The fault a response answers, until `log_request` takes it.
 #[derive(Clone)]
 struct Failed(Arc<Fault>);
@@ -643,5 +665,42 @@ mod tests {
         let big = format!(r#"{{"email":"{}"}}"#, "a".repeat(MAX_BODY));
         let (head, _) = request(server.running.address, "POST /api/sign-in", &big).await;
         assert_eq!(head[0], "http/1.1 413 payload too large");
+    }
+
+    #[tokio::test]
+    async fn a_refusal_in_the_table_gets_its_status_and_any_other_is_a_failure() {
+        let refusals = [(code!("doc.stale"), StatusCode::CONFLICT)];
+        let fault = |code| Fault::new(code, "Made up");
+
+        let stale = refuse(&refusals, fault(code!("doc.stale")));
+        let broken = refuse(&refusals, fault(code!("db.failed")));
+
+        assert_eq!(stale.status(), StatusCode::CONFLICT);
+        assert!(stale.extensions().get::<Failed>().is_none());
+        let body = axum::body::to_bytes(stale.into_body(), 1024).await.unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(
+            body,
+            serde_json::json!({ "code": "doc.stale", "retryable": false })
+        );
+        assert_eq!(broken.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        assert!(broken.extensions().get::<Failed>().is_some());
+    }
+
+    #[test]
+    fn a_body_too_large_and_one_otherwise_unread_get_their_own_faults() {
+        let too_large = || Fault::new(code!("doc.too_large"), "Made up");
+        let invalid = || Fault::new(code!("doc.invalid"), "Made up");
+        let code = |body| {
+            parsed::<()>(body, too_large, invalid)
+                .unwrap_err()
+                .code()
+                .clone()
+        };
+
+        assert_eq!(parsed(Ok(Body(1)), too_large, invalid).unwrap(), 1);
+        assert_eq!(code(Err(Unreadable::TooLarge)), code!("doc.too_large"));
+        assert_eq!(code(Err(Unreadable::NotJson)), code!("doc.invalid"));
+        assert_eq!(code(Err(Unreadable::Invalid)), code!("doc.invalid"));
     }
 }

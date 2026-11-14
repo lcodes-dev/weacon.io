@@ -12,17 +12,14 @@ use weacon_protocol::{
 use crate::app::new_id;
 use crate::auth::Member;
 use crate::db::task_not_found;
-use crate::http::{Body, Shared, Unreadable, error, failure};
+use crate::http::{Body, Shared, Unreadable, error, parsed, refuse};
 
 /// `GET /api/workspaces/{workspace}/tasks`: the workspace's tasks, in their order.
-pub(crate) async fn list(member: Member) -> Response {
-    match member.workspace.tasks().await {
-        Ok(tasks) => Json(TaskList {
-            tasks: tasks.into_iter().map(record).collect(),
-        })
-        .into_response(),
-        Err(fault) => answer(fault),
-    }
+pub(crate) async fn list(member: Member) -> Result<Json<TaskList>, Refused> {
+    let tasks = member.workspace.tasks().await?;
+    Ok(Json(TaskList {
+        tasks: tasks.into_iter().map(record).collect(),
+    }))
 }
 
 /// `POST /api/workspaces/{workspace}/tasks`: makes a task, to do, in front of `before` or
@@ -31,25 +28,17 @@ pub(crate) async fn create(
     State(shared): State<Shared>,
     member: Member,
     body: Result<Body<TaskCreate>, Unreadable>,
-) -> Response {
-    let made = async {
-        let body = parsed(body)?;
-        let title = title(body.title)?;
-        let tasks = member.workspace.tasks().await?;
-        let order = place(&tasks, None, body.before.as_ref())?;
-        let id = TaskId::try_from(new_id()).map_err(|_| invalid())?;
-        let task = Task::new(id, title, order);
-        let attribution = Attribution::by(member.id.clone(), shared.now());
-        member.workspace.add_task(&task, &attribution).await?;
-        Ok(task)
-    };
-    match made.await {
-        Ok(task) => {
-            shared.changed(member.workspace.id());
-            (StatusCode::CREATED, Json(record(task))).into_response()
-        }
-        Err(fault) => answer(fault),
-    }
+) -> Result<impl IntoResponse, Refused> {
+    let body = parsed(body, too_large, invalid)?;
+    let title = title(body.title)?;
+    let tasks = member.workspace.tasks().await?;
+    let order = place(&tasks, None, body.before.as_ref())?;
+    let id = TaskId::try_from(new_id()).map_err(|_| invalid())?;
+    let task = Task::new(id, title, order);
+    let attribution = Attribution::by(member.id.clone(), shared.now());
+    member.workspace.add_task(&task, &attribution).await?;
+    shared.changed(member.workspace.id());
+    Ok((StatusCode::CREATED, Json(record(task))))
 }
 
 /// `POST /api/workspaces/{workspace}/tasks/{task}`: makes one edit to a task the client read
@@ -59,33 +48,26 @@ pub(crate) async fn change(
     member: Member,
     path: Result<Path<(WorkspaceId, TaskId)>, PathRejection>,
     body: Result<Body<TaskChange>, Unreadable>,
-) -> Response {
-    let edited = async {
-        let Path((_, id)) = path.map_err(|_| invalid())?;
-        let body = parsed(body)?;
-        let edit = match body.edit {
-            TaskEditBody::Title { title: text } => TaskEdit::Title(title(text)?),
-            TaskEditBody::Status { status } => TaskEdit::Status(status),
-            TaskEditBody::Move { before } => {
-                let tasks = member.workspace.tasks().await?;
-                TaskEdit::Order(place(&tasks, Some(&id), before.as_ref())?)
-            }
-            TaskEditBody::Newer => return Err(invalid()),
-        };
-        let attribution = Attribution::by(member.id.clone(), shared.now());
-        let read_at = Revision::new(body.version);
-        member
-            .workspace
-            .edit_task(&id, read_at, edit, &attribution)
-            .await
-    };
-    match edited.await {
-        Ok(task) => {
-            shared.changed(member.workspace.id());
-            Json(record(task)).into_response()
+) -> Result<Json<TaskRecord>, Refused> {
+    let Path((_, id)) = path.map_err(|_| invalid())?;
+    let body = parsed(body, too_large, invalid)?;
+    let edit = match body.edit {
+        TaskEditBody::Title { title: text } => TaskEdit::Title(title(text)?),
+        TaskEditBody::Status { status } => TaskEdit::Status(status),
+        TaskEditBody::Move { before } => {
+            let tasks = member.workspace.tasks().await?;
+            TaskEdit::Order(place(&tasks, Some(&id), before.as_ref())?)
         }
-        Err(fault) => answer(fault),
-    }
+        TaskEditBody::Newer => return Err(invalid().into()),
+    };
+    let attribution = Attribution::by(member.id.clone(), shared.now());
+    let read_at = Revision::new(body.version);
+    let task = member
+        .workspace
+        .edit_task(&id, read_at, edit, &attribution)
+        .await?;
+    shared.changed(member.workspace.id());
+    Ok(Json(record(task)))
 }
 
 /// An order key in front of `before`, or after the last task, among the tasks but `moving`.
@@ -129,16 +111,8 @@ fn record(task: Task) -> TaskRecord {
     }
 }
 
-/// A request's body, or `task.too_large` past the size limit and `task.invalid` otherwise.
-fn parsed<T>(body: Result<Body<T>, Unreadable>) -> Result<T, Fault> {
-    match body {
-        Ok(Body(body)) => Ok(body),
-        Err(Unreadable::TooLarge) => Err(Fault::new(
-            code!("task.too_large"),
-            "The task request is too large",
-        )),
-        Err(_) => Err(invalid()),
-    }
+fn too_large() -> Fault {
+    Fault::new(code!("task.too_large"), "The task request is too large")
 }
 
 fn invalid() -> Fault {
@@ -157,17 +131,27 @@ const REFUSALS: [(Code, StatusCode); 8] = [
     (code!("task.too_large"), StatusCode::PAYLOAD_TOO_LARGE),
 ];
 
-/// Answers a refusal with its status, and anything else as the server failing.
+/// Why a task request wasn't done: answered with its status from [`REFUSALS`].
+pub(crate) struct Refused(Fault);
+
+impl From<Fault> for Refused {
+    fn from(fault: Fault) -> Self {
+        Self(fault)
+    }
+}
+
+impl IntoResponse for Refused {
+    fn into_response(self) -> Response {
+        answer(self.0)
+    }
+}
+
 fn answer(fault: Fault) -> Response {
-    let code = fault.code().clone();
     // Another change took the same place at the same moment; reading again finds a free one.
-    if code == code!("db.exists") {
-        return error(StatusCode::CONFLICT, code, true);
+    if *fault.code() == code!("db.exists") {
+        return error(StatusCode::CONFLICT, fault.code().clone(), true);
     }
-    match REFUSALS.iter().find(|(refusal, _)| *refusal == code) {
-        Some((_, status)) => error(*status, code, false),
-        None => failure(fault),
-    }
+    refuse(&REFUSALS, fault)
 }
 
 #[cfg(test)]

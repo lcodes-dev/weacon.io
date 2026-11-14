@@ -11,7 +11,7 @@ use weacon_protocol::{
 
 use crate::app::new_id;
 use crate::auth::Member;
-use crate::http::{Body, Shared, Unreadable, error, failure};
+use crate::http::{Body, Shared, Unreadable, parsed, refuse};
 
 /// The most a doc request's body may be: room for the largest doc the model allows, even
 /// when JSON escapes each byte of its Markdown as `\u00XX`, with its pins.
@@ -20,11 +20,9 @@ pub(crate) const MAX_BODY: usize = 2 * 1024 * 1024;
 const HISTORY: u32 = 1000;
 
 /// `GET /api/workspaces/{workspace}/docs`: the workspace's docs, by title, without bodies.
-pub(crate) async fn list(member: Member) -> Response {
-    match member.workspace.docs().await {
-        Ok(docs) => Json(DocList { docs }).into_response(),
-        Err(fault) => answer(fault),
-    }
+pub(crate) async fn list(member: Member) -> Result<Json<DocList>, Refused> {
+    let docs = member.workspace.docs().await?;
+    Ok(Json(DocList { docs }))
 }
 
 /// `POST /api/workspaces/{workspace}/docs`: makes a doc at its first version.
@@ -32,35 +30,27 @@ pub(crate) async fn create(
     State(shared): State<Shared>,
     member: Member,
     body: Result<Body<DocContent>, Unreadable>,
-) -> Response {
-    let made = async {
-        let body = parsed(body)?;
-        let text = text(body)?;
-        let id = DocId::try_from(new_id()).map_err(|_| invalid())?;
-        let doc = Doc::new(id, text);
-        let attribution = Attribution::by(member.id.clone(), shared.now());
-        member.workspace.add_doc(&doc, &attribution).await?;
-        Ok(doc)
-    };
-    match made.await {
-        Ok(doc) => {
-            shared.changed(member.workspace.id());
-            (StatusCode::CREATED, Json(record(doc))).into_response()
-        }
-        Err(fault) => refused_write(&shared, &member, fault),
-    }
+) -> Result<impl IntoResponse, Refused> {
+    let text = text(parsed(body, too_large, invalid)?)?;
+    let id = DocId::try_from(new_id()).map_err(|_| invalid())?;
+    let doc = Doc::new(id, text);
+    let attribution = Attribution::by(member.id.clone(), shared.now());
+    member
+        .workspace
+        .add_doc(&doc, &attribution)
+        .await
+        .inspect_err(|fault| warn_if_full(&shared, &member, fault))?;
+    shared.changed(member.workspace.id());
+    Ok((StatusCode::CREATED, Json(record(doc))))
 }
 
 /// `GET /api/workspaces/{workspace}/docs/{doc}`: the doc as it is now.
 pub(crate) async fn read(
     member: Member,
     path: Result<Path<(WorkspaceId, DocId)>, PathRejection>,
-) -> Response {
-    let found = async {
-        let Path((_, id)) = path.map_err(|_| invalid())?;
-        member.workspace.doc(&id, None).await
-    };
-    reply(found.await)
+) -> Result<Json<DocRecord>, Refused> {
+    let Path((_, id)) = path.map_err(|_| invalid())?;
+    Ok(Json(record(member.workspace.doc(&id, None).await?)))
 }
 
 /// `POST /api/workspaces/{workspace}/docs/{doc}`: replaces the text of a doc the client read
@@ -70,25 +60,19 @@ pub(crate) async fn revise(
     member: Member,
     path: Result<Path<(WorkspaceId, DocId)>, PathRejection>,
     body: Result<Body<DocRevise>, Unreadable>,
-) -> Response {
-    let revised = async {
-        let Path((_, id)) = path.map_err(|_| invalid())?;
-        let body = parsed(body)?;
-        let text = text(body.content)?;
-        let attribution = Attribution::by(member.id.clone(), shared.now());
-        let read_at = Revision::new(body.version);
-        member
-            .workspace
-            .revise_doc(&id, read_at, text, &attribution)
-            .await
-    };
-    match revised.await {
-        Ok(doc) => {
-            shared.changed(member.workspace.id());
-            Json(record(doc)).into_response()
-        }
-        Err(fault) => refused_write(&shared, &member, fault),
-    }
+) -> Result<Json<DocRecord>, Refused> {
+    let Path((_, id)) = path.map_err(|_| invalid())?;
+    let body = parsed(body, too_large, invalid)?;
+    let text = text(body.content)?;
+    let attribution = Attribution::by(member.id.clone(), shared.now());
+    let read_at = Revision::new(body.version);
+    let doc = member
+        .workspace
+        .revise_doc(&id, read_at, text, &attribution)
+        .await
+        .inspect_err(|fault| warn_if_full(&shared, &member, fault))?;
+    shared.changed(member.workspace.id());
+    Ok(Json(record(doc)))
 }
 
 /// `GET /api/workspaces/{workspace}/docs/{doc}/revisions`: who made the doc's newest
@@ -96,15 +80,10 @@ pub(crate) async fn revise(
 pub(crate) async fn history(
     member: Member,
     path: Result<Path<(WorkspaceId, DocId)>, PathRejection>,
-) -> Response {
-    let found = async {
-        let Path((_, id)) = path.map_err(|_| invalid())?;
-        member.workspace.doc_history(&id, HISTORY).await
-    };
-    match found.await {
-        Ok(revisions) => Json(DocHistory { revisions }).into_response(),
-        Err(fault) => answer(fault),
-    }
+) -> Result<Json<DocHistory>, Refused> {
+    let Path((_, id)) = path.map_err(|_| invalid())?;
+    let revisions = member.workspace.doc_history(&id, HISTORY).await?;
+    Ok(Json(DocHistory { revisions }))
 }
 
 /// `GET /api/workspaces/{workspace}/docs/{doc}/revisions/{version}`: the doc as it was at
@@ -112,15 +91,10 @@ pub(crate) async fn history(
 pub(crate) async fn revision(
     member: Member,
     path: Result<Path<(WorkspaceId, DocId, u64)>, PathRejection>,
-) -> Response {
-    let found = async {
-        let Path((_, id, version)) = path.map_err(|_| invalid())?;
-        member
-            .workspace
-            .doc(&id, Some(Revision::new(version)))
-            .await
-    };
-    reply(found.await)
+) -> Result<Json<DocRecord>, Refused> {
+    let Path((_, id, version)) = path.map_err(|_| invalid())?;
+    let at = Some(Revision::new(version));
+    Ok(Json(record(member.workspace.doc(&id, at).await?)))
 }
 
 fn text(content: DocContent) -> Result<DocText, Fault> {
@@ -150,32 +124,15 @@ fn record(doc: Doc) -> DocRecord {
     }
 }
 
-fn reply(doc: Result<Doc, Fault>) -> Response {
-    match doc {
-        Ok(doc) => Json(record(doc)).into_response(),
-        Err(fault) => answer(fault),
-    }
-}
-
-/// A request's body, or `doc.too_large` past the size limit and `doc.invalid` otherwise.
-fn parsed<T>(body: Result<Body<T>, Unreadable>) -> Result<T, Fault> {
-    match body {
-        Ok(Body(body)) => Ok(body),
-        Err(Unreadable::TooLarge) => Err(too_large()),
-        Err(_) => Err(invalid()),
-    }
-}
-
-/// Answers a refused create or revision. A full workspace stays full, since nothing is
-/// pruned, so it is logged for the operator.
-fn refused_write(shared: &Shared, member: &Member, fault: Fault) -> Response {
-    if fault.code().as_str() == "doc.quota_full" {
+/// Logs a refused write that found the workspace full: it stays full, since nothing is
+/// pruned, so the operator needs to know.
+fn warn_if_full(shared: &Shared, member: &Member, fault: &Fault) {
+    if *fault.code() == code!("doc.quota_full") {
         let workspace = member.workspace.id().as_str().to_owned();
         shared
             .log
             .warn("doc quota full", &[("workspace_id", workspace.into())]);
     }
-    answer(fault)
 }
 
 fn too_large() -> Fault {
@@ -199,13 +156,23 @@ const REFUSALS: [(Code, StatusCode); 9] = [
     (code!("doc.last_version"), StatusCode::CONFLICT),
 ];
 
-/// Answers a refusal with its status, and anything else as the server failing.
-fn answer(fault: Fault) -> Response {
-    let code = fault.code().clone();
-    match REFUSALS.iter().find(|(refusal, _)| *refusal == code) {
-        Some((_, status)) => error(*status, code, false),
-        None => failure(fault),
+/// Why a doc request wasn't done: answered with its status from [`REFUSALS`].
+pub(crate) struct Refused(Fault);
+
+impl From<Fault> for Refused {
+    fn from(fault: Fault) -> Self {
+        Self(fault)
     }
+}
+
+impl IntoResponse for Refused {
+    fn into_response(self) -> Response {
+        answer(self.0)
+    }
+}
+
+fn answer(fault: Fault) -> Response {
+    refuse(&REFUSALS, fault)
 }
 
 #[cfg(test)]
