@@ -20,8 +20,7 @@ use windows_sys::Win32::System::Threading::{
 
 use super::command::{command_line, environment, wide};
 
-/// Whether `program` names a program file, which Windows starts as it is: a script such as a
-/// `.cmd` or `.bat` would run through the shell.
+/// Whether `program` names a program file, which Windows starts as it is, and so no script.
 pub(super) fn is_program_file(program: &Path) -> bool {
     program
         .extension()

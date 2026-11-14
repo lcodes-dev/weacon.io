@@ -1,6 +1,6 @@
 #![expect(
     unsafe_code,
-    reason = "std has no pseudo-consoles: ConPTY and starting a process in one are only in the Windows API"
+    reason = "std has no pseudo-consoles: ConPTY is only in the Windows API"
 )]
 
 mod command;
@@ -22,7 +22,7 @@ use windows_sys::Win32::System::Threading::{
     GetExitCodeProcess, INFINITE, TerminateProcess, WaitForSingleObject,
 };
 
-use super::CHUNK;
+use super::{CHUNK, WAITING, output};
 use crate::terminal::{Event, Size};
 use process::{is_program_file, start};
 
@@ -54,17 +54,15 @@ impl Pty {
                 "not a program file",
             ));
         }
-        let (console, input, output) = Console::open(size)?;
-        let console = Arc::new(console);
+        let (console, input, read) = Console::open(size)?;
         let process = console
-            .handle()
-            .and_then(|handle| start(command, program, handle))
+            .with_open(|handle| start(command, program, handle))
             .inspect_err(|_| console.close())?;
-        let process = Arc::new(process);
-        let (events, received) = mpsc::channel(8);
+        let (console, process) = (Arc::new(console), Arc::new(process));
+        let (events, received) = mpsc::channel(WAITING);
         let (stop, stopped) = watch::channel(());
-        let watched = (Arc::clone(&process), Arc::clone(&console));
-        tokio::spawn(supervise(watched, output, events, stopped));
+        let (watched, closing) = (Arc::clone(&process), Arc::clone(&console));
+        tokio::spawn(supervise(watched, closing, read, events, stopped));
         let pty = Self {
             input,
             console,
@@ -84,7 +82,14 @@ impl Pty {
     }
 
     pub(crate) fn resize(&self, size: Size) -> io::Result<()> {
-        self.console.resize(size)
+        self.console.with_open(|handle| {
+            // SAFETY: the console stays open while `with_open` holds its lock.
+            let resized = unsafe { ResizePseudoConsole(handle, coord(size)) };
+            if resized < 0 {
+                return Err(failed(resized));
+            }
+            Ok(())
+        })
     }
 }
 
@@ -105,7 +110,7 @@ impl Drop for Pty {
 }
 
 impl Console {
-    /// A new pseudo-console of `size`, the end that types into it and the end that reads it.
+    // A new pseudo-console of `size`, the end that types into it and the end that reads it.
     fn open(size: Size) -> io::Result<(Self, PipeWriter, PipeReader)> {
         let (input_read, input) = io::pipe()?;
         let (output, output_write) = io::pipe()?;
@@ -126,23 +131,13 @@ impl Console {
         Ok((Self(Mutex::new(Some(handle))), input, output))
     }
 
-    // The console while it is open.
-    fn handle(&self) -> io::Result<HPCON> {
-        let open = self.0.lock().map_err(|_| io::ErrorKind::BrokenPipe)?;
-        open.ok_or_else(|| io::ErrorKind::BrokenPipe.into())
-    }
-
-    fn resize(&self, size: Size) -> io::Result<()> {
+    // Runs `act` with the console, which can't close while it runs; an error once closed.
+    fn with_open<T>(&self, act: impl FnOnce(HPCON) -> io::Result<T>) -> io::Result<T> {
         let open = self.0.lock().map_err(|_| io::ErrorKind::BrokenPipe)?;
         let Some(handle) = *open else {
             return Err(io::ErrorKind::BrokenPipe.into());
         };
-        // SAFETY: the lock is held, so the console can't close during the call.
-        let resized = unsafe { ResizePseudoConsole(handle, coord(size)) };
-        if resized < 0 {
-            return Err(failed(resized));
-        }
-        Ok(())
+        act(handle)
     }
 
     // Closing waits until the output is read, which `pump` keeps doing.
@@ -158,13 +153,14 @@ impl Console {
 // Sends the output and then how the program ended. The output ends only when the console
 // closes, which happens once the program has ended.
 async fn supervise(
-    (process, console): (Arc<OwnedHandle>, Arc<Console>),
-    output: PipeReader,
+    process: Arc<OwnedHandle>,
+    console: Arc<Console>,
+    reader: PipeReader,
     events: mpsc::Sender<Event>,
     stopped: watch::Receiver<()>,
 ) {
     let sender = events.clone();
-    let pump = task::spawn_blocking(move || pump(output, &sender, stopped));
+    let pump = task::spawn_blocking(move || pump(reader, &sender, stopped));
     let success = task::spawn_blocking(move || ended_well(&process))
         .await
         .unwrap_or(false);
@@ -175,19 +171,19 @@ async fn supervise(
 
 // Keeps reading once nobody listens, or once the terminal is dropped, so the console can still
 // close.
-fn pump(mut output: PipeReader, events: &mpsc::Sender<Event>, mut stopped: watch::Receiver<()>) {
+fn pump(mut reader: PipeReader, events: &mpsc::Sender<Event>, mut stopped: watch::Receiver<()>) {
     let runtime = tokio::runtime::Handle::current();
     let mut buffer = vec![0; CHUNK];
     let mut listening = true;
-    while let Ok(read) = output.read(&mut buffer) {
+    while let Ok(read) = reader.read(&mut buffer) {
         if read == 0 {
             return;
         }
-        let chunk = buffer.get(..read).unwrap_or_default().to_vec();
+        let chunk = output(&buffer, read);
         listening = listening
             && runtime.block_on(async {
                 tokio::select! {
-                    sent = events.send(Event::Output(chunk)) => sent.is_ok(),
+                    sent = events.send(chunk) => sent.is_ok(),
                     _ = stopped.changed() => false,
                 }
             });
