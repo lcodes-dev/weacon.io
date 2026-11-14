@@ -34,7 +34,7 @@ const REDIRECTS: [&str; 9] = [
 ];
 
 /// Git, found on the person's `PATH`. Every call blocks until git exits.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub(crate) struct Git {
     program: PathBuf,
     no_hooks: PathBuf,
@@ -92,6 +92,24 @@ impl Git {
             .map_err(|error| {
                 Fault::new(code!("git.unreadable"), "Git's answer wasn't a folder").because(error)
             })
+    }
+
+    /// Locks `worktree` against `git worktree prune`, which would forget it while its folder is
+    /// in the Trash.
+    pub(crate) fn lock(&self, worktree: &Path) -> Result<(), Fault> {
+        run(self
+            .command(worktree)
+            .args(["worktree", "lock", "--reason", "In the Trash"])
+            .arg(worktree))
+        .map(drop)
+    }
+
+    /// Unlocks `worktree` once it's back; one already unlocked stays so.
+    pub(crate) fn unlock(&self, worktree: &Path) {
+        drop(run(self
+            .command(worktree)
+            .args(["worktree", "unlock"])
+            .arg(worktree)));
     }
 
     /// Every working tree of `repo` that still has its folder, the main one first.

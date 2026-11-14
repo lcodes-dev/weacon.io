@@ -8,24 +8,28 @@ use axum::extract::{DefaultBodyLimit, FromRequest, MatchedPath, Request, State};
 use axum::http::{HeaderValue, Method, StatusCode, header};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, post};
+use axum::routing::{delete, get, post};
 use serde::de::DeserializeOwned;
 use tokio::net::TcpListener;
 use tokio::sync::{Semaphore, broadcast, watch};
 use tokio::time::timeout;
 use weacon_observability::{Clock, Fault, Field, Logger, Reporter};
-use weacon_protocol::{App, Code, ErrorBody, WorkspaceId, code};
+use weacon_protocol::{App, Code, ErrorBody, MachineId, WorkspaceId, code};
 
 use crate::client::Net;
 use crate::connections;
 use crate::db::Db;
+use crate::docs;
 use crate::feed;
 use crate::limit::Limit;
 use crate::outbox::Outbox;
+use crate::pairing;
 use crate::secret::Secret;
 use crate::sign_in;
 use crate::sign_up::SignUp;
+use crate::socket;
 use crate::tasks;
+use crate::uplink;
 use crate::web::{self, WebFile};
 use crate::workspaces;
 
@@ -61,7 +65,9 @@ pub(crate) struct Shared {
     pub(crate) proxies: Arc<[Net]>,
     /// Room for open connections, feeds included; when it's full, more wait to be accepted.
     pub(crate) connections: Arc<Semaphore>,
-    pub(crate) feed: feed::Timing,
+    pub(crate) sockets: socket::Timing,
+    /// Which machine was just unpaired, for its open connection.
+    pub(crate) unpaired: broadcast::Sender<MachineId>,
     /// Which workspace just changed, for the feeds.
     pub(crate) changes: broadcast::Sender<WorkspaceId>,
     /// Room for sign-ins being worked on after their answer; when it's full, more are dropped.
@@ -74,6 +80,12 @@ pub(crate) struct Shared {
     pub(crate) tries: Arc<Limit>,
     /// Who may make an account by signing in.
     pub(crate) sign_up: Arc<[SignUp]>,
+    /// How many pairings each client may start.
+    pub(crate) pair_starts: Arc<Limit>,
+    /// How many pairing codes each client may try.
+    pub(crate) pair_tries: Arc<Limit>,
+    /// How many pairing claims each client may make.
+    pub(crate) pair_claims: Arc<Limit>,
     /// The web app's built files it serves.
     pub(crate) web: &'static [WebFile],
 }
@@ -126,6 +138,28 @@ pub(crate) async fn serve(
     }
 }
 
+/// The doc routes, whose bodies may be larger than others.
+fn doc_routes() -> Router<Shared> {
+    Router::new()
+        .route(
+            "/api/workspaces/{workspace}/docs",
+            get(docs::list).post(docs::create),
+        )
+        .route(
+            "/api/workspaces/{workspace}/docs/{doc}",
+            get(docs::read).post(docs::revise),
+        )
+        .route(
+            "/api/workspaces/{workspace}/docs/{doc}/revisions",
+            get(docs::history),
+        )
+        .route(
+            "/api/workspaces/{workspace}/docs/{doc}/revisions/{version}",
+            get(docs::revision),
+        )
+        .layer(DefaultBodyLimit::max(docs::MAX_BODY))
+}
+
 fn router(shared: Shared) -> Router {
     Router::new()
         .route("/version", get(version))
@@ -137,6 +171,13 @@ fn router(shared: Shared) -> Router {
             "/api/workspaces",
             get(workspaces::list).post(workspaces::create),
         )
+        .route("/api/machines", get(pairing::list))
+        .route("/api/machines/{machine}", delete(pairing::unpair))
+        .route("/api/machines/connect", get(uplink::connect))
+        .route("/api/machines/pair", post(pairing::start))
+        .route("/api/machines/pair/lookup", post(pairing::lookup))
+        .route("/api/machines/pair/confirm", post(pairing::confirm))
+        .route("/api/machines/pair/claim", post(pairing::claim))
         .route("/api/workspaces/{workspace}", get(workspaces::read))
         .route("/api/workspaces/{workspace}/feed", get(feed::feed))
         .route(
@@ -147,6 +188,7 @@ fn router(shared: Shared) -> Router {
             "/api/workspaces/{workspace}/tasks/{task}",
             post(tasks::change),
         )
+        .merge(doc_routes())
         .merge(web::routes(shared.web))
         .layer(DefaultBodyLimit::max(MAX_BODY))
         .layer(middleware::map_response(uncached))
@@ -261,6 +303,11 @@ impl IntoResponse for Unreadable {
         };
         error(status, code, false)
     }
+}
+
+/// Answers that there is no such thing, or none the asker may see, with `code`.
+pub(crate) fn not_found(code: Code) -> Response {
+    error(StatusCode::NOT_FOUND, code, false)
 }
 
 /// Answers that the request isn't from the server's own pages.

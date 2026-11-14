@@ -9,6 +9,7 @@ mod doc;
 mod frame;
 mod log;
 mod machine;
+mod mcp;
 mod message;
 mod pick;
 mod receipt;
@@ -18,14 +19,17 @@ mod settings;
 mod task;
 mod team;
 mod terminal;
+#[cfg(test)]
+mod test_support;
 mod token;
 mod update;
+mod worktree;
 
 pub use access::AccessLevel;
 pub use capability::Capability;
 pub use chat::{
     Asker, ChatAction, ChatAnswer, ChatAnswerKind, ChatCommand, ChatEntry, ChatEvent, ChatId,
-    ChatQuery, ChatQueryKind, ChatUpdate,
+    ChatList, ChatQuery, ChatQueryKind, ChatState, ChatSummary, ChatUpdate,
 };
 pub use code::Code;
 pub use diff::{
@@ -42,12 +46,14 @@ pub use machine::{
     MachineId, MachineKey, MachineList, MachineName, MachineOs, MachineSummary, PairClaim,
     PairClaimed, PairConfirm, PairLookup, PairPending, PairStart, PairStarted, PairingId,
 };
+pub use mcp::{MapArgs, McpCall, SymbolArgs};
 pub use message::{App, Envelope, ErrorBody, Hello, Message, PROTOCOL, Welcome};
 pub use pick::Pick;
 pub use receipt::{Outcome, Receipt, RequestId};
 pub use repo::RepoId;
 pub use run::{
-    AgentKind, AgentSession, PermissionAnswer, RunEvent, RunId, RunState, RunStatus, RunUpdate,
+    AgentKind, AgentOwner, AgentRef, AgentSession, PermissionAnswer, RunEvent, RunId, RunState,
+    RunStatus, RunUpdate,
 };
 pub use settings::{
     AgentSignIn, MachineSettings, MachineSettingsAction, MachineSettingsAnswer,
@@ -69,9 +75,14 @@ pub use terminal::{
 pub use update::{
     BuildTarget, Commit, DownloadUrl, ReleaseBuild, ReleaseManifest, ReleaseVersion, Sha256,
 };
+pub use worktree::{
+    WorktreeAction, WorktreeAnswer, WorktreeAnswerKind, WorktreeCommand, WorktreeQuery,
+    WorktreeQueryKind,
+};
 
 /// `bytes` as lowercase hex.
-pub(crate) fn to_hex(bytes: &[u8]) -> String {
+#[must_use]
+pub fn to_hex(bytes: &[u8]) -> String {
     let nibbles = bytes.iter().flat_map(|byte| [byte >> 4, byte & 0xf]);
     nibbles
         .filter_map(|nibble| char::from_digit(u32::from(nibble), 16))
@@ -112,6 +123,7 @@ mod tests {
         generator.subschema_for::<PairClaim>();
         generator.subschema_for::<PairClaimed>();
         generator.subschema_for::<MachineList>();
+        generator.subschema_for::<ChatList>();
         generator.subschema_for::<DocList>();
         generator.subschema_for::<DocRecord>();
         generator.subschema_for::<DocRevise>();
