@@ -174,15 +174,7 @@ mod tests {
     use super::*;
     use crate::test_support::{Client, Fixture, refusal, workspace_id};
 
-    trait Docs {
-        async fn ok<T: serde::de::DeserializeOwned>(&self, head: &str, body: &str, want: &str)
-        -> T;
-        async fn create(&self, content: &DocContent) -> DocRecord;
-        async fn revise(&self, doc: &DocRecord, content: &DocContent) -> (String, String);
-        async fn get<T: serde::de::DeserializeOwned>(&self, path: &str) -> T;
-    }
-
-    impl Docs for Client {
+    impl Client {
         async fn ok<T: serde::de::DeserializeOwned>(
             &self,
             head: &str,
@@ -194,7 +186,7 @@ mod tests {
             serde_json::from_str(&body).unwrap()
         }
 
-        async fn create(&self, content: &DocContent) -> DocRecord {
+        async fn create_doc(&self, content: &DocContent) -> DocRecord {
             let body = serde_json::to_string(content).unwrap();
             self.ok(
                 "POST /api/workspaces/w1/docs",
@@ -252,8 +244,8 @@ mod tests {
         let (_server, ada) = fixture.client("ada@example.com").await;
         let mut changes = fixture.shared.changes.subscribe();
 
-        let made = ada.create(&linked()).await;
-        let plain = ada.create(&content("Agents", "Plain.", &[])).await;
+        let made = ada.create_doc(&linked()).await;
+        let plain = ada.create_doc(&content("Agents", "Plain.", &[])).await;
 
         assert_eq!((made.version, &made.content), (1, &linked()));
         assert_eq!(changes.try_recv().unwrap(), workspace_id("w1"));
@@ -284,7 +276,7 @@ mod tests {
     async fn a_revision_answers_the_doc_at_its_next_version_and_keeps_the_old_one() {
         let fixture = Fixture::new().await;
         let (_server, ada) = fixture.client("ada@example.com").await;
-        let first = ada.create(&content("Framing", "Draft.", &[])).await;
+        let first = ada.create_doc(&content("Framing", "Draft.", &[])).await;
 
         let (status, body) = ada.revise(&first, &linked()).await;
         let (stale, stale_body) = ada.revise(&first, &content("Late", "Late.", &[])).await;
@@ -324,7 +316,7 @@ mod tests {
     async fn a_doc_or_version_there_isnt_is_not_found() {
         let fixture = Fixture::new().await;
         let (_server, ada) = fixture.client("ada@example.com").await;
-        let doc = ada.create(&linked()).await;
+        let doc = ada.create_doc(&linked()).await;
         let id = doc.id.as_str();
         let gone = DocRecord {
             id: DocId::try_from("d-gone".to_owned()).unwrap(),
@@ -358,7 +350,7 @@ mod tests {
     async fn bad_or_mismatched_content_is_refused_and_nothing_changes() {
         let fixture = Fixture::new().await;
         let (_server, ada) = fixture.client("ada@example.com").await;
-        let doc = ada.create(&linked()).await;
+        let doc = ada.create_doc(&linked()).await;
         let huge = content("Huge", &"a".repeat(300 * 1024), &[]);
 
         for (content, status, code) in [
@@ -400,7 +392,7 @@ mod tests {
     async fn a_request_that_isnt_a_doc_request_is_invalid() {
         let fixture = Fixture::new().await;
         let (_server, ada) = fixture.client("ada@example.com").await;
-        let doc = ada.create(&linked()).await;
+        let doc = ada.create_doc(&linked()).await;
         let head = format!("POST /api/workspaces/w1/docs/{}", doc.id.as_str());
 
         for (head, body) in [
@@ -434,7 +426,7 @@ mod tests {
         let large = content("Large", &"a".repeat(100 * 1024), &[]);
         let escaped = content("Escaped", &"\u{1}".repeat(256 * 1024), &[]);
 
-        let made = ada.create(&large).await;
+        let made = ada.create_doc(&large).await;
         let (status, body) = ada.revise(&made, &escaped).await;
 
         assert_eq!(status, "http/1.1 200 ok", "{body}");
@@ -504,7 +496,7 @@ mod tests {
     async fn a_full_workspace_takes_no_more_docs_and_the_operator_hears_of_it() {
         let fixture = Fixture::new().await;
         let (_server, ada) = fixture.client("ada@example.com").await;
-        let doc = ada.create(&linked()).await;
+        let doc = ada.create_doc(&linked()).await;
         let w1 = fixture
             .shared
             .db

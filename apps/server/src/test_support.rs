@@ -113,18 +113,11 @@ impl Fixture {
         run(self.shared.clone()).await
     }
 
-    /// A server running on the fixture's state that `address` has signed in to, and the
-    /// sign-in's answer.
-    pub(crate) async fn signed_in(&self, address: &str) -> (Running, Value) {
-        let server = self.run().await;
-        let (_, body) = sign_in(self, server.address, address).await;
-        (server, body)
-    }
-
     /// A server running on the fixture's state, which stops once dropped, and a client that
     /// `email` signed in to it.
     pub(crate) async fn client(&self, email: &str) -> (Running, Client) {
-        let (server, body) = self.signed_in(email).await;
+        let server = self.run().await;
+        let (_, body) = sign_in(self, server.address, email).await;
         let client = Client {
             address: server.address,
             auth: bearer(&body),

@@ -152,21 +152,14 @@ mod tests {
     use super::*;
     use crate::test_support::{Client, Fixture, refusal, workspace_id};
 
-    trait Tasks {
-        async fn list(&self) -> Vec<TaskRecord>;
-        async fn create(&self, title: &str, before: Option<&TaskRecord>) -> TaskRecord;
-        async fn change(&self, task: &TaskRecord, edit: TaskEditBody) -> (String, String);
-        async fn changed(&self, task: &TaskRecord, edit: TaskEditBody) -> TaskRecord;
-    }
-
-    impl Tasks for Client {
+    impl Client {
         async fn list(&self) -> Vec<TaskRecord> {
             let (status, body) = self.send("GET /api/workspaces/w1/tasks", "").await;
             assert_eq!(status, "http/1.1 200 ok");
             serde_json::from_str::<TaskList>(&body).unwrap().tasks
         }
 
-        async fn create(&self, title: &str, before: Option<&TaskRecord>) -> TaskRecord {
+        async fn create_task(&self, title: &str, before: Option<&TaskRecord>) -> TaskRecord {
             let create = TaskCreate {
                 title: title.to_owned(),
                 before: before.map(|task| task.id.clone()),
@@ -204,10 +197,10 @@ mod tests {
         let (_server, ada) = fixture.client("ada@example.com").await;
         let mut changes = fixture.shared.changes.subscribe();
 
-        let write = ada.create("Write", None).await;
-        let ship = ada.create("Ship", None).await;
-        let plan = ada.create("Plan", Some(&write)).await;
-        let review = ada.create("Review", Some(&ship)).await;
+        let write = ada.create_task("Write", None).await;
+        let ship = ada.create_task("Ship", None).await;
+        let plan = ada.create_task("Plan", Some(&write)).await;
+        let review = ada.create_task("Review", Some(&ship)).await;
 
         assert_eq!(
             titles(&ada.list().await),
@@ -237,8 +230,8 @@ mod tests {
     async fn an_edit_answers_the_task_at_its_next_version() {
         let fixture = Fixture::new().await;
         let (_server, ada) = fixture.client("ada@example.com").await;
-        let write = ada.create("Write", None).await;
-        let ship = ada.create("Ship", None).await;
+        let write = ada.create_task("Write", None).await;
+        let ship = ada.create_task("Ship", None).await;
 
         let renamed = ada
             .changed(
@@ -279,7 +272,7 @@ mod tests {
     async fn a_stale_or_missing_task_is_refused_and_nothing_changes() {
         let fixture = Fixture::new().await;
         let (_server, ada) = fixture.client("ada@example.com").await;
-        let write = ada.create("Write", None).await;
+        let write = ada.create_task("Write", None).await;
         ada.changed(
             &write,
             TaskEditBody::Title {
@@ -330,7 +323,7 @@ mod tests {
     async fn a_body_past_the_size_limit_is_too_large_and_one_under_it_is_read() {
         let fixture = Fixture::new().await;
         let (_server, ada) = fixture.client("ada@example.com").await;
-        let write = ada.create("Write", None).await;
+        let write = ada.create_task("Write", None).await;
         let huge = TaskCreate {
             title: "x".repeat(20_000),
             before: None,
@@ -359,7 +352,7 @@ mod tests {
     async fn bad_input_is_refused_as_a_bad_request() {
         let fixture = Fixture::new().await;
         let (_server, ada) = fixture.client("ada@example.com").await;
-        let write = ada.create("Write", None).await;
+        let write = ada.create_task("Write", None).await;
         let current = TaskRecord {
             version: 1,
             ..write.clone()
