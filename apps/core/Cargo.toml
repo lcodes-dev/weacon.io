@@ -13,11 +13,16 @@ path = "src/main.rs"
 
 [dependencies]
 clap.workspace = true
+futures-util.workspace = true
+getrandom.workspace = true
 minisign-verify.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
-tokio.workspace = true
+tokio = { workspace = true, features = ["sync"] }
+tokio-rustls.workspace = true
+tokio-tungstenite.workspace = true
+ureq.workspace = true
 weacon-agents.workspace = true
 weacon-appkit.workspace = true
 weacon-client.workspace = true
@@ -25,6 +30,8 @@ weacon-codemap.workspace = true
 weacon-observability.workspace = true
 weacon-protocol.workspace = true
 weacon-version.workspace = true
+webpki-roots.workspace = true
+x25519-dalek.workspace = true
 
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true
@@ -33,6 +40,7 @@ libc.workspace = true
 windows-sys.workspace = true
 
 [dev-dependencies]
+rcgen.workspace = true
 tokio = { workspace = true, features = ["sync", "test-util"] }
 weacon-testing.workspace = true
 

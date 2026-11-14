@@ -10,9 +10,11 @@ mod cli;
 mod daemon;
 mod disk;
 mod doctor;
+mod machine;
 mod map;
 mod memory;
 mod native_host;
+mod pair;
 mod picks;
 mod platform;
 mod reports;
@@ -21,6 +23,7 @@ mod reports;
     expect(dead_code, reason = "the chat engine, which uses it, comes next")
 )]
 mod runs;
+mod server;
 mod service;
 mod session;
 mod status;
@@ -85,6 +88,10 @@ fn run(app: &App, command: Command, env: platform::Env<'_>) -> Result<Outcome, F
             team,
         } => workspaces::access(app, &workspace, level, team, &mut io::stdout().lock())
             .map(Outcome::from),
+        Command::Pair { server, name, pin } => {
+            pair::run(app, &server, name, pin.as_deref(), &mut io::stdout().lock())
+                .map(Outcome::from)
+        }
         Command::Reports { answer } => {
             reports::run(app, answer, &mut io::stdout().lock()).map(Outcome::from)
         }
