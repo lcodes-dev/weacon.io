@@ -54,6 +54,7 @@ use weacon_agents::SpawnPolicy;
 mod chrome;
 mod procs;
 mod programs;
+mod runnable;
 #[cfg_attr(
     not(test),
     expect(
@@ -68,6 +69,7 @@ pub(crate) use procs::{PROCESSES, Process, processes};
 pub(crate) use programs::find_program;
 #[cfg(test)]
 pub(crate) use programs::{plant_link, plant_program};
+pub(crate) use runnable::make_runnable;
 
 /// Reads an environment variable; tests pass a fake.
 pub(crate) type Env<'a> = &'a dyn Fn(&str) -> Option<OsString>;

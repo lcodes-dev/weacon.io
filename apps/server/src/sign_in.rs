@@ -6,7 +6,6 @@ use axum::extract::State;
 use axum::http::header::SET_COOKIE;
 use axum::http::{HeaderMap, Method, StatusCode};
 use axum::response::{IntoResponse, Response};
-use sha2::{Digest, Sha256};
 use tokio::time::{Instant, sleep_until};
 use weacon_observability::Fault;
 use weacon_protocol::{
@@ -15,19 +14,19 @@ use weacon_protocol::{
 };
 
 use crate::app::{fresh, new_id};
-use crate::auth::{Session, Unproven, proof, same_origin, set_session_cookie};
+use crate::auth::{Sender, Session, Unproven, proof, sender, set_session_cookie, token_hash};
 use crate::client::Client;
 use crate::db::Attempt;
 use crate::email::Email;
-use crate::http::{Shared, cross_site, failure, refused, report, too_many};
+use crate::http::{Body, Shared, cross_site, failure, report, too_many, unauthorized};
 use crate::limit::Limit;
-use crate::mail::mail_failed;
-use crate::secret::{os_secrets, random_failed};
+use crate::outbox::mail_failed;
+use crate::secret::{random_bytes, random_failed};
 use crate::sign_up;
 use crate::workspaces;
 
-/// How long a session lasts: 30 days, in seconds.
-pub(crate) const SESSION_LIFETIME: i64 = 2_592_000;
+/// How long a session lasts, in seconds.
+pub(crate) const SESSION_LIFETIME: i64 = 30 * 24 * 60 * 60;
 /// How many sign-ins may be worked on at once after their answer.
 pub(crate) const AT_ONCE: usize = 64;
 /// How long finishing a sign-in takes at least: longer than any of its database work.
@@ -50,20 +49,20 @@ pub(crate) fn tries() -> Limit {
 pub(crate) async fn start(
     State(shared): State<Shared>,
     Client(from): Client,
-    Json(body): Json<AccountSignInStart>,
+    Body(body): Body<AccountSignInStart>,
 ) -> Response {
     if !shared.starts.allow(from, Instant::now()) {
         return too_many(code!("sign_in.too_many"));
     }
     let challenge = match new_challenge() {
         Ok(challenge) => challenge,
-        Err(fault) => return failure(&shared, fault),
+        Err(fault) => return failure(fault),
     };
     if let Ok(room) = Arc::clone(&shared.sign_ins).try_acquire_owned() {
         let sent = challenge.clone();
         drop(tokio::spawn(async move {
             if let Err(fault) = send_code(&shared, &body, &sent).await {
-                report(&shared, fault);
+                report(&shared, "sign-in failed", Arc::new(fault), &[]);
             }
             drop(room);
         }));
@@ -83,16 +82,26 @@ async fn send_code(
     {
         return Ok(());
     }
-    let code = code_text(&os_secrets()?);
-    let code_hash = shared.secret.code_hash(challenge, &code);
-    shared
+    let code = code_text(&random_bytes()?);
+    let code_hash = shared.secret.code_hash(&email, &code);
+    let now = shared.now();
+    if !shared
         .db
-        .start_challenge(&email, challenge, &code_hash, shared.now())
-        .await?;
+        .start_challenge(&email, challenge, &code_hash, now)
+        .await?
+    {
+        return Ok(());
+    }
     let outbox = shared.outbox.clone();
-    tokio::task::spawn_blocking(move || outbox.send(&email, &code))
+    let sent = tokio::task::spawn_blocking(move || outbox.send(&email, &code))
         .await
-        .map_err(|error| mail_failed().because(error))?
+        .map_err(|error| mail_failed().because(error))
+        .and_then(|sent| sent);
+    if sent.is_err() {
+        // A code nobody received mustn't keep the address from getting another.
+        shared.db.unmail(challenge).await?;
+    }
+    sent
 }
 
 /// `POST /api/sign-in/finish`: trades a challenge's code for a session, in the same time
@@ -102,18 +111,18 @@ pub(crate) async fn finish(
     State(shared): State<Shared>,
     Client(from): Client,
     headers: HeaderMap,
-    Json(body): Json<AccountSignInFinish>,
+    Body(body): Body<AccountSignInFinish>,
 ) -> Response {
     let now = Instant::now();
     if !shared.tries.allow(from, now) {
         return too_many(code!("sign_in.too_many"));
     }
-    let page = same_origin(&headers);
-    if page == Some(false) {
+    let page = sender(&headers);
+    if page == Sender::OtherSite {
         return cross_site();
     }
     let answer = match signed_in(&shared, &body).await {
-        Ok(Some((who, token))) if page.is_some() => {
+        Ok(Some((who, token))) if page == Sender::OwnPage => {
             let cookie = set_session_cookie(&token, SESSION_LIFETIME);
             ([(SET_COOKIE, cookie)], Json(who)).into_response()
         }
@@ -122,8 +131,8 @@ pub(crate) async fn finish(
             ..who
         })
         .into_response(),
-        Ok(None) => refused(code!("sign_in.failed")),
-        Err(fault) => failure(&shared, fault),
+        Ok(None) => unauthorized(code!("sign_in.failed")),
+        Err(fault) => failure(fault),
     };
     sleep_until(now + shared.finish_within).await;
     answer
@@ -148,7 +157,7 @@ pub(crate) async fn sign_out(
     let ended = match proof(&method, &headers) {
         Ok(token_hash) => shared.db.end_session(&token_hash).await,
         // Nothing to end, but another site's page may not clear the cookie either.
-        Err(Unproven::Missing) if same_origin(&headers) != Some(false) => Ok(()),
+        Err(Unproven::Missing) if sender(&headers) != Sender::OtherSite => Ok(()),
         Err(_) => return Unproven::CrossSite.into(),
     };
     match ended {
@@ -156,7 +165,7 @@ pub(crate) async fn sign_out(
             let cookie = set_session_cookie("", 0);
             (StatusCode::NO_CONTENT, [(SET_COOKIE, cookie)]).into_response()
         }
-        Err(fault) => failure(&shared, fault),
+        Err(fault) => failure(fault),
     }
 }
 
@@ -168,7 +177,7 @@ async fn signed_in(
     let Ok(email) = Email::parse(&body.email) else {
         return Ok(None);
     };
-    let token = hex(&os_secrets()?);
+    let token = hex(&random_bytes()?);
     let now = shared.now();
     let new_account: Option<AccountId> = sign_up::allows(&shared.sign_up, &email)
         .then(|| fresh(&new_id))
@@ -176,7 +185,7 @@ async fn signed_in(
     let attempt = Attempt {
         email: &email,
         challenge: &body.challenge,
-        code_hash: &shared.secret.code_hash(&body.challenge, body.code.trim()),
+        code_hash: &shared.secret.code_hash(&email, body.code.trim()),
         token_hash: &token_hash(&token),
         now,
         token_expires_at: now.saturating_add(SESSION_LIFETIME),
@@ -196,7 +205,7 @@ async fn signed_in(
 
 /// A challenge nobody can guess: 32 random bytes, in hex.
 fn new_challenge() -> Result<ChallengeId, Fault> {
-    ChallengeId::try_from(hex(&os_secrets()?)).map_err(|_| random_failed())
+    ChallengeId::try_from(hex(&random_bytes()?)).map_err(|_| random_failed())
 }
 
 /// A one-time code: eight digits.
@@ -215,11 +224,6 @@ fn hex(bytes: &[u8]) -> String {
         .collect()
 }
 
-/// Unkeyed: a token is too long to guess.
-pub(crate) fn token_hash(text: &str) -> [u8; 32] {
-    Sha256::digest(text.as_bytes()).into()
-}
-
 #[cfg(test)]
 mod tests {
     use std::net::SocketAddr;
@@ -232,8 +236,8 @@ mod tests {
     use crate::db::CODE_LIFETIME;
     use crate::secret::Secret;
     use crate::test_support::{
-        Fixture, ask, bearer, finish_body, fresh_account, member_id, request, request_with, run,
-        sign_in, start_sign_in, status, workspace_id,
+        Fixture, ask, bearer, finish_body, fresh_account, letter_in, member_id, request,
+        request_with, run, sign_in, start_sign_in, status, workspace_id,
     };
 
     async fn finish_with(address: SocketAddr, body: &str) -> (String, Value) {
@@ -247,8 +251,6 @@ mod tests {
         assert_eq!(code_text(&[1; 32]), "38076673");
         assert_eq!(code_text(&[0; 32]), "00000000");
         assert_eq!(hex(&[0, 10, 255]), "000aff");
-        assert_eq!(token_hash("a"), token_hash("a"));
-        assert_ne!(token_hash("a"), token_hash("b"));
         assert_eq!(new_challenge().unwrap().as_str().len(), 64);
     }
 
@@ -495,12 +497,16 @@ mod tests {
             assert_eq!(answer.as_object().unwrap().len(), 1, "{body}");
             challenges.push(answer["challenge"].as_str().unwrap().len());
         }
-        let (unreadable, _) = request(server.address, "POST /api/sign-in", "{}").await;
+        let (unreadable, refusal) = request(server.address, "POST /api/sign-in", "{}").await;
 
         // Only the request for an account's address leaves a letter.
         assert_eq!(fixture.letter().await.0, "ada@example.com");
         assert_eq!(challenges, [64; 3]);
-        assert_eq!(status(&unreadable), "http/1.1 422 unprocessable entity");
+        assert_eq!(status(&unreadable), "http/1.1 400 bad request");
+        assert_eq!(
+            serde_json::from_str::<Value>(&refusal).unwrap(),
+            json!({ "code": "request.invalid", "retryable": false })
+        );
     }
 
     #[tokio::test]
@@ -534,20 +540,56 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn past_its_live_codes_an_address_gets_the_same_answer_and_no_more_mail() {
+        let fixture = Fixture::new().await;
+        let server = run(fixture.shared.clone()).await;
+        let mut answers = Vec::new();
+        for _ in 0..4 {
+            answers.push(start_sign_in(server.address, "ada@example.com").await.0);
+        }
+        fixture.settled().await;
+
+        assert_eq!(answers, ["http/1.1 202 accepted"; 4]);
+        assert_eq!(fixture.letters().len(), 3);
+    }
+
+    #[tokio::test]
+    async fn codes_someone_else_asked_for_still_sign_the_owner_in() {
+        let fixture = Fixture::new().await;
+        let server = run(fixture.shared.clone()).await;
+        for _ in 0..3 {
+            start_sign_in(server.address, "ada@example.com").await;
+        }
+        fixture.settled().await;
+        let inbox = fixture.letters();
+        // Ada's own start is answered as usual, but no more mail is sent.
+        let (_, own) = start_sign_in(server.address, "ada@example.com").await;
+        fixture.settled().await;
+        let mailed_after = fixture.letters().len();
+        let (_, code) = letter_in(&inbox[1]);
+        let finish = finish_body("ada@example.com", &own, &code);
+        let (head, body) = request(server.address, "POST /api/sign-in/finish", &finish).await;
+
+        assert_eq!(mailed_after, 3);
+        assert_eq!(status(&head), "http/1.1 200 ok");
+        assert_eq!(
+            serde_json::from_str::<Value>(&body).unwrap()["email"],
+            "ada@example.com"
+        );
+    }
+
+    #[tokio::test]
     async fn a_wrong_or_late_code_is_refused() {
         let fixture = Fixture::new().await;
         let server = run(fixture.shared.clone()).await;
         let (_, challenge) = start_sign_in(server.address, "ada@example.com").await;
         let (_, code) = fixture.letter().await;
-        let (_, other) = start_sign_in(server.address, "ada@example.com").await;
-        fixture.settled().await;
         let finish = |email: &str, code: &str| finish_body(email, &challenge, code);
         let mut refusals = Vec::new();
         for body in [
             finish("ada@example.com", "00000000"),
             finish("bo@example.com", &code),
             finish("not an email", &code),
-            finish_body("ada@example.com", &other, &code),
         ] {
             refusals.push(finish_with(server.address, &body).await);
         }
@@ -556,7 +598,7 @@ mod tests {
         let unchallenged = finish_body("ada@example.com", &Value::Null, &code);
         let (unreadable, _) = finish_with(server.address, &unchallenged).await;
 
-        assert_eq!(unreadable, "http/1.1 422 unprocessable entity");
+        assert_eq!(unreadable, "http/1.1 400 bad request");
         for (head, body) in refusals {
             assert_eq!(head, "http/1.1 401 unauthorized");
             assert_eq!(
@@ -656,7 +698,7 @@ mod tests {
     async fn a_code_that_cant_be_sent_is_logged_and_answered_the_same() {
         let fixture = Fixture::new().await;
         let mut shared = fixture.shared.clone();
-        shared.outbox = crate::mail::Outbox::new("missing-outbox".into());
+        shared.outbox = crate::outbox::Outbox::new("missing-outbox".into());
         let server = run(shared).await;
         let (started, _) = start_sign_in(server.address, "ada@example.com").await;
         fixture.settled().await;
@@ -665,11 +707,28 @@ mod tests {
             .lock()
             .unwrap()
             .iter()
-            .find(|record| record.msg == "request failed")
+            .find(|record| record.msg == "sign-in failed")
             .map(|record| record.fields["err"]["code"].clone());
 
         assert_eq!(started, "http/1.1 202 accepted");
         assert_eq!(failed.unwrap(), "mail.failed");
+    }
+
+    #[tokio::test]
+    async fn codes_that_couldnt_be_sent_leave_room_for_ones_that_can() {
+        let fixture = Fixture::new().await;
+        let mut broken = fixture.shared.clone();
+        broken.outbox = crate::outbox::Outbox::new("missing-outbox".into());
+        let failing = run(broken).await;
+        for _ in 0..3 {
+            start_sign_in(failing.address, "ada@example.com").await;
+        }
+        fixture.settled().await;
+        let server = run(fixture.shared.clone()).await;
+        start_sign_in(server.address, "ada@example.com").await;
+        fixture.settled().await;
+
+        assert_eq!(fixture.letters().len(), 1);
     }
 
     #[tokio::test]
@@ -709,10 +768,22 @@ mod tests {
         let finish = finish_body("ada@example.com", &json!("0".repeat(64)), "00000000");
         let (head, body) = request(server.address, "POST /api/sign-in/finish", &finish).await;
 
+        let records = fixture.records.lock().unwrap().clone();
+        let ids = |event: &str| -> Vec<_> {
+            records
+                .iter()
+                .filter(|record| record.msg == event)
+                .map(|record| record.fields["request_id"].clone())
+                .collect()
+        };
+
         assert_eq!(status(&head), "http/1.1 500 internal server error");
         assert_eq!(
             serde_json::from_str::<Value>(&body).unwrap(),
             json!({ "code": "db.failed", "retryable": true })
         );
+        // Logged once, with the id that joins it to the request's own record.
+        assert_eq!(ids("request failed"), ids("request handled"));
+        assert_eq!(ids("request failed").len(), 1);
     }
 }

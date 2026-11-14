@@ -2,7 +2,10 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::token::token_id;
-use crate::{PermissionAnswer, Receipt, RepoId, RequestId, RunStatus, RunUpdate, WorkspaceId};
+use crate::{
+    AccountId, MemberId, PermissionAnswer, Receipt, RepoId, RequestId, RunStatus, RunUpdate,
+    WorkspaceId,
+};
 
 token_id!(
     /// A chat in a workspace, 1–64 ASCII letters, digits, `-` or `_`.
@@ -17,6 +20,19 @@ pub struct ChatCommand {
     pub workspace: WorkspaceId,
     pub chat: ChatId,
     pub action: ChatAction,
+    /// Who asked, when the server relays the command to a machine.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "Asker")]
+    pub by: Option<Asker>,
+}
+
+/// Who asked for a command, stamped by the server on what it relays to a machine and never
+/// taken from a client. The core acts only when `account` is its owner's, and records only
+/// `member`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct Asker {
+    pub account: AccountId,
+    pub member: MemberId,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -207,6 +223,7 @@ mod tests {
             workspace: workspace(),
             chat: chat(),
             action,
+            by: None,
         }))
     }
 
@@ -318,6 +335,24 @@ mod tests {
         for (action, wire) in cases {
             travels(&command(action), command_wire(&wire));
         }
+    }
+
+    #[test]
+    fn a_relayed_command_names_who_asked() {
+        let relayed = envelope(Message::ChatCommand(ChatCommand {
+            request: request(),
+            workspace: workspace(),
+            chat: chat(),
+            action: ChatAction::Interrupt,
+            by: Some(Asker {
+                account: AccountId::try_from("a-1".to_owned()).unwrap(),
+                member: MemberId::try_from("m-1".to_owned()).unwrap(),
+            }),
+        }));
+        let mut wire = command_wire(&json!({ "kind": "interrupt" }));
+        wire["by"] = json!({ "account": "a-1", "member": "m-1" });
+
+        travels(&relayed, wire);
     }
 
     #[test]

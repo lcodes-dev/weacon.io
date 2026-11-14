@@ -47,13 +47,13 @@ enum System {
 }
 
 #[derive(Debug, Deserialize)]
-struct Message {
-    content: Value,
+pub(super) struct Message {
+    pub(super) content: Value,
 }
 
 impl Message {
-    /// The blocks this build knows; a plain string content has none of interest.
-    fn blocks(self) -> Vec<Block> {
+    /// The blocks this build knows; none when the content is a plain string.
+    pub(super) fn blocks(self) -> Vec<Block> {
         let Value::Array(blocks) = self.content else {
             return Vec::new();
         };
@@ -66,7 +66,7 @@ impl Message {
 
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
-enum Block {
+pub(super) enum Block {
     Text {
         text: String,
     },
@@ -139,9 +139,11 @@ pub(crate) fn read(line: &[u8]) -> Vec<Effect> {
     };
     match line {
         Line::System(System::Init { session_id }) => vec![Effect::Started(session_id)],
-        Line::Assistant { message } | Line::User { message } => {
-            message.blocks().into_iter().filter_map(said).collect()
-        }
+        Line::Assistant { message } | Line::User { message } => message
+            .blocks()
+            .into_iter()
+            .filter_map(|block| event(block).map(Effect::Event))
+            .collect(),
         Line::Result { subtype, is_error } => vec![Effect::Finished {
             ok: subtype == "success" && !is_error,
         }],
@@ -164,8 +166,8 @@ pub(crate) fn read(line: &[u8]) -> Vec<Effect> {
     }
 }
 
-fn said(block: Block) -> Option<Effect> {
-    let event = match block {
+pub(super) fn event(block: Block) -> Option<RunEvent> {
+    Some(match block {
         Block::Text { text } => RunEvent::Text { text },
         Block::ToolUse { id, name, input } => RunEvent::ToolCall {
             call: id,
@@ -180,8 +182,7 @@ fn said(block: Block) -> Option<Effect> {
             failed: is_error,
         },
         Block::Other => return None,
-    };
-    Some(Effect::Event(event))
+    })
 }
 
 #[cfg(test)]
