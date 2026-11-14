@@ -6,7 +6,7 @@ use axum::response::{IntoResponse, Response};
 use weacon_model::{Attribution, Doc, DocText, DocTextError, Revision};
 use weacon_observability::Fault;
 use weacon_protocol::{
-    DocContent, DocHistory, DocId, DocList, DocRecord, DocRevise, WorkspaceId, code,
+    Code, DocContent, DocHistory, DocId, DocList, DocRecord, DocRevise, WorkspaceId, code,
 };
 
 use crate::app::new_id;
@@ -20,10 +20,10 @@ pub(crate) const MAX_BODY: usize = 2 * 1024 * 1024;
 const HISTORY: u32 = 1000;
 
 /// `GET /api/workspaces/{workspace}/docs`: the workspace's docs, by title, without bodies.
-pub(crate) async fn list(State(shared): State<Shared>, member: Member) -> Response {
+pub(crate) async fn list(member: Member) -> Response {
     match member.workspace.docs().await {
         Ok(docs) => Json(DocList { docs }).into_response(),
-        Err(fault) => answer(&shared, fault),
+        Err(fault) => answer(fault),
     }
 }
 
@@ -47,13 +47,12 @@ pub(crate) async fn create(
             shared.changed(member.workspace.id());
             (StatusCode::CREATED, Json(record(doc))).into_response()
         }
-        Err(fault) => answer(&shared, fault),
+        Err(fault) => answer(fault),
     }
 }
 
 /// `GET /api/workspaces/{workspace}/docs/{doc}`: the doc as it is now.
 pub(crate) async fn read(
-    State(shared): State<Shared>,
     member: Member,
     path: Result<Path<(WorkspaceId, DocId)>, PathRejection>,
 ) -> Response {
@@ -61,7 +60,7 @@ pub(crate) async fn read(
         let Path((_, id)) = path.map_err(|_| invalid())?;
         member.workspace.doc(&id, None).await
     };
-    reply(&shared, found.await)
+    reply(found.await)
 }
 
 /// `POST /api/workspaces/{workspace}/docs/{doc}`: replaces the text of a doc the client read
@@ -87,13 +86,12 @@ pub(crate) async fn revise(
     if revised.is_ok() {
         shared.changed(member.workspace.id());
     }
-    reply(&shared, revised)
+    reply(revised)
 }
 
 /// `GET /api/workspaces/{workspace}/docs/{doc}/revisions`: who made the doc's newest
 /// revisions, and when.
 pub(crate) async fn history(
-    State(shared): State<Shared>,
     member: Member,
     path: Result<Path<(WorkspaceId, DocId)>, PathRejection>,
 ) -> Response {
@@ -103,14 +101,13 @@ pub(crate) async fn history(
     };
     match found.await {
         Ok(revisions) => Json(DocHistory { revisions }).into_response(),
-        Err(fault) => answer(&shared, fault),
+        Err(fault) => answer(fault),
     }
 }
 
 /// `GET /api/workspaces/{workspace}/docs/{doc}/revisions/{version}`: the doc as it was at
 /// `version`.
 pub(crate) async fn revision(
-    State(shared): State<Shared>,
     member: Member,
     path: Result<Path<(WorkspaceId, DocId, u64)>, PathRejection>,
 ) -> Response {
@@ -121,7 +118,7 @@ pub(crate) async fn revision(
             .doc(&id, Some(Revision::new(version)))
             .await
     };
-    reply(&shared, found.await)
+    reply(found.await)
 }
 
 fn text(content: DocContent) -> Result<DocText, Fault> {
@@ -151,10 +148,10 @@ fn record(doc: Doc) -> DocRecord {
     }
 }
 
-fn reply(shared: &Shared, doc: Result<Doc, Fault>) -> Response {
+fn reply(doc: Result<Doc, Fault>) -> Response {
     match doc {
         Ok(doc) => Json(record(doc)).into_response(),
-        Err(fault) => answer(shared, fault),
+        Err(fault) => answer(fault),
     }
 }
 
@@ -175,18 +172,25 @@ fn invalid() -> Fault {
     Fault::new(code!("doc.invalid"), "The doc request isn't valid")
 }
 
+/// The refusals the doc routes answer, with their status; anything else is the server failing.
+const REFUSALS: [(Code, StatusCode); 8] = [
+    (code!("doc.invalid"), StatusCode::BAD_REQUEST),
+    (code!("doc.unpinned"), StatusCode::BAD_REQUEST),
+    (code!("doc.unlinked"), StatusCode::BAD_REQUEST),
+    (code!("doc.unknown_value"), StatusCode::BAD_REQUEST),
+    (code!("doc.too_large"), StatusCode::PAYLOAD_TOO_LARGE),
+    (code!("doc.not_found"), StatusCode::NOT_FOUND),
+    (code!("doc.stale"), StatusCode::CONFLICT),
+    (code!("doc.last_version"), StatusCode::CONFLICT),
+];
+
 /// Answers a refusal with its status, and anything else as the server failing.
-fn answer(shared: &Shared, fault: Fault) -> Response {
-    let status = match fault.code().as_str() {
-        "doc.invalid" | "doc.unpinned" | "doc.unlinked" | "doc.unknown_value" => {
-            StatusCode::BAD_REQUEST
-        }
-        "doc.too_large" => StatusCode::PAYLOAD_TOO_LARGE,
-        "doc.not_found" => StatusCode::NOT_FOUND,
-        "doc.stale" | "doc.last_version" => StatusCode::CONFLICT,
-        _ => return failure(shared, fault),
-    };
-    error(status, fault.code().clone(), false)
+fn answer(fault: Fault) -> Response {
+    let code = fault.code().clone();
+    match REFUSALS.iter().find(|(refusal, _)| *refusal == code) {
+        Some((_, status)) => error(*status, code, false),
+        None => failure(fault),
+    }
 }
 
 #[cfg(test)]
@@ -529,12 +533,11 @@ mod tests {
         assert!(ada.get::<DocList>("").await.docs.is_empty());
     }
 
-    #[tokio::test]
-    async fn a_failure_of_the_server_is_not_a_refusal() {
-        let fixture = Fixture::new().await;
+    #[test]
+    fn a_failure_of_the_server_is_not_a_refusal() {
         let broken = Fault::new(code!("db.failed"), "The database failed");
 
-        let answer = answer(&fixture.shared, broken);
+        let answer = answer(broken);
 
         assert_eq!(answer.status(), StatusCode::INTERNAL_SERVER_ERROR);
     }
