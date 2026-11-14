@@ -3,10 +3,13 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
+use weacon_codemap::Index;
 use weacon_observability::Fault;
 use weacon_protocol::{CommitId, code};
 
-use super::Source;
+use super::{RepoMap, Source};
+use crate::app::blocking;
+use crate::db::{LocalRepo, Workspace};
 use crate::git::Git;
 
 /// A repository on disk, its main worktree at `repo`.
@@ -41,6 +44,59 @@ impl Source for Repo {
     }
 }
 
+/// The index of the repository `folder` is in, as the worktree holding `folder` has it, kept in
+/// `workspace`'s map so that only text it hasn't seen is read.
+pub(crate) async fn folder_index(
+    workspace: &Workspace,
+    git: &Git,
+    folder: &Path,
+) -> Result<Index, Fault> {
+    let (main, worktree) = {
+        let (git, folder) = (git.clone(), folder.to_owned());
+        blocking(move || Ok(locate(&git, &folder)))
+            .await
+            .map_err(|error| not_a_repo().because(error))??
+    };
+    let repo = RepoMap {
+        map: workspace.map(&LocalRepo::at(&main)),
+        source: Repo {
+            git: git.clone(),
+            repo: main,
+        },
+    };
+    let base = repo.base().await?;
+    let changed = repo.changed(&base, &worktree).await?;
+    let facts = repo.worktree(&base, &worktree, changed).await?;
+    Ok(weacon_codemap::assemble(&facts))
+}
+
+/// The canonical paths of the main worktree of `folder`'s repository and of the worktree
+/// `folder` is in.
+fn locate(git: &Git, folder: &Path) -> Result<(PathBuf, PathBuf), Fault> {
+    let folder = folder
+        .canonicalize()
+        .map_err(|error| not_a_repo().because(error))?;
+    let trees: Vec<PathBuf> = git
+        .worktrees(&folder)?
+        .into_iter()
+        .filter_map(|tree| tree.path.canonicalize().ok())
+        .collect();
+    let main = trees.first().cloned().ok_or_else(not_a_repo)?;
+    let worktree = trees
+        .into_iter()
+        .filter(|tree| folder.starts_with(tree))
+        .max_by_key(|tree| tree.components().count())
+        .ok_or_else(not_a_repo)?;
+    Ok((main, worktree))
+}
+
+fn not_a_repo() -> Fault {
+    Fault::new(
+        code!("map.not_a_repo"),
+        "The folder isn't in a git repository",
+    )
+}
+
 /// The text of the regular file at `path`; a link, a folder, a missing file and one that isn't
 /// UTF-8 have none.
 fn text_at(path: &Path) -> Option<String> {
@@ -61,9 +117,11 @@ fn commit_id(commit: &str) -> Result<CommitId, Fault> {
 mod tests {
     use std::fs;
 
+    use weacon_protocol::WorkspaceId;
     use weacon_testing::TempDir;
 
     use super::*;
+    use crate::db::Db;
     use crate::git::tests::{fixture, git, repo};
 
     #[test]
@@ -98,6 +156,56 @@ mod tests {
             expected.push(("link.md".to_owned(), None));
         }
         assert_eq!(changed, expected);
+    }
+
+    #[tokio::test]
+    async fn indexes_a_folder_as_its_worktree_has_it() {
+        let dir = TempDir::new().unwrap();
+        let main = repo(&dir);
+        fs::create_dir_all(main.join("a/src")).unwrap();
+        fs::write(main.join("a/Cargo.toml"), "[package]\nname = \"a\"\n").unwrap();
+        fs::write(main.join("a/src/lib.rs"), "pub fn run() {}\n").unwrap();
+        fixture(&dir, &main, &["add", "a"]);
+        fixture(&dir, &main, &["commit", "--quiet", "-m", "Add a"]);
+        let other = dir.join("other");
+        let other_arg = other.to_str().unwrap();
+        fixture(
+            &dir,
+            &main,
+            &["worktree", "add", "--quiet", "-b", "other", other_arg],
+        );
+        fs::write(other.join("a/src/lib.rs"), "pub fn walk() {}\n").unwrap();
+        fs::create_dir(dir.join("state")).unwrap();
+        let db = Db::open(&dir.join("state")).await.unwrap();
+        let workspace = db.workspace(&WorkspaceId::try_from("one".to_owned()).unwrap());
+        let git = git(&dir);
+
+        let symbol = |index: &Index, path: &str| index.symbol(path).is_some();
+        let in_main = folder_index(&workspace, &git, &main).await.unwrap();
+        assert!(symbol(&in_main, "a::run"));
+        let in_other = folder_index(&workspace, &git, &other.join("a/src"))
+            .await
+            .unwrap();
+        assert!(symbol(&in_other, "a::walk"));
+        assert!(!symbol(&in_other, "a::run"));
+        let main_key = LocalRepo::at(&main.canonicalize().unwrap());
+        assert!(
+            workspace
+                .map(&main_key)
+                .layer(crate::db::BASE)
+                .await
+                .unwrap()
+                .is_some()
+        );
+
+        let fault = folder_index(&workspace, &git, &dir.join("state"))
+            .await
+            .unwrap_err();
+        assert_eq!(fault.code().as_str(), "git.failed");
+        let fault = folder_index(&workspace, &git, &dir.join("missing"))
+            .await
+            .unwrap_err();
+        assert_eq!(fault.code().as_str(), "map.not_a_repo");
     }
 
     #[test]

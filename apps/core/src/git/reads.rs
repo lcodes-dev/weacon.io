@@ -60,7 +60,10 @@ impl Git {
             .stdout(Stdio::piped())
             .spawn()
             .map_err(not_run)?;
-        let input: String = blobs.iter().map(|blob| format!("{blob}\n")).collect();
+        let input: String = blobs
+            .iter()
+            .flat_map(|blob| [blob.as_str(), "\n"])
+            .collect();
         let mut stdin = child.stdin.take().ok_or_else(failed)?;
         // Written beside the read, so neither side waits on a full pipe.
         let writer = std::thread::spawn(move || stdin.write_all(input.as_bytes()));

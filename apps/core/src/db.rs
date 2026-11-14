@@ -1,5 +1,12 @@
 //! The core's `SQLite` database. Only this module uses the driver, and everything stored for a
 //! workspace is reached through its [`Workspace`] handle.
+#![cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "the daemon and the MCP tools start reading the map in their own changes"
+    )
+)]
 
 mod map;
 mod schema;
@@ -12,7 +19,7 @@ use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, S
 use weacon_observability::Fault;
 use weacon_protocol::{WorkspaceId, code};
 
-pub(crate) use map::{BASE, Layer, Map, Stored};
+pub(crate) use map::{BASE, Layer, LocalRepo, Map, Stored};
 
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 const CONNECTIONS: u32 = 4;

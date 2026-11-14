@@ -1,6 +1,13 @@
 //! The code map of each repository a workspace registered: a base layer at the main worktree's
 //! commit, and a layer per worktree with what it changed, kept in the core's database. It
 //! never leaves this machine.
+#![cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "the daemon and the MCP tools start reading the map in their own changes"
+    )
+)]
 
 #[cfg(test)]
 mod fake;
@@ -257,7 +264,7 @@ fn layer_name(path: &Path) -> String {
 
 #[cfg(test)]
 mod tests {
-    use weacon_protocol::{RepoId, WorkspaceId};
+    use weacon_protocol::WorkspaceId;
     use weacon_testing::TempDir;
 
     use super::fake::{Fake, blob};
@@ -269,7 +276,7 @@ mod tests {
     async fn repo(dir: &TempDir) -> (RepoMap<Fake>, Fake) {
         let db = Db::open(dir).await.unwrap();
         let workspace = db.workspace(&WorkspaceId::try_from("one".to_owned()).unwrap());
-        let map = workspace.map(&RepoId::try_from("repo".to_owned()).unwrap());
+        let map = workspace.map(&crate::db::LocalRepo::at(Path::new("/repo")));
         let source = Fake::default();
         (
             RepoMap {
