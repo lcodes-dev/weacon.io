@@ -32,6 +32,18 @@ pub(crate) enum FileKind {
     },
 }
 
+/// Whether the file at `path` belongs in the code map: every `Cargo.toml`, every `.rs` file inside
+/// a `src` folder and every Markdown file.
+#[must_use]
+pub fn is_mapped(path: &str) -> bool {
+    let name = path.rsplit('/').next().unwrap_or_default();
+    let in_src = path.split('/').any(|part| part == "src");
+    let extension = Path::new(name)
+        .extension()
+        .and_then(|extension| extension.to_str());
+    name == "Cargo.toml" || extension == Some("md") || (in_src && extension == Some("rs"))
+}
+
 /// Reads files into `Facts`, reusing one parser.
 pub struct Reader {
     parser: Parser,
@@ -113,6 +125,29 @@ mod tests {
 
     fn read(path: &str, text: &str) -> Option<Facts> {
         Reader::new().unwrap().facts(&file(path, text)).unwrap()
+    }
+
+    #[test]
+    fn maps_manifests_markdown_and_rust_inside_src() {
+        for path in [
+            "Cargo.toml",
+            "a/Cargo.toml",
+            "docs/a.md",
+            "a/src/lib.rs",
+            "src/b/c.rs",
+        ] {
+            assert!(is_mapped(path), "{path}");
+        }
+        for path in [
+            "a/tests/it.rs",
+            "build.rs",
+            "Cargo.lock",
+            "src/a.txt",
+            "srcs/a.rs",
+            "md",
+        ] {
+            assert!(!is_mapped(path), "{path}");
+        }
     }
 
     #[test]

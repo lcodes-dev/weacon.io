@@ -1,6 +1,6 @@
-use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 
+use serde::{Deserialize, Serialize};
 use tree_sitter::Node;
 
 use crate::paths::{Segments, segments};

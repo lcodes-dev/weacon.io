@@ -20,20 +20,24 @@ pub(crate) struct Repo {
 }
 
 impl Source for Repo {
-    fn head(&self) -> Result<String, Fault> {
-        Ok(self.git.head(&self.repo)?.as_str().to_owned())
+    fn head(&self) -> Result<CommitId, Fault> {
+        self.git.head(&self.repo)
     }
 
-    fn tree(&self, commit: &str) -> Result<Vec<(String, String)>, Fault> {
-        self.git.tree(&self.repo, &commit_id(commit)?)
+    fn tree(&self, commit: &CommitId) -> Result<Vec<(String, String)>, Fault> {
+        self.git.tree(&self.repo, commit)
     }
 
     fn blobs(&self, blobs: &[String]) -> Result<BTreeMap<String, String>, Fault> {
         self.git.blobs(&self.repo, blobs)
     }
 
-    fn changed(&self, path: &Path, commit: &str) -> Result<Vec<(String, Option<String>)>, Fault> {
-        let changed = self.git.changed(path, &commit_id(commit)?)?;
+    fn changed(
+        &self,
+        path: &Path,
+        commit: &CommitId,
+    ) -> Result<Vec<(String, Option<String>)>, Fault> {
+        let changed = self.git.changed(path, commit)?;
         Ok(changed
             .into_iter()
             .map(|file| {
@@ -102,15 +106,6 @@ fn not_a_repo() -> Fault {
 fn text_at(path: &Path) -> Option<String> {
     let kind = std::fs::symlink_metadata(path).ok()?;
     kind.is_file().then(|| std::fs::read_to_string(path).ok())?
-}
-
-fn commit_id(commit: &str) -> Result<CommitId, Fault> {
-    CommitId::try_from(commit.to_owned()).map_err(|_| {
-        Fault::new(
-            code!("map.commit_invalid"),
-            "The map's commit isn't a commit",
-        )
-    })
 }
 
 #[cfg(test)]
@@ -206,18 +201,5 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(fault.code().as_str(), "map.not_a_repo");
-    }
-
-    #[test]
-    fn refuses_a_commit_that_isnt_one() {
-        let dir = TempDir::new().unwrap();
-        let source = Repo {
-            git: git(&dir),
-            repo: repo(&dir),
-        };
-        let fault = source.tree("--output=x").unwrap_err();
-        assert_eq!(fault.code().as_str(), "map.commit_invalid");
-        let fault = source.changed(&dir, "HEAD").unwrap_err();
-        assert_eq!(fault.code().as_str(), "map.commit_invalid");
     }
 }

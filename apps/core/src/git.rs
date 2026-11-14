@@ -146,19 +146,17 @@ impl Git {
     // The branch is made only where none has its name, so the one deleted again when the
     // checkout fails is always this call's.
     fn new_branch(&self, repo: &Path, path: &Path, branch: &str, full: &str) -> Result<(), Fault> {
-        let head = text(run(self.command(repo).args([
-            "rev-parse",
-            "--verify",
-            "HEAD^{commit}",
-        ]))?)?;
-        let head = head.trim_end();
-        run(self.command(repo).args(["update-ref", full, head, ""])).map_err(|_| taken())?;
+        let head = self.head(repo)?;
+        run(self
+            .command(repo)
+            .args(["update-ref", full, head.as_str(), ""]))
+        .map_err(|_| taken())?;
         self.add(repo, path, &[], branch).inspect_err(|_| {
             drop(run(self.command(repo).args([
                 "update-ref",
                 "-d",
                 full,
-                head,
+                head.as_str(),
             ])));
         })
     }

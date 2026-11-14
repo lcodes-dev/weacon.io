@@ -1,9 +1,9 @@
-use serde::{Deserialize, Serialize};
 mod commands;
 mod tables;
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use serde::{Deserialize, Serialize};
 use tree_sitter::Node;
 
 use commands::{Commands, Variant, full_names, variants};
