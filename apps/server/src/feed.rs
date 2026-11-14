@@ -164,7 +164,7 @@ async fn run(
             },
             changed = feed.chats.changed(feed.member.workspace.id()) => {
                 changed?;
-                send_chats(socket, shared, feed, Vec::new()).await?;
+                send_chats(socket, shared, feed, None).await?;
             }
             () = pings.due() => pings.ping(socket, feed.allowed(shared)).await?,
             Some(answer) = feed.answers.recv() => {
@@ -184,15 +184,15 @@ async fn run(
     }
 }
 
-/// Sends `answers`, then the events of the chats it follows that it hasn't sent, while its
+/// Sends `answer`, then the events of the chats it follows that it hasn't sent, while its
 /// member still is one.
 async fn send_chats(
     socket: &mut WebSocket,
     shared: &Shared,
     feed: &mut Feed,
-    answers: Vec<(u32, Message)>,
+    answer: Option<(u32, Message)>,
 ) -> Result<(), Closed> {
-    for (id, answer) in answers {
+    if let Some((id, answer)) = answer {
         feed.allowed(shared).await?;
         reply(socket, shared, id, answer).await?;
     }
@@ -226,11 +226,11 @@ async fn received(
     }
     if feed.offers.has(CHATS) && chats::carries(&envelope.message) {
         feed.allowed(shared).await?;
-        let answers = feed
+        let answer = feed
             .chats
             .heard(envelope, &feed.member, &feed.asker, shared)
             .await;
-        return send_chats(socket, shared, feed, answers).await;
+        return send_chats(socket, shared, feed, answer).await;
     }
     Ok(())
 }

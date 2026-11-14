@@ -1,7 +1,7 @@
 //! Which of a member's commands to a chat the server passes on to the chat's machine.
 
 use weacon_observability::Fault;
-use weacon_protocol::{Asker, ChatAction, ChatCommand, ChatState, MachineId, code};
+use weacon_protocol::{Asker, ChatAction, ChatCommand, ChatState, MachineId, RepoId, code};
 
 use crate::db::Chat;
 
@@ -16,15 +16,16 @@ pub(crate) enum Admitted {
     New {
         title: String,
         machine: MachineId,
+        repo: Option<RepoId>,
         command: ChatCommand,
     },
-    /// A command to a chat the asker owns.
-    Existing(ChatCommand),
+    /// A command to `chat`, which the asker owns.
+    Existing { chat: Chat, command: ChatCommand },
 }
 
 /// Checks `command` from `by` against `chat`, the chat it names if there is one.
 pub(crate) fn admit(
-    chat: Option<&Chat>,
+    chat: Option<Chat>,
     by: Asker,
     mut command: ChatCommand,
 ) -> Result<Admitted, Fault> {
@@ -39,25 +40,21 @@ pub(crate) fn admit(
             machine.take()
         }
         ChatAction::Permission { .. } | ChatAction::Interrupt => None,
-        ChatAction::Newer => {
-            return Err(Fault::new(
-                code!("message.unsupported"),
-                "This build doesn't know that message",
-            ));
-        }
+        ChatAction::Newer => return Err(super::unsupported()),
     };
     let Some(chat) = chat else {
-        let ChatAction::Prompt { text, .. } = &command.action else {
+        let ChatAction::Prompt { text, repo, .. } = &command.action else {
             return Err(crate::db::chat_not_found());
         };
         let machine = machine.ok_or_else(|| {
             Fault::new(code!("chat.machine_required"), "A new chat needs a machine")
         })?;
-        let title = title(text);
+        let (title, repo) = (title(text), repo.clone());
         command.by = Some(by);
         return Ok(Admitted::New {
             title,
             machine,
+            repo,
             command,
         });
     };
@@ -76,7 +73,7 @@ pub(crate) fn admit(
         ChatState::Detached | ChatState::Newer => return Err(detached()),
     }
     command.by = Some(by);
-    Ok(Admitted::Existing(command))
+    Ok(Admitted::Existing { chat, command })
 }
 
 pub(super) fn not_owner() -> Fault {
@@ -103,13 +100,7 @@ mod tests {
     use weacon_protocol::{AccountId, ChatId, MemberId, PermissionAnswer, RequestId, WorkspaceId};
 
     use super::*;
-
-    fn id<T: TryFrom<String>>(text: &str) -> T
-    where
-        T::Error: std::fmt::Debug,
-    {
-        T::try_from(text.to_owned()).unwrap()
-    }
+    use crate::db::test_support::id;
 
     fn asker(member: &str) -> Asker {
         Asker {
@@ -146,7 +137,7 @@ mod tests {
         }
     }
 
-    fn refused(chat: Option<&Chat>, member: &str, action: ChatAction) -> String {
+    fn refused(chat: Option<Chat>, member: &str, action: ChatAction) -> String {
         let fault = admit(chat, asker(member), command(action)).unwrap_err();
         fault.code().as_str().to_owned()
     }
@@ -161,6 +152,7 @@ mod tests {
         let made = Admitted::New {
             title: "x".repeat(80),
             machine: id("mc-1"),
+            repo: None,
             command: relayed,
         };
         assert_eq!(admitted.unwrap(), made);
@@ -183,8 +175,16 @@ mod tests {
         let mut stamped = command(ChatAction::Interrupt);
         stamped.by = Some(asker("m1"));
 
-        let admitted = admit(Some(&open), asker("m1"), command(ChatAction::Interrupt));
-        assert_eq!(admitted.unwrap(), Admitted::Existing(stamped));
+        let admitted = admit(
+            Some(open.clone()),
+            asker("m1"),
+            command(ChatAction::Interrupt),
+        );
+        let existing = Admitted::Existing {
+            chat: open.clone(),
+            command: stamped,
+        };
+        assert_eq!(admitted.unwrap(), existing);
         let answer = ChatAction::Permission {
             answer: PermissionAnswer {
                 run: id("run-1"),
@@ -192,17 +192,17 @@ mod tests {
                 allow: true,
             },
         };
-        assert_eq!(refused(Some(&open), "m3", answer), "chat.not_owner");
+        assert_eq!(refused(Some(open.clone()), "m3", answer), "chat.not_owner");
         assert_eq!(
-            refused(Some(&open), "m3", prompt("Go", None)),
+            refused(Some(open.clone()), "m3", prompt("Go", None)),
             "chat.not_owner"
         );
         assert_eq!(
-            refused(Some(&open), "m1", prompt("Go", Some("mc-2"))),
+            refused(Some(open.clone()), "m1", prompt("Go", Some("mc-2"))),
             "chat.machine_fixed"
         );
-        let later = admit(Some(&open), asker("m1"), command(prompt("Go", None)));
-        assert!(matches!(later.unwrap(), Admitted::Existing(_)));
+        let later = admit(Some(open.clone()), asker("m1"), command(prompt("Go", None)));
+        assert!(matches!(later.unwrap(), Admitted::Existing { .. }));
     }
 
     #[test]
@@ -211,11 +211,11 @@ mod tests {
         let detached = chat(ChatState::Detached);
 
         assert_eq!(
-            refused(Some(&full), "m1", prompt("Go", None)),
+            refused(Some(full), "m1", prompt("Go", None)),
             "chat.quota_full"
         );
         assert_eq!(
-            refused(Some(&detached), "m1", ChatAction::Interrupt),
+            refused(Some(detached), "m1", ChatAction::Interrupt),
             "chat.detached"
         );
         assert_eq!(

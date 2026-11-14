@@ -50,7 +50,8 @@ pub(crate) async fn make(
         member: &owner,
         at,
     };
-    workspace.add_chat(&new, &first).await
+    workspace.add_chat(&new, &first).await?;
+    workspace.chat_made(&chat, &owner).await
 }
 
 pub(crate) fn status(state: weacon_protocol::RunState) -> ChatEvent {
@@ -64,6 +65,16 @@ pub(crate) fn status(state: weacon_protocol::RunState) -> ChatEvent {
 
 /// The prompt `text` to `chat` under `request`, as a member of w1 sent it.
 pub(crate) fn command(request: &str, chat: &str, text: &str) -> ChatCommand {
+    prompt(request, chat, text, None)
+}
+
+/// The prompt `text` to `chat` in w1 under `request`, naming `machine` as a first prompt does.
+pub(crate) fn prompt(
+    request: &str,
+    chat: &str,
+    text: &str,
+    machine: Option<&MachineId>,
+) -> ChatCommand {
     ChatCommand {
         request: id(request),
         workspace: id("w1"),
@@ -71,7 +82,7 @@ pub(crate) fn command(request: &str, chat: &str, text: &str) -> ChatCommand {
         action: ChatAction::Prompt {
             text: text.to_owned(),
             repo: None,
-            machine: None,
+            machine: machine.cloned(),
         },
         by: None,
     }

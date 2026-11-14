@@ -52,6 +52,13 @@ impl Hub {
     }
 }
 
+pub(crate) fn unsupported() -> weacon_observability::Fault {
+    weacon_observability::Fault::new(
+        weacon_protocol::code!("message.unsupported"),
+        "This build doesn't know that message",
+    )
+}
+
 /// Whether `message` is one a client sends about a chat.
 pub(crate) const fn carries(message: &Message) -> bool {
     matches!(message, Message::ChatQuery(_) | Message::ChatCommand(_))

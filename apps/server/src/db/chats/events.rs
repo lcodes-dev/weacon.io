@@ -92,9 +92,8 @@ impl Workspace {
             .await
             .map_err(failed)?;
         }
-        let mut turned = rows.iter().filter(|row| turns(row.event)).map(|row| row.at);
-        match turned.next_back() {
-            Some(at) => self.turned(transaction, chat, at).await,
+        match rows.iter().rev().find(|row| turns(row.event)) {
+            Some(row) => self.turned(transaction, chat, row.at).await,
             None => Ok(()),
         }
     }
@@ -250,7 +249,8 @@ fn ended(event: &ChatEvent) -> Option<&RequestId> {
     (!matches!(receipt.outcome, Outcome::Accepted)).then_some(&receipt.request)
 }
 
-fn turns(event: &ChatEvent) -> bool {
+/// Whether `event` begins a turn, a prompt, or ends one, a receipt that ends its command.
+pub(crate) fn turns(event: &ChatEvent) -> bool {
     matches!(event, ChatEvent::Prompt { .. }) || ended(event).is_some()
 }
 

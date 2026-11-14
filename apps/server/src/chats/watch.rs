@@ -64,25 +64,32 @@ impl Watch {
         member: &Member,
         asker: &Asker,
         shared: &Shared,
-    ) -> Vec<(u32, Message)> {
+    ) -> Option<(u32, Message)> {
         let Envelope { id, message } = envelope;
-        let answered = if let Message::ChatQuery(query) = message {
+        let named = if let Message::ChatQuery(query) = &message {
+            &query.workspace
+        } else if let Message::ChatCommand(asked) = &message {
+            &asked.workspace
+        } else {
+            return None;
+        };
+        let elsewhere = named != member.workspace.id();
+        let answered = if elsewhere {
+            // Another workspace's chat answers as one there isn't.
+            Err(chat_not_found())
+        } else if let Message::ChatQuery(query) = message {
             self.query(member, query).await
         } else if let Message::ChatCommand(asked) = message {
-            command::take(member, asker, shared, asked).await
+            command::take(member, asker, shared, asked).await.map(Some)
         } else {
-            return Vec::new();
+            return None;
         };
         let message = answered.unwrap_or_else(|fault| Some(refusal(shared, member, &fault)));
-        message.map(|message| (id, message)).into_iter().collect()
+        message.map(|message| (id, message))
     }
 
     async fn query(&mut self, member: &Member, query: ChatQuery) -> Result<Option<Message>, Fault> {
         let workspace = &member.workspace;
-        // Another workspace's chat answers as one there isn't.
-        if query.workspace != *workspace.id() {
-            return Err(chat_not_found());
-        }
         let answer = match query.query {
             ChatQueryKind::Subscribe { after } => {
                 let chat = workspace
@@ -306,18 +313,10 @@ mod tests {
         assert!(matches!(next(&mut client).await, Message::Workspace(_)));
     }
 
-    fn prompt(chat: &str, machine: Option<String>) -> Message {
-        Message::ChatCommand(ChatCommand {
-            request: id::<RequestId>("r-9"),
-            workspace: id("w1"),
-            chat: id(chat),
-            action: ChatAction::Prompt {
-                text: "MARKER-PROMPT".to_owned(),
-                repo: None,
-                machine: machine.map(|machine| id(&machine)),
-            },
-            by: None,
-        })
+    fn prompt(chat: &str, machine: Option<&str>) -> Message {
+        let machine = machine.map(id::<weacon_protocol::MachineId>);
+        let asked = crate::db::test_support::prompt("r-9", chat, "MARKER-PROMPT", machine.as_ref());
+        Message::ChatCommand(asked)
     }
 
     #[tokio::test]
@@ -335,12 +334,12 @@ mod tests {
         )
         .await;
 
-        ask(&mut client, 2, prompt("c-9", Some(machine))).await;
+        ask(&mut client, 2, prompt("c-9", Some(&machine))).await;
         assert_eq!(
             refused(&heard(&mut client).await),
             ("machine.offline", true)
         );
-        ask(&mut client, 3, prompt("c-9", Some("mc-other".to_owned()))).await;
+        ask(&mut client, 3, prompt("c-9", Some("mc-other"))).await;
         assert_eq!(
             refused(&heard(&mut client).await),
             ("machine.not_found", false)
@@ -388,11 +387,49 @@ mod tests {
         assert!(matches!(next(&mut client).await, Message::Workspace(_)));
         workspace.unlink(&test_support::member_id("m1")).await;
 
-        ask(&mut client, 2, prompt("c-9", Some(machine))).await;
+        ask(&mut client, 2, prompt("c-9", Some(&machine))).await;
 
         assert!(test_support::socket::ends(&mut client).await);
         attached.incoming.try_recv().unwrap_err();
         assert!(workspace.chat(&id("c-9")).await.unwrap().is_none());
         assert!(workspace.chat(&id("c-9")).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn a_chats_client_hears_at_once_of_a_chat_made() {
+        let fixture = Fixture::new().await;
+        let server = run(fixture.shared.clone()).await;
+        let paired = pair_machine(&fixture, server.address).await;
+        let machine = paired.machine["id"].as_str().unwrap().to_owned();
+        let connected = crate::links::Connected {
+            machine: id(&machine),
+            owner: fixture
+                .shared
+                .db
+                .account_with(&test_support::email("ada@example.com"))
+                .await
+                .unwrap()
+                .unwrap(),
+        };
+        let serves = vec![Capability::from(weacon_protocol::code!("chat.serve"))];
+        let _attached = fixture.shared.links.open(connected, serves);
+        let mut client = feed(
+            &server,
+            &paired.session,
+            &["workspace.feed", "workspace.chats"],
+        )
+        .await;
+        assert!(matches!(next(&mut client).await, Message::Workspace(_)));
+
+        ask(&mut client, 2, prompt("c-9", Some(&machine))).await;
+
+        assert!(matches!(next(&mut client).await, Message::Receipt(_)));
+        let Message::Workspace(update) = next(&mut client).await else {
+            panic!("the feed didn't hear of the chat");
+        };
+        assert_eq!(
+            update.change,
+            weacon_protocol::WorkspaceChange::ChatChanged { chat: id("c-9") }
+        );
     }
 }

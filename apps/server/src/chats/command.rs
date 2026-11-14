@@ -2,52 +2,50 @@
 
 use weacon_observability::Fault;
 use weacon_protocol::{
-    Asker, ChatAction, ChatCommand, ChatState, MachineSummary, Message, Outcome, Receipt,
-    RequestId, code,
+    Asker, ChatCommand, ChatState, MachineSummary, Message, Outcome, Receipt, RepoId, RequestId,
+    code,
 };
 
 use super::admit::{Admitted, admit, detached};
 use super::link;
 use crate::auth::Member;
-use crate::db::{Chat, NewChat, NewRequest, Recorded, chat_not_found};
+use crate::db::{Chat, NewChat, NewRequest, Recorded};
 use crate::http::Shared;
 
-/// Takes `command` from `member`, refusing what the chat's owner or machine doesn't allow,
-/// and relays it; its receipt says the machine has it.
+/// Takes `command` from `asker`, one of the chat's workspace's members, refusing what the
+/// chat's owner or machine doesn't allow, and relays it; its receipt says the machine has it.
 pub(crate) async fn take(
     member: &Member,
     asker: &Asker,
     shared: &Shared,
     command: ChatCommand,
-) -> Result<Option<Message>, Fault> {
-    let workspace = &member.workspace;
-    // Another workspace's chat answers as one there isn't.
-    if command.workspace != *workspace.id() {
-        return Err(chat_not_found());
-    }
-    let chat = workspace.chat(&command.chat).await?;
-    let admitted = admit(chat.as_ref(), asker.clone(), command)?;
+) -> Result<Message, Fault> {
+    let chat = member.workspace.chat(&command.chat).await?;
     let owned = shared.db.machines_of(&asker.account).await?;
-    let request = match (admitted, chat) {
-        (
-            Admitted::New {
-                title,
-                machine,
-                command,
-            },
-            _,
-        ) => {
+    let request = match admit(chat, asker.clone(), command)? {
+        Admitted::New {
+            title,
+            machine,
+            repo,
+            command,
+        } => {
             let Some(summary) = owned.iter().find(|summary| summary.id == machine) else {
                 return Err(Fault::new(
                     code!("machine.not_found"),
                     "There is no such machine",
                 ));
             };
-            start(shared, member, summary, &title, command).await?
+            let made = Made {
+                machine: summary,
+                title: &title,
+                repo: repo.as_ref(),
+            };
+            start(shared, member, &made, command).await?
         }
-        (Admitted::Existing(command), Some(chat)) => {
+        Admitted::Existing { chat, command } => {
             if !owned.iter().any(|summary| summary.id == chat.machine) {
                 // A chat whose machine was unpaired can still be read, never run.
+                let workspace = &member.workspace;
                 workspace
                     .set_chat_state(&command.chat, ChatState::Detached)
                     .await?;
@@ -55,41 +53,36 @@ pub(crate) async fn take(
             }
             go_on(shared, member, &chat, command).await?
         }
-        (Admitted::Existing(_), None) => return Err(chat_not_found()),
     };
-    Ok(Some(Message::Receipt(Receipt {
+    Ok(Message::Receipt(Receipt {
         request,
         outcome: Outcome::Accepted,
-    })))
+    }))
 }
 
-// The chat's first prompt: sent, then the chat is made and followed, so none of its events
-// arrive before it exists.
+/// What a first prompt makes its chat with.
+struct Made<'a> {
+    machine: &'a MachineSummary,
+    title: &'a str,
+    repo: Option<&'a RepoId>,
+}
+
+// A chat's first prompt: the chat is made before it is sent, so two at once can't both reach
+// the machine, and taken back when it can't be sent.
 async fn start(
     shared: &Shared,
     member: &Member,
-    machine: &MachineSummary,
-    title: &str,
+    made: &Made<'_>,
     command: ChatCommand,
 ) -> Result<RequestId, Fault> {
-    let workspace = &member.workspace;
-    if workspace.has_request(&command.request).await? {
-        return Err(conflict());
-    }
-    link::send(shared, &machine.id, Message::ChatCommand(command.clone()))?;
-    let repo = if let ChatAction::Prompt { repo, .. } = &command.action {
-        repo.as_ref()
-    } else {
-        None
-    };
-    let at = shared.now();
+    let (workspace, at) = (&member.workspace, shared.now());
     let chat = NewChat {
         id: &command.chat,
         owner: &member.id,
-        title,
-        repo,
-        machine_id: &machine.id,
-        machine: &machine.name,
+        title: made.title,
+        repo: made.repo,
+        machine_id: &made.machine.id,
+        machine: &made.machine.name,
         at,
     };
     let asked = NewRequest {
@@ -97,11 +90,24 @@ async fn start(
         member: &member.id,
         at,
     };
-    workspace.add_chat(&chat, &asked).await?;
-    // Followed from its start; a machine that left meanwhile is followed when it connects.
+    workspace.add_chat(&chat, &asked).await.map_err(|fault| {
+        if fault.code().as_str() == "db.exists" {
+            conflict()
+        } else {
+            fault
+        }
+    })?;
+    let machine = &made.machine.id;
+    if let Err(fault) = link::send(shared, machine, Message::ChatCommand(command.clone())) {
+        workspace.forget_chat(&command.chat).await?;
+        return Err(fault);
+    }
+    workspace.chat_made(&command.chat, &member.id).await?;
+    shared.changed(workspace.id());
+    // A machine that left meanwhile follows the chat when it connects again.
     drop(link::follow(
         shared,
-        &machine.id,
+        machine,
         workspace.id(),
         &command.chat,
         0,
@@ -159,22 +165,8 @@ mod tests {
 
     use super::*;
     use crate::chats::test_support::{ada, attach, sent};
-    use crate::db::test_support::{NOW, id, make};
+    use crate::db::test_support::{NOW, id, make, prompt};
     use crate::test_support::Fixture;
-
-    fn prompt(request: &str, chat: &str, text: &str, machine: Option<&MachineId>) -> ChatCommand {
-        ChatCommand {
-            request: id(request),
-            workspace: id("w1"),
-            chat: id(chat),
-            action: ChatAction::Prompt {
-                text: text.to_owned(),
-                repo: None,
-                machine: machine.cloned(),
-            },
-            by: None,
-        }
-    }
 
     fn accepted(request: &str) -> Message {
         Message::Receipt(Receipt {
@@ -193,7 +185,7 @@ mod tests {
         let asked = prompt("r-1", "c-1", "Fix it", Some(&ada.machine));
         let answer = take(&ada.member, &ada.asker, shared, asked).await.unwrap();
 
-        assert_eq!(answer, Some(accepted("r-1")));
+        assert_eq!(answer, accepted("r-1"));
         let mut relayed = prompt("r-1", "c-1", "Fix it", None);
         relayed.by = Some(ada.asker.clone());
         let follow = ChatQuery {
@@ -245,7 +237,7 @@ mod tests {
             prompt("r-2", "c-1", "Go", None),
         )
         .await;
-        assert_eq!(taken.unwrap(), Some(accepted("r-2")));
+        assert_eq!(taken.unwrap(), accepted("r-2"));
         assert!(workspace.has_request(&id("r-2")).await.unwrap());
         assert_eq!(sent(&mut serving).len(), 2);
         let retried = take(
@@ -255,7 +247,7 @@ mod tests {
             prompt("r-2", "c-1", "Go", None),
         )
         .await;
-        assert_eq!(retried.unwrap(), Some(accepted("r-2")));
+        assert_eq!(retried.unwrap(), accepted("r-2"));
         assert_eq!(sent(&mut serving).len(), 2);
     }
 }

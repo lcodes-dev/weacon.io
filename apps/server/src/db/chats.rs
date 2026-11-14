@@ -7,7 +7,7 @@ use weacon_protocol::{
     ChatId, ChatState, ChatSummary, MachineId, MachineName, MemberId, RepoId, code,
 };
 
-pub(crate) use events::{Incoming, chat_quota_full};
+pub(crate) use events::{Incoming, chat_quota_full, turns};
 pub(crate) use ledger::{NewRequest, Recorded};
 
 use super::changes::Versioned;
@@ -27,7 +27,7 @@ pub(crate) struct NewChat<'a> {
 }
 
 /// What the server knows of a chat beyond its summary.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Chat {
     pub(crate) owner: MemberId,
     pub(crate) machine: MachineId,
@@ -41,7 +41,8 @@ type ChatRow = (String, String, String, i64, i64);
 type SummaryRow = (String, String, String, String, String, i64);
 
 impl Workspace {
-    /// Makes the chat `chat` with the request that made it. A chat id already in this
+    /// Makes the chat `chat` with the request that makes it, before that is sent: feeds hear
+    /// of it once [`Self::chat_made`] says it was. A chat id or request id already in this
     /// workspace is `db.exists`.
     pub(crate) async fn add_chat(
         &self,
@@ -67,8 +68,32 @@ impl Workspace {
         .await
         .map_err(failed)?;
         self.insert_request(&mut transaction, request).await?;
-        self.record_change(&mut transaction, Versioned::Chat(chat.id), chat.owner)
+        transaction.commit().await.map_err(failed)
+    }
+
+    /// Tells the feed that `owner` made `chat`, once its first prompt reached its machine.
+    pub(crate) async fn chat_made(&self, chat: &ChatId, owner: &MemberId) -> Result<(), Fault> {
+        let mut transaction = self.db.writer.begin().await.map_err(failed)?;
+        self.record_change(&mut transaction, Versioned::Chat(chat), owner)
             .await?;
+        transaction.commit().await.map_err(failed)
+    }
+
+    /// Takes back `chat`, made for a first prompt its machine never got.
+    pub(crate) async fn forget_chat(&self, chat: &ChatId) -> Result<(), Fault> {
+        let mut transaction = self.db.writer.begin().await.map_err(failed)?;
+        sqlx::query("DELETE FROM chat_requests WHERE workspace_id = ? AND chat_id = ?")
+            .bind(self.id.as_str())
+            .bind(chat.as_str())
+            .execute(&mut *transaction)
+            .await
+            .map_err(failed)?;
+        sqlx::query("DELETE FROM chats WHERE workspace_id = ? AND chat_id = ?")
+            .bind(self.id.as_str())
+            .bind(chat.as_str())
+            .execute(&mut *transaction)
+            .await
+            .map_err(failed)?;
         transaction.commit().await.map_err(failed)
     }
 
