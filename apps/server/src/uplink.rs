@@ -25,7 +25,6 @@ pub(crate) async fn connect(
     machine: Machine,
     upgrade: WebSocketUpgrade,
 ) -> Response {
-    // Subscribed before the upgrade, so an unpairing meanwhile still ends the connection.
     let unpaired = shared.unpaired.subscribe();
     let log = shared
         .log
@@ -35,6 +34,7 @@ pub(crate) async fn connect(
         machine,
         unpaired,
         log,
+        gone: false,
     };
     upgrade
         .max_message_size(MAX_MESSAGE)
@@ -47,13 +47,18 @@ struct Link {
     machine: Machine,
     unpaired: Receiver<MachineId>,
     log: Logger,
+    /// Set once the machine is found unpaired, and not when it couldn't be looked up.
+    gone: bool,
 }
 
 impl Link {
-    /// Whether the machine is still paired.
-    async fn paired(&self, shared: &Shared) -> bool {
+    /// Whether the machine is still paired; `false` too when that can't be looked up.
+    async fn paired(&mut self, shared: &Shared) -> bool {
         match shared.db.machine_with(&self.machine.token_hash).await {
-            Ok(found) => found.is_some(),
+            Ok(found) => {
+                self.gone = found.is_none();
+                !self.gone
+            }
             Err(fault) => {
                 self.log
                     .warn("machine link failed", &[("err", Field::error(&fault))]);
@@ -72,10 +77,14 @@ async fn serve(mut socket: WebSocket, shared: Shared, mut link: Link) {
     ) {
         return;
     }
-    link.log.info("machine connected", &[]);
+    // It may have been unpaired since it was let in, before it could hear of it.
+    let mut open = link.paired(&shared).await;
+    if open {
+        link.log.info("machine connected", &[]);
+    }
     let mut pings = Pings::new(shared.sockets.ping_every);
-    loop {
-        let open = tokio::select! {
+    while open {
+        open = tokio::select! {
             unpaired = link.unpaired.recv() => match unpaired {
                 Ok(id) if id != link.machine.id => true,
                 // A notice missed is checked against the database.
@@ -85,12 +94,9 @@ async fn serve(mut socket: WebSocket, shared: Shared, mut link: Link) {
             () = pings.due() => pings.ping(&mut socket, link.paired(&shared)).await,
             frame = socket.recv() => pings.heard(frame.as_ref()),
         };
-        if !open {
-            break;
-        }
     }
-    // Says why, if it was the unpairing; a core that is gone just doesn't hear it.
-    if !link.paired(&shared).await {
+    // A core that is gone just doesn't hear it.
+    if link.gone {
         reply(&mut socket, &shared, 0, error(code!("machine.unpaired"))).await;
     }
     send(&mut socket, shared.sockets.ping_every, Frame::Close(None)).await;
@@ -139,6 +145,15 @@ mod tests {
             panic!("{error}");
         };
         response.status().as_u16()
+    }
+
+    async fn past_pings(client: &mut Client) -> Option<Result<Wire, tungstenite::Error>> {
+        loop {
+            let frame = client.next().await;
+            if !matches!(frame, Some(Ok(Wire::Ping(_)))) {
+                return frame;
+            }
+        }
     }
 
     fn id_of(machine: &Value) -> MachineId {
@@ -213,6 +228,45 @@ mod tests {
         let db = &fixture.shared.db;
         assert!(db.unpair(&account, &id_of(&paired.machine)).await.unwrap());
 
+        assert_eq!(code_of(&next(&mut client).await), Some("machine.unpaired"));
+        assert!(ends(&mut client).await);
+    }
+
+    #[tokio::test]
+    async fn a_paired_machines_connection_outlasts_its_pings() {
+        let fixture = Fixture::new().await;
+        let server = run(fixture.shared.clone()).await;
+        let (_, mut client) = connected(server.address, &fixture).await;
+        // Reading answers each ping; the fixture pings every 100 ms.
+        for _ in 0..4 {
+            assert!(matches!(client.next().await, Some(Ok(Wire::Ping(_)))));
+        }
+        client.send(Wire::Ping(Vec::new().into())).await.unwrap();
+
+        let answered = past_pings(&mut client).await;
+
+        assert!(matches!(answered, Some(Ok(Wire::Pong(_)))), "{answered:?}");
+    }
+
+    #[tokio::test]
+    async fn a_machine_unpaired_before_its_hello_is_told_so() {
+        let fixture = Fixture::new().await;
+        // Pings far apart, so only the check after the hello can find it unpaired in time.
+        let mut shared = fixture.shared.clone();
+        shared.sockets.ping_every = Duration::from_hours(1);
+        let server = run(shared).await;
+        let paired = pair_machine(&fixture, server.address).await;
+        let mut client = open(server.address, CONNECT_PATH, &paired.token)
+            .await
+            .unwrap();
+        let (_, session) = ask(server.address, "GET /api/session", &paired.proof, "").await;
+        let account = AccountId::try_from(session["account"].as_str().unwrap().to_owned()).unwrap();
+        let db = &fixture.shared.db;
+        assert!(db.unpair(&account, &id_of(&paired.machine)).await.unwrap());
+
+        say(&mut client, &["machine.connect"]).await;
+
+        assert!(matches!(next(&mut client).await, Message::Welcome(_)));
         assert_eq!(code_of(&next(&mut client).await), Some("machine.unpaired"));
         assert!(ends(&mut client).await);
     }

@@ -51,9 +51,9 @@ impl Pings {
 
     /// Pings, and says whether the socket goes on: not once two pings went unanswered, nor
     /// when `allowed` finds the client may no longer have it.
-    pub(crate) async fn ping(
+    pub(crate) async fn ping<S: Sink<Frame> + Unpin>(
         &mut self,
-        socket: &mut WebSocket,
+        socket: &mut S,
         allowed: impl Future<Output = bool>,
     ) -> bool {
         let open = self.unanswered < 2
@@ -138,7 +138,42 @@ pub(crate) async fn send<S: Sink<Frame> + Unpin>(
 
 #[cfg(test)]
 mod tests {
+    use std::future::ready;
+
     use super::*;
+
+    #[tokio::test(start_paused = true)]
+    async fn two_unanswered_pings_end_a_socket_and_an_answer_resets_them() {
+        let mut socket = futures_util::sink::drain();
+        let mut pings = Pings::new(TIMING.ping_every);
+        let mut sent = Vec::new();
+        for _ in 0..3 {
+            pings.due().await;
+            sent.push(pings.ping(&mut socket, ready(true)).await);
+        }
+        let pong = Ok(Frame::Pong(Vec::new().into()));
+        let heard = pings.heard(Some(&pong));
+        let again = pings.ping(&mut socket, ready(true)).await;
+        let refused = pings.ping(&mut socket, ready(false)).await;
+
+        assert_eq!(sent, [true, true, false]);
+        assert!(heard);
+        assert!(again);
+        assert!(!refused);
+    }
+
+    #[tokio::test]
+    async fn a_close_or_an_end_is_the_end_of_a_socket() {
+        let mut pings = Pings::new(TIMING.ping_every);
+        let close = Ok(Frame::Close(None));
+        let failed = Err(axum::Error::new("gone"));
+        let text = Ok(Frame::Text("hi".into()));
+
+        assert!(!pings.heard(None));
+        assert!(!pings.heard(Some(&close)));
+        assert!(!pings.heard(Some(&failed)));
+        assert!(pings.heard(Some(&text)));
+    }
 
     #[tokio::test(start_paused = true)]
     async fn a_send_the_client_never_takes_gives_up() {
