@@ -120,7 +120,7 @@ mod tests {
     use weacon_observability::Deliver;
 
     use super::*;
-    use crate::app::App;
+    use crate::app;
     use crate::test_support::{VERSION, recording_sink, workspace_id};
     use crate::workspaces::MAX_NAME;
 
@@ -360,14 +360,14 @@ mod tests {
             seen.lock().unwrap().push(upload.clone());
             Ok(())
         });
-        let app = App::start(
+        let app = app::start(
             VERSION,
             stdout,
             deliver,
             Some("https://key@sentry.example.com/1"),
         );
         for fault in failures {
-            app.finish(Err(fault));
+            assert_eq!(app.finish(Err(fault)), std::process::ExitCode::from(2));
         }
         let logs = serde_json::to_string(&*records.lock().unwrap()).unwrap();
         let uploads = uploads

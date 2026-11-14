@@ -134,7 +134,7 @@ mod tests {
     use serde_json::json;
 
     use super::*;
-    use crate::{RunEvent, RunId};
+    use crate::RunEvent;
 
     fn app(name: &str) -> App {
         App {
@@ -193,7 +193,7 @@ mod tests {
                 Envelope {
                     id: 0,
                     message: Message::Run(RunUpdate {
-                        run: RunId::try_from("r-1".to_owned()).unwrap(),
+                        run: "r-1".parse().unwrap(),
                         event: RunEvent::TextDelta {
                             text: "Hel".to_owned(),
                         },
