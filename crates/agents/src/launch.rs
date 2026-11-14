@@ -11,8 +11,10 @@ use weacon_observability::Fault;
 use weacon_protocol::{AccessLevel, AgentKind, AgentSession, App, RunId, code};
 
 use crate::access::Rules;
+use crate::platform;
 use crate::run::{self, AgentRun};
 use crate::spawn::SpawnPolicy;
+use crate::terminal::{Events, Size, Terminal};
 use crate::wire::Wire;
 use crate::{claude, codex};
 
@@ -139,6 +141,21 @@ impl Launch {
             Ok(_) => Err(failed()),
             Err(error) => Err(failed().because(error)),
         }
+    }
+
+    /// Runs the vendor's own sign-in in a new terminal of `size`: the same program, fixed
+    /// arguments and config folder as [`Launch::log_in`], and no shell.
+    ///
+    /// # Errors
+    /// When this build doesn't know the agent, or its program can't be started.
+    pub fn log_in_terminal(&self, size: Size) -> Result<(Terminal, Events), Fault> {
+        let mut command = self.vendors(claude::login, codex::login)?;
+        // What the browser's terminal emulates, whatever this process runs under.
+        command.env("TERM", "xterm-256color");
+        let (pty, events) = platform::Pty::spawn(command, size).map_err(|error| {
+            Fault::new(code!("agent.login_failed"), "The sign-in couldn't start").because(error)
+        })?;
+        Ok((Terminal { pty }, Events(events)))
     }
 
     // The command of this launch's vendor.

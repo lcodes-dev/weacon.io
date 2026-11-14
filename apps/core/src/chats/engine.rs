@@ -14,8 +14,8 @@ use tokio::sync::{mpsc, oneshot};
 use weacon_observability::{Fault, Field, Logger};
 use weacon_protocol::{
     AgentKind, AgentSession, ChatAnswerKind, ChatCommand, ChatEntry, ChatEvent, ChatId, ChatQuery,
-    ChatUpdate, Message, Outcome, Receipt, RequestId, RunId, RunState, RunStatus, WorkspaceId,
-    code,
+    ChatUpdate, Message, Outcome, PermissionAnswer, Receipt, RequestId, RunId, RunState, RunStatus,
+    WorkspaceId, code,
 };
 
 use super::feed::{Client, Subscriber};
@@ -129,9 +129,8 @@ impl Chat {
 /// An answer to a waiting prompt whose receipt is being written, so a retry delivers it.
 #[derive(Debug, PartialEq, Eq)]
 struct Answered {
-    prompt: u32,
     request: RequestId,
-    allow: bool,
+    answer: PermissionAnswer,
 }
 
 pub(crate) struct Engine<A> {

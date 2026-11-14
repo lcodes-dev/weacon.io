@@ -99,12 +99,11 @@ impl<A: Agent> Engine<A> {
             ));
         }
         let answered = Answered {
-            prompt: answer.prompt,
             request: request.clone(),
-            allow: answer.allow,
+            answer: answer.clone(),
         };
         let answers = &mut self.chat(key).await?.answers;
-        answers.retain(|other| other.prompt != answer.prompt);
+        answers.retain(|other| other.answer.prompt != answer.prompt);
         answers.push(answered);
         self.receipt(key, &request, Outcome::Completed).await?;
         self.deliver(key, &request, answer).await
@@ -127,9 +126,8 @@ impl<A: Agent> Engine<A> {
         answer: PermissionAnswer,
     ) -> Result<(), Fault> {
         let given = Answered {
-            prompt: answer.prompt,
             request: request.clone(),
-            allow: answer.allow,
+            answer: answer.clone(),
         };
         let live = self.is_live(key);
         let chat = self.chat(key).await?;

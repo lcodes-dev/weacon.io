@@ -59,18 +59,8 @@ impl<A: Agent> Engine<A> {
             RunEvent::PermissionAsked { prompt, .. } => {
                 self.asked(key, run, prompt, committed).await
             }
-            // Tried again after a failed write, which reopens the log, so it never shows the
-            // prompt still waiting.
-            RunEvent::PermissionWithdrawn { .. } => {
-                if committed.is_err() {
-                    self.commit_said(key, run, &event).await?;
-                }
-                let log = &self.chat(key).await?.log;
-                let asks = log.runs().waiting.iter().any(|waits| waits.run == *run);
-                if !asks && self.turn(key).is_some() {
-                    self.state(key, run, RunState::Running).await?;
-                }
-                Ok(())
+            RunEvent::PermissionWithdrawn { prompt, .. } => {
+                self.withdrawn(key, run, prompt, committed.map(drop)).await
             }
             // An agent that leaves its turn unknown is exiting; nothing more goes to it.
             RunEvent::Finished {
@@ -94,6 +84,33 @@ impl<A: Agent> Engine<A> {
         }
     }
 
+    // The agent no longer asks. An answer still on its way is never given, and a failed write
+    // is tried again, which reopens the log, unless the log has the withdrawal all the same.
+    async fn withdrawn(
+        &mut self,
+        key: &Key,
+        run: &RunId,
+        prompt: u32,
+        committed: Result<(), Fault>,
+    ) -> Result<(), Fault> {
+        let answers = &mut self.chat(key).await?.answers;
+        answers.retain(|answered| answered.answer.prompt != prompt);
+        let logged = !self.chat(key).await?.log.runs().waits(run, prompt);
+        if committed.is_err() && !logged {
+            let event = RunEvent::PermissionWithdrawn {
+                run: run.clone(),
+                prompt,
+            };
+            self.commit_said(key, run, &event).await?;
+        }
+        let log = &self.chat(key).await?.log;
+        let asks = log.runs().waiting.iter().any(|waits| waits.run == *run);
+        if !asks && self.turn(key).is_some() {
+            self.state(key, run, RunState::Running).await?;
+        }
+        Ok(())
+    }
+
     // A prompt a person can't be shown in full is refused for them; it never waits unseen.
     async fn asked(
         &mut self,
@@ -115,12 +132,16 @@ impl<A: Agent> Engine<A> {
             "permission prompt refused unseen",
             &[("run_id", run.as_str().into())],
         );
-        committed?;
-        let event = RunEvent::PermissionWithdrawn {
-            run: run.clone(),
-            prompt,
-        };
-        self.commit_said(key, run, &event).await.map(drop)
+        // Withdrawn wherever it reached the log, even by a write reported failed.
+        let logged = self.chat(key).await?.log.runs().waits(run, prompt);
+        if committed.is_ok() || logged {
+            let event = RunEvent::PermissionWithdrawn {
+                run: run.clone(),
+                prompt,
+            };
+            self.commit_said(key, run, &event).await?;
+        }
+        committed.map(drop)
     }
 
     // Commits a run's event, cut down when it is too large for one frame; true when whole.
@@ -969,14 +990,138 @@ mod tests {
         assert_eq!(soon(agent.told.recv()).await, None);
     }
 
+    // An answer to prompt 1 whose receipt is written but which hasn't reached the run.
+    async fn on_its_way(engine: &mut Engine<FakeAgent>) -> ChatCommand {
+        let (answers, answer) = allow("r-2");
+        let request = answers.request.clone();
+        let answered = Answered {
+            request: request.clone(),
+            answer,
+        };
+        engine.chat(&key()).await.unwrap().answers.push(answered);
+        let receipt = Outcome::Completed;
+        engine.receipt(&key(), &request, receipt).await.unwrap();
+        answers
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_retry_naming_another_run_gives_nothing_and_changes_no_run() {
+        let (mut engine, mut agent, _bench) = on_ask().await;
+        let mut answers = on_its_way(&mut engine).await;
+        if let ChatAction::Permission { answer } = &mut answers.action {
+            answer.run = run("run-9");
+        }
+
+        engine.command(&key(), answers).await.unwrap();
+
+        assert_eq!(soon(agent.told.recv()).await, None);
+        let runs = &engine.chat(&key()).await.unwrap().log.runs().runs;
+        assert_eq!(runs[0].run, run("run-1"));
+        assert_eq!(waiting_in(&mut engine).await.len(), 1);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn an_answer_on_its_way_to_a_withdrawn_prompt_is_never_given() {
+        let (mut engine, mut agent, _bench) = on_ask().await;
+        let answers = on_its_way(&mut engine).await;
+        let withdrawn = RunEvent::PermissionWithdrawn {
+            run: run("run-1"),
+            prompt: 1,
+        };
+        hear(&mut engine, withdrawn).await.unwrap();
+
+        engine.command(&key(), answers).await.unwrap();
+
+        assert_eq!(soon(agent.told.recv()).await, None);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_withdrawal_that_cant_be_written_still_drops_the_answers_on_their_way() {
+        let (mut engine, _agent, _bench) = on_ask().await;
+        on_its_way(&mut engine).await;
+        // Both writes fail: the log is broken, and a folder where its file was keeps it so.
+        let file = engine.workspaces.root(&key().0).join("chats/c-c-1.jsonl");
+        std::fs::rename(&file, file.with_extension("moved")).unwrap();
+        std::fs::create_dir(&file).unwrap();
+        engine.chat(&key()).await.unwrap().log.jam();
+        let withdrawn = RunEvent::PermissionWithdrawn {
+            run: run("run-1"),
+            prompt: 1,
+        };
+
+        let lost = hear(&mut engine, withdrawn).await;
+
+        assert_eq!(lost.unwrap_err().code().as_str(), "chat.log_not_written");
+        assert!(engine.chat(&key()).await.unwrap().answers.is_empty());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_withdrawal_whose_write_landed_is_not_written_again() {
+        let (mut engine, _agent, _bench) = on_ask().await;
+        // As when the withdrawal reached the disk but its write was reported failed.
+        let event = RunEvent::PermissionWithdrawn {
+            run: run("run-1"),
+            prompt: 1,
+        };
+        hear(&mut engine, event).await.unwrap();
+        let failed = Fault::new(
+            code!("chat.log_not_written"),
+            "The chat's log can't be written",
+        );
+
+        engine
+            .withdrawn(&key(), &run("run-1"), 1, Err(failed))
+            .await
+            .unwrap();
+
+        let log = &engine.chat(&key()).await.unwrap().log;
+        let entries = log.window(u64::MAX, 64).await.unwrap();
+        let withdrawals = entries.iter().filter(|entry| {
+            matches!(&entry.event, ChatEvent::Run { update } if matches!(update.event, RunEvent::PermissionWithdrawn { .. }))
+        });
+        assert_eq!(withdrawals.count(), 1);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_refused_prompt_whose_write_landed_is_withdrawn_in_the_log() {
+        let (_bench, mut engine, mut agent, _pushes) = on_turn().await;
+        assert_eq!(
+            soon(agent.told.recv()).await,
+            Some(Told::Send("Hi".to_owned()))
+        );
+        // As when the prompt reached the disk but its write was reported failed.
+        let asks = RunEvent::PermissionAsked {
+            run: run("run-1"),
+            prompt: 1,
+            tool: "Write".to_owned(),
+            input: json!({}),
+        };
+        hear(&mut engine, asks).await.unwrap();
+        let failed = Fault::new(
+            code!("chat.log_not_written"),
+            "The chat's log can't be written",
+        );
+
+        let refused = engine.asked(&key(), &run("run-1"), 1, Err(failed)).await;
+
+        assert_eq!(refused.unwrap_err().code().as_str(), "chat.log_not_written");
+        assert!(
+            matches!(soon(agent.told.recv()).await, Some(Told::Answer(answer)) if !answer.allow)
+        );
+        assert!(waiting_in(&mut engine).await.is_empty());
+    }
+
     #[tokio::test(start_paused = true)]
     async fn an_answer_already_in_the_log_reaches_its_run_once_and_is_logged_once() {
         let (mut engine, mut agent, _bench) = on_ask().await;
         let (answers, answer) = allow("r-2");
         let answered = Answered {
-            prompt: 1,
             request: answers.request.clone(),
-            allow: true,
+            answer: PermissionAnswer {
+                run: run("run-1"),
+                prompt: 1,
+                allow: true,
+            },
         };
         // As when its receipt and its answer reached the disk but the write was reported failed.
         engine.chat(&key()).await.unwrap().answers.push(answered);
@@ -1036,9 +1181,12 @@ mod tests {
         };
         // As when its receipt was written but its delivery was cut short.
         let pending = Answered {
-            prompt: 2,
             request: second.request.clone(),
-            allow: true,
+            answer: PermissionAnswer {
+                run: run("run-1"),
+                prompt: 2,
+                allow: true,
+            },
         };
         engine.chat(&key()).await.unwrap().answers.push(pending);
         let receipt = Outcome::Completed;
