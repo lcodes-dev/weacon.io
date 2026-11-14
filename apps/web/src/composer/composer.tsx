@@ -12,7 +12,7 @@ import { type Retry, type Send, after, requestFor, requestId } from "./prompt.ts
  * The message box. While `blocked` says why, it still takes text, but can't send it. It keeps the
  * text until the server accepts it, and says so when it doesn't.
  */
-export function Composer({ send, blocked, hidden }: { send: Send | undefined; blocked: string | undefined; hidden: boolean }) {
+export function Composer({ send, blocked, hidden }: { send: Send; blocked: string | undefined; hidden: boolean }) {
   const [placed, setPlaced] = useState<Placed>({ draft: EMPTY, caret: 0 });
   const [active, setActive] = useState(0);
   const [dismissed, setDismissed] = useState<number>();
@@ -42,7 +42,7 @@ export function Composer({ send, blocked, hidden }: { send: Send | undefined; bl
   const options = offered(at, dismissed, sending);
   const unsent = files.attachments.length > 0 ? "Files can't be sent yet; remove them to send the message" : undefined;
   const hint = problem ?? blocked ?? files.refused ?? unsent;
-  const ready = !sending && unsent === undefined && blocked === undefined && send !== undefined && draft.text.trim() !== "";
+  const ready = !sending && unsent === undefined && blocked === undefined && draft.text.trim() !== "";
 
   useLayoutEffect(() => {
     const element = box.current;

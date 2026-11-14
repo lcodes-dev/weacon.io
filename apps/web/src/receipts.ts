@@ -50,17 +50,16 @@ export class Receipts {
     return settled;
   }
 
-  /** Settles the command `envelope` answers; whether it answered one. */
-  take(envelope: Envelope): boolean {
+  /** Settles the command `envelope` answers, if any. */
+  take(envelope: Envelope): void {
     if (envelope.type === "receipt" && typeof envelope.request === "string") {
       this.settle(envelope.request, SETTLED.get(envelope.state) ?? "unsure");
-      return true;
+      return;
     }
     const refused = envelope.type === "error" ? [...this.#waiting].find(([, waiting]) => waiting.id === envelope.id) : undefined;
     if (refused !== undefined) {
       this.settle(refused[0], "refused");
     }
-    return refused !== undefined;
   }
 
   /** Settles every command still waiting as lost, as when the connection ends. */

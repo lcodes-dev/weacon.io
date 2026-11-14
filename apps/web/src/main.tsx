@@ -30,13 +30,15 @@ window.addEventListener("error", crash);
 window.addEventListener("unhandledrejection", crash);
 log.info("app started");
 const place = placeOf(window.location.search);
+// How long a hidden tab waits for a frame before its batch of run events goes out anyway.
+const HIDDEN_MS = 250;
 
 function Root({ url }: { url: string }) {
   const [status, setStatus] = useState<Status>({ state: "connecting" });
   const [transcript, setTranscript] = useState(EMPTY);
-  const [send, setSend] = useState<Send>();
   const [changes, setChanges] = useState(NO_CHANGES);
-  const connected = useRef<Connection>(undefined);
+  // The connection while it is live, and the commands sent on it that wait for an answer.
+  const live = useRef<{ connection: Connection; receipts: Receipts }>(undefined);
   // The hello takes id 1.
   const lastId = useRef(1);
   useEffect(() => {
@@ -56,7 +58,7 @@ function Root({ url }: { url: string }) {
         () => document.hidden,
         (run) => requestAnimationFrame(run),
         (frame) => cancelAnimationFrame(frame),
-        (run) => setTimeout(run, 250),
+        (run) => setTimeout(run, HIDDEN_MS),
       ),
       (events) => {
         if (current) {
@@ -71,13 +73,10 @@ function Root({ url }: { url: string }) {
         }
         setStatus(next);
         if (next.state === "live") {
+          live.current = { connection, receipts };
           log.attach((envelope) => connection.send(envelope), next.capabilities.includes("log.forward"));
-          if (place !== undefined) {
-            const sendTo: Send = (text, request) =>
-              deliver(prompt(++lastId.current, place, request, text), receipts, (envelope) => connection.send(envelope));
-            setSend(() => sendTo);
-          }
         } else if (next.state === "ended") {
+          live.current = undefined;
           setChanges(cut);
           log.detach();
           receipts.end();
@@ -85,28 +84,50 @@ function Root({ url }: { url: string }) {
         }
       },
       message(envelope) {
-        // An error may answer the diff query or a prompt; `receive` keeps what isn't for it.
-        if (current && (envelope.type === "diff_answer" || envelope.type === "error")) {
-          setChanges((before) => receive(before, envelope));
-        }
-        if (envelope.type !== "diff_answer" && !receipts.take(envelope)) {
-          feed.push(envelope);
+        switch (envelope.type) {
+          case "run":
+            feed.push(envelope);
+            return;
+          case "receipt":
+            receipts.take(envelope);
+            return;
+          case "diff_answer":
+            if (current) {
+              setChanges((before) => receive(before, envelope));
+            }
+            return;
+          case "error":
+            // It may answer the diff query or a prompt; each keeps only what is for it.
+            receipts.take(envelope);
+            if (current) {
+              setChanges((before) => receive(before, envelope));
+            }
+            return;
+          default:
+            return;
         }
       },
     });
-    connected.current = connection;
     return () => {
       current = false;
+      live.current = undefined;
       socket.close();
     };
   }, [url]);
+  const send: Send = (text, request) => {
+    const now = live.current;
+    if (now === undefined || place === undefined) {
+      return Promise.resolve("lost");
+    }
+    return deliver(prompt(++lastId.current, place, request, text), now.receipts, (envelope) => now.connection.send(envelope));
+  };
   const openChanges = () => {
     // Asked the first time they are opened, and again after answers were cut short.
-    if (needsAsking(changes) && place !== undefined && connected.current !== undefined) {
+    if (needsAsking(changes) && place !== undefined && live.current !== undefined) {
       const request = requestId(crypto.getRandomValues(new Uint8Array(16)));
       const { query, changes: asked } = ask(++lastId.current, request, place.workspace, place.chat, changes);
       setChanges(asked);
-      connected.current.send(query);
+      live.current.connection.send(query);
     }
   };
   return (

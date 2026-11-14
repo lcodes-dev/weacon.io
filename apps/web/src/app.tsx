@@ -29,7 +29,7 @@ export function App({
   status: Status;
   transcript: Transcript;
   place: Place | undefined;
-  send: Send | undefined;
+  send: Send;
   review: Review;
 }) {
   const [shown, setShown] = useState<Shown>("run");
