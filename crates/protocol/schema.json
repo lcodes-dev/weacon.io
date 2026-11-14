@@ -2528,8 +2528,8 @@
       "type": "object",
       "properties": {
         "by": {
-          "description": "Who asked, when the server relays the message to a machine.",
-          "$ref": "#/$defs/Asker"
+          "description": "The account that asked, when the server relays the message to a machine; the core\nanswers only its owner.",
+          "$ref": "#/$defs/AccountId"
         },
         "machine": {
           "$ref": "#/$defs/MachineId"

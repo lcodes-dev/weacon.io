@@ -1030,9 +1030,10 @@ export type SessionsAnswerKind = (
  */
 export type SessionsQuery = {
   /**
-   * Who asked, when the server relays the message to a machine.
+   * The account that asked, when the server relays the message to a machine; the core
+   * answers only its owner.
    */
-  by?: Asker;
+  by?: AccountId;
   machine: MachineId;
   query: SessionsQueryKind;
   request: RequestId;

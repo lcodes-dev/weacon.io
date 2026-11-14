@@ -2,7 +2,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::chat::any_newer;
-use crate::{AgentKind, AgentSession, Asker, ChatEntry, MachineId, RequestId};
+use crate::{AccountId, AgentKind, AgentSession, ChatEntry, MachineId, RequestId};
 
 /// A person asks their own machine about the agent sessions they ran outside Weacon, from a
 /// client to a core that offers `sessions.read`. No workspace holds these sessions.
@@ -11,10 +11,11 @@ pub struct SessionsQuery {
     pub request: RequestId,
     pub machine: MachineId,
     pub query: SessionsQueryKind,
-    /// Who asked, when the server relays the message to a machine.
+    /// The account that asked, when the server relays the message to a machine; the core
+    /// answers only its owner.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schemars(with = "Asker")]
-    pub by: Option<Asker>,
+    #[schemars(with = "AccountId")]
+    pub by: Option<AccountId>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -93,7 +94,7 @@ mod tests {
     use serde_json::{Value, json};
 
     use super::*;
-    use crate::{AccountId, ChatEvent, Envelope, FrameError, MemberId, Message};
+    use crate::{ChatEvent, Envelope, FrameError, Message};
 
     const SESSION: &str = "0b7c6a52-3f1e-4d2a-9c8b-5e4f3a2b1c0d";
 
@@ -134,14 +135,11 @@ mod tests {
                 session: AgentSession::try_from(SESSION.to_owned()).unwrap(),
                 after: 4,
             },
-            by: Some(Asker {
-                account: AccountId::try_from("a-1".to_owned()).unwrap(),
-                member: MemberId::try_from("m-1".to_owned()).unwrap(),
-            }),
+            by: Some(AccountId::try_from("a-1".to_owned()).unwrap()),
         }));
         let open = json!({ "kind": "open", "agent": "codex", "session": SESSION, "after": 4 });
         let mut query_wire = wire("sessions_query", "query", open);
-        query_wire["by"] = json!({ "account": "a-1", "member": "m-1" });
+        query_wire["by"] = json!("a-1");
         let listed = json!({ "kind": "list", "sessions": [
             { "agent": "claude", "session": SESSION, "folder": "/work/app",
               "modified_at": 1_763_000_000 },
