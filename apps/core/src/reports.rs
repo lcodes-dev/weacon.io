@@ -185,7 +185,7 @@ mod tests {
     use weacon_testing::TempDir;
 
     use super::*;
-    use crate::test_support;
+    use crate::test_support::{self, Broken};
 
     fn reports(dir: &Path, answer: Option<Answer>) -> Result<String, Fault> {
         let app = test_support::app(Some(dir), None);
@@ -310,15 +310,6 @@ mod tests {
 
     #[test]
     fn an_answer_that_cant_be_saved_or_printed_is_an_error() {
-        struct Closed;
-        impl Write for Closed {
-            fn write(&mut self, _: &[u8]) -> io::Result<usize> {
-                Err(io::ErrorKind::BrokenPipe.into())
-            }
-            fn flush(&mut self) -> io::Result<()> {
-                Ok(())
-            }
-        }
         let dir = TempDir::new().unwrap();
         fs::create_dir_all(file(&dir)).unwrap();
         let app = test_support::app(Some(&dir), None);
@@ -328,7 +319,7 @@ mod tests {
         let unprinted = run(
             &test_support::app(Some(&printable), None),
             Some(Answer::On),
-            &mut Closed,
+            &mut Broken,
         )
         .unwrap_err();
         let nowhere = run(&test_support::app(None, None), None, &mut Vec::new()).unwrap_err();
