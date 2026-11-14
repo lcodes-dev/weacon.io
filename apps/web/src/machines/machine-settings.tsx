@@ -1,7 +1,7 @@
 import type { Later } from "../connection.ts";
 import type { AccessLevel, AgentKind, MachineSettings, MachineSettingsAction, MachineSummary, SignInState } from "../protocol.ts";
-import { useAsk } from "../shell/ask.ts";
-import { useLoaded } from "../shell/loaded.ts";
+import { useAsk } from "../api/ask.ts";
+import { useLoaded } from "../api/loaded.ts";
 import { type Link, change, current } from "./link.ts";
 
 const LEVELS: Array<[AccessLevel, string]> = [

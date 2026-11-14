@@ -1,6 +1,6 @@
 import type { ChatId, ChatList } from "../protocol.ts";
 import { newestFirst, stateNote } from "./chat-list.ts";
-import type { Loaded } from "./loaded.ts";
+import type { Loaded } from "../api/loaded.ts";
 
 /** The workspace's chats, newest first, with the one `chosen` marked; picking one calls `choose`. */
 export function ChatsNav({

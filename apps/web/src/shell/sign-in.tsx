@@ -1,8 +1,8 @@
 import { useState } from "react";
 
 import type { AccountSignedIn, ChallengeId } from "../protocol.ts";
-import type { Api } from "./api.ts";
-import { useAsk } from "./ask.ts";
+import type { Api } from "../api/api.ts";
+import { useAsk } from "../api/ask.ts";
 
 /**
  * Asks for an email, then the code sent to it. Every address gets the same answer, so the page
