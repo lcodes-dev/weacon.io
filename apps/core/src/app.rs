@@ -124,31 +124,25 @@ fn reports(env: Env<'_>, version: &Version, log: &Logger) -> Option<Reports> {
 #[cfg(test)]
 mod tests {
     use std::fs;
-    use std::sync::{Arc, Mutex};
 
-    use weacon_observability::Upload;
     use weacon_protocol::code;
-    use weacon_testing::TempDir;
+    use weacon_testing::{TempDir, Uploads, recording_deliver};
 
     use super::*;
     use crate::test_support::{Records, VERSION, env, messages, recording_sink};
 
     const DSN: &str = "https://key@sentry.example.com/1";
 
-    fn start(vars: &[(&str, &str)], verbose: bool) -> (App, Records, Arc<Mutex<Vec<Upload>>>) {
+    fn start(vars: &[(&str, &str)], verbose: bool) -> (App, Records, Uploads) {
         let env = env(vars);
         let (stderr, records) = recording_sink();
-        let uploads = Arc::new(Mutex::new(Vec::new()));
-        let seen = Arc::clone(&uploads);
+        let (deliver, uploads) = recording_deliver();
         let app = App::start(
             VERSION,
             Setup {
                 env: &env,
                 stderr,
-                deliver: Box::new(move |upload| {
-                    seen.lock().unwrap().push(upload.clone());
-                    Ok(())
-                }),
+                deliver,
                 verbose,
                 mode: "doctor",
                 log_name: "cli.log",
