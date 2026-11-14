@@ -21,10 +21,10 @@ const WINDOW_MAX: usize = MAX_FRAME - (16 << 10);
 // More missed entries than this are lost to a subscriber, which then takes a snapshot.
 const REPLAY_MAX: usize = 8 * MAX_FRAME;
 
-/// One chat's journal. Its owner keeps one per chat and awaits each call to the end: calls
+/// One chat's log. Its owner keeps one per chat and awaits each call to the end: calls
 /// aren't safe to cancel or to run side by side.
 #[derive(Debug)]
-pub(crate) struct Log {
+pub(crate) struct ChatLog {
     file: File,
     /// Where each entry starts in the file; the entry `seq` starts at `starts[seq - 1]`.
     starts: Vec<u64>,
@@ -69,12 +69,12 @@ fn unreadable(error: io::Error) -> Fault {
     Fault::new(code!("chat.log_unreadable"), "The chat's log can't be read").because(error)
 }
 
-impl Log {
-    /// Opens `chat`'s journal under its workspace's own folder, `workspace_root`, created
+impl ChatLog {
+    /// Opens `chat`'s log under its workspace's own folder, `workspace_root`, created
     /// private when missing and kept through a power loss. An entry a crash cut short is dropped.
     ///
     /// # Errors
-    /// When the journal can't be read or an entry before its last is damaged.
+    /// When the log can't be read or an entry before its last is damaged.
     pub(crate) async fn open(workspace_root: &Path, chat: &ChatId) -> Result<Self, Fault> {
         let dir = workspace_root.join("chats");
         let path = dir.join(super::file_stem(chat) + ".jsonl");
@@ -372,24 +372,24 @@ mod tests {
         }
     }
 
-    fn journal(root: &Path) -> PathBuf {
+    fn file_of(root: &Path) -> PathBuf {
         root.join("chats/c-c-1.jsonl")
     }
 
-    async fn open(root: &Path) -> Log {
-        Log::open(root, &chat("c-1")).await.unwrap()
+    async fn open(root: &Path) -> ChatLog {
+        ChatLog::open(root, &chat("c-1")).await.unwrap()
     }
 
-    async fn since(log: &Log, after: u64) -> Option<Vec<u64>> {
+    async fn since(log: &ChatLog, after: u64) -> Option<Vec<u64>> {
         let found = log.since(after).await.unwrap();
         found.map(|found| seqs(&found))
     }
 
-    async fn seen(log: &Log, id: &str, action: ChatAction) -> Seen {
+    async fn seen(log: &ChatLog, id: &str, action: ChatAction) -> Seen {
         log.seen(&request(id), &action).await.unwrap()
     }
 
-    async fn window(log: &Log, before: u64, limit: u32) -> Vec<u64> {
+    async fn window(log: &ChatLog, before: u64, limit: u32) -> Vec<u64> {
         seqs(&log.window(before, limit).await.unwrap())
     }
 
@@ -429,11 +429,11 @@ mod tests {
     async fn chats_keep_apart_by_workspace_and_by_case_in_private_files() {
         let dir = TempDir::new().unwrap();
         let (one, other) = (dir.join("w-one"), dir.join("w-other"));
-        let mut upper = Log::open(&one, &chat("Ab")).await.unwrap();
+        let mut upper = ChatLog::open(&one, &chat("Ab")).await.unwrap();
         upper.append(logged_prompt("r-1", "Hi")).await.unwrap();
 
-        let lower = Log::open(&one, &chat("ab")).await.unwrap();
-        let elsewhere = Log::open(&other, &chat("Ab")).await.unwrap();
+        let lower = ChatLog::open(&one, &chat("ab")).await.unwrap();
+        let elsewhere = ChatLog::open(&other, &chat("Ab")).await.unwrap();
 
         assert_eq!((lower.seq(), elsewhere.seq()), (0, 0));
         assert!(one.join("chats/c-.ab.jsonl").exists());
@@ -451,7 +451,7 @@ mod tests {
     #[tokio::test]
     async fn an_entry_cut_short_is_dropped_and_a_damaged_one_before_it_stops_the_open() {
         let dir = TempDir::new().unwrap();
-        let path = journal(&dir);
+        let path = file_of(&dir);
         let mut log = open(&dir).await;
         log.append(logged_prompt("r-1", "Hi")).await.unwrap();
         drop(log);
@@ -468,7 +468,7 @@ mod tests {
 
         // The second entry has the wrong place and another follows it.
         fs::write(&path, [&whole[..], &whole[..], &whole[..]].concat()).unwrap();
-        let damaged = Log::open(&dir, &chat("c-1")).await.unwrap_err();
+        let damaged = ChatLog::open(&dir, &chat("c-1")).await.unwrap_err();
         assert_eq!(damaged.code().as_str(), "chat.log_unreadable");
     }
 
@@ -477,7 +477,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let mut log = open(&dir).await;
         log.append(logged_prompt("r-1", "Hi")).await.unwrap();
-        log.file = File::open(journal(&dir)).unwrap();
+        log.file = File::open(file_of(&dir)).unwrap();
 
         let failed = log.append(accepted("r-1")).await.unwrap_err();
         let after = log.append(accepted("r-1")).await.unwrap_err();
