@@ -228,11 +228,12 @@ impl FakeChat {
             },
         });
         match action {
-            ChatAction::Prompt { text, .. } => {
+            ChatAction::Prompt { text, agent, .. } => {
                 told.extend(self.commit(ChatEvent::Prompt {
                     request: request.clone(),
                     text: text.clone(),
                     repo: None,
+                    agent: *agent,
                 }));
                 if text == LOSE
                     && let Some(id) = self.subscription.take()
@@ -288,6 +289,7 @@ impl FakeChat {
             request,
             text: text.to_owned(),
             repo: None,
+            agent: None,
         }))
     }
 
@@ -423,6 +425,7 @@ mod tests {
             text: text.to_owned(),
             repo: None,
             machine: None,
+            agent: None,
         })
     }
 
@@ -677,6 +680,37 @@ mod tests {
         );
         assert_eq!(shape(&unknown), [(4, "81 receipt q-9".to_owned())]);
         assert_eq!(snapshot(&mut fake).2, Vec::<u64>::new());
+    }
+
+    #[test]
+    fn a_prompt_keeps_the_agent_it_names() {
+        let mut fake = fake();
+        let named = |agent| {
+            command(ChatAction::Prompt {
+                text: "Go.".to_owned(),
+                repo: None,
+                machine: None,
+                agent,
+            })
+        };
+        fake.answer(&query(4, "c-1", ChatQueryKind::Subscribe { after: SEEDED }));
+        let told = [named(Some(AgentKind::Codex)), named(None)]
+            .iter()
+            .flat_map(|envelope| fake.answer(envelope))
+            .collect::<Vec<_>>();
+
+        let agents: Vec<_> = told
+            .iter()
+            .filter_map(|envelope| {
+                if let Message::Chat(ChatUpdate { entry, .. }) = &envelope.message
+                    && let ChatEvent::Prompt { agent, .. } = &entry.event
+                {
+                    return Some(*agent);
+                }
+                None
+            })
+            .collect();
+        assert_eq!(agents, [Some(AgentKind::Codex), None]);
     }
 
     #[test]
