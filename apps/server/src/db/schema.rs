@@ -177,6 +177,93 @@ CREATE UNIQUE INDEX accounts_owner ON accounts (owner) WHERE owner = 1;
 ALTER TABLE sign_in_challenges ADD COLUMN mailed INTEGER NOT NULL DEFAULT 1;
 CREATE INDEX sign_in_challenges_email ON sign_in_challenges (email);
 ",
+    // Docs, each revision whole, with the pins it links to.
+    "
+CREATE TABLE docs (
+    workspace_id TEXT NOT NULL REFERENCES workspaces (workspace_id),
+    doc_id TEXT NOT NULL,
+    version INTEGER NOT NULL,
+    PRIMARY KEY (workspace_id, doc_id)
+) STRICT;
+
+CREATE TABLE doc_versions (
+    workspace_id TEXT NOT NULL,
+    doc_id TEXT NOT NULL,
+    version INTEGER NOT NULL,
+    title TEXT NOT NULL,
+    body TEXT NOT NULL,
+    commit_id TEXT,
+    author_kind TEXT NOT NULL,
+    author_member TEXT NOT NULL,
+    accepted_by TEXT NOT NULL,
+    at INTEGER NOT NULL,
+    PRIMARY KEY (workspace_id, doc_id, version),
+    FOREIGN KEY (workspace_id, doc_id) REFERENCES docs (workspace_id, doc_id),
+    FOREIGN KEY (workspace_id, author_member) REFERENCES members (workspace_id, member_id),
+    FOREIGN KEY (workspace_id, accepted_by) REFERENCES members (workspace_id, member_id)
+) STRICT;
+
+CREATE TABLE doc_pins (
+    workspace_id TEXT NOT NULL,
+    doc_id TEXT NOT NULL,
+    version INTEGER NOT NULL,
+    position INTEGER NOT NULL,
+    pin TEXT NOT NULL,
+    PRIMARY KEY (workspace_id, doc_id, version, position),
+    FOREIGN KEY (workspace_id, doc_id, version)
+        REFERENCES doc_versions (workspace_id, doc_id, version)
+) STRICT;
+
+CREATE TABLE changes_with_docs (
+    workspace_id TEXT NOT NULL,
+    seq INTEGER NOT NULL,
+    kind TEXT NOT NULL,
+    member_id TEXT NOT NULL,
+    task_id TEXT,
+    task_version INTEGER,
+    doc_id TEXT,
+    doc_version INTEGER,
+    PRIMARY KEY (workspace_id, seq),
+    FOREIGN KEY (workspace_id, member_id) REFERENCES members (workspace_id, member_id),
+    FOREIGN KEY (workspace_id, task_id, task_version)
+        REFERENCES task_versions (workspace_id, task_id, version),
+    FOREIGN KEY (workspace_id, doc_id, doc_version)
+        REFERENCES doc_versions (workspace_id, doc_id, version)
+) STRICT;
+
+INSERT INTO changes_with_docs (workspace_id, seq, kind, member_id, task_id, task_version)
+SELECT workspace_id, seq, kind, member_id, task_id, task_version FROM changes;
+
+DROP TABLE changes;
+ALTER TABLE changes_with_docs RENAME TO changes;
+",
+    // Machines paired with an account, and the pairings under way. A confirmed pairing names
+    // its account and machine, and stays until it expires so that its core may claim again.
+    "
+CREATE TABLE machines (
+    machine_id TEXT PRIMARY KEY,
+    account_id TEXT NOT NULL REFERENCES accounts (account_id),
+    name TEXT NOT NULL,
+    os TEXT NOT NULL,
+    machine_key TEXT NOT NULL,
+    token_hash BLOB NOT NULL UNIQUE,
+    paired_at INTEGER NOT NULL
+) STRICT;
+
+CREATE TABLE pairings (
+    pairing_id TEXT PRIMARY KEY,
+    code_hash BLOB NOT NULL UNIQUE,
+    secret_hash BLOB NOT NULL,
+    name TEXT NOT NULL,
+    os TEXT NOT NULL,
+    machine_key TEXT NOT NULL,
+    expires_at INTEGER NOT NULL,
+    account_id TEXT REFERENCES accounts (account_id),
+    machine_id TEXT,
+    confirmed_at INTEGER,
+    claimed INTEGER NOT NULL DEFAULT 0
+) STRICT;
+",
 ];
 
 /// Applies the steps the database hasn't had yet, each in its own transaction that holds the
@@ -254,7 +341,13 @@ mod tests {
             .unwrap()
     }
 
-    const SERVER_WIDE: [&str; 3] = ["accounts", "sign_in_challenges", "sessions"];
+    const SERVER_WIDE: [&str; 5] = [
+        "accounts",
+        "sign_in_challenges",
+        "sessions",
+        "machines",
+        "pairings",
+    ];
 
     async fn tables(db: &Db) -> Vec<String> {
         sqlx::query_scalar(
@@ -280,8 +373,13 @@ mod tests {
                 "sessions",
                 "tasks",
                 "task_versions",
+                "sign_in_challenges",
+                "docs",
+                "doc_versions",
+                "doc_pins",
                 "changes",
-                "sign_in_challenges"
+                "machines",
+                "pairings"
             ]
         );
         for table in SERVER_WIDE {

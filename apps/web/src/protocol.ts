@@ -63,6 +63,15 @@ export type Envelope = {
   | {
     type: "terminal";
   } & TerminalUpdate
+  | {
+    type: "worktree_query";
+  } & WorktreeQuery
+  | {
+    type: "worktree_command";
+  } & WorktreeCommand
+  | {
+    type: "worktree_answer";
+  } & WorktreeAnswer
 );
 
 /**
@@ -119,6 +128,32 @@ export type AgentKind = (
     | "codex"
   )
 );
+
+/**
+ * Whose agent it is.
+ */
+export type AgentOwner = (
+  | {
+    kind: "member";
+    member: MemberId;
+  }
+  | {
+    kind: "shared";
+  }
+);
+
+/**
+ * An agent as people know it.
+ */
+export type AgentRef = {
+  kind: AgentKind;
+  /**
+   * What the machine it runs on is called, which the server stamps from its own record of
+   * the core that sent the status and never takes from the core; left out when not known.
+   */
+  machine?: MachineName;
+  owner: AgentOwner;
+};
 
 /**
  * An agent's own id for a conversation, a lowercase UUID, which resumes it later.
@@ -972,6 +1007,10 @@ export type RunState = (
  * Where a run stands, as its chat's log records it.
  */
 export type RunStatus = {
+  /**
+   * Who runs it; left out when not known.
+   */
+  agent?: AgentRef;
   run: RunId;
   state: RunState;
 };
@@ -1273,3 +1312,87 @@ export type WorkspaceUpdate = {
   seq: number;
   workspace: WorkspaceId;
 };
+
+export type WorktreeAction = (
+  | {
+    kind: "remove";
+  }
+  | {
+    kind: "restore";
+  }
+  | {
+    body: string;
+    kind: "open_pull_request";
+    title: string;
+  }
+);
+
+/**
+ * From the core to a client that has `worktree.manage`, in answer to a [`WorktreeQuery`] or a
+ * [`WorktreeCommand`].
+ */
+export type WorktreeAnswer = {
+  answer: WorktreeAnswerKind;
+  chat: ChatId;
+  request: RequestId;
+  workspace: WorkspaceId;
+};
+
+export type WorktreeAnswerKind = (
+  | {
+    kind: "state";
+    /**
+     * In the Trash.
+     */
+    removed: boolean;
+    uncommitted: boolean;
+    unpushed: boolean;
+  }
+  | {
+    kind: "pull_request_opened";
+    url: DownloadUrl;
+  }
+  | {
+    kind: "pull_request_page";
+    url: DownloadUrl;
+  }
+);
+
+/**
+ * From a client to a core that offers `worktree.manage`: what a person asks of a chat's
+ * worktree. The core acts only for someone who may act on the chat, and a client asks the
+ * person before `remove`, whatever the access level. The answer is a [`WorktreeAnswer`] that
+ * echoes `request`: the worktree's state after `remove` or `restore`, which a repeated one
+ * answers too.
+ */
+export type WorktreeCommand = {
+  action: WorktreeAction;
+  /**
+   * Who asked, when the server relays the command to a machine.
+   */
+  by?: Asker;
+  chat: ChatId;
+  request: RequestId;
+  workspace: WorkspaceId;
+};
+
+/**
+ * From a client to a core that offers `worktree.manage`: a question about a chat's worktree.
+ * The answer is a [`WorktreeAnswer`] that echoes `request`.
+ */
+export type WorktreeQuery = {
+  /**
+   * Who asked, when the server relays the query to a machine.
+   */
+  by?: Asker;
+  chat: ChatId;
+  query: WorktreeQueryKind;
+  request: RequestId;
+  workspace: WorkspaceId;
+};
+
+export type WorktreeQueryKind = (
+  | {
+    kind: "state";
+  }
+);

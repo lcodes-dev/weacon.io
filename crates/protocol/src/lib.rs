@@ -20,6 +20,7 @@ mod team;
 mod terminal;
 mod token;
 mod update;
+mod worktree;
 
 pub use access::AccessLevel;
 pub use capability::Capability;
@@ -47,7 +48,8 @@ pub use pick::Pick;
 pub use receipt::{Outcome, Receipt, RequestId};
 pub use repo::RepoId;
 pub use run::{
-    AgentKind, AgentSession, PermissionAnswer, RunEvent, RunId, RunState, RunStatus, RunUpdate,
+    AgentKind, AgentOwner, AgentRef, AgentSession, PermissionAnswer, RunEvent, RunId, RunState,
+    RunStatus, RunUpdate,
 };
 pub use settings::{
     AgentSignIn, MachineSettings, MachineSettingsAction, MachineSettingsAnswer,
@@ -68,6 +70,10 @@ pub use terminal::{
 };
 pub use update::{
     BuildTarget, Commit, DownloadUrl, ReleaseBuild, ReleaseManifest, ReleaseVersion, Sha256,
+};
+pub use worktree::{
+    WorktreeAction, WorktreeAnswer, WorktreeAnswerKind, WorktreeCommand, WorktreeQuery,
+    WorktreeQueryKind,
 };
 
 /// `bytes` as lowercase hex.
