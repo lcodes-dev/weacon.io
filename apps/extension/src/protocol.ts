@@ -763,6 +763,15 @@ export type MachineSummary = {
 };
 
 /**
+ * The part of a [`Snippet`] from `start` up to `end`, counted in UTF-16 code units as a
+ * browser counts a string.
+ */
+export type Mark = {
+  end: number;
+  start: number;
+};
+
+/**
  * A member of a workspace, 1–64 ASCII letters, digits, `-` or `_`.
  */
 export type MemberId = string;
@@ -1056,6 +1065,45 @@ export type RunUpdate = {
 };
 
 /**
+ * The server's answer to a [`SearchQuery`]: matches in the title first, then the most
+ * recently changed.
+ */
+export type SearchAnswer = {
+  hits: Array<SearchHit>;
+};
+
+/**
+ * One thing a [`SearchQuery`] found, with its title and where it matched.
+ */
+export type SearchHit = (
+  | {
+    kind: "task";
+    snippet: Snippet;
+    task: TaskId;
+    title: string;
+  }
+  | {
+    doc: DocId;
+    kind: "doc";
+    snippet: Snippet;
+    title: string;
+  }
+);
+
+/**
+ * Asks the server, under the capability `workspace.search`, for what in the workspace holds
+ * every word of `text`, at most 8 words in 256 bytes. Text without a word of three or more
+ * characters finds nothing. `limit` is 20 without one, and at most 50.
+ */
+export type SearchQuery = {
+  limit?: (
+    | number
+    | null
+  );
+  text: string;
+};
+
+/**
  * A SHA-256 digest: 64 lowercase hex digits.
  */
 export type Sha256 = string;
@@ -1106,6 +1154,14 @@ export type SignInState = (
 export type SignedIn = {
   member: MemberId;
   token: string;
+};
+
+/**
+ * Plain text from around a match, and the parts of it that matched.
+ */
+export type Snippet = {
+  marks: Array<Mark>;
+  text: string;
 };
 
 /**
