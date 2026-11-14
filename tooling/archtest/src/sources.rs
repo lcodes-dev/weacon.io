@@ -172,7 +172,7 @@ impl Uses {
         }
         // A group straight after `::` continues the path, as in `std::{fs, env}`.
         let outer = if colons == 2 {
-            [prefix, used(path).0].concat()
+            [prefix, path].concat()
         } else {
             Vec::new()
         };
@@ -184,9 +184,10 @@ impl Uses {
     }
 
     fn note_path(&mut self, prefix: &[Ident], path: &mut Vec<Ident>) {
-        let (segments, after_use) = used(path);
-        if prefix.len() + segments.len() > 1 || after_use && !segments.is_empty() {
-            self.note(prefix.iter().chain(segments));
+        let full = [prefix, path].concat();
+        let (segments, after_use) = used(&full);
+        if segments.len() > 1 || after_use {
+            self.note(segments.iter());
         }
         path.clear();
     }
@@ -412,6 +413,7 @@ mod tests {
             "macro_rules! driver { () => { use sqlx as db; }; }",
             "macro_rules! driver { () => { use sqlx; }; }",
             "macro_rules! driver { () => { use sqlx::{self as db}; }; }",
+            "macro_rules! driver { () => { use {sqlx as db, std::fmt}; }; }",
         ] {
             assert_eq!(
                 check(&IO, "src/chats.rs", text),
