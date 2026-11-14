@@ -157,15 +157,15 @@ impl Launch {
         &self,
         app: &App,
         session: Option<&AgentSession>,
-    ) -> Result<(Command, run::Wire), Fault> {
+    ) -> Result<(Command, crate::wire::Wire), Fault> {
         match self.agent {
             AgentKind::Claude => Ok((
                 claude::command(self, session),
-                run::Wire::Claude(claude::Wire::default()),
+                crate::wire::Wire::Claude(claude::Wire::default()),
             )),
             AgentKind::Codex => Ok((
                 codex::command(self),
-                run::Wire::Codex(codex::Wire::new(session.cloned(), app, self.access)),
+                crate::wire::Wire::Codex(codex::Wire::new(session.cloned(), app, self.access)),
             )),
             AgentKind::Newer => Err(unknown()),
         }
@@ -287,8 +287,8 @@ mod tests {
 
         assert_eq!(claude.as_deref(), Some("--print".as_ref()));
         assert_eq!(codex.as_deref(), Some("app-server".as_ref()));
-        assert!(matches!(claude_wire, run::Wire::Claude(_)));
-        assert!(matches!(codex_wire, run::Wire::Codex(_)));
+        assert!(matches!(claude_wire, crate::wire::Wire::Claude(_)));
+        assert!(matches!(codex_wire, crate::wire::Wire::Codex(_)));
     }
 
     #[test]
