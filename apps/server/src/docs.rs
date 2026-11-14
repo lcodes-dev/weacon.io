@@ -2,7 +2,7 @@ use axum::Json;
 use axum::extract::rejection::PathRejection;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
-use axum::response::{IntoResponse, Response};
+use axum::response::IntoResponse;
 use weacon_model::{Attribution, Doc, DocText, DocTextError, Revision};
 use weacon_observability::Fault;
 use weacon_protocol::{
@@ -11,7 +11,7 @@ use weacon_protocol::{
 
 use crate::app::new_id;
 use crate::auth::Member;
-use crate::http::{Body, Shared, Unreadable, parsed, refuse};
+use crate::http::{self, Body, Refusals, Shared, Unreadable, parsed};
 
 /// The most a doc request's body may be: room for the largest doc the model allows, even
 /// when JSON escapes each byte of its Markdown as `\u00XX`, with its pins.
@@ -143,37 +143,28 @@ fn invalid() -> Fault {
     Fault::new(code!("doc.invalid"), "The doc request isn't valid")
 }
 
-/// The refusals the doc routes answer, with their status; anything else is the server failing.
-const REFUSALS: [(Code, StatusCode); 9] = [
-    (code!("doc.invalid"), StatusCode::BAD_REQUEST),
-    (code!("doc.unpinned"), StatusCode::BAD_REQUEST),
-    (code!("doc.unlinked"), StatusCode::BAD_REQUEST),
-    (code!("doc.unknown_value"), StatusCode::BAD_REQUEST),
-    (code!("doc.too_large"), StatusCode::PAYLOAD_TOO_LARGE),
-    (code!("doc.quota_full"), StatusCode::PAYLOAD_TOO_LARGE),
-    (code!("doc.not_found"), StatusCode::NOT_FOUND),
-    (code!("doc.stale"), StatusCode::CONFLICT),
-    (code!("doc.last_version"), StatusCode::CONFLICT),
-];
+/// The doc routes' refusals.
+pub(crate) struct Docs;
 
-/// Why a doc request wasn't done: answered with its status from [`REFUSALS`].
-pub(crate) struct Refused(Fault);
-
-impl From<Fault> for Refused {
-    fn from(fault: Fault) -> Self {
-        Self(fault)
-    }
+impl Refusals for Docs {
+    const REFUSALS: &'static [(Code, StatusCode, bool)] = &[
+        (code!("doc.invalid"), StatusCode::BAD_REQUEST, false),
+        (code!("doc.unpinned"), StatusCode::BAD_REQUEST, false),
+        (code!("doc.unlinked"), StatusCode::BAD_REQUEST, false),
+        (code!("doc.unknown_value"), StatusCode::BAD_REQUEST, false),
+        (code!("doc.too_large"), StatusCode::PAYLOAD_TOO_LARGE, false),
+        (
+            code!("doc.quota_full"),
+            StatusCode::PAYLOAD_TOO_LARGE,
+            false,
+        ),
+        (code!("doc.not_found"), StatusCode::NOT_FOUND, false),
+        (code!("doc.stale"), StatusCode::CONFLICT, false),
+        (code!("doc.last_version"), StatusCode::CONFLICT, false),
+    ];
 }
 
-impl IntoResponse for Refused {
-    fn into_response(self) -> Response {
-        answer(self.0)
-    }
-}
-
-fn answer(fault: Fault) -> Response {
-    refuse(&REFUSALS, fault)
-}
+type Refused = http::Refused<Docs>;
 
 #[cfg(test)]
 mod tests {
@@ -504,7 +495,7 @@ mod tests {
     fn a_failure_of_the_server_is_not_a_refusal() {
         let broken = Fault::new(code!("db.failed"), "The database failed");
 
-        let answer = answer(broken);
+        let answer = Refused::from(broken).into_response();
 
         assert_eq!(answer.status(), StatusCode::INTERNAL_SERVER_ERROR);
     }

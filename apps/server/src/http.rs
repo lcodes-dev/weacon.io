@@ -1,4 +1,5 @@
 use std::future::Future;
+use std::marker::PhantomData;
 use std::sync::Arc;
 use std::time::{Duration, Instant, UNIX_EPOCH};
 
@@ -332,11 +333,33 @@ pub(crate) fn failure(fault: Fault) -> Response {
     response
 }
 
-/// Answers `fault` with its status in `refusals`, or as the server failing when it isn't there.
-pub(crate) fn refuse(refusals: &[(Code, StatusCode)], fault: Fault) -> Response {
-    match refusals.iter().find(|(code, _)| code == fault.code()) {
-        Some((code, status)) => error(*status, code.clone(), false),
+/// Answers `fault` with its status and retryable flag in `refusals`, or as the server failing
+/// when it isn't there.
+fn refuse(refusals: &[(Code, StatusCode, bool)], fault: Fault) -> Response {
+    match refusals.iter().find(|(code, ..)| code == fault.code()) {
+        Some((code, status, retryable)) => error(*status, code.clone(), *retryable),
         None => failure(fault),
+    }
+}
+
+/// A feature's refusals: each code it answers, with its status and whether trying again may
+/// work; anything else is the server failing.
+pub(crate) trait Refusals {
+    const REFUSALS: &'static [(Code, StatusCode, bool)];
+}
+
+/// Why a request of `R`'s feature wasn't done: answered from `R`'s refusals.
+pub(crate) struct Refused<R>(Fault, PhantomData<R>);
+
+impl<R> From<Fault> for Refused<R> {
+    fn from(fault: Fault) -> Self {
+        Self(fault, PhantomData)
+    }
+}
+
+impl<R: Refusals> IntoResponse for Refused<R> {
+    fn into_response(self) -> Response {
+        refuse(R::REFUSALS, self.0)
     }
 }
 
@@ -667,20 +690,34 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_refusal_in_the_table_gets_its_status_and_any_other_is_a_failure() {
-        let refusals = [(code!("doc.stale"), StatusCode::CONFLICT)];
+    async fn a_refusal_in_the_table_gets_its_status_and_flag_and_any_other_is_a_failure() {
+        let refusals = [
+            (code!("doc.stale"), StatusCode::CONFLICT, false),
+            (code!("db.exists"), StatusCode::CONFLICT, true),
+        ];
         let fault = |code| Fault::new(code, "Made up");
+        let body = |response: Response| async move {
+            let body = axum::body::to_bytes(response.into_body(), 1024)
+                .await
+                .unwrap();
+            serde_json::from_slice::<serde_json::Value>(&body).unwrap()
+        };
 
         let stale = refuse(&refusals, fault(code!("doc.stale")));
+        let taken = refuse(&refusals, fault(code!("db.exists")));
         let broken = refuse(&refusals, fault(code!("db.failed")));
 
-        assert_eq!(stale.status(), StatusCode::CONFLICT);
-        assert!(stale.extensions().get::<Failed>().is_none());
-        let body = axum::body::to_bytes(stale.into_body(), 1024).await.unwrap();
-        let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(
-            body,
-            serde_json::json!({ "code": "doc.stale", "retryable": false })
+            (stale.status(), taken.status()),
+            (StatusCode::CONFLICT, StatusCode::CONFLICT)
+        );
+        assert!(stale.extensions().get::<Failed>().is_none());
+        assert_eq!(
+            [body(stale).await, body(taken).await],
+            [
+                serde_json::json!({ "code": "doc.stale", "retryable": false }),
+                serde_json::json!({ "code": "db.exists", "retryable": true }),
+            ]
         );
         assert_eq!(broken.status(), StatusCode::INTERNAL_SERVER_ERROR);
         assert!(broken.extensions().get::<Failed>().is_some());

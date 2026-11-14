@@ -2,7 +2,7 @@ use axum::Json;
 use axum::extract::rejection::PathRejection;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
-use axum::response::{IntoResponse, Response};
+use axum::response::IntoResponse;
 use weacon_model::{Attribution, OrderKey, Revision, Task, TaskEdit, Title};
 use weacon_observability::Fault;
 use weacon_protocol::{
@@ -12,7 +12,7 @@ use weacon_protocol::{
 use crate::app::new_id;
 use crate::auth::Member;
 use crate::db::task_not_found;
-use crate::http::{Body, Shared, Unreadable, error, parsed, refuse};
+use crate::http::{self, Body, Refusals, Shared, Unreadable, parsed};
 
 /// `GET /api/workspaces/{workspace}/tasks`: the workspace's tasks, in their order.
 pub(crate) async fn list(member: Member) -> Result<Json<TaskList>, Refused> {
@@ -119,40 +119,29 @@ fn invalid() -> Fault {
     Fault::new(code!("task.invalid"), "The task request isn't valid")
 }
 
-/// The refusals the task routes answer, with their status; anything else is the server failing.
-const REFUSALS: [(Code, StatusCode); 8] = [
-    (code!("task.invalid"), StatusCode::BAD_REQUEST),
-    (code!("task.unknown_value"), StatusCode::BAD_REQUEST),
-    (code!("task.not_found"), StatusCode::NOT_FOUND),
-    (code!("task.stale"), StatusCode::CONFLICT),
-    (code!("task.no_room"), StatusCode::CONFLICT),
-    (code!("task.last_version"), StatusCode::CONFLICT),
-    (code!("task.too_many"), StatusCode::CONFLICT),
-    (code!("task.too_large"), StatusCode::PAYLOAD_TOO_LARGE),
-];
+/// The task routes' refusals.
+pub(crate) struct Tasks;
 
-/// Why a task request wasn't done: answered with its status from [`REFUSALS`].
-pub(crate) struct Refused(Fault);
-
-impl From<Fault> for Refused {
-    fn from(fault: Fault) -> Self {
-        Self(fault)
-    }
+impl Refusals for Tasks {
+    const REFUSALS: &'static [(Code, StatusCode, bool)] = &[
+        (code!("task.invalid"), StatusCode::BAD_REQUEST, false),
+        (code!("task.unknown_value"), StatusCode::BAD_REQUEST, false),
+        (code!("task.not_found"), StatusCode::NOT_FOUND, false),
+        (code!("task.stale"), StatusCode::CONFLICT, false),
+        (code!("task.no_room"), StatusCode::CONFLICT, false),
+        (code!("task.last_version"), StatusCode::CONFLICT, false),
+        (code!("task.too_many"), StatusCode::CONFLICT, false),
+        (
+            code!("task.too_large"),
+            StatusCode::PAYLOAD_TOO_LARGE,
+            false,
+        ),
+        // Another change took the same place at the same moment; reading again finds a free one.
+        (code!("db.exists"), StatusCode::CONFLICT, true),
+    ];
 }
 
-impl IntoResponse for Refused {
-    fn into_response(self) -> Response {
-        answer(self.0)
-    }
-}
-
-fn answer(fault: Fault) -> Response {
-    // Another change took the same place at the same moment; reading again finds a free one.
-    if *fault.code() == code!("db.exists") {
-        return error(StatusCode::CONFLICT, fault.code().clone(), true);
-    }
-    refuse(&REFUSALS, fault)
-}
+type Refused = http::Refused<Tasks>;
 
 #[cfg(test)]
 mod tests {
@@ -455,7 +444,7 @@ mod tests {
         ] {
             let code = fault.code().as_str().to_owned();
 
-            let answer = answer(fault);
+            let answer = Refused::from(fault).into_response();
 
             assert_eq!(answer.status(), StatusCode::CONFLICT, "{code}");
             let body = axum::body::to_bytes(answer.into_body(), 1024)
