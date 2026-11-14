@@ -14,11 +14,23 @@ pub(super) struct Asked {
     pub(super) about: About,
 }
 
-/// What an ask is about: a machine it names, or a chat, whose machine the server knows.
+/// What an ask is about: a machine it names, or a chat's diff or worktree, whose machine the
+/// server knows. Its answer must be about the same.
 #[derive(PartialEq, Eq)]
 pub(super) enum About {
     Machine(MachineId),
-    Chat(ChatId),
+    Diff(ChatId),
+    Worktree(ChatId),
+}
+
+impl Asked {
+    fn new(workspace: &WorkspaceId, request: &RequestId, about: About) -> Self {
+        Self {
+            workspace: workspace.clone(),
+            request: request.clone(),
+            about,
+        }
+    }
 }
 
 /// What a client offers for the relay to carry `message`, which the machine's core offers too;
@@ -41,7 +53,7 @@ pub(crate) const fn needs(message: &Message) -> Option<Code> {
     }
 }
 
-/// What the machine's core must offer to be sent `message`.
+/// What the machine's core must offer to be sent `message`, which may be more than [`needs`].
 pub(super) fn machine_needs(message: &Message) -> Option<Code> {
     if let Message::WorktreeCommand(command) = message
         && command.action == WorktreeAction::OpenTerminal
@@ -55,40 +67,26 @@ pub(super) fn machine_needs(message: &Message) -> Option<Code> {
 /// put there; `None` for a kind the relay doesn't carry.
 pub(super) fn stamped(mut message: Message, by: &Asker) -> Option<(Asked, Message)> {
     let by = Some(by.clone());
-    let asked = |workspace: &WorkspaceId, request: &RequestId, about| Asked {
-        workspace: workspace.clone(),
-        request: request.clone(),
-        about,
-    };
     let asked = if let Message::MachineSettingsQuery(query) = &mut message {
         query.by = by;
         let about = About::Machine(query.machine.clone());
-        asked(&query.workspace, &query.request, about)
+        Asked::new(&query.workspace, &query.request, about)
     } else if let Message::MachineSettingsCommand(command) = &mut message {
         command.by = by;
         let about = About::Machine(command.machine.clone());
-        asked(&command.workspace, &command.request, about)
+        Asked::new(&command.workspace, &command.request, about)
     } else if let Message::DiffQuery(query) = &mut message {
         query.by = by;
-        asked(
-            &query.workspace,
-            &query.request,
-            About::Chat(query.chat.clone()),
-        )
+        let about = About::Diff(query.chat.clone());
+        Asked::new(&query.workspace, &query.request, about)
     } else if let Message::WorktreeQuery(query) = &mut message {
         query.by = by;
-        asked(
-            &query.workspace,
-            &query.request,
-            About::Chat(query.chat.clone()),
-        )
+        let about = About::Worktree(query.chat.clone());
+        Asked::new(&query.workspace, &query.request, about)
     } else if let Message::WorktreeCommand(command) = &mut message {
         command.by = by;
-        asked(
-            &command.workspace,
-            &command.request,
-            About::Chat(command.chat.clone()),
-        )
+        let about = About::Worktree(command.chat.clone());
+        Asked::new(&command.workspace, &command.request, about)
     } else {
         return None;
     };
@@ -102,27 +100,16 @@ pub(crate) fn takes(message: &Message) -> bool {
 
 /// What an answer the relay carries back names.
 pub(super) fn answering(message: &Message) -> Option<Asked> {
-    let (workspace, request, about) = if let Message::MachineSettingsAnswer(answer) = message {
+    if let Message::MachineSettingsAnswer(answer) = message {
         let about = About::Machine(answer.machine.clone());
-        (&answer.workspace, &answer.request, about)
+        Some(Asked::new(&answer.workspace, &answer.request, about))
     } else if let Message::DiffAnswer(answer) = message {
-        (
-            &answer.workspace,
-            &answer.request,
-            About::Chat(answer.chat.clone()),
-        )
+        let about = About::Diff(answer.chat.clone());
+        Some(Asked::new(&answer.workspace, &answer.request, about))
     } else if let Message::WorktreeAnswer(answer) = message {
-        (
-            &answer.workspace,
-            &answer.request,
-            About::Chat(answer.chat.clone()),
-        )
+        let about = About::Worktree(answer.chat.clone());
+        Some(Asked::new(&answer.workspace, &answer.request, about))
     } else {
-        return None;
-    };
-    Some(Asked {
-        workspace: workspace.clone(),
-        request: request.clone(),
-        about,
-    })
+        None
+    }
 }

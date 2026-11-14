@@ -16,7 +16,7 @@ use weacon_protocol::{Capability, Code, Envelope, MAX_FRAME, MachineId, code};
 use crate::auth::Machine;
 use crate::connections::Place;
 use crate::links::Connected;
-use crate::relay::{self, SETTINGS};
+use crate::relay::{self, DIFF, SETTINGS, WORKTREE};
 use crate::shared::Shared;
 use crate::socket::{Closed, Pings, greet, refusal, reply, send};
 
@@ -101,7 +101,12 @@ async fn run(
     link: &mut Link,
 ) -> Result<Infallible, Closed> {
     let offer = Capability::new(CONNECT);
-    let offers = vec![offer.clone(), Capability::new(SETTINGS)];
+    let offers = vec![
+        offer.clone(),
+        Capability::new(SETTINGS),
+        Capability::new(DIFF),
+        Capability::new(WORKTREE),
+    ];
     let greeted = greet(socket, shared, offers, &offer);
     let hello = timeout(shared.sockets.hello_within, greeted)
         .await
@@ -175,7 +180,7 @@ mod tests {
         let welcome = next(&mut client).await;
         assert!(
             matches!(&welcome, Message::Welcome(Welcome { capabilities, .. })
-                if *capabilities == [Capability::new(CONNECT), Capability::new(SETTINGS)]),
+                if *capabilities == [CONNECT, SETTINGS, DIFF, WORKTREE].map(Capability::new)),
             "{welcome:?}"
         );
         (paired, client)

@@ -56,6 +56,8 @@ struct Waiter {
     files_left: Option<u32>,
     /// What tells it, if nothing answers it first, that no answer came.
     timer: AbortHandle,
+    /// Which of its timers is the live one; one that woke before its restart does nothing.
+    round: u32,
 }
 
 /// What an ask asked, which its answer must name, and the machine it was sent to, the only one
@@ -66,9 +68,8 @@ struct Sent {
 }
 
 impl Waiter {
-    // The asker that left, or reads too slowly, misses it; an answer this server can't send on
-    // is told as `relay.unsendable`, so the asker's connection goes on. True when `message`
-    // itself went on.
+    // A gone or slow asker misses it; an answer this server can't send on goes as
+    // `relay.unsendable`, so the asker's connection goes on. True when `message` itself went on.
     fn tell(&self, message: Message) -> bool {
         let mut envelope = Envelope {
             id: self.id,
@@ -140,9 +141,9 @@ pub(crate) async fn forward(
 ) -> Result<(), Refusal> {
     let unknown = || refused(code!("relay.unknown"), false);
     let (asked, message) = stamped(envelope.message, ask.asker).ok_or_else(unknown)?;
+    let needs = machine_needs(&message).ok_or_else(unknown)?;
     // A newer client's ask this server can't send on would drop the machine's connection.
     let probe = Envelope { id: 0, message };
-    let needs = machine_needs(&probe.message).ok_or_else(unknown)?;
     if probe.to_json().is_err() {
         return Err(unknown());
     }
@@ -174,9 +175,11 @@ async fn machine_for(shared: &Shared, ask: &Ask<'_>, asked: &Asked) -> Result<Ma
     let elsewhere = asked.workspace != *ask.workspace.id();
     let machine = match &asked.about {
         About::Machine(_) if elsewhere => return Err(refused(code!("machine.not_found"), false)),
-        About::Chat(_) if elsewhere => return Err(refused(code!("chat.not_found"), false)),
+        About::Diff(_) | About::Worktree(_) if elsewhere => {
+            return Err(refused(code!("chat.not_found"), false));
+        }
         About::Machine(machine) => machine.clone(),
-        About::Chat(chat) => {
+        About::Diff(chat) | About::Worktree(chat) => {
             let chat = ask.workspace.chat(chat).await.map_err(Refusal::Failed)?;
             let chat = chat.ok_or_else(|| refused(code!("chat.not_found"), false))?;
             if chat.owner != ask.asker.member {
@@ -233,9 +236,16 @@ impl Relay {
             return true;
         }
         if waiter.more_after(&mut message) {
-            if waiter.tell(message) {
+            // The last room goes to telling a slow asker it fell behind.
+            if waiter.back.capacity() <= 1 {
+                entry.remove().tell(Message::Error(ErrorBody {
+                    code: code!("relay.busy"),
+                    retryable: true,
+                }));
+            } else if waiter.tell(message) {
                 waiter.timer.abort();
-                waiter.timer = self.timer(envelope.id);
+                waiter.round = waiter.round.wrapping_add(1);
+                waiter.timer = self.timer(envelope.id, waiter.round);
             } else {
                 entry.remove();
             }
@@ -272,32 +282,37 @@ impl Relay {
             id,
             back: back.clone(),
             files_left: None,
-            timer: self.timer(relayed),
+            timer: self.timer(relayed, 0),
+            round: 0,
         });
         Ok(())
     }
 
     /// What tells the ask under `relayed`, unless something stops it first, that no answer
-    /// came in time.
-    fn timer(self: &Arc<Self>, relayed: u32) -> AbortHandle {
+    /// came in time for its timer `round`.
+    fn timer(self: &Arc<Self>, relayed: u32, round: u32) -> AbortHandle {
         let relay = Arc::clone(self);
         tokio::spawn(async move {
             sleep(relay.answer_within).await;
-            relay.expire(relayed);
+            relay.expire(relayed, round);
         })
         .abort_handle()
     }
 
-    /// Tells the ask under `relayed`, if it still waits, that no answer came.
-    fn expire(&self, relayed: u32) {
+    /// Tells the ask under `relayed`, if it still waits on timer `round`, that no answer came.
+    fn expire(&self, relayed: u32, round: u32) {
         let mut waiting = self.lock();
-        // Told before the lock goes, so no ask is let in ahead of the answer it takes room for.
-        if let Some(waiter) = waiting.remove(&relayed) {
-            waiter.tell(Message::Error(ErrorBody {
-                code: code!("machine.no_answer"),
-                retryable: true,
-            }));
+        let Entry::Occupied(entry) = waiting.entry(relayed) else {
+            return;
+        };
+        if entry.get().round != round {
+            return;
         }
+        // Told before the lock goes, so no ask is let in ahead of the answer it takes room for.
+        entry.remove().tell(Message::Error(ErrorBody {
+            code: code!("machine.no_answer"),
+            retryable: true,
+        }));
     }
 
     fn lock(&self) -> MutexGuard<'_, HashMap<u32, Waiter>> {
@@ -317,21 +332,16 @@ mod tests {
     use tokio::time::timeout;
 
     use weacon_protocol::{
-        AccessLevel, AccountId, ErrorBody, MachineSettings, MachineSettingsAction,
+        AccessLevel, AccountId, ChatId, DiffContent, DiffFile, DiffLine, DiffQuery, DiffQueryKind,
+        ErrorBody, FileChange, Hunk, LineOp, MAX_FRAME, MachineSettings, MachineSettingsAction,
         MachineSettingsAnswer, MachineSettingsAnswerKind, MachineSettingsCommand,
-        MachineSettingsQuery, MachineSettingsQueryKind, MemberId, RequestId,
-    };
-
-    use weacon_protocol::{
-        ChatId, DiffContent, DiffFile, DiffLine, DiffQuery, DiffQueryKind, FileChange, Hunk,
-        LineOp, MAX_FRAME, WorktreeAction, WorktreeAnswer, WorktreeAnswerKind, WorktreeCommand,
-        WorktreeQuery, WorktreeQueryKind,
+        MachineSettingsQuery, MachineSettingsQueryKind, MemberId, RequestId, WorktreeAction,
+        WorktreeAnswer, WorktreeAnswerKind, WorktreeCommand, WorktreeQuery, WorktreeQueryKind,
     };
 
     use super::*;
     use crate::db::test_support::{Making, make_as};
     use crate::links::{Attached, Connected, QUEUE};
-
     use crate::test_support::socket::{Socket, ends, next, next_envelope, open, pongs, say, send};
     use crate::test_support::{
         Fixture, PATIENCE, Paired, ask, member_id, pair_machine, workspace_id,
@@ -619,6 +629,7 @@ mod tests {
             back,
             files_left: None,
             timer: tokio::spawn(async {}).abort_handle(),
+            round: 0,
         };
         relay.lock().insert(7, waiter);
         (relay, answers)
@@ -1232,7 +1243,7 @@ mod tests {
         let asked = Asked {
             workspace: workspace_id("w1"),
             request: request(),
-            about: About::Chat(chat_id("c-1")),
+            about: About::Diff(chat_id("c-1")),
         };
         let sent = Sent {
             asked,
@@ -1260,7 +1271,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_diff_of_the_most_files_comes_back_whole() {
-        let (relay, mut answers) = diff_waiting(1, ANSWER_WITHIN);
+        let (relay, mut answers) = diff_waiting(2, ANSWER_WITHIN);
         for _ in 0..MOST_FILES {
             assert!(relay.answered(&mc1(), envelope(7, file(MOST_FILES, "a", "x"))));
             assert_eq!(heard(&mut answers).await.id, 41);
@@ -1269,14 +1280,43 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn an_asker_that_falls_behind_a_diff_misses_the_rest_of_it() {
-        let (relay, mut answers) = diff_waiting(1, ANSWER_WITHIN);
+    async fn an_asker_that_falls_behind_a_diff_is_told_so_in_its_last_room() {
+        let (relay, mut answers) = diff_waiting(2, ANSWER_WITHIN);
         let claimed = [1, 2, 3].map(|_| relay.answered(&mc1(), envelope(7, file(3, "a", "x"))));
 
         assert_eq!(claimed, [true, true, false]);
         assert_eq!(heard(&mut answers).await, envelope(41, file(3, "a", "x")));
+        assert_eq!(
+            error_of(&heard(&mut answers).await),
+            (41, "relay.busy", true)
+        );
         answers.try_recv().unwrap_err();
         assert!(relay.lock().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_timer_a_later_file_restarted_does_nothing() {
+        let (relay, mut answers) = diff_waiting(4, ANSWER_WITHIN);
+        assert!(relay.answered(&mc1(), envelope(7, file(3, "a", "x"))));
+        heard(&mut answers).await;
+
+        relay.expire(7, 0);
+        assert!(relay.lock().contains_key(&7));
+        relay.expire(7, 1);
+        assert_eq!(
+            error_of(&heard(&mut answers).await),
+            (41, "machine.no_answer", true)
+        );
+        assert!(relay.lock().is_empty());
+    }
+
+    #[tokio::test]
+    async fn an_answer_of_another_kind_doesnt_answer_the_ask() {
+        let (relay, mut answers) = diff_waiting(4, ANSWER_WITHIN);
+
+        assert!(relay.answered(&mc1(), envelope(7, state())));
+        assert!(relay.lock().contains_key(&7));
+        answers.try_recv().unwrap_err();
     }
 
     #[tokio::test]
