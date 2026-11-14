@@ -1,7 +1,7 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::{ChatId, RequestId, WorkspaceId};
+use crate::{Asker, ChatId, RequestId, WorkspaceId};
 
 /// From a client to a core that offers `diff.view`. Each answer is a [`DiffAnswer`] that echoes
 /// `request`.
@@ -11,6 +11,11 @@ pub struct DiffQuery {
     pub workspace: WorkspaceId,
     pub chat: ChatId,
     pub query: DiffQueryKind,
+    /// Who asked, stamped by the server when it relays the query to a machine; a client's own
+    /// value is overwritten.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "Asker")]
+    pub by: Option<Asker>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -154,12 +159,13 @@ mod tests {
     use crate::test_support::{chat, envelope, never_sent, request, travels, workspace};
     use crate::{Envelope, Message};
 
-    fn query(query: DiffQueryKind) -> Envelope {
+    fn query(query: DiffQueryKind, by: Option<Asker>) -> Envelope {
         envelope(Message::DiffQuery(DiffQuery {
             request: request(),
             workspace: workspace(),
             chat: chat(),
             query,
+            by,
         }))
     }
 
@@ -202,9 +208,20 @@ mod tests {
     #[test]
     fn queries_have_a_tagged_shape() {
         travels(
-            &query(DiffQueryKind::Changes),
+            &query(DiffQueryKind::Changes, None),
             wire("diff_query", "query", json!({ "kind": "changes" })),
         );
+    }
+
+    #[test]
+    fn a_relayed_query_says_who_asked() {
+        let by = Asker {
+            account: "a-1".parse().unwrap(),
+            member: "m-1".parse().unwrap(),
+        };
+        let mut wire = wire("diff_query", "query", json!({ "kind": "changes" }));
+        wire["by"] = json!({ "account": "a-1", "member": "m-1" });
+        travels(&query(DiffQueryKind::Changes, Some(by)), wire);
     }
 
     #[test]
