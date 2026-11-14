@@ -156,6 +156,7 @@ pub(crate) fn prompt(request: &str, text: &str) -> ChatCommand {
             text,
             repo: None,
             machine: None,
+            agent: None,
         },
     )
 }

@@ -231,9 +231,16 @@ impl Log {
         let same = matches!(
             (earlier, action),
             (
-                Some(ChatEvent::Prompt { text: was_text, repo: was_repo, .. }),
-                ChatAction::Prompt { text, repo, .. },
-            ) if was_text == *text && was_repo == *repo
+                Some(ChatEvent::Prompt {
+                    text: was_text,
+                    repo: was_repo,
+                    agent: was_agent,
+                    ..
+                }),
+                ChatAction::Prompt {
+                    text, repo, agent, ..
+                },
+            ) if was_text == *text && was_repo == *repo && was_agent == *agent
         );
         Ok(match (same, asked.receipted) {
             (true, true) => Seen::Same,
@@ -329,6 +336,7 @@ mod tests {
             request: request(id),
             text: text.to_owned(),
             repo: None,
+            agent: None,
         }
     }
 
@@ -365,6 +373,7 @@ mod tests {
             text: text.to_owned(),
             repo: None,
             machine: None,
+            agent: None,
         }
     }
 
@@ -611,8 +620,16 @@ mod tests {
             text: "Hi".to_owned(),
             repo: Some(RepoId::try_from("site".to_owned()).unwrap()),
             machine: None,
+            agent: None,
         };
         assert_eq!(seen(&log, "r-1", elsewhere).await, Seen::Other);
+        let another_agent = ChatAction::Prompt {
+            text: "Hi".to_owned(),
+            repo: None,
+            machine: None,
+            agent: Some(weacon_protocol::AgentKind::Codex),
+        };
+        assert_eq!(seen(&log, "r-1", another_agent).await, Seen::Other);
         assert_eq!(seen(&log, "r-1", ChatAction::Interrupt).await, Seen::Other);
         assert_eq!(seen(&log, "r-2", ChatAction::Interrupt).await, Seen::Same);
         assert_eq!(seen(&log, "r-2", allow).await, Seen::Same);

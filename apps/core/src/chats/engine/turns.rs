@@ -557,6 +557,7 @@ mod tests {
             request: prompt(request, text).request,
             text: text.to_owned(),
             repo: None,
+            agent: None,
         }
     }
 
