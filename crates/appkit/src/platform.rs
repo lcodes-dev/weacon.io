@@ -48,26 +48,58 @@ pub fn sync_dir(dir: &Path) -> io::Result<()> {
 /// # Errors
 /// When a folder or the file can't be created, written or renamed.
 pub fn write_whole(path: &Path, contents: &[u8]) -> io::Result<()> {
-    write_staged(path, contents, crate::random_id())
-}
-
-// Each write stages in a file of its own, so writers to one path never share one.
-fn write_staged(path: &Path, contents: &[u8], id: u128) -> io::Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
+    write_staged(path, contents, Place::Replace, crate::random_id())
+}
+
+/// [`write_whole`] for a file readable only by this user, in a folder that must exist; on
+/// Windows, as private as its folder.
+///
+/// # Errors
+/// When the file can't be created, written or renamed.
+pub fn write_private(path: &Path, contents: &[u8]) -> io::Result<()> {
+    write_staged(path, contents, Place::ReplacePrivate, crate::random_id())
+}
+
+/// [`write_private`], except that a file already at `path` wins and is left as it is.
+///
+/// # Errors
+/// `AlreadyExists` when there is a file at `path`, or when the new one can't be created,
+/// written or linked into place.
+pub fn create_private(path: &Path, contents: &[u8]) -> io::Result<()> {
+    write_staged(path, contents, Place::CreatePrivate, crate::random_id())
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Place {
+    Replace,
+    ReplacePrivate,
+    CreatePrivate,
+}
+
+// Each write stages in a file of its own, so writers to one path never share one.
+fn write_staged(path: &Path, contents: &[u8], place: Place, id: u128) -> io::Result<()> {
     let mut name = path.as_os_str().to_owned();
     name.push(format!(".{id:032x}.new"));
     let unfinished = PathBuf::from(name);
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&unfinished)?;
+    let mut options = OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    if place != Place::Replace {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options.open(&unfinished)?;
     let written = file
         .write_all(contents)
         .and_then(|()| file.sync_all())
-        .and_then(|()| fs::rename(&unfinished, path));
-    if written.is_err() {
+        .and_then(|()| match place {
+            Place::CreatePrivate => fs::hard_link(&unfinished, path),
+            Place::Replace | Place::ReplacePrivate => fs::rename(&unfinished, path),
+        });
+    if written.is_err() || place == Place::CreatePrivate {
         drop(fs::remove_file(&unfinished));
     }
     written?;
@@ -187,10 +219,10 @@ mod tests {
         let staged = |id: u128| dir.join(format!("workspace.json.{id:032x}.new"));
         fs::write(staged(1), "another write, still going").unwrap();
 
-        write_staged(&path, b"mine", 2).unwrap();
-        let clash = write_staged(&path, b"again", 1).unwrap_err();
+        write_staged(&path, b"mine", Place::Replace, 2).unwrap();
+        let clash = write_staged(&path, b"again", Place::Replace, 1).unwrap_err();
         fs::create_dir(dir.join("folder")).unwrap();
-        write_staged(&dir.join("folder"), b"onto a folder", 3).unwrap_err();
+        write_staged(&dir.join("folder"), b"onto a folder", Place::Replace, 3).unwrap_err();
 
         assert_eq!(fs::read_to_string(&path).unwrap(), "mine");
         assert_eq!(clash.kind(), io::ErrorKind::AlreadyExists);
@@ -216,6 +248,58 @@ mod tests {
         assert_eq!(fs::read_to_string(&path).unwrap(), "second");
         assert_eq!(fs::read_dir(dir.join("a/b")).unwrap().count(), 1);
         assert!(write_whole(&dir.join("a/b/unit.service/x"), b"").is_err());
+    }
+
+    #[test]
+    fn a_private_write_replaces_the_file_but_makes_no_folders() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.join("letter.json");
+
+        write_private(&path, b"first").unwrap();
+        write_private(&path, b"second").unwrap();
+        fs::create_dir(dir.join("folder")).unwrap();
+        write_private(&dir.join("folder"), b"onto a folder").unwrap_err();
+
+        assert_eq!(fs::read_to_string(&path).unwrap(), "second");
+        assert_eq!(
+            fs::read_dir(&*dir).unwrap().count(),
+            2,
+            "nothing staged is left"
+        );
+        write_private(&dir.join("missing/letter.json"), b"").unwrap_err();
+        assert!(!dir.join("missing").exists());
+    }
+
+    #[test]
+    fn a_private_create_leaves_a_file_already_there() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.join("secret");
+
+        create_private(&path, b"first").unwrap();
+        let second = create_private(&path, b"second").unwrap_err();
+
+        assert_eq!(second.kind(), io::ErrorKind::AlreadyExists);
+        assert_eq!(fs::read_to_string(&path).unwrap(), "first");
+        assert_eq!(
+            fs::read_dir(&*dir).unwrap().count(),
+            1,
+            "nothing staged is left"
+        );
+        create_private(&dir.join("missing/secret"), b"").unwrap_err();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn private_writes_make_private_files() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = TempDir::new().unwrap();
+        let mode = |name: &str| fs::metadata(dir.join(name)).unwrap().permissions().mode() & 0o777;
+        write_private(&dir.join("private"), b"").unwrap();
+        create_private(&dir.join("new"), b"").unwrap();
+
+        assert_eq!(mode("private"), 0o600);
+        assert_eq!(mode("new"), 0o600);
     }
 
     #[cfg(unix)]

@@ -237,6 +237,33 @@ SELECT workspace_id, seq, kind, member_id, task_id, task_version FROM changes;
 DROP TABLE changes;
 ALTER TABLE changes_with_docs RENAME TO changes;
 ",
+    // Machines paired with an account, and the pairings under way. A confirmed pairing names
+    // its account and machine, and stays until it expires so that its core may claim again.
+    "
+CREATE TABLE machines (
+    machine_id TEXT PRIMARY KEY,
+    account_id TEXT NOT NULL REFERENCES accounts (account_id),
+    name TEXT NOT NULL,
+    os TEXT NOT NULL,
+    machine_key TEXT NOT NULL,
+    token_hash BLOB NOT NULL UNIQUE,
+    paired_at INTEGER NOT NULL
+) STRICT;
+
+CREATE TABLE pairings (
+    pairing_id TEXT PRIMARY KEY,
+    code_hash BLOB NOT NULL UNIQUE,
+    secret_hash BLOB NOT NULL,
+    name TEXT NOT NULL,
+    os TEXT NOT NULL,
+    machine_key TEXT NOT NULL,
+    expires_at INTEGER NOT NULL,
+    account_id TEXT REFERENCES accounts (account_id),
+    machine_id TEXT,
+    confirmed_at INTEGER,
+    claimed INTEGER NOT NULL DEFAULT 0
+) STRICT;
+",
     // Chats, the events their machines report, the prompts that wait for their owners and the
     // commands their owners sent them. A workspace counts the bytes its chats' events take.
     "
@@ -376,7 +403,13 @@ mod tests {
             .unwrap()
     }
 
-    const SERVER_WIDE: [&str; 3] = ["accounts", "sign_in_challenges", "sessions"];
+    const SERVER_WIDE: [&str; 5] = [
+        "accounts",
+        "sign_in_challenges",
+        "sessions",
+        "machines",
+        "pairings",
+    ];
 
     async fn tables(db: &Db) -> Vec<String> {
         sqlx::query_scalar(
@@ -407,6 +440,8 @@ mod tests {
                 "doc_versions",
                 "doc_pins",
                 "changes",
+                "machines",
+                "pairings",
                 "chats",
                 "chat_events",
                 "chat_waiting",
