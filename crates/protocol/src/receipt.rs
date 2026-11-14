@@ -50,18 +50,8 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+    use crate::test_support::request;
     use crate::{Envelope, Message, code};
-
-    fn request(id: &str) -> RequestId {
-        RequestId::try_from(id.to_owned()).unwrap()
-    }
-
-    #[test]
-    fn request_ids_are_plain_tokens_checked_on_arrival() {
-        assert_eq!(RequestId::try_from("a b".to_owned()), Err("a b".to_owned()));
-        assert_eq!(serde_json::to_value(request("r-1")).unwrap(), json!("r-1"));
-        serde_json::from_value::<RequestId>(json!("a b")).unwrap_err();
-    }
 
     #[test]
     fn receipts_have_a_flat_tagged_shape() {
@@ -86,7 +76,7 @@ mod tests {
             let envelope = Envelope {
                 id: 3,
                 message: Message::Receipt(Receipt {
-                    request: request("r-1"),
+                    request: request(),
                     outcome,
                 }),
             };
@@ -103,7 +93,7 @@ mod tests {
         assert_eq!(
             serde_json::from_value::<Envelope>(wire).unwrap().message,
             Message::Receipt(Receipt {
-                request: request("r-1"),
+                request: request(),
                 outcome: Outcome::Newer,
             })
         );

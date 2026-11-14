@@ -97,19 +97,8 @@ mod tests {
     use serde_json::{Value, json};
 
     use super::*;
-    use crate::{AccountId, Envelope, FrameError, MemberId, Message};
-
-    fn request() -> RequestId {
-        RequestId::try_from("r-1".to_owned()).unwrap()
-    }
-
-    fn workspace() -> WorkspaceId {
-        WorkspaceId::try_from("w-1".to_owned()).unwrap()
-    }
-
-    fn chat() -> ChatId {
-        ChatId::try_from("c-1".to_owned()).unwrap()
-    }
+    use crate::test_support::{chat, envelope, never_sent, request, travels, workspace};
+    use crate::{Envelope, Message};
 
     fn wire(message: &str, field: &str, body: Value) -> Value {
         let mut wire = json!({ "id": 4, "type": message, "request": "r-1",
@@ -118,35 +107,39 @@ mod tests {
         wire
     }
 
-    fn travels(message: Message, wire: Value) {
-        let envelope = Envelope { id: 4, message };
-        assert_eq!(serde_json::to_value(&envelope).unwrap(), wire);
-        assert_eq!(
-            Envelope::from_json(&envelope.to_json().unwrap()).unwrap(),
-            envelope
-        );
-        assert_eq!(serde_json::from_value::<Envelope>(wire).unwrap(), envelope);
+    fn query(by: Option<Asker>) -> Envelope {
+        envelope(Message::WorktreeQuery(WorktreeQuery {
+            request: request(),
+            workspace: workspace(),
+            chat: chat(),
+            query: WorktreeQueryKind::State,
+            by,
+        }))
     }
 
-    fn answer(answer: WorktreeAnswerKind) -> Message {
-        Message::WorktreeAnswer(WorktreeAnswer {
+    fn command(action: WorktreeAction, by: Option<Asker>) -> Envelope {
+        envelope(Message::WorktreeCommand(WorktreeCommand {
+            request: request(),
+            workspace: workspace(),
+            chat: chat(),
+            action,
+            by,
+        }))
+    }
+
+    fn answer(answer: WorktreeAnswerKind) -> Envelope {
+        envelope(Message::WorktreeAnswer(WorktreeAnswer {
             request: request(),
             workspace: workspace(),
             chat: chat(),
             answer,
-        })
+        }))
     }
 
     #[test]
     fn queries_and_commands_have_a_tagged_shape() {
         travels(
-            Message::WorktreeQuery(WorktreeQuery {
-                request: request(),
-                workspace: workspace(),
-                chat: chat(),
-                query: WorktreeQueryKind::State,
-                by: None,
-            }),
+            &query(None),
             wire("worktree_query", "query", json!({ "kind": "state" })),
         );
         let actions = [
@@ -162,15 +155,8 @@ mod tests {
             ),
         ];
         for (action, body) in actions {
-            let command = WorktreeCommand {
-                request: request(),
-                workspace: workspace(),
-                chat: chat(),
-                action,
-                by: None,
-            };
             travels(
-                Message::WorktreeCommand(command),
+                &command(action, None),
                 wire("worktree_command", "action", body),
             );
         }
@@ -200,7 +186,7 @@ mod tests {
             ),
         ];
         for (kind, body) in cases {
-            travels(answer(kind), wire("worktree_answer", "answer", body));
+            travels(&answer(kind), wire("worktree_answer", "answer", body));
         }
     }
 
@@ -224,34 +210,16 @@ mod tests {
     #[test]
     fn a_relayed_query_or_command_says_who_asked() {
         let by = Some(Asker {
-            account: AccountId::try_from("a-1".to_owned()).unwrap(),
-            member: MemberId::try_from("m-1".to_owned()).unwrap(),
+            account: "a-1".parse().unwrap(),
+            member: "m-1".parse().unwrap(),
         });
         let asked = json!({ "account": "a-1", "member": "m-1" });
-        let mut query = wire("worktree_query", "query", json!({ "kind": "state" }));
-        query["by"] = asked.clone();
-        travels(
-            Message::WorktreeQuery(WorktreeQuery {
-                request: request(),
-                workspace: workspace(),
-                chat: chat(),
-                query: WorktreeQueryKind::State,
-                by: by.clone(),
-            }),
-            query,
-        );
-        let mut command = wire("worktree_command", "action", json!({ "kind": "remove" }));
-        command["by"] = asked;
-        travels(
-            Message::WorktreeCommand(WorktreeCommand {
-                request: request(),
-                workspace: workspace(),
-                chat: chat(),
-                action: WorktreeAction::Remove,
-                by,
-            }),
-            command,
-        );
+        let mut query_wire = wire("worktree_query", "query", json!({ "kind": "state" }));
+        query_wire["by"] = asked.clone();
+        travels(&query(by.clone()), query_wire);
+        let mut command_wire = wire("worktree_command", "action", json!({ "kind": "remove" }));
+        command_wire["by"] = asked;
+        travels(&command(WorktreeAction::Remove, by), command_wire);
     }
 
     #[test]
@@ -262,8 +230,7 @@ mod tests {
             wire("worktree_answer", "answer", json!({ "kind": "merged" })),
         ];
         for wire in newer {
-            let envelope: Envelope = serde_json::from_value(wire.clone()).unwrap();
-            assert_eq!(envelope.to_json(), Err(FrameError::Invalid), "{wire}");
+            never_sent(wire);
         }
     }
 

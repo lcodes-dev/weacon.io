@@ -1,10 +1,10 @@
-// The apps bundle `isCommit` and `PROTOCOL`, so this file imports nothing at run time.
+// The apps bundle `PROTOCOL`, so this file imports nothing at run time.
 
 /** Must equal `weacon_protocol::PROTOCOL`. */
 export const PROTOCOL = 1;
 
 /** Whether `text` is a commit hash, by the rule `crates/version` applies too. */
-export function isCommit(text: string): boolean {
+function isCommit(text: string): boolean {
   return /^[0-9a-f]{7,64}$/i.test(text);
 }
 

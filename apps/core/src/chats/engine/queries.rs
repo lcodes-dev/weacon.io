@@ -1,7 +1,7 @@
 //! What clients ask about a chat's log.
 
 use weacon_observability::Fault;
-use weacon_protocol::{ChatAnswerKind, ChatQueryKind, RunStatus};
+use weacon_protocol::{ChatAnswerKind, ChatQueryKind};
 
 use super::{Engine, Key, unsupported, update};
 use crate::chats::feed::{Client, Subscriber};
@@ -19,8 +19,8 @@ impl<A: Agent> Engine<A> {
         if matches!(query, ChatQueryKind::Subscribe { .. }) {
             self.sweep();
         }
-        let record = self.runs.of(&key.0, &key.1);
-        let run = record.and_then(|record| Some((record.run.clone()?, record.state)));
+        // A run cut off, as by a restart, isn't shown as working.
+        self.save_ended(key).await?;
         let chat = self.chat(key).await?;
         match query {
             ChatQueryKind::Subscribe { after } => {
@@ -42,11 +42,8 @@ impl<A: Agent> Engine<A> {
             }
             ChatQueryKind::Snapshot => Ok(Some(ChatAnswerKind::Snapshot {
                 seq: chat.log.seq(),
-                runs: run
-                    .map(|(run, state)| RunStatus { run, state })
-                    .into_iter()
-                    .collect(),
-                waiting: chat.waiting.iter().map(|waiting| waiting.seq).collect(),
+                runs: chat.log.runs().runs.clone(),
+                waiting: chat.log.runs().waiting_seqs(),
                 events: chat.log.window(u64::MAX, SNAPSHOT_EVENTS).await?,
             })),
             ChatQueryKind::Window { before, limit } => Ok(Some(ChatAnswerKind::Window {

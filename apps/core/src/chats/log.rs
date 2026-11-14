@@ -5,12 +5,14 @@ use std::fs::{File, OpenOptions};
 use std::io::{self, BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::Path;
 
+use weacon_model::ChatRuns;
 use weacon_observability::Fault;
 use weacon_protocol::{
     ChatAction, ChatEntry, ChatEvent, ChatId, MAX_FRAME, Outcome, RequestId, RunEvent, RunUpdate,
     code,
 };
 
+use crate::app::blocking;
 use crate::platform;
 
 // An entry, and a window of entries, each fit one frame with room for what travels with them.
@@ -30,6 +32,7 @@ pub(crate) struct Log {
     requests: HashMap<RequestId, Asked>,
     /// Set by a failed write, which may have left half an entry; opening the log again mends it.
     broken: bool,
+    runs: ChatRuns,
 }
 
 /// What the log holds of one command.
@@ -76,6 +79,7 @@ impl Log {
                 end: 0,
                 requests: HashMap::new(),
                 broken: false,
+                runs: ChatRuns::default(),
             };
             weacon_appkit::sync_dir(&dir)?;
             weacon_appkit::sync_dir(&workspace_root)?;
@@ -115,6 +119,7 @@ impl Log {
     }
 
     fn keep(&mut self, entry: &ChatEntry, len: usize) {
+        self.runs.apply(entry);
         match &entry.event {
             ChatEvent::Prompt { request, .. } => {
                 self.requests.entry(request.clone()).or_default().prompt = Some(entry.seq);
@@ -131,6 +136,11 @@ impl Log {
         }
         self.starts.push(self.end);
         self.end += u64::try_from(len).unwrap_or(u64::MAX);
+    }
+
+    /// Where the chat's runs stand, as its entries say.
+    pub(crate) const fn runs(&self) -> &ChatRuns {
+        &self.runs
     }
 
     /// The last entry's place, 0 while the log is empty.
@@ -234,7 +244,7 @@ impl Log {
             (earlier, action),
             (
                 Some(ChatEvent::Prompt { text: was_text, repo: was_repo, .. }),
-                ChatAction::Prompt { text, repo },
+                ChatAction::Prompt { text, repo, .. },
             ) if was_text == *text && was_repo == *repo
         );
         Ok(match (same, asked.receipted) {
@@ -295,14 +305,6 @@ impl Log {
             .copied()
             .unwrap_or(self.end)
     }
-}
-
-async fn blocking<T: Send + 'static>(
-    work: impl FnOnce() -> io::Result<T> + Send + 'static,
-) -> io::Result<T> {
-    tokio::task::spawn_blocking(work)
-        .await
-        .unwrap_or_else(|error| Err(io::Error::other(error)))
 }
 
 #[cfg(test)]
@@ -374,6 +376,7 @@ mod tests {
         ChatAction::Prompt {
             text: text.to_owned(),
             repo: None,
+            machine: None,
         }
     }
 
@@ -619,6 +622,7 @@ mod tests {
         let elsewhere = ChatAction::Prompt {
             text: "Hi".to_owned(),
             repo: Some(RepoId::try_from("site".to_owned()).unwrap()),
+            machine: None,
         };
         assert_eq!(seen(&log, "r-1", elsewhere).await, Seen::Other);
         assert_eq!(seen(&log, "r-1", ChatAction::Interrupt).await, Seen::Other);

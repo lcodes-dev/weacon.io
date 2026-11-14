@@ -9,12 +9,14 @@ mod platform;
 mod run;
 pub mod sessions;
 mod spawn;
+mod terminal;
 #[cfg(test)]
 mod test_support;
 mod transcript;
 mod wire;
 
-pub use launch::{Launch, SignIn};
+pub use launch::{Launch, McpServer, SignIn};
 pub use run::{AgentRun, Run};
 pub use spawn::SpawnPolicy;
+pub use terminal::{Event, Events, Size, Terminal};
 pub use transcript::{Said, Transcript};

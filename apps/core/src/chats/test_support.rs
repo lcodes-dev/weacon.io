@@ -149,7 +149,15 @@ pub(crate) fn command(request: &str, chat_id: &str, action: ChatAction) -> ChatC
 
 pub(crate) fn prompt(request: &str, text: &str) -> ChatCommand {
     let text = text.to_owned();
-    command(request, "c-1", ChatAction::Prompt { text, repo: None })
+    command(
+        request,
+        "c-1",
+        ChatAction::Prompt {
+            text,
+            repo: None,
+            machine: None,
+        },
+    )
 }
 
 pub(crate) fn query(chat_id: &str, query: ChatQueryKind) -> ChatQuery {
@@ -231,6 +239,7 @@ fn said(event: &RunEvent) -> String {
         RunEvent::ToolDone { .. } => "tool done".to_owned(),
         RunEvent::PermissionAsked { prompt, .. } => format!("asks {prompt}"),
         RunEvent::PermissionWithdrawn { prompt, .. } => format!("withdraws {prompt}"),
+        RunEvent::PermissionAnswered { answer } => format!("answered {}", answer.prompt),
         RunEvent::Finished { outcome: ended } => format!("finished {}", outcome(ended)),
         RunEvent::Newer => "newer".to_owned(),
     }

@@ -155,6 +155,7 @@ fn parse(line: &[u8]) -> Option<Result<Envelope, FrameError>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::{request, run, workspace};
     use crate::{App, ErrorBody, Hello, Outcome, Receipt, RunEvent, RunUpdate, WorkspaceUpdate};
 
     fn envelope(id: u32) -> Envelope {
@@ -257,55 +258,39 @@ mod tests {
     }
 
     #[test]
-    fn encoding_refuses_unknown_and_oversized_messages() {
-        let fits = MAX_FRAME - encode_line(&hello(1)).unwrap().len() + 1;
-        let unknown = Envelope {
-            id: 7,
-            message: Message::Unknown,
-        };
-
-        assert_eq!(encode_line(&hello(fits)).unwrap().len(), MAX_FRAME);
-        assert_eq!(encode_line(&hello(fits + 1)), Err(FrameError::TooLarge));
-        let newer = Envelope {
-            id: 8,
-            message: Message::Receipt(Receipt {
-                request: serde_json::from_str(r#""r-1""#).unwrap(),
+    fn messages_only_received_are_never_sent() {
+        let messages = [
+            Message::Unknown,
+            Message::Receipt(Receipt {
+                request: request(),
                 outcome: Outcome::Newer,
             }),
-        };
-
-        let newer_event = Envelope {
-            id: 9,
-            message: Message::Run(RunUpdate {
-                run: serde_json::from_str(r#""r-1""#).unwrap(),
+            Message::Run(RunUpdate {
+                run: run(),
                 event: RunEvent::Newer,
             }),
-        };
-
-        assert_eq!(encode_line(&unknown), Err(FrameError::Invalid));
-        assert_eq!(newer.to_json(), Err(FrameError::Invalid));
-        let newer_finish = Envelope {
-            id: 9,
-            message: Message::Run(RunUpdate {
-                run: serde_json::from_str(r#""r-1""#).unwrap(),
+            Message::Run(RunUpdate {
+                run: run(),
                 event: RunEvent::Finished {
                     outcome: Outcome::Newer,
                 },
             }),
-        };
-
-        assert_eq!(newer_event.to_json(), Err(FrameError::Invalid));
-        assert_eq!(newer_finish.to_json(), Err(FrameError::Invalid));
-        let newer_change = Envelope {
-            id: 10,
-            message: Message::Workspace(WorkspaceUpdate {
-                workspace: serde_json::from_str(r#""w-1""#).unwrap(),
+            Message::Workspace(WorkspaceUpdate {
+                workspace: workspace(),
                 seq: 1,
                 change: WorkspaceChange::Newer,
             }),
-        };
+        ];
 
-        assert_eq!(newer_change.to_json(), Err(FrameError::Invalid));
+        for message in messages {
+            let envelope = Envelope { id: 7, message };
+            assert_eq!(envelope.to_json(), Err(FrameError::Invalid), "{envelope:?}");
+            assert_eq!(
+                encode_line(&envelope),
+                Err(FrameError::Invalid),
+                "{envelope:?}"
+            );
+        }
     }
 
     #[test]
@@ -341,6 +326,7 @@ mod tests {
         padded.extend(envelope(9).to_json().unwrap());
 
         assert_eq!(hello(full).to_json().unwrap().len(), MAX_FRAME);
+        assert_eq!(encode_line(&hello(full - 1)).unwrap().len(), MAX_FRAME);
         assert_eq!(encode_line(&hello(full)), Err(FrameError::TooLarge));
         assert_eq!(hello(full + 1).to_json(), Err(FrameError::TooLarge));
         assert_eq!(Envelope::from_json(&padded), Ok(envelope(9)));

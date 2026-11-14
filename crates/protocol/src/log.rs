@@ -9,6 +9,7 @@ const EVENT_WORDS: usize = 4;
 // The schema's form of `is_event`; a test keeps the two in step.
 const EVENT_PATTERN: &str = r"^[a-z][a-z_]*( [a-z_]+){0,3}$";
 
+// No `Newer`: the levels are fixed, and a record at a level the receiver doesn't know is refused.
 #[derive(
     Clone,
     Copy,
@@ -46,7 +47,6 @@ pub enum Level {
 pub struct ClientLog {
     pub level: Level,
     pub msg: LogEvent,
-    // These are left out rather than null, so the schema and the generated types say so too.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(with = "RunId")]
     pub run_id: Option<RunId>,
