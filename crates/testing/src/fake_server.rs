@@ -43,7 +43,7 @@ pub async fn serve(
     ];
     let answer = fake_core::answer(&hello, &offered)?;
     let welcomed = matches!(answer.message, Message::Welcome(_));
-    sink.send(Frame::text(fake_core::text(&answer)?))
+    sink.send(Frame::text(envelope_text(&answer)?))
         .await
         .map_err(|error| error.to_string())?;
     if !welcomed {
@@ -125,7 +125,7 @@ fn replies_to(text: &str) -> Vec<String> {
     };
     replies
         .iter()
-        .filter_map(|reply| fake_core::text(reply).ok())
+        .filter_map(|reply| envelope_text(reply).ok())
         .collect()
 }
 
@@ -144,6 +144,12 @@ async fn next_text(
     Ok(None)
 }
 
+/// `envelope` as the text of one frame.
+fn envelope_text(envelope: &Envelope) -> Result<String, String> {
+    let json = envelope.to_json().map_err(|error| error.to_string())?;
+    String::from_utf8(json).map_err(|error| error.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use std::fs;
@@ -155,7 +161,7 @@ mod tests {
 
     use super::*;
     use crate::TempDir;
-    use crate::fake_core::{SESSION, recording};
+    use crate::recording::{SESSION, recording};
 
     type Client = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
