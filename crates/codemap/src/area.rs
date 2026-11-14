@@ -7,12 +7,12 @@ use crate::rank::{by_rank, page_rank};
 
 /// Files that name each other more than they name the rest.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Area {
+pub(crate) struct Area {
     /// Its highest-ranked file's path without `.rs`: `crates/protocol/src/lib`. It holds while
     /// that file stays on top, and changes when another file outranks it.
-    pub id: String,
+    pub(crate) id: String,
     /// Highest page rank first.
-    pub files: Vec<String>,
+    pub(crate) files: Vec<String>,
 }
 
 /// Groups the nodes' files into areas, sorted by id.
@@ -42,7 +42,7 @@ fn area(files: Vec<(&str, f64)>) -> Area {
 impl Area {
     /// Changes when a file joins or leaves the area, not when its files' code changes.
     #[must_use]
-    pub fn fingerprint(&self) -> Fingerprint {
+    pub(crate) fn fingerprint(&self) -> Fingerprint {
         let mut files: Vec<&str> = self.files.iter().map(String::as_str).collect();
         files.sort_unstable();
         Fingerprint::of(files)

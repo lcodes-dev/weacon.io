@@ -26,13 +26,14 @@ use std::fmt;
 
 pub use anchor::{Anchor, Finding, Pin};
 pub use answers::Churn;
-pub use area::Area;
-pub use contracts::{Contract, ContractKind};
-pub use edges::{Edge, EdgeKind};
+pub(crate) use area::Area;
+pub use contracts::ContractKind;
+pub(crate) use edges::{Edge, EdgeKind};
 pub use fingerprint::Fingerprint;
-pub use flows::{Break, Flow};
-pub use index::{Crate, Index, Module, SourceFile, index};
-pub use symbols::{Kind, Symbol};
+pub(crate) use flows::Break;
+pub(crate) use index::{Crate, Module};
+pub use index::{Index, SourceFile, index};
+pub(crate) use symbols::{Kind, Symbol};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Error {

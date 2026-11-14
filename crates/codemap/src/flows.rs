@@ -8,17 +8,17 @@ const REACH: usize = 4;
 
 /// A flow pinned in a document, such as `flow:a::run->a::serve` in `docs/serving.md`.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Flow {
-    pub steps: Vec<String>,
-    pub file: String,
+pub(crate) struct Flow {
+    pub(crate) steps: Vec<String>,
+    pub(crate) file: String,
     /// Counting from 1.
-    pub line: usize,
+    pub(crate) line: usize,
     /// The first place the code no longer follows it, if any.
-    pub breaks: Option<Break>,
+    pub(crate) breaks: Option<Break>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Break {
+pub(crate) enum Break {
     /// No item has this path.
     Missing(String),
     /// The first step doesn't reach the second through calls.

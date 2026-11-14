@@ -9,14 +9,14 @@ use crate::{Crate, Kind};
 
 /// One item's code naming another item: `from` and `to` are paths such as `weacon_core::map::run`.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-pub struct Edge {
-    pub from: String,
-    pub to: String,
-    pub kind: EdgeKind,
+pub(crate) struct Edge {
+    pub(crate) from: String,
+    pub(crate) to: String,
+    pub(crate) kind: EdgeKind,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub enum EdgeKind {
+pub(crate) enum EdgeKind {
     Calls,
     Uses,
     /// From a type to a trait in the repository it implements.

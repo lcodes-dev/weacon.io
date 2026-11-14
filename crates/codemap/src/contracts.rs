@@ -17,21 +17,21 @@ use crate::{Crate, Module};
 
 /// Something other programs or people rely on staying as it is.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-pub struct Contract {
-    pub kind: ContractKind,
+pub(crate) struct Contract {
+    pub(crate) kind: ContractKind,
     /// `map check-anchors`, `store.full`, `GET /version`, `workspaces`, or a type's path.
-    pub name: String,
+    pub(crate) name: String,
     /// The path of the item that declares it.
-    pub item: String,
-    pub file: String,
+    pub(crate) item: String,
+    pub(crate) file: String,
     /// Counting from 1.
-    pub line: usize,
+    pub(crate) line: usize,
 }
 
 impl Contract {
     /// `route GET /version`, `command map check-anchors`, `code store.full`.
     #[must_use]
-    pub fn describe(&self) -> String {
+    pub(crate) fn describe(&self) -> String {
         let kind = match self.kind {
             ContractKind::Command => "command",
             ContractKind::ErrorCode => "code",

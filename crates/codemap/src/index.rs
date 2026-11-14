@@ -28,35 +28,35 @@ impl fmt::Debug for SourceFile {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Index {
     /// Sorted by folder.
-    pub crates: Vec<Crate>,
+    pub(crate) crates: Vec<Crate>,
     /// Sorted by id.
-    pub areas: Vec<Area>,
+    pub(crate) areas: Vec<Area>,
     /// Sorted.
-    pub edges: Vec<Edge>,
+    pub(crate) edges: Vec<Edge>,
     /// Sorted.
-    pub contracts: Vec<Contract>,
+    pub(crate) contracts: Vec<Contract>,
     /// Sorted by file and line.
-    pub flows: Vec<Flow>,
+    pub(crate) flows: Vec<Flow>,
     /// Every item's path, most central first.
     pub(crate) central: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Crate {
+pub(crate) struct Crate {
     /// The name code uses, `weacon_protocol` for the package `weacon-protocol`.
-    pub name: String,
+    pub(crate) name: String,
     /// The folder holding `Cargo.toml`, empty at the repository root.
-    pub folder: String,
+    pub(crate) folder: String,
     /// One per file under `src/`, sorted by file.
-    pub modules: Vec<Module>,
+    pub(crate) modules: Vec<Module>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Module {
+pub(crate) struct Module {
     /// Within the crate, `frame::codec`; empty for the crate's root.
-    pub path: String,
-    pub file: String,
-    pub symbols: Vec<Symbol>,
+    pub(crate) path: String,
+    pub(crate) file: String,
+    pub(crate) symbols: Vec<Symbol>,
 }
 
 /// Outlines every crate whose `Cargo.toml` is among `files`, from the `.rs` files under its `src/`.
@@ -174,7 +174,7 @@ fn module_path(folder: &str, file: &str) -> Option<String> {
 impl Index {
     /// The item at `crate_name::module::path::Name`.
     #[must_use]
-    pub fn symbol(&self, path: &str) -> Option<&Symbol> {
+    pub(crate) fn symbol(&self, path: &str) -> Option<&Symbol> {
         let (name, rest) = path.split_once("::")?;
         let krate = self.crates.iter().find(|krate| krate.name == name)?;
         krate.modules.iter().find_map(|module| {
@@ -187,7 +187,7 @@ impl Index {
     }
 
     #[must_use]
-    pub fn area(&self, id: &str) -> Option<&Area> {
+    pub(crate) fn area(&self, id: &str) -> Option<&Area> {
         self.areas.iter().find(|area| area.id == id)
     }
 }
