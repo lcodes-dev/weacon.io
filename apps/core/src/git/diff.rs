@@ -608,19 +608,46 @@ mod tests {
     fn a_file_too_large_for_a_frame_says_so() {
         let dir = TempDir::new().unwrap();
         let (git, path, base) = begun(&dir);
-        let big = "line\n".repeat(MAX_PATCH / 4);
+        // Over half a frame each; a file of exactly the most a patch holds still fits.
+        let big = "line\n".repeat(MAX_FRAME / 8);
         fs::write(path.join("lib.rs"), &big).unwrap();
         fs::write(path.join("big.txt"), &big).unwrap();
+        fs::write(path.join("most.txt"), "a\n".repeat(MAX_PATCH / 2)).unwrap();
 
         let files = git.changes(&path, &base).unwrap();
 
-        assert!(
-            files
-                .iter()
-                .all(|file| file.content == DiffContent::TooLarge),
-            "{files:?}"
-        );
-        assert_eq!(files.len(), 2);
+        let large: Vec<&str> = files
+            .iter()
+            .filter(|file| file.content == DiffContent::TooLarge)
+            .map(|file| file.path.as_str())
+            .collect();
+        assert_eq!(large, ["big.txt", "lib.rs"]);
+        assert_eq!(files.len(), 3);
+    }
+
+    #[test]
+    fn output_of_exactly_the_limit_is_kept() {
+        let version = run(Command::new("git").arg("--version")).unwrap();
+
+        let kept = run_within(Command::new("git").arg("--version"), version.len()).unwrap();
+        let cut = run_within(Command::new("git").arg("--version"), version.len() - 1).unwrap();
+
+        assert_eq!(kept, Some(version));
+        assert_eq!(cut, None);
+    }
+
+    #[test]
+    fn a_file_added_in_a_commit_is_added() {
+        let dir = TempDir::new().unwrap();
+        let (git, path, base) = begun(&dir);
+        fs::write(path.join("new.txt"), "new\n").unwrap();
+        fixture(&dir, &path, &["add", "new.txt"]);
+        fixture(&dir, &path, &["commit", "--quiet", "-m", "New"]);
+
+        let files = git.changes(&path, &base).unwrap();
+
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].change, FileChange::Added);
     }
 
     #[test]
