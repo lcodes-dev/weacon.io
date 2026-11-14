@@ -125,6 +125,8 @@ Every program logs, reports errors and says which build it is from its first com
 | `scripts/release.sh <target>` | Builds a static release `weacon` for one target into `dist/`, checks it reports this commit, and prints its size |
 | `scripts/release.sh server <target>` | Builds the web app, then a static release `weacon-server` with it inside for a Linux target into `dist/`, checks it reports this commit and serves this web app, and prints its size |
 | `scripts/release.sh install <[user@]host> <target>` | Copies that Linux build to a host over SSH and runs `weacon service install` there: a systemd user service, with lingering on |
+| `scripts/release.sh manifest <tag> <folder> <https base URL>` | Writes the unsigned `manifest.json` for the core's builds in a folder: version, commit, protocol, and each target's URL, size and SHA-256. The release workflow runs it for a tag and uploads it with the builds to a draft release |
+| `scripts/release.sh sign <tag> <secret key file>` | Run by the owner, on the machine with the release key: checks the draft's manifest against its tag (version, commit, every target, each URL) and each build against its SHA-256, dates and signs the manifest with minisign, checks the signature against the keys the tag's core trusts, and uploads both to the draft |
 
 Every dependency is declared once, in `[workspace.dependencies]` in the root `Cargo.toml`; crates refer to it with `workspace = true`. `Cargo.lock` is committed and every command runs with `--locked`. A new dependency must be at least three days old, maintained, under a licence `.cargo/deny.toml` allows, and without a build script unless it needs one; say why it's needed in the PR.
 

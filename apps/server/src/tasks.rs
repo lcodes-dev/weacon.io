@@ -1,9 +1,9 @@
 use axum::Json;
-use axum::extract::rejection::{JsonRejection, PathRejection};
+use axum::extract::rejection::PathRejection;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use weacon_model::{Change, OrderKey, Revision, Task, TaskEdit, Title};
+use weacon_model::{Attribution, OrderKey, Revision, Task, TaskEdit, Title};
 use weacon_observability::Fault;
 use weacon_protocol::{
     Code, TaskChange, TaskCreate, TaskEditBody, TaskId, TaskList, TaskRecord, WorkspaceId, code,
@@ -12,16 +12,16 @@ use weacon_protocol::{
 use crate::app::new_id;
 use crate::auth::Member;
 use crate::db::task_not_found;
-use crate::http::{Shared, error, failure};
+use crate::http::{Body, Shared, Unreadable, error, failure};
 
 /// `GET /api/workspaces/{workspace}/tasks`: the workspace's tasks, in their order.
-pub(crate) async fn list(State(shared): State<Shared>, member: Member) -> Response {
+pub(crate) async fn list(member: Member) -> Response {
     match member.workspace.tasks().await {
         Ok(tasks) => Json(TaskList {
             tasks: tasks.into_iter().map(record).collect(),
         })
         .into_response(),
-        Err(fault) => answer(&shared, fault),
+        Err(fault) => answer(fault),
     }
 }
 
@@ -30,7 +30,7 @@ pub(crate) async fn list(State(shared): State<Shared>, member: Member) -> Respon
 pub(crate) async fn create(
     State(shared): State<Shared>,
     member: Member,
-    body: Result<Json<TaskCreate>, JsonRejection>,
+    body: Result<Body<TaskCreate>, Unreadable>,
 ) -> Response {
     let made = async {
         let body = parsed(body)?;
@@ -39,8 +39,8 @@ pub(crate) async fn create(
         let order = place(&tasks, None, body.before.as_ref())?;
         let id = TaskId::try_from(new_id()).map_err(|_| invalid())?;
         let task = Task::new(id, title, order);
-        let change = Change::by(member.id.clone(), shared.now());
-        member.workspace.add_task(&task, &change).await?;
+        let attribution = Attribution::by(member.id.clone(), shared.now());
+        member.workspace.add_task(&task, &attribution).await?;
         Ok(task)
     };
     match made.await {
@@ -48,7 +48,7 @@ pub(crate) async fn create(
             shared.changed(member.workspace.id());
             (StatusCode::CREATED, Json(record(task))).into_response()
         }
-        Err(fault) => answer(&shared, fault),
+        Err(fault) => answer(fault),
     }
 }
 
@@ -58,7 +58,7 @@ pub(crate) async fn change(
     State(shared): State<Shared>,
     member: Member,
     path: Result<Path<(WorkspaceId, TaskId)>, PathRejection>,
-    body: Result<Json<TaskChange>, JsonRejection>,
+    body: Result<Body<TaskChange>, Unreadable>,
 ) -> Response {
     let edited = async {
         let Path((_, id)) = path.map_err(|_| invalid())?;
@@ -72,11 +72,11 @@ pub(crate) async fn change(
             }
             TaskEditBody::Newer => return Err(invalid()),
         };
-        let change = Change::by(member.id.clone(), shared.now());
+        let attribution = Attribution::by(member.id.clone(), shared.now());
         let read_at = Revision::new(body.version);
         member
             .workspace
-            .edit_task(&id, read_at, edit, &change)
+            .edit_task(&id, read_at, edit, &attribution)
             .await
     };
     match edited.await {
@@ -84,7 +84,7 @@ pub(crate) async fn change(
             shared.changed(member.workspace.id());
             Json(record(task)).into_response()
         }
-        Err(fault) => answer(&shared, fault),
+        Err(fault) => answer(fault),
     }
 }
 
@@ -130,10 +130,10 @@ fn record(task: Task) -> TaskRecord {
 }
 
 /// A request's body, or `task.too_large` past the size limit and `task.invalid` otherwise.
-fn parsed<T>(body: Result<Json<T>, JsonRejection>) -> Result<T, Fault> {
+fn parsed<T>(body: Result<Body<T>, Unreadable>) -> Result<T, Fault> {
     match body {
-        Ok(Json(body)) => Ok(body),
-        Err(rejection) if rejection.status() == StatusCode::PAYLOAD_TOO_LARGE => Err(Fault::new(
+        Ok(Body(body)) => Ok(body),
+        Err(Unreadable::TooLarge) => Err(Fault::new(
             code!("task.too_large"),
             "The task request is too large",
         )),
@@ -158,7 +158,7 @@ const REFUSALS: [(Code, StatusCode); 8] = [
 ];
 
 /// Answers a refusal with its status, and anything else as the server failing.
-fn answer(shared: &Shared, fault: Fault) -> Response {
+fn answer(fault: Fault) -> Response {
     let code = fault.code().clone();
     // Another change took the same place at the same moment; reading again finds a free one.
     if code == code!("db.exists") {
@@ -166,7 +166,7 @@ fn answer(shared: &Shared, fault: Fault) -> Response {
     }
     match REFUSALS.iter().find(|(refusal, _)| *refusal == code) {
         Some((_, status)) => error(*status, code, false),
-        None => failure(shared, fault),
+        None => failure(fault),
     }
 }
 
@@ -179,7 +179,9 @@ mod tests {
     use weacon_protocol::TaskStatus;
 
     use super::*;
-    use crate::test_support::{Fixture, Running, bearer, request_with, status, workspace_id};
+    use crate::test_support::{
+        Fixture, Running, bearer, refusal, request_with, status, workspace_id,
+    };
 
     struct Ada {
         address: SocketAddr,
@@ -234,11 +236,6 @@ mod tests {
             auth: bearer(&body),
         };
         (server, ada)
-    }
-
-    fn refusal(body: &str) -> String {
-        let error: ErrorBody = serde_json::from_str(body).unwrap();
-        error.code.as_str().to_owned()
     }
 
     fn titles(tasks: &[TaskRecord]) -> Vec<&str> {
@@ -485,14 +482,13 @@ mod tests {
 
     #[tokio::test]
     async fn a_full_workspace_or_a_taken_place_is_a_conflict() {
-        let fixture = Fixture::new().await;
         for (fault, retryable) in [
             (Fault::new(code!("db.exists"), "It already exists"), true),
             (Fault::new(code!("task.too_many"), "Full"), false),
         ] {
             let code = fault.code().as_str().to_owned();
 
-            let answer = answer(&fixture.shared, fault);
+            let answer = answer(fault);
 
             assert_eq!(answer.status(), StatusCode::CONFLICT, "{code}");
             let body = axum::body::to_bytes(answer.into_body(), 1024)
