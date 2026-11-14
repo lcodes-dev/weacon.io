@@ -1,7 +1,8 @@
 use std::ops::ControlFlow::{self, Break, Continue};
 
-use sqlx::SqliteConnection;
-use weacon_model::{Attribution, Doc, DocText, Merged, OrderKey, Revision, Task, TaskEdit, Title};
+use sqlx::pool::PoolConnection;
+use sqlx::{Sqlite, SqliteConnection};
+use weacon_model::{Attribution, Doc, DocText, Merged, Revision, Task, TaskEdit, Title};
 use weacon_observability::Fault;
 use weacon_protocol::{
     AgentRef, DocId, MemberId, ProposalChange, ProposalId, ProposalOutcome, TaskEditBody, TaskId,
@@ -9,9 +10,9 @@ use weacon_protocol::{
 };
 
 use super::super::docs::refused as revise_refused;
-use super::super::tasks::{no_room, refused as edit_refused};
-use super::super::{Workspace, failed, parsed, stored, unreadable};
-use super::target::{Snapshot, doc_text};
+use super::super::tasks::refused as edit_refused;
+use super::super::{Workspace, failed, parsed, stored, unreadable, version_number};
+use super::target::{Snapshot, doc_text, proposable};
 use super::{Closing, OPEN, closed, not_found};
 
 /// The most lines times lines a doc edit's merge may compare once the start and end both
@@ -38,7 +39,7 @@ struct Open {
 enum Change {
     DocEdit {
         doc: DocId,
-        base: i64,
+        base: Revision,
         text: DocText,
     },
     TaskEdit {
@@ -53,11 +54,24 @@ enum Change {
     },
 }
 
-/// A change ready to make once the workspace is locked: a doc edit is merged already, with
-/// the doc as it was when merged.
+/// A change ready to make once the workspace is locked: a doc edit is merged already, into
+/// the doc at revision `read_at`.
 enum Ready {
-    Revision { doc: Doc, text: DocText },
-    Change(Change),
+    Revision {
+        doc: DocId,
+        read_at: Revision,
+        text: DocText,
+    },
+    TaskEdit {
+        task: TaskId,
+        edits: Vec<(TaskEditBody, TaskEdit)>,
+        was: Snapshot,
+    },
+    NewDoc(Doc),
+    NewTask {
+        id: TaskId,
+        title: Title,
+    },
 }
 
 /// What accepting makes, before it is stored.
@@ -86,13 +100,12 @@ impl Workspace {
             change,
             attribution,
         } = self.open_proposal(&mut reader, id, by, at).await?;
-        let ready = match self.merge_doc_edit(&mut reader, change).await? {
+        let ready = match self.ready(reader, change).await? {
             Continue(ready) => ready,
             Break(conflict) => return Ok(conflict),
         };
-        drop(reader);
         let mut transaction = self.db.write().await?;
-        self.open_proposal(&mut transaction, id, by, at).await?;
+        self.open_bytes(&mut transaction, id).await?;
         let made = match self.apply_change(&mut transaction, ready).await? {
             Continue(made) => made,
             Break(conflict) => return Ok(conflict),
@@ -100,7 +113,7 @@ impl Workspace {
         let version = made.version().ok_or_else(unreadable)?;
         let accepted = Closing::Accepted {
             by,
-            version: i64::try_from(version.get()).map_err(|_| unreadable())?,
+            version: version_number(version, unreadable)?,
         };
         // Its own bytes leave the quota first, so that a full workspace can still accept it.
         self.close_proposal(&mut transaction, id, accepted, by)
@@ -143,35 +156,40 @@ impl Workspace {
         })
     }
 
-    /// Merges a doc edit into the doc as it is now, or says what conflicts; other changes
-    /// pass as they are.
-    async fn merge_doc_edit(
+    /// `change`, with a doc edit merged into the doc as it is now, or what conflicts. The
+    /// reader goes back to the pool before the merge, which takes a while.
+    async fn ready(
         &self,
-        reader: &mut SqliteConnection,
+        mut reader: PoolConnection<Sqlite>,
         change: Change,
     ) -> Result<ControlFlow<ProposalOutcome, Ready>, Fault> {
-        let Change::DocEdit { doc, base, text } = change else {
-            return Ok(Continue(Ready::Change(change)));
+        let ready = match change {
+            Change::DocEdit { doc, base, text } => {
+                let was = self.read_doc(&mut reader, &doc, Some(base)).await?.text;
+                let current = self.read_doc(&mut reader, &doc, None).await?;
+                drop(reader);
+                let read_at = current.version;
+                match merged(was, current.text, text).await? {
+                    Merged::Text(text) => Ready::Revision { doc, read_at, text },
+                    Merged::Conflict {
+                        hunks,
+                        title,
+                        anchors,
+                    } => {
+                        let conflict = ProposalOutcome::DocConflict {
+                            hunks,
+                            title,
+                            anchors,
+                        };
+                        return Ok(Break(conflict));
+                    }
+                }
+            }
+            Change::TaskEdit { task, edits, was } => Ready::TaskEdit { task, edits, was },
+            Change::NewDoc(doc) => Ready::NewDoc(doc),
+            Change::NewTask { id, title } => Ready::NewTask { id, title },
         };
-        let was = self.read_doc(reader, &doc, Some(base)).await?.text;
-        let doc = self.read_doc(reader, &doc, None).await?;
-        let current = doc.text.clone();
-        let merged =
-            tokio::task::spawn_blocking(move || DocText::merge(&was, &current, &text, MAX_MERGE))
-                .await
-                .map_err(|_| Fault::new(code!("proposal.merge_failed"), "The merge failed"))?;
-        match merged.map_err(|_| too_large())? {
-            Merged::Text(text) => Ok(Continue(Ready::Revision { doc, text })),
-            Merged::Conflict {
-                hunks,
-                title,
-                anchors,
-            } => Ok(Break(ProposalOutcome::DocConflict {
-                hunks,
-                title,
-                anchors,
-            })),
-        }
+        Ok(Continue(ready))
     }
 
     /// What `ready` makes, read and checked inside the caller's transaction, or what
@@ -182,21 +200,19 @@ impl Workspace {
         ready: Ready,
     ) -> Result<ControlFlow<ProposalOutcome, Made>, Fault> {
         let made = match ready {
-            Ready::Revision { doc, text } => {
-                let now = self.read_doc(transaction, &doc.id, None).await?;
-                Made::Revision(now.revise(doc.version, text).map_err(revise_refused)?)
+            Ready::Revision { doc, read_at, text } => {
+                let now = self.read_doc(transaction, &doc, None).await?;
+                Made::Revision(now.revise(read_at, text).map_err(revise_refused)?)
             }
-            Ready::Change(Change::TaskEdit { task, edits, was }) => {
+            Ready::TaskEdit { task, edits, was } => {
                 let task = self.read_task(transaction, &task).await?;
                 return edited(task, &was, edits);
             }
-            Ready::Change(Change::NewDoc(doc)) => Made::NewDoc(doc),
-            Ready::Change(Change::NewTask { id, title }) => {
+            Ready::NewDoc(doc) => Made::NewDoc(doc),
+            Ready::NewTask { id, title } => {
                 let order = self.after_last(transaction).await?;
                 Made::NewTask(Task::new(id, title, order))
             }
-            // Merged before the workspace was locked.
-            Ready::Change(Change::DocEdit { .. }) => return Err(unreadable()),
         };
         Ok(Continue(made))
     }
@@ -219,19 +235,6 @@ impl Workspace {
             }
         }
     }
-
-    /// An order key after every task's, for a new task placed last.
-    async fn after_last(&self, transaction: &mut SqliteConnection) -> Result<OrderKey, Fault> {
-        let last: Option<String> = sqlx::query_scalar(
-            "SELECT order_key FROM tasks WHERE workspace_id = ? ORDER BY order_key DESC LIMIT 1",
-        )
-        .bind(self.id.as_str())
-        .fetch_optional(&mut *transaction)
-        .await
-        .map_err(failed)?;
-        let last: Option<OrderKey> = last.map(stored).transpose()?;
-        OrderKey::between(last.as_ref(), None).ok_or_else(no_room)
-    }
 }
 
 impl Made {
@@ -253,14 +256,14 @@ fn checked(
     Some(match change {
         ProposalChange::DocEdit { doc, base, content } => Change::DocEdit {
             doc,
-            base: i64::try_from(base).ok()?,
+            base: Revision::new(base),
             text: doc_text(&content).ok()?,
         },
         ProposalChange::TaskEdit { task, edits, .. } => Change::TaskEdit {
             task,
             edits: edits
                 .into_iter()
-                .map(|edit| Some((edit.clone(), model_edit(edit)?)))
+                .map(|edit| Some((edit.clone(), proposable(edit)?)))
                 .collect::<Option<_>>()?,
             was: snapshot?,
         },
@@ -284,7 +287,7 @@ fn edited(
 ) -> Result<ControlFlow<ProposalOutcome, Made>, Fault> {
     let conflicts: Vec<TaskEditBody> = edits
         .iter()
-        .filter(|(body, _)| conflicts(&task, was, body))
+        .filter(|(_, edit)| conflicts(&task, was, edit))
         .map(|(body, _)| body.clone())
         .collect();
     if !conflicts.is_empty() {
@@ -301,23 +304,20 @@ fn edited(
 
 /// Whether `edit` changes a field the task has changed in since `snapshot`, to something
 /// other than what the edit proposes.
-fn conflicts(task: &Task, snapshot: &Snapshot, edit: &TaskEditBody) -> bool {
+fn conflicts(task: &Task, snapshot: &Snapshot, edit: &TaskEdit) -> bool {
     match edit {
-        TaskEditBody::Title { title } => {
-            task.title.as_str() != snapshot.title && task.title.as_str() != title
-        }
-        TaskEditBody::Status { status } => task.status != snapshot.status && task.status != *status,
-        TaskEditBody::Move { .. } | TaskEditBody::Newer => true,
+        TaskEdit::Title(title) => task.title.as_str() != snapshot.title && task.title != *title,
+        TaskEdit::Status(status) => task.status != snapshot.status && task.status != *status,
+        TaskEdit::Order(_) => true,
     }
 }
 
-/// The model's edit for one a proposal stored.
-fn model_edit(edit: TaskEditBody) -> Option<TaskEdit> {
-    match edit {
-        TaskEditBody::Title { title } => Title::try_from(title).ok().map(TaskEdit::Title),
-        TaskEditBody::Status { status } => Some(TaskEdit::Status(status)),
-        TaskEditBody::Move { .. } | TaskEditBody::Newer => None,
-    }
+/// The merge of a doc edit, off the async threads.
+async fn merged(was: DocText, current: DocText, proposed: DocText) -> Result<Merged, Fault> {
+    tokio::task::spawn_blocking(move || DocText::merge(&was, &current, &proposed, MAX_MERGE))
+        .await
+        .map_err(|_| Fault::new(code!("proposal.merge_failed"), "The merge failed"))?
+        .map_err(|_| too_large())
 }
 
 fn too_large() -> Fault {
@@ -700,10 +700,9 @@ mod tests {
             .open_proposal(&mut reader, &id("p1"), &member_id("m3"), NOW)
             .await
             .unwrap();
-        let Ok(Continue(ready)) = one.merge_doc_edit(&mut reader, open.change).await else {
+        let Ok(Continue(ready)) = one.ready(reader, open.change).await else {
             panic!("not merged");
         };
-        drop(reader);
         revised_by_a_person(&one, "Zero\nOne\nTwo\nThree\n").await;
 
         let mut transaction = one.db.write().await.unwrap();

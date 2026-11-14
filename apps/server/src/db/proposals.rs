@@ -193,13 +193,13 @@ impl Workspace {
         Ok(())
     }
 
-    /// Takes the open proposal `id`'s bytes off the quota; `proposal.not_found` when there's
+    /// What the open proposal `id` counts toward the quota; `proposal.not_found` when there's
     /// no such proposal, and `proposal.closed` when it isn't open.
-    async fn release_charge(
+    async fn open_bytes(
         &self,
         transaction: &mut SqliteConnection,
         id: &ProposalId,
-    ) -> Result<(), Fault> {
+    ) -> Result<i64, Fault> {
         let (state, bytes): (String, i64) = sqlx::query_as(
             "SELECT state, bytes FROM proposals WHERE workspace_id = ? AND proposal_id = ?",
         )
@@ -212,6 +212,16 @@ impl Workspace {
         if state != OPEN {
             return Err(closed());
         }
+        Ok(bytes)
+    }
+
+    /// Takes the open proposal `id`'s bytes off the quota.
+    async fn release_charge(
+        &self,
+        transaction: &mut SqliteConnection,
+        id: &ProposalId,
+    ) -> Result<(), Fault> {
+        let bytes = self.open_bytes(transaction, id).await?;
         sqlx::query("UPDATE proposals SET bytes = 0 WHERE workspace_id = ? AND proposal_id = ?")
             .bind(self.id.as_str())
             .bind(id.as_str())

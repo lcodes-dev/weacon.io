@@ -82,23 +82,32 @@ fn merge_bodies(base: &str, current: &str, proposed: &str, max_cost: usize) -> M
 /// The lines times lines aligning `other` with `base` compares, past the start and end they
 /// share.
 fn cost(base: &str, other: &str) -> usize {
-    let (base, other): (Vec<&str>, Vec<&str>) = (
-        base.split_inclusive('\n').collect(),
-        other.split_inclusive('\n').collect(),
-    );
-    let start = base
-        .iter()
-        .zip(&other)
-        .take_while(|(one, two)| one == two)
-        .count();
-    let (base_rest, other_rest) = (base.iter().skip(start), other.iter().skip(start));
-    let end = base_rest
-        .rev()
-        .zip(other_rest.rev())
-        .take_while(|(one, two)| one == two)
-        .count();
+    let (base, other) = (lines(base), lines(other));
+    let (start, end) = shared_ends(&base, &other);
     let middle = |lines: &[&str]| lines.len().saturating_sub(start + end).max(1);
     middle(&base).saturating_mul(middle(&other))
+}
+
+/// `text`'s lines, each with its ending.
+fn lines(text: &str) -> Vec<&str> {
+    text.split_inclusive('\n').collect()
+}
+
+/// How many lines `base` and `other` share at their start, and then at their end.
+fn shared_ends(base: &[&str], other: &[&str]) -> (usize, usize) {
+    let start = base
+        .iter()
+        .zip(other)
+        .take_while(|(one, two)| one == two)
+        .count();
+    let end = base
+        .iter()
+        .skip(start)
+        .rev()
+        .zip(other.iter().skip(start).rev())
+        .take_while(|(one, two)| one == two)
+        .count();
+    (start, end)
 }
 
 /// The outcome of merging two bodies.
@@ -127,17 +136,47 @@ struct At {
     proposed: usize,
 }
 
+impl At {
+    const fn next(self) -> Self {
+        Self {
+            base: self.base + 1,
+            current: self.current + 1,
+            proposed: self.proposed + 1,
+        }
+    }
+}
+
 /// Merges `proposed`, written against `base`, into `current`, line by line with each line's
 /// ending kept, as diff3 does: each side is aligned with `base` by Hirschberg's linear-space
 /// longest common subsequence. Where only one side changed lines, that change is taken; where
 /// both changed the same or neighbouring lines differently, the hunk is a conflict. Its time
 /// grows with the product of the lines each side rewrote, which [`cost`] bounds.
 fn merge(base: &str, current: &str, proposed: &str) -> Merge {
-    let [base, current, proposed]: [Vec<&str>; 3] =
-        [base, current, proposed].map(|text| text.split_inclusive('\n').collect());
-    let (in_current, in_proposed) = (matches(&base, &current), matches(&base, &proposed));
-    // Lines of `base` that both sides kept cut the three texts into spans merged one by one.
-    let kept = in_current.iter().zip(&in_proposed).enumerate().filter_map(
+    let texts = [base, current, proposed].map(lines);
+    let mut hunks = Vec::new();
+    let mut from = At::default();
+    for upto in kept(&texts) {
+        merge_span(&mut hunks, &texts, from, upto);
+        agree(&mut hunks, span(&texts[0], upto.base, upto.base + 1));
+        from = upto.next();
+    }
+    match hunks.as_slice() {
+        [] => Merge::Clean(String::new()),
+        [MergeHunk::Agreed { text }] => Merge::Clean(text.clone()),
+        _ => Merge::Conflicted(hunks),
+    }
+}
+
+/// Where each line of `base` that both sides kept is in all three texts, then where the
+/// texts end: these cut the texts into spans merged one by one.
+fn kept([base, current, proposed]: &[Vec<&str>; 3]) -> Vec<At> {
+    let (in_current, in_proposed) = (matches(base, current), matches(base, proposed));
+    let end = At {
+        base: base.len(),
+        current: current.len(),
+        proposed: proposed.len(),
+    };
+    let both = in_current.iter().zip(&in_proposed).enumerate().filter_map(
         |(line, (in_current, in_proposed))| {
             Some(At {
                 base: line,
@@ -146,36 +185,22 @@ fn merge(base: &str, current: &str, proposed: &str) -> Merge {
             })
         },
     );
-    let end = At {
-        base: base.len(),
-        current: current.len(),
-        proposed: proposed.len(),
-    };
-    let mut hunks = Vec::new();
-    let mut from = At::default();
-    for upto in kept.chain([end]) {
-        let base_span = span(&base, from.base, upto.base);
-        let current_span = span(&current, from.current, upto.current);
-        let proposed_span = span(&proposed, from.proposed, upto.proposed);
-        match settled(&base_span, &current_span, &proposed_span) {
-            Some(text) => agree(&mut hunks, text.clone()),
-            None => hunks.push(MergeHunk::Conflict {
-                base: base_span,
-                current: current_span,
-                proposed: proposed_span,
-            }),
-        }
-        agree(&mut hunks, span(&base, upto.base, upto.base + 1));
-        from = At {
-            base: upto.base + 1,
-            current: upto.current + 1,
-            proposed: upto.proposed + 1,
-        };
-    }
-    match hunks.as_slice() {
-        [] => Merge::Clean(String::new()),
-        [MergeHunk::Agreed { text }] => Merge::Clean(text.clone()),
-        _ => Merge::Conflicted(hunks),
+    both.chain([end]).collect()
+}
+
+/// Merges the lines from `from` up to `upto` in each text.
+fn merge_span(hunks: &mut Vec<MergeHunk>, texts: &[Vec<&str>; 3], from: At, upto: At) {
+    let [base, current, proposed] = texts;
+    let base = span(base, from.base, upto.base);
+    let current = span(current, from.current, upto.current);
+    let proposed = span(proposed, from.proposed, upto.proposed);
+    match settled(&base, &current, &proposed) {
+        Some(text) => agree(hunks, text.clone()),
+        None => hunks.push(MergeHunk::Conflict {
+            base,
+            current,
+            proposed,
+        }),
     }
 }
 
@@ -206,17 +231,7 @@ fn matches(base: &[&str], other: &[&str]) -> Vec<Option<usize>> {
 /// `offset`, that they match. It halves `base` instead of filling a table, so it needs memory
 /// only in proportion to the lines.
 fn align(base: &[&str], other: &[&str], offset: usize, found: &mut [Option<usize>]) {
-    let start = base
-        .iter()
-        .zip(other)
-        .take_while(|(line, candidate)| line == candidate)
-        .count();
-    let (base_rest, other_rest) = (base.iter().skip(start), other.iter().skip(start));
-    let end = base_rest
-        .rev()
-        .zip(other_rest.rev())
-        .take_while(|(line, candidate)| line == candidate)
-        .count();
+    let (start, end) = shared_ends(base, other);
     // A shared start and end match line for line; only the middle needs searching.
     let (Some(base_middle), Some(other_middle)) = (
         base.get(start..base.len() - end),
@@ -231,24 +246,29 @@ fn align(base: &[&str], other: &[&str], offset: usize, found: &mut [Option<usize
     for (index, slot) in found.iter_mut().skip(tail).enumerate() {
         *slot = Some(offset + start + other_middle.len() + index);
     }
-    let (Some(middle), middle_at) = (found.get_mut(start..tail), offset + start) else {
-        return;
-    };
-    if let [line] = base_middle {
-        if let Some(slot) = middle.first_mut() {
-            *slot = other_middle
+    if let Some(middle) = found.get_mut(start..tail) {
+        align_middle(base_middle, other_middle, offset + start, middle);
+    }
+}
+
+/// [`align`] for what is left once the shared start and end are set aside: one line is
+/// looked for, and more are halved.
+fn align_middle(base: &[&str], other: &[&str], offset: usize, found: &mut [Option<usize>]) {
+    if let [line] = base {
+        if let Some(slot) = found.first_mut() {
+            *slot = other
                 .iter()
                 .position(|candidate| candidate == line)
-                .map(|to| middle_at + to);
+                .map(|to| offset + to);
         }
-    } else if !base_middle.is_empty() && !other_middle.is_empty() {
-        let half = base_middle.len() / 2;
-        let (top, bottom) = base_middle.split_at(half);
-        let cut = split(top, bottom, other_middle);
-        let (left, right) = other_middle.split_at(cut);
-        let (found_top, found_bottom) = middle.split_at_mut(half);
-        align(top, left, middle_at, found_top);
-        align(bottom, right, middle_at + cut, found_bottom);
+    } else if !base.is_empty() && !other.is_empty() {
+        let half = base.len() / 2;
+        let (top, bottom) = base.split_at(half);
+        let cut = split(top, bottom, other);
+        let (left, right) = other.split_at(cut);
+        let (found_top, found_bottom) = found.split_at_mut(half);
+        align(top, left, offset, found_top);
+        align(bottom, right, offset + cut, found_bottom);
     }
 }
 
