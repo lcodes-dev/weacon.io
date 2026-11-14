@@ -143,7 +143,7 @@ async fn run(
     shared: &Shared,
     feed: &mut Feed,
 ) -> Result<Infallible, Closed> {
-    let [feed_offer, tasks, docs, settings] = [FEED, TASKS, DOCS, SETTINGS].map(Capability::from);
+    let [feed_offer, tasks, docs, settings] = [FEED, TASKS, DOCS, SETTINGS].map(Capability::new);
     let offered = vec![
         feed_offer.clone(),
         tasks.clone(),
@@ -363,7 +363,7 @@ mod tests {
         };
         assert_eq!(
             welcome.capabilities,
-            [FEED, TASKS, DOCS, SETTINGS].map(Capability::from)
+            [FEED, TASKS, DOCS, SETTINGS].map(Capability::new)
         );
         assert_eq!(missed, joined(1, "m1"));
         assert_eq!(live, joined(2, "m2"));

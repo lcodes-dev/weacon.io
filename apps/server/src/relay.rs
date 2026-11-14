@@ -124,7 +124,7 @@ pub(crate) async fn forward(
     };
     if shared
         .links
-        .send(&machine, &Capability::from(SETTINGS), sent)
+        .send(&machine, &Capability::new(SETTINGS), sent)
         .is_err()
     {
         shared.relay.lock().remove(&relayed);
@@ -633,7 +633,7 @@ mod tests {
             machine: machine.clone(),
             owner: account.clone(),
         };
-        let attached = (fixture.shared.links).open(connected, vec![Capability::from(SETTINGS)]);
+        let attached = (fixture.shared.links).open(connected, vec![Capability::new(SETTINGS)]);
         let asker = Asker {
             account,
             member: member_id("m1"),

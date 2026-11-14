@@ -234,7 +234,7 @@ mod tests {
         bytes.extend(b"not json\n");
         bytes.extend(line(update("llo")));
         let daemon = send_after_hello(&socket, bytes);
-        let offered = vec![Capability::from(code!("run.stream"))];
+        let offered = vec![Capability::new(code!("run.stream"))];
 
         let (welcomed, mut connection) =
             Connection::open(&socket, app("weacon-extension"), offered.clone())
