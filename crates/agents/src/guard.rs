@@ -590,12 +590,13 @@ mod tests {
             "env --chdir=/ rm -rf x",
             "env -S 'rm -rf /'",
             "GIT_DIR=/elsewhere git reset --hard",
+            // Git runs its pager through `sh`, so the value is a command.
+            "GIT_PAGER=cat git log",
+            "GIT_PAGER=\"rm -rf ../main\" git log",
         ] {
             assert_eq!(check(line), Some(Reason::Unsure), "{line}");
         }
-        for line in ["GIT_PAGER=cat git log", "git -c user.name=me commit -m x"] {
-            assert_eq!(check(line), None, "{line}");
-        }
+        assert_eq!(check("git -c user.name=me commit -m x"), None);
     }
 
     #[test]

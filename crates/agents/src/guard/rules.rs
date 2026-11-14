@@ -13,7 +13,7 @@ use super::{Context, Reason, check_word, git, path_of, reading, safe};
 const DEVICES: [&str; 5] = ["/dev/null", "/dev/stdout", "/dev/stderr", "/dev/tty", "nul"];
 // Of the variables that point git at another repository or have it run a command, these do
 // neither.
-const GIT_HARMLESS: [&str; 2] = ["GIT_PAGER", "GIT_TERMINAL_PROMPT"];
+const GIT_HARMLESS: [&str; 1] = ["GIT_TERMINAL_PROMPT"];
 // Variables that choose which programs run or how the shell splits words; an editor or pager
 // is a program the command then runs.
 const SHELL_SETTINGS: [&str; 8] = [
@@ -28,7 +28,7 @@ const SHELL_SETTINGS: [&str; 8] = [
 ];
 // Variables that change only how a program prints, so they may come before any listed one.
 // Before a build tool any other may come too, since its build scripts run as they please.
-const DISPLAY_SETTINGS: [&str; 10] = [
+const DISPLAY_SETTINGS: [&str; 9] = [
     "LANG",
     "TZ",
     "TERM",
@@ -37,7 +37,6 @@ const DISPLAY_SETTINGS: [&str; 10] = [
     "CLICOLOR",
     "COLUMNS",
     "LINES",
-    "GIT_PAGER",
     "GIT_TERMINAL_PROMPT",
 ];
 // Programs that print their words and read no file they name, so an expansion there is only text.

@@ -178,3 +178,4 @@ echo 'ref: refs/heads/main' > sub/.git/HEAD
 printf x > sub/.git/config
 echo 'gitdir: /tmp/x' > sub/.git
 touch .git/hooks/pre-commit
+GIT_PAGER="rm -rf ../main" git log
