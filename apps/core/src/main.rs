@@ -28,11 +28,11 @@ mod workspaces;
 use std::io::{self, IsTerminal};
 use std::process::ExitCode;
 
+use weacon_appkit::Ending;
 use weacon_observability::{Fault, json_lines};
 
 use crate::app::{App, Setup};
 use crate::cli::Command;
-use weacon_appkit::Ending;
 
 fn main() -> ExitCode {
     let version = weacon_version::version!();
