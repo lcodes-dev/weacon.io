@@ -198,22 +198,16 @@ impl<A: Agent> Engine<A> {
 
 #[cfg(test)]
 mod tests {
-    use serde_json::json;
+
     use weacon_protocol::{ChatAction, ChatCommand};
 
     use super::super::PendingAnswer;
-    use super::super::by_hand::{allow, hear, on_ask, on_its_way, on_turn, waiting_in};
+    use super::super::by_hand::{allow_one, hear, on_ask, on_its_way, on_turn, waiting_in};
     use super::*;
-    use crate::chats::test_support::{Told, command, key, parts, prompt, run, soon};
+    use crate::chats::test_support::{
+        Told, asks, command, key, logged_prompt, parts, prompt, run, soon,
+    };
     use crate::runs::Queued;
-
-    fn entry(request: &str, text: &str) -> ChatEvent {
-        ChatEvent::Prompt {
-            request: prompt(request, text).request,
-            text: text.to_owned(),
-            repo: None,
-        }
-    }
 
     #[tokio::test(start_paused = true)]
     async fn a_prompt_sent_again_goes_on_from_where_its_first_try_stopped() {
@@ -222,7 +216,10 @@ mod tests {
         let agent = AgentKind::Claude;
 
         // Stopped after the prompt reached the log, before it was queued.
-        engine.commit(&key(), entry("r-1", "Hi")).await.unwrap();
+        engine
+            .commit(&key(), logged_prompt("r-1", "Hi"))
+            .await
+            .unwrap();
         engine.command(&key(), prompt("r-1", "Hi")).await.unwrap();
         let mut started = soon(bench.started.recv()).await.unwrap();
         assert_eq!(
@@ -239,7 +236,10 @@ mod tests {
             .unwrap();
 
         // Stopped after it was queued, before it was accepted.
-        engine.commit(&key(), entry("r-2", "More")).await.unwrap();
+        engine
+            .commit(&key(), logged_prompt("r-2", "More"))
+            .await
+            .unwrap();
         let queued = Queued {
             request: prompt("r-2", "More").request,
             text: "More".to_owned(),
@@ -291,12 +291,7 @@ mod tests {
             soon(on.agent.told.recv()).await,
             Some(Told::Send("Hi".to_owned()))
         );
-        let asks = RunEvent::PermissionAsked {
-            run: run("run-1"),
-            prompt: 1,
-            tool: "Bash".to_owned(),
-            input: json!({ "command": "ls" }),
-        };
+        let asks = asks("run-1", 1);
         hear(&mut on.engine, asks).await.unwrap();
         let answer = PermissionAnswer {
             run: run("run-1"),
@@ -320,7 +315,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn an_answer_whose_receipt_was_written_reaches_its_run_when_sent_again() {
         let mut on = on_ask().await;
-        let (answers, answer) = allow("r-2");
+        let (answers, answer) = allow_one("r-2");
         on.engine.open(&key()).await.unwrap().log.jam();
         let failed = on.engine.command(&key(), answers.clone()).await;
         assert_eq!(failed.unwrap_err().code().as_str(), "chat.log_not_written");
@@ -357,7 +352,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn an_answer_already_in_the_log_reaches_its_run_once_and_is_logged_once() {
         let mut on = on_ask().await;
-        let (answers, answer) = allow("r-2");
+        let (answers, answer) = allow_one("r-2");
         let answered = PendingAnswer {
             request: answers.request.clone(),
             answer: PermissionAnswer {
@@ -402,7 +397,7 @@ mod tests {
         // As after a restart: the log still shows the prompt, but its run is gone.
         on.engine.chats.remove(&key());
 
-        let refused = on.engine.command(&key(), allow("r-2").0).await;
+        let refused = on.engine.command(&key(), allow_one("r-2").0).await;
 
         assert_eq!(refused.unwrap_err().code().as_str(), "agent.no_such_prompt");
     }
@@ -410,14 +405,9 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn answering_one_prompt_keeps_another_answer_still_on_its_way() {
         let mut on = on_ask().await;
-        let asks = RunEvent::PermissionAsked {
-            run: run("run-1"),
-            prompt: 2,
-            tool: "Write".to_owned(),
-            input: json!({}),
-        };
+        let asks = asks("run-1", 2);
         hear(&mut on.engine, asks).await.unwrap();
-        let (second, given) = allow("r-2");
+        let (second, given) = allow_one("r-2");
         let second = ChatCommand {
             action: ChatAction::Permission {
                 answer: PermissionAnswer {
@@ -448,7 +438,7 @@ mod tests {
             .await
             .unwrap();
 
-        on.engine.command(&key(), allow("r-3").0).await.unwrap();
+        on.engine.command(&key(), allow_one("r-3").0).await.unwrap();
         on.engine.command(&key(), second).await.unwrap();
 
         assert_eq!(
@@ -466,7 +456,7 @@ mod tests {
         on.engine.command(&key(), interrupt).await.unwrap();
         assert_eq!(soon(on.agent.told.recv()).await, Some(Told::Interrupt));
 
-        on.engine.command(&key(), allow("r-2").0).await.unwrap();
+        on.engine.command(&key(), allow_one("r-2").0).await.unwrap();
 
         assert_eq!(soon(on.agent.told.recv()).await, None);
     }

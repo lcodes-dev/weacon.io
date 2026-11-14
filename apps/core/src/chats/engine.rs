@@ -378,50 +378,18 @@ mod tests {
     use std::sync::atomic::Ordering;
 
     use weacon_model::ChatRuns;
-    use weacon_protocol::{
-        AgentSession, ChatAction, ChatAnswerKind, ChatQueryKind, PermissionAnswer, RunEvent,
-    };
+    use weacon_protocol::{ChatAction, ChatAnswerKind, ChatQueryKind, RunEvent};
 
     use super::agent::Heard;
     use super::by_hand::on_turn;
     use super::*;
     use crate::chats::test_support::{
-        Bench, Started, Told, bench, chat, client, command, key, prompt, pushed, query, run, skip,
-        soon,
+        Bench, Started, Told, allow, asks, bench, chat, client, command, key, prompt, pushed,
+        query, run, session, skip, soon, text,
     };
-
-    const SESSION: &str = "0b7c6a52-3f1e-4d2a-9c8b-5e4f3a2b1c0d";
-
-    fn session() -> AgentSession {
-        AgentSession::try_from(SESSION.to_owned()).unwrap()
-    }
-
-    fn text(text: &str) -> RunEvent {
-        RunEvent::Text {
-            text: text.to_owned(),
-        }
-    }
 
     fn done(outcome: Outcome) -> RunEvent {
         RunEvent::Finished { outcome }
-    }
-
-    fn asks(run_id: &str, prompt: u32) -> RunEvent {
-        RunEvent::PermissionAsked {
-            run: run(run_id),
-            prompt,
-            tool: "Bash".to_owned(),
-            input: serde_json::json!({ "command": "ls" }),
-        }
-    }
-
-    fn allow(request: &str, chat_id: &str, run_id: &str, prompt: u32) -> ChatCommand {
-        let answer = PermissionAnswer {
-            run: run(run_id),
-            prompt,
-            allow: true,
-        };
-        command(request, chat_id, ChatAction::Permission { answer })
     }
 
     // The chat's snapshot: its runs, its waiting prompts and its latest events.

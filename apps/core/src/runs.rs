@@ -216,8 +216,7 @@ mod tests {
     use weacon_testing::TempDir;
 
     use super::*;
-
-    const SESSION: &str = "0b7c6a52-3f1e-4d2a-9c8b-5e4f3a2b1c0d";
+    use crate::chats::test_support::session;
 
     fn key(workspace: &str, chat: &str) -> ChatKey {
         ChatKey {
@@ -285,7 +284,7 @@ mod tests {
         let c1 = key("w-1", "c-1");
         begin(&mut runs, "c-1").await;
         runs.update(&c1, |record| {
-            record.session = AgentSession::try_from(SESSION.to_owned()).ok();
+            record.session = Some(session());
         })
         .await
         .unwrap();
@@ -335,7 +334,7 @@ mod tests {
         };
         begin(&mut runs, "c-1").await;
         runs.update(&c1, |record| {
-            record.session = AgentSession::try_from(SESSION.to_owned()).ok();
+            record.session = Some(session());
             record.turn = RequestId::try_from("r-1".to_owned()).ok();
             record.queue.push(queued.clone());
         })
@@ -355,7 +354,7 @@ mod tests {
                 agent: AgentKind::Claude,
                 run: Some(run),
                 state: RunState::Starting,
-                session: AgentSession::try_from(SESSION.to_owned()).ok(),
+                session: Some(session()),
                 turn: None,
                 queue: vec![queued],
                 active_at: 200,

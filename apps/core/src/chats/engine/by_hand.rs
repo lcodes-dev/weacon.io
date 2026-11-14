@@ -1,17 +1,16 @@
 //! An engine driven by hand, for the engine's own tests.
 
-use serde_json::json;
 use tokio::sync::mpsc;
 use weacon_observability::Fault;
 use weacon_protocol::{
-    AgentSession, ChatAction, ChatAnswerKind, ChatCommand, ChatEvent, ChatQueryKind, Message,
-    Outcome, PermissionAnswer, RunEvent,
+    ChatAnswerKind, ChatCommand, ChatEvent, ChatQueryKind, Message, Outcome, PermissionAnswer,
+    RunEvent,
 };
 
 use super::agent::Heard;
 use super::{Engine, PendingAnswer};
 use crate::chats::test_support::{
-    Bench, FakeAgent, Started, Told, client, command, key, parts, prompt, run, skip, soon,
+    Bench, FakeAgent, Started, Told, allow, asks, client, key, parts, prompt, run, skip, soon,
 };
 
 /// An engine driven by hand, on its first turn, with a client watching the chat.
@@ -50,10 +49,6 @@ pub(super) async fn latest(engine: &mut Engine<FakeAgent>) -> ChatEvent {
     window.pop().unwrap().event
 }
 
-pub(super) fn session() -> AgentSession {
-    AgentSession::try_from("0b7c6a52-3f1e-4d2a-9c8b-5e4f3a2b1c0d".to_owned()).unwrap()
-}
-
 // A run on its turn, waiting for a person to answer its prompt 1.
 pub(super) async fn on_ask() -> OnTurn {
     let mut on = on_turn().await;
@@ -61,13 +56,7 @@ pub(super) async fn on_ask() -> OnTurn {
         soon(on.agent.told.recv()).await,
         Some(Told::Send("Hi".to_owned()))
     );
-    let asks = RunEvent::PermissionAsked {
-        run: run("run-1"),
-        prompt: 1,
-        tool: "Write".to_owned(),
-        input: json!({}),
-    };
-    hear(&mut on.engine, asks).await.unwrap();
+    hear(&mut on.engine, asks("run-1", 1)).await.unwrap();
     on
 }
 
@@ -81,21 +70,19 @@ pub(super) async fn waiting_in(engine: &mut Engine<FakeAgent>) -> Vec<u64> {
     waiting
 }
 
-pub(super) fn allow(request: &str) -> (ChatCommand, PermissionAnswer) {
+// Request `request` allowing run-1's prompt 1, and the answer it carries.
+pub(super) fn allow_one(request: &str) -> (ChatCommand, PermissionAnswer) {
     let answer = PermissionAnswer {
         run: run("run-1"),
         prompt: 1,
         allow: true,
     };
-    let action = ChatAction::Permission {
-        answer: answer.clone(),
-    };
-    (command(request, "c-1", action), answer)
+    (allow(request, "c-1", "run-1", 1), answer)
 }
 
 // An answer to prompt 1 whose receipt is written but which hasn't reached the run.
 pub(super) async fn on_its_way(engine: &mut Engine<FakeAgent>) -> ChatCommand {
-    let (answers, answer) = allow("r-2");
+    let (answers, answer) = allow_one("r-2");
     let request = answers.request.clone();
     let answered = PendingAnswer {
         request: request.clone(),

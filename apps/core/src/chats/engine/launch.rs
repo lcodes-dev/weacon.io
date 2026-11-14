@@ -95,8 +95,8 @@ mod tests {
     use weacon_protocol::{Outcome, RunEvent};
 
     use super::super::agent::Heard;
-    use super::super::by_hand::{hear, on_turn, session};
-    use crate::chats::test_support::{key, prompt, run, soon};
+    use super::super::by_hand::{hear, on_turn};
+    use crate::chats::test_support::{key, prompt, run, session, soon};
 
     #[tokio::test(start_paused = true)]
     async fn a_session_the_journal_couldnt_save_is_resumed_by_the_next_run() {

@@ -168,22 +168,18 @@ mod tests {
     use weacon_protocol::{ChatAnswerKind, ChatQueryKind};
     use weacon_testing::messages;
 
-    use super::super::by_hand::{
-        allow, hear, latest, on_ask, on_its_way, on_turn, session, waiting_in,
-    };
+    use super::super::by_hand::{allow_one, hear, latest, on_ask, on_its_way, on_turn, waiting_in};
     use super::*;
-    use crate::chats::test_support::{Told, chat, client, key, prompt, pushed, run, soon};
-
-    fn text(text: String) -> RunEvent {
-        RunEvent::Text { text }
-    }
+    use crate::chats::test_support::{
+        Told, asks, chat, client, key, prompt, pushed, run, session, soon, text,
+    };
 
     #[tokio::test(start_paused = true)]
     async fn an_event_too_large_for_a_frame_is_committed_without_what_made_it_so() {
         let mut on = on_turn().await;
         let large = "é".repeat(700_000);
 
-        hear(&mut on.engine, text(large.clone())).await.unwrap();
+        hear(&mut on.engine, text(&large)).await.unwrap();
         let ChatEvent::Run { update } = latest(&mut on.engine).await else {
             panic!("no run event");
         };
@@ -324,20 +320,20 @@ mod tests {
         hear(&mut on.engine, withdrawn).await.unwrap();
 
         assert!(waiting_in(&mut on.engine).await.is_empty());
-        let refused = on.engine.command(&key(), allow("r-2").0).await;
+        let refused = on.engine.command(&key(), allow_one("r-2").0).await;
         assert_eq!(refused.unwrap_err().code().as_str(), "agent.no_such_prompt");
     }
 
     #[tokio::test(start_paused = true)]
     async fn what_another_run_says_is_ignored_and_a_read_failure_is_logged_once() {
         let mut on = on_turn().await;
-        let stale = Heard::Event(text("Old".to_owned()));
+        let stale = Heard::Event(text("Old"));
         on.engine.heard(&key(), &run("run-9"), stale).await.unwrap();
         let other = ChatKey {
             chat: chat("c-2"),
             ..key()
         };
-        let elsewhere = Heard::Event(text("Other".to_owned()));
+        let elsewhere = Heard::Event(text("Other"));
         on.engine
             .heard(&other, &run("run-1"), elsewhere)
             .await
@@ -447,12 +443,7 @@ mod tests {
             Some(Told::Send("Hi".to_owned()))
         );
         // As when the prompt reached the disk but its write was reported failed.
-        let asks = RunEvent::PermissionAsked {
-            run: run("run-1"),
-            prompt: 1,
-            tool: "Write".to_owned(),
-            input: json!({}),
-        };
+        let asks = asks("run-1", 1);
         hear(&mut on.engine, asks).await.unwrap();
         let failed = Fault::new(
             code!("chat.log_not_written"),

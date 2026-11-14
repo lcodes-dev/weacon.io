@@ -325,34 +325,15 @@ mod tests {
 
     use weacon_protocol::{
         ChatAnswer, ChatAnswerKind, ChatUpdate, Envelope, Message, Outcome, PermissionAnswer,
-        Receipt, RepoId, RunId, WorkspaceId, encode_line,
+        Receipt, RepoId, WorkspaceId, encode_line,
     };
     use weacon_testing::TempDir;
 
     use super::*;
-
-    fn chat(id: &str) -> ChatId {
-        ChatId::try_from(id.to_owned()).unwrap()
-    }
-
-    fn request(id: &str) -> RequestId {
-        RequestId::try_from(id.to_owned()).unwrap()
-    }
-
-    fn run() -> RunId {
-        RunId::try_from("run-1".to_owned()).unwrap()
-    }
+    use crate::chats::test_support::{chat, logged_prompt, request, run};
 
     fn longest_workspace() -> WorkspaceId {
         WorkspaceId::try_from("w".repeat(64)).unwrap()
-    }
-
-    fn prompt(id: &str, text: &str) -> ChatEvent {
-        ChatEvent::Prompt {
-            request: request(id),
-            text: text.to_owned(),
-            repo: None,
-        }
     }
 
     fn accepted(id: &str) -> ChatEvent {
@@ -367,7 +348,7 @@ mod tests {
     fn said(text: String) -> ChatEvent {
         ChatEvent::Run {
             update: RunUpdate {
-                run: run(),
+                run: run("run-1"),
                 event: RunEvent::Text { text },
             },
         }
@@ -423,7 +404,7 @@ mod tests {
         assert_eq!(log.seq(), 0);
         assert_eq!(log.window(9, 9).await.unwrap(), []);
 
-        let first = log.append(prompt("r-1", "Hi")).await.unwrap();
+        let first = log.append(logged_prompt("r-1", "Hi")).await.unwrap();
         let second = log.append(accepted("r-1")).await.unwrap();
         drop(log);
         let mut reopened = open(&dir).await;
@@ -433,7 +414,7 @@ mod tests {
             first,
             ChatEntry {
                 seq: 1,
-                event: prompt("r-1", "Hi")
+                event: logged_prompt("r-1", "Hi")
             }
         );
         assert_eq!(seqs(&[second.clone(), third.clone()]), [2, 3]);
@@ -449,7 +430,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let (one, other) = (dir.join("w-one"), dir.join("w-other"));
         let mut upper = Log::open(&one, &chat("Ab")).await.unwrap();
-        upper.append(prompt("r-1", "Hi")).await.unwrap();
+        upper.append(logged_prompt("r-1", "Hi")).await.unwrap();
 
         let lower = Log::open(&one, &chat("ab")).await.unwrap();
         let elsewhere = Log::open(&other, &chat("Ab")).await.unwrap();
@@ -472,7 +453,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let path = journal(&dir);
         let mut log = open(&dir).await;
-        log.append(prompt("r-1", "Hi")).await.unwrap();
+        log.append(logged_prompt("r-1", "Hi")).await.unwrap();
         drop(log);
         let whole = fs::read(&path).unwrap();
 
@@ -495,7 +476,7 @@ mod tests {
     async fn a_failed_write_breaks_the_log_until_it_is_opened_again() {
         let dir = TempDir::new().unwrap();
         let mut log = open(&dir).await;
-        log.append(prompt("r-1", "Hi")).await.unwrap();
+        log.append(logged_prompt("r-1", "Hi")).await.unwrap();
         log.file = File::open(journal(&dir)).unwrap();
 
         let failed = log.append(accepted("r-1")).await.unwrap_err();
@@ -516,7 +497,7 @@ mod tests {
         let mut log = open(&dir).await;
         let delta = ChatEvent::Run {
             update: RunUpdate {
-                run: run(),
+                run: run("run-1"),
                 event: RunEvent::TextDelta {
                     text: "Hel".to_owned(),
                 },
@@ -612,19 +593,19 @@ mod tests {
         let mut log = open(&dir).await;
         let allow = ChatAction::Permission {
             answer: PermissionAnswer {
-                run: run(),
+                run: run("run-1"),
                 prompt: 1,
                 allow: true,
             },
         };
         assert_eq!(seen(&log, "r-1", asks("Hi")).await, Seen::Never);
         log.append(said("Hello.".to_owned())).await.unwrap();
-        log.append(prompt("r-1", "Hi")).await.unwrap();
+        log.append(logged_prompt("r-1", "Hi")).await.unwrap();
         assert_eq!(seen(&log, "r-1", asks("Hi")).await, Seen::Pending);
         assert_eq!(seen(&log, "r-1", asks("Bye")).await, Seen::Other);
         log.append(accepted("r-1")).await.unwrap();
         log.append(accepted("r-2")).await.unwrap();
-        log.append(prompt("r-4", "Hi")).await.unwrap();
+        log.append(logged_prompt("r-4", "Hi")).await.unwrap();
         drop(log);
 
         let log = open(&dir).await;
@@ -654,7 +635,7 @@ mod tests {
                 outcome,
             },
         };
-        log.append(prompt("r-1", "Hi")).await.unwrap();
+        log.append(logged_prompt("r-1", "Hi")).await.unwrap();
         log.append(accepted("r-1")).await.unwrap();
         assert!(!log.has_ended(&request("r-1")));
         log.append(receipt("r-1", Outcome::Interrupted))

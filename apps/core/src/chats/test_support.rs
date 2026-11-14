@@ -8,8 +8,9 @@ use std::time::Duration;
 use tokio::sync::mpsc;
 use weacon_observability::Fault;
 use weacon_protocol::{
-    ChatAction, ChatAnswerKind, ChatCommand, ChatEvent, ChatId, ChatQuery, ChatQueryKind, Message,
-    Outcome, PermissionAnswer, RequestId, RunEvent, RunId, WorkspaceId, code,
+    AgentSession, ChatAction, ChatAnswerKind, ChatCommand, ChatEvent, ChatId, ChatQuery,
+    ChatQueryKind, Message, Outcome, PermissionAnswer, RequestId, RunEvent, RunId, WorkspaceId,
+    code,
 };
 use weacon_testing::{Records, TempDir, recording_logger};
 
@@ -145,9 +146,52 @@ pub(crate) fn run(id: &str) -> RunId {
     RunId::try_from(id.to_owned()).unwrap()
 }
 
-pub(crate) fn command(request: &str, chat_id: &str, action: ChatAction) -> ChatCommand {
+pub(crate) fn request(id: &str) -> RequestId {
+    RequestId::try_from(id.to_owned()).unwrap()
+}
+
+pub(crate) fn session() -> AgentSession {
+    AgentSession::try_from("0b7c6a52-3f1e-4d2a-9c8b-5e4f3a2b1c0d".to_owned()).unwrap()
+}
+
+pub(crate) fn text(text: &str) -> RunEvent {
+    RunEvent::Text {
+        text: text.to_owned(),
+    }
+}
+
+/// Run `run_id` asking a person whether it may run `ls`.
+pub(crate) fn asks(run_id: &str, prompt: u32) -> RunEvent {
+    RunEvent::PermissionAsked {
+        run: run(run_id),
+        prompt,
+        tool: "Bash".to_owned(),
+        input: serde_json::json!({ "command": "ls" }),
+    }
+}
+
+/// Request `request` allowing what run `run_id` asked in prompt `prompt`, in chat `chat_id`.
+pub(crate) fn allow(request: &str, chat_id: &str, run_id: &str, prompt: u32) -> ChatCommand {
+    let answer = PermissionAnswer {
+        run: run(run_id),
+        prompt,
+        allow: true,
+    };
+    command(request, chat_id, ChatAction::Permission { answer })
+}
+
+/// A prompt as chat `c-1`'s log holds it.
+pub(crate) fn logged_prompt(request_id: &str, text: &str) -> ChatEvent {
+    ChatEvent::Prompt {
+        request: request(request_id),
+        text: text.to_owned(),
+        repo: None,
+    }
+}
+
+pub(crate) fn command(request_id: &str, chat_id: &str, action: ChatAction) -> ChatCommand {
     ChatCommand {
-        request: RequestId::try_from(request.to_owned()).unwrap(),
+        request: request(request_id),
         workspace: workspace(),
         chat: chat(chat_id),
         action,

@@ -285,13 +285,12 @@ mod tests {
         use std::time::Duration;
 
         use weacon_agents::{Launch, SpawnPolicy};
-        use weacon_protocol::{AccessLevel, AgentKind, AgentSession, Outcome};
+        use weacon_protocol::{AccessLevel, AgentKind, Outcome};
         use weacon_testing::TempDir;
 
         use super::super::*;
+        use crate::chats::test_support::session;
         use crate::test_support::VERSION;
-
-        const SESSION: &str = "0b7c6a52-3f1e-4d2a-9c8b-5e4f3a2b1c0d";
 
         // Reads a prompt, says hello, then waits for one more line before its turn fails.
         const SCRIPT: &str = r#"#!/bin/sh
@@ -347,8 +346,10 @@ printf '%s\n' '{"type":"result","subtype":"error_during_execution","is_error":tr
             };
 
             Agent::send(&mut agent, "Hi").await.unwrap();
-            let session = AgentSession::try_from(SESSION.to_owned()).unwrap();
-            assert_eq!(next(&mut agent).await, Some(RunEvent::Started { session }));
+            assert_eq!(
+                next(&mut agent).await,
+                Some(RunEvent::Started { session: session() })
+            );
             let hello = RunEvent::Text {
                 text: "Hello.".to_owned(),
             };
