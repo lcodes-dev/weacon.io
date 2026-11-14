@@ -147,6 +147,11 @@ SELECT workspace_id, seq, kind, member_id FROM changes;
 DROP TABLE changes;
 ALTER TABLE changes_with_tasks RENAME TO changes;
 ",
+    // What each member may do, and whether an account has had its Personal workspace made.
+    "
+ALTER TABLE members ADD COLUMN role TEXT NOT NULL DEFAULT 'member';
+ALTER TABLE accounts ADD COLUMN personal_made INTEGER NOT NULL DEFAULT 0;
+",
 ];
 
 /// Applies the steps the database hasn't had yet, each in its own transaction that holds the

@@ -5,6 +5,7 @@ mod capability;
 mod chat;
 mod code;
 mod diff;
+mod doc;
 mod frame;
 mod log;
 mod message;
@@ -26,6 +27,10 @@ pub use code::Code;
 pub use diff::{
     DiffAnswer, DiffAnswerKind, DiffContent, DiffFile, DiffLine, DiffQuery, DiffQueryKind,
     FileChange, Hunk, LineOp,
+};
+pub use doc::{
+    CommitId, DocAnchors, DocContent, DocHistory, DocId, DocList, DocPin, DocRecord, DocRevise,
+    DocRevision, DocSummary, links_to_code,
 };
 pub use frame::{FrameError, LineDecoder, MAX_FRAME, encode_line};
 pub use log::{ClientLog, Level, LogEvent};
@@ -73,6 +78,10 @@ mod tests {
         generator.subschema_for::<TaskList>();
         generator.subschema_for::<TaskCreate>();
         generator.subschema_for::<TaskChange>();
+        generator.subschema_for::<DocList>();
+        generator.subschema_for::<DocRecord>();
+        generator.subschema_for::<DocRevise>();
+        generator.subschema_for::<DocHistory>();
         generator.subschema_for::<ReleaseManifest>();
         let schema = generator.into_root_schema_for::<Envelope>();
         let current = serde_json::to_string_pretty(&schema).unwrap() + "\n";
