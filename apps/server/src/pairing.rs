@@ -55,7 +55,7 @@ pub(crate) async fn start(
         return too_many(code!("pairing.too_many"));
     }
     if body.os == MachineOs::Newer {
-        return bad_input();
+        return error(StatusCode::BAD_REQUEST, code!("pairing.invalid"), false);
     }
     match started(&shared, &body).await {
         Ok(Some(started)) => (StatusCode::CREATED, Json(started)).into_response(),
@@ -98,7 +98,7 @@ pub(crate) async fn lookup(
     if !shared.pair_tries.allow(from, Instant::now()) {
         return too_many(code!("pairing.too_many"));
     }
-    let code_hash = shared.secret.pairing_code_hash(&typed(&body.code));
+    let code_hash = shared.secret.pairing_code_hash(&normalised(&body.code));
     match shared.db.pending_pairing(&code_hash, shared.now()).await {
         Ok(Some(pending)) => Json(pending).into_response(),
         Ok(None) => not_found(code!("pairing.not_found")),
@@ -132,7 +132,7 @@ async fn confirmed(
     let confirmation = Confirmation {
         account: &session.account,
         pairing: &body.pairing,
-        code_hash: &shared.secret.pairing_code_hash(&typed(&body.code)),
+        code_hash: &shared.secret.pairing_code_hash(&normalised(&body.code)),
         machine: &fresh(&new_id)?,
     };
     shared.db.confirm_pairing(&confirmation, shared.now()).await
@@ -178,7 +178,7 @@ async fn claimed(shared: &Shared, body: &PairClaim) -> Result<Option<PairClaimed
 }
 
 /// `GET /api/machines`: the machines paired with the signed-in account.
-pub(crate) async fn list(State(shared): State<Shared>, session: Session) -> Response {
+pub(crate) async fn machines(State(shared): State<Shared>, session: Session) -> Response {
     match shared.db.machines_of(&session.account).await {
         Ok(machines) => Json(MachineList { machines }).into_response(),
         Err(fault) => failure(fault),
@@ -206,11 +206,6 @@ pub(crate) async fn unpair(
     }
 }
 
-/// Answers that the pairing names a system this server doesn't know.
-fn bad_input() -> Response {
-    error(StatusCode::BAD_REQUEST, code!("pairing.invalid"), false)
-}
-
 /// A code of eight letters from [`ALPHABET`]: 40 random bits.
 fn code_text(word: u64) -> String {
     (0..8)
@@ -229,7 +224,7 @@ fn shown(code: &str) -> String {
 
 /// A code as a person typed it, read as its letters: any case, with or without spaces and
 /// dashes, and the letters that look like digits taken for them.
-fn typed(code: &str) -> String {
+fn normalised(code: &str) -> String {
     code.chars()
         .filter(|letter| !letter.is_whitespace() && *letter != '-')
         .map(|letter| match letter.to_ascii_uppercase() {
@@ -265,8 +260,8 @@ mod tests {
         assert_eq!(code_text(u64::MAX), "ZZZZZZZZ");
         assert_eq!(code_text(u64::from_le_bytes([1; 8])), "1802G040");
         assert_eq!(shown("ABCDEFGH"), "ABCD-EFGH");
-        assert_eq!(typed(" abcd-efgh "), "ABCDEFGH");
-        assert_eq!(typed("oO iI lL"), "001111");
+        assert_eq!(normalised(" abcd-efgh "), "ABCDEFGH");
+        assert_eq!(normalised("oO iI lL"), "001111");
     }
 
     #[tokio::test]

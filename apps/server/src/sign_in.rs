@@ -30,7 +30,7 @@ pub(crate) const SESSION_LIFETIME: i64 = 30 * 24 * 60 * 60;
 /// How many sign-ins may be worked on at once after their answer.
 pub(crate) const AT_ONCE: usize = 64;
 /// How long finishing a sign-in takes at least: longer than any of its database work.
-pub(crate) const FINISH_WITHIN: Duration = Duration::from_millis(250);
+pub(crate) const FINISH_TAKES: Duration = Duration::from_millis(250);
 
 /// How many sign-ins each client may start.
 pub(crate) fn starts() -> Limit {
@@ -57,13 +57,13 @@ pub(crate) async fn start(
         Ok(challenge) => challenge,
         Err(fault) => return failure(fault),
     };
-    if let Ok(room) = Arc::clone(&shared.sign_ins).try_acquire_owned() {
+    if let Ok(place) = Arc::clone(&shared.sign_ins).try_acquire_owned() {
         let sent = challenge.clone();
         drop(tokio::spawn(async move {
             if let Err(fault) = send_code(&shared, &body, &sent).await {
                 report(&shared, "sign-in failed", Arc::new(fault), &[]);
             }
-            drop(room);
+            drop(place);
         }));
     }
     (StatusCode::ACCEPTED, Json(SignInStarted { challenge })).into_response()
@@ -112,8 +112,8 @@ pub(crate) async fn finish(
     headers: HeaderMap,
     Body(body): Body<AccountSignInFinish>,
 ) -> Response {
-    let now = Instant::now();
-    if !shared.tries.allow(from, now) {
+    let began = Instant::now();
+    if !shared.tries.allow(from, began) {
         return too_many(code!("sign_in.too_many"));
     }
     let page = sender(&headers);
@@ -133,7 +133,7 @@ pub(crate) async fn finish(
         Ok(None) => unauthorized(code!("sign_in.failed")),
         Err(fault) => failure(fault),
     };
-    sleep_until(now + shared.finish_within).await;
+    sleep_until(began + shared.finish_within).await;
     answer
 }
 
@@ -157,7 +157,7 @@ pub(crate) async fn sign_out(
         Ok(token_hash) => shared.db.end_session(&token_hash).await,
         // Nothing to end, but another site's page may not clear the cookie either.
         Err(Unproven::Missing) if sender(&headers) != Sender::OtherSite => Ok(()),
-        Err(_) => return Unproven::CrossSite.into(),
+        Err(_) => return cross_site(),
     };
     match ended {
         Ok(()) => {
