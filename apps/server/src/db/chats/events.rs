@@ -368,9 +368,13 @@ fn ended(event: &ChatEvent) -> Option<&RequestId> {
     (!matches!(receipt.outcome, Outcome::Accepted)).then_some(&receipt.request)
 }
 
-/// Whether `event` begins a turn, a prompt, or ends one, a receipt that ends its command.
+/// Whether `event` begins a turn, a prompt from Weacon or from outside it, or ends one, a
+/// receipt that ends its command.
 pub(crate) fn turns(event: &ChatEvent) -> bool {
-    matches!(event, ChatEvent::Prompt { .. }) || ended(event).is_some()
+    matches!(
+        event,
+        ChatEvent::Prompt { .. } | ChatEvent::OutsidePrompt { .. }
+    ) || ended(event).is_some()
 }
 
 fn size(rows: &[Row<'_>]) -> Result<i64, Fault> {
@@ -637,6 +641,21 @@ mod tests {
         let elsewhere = [(Some(10), receipt("r-c-2", Outcome::Completed))];
         append(&one, "c-1", &elsewhere).await.unwrap();
         assert_eq!(one.open_requests(&id("c-2")).await.unwrap().len(), 1);
+
+        let before = changed_chats(&one).await.len();
+        let typed = ChatEvent::OutsidePrompt {
+            text: "Go on".to_owned(),
+        };
+        let outside = Incoming {
+            core_seq: Some(11),
+            event: &typed,
+            at: NOW + 90,
+        };
+        one.append_events(&id("c-1"), &[outside]).await.unwrap();
+        assert_eq!(changed_chats(&one).await.len(), before + 1);
+        assert_eq!(updated_at(&one).await, NOW + 90);
+        let listed = one.chats().await.unwrap();
+        assert_eq!(listed.first().map(|chat| chat.id.as_str()), Some("c-1"));
     }
 
     #[tokio::test]
