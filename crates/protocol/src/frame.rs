@@ -76,6 +76,8 @@ fn only_received(message: &Message) -> bool {
         Message::ChatAnswer(answer) => answer.answer.is_newer(),
         Message::DiffQuery(query) => matches!(query.query, DiffQueryKind::Newer),
         Message::DiffAnswer(answer) => answer.answer.is_newer(),
+        Message::TerminalCommand(command) => command.is_newer(),
+        Message::Terminal(update) => update.is_newer(),
         Message::Hello(_)
         | Message::Welcome(_)
         | Message::Error(_)

@@ -48,6 +48,12 @@ export type Envelope = {
   | {
     type: "diff_answer";
   } & DiffAnswer
+  | {
+    type: "terminal_command";
+  } & TerminalCommand
+  | {
+    type: "terminal";
+  } & TerminalUpdate
 );
 
 /**
@@ -82,6 +88,16 @@ export type AccountSignedIn = {
   email: string;
   token?: string;
 };
+
+/**
+ * Which vendor's agent.
+ */
+export type AgentKind = (
+  | (
+    | "claude"
+    | "codex"
+  )
+);
 
 /**
  * An agent's own id for a conversation, a lowercase UUID, which resumes it later.
@@ -125,6 +141,12 @@ export type Author = (
  * A Rust target a release is built for, such as `x86_64-unknown-linux-musl`.
  */
 export type BuildTarget = string;
+
+/**
+ * Bytes that travel as lowercase hex, at most [`NOISE_MAX`] of them. Its `Debug` shows only
+ * how many, since they are sealed or terminal content.
+ */
+export type Bytes = string;
 
 /**
  * A feature a peer supports, such as `chat.send`, named like a [`Code`]. A peer keeps the ones
@@ -882,6 +904,17 @@ export type SignInStarted = {
 };
 
 /**
+ * Whether an agent is signed in from its workspace's own config folder.
+ */
+export type SignInState = (
+  | (
+    | "signed_in"
+    | "signed_out"
+  )
+  | "unknown"
+);
+
+/**
  * A signed-in member and the session token that proves it, sent as a bearer token.
  */
 export type SignedIn = {
@@ -959,6 +992,96 @@ export type TaskStatus = (
     | "done"
   )
 );
+
+export type TerminalAction = (
+  | {
+    agent: AgentKind;
+    handshake: Bytes;
+    kind: "open";
+  }
+  | {
+    kind: "frame";
+    sealed: Bytes;
+  }
+  | {
+    kind: "close";
+  }
+);
+
+/**
+ * From a browser, through the server, to a core that offers `terminal.sign_in`.
+ */
+export type TerminalCommand = {
+  action: TerminalAction;
+  /**
+   * Who asked, stamped by the server on what it relays; the core opens a terminal only for
+   * its owner.
+   */
+  by?: Asker;
+  machine: MachineId;
+  terminal: TerminalId;
+  workspace: WorkspaceId;
+};
+
+export type TerminalEvent = (
+  | {
+    handshake: Bytes;
+    kind: "accepted";
+  }
+  | {
+    kind: "frame";
+    sealed: Bytes;
+  }
+  | {
+    code?: Code;
+    kind: "closed";
+  }
+);
+
+/**
+ * One sign-in terminal, chosen by the browser that opens it; 1–64 ASCII letters, digits,
+ * `-` or `_`.
+ */
+export type TerminalId = string;
+
+/**
+ * From the browser to the core, only inside the seal.
+ */
+export type TerminalInput = (
+  | {
+    data: Bytes;
+    kind: "input";
+  }
+  | {
+    cols: number;
+    kind: "resize";
+    rows: number;
+  }
+);
+
+/**
+ * From the core to the browser, only inside the seal.
+ */
+export type TerminalOutput = (
+  | {
+    data: Bytes;
+    kind: "output";
+  }
+  | {
+    kind: "ended";
+    sign_in: SignInState;
+  }
+);
+
+/**
+ * From a core that offers `terminal.sign_in`, through the server, to the browser that opened
+ * `terminal`.
+ */
+export type TerminalUpdate = {
+  event: TerminalEvent;
+  terminal: TerminalId;
+  workspace: WorkspaceId;
+};
 
 /**
  * The answer to a [`Hello`] that speaks the same protocol.

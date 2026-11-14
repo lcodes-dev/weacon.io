@@ -16,6 +16,7 @@ mod repo;
 mod run;
 mod task;
 mod team;
+mod terminal;
 mod token;
 mod update;
 
@@ -54,6 +55,10 @@ pub use team::{
     AccountId, AccountSignInFinish, AccountSignInStart, AccountSignedIn, ChallengeId, MemberId,
     SignInFinish, SignInStart, SignInStarted, SignedIn, WorkspaceChange, WorkspaceCreate,
     WorkspaceId, WorkspaceList, WorkspaceRole, WorkspaceSummary, WorkspaceUpdate,
+};
+pub use terminal::{
+    Bytes, NOISE_MAX, SignInState, TERMINAL_NOISE, TerminalAction, TerminalCommand, TerminalEvent,
+    TerminalId, TerminalInput, TerminalOutput, TerminalUpdate,
 };
 pub use update::{
     BuildTarget, Commit, DownloadUrl, ReleaseBuild, ReleaseManifest, ReleaseVersion, Sha256,
@@ -98,6 +103,8 @@ mod tests {
         generator.subschema_for::<DocRevise>();
         generator.subschema_for::<DocHistory>();
         generator.subschema_for::<ReleaseManifest>();
+        generator.subschema_for::<TerminalInput>();
+        generator.subschema_for::<TerminalOutput>();
         let schema = generator.into_root_schema_for::<Envelope>();
         let current = serde_json::to_string_pretty(&schema).unwrap() + "\n";
         let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("schema.json");
