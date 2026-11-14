@@ -153,7 +153,10 @@ impl Daemon {
         loop {
             tokio::select! {
                 () = &mut shutdown => break,
-                _ = disk_check.tick() => self.disk.check(&self.shared.log).await,
+                _ = disk_check.tick() => {
+                    self.disk.check(&self.shared.log).await;
+                    self.shared.chats.disk_full(self.disk.level() == disk::Level::Full);
+                }
                 _ = memory_sample.tick(), if platform::PROCESSES => self.memory.record(&self.shared.log).await,
                 accepted = self.listener.accept() => match accepted {
                     Ok(stream) => self.admit(stream, &mut clients),
@@ -489,18 +492,25 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn the_disk_is_checked_at_start_and_again_each_minute() {
+        use crate::chats::test_support::bench;
+
         let dir = TempDir::new().unwrap();
         fs::write(dir.join("free"), "0").unwrap();
         let watched = dir.to_path_buf();
+        let bench = bench();
+        let chats = bench.chats.clone();
         let running = start_as(&dir, |daemon| {
             daemon.disk = disk::Watch::new(watched, free_in_file);
+            daemon.shared.chats = chats;
         })
         .unwrap();
 
         logs(&running.records, "disk full").await;
+        logs(&bench.records, "turns paused").await;
         fs::write(dir.join("free"), (8_u64 << 30).to_string()).unwrap();
         tokio::time::sleep(DISK_CHECK).await;
         logs(&running.records, "disk ok").await;
+        logs(&bench.records, "turns resumed").await;
         let records = running.stop().await;
 
         let disk: Vec<_> = messages(&records)

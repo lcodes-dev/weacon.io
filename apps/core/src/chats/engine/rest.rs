@@ -51,6 +51,35 @@ impl<A: Agent> Engine<A> {
         self.set_state(key, &run, RunState::Sleeping).await
     }
 
+    // A disk no longer full lets every chat with prompts queued go on.
+    pub(super) async fn set_disk_full(&mut self, full: bool) {
+        if std::mem::replace(&mut self.disk_full, full) == full {
+            return;
+        }
+        let message = if full {
+            "turns paused"
+        } else {
+            "turns resumed"
+        };
+        self.log.warn(message, &[]);
+        if full {
+            return;
+        }
+        let queued: Vec<ChatKey> = self
+            .runs
+            .records()
+            .filter(|record| !record.queue.is_empty())
+            .map(|record| record.key.clone())
+            .collect();
+        for key in queued {
+            if let Err(fault) = self.advance(&key).await {
+                self.log
+                    .warn("chat not picked up", &chat_fields(&key, &fault));
+            }
+            self.settle(&key);
+        }
+    }
+
     // After a restart: a turn cut off ends `unknown`, queued prompts get a new run, and a run
     // active within `IDLE` starts again to resume its session; the others sleep.
     pub(super) async fn reconcile(&mut self) {

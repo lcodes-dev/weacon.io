@@ -74,8 +74,8 @@ impl<A: Agent> Engine<A> {
         let Some(next) = record.queue.first().cloned() else {
             return Ok(());
         };
-        // A run still starting takes the turn once it is up.
-        if self.is_launching(key) {
+        // A run still starting takes the turn once it is up; a full disk takes none.
+        if self.is_launching(key) || self.disk_full {
             return Ok(());
         }
         let Some(run) = self.run_of(key).filter(|_| self.takes_orders(key)) else {

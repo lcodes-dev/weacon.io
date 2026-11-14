@@ -6,6 +6,7 @@ pub(crate) mod agent;
 mod by_hand;
 mod commands;
 mod cut;
+mod handle;
 mod launch;
 mod pending;
 mod queries;
@@ -17,17 +18,19 @@ use std::collections::HashMap;
 use std::collections::hash_map::Entry;
 use std::sync::Arc;
 
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::mpsc;
 use weacon_observability::{Fault, Field, Logger};
 use weacon_protocol::{
-    AgentKind, AgentSession, ChatAnswerKind, ChatCommand, ChatEntry, ChatEvent, ChatQuery,
-    ChatUpdate, Message, Outcome, Receipt, RequestId, RunId, RunState, RunStatus, code,
+    AgentKind, AgentSession, ChatEntry, ChatEvent, ChatUpdate, Message, Outcome, Receipt,
+    RequestId, RunId, RunState, RunStatus, code,
 };
 
 use self::agent::{Agent, Order, Said};
+use self::handle::Ask;
+pub(crate) use self::handle::Chats;
 use self::launch::Launched;
 use self::pending::{PendingAnswer, PendingEnd, PendingInterrupt};
-use super::feed::{Client, Subscriber};
+use super::feed::Subscriber;
 use super::log::ChatLog;
 use crate::runs::{ChatKey, Runs};
 use crate::workspaces::Workspaces;
@@ -56,53 +59,11 @@ pub(crate) struct Host<A> {
     pub(crate) now: fn() -> u64,
 }
 
-/// The clients' way to the engine.
-#[derive(Clone, Debug)]
-pub(crate) struct Chats {
-    asks: mpsc::Sender<Ask>,
-}
-
-enum Ask {
-    Command(ChatCommand, oneshot::Sender<Result<(), Fault>>),
-    Query(
-        ChatQuery,
-        Client,
-        oneshot::Sender<Result<Option<ChatAnswerKind>, Fault>>,
-    ),
-}
-
-fn stopped() -> Fault {
-    Fault::new(code!("chat.engine_stopped"), "The daemon is stopping")
-}
-
 fn unsupported() -> Fault {
     Fault::new(
         code!("message.unsupported"),
         "This build doesn't know that message",
     )
-}
-
-impl Chats {
-    /// Acts on `command`. Its receipts are events in the chat's log; an error means it has no
-    /// receipt, and sending it again is safe.
-    pub(crate) async fn command(&self, command: ChatCommand) -> Result<(), Fault> {
-        let (answer, answered) = oneshot::channel();
-        let ask = Ask::Command(command, answer);
-        self.asks.send(ask).await.map_err(|_| stopped())?;
-        answered.await.map_err(|_| stopped())?
-    }
-
-    /// The answer to `query`, if it has one; a subscription's events go to `client`.
-    pub(crate) async fn query(
-        &self,
-        query: ChatQuery,
-        client: &Client,
-    ) -> Result<Option<ChatAnswerKind>, Fault> {
-        let (answer, answered) = oneshot::channel();
-        let ask = Ask::Query(query, client.clone(), answer);
-        self.asks.send(ask).await.map_err(|_| stopped())?;
-        answered.await.map_err(|_| stopped())?
-    }
 }
 
 /// A chat the engine has open: one with a running agent, a waiting prompt or a subscriber.
@@ -145,6 +106,8 @@ pub(crate) struct Engine<A> {
     asked: mpsc::Receiver<Ask>,
     incoming: mpsc::Receiver<Said>,
     says: mpsc::Sender<Said>,
+    /// Set while the disk is full: prompts are queued and no new turn starts.
+    disk_full: bool,
     starts: mpsc::UnboundedSender<Launched<A>>,
     started: mpsc::UnboundedReceiver<Launched<A>>,
     log: Logger,
@@ -168,11 +131,12 @@ impl<A: Agent> Engine<A> {
             asked,
             incoming,
             says,
+            disk_full: false,
             starts,
             started,
             log,
         };
-        (Chats { asks }, engine)
+        (Chats::new(asks), engine)
     }
 
     /// Serves until every [`Chats`] is dropped; the agents stop with it.
@@ -196,6 +160,10 @@ impl<A: Agent> Engine<A> {
                         let key = ChatKey::new(&query.workspace, &query.chat);
                         drop(answer.send(self.query(&key, query.query, &client).await));
                         key
+                    }
+                    Some(Ask::DiskFull(full)) => {
+                        self.set_disk_full(full).await;
+                        continue;
                     }
                     None => return self.log.info("engine stopped", &[]),
                 },
@@ -847,6 +815,25 @@ mod tests {
             soon(started.told.recv()).await,
             Some(Told::Send("Hi".to_owned()))
         );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_full_disk_queues_prompts_and_starts_their_turns_once_it_has_room() {
+        let mut bench = bench();
+        let mut pushes = watch(&bench).await;
+        bench.chats.disk_full(true);
+
+        bench.chats.command(prompt("r-1", "Hi")).await.unwrap();
+        let accepted = pushed(&mut pushes, 2).await;
+        assert_eq!(accepted, ["1 prompt r-1 Hi", "2 receipt r-1 accepted"]);
+        assert!(soon(bench.started.recv()).await.is_none());
+
+        bench.chats.disk_full(false);
+        let mut started = soon(bench.started.recv()).await.unwrap();
+        let told = soon(started.told.recv()).await;
+        assert_eq!(told, Some(Told::Send("Hi".to_owned())));
+        let running = pushed(&mut pushes, 2).await;
+        assert_eq!(running, ["3 run-1 is Starting", "4 run-1 is Running"]);
     }
 
     #[tokio::test(start_paused = true)]
