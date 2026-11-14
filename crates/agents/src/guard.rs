@@ -173,23 +173,50 @@ fn path_of(word: &Word, context: &Context, cwd: &Path) -> Option<PathBuf> {
     } else {
         word.text.clone()
     };
-    if !word.tilde {
-        return Some(cwd.join(text));
+    let path = if word.tilde {
+        let rest = text.strip_prefix('~')?;
+        if !(rest.is_empty() || rest.starts_with('/')) {
+            return None;
+        }
+        context.home.as_ref()?.join(rest.trim_start_matches('/'))
+    } else {
+        cwd.join(text)
+    };
+    // A wildcard may match a symlink that leads out, and only the file system knows which.
+    (!(word.glob && leads_out(&path, context))).then_some(path)
+}
+
+// Whether `folder`, inside the worktree, holds a symlink to somewhere outside it; one it can't
+// list may. A folder outside is judged as outside already.
+fn leads_out(folder: &Path, context: &Context) -> bool {
+    let worktree = resolve(&context.worktree);
+    let inside = |path: &Path| {
+        resolve(path)
+            .zip(worktree.as_deref())
+            .is_some_and(|(path, worktree)| path.starts_with(worktree))
+    };
+    if !inside(folder) {
+        return false;
     }
-    let rest = text.strip_prefix('~')?;
-    if !(rest.is_empty() || rest.starts_with('/')) {
-        return None;
-    }
-    Some(context.home.as_ref()?.join(rest.trim_start_matches('/')))
+    let entries = match std::fs::read_dir(folder) {
+        Ok(entries) => entries,
+        Err(error) => return error.kind() != std::io::ErrorKind::NotFound,
+    };
+    entries.into_iter().any(|entry| {
+        entry.map_or(true, |entry| {
+            entry.file_type().is_ok_and(|kind| kind.is_symlink()) && !inside(&entry.path())
+        })
+    })
 }
 
 // The folders before the first part with a wildcard; `None` if a later part climbs with `..`.
 fn before_glob(text: &str) -> Option<String> {
     let parts: Vec<&str> = text.split('/').collect();
-    let at = parts
-        .iter()
-        .position(|part| part.contains(['*', '?', '[']))?;
-    if parts.get(at..)?.contains(&"..") {
+    let wild = |part: &&str| part.contains(['*', '?', '[']);
+    let at = parts.iter().position(&wild)?;
+    // Past one wildcard part, the matches lie in folders it can't list ahead.
+    let later = parts.get(at + 1..)?;
+    if later.contains(&"..") || later.iter().any(wild) {
         return None;
     }
     let prefix = parts.get(..at)?.join("/");
@@ -888,10 +915,32 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let context = context(&dir);
         fs::create_dir_all(dir.join("WT")).unwrap();
+        // On a volume that ignores case, the two names are one folder.
+        if fs::canonicalize(dir.join("WT")).unwrap() == fs::canonicalize(dir.join("wt")).unwrap() {
+            return;
+        }
 
         assert_eq!(
             check_command("rm -rf ../WT", &context),
             Some(Reason::DeleteOutside)
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_wildcard_beside_a_symlink_that_leads_out_asks() {
+        let dir = TempDir::new().unwrap();
+        let context = context(&dir);
+        let check = |line: &str| check_command(line, &context);
+
+        assert_eq!(check("rm -rf src/*"), None);
+        std::os::unix::fs::symlink(dir.join("wt/src"), dir.join("wt/inside")).unwrap();
+        assert_eq!(check("rm -rf in*/x"), None);
+        std::os::unix::fs::symlink(dir.join("main"), dir.join("wt/link-out")).unwrap();
+
+        assert_eq!(check("rm -rf link*/victim"), Some(Reason::Unsure));
+        assert_eq!(check("echo x > link*"), Some(Reason::Unsure));
+        assert_eq!(check("rm -rf src/*"), None);
+        assert_eq!(check("rm -rf src/*/x/*"), Some(Reason::Unsure));
     }
 }
