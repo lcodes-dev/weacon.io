@@ -244,7 +244,7 @@ mod tests {
 
         for (state, word) in states {
             let wire = RunStatus {
-                run: RunId::try_from("run-7".to_owned()).unwrap(),
+                run: "run-7".parse().unwrap(),
                 state,
             };
             assert_eq!(
