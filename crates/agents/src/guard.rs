@@ -303,8 +303,10 @@ mod tests {
         );
         assert_eq!(in_main("git switch other"), Some(Reason::ResetMainCheckout));
 
-        // rules.rs goes_deep: find is never deep; a recursive read above credentials asks.
+        // rules.rs goes_deep: find is never deep; a recursive read above credentials asks, but a
+        // plain long option, or one that only looks recursive, doesn't.
         assert_eq!(check("grep token ../home"), None);
+        assert_eq!(check("grep --color token ../home"), None);
         assert_eq!(
             check("grep --recursive token ../home"),
             Some(Reason::Credentials)
