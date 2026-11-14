@@ -1,6 +1,6 @@
 import { type Status, offers } from "../connection.ts";
 import type { ChatRef } from "../chat-ref.ts";
-import type { Envelope, RequestId } from "../protocol.ts";
+import type { ChatAction, Envelope, RequestId } from "../protocol.ts";
 import type { Receipts, Settled } from "../receipts.ts";
 
 /** How sending a prompt ended: as its command did, or refused here for its size. */
@@ -15,9 +15,14 @@ const FEED_LIMIT = 16_384;
 /** A command to a chat. */
 export type Command = Extract<Envelope, { type: "chat_command" }>;
 
+/** The command that asks `action` of the chat at `chatRef`, under `request`. */
+export function chatCommand(id: number, chatRef: ChatRef, request: RequestId, action: ChatAction): Command {
+  return { id, type: "chat_command", ...chatRef, request, action };
+}
+
 /** The command that sends `text` to the chat at `chatRef`, under `request`. */
 export function prompt(id: number, chatRef: ChatRef, request: RequestId, text: string): Command {
-  return { id, type: "chat_command", ...chatRef, request, action: { kind: "prompt", text } };
+  return chatCommand(id, chatRef, request, { kind: "prompt", text });
 }
 
 /** Sends `command` through `send` and waits for its receipt, unless it is too long to send. */
@@ -63,6 +68,21 @@ export function after(sent: Sent, text: string, request: RequestId): After {
   }
   const retry = sent === "lost" || sent === "unsure" ? { text, request } : undefined;
   return { text, problem: PROBLEMS[sent], retry };
+}
+
+/** How a command ended, heard after its wait ran out. */
+export type Late = { request: RequestId; settled: Settled };
+
+/**
+ * What the box holds once `late` says how the send it may retry ended, or `undefined` when `late`
+ * is about another send. Text edited since is kept.
+ */
+export function afterLate(retry: Retry | undefined, text: string, late: Late): After | undefined {
+  if (retry?.request !== late.request) {
+    return undefined;
+  }
+  const ended = after(late.settled, retry.text, retry.request);
+  return text === retry.text ? ended : { ...ended, text };
 }
 
 /** Why the box can't send to `chatRef` now, or `undefined` when it can. */

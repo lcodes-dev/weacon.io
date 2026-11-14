@@ -4,7 +4,7 @@ import { Connection, type Status } from "../connection.ts";
 import type { Incoming } from "../incoming.ts";
 import { ME } from "../me.ts";
 import type { WorkspaceId } from "../protocol.ts";
-import type { Api } from "./api.ts";
+import type { Api } from "../api/api.ts";
 import { FEED, STAYED_MS, failedAfter, feedUrl, heardAfter, retries, retryAfter } from "./workspace-feed.ts";
 import type { WorkspaceSocket } from "./workspace-socket.ts";
 

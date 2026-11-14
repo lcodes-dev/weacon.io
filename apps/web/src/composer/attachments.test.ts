@@ -1,13 +1,13 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { MAX_BYTES, MAX_FILES, NONE, add, remove, settled, size } from "./attachments.ts";
+import { MAX_BYTES, MAX_FILES, NO_ATTACHMENTS, attachFiles, removeAttachment, settled, size } from "./attachments.ts";
 
 const file = (name: string, bytes: number) => new File([new Uint8Array(bytes)], name);
 
 test("files are added in order, each with an id of its own", () => {
-  const first = add(NONE, [file("a.txt", 3), file("b.png", 5)]);
-  const second = add(first, [file("c.md", 1)]);
+  const first = attachFiles(NO_ATTACHMENTS, [file("a.txt", 3), file("b.png", 5)]);
+  const second = attachFiles(first, [file("c.md", 1)]);
 
   assert.deepEqual(
     second.attachments.map(({ id, file: { name, size: bytes } }) => [id, name, bytes]),
@@ -22,18 +22,18 @@ test("files are added in order, each with an id of its own", () => {
 });
 
 test("removing a file keeps the others and their ids, and clears why any were left out", () => {
-  const added = add(NONE, [file("a", 1), file("b", 1), file("c", 0)]);
-  const left = remove(added, 1);
+  const added = attachFiles(NO_ATTACHMENTS, [file("a", 1), file("b", 1), file("c", 0)]);
+  const left = removeAttachment(added, 1);
   assert.deepEqual(
     left.attachments.map(({ id, file }) => [id, file.name]),
     [[2, "b"]],
   );
   assert.equal(left.refused, undefined);
-  assert.equal(add(left, [file("d", 1)]).attachments.at(-1)?.id, 3);
+  assert.equal(attachFiles(left, [file("d", 1)]).attachments.at(-1)?.id, 3);
 });
 
 test("empty and oversized files are left out, and the box says why", () => {
-  const added = add(NONE, [file("folder", 0), file("big.bin", MAX_BYTES + 1), file("ok.bin", MAX_BYTES)]);
+  const added = attachFiles(NO_ATTACHMENTS, [file("folder", 0), file("big.bin", MAX_BYTES + 1), file("ok.bin", MAX_BYTES)]);
   assert.deepEqual(
     added.attachments.map(({ file }) => file.name),
     ["ok.bin"],
@@ -43,13 +43,13 @@ test("empty and oversized files are left out, and the box says why", () => {
 });
 
 test("past the limit, the extra files are left out", () => {
-  const full = add(NONE, Array.from({ length: MAX_FILES - 1 }, (_, at) => file(`${at}`, 1)));
-  const over = add(full, [file("last", 1), file("one too many", 1)]);
+  const full = attachFiles(NO_ATTACHMENTS, Array.from({ length: MAX_FILES - 1 }, (_, at) => file(`${at}`, 1)));
+  const over = attachFiles(full, [file("last", 1), file("one too many", 1)]);
 
   assert.equal(over.attachments.length, MAX_FILES);
   assert.equal(over.attachments.at(-1)?.file.name, "last");
   assert.equal(over.refused, "A message can carry 10 files");
-  assert.equal(add(over, [file("more", 1)]).attachments.length, MAX_FILES);
+  assert.equal(attachFiles(over, [file("more", 1)]).attachments.length, MAX_FILES);
 });
 
 test("sizes read in B, KB or MB", () => {
@@ -63,8 +63,8 @@ test("sizes read in B, KB or MB", () => {
 });
 
 test("once the person moves on, why files were left out no longer shows", () => {
-  const refused = add(NONE, [file("a", 1), file("empty", 0)]);
+  const refused = attachFiles(NO_ATTACHMENTS, [file("a", 1), file("empty", 0)]);
   assert.deepEqual(settled(refused), { ...refused, refused: undefined });
-  const calm = add(NONE, [file("a", 1)]);
+  const calm = attachFiles(NO_ATTACHMENTS, [file("a", 1)]);
   assert.equal(settled(calm), calm);
 });

@@ -2,9 +2,9 @@ import { useContext, useEffect, useState } from "react";
 
 import type { Later } from "../connection.ts";
 import type { MachineId, MachineSummary, PairPending } from "../protocol.ts";
-import type { Api } from "../shell/api.ts";
-import { useAsk } from "../shell/ask.ts";
-import { useLoaded } from "../shell/loaded.ts";
+import type { Api } from "../api/api.ts";
+import { useAsk } from "../api/ask.ts";
+import { useLoaded } from "../api/loaded.ts";
 import { WorkspaceSocketContext, useOffers } from "../shell/workspace-socket.ts";
 import { waitForClaim } from "./claim.ts";
 import { fingerprint } from "./fingerprint.ts";
@@ -183,7 +183,7 @@ function LookUp({
         event.preventDefault();
         setUnchecked(false);
         void looking.ask(
-          () => api.lookup(code),
+          () => api.lookUpPairing(code),
           (pending) =>
             void fingerprint(pending.key).then(
               (shown) => found({ pending, code, fingerprint: shown }),
@@ -256,7 +256,7 @@ function ConfirmPairing({
             disabled={busy}
             onClick={() =>
               void confirming.ask(
-                () => api.confirm({ pairing: pending.pairing, code: found.code }),
+                () => api.confirmPairing({ pairing: pending.pairing, code: found.code }),
                 (machine) => void confirmed(machine),
               )
             }
