@@ -126,14 +126,12 @@ impl Workspace {
 
 #[cfg(test)]
 mod tests {
-    use sqlx::sqlite::SqliteConnectOptions;
-    use sqlx::{ConnectOptions, raw_sql};
     use weacon_testing::TempDir;
 
     use weacon_protocol::ChallengeId;
 
     use super::*;
-    use crate::db::schema::{steps, steps_before};
+    use crate::db::schema::{database_before, steps};
     use crate::db::{Attempt, NewChallenge, NewWorkspace};
     use crate::test_support::{email, fresh_account, member_id, two_teams, workspace_id};
 
@@ -269,28 +267,13 @@ mod tests {
     // A database at `path` from before accounts: ada in w1 and w2, bo in w1, and a session
     // and a sign-in of ada's in w1.
     async fn old_database(path: &std::path::Path) {
-        let mut old = SqliteConnectOptions::new()
-            .filename(path)
-            .create_if_missing(true)
-            .connect()
-            .await
-            .unwrap();
-        for step in steps_before(steps::ACCOUNTS) {
-            raw_sql(*step).execute(&mut old).await.unwrap();
-        }
-        raw_sql(
-            "INSERT INTO workspaces VALUES ('w1', 'One'), ('w2', 'Two');
+        let rows = "INSERT INTO workspaces VALUES ('w1', 'One'), ('w2', 'Two');
              INSERT INTO members VALUES
                  ('w1', 'm1', 'ada@example.com'), ('w2', 'm1', 'ada@example.com'),
                  ('w1', 'm2', 'bo@example.com');
              INSERT INTO sessions VALUES ('w1', x'01', 'm1', 9999999999);
-             INSERT INTO sign_in_challenges VALUES ('w1', 'c1', 'm1', x'02', 9999999999, 0);
-             PRAGMA user_version = 3;",
-        )
-        .execute(&mut old)
-        .await
-        .unwrap();
-        drop(old);
+             INSERT INTO sign_in_challenges VALUES ('w1', 'c1', 'm1', x'02', 9999999999, 0)";
+        database_before(path, steps::ACCOUNTS, rows).await;
     }
 
     #[tokio::test]

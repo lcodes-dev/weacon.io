@@ -254,12 +254,17 @@ fn size(text: &DocText, agent: Option<&str>) -> i64 {
     i64::try_from(size).unwrap_or(i64::MAX)
 }
 
-/// Fills the workspace's quota, for tests of what a full one answers.
 #[cfg(test)]
 impl Workspace {
+    /// Fills the workspace's quota, for tests of what a full one answers.
     pub(crate) async fn fill_doc_quota(&self) {
+        self.set_doc_bytes(DOC_QUOTA).await;
+    }
+
+    /// Says the workspace holds `bytes` of docs.
+    pub(crate) async fn set_doc_bytes(&self, bytes: i64) {
         sqlx::query("UPDATE workspaces SET doc_bytes = ? WHERE workspace_id = ?")
-            .bind(DOC_QUOTA)
+            .bind(bytes)
             .bind(self.id.as_str())
             .execute(&self.db.writer)
             .await
@@ -627,15 +632,6 @@ mod tests {
             .unwrap()
     }
 
-    async fn set_doc_bytes(workspace: &Workspace, bytes: i64) {
-        sqlx::query("UPDATE workspaces SET doc_bytes = ? WHERE workspace_id = ?")
-            .bind(bytes)
-            .bind(workspace.id.as_str())
-            .execute(&workspace.db.writer)
-            .await
-            .unwrap();
-    }
-
     #[tokio::test]
     async fn each_revision_counts_its_bytes_and_its_rows_toward_the_quota() {
         let dir = TempDir::new().unwrap();
@@ -671,7 +667,7 @@ mod tests {
         let first = new_doc("d1", "Framing");
         one.add_doc(&first, &by("m1")).await.unwrap();
         let next = linked();
-        set_doc_bytes(&one, DOC_QUOTA - size(&next, None)).await;
+        one.set_doc_bytes(DOC_QUOTA - size(&next, None)).await;
 
         let fits = one
             .revise_doc(&first.id, Revision::FIRST, next, &by("m1"))
