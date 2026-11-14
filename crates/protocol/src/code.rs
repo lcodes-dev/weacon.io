@@ -6,13 +6,15 @@ use serde::{Deserialize, Deserializer, Serialize, de};
 /// A dotted code such as `store.full`: two or more lowercase words joined by dots. It names
 /// errors, and capabilities too.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, JsonSchema)]
-pub struct Code(#[schemars(regex(pattern = PATTERN), length(max = MAX_LEN))] Cow<'static, str>);
+pub struct Code(
+    #[schemars(regex(pattern = CODE_PATTERN), length(max = CODE_MAX))] Cow<'static, str>,
+);
 
 // Codes come from peers too, and end up in log lines and error reports.
-const MAX_LEN: usize = 64;
+const CODE_MAX: usize = 64;
 
 // The schema's form of `is_code`; a test keeps the two in step.
-const PATTERN: &str = r"^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+$";
+const CODE_PATTERN: &str = r"^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+$";
 
 /// A [`Code`], checked at compile time: `code!("store.full")`.
 ///
@@ -59,7 +61,7 @@ impl<'de> Deserialize<'de> for Code {
 }
 
 const fn is_code(code: &str) -> bool {
-    if code.len() > MAX_LEN {
+    if code.len() > CODE_MAX {
         return false;
     }
     let mut rest = code.as_bytes();
@@ -89,7 +91,7 @@ mod tests {
 
     #[test]
     fn accepts_dotted_lowercase_codes_only() {
-        let pattern = regex::Regex::new(PATTERN).unwrap();
+        let pattern = regex::Regex::new(CODE_PATTERN).unwrap();
         for good in [
             "store.full",
             "driver.timeout",
