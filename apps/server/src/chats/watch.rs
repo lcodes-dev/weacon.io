@@ -160,7 +160,7 @@ fn refusal(shared: &Shared, member: &Member, fault: &Fault) -> Message {
 mod tests {
     use futures_util::SinkExt;
     use tokio_tungstenite::tungstenite::Message as Wire;
-    use weacon_protocol::{ChatAction, ChatCommand, ChatState, RequestId, TaskCreate};
+    use weacon_protocol::{Capability, ChatAction, ChatCommand, ChatState, RequestId, TaskCreate};
 
     use super::*;
     use crate::db::test_support::{NOW, append, id, make, said};
@@ -354,5 +354,45 @@ mod tests {
         assert!(workspace.chat(&id("c-9")).await.unwrap().is_none());
         let logged = serde_json::to_string(&*fixture.records.lock().unwrap()).unwrap();
         assert!(!logged.contains("MARKER"), "{logged}");
+    }
+
+    #[tokio::test]
+    async fn a_member_whose_membership_ended_asks_nothing_more() {
+        let fixture = Fixture::new().await;
+        // No ping comes to find the membership ended before the prompt does.
+        let mut quiet = fixture.shared.clone();
+        quiet.sockets.ping_every = std::time::Duration::from_hours(1);
+        let server = run(quiet).await;
+        let paired = pair_machine(&fixture, server.address).await;
+        let machine = paired.machine["id"].as_str().unwrap().to_owned();
+        let connected = crate::links::Connected {
+            machine: id(&machine),
+            owner: fixture
+                .shared
+                .db
+                .account_with(&test_support::email("ada@example.com"))
+                .await
+                .unwrap()
+                .unwrap(),
+        };
+        let serves = vec![Capability::from(weacon_protocol::code!("chat.serve"))];
+        let mut attached = fixture.shared.links.open(connected, serves);
+        let workspace = w1(&fixture).await;
+        let mut client = feed(
+            &server,
+            &paired.session,
+            &["workspace.feed", "workspace.chats"],
+        )
+        .await;
+        // Past what the feed sends first, which ends it once the membership has.
+        assert!(matches!(next(&mut client).await, Message::Workspace(_)));
+        workspace.unlink(&test_support::member_id("m1")).await;
+
+        ask(&mut client, 2, prompt("c-9", Some(machine))).await;
+
+        assert!(test_support::socket::ends(&mut client).await);
+        attached.incoming.try_recv().unwrap_err();
+        assert!(workspace.chat(&id("c-9")).await.unwrap().is_none());
+        assert!(workspace.chat(&id("c-9")).await.unwrap().is_none());
     }
 }

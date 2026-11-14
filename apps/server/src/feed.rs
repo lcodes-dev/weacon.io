@@ -225,6 +225,7 @@ async fn received(
         return relay(socket, shared, feed, envelope).await;
     }
     if feed.offers.has(CHATS) && chats::carries(&envelope.message) {
+        feed.allowed(shared).await?;
         let answers = feed
             .chats
             .heard(envelope, &feed.member, &feed.asker, shared)
