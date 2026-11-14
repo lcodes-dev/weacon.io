@@ -13,6 +13,9 @@ const PROBLEMS = new Map<Code, string>([
   ["machine.not_found", "That machine isn't paired any more."],
   ["settings.no_answer", "The machine didn't answer. Check that it's on and connected."],
   ["settings.reconnecting", "The workspace is reconnecting. Try again in a moment."],
+  ["machine.offline", "This machine isn't connected. Start Weacon on it, then try again."],
+  ["machine.no_answer", "The machine didn't answer. Try again."],
+  ["relay.busy", "The server is busy. Try again in a moment."],
   ["settings.not_owner", "Only this machine's owner can see or change its settings."],
 ]);
 

@@ -22,8 +22,8 @@ export type Link = {
 /** Starts `run` after `ms` and returns what stops it; tests pass their own. */
 export type Wait = (run: () => void, ms: number) => () => void;
 
-// A core that is offline never answers; the page says so rather than wait for good.
-const ANSWER_MS = 30_000;
+// The server answers `machine.no_answer` after 30 s; this is only for a server that never does.
+const ANSWER_MS = 35_000;
 export const NO_ANSWER = "settings.no_answer";
 export const RECONNECTING = "settings.reconnecting";
 
