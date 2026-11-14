@@ -143,6 +143,7 @@ pub(crate) fn command(request: &str, chat_id: &str, action: ChatAction) -> ChatC
         workspace: workspace(),
         chat: chat(chat_id),
         action,
+        by: None,
     }
 }
 
