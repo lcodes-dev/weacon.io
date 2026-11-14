@@ -6,6 +6,8 @@
 # `open_unfollowed`'s two flags share no bits either, so `^` gives the same flags; `&` drops both,
 # and the pipe test then hangs instead of failing.
 # A `Lines::next` that always returns a line never ends, so every reader spins instead of failing.
+# `depth * 1` in `full_names` isn't equivalent: it never deepens, so a self-nesting subcommand
+# expands until the test is killed for memory, which takes CI's runner with it.
 # Windows code isn't built on Linux, where mutation tests run; the Windows CI job tests it.
 # Nor is the macOS pty, macOS's or other systems' `trash`; the rest of macOS's Trash is tested
 # on Linux.
@@ -29,6 +31,7 @@ exclude_re = [
     "platform/trash(/macos|/linux)?\\.rs:.*(replace trash ->| in trash$|replace own_uid ->)",
     "replace match guard error.kind\\(\\) == io::ErrorKind::NotFound with true in place$",
     "replace Lines<R>::next -> io::Result<Option<Vec<u8>>> with Ok\\(Some",
+    "replace \\+ with \\* in full_names",
 ]
 # Some mutants make a blocking client wait out its 5 s read timeout.
 minimum_test_timeout = 60

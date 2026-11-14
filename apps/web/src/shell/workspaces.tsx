@@ -10,7 +10,7 @@ import { Frame } from "./frame.tsx";
 import { STORE, opening, remember } from "./last-workspace.ts";
 import { useLoaded } from "./loaded.ts";
 import { useBurst, useFeed } from "./feed-hooks.ts";
-import { WorkspaceSocket, WorkspaceSocketContext, useWorkspaceSocket } from "./workspace-socket.ts";
+import { WorkspaceSocket, WorkspaceSocketContext, useOffers, useWorkspaceSocket } from "./workspace-socket.ts";
 
 /**
  * The signed-in person's workspaces, and the one `?workspace=` names, or else the last one opened
@@ -157,11 +157,11 @@ function NewWorkspace({ api, made }: { api: Api; made(workspace: WorkspaceSummar
  * without remounting what it holds when that changes.
  */
 function SocketScope({ workspace, children }: { workspace: WorkspaceId | undefined; children: ReactNode }) {
-  const [scope, setScope] = useState<{ workspace: WorkspaceId; socket: WorkspaceSocket }>();
-  if (scope?.workspace !== workspace) {
-    setScope(workspace === undefined ? undefined : { workspace, socket: new WorkspaceSocket() });
+  const [socket, setSocket] = useState<WorkspaceSocket>();
+  if (socket?.workspace !== workspace) {
+    setSocket(workspace === undefined ? undefined : new WorkspaceSocket(workspace));
   }
-  return <WorkspaceSocketContext value={scope?.workspace === workspace ? scope?.socket : undefined}>{children}</WorkspaceSocketContext>;
+  return <WorkspaceSocketContext value={socket?.workspace === workspace ? socket : undefined}>{children}</WorkspaceSocketContext>;
 }
 
 function Workspace({
@@ -176,9 +176,9 @@ function Workspace({
   choose: (chat: ChatId) => void;
 }) {
   const socket = useWorkspaceSocket();
-  const { status, offered } = useFeed(workspace.id, api, socket);
+  const status = useFeed(workspace.id, api, socket);
   // Whether the server serves chats, known once the feed is welcomed.
-  const chats = offered?.includes("workspace.chats");
+  const chats = useOffers(socket, "workspace.chats");
   const page = (title: string) => (
     <section className="page">
       <h1>{title}</h1>
