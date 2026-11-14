@@ -174,7 +174,7 @@ pub enum PairClaimed {
     /// Not confirmed yet: claim again later.
     Waiting,
     /// Paired with `owner`'s account. The core proves itself with `token`, sent as a bearer
-    /// token, which the server hands out only once.
+    /// token, which every claim with the pairing's secret returns until the pairing expires.
     Paired {
         machine: MachineId,
         owner: AccountId,

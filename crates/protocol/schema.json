@@ -2145,7 +2145,7 @@
           ]
         },
         {
-          "description": "Paired with `owner`'s account. The core proves itself with `token`, sent as a bearer\ntoken, which the server hands out only once.",
+          "description": "Paired with `owner`'s account. The core proves itself with `token`, sent as a bearer\ntoken, which every claim with the pairing's secret returns until the pairing expires.",
           "type": "object",
           "properties": {
             "machine": {
