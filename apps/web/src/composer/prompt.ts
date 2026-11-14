@@ -1,4 +1,5 @@
 import type { Status } from "../connection.ts";
+import { hex } from "../hex.ts";
 import type { Place } from "../place.ts";
 import type { Envelope, RequestId } from "../protocol.ts";
 import type { Receipts, Settled } from "../receipts.ts";
@@ -78,5 +79,5 @@ export function blocked(status: Status, place: Place | undefined): string | unde
 
 /** A request id made of `bytes` in hex. */
 export function requestId(bytes: Uint8Array): RequestId {
-  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
+  return hex(bytes);
 }
