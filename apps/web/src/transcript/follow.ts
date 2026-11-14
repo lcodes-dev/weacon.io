@@ -20,3 +20,25 @@ export function selectingIn(
 export function touches(selection: Pick<Selection, "rangeCount" | "getRangeAt"> | null, node: Node): boolean {
   return selection !== null && selection.rangeCount > 0 && selection.getRangeAt(0).intersectsNode(node);
 }
+
+/** The parts of a key press that say whether it scrolls the reader up. */
+export type ScrollKey = { key: string; shiftKey: boolean };
+
+/** Whether a key press, outside anything editable, scrolls the reader up and away from the bottom. */
+export function leavesBottom({ key, shiftKey }: ScrollKey, editable: boolean): boolean {
+  return !editable && (["ArrowUp", "PageUp", "Home"].includes(key) || (key === " " && shiftKey));
+}
+
+/**
+ * Whether the view follows after a scroll: at the bottom it does; while the reader holds the
+ * scrollbar or a touch, the scroll is theirs and leaving the bottom stops it; any other scroll,
+ * such as the browser keeping rows in place as they reach their height, leaves it as it was.
+ */
+export function followsAfter(following: boolean, bottom: boolean, held: boolean): boolean {
+  return bottom || (following && !held);
+}
+
+/** Whether scrolling `delta` pixels down from `scroll` reaches the bottom, so the reader means to follow. */
+export function reachesBottom(delta: number, scroll: Scroll): boolean {
+  return delta > 0 && delta >= scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight - SLACK_PX;
+}
