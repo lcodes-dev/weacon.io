@@ -81,8 +81,6 @@ test("only events with the fields this app reads are taken; unknown ones pass", 
     call("c-1"),
     done("c-1", true),
     { event: "finished", outcome: { state: "failed", code: "run.failed" } },
-    { event: "permission_asked", run: "r-1", prompt: 2, tool: "Bash", input: {} },
-    { event: "permission_withdrawn", run: "r-1", prompt: 2 },
     { event: "newer" },
   ];
   const bad: unknown[] = [
@@ -98,9 +96,6 @@ test("only events with the fields this app reads are taken; unknown ones pass", 
     { event: "finished" },
     { event: "finished", outcome: null },
     { event: "finished", outcome: { state: 1 } },
-    { event: "permission_asked", run: "r-1", prompt: 2 },
-    { event: "permission_asked", run: "r-1", prompt: 1.5, tool: "Bash" },
-    { event: "permission_withdrawn", prompt: 2 },
   ];
 
   assert.ok(good.every(isRunEvent));

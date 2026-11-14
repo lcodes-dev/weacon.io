@@ -15,7 +15,7 @@ export type Heard =
 /** What `envelope` says about the chat at `place`, or `undefined` when it isn't about it or is malformed. */
 export function about(envelope: Envelope, place: Place): Heard | undefined {
   if (envelope.type === "run") {
-    return typeof envelope.run === "string" && isRunEvent(envelope.event)
+    return typeof envelope.run === "string" && isEvent(envelope.event)
       ? { kind: "run", run: envelope.run, event: envelope.event }
       : undefined;
   }
@@ -69,7 +69,7 @@ function entryOf(value: unknown): ChatEntry | undefined {
         return typeof record(event["receipt"])?.["state"] === "string";
       case "run": {
         const update = record(event["update"]);
-        return typeof update?.["run"] === "string" && isRunEvent(update["event"]);
+        return typeof update?.["run"] === "string" && isEvent(update["event"]);
       }
       case "run_status":
         return statusOf(event["status"]) !== undefined;
@@ -135,4 +135,18 @@ function record(value: unknown): Record<string, unknown> | undefined {
 
 function isSeq(value: unknown, least: number): value is number {
   return Number.isSafeInteger(value) && (value as number) >= least;
+}
+
+// A run event whose fields this app reads are all there, permission prompts' included.
+function isEvent(value: unknown): value is RunEvent {
+  const event = record(value);
+  const run = typeof event?.["run"] === "string" && Number.isInteger(event["prompt"]);
+  switch (event?.["event"]) {
+    case "permission_asked":
+      return run && typeof event["tool"] === "string";
+    case "permission_withdrawn":
+      return run;
+    default:
+      return isRunEvent(value);
+  }
 }

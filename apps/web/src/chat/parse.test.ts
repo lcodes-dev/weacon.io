@@ -115,4 +115,19 @@ test("run updates are heard whatever chat they belong to, when well-formed", () 
   assert.deepEqual(about(frame({ type: "run", run: "r-1", event: text }), place), { kind: "run", run: "r-1", event: text });
   assert.equal(about(frame({ type: "run", run: 1, event: text }), place), undefined);
   assert.equal(about(frame({ type: "run", run: "r-1", event: { event: "text_delta" } }), place), undefined);
+  const asked = { event: "permission_asked", run: "r-1", prompt: 2, tool: "Bash", input: {} };
+  const withdrawn = { event: "permission_withdrawn", run: "r-1", prompt: 2 };
+  for (const event of [asked, withdrawn]) {
+    assert.deepEqual(about(frame({ type: "run", run: "r-1", event }), place), { kind: "run", run: "r-1", event });
+  }
+  const broken = [
+    { event: "permission_asked", run: "r-1", prompt: 2 },
+    { event: "permission_asked", run: "r-1", prompt: 1.5, tool: "Bash" },
+    { event: "permission_withdrawn", prompt: 2 },
+  ];
+  for (const event of broken) {
+    assert.equal(about(frame({ type: "run", run: "r-1", event }), place), undefined, JSON.stringify(event));
+    const entry = { seq: 1, event: { kind: "run", update: { run: "r-1", event } } };
+    assert.equal(about(update(entry), place), undefined, JSON.stringify(event));
+  }
 });

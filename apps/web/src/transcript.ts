@@ -84,10 +84,6 @@ export function isRunEvent(event: unknown): event is RunEvent {
       return text("call") && text("tool");
     case "tool_done":
       return text("call") && typeof fields["failed"] === "boolean";
-    case "permission_asked":
-      return text("run") && Number.isInteger(fields["prompt"]) && text("tool");
-    case "permission_withdrawn":
-      return text("run") && Number.isInteger(fields["prompt"]);
     case "finished": {
       const outcome = fields["outcome"] as Record<string, unknown> | null | undefined;
       return typeof outcome === "object" && outcome !== null && typeof outcome["state"] === "string";
