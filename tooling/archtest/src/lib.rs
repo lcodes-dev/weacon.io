@@ -91,7 +91,12 @@ pub fn violations(root: &Path) -> Result<Vec<String>, String> {
             if is_app {
                 out.extend(manifest::check_app_needs(package));
             }
-            out.extend(sources::check_sources(rule, &read_sources(dir)?));
+            let (sources, links) = read_sources(dir)?;
+            out.extend(sources::check_sources(rule, &sources));
+            out.extend(links.iter().map(|link| {
+                let (name, link) = (&package.name, link.display());
+                format!("{name}: {link} is a link; archtest checks only a package's own files")
+            }));
         }
     }
     out.extend(check_integrations(&metadata.workspace_root)?);
@@ -104,7 +109,7 @@ fn check_integrations(root: &Path) -> Result<Vec<String>, String> {
     let mut found: Vec<String> = files_under(&root.join(INTEGRATIONS_FOLDER))?
         .iter()
         .filter_map(|path| {
-            let link = fs::symlink_metadata(path).is_ok_and(|metadata| metadata.is_symlink());
+            let link = is_link(path);
             let kind = path.extension().and_then(|extension| extension.to_str());
             let data = kind.is_some_and(|kind| INTEGRATIONS_DATA.contains(&kind));
             let shown = path.strip_prefix(root).unwrap_or(path).display();
@@ -154,18 +159,30 @@ fn read_manifest(path: &Path) -> Result<Table, String> {
     toml::from_str(&text).map_err(|error| format!("{}: {error}", path.display()))
 }
 
-fn read_sources(dir: &Path) -> Result<Vec<SourceFile>, String> {
+/// A package's Rust files, and the links among them, which are never followed.
+fn read_sources(dir: &Path) -> Result<(Vec<SourceFile>, Vec<PathBuf>), String> {
     let mut sources = Vec::new();
+    let mut links = Vec::new();
     for name in ["build.rs", "src", "tests", "benches"] {
         for path in files_under(&dir.join(name))? {
-            if path.extension().is_some_and(|extension| extension == "rs") {
+            let relative = path.strip_prefix(dir).unwrap_or(&path).to_path_buf();
+            if is_link(&path) {
+                links.push(relative);
+            } else if path.extension().is_some_and(|extension| extension == "rs") {
                 let text = read(&path)?;
-                let path = path.strip_prefix(dir).unwrap_or(&path).to_path_buf();
-                sources.push(SourceFile { path, text });
+                sources.push(SourceFile {
+                    path: relative,
+                    text,
+                });
             }
         }
     }
-    Ok(sources)
+    links.sort();
+    Ok((sources, links))
+}
+
+fn is_link(path: &Path) -> bool {
+    fs::symlink_metadata(path).is_ok_and(|metadata| metadata.is_symlink())
 }
 
 /// Every file and link at or under `path`, without following links; none when nothing is there.
@@ -222,6 +239,36 @@ mod tests {
         fs::remove_dir(&dir).unwrap();
 
         found.unwrap_err();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn links_among_a_packages_sources_are_found_not_followed() {
+        let dir = temp_dir();
+        let src = dir.join("src");
+        fs::create_dir_all(src.join("real")).unwrap();
+        fs::write(src.join("lib.rs"), "fn f() {}").unwrap();
+        fs::write(src.join("real/inner.rs"), "fn g() {}").unwrap();
+        std::os::unix::fs::symlink("real", src.join("folder")).unwrap();
+        std::os::unix::fs::symlink("lib.rs", src.join("file.rs")).unwrap();
+
+        let read = read_sources(&dir);
+        fs::remove_dir_all(&dir).unwrap();
+
+        let (sources, links) = read.unwrap();
+        let mut paths: Vec<_> = sources.iter().map(|file| file.path.clone()).collect();
+        paths.sort();
+        assert_eq!(
+            paths,
+            [
+                PathBuf::from("src/lib.rs"),
+                PathBuf::from("src/real/inner.rs")
+            ]
+        );
+        assert_eq!(
+            links,
+            [PathBuf::from("src/file.rs"), PathBuf::from("src/folder")]
+        );
     }
 
     #[test]
