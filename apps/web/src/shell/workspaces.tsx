@@ -8,7 +8,7 @@ import type { Api } from "./api.ts";
 import { useAsk } from "./ask.ts";
 import { Frame } from "./frame.tsx";
 import { STORE, opening, remember } from "./last-workspace.ts";
-import { problemText } from "./problems.ts";
+import { useLoaded } from "./loaded.ts";
 import { FEED, feedUrl } from "./workspace-feed.ts";
 
 /**
@@ -17,34 +17,14 @@ import { FEED, feedUrl } from "./workspace-feed.ts";
  * `page`, such as Settings, shows in their place while they stay open beneath it.
  */
 export function Workspaces({ api, who, page }: { api: Api; who: ReactNode; page?: ReactNode }) {
-  const [list, setList] = useState<WorkspaceSummary[]>();
-  const [problem, setProblem] = useState<string>();
+  const { value, problem, load, change } = useLoaded(() => api.workspaces(), api);
+  const list = value?.workspaces;
   const [open, setOpen] = useState(() => opening(window.location.search, STORE));
-  // Each fetch and each made workspace takes a number; an answer older than the list is dropped.
-  const changes = useRef(0);
-  const load = async () => {
-    const asked = ++changes.current;
-    setProblem(undefined);
-    const answer = await api.workspaces();
-    if (asked !== changes.current) {
-      return;
-    }
-    if (answer.ok) {
-      setList(answer.value.workspaces);
-    } else {
-      setProblem(problemText(answer.code));
-    }
-  };
   useEffect(() => {
-    void load();
     const follow = () => setOpen(workspaceOf(window.location.search));
     window.addEventListener("popstate", follow);
-    return () => {
-      // Answers to an unmounted list are dropped too.
-      changes.current++;
-      window.removeEventListener("popstate", follow);
-    };
-  }, [api]);
+    return () => window.removeEventListener("popstate", follow);
+  }, []);
   useEffect(() => {
     remember(STORE, open);
     // One opened from memory takes its place in the address, so Back and links find it.
@@ -115,8 +95,7 @@ export function Workspaces({ api, who, page }: { api: Api; who: ReactNode; page?
             <NewWorkspace
               api={api}
               made={(made) => {
-                changes.current++;
-                setList((before) => [...(before ?? []), made]);
+                change((before) => ({ workspaces: [...(before?.workspaces ?? []), made] }));
                 if (listing.current) {
                   choose(made.id);
                 }

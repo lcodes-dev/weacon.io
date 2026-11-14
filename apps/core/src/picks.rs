@@ -1,7 +1,5 @@
-use std::fs;
-use std::io::{self, Write};
+use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
 
 use weacon_protocol::{Pick, RequestId};
 
@@ -49,48 +47,22 @@ impl Picks {
         read_json(&self.path(request))
     }
 
-    // Written aside under a name of its own, then linked into place: a reader never sees half a
-    // pick, and of two keeps of one request at once, only one is published.
+    // Of two keeps of one request at once, only one is published.
     fn publish(&self, request: &RequestId, json: &[u8]) -> io::Result<()> {
         platform::private_dir(&self.dir)?;
-        let partial = self.dir.join(format!(
-            "{}.{}-{}.partial",
-            name(request),
-            std::process::id(),
-            NEXT.fetch_add(1, Ordering::Relaxed)
-        ));
-        let published =
-            write_new(&partial, json).and_then(|()| fs::hard_link(&partial, self.path(request)));
-        // Linked or not, the partial name is no longer needed.
-        drop(fs::remove_file(&partial));
-        published
+        weacon_appkit::create_private(&self.path(request), json)
     }
 
     fn path(&self, request: &RequestId) -> PathBuf {
-        self.dir.join(name(request) + ".json")
+        self.dir
+            .join(platform::case_safe_name("pick-", request.as_str()) + ".json")
     }
-}
-
-fn name(request: &RequestId) -> String {
-    platform::case_safe_name("pick-", request.as_str())
-}
-
-static NEXT: AtomicU64 = AtomicU64::new(0);
-
-fn write_new(path: &Path, json: &[u8]) -> io::Result<()> {
-    // A partial left by a crashed run under a reused process id is stale.
-    if let Err(error) = fs::remove_file(path)
-        && error.kind() != io::ErrorKind::NotFound
-    {
-        return Err(error);
-    }
-    let mut file = weacon_appkit::private_append(path)?;
-    file.write_all(json)?;
-    file.sync_all()
 }
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+
     use weacon_testing::TempDir;
 
     use super::*;
@@ -107,6 +79,8 @@ mod tests {
         picks.keep(&first).unwrap();
 
         assert_eq!(picks.read(&first.request).unwrap(), Some(first));
+        let file = fs::metadata(dir.join("picks/pick-p-1.json")).unwrap();
+        assert_ne!(weacon_appkit::owner_only(&file), Some(false));
         assert!(matches!(
             picks.keep(&pick("p-1", "<button>Other</button>")),
             Err(KeepError::Conflict)
