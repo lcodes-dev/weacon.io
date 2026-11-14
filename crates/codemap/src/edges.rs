@@ -639,6 +639,20 @@ mod tests {
     }
 
     #[test]
+    fn a_tests_own_use_comes_before_its_modules() {
+        let found = edges(&[
+            ("a/Cargo.toml", CRATE_A),
+            (
+                "a/src/lib.rs",
+                "pub mod left { pub fn run() {} }\npub mod right { pub fn run() {} }\n\
+                 #[cfg(test)]\nmod tests {\n use crate::left::run;\n\
+                 #[test]\n fn own() { use crate::right::run; run(); }\n}\n",
+            ),
+        ]);
+        assert_eq!(found, ["a::tests::own Tests a::right::run"]);
+    }
+
+    #[test]
     fn a_use_in_a_block_stays_in_it() {
         let found = edges(&[
             ("a/Cargo.toml", CRATE_A),

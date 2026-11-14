@@ -51,7 +51,7 @@ pub(super) fn tests(item: Node<'_>, place: &Place, source: &[u8]) -> Vec<Item> {
                 },
                 within: place.within.clone(),
                 owner: None,
-                imports: [imports, paths::local_imports(node, source)].concat(),
+                imports: [paths::local_imports(node, source), imports].concat(),
                 refs: refs(node, source),
                 contracts: Vec::new(),
             }),

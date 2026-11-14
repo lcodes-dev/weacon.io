@@ -76,8 +76,7 @@ fn statements(sql: &str) -> Vec<String> {
         };
         match ch {
             '\'' => blank(&mut chars, current, |_, inside| inside == '\''),
-            // A quoted name is copied as it is, comment markers and all.
-            '"' | '`' => current.extend(chars.by_ref().take_while(|inside| *inside != ch)),
+            '"' | '`' => quoted(&mut chars, current, ch),
             '-' if chars.peek() == Some(&'-') => {
                 blank(&mut chars, current, |_, inside| inside == '\n');
             }
@@ -90,6 +89,27 @@ fn statements(sql: &str) -> Vec<String> {
     }
     found
 }
+
+/// A quoted name as one word, its text kept exactly between markers that tokenizing leaves alone.
+fn quoted(chars: &mut Peekable<Chars<'_>>, out: &mut String, quote: char) {
+    out.push(QUOTED);
+    for inside in chars.by_ref().take_while(|inside| *inside != quote) {
+        let hidden = SPLITS.iter().position(|split| *split == inside);
+        out.push(
+            hidden
+                .and_then(|at| HIDDEN.get(at))
+                .copied()
+                .unwrap_or(inside),
+        );
+    }
+    out.push(QUOTED);
+}
+
+/// Where a quoted name starts and ends.
+const QUOTED: char = '\u{1}';
+/// What tokenizing splits words at, and what stands in for each inside a quoted name.
+const SPLITS: [char; 5] = [' ', ',', '(', ')', '.'];
+const HIDDEN: [char; 5] = ['\u{2}', '\u{3}', '\u{4}', '\u{5}', '\u{6}'];
 
 /// Blanks out what follows up to and including the character that `ends` it, given the one
 /// before, keeping line breaks.
@@ -107,6 +127,18 @@ fn blank(chars: &mut Peekable<Chars<'_>>, out: &mut String, ends: impl Fn(char, 
 /// `notes` for `"notes"`, `main.notes` or `` `notes` ``.
 fn plain(word: &str) -> String {
     let name = word.rsplit('.').next().unwrap_or_default();
+    if let Some(quoted) = name
+        .strip_prefix(QUOTED)
+        .and_then(|rest| rest.strip_suffix(QUOTED))
+    {
+        return quoted
+            .chars()
+            .map(|ch| {
+                let hidden = HIDDEN.iter().position(|hidden| *hidden == ch);
+                hidden.and_then(|at| SPLITS.get(at)).copied().unwrap_or(ch)
+            })
+            .collect();
+    }
     name.chars()
         .filter(|ch| ch.is_alphanumeric() || *ch == '_')
         .collect()
@@ -174,11 +206,30 @@ mod tests {
             ("d", 5),
             ("e", 6),
             ("notes", 2),
-            ("notesarchive", 6),
+            ("notes--archive", 6),
             ("quoted", 4),
-            ("tasksx", 6),
+            ("tasks/*x", 6),
         ];
         assert_eq!(found, named(&tables));
+    }
+
+    #[test]
+    fn keeps_a_quoted_name_exactly() {
+        let found = left(&[
+            "CREATE TABLE \"a,b\"(id); CREATE TABLE a(id); DROP TABLE \"a,b\";",
+            "CREATE TABLE \"my table\" (id); CREATE TABLE main.\"a.b\" (id);",
+            "CREATE TABLE \"(odd)\" (id); CREATE TABLE plain_name(id);",
+        ]);
+        assert_eq!(
+            found,
+            named(&[
+                ("(odd)", 3),
+                ("a", 1),
+                ("a.b", 2),
+                ("my table", 2),
+                ("plain_name", 3)
+            ])
+        );
     }
 
     #[test]
