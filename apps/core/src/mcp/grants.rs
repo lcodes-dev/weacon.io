@@ -12,7 +12,7 @@ use weacon_agents::AgentRun;
 use weacon_observability::Fault;
 use weacon_protocol::{PermissionAnswer, RunEvent, RunId, WorkspaceId, code, to_hex};
 
-use crate::runs::task::Agent;
+use crate::chats::engine::agent::Agent;
 
 /// How many of a run's tool calls may be answered at once, so a looping agent can't hold the
 /// daemon's threads.
