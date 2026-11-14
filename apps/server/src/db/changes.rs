@@ -1,13 +1,22 @@
 use sqlx::SqliteConnection;
 use weacon_observability::Fault;
-use weacon_protocol::{MemberId, TaskId, WorkspaceChange, WorkspaceUpdate};
+use weacon_protocol::{DocId, MemberId, TaskId, WorkspaceChange, WorkspaceUpdate};
 
 use super::{Workspace, failed, stored, unreadable};
 
 const MEMBER_JOINED: &str = "member_joined";
 const TASK_CHANGED: &str = "task_changed";
+const DOC_CHANGED: &str = "doc_changed";
 
-type Row = (i64, String, String, Option<String>, Option<i64>);
+type Row = (
+    i64,
+    String,
+    String,
+    Option<String>,
+    Option<i64>,
+    Option<String>,
+    Option<i64>,
+);
 
 impl Workspace {
     /// Records that `member` joined, as the workspace's next change; false when they already
@@ -53,6 +62,31 @@ impl Workspace {
         Ok(())
     }
 
+    /// Records, inside the transaction that stores it, that `doc` is now at `version`,
+    /// through a change `member` made or accepted.
+    pub(super) async fn doc_changed(
+        &self,
+        transaction: &mut SqliteConnection,
+        doc: &DocId,
+        version: i64,
+        member: &MemberId,
+    ) -> Result<(), Fault> {
+        sqlx::query(
+            "INSERT INTO changes (workspace_id, seq, kind, member_id, doc_id, doc_version)
+             SELECT ?1, COALESCE(MAX(seq), 0) + 1, ?2, ?3, ?4, ?5 FROM changes
+             WHERE workspace_id = ?1",
+        )
+        .bind(self.id.as_str())
+        .bind(DOC_CHANGED)
+        .bind(member.as_str())
+        .bind(doc.as_str())
+        .bind(version)
+        .execute(transaction)
+        .await
+        .map_err(failed)?;
+        Ok(())
+    }
+
     /// Up to `limit` changes after `seq`, in order.
     pub(crate) async fn changes_since(
         &self,
@@ -61,7 +95,7 @@ impl Workspace {
     ) -> Result<Vec<WorkspaceUpdate>, Fault> {
         let after = i64::try_from(seq).unwrap_or(i64::MAX);
         sqlx::query_as::<_, Row>(
-            "SELECT seq, kind, member_id, task_id, task_version FROM changes
+            "SELECT seq, kind, member_id, task_id, task_version, doc_id, doc_version FROM changes
              WHERE workspace_id = ? AND seq > ? ORDER BY seq LIMIT ?",
         )
         .bind(self.id.as_str())
@@ -75,15 +109,25 @@ impl Workspace {
         .collect()
     }
 
-    fn update(&self, (seq, kind, member, task, version): Row) -> Result<WorkspaceUpdate, Fault> {
-        let change = match (kind.as_str(), task, version) {
-            (MEMBER_JOINED, None, None) => WorkspaceChange::MemberJoined {
+    fn update(&self, row: Row) -> Result<WorkspaceUpdate, Fault> {
+        let (seq, kind, member, task, task_version, doc, doc_version) = row;
+        let version = |version: i64| u64::try_from(version).map_err(|_| unreadable());
+        let change = match (kind.as_str(), task, task_version, doc, doc_version) {
+            (MEMBER_JOINED, None, None, None, None) => WorkspaceChange::MemberJoined {
                 member: stored(member)?,
             },
-            (TASK_CHANGED, Some(task), Some(version)) => WorkspaceChange::TaskChanged {
-                task: stored(task)?,
-                version: u64::try_from(version).map_err(|_| unreadable())?,
-            },
+            (TASK_CHANGED, Some(task), Some(task_version), None, None) => {
+                WorkspaceChange::TaskChanged {
+                    task: stored(task)?,
+                    version: version(task_version)?,
+                }
+            }
+            (DOC_CHANGED, None, None, Some(doc), Some(doc_version)) => {
+                WorkspaceChange::DocChanged {
+                    doc: stored(doc)?,
+                    version: version(doc_version)?,
+                }
+            }
             // This server writes every kind it stores, so another is damage, not news.
             _ => return Err(unreadable()),
         };

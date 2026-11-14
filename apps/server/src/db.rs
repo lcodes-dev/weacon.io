@@ -4,6 +4,7 @@
 mod account;
 mod backup;
 mod changes;
+mod docs;
 mod owned;
 mod schema;
 mod tasks;
@@ -17,7 +18,7 @@ use std::time::Duration;
 use sqlx::SqlitePool;
 use sqlx::sqlite::{SqliteConnectOptions, SqliteConnection, SqlitePoolOptions, SqliteSynchronous};
 use weacon_observability::Fault;
-use weacon_protocol::{MemberId, WorkspaceId, code};
+use weacon_protocol::{Author, MemberId, WorkspaceId, code};
 
 pub(crate) use account::Attempt;
 #[cfg(test)]
@@ -148,6 +149,24 @@ fn path_unusable() -> Fault {
 /// A value read back from the database, such as an id, checked like one that arrived.
 fn stored<T: TryFrom<String>>(value: String) -> Result<T, Fault> {
     T::try_from(value).map_err(|_| unreadable())
+}
+
+/// How `author` is stored, unless it is one from a newer peer.
+fn author_columns(author: &Author) -> Option<(&'static str, &MemberId)> {
+    match author {
+        Author::Person { member } => Some(("person", member)),
+        Author::Agent { owner } => Some(("agent", owner)),
+        Author::Newer => None,
+    }
+}
+
+fn stored_author(kind: &str, member: String) -> Result<Author, Fault> {
+    let member = stored(member)?;
+    match kind {
+        "person" => Ok(Author::Person { member }),
+        "agent" => Ok(Author::Agent { owner: member }),
+        _ => Err(unreadable()),
+    }
 }
 
 fn unreadable() -> Fault {
@@ -539,6 +558,9 @@ mod tests {
                 "sessions",
                 "tasks",
                 "task_versions",
+                "docs",
+                "doc_versions",
+                "doc_pins",
                 "changes"
             ]
         );

@@ -1,9 +1,9 @@
 use sqlx::SqliteConnection;
 use weacon_model::{Change, EditError, Revision, Task, TaskEdit};
 use weacon_observability::Fault;
-use weacon_protocol::{Author, MemberId, TaskId, TaskStatus, code};
+use weacon_protocol::{TaskId, TaskStatus, code};
 
-use super::{Workspace, failed, stored, unreadable};
+use super::{Workspace, author_columns, failed, stored, unreadable};
 
 type Row = (String, String, String, String, i64);
 
@@ -101,7 +101,7 @@ impl Workspace {
         task: &Task,
         change: &Change,
     ) -> Result<(), Fault> {
-        let (kind, author) = author_columns(change.author())?;
+        let (kind, author) = author_columns(change.author()).ok_or_else(unknown)?;
         let version = version_number(task.version)?;
         sqlx::query(
             "INSERT INTO task_versions
@@ -187,17 +187,10 @@ fn stored_status(text: &str) -> Result<TaskStatus, Fault> {
     }
 }
 
-fn author_columns(author: &Author) -> Result<(&'static str, &MemberId), Fault> {
-    match author {
-        Author::Person { member } => Ok(("person", member)),
-        Author::Agent { owner } => Ok(("agent", owner)),
-        Author::Newer => Err(unknown()),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use weacon_model::{OrderKey, Title};
+    use weacon_protocol::Author;
     use weacon_testing::TempDir;
 
     use super::*;
@@ -466,10 +459,7 @@ mod tests {
         assert_eq!(code(&edited), "task.unknown_value");
         assert_eq!(code(&added), "task.unknown_value");
         assert_eq!(code(&last), "task.last_version");
-        assert_eq!(
-            code(&author_columns(&Author::Newer).unwrap_err()),
-            "task.unknown_value"
-        );
+        assert_eq!(author_columns(&Author::Newer), None);
         assert_eq!(one.tasks().await.unwrap(), [task]);
     }
 
