@@ -2,6 +2,7 @@
 //! orders agents, commits what happens to each chat's log and then publishes it.
 
 pub(crate) mod agent;
+mod busy;
 #[cfg(test)]
 mod by_hand;
 mod commands;
@@ -86,17 +87,6 @@ impl Chats {
         let ask = Ask::Command(command, answer);
         self.asks.send(ask).await.map_err(|_| stopped())?;
         answered.await.map_err(|_| stopped())?
-    }
-
-    /// Whether an agent is on a turn or waits on a person, or a session or a turn's end the
-    /// journal couldn't save yet is only in memory, which a restart would cut off or lose.
-    pub(crate) async fn busy(&self) -> Result<bool, Fault> {
-        let (answer, answered) = oneshot::channel();
-        self.asks
-            .send(Ask::Busy(answer))
-            .await
-            .map_err(|_| stopped())?;
-        answered.await.map_err(|_| stopped())
     }
 
     /// The answer to `query`, if it has one; a subscription's events go to `client`.
@@ -319,16 +309,6 @@ impl<A: Agent> Engine<A> {
             .get(key)
             .and_then(|chat| chat.orders.as_ref())
             .is_some_and(|orders| orders.send(order).is_ok())
-    }
-
-    fn busy(&self) -> bool {
-        self.open_chats.iter().any(|(key, chat)| {
-            let live = chat.orders.is_some()
-                && self.runs.of(key).is_some_and(|record| {
-                    record.turn.is_some() || record.state == RunState::Waiting
-                });
-            live || chat.pending_session.is_some() || chat.pending_end.is_some()
-        })
     }
 
     // Whether the chat's run hasn't yet reported its exit.

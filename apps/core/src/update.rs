@@ -8,6 +8,7 @@ mod settings;
 mod verify;
 mod watch;
 
+use watch::Found;
 pub(crate) use watch::{CHECK_EVERY, Check, Hooks, Watch};
 
 use std::fs::{File, TryLockError};
@@ -18,7 +19,7 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use weacon_appkit::Ending;
-use weacon_observability::Fault;
+use weacon_observability::{Fault, Logger};
 use weacon_protocol::{
     BuildTarget, Commit, PROTOCOL, ReleaseManifest, ReleaseVersion, UpdateSchedule, code,
 };
@@ -289,6 +290,25 @@ pub(crate) fn watch(state_dir: &Path, version: &str) -> Option<Watch> {
 pub(crate) async fn agents_busy(chats: &crate::chats::Chats) -> bool {
     let answer = tokio::time::timeout(ENGINE_ANSWERS_WITHIN, chats.busy()).await;
     answer.map_or(true, |busy| busy.unwrap_or(true))
+}
+
+/// A check with `updates`, if there are any, once the engine says whether an agent is busy.
+pub(crate) async fn start(updates: Option<&Watch>, chats: &crate::chats::Chats) -> Option<Check> {
+    let updates = updates?;
+    Some(updates.start(agents_busy(chats).await))
+}
+
+/// Logs what the check in `checking` found, and clears it.
+pub(crate) fn ended(
+    checking: &mut Option<Check>,
+    updates: Option<&mut Watch>,
+    joined: Result<Result<Found, Fault>, tokio::task::JoinError>,
+    log: &Logger,
+) {
+    *checking = None;
+    if let Some(updates) = updates {
+        updates.finished(joined, log);
+    }
 }
 
 /// A running check's result; never, when none runs. Awaiting a task by reference can be

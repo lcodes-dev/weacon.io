@@ -156,13 +156,6 @@ impl Daemon {
         })
     }
 
-    /// This daemon without its update schedule, so tests never reach the release server.
-    #[cfg(test)]
-    pub(crate) fn without_updates(mut self) -> Self {
-        self.updates = None;
-        self
-    }
-
     /// Serves clients until `shutdown` finishes, then closes every connection and the socket.
     pub(crate) async fn serve(mut self, shutdown: impl Future<Output = ()>) {
         let mut clients = JoinSet::new();
@@ -176,16 +169,10 @@ impl Daemon {
                 () = &mut shutdown => break,
                 _ = disk_check.tick() => self.disk.check(&self.shared.log).await,
                 _ = memory_sample.tick(), if platform::PROCESSES => self.memory.record(&self.shared.log).await,
-                _ = update_check.tick(), if checking.is_none() && self.updates.is_some() => {
-                    let busy = update::agents_busy(&self.shared.chats).await;
-                    checking = self.updates.as_ref().map(|updates| updates.start(busy));
-                }
-                joined = update::finished(&mut checking), if checking.is_some() => {
-                    checking = None;
-                    if let Some(updates) = &mut self.updates {
-                        updates.finished(joined, &self.shared.log);
-                    }
-                }
+                _ = update_check.tick(), if checking.is_none() => checking =
+                    update::start(self.updates.as_ref(), &self.shared.chats).await,
+                joined = update::finished(&mut checking), if checking.is_some() =>
+                    update::ended(&mut checking, self.updates.as_mut(), joined, &self.shared.log),
                 accepted = self.listener.accept() => match accepted {
                     Ok(stream) => self.admit(stream, &mut clients),
                     Err(error) => {
@@ -450,8 +437,9 @@ mod tests {
             SpawnPolicy::default(),
             Places::default(),
             log,
-        )?
-        .without_updates();
+        )?;
+        // Tests never reach the release server.
+        daemon.updates = None;
         change(&mut daemon);
         let socket = daemon.socket.clone();
         let (stop, stopped) = oneshot::channel();
