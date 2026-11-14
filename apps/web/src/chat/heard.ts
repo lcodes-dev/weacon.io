@@ -47,9 +47,19 @@ export function heard(message: ChatMessage | RunMessage | ErrorMessage, ref: Cha
  * events in its chat's log, live or in a snapshot or window.
  */
 export function receiptsIn(message: ChatMessage | RunMessage | ErrorMessage): Array<Extract<Incoming, { type: "receipt" }>> {
-  if (message.type !== "chat" && message.type !== "chat_answer") {
+  return entriesIn(message).flatMap(({ event }) =>
+    event.kind === "receipt" ? [{ id: message.id, type: "receipt" as const, ...event.receipt }] : [],
+  );
+}
+
+// The entries `message` holds; only a snapshot's and a window's events were checked as it arrived.
+function entriesIn(message: ChatMessage | RunMessage | ErrorMessage): ChatEntry[] {
+  if (message.type === "chat") {
+    return [message.entry];
+  }
+  if (message.type !== "chat_answer") {
     return [];
   }
-  const entries = message.type === "chat" ? [message.entry] : "events" in message.answer ? message.answer.events : [];
-  return entries.flatMap(({ event }) => (event.kind === "receipt" ? [{ id: message.id, type: "receipt" as const, ...event.receipt }] : []));
+  const { answer } = message;
+  return answer.kind === "snapshot" || answer.kind === "window" ? answer.events : [];
 }

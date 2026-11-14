@@ -259,9 +259,13 @@ impl FakeChat {
         told
     }
 
-    // Commits the answer, then plays the turn it lets the run finish.
+    // Commits the answer to a prompt still waiting, then plays the turn it lets the run finish.
     fn answered(&mut self, answer: &PermissionAnswer) -> Vec<Envelope> {
-        let Some(agent) = self.agent_of(&answer.run) else {
+        let open = self
+            .open_prompts()
+            .iter()
+            .any(|&(run, prompt, _)| *run == answer.run && prompt == answer.prompt);
+        let Some(agent) = self.agent_of(&answer.run).filter(|_| open) else {
             return Vec::new();
         };
         let reply = if answer.allow {
@@ -345,6 +349,13 @@ impl FakeChat {
     // The permission prompts no later entry has closed: by a withdrawal, the run finishing, or the
     // run no longer waiting.
     fn waiting(&self) -> Vec<u64> {
+        self.open_prompts()
+            .into_iter()
+            .map(|(_, _, seq)| seq)
+            .collect()
+    }
+
+    fn open_prompts(&self) -> Vec<(&RunId, u32, u64)> {
         let mut open: Vec<(&RunId, u32, u64)> = Vec::new();
         for entry in &self.entries {
             open.retain(|&(run, prompt, _)| !closes(entry, run, prompt));
@@ -352,7 +363,7 @@ impl FakeChat {
                 open.push((run, prompt, entry.seq));
             }
         }
-        open.into_iter().map(|(_, _, seq)| seq).collect()
+        open
     }
 
     fn agent_of(&self, run: &RunId) -> Option<AgentRef> {
@@ -680,6 +691,31 @@ mod tests {
         );
         assert_eq!(shape(&unknown), [(4, "81 receipt q-9".to_owned())]);
         assert_eq!(snapshot(&mut fake).2, Vec::<u64>::new());
+    }
+
+    #[test]
+    fn an_answer_to_a_prompt_no_longer_waiting_is_received_and_does_nothing() {
+        let mut fake = fake();
+        fake.answer(&query(4, "c-1", ChatQueryKind::Subscribe { after: SEEDED }));
+        let answer = command(ChatAction::Permission {
+            answer: PermissionAnswer {
+                run: run("r-2").unwrap(),
+                prompt: 1,
+                allow: true,
+            },
+        });
+        fake.answer(&command(ChatAction::Interrupt));
+        let late = fake.answer(&answer);
+        let wrong = fake.answer(&command(ChatAction::Permission {
+            answer: PermissionAnswer {
+                run: run("r-1").unwrap(),
+                prompt: 1,
+                allow: true,
+            },
+        }));
+
+        assert_eq!(shape(&late), [(4, "75 receipt q-9".to_owned())]);
+        assert_eq!(shape(&wrong), [(4, "76 receipt q-9".to_owned())]);
     }
 
     #[test]

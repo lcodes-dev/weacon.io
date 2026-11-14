@@ -59,5 +59,7 @@ test("a committed receipt is taken as the receipt of the command it answers, liv
   assert.deepEqual(receiptsIn(answer({ kind: "snapshot", seq: 3, runs: [], waiting: [], events })), [accepted, refused]);
   assert.deepEqual(receiptsIn(update), []);
   assert.deepEqual(receiptsIn(answer({ kind: "events_lost" })), []);
+  // Fields of an answer this app doesn't read aren't checked as it arrives, so they are never read.
+  assert.deepEqual(receiptsIn(answer({ kind: "events_lost", events: null } as never)), []);
   assert.deepEqual(receiptsIn({ id: 6, type: "error", code: "chat.unknown", retryable: false }), []);
 });
