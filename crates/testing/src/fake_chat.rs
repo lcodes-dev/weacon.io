@@ -1,7 +1,7 @@
-//! A made-up chat log that the fake server keeps for its client: a person's prompt and a long
-//! answer, another prompt, a member's Claude run that plays the recording, and a shared Codex run
-//! waiting on a permission prompt. It answers the client's chat queries and commands, and commits the recording's
-//! events as they play. A prompt of exactly [`LOSE`] makes it tell the client it lost events, and a
+//! A made-up chat log that the fake server keeps for its client: a person's prompt and a member's
+//! Claude run's long answer, then another prompt and a shared Codex run waiting on a permission
+//! prompt. It answers the client's chat queries and commands, and commits the recording's events,
+//! the Claude run's, as they play. A prompt of exactly [`LOSE`] makes it tell the client it lost events, and a
 //! query about any other chat is refused.
 
 use serde_json::Value;
@@ -57,7 +57,7 @@ impl FakeChat {
         let member = MemberId::try_from("m-1".to_owned())?;
         let claude = agent(AgentKind::Claude, AgentOwner::Member { member }, "laptop")?;
         fake.prompt("q-0", FIRST)?;
-        fake.start(&mine, RunState::Running, Some(claude));
+        fake.start(&mine, claude);
         for step in 1..=EARLIER {
             fake.commit(said(
                 &mine,
@@ -66,11 +66,9 @@ impl FakeChat {
         }
         fake.finish(&mine, Outcome::Completed);
         fake.prompt("q-1", "Now merge across units too.")?;
-        fake.status(&mine, RunState::Running);
         fake.start(
             &shared,
-            RunState::Waiting,
-            Some(agent(AgentKind::Codex, AgentOwner::Shared, "team VPS")?),
+            agent(AgentKind::Codex, AgentOwner::Shared, "team VPS")?,
         );
         fake.commit(said(
             &shared,
@@ -80,13 +78,14 @@ impl FakeChat {
             update: RunUpdate {
                 run: shared.clone(),
                 event: RunEvent::PermissionAsked {
-                    run: shared,
+                    run: shared.clone(),
                     prompt: 1,
                     tool: "Bash".to_owned(),
                     input: Value::Null,
                 },
             },
         });
+        fake.status(&shared, RunState::Waiting);
         Ok(fake)
     }
 
@@ -164,7 +163,7 @@ impl FakeChat {
                     id,
                     ChatAnswerKind::Snapshot {
                         seq: self.seq(),
-                        runs: self.statuses().next_back().cloned().into_iter().collect(),
+                        runs: self.current().into_iter().collect(),
                         waiting: ChatRuns::fold(&self.entries).waiting_seqs(),
                         events,
                     },
@@ -206,10 +205,9 @@ impl FakeChat {
             ChatAction::Permission { answer } => self.answered(answer),
             ChatAction::Interrupt => {
                 let working = self
-                    .statuses()
-                    .next_back()
+                    .current()
                     .filter(|status| matches!(status.state, RunState::Running | RunState::Waiting));
-                if let Some(run) = working.map(|status| status.run.clone()) {
+                if let Some(RunStatus { run, .. }) = working {
                     self.finish(&run, Outcome::Interrupted);
                     self.stopped.push(run);
                 }
@@ -286,13 +284,18 @@ impl FakeChat {
         self.status(run, RunState::Idle);
     }
 
+    fn start(&mut self, run: &RunId, agent: AgentRef) {
+        let status = RunStatus {
+            run: run.clone(),
+            state: RunState::Running,
+            agent: Some(agent),
+        };
+        self.commit(ChatEvent::RunStatus { status });
+    }
+
     // A run's state, under the agent its last status named.
     fn status(&mut self, run: &RunId, state: RunState) {
         let agent = self.last(run).and_then(|status| status.agent.clone());
-        self.start(run, state, agent);
-    }
-
-    fn start(&mut self, run: &RunId, state: RunState, agent: Option<AgentRef>) {
         let status = RunStatus {
             run: run.clone(),
             state,
@@ -333,7 +336,12 @@ impl FakeChat {
         earlier.into_iter().skip(skip).cloned().collect()
     }
 
-    // The statuses in the log, oldest first; the last is the chat's current run.
+    // The chat's current run, as its last status says.
+    fn current(&self) -> Option<RunStatus> {
+        self.statuses().next_back().cloned()
+    }
+
+    // The statuses in the log, oldest first.
     fn statuses(&self) -> impl DoubleEndedIterator<Item = &RunStatus> {
         self.entries.iter().filter_map(|entry| {
             let ChatEvent::RunStatus { status } = &entry.event else {
@@ -372,8 +380,6 @@ impl FakeChat {
 
 #[cfg(test)]
 mod tests {
-    use weacon_protocol::MachineName;
-
     use super::*;
 
     fn fake() -> FakeChat {
@@ -489,32 +495,46 @@ mod tests {
     }
 
     #[test]
-    fn the_chat_starts_with_a_prompt_two_agents_and_a_prompt_waiting() {
+    fn the_chat_starts_with_a_finished_turn_then_a_shared_run_waiting_on_a_prompt() {
         let mut fake = fake();
         let (seq, runs, waiting) = snapshot(&mut fake);
-        let first = fake.answer(&query(
-            1,
-            "c-1",
-            ChatQueryKind::Window {
-                before: 2,
-                limit: 1,
-            },
-        ));
+        let member = MemberId::try_from("m-1".to_owned()).unwrap();
+        let claude = agent(AgentKind::Claude, AgentOwner::Member { member }, "laptop").unwrap();
+        let codex = agent(AgentKind::Codex, AgentOwner::Shared, "team VPS").unwrap();
+        let log: Vec<_> = fake
+            .entries
+            .iter()
+            .map(|entry| format!("{} {}", entry.seq, kind(&entry.event)))
+            .filter(|told| !told.ends_with("r-1 text"))
+            .collect();
+        let agents: Vec<_> = fake.statuses().map(|status| status.agent.clone()).collect();
 
-        assert_eq!((seq, waiting), (SEEDED, vec![SEEDED]));
-        assert_eq!(shape(&first), [(1, "window [1]".to_owned())]);
-        let [status] = &runs[..] else {
-            panic!("not one run: {runs:?}");
-        };
-        let agent = status.agent.clone().unwrap();
         assert_eq!(
-            (status.run.as_str(), status.state),
-            ("r-2", RunState::Waiting)
+            log,
+            [
+                format!("1 prompt {FIRST}"),
+                "2 r-1 Running".to_owned(),
+                "63 r-1 finished".to_owned(),
+                "64 r-1 Idle".to_owned(),
+                "65 prompt Now merge across units too.".to_owned(),
+                "66 r-2 Running".to_owned(),
+                "67 r-2 text".to_owned(),
+                "68 r-2 permission_asked".to_owned(),
+                format!("{SEEDED} r-2 Waiting"),
+            ]
         );
-        assert_eq!(agent.owner, AgentOwner::Shared);
         assert_eq!(
-            agent.machine.as_ref().map(MachineName::as_str),
-            Some("team VPS")
+            agents,
+            [claude.clone(), claude, codex.clone(), codex.clone()].map(Some)
+        );
+        assert_eq!((seq, waiting), (SEEDED, vec![SEEDED - 1]));
+        assert_eq!(
+            runs,
+            [RunStatus {
+                run: run("r-2").unwrap(),
+                state: RunState::Waiting,
+                agent: Some(codex)
+            }]
         );
     }
 
@@ -536,12 +556,12 @@ mod tests {
         assert_eq!(
             shape(&missed),
             [
-                (4, "68 r-2 text".to_owned()),
-                (4, "69 r-2 permission_asked".to_owned())
+                (4, "68 r-2 permission_asked".to_owned()),
+                (4, "69 r-2 Waiting".to_owned())
             ]
         );
-        assert!(delta.is_empty());
-        assert_eq!(shape(&text), [(4, "70 r-1 text".to_owned())]);
+        assert_eq!(shape(&delta), [(4, "70 r-1 Running".to_owned())]);
+        assert_eq!(shape(&text), [(4, "71 r-1 text".to_owned())]);
         assert_eq!(
             shape(&fake.answer(&query(
                 6,
@@ -562,10 +582,13 @@ mod tests {
             .is_empty()
         );
 
-        assert_eq!(snapshot(&mut fake).0, 70);
+        assert_eq!(snapshot(&mut fake).0, 71);
         assert_eq!(
             shape(&fake.answer(&query(2, "c-1", ChatQueryKind::Subscribe { after: SEEDED }))),
-            [(2, "70 r-1 text".to_owned())]
+            [
+                (2, "70 r-1 Running".to_owned()),
+                (2, "71 r-1 text".to_owned())
+            ]
         );
     }
 
@@ -592,12 +615,13 @@ mod tests {
             panic!("no snapshot");
         };
         assert_eq!(events.len(), PAGE);
-        assert_eq!(events.last().map(|entry| entry.seq), Some(129));
+        assert_eq!(events.last().map(|entry| entry.seq), Some(130));
     }
 
     #[test]
-    fn a_stopped_run_plays_no_further() {
+    fn an_interrupt_finishes_the_waiting_run_which_then_plays_no_further() {
         let mut fake = fake();
+        fake.answer(&query(4, "c-1", ChatQueryKind::Subscribe { after: SEEDED }));
         let recorded = played_by(
             "r-2",
             RunEvent::Text {
@@ -605,7 +629,17 @@ mod tests {
             },
         );
         assert!(fake.plays(&recorded));
-        fake.answer(&command(ChatAction::Interrupt));
+        let stopped = fake.answer(&command(ChatAction::Interrupt));
+
+        assert_eq!(
+            shape(&stopped),
+            [
+                (4, "70 receipt q-9".to_owned()),
+                (4, "71 r-2 finished".to_owned()),
+                (4, "72 r-2 Idle".to_owned())
+            ]
+        );
+        assert_eq!(snapshot(&mut fake).2, Vec::<u64>::new());
         assert!(!fake.plays(&recorded));
         assert!(fake.played(&recorded).is_empty());
         assert!(fake.plays(&query(1, "c-1", ChatQueryKind::Snapshot)));
@@ -791,8 +825,8 @@ mod tests {
         let (seq, runs, waiting) = snapshot(&mut fake);
 
         assert_eq!(shape(&asked), []);
-        assert_eq!(seq, SEEDED + 2);
-        assert_eq!(waiting, [SEEDED + 1]);
+        assert_eq!(seq, SEEDED + 3);
+        assert_eq!(waiting, [SEEDED + 2]);
         assert_eq!(
             runs.iter()
                 .map(|status| (status.run.as_str(), status.state))
