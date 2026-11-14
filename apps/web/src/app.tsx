@@ -1,34 +1,50 @@
 import { useState } from "react";
 
 import { Composer } from "./composer/composer.tsx";
-import { type Send, blocked } from "./composer/prompt.ts";
+import { type Late, type Send, blocked } from "./composer/prompt.ts";
 import { type Status, statusText } from "./connection.ts";
 import { type Changes, canAsk } from "./diff/changes.ts";
 import type { Comment } from "./diff/comments.ts";
 import { DiffView } from "./diff/diff-view.tsx";
 import type { ChatRef } from "./chat-ref.ts";
 import type { App as Build } from "./protocol.ts";
+import type { Line } from "./chat/lines.ts";
+import { StopButton } from "./chat/parts.tsx";
 import { Settings } from "./settings/settings.tsx";
-import type { Transcript } from "./transcript/transcript.ts";
-import { TranscriptView } from "./transcript/transcript-view.tsx";
+import { type Answerer, TranscriptView } from "./transcript/transcript-view.tsx";
 
 type Shown = "run" | "changes" | "settings";
 
-/** The page: a header with Changes and Settings, over the run's transcript and the message box, its changes, or Settings. */
+/** What the chat shows, and what a person can do with it. */
+export type ChatView = {
+  lines: readonly Line[];
+  older: (() => void) | undefined;
+  answering: Answerer;
+  loading: boolean;
+  /** Asks for the chat again, when the server refused it. */
+  retry: (() => void) | undefined;
+  /** Stops the agent's turn, while one is running. */
+  stop: { stopping: boolean; problem: string | undefined; stop: () => void } | undefined;
+};
+
+/** The page: a header with Stop, Changes and Settings, over the chat's transcript and the message box, its changes, or Settings. */
 export function App({
   me,
   status,
-  transcript,
+  chat,
   chatRef,
   send,
+  late,
   changes,
   openChanges,
 }: {
   me: Build;
   status: Status;
-  transcript: Transcript;
+  chat: ChatView;
   chatRef: ChatRef | undefined;
   send: Send;
+  /** How a prompt ended, heard after its wait ran out. */
+  late: Late | undefined;
   changes: Changes;
   /** Asks the server for the chat's changes, when they need asking. */
   openChanges: () => void;
@@ -41,6 +57,7 @@ export function App({
         <span className="status">{statusText(status)}</span>
         {shown === "run" ? (
           <span className="actions">
+            {chat.stop !== undefined && <StopButton stopping={chat.stop.stopping} problem={chat.stop.problem} onStop={chat.stop.stop} />}
             {chatRef !== undefined && canAsk(status) && (
               <button
                 type="button"
@@ -64,7 +81,14 @@ export function App({
       </header>
       <main>
         <div className={shown === "run" ? "pane" : "pane away"}>
-          <TranscriptView rows={transcript.rows} writing={transcript.writing} away={shown !== "run"} />
+          <TranscriptView
+            lines={chat.lines}
+            older={chat.older}
+            answering={chat.answering}
+            loading={chat.loading}
+            retry={chat.retry}
+            away={shown !== "run"}
+          />
         </div>
         {shown === "changes" && (
           <div className="pane">
@@ -77,7 +101,7 @@ export function App({
           </div>
         )}
       </main>
-      <Composer send={send} blocked={blocked(status, chatRef)} hidden={shown !== "run"} />
+      <Composer send={send} blocked={blocked(status, chatRef)} hidden={shown !== "run"} late={late} />
     </div>
   );
 }
