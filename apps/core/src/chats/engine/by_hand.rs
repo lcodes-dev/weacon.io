@@ -27,6 +27,7 @@ pub(super) async fn on_turn() -> OnTurn {
     let subscribe = ChatQueryKind::Subscribe { after: 0 };
     engine.query(&key(), subscribe, &client).await.unwrap();
     engine.command(&key(), prompt("r-1", "Hi")).await.unwrap();
+    launched(&mut engine).await;
     skip(&mut pushes, 4).await;
     let agent = soon(bench.started.recv()).await.unwrap();
     OnTurn {
@@ -120,4 +121,10 @@ pub(super) async fn until_deaf(engine: &Engine<FakeAgent>) {
         tokio::task::yield_now().await;
     }
     panic!("the run still reads its orders");
+}
+
+// Takes up the next agent started off the engine's loop, as its loop would.
+pub(super) async fn launched(engine: &mut Engine<FakeAgent>) {
+    let launched = soon(engine.started.recv()).await.unwrap();
+    engine.finish_launch(launched).await.unwrap();
 }

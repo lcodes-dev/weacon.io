@@ -6,8 +6,11 @@ pub(crate) mod agent;
 mod by_hand;
 mod commands;
 mod cut;
+mod handle;
 mod launch;
+mod pending;
 mod queries;
+mod rest;
 mod said;
 mod turns;
 
@@ -15,22 +18,26 @@ use std::collections::HashMap;
 use std::collections::hash_map::Entry;
 use std::sync::Arc;
 
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::mpsc;
 use weacon_observability::{Fault, Field, Logger};
 use weacon_protocol::{
-    AgentKind, AgentSession, ChatAnswerKind, ChatCommand, ChatEntry, ChatEvent, ChatQuery,
-    ChatUpdate, Message, Outcome, PermissionAnswer, Receipt, RequestId, RunId, RunState, RunStatus,
-    code,
+    AgentKind, AgentSession, ChatEntry, ChatEvent, ChatUpdate, Message, Outcome, Receipt,
+    RequestId, RunId, RunState, RunStatus, code,
 };
 
 use self::agent::{Agent, Order, Said};
-use super::feed::{Client, Subscriber};
+use self::handle::Ask;
+pub(crate) use self::handle::Chats;
+use self::launch::Launched;
+use self::pending::{PendingAnswer, PendingEnd, PendingInterrupt};
+use super::feed::Subscriber;
 use super::log::ChatLog;
 use crate::runs::{ChatKey, Runs};
 use crate::workspaces::Workspaces;
 
 const ASKS: usize = 64;
 const SAYS: usize = 256;
+const IDLE_CHECK: std::time::Duration = std::time::Duration::from_mins(1);
 
 /// Which agent to start, and as what.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -51,53 +58,11 @@ pub(crate) struct Host<A> {
     pub(crate) now: fn() -> u64,
 }
 
-/// The clients' way to the engine.
-#[derive(Clone, Debug)]
-pub(crate) struct Chats {
-    asks: mpsc::Sender<Ask>,
-}
-
-enum Ask {
-    Command(ChatCommand, oneshot::Sender<Result<(), Fault>>),
-    Query(
-        ChatQuery,
-        Client,
-        oneshot::Sender<Result<Option<ChatAnswerKind>, Fault>>,
-    ),
-}
-
-fn stopped() -> Fault {
-    Fault::new(code!("chat.engine_stopped"), "The daemon is stopping")
-}
-
 fn unsupported() -> Fault {
     Fault::new(
         code!("message.unsupported"),
         "This build doesn't know that message",
     )
-}
-
-impl Chats {
-    /// Acts on `command`. Its receipts are events in the chat's log; an error means it has no
-    /// receipt, and sending it again is safe.
-    pub(crate) async fn command(&self, command: ChatCommand) -> Result<(), Fault> {
-        let (answer, answered) = oneshot::channel();
-        let ask = Ask::Command(command, answer);
-        self.asks.send(ask).await.map_err(|_| stopped())?;
-        answered.await.map_err(|_| stopped())?
-    }
-
-    /// The answer to `query`, if it has one; a subscription's events go to `client`.
-    pub(crate) async fn query(
-        &self,
-        query: ChatQuery,
-        client: &Client,
-    ) -> Result<Option<ChatAnswerKind>, Fault> {
-        let (answer, answered) = oneshot::channel();
-        let ask = Ask::Query(query, client.clone(), answer);
-        self.asks.send(ask).await.map_err(|_| stopped())?;
-        answered.await.map_err(|_| stopped())?
-    }
 }
 
 /// A chat the engine has open: one with a running agent, a waiting prompt or a subscriber.
@@ -107,9 +72,12 @@ struct Chat {
     /// The way to the chat's agent: none without one, closed once it stopped reading, until
     /// its exit is reported.
     orders: Option<mpsc::UnboundedSender<Order>>,
+    /// The run whose agent is starting, off the engine's loop.
+    launching: Option<RunId>,
     pending_answers: Vec<PendingAnswer>,
     pending_end: Option<PendingEnd>,
-    pending_interrupt: Option<PendingInterrupt>,
+    /// Interrupts committed or tried and not yet sent, each bound to the turn it stops.
+    pending_interrupts: Vec<PendingInterrupt>,
     /// The agent's session when the runs journal couldn't save it.
     pending_session: Option<AgentSession>,
 }
@@ -122,32 +90,13 @@ impl Chat {
     // Whether nothing needs the chat open.
     fn is_unused(&self) -> bool {
         self.orders.is_none()
+            && self.launching.is_none()
+            && self.pending_interrupts.is_empty()
             && self.subscribers.is_empty()
             && self.pending_answers.is_empty()
             && self.pending_end.is_none()
             && self.pending_session.is_none()
     }
-}
-
-/// An answer to a waiting prompt whose receipt is being written, so a retry delivers it.
-#[derive(Debug, PartialEq, Eq)]
-struct PendingAnswer {
-    request: RequestId,
-    answer: PermissionAnswer,
-}
-
-/// The outcome a turn's run reported, when the turn's receipt couldn't be written.
-#[derive(Debug, PartialEq, Eq)]
-struct PendingEnd {
-    turn: RequestId,
-    outcome: Outcome,
-}
-
-/// An interrupt committed and not yet sent, and the turn it stops.
-#[derive(Debug, PartialEq, Eq)]
-struct PendingInterrupt {
-    request: RequestId,
-    turn: Option<RequestId>,
 }
 
 pub(crate) struct Engine<A> {
@@ -158,6 +107,10 @@ pub(crate) struct Engine<A> {
     asked: mpsc::Receiver<Ask>,
     incoming: mpsc::Receiver<Said>,
     says: mpsc::Sender<Said>,
+    /// Set while the disk is full: prompts are queued and no new turn starts.
+    disk_full: bool,
+    starts: mpsc::UnboundedSender<Launched<A>>,
+    started: mpsc::UnboundedReceiver<Launched<A>>,
     log: Logger,
 }
 
@@ -170,6 +123,7 @@ impl<A: Agent> Engine<A> {
     ) -> (Chats, Self) {
         let (asks, asked) = mpsc::channel(ASKS);
         let (says, incoming) = mpsc::channel(SAYS);
+        let (starts, started) = mpsc::unbounded_channel();
         let engine = Self {
             runs,
             workspaces,
@@ -178,15 +132,25 @@ impl<A: Agent> Engine<A> {
             asked,
             incoming,
             says,
+            disk_full: false,
+            starts,
+            started,
             log,
         };
-        (Chats { asks }, engine)
+        (Chats::new(asks), engine)
     }
 
     /// Serves until every [`Chats`] is dropped; the agents stop with it.
     pub(crate) async fn serve(mut self) {
+        self.reconcile().await;
+        let mut ticks = tokio::time::interval(IDLE_CHECK);
+        ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
             let key = tokio::select! {
+                _ = ticks.tick() => {
+                    self.sleep_idle().await;
+                    continue;
+                }
                 ask = self.asked.recv() => match ask {
                     Some(Ask::Command(command, answer)) => {
                         let key = ChatKey::new(&command.workspace, &command.chat);
@@ -198,6 +162,10 @@ impl<A: Agent> Engine<A> {
                         drop(answer.send(self.query(&key, query.query, &client).await));
                         key
                     }
+                    Some(Ask::DiskFull(full)) => {
+                        self.set_disk_full(full).await;
+                        continue;
+                    }
                     None => return self.log.info("engine stopped", &[]),
                 },
                 Some(said) = self.incoming.recv() => {
@@ -205,6 +173,13 @@ impl<A: Agent> Engine<A> {
                     if let Err(fault) = self.heard(&key, &said.of.run, said.heard).await {
                         let fields = failed(&key, &said.of.run, &fault);
                         self.log.error("run event not committed", &fields);
+                    }
+                    key
+                }
+                Some(launched) = self.started.recv() => {
+                    let (key, run) = (launched.key.clone(), launched.run.clone());
+                    if let Err(fault) = self.finish_launch(launched).await {
+                        self.log.error("run start not handled", &failed(&key, &run, &fault));
                     }
                     key
                 }
@@ -221,6 +196,21 @@ impl<A: Agent> Engine<A> {
     ) -> Result<(), Fault> {
         self.runs.update(key, |record| record.state = state).await?;
         self.tell_state(key, run, state).await
+    }
+
+    // Once nothing of `run`, the chat's own run, waits for a person, its turn is running again.
+    async fn running_again(&mut self, key: &ChatKey, run: &RunId) -> Result<(), Fault> {
+        let log = &self.open(key).await?.events;
+        let asks = log.runs().asks(run);
+        let running = self
+            .runs
+            .of(key)
+            .is_some_and(|record| record.state == RunState::Running);
+        let current = self.run_of(key).as_ref() == Some(run);
+        if asks || running || !current || self.turn(key).is_none() {
+            return Ok(());
+        }
+        self.set_state(key, run, RunState::Running).await
     }
 
     // Commits the run's state for the chat's subscribers; the journal already holds it.
@@ -338,9 +328,10 @@ impl<A: Agent> Engine<A> {
                 events: ChatLog::open(&root, &key.chat).await?,
                 subscribers: Vec::new(),
                 orders: None,
+                launching: None,
                 pending_answers: Vec::new(),
                 pending_end: None,
-                pending_interrupt: None,
+                pending_interrupts: Vec::new(),
                 pending_session: None,
             })),
         }
@@ -366,10 +357,15 @@ impl<A: Agent> Engine<A> {
 
 // What names a chat's run on a log line.
 fn about(key: &ChatKey, run: &RunId) -> [(&'static str, Field); 3] {
+    let [workspace, chat] = chat_about(key);
+    [workspace, chat, ("run_id", run.as_str().into())]
+}
+
+// What names a chat on a log line.
+fn chat_about(key: &ChatKey) -> [(&'static str, Field); 2] {
     [
         ("workspace_id", key.workspace.as_str().into()),
         ("chat_id", key.chat.as_str().into()),
-        ("run_id", run.as_str().into()),
     ]
 }
 
@@ -398,8 +394,8 @@ mod tests {
     use super::by_hand::on_turn;
     use super::*;
     use crate::chats::test_support::{
-        Bench, Started, Told, allow, asks, bench, chat, client, command, key, prompt,
-        prompt_naming, pushed, query, run, session, skip, soon, text,
+        Bench, Started, Told, allow, asks, bench, chat, client, command, key, parts, prompt,
+        prompt_naming, pushed, query, run, session, skip, soon, text, workspace,
     };
 
     fn done(outcome: Outcome) -> RunEvent {
@@ -820,6 +816,88 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
+    async fn a_chat_whose_agent_is_slow_to_start_holds_up_no_other() {
+        let mut bench = bench();
+        let release = bench.hold_next_start();
+
+        let sent = soon(async { Some(bench.chats.command(prompt("r-1", "Hi")).await) }).await;
+        assert!(matches!(sent, Some(Ok(()))));
+        let (anyone, _pushes) = client(1);
+        let elsewhere = query("c-2", ChatQueryKind::Snapshot);
+        let answer = soon(async { Some(bench.chats.query(elsewhere, &anyone).await) }).await;
+        assert!(matches!(
+            answer,
+            Some(Ok(Some(ChatAnswerKind::Snapshot { seq: 0, .. })))
+        ));
+
+        drop(release);
+        let mut started = soon(bench.started.recv()).await.unwrap();
+        assert_eq!(
+            soon(started.told.recv()).await,
+            Some(Told::Send("Hi".to_owned()))
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_full_disk_queues_prompts_and_starts_their_turns_once_it_has_room() {
+        let mut bench = bench();
+        let mut pushes = watch(&bench).await;
+        bench.chats.disk_full(true);
+
+        bench.chats.command(prompt("r-1", "Hi")).await.unwrap();
+        let accepted = pushed(&mut pushes, 2).await;
+        assert_eq!(accepted, ["1 prompt r-1 Hi", "2 receipt r-1 accepted"]);
+        assert!(soon(bench.started.recv()).await.is_none());
+
+        bench.chats.disk_full(false);
+        let mut started = soon(bench.started.recv()).await.unwrap();
+        let told = soon(started.told.recv()).await;
+        assert_eq!(told, Some(Told::Send("Hi".to_owned())));
+        let running = pushed(&mut pushes, 2).await;
+        assert_eq!(running, ["3 run-1 is Starting", "4 run-1 is Running"]);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn an_interrupt_sent_while_the_agent_starts_stops_the_turn_it_was_starting_for() {
+        let mut bench = bench();
+        let release = bench.hold_next_start();
+        bench.chats.command(prompt("r-1", "Hi")).await.unwrap();
+
+        let interrupt = command("r-2", "c-1", ChatAction::Interrupt);
+        bench.chats.command(interrupt).await.unwrap();
+        drop(release);
+
+        let mut started = soon(bench.started.recv()).await.unwrap();
+        let told = [
+            soon(started.told.recv()).await,
+            soon(started.told.recv()).await,
+        ];
+        assert_eq!(
+            told,
+            [Some(Told::Send("Hi".to_owned())), Some(Told::Interrupt)]
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn reading_a_chat_this_machine_never_had_writes_nothing() {
+        let (_bench, mut engine) = parts();
+        let root = engine.workspaces.root(&workspace());
+        let (client, mut pushes) = client(8);
+
+        let snapshot = engine.query(&key(), ChatQueryKind::Snapshot, &client).await;
+        let subscribe = ChatQueryKind::Subscribe { after: 0 };
+        engine.query(&key(), subscribe, &client).await.unwrap();
+
+        assert!(
+            matches!(snapshot, Ok(Some(ChatAnswerKind::Snapshot { seq: 0, ref events, .. })) if events.is_empty())
+        );
+        assert!(!root.exists());
+        engine.command(&key(), prompt("r-1", "Hi")).await.unwrap();
+        assert_eq!(pushed(&mut pushes, 1).await, ["1 prompt r-1 Hi"]);
+        assert!(root.join("chats").is_dir());
+    }
+
+    #[tokio::test(start_paused = true)]
     async fn a_snapshot_tells_the_runs_the_waiting_prompts_and_the_latest_events() {
         let mut bench = bench();
         let mut pushes = watch(&bench).await;
@@ -881,7 +959,8 @@ mod tests {
         let (runs, waiting, events) = snapshot(&bench).await;
         let folded = ChatRuns::fold(&events);
         assert_eq!((waiting.as_slice(), runs.len()), ([7].as_slice(), 1));
-        assert_eq!((folded.waiting_seqs(), folded.runs), (waiting, runs));
+        let folded_runs: Vec<_> = folded.run().cloned().into_iter().collect();
+        assert_eq!((folded.waiting_seqs(), folded_runs), (waiting, runs));
         let second = allow("r-3", "c-1", "run-1", 2);
         bench.chats.command(second).await.unwrap();
 
@@ -970,7 +1049,7 @@ mod tests {
             "message.unsupported"
         );
 
-        let (stopped, engine) = crate::chats::test_support::parts();
+        let (stopped, engine) = parts();
         drop(engine);
         let command = stopped.chats.command(prompt("r-1", "Hi")).await;
         assert_eq!(code_of(command), "chat.engine_stopped");

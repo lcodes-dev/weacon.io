@@ -74,12 +74,15 @@ impl<A: Agent> Engine<A> {
         let Some(next) = record.queue.first().cloned() else {
             return Ok(());
         };
-        let run = match self.run_of(key).filter(|_| self.takes_orders(key)) {
-            Some(run) => run,
-            None => match self.launch(key).await {
-                Ok(run) => run,
-                Err(fault) => return self.fail_queue(key, &fault).await,
-            },
+        // A run still starting takes the turn once it is up; a full disk takes none.
+        if self.is_launching(key) || self.disk_full {
+            return Ok(());
+        }
+        let Some(run) = self.run_of(key).filter(|_| self.takes_orders(key)) else {
+            return match self.launch(key).await {
+                Ok(()) => Ok(()),
+                Err(fault) => self.fail_queue(key, &fault).await,
+            };
         };
         self.give_turn(key, &run, next).await
     }
@@ -104,6 +107,13 @@ impl<A: Agent> Engine<A> {
                 })
                 .await;
         }
+        // An interrupt sent before the turn began stops it now.
+        let stops = &mut self.open(key).await?.pending_interrupts;
+        let before = stops.len();
+        stops.retain(|stop| !(stop.committed && stop.turn.as_ref() == Some(&next.request)));
+        if stops.len() < before {
+            self.order(key, Order::Interrupt);
+        }
         self.set_state(key, run, RunState::Running).await
     }
 
@@ -126,7 +136,7 @@ impl<A: Agent> Engine<A> {
                 RunState::Starting | RunState::Running | RunState::Waiting
             )
         };
-        let cut_off = !live && chat.events.runs().runs.iter().any(working);
+        let cut_off = !live && chat.events.runs().run().is_some_and(working);
         let ended: Vec<_> = queue
             .into_iter()
             .map(|queued| queued.request)
@@ -148,7 +158,7 @@ impl<A: Agent> Engine<A> {
     }
 
     // Nothing can run them: each queued prompt fails rather than waits for ever.
-    async fn fail_queue(&mut self, key: &ChatKey, fault: &Fault) -> Result<(), Fault> {
+    pub(super) async fn fail_queue(&mut self, key: &ChatKey, fault: &Fault) -> Result<(), Fault> {
         let record = self.runs.of(key);
         let queue = record
             .map(|record| record.queue.clone())
@@ -169,7 +179,7 @@ mod tests {
     use weacon_protocol::{ChatEvent, Receipt, RequestId, RunEvent, code};
 
     use super::super::agent::Heard;
-    use super::super::by_hand::{hear, latest, on_ask, on_turn, until_deaf, waiting_in};
+    use super::super::by_hand::{hear, latest, launched, on_ask, on_turn, until_deaf, waiting_in};
     use super::*;
     use crate::chats::test_support::{FakeAgent, Told, key, prompt, run, soon};
 
@@ -223,6 +233,7 @@ mod tests {
             .await
             .unwrap();
 
+        launched(&mut on.engine).await;
         let mut next = soon(on.bench.started.recv()).await.unwrap();
         assert_eq!(next.run_as.run, run("run-2"));
         assert_eq!(
@@ -247,6 +258,7 @@ mod tests {
             .await
             .unwrap();
 
+        launched(&mut on.engine).await;
         let mut next = soon(on.bench.started.recv()).await.unwrap();
         assert_eq!(next.run_as.run, run("run-2"));
         assert_eq!(
@@ -282,7 +294,7 @@ mod tests {
             .unwrap();
         on.engine.open_chats.remove(&key());
 
-        waiting_in(&mut on.engine).await;
+        on.engine.reconcile().await;
 
         let status = RunStatus {
             run: run("run-1"),
@@ -301,7 +313,15 @@ mod tests {
         assert_eq!(waiting_in(&mut on.engine).await.len(), 1);
         // As after a restart: the log is all that is left of the chat.
         on.engine.open_chats.remove(&key());
+        let seq = on.engine.open(&key()).await.unwrap().events.seq();
+        assert_eq!(
+            waiting_in(&mut on.engine).await.len(),
+            1,
+            "a read changes nothing"
+        );
+        assert_eq!(on.engine.open(&key()).await.unwrap().events.seq(), seq);
 
+        on.engine.reconcile().await;
         assert!(waiting_in(&mut on.engine).await.is_empty());
         let first = prompt("r-1", "Hi").request;
         assert_eq!(
@@ -393,6 +413,7 @@ mod tests {
             .await
             .unwrap();
 
+        launched(&mut on.engine).await;
         let mut next = soon(on.bench.started.recv()).await.unwrap();
         assert_eq!(next.run_as.run, run("run-2"));
         assert_eq!(
@@ -445,6 +466,7 @@ mod tests {
             outcomes(&mut on.engine, &first).await,
             [Outcome::Accepted, Outcome::Unknown]
         );
+        launched(&mut on.engine).await;
         let mut next = soon(on.bench.started.recv()).await.unwrap();
         assert_eq!(next.run_as.run, run("run-2"));
         assert_eq!(
