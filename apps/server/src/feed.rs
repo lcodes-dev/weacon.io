@@ -57,7 +57,7 @@ pub(crate) async fn feed(
     let changes = shared.changes.subscribe();
     // A member joins a workspace when they first open it.
     match member.workspace.join(&member.id).await {
-        Ok(true) => shared.changed(member.workspace.id()),
+        Ok(true) => shared.wake_feeds(member.workspace.id()),
         Ok(false) => {}
         Err(fault) => return failure(fault),
     }
@@ -280,7 +280,7 @@ mod tests {
     use crate::db::Workspace;
     use crate::email::Email;
     use crate::sign_in::SESSION_LIFETIME;
-    use crate::socket::error;
+    use crate::socket::refusal;
     use crate::test_support::socket::{Client, ends, frame, next, open, say, say_as};
     use crate::test_support::{
         self, Fixture, Running, fresh_account, member_id, run, workspace_id,
@@ -402,7 +402,7 @@ mod tests {
             .add_task(&task, &attribution)
             .await
             .unwrap();
-        fixture.shared.changed(&workspace_id("w1"));
+        fixture.shared.wake_feeds(&workspace_id("w1"));
         join(&fixture, server.address, "m2", "bo@example.com").await;
         let after_the_task = next(&mut plain).await;
         let path = "/api/workspaces/w1/feed";
@@ -445,7 +445,7 @@ mod tests {
             .add_doc(&doc, &attribution)
             .await
             .unwrap();
-        fixture.shared.changed(&workspace_id("w1"));
+        fixture.shared.wake_feeds(&workspace_id("w1"));
         join(&fixture, server.address, "m2", "bo@example.com").await;
         let after_the_doc = next(&mut plain).await;
         let path = "/api/workspaces/w1/feed";
@@ -545,10 +545,16 @@ mod tests {
             .unwrap();
         say_as(&mut older, PROTOCOL + 1, &["workspace.feed"]).await;
 
-        assert_eq!(next(&mut wrong).await, error(code!("handshake.required")));
-        assert_eq!(next(&mut without).await, error(code!("capability.missing")));
+        assert_eq!(next(&mut wrong).await, refusal(code!("handshake.required")));
+        assert_eq!(
+            next(&mut without).await,
+            refusal(code!("capability.missing"))
+        );
         assert!(ends(&mut without).await);
-        assert_eq!(next(&mut older).await, error(code!("protocol.unsupported")));
+        assert_eq!(
+            next(&mut older).await,
+            refusal(code!("protocol.unsupported"))
+        );
         assert!(ends(&mut older).await);
     }
 

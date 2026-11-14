@@ -122,7 +122,7 @@ async fn serve(app: &App, args: Serve) -> Result<(), Fault> {
         links: Arc::default(),
         relay: Arc::default(),
         sign_ins: Arc::new(Semaphore::new(sign_in::AT_ONCE)),
-        finish_within: sign_in::FINISH_TAKES,
+        finish_takes: sign_in::FINISH_TAKES,
         sign_in: Arc::new(sign_in::limits()),
         pairing: Arc::new(pairing::limits()),
         web: web::FILES,

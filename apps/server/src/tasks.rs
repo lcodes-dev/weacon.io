@@ -46,7 +46,7 @@ pub(crate) async fn create(
     let task = Task::new(id, title, order);
     let attribution = Attribution::by(member.id.clone(), shared.now());
     member.workspace.add_task(&task, &attribution).await?;
-    shared.changed(member.workspace.id());
+    shared.wake_feeds(member.workspace.id());
     Ok((StatusCode::CREATED, Json(record(task))))
 }
 
@@ -75,7 +75,7 @@ pub(crate) async fn change(
         .workspace
         .edit_task(&id, read_at, edit, &attribution)
         .await?;
-    shared.changed(member.workspace.id());
+    shared.wake_feeds(member.workspace.id());
     Ok(Json(record(task)))
 }
 

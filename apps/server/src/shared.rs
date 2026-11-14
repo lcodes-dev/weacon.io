@@ -44,7 +44,7 @@ pub(crate) struct Shared {
     /// Room for sign-ins being worked on after their answer; when it's full, more are dropped.
     pub(crate) sign_ins: Arc<Semaphore>,
     /// How long finishing a sign-in takes at least, so its timing gives nothing away.
-    pub(crate) finish_within: Duration,
+    pub(crate) finish_takes: Duration,
     /// Who may make an account by signing in.
     pub(crate) sign_up: Arc<[SignUp]>,
     pub(crate) sign_in: Arc<sign_in::Limits>,
@@ -65,7 +65,7 @@ impl Shared {
 
     /// Tells the open feeds that `workspace` changed; nobody listening is fine, as feeds read
     /// what they missed from the database.
-    pub(crate) fn changed(&self, workspace: &WorkspaceId) {
+    pub(crate) fn wake_feeds(&self, workspace: &WorkspaceId) {
         drop(self.changes.send(workspace.clone()));
     }
 }

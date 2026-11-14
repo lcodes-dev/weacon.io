@@ -94,7 +94,7 @@ impl Fixture {
             links: Arc::default(),
             relay: Arc::default(),
             sign_ins: Arc::new(Semaphore::new(sign_in::AT_ONCE)),
-            finish_within: Duration::ZERO,
+            finish_takes: Duration::ZERO,
             sign_in: Arc::new(sign_in::limits()),
             sign_up: Arc::new([]),
             pairing: Arc::new(pairing::limits()),

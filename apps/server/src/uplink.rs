@@ -18,7 +18,7 @@ use crate::connections::Place;
 use crate::links::Connected;
 use crate::relay::SETTINGS;
 use crate::shared::Shared;
-use crate::socket::{Closed, Pings, error, greet, reply, send};
+use crate::socket::{Closed, Pings, greet, refusal, reply, send};
 
 /// What a core must offer, and the server offers, to keep a machine's connection.
 const CONNECT: Code = code!("machine.connect");
@@ -87,7 +87,7 @@ async fn serve(mut socket: WebSocket, shared: Shared, mut link: Link) {
     let Err(Closed) = run(&mut socket, &shared, &mut link).await;
     // A core that is gone just doesn't hear it.
     if link.gone {
-        drop(reply(&mut socket, &shared, 0, error(code!("machine.unpaired"))).await);
+        drop(reply(&mut socket, &shared, 0, refusal(code!("machine.unpaired"))).await);
     }
     drop(send(&mut socket, shared.sockets.ping_every, Frame::Close(None)).await);
     if link.connected {

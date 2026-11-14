@@ -162,7 +162,7 @@ pub(crate) async fn finish(
         Ok(None) => unauthorized(code!("sign_in.failed")),
         Err(fault) => failure(fault),
     };
-    sleep_until(began + shared.finish_within).await;
+    sleep_until(began + shared.finish_takes).await;
     answer
 }
 
@@ -765,14 +765,14 @@ mod tests {
     #[tokio::test]
     async fn finishing_takes_the_same_time_for_a_stranger() {
         let mut fixture = Fixture::new().await;
-        fixture.shared.finish_within = Duration::from_millis(200);
+        fixture.shared.finish_takes = Duration::from_millis(200);
         let server = fixture.run().await;
         let stranger = finish_body("bo@example.com", &json!("0".repeat(64)), "00000000");
         let started = std::time::Instant::now();
         let (head, _) = request(server.address, "POST /api/sign-in/finish", &stranger).await;
 
         assert_eq!(status(&head), "http/1.1 401 unauthorized");
-        assert!(started.elapsed() >= fixture.shared.finish_within);
+        assert!(started.elapsed() >= fixture.shared.finish_takes);
     }
 
     #[tokio::test]

@@ -63,7 +63,7 @@ pub(crate) async fn create(
         .add_doc(&doc, &attribution)
         .await
         .inspect_err(|fault| warn_if_full(&shared, &member, fault))?;
-    shared.changed(member.workspace.id());
+    shared.wake_feeds(member.workspace.id());
     Ok((StatusCode::CREATED, Json(record(doc))))
 }
 
@@ -94,7 +94,7 @@ pub(crate) async fn revise(
         .revise_doc(&id, read_at, text, &attribution)
         .await
         .inspect_err(|fault| warn_if_full(&shared, &member, fault))?;
-    shared.changed(member.workspace.id());
+    shared.wake_feeds(member.workspace.id());
     Ok(Json(record(doc)))
 }
 

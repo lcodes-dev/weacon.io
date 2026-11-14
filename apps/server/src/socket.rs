@@ -94,7 +94,7 @@ pub(crate) async fn greet(
         message: Message::Hello(hello),
     }) = Envelope::from_json(text.as_bytes())
     else {
-        reply(socket, shared, 0, error(code!("handshake.required"))).await?;
+        reply(socket, shared, 0, refusal(code!("handshake.required"))).await?;
         return Err(Closed);
     };
     let answer = hello.answer(shared.app.clone(), offers);
@@ -103,14 +103,14 @@ pub(crate) async fn greet(
         return Err(Closed);
     }
     if !hello.capabilities.contains(needs) {
-        reply(socket, shared, id, error(code!("capability.missing"))).await?;
+        reply(socket, shared, id, refusal(code!("capability.missing"))).await?;
         return Err(Closed);
     }
     reply(socket, shared, id, answer).await?;
     Ok(hello)
 }
 
-pub(crate) fn error(code: Code) -> Message {
+pub(crate) fn refusal(code: Code) -> Message {
     Message::Error(ErrorBody {
         code,
         retryable: false,
