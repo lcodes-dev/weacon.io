@@ -2,10 +2,13 @@
 
 use std::net::SocketAddr;
 
-use serde_json::{Value, json};
+use serde_json::Value;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
-use weacon_protocol::MachineId;
+use weacon_protocol::{
+    AccountSignInFinish, AccountSignInStart, ChallengeId, MachineId, MachineKey, MachineName,
+    MachineOs, PairClaim, PairConfirm, PairStart, PairStarted, SignInStarted,
+};
 
 use super::{Fixture, PATIENCE};
 
@@ -49,16 +52,24 @@ pub(crate) fn header<'a>(head: &'a [String], name: &str) -> Option<&'a str> {
 }
 
 /// Starts a sign-in for `email`: the answer's status line, and its challenge.
-pub(crate) async fn start_sign_in(address: SocketAddr, email: &str) -> (String, Value) {
-    let start = json!({ "email": email }).to_string();
+pub(crate) async fn start_sign_in(address: SocketAddr, email: &str) -> (String, ChallengeId) {
+    let start = AccountSignInStart {
+        email: email.to_owned(),
+    };
+    let start = serde_json::to_string(&start).unwrap();
     let (head, body) = request(address, "POST /api/sign-in", &start).await;
-    let body: Value = serde_json::from_str(&body).unwrap();
-    (status(&head).to_owned(), body["challenge"].clone())
+    let started: SignInStarted = serde_json::from_str(&body).unwrap();
+    (status(&head).to_owned(), started.challenge)
 }
 
 /// A `POST /api/sign-in/finish` body.
-pub(crate) fn finish_body(email: &str, challenge: &Value, code: &str) -> String {
-    json!({ "email": email, "challenge": challenge, "code": code }).to_string()
+pub(crate) fn finish_body(email: &str, challenge: &ChallengeId, code: &str) -> String {
+    let finish = AccountSignInFinish {
+        email: email.to_owned(),
+        code: code.to_owned(),
+        challenge: challenge.clone(),
+    };
+    serde_json::to_string(&finish).unwrap()
 }
 
 /// Signs `email` in with the code the server sends: the answer's status line and body.
@@ -125,24 +136,33 @@ impl Paired {
 }
 
 /// A `POST /api/machines/pair` body.
-pub(crate) fn pairing_start(os: &str) -> String {
-    json!({ "name": "Studio", "os": os, "key": "ab".repeat(32) }).to_string()
+pub(crate) fn pairing_start(os: MachineOs) -> String {
+    let start = PairStart {
+        name: MachineName::try_from("Studio".to_owned()).unwrap(),
+        os,
+        key: MachineKey::from_bytes([0xab; 32]),
+    };
+    serde_json::to_string(&start).unwrap()
 }
 
 /// Pairs a machine with ada, and claims it.
 pub(crate) async fn pair_machine(fixture: &Fixture, address: SocketAddr) -> Paired {
     let (_, ada) = sign_in(fixture, address, "ada@example.com").await;
     let proof = bearer(&ada);
-    let (_, pairing) = ask(
-        address,
-        "POST /api/machines/pair",
-        "",
-        &pairing_start("linux"),
-    )
-    .await;
-    let confirm = json!({ "pairing": pairing["pairing"], "code": pairing["code"] }).to_string();
+    let start = pairing_start(MachineOs::Linux);
+    let (_, started) = request(address, "POST /api/machines/pair", &start).await;
+    let started: PairStarted = serde_json::from_str(&started).unwrap();
+    let confirm = PairConfirm {
+        pairing: started.pairing.clone(),
+        code: started.code,
+    };
+    let confirm = serde_json::to_string(&confirm).unwrap();
     let (_, machine) = ask(address, "POST /api/machines/pair/confirm", &proof, &confirm).await;
-    let claim = json!({ "pairing": pairing["pairing"], "secret": pairing["secret"] }).to_string();
+    let claim = PairClaim {
+        pairing: started.pairing,
+        secret: started.secret,
+    };
+    let claim = serde_json::to_string(&claim).unwrap();
     let (_, claimed) = ask(address, "POST /api/machines/pair/claim", "", &claim).await;
     Paired {
         proof,
