@@ -34,6 +34,7 @@ mod test_support;
     expect(dead_code, reason = "`weacon update`, which uses it, comes next")
 )]
 mod update;
+mod uplink;
 mod workspaces;
 
 use std::io::{self, IsTerminal};
