@@ -6,6 +6,7 @@ use std::time::Duration;
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
+use tokio::sync::Notify;
 use tokio::time::timeout;
 use tokio_rustls::TlsAcceptor;
 use tokio_rustls::rustls::ServerConfig;
@@ -52,6 +53,17 @@ impl Tls {
             .unwrap()
             .unwrap();
         timeout(WAIT, self.acceptor.accept(tcp)).await.unwrap().ok()
+    }
+
+    /// Closes each connection as it comes, until `done` is notified, so a client that asks
+    /// more than it should fails at once.
+    pub(crate) async fn refuse_until(&self, done: &Notify) {
+        loop {
+            tokio::select! {
+                () = done.notified() => return,
+                accepted = self.listener.accept() => drop(accepted),
+            }
+        }
     }
 }
 

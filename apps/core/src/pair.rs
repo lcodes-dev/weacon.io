@@ -183,6 +183,7 @@ fn not_printed() -> Fault {
 #[cfg(test)]
 mod tests {
     use serde::Serialize;
+    use tokio::sync::Notify;
     use weacon_protocol::{AccountId, ErrorBody, MachineId, MachineOs, PairingId};
 
     use weacon_testing::TempDir;
@@ -265,7 +266,18 @@ mod tests {
             );
             (done, out)
         });
-        let (joined, requests) = tokio::join!(paired_up, serve(tls, answers));
+        let finished = Notify::new();
+        let client = async {
+            let joined = paired_up.await;
+            finished.notify_one();
+            joined
+        };
+        let server = async {
+            let requests = serve(tls, answers).await;
+            tls.refuse_until(&finished).await;
+            requests
+        };
+        let (joined, requests) = tokio::join!(client, server);
         let (done, out) = joined.unwrap();
         Outcome {
             done,

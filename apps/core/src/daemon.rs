@@ -12,8 +12,8 @@ use weacon_agents::SpawnPolicy;
 pub(crate) use weacon_appkit::build;
 use weacon_observability::{Fault, Field, Logger};
 use weacon_protocol::{
-    App, Capability, ChatAnswer, ChatCommand, ChatQuery, Envelope, LineDecoder, Message, Outcome,
-    Pick, Receipt, code, encode_line,
+    App, ChatAnswer, ChatCommand, ChatQuery, Envelope, LineDecoder, Message, Outcome, Pick,
+    Receipt, code, encode_line,
 };
 
 use crate::chats::feed::{self, Client};
