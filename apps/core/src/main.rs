@@ -31,6 +31,7 @@ mod status;
     expect(dead_code, reason = "the sign-in terminal, which uses it, comes next")
 )]
 mod terminal;
+mod terminals;
 #[cfg(test)]
 mod test_support;
 #[cfg_attr(
@@ -88,6 +89,7 @@ fn run(app: &App, command: Command, env: platform::Env<'_>) -> Result<Ending, Fa
             team,
         } => workspaces::access(app, &workspace, level, team, &mut io::stdout().lock()),
         Command::Reports { answer } => reports::run(app, answer, &mut io::stdout().lock()),
+        Command::Terminals { answer } => terminals::run(app, answer, env, &mut io::stdout().lock()),
         Command::ConnectChrome => native_host::connect_chrome(app, env, &mut io::stdout().lock()),
         Command::NativeHost { origin } => native_host::run(app, &origin),
         Command::Map(command) => {

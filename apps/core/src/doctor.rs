@@ -22,6 +22,8 @@ pub(crate) fn run(app: &App, out: &mut impl Write) -> Result<(), Fault> {
     };
     print(report(app, platform::free_space))?;
     if let Some(dir) = &app.state_dir {
+        let env = |key: &str| std::env::var_os(key);
+        print(crate::terminals::describe(dir, &env).to_owned())?;
         let runtime = runtime()?;
         let all = |launches: &[Launch]| runtime.block_on(sign_ins(&app.log, launches));
         print(workspaces(
@@ -138,7 +140,7 @@ mod tests {
         assert_eq!(
             String::from_utf8(out).unwrap(),
             format!(
-                "weacon 0.1.0 (1a2b3c4)\nState folder: {state}\nLog file: /srv/weacon/logs/weacon.log\nDisk: unavailable\nError reports: off\n"
+                "weacon 0.1.0 (1a2b3c4)\nState folder: {state}\nLog file: /srv/weacon/logs/weacon.log\nDisk: unavailable\nError reports: off\nTerminals from the web app: off. Run weacon terminals on to allow them.\n"
             )
         );
     }

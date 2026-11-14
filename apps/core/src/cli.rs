@@ -53,6 +53,13 @@ pub(crate) enum Command {
         #[arg(value_enum)]
         answer: Option<crate::reports::Answer>,
     },
+    /// Choose whether a chat's owner may open their terminal here from the web app, or show
+    /// the answer. Only someone at this machine can turn it on.
+    Terminals {
+        /// on or off; left out, shows the answer.
+        #[arg(value_enum)]
+        answer: Option<crate::reports::Answer>,
+    },
     /// Let Weacon's Chrome extension reach this core.
     ConnectChrome,
     /// Relay messages between Chrome's extension and the daemon; Chrome starts it.
@@ -106,6 +113,7 @@ impl Command {
             | Self::Login { .. }
             | Self::Access { .. }
             | Self::Reports { .. }
+            | Self::Terminals { .. }
             | Self::ConnectChrome
             | Self::Map(_) => "cli.log",
             Self::NativeHost { .. } => "native-host.log",
@@ -121,6 +129,7 @@ impl Command {
             Self::Login { .. } => "login",
             Self::Access { .. } => "access",
             Self::Reports { .. } => "reports",
+            Self::Terminals { .. } => "terminals",
             Self::ConnectChrome => "connect-chrome",
             Self::NativeHost { .. } => "native-host",
             Self::Map(_) => "map",
@@ -281,6 +290,23 @@ mod tests {
         ] {
             run(bad).unwrap_err();
         }
+    }
+
+    #[test]
+    fn terminals_takes_on_off_or_nothing() {
+        let answer = |args: &[&str]| {
+            let Command::Terminals { answer } = run(args).unwrap().command else {
+                panic!("not a terminals command");
+            };
+            answer
+        };
+        let shown = run(&["weacon", "terminals"]).unwrap().command;
+
+        assert_eq!(answer(&["weacon", "terminals"]), None);
+        assert_eq!(answer(&["weacon", "terminals", "on"]), Some(Answer::On));
+        assert_eq!(answer(&["weacon", "terminals", "off"]), Some(Answer::Off));
+        assert_eq!((shown.name(), shown.log_name()), ("terminals", "cli.log"));
+        run(&["weacon", "terminals", "yes"]).unwrap_err();
     }
 
     #[test]
