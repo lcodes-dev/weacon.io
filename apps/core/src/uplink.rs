@@ -10,8 +10,8 @@ use tokio::time::{Instant, sleep, timeout};
 use tokio_tungstenite::tungstenite::{Message as Wire, Utf8Bytes};
 use weacon_observability::{Fault, Field, Logger};
 use weacon_protocol::{
-    AccountId, App, Capability, ChatCommand, Code, Envelope, ErrorBody, Hello, Message, Outcome,
-    PROTOCOL, Receipt, code,
+    AccountId, App, Asker, Capability, ChatCommand, Code, Envelope, ErrorBody, Hello, Message,
+    Outcome, PROTOCOL, Receipt, code,
 };
 
 use crate::machine::{self, Paired};
@@ -232,7 +232,8 @@ impl Uplink {
 
 impl Uplink {
     /// What to do with a frame from the server. Only the machine's owner may ask it to act,
-    /// whatever the server allows; the rest goes to the daemon.
+    /// whatever the server allows, and a kind whose asker it can't find is refused; the rest
+    /// goes to the daemon.
     fn answer(&self, frame: Wire, owner: &AccountId) -> Step {
         let Wire::Text(text) = frame else {
             return Step::Nothing;
@@ -245,15 +246,21 @@ impl Uplink {
         {
             return Step::Unpaired;
         }
+        let owners = match asking(&envelope.message) {
+            Asking::By(by) => by.is_some_and(|by| by.account == *owner),
+            Asking::NotAnAsk => true,
+            Asking::Unknown => return failure(envelope.id, code!("uplink.unknown")),
+        };
         let command = if let Message::ChatCommand(command) = &envelope.message {
             Some(command.clone())
         } else {
             None
         };
-        if let Some(command) = &command
-            && !command.by.as_ref().is_some_and(|by| by.account == *owner)
-        {
-            return refusal(envelope.id, command, code!("chat.not_owner"));
+        if !owners {
+            return command.map_or_else(
+                || failure(envelope.id, code!("machine.not_owner")),
+                |command| refusal(envelope.id, &command, code!("chat.not_owner")),
+            );
         }
         let id = envelope.id;
         if self.to_daemon.try_send(envelope).is_ok() {
@@ -263,6 +270,48 @@ impl Uplink {
             refusal(id, &command, code!("chat.unavailable"))
         })
     }
+}
+
+/// Who asks the machine to act, in a message from the server.
+enum Asking<'a> {
+    /// The asker the server stamped, if it did.
+    By(Option<&'a Asker>),
+    /// Something the server says of its own, such as an error.
+    NotAnAsk,
+    /// A kind with no arm in [`asking`], refused until one says where its asker is.
+    Unknown,
+}
+
+fn asking(message: &Message) -> Asking<'_> {
+    let by = if let Message::ChatCommand(command) = message {
+        &command.by
+    } else if let Message::MachineSettingsQuery(query) = message {
+        &query.by
+    } else if let Message::MachineSettingsCommand(command) = message {
+        &command.by
+    } else if let Message::TerminalCommand(command) = message {
+        &command.by
+    } else if let Message::WorktreeQuery(query) = message {
+        &query.by
+    } else if let Message::WorktreeCommand(command) = message {
+        &command.by
+    } else if let Message::Error(_) = message {
+        return Asking::NotAnAsk;
+    } else {
+        return Asking::Unknown;
+    };
+    Asking::By(by.as_ref())
+}
+
+/// An error under the envelope `id` it answers.
+fn failure(id: u32, code: Code) -> Step {
+    Step::Reply(Envelope {
+        id,
+        message: Message::Error(ErrorBody {
+            code,
+            retryable: false,
+        }),
+    })
 }
 
 /// A receipt that fails `command` with `code`, under the envelope `id` it came in.
@@ -307,8 +356,10 @@ mod tests {
     use tokio_rustls::server::TlsStream;
     use tokio_tungstenite::WebSocketStream;
     use weacon_protocol::{
-        Asker, ChatAction, ChatId, ChatQuery, ChatQueryKind, MachineId, MemberId, RequestId,
-        Welcome, WorkspaceId,
+        ChatAction, ChatId, MachineId, MachineSettingsAction, MachineSettingsCommand,
+        MachineSettingsQuery, MachineSettingsQueryKind, MemberId, RequestId, TerminalAction,
+        TerminalCommand, TerminalId, Welcome, WorkspaceId, WorktreeAction, WorktreeCommand,
+        WorktreeQuery, WorktreeQueryKind,
     };
     use weacon_testing::TempDir;
 
@@ -511,6 +562,105 @@ mod tests {
         taken.try_recv().unwrap_err();
     }
 
+    // Each kind the server relays to the machine, asked `by` someone or no one.
+    fn every_ask(by: Option<&AccountId>) -> Vec<Message> {
+        let by = by.map(|account| Asker {
+            account: account.clone(),
+            member: MemberId::try_from("m-1".to_owned()).unwrap(),
+        });
+        let request = RequestId::try_from("r-1".to_owned()).unwrap();
+        let workspace = WorkspaceId::try_from("w-1".to_owned()).unwrap();
+        let machine = MachineId::try_from("mc-1".to_owned()).unwrap();
+        let chat = ChatId::try_from("c-1".to_owned()).unwrap();
+        vec![
+            Message::MachineSettingsQuery(MachineSettingsQuery {
+                request: request.clone(),
+                machine: machine.clone(),
+                workspace: workspace.clone(),
+                query: MachineSettingsQueryKind::Current,
+                by: by.clone(),
+            }),
+            Message::MachineSettingsCommand(MachineSettingsCommand {
+                request: request.clone(),
+                machine: machine.clone(),
+                workspace: workspace.clone(),
+                action: MachineSettingsAction::SetReports { send: true },
+                by: by.clone(),
+            }),
+            Message::TerminalCommand(TerminalCommand {
+                terminal: TerminalId::try_from("t-1".to_owned()).unwrap(),
+                machine,
+                workspace: workspace.clone(),
+                action: TerminalAction::Close,
+                by: by.clone(),
+            }),
+            Message::WorktreeQuery(WorktreeQuery {
+                request: request.clone(),
+                workspace: workspace.clone(),
+                chat: chat.clone(),
+                query: WorktreeQueryKind::State,
+                by: by.clone(),
+            }),
+            Message::WorktreeCommand(WorktreeCommand {
+                request,
+                workspace,
+                chat,
+                action: WorktreeAction::Restore,
+                by,
+            }),
+        ]
+    }
+
+    // What the uplink answers `message` under id 9 with: `None` when it passes it on.
+    fn answered(link: &Uplink, message: Message) -> Option<String> {
+        let frame = text(&Envelope { id: 9, message });
+        match link.answer(frame, &owner()) {
+            Step::Nothing => None,
+            Step::Unpaired => Some("unpaired".to_owned()),
+            Step::Reply(Envelope {
+                id: 9,
+                message: Message::Error(ErrorBody { code, .. }),
+            }) => Some(code.as_str().to_owned()),
+            Step::Reply(other) => Some(format!("{other:?}")),
+        }
+    }
+
+    #[test]
+    fn every_ask_but_the_owners_and_every_kind_it_cant_place_is_refused() {
+        let dir = TempDir::new().unwrap();
+        let (to_daemon, mut taken) = mpsc::channel(16);
+        let link = with_commands(&dir, to_daemon);
+        let stranger = AccountId::try_from("a-other".to_owned()).unwrap();
+        let not_owner = Some("machine.not_owner".to_owned());
+        let other_error = Message::Error(ErrorBody {
+            code: code!("relay.busy"),
+            retryable: true,
+        });
+
+        let owners: Vec<_> = every_ask(Some(&owner()))
+            .into_iter()
+            .map(|ask| answered(&link, ask))
+            .collect();
+        let others: Vec<_> = [every_ask(Some(&stranger)), every_ask(None)]
+            .concat()
+            .into_iter()
+            .map(|ask| answered(&link, ask))
+            .collect();
+        let error = answered(&link, other_error.clone());
+
+        assert_eq!(owners, [None, None, None, None, None]);
+        assert_eq!(others, vec![not_owner; 10]);
+        // A kind this build doesn't know arrives as `Message::Unknown`.
+        assert!(matches!(asking(&Message::Unknown), Asking::Unknown));
+        assert_eq!(error, None);
+        let passed: Vec<_> = std::iter::from_fn(|| taken.try_recv().ok())
+            .map(|envelope| envelope.message)
+            .collect();
+        let mut expected = every_ask(Some(&owner()));
+        expected.push(other_error);
+        assert_eq!(passed, expected);
+    }
+
     #[tokio::test]
     async fn an_owners_command_nothing_takes_is_refused_as_unavailable() {
         let (dir, tls) = (TempDir::new().unwrap(), Tls::new().await);
@@ -528,7 +678,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn other_messages_reach_the_daemon_and_its_own_reach_the_server() {
+    async fn an_owners_ask_reaches_the_daemon_and_its_own_messages_reach_the_server() {
         let (dir, tls) = (TempDir::new().unwrap(), Tls::new().await);
         let (to_daemon, mut taken) = mpsc::channel(4);
         let link = with_commands(&dir, to_daemon);
@@ -536,11 +686,7 @@ mod tests {
         let (outgoing, mut from_daemon) = mpsc::channel(4);
         let query = Envelope {
             id: 5,
-            message: Message::ChatQuery(ChatQuery {
-                workspace: WorkspaceId::try_from("w-1".to_owned()).unwrap(),
-                chat: ChatId::try_from("c-1".to_owned()).unwrap(),
-                query: ChatQueryKind::Subscribe { after: 7 },
-            }),
+            message: every_ask(Some(&owner())).remove(0),
         };
         let answer = Envelope {
             id: 5,
