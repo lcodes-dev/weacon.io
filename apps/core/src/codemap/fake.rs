@@ -23,6 +23,7 @@ struct State {
     changed: Vec<(String, Option<String>)>,
     blobs_read: Vec<String>,
     texts_read: Vec<String>,
+    heads_read: usize,
 }
 
 pub(crate) fn blob(text: &str) -> String {
@@ -52,6 +53,10 @@ impl Fake {
         self.state.lock().unwrap().changed = changed.collect();
     }
 
+    pub(crate) fn heads_read(&self) -> usize {
+        std::mem::take(&mut self.state.lock().unwrap().heads_read)
+    }
+
     pub(crate) fn texts_read(&self) -> Vec<String> {
         std::mem::take(&mut self.state.lock().unwrap().texts_read)
     }
@@ -67,7 +72,8 @@ impl Fake {
 
 impl Source for Fake {
     fn head(&self) -> Result<CommitId, Fault> {
-        let state = self.state.lock().unwrap();
+        let mut state = self.state.lock().unwrap();
+        state.heads_read += 1;
         if state.failing {
             return Err(read_failed());
         }

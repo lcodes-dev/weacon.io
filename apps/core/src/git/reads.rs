@@ -153,7 +153,7 @@ mod tests {
     use weacon_testing::TempDir;
 
     use super::*;
-    use crate::git::tests::{fixture, git, repo};
+    use crate::git::{fixture, git, repo};
 
     #[test]
     fn reads_the_head_its_tree_and_its_blobs() {

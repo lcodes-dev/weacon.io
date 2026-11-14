@@ -153,7 +153,7 @@ mod tests {
     #[test]
     fn reads_manifests_with_a_package() {
         let facts = read("a/Cargo.toml", "[package]\nname = \"b-two\"\n").unwrap();
-        assert_eq!(facts.path, "a/Cargo.toml");
+        assert_eq!(facts.path(), "a/Cargo.toml");
         assert_eq!(facts.kind, FileKind::Manifest("b_two".to_owned()));
         assert_eq!(read("Cargo.toml", "[workspace]\n"), None);
         assert_eq!(read("Cargo.toml", "[package"), None);

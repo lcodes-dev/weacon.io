@@ -515,7 +515,8 @@ mod tests {
     }
 
     #[test]
-    fn keys_text_by_its_hash() {
+    fn keys_text_by_its_hash_and_layers_by_their_worktree() {
         assert!(content_key("a").starts_with("sha256:ca978112"));
+        assert_eq!(layer_name(Path::new("/w/chat")), "worktree:/w/chat");
     }
 }
