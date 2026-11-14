@@ -1,18 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { type Served, serve } from "./server.ts";
-
-const EMAIL = "ada@example.com";
-
-async function signIn(served: Served): Promise<void> {
-  const { page } = served;
-  await served.admin("add-account", "--email", EMAIL);
-  await page.getByLabel("Email").fill(EMAIL);
-  await page.getByRole("button", { name: "Send code" }).click();
-  await page.getByLabel("Code").fill(await served.code(EMAIL));
-  await page.getByRole("button", { name: "Sign in" }).click();
-}
+import { EMAIL, serve, signIn } from "./server.ts";
 
 test("a person signs in with the code sent to them, stays signed in, and signs out", { timeout: 600_000 }, async (t) => {
   const served = await serve();
