@@ -89,13 +89,24 @@ fn links(body: &str) -> BTreeSet<&str> {
     [("](", ')'), ("<", '>'), ("]:", ' ')]
         .into_iter()
         .flat_map(|(opener, end)| body.split(opener).skip(1).map(move |rest| (rest, end)))
-        .filter_map(|(rest, end)| {
-            rest.trim_start()
-                .split(|char: char| char.is_whitespace() || char == end)
-                .next()
-        })
+        .filter_map(|(rest, end)| destination(rest.trim_start(), end))
         .filter(|target| may_link_to_code(target))
         .collect()
+}
+
+/// The target at the start of `rest`, up to a space or the `end` that closes it. Inside
+/// `(…)`, balanced parentheses belong to the target, as in Markdown.
+fn destination(rest: &str, end: char) -> Option<&str> {
+    let mut depth = 0_usize;
+    for (index, char) in rest.char_indices() {
+        match char {
+            '(' => depth = depth.saturating_add(1),
+            ')' if depth > 0 => depth -= 1,
+            _ if char.is_whitespace() || char == end => return rest.get(..index),
+            _ => {}
+        }
+    }
+    Some(rest)
 }
 
 /// Whether Markdown could render `target` as a link to code: its kind is code in any case,
@@ -204,6 +215,7 @@ mod tests {
         assert_eq!(made.title(), &title("Framing"));
         assert_eq!(made.anchors(), Some(&anchors(&all)));
         assert!(text("No links at all.", &[]).unwrap().anchors().is_none());
+        text("[a](sym:a(b)) [c](area:(c)d)", &["sym:a(b)", "area:(c)d"]).unwrap();
         for (body, pinned) in [
             ("[a](sym:a)", &[][..]),
             ("[a]( sym:a)", &[][..]),
@@ -216,6 +228,7 @@ mod tests {
             ("[a](&#115;ym:a)", &[][..]),
             ("[a](sym&colon;a)", &[][..]),
             ("[a](sym\\:a)", &[][..]),
+            ("[a](sym:a(b))", &["sym:a(b"][..]),
             ("[a](sym:a) <area:b>", &["sym:a"][..]),
             ("[a](sym:a)\n[b](flow:a->b)", &["sym:a"][..]),
         ] {
