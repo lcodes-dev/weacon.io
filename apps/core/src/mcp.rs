@@ -721,6 +721,7 @@ mod tests {
             cwd: PathBuf::from("/work"),
             access: weacon_protocol::AccessLevel::AskFirst,
             mcp: None,
+            plugin: None,
         };
         let start = Start {
             workspace: WorkspaceId::try_from("w-1".to_owned()).unwrap(),

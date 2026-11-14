@@ -278,6 +278,7 @@ mod tests {
                 cwd: PathBuf::from("/work"),
                 access: AccessLevel::AskFirst,
                 mcp: None,
+                plugin: None,
             }
         );
         assert_eq!(codex.program, program(&dir, "codex"));
