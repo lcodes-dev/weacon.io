@@ -63,7 +63,7 @@ fn main() -> ExitCode {
             log_name: cli.command.log_name(),
         },
     );
-    std::panic::set_hook(app.panic_hook());
+    std::panic::set_hook(app.panic_hook(app::panicked));
     let result = run(&app, cli.command, &env);
     app.finish(result)
 }

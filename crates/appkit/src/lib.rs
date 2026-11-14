@@ -11,7 +11,7 @@ mod runtime;
 #[cfg(test)]
 mod test_support;
 
-pub use app::{build, panic_hook, reporter, reports, root_logger};
+pub use app::{App, build, panic_hook, reporter, reports, root_logger};
 pub use deliver::http;
 pub use exit::{Ending, finish};
 pub use id::random_id;

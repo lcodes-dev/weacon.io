@@ -160,7 +160,7 @@ mod tests {
             "",
         )
         .ok();
-        app.reporter = std::sync::Arc::new(weacon_appkit::reporter(
+        app.base.reporter = std::sync::Arc::new(weacon_appkit::reporter(
             reports,
             false,
             Box::new(|_| Ok(())),
