@@ -1,8 +1,8 @@
 use sqlx::SqliteConnection;
 use weacon_observability::Fault;
 use weacon_protocol::{
-    ChatEntry, ChatEvent, ChatId, ChatState, ChatSummary, MachineName, MemberId, RepoId, RequestId,
-    code,
+    ChatEntry, ChatEvent, ChatId, ChatState, ChatSummary, MachineId, MachineName, MemberId, RepoId,
+    RequestId, code,
 };
 
 use super::{Workspace, failed, stored, unreadable};
@@ -17,6 +17,8 @@ pub(crate) struct NewChat<'a> {
     pub(crate) owner: &'a MemberId,
     pub(crate) title: &'a str,
     pub(crate) repo: Option<&'a RepoId>,
+    /// Kept without a reference: an unpaired machine leaves its chats readable.
+    pub(crate) machine_id: &'a MachineId,
     pub(crate) machine: &'a MachineName,
     pub(crate) at: i64,
 }
@@ -75,15 +77,16 @@ impl Workspace {
     ) -> Result<(), Fault> {
         let mut transaction = self.db.writer.begin().await.map_err(failed)?;
         sqlx::query(
-            "INSERT INTO chats (workspace_id, chat_id, owner_member, title, repo, machine_name,
-                 state, created_at, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?, 'open', ?, ?)",
+            "INSERT INTO chats (workspace_id, chat_id, owner_member, title, repo, machine_id,
+                 machine_name, state, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, 'open', ?, ?)",
         )
         .bind(self.id.as_str())
         .bind(chat.id.as_str())
         .bind(chat.owner.as_str())
         .bind(chat.title)
         .bind(chat.repo.map(RepoId::as_str))
+        .bind(chat.machine_id.as_str())
         .bind(chat.machine.as_str())
         .bind(chat.at)
         .bind(chat.at)
@@ -458,13 +461,14 @@ mod tests {
     async fn make(workspace: &Workspace, chat: &str, owner: &str, at: i64) -> Result<(), Fault> {
         let request = id::<RequestId>(&format!("r-{chat}"));
         let (chat, owner) = (id::<ChatId>(chat), member_id(owner));
-        let machine = id::<MachineName>("Ada's laptop");
+        let (machine_id, machine) = (id::<MachineId>("mc-1"), id::<MachineName>("Ada's laptop"));
         let repo = id::<RepoId>("site");
         let new = NewChat {
             id: &chat,
             owner: &owner,
             title: "Fix the build",
             repo: Some(&repo),
+            machine_id: &machine_id,
             machine: &machine,
             at,
         };

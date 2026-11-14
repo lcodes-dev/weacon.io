@@ -275,6 +275,7 @@ CREATE TABLE chats (
     owner_member TEXT NOT NULL,
     title TEXT NOT NULL,
     repo TEXT,
+    machine_id TEXT NOT NULL,
     machine_name TEXT NOT NULL,
     state TEXT NOT NULL,
     created_at INTEGER NOT NULL,
@@ -288,6 +289,7 @@ CREATE TABLE chats (
 ) STRICT;
 
 CREATE INDEX chats_updated ON chats (workspace_id, updated_at);
+CREATE INDEX chats_machine ON chats (workspace_id, machine_id);
 
 CREATE TABLE chat_events (
     workspace_id TEXT NOT NULL,
