@@ -38,7 +38,7 @@ use grants::{Grant, Grants, Revoke};
 use weacon_agents::{Launch, McpServer};
 use weacon_protocol::{AgentKind, App};
 
-use crate::chats::engine::Start;
+use crate::chats::engine::RunAs;
 use crate::daemon::ACCEPT_BACKOFF;
 
 // So local processes, other users' included, can't hold the core's sockets.
@@ -97,19 +97,19 @@ impl Drop for Server {
     }
 }
 
-/// Points a Claude Code `launch` at the MCP with a token for `start`'s run, which works until
+/// Points a Claude Code `launch` at the MCP with a token for `run_as`'s run, which works until
 /// the [`Revoke`] is dropped. Other agents are left as they are.
 pub(crate) fn grant(
     mcp: Option<&Mcp>,
     launch: Launch,
-    start: &Start,
+    run_as: &RunAs,
 ) -> Result<(Launch, Option<Revoke>), Fault> {
     let Some(mcp) = mcp.filter(|_| launch.agent == AgentKind::Claude) else {
         return Ok((launch, None));
     };
     let grant = Grant::new(
-        start.workspace.clone(),
-        start.run.clone(),
+        run_as.key.workspace.clone(),
+        run_as.run.clone(),
         launch.cwd.clone(),
     );
     let (token, revoke) = mcp.grants.issue(grant)?;
@@ -298,7 +298,7 @@ impl ServerHandler for Handler {
         let started = Instant::now();
         let folder = grant.folder.clone();
         let log = self.log.child(&[("run_id", grant.run.as_str().into())]);
-        let text = tokio::task::spawn_blocking(move || tools::answer(&call, &folder, &log))
+        let text = tokio::task::spawn_blocking(move || tools::answer_or_none(&call, &folder, &log))
             .await
             .map_err(|_| ErrorData::internal_error("The tool failed", None))?;
         let millis = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
@@ -722,17 +722,16 @@ mod tests {
             access: weacon_protocol::AccessLevel::AskFirst,
             mcp: None,
         };
-        let start = Start {
-            workspace: WorkspaceId::try_from("w-1".to_owned()).unwrap(),
-            chat: weacon_protocol::ChatId::try_from("c-1".to_owned()).unwrap(),
+        let run_as = RunAs {
+            key: crate::chats::test_support::key(),
             agent: AgentKind::Claude,
             run: RunId::try_from("run-1".to_owned()).unwrap(),
             session: None,
         };
 
-        let (claude, revoke) = grant(Some(&mcp), launch(AgentKind::Claude), &start).unwrap();
-        let (codex, none) = grant(Some(&mcp), launch(AgentKind::Codex), &start).unwrap();
-        let (alone, no_mcp) = grant(None, launch(AgentKind::Claude), &start).unwrap();
+        let (claude, revoke) = grant(Some(&mcp), launch(AgentKind::Claude), &run_as).unwrap();
+        let (codex, none) = grant(Some(&mcp), launch(AgentKind::Codex), &run_as).unwrap();
+        let (alone, no_mcp) = grant(None, launch(AgentKind::Claude), &run_as).unwrap();
 
         let server = claude.mcp.unwrap();
         assert_eq!(server.url, mcp.url);

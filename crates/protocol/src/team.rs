@@ -4,7 +4,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::token::token_id;
-use crate::{ChatId, DocId, TaskId};
+use crate::{ChatId, DocId, ProposalId, TaskId};
 
 token_id!(
     /// A workspace on the server, 1–64 ASCII letters, digits, `-` or `_`.
@@ -28,8 +28,9 @@ token_id!(
     "not a challenge id"
 );
 
-/// Sign-in to one workspace, which [`AccountSignInStart`] replaces: asks the server to send
-/// a one-time code to `email`, if it is a member of `workspace`. The answer, a [`SignInStarted`], is the same either way.
+/// Sign-in to one workspace, which [`AccountSignInStart`] replaces: asks the server to send a
+/// one-time code to `email`, if it is a member of `workspace`. The answer, a [`SignInStarted`],
+/// is the same either way.
 #[derive(PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct SignInStart {
     pub workspace: WorkspaceId,
@@ -192,14 +193,17 @@ pub enum WorkspaceChange {
     /// A chat was made, or its title, state or latest turn changed. Only for clients that have
     /// the capability `workspace.chats`, which read the chats again.
     ChatChanged { chat: ChatId },
+    /// A proposal was made or its state changed. Only for clients that have the capability
+    /// `workspace.proposals`, which read the proposals again.
+    ProposalChanged { proposal: ProposalId },
     /// A change this build doesn't know, from a newer peer; only ever received.
     #[serde(other)]
     #[schemars(skip)]
     Newer,
 }
 
-/// One change to `workspace`. `seq` grows strictly within a workspace, and a feed opened with
-/// `since=N` sends every change after `N`.
+/// One change to `workspace`, from the server to clients that have `workspace.feed`. `seq` grows
+/// strictly within a workspace, and a feed opened with `since=N` sends every change after `N`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct WorkspaceUpdate {
     pub workspace: WorkspaceId,
@@ -300,18 +304,16 @@ mod tests {
     }
 
     #[test]
-    fn changes_are_tagged_and_a_newer_one_still_parses() {
+    fn an_update_carries_its_workspace_and_order() {
         let update = WorkspaceUpdate {
             workspace: workspace(),
             seq: 7,
-            change: WorkspaceChange::MemberJoined {
-                member: "m-1".parse().unwrap(),
-            },
+            change: WorkspaceChange::ChatChanged { chat: chat() },
         };
         let wire = json!({
             "workspace": "w-1",
             "seq": 7,
-            "change": { "kind": "member_joined", "member": "m-1" },
+            "change": { "kind": "chat_changed", "chat": "c-1" },
         });
 
         assert_eq!(serde_json::to_value(&update).unwrap(), wire);
@@ -319,36 +321,49 @@ mod tests {
             serde_json::from_value::<WorkspaceUpdate>(wire).unwrap(),
             update
         );
-        let changed = WorkspaceChange::TaskChanged {
-            task: "t-1".parse().unwrap(),
-            version: 2,
-        };
-        let changed_wire = json!({ "kind": "task_changed", "task": "t-1", "version": 2 });
+    }
 
-        assert_eq!(serde_json::to_value(&changed).unwrap(), changed_wire);
-        assert_eq!(
-            serde_json::from_value::<WorkspaceChange>(changed_wire).unwrap(),
-            changed
-        );
-        let revised = WorkspaceChange::DocChanged {
-            doc: "d-1".parse().unwrap(),
-            version: 3,
-        };
-        let revised_wire = json!({ "kind": "doc_changed", "doc": "d-1", "version": 3 });
-
-        assert_eq!(serde_json::to_value(&revised).unwrap(), revised_wire);
-        assert_eq!(
-            serde_json::from_value::<WorkspaceChange>(revised_wire).unwrap(),
-            revised
-        );
-        let chatted = WorkspaceChange::ChatChanged { chat: chat() };
-        let chatted_wire = json!({ "kind": "chat_changed", "chat": "c-1" });
-
-        assert_eq!(serde_json::to_value(&chatted).unwrap(), chatted_wire);
-        assert_eq!(
-            serde_json::from_value::<WorkspaceChange>(chatted_wire).unwrap(),
-            chatted
-        );
+    #[test]
+    fn changes_are_tagged_and_a_newer_one_still_parses() {
+        let changes = [
+            (
+                WorkspaceChange::MemberJoined {
+                    member: "m-1".parse().unwrap(),
+                },
+                json!({ "kind": "member_joined", "member": "m-1" }),
+            ),
+            (
+                WorkspaceChange::TaskChanged {
+                    task: "t-1".parse().unwrap(),
+                    version: 2,
+                },
+                json!({ "kind": "task_changed", "task": "t-1", "version": 2 }),
+            ),
+            (
+                WorkspaceChange::DocChanged {
+                    doc: "d-1".parse().unwrap(),
+                    version: 3,
+                },
+                json!({ "kind": "doc_changed", "doc": "d-1", "version": 3 }),
+            ),
+            (
+                WorkspaceChange::ChatChanged { chat: chat() },
+                json!({ "kind": "chat_changed", "chat": "c-1" }),
+            ),
+            (
+                WorkspaceChange::ProposalChanged {
+                    proposal: "p-1".parse().unwrap(),
+                },
+                json!({ "kind": "proposal_changed", "proposal": "p-1" }),
+            ),
+        ];
+        for (change, wire) in changes {
+            assert_eq!(serde_json::to_value(&change).unwrap(), wire);
+            assert_eq!(
+                serde_json::from_value::<WorkspaceChange>(wire).unwrap(),
+                change
+            );
+        }
         assert_eq!(
             serde_json::from_value::<WorkspaceChange>(json!({ "kind": "renamed" })).unwrap(),
             WorkspaceChange::Newer

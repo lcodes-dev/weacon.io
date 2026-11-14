@@ -6,7 +6,7 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use super::wire::{Block, Message, event};
-use crate::transcript::{Said, Transcript};
+use crate::transcript::{Step, Transcript};
 
 #[derive(Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -39,11 +39,9 @@ struct Place {
     sidechain: bool,
 }
 
-/// Adds `line` to `transcript`; false when it doesn't parse.
-pub(crate) fn line(line: &[u8], transcript: &mut Transcript) -> bool {
-    let Ok(parsed) = serde_json::from_slice::<Line>(line) else {
-        return false;
-    };
+pub(crate) fn read_line(line: &[u8], transcript: &mut Transcript) -> serde_json::Result<()> {
+    let parsed = serde_json::from_slice::<Line>(line)?;
+    // Any line may carry the cwd, even a kind this build skips.
     if transcript.cwd.is_none() {
         transcript.cwd = serde_json::from_slice::<Place>(line)
             .ok()
@@ -63,40 +61,46 @@ pub(crate) fn line(line: &[u8], transcript: &mut Transcript) -> bool {
             sidechain: false,
         } => {
             let events = message.blocks().into_iter().filter_map(event);
-            transcript.said.extend(events.map(Said::Event));
+            transcript.steps.extend(events.map(Step::Event));
         }
         Line::User { .. } | Line::Assistant { .. } | Line::Other => {}
     }
-    true
+    Ok(())
 }
 
 fn from_person(message: Message, transcript: &mut Transcript) {
     if let Value::String(text) = &message.content {
-        transcript.said.push(Said::Prompt(text.clone()));
+        transcript.steps.push(Step::Prompt(text.clone()));
         return;
     }
     // One prompt, where its first text was.
-    let mut prompt: Option<(usize, Vec<String>)> = None;
+    let mut texts = Vec::new();
+    let mut first_text_at = 0;
     for block in message.blocks() {
-        if let Block::Text { text } = block {
-            let at = transcript.said.len();
-            prompt.get_or_insert((at, Vec::new())).1.push(text);
-        } else {
-            transcript.said.extend(event(block).map(Said::Event));
+        match block {
+            Block::Text { text } => {
+                if texts.is_empty() {
+                    first_text_at = transcript.steps.len();
+                }
+                texts.push(text);
+            }
+            Block::ToolResult { .. } => transcript.steps.extend(event(block).map(Step::Event)),
+            Block::ToolUse { .. } | Block::Other => {}
         }
     }
-    if let Some((at, texts)) = prompt {
-        transcript.said.insert(at, Said::Prompt(texts.join("\n\n")));
+    if !texts.is_empty() {
+        let prompt = Step::Prompt(texts.join("\n\n"));
+        transcript.steps.insert(first_text_at, prompt);
     }
 }
 
 #[cfg(test)]
 mod tests {
     use serde_json::json;
-    use weacon_protocol::{AgentKind, RunEvent};
+    use weacon_protocol::AgentKind;
 
     use super::*;
-    use crate::test_support::{jsonl, text, tool_done};
+    use crate::test_support::{jsonl, text, tool_call, tool_done};
 
     fn read(lines: &[Value]) -> Transcript {
         Transcript::read(AgentKind::Claude, jsonl(lines).as_bytes()).unwrap()
@@ -126,18 +130,15 @@ mod tests {
             transcript,
             Transcript {
                 cwd: Some(PathBuf::from("/work/app")),
-                said: vec![
-                    Said::Prompt("Fix the build".to_owned()),
-                    Said::Event(text("Looking")),
-                    Said::Event(RunEvent::ToolCall {
-                        call: "t1".to_owned(),
-                        tool: "Bash".to_owned(),
-                        input: json!({ "command": "make" }),
-                    }),
-                    Said::Event(tool_done("t1", true)),
-                    Said::Prompt("Try again\n\nwith this".to_owned()),
+                steps: vec![
+                    Step::Prompt("Fix the build".to_owned()),
+                    Step::Event(text("Looking")),
+                    Step::Event(tool_call("t1", "Bash", json!({ "command": "make" }))),
+                    Step::Event(tool_done("t1", true)),
+                    Step::Prompt("Try again\n\nwith this".to_owned()),
                 ],
                 skipped: 0,
+                end: 599,
             }
         );
     }
@@ -148,15 +149,16 @@ mod tests {
             { "type": "tool_result", "tool_use_id": "t1" },
             { "type": "text", "text": "Stop" },
             { "type": "tool_result", "tool_use_id": "t2" },
+            { "type": "tool_use", "id": "t3", "name": "Bash", "input": {} },
             { "type": "text", "text": "here" },
         ] } })]);
 
         assert_eq!(
-            transcript.said,
+            transcript.steps,
             [
-                Said::Event(tool_done("t1", false)),
-                Said::Prompt("Stop\n\nhere".to_owned()),
-                Said::Event(tool_done("t2", false)),
+                Step::Event(tool_done("t1", false)),
+                Step::Prompt("Stop\n\nhere".to_owned()),
+                Step::Event(tool_done("t2", false)),
             ]
         );
     }
@@ -178,6 +180,7 @@ mod tests {
             transcript,
             Transcript {
                 cwd: Some(PathBuf::from("/work/app")),
+                end: 435,
                 ..Transcript::default()
             }
         );
@@ -193,6 +196,6 @@ mod tests {
 
         assert_eq!(transcript.skipped, 2);
         assert_eq!(transcript.cwd, None);
-        assert_eq!(transcript.said, vec![Said::Prompt("Hi".to_owned())]);
+        assert_eq!(transcript.steps, vec![Step::Prompt("Hi".to_owned())]);
     }
 }

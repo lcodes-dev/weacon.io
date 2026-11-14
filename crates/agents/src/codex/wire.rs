@@ -323,7 +323,7 @@ mod tests {
     use super::*;
     use crate::test_support::{
         self, Done, FakeRun, answer, app, ended, ends_as_recorded, is_asked, is_finished,
-        is_started, next, started, text, tool_done, until,
+        is_started, next, started, text, tool_call, tool_done, until,
     };
     use crate::wire::Wire as RunWire;
 
@@ -343,7 +343,7 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn a_thread_runs_a_turn_and_an_approval_goes_out_and_back() {
-        let (mut run, done) = fake(include_str!("../../sessions/codex/approval.replay"), None);
+        let (mut run, done) = fake(include_str!("../../replays/codex/approval.replay"), None);
 
         run.send("Run the parser tests").await.unwrap();
         let events = until(&mut run, is_asked).await;
@@ -352,11 +352,11 @@ mod tests {
             Some(
                 [
                     started(THREAD),
-                    RunEvent::ToolCall {
-                        call: "item-1".to_owned(),
-                        tool: "command".to_owned(),
-                        input: json!({ "command": "cargo test -p parser" }),
-                    },
+                    tool_call(
+                        "item-1",
+                        "command",
+                        json!({ "command": "cargo test -p parser" })
+                    ),
                 ]
                 .as_slice()
             )
@@ -381,7 +381,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn an_interrupt_waits_for_its_turn_and_withdraws_waiting_prompts() {
         let (mut run, done) = fake(
-            include_str!("../../sessions/codex/interrupt.replay"),
+            include_str!("../../replays/codex/interrupt.replay"),
             Some(THREAD),
         );
 
@@ -411,7 +411,7 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn a_refused_turn_takes_its_interrupt_along_and_a_declined_change_fails() {
-        let (mut run, done) = fake(include_str!("../../sessions/codex/decline.replay"), None);
+        let (mut run, done) = fake(include_str!("../../replays/codex/decline.replay"), None);
 
         run.send("Tidy the readme").await.unwrap();
         assert_eq!(until(&mut run, is_started).await, [started(THREAD)]);
@@ -436,7 +436,7 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn without_a_thread_every_prompt_fails() {
-        let (mut run, done) = fake(include_str!("../../sessions/codex/no_thread.replay"), None);
+        let (mut run, done) = fake(include_str!("../../replays/codex/no_thread.replay"), None);
 
         run.send("Explain the build").await.unwrap();
         assert_eq!(until(&mut run, is_finished).await, [failed()]);
@@ -448,7 +448,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn a_prompt_interrupted_before_the_thread_opens_is_never_sent() {
         let (mut run, done) = fake(
-            include_str!("../../sessions/codex/early_interrupt.replay"),
+            include_str!("../../replays/codex/early_interrupt.replay"),
             None,
         );
 

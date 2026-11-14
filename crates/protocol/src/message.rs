@@ -3,9 +3,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     Capability, ChatAnswer, ChatCommand, ChatQuery, ChatUpdate, ClientLog, Code, DiffAnswer,
-    DiffQuery, MachineSettingsAnswer, MachineSettingsCommand, MachineSettingsQuery, Pick, Receipt,
-    RunUpdate, TerminalCommand, TerminalUpdate, WorkspaceUpdate, WorktreeAnswer, WorktreeCommand,
-    WorktreeQuery, code,
+    DiffQuery, MachineSettingsAnswer, MachineSettingsCommand, MachineSettingsQuery, Pick,
+    ProposalCommand, Receipt, RunUpdate, SessionsAnswer, SessionsQuery, TerminalCommand,
+    TerminalUpdate, WorkspaceUpdate, WorktreeAnswer, WorktreeCommand, WorktreeQuery, code,
 };
 
 /// The protocol version this build speaks. Only a breaking change raises it; peers must match
@@ -27,54 +27,27 @@ pub enum Message {
     Welcome(Welcome),
     Error(ErrorBody),
     Receipt(Receipt),
-    /// An element picked in Chrome, from the extension's host to a core that offers element.pick.
     Pick(Pick),
-    /// What a run reported, from the core to clients that have the capability `run.stream`.
     Run(RunUpdate),
-    /// A change to a workspace, from the server to clients that have the capability
-    /// `workspace.feed`.
     Workspace(WorkspaceUpdate),
-    /// A log record from a client, sent only to a peer that offers `log.forward`.
     Log(ClientLog),
-    /// What a person asks of a chat's agent, from a client to a core that offers `chat.send`.
     ChatCommand(ChatCommand),
-    /// A committed event of a chat, from the core to a client that subscribed under
-    /// `chat.events`.
     Chat(ChatUpdate),
-    /// A question about a chat's log, from a client to a core that offers `chat.events`.
     ChatQuery(ChatQuery),
-    /// The core's answer to a [`ChatQuery`], or its word that the client missed events, to a
-    /// client that has `chat.events`.
     ChatAnswer(ChatAnswer),
-    /// A question about a chat's changes, from a client to a core that offers `diff.view`.
     DiffQuery(DiffQuery),
-    /// The core's answer to a [`DiffQuery`], one changed file at a time, to a client that has
-    /// `diff.view`.
     DiffAnswer(DiffAnswer),
-    /// A question about what a machine keeps for a workspace, from a client to a core that
-    /// offers `machine.settings`.
     MachineSettingsQuery(MachineSettingsQuery),
-    /// A change to what a machine keeps for a workspace, from a client to a core that offers
-    /// `machine.settings`.
     MachineSettingsCommand(MachineSettingsCommand),
-    /// The core's answer to a [`MachineSettingsQuery`] or a [`MachineSettingsCommand`], to a
-    /// client that has `machine.settings`.
     MachineSettingsAnswer(MachineSettingsAnswer),
-    /// A sign-in terminal's sealed input, from a browser through the server to a core that
-    /// offers `terminal.sign_in`; the server relays it only if it offers `terminal.relay`.
+    SessionsQuery(SessionsQuery),
+    SessionsAnswer(SessionsAnswer),
     TerminalCommand(TerminalCommand),
-    /// A sign-in terminal's sealed output, from a core that offers `terminal.sign_in` through
-    /// the server to the browser that opened it.
     Terminal(TerminalUpdate),
-    /// A question about a chat's worktree, from a client to a core that offers
-    /// `worktree.manage`.
     WorktreeQuery(WorktreeQuery),
-    /// What a person asks of a chat's worktree, from a client to a core that offers
-    /// `worktree.manage`.
     WorktreeCommand(WorktreeCommand),
-    /// The core's answer to a [`WorktreeQuery`] or a [`WorktreeCommand`], to a client that has
-    /// `worktree.manage`.
     WorktreeAnswer(WorktreeAnswer),
+    ProposalCommand(ProposalCommand),
     /// A message type this build doesn't know, from a newer peer.
     #[serde(other)]
     #[schemars(skip)]
@@ -106,6 +79,7 @@ pub struct App {
     pub commit: String,
 }
 
+/// Why a request failed, in an error message or an HTTP error answer.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ErrorBody {
     pub code: Code,

@@ -12,9 +12,13 @@ mod email;
 mod feed;
 mod http;
 mod limit;
+mod links;
 mod outbox;
 mod pairing;
+mod proposals;
+mod relay;
 mod secret;
+mod shared;
 mod sign_in;
 mod sign_up;
 mod socket;
@@ -40,9 +44,9 @@ use weacon_protocol::code;
 
 use crate::cli::{Command, Serve};
 use crate::db::Db;
-use crate::http::Shared;
 use crate::outbox::Outbox;
 use crate::secret::Secret;
+use crate::shared::Shared;
 
 /// How many wake-ups a feed may miss before it rereads the database.
 const CHANGES: usize = 256;
@@ -97,13 +101,7 @@ async fn serve(app: &App, args: Serve) -> Result<(), Fault> {
         sign_up,
     } = args;
     usable_outbox(outbox.clone()).await?;
-    let signals = weacon_appkit::Signals::new().map_err(|error| {
-        Fault::new(
-            code!("server.signals_failed"),
-            "The server couldn't catch signals",
-        )
-        .because(error)
-    })?;
+    let signals = signals()?;
     let listener = bind(listen).await?;
     let secret = open_secret(secret, app.log.clone()).await?;
     let db = Db::create(&db).await?;
@@ -122,18 +120,27 @@ async fn serve(app: &App, args: Serve) -> Result<(), Fault> {
         sockets: socket::TIMING,
         changes: broadcast::channel(CHANGES).0,
         unpaired: broadcast::channel(CHANGES).0,
+        links: Arc::default(),
+        relay: Arc::default(),
         sign_ins: Arc::new(Semaphore::new(sign_in::AT_ONCE)),
-        finish_within: sign_in::FINISH_WITHIN,
-        starts: Arc::new(sign_in::starts()),
-        tries: Arc::new(sign_in::tries()),
-        pair_starts: Arc::new(pairing::starts()),
-        pair_tries: Arc::new(pairing::tries()),
-        pair_claims: Arc::new(pairing::claims()),
+        finish_takes: sign_in::FINISH_TAKES,
+        sign_in_limits: Arc::new(sign_in::limits()),
+        pairing_limits: Arc::new(pairing::limits()),
         web: web::FILES,
     };
     http::serve(listener, shared, signals.wait()).await;
     db.close().await;
     Ok(())
+}
+
+fn signals() -> Result<weacon_appkit::Signals, Fault> {
+    weacon_appkit::Signals::new().map_err(|error| {
+        Fault::new(
+            code!("server.signals_failed"),
+            "The server couldn't catch signals",
+        )
+        .because(error)
+    })
 }
 
 /// Checks that `outbox` is a folder; otherwise every sign-in would fail after its answer, and

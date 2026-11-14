@@ -309,7 +309,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let claude = launch(AgentKind::Claude, &dir);
         let script = "#!/bin/sh\nprintf '%s %s %s %s' \"$1\" \"$2\" \"$PWD\" \"$CLAUDE_CONFIG_DIR\" > ran\nexit 3\n";
-        platform::write_program(&claude.program, script);
+        weacon_testing::platform::write_program(&claude.program, script).unwrap();
         let session = AgentSession::try_from(SESSION.to_owned()).unwrap();
         // Whatever the agent exits with, the person ended it.
         claude.resume_by_hand(&session).await.unwrap();

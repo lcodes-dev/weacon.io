@@ -124,7 +124,7 @@ impl Daemon {
         places.mcp = Some(mcp);
         let (chats, engine) = chats::start(state_dir, places, app.clone(), spawn, log.clone())?;
         let listener = platform::bind(&socket).map_err(failed)?;
-        let engine = tokio::spawn(engine.run());
+        let engine = tokio::spawn(engine.serve());
         log.info("daemon started", &[]);
         Ok(Self {
             listener,
@@ -811,6 +811,7 @@ mod tests {
         let offered = [
             code!("chat.send"),
             code!("chat.events"),
+            code!("chat.agent"),
             code!("run.stream"),
         ];
         let Message::Welcome(welcome) = &replies[0] else {

@@ -1,15 +1,16 @@
 import { type ReactNode, useEffect, useRef, useState } from "react";
 
-import { workspaceOf } from "../chat-ref.ts";
-import { Connection, type Status, statusText } from "../connection.ts";
-import { ME } from "../me.ts";
-import type { WorkspaceId, WorkspaceSummary } from "../protocol.ts";
-import type { Api } from "./api.ts";
-import { useAsk } from "./ask.ts";
+import type { Api } from "../api/api.ts";
+import { useAsk } from "../api/ask.ts";
+import { useLoaded } from "../api/loaded.ts";
+import { chatRefOf, workspaceOf } from "../chat-ref.ts";
+import { statusText } from "../connection.ts";
+import type { ChatId, WorkspaceId, WorkspaceSummary } from "../protocol.ts";
+import { ChatsNav } from "./chats.tsx";
+import { useBurst, useFeed } from "./feed-hooks.ts";
 import { Frame } from "./frame.tsx";
 import { STORE, opening, remember } from "./last-workspace.ts";
-import { useLoaded } from "./loaded.ts";
-import { FEED, feedUrl } from "./workspace-feed.ts";
+import { WorkspaceSocket, WorkspaceSocketContext, useOffers, useWorkspaceSocket } from "./workspace-socket.ts";
 
 /**
  * The signed-in person's workspaces, and the one `?workspace=` names, or else the last one opened
@@ -20,8 +21,12 @@ export function Workspaces({ api, who, page }: { api: Api; who: ReactNode; page?
   const { value, problem, load, change } = useLoaded(() => api.workspaces(), api);
   const list = value?.workspaces;
   const [open, setOpen] = useState(() => opening(window.location.search, STORE));
+  const [chat, setChat] = useState(() => chatRefOf(window.location.search)?.chat);
   useEffect(() => {
-    const follow = () => setOpen(workspaceOf(window.location.search));
+    const follow = () => {
+      setOpen(workspaceOf(window.location.search));
+      setChat(chatRefOf(window.location.search)?.chat);
+    };
     window.addEventListener("popstate", follow);
     return () => window.removeEventListener("popstate", follow);
   }, []);
@@ -35,6 +40,13 @@ export function Workspaces({ api, who, page }: { api: Api; who: ReactNode; page?
   const choose = (id: WorkspaceId | undefined) => {
     window.history.pushState(null, "", id === undefined ? window.location.pathname : `?workspace=${id}`);
     setOpen(id);
+    setChat(undefined);
+  };
+  const chooseChat = (id: ChatId) => {
+    if (id !== chat) {
+      window.history.pushState(null, "", `?workspace=${open}&chat=${id}`);
+      setChat(id);
+    }
   };
   const workspace = list?.find(({ id }) => id === open);
   // Whether the list is on screen, so a workspace made after the person moved on doesn't pull them back.
@@ -63,10 +75,11 @@ export function Workspaces({ api, who, page }: { api: Api; who: ReactNode; page?
   );
   return (
     <Frame middle={page === undefined && selector} right={who}>
+      <SocketScope workspace={workspace?.id}>
       {page}
       <div style={{ display: page === undefined ? "contents" : "none" }}>
       {workspace !== undefined ? (
-        <Workspace key={workspace.id} api={api} workspace={workspace} />
+        <Workspace key={workspace.id} api={api} workspace={workspace} chosen={chat} choose={chooseChat} />
       ) : (
         <section className="page workspaces">
           <h1>Workspaces</h1>
@@ -105,6 +118,7 @@ export function Workspaces({ api, who, page }: { api: Api; who: ReactNode; page?
         </section>
       )}
       </div>
+      </SocketScope>
     </Frame>
   );
 }
@@ -117,7 +131,7 @@ function NewWorkspace({ api, made }: { api: Api; made(workspace: WorkspaceSummar
       onSubmit={(event) => {
         event.preventDefault();
         void ask(
-          () => api.create(name),
+          () => api.createWorkspace(name),
           (workspace) => {
             setName("");
             made(workspace);
@@ -138,42 +152,84 @@ function NewWorkspace({ api, made }: { api: Api; made(workspace: WorkspaceSummar
   );
 }
 
-function Workspace({ api, workspace }: { api: Api; workspace: WorkspaceSummary }) {
-  const status = useFeed(workspace.id, api);
-  return (
-    <div className="workspace">
-      <nav className="chats" aria-label="Chats">
-        <h2>Chats</h2>
-        <p className="muted">No chats yet. Connect a machine to start one.</p>
-      </nav>
-      <section className="page">
-        <h1>{workspace.name}</h1>
-        <p className="status">{statusText(status)}</p>
-      </section>
-    </div>
-  );
+/**
+ * Gives the open workspace's page, and any page shown over it, one socket per open `workspace`,
+ * without remounting what it holds when that changes.
+ */
+function SocketScope({ workspace, children }: { workspace: WorkspaceId | undefined; children: ReactNode }) {
+  const [socket, setSocket] = useState<WorkspaceSocket>();
+  if (socket?.workspace !== workspace) {
+    setSocket(workspace === undefined ? undefined : new WorkspaceSocket(workspace));
+  }
+  return <WorkspaceSocketContext value={socket?.workspace === workspace ? socket : undefined}>{children}</WorkspaceSocketContext>;
 }
 
-/** Where the feed of `workspace`'s changes stands; when it ends, asking for the session lets a lost one reach sign-in. */
-function useFeed(workspace: WorkspaceId, api: Api): Status {
-  const [status, setStatus] = useState<Status>({ state: "connecting" });
-  useEffect(() => {
-    let current = true;
-    const socket = new WebSocket(feedUrl(window.location, workspace));
-    const onStatus = (next: Status) => {
-      if (!current) {
-        return;
-      }
-      setStatus(next);
-      if (next.state === "ended") {
-        void api.session();
-      }
-    };
-    new Connection(socket, ME, { status: onStatus, message: () => {} }, FEED, (run, ms) => setTimeout(run, ms));
-    return () => {
-      current = false;
-      socket.close();
-    };
-  }, [workspace, api]);
-  return status;
+function Workspace({
+  api,
+  workspace,
+  chosen,
+  choose,
+}: {
+  api: Api;
+  workspace: WorkspaceSummary;
+  chosen: ChatId | undefined;
+  choose: (chat: ChatId) => void;
+}) {
+  const socket = useWorkspaceSocket();
+  const status = useFeed(workspace.id, api, socket);
+  // Whether the server serves chats, known once the feed is welcomed.
+  const chats = useOffers(socket, "workspace.chats");
+  const page = (title: string) => (
+    <section className="page">
+      <h1>{title}</h1>
+      <p className="status">{statusText(status)}</p>
+    </section>
+  );
+  if (chats !== true) {
+    return (
+      <div className="workspace">
+        <nav className="chats" aria-label="Chats">
+          <h2>Chats</h2>
+          <p className="muted">{chats === undefined ? "Loading" : "No chats yet. Connect a machine to start one."}</p>
+        </nav>
+        {page(workspace.name)}
+      </div>
+    );
+  }
+  return <WorkspaceChats api={api} workspace={workspace} chosen={chosen} choose={choose} page={page} />;
+}
+
+/** The workspace's chats, kept fresh by its feed, beside the chosen one's `page`. */
+function WorkspaceChats({
+  api,
+  workspace,
+  chosen,
+  choose,
+  page,
+}: {
+  api: Api;
+  workspace: WorkspaceSummary;
+  chosen: ChatId | undefined;
+  choose: (chat: ChatId) => void;
+  page: (title: string) => ReactNode;
+}) {
+  const socket = useWorkspaceSocket();
+  const chats = useLoaded(() => api.chats(workspace.id), workspace.id);
+  const reload = useBurst(() => void chats.load());
+  useEffect(
+    () =>
+      socket.subscribe((message) => {
+        if (message.type === "workspace" && message.change.kind === "chat_changed") {
+          reload();
+        }
+      }),
+    [socket],
+  );
+  const openChat = chats.value?.chats.find(({ id }) => id === chosen);
+  return (
+    <div className="workspace">
+      <ChatsNav loaded={chats} chosen={chosen} choose={choose} />
+      {page(openChat?.title ?? workspace.name)}
+    </div>
+  );
 }

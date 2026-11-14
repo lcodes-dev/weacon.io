@@ -8,15 +8,16 @@ use std::time::Duration;
 use tokio::sync::mpsc;
 use weacon_observability::Fault;
 use weacon_protocol::{
-    ChatAction, ChatAnswerKind, ChatCommand, ChatEvent, ChatId, ChatQuery, ChatQueryKind, Message,
-    Outcome, PermissionAnswer, RequestId, RunEvent, RunId, WorkspaceId, code,
+    AgentKind, AgentSession, ChatAction, ChatAnswerKind, ChatCommand, ChatEvent, ChatId, ChatQuery,
+    ChatQueryKind, Message, Outcome, PermissionAnswer, RequestId, RunEvent, RunId, WorkspaceId,
+    code,
 };
 use weacon_testing::{Records, TempDir, recording_logger};
 
-use super::engine::{Chats, Engine, Host, Start};
+use super::engine::agent::Agent;
+use super::engine::{Chats, Engine, Host, RunAs};
 use super::feed::Client;
-use crate::runs::Runs;
-use crate::runs::task::Agent;
+use crate::runs::{ChatKey, Runs};
 use crate::workspaces::Workspaces;
 
 /// What a fake agent was told.
@@ -65,7 +66,7 @@ impl Agent for FakeAgent {
 /// The test's end of a started fake agent; dropping `say` makes the agent exit.
 #[derive(Debug)]
 pub(crate) struct Started {
-    pub(crate) start: Start,
+    pub(crate) run_as: RunAs,
     pub(crate) say: mpsc::UnboundedSender<RunEvent>,
     pub(crate) told: mpsc::UnboundedReceiver<Told>,
 }
@@ -82,7 +83,7 @@ pub(crate) struct Bench {
 /// An engine with its state in a new folder, running on the current runtime.
 pub(crate) fn bench() -> Bench {
     let (bench, engine) = parts();
-    tokio::spawn(engine.run());
+    tokio::spawn(engine.serve());
     bench
 }
 
@@ -93,7 +94,7 @@ pub(crate) fn parts() -> (Bench, Engine<FakeAgent>) {
     let broken = Arc::new(AtomicBool::new(false));
     let fails = Arc::clone(&broken);
     let host = Host {
-        start: Arc::new(move |start: &Start| {
+        launch: Arc::new(move |run_as: &RunAs| {
             if fails.load(Ordering::SeqCst) {
                 return Err(Fault::new(
                     code!("agent.not_started"),
@@ -102,8 +103,8 @@ pub(crate) fn parts() -> (Bench, Engine<FakeAgent>) {
             }
             let (say, says) = mpsc::unbounded_channel();
             let (told_by, told) = mpsc::unbounded_channel();
-            let start = start.clone();
-            drop(starts.send(Started { start, say, told }));
+            let run_as = run_as.clone();
+            drop(starts.send(Started { run_as, say, told }));
             Ok(FakeAgent {
                 says,
                 told: told_by,
@@ -133,13 +134,65 @@ pub(crate) fn chat(id: &str) -> ChatId {
     ChatId::try_from(id.to_owned()).unwrap()
 }
 
+/// Chat `c-1` in `w-1`.
+pub(crate) fn key() -> ChatKey {
+    ChatKey {
+        workspace: workspace(),
+        chat: chat("c-1"),
+    }
+}
+
 pub(crate) fn run(id: &str) -> RunId {
     RunId::try_from(id.to_owned()).unwrap()
 }
 
-pub(crate) fn command(request: &str, chat_id: &str, action: ChatAction) -> ChatCommand {
+pub(crate) fn request(id: &str) -> RequestId {
+    RequestId::try_from(id.to_owned()).unwrap()
+}
+
+pub(crate) fn session() -> AgentSession {
+    AgentSession::try_from("0b7c6a52-3f1e-4d2a-9c8b-5e4f3a2b1c0d".to_owned()).unwrap()
+}
+
+pub(crate) fn text(text: &str) -> RunEvent {
+    RunEvent::Text {
+        text: text.to_owned(),
+    }
+}
+
+/// Run `run_id` asking a person whether it may run `ls`.
+pub(crate) fn asks(run_id: &str, prompt: u32) -> RunEvent {
+    RunEvent::PermissionAsked {
+        run: run(run_id),
+        prompt,
+        tool: "Bash".to_owned(),
+        input: serde_json::json!({ "command": "ls" }),
+    }
+}
+
+/// Request `request` allowing what run `run_id` asked in prompt `prompt`, in chat `chat_id`.
+pub(crate) fn allow(request: &str, chat_id: &str, run_id: &str, prompt: u32) -> ChatCommand {
+    let answer = PermissionAnswer {
+        run: run(run_id),
+        prompt,
+        allow: true,
+    };
+    command(request, chat_id, ChatAction::Permission { answer })
+}
+
+/// A prompt as chat `c-1`'s log holds it.
+pub(crate) fn logged_prompt(request_id: &str, text: &str) -> ChatEvent {
+    ChatEvent::Prompt {
+        request: request(request_id),
+        text: text.to_owned(),
+        repo: None,
+        agent: None,
+    }
+}
+
+pub(crate) fn command(request_id: &str, chat_id: &str, action: ChatAction) -> ChatCommand {
     ChatCommand {
-        request: RequestId::try_from(request.to_owned()).unwrap(),
+        request: request(request_id),
         workspace: workspace(),
         chat: chat(chat_id),
         action,
@@ -156,8 +209,18 @@ pub(crate) fn prompt(request: &str, text: &str) -> ChatCommand {
             text,
             repo: None,
             machine: None,
+            agent: None,
         },
     )
+}
+
+/// A prompt under `request` that names `agent`.
+pub(crate) fn prompt_naming(request: &str, text: &str, agent: AgentKind) -> ChatCommand {
+    let mut asked = prompt(request, text);
+    if let ChatAction::Prompt { agent: named, .. } = &mut asked.action {
+        *named = Some(agent);
+    }
+    asked
 }
 
 pub(crate) fn query(chat_id: &str, query: ChatQueryKind) -> ChatQuery {
@@ -196,6 +259,13 @@ pub(crate) async fn pushed(from: &mut mpsc::Receiver<Message>, count: usize) -> 
     briefs
 }
 
+/// Passes over the next `count` pushed messages, failing unless each one arrives.
+pub(crate) async fn skip(from: &mut mpsc::Receiver<Message>, count: usize) {
+    let briefs = pushed(from, count).await;
+    let missing = |brief: &String| brief == "nothing" || brief == "closed";
+    assert!(!briefs.iter().any(missing), "{briefs:?}");
+}
+
 /// A pushed message in a few words, such as `2 receipt r-1 accepted`.
 pub(crate) fn brief(message: &Message) -> String {
     if let Message::Chat(update) = message {
@@ -225,6 +295,7 @@ fn event(event: &ChatEvent) -> String {
         ChatEvent::RunStatus { status } => {
             format!("{} is {:?}", status.run.as_str(), status.state)
         }
+        ChatEvent::OutsidePrompt { text } => format!("outside prompt {text}"),
         ChatEvent::Newer => "newer".to_owned(),
     }
 }

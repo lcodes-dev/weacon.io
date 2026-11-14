@@ -4,7 +4,9 @@ use weacon_observability::Fault;
 use weacon_protocol::{TaskId, TaskStatus, code};
 
 use super::changes::Versioned;
-use super::{Workspace, author_columns, failed, stored, stored_version, unreadable};
+use super::{
+    Workspace, author_columns, failed, stored, stored_version, unreadable, version_number,
+};
 
 type Row = (String, String, String, String, i64);
 
@@ -19,12 +21,19 @@ impl Workspace {
         task: &Task,
         attribution: &Attribution,
     ) -> Result<(), Fault> {
-        let mut transaction = self
-            .db
-            .writer
-            .begin_with("BEGIN IMMEDIATE")
-            .await
-            .map_err(failed)?;
+        let mut transaction = self.db.write().await?;
+        self.insert_task(&mut transaction, task, attribution)
+            .await?;
+        transaction.commit().await.map_err(failed)
+    }
+
+    /// [`Self::add_task`], inside the caller's transaction.
+    pub(super) async fn insert_task(
+        &self,
+        transaction: &mut SqliteConnection,
+        task: &Task,
+        attribution: &Attribution,
+    ) -> Result<(), Fault> {
         let added = sqlx::query(
             "INSERT INTO tasks (workspace_id, task_id, title, status, order_key, version)
              SELECT ?1, ?2, ?3, ?4, ?5, ?6
@@ -35,7 +44,7 @@ impl Workspace {
         .bind(task.title.as_str())
         .bind(status_text(task.status)?)
         .bind(task.order.as_str())
-        .bind(version_number(task.version)?)
+        .bind(version_number(task.version, last_version)?)
         .bind(MAX_TASKS)
         .execute(&mut *transaction)
         .await
@@ -46,9 +55,7 @@ impl Workspace {
                 "The workspace has as many tasks as it can hold",
             ));
         }
-        self.record_version(&mut transaction, task, attribution)
-            .await?;
-        transaction.commit().await.map_err(failed)
+        self.record_version(transaction, task, attribution).await
     }
 
     /// The tasks, in their order.
@@ -76,12 +83,22 @@ impl Workspace {
         edit: TaskEdit,
         attribution: &Attribution,
     ) -> Result<Task, Fault> {
-        let mut transaction = self
-            .db
-            .writer
-            .begin_with("BEGIN IMMEDIATE")
-            .await
-            .map_err(failed)?;
+        let mut transaction = self.db.write().await?;
+        let task = self.read_task(&mut transaction, id).await?;
+        let edited = task.edit(read_at, edit).map_err(refused)?;
+        self.store_task(&mut transaction, &edited, attribution)
+            .await?;
+        transaction.commit().await.map_err(failed)?;
+        Ok(edited)
+    }
+
+    /// The task `id` as it is now, inside the caller's transaction; `task.not_found` when
+    /// there's none.
+    pub(super) async fn read_task(
+        &self,
+        transaction: &mut SqliteConnection,
+        id: &TaskId,
+    ) -> Result<Task, Fault> {
         let row = sqlx::query_as::<_, Row>(
             "SELECT task_id, title, status, order_key, version FROM tasks
              WHERE workspace_id = ? AND task_id = ?",
@@ -92,7 +109,17 @@ impl Workspace {
         .await
         .map_err(failed)?
         .ok_or_else(task_not_found)?;
-        let edited = stored_task(row)?.edit(read_at, edit).map_err(refused)?;
+        stored_task(row)
+    }
+
+    /// Stores `edited`, read and edited inside the caller's transaction, as the task's new
+    /// version.
+    pub(super) async fn store_task(
+        &self,
+        transaction: &mut SqliteConnection,
+        edited: &Task,
+        attribution: &Attribution,
+    ) -> Result<(), Fault> {
         sqlx::query(
             "UPDATE tasks SET title = ?, status = ?, order_key = ?, version = ?
              WHERE workspace_id = ? AND task_id = ?",
@@ -100,16 +127,13 @@ impl Workspace {
         .bind(edited.title.as_str())
         .bind(status_text(edited.status)?)
         .bind(edited.order.as_str())
-        .bind(version_number(edited.version)?)
+        .bind(version_number(edited.version, last_version)?)
         .bind(self.id.as_str())
-        .bind(id.as_str())
+        .bind(edited.id.as_str())
         .execute(&mut *transaction)
         .await
         .map_err(failed)?;
-        self.record_version(&mut transaction, &edited, attribution)
-            .await?;
-        transaction.commit().await.map_err(failed)?;
-        Ok(edited)
+        self.record_version(transaction, edited, attribution).await
     }
 
     /// Records who is behind the version `task` is now at, and the change for the feed.
@@ -121,7 +145,7 @@ impl Workspace {
     ) -> Result<(), Fault> {
         let (kind, author, agent) =
             author_columns(attribution.author()).ok_or_else(unknown_value)?;
-        let version = version_number(task.version)?;
+        let version = version_number(task.version, last_version)?;
         sqlx::query(
             "INSERT INTO task_versions
                  (workspace_id, task_id, version, author_kind, author_member, agent, accepted_by,
@@ -140,7 +164,7 @@ impl Workspace {
         .await
         .map_err(failed)?;
         let versioned = Versioned::Task(&task.id, version);
-        self.changed(transaction, versioned, attribution.accepted_by())
+        self.record_change(transaction, versioned, attribution.accepted_by())
             .await
     }
 }
@@ -155,11 +179,16 @@ fn stored_task((id, title, status, order, version): Row) -> Result<Task, Fault> 
     })
 }
 
+/// No order key fits between the task's neighbours.
+pub(crate) fn no_room() -> Fault {
+    Fault::new(code!("task.no_room"), "There is no room for the task there")
+}
+
 pub(crate) fn task_not_found() -> Fault {
     Fault::new(code!("task.not_found"), "There is no such task")
 }
 
-fn refused(error: EditError) -> Fault {
+pub(super) fn refused(error: EditError) -> Fault {
     match error {
         EditError::Stale => Fault::new(
             code!("task.stale"),
@@ -183,10 +212,6 @@ fn last_version() -> Fault {
         code!("task.last_version"),
         "The task can't be changed any more",
     )
-}
-
-fn version_number(version: Revision) -> Result<i64, Fault> {
-    i64::try_from(version.get()).map_err(|_| last_version())
 }
 
 fn status_text(status: TaskStatus) -> Result<&'static str, Fault> {
@@ -215,20 +240,11 @@ mod tests {
 
     use super::*;
     use crate::db::stored_author;
+    use crate::db::test_support::{NOW, by, code};
     use crate::test_support::{agent, member_id, new_task, two_teams};
-
-    const NOW: i64 = 1_762_077_600;
-
-    fn by(member: &str) -> Attribution {
-        Attribution::by(member_id(member), NOW)
-    }
 
     fn rename(title: &str) -> TaskEdit {
         TaskEdit::Title(Title::try_from(title.to_owned()).unwrap())
-    }
-
-    fn code(fault: &Fault) -> &str {
-        fault.code().as_str()
     }
 
     async fn changes(workspace: &Workspace) -> Vec<(String, i64, String, String, String, i64)> {

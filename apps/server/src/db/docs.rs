@@ -4,7 +4,10 @@ use weacon_observability::Fault;
 use weacon_protocol::{DocAnchors, DocId, DocRevision, DocSummary, code};
 
 use super::changes::Versioned;
-use super::{Workspace, author_columns, failed, stored, stored_author, stored_version, unreadable};
+use super::{
+    Workspace, author_columns, failed, stored, stored_author, stored_version, unreadable,
+    version_number,
+};
 
 /// How many bytes of doc revisions a workspace may hold.
 const DOC_QUOTA: i64 = 1 << 30;
@@ -18,21 +21,26 @@ impl Workspace {
     /// Stores a new doc, made as `attribution` says. An id already in this workspace is
     /// `db.exists`.
     pub(crate) async fn add_doc(&self, doc: &Doc, attribution: &Attribution) -> Result<(), Fault> {
-        let mut transaction = self
-            .db
-            .writer
-            .begin_with("BEGIN IMMEDIATE")
-            .await
-            .map_err(failed)?;
+        let mut transaction = self.db.write().await?;
+        self.insert_doc(&mut transaction, doc, attribution).await?;
+        transaction.commit().await.map_err(failed)
+    }
+
+    /// [`Self::add_doc`], inside the caller's transaction.
+    pub(super) async fn insert_doc(
+        &self,
+        transaction: &mut SqliteConnection,
+        doc: &Doc,
+        attribution: &Attribution,
+    ) -> Result<(), Fault> {
         sqlx::query("INSERT INTO docs (workspace_id, doc_id, version) VALUES (?, ?, ?)")
             .bind(self.id.as_str())
             .bind(doc.id.as_str())
-            .bind(version_number(doc.version)?)
+            .bind(version_number(doc.version, last_version)?)
             .execute(&mut *transaction)
             .await
             .map_err(failed)?;
-        self.record_doc(&mut transaction, doc, attribution).await?;
-        transaction.commit().await.map_err(failed)
+        self.record_doc(transaction, doc, attribution).await
     }
 
     /// The docs, by title.
@@ -61,7 +69,7 @@ impl Workspace {
     /// isn't is `doc.not_found`.
     pub(crate) async fn doc(&self, id: &DocId, version: Option<Revision>) -> Result<Doc, Fault> {
         let version = version
-            .map(|version| i64::try_from(version.get()).map_err(|_| doc_not_found()))
+            .map(|version| version_number(version, doc_not_found))
             .transpose()?;
         let mut reader = self.db.readers.acquire().await.map_err(failed)?;
         self.read_doc(&mut reader, id, version).await
@@ -76,25 +84,31 @@ impl Workspace {
         text: DocText,
         attribution: &Attribution,
     ) -> Result<Doc, Fault> {
-        let mut transaction = self
-            .db
-            .writer
-            .begin_with("BEGIN IMMEDIATE")
-            .await
-            .map_err(failed)?;
+        let mut transaction = self.db.write().await?;
         let current = self.read_doc(&mut transaction, id, None).await?;
         let revised = current.revise(read_at, text).map_err(refused)?;
-        sqlx::query("UPDATE docs SET version = ? WHERE workspace_id = ? AND doc_id = ?")
-            .bind(version_number(revised.version)?)
-            .bind(self.id.as_str())
-            .bind(id.as_str())
-            .execute(&mut *transaction)
-            .await
-            .map_err(failed)?;
-        self.record_doc(&mut transaction, &revised, attribution)
+        self.store_revision(&mut transaction, &revised, attribution)
             .await?;
         transaction.commit().await.map_err(failed)?;
         Ok(revised)
+    }
+
+    /// Stores `revised`, read and revised inside the caller's transaction, as the doc's new
+    /// revision.
+    pub(super) async fn store_revision(
+        &self,
+        transaction: &mut SqliteConnection,
+        revised: &Doc,
+        attribution: &Attribution,
+    ) -> Result<(), Fault> {
+        sqlx::query("UPDATE docs SET version = ? WHERE workspace_id = ? AND doc_id = ?")
+            .bind(version_number(revised.version, last_version)?)
+            .bind(self.id.as_str())
+            .bind(revised.id.as_str())
+            .execute(&mut *transaction)
+            .await
+            .map_err(failed)?;
+        self.record_doc(transaction, revised, attribution).await
     }
 
     /// The doc's newest `limit` revisions, newest first; `limit` is at least 1. A doc there
@@ -130,7 +144,7 @@ impl Workspace {
             .collect()
     }
 
-    async fn read_doc(
+    pub(super) async fn read_doc(
         &self,
         connection: &mut SqliteConnection,
         id: &DocId,
@@ -174,7 +188,11 @@ impl Workspace {
 
     /// Counts `size` more bytes against the workspace's quota, or refuses a revision it has
     /// no room left for.
-    async fn charge(&self, transaction: &mut SqliteConnection, size: i64) -> Result<(), Fault> {
+    pub(super) async fn charge(
+        &self,
+        transaction: &mut SqliteConnection,
+        size: i64,
+    ) -> Result<(), Fault> {
         let charged = sqlx::query(
             "UPDATE workspaces SET doc_bytes = doc_bytes + ?2
              WHERE workspace_id = ?1 AND doc_bytes + ?2 <= ?3",
@@ -200,7 +218,7 @@ impl Workspace {
         attribution: &Attribution,
     ) -> Result<(), Fault> {
         let (kind, author, agent) = author_columns(attribution.author()).ok_or_else(unknown)?;
-        let version = version_number(doc.version)?;
+        let version = version_number(doc.version, last_version)?;
         let anchors = doc.text.anchors();
         let size = size(&doc.text, agent.as_deref());
         self.charge(transaction, size).await?;
@@ -240,7 +258,7 @@ impl Workspace {
             .map_err(failed)?;
         }
         let versioned = Versioned::Doc(&doc.id, version);
-        self.changed(transaction, versioned, attribution.accepted_by())
+        self.record_change(transaction, versioned, attribution.accepted_by())
             .await
     }
 }
@@ -261,12 +279,17 @@ fn size(text: &DocText, agent: Option<&str>) -> i64 {
     i64::try_from(size).unwrap_or(i64::MAX)
 }
 
-/// Fills the workspace's quota, for tests of what a full one answers.
 #[cfg(test)]
 impl Workspace {
+    /// Fills the workspace's quota, for tests of what a full one answers.
     pub(crate) async fn fill_doc_quota(&self) {
+        self.set_doc_bytes(DOC_QUOTA).await;
+    }
+
+    /// Says the workspace holds `bytes` of docs.
+    pub(crate) async fn set_doc_bytes(&self, bytes: i64) {
         sqlx::query("UPDATE workspaces SET doc_bytes = ? WHERE workspace_id = ?")
-            .bind(DOC_QUOTA)
+            .bind(bytes)
             .bind(self.id.as_str())
             .execute(&self.db.writer)
             .await
@@ -285,9 +308,9 @@ fn doc_not_found() -> Fault {
     Fault::new(code!("doc.not_found"), "There is no such doc")
 }
 
-fn refused(error: ReviseError) -> Fault {
+pub(super) fn refused(error: ReviseError) -> Fault {
     match error {
-        ReviseError::Stale { .. } => {
+        ReviseError::Stale => {
             Fault::new(code!("doc.stale"), "The doc has changed since it was read")
         }
         ReviseError::LastVersion => last_version(),
@@ -309,10 +332,6 @@ fn last_version() -> Fault {
     )
 }
 
-fn version_number(version: Revision) -> Result<i64, Fault> {
-    i64::try_from(version.get()).map_err(|_| last_version())
-}
-
 #[cfg(test)]
 mod tests {
     use weacon_model::Title;
@@ -321,10 +340,9 @@ mod tests {
 
     use super::*;
     use crate::db::Db;
-    use crate::db::schema::database_before;
+    use crate::db::schema::{database_before, steps};
+    use crate::db::test_support::{NOW, by, code};
     use crate::test_support::{agent, member_id, two_teams, workspace_id};
-
-    const NOW: i64 = 1_762_077_600;
 
     fn doc_id(id: &str) -> DocId {
         DocId::try_from(id.to_owned()).unwrap()
@@ -356,14 +374,6 @@ mod tests {
 
     fn new_doc(id: &str, title: &str) -> Doc {
         Doc::new(doc_id(id), text(title, "Plain.", &[]))
-    }
-
-    fn by(member: &str) -> Attribution {
-        Attribution::by(member_id(member), NOW)
-    }
-
-    fn code(fault: &Fault) -> &str {
-        fault.code().as_str()
     }
 
     fn summary(doc: &Doc) -> DocSummary {
@@ -613,7 +623,7 @@ mod tests {
              INSERT INTO doc_versions (workspace_id, doc_id, version, title, body, author_kind,
                  author_member, accepted_by, at)
                  VALUES ('w1', 'd1', 1, 'Framing', 'Plain.', 'agent', 'm1', 'm1', 0);";
-        database_before(&path, "ADD COLUMN agent TEXT", rows).await;
+        database_before(&path, steps::VERSION_AGENTS, rows).await;
         let db = Db::open(&path).await.unwrap();
         let one = db.workspace(&workspace_id("w1")).await.unwrap();
         let newer = agent(AgentKind::Newer, AgentOwner::Shared, None);
@@ -645,15 +655,6 @@ mod tests {
             .fetch_one(&workspace.db.readers)
             .await
             .unwrap()
-    }
-
-    async fn set_doc_bytes(workspace: &Workspace, bytes: i64) {
-        sqlx::query("UPDATE workspaces SET doc_bytes = ? WHERE workspace_id = ?")
-            .bind(bytes)
-            .bind(workspace.id.as_str())
-            .execute(&workspace.db.writer)
-            .await
-            .unwrap();
     }
 
     #[tokio::test]
@@ -691,7 +692,7 @@ mod tests {
         let first = new_doc("d1", "Framing");
         one.add_doc(&first, &by("m1")).await.unwrap();
         let next = linked();
-        set_doc_bytes(&one, DOC_QUOTA - size(&next, None)).await;
+        one.set_doc_bytes(DOC_QUOTA - size(&next, None)).await;
 
         let fits = one
             .revise_doc(&first.id, Revision::FIRST, next, &by("m1"))
@@ -741,7 +742,7 @@ mod tests {
              ",
             commit = "c".repeat(40),
         );
-        database_before(&path, "ADD COLUMN doc_bytes", &rows).await;
+        database_before(&path, steps::DOC_BYTES, &rows).await;
 
         let db = Db::open(&path).await.unwrap();
         let one = db.workspace(&workspace_id("w1")).await.unwrap();

@@ -6,14 +6,15 @@ use weacon_protocol::{ChatId, RunState, WorkspaceId, code};
 
 use crate::app::{App, runtime};
 use crate::chats;
-use crate::runs::Runs;
+use crate::runs::{ChatKey, Runs};
 use crate::workspaces::Workspaces;
 
 /// Runs the chat's agent here until the person ends it.
 pub(crate) fn run(app: &App, workspace: &WorkspaceId, chat: &ChatId) -> Result<(), Fault> {
     let state_dir = app.state_dir()?;
+    let key = ChatKey::new(workspace, chat);
     let runs = Runs::load(state_dir)?;
-    let record = runs.of(workspace, chat).ok_or_else(|| {
+    let record = runs.of(&key).ok_or_else(|| {
         Fault::new(
             code!("resume.no_chat"),
             "This chat hasn't run on this machine",
@@ -32,7 +33,7 @@ pub(crate) fn run(app: &App, workspace: &WorkspaceId, chat: &ChatId) -> Result<(
             "The chat's agent is still running here; carry on once it sleeps",
         ));
     }
-    let cwd = chats::work_dir(app.work_root.as_deref(), workspace, chat)?;
+    let cwd = chats::work_dir(app.work_root.as_deref(), &key)?;
     let launch =
         Workspaces::new(state_dir, app.path.clone()).launch(workspace, record.agent, cwd)?;
     let ids = [
@@ -52,6 +53,7 @@ mod tests {
 
     use weacon_protocol::{AgentKind, AgentSession};
     use weacon_testing::TempDir;
+    use weacon_testing::platform::write_program;
 
     use super::*;
     use crate::test_support;
@@ -68,13 +70,12 @@ mod tests {
     // The chat's record in the journal, as its last run left it.
     fn chat_left(dir: &Path, state: RunState, session: Option<&str>) {
         let (workspace, chat) = ids();
+        let key = ChatKey::new(&workspace, &chat);
         runtime().unwrap().block_on(async {
             let mut runs = Runs::load(dir).unwrap();
-            runs.begin(&workspace, &chat, AgentKind::Claude, 100)
-                .await
-                .unwrap();
+            runs.begin(&key, AgentKind::Claude, 100).await.unwrap();
             let session = session.map(|id| AgentSession::try_from(id.to_owned()).unwrap());
-            runs.update(&workspace, &chat, |record| {
+            runs.update(&key, |record| {
                 record.state = state;
                 record.session = session;
             })
@@ -123,9 +124,9 @@ mod tests {
         for state in [RunState::Sleeping, RunState::Ended] {
             let dir = TempDir::new().unwrap();
             chat_left(&dir.join("state"), state, Some(SESSION));
-            let claude = crate::platform::plant_program(&dir.join("bin"), "claude", 0o755);
             let script = "#!/bin/sh\nprintf '%s %s %s' \"$*\" \"$PWD\" \"$CLAUDE_CONFIG_DIR\" > \"$0.ran\"\n";
-            fs::write(&claude, script).unwrap();
+            fs::create_dir_all(dir.join("bin")).unwrap();
+            write_program(&dir.join("bin/claude"), script).unwrap();
             resume(&dir).unwrap();
             let ran = fs::read_to_string(dir.join("bin/claude.ran")).unwrap();
             let folder = dir.join("work/w-w-1/c-c-1");

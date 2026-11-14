@@ -1,8 +1,8 @@
 import { useState } from "react";
 
 import type { AccountSignedIn, ChallengeId } from "../protocol.ts";
-import type { Api } from "./api.ts";
-import { useAsk } from "./ask.ts";
+import type { Api } from "../api/api.ts";
+import { useAsk } from "../api/ask.ts";
 
 /**
  * Asks for an email, then the code sent to it. Every address gets the same answer, so the page
@@ -16,7 +16,7 @@ export function SignIn({ api, signedIn }: { api: Api; signedIn(account: AccountS
   const { busy, problem, ask, clear } = useAsk();
   const send = () => {
     const to = email.trim();
-    void ask(() => api.start(to), ({ challenge }) => {
+    void ask(() => api.startSignIn(to), ({ challenge }) => {
       setCode("");
       setSent({ email: to, challenge });
     });
@@ -43,7 +43,7 @@ export function SignIn({ api, signedIn }: { api: Api; signedIn(account: AccountS
         <form
           onSubmit={(event) => {
             event.preventDefault();
-            void ask(() => api.finish({ ...sent, code: code.trim() }), signedIn);
+            void ask(() => api.finishSignIn({ ...sent, code: code.trim() }), signedIn);
           }}
         >
           <p>If {sent.email} can sign in here, we sent it a code.</p>

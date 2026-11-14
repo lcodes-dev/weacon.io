@@ -64,7 +64,6 @@
       ]
     },
     {
-      "description": "An element picked in Chrome, from the extension's host to a core that offers element.pick.",
       "type": "object",
       "properties": {
         "type": {
@@ -78,7 +77,6 @@
       ]
     },
     {
-      "description": "What a run reported, from the core to clients that have the capability `run.stream`.",
       "type": "object",
       "properties": {
         "type": {
@@ -92,7 +90,6 @@
       ]
     },
     {
-      "description": "A change to a workspace, from the server to clients that have the capability\n`workspace.feed`.",
       "type": "object",
       "properties": {
         "type": {
@@ -106,7 +103,6 @@
       ]
     },
     {
-      "description": "A log record from a client, sent only to a peer that offers `log.forward`.",
       "type": "object",
       "properties": {
         "type": {
@@ -120,7 +116,6 @@
       ]
     },
     {
-      "description": "What a person asks of a chat's agent, from a client to a core that offers `chat.send`.",
       "type": "object",
       "properties": {
         "type": {
@@ -134,7 +129,6 @@
       ]
     },
     {
-      "description": "A committed event of a chat, from the core to a client that subscribed under\n`chat.events`.",
       "type": "object",
       "properties": {
         "type": {
@@ -148,7 +142,6 @@
       ]
     },
     {
-      "description": "A question about a chat's log, from a client to a core that offers `chat.events`.",
       "type": "object",
       "properties": {
         "type": {
@@ -162,7 +155,6 @@
       ]
     },
     {
-      "description": "The core's answer to a [`ChatQuery`], or its word that the client missed events, to a\nclient that has `chat.events`.",
       "type": "object",
       "properties": {
         "type": {
@@ -176,7 +168,6 @@
       ]
     },
     {
-      "description": "A question about a chat's changes, from a client to a core that offers `diff.view`.",
       "type": "object",
       "properties": {
         "type": {
@@ -190,7 +181,6 @@
       ]
     },
     {
-      "description": "The core's answer to a [`DiffQuery`], one changed file at a time, to a client that has\n`diff.view`.",
       "type": "object",
       "properties": {
         "type": {
@@ -204,7 +194,6 @@
       ]
     },
     {
-      "description": "A question about what a machine keeps for a workspace, from a client to a core that\noffers `machine.settings`.",
       "type": "object",
       "properties": {
         "type": {
@@ -218,7 +207,6 @@
       ]
     },
     {
-      "description": "A change to what a machine keeps for a workspace, from a client to a core that offers\n`machine.settings`.",
       "type": "object",
       "properties": {
         "type": {
@@ -232,7 +220,6 @@
       ]
     },
     {
-      "description": "The core's answer to a [`MachineSettingsQuery`] or a [`MachineSettingsCommand`], to a\nclient that has `machine.settings`.",
       "type": "object",
       "properties": {
         "type": {
@@ -246,7 +233,32 @@
       ]
     },
     {
-      "description": "A sign-in terminal's sealed input, from a browser through the server to a core that\noffers `terminal.sign_in`; the server relays it only if it offers `terminal.relay`.",
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "sessions_query"
+        }
+      },
+      "$ref": "#/$defs/SessionsQuery",
+      "required": [
+        "type"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "sessions_answer"
+        }
+      },
+      "$ref": "#/$defs/SessionsAnswer",
+      "required": [
+        "type"
+      ]
+    },
+    {
       "type": "object",
       "properties": {
         "type": {
@@ -260,7 +272,6 @@
       ]
     },
     {
-      "description": "A sign-in terminal's sealed output, from a core that offers `terminal.sign_in` through\nthe server to the browser that opened it.",
       "type": "object",
       "properties": {
         "type": {
@@ -274,7 +285,6 @@
       ]
     },
     {
-      "description": "A question about a chat's worktree, from a client to a core that offers\n`worktree.manage`.",
       "type": "object",
       "properties": {
         "type": {
@@ -288,7 +298,6 @@
       ]
     },
     {
-      "description": "What a person asks of a chat's worktree, from a client to a core that offers\n`worktree.manage`.",
       "type": "object",
       "properties": {
         "type": {
@@ -302,7 +311,6 @@
       ]
     },
     {
-      "description": "The core's answer to a [`WorktreeQuery`] or a [`WorktreeCommand`], to a client that has\n`worktree.manage`.",
       "type": "object",
       "properties": {
         "type": {
@@ -311,6 +319,19 @@
         }
       },
       "$ref": "#/$defs/WorktreeAnswer",
+      "required": [
+        "type"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "proposal_command"
+        }
+      },
+      "$ref": "#/$defs/ProposalCommand",
       "required": [
         "type"
       ]
@@ -592,9 +613,12 @@
     "ChatAction": {
       "oneOf": [
         {
-          "description": "Starts or queues a turn. Only a chat's first prompt has `repo` and `machine`, one of the\nsender's; the server drops `machine` before relaying.",
+          "description": "Starts or queues a turn. Only a chat's first prompt has `repo` and `machine`, one of the\nsender's; the server drops `machine` before relaying. `agent` fixes the chat's agent on\nits first prompt, Claude when missing; a later prompt naming another agent is refused as\n`chat.agent_conflict`, and an agent the core doesn't know as `message.unsupported`.",
           "type": "object",
           "properties": {
+            "agent": {
+              "$ref": "#/$defs/AgentKind"
+            },
             "kind": {
               "type": "string",
               "const": "prompt"
@@ -647,6 +671,7 @@
       ]
     },
     "ChatAnswer": {
+      "description": "The core's answer to a [`ChatQuery`], or its word that the client missed events, to a client\nthat has `chat.events`.",
       "type": "object",
       "properties": {
         "answer": {
@@ -744,7 +769,7 @@
       ]
     },
     "ChatCommand": {
-      "description": "The core answers with receipts under `request`.",
+      "description": "What a person asks of a chat's agent, from a client to a core that offers `chat.send`. The\ncore answers with receipts under `request`.",
       "type": "object",
       "properties": {
         "action": {
@@ -792,9 +817,12 @@
     "ChatEvent": {
       "oneOf": [
         {
-          "description": "A person's prompt, accepted under `request`, with the repository it fixed, if any.",
+          "description": "A person's prompt, accepted under `request`, with the repository and the agent it\nnamed, if any.",
           "type": "object",
           "properties": {
+            "agent": {
+              "$ref": "#/$defs/AgentKind"
+            },
             "kind": {
               "type": "string",
               "const": "prompt"
@@ -863,6 +891,23 @@
             "kind",
             "status"
           ]
+        },
+        {
+          "description": "A prompt typed outside Weacon, read from an agent's own session file.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "outside_prompt"
+            },
+            "text": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "text"
+          ]
         }
       ]
     },
@@ -888,7 +933,7 @@
       ]
     },
     "ChatQuery": {
-      "description": "The answer is a [`ChatAnswer`], or for `subscribe` the [`ChatUpdate`]s themselves.",
+      "description": "A question about a chat's log, from a client to a core that offers `chat.events`. The answer\nis a [`ChatAnswer`], or for `subscribe` the [`ChatUpdate`]s themselves.",
       "type": "object",
       "properties": {
         "chat": {
@@ -1021,7 +1066,7 @@
       ]
     },
     "ChatUpdate": {
-      "description": "Text deltas are never committed; they arrive only as run updates.",
+      "description": "A committed event of a chat, from the core to a client that subscribed under `chat.events`.\nText deltas are never committed; they arrive only as run updates.",
       "type": "object",
       "properties": {
         "chat": {
@@ -1041,7 +1086,7 @@
       ]
     },
     "ClientLog": {
-      "description": "A log record from a client that has no log of its own, such as the web app: an event name and\ntyped ids. The receiver logs only events it knows, so no other text reaches its log.",
+      "description": "A log record from a client that has no log of its own, such as the web app: an event name\nand typed ids, sent only to a peer that offers `log.forward`. The receiver logs only events\nit knows, so no other text reaches its log.",
       "type": "object",
       "properties": {
         "code": {
@@ -1451,6 +1496,7 @@
       "pattern": "^https://[A-Za-z0-9.-]+(:[0-9]{1,5})?([/?#][!-~]*)?$"
     },
     "ErrorBody": {
+      "description": "Why a request failed, in an error message or an HTTP error answer.",
       "type": "object",
       "properties": {
         "code": {
@@ -1778,6 +1824,26 @@
           "required": [
             "kind"
           ]
+        },
+        {
+          "description": "The ids of the workspace's repositories, sorted. Where each is on the machine is never\nsaid: everyone who may ask would see it.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "repos"
+            },
+            "repos": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/RepoId"
+              }
+            }
+          },
+          "required": [
+            "kind",
+            "repos"
+          ]
         }
       ]
     },
@@ -1851,6 +1917,19 @@
           "required": [
             "kind"
           ]
+        },
+        {
+          "description": "The repositories the owner registered for the workspace, of a core that offers\n`repo.list`; an older core answers `request.unknown`.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "repos"
+            }
+          },
+          "required": [
+            "kind"
+          ]
         }
       ]
     },
@@ -1888,6 +1967,53 @@
       "type": "string",
       "maxLength": 64,
       "pattern": "^[A-Za-z0-9_-]+$"
+    },
+    "MergeHunk": {
+      "description": "A run of a doc's body in a [`ProposalOutcome::DocConflict`]; the hunks in order are the\nwhole body.",
+      "oneOf": [
+        {
+          "description": "Lines the merge settled: the same on both sides, or changed on one only.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "agreed"
+            },
+            "text": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "text"
+          ]
+        },
+        {
+          "description": "Lines the doc and the proposal both changed since `base`, each in its own way.",
+          "type": "object",
+          "properties": {
+            "base": {
+              "type": "string"
+            },
+            "current": {
+              "type": "string"
+            },
+            "kind": {
+              "type": "string",
+              "const": "conflict"
+            },
+            "proposed": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "base",
+            "current",
+            "proposed"
+          ]
+        }
+      ]
     },
     "Outcome": {
       "description": "Where an accepted command stands. It ends `completed`, `interrupted`, `failed` or `unknown`.\n`unknown` means it may or may not have run, as when a restart cut it off; the client must not\nsend it again under a new id.",
@@ -1958,6 +2084,34 @@
         }
       ]
     },
+    "OutsideSession": {
+      "description": "A session a person ran with their own agent outside Weacon, last changed at `modified_at`,\nin seconds since the Unix epoch.",
+      "type": "object",
+      "properties": {
+        "agent": {
+          "$ref": "#/$defs/AgentKind"
+        },
+        "folder": {
+          "description": "The folder it ran in, when its file names one.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "modified_at": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "session": {
+          "$ref": "#/$defs/AgentSession"
+        }
+      },
+      "required": [
+        "agent",
+        "session",
+        "modified_at"
+      ]
+    },
     "PairClaim": {
       "description": "From the core that started `pairing`: whether the person has confirmed it yet. The answer\nis a [`PairClaimed`].",
       "type": "object",
@@ -1991,7 +2145,7 @@
           ]
         },
         {
-          "description": "Paired with `owner`'s account. The core proves itself with `token`, sent as a bearer\ntoken, which the server hands out only once.",
+          "description": "Paired with `owner`'s account. The core proves itself with `token`, sent as a bearer\ntoken, which every claim with the pairing's secret returns until the pairing expires or\nthe machine is unpaired.",
           "type": "object",
           "properties": {
             "machine": {
@@ -2143,7 +2297,7 @@
       ]
     },
     "Pick": {
-      "description": "An element someone picked on a local web page, sent to the core for a chat. The sender cuts\nthe HTML short and shrinks the screenshot so the message fits in one frame.",
+      "description": "An element someone picked in Chrome, from the extension's host to a core that offers\n`element.pick`, for a chat. The sender cuts the HTML short and shrinks the screenshot so the\nmessage fits in one frame.",
       "type": "object",
       "properties": {
         "html": {
@@ -2179,8 +2333,472 @@
         "html"
       ]
     },
+    "ProposalAbout": {
+      "description": "The doc or task a proposal is about; a new one has the id it gets once accepted.",
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "doc": {
+              "$ref": "#/$defs/DocId"
+            },
+            "kind": {
+              "type": "string",
+              "const": "doc"
+            }
+          },
+          "required": [
+            "kind",
+            "doc"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "task"
+            },
+            "task": {
+              "$ref": "#/$defs/TaskId"
+            }
+          },
+          "required": [
+            "kind",
+            "task"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "doc": {
+              "$ref": "#/$defs/DocId"
+            },
+            "kind": {
+              "type": "string",
+              "const": "new_doc"
+            }
+          },
+          "required": [
+            "kind",
+            "doc"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "new_task"
+            },
+            "task": {
+              "$ref": "#/$defs/TaskId"
+            }
+          },
+          "required": [
+            "kind",
+            "task"
+          ]
+        }
+      ]
+    },
+    "ProposalAction": {
+      "oneOf": [
+        {
+          "description": "Proposes `change`, made by an agent of `agent`'s kind, which the server can't check. An\nedit takes the place of the same machine's open edit of the same doc or task.",
+          "type": "object",
+          "properties": {
+            "agent": {
+              "$ref": "#/$defs/AgentKind"
+            },
+            "change": {
+              "$ref": "#/$defs/ProposalChange"
+            },
+            "kind": {
+              "type": "string",
+              "const": "propose"
+            },
+            "proposal": {
+              "$ref": "#/$defs/ProposalId"
+            }
+          },
+          "required": [
+            "kind",
+            "proposal",
+            "agent",
+            "change"
+          ]
+        },
+        {
+          "description": "Withdraws one of the same machine's open proposals.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "withdraw"
+            },
+            "proposal": {
+              "$ref": "#/$defs/ProposalId"
+            }
+          },
+          "required": [
+            "kind",
+            "proposal"
+          ]
+        }
+      ]
+    },
+    "ProposalChange": {
+      "description": "What a proposal would change once a person accepts it.",
+      "oneOf": [
+        {
+          "description": "The doc's whole new content, written from its revision `base`.",
+          "type": "object",
+          "properties": {
+            "base": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            },
+            "content": {
+              "$ref": "#/$defs/DocContent"
+            },
+            "doc": {
+              "$ref": "#/$defs/DocId"
+            },
+            "kind": {
+              "type": "string",
+              "const": "doc_edit"
+            }
+          },
+          "required": [
+            "kind",
+            "doc",
+            "base",
+            "content"
+          ]
+        },
+        {
+          "description": "At least one edit to the task, made from its version `base`.",
+          "type": "object",
+          "properties": {
+            "base": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            },
+            "edits": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/TaskEditBody"
+              }
+            },
+            "kind": {
+              "type": "string",
+              "const": "task_edit"
+            },
+            "task": {
+              "$ref": "#/$defs/TaskId"
+            }
+          },
+          "required": [
+            "kind",
+            "task",
+            "base",
+            "edits"
+          ]
+        },
+        {
+          "description": "A doc to make, at its first revision.",
+          "type": "object",
+          "properties": {
+            "content": {
+              "$ref": "#/$defs/DocContent"
+            },
+            "kind": {
+              "type": "string",
+              "const": "new_doc"
+            }
+          },
+          "required": [
+            "kind",
+            "content"
+          ]
+        },
+        {
+          "description": "A task to do, placed last.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "new_task"
+            },
+            "title": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "title"
+          ]
+        }
+      ]
+    },
+    "ProposalCommand": {
+      "description": "What an agent asks the server for, from a core to a server that offers\n`workspace.proposals`, for one of its owner's agents. The server answers with receipts under\n`request`, and names the owner and machine itself.",
+      "type": "object",
+      "properties": {
+        "action": {
+          "$ref": "#/$defs/ProposalAction"
+        },
+        "request": {
+          "$ref": "#/$defs/RequestId"
+        },
+        "workspace": {
+          "$ref": "#/$defs/WorkspaceId"
+        }
+      },
+      "required": [
+        "request",
+        "workspace",
+        "action"
+      ]
+    },
+    "ProposalDecision": {
+      "description": "A member's decision on an open proposal, from a client to the server. The answer is a\n[`ProposalOutcome`].",
+      "type": "object",
+      "properties": {
+        "verdict": {
+          "$ref": "#/$defs/ProposalVerdict"
+        }
+      },
+      "required": [
+        "verdict"
+      ]
+    },
+    "ProposalId": {
+      "description": "A proposal in a workspace, chosen by the core that proposes it and kept across\nreconnects: sending it again with the same change is the same proposal, while the same\nid with another change, or from another machine, is refused with `proposal.conflict`.\n1–64 ASCII letters, digits, `-` or `_`.",
+      "type": "string",
+      "maxLength": 64,
+      "pattern": "^[A-Za-z0-9_-]+$"
+    },
+    "ProposalList": {
+      "description": "A workspace's proposals, newest first, from the server.",
+      "type": "object",
+      "properties": {
+        "proposals": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ProposalRecord"
+          }
+        }
+      },
+      "required": [
+        "proposals"
+      ]
+    },
+    "ProposalOutcome": {
+      "description": "What a [`ProposalDecision`] came to. A conflict changes nothing: the proposal stays open,\nand the person edits the doc or task themselves, then rejects it.",
+      "oneOf": [
+        {
+          "description": "The doc or task is now at `version`.",
+          "type": "object",
+          "properties": {
+            "outcome": {
+              "type": "string",
+              "const": "accepted"
+            },
+            "version": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            }
+          },
+          "required": [
+            "outcome",
+            "version"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "outcome": {
+              "type": "string",
+              "const": "rejected"
+            }
+          },
+          "required": [
+            "outcome"
+          ]
+        },
+        {
+          "description": "The doc changed since the proposal's base where the proposal changed it too: in its\nbody, as `hunks` show, its title, or the anchors it links to.",
+          "type": "object",
+          "properties": {
+            "anchors": {
+              "type": "boolean"
+            },
+            "hunks": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/MergeHunk"
+              }
+            },
+            "outcome": {
+              "type": "string",
+              "const": "doc_conflict"
+            },
+            "title": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "outcome",
+            "hunks",
+            "title",
+            "anchors"
+          ]
+        },
+        {
+          "description": "The proposal's `edits` that change what changed in the task since the proposal's base.",
+          "type": "object",
+          "properties": {
+            "edits": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/TaskEditBody"
+              }
+            },
+            "outcome": {
+              "type": "string",
+              "const": "task_conflict"
+            }
+          },
+          "required": [
+            "outcome",
+            "edits"
+          ]
+        }
+      ]
+    },
+    "ProposalRecord": {
+      "description": "A proposal, from the server to clients that have the capability `workspace.proposals`, at\n`at` seconds since the Unix epoch. Its author's machine is a name, never an id, and only an\nopen proposal still holds its `change`.",
+      "type": "object",
+      "properties": {
+        "about": {
+          "$ref": "#/$defs/ProposalAbout"
+        },
+        "at": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "author": {
+          "$ref": "#/$defs/Author"
+        },
+        "change": {
+          "$ref": "#/$defs/ProposalChange"
+        },
+        "id": {
+          "$ref": "#/$defs/ProposalId"
+        }
+      },
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "state": {
+              "type": "string",
+              "const": "open"
+            }
+          },
+          "required": [
+            "state"
+          ]
+        },
+        {
+          "description": "Accepted by `by`, which made the doc or task `version`.",
+          "type": "object",
+          "properties": {
+            "by": {
+              "$ref": "#/$defs/MemberId"
+            },
+            "state": {
+              "type": "string",
+              "const": "accepted"
+            },
+            "version": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            }
+          },
+          "required": [
+            "state",
+            "version",
+            "by"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "by": {
+              "$ref": "#/$defs/MemberId"
+            },
+            "state": {
+              "type": "string",
+              "const": "rejected"
+            }
+          },
+          "required": [
+            "state",
+            "by"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "state": {
+              "type": "string",
+              "const": "superseded"
+            }
+          },
+          "required": [
+            "state"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "state": {
+              "type": "string",
+              "const": "withdrawn"
+            }
+          },
+          "required": [
+            "state"
+          ]
+        }
+      ],
+      "required": [
+        "id",
+        "about",
+        "author",
+        "at"
+      ]
+    },
+    "ProposalVerdict": {
+      "oneOf": [
+        {
+          "type": "string",
+          "enum": [
+            "accept",
+            "reject"
+          ]
+        }
+      ]
+    },
     "Receipt": {
-      "description": "The daemon's word on a command, sent when it is accepted and again when it ends.",
+      "description": "The core's or server's word on a command, sent when it accepts it and again when it ends.",
       "type": "object",
       "properties": {
         "request": {
@@ -2581,7 +3199,7 @@
       ]
     },
     "RunUpdate": {
-      "description": "One event of the run `run`, in the order the run reported it.",
+      "description": "One event of the run `run`, in the order the run reported it, from the core to clients that\nhave `run.stream`.",
       "type": "object",
       "properties": {
         "event": {
@@ -2594,6 +3212,154 @@
       "required": [
         "run",
         "event"
+      ]
+    },
+    "SessionsAnswer": {
+      "description": "The core's answer to a [`SessionsQuery`] under the same `request`, to a client that has\n`sessions.read`.",
+      "type": "object",
+      "properties": {
+        "answer": {
+          "$ref": "#/$defs/SessionsAnswerKind"
+        },
+        "machine": {
+          "$ref": "#/$defs/MachineId"
+        },
+        "request": {
+          "$ref": "#/$defs/RequestId"
+        }
+      },
+      "required": [
+        "request",
+        "machine",
+        "answer"
+      ]
+    },
+    "SessionsAnswerKind": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "list"
+            },
+            "sessions": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/OutsideSession"
+              }
+            }
+          },
+          "required": [
+            "kind",
+            "sessions"
+          ]
+        },
+        {
+          "description": "Events in the file's order, each `seq` its place there, the agent's as runs whose id is\nthe session's; with `more`, ask again after the last `seq`.",
+          "type": "object",
+          "properties": {
+            "events": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/ChatEntry"
+              }
+            },
+            "kind": {
+              "type": "string",
+              "const": "opened"
+            },
+            "more": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "kind",
+            "events",
+            "more"
+          ]
+        },
+        {
+          "description": "No such session in the person's own config folders.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "missing"
+            }
+          },
+          "required": [
+            "kind"
+          ]
+        }
+      ]
+    },
+    "SessionsQuery": {
+      "description": "A person asks their own machine about the agent sessions they ran outside Weacon, from a\nclient to a core that offers `sessions.read`. No workspace holds these sessions.",
+      "type": "object",
+      "properties": {
+        "by": {
+          "description": "The account that asked, when the server relays the message to a machine; the core\nanswers only its owner.",
+          "$ref": "#/$defs/AccountId"
+        },
+        "machine": {
+          "$ref": "#/$defs/MachineId"
+        },
+        "query": {
+          "$ref": "#/$defs/SessionsQueryKind"
+        },
+        "request": {
+          "$ref": "#/$defs/RequestId"
+        }
+      },
+      "required": [
+        "request",
+        "machine",
+        "query"
+      ]
+    },
+    "SessionsQueryKind": {
+      "oneOf": [
+        {
+          "description": "The sessions in the person's own config folders, newest first.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "list"
+            }
+          },
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "description": "The session's events after `after`, as many as fit one frame.",
+          "type": "object",
+          "properties": {
+            "after": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            },
+            "agent": {
+              "$ref": "#/$defs/AgentKind"
+            },
+            "kind": {
+              "type": "string",
+              "const": "open"
+            },
+            "session": {
+              "$ref": "#/$defs/AgentSession"
+            }
+          },
+          "required": [
+            "kind",
+            "agent",
+            "session",
+            "after"
+          ]
+        }
       ]
     },
     "Sha256": {
@@ -2625,7 +3391,7 @@
       ]
     },
     "SignInStart": {
-      "description": "Sign-in to one workspace, which [`AccountSignInStart`] replaces: asks the server to send\na one-time code to `email`, if it is a member of `workspace`. The answer, a [`SignInStarted`], is the same either way.",
+      "description": "Sign-in to one workspace, which [`AccountSignInStart`] replaces: asks the server to send a\none-time code to `email`, if it is a member of `workspace`. The answer, a [`SignInStarted`],\nis the same either way.",
       "type": "object",
       "properties": {
         "email": {
@@ -2892,7 +3658,7 @@
       ]
     },
     "TerminalCommand": {
-      "description": "From the owner of `machine`'s browser to its core, which offers `terminal.sign_in`. The\nserver relays it only from the machine's owner, and the core acts only when `by` is its\nowner and refuses a terminal id it has already seen.",
+      "description": "A sign-in terminal's sealed input, from the owner of `machine`'s browser to its core, which\noffers `terminal.sign_in`. The server relays it only when it offers `terminal.relay`, and\nonly from the machine's owner, and the core acts only when `by` is its owner and refuses a\nterminal id it has already seen.",
       "type": "object",
       "properties": {
         "action": {
@@ -3066,7 +3832,7 @@
       ]
     },
     "TerminalUpdate": {
-      "description": "From a core that offers `terminal.sign_in`, through the server, to the browser that opened\n`terminal`.",
+      "description": "A sign-in terminal's sealed output, from a core that offers `terminal.sign_in`, through the\nserver, to the browser that opened `terminal`.",
       "type": "object",
       "properties": {
         "event": {
@@ -3185,6 +3951,23 @@
             "kind",
             "chat"
           ]
+        },
+        {
+          "description": "A proposal was made or its state changed. Only for clients that have the capability\n`workspace.proposals`, which read the proposals again.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "proposal_changed"
+            },
+            "proposal": {
+              "$ref": "#/$defs/ProposalId"
+            }
+          },
+          "required": [
+            "kind",
+            "proposal"
+          ]
         }
       ]
     },
@@ -3257,7 +4040,7 @@
       ]
     },
     "WorkspaceUpdate": {
-      "description": "One change to `workspace`. `seq` grows strictly within a workspace, and a feed opened with\n`since=N` sends every change after `N`.",
+      "description": "One change to `workspace`, from the server to clients that have `workspace.feed`. `seq` grows\nstrictly within a workspace, and a feed opened with `since=N` sends every change after `N`.",
       "type": "object",
       "properties": {
         "change": {
@@ -3325,6 +4108,19 @@
             "kind",
             "title",
             "body"
+          ]
+        },
+        {
+          "description": "Opens a terminal at the chat's worktree, or its working folder without one, on the core's\nmachine; only its owner may ask, of a core that offers `worktree.open_terminal`.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "open_terminal"
+            }
+          },
+          "required": [
+            "kind"
           ]
         }
       ]
@@ -3413,6 +4209,19 @@
           "required": [
             "kind",
             "url"
+          ]
+        },
+        {
+          "description": "A terminal was opened on the core's machine.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "terminal_opened"
+            }
+          },
+          "required": [
+            "kind"
           ]
         }
       ]
