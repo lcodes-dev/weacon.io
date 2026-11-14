@@ -41,42 +41,19 @@ pub(crate) async fn answer(
 
 #[cfg(test)]
 mod tests {
-    use weacon_protocol::{ChatEvent, RunEvent, RunId, RunState, RunStatus, RunUpdate};
+    use weacon_protocol::RunState;
     use weacon_testing::TempDir;
 
     use super::*;
-    use crate::db::test_support::{NOW, append, id, make, said};
+    use crate::db::test_support::{NOW, append, asks, id, make, said, seqs, status};
     use crate::test_support::two_teams;
-
-    fn running() -> ChatEvent {
-        let status = RunStatus {
-            run: id::<RunId>("run-1"),
-            state: RunState::Waiting,
-            agent: None,
-        };
-        ChatEvent::RunStatus { status }
-    }
-
-    fn asks() -> ChatEvent {
-        ChatEvent::Run {
-            update: RunUpdate {
-                run: id("run-1"),
-                event: RunEvent::PermissionAsked {
-                    run: id("run-1"),
-                    prompt: 1,
-                    tool: "Write".to_owned(),
-                    input: serde_json::Value::Null,
-                },
-            },
-        }
-    }
 
     #[tokio::test]
     async fn a_snapshot_tells_the_runs_the_waiting_prompts_and_the_latest_events() {
         let dir = TempDir::new().unwrap();
         let (one, two) = two_teams(&dir).await;
         make(&one, "c-1", "m1", NOW).await.unwrap();
-        let mut events = vec![(Some(1), running()), (Some(2), asks())];
+        let mut events = vec![(Some(1), status(RunState::Waiting)), (Some(2), asks(1))];
         events.extend((3..60).map(|seq| (Some(seq), said("more"))));
         append(&one, "c-1", &events).await.unwrap();
 
@@ -92,8 +69,7 @@ mod tests {
         };
         assert_eq!((seq, waiting), (59, vec![2]));
         assert_eq!(runs.first().map(|run| run.state), Some(RunState::Waiting));
-        let seqs: Vec<_> = events.iter().map(|entry| entry.seq).collect();
-        assert_eq!(seqs, (10..60).collect::<Vec<_>>());
+        assert_eq!(seqs(&events), (10..60).collect::<Vec<_>>());
 
         let window = ChatQueryKind::Window {
             before: 10,
@@ -103,10 +79,7 @@ mod tests {
         else {
             panic!("not a window");
         };
-        assert_eq!(
-            events.iter().map(|entry| entry.seq).collect::<Vec<_>>(),
-            [7, 8, 9]
-        );
+        assert_eq!(seqs(&events), [7, 8, 9]);
         let elsewhere = answer(&two, &id("c-1"), &ChatQueryKind::Snapshot).await;
         assert_eq!(elsewhere.unwrap_err().code().as_str(), "chat.not_found");
         let subscribe = ChatQueryKind::Subscribe { after: 0 };

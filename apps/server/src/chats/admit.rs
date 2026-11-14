@@ -201,7 +201,7 @@ mod tests {
             refused(Some(open.clone()), "m1", prompt("Go", Some("mc-2"))),
             "chat.machine_fixed"
         );
-        let later = admit(Some(open.clone()), asker("m1"), command(prompt("Go", None)));
+        let later = admit(Some(open), asker("m1"), command(prompt("Go", None)));
         assert!(matches!(later.unwrap(), Admitted::Existing { .. }));
     }
 

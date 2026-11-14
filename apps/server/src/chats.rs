@@ -84,39 +84,17 @@ async fn list(member: Member) -> Response {
 
 #[cfg(test)]
 mod tests {
-    use weacon_protocol::{ChatId, ChatState, MachineId, MachineName, RequestId, WorkspaceId};
+    use weacon_protocol::ChatState;
 
     use super::*;
-    use crate::db::{NewChat, NewRequest};
-    use crate::test_support::{self, Fixture, bearer, member_id, request_with, run, status};
+    use crate::db::test_support::{id, make_titled};
+    use crate::test_support::{self, Fixture, bearer, request_with, run, status};
 
     async fn make(fixture: &Fixture, chat: &str, title: &str, at: i64) {
-        let workspace = fixture
-            .shared
-            .db
-            .workspace(&WorkspaceId::try_from("w1".to_owned()).unwrap())
+        let workspace = fixture.shared.db.workspace(&id("w1")).await.unwrap();
+        make_titled(&workspace, chat, "m1", title, at)
             .await
             .unwrap();
-        let (chat, owner) = (ChatId::try_from(chat.to_owned()).unwrap(), member_id("m1"));
-        let request = RequestId::try_from(format!("r-{}", chat.as_str())).unwrap();
-        let machine = MachineName::try_from("Ada's laptop".to_owned()).unwrap();
-        let machine_id = MachineId::try_from("mc-1".to_owned()).unwrap();
-        let new = NewChat {
-            id: &chat,
-            owner: &owner,
-            title,
-            repo: None,
-            machine_id: &machine_id,
-            machine: &machine,
-            at,
-        };
-        let asked = crate::db::test_support::command(request.as_str(), chat.as_str(), title);
-        let first = NewRequest {
-            command: &asked,
-            member: &owner,
-            at,
-        };
-        workspace.add_chat(&new, &first).await.unwrap();
     }
 
     #[tokio::test]

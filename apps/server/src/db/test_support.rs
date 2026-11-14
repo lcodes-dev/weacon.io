@@ -1,8 +1,8 @@
 use weacon_model::Attribution;
 use weacon_observability::Fault;
 use weacon_protocol::{
-    ChatAction, ChatCommand, ChatEntry, ChatEvent, ChatId, MachineId, MachineName, RepoId,
-    RequestId, RunEvent, RunId, RunUpdate,
+    ChatAction, ChatCommand, ChatEntry, ChatEvent, ChatId, MachineId, MachineName,
+    PermissionAnswer, RepoId, RequestId, RunEvent, RunId, RunState, RunStatus, RunUpdate,
 };
 
 use super::{Incoming, NewChat, NewRequest, Workspace};
@@ -25,10 +25,22 @@ pub(crate) fn id<T: TryFrom<String>>(text: &str) -> T {
     T::try_from(text.to_owned()).ok().unwrap()
 }
 
+/// Makes chat `chat` of `owner` in `workspace` at `at`, its first prompt sent.
 pub(crate) async fn make(
     workspace: &Workspace,
     chat: &str,
     owner: &str,
+    at: i64,
+) -> Result<(), Fault> {
+    make_titled(workspace, chat, owner, "Fix the build", at).await
+}
+
+/// [`make`], with the first prompt `title`.
+pub(crate) async fn make_titled(
+    workspace: &Workspace,
+    chat: &str,
+    owner: &str,
+    title: &str,
     at: i64,
 ) -> Result<(), Fault> {
     let request = id::<RequestId>(&format!("r-{chat}"));
@@ -38,13 +50,13 @@ pub(crate) async fn make(
     let new = NewChat {
         id: &chat,
         owner: &owner,
-        title: "Fix the build",
+        title,
         repo: Some(&repo),
         machine_id: &machine_id,
         machine: &machine,
         at,
     };
-    let asked = command(request.as_str(), chat.as_str(), "Fix the build");
+    let asked = command(request.as_str(), chat.as_str(), title);
     let first = NewRequest {
         command: &asked,
         member: &owner,
@@ -54,8 +66,8 @@ pub(crate) async fn make(
     workspace.chat_made(&chat, &owner).await
 }
 
-pub(crate) fn status(state: weacon_protocol::RunState) -> ChatEvent {
-    let status = weacon_protocol::RunStatus {
+pub(crate) fn status(state: RunState) -> ChatEvent {
+    let status = RunStatus {
         run: id("run-1"),
         state,
         agent: None,
@@ -117,6 +129,34 @@ pub(crate) async fn append(
 
 pub(crate) fn seqs(entries: &[ChatEntry]) -> Vec<u64> {
     entries.iter().map(|entry| entry.seq).collect()
+}
+
+/// Run run-1's permission prompt `prompt`, asked.
+pub(crate) fn asks(prompt: u32) -> ChatEvent {
+    let run = id::<RunId>("run-1");
+    let event = RunEvent::PermissionAsked {
+        run: run.clone(),
+        prompt,
+        tool: "Write".to_owned(),
+        input: serde_json::Value::Null,
+    };
+    ChatEvent::Run {
+        update: RunUpdate { run, event },
+    }
+}
+
+/// Run run-1's permission prompt `prompt`, allowed.
+pub(crate) fn answers(prompt: u32) -> ChatEvent {
+    let run = id::<RunId>("run-1");
+    let answer = PermissionAnswer {
+        run: run.clone(),
+        prompt,
+        allow: true,
+    };
+    let event = RunEvent::PermissionAnswered { answer };
+    ChatEvent::Run {
+        update: RunUpdate { run, event },
+    }
 }
 
 impl Workspace {

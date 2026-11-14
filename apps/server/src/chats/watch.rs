@@ -160,13 +160,12 @@ fn refusal(shared: &Shared, member: &Member, fault: &Fault) -> Message {
 
 #[cfg(test)]
 mod tests {
-    use futures_util::SinkExt;
-    use tokio_tungstenite::tungstenite::Message as Wire;
-    use weacon_protocol::{Capability, ChatState, TaskCreate};
+    use weacon_protocol::{Capability, ChatState, TaskCreate, code};
 
     use super::*;
     use crate::db::test_support::{NOW, append, id, make, said};
-    use crate::test_support::socket::{Client, next, open, say};
+    use crate::links::{Attached, Connected};
+    use crate::test_support::socket::{self, Client, next, open, say};
     use crate::test_support::{self, Fixture, Running, pair_machine, request_with, run};
 
     async fn w1(fixture: &Fixture) -> Workspace {
@@ -190,11 +189,7 @@ mod tests {
     }
 
     async fn ask(client: &mut Client, id: u32, message: Message) {
-        let json = Envelope { id, message }.to_json().unwrap();
-        client
-            .send(Wire::Text(String::from_utf8(json).unwrap().into()))
-            .await
-            .unwrap();
+        socket::send(client, Envelope { id, message }).await;
     }
 
     // The next message about a chat, or an error, past the workspace's own changes.
@@ -350,6 +345,21 @@ mod tests {
         assert!(!logged.contains("MARKER"), "{logged}");
     }
 
+    // Ada's session, and the machine she paired, connected and serving chats.
+    async fn serving(fixture: &Fixture, server: &Running) -> (String, String, Attached) {
+        let paired = pair_machine(fixture, server.address).await;
+        let machine = paired.machine["id"].as_str().unwrap().to_owned();
+        let ada = test_support::email("ada@example.com");
+        let owner = fixture.shared.db.account_with(&ada).await.unwrap();
+        let connected = Connected {
+            machine: id(&machine),
+            owner: owner.unwrap(),
+        };
+        let offers = vec![Capability::from(code!("chat.serve"))];
+        let attached = fixture.shared.links.open(connected, offers);
+        (paired.session, machine, attached)
+    }
+
     #[tokio::test]
     async fn a_member_whose_membership_ended_asks_nothing_more() {
         let fixture = Fixture::new().await;
@@ -357,36 +367,17 @@ mod tests {
         let mut quiet = fixture.shared.clone();
         quiet.sockets.ping_every = std::time::Duration::from_hours(1);
         let server = run(quiet).await;
-        let paired = pair_machine(&fixture, server.address).await;
-        let machine = paired.machine["id"].as_str().unwrap().to_owned();
-        let connected = crate::links::Connected {
-            machine: id(&machine),
-            owner: fixture
-                .shared
-                .db
-                .account_with(&test_support::email("ada@example.com"))
-                .await
-                .unwrap()
-                .unwrap(),
-        };
-        let serves = vec![Capability::from(weacon_protocol::code!("chat.serve"))];
-        let mut attached = fixture.shared.links.open(connected, serves);
+        let (session, machine, mut attached) = serving(&fixture, &server).await;
         let workspace = w1(&fixture).await;
-        let mut client = feed(
-            &server,
-            &paired.session,
-            &["workspace.feed", "workspace.chats"],
-        )
-        .await;
+        let mut client = feed(&server, &session, &["workspace.feed", "workspace.chats"]).await;
         // Past what the feed sends first, which ends it once the membership has.
         assert!(matches!(next(&mut client).await, Message::Workspace(_)));
         workspace.unlink(&test_support::member_id("m1")).await;
 
         ask(&mut client, 2, prompt("c-9", Some(&machine))).await;
 
-        assert!(test_support::socket::ends(&mut client).await);
+        assert!(socket::ends(&mut client).await);
         attached.incoming.try_recv().unwrap_err();
-        assert!(workspace.chat(&id("c-9")).await.unwrap().is_none());
         assert!(workspace.chat(&id("c-9")).await.unwrap().is_none());
     }
 
@@ -394,26 +385,8 @@ mod tests {
     async fn a_chats_client_hears_at_once_of_a_chat_made() {
         let fixture = Fixture::new().await;
         let server = run(fixture.shared.clone()).await;
-        let paired = pair_machine(&fixture, server.address).await;
-        let machine = paired.machine["id"].as_str().unwrap().to_owned();
-        let connected = crate::links::Connected {
-            machine: id(&machine),
-            owner: fixture
-                .shared
-                .db
-                .account_with(&test_support::email("ada@example.com"))
-                .await
-                .unwrap()
-                .unwrap(),
-        };
-        let serves = vec![Capability::from(weacon_protocol::code!("chat.serve"))];
-        let _attached = fixture.shared.links.open(connected, serves);
-        let mut client = feed(
-            &server,
-            &paired.session,
-            &["workspace.feed", "workspace.chats"],
-        )
-        .await;
+        let (session, machine, _attached) = serving(&fixture, &server).await;
+        let mut client = feed(&server, &session, &["workspace.feed", "workspace.chats"]).await;
         assert!(matches!(next(&mut client).await, Message::Workspace(_)));
 
         ask(&mut client, 2, prompt("c-9", Some(&machine))).await;

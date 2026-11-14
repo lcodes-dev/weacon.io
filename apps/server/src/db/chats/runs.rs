@@ -103,48 +103,12 @@ impl Workspace {
 
 #[cfg(test)]
 mod tests {
-    use serde_json::Value;
-    use weacon_protocol::{ChatEvent, PermissionAnswer, RunEvent, RunId, RunState, RunUpdate};
+    use weacon_protocol::RunState;
     use weacon_testing::TempDir;
 
     use super::*;
-    use crate::db::test_support::{NOW, append, id, make};
+    use crate::db::test_support::{NOW, answers, append, asks, id, make, status};
     use crate::test_support::two_teams;
-
-    fn status(state: RunState) -> ChatEvent {
-        let status = RunStatus {
-            run: id("run-1"),
-            state,
-            agent: None,
-        };
-        ChatEvent::RunStatus { status }
-    }
-
-    fn said(event: RunEvent) -> ChatEvent {
-        let run = id::<RunId>("run-1");
-        ChatEvent::Run {
-            update: RunUpdate { run, event },
-        }
-    }
-
-    fn asks(prompt: u32) -> ChatEvent {
-        let (run, tool, input) = (id("run-1"), "Write".to_owned(), Value::Null);
-        said(RunEvent::PermissionAsked {
-            run,
-            prompt,
-            tool,
-            input,
-        })
-    }
-
-    fn answers(prompt: u32) -> ChatEvent {
-        let answer = PermissionAnswer {
-            run: id("run-1"),
-            prompt,
-            allow: true,
-        };
-        said(RunEvent::PermissionAnswered { answer })
-    }
 
     fn waits(runs: &ChatRuns) -> Vec<(u32, u64)> {
         runs.waiting
