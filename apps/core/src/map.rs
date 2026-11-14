@@ -6,36 +6,42 @@ use std::time::Instant;
 use weacon_appkit::Ending;
 use weacon_codemap::{Index, SourceFile, index};
 use weacon_observability::Fault;
-use weacon_protocol::code;
+use weacon_protocol::{MapArgs, McpCall, SymbolArgs, code};
 
 use crate::app::App;
-use crate::cli::MapCommand;
+use crate::cli::{MapCommand, MapSubcommand};
 use crate::codemap::{LARGEST, index_failed, read_failed};
+use crate::mcp::tools;
 
-/// Checks the repository; `Findings` when a pin no longer matches.
+/// Prints what the MCP's tools answer, or checks the repository's pins: `Findings` when one
+/// no longer matches.
 pub(crate) fn run(
     app: &App,
     command: MapCommand,
     input: &mut impl Read,
     out: &mut impl Write,
 ) -> Result<Ending, Fault> {
-    let MapCommand::CheckAnchors { root } = command;
-    let clean = check_anchors(app, &root, input, out)?;
-    Ok(if clean {
-        Ending::Done
-    } else {
-        Ending::Findings
-    })
+    let MapCommand {
+        command,
+        root,
+        budget,
+    } = command;
+    let call = match command {
+        Some(MapSubcommand::CheckAnchors) => return check_anchors(app, &root, input, out),
+        Some(MapSubcommand::Symbol { path }) => McpCall::Symbol(SymbolArgs { path, budget }),
+        None => McpCall::Map(MapArgs { budget }),
+    };
+    print(out, &tools::answer(&call, &root)?)?;
+    Ok(Ending::Done)
 }
 
-/// Prints each pin read from `input` that no longer matches the repository at `root`, and
-/// says whether every pin matches.
+/// Prints each pin read from `input` that no longer matches the repository at `root`.
 fn check_anchors(
     app: &App,
     root: &Path,
     input: &mut impl Read,
     out: &mut impl Write,
-) -> Result<bool, Fault> {
+) -> Result<Ending, Fault> {
     let mut pins = String::new();
     input.read_to_string(&mut pins).map_err(|error| {
         Fault::new(code!("map.input_failed"), "The anchors couldn't be read").because(error)
@@ -52,14 +58,18 @@ fn check_anchors(
         .iter()
         .map(|finding| finding.to_string() + "\n")
         .collect();
-    out.write_all(report.as_bytes()).map_err(|error| {
-        Fault::new(
-            code!("map.output_failed"),
-            "The findings couldn't be printed",
-        )
-        .because(error)
-    })?;
-    Ok(findings.is_empty())
+    print(out, &report)?;
+    Ok(if findings.is_empty() {
+        Ending::Done
+    } else {
+        Ending::Findings
+    })
+}
+
+fn print(out: &mut impl Write, text: &str) -> Result<(), Fault> {
+    out.write_all(text.as_bytes()).map_err(|error| {
+        Fault::new(code!("map.output_failed"), "The answer couldn't be printed").because(error)
+    })
 }
 
 /// The code map of the repository at `root`, and how many files it read; it blocks.
@@ -144,8 +154,10 @@ mod tests {
 
     fn check(root: &Path, pins: &str) -> (Result<Ending, Fault>, String) {
         let mut out = Vec::new();
-        let command = MapCommand::CheckAnchors {
+        let command = MapCommand {
+            command: Some(MapSubcommand::CheckAnchors),
             root: root.to_owned(),
+            budget: None,
         };
         let ending = run(&app(None, None), command, &mut pins.as_bytes(), &mut out);
         (ending, String::from_utf8(out).unwrap())
@@ -226,6 +238,84 @@ mod tests {
         assert_eq!(denied.kind(), io::ErrorKind::PermissionDenied);
         let failed = text_or_skip(Err(io::ErrorKind::PermissionDenied.into())).unwrap_err();
         assert_eq!(failed.kind(), io::ErrorKind::PermissionDenied);
+    }
+
+    fn printed(root: &Path, command: Option<MapSubcommand>, budget: Option<u32>) -> String {
+        let mut out = Vec::new();
+        let command = MapCommand {
+            command,
+            root: root.to_owned(),
+            budget,
+        };
+        let ending = run(&app(None, None), command, &mut io::empty(), &mut out);
+        assert_eq!(ending.unwrap(), Ending::Done);
+        String::from_utf8(out).unwrap()
+    }
+
+    fn symbol(path: &str) -> MapSubcommand {
+        let path = path.to_owned();
+        MapSubcommand::Symbol { path }
+    }
+
+    #[test]
+    fn map_and_symbol_print_exactly_what_the_tools_answer() {
+        let root = repo(CRATE);
+        let empty = TempDir::new().unwrap();
+        let tool = |call: McpCall, root: &Path| tools::answer(&call, root).unwrap();
+        let go = || SymbolArgs {
+            path: "a::m::go".into(),
+            budget: None,
+        };
+
+        let outline = printed(&root, None, None);
+        let item = printed(&root, Some(symbol("a::m::go")), None);
+
+        assert_eq!(outline, tool(McpCall::Map(MapArgs::default()), &root));
+        assert_eq!(item, tool(McpCall::Symbol(go()), &root));
+        assert_eq!(item, "a::m::go: Fn at a/src/m.rs:1\n");
+        let none = tool(McpCall::Map(MapArgs::default()), &empty);
+        assert_eq!(printed(&empty, None, None), none);
+    }
+
+    #[test]
+    fn a_budget_reaches_the_map_tool() {
+        let root = repo(CRATE);
+        let modules: Vec<_> = (0..80)
+            .map(|n| format!("mod module_number_{n};\n"))
+            .collect();
+        fs::write(root.join("a/src/lib.rs"), modules.concat()).unwrap();
+        for n in 0..80 {
+            fs::write(root.join(format!("a/src/module_number_{n}.rs")), "").unwrap();
+        }
+        let cut_by_tool = MapArgs { budget: Some(1000) };
+
+        let whole = printed(&root, None, None);
+        let cut = printed(&root, None, Some(1000));
+
+        assert_ne!(cut, whole);
+        assert_eq!(
+            cut,
+            tools::answer(&McpCall::Map(cut_by_tool), &root).unwrap()
+        );
+    }
+
+    #[test]
+    fn a_root_that_cant_be_read_or_an_answer_that_cant_be_printed_is_an_error() {
+        let command = |root: std::path::PathBuf| MapCommand {
+            command: None,
+            root,
+            budget: None,
+        };
+        let run = |command, out: &mut dyn Write| {
+            run(&app(None, None), command, &mut io::empty(), &mut &mut *out).unwrap_err()
+        };
+        let dir = TempDir::new().unwrap();
+
+        let unread = run(command(dir.join("nowhere")), &mut Vec::new());
+        let unprinted = run(command(repo(CRATE).to_path_buf()), &mut Broken);
+
+        assert_eq!(unread.code().as_str(), "map.read_failed");
+        assert_eq!(unprinted.code().as_str(), "map.output_failed");
     }
 
     #[test]

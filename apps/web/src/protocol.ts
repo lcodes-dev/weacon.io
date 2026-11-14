@@ -233,6 +233,7 @@ export type ChallengeId = string;
 
 export type ChatAction = (
   | {
+    agent?: AgentKind;
     kind: "prompt";
     machine?: MachineId;
     repo?: RepoId;
@@ -294,6 +295,7 @@ export type ChatEntry = {
 
 export type ChatEvent = (
   | {
+    agent?: AgentKind;
     kind: "prompt";
     repo?: RepoId;
     request: RequestId;
@@ -1626,6 +1628,9 @@ export type WorktreeAction = (
     kind: "open_pull_request";
     title: string;
   }
+  | {
+    kind: "open_terminal";
+  }
 );
 
 /**
@@ -1656,6 +1661,9 @@ export type WorktreeAnswerKind = (
   | {
     kind: "pull_request_page";
     url: DownloadUrl;
+  }
+  | {
+    kind: "terminal_opened";
   }
 );
 
