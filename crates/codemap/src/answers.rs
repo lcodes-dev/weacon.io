@@ -21,7 +21,8 @@ const TAIL: usize = "… 4294967295 more lines\n".len();
 /// How many of a list's entries are named before the rest are counted.
 const NAMED: usize = 5;
 
-/// Lines that stop before the budget, then say how many were left out.
+/// Lines that stop before the budget, then say how many were left out; that last line is kept
+/// even when the budget is smaller than it.
 struct Text {
     out: String,
     budget: usize,
@@ -49,7 +50,8 @@ impl Text {
 
     fn finish(mut self) -> String {
         if self.left_out > 0 {
-            let tail = format!("… {} more lines\n", self.left_out);
+            let lines = if self.left_out == 1 { "line" } else { "lines" };
+            let tail = format!("… {} more {lines}\n", self.left_out);
             self.out.push_str(&tail);
         }
         self.out
@@ -220,20 +222,20 @@ impl Index {
         text.finish()
     }
 
-    /// The crates' `main`s, subcommands and routes.
+    /// The binaries' `main`s, the subcommands and the routes.
     fn entry_points(&self, text: &mut Text) {
         text.line("Entry points:");
-        for krate in &self.crates {
-            let main = krate.modules.iter().find(|module| module.path.is_empty());
-            let main = main.and_then(|module| {
-                let symbol = module.symbols.iter().find(|symbol| symbol.name == "main")?;
-                Some(format!(
-                    "- main of {}  {}:{}",
-                    krate.name, module.file, symbol.line
-                ))
-            });
-            if let Some(line) = main {
-                text.line(&line);
+        for node in nodes(&self.crates) {
+            let file = &node.module.file;
+            let binary = file.ends_with("src/main.rs") || file.contains("/src/bin/");
+            let main = node
+                .module
+                .symbols
+                .iter()
+                .find(|symbol| symbol.name == "main");
+            if let Some(main) = main.filter(|_| binary) {
+                let krate = &node.krate.name;
+                text.line(&format!("- main of {krate}  {file}:{}", main.line));
             }
         }
         let entries = self.contracts.iter().filter(|contract| {
@@ -338,7 +340,7 @@ mod tests {
         assert_eq!(text.finish(), "twelve bytes\n");
         let mut text = Text::new(fits - 1);
         text.line(line);
-        assert_eq!(text.finish(), "… 1 more lines\n");
+        assert_eq!(text.finish(), "… 1 more line\n");
     }
 
     #[test]

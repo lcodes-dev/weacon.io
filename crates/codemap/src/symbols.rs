@@ -5,7 +5,7 @@ use tree_sitter::{Node, Tree};
 
 use crate::Fingerprint;
 use crate::contracts::{Declared, contracts};
-use crate::paths::{Segments, segments};
+use crate::paths::{self, Bound, Segments, segments};
 use crate::refs::{Ref, refs};
 use crate::syntax::{attributes, line, preorder, push_reversed, test_only, text};
 
@@ -77,6 +77,8 @@ pub(crate) struct Item {
     pub(crate) within: Vec<String>,
     /// The type or trait it belongs to, which `Self` names, as written in `within`.
     pub(crate) owner: Option<String>,
+    /// What `use`s inside it, or in the test modules around a test, bring into scope.
+    pub(crate) imports: Vec<(Segments, Bound)>,
     pub(crate) refs: Vec<Ref>,
     pub(crate) contracts: Vec<Declared>,
 }
@@ -166,9 +168,30 @@ fn visit<'tree>(
         fingerprint: fingerprint(item, source),
     };
     let inside = place.inside(kind, name, full);
-    let (refs, contracts) = match kind {
-        Kind::Mod => (Vec::new(), Vec::new()),
-        Kind::Trait => (refs(item, source), Vec::new()),
+    let (refs, contracts, imports) = read(kind, item, source);
+    found.items.push(Item {
+        symbol,
+        within: place.within.clone(),
+        owner: place.owner.clone(),
+        imports,
+        refs,
+        contracts,
+    });
+    if let Some(inside) = inside {
+        push_items(pending, body, &inside);
+    }
+}
+
+/// What an item of `kind` refers to, declares and brings in with `use`s inside it; a module's
+/// and a trait's items are read on their own.
+fn read(
+    kind: Kind,
+    item: Node<'_>,
+    source: &[u8],
+) -> (Vec<Ref>, Vec<Declared>, Vec<(Segments, Bound)>) {
+    match kind {
+        Kind::Mod => (Vec::new(), Vec::new(), Vec::new()),
+        Kind::Trait => (refs(item, source), Vec::new(), Vec::new()),
         Kind::Const
         | Kind::Enum
         | Kind::Fn
@@ -176,17 +199,11 @@ fn visit<'tree>(
         | Kind::Static
         | Kind::Struct
         | Kind::Type
-        | Kind::Union => (refs(item, source), contracts(item, source)),
-    };
-    found.items.push(Item {
-        symbol,
-        within: place.within.clone(),
-        owner: place.owner.clone(),
-        refs,
-        contracts,
-    });
-    if let Some(inside) = inside {
-        push_items(pending, body, &inside);
+        | Kind::Union => (
+            refs(item, source),
+            contracts(item, source),
+            local_imports(item, source),
+        ),
     }
 }
 
@@ -265,36 +282,62 @@ fn impl_owner(item: Node<'_>, source: &[u8]) -> (String, String) {
 /// The `#[test]` functions in `item`, a test-only item, each read as if written in `place`.
 fn tests(item: Node<'_>, place: &Place, source: &[u8]) -> Vec<Item> {
     let mut found = Vec::new();
-    let mut modules = vec![(item, place.prefix.clone())];
-    while let Some((node, prefix)) = modules.pop() {
+    let mut modules = vec![(item, place.clone(), Vec::new())];
+    while let Some((node, place, imports)) = modules.pop() {
         let name = node
             .child_by_field_name("name")
             .map(|name| plain(text(name, source)));
-        let body = node.child_by_field_name("body");
-        match (node.kind(), name) {
-            ("mod_item", Some(name)) => {
-                let prefix = join(&prefix, name);
-                if let Some(body) = body {
-                    let mut cursor = body.walk();
-                    let children = body.named_children(&mut cursor);
-                    modules.extend(children.map(|child| (child, prefix.clone())));
+        match (node.kind(), name, node.child_by_field_name("body")) {
+            ("mod_item", Some(name), Some(body)) => {
+                let inside = Place {
+                    within: [&place.within[..], &[name.to_owned()]].concat(),
+                    owner: None,
+                    prefix: join(&place.prefix, name),
+                };
+                let mut cursor = body.walk();
+                let children: Vec<Node<'_>> = body.named_children(&mut cursor).collect();
+                let mut imports = imports.clone();
+                for child in children
+                    .iter()
+                    .filter(|child| child.kind() == "use_declaration")
+                {
+                    imports.extend(paths::imports(*child, source));
                 }
+                modules.extend(
+                    children
+                        .into_iter()
+                        .map(|child| (child, inside.clone(), imports.clone())),
+                );
             }
-            ("function_item", Some(name)) if is_test(node, source) => found.push(Item {
+            ("function_item", Some(name), _) if is_test(node, source) => found.push(Item {
                 symbol: Symbol {
                     kind: Kind::Fn,
-                    name: join(&prefix, name),
+                    name: join(&place.prefix, name),
                     line: line(node),
                     fingerprint: fingerprint(node, source),
                 },
                 within: place.within.clone(),
                 owner: None,
+                imports: [imports, local_imports(node, source)].concat(),
                 refs: refs(node, source),
                 contracts: Vec::new(),
             }),
             _ => {}
         }
     }
+    found
+}
+
+/// What the `use`s inside `item`'s code bring into scope there.
+fn local_imports(item: Node<'_>, source: &[u8]) -> Vec<(Segments, Bound)> {
+    let mut found = Vec::new();
+    preorder(item, |node| {
+        if node.kind() == "use_declaration" {
+            found.extend(paths::imports(node, source));
+            return false;
+        }
+        true
+    });
     found
 }
 

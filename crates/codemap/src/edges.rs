@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::iter::once;
 
 use crate::graph::{ModuleNode, absolute, longest_module, nodes, segments_of};
-use crate::paths::{Bound, NamedPath};
+use crate::paths::{Bound, NamedPath, Segments};
 use crate::refs::Ref;
 use crate::symbols::{Impl, Item, Outline, items_in};
 use crate::{Crate, Kind};
@@ -88,6 +88,8 @@ struct Spot<'s> {
     module: &'s str,
     within: &'s [String],
     owner: Option<&'s str>,
+    /// What `use`s there bring into scope beyond the module's own.
+    imports: &'s [(Segments, Bound)],
 }
 
 /// `crate::module::Name`, leaving out an empty module.
@@ -180,6 +182,7 @@ impl<'a> Scope<'a> {
             module,
             within: &implemented.within,
             owner: Some(&implemented.owner),
+            imports: &[],
         };
         let (to, true) = self.path(&spot, &implemented.trait_path)? else {
             return None;
@@ -199,6 +202,7 @@ impl<'a> Scope<'a> {
             module,
             within: &item.within,
             owner: item.owner.as_deref(),
+            imports: &item.imports,
         };
         let mut found: Vec<(String, EdgeKind)> = item
             .refs
@@ -237,7 +241,29 @@ impl<'a> Scope<'a> {
 
     /// The item a path written in `item` names, and whether it names that item itself rather
     /// than something inside it that isn't an item, such as an enum's variant.
+    /// The item a path written at `spot` names, through the `use`s there first: one that binds
+    /// its first name, else the module's own names, else what a glob there brings in.
     fn path(&self, spot: &Spot<'_>, path: &[String]) -> Option<(String, bool)> {
+        let first = path.first()?;
+        let bound = spot
+            .imports
+            .iter()
+            .find(|(_, bound)| matches!(bound, Bound::Name(name) if name == first));
+        if let Some((segments, _)) = bound {
+            return self.resolve(spot, &[&segments[..], path.get(1..)?].concat());
+        }
+        self.resolve(spot, path).or_else(|| {
+            let globs = spot
+                .imports
+                .iter()
+                .filter(|(_, bound)| *bound == Bound::Glob);
+            globs
+                .into_iter()
+                .find_map(|(segments, _)| self.resolve(spot, &[&segments[..], path].concat()))
+        })
+    }
+
+    fn resolve(&self, spot: &Spot<'_>, path: &[String]) -> Option<(String, bool)> {
         let segments = path
             .iter()
             .map(|segment| match (segment.as_str(), spot.owner) {
@@ -539,6 +565,28 @@ mod tests {
     }
 
     #[test]
+    fn tests_resolve_from_their_own_module() {
+        let found = edges(&[
+            ("a/Cargo.toml", CRATE_A),
+            ("a/src/lib.rs", "mod store;\npub fn keep() {}\n"),
+            (
+                "a/src/store.rs",
+                "pub fn keep() {}\npub fn other() {}\n#[cfg(test)]\nmod tests {\n use super::*;\n\
+                 fn helper() {}\n #[test]\n fn named() { super::keep(); }\n #[test]\n fn bare() { other(); }\n\
+                 mod inner { use super::super::keep as kept;\n #[test]\n fn deep() { kept(); } }\n}\n",
+            ),
+        ]);
+        assert_eq!(
+            found,
+            [
+                "a::store::tests::bare Tests a::store::other",
+                "a::store::tests::inner::deep Tests a::store::keep",
+                "a::store::tests::named Tests a::store::keep",
+            ]
+        );
+    }
+
+    #[test]
     fn a_use_in_a_block_stays_in_it() {
         let found = edges(&[
             ("a/Cargo.toml", CRATE_A),
@@ -548,10 +596,7 @@ mod tests {
                  fn first() { use crate::left::run; run(); }\nfn second() { run(); }\n",
             ),
         ]);
-        assert!(
-            !found.iter().any(|edge| edge.starts_with("a::second")),
-            "{found:?}"
-        );
+        assert_eq!(found, ["a::first Calls a::left::run"]);
     }
 
     #[test]

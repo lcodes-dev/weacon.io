@@ -42,6 +42,8 @@ pub(crate) fn refs(item: Node<'_>, source: &[u8]) -> Vec<Ref> {
                 found.extend(name.and_then(|name| segments(name, source)).map(Ref::Call));
                 false
             }
+            // What a `use` names is read when a name it binds is used.
+            "use_declaration" => false,
             "type_identifier" => {
                 found.insert(Ref::Use(vec![text(node, source).to_owned()]));
                 false

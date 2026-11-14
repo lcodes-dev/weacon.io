@@ -30,13 +30,22 @@ pub(crate) fn written(text: &str) -> Vec<(Vec<String>, usize)> {
     let mut found = Vec::new();
     for (number, line) in (1..).zip(text.lines()) {
         for (start, _) in line.match_indices("flow:") {
+            let before = line
+                .get(..start)
+                .and_then(|before| before.chars().next_back());
+            if before.is_some_and(|ch| ch.is_alphanumeric() || ch == '_') {
+                continue;
+            }
             let rest = line.get(start..).unwrap_or_default();
             let end = rest
                 .find(|ch: char| {
                     ch.is_whitespace() || matches!(ch, '`' | ')' | '"' | '\'' | ',' | '#')
                 })
                 .unwrap_or(rest.len());
-            let pin = rest.get(..end).unwrap_or_default().trim_end_matches('.');
+            let pin = rest
+                .get(..end)
+                .unwrap_or_default()
+                .trim_end_matches(['.', '*', ']', '>', ';', ':']);
             if let Ok(Anchor::Flow(steps)) = pin.parse() {
                 found.push((steps, number));
             }
@@ -126,7 +135,8 @@ mod tests {
     #[test]
     fn finds_pins_in_text_code_and_links() {
         let text = "Runs `flow:a::run->a::m::go`, then [here](flow:a::go->a::stop#00ff).\n\
-                    flow:a::x->a::y. flow:a::only flow:not a flow\n";
+                    flow:a::x->a::y. flow:a::only flow:not a flow\n\
+                    **flow:a::b->a::c** <flow:a::d->a::e>; workflow:a::f->a::g\n";
         let steps = |list: &[&str]| {
             list.iter()
                 .map(|step| (*step).to_owned())
@@ -138,6 +148,8 @@ mod tests {
                 (steps(&["a::run", "a::m::go"]), 1),
                 (steps(&["a::go", "a::stop"]), 1),
                 (steps(&["a::x", "a::y"]), 2),
+                (steps(&["a::b", "a::c"]), 3),
+                (steps(&["a::d", "a::e"]), 3),
             ]
         );
     }

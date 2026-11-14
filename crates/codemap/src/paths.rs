@@ -95,6 +95,18 @@ fn visit<'tree>(
     }
 }
 
+/// What a `use` declaration brings into scope, and under which names.
+pub(crate) fn imports(declaration: Node<'_>, source: &[u8]) -> Vec<(Segments, Bound)> {
+    let mut found = Vec::new();
+    if let Some(tree) = declaration.child_by_field_name("argument") {
+        use_tree(tree, source, &mut found);
+    }
+    found
+        .into_iter()
+        .filter_map(|(segments, bound)| Some((segments, bound?)))
+        .collect()
+}
+
 fn in_block(node: Node<'_>) -> bool {
     std::iter::successors(node.parent(), Node::parent).any(|parent| parent.kind() == "block")
 }
