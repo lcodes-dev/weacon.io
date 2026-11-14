@@ -339,7 +339,7 @@ mod tests {
         let (one, _) = two_teams(&dir).await;
         let first = new_doc("d1", "Framing");
         one.add_doc(&first, &by("m1")).await.unwrap();
-        let agents = Attribution::accepted(member_id("m1"), member_id("m3"), NOW + 1);
+        let agents = Attribution::accepted(member_id("m1"), None, member_id("m3"), NOW + 1);
 
         let second = one
             .revise_doc(&first.id, Revision::FIRST, linked(), &agents)
@@ -366,9 +366,7 @@ mod tests {
             [
                 DocRevision {
                     version: 2,
-                    author: Author::Agent {
-                        owner: member_id("m1")
-                    },
+                    author: agents.author().clone(),
                     accepted_by: member_id("m3"),
                     at: NOW + 1,
                 },

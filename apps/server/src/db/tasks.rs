@@ -1,10 +1,10 @@
 use sqlx::SqliteConnection;
 use weacon_model::{Attribution, EditError, Revision, Task, TaskEdit};
 use weacon_observability::Fault;
-use weacon_protocol::{TaskId, TaskStatus, code};
+use weacon_protocol::{AgentRef, Author, MachineName, MemberId, TaskId, TaskStatus, code};
 
 use super::changes::Versioned;
-use super::{Workspace, author_columns, failed, stored, stored_version, unreadable};
+use super::{Workspace, agent_columns, author_columns, failed, stored, stored_version, unreadable};
 
 type Row = (String, String, String, String, i64);
 
@@ -136,9 +136,42 @@ impl Workspace {
         .execute(&mut *transaction)
         .await
         .map_err(failed)?;
+        if let Author::Agent {
+            agent: Some(agent), ..
+        } = attribution.author()
+        {
+            self.record_agent(transaction, &task.id, version, agent)
+                .await?;
+        }
         let versioned = Versioned::Task(&task.id, version);
         self.changed(transaction, versioned, attribution.accepted_by())
             .await
+    }
+
+    /// Records which agent made `version` of the task `task`.
+    async fn record_agent(
+        &self,
+        transaction: &mut SqliteConnection,
+        task: &TaskId,
+        version: i64,
+        agent: &AgentRef,
+    ) -> Result<(), Fault> {
+        let (kind, member, machine) = agent_columns(agent).ok_or_else(unknown_value)?;
+        sqlx::query(
+            "INSERT INTO task_version_agents
+                 (workspace_id, task_id, version, agent_kind, agent_member, machine)
+             VALUES (?, ?, ?, ?, ?, ?)",
+        )
+        .bind(self.id.as_str())
+        .bind(task.as_str())
+        .bind(version)
+        .bind(kind)
+        .bind(member.map(MemberId::as_str))
+        .bind(machine.map(MachineName::as_str))
+        .execute(transaction)
+        .await
+        .map_err(failed)?;
+        Ok(())
     }
 }
 
@@ -209,6 +242,8 @@ mod tests {
     use weacon_model::{OrderKey, Title};
     use weacon_protocol::Author;
     use weacon_testing::TempDir;
+
+    use weacon_protocol::{AgentKind, AgentOwner};
 
     use super::*;
     use crate::test_support::{member_id, new_task, two_teams};
@@ -363,13 +398,78 @@ mod tests {
         assert_eq!(changes(&one).await.len(), 2);
     }
 
+    async fn agents(workspace: &Workspace) -> Vec<(i64, String, Option<String>, Option<String>)> {
+        sqlx::query_as(
+            "SELECT version, agent_kind, agent_member, machine FROM task_version_agents
+             WHERE workspace_id = ? ORDER BY version",
+        )
+        .bind(workspace.id.as_str())
+        .fetch_all(&workspace.db.readers)
+        .await
+        .unwrap()
+    }
+
+    fn agent(kind: AgentKind, owner: AgentOwner, machine: Option<&str>) -> AgentRef {
+        AgentRef {
+            kind,
+            owner,
+            machine: machine.map(|name| MachineName::try_from(name.to_owned()).unwrap()),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_version_an_agent_made_records_which_agent_when_known() {
+        let dir = TempDir::new().unwrap();
+        let (one, _) = two_teams(&dir).await;
+        let task = new_task("t1", "Write", "V");
+        one.add_task(&task, &by("m1")).await.unwrap();
+        let own = AgentOwner::Member {
+            member: member_id("m1"),
+        };
+        let edits = [
+            Some(agent(AgentKind::Codex, own, Some("Ada's laptop"))),
+            Some(agent(AgentKind::Claude, AgentOwner::Shared, None)),
+            None,
+        ];
+        let mut read_at = Revision::FIRST;
+        for edit in edits {
+            let attribution = Attribution::accepted(member_id("m1"), edit, member_id("m3"), NOW);
+            read_at = one
+                .edit_task(&task.id, read_at, rename("Ship"), &attribution)
+                .await
+                .unwrap()
+                .version;
+        }
+        let newer = Some(agent(AgentKind::Newer, AgentOwner::Shared, None));
+        let attribution = Attribution::accepted(member_id("m1"), newer, member_id("m3"), NOW);
+        let refused = one
+            .edit_task(&task.id, read_at, rename("Late"), &attribution)
+            .await
+            .unwrap_err();
+
+        assert_eq!(
+            agents(&one).await,
+            [
+                (
+                    2,
+                    "codex".to_owned(),
+                    Some("m1".to_owned()),
+                    Some("Ada's laptop".to_owned())
+                ),
+                (3, "claude".to_owned(), None, None),
+            ]
+        );
+        assert_eq!(code(&refused), "task.unknown_value");
+        assert_eq!(one.tasks().await.unwrap()[0].version, read_at);
+    }
+
     #[tokio::test]
     async fn every_version_records_who_made_it_and_who_accepted_it() {
         let dir = TempDir::new().unwrap();
         let (one, _) = two_teams(&dir).await;
         let task = new_task("t1", "Write", "V");
         one.add_task(&task, &by("m1")).await.unwrap();
-        let agents = Attribution::accepted(member_id("m1"), member_id("m3"), NOW + 5);
+        let agents = Attribution::accepted(member_id("m1"), None, member_id("m3"), NOW + 5);
         one.edit_task(&task.id, Revision::FIRST, rename("Ship"), &agents)
             .await
             .unwrap();

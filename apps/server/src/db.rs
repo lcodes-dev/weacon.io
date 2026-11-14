@@ -20,7 +20,9 @@ use sqlx::SqlitePool;
 use sqlx::sqlite::{SqliteConnectOptions, SqliteConnection, SqlitePoolOptions, SqliteSynchronous};
 use weacon_model::Revision;
 use weacon_observability::Fault;
-use weacon_protocol::{AccountId, Author, MemberId, WorkspaceId, code};
+use weacon_protocol::{
+    AccountId, AgentOwner, AgentRef, Author, MachineName, MemberId, WorkspaceId, code,
+};
 
 #[cfg(test)]
 pub(crate) use account::CODE_LIFETIME;
@@ -173,16 +175,32 @@ fn stored_version(version: i64) -> Result<Revision, Fault> {
 fn author_columns(author: &Author) -> Option<(&'static str, &MemberId)> {
     match author {
         Author::Person { member } => Some(("person", member)),
-        Author::Agent { owner } => Some(("agent", owner)),
+        Author::Agent { owner, .. } => Some(("agent", owner)),
         Author::Newer => None,
     }
+}
+
+/// How `agent` is stored: its kind, the member whose agent it is or none for the shared agent,
+/// and its machine; `None` for one from a newer peer.
+fn agent_columns(
+    agent: &AgentRef,
+) -> Option<(&'static str, Option<&MemberId>, Option<&MachineName>)> {
+    let member = match &agent.owner {
+        AgentOwner::Member { member } => Some(member),
+        AgentOwner::Shared => None,
+        AgentOwner::Newer => return None,
+    };
+    Some((agent.kind.name()?, member, agent.machine.as_ref()))
 }
 
 fn stored_author(kind: &str, member: String) -> Result<Author, Fault> {
     let member = stored(member)?;
     match kind {
         "person" => Ok(Author::Person { member }),
-        "agent" => Ok(Author::Agent { owner: member }),
+        "agent" => Ok(Author::Agent {
+            owner: member,
+            agent: None,
+        }),
         _ => Err(unreadable()),
     }
 }

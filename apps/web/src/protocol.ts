@@ -193,6 +193,7 @@ export type Author = (
     member: MemberId;
   }
   | {
+    agent?: AgentRef;
     kind: "agent";
     owner: MemberId;
   }

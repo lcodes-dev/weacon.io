@@ -264,6 +264,22 @@ CREATE TABLE pairings (
     claimed INTEGER NOT NULL DEFAULT 0
 ) STRICT;
 ",
+    // Which agent made a task's version, when its author names one; no member for the
+    // workspace's shared agent.
+    "
+CREATE TABLE task_version_agents (
+    workspace_id TEXT NOT NULL,
+    task_id TEXT NOT NULL,
+    version INTEGER NOT NULL,
+    agent_kind TEXT NOT NULL,
+    agent_member TEXT,
+    machine TEXT,
+    PRIMARY KEY (workspace_id, task_id, version),
+    FOREIGN KEY (workspace_id, task_id, version)
+        REFERENCES task_versions (workspace_id, task_id, version),
+    FOREIGN KEY (workspace_id, agent_member) REFERENCES members (workspace_id, member_id)
+) STRICT;
+",
 ];
 
 /// Applies the steps the database hasn't had yet, each in its own transaction that holds the
@@ -379,7 +395,8 @@ mod tests {
                 "doc_pins",
                 "changes",
                 "machines",
-                "pairings"
+                "pairings",
+                "task_version_agents"
             ]
         );
         for table in SERVER_WIDE {
