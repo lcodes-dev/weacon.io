@@ -300,21 +300,17 @@ impl FakeChat {
         earlier.into_iter().skip(skip).cloned().collect()
     }
 
-    // Where the permission prompts still waiting are: those of runs that wait, not yet answered.
     // The permission prompts no later entry has closed: by a withdrawal, the run finishing, or the
     // run no longer waiting.
     fn waiting(&self) -> Vec<u64> {
-        self.entries
-            .iter()
-            .filter_map(|entry| Some((entry.seq, asked(entry)?)))
-            .filter(|&(seq, (run, prompt))| {
-                !self
-                    .entries
-                    .iter()
-                    .any(|later| later.seq > seq && closes(later, run, prompt))
-            })
-            .map(|(seq, _)| seq)
-            .collect()
+        let mut open: Vec<(&RunId, u32, u64)> = Vec::new();
+        for entry in &self.entries {
+            open.retain(|&(run, prompt, _)| !closes(entry, run, prompt));
+            if let Some((run, prompt)) = asked(entry) {
+                open.push((run, prompt, entry.seq));
+            }
+        }
+        open.into_iter().map(|(_, _, seq)| seq).collect()
     }
 
     fn agent_of(&self, run: &RunId) -> Option<AgentRef> {
