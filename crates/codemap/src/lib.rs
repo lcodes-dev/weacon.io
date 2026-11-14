@@ -33,10 +33,9 @@ pub(crate) use edges::{Edge, EdgeKind};
 pub use facts::{Facts, Reader};
 pub use fingerprint::Fingerprint;
 pub(crate) use flows::Break;
-pub(crate) use index::{Crate, Module};
-pub use index::{Index, SourceFile, assemble, index};
+pub use index::{Crate, Index, Module, SourceFile, assemble, index};
 pub use search::Entry;
-pub(crate) use symbols::{Kind, Symbol};
+pub use symbols::{Kind, Symbol};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Error {

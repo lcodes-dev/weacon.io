@@ -618,6 +618,41 @@ mod tests {
     }
 
     #[test]
+    fn a_nested_test_module_reaches_its_parents_uses_through_a_glob() {
+        let found = edges(&[
+            ("a/Cargo.toml", CRATE_A),
+            (
+                "a/src/lib.rs",
+                "pub fn run() {}\nmod m;\n#[cfg(test)]\nmod tests {\n use crate::run;\n use super::m as here;\n\
+                 mod inner { use super::*;\n #[test]\n fn checks() { run(); here::go(); } }\n\
+                 mod apart { use crate::m::*;\n #[test]\n fn alone() { run(); } }\n}\n",
+            ),
+            ("a/src/m.rs", "pub fn go() {}\n"),
+        ]);
+        assert_eq!(
+            found,
+            [
+                "a::tests::inner::checks Tests a::m::go",
+                "a::tests::inner::checks Tests a::run",
+            ]
+        );
+    }
+
+    #[test]
+    fn a_tests_own_use_comes_before_its_modules() {
+        let found = edges(&[
+            ("a/Cargo.toml", CRATE_A),
+            (
+                "a/src/lib.rs",
+                "pub mod left { pub fn run() {} }\npub mod right { pub fn run() {} }\n\
+                 #[cfg(test)]\nmod tests {\n use crate::left::run;\n\
+                 #[test]\n fn own() { use crate::right::run; run(); }\n}\n",
+            ),
+        ]);
+        assert_eq!(found, ["a::tests::own Tests a::right::run"]);
+    }
+
+    #[test]
     fn a_use_in_a_block_stays_in_it() {
         let found = edges(&[
             ("a/Cargo.toml", CRATE_A),
