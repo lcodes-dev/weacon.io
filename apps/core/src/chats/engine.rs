@@ -398,8 +398,8 @@ mod tests {
     use super::by_hand::on_turn;
     use super::*;
     use crate::chats::test_support::{
-        Bench, Started, Told, allow, asks, bench, chat, client, command, key, prompt,
-        prompt_naming, pushed, query, run, session, skip, soon, text,
+        Bench, Started, Told, allow, asks, bench, chat, client, command, key, parts, prompt,
+        prompt_naming, pushed, query, run, session, skip, soon, text, workspace,
     };
 
     fn done(outcome: Outcome) -> RunEvent {
@@ -820,6 +820,25 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
+    async fn reading_a_chat_this_machine_never_had_writes_nothing() {
+        let (_bench, mut engine) = parts();
+        let root = engine.workspaces.root(&workspace());
+        let (client, mut pushes) = client(8);
+
+        let snapshot = engine.query(&key(), ChatQueryKind::Snapshot, &client).await;
+        let subscribe = ChatQueryKind::Subscribe { after: 0 };
+        engine.query(&key(), subscribe, &client).await.unwrap();
+
+        assert!(
+            matches!(snapshot, Ok(Some(ChatAnswerKind::Snapshot { seq: 0, ref events, .. })) if events.is_empty())
+        );
+        assert!(!root.exists());
+        engine.command(&key(), prompt("r-1", "Hi")).await.unwrap();
+        assert_eq!(pushed(&mut pushes, 1).await, ["1 prompt r-1 Hi"]);
+        assert!(root.join("chats").is_dir());
+    }
+
+    #[tokio::test(start_paused = true)]
     async fn a_snapshot_tells_the_runs_the_waiting_prompts_and_the_latest_events() {
         let mut bench = bench();
         let mut pushes = watch(&bench).await;
@@ -970,7 +989,7 @@ mod tests {
             "message.unsupported"
         );
 
-        let (stopped, engine) = crate::chats::test_support::parts();
+        let (stopped, engine) = parts();
         drop(engine);
         let command = stopped.chats.command(prompt("r-1", "Hi")).await;
         assert_eq!(code_of(command), "chat.engine_stopped");
