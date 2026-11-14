@@ -207,6 +207,7 @@ impl<A: Agent> Engine<A> {
         let status = RunStatus {
             run: run.clone(),
             state,
+            agent: None,
         };
         self.commit(key, ChatEvent::RunStatus { status })
             .await
@@ -778,6 +779,7 @@ mod tests {
         let waits = RunStatus {
             run: run("run-1"),
             state: RunState::Waiting,
+            agent: None,
         };
         assert_eq!((seq, waiting, runs), (6, vec![5], vec![waits]));
         let seqs: Vec<u64> = events.iter().map(|entry| entry.seq).collect();
