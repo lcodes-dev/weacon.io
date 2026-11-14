@@ -27,7 +27,6 @@ pub(crate) enum Effect {
 }
 
 /// An agent's request for permission to use `tool` with `input`.
-#[derive(Clone, Debug, PartialEq)]
 pub(crate) struct Asked {
     /// The agent's own id for the request, sent back with the answer.
     pub(crate) request: Value,

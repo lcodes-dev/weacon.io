@@ -187,15 +187,15 @@ impl Wire {
             return self.give_up();
         };
         self.thread = Some(id.to_owned());
-        let mut heard: Vec<_> = AgentSession::try_from(id.to_owned())
+        let mut effects: Vec<_> = AgentSession::try_from(id.to_owned())
             .ok()
             .map(Effect::Started)
             .into_iter()
             .collect();
         if let Some(text) = self.queued.take() {
-            heard.extend(self.prompt(&text));
+            effects.extend(self.prompt(&text));
         }
-        heard
+        effects
     }
 
     fn give_up(&mut self) -> Vec<Effect> {
@@ -226,7 +226,7 @@ impl Wire {
     }
 
     // Notices from other threads, such as a sub-agent's, aren't this run's; approvals are
-    // asked on any thread, so their resolutions are heard from any thread too.
+    // asked on any thread, so their resolutions are effects from any thread too.
     fn notified(&mut self, method: &str, params: &Value) -> Vec<Effect> {
         if method == "serverRequest/resolved" {
             return params
@@ -325,13 +325,14 @@ mod tests {
         self, Done, FakeRun, answer, app, ended, ends_as_recorded, is_asked, is_finished,
         is_started, next, started, text, tool_done, until,
     };
+    use crate::wire::Wire as RunWire;
 
     const THREAD: &str = "019a2b3c-4d5e-7f60-8a9b-0c1d2e3f4a5b";
 
     fn fake(recording: &str, resume: Option<&str>) -> (FakeRun, Done) {
         let resume = resume.map(|id| AgentSession::try_from(id.to_owned()).unwrap());
         let wire = Wire::new(resume, &app(), AccessLevel::AskFirst);
-        test_support::fake(crate::wire::Wire::Codex(wire), recording)
+        test_support::fake(RunWire::Codex(wire), recording)
     }
 
     fn failed() -> RunEvent {
