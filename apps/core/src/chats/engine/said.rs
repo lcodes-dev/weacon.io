@@ -1,13 +1,13 @@
 //! What the engine does with what a run says: commit it, then act on it.
 
-use weacon_observability::{Fault, Field};
+use weacon_observability::Fault;
 use weacon_protocol::{
     ChatEvent, Message, Outcome, PermissionAnswer, RunEvent, RunId, RunState, RunUpdate, code,
 };
 
 use super::agent::{Agent, Heard, Order};
 use super::cut::cut;
-use super::{ChatKey, Engine, Logged};
+use super::{ChatKey, Engine, Logged, about, failed};
 
 impl<A: Agent> Engine<A> {
     pub(super) async fn heard(
@@ -22,10 +22,7 @@ impl<A: Agent> Engine<A> {
         match heard {
             Heard::Exited(fault) => {
                 if let Some(fault) = fault {
-                    let fields = [
-                        ("run_id", run.as_str().into()),
-                        ("err", Field::error(&fault)),
-                    ];
+                    let fields = failed(key, run, &fault);
                     self.log.warn("run output not read", &fields);
                 }
                 self.exited(key, run).await
@@ -123,10 +120,8 @@ impl<A: Agent> Engine<A> {
             allow: false,
         };
         self.order(key, Order::Answer(answer));
-        self.log.warn(
-            "permission prompt refused unseen",
-            &[("run_id", run.as_str().into())],
-        );
+        self.log
+            .warn("permission prompt refused unseen", &about(key, run));
         // Withdrawn wherever it reached the log, even by a write reported failed.
         let logged = self.open(key).await?.log.runs().waits(run, prompt);
         if committed.is_ok() || logged {
@@ -168,11 +163,21 @@ mod tests {
     use weacon_protocol::{ChatAnswerKind, ChatQueryKind};
     use weacon_testing::messages;
 
-    use super::super::by_hand::{allow_one, hear, latest, on_ask, on_its_way, on_turn, waiting_in};
+    use super::super::by_hand::{
+        OnTurn, allow_one, hear, latest, on_ask, on_its_way, on_turn, waiting_in,
+    };
     use super::*;
     use crate::chats::test_support::{
         Told, asks, chat, client, key, prompt, pushed, run, session, soon, text,
     };
+
+    // The workspace, chat, run and error named by the first line logged as `msg`.
+    fn named(on: &OnTurn, msg: &str) -> [Value; 4] {
+        let records = on.bench.records.lock().unwrap();
+        let line = records.iter().find(|record| record.msg == msg).unwrap();
+        ["workspace_id", "chat_id", "run_id", "err"]
+            .map(|name| line.fields.get(name).cloned().unwrap_or(Value::Null))
+    }
 
     #[tokio::test(start_paused = true)]
     async fn an_event_too_large_for_a_frame_is_committed_without_what_made_it_so() {
@@ -246,6 +251,11 @@ mod tests {
             if waiting.is_empty() && runs[0].state == RunState::Running)
         );
         assert!(messages(&on.bench.records).contains(&"permission prompt refused unseen"));
+        let named = named(&on, "permission prompt refused unseen");
+        assert_eq!(
+            named,
+            [json!("w-1"), json!("c-1"), json!("run-1"), Value::Null]
+        );
     }
 
     #[tokio::test(start_paused = true)]
@@ -355,6 +365,12 @@ mod tests {
                 .count(),
             1
         );
+        let [workspace, chat, run_id, err] = named(&on, "run output not read");
+        assert_eq!(
+            [workspace, chat, run_id],
+            [json!("w-1"), json!("c-1"), json!("run-1")]
+        );
+        assert_eq!(err["code"], "agent.io_failed");
         on.engine
             .heard(&key(), &run("run-1"), Heard::Exited(None))
             .await
