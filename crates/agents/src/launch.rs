@@ -183,6 +183,37 @@ impl Launch {
         }
     }
 
+    /// Runs the agent on `session` in the terminal this process has, for the person to carry on
+    /// by hand: the vendor's program unmodified, with the workspace's config folder and no
+    /// shell. Only Claude Code, whose `--resume` takes the session a chat holds.
+    ///
+    /// # Errors
+    /// When this agent can't be resumed by hand, or its program can't be run.
+    pub async fn resume_by_hand(&self, session: &AgentSession) -> Result<(), Fault> {
+        let mut command = match self.agent {
+            AgentKind::Claude => claude::resume(self, session),
+            AgentKind::Codex => {
+                return Err(Fault::new(
+                    code!("agent.no_resume_by_hand"),
+                    "This agent can't be carried on by hand yet",
+                ));
+            }
+            AgentKind::Newer => return Err(unknown()),
+        };
+        let failed = |error| {
+            Fault::new(code!("agent.resume_failed"), "The agent couldn't start").because(error)
+        };
+        // The terminal's Ctrl-C reaches this process too; caught, it leaves the agent the terminal.
+        let mut interrupts = platform::interrupts().map_err(failed)?;
+        let mut child = command.spawn().map_err(failed)?;
+        loop {
+            tokio::select! {
+                status = child.wait() => return status.map(drop).map_err(failed),
+                Some(()) = interrupts.recv() => {}
+            }
+        }
+    }
+
     /// Runs the vendor's own sign-in in a new terminal of `size`: the same program, fixed
     /// arguments and config folder as [`Launch::log_in`], and no shell.
     ///
@@ -296,6 +327,45 @@ mod tests {
 
     fn start(launch: &Launch) -> Result<AgentRun, Fault> {
         launch.start(&SpawnPolicy::default(), &app(), run_id("run-1"), None)
+    }
+
+    const SESSION: &str = "0b7c6a52-3f1e-4d2a-9c8b-5e4f3a2b1c0d";
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_resumed_agent_keeps_the_terminal_through_ctrl_c_until_the_person_ends_it() {
+        let dir = TempDir::new().unwrap();
+        let claude = launch(AgentKind::Claude, &dir);
+        // Ctrl-C reaches the whole foreground group, this process too.
+        let script = "#!/bin/sh\nkill -INT $PPID\nprintf ended > ended\nexit 3\n";
+        weacon_testing::platform::write_program(&claude.program, script).unwrap();
+        let session = AgentSession::try_from(SESSION.to_owned()).unwrap();
+        // Whatever the agent exits with, the person ended it.
+        claude.resume_by_hand(&session).await.unwrap();
+        assert_eq!(std::fs::read_to_string(dir.join("ended")).unwrap(), "ended");
+        let missing = Launch {
+            program: dir.join("missing"),
+            ..claude
+        };
+        let fault = missing.resume_by_hand(&session).await.unwrap_err();
+        assert_eq!(fault.code().as_str(), "agent.resume_failed");
+    }
+
+    #[tokio::test]
+    async fn only_claude_is_resumed_by_hand_for_now() {
+        let dir = TempDir::new().unwrap();
+        let session = AgentSession::try_from(SESSION.to_owned()).unwrap();
+        let codex = launch(AgentKind::Codex, &dir)
+            .resume_by_hand(&session)
+            .await;
+        assert_eq!(
+            codex.unwrap_err().code().as_str(),
+            "agent.no_resume_by_hand"
+        );
+        let newer = launch(AgentKind::Newer, &dir)
+            .resume_by_hand(&session)
+            .await;
+        assert_eq!(newer.unwrap_err().code().as_str(), "agent.unknown");
     }
 
     #[test]

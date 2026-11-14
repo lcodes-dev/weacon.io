@@ -16,6 +16,18 @@ use std::fs::File;
 use std::io;
 use std::path::Path;
 
+/// The terminal's interrupt, caught from now on instead of ending this process.
+#[cfg(unix)]
+pub(crate) fn interrupts() -> io::Result<tokio::signal::unix::Signal> {
+    tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())
+}
+
+/// The console's Ctrl-C, caught from now on instead of ending this process.
+#[cfg(windows)]
+pub(crate) fn interrupts() -> io::Result<tokio::signal::windows::CtrlC> {
+    tokio::signal::windows::ctrl_c()
+}
+
 /// `file` opened to read, when it is a regular file with one link and not a symlink.
 pub(crate) fn open_plain(file: &Path) -> io::Result<File> {
     let opened = open_unfollowed(file)?;

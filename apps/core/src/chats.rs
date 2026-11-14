@@ -93,7 +93,7 @@ pub(crate) fn file_stem(chat: &ChatId) -> String {
 }
 
 // A chat's agent works in a folder made for it under the work folder, out of the core's state.
-fn work_dir(work_root: Option<&Path>, key: &ChatKey) -> Result<PathBuf, Fault> {
+pub(crate) fn work_dir(work_root: Option<&Path>, key: &ChatKey) -> Result<PathBuf, Fault> {
     let failed = || {
         Fault::new(
             code!("chat.folder_failed"),
