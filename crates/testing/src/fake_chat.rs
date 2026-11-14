@@ -5,6 +5,7 @@
 //! query about any other chat is refused.
 
 use serde_json::Value;
+use weacon_model::ChatRuns;
 use weacon_protocol::{
     AgentKind, AgentOwner, AgentRef, ChatAction, ChatAnswer, ChatAnswerKind, ChatCommand,
     ChatEntry, ChatEvent, ChatId, ChatQuery, ChatQueryKind, ChatUpdate, Envelope, ErrorBody,
@@ -14,7 +15,7 @@ use weacon_protocol::{
 
 mod events;
 
-use events::{agent, asked, closes, run, said};
+use events::{agent, run, said};
 
 /// The prompt text that makes the fake drop its client's subscription.
 const LOSE: &str = "/lose";
@@ -37,7 +38,6 @@ pub(crate) struct FakeChat {
     workspace: WorkspaceId,
     chat: ChatId,
     entries: Vec<ChatEntry>,
-    runs: Vec<RunStatus>,
     subscription: Option<u32>,
     /// Runs a person stopped, whose recording plays no further.
     stopped: Vec<RunId>,
@@ -50,7 +50,6 @@ impl FakeChat {
             workspace: WorkspaceId::try_from("w-1".to_owned())?,
             chat: ChatId::try_from("c-1".to_owned())?,
             entries: Vec::new(),
-            runs: Vec::new(),
             subscription: None,
             stopped: Vec::new(),
         };
@@ -58,20 +57,20 @@ impl FakeChat {
         let member = MemberId::try_from("m-1".to_owned())?;
         let claude = agent(AgentKind::Claude, AgentOwner::Member { member }, "laptop")?;
         fake.prompt("q-0", FIRST)?;
-        fake.status(&mine, RunState::Running, claude.clone());
+        fake.start(&mine, RunState::Running, Some(claude));
         for step in 1..=EARLIER {
             fake.commit(said(
                 &mine,
                 &format!("Step {step} of the first pass is done."),
             ));
         }
-        fake.finish(&mine, Outcome::Completed, claude.clone());
+        fake.finish(&mine, Outcome::Completed);
         fake.prompt("q-1", "Now merge across units too.")?;
-        fake.status(&mine, RunState::Running, claude);
-        fake.status(
+        fake.status(&mine, RunState::Running);
+        fake.start(
             &shared,
             RunState::Waiting,
-            agent(AgentKind::Codex, AgentOwner::Shared, "team VPS")?,
+            Some(agent(AgentKind::Codex, AgentOwner::Shared, "team VPS")?),
         );
         fake.commit(said(
             &shared,
@@ -133,12 +132,12 @@ impl FakeChat {
         if !self.plays(envelope) {
             return Vec::new();
         }
-        let run = update.run.clone();
+        let run = &update.run;
         let delta = matches!(update.event, RunEvent::TextDelta { .. });
         let event = ChatEvent::Run {
             update: update.clone(),
         };
-        let Some(agent) = self.agent_of(&run) else {
+        let Some(state) = self.last(run).map(|status| status.state) else {
             return if delta {
                 Vec::new()
             } else {
@@ -148,16 +147,12 @@ impl FakeChat {
         // The recording's run goes idle at the end of each pass, and runs again with the next.
         if matches!(update.event, RunEvent::Finished { .. }) {
             let mut told = self.commit(event);
-            told.extend(self.status(&run, RunState::Idle, agent));
+            told.extend(self.status(run, RunState::Idle));
             return told;
         }
-        let idle = self
-            .runs
-            .iter()
-            .any(|status| status.run == run && status.state == RunState::Idle);
         let asks = matches!(update.event, RunEvent::PermissionAsked { .. });
-        let mut told = if idle {
-            self.status(&run, RunState::Running, agent.clone())
+        let mut told = if state == RunState::Idle {
+            self.status(run, RunState::Running)
         } else {
             Vec::new()
         };
@@ -167,7 +162,7 @@ impl FakeChat {
         }
         told.extend(self.commit(event));
         if asks {
-            told.extend(self.status(&run, RunState::Waiting, agent));
+            told.extend(self.status(run, RunState::Waiting));
         }
         told
     }
@@ -184,14 +179,13 @@ impl FakeChat {
     fn query(&mut self, id: u32, query: &ChatQueryKind) -> Vec<Envelope> {
         match query {
             ChatQueryKind::Snapshot => {
-                let waiting = self.waiting();
                 let events = self.before(self.seq() + 1, PAGE);
                 vec![self.envelope(
                     id,
                     ChatAnswerKind::Snapshot {
                         seq: self.seq(),
-                        runs: self.runs.clone(),
-                        waiting,
+                        runs: self.statuses().next_back().cloned().into_iter().collect(),
+                        waiting: ChatRuns::fold(&self.entries).waiting_seqs(),
                         events,
                     },
                 )]
@@ -243,14 +237,12 @@ impl FakeChat {
             }
             ChatAction::Permission { answer } => told.extend(self.answered(answer)),
             ChatAction::Interrupt => {
-                let stopped: Vec<_> = self
-                    .runs
-                    .iter()
-                    .filter(|status| matches!(status.state, RunState::Running | RunState::Waiting))
-                    .filter_map(|status| Some((status.run.clone(), status.agent.clone()?)))
-                    .collect();
-                for (run, agent) in stopped {
-                    told.extend(self.finish(&run, Outcome::Interrupted, agent));
+                let working = self
+                    .statuses()
+                    .next_back()
+                    .filter(|status| matches!(status.state, RunState::Running | RunState::Waiting));
+                if let Some(run) = working.map(|status| status.run.clone()) {
+                    told.extend(self.finish(&run, Outcome::Interrupted));
                     self.stopped.push(run);
                 }
             }
@@ -261,13 +253,9 @@ impl FakeChat {
 
     // Commits the answer to a prompt still waiting, then plays the turn it lets the run finish.
     fn answered(&mut self, answer: &PermissionAnswer) -> Vec<Envelope> {
-        let open = self
-            .open_prompts()
-            .iter()
-            .any(|&(run, prompt, _)| *run == answer.run && prompt == answer.prompt);
-        let Some(agent) = self.agent_of(&answer.run).filter(|_| open) else {
+        if !ChatRuns::fold(&self.entries).waits(&answer.run, answer.prompt) {
             return Vec::new();
-        };
+        }
         let reply = if answer.allow {
             "The tests pass."
         } else {
@@ -281,9 +269,9 @@ impl FakeChat {
                 },
             },
         });
-        told.extend(self.status(&answer.run, RunState::Running, agent.clone()));
+        told.extend(self.status(&answer.run, RunState::Running));
         told.extend(self.commit(said(&answer.run, reply)));
-        told.extend(self.finish(&answer.run, Outcome::Completed, agent));
+        told.extend(self.finish(&answer.run, Outcome::Completed));
         told
     }
 
@@ -297,25 +285,29 @@ impl FakeChat {
         }))
     }
 
-    fn finish(&mut self, run: &RunId, outcome: Outcome, agent: AgentRef) -> Vec<Envelope> {
+    fn finish(&mut self, run: &RunId, outcome: Outcome) -> Vec<Envelope> {
         let mut told = self.commit(ChatEvent::Run {
             update: RunUpdate {
                 run: run.clone(),
                 event: RunEvent::Finished { outcome },
             },
         });
-        told.extend(self.status(run, RunState::Idle, agent));
+        told.extend(self.status(run, RunState::Idle));
         told
     }
 
-    fn status(&mut self, run: &RunId, state: RunState, agent: AgentRef) -> Vec<Envelope> {
+    // A run's state, under the agent its last status named.
+    fn status(&mut self, run: &RunId, state: RunState) -> Vec<Envelope> {
+        let agent = self.last(run).and_then(|status| status.agent.clone());
+        self.start(run, state, agent)
+    }
+
+    fn start(&mut self, run: &RunId, state: RunState, agent: Option<AgentRef>) -> Vec<Envelope> {
         let status = RunStatus {
             run: run.clone(),
             state,
-            agent: Some(agent),
+            agent,
         };
-        self.runs.retain(|known| known.run != *run);
-        self.runs.push(status.clone());
         self.commit(ChatEvent::RunStatus { status })
     }
 
@@ -346,32 +338,18 @@ impl FakeChat {
         earlier.into_iter().skip(skip).cloned().collect()
     }
 
-    // The permission prompts no later entry has closed: by a withdrawal, the run finishing, or the
-    // run no longer waiting.
-    fn waiting(&self) -> Vec<u64> {
-        self.open_prompts()
-            .into_iter()
-            .map(|(_, _, seq)| seq)
-            .collect()
+    // The statuses in the log, oldest first; the last is the chat's current run.
+    fn statuses(&self) -> impl DoubleEndedIterator<Item = &RunStatus> {
+        self.entries.iter().filter_map(|entry| {
+            let ChatEvent::RunStatus { status } = &entry.event else {
+                return None;
+            };
+            Some(status)
+        })
     }
 
-    fn open_prompts(&self) -> Vec<(&RunId, u32, u64)> {
-        let mut open: Vec<(&RunId, u32, u64)> = Vec::new();
-        for entry in &self.entries {
-            open.retain(|&(run, prompt, _)| !closes(entry, run, prompt));
-            if let Some((run, prompt)) = asked(entry) {
-                open.push((run, prompt, entry.seq));
-            }
-        }
-        open
-    }
-
-    fn agent_of(&self, run: &RunId) -> Option<AgentRef> {
-        self.runs
-            .iter()
-            .find(|status| status.run == *run)?
-            .agent
-            .clone()
+    fn last(&self, run: &RunId) -> Option<&RunStatus> {
+        self.statuses().rev().find(|status| status.run == *run)
     }
 
     fn update(&self, id: u32, entry: ChatEntry) -> Envelope {
@@ -441,10 +419,14 @@ mod tests {
     }
 
     fn played(event: RunEvent) -> Envelope {
+        played_by("r-1", event)
+    }
+
+    fn played_by(id: &str, event: RunEvent) -> Envelope {
         Envelope {
             id: 0,
             message: Message::Run(RunUpdate {
-                run: run("r-1").unwrap(),
+                run: run(id).unwrap(),
                 event,
             }),
         }
@@ -526,28 +508,17 @@ mod tests {
 
         assert_eq!((seq, waiting), (SEEDED, vec![SEEDED]));
         assert_eq!(shape(&first), [(1, "window [1]".to_owned())]);
-        let agents: Vec<_> = runs
-            .iter()
-            .map(|status| {
-                (
-                    status.run.as_str(),
-                    status.state,
-                    status.agent.clone().unwrap(),
-                )
-            })
-            .collect();
-        assert_eq!(agents[0].0, "r-1");
-        assert_eq!(agents[0].1, RunState::Running);
+        let [status] = &runs[..] else {
+            panic!("not one run: {runs:?}");
+        };
+        let agent = status.agent.clone().unwrap();
         assert_eq!(
-            agents[0].2.owner,
-            AgentOwner::Member {
-                member: MemberId::try_from("m-1".to_owned()).unwrap()
-            }
+            (status.run.as_str(), status.state),
+            ("r-2", RunState::Waiting)
         );
-        assert_eq!(agents[1].1, RunState::Waiting);
-        assert_eq!(agents[1].2.owner, AgentOwner::Shared);
+        assert_eq!(agent.owner, AgentOwner::Shared);
         assert_eq!(
-            agents[1].2.machine.as_ref().map(MachineName::as_str),
+            agent.machine.as_ref().map(MachineName::as_str),
             Some("team VPS")
         );
     }
@@ -632,9 +603,12 @@ mod tests {
     #[test]
     fn a_stopped_run_plays_no_further() {
         let mut fake = fake();
-        let recorded = played(RunEvent::Text {
-            text: "Merged.".to_owned(),
-        });
+        let recorded = played_by(
+            "r-2",
+            RunEvent::Text {
+                text: "Merged.".to_owned(),
+            },
+        );
         assert!(fake.plays(&recorded));
         fake.answer(&command(ChatAction::Interrupt));
         assert!(!fake.plays(&recorded));
@@ -681,15 +655,8 @@ mod tests {
                 (4, "77 r-2 Idle".to_owned())
             ]
         );
-        assert_eq!(
-            shape(&stopped),
-            [
-                (4, "78 receipt q-9".to_owned()),
-                (4, "79 r-1 finished".to_owned()),
-                (4, "80 r-1 Idle".to_owned())
-            ]
-        );
-        assert_eq!(shape(&unknown), [(4, "81 receipt q-9".to_owned())]);
+        assert_eq!(shape(&stopped), [(4, "78 receipt q-9".to_owned())]);
+        assert_eq!(shape(&unknown), [(4, "79 receipt q-9".to_owned())]);
         assert_eq!(snapshot(&mut fake).2, Vec::<u64>::new());
     }
 
@@ -714,7 +681,7 @@ mod tests {
 
         assert_eq!(shape(&other_run), [(4, "70 receipt q-9".to_owned())]);
         assert_eq!(shape(&other_prompt), [(4, "71 receipt q-9".to_owned())]);
-        assert_eq!(shape(&late), [(4, "77 receipt q-9".to_owned())]);
+        assert_eq!(shape(&late), [(4, "75 receipt q-9".to_owned())]);
     }
 
     #[test]
@@ -830,48 +797,13 @@ mod tests {
 
         assert_eq!(shape(&asked), []);
         assert_eq!(seq, SEEDED + 2);
-        assert_eq!(waiting, [SEEDED, SEEDED + 1]);
-        assert!(
+        assert_eq!(waiting, [SEEDED + 1]);
+        assert_eq!(
             runs.iter()
-                .any(|status| status.run.as_str() == "r-1" && status.state == RunState::Waiting)
+                .map(|status| (status.run.as_str(), status.state))
+                .collect::<Vec<_>>(),
+            [("r-1", RunState::Waiting)]
         );
-    }
-
-    #[test]
-    fn a_snapshot_lists_only_the_prompts_still_waiting() {
-        let mut fake = fake();
-        let ask = |prompt| {
-            played(RunEvent::PermissionAsked {
-                run: run("r-1").unwrap(),
-                prompt,
-                tool: "Edit".to_owned(),
-                input: Value::Null,
-            })
-        };
-        fake.played(&ask(7));
-        fake.played(&played(RunEvent::Finished {
-            outcome: Outcome::Completed,
-        }));
-        fake.played(&ask(8));
-        let after_second = snapshot(&mut fake).2;
-        fake.played(&played(RunEvent::PermissionWithdrawn {
-            run: run("r-1").unwrap(),
-            prompt: 8,
-        }));
-        let after_withdrawn = snapshot(&mut fake).2;
-        fake.played(&ask(9));
-        fake.played(&played(RunEvent::PermissionAnswered {
-            answer: PermissionAnswer {
-                run: run("r-1").unwrap(),
-                prompt: 9,
-                allow: false,
-            },
-        }));
-
-        // The seeded Codex prompt, then the second Claude one; the first ended with its turn.
-        assert_eq!(after_second, [SEEDED, SEEDED + 6]);
-        assert_eq!(after_withdrawn, [SEEDED]);
-        assert_eq!(snapshot(&mut fake).2, [SEEDED]);
     }
 
     #[test]
