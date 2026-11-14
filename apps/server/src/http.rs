@@ -31,8 +31,7 @@ const REQUEST_ID: &str = "x-request-id";
 const GRACE: Duration = Duration::from_secs(10);
 /// How long a request may take from its head to its answer, its body included.
 const ANSWER_WITHIN: Duration = Duration::from_secs(30);
-/// 16 KiB.
-const MAX_BODY: usize = 16_384;
+const MAX_BODY: usize = 16 * 1024;
 static METHODS: [Method; 9] = [
     Method::GET,
     Method::POST,
