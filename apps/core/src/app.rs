@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use serde::de::DeserializeOwned;
 use weacon_agents::SpawnPolicy;
-use weacon_appkit::{KEEP, MAX_BYTES, RotatingFile, panic_hook, root_logger};
+use weacon_appkit::{KEEP, MAX_BYTES, Outcome, RotatingFile, panic_hook, root_logger};
 use weacon_observability::{
     Deliver, Fault, Field, Level, Logger, Reporter, Reports, Sink, json_lines, tee,
 };
@@ -15,8 +15,6 @@ use weacon_protocol::code;
 use weacon_version::Version;
 
 use crate::platform::{self, Env};
-
-use weacon_appkit::Outcome;
 
 /// What a command runs with: its build, logger, error reporter and where its state lives.
 pub(crate) struct App {
