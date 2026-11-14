@@ -14,17 +14,17 @@ use crate::syntax::{line, preorder, push_reversed, test_only, text};
 
 /// An item declared in a module, named relative to it: `Frame`, `Frame::new`, `tests::helper`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct Symbol {
-    pub(crate) kind: Kind,
-    pub(crate) name: String,
+pub struct Symbol {
+    pub kind: Kind,
+    pub name: String,
     /// The first line, counting from 1.
-    pub(crate) line: usize,
+    pub line: usize,
     /// Changes when the item's code does, but not its comments, attributes or layout.
-    pub(crate) fingerprint: Fingerprint,
+    pub fingerprint: Fingerprint,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) enum Kind {
+pub enum Kind {
     Const,
     Enum,
     Fn,
