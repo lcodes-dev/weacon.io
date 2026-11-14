@@ -24,8 +24,18 @@ test("only the messages this app acts on pass, each with the fields it reads", (
     { id: 4, type: "receipt", request: "r-1", state: "accepted" },
     { id: 0, type: "run", run: "r-1", event: { event: "text_delta", text: "x" } },
     { id: 5, type: "diff_answer", request: "r-1", workspace: "w-1", chat: "c-1", answer: { kind: "unchanged" } },
+    { id: 0, type: "workspace", workspace: "w-1", seq: 3, change: { kind: "chat_changed", chat: "c-1" } },
+    { id: 0, type: "workspace", workspace: "w-1", seq: 4, change: { kind: "member_joined", member: "m-1" } },
+    { id: 0, type: "workspace", workspace: "w-1", seq: 5, change: { kind: "newer" } },
   ];
   const bad = [
+    { id: 0, type: "constructor" },
+    { id: 0, type: "toString" },
+    { id: 0, type: "workspace", seq: 3, change: { kind: "chat_changed", chat: "c-1" } },
+    { id: 0, type: "workspace", workspace: "w-1", seq: 1.5, change: { kind: "chat_changed", chat: "c-1" } },
+    { id: 0, type: "workspace", workspace: "w-1", seq: 3, change: { kind: "chat_changed" } },
+    { id: 0, type: "workspace", workspace: "w-1", seq: 3, change: null },
+    { id: 0, type: "workspace", workspace: "w-1", seq: 3, change: { kind: 1 } },
     { id: 0, type: "newer" },
     { id: 0, type: "log", level: "info", msg: "app started" },
     { type: "receipt", request: "r-1", state: "accepted" },

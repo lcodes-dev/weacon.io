@@ -2,8 +2,8 @@
 
 use weacon_observability::Fault;
 use weacon_protocol::{
-    AgentKind, ChatAction, ChatCommand, ChatEvent, Outcome, PermissionAnswer, RepoId, RequestId,
-    RunEvent, RunState, RunUpdate, code,
+    AgentKind, ChatAction, ChatCommand, ChatEvent, Outcome, PermissionAnswer, RequestId, RunEvent,
+    RunState, RunUpdate, code,
 };
 
 use super::{Answered, Engine, Key, unsupported};
@@ -35,11 +35,31 @@ impl<A: Agent> Engine<A> {
             }
         }
         match command.action {
-            ChatAction::Prompt { text, repo, .. } => {
-                if seen != Seen::Pending {
-                    self.log_prompt(key, &request, &text, repo).await?;
+            // A prompt is in the log before it is queued, and queued before it is accepted.
+            // Whichever step a first try stopped at, sending it again takes it from there.
+            ChatAction::Prompt {
+                text,
+                repo,
+                agent: named,
+                ..
+            } => {
+                let (agent, fresh) = (self.agent_of(key, named).await?, seen != Seen::Pending);
+                if fresh && text.trim().is_empty() {
+                    return Err(Fault::new(
+                        code!("chat.empty_prompt"),
+                        "The prompt is empty",
+                    ));
                 }
-                self.prompt(key, request, text).await
+                if fresh {
+                    let prompt = ChatEvent::Prompt {
+                        request: request.clone(),
+                        text: text.clone(),
+                        repo,
+                        agent: named,
+                    };
+                    self.commit(key, prompt).await?;
+                }
+                self.prompt(key, request, text, agent).await
             }
             ChatAction::Permission { answer } => self.permission(key, request, answer).await,
             ChatAction::Interrupt => self.interrupt(key, request).await,
@@ -47,36 +67,31 @@ impl<A: Agent> Engine<A> {
         }
     }
 
-    // A prompt is in the log before it is queued, and queued before it is accepted. Whichever
-    // step a first try stopped at, sending it again takes it from there.
-    async fn log_prompt(
-        &mut self,
-        key: &Key,
-        request: &RequestId,
-        text: &str,
-        repo: Option<RepoId>,
-    ) -> Result<(), Fault> {
-        if text.trim().is_empty() {
-            return Err(Fault::new(
-                code!("chat.empty_prompt"),
-                "The prompt is empty",
-            ));
+    // The chat's agent is the one its first logged prompt named; a later prompt can't change it.
+    async fn agent_of(&mut self, key: &Key, named: Option<AgentKind>) -> Result<AgentKind, Fault> {
+        let chosen = self.chat(key).await?.log.agent();
+        match (named, chosen) {
+            (Some(AgentKind::Newer), _) => Err(unsupported()),
+            (Some(named), Some(chosen)) if named != chosen => Err(Fault::new(
+                code!("chat.agent_conflict"),
+                "The chat already runs another agent",
+            )),
+            (named, chosen) => Ok(chosen.or(named).unwrap_or(AgentKind::Claude)),
         }
-        let prompt = ChatEvent::Prompt {
-            request: request.clone(),
-            text: text.to_owned(),
-            repo,
-        };
-        self.commit(key, prompt).await.map(drop)
     }
 
-    async fn prompt(&mut self, key: &Key, request: RequestId, text: String) -> Result<(), Fault> {
+    async fn prompt(
+        &mut self,
+        key: &Key,
+        request: RequestId,
+        text: String,
+        agent: AgentKind,
+    ) -> Result<(), Fault> {
         let queued = Queued {
             request: request.clone(),
             text,
         };
-        // Until a prompt can name its agent, a new chat runs Claude.
-        let (agent, now) = (AgentKind::Claude, (self.host.now)());
+        let now = (self.host.now)();
         self.runs
             .enqueue((&key.0, &key.1), agent, queued, now)
             .await?;

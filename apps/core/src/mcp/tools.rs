@@ -5,7 +5,7 @@ use std::path::Path;
 use rmcp::model::Tool;
 use serde_json::json;
 use weacon_codemap::Index;
-use weacon_observability::{Field, Logger};
+use weacon_observability::{Fault, Field, Logger};
 use weacon_protocol::McpCall;
 
 use crate::map::index_folder;
@@ -35,7 +35,7 @@ pub(crate) fn listed() -> Vec<Tool> {
         {
             "name": "symbol",
             "description": "One item by its full path, such as \
-                `weacon_protocol::frame::Envelope`: its kind and the file and line that declare it.",
+                `weacon_protocol::message::Envelope`: its kind and the file and line that declare it.",
             "inputSchema": {
                 "type": "object",
                 "properties": {"path": {"type": "string"}, "budget": budget},
@@ -48,14 +48,19 @@ pub(crate) fn listed() -> Vec<Tool> {
 }
 
 /// The answer to `call` from the code in `folder`; it reads the folder, so it blocks.
-pub(crate) fn answer(call: &McpCall, folder: &Path, log: &Logger) -> String {
-    match index_folder(folder) {
-        Ok((map, _)) => answer_from(call, &map),
-        Err(fault) => {
-            log.warn("mcp map failed", &[("err", Field::error(&fault))]);
-            NO_MAP.to_owned()
-        }
-    }
+///
+/// # Errors
+/// When the folder can't be read.
+pub(crate) fn answer(call: &McpCall, folder: &Path) -> Result<String, Fault> {
+    index_folder(folder).map(|(map, _)| answer_from(call, &map))
+}
+
+/// [`answer`], with a folder that can't be read logged and answered as having no map.
+pub(crate) fn answer_or_none(call: &McpCall, folder: &Path, log: &Logger) -> String {
+    answer(call, folder).unwrap_or_else(|fault| {
+        log.warn("mcp map failed", &[("err", Field::error(&fault))]);
+        NO_MAP.to_owned()
+    })
 }
 
 fn answer_from(call: &McpCall, map: &Index) -> String {
@@ -186,8 +191,8 @@ mod tests {
             .collect();
 
         assert_eq!(names, ["map", "symbol"]);
-        assert_eq!(sizes, [Some(194), Some(118)]);
-        assert_eq!(serde_json::to_string(&tools).unwrap().len(), 753);
+        assert_eq!(sizes, [Some(194), Some(120)]);
+        assert_eq!(serde_json::to_string(&tools).unwrap().len(), 755);
     }
 
     #[test]
@@ -213,8 +218,10 @@ mod tests {
         std::fs::write(dir.join("notes.md"), "# Notes\n").unwrap();
         let (log, records) = recording_logger();
 
-        assert_eq!(answer(&map(None), &dir, &log), NO_MAP);
-        assert_eq!(answer(&map(None), &dir.join("gone"), &log), NO_MAP);
+        assert_eq!(answer_or_none(&map(None), &dir, &log), NO_MAP);
+        assert_eq!(answer_or_none(&map(None), &dir.join("gone"), &log), NO_MAP);
+        let gone = answer(&map(None), &dir.join("gone")).unwrap_err();
+        assert_eq!(gone.code().as_str(), "map.read_failed");
         assert_eq!(weacon_testing::messages(&records), ["mcp map failed"]);
     }
 
