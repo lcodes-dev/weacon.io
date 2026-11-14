@@ -1,6 +1,7 @@
 //! The person's answer to whether this core sends error reports, kept in the state folder.
 
 use std::fs;
+use std::future::Future;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -38,14 +39,27 @@ pub(crate) fn agreed(state_dir: &Path, log: &Logger) -> bool {
 
 const CHECK: Duration = Duration::from_secs(10);
 
-/// Keeps a long-running reporter in step with the stored answer.
-pub(crate) struct Watch {
+/// Runs `work` while keeping `reporter` in step with the answer stored in `state_dir`, so a
+/// command that runs for long stops sending as soon as the person says no.
+pub(crate) async fn following<T>(
+    state_dir: &Path,
+    reporter: &Reporter,
+    log: &Logger,
+    work: impl Future<Output = T>,
+) -> T {
+    tokio::select! {
+        done = work => done,
+        never = Watch::new(state_dir.to_owned()).follow(reporter, log) => match never {},
+    }
+}
+
+struct Watch {
     state_dir: PathBuf,
     failing: bool,
 }
 
 impl Watch {
-    pub(crate) const fn new(state_dir: PathBuf) -> Self {
+    const fn new(state_dir: PathBuf) -> Self {
         Self {
             state_dir,
             failing: false,
@@ -53,7 +67,7 @@ impl Watch {
     }
 
     /// Checks the answer every few seconds, forever.
-    pub(crate) async fn follow(mut self, reporter: &Reporter, log: &Logger) -> ! {
+    async fn follow(mut self, reporter: &Reporter, log: &Logger) -> ! {
         let mut tick = tokio::time::interval(CHECK);
         loop {
             tick.tick().await;
@@ -258,6 +272,25 @@ mod tests {
             test_support::messages(&records),
             ["reports unreadable", "reports unreadable"]
         );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn long_work_stops_sending_once_the_person_says_no() {
+        let dir = TempDir::new().unwrap();
+        let app = test_support::app(Some(&dir), None);
+        let (log, _) = test_support::recording_logger();
+        fs::write(file(&dir), r#"{"send":true}"#).unwrap();
+        let work = async {
+            tokio::time::sleep(CHECK).await;
+            let before = app.reporter.agreed();
+            fs::write(file(&dir), r#"{"send":false}"#).unwrap();
+            tokio::time::sleep(CHECK * 2).await;
+            (before, app.reporter.agreed())
+        };
+
+        let seen = following(&dir, &app.reporter, &log, work).await;
+
+        assert_eq!(seen, (true, false));
     }
 
     #[test]

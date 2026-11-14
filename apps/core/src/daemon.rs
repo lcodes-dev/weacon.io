@@ -50,11 +50,8 @@ pub(crate) fn run(app: &crate::app::App) -> Result<(), Fault> {
             .because(error)
         })?;
         let daemon = Daemon::start(state_dir, build(&app.version), app.log.clone())?;
-        let reports = crate::reports::Watch::new(state_dir.to_owned());
-        tokio::select! {
-            () = daemon.serve(signals.wait()) => {}
-            never = reports.follow(&app.reporter, &app.log) => match never {}
-        }
+        let serve = daemon.serve(signals.wait());
+        crate::reports::following(state_dir, &app.reporter, &app.log, serve).await;
         Ok(())
     })
 }
