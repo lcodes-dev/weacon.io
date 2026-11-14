@@ -107,7 +107,8 @@ mod windows {
     };
 
     /// The file is opened as itself, then refused when it is a link or when Windows says it
-    /// is anywhere but `root` joined with `parts`, as after a folder swapped for a junction.
+    /// is anywhere but `root`, which is canonical, joined with `parts`, as after a folder
+    /// swapped for a junction.
     pub(super) fn open_parts(root: &Path, parts: &[&str]) -> io::Result<File> {
         let mut path = root.to_path_buf();
         path.extend(parts);
@@ -115,7 +116,8 @@ mod windows {
             .read(true)
             .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
             .open(&path)?;
-        if opened.metadata()?.file_type().is_symlink() || !same(&final_path(&opened)?, &path) {
+        // Compared exactly: a folder may tell case apart, and both paths carry the case on disk.
+        if opened.metadata()?.file_type().is_symlink() || final_path(&opened)? != path {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "not beneath its root",
@@ -145,16 +147,6 @@ mod windows {
             }
             buffer.resize(written, 0);
         }
-    }
-
-    /// Whether two paths name the same file, as Windows compares names: without the `\\?\`
-    /// prefix and ignoring case.
-    fn same(one: &Path, other: &Path) -> bool {
-        let plain = |path: &Path| {
-            let text = path.to_string_lossy();
-            text.strip_prefix(r"\\?\").unwrap_or(&text).to_lowercase()
-        };
-        plain(one) == plain(other)
     }
 }
 
@@ -238,7 +230,7 @@ mod tests {
         assert!(made.status.success());
         let root = root.canonicalize().unwrap();
         assert_eq!(read(&root, "real/c.md").as_deref(), Some("inside"));
-        assert_eq!(read(&root, "REAL/c.md").as_deref(), Some("inside"));
+        assert_eq!(read(&root, "REAL/c.md"), None);
         assert_eq!(read(&root, "folder/c.md"), None);
         assert_eq!(read(&root, "folder"), None);
     }
