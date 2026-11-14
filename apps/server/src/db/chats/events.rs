@@ -659,7 +659,27 @@ mod tests {
         let refused = append(&one, "c-1", &[(Some(1), too_large)]).await;
 
         assert_eq!(code(&refused.unwrap_err()), "chat.event_too_large");
-        assert_eq!(append(&one, "c-1", &[(Some(1), largest)]).await.unwrap(), 1);
+        assert_eq!(
+            append(&one, "c-1", &[(Some(1), largest.clone())])
+                .await
+                .unwrap(),
+            1
+        );
+        // The largest one still goes out in a frame of its own.
+        let update = weacon_protocol::ChatUpdate {
+            workspace: id("w1"),
+            chat: id("c-1"),
+            entry: ChatEntry {
+                seq: u64::MAX,
+                event: largest,
+            },
+        };
+        let message = weacon_protocol::Message::Chat(update);
+        let envelope = weacon_protocol::Envelope {
+            id: u32::MAX,
+            message,
+        };
+        envelope.to_json().unwrap();
     }
 
     #[tokio::test]
