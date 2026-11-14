@@ -35,6 +35,8 @@ enum Line {
 #[derive(Deserialize)]
 struct Place {
     cwd: Option<PathBuf>,
+    #[serde(default, rename = "isSidechain")]
+    sidechain: bool,
 }
 
 /// Adds `line` to `transcript`; false when it doesn't parse.
@@ -45,6 +47,7 @@ pub(crate) fn line(line: &[u8], transcript: &mut Transcript) -> bool {
     if transcript.cwd.is_none() {
         transcript.cwd = serde_json::from_slice::<Place>(line)
             .ok()
+            .filter(|place| !place.sidechain)
             .and_then(|place| place.cwd);
     }
     match parsed {
@@ -72,12 +75,16 @@ fn from_person(message: Message, transcript: &mut Transcript) {
         transcript.said.push(Said::Prompt(text.clone()));
         return;
     }
+    let mut texts = Vec::new();
     for block in message.blocks() {
         if let Block::Text { text } = block {
-            transcript.said.push(Said::Prompt(text));
+            texts.push(text);
         } else {
             transcript.said.extend(event(block).map(Said::Event));
         }
+    }
+    if !texts.is_empty() {
+        transcript.said.push(Said::Prompt(texts.join("\n\n")));
     }
 }
 
@@ -109,6 +116,7 @@ mod tests {
             json!({ "type": "user", "message": { "content": [
                 { "type": "text", "text": "Try again" },
                 { "type": "image", "source": {} },
+                { "type": "text", "text": "with this" },
             ] } }),
         ]);
 
@@ -125,7 +133,7 @@ mod tests {
                         input: json!({ "command": "make" }),
                     }),
                     Said::Event(tool_done("t1", true)),
-                    Said::Prompt("Try again".to_owned()),
+                    Said::Prompt("Try again\n\nwith this".to_owned()),
                 ],
                 skipped: 0,
             }
@@ -138,13 +146,20 @@ mod tests {
             json!({ "type": "user", "isMeta": true, "message": { "content": "Caveat" } }),
             json!({ "type": "user", "isCompactSummary": true, "message": { "content": "Summary" } }),
             json!({ "type": "user", "isVisibleInTranscriptOnly": true, "message": { "content": "Shown" } }),
-            json!({ "type": "user", "isSidechain": true, "message": { "content": "Explore" } }),
+            json!({ "type": "user", "isSidechain": true, "cwd": "/worktree", "message": { "content": "Explore" } }),
             json!({ "type": "assistant", "isSidechain": true, "message": { "content": [
                 { "type": "text", "text": "Found it" },
             ] } }),
+            json!({ "type": "attachment", "cwd": "/work/app" }),
         ]);
 
-        assert_eq!(transcript, Transcript::default());
+        assert_eq!(
+            transcript,
+            Transcript {
+                cwd: Some(PathBuf::from("/work/app")),
+                ..Transcript::default()
+            }
+        );
     }
 
     #[test]
