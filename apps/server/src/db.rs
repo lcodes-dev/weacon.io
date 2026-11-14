@@ -17,11 +17,11 @@ use std::time::Duration;
 use sqlx::SqlitePool;
 use sqlx::sqlite::{SqliteConnectOptions, SqliteConnection, SqlitePoolOptions, SqliteSynchronous};
 use weacon_observability::Fault;
-use weacon_protocol::{MemberId, WorkspaceId, code};
+use weacon_protocol::{AccountId, MemberId, WorkspaceId, code};
 
-pub(crate) use account::Attempt;
 #[cfg(test)]
 pub(crate) use account::CODE_LIFETIME;
+pub(crate) use account::{Account, Attempt};
 pub(crate) use backup::restore;
 pub(crate) use owned::NewWorkspace;
 pub(crate) use workspace::Workspace;
@@ -113,6 +113,15 @@ impl Db {
             .await
             .map_err(failed)?;
         Ok(found.map(|_| Workspace::new(self.clone(), id.clone())))
+    }
+
+    /// The handle to the account `id`, which reaches only that account's own rows; the id
+    /// comes from a session, so the account is there.
+    pub(crate) fn account(&self, id: AccountId) -> Account {
+        Account {
+            db: self.clone(),
+            id,
+        }
     }
 
     /// Closes every connection, so the file can be copied or removed.

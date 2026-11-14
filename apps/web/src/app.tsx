@@ -8,6 +8,7 @@ import type { Comment } from "./diff/comments.ts";
 import { DiffView } from "./diff/diff-view.tsx";
 import type { ChatRef } from "./chat-ref.ts";
 import type { App as Build } from "./protocol.ts";
+import { Settings } from "./settings/settings.tsx";
 import type { Transcript } from "./transcript/transcript.ts";
 import { TranscriptView } from "./transcript/transcript-view.tsx";
 
@@ -72,34 +73,11 @@ export function App({
         )}
         {shown === "settings" && (
           <div className="pane">
-            <Settings me={me} status={status} />
+            <Settings me={me} server={status.state === "live" ? status.server : undefined} />
           </div>
         )}
       </main>
       <Composer send={send} blocked={blocked(status, chatRef)} hidden={shown !== "run"} />
     </div>
-  );
-}
-
-function Settings({ me, status }: { me: Build; status: Status }) {
-  return (
-    <section className="page">
-      <h1>Settings</h1>
-      <h2>About</h2>
-      <dl>
-        <dt>Version</dt>
-        <dd>{me.version}</dd>
-        <dt>Commit</dt>
-        <dd>{me.commit}</dd>
-        {status.state === "live" && (
-          <>
-            <dt>Server</dt>
-            <dd>
-              {status.server.version} ({status.server.commit})
-            </dd>
-          </>
-        )}
-      </dl>
-    </section>
   );
 }

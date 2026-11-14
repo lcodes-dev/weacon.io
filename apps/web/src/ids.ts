@@ -1,3 +1,4 @@
+import { hex } from "./hex.ts";
 import type { RequestId } from "./protocol.ts";
 
 /** Whether `text` has the form of the protocol's ids (`token_id!`): 1–64 ASCII letters, digits, `-` or `_`. */
@@ -7,7 +8,7 @@ export function isId(text: string): boolean {
 
 /** A request id made of `bytes` in hex. */
 export function requestId(bytes: Uint8Array): RequestId {
-  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
+  return hex(bytes);
 }
 
 /** A new request id, from 16 random bytes. */

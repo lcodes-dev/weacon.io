@@ -14,7 +14,7 @@ pub(crate) struct Workspace {
 }
 
 #[derive(Debug, PartialEq, Eq)]
-pub(crate) struct Member {
+pub(crate) struct MemberRow {
     pub(crate) id: MemberId,
     pub(crate) email: Email,
 }
@@ -85,7 +85,7 @@ impl Workspace {
     }
 
     /// The members, in the order they were added.
-    pub(crate) async fn members(&self) -> Result<Vec<Member>, Fault> {
+    pub(crate) async fn members(&self) -> Result<Vec<MemberRow>, Fault> {
         sqlx::query_as::<_, (String, String)>(
             "SELECT member_id, email FROM members WHERE workspace_id = ? ORDER BY rowid",
         )
@@ -95,7 +95,7 @@ impl Workspace {
         .map_err(failed)?
         .into_iter()
         .map(|(id, email)| {
-            Ok(Member {
+            Ok(MemberRow {
                 id: stored(id)?,
                 email: Email::parse(&email).map_err(|_| unreadable())?,
             })
@@ -289,7 +289,7 @@ mod tests {
         assert_eq!(of, [ada.clone(), ada.clone(), bo]);
         // Members from before may do what any member may.
         let ada_id = AccountId::try_from(ada.clone()).unwrap();
-        let roles = db.workspaces_of(&ada_id).await.unwrap();
+        let roles = db.account(ada_id).workspaces().await.unwrap();
         assert!(
             roles
                 .iter()
@@ -334,7 +334,7 @@ mod tests {
             &[("m2", "ada@example.com"), ("m3", "bo@example.com")],
         )
         .await;
-        let member = |id: &str, address: &str| Member {
+        let member = |id: &str, address: &str| MemberRow {
             id: member_id(id),
             email: email(address),
         };
