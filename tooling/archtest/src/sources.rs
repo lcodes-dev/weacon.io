@@ -169,6 +169,10 @@ impl Uses {
         if let Some((punct, _)) = cursor.punct()
             && punct.as_char() == ':'
         {
+            // A leading `::`, as in `use ::sqlx;`, still names a crate after `use`.
+            if path.last().is_some_and(|ident| ident == "use") {
+                return Last::PathSep;
+            }
             return last.colon();
         }
         if let Some((ident, next)) = cursor.ident() {
@@ -535,6 +539,8 @@ mod tests {
         }
         for text in [
             "macro_rules! driver { () => { use sqlx as db; }; }",
+            "macro_rules! driver { () => { use ::sqlx; }; }",
+            "macro_rules! driver { () => { use ::sqlx as db; }; }",
             "macro_rules! driver { () => { use sqlx; }; }",
             "macro_rules! driver { () => { use sqlx::{self as db}; }; }",
             "macro_rules! driver { () => { use {sqlx as db, std::fmt}; }; }",
