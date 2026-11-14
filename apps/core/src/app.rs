@@ -76,6 +76,11 @@ impl App {
         }
     }
 
+    /// The state folder, or why there is none.
+    pub(crate) fn state_dir(&self) -> Result<&Path, Fault> {
+        self.state_dir.as_deref().ok_or_else(state_unavailable)
+    }
+
     /// Logs and reports how the command ended, and gives its exit code.
     pub(crate) fn finish(&self, result: Result<Outcome, Fault>) -> ExitCode {
         weacon_appkit::finish(&self.log, &self.reporter, result)
@@ -96,6 +101,20 @@ pub(crate) fn state_unavailable() -> Fault {
         code!("state.unavailable"),
         "The state folder can't be used: set HOME or WEACON_STATE_DIR to a writable folder",
     )
+}
+
+/// The single-threaded async runtime the core's commands run on.
+pub(crate) fn runtime() -> Result<tokio::runtime::Runtime, Fault> {
+    weacon_appkit::runtime(tokio::runtime::Builder::new_current_thread())
+}
+
+/// Runs `work` off the async runtime, for file and process I/O that can block.
+pub(crate) async fn blocking<T: Send + 'static>(
+    work: impl FnOnce() -> io::Result<T> + Send + 'static,
+) -> io::Result<T> {
+    tokio::task::spawn_blocking(work)
+        .await
+        .unwrap_or_else(|error| Err(io::Error::other(error)))
 }
 
 fn open_log(state_dir: &Path, name: &str) -> io::Result<(PathBuf, RotatingFile)> {
@@ -136,6 +155,15 @@ mod tests {
     use crate::test_support::{Records, VERSION, env, messages, recording_sink};
 
     const DSN: &str = "https://key@sentry.example.com/1";
+
+    #[tokio::test]
+    async fn blocking_work_that_panics_fails_with_io() {
+        let answer = blocking(|| Ok(7)).await.unwrap();
+        let failed = blocking(|| -> io::Result<()> { panic!("work failed") }).await;
+
+        assert_eq!(answer, 7);
+        assert_eq!(failed.unwrap_err().kind(), io::ErrorKind::Other);
+    }
 
     fn start(vars: &[(&str, &str)], verbose: bool) -> (App, Records, Arc<Mutex<Vec<Upload>>>) {
         let env = env(vars);
