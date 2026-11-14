@@ -19,12 +19,7 @@ impl Workspace {
         task: &Task,
         attribution: &Attribution,
     ) -> Result<(), Fault> {
-        let mut transaction = self
-            .db
-            .writer
-            .begin_with("BEGIN IMMEDIATE")
-            .await
-            .map_err(failed)?;
+        let mut transaction = self.db.write().await?;
         let added = sqlx::query(
             "INSERT INTO tasks (workspace_id, task_id, title, status, order_key, version)
              SELECT ?1, ?2, ?3, ?4, ?5, ?6
@@ -76,12 +71,7 @@ impl Workspace {
         edit: TaskEdit,
         attribution: &Attribution,
     ) -> Result<Task, Fault> {
-        let mut transaction = self
-            .db
-            .writer
-            .begin_with("BEGIN IMMEDIATE")
-            .await
-            .map_err(failed)?;
+        let mut transaction = self.db.write().await?;
         let row = sqlx::query_as::<_, Row>(
             "SELECT task_id, title, status, order_key, version FROM tasks
              WHERE workspace_id = ? AND task_id = ?",

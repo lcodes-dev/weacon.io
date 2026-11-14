@@ -18,12 +18,7 @@ impl Workspace {
     /// Stores a new doc, made as `attribution` says. An id already in this workspace is
     /// `db.exists`.
     pub(crate) async fn add_doc(&self, doc: &Doc, attribution: &Attribution) -> Result<(), Fault> {
-        let mut transaction = self
-            .db
-            .writer
-            .begin_with("BEGIN IMMEDIATE")
-            .await
-            .map_err(failed)?;
+        let mut transaction = self.db.write().await?;
         sqlx::query("INSERT INTO docs (workspace_id, doc_id, version) VALUES (?, ?, ?)")
             .bind(self.id.as_str())
             .bind(doc.id.as_str())
@@ -76,12 +71,7 @@ impl Workspace {
         text: DocText,
         attribution: &Attribution,
     ) -> Result<Doc, Fault> {
-        let mut transaction = self
-            .db
-            .writer
-            .begin_with("BEGIN IMMEDIATE")
-            .await
-            .map_err(failed)?;
+        let mut transaction = self.db.write().await?;
         let current = self.read_doc(&mut transaction, id, None).await?;
         let revised = current.revise(read_at, text).map_err(refused)?;
         sqlx::query("UPDATE docs SET version = ? WHERE workspace_id = ? AND doc_id = ?")

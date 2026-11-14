@@ -44,6 +44,15 @@ pub(crate) struct Db {
 }
 
 impl Db {
+    /// A transaction that holds the write lock from the start, so nothing changes between its
+    /// reads and its writes.
+    async fn write(&self) -> Result<sqlx::Transaction<'static, sqlx::Sqlite>, Fault> {
+        self.writer
+            .begin_with("BEGIN IMMEDIATE")
+            .await
+            .map_err(failed)
+    }
+
     /// Opens the database at `path`, creating it if it's missing, and brings its schema up
     /// to date.
     pub(crate) async fn create(path: &Path) -> Result<Self, Fault> {

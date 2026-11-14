@@ -107,11 +107,7 @@ impl Db {
         &self,
         attempt: &Attempt<'_>,
     ) -> Result<Option<AccountId>, Fault> {
-        let mut transaction = self
-            .writer
-            .begin_with("BEGIN IMMEDIATE")
-            .await
-            .map_err(failed)?;
+        let mut transaction = self.write().await?;
         let live = sqlx::query_scalar::<_, i64>(
             "SELECT 1 FROM sign_in_challenges
              WHERE challenge_id = ? AND email = ? AND expires_at > ? AND attempts < ?",

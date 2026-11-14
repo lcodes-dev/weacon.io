@@ -32,12 +32,7 @@ impl Account {
         new: NewWorkspace,
     ) -> Result<Option<WorkspaceSummary>, Fault> {
         let account = &self.id;
-        let mut transaction = self
-            .db
-            .writer
-            .begin_with("BEGIN IMMEDIATE")
-            .await
-            .map_err(failed)?;
+        let mut transaction = self.db.write().await?;
         let owned: i64 =
             sqlx::query_scalar("SELECT count(*) FROM members WHERE account_id = ? AND role = ?")
                 .bind(account.as_str())
