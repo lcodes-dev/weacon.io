@@ -274,7 +274,15 @@ impl<'a> Scope<'a> {
             });
         let mut here = segments_of(spot.module);
         here.extend(spot.within.iter().map(String::as_str));
-        let (krate, segments) = absolute(&self.crates, spot.krate, here, segments);
+        // A module in scope hides a crate of the same name.
+        let local = path.first().is_some_and(|first| {
+            let module = [&here[..], &[first.as_str()]].concat();
+            let found = self.find(spot.krate, &module, HOPS);
+            found.is_some_and(|found| self.ids.get(&found) == Some(&Kind::Mod))
+        });
+        let no_crates = BTreeSet::new();
+        let crates = if local { &no_crates } else { &self.crates };
+        let (krate, segments) = absolute(crates, spot.krate, here, segments);
         if let Some(exact) = self.find(krate, &segments, HOPS) {
             return Some((exact, true));
         }
@@ -598,6 +606,21 @@ mod tests {
                 "a::store::tests::named Tests a::store::keep",
             ]
         );
+    }
+
+    #[test]
+    fn raw_names_and_local_modules_resolve_like_rust() {
+        let found = edges(&[
+            ("a/Cargo.toml", CRATE_A),
+            (
+                "a/src/lib.rs",
+                "mod m { pub struct r#type; }\nmod b { pub struct T; }\n\
+                 fn take(_: m::r#type, _: b::T) {}\n",
+            ),
+            ("b/Cargo.toml", CRATE_B),
+            ("b/src/lib.rs", "pub struct T;\n"),
+        ]);
+        assert_eq!(found, ["a::take Uses a::b::T", "a::take Uses a::m::type"]);
     }
 
     #[test]

@@ -1,6 +1,6 @@
 use tree_sitter::Node;
 
-use super::{Item, Kind, Place, Symbol, fingerprint, join, plain};
+use super::{Item, Kind, Place, Symbol, fingerprint, join};
 use crate::paths::{self, Bound, Segments};
 use crate::refs::refs;
 use crate::syntax::{attributes, line, text};
@@ -13,7 +13,7 @@ pub(super) fn tests(item: Node<'_>, place: &Place, source: &[u8]) -> Vec<Item> {
     while let Some((node, place, imports)) = modules.pop() {
         let name = node
             .child_by_field_name("name")
-            .map(|name| plain(text(name, source)));
+            .map(|name| crate::syntax::name(name, source));
         match (node.kind(), name, node.child_by_field_name("body")) {
             ("mod_item", Some(name), Some(body)) => {
                 let inside = Place {

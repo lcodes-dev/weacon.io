@@ -129,7 +129,10 @@ impl Log {
                 asked.receipted = true;
                 asked.ended |= receipt.outcome != Outcome::Accepted;
             }
-            ChatEvent::Run { .. } | ChatEvent::RunStatus { .. } | ChatEvent::Newer => {}
+            ChatEvent::Run { .. }
+            | ChatEvent::RunStatus { .. }
+            | ChatEvent::OutsidePrompt { .. }
+            | ChatEvent::Newer => {}
         }
         self.starts.push(self.end);
         self.end += u64::try_from(len).unwrap_or(u64::MAX);

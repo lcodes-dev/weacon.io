@@ -1,7 +1,7 @@
 import type { App, Envelope, RunEvent } from "./protocol.ts";
 
 /** A message from the server that this app acts on, its fields checked where it arrives. */
-export type Incoming = Extract<Envelope, { type: "welcome" | "error" | "receipt" | "run" | "diff_answer" }>;
+export type Incoming = Extract<Envelope, { type: "welcome" | "error" | "receipt" | "run" | "diff_answer" | "workspace" }>;
 
 /** A run message, checked. */
 export type RunMessage = Extract<Incoming, { type: "run" }>;
@@ -44,34 +44,38 @@ export function route(message: Incoming, to: Routes): void {
       to.changes(message);
       return;
     case "welcome":
+    case "workspace":
       return;
   }
 }
+
+type Fields = Record<string, unknown>;
+
+const text = (fields: Fields, key: string) => typeof fields[key] === "string";
+
+// The fields each message this app acts on must have.
+const CHECKS: { [T in Incoming["type"]]: (fields: Fields) => boolean } = {
+  welcome: (fields) => isApp(fields["app"]) && (fields["capabilities"] === undefined || isStrings(fields["capabilities"])),
+  error: (fields) => text(fields, "code"),
+  receipt: (fields) => text(fields, "request") && text(fields, "state"),
+  run: (fields) => text(fields, "run") && isRunEvent(fields["event"]),
+  // The answer itself is checked where the chat's changes take it.
+  diff_answer: (fields) => text(fields, "request") && text(fields, "workspace") && text(fields, "chat"),
+  workspace: (fields) => text(fields, "workspace") && Number.isSafeInteger(fields["seq"]) && isChange(fields["change"]),
+};
 
 function isIncoming(value: unknown): value is Incoming {
   if (typeof value !== "object" || value === null) {
     return false;
   }
-  const fields = value as Record<string, unknown>;
-  if (typeof fields["id"] !== "number") {
-    return false;
-  }
-  const text = (key: string) => typeof fields[key] === "string";
-  switch (fields["type"]) {
-    case "welcome":
-      return isApp(fields["app"]) && (fields["capabilities"] === undefined || isStrings(fields["capabilities"]));
-    case "error":
-      return text("code");
-    case "receipt":
-      return text("request") && text("state");
-    case "run":
-      return text("run") && isRunEvent(fields["event"]);
-    case "diff_answer":
-      // The answer itself is checked where the chat's changes take it.
-      return text("request") && text("workspace") && text("chat");
-    default:
-      return false;
-  }
+  const fields = value as Fields;
+  const type = fields["type"];
+  return (
+    typeof fields["id"] === "number" &&
+    typeof type === "string" &&
+    Object.hasOwn(CHECKS, type) &&
+    CHECKS[type as Incoming["type"]](fields)
+  );
 }
 
 function isApp(app: unknown): app is App {
@@ -108,4 +112,13 @@ function isRunEvent(event: unknown): event is RunEvent {
     default:
       return typeof fields["event"] === "string";
   }
+}
+
+// A change of a kind this app reads has its fields; one of a newer kind passes, to be skipped.
+function isChange(value: unknown): boolean {
+  if (typeof value !== "object" || value === null) {
+    return false;
+  }
+  const fields = value as Fields;
+  return fields["kind"] === "chat_changed" ? typeof fields["chat"] === "string" : typeof fields["kind"] === "string";
 }

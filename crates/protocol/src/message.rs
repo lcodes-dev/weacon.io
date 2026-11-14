@@ -3,9 +3,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     Capability, ChatAnswer, ChatCommand, ChatQuery, ChatUpdate, ClientLog, Code, DiffAnswer,
-    DiffQuery, MachineSettingsAnswer, MachineSettingsCommand, MachineSettingsQuery, Pick, Receipt,
-    RunUpdate, TerminalCommand, TerminalUpdate, WorkspaceUpdate, WorktreeAnswer, WorktreeCommand,
-    WorktreeQuery, code,
+    DiffQuery, MachineSettingsAnswer, MachineSettingsCommand, MachineSettingsQuery, Pick,
+    ProposalCommand, Receipt, RunUpdate, SessionsAnswer, SessionsQuery, TerminalCommand,
+    TerminalUpdate, WorkspaceUpdate, WorktreeAnswer, WorktreeCommand, WorktreeQuery, code,
 };
 
 /// The protocol version this build speaks. Only a breaking change raises it; peers must match
@@ -60,6 +60,11 @@ pub enum Message {
     /// The core's answer to a [`MachineSettingsQuery`] or a [`MachineSettingsCommand`], to a
     /// client that has `machine.settings`.
     MachineSettingsAnswer(MachineSettingsAnswer),
+    /// A question about the sessions a person ran outside Weacon, from a client to their own
+    /// core that offers `sessions.read`.
+    SessionsQuery(SessionsQuery),
+    /// The core's answer to a [`SessionsQuery`], to a client that has `sessions.read`.
+    SessionsAnswer(SessionsAnswer),
     /// A sign-in terminal's sealed input, from a browser through the server to a core that
     /// offers `terminal.sign_in`; the server relays it only if it offers `terminal.relay`.
     TerminalCommand(TerminalCommand),
@@ -75,6 +80,8 @@ pub enum Message {
     /// The core's answer to a [`WorktreeQuery`] or a [`WorktreeCommand`], to a client that has
     /// `worktree.manage`.
     WorktreeAnswer(WorktreeAnswer),
+    /// What a core asks of the server for its owner's agents, under `workspace.proposals`.
+    ProposalCommand(ProposalCommand),
     /// A message type this build doesn't know, from a newer peer.
     #[serde(other)]
     #[schemars(skip)]
