@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import type { RunEvent } from "./protocol.ts";
+import type { RunEvent } from "../protocol.ts";
 import { EMPTY, apply } from "./transcript.ts";
 
 const delta = (text: string): RunEvent => ({ event: "text_delta", text });

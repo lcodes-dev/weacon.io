@@ -8,8 +8,8 @@ import type { Comment } from "./diff/comments.ts";
 import { DiffView } from "./diff/diff-view.tsx";
 import type { ChatRef } from "./chat-ref.ts";
 import type { App as Build } from "./protocol.ts";
-import type { Transcript } from "./transcript.ts";
-import { TranscriptView } from "./transcript-view.tsx";
+import type { Transcript } from "./transcript/transcript.ts";
+import { TranscriptView } from "./transcript/transcript-view.tsx";
 
 type Shown = "run" | "changes" | "settings";
 

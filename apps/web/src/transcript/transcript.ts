@@ -1,4 +1,4 @@
-import type { Outcome, RunEvent } from "./protocol.ts";
+import type { Outcome, RunEvent } from "../protocol.ts";
 
 export type ToolState = "running" | "done" | "failed";
 

@@ -16,7 +16,7 @@ import { Receipts } from "./receipts.ts";
 import { fakeServerUrl } from "./server.ts";
 import { Api } from "./shell/api.ts";
 import { Shell } from "./shell/shell.tsx";
-import { EMPTY, apply } from "./transcript.ts";
+import { EMPTY, apply } from "./transcript/transcript.ts";
 
 const log = new Log();
 // A crash is reported by a fixed code, as its message and stack could hold content, and once,

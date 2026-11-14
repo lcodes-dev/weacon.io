@@ -3,7 +3,7 @@ import { test } from "node:test";
 
 import type { Page } from "playwright-core";
 
-import { atBottom } from "../src/follow.ts";
+import { atBottom } from "../src/transcript/follow.ts";
 import { fakeServer, start } from "./harness.ts";
 
 const MESSAGES = 33;
