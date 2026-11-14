@@ -1,7 +1,7 @@
 use std::{fmt, mem};
 
 use crate::{
-    ChatAction, ChatQueryKind, Code, DiffQueryKind, Envelope, MachineSettingsQueryKind, Message,
+    ChatQueryKind, Code, DiffQueryKind, Envelope, MachineSettingsQueryKind, Message,
     WorkspaceChange, WorktreeAction, WorktreeAnswerKind, WorktreeQueryKind, code,
 };
 
@@ -71,7 +71,7 @@ fn only_received(message: &Message) -> bool {
         Message::Receipt(receipt) => receipt.outcome.is_newer(),
         Message::Run(update) => update.event.is_newer(),
         Message::Workspace(update) => matches!(update.change, WorkspaceChange::Newer),
-        Message::ChatCommand(command) => matches!(command.action, ChatAction::Newer),
+        Message::ChatCommand(command) => command.action.is_newer(),
         Message::Chat(update) => update.entry.event.is_newer(),
         Message::ChatQuery(query) => matches!(query.query, ChatQueryKind::Newer),
         Message::ChatAnswer(answer) => answer.answer.is_newer(),
@@ -82,11 +82,14 @@ fn only_received(message: &Message) -> bool {
         }
         Message::MachineSettingsCommand(command) => command.action.is_newer(),
         Message::MachineSettingsAnswer(answer) => answer.answer.is_newer(),
+        Message::SessionsQuery(query) => query.query.is_newer(),
+        Message::SessionsAnswer(answer) => answer.answer.is_newer(),
         Message::TerminalCommand(command) => command.is_newer(),
         Message::Terminal(update) => update.is_newer(),
         Message::WorktreeQuery(query) => matches!(query.query, WorktreeQueryKind::Newer),
         Message::WorktreeCommand(command) => matches!(command.action, WorktreeAction::Newer),
         Message::WorktreeAnswer(answer) => matches!(answer.answer, WorktreeAnswerKind::Newer),
+        Message::ProposalCommand(command) => command.is_newer(),
         Message::Hello(_)
         | Message::Welcome(_)
         | Message::Error(_)
@@ -153,8 +156,12 @@ fn parse(line: &[u8]) -> Option<Result<Envelope, FrameError>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::{request, run, workspace};
-    use crate::{App, ErrorBody, Hello, Outcome, Receipt, RunEvent, RunUpdate, WorkspaceUpdate};
+    use crate::test_support::{chat, request, run, workspace};
+    use crate::{
+        AgentKind, App, ChatAction, ChatCommand, ChatEntry, ChatEvent, ChatUpdate, ErrorBody,
+        Hello, Outcome, ProposalAction, ProposalCommand, Receipt, RunEvent, RunUpdate,
+        WorkspaceUpdate,
+    };
 
     fn envelope(id: u32) -> Envelope {
         Envelope {
@@ -278,17 +285,57 @@ mod tests {
                 seq: 1,
                 change: WorkspaceChange::Newer,
             }),
+            Message::ProposalCommand(ProposalCommand {
+                request: request(),
+                workspace: workspace(),
+                action: ProposalAction::Newer,
+            }),
         ];
 
-        for message in messages {
-            let envelope = Envelope { id: 7, message };
-            assert_eq!(envelope.to_json(), Err(FrameError::Invalid), "{envelope:?}");
-            assert_eq!(
-                encode_line(&envelope),
-                Err(FrameError::Invalid),
-                "{envelope:?}"
-            );
-        }
+        messages.into_iter().for_each(never_sent);
+    }
+
+    #[test]
+    fn a_prompt_naming_an_agent_this_build_doesnt_know_is_never_sent() {
+        let messages = [
+            Message::ChatCommand(ChatCommand {
+                request: request(),
+                workspace: workspace(),
+                chat: chat(),
+                action: ChatAction::Prompt {
+                    text: "Hi".to_owned(),
+                    repo: None,
+                    machine: None,
+                    agent: Some(AgentKind::Newer),
+                },
+                by: None,
+            }),
+            Message::Chat(ChatUpdate {
+                workspace: workspace(),
+                chat: chat(),
+                entry: ChatEntry {
+                    seq: 1,
+                    event: ChatEvent::Prompt {
+                        request: request(),
+                        text: "Hi".to_owned(),
+                        repo: None,
+                        agent: Some(AgentKind::Newer),
+                    },
+                },
+            }),
+        ];
+
+        messages.into_iter().for_each(never_sent);
+    }
+
+    fn never_sent(message: Message) {
+        let envelope = Envelope { id: 7, message };
+        assert_eq!(envelope.to_json(), Err(FrameError::Invalid), "{envelope:?}");
+        assert_eq!(
+            encode_line(&envelope),
+            Err(FrameError::Invalid),
+            "{envelope:?}"
+        );
     }
 
     #[test]

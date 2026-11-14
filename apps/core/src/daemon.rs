@@ -889,6 +889,7 @@ mod tests {
         let offered = [
             code!("chat.send"),
             code!("chat.events"),
+            code!("chat.agent"),
             code!("run.stream"),
         ];
         let Message::Welcome(welcome) = &replies[0] else {
@@ -898,9 +899,8 @@ mod tests {
             assert!(welcome.capabilities.contains(&capability.into()));
         }
         // Not until chats are given worktrees.
-        for capability in [code!("diff.view"), code!("worktree.manage")] {
-            assert!(!welcome.capabilities.contains(&capability.into()));
-        }
+        let early = [code!("diff.view"), code!("worktree.manage")].map(Into::into);
+        assert!(!early.iter().any(|it| welcome.capabilities.contains(it)));
         assert_eq!(error_code(&replies[1]), Some("chat.empty_prompt"));
         assert!(matches!(&replies[2], Message::ChatAnswer(answer)
             if matches!(answer.answer, weacon_protocol::ChatAnswerKind::Snapshot { seq: 4, .. })));

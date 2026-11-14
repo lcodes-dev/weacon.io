@@ -200,7 +200,8 @@ impl Inner {
             WorktreeAction::OpenPullRequest { title, body } => {
                 self.pull_request(&found, &title, &body)
             }
-            WorktreeAction::Newer => Err(unknown()),
+            // Not offered by this core yet.
+            WorktreeAction::OpenTerminal | WorktreeAction::Newer => Err(unknown()),
         }
     }
 
@@ -527,10 +528,12 @@ mod tests {
 
         let error = bench.worktrees.diff(other).await.unwrap_err();
         assert_eq!(code(&error), "worktree.none");
-        assert_eq!(
-            code(&bench.act(Action::Newer).await.unwrap_err()),
-            "request.unknown"
-        );
+        for action in [Action::OpenTerminal, Action::Newer] {
+            assert_eq!(
+                code(&bench.act(action).await.unwrap_err()),
+                "request.unknown"
+            );
+        }
         let newer = WorktreeQuery {
             request: request(),
             workspace: bench.workspace.clone(),
