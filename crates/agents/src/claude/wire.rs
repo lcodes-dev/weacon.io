@@ -4,7 +4,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use weacon_protocol::{AgentSession, RunEvent};
 
-use crate::run::{Heard, UNSUPPORTED};
+use crate::wire::{Asked, Effect, UNSUPPORTED};
 
 /// Sent back when a person denies a tool; the agent reads it.
 const DENIED: &str = "The person declined this tool use.";
@@ -102,9 +102,9 @@ pub(crate) struct Wire {
 }
 
 impl Wire {
-    pub(crate) fn interrupt(&mut self) -> Vec<Heard> {
+    pub(crate) fn interrupt(&mut self) -> Vec<Effect> {
         self.interrupts += 1;
-        vec![Heard::Send(json!({
+        vec![Effect::Send(json!({
             "type": "control_request",
             "request_id": format!("weacon-{}", self.interrupts),
             "request": { "subtype": "interrupt" },
@@ -112,8 +112,8 @@ impl Wire {
     }
 }
 
-pub(crate) fn prompt(text: &str) -> Vec<Heard> {
-    vec![Heard::Send(json!({
+pub(crate) fn prompt(text: &str) -> Vec<Effect> {
+    vec![Effect::Send(json!({
         "type": "user",
         "message": { "role": "user", "content": text },
         "parent_tool_use_id": null,
@@ -121,45 +121,45 @@ pub(crate) fn prompt(text: &str) -> Vec<Heard> {
     }))]
 }
 
-pub(crate) fn answer(request: &Value, allow: bool, input: &Value) -> Vec<Heard> {
+pub(crate) fn answer(request: &Value, allow: bool, input: &Value) -> Vec<Effect> {
     let response = if allow {
         json!({ "behavior": "allow", "updatedInput": input })
     } else {
         json!({ "behavior": "deny", "message": DENIED })
     };
-    vec![Heard::Send(json!({
+    vec![Effect::Send(json!({
         "type": "control_response",
         "response": { "subtype": "success", "request_id": request, "response": response },
     }))]
 }
 
-pub(crate) fn read(line: &[u8]) -> Vec<Heard> {
+pub(crate) fn read(line: &[u8]) -> Vec<Effect> {
     let Ok(line) = serde_json::from_slice(line) else {
         return Vec::new();
     };
     match line {
-        Line::System(System::Init { session_id }) => vec![Heard::Started(session_id)],
+        Line::System(System::Init { session_id }) => vec![Effect::Started(session_id)],
         Line::Assistant { message } | Line::User { message } => message
             .blocks()
             .into_iter()
-            .filter_map(|block| event(block).map(Heard::Event))
+            .filter_map(|block| event(block).map(Effect::Event))
             .collect(),
-        Line::Result { subtype, is_error } => vec![Heard::Finished {
+        Line::Result { subtype, is_error } => vec![Effect::Finished {
             ok: subtype == "success" && !is_error,
         }],
         Line::ControlRequest {
             request_id,
             request: Request::CanUseTool { tool_name, input },
-        } => vec![Heard::Asked {
+        } => vec![Effect::Asked(Asked {
             request: Value::String(request_id),
             tool: tool_name,
             input,
-        }],
-        Line::ControlRequest { request_id, .. } => vec![Heard::Send(json!({
+        })],
+        Line::ControlRequest { request_id, .. } => vec![Effect::Send(json!({
             "type": "control_response",
             "response": { "subtype": "error", "request_id": request_id, "error": UNSUPPORTED },
         }))],
-        Line::ControlCancelRequest { request_id } => vec![Heard::Withdrawn {
+        Line::ControlCancelRequest { request_id } => vec![Effect::Withdrawn {
             request: Value::String(request_id),
         }],
         Line::System(System::Other) | Line::Other => Vec::new(),

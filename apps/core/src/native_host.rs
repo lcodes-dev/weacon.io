@@ -88,7 +88,13 @@ pub(crate) fn run(app: &App, origin: &str) -> Result<(), Fault> {
             )
             .because(error)
         })?;
-        relay(tokio::io::stdin(), tokio::io::stdout(), daemon, &app.log)
+        let relay = Box::pin(relay(
+            tokio::io::stdin(),
+            tokio::io::stdout(),
+            daemon,
+            &app.log,
+        ));
+        crate::reports::following(state_dir, &app.reporter, &app.log, relay)
             .await
             .map_err(|error| {
                 Fault::new(code!("native_host.failed"), "The native host stopped").because(error)

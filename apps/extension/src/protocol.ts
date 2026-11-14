@@ -98,6 +98,35 @@ export type App = {
 };
 
 /**
+ * Who asked for a command, stamped by the server on what it relays to a machine and never
+ * taken from a client. The core acts only when `account` is its owner's, and records only
+ * `member`.
+ */
+export type Asker = {
+  account: AccountId;
+  member: MemberId;
+};
+
+/**
+ * Who made a change, such as one to a task.
+ */
+export type Author = (
+  | {
+    kind: "person";
+    member: MemberId;
+  }
+  | {
+    kind: "agent";
+    owner: MemberId;
+  }
+);
+
+/**
+ * A Rust target a release is built for, such as `x86_64-unknown-linux-musl`.
+ */
+export type BuildTarget = string;
+
+/**
  * A feature a peer supports, such as `chat.send`, named like a [`Code`]. A peer keeps the ones
  * it doesn't know, so a newer peer's list still parses.
  */
@@ -112,6 +141,7 @@ export type ChallengeId = string;
 export type ChatAction = (
   | {
     kind: "prompt";
+    repo?: RepoId;
     text: string;
   }
   | {
@@ -151,6 +181,10 @@ export type ChatAnswerKind = (
  */
 export type ChatCommand = {
   action: ChatAction;
+  /**
+   * Who asked, when the server relays the command to a machine.
+   */
+  by?: Asker;
   chat: ChatId;
   request: RequestId;
   workspace: WorkspaceId;
@@ -167,6 +201,7 @@ export type ChatEntry = {
 export type ChatEvent = (
   | {
     kind: "prompt";
+    repo?: RepoId;
     request: RequestId;
     text: string;
   }
@@ -241,6 +276,16 @@ export type ClientLog = {
 export type Code = string;
 
 /**
+ * A full git commit id: 40 lowercase hex digits.
+ */
+export type Commit = string;
+
+/**
+ * A git commit, as 40 or 64 lowercase hex digits.
+ */
+export type CommitId = string;
+
+/**
  * From the core to a client that has `diff.view`, in answer to a [`DiffQuery`].
  */
 export type DiffAnswer = {
@@ -312,6 +357,95 @@ export type DiffQueryKind = (
   }
 );
 
+/**
+ * A pin for each anchor a doc links to, all computed at `commit`.
+ */
+export type DocAnchors = {
+  commit: CommitId;
+  pins: Array<DocPin>;
+};
+
+/**
+ * What one revision of a doc says: its title, its Markdown, and the anchors it links to,
+ * unless it links to none.
+ */
+export type DocContent = {
+  anchors?: DocAnchors;
+  body: string;
+  title: string;
+};
+
+/**
+ * A doc's revisions, newest first, from the server.
+ */
+export type DocHistory = {
+  revisions: Array<DocRevision>;
+};
+
+/**
+ * A doc in a workspace, 1–64 ASCII letters, digits, `-` or `_`.
+ */
+export type DocId = string;
+
+/**
+ * A workspace's docs, from the server.
+ */
+export type DocList = {
+  docs: Array<DocSummary>;
+};
+
+/**
+ * An anchor a doc links to, with the fingerprint the code had at the revision's commit:
+ * `sym:weacon_protocol::frame::encode_line#0123456789abcdef`, in printable ASCII. The core
+ * computes both; the server only checks their shape.
+ */
+export type DocPin = string;
+
+/**
+ * A doc at one revision; `version` rises with each revision. The server sends it to clients
+ * that have the capability `workspace.docs`.
+ */
+export type DocRecord = {
+  content: DocContent;
+  id: DocId;
+  version: number;
+};
+
+/**
+ * Asks the server for a new revision of a doc that the client read at `version`; the server
+ * refuses when the doc has changed since. The answer is its [`DocRecord`].
+ */
+export type DocRevise = {
+  content: DocContent;
+  version: number;
+};
+
+/**
+ * Who made one revision of a doc, who accepted it, and when, in seconds since the Unix
+ * epoch.
+ */
+export type DocRevision = {
+  accepted_by: MemberId;
+  at: number;
+  author: Author;
+  version: number;
+};
+
+/**
+ * A doc in a [`DocList`], without its body.
+ */
+export type DocSummary = {
+  id: DocId;
+  title: string;
+  version: number;
+};
+
+/**
+ * An `https://` address of printable ASCII, at most 2,048 bytes, with a plain host name and
+ * optionally a port: no user name or password.
+ */
+export type DownloadUrl = string;
+
 export type ErrorBody = {
   code: Code;
   /**
@@ -379,6 +513,53 @@ export type LineOp = (
 export type LogEvent = string;
 
 /**
+ * A machine paired with an account, 1–64 ASCII letters, digits, `-` or `_`.
+ */
+export type MachineId = string;
+
+/**
+ * A machine's public X25519 key, the static key of its sealed channels, as 64 lowercase hex
+ * digits. A browser pins it when the person confirms the pairing.
+ */
+export type MachineKey = string;
+
+/**
+ * The machines paired with the signed-in account.
+ */
+export type MachineList = {
+  machines: Array<MachineSummary>;
+};
+
+/**
+ * What a machine is called: 1–64 characters, none of them control or bidirectional
+ * formatting characters, so it shows the same wherever it is shown.
+ */
+export type MachineName = string;
+
+/**
+ * The operating system a machine runs.
+ */
+export type MachineOs = (
+  | (
+    | "macos"
+    | "linux"
+    | "windows"
+  )
+);
+
+/**
+ * A machine paired with the signed-in account, at `paired_at`, in seconds since the Unix
+ * epoch.
+ */
+export type MachineSummary = {
+  id: MachineId;
+  key: MachineKey;
+  name: MachineName;
+  os: MachineOs;
+  paired_at: number;
+};
+
+/**
  * A member of a workspace, 1–64 ASCII letters, digits, `-` or `_`.
  */
 export type MemberId = string;
@@ -406,6 +587,85 @@ export type Outcome = (
     state: "unknown";
   }
 );
+
+/**
+ * From the core that started `pairing`: whether the person has confirmed it yet. The answer
+ * is a [`PairClaimed`].
+ */
+export type PairClaim = {
+  pairing: PairingId;
+  secret: string;
+};
+
+/**
+ * The answer to a [`PairClaim`].
+ */
+export type PairClaimed = (
+  | {
+    state: "waiting";
+  }
+  | {
+    machine: MachineId;
+    owner: AccountId;
+    state: "paired";
+    token: string;
+  }
+);
+
+/**
+ * From the web app, signed in: pairs the machine waiting under `code` with the signed-in
+ * account. The answer is its [`MachineSummary`].
+ */
+export type PairConfirm = {
+  code: string;
+  pairing: PairingId;
+};
+
+/**
+ * From the web app, signed in: the machine waiting under `code`. The answer is a
+ * [`PairPending`].
+ */
+export type PairLookup = {
+  code: string;
+};
+
+/**
+ * A machine waiting to be paired, for the person to check against what its terminal shows.
+ */
+export type PairPending = {
+  key: MachineKey;
+  name: MachineName;
+  os: MachineOs;
+  pairing: PairingId;
+};
+
+/**
+ * From a core to the server, unauthenticated: starts pairing the machine. The answer is a
+ * [`PairStarted`]; the server refuses an `os` it doesn't know.
+ */
+export type PairStart = {
+  key: MachineKey;
+  name: MachineName;
+  os: MachineOs;
+};
+
+/**
+ * The answer to a [`PairStart`]: the single-use `code` the person enters in the web app, and
+ * the `secret` only the core that started may claim the machine with, until `expires_at`, in
+ * seconds since the Unix epoch.
+ */
+export type PairStarted = {
+  code: string;
+  expires_at: number;
+  pairing: PairingId;
+  secret: string;
+};
+
+/**
+ * One pairing of a machine, from its start to its claim; 1–64 ASCII letters, digits, `-`
+ * or `_`.
+ */
+export type PairingId = string;
 
 /**
  * A person's answer to a [`RunEvent::PermissionAsked`].
@@ -465,6 +725,45 @@ export type Receipt = {
     state: "unknown";
   }
 );
+
+/**
+ * One target's binary in a release.
+ */
+export type ReleaseBuild = {
+  sha256: Sha256;
+  size: number;
+  target: BuildTarget;
+  url: DownloadUrl;
+};
+
+/**
+ * A release, as its signed manifest describes it; a core reads it to update itself.
+ */
+export type ReleaseManifest = {
+  /**
+   * At most one for each target.
+   */
+  builds: Array<ReleaseBuild>;
+  commit: Commit;
+  protocol: number;
+  /**
+   * When the release was signed, in seconds since the Unix epoch, so a core can tell a
+   * manifest that is being held back from the newest one.
+   */
+  published_at: number;
+  version: ReleaseVersion;
+};
+
+/**
+ * A release's `major.minor.patch`, ordered by its numbers.
+ */
+export type ReleaseVersion = string;
+
+/**
+ * A git repository the owner registered for a workspace on their machine, 1–64 ASCII
+ * letters, digits, `-` or `_`.
+ */
+export type RepoId = string;
 
 /**
  * A command's id, chosen by the client and kept across reconnects and retries. Sending the
@@ -548,6 +847,11 @@ export type RunUpdate = {
   event: RunEvent;
   run: RunId;
 };
+
+/**
+ * A SHA-256 digest: 64 lowercase hex digits.
+ */
+export type Sha256 = string;
 
 /**
  * Trades the one-time code sent to `email` for a [`SignedIn`]. `challenge` is the one its
@@ -675,6 +979,11 @@ export type WorkspaceChange = (
   | {
     kind: "task_changed";
     task: TaskId;
+    version: number;
+  }
+  | {
+    doc: DocId;
+    kind: "doc_changed";
     version: number;
   }
 );

@@ -9,7 +9,7 @@ import { fileURLToPath } from "node:url";
 
 import { type Browser, type Page, chromium } from "playwright-core";
 
-const REPO = fileURLToPath(new URL("../../..", import.meta.url));
+export const REPO = fileURLToPath(new URL("../../..", import.meta.url));
 const PAGE = new URL("../dist/index.html", import.meta.url);
 
 /** A page open on a fake server. */
@@ -39,7 +39,28 @@ export async function start(
   { startupMs = STARTUP_MS, query = "" }: { startupMs?: number; query?: string } = {},
 ): Promise<Harness> {
   const dir = mkdtempSync(join(tmpdir(), "weacon-web-"));
-  const child = server(dir);
+  const { page, stop } = await open(dir, server(dir), (child) => firstLine(child, startupMs), (url) => `${PAGE.href}?server=${encodeURIComponent(url)}${query}`);
+  return {
+    page,
+    received: () =>
+      readFileSync(join(dir, "received.jsonl"), "utf8")
+        .split("\n")
+        .filter((line) => line !== "")
+        .map((line) => JSON.parse(line) as unknown),
+    close: stop,
+  };
+}
+
+/**
+ * Opens a browser on `href` of what `ready` reads from `child`, which runs in `dir`. `stop` closes
+ * the browser, stops `child` and removes `dir`, as happens on any failure.
+ */
+export async function open(
+  dir: string,
+  child: ChildProcess,
+  ready: (child: ChildProcess) => Promise<string>,
+  href: (found: string) => string,
+): Promise<{ page: Page; stop(): Promise<void> }> {
   let browser: Browser | undefined;
   const stop = async () => {
     await browser?.close();
@@ -47,49 +68,51 @@ export async function start(
     rmSync(dir, { recursive: true, force: true });
   };
   try {
-    const url = await firstLine(child, startupMs);
+    const found = await ready(child);
     browser = await chromium.launch();
     const page = await browser.newPage();
-    await page.goto(`${PAGE.href}?server=${encodeURIComponent(url)}${query}`);
-    return {
-      page,
-      received: () =>
-        readFileSync(join(dir, "received.jsonl"), "utf8")
-          .split("\n")
-          .filter((line) => line !== "")
-          .map((line) => JSON.parse(line) as unknown),
-      close: stop,
-    };
+    await page.goto(href(found));
+    return { page, stop };
   } catch (error) {
     await stop();
     throw error;
   }
 }
 
-// Long enough for cargo to build the fake server first.
-const STARTUP_MS = 300_000;
+// Long enough for cargo to build the server first.
+export const STARTUP_MS = 300_000;
 
-/** `child`'s first line, or a failure once `deadlineMs` passes without one, so `start` cleans up. */
-export async function firstLine(child: ChildProcess, deadlineMs = STARTUP_MS): Promise<string> {
+/**
+ * What `pick` finds in the first of `child`'s lines it accepts, at first any line; or a failure
+ * once `deadlineMs` passes without one, so `open` cleans up.
+ */
+export async function firstLine(
+  child: ChildProcess,
+  deadlineMs = STARTUP_MS,
+  pick: (line: string) => string | undefined = (line) => line,
+): Promise<string> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   const late = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => reject(new Error("the fake server didn't start in time")), deadlineMs);
+    timer = setTimeout(() => reject(new Error("the server didn't start in time")), deadlineMs);
   });
   try {
-    return await Promise.race([readFirstLine(child), late]);
+    return await Promise.race([readLine(child, pick), late]);
   } finally {
     clearTimeout(timer);
   }
 }
 
-async function readFirstLine(child: ChildProcess): Promise<string> {
+async function readLine(child: ChildProcess, pick: (line: string) => string | undefined): Promise<string> {
   if (child.stdout === null) {
-    throw new Error("the fake server has no stdout");
+    throw new Error("the server has no stdout");
   }
   for await (const line of createInterface({ input: child.stdout })) {
-    return line;
+    const found = pick(line);
+    if (found !== undefined) {
+      return found;
+    }
   }
-  throw new Error("the fake server exited before it listened");
+  throw new Error("the server exited before it listened");
 }
 
 /** Polls until `done`; fails after `deadlineMs`. */

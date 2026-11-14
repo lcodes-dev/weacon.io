@@ -23,8 +23,10 @@ use crate::limit::Limit;
 use crate::mail::Outbox;
 use crate::secret::Secret;
 use crate::sign_in;
+use crate::sign_up::SignUp;
 use crate::tasks;
 use crate::web::{self, WebFile};
+use crate::workspaces;
 
 const REQUEST_ID: &str = "x-request-id";
 const GRACE: Duration = Duration::from_secs(10);
@@ -70,6 +72,8 @@ pub(crate) struct Shared {
     pub(crate) starts: Arc<Limit>,
     /// How many codes each client may try.
     pub(crate) tries: Arc<Limit>,
+    /// Who may make an account by signing in.
+    pub(crate) sign_up: Arc<[SignUp]>,
     /// The web app's built files it serves.
     pub(crate) web: &'static [WebFile],
 }
@@ -129,6 +133,11 @@ fn router(shared: Shared) -> Router {
         .route("/api/sign-in/finish", post(sign_in::finish))
         .route("/api/session", get(sign_in::session))
         .route("/api/sign-out", post(sign_in::sign_out))
+        .route(
+            "/api/workspaces",
+            get(workspaces::list).post(workspaces::create),
+        )
+        .route("/api/workspaces/{workspace}", get(workspaces::read))
         .route("/api/workspaces/{workspace}/feed", get(feed::feed))
         .route(
             "/api/workspaces/{workspace}/tasks",
@@ -140,6 +149,7 @@ fn router(shared: Shared) -> Router {
         )
         .merge(web::routes(shared.web))
         .layer(DefaultBodyLimit::max(MAX_BODY))
+        .layer(middleware::map_response(uncached))
         .layer(middleware::from_fn(in_time))
         .layer(middleware::from_fn_with_state(shared.clone(), log_request))
         .with_state(shared)
@@ -147,6 +157,15 @@ fn router(shared: Shared) -> Router {
 
 async fn version(State(shared): State<Shared>) -> impl IntoResponse {
     ([(header::CACHE_CONTROL, "no-store")], Json(shared.app))
+}
+
+/// Keeps every answer out of caches unless its handler says otherwise: most are one person's.
+async fn uncached(mut response: Response) -> Response {
+    response
+        .headers_mut()
+        .entry(header::CACHE_CONTROL)
+        .or_insert(HeaderValue::from_static("no-store"));
+    response
 }
 
 /// Answers that the request took too long, when it has: a body that never comes, for one.
@@ -192,6 +211,11 @@ async fn log_request(State(shared): State<Shared>, request: Request, next: Next)
 /// Answers that the client must sign in, or try again, with `code`.
 pub(crate) fn refused(code: Code) -> Response {
     error(StatusCode::UNAUTHORIZED, code, false)
+}
+
+/// Answers that the request's body isn't one the server can take, with `code`.
+pub(crate) fn invalid(code: Code) -> Response {
+    error(StatusCode::UNPROCESSABLE_ENTITY, code, false)
 }
 
 /// Answers that the request isn't from the server's own pages.
