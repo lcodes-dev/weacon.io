@@ -8,7 +8,7 @@ use serde::de::DeserializeOwned;
 use weacon_agents::SpawnPolicy;
 use weacon_appkit::{RotatingFile, root_logger};
 use weacon_observability::{Deliver, Fault, Field, Level, Logger, Reports, Sink, json_lines, tee};
-use weacon_protocol::code;
+use weacon_protocol::{AgentKind, code};
 use weacon_version::Version;
 
 use crate::platform::{self, Env};
@@ -24,6 +24,8 @@ pub(crate) struct App {
     pub(crate) spawn: SpawnPolicy,
     /// The person's `PATH`, where their agents' programs are found.
     pub(crate) path: Option<OsString>,
+    /// The person's own config folder for each agent, outside every workspace.
+    pub(crate) agent_homes: Vec<(AgentKind, PathBuf)>,
 }
 
 /// The outside world an [`App`] starts from; `main` passes the real one.
@@ -73,6 +75,7 @@ impl App {
             log_file,
             spawn: platform::spawn_policy(setup.env),
             path: (setup.env)("PATH"),
+            agent_homes: platform::agent_homes(setup.env),
         }
     }
 

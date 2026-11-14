@@ -12,8 +12,8 @@ use weacon_agents::SpawnPolicy;
 pub(crate) use weacon_appkit::build;
 use weacon_observability::{Fault, Field, Logger};
 use weacon_protocol::{
-    App, ChatAnswer, ChatCommand, ChatQuery, Envelope, LineDecoder, Message, Outcome, Pick,
-    Receipt, code, encode_line,
+    App, ChatAnswer, ChatCommand, ChatQuery, Envelope, FrameError, LineDecoder, Message, Outcome,
+    Pick, Receipt, code, encode_line,
 };
 
 use crate::chats::feed::{self, Client};
@@ -21,6 +21,7 @@ use crate::chats::{self, Chats, Places};
 use crate::disk;
 use crate::mcp;
 use crate::memory;
+use crate::outside::Outside;
 use crate::picks::{KeepError, Picks};
 use crate::platform::{self, Listener, Owner, Stream};
 use crate::session::{Reply, Session};
@@ -54,6 +55,7 @@ pub(crate) fn run(app: &crate::app::App) -> Result<(), Fault> {
                 path: app.path.clone(),
                 work_root: app.work_root.clone(),
                 mcp: None,
+                agent_homes: app.agent_homes.clone(),
             },
             app.log.clone(),
         )?;
@@ -68,6 +70,7 @@ struct Shared {
     app: App,
     picks: Picks,
     chats: Chats,
+    outside: Outside,
     log: Logger,
 }
 
@@ -120,6 +123,7 @@ impl Daemon {
         {
             return Err(failed(error));
         }
+        let outside = Outside::new(places.agent_homes.clone(), state_dir);
         let (mcp, mcp_server) = mcp::start(&app, &log)?;
         places.mcp = Some(mcp);
         let (chats, engine) = chats::start(state_dir, places, app.clone(), spawn, log.clone())?;
@@ -134,6 +138,7 @@ impl Daemon {
                 app,
                 picks: Picks::new(state_dir),
                 chats,
+                outside,
                 log,
             },
             disk: disk::Watch::new(state_dir.to_owned(), platform::free_space),
@@ -261,16 +266,8 @@ async fn answer(
     } = connection;
     for received in decoder.push(bytes) {
         let limit = (!session.greeted()).then_some(deadline);
-        if let Ok(Envelope {
-            message: Message::Error(body),
-            ..
-        }) = &received
-            && session.greeted()
-        {
-            let code = body.code.as_str().into();
-            shared
-                .log
-                .warn("client reported an error", &[("code", code)]);
+        if session.greeted() {
+            warn_reported(&shared.log, &received);
         }
         let reply = match received {
             Ok(Envelope {
@@ -285,6 +282,10 @@ async fn answer(
                 id,
                 message: Message::ChatQuery(query),
             }) if session.greeted() => query_chat(shared, id, query, client).await,
+            Ok(Envelope {
+                id,
+                message: Message::SessionsQuery(query),
+            }) if session.greeted() => shared.outside.reply(id, query, &shared.log).await,
             received => session.answer(received, &shared.app),
         };
         if let Some(envelope) = reply.envelope
@@ -300,6 +301,17 @@ async fn answer(
         }
     }
     Ok(true)
+}
+
+fn warn_reported(log: &Logger, received: &Result<Envelope, FrameError>) {
+    if let Ok(Envelope {
+        message: Message::Error(body),
+        ..
+    }) = received
+    {
+        let code = body.code.as_str().into();
+        log.warn("client reported an error", &[("code", code)]);
+    }
 }
 
 // The reply to a chat command: nothing when it was taken, since its receipts are events in the
@@ -837,6 +849,46 @@ mod tests {
         assert!(logged.contains("chat request refused"), "{logged}");
         assert!(logged.contains("r-1"), "{logged}");
         assert!(!logged.contains("MARKER"), "{logged}");
+    }
+
+    #[tokio::test]
+    async fn the_owner_lists_the_sessions_run_outside_weacon_through_the_socket() {
+        use weacon_protocol::{
+            AgentKind, MachineId, RequestId, SessionsAnswerKind, SessionsQuery, SessionsQueryKind,
+        };
+
+        let dir = TempDir::new().unwrap();
+        let project = dir.join("claude").join("projects").join("-work");
+        fs::create_dir_all(&project).unwrap();
+        fs::write(
+            project.join("0b7c6a52-3f1e-4d2a-9c8b-5e4f3a2b1c0d.jsonl"),
+            "",
+        )
+        .unwrap();
+        let homes = vec![(AgentKind::Claude, dir.join("claude"))];
+        let outside = Outside::new(homes, &dir.join("state"));
+        let state = dir.join("state");
+        let running = start_as(&state, |daemon| daemon.shared.outside = outside).unwrap();
+        let query = SessionsQuery {
+            request: RequestId::try_from("r-1".to_owned()).unwrap(),
+            machine: MachineId::try_from("mc-1".to_owned()).unwrap(),
+            query: SessionsQueryKind::List,
+            by: None,
+        };
+        let line = encode_line(&Envelope {
+            id: 2,
+            message: Message::SessionsQuery(query),
+        })
+        .unwrap();
+
+        let bytes = [hello(PROTOCOL), line].concat();
+        let (replies, _stream) = exchange(connect(&running.socket).await, &bytes, 2).await;
+        running.stop().await;
+
+        assert!(matches!(&replies[0], Message::Welcome(welcome)
+            if welcome.capabilities.contains(&code!("sessions.read").into())));
+        assert!(matches!(&replies[1], Message::SessionsAnswer(answer)
+            if matches!(&answer.answer, SessionsAnswerKind::List { sessions } if sessions.len() == 1)));
     }
 
     #[tokio::test]

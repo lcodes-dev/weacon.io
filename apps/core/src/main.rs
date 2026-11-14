@@ -19,6 +19,7 @@ mod mcp;
 mod memory;
 mod names;
 mod native_host;
+mod outside;
 mod picks;
 mod platform;
 mod reports;

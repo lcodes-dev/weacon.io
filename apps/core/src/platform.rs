@@ -1,6 +1,8 @@
 use std::ffi::OsString;
 use std::path::PathBuf;
 
+use weacon_protocol::AgentKind;
+
 mod chrome;
 mod procs;
 mod programs;
@@ -85,6 +87,23 @@ pub(crate) fn work_root(env: Env<'_>) -> Option<PathBuf> {
     home_dir(env).map(|home| home.join("Weacon"))
 }
 
+/// The person's own config folder for each agent, as the vendor's own tool finds it.
+pub(crate) fn agent_homes(env: Env<'_>) -> Vec<(AgentKind, PathBuf)> {
+    let home = |key, fallback| {
+        var(env, key)
+            .map(PathBuf::from)
+            .filter(|dir| dir.is_absolute())
+            .or_else(|| home_dir(env).map(|home| home.join(fallback)))
+    };
+    [
+        (AgentKind::Claude, home("CLAUDE_CONFIG_DIR", ".claude")),
+        (AgentKind::Codex, home("CODEX_HOME", ".codex")),
+    ]
+    .into_iter()
+    .filter_map(|(agent, dir)| Some((agent, dir?)))
+    .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use weacon_testing::TempDir;
@@ -106,6 +125,32 @@ mod tests {
         );
         assert_eq!(home_dir(&vars), Some(PathBuf::from(r"C:\Users\ada")));
         assert_eq!(state_dir(&env(&[])), None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn each_agents_own_folder_is_where_its_tool_looks() {
+        let set = env(&[
+            ("HOME", "/home/ada"),
+            ("CLAUDE_CONFIG_DIR", "/srv/claude"),
+            ("CODEX_HOME", "relative"),
+        ]);
+
+        assert_eq!(
+            agent_homes(&set),
+            [
+                (AgentKind::Claude, PathBuf::from("/srv/claude")),
+                (AgentKind::Codex, PathBuf::from("/home/ada/.codex")),
+            ]
+        );
+        assert_eq!(
+            agent_homes(&env(&[("HOME", "/home/ada")])),
+            [
+                (AgentKind::Claude, PathBuf::from("/home/ada/.claude")),
+                (AgentKind::Codex, PathBuf::from("/home/ada/.codex")),
+            ]
+        );
+        assert_eq!(agent_homes(&env(&[])), []);
     }
 
     #[cfg(unix)]

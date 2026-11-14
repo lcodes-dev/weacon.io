@@ -11,7 +11,7 @@ use weacon_protocol::{
 };
 
 use crate::sessions::{Files, SessionFile, find};
-use crate::transcript::{Said, Transcript};
+use crate::transcript::{Step, Transcript};
 
 /// How much of a file, 64 KiB, is read for the folder it names.
 const HEAD: u64 = 65_536;
@@ -56,15 +56,15 @@ pub fn list(files: &impl Files, dirs: &[(AgentKind, &Path)], limit: usize) -> Ve
         .iter()
         .flat_map(|(agent, dir)| find(files, *agent, dir))
         .collect();
-    found.sort_by_key(|file| Reverse(file.modified()));
+    found.sort_by_key(|file| Reverse(file.modified));
     found
         .iter()
         .take(limit)
         .map(|file| OutsideSession {
-            agent: file.agent(),
-            session: file.session().clone(),
+            agent: file.agent,
+            session: file.session.clone(),
             folder: folder(files, file),
-            modified_at: seconds(file.modified()),
+            modified_at: seconds(file.modified),
         })
         .collect()
 }
@@ -84,22 +84,22 @@ pub fn open(
 ) -> Option<io::Result<(Vec<ChatEntry>, bool)>> {
     let file = find(files, agent, dir)
         .into_iter()
-        .find(|file| file.session() == session)?;
+        .find(|file| file.session == *session)?;
     let run = RunId::try_from(session.as_str().to_owned()).ok()?;
     Some(file.read(files, 0, WHOLE).map(|bytes| {
-        let said = Transcript::read(agent, &bytes).map(|read| read.said);
-        page(&run, said.unwrap_or_default(), after, budget)
+        let steps = Transcript::read(agent, &bytes).map(|read| read.steps);
+        page(&run, steps.unwrap_or_default(), after, budget)
     }))
 }
 
-fn page(run: &RunId, said: Vec<Said>, after: u64, budget: usize) -> (Vec<ChatEntry>, bool) {
+fn page(run: &RunId, steps: Vec<Step>, after: u64, budget: usize) -> (Vec<ChatEntry>, bool) {
     let mut events = Vec::new();
     let mut used = 0;
-    let later = (1..).zip(said).skip_while(|(seq, _)| *seq <= after);
-    for (seq, said) in later {
+    let later = (1..).zip(steps).skip_while(|(seq, _)| *seq <= after);
+    for (seq, step) in later {
         let entry = ChatEntry {
             seq,
-            event: event(run, said),
+            event: event(run, step),
         };
         let size = serde_json::to_vec(&entry).map_or(usize::MAX, |json| json.len());
         if size > budget {
@@ -114,10 +114,10 @@ fn page(run: &RunId, said: Vec<Said>, after: u64, budget: usize) -> (Vec<ChatEnt
     (events, false)
 }
 
-fn event(run: &RunId, said: Said) -> ChatEvent {
-    match said {
-        Said::Prompt(text) => ChatEvent::OutsidePrompt { text },
-        Said::Event(event) => ChatEvent::Run {
+fn event(run: &RunId, step: Step) -> ChatEvent {
+    match step {
+        Step::Prompt(text) => ChatEvent::OutsidePrompt { text },
+        Step::Event(event) => ChatEvent::Run {
             update: RunUpdate {
                 run: run.clone(),
                 event,
@@ -128,7 +128,7 @@ fn event(run: &RunId, said: Said) -> ChatEvent {
 
 fn folder(files: &impl Files, file: &SessionFile) -> Option<String> {
     let head = file.read(files, 0, HEAD).ok()?;
-    let cwd = Transcript::read(file.agent(), &head)?.cwd?;
+    let cwd = Transcript::read(file.agent, &head)?.cwd?;
     cwd.to_str().map(str::to_owned)
 }
 

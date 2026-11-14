@@ -48,6 +48,7 @@ pub(crate) fn app(state_dir: Option<&Path>, log_file: Option<&Path>) -> App {
         log_file: log_file.map(Path::to_path_buf),
         spawn: weacon_agents::SpawnPolicy::default(),
         path: None,
+        agent_homes: Vec::new(),
     }
 }
 
