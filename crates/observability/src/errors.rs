@@ -74,52 +74,13 @@ impl ErrorInfo {
     }
 }
 
-/// Lets [`Field::error`](crate::Field::error) take a sized error or a `dyn Error`.
-pub trait AsError {
-    fn as_error(&self) -> &(dyn Error + 'static);
-
-    /// The error's type, when it is known.
-    fn type_path(&self) -> Option<String>;
-}
-
-impl<E: Error + 'static> AsError for E {
-    fn as_error(&self) -> &(dyn Error + 'static) {
-        self
-    }
-
-    fn type_path(&self) -> Option<String> {
-        Some(type_path::<E>())
-    }
-}
-
-impl AsError for dyn Error + 'static {
-    fn as_error(&self) -> &(dyn Error + 'static) {
-        self
-    }
-
-    fn type_path(&self) -> Option<String> {
-        None
-    }
-}
-
-impl AsError for dyn Error + Send + Sync + 'static {
-    fn as_error(&self) -> &(dyn Error + 'static) {
-        self
-    }
-
-    fn type_path(&self) -> Option<String> {
-        None
-    }
-}
-
 /// Describes an error without its message, which can hold paths and input; only a [`Fault`]
 /// keeps its own.
-pub(crate) fn describe_error<E: AsError + ?Sized>(error: &E) -> ErrorInfo {
-    let mut info = describe(error.as_error(), 0);
-    if let Some(name) = error.type_path() {
-        info.name = Some(name);
+pub(crate) fn describe_error<E: Error + 'static>(error: &E) -> ErrorInfo {
+    ErrorInfo {
+        name: Some(type_path::<E>()),
+        ..describe(error, 0)
     }
-    info
 }
 
 fn describe(error: &(dyn Error + 'static), depth: usize) -> ErrorInfo {
@@ -141,7 +102,7 @@ fn describe(error: &(dyn Error + 'static), depth: usize) -> ErrorInfo {
 }
 
 // Generic arguments can name user types in odd places and add nothing to a report.
-fn type_path<T: ?Sized>() -> String {
+fn type_path<T>() -> String {
     let name = std::any::type_name::<T>();
     name.split('<').next().unwrap_or(name).to_owned()
 }
@@ -197,19 +158,6 @@ mod tests {
         assert_eq!(cause.name.as_deref(), Some("std::io::error::Error"));
         assert_eq!(cause.kind.as_deref(), Some("NotFound"));
         assert_eq!(cause.message, None);
-    }
-
-    #[test]
-    fn describes_boxed_errors_by_what_they_hold() {
-        let boxed: Box<dyn Error + Send + Sync> =
-            Box::new(Fault::new(STORE_FULL, "The store is full"));
-        let info = describe_error(&*boxed);
-
-        assert_eq!(
-            info.name.as_deref(),
-            Some("weacon_observability::errors::Fault")
-        );
-        assert_eq!(info.message, Some("The store is full"));
     }
 
     #[test]

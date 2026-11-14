@@ -1,8 +1,9 @@
+use std::error::Error;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use weacon_protocol::Code;
 
-use crate::{AsError, Clock, Fault, Field, Logger, Reports, Upload};
+use crate::{Clock, Fault, Field, Logger, Reports, Upload};
 
 /// Delivers one report; the real one POSTs it, tests record it.
 pub type Deliver = Box<dyn Fn(&Upload) -> Result<(), Fault> + Send + Sync>;
@@ -56,7 +57,7 @@ impl Reporter {
     }
 
     /// Reports `error` under `code`; a report that can't be sent is logged and dropped.
-    pub fn capture_error<E: AsError + ?Sized>(&self, error: &E, code: &Code, log: &Logger) {
+    pub fn capture_error<E: Error + 'static>(&self, error: &E, code: &Code, log: &Logger) {
         let Some(reports) = self.reports.as_ref().filter(|_| self.agreed()) else {
             return;
         };
