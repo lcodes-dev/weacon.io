@@ -12,6 +12,7 @@ use weacon_observability::Fault;
 use weacon_protocol::{AccessLevel, AgentKind, AgentSession, App, RunId, code};
 
 use crate::access::Rules;
+use crate::platform;
 use crate::run::{self, AgentRun};
 use crate::spawn::SpawnPolicy;
 use crate::terminal::{Events, Size, Terminal};
