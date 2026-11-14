@@ -24,37 +24,40 @@ const NAMED: usize = 5;
 /// Lines that stop before the budget, then say how many were left out; that last line is kept
 /// even when the budget is smaller than it.
 struct Text {
-    out: String,
+    lines: Vec<String>,
     budget: usize,
-    left_out: usize,
 }
 
 impl Text {
-    fn new(budget: usize) -> Self {
+    const fn new(budget: usize) -> Self {
         Self {
-            out: String::new(),
+            lines: Vec::new(),
             budget,
-            left_out: 0,
         }
     }
 
     fn line(&mut self, line: &str) {
-        let fits = self.out.len() + line.len() + 1 + TAIL <= self.budget;
-        if self.left_out == 0 && fits {
-            self.out.push_str(line);
-            self.out.push('\n');
-        } else {
-            self.left_out += 1;
-        }
+        self.lines.push(format!("{line}\n"));
     }
 
-    fn finish(mut self) -> String {
-        if self.left_out > 0 {
-            let lines = if self.left_out == 1 { "line" } else { "lines" };
-            let tail = format!("… {} more {lines}\n", self.left_out);
-            self.out.push_str(&tail);
+    /// Every line when they all fit; else the first ones that fit beside the last line.
+    fn finish(self) -> String {
+        let all: usize = self.lines.iter().map(String::len).sum();
+        if all <= self.budget {
+            return self.lines.concat();
         }
-        self.out
+        let mut out = String::new();
+        let mut kept = 0;
+        for line in &self.lines {
+            if out.len() + line.len() + TAIL > self.budget {
+                break;
+            }
+            out.push_str(line);
+            kept += 1;
+        }
+        let left_out = self.lines.len() - kept;
+        let lines = if left_out == 1 { "line" } else { "lines" };
+        out + &format!("… {left_out} more {lines}\n")
     }
 }
 
@@ -227,7 +230,9 @@ impl Index {
         text.line("Entry points:");
         for node in nodes(&self.crates) {
             let file = &node.module.file;
-            let binary = file.ends_with("src/main.rs") || file.contains("/src/bin/");
+            let binary = file.ends_with("src/main.rs")
+                || file.starts_with("src/bin/")
+                || file.contains("/src/bin/");
             let main = node
                 .module
                 .symbols
@@ -297,6 +302,30 @@ mod tests {
     }
 
     #[test]
+    fn lists_every_binary() {
+        let index = index(&files(&[
+            ("Cargo.toml", "[package]\nname = \"root\"\n"),
+            ("src/lib.rs", "pub fn main() {}\n"),
+            ("src/bin/tool.rs", "fn main() {}\n"),
+            ("app/Cargo.toml", "[package]\nname = \"app\"\n"),
+            ("app/src/bin/other.rs", "fn main() {}\n"),
+        ]))
+        .unwrap();
+        let found = index.start_here(10_000);
+        let mains: Vec<&str> = found
+            .lines()
+            .filter(|line| line.starts_with("- main of"))
+            .collect();
+        assert_eq!(
+            mains,
+            [
+                "- main of root  src/bin/tool.rs:1",
+                "- main of app  app/src/bin/other.rs:1"
+            ]
+        );
+    }
+
+    #[test]
     fn starts_with_entry_points_then_central_items() {
         assert_eq!(
             repo().start_here(10_000),
@@ -332,15 +361,28 @@ mod tests {
     }
 
     #[test]
-    fn keeps_a_line_that_just_fits() {
-        let line = "twelve bytes";
-        let fits = line.len() + 1 + TAIL;
-        let mut text = Text::new(fits);
-        text.line(line);
-        assert_eq!(text.finish(), "twelve bytes\n");
-        let mut text = Text::new(fits - 1);
-        text.line(line);
-        assert_eq!(text.finish(), "… 1 more line\n");
+    fn keeps_whole_answers_that_fit_and_cuts_the_rest_before_its_tail() {
+        let line = "a line of twenty-six bytes";
+        let text = |budget: usize, lines: usize| {
+            let mut text = Text::new(budget);
+            (0..lines).for_each(|_| text.line(line));
+            text.finish()
+        };
+        assert_eq!(text(line.len() + 1, 1), "a line of twenty-six bytes\n");
+        assert_eq!(
+            text(3 * (line.len() + 1), 3),
+            "a line of twenty-six bytes\n".repeat(3)
+        );
+        let first_and_tail = line.len() + 1 + TAIL;
+        assert_eq!(
+            text(first_and_tail, 3),
+            "a line of twenty-six bytes\n… 2 more lines\n"
+        );
+        assert_eq!(text(first_and_tail - 1, 2), "… 2 more lines\n");
+        assert_eq!(
+            text(first_and_tail, 2),
+            "a line of twenty-six bytes\n… 1 more line\n"
+        );
     }
 
     #[test]

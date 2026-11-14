@@ -5,7 +5,8 @@ use crate::paths;
 use crate::refs::refs;
 use crate::syntax::{attributes, line, text};
 
-/// The `#[test]` functions in `item`, a test-only item, each read as if written in `place`.
+/// The `#[test]` functions in `item`, a test-only item or a test, each read where it is
+/// written, with the `use`s of the module it is in.
 pub(super) fn tests(item: Node<'_>, place: &Place, source: &[u8]) -> Vec<Item> {
     let mut found = Vec::new();
     let mut modules = vec![(item, place.clone(), Vec::new())];
@@ -22,7 +23,7 @@ pub(super) fn tests(item: Node<'_>, place: &Place, source: &[u8]) -> Vec<Item> {
                 };
                 let mut cursor = body.walk();
                 let children: Vec<Node<'_>> = body.named_children(&mut cursor).collect();
-                let mut imports = imports.clone();
+                let mut imports = Vec::new();
                 for child in children
                     .iter()
                     .filter(|child| child.kind() == "use_declaration")
@@ -54,9 +55,12 @@ pub(super) fn tests(item: Node<'_>, place: &Place, source: &[u8]) -> Vec<Item> {
     found
 }
 
-fn is_test(function: Node<'_>, source: &[u8]) -> bool {
+/// Whether `function` has `#[test]`, or a test attribute such as `#[tokio::test(...)]`.
+pub(super) fn is_test(function: Node<'_>, source: &[u8]) -> bool {
     attributes(function).any(|node| {
         let attribute: String = text(node, source).split_whitespace().collect();
-        attribute == "#[test]" || attribute.ends_with("::test]")
+        let inner = attribute.strip_prefix("#[").unwrap_or_default();
+        let path = inner.split(['(', ']']).next().unwrap_or_default();
+        path == "test" || path.ends_with("::test")
     })
 }

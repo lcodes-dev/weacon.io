@@ -187,9 +187,11 @@ impl<'a> Scope<'a> {
         let (to, true) = self.path(&spot, &implemented.trait_path)? else {
             return None;
         };
-        let here = inside(module, &implemented.within);
-        (self.ids.get(&to) == Some(&Kind::Trait)).then(|| Edge {
-            from: self.owner(krate, &here, &implemented.owner),
+        let (from, true) = self.path(&spot, &implemented.owner_path)? else {
+            return None;
+        };
+        (self.ids.get(&to) == Some(&Kind::Trait)).then_some(Edge {
+            from,
             to,
             kind: EdgeKind::Implements,
         })
@@ -275,6 +277,16 @@ impl<'a> Scope<'a> {
         let (krate, segments) = absolute(&self.crates, spot.krate, here, segments);
         if let Some(exact) = self.find(krate, &segments, HOPS) {
             return Some((exact, true));
+        }
+        // `model::X::run` names the method its type's `impl` declares, wherever that is written.
+        if let Some((name, owner)) = segments.split_last()
+            && let Some(owner) = self.find(krate, owner, HOPS)
+            && let Some((_, method)) = self
+                .methods
+                .get(name)
+                .and_then(|methods| methods.iter().find(|(of, _)| *of == owner))
+        {
+            return Some((method.clone(), true));
         }
         // Only what was written is dropped from the end: never the module it was written in.
         let shortest = (segments.len() + 1).saturating_sub(path.len()).max(1);
@@ -571,18 +583,37 @@ mod tests {
             ("a/src/lib.rs", "mod store;\npub fn keep() {}\n"),
             (
                 "a/src/store.rs",
-                "pub fn keep() {}\npub fn other() {}\n#[cfg(test)]\nmod tests {\n use super::*;\n\
-                 fn helper() {}\n #[test]\n fn named() { super::keep(); }\n #[test]\n fn bare() { other(); }\n\
+                "pub fn keep() {}\npub fn other() {}\n#[test]\nfn alone() { keep(); }\n#[cfg(test)]\nmod tests {\n use super::*;\n\
+                 use super::other as kept;\n fn helper() {}\n #[test]\n fn named() { super::keep(); }\n\
+                 #[tokio::test(flavor = \"current_thread\")]\n async fn bare() { other(); }\n\
                  mod inner { use super::super::keep as kept;\n #[test]\n fn deep() { kept(); } }\n}\n",
             ),
         ]);
         assert_eq!(
             found,
             [
+                "a::store::alone Tests a::store::keep",
                 "a::store::tests::bare Tests a::store::other",
                 "a::store::tests::inner::deep Tests a::store::keep",
                 "a::store::tests::named Tests a::store::keep",
             ]
+        );
+    }
+
+    #[test]
+    fn qualified_types_keep_their_module() {
+        let found = edges(&[
+            ("a/Cargo.toml", CRATE_A),
+            (
+                "a/src/lib.rs",
+                "mod model;\nuse model::X;\npub struct S;\npub trait Tr {}\nimpl Tr for model::S {}\n\
+                 impl X { pub fn run() {} }\nfn call() { model::X::run(); }\n",
+            ),
+            ("a/src/model.rs", "pub struct X;\npub struct S;\n"),
+        ]);
+        assert_eq!(
+            found,
+            ["a::call Calls a::X::run", "a::model::S Implements a::Tr"]
         );
     }
 
