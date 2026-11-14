@@ -76,8 +76,7 @@ const CHECKS: { [T in Incoming["type"]]: (fields: Fields) => boolean } = {
   error: (fields) => text(fields, "code"),
   receipt: (fields) => text(fields, "request") && text(fields, "state"),
   run: (fields) => text(fields, "run") && isRunEvent(fields["event"]),
-  // The answer itself is checked where the chat's changes take it.
-  diff_answer: (fields) => text(fields, "request") && text(fields, "workspace") && text(fields, "chat"),
+  diff_answer: (fields) => text(fields, "request") && text(fields, "workspace") && text(fields, "chat") && isDiffAnswer(fields["answer"]),
   chat: (fields) => text(fields, "workspace") && text(fields, "chat") && isEntry(fields["entry"]),
   chat_answer: (fields) => text(fields, "workspace") && text(fields, "chat") && isChatAnswer(fields["answer"]),
   workspace: (fields) => text(fields, "workspace") && Number.isSafeInteger(fields["seq"]) && isChange(fields["change"]),
@@ -235,6 +234,57 @@ function isMachineSettingsAnswer(answer: unknown): boolean {
     signIns.every((signIn: unknown) => {
       const one = signIn as Fields | null;
       return typeof one === "object" && one !== null && text(one, "agent") && text(one, "state");
+    })
+  );
+}
+
+// An answer of a kind this app reads has every field the diff view reads; others are dropped.
+function isDiffAnswer(answer: unknown): boolean {
+  const fields = record(answer);
+  if (fields?.["kind"] === "unchanged") {
+    return true;
+  }
+  const file = record(fields?.["file"]);
+  const files = fields?.["files"];
+  return (
+    fields?.["kind"] === "file" &&
+    typeof files === "number" &&
+    Number.isSafeInteger(files) &&
+    files >= 1 &&
+    typeof file?.["path"] === "string" &&
+    isFileChange(file["change"]) &&
+    isContent(file["content"])
+  );
+}
+
+function isFileChange(change: unknown): boolean {
+  const fields = record(change);
+  const kind = fields?.["kind"];
+  return typeof kind === "string" && (kind !== "renamed" || typeof fields?.["from"] === "string");
+}
+
+function isContent(content: unknown): boolean {
+  const fields = record(content);
+  switch (fields?.["kind"]) {
+    case "text": {
+      const hunks = fields["hunks"];
+      return Array.isArray(hunks) && hunks.every(isHunk);
+    }
+    default:
+      return typeof fields?.["kind"] === "string";
+  }
+}
+
+function isHunk(hunk: unknown): boolean {
+  const fields = record(hunk);
+  const lines = fields?.["lines"];
+  return (
+    Number.isSafeInteger(fields?.["old_start"]) &&
+    Number.isSafeInteger(fields?.["new_start"]) &&
+    Array.isArray(lines) &&
+    lines.every((line) => {
+      const parts = record(line);
+      return typeof parts?.["op"] === "string" && typeof parts["text"] === "string";
     })
   );
 }

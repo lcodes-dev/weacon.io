@@ -239,3 +239,46 @@ test("a machine's settings answer passes with the fields the page reads, and a n
   }
   assert.equal(parse(frame({ id: 6, type: "machine_settings_answer", request: "r-1", workspace: "w-1", answer: current })), undefined);
 });
+
+test("a diff answer passes only with every field the diff view reads", () => {
+  const file = (path: string) => ({
+    path,
+    change: { kind: "modified" },
+    content: { kind: "text", hunks: [{ old_start: 3, new_start: 5, lines: [{ op: "added", text: "d", no_newline: true }] }] },
+  });
+  const answer = (body: unknown) =>
+    JSON.stringify({ id: 0, type: "diff_answer", request: "q-1", workspace: "w-1", chat: "c-1", answer: body });
+  const text = (hunks: unknown) => ({ kind: "file", files: 1, file: { path: "a", change: { kind: "added" }, content: { kind: "text", hunks } } });
+  const malformed = [
+    "nope",
+    null,
+    { kind: "file", files: "1", file: file("a.rs") },
+    { kind: "file", files: 1.5, file: file("a.rs") },
+    { kind: "file", files: 0, file: file("a.rs") },
+    { kind: "file", files: 1, file: { ...file("a.rs"), path: 7 } },
+    { kind: "file", files: 1, file: { ...file("a.rs"), change: { kind: "renamed" } } },
+    { kind: "file", files: 1, file: { ...file("a.rs"), change: "added" } },
+    { kind: "file", files: 1, file: { ...file("a.rs"), content: { hunks: [] } } },
+    text("none"),
+    text([{ old_start: 1, new_start: "1", lines: [] }]),
+    text([{ old_start: "1", new_start: 1, lines: [] }]),
+    text([{ old_start: 1, new_start: 1, lines: "none" }]),
+    text([{ old_start: 1, new_start: 1, lines: [{ op: "added" }] }]),
+    text([{ old_start: 1, new_start: 1, lines: [{ text: "x" }] }]),
+    text([{ old_start: 1, new_start: 1, lines: [null] }]),
+  ];
+
+  const good = [
+    { kind: "unchanged" },
+    { kind: "file", files: 2, file: file("a.rs") },
+    { kind: "file", files: 1, file: { ...file("b.rs"), change: { kind: "renamed", from: "a.rs" } } },
+    { kind: "file", files: 1, file: { ...file("c.rs"), change: { kind: "copied" }, content: { kind: "symlink" } } },
+  ];
+
+  for (const body of good) {
+    assert.notEqual(parse(answer(body)), undefined, JSON.stringify(body));
+  }
+  for (const body of malformed) {
+    assert.equal(parse(answer(body)), undefined, JSON.stringify(body));
+  }
+});
