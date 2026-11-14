@@ -273,7 +273,7 @@ impl Runs {
         let not_saved = || Fault::new(code!("runs.not_saved"), "The runs journal can't be saved");
         let json = stored(&next).map_err(|error| not_saved().because(error))?;
         let path = self.path.clone();
-        blocking(move || weacon_appkit::write_whole(&path, &json))
+        blocking(move || weacon_appkit::write_private(&path, &json))
             .await
             .map_err(|error| not_saved().because(error))?;
         self.journal = next;
@@ -609,5 +609,22 @@ mod tests {
         let runs = Runs::load(&dir).unwrap();
 
         assert!(!format!("{runs:?}").contains("Hi"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn the_journal_is_readable_only_by_its_user() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = TempDir::new().unwrap();
+        let mut runs = Runs::load(&dir).unwrap();
+
+        begin(&mut runs, "c-1").await;
+
+        let mode = std::fs::metadata(dir.join("runs.json"))
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o600);
     }
 }
