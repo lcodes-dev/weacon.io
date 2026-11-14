@@ -8,7 +8,7 @@ use super::{Db, exists, failed, stored, unreadable};
 use crate::email::Email;
 
 /// How long a code works, in seconds.
-pub(crate) const CODE_LIFETIME: i64 = 600;
+pub(crate) const CODE_LIFETIME: i64 = 10 * 60;
 /// How many wrong tries end a challenge.
 const MAX_ATTEMPTS: i64 = 5;
 /// How many live codes are mailed to one address, so a server open to sign-up can't flood an
@@ -452,6 +452,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_code_works_for_ten_minutes_and_ended_ones_are_cleared() {
+        assert_eq!(CODE_LIFETIME, 600);
         let dir = TempDir::new().unwrap();
         let db = people(&dir).await;
         challenge(&db, "ada@example.com", "c1", b"k1", NOW).await;

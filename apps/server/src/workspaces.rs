@@ -8,7 +8,7 @@ use weacon_protocol::{WorkspaceCreate, WorkspaceList, code};
 use crate::app::{fresh, new_id};
 use crate::auth::{Member, Session};
 use crate::db::NewWorkspace;
-use crate::http::{Body, Shared, failure, invalid, refused};
+use crate::http::{Body, Shared, failure, invalid, unauthorized};
 
 pub(crate) const MAX_NAME: usize = 100;
 /// What an account's own workspace is called when it is made.
@@ -50,7 +50,7 @@ pub(crate) async fn read(member: Member) -> Response {
     match member.workspace.summary(&member.id).await {
         Ok(Some(summary)) => Json(summary).into_response(),
         // Someone else ended the membership since it was checked.
-        Ok(None) => refused(code!("sign_in.required")),
+        Ok(None) => unauthorized(code!("sign_in.required")),
         Err(fault) => failure(fault),
     }
 }

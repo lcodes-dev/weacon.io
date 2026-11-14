@@ -35,8 +35,7 @@ pub(crate) const TIMING: Timing = Timing {
     hello_within: Duration::from_secs(10),
     ping_every: Duration::from_secs(30),
 };
-/// 16 KiB.
-const MAX_MESSAGE: usize = 16_384;
+const MAX_MESSAGE: usize = 16 * 1024;
 const PAGE: u32 = 500;
 
 #[derive(Deserialize)]
@@ -581,6 +580,7 @@ mod tests {
 
     #[tokio::test]
     async fn an_oversized_message_ends_the_feed() {
+        assert_eq!(MAX_MESSAGE, 16_384);
         let fixture = Fixture::new().await;
         let (server, token) = signed_in(&fixture).await;
         let mut client = open(server.address, "/api/workspaces/w1/feed", &token)

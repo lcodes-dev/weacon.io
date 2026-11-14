@@ -11,7 +11,7 @@ use weacon_protocol::{AccountId, MemberId, WorkspaceId, code};
 
 use crate::db::Workspace;
 use crate::email::Email;
-use crate::http::{Shared, cross_site, error, failure, refused};
+use crate::http::{Shared, cross_site, error, failure, unauthorized};
 
 /// The browser's session cookie; the prefix ties it to this host.
 pub(crate) const SESSION_COOKIE: &str = "__Host-weacon_session";
@@ -81,7 +81,7 @@ impl FromRequestParts<Shared> for Member {
 }
 
 fn required() -> Response {
-    refused(code!("sign_in.required"))
+    unauthorized(code!("sign_in.required"))
 }
 
 /// Why a request carries no usable session token.

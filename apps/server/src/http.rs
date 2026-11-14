@@ -33,8 +33,7 @@ const REQUEST_ID: &str = "x-request-id";
 const GRACE: Duration = Duration::from_secs(10);
 /// How long a request may take from its head to its answer, its body included.
 const ANSWER_WITHIN: Duration = Duration::from_secs(30);
-/// 16 KiB.
-const MAX_BODY: usize = 16_384;
+const MAX_BODY: usize = 16 * 1024;
 static METHODS: [Method; 9] = [
     Method::GET,
     Method::POST,
@@ -214,7 +213,7 @@ async fn log_request(State(shared): State<Shared>, request: Request, next: Next)
 }
 
 /// Answers that the client must sign in, or try again, with `code`.
-pub(crate) fn refused(code: Code) -> Response {
+pub(crate) fn unauthorized(code: Code) -> Response {
     error(StatusCode::UNAUTHORIZED, code, false)
 }
 
@@ -567,6 +566,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_body_that_cant_be_read_is_answered_with_an_error_body() {
+        assert_eq!(MAX_BODY, 16_384);
         let code = |code: &str| serde_json::json!({ "code": code, "retryable": false });
 
         assert_eq!(

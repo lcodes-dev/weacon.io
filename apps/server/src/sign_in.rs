@@ -18,15 +18,15 @@ use crate::auth::{Sender, Session, Unproven, proof, sender, set_session_cookie, 
 use crate::client::Client;
 use crate::db::Attempt;
 use crate::email::Email;
-use crate::http::{Body, Shared, cross_site, failure, refused, report, too_many};
+use crate::http::{Body, Shared, cross_site, failure, report, too_many, unauthorized};
 use crate::limit::Limit;
 use crate::outbox::mail_failed;
-use crate::secret::{os_secrets, random_failed};
+use crate::secret::{random_bytes, random_failed};
 use crate::sign_up;
 use crate::workspaces;
 
-/// How long a session lasts: 30 days, in seconds.
-pub(crate) const SESSION_LIFETIME: i64 = 2_592_000;
+/// How long a session lasts, in seconds.
+pub(crate) const SESSION_LIFETIME: i64 = 30 * 24 * 60 * 60;
 /// How many sign-ins may be worked on at once after their answer.
 pub(crate) const AT_ONCE: usize = 64;
 /// How long finishing a sign-in takes at least: longer than any of its database work.
@@ -82,7 +82,7 @@ async fn send_code(
     {
         return Ok(());
     }
-    let code = code_text(&os_secrets()?);
+    let code = code_text(&random_bytes()?);
     let code_hash = shared.secret.code_hash(&email, &code);
     let now = shared.now();
     if !shared
@@ -131,7 +131,7 @@ pub(crate) async fn finish(
             ..who
         })
         .into_response(),
-        Ok(None) => refused(code!("sign_in.failed")),
+        Ok(None) => unauthorized(code!("sign_in.failed")),
         Err(fault) => failure(fault),
     };
     sleep_until(now + shared.finish_within).await;
@@ -177,7 +177,7 @@ async fn signed_in(
     let Ok(email) = Email::parse(&body.email) else {
         return Ok(None);
     };
-    let token = hex(&os_secrets()?);
+    let token = hex(&random_bytes()?);
     let now = shared.now();
     let new_account: Option<AccountId> = sign_up::allows(&shared.sign_up, &email)
         .then(|| fresh(&new_id))
@@ -205,7 +205,7 @@ async fn signed_in(
 
 /// A challenge nobody can guess: 32 random bytes, in hex.
 fn new_challenge() -> Result<ChallengeId, Fault> {
-    ChallengeId::try_from(hex(&os_secrets()?)).map_err(|_| random_failed())
+    ChallengeId::try_from(hex(&random_bytes()?)).map_err(|_| random_failed())
 }
 
 /// A one-time code: eight digits.
