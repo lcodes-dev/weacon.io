@@ -201,36 +201,13 @@ fn before_glob(text: &str) -> Option<String> {
 }
 
 #[cfg(test)]
-pub(crate) mod tests {
+mod tests {
     use std::fs;
 
     use weacon_testing::TempDir;
 
     use super::*;
-
-    // A chat's worktree beside its main checkout, a home with an agent's credentials, and
-    // Weacon's state.
-    pub(crate) fn context(dir: &Path) -> Context {
-        for folder in [
-            "main",
-            "wt/src",
-            "home/.claude",
-            "home/.codex",
-            "state/settings",
-        ] {
-            fs::create_dir_all(dir.join(folder)).unwrap();
-        }
-        Context {
-            cwd: dir.join("wt"),
-            worktree: dir.join("wt"),
-            main_checkout: Some(dir.join("main")),
-            home: Some(dir.join("home")),
-            weacon: vec![dir.join("state")],
-            credentials: vec![dir.join("home/.claude"), dir.join("home/.codex")],
-            cdpath: false,
-            additions: vec![vec!["terraform".to_owned(), "destroy".to_owned()]],
-        }
-    }
+    use crate::test_support::guard_context as context;
 
     #[test]
     fn work_inside_the_worktree_needs_no_one() {

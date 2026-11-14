@@ -72,7 +72,7 @@ mod tests {
     use weacon_testing::TempDir;
 
     use super::*;
-    use crate::guard::tests::context as guard_context;
+    use crate::test_support::guard_context;
 
     fn context(cwd: &Path) -> Context {
         Context {
