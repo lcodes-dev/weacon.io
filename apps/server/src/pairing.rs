@@ -17,15 +17,15 @@ use crate::app::{fresh, new_id};
 use crate::auth::Session;
 use crate::auth::token_hash;
 use crate::client::Client;
-use crate::db::{Claim, Confirmation, NewPairing};
+use crate::db::{Claim, Claiming, Confirmation, NewPairing};
 use crate::http::{Body, Shared, error, failure, not_found, too_many};
 use crate::limit::{HOUR, Limit};
 use crate::secret::{random_token, random_u64};
 
 /// How long a person has to confirm a pairing, in seconds.
 const PAIRING_LIFETIME: i64 = 600;
-/// How many pairings may be under way at once, server-wide, as anyone may start one.
-const MOST_UNDER_WAY: i64 = 1000;
+/// How long a core has to claim its machine once the person confirms, in seconds.
+const CLAIM_WITHIN: i64 = 120;
 /// Crockford's base 32: no I, L, O or U, which read like other letters.
 const ALPHABET: &[u8; 32] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ";
 
@@ -78,7 +78,7 @@ async fn started(shared: &Shared, body: &PairStart) -> Result<Option<PairStarted
         key: &body.key,
         expires_at,
     };
-    let recorded = shared.db.start_pairing(&new, now, MOST_UNDER_WAY).await?;
+    let recorded = shared.db.start_pairing(&new, now).await?;
     Ok(recorded.then(|| PairStarted {
         pairing,
         code: shown(&code),
@@ -129,13 +129,15 @@ async fn confirmed(
     session: &Session,
     body: &PairConfirm,
 ) -> Result<Option<MachineSummary>, Fault> {
+    let now = shared.now();
     let confirmation = Confirmation {
         account: &session.account,
         pairing: &body.pairing,
         code_hash: &shared.secret.pairing_code_hash(&normalised(&body.code)),
         machine: &fresh(&new_id)?,
+        claim_by: now.saturating_add(CLAIM_WITHIN),
     };
-    shared.db.confirm_pairing(&confirmation, shared.now()).await
+    shared.db.confirm_pairing(&confirmation, now).await
 }
 
 /// `POST /api/machines/pair/claim`: whether the person has confirmed the pairing yet, and
@@ -157,15 +159,12 @@ pub(crate) async fn claim(
 
 async fn claimed(shared: &Shared, body: &PairClaim) -> Result<Option<PairClaimed>, Fault> {
     let token = to_hex(&shared.secret.machine_token(&body.secret));
-    let claim = shared
-        .db
-        .claim_pairing(
-            &body.pairing,
-            &token_hash(&body.secret),
-            &token_hash(&token),
-            shared.now(),
-        )
-        .await?;
+    let claiming = Claiming {
+        pairing: &body.pairing,
+        secret_hash: &token_hash(&body.secret),
+        token_hash: &token_hash(&token),
+    };
+    let claim = shared.db.claim_pairing(&claiming, shared.now()).await?;
     Ok(match claim {
         Claim::Unknown => None,
         Claim::Waiting => Some(PairClaimed::Waiting),
@@ -382,6 +381,34 @@ mod tests {
         for refusal in [wrong, guessed, late, too_late] {
             assert_eq!(refusal["code"], "pairing.not_found");
         }
+    }
+
+    #[tokio::test]
+    async fn a_confirmed_pairing_is_claimed_only_until_its_deadline() {
+        let fixture = Fixture::new().await;
+        let server = run(fixture.shared.clone()).await;
+        let (_, ada) = sign_in(&fixture, server.address, "ada@example.com").await;
+        let mut claims = Vec::new();
+        for _ in 0..2 {
+            let (_, pairing) = start_pairing(server.address, "linux").await;
+            let confirm = json!({ "pairing": pairing["pairing"], "code": pairing["code"] });
+            post(
+                server.address,
+                "/api/machines/pair/confirm",
+                &bearer(&ada),
+                &confirm,
+            )
+            .await;
+            claims.push(json!({ "pairing": pairing["pairing"], "secret": pairing["secret"] }));
+        }
+
+        fixture.advance(CLAIM_WITHIN - 1);
+        let (_, in_time) = post(server.address, "/api/machines/pair/claim", "", &claims[0]).await;
+        fixture.advance(1);
+        let (_, late) = post(server.address, "/api/machines/pair/claim", "", &claims[1]).await;
+
+        assert_eq!(in_time["state"], "paired");
+        assert_eq!(late["code"], "pairing.not_found");
     }
 
     #[tokio::test]

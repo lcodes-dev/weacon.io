@@ -3,6 +3,7 @@ mod tables;
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use serde::{Deserialize, Serialize};
 use tree_sitter::Node;
 
 use commands::{Commands, Variant, full_names, variants};
@@ -57,13 +58,13 @@ pub enum ContractKind {
 }
 
 /// A contract an item declares, as found in its file.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct Declared {
     pub(crate) kind: Declares,
     pub(crate) line: usize,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum Declares {
     /// The item itself.
     Serde,
