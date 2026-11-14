@@ -435,12 +435,17 @@ mod tests {
         Wire::text(String::from_utf8(envelope.to_json().unwrap()).unwrap())
     }
 
+    // The core's next message; a core that leaves or goes quiet first fails the test.
     async fn heard(peer: &mut Peer) -> Message {
-        loop {
-            if let Some(Ok(Wire::Text(text))) = peer.next().await {
-                return Envelope::from_json(text.as_bytes()).unwrap().message;
+        let text = async {
+            loop {
+                if let Wire::Text(text) = peer.next().await.unwrap().unwrap() {
+                    return text;
+                }
             }
-        }
+        };
+        let text = timeout(Duration::from_secs(10), text).await.unwrap();
+        Envelope::from_json(text.as_bytes()).unwrap().message
     }
 
     // A server that takes the socket, checks the hello and welcomes it with `offers`.
@@ -576,7 +581,7 @@ mod tests {
                 Some(("r-nobody", "chat.not_owner")),
             ]
         );
-        let Message::ChatCommand(taken_command) = taken.recv().await.unwrap().message else {
+        let Message::ChatCommand(taken_command) = taken.try_recv().unwrap().message else {
             panic!("not a command");
         };
         assert_eq!(taken_command.request.as_str(), "r-owner");
@@ -757,7 +762,7 @@ mod tests {
 
         assert_eq!(ended.unwrap(), Ended::Lost);
         assert_eq!(heard_back, answer.message);
-        assert_eq!(taken.recv().await.unwrap(), query);
+        assert_eq!(taken.try_recv().unwrap(), query);
     }
 
     #[tokio::test]
