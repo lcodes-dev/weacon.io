@@ -321,15 +321,28 @@ fn stored(journal: &Journal) -> serde_json::Result<Vec<u8>> {
     })
 }
 
-// Whether `record` holds every field `json` has, so writing it back loses nothing.
+// Whether `record` holds every field `json` has, at any depth, so writing it back loses nothing.
 fn reads_whole(record: &Record, json: &RawValue) -> bool {
     let found = serde_json::from_str::<serde_json::Value>(json.get());
-    let (Ok(serde_json::Value::Object(found)), Ok(serde_json::Value::Object(known))) =
-        (found, serde_json::to_value(record))
-    else {
-        return false;
-    };
-    found.keys().all(|field| known.contains_key(field))
+    let known = serde_json::to_value(record);
+    matches!((found, known), (Ok(found), Ok(known)) if covers(&known, &found))
+}
+
+fn covers(known: &serde_json::Value, found: &serde_json::Value) -> bool {
+    use serde_json::Value;
+    match (known, found) {
+        (Value::Object(known), Value::Object(found)) => found
+            .iter()
+            .all(|(field, value)| known.get(field).is_some_and(|known| covers(known, value))),
+        (Value::Array(known), Value::Array(found)) => {
+            known.len() == found.len()
+                && known
+                    .iter()
+                    .zip(found)
+                    .all(|(known, found)| covers(known, found))
+        }
+        _ => true,
+    }
 }
 
 #[cfg(test)]
@@ -618,14 +631,15 @@ mod tests {
         let more = r#"{"workspace":"w-1","chat":"c-7","agent":"claude","run":null,"state":"idle","session":null,"turn":null,"queue":[],"active_at":5,"model":"next"}"#;
         let agent = r#"{"workspace":"w-1","chat":"c-6","agent":"gemini","run":null,"state":"idle","session":null,"turn":null,"queue":[],"active_at":5}"#;
         let state = r#"{"workspace":"w-1","chat":"c-5","agent":"claude","run":null,"state":"paused","session":null,"turn":null,"queue":[],"active_at":5}"#;
+        let nested = r#"{"workspace":"w-1","chat":"c-4","agent":"claude","run":null,"state":"idle","session":null,"turn":null,"queue":[{"request":"r-1","text":"Hi","priority":2}],"active_at":5}"#;
         let journal = format!(
-            r#"{{"issued":3,"chats":[{NEWER},{broken},{nameless},{more},{agent},{state}],"limits":{{"runs":9}}}}"#
+            r#"{{"issued":3,"chats":[{NEWER},{broken},{nameless},{more},{agent},{state},{nested}],"limits":{{"runs":9}}}}"#
         );
         std::fs::write(dir.join("runs.json"), journal).unwrap();
 
         let mut runs = Runs::load(&dir).unwrap();
-        assert_eq!(runs.kept(), 6);
-        for chat in ["c-9", "c-8", "c-7", "c-6", "c-5"] {
+        assert_eq!(runs.kept(), 7);
+        for chat in ["c-9", "c-8", "c-7", "c-6", "c-5", "c-4"] {
             let kept = key("w-1", chat);
             assert_eq!(runs.of(&kept), None);
             assert_eq!(refusals(&mut runs, &kept).await, ["runs.newer_record"; 2]);
@@ -640,6 +654,7 @@ mod tests {
             more,
             agent,
             state,
+            nested,
             r#""limits":{"runs":9}"#,
         ] {
             assert!(raw.contains(kept), "{kept} was rewritten");

@@ -18,7 +18,7 @@ use std::collections::HashMap;
 use std::collections::hash_map::Entry;
 use std::sync::Arc;
 
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch};
 use weacon_observability::{Fault, Field, Logger};
 use weacon_protocol::{
     AgentKind, AgentSession, ChatEntry, ChatEvent, ChatUpdate, Message, Outcome, Receipt,
@@ -109,6 +109,7 @@ pub(crate) struct Engine<A> {
     says: mpsc::Sender<Said>,
     /// Set while the disk is full: prompts are queued and no new turn starts.
     disk_full: bool,
+    disk: watch::Receiver<bool>,
     starts: mpsc::UnboundedSender<Launched<A>>,
     started: mpsc::UnboundedReceiver<Launched<A>>,
     log: Logger,
@@ -124,6 +125,7 @@ impl<A: Agent> Engine<A> {
         let (asks, asked) = mpsc::channel(ASKS);
         let (says, incoming) = mpsc::channel(SAYS);
         let (starts, started) = mpsc::unbounded_channel();
+        let (disk_full, disk) = watch::channel(false);
         let engine = Self {
             runs,
             workspaces,
@@ -133,11 +135,12 @@ impl<A: Agent> Engine<A> {
             incoming,
             says,
             disk_full: false,
+            disk,
             starts,
             started,
             log,
         };
-        (Chats::new(asks), engine)
+        (Chats::new(asks, disk_full), engine)
     }
 
     /// Serves until every [`Chats`] is dropped; the agents stop with it.
@@ -162,10 +165,6 @@ impl<A: Agent> Engine<A> {
                         drop(answer.send(self.query(&key, query.query, &client).await));
                         key
                     }
-                    Some(Ask::DiskFull(full)) => {
-                        self.set_disk_full(full).await;
-                        continue;
-                    }
                     None => return self.log.info("engine stopped", &[]),
                 },
                 Some(said) = self.incoming.recv() => {
@@ -175,6 +174,11 @@ impl<A: Agent> Engine<A> {
                         self.log.error("run event not committed", &fields);
                     }
                     key
+                }
+                Ok(()) = self.disk.changed() => {
+                    let full = *self.disk.borrow_and_update();
+                    self.set_disk_full(full).await;
+                    continue;
                 }
                 Some(launched) = self.started.recv() => {
                     let (key, run) = (launched.key.clone(), launched.run.clone());
@@ -876,6 +880,30 @@ mod tests {
             told,
             [Some(Told::Send("Hi".to_owned())), Some(Told::Interrupt)]
         );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_full_disk_is_heard_even_when_the_engine_is_busy() {
+        let (mut bench, engine) = parts();
+        let (anyone, _pushes) = client(1);
+        // Enough queries to fill the engine's queue before it serves.
+        let ask = |chats: Chats, anyone: crate::chats::feed::Client| async move {
+            let snapshot = query("c-2", ChatQueryKind::Snapshot);
+            chats.query(snapshot, &anyone).await
+        };
+        let asked: Vec<_> = (0..ASKS)
+            .map(|_| tokio::spawn(ask(bench.chats.clone(), anyone.clone())))
+            .collect();
+        tokio::task::yield_now().await;
+
+        bench.chats.disk_full(true);
+        tokio::spawn(engine.serve());
+        for asked in asked {
+            asked.await.unwrap().unwrap();
+        }
+
+        bench.chats.command(prompt("r-1", "Hi")).await.unwrap();
+        assert!(soon(bench.started.recv()).await.is_none());
     }
 
     #[tokio::test(start_paused = true)]

@@ -75,7 +75,7 @@ impl<A: Agent> Engine<A> {
             return Ok(());
         };
         // A run still starting takes the turn once it is up; a full disk takes none.
-        if self.is_launching(key) || self.disk_full {
+        if self.is_launching(key) || *self.disk.borrow() {
             return Ok(());
         }
         let Some(run) = self.run_of(key).filter(|_| self.takes_orders(key)) else {
