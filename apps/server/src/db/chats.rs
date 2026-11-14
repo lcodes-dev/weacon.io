@@ -319,7 +319,9 @@ pub(crate) mod test_support {
 mod tests {
     use weacon_testing::TempDir;
 
-    use super::test_support::{NOW, append, code, id, make};
+    use weacon_protocol::RunState;
+
+    use super::test_support::{NOW, append, code, id, make, status};
     use super::*;
     use crate::test_support::{member_id, two_teams};
 
@@ -384,8 +386,8 @@ mod tests {
         for chat in ["c-2", "c-3"] {
             one.end_request(&id(&format!("r-{chat}"))).await.unwrap();
         }
-        let running = super::test_support::status(weacon_protocol::RunState::Running);
-        let idle = super::test_support::status(weacon_protocol::RunState::Idle);
+        let running = status(RunState::Running);
+        let idle = status(RunState::Idle);
         append(&one, "c-2", &[(Some(4), idle)]).await.unwrap();
         append(&one, "c-3", &[(Some(7), running)]).await.unwrap();
         one.set_chat_state(&id("c-4"), ChatState::Detached)

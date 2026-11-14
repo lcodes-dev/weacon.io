@@ -92,8 +92,8 @@ impl Workspace {
             .await
             .map_err(failed)?;
         }
-        let turned = rows.iter().filter(|row| turns(row.event)).map(|row| row.at);
-        match turned.last() {
+        let mut turned = rows.iter().filter(|row| turns(row.event)).map(|row| row.at);
+        match turned.next_back() {
             Some(at) => self.turned(transaction, chat, at).await,
             None => Ok(()),
         }
@@ -458,7 +458,7 @@ mod tests {
         make(&one, "c-1", "m1", NOW).await.unwrap();
         make(&two, "c-1", "m2", NOW).await.unwrap();
         let made = WorkspaceChange::ChatChanged { chat: id("c-1") };
-        assert_eq!(changed_chats(&one).await, [made.clone()]);
+        assert_eq!(changed_chats(&one).await, std::slice::from_ref(&made));
 
         let accepted = receipt("r-c-1", Outcome::Accepted);
         let events = [(Some(1), accepted), (Some(2), said("working"))];
