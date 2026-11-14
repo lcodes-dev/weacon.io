@@ -546,9 +546,12 @@
           ]
         },
         {
-          "description": "An agent, named by the member it answers to.",
+          "description": "An agent, named by the member it answers to, and by which agent it is when known.",
           "type": "object",
           "properties": {
+            "agent": {
+              "$ref": "#/$defs/AgentRef"
+            },
             "kind": {
               "type": "string",
               "const": "agent"

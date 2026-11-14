@@ -1,8 +1,8 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::MemberId;
 use crate::token::token_id;
+use crate::{AgentRef, MemberId};
 
 token_id!(
     /// A task in a workspace, 1–64 ASCII letters, digits, `-` or `_`.
@@ -30,9 +30,12 @@ pub enum Author {
     Person {
         member: MemberId,
     },
-    /// An agent, named by the member it answers to.
+    /// An agent, named by the member it answers to, and by which agent it is when known.
     Agent {
         owner: MemberId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[schemars(with = "AgentRef")]
+        agent: Option<AgentRef>,
     },
     /// An author this build doesn't know, from a newer peer; only ever received.
     #[serde(other)]
@@ -102,6 +105,7 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+    use crate::{AgentKind, AgentOwner, MachineName};
 
     fn member() -> MemberId {
         MemberId::try_from("m-1".to_owned()).unwrap()
@@ -139,7 +143,10 @@ mod tests {
     #[test]
     fn authors_are_tagged_and_a_newer_one_still_parses() {
         let person = Author::Person { member: member() };
-        let agent = Author::Agent { owner: member() };
+        let agent = Author::Agent {
+            owner: member(),
+            agent: None,
+        };
         let person_wire = json!({ "kind": "person", "member": "m-1" });
         let agent_wire = json!({ "kind": "agent", "owner": "m-1" });
 
@@ -155,6 +162,23 @@ mod tests {
             Author::Newer
         );
         serde_json::from_value::<Author>(json!({ "kind": "person" })).unwrap_err();
+    }
+
+    #[test]
+    fn an_agent_author_names_which_agent_when_known() {
+        let named = Author::Agent {
+            owner: member(),
+            agent: Some(AgentRef {
+                kind: AgentKind::Codex,
+                owner: AgentOwner::Member { member: member() },
+                machine: Some(MachineName::try_from("Ada's laptop".to_owned()).unwrap()),
+            }),
+        };
+        let wire = json!({ "kind": "agent", "owner": "m-1", "agent": { "kind": "codex",
+            "owner": { "kind": "member", "member": "m-1" }, "machine": "Ada's laptop" } });
+
+        assert_eq!(serde_json::to_value(&named).unwrap(), wire);
+        assert_eq!(serde_json::from_value::<Author>(wire).unwrap(), named);
     }
 
     fn record() -> TaskRecord {
