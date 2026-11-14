@@ -156,6 +156,7 @@ pub(crate) fn prompt(request: &str, text: &str) -> ChatCommand {
             text,
             repo: None,
             machine: None,
+            agent: None,
         },
     )
 }
@@ -225,6 +226,7 @@ fn event(event: &ChatEvent) -> String {
         ChatEvent::RunStatus { status } => {
             format!("{} is {:?}", status.run.as_str(), status.state)
         }
+        ChatEvent::OutsidePrompt { text } => format!("outside prompt {text}"),
         ChatEvent::Newer => "newer".to_owned(),
     }
 }

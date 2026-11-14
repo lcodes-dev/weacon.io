@@ -1,6 +1,7 @@
 use std::ffi::OsString;
 use std::path::PathBuf;
 
+use clap::error::ErrorKind;
 use clap::{Args, CommandFactory, FromArgMatches, Parser, Subcommand};
 use weacon_protocol::{AccessLevel, AgentKind, WorkspaceId};
 use weacon_version::Version;
@@ -61,8 +62,7 @@ pub(crate) enum Command {
     /// Relay messages between Chrome's extension and the daemon; Chrome starts it.
     #[command(hide = true)]
     NativeHost { origin: String },
-    /// Work with the code map of a repository.
-    #[command(subcommand)]
+    /// Print the text the MCP's `map` tool answers: where to begin in a repository's code.
     Map(MapCommand),
 }
 
@@ -116,14 +116,24 @@ pub(crate) enum ServiceCommand {
     Uninstall,
 }
 
+#[derive(Debug, PartialEq, Eq, Args)]
+pub(crate) struct MapCommand {
+    #[command(subcommand)]
+    pub(crate) command: Option<MapSubcommand>,
+    /// The repository's root folder.
+    #[arg(long, global = true, default_value = ".")]
+    pub(crate) root: PathBuf,
+    /// The most bytes the answer may hold, for the map and `symbol`.
+    #[arg(long, global = true)]
+    pub(crate) budget: Option<u32>,
+}
+
 #[derive(Debug, PartialEq, Eq, Subcommand)]
-pub(crate) enum MapCommand {
+pub(crate) enum MapSubcommand {
+    /// Print the text the MCP's `symbol` tool answers for an item's full path.
+    Symbol { path: String },
     /// Read pinned anchors on stdin, one per line, and print those that no longer match.
-    CheckAnchors {
-        /// The repository's root folder.
-        #[arg(long, default_value = ".")]
-        root: PathBuf,
-    },
+    CheckAnchors,
 }
 
 impl Cli {
@@ -173,10 +183,19 @@ pub(crate) fn parse<I: IntoIterator<Item = OsString>>(
     args: I,
     version: &Version,
 ) -> Result<Cli, clap::Error> {
-    let matches = Cli::command()
-        .version(version.with_commit())
-        .try_get_matches_from(from_chrome(args.into_iter().collect()))?;
-    Cli::from_arg_matches(&matches)
+    let mut command = Cli::command().version(version.with_commit());
+    let matches = command.try_get_matches_from_mut(from_chrome(args.into_iter().collect()))?;
+    let cli = Cli::from_arg_matches(&matches)?;
+    if let Command::Map(MapCommand {
+        command: Some(MapSubcommand::CheckAnchors),
+        budget: Some(_),
+        ..
+    }) = cli.command
+    {
+        let refused = "only the map and `symbol` take --budget, not check-anchors";
+        return Err(command.error(ErrorKind::ArgumentConflict, refused));
+    }
+    Ok(cli)
 }
 
 // Chrome starts a native host with the extension's origin as its first argument, and on
@@ -195,8 +214,6 @@ fn from_chrome(mut args: Vec<OsString>) -> Vec<OsString> {
 
 #[cfg(test)]
 mod tests {
-    use clap::error::ErrorKind;
-
     use super::*;
     use crate::reports::Answer;
     use crate::test_support::VERSION;
@@ -220,8 +237,6 @@ mod tests {
             .map(|name| run(&["weacon", name]).unwrap().command.name());
         let install = run(&["weacon", "service", "install"]).unwrap().command;
         let uninstall = run(&["weacon", "service", "uninstall"]).unwrap().command;
-        let map = run(&["weacon", "map", "check-anchors"]).unwrap().command;
-        let rooted = run(&["weacon", "map", "check-anchors", "--root", "/srv/repo"]).unwrap();
         let verbose = run(&["weacon", "doctor", "--verbose"]).unwrap();
 
         assert_eq!(doctor.command, Command::Doctor);
@@ -232,19 +247,58 @@ mod tests {
         );
         let service = run(&["weacon", "service", "install"]).unwrap().command;
         assert_eq!((service.name(), service.log_name()), ("service", "cli.log"));
-        assert_eq!(
-            map,
-            Command::Map(MapCommand::CheckAnchors { root: ".".into() })
-        );
-        assert_eq!((map.name(), map.log_name()), ("map", "cli.log"));
-        assert_eq!(
-            rooted.command,
-            Command::Map(MapCommand::CheckAnchors {
-                root: "/srv/repo".into()
-            })
-        );
         assert!(!doctor.verbose);
         assert!(verbose.verbose);
+    }
+
+    #[test]
+    fn map_commands_take_a_root_and_a_budget_before_or_after_their_subcommand() {
+        let map = |args: &[&str]| {
+            let args = [["weacon", "map"].as_slice(), args].concat();
+            run(&args).map(|cli| cli.command).ok()
+        };
+        let map_of = |command, root: &str, budget| {
+            Some(Command::Map(MapCommand {
+                command,
+                root: root.into(),
+                budget,
+            }))
+        };
+        let symbol = || {
+            let path = "a::b".to_owned();
+            Some(MapSubcommand::Symbol { path })
+        };
+        let check = || Some(MapSubcommand::CheckAnchors);
+
+        let outline = map(&["--budget", "2000"]);
+        let item = map(&["--root", "r", "symbol", "a::b", "--budget", "1500"]);
+        let early = map(&["--budget", "1500", "symbol", "a::b"]);
+        let checked = map(&["check-anchors"]).unwrap();
+
+        assert_eq!(outline, map_of(None, ".", Some(2000)));
+        assert_eq!(item, map_of(symbol(), "r", Some(1500)));
+        assert_eq!(early, map_of(symbol(), ".", Some(1500)));
+        assert_eq!(
+            map(&["symbol", "a::b", "--root", "r"]),
+            map_of(symbol(), "r", None)
+        );
+        assert_eq!((checked.name(), checked.log_name()), ("map", "cli.log"));
+        assert_eq!(Some(checked), map_of(check(), ".", None));
+        assert_eq!(
+            map(&["--root", "/srv", "check-anchors"]),
+            map_of(check(), "/srv", None)
+        );
+        assert_eq!(
+            map(&["check-anchors", "--root", "/srv"]),
+            map_of(check(), "/srv", None)
+        );
+        for args in [
+            ["--budget", "3", "check-anchors"],
+            ["check-anchors", "--budget", "3"],
+        ] {
+            let refused = run(&[["weacon", "map"].as_slice(), &args].concat()).unwrap_err();
+            assert_eq!(refused.kind(), ErrorKind::ArgumentConflict);
+        }
     }
 
     #[test]

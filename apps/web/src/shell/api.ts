@@ -5,6 +5,8 @@ import type {
   AccountSignedIn,
   AccountSignInFinish,
   AccountSignInStart,
+  ChatList,
+  ChatSummary,
   Code,
   MachineId,
   MachineList,
@@ -14,6 +16,7 @@ import type {
   PairPending,
   SignInStarted,
   WorkspaceCreate,
+  WorkspaceId,
   WorkspaceList,
   WorkspaceSummary,
 } from "../protocol.ts";
@@ -81,6 +84,11 @@ export class Api {
     return this.#ask("POST", "/api/workspaces", body, isWorkspace);
   }
 
+  /** The chats of `workspace` the signed-in member can see. */
+  chats(workspace: WorkspaceId): Promise<Answer<ChatList>> {
+    return this.#ask("GET", `/api/workspaces/${workspace}/chats`, undefined, isChats);
+  }
+
   /** The machines paired with the signed-in account, oldest first. */
   machines(): Promise<Answer<MachineList>> {
     return this.#ask("GET", "/api/machines", undefined, isMachineList);
@@ -145,6 +153,11 @@ function listOf<T>(key: string, item: (value: unknown) => boolean): (value: unkn
 }
 
 const isList = listOf<WorkspaceList>("workspaces", isWorkspace);
+const isChat = (value: unknown): value is ChatSummary =>
+  fields(value, ["id", "machine", "owner", "state", "title"]) &&
+  isId((value as ChatSummary).id) &&
+  Number.isSafeInteger((value as ChatSummary).updated_at);
+const isChats = listOf<ChatList>("chats", isChat);
 const isEmpty = (value: unknown): value is undefined => value === undefined;
 const isPending = (value: unknown): value is PairPending =>
   fields(value, ["pairing", "name", "os", "key"]) &&
