@@ -51,11 +51,15 @@ pub(crate) fn run(app: &crate::app::App) -> Result<(), Fault> {
             .because(error)
         })?;
         let daemon = Daemon::start(state_dir, build(&app.version), app.log.clone())?;
+        // The chat engine takes the owner's commands from here; until then each is answered
+        // `chat.unavailable`.
+        let (commands, _) = tokio::sync::mpsc::channel(16);
         let uplink = Uplink {
             state_dir: state_dir.to_owned(),
             app: build(&app.version),
             capabilities: CAPABILITIES.iter().cloned().map(Capability::from).collect(),
             log: app.log.child(&[("component", "uplink".into())]),
+            commands,
             random: weacon_appkit::random_id,
         };
         let serve = async {

@@ -5,12 +5,13 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
+use tokio::sync::mpsc;
 use tokio::time::{sleep, timeout};
 use tokio_tungstenite::tungstenite::Message as Wire;
 use weacon_observability::{Fault, Field, Logger};
 use weacon_protocol::{
-    AccountId, App, Capability, Code, Envelope, ErrorBody, Hello, Message, Outcome, PROTOCOL,
-    Receipt, code,
+    AccountId, App, Capability, ChatCommand, Code, Envelope, ErrorBody, Hello, Message, Outcome,
+    PROTOCOL, Receipt, code,
 };
 
 use crate::machine::{self, Paired};
@@ -24,6 +25,9 @@ const LOOK_EVERY: Duration = Duration::from_secs(30);
 const FIRST_WAIT: Duration = Duration::from_secs(1);
 const LONGEST_WAIT: Duration = Duration::from_mins(1);
 const HELLO_WITHIN: Duration = Duration::from_secs(10);
+
+/// Where the owner's chat commands go in the daemon.
+pub(crate) type Commands = mpsc::Sender<ChatCommand>;
 
 /// How a connection ended.
 #[derive(Debug, PartialEq, Eq)]
@@ -78,6 +82,7 @@ pub(crate) struct Uplink {
     pub(crate) app: App,
     pub(crate) capabilities: Vec<Capability>,
     pub(crate) log: Logger,
+    pub(crate) commands: Commands,
     /// Random numbers, for the backoff's jitter.
     pub(crate) random: fn() -> u128,
 }
@@ -140,7 +145,7 @@ impl Uplink {
             let Ok(envelope) = Envelope::from_json(text.as_bytes()) else {
                 continue;
             };
-            match answer(envelope, &paired.owner) {
+            match self.answer(envelope, &paired.owner).await {
                 Step::Unpaired => return Ok(Ended::Unpaired),
                 Step::Reply(reply) => send(&mut socket, &reply).await,
                 Step::Nothing => {}
@@ -172,37 +177,41 @@ impl Uplink {
     }
 }
 
+impl Uplink {
+    /// What to do with a message from the server. Only the machine's owner may ask it to act,
+    /// whatever the server allows.
+    async fn answer(&self, envelope: Envelope, owner: &AccountId) -> Step {
+        if let Message::Error(ErrorBody { code, .. }) = &envelope.message
+            && *code == code!("machine.unpaired")
+        {
+            return Step::Unpaired;
+        }
+        let Message::ChatCommand(command) = envelope.message else {
+            return Step::Nothing;
+        };
+        let request = command.request.clone();
+        let from_owner = command.by.as_ref().is_some_and(|by| by.account == *owner);
+        let code = if !from_owner {
+            code!("chat.not_owner")
+        } else if self.commands.send(command).await.is_err() {
+            code!("chat.unavailable")
+        } else {
+            return Step::Nothing;
+        };
+        Step::Reply(Envelope {
+            id: envelope.id,
+            message: Message::Receipt(Receipt {
+                request,
+                outcome: Outcome::Failed { code },
+            }),
+        })
+    }
+}
+
 enum Step {
     Unpaired,
     Reply(Envelope),
     Nothing,
-}
-
-/// What to do with a message from the server. Only the machine's owner may ask it to act, and
-/// nothing in the daemon takes chat commands yet.
-fn answer(envelope: Envelope, owner: &AccountId) -> Step {
-    if let Message::Error(ErrorBody { code, .. }) = &envelope.message
-        && *code == code!("machine.unpaired")
-    {
-        return Step::Unpaired;
-    }
-    let Message::ChatCommand(command) = envelope.message else {
-        return Step::Nothing;
-    };
-    let from_owner = command.by.as_ref().is_some_and(|by| by.account == *owner);
-    let code = if from_owner {
-        code!("chat.unavailable")
-    } else {
-        code!("chat.not_owner")
-    };
-    let receipt = Receipt {
-        request: command.request,
-        outcome: Outcome::Failed { code },
-    };
-    Step::Reply(Envelope {
-        id: envelope.id,
-        message: Message::Receipt(receipt),
-    })
 }
 
 /// Sends `envelope`; a connection that broke shows up on its next read.
@@ -247,11 +256,16 @@ mod tests {
     }
 
     fn uplink(dir: &TempDir) -> Uplink {
+        with_commands(dir, mpsc::channel(1).0)
+    }
+
+    fn with_commands(dir: &TempDir, commands: Commands) -> Uplink {
         Uplink {
             state_dir: dir.to_path_buf(),
             app: weacon_appkit::build(&VERSION),
             capabilities: vec![Capability::from(CONNECT)],
             log: recording_logger().0,
+            commands,
             random: || 0,
         }
     }
@@ -363,15 +377,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn only_the_owner_is_answered_and_an_unpairing_ends_the_connection() {
+    async fn only_the_owners_commands_reach_the_daemon_and_an_unpairing_ends_it() {
         let (dir, tls) = (TempDir::new().unwrap(), Tls::new().await);
-        let link = uplink(&dir);
+        let (commands, mut taken) = mpsc::channel(4);
+        let link = with_commands(&dir, commands);
         let pairing = paired(&tls);
         let stranger = AccountId::try_from("a-other".to_owned()).unwrap();
         let serve = async {
             let mut peer = welcoming(&tls, &[CONNECT]).await;
+            peer.send(text(&command("r-owner", Some(&owner()))))
+                .await
+                .unwrap();
             let heard_back = [
-                asked(&mut peer, &command("r-owner", Some(&owner()))).await,
                 asked(&mut peer, &command("r-stranger", Some(&stranger))).await,
                 asked(&mut peer, &command("r-nobody", None)).await,
             ];
@@ -394,11 +411,28 @@ mod tests {
         assert_eq!(
             refusals,
             [
-                Some(("r-owner", "chat.unavailable")),
                 Some(("r-stranger", "chat.not_owner")),
                 Some(("r-nobody", "chat.not_owner")),
             ]
         );
+        assert_eq!(taken.recv().await.unwrap().request.as_str(), "r-owner");
+        taken.try_recv().unwrap_err();
+    }
+
+    #[tokio::test]
+    async fn an_owners_command_nothing_takes_is_refused_as_unavailable() {
+        let (dir, tls) = (TempDir::new().unwrap(), Tls::new().await);
+        let link = with_commands(&dir, mpsc::channel(1).0);
+        let pairing = paired(&tls);
+        let serve = async {
+            let mut peer = welcoming(&tls, &[CONNECT]).await;
+            asked(&mut peer, &command("r-owner", Some(&owner()))).await
+        };
+
+        let (ended, refused) = tokio::join!(link.connection(&pairing, &link.log), serve);
+
+        assert_eq!(ended.unwrap(), Ended::Lost);
+        assert_eq!(refusal(&refused), Some(("r-owner", "chat.unavailable")));
     }
 
     #[tokio::test]
