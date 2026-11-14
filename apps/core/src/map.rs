@@ -3,13 +3,13 @@ use std::io::{self, Read, Write};
 use std::path::Path;
 use std::time::Instant;
 
+use weacon_appkit::Outcome;
 use weacon_codemap::{SourceFile, index};
 use weacon_observability::Fault;
 use weacon_protocol::code;
 
 use crate::app::App;
 use crate::cli::MapCommand;
-use weacon_appkit::Outcome;
 
 /// Checks the repository; `Findings` when a pin no longer matches.
 pub(crate) fn run(

@@ -15,14 +15,9 @@ pub(crate) struct App {
 }
 
 impl App {
-    /// Logs to `stdout`, and sends error reports when `dsn` is set.
-    pub(crate) fn start(
-        version: Version,
-        stdout: Sink,
-        deliver: Deliver,
-        dsn: Option<&str>,
-    ) -> Self {
-        let log = root_logger(stdout, &version);
+    /// Logs to `logs`, and sends error reports when `dsn` is set.
+    pub(crate) fn start(version: Version, logs: Sink, deliver: Deliver, dsn: Option<&str>) -> Self {
+        let log = root_logger(logs, &version);
         log.info("app started", &[]);
         let client = format!("{}/{}", version.name, version.version);
         let reports = dsn.and_then(|dsn| reports(dsn, &client, &version, "", &log));
@@ -53,7 +48,7 @@ pub(crate) fn fresh<T: TryFrom<String>>(new_id: &dyn Fn() -> String) -> Result<T
     T::try_from(new_id()).map_err(|_| Fault::new(code!("id.invalid"), "A new id isn't valid"))
 }
 
-fn panicked() -> Fault {
+pub(crate) fn panicked() -> Fault {
     Fault::new(code!("server.panicked"), "The server panicked")
 }
 
@@ -70,14 +65,14 @@ mod tests {
     const DSN: &str = "https://key@sentry.example.com/1";
 
     fn start(dsn: Option<&str>) -> (App, Records, Arc<Mutex<Vec<Upload>>>) {
-        let (stdout, records) = recording_sink();
+        let (logs, records) = recording_sink();
         let uploads = Arc::new(Mutex::new(Vec::new()));
         let seen = Arc::clone(&uploads);
         let deliver: Deliver = Box::new(move |upload| {
             seen.lock().unwrap().push(upload.clone());
             Ok(())
         });
-        (App::start(VERSION, stdout, deliver, dsn), records, uploads)
+        (App::start(VERSION, logs, deliver, dsn), records, uploads)
     }
 
     #[test]

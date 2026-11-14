@@ -1,6 +1,6 @@
 use std::fs;
 use std::net::SocketAddr;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, UNIX_EPOCH};
@@ -104,6 +104,19 @@ impl Fixture {
         }
     }
 
+    /// A server running on the fixture's state.
+    pub(crate) async fn run(&self) -> Running {
+        run(self.shared.clone()).await
+    }
+
+    /// A server running on the fixture's state that `address` has signed in to, and the
+    /// sign-in's answer.
+    pub(crate) async fn signed_in(&self, address: &str) -> (Running, Value) {
+        let server = self.run().await;
+        let (_, body) = sign_in(self, server.address, address).await;
+        (server, body)
+    }
+
     /// Moves the clock on by `seconds`.
     pub(crate) fn advance(&self, seconds: i64) {
         self.clock
@@ -131,11 +144,16 @@ impl Fixture {
     pub(crate) async fn letter(&self) -> (String, String) {
         self.settled().await;
         let [file] = self.letters().try_into().unwrap();
-        let letter: Value = serde_json::from_slice(&fs::read(&file).unwrap()).unwrap();
-        fs::remove_file(&file).unwrap();
-        let text = |key: &str| letter[key].as_str().unwrap().to_owned();
-        (text("to"), text("code"))
+        letter_in(&file)
     }
+}
+
+/// Who the letter in `file` is for and its code, taking it out of the outbox.
+pub(crate) fn letter_in(file: &Path) -> (String, String) {
+    let letter: Value = serde_json::from_slice(&fs::read(file).unwrap()).unwrap();
+    fs::remove_file(file).unwrap();
+    let text = |key: &str| letter[key].as_str().unwrap().to_owned();
+    (text("to"), text("code"))
 }
 
 /// A server running on a port of its own until `stop` is sent.
@@ -286,4 +304,17 @@ pub(crate) fn member_id(id: &str) -> weacon_protocol::MemberId {
 /// An account id nothing else has.
 pub(crate) fn fresh_account() -> weacon_protocol::AccountId {
     weacon_protocol::AccountId::try_from(crate::app::new_id()).unwrap()
+}
+
+pub(crate) fn email(address: &str) -> Email {
+    Email::parse(address).unwrap()
+}
+
+/// A task to do, at its first version.
+pub(crate) fn new_task(id: &str, title: &str, order: &str) -> weacon_model::Task {
+    weacon_model::Task::new(
+        weacon_protocol::TaskId::try_from(id.to_owned()).unwrap(),
+        weacon_model::Title::try_from(title.to_owned()).unwrap(),
+        weacon_model::OrderKey::try_from(order.to_owned()).unwrap(),
+    )
 }

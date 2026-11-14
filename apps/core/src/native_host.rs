@@ -6,8 +6,8 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use weacon_observability::{Fault, Logger};
 use weacon_protocol::{Envelope, FrameError, LineDecoder, MAX_FRAME, code};
 
-use crate::app::{App, state_unavailable};
-use crate::daemon::{READ_CHUNK, runtime, socket_path};
+use crate::app::{App, runtime};
+use crate::daemon::{READ_CHUNK, socket_path};
 use crate::platform::{self, CHROME_HOST, Env};
 
 /// How Chrome names the extension; its id comes from the public key in its manifest.
@@ -34,7 +34,7 @@ fn register(
     exe: io::Result<PathBuf>,
     out: &mut impl Write,
 ) -> Result<(), Fault> {
-    let state_dir = app.state_dir.as_deref().ok_or_else(state_unavailable)?;
+    let state_dir = app.state_dir()?;
     let failed = |error: io::Error| {
         Fault::new(
             code!("chrome.connect_failed"),
@@ -77,7 +77,7 @@ pub(crate) fn run(app: &App, origin: &str) -> Result<(), Fault> {
             "Only Weacon's extension may start the native host",
         ));
     }
-    let state_dir = app.state_dir.as_deref().ok_or_else(state_unavailable)?;
+    let state_dir = app.state_dir()?;
     let socket = socket_path(state_dir);
     let runtime = runtime()?;
     let relayed = runtime.block_on(async {
