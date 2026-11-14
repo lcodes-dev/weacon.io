@@ -6,7 +6,8 @@ use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use weacon_protocol::{
-    AgentKind, AgentSession, ChatEntry, ChatEvent, OutsideSession, RunId, RunUpdate,
+    AgentKind, AgentSession, ChatEntry, ChatEvent, MAX_FRAME, OutsideSession, RunId, RunUpdate,
+    SessionsAnswerKind, SessionsQueryKind,
 };
 
 use crate::sessions::{Files, SessionFile, find};
@@ -16,6 +17,38 @@ use crate::transcript::{Said, Transcript};
 const HEAD: u64 = 65_536;
 /// How much of a file, 64 MiB, is read to open it; a longer session shows its start.
 const WHOLE: u64 = 67_108_864;
+
+/// How many sessions a list holds at most; with their folders, they still fit one frame.
+const LISTED: usize = 200;
+/// What an answer's envelope adds to its events.
+const ENVELOPE: usize = 4096;
+
+/// The answer to `query` about the sessions in each agent's config folder in `dirs`; `None`
+/// for a query this build doesn't know. A file that can't be read counts as missing.
+pub fn answer(
+    files: &impl Files,
+    dirs: &[(AgentKind, &Path)],
+    query: &SessionsQueryKind,
+) -> Option<SessionsAnswerKind> {
+    Some(match query {
+        SessionsQueryKind::List => SessionsAnswerKind::List {
+            sessions: list(files, dirs, LISTED),
+        },
+        SessionsQueryKind::Open {
+            agent,
+            session,
+            after,
+        } => {
+            let dir = dirs.iter().find(|(kind, _)| kind == agent);
+            let budget = MAX_FRAME - ENVELOPE;
+            match dir.and_then(|&place| open(files, place, session, *after, budget)) {
+                Some(Ok((events, more))) => SessionsAnswerKind::Opened { events, more },
+                Some(Err(_)) | None => SessionsAnswerKind::Missing,
+            }
+        }
+        SessionsQueryKind::Newer => return None,
+    })
+}
 
 /// The sessions in each agent's config folder, newest first, at most `limit`.
 pub fn list(files: &impl Files, dirs: &[(AgentKind, &Path)], limit: usize) -> Vec<OutsideSession> {
@@ -112,7 +145,7 @@ mod tests {
     use std::time::Duration;
 
     use serde_json::json;
-    use weacon_protocol::RunEvent;
+    use weacon_protocol::{Envelope, MachineId, Message, RequestId, RunEvent, SessionsAnswer};
     use weacon_testing::TempDir;
 
     use super::*;
@@ -298,6 +331,65 @@ mod tests {
             .unwrap()
             .unwrap_err();
         assert_eq!(list(&Disk, &[place], 10).first().unwrap().folder, None);
+    }
+
+    #[test]
+    fn queries_are_answered_from_the_agents_own_folders() {
+        let dir = TempDir::new().unwrap();
+        write(&claude(&dir, ONE), &prompt("Hi"), 9);
+        let secret = dir.join(".credentials.json");
+        write(&secret, "secret", 0);
+        fs::hard_link(&secret, claude(&dir, TWO)).unwrap();
+        let dirs = [(AgentKind::Claude, &*dir)];
+        let open = |agent, id| SessionsQueryKind::Open {
+            agent,
+            session: session(id),
+            after: 0,
+        };
+
+        let listed = answer(&Disk, &dirs, &SessionsQueryKind::List).unwrap();
+        let SessionsAnswerKind::List { sessions } = listed else {
+            panic!("{listed:?}");
+        };
+        assert_eq!(sessions.len(), 2);
+        let opened = answer(&Disk, &dirs, &open(AgentKind::Claude, ONE)).unwrap();
+        assert!(
+            matches!(opened, SessionsAnswerKind::Opened { ref events, more: false } if events.len() == 1)
+        );
+        for missing in [open(AgentKind::Claude, TWO), open(AgentKind::Codex, ONE)] {
+            assert_eq!(
+                answer(&Disk, &dirs, &missing),
+                Some(SessionsAnswerKind::Missing)
+            );
+        }
+        assert_eq!(answer(&Disk, &dirs, &SessionsQueryKind::Newer), None);
+    }
+
+    #[test]
+    fn a_long_session_opens_a_frame_at_a_time() {
+        let dir = TempDir::new().unwrap();
+        let line = prompt(&"x".repeat(1000));
+        write(&claude(&dir, ONE), &line.repeat(2000), 0);
+        let query = SessionsQueryKind::Open {
+            agent: AgentKind::Claude,
+            session: session(ONE),
+            after: 0,
+        };
+
+        let opened = answer(&Disk, &[(AgentKind::Claude, &*dir)], &query).unwrap();
+
+        assert!(
+            matches!(&opened, SessionsAnswerKind::Opened { events, more: true } if events.len() > 900)
+        );
+        let envelope = Envelope {
+            id: u32::MAX,
+            message: Message::SessionsAnswer(SessionsAnswer {
+                request: RequestId::try_from("r".repeat(64)).unwrap(),
+                machine: MachineId::try_from("m".repeat(64)).unwrap(),
+                answer: opened,
+            }),
+        };
+        envelope.to_json().unwrap();
     }
 
     #[test]
