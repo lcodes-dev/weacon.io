@@ -892,7 +892,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn chat_messages_before_the_hello_are_refused_like_any_other() {
+    async fn chat_and_sessions_messages_before_the_hello_are_refused_like_any_other() {
         use crate::chats::test_support::{bench, prompt, query};
         use weacon_protocol::ChatQueryKind;
 
@@ -905,6 +905,12 @@ mod tests {
         for first in [
             Message::ChatCommand(prompt("r-1", "Hi")),
             Message::ChatQuery(query("c-1", ChatQueryKind::Snapshot)),
+            Message::SessionsQuery(weacon_protocol::SessionsQuery {
+                request: weacon_protocol::RequestId::try_from("r-1".to_owned()).unwrap(),
+                machine: weacon_protocol::MachineId::try_from("mc-1".to_owned()).unwrap(),
+                query: weacon_protocol::SessionsQueryKind::List,
+                by: None,
+            }),
         ] {
             let stream = connect(&running.socket).await;
             let (replies, _stream) = exchange(stream, &line(1, first), 1).await;
