@@ -84,8 +84,8 @@ pub enum WorkspaceChange {
     Newer,
 }
 
-/// One change to `workspace`. `seq` grows strictly within a workspace, and a feed opened with
-/// `since=N` sends every change after `N`.
+/// One change to `workspace`, from the server to clients that have `workspace.feed`. `seq` grows
+/// strictly within a workspace, and a feed opened with `since=N` sends every change after `N`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct WorkspaceUpdate {
     pub workspace: WorkspaceId,

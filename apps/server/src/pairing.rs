@@ -157,7 +157,8 @@ async fn confirmed(
 }
 
 /// `POST /api/machines/pair/claim`: whether the person has confirmed the pairing yet, and
-/// once they have, the machine's token, only this once.
+/// once they have, the machine's token, the same for every claim until the pairing expires or
+/// the machine is unpaired.
 pub(crate) async fn claim(
     State(shared): State<Shared>,
     Client(from): Client,
