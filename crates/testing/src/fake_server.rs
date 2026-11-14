@@ -14,7 +14,9 @@ use weacon_protocol::{
     Capability, ChatAction, ChatCommand, Envelope, Message, Outcome, Receipt, code,
 };
 
-use crate::{BUFFER, fake_core, fake_diff, play};
+use crate::recording::envelope_text;
+use crate::replay::{BUFFER, play};
+use crate::{fake_core, fake_diff};
 
 /// Plays `recording` to the client on `stream`, waiting `pace` after each message, and appends
 /// each text frame the client sends after its hello to `received`, one per line. It offers
@@ -43,7 +45,7 @@ pub async fn serve(
     ];
     let answer = fake_core::answer(&hello, &offered)?;
     let welcomed = matches!(answer.message, Message::Welcome(_));
-    sink.send(Frame::text(fake_core::text(&answer)?))
+    sink.send(Frame::text(envelope_text(&answer)?))
         .await
         .map_err(|error| error.to_string())?;
     if !welcomed {
@@ -125,7 +127,7 @@ fn replies_to(text: &str) -> Vec<String> {
     };
     replies
         .iter()
-        .filter_map(|reply| fake_core::text(reply).ok())
+        .filter_map(|reply| envelope_text(reply).ok())
         .collect()
 }
 
@@ -155,7 +157,7 @@ mod tests {
 
     use super::*;
     use crate::TempDir;
-    use crate::fake_core::{SESSION, recording};
+    use crate::recording::{SESSION, recording};
 
     type Client = WebSocketStream<MaybeTlsStream<TcpStream>>;
 

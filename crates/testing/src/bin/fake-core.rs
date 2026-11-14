@@ -5,8 +5,9 @@ use std::path::Path;
 use std::process::ExitCode;
 use std::time::Duration;
 
-use weacon_testing::fake_core::{SESSION, args, recording, serve};
+use weacon_testing::fake_core::serve;
 use weacon_testing::platform::listen;
+use weacon_testing::recording::{SESSION, args, recording};
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> ExitCode {
