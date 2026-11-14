@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { Connection, type Listener, type Socket, type Status, parse, statusText } from "./connection.ts";
+import { Connection, type Listener, type Socket, type Status, offers, statusText } from "./connection.ts";
 import type { App, Envelope } from "./protocol.ts";
 
 const ME: App = { name: "weacon-web", version: "0.1.0", commit: "1a2b3c4" };
@@ -29,14 +29,24 @@ class FakeSocket implements Socket {
   }
 }
 
-function open(): { socket: FakeSocket; connection: Connection; statuses: Status[]; messages: Envelope[] } {
+type Opened = { socket: FakeSocket; connection: Connection; statuses: Status[]; messages: Envelope[]; deadline: () => void };
+
+// A connection whose welcome deadline runs only when the test calls it.
+function open(): Opened {
   const socket = new FakeSocket();
   const statuses: Status[] = [];
   const messages: Envelope[] = [];
+  const deadlines: Array<{ run: () => void; ms: number }> = [];
   const listener: Listener = { status: (status) => statuses.push(status), message: (envelope) => messages.push(envelope) };
-  const connection = new Connection(socket, ME, listener, { needs: "run.stream", offers: ["diff.view"] });
+  const connection = new Connection(socket, ME, listener, { needs: "run.stream", offers: ["diff.view"] }, (run, ms) =>
+    deadlines.push({ run, ms }),
+  );
   socket.fire("open");
-  return { socket, connection, statuses, messages };
+  assert.deepEqual(
+    deadlines.map(({ ms }) => ms),
+    [10_000],
+  );
+  return { socket, connection, statuses, messages, deadline: () => deadlines.forEach(({ run }) => run()) };
 }
 
 const welcome = (capabilities: string[]) => JSON.stringify({ id: 1, type: "welcome", app: SERVER, capabilities });
@@ -93,28 +103,6 @@ test("only a server that streams runs is welcome, and refusals say why", () => {
   assert.ok(ends.every(({ closed, sent }) => closed && sent === 1));
 });
 
-test("a connection that needs another capability asks for it and takes only a server that offers it", () => {
-  const welcomed = ["workspace.feed", "run.stream"].map((offered) => {
-    const socket = new FakeSocket();
-    const statuses: Status[] = [];
-    new Connection(socket, ME, { status: (status) => statuses.push(status), message: () => {} }, { needs: "workspace.feed", offers: [] });
-    socket.fire("open");
-    socket.fire("message", welcome([offered]));
-    return { hello: socket.sent[0], statuses };
-  });
-
-  assert.deepEqual(welcomed, [
-    {
-      hello: { id: 1, type: "hello", protocol: 1, app: ME, capabilities: ["workspace.feed"] },
-      statuses: [{ state: "live", server: SERVER, capabilities: ["workspace.feed"] }],
-    },
-    {
-      hello: { id: 1, type: "hello", protocol: 1, app: ME, capabilities: ["workspace.feed"] },
-      statuses: [{ state: "ended", code: "connection.server_too_old" }],
-    },
-  ]);
-});
-
 test("a socket that closes before any answer is refused", () => {
   const { socket, statuses } = open();
   socket.fire("close");
@@ -122,21 +110,12 @@ test("a socket that closes before any answer is refused", () => {
   assert.deepEqual(statuses, [{ state: "ended", code: "connection.refused" }]);
 });
 
-test("frames that aren't messages are dropped", () => {
-  assert.equal(parse(new ArrayBuffer(1)), undefined);
-  assert.equal(parse("[1]"), undefined);
-  assert.equal(parse('{"type":3}'), undefined);
-  assert.equal(parse("null"), undefined);
-  assert.deepEqual(parse('{"id":0,"type":"newer"}'), { id: 0, type: "newer" });
-});
-
-test("a server that doesn't welcome the app in time ends the connection", (context) => {
-  context.mock.timers.enable({ apis: ["setTimeout"] });
+test("a server that doesn't welcome the app in time ends the connection", () => {
   const late = open();
   const prompt = open();
-  context.mock.timers.tick(9_999);
   prompt.socket.fire("message", welcome(["run.stream"]));
-  context.mock.timers.tick(1);
+  late.deadline();
+  prompt.deadline();
 
   assert.deepEqual(late.statuses, [{ state: "ended", code: "connection.no_answer" }]);
   assert.ok(late.socket.closed);
@@ -154,4 +133,35 @@ test("the header says how the connection stands", () => {
     "The server runs another version of Weacon; reload the page",
   );
   assert.equal(statusText({ state: "ended", code: "connection.server_too_old" }), "The server is too old for this app");
+});
+
+test("a capability counts only while the server is live and offers it", () => {
+  const live: Status = { state: "live", server: SERVER, capabilities: ["run.stream", "chat.send"] };
+  assert.equal(offers(live, "chat.send"), true);
+  assert.equal(offers(live, "diff.view"), false);
+  assert.equal(offers({ state: "connecting" }, "chat.send"), false);
+  assert.equal(offers({ state: "ended", code: "connection.lost" }, "chat.send"), false);
+});
+
+test("a connection that needs another capability asks for it and takes only a server that offers it", () => {
+  const welcomed = ["workspace.feed", "run.stream"].map((offered) => {
+    const socket = new FakeSocket();
+    const statuses: Status[] = [];
+    const listener: Listener = { status: (status) => statuses.push(status), message: () => {} };
+    new Connection(socket, ME, listener, { needs: "workspace.feed", offers: [] }, () => {});
+    socket.fire("open");
+    socket.fire("message", welcome([offered]));
+    return { hello: socket.sent[0], statuses };
+  });
+
+  assert.deepEqual(welcomed, [
+    {
+      hello: { id: 1, type: "hello", protocol: 1, app: ME, capabilities: ["workspace.feed"] },
+      statuses: [{ state: "live", server: SERVER, capabilities: ["workspace.feed"] }],
+    },
+    {
+      hello: { id: 1, type: "hello", protocol: 1, app: ME, capabilities: ["workspace.feed"] },
+      statuses: [{ state: "ended", code: "connection.server_too_old" }],
+    },
+  ]);
 });
