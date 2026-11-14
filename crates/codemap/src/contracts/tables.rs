@@ -76,6 +76,8 @@ fn statements(sql: &str) -> Vec<String> {
         };
         match ch {
             '\'' => blank(&mut chars, current, |_, inside| inside == '\''),
+            // A quoted name is copied as it is, comment markers and all.
+            '"' | '`' => current.extend(chars.by_ref().take_while(|inside| *inside != ch)),
             '-' if chars.peek() == Some(&'-') => {
                 blank(&mut chars, current, |_, inside| inside == '\n');
             }
@@ -164,8 +166,18 @@ mod tests {
             "DROP TABLE notes; */ INSERT INTO notes VALUES ('', 'x; DROP TABLE notes;');",
             "CREATE TABLE \"main\".\"quoted\" (id); CREATE TABLE b (x); -- DROP TABLE b",
             "CREATE TABLE c (x DEFAULT -1, y DEFAULT 4/2); CREATE TABLE d (z);",
+            "CREATE TABLE \"notes--archive\" (id); CREATE TABLE `tasks/*x` (id); CREATE TABLE e (id);",
         ]);
-        let tables = [("b", 4), ("c", 5), ("d", 5), ("notes", 2), ("quoted", 4)];
+        let tables = [
+            ("b", 4),
+            ("c", 5),
+            ("d", 5),
+            ("e", 6),
+            ("notes", 2),
+            ("notesarchive", 6),
+            ("quoted", 4),
+            ("tasksx", 6),
+        ];
         assert_eq!(found, named(&tables));
     }
 

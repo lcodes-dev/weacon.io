@@ -61,19 +61,17 @@ pub(super) fn tests(item: Node<'_>, place: &Place, source: &[u8]) -> Vec<Item> {
     found
 }
 
-/// A name its parent module's `use` binds, as a child module reaches it: relative paths
-/// gain a `super`.
+/// A name its parent module's `use` binds, as a child module reaches it: `self` becomes
+/// `super`, and `super` gains another.
 fn from_child((path, bound): &(Segments, Bound)) -> Option<(Segments, Bound)> {
     let Bound::Name(_) = bound else {
         return None;
     };
-    let relative = path
-        .first()
-        .is_some_and(|first| first == "self" || first == "super");
-    let path = if relative {
-        [&["super".to_owned()][..], path].concat()
-    } else {
-        path.clone()
+    let up = ["super".to_owned()];
+    let path = match path.first().map(String::as_str) {
+        Some("self") => [&up[..], path.get(1..).unwrap_or_default()].concat(),
+        Some("super") => [&up[..], path].concat(),
+        _ => path.clone(),
     };
     Some((path, bound.clone()))
 }
@@ -86,4 +84,28 @@ pub(super) fn is_test(function: Node<'_>, source: &[u8]) -> bool {
         let path = inner.split(['(', ']']).next().unwrap_or_default();
         path == "test" || path.ends_with("::test")
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_parents_binding_is_rewritten_for_the_child() {
+        let rewrite = |path: &[&str]| {
+            let path = path.iter().map(|part| (*part).to_owned()).collect();
+            let found = from_child(&(path, Bound::Name("x".to_owned())));
+            found.map(|(path, _)| path.join("::"))
+        };
+        assert_eq!(
+            rewrite(&["self", "m", "go"]).as_deref(),
+            Some("super::m::go")
+        );
+        assert_eq!(
+            rewrite(&["super", "go"]).as_deref(),
+            Some("super::super::go")
+        );
+        assert_eq!(rewrite(&["crate", "go"]).as_deref(), Some("crate::go"));
+        assert_eq!(from_child(&(vec!["m".to_owned()], Bound::Glob)), None);
+    }
 }
