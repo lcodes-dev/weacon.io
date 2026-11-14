@@ -52,6 +52,25 @@ async function serveFeed(
   return { opened, sent };
 }
 
+// Holds back the next workspace the page makes; the returned function lets it through and waits for the answer.
+async function holdCreate(page: Page): Promise<() => Promise<void>> {
+  let answer = () => {};
+  const held = new Promise<void>((resolve) => {
+    answer = resolve;
+  });
+  await page.route("**/api/workspaces", async (route) => {
+    if (route.request().method() === "POST") {
+      await held;
+    }
+    await route.continue();
+  });
+  return async () => {
+    answer();
+    await page.waitForResponse((response) => response.request().method() === "POST");
+    await page.unroute("**/api/workspaces");
+  };
+}
+
 // Lists `list(n)` as every workspace's chats the nth time they are asked for; gives how often they were.
 async function listChats(page: Page, list: (asked: number) => ChatList): Promise<() => number> {
   let asked = 0;
@@ -94,7 +113,7 @@ test("a person signs in with the code sent to them, stays signed in, and signs o
   await page.getByLabel("Email").waitFor();
 });
 
-test("a signed-in person makes a workspace, opens its feed, and finds it again after a reload", { timeout: 600_000 }, async (t) => {
+test("a signed-in person makes a workspace, opens its feed, finds it again after a reload, and moves through history", { timeout: 600_000 }, async (t) => {
   const served = await serve();
   t.after(() => served.close());
   const { page } = served;
@@ -122,29 +141,28 @@ test("a signed-in person makes a workspace, opens its feed, and finds it again a
   await page.getByRole("heading", { name: "Workspaces" }).waitFor();
   await page.goForward();
   await page.getByRole("heading", { name: "Personal" }).waitFor();
+});
+
+test("the list takes a workspace made after the person moved on, and copes with a bad address, a failed load and an ended session", { timeout: 600_000 }, async (t) => {
+  const served = await serve();
+  t.after(() => served.close());
+  const { page } = served;
+  await signIn(served);
+  await page.getByLabel("Name").fill("Made-up team");
+  await page.getByRole("button", { name: "Create" }).click();
+  await page.getByRole("heading", { name: "Made-up team" }).waitFor();
 
   // A workspace made after the person moved on joins the list without taking them away.
   await page.getByRole("button", { name: "All workspaces" }).click();
-  let answer = () => {};
-  const held = new Promise<void>((resolve) => {
-    answer = resolve;
-  });
-  await page.route("**/api/workspaces", async (route) => {
-    if (route.request().method() === "POST") {
-      await held;
-    }
-    await route.continue();
-  });
+  const release = await holdCreate(page);
   await page.getByLabel("Name").fill("Late team");
   await page.getByRole("button", { name: "Create" }).click();
   await page.getByRole("button", { name: "Personal" }).click();
   await page.getByRole("heading", { name: "Personal" }).waitFor();
-  answer();
-  await page.waitForResponse((response) => response.request().method() === "POST");
+  await release();
   // Two frames after the answer, the page has handled it.
   await page.evaluate(() => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done))));
   assert.equal(await page.getByRole("heading", { name: "Personal" }).count(), 1);
-  await page.unroute("**/api/workspaces");
   await page.getByRole("button", { name: "All workspaces" }).click();
   await page.getByRole("button", { name: "Late team" }).waitFor();
   await page.goto(new URL("/?workspace=not-mine", page.url()).href);
@@ -242,22 +260,11 @@ test("Settings shows the account and this build, and signs out from there", { ti
   await page.getByRole("heading", { name: "Workspaces" }).waitFor();
 
   // A workspace made while Settings covers the list joins it without opening.
-  let answer = () => {};
-  const held = new Promise<void>((resolve) => {
-    answer = resolve;
-  });
-  await page.route("**/api/workspaces", async (route) => {
-    if (route.request().method() === "POST") {
-      await held;
-    }
-    await route.continue();
-  });
+  const release = await holdCreate(page);
   await page.getByLabel("Name").fill("Made in passing");
   await page.getByRole("button", { name: "Create" }).click();
   await page.getByRole("button", { name: "Settings" }).click();
-  answer();
-  await page.waitForResponse((response) => response.request().method() === "POST");
-  await page.unroute("**/api/workspaces");
+  await release();
   await page.getByRole("button", { name: "Back" }).click();
   await page.getByRole("button", { name: "Made in passing" }).waitFor();
   await page.getByRole("heading", { name: "Workspaces" }).waitFor();
