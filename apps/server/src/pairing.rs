@@ -73,6 +73,10 @@ pub(crate) async fn start(
     if body.os == MachineOs::Newer {
         return error(StatusCode::BAD_REQUEST, code!("pairing.invalid"), false);
     }
+    // Answered like a name the protocol refuses, since only a new name can be held to this.
+    if body.name.as_str().trim() != body.name.as_str() {
+        return error(StatusCode::BAD_REQUEST, code!("request.invalid"), false);
+    }
     match started(&shared, &body).await {
         Ok(Some(started)) => (StatusCode::CREATED, Json(started)).into_response(),
         Ok(None) => too_many(code!("pairing.too_many")),
@@ -438,6 +442,20 @@ mod tests {
 
         assert_eq!(status, "http/1.1 400 bad request");
         assert_eq!(refusal["code"], "pairing.invalid");
+    }
+
+    #[tokio::test]
+    async fn a_blank_or_untrimmed_name_is_refused() {
+        let fixture = Fixture::new().await;
+        let server = fixture.run().await;
+
+        for name in ["   ", " Studio", "Studio\u{a0}", "Studio\n"] {
+            let start = json!({ "name": name, "os": "macos", "key": "ab".repeat(32) });
+            let (status, refusal) = post(server.address, "/api/machines/pair", "", &start).await;
+
+            assert_eq!(status, "http/1.1 400 bad request", "{name:?}");
+            assert_eq!(refusal["code"], "request.invalid", "{name:?}");
+        }
     }
 
     #[tokio::test]
