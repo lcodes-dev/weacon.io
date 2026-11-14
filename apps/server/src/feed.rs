@@ -254,7 +254,7 @@ mod tests {
     use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async};
     use weacon_protocol::{Hello, MemberId, PROTOCOL, WorkspaceChange, WorkspaceUpdate};
 
-    use weacon_model::{Change, OrderKey, Task, TaskTitle};
+    use weacon_model::{Change, OrderKey, Task, Title};
     use weacon_protocol::TaskId;
 
     use super::*;
@@ -441,7 +441,7 @@ mod tests {
         let first = next(&mut plain).await;
         let task = Task::new(
             TaskId::try_from("t1".to_owned()).unwrap(),
-            TaskTitle::try_from("Write".to_owned()).unwrap(),
+            Title::try_from("Write".to_owned()).unwrap(),
             OrderKey::try_from("V".to_owned()).unwrap(),
         );
         let change = Change::by(member_id("m1"), 0);

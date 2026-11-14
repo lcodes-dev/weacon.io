@@ -3,7 +3,7 @@ use axum::extract::rejection::{JsonRejection, PathRejection};
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use weacon_model::{Change, OrderKey, Task, TaskEdit, TaskTitle, TaskVersion};
+use weacon_model::{Change, OrderKey, Revision, Task, TaskEdit, Title};
 use weacon_observability::Fault;
 use weacon_protocol::{
     TaskChange, TaskCreate, TaskEditBody, TaskId, TaskList, TaskRecord, WorkspaceId, code,
@@ -73,7 +73,7 @@ pub(crate) async fn change(
             TaskEditBody::Newer => return Err(invalid()),
         };
         let change = Change::by(member.id.clone(), shared.now());
-        let read_at = TaskVersion::new(body.version);
+        let read_at = Revision::new(body.version);
         member
             .workspace
             .edit_task(&id, read_at, edit, &change)
@@ -115,8 +115,8 @@ fn place(
         .ok_or_else(|| Fault::new(code!("task.no_room"), "There is no room for the task there"))
 }
 
-fn title(text: String) -> Result<TaskTitle, Fault> {
-    TaskTitle::try_from(text).map_err(|_| invalid())
+fn title(text: String) -> Result<Title, Fault> {
+    Title::try_from(text).map_err(|_| invalid())
 }
 
 fn record(task: Task) -> TaskRecord {
