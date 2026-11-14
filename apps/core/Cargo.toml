@@ -15,18 +15,13 @@ path = "src/main.rs"
 clap.workspace = true
 futures-util.workspace = true
 getrandom.workspace = true
-rustls.workspace = true
-sha2.workspace = true
-http-body-util.workspace = true
-hyper = { workspace = true, features = ["client"] }
-hyper-util.workspace = true
-tokio-rustls.workspace = true
-tokio-tungstenite.workspace = true
-webpki-roots.workspace = true
-x25519-dalek.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
+tokio-rustls.workspace = true
+tokio-tungstenite.workspace = true
 tokio.workspace = true
+ureq.workspace = true
 weacon-agents.workspace = true
 weacon-appkit.workspace = true
 weacon-client.workspace = true
@@ -34,6 +29,8 @@ weacon-codemap.workspace = true
 weacon-observability.workspace = true
 weacon-protocol.workspace = true
 weacon-version.workspace = true
+webpki-roots.workspace = true
+x25519-dalek.workspace = true
 
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true

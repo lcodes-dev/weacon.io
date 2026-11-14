@@ -3,16 +3,13 @@
 
 use std::io::Write;
 use std::path::Path;
+use std::thread::sleep;
 use std::time::Duration;
 
-use hyper::StatusCode;
 use weacon_observability::Fault;
-use weacon_protocol::{
-    AccountId, MachineId, MachineName, PairClaim, PairClaimed, PairStart, PairStarted, code,
-};
+use weacon_protocol::{MachineName, PairClaim, PairClaimed, PairStart, PairStarted, code};
 
 use crate::app::{App, state_unavailable};
-use crate::daemon::runtime;
 use crate::machine::{self, Key, Paired};
 use crate::platform;
 use crate::server::{Failure, Server};
@@ -20,72 +17,82 @@ use crate::server::{Failure, Server};
 /// How often the core asks whether the person has confirmed.
 const CLAIM_EVERY: Duration = Duration::from_secs(2);
 
-/// What `weacon pair` was asked.
-#[derive(Debug, PartialEq, Eq)]
-pub(crate) struct Pairing {
-    pub(crate) server: String,
-    pub(crate) name: Option<String>,
-    /// The certificates to trust for the server in place of the public roots, as PEM.
-    pub(crate) pinned: Option<String>,
-}
-
-/// Reads the PEM file `pin`, if one was given.
+/// Pairs this machine with the server at `url`, named `name`, trusting the certificates in
+/// the PEM file `pin` in place of the public ones; prints the code to confirm and the key's
+/// fingerprint to `out`.
 ///
 /// # Errors
-/// When it can't be read.
-pub(crate) fn pinned(pin: Option<&Path>) -> Result<Option<String>, Fault> {
-    pin.map(|path| std::fs::read_to_string(path).map_err(|error| bad_pin().because(error)))
-        .transpose()
-}
-
-/// Pairs this machine, printing the code to confirm and the key's fingerprint to `out`.
-///
-/// # Errors
-/// When the server can't be reached or refuses, the person doesn't confirm in time, or the
-/// pairing can't be kept.
-pub(crate) fn run(app: &App, pairing: &Pairing, out: &mut impl Write) -> Result<(), Fault> {
+/// When the pin can't be read, the server can't be reached or refuses, nobody confirms in
+/// time, or the pairing can't be kept.
+pub(crate) fn run(
+    app: &App,
+    url: &str,
+    name: Option<String>,
+    pin: Option<&Path>,
+    out: &mut impl Write,
+) -> Result<(), Fault> {
     let state_dir = app.state_dir.as_deref().ok_or_else(state_unavailable)?;
-    let key = Key::from_random(random_key()?);
-    runtime()?.block_on(pair(state_dir, pairing, key, CLAIM_EVERY, out))
+    let pinned = pin
+        .map(|path| std::fs::read_to_string(path).map_err(|error| bad_pin().because(error)))
+        .transpose()?;
+    let asked = Asked {
+        url,
+        name: name.unwrap_or_else(|| platform::MACHINE_NAME.to_owned()),
+        pinned,
+    };
+    pair(
+        state_dir,
+        &asked,
+        Key::from_random(random_key()?),
+        CLAIM_EVERY,
+        out,
+    )
 }
 
-async fn pair(
+/// What `weacon pair` was asked.
+struct Asked<'a> {
+    url: &'a str,
+    name: String,
+    /// The certificates to trust in place of the public roots, as PEM.
+    pinned: Option<String>,
+}
+
+fn pair(
     state_dir: &Path,
-    pairing: &Pairing,
+    asked: &Asked<'_>,
     key: Key,
     every: Duration,
     out: &mut impl Write,
 ) -> Result<(), Fault> {
-    let pinned = pairing.pinned.clone();
-    let server = Server::new(&pairing.server, pinned.as_deref().map(str::as_bytes))?;
-    let name = pairing
-        .name
-        .clone()
-        .unwrap_or_else(|| platform::MACHINE_NAME.to_owned());
+    let server = Server::new(asked.url, asked.pinned.as_deref().map(str::as_bytes))?;
     let start = PairStart {
-        name: MachineName::try_from(name).map_err(|_| bad_name())?,
+        name: MachineName::try_from(asked.name.clone()).map_err(|_| bad_name())?,
         os: platform::MACHINE_OS,
-        key: key.public()?,
+        key: key.public(),
     };
-    let started: PairStarted = server
-        .post("/api/machines/pair", &start)
-        .await
-        .map_err(failed)?;
-    let fingerprint = key.fingerprint()?;
+    let started: PairStarted = server.post("/api/machines/pair", &start).map_err(failed)?;
     writeln!(
         out,
-        "Enter this code in Weacon to pair this machine: {}\nCheck that Weacon shows this key: {fingerprint}\nWaiting for you to confirm…",
-        started.code
+        "Enter this code in Weacon to pair this machine: {}\nCheck that Weacon shows this key: {}\nWaiting for you to confirm…",
+        started.code,
+        key.fingerprint()
     )
     .map_err(|error| not_printed().because(error))?;
     let claim = PairClaim {
         pairing: started.pairing,
         secret: started.secret,
     };
-    let (machine, owner, token) = claimed(&server, &claim, every).await?;
+    let PairClaimed::Paired {
+        machine,
+        owner,
+        token,
+    } = claimed(&server, &claim, every)?
+    else {
+        return Err(refused());
+    };
     let paired = Paired {
-        server: pairing.server.clone(),
-        pinned,
+        server: asked.url.to_owned(),
+        pinned: asked.pinned.clone(),
         machine,
         owner,
         token,
@@ -100,24 +107,15 @@ async fn pair(
 }
 
 /// Claims the pairing every `every` until the person confirms it, or it ends.
-async fn claimed(
-    server: &Server,
-    claim: &PairClaim,
-    every: Duration,
-) -> Result<(MachineId, AccountId, String), Fault> {
+fn claimed(server: &Server, claim: &PairClaim, every: Duration) -> Result<PairClaimed, Fault> {
     loop {
-        match server.post("/api/machines/pair/claim", claim).await {
-            Ok(PairClaimed::Paired {
-                machine,
-                owner,
-                token,
-            }) => return Ok((machine, owner, token)),
+        match server.post("/api/machines/pair/claim", claim) {
             Ok(PairClaimed::Waiting) | Err(Failure::Unreachable(_)) => {}
-            Ok(PairClaimed::Newer) => return Err(failed(Failure::Refused(StatusCode::OK))),
-            Err(Failure::Refused(StatusCode::NOT_FOUND)) => return Err(expired()),
-            Err(refused) => return Err(failed(refused)),
+            Ok(claimed) => return Ok(claimed),
+            Err(Failure::Refused(404)) => return Err(expired()),
+            Err(Failure::Refused(_)) => return Err(refused()),
         }
-        tokio::time::sleep(every).await;
+        sleep(every);
     }
 }
 
@@ -131,11 +129,15 @@ fn random_key() -> Result<[u8; 32], Fault> {
 fn failed(failure: Failure) -> Fault {
     match failure {
         Failure::Unreachable(fault) => fault,
-        Failure::Refused(..) => Fault::new(
-            code!("pairing.refused"),
-            "The server refused to pair this machine",
-        ),
+        Failure::Refused(_) => refused(),
     }
+}
+
+fn refused() -> Fault {
+    Fault::new(
+        code!("pairing.refused"),
+        "The server refused to pair this machine",
+    )
 }
 
 fn expired() -> Fault {
@@ -169,13 +171,15 @@ fn not_printed() -> Fault {
 #[cfg(test)]
 mod tests {
     use serde::Serialize;
-    use std::fs;
-    use weacon_protocol::{ErrorBody, MachineOs, PairingId};
+    use weacon_protocol::{AccountId, ErrorBody, MachineId, MachineOs, PairingId};
 
     use weacon_testing::TempDir;
 
     use super::*;
-    use crate::test_support::tls::{Tls, answer, read_request};
+    use crate::test_support::{
+        self,
+        tls::{Tls, answer, read_request},
+    };
 
     fn started() -> PairStarted {
         PairStarted {
@@ -226,15 +230,26 @@ mod tests {
         name: Option<&str>,
         answers: Vec<(&str, String)>,
     ) -> Outcome {
-        let pairing = Pairing {
-            server: tls.url(),
-            name: name.map(str::to_owned),
-            pinned: Some(tls.pem.clone()),
-        };
-        let mut out = Vec::new();
-        let key = Key::from_random([7; 32]);
-        let paired_up = pair(dir, &pairing, key, Duration::ZERO, &mut out);
-        let (done, requests) = tokio::join!(paired_up, serve(tls, answers));
+        let (dir, url, pem) = (dir.to_path_buf(), tls.url(), tls.pem.clone());
+        let name = name.unwrap_or(platform::MACHINE_NAME).to_owned();
+        let paired_up = tokio::task::spawn_blocking(move || {
+            let asked = Asked {
+                url: &url,
+                name,
+                pinned: Some(pem),
+            };
+            let mut out = Vec::new();
+            let done = pair(
+                &dir,
+                &asked,
+                Key::from_random([7; 32]),
+                Duration::ZERO,
+                &mut out,
+            );
+            (done, out)
+        });
+        let (joined, requests) = tokio::join!(paired_up, serve(tls, answers));
+        let (done, out) = joined.unwrap();
         Outcome {
             done,
             requests,
@@ -263,7 +278,7 @@ mod tests {
         let start = PairStart {
             name: MachineName::try_from("Studio".to_owned()).unwrap(),
             os: platform::MACHINE_OS,
-            key: key.public().unwrap(),
+            key: key.public(),
         };
         let claim = r#"{"pairing":"p-1","secret":"s3cret"}"#;
         assert_eq!(
@@ -275,7 +290,7 @@ mod tests {
             ]
         );
         assert!(printed.contains("ABCD-EFGH"), "{printed}");
-        assert!(printed.contains(&key.fingerprint().unwrap()), "{printed}");
+        assert!(printed.contains(&key.fingerprint()), "{printed}");
         assert_eq!(
             kept,
             Paired {
@@ -333,22 +348,21 @@ mod tests {
     }
 
     #[test]
-    fn a_pin_is_read_from_its_file() {
+    fn a_pin_that_cant_be_read_pairs_nothing() {
         let dir = TempDir::new().unwrap();
-        fs::write(dir.join("server.pem"), "PEM").unwrap();
+        let app = test_support::app(Some(&dir), None);
+        let missing = dir.join("missing.pem");
 
-        assert_eq!(pinned(None).unwrap(), None);
-        assert_eq!(
-            pinned(Some(&dir.join("server.pem"))).unwrap().as_deref(),
-            Some("PEM")
+        let failed = run(
+            &app,
+            "https://localhost:1",
+            None,
+            Some(&missing),
+            &mut Vec::new(),
         );
-        assert_eq!(
-            pinned(Some(&dir.join("missing.pem")))
-                .unwrap_err()
-                .code()
-                .as_str(),
-            "server.pin_unreadable"
-        );
+
+        assert_eq!(failed.unwrap_err().code().as_str(), "server.pin_unreadable");
+        assert_eq!(machine::read(&dir).unwrap(), None);
     }
 
     #[test]

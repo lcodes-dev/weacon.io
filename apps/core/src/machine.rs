@@ -28,38 +28,51 @@ pub(crate) struct Paired {
     pub(crate) key: Key,
 }
 
-/// The machine's X25519 private key, as 64 hex digits.
+/// The machine's X25519 private key, kept as 64 hex digits.
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(transparent)]
-pub(crate) struct Key(String);
+#[serde(try_from = "String", into = "String")]
+pub(crate) struct Key([u8; 32]);
 
 impl Key {
     /// A key made from 32 random bytes.
-    pub(crate) fn from_random(bytes: [u8; 32]) -> Self {
-        Self(hex(&bytes))
+    pub(crate) const fn from_random(bytes: [u8; 32]) -> Self {
+        Self(bytes)
     }
 
     /// The public half, which the server and browsers know the machine by.
-    pub(crate) fn public(&self) -> Result<MachineKey, Fault> {
-        Ok(MachineKey::from_bytes(self.public_bytes()?))
+    pub(crate) fn public(&self) -> MachineKey {
+        MachineKey::from_bytes(self.public_bytes())
     }
 
     /// How a person checks the public key: the first half of its SHA-256, in lowercase hex,
     /// in groups of four.
-    pub(crate) fn fingerprint(&self) -> Result<String, Fault> {
-        let digest = Sha256::digest(self.public_bytes()?);
+    pub(crate) fn fingerprint(&self) -> String {
+        let digest = Sha256::digest(self.public_bytes());
         let digits = hex(digest.get(..16).unwrap_or_default());
         let groups: Vec<_> = digits
             .as_bytes()
             .chunks(4)
             .map(String::from_utf8_lossy)
             .collect();
-        Ok(groups.join(" "))
+        groups.join(" ")
     }
 
-    fn public_bytes(&self) -> Result<[u8; 32], Fault> {
-        let secret = StaticSecret::from(bytes(&self.0).ok_or_else(unreadable)?);
-        Ok(PublicKey::from(&secret).to_bytes())
+    fn public_bytes(&self) -> [u8; 32] {
+        PublicKey::from(&StaticSecret::from(self.0)).to_bytes()
+    }
+}
+
+impl TryFrom<String> for Key {
+    type Error = &'static str;
+
+    fn try_from(hex: String) -> Result<Self, Self::Error> {
+        bytes(&hex).map(Self).ok_or("not a machine key")
+    }
+}
+
+impl From<Key> for String {
+    fn from(key: Key) -> Self {
+        hex(&key.0)
     }
 }
 
@@ -124,13 +137,11 @@ fn not_saved() -> Fault {
     )
 }
 
-// A lookup table, as clippy refuses `format!` collected into a string.
 fn hex(bytes: &[u8]) -> String {
-    const DIGITS: &[u8; 16] = b"0123456789abcdef";
     bytes
         .iter()
         .flat_map(|byte| [byte >> 4, byte & 0xf])
-        .filter_map(|nibble| DIGITS.get(usize::from(nibble)).copied().map(char::from))
+        .filter_map(|nibble| char::from_digit(u32::from(nibble), 16))
         .collect()
 }
 
@@ -174,7 +185,7 @@ mod tests {
 
     use super::*;
 
-    // RFC 7748's first X25519 test key.
+    // A published X25519 test vector: this private key has this public key.
     const SECRET: &str = "77076d0a7318a57d3c16c17251b26645df4c2f87ebc0992ab177fba51db92c2a";
     const PUBLIC: &str = "8520f0098930a754748b7ddcb43ef75a0dbf3a0d26381af4eba4a98eaa9b4e6a";
 
@@ -195,16 +206,16 @@ mod tests {
 
     #[test]
     fn a_key_gives_its_x25519_public_half_and_a_fingerprint_of_it() {
-        let fingerprint = key().fingerprint().unwrap();
+        let fingerprint = key().fingerprint();
         let expected = hex(Sha256::digest(bytes(PUBLIC).unwrap()).get(..16).unwrap());
 
-        assert_eq!(key().0, SECRET);
-        assert_eq!(key().public().unwrap().as_str(), PUBLIC);
+        assert_eq!(String::from(key()), SECRET);
+        assert_eq!(key().public().as_str(), PUBLIC);
         assert_eq!(fingerprint.replace(' ', ""), expected);
         assert_eq!(fingerprint.len(), 39);
         assert!(fingerprint.split(' ').all(|group| group.len() == 4));
-        Key("zz".repeat(32)).public().unwrap_err();
-        Key("ab".repeat(31)).public().unwrap_err();
+        assert_eq!(Key::try_from("zz".repeat(32)), Err("not a machine key"));
+        assert_eq!(Key::try_from("ab".repeat(31)), Err("not a machine key"));
     }
 
     #[test]
