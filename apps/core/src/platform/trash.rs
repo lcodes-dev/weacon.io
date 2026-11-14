@@ -16,11 +16,32 @@ use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 #[cfg(target_os = "linux")]
+#[cfg_attr(
+    not(test),
+    expect(
+        unused_imports,
+        reason = "chats remove their worktrees through it once wired in"
+    )
+)]
 pub(crate) use linux::trash;
 #[cfg(target_os = "macos")]
+#[cfg_attr(
+    not(test),
+    expect(
+        unused_imports,
+        reason = "chats remove their worktrees through it once wired in"
+    )
+)]
 pub(crate) use macos::trash;
 use serde::{Deserialize, Serialize};
 #[cfg(windows)]
+#[cfg_attr(
+    not(test),
+    expect(
+        unused_imports,
+        reason = "chats remove their worktrees through it once wired in"
+    )
+)]
 pub(crate) use windows::trash;
 
 #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]

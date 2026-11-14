@@ -18,15 +18,44 @@ pub(crate) fn trash(path: &Path, env: Env<'_>, now: SystemTime) -> io::Result<Tr
         return Err(io::ErrorKind::InvalidInput.into());
     }
     let dev = path.symlink_metadata()?.dev();
+    // Resolved, so the walk to the drive's top never stops at a link to another drive.
     let parent = path
         .parent()
         .ok_or(io::ErrorKind::InvalidInput)?
         .canonicalize()?;
-    let dir = trash_dir(&parent, dev, env)?;
+    let home = xdg_dir(env, "XDG_DATA_HOME", ".local/share").map(|dir| dir.join("Trash"));
+    let places = Places {
+        home,
+        top: top_of(&parent, dev),
+        dev,
+        uid: own_uid(),
+    };
+    trash_into(path, &parent, &places, now)
+}
+
+// Where an item's Trash may be.
+struct Places {
+    home: Option<PathBuf>,
+    // The item's drive, and its top.
+    top: PathBuf,
+    dev: u64,
+    uid: u32,
+}
+
+// `trash` once it knows the item's resolved `parent` and its Trash's `places`.
+fn trash_into(path: &Path, parent: &Path, places: &Places, now: SystemTime) -> io::Result<Trashed> {
+    let dir = places.pick().ok_or(io::ErrorKind::Unsupported)?;
     let name = path.file_name().ok_or(io::ErrorKind::InvalidInput)?;
+    let full = parent.join(name);
+    // A drive's own Trash says where from its top, so the record holds wherever it's mounted.
+    let from = if Some(&dir) == places.home.as_ref() {
+        full.as_path()
+    } else {
+        full.strip_prefix(&places.top).unwrap_or(&full)
+    };
     let entry = format!(
         "[Trash Info]\nPath={}\nDeletionDate={}\n",
-        encode(path.as_os_str().as_bytes()),
+        encode(from.as_os_str().as_bytes()),
         local_time(now)?
     );
     let mut open = fs::OpenOptions::new();
@@ -42,44 +71,49 @@ pub(crate) fn trash(path: &Path, env: Env<'_>, now: SystemTime) -> io::Result<Tr
     })
 }
 
-// `parent` is the item's folder with its symlinks resolved, so the walk to the drive's top
-// never stops at a link to another drive.
 #[expect(unsafe_code, reason = "getuid has no safe API in std")]
-fn trash_dir(parent: &Path, dev: u64, env: Env<'_>) -> io::Result<PathBuf> {
-    let home = xdg_dir(env, "XDG_DATA_HOME", ".local/share").map(|dir| dir.join("Trash"));
+fn own_uid() -> u32 {
     // SAFETY: getuid has no preconditions and can't fail.
-    let uid = unsafe { libc::getuid() };
-    pick(home, &top_of(parent, dev), uid, dev).ok_or_else(|| io::ErrorKind::Unsupported.into())
+    unsafe { libc::getuid() }
 }
 
-// The home Trash if it's on drive `dev`, else the shared one at the drive's `top` if its
-// sticky bit is set, else this user's own there; each with `files` and `info` made.
-pub(super) fn pick(home: Option<PathBuf>, top: &Path, uid: u32, dev: u64) -> Option<PathBuf> {
-    let shared = top.join(".Trash");
-    let sticky = shared
-        .symlink_metadata()
-        .is_ok_and(|meta| meta.is_dir() && meta.permissions().mode() & libc::S_ISVTX != 0);
-    let usable = |dir: PathBuf| usable(dir, uid, dev);
-    home.and_then(usable)
-        .or_else(|| {
-            sticky
-                .then(|| usable(shared.join(uid.to_string())))
-                .flatten()
-        })
-        .or_else(|| usable(top.join(format!(".Trash-{uid}"))))
+fn usable_home(home: PathBuf, places: &Places) -> Option<PathBuf> {
+    usable(home, places.uid, places.dev, 0o022)
+}
+
+impl Places {
+    // The home Trash if it's on the item's drive, else the shared one at the drive's top if its
+    // sticky bit is set, else this user's own there; each with `files` and `info` made.
+    fn pick(&self) -> Option<PathBuf> {
+        let shared = self.top.join(".Trash");
+        let sticky = shared
+            .symlink_metadata()
+            .is_ok_and(|meta| meta.is_dir() && meta.permissions().mode() & libc::S_ISVTX != 0);
+        // A drive's Trash, unlike the home one, may sit where others can look, so it's closed.
+        let usable = |dir: PathBuf| usable(dir, self.uid, self.dev, 0o077);
+        self.home
+            .clone()
+            .and_then(|home| usable_home(home, self))
+            .or_else(|| {
+                sticky
+                    .then(|| usable(shared.join(self.uid.to_string())))
+                    .flatten()
+            })
+            .or_else(|| usable(self.top.join(format!(".Trash-{}", self.uid))))
+    }
 }
 
 // `dir` as a Trash, when it and its `files` and `info` can be made and are real folders on
-// drive `dev` that only `uid` owns and can change.
-fn usable(dir: PathBuf, uid: u32, dev: u64) -> Option<PathBuf> {
-    let own = |path: &Path| {
+// drive `dev` that only `uid` owns and can change, and `dir` has none of the `closed` bits.
+fn usable(dir: PathBuf, uid: u32, dev: u64, closed: u32) -> Option<PathBuf> {
+    let own = |path: &Path, closed: u32| {
         path.symlink_metadata().is_ok_and(|meta| {
-            meta.is_dir() && meta.dev() == dev && meta.uid() == uid && meta.mode() & 0o022 == 0
+            meta.is_dir() && meta.dev() == dev && meta.uid() == uid && meta.mode() & closed == 0
         })
     };
     let parts = [dir.join("files"), dir.join("info")];
     let made = parts.iter().all(|part| private_dir(part).is_ok());
-    (made && own(&dir) && parts.iter().all(|part| own(part))).then_some(dir)
+    (made && own(&dir, closed) && parts.iter().all(|part| own(part, 0o022))).then_some(dir)
 }
 
 // A path in a `.trashinfo` file: bytes other than unreserved ones and `/` as `%XX`.
@@ -129,20 +163,44 @@ mod tests {
 
     use super::*;
     use crate::platform::trash::{folder, restore};
-    use crate::test_support::env;
+
+    fn pick(home: Option<PathBuf>, top: &Path, uid: u32, dev: u64) -> Option<PathBuf> {
+        let top = top.to_owned();
+        Places {
+            home,
+            top,
+            dev,
+            uid,
+        }
+        .pick()
+    }
+
+    // `trash`, with the drive's top in the test's own folder, so nothing reaches the system's.
+    fn trash(path: &Path, data: &Path, now: SystemTime) -> io::Result<Trashed> {
+        let parent = path.parent().unwrap().canonicalize().unwrap();
+        let uid = fs::metadata(&parent).unwrap().uid();
+        let top = data.parent().unwrap().join("top");
+        let dev = fs::metadata(path).unwrap().dev();
+        let places = Places {
+            home: Some(data.join("Trash")),
+            top,
+            dev,
+            uid,
+        };
+        trash_into(path, &parent, &places, now)
+    }
 
     #[test]
     fn on_linux_items_go_to_the_home_trash_with_an_info_file_each() {
         let dir = TempDir::new().unwrap();
         let data = dir.join("data");
-        let vars = env(&[("XDG_DATA_HOME", data.to_str().unwrap())]);
         let first = folder(&dir, "c a");
         let second_dir = dir.join("other");
         let second = folder(&second_dir, "c a");
 
         let when = UNIX_EPOCH + Duration::from_secs(1_700_000_000);
-        let one = trash(&first, &vars, when).unwrap();
-        let two = trash(&second, &vars, when).unwrap();
+        let one = trash(&first, &data, when).unwrap();
+        let two = trash(&second, &data, when).unwrap();
 
         assert!(!first.exists() && !second.exists());
         assert_eq!(one.item, data.join("Trash/files/c a"));
@@ -168,14 +226,33 @@ mod tests {
     fn on_linux_a_name_taken_in_the_trash_is_skipped() {
         let dir = TempDir::new().unwrap();
         let data = dir.join("data");
-        let vars = env(&[("XDG_DATA_HOME", data.to_str().unwrap())]);
         // An item left without its info file still holds its name.
+        private_dir(&data.join("Trash/files")).unwrap();
         folder(&data.join("Trash/files"), "c-b");
 
-        let trashed = trash(&folder(&dir, "c-b"), &vars, UNIX_EPOCH).unwrap();
+        let trashed = trash(&folder(&dir, "c-b"), &data, UNIX_EPOCH).unwrap();
 
         assert_eq!(trashed.item, data.join("Trash/files/c-b.2"));
         assert!(!data.join("Trash/info/c-b.trashinfo").exists());
+    }
+
+    #[test]
+    fn on_linux_a_drives_own_trash_records_where_from_its_top() {
+        let dir = TempDir::new().unwrap();
+        let item = folder(&dir.join("work"), "c-d");
+        let parent = dir.join("work").canonicalize().unwrap();
+        let meta = fs::metadata(&parent).unwrap();
+        let places = Places {
+            home: None,
+            top: parent.parent().unwrap().to_owned(),
+            dev: meta.dev(),
+            uid: meta.uid(),
+        };
+
+        let trashed = trash_into(&item, &parent, &places, UNIX_EPOCH).unwrap();
+
+        let info = fs::read_to_string(trashed.info.unwrap()).unwrap();
+        assert!(info.contains("\nPath=work/c-d\n"), "{info}");
     }
 
     #[test]
@@ -219,7 +296,7 @@ mod tests {
         assert_eq!(picked(&shared), shared.join(".Trash").join(uid.to_string()));
 
         assert_eq!(pick(&dir.join("elsewhere"), uid, dev + 1), None);
-        let home_trash = super::pick(Some(dir.join("data/Trash")), &own, uid, dev);
+        let home_trash = self::pick(Some(dir.join("data/Trash")), &own, uid, dev);
         assert_eq!(home_trash, Some(dir.join("data/Trash")));
     }
 
@@ -236,6 +313,14 @@ mod tests {
         // Folders this user doesn't own.
         let top = dir.join("top");
         assert_eq!(pick(Some(home.clone()), &top, uid + 1, dev), None);
+        // A home Trash others can look into is still this user's own; a drive's isn't.
+        fs::set_permissions(&home, fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(pick(Some(home.clone()), &top, uid, dev), Some(home.clone()));
+        let drives = top.join(format!(".Trash-{uid}"));
+        assert_eq!(pick(None, &top, uid, dev), Some(drives.clone()));
+        fs::set_permissions(&drives, fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(pick(None, &top, uid, dev), None);
+        fs::set_permissions(&drives, fs::Permissions::from_mode(0o700)).unwrap();
         // A folder others can write to, or a link in place of one.
         fs::set_permissions(home.join("files"), fs::Permissions::from_mode(0o777)).unwrap();
         assert_eq!(
@@ -254,9 +339,8 @@ mod tests {
         let item = folder(&dir, "c-x");
         // The Trash inside the item itself, which can't move into itself.
         let data = item.join("data");
-        let vars = env(&[("XDG_DATA_HOME", data.to_str().unwrap())]);
 
-        let error = trash(&item, &vars, UNIX_EPOCH).unwrap_err();
+        let error = trash(&item, &data, UNIX_EPOCH).unwrap_err();
 
         assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
         assert!(item.join("work.txt").exists());
@@ -267,10 +351,9 @@ mod tests {
     fn on_linux_a_name_too_long_for_the_trash_fails_and_stays() {
         let dir = TempDir::new().unwrap();
         let data = dir.join("data");
-        let vars = env(&[("XDG_DATA_HOME", data.to_str().unwrap())]);
         let item = folder(&dir, &"n".repeat(250));
 
-        let error = trash(&item, &vars, UNIX_EPOCH).unwrap_err();
+        let error = trash(&item, &data, UNIX_EPOCH).unwrap_err();
 
         assert_eq!(error.kind(), io::ErrorKind::InvalidFilename);
         assert!(item.join("work.txt").exists());

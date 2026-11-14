@@ -58,7 +58,7 @@ pub(super) fn trash_dir(
         private_dir(&own)?;
         // Anyone can make a folder in `.Trashes`, so it must be this user's alone.
         let meta = own.symlink_metadata()?;
-        if meta.uid() != uid || meta.mode() & 0o022 != 0 {
+        if meta.uid() != uid || meta.mode() & 0o077 != 0 {
             return Err(io::ErrorKind::PermissionDenied.into());
         }
         own
@@ -143,7 +143,7 @@ mod tests {
             assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
         };
 
-        fs::set_permissions(&own, fs::Permissions::from_mode(0o777)).unwrap();
+        fs::set_permissions(&own, fs::Permissions::from_mode(0o755)).unwrap();
         refused(uid);
         fs::set_permissions(&own, fs::Permissions::from_mode(0o700)).unwrap();
         fs::create_dir_all(top.join(".Trashes").join((uid + 1).to_string())).unwrap();
