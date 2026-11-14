@@ -17,7 +17,7 @@ import type { DiffFile } from "../protocol.ts";
 import { type Changes, type Row, rows } from "./changes.ts";
 import { type Comment, type Selection, add, edit, pick, remove, span } from "./comments.ts";
 import { changeText, contentText, hunkText, linesText, summary } from "./labels.ts";
-import { CommentView, Composer } from "./review.tsx";
+import { CommentBox, CommentView } from "./review.tsx";
 
 // Keep in step with `.diff .lines` in diff.css; an off-screen file reserves this much per row.
 const ROW_PX = 20;
@@ -133,7 +133,7 @@ const FileView = memo(function FileView({
           />
         ))}
       {box && boxAt?.last === at && (
-        <Composer
+        <CommentBox
           label={linesText(lines, boxAt.first, boxAt.last)}
           text={draft}
           action="Comment"

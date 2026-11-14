@@ -131,7 +131,7 @@ function NewWorkspace({ api, made }: { api: Api; made(workspace: WorkspaceSummar
       onSubmit={(event) => {
         event.preventDefault();
         void ask(
-          () => api.create(name),
+          () => api.createWorkspace(name),
           (workspace) => {
             setName("");
             made(workspace);

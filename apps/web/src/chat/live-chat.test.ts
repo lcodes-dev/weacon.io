@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import type { Envelope } from "../protocol.ts";
-import { ChatFeed, nextFrame } from "./feed.ts";
+import { LiveChat, nextFrame } from "./live-chat.ts";
 import type { Sync } from "./sync.ts";
 
 function wired() {
@@ -10,7 +10,7 @@ function wired() {
   const shown: Sync[] = [];
   const flushes: (() => void)[] = [];
   let next = 1;
-  const feed = new ChatFeed(
+  const live = new LiveChat(
     { workspace: "w-1", chat: "c-1" },
     {
       id: () => next++,
@@ -19,7 +19,7 @@ function wired() {
       show: (sync) => shown.push(sync),
     },
   );
-  return { feed, sent, shown, flushes };
+  return { live, sent, shown, flushes };
 }
 
 const answer = (id: number, seq: number) =>
@@ -33,11 +33,11 @@ const answer = (id: number, seq: number) =>
 const delta = (text: string) => ({ id: 0, type: "run", run: "r-1", event: { event: "text_delta", text } }) satisfies Envelope;
 
 test("a burst of messages is shown once, as it stands at the flush", () => {
-  const { feed, sent, shown, flushes } = wired();
-  feed.open();
-  feed.push(answer(1, 4));
-  feed.push(delta("He"));
-  feed.push(delta("llo"));
+  const { live, sent, shown, flushes } = wired();
+  live.open();
+  live.push(answer(1, 4));
+  live.push(delta("He"));
+  live.push(delta("llo"));
 
   assert.deepEqual(
     sent.map((envelope) => envelope.type === "chat_query" && envelope.query.kind),
@@ -52,16 +52,16 @@ test("a burst of messages is shown once, as it stands at the flush", () => {
 
   flushes[0]?.();
   assert.equal(shown.length, 1);
-  feed.push(delta("!"));
+  live.push(delta("!"));
   assert.equal(flushes.length, 2);
 });
 
 test("a taken answer stops its prompt being answerable", () => {
-  const { feed, shown, flushes } = wired();
-  feed.answered("r-1", 1);
+  const { live, shown, flushes } = wired();
+  live.answered("r-1", 1);
   assert.equal(flushes.length, 0);
-  feed.open();
-  feed.push({
+  live.open();
+  live.push({
     id: 1,
     type: "chat_answer",
     workspace: "w-1",
@@ -74,7 +74,7 @@ test("a taken answer stops its prompt being answerable", () => {
       events: [{ seq: 1, event: { kind: "run", update: { run: "r-1", event: { event: "permission_asked", run: "r-1", prompt: 1, tool: "Bash", input: null } } } }],
     },
   });
-  feed.answered("r-1", 1);
+  live.answered("r-1", 1);
   flushes[0]?.();
   const turn = shown[0]?.chat?.items[0];
 
@@ -82,19 +82,19 @@ test("a taken answer stops its prompt being answerable", () => {
 });
 
 test("what changes nothing schedules nothing, and other chats' messages aren't taken", () => {
-  const { feed, sent, flushes } = wired();
-  feed.push({ ...answer(1, 4), chat: "c-2" });
-  feed.more();
-  feed.end();
+  const { live, sent, flushes } = wired();
+  live.push({ ...answer(1, 4), chat: "c-2" });
+  live.more();
+  live.end();
   assert.deepEqual([sent, flushes], [[], []]);
 });
 
 test("the end of the connection keeps the chat but drops what was asked", () => {
-  const { feed, shown, flushes } = wired();
-  feed.open();
-  feed.push(answer(1, 4));
-  feed.end();
-  feed.push(answer(1, 9));
+  const { live, shown, flushes } = wired();
+  live.open();
+  live.push(answer(1, 4));
+  live.end();
+  live.push(answer(1, 9));
   flushes[0]?.();
 
   assert.equal(shown[0]?.live, false);

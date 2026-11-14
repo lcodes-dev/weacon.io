@@ -183,7 +183,7 @@ function LookUp({
         event.preventDefault();
         setUnchecked(false);
         void looking.ask(
-          () => api.lookup(code),
+          () => api.lookUpPairing(code),
           (pending) =>
             void fingerprint(pending.key).then(
               (shown) => found({ pending, code, fingerprint: shown }),
@@ -256,7 +256,7 @@ function ConfirmPairing({
             disabled={busy}
             onClick={() =>
               void confirming.ask(
-                () => api.confirm({ pairing: pending.pairing, code: found.code }),
+                () => api.confirmPairing({ pairing: pending.pairing, code: found.code }),
                 (machine) => void confirmed(machine),
               )
             }
