@@ -3,7 +3,7 @@ use serde::{Deserialize, Deserializer, Serialize, de};
 use serde_json::Value;
 
 use crate::token::token_id;
-use crate::{MachineId, MemberId, Outcome};
+use crate::{MachineName, MemberId, Outcome};
 
 /// Which vendor's agent.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
@@ -153,10 +153,11 @@ pub struct RunStatus {
 pub struct AgentRef {
     pub kind: AgentKind,
     pub owner: AgentOwner,
-    /// Left out when not known.
+    /// What the machine it runs on is called, which the server stamps from its own record of
+    /// the core that sent the status and never takes from the core; left out when not known.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schemars(with = "MachineId")]
-    pub machine: Option<MachineId>,
+    #[schemars(with = "MachineName")]
+    pub machine: Option<MachineName>,
 }
 
 /// Whose agent it is.
@@ -279,7 +280,7 @@ mod tests {
     #[test]
     fn a_status_may_name_who_runs_the_run() {
         let member = MemberId::try_from("m-1".to_owned()).unwrap();
-        let laptop = MachineId::try_from("laptop-1".to_owned()).unwrap();
+        let laptop = MachineName::try_from("Ada's laptop".to_owned()).unwrap();
         let status = |agent| RunStatus {
             run: RunId::try_from("run-7".to_owned()).unwrap(),
             state: RunState::Running,
@@ -293,7 +294,7 @@ mod tests {
                     machine: Some(laptop),
                 })),
                 json!({ "run": "run-7", "state": "running", "agent": { "kind": "claude",
-                        "owner": { "kind": "member", "member": "m-1" }, "machine": "laptop-1" } }),
+                        "owner": { "kind": "member", "member": "m-1" }, "machine": "Ada's laptop" } }),
             ),
             (
                 status(Some(AgentRef {
@@ -324,7 +325,7 @@ mod tests {
         assert_eq!(team.agent.map(|agent| agent.owner), Some(AgentOwner::Newer));
         newer(json!({ "kind": "claude" })).unwrap_err();
         newer(json!({ "kind": "claude", "owner": { "kind": "member" } })).unwrap_err();
-        newer(json!({ "kind": "claude", "owner": { "kind": "shared" }, "machine": "a b" }))
+        newer(json!({ "kind": "claude", "owner": { "kind": "shared" }, "machine": "" }))
             .unwrap_err();
     }
 

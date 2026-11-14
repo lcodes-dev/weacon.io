@@ -112,9 +112,10 @@ export type AgentOwner = (
 export type AgentRef = {
   kind: AgentKind;
   /**
-   * Left out when not known.
+   * What the machine it runs on is called, which the server stamps from its own record of
+   * the core that sent the status and never takes from the core; left out when not known.
    */
-  machine?: MachineId;
+  machine?: MachineName;
   owner: AgentOwner;
 };
 
