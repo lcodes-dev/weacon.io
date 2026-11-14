@@ -51,19 +51,16 @@ impl<A: Agent> Engine<A> {
         self.set_state(key, &run, RunState::Sleeping).await
     }
 
-    // A disk no longer full lets every chat with prompts queued go on.
+    // Every `false` lets the chats with prompts queued go on: the disk may have filled and
+    // cleared before the engine looked.
     pub(super) async fn set_disk_full(&mut self, full: bool) {
-        // A disk that filled and cleared between two passes may have queued a prompt, so
-        // every `false` goes on with what is queued; only a change is logged.
-        let was = std::mem::replace(&mut self.disk_full, full);
-        if full {
-            if !was {
-                self.log.warn("turns paused", &[]);
-            }
-            return;
+        match (std::mem::replace(&mut self.disk_full, full), full) {
+            (false, true) => self.log.warn("turns paused", &[]),
+            (true, false) => self.log.info("turns resumed", &[]),
+            _ => {}
         }
-        if was {
-            self.log.info("turns resumed", &[]);
+        if full {
+            return;
         }
         let queued: Vec<ChatKey> = self
             .runs
@@ -166,16 +163,15 @@ mod tests {
     async fn only_a_change_of_the_disk_is_logged() {
         let (bench, mut engine) = parts();
 
-        for full in [true, true, false, false] {
+        for full in [true, true, false, false, true] {
             engine.set_disk_full(full).await;
         }
 
-        let logged = messages(&bench.records);
-        let turns: Vec<_> = logged
-            .iter()
+        let turns: Vec<_> = messages(&bench.records)
+            .into_iter()
             .filter(|message| message.starts_with("turns "))
             .collect();
-        assert_eq!(turns, [&"turns paused", &"turns resumed"]);
+        assert_eq!(turns, ["turns paused", "turns resumed", "turns paused"]);
     }
 
     // Makes chat `c-1`'s last turn start or end `ago` seconds before now.
