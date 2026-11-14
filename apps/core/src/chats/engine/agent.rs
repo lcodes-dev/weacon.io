@@ -281,12 +281,12 @@ mod tests {
     // A real process: a shell script stands in for `claude`.
     #[cfg(unix)]
     mod with_a_program {
-        use std::path::Path;
         use std::time::Duration;
 
         use weacon_agents::{Launch, SpawnPolicy};
         use weacon_protocol::{AccessLevel, AgentKind, Outcome};
         use weacon_testing::TempDir;
+        use weacon_testing::platform::write_program;
 
         use super::super::*;
         use crate::chats::test_support::session;
@@ -301,22 +301,6 @@ read -r interrupt
 printf '%s\n' '{"type":"result","subtype":"error_during_execution","is_error":true}'
 "#;
 
-        // Written from a child shell, so this process never holds a write handle that another
-        // test's fork could inherit, which makes running it fail as busy.
-        fn write_program(path: &Path, script: &str) {
-            let written = std::process::Command::new("sh")
-                .args([
-                    "-c",
-                    "printf '%s' \"$1\" > \"$2\" && chmod 755 \"$2\"",
-                    "sh",
-                    script,
-                ])
-                .arg(path)
-                .status()
-                .unwrap();
-            assert!(written.success());
-        }
-
         async fn next(agent: &mut AgentRun) -> Option<RunEvent> {
             let event = tokio::time::timeout(Duration::from_secs(30), Agent::next(agent));
             event.await.unwrap().unwrap()
@@ -326,7 +310,7 @@ printf '%s\n' '{"type":"result","subtype":"error_during_execution","is_error":tr
         async fn the_drivers_run_takes_orders_and_says_what_its_agent_does() {
             let dir = TempDir::new().unwrap();
             let program = dir.join("claude");
-            write_program(&program, SCRIPT);
+            write_program(&program, SCRIPT).unwrap();
             let launch = Launch {
                 agent: AgentKind::Claude,
                 program,

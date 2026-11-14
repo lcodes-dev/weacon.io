@@ -3,7 +3,7 @@
 #[cfg(unix)]
 pub(crate) use unix::create_private_dir;
 #[cfg(unix)]
-pub use unix::{Listener, listen};
+pub use unix::{Listener, listen, write_program};
 #[cfg(windows)]
 pub(crate) use windows::create_private_dir;
 #[cfg(windows)]
@@ -39,6 +39,28 @@ mod unix {
         let listener = Listener::bind(path)?;
         fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
         Ok(listener)
+    }
+
+    /// Writes an executable `script` to `path` from a child shell, so this process never holds a
+    /// write handle that another test's fork could inherit, which makes running it fail as busy.
+    ///
+    /// # Errors
+    /// When the shell can't be run or can't write the program.
+    pub fn write_program(path: &Path, script: &str) -> io::Result<()> {
+        let written = std::process::Command::new("sh")
+            .args([
+                "-c",
+                "printf '%s' \"$1\" > \"$2\" && chmod 755 \"$2\"",
+                "sh",
+                script,
+            ])
+            .arg(path)
+            .status()?;
+        if written.success() {
+            Ok(())
+        } else {
+            Err(io::Error::other("the program couldn't be written"))
+        }
     }
 }
 
