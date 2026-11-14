@@ -100,10 +100,13 @@ impl Links {
     /// The id for an envelope sent to a machine, unique among those its answers may name for
     /// a long while; never 0, which the server and the core use for messages of their own.
     pub(crate) fn next_id(&self) -> u32 {
-        self.last_id
-            .fetch_add(1, Ordering::Relaxed)
-            .wrapping_add(1)
-            .max(1)
+        let next = |last: u32| last.wrapping_add(1).max(1);
+        let last = self
+            .last_id
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |last| {
+                Some(next(last))
+            });
+        next(last.unwrap_or_else(|last| last))
     }
 
     /// Each machine connected from now on.
@@ -195,7 +198,7 @@ mod tests {
         let wrapped = [links.next_id(), links.next_id(), links.next_id()];
 
         assert_eq!(first, [1, 2]);
-        assert_eq!(wrapped, [u32::MAX, 1, 1]);
+        assert_eq!(wrapped, [u32::MAX, 1, 2]);
     }
 
     #[test]
