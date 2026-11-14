@@ -43,8 +43,10 @@ export function Workspaces({ api, who, page }: { api: Api; who: ReactNode; page?
     setChat(undefined);
   };
   const chooseChat = (id: ChatId) => {
-    window.history.pushState(null, "", `?workspace=${open}&chat=${id}`);
-    setChat(id);
+    if (id !== chat) {
+      window.history.pushState(null, "", `?workspace=${open}&chat=${id}`);
+      setChat(id);
+    }
   };
   const workspace = list?.find(({ id }) => id === open);
   // Whether the list is on screen, so a workspace made after the person moved on doesn't pull them back.
@@ -73,7 +75,7 @@ export function Workspaces({ api, who, page }: { api: Api; who: ReactNode; page?
   );
   return (
     <Frame middle={page === undefined && selector} right={who}>
-      <SocketScope key={workspace?.id} open={workspace !== undefined}>
+      <SocketScope workspace={workspace?.id}>
       {page}
       <div style={{ display: page === undefined ? "contents" : "none" }}>
       {workspace !== undefined ? (
@@ -150,10 +152,16 @@ function NewWorkspace({ api, made }: { api: Api; made(workspace: WorkspaceSummar
   );
 }
 
-/** Gives the open workspace's page, and any page shown over it, one socket while it is `open`. */
-function SocketScope({ open, children }: { open: boolean; children: ReactNode }) {
-  const [socket] = useState(() => new WorkspaceSocket());
-  return <WorkspaceSocketContext value={open ? socket : undefined}>{children}</WorkspaceSocketContext>;
+/**
+ * Gives the open workspace's page, and any page shown over it, one socket per open `workspace`,
+ * without remounting what it holds when that changes.
+ */
+function SocketScope({ workspace, children }: { workspace: WorkspaceId | undefined; children: ReactNode }) {
+  const [scope, setScope] = useState<{ workspace: WorkspaceId; socket: WorkspaceSocket }>();
+  if (scope?.workspace !== workspace) {
+    setScope(workspace === undefined ? undefined : { workspace, socket: new WorkspaceSocket() });
+  }
+  return <WorkspaceSocketContext value={scope?.workspace === workspace ? scope?.socket : undefined}>{children}</WorkspaceSocketContext>;
 }
 
 function Workspace({
@@ -168,6 +176,44 @@ function Workspace({
   choose: (chat: ChatId) => void;
 }) {
   const socket = useWorkspaceSocket();
+  const { status, offered } = useFeed(workspace.id, api, socket);
+  // Whether the server serves chats, known once the feed is welcomed.
+  const chats = offered?.includes("workspace.chats");
+  const page = (title: string) => (
+    <section className="page">
+      <h1>{title}</h1>
+      <p className="status">{statusText(status)}</p>
+    </section>
+  );
+  if (chats !== true) {
+    return (
+      <div className="workspace">
+        <nav className="chats" aria-label="Chats">
+          <h2>Chats</h2>
+          <p className="muted">{chats === undefined ? "Loading" : "No chats yet. Connect a machine to start one."}</p>
+        </nav>
+        {page(workspace.name)}
+      </div>
+    );
+  }
+  return <WorkspaceChats api={api} workspace={workspace} chosen={chosen} choose={choose} page={page} />;
+}
+
+/** The workspace's chats, kept fresh by its feed, beside the chosen one's `page`. */
+function WorkspaceChats({
+  api,
+  workspace,
+  chosen,
+  choose,
+  page,
+}: {
+  api: Api;
+  workspace: WorkspaceSummary;
+  chosen: ChatId | undefined;
+  choose: (chat: ChatId) => void;
+  page: (title: string) => ReactNode;
+}) {
+  const socket = useWorkspaceSocket();
   const chats = useLoaded(() => api.chats(workspace.id), workspace.id);
   const reload = useBurst(() => void chats.load());
   useEffect(
@@ -179,15 +225,11 @@ function Workspace({
       }),
     [socket],
   );
-  const status = useFeed(workspace.id, api, socket);
   const openChat = chats.value?.chats.find(({ id }) => id === chosen);
   return (
     <div className="workspace">
       <ChatsNav loaded={chats} chosen={chosen} choose={choose} />
-      <section className="page">
-        <h1>{openChat?.title ?? workspace.name}</h1>
-        <p className="status">{statusText(status)}</p>
-      </section>
+      {page(openChat?.title ?? workspace.name)}
     </div>
   );
 }

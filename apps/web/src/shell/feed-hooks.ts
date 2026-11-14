@@ -5,22 +5,30 @@ import type { Incoming } from "../incoming.ts";
 import { ME } from "../me.ts";
 import type { WorkspaceId } from "../protocol.ts";
 import type { Api } from "./api.ts";
-import { FEED, feedUrl, retries, retryAfter } from "./workspace-feed.ts";
+import { FEED, STAYED_MS, failedAfter, feedUrl, heardAfter, retries, retryAfter } from "./workspace-feed.ts";
 import type { WorkspaceSocket } from "./workspace-socket.ts";
 
 /**
- * Where `workspace`'s feed stands; it hands each message to `socket`, a workspace change only once,
- * and opens again after the last change it heard.
+ * Where `workspace`'s feed stands, and what its server offered when it last welcomed it; it hands
+ * each message to `socket`, a workspace change only once, and opens again after the last one heard.
  */
-export function useFeed(workspace: WorkspaceId, api: Api, socket: WorkspaceSocket): Status {
+export function useFeed(workspace: WorkspaceId, api: Api, socket: WorkspaceSocket): { status: Status; offered: readonly string[] | undefined } {
   const [status, setStatus] = useState<Status>({ state: "connecting" });
+  // Kept apart from `status`, which a feed that ends at once may replace before it is shown.
+  const [offered, setOffered] = useState<readonly string[]>();
   useEffect(() => {
     let current = true;
     let since = 0;
     let failed = 0;
+    // Whether the open feed has stayed long enough, or brought a change, to restart the backoff.
+    let stayed = false;
+    let staying: ReturnType<typeof setTimeout> | undefined;
     let opened: WebSocket | undefined;
     let retry: ReturnType<typeof setTimeout> | undefined;
     const open = () => {
+      if (failed > 0) {
+        setStatus({ state: "connecting" });
+      }
       const fresh = new WebSocket(feedUrl(window.location, workspace, since));
       opened = fresh;
       const listener = {
@@ -30,25 +38,29 @@ export function useFeed(workspace: WorkspaceId, api: Api, socket: WorkspaceSocke
           }
           setStatus(next);
           if (next.state === "live") {
-            failed = 0;
+            setOffered(next.capabilities);
+            stayed = false;
+            staying = setTimeout(() => (stayed = true), STAYED_MS);
             socket.attach((envelope) => connection.send(envelope));
           } else if (next.state === "ended") {
+            clearTimeout(staying);
             socket.attach(undefined);
             // Asking for the session lets one that ended reach sign-in.
             void api.session();
+            failed = failedAfter(failed, stayed);
+            stayed = false;
             if (retries(next.code)) {
-              failed += 1;
               retry = setTimeout(open, retryAfter(failed));
             }
           }
         },
         message(envelope: Incoming) {
-          if (!current || (envelope.type === "workspace" && (envelope.workspace !== workspace || envelope.seq <= since))) {
+          const after = current ? heardAfter(envelope, workspace, since) : undefined;
+          if (after === undefined) {
             return;
           }
-          if (envelope.type === "workspace") {
-            since = envelope.seq;
-          }
+          stayed ||= after > since;
+          since = after;
           socket.heard(envelope);
         },
       };
@@ -58,11 +70,12 @@ export function useFeed(workspace: WorkspaceId, api: Api, socket: WorkspaceSocke
     return () => {
       current = false;
       clearTimeout(retry);
+      clearTimeout(staying);
       socket.attach(undefined);
       opened?.close();
     };
   }, [workspace, api, socket]);
-  return status;
+  return { status, offered };
 }
 
 const BURST_MS = 250;

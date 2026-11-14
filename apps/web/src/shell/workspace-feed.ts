@@ -1,4 +1,5 @@
 import type { Asks, End } from "../connection.ts";
+import type { Incoming } from "../incoming.ts";
 import type { WorkspaceId } from "../protocol.ts";
 
 /** What a workspace's feed asks of the server: its changes, chats' included. */
@@ -24,3 +25,25 @@ const PASSING: ReadonlySet<End> = new Set(["connection.lost", "connection.refuse
 export function retries(code: End): boolean {
   return PASSING.has(code);
 }
+
+/**
+ * The last change heard once `message` arrives, or `undefined` when it is to be dropped: a change of
+ * another workspace, or one at or before `since`, as a reopened feed replays.
+ */
+export function heardAfter(message: Incoming, workspace: WorkspaceId, since: number): number | undefined {
+  if (message.type !== "workspace") {
+    return since;
+  }
+  return message.workspace === workspace && message.seq > since ? message.seq : undefined;
+}
+
+/**
+ * The tries in a row that failed once a feed ends; one that stayed open a while or brought a change
+ * counts as a fresh start, so a feed that is welcomed and closed at once still backs off.
+ */
+export function failedAfter(failed: number, stayed: boolean): number {
+  return stayed ? 1 : failed + 1;
+}
+
+/** How long a feed must stay open to count as having stayed. */
+export const STAYED_MS = LONGEST_WAIT_MS;
