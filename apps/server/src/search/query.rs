@@ -1,7 +1,7 @@
 /// The most bytes a search's text may hold.
 pub(crate) const MAX_TEXT: usize = 256;
 /// The most words a search's text may hold.
-pub(crate) const MAX_WORDS: usize = 8;
+const MAX_WORDS: usize = 8;
 /// A trigram index finds only words of at least this many characters.
 const MIN_WORD: usize = 3;
 
@@ -9,10 +9,8 @@ const MIN_WORD: usize = 3;
 /// nothing in it is read as query syntax; each short one is an escaped `LIKE` pattern.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct Query {
-    /// What a row must match: every long word.
+    /// What a row must match, and its title too to come first: every long word.
     pub(crate) words: String,
-    /// What a row's title must match to come first: every long word.
-    pub(crate) in_title: String,
     /// What a row's text must also hold, as patterns for `LIKE … ESCAPE '\'`.
     pub(crate) short: Vec<String>,
 }
@@ -39,7 +37,6 @@ pub(crate) fn parse(text: &str) -> Result<Option<Query>, TooLong> {
         .collect::<Vec<_>>()
         .join(" ");
     Ok(Some(Query {
-        in_title: format!("title : ({words})"),
         words,
         short: short.into_iter().map(pattern).collect(),
     }))
@@ -47,13 +44,10 @@ pub(crate) fn parse(text: &str) -> Result<Option<Query>, TooLong> {
 
 /// A `LIKE` pattern for text that holds `word` anywhere.
 fn pattern(word: &str) -> String {
-    let escaped: String = word
-        .chars()
-        .flat_map(|ch| match ch {
-            '\\' | '%' | '_' => vec!['\\', ch],
-            ch => vec![ch],
-        })
-        .collect();
+    let escaped = word
+        .replace('\\', r"\\")
+        .replace('%', r"\%")
+        .replace('_', r"\_");
     format!("%{escaped}%")
 }
 
@@ -70,10 +64,6 @@ mod tests {
         let parsed = query("  release \"notes\" OR NEAR(x*  ");
 
         assert_eq!(parsed.words, r#""release" """notes""" "NEAR(x*""#);
-        assert_eq!(
-            parsed.in_title,
-            r#"title : ("release" """notes""" "NEAR(x*")"#
-        );
         assert_eq!(parsed.short, ["%OR%"]);
     }
 

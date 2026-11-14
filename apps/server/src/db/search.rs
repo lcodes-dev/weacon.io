@@ -1,5 +1,3 @@
-use std::borrow::Cow;
-
 use sqlx::SqliteConnection;
 use weacon_model::{Doc, Task};
 use weacon_observability::Fault;
@@ -41,8 +39,8 @@ impl Workspace {
         self.index(transaction, indexed).await
     }
 
-    /// Indexes `doc` by its title and body, then its pins a line each as the schema's
-    /// backfill puts them, as revised at `at`.
+    /// Indexes `doc` by its title, and its body followed by one line per pin, as revised at
+    /// `at`.
     pub(super) async fn index_doc(
         &self,
         transaction: &mut SqliteConnection,
@@ -73,7 +71,13 @@ impl Workspace {
         transaction: &mut SqliteConnection,
         indexed: Indexed<'_>,
     ) -> Result<(), Fault> {
-        let Indexed { kind, item, .. } = indexed;
+        let Indexed {
+            kind,
+            item,
+            title,
+            body,
+            at,
+        } = indexed;
         sqlx::query(
             "DELETE FROM search WHERE rowid =
                  (SELECT row FROM search_rows WHERE workspace_id = ? AND kind = ? AND item = ?)",
@@ -90,8 +94,8 @@ impl Workspace {
         .bind(self.id.as_str())
         .bind(kind)
         .bind(item)
-        .bind(unmarked(indexed.title))
-        .bind(unmarked(indexed.body))
+        .bind(unmarked(title))
+        .bind(unmarked(body))
         .execute(&mut *transaction)
         .await
         .map_err(failed)?
@@ -104,7 +108,7 @@ impl Workspace {
         .bind(kind)
         .bind(item)
         .bind(row)
-        .bind(indexed.at)
+        .bind(at)
         .execute(&mut *transaction)
         .await
         .map_err(failed)?;
@@ -124,14 +128,14 @@ impl Workspace {
              WHERE search MATCH ?1 AND search.workspace_id = ?2
                  AND NOT EXISTS (SELECT 1 FROM json_each(?3)
                      WHERE search.title || char(10) || search.body NOT LIKE value ESCAPE '\\')
-             ORDER BY search.rowid IN (SELECT rowid FROM search WHERE search MATCH ?4) DESC,
+             ORDER BY search.rowid IN
+                     (SELECT rowid FROM search WHERE search MATCH 'title : (' || ?1 || ')') DESC,
                  rows.at DESC, search.rowid DESC
-             LIMIT ?5",
+             LIMIT ?4",
         )
         .bind(&query.words)
         .bind(self.id.as_str())
         .bind(short)
-        .bind(&query.in_title)
         .bind(limit)
         .fetch_all(&self.db.readers)
         .await
@@ -161,12 +165,8 @@ fn hit((kind, item, title, marked): HitRow) -> Result<SearchHit, Fault> {
 
 /// `text` without the bytes snippets mark matches with, which the schema's backfill also
 /// leaves out.
-fn unmarked(text: &str) -> Cow<'_, str> {
-    if text.contains([MATCH_START, MATCH_END]) {
-        Cow::Owned(text.replace([MATCH_START, MATCH_END], " "))
-    } else {
-        Cow::Borrowed(text)
-    }
+fn unmarked(text: &str) -> String {
+    text.replace([MATCH_START, MATCH_END], " ")
 }
 
 /// A snippet's text and marks, from one with its matches between the marking bytes.
@@ -202,7 +202,7 @@ mod tests {
     use crate::db::Db;
     use crate::db::schema::database_before;
     use crate::search::query::parse;
-    use crate::test_support::{member_id, new_task, two_teams, workspace_id};
+    use crate::test_support::{email, fresh_account, member_id, new_task, two_teams, workspace_id};
 
     fn by(at: i64) -> Attribution {
         Attribution::by(member_id("m1"), at)
@@ -451,14 +451,10 @@ mod tests {
             .create_workspace(&workspace_id("w1"), "One")
             .await
             .unwrap();
-        let ada = crate::test_support::email("ada@example.com");
-        one.add_member(
-            &member_id("m1"),
-            &crate::test_support::fresh_account(),
-            &ada,
-        )
-        .await
-        .unwrap();
+        let ada = email("ada@example.com");
+        one.add_member(&member_id("m1"), &fresh_account(), &ada)
+            .await
+            .unwrap();
         let task = new_task("t1", "Ship it", "a");
         one.add_task(&task, &by(5)).await.unwrap();
         let done = TaskEdit::Status(weacon_protocol::TaskStatus::Done);

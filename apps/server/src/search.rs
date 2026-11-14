@@ -18,8 +18,7 @@ const LIMIT: u32 = 20;
 const MAX_LIMIT: u32 = 50;
 
 /// `POST /api/workspaces/{workspace}/search`: what in the workspace matches the query's text.
-/// Every member reads every task and doc, so the `Member` the task and doc routes read with
-/// is what search reads with.
+/// Every member reads every task and doc, so membership is the only check.
 pub(crate) async fn search(
     member: Member,
     body: Result<Body<SearchQuery>, Unreadable>,
@@ -35,7 +34,9 @@ async fn found(
     body: Result<Body<SearchQuery>, Unreadable>,
 ) -> Result<Vec<SearchHit>, Fault> {
     let Body(asked) = body.map_err(|unreadable| match unreadable {
-        Unreadable::TooLarge => too_long(),
+        Unreadable::TooLarge => {
+            Fault::new(code!("search.too_large"), "The search request is too large")
+        }
         Unreadable::NotJson | Unreadable::Invalid => invalid(),
     })?;
     let limit = match asked.limit {
@@ -57,13 +58,19 @@ fn too_long() -> Fault {
     Fault::new(code!("search.too_long"), "The search text is too long")
 }
 
+const REFUSALS: [(Code, StatusCode); 3] = [
+    (code!("search.invalid"), StatusCode::BAD_REQUEST),
+    (code!("search.too_long"), StatusCode::BAD_REQUEST),
+    (code!("search.too_large"), StatusCode::PAYLOAD_TOO_LARGE),
+];
+
 /// Answers a refusal with its status, and anything else as the server failing.
 fn answer(fault: Fault) -> Response {
     let code = fault.code().clone();
-    if [code!("search.invalid"), code!("search.too_long")].contains(&code) {
-        return error(StatusCode::BAD_REQUEST, code, false);
+    match REFUSALS.iter().find(|(refusal, _)| *refusal == code) {
+        Some((_, status)) => error(*status, code, false),
+        None => failure(fault),
     }
-    failure(fault)
 }
 
 #[cfg(test)]
@@ -181,12 +188,14 @@ mod tests {
             (asked("release", Some(MAX_LIMIT + 1)), "search.invalid"),
             ("{\"limit\":1}".to_owned(), "search.invalid"),
             (asked(&long, None), "search.too_long"),
-            (huge, "search.too_long"),
         ] {
             let (refused, answer) = ada.search(&body).await;
             assert_eq!(refused, "http/1.1 400 bad request", "{code}");
             assert_eq!(refusal(&answer), code);
         }
+        let (refused, answer) = ada.search(&huge).await;
+        assert_eq!(refused, "http/1.1 413 payload too large");
+        assert_eq!(refusal(&answer), "search.too_large");
         assert!(
             ada.search(&asked("release", Some(MAX_LIMIT)))
                 .await
