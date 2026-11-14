@@ -139,6 +139,11 @@ impl Workspaces {
     }
 
     /// The folder for everything this machine keeps for `workspace` but its settings.
+    /// The core's state folder, which holds every workspace's.
+    pub(crate) fn state_dir(&self) -> &Path {
+        &self.state
+    }
+
     pub(crate) fn root(&self, workspace: &WorkspaceId) -> PathBuf {
         self.dir.join(folder_name(workspace))
     }

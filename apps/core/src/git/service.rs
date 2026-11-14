@@ -17,9 +17,9 @@ use weacon_protocol::{
 };
 
 use super::branch::{Draft, Gh};
-use super::chats::{ChatRepo, ChatRepos};
+use super::chats::ChatRepo;
 use super::removal::Journal;
-use super::repos::Repos;
+use super::state::Stores;
 use super::{Git, branch, diff};
 use crate::platform::trash::Trashed;
 use crate::workspaces::Workspaces;
@@ -249,7 +249,7 @@ impl Inner {
         })?;
         let branch = branch(&record.chat);
         git.push(worktree, &branch)?;
-        let config = self.root(&record.workspace).join("gh");
+        let config = self.workspaces().root(&record.workspace).join("gh");
         let gh = Gh::find(self.path.as_deref(), config).map(|gh| gh.in_tree(git));
         if let Some(gh) = gh.filter(|gh| gh.signed_in(worktree)) {
             let draft = Draft {
@@ -267,24 +267,12 @@ impl Inner {
 
     // The chat's git, record and worktree; a chat that hasn't one is refused.
     fn chat(&self, workspace: &WorkspaceId, chat: &ChatId) -> Result<Chat, Fault> {
-        let records = ChatRepos::new(
-            workspace.clone(),
-            self.root(workspace).join("git/chats.json"),
-        );
+        let stores = self.stores(workspace);
         let none = || Fault::new(code!("worktree.none"), "The chat has no worktree");
-        let record = records.get(chat)?.ok_or_else(none)?;
+        let record = stores.chats().get(chat)?.ok_or_else(none)?;
         let work_root = self.work_root.as_deref().ok_or_else(none)?;
         let worktree = crate::chats::chat_folder(work_root, workspace, chat);
-        let repos = Repos::new(
-            workspace.clone(),
-            self.root(workspace).join("git/repos.json"),
-        );
-        let repo = repos.get(&record.repo)?.ok_or_else(|| {
-            Fault::new(
-                code!("repo.unknown"),
-                "The chat's repository isn't registered",
-            )
-        })?;
+        let repo = stores.repo(&record.repo)?;
         let git =
             Git::open(&self.state_dir, self.path.as_deref())?.in_tree(&repo.path, &worktree)?;
         Ok(Chat {
@@ -295,12 +283,15 @@ impl Inner {
     }
 
     fn journal(&self, workspace: &WorkspaceId, git: &Git) -> Journal {
-        let file = self.root(workspace).join("git/removed.json");
-        Journal::new(workspace.clone(), file, git.clone())
+        self.stores(workspace).removed(git.clone())
     }
 
-    fn root(&self, workspace: &WorkspaceId) -> PathBuf {
-        Workspaces::new(&self.state_dir, self.path.clone()).root(workspace)
+    fn stores(&self, workspace: &WorkspaceId) -> Stores {
+        Stores::new(&self.workspaces(), workspace)
+    }
+
+    fn workspaces(&self) -> Workspaces {
+        Workspaces::new(&self.state_dir, self.path.clone())
     }
 }
 
@@ -344,20 +335,16 @@ pub(crate) fn with_chat(dir: &Path) -> (Worktrees, WorkspaceId, ChatId, PathBuf)
     let workspace = WorkspaceId::try_from("w-1".to_owned()).unwrap();
     let chat_id = chat("c-1");
     let repo = repo(dir);
-    let worktree = crate::chats::chat_folder(&work, &workspace, &chat_id);
-    let start = git(dir)
-        .chat_worktree(&repo, &chat_id, &worktree)
-        .unwrap()
-        .start
-        .unwrap();
-    let root = Workspaces::new(&state, None).root(&workspace);
+    let workspaces = Workspaces::new(&state, None);
     let site = RepoId::try_from("site".to_owned()).unwrap();
-    Repos::new(workspace.clone(), root.join("git/repos.json"))
+    Stores::new(&workspaces, &workspace)
+        .repos()
         .add(&git(dir), site.clone(), &repo)
         .unwrap();
-    ChatRepos::new(workspace.clone(), root.join("git/chats.json"))
-        .record(&chat_id, site, start)
-        .unwrap();
+    let key = crate::runs::ChatKey::new(&workspace, &chat_id);
+    let path = std::env::var_os("PATH");
+    let worktree =
+        super::launch::chat_tree(&workspaces, path.as_deref(), &work, &key, &site).unwrap();
     let worktrees = Worktrees::new(&state, std::env::var_os("PATH"), Some(work), bin);
     (worktrees, workspace, chat_id, worktree)
 }

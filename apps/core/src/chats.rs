@@ -18,6 +18,7 @@ use weacon_protocol::{App, ChatId, WorkspaceId, code};
 pub(crate) use engine::Chats;
 use engine::{Engine, Host, RunAs};
 
+use crate::git;
 use crate::integrations::Plugin;
 use crate::mcp::grants::Granted;
 use crate::mcp::{self, Mcp};
@@ -79,9 +80,16 @@ fn launch(
     })
 }
 
-/// `run_as`'s agent in its chat's folder, given the core's plugin.
+/// `run_as`'s agent in its chat's folder, given the core's plugin: the chat's worktree when its
+/// first prompt named a repository.
 fn prepared(roots: &Workspaces, places: &Places, run_as: &RunAs) -> Result<Launch, Fault> {
-    let cwd = work_dir(places.work_root.as_deref(), &run_as.key)?;
+    let work_root = places.work_root.as_deref();
+    let cwd = match (&run_as.repo, work_root) {
+        (Some(repo), Some(work_root)) => {
+            git::launch::chat_tree(roots, places.path.as_deref(), work_root, &run_as.key, repo)?
+        }
+        _ => work_dir(work_root, &run_as.key)?,
+    };
     let mut launch = roots.launch(&run_as.key.workspace, run_as.agent, cwd)?;
     launch.plugin = places.plugin.as_ref().and_then(Plugin::folder);
     Ok(launch)
@@ -147,6 +155,28 @@ mod tests {
     }
 
     #[test]
+    fn a_chat_that_named_a_repository_runs_in_its_worktree_or_not_at_all() {
+        let dir = TempDir::new().unwrap();
+        let workspaces = Workspaces::new(&dir.join("state"), None);
+        let places = Places {
+            work_root: Some(dir.join("Weacon")),
+            ..Places::default()
+        };
+        let run_as = RunAs {
+            key: ChatKey::new(&workspace(), &chat("c-1")),
+            agent: AgentKind::Claude,
+            run: "run-1".parse().unwrap(),
+            session: None,
+            repo: Some("site".parse().unwrap()),
+        };
+
+        let error = prepared(&workspaces, &places, &run_as).unwrap_err();
+
+        assert_eq!(error.code().as_str(), "repo.unknown");
+        assert!(!dir.join("Weacon").exists());
+    }
+
+    #[test]
     fn a_real_launch_accepts_a_chats_folder() {
         let dir = TempDir::new().unwrap();
         platform::plant_program(&dir.join("bin"), "claude", 0o755);
@@ -204,6 +234,7 @@ mod tests {
             agent: AgentKind::Claude,
             run: weacon_protocol::RunId::try_from("run-1".to_owned()).unwrap(),
             session: None,
+            repo: None,
         };
         let run = |bin: &str| {
             let places = places(bin);
@@ -241,6 +272,7 @@ mod tests {
             agent: AgentKind::Claude,
             run: weacon_protocol::RunId::try_from("run-1".to_owned()).unwrap(),
             session: None,
+            repo: None,
         };
 
         let launch = prepared(&roots, &places, &run_as).unwrap();

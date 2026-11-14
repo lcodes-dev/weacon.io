@@ -19,8 +19,8 @@ use tokio::sync::{mpsc, oneshot};
 use weacon_observability::{Fault, Field, Logger};
 use weacon_protocol::{
     AgentKind, AgentSession, ChatAnswerKind, ChatCommand, ChatEntry, ChatEvent, ChatQuery,
-    ChatUpdate, Message, Outcome, PermissionAnswer, Receipt, RequestId, RunId, RunState, RunStatus,
-    code,
+    ChatUpdate, Message, Outcome, PermissionAnswer, Receipt, RepoId, RequestId, RunId, RunState,
+    RunStatus, code,
 };
 
 use self::agent::{Agent, Order, Said};
@@ -39,6 +39,8 @@ pub(crate) struct RunAs {
     pub(crate) agent: AgentKind,
     pub(crate) run: RunId,
     pub(crate) session: Option<AgentSession>,
+    /// The repository the chat's first prompt named, whose worktree it runs in.
+    pub(crate) repo: Option<RepoId>,
 }
 
 type Launcher<A> = Arc<dyn Fn(&RunAs) -> Result<A, Fault> + Send + Sync>;
@@ -467,6 +469,7 @@ mod tests {
                 agent: AgentKind::Claude,
                 run: run("run-1"),
                 session: None,
+                repo: None,
             }
         );
         let delta = RunEvent::TextDelta {

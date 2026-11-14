@@ -8,6 +8,8 @@ pub(crate) const CAPABILITIES: &[Capability] = &[
     Capability::new(code!("chat.agent")),
     Capability::new(code!("run.stream")),
     Capability::new(code!("machine.connect")),
+    Capability::new(code!("diff.view")),
+    Capability::new(code!("worktree.manage")),
 ];
 
 /// One client's place in the conversation with the daemon.
@@ -103,6 +105,8 @@ mod tests {
                             Capability::new(code!("chat.agent")),
                             Capability::new(code!("run.stream")),
                             Capability::new(code!("machine.connect")),
+                            Capability::new(code!("diff.view")),
+                            Capability::new(code!("worktree.manage")),
                         ],
                     }),
                 }),

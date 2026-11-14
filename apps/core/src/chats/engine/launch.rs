@@ -43,11 +43,13 @@ impl<A: Agent> Engine<A> {
         let kind = self.runs.of(key).ok_or_else(not_started)?.agent;
         let run = self.runs.begin(key, kind, self.now()).await?;
         let session = self.runs.of(key).and_then(|record| record.session.clone());
+        let repo = self.open(key).await?.events.repo().cloned();
         let run_as = RunAs {
             key: key.clone(),
             agent: kind,
             run: run.clone(),
             session,
+            repo,
         };
         match self.launch_agent(run_as).await {
             Ok(agent) => self.attach(key, &run, agent).await?,

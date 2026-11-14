@@ -1,11 +1,62 @@
-//! The git module's own state files: each a JSON list, read whole and written whole.
+//! The git module's own state files: each a JSON list, read whole and written whole, in the
+//! workspace's folder.
 
 use std::fs::{self, File, TryLockError};
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde::Serialize;
 use serde::de::DeserializeOwned;
+use weacon_observability::Fault;
+use weacon_protocol::{RepoId, WorkspaceId, code};
+
+use super::Git;
+use super::chats::ChatRepos;
+use super::removal::Journal;
+use super::repos::{Repo, Repos};
+use crate::workspaces::Workspaces;
+
+/// A workspace's git state: its repositories, its chats' worktrees, and those in the Trash.
+pub(crate) struct Stores {
+    workspace: WorkspaceId,
+    folder: PathBuf,
+}
+
+impl Stores {
+    pub(crate) fn new(workspaces: &Workspaces, workspace: &WorkspaceId) -> Self {
+        let folder = workspaces.root(workspace).join("git");
+        Self {
+            workspace: workspace.clone(),
+            folder,
+        }
+    }
+
+    pub(crate) fn repos(&self) -> Repos {
+        Repos::new(self.workspace.clone(), self.folder.join("repos.json"))
+    }
+
+    /// The registered repository `id`; one not registered is refused.
+    pub(crate) fn repo(&self, id: &RepoId) -> Result<Repo, Fault> {
+        self.repos().get(id)?.ok_or_else(|| {
+            Fault::new(
+                code!("repo.unknown"),
+                "That repository isn't registered in the workspace",
+            )
+        })
+    }
+
+    pub(crate) fn chats(&self) -> ChatRepos {
+        ChatRepos::new(self.workspace.clone(), self.folder.join("chats.json"))
+    }
+
+    pub(crate) fn removed(&self, git: Git) -> Journal {
+        Journal::new(
+            self.workspace.clone(),
+            self.folder.join("removed.json"),
+            git,
+        )
+    }
+}
 
 /// The list in `file`; none before the first is written.
 pub(super) fn load<T: DeserializeOwned>(file: &Path) -> io::Result<Vec<T>> {

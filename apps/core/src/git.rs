@@ -16,11 +16,12 @@ use crate::workspaces::resolved;
 pub(crate) mod branch;
 pub(crate) mod chats;
 pub(crate) mod diff;
+pub(crate) mod launch;
 mod lock;
 pub(crate) mod removal;
 pub(crate) mod repos;
 pub(crate) mod service;
-mod state;
+pub(crate) mod state;
 mod tree;
 
 // Variables that would point git at another repository, or stand in for `-c` options.
