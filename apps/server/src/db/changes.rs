@@ -239,7 +239,10 @@ mod tests {
             .connect()
             .await
             .unwrap();
-        let before_docs = STEPS.len() - 1;
+        let before_docs = STEPS
+            .iter()
+            .position(|step| step.contains("CREATE TABLE docs"))
+            .unwrap();
         for step in &STEPS[..before_docs] {
             raw_sql(*step).execute(&mut old).await.unwrap();
         }
