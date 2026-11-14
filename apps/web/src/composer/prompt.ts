@@ -1,4 +1,4 @@
-import type { Status } from "../connection.ts";
+import { type Status, offers } from "../connection.ts";
 import type { Place } from "../place.ts";
 import type { Envelope, RequestId } from "../protocol.ts";
 import type { Receipts, Settled } from "../receipts.ts";
@@ -73,7 +73,7 @@ export function blocked(status: Status, place: Place | undefined): string | unde
   if (status.state !== "live") {
     return "Messages send once the server is connected";
   }
-  return status.capabilities.includes("chat.send") ? undefined : "This server can't take messages yet";
+  return offers(status, "chat.send") ? undefined : "This server can't take messages yet";
 }
 
 /** A request id made of `bytes` in hex. */

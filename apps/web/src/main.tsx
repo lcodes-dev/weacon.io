@@ -5,7 +5,7 @@ import "./app.css";
 import { App } from "./app.tsx";
 import { ME } from "./build.ts";
 import { type Send, deliver, prompt, requestId } from "./composer/prompt.ts";
-import { Connection, type Status } from "./connection.ts";
+import { Connection, type Status, offers } from "./connection.ts";
 import { NO_CHANGES, ask, cut, needsAsking, receive } from "./diff/changes.ts";
 import { Feed, nextFrame } from "./feed.ts";
 import { Log } from "./log.ts";
@@ -74,7 +74,7 @@ function Root({ url }: { url: string }) {
         setStatus(next);
         if (next.state === "live") {
           live.current = { connection, receipts };
-          log.attach((envelope) => connection.send(envelope), next.capabilities.includes("log.forward"));
+          log.attach((envelope) => connection.send(envelope), offers(next, "log.forward"));
         } else if (next.state === "ended") {
           live.current = undefined;
           setChanges(cut);

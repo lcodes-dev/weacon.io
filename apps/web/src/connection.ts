@@ -1,11 +1,18 @@
 import { PROTOCOL } from "../../../tooling/ts/version.ts";
-import { DIFF_VIEW } from "./diff/changes.ts";
 import type { App, Envelope } from "./protocol.ts";
 
+/** Every capability the web app speaks of, in its hello or in the server's welcome. */
+export type WebCapability = "run.stream" | "diff.view" | "chat.send" | "log.forward";
+
 // What the web app needs the server to offer.
-const NEEDS = "run.stream";
+const NEEDS: WebCapability = "run.stream";
 // What else it can do with a server that offers the same.
-const OFFERS = [DIFF_VIEW];
+const OFFERS: WebCapability[] = ["diff.view"];
+
+/** Whether the server is live and offers `capability`. */
+export function offers(status: Status, capability: WebCapability): boolean {
+  return status.state === "live" && status.capabilities.includes(capability);
+}
 
 /** Why a connection ended. */
 export type End =

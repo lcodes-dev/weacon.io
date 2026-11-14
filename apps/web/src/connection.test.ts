@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { Connection, type Listener, type Socket, type Status, parse, statusText } from "./connection.ts";
+import { Connection, type Listener, type Socket, type Status, offers, parse, statusText } from "./connection.ts";
 import type { App, Envelope } from "./protocol.ts";
 
 const ME: App = { name: "weacon-web", version: "0.1.0", commit: "1a2b3c4" };
@@ -132,4 +132,12 @@ test("the header says how the connection stands", () => {
     "The server runs another version of Weacon; reload the page",
   );
   assert.equal(statusText({ state: "ended", code: "connection.server_too_old" }), "The server is too old for this app");
+});
+
+test("a capability counts only while the server is live and offers it", () => {
+  const live: Status = { state: "live", server: SERVER, capabilities: ["run.stream", "chat.send"] };
+  assert.equal(offers(live, "chat.send"), true);
+  assert.equal(offers(live, "diff.view"), false);
+  assert.equal(offers({ state: "connecting" }, "chat.send"), false);
+  assert.equal(offers({ state: "ended", code: "connection.lost" }, "chat.send"), false);
 });
