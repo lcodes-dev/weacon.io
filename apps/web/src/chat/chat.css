@@ -44,3 +44,8 @@
 .row.problem {
   color: #c4372b;
 }
+
+header .problem {
+  color: #c4372b;
+  align-self: center;
+}

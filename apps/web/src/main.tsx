@@ -7,7 +7,7 @@ import { chatRefOf } from "./chat-ref.ts";
 import { type Late, type Send, type Sent, chatCommand, deliver } from "./composer/prompt.ts";
 import { type Asks, Connection, type Later, type Status, offers } from "./connection.ts";
 import { NO_CHANGES, ask, cut, needsAsking, receive } from "./diff/changes.ts";
-import { type Answers, answeredUnder, askKey, sending, settle, settleLate } from "./chat/asks.ts";
+import { type Answers, askKey, sending, settle, settleLate, stopProblem } from "./chat/asks.ts";
 import { working } from "./chat/chat.ts";
 import { ChatFeed, nextFrame } from "./chat/feed.ts";
 import { lines } from "./chat/lines.ts";
@@ -45,10 +45,11 @@ function Root({ url }: { url: string }) {
   const [status, setStatus] = useState<Status>({ state: "connecting" });
   const [sync, setSync] = useState<Sync>(START);
   const [answers, setAnswers] = useState<Answers>(new Map());
-  // The answers as last shown, for a late receipt to find which prompt it settles.
-  const sent = useRef(answers);
-  sent.current = answers;
+  // Every answer's request, with its prompt, for a late receipt to close the prompt it answers,
+  // even after a later answer to the same prompt replaced it on screen.
+  const answered = useRef(new Map<RequestId, { run: RunId; prompt: number }>());
   const [stopping, setStopping] = useState(false);
+  const [stopFailed, setStopFailed] = useState<string>();
   const [late, setLate] = useState<Late>();
   const [changes, setChanges] = useState(NO_CHANGES);
   // The connection while it is live, and the commands sent on it that wait for an answer.
@@ -72,7 +73,7 @@ function Root({ url }: { url: string }) {
         return;
       }
       setLate({ request, settled });
-      const answer = answeredUnder(sent.current, request);
+      const answer = answered.current.get(request);
       if (answer !== undefined && settled === "accepted") {
         live.current?.feed?.answered(answer.run, answer.prompt);
       }
@@ -144,6 +145,7 @@ function Root({ url }: { url: string }) {
     answer(run: RunId, prompt: number, allow: boolean) {
       const key = askKey(run, prompt);
       const { answers: next, request } = sending(answers, { run, prompt, allow }, newRequestId);
+      answered.current.set(request, { run, prompt });
       setAnswers(next);
       void command({ kind: "permission", answer: { run, prompt, allow } }, request).then((sent) => {
         // An answer is far too short to be refused for its size.
@@ -157,7 +159,11 @@ function Root({ url }: { url: string }) {
   };
   const stop = () => {
     setStopping(true);
-    void command({ kind: "interrupt" }, newRequestId()).then(() => setStopping(false));
+    setStopFailed(undefined);
+    void command({ kind: "interrupt" }, newRequestId()).then((sent) => {
+      setStopping(false);
+      setStopFailed(stopProblem(sent));
+    });
   };
   const { chat } = sync;
   const shown = {
@@ -167,7 +173,7 @@ function Root({ url }: { url: string }) {
     // A chat is on its way while the connection is made, then only from a server that serves chats.
     loading: chatRef !== undefined && chat === undefined && !sync.failed && (status.state === "connecting" || offers(status, "chat.events")),
     retry: sync.failed ? () => live.current?.feed?.open() : undefined,
-    stop: chat !== undefined && working(chat) ? { stopping, stop } : undefined,
+    stop: chat !== undefined && working(chat) ? { stopping, problem: stopFailed, stop } : undefined,
   };
   const openChanges = () => {
     // Asked the first time they are opened, and again after answers were cut short.

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { type Answers, answerProblem, answeredUnder, askKey, sending, settle, settleLate } from "./asks.ts";
+import { type Answers, answerProblem, answeredUnder, askKey, sending, settle, settleLate, stopProblem } from "./asks.ts";
 import { chatCommand } from "../composer/prompt.ts";
 
 const key = askKey("r-1", 2);
@@ -81,4 +81,11 @@ test("a late receipt settles the answer sent under its request", () => {
   assert.equal(settleLate(unsure, "a-9", "accepted"), unsure);
   assert.equal(answeredUnder(unsure, "a-1")?.prompt, 2);
   assert.equal(answeredUnder(unsure, "a-9"), undefined);
+});
+
+test("Stop says why it may not have worked", () => {
+  assert.equal(stopProblem("accepted"), undefined);
+  assert.equal(stopProblem("refused"), "The agent wasn't stopped");
+  assert.equal(stopProblem("lost"), "The connection closed; the agent may not have stopped");
+  assert.equal(stopProblem("unsure"), "The server didn't answer; the agent may not have stopped");
 });

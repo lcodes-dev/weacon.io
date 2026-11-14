@@ -77,9 +77,12 @@ export class Receipts {
       return;
     }
     const overdue = [...this.#overdue].find(([, id]) => id === envelope.id);
+    // An error about an earlier envelope doesn't decide a retry of the same request that waits.
     if (overdue !== undefined) {
       this.#overdue.delete(overdue[0]);
-      this.#late(overdue[0], "refused");
+      if (!this.#waiting.has(overdue[0])) {
+        this.#late(overdue[0], "refused");
+      }
     }
   }
 

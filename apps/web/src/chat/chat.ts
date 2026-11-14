@@ -104,6 +104,12 @@ export function older(chat: Chat, events: readonly ChatEntry[]): Chat {
     return chat;
   }
   const earlier = fold(chat, before).map((item) => (item.kind === "turn" ? { ...item, turn: { ...item.turn, open: false } } : item));
+  // What the log said after the snapshot also closes the prompts this window brings back.
+  for (const entry of chat.entries) {
+    if (entry.seq > chat.base) {
+      closeBy(earlier, entry);
+    }
+  }
   return { ...chat, first: before[0]?.seq ?? chat.first, entries: [...before, ...chat.entries], items: [...earlier, ...chat.items] };
 }
 
@@ -150,24 +156,15 @@ function step(items: Item[], entry: ChatEntry, waiting: boolean): void {
     items.push({ kind: "prompt", seq: entry.seq, text: event.text });
     return;
   }
-  if (event.kind === "run_status" && event.status.state !== "waiting") {
-    closeAsks(items, event.status.run, () => true);
-    // A run that stops without a finished event, as when its core crashed, ends its turn too.
-    if (!["starting", "running"].includes(event.status.state)) {
-      update(items, event.status.run, (turn) => ({ ...turn, open: false }));
-    }
+  closeBy(items, entry);
+  // A run that stops without a finished event, as when its core crashed, ends its turn too.
+  if (event.kind === "run_status" && !["starting", "running", "waiting"].includes(event.status.state)) {
+    update(items, event.status.run, (turn) => ({ ...turn, open: false }));
   }
-  if (event.kind !== "run") {
+  if (event.kind !== "run" || event.update.event.event === "permission_withdrawn") {
     return;
   }
   const { run, event: done } = event.update;
-  if (done.event === "permission_withdrawn") {
-    closeAsks(items, run, (ask) => ask.prompt === done.prompt);
-    return;
-  }
-  if (done.event === "finished") {
-    closeAsks(items, run, () => true);
-  }
   addTo(items, run, turnKey(entry.seq - 1, run), (turn) => {
     if (done.event === "permission_asked") {
       const ask = { prompt: done.prompt, tool: done.tool, at: turn.transcript.rows.length, open: waiting };
@@ -197,6 +194,20 @@ function update(items: Item[], run: RunId, change: (turn: Turn) => Turn): boolea
   }
   items[at] = { kind: "turn", turn: change(item.turn) };
   return true;
+}
+
+// Closes the prompts `entry` says no longer wait: a withdrawn one, or all of a run that finished
+// or stopped waiting.
+function closeBy(items: Item[], entry: ChatEntry): void {
+  const { event } = entry;
+  if (event.kind === "run_status" && event.status.state !== "waiting") {
+    closeAsks(items, event.status.run, () => true);
+  } else if (event.kind === "run" && event.update.event.event === "permission_withdrawn") {
+    const { prompt } = event.update.event;
+    closeAsks(items, event.update.run, (ask) => ask.prompt === prompt);
+  } else if (event.kind === "run" && event.update.event.event === "finished") {
+    closeAsks(items, event.update.run, () => true);
+  }
 }
 
 // Closes the open prompts `which` picks in every turn of `run`, such as one cut in two by a window.

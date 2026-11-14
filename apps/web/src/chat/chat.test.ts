@@ -210,3 +210,18 @@ test("a prompt loaded with older events still closes when it is withdrawn or its
   assert.deepEqual(shown(moved.items).slice(0, 2), ["r-1 done: ask 1@0 open", "r-2 done: ask 1@0"]);
   assert.deepEqual(shown(ended.items).slice(0, 2), ["r-1 done: ask 1@0", "r-2 done: ask 1@0 open"]);
 });
+
+test("a prompt withdrawn before the window that brings it back stays closed", () => {
+  const start = chat([text(5, "r-1", "Later.")], 5, [3, 4]);
+  const withdrawn = commitAll(start, [
+    ran(6, "r-1", { event: "permission_withdrawn", run: "r-1", prompt: 1 }),
+    status(7, "r-2", "running"),
+  ]);
+  const loaded = older(withdrawn, [asked(3, "r-1", 1), asked(4, "r-2", 1)]);
+
+  assert.deepEqual(shown(loaded.items).slice(0, 2), ["r-1 done: ask 1@0", "r-2 done: ask 1@0"]);
+  assert.deepEqual(shown(older(start, [asked(3, "r-1", 1), asked(4, "r-2", 1)]).items).slice(0, 2), [
+    "r-1 done: ask 1@0 open",
+    "r-2 done: ask 1@0 open",
+  ]);
+});

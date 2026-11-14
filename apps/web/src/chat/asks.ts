@@ -1,4 +1,5 @@
 import type { RequestId, RunId } from "../protocol.ts";
+import type { Sent } from "../composer/prompt.ts";
 import type { Settled } from "../receipts.ts";
 
 /** A person's answer to the prompt `prompt` of `run`, on its way or not taken. */
@@ -63,6 +64,18 @@ const PROBLEMS: Record<Exclude<Settled, "accepted">, string> = {
   lost: "The connection closed; the answer may not have been sent",
   unsure: "The server didn't answer; the answer may not have been sent",
 };
+
+const STOP_PROBLEMS: Record<Exclude<Sent, "accepted">, string> = {
+  refused: "The agent wasn't stopped",
+  too_long: "The agent wasn't stopped",
+  lost: "The connection closed; the agent may not have stopped",
+  unsure: "The server didn't answer; the agent may not have stopped",
+};
+
+/** What Stop says once its interrupt ended as `sent`: nothing when it was taken. */
+export function stopProblem(sent: Sent): string | undefined {
+  return sent === "accepted" ? undefined : STOP_PROBLEMS[sent];
+}
 
 /** What a prompt says about its answer: nothing, or why it may not have been taken. */
 export function answerProblem(answering: Answering | undefined): string | undefined {

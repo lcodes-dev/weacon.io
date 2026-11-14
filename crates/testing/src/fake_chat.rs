@@ -143,12 +143,16 @@ impl FakeChat {
             .runs
             .iter()
             .any(|status| status.run == run && status.state == RunState::Idle);
+        let asks = matches!(update.event, RunEvent::PermissionAsked { .. });
         let mut told = if idle {
-            self.status(&run, RunState::Running, agent)
+            self.status(&run, RunState::Running, agent.clone())
         } else {
             Vec::new()
         };
         told.extend(self.commit(event));
+        if asks {
+            told.extend(self.status(&run, RunState::Waiting, agent));
+        }
         told
     }
 
@@ -700,6 +704,26 @@ mod tests {
         assert_eq!(
             shape(&fake.played(&stranger)),
             [(4, "75 r-9 finished".to_owned())]
+        );
+    }
+
+    #[test]
+    fn a_replayed_permission_prompt_makes_its_run_wait() {
+        let mut fake = fake();
+        let asked = fake.played(&played(RunEvent::PermissionAsked {
+            run: run("r-1").unwrap(),
+            prompt: 7,
+            tool: "Edit".to_owned(),
+            input: Value::Null,
+        }));
+        let (seq, runs, waiting) = snapshot(&mut fake);
+
+        assert_eq!(shape(&asked), []);
+        assert_eq!(seq, SEEDED + 2);
+        assert_eq!(waiting, [SEEDED, SEEDED + 1]);
+        assert!(
+            runs.iter()
+                .any(|status| status.run.as_str() == "r-1" && status.state == RunState::Waiting)
         );
     }
 

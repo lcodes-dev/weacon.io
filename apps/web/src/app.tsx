@@ -24,7 +24,7 @@ export type ChatView = {
   /** Asks for the chat again, when the server refused it. */
   retry: (() => void) | undefined;
   /** Stops the agent's turn, while one is running. */
-  stop: { stopping: boolean; stop: () => void } | undefined;
+  stop: { stopping: boolean; problem: string | undefined; stop: () => void } | undefined;
 };
 
 /** The page: a header with Stop, Changes and Settings, over the chat's transcript and the message box, its changes, or Settings. */
@@ -57,7 +57,7 @@ export function App({
         <span className="status">{statusText(status)}</span>
         {shown === "run" ? (
           <span className="actions">
-            {chat.stop !== undefined && <StopButton stopping={chat.stop.stopping} onStop={chat.stop.stop} />}
+            {chat.stop !== undefined && <StopButton stopping={chat.stop.stopping} problem={chat.stop.problem} onStop={chat.stop.stop} />}
             {chatRef !== undefined && canAsk(status) && (
               <button
                 type="button"
