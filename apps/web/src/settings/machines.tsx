@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 
 import { fingerprint } from "../machines/fingerprint.ts";
+import { keep } from "../machines/keep.ts";
 import { osName } from "../machines/os.ts";
 import type { Pins } from "../machines/pins.ts";
 import { unpair } from "../machines/unpair.ts";
@@ -132,6 +133,7 @@ function Pair({ api, pins, paired }: { api: Api; pins: Pins; paired(id: MachineI
   const [found, setFound] = useState<Found>();
   const [local, setLocal] = useState<string>();
   const [unchecked, setUnchecked] = useState(false);
+  const [saving, setSaving] = useState(false);
   const looking = useAsk();
   const confirming = useAsk();
   const reset = () => {
@@ -140,23 +142,18 @@ function Pair({ api, pins, paired }: { api: Api; pins: Pins; paired(id: MachineI
     looking.clear();
     confirming.clear();
   };
-  // The server has paired the machine by now, so a problem here ends the pairing on this page.
+  // The server has paired the machine by now: whatever happens here, the list shows it.
   const confirmed = async (machine: MachineSummary, shown: PairPending) => {
-    const before = await pins.pinned(machine.id).catch(() => undefined);
-    if (machine.key !== shown.key || (before !== undefined && before !== machine.key)) {
-      setLocal("The machine's key isn't the one you checked. If it shows in your list, unpair it.");
-      return;
-    }
-    try {
-      await pins.pin(machine.id, machine.key);
-    } catch {
-      setLocal("This browser couldn't keep the machine's key. It's paired, but its terminal won't open here.");
-      paired(machine.id);
-      return;
-    }
-    setCode("");
-    reset();
+    setSaving(true);
+    const problem = await keep(pins, machine, shown);
+    setSaving(false);
     paired(machine.id);
+    if (problem === undefined) {
+      setCode("");
+      reset();
+    } else {
+      setLocal(problem);
+    }
   };
   if (found !== undefined) {
     const { pending } = found;
@@ -177,7 +174,7 @@ function Pair({ api, pins, paired }: { api: Api; pins: Pins; paired(id: MachineI
           <>
             <button
               type="button"
-              disabled={confirming.busy}
+              disabled={confirming.busy || saving}
               onClick={() =>
                 void confirming.ask(
                   () => api.confirm({ pairing: pending.pairing, code: found.code }),
@@ -187,7 +184,7 @@ function Pair({ api, pins, paired }: { api: Api; pins: Pins; paired(id: MachineI
             >
               Confirm
             </button>{" "}
-            <button type="button" disabled={confirming.busy} onClick={reset}>
+            <button type="button" disabled={confirming.busy || saving} onClick={reset}>
               Cancel
             </button>
           </>
