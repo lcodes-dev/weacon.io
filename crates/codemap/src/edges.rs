@@ -4,7 +4,7 @@ use std::iter::once;
 use crate::graph::{ModuleNode, absolute, longest_module, nodes, segments_of};
 use crate::paths::{Bound, NamedPath};
 use crate::refs::Ref;
-use crate::symbols::Item;
+use crate::symbols::{Item, Outline};
 use crate::{Crate, Kind};
 
 /// One item's code naming another item: `from` and `to` are paths such as `weacon_core::map::run`.
@@ -19,6 +19,10 @@ pub struct Edge {
 pub enum EdgeKind {
     Calls,
     Uses,
+    /// From a type to a trait in the repository it implements.
+    Implements,
+    /// From a `#[test]` function, such as `a::m::tests::reads`, to what it calls or uses.
+    Tests,
 }
 
 /// How many `use`s a path is followed through, re-exports included.
@@ -28,14 +32,39 @@ const HOPS: usize = 4;
 pub(crate) fn edges(
     crates: &[Crate],
     named_paths: &BTreeMap<&str, &[NamedPath]>,
-    items: &BTreeMap<&str, &[Item]>,
+    outlines: &BTreeMap<&str, &Outline>,
 ) -> Vec<Edge> {
-    let items_of = |file: &str| items.get(file).copied().unwrap_or_default();
+    let items_of = |file: &str| {
+        outlines
+            .get(file)
+            .map_or(&[][..], |outline| &outline.items[..])
+    };
     let scope = Scope::new(crates, named_paths, &items_of);
     let mut found = BTreeSet::new();
     for ModuleNode { krate, module } in nodes(crates) {
-        for item in items_of(&module.file) {
-            found.extend(scope.edges(&krate.name, &module.path, item));
+        let Some(outline) = outlines.get(module.file.as_str()) else {
+            continue;
+        };
+        let (krate, module) = (krate.name.as_str(), module.path.as_str());
+        for item in &outline.items {
+            found.extend(scope.edges(krate, module, item));
+        }
+        for test in &outline.tests {
+            let edges = scope.edges(krate, module, test);
+            found.extend(edges.into_iter().map(|edge| Edge {
+                kind: EdgeKind::Tests,
+                ..edge
+            }));
+        }
+        for implemented in &outline.impls {
+            let edges = scope.edges(krate, module, &implemented.as_item());
+            let traits = edges
+                .into_iter()
+                .filter(|edge| scope.ids.get(&edge.to) == Some(&Kind::Trait));
+            found.extend(traits.map(|edge| Edge {
+                kind: EdgeKind::Implements,
+                ..edge
+            }));
         }
     }
     found.into_iter().collect()
@@ -113,7 +142,7 @@ impl<'a> Scope<'a> {
         self.ids.insert(path, symbol.kind);
     }
 
-    fn edges(&self, krate: &'a str, module: &'a str, item: &'a Item) -> Vec<Edge> {
+    fn edges(&self, krate: &str, module: &str, item: &Item) -> Vec<Edge> {
         let from = id(krate, module, &item.symbol.name);
         let mut found: Vec<(String, EdgeKind)> = item
             .refs
@@ -150,10 +179,10 @@ impl<'a> Scope<'a> {
     /// than something inside it that isn't an item, such as an enum's variant.
     fn path(
         &self,
-        krate: &'a str,
-        module: &'a str,
-        item: &'a Item,
-        path: &'a [String],
+        krate: &str,
+        module: &str,
+        item: &Item,
+        path: &[String],
     ) -> Option<(String, bool)> {
         let segments = path
             .iter()
@@ -174,7 +203,7 @@ impl<'a> Scope<'a> {
         within.map(|found| (found, false))
     }
 
-    fn find(&self, krate: &'a str, segments: &[&'a str], hops: usize) -> Option<String> {
+    fn find(&self, krate: &str, segments: &[&str], hops: usize) -> Option<String> {
         let item = join(once(krate).chain(segments.iter().copied()));
         if self.ids.contains_key(&item) {
             return Some(item);
@@ -190,7 +219,7 @@ impl<'a> Scope<'a> {
             segments.get(length + 1..)?,
         );
         let imports = self.imports.get(&(krate, module.join("::")))?;
-        let through = |import: &&'a NamedPath, name: Option<&'a str>| {
+        let through = |import: &&NamedPath, name: Option<&str>| {
             let written = import.segments.iter().map(String::as_str);
             let segments = written.chain(name).chain(rest.iter().copied());
             let (krate, segments) = absolute(&self.crates, krate, module.to_vec(), segments);
@@ -377,6 +406,37 @@ mod tests {
             ),
         ]);
         assert_eq!(found, ["a::g Uses a::K", "a::h Uses a::K"]);
+    }
+
+    #[test]
+    fn links_types_to_traits_and_tests_to_what_they_test() {
+        let found = edges(&[
+            ("a/Cargo.toml", CRATE_A),
+            (
+                "a/src/lib.rs",
+                "mod m;\npub trait Show {}\npub struct X;\nimpl Show for X {}\n\
+                 impl std::fmt::Debug for X {}\nimpl<T> From<T> for X {}\n\
+                 pub fn run() {}\n#[cfg(test)]\nmod tests {\n use super::*;\n\
+                 fn helper() { run(); }\n #[test]\n fn runs() { run(); m::go(); let _x: X; }\n\
+                 mod deeper { #[tokio::test]\n async fn shows() { crate::m::Y::show(); } }\n}\n",
+            ),
+            (
+                "a/src/m.rs",
+                "pub fn go() {}\npub struct Y;\nmod inner { pub trait Shown {} }\n\
+                 impl Y { pub fn show() {} }\nimpl inner::Shown for Y {}\n",
+            ),
+        ]);
+        assert_eq!(
+            found,
+            [
+                "a::X Implements a::Show",
+                "a::m::Y Implements a::m::inner::Shown",
+                "a::tests::deeper::shows Tests a::m::Y::show",
+                "a::tests::runs Tests a::X",
+                "a::tests::runs Tests a::m::go",
+                "a::tests::runs Tests a::run",
+            ]
+        );
     }
 
     #[test]

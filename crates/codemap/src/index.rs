@@ -74,11 +74,15 @@ pub(crate) fn assemble(facts: &[Facts]) -> Index {
     let mut crates: Vec<Crate> = facts.iter().filter_map(manifest).collect();
     crates.sort_by(|one, other| one.folder.cmp(&other.folder));
     let mut named_by_file = BTreeMap::new();
-    let mut items_by_file = BTreeMap::new();
+    let mut outlines = BTreeMap::new();
     let mut sources: Vec<&Facts> = facts.iter().collect();
     sources.sort_by_key(|facts| &facts.path);
     for facts in sources {
-        let FileKind::Rust { items, named_paths } = &facts.kind else {
+        let FileKind::Rust {
+            outline,
+            named_paths,
+        } = &facts.kind
+        else {
             continue;
         };
         let file = facts.path.as_str();
@@ -91,18 +95,22 @@ pub(crate) fn assemble(facts: &[Facts]) -> Index {
             continue;
         };
         named_by_file.insert(file, &named_paths[..]);
-        items_by_file.insert(file, &items[..]);
+        outlines.insert(file, outline);
         owner.modules.push(Module {
             path,
             file: file.to_owned(),
-            symbols: items.iter().map(|item| item.symbol.clone()).collect(),
+            symbols: outline
+                .items
+                .iter()
+                .map(|item| item.symbol.clone())
+                .collect(),
         });
     }
     crates.iter_mut().for_each(root_binary);
     let nodes = nodes(&crates);
     let areas = areas(&nodes, &file_links(&nodes, &named_by_file));
-    let edges = edges(&crates, &named_by_file, &items_by_file);
-    let contracts = contracts::assemble(&crates, &items_by_file);
+    let edges = edges(&crates, &named_by_file, &outlines);
+    let contracts = contracts::assemble(&crates, &outlines);
     Index {
         crates,
         areas,

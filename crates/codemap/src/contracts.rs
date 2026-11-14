@@ -11,7 +11,7 @@ use tables::Tables;
 use crate::edges::id;
 use crate::graph::{ModuleNode, nodes};
 use crate::paths::segments;
-use crate::symbols::Item;
+use crate::symbols::{Item, Outline};
 use crate::syntax::{attributes, line, preorder, text};
 use crate::{Crate, Module};
 
@@ -62,11 +62,14 @@ pub(crate) enum Declares {
 const METHODS: &[&str] = &["delete", "get", "head", "options", "patch", "post", "put"];
 
 /// Every contract the crates' items declare, sorted, each once.
-pub(crate) fn assemble(crates: &[Crate], items: &BTreeMap<&str, &[Item]>) -> Vec<Contract> {
+pub(crate) fn assemble(crates: &[Crate], outlines: &BTreeMap<&str, &Outline>) -> Vec<Contract> {
     let mut found = BTreeSet::new();
     let mut commands = Commands::new();
     for ModuleNode { krate, module } in nodes(crates) {
-        for item in items.get(module.file.as_str()).copied().unwrap_or_default() {
+        let items = outlines
+            .get(module.file.as_str())
+            .map_or(&[][..], |it| &it.items[..]);
+        for item in items {
             declare(&mut found, &mut commands, krate, module, item);
         }
     }

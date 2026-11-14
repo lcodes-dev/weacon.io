@@ -5,8 +5,9 @@ use tree_sitter::{Node, Tree};
 
 use crate::Fingerprint;
 use crate::contracts::{Declared, contracts};
+use crate::paths::{Segments, segments};
 use crate::refs::{Ref, refs};
-use crate::syntax::{line, preorder, push_reversed, test_only, text};
+use crate::syntax::{attributes, line, preorder, push_reversed, test_only, text};
 
 /// An item declared in a module, named relative to it: `Frame`, `Frame::new`, `tests::helper`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -80,6 +81,45 @@ pub(crate) struct Item {
     pub(crate) contracts: Vec<Declared>,
 }
 
+/// A file's items, its trait impls, and its tests.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct Outline {
+    pub(crate) items: Vec<Item>,
+    pub(crate) impls: Vec<Impl>,
+    /// Each `#[test]` function, named after the modules around it, such as `tests::reads`.
+    pub(crate) tests: Vec<Item>,
+}
+
+/// An `impl Trait for Type`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Impl {
+    pub(crate) within: Vec<String>,
+    pub(crate) owner: String,
+    /// The trait, as written.
+    pub(crate) trait_path: Segments,
+}
+
+impl Impl {
+    /// The impl as an item of its type that uses the trait, so the trait resolves as any path.
+    pub(crate) fn as_item(&self) -> Item {
+        let name = [&self.within[..], std::slice::from_ref(&self.owner)]
+            .concat()
+            .join("::");
+        Item {
+            symbol: Symbol {
+                kind: Kind::Struct,
+                name,
+                line: 0,
+                fingerprint: Fingerprint::of([""]),
+            },
+            within: self.within.clone(),
+            owner: Some(self.owner.clone()),
+            refs: vec![Ref::Use(self.trait_path.clone())],
+            contracts: Vec::new(),
+        }
+    }
+}
+
 /// Where items sit: the inline modules around them, their owner, and the prefix of their names.
 #[derive(Clone, Default)]
 struct Place {
@@ -88,16 +128,16 @@ struct Place {
     prefix: String,
 }
 
-/// The items of a file, test-only items left out, in source order.
-pub(crate) fn symbols(tree: &Tree, source: &[u8]) -> Vec<Item> {
-    let mut found = Vec::new();
+/// The outline of a file, its items in source order and test-only ones left out.
+pub(crate) fn symbols(tree: &Tree, source: &[u8]) -> Outline {
+    let mut found = Outline::default();
     // A stack rather than recursion, so no nesting depth can overflow ours.
     let mut pending = Vec::new();
     push_items(&mut pending, Some(tree.root_node()), &Place::default());
     while let Some((item, place)) = pending.pop() {
         visit(item, &place, source, &mut found, &mut pending);
     }
-    number_repeats(&mut found);
+    number_repeats(&mut found.items);
     found
 }
 
@@ -107,21 +147,16 @@ fn visit<'tree>(
     item: Node<'tree>,
     place: &Place,
     source: &[u8],
-    found: &mut Vec<Item>,
+    found: &mut Outline,
     pending: &mut Pending<'tree>,
 ) {
     if test_only(item, source) {
+        found.tests.extend(tests(item, place, source));
         return;
     }
     let body = item.child_by_field_name("body");
     if item.kind() == "impl_item" {
-        let (owner, path) = impl_owner(item, source);
-        let inside = Place {
-            within: place.within.clone(),
-            owner: Some(owner),
-            prefix: join(&place.prefix, &path),
-        };
-        push_items(pending, body, &inside);
+        visit_impl(item, place, source, found, pending);
         return;
     }
     let name = item
@@ -146,7 +181,7 @@ fn visit<'tree>(
     } else {
         (refs(item, source), contracts(item, source))
     };
-    found.push(Item {
+    found.items.push(Item {
         symbol,
         within: place.within.clone(),
         owner: place.owner.clone(),
@@ -156,6 +191,31 @@ fn visit<'tree>(
     if let Some(inside) = inside {
         push_items(pending, body, &inside);
     }
+}
+
+fn visit_impl<'tree>(
+    item: Node<'tree>,
+    place: &Place,
+    source: &[u8],
+    found: &mut Outline,
+    pending: &mut Pending<'tree>,
+) {
+    let body = item.child_by_field_name("body");
+    let (owner, path) = impl_owner(item, source);
+    let written = item.child_by_field_name("trait");
+    if let Some(trait_path) = written.and_then(|written| trait_path(written, source)) {
+        found.impls.push(Impl {
+            within: place.within.clone(),
+            owner: owner.clone(),
+            trait_path,
+        });
+    }
+    let inside = Place {
+        within: place.within.clone(),
+        owner: Some(owner),
+        prefix: join(&place.prefix, &path),
+    };
+    push_items(pending, body, &inside);
 }
 
 impl Place {
@@ -203,6 +263,58 @@ fn impl_owner(item: Node<'_>, source: &[u8]) -> (String, String) {
         None => owner.clone(),
     };
     (owner, path)
+}
+
+/// `fmt::Display` for `fmt::Display` or `From<u8>`'s `From`.
+fn trait_path(node: Node<'_>, source: &[u8]) -> Option<Segments> {
+    match node.kind() {
+        "generic_type" => trait_path(node.child_by_field_name("type")?, source),
+        "type_identifier" => Some(vec![text(node, source).to_owned()]),
+        _ => segments(node, source),
+    }
+}
+
+/// The `#[test]` functions in `item`, a test-only item, each read as if written in `place`.
+fn tests(item: Node<'_>, place: &Place, source: &[u8]) -> Vec<Item> {
+    let mut found = Vec::new();
+    let mut modules = vec![(item, place.prefix.clone())];
+    while let Some((node, prefix)) = modules.pop() {
+        let name = node
+            .child_by_field_name("name")
+            .map(|name| plain(text(name, source)));
+        let body = node.child_by_field_name("body");
+        match (node.kind(), name) {
+            ("mod_item", Some(name)) => {
+                let prefix = join(&prefix, name);
+                if let Some(body) = body {
+                    let mut cursor = body.walk();
+                    let children = body.named_children(&mut cursor);
+                    modules.extend(children.map(|child| (child, prefix.clone())));
+                }
+            }
+            ("function_item", Some(name)) if is_test(node, source) => found.push(Item {
+                symbol: Symbol {
+                    kind: Kind::Fn,
+                    name: join(&prefix, name),
+                    line: line(node),
+                    fingerprint: fingerprint(node, source),
+                },
+                within: place.within.clone(),
+                owner: None,
+                refs: refs(node, source),
+                contracts: Vec::new(),
+            }),
+            _ => {}
+        }
+    }
+    found
+}
+
+fn is_test(function: Node<'_>, source: &[u8]) -> bool {
+    attributes(function).any(|node| {
+        let attribute: String = text(node, source).split_whitespace().collect();
+        attribute == "#[test]" || attribute.ends_with("::test]")
+    })
 }
 
 /// `Frame` for `fmt::Frame`, `Frame<T>`, `&mut Frame` or `dyn Frame`; `T` for `[T]`.
@@ -270,6 +382,7 @@ mod tests {
     fn symbols_in(text: &str) -> Vec<Symbol> {
         let tree = tree(text);
         symbols(&tree, text.as_bytes())
+            .items
             .into_iter()
             .map(|item| item.symbol)
             .collect()

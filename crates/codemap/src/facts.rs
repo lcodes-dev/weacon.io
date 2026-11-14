@@ -4,7 +4,7 @@ use serde::Deserialize;
 use tree_sitter::Parser;
 
 use crate::paths::{NamedPath, named_paths};
-use crate::symbols::{Item, symbols};
+use crate::symbols::{Outline, symbols};
 use crate::syntax::{parse, rust_parser};
 use crate::{Error, SourceFile};
 
@@ -21,7 +21,7 @@ pub(crate) enum FileKind {
     /// A `Cargo.toml` with a package, and the name code uses for it.
     Manifest(String),
     Rust {
-        items: Vec<Item>,
+        outline: Outline,
         named_paths: Vec<NamedPath>,
     },
 }
@@ -68,7 +68,7 @@ impl Reader {
             let tree = parse(&mut self.parser, &file.text)?;
             let source = file.text.as_bytes();
             Some(FileKind::Rust {
-                items: symbols(&tree, source),
+                outline: symbols(&tree, source),
                 named_paths: named_paths(tree.root_node(), source),
             })
         } else {
@@ -109,13 +109,21 @@ mod tests {
     #[test]
     fn reads_rust_files_only() {
         let Some(Facts {
-            kind: FileKind::Rust { items, named_paths },
+            kind:
+                FileKind::Rust {
+                    outline,
+                    named_paths,
+                },
             ..
         }) = read("src/lib.rs", "mod x;\nfn top() {}\n")
         else {
             panic!("not read as Rust");
         };
-        let names: Vec<&str> = items.iter().map(|item| item.symbol.name.as_str()).collect();
+        let names: Vec<&str> = outline
+            .items
+            .iter()
+            .map(|item| item.symbol.name.as_str())
+            .collect();
         assert_eq!(names, ["top"]);
         assert_eq!(named_paths.len(), 1);
         assert_eq!(read("README.md", "fn top() {}"), None);
