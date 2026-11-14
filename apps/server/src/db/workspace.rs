@@ -115,11 +115,7 @@ mod tests {
     use super::*;
     use crate::db::schema::STEPS;
     use crate::db::{Attempt, NewWorkspace};
-    use crate::test_support::{fresh_account, member_id, two_teams, workspace_id};
-
-    fn email(text: &str) -> Email {
-        Email::parse(text).unwrap()
-    }
+    use crate::test_support::{email, fresh_account, member_id, two_teams, workspace_id};
 
     async fn accounts(db: &Db) -> Vec<(String, String)> {
         sqlx::query_as("SELECT account_id, email FROM accounts ORDER BY email")
@@ -311,5 +307,102 @@ mod tests {
         .execute(&db.writer)
         .await;
         assert_eq!(failed(twice.unwrap_err()).code().as_str(), "db.exists");
+    }
+
+    async fn with_members(db: &Db, id: &str, members: &[(&str, &str)]) -> Workspace {
+        let workspace = db
+            .create_workspace(&workspace_id(id), "Team")
+            .await
+            .unwrap();
+        for (member, address) in members {
+            workspace
+                .add_member(&member_id(member), &fresh_account(), &email(address))
+                .await
+                .unwrap();
+        }
+        workspace
+    }
+
+    #[tokio::test]
+    async fn every_read_sees_only_its_own_workspace() {
+        let dir = TempDir::new().unwrap();
+        let db = Db::create(&dir.join("weacon.db")).await.unwrap();
+        let one = with_members(&db, "w1", &[("m1", "ada@example.com")]).await;
+        let two = with_members(
+            &db,
+            "w2",
+            &[("m2", "ada@example.com"), ("m3", "bo@example.com")],
+        )
+        .await;
+        let member = |id: &str, address: &str| Member {
+            id: member_id(id),
+            email: email(address),
+        };
+
+        assert_eq!(
+            db.workspace(&workspace_id("w1"))
+                .await
+                .unwrap()
+                .members()
+                .await
+                .unwrap(),
+            [member("m1", "ada@example.com")]
+        );
+        assert_eq!(
+            db.workspace(&workspace_id("w3"))
+                .await
+                .unwrap_err()
+                .code()
+                .as_str(),
+            "workspace.not_found"
+        );
+        assert_eq!(
+            one.members().await.unwrap(),
+            [member("m1", "ada@example.com")]
+        );
+        assert_eq!(
+            two.members().await.unwrap(),
+            [
+                member("m2", "ada@example.com"),
+                member("m3", "bo@example.com")
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn duplicates_are_refused_as_existing() {
+        let dir = TempDir::new().unwrap();
+        let db = Db::create(&dir.join("weacon.db")).await.unwrap();
+        let one = db
+            .create_workspace(&workspace_id("w1"), "One")
+            .await
+            .unwrap();
+        one.add_member(
+            &member_id("m1"),
+            &fresh_account(),
+            &email("ada@example.com"),
+        )
+        .await
+        .unwrap();
+
+        let same_email = one
+            .add_member(
+                &member_id("m2"),
+                &fresh_account(),
+                &email("ada@example.com"),
+            )
+            .await
+            .unwrap_err();
+        let id = one
+            .add_member(&member_id("m1"), &fresh_account(), &email("bo@example.com"))
+            .await
+            .unwrap_err();
+        let workspace = db
+            .create_workspace(&workspace_id("w1"), "Again")
+            .await
+            .unwrap_err();
+        assert_eq!(same_email.code().as_str(), "db.exists");
+        assert_eq!(id.code().as_str(), "db.exists");
+        assert_eq!(workspace.code().as_str(), "db.exists");
     }
 }

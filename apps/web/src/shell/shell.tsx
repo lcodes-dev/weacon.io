@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 
-import { ME } from "../build.ts";
+import { ME } from "../me.ts";
 import type { AccountSignedIn, Code } from "../protocol.ts";
 import { Settings } from "../settings/settings.tsx";
 import { Api, type Fetch } from "./api.ts";

@@ -1,8 +1,8 @@
 import { type ReactNode, useEffect, useRef, useState } from "react";
 
-import { ME } from "../build.ts";
+import { workspaceOf } from "../chat-ref.ts";
 import { Connection, type Status, statusText } from "../connection.ts";
-import { workspaceOf } from "../place.ts";
+import { ME } from "../me.ts";
 import type { WorkspaceId, WorkspaceSummary } from "../protocol.ts";
 import type { Api } from "./api.ts";
 import { useAsk } from "./ask.ts";
@@ -60,12 +60,13 @@ export function Workspaces({ api, who, page }: { api: Api; who: ReactNode; page?
   // Whether the list is on screen, so a workspace made after the person moved on doesn't pull them back.
   const listing = useRef(false);
   const shown = workspace?.id;
+  const covered = page !== undefined;
   useEffect(() => {
-    listing.current = shown === undefined;
+    listing.current = shown === undefined && !covered;
     return () => {
       listing.current = false;
     };
-  }, [shown]);
+  }, [shown, covered]);
   const selector = list !== undefined && workspace !== undefined && (
     <span className="selector">
       <select aria-label="Workspace" value={workspace.id} onChange={(event) => choose(event.target.value)}>
@@ -189,7 +190,7 @@ function useFeed(workspace: WorkspaceId, api: Api): Status {
         void api.session();
       }
     };
-    new Connection(socket, ME, { status: onStatus, message: () => {} }, FEED);
+    new Connection(socket, ME, { status: onStatus, message: () => {} }, FEED, (run, ms) => setTimeout(run, ms));
     return () => {
       current = false;
       socket.close();
