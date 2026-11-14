@@ -3,6 +3,7 @@
 mod access;
 mod claude;
 mod codex;
+pub mod guard;
 mod launch;
 mod lines;
 mod platform;
