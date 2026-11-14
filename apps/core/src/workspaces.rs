@@ -30,6 +30,30 @@ pub(crate) fn login(app: &App, agent: AgentKind, workspace: &WorkspaceId) -> Res
     Ok(())
 }
 
+/// Refuses `launch` unless its agent is signed in from the workspace's own config folder.
+/// Nothing is cached, so a sign-out counts at the next run.
+///
+/// # Errors
+/// `agent.signed_out` when it isn't signed in that way; the check's own fault when it can't run.
+pub(crate) fn require_sign_in(launch: &Launch) -> Result<(), Fault> {
+    // A thread of its own, so the check can be waited for wherever this is called from.
+    let checked =
+        std::thread::scope(|scope| scope.spawn(|| runtime()?.block_on(launch.sign_in())).join());
+    let sign_in = checked.unwrap_or_else(|_| {
+        Err(Fault::new(
+            code!("agent.status_failed"),
+            "The agent's sign-in couldn't be checked",
+        ))
+    })?;
+    match sign_in {
+        SignIn::SignedIn => Ok(()),
+        SignIn::SignedOut => Err(Fault::new(
+            code!("agent.signed_out"),
+            "The agent isn't signed in for this workspace on this machine",
+        )),
+    }
+}
+
 #[derive(Clone, Debug)]
 pub(crate) struct Workspaces {
     state: PathBuf,
@@ -533,5 +557,53 @@ mod tests {
             blocked.unwrap_err().code().as_str(),
             "workspace.cwd_refused"
         );
+    }
+
+    // A `codex` whose sign-in check ends with `code`, written from a child shell so no other
+    // test's fork holds it open.
+    #[cfg(unix)]
+    fn status_program(dir: &Path, code: u8) -> OsString {
+        let bin = dir.join(format!("bin-{code}"));
+        fs::create_dir_all(&bin).unwrap();
+        let written = std::process::Command::new("sh")
+            .args([
+                "-c",
+                "printf '#!/bin/sh\\nexit %s\\n' \"$1\" > \"$2\" && chmod 755 \"$2\"",
+            ])
+            .args(["sh", &code.to_string()])
+            .arg(bin.join("codex"))
+            .status()
+            .unwrap();
+        assert!(written.success());
+        bin.into_os_string()
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_run_starts_only_when_its_workspace_is_signed_in_on_its_own() {
+        let dir = TempDir::new().unwrap();
+        let launch = |code| {
+            Workspaces::new(&dir.join("state"), Some(status_program(&dir, code)))
+                .located(&id("w1"), AgentKind::Codex, dir.to_path_buf())
+                .unwrap()
+        };
+
+        let signed_out = require_sign_in(&launch(1)).unwrap_err();
+
+        require_sign_in(&launch(0)).unwrap();
+        assert_eq!(signed_out.code().as_str(), "agent.signed_out");
+    }
+
+    #[test]
+    fn a_check_that_cant_run_keeps_the_run_from_starting() {
+        let dir = TempDir::new().unwrap();
+        let workspaces =
+            Workspaces::new(&dir.join("state"), Some(dir.join("bin").into_os_string()));
+        program(&dir, "codex");
+        let launch = workspaces
+            .located(&id("w1"), AgentKind::Codex, dir.to_path_buf())
+            .unwrap();
+
+        require_sign_in(&launch).unwrap_err();
     }
 }

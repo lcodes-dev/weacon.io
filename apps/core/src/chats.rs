@@ -22,7 +22,7 @@ use crate::mcp::grants::Granted;
 use crate::mcp::{self, Mcp};
 use crate::platform;
 use crate::runs::Runs;
-use crate::workspaces::Workspaces;
+use crate::workspaces::{self, Workspaces};
 
 /// Where the engine finds things on this machine, beside its state folder.
 #[derive(Clone, Debug, Default)]
@@ -68,6 +68,7 @@ fn launch(
 ) -> Result<Granted, Fault> {
     let cwd = work_dir(places.work_root.as_deref(), &start.workspace, &start.chat)?;
     let launch = roots.launch(&start.workspace, start.agent, cwd)?;
+    workspaces::require_sign_in(&launch)?;
     let (launch, revoke) = mcp::grant(places.mcp.as_ref(), launch, start)?;
     let agent = launch.start(policy, app, start.run.clone(), start.session.as_ref())?;
     Ok(Granted {
@@ -162,7 +163,9 @@ mod tests {
     async fn a_runs_token_lives_as_long_as_its_agent_and_a_failed_start_keeps_none() {
         let dir = TempDir::new().unwrap();
         let claude = platform::plant_program(&dir.join("bin"), "claude", 0o755);
-        std::fs::write(&claude, "#!/bin/sh\nexec sleep 30\n").unwrap();
+        // Signed in from its own folder when asked, and otherwise a run that waits.
+        let script = "#!/bin/sh\n[ \"$1\" = auth ] && { printf '{\"authMethod\":\"claude.ai\"}'; exit 0; }\nexec sleep 30\n";
+        std::fs::write(&claude, script).unwrap();
         platform::plant_program(&dir.join("broken"), "claude", 0o755);
         let app = weacon_appkit::build(&VERSION);
         let (log, _records) = recording_logger();
