@@ -7,7 +7,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 
 use crate::token::token_id;
-use crate::{AgentKind, Asker, Code, FrameError, MachineId, WorkspaceId};
+use crate::{AgentKind, Asker, Code, FrameError, MachineId, WorkspaceId, to_hex};
 
 token_id!(
     /// One sign-in terminal, chosen by the browser that opens it; 1–64 ASCII letters, digits,
@@ -23,6 +23,9 @@ pub const TERMINAL_NOISE: &str = "Noise_NK_25519_AESGCM_SHA256";
 /// The largest Noise message, and so the most [`Bytes`] carries.
 pub const NOISE_MAX: usize = 65535;
 
+/// The largest plaintext one sealed frame holds: a Noise message less its tag.
+pub const SEALED_MAX: usize = NOISE_MAX - 16;
+
 /// From a browser, through the server, to a core that offers `terminal.sign_in`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct TerminalCommand {
@@ -30,8 +33,7 @@ pub struct TerminalCommand {
     pub machine: MachineId,
     pub workspace: WorkspaceId,
     pub action: TerminalAction,
-    /// Who asked, stamped by the server on what it relays; the core opens a terminal only for
-    /// its owner.
+    /// Who asked, stamped by the server on what it relays.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(with = "Asker")]
     pub by: Option<Asker>,
@@ -127,12 +129,9 @@ impl TerminalInput {
     /// The plaintext to seal.
     ///
     /// # Errors
-    /// For [`Self::Newer`], which is only ever received.
+    /// For [`Self::Newer`], which is only ever received, or beyond [`SEALED_MAX`].
     pub fn to_json(&self) -> Result<Vec<u8>, FrameError> {
-        if matches!(self, Self::Newer) {
-            return Err(FrameError::Invalid);
-        }
-        serde_json::to_vec(self).map_err(|_| FrameError::Invalid)
+        sealed_json(self, matches!(self, Self::Newer))
     }
 
     /// # Errors
@@ -146,18 +145,16 @@ impl TerminalOutput {
     /// The plaintext to seal.
     ///
     /// # Errors
-    /// For anything only ever received.
+    /// For anything only ever received, or beyond [`SEALED_MAX`].
     pub fn to_json(&self) -> Result<Vec<u8>, FrameError> {
-        if matches!(
+        let newer = matches!(
             self,
             Self::Newer
                 | Self::Ended {
                     sign_in: SignInState::Newer
                 }
-        ) {
-            return Err(FrameError::Invalid);
-        }
-        serde_json::to_vec(self).map_err(|_| FrameError::Invalid)
+        );
+        sealed_json(self, newer)
     }
 
     /// # Errors
@@ -165,6 +162,17 @@ impl TerminalOutput {
     pub fn from_json(json: &[u8]) -> Result<Self, FrameError> {
         serde_json::from_slice(json).map_err(|_| FrameError::Invalid)
     }
+}
+
+fn sealed_json(value: &impl Serialize, newer: bool) -> Result<Vec<u8>, FrameError> {
+    if newer {
+        return Err(FrameError::Invalid);
+    }
+    let json = serde_json::to_vec(value).map_err(|_| FrameError::Invalid)?;
+    if json.len() > SEALED_MAX {
+        return Err(FrameError::TooLarge);
+    }
+    Ok(json)
 }
 
 impl TerminalCommand {
@@ -179,15 +187,13 @@ impl TerminalCommand {
         )
     }
 
-    /// The Noise prologue both ends hash before the handshake, so the server can't move a
-    /// handshake to another machine, workspace, terminal or vendor. `None` for an agent this
-    /// build doesn't know.
+    /// The Noise prologue both ends hash before the handshake of an [`TerminalAction::Open`],
+    /// so the server can't move it to another machine, workspace, terminal or vendor. `None`
+    /// for any other action, or an agent this build doesn't know.
     #[must_use]
-    pub fn prologue(&self, agent: AgentKind) -> Option<Vec<u8>> {
-        let agent = match agent {
-            AgentKind::Claude => "claude",
-            AgentKind::Codex => "codex",
-            AgentKind::Newer => return None,
+    pub fn prologue(&self) -> Option<Vec<u8>> {
+        let TerminalAction::Open { agent, .. } = self.action else {
+            return None;
         };
         // Ids are tokens, which never hold the separator.
         let parts = [
@@ -195,7 +201,7 @@ impl TerminalCommand {
             self.machine.as_str(),
             self.workspace.as_str(),
             self.terminal.as_str(),
-            agent,
+            agent.name()?,
         ];
         Some(parts.join("\n").into_bytes())
     }
@@ -211,11 +217,12 @@ impl TerminalUpdate {
 /// how many, since they are sealed or terminal content.
 #[derive(Clone, PartialEq, Eq, JsonSchema)]
 pub struct Bytes(
-    #[schemars(with = "String", regex(pattern = BYTES_PATTERN), length(max = 131_070))] Vec<u8>,
+    #[schemars(with = "String", regex(pattern = BYTES_PATTERN), length(max = HEX_MAX))] Vec<u8>,
 );
 
 // The schema's form of the check in `deserialize`; a test keeps the two in step.
 const BYTES_PATTERN: &str = r"^([0-9a-f]{2})*$";
+const HEX_MAX: usize = 2 * NOISE_MAX;
 
 impl Bytes {
     /// `None` when there are more than [`NOISE_MAX`].
@@ -238,18 +245,13 @@ impl fmt::Debug for Bytes {
 
 impl Serialize for Bytes {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        let nibbles = self.0.iter().flat_map(|byte| [byte >> 4, byte & 0xf]);
-        let hex: String = nibbles
-            .filter_map(|nibble| char::from_digit(u32::from(nibble), 16))
-            .collect();
-        serializer.serialize_str(&hex)
+        serializer.serialize_str(&to_hex(&self.0))
     }
 }
 
 impl<'de> Deserialize<'de> for Bytes {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let hex = String::deserialize(deserializer)?;
-        let invalid = || de::Error::custom("not lowercase hex bytes");
         let nibble = |digit: u8| match digit {
             b'0'..=b'9' => Some(digit - b'0'),
             b'a'..=b'f' => Some(digit - b'a' + 10),
@@ -262,7 +264,7 @@ impl<'de> Deserialize<'de> for Bytes {
                 _ => None,
             })
             .collect::<Option<Vec<u8>>>()
-            .ok_or_else(invalid)?;
+            .ok_or_else(|| de::Error::custom("not lowercase hex bytes"))?;
         Self::new(bytes).ok_or_else(|| de::Error::custom("more bytes than a Noise message"))
     }
 }
@@ -461,7 +463,21 @@ mod tests {
             assert_eq!(TerminalOutput::from_json(json.as_bytes()).unwrap(), output);
         }
         TerminalInput::from_json(b"not json").unwrap_err();
+
         TerminalOutput::from_json(br#"{"kind":"output"}"#).unwrap_err();
+    }
+
+    #[test]
+    fn a_plaintext_that_wouldnt_fit_one_sealed_frame_is_refused() {
+        // Each byte of data takes two in the JSON, around which the rest takes 26 or 27.
+        let fits = (SEALED_MAX - 27) / 2;
+        let data = |len| bytes(&vec![7; len]);
+        let output = |len| TerminalOutput::Output { data: data(len) }.to_json();
+        let input = |len| TerminalInput::Input { data: data(len) }.to_json();
+        assert_eq!(output(fits).unwrap().len(), SEALED_MAX);
+        assert_eq!(input(fits).unwrap().len(), SEALED_MAX - 1);
+        assert_eq!(output(fits + 1), Err(FrameError::TooLarge));
+        assert_eq!(input(fits + 1), Err(FrameError::TooLarge));
     }
 
     #[test]
@@ -501,23 +517,26 @@ mod tests {
 
     #[test]
     fn the_prologue_binds_the_machine_workspace_terminal_and_vendor() {
-        let open = command(TerminalAction::Close);
+        let open = |agent| {
+            command(TerminalAction::Open {
+                agent,
+                handshake: bytes(b""),
+            })
+        };
         assert_eq!(
-            open.prologue(AgentKind::Claude).unwrap(),
+            open(AgentKind::Claude).prologue().unwrap(),
             b"weacon-terminal/1\nm-1\nw-1\nt-1\nclaude"
         );
         assert_eq!(
-            open.prologue(AgentKind::Codex).unwrap(),
+            open(AgentKind::Codex).prologue().unwrap(),
             b"weacon-terminal/1\nm-1\nw-1\nt-1\ncodex"
         );
-        assert_eq!(open.prologue(AgentKind::Newer), None);
+        assert_eq!(open(AgentKind::Newer).prologue(), None);
+        assert_eq!(command(TerminalAction::Close).prologue(), None);
         let other = TerminalCommand {
             workspace: WorkspaceId::try_from("w-2".to_owned()).unwrap(),
-            ..command(TerminalAction::Close)
+            ..open(AgentKind::Claude)
         };
-        assert_ne!(
-            other.prologue(AgentKind::Claude),
-            open.prologue(AgentKind::Claude)
-        );
+        assert_ne!(other.prologue(), open(AgentKind::Claude).prologue());
     }
 }

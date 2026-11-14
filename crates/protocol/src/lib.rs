@@ -57,12 +57,20 @@ pub use team::{
     WorkspaceId, WorkspaceList, WorkspaceRole, WorkspaceSummary, WorkspaceUpdate,
 };
 pub use terminal::{
-    Bytes, NOISE_MAX, SignInState, TERMINAL_NOISE, TerminalAction, TerminalCommand, TerminalEvent,
-    TerminalId, TerminalInput, TerminalOutput, TerminalUpdate,
+    Bytes, NOISE_MAX, SEALED_MAX, SignInState, TERMINAL_NOISE, TerminalAction, TerminalCommand,
+    TerminalEvent, TerminalId, TerminalInput, TerminalOutput, TerminalUpdate,
 };
 pub use update::{
     BuildTarget, Commit, DownloadUrl, ReleaseBuild, ReleaseManifest, ReleaseVersion, Sha256,
 };
+
+/// `bytes` as lowercase hex.
+pub(crate) fn to_hex(bytes: &[u8]) -> String {
+    let nibbles = bytes.iter().flat_map(|byte| [byte >> 4, byte & 0xf]);
+    nibbles
+        .filter_map(|nibble| char::from_digit(u32::from(nibble), 16))
+        .collect()
+}
 
 #[cfg(test)]
 mod tests {

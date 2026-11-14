@@ -2439,7 +2439,7 @@
           "$ref": "#/$defs/TerminalAction"
         },
         "by": {
-          "description": "Who asked, stamped by the server on what it relays; the core opens a terminal only for\nits owner.",
+          "description": "Who asked, stamped by the server on what it relays.",
           "$ref": "#/$defs/Asker"
         },
         "machine": {

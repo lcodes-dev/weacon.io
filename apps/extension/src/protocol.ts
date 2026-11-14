@@ -1014,8 +1014,7 @@ export type TerminalAction = (
 export type TerminalCommand = {
   action: TerminalAction;
   /**
-   * Who asked, stamped by the server on what it relays; the core opens a terminal only for
-   * its owner.
+   * Who asked, stamped by the server on what it relays.
    */
   by?: Asker;
   machine: MachineId;
