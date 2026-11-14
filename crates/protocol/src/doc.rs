@@ -337,7 +337,7 @@ mod tests {
     #[test]
     fn records_lists_and_revisions_travel_as_plain_json() {
         let record = DocRecord {
-            id: DocId::try_from("d-1".to_owned()).unwrap(),
+            id: "d-1".parse().unwrap(),
             version: 2,
             content: content(),
         };
@@ -377,12 +377,13 @@ mod tests {
 
     #[test]
     fn a_history_lists_who_made_and_accepted_each_revision() {
-        let member = MemberId::try_from("m-1".to_owned()).unwrap();
+        let member: MemberId = "m-1".parse().unwrap();
         let history = DocHistory {
             revisions: vec![DocRevision {
                 version: 1,
                 author: Author::Agent {
                     owner: member.clone(),
+                    agent: None,
                 },
                 accepted_by: member,
                 at: 1_700_000_000,

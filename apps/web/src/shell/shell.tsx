@@ -2,6 +2,8 @@ import { useEffect, useMemo, useState } from "react";
 
 import { ME } from "../me.ts";
 import type { AccountSignedIn, Code } from "../protocol.ts";
+import { Pins, browserStore } from "../machines/pins.ts";
+import { Machines } from "../settings/machines.tsx";
 import { Settings } from "../settings/settings.tsx";
 import { Api, type Fetch } from "./api.ts";
 import { useAsk } from "./ask.ts";
@@ -17,6 +19,9 @@ type Screen =
   | { name: "failed"; code: Code }
   | { name: "signed out" }
   | { name: "signed in"; account: AccountSignedIn; settings: boolean };
+
+// Keys pinned in this browser, opened on first use.
+const PINS = new Pins(browserStore());
 
 /** The app as the server serves it: sign-in, then the signed-in person's screens. */
 export function Shell({ fetch }: { fetch: Fetch }) {
@@ -73,7 +78,11 @@ export function Shell({ fetch }: { fetch: Fetch }) {
       </span>
     );
     const account = { email: screen.account.email, signOut, signingOut: signingOut.busy };
-    const page = screen.settings ? <Settings me={ME} account={account} /> : undefined;
+    const page = screen.settings ? (
+      <Settings me={ME} account={account}>
+        <Machines api={api} pins={PINS} />
+      </Settings>
+    ) : undefined;
     return <Workspaces api={api} who={who} page={page} />;
   }
   return (

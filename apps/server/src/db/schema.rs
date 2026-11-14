@@ -276,6 +276,11 @@ UPDATE workspaces SET doc_bytes =
     + (SELECT COALESCE(SUM(length(pin)), 0)
        FROM doc_pins WHERE doc_pins.workspace_id = workspaces.workspace_id);
 ",
+    // Which agent made a version, as its JSON, when its author names one.
+    "
+ALTER TABLE task_versions ADD COLUMN agent TEXT;
+ALTER TABLE doc_versions ADD COLUMN agent TEXT;
+",
 ];
 
 /// Applies the steps the database hasn't had yet, each in its own transaction that holds the
