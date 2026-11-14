@@ -16,6 +16,11 @@ mod runs;
 mod service;
 mod session;
 mod status;
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "the sign-in terminal, which uses it, comes next")
+)]
+mod terminal;
 #[cfg(test)]
 mod test_support;
 #[cfg_attr(
