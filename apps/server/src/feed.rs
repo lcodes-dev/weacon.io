@@ -407,6 +407,7 @@ mod tests {
     #[tokio::test]
     async fn a_feed_keeps_its_place_among_the_connections() {
         let mut fixture = Fixture::new().await;
+        fixture.shared.feed.ping_every = QUIET;
         let room = Arc::new(Semaphore::new(2));
         fixture.shared.connections = Arc::clone(&room);
         let (server, token) = signed_in(&fixture).await;
@@ -449,7 +450,8 @@ mod tests {
 
     #[tokio::test]
     async fn only_a_client_that_offers_tasks_hears_of_task_changes() {
-        let fixture = Fixture::new().await;
+        let mut fixture = Fixture::new().await;
+        fixture.shared.feed.ping_every = QUIET;
         let (server, token) = signed_in(&fixture).await;
         let mut plain = greeted(server.address, &token, 0).await;
         let first = next(&mut plain).await;
