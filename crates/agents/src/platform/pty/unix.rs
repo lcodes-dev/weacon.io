@@ -103,8 +103,10 @@ async fn pump(master: Arc<AsyncFd<File>>, mut child: Child, events: mpsc::Sender
     loop {
         match master.get_ref().read(&mut buffer) {
             Ok(0) | Err(_) => break,
-            Ok(read) if !send(&events, &buffer, read).await => return,
-            Ok(_) => {}
+            Ok(read) => {
+                let chunk = buffer.get(..read).unwrap_or_default().to_vec();
+                drop(events.send(Event::Output(chunk)).await);
+            }
         }
     }
     drop(events.send(Event::Exited { success }).await);
