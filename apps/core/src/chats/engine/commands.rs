@@ -6,10 +6,10 @@ use weacon_protocol::{
     RunEvent, RunState, RunUpdate, code,
 };
 
+use super::agent::{Agent, Order};
 use super::{ChatKey, Engine, PendingAnswer, PendingInterrupt, unsupported};
 use crate::chats::log::Seen;
 use crate::runs::Queued;
-use crate::runs::task::{Agent, Order};
 
 impl<A: Agent> Engine<A> {
     pub(super) async fn command(

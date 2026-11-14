@@ -13,9 +13,9 @@ use weacon_protocol::{
 };
 use weacon_testing::{Records, TempDir, recording_logger};
 
+use super::engine::agent::Agent;
 use super::engine::{Chats, Engine, Host, Start};
 use super::feed::Client;
-use crate::runs::task::Agent;
 use crate::runs::{ChatKey, Runs};
 use crate::workspaces::Workspaces;
 

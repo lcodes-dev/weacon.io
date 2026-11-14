@@ -1,6 +1,7 @@
 //! The one task that owns every chat on this machine: it takes people's commands, starts and
 //! orders agents, commits what happens to each chat's log and then publishes it.
 
+pub(super) mod agent;
 #[cfg(test)]
 mod by_hand;
 mod commands;
@@ -22,9 +23,9 @@ use weacon_protocol::{
     code,
 };
 
+use self::agent::{Agent, Order, Report};
 use super::feed::{Client, Subscriber};
 use super::log::Log;
-use crate::runs::task::{Agent, Order, Report};
 use crate::runs::{ChatKey, Runs};
 use crate::workspaces::Workspaces;
 
@@ -381,12 +382,12 @@ mod tests {
         AgentSession, ChatAction, ChatAnswerKind, ChatQueryKind, PermissionAnswer, RunEvent,
     };
 
+    use super::agent::Heard;
     use super::by_hand::on_turn;
     use super::*;
     use crate::chats::test_support::{
         Bench, Started, Told, bench, chat, client, command, key, prompt, pushed, query, run, soon,
     };
-    use crate::runs::task::Heard;
 
     const SESSION: &str = "0b7c6a52-3f1e-4d2a-9c8b-5e4f3a2b1c0d";
 

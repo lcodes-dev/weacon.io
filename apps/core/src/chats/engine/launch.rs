@@ -6,8 +6,8 @@ use tokio::sync::mpsc;
 use weacon_observability::{Fault, Field};
 use weacon_protocol::{AgentSession, RunId, RunState, code};
 
+use super::agent::{Agent, RunOf, drive};
 use super::{ChatKey, Engine, Start};
-use crate::runs::task::{Agent, RunOf, drive};
 
 impl<A: Agent> Engine<A> {
     // Saves the session the chat's next run resumes; one that can't be saved yet is kept, and
@@ -94,9 +94,9 @@ impl<A: Agent> Engine<A> {
 mod tests {
     use weacon_protocol::{Outcome, RunEvent};
 
+    use super::super::agent::Heard;
     use super::super::by_hand::{hear, on_turn, session};
     use crate::chats::test_support::{key, prompt, run, soon};
-    use crate::runs::task::Heard;
 
     #[tokio::test(start_paused = true)]
     async fn a_session_the_journal_couldnt_save_is_resumed_by_the_next_run() {

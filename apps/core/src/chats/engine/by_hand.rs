@@ -8,11 +8,11 @@ use weacon_protocol::{
     Outcome, PermissionAnswer, RunEvent,
 };
 
+use super::agent::Heard;
 use super::{Engine, PendingAnswer};
 use crate::chats::test_support::{
     Bench, FakeAgent, Started, Told, client, command, key, parts, prompt, pushed, run, soon,
 };
-use crate::runs::task::Heard;
 
 // An engine driven by hand, on its first turn, with the client watching the chat.
 pub(super) async fn on_turn() -> (Bench, Engine<FakeAgent>, Started, mpsc::Receiver<Message>) {

@@ -3,9 +3,9 @@
 use weacon_observability::Fault;
 use weacon_protocol::{ChatAnswerKind, ChatQueryKind};
 
+use super::agent::Agent;
 use super::{ChatKey, Engine, unsupported, update};
 use crate::chats::feed::{Client, Subscriber};
-use crate::runs::task::Agent;
 
 const SNAPSHOT_EVENTS: u32 = 50;
 

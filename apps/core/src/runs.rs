@@ -1,8 +1,6 @@
 //! The core's journal of its runs: the ids it has issued and what each chat's latest run was
 //! doing, so a restart can pick them up.
 
-pub(crate) mod task;
-
 use std::fmt;
 use std::path::{Path, PathBuf};
 

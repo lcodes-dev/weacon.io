@@ -3,9 +3,9 @@
 use weacon_observability::Fault;
 use weacon_protocol::{Outcome, RunId, RunState, RunStatus};
 
+use super::agent::{Agent, Order};
 use super::{ChatKey, Engine, PendingEnd};
 use crate::runs::Queued;
-use crate::runs::task::{Agent, Order};
 
 impl<A: Agent> Engine<A> {
     // Ends the turn, if one is running, with `outcome`; the run is left idle, or asleep once its
@@ -165,11 +165,11 @@ mod tests {
     use tokio::sync::mpsc;
     use weacon_protocol::{ChatEvent, Receipt, RequestId, RunEvent, code};
 
+    use super::super::agent::Heard;
     use super::super::by_hand::{hear, latest, on_ask, on_turn, waiting_in};
     use super::*;
     use crate::chats::test_support::{FakeAgent, Told, key, prompt, run, soon};
     use crate::runs::Queued;
-    use crate::runs::task::Heard;
 
     // The outcomes of `request`'s receipts in the log, in order.
     async fn outcomes(engine: &mut Engine<FakeAgent>, request: &RequestId) -> Vec<Outcome> {

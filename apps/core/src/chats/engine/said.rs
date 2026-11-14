@@ -5,9 +5,9 @@ use weacon_protocol::{
     ChatEvent, Message, Outcome, PermissionAnswer, RunEvent, RunId, RunState, RunUpdate, code,
 };
 
+use super::agent::{Agent, Heard, Order};
 use super::cut::cut;
 use super::{ChatKey, Engine, Logged};
-use crate::runs::task::{Agent, Heard, Order};
 
 impl<A: Agent> Engine<A> {
     pub(super) async fn heard(
