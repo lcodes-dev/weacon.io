@@ -8,8 +8,8 @@ use serde_json::Value;
 use weacon_protocol::{
     AgentKind, AgentOwner, AgentRef, ChatAction, ChatAnswer, ChatAnswerKind, ChatCommand,
     ChatEntry, ChatEvent, ChatId, ChatQuery, ChatQueryKind, ChatUpdate, Envelope, ErrorBody,
-    MachineName, MemberId, Message, Outcome, Receipt, RequestId, RunEvent, RunId, RunState,
-    RunStatus, RunUpdate, WorkspaceId, code,
+    MachineName, MemberId, Message, Outcome, PermissionAnswer, Receipt, RequestId, RunEvent, RunId,
+    RunState, RunStatus, RunUpdate, WorkspaceId, code,
 };
 
 /// The prompt text that makes the fake drop its client's subscription.
@@ -227,19 +227,7 @@ impl FakeChat {
                     told.push(self.envelope(id, ChatAnswerKind::EventsLost));
                 }
             }
-            ChatAction::Permission { answer } => {
-                let Some(agent) = self.agent_of(&answer.run) else {
-                    return told;
-                };
-                let reply = if answer.allow {
-                    "The tests pass."
-                } else {
-                    "I won't run them, then."
-                };
-                told.extend(self.status(&answer.run, RunState::Running, agent.clone()));
-                told.extend(self.commit(said(&answer.run, reply)));
-                told.extend(self.finish(&answer.run, Outcome::Completed, agent));
-            }
+            ChatAction::Permission { answer } => told.extend(self.answered(answer)),
             ChatAction::Interrupt => {
                 let stopped: Vec<_> = self
                     .runs
@@ -254,6 +242,30 @@ impl FakeChat {
             }
             ChatAction::Newer => {}
         }
+        told
+    }
+
+    // Commits the answer, then plays the turn it lets the run finish.
+    fn answered(&mut self, answer: &PermissionAnswer) -> Vec<Envelope> {
+        let Some(agent) = self.agent_of(&answer.run) else {
+            return Vec::new();
+        };
+        let reply = if answer.allow {
+            "The tests pass."
+        } else {
+            "I won't run them, then."
+        };
+        let mut told = self.commit(ChatEvent::Run {
+            update: RunUpdate {
+                run: answer.run.clone(),
+                event: RunEvent::PermissionAnswered {
+                    answer: answer.clone(),
+                },
+            },
+        });
+        told.extend(self.status(&answer.run, RunState::Running, agent.clone()));
+        told.extend(self.commit(said(&answer.run, reply)));
+        told.extend(self.finish(&answer.run, Outcome::Completed, agent));
         told
     }
 
@@ -380,7 +392,8 @@ fn closes(entry: &ChatEntry, run: &RunId, prompt: u32) -> bool {
     };
     update.run == *run
         && (matches!(update.event, RunEvent::Finished { .. })
-            || matches!(update.event, RunEvent::PermissionWithdrawn { prompt: withdrawn, .. } if withdrawn == prompt))
+            || matches!(update.event, RunEvent::PermissionWithdrawn { prompt: withdrawn, .. } if withdrawn == prompt)
+            || matches!(&update.event, RunEvent::PermissionAnswered { answer } if answer.prompt == prompt))
 }
 
 fn run(id: &str) -> Result<RunId, String> {
@@ -682,21 +695,22 @@ mod tests {
             shape(&allowed),
             [
                 (4, "72 receipt q-9".to_owned()),
-                (4, "73 r-2 Running".to_owned()),
-                (4, "74 r-2 text".to_owned()),
-                (4, "75 r-2 finished".to_owned()),
-                (4, "76 r-2 Idle".to_owned())
+                (4, "73 r-2 permission_answered".to_owned()),
+                (4, "74 r-2 Running".to_owned()),
+                (4, "75 r-2 text".to_owned()),
+                (4, "76 r-2 finished".to_owned()),
+                (4, "77 r-2 Idle".to_owned())
             ]
         );
         assert_eq!(
             shape(&stopped),
             [
-                (4, "77 receipt q-9".to_owned()),
-                (4, "78 r-1 finished".to_owned()),
-                (4, "79 r-1 Idle".to_owned())
+                (4, "78 receipt q-9".to_owned()),
+                (4, "79 r-1 finished".to_owned()),
+                (4, "80 r-1 Idle".to_owned())
             ]
         );
-        assert_eq!(shape(&unknown), [(4, "80 receipt q-9".to_owned())]);
+        assert_eq!(shape(&unknown), [(4, "81 receipt q-9".to_owned())]);
         assert_eq!(snapshot(&mut fake).2, Vec::<u64>::new());
     }
 
@@ -806,9 +820,19 @@ mod tests {
             run: run("r-1").unwrap(),
             prompt: 8,
         }));
+        let after_withdrawn = snapshot(&mut fake).2;
+        fake.played(&ask(9));
+        fake.played(&played(RunEvent::PermissionAnswered {
+            answer: PermissionAnswer {
+                run: run("r-1").unwrap(),
+                prompt: 9,
+                allow: false,
+            },
+        }));
 
         // The seeded Codex prompt, then the second Claude one; the first ended with its turn.
         assert_eq!(after_second, [SEEDED, SEEDED + 6]);
+        assert_eq!(after_withdrawn, [SEEDED]);
         assert_eq!(snapshot(&mut fake).2, [SEEDED]);
     }
 

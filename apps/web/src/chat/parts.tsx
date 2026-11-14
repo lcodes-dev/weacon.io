@@ -17,7 +17,7 @@ export function AskView({
   const problem = answerProblem(answering);
   return (
     <div className={ask.open ? "row ask open" : "row ask"} role="group" aria-label={`Use ${ask.tool}?`}>
-      <span>{ask.open ? `Asks to use ${ask.tool}` : `Asked to use ${ask.tool}`}</span>
+      <span>{askText(ask)}</span>
       {ask.open && (
         <span className="choices">
           <button type="button" disabled={sending} onClick={() => onAnswer(true)}>
@@ -35,6 +35,13 @@ export function AskView({
       )}
     </div>
   );
+}
+
+function askText({ open, tool, allowed }: Ask): string {
+  if (open) {
+    return `Asks to use ${tool}`;
+  }
+  return allowed === undefined ? `Asked to use ${tool}` : `${allowed ? "Allowed" : "Denied"} ${tool}`;
 }
 
 /** Stop, shown while an agent is on a turn, and why the last one may not have worked. */

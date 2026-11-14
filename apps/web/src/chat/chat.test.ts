@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import type { ChatEntry, ChatEvent, RunEvent, RunState } from "../protocol.ts";
-import { type Chat, type Item, type Run, answered, commit, fromSnapshot, missing, older, stream, working } from "./chat.ts";
+import { type Ask, type Chat, type Item, type Run, answered, commit, fromSnapshot, missing, older, stream, working } from "./chat.ts";
 
 const at = (seq: number, event: ChatEvent): ChatEntry => ({ seq, event });
 const said = (seq: number, text: string) => at(seq, { kind: "prompt", request: `q-${seq}`, text });
@@ -36,7 +36,8 @@ function shown(items: readonly Item[]): string[] {
     }
     const { run, transcript, asks, open } = item.turn;
     const rows = transcript.rows.map((row) => (row.kind === "text" ? row.pieces.join("|") : row.kind));
-    const prompts = asks.map((ask) => `ask ${ask.prompt}@${ask.at}${ask.open ? " open" : ""}`);
+    const answer = (ask: Ask) => (ask.allowed === undefined ? "" : ask.allowed ? " allowed" : " denied");
+    const prompts = asks.map((ask) => `ask ${ask.prompt}@${ask.at}${ask.open ? " open" : ""}${answer(ask)}`);
     return `${run}${open ? "" : " done"}: ${[...rows, ...prompts].join(", ")}`;
   });
 }
@@ -135,6 +136,19 @@ test("a prompt is open until it is withdrawn, its run stops waiting or its turn 
   assert.deepEqual(shown(moved.items), ["r-1: Let me run it., ask 1@1, ask 2@1"]);
   assert.deepEqual(shown(ended.items), ["r-1 done: Let me run it., finished, ask 1@1, ask 2@1"]);
   assert.equal(moved.runs.get("r-1")?.state, "running");
+});
+
+test("an answer in the log closes its prompt, says how it was answered, and adds nothing to the turn", () => {
+  const answer = (seq: number, prompt: number, allow: boolean) =>
+    ran(seq, "r-1", { event: "permission_answered", answer: { run: "r-1", prompt, allow } });
+  const waiting = commitAll(chat([]), [asked(1, "r-1", 1), asked(2, "r-1", 2), asked(3, "r-1", 3)]);
+  const closedHere = answered(waiting, "r-1", 1);
+  const told = commitAll(closedHere, [answer(4, 1, true), answer(5, 2, false)]);
+  const ended = commitAll(told, [finished(6, "r-1"), answer(7, 3, true)]);
+
+  assert.deepEqual(shown(told.items), ["r-1: ask 1@0 allowed, ask 2@0 denied, ask 3@0 open"]);
+  assert.deepEqual(shown(ended.items), ["r-1 done: finished, ask 1@0 allowed, ask 2@0 denied, ask 3@0 allowed"]);
+  assert.equal(commitAll(told, [answer(6, 9, true)]).items[0], told.items[0]);
 });
 
 test("prompts the snapshot covers are open only if it says they wait", () => {

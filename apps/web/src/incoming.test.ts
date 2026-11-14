@@ -70,6 +70,7 @@ test("a run message passes only with the event fields this app reads; unknown ev
     { event: "permission_asked", run: "r-1", prompt: 2, tool: "Bash", input: {} },
     { event: "permission_asked", run: "r-1", prompt: 3, tool: "Bash", input: null },
     { event: "permission_withdrawn", run: "r-1", prompt: 2 },
+    { event: "permission_answered", answer: { run: "r-1", prompt: 2, allow: false } },
     { event: "newer" },
   ];
   const bad: unknown[] = [
@@ -88,6 +89,10 @@ test("a run message passes only with the event fields this app reads; unknown ev
     { event: "permission_asked", run: "r-1", prompt: 2 },
     { event: "permission_asked", run: "r-1", prompt: 1.5, tool: "Bash" },
     { event: "permission_withdrawn", prompt: 2 },
+    { event: "permission_answered" },
+    { event: "permission_answered", answer: { prompt: 2, allow: true } },
+    { event: "permission_answered", answer: { run: "r-1", prompt: -1, allow: true } },
+    { event: "permission_answered", answer: { run: "r-1", prompt: 2, allow: "yes" } },
   ];
 
   for (const event of good) {

@@ -2,7 +2,8 @@ import type { AgentRef, ChatEntry, RunEvent, RunId, RunState, RunStatus } from "
 import { EMPTY, type Transcript, apply } from "../transcript/transcript.ts";
 
 /** A permission prompt, shown after `at` rows of its turn. */
-export type Ask = { prompt: number; tool: string; at: number; open: boolean };
+/** A permission prompt, and how it was answered once the log says. */
+export type Ask = { prompt: number; tool: string; at: number; open: boolean; allowed?: boolean };
 
 /**
  * What one run did from its first event after a prompt until it finished; `key` names it for
@@ -165,7 +166,7 @@ function step(items: Item[], entry: ChatEntry, waiting: boolean): void {
   if (event.kind === "run_status" && !["starting", "running", "waiting"].includes(event.status.state)) {
     update(items, event.status.run, (turn) => ({ ...turn, open: false, transcript: { ...turn.transcript, writing: false } }));
   }
-  if (event.kind !== "run" || event.update.event.event === "permission_withdrawn") {
+  if (event.kind !== "run" || ["permission_withdrawn", "permission_answered"].includes(event.update.event.event)) {
     return;
   }
   const { run, event: done } = event.update;
@@ -211,27 +212,27 @@ function closeBy(items: Item[], entry: ChatEntry): void {
     closeAsks(items, event.update.run, (ask) => ask.prompt === prompt);
   } else if (event.kind === "run" && event.update.event.event === "finished") {
     closeAsks(items, event.update.run, () => true);
+  } else if (event.kind === "run" && event.update.event.event === "permission_answered") {
+    const { prompt, allow } = event.update.event.answer;
+    changeAsks(items, event.update.run, (ask) => (ask.prompt === prompt ? { ...ask, open: false, allowed: allow } : ask));
   }
 }
 
 // Closes the open prompts `which` picks in every turn of `run`, such as one cut in two by a window.
 function closeAsks(items: Item[], run: RunId, which: (ask: Ask) => boolean): void {
+  changeAsks(items, run, (ask) => (ask.open && which(ask) ? { ...ask, open: false } : ask));
+}
+
+// Changes the prompts of every turn of `run`; a turn whose prompts `change` all keeps stays the same.
+function changeAsks(items: Item[], run: RunId, change: (ask: Ask) => Ask): void {
   for (const [at, item] of items.entries()) {
     if (item.kind === "turn" && item.turn.run === run) {
-      const turn = closing(item.turn, which);
-      if (turn !== item.turn) {
-        items[at] = { kind: "turn", turn };
+      const asks = item.turn.asks.map(change);
+      if (asks.some((ask, index) => ask !== item.turn.asks[index])) {
+        items[at] = { kind: "turn", turn: { ...item.turn, asks } };
       }
     }
   }
-}
-
-// `turn` with the open prompts `which` picks closed; the same turn when it picks none.
-function closing(turn: Turn, which: (ask: Ask) => boolean): Turn {
-  if (!turn.asks.some((ask) => ask.open && which(ask))) {
-    return turn;
-  }
-  return { ...turn, asks: turn.asks.map((ask) => (ask.open && which(ask) ? { ...ask, open: false } : ask)) };
 }
 
 // The same for a turn whether its first event was streamed or committed after `seq`.

@@ -28,7 +28,7 @@ test("a chat shows its prompts and labelled turns, and a waiting prompt is answe
 
   await page.getByRole("button", { name: "Allow" }).click();
   await page.getByText("The tests pass.").waitFor();
-  await page.getByText("Asked to use Bash").waitFor();
+  await page.getByText("Allowed Bash").waitFor();
   assert.equal(await page.getByRole("alert").count(), 0);
 
   assert.deepEqual(
