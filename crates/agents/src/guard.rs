@@ -121,7 +121,14 @@ pub(crate) fn check_path(file: &Path, context: &Context, outside: Reason) -> Opt
     }
     // Inside the worktree only by its exact name: a folder that differs in case may be another.
     let inside = resolve(&context.worktree).is_some_and(|worktree| file.starts_with(worktree));
-    (!inside).then_some(outside)
+    if !inside {
+        return Some(outside);
+    }
+    // Writing a file with another name writes it wherever that name is.
+    let aliased = outside == Reason::WriteOutside
+        && std::fs::metadata(&file).is_ok_and(|meta| meta.is_file())
+        && crate::platform::links(&file).is_ok_and(|links| links > 1);
+    aliased.then_some(Reason::Unsure)
 }
 
 // Asks about a path inside a credential folder, or, for a `deep` read that goes through
@@ -942,5 +949,40 @@ mod tests {
         assert_eq!(check("echo x > link*"), Some(Reason::Unsure));
         assert_eq!(check("rm -rf src/*"), None);
         assert_eq!(check("rm -rf src/*/x/*"), Some(Reason::Unsure));
+    }
+
+    #[test]
+    fn a_cd_that_may_not_run_asks() {
+        let dir = TempDir::new().unwrap();
+        let context = context(&dir);
+        let check = |line: &str| check_command(line, &context);
+
+        for line in [
+            "cd .. || cd wt; rm -rf main",
+            "false || cd src; rm -rf x",
+            "if true; then cd src; fi; rm -rf x",
+            "for x in a; do cd src; done",
+        ] {
+            assert_eq!(check(line), Some(Reason::Unsure), "{line}");
+        }
+        assert_eq!(check("if true; then echo; fi; cd src && rm -rf x"), None);
+        assert_eq!(check("cd src && rm -rf x || echo failed"), None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_file_with_another_name_asks_before_it_is_written() {
+        let dir = TempDir::new().unwrap();
+        let context = context(&dir);
+        fs::write(dir.join("main/important"), "").unwrap();
+        fs::hard_link(dir.join("main/important"), dir.join("wt/alias")).unwrap();
+        fs::write(dir.join("wt/plain"), "").unwrap();
+
+        assert_eq!(
+            check_command("printf x > alias", &context),
+            Some(Reason::Unsure)
+        );
+        assert_eq!(check_command("printf x > plain", &context), None);
+        assert_eq!(check_command("rm alias", &context), None);
     }
 }

@@ -25,8 +25,8 @@ pub(crate) struct Simple {
     pub(crate) reads: Vec<Word>,
     /// Reads its input from a file, a pipe or text in the command line.
     pub(crate) fed: bool,
-    /// Runs in a shell of its own, as in a pipeline, `( … )`, `$( … )` or with `&`, so a `cd`
-    /// there doesn't move the commands after it.
+    /// A `cd` in it may not move the commands after it: it runs in a shell of its own, as in a
+    /// pipeline, `( … )`, `$( … )` or with `&`, or only on some paths, beside `||` or in a block.
     pub(crate) apart: bool,
 }
 
@@ -35,6 +35,9 @@ pub(crate) struct Simple {
 pub(crate) fn parse(line: &str) -> Option<Vec<Simple>> {
     parse_nested(line, 0)
 }
+
+const OPENS: [&str; 6] = ["if", "while", "until", "for", "select", "case"];
+const CLOSES: [&str; 3] = ["fi", "done", "esac"];
 
 // Far deeper than any real command; deeper nesting would exhaust the stack.
 const MAX_DEPTH: usize = 32;
@@ -48,6 +51,7 @@ fn parse_nested(line: &str, depth: usize) -> Option<Vec<Simple>> {
         depth,
         unsure: false,
         parens: 0,
+        blocks: 0,
     };
     parser.list(None)?;
     (!parser.unsure).then_some(parser.found)
@@ -63,6 +67,8 @@ struct Parser {
     depth: usize,
     // How many `(` are open.
     parens: usize,
+    // How many `if`, loops and `case`s are open, whose commands may not run.
+    blocks: usize,
     // Met something it can split but not follow, such as a `case` inside a substitution.
     unsure: bool,
 }
@@ -164,6 +170,7 @@ impl Parser {
             return self.redirect_target(simple, word, true);
         }
         let pipe = char == '|' && self.peek() != Some('|');
+        let or = char == '|' && self.peek() == Some('|');
         let background = char == '&' && self.peek() != Some('&');
         if matches!(
             (char, self.peek()),
@@ -171,7 +178,7 @@ impl Parser {
         ) {
             self.advance(1);
         }
-        simple.apart |= pipe || background;
+        simple.apart |= pipe || background || or;
         self.finish(simple, word);
         match char {
             '(' => self.parens += 1,
@@ -179,7 +186,7 @@ impl Parser {
             _ => {}
         }
         simple.fed = pipe;
-        simple.apart = pipe;
+        simple.apart = pipe || or;
         if char == '\n' {
             self.skip_heredocs()?;
         }
@@ -314,7 +321,16 @@ impl Parser {
 
     fn finish(&mut self, simple: &mut Simple, word: &mut Option<Word>) {
         end_word(simple, word);
-        simple.apart |= self.parens > 0 || self.depth > 1;
+        let first = simple.words.first().map(|word| word.text.as_str());
+        let (opens, closes) = (
+            first.is_some_and(|word| OPENS.contains(&word)),
+            first.is_some_and(|word| CLOSES.contains(&word)),
+        );
+        self.blocks += usize::from(opens);
+        simple.apart |= self.parens > 0 || self.depth > 1 || self.blocks > 0;
+        if closes {
+            self.blocks = self.blocks.saturating_sub(1);
+        }
         let done = std::mem::take(simple);
         // A `case` pattern's `)` would close the substitution it's in too early.
         if self.depth > 1 && done.words.first().is_some_and(|word| word.text == "case") {
