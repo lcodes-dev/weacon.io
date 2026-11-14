@@ -24,7 +24,7 @@ use windows_sys::Win32::System::Threading::{
 
 use super::CHUNK;
 use crate::terminal::{Event, Size};
-use process::start;
+use process::{is_program_file, start};
 
 /// The program's side ends when it does; dropping this ends the program.
 pub(crate) struct Pty {
@@ -48,34 +48,18 @@ impl Pty {
     pub(crate) fn spawn(command: Command, size: Size) -> io::Result<(Self, mpsc::Receiver<Event>)> {
         let command = command.as_std();
         let program = Path::new(command.get_program());
-        if !program
-            .extension()
-            .is_some_and(|extension| extension.eq_ignore_ascii_case("exe"))
-        {
+        if !is_program_file(program) {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "not a program file",
             ));
         }
-        let (input_read, input) = io::pipe()?;
-        let (output, output_write) = io::pipe()?;
-        let mut handle = 0;
-        // SAFETY: both pipe ends are open; the console duplicates them.
-        let created = unsafe {
-            CreatePseudoConsole(
-                coord(size),
-                input_read.as_raw_handle(),
-                output_write.as_raw_handle(),
-                0,
-                &raw mut handle,
-            )
-        };
-        if created < 0 {
-            return Err(failed(created));
-        }
-        drop((input_read, output_write));
-        let console = Arc::new(Console(Mutex::new(Some(handle))));
-        let process = start(command, program, handle).inspect_err(|_| console.close())?;
+        let (console, input, output) = Console::open(size)?;
+        let console = Arc::new(console);
+        let process = console
+            .handle()
+            .and_then(|handle| start(command, program, handle))
+            .inspect_err(|_| console.close())?;
         let process = Arc::new(process);
         let (events, received) = mpsc::channel(8);
         let (stop, stopped) = watch::channel(());
@@ -100,20 +84,7 @@ impl Pty {
     }
 
     pub(crate) fn resize(&self, size: Size) -> io::Result<()> {
-        let open = self
-            .console
-            .0
-            .lock()
-            .map_err(|_| io::ErrorKind::BrokenPipe)?;
-        let Some(handle) = *open else {
-            return Err(io::ErrorKind::BrokenPipe.into());
-        };
-        // SAFETY: the lock is held, so the console can't close during the call.
-        let resized = unsafe { ResizePseudoConsole(handle, coord(size)) };
-        if resized < 0 {
-            return Err(failed(resized));
-        }
-        Ok(())
+        self.console.resize(size)
     }
 }
 
@@ -134,6 +105,46 @@ impl Drop for Pty {
 }
 
 impl Console {
+    /// A new pseudo-console of `size`, the end that types into it and the end that reads it.
+    fn open(size: Size) -> io::Result<(Self, PipeWriter, PipeReader)> {
+        let (input_read, input) = io::pipe()?;
+        let (output, output_write) = io::pipe()?;
+        let mut handle = 0;
+        // SAFETY: both pipe ends are open; the console duplicates them.
+        let created = unsafe {
+            CreatePseudoConsole(
+                coord(size),
+                input_read.as_raw_handle(),
+                output_write.as_raw_handle(),
+                0,
+                &raw mut handle,
+            )
+        };
+        if created < 0 {
+            return Err(failed(created));
+        }
+        Ok((Self(Mutex::new(Some(handle))), input, output))
+    }
+
+    // The console while it is open.
+    fn handle(&self) -> io::Result<HPCON> {
+        let open = self.0.lock().map_err(|_| io::ErrorKind::BrokenPipe)?;
+        open.ok_or_else(|| io::ErrorKind::BrokenPipe.into())
+    }
+
+    fn resize(&self, size: Size) -> io::Result<()> {
+        let open = self.0.lock().map_err(|_| io::ErrorKind::BrokenPipe)?;
+        let Some(handle) = *open else {
+            return Err(io::ErrorKind::BrokenPipe.into());
+        };
+        // SAFETY: the lock is held, so the console can't close during the call.
+        let resized = unsafe { ResizePseudoConsole(handle, coord(size)) };
+        if resized < 0 {
+            return Err(failed(resized));
+        }
+        Ok(())
+    }
+
     // Closing waits until the output is read, which `pump` keeps doing.
     fn close(&self) {
         let taken = self.0.lock().ok().and_then(|mut handle| handle.take());

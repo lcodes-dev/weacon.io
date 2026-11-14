@@ -20,6 +20,14 @@ use windows_sys::Win32::System::Threading::{
 
 use super::command::{command_line, environment, wide};
 
+/// Whether `program` names a program file, which Windows starts as it is: a script such as a
+/// `.cmd` or `.bat` would run through the shell.
+pub(super) fn is_program_file(program: &Path) -> bool {
+    program
+        .extension()
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("exe"))
+}
+
 // Starts the program attached to `console`, with the command's arguments, environment and
 // folder, and no handles of this process.
 pub(super) fn start(
@@ -124,5 +132,28 @@ fn check(succeeded: i32) -> io::Result<()> {
         Err(io::Error::last_os_error())
     } else {
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_a_program_file_is_started_never_a_script() {
+        for program in [r"C:\bin\claude.exe", r"C:\bin\CLAUDE.EXE", "codex.Exe"] {
+            assert!(is_program_file(Path::new(program)), "{program}");
+        }
+        let refused = [
+            r"C:\bin\claude.cmd",
+            r"C:\bin\claude.bat",
+            r"C:\bin\claude.ps1",
+            r"C:\bin\claude",
+            r"C:\bin\claude.exe.cmd",
+            r"C:\bin\exe",
+        ];
+        for program in refused {
+            assert!(!is_program_file(Path::new(program)), "{program}");
+        }
     }
 }
