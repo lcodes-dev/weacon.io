@@ -1,0 +1,21 @@
+--- apps/core/src/codemap/watch.rs
++++ replace match guard base.commit == head with false in Watch<S>::update
+@@ -47,17 +47,17 @@
+                 None
+             }
+         }
+     }
+ 
+     async fn update(&mut self) -> Result<Option<Vec<Facts>>, Fault> {
+         let head = self.repo.head().await?;
+         let base = match self.base.take() {
+-            Some(base) if base.commit == head => base,
++            Some(base) if false /* ~ changed by cargo-mutants ~ */ => base,
+             _ => self.repo.base().await?,
+         };
+         let base = self.base.insert(base);
+         let changed = self.repo.changed(base, &self.worktree).await?;
+         let mut state = base.commit.as_str().to_owned();
+         for (path, text) in &changed {
+             let key = text.as_deref().map(content_key).unwrap_or_default();
+             state.extend(["\0", path, "\0", &key]);

@@ -1,0 +1,226 @@
+[
+  {
+    "diff": "--- crates/codemap/src/facts.rs\n+++ replace Facts::path -> &str with \"\"\n@@ -103,17 +103,17 @@\n         }))\n     }\n }\n \n impl Facts {\n     /// The file's path, relative to the repository's root.\n     #[must_use]\n     pub fn path(&self) -> &str {\n-        &self.path\n+        \"\" /* ~ changed by cargo-mutants ~ */\n     }\n }\n \n fn manifest(text: &str) -> Option<FileKind> {\n     let manifest: Manifest = toml::from_str(text).ok()?;\n     let package = manifest.package?;\n     Some(FileKind::Manifest(package.name.replace('-', \"_\")))\n }\n",
+    "file": "crates/codemap/src/facts.rs",
+    "function": {
+      "function_name": "Facts::path",
+      "return_type": "-> &str",
+      "span": {
+        "end": {
+          "column": 6,
+          "line": 112
+        },
+        "start": {
+          "column": 5,
+          "line": 108
+        }
+      }
+    },
+    "genre": "FnValue",
+    "name": "crates/codemap/src/facts.rs:111:9: replace Facts::path -> &str with \"\"",
+    "package": "weacon-codemap",
+    "replacement": "\"\"",
+    "span": {
+      "end": {
+        "column": 19,
+        "line": 111
+      },
+      "start": {
+        "column": 9,
+        "line": 111
+      }
+    }
+  },
+  {
+    "diff": "--- crates/codemap/src/facts.rs\n+++ replace Facts::path -> &str with \"xyzzy\"\n@@ -103,17 +103,17 @@\n         }))\n     }\n }\n \n impl Facts {\n     /// The file's path, relative to the repository's root.\n     #[must_use]\n     pub fn path(&self) -> &str {\n-        &self.path\n+        \"xyzzy\" /* ~ changed by cargo-mutants ~ */\n     }\n }\n \n fn manifest(text: &str) -> Option<FileKind> {\n     let manifest: Manifest = toml::from_str(text).ok()?;\n     let package = manifest.package?;\n     Some(FileKind::Manifest(package.name.replace('-', \"_\")))\n }\n",
+    "file": "crates/codemap/src/facts.rs",
+    "function": {
+      "function_name": "Facts::path",
+      "return_type": "-> &str",
+      "span": {
+        "end": {
+          "column": 6,
+          "line": 112
+        },
+        "start": {
+          "column": 5,
+          "line": 108
+        }
+      }
+    },
+    "genre": "FnValue",
+    "name": "crates/codemap/src/facts.rs:111:9: replace Facts::path -> &str with \"xyzzy\"",
+    "package": "weacon-codemap",
+    "replacement": "\"xyzzy\"",
+    "span": {
+      "end": {
+        "column": 19,
+        "line": 111
+      },
+      "start": {
+        "column": 9,
+        "line": 111
+      }
+    }
+  },
+  {
+    "diff": "--- apps/core/src/codemap.rs\n+++ replace layer_name -> String with String::new()\n@@ -329,17 +329,17 @@\n /// What a worktree's text is stored under: its hash, which no git blob id looks like.\n fn content_key(text: &str) -> String {\n     let digest = Sha256Hex::from_bytes(Sha256::digest(text.as_bytes()).into());\n     format!(\"sha256:{}\", digest.as_str())\n }\n \n /// The layer that holds what the worktree at `path` changed.\n fn layer_name(path: &Path) -> String {\n-    format!(\"worktree:{}\", path.display())\n+    String::new() /* ~ changed by cargo-mutants ~ */\n }\n \n #[cfg(test)]\n mod tests {\n     use weacon_protocol::WorkspaceId;\n     use weacon_testing::TempDir;\n \n     use super::fake::{Fake, blob};\n",
+    "file": "apps/core/src/codemap.rs",
+    "function": {
+      "function_name": "layer_name",
+      "return_type": "-> String",
+      "span": {
+        "end": {
+          "column": 2,
+          "line": 338
+        },
+        "start": {
+          "column": 1,
+          "line": 335
+        }
+      }
+    },
+    "genre": "FnValue",
+    "name": "apps/core/src/codemap.rs:337:5: replace layer_name -> String with String::new()",
+    "package": "weacon-core",
+    "replacement": "String::new()",
+    "span": {
+      "end": {
+        "column": 43,
+        "line": 337
+      },
+      "start": {
+        "column": 5,
+        "line": 337
+      }
+    }
+  },
+  {
+    "diff": "--- apps/core/src/codemap.rs\n+++ replace layer_name -> String with \"xyzzy\".into()\n@@ -329,17 +329,17 @@\n /// What a worktree's text is stored under: its hash, which no git blob id looks like.\n fn content_key(text: &str) -> String {\n     let digest = Sha256Hex::from_bytes(Sha256::digest(text.as_bytes()).into());\n     format!(\"sha256:{}\", digest.as_str())\n }\n \n /// The layer that holds what the worktree at `path` changed.\n fn layer_name(path: &Path) -> String {\n-    format!(\"worktree:{}\", path.display())\n+    \"xyzzy\".into() /* ~ changed by cargo-mutants ~ */\n }\n \n #[cfg(test)]\n mod tests {\n     use weacon_protocol::WorkspaceId;\n     use weacon_testing::TempDir;\n \n     use super::fake::{Fake, blob};\n",
+    "file": "apps/core/src/codemap.rs",
+    "function": {
+      "function_name": "layer_name",
+      "return_type": "-> String",
+      "span": {
+        "end": {
+          "column": 2,
+          "line": 338
+        },
+        "start": {
+          "column": 1,
+          "line": 335
+        }
+      }
+    },
+    "genre": "FnValue",
+    "name": "apps/core/src/codemap.rs:337:5: replace layer_name -> String with \"xyzzy\".into()",
+    "package": "weacon-core",
+    "replacement": "\"xyzzy\".into()",
+    "span": {
+      "end": {
+        "column": 43,
+        "line": 337
+      },
+      "start": {
+        "column": 5,
+        "line": 337
+      }
+    }
+  },
+  {
+    "diff": "--- apps/core/src/codemap/repo.rs\n+++ replace > with >= in <impl Source for Repo>::text\n@@ -50,17 +50,17 @@\n     /// worktree, has text.\n     fn text(&self, path: &Path, file: &str) -> Option<String> {\n         let path = path.canonicalize().ok()?.join(file);\n         if path.canonicalize().ok()? != path {\n             return None;\n         }\n         let file = File::open(&path).ok()?;\n         let about = file.metadata().ok()?;\n-        if !about.is_file() || about.len() > LARGEST {\n+        if !about.is_file() || about.len() >= /* ~ changed by cargo-mutants ~ */ LARGEST {\n             return None;\n         }\n         let mut text = String::new();\n         file.take(LARGEST).read_to_string(&mut text).ok()?;\n         Some(text)\n     }\n }\n \n",
+    "file": "apps/core/src/codemap/repo.rs",
+    "function": {
+      "function_name": "<impl Source for Repo>::text",
+      "return_type": "-> Option<String>",
+      "span": {
+        "end": {
+          "column": 6,
+          "line": 64
+        },
+        "start": {
+          "column": 5,
+          "line": 49
+        }
+      }
+    },
+    "genre": "BinaryOperator",
+    "name": "apps/core/src/codemap/repo.rs:58:44: replace > with >= in <impl Source for Repo>::text",
+    "package": "weacon-core",
+    "replacement": ">=",
+    "span": {
+      "end": {
+        "column": 45,
+        "line": 58
+      },
+      "start": {
+        "column": 44,
+        "line": 58
+      }
+    }
+  },
+  {
+    "diff": "--- apps/core/src/codemap/watch.rs\n+++ replace match guard base.commit == head with true in Watch<S>::update\n@@ -47,17 +47,17 @@\n                 None\n             }\n         }\n     }\n \n     async fn update(&mut self) -> Result<Option<Vec<Facts>>, Fault> {\n         let head = self.repo.head().await?;\n         let base = match self.base.take() {\n-            Some(base) if base.commit == head => base,\n+            Some(base) if true /* ~ changed by cargo-mutants ~ */ => base,\n             _ => self.repo.base().await?,\n         };\n         let base = self.base.insert(base);\n         let changed = self.repo.changed(base, &self.worktree).await?;\n         let mut state = base.commit.as_str().to_owned();\n         for (path, text) in &changed {\n             let key = text.as_deref().map(content_key).unwrap_or_default();\n             state.extend([\"\\0\", path, \"\\0\", &key]);\n",
+    "file": "apps/core/src/codemap/watch.rs",
+    "function": {
+      "function_name": "Watch<S>::update",
+      "return_type": "-> Result<Option<Vec<Facts>>, Fault>",
+      "span": {
+        "end": {
+          "column": 6,
+          "line": 72
+        },
+        "start": {
+          "column": 5,
+          "line": 52
+        }
+      }
+    },
+    "genre": "MatchArmGuard",
+    "name": "apps/core/src/codemap/watch.rs:55:27: replace match guard base.commit == head with true in Watch<S>::update",
+    "package": "weacon-core",
+    "replacement": "true",
+    "span": {
+      "end": {
+        "column": 46,
+        "line": 55
+      },
+      "start": {
+        "column": 27,
+        "line": 55
+      }
+    }
+  },
+  {
+    "diff": "--- apps/core/src/codemap/watch.rs\n+++ replace match guard base.commit == head with false in Watch<S>::update\n@@ -47,17 +47,17 @@\n                 None\n             }\n         }\n     }\n \n     async fn update(&mut self) -> Result<Option<Vec<Facts>>, Fault> {\n         let head = self.repo.head().await?;\n         let base = match self.base.take() {\n-            Some(base) if base.commit == head => base,\n+            Some(base) if false /* ~ changed by cargo-mutants ~ */ => base,\n             _ => self.repo.base().await?,\n         };\n         let base = self.base.insert(base);\n         let changed = self.repo.changed(base, &self.worktree).await?;\n         let mut state = base.commit.as_str().to_owned();\n         for (path, text) in &changed {\n             let key = text.as_deref().map(content_key).unwrap_or_default();\n             state.extend([\"\\0\", path, \"\\0\", &key]);\n",
+    "file": "apps/core/src/codemap/watch.rs",
+    "function": {
+      "function_name": "Watch<S>::update",
+      "return_type": "-> Result<Option<Vec<Facts>>, Fault>",
+      "span": {
+        "end": {
+          "column": 6,
+          "line": 72
+        },
+        "start": {
+          "column": 5,
+          "line": 52
+        }
+      }
+    },
+    "genre": "MatchArmGuard",
+    "name": "apps/core/src/codemap/watch.rs:55:27: replace match guard base.commit == head with false in Watch<S>::update",
+    "package": "weacon-core",
+    "replacement": "false",
+    "span": {
+      "end": {
+        "column": 46,
+        "line": 55
+      },
+      "start": {
+        "column": 27,
+        "line": 55
+      }
+    }
+  }
+]

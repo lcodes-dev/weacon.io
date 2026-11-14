@@ -295,7 +295,10 @@ fn parse_worktree(record: &str) -> Option<(Worktree, bool)> {
 }
 
 #[cfg(test)]
-pub(crate) mod tests {
+pub(crate) use tests::{fixture, git, repo};
+
+#[cfg(test)]
+mod tests {
     use std::fs;
 
     use weacon_testing::TempDir;

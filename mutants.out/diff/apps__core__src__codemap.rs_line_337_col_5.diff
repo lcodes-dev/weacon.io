@@ -1,0 +1,21 @@
+--- apps/core/src/codemap.rs
++++ replace layer_name -> String with String::new()
+@@ -329,17 +329,17 @@
+ /// What a worktree's text is stored under: its hash, which no git blob id looks like.
+ fn content_key(text: &str) -> String {
+     let digest = Sha256Hex::from_bytes(Sha256::digest(text.as_bytes()).into());
+     format!("sha256:{}", digest.as_str())
+ }
+ 
+ /// The layer that holds what the worktree at `path` changed.
+ fn layer_name(path: &Path) -> String {
+-    format!("worktree:{}", path.display())
++    String::new() /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ #[cfg(test)]
+ mod tests {
+     use weacon_protocol::WorkspaceId;
+     use weacon_testing::TempDir;
+ 
+     use super::fake::{Fake, blob};

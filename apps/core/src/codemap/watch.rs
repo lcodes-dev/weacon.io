@@ -105,7 +105,9 @@ mod tests {
             &[("Cargo.toml", MANIFEST), ("src/lib.rs", "fn a() {}\n")],
         );
         assert_eq!(watch.check(&log).await.map(|facts| facts.len()), Some(2));
+        source.heads_read();
         assert_eq!(watch.check(&log).await, None);
+        assert_eq!(source.heads_read(), 1, "the base was read again");
 
         source.change(&[("src/new.rs", Some("fn b() {}\n"))]);
         assert_eq!(watch.check(&log).await.map(|facts| facts.len()), Some(3));

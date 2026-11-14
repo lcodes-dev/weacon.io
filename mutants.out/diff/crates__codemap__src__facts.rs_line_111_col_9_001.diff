@@ -1,0 +1,21 @@
+--- crates/codemap/src/facts.rs
++++ replace Facts::path -> &str with "xyzzy"
+@@ -103,17 +103,17 @@
+         }))
+     }
+ }
+ 
+ impl Facts {
+     /// The file's path, relative to the repository's root.
+     #[must_use]
+     pub fn path(&self) -> &str {
+-        &self.path
++        "xyzzy" /* ~ changed by cargo-mutants ~ */
+     }
+ }
+ 
+ fn manifest(text: &str) -> Option<FileKind> {
+     let manifest: Manifest = toml::from_str(text).ok()?;
+     let package = manifest.package?;
+     Some(FileKind::Manifest(package.name.replace('-', "_")))
+ }

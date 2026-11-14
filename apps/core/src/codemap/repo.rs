@@ -126,7 +126,7 @@ mod tests {
 
     use super::*;
     use crate::db::Db;
-    use crate::git::tests::{fixture, git, repo};
+    use crate::git::{fixture, git, repo};
 
     #[test]
     fn reads_a_repository_and_what_its_worktree_changed() {
@@ -144,21 +144,26 @@ mod tests {
 
         fs::write(path.join("README.md"), "# Changed\n").unwrap();
         fs::write(path.join("bytes.md"), [0xff]).unwrap();
-        fs::write(
-            path.join("big.md"),
-            "x".repeat(usize::try_from(LARGEST).unwrap() + 1),
-        )
-        .unwrap();
+        let largest = usize::try_from(LARGEST).unwrap();
+        fs::write(path.join("big.md"), "x".repeat(largest + 1)).unwrap();
+        fs::write(path.join("full.md"), "x".repeat(largest)).unwrap();
         fs::remove_file(path.join(".gitattributes")).unwrap();
         let text = |file: &str| source.text(&path, file);
         assert_eq!(text("README.md").as_deref(), Some("# Changed\n"));
         assert_eq!(text("bytes.md"), None);
         assert_eq!(text("big.md"), None);
+        assert_eq!(text("full.md").map(|text| text.len()), Some(largest));
         assert_eq!(text(".gitattributes"), None);
         let changed = source.changed(&path, &head).unwrap();
         assert_eq!(
             changed,
-            [".gitattributes", "README.md", "big.md", "bytes.md"]
+            [
+                ".gitattributes",
+                "README.md",
+                "big.md",
+                "bytes.md",
+                "full.md"
+            ]
         );
     }
 

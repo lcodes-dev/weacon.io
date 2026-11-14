@@ -1,0 +1,21 @@
+--- apps/core/src/codemap/repo.rs
++++ replace > with >= in <impl Source for Repo>::text
+@@ -50,17 +50,17 @@
+     /// worktree, has text.
+     fn text(&self, path: &Path, file: &str) -> Option<String> {
+         let path = path.canonicalize().ok()?.join(file);
+         if path.canonicalize().ok()? != path {
+             return None;
+         }
+         let file = File::open(&path).ok()?;
+         let about = file.metadata().ok()?;
+-        if !about.is_file() || about.len() > LARGEST {
++        if !about.is_file() || about.len() >= /* ~ changed by cargo-mutants ~ */ LARGEST {
+             return None;
+         }
+         let mut text = String::new();
+         file.take(LARGEST).read_to_string(&mut text).ok()?;
+         Some(text)
+     }
+ }
+ 
