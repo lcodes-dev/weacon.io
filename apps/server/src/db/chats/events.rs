@@ -62,7 +62,7 @@ impl Workspace {
         }
         let (rows, seq, core_seq) = numbered(events, seq, core_seq)?;
         let runs = self.folded(&mut transaction, chat, &rows).await?;
-        let crowded = runs.waiting.len() > WAITING_MAX;
+        let crowded = runs.waiting().len() > WAITING_MAX;
         if crowded || !self.charge_chats(&mut transaction, size(&rows)?).await? {
             self.fill(&mut transaction, chat, stored(owner)?).await?;
             transaction.commit().await.map_err(failed)?;

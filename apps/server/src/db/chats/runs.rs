@@ -1,11 +1,34 @@
 use sqlx::SqliteConnection;
 use weacon_model::{ChatRuns, Waiting};
 use weacon_observability::Fault;
-use weacon_protocol::{ChatEntry, ChatId, RunStatus};
+use weacon_protocol::{ChatEntry, ChatEvent, ChatId, RunEvent, RunStatus, RunUpdate};
 
 use super::super::{Workspace, failed, stored, unreadable};
 use super::events::{Place, Read};
 use super::{count, number};
+
+// The fold again, from what it left stored: its run's status, then each prompt still waiting.
+fn restored(run: Option<RunStatus>, waiting: Vec<Waiting>) -> ChatRuns {
+    let status = run.map(|status| ChatEntry {
+        seq: 0,
+        event: ChatEvent::RunStatus { status },
+    });
+    let asked = waiting.into_iter().map(|Waiting { run, prompt, seq }| {
+        let event = RunEvent::PermissionAsked {
+            run: run.clone(),
+            prompt,
+            tool: String::new(),
+            input: serde_json::Value::Null,
+        };
+        ChatEntry {
+            seq,
+            event: ChatEvent::Run {
+                update: RunUpdate { run, event },
+            },
+        }
+    });
+    ChatRuns::fold(&status.into_iter().chain(asked).collect::<Vec<_>>())
+}
 
 /// The most bytes a waiting prompt's place takes in a snapshot: a `u64` and its comma.
 const WAITING_BYTES: usize = 21;
@@ -40,7 +63,7 @@ impl Workspace {
             return Ok(None);
         };
         let runs = self.read_runs(&mut reader, chat).await?;
-        let room = max_bytes.saturating_sub(WAITING_BYTES.saturating_mul(runs.waiting.len()));
+        let room = max_bytes.saturating_sub(WAITING_BYTES.saturating_mul(runs.waiting().len()));
         let latest = Read {
             chat,
             place: Place::Before(u64::MAX),
@@ -100,10 +123,7 @@ impl Workspace {
             })
         })
         .collect::<Result<_, Fault>>()?;
-        Ok(ChatRuns {
-            runs: runs.into_iter().collect(),
-            waiting,
-        })
+        Ok(restored(runs, waiting))
     }
 
     /// Keeps `runs` as the chat's latest run and waiting prompts, in place of what was there.
@@ -113,7 +133,7 @@ impl Workspace {
         chat: &ChatId,
         runs: &ChatRuns,
     ) -> Result<(), Fault> {
-        let latest = runs.runs.last();
+        let latest = runs.run();
         let status = latest
             .map(serde_json::to_string)
             .transpose()
@@ -134,7 +154,7 @@ impl Workspace {
             .execute(&mut *transaction)
             .await
             .map_err(failed)?;
-        for waits in &runs.waiting {
+        for waits in runs.waiting() {
             sqlx::query(
                 "INSERT INTO chat_waiting (workspace_id, chat_id, run_id, prompt, seq)
                  VALUES (?, ?, ?, ?, ?)",
@@ -162,7 +182,7 @@ mod tests {
     use crate::test_support::two_teams;
 
     fn waits(runs: &ChatRuns) -> Vec<(u32, u64)> {
-        runs.waiting
+        runs.waiting()
             .iter()
             .map(|waits| (waits.prompt, waits.seq))
             .collect()
@@ -183,7 +203,7 @@ mod tests {
 
         let runs = one.chat_runs(&id("c-1")).await.unwrap();
         assert_eq!(
-            runs.runs.first().map(|run| run.state),
+            runs.run().map(|run| run.state),
             Some(RunState::Running)
         );
         assert_eq!(waits(&runs), [(1, 2), (2, 3)]);
@@ -199,8 +219,8 @@ mod tests {
             .unwrap();
 
         let runs = one.chat_runs(&id("c-1")).await.unwrap();
-        assert_eq!(runs.runs.first().map(|run| run.state), Some(RunState::Idle));
-        assert!(runs.waiting.is_empty());
+        assert_eq!(runs.run().map(|run| run.state), Some(RunState::Idle));
+        assert!(runs.waiting().is_empty());
         let run_id: Option<String> =
             sqlx::query_scalar("SELECT run_id FROM chats WHERE workspace_id = 'w1'")
                 .fetch_one(&one.db.readers)
