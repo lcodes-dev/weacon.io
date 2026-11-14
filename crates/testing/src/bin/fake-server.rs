@@ -9,8 +9,8 @@ use std::time::Duration;
 
 use tokio::io::AsyncWriteExt;
 use tokio::net::TcpListener;
-use weacon_testing::fake_core::{SESSION, args, recording};
 use weacon_testing::fake_server::serve;
+use weacon_testing::recording::{SESSION, args, recording};
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> ExitCode {
