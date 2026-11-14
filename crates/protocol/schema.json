@@ -592,9 +592,12 @@
     "ChatAction": {
       "oneOf": [
         {
-          "description": "Starts or queues a turn. Only a chat's first prompt has `repo` and `machine`, one of the\nsender's; the server drops `machine` before relaying.",
+          "description": "Starts or queues a turn. Only a chat's first prompt has `repo` and `machine`, one of the\nsender's; the server drops `machine` before relaying. `agent` fixes the chat's agent on\nits first prompt, the core's default when missing; a later prompt naming another agent is\nrefused as `chat.agent_conflict`.",
           "type": "object",
           "properties": {
+            "agent": {
+              "$ref": "#/$defs/AgentKind"
+            },
             "kind": {
               "type": "string",
               "const": "prompt"
@@ -792,9 +795,12 @@
     "ChatEvent": {
       "oneOf": [
         {
-          "description": "A person's prompt, accepted under `request`, with the repository it fixed, if any.",
+          "description": "A person's prompt, accepted under `request`, with the repository and the agent it\nnamed, if any.",
           "type": "object",
           "properties": {
+            "agent": {
+              "$ref": "#/$defs/AgentKind"
+            },
             "kind": {
               "type": "string",
               "const": "prompt"
