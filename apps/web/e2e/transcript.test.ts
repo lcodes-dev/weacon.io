@@ -80,6 +80,14 @@ test("a reader at the bottom of a finished run is still there after Settings", {
     // The rows near the end grow to their real height once shown, after the view first followed.
     await page.evaluate(settled);
     assert.ok(atBottom(await page.evaluate(scrollOf)), "the run's end stopped short of the bottom");
+    // The browser moves the view by itself too, as rows reach their height; only the reader stops it following.
+    await page.evaluate(async () => {
+      const view = document.querySelector(".transcript");
+      if (view !== null) {
+        view.scrollTop -= 200;
+        await new Promise((resolve) => view.addEventListener("scroll", resolve, { once: true }));
+      }
+    });
     await page.getByRole("button", { name: "Settings" }).click();
     await page.getByRole("button", { name: "Back" }).click();
     await page.evaluate(settled);
@@ -131,16 +139,26 @@ async function rowCount(page: Page): Promise<number> {
   return page.evaluate(() => document.querySelectorAll(".row").length);
 }
 
+// Scrolls with the wheel, as a reader does, then waits until the view has reached the bottom or,
+// scrolling up, has stopped.
 async function scrollTo(page: Page, where: "bottom" | "up"): Promise<void> {
+  const box = await page.locator(".transcript").boundingBox();
+  if (box === null) {
+    throw new Error("the transcript isn't shown");
+  }
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  await page.mouse.wheel(0, where === "bottom" ? 1_000_000 : -2_000);
   await page.evaluate(async (to) => {
     const view = document.querySelector(".transcript");
-    if (view !== null) {
-      view.scrollTop = to === "bottom" ? view.scrollHeight : view.scrollTop - 2_000;
-      // A reader's scroll reaches the page with its event; a script's event waits for the next
-      // frame, and a row rendering before it would be taken as the reader's.
-      view.dispatchEvent(new Event("scroll"));
+    if (view === null) {
+      throw new Error("the transcript isn't there");
     }
-    await new Promise((resolve) => requestAnimationFrame(resolve));
+    const bottom = () => view.scrollHeight - view.scrollTop - view.clientHeight <= 32;
+    for (let still = 0, last = -1; to === "bottom" ? !bottom() : still < 3 || bottom(); ) {
+      await new Promise(requestAnimationFrame);
+      still = view.scrollTop === last ? still + 1 : 0;
+      last = view.scrollTop;
+    }
   }, where);
 }
 

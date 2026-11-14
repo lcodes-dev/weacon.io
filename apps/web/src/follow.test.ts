@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { atBottom, selectingIn, touches } from "./follow.ts";
+import { atBottom, followsAfter, leavesBottom, selectingIn, touches } from "./follow.ts";
 
 test("the bottom is within a line of the end", () => {
   assert.equal(atBottom({ scrollTop: 900, scrollHeight: 1600, clientHeight: 700 }), true);
@@ -36,4 +36,27 @@ test("a bare caret touches the row it sits in", () => {
   assert.equal(touches(caret(0, true), row), false);
   assert.equal(touches(caret(1, false), row), false);
   assert.equal(touches(caret(1, true), row), true);
+});
+
+test("only keys that scroll up, outside an editable field, leave the bottom", () => {
+  const key = (name: string, shiftKey = false) => ({ key: name, shiftKey });
+  for (const name of ["ArrowUp", "PageUp", "Home"]) {
+    assert.equal(leavesBottom(key(name), false), true, name);
+    assert.equal(leavesBottom(key(name), true), false, name);
+  }
+  assert.equal(leavesBottom(key(" ", true), false), true);
+  assert.equal(leavesBottom(key(" "), false), false);
+  assert.equal(leavesBottom(key("ArrowDown"), false), false);
+  assert.equal(leavesBottom(key("a"), false), false);
+});
+
+test("a scroll stops following only when the reader makes it away from the bottom", () => {
+  // At the bottom, whoever scrolled.
+  assert.equal(followsAfter(false, true, false), true);
+  assert.equal(followsAfter(false, true, true), true);
+  // The browser moved the view: as it was.
+  assert.equal(followsAfter(true, false, false), true);
+  assert.equal(followsAfter(false, false, false), false);
+  // The reader moved it away.
+  assert.equal(followsAfter(true, false, true), false);
 });
