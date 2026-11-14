@@ -4,7 +4,6 @@ use std::ffi::OsStr;
 use std::io;
 use std::path::{Component, Path, PathBuf};
 
-use serde_json::Value;
 use weacon_protocol::AccessLevel;
 
 use crate::platform;
@@ -25,14 +24,6 @@ pub(crate) enum Decision {
     Refuse,
     /// Allowed if the file `may_change`, else asked.
     Check(PathBuf),
-}
-
-/// A prompt about changing `file`, waiting for the file to be checked.
-pub(crate) struct Check {
-    pub(crate) request: Value,
-    pub(crate) tool: String,
-    pub(crate) input: Value,
-    pub(crate) file: PathBuf,
 }
 
 impl Rules {

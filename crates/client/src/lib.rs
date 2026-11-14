@@ -127,30 +127,21 @@ fn no_answer(error: impl Into<Box<dyn Error + Send + Sync>>) -> Fault {
 }
 
 fn welcomed(message: Message) -> Result<Welcome, Fault> {
-    match message {
-        Message::Welcome(welcome) => Ok(welcome),
-        Message::Error(body) if body.code == code!("protocol.unsupported") => Err(Fault::new(
+    if let Message::Welcome(welcome) = message {
+        return Ok(welcome);
+    }
+    if let Message::Error(body) = &message
+        && body.code == code!("protocol.unsupported")
+    {
+        return Err(Fault::new(
             code!("daemon.other_protocol"),
             "The daemon speaks another protocol version; restart it",
-        )),
-        Message::Hello(_)
-        | Message::Error(_)
-        | Message::Receipt(_)
-        | Message::Pick(_)
-        | Message::Run(_)
-        | Message::Workspace(_)
-        | Message::Log(_)
-        | Message::ChatCommand(_)
-        | Message::Chat(_)
-        | Message::ChatQuery(_)
-        | Message::ChatAnswer(_)
-        | Message::DiffQuery(_)
-        | Message::DiffAnswer(_)
-        | Message::Unknown => Err(Fault::new(
-            code!("daemon.refused"),
-            "The daemon refused the handshake",
-        )),
+        ));
     }
+    Err(Fault::new(
+        code!("daemon.refused"),
+        "The daemon refused the handshake",
+    ))
 }
 
 #[cfg(test)]

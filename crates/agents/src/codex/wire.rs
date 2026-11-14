@@ -4,7 +4,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use weacon_protocol::{AccessLevel, AgentSession, App, RunEvent};
 
-use crate::run::{Heard, UNSUPPORTED};
+use crate::wire::{Asked, Effect, UNSUPPORTED};
 
 const METHOD_NOT_FOUND: i64 = -32601;
 
@@ -82,15 +82,15 @@ impl Wire {
         }
     }
 
-    pub(crate) fn opening(&mut self) -> Vec<Heard> {
+    pub(crate) fn opening(&mut self) -> Vec<Effect> {
         let params = json!({ "clientInfo": self.client });
         vec![self.request(Waiting::Initialize, "initialize", &params)]
     }
 
-    pub(crate) fn prompt(&mut self, text: &str) -> Vec<Heard> {
+    pub(crate) fn prompt(&mut self, text: &str) -> Vec<Effect> {
         let Some(thread) = self.thread.clone() else {
             if !self.opening_thread() {
-                return vec![Heard::Finished { ok: false }];
+                return vec![Effect::Finished { ok: false }];
             }
             self.queued = Some(text.to_owned());
             return Vec::new();
@@ -100,16 +100,16 @@ impl Wire {
         vec![self.request(Waiting::Turn, "turn/start", &params)]
     }
 
-    pub(crate) fn interrupt(&mut self) -> Vec<Heard> {
+    pub(crate) fn interrupt(&mut self) -> Vec<Effect> {
         // A prompt that never went out ends here, as interrupted.
         if self.queued.take().is_some() {
-            return vec![Heard::Finished { ok: false }];
+            return vec![Effect::Finished { ok: false }];
         }
         self.interrupt_pending = true;
         self.interrupt_turn()
     }
 
-    pub(crate) fn read(&mut self, line: &[u8]) -> Vec<Heard> {
+    pub(crate) fn read(&mut self, line: &[u8]) -> Vec<Effect> {
         let Ok(incoming) = serde_json::from_slice::<Incoming>(line) else {
             return Vec::new();
         };
@@ -121,10 +121,10 @@ impl Wire {
         }
     }
 
-    fn request(&mut self, waiting: Waiting, method: &str, params: &Value) -> Heard {
+    fn request(&mut self, waiting: Waiting, method: &str, params: &Value) -> Effect {
         self.next_id += 1;
         self.waiting.push((self.next_id, waiting));
-        Heard::Send(json!({ "id": self.next_id, "method": method, "params": params }))
+        Effect::Send(json!({ "id": self.next_id, "method": method, "params": params }))
     }
 
     fn opening_thread(&self) -> bool {
@@ -134,7 +134,7 @@ impl Wire {
     }
 
     // A response without a result carries an error instead.
-    fn answered(&mut self, id: &Value, result: Option<Value>) -> Vec<Heard> {
+    fn answered(&mut self, id: &Value, result: Option<Value>) -> Vec<Effect> {
         let Some(at) = self
             .waiting
             .iter()
@@ -146,7 +146,7 @@ impl Wire {
         match (waiting, result) {
             (Waiting::Initialize, Some(_)) => {
                 vec![
-                    Heard::Send(json!({ "method": "initialized" })),
+                    Effect::Send(json!({ "method": "initialized" })),
                     self.open_thread(),
                 ]
             }
@@ -159,7 +159,7 @@ impl Wire {
     }
 
     // A person answers every approval, and anything not known to be safe asks first.
-    fn open_thread(&mut self) -> Heard {
+    fn open_thread(&mut self) -> Effect {
         let (method, mut params) = match &self.resume {
             Some(session) => (
                 "thread/resume",
@@ -182,31 +182,31 @@ impl Wire {
         self.request(Waiting::Thread, method, &params)
     }
 
-    fn thread_opened(&mut self, result: &Value) -> Vec<Heard> {
+    fn thread_opened(&mut self, result: &Value) -> Vec<Effect> {
         let Some(id) = result.pointer("/thread/id").and_then(Value::as_str) else {
             return self.give_up();
         };
         self.thread = Some(id.to_owned());
-        let mut heard: Vec<_> = AgentSession::try_from(id.to_owned())
+        let mut effects: Vec<_> = AgentSession::try_from(id.to_owned())
             .ok()
-            .map(Heard::Started)
+            .map(Effect::Started)
             .into_iter()
             .collect();
         if let Some(text) = self.queued.take() {
-            heard.extend(self.prompt(&text));
+            effects.extend(self.prompt(&text));
         }
-        heard
+        effects
     }
 
-    fn give_up(&mut self) -> Vec<Heard> {
+    fn give_up(&mut self) -> Vec<Effect> {
         self.queued
             .take()
-            .map(|_| Heard::Finished { ok: false })
+            .map(|_| Effect::Finished { ok: false })
             .into_iter()
             .collect()
     }
 
-    fn interrupt_turn(&mut self) -> Vec<Heard> {
+    fn interrupt_turn(&mut self) -> Vec<Effect> {
         let (true, Some(thread), Some(turn)) = (
             self.interrupt_pending,
             self.thread.clone(),
@@ -219,19 +219,19 @@ impl Wire {
         vec![self.request(Waiting::Interrupt, "turn/interrupt", &params)]
     }
 
-    fn ended(&mut self, ok: bool) -> Vec<Heard> {
+    fn ended(&mut self, ok: bool) -> Vec<Effect> {
         self.turn = None;
         self.interrupt_pending = false;
-        vec![Heard::Finished { ok }]
+        vec![Effect::Finished { ok }]
     }
 
     // Notices from other threads, such as a sub-agent's, aren't this run's; approvals are
-    // asked on any thread, so their resolutions are heard from any thread too.
-    fn notified(&mut self, method: &str, params: &Value) -> Vec<Heard> {
+    // asked on any thread, so their resolutions are effects from any thread too.
+    fn notified(&mut self, method: &str, params: &Value) -> Vec<Effect> {
         if method == "serverRequest/resolved" {
             return params
                 .get("requestId")
-                .map(|request| Heard::Withdrawn {
+                .map(|request| Effect::Withdrawn {
                     request: request.clone(),
                 })
                 .into_iter()
@@ -255,27 +255,27 @@ impl Wire {
     }
 }
 
-pub(crate) fn answer(request: &Value, allow: bool) -> Vec<Heard> {
+pub(crate) fn answer(request: &Value, allow: bool) -> Vec<Effect> {
     let decision = if allow { "accept" } else { "decline" };
-    vec![Heard::Send(
+    vec![Effect::Send(
         json!({ "id": request, "result": { "decision": decision } }),
     )]
 }
 
-fn asked(id: Value, method: &str, params: Value) -> Vec<Heard> {
+fn asked(id: Value, method: &str, params: Value) -> Vec<Effect> {
     let tool = match method {
         "item/commandExecution/requestApproval" => "command",
         "item/fileChange/requestApproval" => "file_change",
         _ => {
             let error = json!({ "code": METHOD_NOT_FOUND, "message": UNSUPPORTED });
-            return vec![Heard::Send(json!({ "id": id, "error": error }))];
+            return vec![Effect::Send(json!({ "id": id, "error": error }))];
         }
     };
-    vec![Heard::Asked {
+    vec![Effect::Asked(Asked {
         request: id,
         tool: tool.to_owned(),
         input: params,
-    }]
+    })]
 }
 
 fn turn_field(value: &Value, field: &str) -> Option<String> {
@@ -286,7 +286,7 @@ fn item(params: &Value) -> Option<Item> {
     ItemNote::deserialize(params).ok().map(|note| note.item)
 }
 
-fn started(item: Item) -> Option<Heard> {
+fn started(item: Item) -> Option<Effect> {
     let (call, tool, input) = match item {
         Item::CommandExecution { id, command, .. } => {
             (id, "command", json!({ "command": command }))
@@ -294,14 +294,14 @@ fn started(item: Item) -> Option<Heard> {
         Item::FileChange { id, changes, .. } => (id, "file_change", json!({ "changes": changes })),
         Item::AgentMessage { .. } | Item::Other => return None,
     };
-    Some(Heard::Event(RunEvent::ToolCall {
+    Some(Effect::Event(RunEvent::ToolCall {
         call,
         tool: tool.to_owned(),
         input,
     }))
 }
 
-fn completed(item: Item) -> Option<Heard> {
+fn completed(item: Item) -> Option<Effect> {
     let event = match item {
         Item::AgentMessage { text } => RunEvent::Text { text },
         Item::CommandExecution { id, status, .. } | Item::FileChange { id, status, .. } => {
@@ -312,7 +312,7 @@ fn completed(item: Item) -> Option<Heard> {
         }
         Item::Other => return None,
     };
-    Some(Heard::Event(event))
+    Some(Effect::Event(event))
 }
 
 #[cfg(test)]
@@ -321,18 +321,18 @@ mod tests {
     use weacon_protocol::{Outcome, code};
 
     use super::*;
-    use crate::run;
     use crate::test_support::{
         self, Done, FakeRun, answer, app, ended, ends_as_recorded, is_asked, is_finished,
         is_started, next, started, text, tool_done, until,
     };
+    use crate::wire::Wire as RunWire;
 
     const THREAD: &str = "019a2b3c-4d5e-7f60-8a9b-0c1d2e3f4a5b";
 
     fn fake(recording: &str, resume: Option<&str>) -> (FakeRun, Done) {
         let resume = resume.map(|id| AgentSession::try_from(id.to_owned()).unwrap());
         let wire = Wire::new(resume, &app(), AccessLevel::AskFirst);
-        test_support::fake(run::Wire::Codex(wire), recording)
+        test_support::fake(RunWire::Codex(wire), recording)
     }
 
     fn failed() -> RunEvent {
@@ -463,7 +463,7 @@ mod tests {
     fn a_read_only_thread_asks_for_the_read_only_sandbox_and_others_dont() {
         let resume = AgentSession::try_from(THREAD.to_owned()).unwrap();
         let params = |resume: Option<AgentSession>, access| {
-            let Heard::Send(line) = Wire::new(resume, &app(), access).open_thread() else {
+            let Effect::Send(line) = Wire::new(resume, &app(), access).open_thread() else {
                 panic!("nothing sent");
             };
             line["params"]["sandbox"].clone()

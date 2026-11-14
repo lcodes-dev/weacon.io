@@ -104,7 +104,7 @@ function Root({ url }: { url: string }) {
     // Asked the first time they are opened, and again after answers were cut short.
     if (needsAsking(changes) && place !== undefined && connected.current !== undefined) {
       const request = requestId(crypto.getRandomValues(new Uint8Array(16)));
-      const { query, changes: asked } = ask(++lastId.current, request, place.workspace, place.chat);
+      const { query, changes: asked } = ask(++lastId.current, request, place.workspace, place.chat, changes);
       setChanges(asked);
       connected.current.send(query);
     }
