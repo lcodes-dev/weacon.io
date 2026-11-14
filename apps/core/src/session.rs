@@ -70,7 +70,7 @@ mod tests {
 
     use super::*;
     use crate::daemon::build;
-    use crate::test_support::{self, VERSION, hello};
+    use crate::test_support::{self, VERSION, client_hello};
 
     fn error_code(reply: &Reply) -> Option<&str> {
         test_support::error_code(&reply.envelope.as_ref()?.message)
@@ -79,8 +79,8 @@ mod tests {
     #[test]
     fn a_matching_hello_is_welcomed_once() {
         let mut session = Session::default();
-        let welcome = session.answer(Ok(hello(1, PROTOCOL)), &build(&VERSION));
-        let again = session.answer(Ok(hello(2, PROTOCOL)), &build(&VERSION));
+        let welcome = session.answer(Ok(client_hello(1, PROTOCOL, [])), &build(&VERSION));
+        let again = session.answer(Ok(client_hello(2, PROTOCOL, [])), &build(&VERSION));
 
         assert_eq!(
             welcome,
@@ -103,7 +103,7 @@ mod tests {
     #[test]
     fn another_protocol_is_refused_and_hung_up_on() {
         let mut session = Session::default();
-        let reply = session.answer(Ok(hello(1, PROTOCOL + 1)), &build(&VERSION));
+        let reply = session.answer(Ok(client_hello(1, PROTOCOL + 1, [])), &build(&VERSION));
 
         assert_eq!(error_code(&reply), Some("protocol.unsupported"));
         assert!(reply.close);
@@ -129,7 +129,7 @@ mod tests {
     #[test]
     fn after_the_hello_unknown_messages_get_an_error_and_errors_get_nothing() {
         let mut session = Session::default();
-        session.answer(Ok(hello(1, PROTOCOL)), &build(&VERSION));
+        session.answer(Ok(client_hello(1, PROTOCOL, [])), &build(&VERSION));
         let unknown = session.answer(
             Ok(Envelope {
                 id: 5,
