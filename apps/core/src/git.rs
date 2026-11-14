@@ -10,6 +10,7 @@ use weacon_observability::Fault;
 use weacon_protocol::{ChatId, code};
 
 use crate::platform;
+use crate::workspaces::resolved;
 
 pub(crate) mod removal;
 
@@ -76,12 +77,12 @@ impl Git {
         let full = format!("refs/heads/{branch}");
         let listed = self.listed(repo)?;
         let ours = |tree: &Worktree| tree.branch.as_deref() == Some(full.as_str());
-        let here = same_path(path).and_then(|path| {
+        let here = resolved(path).and_then(|path| {
             listed
                 .iter()
-                .find(|(tree, _)| same_path(&tree.path).as_ref() == Some(&path))
+                .find(|(tree, _)| resolved(&tree.path).as_ref() == Some(&path))
         });
-        let (options, target) = match here {
+        let fresh = match here {
             Some((tree, false)) if ours(tree) => {
                 return Ok(Worktree {
                     path: path.to_owned(),
@@ -92,25 +93,54 @@ impl Git {
             Some((tree, true))
                 if ours(tree) && listed.iter().filter(|(other, _)| ours(other)).count() == 1 =>
             {
-                (vec!["--force"], branch.as_str())
+                false
             }
             Some(_) => return Err(taken()),
             None if path.symlink_metadata().is_ok() || self.has_branch(repo, &full)? => {
                 return Err(taken());
             }
-            None => (vec!["-b", branch.as_str()], "HEAD"),
+            None => true,
         };
         make_parent(path)?;
+        if fresh {
+            self.new_branch(repo, path, &branch, &full)?;
+        } else {
+            self.add(repo, path, &["--force"], &branch)?;
+        }
+        Ok(Worktree {
+            path: path.to_owned(),
+            branch: Some(full),
+        })
+    }
+
+    fn add(&self, repo: &Path, path: &Path, options: &[&str], target: &str) -> Result<(), Fault> {
         run(self
             .command(repo)
             .args(["worktree", "add", "--quiet"])
             .args(options)
             .arg("--")
             .arg(path)
-            .arg(target))?;
-        Ok(Worktree {
-            path: path.to_owned(),
-            branch: Some(full),
+            .arg(target))
+        .map(drop)
+    }
+
+    // The branch is made only where none has its name, so the one deleted again when the
+    // checkout fails is always this call's.
+    fn new_branch(&self, repo: &Path, path: &Path, branch: &str, full: &str) -> Result<(), Fault> {
+        let head = text(run(self.command(repo).args([
+            "rev-parse",
+            "--verify",
+            "HEAD^{commit}",
+        ]))?)?;
+        let head = head.trim_end();
+        run(self.command(repo).args(["update-ref", full, head, ""])).map_err(|_| taken())?;
+        self.add(repo, path, &[], branch).inspect_err(|_| {
+            drop(run(self.command(repo).args([
+                "update-ref",
+                "-d",
+                full,
+                head,
+            ])));
         })
     }
 
@@ -122,7 +152,19 @@ impl Git {
             "--porcelain",
             "-z",
         ]))?)?;
-        Ok(listed.split("\0\0").filter_map(parse_worktree).collect())
+        Ok(listed
+            .split("\0\0")
+            .filter_map(parse_worktree)
+            // A locked worktree's folder can be gone without git calling it prunable.
+            .map(|(tree, prunable)| {
+                let gone = matches!(
+                    tree.path.symlink_metadata(),
+                    Err(error) if error.kind() == io::ErrorKind::NotFound
+                );
+                let missing = prunable || gone;
+                (tree, missing)
+            })
+            .collect())
     }
 
     fn has_branch(&self, repo: &Path, full: &str) -> Result<bool, Fault> {
@@ -211,17 +253,17 @@ fn text(out: Vec<u8>) -> Result<String, Fault> {
     })
 }
 
-// One record of `git worktree list --porcelain -z`, and whether its folder is missing; none for
+// One record of `git worktree list --porcelain -z`, and whether git calls it prunable; none for
 // a bare repository.
 fn parse_worktree(record: &str) -> Option<(Worktree, bool)> {
     let mut path = None;
     let mut branch = None;
-    let mut missing = false;
+    let mut prunable = false;
     for field in record.split('\0') {
         match field.split_once(' ').unwrap_or((field, "")) {
             ("worktree", value) => path = Some(PathBuf::from(value)),
             ("branch", value) => branch = Some(value.to_owned()),
-            ("prunable", _) => missing = true,
+            ("prunable", _) => prunable = true,
             ("bare", _) => return None,
             _ => {}
         }
@@ -231,13 +273,8 @@ fn parse_worktree(record: &str) -> Option<(Worktree, bool)> {
             path: path?,
             branch,
         },
-        missing,
+        prunable,
     ))
-}
-
-// `path` with its folder's symlinks resolved, so a path compares the same once it's gone.
-fn same_path(path: &Path) -> Option<PathBuf> {
-    Some(path.parent()?.canonicalize().ok()?.join(path.file_name()?))
 }
 
 #[cfg(test)]
@@ -258,23 +295,34 @@ mod tests {
         Git::find(&std::env::var_os("PATH").unwrap(), no_hooks).unwrap()
     }
 
-    // A repository with one commit, made without the person's own configuration.
+    // Runs the fixture's own git in `repo`, without the person's configuration or redirects.
+    fn fixture(dir: &Path, repo: &Path, args: &[&str]) {
+        let mut command = Command::new("git");
+        for name in REDIRECTS {
+            command.env_remove(name);
+        }
+        let done = command
+            .arg("-C")
+            .arg(repo)
+            .args(["-c", "user.name=Ada", "-c", "user.email=ada@example.com"])
+            .args(["-c", "commit.gpgsign=false"])
+            .args(args)
+            .env("GIT_CONFIG_GLOBAL", dir.join("no-config"))
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .output()
+            .unwrap();
+        assert!(
+            done.status.success(),
+            "{args:?} {}",
+            String::from_utf8_lossy(&done.stderr)
+        );
+    }
+
+    // A repository with one commit.
     fn repo(dir: &Path) -> PathBuf {
         let repo = dir.join("repo");
         fs::create_dir_all(&repo).unwrap();
-        let git = |args: &[&str]| {
-            let done = Command::new("git")
-                .arg("-C")
-                .arg(&repo)
-                .args(["-c", "user.name=Ada", "-c", "user.email=ada@example.com"])
-                .args(["-c", "commit.gpgsign=false"])
-                .args(args)
-                .env("GIT_CONFIG_GLOBAL", dir.join("no-config"))
-                .env("GIT_CONFIG_NOSYSTEM", "1")
-                .output()
-                .unwrap();
-            assert!(done.status.success(), "{args:?}");
-        };
+        let git = |args: &[&str]| fixture(dir, &repo, args);
         git(&["init", "--quiet", "--initial-branch=main"]);
         fs::write(repo.join("README.md"), "# Site\n").unwrap();
         // Checked out as it is, whatever the machine's line-ending settings.
@@ -473,6 +521,81 @@ mod tests {
             assert_eq!(error.code().as_str(), "git.worktree_taken");
         }
         assert_eq!(git.worktrees(&repo).unwrap().len(), 2);
+    }
+
+    #[test]
+    fn a_checkout_that_fails_leaves_no_branch_behind() {
+        let dir = TempDir::new().unwrap();
+        let (git, repo) = (git(&dir), repo(&dir));
+        let path = dir.join("trees/c-f");
+        // A filter the checkout needs, and that fails.
+        fs::write(
+            repo.join(".gitattributes"),
+            "* -text\nboom.txt filter=boom\n",
+        )
+        .unwrap();
+        fs::write(repo.join("boom.txt"), "boom\n").unwrap();
+        fixture(&dir, &repo, &["add", ".gitattributes", "boom.txt"]);
+        fixture(&dir, &repo, &["commit", "--quiet", "-m", "Boom"]);
+        fixture(&dir, &repo, &["config", "filter.boom.smudge", "false"]);
+        fixture(&dir, &repo, &["config", "filter.boom.required", "true"]);
+
+        let error = git.chat_worktree(&repo, &chat("f"), &path).unwrap_err();
+
+        assert_eq!(error.code().as_str(), "git.failed");
+        assert!(!git.has_branch(&repo, "refs/heads/weacon/f").unwrap());
+        fixture(&dir, &repo, &["config", "--remove-section", "filter.boom"]);
+        git.chat_worktree(&repo, &chat("f"), &path).unwrap();
+    }
+
+    #[test]
+    fn a_branch_made_meanwhile_is_never_taken_back() {
+        let dir = TempDir::new().unwrap();
+        let (git, repo) = (git(&dir), repo(&dir));
+        let first = dir.join("trees/c-r");
+        git.chat_worktree(&repo, &chat("r"), &first).unwrap();
+        let full = "refs/heads/weacon/r";
+
+        // As a second call for the chat would, after its check but before its branch.
+        let error = git
+            .new_branch(&repo, &dir.join("trees/c-r2"), "weacon/r", full)
+            .unwrap_err();
+
+        assert_eq!(error.code().as_str(), "git.worktree_taken");
+        assert!(git.has_branch(&repo, full).unwrap());
+        assert_eq!(
+            git.chat_worktree(&repo, &chat("r"), &first).unwrap().path,
+            first
+        );
+    }
+
+    #[test]
+    fn a_chat_whose_worktree_and_the_folder_above_were_deleted_gets_it_back() {
+        let dir = TempDir::new().unwrap();
+        let (git, repo) = (git(&dir), repo(&dir));
+        let path = dir.join("trees/w-1/c-p");
+        git.chat_worktree(&repo, &chat("p"), &path).unwrap();
+        fs::remove_dir_all(dir.join("trees/w-1")).unwrap();
+
+        git.chat_worktree(&repo, &chat("p"), &path).unwrap();
+
+        assert!(path.join("README.md").exists());
+    }
+
+    #[test]
+    fn a_locked_worktree_whose_folder_is_gone_isnt_listed_or_used() {
+        let dir = TempDir::new().unwrap();
+        let (git, repo) = (git(&dir), repo(&dir));
+        let path = dir.join("trees/c-l");
+        git.chat_worktree(&repo, &chat("l"), &path).unwrap();
+        fixture(&dir, &repo, &["worktree", "lock", path.to_str().unwrap()]);
+        fs::remove_dir_all(&path).unwrap();
+
+        assert_eq!(git.worktrees(&repo).unwrap().len(), 1);
+        let error = git.chat_worktree(&repo, &chat("l"), &path).unwrap_err();
+
+        assert_eq!(error.code().as_str(), "git.failed");
+        assert!(!path.exists());
     }
 
     #[test]
