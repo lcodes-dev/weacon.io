@@ -11,8 +11,8 @@ use weacon_protocol::{
 
 use super::{Db, failed, stored, unreadable};
 
-/// How long a core has to claim its machine once the person confirms, in seconds.
-const CLAIM_WITHIN: i64 = 120;
+/// How many pairings may be under way at once, server-wide, as anyone may start one.
+const MAX_UNDER_WAY: i64 = 1000;
 
 /// A pairing a core started, with its code and claim secret hashed.
 pub(crate) struct NewPairing<'a> {
@@ -25,12 +25,14 @@ pub(crate) struct NewPairing<'a> {
     pub(crate) expires_at: i64,
 }
 
-/// A person's confirmation of a pairing, which pairs its machine with them as `machine`.
+/// A person's confirmation of a pairing, which pairs its machine with them as `machine`; its
+/// core may then claim it until `claim_by`.
 pub(crate) struct Confirmation<'a> {
     pub(crate) account: &'a AccountId,
     pub(crate) pairing: &'a PairingId,
     pub(crate) code_hash: &'a [u8],
     pub(crate) machine: &'a MachineId,
+    pub(crate) claim_by: i64,
 }
 
 /// A core's claim of a pairing, with the hash of the token its machine gets.
@@ -62,12 +64,11 @@ type PairingRow = (Vec<u8>, Option<String>, Option<String>, Option<i64>, bool);
 
 impl Db {
     /// Records `pairing`, and ends the expired ones so they don't pile up; `false`, recording
-    /// nothing, when `most` are under way already.
+    /// nothing, when [`MAX_UNDER_WAY`] are under way already.
     pub(crate) async fn start_pairing(
         &self,
         pairing: &NewPairing<'_>,
         now: i64,
-        most: i64,
     ) -> Result<bool, Fault> {
         let mut transaction = self.write().await?;
         sqlx::query("DELETE FROM pairings WHERE expires_at <= ?")
@@ -79,7 +80,7 @@ impl Db {
             .fetch_one(&mut *transaction)
             .await
             .map_err(failed)?;
-        if under_way >= most {
+        if under_way >= MAX_UNDER_WAY {
             return Ok(false);
         }
         sqlx::query(
@@ -140,6 +141,7 @@ impl Db {
             pairing,
             code_hash,
             machine,
+            claim_by,
         } = *confirmation;
         let mut transaction = self.write().await?;
         let Some((stored_hash, name, os, key)) =
@@ -165,7 +167,7 @@ impl Db {
         .bind(account.as_str())
         .bind(machine.as_str())
         .bind(now)
-        .bind(now.saturating_add(CLAIM_WITHIN))
+        .bind(claim_by)
         .bind(pairing.as_str())
         .execute(&mut *transaction)
         .await
@@ -388,7 +390,7 @@ mod tests {
     }
 
     // Starts pairing `pairing`, whose code hash is its id and whose secret hash is "secret".
-    async fn start(db: &Db, pairing: &str, now: i64, most: i64) -> bool {
+    async fn start(db: &Db, pairing: &str, now: i64) -> bool {
         let new = NewPairing {
             id: &id(pairing),
             code_hash: pairing.as_bytes(),
@@ -398,7 +400,7 @@ mod tests {
             key: &key(),
             expires_at: now + 600,
         };
-        db.start_pairing(&new, now, most).await.unwrap()
+        db.start_pairing(&new, now).await.unwrap()
     }
 
     async fn confirm(db: &Db, account: &AccountId, pairing: &str, code: &str) -> bool {
@@ -407,6 +409,7 @@ mod tests {
             pairing: &id(pairing),
             code_hash: code.as_bytes(),
             machine: &id(&format!("mc-{pairing}")),
+            claim_by: NOW + 121,
         };
         db.confirm_pairing(&confirmation, NOW + 1)
             .await
@@ -426,7 +429,7 @@ mod tests {
     #[tokio::test]
     async fn a_confirmed_pairing_is_claimed_once_by_its_secret() {
         let Setup { _dir, db, ada, .. } = setup().await;
-        assert!(start(&db, "p1", NOW, 10).await);
+        assert!(start(&db, "p1", NOW).await);
         let pending = db.pending_pairing(b"p1", NOW).await.unwrap().unwrap();
         let before = claim(&db, "p1", b"secret", NOW).await;
         assert!(!confirm(&db, &ada, "p1", "p2").await);
@@ -474,8 +477,8 @@ mod tests {
     #[tokio::test]
     async fn pairings_end_when_they_expire() {
         let Setup { _dir, db, ada, .. } = setup().await;
-        assert!(start(&db, "p1", NOW, 10).await);
-        assert!(start(&db, "p2", NOW, 10).await);
+        assert!(start(&db, "p1", NOW).await);
+        assert!(start(&db, "p2", NOW).await);
         assert!(confirm(&db, &ada, "p2", "p2").await);
 
         assert_eq!(
@@ -487,30 +490,30 @@ mod tests {
         );
         assert_eq!(db.pending_pairing(b"p1", NOW + 600).await.unwrap(), None);
         assert_eq!(claim(&db, "p1", b"secret", NOW + 600).await, Claim::Unknown);
-        assert_eq!(
-            claim(&db, "p2", b"secret", NOW + 1 + CLAIM_WITHIN).await,
-            Claim::Unknown
-        );
-        // The next start ends both.
-        assert!(start(&db, "p3", NOW + 600, 1).await);
+        assert_eq!(claim(&db, "p2", b"secret", NOW + 121).await, Claim::Unknown);
+        // The next start ends both, so either may be started again.
+        assert!(start(&db, "p3", NOW + 600).await);
+        assert!(start(&db, "p1", NOW + 600).await);
+        assert!(start(&db, "p2", NOW + 600).await);
         assert_eq!(db.machines_of(&ada).await.unwrap(), []);
     }
 
     #[tokio::test]
     async fn only_so_many_pairings_are_under_way() {
         let Setup { _dir, db, .. } = setup().await;
+        for index in 0..MAX_UNDER_WAY {
+            assert!(start(&db, &format!("p-{index}"), NOW).await);
+        }
 
-        assert!(start(&db, "p1", NOW, 2).await);
-        assert!(start(&db, "p2", NOW, 2).await);
-        assert!(!start(&db, "p3", NOW, 2).await);
-        assert_eq!(db.pending_pairing(b"p3", NOW).await.unwrap(), None);
-        assert!(start(&db, "p3", NOW + 600, 2).await);
+        assert!(!start(&db, "p-x", NOW).await);
+        assert_eq!(db.pending_pairing(b"p-x", NOW).await.unwrap(), None);
+        assert!(start(&db, "p-x", NOW + 600).await);
     }
 
     #[tokio::test]
     async fn only_its_owner_sees_and_unpairs_a_machine() {
         let Setup { _dir, db, ada, bo } = setup().await;
-        assert!(start(&db, "p1", NOW, 10).await);
+        assert!(start(&db, "p1", NOW).await);
         assert!(confirm(&db, &ada, "p1", "p1").await);
         let unclaimed = db.machines_of(&ada).await.unwrap();
         claim(&db, "p1", b"secret", NOW + 2).await;
