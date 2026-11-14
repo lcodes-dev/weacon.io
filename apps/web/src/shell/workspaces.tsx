@@ -1,4 +1,4 @@
-import { type ReactNode, useEffect, useRef, useState } from "react";
+import { type ReactNode, type RefObject, useEffect, useRef, useState } from "react";
 
 import type { Api } from "../api/api.ts";
 import { useAsk } from "../api/ask.ts";
@@ -24,6 +24,17 @@ export function Workspaces({ api, log, who, page }: { api: Api; log: Log; who: R
   const list = loaded.value?.workspaces;
   const { open, chat, choose, chooseChat } = useOpenWorkspace();
   const workspace = list?.find(({ id }) => id === open);
+  // Whether the list is on screen when a workspace made from it arrives, so one made after the
+  // person moved on doesn't pull them back, and one made before they came back does open.
+  const listing = useRef(false);
+  const shown = workspace?.id;
+  const covered = page !== undefined;
+  useEffect(() => {
+    listing.current = shown === undefined && !covered;
+    return () => {
+      listing.current = false;
+    };
+  }, [shown, covered]);
   const selector = list !== undefined && workspace !== undefined && (
     <span className="selector">
       <select aria-label="Workspace" value={workspace.id} onChange={(event) => choose(event.target.value)}>
@@ -46,7 +57,7 @@ export function Workspaces({ api, log, who, page }: { api: Api; log: Log; who: R
           {workspace !== undefined ? (
             <Workspace key={workspace.id} api={api} log={log} workspace={workspace} chosen={chat} choose={chooseChat} />
           ) : (
-            <AllWorkspaces api={api} loaded={loaded} covered={page !== undefined} choose={choose} />
+            <AllWorkspaces api={api} loaded={loaded} listing={listing} choose={choose} />
           )}
         </div>
       </SocketScope>
@@ -91,23 +102,15 @@ function useOpenWorkspace() {
 function AllWorkspaces({
   api,
   loaded,
-  covered,
+  listing,
   choose,
 }: {
   api: Api;
   loaded: Loading<WorkspaceList>;
-  covered: boolean;
+  listing: RefObject<boolean>;
   choose(id: WorkspaceId): void;
 }) {
   const list = loaded.value?.workspaces;
-  // Whether the list is on screen, so a workspace made after the person moved on doesn't pull them back.
-  const listing = useRef(false);
-  useEffect(() => {
-    listing.current = !covered;
-    return () => {
-      listing.current = false;
-    };
-  }, [covered]);
   return (
     <section className="page workspaces">
       <h1>Workspaces</h1>

@@ -163,6 +163,17 @@ test("the list takes a workspace made after the person moved on, and copes with 
   // Two frames after the answer, the page has handled it.
   await page.evaluate(() => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done))));
   assert.equal(await page.getByRole("heading", { name: "Personal" }).count(), 1);
+  // One made before the person came back to the list opens once it arrives.
+  await page.getByRole("button", { name: "All workspaces" }).click();
+  const releaseBack = await holdCreate(page);
+  await page.getByLabel("Name").fill("Back team");
+  await page.getByRole("button", { name: "Create" }).click();
+  await page.getByRole("button", { name: "Personal" }).click();
+  await page.getByRole("heading", { name: "Personal" }).waitFor();
+  await page.getByRole("button", { name: "All workspaces" }).click();
+  await page.getByRole("heading", { name: "Workspaces" }).waitFor();
+  await releaseBack();
+  await page.getByRole("heading", { name: "Back team" }).waitFor();
   await page.getByRole("button", { name: "All workspaces" }).click();
   await page.getByRole("button", { name: "Late team" }).waitFor();
   await page.goto(new URL("/?workspace=not-mine", page.url()).href);
