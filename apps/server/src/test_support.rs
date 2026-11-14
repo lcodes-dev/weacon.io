@@ -67,6 +67,18 @@ pub(crate) struct Fixture {
 }
 
 impl Fixture {
+    /// Every byte the server stored, its database and anything else in its folder.
+    pub(crate) fn stored(&self) -> Vec<u8> {
+        let mut stored = Vec::new();
+        for entry in fs::read_dir(&*self.dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_file() {
+                stored.extend(fs::read(path).unwrap());
+            }
+        }
+        stored
+    }
+
     pub(crate) async fn new() -> Self {
         let dir = TempDir::new().unwrap();
         let db = with_ada(&dir).await;
