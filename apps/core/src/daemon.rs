@@ -38,24 +38,21 @@ pub(crate) fn socket_path(state_dir: &Path) -> PathBuf {
 /// None for a build whose version isn't a release's `major.minor.patch`.
 fn updates(state_dir: &Path, app: &App) -> Option<update::Watch> {
     let own = app.version.parse().ok()?;
-    let launch: update::Launch = |dir| {
-        let env = |key: &str| std::env::var_os(key);
-        crate::service::launch_with(dir, &env, &mut crate::service::system)
+    let hooks = update::Hooks {
+        latest: update::latest,
+        launch: |dir| {
+            let env = |key: &str| std::env::var_os(key);
+            crate::service::launch_with(dir, &env, &mut crate::service::system)
+        },
+        // A journal that can't be read might hold a turn.
+        busy: |dir| crate::runs::Runs::load(dir).map_or(true, |runs| runs.any_busy()),
+        now: unix_now,
     };
-    let dir = state_dir.to_owned();
-    Some(update::Watch::new(
-        dir,
-        own,
-        update::latest,
-        launch,
-        unix_now,
-    ))
+    Some(update::Watch::new(state_dir.to_owned(), own, hooks))
 }
 
 // A running check's result; never, when none runs. Polling a task by reference can be cancelled.
-async fn finish<T>(
-    task: &mut Option<tokio::task::JoinHandle<T>>,
-) -> Result<T, tokio::task::JoinError> {
+async fn finish<T>(task: &mut Option<JoinHandle<T>>) -> Result<T, tokio::task::JoinError> {
     match task {
         Some(task) => task.await,
         None => std::future::pending().await,
@@ -549,10 +546,13 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let watched = dir.to_path_buf();
         let running = start_as(&dir, |daemon| {
-            let unreachable = || Err(Fault::new(code!("update.fetch_failed"), "x"));
-            let own = "1.0.0".parse().unwrap();
-            let watch =
-                update::Watch::new(watched, own, unreachable, |_| Ok(false), || 1_800_000_000);
+            let hooks = update::Hooks {
+                latest: || Err(Fault::new(code!("update.fetch_failed"), "x")),
+                launch: |_| Ok(false),
+                busy: |_| false,
+                now: || 1_800_000_000,
+            };
+            let watch = update::Watch::new(watched, "1.0.0".parse().unwrap(), hooks);
             daemon.updates = Some(watch);
         })
         .unwrap();

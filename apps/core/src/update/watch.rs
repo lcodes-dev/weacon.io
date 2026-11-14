@@ -21,15 +21,22 @@ pub(crate) const CHECK_EVERY: Duration = Duration::from_hours(1);
 pub(crate) type Latest = fn() -> Result<ReleaseManifest, Fault>;
 /// Starts `weacon update` apart from the daemon for a state folder; false where it can't.
 pub(crate) type Launch = fn(&Path) -> io::Result<bool>;
-/// Seconds since the Unix epoch.
-pub(crate) type Now = fn() -> u64;
+
+/// What a check reaches outside the daemon; tests pass fakes.
+#[derive(Clone, Copy)]
+pub(crate) struct Hooks {
+    pub(crate) latest: Latest,
+    pub(crate) launch: Launch,
+    /// Whether an agent of the state folder is on a turn, which a restart would cut off.
+    pub(crate) busy: fn(&Path) -> bool,
+    /// Seconds since the Unix epoch.
+    pub(crate) now: fn() -> u64,
+}
 
 pub(crate) struct Watch {
     state_dir: PathBuf,
     own: ReleaseVersion,
-    latest: Latest,
-    launch: Launch,
-    now: Now,
+    hooks: Hooks,
     failing: bool,
 }
 
@@ -45,33 +52,19 @@ pub(crate) enum Found {
 }
 
 impl Watch {
-    pub(crate) const fn new(
-        state_dir: PathBuf,
-        own: ReleaseVersion,
-        latest: Latest,
-        launch: Launch,
-        now: Now,
-    ) -> Self {
+    pub(crate) const fn new(state_dir: PathBuf, own: ReleaseVersion, hooks: Hooks) -> Self {
         Self {
             state_dir,
             own,
-            latest,
-            launch,
-            now,
+            hooks,
             failing: false,
         }
     }
 
     /// Starts a check, which does nothing unless one is due.
     pub(crate) fn start(&self) -> Check {
-        let (dir, own, latest, launch, now) = (
-            self.state_dir.clone(),
-            self.own,
-            self.latest,
-            self.launch,
-            self.now,
-        );
-        tokio::task::spawn_blocking(move || step(&dir, own, latest, launch, now()))
+        let (dir, own, hooks) = (self.state_dir.clone(), self.own, self.hooks);
+        tokio::task::spawn_blocking(move || step(&dir, own, hooks))
     }
 
     /// Logs what a finished check found.
@@ -114,18 +107,24 @@ impl Watch {
     }
 }
 
-fn step(
-    state_dir: &Path,
-    own: ReleaseVersion,
-    latest: Latest,
-    launch: Launch,
-    now: u64,
-) -> Result<Found, Fault> {
-    let file = settings::file(state_dir);
-    if !due(Settings::read(&file)?, now) {
+fn step(state_dir: &Path, own: ReleaseVersion, hooks: Hooks) -> Result<Found, Fault> {
+    let now = (hooks.now)();
+    let settings = Settings::read(&settings::file(state_dir))?;
+    if !due(settings, now) {
         return Ok(Found::Nothing);
     }
-    record(state_dir, own, &latest()?, launch, now)
+    // An install restarts the daemon, so it waits for every turn to end; the next tick looks again.
+    if installs(settings.schedule) && (hooks.busy)(state_dir) {
+        return Ok(Found::Nothing);
+    }
+    record(state_dir, own, &(hooks.latest)()?, hooks.launch, now)
+}
+
+fn installs(schedule: UpdateSchedule) -> bool {
+    matches!(
+        schedule.effective(),
+        UpdateSchedule::Daily | UpdateSchedule::Weekly
+    )
 }
 
 /// Records what a check fetched, and starts the install it calls for.
@@ -159,12 +158,8 @@ fn record(
     if !newer {
         return Ok(Found::Nothing);
     }
-    let installs = matches!(
-        settings.schedule.effective(),
-        UpdateSchedule::Daily | UpdateSchedule::Weekly
-    );
     // A new protocol always waits for its owner to say yes.
-    if installs && release.protocol == PROTOCOL && launched(launch, state_dir)? {
+    if installs(settings.schedule) && release.protocol == PROTOCOL && launched(launch, state_dir)? {
         return Ok(Found::Started(release.version));
     }
     Ok(Found::Offered(release.version))
@@ -232,12 +227,47 @@ mod tests {
     const CANNOT_START: Launch = |_| Ok(false);
     const FAILS_TO_START: Launch = |_| Err(io::Error::from(io::ErrorKind::NotFound));
 
+    fn hooks(latest: Latest, launch: Launch) -> Hooks {
+        Hooks {
+            latest,
+            launch,
+            busy: |_| false,
+            now: || NOW,
+        }
+    }
+
     fn run(dir: &Path, latest: Latest, launch: Launch) -> Result<Found, Fault> {
-        step(dir, "1.0.0".parse().unwrap(), latest, launch, NOW)
+        step(dir, "1.0.0".parse().unwrap(), hooks(latest, launch))
     }
 
     fn version(text: &str) -> ReleaseVersion {
         text.parse().unwrap()
+    }
+
+    #[test]
+    fn an_install_waits_while_an_agent_is_on_a_turn() {
+        let dir = TempDir::new().unwrap();
+        let busy = Hooks {
+            busy: |_| true,
+            ..hooks(MUST_NOT_ASK, STARTS)
+        };
+        for schedule in [UpdateSchedule::Daily, UpdateSchedule::Weekly] {
+            with(&dir, schedule, 0);
+            let found = step(&dir, version("1.0.0"), busy);
+            assert_eq!(found.unwrap(), Found::Nothing);
+            assert_eq!(
+                Settings::read(&settings::file(&dir)).unwrap().last_checked,
+                0
+            );
+        }
+        // Saying what's out restarts nothing, so it doesn't wait.
+        with(&dir, UpdateSchedule::Notify, 0);
+        let notify = Hooks {
+            latest: NEWER,
+            ..busy
+        };
+        let found = step(&dir, version("1.0.0"), notify);
+        assert_eq!(found.unwrap(), Found::Offered(version("2.0.0")));
     }
 
     #[test]
@@ -410,7 +440,7 @@ mod tests {
         );
 
         let (log, records) = recording_logger();
-        let mut watch = Watch::new(dir.to_path_buf(), version("1.0.0"), NEWER, STARTS, || NOW);
+        let mut watch = Watch::new(dir.to_path_buf(), version("1.0.0"), hooks(NEWER, STARTS));
         watch.observe(Err(fault), &log);
         watch.observe(run(&dir, UNREACHABLE, STARTS), &log);
         watch.observe(Ok(Found::Offered(version("2.0.0"))), &log);
@@ -431,7 +461,7 @@ mod tests {
     async fn a_check_runs_off_the_runtime() {
         let dir = TempDir::new().unwrap();
         let (log, records) = recording_logger();
-        let mut watch = Watch::new(dir.to_path_buf(), version("1.0.0"), NEWER, STARTS, || NOW);
+        let mut watch = Watch::new(dir.to_path_buf(), version("1.0.0"), hooks(NEWER, STARTS));
         let joined = watch.start().await;
         watch.finished(joined, &log);
         assert_eq!(messages(&records), ["update available"]);

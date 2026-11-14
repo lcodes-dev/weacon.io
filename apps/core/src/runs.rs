@@ -78,6 +78,18 @@ impl Runs {
         Ok(Self { path, journal })
     }
 
+    /// Whether an agent is on a turn or has one queued, which a restart would cut off.
+    pub(crate) fn any_busy(&self) -> bool {
+        self.journal.chats.iter().any(|record| {
+            record.turn.is_some()
+                || !record.queue.is_empty()
+                || matches!(
+                    record.state,
+                    RunState::Starting | RunState::Running | RunState::Waiting
+                )
+        })
+    }
+
     pub(crate) fn of(&self, workspace: &WorkspaceId, chat: &ChatId) -> Option<&Record> {
         self.journal.chats.get(self.position(workspace, chat)?)
     }
@@ -248,6 +260,49 @@ mod tests {
         })
         .await
         .unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_chat_is_busy_while_its_agent_is_on_a_turn_or_has_one_queued() {
+        let dir = TempDir::new().unwrap();
+        let mut runs = Runs::load(&dir).unwrap();
+        assert!(!runs.any_busy());
+        begin(&mut runs, "c-1").await;
+        assert!(runs.any_busy(), "starting");
+        let (w1, c1) = (workspace("w-1"), chat("c-1"));
+        let set = |state| move |record: &mut Record| record.state = state;
+        for (state, busy) in [
+            (RunState::Running, true),
+            (RunState::Waiting, true),
+            (RunState::Idle, false),
+            (RunState::Sleeping, false),
+            (RunState::Ended, false),
+        ] {
+            runs.update(&w1, &c1, set(state)).await.unwrap();
+            assert_eq!(runs.any_busy(), busy, "{state:?}");
+            assert_eq!(
+                Runs::load(&dir).unwrap().any_busy(),
+                busy,
+                "{state:?} saved"
+            );
+        }
+        let turn = RequestId::try_from("r-1".to_owned()).unwrap();
+        runs.update(&w1, &c1, |record| record.turn = Some(turn))
+            .await
+            .unwrap();
+        assert!(runs.any_busy(), "on a turn");
+        runs.update(&w1, &c1, |record| record.turn = None)
+            .await
+            .unwrap();
+        runs.update(&w1, &c1, |record| {
+            record.queue.push(Queued {
+                request: RequestId::try_from("r-2".to_owned()).unwrap(),
+                text: "x".to_owned(),
+            });
+        })
+        .await
+        .unwrap();
+        assert!(runs.any_busy(), "queued");
     }
 
     #[tokio::test]

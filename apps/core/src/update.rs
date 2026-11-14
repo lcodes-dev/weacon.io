@@ -8,7 +8,7 @@ mod settings;
 mod verify;
 mod watch;
 
-pub(crate) use watch::{CHECK_EVERY, Check, Launch, Watch};
+pub(crate) use watch::{CHECK_EVERY, Check, Hooks, Watch};
 
 use std::fs::{File, TryLockError};
 use std::io::{self, Read, Write};
