@@ -293,7 +293,7 @@ mod tests {
         assert_eq!(of, [ada.clone(), ada.clone(), bo]);
         // Members from before may do what any member may.
         let ada_id = AccountId::try_from(ada.clone()).unwrap();
-        let roles = db.workspaces_of(&ada_id).await.unwrap();
+        let roles = db.account(ada_id).workspaces().await.unwrap();
         assert!(
             roles
                 .iter()

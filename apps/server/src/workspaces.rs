@@ -24,7 +24,8 @@ pub(crate) async fn create(
         Ok(new) => {
             shared
                 .db
-                .create_owned_workspace(&session.account, new)
+                .account(session.account)
+                .create_workspace(new)
                 .await
         }
         Err(fault) => return invalid(fault.code().clone()),
@@ -38,7 +39,7 @@ pub(crate) async fn create(
 
 /// `GET /api/workspaces`: the signed-in account's workspaces.
 pub(crate) async fn list(State(shared): State<Shared>, session: Session) -> Response {
-    match shared.db.workspaces_of(&session.account).await {
+    match shared.db.account(session.account).workspaces().await {
         Ok(workspaces) => Json(WorkspaceList { workspaces }).into_response(),
         Err(fault) => failure(&shared, fault),
     }
