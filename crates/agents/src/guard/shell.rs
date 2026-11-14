@@ -62,7 +62,8 @@ struct Parser {
     at: usize,
     found: Vec<Simple>,
     // Delimiters of here-documents whose text starts at the next line.
-    heredocs: Vec<String>,
+    // Each with whether `<<-` opened it, which strips the tabs that start its lines.
+    heredocs: Vec<(String, bool)>,
     // How many substitutions this text is inside.
     depth: usize,
     // How many `(` are open.
@@ -222,11 +223,12 @@ impl Parser {
                 self.advance(1);
                 return self.redirect_target(simple, word, false);
             }
-            if self.peek() == Some('-') {
+            let strips = self.peek() == Some('-');
+            if strips {
                 self.advance(1);
             }
             let delimiter = self.target()?;
-            self.heredocs.push(delimiter.text);
+            self.heredocs.push((delimiter.text, strips));
             return Some(());
         }
         self.redirect_target(simple, word, false)
@@ -287,17 +289,22 @@ impl Parser {
 
     // Here-document text is input, not commands, so it is skipped.
     fn skip_heredocs(&mut self) -> Option<()> {
-        for delimiter in std::mem::take(&mut self.heredocs) {
-            self.skip_heredoc(&delimiter)?;
+        for (delimiter, strips) in std::mem::take(&mut self.heredocs) {
+            self.skip_heredoc(&delimiter, strips)?;
         }
         Some(())
     }
 
-    fn skip_heredoc(&mut self, delimiter: &str) -> Option<()> {
+    fn skip_heredoc(&mut self, delimiter: &str, strips: bool) -> Option<()> {
         loop {
             let before = self.at;
             let line = self.line()?;
-            if line.trim_start_matches('\t') == delimiter {
+            let line = if strips {
+                line.trim_start_matches('\t')
+            } else {
+                &line
+            };
+            if line == delimiter {
                 return Some(());
             }
             // The shell runs substitutions in the text unless its delimiter was quoted, and joins a

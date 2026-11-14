@@ -909,7 +909,7 @@ mod tests {
             "make 2>&1 >build.log",
             "echo hi >&2",
             "cd src && ls",
-            "cd /tmp; echo x >&-",
+            "cd ..; echo x >&-",
             "(echo a); cd src && rm -rf x",
         ] {
             assert_eq!(check(line), None, "{line}");
@@ -1002,5 +1002,22 @@ mod tests {
         );
         assert_eq!(check("cat <<EOF\nplain text\nEOF"), None);
         assert_eq!(check("echo x >&2"), None);
+    }
+
+    #[test]
+    fn only_a_dash_here_document_ends_at_a_tabbed_delimiter() {
+        let dir = TempDir::new().unwrap();
+        let context = context(&dir);
+        let check = |line: &str| check_command(line, &context);
+
+        assert_eq!(
+            check("cat <<EOF\n\tEOF\ncat <<Y\nEOF\nrm -rf ../main\nY"),
+            Some(Reason::DeleteOutside)
+        );
+        assert_eq!(
+            check("cat <<-EOF\n\tbody\n\tEOF\nrm -rf ../main"),
+            Some(Reason::DeleteOutside)
+        );
+        assert_eq!(check("cat <<-EOF\n\tbody\n\tEOF\nls"), None);
     }
 }
