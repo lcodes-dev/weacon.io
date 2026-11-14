@@ -2,13 +2,18 @@ import { createContext, useContext } from "react";
 
 import { HELLO_ID } from "../connection.ts";
 import type { Incoming } from "../incoming.ts";
-import type { Envelope } from "../protocol.ts";
+import type { Envelope, WorkspaceId } from "../protocol.ts";
 
 /** The open workspace's one socket, which its pages send on and listen to, across the feed's reconnects. */
 export class WorkspaceSocket {
+  readonly workspace: WorkspaceId;
   #send: ((envelope: Envelope) => void) | undefined;
   #handlers = new Set<(message: Incoming) => void>();
   #lastId = HELLO_ID;
+
+  constructor(workspace: WorkspaceId) {
+    this.workspace = workspace;
+  }
 
   /** Sends through `send` from now on, as when the feed goes live; `undefined` when it ends. */
   attach(send: ((envelope: Envelope) => void) | undefined): void {

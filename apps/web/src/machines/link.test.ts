@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
+import type { Incoming } from "../incoming.ts";
 import type { Envelope, MachineSettings } from "../protocol.ts";
 import { type Link, NO_ANSWER, RECONNECTING, type Wait, change, current } from "./link.ts";
 
@@ -16,7 +17,7 @@ const SETTINGS: MachineSettings = {
 function fake(): {
   link: Link;
   sent: Envelope[];
-  deliver(envelope: Envelope): void;
+  deliver(message: Incoming): void;
   listeners(): number;
   wait: Wait;
   expire(): void;
@@ -24,7 +25,7 @@ function fake(): {
   offline(): void;
 } {
   const sent: Envelope[] = [];
-  const handles = new Set<(envelope: Envelope) => void>();
+  const handles = new Set<(message: Incoming) => void>();
   const timers = new Set<() => void>();
   let ids = 10;
   let broken = false;
@@ -44,8 +45,8 @@ function fake(): {
       nextId: () => ++ids,
     },
     sent,
-    deliver: (envelope) => {
-      for (const handle of [...handles]) handle(envelope);
+    deliver: (message) => {
+      for (const handle of [...handles]) handle(message);
     },
     listeners: () => handles.size,
     wait: (run) => {

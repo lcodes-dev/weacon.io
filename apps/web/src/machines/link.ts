@@ -1,4 +1,5 @@
 import { newRequestId } from "../ids.ts";
+import type { Incoming } from "../incoming.ts";
 import type {
   Envelope,
   MachineId,
@@ -13,8 +14,8 @@ import { UNREACHABLE } from "../shell/api.ts";
 export type Link = {
   /** Puts `envelope` on the connection; false, dropping it, while the connection isn't live. */
   send(envelope: Envelope): boolean;
-  /** Hands every envelope that arrives to `handle`, until the returned function is called. */
-  subscribe(handle: (envelope: Envelope) => void): () => void;
+  /** Hands every checked message that arrives to `handle`, until the returned function is called. */
+  subscribe(handle: (message: Incoming) => void): () => void;
   /** An envelope id not yet used on this connection. */
   nextId(): number;
 };

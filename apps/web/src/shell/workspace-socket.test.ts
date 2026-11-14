@@ -9,7 +9,7 @@ const change: Incoming = { id: 0, type: "workspace", workspace: "w-1", seq: 3, c
 const ask: Envelope = { id: 2, type: "chat_query", workspace: "w-1", chat: "c-1", query: { kind: "snapshot" } };
 
 test("a page sends only while the feed is live, through whichever connection is open", () => {
-  const socket = new WorkspaceSocket();
+  const socket = new WorkspaceSocket("w-1");
   const first: Envelope[] = [];
   const second: Envelope[] = [];
 
@@ -25,7 +25,7 @@ test("a page sends only while the feed is live, through whichever connection is 
 });
 
 test("a subscription hears every message until it ends", () => {
-  const socket = new WorkspaceSocket();
+  const socket = new WorkspaceSocket("w-1");
   const heard: string[] = [];
   const end = socket.subscribe((message) => heard.push(message.type));
 
@@ -37,7 +37,7 @@ test("a subscription hears every message until it ends", () => {
 });
 
 test("a handler that ends its own subscription doesn't stop the others hearing the message", () => {
-  const socket = new WorkspaceSocket();
+  const socket = new WorkspaceSocket("w-1");
   const heard: string[] = [];
   const end = socket.subscribe(() => {
     heard.push("first");
@@ -52,7 +52,7 @@ test("a handler that ends its own subscription doesn't stop the others hearing t
 });
 
 test("envelope ids count up from the hello's", () => {
-  const socket = new WorkspaceSocket();
+  const socket = new WorkspaceSocket("w-1");
 
   assert.deepEqual([socket.nextId(), socket.nextId(), socket.nextId()], [2, 3, 4]);
 });

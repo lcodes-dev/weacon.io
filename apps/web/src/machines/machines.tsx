@@ -1,10 +1,12 @@
-import { useEffect, useState } from "react";
+import { useContext, useEffect, useState } from "react";
 
 import type { Later } from "../connection.ts";
 import type { MachineId, MachineSummary, PairPending } from "../protocol.ts";
+import { MachineSettingsView } from "../settings/machine-settings.tsx";
 import type { Api } from "../shell/api.ts";
 import { useAsk } from "../shell/ask.ts";
 import { useLoaded } from "../shell/loaded.ts";
+import { WorkspaceSocketContext } from "../shell/workspace-socket.ts";
 import { waitForClaim } from "./claim.ts";
 import { fingerprint } from "./fingerprint.ts";
 import { keep } from "./keep.ts";
@@ -71,6 +73,9 @@ export function Machines({ api, pins, later }: { api: Api; pins: Pins; later: La
 
 function Machine({ api, pins, machine, unpaired }: { api: Api; pins: Pins; machine: MachineSummary; unpaired(): void }) {
   const [confirming, setConfirming] = useState(false);
+  const [open, setOpen] = useState(false);
+  // A machine's settings are kept for each workspace, so they show only while one is open.
+  const socket = useContext(WorkspaceSocketContext);
   const { busy, problem, ask } = useAsk();
   const paired = new Date(machine.paired_at * 1000).toLocaleDateString();
   return (
@@ -108,6 +113,20 @@ function Machine({ api, pins, machine, unpaired }: { api: Api; pins: Pins; machi
         </button>
       )}
       {problem !== undefined && <span role="alert">{problem}</span>}
+      {socket !== undefined && (
+        <button type="button" aria-expanded={open} onClick={() => setOpen(!open)}>
+          {open ? "Hide settings" : "Settings"}
+        </button>
+      )}
+      {socket !== undefined && open && (
+        <MachineSettingsView
+          key={`${machine.id} ${socket.workspace}`}
+          machine={machine}
+          workspace={socket.workspace}
+          link={socket}
+          pins={pins}
+        />
+      )}
     </li>
   );
 }
