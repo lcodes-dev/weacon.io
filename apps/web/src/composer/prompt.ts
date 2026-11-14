@@ -1,7 +1,7 @@
 import { type Command, deliver } from "../chat/commands.ts";
 import type { ChatRef } from "../chat-ref.ts";
 import type { Envelope, RequestId } from "../protocol.ts";
-import { type Receipts, type Settled, mayHaveRun } from "../receipts.ts";
+import { type Receipts, type Settled, mayHaveRun, settledText } from "../receipts.ts";
 
 /** How sending a prompt ended: as its command did, or refused here for its size. */
 export type Sent = Settled | "too_long";
@@ -23,14 +23,7 @@ export function deliverPrompt(command: Command, receipts: Receipts, send: (envel
 /** A prompt that may have run, kept with its request so sending it again can't run it twice. */
 export type Retry = { text: string; request: RequestId };
 
-const PROBLEMS: Record<Exclude<Sent, "accepted">, string> = {
-  too_long: "It's too long to send. Shorten it and try again.",
-  refused: "The message wasn't sent.",
-  offline: "The machine is offline, so the message wasn't sent. Try again once it's back.",
-  detached: "This chat's machine is gone, so it can be read but takes no messages.",
-  lost: "The connection closed. The message may not have been sent.",
-  unsure: "The server didn't answer. The message may not have been sent.",
-};
+const MESSAGE = { the: "the message", not: "wasn't sent", maybe: "may not have been sent" };
 
 /** What the box holds after a send. */
 export type After = { text: string; problem: string | undefined; retry: Retry | undefined };
@@ -44,7 +37,8 @@ export function after(sent: Sent, text: string, request: RequestId): After {
     return { text: "", problem: undefined, retry: undefined };
   }
   const retry = sent !== "too_long" && mayHaveRun(sent) ? { text, request } : undefined;
-  return { text, problem: PROBLEMS[sent], retry };
+  const problem = sent === "too_long" ? "It's too long to send. Shorten it and try again." : settledText(sent, MESSAGE);
+  return { text, problem, retry };
 }
 
 /** How a command ended, heard after its wait ran out. */

@@ -13,6 +13,28 @@ export function mayHaveRun(settled: Settled): boolean {
   return settled === "lost" || settled === "unsure";
 }
 
+/** What a command was about, for saying how it ended: its subject, and what didn't or may not have happened. */
+export type Subject = { the: string; not: string; maybe: string };
+
+/** What a person reads once a command about `subject` ended as `settled`: nothing when it was taken. */
+export function settledText(settled: Settled, { the, not, maybe }: Subject): string | undefined {
+  const The = `${the.charAt(0).toUpperCase()}${the.slice(1)}`;
+  switch (settled) {
+    case "accepted":
+      return undefined;
+    case "refused":
+      return `${The} ${not}.`;
+    case "offline":
+      return `The machine is offline, so ${the} ${not}. Try again once it's back.`;
+    case "detached":
+      return `This chat's machine is gone, so ${the} ${not}.`;
+    case "lost":
+      return `The connection closed. ${The} ${maybe}.`;
+    case "unsure":
+      return `The server didn't answer. ${The} ${maybe}.`;
+  }
+}
+
 // How long a command waits for the server's word on it.
 const WAIT_MS = 15_000;
 

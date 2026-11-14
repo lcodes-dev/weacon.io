@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import type { Incoming } from "./incoming.ts";
-import { Receipts } from "./receipts.ts";
+import { Receipts, settledText } from "./receipts.ts";
 
 const receipt = (request: string, state: "accepted" | "completed" | "interrupted" | "unknown"): Incoming => ({
   id: 2,
@@ -176,4 +176,18 @@ test("an error about an overdue envelope doesn't decide a retry that waits", asy
 
   assert.equal(await retry, "accepted");
   assert.deepEqual(late, []);
+});
+
+test("how a command ended is said once for every subject", () => {
+  const subject = { the: "the agent", not: "wasn't stopped", maybe: "may not have stopped" };
+  const said = (["accepted", "refused", "offline", "detached", "lost", "unsure"] as const).map((settled) => settledText(settled, subject));
+
+  assert.deepEqual(said, [
+    undefined,
+    "The agent wasn't stopped.",
+    "The machine is offline, so the agent wasn't stopped. Try again once it's back.",
+    "This chat's machine is gone, so the agent wasn't stopped.",
+    "The connection closed. The agent may not have stopped.",
+    "The server didn't answer. The agent may not have stopped.",
+  ]);
 });

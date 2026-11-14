@@ -52,7 +52,7 @@ test("an accepted prompt empties the box; any other keeps it and says why", () =
   });
   assert.deepEqual(after("detached", "hi", "r-1"), {
     text: "hi",
-    problem: "This chat's machine is gone, so it can be read but takes no messages.",
+    problem: "This chat's machine is gone, so the message wasn't sent.",
     retry: undefined,
   });
   assert.deepEqual(after("too_long", "hi", "r-1"), {

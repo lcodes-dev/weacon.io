@@ -4,12 +4,12 @@ import { test } from "node:test";
 import type { Page } from "playwright-core";
 
 import { atBottom } from "../src/transcript/follow.ts";
-import { fakeServer, start } from "./harness.ts";
+import { FAKE_CHAT, fakeServer, start } from "./harness.ts";
 
 const MESSAGES = 33;
 
 test("text stays selected while the run streams, and following waits for the reader", { timeout: 180_000 }, async (t) => {
-  const harness = await start(fakeServer(100_000, 1), { query: "&workspace=w-1&chat=c-1" });
+  const harness = await start(fakeServer(100_000, 1), { query: FAKE_CHAT });
   t.after(() => harness.close());
   const { page } = harness;
   // A few more than the selection, so it ends well above the row being written.
@@ -70,7 +70,7 @@ test("text stays selected while the run streams, and following waits for the rea
 });
 
 test("a reader at the bottom of a finished run is still there after Settings", { timeout: 60_000 }, async (t) => {
-  const harness = await start(fakeServer(20_000, 0), { query: "&workspace=w-1&chat=c-1" });
+  const harness = await start(fakeServer(20_000, 0), { query: FAKE_CHAT });
   t.after(() => harness.close());
   const { page } = harness;
   await page.waitForSelector(".row.finished");

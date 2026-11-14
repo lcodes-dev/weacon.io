@@ -82,6 +82,9 @@ export async function open(
 // Long enough for cargo to build the server first.
 export const STARTUP_MS = 300_000;
 
+/** The address query that opens the fake server's chat. */
+export const FAKE_CHAT = "&workspace=w-1&chat=c-1";
+
 /**
  * What `pick` finds in the first of `child`'s lines it accepts, at first any line; or a failure
  * once `deadlineMs` passes without one, so `open` cleans up.

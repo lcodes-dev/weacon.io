@@ -1,5 +1,5 @@
 import type { RequestId, RunId } from "../protocol.ts";
-import { type Settled, mayHaveRun } from "../receipts.ts";
+import { type Settled, mayHaveRun, settledText } from "../receipts.ts";
 
 /** A person's answer to the prompt `prompt` of `run`, on its way or not taken. */
 export type Answering = {
@@ -60,28 +60,15 @@ export function settleAnswer(answers: Answers, sent: SentAnswers, request: Reque
   return answer === undefined ? answers : settle(answers, askKey(answer.run, answer.prompt), request, settled);
 }
 
-const PROBLEMS: Record<Exclude<Settled, "accepted">, string> = {
-  refused: "The answer wasn't taken.",
-  offline: "The machine is offline, so the answer wasn't sent. Try again once it's back.",
-  detached: "This chat's machine is gone, so it takes no answers.",
-  lost: "The connection closed. The answer may not have been sent.",
-  unsure: "The server didn't answer. The answer may not have been sent.",
-};
-
-const STOP_PROBLEMS: Record<Exclude<Settled, "accepted">, string> = {
-  refused: "The agent wasn't stopped.",
-  offline: "The machine is offline, so the agent wasn't stopped. Try again once it's back.",
-  detached: "This chat's machine is gone, so there's no agent to stop.",
-  lost: "The connection closed. The agent may not have stopped.",
-  unsure: "The server didn't answer. The agent may not have stopped.",
-};
+const ANSWER = { the: "the answer", not: "wasn't taken", maybe: "may not have been sent" };
+const STOP = { the: "the agent", not: "wasn't stopped", maybe: "may not have stopped" };
 
 /** What Stop says once its interrupt ended as `settled`: nothing when it was taken. */
 export function stopProblem(settled: Settled): string | undefined {
-  return settled === "accepted" ? undefined : STOP_PROBLEMS[settled];
+  return settledText(settled, STOP);
 }
 
 /** What a prompt says about its answer: nothing, or why it may not have been taken. */
 export function answerProblem(answering: Answering | undefined): string | undefined {
-  return answering?.settled === undefined ? undefined : PROBLEMS[answering.settled];
+  return answering?.settled === undefined ? undefined : settledText(answering.settled, ANSWER);
 }

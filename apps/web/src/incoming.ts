@@ -120,19 +120,18 @@ function isRunEvent(event: unknown): event is RunEvent {
   if (fields === undefined) {
     return false;
   }
-  const text = (key: string) => typeof fields[key] === "string";
   switch (fields["event"]) {
     case "text_delta":
     case "text":
-      return text("text");
+      return text(fields, "text");
     case "tool_call":
-      return text("call") && text("tool");
+      return text(fields, "call") && text(fields, "tool");
     case "tool_done":
-      return text("call") && typeof fields["failed"] === "boolean";
+      return text(fields, "call") && typeof fields["failed"] === "boolean";
     case "permission_asked":
-      return text("run") && isSeq(fields["prompt"], 0) && text("tool");
+      return text(fields, "run") && isSeq(fields["prompt"], 0) && text(fields, "tool");
     case "permission_withdrawn":
-      return text("run") && isSeq(fields["prompt"], 0);
+      return text(fields, "run") && isSeq(fields["prompt"], 0);
     case "permission_answered": {
       const answer = record(fields["answer"]);
       return typeof answer?.["run"] === "string" && isSeq(answer["prompt"], 0) && typeof answer["allow"] === "boolean";
@@ -228,10 +227,10 @@ function isChange(value: unknown): boolean {
 
 /** Whether `answer` is the current settings with every field this app reads, or another kind it ignores. */
 function isMachineSettingsAnswer(answer: unknown): boolean {
-  if (typeof answer !== "object" || answer === null) {
+  const fields = record(answer);
+  if (fields === undefined) {
     return false;
   }
-  const fields = answer as Fields;
   if (fields["kind"] !== "current") {
     return typeof fields["kind"] === "string";
   }
@@ -242,8 +241,8 @@ function isMachineSettingsAnswer(answer: unknown): boolean {
     (fields["reports"] === undefined || typeof fields["reports"] === "boolean") &&
     Array.isArray(signIns) &&
     signIns.every((signIn: unknown) => {
-      const one = signIn as Fields | null;
-      return typeof one === "object" && one !== null && text(one, "agent") && text(one, "state");
+      const one = record(signIn);
+      return one !== undefined && text(one, "agent") && text(one, "state");
     })
   );
 }
