@@ -14,8 +14,10 @@ const WEB_FILES: [(&str, &str, &str); 3] = [
 
 fn main() -> io::Result<()> {
     weacon_version::emit();
-    let dist = Path::new(env!("CARGO_MANIFEST_DIR")).join("../web/dist");
-    let out = PathBuf::from(env::var_os("OUT_DIR").unwrap_or_default()).join("web.rs");
+    // Read as the script runs: `env!` would keep the folder of the checkout it was built in.
+    let var = |name| PathBuf::from(env::var_os(name).unwrap_or_default());
+    let dist = var("CARGO_MANIFEST_DIR").join("../web/dist");
+    let out = var("OUT_DIR").join("web.rs");
     let list = embed(&dist)?;
     // Rewriting the same list would rebuild the server for nothing.
     if fs::read_to_string(&out).ok().as_deref() != Some(list.as_str()) {

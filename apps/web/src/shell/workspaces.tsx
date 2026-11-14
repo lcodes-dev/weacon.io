@@ -8,42 +8,23 @@ import type { Api } from "./api.ts";
 import { useAsk } from "./ask.ts";
 import { Frame } from "./frame.tsx";
 import { STORE, opening, remember } from "./last-workspace.ts";
-import { problemText } from "./problems.ts";
+import { useLoaded } from "./loaded.ts";
 import { FEED, feedUrl } from "./workspace-feed.ts";
 
 /**
  * The signed-in person's workspaces, and the one `?workspace=` names, or else the last one opened
- * here, open on its feed with a selector in the header; `who` is the header's account part.
+ * here, open on its feed with a selector in the header; `who` is the header's account part. A
+ * `page`, such as Settings, shows in their place while they stay open beneath it.
  */
-export function Workspaces({ api, who }: { api: Api; who: ReactNode }) {
-  const [list, setList] = useState<WorkspaceSummary[]>();
-  const [problem, setProblem] = useState<string>();
+export function Workspaces({ api, who, page }: { api: Api; who: ReactNode; page?: ReactNode }) {
+  const { value, problem, load, change } = useLoaded(() => api.workspaces(), api);
+  const list = value?.workspaces;
   const [open, setOpen] = useState(() => opening(window.location.search, STORE));
-  // Each fetch and each made workspace takes a number; an answer older than the list is dropped.
-  const changes = useRef(0);
-  const load = async () => {
-    const asked = ++changes.current;
-    setProblem(undefined);
-    const answer = await api.workspaces();
-    if (asked !== changes.current) {
-      return;
-    }
-    if (answer.ok) {
-      setList(answer.value.workspaces);
-    } else {
-      setProblem(problemText(answer.code));
-    }
-  };
   useEffect(() => {
-    void load();
     const follow = () => setOpen(workspaceOf(window.location.search));
     window.addEventListener("popstate", follow);
-    return () => {
-      // Answers to an unmounted list are dropped too.
-      changes.current++;
-      window.removeEventListener("popstate", follow);
-    };
-  }, [api]);
+    return () => window.removeEventListener("popstate", follow);
+  }, []);
   useEffect(() => {
     remember(STORE, open);
     // One opened from memory takes its place in the address, so Back and links find it.
@@ -59,12 +40,13 @@ export function Workspaces({ api, who }: { api: Api; who: ReactNode }) {
   // Whether the list is on screen, so a workspace made after the person moved on doesn't pull them back.
   const listing = useRef(false);
   const shown = workspace?.id;
+  const covered = page !== undefined;
   useEffect(() => {
-    listing.current = shown === undefined;
+    listing.current = shown === undefined && !covered;
     return () => {
       listing.current = false;
     };
-  }, [shown]);
+  }, [shown, covered]);
   const selector = list !== undefined && workspace !== undefined && (
     <span className="selector">
       <select aria-label="Workspace" value={workspace.id} onChange={(event) => choose(event.target.value)}>
@@ -80,7 +62,9 @@ export function Workspaces({ api, who }: { api: Api; who: ReactNode }) {
     </span>
   );
   return (
-    <Frame middle={selector} right={who}>
+    <Frame middle={page === undefined && selector} right={who}>
+      {page}
+      <div style={{ display: page === undefined ? "contents" : "none" }}>
       {workspace !== undefined ? (
         <Workspace key={workspace.id} api={api} workspace={workspace} />
       ) : (
@@ -111,8 +95,7 @@ export function Workspaces({ api, who }: { api: Api; who: ReactNode }) {
             <NewWorkspace
               api={api}
               made={(made) => {
-                changes.current++;
-                setList((before) => [...(before ?? []), made]);
+                change((before) => ({ workspaces: [...(before?.workspaces ?? []), made] }));
                 if (listing.current) {
                   choose(made.id);
                 }
@@ -121,6 +104,7 @@ export function Workspaces({ api, who }: { api: Api; who: ReactNode }) {
           )}
         </section>
       )}
+      </div>
     </Frame>
   );
 }

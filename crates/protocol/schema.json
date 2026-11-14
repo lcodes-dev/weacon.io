@@ -272,6 +272,48 @@
       "required": [
         "type"
       ]
+    },
+    {
+      "description": "A question about a chat's worktree, from a client to a core that offers\n`worktree.manage`.",
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "worktree_query"
+        }
+      },
+      "$ref": "#/$defs/WorktreeQuery",
+      "required": [
+        "type"
+      ]
+    },
+    {
+      "description": "What a person asks of a chat's worktree, from a client to a core that offers\n`worktree.manage`.",
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "worktree_command"
+        }
+      },
+      "$ref": "#/$defs/WorktreeCommand",
+      "required": [
+        "type"
+      ]
+    },
+    {
+      "description": "The core's answer to a [`WorktreeQuery`] or a [`WorktreeCommand`], to a client that has\n`worktree.manage`.",
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "worktree_answer"
+        }
+      },
+      "$ref": "#/$defs/WorktreeAnswer",
+      "required": [
+        "type"
+      ]
     }
   ],
   "required": [
@@ -3093,6 +3135,218 @@
         "workspace",
         "seq",
         "change"
+      ]
+    },
+    "WorktreeAction": {
+      "oneOf": [
+        {
+          "description": "Moves the worktree to the Trash; its branch stays.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "remove"
+            }
+          },
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "description": "Brings the worktree back from the Trash to where it was.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "restore"
+            }
+          },
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "description": "Pushes the chat's branch and opens a draft pull request from it.",
+          "type": "object",
+          "properties": {
+            "body": {
+              "type": "string"
+            },
+            "kind": {
+              "type": "string",
+              "const": "open_pull_request"
+            },
+            "title": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "title",
+            "body"
+          ]
+        }
+      ]
+    },
+    "WorktreeAnswer": {
+      "description": "From the core to a client that has `worktree.manage`, in answer to a [`WorktreeQuery`] or a\n[`WorktreeCommand`].",
+      "type": "object",
+      "properties": {
+        "answer": {
+          "$ref": "#/$defs/WorktreeAnswerKind"
+        },
+        "chat": {
+          "$ref": "#/$defs/ChatId"
+        },
+        "request": {
+          "$ref": "#/$defs/RequestId"
+        },
+        "workspace": {
+          "$ref": "#/$defs/WorkspaceId"
+        }
+      },
+      "required": [
+        "request",
+        "workspace",
+        "chat",
+        "answer"
+      ]
+    },
+    "WorktreeAnswerKind": {
+      "oneOf": [
+        {
+          "description": "Where the worktree stands, in the Trash or not. A chat with no worktree yet gets the\nerror `worktree.none`.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "state"
+            },
+            "removed": {
+              "description": "In the Trash.",
+              "type": "boolean"
+            },
+            "uncommitted": {
+              "type": "boolean"
+            },
+            "unpushed": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "kind",
+            "removed",
+            "uncommitted",
+            "unpushed"
+          ]
+        },
+        {
+          "description": "The branch was pushed and a draft pull request opened at `url`.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "pull_request_opened"
+            },
+            "url": {
+              "$ref": "#/$defs/DownloadUrl"
+            }
+          },
+          "required": [
+            "kind",
+            "url"
+          ]
+        },
+        {
+          "description": "The branch was pushed, but no pull request could be opened from here; `url` is the\npage where the person can open one.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "pull_request_page"
+            },
+            "url": {
+              "$ref": "#/$defs/DownloadUrl"
+            }
+          },
+          "required": [
+            "kind",
+            "url"
+          ]
+        }
+      ]
+    },
+    "WorktreeCommand": {
+      "description": "From a client to a core that offers `worktree.manage`: what a person asks of a chat's\nworktree. The core acts only for someone who may act on the chat, and a client asks the\nperson before `remove`, whatever the access level. The answer is a [`WorktreeAnswer`] that\nechoes `request`: the worktree's state after `remove` or `restore`, which a repeated one\nanswers too.",
+      "type": "object",
+      "properties": {
+        "action": {
+          "$ref": "#/$defs/WorktreeAction"
+        },
+        "by": {
+          "description": "Who asked, when the server relays the command to a machine.",
+          "$ref": "#/$defs/Asker"
+        },
+        "chat": {
+          "$ref": "#/$defs/ChatId"
+        },
+        "request": {
+          "$ref": "#/$defs/RequestId"
+        },
+        "workspace": {
+          "$ref": "#/$defs/WorkspaceId"
+        }
+      },
+      "required": [
+        "request",
+        "workspace",
+        "chat",
+        "action"
+      ]
+    },
+    "WorktreeQuery": {
+      "description": "From a client to a core that offers `worktree.manage`: a question about a chat's worktree.\nThe answer is a [`WorktreeAnswer`] that echoes `request`.",
+      "type": "object",
+      "properties": {
+        "by": {
+          "description": "Who asked, when the server relays the query to a machine.",
+          "$ref": "#/$defs/Asker"
+        },
+        "chat": {
+          "$ref": "#/$defs/ChatId"
+        },
+        "query": {
+          "$ref": "#/$defs/WorktreeQueryKind"
+        },
+        "request": {
+          "$ref": "#/$defs/RequestId"
+        },
+        "workspace": {
+          "$ref": "#/$defs/WorkspaceId"
+        }
+      },
+      "required": [
+        "request",
+        "workspace",
+        "chat",
+        "query"
+      ]
+    },
+    "WorktreeQueryKind": {
+      "oneOf": [
+        {
+          "description": "Whether the worktree is in the Trash, and what removing it would set aside.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "state"
+            }
+          },
+          "required": [
+            "kind"
+          ]
+        }
       ]
     }
   }

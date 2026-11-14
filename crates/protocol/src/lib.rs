@@ -20,6 +20,7 @@ mod team;
 mod terminal;
 mod token;
 mod update;
+mod worktree;
 
 pub use access::AccessLevel;
 pub use capability::Capability;
@@ -69,6 +70,10 @@ pub use terminal::{
 pub use update::{
     BuildTarget, Commit, DownloadUrl, ReleaseBuild, ReleaseManifest, ReleaseVersion, Sha256,
     UpdateSchedule,
+};
+pub use worktree::{
+    WorktreeAction, WorktreeAnswer, WorktreeAnswerKind, WorktreeCommand, WorktreeQuery,
+    WorktreeQueryKind,
 };
 
 /// `bytes` as lowercase hex.

@@ -8,7 +8,7 @@ use weacon_protocol::{WorkspaceCreate, WorkspaceList, code};
 use crate::app::{fresh, new_id};
 use crate::auth::{Member, Session};
 use crate::db::NewWorkspace;
-use crate::http::{Shared, failure, invalid, refused};
+use crate::http::{Body, Shared, failure, invalid, unauthorized};
 
 pub(crate) const MAX_NAME: usize = 100;
 /// What an account's own workspace is called when it is made.
@@ -18,13 +18,14 @@ const PERSONAL: &str = "Personal";
 pub(crate) async fn create(
     State(shared): State<Shared>,
     session: Session,
-    Json(body): Json<WorkspaceCreate>,
+    Body(body): Body<WorkspaceCreate>,
 ) -> Response {
     let made = match workspace_name(&body.name).and_then(new_workspace) {
         Ok(new) => {
             shared
                 .db
-                .create_owned_workspace(&session.account, new)
+                .account(session.account)
+                .create_workspace(new)
                 .await
         }
         Err(fault) => return invalid(fault.code().clone()),
@@ -32,25 +33,25 @@ pub(crate) async fn create(
     match made {
         Ok(Some(summary)) => (StatusCode::CREATED, Json(summary)).into_response(),
         Ok(None) => invalid(code!("workspace.too_many")),
-        Err(fault) => failure(&shared, fault),
+        Err(fault) => failure(fault),
     }
 }
 
 /// `GET /api/workspaces`: the signed-in account's workspaces.
 pub(crate) async fn list(State(shared): State<Shared>, session: Session) -> Response {
-    match shared.db.workspaces_of(&session.account).await {
+    match shared.db.account(session.account).workspaces().await {
         Ok(workspaces) => Json(WorkspaceList { workspaces }).into_response(),
-        Err(fault) => failure(&shared, fault),
+        Err(fault) => failure(fault),
     }
 }
 
 /// `GET /api/workspaces/{workspace}`: one workspace, to one of its members.
-pub(crate) async fn read(State(shared): State<Shared>, member: Member) -> Response {
+pub(crate) async fn read(member: Member) -> Response {
     match member.workspace.summary(&member.id).await {
         Ok(Some(summary)) => Json(summary).into_response(),
         // Someone else ended the membership since it was checked.
-        Ok(None) => refused(code!("sign_in.required")),
-        Err(fault) => failure(&shared, fault),
+        Ok(None) => unauthorized(code!("sign_in.required")),
+        Err(fault) => failure(fault),
     }
 }
 
@@ -191,7 +192,7 @@ mod tests {
             refusals.push(ask(server.address, &read, &bo, "").await);
             refusals.push(ask(server.address, &read, "", "").await);
         }
-        let (bad_id, _) = ask(server.address, "GET /api/workspaces/w.1", &ada, "").await;
+        let bad_id = ask(server.address, "GET /api/workspaces/w.1", &ada, "").await;
         let (nobody, _) = ask(server.address, "GET /api/workspaces", "", "").await;
 
         assert_eq!(theirs.len(), 2);
@@ -205,7 +206,13 @@ mod tests {
                 ("http/1.1 401 unauthorized".to_owned(), required.clone())
             );
         }
-        assert_eq!(bad_id, "http/1.1 400 bad request");
+        assert_eq!(
+            bad_id,
+            (
+                "http/1.1 400 bad request".to_owned(),
+                json!({ "code": "request.invalid", "retryable": false })
+            )
+        );
         assert_eq!(nobody, "http/1.1 401 unauthorized");
     }
 
