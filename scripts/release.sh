@@ -9,9 +9,17 @@
 #   scripts/release.sh install <[user@]host> <target>
 # Or writes the unsigned manifest of the core's builds in a folder, as published at a base URL:
 #   scripts/release.sh manifest <tag> <folder> <https base URL>
+# Or, on the machine with the release key, checks a draft release's manifest and builds against
+# its tag, signs the manifest with minisign and uploads it with its signature to the draft:
+#   scripts/release.sh sign <tag> <secret key file>
 set -euo pipefail
 
+caller=$PWD
 cd "$(dirname "$0")/.."
+
+# The targets every release builds the core for; the manifest names a build for each.
+CORE_TARGETS=(x86_64-unknown-linux-musl aarch64-unknown-linux-musl aarch64-apple-darwin
+  x86_64-apple-darwin x86_64-pc-windows-msvc)
 
 die() {
   printf 'error: %s\n' "$*" >&2
@@ -68,35 +76,92 @@ check_serves() {
   done
 }
 
-# Writes <folder>/manifest.json for the core's builds there, named weacon-<target>[.exe].
+workspace_version() {
+  sed -n '/^\[workspace.package\]/,/^\[/s/^version = "\(.*\)"$/\1/p' Cargo.toml
+}
+
+# The file a target's build of the core is published as.
+build_name() {
+  case "$1" in
+    *-windows-*) printf 'weacon-%s.exe' "$1" ;;
+    *) printf 'weacon-%s' "$1" ;;
+  esac
+}
+
+# Writes <folder>/manifest.json for the core's builds there. It is dated when it's signed.
 write_manifest() {
-  local tag=${1:-} dir=${2:-} base=${3:-} version protocol file name target builds=()
-  if ! [[ $tag =~ ^v(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})$ ]] \
-    || ! [ -d "$dir" ] || ! [[ $base =~ ^https://[A-Za-z0-9.-]+(/[!-~]*)?$ ]]; then
-    die "usage: scripts/release.sh manifest <vX.Y.Z> <folder> <https base URL>"
+  local tag=${1:-} dir=${2:-} base=${3:-} protocol target name builds=()
+  if [ "$tag" != "v$(workspace_version)" ] || ! [ -d "$dir" ] || [[ $base != https://* ]]; then
+    die "usage: scripts/release.sh manifest v$(workspace_version) <folder> <https base URL>"
   fi
-  version=${tag#v}
-  [ "$version" = "$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)" ] \
-    || die "$tag isn't the workspace's version"
   protocol=$(sed -n 's/^pub const PROTOCOL: u32 = \([0-9]*\);$/\1/p' crates/protocol/src/message.rs)
   [ -n "$protocol" ] || die "the protocol version wasn't found"
-  for file in "$dir"/weacon-*; do
-    name=$(basename "$file")
-    target=${name#weacon-}
-    target=${target%.exe}
-    # Servers update on their own; the manifest is the core's.
-    case "$target" in server-* | *.tar) continue ;; esac
+  for target in "${CORE_TARGETS[@]}"; do
+    name=$(build_name "$target")
+    [ -f "$dir/$name" ] || die "$dir has no $name"
     builds+=("$(jq -cn --arg target "$target" --arg url "${base%/}/$name" \
-      --argjson size "$(wc -c <"$file" | tr -d ' ')" \
-      --arg sha256 "$(sha256sum "$file" | cut -d ' ' -f 1)" \
+      --argjson size "$(wc -c <"$dir/$name" | tr -d ' ')" \
+      --arg sha256 "$(sha256sum "$dir/$name" | cut -d ' ' -f 1)" \
       '{target: $target, url: $url, size: $size, sha256: $sha256}')")
   done
-  [ "${#builds[@]}" -gt 0 ] || die "$dir holds no builds of the core"
-  printf '%s\n' "${builds[@]}" | jq -cs --arg version "$version" --arg commit "$(git rev-parse HEAD)" \
-    --argjson published_at "$(date +%s)" --argjson protocol "$protocol" \
-    '{version: $version, commit: $commit, published_at: $published_at, protocol: $protocol,
-      builds: .}' >"$dir/manifest.json"
+  printf '%s\n' "${builds[@]}" | jq -cs --arg version "${tag#v}" --arg commit "$(git rev-parse HEAD)" \
+    --argjson protocol "$protocol" \
+    '{version: $version, commit: $commit, published_at: 0, protocol: $protocol, builds: .}' \
+    >"$dir/manifest.json"
   printf '%s: %s builds\n' "$dir/manifest.json" "${#builds[@]}"
+}
+
+# Signs the draft release of <tag> once its manifest and builds match the tag.
+sign_release() {
+  local tag=${1:-} key=${2:-} tool commit repo keys target public trusted=
+  [[ $key == /* ]] || key="$caller/$key"
+  if ! [[ $tag =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || ! [ -f "$key" ]; then
+    die "usage: scripts/release.sh sign <vX.Y.Z> <secret key file>"
+  fi
+  for tool in gh minisign jq shasum; do
+    command -v "$tool" >/dev/null || die "$tool is missing"
+  done
+  commit=$(git rev-parse -q --verify "$tag^{commit}") || die "$tag isn't here: fetch the tags"
+  repo=$(gh repo view --json nameWithOwner --jq .nameWithOwner)
+  # The keys the tag's own core trusts.
+  keys=$(git show "$tag:apps/core/src/update/verify.rs" \
+    | sed -n '/const TRUSTED/,/];/s/.*"\(RW[A-Za-z0-9+/]*\)".*/\1/p')
+  [ -n "$keys" ] || die "the trusted keys weren't found at $tag"
+
+  # Global, so the trap still sees it once this returns.
+  work=$(mktemp -d)
+  trap 'rm -rf "$work"' EXIT
+  gh release download "$tag" --repo "$repo" --dir "$work" --pattern manifest.json
+  jq -e --arg version "${tag#v}" --arg commit "$commit" \
+    --arg base "https://github.com/$repo/releases/download/$tag/" \
+    --argjson targets "$(printf '%s\n' "${CORE_TARGETS[@]}" | jq -R . | jq -cs .)" '
+      .version == $version and .commit == $commit
+      and ([.builds[].target] | sort) == ($targets | sort)
+      and all(.builds[]; .url == $base + "weacon-" + .target
+        + (if .target | test("-windows-") then ".exe" else "" end))' \
+    "$work/manifest.json" >/dev/null || die "the draft's manifest doesn't describe $tag's builds"
+  for target in "${CORE_TARGETS[@]}"; do
+    gh release download "$tag" --repo "$repo" --dir "$work" --pattern "$(build_name "$target")"
+  done
+  (cd "$work" && jq -r '.builds[] | "\(.sha256)  \(.url | split("/") | last)"' manifest.json \
+    | shasum -a 256 -c --quiet) || die "a build of the draft doesn't match its manifest"
+
+  mkdir "$work/signed"
+  jq -c --argjson now "$(date +%s)" '.published_at = $now' "$work/manifest.json" \
+    >"$work/signed/manifest.json"
+  # Prehashed only: the core refuses legacy signatures.
+  minisign -S -H -s "$key" -m "$work/signed/manifest.json" -t "weacon ${tag#v}"
+  for public in $keys; do
+    if minisign -V -H -q -P "$public" -m "$work/signed/manifest.json" 2>/dev/null; then
+      trusted=1
+      break
+    fi
+  done
+  [ -n "$trusted" ] || die "the signature isn't by a key $tag's core trusts"
+  gh release upload "$tag" --repo "$repo" --clobber \
+    "$work/signed/manifest.json" "$work/signed/manifest.json.minisig"
+  printf 'Signed %s. Publish the draft, then put manifest.json and manifest.json.minisig at\n' "$tag"
+  printf 'https://weacon.io/releases/stable/.\n'
 }
 
 case "${1:-}" in
@@ -105,6 +170,9 @@ case "${1:-}" in
     exit ;;
   manifest)
     write_manifest "${2:-}" "${3:-}" "${4:-}"
+    exit ;;
+  sign)
+    sign_release "${2:-}" "${3:-}"
     exit ;;
 esac
 
