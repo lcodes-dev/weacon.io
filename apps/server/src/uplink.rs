@@ -7,12 +7,12 @@ use axum::response::Response;
 use tokio::sync::broadcast::{Receiver, error::RecvError};
 use tokio::time::timeout;
 use weacon_observability::{Field, Logger};
-use weacon_protocol::{Capability, Code, MachineId, code};
+use weacon_protocol::{Capability, Code, MAX_FRAME, MachineId, code};
 
 use crate::auth::Machine;
 use crate::connections::Place;
 use crate::http::Shared;
-use crate::socket::{MAX_MESSAGE, Pings, error, greet, reply, send};
+use crate::socket::{Pings, error, greet, reply, send};
 
 /// What a core must offer, and the server offers, to keep a machine's connection.
 const CONNECT: Code = code!("machine.connect");
@@ -37,8 +37,9 @@ pub(crate) async fn connect(
         gone: false,
     };
     upgrade
-        .max_message_size(MAX_MESSAGE)
-        .max_frame_size(MAX_MESSAGE)
+        // Chat events travel on it, so it takes any message the protocol allows.
+        .max_message_size(MAX_FRAME)
+        .max_frame_size(MAX_FRAME)
         .on_upgrade(move |socket| serve(socket, shared, link))
 }
 
@@ -269,6 +270,24 @@ mod tests {
         assert!(matches!(next(&mut client).await, Message::Welcome(_)));
         assert_eq!(code_of(&next(&mut client).await), Some("machine.unpaired"));
         assert!(ends(&mut client).await);
+    }
+
+    #[tokio::test]
+    async fn a_machine_may_send_any_message_the_protocol_allows() {
+        let fixture = Fixture::new().await;
+        let server = run(fixture.shared.clone()).await;
+        let (_, mut client) = connected(server.address, &fixture).await;
+
+        client
+            .send(Wire::text("x".repeat(MAX_FRAME)))
+            .await
+            .unwrap();
+        client.send(Wire::Ping(Vec::new().into())).await.unwrap();
+
+        assert!(matches!(
+            past_pings(&mut client).await,
+            Some(Ok(Wire::Pong(_)))
+        ));
     }
 
     #[tokio::test]
