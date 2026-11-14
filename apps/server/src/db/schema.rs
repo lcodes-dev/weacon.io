@@ -157,7 +157,6 @@ ALTER TABLE accounts ADD COLUMN personal_made INTEGER NOT NULL DEFAULT 0;
 CREATE TABLE docs (
     workspace_id TEXT NOT NULL REFERENCES workspaces (workspace_id),
     doc_id TEXT NOT NULL,
-    title TEXT NOT NULL,
     version INTEGER NOT NULL,
     PRIMARY KEY (workspace_id, doc_id)
 ) STRICT;

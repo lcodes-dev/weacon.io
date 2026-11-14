@@ -17,6 +17,7 @@ use std::time::Duration;
 
 use sqlx::SqlitePool;
 use sqlx::sqlite::{SqliteConnectOptions, SqliteConnection, SqlitePoolOptions, SqliteSynchronous};
+use weacon_model::Revision;
 use weacon_observability::Fault;
 use weacon_protocol::{Author, MemberId, WorkspaceId, code};
 
@@ -149,6 +150,12 @@ fn path_unusable() -> Fault {
 /// A value read back from the database, such as an id, checked like one that arrived.
 fn stored<T: TryFrom<String>>(value: String) -> Result<T, Fault> {
     T::try_from(value).map_err(|_| unreadable())
+}
+
+fn stored_version(version: i64) -> Result<Revision, Fault> {
+    u64::try_from(version)
+        .map(Revision::new)
+        .map_err(|_| unreadable())
 }
 
 /// How `author` is stored, unless it is one from a newer peer.

@@ -1,39 +1,41 @@
 use sqlx::SqliteConnection;
-use weacon_model::{Change, Doc, DocText, ReviseError, Revision};
+use weacon_model::{Attribution, Doc, DocText, ReviseError, Revision};
 use weacon_observability::Fault;
 use weacon_protocol::{DocAnchors, DocId, DocRevision, DocSummary, code};
 
-use super::{Workspace, author_columns, failed, stored, stored_author, unreadable};
+use super::changes::Versioned;
+use super::{Workspace, author_columns, failed, stored, stored_author, stored_version, unreadable};
 
-type TextRow = (String, String, Option<String>);
+type VersionRow = (i64, String, String, Option<String>);
 type RevisionRow = (i64, String, String, String, i64);
 
 impl Workspace {
-    /// Stores a new doc, made by `change`. An id already in this workspace is `db.exists`.
-    pub(crate) async fn add_doc(&self, doc: &Doc, change: &Change) -> Result<(), Fault> {
+    /// Stores a new doc, made as `attribution` says. An id already in this workspace is
+    /// `db.exists`.
+    pub(crate) async fn add_doc(&self, doc: &Doc, attribution: &Attribution) -> Result<(), Fault> {
         let mut transaction = self
             .db
             .writer
             .begin_with("BEGIN IMMEDIATE")
             .await
             .map_err(failed)?;
-        sqlx::query("INSERT INTO docs (workspace_id, doc_id, title, version) VALUES (?, ?, ?, ?)")
+        sqlx::query("INSERT INTO docs (workspace_id, doc_id, version) VALUES (?, ?, ?)")
             .bind(self.id.as_str())
             .bind(doc.id.as_str())
-            .bind(doc.text.title().as_str())
             .bind(version_number(doc.version)?)
             .execute(&mut *transaction)
             .await
             .map_err(failed)?;
-        self.record_doc(&mut transaction, doc, change).await?;
+        self.record_doc(&mut transaction, doc, attribution).await?;
         transaction.commit().await.map_err(failed)
     }
 
     /// The docs, by title.
     pub(crate) async fn docs(&self) -> Result<Vec<DocSummary>, Fault> {
         sqlx::query_as::<_, (String, String, i64)>(
-            "SELECT doc_id, title, version FROM docs WHERE workspace_id = ?
-             ORDER BY title, doc_id",
+            "SELECT docs.doc_id, doc_versions.title, docs.version
+             FROM docs JOIN doc_versions USING (workspace_id, doc_id, version)
+             WHERE docs.workspace_id = ? ORDER BY doc_versions.title, docs.doc_id",
         )
         .bind(self.id.as_str())
         .fetch_all(&self.db.readers)
@@ -67,7 +69,7 @@ impl Workspace {
         id: &DocId,
         read_at: Revision,
         text: DocText,
-        change: &Change,
+        attribution: &Attribution,
     ) -> Result<Doc, Fault> {
         let mut transaction = self
             .db
@@ -77,55 +79,50 @@ impl Workspace {
             .map_err(failed)?;
         let current = self.read_doc(&mut transaction, id, None).await?;
         let revised = current.revise(read_at, text).map_err(refused)?;
-        sqlx::query("UPDATE docs SET title = ?, version = ? WHERE workspace_id = ? AND doc_id = ?")
-            .bind(revised.text.title().as_str())
+        sqlx::query("UPDATE docs SET version = ? WHERE workspace_id = ? AND doc_id = ?")
             .bind(version_number(revised.version)?)
             .bind(self.id.as_str())
             .bind(id.as_str())
             .execute(&mut *transaction)
             .await
             .map_err(failed)?;
-        self.record_doc(&mut transaction, &revised, change).await?;
+        self.record_doc(&mut transaction, &revised, attribution)
+            .await?;
         transaction.commit().await.map_err(failed)?;
         Ok(revised)
     }
 
-    /// The doc's newest `limit` revisions, newest first. A doc there isn't is
-    /// `doc.not_found`.
+    /// The doc's newest `limit` revisions, newest first; `limit` is at least 1. A doc there
+    /// isn't, which has none, is `doc.not_found`.
     pub(crate) async fn doc_history(
         &self,
         id: &DocId,
         limit: u32,
     ) -> Result<Vec<DocRevision>, Fault> {
-        let mut reader = self.db.readers.acquire().await.map_err(failed)?;
-        let known = sqlx::query("SELECT 1 FROM docs WHERE workspace_id = ? AND doc_id = ?")
-            .bind(self.id.as_str())
-            .bind(id.as_str())
-            .fetch_optional(&mut *reader)
-            .await
-            .map_err(failed)?;
-        known.ok_or_else(doc_not_found)?;
-        sqlx::query_as::<_, RevisionRow>(
+        let revisions = sqlx::query_as::<_, RevisionRow>(
             "SELECT version, author_kind, author_member, accepted_by, at FROM doc_versions
-             WHERE workspace_id = ? AND doc_id = ?
-             ORDER BY version DESC LIMIT ?",
+             WHERE workspace_id = ? AND doc_id = ? ORDER BY version DESC LIMIT ?",
         )
         .bind(self.id.as_str())
         .bind(id.as_str())
         .bind(limit)
-        .fetch_all(&mut *reader)
+        .fetch_all(&self.db.readers)
         .await
-        .map_err(failed)?
-        .into_iter()
-        .map(|(version, kind, author, accepted_by, at)| {
-            Ok(DocRevision {
-                version: stored_version(version)?.get(),
-                author: stored_author(&kind, author)?,
-                accepted_by: stored(accepted_by)?,
-                at,
+        .map_err(failed)?;
+        if revisions.is_empty() {
+            return Err(doc_not_found());
+        }
+        revisions
+            .into_iter()
+            .map(|(version, kind, author, accepted_by, at)| {
+                Ok(DocRevision {
+                    version: stored_version(version)?.get(),
+                    author: stored_author(&kind, author)?,
+                    accepted_by: stored(accepted_by)?,
+                    at,
+                })
             })
-        })
-        .collect()
+            .collect()
     }
 
     async fn read_doc(
@@ -134,20 +131,18 @@ impl Workspace {
         id: &DocId,
         version: Option<i64>,
     ) -> Result<Doc, Fault> {
-        let (version, (title, body, commit)) =
-            sqlx::query_as::<_, (i64, String, String, Option<String>)>(
-                "SELECT version, title, body, commit_id FROM doc_versions
+        let (version, title, body, commit) = sqlx::query_as::<_, VersionRow>(
+            "SELECT version, title, body, commit_id FROM doc_versions
              WHERE workspace_id = ?1 AND doc_id = ?2 AND version = COALESCE(?3,
                  (SELECT version FROM docs WHERE workspace_id = ?1 AND doc_id = ?2))",
-            )
-            .bind(self.id.as_str())
-            .bind(id.as_str())
-            .bind(version)
-            .fetch_optional(&mut *connection)
-            .await
-            .map_err(failed)?
-            .map(|(version, title, body, commit)| (version, (title, body, commit)))
-            .ok_or_else(doc_not_found)?;
+        )
+        .bind(self.id.as_str())
+        .bind(id.as_str())
+        .bind(version)
+        .fetch_optional(&mut *connection)
+        .await
+        .map_err(failed)?
+        .ok_or_else(doc_not_found)?;
         let pins: Vec<String> = sqlx::query_scalar(
             "SELECT pin FROM doc_pins WHERE workspace_id = ? AND doc_id = ? AND version = ?
              ORDER BY position",
@@ -158,9 +153,16 @@ impl Workspace {
         .fetch_all(&mut *connection)
         .await
         .map_err(failed)?;
+        let anchors = match commit {
+            Some(commit) => Some(DocAnchors {
+                commit: stored(commit)?,
+                pins: pins.into_iter().map(stored).collect::<Result<_, _>>()?,
+            }),
+            None => None,
+        };
         Ok(Doc {
             id: id.clone(),
-            text: stored_text((title, body, commit), pins)?,
+            text: DocText::new(stored(title)?, body, anchors).map_err(|_| unreadable())?,
             version: stored_version(version)?,
         })
     }
@@ -171,9 +173,9 @@ impl Workspace {
         &self,
         transaction: &mut SqliteConnection,
         doc: &Doc,
-        change: &Change,
+        attribution: &Attribution,
     ) -> Result<(), Fault> {
-        let (kind, author) = author_columns(change.author()).ok_or_else(unknown)?;
+        let (kind, author) = author_columns(attribution.author()).ok_or_else(unknown)?;
         let version = version_number(doc.version)?;
         let anchors = doc.text.anchors();
         sqlx::query(
@@ -189,12 +191,14 @@ impl Workspace {
         .bind(anchors.map(|anchors| anchors.commit.as_str()))
         .bind(kind)
         .bind(author.as_str())
-        .bind(change.accepted_by().as_str())
-        .bind(change.at())
+        .bind(attribution.accepted_by().as_str())
+        .bind(attribution.at())
         .execute(&mut *transaction)
         .await
         .map_err(failed)?;
-        for (position, pin) in anchors.iter().flat_map(|anchors| &anchors.pins).enumerate() {
+        let pins = anchors.iter().flat_map(|anchors| &anchors.pins);
+        // The model holds at most a few hundred pins, so every position fits.
+        for (position, pin) in (0_i64..).zip(pins) {
             sqlx::query(
                 "INSERT INTO doc_pins (workspace_id, doc_id, version, position, pin)
                  VALUES (?, ?, ?, ?, ?)",
@@ -202,30 +206,19 @@ impl Workspace {
             .bind(self.id.as_str())
             .bind(doc.id.as_str())
             .bind(version)
-            .bind(i64::try_from(position).map_err(|_| unreadable())?)
+            .bind(position)
             .bind(pin.as_str())
             .execute(&mut *transaction)
             .await
             .map_err(failed)?;
         }
-        self.doc_changed(transaction, &doc.id, version, change.accepted_by())
+        let versioned = Versioned::Doc(&doc.id, version);
+        self.changed(transaction, versioned, attribution.accepted_by())
             .await
     }
 }
 
-fn stored_text((title, body, commit): TextRow, pins: Vec<String>) -> Result<DocText, Fault> {
-    let anchors = commit
-        .map(|commit| {
-            Ok::<_, Fault>(DocAnchors {
-                commit: stored(commit)?,
-                pins: pins.into_iter().map(stored).collect::<Result<_, _>>()?,
-            })
-        })
-        .transpose()?;
-    DocText::new(stored(title)?, body, anchors).map_err(|_| unreadable())
-}
-
-pub(crate) fn doc_not_found() -> Fault {
+fn doc_not_found() -> Fault {
     Fault::new(code!("doc.not_found"), "There is no such doc")
 }
 
@@ -255,12 +248,6 @@ fn last_version() -> Fault {
 
 fn version_number(version: Revision) -> Result<i64, Fault> {
     i64::try_from(version.get()).map_err(|_| last_version())
-}
-
-fn stored_version(version: i64) -> Result<Revision, Fault> {
-    u64::try_from(version)
-        .map(Revision::new)
-        .map_err(|_| unreadable())
 }
 
 #[cfg(test)]
@@ -306,8 +293,8 @@ mod tests {
         Doc::new(doc_id(id), text(title, "Plain.", &[]))
     }
 
-    fn by(member: &str) -> Change {
-        Change::by(member_id(member), NOW)
+    fn by(member: &str) -> Attribution {
+        Attribution::by(member_id(member), NOW)
     }
 
     fn code(fault: &Fault) -> &str {
@@ -352,7 +339,7 @@ mod tests {
         let (one, _) = two_teams(&dir).await;
         let first = new_doc("d1", "Framing");
         one.add_doc(&first, &by("m1")).await.unwrap();
-        let agents = Change::accepted(member_id("m1"), member_id("m3"), NOW + 1);
+        let agents = Attribution::accepted(member_id("m1"), member_id("m3"), NOW + 1);
 
         let second = one
             .revise_doc(&first.id, Revision::FIRST, linked(), &agents)

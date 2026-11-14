@@ -3,7 +3,7 @@ use axum::extract::rejection::{JsonRejection, PathRejection};
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use weacon_model::{Change, Doc, DocText, DocTextError, Revision};
+use weacon_model::{Attribution, Doc, DocText, DocTextError, Revision};
 use weacon_observability::Fault;
 use weacon_protocol::{
     DocContent, DocHistory, DocId, DocList, DocRecord, DocRevise, WorkspaceId, code,
@@ -33,11 +33,12 @@ pub(crate) async fn create(
     body: Result<Json<DocContent>, JsonRejection>,
 ) -> Response {
     let made = async {
-        let text = text(body.map_err(|rejection| rejected(&rejection))?.0)?;
+        let Json(body) = body.map_err(|rejection| rejected(&rejection))?;
+        let text = text(body)?;
         let id = DocId::try_from(new_id()).map_err(|_| invalid())?;
         let doc = Doc::new(id, text);
-        let change = Change::by(member.id.clone(), shared.now());
-        member.workspace.add_doc(&doc, &change).await?;
+        let attribution = Attribution::by(member.id.clone(), shared.now());
+        member.workspace.add_doc(&doc, &attribution).await?;
         Ok(doc)
     };
     match made.await {
@@ -74,11 +75,11 @@ pub(crate) async fn revise(
         let Path((_, id)) = path.map_err(|_| invalid())?;
         let Json(body) = body.map_err(|rejection| rejected(&rejection))?;
         let text = text(body.content)?;
-        let change = Change::by(member.id.clone(), shared.now());
+        let attribution = Attribution::by(member.id.clone(), shared.now());
         let read_at = Revision::new(body.version);
         member
             .workspace
-            .revise_doc(&id, read_at, text, &change)
+            .revise_doc(&id, read_at, text, &attribution)
             .await
     };
     let revised = revised.await;
@@ -193,12 +194,12 @@ mod tests {
     use std::net::SocketAddr;
 
     use serde_json::json;
-    use weacon_protocol::{
-        Author, CommitId, DocAnchors, DocPin, DocSummary, ErrorBody, WorkspaceChange,
-    };
+    use weacon_protocol::{Author, CommitId, DocAnchors, DocPin, DocSummary, WorkspaceChange};
 
     use super::*;
-    use crate::test_support::{self, Fixture, Running, request_with, run, status, workspace_id};
+    use crate::test_support::{
+        self, Fixture, Running, refusal, request_with, status, workspace_id,
+    };
 
     struct Ada {
         address: SocketAddr,
@@ -253,19 +254,8 @@ mod tests {
     }
 
     async fn ada(fixture: &Fixture) -> (Running, Ada) {
-        let server = run(fixture.shared.clone()).await;
-        let (_, body) = test_support::sign_in(fixture, server.address, "ada@example.com").await;
-        let token = body["token"].as_str().unwrap();
-        let ada = Ada {
-            address: server.address,
-            auth: format!("authorization: Bearer {token}\r\n"),
-        };
-        (server, ada)
-    }
-
-    fn refusal(body: &str) -> String {
-        let error: ErrorBody = serde_json::from_str(body).unwrap();
-        error.code.as_str().to_owned()
+        let (server, address, auth) = test_support::ada(fixture).await;
+        (server, Ada { address, auth })
     }
 
     fn content(title: &str, body: &str, pinned: &[&str]) -> DocContent {

@@ -1,12 +1,20 @@
 use sqlx::SqliteConnection;
+use weacon_model::Revision;
 use weacon_observability::Fault;
 use weacon_protocol::{DocId, MemberId, TaskId, WorkspaceChange, WorkspaceUpdate};
 
-use super::{Workspace, failed, stored, unreadable};
+use super::{Workspace, failed, stored, stored_version, unreadable};
 
 const MEMBER_JOINED: &str = "member_joined";
 const TASK_CHANGED: &str = "task_changed";
 const DOC_CHANGED: &str = "doc_changed";
+
+/// A task or a doc, at the version it now has as stored.
+#[derive(Clone, Copy, Debug)]
+pub(super) enum Versioned<'a> {
+    Task(&'a TaskId, i64),
+    Doc(&'a DocId, i64),
+}
 
 type Row = (
     i64,
@@ -37,50 +45,31 @@ impl Workspace {
         Ok(joined.rows_affected() == 1)
     }
 
-    /// Records, inside the transaction that stores it, that `task` is now at `version`,
+    /// Records, inside the transaction that stores it, that `versioned` is at a new version,
     /// through a change `member` made or accepted.
-    pub(super) async fn task_changed(
+    pub(super) async fn changed(
         &self,
         transaction: &mut SqliteConnection,
-        task: &TaskId,
-        version: i64,
+        versioned: Versioned<'_>,
         member: &MemberId,
     ) -> Result<(), Fault> {
+        let (kind, task, doc) = match versioned {
+            Versioned::Task(id, version) => (TASK_CHANGED, Some((id.as_str(), version)), None),
+            Versioned::Doc(id, version) => (DOC_CHANGED, None, Some((id.as_str(), version))),
+        };
         sqlx::query(
-            "INSERT INTO changes (workspace_id, seq, kind, member_id, task_id, task_version)
-             SELECT ?1, COALESCE(MAX(seq), 0) + 1, ?2, ?3, ?4, ?5 FROM changes
+            "INSERT INTO changes
+                 (workspace_id, seq, kind, member_id, task_id, task_version, doc_id, doc_version)
+             SELECT ?1, COALESCE(MAX(seq), 0) + 1, ?2, ?3, ?4, ?5, ?6, ?7 FROM changes
              WHERE workspace_id = ?1",
         )
         .bind(self.id.as_str())
-        .bind(TASK_CHANGED)
+        .bind(kind)
         .bind(member.as_str())
-        .bind(task.as_str())
-        .bind(version)
-        .execute(transaction)
-        .await
-        .map_err(failed)?;
-        Ok(())
-    }
-
-    /// Records, inside the transaction that stores it, that `doc` is now at `version`,
-    /// through a change `member` made or accepted.
-    pub(super) async fn doc_changed(
-        &self,
-        transaction: &mut SqliteConnection,
-        doc: &DocId,
-        version: i64,
-        member: &MemberId,
-    ) -> Result<(), Fault> {
-        sqlx::query(
-            "INSERT INTO changes (workspace_id, seq, kind, member_id, doc_id, doc_version)
-             SELECT ?1, COALESCE(MAX(seq), 0) + 1, ?2, ?3, ?4, ?5 FROM changes
-             WHERE workspace_id = ?1",
-        )
-        .bind(self.id.as_str())
-        .bind(DOC_CHANGED)
-        .bind(member.as_str())
-        .bind(doc.as_str())
-        .bind(version)
+        .bind(task.map(|(id, _)| id))
+        .bind(task.map(|(_, version)| version))
+        .bind(doc.map(|(id, _)| id))
+        .bind(doc.map(|(_, version)| version))
         .execute(transaction)
         .await
         .map_err(failed)?;
@@ -111,7 +100,7 @@ impl Workspace {
 
     fn update(&self, row: Row) -> Result<WorkspaceUpdate, Fault> {
         let (seq, kind, member, task, task_version, doc, doc_version) = row;
-        let version = |version: i64| u64::try_from(version).map_err(|_| unreadable());
+        let version = |version| stored_version(version).map(Revision::get);
         let change = match (kind.as_str(), task, task_version, doc, doc_version) {
             (MEMBER_JOINED, None, None, None, None) => WorkspaceChange::MemberJoined {
                 member: stored(member)?,
@@ -143,7 +132,7 @@ impl Workspace {
 mod tests {
     use weacon_testing::TempDir;
 
-    use weacon_model::{Change, OrderKey, Task, Title};
+    use weacon_model::{Attribution, OrderKey, Task, Title};
 
     use super::*;
     use crate::test_support::{member_id, two_teams, workspace_id};
@@ -206,7 +195,7 @@ mod tests {
             Title::try_from("Write".to_owned()).unwrap(),
             OrderKey::try_from("V".to_owned()).unwrap(),
         );
-        one.add_task(&task, &Change::by(member_id("m1"), 0))
+        one.add_task(&task, &Attribution::by(member_id("m1"), 0))
             .await
             .unwrap();
         sqlx::query(

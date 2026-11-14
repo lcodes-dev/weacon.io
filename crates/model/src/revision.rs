@@ -25,13 +25,13 @@ impl Revision {
 /// Who is behind one revision, and when. An agent's change takes effect only once a person
 /// accepts it, so every change names that person; for a person's own it is them.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Change {
+pub struct Attribution {
     author: Author,
     accepted_by: MemberId,
     at: i64,
 }
 
-impl Change {
+impl Attribution {
     /// A change a person made themselves, at `at` seconds since the Unix epoch.
     #[must_use]
     pub fn by(member: MemberId, at: i64) -> Self {
@@ -79,8 +79,8 @@ mod tests {
     #[test]
     fn a_change_names_who_made_it_and_who_accepted_it() {
         let member = |id: &str| MemberId::try_from(id.to_owned()).unwrap();
-        let own = Change::by(member("m-1"), 1_700_000_000);
-        let agents = Change::accepted(member("m-1"), member("m-2"), 1_700_000_001);
+        let own = Attribution::by(member("m-1"), 1_700_000_000);
+        let agents = Attribution::accepted(member("m-1"), member("m-2"), 1_700_000_001);
 
         assert_eq!(
             own.author(),

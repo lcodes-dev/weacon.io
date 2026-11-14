@@ -3,7 +3,7 @@ use axum::extract::rejection::{JsonRejection, PathRejection};
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use weacon_model::{Change, OrderKey, Revision, Task, TaskEdit, Title};
+use weacon_model::{Attribution, OrderKey, Revision, Task, TaskEdit, Title};
 use weacon_observability::Fault;
 use weacon_protocol::{
     TaskChange, TaskCreate, TaskEditBody, TaskId, TaskList, TaskRecord, WorkspaceId, code,
@@ -39,8 +39,8 @@ pub(crate) async fn create(
         let order = place(&tasks, None, body.before.as_ref())?;
         let id = TaskId::try_from(new_id()).map_err(|_| invalid())?;
         let task = Task::new(id, title, order);
-        let change = Change::by(member.id.clone(), shared.now());
-        member.workspace.add_task(&task, &change).await?;
+        let attribution = Attribution::by(member.id.clone(), shared.now());
+        member.workspace.add_task(&task, &attribution).await?;
         Ok(task)
     };
     match made.await {
@@ -72,11 +72,11 @@ pub(crate) async fn change(
             }
             TaskEditBody::Newer => return Err(invalid()),
         };
-        let change = Change::by(member.id.clone(), shared.now());
+        let attribution = Attribution::by(member.id.clone(), shared.now());
         let read_at = Revision::new(body.version);
         member
             .workspace
-            .edit_task(&id, read_at, edit, &change)
+            .edit_task(&id, read_at, edit, &attribution)
             .await
     };
     match edited.await {
@@ -155,7 +155,9 @@ mod tests {
     use weacon_protocol::TaskStatus;
 
     use super::*;
-    use crate::test_support::{self, Fixture, Running, request_with, run, status, workspace_id};
+    use crate::test_support::{
+        self, Fixture, Running, refusal, request_with, status, workspace_id,
+    };
 
     struct Ada {
         address: SocketAddr,
@@ -202,21 +204,9 @@ mod tests {
         }
     }
 
-    /// The running server, which stops once dropped, and ada signed in to it.
     async fn ada(fixture: &Fixture) -> (Running, Ada) {
-        let server = run(fixture.shared.clone()).await;
-        let (_, body) = test_support::sign_in(fixture, server.address, "ada@example.com").await;
-        let token = body["token"].as_str().unwrap();
-        let ada = Ada {
-            address: server.address,
-            auth: format!("authorization: Bearer {token}\r\n"),
-        };
-        (server, ada)
-    }
-
-    fn refusal(body: &str) -> String {
-        let error: ErrorBody = serde_json::from_str(body).unwrap();
-        error.code.as_str().to_owned()
+        let (server, address, auth) = test_support::ada(fixture).await;
+        (server, Ada { address, auth })
     }
 
     fn titles(tasks: &[TaskRecord]) -> Vec<&str> {

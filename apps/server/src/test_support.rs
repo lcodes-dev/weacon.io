@@ -229,6 +229,21 @@ pub(crate) async fn sign_in(
     )
 }
 
+/// The running server, which stops once dropped, its address, and the header that signs ada
+/// in to it.
+pub(crate) async fn ada(fixture: &Fixture) -> (Running, SocketAddr, String) {
+    let server = run(fixture.shared.clone()).await;
+    let (_, body) = sign_in(fixture, server.address, "ada@example.com").await;
+    let address = server.address;
+    (server, address, bearer(&body))
+}
+
+/// The code of the refusal whose JSON body is `body`.
+pub(crate) fn refusal(body: &str) -> String {
+    let error: weacon_protocol::ErrorBody = serde_json::from_str(body).unwrap();
+    error.code.as_str().to_owned()
+}
+
 /// The header that proves a sign-in whose answer was `body`.
 pub(crate) fn bearer(body: &Value) -> String {
     let token = body["token"].as_str().unwrap();

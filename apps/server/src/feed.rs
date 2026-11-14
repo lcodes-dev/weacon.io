@@ -87,7 +87,7 @@ struct Feed {
 }
 
 /// Which features the client offered besides the feed; it hears only of their changes.
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Default)]
 struct Offers {
     tasks: bool,
     docs: bool,
@@ -215,18 +215,18 @@ async fn greet(socket: &mut WebSocket, shared: &Shared) -> Option<Offers> {
         reply(socket, shared, 0, error(code!("handshake.required"))).await;
         return None;
     };
-    let [feed, tasks, docs] = [FEED, TASKS, DOCS].map(Capability::from);
-    let offered = vec![feed.clone(), tasks.clone(), docs.clone()];
-    let answer = hello.answer(shared.app.clone(), offered);
+    let offered = [FEED, TASKS, DOCS].map(Capability::from);
+    let answer = hello.answer(shared.app.clone(), offered.to_vec());
+    let offers = |code| hello.capabilities.contains(&Capability::from(code));
     let welcomed = matches!(answer, Message::Welcome(_));
-    if welcomed && !hello.capabilities.contains(&feed) {
+    if welcomed && !offers(FEED) {
         reply(socket, shared, id, error(code!("capability.missing"))).await;
         return None;
     }
     let sent = reply(socket, shared, id, answer).await;
     (sent && welcomed).then(|| Offers {
-        tasks: hello.capabilities.contains(&tasks),
-        docs: hello.capabilities.contains(&docs),
+        tasks: offers(TASKS),
+        docs: offers(DOCS),
     })
 }
 
@@ -270,7 +270,7 @@ mod tests {
     use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async};
     use weacon_protocol::{Hello, MemberId, PROTOCOL, WorkspaceChange, WorkspaceUpdate};
 
-    use weacon_model::{Change, Doc, DocText, OrderKey, Task, Title};
+    use weacon_model::{Attribution, Doc, DocText, OrderKey, Task, Title};
     use weacon_protocol::{DocId, TaskId};
 
     use super::*;
@@ -460,8 +460,12 @@ mod tests {
             Title::try_from("Write".to_owned()).unwrap(),
             OrderKey::try_from("V".to_owned()).unwrap(),
         );
-        let change = Change::by(member_id("m1"), 0);
-        w1(&fixture).await.add_task(&task, &change).await.unwrap();
+        let attribution = Attribution::by(member_id("m1"), 0);
+        w1(&fixture)
+            .await
+            .add_task(&task, &attribution)
+            .await
+            .unwrap();
         fixture.shared.changed(&workspace_id("w1"));
         join(&fixture, server.address, "m2", "bo@example.com").await;
         let after_the_task = next(&mut plain).await;
@@ -499,8 +503,12 @@ mod tests {
             )
             .unwrap(),
         );
-        let change = Change::by(member_id("m1"), 0);
-        w1(&fixture).await.add_doc(&doc, &change).await.unwrap();
+        let attribution = Attribution::by(member_id("m1"), 0);
+        w1(&fixture)
+            .await
+            .add_doc(&doc, &attribution)
+            .await
+            .unwrap();
         fixture.shared.changed(&workspace_id("w1"));
         join(&fixture, server.address, "m2", "bo@example.com").await;
         let after_the_doc = next(&mut plain).await;
