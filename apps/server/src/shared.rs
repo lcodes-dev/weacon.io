@@ -47,8 +47,8 @@ pub(crate) struct Shared {
     pub(crate) finish_takes: Duration,
     /// Who may make an account by signing in.
     pub(crate) sign_up: Arc<[SignUp]>,
-    pub(crate) sign_in: Arc<sign_in::Limits>,
-    pub(crate) pairing: Arc<pairing::Limits>,
+    pub(crate) sign_in_limits: Arc<sign_in::Limits>,
+    pub(crate) pairing_limits: Arc<pairing::Limits>,
     /// The web app's built files it serves.
     pub(crate) web: &'static [WebFile],
 }

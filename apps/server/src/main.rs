@@ -123,8 +123,8 @@ async fn serve(app: &App, args: Serve) -> Result<(), Fault> {
         relay: Arc::default(),
         sign_ins: Arc::new(Semaphore::new(sign_in::AT_ONCE)),
         finish_takes: sign_in::FINISH_TAKES,
-        sign_in: Arc::new(sign_in::limits()),
-        pairing: Arc::new(pairing::limits()),
+        sign_in_limits: Arc::new(sign_in::limits()),
+        pairing_limits: Arc::new(pairing::limits()),
         web: web::FILES,
     };
     http::serve(listener, shared, signals.wait()).await;

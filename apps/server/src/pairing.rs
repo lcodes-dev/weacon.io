@@ -32,33 +32,21 @@ const MOST_UNDER_WAY: i64 = 1000;
 /// Crockford's base 32: no I, L, O or U, which read like other letters.
 const ALPHABET: &[u8; 32] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ";
 
-/// How many pairings each client may start.
-pub(crate) fn starts() -> Limit {
-    Limit::new(5, HOUR)
-}
-
-/// How many codes each client may look up or confirm.
-pub(crate) fn tries() -> Limit {
-    Limit::new(60, HOUR)
-}
-
-/// How many claims each client may make; a core claims every few seconds while it waits.
-pub(crate) fn claims() -> Limit {
-    Limit::new(1200, HOUR)
-}
-
 /// How often each client may ask each pairing step.
 pub(crate) struct Limits {
+    /// How many pairings each client may start.
     pub(crate) starts: Limit,
+    /// How many codes each client may look up or confirm.
     pub(crate) tries: Limit,
+    /// How many claims each client may make; a core claims every few seconds while it waits.
     pub(crate) claims: Limit,
 }
 
 pub(crate) fn limits() -> Limits {
     Limits {
-        starts: starts(),
-        tries: tries(),
-        claims: claims(),
+        starts: Limit::new(5, HOUR),
+        tries: Limit::new(60, HOUR),
+        claims: Limit::new(1200, HOUR),
     }
 }
 
@@ -79,7 +67,7 @@ pub(crate) async fn start(
     Client(from): Client,
     Body(body): Body<PairStart>,
 ) -> Response {
-    if !shared.pairing.starts.allow(from, Instant::now()) {
+    if !shared.pairing_limits.starts.allow(from, Instant::now()) {
         return too_many(code!("pairing.too_many"));
     }
     if body.os == MachineOs::Newer {
@@ -123,7 +111,7 @@ pub(crate) async fn lookup(
     _: Session,
     Body(body): Body<PairLookup>,
 ) -> Response {
-    if !shared.pairing.tries.allow(from, Instant::now()) {
+    if !shared.pairing_limits.tries.allow(from, Instant::now()) {
         return too_many(code!("pairing.too_many"));
     }
     let code_hash = shared.secret.pairing_code_hash(&normalised(&body.code));
@@ -142,7 +130,7 @@ pub(crate) async fn confirm(
     session: Session,
     Body(body): Body<PairConfirm>,
 ) -> Response {
-    if !shared.pairing.tries.allow(from, Instant::now()) {
+    if !shared.pairing_limits.tries.allow(from, Instant::now()) {
         return too_many(code!("pairing.too_many"));
     }
     match confirmed(&shared, &session, &body).await {
@@ -173,7 +161,7 @@ pub(crate) async fn claim(
     Client(from): Client,
     Body(body): Body<PairClaim>,
 ) -> Response {
-    if !shared.pairing.claims.allow(from, Instant::now()) {
+    if !shared.pairing_limits.claims.allow(from, Instant::now()) {
         return too_many(code!("pairing.too_many"));
     }
     match claimed(&shared, &body).await {
@@ -441,10 +429,10 @@ mod tests {
     #[tokio::test]
     async fn each_client_tries_and_claims_only_so_many_times() {
         let mut fixture = Fixture::new().await;
-        fixture.shared.pairing = Arc::new(Limits {
-            starts: starts(),
+        fixture.shared.pairing_limits = Arc::new(Limits {
             tries: Limit::new(2, HOUR),
             claims: Limit::new(1, HOUR),
+            ..limits()
         });
         let server = fixture.run().await;
         let (_, ada) = sign_in(&fixture, server.address, "ada@example.com").await;
