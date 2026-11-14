@@ -86,11 +86,15 @@ mod tests {
 
     #[test]
     fn a_session_starts_with_the_map_of_its_folder_within_a_fixed_size() {
-        let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let dir = TempDir::new().unwrap();
+        for n in 0..120 {
+            repository(&dir.join(format!("crate_number_{n}")), &format!("item_{n}"));
+        }
 
-        let text = session_start(workspace).unwrap();
+        let text = session_start(dir.to_path_buf()).unwrap();
 
-        assert!(!text.is_empty() && text.len() <= 4000, "{}", text.len());
+        // Large enough to be cut, so the answer fills most of the size it may take.
+        assert!((3000..=4000).contains(&text.len()), "{}", text.len());
         assert!(text.ends_with('\n'));
     }
 
