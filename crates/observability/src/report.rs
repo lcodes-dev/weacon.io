@@ -1,3 +1,5 @@
+//! Builds error reports: a scrubbed Sentry event for an error, ready to upload.
+
 use std::borrow::Cow;
 use std::error::Error;
 use std::time::SystemTime;
@@ -7,7 +9,8 @@ use sentry_types::{Dsn, Scheme};
 use weacon_protocol::{Code, code};
 
 use crate::errors::{ErrorInfo, Fault, describe_error};
-use crate::scrub::scrub_event;
+
+mod scrub;
 
 /// Where error reports go, from a Sentry DSN.
 #[derive(Clone, Debug)]
@@ -72,7 +75,7 @@ impl Reports {
             tags: Map::from([("code".to_owned(), code.as_str().to_owned())]),
             ..Event::default()
         };
-        scrub_event(&mut event, &self.home_dir);
+        scrub::scrub_event(&mut event, &self.home_dir);
         let mut envelope = Envelope::new();
         envelope.add_item(event);
         let mut body = Vec::new();

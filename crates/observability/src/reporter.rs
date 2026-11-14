@@ -1,3 +1,5 @@
+//! Decides whether each report goes out, and hands it to the sender.
+
 use std::error::Error;
 use std::sync::atomic::{AtomicBool, Ordering};
 

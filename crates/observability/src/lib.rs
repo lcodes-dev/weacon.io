@@ -5,7 +5,6 @@ mod logger;
 mod redact;
 mod report;
 mod reporter;
-mod scrub;
 
 pub use errors::Fault;
 pub use logger::{Clock, Logger, LoggerOptions, Record, Sink, json_lines, tee};
