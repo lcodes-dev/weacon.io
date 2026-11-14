@@ -9,6 +9,7 @@ import { Connection, type Later, type Status, offers } from "./connection.ts";
 import { NO_CHANGES, ask, cut, needsAsking, receive } from "./diff/changes.ts";
 import { Feed, nextFrame } from "./feed.ts";
 import { newRequestId } from "./ids.ts";
+import { route } from "./incoming.ts";
 import { Log } from "./log.ts";
 import { ME } from "./me.ts";
 import { Receipts } from "./receipts.ts";
@@ -86,28 +87,15 @@ function Root({ url }: { url: string }) {
         }
       },
       message(envelope) {
-        switch (envelope.type) {
-          case "run":
-            feed.push(envelope);
-            return;
-          case "receipt":
-            receipts.take(envelope);
-            return;
-          case "diff_answer":
+        route(envelope, {
+          run: (message) => feed.push(message),
+          answers: (message) => receipts.take(message),
+          changes: (message) => {
             if (current) {
-              setChanges((before) => receive(before, envelope));
+              setChanges((before) => receive(before, message));
             }
-            return;
-          case "error":
-            // It may answer the diff query or a prompt; each keeps only what is for it.
-            receipts.take(envelope);
-            if (current) {
-              setChanges((before) => receive(before, envelope));
-            }
-            return;
-          default:
-            return;
-        }
+          },
+        });
       },
     }, later);
     return () => {

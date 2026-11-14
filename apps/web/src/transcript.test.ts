@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import type { RunEvent } from "./protocol.ts";
-import { EMPTY, apply, isRunEvent } from "./transcript.ts";
+import { EMPTY, apply } from "./transcript.ts";
 
 const delta = (text: string): RunEvent => ({ event: "text_delta", text });
 const whole = (text: string): RunEvent => ({ event: "text", text });
@@ -72,34 +72,6 @@ test("rows an update doesn't touch keep their identity, so the view skips them",
   assert.equal(after.rows[0], before.rows[0]);
   assert.equal(after.rows[1], before.rows[1]);
   assert.notEqual(after.rows[2], before.rows[2]);
-});
-
-test("only events with the fields this app reads are taken; unknown ones pass", () => {
-  const good: unknown[] = [
-    delta("x"),
-    whole("x"),
-    call("c-1"),
-    done("c-1", true),
-    { event: "finished", outcome: { state: "failed", code: "run.failed" } },
-    { event: "newer" },
-  ];
-  const bad: unknown[] = [
-    undefined,
-    null,
-    "text",
-    {},
-    { event: 3 },
-    { event: "text_delta" },
-    { event: "text", text: 4 },
-    { event: "tool_call", call: "c-1" },
-    { event: "tool_done", call: "c-1", failed: "no" },
-    { event: "finished" },
-    { event: "finished", outcome: null },
-    { event: "finished", outcome: { state: 1 } },
-  ];
-
-  assert.ok(good.every(isRunEvent));
-  assert.ok(!bad.some(isRunEvent));
 });
 
 test("a reused call id finishes only its newest row, once", () => {

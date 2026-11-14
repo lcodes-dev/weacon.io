@@ -1,5 +1,6 @@
 import type { Later } from "./connection.ts";
-import type { Envelope, RequestId } from "./protocol.ts";
+import type { Incoming } from "./incoming.ts";
+import type { RequestId } from "./protocol.ts";
 
 /** How a command ended for its sender; `lost` and `unsure` may or may not have run. */
 export type Settled = "accepted" | "refused" | "lost" | "unsure";
@@ -52,8 +53,8 @@ export class Receipts {
   }
 
   /** Settles the command `envelope` answers, if any. */
-  take(envelope: Envelope): void {
-    if (envelope.type === "receipt" && typeof envelope.request === "string") {
+  take(envelope: Incoming): void {
+    if (envelope.type === "receipt") {
       this.settle(envelope.request, SETTLED.get(envelope.state) ?? "unsure");
       return;
     }

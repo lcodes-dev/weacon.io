@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { Connection, type Listener, type Socket, type Status, offers, parse, statusText } from "./connection.ts";
+import { Connection, type Listener, type Socket, type Status, offers, statusText } from "./connection.ts";
 import type { App, Envelope } from "./protocol.ts";
 
 const ME: App = { name: "weacon-web", version: "0.1.0", commit: "1a2b3c4" };
@@ -106,14 +106,6 @@ test("a socket that closes before any answer is refused", () => {
   socket.fire("close");
 
   assert.deepEqual(statuses, [{ state: "ended", code: "connection.refused" }]);
-});
-
-test("frames that aren't messages are dropped", () => {
-  assert.equal(parse(new ArrayBuffer(1)), undefined);
-  assert.equal(parse("[1]"), undefined);
-  assert.equal(parse('{"type":3}'), undefined);
-  assert.equal(parse("null"), undefined);
-  assert.deepEqual(parse('{"id":0,"type":"newer"}'), { id: 0, type: "newer" });
 });
 
 test("a server that doesn't welcome the app in time ends the connection", () => {

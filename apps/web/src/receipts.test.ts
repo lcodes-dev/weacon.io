@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import type { Envelope } from "./protocol.ts";
+import type { Incoming } from "./incoming.ts";
 import { Receipts } from "./receipts.ts";
 
-const receipt = (request: string, state: "accepted" | "completed" | "interrupted" | "unknown"): Envelope => ({
+const receipt = (request: string, state: "accepted" | "completed" | "interrupted" | "unknown"): Incoming => ({
   id: 2,
   type: "receipt",
   request,
@@ -44,8 +44,6 @@ test("a command that ends at once counts as accepted", async () => {
 test("other messages settle nothing", async () => {
   const { receipts: all } = setup();
   const waiting = all.wait("r-1", 2);
-  all.take({ id: 0, type: "log", level: "info", msg: "app started" });
-  all.take({ id: 2, type: "receipt", state: "accepted" } as unknown as Envelope);
   all.take({ id: 3, type: "error", code: "request.conflict", retryable: false });
   all.end();
   assert.equal(await waiting, "lost");
@@ -101,6 +99,6 @@ test("an earlier send's deadline doesn't end a later send of the same request", 
 test("a state this build doesn't know is unsure, whatever its name", async () => {
   const { receipts: all } = setup();
   const odd = all.wait("r-1", 2);
-  all.take({ id: 2, type: "receipt", request: "r-1", state: "constructor" } as unknown as Envelope);
+  all.take({ id: 2, type: "receipt", request: "r-1", state: "constructor" } as unknown as Incoming);
   assert.equal(await odd, "unsure");
 });

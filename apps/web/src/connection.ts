@@ -1,4 +1,5 @@
 import { PROTOCOL } from "../../../tooling/ts/version.ts";
+import { type Incoming, parse } from "./incoming.ts";
 import type { App, Envelope } from "./protocol.ts";
 
 /** Every capability the web app speaks of, in its hello or in the server's welcome. */
@@ -45,7 +46,7 @@ export type Later = (run: () => void, ms: number) => void;
 /** Told each change of status, and each message after the welcome. */
 export type Listener = {
   status(status: Status): void;
-  message(envelope: Envelope): void;
+  message(envelope: Incoming): void;
 };
 
 /** Says hello as `me` once `socket` opens, then passes on what the server sends. */
@@ -87,17 +88,13 @@ export class Connection {
     }
   }
 
-  #welcome(envelope: Envelope | undefined): void {
+  #welcome(envelope: Incoming | undefined): void {
     if (envelope?.type !== "welcome") {
       const other = envelope?.type === "error" && envelope.code === "protocol.unsupported";
       this.#end(other ? "connection.other_protocol" : "connection.refused");
       return;
     }
-    const capabilities: unknown = envelope.capabilities ?? [];
-    if (!isApp(envelope.app) || !isStrings(capabilities)) {
-      this.#end("connection.refused");
-      return;
-    }
+    const capabilities = envelope.capabilities ?? [];
     if (!capabilities.includes(NEEDS)) {
       this.#end("connection.server_too_old");
       return;
@@ -134,32 +131,5 @@ export function statusText(status: Status): string {
       return "Connected";
     case "ended":
       return ENDINGS[status.code];
-  }
-}
-
-// The welcome's fields, checked before the connection goes live; `Feed` checks run messages.
-function isApp(app: unknown): app is App {
-  return (
-    typeof app === "object" &&
-    app !== null &&
-    ["name", "version", "commit"].every((key) => typeof (app as Record<string, unknown>)[key] === "string")
-  );
-}
-
-function isStrings(list: unknown): list is string[] {
-  return Array.isArray(list) && list.every((item) => typeof item === "string");
-}
-
-/** A message from the server, or `undefined` when a frame isn't one. */
-export function parse(data: unknown): Envelope | undefined {
-  if (typeof data !== "string") {
-    return undefined;
-  }
-  try {
-    const value: unknown = JSON.parse(data);
-    const fit = typeof value === "object" && value !== null && "type" in value && typeof value.type === "string";
-    return fit ? (value as Envelope) : undefined;
-  } catch {
-    return undefined;
   }
 }
