@@ -99,8 +99,9 @@ async fn pump(master: Arc<AsyncFd<File>>, mut child: Child, events: mpsc::Sender
             }
         }
     };
-    // What the program wrote just before it ended is still to be read.
-    loop {
+    // What the program wrote just before it ended is still to be read, but no more than
+    // that: something it left running may never stop printing.
+    for _ in 0..DRAINED {
         match master.get_ref().read(&mut buffer) {
             Ok(0) | Err(_) => break,
             Ok(read) => {
@@ -111,6 +112,8 @@ async fn pump(master: Arc<AsyncFd<File>>, mut child: Child, events: mpsc::Sender
     }
     drop(events.send(Event::Exited { success }).await);
 }
+
+const DRAINED: usize = 4;
 
 enum Reading {
     Data(usize),

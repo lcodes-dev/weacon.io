@@ -14,7 +14,7 @@ use std::ptr;
 use std::sync::{Arc, Mutex};
 
 use tokio::process::Command;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch};
 use tokio::task;
 use windows_sys::Win32::Foundation::{INVALID_HANDLE_VALUE, WAIT_OBJECT_0};
 use windows_sys::Win32::System::Console::{
@@ -36,6 +36,8 @@ pub(crate) struct Pty {
     input: PipeWriter,
     console: Arc<Console>,
     process: Arc<OwnedHandle>,
+    // Dropped with this, which tells the output's reader to stop waiting for the events' reader.
+    _stop: watch::Sender<()>,
 }
 
 // The pseudo-console, until it is closed once the program has ended.
@@ -81,20 +83,16 @@ impl Pty {
         let process = start(command, program, handle).inspect_err(|_| console.close())?;
         let process = Arc::new(process);
         let (events, received) = mpsc::channel(8);
-        tokio::spawn(supervise(
-            Arc::clone(&process),
-            Arc::clone(&console),
-            output,
-            events,
-        ));
-        Ok((
-            Self {
-                input,
-                console,
-                process,
-            },
-            received,
-        ))
+        let (stop, stopped) = watch::channel(());
+        let watched = (Arc::clone(&process), Arc::clone(&console));
+        tokio::spawn(supervise(watched, output, events, stopped));
+        let pty = Self {
+            input,
+            console,
+            process,
+            _stop: stop,
+        };
+        Ok((pty, received))
     }
 
     /// Writes all of `data` as if typed.
@@ -145,13 +143,13 @@ impl Console {
 // Sends the output and then how the program ended. The output ends only when the console
 // closes, which happens once the program has ended.
 async fn supervise(
-    process: Arc<OwnedHandle>,
-    console: Arc<Console>,
+    (process, console): (Arc<OwnedHandle>, Arc<Console>),
     output: PipeReader,
     events: mpsc::Sender<Event>,
+    stopped: watch::Receiver<()>,
 ) {
     let sender = events.clone();
-    let pump = task::spawn_blocking(move || pump(output, &sender));
+    let pump = task::spawn_blocking(move || pump(output, &sender, stopped));
     let success = task::spawn_blocking(move || ended_well(&process))
         .await
         .unwrap_or(false);
@@ -160,8 +158,10 @@ async fn supervise(
     drop(events.send(Event::Exited { success }).await);
 }
 
-// Keeps reading after the receiver is gone, so the console can still close.
-fn pump(mut output: PipeReader, events: &mpsc::Sender<Event>) {
+// Keeps reading once nobody listens, or once the terminal is dropped, so the console can still
+// close.
+fn pump(mut output: PipeReader, events: &mpsc::Sender<Event>, mut stopped: watch::Receiver<()>) {
+    let runtime = tokio::runtime::Handle::current();
     let mut buffer = vec![0; CHUNK];
     let mut listening = true;
     while let Ok(read) = output.read(&mut buffer) {
@@ -169,7 +169,13 @@ fn pump(mut output: PipeReader, events: &mpsc::Sender<Event>) {
             return;
         }
         let chunk = buffer.get(..read).unwrap_or_default().to_vec();
-        listening = listening && events.blocking_send(Event::Output(chunk)).is_ok();
+        listening = listening
+            && runtime.block_on(async {
+                tokio::select! {
+                    sent = events.send(Event::Output(chunk)) => sent.is_ok(),
+                    _ = stopped.changed() => false,
+                }
+            });
     }
 }
 
@@ -428,7 +434,8 @@ mod tests {
             .env_remove("pathext");
         let block = String::from_utf16(&environment(&command).unwrap()).unwrap();
         let entries: Vec<&str> = block.trim_end_matches('\0').split('\0').collect();
-        assert!(entries.contains(&"Weacon_Test_Set=1"), "{entries:?}");
+        // The entries hold this process's whole environment, so no message shows them.
+        assert!(entries.contains(&"Weacon_Test_Set=1"));
         assert!(
             !entries
                 .iter()
@@ -439,9 +446,9 @@ mod tests {
                 .iter()
                 .any(|entry| entry.to_ascii_uppercase().starts_with("PATHEXT="))
         );
-        let mut sorted = entries.clone();
-        sorted.sort_by_key(|entry| entry.split('=').next().map(str::to_ascii_uppercase));
-        assert_eq!(entries, sorted);
+        assert!(
+            entries.is_sorted_by_key(|entry| entry.split('=').next().map(str::to_ascii_uppercase))
+        );
         assert!(block.ends_with("\0\0"));
     }
 }
