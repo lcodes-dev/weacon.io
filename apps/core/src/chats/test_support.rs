@@ -130,7 +130,7 @@ pub(crate) fn parts() -> (Bench, Engine<FakeAgent>) {
                 on_turn: false,
             })
         }),
-        now: || 1000,
+        now: || 1_000_000,
     };
     let (log, records) = recording_logger();
     let runs = Runs::load(&dir).unwrap();

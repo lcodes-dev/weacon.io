@@ -9,6 +9,7 @@ mod cut;
 mod launch;
 mod pending;
 mod queries;
+mod rest;
 mod said;
 mod turns;
 
@@ -33,6 +34,8 @@ use crate::workspaces::Workspaces;
 
 const ASKS: usize = 64;
 const SAYS: usize = 256;
+// How often the engine looks for idle agents.
+const TICK: std::time::Duration = std::time::Duration::from_mins(1);
 
 /// Which agent to start, and as what.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -174,8 +177,15 @@ impl<A: Agent> Engine<A> {
 
     /// Serves until every [`Chats`] is dropped; the agents stop with it.
     pub(crate) async fn serve(mut self) {
+        self.reconcile().await;
+        let mut ticks = tokio::time::interval(TICK);
+        ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
             let key = tokio::select! {
+                _ = ticks.tick() => {
+                    self.sleep_idle().await;
+                    continue;
+                }
                 ask = self.asked.recv() => match ask {
                     Some(Ask::Command(command, answer)) => {
                         let key = ChatKey::new(&command.workspace, &command.chat);

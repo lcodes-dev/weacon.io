@@ -87,7 +87,12 @@ impl<A: Agent> Engine<A> {
         match agent {
             Ok(agent) => {
                 self.attach(&key, &run, agent).await?;
-                self.advance(&key).await
+                self.advance(&key).await?;
+                // Started with no prompt, as after a restart, it waits for one.
+                if self.turn(&key).is_none() {
+                    self.set_state(&key, &run, RunState::Idle).await?;
+                }
+                Ok(())
             }
             Err(fault) => {
                 self.log

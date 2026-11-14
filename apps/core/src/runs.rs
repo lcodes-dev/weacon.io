@@ -147,6 +147,10 @@ impl Runs {
         Ok(())
     }
 
+    pub(crate) fn records(&self) -> impl Iterator<Item = &Record> {
+        self.journal.chats.iter()
+    }
+
     pub(crate) fn of(&self, key: &ChatKey) -> Option<&Record> {
         self.journal.chats.get(self.position(key)?)
     }
