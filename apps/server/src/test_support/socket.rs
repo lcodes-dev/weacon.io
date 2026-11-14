@@ -75,18 +75,17 @@ pub(crate) async fn text(client: &mut Client) -> Utf8Bytes {
 }
 
 // Whether the socket ends, pings aside, before it has had ten seconds to.
-pub(crate) async fn closed(client: &mut Client) -> bool {
-    timeout(Duration::from_secs(10), ends(client))
+pub(crate) async fn ends(client: &mut Client) -> bool {
+    let ended = async {
+        loop {
+            match client.next().await {
+                Some(Ok(Wire::Ping(_))) => {}
+                None | Some(Ok(Wire::Close(_)) | Err(_)) => return true,
+                Some(Ok(_)) => return false,
+            }
+        }
+    };
+    timeout(Duration::from_secs(10), ended)
         .await
         .unwrap_or(false)
-}
-
-pub(crate) async fn ends(client: &mut Client) -> bool {
-    loop {
-        match client.next().await {
-            Some(Ok(Wire::Ping(_))) => {}
-            None | Some(Ok(Wire::Close(_)) | Err(_)) => return true,
-            Some(Ok(_)) => return false,
-        }
-    }
 }

@@ -109,7 +109,7 @@ async fn serve(mut socket: WebSocket, shared: Shared, mut feed: Feed) {
                 Err(RecvError::Closed) => false,
             },
             () = pings.due() => pings.ping(&mut socket, feed.allowed(&shared)).await,
-            frame = socket.recv() => pings.heard(frame.as_ref()),
+            frame = socket.recv() => frame.is_some_and(|frame| pings.heard(&frame)),
         };
         if !open {
             return;
@@ -179,7 +179,7 @@ mod tests {
     use crate::email::Email;
     use crate::sign_in::SESSION_LIFETIME;
     use crate::socket::error;
-    use crate::test_support::socket::{Client, closed, frame, next, open, say, say_as};
+    use crate::test_support::socket::{Client, ends, frame, next, open, say, say_as};
     use crate::test_support::{
         self, Fixture, Running, fresh_account, member_id, run, workspace_id,
     };
@@ -390,9 +390,9 @@ mod tests {
 
         assert_eq!(next(&mut wrong).await, error(code!("handshake.required")));
         assert_eq!(next(&mut without).await, error(code!("capability.missing")));
-        assert!(closed(&mut without).await);
+        assert!(ends(&mut without).await);
         assert_eq!(next(&mut older).await, error(code!("protocol.unsupported")));
-        assert!(closed(&mut older).await);
+        assert!(ends(&mut older).await);
     }
 
     #[tokio::test]
@@ -403,7 +403,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(closed(&mut silent).await);
+        assert!(ends(&mut silent).await);
     }
 
     #[tokio::test]
@@ -418,7 +418,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(closed(&mut client).await);
+        assert!(ends(&mut client).await);
     }
 
     #[tokio::test]
@@ -433,7 +433,7 @@ mod tests {
         }
         fixture.advance(SESSION_LIFETIME);
 
-        assert!(closed(&mut client).await);
+        assert!(ends(&mut client).await);
     }
 
     #[tokio::test]
@@ -447,7 +447,7 @@ mod tests {
 
         join(&fixture, server.address, "m2", "bo@example.com").await;
 
-        assert!(closed(&mut client).await);
+        assert!(ends(&mut client).await);
     }
 
     #[tokio::test]
@@ -480,7 +480,7 @@ mod tests {
 
         assert!(matches!(next(&mut client).await, Message::Welcome(_)));
         assert_eq!(next(&mut client).await, joined(1, "m2"));
-        assert!(closed(&mut client).await);
+        assert!(ends(&mut client).await);
     }
 
     #[tokio::test]
@@ -490,7 +490,7 @@ mod tests {
         let mut client = greeted(server.address, &token, 1).await;
         w1(&fixture).await.unlink(&member_id("m1")).await;
 
-        assert!(closed(&mut client).await);
+        assert!(ends(&mut client).await);
         let again = open(server.address, "/api/workspaces/w1/feed", &token).await;
         again.unwrap_err();
     }
@@ -504,7 +504,7 @@ mod tests {
 
         test_support::request_with(server.address, "POST /api/sign-out", &bearer, "").await;
 
-        assert!(closed(&mut client).await);
+        assert!(ends(&mut client).await);
     }
 
     #[tokio::test]

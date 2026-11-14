@@ -93,7 +93,7 @@ async fn serve(mut socket: WebSocket, shared: Shared, mut link: Link) {
                 Err(RecvError::Closed) => false,
             },
             () = pings.due() => pings.ping(&mut socket, link.paired(&shared)).await,
-            frame = socket.recv() => pings.heard(frame.as_ref()),
+            frame = socket.recv() => frame.is_some_and(|frame| pings.heard(&frame)),
         };
     }
     // A core that is gone just doesn't hear it.
@@ -150,7 +150,7 @@ mod tests {
 
     async fn past_pings(client: &mut Client) -> Option<Result<Wire, tungstenite::Error>> {
         loop {
-            let frame = client.next().await;
+            let frame = timeout(Duration::from_secs(10), client.next()).await.ok()?;
             if !matches!(frame, Some(Ok(Wire::Ping(_)))) {
                 return frame;
             }
@@ -240,7 +240,8 @@ mod tests {
         let (_, mut client) = connected(server.address, &fixture).await;
         // Reading answers each ping; the fixture pings every 100 ms.
         for _ in 0..4 {
-            assert!(matches!(client.next().await, Some(Ok(Wire::Ping(_)))));
+            let frame = timeout(Duration::from_secs(10), client.next()).await;
+            assert!(matches!(frame, Ok(Some(Ok(Wire::Ping(_))))));
         }
         client.send(Wire::Ping(Vec::new().into())).await.unwrap();
 
@@ -302,6 +303,9 @@ mod tests {
         fixture.shared.unpaired.send(other).unwrap();
         client.send(Wire::Ping(Vec::new().into())).await.unwrap();
 
-        assert!(matches!(client.next().await, Some(Ok(Wire::Pong(_)))));
+        assert!(matches!(
+            past_pings(&mut client).await,
+            Some(Ok(Wire::Pong(_)))
+        ));
     }
 }

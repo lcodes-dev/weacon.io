@@ -64,8 +64,8 @@ impl Pings {
     }
 
     /// Whether the socket goes on after the client sent `frame`, which counts as an answer.
-    pub(crate) fn heard(&mut self, frame: Option<&Result<Frame, axum::Error>>) -> bool {
-        let open = matches!(frame, Some(Ok(frame)) if !matches!(frame, Frame::Close(_)));
+    pub(crate) fn heard(&mut self, frame: &Result<Frame, axum::Error>) -> bool {
+        let open = matches!(frame, Ok(frame) if !matches!(frame, Frame::Close(_)));
         if open {
             self.unanswered = 0;
         }
@@ -152,7 +152,7 @@ mod tests {
             sent.push(pings.ping(&mut socket, ready(true)).await);
         }
         let pong = Ok(Frame::Pong(Vec::new().into()));
-        let heard = pings.heard(Some(&pong));
+        let heard = pings.heard(&pong);
         let again = pings.ping(&mut socket, ready(true)).await;
         let refused = pings.ping(&mut socket, ready(false)).await;
 
@@ -163,16 +163,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_close_or_an_end_is_the_end_of_a_socket() {
+    async fn a_close_or_an_error_is_the_end_of_a_socket() {
         let mut pings = Pings::new(TIMING.ping_every);
         let close = Ok(Frame::Close(None));
         let failed = Err(axum::Error::new("gone"));
         let text = Ok(Frame::Text("hi".into()));
 
-        assert!(!pings.heard(None));
-        assert!(!pings.heard(Some(&close)));
-        assert!(!pings.heard(Some(&failed)));
-        assert!(pings.heard(Some(&text)));
+        assert!(!pings.heard(&close));
+        assert!(!pings.heard(&failed));
+        assert!(pings.heard(&text));
     }
 
     #[tokio::test(start_paused = true)]
