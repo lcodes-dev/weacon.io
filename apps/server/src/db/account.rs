@@ -2,7 +2,7 @@ use sqlx::SqliteConnection;
 use weacon_observability::Fault;
 use weacon_protocol::{AccountId, MemberId, WorkspaceId, WorkspaceRole, WorkspaceSummary};
 
-use super::{Account, Workspace, failed, stored, unreadable};
+use super::{Db, failed, stored, unreadable};
 
 const OWNER: &str = "owner";
 const MEMBER: &str = "member";
@@ -14,6 +14,14 @@ pub(crate) struct NewWorkspace {
     pub(crate) id: WorkspaceId,
     pub(crate) name: String,
     pub(crate) owner: MemberId,
+}
+
+/// One account's view of the database: what belongs to it alone, and the workspaces it is a
+/// member of. Its queries reach no other account's rows.
+#[derive(Debug)]
+pub(crate) struct Account {
+    pub(super) db: Db,
+    pub(super) id: AccountId,
 }
 
 impl Account {
@@ -66,27 +74,6 @@ impl Account {
     }
 }
 
-impl Workspace {
-    /// The workspace as `member` sees it, if they are still one.
-    pub(crate) async fn summary(
-        &self,
-        member: &MemberId,
-    ) -> Result<Option<WorkspaceSummary>, Fault> {
-        sqlx::query_as::<_, (String, String)>(
-            "SELECT w.name, m.role
-             FROM members AS m JOIN workspaces AS w ON w.workspace_id = m.workspace_id
-             WHERE m.workspace_id = ? AND m.member_id = ?",
-        )
-        .bind(self.id.as_str())
-        .bind(member.as_str())
-        .fetch_optional(&self.db.readers)
-        .await
-        .map_err(failed)?
-        .map(|(name, role)| summary(self.id.clone(), name, &role))
-        .transpose()
-    }
-}
-
 /// Makes `account`'s Personal workspace as `new`, unless it has had one.
 pub(super) async fn ensure_personal(
     transaction: &mut SqliteConnection,
@@ -130,7 +117,11 @@ async fn insert_owned(
     }
 }
 
-fn summary(id: WorkspaceId, name: String, role: &str) -> Result<WorkspaceSummary, Fault> {
+pub(super) fn summary(
+    id: WorkspaceId,
+    name: String,
+    role: &str,
+) -> Result<WorkspaceSummary, Fault> {
     let role = match role {
         OWNER => WorkspaceRole::Owner,
         MEMBER => WorkspaceRole::Member,

@@ -15,14 +15,6 @@ const MAX_ATTEMPTS: i64 = 5;
 /// inbox; `ada+1@` and `ada+2@` count apart, though they may reach the same one.
 const MAX_LIVE: i64 = 3;
 
-/// One account's view of the database: what belongs to it alone, and the workspaces it is a
-/// member of. Its queries reach no other account's rows.
-#[derive(Debug)]
-pub(crate) struct Account {
-    pub(super) db: Db,
-    pub(super) id: AccountId,
-}
-
 /// One try at finishing a sign-in. Times are seconds since the Unix epoch.
 pub(crate) struct Attempt<'a> {
     pub(crate) email: &'a Email,

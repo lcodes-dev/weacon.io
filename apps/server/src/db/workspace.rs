@@ -1,6 +1,7 @@
 use weacon_observability::Fault;
-use weacon_protocol::{AccountId, MemberId, WorkspaceId};
+use weacon_protocol::{AccountId, MemberId, WorkspaceId, WorkspaceSummary};
 
+use super::account::summary;
 use super::sign_in::insert_account;
 use super::{Db, failed, stored, unreadable};
 use crate::email::Email;
@@ -101,6 +102,25 @@ impl Workspace {
             })
         })
         .collect()
+    }
+
+    /// The workspace as `member` sees it, if they are still one.
+    pub(crate) async fn summary(
+        &self,
+        member: &MemberId,
+    ) -> Result<Option<WorkspaceSummary>, Fault> {
+        sqlx::query_as::<_, (String, String)>(
+            "SELECT w.name, m.role
+             FROM members AS m JOIN workspaces AS w ON w.workspace_id = m.workspace_id
+             WHERE m.workspace_id = ? AND m.member_id = ?",
+        )
+        .bind(self.id.as_str())
+        .bind(member.as_str())
+        .fetch_optional(&self.db.readers)
+        .await
+        .map_err(failed)?
+        .map(|(name, role)| summary(self.id.clone(), name, &role))
+        .transpose()
     }
 }
 
