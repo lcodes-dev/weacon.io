@@ -22,7 +22,7 @@ pub(crate) async fn two_teams(dir: &TempDir) -> (Workspace, Workspace) {
         (&two, "m2", "ada@example.com"),
         (&one, "m3", "bo@example.com"),
     ] {
-        let email = Email::parse(address).unwrap();
+        let email = email(address);
         workspace
             .add_member(&member_id(member), &fresh_account(), &email)
             .await

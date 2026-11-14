@@ -236,7 +236,7 @@ mod tests {
     use crate::db::CODE_LIFETIME;
     use crate::secret::Secret;
     use crate::test_support::{
-        Fixture, ask, bearer, finish_body, fresh_account, letter_in, member_id, request,
+        Fixture, ask, bearer, email, finish_body, fresh_account, letter_in, member_id, request,
         request_with, run, sign_in, start_sign_in, status, workspace_id,
     };
 
@@ -442,7 +442,7 @@ mod tests {
     #[tokio::test]
     async fn an_account_in_no_workspace_signs_in_too() {
         let fixture = Fixture::new().await;
-        let bo = Email::parse("bo@example.com").unwrap();
+        let bo = email("bo@example.com");
         fixture
             .shared
             .db
@@ -520,10 +520,7 @@ mod tests {
         let (status, body) = sign_in(&fixture, server.address, "bo@example.org").await;
         let (again, after) = sign_in(&fixture, server.address, "bo@example.org").await;
         let db = &fixture.shared.db;
-        let bo = db
-            .account_with(&Email::parse("bo@example.org").unwrap())
-            .await
-            .unwrap();
+        let bo = db.account_with(&email("bo@example.org")).await.unwrap();
 
         // Allowed or not, the start is answered the same; only an allowed address gets a code.
         assert_eq!(stranger, "http/1.1 202 accepted");
@@ -533,9 +530,7 @@ mod tests {
         assert_eq!(bo.as_ref().map(AccountId::as_str), body["account"].as_str());
         assert_eq!(again, "http/1.1 200 ok");
         assert_eq!(after["account"], body["account"]);
-        let other = db
-            .account_with(&Email::parse("cy@example.net").unwrap())
-            .await;
+        let other = db.account_with(&email("cy@example.net")).await;
         assert_eq!(other.unwrap(), None);
     }
 

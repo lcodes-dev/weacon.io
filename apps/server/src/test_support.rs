@@ -25,7 +25,6 @@ pub(crate) use weacon_testing::{Records, messages, recording_logger, recording_s
 
 use crate::connections;
 use crate::db::Db;
-use crate::email::Email;
 use crate::http::{self, Shared};
 use crate::outbox::Outbox;
 use crate::pairing;
@@ -179,7 +178,7 @@ async fn with_ada(dir: &TempDir) -> Db {
         .create_workspace(&workspace_id("w1"), "Team")
         .await
         .unwrap();
-    let ada = Email::parse("ada@example.com").unwrap();
+    let ada = email("ada@example.com");
     let (m1, account) = (member_id("m1"), fresh_account());
     workspace.add_member(&m1, &account, &ada).await.unwrap();
     db
