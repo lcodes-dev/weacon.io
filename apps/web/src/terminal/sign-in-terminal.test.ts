@@ -36,7 +36,7 @@ function store(pinned?: string, failing = false): PinStore {
   };
 }
 
-function terminal(pins: Pins) {
+function terminal(pins: Pins, online = true) {
   const sent: TerminalCommand[] = [];
   const written: string[] = [];
   const states: TerminalState[] = [];
@@ -45,7 +45,10 @@ function terminal(pins: Pins) {
     workspace: "w-1",
     agent: "claude",
     pins,
-    send: (command) => sent.push(command),
+    send: (command) => {
+      sent.push(command);
+      return online;
+    },
     screen: {
       write: (data) => written.push(new TextDecoder().decode(data)),
       state: (state) => states.push(state),
@@ -204,4 +207,10 @@ test("the page hears once that a terminal closed, and sees every state", () => {
   state({ kind: "closed", problem: "broken" });
   assert.deepEqual(seen, ["open", "closed", "closed"]);
   assert.equal(closed, 1);
+});
+
+test("a connection that can't take a command ends the terminal", async () => {
+  const { session, states } = terminal(new Pins(store(machine.key)), false);
+  await session.start();
+  assert.deepEqual(states.at(-1), { kind: "closed", problem: "offline" });
 });

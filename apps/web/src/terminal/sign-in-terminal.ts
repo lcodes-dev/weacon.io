@@ -27,7 +27,7 @@ export type TerminalState =
  * Why a terminal closed before its sign-in ended. `unpinned`: this browser hasn't confirmed the
  * machine's key, which only the pairing confirm in Settings does.
  */
-export type Problem = "unpinned" | "key_changed" | "key_unchecked" | "broken" | Code;
+export type Problem = "unpinned" | "key_changed" | "key_unchecked" | "offline" | "broken" | Code;
 
 /** What a terminal shows. Output goes nowhere but `write`. */
 export interface Screen {
@@ -42,7 +42,8 @@ export type Options = {
   workspace: WorkspaceId;
   agent: AgentKind;
   pins: Pins;
-  send: (command: TerminalCommand) => void;
+  /** Puts a command on the server's connection; `false` when it can't, which ends the terminal. */
+  send: (command: TerminalCommand) => boolean;
   screen: Screen;
   size: Size;
   terminal?: TerminalId;
@@ -210,7 +211,9 @@ export class SignInTerminal {
 
   #send(action: TerminalAction): void {
     const { machine, workspace, send } = this.#options;
-    send({ terminal: this.#terminal, machine: machine.id, workspace, action });
+    if (!send({ terminal: this.#terminal, machine: machine.id, workspace, action })) {
+      this.#close("offline");
+    }
   }
 
   // Shows nothing more once anything fails, and asks the core to stop too.

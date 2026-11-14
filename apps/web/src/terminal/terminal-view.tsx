@@ -13,7 +13,8 @@ export type TerminalProps = {
   workspace: WorkspaceId;
   agent: AgentKind;
   pins: Pins;
-  send: (command: TerminalCommand) => void;
+  /** `false` when the connection can't take it, which ends the terminal. */
+  send: (command: TerminalCommand) => boolean;
   /** Hands each terminal update to `handle` until the returned function is called. */
   subscribe: (handle: (update: TerminalUpdate) => void) => () => void;
   /** Called once the terminal has closed, whatever closed it. */
@@ -86,6 +87,8 @@ function noteOf(state: TerminalState): string | undefined {
           return "The terminal closed.";
         case "unpinned":
           return "Confirm this machine's key in Settings › Machines first.";
+        case "offline":
+          return "The connection to the server dropped. Try again once it's back.";
         case "key_changed":
           return "This machine's key changed. Pair it again.";
         case "key_unchecked":
