@@ -14,7 +14,7 @@ use weacon_protocol::{AccessLevel, AgentKind, AgentSession, App, RunId, code};
 use crate::access::Rules;
 use crate::platform;
 use crate::run::{self, AgentRun};
-use crate::spawn::SpawnPolicy;
+use crate::spawn_policy::SpawnPolicy;
 use crate::terminal::{Events, Size, Terminal};
 use crate::wire::Wire;
 use crate::{claude, codex};
@@ -31,6 +31,8 @@ pub struct Launch {
     pub cwd: PathBuf,
     /// What the agent may do on this machine, which decides the prompts no person is asked.
     pub access: AccessLevel,
+    /// The command, word by word, that answers the agent's pre-tool hook, when it has one.
+    pub hook: Option<Vec<String>>,
     /// The core's MCP for this run; only Claude Code is pointed at it.
     pub mcp: Option<McpServer>,
 }
@@ -88,6 +90,7 @@ impl Launch {
             config_dir: workspace_dir.join(name),
             cwd,
             access: AccessLevel::AskFirst,
+            hook: None,
             mcp: None,
         })
     }
@@ -122,11 +125,12 @@ impl Launch {
     ///
     /// # Errors
     /// When this build doesn't know the agent, or the command can't be run or doesn't end.
-    pub async fn sign_in(&self) -> Result<SignIn, Fault> {
-        let mut command = self.vendors(claude::status, codex::status)?;
-        let own_sign_in = match self.agent {
-            AgentKind::Claude => claude::own_sign_in,
-            AgentKind::Codex | AgentKind::Newer => codex::own_sign_in,
+    pub async fn sign_in_status(&self) -> Result<SignIn, Fault> {
+        let (mut command, own_sign_in) = match self.agent {
+            AgentKind::Claude => (claude::status(self), Some(claude::own_sign_in)),
+            // Codex doesn't print where its sign-in comes from.
+            AgentKind::Codex => (codex::status(self), None),
+            AgentKind::Newer => return Err(unknown()),
         };
         command
             .stdin(Stdio::null())
@@ -140,7 +144,9 @@ impl Launch {
             )
         };
         match timeout(STATUS_TIMEOUT, status_of(command)).await {
-            Ok(Ok((exit, status))) if exit.success() && own_sign_in(&status) => {
+            Ok(Ok((exit, printed)))
+                if exit.success() && own_sign_in.is_none_or(|own| own(&printed)) =>
+            {
                 Ok(SignIn::SignedIn)
             }
             Ok(Ok(_)) => Ok(SignIn::SignedOut),
@@ -208,16 +214,25 @@ impl Launch {
     }
 }
 
-/// Variables that would sign a vendor's program in other than through the workspace's own
-/// config folder: any whose name starts with one of `prefixes` or is one of `names`.
-pub(crate) struct OtherSignIns {
+/// The variable naming a vendor's config folder, and those that would sign it in otherwise:
+/// any whose name starts with one of `prefixes` or is one of `names`.
+pub(crate) struct SignInEnv {
+    pub(crate) config_var: &'static str,
     pub(crate) prefixes: &'static [&'static str],
     pub(crate) names: &'static [&'static str],
 }
 
-impl OtherSignIns {
+impl SignInEnv {
+    /// `launch`'s program, signed in only through the workspace's own config folder.
+    pub(crate) fn command(&self, launch: &Launch) -> Command {
+        let mut command = Command::new(&launch.program);
+        self.remove(&mut command, std::env::vars_os().map(|(name, _)| name));
+        command.env(self.config_var, &launch.config_dir);
+        command
+    }
+
     /// Removes from `command` those of the `inherited` variables' names that match.
-    pub(crate) fn remove(&self, command: &mut Command, inherited: impl Iterator<Item = OsString>) {
+    fn remove(&self, command: &mut Command, inherited: impl Iterator<Item = OsString>) {
         for name in inherited.filter(|name| self.matches(name)) {
             command.env_remove(name);
         }
@@ -237,11 +252,11 @@ impl OtherSignIns {
 // rest.
 async fn status_of(mut command: Command) -> io::Result<(ExitStatus, Vec<u8>)> {
     let mut child = command.spawn()?;
-    let mut status = Vec::new();
+    let mut printed = Vec::new();
     if let Some(stdout) = child.stdout.take() {
-        stdout.take(STATUS_LIMIT).read_to_end(&mut status).await?;
+        stdout.take(STATUS_LIMIT).read_to_end(&mut printed).await?;
     }
-    Ok((child.wait().await?, status))
+    Ok((child.wait().await?, printed))
 }
 
 fn not_installed() -> Fault {
@@ -262,18 +277,7 @@ mod tests {
     use weacon_testing::TempDir;
 
     use super::*;
-    use crate::test_support::{app, run_id};
-
-    fn launch(agent: AgentKind, dir: &TempDir) -> Launch {
-        Launch {
-            agent,
-            program: dir.join("agent"),
-            config_dir: dir.join("config"),
-            cwd: dir.to_path_buf(),
-            access: AccessLevel::AskFirst,
-            mcp: None,
-        }
-    }
+    use crate::test_support::{app, launch, run_id};
 
     fn start(launch: &Launch) -> Result<AgentRun, Fault> {
         launch.start(&SpawnPolicy::default(), &app(), run_id("run-1"), None)
@@ -281,7 +285,8 @@ mod tests {
 
     #[test]
     fn inherited_variables_with_a_sign_in_prefix_or_name_are_removed_in_any_case() {
-        let other = OtherSignIns {
+        let other = SignInEnv {
+            config_var: "VENDOR_HOME",
             prefixes: &["VENDOR_"],
             names: &["TOKEN"],
         };
@@ -346,6 +351,7 @@ mod tests {
                 config_dir: PathBuf::from("/state/w/claude"),
                 cwd: PathBuf::from("/work"),
                 access: AccessLevel::AskFirst,
+                hook: None,
                 mcp: None,
             }
         );
@@ -382,7 +388,7 @@ mod tests {
     }
 
     async fn sign_in_code(launch: Launch) -> String {
-        let error = launch.sign_in().await.unwrap_err();
+        let error = launch.sign_in_status().await.unwrap_err();
         error.code().as_str().to_owned()
     }
 
@@ -414,7 +420,7 @@ mod tests {
         ];
 
         for (agent, program, expected) in cases {
-            let answer = with(agent, program).sign_in().await.unwrap();
+            let answer = with(agent, program).sign_in_status().await.unwrap();
             assert_eq!(answer, expected, "{agent:?} {program}");
         }
     }
@@ -425,22 +431,28 @@ mod tests {
         let dir = TempDir::new().unwrap();
         std::fs::write(dir.join("agent"), "").unwrap();
 
-        let error = launch(AgentKind::Claude, &dir).sign_in().await.unwrap_err();
+        let error = launch(AgentKind::Claude, &dir)
+            .sign_in_status()
+            .await
+            .unwrap_err();
 
         assert_eq!(error.code().as_str(), "agent.status_failed");
     }
 
-    // `yes` never exits; with time paused, the wait for it ends as soon as nothing else can run.
+    // A program that waits and prints nothing; with time paused, the wait for it ends as soon
+    // as nothing else can run, and it never ends first.
     #[cfg(unix)]
     #[tokio::test(start_paused = true)]
     async fn a_status_command_that_never_ends_is_given_up_on() {
         let dir = TempDir::new().unwrap();
+        let program = dir.join("codex");
+        platform::write_program(&program, "#!/bin/sh\nexec sleep 3600\n");
         let hanging = Launch {
-            program: PathBuf::from("yes"),
+            program,
             ..launch(AgentKind::Codex, &dir)
         };
 
-        let error = hanging.sign_in().await.unwrap_err();
+        let error = hanging.sign_in_status().await.unwrap_err();
 
         assert_eq!(error.code().as_str(), "agent.status_failed");
     }

@@ -1,5 +1,6 @@
 //! The driver for Claude Code, through its stream-json mode.
 
+pub(crate) mod hook;
 pub(crate) mod transcript;
 mod wire;
 
@@ -12,7 +13,7 @@ use weacon_protocol::{AccessLevel, AgentSession};
 
 pub(crate) use wire::{Wire, answer, prompt, read};
 
-use crate::launch::{Launch, OtherSignIns};
+use crate::launch::{Launch, SignInEnv};
 
 /// The tools that only change files, and the input naming each one's file.
 const FILE_TOOLS: [(&str, &str); 4] = [
@@ -22,14 +23,23 @@ const FILE_TOOLS: [(&str, &str); 4] = [
     ("Write", "file_path"),
 ];
 
+/// Whether `tool` only changes a file.
+fn changes_file(tool: &str) -> bool {
+    FILE_TOOLS.iter().any(|(name, _)| *name == tool)
+}
+
 /// The file a prompt for `tool` would change, when it only changes a file.
 pub(crate) fn changed_file(tool: &str, input: &Value) -> Option<PathBuf> {
     let (_, key) = FILE_TOOLS.iter().find(|(name, _)| *name == tool)?;
     input.get(key)?.as_str().map(PathBuf::from)
 }
 
-// Sign-ins and providers that would win over the workspace's own.
-const OTHER_SIGN_INS: OtherSignIns = OtherSignIns {
+/// The folders and files under home that hold its sign-in.
+pub(crate) const CREDENTIALS: [&str; 2] = [".claude", ".claude.json"];
+
+// Its config folder's variable, and the sign-ins and providers that would win over it.
+const SIGN_IN_ENV: SignInEnv = SignInEnv {
+    config_var: "CLAUDE_CONFIG_DIR",
     prefixes: &["ANTHROPIC_", "CLAUDE_"],
     names: &["AWS_BEARER_TOKEN_BEDROCK"],
 };
@@ -39,7 +49,7 @@ const TOKEN_HEADER: &str = "Bearer ${WEACON_MCP_TOKEN}";
 
 /// `claude` in its stream-json mode, resuming `session` when given.
 pub(crate) fn command(launch: &Launch, session: Option<&AgentSession>) -> Command {
-    let mut command = with_workspace_sign_in(launch);
+    let mut command = SIGN_IN_ENV.command(launch);
     command.args([
         "--print",
         "--verbose",
@@ -59,6 +69,9 @@ pub(crate) fn command(launch: &Launch, session: Option<&AgentSession>) -> Comman
     if launch.access == AccessLevel::ReadOnly {
         let tools = FILE_TOOLS.map(|(tool, _)| tool);
         command.args(["--disallowedTools", &format!("Bash,{}", tools.join(","))]);
+    }
+    if let Some(hook) = &launch.hook {
+        command.args(["--settings", &hook_settings(hook)]);
     }
     if let Some(mcp) = &launch.mcp {
         // Claude reads the token from its environment, so it never reaches the command line.
@@ -82,10 +95,25 @@ pub(crate) fn command(launch: &Launch, session: Option<&AgentSession>) -> Comman
     command
 }
 
+// Settings that run `hook` before every tool; flag settings load with the user's alone, and a
+// hook's "ask" outweighs any rule that would allow the call.
+fn hook_settings(hook: &[String]) -> String {
+    let command: Vec<String> = hook.iter().map(|word| shell_quoted(word)).collect();
+    // Claude Code goes on when a hook fails in any other way than exiting with 2.
+    let command = format!("{} || exit 2", command.join(" "));
+    let hooks = json!([{ "type": "command", "command": command }]);
+    json!({ "hooks": { "PreToolUse": [{ "matcher": "*", "hooks": hooks }] } }).to_string()
+}
+
+// Claude Code runs a hook's command through a shell, which reads a single-quoted word as is.
+fn shell_quoted(word: &str) -> String {
+    format!("'{}'", word.replace('\'', "'\\''"))
+}
+
 /// `claude`'s own check of its sign-in, which exits with success when signed in and prints
 /// how; it runs wherever Weacon does.
 pub(crate) fn status(launch: &Launch) -> Command {
-    let mut command = with_workspace_sign_in(launch);
+    let mut command = SIGN_IN_ENV.command(launch);
     command.args(["auth", "status", "--json"]);
     command
 }
@@ -99,10 +127,11 @@ struct Source {
     api_key_source: Option<String>,
 }
 
-/// Whether `status` printed a sign-in kept in the config folder: a claude.ai login, or a key
-/// that `claude auth login` stored. Anything else, such as a token from the host, isn't one.
-pub(crate) fn own_sign_in(status: &[u8]) -> bool {
-    let Ok(source) = serde_json::from_slice::<Source>(status) else {
+/// Whether `printed`, what `status` printed, shows a sign-in kept in the config folder: a
+/// claude.ai login, or a key `claude auth login` stored. Anything else, such as a host's token,
+/// isn't one.
+pub(crate) fn own_sign_in(printed: &[u8]) -> bool {
+    let Ok(source) = serde_json::from_slice::<Source>(printed) else {
         return false;
     };
     match (
@@ -117,15 +146,8 @@ pub(crate) fn own_sign_in(status: &[u8]) -> bool {
 
 /// `claude`'s own sign-in, for the person's terminal.
 pub(crate) fn login(launch: &Launch) -> Command {
-    let mut command = with_workspace_sign_in(launch);
+    let mut command = SIGN_IN_ENV.command(launch);
     command.args(["auth", "login"]);
-    command
-}
-
-fn with_workspace_sign_in(launch: &Launch) -> Command {
-    let mut command = Command::new(&launch.program);
-    OTHER_SIGN_INS.remove(&mut command, std::env::vars_os().map(|(name, _)| name));
-    command.env("CLAUDE_CONFIG_DIR", &launch.config_dir);
     command
 }
 
@@ -152,7 +174,7 @@ mod tests {
 
         use crate::platform::write_program;
         use crate::run::AgentRun;
-        use crate::spawn::SpawnPolicy;
+        use crate::spawn_policy::SpawnPolicy;
         use crate::test_support::{app, run_id, started};
 
         const SESSION_A: &str = "0b7c6a52-3f1e-4d2a-9c8b-5e4f3a2b1c0d";
@@ -169,23 +191,26 @@ mod tests {
             let padded = |by: usize| format!("{}{own}", " ".repeat(by));
             let script = |number, status: &str, code| status_script(&dir, number, status, code);
 
-            assert_eq!(script(0, own, 0).sign_in().await.unwrap(), SignIn::SignedIn);
             assert_eq!(
-                script(1, own, 1).sign_in().await.unwrap(),
+                script(0, own, 0).sign_in_status().await.unwrap(),
+                SignIn::SignedIn
+            );
+            assert_eq!(
+                script(1, own, 1).sign_in_status().await.unwrap(),
                 SignIn::SignedOut
             );
             assert_eq!(
-                script(2, host, 0).sign_in().await.unwrap(),
+                script(2, host, 0).sign_in_status().await.unwrap(),
                 SignIn::SignedOut
             );
             assert_eq!(
-                script(3, &padded(4096), 0).sign_in().await.unwrap(),
+                script(3, &padded(4096), 0).sign_in_status().await.unwrap(),
                 SignIn::SignedIn
             );
             // Past the limit, so the answer is never read.
             let past = padded(70 * 1024);
             assert_eq!(
-                script(4, &past, 0).sign_in().await.unwrap(),
+                script(4, &past, 0).sign_in_status().await.unwrap(),
                 SignIn::SignedOut
             );
         }
@@ -202,6 +227,7 @@ mod tests {
                 config_dir: dir.to_path_buf(),
                 cwd: dir.to_path_buf(),
                 access: AccessLevel::AskFirst,
+                hook: None,
                 mcp: None,
             }
         }
@@ -237,6 +263,7 @@ mod tests {
                 config_dir,
                 cwd: dir.to_owned(),
                 access: AccessLevel::AskFirst,
+                hook: None,
                 mcp: None,
             }
         }
@@ -331,14 +358,7 @@ mod tests {
 
     #[test]
     fn every_command_runs_with_the_workspaces_config() {
-        let claude = Launch {
-            agent: AgentKind::Claude,
-            program: PathBuf::from("claude"),
-            config_dir: PathBuf::from("/work/config"),
-            cwd: PathBuf::from("/work"),
-            access: AccessLevel::AskFirst,
-            mcp: None,
-        };
+        let claude = crate::test_support::launch(AgentKind::Claude, Path::new("/work"));
         let check = status(&claude);
         assert_eq!(
             check.as_std().get_args().collect::<Vec<_>>(),
@@ -353,7 +373,7 @@ mod tests {
         for command in [command(&claude, None), check, login] {
             let config = (
                 OsStr::new("CLAUDE_CONFIG_DIR"),
-                Some(OsStr::new("/work/config")),
+                Some(claude.config_dir.as_os_str()),
             );
             assert!(command.as_std().get_envs().any(|env| env == config));
         }
@@ -370,10 +390,62 @@ mod tests {
             "CLAUDE_CODE_USE_BEDROCK",
             "AWS_BEARER_TOKEN_BEDROCK",
         ] {
-            assert!(OTHER_SIGN_INS.matches(OsStr::new(name)), "{name}");
+            assert!(SIGN_IN_ENV.matches(OsStr::new(name)), "{name}");
         }
         for name in ["PATH", "HOME", "AWS_REGION"] {
-            assert!(!OTHER_SIGN_INS.matches(OsStr::new(name)), "{name}");
+            assert!(!SIGN_IN_ENV.matches(OsStr::new(name)), "{name}");
+        }
+    }
+
+    #[test]
+    fn a_launch_with_a_hook_runs_it_before_every_tool() {
+        let words = ["/opt/weacon", "guard", "check", "--worktree=/it's here"];
+        let hooked = Launch {
+            hook: Some(words.map(str::to_owned).to_vec()),
+            ..crate::test_support::launch(AgentKind::Claude, Path::new("/work"))
+        };
+        let args = |launch: &Launch| -> Vec<String> {
+            let command = command(launch, None);
+            command
+                .as_std()
+                .get_args()
+                .map(|arg| arg.to_str().unwrap().to_owned())
+                .collect()
+        };
+
+        let hooked = args(&hooked);
+        let at = hooked.iter().position(|arg| arg == "--settings").unwrap();
+        let settings: Value = serde_json::from_str(&hooked[at + 1]).unwrap();
+        let hook = &settings["hooks"]["PreToolUse"][0];
+        let line = hook["hooks"][0]["command"].as_str().unwrap();
+
+        assert_eq!(hook["matcher"], "*");
+        assert_eq!(hook["hooks"][0]["type"], "command");
+        assert_eq!(
+            line,
+            "'/opt/weacon' 'guard' 'check' '--worktree=/it'\\''s here' || exit 2"
+        );
+        let plain = args(&crate::test_support::launch(
+            AgentKind::Claude,
+            Path::new("/work"),
+        ));
+        assert!(!plain.contains(&"--settings".to_owned()));
+        // A shell reads the words back as they were.
+        if cfg!(unix) {
+            let echoed = std::process::Command::new("sh")
+                .args(["-c", &format!("printf '%s\\n' {line}")])
+                .output()
+                .unwrap();
+            assert_eq!(
+                String::from_utf8(echoed.stdout).unwrap(),
+                words.join("\n") + "\n"
+            );
+            // A guard that can't start blocks the tool.
+            let missing = std::process::Command::new("sh")
+                .args(["-c", line])
+                .status()
+                .unwrap();
+            assert_eq!(missing.code(), Some(2));
         }
     }
 
@@ -381,12 +453,8 @@ mod tests {
     fn every_level_ignores_the_repositorys_settings_and_read_only_refuses_changing_tools() {
         let args = |access| {
             let launch = Launch {
-                agent: AgentKind::Claude,
-                program: PathBuf::from("claude"),
-                config_dir: PathBuf::from("/work/config"),
-                cwd: PathBuf::from("/work"),
                 access,
-                mcp: None,
+                ..crate::test_support::launch(AgentKind::Claude, Path::new("/work"))
             };
             let command = command(&launch, None);
             let args: Vec<_> = command.as_std().get_args().map(ToOwned::to_owned).collect();
@@ -408,12 +476,9 @@ mod tests {
 
     fn with_mcp(mcp: Option<McpServer>) -> (Command, Vec<String>) {
         let launch = Launch {
-            agent: AgentKind::Claude,
-            program: PathBuf::from("claude"),
-            config_dir: PathBuf::from("/work/config"),
-            cwd: PathBuf::from("/work"),
             access: AccessLevel::ReadOnly,
             mcp,
+            ..crate::test_support::launch(AgentKind::Claude, Path::new("/work"))
         };
         let command = command(&launch, None);
         let args = command.as_std().get_args();

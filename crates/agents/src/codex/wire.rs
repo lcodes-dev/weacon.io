@@ -13,7 +13,7 @@ pub(crate) struct Wire {
     client: Value,
     resume: Option<AgentSession>,
     read_only: bool,
-    next_id: u64,
+    last_id: u64,
     waiting: Vec<(u64, Waiting)>,
     thread: Option<String>,
     turn: Option<String>,
@@ -40,10 +40,9 @@ struct Incoming {
     result: Option<Value>,
 }
 
-#[derive(Deserialize)]
-struct ItemNote {
-    item: Item,
-}
+// The tool names a command and a file change go by, in prompts and in tool calls alike.
+const COMMAND: &str = "command";
+const FILE_CHANGE: &str = "file_change";
 
 #[derive(Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
@@ -73,7 +72,7 @@ impl Wire {
             client: json!({ "name": app.name, "title": "Weacon", "version": app.version }),
             resume,
             read_only: access == AccessLevel::ReadOnly,
-            next_id: 0,
+            last_id: 0,
             waiting: Vec::new(),
             thread: None,
             turn: None,
@@ -122,9 +121,9 @@ impl Wire {
     }
 
     fn request(&mut self, waiting: Waiting, method: &str, params: &Value) -> Effect {
-        self.next_id += 1;
-        self.waiting.push((self.next_id, waiting));
-        Effect::Send(json!({ "id": self.next_id, "method": method, "params": params }))
+        self.last_id += 1;
+        self.waiting.push((self.last_id, waiting));
+        Effect::Send(json!({ "id": self.last_id, "method": method, "params": params }))
     }
 
     fn opening_thread(&self) -> bool {
@@ -152,7 +151,7 @@ impl Wire {
             }
             (Waiting::Thread, Some(result)) => self.thread_opened(&result),
             (Waiting::Initialize | Waiting::Thread, None) => self.give_up(),
-            (Waiting::Turn, None) => self.ended(false),
+            (Waiting::Turn, None) => self.finished(false),
             // A turn's id comes from `turn/started`, which a late reply can't undo.
             (Waiting::Turn, Some(_)) | (Waiting::Interrupt, _) => Vec::new(),
         }
@@ -219,7 +218,7 @@ impl Wire {
         vec![self.request(Waiting::Interrupt, "turn/interrupt", &params)]
     }
 
-    fn ended(&mut self, ok: bool) -> Vec<Effect> {
+    fn finished(&mut self, ok: bool) -> Vec<Effect> {
         self.turn = None;
         self.interrupt_pending = false;
         vec![Effect::Finished { ok }]
@@ -245,9 +244,8 @@ impl Wire {
                 self.turn = turn_field(params, "id");
                 self.interrupt_turn()
             }
-            "turn/completed" => {
-                self.ended(turn_field(params, "status").is_some_and(|status| status == "completed"))
-            }
+            "turn/completed" => self
+                .finished(turn_field(params, "status").is_some_and(|status| status == "completed")),
             "item/started" => item(params).and_then(started).into_iter().collect(),
             "item/completed" => item(params).and_then(completed).into_iter().collect(),
             _ => Vec::new(),
@@ -264,8 +262,8 @@ pub(crate) fn answer(request: &Value, allow: bool) -> Vec<Effect> {
 
 fn asked(id: Value, method: &str, params: Value) -> Vec<Effect> {
     let tool = match method {
-        "item/commandExecution/requestApproval" => "command",
-        "item/fileChange/requestApproval" => "file_change",
+        "item/commandExecution/requestApproval" => COMMAND,
+        "item/fileChange/requestApproval" => FILE_CHANGE,
         _ => {
             let error = json!({ "code": METHOD_NOT_FOUND, "message": UNSUPPORTED });
             return vec![Effect::Send(json!({ "id": id, "error": error }))];
@@ -283,15 +281,13 @@ fn turn_field(value: &Value, field: &str) -> Option<String> {
 }
 
 fn item(params: &Value) -> Option<Item> {
-    ItemNote::deserialize(params).ok().map(|note| note.item)
+    Item::deserialize(params.get("item")?).ok()
 }
 
 fn started(item: Item) -> Option<Effect> {
     let (call, tool, input) = match item {
-        Item::CommandExecution { id, command, .. } => {
-            (id, "command", json!({ "command": command }))
-        }
-        Item::FileChange { id, changes, .. } => (id, "file_change", json!({ "changes": changes })),
+        Item::CommandExecution { id, command, .. } => (id, COMMAND, json!({ "command": command })),
+        Item::FileChange { id, changes, .. } => (id, FILE_CHANGE, json!({ "changes": changes })),
         Item::AgentMessage { .. } | Item::Other => return None,
     };
     Some(Effect::Event(RunEvent::ToolCall {
@@ -322,7 +318,7 @@ mod tests {
 
     use super::*;
     use crate::test_support::{
-        self, Done, FakeRun, answer, app, ended, ends_as_recorded, is_asked, is_finished,
+        self, Done, FakeRun, answer, app, ends_as_recorded, finished, is_asked, is_finished,
         is_started, next, started, text, tool_done, until,
     };
     use crate::wire::Wire as RunWire;
@@ -336,7 +332,7 @@ mod tests {
     }
 
     fn failed() -> RunEvent {
-        ended(Outcome::Failed {
+        finished(Outcome::Failed {
             code: code!("agent.turn_failed"),
         })
     }
@@ -372,7 +368,7 @@ mod tests {
             [
                 tool_done("item-1", false),
                 text("All 12 tests pass."),
-                ended(Outcome::Completed),
+                finished(Outcome::Completed),
             ]
         );
         ends_as_recorded(run, done).await;
@@ -401,7 +397,7 @@ mod tests {
                         run: test_support::run_id("run-1"),
                         prompt: 1,
                     },
-                    ended(Outcome::Interrupted),
+                    finished(Outcome::Interrupted),
                 ]
                 .as_slice()
             )
@@ -418,7 +414,7 @@ mod tests {
         run.interrupt().await.unwrap();
         assert_eq!(
             until(&mut run, is_finished).await,
-            [ended(Outcome::Interrupted)]
+            [finished(Outcome::Interrupted)]
         );
         run.send("Tidy the readme").await.unwrap();
         let events = until(&mut run, is_asked).await;
@@ -454,7 +450,7 @@ mod tests {
 
         run.send("Bump the version").await.unwrap();
         run.interrupt().await.unwrap();
-        assert_eq!(next(&mut run).await, Some(ended(Outcome::Interrupted)));
+        assert_eq!(next(&mut run).await, Some(finished(Outcome::Interrupted)));
         assert_eq!(next(&mut run).await, Some(started(THREAD)));
         ends_as_recorded(run, done).await;
     }

@@ -14,6 +14,7 @@ mod doctor;
     )
 )]
 mod git;
+mod guard;
 mod map;
 mod mcp;
 mod memory;
@@ -86,7 +87,14 @@ fn run(app: &App, command: Command, env: platform::Env<'_>) -> Result<Ending, Fa
             workspace,
             level,
             team,
-        } => workspaces::access(app, &workspace, level, team, &mut io::stdout().lock()),
+        } => workspaces::access::run(app, &workspace, level, team, &mut io::stdout().lock()),
+        Command::Guard(command) => guard::run(
+            app,
+            command,
+            env,
+            &mut io::stdin().lock(),
+            &mut io::stdout().lock(),
+        ),
         Command::Reports { answer } => reports::run(app, answer, &mut io::stdout().lock()),
         Command::ConnectChrome => native_host::connect_chrome(app, env, &mut io::stdout().lock()),
         Command::NativeHost { origin } => native_host::run(app, &origin),
