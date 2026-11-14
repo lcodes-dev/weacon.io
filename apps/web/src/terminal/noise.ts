@@ -93,7 +93,9 @@ export class Channel {
 
   /** `plaintext` as the next message to send. */
   seal(plaintext: Bytes): Promise<Bytes> {
-    return this.#guard(plaintext.length > SEALED_MAX, () => this.#send.encrypt(new Uint8Array(), plaintext));
+    // Copied now, as the step may run later.
+    const copy = plaintext.slice();
+    return this.#guard(copy.length > SEALED_MAX, () => this.#send.encrypt(new Uint8Array(), copy));
   }
 
   /** Refuses everything from now on. */
@@ -103,8 +105,9 @@ export class Channel {
 
   /** The plaintext of the next message received. */
   open(message: Bytes): Promise<Bytes> {
-    return this.#guard(message.length > NOISE_MAX || message.length < TAG, () =>
-      this.#receive.decrypt(new Uint8Array(), message),
+    const copy = message.slice();
+    return this.#guard(copy.length > NOISE_MAX || copy.length < TAG, () =>
+      this.#receive.decrypt(new Uint8Array(), copy),
     );
   }
 

@@ -439,7 +439,7 @@ mod tests {
         }
         assert_eq!(
             current, committed,
-            "noise-vectors.json is out of date: run UPDATE_VECTORS=1 cargo test -p weacon-core seal"
+            "noise-vectors.json is out of date: run UPDATE_VECTORS=1 cargo test --locked -p weacon-core seal"
         );
     }
 

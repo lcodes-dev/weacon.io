@@ -134,6 +134,21 @@ test("a frame opened beside one that fails is refused too", async () => {
   );
 });
 
+test("a frame is taken as it was when sealed or opened, whatever its buffer holds later", async () => {
+  const vector = vectors.weacon;
+  const [, , third, fourth] = vector.messages;
+  assert.ok(third && fourth);
+  const channel = await handshake(vector);
+  const plaintext = bytes(third.payload);
+  const sealing = channel.seal(plaintext);
+  const ciphertext = bytes(fourth.ciphertext);
+  const opening = channel.open(ciphertext);
+  plaintext.fill(0);
+  ciphertext.fill(0);
+  assert.equal(hex(await sealing), third.ciphertext);
+  assert.equal(hex(await opening), fourth.payload);
+});
+
 test("a closed channel or a message over the Noise limit is refused", async () => {
   let channel = await handshake(vectors.weacon);
   channel.close();
