@@ -300,6 +300,25 @@ mod tests {
         }
     }
 
+    #[test]
+    fn a_flow_a_doc_pins_reaches_the_flow_tool() {
+        let mut files = CRATE.to_vec();
+        files.push((
+            "docs/run.md",
+            "Runs flow:a::run->a::m::go, then flow:a::run->a::gone.\n",
+        ));
+        let root = repo(&files);
+
+        let flows = tools::answer(&McpCall::Flow(FlowArgs::default()), &root).unwrap();
+
+        assert_eq!(
+            flows,
+            "Flows pinned in the docs: 2.\n- docs/run.md:1  a::run -> a::m::go: holds\n\
+             - docs/run.md:1  a::run -> a::gone: breaks: no item a::gone\n"
+        );
+        assert_eq!(printed(&root, Some(MapSubcommand::Flows), None), flows);
+    }
+
     fn symbol(path: &str) -> MapSubcommand {
         let path = path.to_owned();
         MapSubcommand::Symbol { path }
