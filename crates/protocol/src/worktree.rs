@@ -54,9 +54,8 @@ pub enum WorktreeAction {
     Restore,
     /// Pushes the chat's branch and opens a draft pull request from it.
     OpenPullRequest { title: String, body: String },
-    /// Opens a terminal on the core's machine at the chat's worktree, or at its working folder
-    /// when it has none. Only to a core that offers `worktree.open_terminal`, which its owner
-    /// turns on there.
+    /// Opens a terminal at the chat's worktree, or its working folder without one, on the core's
+    /// machine; only its owner may ask, of a core that offers `worktree.open_terminal`.
     OpenTerminal,
     /// An action this build doesn't know, from a newer peer; only ever received.
     #[serde(other)]

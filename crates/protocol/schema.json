@@ -4091,7 +4091,7 @@
           ]
         },
         {
-          "description": "Opens a terminal on the core's machine at the chat's worktree, or at its working folder\nwhen it has none. Only to a core that offers `worktree.open_terminal`, which its owner\nturns on there.",
+          "description": "Opens a terminal at the chat's worktree, or its working folder without one, on the core's\nmachine; only its owner may ask, of a core that offers `worktree.open_terminal`.",
           "type": "object",
           "properties": {
             "kind": {
