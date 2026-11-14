@@ -3,9 +3,9 @@
 use std::collections::BTreeSet;
 use std::io;
 
-use weacon_observability::{Field, Logger};
+use weacon_observability::Logger;
 
-use crate::app::blocking;
+use crate::app::{WarnOnce, blocking};
 use crate::platform::Process;
 
 /// The core's own memory and its descendants', such as agents and their tools.
@@ -45,14 +45,14 @@ pub(crate) type Processes = fn() -> io::Result<Vec<Process>>;
 /// Samples this process's tree and logs each sample; a failure is logged once until one works.
 pub(crate) struct Watch {
     processes: Processes,
-    failing: bool,
+    failures: WarnOnce,
 }
 
 impl Watch {
-    pub(crate) const fn new(processes: Processes) -> Self {
+    pub(crate) fn new(processes: Processes) -> Self {
         Self {
             processes,
-            failing: false,
+            failures: WarnOnce::default(),
         }
     }
 
@@ -63,24 +63,15 @@ impl Watch {
         let sampled = listed.and_then(|processes| {
             sample(&processes, std::process::id()).ok_or_else(|| io::ErrorKind::NotFound.into())
         });
-        match sampled {
-            Ok(sample) => {
-                self.failing = false;
-                log.info(
-                    "memory sampled",
-                    &[
-                        ("core_kib", sample.core_kib.into()),
-                        ("descendants_kib", sample.descendants_kib.into()),
-                        ("descendants", sample.descendants.into()),
-                    ],
-                );
-            }
-            Err(error) => {
-                if !self.failing {
-                    log.warn("memory not sampled", &[("err", Field::error(&error))]);
-                }
-                self.failing = true;
-            }
+        if let Some(sample) = self.failures.check(sampled, log, "memory not sampled") {
+            log.info(
+                "memory sampled",
+                &[
+                    ("core_kib", sample.core_kib.into()),
+                    ("descendants_kib", sample.descendants_kib.into()),
+                    ("descendants", sample.descendants.into()),
+                ],
+            );
         }
     }
 }

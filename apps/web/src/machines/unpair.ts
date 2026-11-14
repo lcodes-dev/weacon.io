@@ -1,5 +1,5 @@
 import type { MachineId } from "../protocol.ts";
-import type { Answer } from "../shell/api.ts";
+import type { Answer } from "../api/api.ts";
 
 /** Unpairs `machine`; one already unpaired elsewhere is as gone as one unpaired here. */
 export async function unpair(api: { unpair(machine: MachineId): Promise<Answer<undefined>> }, machine: MachineId): Promise<Answer<undefined>> {

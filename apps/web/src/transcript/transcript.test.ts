@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import type { RunEvent } from "../protocol.ts";
-import { EMPTY, apply } from "./transcript.ts";
+import { EMPTY_TRANSCRIPT, apply } from "./transcript.ts";
 
 const delta = (text: string): RunEvent => ({ event: "text_delta", text });
 const whole = (text: string): RunEvent => ({ event: "text", text });
@@ -10,11 +10,11 @@ const call = (id: string): RunEvent => ({ event: "tool_call", call: id, tool: "R
 const done = (id: string, failed: boolean): RunEvent => ({ event: "tool_done", call: id, failed });
 
 test("deltas stream into one row that the whole text then replaces", () => {
-  const streamed = apply(EMPTY, [delta("He"), delta("llo")]);
+  const streamed = apply(EMPTY_TRANSCRIPT, [delta("He"), delta("llo")]);
   const ended = apply(streamed, [whole("Hello.")]);
   const next = apply(ended, [whole("Next.")]);
 
-  const same = apply(apply(EMPTY, [delta("Hi"), delta(" there")]), [whole("Hi there")]);
+  const same = apply(apply(EMPTY_TRANSCRIPT, [delta("Hi"), delta(" there")]), [whole("Hi there")]);
 
   assert.deepEqual(streamed, { rows: [{ kind: "text", pieces: ["He", "llo"] }], writing: true });
   assert.deepEqual(ended, { rows: [{ kind: "text", pieces: ["Hello."] }], writing: false });
@@ -27,7 +27,7 @@ test("deltas stream into one row that the whole text then replaces", () => {
 });
 
 test("tools get rows that change when they finish, and end the text", () => {
-  const { rows, writing } = apply(EMPTY, [
+  const { rows, writing } = apply(EMPTY_TRANSCRIPT, [
     delta("Reading"),
     call("c-1"),
     call("c-2"),
@@ -48,7 +48,7 @@ test("tools get rows that change when they finish, and end the text", () => {
 });
 
 test("a finished turn ends the text and its running tools, and other events change nothing", () => {
-  const before = apply(EMPTY, [call("c-1"), done("c-1", false), call("c-2"), delta("Bye")]);
+  const before = apply(EMPTY_TRANSCRIPT, [call("c-1"), done("c-1", false), call("c-2"), delta("Bye")]);
   const after = apply(before, [
     { event: "started", session: "0b8f5c2e-7a1d-4e3b-9c6f-2d4a8e1b5c7f" },
     { event: "finished", outcome: { state: "completed" } },
@@ -66,7 +66,7 @@ test("a finished turn ends the text and its running tools, and other events chan
 });
 
 test("rows an update doesn't touch keep their identity, so the view skips them", () => {
-  const before = apply(EMPTY, [whole("First."), call("c-1"), delta("Wri")]);
+  const before = apply(EMPTY_TRANSCRIPT, [whole("First."), call("c-1"), delta("Wri")]);
   const after = apply(before, [delta("ting")]);
 
   assert.equal(after.rows[0], before.rows[0]);
@@ -75,7 +75,7 @@ test("rows an update doesn't touch keep their identity, so the view skips them",
 });
 
 test("a reused call id finishes only its newest row, once", () => {
-  const { rows } = apply(EMPTY, [call("c-1"), call("c-1"), done("c-1", true), done("c-1", false)]);
+  const { rows } = apply(EMPTY_TRANSCRIPT, [call("c-1"), call("c-1"), done("c-1", true), done("c-1", false)]);
 
   assert.deepEqual(rows, [
     { kind: "tool", call: "c-1", tool: "Read", state: "running" },

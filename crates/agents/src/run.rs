@@ -303,11 +303,9 @@ mod tests {
     use super::*;
     use crate::claude;
     use crate::test_support::{
-        self, Done, FakeRun, answer, ended, ends_as_recorded, is_asked, is_finished, run_id, text,
-        tool_done, until,
+        self, Done, FakeRun, SESSION, answer, ended, ends_as_recorded, is_asked, is_finished,
+        run_id, text, tool_call, tool_done, until,
     };
-
-    const SESSION: &str = "0b7c6a52-3f1e-4d2a-9c8b-5e4f3a2b1c0d";
 
     fn claude_wire() -> Wire {
         Wire::Claude(claude::Wire::default())
@@ -332,11 +330,7 @@ mod tests {
             [
                 started(),
                 text("I'll run them."),
-                RunEvent::ToolCall {
-                    call: "toolu_01".to_owned(),
-                    tool: "Bash".to_owned(),
-                    input: command.clone(),
-                },
+                tool_call("toolu_01", "Bash", command.clone()),
                 RunEvent::PermissionAsked {
                     run: run_id("run-1"),
                     prompt: 1,
@@ -359,14 +353,6 @@ mod tests {
         let again = run.answer(&answer("run-1", true)).await.unwrap_err();
         assert_eq!(again.code().as_str(), "agent.no_such_prompt");
         ends_as_recorded(run, done).await;
-    }
-
-    fn tool_call(call: &str, tool: &str, input: Value) -> RunEvent {
-        RunEvent::ToolCall {
-            call: call.to_owned(),
-            tool: tool.to_owned(),
-            input,
-        }
     }
 
     #[tokio::test(start_paused = true)]

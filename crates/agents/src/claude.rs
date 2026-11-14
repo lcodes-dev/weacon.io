@@ -157,10 +157,7 @@ mod tests {
 
         use crate::run::AgentRun;
         use crate::spawn::SpawnPolicy;
-        use crate::test_support::{app, run_id, started};
-
-        const SESSION_A: &str = "0b7c6a52-3f1e-4d2a-9c8b-5e4f3a2b1c0d";
-        const SESSION_B: &str = "5d4c3b2a-1f0e-4d9c-8b7a-6f5e4d3c2b1a";
+        use crate::test_support::{OTHER_SESSION, SESSION, app, run_id, started};
 
         // Scripts stand in for `claude auth status`, printing `status` and exiting `code`.
         #[tokio::test]
@@ -268,8 +265,8 @@ mod tests {
         async fn two_workspaces_run_side_by_side_each_with_its_own_config() {
             let dir = TempDir::new().unwrap();
             fake_claude(&dir);
-            let first = workspace(&dir, "first", SESSION_A);
-            let second = workspace(&dir, "second", SESSION_B);
+            let first = workspace(&dir, "first", SESSION);
+            let second = workspace(&dir, "second", OTHER_SESSION);
 
             let (first_events, second_events) = tokio::join!(
                 events(
@@ -283,7 +280,7 @@ mod tests {
                             &SpawnPolicy::default(),
                             &app(),
                             run_id("run-1"),
-                            Some(&AgentSession::try_from(SESSION_A.to_owned()).unwrap())
+                            Some(&AgentSession::try_from(SESSION.to_owned()).unwrap())
                         )
                         .unwrap()
                 )
@@ -292,11 +289,11 @@ mod tests {
             let finished = RunEvent::Finished {
                 outcome: Outcome::Completed,
             };
-            assert_eq!(first_events, [started(SESSION_A), finished.clone()]);
-            assert_eq!(second_events, [started(SESSION_B), finished]);
+            assert_eq!(first_events, [started(SESSION), finished.clone()]);
+            assert_eq!(second_events, [started(OTHER_SESSION), finished]);
             let args = |name| fs::read_to_string(dir.join(name).join("args")).unwrap();
             assert!(!args("first").contains("--resume"));
-            assert!(args("second").ends_with(&format!("--resume\n{SESSION_A}\n")));
+            assert!(args("second").ends_with(&format!("--resume\n{SESSION}\n")));
         }
 
         #[cfg(target_os = "linux")]
@@ -306,7 +303,7 @@ mod tests {
 
             let dir = TempDir::new().unwrap();
             fake_claude(&dir);
-            let claude = workspace(&dir, "first", SESSION_A);
+            let claude = workspace(&dir, "first", SESSION);
             // Writing its own score back shows whether this procfs takes scores at all.
             let own = fs::read_to_string("/proc/self/oom_score_adj").ok();
             let adjustable = own
