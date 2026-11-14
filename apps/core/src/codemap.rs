@@ -4,6 +4,7 @@
 
 #[cfg(test)]
 mod fake;
+mod repo;
 mod watch;
 
 use std::collections::{BTreeMap, BTreeSet};

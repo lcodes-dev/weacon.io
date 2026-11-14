@@ -12,6 +12,7 @@ use weacon_protocol::{ChatId, code};
 use crate::platform;
 use crate::workspaces::resolved;
 
+mod reads;
 pub(crate) mod removal;
 
 // Variables that would point git at another repository, or stand in for `-c` options.
@@ -296,7 +297,7 @@ fn parse_worktree(record: &str) -> Option<(Worktree, bool)> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use std::fs;
 
     use weacon_testing::TempDir;
@@ -307,14 +308,14 @@ mod tests {
         ChatId::try_from(id.to_owned()).unwrap()
     }
 
-    pub(super) fn git(dir: &Path) -> Git {
+    pub(crate) fn git(dir: &Path) -> Git {
         let no_hooks = dir.join("no-hooks");
         fs::create_dir_all(&no_hooks).unwrap();
         Git::find(&std::env::var_os("PATH").unwrap(), no_hooks).unwrap()
     }
 
     // Runs the fixture's own git in `repo`, without the person's configuration or redirects.
-    pub(super) fn fixture(dir: &Path, repo: &Path, args: &[&str]) {
+    pub(crate) fn fixture(dir: &Path, repo: &Path, args: &[&str]) {
         let mut command = Command::new("git");
         for name in REDIRECTS {
             command.env_remove(name);
@@ -337,7 +338,7 @@ mod tests {
     }
 
     // A repository with one commit.
-    pub(super) fn repo(dir: &Path) -> PathBuf {
+    pub(crate) fn repo(dir: &Path) -> PathBuf {
         let repo = dir.join("repo");
         fs::create_dir_all(&repo).unwrap();
         let git = |args: &[&str]| fixture(dir, &repo, args);
