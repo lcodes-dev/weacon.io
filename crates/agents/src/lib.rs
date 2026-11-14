@@ -20,4 +20,4 @@ pub use launch::{Launch, McpServer, SignIn};
 pub use run::{AgentRun, Run};
 pub use spawn::SpawnPolicy;
 pub use terminal::{Event, Events, Size, Terminal};
-pub use transcript::{Said, Transcript};
+pub use transcript::{Step, Transcript};
