@@ -4,27 +4,32 @@ use std::time::{Duration, Instant, UNIX_EPOCH};
 
 use axum::Json;
 use axum::Router;
-use axum::extract::{DefaultBodyLimit, MatchedPath, Request, State};
+use axum::extract::{DefaultBodyLimit, FromRequest, MatchedPath, Request, State};
 use axum::http::{HeaderValue, Method, StatusCode, header};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, post};
+use axum::routing::{delete, get, post};
+use serde::de::DeserializeOwned;
 use tokio::net::TcpListener;
 use tokio::sync::{Semaphore, broadcast, watch};
 use tokio::time::timeout;
 use weacon_observability::{Clock, Fault, Field, Logger, Reporter};
-use weacon_protocol::{App, Code, ErrorBody, WorkspaceId, code};
+use weacon_protocol::{App, Code, ErrorBody, MachineId, WorkspaceId, code};
 
 use crate::client::Net;
 use crate::connections;
 use crate::db::Db;
+use crate::docs;
 use crate::feed;
 use crate::limit::Limit;
-use crate::mail::Outbox;
+use crate::outbox::Outbox;
+use crate::pairing;
 use crate::secret::Secret;
 use crate::sign_in;
 use crate::sign_up::SignUp;
+use crate::socket;
 use crate::tasks;
+use crate::uplink;
 use crate::web::{self, WebFile};
 use crate::workspaces;
 
@@ -32,8 +37,7 @@ const REQUEST_ID: &str = "x-request-id";
 const GRACE: Duration = Duration::from_secs(10);
 /// How long a request may take from its head to its answer, its body included.
 const ANSWER_WITHIN: Duration = Duration::from_secs(30);
-/// 16 KiB.
-const MAX_BODY: usize = 16_384;
+const MAX_BODY: usize = 16 * 1024;
 static METHODS: [Method; 9] = [
     Method::GET,
     Method::POST,
@@ -61,7 +65,9 @@ pub(crate) struct Shared {
     pub(crate) proxies: Arc<[Net]>,
     /// Room for open connections, feeds included; when it's full, more wait to be accepted.
     pub(crate) connections: Arc<Semaphore>,
-    pub(crate) feed: feed::Timing,
+    pub(crate) sockets: socket::Timing,
+    /// Which machine was just unpaired, for its open connection.
+    pub(crate) unpaired: broadcast::Sender<MachineId>,
     /// Which workspace just changed, for the feeds.
     pub(crate) changes: broadcast::Sender<WorkspaceId>,
     /// Room for sign-ins being worked on after their answer; when it's full, more are dropped.
@@ -74,6 +80,12 @@ pub(crate) struct Shared {
     pub(crate) tries: Arc<Limit>,
     /// Who may make an account by signing in.
     pub(crate) sign_up: Arc<[SignUp]>,
+    /// How many pairings each client may start.
+    pub(crate) pair_starts: Arc<Limit>,
+    /// How many pairing codes each client may try.
+    pub(crate) pair_tries: Arc<Limit>,
+    /// How many pairing claims each client may make.
+    pub(crate) pair_claims: Arc<Limit>,
     /// The web app's built files it serves.
     pub(crate) web: &'static [WebFile],
 }
@@ -126,6 +138,28 @@ pub(crate) async fn serve(
     }
 }
 
+/// The doc routes, whose bodies may be larger than others.
+fn doc_routes() -> Router<Shared> {
+    Router::new()
+        .route(
+            "/api/workspaces/{workspace}/docs",
+            get(docs::list).post(docs::create),
+        )
+        .route(
+            "/api/workspaces/{workspace}/docs/{doc}",
+            get(docs::read).post(docs::revise),
+        )
+        .route(
+            "/api/workspaces/{workspace}/docs/{doc}/revisions",
+            get(docs::history),
+        )
+        .route(
+            "/api/workspaces/{workspace}/docs/{doc}/revisions/{version}",
+            get(docs::revision),
+        )
+        .layer(DefaultBodyLimit::max(docs::MAX_BODY))
+}
+
 fn router(shared: Shared) -> Router {
     Router::new()
         .route("/version", get(version))
@@ -137,6 +171,13 @@ fn router(shared: Shared) -> Router {
             "/api/workspaces",
             get(workspaces::list).post(workspaces::create),
         )
+        .route("/api/machines", get(pairing::list))
+        .route("/api/machines/{machine}", delete(pairing::unpair))
+        .route("/api/machines/connect", get(uplink::connect))
+        .route("/api/machines/pair", post(pairing::start))
+        .route("/api/machines/pair/lookup", post(pairing::lookup))
+        .route("/api/machines/pair/confirm", post(pairing::confirm))
+        .route("/api/machines/pair/claim", post(pairing::claim))
         .route("/api/workspaces/{workspace}", get(workspaces::read))
         .route("/api/workspaces/{workspace}/feed", get(feed::feed))
         .route(
@@ -147,6 +188,7 @@ fn router(shared: Shared) -> Router {
             "/api/workspaces/{workspace}/tasks/{task}",
             post(tasks::change),
         )
+        .merge(doc_routes())
         .merge(web::routes(shared.web))
         .layer(DefaultBodyLimit::max(MAX_BODY))
         .layer(middleware::map_response(uncached))
@@ -191,6 +233,10 @@ async fn log_request(State(shared): State<Shared>, request: Request, next: Next)
         .map_or("unmatched", MatchedPath::as_str)
         .to_owned();
     let mut response = next.run(request).await;
+    if let Some(Failed(fault)) = response.extensions_mut().remove::<Failed>() {
+        let id = [("request_id", request_id.as_str().into())];
+        report(&shared, "request failed", fault, &id);
+    }
     let duration_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
     if let Ok(value) = HeaderValue::from_str(&request_id) {
         response.headers_mut().insert(REQUEST_ID, value);
@@ -209,13 +255,59 @@ async fn log_request(State(shared): State<Shared>, request: Request, next: Next)
 }
 
 /// Answers that the client must sign in, or try again, with `code`.
-pub(crate) fn refused(code: Code) -> Response {
+pub(crate) fn unauthorized(code: Code) -> Response {
     error(StatusCode::UNAUTHORIZED, code, false)
 }
 
 /// Answers that the request's body isn't one the server can take, with `code`.
 pub(crate) fn invalid(code: Code) -> Response {
     error(StatusCode::UNPROCESSABLE_ENTITY, code, false)
+}
+
+/// A JSON request body; one the server can't read is refused with an `ErrorBody`, as every
+/// other client error is.
+pub(crate) struct Body<T>(pub(crate) T);
+
+/// Why a request's body couldn't be read.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum Unreadable {
+    TooLarge,
+    NotJson,
+    Invalid,
+}
+
+impl<T: DeserializeOwned, S: Send + Sync> FromRequest<S> for Body<T> {
+    type Rejection = Unreadable;
+
+    async fn from_request(request: Request, state: &S) -> Result<Self, Unreadable> {
+        Json::<T>::from_request(request, state)
+            .await
+            .map(|Json(body)| Self(body))
+            .map_err(|rejection| match rejection.status() {
+                StatusCode::PAYLOAD_TOO_LARGE => Unreadable::TooLarge,
+                StatusCode::UNSUPPORTED_MEDIA_TYPE => Unreadable::NotJson,
+                _ => Unreadable::Invalid,
+            })
+    }
+}
+
+impl IntoResponse for Unreadable {
+    fn into_response(self) -> Response {
+        let (status, code) = match self {
+            Self::TooLarge => (StatusCode::PAYLOAD_TOO_LARGE, code!("request.too_large")),
+            Self::NotJson => (
+                StatusCode::UNSUPPORTED_MEDIA_TYPE,
+                code!("request.not_json"),
+            ),
+            Self::Invalid => (StatusCode::BAD_REQUEST, code!("request.invalid")),
+        };
+        error(status, code, false)
+    }
+}
+
+/// Answers that there is no such thing, or none the asker may see, with `code`.
+pub(crate) fn not_found(code: Code) -> Response {
+    error(StatusCode::NOT_FOUND, code, false)
 }
 
 /// Answers that the request isn't from the server's own pages.
@@ -228,22 +320,35 @@ pub(crate) fn too_many(code: Code) -> Response {
     error(StatusCode::TOO_MANY_REQUESTS, code, true)
 }
 
-/// Logs and reports `fault`, and answers that the server failed.
-pub(crate) fn failure(shared: &Shared, fault: Fault) -> Response {
-    let code = fault.code().clone();
-    report(shared, fault);
-    error(StatusCode::INTERNAL_SERVER_ERROR, code, true)
+/// Answers that the server failed with `fault`, which the request's log record logs and
+/// reports, with its id.
+pub(crate) fn failure(fault: Fault) -> Response {
+    let mut response = error(
+        StatusCode::INTERNAL_SERVER_ERROR,
+        fault.code().clone(),
+        true,
+    );
+    response.extensions_mut().insert(Failed(Arc::new(fault)));
+    response
 }
+
+/// The fault a response answers, until `log_request` takes it.
+#[derive(Clone)]
+struct Failed(Arc<Fault>);
 
 pub(crate) fn error(status: StatusCode, code: Code, retryable: bool) -> Response {
     (status, Json(ErrorBody { code, retryable })).into_response()
 }
 
-/// Logs and reports `fault`.
-pub(crate) fn report(shared: &Shared, fault: Fault) {
-    shared
-        .log
-        .error("request failed", &[("err", Field::error(&fault))]);
+/// Logs `fault` as `event`, with `fields`, and reports it.
+pub(crate) fn report(
+    shared: &Shared,
+    event: &'static str,
+    fault: Arc<Fault>,
+    fields: &[(&'static str, Field)],
+) {
+    let err = [("err", Field::error(&*fault))];
+    shared.log.error(event, &[fields, &err].concat());
     let (reporter, log) = (Arc::clone(&shared.reporter), shared.log.clone());
     // Sending a report blocks, so it runs beside the request rather than holding it up.
     drop(tokio::task::spawn_blocking(move || {
@@ -260,7 +365,7 @@ mod tests {
     use tokio::net::TcpStream;
 
     use super::*;
-    use crate::test_support::{Fixture, Running, header, messages, request, run};
+    use crate::test_support::{Fixture, Running, header, messages, request};
 
     struct Server {
         running: Running,
@@ -274,7 +379,7 @@ mod tests {
     async fn start_with(change: impl FnOnce(&mut Shared)) -> Server {
         let mut fixture = Fixture::new().await;
         change(&mut fixture.shared);
-        let running = run(fixture.shared.clone()).await;
+        let running = fixture.run().await;
         Server { running, fixture }
     }
 
@@ -501,5 +606,42 @@ mod tests {
         TcpStream::connect(server.running.address)
             .await
             .unwrap_err();
+    }
+
+    // How a body of `content_type` is refused.
+    async fn refusal(content_type: &str, body: &str) -> (StatusCode, serde_json::Value) {
+        let request = Request::builder()
+            .header(header::CONTENT_TYPE, content_type)
+            .body(axum::body::Body::from(body.to_owned()))
+            .unwrap();
+        let answer = Body::<serde_json::Value>::from_request(request, &())
+            .await
+            .err()
+            .unwrap()
+            .into_response();
+        let status = answer.status();
+        let bytes = axum::body::to_bytes(answer.into_body(), 1024)
+            .await
+            .unwrap();
+        (status, serde_json::from_slice(&bytes).unwrap())
+    }
+
+    #[tokio::test]
+    async fn a_body_that_cant_be_read_is_answered_with_an_error_body() {
+        assert_eq!(MAX_BODY, 16_384);
+        let code = |code: &str| serde_json::json!({ "code": code, "retryable": false });
+
+        assert_eq!(
+            refusal("application/json", "{").await,
+            (StatusCode::BAD_REQUEST, code("request.invalid"))
+        );
+        assert_eq!(
+            refusal("text/plain", "{}").await,
+            (StatusCode::UNSUPPORTED_MEDIA_TYPE, code("request.not_json"))
+        );
+        let server = start().await;
+        let big = format!(r#"{{"email":"{}"}}"#, "a".repeat(MAX_BODY));
+        let (head, _) = request(server.running.address, "POST /api/sign-in", &big).await;
+        assert_eq!(head[0], "http/1.1 413 payload too large");
     }
 }

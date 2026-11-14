@@ -1,16 +1,17 @@
 use std::net::IpAddr;
 
-use axum::extract::{FromRequestParts, RawPathParams};
+use axum::extract::{FromRequestParts, Path};
 use axum::http::header::{AUTHORIZATION, COOKIE, HOST, ORIGIN};
 use axum::http::request::Parts;
 use axum::http::{HeaderMap, HeaderValue, Method, StatusCode};
-use axum::response::{IntoResponse, Response};
-use weacon_protocol::{AccountId, MemberId, WorkspaceId, code};
+use axum::response::Response;
+use serde::Deserialize;
+use sha2::{Digest, Sha256};
+use weacon_protocol::{AccountId, MachineId, MemberId, WorkspaceId, code};
 
 use crate::db::Workspace;
 use crate::email::Email;
-use crate::http::{Shared, cross_site, failure, refused};
-use crate::sign_in::token_hash;
+use crate::http::{Shared, cross_site, error, failure, unauthorized};
 
 /// The browser's session cookie; the prefix ties it to this host.
 pub(crate) const SESSION_COOKIE: &str = "__Host-weacon_session";
@@ -36,6 +37,27 @@ pub(crate) struct Member {
     pub(crate) token_hash: [u8; 32],
 }
 
+/// A paired machine, proved by the bearer token its core got when it claimed the pairing.
+/// Only a bearer token counts: no page acts as a machine.
+pub(crate) struct Machine {
+    pub(crate) id: MachineId,
+    pub(crate) token_hash: [u8; 32],
+}
+
+impl FromRequestParts<Shared> for Machine {
+    type Rejection = Response;
+
+    async fn from_request_parts(parts: &mut Parts, shared: &Shared) -> Result<Self, Response> {
+        let unpaired = || unauthorized(code!("machine.unpaired"));
+        let token_hash = bearer(&parts.headers)
+            .map(token_hash)
+            .ok_or_else(unpaired)?;
+        let found = shared.db.machine_with(&token_hash).await.map_err(failure)?;
+        let id = found.ok_or_else(unpaired)?;
+        Ok(Self { id, token_hash })
+    }
+}
+
 impl FromRequestParts<Shared> for Session {
     type Rejection = Response;
 
@@ -45,31 +67,31 @@ impl FromRequestParts<Shared> for Session {
             .db
             .session(&token_hash, shared.now())
             .await
-            .map_err(|fault| failure(shared, fault))?;
+            .map_err(failure)?;
         let (account, email) = found.ok_or_else(required)?;
         Ok(Self { account, email })
     }
+}
+
+/// The workspace a route names; its other parameters are left to the handler.
+#[derive(Deserialize)]
+struct InWorkspace {
+    workspace: WorkspaceId,
 }
 
 impl FromRequestParts<Shared> for Member {
     type Rejection = Response;
 
     async fn from_request_parts(parts: &mut Parts, shared: &Shared) -> Result<Self, Response> {
-        let bad_request = |_| StatusCode::BAD_REQUEST.into_response();
-        let params = RawPathParams::from_request_parts(parts, shared)
+        let Path(InWorkspace { workspace }) = Path::from_request_parts(parts, shared)
             .await
-            .map_err(bad_request)?;
-        let workspace = params
-            .iter()
-            .find(|(name, _)| *name == "workspace")
-            .and_then(|(_, id)| WorkspaceId::try_from(id.to_owned()).ok())
-            .ok_or_else(|| StatusCode::BAD_REQUEST.into_response())?;
+            .map_err(|_| error(StatusCode::BAD_REQUEST, code!("request.invalid"), false))?;
         let token_hash = proof(&parts.method, &parts.headers)?;
         let found = shared
             .db
             .member_workspace(&workspace, &token_hash, shared.now())
             .await
-            .map_err(|fault| failure(shared, fault))?;
+            .map_err(failure)?;
         let (workspace, id) = found.ok_or_else(required)?;
         Ok(Self {
             workspace,
@@ -80,7 +102,7 @@ impl FromRequestParts<Shared> for Member {
 }
 
 fn required() -> Response {
-    refused(code!("sign_in.required"))
+    unauthorized(code!("sign_in.required"))
 }
 
 /// Why a request carries no usable session token.
@@ -104,20 +126,24 @@ impl From<Unproven> for Response {
 /// cookie. The cookie counts only from the server's own pages; a request no page sent may use
 /// it to read.
 pub(crate) fn proof(method: &Method, headers: &HeaderMap) -> Result<[u8; 32], Unproven> {
-    let bearer = headers
-        .get(AUTHORIZATION)
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.strip_prefix("Bearer "));
-    if let Some(token) = bearer {
+    if let Some(token) = bearer(headers) {
         return Ok(token_hash(token));
     }
     let token = session_cookie(headers).ok_or(Unproven::Missing)?;
     let reads = matches!(*method, Method::GET | Method::HEAD);
-    if same_origin(headers).unwrap_or(reads) {
-        Ok(token_hash(token))
-    } else {
-        Err(Unproven::CrossSite)
+    match sender(headers) {
+        Sender::OwnPage => Ok(token_hash(token)),
+        Sender::NoPage if reads => Ok(token_hash(token)),
+        Sender::NoPage | Sender::OtherSite => Err(Unproven::CrossSite),
     }
+}
+
+fn bearer(headers: &HeaderMap) -> Option<&str> {
+    headers
+        .get(AUTHORIZATION)?
+        .to_str()
+        .ok()?
+        .strip_prefix("Bearer ")
 }
 
 fn session_cookie(headers: &HeaderMap) -> Option<&str> {
@@ -134,10 +160,22 @@ fn session_cookie(headers: &HeaderMap) -> Option<&str> {
         })
 }
 
-/// Whether the page that sent a request is the server's own: its `Origin` is the host the
-/// request was sent to, over HTTPS, or over HTTP on this machine. `None` when no page sent it.
-pub(crate) fn same_origin(headers: &HeaderMap) -> Option<bool> {
-    let origin = headers.get(ORIGIN)?;
+/// Who sent a request, by its `Origin`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Sender {
+    /// The server's own page: the host the request was sent to, over HTTPS, or over HTTP on
+    /// this machine.
+    OwnPage,
+    /// Another site's page.
+    OtherSite,
+    /// No page, such as a command-line client.
+    NoPage,
+}
+
+pub(crate) fn sender(headers: &HeaderMap) -> Sender {
+    let Some(origin) = headers.get(ORIGIN) else {
+        return Sender::NoPage;
+    };
     let text = |value: &HeaderValue| value.to_str().ok().map(str::to_ascii_lowercase);
     let own = text(origin)
         .zip(headers.get(HOST).and_then(text))
@@ -146,7 +184,16 @@ pub(crate) fn same_origin(headers: &HeaderMap) -> Option<bool> {
             Some(("http", sent_to)) => sent_to == host && this_machine(&host),
             _ => false,
         });
-    Some(own)
+    if own {
+        Sender::OwnPage
+    } else {
+        Sender::OtherSite
+    }
+}
+
+/// Unkeyed: a token is too long to guess.
+pub(crate) fn token_hash(text: &str) -> [u8; 32] {
+    Sha256::digest(text.as_bytes()).into()
 }
 
 /// Whether `host`, with or without a port, names this machine.
@@ -177,9 +224,9 @@ mod tests {
 
     #[test]
     fn a_page_is_the_servers_own_when_its_origin_is_the_host_asked() {
-        let from = |origin, host| same_origin(&headers(&[("origin", origin), ("host", host)]));
-        let own = Some(true);
-        let other = Some(false);
+        let from = |origin, host| sender(&headers(&[("origin", origin), ("host", host)]));
+        let own = Sender::OwnPage;
+        let other = Sender::OtherSite;
 
         assert_eq!(from("https://weacon.example", "weacon.example"), own);
         assert_eq!(from("https://Weacon.Example", "weacon.example"), own);
@@ -209,10 +256,13 @@ mod tests {
         assert_eq!(from("http://10.0.0.1:8080", "10.0.0.1:8080"), other);
         assert_eq!(from("http://localhost:8080", "localhost:9090"), other);
         assert_eq!(
-            same_origin(&headers(&[("origin", "https://weacon.example")])),
+            sender(&headers(&[("origin", "https://weacon.example")])),
             other
         );
-        assert_eq!(same_origin(&headers(&[("host", "weacon.example")])), None);
+        assert_eq!(
+            sender(&headers(&[("host", "weacon.example")])),
+            Sender::NoPage
+        );
     }
 
     #[test]
@@ -276,5 +326,15 @@ mod tests {
         assert_eq!(found(&[("cookie", "x__Host-weacon_session=abc")]), None);
         assert_eq!(found(&[("cookie", "theme=dark")]), None);
         assert_eq!(found(&[]), None);
+    }
+
+    #[test]
+    fn a_token_hashes_the_same_each_time_and_apart_from_others() {
+        assert_eq!(token_hash("a"), token_hash("a"));
+        assert_ne!(token_hash("a"), token_hash("b"));
+        assert_eq!(
+            token_hash("abc").map(|byte| format!("{byte:02x}")).concat(),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
     }
 }

@@ -1,4 +1,6 @@
-import type { Envelope, RequestId } from "./protocol.ts";
+import type { Later } from "./connection.ts";
+import type { Incoming } from "./incoming.ts";
+import type { RequestId } from "./protocol.ts";
 
 /** How a command ended for its sender; `lost` and `unsure` may or may not have run. */
 export type Settled = "accepted" | "refused" | "lost" | "unsure";
@@ -23,9 +25,9 @@ type Waiting = { id: number; settled: Promise<Settled>; resolve: (settled: Settl
  */
 export class Receipts {
   #waiting = new Map<RequestId, Waiting>();
-  #later: (run: () => void, ms: number) => void;
+  #later: Later;
 
-  constructor(later: (run: () => void, ms: number) => void) {
+  constructor(later: Later) {
     this.#later = later;
   }
 
@@ -50,17 +52,16 @@ export class Receipts {
     return settled;
   }
 
-  /** Settles the command `envelope` answers; whether it answered one. */
-  take(envelope: Envelope): boolean {
-    if (envelope.type === "receipt" && typeof envelope.request === "string") {
+  /** Settles the command `envelope` answers, if any. */
+  take(envelope: Incoming): void {
+    if (envelope.type === "receipt") {
       this.settle(envelope.request, SETTLED.get(envelope.state) ?? "unsure");
-      return true;
+      return;
     }
     const refused = envelope.type === "error" ? [...this.#waiting].find(([, waiting]) => waiting.id === envelope.id) : undefined;
     if (refused !== undefined) {
       this.settle(refused[0], "refused");
     }
-    return refused !== undefined;
   }
 
   /** Settles every command still waiting as lost, as when the connection ends. */

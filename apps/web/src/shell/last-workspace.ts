@@ -1,4 +1,5 @@
-import { isId, workspaceOf } from "../place.ts";
+import { workspaceOf } from "../chat-ref.ts";
+import { isId } from "../ids.ts";
 import type { WorkspaceId } from "../protocol.ts";
 
 export type Store = Pick<Storage, "getItem" | "setItem" | "removeItem">;

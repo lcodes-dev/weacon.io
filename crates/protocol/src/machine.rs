@@ -4,6 +4,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Deserializer, Serialize, de};
 
 use crate::AccountId;
+use crate::to_hex;
 use crate::token::token_id;
 
 token_id!(
@@ -29,12 +30,7 @@ const KEY_PATTERN: &str = r"^[0-9a-f]{64}$";
 impl MachineKey {
     #[must_use]
     pub fn from_bytes(key: [u8; 32]) -> Self {
-        let nibbles = key.iter().flat_map(|byte| [byte >> 4, byte & 0xf]);
-        Self(
-            nibbles
-                .filter_map(|nibble| char::from_digit(u32::from(nibble), 16))
-                .collect(),
-        )
+        Self(to_hex(&key))
     }
 
     #[must_use]
@@ -306,7 +302,7 @@ mod tests {
     }
 
     fn pairing() -> PairingId {
-        PairingId::try_from("p-1".to_owned()).unwrap()
+        "p-1".parse().unwrap()
     }
 
     #[test]
@@ -348,8 +344,8 @@ mod tests {
         };
         let start_wire = json!({ "name": "Studio", "os": "macos", "key": key().as_str() });
         let claimed = PairClaimed::Paired {
-            machine: MachineId::try_from("mc-1".to_owned()).unwrap(),
-            owner: AccountId::try_from("a-1".to_owned()).unwrap(),
+            machine: "mc-1".parse().unwrap(),
+            owner: "a-1".parse().unwrap(),
             token: "tok".to_owned(),
         };
         let claimed_wire =
@@ -433,8 +429,8 @@ mod tests {
                 format!(
                     "{:?}",
                     PairClaimed::Paired {
-                        machine: MachineId::try_from("mc-1".to_owned()).unwrap(),
-                        owner: AccountId::try_from("a-1".to_owned()).unwrap(),
+                        machine: "mc-1".parse().unwrap(),
+                        owner: "a-1".parse().unwrap(),
                         token: "s3cr3t-marker".to_owned(),
                     }
                 ),

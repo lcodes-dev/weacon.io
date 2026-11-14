@@ -183,6 +183,13 @@ hex_string!(
     "not a SHA-256 digest"
 );
 
+impl Sha256 {
+    #[must_use]
+    pub fn from_bytes(digest: [u8; 32]) -> Self {
+        Self(crate::to_hex(&digest))
+    }
+}
+
 /// An `https://` address of printable ASCII, at most 2,048 bytes, with a plain host name and
 /// optionally a port: no user name or password.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, JsonSchema)]
@@ -402,6 +409,14 @@ mod tests {
         let sha = |text: &str| Sha256::try_from(text.to_owned()).is_ok();
         matches_its_parser(Commit::PATTERN, commit, &samples);
         matches_its_parser(Sha256::PATTERN, sha, &samples);
+    }
+
+    #[test]
+    fn a_digest_is_written_in_lowercase_hex() {
+        let bytes = std::array::from_fn(|i| u8::try_from(i * 8 + 7).unwrap());
+        let hex = "070f171f272f373f474f575f676f777f878f979fa7afb7bfc7cfd7dfe7eff7ff";
+
+        assert_eq!(Sha256::from_bytes(bytes).as_str(), hex);
     }
 
     #[test]
