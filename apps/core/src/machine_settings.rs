@@ -38,8 +38,16 @@ pub(crate) async fn query(
     query: MachineSettingsQuery,
 ) -> Result<MachineSettingsAnswer, Fault> {
     allowed(owner, &query.machine, query.by.as_ref())?;
-    if matches!(query.query, MachineSettingsQueryKind::Newer) {
-        return Err(unknown());
+    match query.query {
+        MachineSettingsQueryKind::Current => {}
+        // Answered once this core offers `repo.list`.
+        MachineSettingsQueryKind::Repos => {
+            return Err(Fault::new(
+                code!("request.unknown"),
+                "This core doesn't answer that question yet",
+            ));
+        }
+        MachineSettingsQueryKind::Newer => return Err(unknown()),
     }
     answer(host, query.request, query.machine, query.workspace).await
 }
@@ -374,6 +382,13 @@ mod tests {
         };
         let level = command(&host, &owner, told(level, "mc-1", Some(by("a-1")))).await;
 
+        let repos = query(
+            &host,
+            &owner,
+            asked(MachineSettingsQueryKind::Repos, "mc-1", Some(by("a-1"))),
+        )
+        .await;
+        assert_eq!(repos.unwrap_err().code().as_str(), "request.unknown");
         for result in [read, newer, level] {
             assert_eq!(result.unwrap_err().code().as_str(), "settings.unknown");
         }
