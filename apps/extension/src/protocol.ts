@@ -78,6 +78,9 @@ export type Envelope = {
   | {
     type: "worktree_answer";
   } & WorktreeAnswer
+  | {
+    type: "proposal_command";
+  } & ProposalCommand
 );
 
 /**
@@ -230,6 +233,7 @@ export type ChallengeId = string;
 
 export type ChatAction = (
   | {
+    agent?: AgentKind;
     kind: "prompt";
     machine?: MachineId;
     repo?: RepoId;
@@ -291,6 +295,7 @@ export type ChatEntry = {
 
 export type ChatEvent = (
   | {
+    agent?: AgentKind;
     kind: "prompt";
     repo?: RepoId;
     request: RequestId;
@@ -778,6 +783,23 @@ export type MachineSummary = {
 export type MemberId = string;
 
 /**
+ * A run of a doc's body in a [`ProposalOutcome::DocConflict`]; the hunks in order are the
+ * whole body.
+ */
+export type MergeHunk = (
+  | {
+    kind: "agreed";
+    text: string;
+  }
+  | {
+    base: string;
+    current: string;
+    kind: "conflict";
+    proposed: string;
+  }
+);
+
+/**
  * Where an accepted command stands. It ends `completed`, `interrupted`, `failed` or `unknown`.
  * `unknown` means it may or may not have run, as when a restart cut it off; the client must not
  * send it again under a new id.
@@ -931,6 +953,164 @@ export type Pick = {
   title: string;
   url: string;
 };
+
+/**
+ * The doc or task a proposal is about; a new one has the id it gets once accepted.
+ */
+export type ProposalAbout = (
+  | {
+    doc: DocId;
+    kind: "doc";
+  }
+  | {
+    kind: "task";
+    task: TaskId;
+  }
+  | {
+    doc: DocId;
+    kind: "new_doc";
+  }
+  | {
+    kind: "new_task";
+    task: TaskId;
+  }
+);
+
+export type ProposalAction = (
+  | {
+    agent: AgentKind;
+    change: ProposalChange;
+    kind: "propose";
+    proposal: ProposalId;
+  }
+  | {
+    kind: "withdraw";
+    proposal: ProposalId;
+  }
+);
+
+/**
+ * What a proposal would change once a person accepts it.
+ */
+export type ProposalChange = (
+  | {
+    base: number;
+    content: DocContent;
+    doc: DocId;
+    kind: "doc_edit";
+  }
+  | {
+    base: number;
+    edits: Array<TaskEditBody>;
+    kind: "task_edit";
+    task: TaskId;
+  }
+  | {
+    content: DocContent;
+    kind: "new_doc";
+  }
+  | {
+    kind: "new_task";
+    title: string;
+  }
+);
+
+/**
+ * What an agent asks the server for, from a core to a server that offers
+ * `workspace.proposals`, for one of its owner's agents. The server answers with receipts under
+ * `request`, and names the owner and machine itself.
+ */
+export type ProposalCommand = {
+  action: ProposalAction;
+  request: RequestId;
+  workspace: WorkspaceId;
+};
+
+/**
+ * A member's decision on an open proposal, from a client to the server. The answer is a
+ * [`ProposalOutcome`].
+ */
+export type ProposalDecision = {
+  verdict: ProposalVerdict;
+};
+
+/**
+ * A proposal in a workspace, chosen by the core that proposes it and kept across
+ * reconnects: sending it again with the same change is the same proposal, while the same
+ * id with another change, or from another machine, is refused with `proposal.conflict`.
+ * 1–64 ASCII letters, digits, `-` or `_`.
+ */
+export type ProposalId = string;
+
+/**
+ * A workspace's proposals, newest first, from the server.
+ */
+export type ProposalList = {
+  proposals: Array<ProposalRecord>;
+};
+
+/**
+ * What a [`ProposalDecision`] came to. A conflict changes nothing: the proposal stays open,
+ * and the person edits the doc or task themselves, then rejects it.
+ */
+export type ProposalOutcome = (
+  | {
+    outcome: "accepted";
+    version: number;
+  }
+  | {
+    outcome: "rejected";
+  }
+  | {
+    anchors: boolean;
+    hunks: Array<MergeHunk>;
+    outcome: "doc_conflict";
+    title: boolean;
+  }
+  | {
+    edits: Array<TaskEditBody>;
+    outcome: "task_conflict";
+  }
+);
+
+/**
+ * A proposal, from the server to clients that have the capability `workspace.proposals`, at
+ * `at` seconds since the Unix epoch. Its author's machine is a name, never an id, and only an
+ * open proposal still holds its `change`.
+ */
+export type ProposalRecord = {
+  about: ProposalAbout;
+  at: number;
+  author: Author;
+  change?: ProposalChange;
+  id: ProposalId;
+} & (
+  | {
+    state: "open";
+  }
+  | {
+    by: MemberId;
+    state: "accepted";
+    version: number;
+  }
+  | {
+    by: MemberId;
+    state: "rejected";
+  }
+  | {
+    state: "superseded";
+  }
+  | {
+    state: "withdrawn";
+  }
+);
+
+export type ProposalVerdict = (
+  | (
+    | "accept"
+    | "reject"
+  )
+);
 
 /**
  * The daemon's word on a command, sent when it is accepted and again when it ends.
@@ -1383,6 +1563,10 @@ export type WorkspaceChange = (
     chat: ChatId;
     kind: "chat_changed";
   }
+  | {
+    kind: "proposal_changed";
+    proposal: ProposalId;
+  }
 );
 
 /**
@@ -1444,6 +1628,9 @@ export type WorktreeAction = (
     kind: "open_pull_request";
     title: string;
   }
+  | {
+    kind: "open_terminal";
+  }
 );
 
 /**
@@ -1474,6 +1661,9 @@ export type WorktreeAnswerKind = (
   | {
     kind: "pull_request_page";
     url: DownloadUrl;
+  }
+  | {
+    kind: "terminal_opened";
   }
 );
 

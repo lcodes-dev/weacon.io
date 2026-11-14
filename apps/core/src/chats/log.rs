@@ -8,8 +8,8 @@ use std::path::Path;
 use weacon_model::ChatRuns;
 use weacon_observability::Fault;
 use weacon_protocol::{
-    ChatAction, ChatEntry, ChatEvent, ChatId, MAX_FRAME, Outcome, RequestId, RunEvent, RunUpdate,
-    code,
+    AgentKind, ChatAction, ChatEntry, ChatEvent, ChatId, MAX_FRAME, Outcome, RequestId, RunEvent,
+    RunUpdate, code,
 };
 
 use crate::app::blocking;
@@ -32,6 +32,8 @@ pub(crate) struct ChatLog {
     requests: HashMap<RequestId, Asked>,
     /// Set by a failed write, which may have left half an entry; opening the log again mends it.
     broken: bool,
+    /// The agent the chat's first prompt named, Claude when it named none.
+    agent: Option<AgentKind>,
     runs: ChatRuns,
 }
 
@@ -87,6 +89,7 @@ impl ChatLog {
                 end: 0,
                 requests: HashMap::new(),
                 broken: false,
+                agent: None,
                 runs: ChatRuns::default(),
             };
             weacon_appkit::sync_dir(&dir)?;
@@ -129,8 +132,11 @@ impl ChatLog {
     fn keep(&mut self, entry: &ChatEntry, len: usize) {
         self.runs.apply(entry);
         match &entry.event {
-            ChatEvent::Prompt { request, .. } => {
+            ChatEvent::Prompt { request, agent, .. } => {
                 self.requests.entry(request.clone()).or_default().prompt = Some(entry.seq);
+                self.agent = self
+                    .agent
+                    .or_else(|| Some(agent.unwrap_or(AgentKind::Claude)));
             }
             ChatEvent::Receipt { receipt } => {
                 let asked = self.requests.entry(receipt.request.clone()).or_default();
@@ -148,6 +154,11 @@ impl ChatLog {
         }
         self.starts.push(self.end);
         self.end += u64::try_from(len).unwrap_or(u64::MAX);
+    }
+
+    /// The chat's agent, once a prompt is in the log.
+    pub(crate) const fn agent(&self) -> Option<AgentKind> {
+        self.agent
     }
 
     /// Where the chat's runs stand, as its entries say.
@@ -255,9 +266,16 @@ impl ChatLog {
         let same = matches!(
             (earlier, action),
             (
-                Some(ChatEvent::Prompt { text: was_text, repo: was_repo, .. }),
-                ChatAction::Prompt { text, repo, .. },
-            ) if was_text == *text && was_repo == *repo
+                Some(ChatEvent::Prompt {
+                    text: was_text,
+                    repo: was_repo,
+                    agent: was_agent,
+                    ..
+                }),
+                ChatAction::Prompt {
+                    text, repo, agent, ..
+                },
+            ) if was_text == *text && was_repo == *repo && was_agent == *agent
         );
         Ok(match (same, asked.stage) {
             (true, Stage::Logged) => Seen::Pending,
@@ -373,6 +391,7 @@ mod tests {
             text: text.to_owned(),
             repo: None,
             machine: None,
+            agent: None,
         }
     }
 
@@ -619,8 +638,16 @@ mod tests {
             text: "Hi".to_owned(),
             repo: Some(RepoId::try_from("site".to_owned()).unwrap()),
             machine: None,
+            agent: None,
         };
         assert_eq!(seen(&log, "r-1", elsewhere).await, Seen::Other);
+        let another_agent = ChatAction::Prompt {
+            text: "Hi".to_owned(),
+            repo: None,
+            machine: None,
+            agent: Some(AgentKind::Codex),
+        };
+        assert_eq!(seen(&log, "r-1", another_agent).await, Seen::Other);
         assert_eq!(seen(&log, "r-1", ChatAction::Interrupt).await, Seen::Other);
         assert_eq!(seen(&log, "r-2", ChatAction::Interrupt).await, Seen::Same);
         assert_eq!(seen(&log, "r-2", allow).await, Seen::Same);

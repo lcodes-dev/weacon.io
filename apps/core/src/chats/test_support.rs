@@ -8,7 +8,7 @@ use std::time::Duration;
 use tokio::sync::mpsc;
 use weacon_observability::Fault;
 use weacon_protocol::{
-    AgentSession, ChatAction, ChatAnswerKind, ChatCommand, ChatEvent, ChatId, ChatQuery,
+    AgentKind, AgentSession, ChatAction, ChatAnswerKind, ChatCommand, ChatEvent, ChatId, ChatQuery,
     ChatQueryKind, Message, Outcome, PermissionAnswer, RequestId, RunEvent, RunId, WorkspaceId,
     code,
 };
@@ -186,6 +186,7 @@ pub(crate) fn logged_prompt(request_id: &str, text: &str) -> ChatEvent {
         request: request(request_id),
         text: text.to_owned(),
         repo: None,
+        agent: None,
     }
 }
 
@@ -208,8 +209,18 @@ pub(crate) fn prompt(request: &str, text: &str) -> ChatCommand {
             text,
             repo: None,
             machine: None,
+            agent: None,
         },
     )
+}
+
+/// A prompt under `request` that names `agent`.
+pub(crate) fn prompt_naming(request: &str, text: &str, agent: AgentKind) -> ChatCommand {
+    let mut asked = prompt(request, text);
+    if let ChatAction::Prompt { agent: named, .. } = &mut asked.action {
+        *named = Some(agent);
+    }
+    asked
 }
 
 pub(crate) fn query(chat_id: &str, query: ChatQueryKind) -> ChatQuery {

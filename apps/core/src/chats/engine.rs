@@ -402,8 +402,8 @@ mod tests {
     use super::by_hand::on_turn;
     use super::*;
     use crate::chats::test_support::{
-        Bench, Started, Told, allow, asks, bench, chat, client, command, key, prompt, pushed,
-        query, run, session, skip, soon, text,
+        Bench, Started, Told, allow, asks, bench, chat, client, command, key, prompt,
+        prompt_naming, pushed, query, run, session, skip, soon, text,
     };
 
     fn done(outcome: Outcome) -> RunEvent {
@@ -687,6 +687,39 @@ mod tests {
         bench.chats.command(idle).await.unwrap();
         assert_eq!(pushed(&mut pushes, 1).await, ["13 receipt r-4 completed"]);
         agent.told.try_recv().unwrap_err();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_chats_first_prompt_fixes_its_agent_and_a_later_one_cant_change_it() {
+        let mut bench = bench();
+        let mut pushes = watch(&bench).await;
+
+        let first = prompt_naming("r-1", "Hi", AgentKind::Codex);
+        bench.chats.command(first).await.unwrap();
+
+        let started = soon(bench.started.recv()).await.unwrap();
+        assert_eq!(started.start.agent, AgentKind::Codex);
+        skip(&mut pushes, 4).await;
+        let other = prompt_naming("r-2", "More", AgentKind::Claude);
+        assert_eq!(
+            code_of(bench.chats.command(other).await),
+            "chat.agent_conflict"
+        );
+        let same = prompt_naming("r-3", "More", AgentKind::Codex);
+        bench.chats.command(same).await.unwrap();
+        assert_eq!(pushed(&mut pushes, 1).await, ["5 prompt r-3 More"]);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn an_agent_this_build_doesnt_know_is_refused() {
+        let bench = bench();
+
+        let newer = prompt_naming("r-1", "Hi", AgentKind::Newer);
+
+        assert_eq!(
+            code_of(bench.chats.command(newer).await),
+            "message.unsupported"
+        );
     }
 
     #[tokio::test(start_paused = true)]

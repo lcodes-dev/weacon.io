@@ -2,8 +2,8 @@
 
 use weacon_observability::Fault;
 use weacon_protocol::{
-    AgentKind, ChatAction, ChatCommand, ChatEvent, Outcome, PermissionAnswer, RepoId, RequestId,
-    RunEvent, RunState, RunUpdate, code,
+    AgentKind, ChatAction, ChatCommand, ChatEvent, Outcome, PermissionAnswer, RequestId, RunEvent,
+    RunState, RunUpdate, code,
 };
 
 use super::agent::{Agent, Order};
@@ -53,11 +53,23 @@ impl<A: Agent> Engine<A> {
         seen: Seen,
     ) -> Result<(), Fault> {
         match action {
-            ChatAction::Prompt { text, repo, .. } => {
+            ChatAction::Prompt {
+                text,
+                repo,
+                agent: named,
+                ..
+            } => {
+                let agent = self.agent_of(key, named).await?;
                 if seen != Seen::Pending {
-                    self.log_prompt(key, &request, &text, repo).await?;
+                    let prompt = ChatEvent::Prompt {
+                        request: request.clone(),
+                        text: text.clone(),
+                        repo,
+                        agent: named,
+                    };
+                    self.log_prompt(key, prompt).await?;
                 }
-                self.prompt(key, request, text).await
+                self.prompt(key, request, text, agent).await
             }
             ChatAction::Permission { answer } => self.permission(key, request, answer).await,
             ChatAction::Interrupt => self.interrupt(key, request).await,
@@ -67,25 +79,31 @@ impl<A: Agent> Engine<A> {
 
     // A prompt is in the log before it is queued, and queued before it is accepted. Whichever
     // step a first try stopped at, sending it again takes it from there.
-    async fn log_prompt(
-        &mut self,
-        key: &ChatKey,
-        request: &RequestId,
-        text: &str,
-        repo: Option<RepoId>,
-    ) -> Result<(), Fault> {
-        if text.trim().is_empty() {
+    async fn log_prompt(&mut self, key: &ChatKey, prompt: ChatEvent) -> Result<(), Fault> {
+        if matches!(&prompt, ChatEvent::Prompt { text, .. } if text.trim().is_empty()) {
             return Err(Fault::new(
                 code!("chat.empty_prompt"),
                 "The prompt is empty",
             ));
         }
-        let prompt = ChatEvent::Prompt {
-            request: request.clone(),
-            text: text.to_owned(),
-            repo,
-        };
         self.commit(key, prompt).await
+    }
+
+    // The chat's agent is the one its first logged prompt named; a later prompt can't change it.
+    async fn agent_of(
+        &mut self,
+        key: &ChatKey,
+        named: Option<AgentKind>,
+    ) -> Result<AgentKind, Fault> {
+        let chosen = self.open(key).await?.log.agent();
+        match (named, chosen) {
+            (Some(AgentKind::Newer), _) => Err(unsupported()),
+            (Some(named), Some(chosen)) if named != chosen => Err(Fault::new(
+                code!("chat.agent_conflict"),
+                "The chat already runs another agent",
+            )),
+            (named, chosen) => Ok(chosen.or(named).unwrap_or(AgentKind::Claude)),
+        }
     }
 
     async fn prompt(
@@ -93,14 +111,13 @@ impl<A: Agent> Engine<A> {
         key: &ChatKey,
         request: RequestId,
         text: String,
+        agent: AgentKind,
     ) -> Result<(), Fault> {
         let queued = Queued {
             request: request.clone(),
             text,
         };
-        // Until a prompt can name its agent, a new chat runs Claude.
-        let (agent, now) = (AgentKind::Claude, self.now());
-        self.runs.enqueue(key, agent, queued, now).await?;
+        self.runs.enqueue(key, agent, queued, self.now()).await?;
         self.commit_receipt(key, &request, Outcome::Accepted)
             .await?;
         self.advance(key).await
@@ -215,9 +232,28 @@ mod tests {
     use super::super::by_hand::{allow_one, hear, on_ask, on_its_way, on_turn, waiting_in};
     use super::*;
     use crate::chats::test_support::{
-        Told, asks, command, key, logged_prompt, parts, prompt, run, soon,
+        Told, asks, command, key, logged_prompt, parts, prompt, prompt_naming, run, soon,
     };
     use crate::runs::Queued;
+
+    #[tokio::test(start_paused = true)]
+    async fn the_agent_a_logged_first_prompt_named_holds_even_if_it_wasnt_queued() {
+        let (mut bench, mut engine) = parts();
+        // The first prompt reaches the log, but the runs journal can't be saved.
+        let path = engine.runs.jam();
+        let first = prompt_naming("r-1", "Hi", AgentKind::Codex);
+        let lost = engine.command(&key(), first.clone()).await;
+        assert_eq!(lost.unwrap_err().code().as_str(), "runs.not_saved");
+        engine.runs.unjam(path);
+
+        let other = prompt_naming("r-2", "Hi", AgentKind::Claude);
+        let other = engine.command(&key(), other).await;
+        assert_eq!(other.unwrap_err().code().as_str(), "chat.agent_conflict");
+        engine.command(&key(), first).await.unwrap();
+
+        let started = soon(bench.started.recv()).await.unwrap();
+        assert_eq!(started.start.agent, AgentKind::Codex);
+    }
 
     #[tokio::test(start_paused = true)]
     async fn a_prompt_sent_again_goes_on_from_where_its_first_try_stopped() {
