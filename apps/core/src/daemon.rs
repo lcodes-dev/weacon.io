@@ -59,13 +59,7 @@ pub(crate) fn run(app: &crate::app::App) -> Result<(), Fault> {
             },
             app.log.clone(),
         )?;
-        let (uplink, from_daemon) = uplink::unrouted(app, state_dir);
-        let serve = async {
-            tokio::select! {
-                () = daemon.serve(signals.wait()) => {}
-                never = Box::pin(uplink.run(from_daemon)) => match never {},
-            }
-        };
+        let serve = daemon.serve(signals.wait());
         crate::reports::following(state_dir, &app.reporter, &app.log, serve).await;
         Ok(())
     })
@@ -88,6 +82,7 @@ pub(crate) struct Daemon {
     disk: disk::Watch,
     memory: memory::Watch,
     engine: JoinHandle<()>,
+    uplink: JoinSet<()>,
     mcp: mcp::Server,
     // Held for the daemon's life, so a second daemon can't start.
     _lock: File,
@@ -133,6 +128,7 @@ impl Daemon {
         let (chats, engine) = chats::start(state_dir, places, app.clone(), spawn, log.clone())?;
         let listener = platform::bind(&socket).map_err(failed)?;
         let engine = tokio::spawn(engine.serve());
+        let uplink = connect(&app, &log, state_dir, chats.clone());
         log.info("daemon started", &[]);
         Ok(Self {
             listener,
@@ -147,6 +143,7 @@ impl Daemon {
             disk: disk::Watch::new(state_dir.to_owned(), platform::free_space),
             memory: memory::Watch::new(platform::processes),
             engine,
+            uplink,
             mcp: mcp_server,
             _lock: lock,
         })
@@ -180,6 +177,8 @@ impl Daemon {
         drop(self.listener);
         drop(fs::remove_file(&self.socket));
         clients.shutdown().await;
+        // The uplink's way to the engine goes first, or the engine would never stop.
+        self.uplink.shutdown().await;
         drop(self.mcp);
         // The engine stops once the last way to it is gone; its writes end before the lock goes.
         let log = self.shared.log.clone();
@@ -203,6 +202,14 @@ impl Daemon {
             }
         });
     }
+}
+
+// Keeps the machine connected to its server, for as long as the set is kept.
+fn connect(app: &App, log: &Logger, state_dir: &Path, chats: Chats) -> JoinSet<()> {
+    let (link, from_daemon) = uplink::new(app, log, state_dir, chats);
+    let mut uplink = JoinSet::new();
+    uplink.spawn(async move { match link.run(from_daemon).await {} });
+    uplink
 }
 
 /// One client's connection: where it is in the conversation, and where events it subscribed to
@@ -562,7 +569,9 @@ mod tests {
             let mode = fs::metadata(&socket).unwrap().permissions().mode() & 0o777;
             assert_eq!(mode, 0o600);
         }
-        let records = running.stop().await;
+        // The uplink each daemon keeps must not hold the engine up.
+        let stopped = timeout(Duration::from_secs(10), running.stop()).await;
+        let records = stopped.expect("the daemon never stopped");
         assert!(!socket.exists());
         assert_eq!(
             ask(&socket).await.unwrap_err().code().as_str(),
@@ -573,6 +582,27 @@ mod tests {
             .filter(|message| message.starts_with("daemon "))
             .collect();
         assert_eq!(lifecycle, ["daemon started", "daemon stopped"]);
+    }
+
+    #[tokio::test]
+    async fn a_paired_daemon_dials_its_server() {
+        use crate::machine::{self, Key, Paired};
+        let (dir, tls) = (TempDir::new().unwrap(), test_support::tls::Tls::new().await);
+        let paired = Paired {
+            server: tls.url(),
+            pinned: Some(tls.pem.clone()),
+            machine: "mc-1".parse().unwrap(),
+            owner: "a-owner".parse().unwrap(),
+            token: "t0ken".to_owned(),
+            key: Key::from_random([7; 32]),
+        };
+        machine::write(&dir, &paired).unwrap();
+        let running = start(&dir).unwrap();
+
+        let dialed = tls.accept().await;
+
+        assert!(dialed.is_some(), "the daemon never dialed its server");
+        running.stop().await;
     }
 
     #[tokio::test]
