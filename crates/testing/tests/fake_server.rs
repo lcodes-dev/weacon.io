@@ -9,7 +9,9 @@ mod tests {
     use tokio::io::{AsyncBufReadExt, BufReader};
     use tokio_tungstenite::connect_async;
     use tokio_tungstenite::tungstenite::Message;
+    use weacon_protocol::{PROTOCOL, code};
     use weacon_testing::TempDir;
+    use weacon_testing::fake_core::client_hello;
 
     fn fake_server(args: &[&str]) -> Option<i32> {
         Command::new(env!("CARGO_BIN_EXE_fake-server"))
@@ -31,10 +33,14 @@ mod tests {
     }
 
     async fn welcome(url: &str) -> serde_json::Value {
-        let hello = r#"{"id":1,"type":"hello","protocol":1,"capabilities":["run.stream"],
-            "app":{"name":"weacon-web","version":"0.1.0","commit":"1a2b3c4"}}"#;
+        let hello = client_hello(1, PROTOCOL, [code!("run.stream")])
+            .to_json()
+            .unwrap();
         let (mut client, _) = connect_async(url).await.unwrap();
-        client.send(Message::text(hello)).await.unwrap();
+        client
+            .send(Message::text(String::from_utf8(hello).unwrap()))
+            .await
+            .unwrap();
         let Message::Text(welcome) = client.next().await.unwrap().unwrap() else {
             panic!("no welcome");
         };
