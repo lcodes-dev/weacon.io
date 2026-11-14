@@ -239,6 +239,10 @@ mod tests {
         .unwrap();
     }
 
+    fn latest(runs: &Runs, key: &ChatKey) -> Option<RunId> {
+        runs.of(key)?.run.clone()
+    }
+
     #[tokio::test]
     async fn a_run_id_is_never_issued_twice_even_after_a_restart() {
         let dir = TempDir::new().unwrap();
@@ -260,7 +264,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let mut runs = Runs::load(&dir).unwrap();
         let c1 = key("w-1", "c-1");
-        let asked = begin(&mut runs, "c-1").await;
+        let first = begin(&mut runs, "c-1").await;
         waiting(&mut runs, "c-1").await;
         std::fs::remove_file(dir.join("runs.json")).unwrap();
         std::fs::create_dir(dir.join("runs.json")).unwrap();
@@ -273,7 +277,11 @@ mod tests {
 
         assert_eq!(begun.unwrap_err().code().as_str(), "runs.not_saved");
         assert_eq!(updated.unwrap_err().code().as_str(), "runs.not_saved");
-        assert_eq!(latest(&runs, &c1).as_ref(), Some(&asked));
+        let record = runs.of(&c1).unwrap();
+        assert_eq!(
+            (&record.run, record.state),
+            (&Some(first), RunState::Waiting)
+        );
         assert_eq!(begin(&mut runs, "c-1").await.as_str(), "run-3");
     }
 
@@ -294,33 +302,23 @@ mod tests {
         assert_eq!(runs.of(&c1).unwrap().session, None);
     }
 
-    fn latest(runs: &Runs, key: &ChatKey) -> Option<RunId> {
-        runs.of(key)?.run.clone()
-    }
-
     #[tokio::test]
     async fn each_chat_has_its_own_latest_run_and_keeps_it_across_a_restart() {
         let dir = TempDir::new().unwrap();
         let mut runs = Runs::load(&dir).unwrap();
-        let asked = begin(&mut runs, "c-1").await;
+        let first = begin(&mut runs, "c-1").await;
         let other = begin(&mut runs, "c-2").await;
         let c1 = key("w-1", "c-1");
 
-        waiting(&mut runs, "c-1").await;
-        waiting(&mut runs, "c-2").await;
-
-        assert_eq!(latest(&runs, &c1).as_ref(), Some(&asked));
-        assert_ne!(latest(&runs, &c1).as_ref(), Some(&other));
-        assert_ne!(latest(&runs, &key("w-1", "c-3")).as_ref(), Some(&asked));
-        assert_ne!(latest(&runs, &key("w-2", "c-1")).as_ref(), Some(&asked));
+        assert_eq!(latest(&runs, &c1), Some(first.clone()));
+        assert_eq!(latest(&runs, &key("w-1", "c-2")), Some(other));
+        assert_eq!(latest(&runs, &key("w-1", "c-3")), None);
+        assert_eq!(latest(&runs, &key("w-2", "c-1")), None);
 
         let mut restarted = Runs::load(&dir).unwrap();
-        assert_eq!(latest(&restarted, &c1).as_ref(), Some(&asked));
+        assert_eq!(latest(&restarted, &c1), Some(first));
         let next = begin(&mut restarted, "c-1").await;
-        waiting(&mut restarted, "c-1").await;
-
-        assert_ne!(latest(&restarted, &c1).as_ref(), Some(&asked));
-        assert_eq!(latest(&restarted, &c1).as_ref(), Some(&next));
+        assert_eq!(latest(&restarted, &c1), Some(next));
     }
 
     #[tokio::test]
