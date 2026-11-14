@@ -3,7 +3,17 @@ import { type Incoming, parse } from "./incoming.ts";
 import type { App, Envelope } from "./protocol.ts";
 
 /** Every capability the web app speaks of, in its hello or in the server's welcome. */
-export type WebCapability = "run.stream" | "workspace.feed" | "diff.view" | "chat.send" | "log.forward";
+export type WebCapability =
+  | "run.stream"
+  | "workspace.feed"
+  | "workspace.chats"
+  | "diff.view"
+  | "chat.send"
+  | "log.forward"
+  | "machine.settings";
+
+/** The hello's envelope id; a connection's requests take the ids after it. */
+export const HELLO_ID = 1;
 
 /** What a connection asks of the server: what it must offer, and what else this app can use. */
 export type Asks = { needs: WebCapability; offers: WebCapability[] };
@@ -64,7 +74,7 @@ export class Connection {
       }
     }, WELCOME_MS);
     socket.addEventListener("open", () => {
-      this.#send({ id: 1, type: "hello", protocol: PROTOCOL, app: me, capabilities: [asks.needs, ...asks.offers] });
+      this.#send({ id: HELLO_ID, type: "hello", protocol: PROTOCOL, app: me, capabilities: [asks.needs, ...asks.offers] });
     });
     socket.addEventListener("message", ({ data }) => {
       const envelope = parse(data);

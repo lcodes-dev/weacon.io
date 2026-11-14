@@ -298,7 +298,7 @@ impl ServerHandler for Handler {
         let started = Instant::now();
         let folder = grant.folder.clone();
         let log = self.log.child(&[("run_id", grant.run.as_str().into())]);
-        let text = tokio::task::spawn_blocking(move || tools::answer(&call, &folder, &log))
+        let text = tokio::task::spawn_blocking(move || tools::answer_or_none(&call, &folder, &log))
             .await
             .map_err(|_| ErrorData::internal_error("The tool failed", None))?;
         let millis = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);

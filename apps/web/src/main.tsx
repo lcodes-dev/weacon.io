@@ -5,7 +5,7 @@ import "./app.css";
 import { App } from "./app.tsx";
 import { chatRefOf } from "./chat-ref.ts";
 import { type Send, deliver, prompt } from "./composer/prompt.ts";
-import { type Asks, Connection, type Later, type Status, offers } from "./connection.ts";
+import { type Asks, Connection, HELLO_ID, type Later, type Status, offers } from "./connection.ts";
 import { NO_CHANGES, ask, cut, needsAsking, receive } from "./diff/changes.ts";
 import { Feed, nextFrame } from "./feed.ts";
 import { newRequestId } from "./ids.ts";
@@ -41,8 +41,7 @@ function Root({ url }: { url: string }) {
   const [changes, setChanges] = useState(NO_CHANGES);
   // The connection while it is live, and the commands sent on it that wait for an answer.
   const live = useRef<{ connection: Connection; receipts: Receipts }>(undefined);
-  // The hello takes id 1.
-  const lastId = useRef(1);
+  const lastId = useRef(HELLO_ID);
   useEffect(() => {
     // A closed socket's last news must not overwrite the next socket's.
     let current = true;

@@ -399,7 +399,7 @@ impl<A: Agent> Engine<A> {
 mod tests {
     use serde_json::{Value, json};
     use weacon_protocol::{
-        ChatAction, ChatAnswerKind, ChatCommand, ChatQueryKind, Receipt, RequestId,
+        AgentKind, ChatAction, ChatAnswerKind, ChatCommand, ChatQueryKind, Receipt, RequestId,
     };
     use weacon_testing::messages;
 
@@ -583,6 +583,7 @@ mod tests {
             request: prompt(request, text).request,
             text: text.to_owned(),
             repo: None,
+            agent: None,
         }
     }
 
@@ -590,7 +591,7 @@ mod tests {
     async fn a_prompt_sent_again_goes_on_from_where_its_first_try_stopped() {
         let (mut bench, mut engine) = parts();
         let chat_of = (&workspace(), &chat("c-1"));
-        let agent = weacon_protocol::AgentKind::Claude;
+        let agent = AgentKind::Claude;
 
         // Stopped after the prompt reached the log, before it was queued.
         engine.commit(&key(), entry("r-1", "Hi")).await.unwrap();
@@ -719,6 +720,37 @@ mod tests {
 
     fn session() -> AgentSession {
         AgentSession::try_from("0b7c6a52-3f1e-4d2a-9c8b-5e4f3a2b1c0d".to_owned()).unwrap()
+    }
+
+    // A prompt "Hi" under `request` that names `agent`.
+    fn named(request: &str, agent: AgentKind) -> ChatCommand {
+        let mut asked = prompt(request, "Hi");
+        if let ChatAction::Prompt { agent: chosen, .. } = &mut asked.action {
+            *chosen = Some(agent);
+        }
+        asked
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn the_agent_a_logged_first_prompt_named_holds_even_if_it_wasnt_queued() {
+        let (mut bench, mut engine) = parts();
+        // The first prompt reaches the log, but the runs journal can't be saved.
+        let path = engine.runs.jam();
+        let lost = engine.command(&key(), named("r-1", AgentKind::Codex)).await;
+        assert_eq!(lost.unwrap_err().code().as_str(), "runs.not_saved");
+        engine.runs.unjam(path);
+
+        let other = engine
+            .command(&key(), named("r-2", AgentKind::Claude))
+            .await;
+        assert_eq!(other.unwrap_err().code().as_str(), "chat.agent_conflict");
+        engine
+            .command(&key(), named("r-1", AgentKind::Codex))
+            .await
+            .unwrap();
+
+        let started = soon(bench.started.recv()).await.unwrap();
+        assert_eq!(started.start.agent, AgentKind::Codex);
     }
 
     #[tokio::test(start_paused = true)]

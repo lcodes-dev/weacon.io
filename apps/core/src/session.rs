@@ -5,6 +5,7 @@ pub(crate) const CAPABILITIES: &[Capability] = &[
     Capability::new(code!("element.pick")),
     Capability::new(code!("chat.send")),
     Capability::new(code!("chat.events")),
+    Capability::new(code!("chat.agent")),
     Capability::new(code!("run.stream")),
     Capability::new(code!("machine.connect")),
 ];
@@ -99,6 +100,7 @@ mod tests {
                             code!("element.pick").into(),
                             code!("chat.send").into(),
                             code!("chat.events").into(),
+                            code!("chat.agent").into(),
                             code!("run.stream").into(),
                             code!("machine.connect").into(),
                         ],
