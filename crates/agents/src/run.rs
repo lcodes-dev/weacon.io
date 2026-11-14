@@ -10,7 +10,7 @@ use weacon_protocol::{AgentSession, Outcome, PermissionAnswer, RunEvent, RunId, 
 
 use crate::access::{Decision, Rules};
 use crate::lines::Lines;
-use crate::spawn::SpawnPolicy;
+use crate::spawn_policy::SpawnPolicy;
 use crate::wire::{Asked, Effect, Wire};
 
 // Far above any real line; a longer one is skipped rather than held in memory.
@@ -61,7 +61,7 @@ pub(crate) fn spawn(
     rules: Rules,
 ) -> Result<AgentRun, Fault> {
     let not_started = || Fault::new(code!("agent.not_started"), "The agent couldn't start");
-    policy.apply(&mut command);
+    policy.add_env(&mut command);
     let mut child = command
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -69,7 +69,7 @@ pub(crate) fn spawn(
         .kill_on_drop(true)
         .spawn()
         .map_err(|error| not_started().because(error))?;
-    policy.adjust(&child);
+    policy.set_oom_score(&child);
     let (Some(stdin), Some(stdout)) = (child.stdin.take(), child.stdout.take()) else {
         return Err(not_started());
     };
@@ -304,8 +304,8 @@ mod tests {
     use super::*;
     use crate::claude;
     use crate::test_support::{
-        self, Done, FakeRun, answer, ended, ends_as_recorded, is_asked, is_finished, run_id, text,
-        tool_done, until,
+        self, Done, FakeRun, answer, ends_as_recorded, finished, is_asked, is_finished, run_id,
+        text, tool_call, tool_done, until,
     };
 
     const SESSION: &str = "0b7c6a52-3f1e-4d2a-9c8b-5e4f3a2b1c0d";
@@ -354,20 +354,12 @@ mod tests {
             [
                 tool_done("toolu_01", false),
                 text("All 12 tests pass."),
-                ended(Outcome::Completed),
+                finished(Outcome::Completed),
             ]
         );
         let again = run.answer(&answer("run-1", true)).await.unwrap_err();
         assert_eq!(again.code().as_str(), "agent.no_such_prompt");
         ends_as_recorded(run, done).await;
-    }
-
-    fn tool_call(call: &str, tool: &str, input: Value) -> RunEvent {
-        RunEvent::ToolCall {
-            call: call.to_owned(),
-            tool: tool.to_owned(),
-            input,
-        }
     }
 
     #[tokio::test(start_paused = true)]
@@ -384,7 +376,7 @@ mod tests {
                 started(),
                 tool_call("toolu_02", "Write", write),
                 tool_done("toolu_02", true),
-                ended(Outcome::Completed),
+                finished(Outcome::Completed),
             ]
         );
         ends_as_recorded(run, done).await;
@@ -430,7 +422,7 @@ mod tests {
 
         assert_eq!(
             until(&mut run, is_finished).await,
-            [tool_done("toolu_05", false), ended(Outcome::Completed)]
+            [tool_done("toolu_05", false), finished(Outcome::Completed)]
         );
         ends_as_recorded(run, done).await;
     }
@@ -449,7 +441,7 @@ mod tests {
         run.answer(&answer("run-1", false)).await.unwrap();
         assert_eq!(
             until(&mut run, is_finished).await,
-            [tool_done("toolu_02", true), ended(Outcome::Completed)]
+            [tool_done("toolu_02", true), finished(Outcome::Completed)]
         );
         ends_as_recorded(run, done).await;
     }
@@ -465,7 +457,7 @@ mod tests {
         run.answer(&answer("run-1", false)).await.unwrap();
         assert_eq!(
             until(&mut run, is_finished).await,
-            [tool_done("toolu_02", true), ended(Outcome::Completed),]
+            [tool_done("toolu_02", true), finished(Outcome::Completed),]
         );
         ends_as_recorded(run, done).await;
     }
@@ -486,7 +478,7 @@ mod tests {
                     run: run_id("run-1"),
                     prompt: 1,
                 },
-                ended(Outcome::Interrupted),
+                finished(Outcome::Interrupted),
             ]
         );
         ends_as_recorded(run, done).await;
@@ -499,7 +491,11 @@ mod tests {
         run.send("Bump the version").await.unwrap();
         assert_eq!(
             until(&mut run, is_finished).await,
-            [started(), text("Bumping it now."), ended(Outcome::Unknown)]
+            [
+                started(),
+                text("Bumping it now."),
+                finished(Outcome::Unknown)
+            ]
         );
         ends_as_recorded(run, done).await;
 
@@ -510,7 +506,7 @@ mod tests {
             [
                 started(),
                 text("It didn't; the file is unchanged."),
-                ended(Outcome::Completed),
+                finished(Outcome::Completed),
             ]
         );
         ends_as_recorded(resumed, done).await;
@@ -525,7 +521,7 @@ mod tests {
             until(&mut run, is_finished).await,
             [
                 started(),
-                ended(Outcome::Failed {
+                finished(Outcome::Failed {
                     code: code!("agent.turn_failed"),
                 }),
             ]
@@ -562,7 +558,7 @@ mod tests {
         assert!(run.next().await.unwrap().as_ref().is_some_and(is_asked));
         let lost = run.answer(&answer("run-1", false)).await.unwrap_err();
         assert_eq!(lost.code().as_str(), "agent.io_failed");
-        assert_eq!(run.next().await.unwrap(), Some(ended(Outcome::Unknown)));
+        assert_eq!(run.next().await.unwrap(), Some(finished(Outcome::Unknown)));
         assert_eq!(run.next().await.unwrap(), None);
     }
 }

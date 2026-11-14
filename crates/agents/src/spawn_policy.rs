@@ -14,7 +14,7 @@ pub struct SpawnPolicy {
 
 impl SpawnPolicy {
     /// Adds the variables the driver doesn't set or remove itself, so a sign-in can't change.
-    pub(crate) fn apply(&self, command: &mut Command) {
+    pub(crate) fn add_env(&self, command: &mut Command) {
         let own: Vec<OsString> = command
             .as_std()
             .get_envs()
@@ -29,7 +29,7 @@ impl SpawnPolicy {
 
     /// Adjusts the agent just started, long before it can start a tool. The core sets a score
     /// only where it could write its own, so this fails only for an agent already gone.
-    pub(crate) fn adjust(&self, child: &Child) {
+    pub(crate) fn set_oom_score(&self, child: &Child) {
         if let (Some(score), Some(pid)) = (self.oom_score_adj, child.id()) {
             drop(std::fs::write(
                 format!("/proc/{pid}/oom_score_adj"),

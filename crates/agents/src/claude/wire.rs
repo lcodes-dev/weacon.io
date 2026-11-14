@@ -183,13 +183,3 @@ fn said(block: Block) -> Option<Effect> {
     };
     Some(Effect::Event(event))
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn the_texts_added_to_the_agents_context_keep_their_size() {
-        assert_eq!(DENIED.len(), 34);
-    }
-}

@@ -1,14 +1,19 @@
 //! Helpers for the drivers' tests: a run over a replayed session, and the events it yields.
 
+use std::path::Path;
 use std::time::Duration;
 
+use serde_json::Value;
 use tokio::io::{BufReader, DuplexStream};
 use tokio::task::JoinHandle;
 use tokio::time::timeout;
-use weacon_protocol::{AgentSession, App, Outcome, PermissionAnswer, RunEvent, RunId};
+use weacon_protocol::{
+    AccessLevel, AgentKind, AgentSession, App, Outcome, PermissionAnswer, RunEvent, RunId,
+};
 use weacon_testing::replay;
 
 use crate::access::Rules;
+use crate::launch::Launch;
 use crate::run::Run;
 use crate::wire::Wire;
 
@@ -111,6 +116,25 @@ pub(crate) fn tool_done(call: &str, failed: bool) -> RunEvent {
     }
 }
 
-pub(crate) const fn ended(outcome: Outcome) -> RunEvent {
+pub(crate) fn tool_call(call: &str, tool: &str, input: Value) -> RunEvent {
+    RunEvent::ToolCall {
+        call: call.to_owned(),
+        tool: tool.to_owned(),
+        input,
+    }
+}
+
+/// A launch of `agent` working in `dir`, with its program and config folder in it.
+pub(crate) fn launch(agent: AgentKind, dir: &Path) -> Launch {
+    Launch {
+        agent,
+        program: dir.join("agent"),
+        config_dir: dir.join("config"),
+        cwd: dir.to_path_buf(),
+        access: AccessLevel::AskFirst,
+    }
+}
+
+pub(crate) const fn finished(outcome: Outcome) -> RunEvent {
     RunEvent::Finished { outcome }
 }

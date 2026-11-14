@@ -12,7 +12,7 @@ use weacon_protocol::{AccessLevel, AgentKind, AgentSession, App, RunId, code};
 
 use crate::access::Rules;
 use crate::run::{self, AgentRun};
-use crate::spawn::SpawnPolicy;
+use crate::spawn_policy::SpawnPolicy;
 use crate::wire::Wire;
 use crate::{claude, codex};
 
@@ -226,17 +226,7 @@ mod tests {
     use weacon_testing::TempDir;
 
     use super::*;
-    use crate::test_support::{app, run_id};
-
-    fn launch(agent: AgentKind, dir: &TempDir) -> Launch {
-        Launch {
-            agent,
-            program: dir.join("agent"),
-            config_dir: dir.join("config"),
-            cwd: dir.to_path_buf(),
-            access: AccessLevel::AskFirst,
-        }
-    }
+    use crate::test_support::{app, launch, run_id};
 
     fn start(launch: &Launch) -> Result<AgentRun, Fault> {
         launch.start(&SpawnPolicy::default(), &app(), run_id("run-1"), None)

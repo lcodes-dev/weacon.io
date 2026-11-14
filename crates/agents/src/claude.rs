@@ -126,7 +126,7 @@ mod tests {
         use weacon_testing::TempDir;
 
         use crate::run::AgentRun;
-        use crate::spawn::SpawnPolicy;
+        use crate::spawn_policy::SpawnPolicy;
         use crate::test_support::{app, run_id, started};
 
         const SESSION_A: &str = "0b7c6a52-3f1e-4d2a-9c8b-5e4f3a2b1c0d";
@@ -322,13 +322,7 @@ mod tests {
 
     #[test]
     fn every_command_runs_with_the_workspaces_config() {
-        let claude = Launch {
-            agent: AgentKind::Claude,
-            program: PathBuf::from("claude"),
-            config_dir: PathBuf::from("/work/config"),
-            cwd: PathBuf::from("/work"),
-            access: AccessLevel::AskFirst,
-        };
+        let claude = crate::test_support::launch(AgentKind::Claude, Path::new("/work"));
         let check = status(&claude);
         assert_eq!(
             check.as_std().get_args().collect::<Vec<_>>(),
@@ -371,11 +365,8 @@ mod tests {
     fn every_level_ignores_the_repositorys_settings_and_read_only_refuses_changing_tools() {
         let args = |access| {
             let launch = Launch {
-                agent: AgentKind::Claude,
-                program: PathBuf::from("claude"),
-                config_dir: PathBuf::from("/work/config"),
-                cwd: PathBuf::from("/work"),
                 access,
+                ..crate::test_support::launch(AgentKind::Claude, Path::new("/work"))
             };
             let command = command(&launch, None);
             let args: Vec<_> = command.as_std().get_args().map(ToOwned::to_owned).collect();

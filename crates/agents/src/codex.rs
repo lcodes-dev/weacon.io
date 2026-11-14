@@ -48,13 +48,7 @@ mod tests {
 
     #[test]
     fn every_command_runs_with_the_workspaces_config() {
-        let launch = Launch {
-            agent: AgentKind::Codex,
-            program: "/work/codex".into(),
-            config_dir: "/work/config".into(),
-            cwd: "/work".into(),
-            access: weacon_protocol::AccessLevel::AskFirst,
-        };
+        let launch = crate::test_support::launch(AgentKind::Codex, Path::new("/work"));
         let status_command = status(&launch);
         let status_args: Vec<_> = status_command.as_std().get_args().collect();
 
