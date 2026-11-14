@@ -64,7 +64,8 @@ pub(crate) fn run(app: &crate::app::App) -> Result<(), Fault> {
             },
             app.log.clone(),
         )?;
-        daemon.serve(signals.wait()).await;
+        let serve = daemon.serve(signals.wait());
+        crate::reports::following(state_dir, &app.reporter, &app.log, serve).await;
         Ok(())
     })
 }

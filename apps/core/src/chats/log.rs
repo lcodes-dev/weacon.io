@@ -229,8 +229,10 @@ impl Log {
         let earlier = self.read(seq, seq).await?.pop().map(|entry| entry.event);
         let same = matches!(
             (earlier, action),
-            (Some(ChatEvent::Prompt { text: earlier, .. }), ChatAction::Prompt { text })
-                if earlier == *text
+            (
+                Some(ChatEvent::Prompt { text: was_text, repo: was_repo, .. }),
+                ChatAction::Prompt { text, repo },
+            ) if was_text == *text && was_repo == *repo
         );
         Ok(match (same, asked.receipted) {
             (true, true) => Seen::Same,
@@ -307,7 +309,7 @@ mod tests {
 
     use weacon_protocol::{
         ChatAnswer, ChatAnswerKind, ChatUpdate, Envelope, Message, Outcome, PermissionAnswer,
-        Receipt, RunId, WorkspaceId, encode_line,
+        Receipt, RepoId, RunId, WorkspaceId, encode_line,
     };
     use weacon_testing::TempDir;
 
@@ -333,6 +335,7 @@ mod tests {
         ChatEvent::Prompt {
             request: request(id),
             text: text.to_owned(),
+            repo: None,
         }
     }
 
@@ -367,6 +370,7 @@ mod tests {
     fn asks(text: &str) -> ChatAction {
         ChatAction::Prompt {
             text: text.to_owned(),
+            repo: None,
         }
     }
 
@@ -609,6 +613,11 @@ mod tests {
         let log = open(&dir).await;
         assert_eq!(seen(&log, "r-1", asks("Hi")).await, Seen::Same);
         assert_eq!(seen(&log, "r-1", asks("Bye")).await, Seen::Other);
+        let elsewhere = ChatAction::Prompt {
+            text: "Hi".to_owned(),
+            repo: Some(RepoId::try_from("site".to_owned()).unwrap()),
+        };
+        assert_eq!(seen(&log, "r-1", elsewhere).await, Seen::Other);
         assert_eq!(seen(&log, "r-1", ChatAction::Interrupt).await, Seen::Other);
         assert_eq!(seen(&log, "r-2", ChatAction::Interrupt).await, Seen::Same);
         assert_eq!(seen(&log, "r-2", allow).await, Seen::Same);

@@ -553,6 +553,7 @@ mod tests {
         ChatEvent::Prompt {
             request: prompt(request, text).request,
             text: text.to_owned(),
+            repo: None,
         }
     }
 

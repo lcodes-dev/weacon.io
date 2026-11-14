@@ -13,13 +13,13 @@
 }
 
 .composer textarea {
-  flex: 1;
   min-height: 2.5em;
   max-height: 40vh;
   resize: vertical;
   font: inherit;
   color: inherit;
   background: none;
+  position: relative;
   border: 1px solid var(--border);
   border-radius: 6px;
   padding: 6px 10px;
@@ -29,4 +29,95 @@
   flex-basis: 100%;
   margin: 0;
   font-size: 13px;
+}
+
+/* The box and its backdrop share one cell, so the backdrop's mentions sit under the box's text. */
+.composer .field {
+  flex: 1;
+  display: grid;
+}
+
+.composer .field > * {
+  grid-area: 1 / 1;
+  box-sizing: border-box;
+  margin: 0;
+  font: inherit;
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+  /* The same gutter in both, so a scrollbar in the box doesn't rewrap its text alone. */
+  scrollbar-gutter: stable;
+}
+
+.composer .backdrop {
+  /* Sized by the box alone, so long text scrolls instead of stretching the box. */
+  contain: size;
+  overflow: hidden;
+  color: transparent;
+  border: 1px solid transparent;
+  padding: 6px 10px;
+}
+
+.composer mark {
+  color: transparent;
+  background: color-mix(in srgb, #3b82f6 22%, transparent);
+  border-radius: 3px;
+}
+
+.composer .mentions {
+  flex-basis: 100%;
+  order: -1;
+  margin: 0;
+  padding: 4px 0;
+  list-style: none;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.composer .mentions li {
+  display: flex;
+  justify-content: space-between;
+  padding: 4px 10px;
+  cursor: pointer;
+}
+
+.composer .mentions [aria-selected="true"] {
+  background: color-mix(in srgb, var(--fg) 8%, transparent);
+}
+
+.composer .files {
+  flex-basis: 100%;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.composer .files li {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  padding: 2px 4px 2px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 13px;
+}
+
+.composer .files .name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.composer .files button {
+  border: none;
+  padding: 0 6px;
+}
+
+.composer[data-dropping] .field {
+  outline: 2px dashed var(--muted);
+  outline-offset: 2px;
+  border-radius: 6px;
 }

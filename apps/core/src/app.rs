@@ -64,10 +64,12 @@ impl App {
             log.warn("log file unavailable", &[("err", Field::error(&error))]);
         }
         let reports = reports(setup.env, &version, &log);
+        let agreed = state_dir
+            .as_deref()
+            .is_some_and(|dir| crate::reports::agreed(dir, &log));
         Self {
             version,
-            // The core sends nothing until it can ask the person and store their answer.
-            reporter: Arc::new(weacon_appkit::reporter(reports, false, setup.deliver)),
+            reporter: Arc::new(weacon_appkit::reporter(reports, agreed, setup.deliver)),
             log,
             state_dir,
             data_dir: platform::data_dir(setup.env),
@@ -219,6 +221,27 @@ mod tests {
         assert!(!app.reporter.agreed());
         assert_eq!(app.finish(Err(fault)), ExitCode::from(2));
         assert!(uploads.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_stored_answer_decides_whether_reports_are_sent() {
+        let fault = || Fault::new(code!("store.full"), "The store is full");
+        let sent = |answer: Option<&str>| {
+            let dir = TempDir::new().unwrap();
+            if let Some(answer) = answer {
+                fs::write(dir.join("reports.json"), answer).unwrap();
+            }
+            let (app, stderr, uploads) = start(&[state(&dir), ("WEACON_SENTRY_DSN", DSN)], false);
+            app.finish(Err(fault()));
+            (uploads.lock().unwrap().len(), messages(&stderr))
+        };
+
+        assert_eq!(sent(None).0, 0);
+        assert_eq!(sent(Some(r#"{"send":false}"#)).0, 0);
+        assert_eq!(sent(Some(r#"{"send":true}"#)).0, 1);
+        let (broken, warnings) = sent(Some("not json"));
+        assert_eq!(broken, 0);
+        assert_eq!(warnings.first(), Some(&"reports unreadable"));
     }
 
     #[test]

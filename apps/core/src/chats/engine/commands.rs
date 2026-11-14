@@ -2,8 +2,8 @@
 
 use weacon_observability::Fault;
 use weacon_protocol::{
-    AgentKind, ChatAction, ChatCommand, ChatEvent, Outcome, PermissionAnswer, RequestId, RunState,
-    code,
+    AgentKind, ChatAction, ChatCommand, ChatEvent, Outcome, PermissionAnswer, RepoId, RequestId,
+    RunState, code,
 };
 
 use super::{Engine, Key, Waiting, unsupported};
@@ -35,9 +35,11 @@ impl<A: Agent> Engine<A> {
             }
         }
         match command.action {
-            ChatAction::Prompt { text } => {
-                let committed = seen == Seen::Pending;
-                self.prompt(key, request, text, committed).await
+            ChatAction::Prompt { text, repo } => {
+                if seen != Seen::Pending {
+                    self.log_prompt(key, &request, &text, repo).await?;
+                }
+                self.prompt(key, request, text).await
             }
             ChatAction::Permission { answer } => self.permission(key, request, answer).await,
             ChatAction::Interrupt => self.interrupt(key, request).await,
@@ -46,14 +48,13 @@ impl<A: Agent> Engine<A> {
     }
 
     // A prompt is in the log before it is queued, and queued before it is accepted. Whichever
-    // step a first try stopped at, sending it again takes it from there: `committed` says its
-    // entry is in the log already.
-    async fn prompt(
+    // step a first try stopped at, sending it again takes it from there.
+    async fn log_prompt(
         &mut self,
         key: &Key,
-        request: RequestId,
-        text: String,
-        committed: bool,
+        request: &RequestId,
+        text: &str,
+        repo: Option<RepoId>,
     ) -> Result<(), Fault> {
         if text.trim().is_empty() {
             return Err(Fault::new(
@@ -61,13 +62,15 @@ impl<A: Agent> Engine<A> {
                 "The prompt is empty",
             ));
         }
-        if !committed {
-            let prompt = ChatEvent::Prompt {
-                request: request.clone(),
-                text: text.clone(),
-            };
-            self.commit(key, prompt).await?;
-        }
+        let prompt = ChatEvent::Prompt {
+            request: request.clone(),
+            text: text.to_owned(),
+            repo,
+        };
+        self.commit(key, prompt).await.map(drop)
+    }
+
+    async fn prompt(&mut self, key: &Key, request: RequestId, text: String) -> Result<(), Fault> {
         let queued = Queued {
             request: request.clone(),
             text,

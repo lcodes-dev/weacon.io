@@ -1,13 +1,10 @@
 use std::collections::BTreeMap;
 use std::fmt;
 
-use serde::Deserialize;
-
 use crate::area::areas;
+use crate::facts::{Facts, FileKind, Reader};
 use crate::graph::{file_links, nodes};
-use crate::outline::symbols;
-use crate::paths::paths;
-use crate::syntax::{parse, rust_parser};
+use crate::paths::Named;
 use crate::{Area, Error, Symbol};
 
 /// A file as the caller read it, its path relative to the repository root with `/` separators.
@@ -51,62 +48,66 @@ pub struct Module {
     pub symbols: Vec<Symbol>,
 }
 
-#[derive(Deserialize)]
-struct Manifest {
-    package: Option<Package>,
-}
-
-#[derive(Deserialize)]
-struct Package {
-    name: String,
-}
-
 /// Outlines every crate whose `Cargo.toml` is among `files`, from the `.rs` files under its `src/`.
 /// A `Cargo.toml` that isn't valid is skipped.
 ///
 /// # Errors
 ///
-/// When the Rust grammar can't be loaded or the parser gives up on a file.
+/// When the Rust grammar can't be loaded or the parser gives up on a `.rs` file.
 pub fn index(files: &[SourceFile]) -> Result<Index, Error> {
-    let mut crates: Vec<Crate> = files.iter().filter_map(manifest).collect();
+    let mut reader = Reader::new()?;
+    let facts = files
+        .iter()
+        .filter_map(|file| reader.facts(file).transpose())
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(assemble(&facts))
+}
+
+/// The index of a repository from the facts of its files.
+#[must_use]
+pub(crate) fn assemble(facts: &[Facts]) -> Index {
+    let mut crates: Vec<Crate> = facts.iter().filter_map(manifest).collect();
     crates.sort_by(|one, other| one.folder.cmp(&other.folder));
-    let mut parser = rust_parser()?;
     let mut named = BTreeMap::new();
-    let mut sources: Vec<&SourceFile> = files.iter().collect();
-    sources.sort_by(|one, other| one.path.cmp(&other.path));
-    for file in sources {
+    let mut sources: Vec<(&str, &[Symbol], &[Named])> = facts
+        .iter()
+        .filter_map(|facts| match &facts.kind {
+            FileKind::Rust { symbols, named } => {
+                Some((facts.path.as_str(), &symbols[..], &named[..]))
+            }
+            FileKind::Manifest(_) => None,
+        })
+        .collect();
+    sources.sort_by_key(|(path, ..)| *path);
+    for (file, symbols, paths) in sources {
         // A folder sorts before the folders inside it, so the last match is the innermost crate.
         let Some((owner, path)) = crates
             .iter_mut()
             .rev()
-            .find_map(|it| module_path(&it.folder, &file.path).map(|path| (it, path)))
+            .find_map(|it| module_path(&it.folder, file).map(|path| (it, path)))
         else {
             continue;
         };
-        let tree = parse(&mut parser, &file.text)?;
-        let source = file.text.as_bytes();
-        named.insert(file.path.clone(), paths(tree.root_node(), source));
+        named.insert(file, paths);
         owner.modules.push(Module {
             path,
-            file: file.path.clone(),
-            symbols: symbols(&tree, source),
+            file: file.to_owned(),
+            symbols: symbols.to_vec(),
         });
     }
     crates.iter_mut().for_each(root_binary);
     let nodes = nodes(&crates);
     let areas = areas(&nodes, &file_links(&nodes, &named));
-    Ok(Index { crates, areas })
+    Index { crates, areas }
 }
 
-fn manifest(file: &SourceFile) -> Option<Crate> {
-    let folder = match file.path.strip_suffix("/Cargo.toml") {
-        Some(folder) => folder,
-        None if file.path == "Cargo.toml" => "",
-        None => return None,
+fn manifest(facts: &Facts) -> Option<Crate> {
+    let FileKind::Manifest(name) = &facts.kind else {
+        return None;
     };
-    let manifest: Manifest = toml::from_str(&file.text).ok()?;
-    manifest.package.map(|package| Crate {
-        name: package.name.replace('-', "_"),
+    let folder = facts.path.strip_suffix("/Cargo.toml").unwrap_or_default();
+    Some(Crate {
+        name: name.clone(),
         folder: folder.to_owned(),
         modules: Vec::new(),
     })
@@ -287,6 +288,28 @@ mod tests {
                 "b [b] main::x b/src/main/x.rs: x",
             ]
         );
+    }
+
+    #[test]
+    fn assembles_kept_facts_with_a_changed_file() {
+        let files = [
+            file("a/Cargo.toml", "[package]\nname = \"a\"\n"),
+            file("a/src/lib.rs", "mod m;\npub fn run() { m::go(); }\n"),
+            file("a/src/m.rs", "pub fn go() {}\n"),
+        ];
+        let mut reader = Reader::new().unwrap();
+        let mut facts: Vec<Facts> = files
+            .iter()
+            .filter_map(|it| reader.facts(it).unwrap())
+            .collect();
+        let changed = file("a/src/m.rs", "pub fn went() {}\n");
+        facts.retain(|it| it.path != changed.path);
+        facts.extend(reader.facts(&changed).unwrap());
+
+        let fresh = index(&[files[0].clone(), files[1].clone(), changed]).unwrap();
+        assert_eq!(assemble(&facts), fresh);
+        assert!(fresh.symbol("a::m::went").is_some());
+        assert_eq!(fresh.areas.len(), 1);
     }
 
     #[test]

@@ -41,6 +41,11 @@ impl Email {
     pub(crate) fn as_str(&self) -> &str {
         &self.0
     }
+
+    /// What follows the `@`.
+    pub(crate) fn domain(&self) -> &str {
+        self.0.split_once('@').map_or("", |(_, domain)| domain)
+    }
 }
 
 // An address never reaches a log line, even through `{:?}`.

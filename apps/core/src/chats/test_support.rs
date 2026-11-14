@@ -148,7 +148,7 @@ pub(crate) fn command(request: &str, chat_id: &str, action: ChatAction) -> ChatC
 
 pub(crate) fn prompt(request: &str, text: &str) -> ChatCommand {
     let text = text.to_owned();
-    command(request, "c-1", ChatAction::Prompt { text })
+    command(request, "c-1", ChatAction::Prompt { text, repo: None })
 }
 
 pub(crate) fn query(chat_id: &str, query: ChatQueryKind) -> ChatQuery {
@@ -217,7 +217,7 @@ pub(crate) fn brief(message: &Message) -> String {
 
 fn event(event: &ChatEvent) -> String {
     match event {
-        ChatEvent::Prompt { request, text } => format!("prompt {} {text}", request.as_str()),
+        ChatEvent::Prompt { request, text, .. } => format!("prompt {} {text}", request.as_str()),
         ChatEvent::Receipt { receipt } => {
             format!(
                 "receipt {} {}",
