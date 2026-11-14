@@ -8,7 +8,10 @@ use syn::visit::{self, Visit};
 use syn::{Attribute, Ident, ItemFn, ItemMod, ItemUse, Macro, Meta, UseTree};
 
 use crate::SourceFile;
-use crate::rules::{DB_DRIVERS, IO_MODULES, MARKERS, MAX_CODE_LINES, OS_CFGS, Rule};
+use crate::rules::{
+    DB_DRIVERS, INTEGRATIONS_FOLDER, INTEGRATIONS_READER, IO_MODULES, MARKERS, MAX_CODE_LINES,
+    OS_CFGS, Rule,
+};
 
 pub(crate) fn check_sources(rule: &Rule, sources: &[SourceFile]) -> Vec<String> {
     let name = rule.package;
@@ -83,6 +86,11 @@ fn check_uses(rule: &Rule, path: &Path, uses: &Uses) -> Vec<String> {
             out.push("selects an operating system outside the platform module".to_owned());
         }
     }
+    if uses.includes_integrations && rule.package != INTEGRATIONS_READER {
+        out.push(format!(
+            "includes {INTEGRATIONS_FOLDER}/ files, which only {INTEGRATIONS_READER} reads"
+        ));
+    }
     out
 }
 
@@ -115,6 +123,8 @@ struct Uses {
     roots: BTreeSet<String>,
     std_modules: BTreeSet<String>,
     os_cfg: bool,
+    /// An `include!`, `include_str!` or `include_bytes!` of an integrations file.
+    includes_integrations: bool,
 }
 
 impl Uses {
@@ -282,6 +292,19 @@ impl<'ast> Visit<'ast> for Uses {
         if mac.path.is_ident("cfg") {
             self.os_cfg |= names_os(&mac.tokens.to_string());
         }
+        if ["include", "include_str", "include_bytes"]
+            .iter()
+            .any(|name| mac.path.is_ident(name))
+        {
+            let tokens = mac.tokens.to_string();
+            self.includes_integrations |= [
+                format!("/{INTEGRATIONS_FOLDER}/"),
+                format!("\"{INTEGRATIONS_FOLDER}/"),
+                format!("\"{INTEGRATIONS_FOLDER}\""),
+            ]
+            .iter()
+            .any(|named| tokens.contains(named));
+        }
         self.note_tokens(TokenBuffer::new2(mac.tokens.clone()).begin(), &[]);
         visit::visit_macro(self, mac);
     }
@@ -313,6 +336,34 @@ mod tests {
 
     fn check(rule: &Rule, path: &str, text: &str) -> Vec<String> {
         check_file(rule, &file(path, text))
+    }
+
+    #[test]
+    fn only_the_core_includes_integrations_files() {
+        let includes = [
+            "const S: &str = include_str!(\n    \"../../../integrations/claude/skill.md\"\n);",
+            "const B: &[u8] = include_bytes!(\"integrations/x.json\");",
+            "include!(\"../integrations/gen.json\");",
+            "const C: &str = include_str!(concat!(env!(\"CARGO_MANIFEST_DIR\"), \"/../../integrations/x.md\"));",
+            "const D: &str = include_str!(concat!(\"../../\", \"integrations\", \"/x.md\"));",
+            "const E: &str = include_str![\"integrations/x.md\"];",
+        ];
+        let refused = "includes integrations/ files, which only weacon-core reads";
+
+        for text in includes {
+            assert_eq!(check(&PURE, "src/lib.rs", text), [refused], "{text}");
+            assert!(check(&IO, "src/lib.rs", text).is_empty(), "{text}");
+        }
+        let elsewhere = [
+            "// integrations/ is read elsewhere\nconst A: &str = include_str!(\"a.txt\");",
+            "#[cfg(test)]\nmod tests { const A: &str = include_str!(\"integrations/a.md\"); }",
+            "const A: &str = concat!(\"integrations/\", \"a.md\");",
+            "const V: &str = include_str!(\"../assets/vendor_integrations/a.json\");",
+            "#[cfg(test)]\nfn helper() { include_str!(\"integrations/a.md\"); }",
+        ];
+        for text in elsewhere {
+            assert!(check(&PURE, "src/lib.rs", text).is_empty(), "{text}");
+        }
     }
 
     #[test]

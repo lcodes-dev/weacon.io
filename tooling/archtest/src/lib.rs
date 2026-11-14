@@ -1,6 +1,5 @@
 //! Checks that the workspace keeps its dependency rules and conventions; see `rules.rs`.
 
-mod integrations;
 mod manifest;
 mod rules;
 mod sources;
@@ -13,7 +12,7 @@ use std::process::Command;
 use serde::Deserialize;
 use toml::Table;
 
-use crate::rules::{PLANNED, RULES};
+use crate::rules::{INTEGRATIONS_DATA, INTEGRATIONS_FOLDER, PLANNED, RULES};
 
 #[derive(Deserialize)]
 struct Metadata {
@@ -92,13 +91,38 @@ pub fn violations(root: &Path) -> Result<Vec<String>, String> {
             if is_app {
                 out.extend(manifest::check_app_needs(package));
             }
-            let sources = read_sources(dir)?;
-            out.extend(sources::check_sources(rule, &sources));
-            out.extend(integrations::check_readers(&package.name, &sources));
+            out.extend(sources::check_sources(rule, &read_sources(dir)?));
         }
     }
-    out.extend(integrations::check_folder(&metadata.workspace_root)?);
+    out.extend(check_integrations(&metadata.workspace_root)?);
     Ok(out)
+}
+
+/// Each link in the integrations folder, and each file that isn't one of the data kinds it may
+/// hold.
+fn check_integrations(root: &Path) -> Result<Vec<String>, String> {
+    let mut found: Vec<String> = files_under(&root.join(INTEGRATIONS_FOLDER))?
+        .iter()
+        .filter_map(|path| {
+            let link = fs::symlink_metadata(path).is_ok_and(|metadata| metadata.is_symlink());
+            let kind = path.extension().and_then(|extension| extension.to_str());
+            let data = kind.is_some_and(|kind| INTEGRATIONS_DATA.contains(&kind));
+            let shown = path.strip_prefix(root).unwrap_or(path).display();
+            if link {
+                Some(format!(
+                    "{shown} is a link; {INTEGRATIONS_FOLDER}/ holds only its own files"
+                ))
+            } else if data {
+                None
+            } else {
+                Some(format!(
+                    "{shown} isn't data; {INTEGRATIONS_FOLDER}/ holds only JSON and Markdown"
+                ))
+            }
+        })
+        .collect();
+    found.sort();
+    Ok(found)
 }
 
 fn read_metadata(root: &Path) -> Result<Metadata, String> {
@@ -132,25 +156,37 @@ fn read_manifest(path: &Path) -> Result<Table, String> {
 
 fn read_sources(dir: &Path) -> Result<Vec<SourceFile>, String> {
     let mut sources = Vec::new();
-    let mut pending: Vec<PathBuf> = ["build.rs", "src", "tests", "benches"]
-        .iter()
-        .map(|name| dir.join(name))
-        .filter(|path| path.exists())
-        .collect();
+    for name in ["build.rs", "src", "tests", "benches"] {
+        for path in files_under(&dir.join(name))? {
+            if path.extension().is_some_and(|extension| extension == "rs") {
+                let text = read(&path)?;
+                let path = path.strip_prefix(dir).unwrap_or(&path).to_path_buf();
+                sources.push(SourceFile { path, text });
+            }
+        }
+    }
+    Ok(sources)
+}
+
+/// Every file and link at or under `path`, without following links; none when nothing is there.
+fn files_under(path: &Path) -> Result<Vec<PathBuf>, String> {
+    let mut files = Vec::new();
+    let mut pending = vec![path.to_path_buf()];
     while let Some(path) = pending.pop() {
-        if path.is_dir() {
+        let Ok(kind) = fs::symlink_metadata(&path).map(|metadata| metadata.file_type()) else {
+            continue;
+        };
+        if kind.is_dir() {
             let entries =
                 fs::read_dir(&path).map_err(|error| format!("{}: {error}", path.display()))?;
             for entry in entries {
                 pending.push(entry.map_err(|error| error.to_string())?.path());
             }
-        } else if path.extension().is_some_and(|extension| extension == "rs") {
-            let text = read(&path)?;
-            let path = path.strip_prefix(dir).unwrap_or(&path).to_path_buf();
-            sources.push(SourceFile { path, text });
+        } else {
+            files.push(path);
         }
     }
-    Ok(sources)
+    Ok(files)
 }
 
 fn read(path: &Path) -> Result<String, String> {
@@ -169,17 +205,56 @@ mod tests {
         assert!(found.is_empty(), "{}", found.join("\n"));
     }
 
-    #[test]
-    fn a_folder_without_a_workspace_is_an_error() {
+    // archtest may use nothing in the repo, so not weacon_testing's TempDir.
+    fn temp_dir() -> PathBuf {
         use std::hash::{BuildHasher, RandomState};
 
-        // archtest may use nothing in the repo, so not weacon_testing's TempDir.
         let id = RandomState::new().hash_one(std::process::id());
         let dir = std::env::temp_dir().join(format!("weacon-archtest-{id:016x}"));
         fs::create_dir(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn a_folder_without_a_workspace_is_an_error() {
+        let dir = temp_dir();
         let found = violations(&dir);
         fs::remove_dir(&dir).unwrap();
 
         found.unwrap_err();
+    }
+
+    #[test]
+    fn the_integrations_folder_holds_only_data_and_may_be_missing() {
+        let root = temp_dir();
+        let hooks = root.join("integrations/claude/hooks");
+        fs::create_dir_all(&hooks).unwrap();
+        for name in ["hooks.json", "run.sh", "notes"] {
+            fs::write(hooks.join(name), "").unwrap();
+        }
+        fs::write(root.join("integrations/claude/SKILL.md"), "").unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink("..", hooks.join("up.json")).unwrap();
+
+        let found = check_integrations(&root);
+        let missing = check_integrations(&root.join("nowhere"));
+        fs::remove_dir_all(&root).unwrap();
+
+        let expected = |name: &str| {
+            let path = Path::new("integrations/claude/hooks").join(name);
+            let path = path.display();
+            format!("{path} isn't data; integrations/ holds only JSON and Markdown")
+        };
+        let mut expected = vec![expected("notes"), expected("run.sh")];
+        if cfg!(unix) {
+            let link = Path::new("integrations/claude/hooks/up.json");
+            let link = link.display();
+            expected.push(format!(
+                "{link} is a link; integrations/ holds only its own files"
+            ));
+        }
+        expected.sort();
+        assert_eq!(found.unwrap(), expected);
+        assert!(missing.unwrap().is_empty());
     }
 }

@@ -151,14 +151,12 @@ pub(crate) const IO_PACKAGES: &[&str] = &[
     "walkdir",
 ];
 
-/// The folder of plugin files, hooks and skills Weacon gives people's agents, and the one
-/// package that reads it.
-pub(crate) const INTEGRATIONS: (&str, &str) = ("integrations", "weacon-core");
-
-/// File extensions that mark code, which the integrations folder never holds.
-pub(crate) const CODE_EXTENSIONS: &[&str] = &[
-    "bat", "cjs", "cmd", "js", "mjs", "ps1", "py", "rs", "sh", "ts", "tsx",
-];
+/// The folder of plugin files, hooks and skills Weacon gives people's agents.
+pub(crate) const INTEGRATIONS_FOLDER: &str = "integrations";
+/// The only package that includes the integrations folder's files.
+pub(crate) const INTEGRATIONS_READER: &str = "weacon-core";
+/// The kinds of file the integrations folder may hold: data, never code.
+pub(crate) const INTEGRATIONS_DATA: &[&str] = &["json", "md"];
 
 /// The most lines a source file may hold before its test module.
 pub(crate) const MAX_CODE_LINES: usize = 400;
