@@ -112,6 +112,10 @@ pub enum RunEvent {
         run: RunId,
         prompt: u32,
     },
+    /// A person answered a waiting prompt; committed before the agent is told.
+    PermissionAnswered {
+        answer: PermissionAnswer,
+    },
     /// Ends the turn and withdraws any prompt still waiting.
     Finished {
         outcome: Outcome,
@@ -237,6 +241,24 @@ mod tests {
         assert_eq!(serde_json::to_value(&run).unwrap(), json!("run-7"));
         assert_eq!(RunId::try_from("a b".to_owned()), Err("a b".to_owned()));
         serde_json::from_value::<RunId>(json!("a/b")).unwrap_err();
+    }
+
+    #[test]
+    fn an_answer_travels_with_the_prompt_it_answers() {
+        let run = RunId::try_from("run-1".to_owned()).unwrap();
+        let answer = PermissionAnswer {
+            run,
+            prompt: 2,
+            allow: false,
+        };
+        let event = RunEvent::PermissionAnswered { answer };
+        let wire = json!({
+            "event": "permission_answered",
+            "answer": { "run": "run-1", "prompt": 2, "allow": false }
+        });
+
+        assert_eq!(serde_json::to_value(&event).unwrap(), wire);
+        assert_eq!(serde_json::from_value::<RunEvent>(wire).unwrap(), event);
     }
 
     #[test]
