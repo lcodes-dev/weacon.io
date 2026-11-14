@@ -1,5 +1,5 @@
 use sqlx::SqliteConnection;
-use weacon_model::{Change, EditError, Task, TaskEdit, TaskVersion};
+use weacon_model::{Change, EditError, Revision, Task, TaskEdit};
 use weacon_observability::Fault;
 use weacon_protocol::{Author, MemberId, TaskId, TaskStatus, code};
 
@@ -66,7 +66,7 @@ impl Workspace {
     pub(crate) async fn edit_task(
         &self,
         id: &TaskId,
-        read_at: TaskVersion,
+        read_at: Revision,
         edit: TaskEdit,
         change: &Change,
     ) -> Result<Task, Fault> {
@@ -141,7 +141,7 @@ fn stored_task((id, title, status, order, version): Row) -> Result<Task, Fault> 
         status: stored_status(&status)?,
         order: stored(order)?,
         version: u64::try_from(version)
-            .map(TaskVersion::new)
+            .map(Revision::new)
             .map_err(|_| unreadable())?,
     })
 }
@@ -176,7 +176,7 @@ fn last_version() -> Fault {
     )
 }
 
-fn version_number(version: TaskVersion) -> Result<i64, Fault> {
+fn version_number(version: Revision) -> Result<i64, Fault> {
     i64::try_from(version.get()).map_err(|_| last_version())
 }
 
@@ -208,7 +208,7 @@ fn author_columns(author: &Author) -> Result<(&'static str, &MemberId), Fault> {
 
 #[cfg(test)]
 mod tests {
-    use weacon_model::{OrderKey, TaskTitle};
+    use weacon_model::{OrderKey, Title};
     use weacon_testing::TempDir;
 
     use super::*;
@@ -219,7 +219,7 @@ mod tests {
     fn new_task(id: &str, title: &str, order: &str) -> Task {
         Task::new(
             TaskId::try_from(id.to_owned()).unwrap(),
-            TaskTitle::try_from(title.to_owned()).unwrap(),
+            Title::try_from(title.to_owned()).unwrap(),
             OrderKey::try_from(order.to_owned()).unwrap(),
         )
     }
@@ -229,7 +229,7 @@ mod tests {
     }
 
     fn rename(title: &str) -> TaskEdit {
-        TaskEdit::Title(TaskTitle::try_from(title.to_owned()).unwrap())
+        TaskEdit::Title(Title::try_from(title.to_owned()).unwrap())
     }
 
     fn code(fault: &Fault) -> &str {
@@ -282,7 +282,7 @@ mod tests {
         let id = task.id.clone();
 
         let renamed = one
-            .edit_task(&id, TaskVersion::FIRST, rename("Ship"), &by("m1"))
+            .edit_task(&id, Revision::FIRST, rename("Ship"), &by("m1"))
             .await
             .unwrap();
         let done = one
@@ -306,7 +306,7 @@ mod tests {
 
         let expected = Task {
             status: TaskStatus::Done,
-            version: TaskVersion::new(4),
+            version: Revision::new(4),
             ..new_task("t1", "Ship", "W")
         };
         assert_eq!(moved, expected);
@@ -358,12 +358,12 @@ mod tests {
         let task = new_task("t1", "Write", "V");
         one.add_task(&task, &by("m1")).await.unwrap();
         let first = one
-            .edit_task(&task.id, TaskVersion::FIRST, rename("Ship"), &by("m1"))
+            .edit_task(&task.id, Revision::FIRST, rename("Ship"), &by("m1"))
             .await
             .unwrap();
 
         let late = one
-            .edit_task(&task.id, TaskVersion::FIRST, rename("Drop"), &by("m1"))
+            .edit_task(&task.id, Revision::FIRST, rename("Drop"), &by("m1"))
             .await
             .unwrap_err();
 
@@ -379,7 +379,7 @@ mod tests {
         let task = new_task("t1", "Write", "V");
         one.add_task(&task, &by("m1")).await.unwrap();
         let agents = Change::accepted(member_id("m1"), member_id("m3"), NOW + 5);
-        one.edit_task(&task.id, TaskVersion::FIRST, rename("Ship"), &agents)
+        one.edit_task(&task.id, Revision::FIRST, rename("Ship"), &agents)
             .await
             .unwrap();
 
@@ -412,7 +412,7 @@ mod tests {
         let id = TaskId::try_from("t1".to_owned()).unwrap();
 
         let edited = two
-            .edit_task(&id, TaskVersion::FIRST, rename("Changed"), &by("m2"))
+            .edit_task(&id, Revision::FIRST, rename("Changed"), &by("m2"))
             .await
             .unwrap();
 
@@ -430,11 +430,11 @@ mod tests {
         one.add_task(&task, &by("m1")).await.unwrap();
 
         let missing = two
-            .edit_task(&task.id, TaskVersion::FIRST, rename("Taken"), &by("m2"))
+            .edit_task(&task.id, Revision::FIRST, rename("Taken"), &by("m2"))
             .await
             .unwrap_err();
         let stranger = one
-            .edit_task(&task.id, TaskVersion::FIRST, rename("Taken"), &by("m2"))
+            .edit_task(&task.id, Revision::FIRST, rename("Taken"), &by("m2"))
             .await
             .unwrap_err();
         let added = one
@@ -471,7 +471,7 @@ mod tests {
         let moved_onto = one
             .edit_task(
                 &task.id,
-                TaskVersion::FIRST,
+                Revision::FIRST,
                 TaskEdit::Order(OrderKey::try_from("W".to_owned()).unwrap()),
                 &by("m1"),
             )
@@ -496,14 +496,14 @@ mod tests {
             ..new_task("t2", "Read", "W")
         };
         let too_far = Task {
-            version: TaskVersion::new(u64::MAX),
+            version: Revision::new(u64::MAX),
             ..new_task("t3", "Read", "X")
         };
 
         let edited = one
             .edit_task(
                 &task.id,
-                TaskVersion::FIRST,
+                Revision::FIRST,
                 TaskEdit::Status(TaskStatus::Newer),
                 &by("m1"),
             )
@@ -533,7 +533,7 @@ mod tests {
             .execute(&one.db.writer)
             .await
             .unwrap();
-        let last = TaskVersion::new(u64::try_from(i64::MAX).unwrap());
+        let last = Revision::new(u64::try_from(i64::MAX).unwrap());
 
         let fault = one
             .edit_task(&task.id, last, rename("Ship"), &by("m1"))
