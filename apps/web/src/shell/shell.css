@@ -1,0 +1,33 @@
+.who {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.sign-in form {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 12px;
+  max-width: 320px;
+}
+
+.sign-in label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  align-self: stretch;
+}
+
+.sign-in input {
+  font: inherit;
+  color: inherit;
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 8px;
+}
+
+[role="alert"] {
+  margin: 8px 16px;
+}

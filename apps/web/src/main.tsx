@@ -11,7 +11,9 @@ import { Feed, nextFrame } from "./feed.ts";
 import { Log } from "./log.ts";
 import { placeOf } from "./place.ts";
 import { Receipts } from "./receipts.ts";
-import { serverUrl } from "./server.ts";
+import { fakeServerUrl } from "./server.ts";
+import { Api } from "./shell/api.ts";
+import { Shell } from "./shell/shell.tsx";
 import { EMPTY, apply } from "./transcript.ts";
 
 const log = new Log();
@@ -29,7 +31,7 @@ window.addEventListener("unhandledrejection", crash);
 log.info("app started");
 const place = placeOf(window.location.search);
 
-function Root() {
+function Root({ url }: { url: string }) {
   const [status, setStatus] = useState<Status>({ state: "connecting" });
   const [transcript, setTranscript] = useState(EMPTY);
   const [send, setSend] = useState<Send>();
@@ -42,7 +44,7 @@ function Root() {
     let current = true;
     let socket: WebSocket;
     try {
-      socket = new WebSocket(serverUrl(window.location));
+      socket = new WebSocket(url);
     } catch {
       // Only a malformed `?server=` gets here.
       setStatus({ state: "ended", code: "connection.refused" });
@@ -97,7 +99,7 @@ function Root() {
       current = false;
       socket.close();
     };
-  }, []);
+  }, [url]);
   const openChanges = () => {
     // Asked the first time they are opened, and again after answers were cut short.
     if (needsAsking(changes) && place !== undefined && connected.current !== undefined) {
@@ -112,11 +114,12 @@ function Root() {
   );
 }
 
+const fake = fakeServerUrl(window.location);
 const root = document.getElementById("root");
 if (root !== null) {
   createRoot(root).render(
     <StrictMode>
-      <Root />
+      {fake === undefined ? <Shell api={new Api(fetch.bind(window))} /> : <Root url={fake} />}
     </StrictMode>,
   );
 }
