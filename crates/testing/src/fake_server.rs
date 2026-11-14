@@ -15,6 +15,7 @@ use weacon_protocol::{Capability, Envelope, Message, code};
 
 use crate::Failure;
 use crate::fake_chat::FakeChat;
+use crate::fake_worktree::FakeWorktree;
 use crate::recording::envelope_text;
 use crate::replay::{BUFFER, play};
 use crate::{fake_core, fake_diff};
@@ -24,11 +25,13 @@ const OFFERED: &[Capability] = &[
     Capability::new(code!("chat.send")),
     Capability::new(code!("chat.events")),
     Capability::new(code!("diff.view")),
+    Capability::new(code!("worktree.manage")),
 ];
 
 /// Plays `recording` to the client on `stream`, waiting `pace` after each message, and appends
 /// each text frame the client sends after its hello to `received`, one per line. It offers
-/// `chat.send` and answers each prompt with a receipt that accepts it, and offers `diff.view`.
+/// `chat.send` and answers each prompt with a receipt that accepts it, and offers `diff.view` and
+/// `worktree.manage`.
 ///
 /// # Errors
 /// When the handshake fails, the client's first frame isn't a hello on this protocol that offers
@@ -51,6 +54,7 @@ pub async fn serve(
         return Err("the client speaks another protocol".into());
     }
     let chat = Mutex::new(FakeChat::new()?);
+    let worktree = Mutex::new(FakeWorktree::default());
     let (run_out, run_lines) = duplex(BUFFER);
     let (reply_sender, replies) = unbounded_channel();
     let playing = play(recording, BufReader::new(tokio::io::empty()), run_out, pace);
@@ -63,7 +67,7 @@ pub async fn serve(
             ))
         ));
     };
-    let keeping = keep(&mut frames, received, &chat, reply_sender);
+    let keeping = keep(&mut frames, received, (&chat, &worktree), reply_sender);
     tokio::pin!(keeping);
     tokio::select! {
         kept = &mut keeping => kept,
@@ -100,7 +104,7 @@ async fn send_all(
 async fn keep(
     frames: &mut (impl Stream<Item = tungstenite::Result<Frame>> + Unpin),
     received: &Path,
-    chat: &Mutex<FakeChat>,
+    fakes: (&Mutex<FakeChat>, &Mutex<FakeWorktree>),
     replies: UnboundedSender<String>,
 ) -> Result<(), Failure> {
     let mut file = OpenOptions::new()
@@ -112,7 +116,7 @@ async fn keep(
         file.write_all(format!("{text}\n").as_bytes()).await?;
         // Tokio's file writes in the background; a reader may look at any moment.
         file.flush().await?;
-        reply_to(&text, chat, &replies);
+        reply_to(&text, fakes, &replies);
     }
     Ok(())
 }
@@ -145,13 +149,20 @@ fn send_texts(replies: &UnboundedSender<String>, envelopes: &[Envelope]) {
     }
 }
 
-// Sends what answers `text` to `replies`: the answers to a diff query, and what the chat says to a
-// query or a command, its receipt included.
-fn reply_to(text: &str, chat: &Mutex<FakeChat>, replies: &UnboundedSender<String>) {
+// Sends what answers `text` to `replies`: the answers to a diff query, the worktree's answer, and
+// what the chat says to a query or a command, its receipt included.
+fn reply_to(
+    text: &str,
+    (chat, worktree): (&Mutex<FakeChat>, &Mutex<FakeWorktree>),
+    replies: &UnboundedSender<String>,
+) {
     let Ok(envelope) = Envelope::from_json(text.as_bytes()) else {
         return;
     };
     send_texts(replies, &fake_diff::answers(&envelope));
+    if let Ok(mut worktree) = worktree.lock() {
+        send_texts(replies, worktree.answer(&envelope).as_slice());
+    }
     if let Ok(mut chat) = chat.lock() {
         send_texts(replies, &chat.answer(&envelope));
     }
@@ -262,7 +273,8 @@ mod tests {
                 "log.forward",
                 "chat.send",
                 "chat.events",
-                "diff.view"
+                "diff.view",
+                "worktree.manage"
             ])
         );
         assert_eq!(streamed, expected);
@@ -333,6 +345,32 @@ mod tests {
                 (&json!("diff_answer"), &json!(9), &json!("q-1"))
             );
         }
+    }
+
+    #[tokio::test]
+    async fn worktree_queries_and_commands_are_answered_under_their_ids() {
+        let dir = TempDir::new().unwrap();
+        let (mut client, served) = start(String::new(), dir.join("received.jsonl")).await;
+        client.send(hello(PROTOCOL)).await.unwrap();
+        texts(&mut client, 1).await;
+        let state = json!({ "id": 9, "type": "worktree_query", "request": "q-1",
+                            "workspace": "w-1", "chat": "c-1", "query": { "kind": "state" } });
+        let remove = json!({ "id": 10, "type": "worktree_command", "request": "q-2",
+                             "workspace": "w-1", "chat": "c-1", "action": { "kind": "remove" } });
+        client.send(Frame::text(state.to_string())).await.unwrap();
+        client.send(Frame::text(remove.to_string())).await.unwrap();
+        // A deadline, so a server that never answers fails the test instead of hanging it.
+        let answers = tokio::time::timeout(Duration::from_secs(30), texts(&mut client, 2))
+            .await
+            .unwrap();
+        client.close(None).await.unwrap();
+        served.await.unwrap().unwrap();
+
+        let told: Vec<_> = answers
+            .iter()
+            .map(|answer| (answer["id"].clone(), answer["answer"]["removed"].clone()))
+            .collect();
+        assert_eq!(told, [(json!(9), json!(false)), (json!(10), json!(true))]);
     }
 
     // In memory rather than over TCP, so the paused clock only moves once both sides are idle.
