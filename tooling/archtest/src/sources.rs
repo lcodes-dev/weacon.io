@@ -150,26 +150,26 @@ impl Uses {
     /// Notes the paths in a macro's tokens, which `syn` leaves unparsed, each after `prefix`.
     fn note_tokens(&mut self, mut cursor: Cursor<'_>, prefix: &[Ident]) {
         let mut path = Vec::new();
-        let mut colons = 0;
+        let mut last = Last::Other;
         while let Some((_, next)) = cursor.token_tree() {
-            colons = self.note_token(cursor, prefix, &mut path, colons);
+            last = self.note_token(cursor, prefix, &mut path, last);
             cursor = next;
         }
         self.note_path(prefix, &mut path);
     }
 
-    // Takes the token at `cursor` into `path`, and returns how many colons now end it.
+    // Takes the token at `cursor` into `path`, and returns what now ends it.
     fn note_token(
         &mut self,
         cursor: Cursor<'_>,
         prefix: &[Ident],
         path: &mut Vec<Ident>,
-        colons: u8,
-    ) -> u8 {
+        last: Last,
+    ) -> Last {
         if let Some((punct, _)) = cursor.punct()
             && punct.as_char() == ':'
         {
-            return colons.saturating_add(1);
+            return last.colon();
         }
         if let Some((ident, next)) = cursor.ident() {
             if INCLUDES.iter().any(|name| ident == name)
@@ -179,27 +179,27 @@ impl Uses {
             {
                 self.includes_integrations |= names_integrations(inside);
             }
-            if colons == ALIAS {
-                return 0;
+            if last == Last::Alias {
+                return Last::Other;
             }
             let alias = ident == "as"
                 && prefix
                     .first()
                     .or_else(|| path.first())
                     .is_some_and(|first| first == "use");
-            if colons != 2 || ident == "as" {
+            if last != Last::PathSep || ident == "as" {
                 self.note_path(prefix, path);
             }
             if alias {
-                return ALIAS;
+                return Last::Alias;
             }
             // After `use`, even one segment names a crate, as in `use sqlx as db;`.
             let used = ident == "use";
             path.push(ident);
-            return if used { 2 } else { 0 };
+            return if used { Last::PathSep } else { Last::Other };
         }
         // A group straight after `::` continues the path, as in `std::{fs, env}`.
-        let outer = if colons == 2 {
+        let outer = if last == Last::PathSep {
             [prefix, path].concat()
         } else {
             Vec::new()
@@ -208,7 +208,7 @@ impl Uses {
         if let Some((inside, ..)) = cursor.any_group() {
             self.note_tokens(inside, &outer);
         }
-        0
+        Last::Other
     }
 
     fn note_path(&mut self, prefix: &[Ident], path: &mut Vec<Ident>) {
@@ -239,8 +239,27 @@ impl Uses {
     }
 }
 
-// Stands in for a colon count after `as` in a `use`: the next name is an alias, not a path.
-const ALIAS: u8 = u8::MAX;
+// What ends the path so far, while reading a macro's tokens.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Last {
+    Other,
+    Colon,
+    PathSep,
+    ManyColons,
+    // `as` in a `use`: the next name is an alias, not a path.
+    Alias,
+}
+
+impl Last {
+    const fn colon(self) -> Self {
+        match self {
+            Self::Other => Self::Colon,
+            Self::Colon => Self::PathSep,
+            Self::PathSep | Self::ManyColons => Self::ManyColons,
+            Self::Alias => Self::Alias,
+        }
+    }
+}
 
 // `path` without a leading `use`, and whether it had one.
 fn used(path: &[Ident]) -> (&[Ident], bool) {
