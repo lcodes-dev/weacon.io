@@ -1,3 +1,4 @@
+use std::error::Error;
 use std::ffi::OsString;
 use std::io;
 use std::ops::Deref;
@@ -115,6 +116,35 @@ pub(crate) async fn blocking<T: Send + 'static>(
         .unwrap_or_else(|error| Err(io::Error::other(error)))
 }
 
+/// A watch's failed readings: the first since a success warns, the rest are quiet.
+#[derive(Default)]
+pub(crate) struct WarnOnce {
+    failing: bool,
+}
+
+impl WarnOnce {
+    /// The reading, or `None` after warning with `event` if this is the first failure in a row.
+    pub(crate) fn check<T, E: Error + 'static>(
+        &mut self,
+        reading: Result<T, E>,
+        log: &Logger,
+        event: &'static str,
+    ) -> Option<T> {
+        let error = match reading {
+            Ok(value) => {
+                self.failing = false;
+                return Some(value);
+            }
+            Err(error) => error,
+        };
+        if !self.failing {
+            log.warn(event, &[("err", Field::error(&error))]);
+        }
+        self.failing = true;
+        None
+    }
+}
+
 /// The JSON in `path`, or `None` when there is no such file.
 pub(crate) fn read_json<T: DeserializeOwned>(path: &Path) -> io::Result<Option<T>> {
     match std::fs::read(path) {
@@ -158,7 +188,7 @@ mod tests {
     use weacon_testing::{TempDir, Uploads, recording_deliver};
 
     use super::*;
-    use crate::test_support::{Records, VERSION, env, messages, recording_sink};
+    use crate::test_support::{Records, VERSION, env, messages, recording_logger, recording_sink};
 
     const DSN: &str = "https://key@sentry.example.com/1";
 
@@ -169,6 +199,23 @@ mod tests {
 
         assert_eq!(answer, 7);
         assert_eq!(failed.unwrap_err().kind(), io::ErrorKind::Other);
+    }
+
+    #[test]
+    fn warn_once_warns_again_only_after_a_success() {
+        let (log, records) = recording_logger();
+        let mut warn = WarnOnce::default();
+        let mut check = |reading: io::Result<u8>| warn.check(reading, &log, "watch failed");
+
+        let read = [
+            check(Err(io::Error::other("unreadable"))),
+            check(Err(io::Error::other("unreadable"))),
+            check(Ok(7)),
+            check(Err(io::Error::other("unreadable"))),
+        ];
+
+        assert_eq!(read, [None, None, Some(7), None]);
+        assert_eq!(messages(&records), ["watch failed", "watch failed"]);
     }
 
     fn start(vars: &[(&str, &str)], verbose: bool) -> (App, Records, Uploads) {
