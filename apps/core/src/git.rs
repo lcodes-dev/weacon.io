@@ -18,6 +18,7 @@ pub(crate) mod chats;
 pub(crate) mod diff;
 pub(crate) mod removal;
 pub(crate) mod repos;
+pub(crate) mod service;
 mod state;
 
 // Variables that would point git at another repository, or stand in for `-c` options.

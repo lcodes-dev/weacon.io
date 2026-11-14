@@ -12,13 +12,14 @@ use weacon_agents::SpawnPolicy;
 pub(crate) use weacon_appkit::build;
 use weacon_observability::{Fault, Field, Logger};
 use weacon_protocol::{
-    App, ChatAnswer, ChatCommand, ChatQuery, Envelope, LineDecoder, Message, Outcome, Pick,
-    Receipt, code, encode_line,
+    App, ChatAnswer, ChatCommand, ChatQuery, DiffAnswer, DiffQuery, Envelope, FrameError,
+    LineDecoder, Message, Outcome, Pick, Receipt, WorktreeAnswer, code, encode_line,
 };
 
 use crate::chats::feed::{self, Client};
 use crate::chats::{self, Chats, Places};
 use crate::disk;
+use crate::git::service::Worktrees;
 use crate::mcp;
 use crate::memory;
 use crate::picks::{KeepError, Picks};
@@ -33,6 +34,13 @@ const MEMORY_SAMPLE: Duration = Duration::from_mins(5);
 
 pub(crate) fn socket_path(state_dir: &Path) -> PathBuf {
     state_dir.join("weacon.sock")
+}
+
+// The worktree answers, with this process's environment and the person's own Trash.
+fn worktrees(state_dir: &Path, places: &Places) -> Worktrees {
+    let env = |key: &str| std::env::var_os(key);
+    let (path, work_root) = (places.path.clone(), places.work_root.clone());
+    Worktrees::new(state_dir, path, work_root, &env, platform::trash::trash)
 }
 
 /// Runs the daemon until Ctrl-C or the system asks it to stop.
@@ -68,6 +76,7 @@ struct Shared {
     app: App,
     picks: Picks,
     chats: Chats,
+    worktrees: Worktrees,
     log: Logger,
 }
 
@@ -122,6 +131,7 @@ impl Daemon {
         }
         let (mcp, mcp_server) = mcp::start(&app, &log)?;
         places.mcp = Some(mcp);
+        let worktrees = worktrees(state_dir, &places);
         let (chats, engine) = chats::start(state_dir, places, app.clone(), spawn, log.clone())?;
         let listener = platform::bind(&socket).map_err(failed)?;
         let engine = tokio::spawn(engine.run());
@@ -134,6 +144,7 @@ impl Daemon {
                 app,
                 picks: Picks::new(state_dir),
                 chats,
+                worktrees,
                 log,
             },
             disk: disk::Watch::new(state_dir.to_owned(), platform::free_space),
@@ -272,21 +283,7 @@ async fn answer(
                 .log
                 .warn("client reported an error", &[("code", code)]);
         }
-        let reply = match received {
-            Ok(Envelope {
-                id,
-                message: Message::Pick(pick),
-            }) if session.greeted() => keep(shared, id, pick).await,
-            Ok(Envelope {
-                id,
-                message: Message::ChatCommand(command),
-            }) if session.greeted() => command_chat(shared, id, command).await,
-            Ok(Envelope {
-                id,
-                message: Message::ChatQuery(query),
-            }) if session.greeted() => query_chat(shared, id, query, client).await,
-            received => session.answer(received, &shared.app),
-        };
+        let reply = route(shared, session, received, client).await;
         if let Some(envelope) = reply.envelope
             && let Ok(line) = encode_line(&envelope)
         {
@@ -300,6 +297,48 @@ async fn answer(
         }
     }
     Ok(true)
+}
+
+// The reply to one message from a client; only a greeted one is served.
+async fn route(
+    shared: &Shared,
+    session: &mut Session,
+    received: Result<Envelope, FrameError>,
+    client: &Client,
+) -> Reply {
+    match received {
+        Ok(Envelope {
+            id,
+            message: Message::Pick(pick),
+        }) if session.greeted() => keep(shared, id, pick).await,
+        Ok(Envelope {
+            id,
+            message: Message::ChatCommand(command),
+        }) if session.greeted() => command_chat(shared, id, command).await,
+        Ok(Envelope {
+            id,
+            message: Message::ChatQuery(query),
+        }) if session.greeted() => query_chat(shared, id, query, client).await,
+        Ok(Envelope {
+            id,
+            message: Message::DiffQuery(query),
+        }) if session.greeted() => diff(shared, id, query, client).await,
+        Ok(Envelope {
+            id,
+            message: Message::WorktreeQuery(query),
+        }) if session.greeted() => {
+            let answer = shared.worktrees.query(query).await;
+            answer_worktree(shared, id, answer)
+        }
+        Ok(Envelope {
+            id,
+            message: Message::WorktreeCommand(command),
+        }) if session.greeted() => {
+            let answer = shared.worktrees.command(command).await;
+            answer_worktree(shared, id, answer)
+        }
+        received => session.answer(received, &shared.app),
+    }
 }
 
 // The reply to a chat command: nothing when it was taken, since its receipts are events in the
@@ -333,6 +372,42 @@ async fn query_chat(shared: &Shared, id: u32, query: ChatQuery, client: &Client)
                     chat,
                     answer,
                 }),
+            }),
+            close: false,
+        },
+        Err(fault) => refused(shared, id, &fault),
+    }
+}
+
+// A chat's changes, pushed one file at a time by a task of their own, so a long list never
+// waits on the queue this connection drains.
+async fn diff(shared: &Shared, id: u32, query: DiffQuery, client: &Client) -> Reply {
+    match shared.worktrees.diff(query).await {
+        Ok(answers) => {
+            tokio::spawn(push_all(client.push.clone(), answers));
+            Reply {
+                envelope: None,
+                close: false,
+            }
+        }
+        Err(fault) => refused(shared, id, &fault),
+    }
+}
+
+async fn push_all(push: mpsc::Sender<Message>, answers: Vec<DiffAnswer>) {
+    for answer in answers {
+        if push.send(Message::DiffAnswer(answer)).await.is_err() {
+            return;
+        }
+    }
+}
+
+fn answer_worktree(shared: &Shared, id: u32, answer: Result<WorktreeAnswer, Fault>) -> Reply {
+    match answer {
+        Ok(answer) => Reply {
+            envelope: Some(Envelope {
+                id,
+                message: Message::WorktreeAnswer(answer),
             }),
             close: false,
         },
@@ -385,7 +460,7 @@ mod tests {
     use tokio::io::{AsyncBufReadExt, AsyncRead};
     use tokio::sync::oneshot;
     use tokio::time::timeout;
-    use weacon_protocol::{ErrorBody, PROTOCOL, Welcome};
+    use weacon_protocol::{ChatId, ErrorBody, PROTOCOL, Welcome, WorkspaceId};
     use weacon_testing::TempDir;
 
     use super::*;
@@ -785,6 +860,75 @@ mod tests {
         running.stop().await;
     }
 
+    // A diff of `chat`, then a diff, a state query and a removal of `c-2`, which has no worktree.
+    fn worktree_asks(workspace: &WorkspaceId, chat: &ChatId) -> Vec<u8> {
+        use weacon_protocol::{
+            DiffQueryKind, RequestId, WorktreeAction, WorktreeCommand, WorktreeQuery,
+            WorktreeQueryKind,
+        };
+
+        let line = |id, message| encode_line(&Envelope { id, message }).unwrap();
+        let request = RequestId::try_from("r-1".to_owned()).unwrap();
+        let other = ChatId::try_from("c-2".to_owned()).unwrap();
+        let diff = |chat: &ChatId| DiffQuery {
+            request: request.clone(),
+            workspace: workspace.clone(),
+            chat: chat.clone(),
+            query: DiffQueryKind::Changes,
+        };
+        let query = WorktreeQuery {
+            request: request.clone(),
+            workspace: workspace.clone(),
+            chat: other.clone(),
+            query: WorktreeQueryKind::State,
+            by: None,
+        };
+        let command = WorktreeCommand {
+            request: request.clone(),
+            workspace: workspace.clone(),
+            chat: other.clone(),
+            action: WorktreeAction::Remove,
+            by: None,
+        };
+        [
+            hello(PROTOCOL),
+            line(2, Message::DiffQuery(diff(chat))),
+            line(3, Message::DiffQuery(diff(&other))),
+            line(4, Message::WorktreeQuery(query)),
+            line(5, Message::WorktreeCommand(command)),
+        ]
+        .concat()
+    }
+
+    fn diff_answer(message: &Message) -> Option<&weacon_protocol::DiffAnswerKind> {
+        let Message::DiffAnswer(answer) = message else {
+            return None;
+        };
+        Some(&answer.answer)
+    }
+
+    #[tokio::test]
+    async fn a_chats_changes_are_pushed_and_one_without_a_worktree_is_refused() {
+        use weacon_protocol::DiffAnswerKind;
+
+        let dir = TempDir::new().unwrap();
+        let (worktrees, workspace, chat, worktree) = crate::git::service::with_chat(&dir);
+        fs::write(worktree.join("agent.txt"), "mine\n").unwrap();
+        let running = start_as(&dir, |daemon| daemon.shared.worktrees = worktrees).unwrap();
+        let bytes = worktree_asks(&workspace, &chat);
+
+        let (replies, _stream) = exchange(connect(&running.socket).await, &bytes, 5).await;
+        running.stop().await;
+
+        let pushed = replies.iter().find_map(diff_answer);
+        let Some(DiffAnswerKind::File { files: 1, file }) = pushed else {
+            panic!("no change pushed: {replies:?}");
+        };
+        assert_eq!(file.path, "agent.txt");
+        let refused: Vec<&str> = replies.iter().filter_map(error_code).collect();
+        assert_eq!(refused, ["worktree.none"; 3]);
+    }
+
     #[tokio::test]
     async fn chat_commands_and_queries_reach_the_engine_and_its_events_come_back() {
         use crate::chats::test_support::{bench, brief, prompt, query, soon};
@@ -812,6 +956,8 @@ mod tests {
             code!("chat.send"),
             code!("chat.events"),
             code!("run.stream"),
+            code!("diff.view"),
+            code!("worktree.manage"),
         ];
         let Message::Welcome(welcome) = &replies[0] else {
             panic!("no welcome");

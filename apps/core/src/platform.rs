@@ -5,13 +5,6 @@ mod chrome;
 mod procs;
 mod programs;
 mod spawn_policy;
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "chats remove their worktrees through it once wired in"
-    )
-)]
 pub(crate) mod trash;
 #[cfg(unix)]
 mod unix;

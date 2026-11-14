@@ -1,0 +1,601 @@
+//! The core's answers to its clients about chats' worktrees: their changes, where they stand,
+//! and what a person asks of them. The daemon's clients are its owner's alone.
+
+use std::collections::BTreeMap;
+use std::ffi::OsString;
+use std::io;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
+use std::time::SystemTime;
+
+use weacon_observability::Fault;
+use weacon_protocol::{
+    ChatId, DiffAnswer, DiffAnswerKind, DiffContent, DiffQuery, DiffQueryKind, Envelope,
+    FrameError, Message, RequestId, WorkspaceId, WorktreeAction, WorktreeAnswer,
+    WorktreeAnswerKind, WorktreeCommand, WorktreeQuery, WorktreeQueryKind, code,
+};
+
+use super::branch::{Draft, Gh};
+use super::chats::{ChatRepo, ChatRepos};
+use super::removal::Journal;
+use super::{Git, branch};
+use crate::platform::Env;
+use crate::platform::trash::Trashed;
+use crate::workspaces::Workspaces;
+
+// The variables the Trash reads to find the person's own.
+const TRASH_VARS: [&str; 3] = ["HOME", "USERPROFILE", "XDG_DATA_HOME"];
+
+/// Moves an item to the Trash, as `platform::trash::trash`; tests pass one of their own.
+pub(crate) type ToTrash = fn(&Path, Env<'_>, SystemTime) -> io::Result<Trashed>;
+
+/// What answers about worktrees: one call at a time, as their journals need.
+#[derive(Clone)]
+pub(crate) struct Worktrees {
+    inner: Arc<Inner>,
+}
+
+// A chat that has a worktree: its git, its record and where the worktree is.
+struct Chat {
+    git: Git,
+    record: ChatRepo,
+    worktree: PathBuf,
+}
+
+struct Inner {
+    state_dir: PathBuf,
+    path: Option<OsString>,
+    work_root: Option<PathBuf>,
+    vars: BTreeMap<String, OsString>,
+    to_trash: ToTrash,
+    busy: Mutex<()>,
+}
+
+impl Worktrees {
+    /// Answers for the chats whose state is in `state_dir` and whose worktrees are in
+    /// `work_root`, finding git and gh on `path`.
+    pub(crate) fn new(
+        state_dir: &Path,
+        path: Option<OsString>,
+        work_root: Option<PathBuf>,
+        env: Env<'_>,
+        to_trash: ToTrash,
+    ) -> Self {
+        let vars = TRASH_VARS
+            .iter()
+            .filter_map(|name| Some(((*name).to_owned(), env(name)?)))
+            .collect();
+        let inner = Inner {
+            state_dir: state_dir.to_owned(),
+            path,
+            work_root,
+            vars,
+            to_trash,
+            busy: Mutex::new(()),
+        };
+        Self {
+            inner: Arc::new(inner),
+        }
+    }
+
+    /// Every answer to `query`, in the order they're sent.
+    pub(crate) async fn diff(&self, query: DiffQuery) -> Result<Vec<DiffAnswer>, Fault> {
+        self.blocking(move |inner| inner.diff(&query)).await
+    }
+
+    pub(crate) async fn query(&self, query: WorktreeQuery) -> Result<WorktreeAnswer, Fault> {
+        self.blocking(move |inner| {
+            let answer = match query.query {
+                WorktreeQueryKind::State => inner.state(&query.workspace, &query.chat)?,
+                WorktreeQueryKind::Newer => return Err(unknown()),
+            };
+            Ok(answered(query.request, query.workspace, query.chat, answer))
+        })
+        .await
+    }
+
+    pub(crate) async fn command(&self, command: WorktreeCommand) -> Result<WorktreeAnswer, Fault> {
+        self.blocking(move |inner| {
+            let (workspace, chat) = (&command.workspace, &command.chat);
+            let answer = inner.act(workspace, chat, command.action.clone())?;
+            Ok(answered(
+                command.request,
+                command.workspace,
+                command.chat,
+                answer,
+            ))
+        })
+        .await
+    }
+
+    // Runs `work` off the runtime, after any call already under way.
+    async fn blocking<T: Send + 'static>(
+        &self,
+        work: impl FnOnce(&Inner) -> Result<T, Fault> + Send + 'static,
+    ) -> Result<T, Fault> {
+        let inner = Arc::clone(&self.inner);
+        tokio::task::spawn_blocking(move || {
+            let _turn = inner.busy.lock().map_err(|_| failed())?;
+            work(&inner)
+        })
+        .await
+        .map_err(|_| failed())?
+    }
+}
+
+impl Inner {
+    fn diff(&self, query: &DiffQuery) -> Result<Vec<DiffAnswer>, Fault> {
+        if query.query != DiffQueryKind::Changes {
+            return Err(unknown());
+        }
+        let Chat {
+            git,
+            record,
+            worktree,
+        } = self.chat(&query.workspace, &query.chat)?;
+        let base = git.base(&worktree, &record.start)?;
+        let files = git.changes(&worktree, &base)?;
+        let answer = |answer| DiffAnswer {
+            request: query.request.clone(),
+            workspace: query.workspace.clone(),
+            chat: query.chat.clone(),
+            answer,
+        };
+        let Ok(count) = u32::try_from(files.len()) else {
+            return Err(Fault::new(
+                code!("diff.too_many"),
+                "Too many files changed to list",
+            ));
+        };
+        if count == 0 {
+            return Ok(vec![answer(DiffAnswerKind::Unchanged)]);
+        }
+        Ok(files
+            .into_iter()
+            .map(|file| answer(DiffAnswerKind::File { files: count, file }))
+            .map(fitted)
+            .collect())
+    }
+
+    fn state(&self, workspace: &WorkspaceId, chat: &ChatId) -> Result<WorktreeAnswerKind, Fault> {
+        let Chat {
+            git,
+            record,
+            worktree,
+        } = self.chat(workspace, chat)?;
+        if self.journal(workspace, &git).removed(chat)?.is_some() {
+            // What it holds stays as it was, in the Trash.
+            return Ok(WorktreeAnswerKind::State {
+                removed: true,
+                uncommitted: false,
+                unpushed: false,
+            });
+        }
+        let base = git.base(&worktree, &record.start)?;
+        let unsaved = git.unsaved(&worktree, &base)?;
+        Ok(WorktreeAnswerKind::State {
+            removed: false,
+            uncommitted: unsaved.uncommitted,
+            unpushed: unsaved.unpushed,
+        })
+    }
+
+    fn act(
+        &self,
+        workspace: &WorkspaceId,
+        chat: &ChatId,
+        action: WorktreeAction,
+    ) -> Result<WorktreeAnswerKind, Fault> {
+        let found = self.chat(workspace, chat)?;
+        let journal = self.journal(workspace, &found.git);
+        match action {
+            WorktreeAction::Remove => {
+                if journal.removed(chat)?.is_none() {
+                    let env = |key: &str| self.vars.get(key).cloned();
+                    let now = SystemTime::now();
+                    let to_trash = |path: &Path| (self.to_trash)(path, &env, now);
+                    journal.remove(chat, &found.worktree, to_trash, now)?;
+                }
+                self.state(workspace, chat)
+            }
+            WorktreeAction::Restore => {
+                if journal.removed(chat)?.is_some() {
+                    journal.restore(chat)?;
+                }
+                self.state(workspace, chat)
+            }
+            WorktreeAction::OpenPullRequest { title, body } => {
+                self.pull_request(&found, &title, &body)
+            }
+            WorktreeAction::Newer => Err(unknown()),
+        }
+    }
+
+    // Pushes the chat's branch, then opens its draft pull request with the workspace's own gh,
+    // or gives the page to open one on.
+    fn pull_request(
+        &self,
+        chat: &Chat,
+        title: &str,
+        body: &str,
+    ) -> Result<WorktreeAnswerKind, Fault> {
+        let Chat {
+            git,
+            record,
+            worktree,
+        } = chat;
+        let base = record.start.branch.as_deref().ok_or_else(|| {
+            Fault::new(code!("pr.no_base"), "The chat's branch began on no branch")
+        })?;
+        let branch = branch(&record.chat);
+        git.push(worktree, &branch)?;
+        let config = self.root(&record.workspace).join("gh");
+        let gh = Gh::find(self.path.as_deref().unwrap_or_default(), config);
+        if let Some(gh) = gh.filter(|gh| gh.signed_in(worktree)) {
+            let draft = Draft {
+                base,
+                branch: &branch,
+                title,
+                body,
+            };
+            let url = gh.open_draft(worktree, &draft)?;
+            return Ok(WorktreeAnswerKind::PullRequestOpened { url });
+        }
+        let url = git.compare_page(worktree, base, &branch)?;
+        Ok(WorktreeAnswerKind::PullRequestPage { url })
+    }
+
+    // The chat's git, record and worktree; a chat that hasn't one is refused.
+    fn chat(&self, workspace: &WorkspaceId, chat: &ChatId) -> Result<Chat, Fault> {
+        let records = ChatRepos::new(
+            workspace.clone(),
+            self.root(workspace).join("git/chats.json"),
+        );
+        let none = || Fault::new(code!("worktree.none"), "The chat has no worktree");
+        let record = records.get(chat)?.ok_or_else(none)?;
+        let work_root = self.work_root.as_deref().ok_or_else(none)?;
+        let worktree = crate::chats::chat_folder(work_root, workspace, chat);
+        let git = Git::open(&self.state_dir, self.path.as_deref())?;
+        Ok(Chat {
+            git,
+            record,
+            worktree,
+        })
+    }
+
+    fn journal(&self, workspace: &WorkspaceId, git: &Git) -> Journal {
+        let file = self.root(workspace).join("git/removed.json");
+        Journal::new(workspace.clone(), file, git.clone())
+    }
+
+    fn root(&self, workspace: &WorkspaceId) -> PathBuf {
+        Workspaces::new(&self.state_dir, self.path.clone()).root(workspace)
+    }
+}
+
+// `answer`, its file said to be too large when it wouldn't fit one frame.
+fn fitted(mut answer: DiffAnswer) -> DiffAnswer {
+    let envelope = Envelope {
+        id: 0,
+        message: Message::DiffAnswer(answer.clone()),
+    };
+    if envelope.to_json() == Err(FrameError::TooLarge)
+        && let DiffAnswerKind::File { file, .. } = &mut answer.answer
+    {
+        file.content = DiffContent::TooLarge;
+    }
+    answer
+}
+
+fn answered(
+    request: RequestId,
+    workspace: WorkspaceId,
+    chat: ChatId,
+    answer: WorktreeAnswerKind,
+) -> WorktreeAnswer {
+    WorktreeAnswer {
+        request,
+        workspace,
+        chat,
+        answer,
+    }
+}
+
+fn unknown() -> Fault {
+    Fault::new(
+        code!("request.unknown"),
+        "This core doesn't know that request",
+    )
+}
+
+fn failed() -> Fault {
+    Fault::new(
+        code!("worktree.failed"),
+        "The worktree couldn't be answered for",
+    )
+}
+
+/// Answers for a chat `c-1` in workspace `w-1` whose first prompt named a repository, with its
+/// worktree made and recorded under `dir`; its Trash is a folder there too.
+#[cfg(test)]
+pub(crate) fn with_chat(dir: &Path) -> (Worktrees, WorkspaceId, ChatId, PathBuf) {
+    use weacon_protocol::RepoId;
+
+    use crate::git::tests::{chat, git, repo};
+
+    let (state, work) = (dir.join("state"), dir.join("work"));
+    let workspace = WorkspaceId::try_from("w-1".to_owned()).unwrap();
+    let chat_id = chat("c-1");
+    let repo = repo(dir);
+    let worktree = crate::chats::chat_folder(&work, &workspace, &chat_id);
+    let start = git(dir)
+        .chat_worktree(&repo, &chat_id, &worktree)
+        .unwrap()
+        .start
+        .unwrap();
+    let root = Workspaces::new(&state, None).root(&workspace);
+    ChatRepos::new(workspace.clone(), root.join("git/chats.json"))
+        .record(
+            &chat_id,
+            RepoId::try_from("site".to_owned()).unwrap(),
+            start,
+        )
+        .unwrap();
+    let trash = dir.join("bin");
+    let env = |key: &str| (key == "XDG_DATA_HOME").then(|| trash.clone().into_os_string());
+    let worktrees = Worktrees::new(&state, std::env::var_os("PATH"), Some(work), &env, bin);
+    (worktrees, workspace, chat_id, worktree)
+}
+
+#[cfg(test)]
+// A Trash of the test's own, in the folder its `XDG_DATA_HOME` names.
+fn bin(path: &Path, env: Env<'_>, _: SystemTime) -> io::Result<Trashed> {
+    let bin = PathBuf::from(env("XDG_DATA_HOME").ok_or(io::ErrorKind::NotFound)?);
+    std::fs::create_dir_all(&bin)?;
+    let item = bin.join(path.file_name().ok_or(io::ErrorKind::InvalidInput)?);
+    std::fs::rename(path, &item)?;
+    Ok(Trashed { item, info: None })
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+
+    use weacon_protocol::{DiffFile, WorktreeAction as Action};
+    use weacon_testing::TempDir;
+
+    use super::*;
+    use crate::git::tests::{chat, fixture};
+
+    struct Bench {
+        dir: TempDir,
+        worktrees: Worktrees,
+        workspace: WorkspaceId,
+        chat: ChatId,
+        worktree: PathBuf,
+    }
+
+    fn bench() -> Bench {
+        let dir = TempDir::new().unwrap();
+        let (worktrees, workspace, chat, worktree) = with_chat(&dir);
+        Bench {
+            dir,
+            worktrees,
+            workspace,
+            chat,
+            worktree,
+        }
+    }
+
+    fn request() -> RequestId {
+        RequestId::try_from("r-1".to_owned()).unwrap()
+    }
+
+    impl Bench {
+        async fn changes(&self) -> Result<Vec<DiffAnswerKind>, Fault> {
+            let query = DiffQuery {
+                request: request(),
+                workspace: self.workspace.clone(),
+                chat: self.chat.clone(),
+                query: DiffQueryKind::Changes,
+            };
+            let answers = self.worktrees.diff(query).await?;
+            Ok(answers.into_iter().map(|answer| answer.answer).collect())
+        }
+
+        async fn state(&self) -> Result<WorktreeAnswerKind, Fault> {
+            let query = WorktreeQuery {
+                request: request(),
+                workspace: self.workspace.clone(),
+                chat: self.chat.clone(),
+                query: WorktreeQueryKind::State,
+                by: None,
+            };
+            Ok(self.worktrees.query(query).await?.answer)
+        }
+
+        async fn act(&self, action: Action) -> Result<WorktreeAnswerKind, Fault> {
+            let command = WorktreeCommand {
+                request: request(),
+                workspace: self.workspace.clone(),
+                chat: self.chat.clone(),
+                action,
+                by: None,
+            };
+            Ok(self.worktrees.command(command).await?.answer)
+        }
+    }
+
+    // The path of a file that's one of two changed.
+    fn path_of_two(kind: &DiffAnswerKind) -> Option<&str> {
+        let DiffAnswerKind::File { files: 2, file } = kind else {
+            return None;
+        };
+        Some(file.path.as_str())
+    }
+
+    fn state(removed: bool, uncommitted: bool, unpushed: bool) -> WorktreeAnswerKind {
+        WorktreeAnswerKind::State {
+            removed,
+            uncommitted,
+            unpushed,
+        }
+    }
+
+    fn code(fault: &Fault) -> &str {
+        fault.code().as_str()
+    }
+
+    #[tokio::test]
+    async fn a_chats_changes_come_one_file_at_a_time_or_as_none() {
+        let bench = bench();
+
+        assert_eq!(bench.changes().await.unwrap(), [DiffAnswerKind::Unchanged]);
+        fs::write(bench.worktree.join("agent.txt"), "mine\n").unwrap();
+        fs::write(bench.worktree.join("other.txt"), "more\n").unwrap();
+
+        let changes = bench.changes().await.unwrap();
+
+        assert_eq!(changes.len(), 2);
+        let paths: Vec<&str> = changes.iter().filter_map(path_of_two).collect();
+        assert_eq!(paths, ["agent.txt", "other.txt"]);
+    }
+
+    #[tokio::test]
+    async fn a_worktree_says_what_removing_it_would_set_aside() {
+        let bench = bench();
+
+        assert_eq!(bench.state().await.unwrap(), state(false, false, false));
+        fs::write(bench.worktree.join("agent.txt"), "mine\n").unwrap();
+        assert_eq!(bench.state().await.unwrap(), state(false, true, false));
+        fixture(&bench.dir, &bench.worktree, &["add", "agent.txt"]);
+        fixture(
+            &bench.dir,
+            &bench.worktree,
+            &["commit", "--quiet", "-m", "Agent"],
+        );
+        assert_eq!(bench.state().await.unwrap(), state(false, false, true));
+    }
+
+    #[tokio::test]
+    async fn removing_and_restoring_answer_with_where_the_worktree_stands() {
+        let bench = bench();
+
+        assert_eq!(
+            bench.act(Action::Remove).await.unwrap(),
+            state(true, false, false)
+        );
+        assert!(!bench.worktree.exists());
+        assert_eq!(
+            bench.act(Action::Remove).await.unwrap(),
+            state(true, false, false)
+        );
+        assert_eq!(bench.state().await.unwrap(), state(true, false, false));
+
+        assert_eq!(
+            bench.act(Action::Restore).await.unwrap(),
+            state(false, false, false)
+        );
+        assert!(bench.worktree.join("README.md").exists());
+        assert_eq!(
+            bench.act(Action::Restore).await.unwrap(),
+            state(false, false, false)
+        );
+    }
+
+    #[tokio::test]
+    async fn a_pull_request_needs_somewhere_to_push_and_a_page_to_open_on() {
+        let bench = bench();
+        let open = || Action::OpenPullRequest {
+            title: "Fix the build".to_owned(),
+            body: String::new(),
+        };
+
+        let error = bench.act(open()).await.unwrap_err();
+        assert_eq!(code(&error), "pr.push_failed");
+
+        let origin = bench.dir.join("origin.git");
+        fixture(
+            &bench.dir,
+            &bench.dir,
+            &["init", "--quiet", "--bare", origin.to_str().unwrap()],
+        );
+        let repo = bench.dir.join("repo");
+        fixture(
+            &bench.dir,
+            &repo,
+            &["remote", "add", "origin", origin.to_str().unwrap()],
+        );
+        let error = bench.act(open()).await.unwrap_err();
+
+        // Pushed, but a remote that isn't on GitHub has no page to open one on.
+        assert_eq!(code(&error), "pr.no_page");
+        fixture(
+            &bench.dir,
+            &origin,
+            &["rev-parse", "--verify", "--quiet", "refs/heads/weacon/c-1"],
+        );
+    }
+
+    #[tokio::test]
+    async fn a_chat_without_a_worktree_or_a_newer_ask_is_refused() {
+        let bench = bench();
+        let other = DiffQuery {
+            request: request(),
+            workspace: bench.workspace.clone(),
+            chat: chat("c-2"),
+            query: DiffQueryKind::Changes,
+        };
+
+        let error = bench.worktrees.diff(other).await.unwrap_err();
+        assert_eq!(code(&error), "worktree.none");
+        assert_eq!(
+            code(&bench.act(Action::Newer).await.unwrap_err()),
+            "request.unknown"
+        );
+        let newer = WorktreeQuery {
+            request: request(),
+            workspace: bench.workspace.clone(),
+            chat: bench.chat.clone(),
+            query: WorktreeQueryKind::Newer,
+            by: None,
+        };
+        let error = bench.worktrees.query(newer).await.unwrap_err();
+        assert_eq!(code(&error), "request.unknown");
+    }
+
+    #[test]
+    fn a_file_too_large_for_a_frame_is_only_said_to_be() {
+        let line = weacon_protocol::DiffLine {
+            op: weacon_protocol::LineOp::Added,
+            text: "a".repeat(weacon_protocol::MAX_FRAME),
+            no_newline: false,
+        };
+        let file = |lines| DiffFile {
+            path: "big.txt".to_owned(),
+            change: weacon_protocol::FileChange::Added,
+            content: DiffContent::Text {
+                hunks: vec![weacon_protocol::Hunk {
+                    old_start: 0,
+                    new_start: 1,
+                    lines,
+                }],
+            },
+        };
+        let answer = |file| DiffAnswer {
+            request: request(),
+            workspace: WorkspaceId::try_from("w-1".to_owned()).unwrap(),
+            chat: chat("c-1"),
+            answer: DiffAnswerKind::File { files: 1, file },
+        };
+
+        let fitted_big = fitted(answer(file(vec![line])));
+        let small = answer(file(Vec::new()));
+
+        let DiffAnswerKind::File { file: big, .. } = fitted_big.answer else {
+            panic!("not a file");
+        };
+        assert_eq!(big.content, DiffContent::TooLarge);
+        assert_eq!(fitted(small.clone()), small);
+    }
+}

@@ -94,12 +94,17 @@ fn work_dir(
             "The chat's working folder couldn't be created",
         )
     };
-    let dir = work_root
-        .ok_or_else(failed)?
-        .join(crate::names::case_safe_name("w-", workspace.as_str()))
-        .join(file_stem(chat));
+    let dir = chat_folder(work_root.ok_or_else(failed)?, workspace, chat);
     platform::private_dir(&dir).map_err(|error| failed().because(error))?;
     Ok(dir)
+}
+
+/// The folder a chat's agents work in under `work_root`: its worktree when its first prompt
+/// named a repository, else a plain folder.
+pub(crate) fn chat_folder(work_root: &Path, workspace: &WorkspaceId, chat: &ChatId) -> PathBuf {
+    work_root
+        .join(crate::names::case_safe_name("w-", workspace.as_str()))
+        .join(file_stem(chat))
 }
 
 fn unix_now() -> u64 {
