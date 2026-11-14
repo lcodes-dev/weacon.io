@@ -375,10 +375,10 @@ mod tests {
         fs::create_dir_all(&work).unwrap();
         let add = GuardCommand::Add {
             workspace: id("w1"),
-            words: words("terraform destroy"),
+            words: words("cargo bench"),
         };
         change(&app, add).unwrap();
-        let call = bash(&work, "terraform destroy -auto-approve");
+        let call = bash(&work, "cargo bench --all");
 
         assert!(check(&app, &dir, "w1", &call).contains(Reason::Addition.text()));
         assert_eq!(check(&app, &dir, "w2", &call), "");

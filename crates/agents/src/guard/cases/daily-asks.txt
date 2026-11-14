@@ -1,0 +1,12 @@
+npm install
+python script.py
+node build.js
+sh ./run.sh
+./scripts/check.sh
+docker ps
+curl -s https://example.com
+sed -n '1,20p' notes.md
+sed -i 's/a/b/' notes.md
+awk '{ print $1 }' notes.md
+python3 -c 'print(1)'
+npx tsc --noEmit

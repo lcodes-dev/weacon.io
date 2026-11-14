@@ -145,7 +145,7 @@ const BUILD_AND_TEST: [&[&str]; 30] = [
 ];
 
 /// The git subcommands that run without asking, once git's own checks pass.
-const GIT_SAFE: [&str; 20] = [
+const GIT_SAFE: [&str; 26] = [
     "status",
     "diff",
     "log",
@@ -166,6 +166,12 @@ const GIT_SAFE: [&str; 20] = [
     "blame",
     "grep",
     "merge-base",
+    "reset",
+    "clean",
+    "merge",
+    "cherry-pick",
+    "revert",
+    "tag",
 ];
 // Git options that run a command or write a file of their own.
 const GIT_FORBIDS: [&str; 5] = [
@@ -224,7 +230,18 @@ fn find(args: &[Word], context: &Context, cwd: &Path) -> Option<Reason> {
     if !named(&["-delete"]) {
         return None;
     }
-    let starts: Vec<&Word> = args
+    // Options about links and debugging come before the folders to start from.
+    let mut rest = args;
+    while let Some((first, after)) = rest.split_first() {
+        let text = first.text.as_str();
+        rest = match text {
+            "-H" | "-P" | "--" => after,
+            "-D" => after.get(1..).unwrap_or_default(),
+            _ if text.starts_with("-O") => after,
+            _ => break,
+        };
+    }
+    let starts: Vec<&Word> = rest
         .iter()
         .take_while(|arg| !arg.text.starts_with(['-', '(', '!']))
         .collect();
