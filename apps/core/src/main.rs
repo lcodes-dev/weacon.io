@@ -57,7 +57,7 @@ fn main() -> ExitCode {
         Setup {
             env: &env,
             stderr: json_lines(io::stderr()),
-            deliver: weacon_appkit::http(),
+            deliver: weacon_appkit::deliver_over_https(),
             verbose: cli.prints_info(io::stderr().is_terminal()),
             mode: cli.command.name(),
             log_name: cli.command.log_name(),
