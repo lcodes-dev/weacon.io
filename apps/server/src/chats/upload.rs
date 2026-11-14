@@ -7,7 +7,7 @@ use crate::db::{Incoming, turns};
 use crate::http::Shared;
 
 /// Stores `update` from `machine`, and tells the sockets that follow its chat. An event of a
-/// chat that isn't on `machine`, in any workspace, is dropped.
+/// chat that isn't on `machine`, or whose owner no longer owns it there, is dropped.
 pub(crate) async fn chat(shared: &Shared, machine: &MachineId, update: ChatUpdate) {
     let ChatUpdate {
         workspace,
@@ -18,10 +18,7 @@ pub(crate) async fn chat(shared: &Shared, machine: &MachineId, update: ChatUpdat
         let Some(place) = shared.db.find_workspace(&workspace).await? else {
             return Ok(false);
         };
-        let Some(found) = place.chat(&chat).await? else {
-            return Ok(false);
-        };
-        if found.machine != *machine {
+        if !place.runs_on(&chat, machine).await? {
             return Ok(false);
         }
         let incoming = Incoming {
@@ -56,23 +53,14 @@ pub(crate) async fn chat(shared: &Shared, machine: &MachineId, update: ChatUpdat
 
 #[cfg(test)]
 mod tests {
-    use weacon_protocol::{
-        ChatEntry, ChatEvent, Outcome, Receipt, RunEvent, RunId, RunUpdate, WorkspaceId,
-    };
+    use weacon_protocol::{ChatEntry, ChatEvent, Outcome, Receipt, WorkspaceId};
 
     use super::*;
-    use crate::db::test_support::{NOW, id, make};
-    use crate::test_support::Fixture;
+    use crate::chats::test_support::{Ada, ada};
+    use crate::db::test_support::{NOW, id, make, said};
+    use crate::test_support::{Fixture, member_id};
 
-    fn update(workspace: &str, chat: &str, seq: u64, text: &str) -> ChatUpdate {
-        let event = ChatEvent::Run {
-            update: RunUpdate {
-                run: id::<RunId>("run-1"),
-                event: RunEvent::Text {
-                    text: text.to_owned(),
-                },
-            },
-        };
+    fn update(workspace: &str, chat: &str, seq: u64, event: ChatEvent) -> ChatUpdate {
         ChatUpdate {
             workspace: id(workspace),
             chat: id(chat),
@@ -80,57 +68,59 @@ mod tests {
         }
     }
 
+    // Ada, with chat c-1 in w1 on her machine.
+    async fn ada_chatting(fixture: &Fixture) -> Ada {
+        let ada = ada(fixture).await;
+        make(&ada.member.workspace, "c-1", "m1", NOW).await.unwrap();
+        ada.member.workspace.move_chats_to(&ada.machine).await;
+        ada
+    }
+
     #[tokio::test]
     async fn only_the_chats_own_machine_adds_to_it_and_its_followers_hear_of_it() {
         let fixture = Fixture::new().await;
-        let shared = &fixture.shared;
-        let workspace = shared.db.workspace(&id::<WorkspaceId>("w1")).await.unwrap();
-        make(&workspace, "c-1", "m1", NOW).await.unwrap();
+        let (shared, ada) = (&fixture.shared, ada_chatting(&fixture).await);
+        let (workspace, ours) = (&ada.member.workspace, &ada.machine);
         let mut notices = shared.chats.notices();
-        let (ours, other) = (id::<MachineId>("mc-1"), id::<MachineId>("mc-2"));
+        let other = id::<MachineId>("mc-2");
 
-        chat(shared, &ours, update("w1", "c-1", 4, "MARKER-TEXT")).await;
-        chat(shared, &other, update("w1", "c-1", 5, "MARKER-TEXT")).await;
-        chat(shared, &ours, update("w1", "c-9", 6, "MARKER-TEXT")).await;
-        chat(shared, &ours, update("w-9", "c-1", 7, "MARKER-TEXT")).await;
+        chat(shared, ours, update("w1", "c-1", 4, said("MARKER-TEXT"))).await;
+        chat(shared, &other, update("w1", "c-1", 5, said("MARKER-TEXT"))).await;
+        chat(shared, ours, update("w1", "c-9", 6, said("MARKER-TEXT"))).await;
+        chat(shared, ours, update("w-9", "c-1", 7, said("MARKER-TEXT"))).await;
+        workspace.unlink(&member_id("m1")).await;
+        chat(shared, ours, update("w1", "c-1", 8, said("MARKER-TEXT"))).await;
 
         let events = workspace.events_after(&id("c-1"), 0, 10, usize::MAX).await;
         assert_eq!(events.unwrap().len(), 1);
-        assert_eq!(
-            workspace.chat(&id("c-1")).await.unwrap().unwrap().core_seq,
-            4
-        );
+        let core_seq = workspace.chat(&id("c-1")).await.unwrap().unwrap().core_seq;
+        assert_eq!(core_seq, 4);
         assert_eq!(notices.try_recv().unwrap(), (id("w1"), id("c-1")));
         notices.try_recv().unwrap_err();
         let logged = serde_json::to_string(&*fixture.records.lock().unwrap()).unwrap();
-        assert_eq!(logged.matches("chat upload refused").count(), 3);
+        assert_eq!(logged.matches("chat upload refused").count(), 4);
         assert!(!logged.contains("MARKER"), "{logged}");
     }
 
     #[tokio::test]
     async fn a_turn_ending_wakes_the_workspaces_feeds_and_text_does_not() {
         let fixture = Fixture::new().await;
-        let shared = &fixture.shared;
-        let workspace = shared.db.workspace(&id::<WorkspaceId>("w1")).await.unwrap();
-        make(&workspace, "c-1", "m1", NOW).await.unwrap();
+        let (shared, ada) = (&fixture.shared, ada_chatting(&fixture).await);
         let mut feeds = shared.changes.subscribe();
-        let machine = id::<MachineId>("mc-1");
 
-        chat(shared, &machine, update("w1", "c-1", 1, "working")).await;
+        chat(
+            shared,
+            &ada.machine,
+            update("w1", "c-1", 1, said("working")),
+        )
+        .await;
         feeds.try_recv().unwrap_err();
         let receipt = Receipt {
             request: id("r-c-1"),
             outcome: Outcome::Completed,
         };
-        let ended = ChatUpdate {
-            workspace: id("w1"),
-            chat: id("c-1"),
-            entry: ChatEntry {
-                seq: 2,
-                event: ChatEvent::Receipt { receipt },
-            },
-        };
-        chat(shared, &machine, ended).await;
+        let ended = update("w1", "c-1", 2, ChatEvent::Receipt { receipt });
+        chat(shared, &ada.machine, ended).await;
 
         assert_eq!(feeds.try_recv().unwrap(), id::<WorkspaceId>("w1"));
     }

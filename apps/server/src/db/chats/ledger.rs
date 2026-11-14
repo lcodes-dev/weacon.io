@@ -57,6 +57,7 @@ impl Workspace {
     }
 
     /// Whether the ledger has `request`, for any chat.
+    #[cfg(test)]
     pub(crate) async fn has_request(&self, request: &RequestId) -> Result<bool, Fault> {
         let found =
             sqlx::query("SELECT 1 FROM chat_requests WHERE workspace_id = ? AND request_id = ?")

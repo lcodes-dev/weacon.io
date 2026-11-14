@@ -6,19 +6,14 @@ use tokio::sync::broadcast::{Receiver, error::RecvError};
 use weacon_observability::{Fault, Field};
 use weacon_protocol::{
     Asker, ChatAnswer, ChatAnswerKind, ChatEntry, ChatId, ChatQuery, ChatQueryKind, ChatUpdate,
-    Envelope, ErrorBody, MAX_FRAME, Message, WorkspaceId,
+    Envelope, ErrorBody, Message, WorkspaceId,
 };
 
-use super::{command, read};
+use super::{PAGE, PAGE_BYTES, command, read};
 use crate::auth::Member;
 use crate::db::{Workspace, chat_not_found};
 use crate::http::Shared;
 use crate::socket::Closed;
-
-/// The most events of one chat sent at a time.
-const PAGE: u32 = 200;
-// A page of events leaves room in its frames for what travels with them.
-const PAGE_BYTES: usize = MAX_FRAME - (16 << 10);
 
 /// The chats one socket follows, and which of them have events it hasn't sent yet.
 pub(crate) struct Watch {

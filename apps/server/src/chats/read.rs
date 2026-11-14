@@ -1,14 +1,14 @@
 //! What a member reads of a chat: a snapshot, and windows of older events.
 
 use weacon_observability::Fault;
-use weacon_protocol::{ChatAnswerKind, ChatId, ChatQueryKind, MAX_FRAME, code};
+use weacon_protocol::{ChatAnswerKind, ChatId, ChatQueryKind};
+
+use super::{PAGE, PAGE_BYTES};
 
 use crate::db::{Workspace, chat_not_found};
 
 /// The events a snapshot carries, when they fit.
 const SNAPSHOT_EVENTS: u32 = 50;
-// A snapshot's or window's events leave room in their frame for what travels with them.
-const EVENTS_MAX: usize = MAX_FRAME - (16 << 10);
 
 /// Answers a snapshot or a window of `chat` in `workspace`. A subscription isn't answered here.
 pub(crate) async fn answer(
@@ -21,7 +21,7 @@ pub(crate) async fn answer(
         ChatQueryKind::Snapshot => {
             let runs = workspace.chat_runs(chat).await?;
             let events = workspace
-                .events_before(chat, u64::MAX, SNAPSHOT_EVENTS, EVENTS_MAX)
+                .events_before(chat, u64::MAX, SNAPSHOT_EVENTS, PAGE_BYTES)
                 .await?;
             Ok(ChatAnswerKind::Snapshot {
                 seq: found.seq,
@@ -32,13 +32,10 @@ pub(crate) async fn answer(
         }
         ChatQueryKind::Window { before, limit } => Ok(ChatAnswerKind::Window {
             events: workspace
-                .events_before(chat, before, limit, EVENTS_MAX)
+                .events_before(chat, before, limit.min(PAGE), PAGE_BYTES)
                 .await?,
         }),
-        ChatQueryKind::Subscribe { .. } | ChatQueryKind::Newer => Err(Fault::new(
-            code!("message.unsupported"),
-            "This build doesn't know that message",
-        )),
+        ChatQueryKind::Subscribe { .. } | ChatQueryKind::Newer => Err(super::unsupported()),
     }
 }
 
@@ -115,5 +112,28 @@ mod tests {
         let subscribe = ChatQueryKind::Subscribe { after: 0 };
         let refused = answer(&one, &id("c-1"), &subscribe).await.unwrap_err();
         assert_eq!(refused.code().as_str(), "message.unsupported");
+    }
+
+    #[tokio::test]
+    async fn a_window_holds_a_page_at_most_whatever_its_client_asks() {
+        let dir = TempDir::new().unwrap();
+        let (one, _) = two_teams(&dir).await;
+        make(&one, "c-1", "m1", NOW).await.unwrap();
+        let more = PAGE + 5;
+        let events: Vec<_> = (1..=u64::from(more))
+            .map(|seq| (Some(seq), said("more")))
+            .collect();
+        append(&one, "c-1", &events).await.unwrap();
+
+        let all = ChatQueryKind::Window {
+            before: u64::MAX,
+            limit: u32::MAX,
+        };
+        let ChatAnswerKind::Window { events } = answer(&one, &id("c-1"), &all).await.unwrap()
+        else {
+            panic!("not a window");
+        };
+        assert_eq!(events.len(), usize::try_from(PAGE).unwrap());
+        assert_eq!(events.first().map(|entry| entry.seq), Some(6));
     }
 }

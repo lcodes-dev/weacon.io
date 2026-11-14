@@ -23,6 +23,11 @@ use weacon_protocol::{ChatId, ChatList, Message, WorkspaceId};
 use crate::auth::Member;
 use crate::http::{Shared, failure};
 
+/// The most events of one chat sent at a time.
+const PAGE: u32 = 200;
+/// The bytes of a page of events, which leaves room in its frame for what travels with it.
+const PAGE_BYTES: usize = weacon_protocol::MAX_FRAME - (16 << 10);
+
 /// How many chats' new events a socket may fall behind by before it reads them all again.
 const NOTICES: usize = 256;
 

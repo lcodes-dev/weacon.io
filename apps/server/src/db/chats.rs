@@ -120,6 +120,24 @@ impl Workspace {
         .transpose()
     }
 
+    /// Whether `chat` runs on `machine`, and the account that owns the machine is still the
+    /// chat's owner here.
+    pub(crate) async fn runs_on(&self, chat: &ChatId, machine: &MachineId) -> Result<bool, Fault> {
+        let found = sqlx::query(
+            "SELECT 1 FROM chats AS c
+             JOIN members AS m ON m.workspace_id = c.workspace_id AND m.member_id = c.owner_member
+             JOIN machines AS d ON d.machine_id = c.machine_id AND d.account_id = m.account_id
+             WHERE c.workspace_id = ? AND c.chat_id = ? AND c.machine_id = ?",
+        )
+        .bind(self.id.as_str())
+        .bind(chat.as_str())
+        .bind(machine.as_str())
+        .fetch_optional(&self.db.readers)
+        .await
+        .map_err(failed)?;
+        Ok(found.is_some())
+    }
+
     /// The workspace's chats, the latest updated first.
     pub(crate) async fn chats(&self) -> Result<Vec<ChatSummary>, Fault> {
         sqlx::query_as::<_, SummaryRow>(
