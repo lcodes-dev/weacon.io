@@ -16,22 +16,23 @@ use weacon_protocol::{
 use crate::app::{fresh, new_id};
 use crate::auth::{Sender, Session, Unproven, proof, sender, set_session_cookie, token_hash};
 use crate::client::Client;
-use crate::db::Attempt;
+use crate::db::{Attempt, NewChallenge};
 use crate::email::Email;
 use crate::http::{Body, Shared, cross_site, failure, report, too_many, unauthorized};
-use crate::limit::Limit;
+use crate::limit::{HOUR, Limit};
 use crate::outbox::mail_failed;
-use crate::secret::{random_bytes, random_failed};
+use crate::secret::{random_failed, random_token, random_u64};
 use crate::sign_up;
 use crate::workspaces;
 
+/// How long a mailed code works, in seconds.
+pub(crate) const CODE_LIFETIME: i64 = 10 * 60;
 /// How long a session lasts, in seconds.
 pub(crate) const SESSION_LIFETIME: i64 = 30 * 24 * 60 * 60;
 /// How many sign-ins may be worked on at once after their answer.
 pub(crate) const AT_ONCE: usize = 64;
 /// How long finishing a sign-in takes at least: longer than any of its database work.
-pub(crate) const FINISH_WITHIN: Duration = Duration::from_millis(250);
-const HOUR: Duration = Duration::from_hours(1);
+pub(crate) const FINISH_TAKES: Duration = Duration::from_millis(250);
 
 /// How many sign-ins each client may start.
 pub(crate) fn starts() -> Limit {
@@ -58,13 +59,13 @@ pub(crate) async fn start(
         Ok(challenge) => challenge,
         Err(fault) => return failure(fault),
     };
-    if let Ok(room) = Arc::clone(&shared.sign_ins).try_acquire_owned() {
+    if let Ok(place) = Arc::clone(&shared.sign_ins).try_acquire_owned() {
         let sent = challenge.clone();
         drop(tokio::spawn(async move {
             if let Err(fault) = send_code(&shared, &body, &sent).await {
                 report(&shared, "sign-in failed", Arc::new(fault), &[]);
             }
-            drop(room);
+            drop(place);
         }));
     }
     (StatusCode::ACCEPTED, Json(SignInStarted { challenge })).into_response()
@@ -82,14 +83,17 @@ async fn send_code(
     {
         return Ok(());
     }
-    let code = code_text(&random_bytes()?);
-    let code_hash = shared.secret.code_hash(&email, &code);
+    let code = code_text(random_u64()?);
+    let code_hash = shared.secret.sign_in_code_hash(&email, &code);
     let now = shared.now();
-    if !shared
-        .db
-        .start_challenge(&email, challenge, &code_hash, now)
-        .await?
-    {
+    let new = NewChallenge {
+        email: &email,
+        id: challenge,
+        code_hash: &code_hash,
+        now,
+        expires_at: now.saturating_add(CODE_LIFETIME),
+    };
+    if !shared.db.start_challenge(&new).await? {
         return Ok(());
     }
     let outbox = shared.outbox.clone();
@@ -113,8 +117,8 @@ pub(crate) async fn finish(
     headers: HeaderMap,
     Body(body): Body<AccountSignInFinish>,
 ) -> Response {
-    let now = Instant::now();
-    if !shared.tries.allow(from, now) {
+    let began = Instant::now();
+    if !shared.tries.allow(from, began) {
         return too_many(code!("sign_in.too_many"));
     }
     let page = sender(&headers);
@@ -134,7 +138,7 @@ pub(crate) async fn finish(
         Ok(None) => unauthorized(code!("sign_in.failed")),
         Err(fault) => failure(fault),
     };
-    sleep_until(now + shared.finish_within).await;
+    sleep_until(began + shared.finish_within).await;
     answer
 }
 
@@ -158,7 +162,7 @@ pub(crate) async fn sign_out(
         Ok(token_hash) => shared.db.end_session(&token_hash).await,
         // Nothing to end, but another site's page may not clear the cookie either.
         Err(Unproven::Missing) if sender(&headers) != Sender::OtherSite => Ok(()),
-        Err(_) => return Unproven::CrossSite.into(),
+        Err(_) => return cross_site(),
     };
     match ended {
         Ok(()) => {
@@ -177,7 +181,7 @@ async fn signed_in(
     let Ok(email) = Email::parse(&body.email) else {
         return Ok(None);
     };
-    let token = hex(&random_bytes()?);
+    let token = random_token()?;
     let now = shared.now();
     let new_account: Option<AccountId> = sign_up::allows(&shared.sign_up, &email)
         .then(|| fresh(&new_id))
@@ -185,7 +189,7 @@ async fn signed_in(
     let attempt = Attempt {
         email: &email,
         challenge: &body.challenge,
-        code_hash: &shared.secret.code_hash(&email, body.code.trim()),
+        code_hash: &shared.secret.sign_in_code_hash(&email, body.code.trim()),
         token_hash: &token_hash(&token),
         now,
         token_expires_at: now.saturating_add(SESSION_LIFETIME),
@@ -203,25 +207,14 @@ async fn signed_in(
     }))
 }
 
-/// A challenge nobody can guess: 32 random bytes, in hex.
+/// A challenge nobody can guess.
 fn new_challenge() -> Result<ChallengeId, Fault> {
-    ChallengeId::try_from(hex(&random_bytes()?)).map_err(|_| random_failed())
+    ChallengeId::try_from(random_token()?).map_err(|_| random_failed())
 }
 
 /// A one-time code: eight digits.
-fn code_text(secret: &[u8; 32]) -> String {
-    let word = secret.first_chunk().copied().unwrap_or_default();
-    format!("{:08}", u64::from_le_bytes(word) % 100_000_000)
-}
-
-// A lookup table, as clippy refuses `format!` collected into a string.
-pub(crate) fn hex(bytes: &[u8]) -> String {
-    const DIGITS: &[u8; 16] = b"0123456789abcdef";
-    bytes
-        .iter()
-        .flat_map(|byte| [byte >> 4, byte & 0xf])
-        .filter_map(|nibble| DIGITS.get(usize::from(nibble)).copied().map(char::from))
-        .collect()
+fn code_text(word: u64) -> String {
+    format!("{:08}", word % 100_000_000)
 }
 
 #[cfg(test)]
@@ -233,7 +226,6 @@ mod tests {
 
     use super::*;
     use crate::auth::SESSION_COOKIE;
-    use crate::db::CODE_LIFETIME;
     use crate::secret::Secret;
     use crate::test_support::{
         Fixture, ask, bearer, email, finish_body, fresh_account, letter_in, member_id, request,
@@ -246,9 +238,8 @@ mod tests {
 
     #[test]
     fn codes_are_eight_digits_and_tokens_are_hex() {
-        assert_eq!(code_text(&[1; 32]), "38076673");
-        assert_eq!(code_text(&[0; 32]), "00000000");
-        assert_eq!(hex(&[0, 10, 255]), "000aff");
+        assert_eq!(code_text(u64::from_le_bytes([1; 8])), "38076673");
+        assert_eq!(code_text(0), "00000000");
         assert_eq!(new_challenge().unwrap().as_str().len(), 64);
     }
 
