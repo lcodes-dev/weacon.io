@@ -19,6 +19,12 @@ use crate::recording::envelope_text;
 use crate::replay::{BUFFER, play};
 use crate::{fake_core, fake_diff};
 
+const OFFERED: &[Capability] = &[
+    Capability::new(code!("log.forward")),
+    Capability::new(code!("chat.send")),
+    Capability::new(code!("diff.view")),
+];
+
 /// Plays `recording` to the client on `stream`, waiting `pace` after each message, and appends
 /// each text frame the client sends after its hello to `received`, one per line. It offers
 /// `chat.send` and answers each prompt with a receipt that accepts it, and offers `diff.view`.
@@ -37,12 +43,7 @@ pub async fn serve(
     let hello = next_text(&mut frames)
         .await?
         .ok_or("the client left before its hello")?;
-    let offered: [Capability; 3] = [
-        code!("log.forward").into(),
-        code!("chat.send").into(),
-        code!("diff.view").into(),
-    ];
-    let answer = fake_core::answer(&hello, &offered)?;
+    let answer = fake_core::answer(&hello, OFFERED)?;
     let welcomed = matches!(answer.message, Message::Welcome(_));
     sink.send(Frame::text(envelope_text(&answer)?)).await?;
     if !welcomed {

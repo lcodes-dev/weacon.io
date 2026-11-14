@@ -32,6 +32,8 @@ pub async fn serve(
     play(recording, reader, writer, pace).await
 }
 
+const RUN_STREAM: Capability = Capability::new(code!("run.stream"));
+
 /// The answer to the client's first `line`, offering `run.stream` and `more`. A client it
 /// welcomes must offer `run.stream`.
 pub(crate) fn answer(line: &str, more: &[Capability]) -> Result<Envelope, Failure> {
@@ -44,10 +46,9 @@ pub(crate) fn answer(line: &str, more: &[Capability]) -> Result<Envelope, Failur
         version: "0.0.0".to_owned(),
         commit: "0000000".to_owned(),
     };
-    let stream = Capability::from(code!("run.stream"));
-    let capabilities = [std::slice::from_ref(&stream), more].concat();
+    let capabilities = [&[RUN_STREAM], more].concat();
     let message = hello.answer(core, capabilities);
-    if matches!(message, Message::Welcome(_)) && !hello.capabilities.contains(&stream) {
+    if matches!(message, Message::Welcome(_)) && !hello.capabilities.contains(&RUN_STREAM) {
         return Err("the client didn't offer run.stream".into());
     }
     Ok(Envelope {
