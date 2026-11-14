@@ -79,7 +79,7 @@ impl Rules {
 
 // `path` with symlinks resolved as far as it exists; `None` if the rest climbs with `..` or
 // anything on the way can't be resolved, such as a symlink to nowhere.
-fn resolve(path: &Path) -> Option<PathBuf> {
+pub(crate) fn resolve(path: &Path) -> Option<PathBuf> {
     let mut missing = Vec::new();
     let mut base = path;
     loop {
