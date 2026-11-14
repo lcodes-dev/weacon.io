@@ -120,6 +120,20 @@ test("a tampered, replayed or reordered frame breaks the channel for good", asyn
   await refused(channel.open(bytes(fourth.ciphertext)));
 });
 
+test("a frame opened beside one that fails is refused too", async () => {
+  const vector = vectors.published;
+  const [, , , fourth, , sixth] = vector.messages;
+  assert.ok(fourth && sixth);
+  const channel = await handshake(vector);
+  const tampered = bytes(fourth.ciphertext);
+  tampered[0] = (tampered[0] ?? 0) ^ 1;
+  const results = await Promise.allSettled([channel.open(tampered), channel.open(bytes(sixth.ciphertext))]);
+  assert.deepEqual(
+    results.map((result) => result.status),
+    ["rejected", "rejected"],
+  );
+});
+
 test("a closed channel or a message over the Noise limit is refused", async () => {
   let channel = await handshake(vectors.weacon);
   channel.close();

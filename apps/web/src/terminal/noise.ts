@@ -34,10 +34,10 @@ export async function initiate(
   own: Promise<Ephemeral> = ephemeral(),
 ): Promise<{ message: Bytes; pending: Pending }> {
   return sealing(async () => {
+    const e = await own;
     if (remote.length !== KEY) {
       throw new SealError();
     }
-    const e = await own;
     const state = new Symmetric();
     await state.mixHash(prologue);
     await state.mixHash(remote);
@@ -84,6 +84,7 @@ export class Channel {
   readonly #send: Cipher;
   readonly #receive: Cipher;
   #broken = false;
+  #last: Promise<unknown> = Promise.resolve();
 
   constructor(send: Cipher, receive: Cipher) {
     this.#send = send;
@@ -107,18 +108,23 @@ export class Channel {
     );
   }
 
-  // Each call takes its nonce before it awaits anything, so calls never share one.
-  async #guard(refused: boolean, step: () => Promise<Bytes>): Promise<Bytes> {
-    if (this.#broken || refused) {
-      this.#broken = true;
-      throw new SealError();
-    }
-    try {
-      return await sealing(step);
-    } catch (error) {
-      this.#broken = true;
-      throw error;
-    }
+  // One step at a time, in call order, so nonces follow the calls and nothing passes after
+  // a failure.
+  #guard(refused: boolean, step: () => Promise<Bytes>): Promise<Bytes> {
+    const run = this.#last.then(async () => {
+      if (this.#broken || refused) {
+        this.#broken = true;
+        throw new SealError();
+      }
+      try {
+        return await sealing(step);
+      } catch (error) {
+        this.#broken = true;
+        throw error;
+      }
+    });
+    this.#last = run.catch(() => undefined);
+    return run;
   }
 }
 

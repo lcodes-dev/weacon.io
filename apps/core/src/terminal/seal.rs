@@ -166,6 +166,7 @@ impl Dh for X25519 {
         32
     }
 
+    // snow always passes `priv_len` bytes.
     fn set(&mut self, privkey: &[u8]) {
         if let Some(Ok(bytes)) = privkey.get(..32).map(<[u8; 32]>::try_from) {
             self.secret = StaticSecret::from(bytes);
@@ -492,6 +493,15 @@ mod tests {
         assert_eq!(opened.len(), SEALED_MAX);
         seal.seal(&vec![7; SEALED_MAX + 1]).err().unwrap();
         seal.seal(b"short").err().unwrap();
+    }
+
+    #[test]
+    fn keys_snow_makes_are_x25519_pairs() {
+        let pair = builder(&[]).unwrap().generate_keypair().unwrap();
+        let private: [u8; 32] = pair.private.try_into().unwrap();
+        assert_eq!(pair.public, public(&private));
+        assert_ne!(private, [0; 32]);
+        assert_eq!(X25519::default().name(), "25519");
     }
 
     #[test]
