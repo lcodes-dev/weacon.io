@@ -132,7 +132,7 @@ mod tests {
         let launch = workspaces.launch(&workspace(), AgentKind::Claude, cwd.clone());
 
         assert_eq!(launch.unwrap().cwd, cwd);
-        // Where chats used to work: inside the state folder, so refused.
+        // A folder inside the state folder is refused.
         let inside = workspaces.root(&workspace()).join("work");
         std::fs::create_dir_all(&inside).unwrap();
         let refused = workspaces.launch(&workspace(), AgentKind::Claude, inside);

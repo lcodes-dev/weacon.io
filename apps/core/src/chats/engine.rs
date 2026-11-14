@@ -25,7 +25,7 @@ use weacon_protocol::{
 
 use self::agent::{Agent, Order, Report};
 use super::feed::{Client, Subscriber};
-use super::log::Log;
+use super::log::ChatLog;
 use crate::runs::{ChatKey, Runs};
 use crate::workspaces::Workspaces;
 
@@ -102,7 +102,7 @@ impl Chats {
 
 /// A chat the engine has open: one with a running agent, a waiting prompt or a subscriber.
 struct Chat {
-    log: Log,
+    log: ChatLog,
     subscribers: Vec<Subscriber>,
     /// The way to the chat's running agent.
     orders: Option<mpsc::UnboundedSender<Order>>,
@@ -290,7 +290,7 @@ impl<A: Agent> Engine<A> {
         for subscriber in chat.subscribers.drain(..) {
             subscriber.end();
         }
-        if let Ok(log) = Log::open(&root, &key.chat).await {
+        if let Ok(log) = ChatLog::open(&root, &key.chat).await {
             chat.log = log;
         }
     }
@@ -336,7 +336,7 @@ impl<A: Agent> Engine<A> {
         match self.chats.entry(key.clone()) {
             Entry::Occupied(open) => Ok(open.into_mut()),
             Entry::Vacant(closed) => Ok(closed.insert(Chat {
-                log: Log::open(&root, &key.chat).await?,
+                log: ChatLog::open(&root, &key.chat).await?,
                 subscribers: Vec::new(),
                 orders: None,
                 pending_answers: Vec::new(),
