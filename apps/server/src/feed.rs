@@ -13,6 +13,7 @@ use weacon_protocol::{Capability, Code, Message, WorkspaceChange, WorkspaceId, c
 use crate::auth::Member;
 use crate::connections::Place;
 use crate::http::{Shared, failure};
+use crate::proposals::PROPOSALS;
 use crate::socket::{Closed, Pings, greet, reply};
 
 /// What a client must offer, and the server offers, to get a workspace's changes.
@@ -76,6 +77,7 @@ struct Feed {
 struct Offers {
     tasks: bool,
     docs: bool,
+    proposals: bool,
 }
 
 impl Feed {
@@ -116,8 +118,13 @@ async fn run(
     shared: &Shared,
     feed: &mut Feed,
 ) -> Result<Infallible, Closed> {
-    let [feed_offer, tasks, docs] = [FEED, TASKS, DOCS].map(Capability::from);
-    let offered = vec![feed_offer.clone(), tasks.clone(), docs.clone()];
+    let [feed_offer, tasks, docs, proposals] = [FEED, TASKS, DOCS, PROPOSALS].map(Capability::from);
+    let offered = vec![
+        feed_offer.clone(),
+        tasks.clone(),
+        docs.clone(),
+        proposals.clone(),
+    ];
     let greeted = greet(socket, shared, offered, &feed_offer);
     let hello = timeout(shared.sockets.hello_within, greeted)
         .await
@@ -125,6 +132,7 @@ async fn run(
     feed.offers = Offers {
         tasks: hello.capabilities.contains(&tasks),
         docs: hello.capabilities.contains(&docs),
+        proposals: hello.capabilities.contains(&proposals),
     };
     catch_up(socket, shared, feed).await?;
     let mut pings = Pings::new(shared.sockets.ping_every);
@@ -156,10 +164,9 @@ async fn catch_up(socket: &mut WebSocket, shared: &Shared, feed: &mut Feed) -> R
             let wanted = match update.change {
                 WorkspaceChange::TaskChanged { .. } => feed.offers.tasks,
                 WorkspaceChange::DocChanged { .. } => feed.offers.docs,
-                // No feed offers `workspace.chats` or `workspace.proposals` yet.
-                WorkspaceChange::ChatChanged { .. } | WorkspaceChange::ProposalChanged { .. } => {
-                    false
-                }
+                WorkspaceChange::ProposalChanged { .. } => feed.offers.proposals,
+                // No feed offers `workspace.chats` yet.
+                WorkspaceChange::ChatChanged { .. } => false,
                 WorkspaceChange::MemberJoined { .. } | WorkspaceChange::Newer => true,
             };
             if !wanted {
@@ -192,7 +199,9 @@ mod tests {
     use weacon_protocol::{MemberId, PROTOCOL, WorkspaceChange, WorkspaceUpdate};
 
     use weacon_model::{Attribution, Doc, DocText, OrderKey, Task, Title};
-    use weacon_protocol::{DocId, TaskId};
+    use weacon_protocol::{
+        AgentKind, AgentOwner, AgentRef, DocId, ProposalChange, ProposalId, TaskId,
+    };
 
     use super::*;
     use crate::auth::SESSION_COOKIE;
@@ -297,7 +306,7 @@ mod tests {
         };
         assert_eq!(
             welcome.capabilities,
-            [FEED, TASKS, DOCS].map(Capability::from)
+            [FEED, TASKS, DOCS, PROPOSALS].map(Capability::from)
         );
         assert_eq!(missed, joined(1, "m1"));
         assert_eq!(live, joined(2, "m2"));
@@ -384,6 +393,51 @@ mod tests {
         assert_eq!(next(&mut docs).await, joined(1, "m1"));
         assert_eq!(next(&mut docs).await, doc_changed);
         assert_eq!(next(&mut docs).await, joined(3, "m2"));
+    }
+
+    #[tokio::test]
+    async fn only_a_client_that_offers_proposals_hears_of_proposal_changes() {
+        let mut fixture = Fixture::new().await;
+        fixture.shared.sockets.ping_every = QUIET;
+        let (server, token) = signed_in(&fixture).await;
+        let mut plain = greeted(server.address, &token, 0).await;
+        next(&mut plain).await;
+        let proposal = ProposalId::try_from("p1".to_owned()).unwrap();
+        let proposed = crate::db::Proposed {
+            id: proposal.clone(),
+            change: ProposalChange::NewTask {
+                title: "Ship".to_owned(),
+            },
+            owner: member_id("m1"),
+            agent: AgentRef {
+                kind: AgentKind::Claude,
+                owner: AgentOwner::Member {
+                    member: member_id("m1"),
+                },
+                machine: None,
+            },
+            machine: "mc1".parse().unwrap(),
+            fresh: "t1".to_owned(),
+            at: 0,
+        };
+        w1(&fixture).await.propose(&proposed).await.unwrap();
+        fixture.shared.changed(&workspace_id("w1"));
+        join(&fixture, server.address, "m2", "bo@example.com").await;
+        let after_the_proposal = next(&mut plain).await;
+        let path = "/api/workspaces/w1/feed";
+        let mut proposals = open(server.address, path, &token).await.unwrap();
+        say(&mut proposals, &["workspace.feed", "workspace.proposals"]).await;
+        next(&mut proposals).await;
+
+        let proposal_changed = Message::Workspace(WorkspaceUpdate {
+            workspace: workspace_id("w1"),
+            seq: 2,
+            change: WorkspaceChange::ProposalChanged { proposal },
+        });
+        assert_eq!(after_the_proposal, joined(3, "m2"));
+        assert_eq!(next(&mut proposals).await, joined(1, "m1"));
+        assert_eq!(next(&mut proposals).await, proposal_changed);
+        assert_eq!(next(&mut proposals).await, joined(3, "m2"));
     }
 
     #[tokio::test]

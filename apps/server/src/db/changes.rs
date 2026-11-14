@@ -1,19 +1,22 @@
 use sqlx::SqliteConnection;
 use weacon_model::Revision;
 use weacon_observability::Fault;
-use weacon_protocol::{DocId, MemberId, TaskId, WorkspaceChange, WorkspaceUpdate};
+use weacon_protocol::{DocId, MemberId, ProposalId, TaskId, WorkspaceChange, WorkspaceUpdate};
 
 use super::{Workspace, failed, stored, stored_version, unreadable};
 
 const MEMBER_JOINED: &str = "member_joined";
 const TASK_CHANGED: &str = "task_changed";
 const DOC_CHANGED: &str = "doc_changed";
+const PROPOSAL_CHANGED: &str = "proposal_changed";
 
-/// A task or a doc, at the version it now has as stored.
+/// A task or a doc, at the version it now has as stored, or a proposal that was made or
+/// whose state changed.
 #[derive(Clone, Copy, Debug)]
 pub(super) enum Versioned<'a> {
     Task(&'a TaskId, i64),
     Doc(&'a DocId, i64),
+    Proposal(&'a ProposalId),
 }
 
 type Row = (
@@ -24,6 +27,7 @@ type Row = (
     Option<i64>,
     Option<String>,
     Option<i64>,
+    Option<String>,
 );
 
 impl Workspace {
@@ -53,14 +57,17 @@ impl Workspace {
         versioned: Versioned<'_>,
         member: &MemberId,
     ) -> Result<(), Fault> {
-        let (kind, task, doc) = match versioned {
-            Versioned::Task(id, version) => (TASK_CHANGED, Some((id.as_str(), version)), None),
-            Versioned::Doc(id, version) => (DOC_CHANGED, None, Some((id.as_str(), version))),
+        let (kind, task, doc, proposal) = match versioned {
+            Versioned::Task(id, version) => {
+                (TASK_CHANGED, Some((id.as_str(), version)), None, None)
+            }
+            Versioned::Doc(id, version) => (DOC_CHANGED, None, Some((id.as_str(), version)), None),
+            Versioned::Proposal(id) => (PROPOSAL_CHANGED, None, None, Some(id.as_str())),
         };
         sqlx::query(
-            "INSERT INTO changes
-                 (workspace_id, seq, kind, member_id, task_id, task_version, doc_id, doc_version)
-             SELECT ?1, COALESCE(MAX(seq), 0) + 1, ?2, ?3, ?4, ?5, ?6, ?7 FROM changes
+            "INSERT INTO changes (workspace_id, seq, kind, member_id, task_id, task_version,
+                 doc_id, doc_version, proposal_id)
+             SELECT ?1, COALESCE(MAX(seq), 0) + 1, ?2, ?3, ?4, ?5, ?6, ?7, ?8 FROM changes
              WHERE workspace_id = ?1",
         )
         .bind(self.id.as_str())
@@ -70,6 +77,7 @@ impl Workspace {
         .bind(task.map(|(_, version)| version))
         .bind(doc.map(|(id, _)| id))
         .bind(doc.map(|(_, version)| version))
+        .bind(proposal)
         .execute(transaction)
         .await
         .map_err(failed)?;
@@ -84,7 +92,8 @@ impl Workspace {
     ) -> Result<Vec<WorkspaceUpdate>, Fault> {
         let after = i64::try_from(seq).unwrap_or(i64::MAX);
         sqlx::query_as::<_, Row>(
-            "SELECT seq, kind, member_id, task_id, task_version, doc_id, doc_version FROM changes
+            "SELECT seq, kind, member_id, task_id, task_version, doc_id, doc_version, proposal_id
+             FROM changes
              WHERE workspace_id = ? AND seq > ? ORDER BY seq LIMIT ?",
         )
         .bind(self.id.as_str())
@@ -99,8 +108,19 @@ impl Workspace {
     }
 
     fn stored_update(&self, row: Row) -> Result<WorkspaceUpdate, Fault> {
-        let (seq, kind, member, task, task_version, doc, doc_version) = row;
+        let (seq, kind, member, task, task_version, doc, doc_version, proposal) = row;
         let version = |version| stored_version(version).map(Revision::get);
+        if let Some(proposal) = proposal {
+            return match (kind.as_str(), task, doc) {
+                (PROPOSAL_CHANGED, None, None) => self.update(
+                    seq,
+                    WorkspaceChange::ProposalChanged {
+                        proposal: stored(proposal)?,
+                    },
+                ),
+                _ => Err(unreadable()),
+            };
+        }
         let change = match (kind.as_str(), task, task_version, doc, doc_version) {
             (MEMBER_JOINED, None, None, None, None) => WorkspaceChange::MemberJoined {
                 member: stored(member)?,
@@ -120,6 +140,10 @@ impl Workspace {
             // This server writes every kind it stores, so another is damage, not news.
             _ => return Err(unreadable()),
         };
+        self.update(seq, change)
+    }
+
+    fn update(&self, seq: i64, change: WorkspaceChange) -> Result<WorkspaceUpdate, Fault> {
         Ok(WorkspaceUpdate {
             workspace: self.id.clone(),
             seq: u64::try_from(seq).map_err(|_| unreadable())?,

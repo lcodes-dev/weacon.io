@@ -14,6 +14,7 @@ mod http;
 mod limit;
 mod outbox;
 mod pairing;
+mod proposals;
 mod secret;
 mod sign_in;
 mod sign_up;

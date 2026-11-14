@@ -6,6 +6,7 @@ mod backup;
 mod changes;
 mod docs;
 mod machine;
+mod proposals;
 mod schema;
 mod sign_in;
 mod tasks;
@@ -27,6 +28,8 @@ use weacon_protocol::{AccountId, AgentOwner, AgentRef, Author, MemberId, Workspa
 pub(crate) use account::{Account, NewWorkspace};
 pub(crate) use backup::restore;
 pub(crate) use machine::{Claim, Confirmation, NewPairing};
+#[cfg(test)]
+pub(crate) use proposals::Proposed;
 pub(crate) use sign_in::{Attempt, NewChallenge};
 pub(crate) use workspace::Workspace;
 

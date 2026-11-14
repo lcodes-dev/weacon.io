@@ -85,33 +85,30 @@ impl Workspace {
         attribution: &Attribution,
     ) -> Result<Doc, Fault> {
         let mut transaction = self.db.write().await?;
-        let revised = self
-            .update_doc(&mut transaction, id, read_at, text, attribution)
+        let current = self.read_doc(&mut transaction, id, None).await?;
+        let revised = current.revise(read_at, text).map_err(refused)?;
+        self.store_revision(&mut transaction, &revised, attribution)
             .await?;
         transaction.commit().await.map_err(failed)?;
         Ok(revised)
     }
 
-    /// [`Self::revise_doc`], inside the caller's transaction.
-    pub(super) async fn update_doc(
+    /// Stores `revised`, read and revised inside the caller's transaction, as the doc's new
+    /// revision.
+    pub(super) async fn store_revision(
         &self,
         transaction: &mut SqliteConnection,
-        id: &DocId,
-        read_at: Revision,
-        text: DocText,
+        revised: &Doc,
         attribution: &Attribution,
-    ) -> Result<Doc, Fault> {
-        let current = self.read_doc(transaction, id, None).await?;
-        let revised = current.revise(read_at, text).map_err(refused)?;
+    ) -> Result<(), Fault> {
         sqlx::query("UPDATE docs SET version = ? WHERE workspace_id = ? AND doc_id = ?")
             .bind(version_number(revised.version, last_version)?)
             .bind(self.id.as_str())
-            .bind(id.as_str())
+            .bind(revised.id.as_str())
             .execute(&mut *transaction)
             .await
             .map_err(failed)?;
-        self.record_doc(transaction, &revised, attribution).await?;
-        Ok(revised)
+        self.record_doc(transaction, revised, attribution).await
     }
 
     /// The doc's newest `limit` revisions, newest first; `limit` is at least 1. A doc there
@@ -311,7 +308,7 @@ fn doc_not_found() -> Fault {
     Fault::new(code!("doc.not_found"), "There is no such doc")
 }
 
-fn refused(error: ReviseError) -> Fault {
+pub(super) fn refused(error: ReviseError) -> Fault {
     match error {
         ReviseError::Stale => {
             Fault::new(code!("doc.stale"), "The doc has changed since it was read")

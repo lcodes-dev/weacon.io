@@ -24,6 +24,7 @@ use crate::feed;
 use crate::limit::Limit;
 use crate::outbox::Outbox;
 use crate::pairing;
+use crate::proposals;
 use crate::secret::Secret;
 use crate::sign_in;
 use crate::sign_up::SignUp;
@@ -189,6 +190,7 @@ fn router(shared: Shared) -> Router {
             post(tasks::change),
         )
         .merge(doc_routes())
+        .merge(proposals::routes())
         .merge(web::routes(shared.web))
         .layer(DefaultBodyLimit::max(MAX_BODY))
         .layer(middleware::map_response(uncached))

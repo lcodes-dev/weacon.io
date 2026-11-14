@@ -84,8 +84,9 @@ impl Workspace {
         attribution: &Attribution,
     ) -> Result<Task, Fault> {
         let mut transaction = self.db.write().await?;
-        let edited = self
-            .update_task(&mut transaction, id, read_at, edit, attribution)
+        let task = self.read_task(&mut transaction, id).await?;
+        let edited = task.edit(read_at, edit).map_err(refused)?;
+        self.store_task(&mut transaction, &edited, attribution)
             .await?;
         transaction.commit().await.map_err(failed)?;
         Ok(edited)
@@ -111,17 +112,14 @@ impl Workspace {
         stored_task(row)
     }
 
-    /// [`Self::edit_task`], inside the caller's transaction.
-    pub(super) async fn update_task(
+    /// Stores `edited`, read and edited inside the caller's transaction, as the task's new
+    /// version.
+    pub(super) async fn store_task(
         &self,
         transaction: &mut SqliteConnection,
-        id: &TaskId,
-        read_at: Revision,
-        edit: TaskEdit,
+        edited: &Task,
         attribution: &Attribution,
-    ) -> Result<Task, Fault> {
-        let task = self.read_task(transaction, id).await?;
-        let edited = task.edit(read_at, edit).map_err(refused)?;
+    ) -> Result<(), Fault> {
         sqlx::query(
             "UPDATE tasks SET title = ?, status = ?, order_key = ?, version = ?
              WHERE workspace_id = ? AND task_id = ?",
@@ -131,13 +129,11 @@ impl Workspace {
         .bind(edited.order.as_str())
         .bind(version_number(edited.version, last_version)?)
         .bind(self.id.as_str())
-        .bind(id.as_str())
+        .bind(edited.id.as_str())
         .execute(&mut *transaction)
         .await
         .map_err(failed)?;
-        self.record_version(transaction, &edited, attribution)
-            .await?;
-        Ok(edited)
+        self.record_version(transaction, edited, attribution).await
     }
 
     /// Records who is behind the version `task` is now at, and the change for the feed.
@@ -187,7 +183,7 @@ pub(crate) fn task_not_found() -> Fault {
     Fault::new(code!("task.not_found"), "There is no such task")
 }
 
-fn refused(error: EditError) -> Fault {
+pub(super) fn refused(error: EditError) -> Fault {
     match error {
         EditError::Stale => Fault::new(
             code!("task.stale"),
