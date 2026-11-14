@@ -3,17 +3,17 @@
 use axum::extract::rejection::PathRejection;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
-use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::{Json, Router};
 use weacon_observability::Fault;
 use weacon_protocol::{
-    Code, ProposalDecision, ProposalId, ProposalList, ProposalOutcome, ProposalVerdict,
-    WorkspaceId, code,
+    Code, ProposalDecision, ProposalId, ProposalList, ProposalOutcome, ProposalRecord,
+    ProposalVerdict, WorkspaceId, code,
 };
 
 use crate::auth::Member;
-use crate::http::{Body, Shared, Unreadable, error, failure};
+use crate::http::{self, Body, Refusals, Unreadable, parsed};
+use crate::shared::Shared;
 
 /// What the server offers to clients that read and decide on proposals.
 pub(crate) const PROPOSALS: Code = code!("workspace.proposals");
@@ -29,26 +29,18 @@ pub(crate) fn routes() -> Router<Shared> {
 
 /// `GET /api/workspaces/{workspace}/proposals`: the workspace's newest proposals, newest
 /// first.
-async fn list(member: Member) -> Response {
-    match member.workspace.proposals().await {
-        Ok(proposals) => Json(ProposalList { proposals }).into_response(),
-        Err(fault) => answer(fault),
-    }
+async fn list(member: Member) -> Result<Json<ProposalList>, Refused> {
+    let proposals = member.workspace.proposals().await?;
+    Ok(Json(ProposalList { proposals }))
 }
 
 /// `GET /api/workspaces/{workspace}/proposals/{proposal}`: one proposal.
 async fn read(
     member: Member,
     path: Result<Path<(WorkspaceId, ProposalId)>, PathRejection>,
-) -> Response {
-    let found = async {
-        let Path((_, id)) = path.map_err(|_| invalid())?;
-        member.workspace.proposal(&id).await
-    };
-    match found.await {
-        Ok(record) => Json(record).into_response(),
-        Err(fault) => answer(fault),
-    }
+) -> Result<Json<ProposalRecord>, Refused> {
+    let Path((_, id)) = path.map_err(|_| invalid())?;
+    Ok(Json(member.workspace.proposal(&id).await?))
 }
 
 /// `POST /api/workspaces/{workspace}/proposals/{proposal}`: a member accepts or rejects an
@@ -58,32 +50,25 @@ async fn decide(
     member: Member,
     path: Result<Path<(WorkspaceId, ProposalId)>, PathRejection>,
     body: Result<Body<ProposalDecision>, Unreadable>,
-) -> Response {
-    let decided = async {
-        let Path((_, id)) = path.map_err(|_| invalid())?;
-        let Body(decision) = body.map_err(|_| invalid())?;
-        let workspace = &member.workspace;
-        match decision.verdict {
-            ProposalVerdict::Accept => workspace.accept(&id, &member.id, shared.now()).await,
-            ProposalVerdict::Reject => workspace
-                .reject(&id, &member.id)
-                .await
-                .map(|()| ProposalOutcome::Rejected),
-            ProposalVerdict::Newer => Err(invalid()),
+) -> Result<Json<ProposalOutcome>, Refused> {
+    let Path((_, id)) = path.map_err(|_| invalid())?;
+    let decision = parsed(body, invalid, invalid)?;
+    let workspace = &member.workspace;
+    let outcome = match decision.verdict {
+        ProposalVerdict::Accept => workspace.accept(&id, &member.id, shared.now()).await?,
+        ProposalVerdict::Reject => {
+            workspace.reject(&id, &member.id).await?;
+            ProposalOutcome::Rejected
         }
+        ProposalVerdict::Newer => return Err(invalid().into()),
     };
-    match decided.await {
-        Ok(outcome) => {
-            if matches!(
-                outcome,
-                ProposalOutcome::Accepted { .. } | ProposalOutcome::Rejected
-            ) {
-                shared.changed(member.workspace.id());
-            }
-            Json(outcome).into_response()
-        }
-        Err(fault) => answer(fault),
+    if matches!(
+        outcome,
+        ProposalOutcome::Accepted { .. } | ProposalOutcome::Rejected
+    ) {
+        shared.wake_feeds(workspace.id());
     }
+    Ok(Json(outcome))
 }
 
 fn invalid() -> Fault {
@@ -93,61 +78,39 @@ fn invalid() -> Fault {
     )
 }
 
-const REFUSALS: [(Code, StatusCode); 7] = [
-    (code!("proposal.invalid"), StatusCode::BAD_REQUEST),
-    (code!("doc.too_large"), StatusCode::PAYLOAD_TOO_LARGE),
-    (code!("proposal.not_found"), StatusCode::NOT_FOUND),
-    (code!("proposal.closed"), StatusCode::CONFLICT),
-    (code!("doc.quota_full"), StatusCode::PAYLOAD_TOO_LARGE),
-    (code!("task.too_many"), StatusCode::CONFLICT),
-    (code!("task.no_room"), StatusCode::CONFLICT),
-];
+struct Proposals;
 
-/// Answers a refusal with its status, and anything else as the server failing.
-fn answer(fault: Fault) -> Response {
-    let code = fault.code().clone();
-    match REFUSALS.iter().find(|(refusal, _)| *refusal == code) {
-        Some((_, status)) => error(*status, code, false),
-        None => failure(fault),
-    }
+impl Refusals for Proposals {
+    const REFUSALS: &'static [(Code, StatusCode, bool)] = &[
+        (code!("proposal.invalid"), StatusCode::BAD_REQUEST, false),
+        (code!("proposal.not_found"), StatusCode::NOT_FOUND, false),
+        (code!("proposal.closed"), StatusCode::CONFLICT, false),
+        (code!("doc.too_large"), StatusCode::PAYLOAD_TOO_LARGE, false),
+        (
+            code!("doc.quota_full"),
+            StatusCode::PAYLOAD_TOO_LARGE,
+            false,
+        ),
+        (code!("task.too_many"), StatusCode::CONFLICT, false),
+        (code!("task.no_room"), StatusCode::CONFLICT, false),
+    ];
 }
+
+type Refused = http::Refused<Proposals>;
 
 #[cfg(test)]
 mod tests {
-    use std::net::SocketAddr;
-
     use weacon_protocol::{ProposalChange, ProposalRecord, ProposalState, TaskStatus};
 
     use super::*;
     use crate::test_support::{
-        self, Fixture, Running, bearer, member_id, refusal, request_with, status, workspace_id,
+        self, Client, Fixture, error_code, member_id, request_with, status, workspace_id,
     };
 
-    struct Ada {
-        address: SocketAddr,
-        auth: String,
-    }
-
-    impl Ada {
-        async fn send(&self, head: &str, body: &str) -> (String, String) {
-            let (head, body) = request_with(self.address, head, &self.auth, body).await;
-            (status(&head).to_owned(), body)
-        }
-
-        async fn decide(&self, proposal: &str, verdict: ProposalVerdict) -> (String, String) {
-            let body = serde_json::to_string(&ProposalDecision { verdict }).unwrap();
-            let head = format!("POST /api/workspaces/w1/proposals/{proposal}");
-            self.send(&head, &body).await
-        }
-    }
-
-    async fn ada(fixture: &Fixture) -> (Running, Ada) {
-        let (server, body) = fixture.signed_in("ada@example.com").await;
-        let ada = Ada {
-            address: server.address,
-            auth: bearer(&body),
-        };
-        (server, ada)
+    async fn decide(ada: &Client, proposal: &str, verdict: ProposalVerdict) -> (String, String) {
+        let body = serde_json::to_string(&ProposalDecision { verdict }).unwrap();
+        let head = format!("POST /api/workspaces/w1/proposals/{proposal}");
+        ada.send(&head, &body).await
     }
 
     // m1's agent proposes a task called `title` as `proposal`.
@@ -168,7 +131,7 @@ mod tests {
     #[tokio::test]
     async fn a_member_lists_reads_and_decides_on_proposals() {
         let fixture = Fixture::new().await;
-        let (_server, ada) = ada(&fixture).await;
+        let (_server, ada) = fixture.client("ada@example.com").await;
         proposed(&fixture, "p1", "Ship").await;
         proposed(&fixture, "p2", "Test").await;
         let mut changes = fixture.shared.changes.subscribe();
@@ -182,13 +145,13 @@ mod tests {
             .map(|record| record.id.as_str())
             .collect();
         assert_eq!(ids, ["p2", "p1"]);
-        let (accepted, body) = ada.decide("p1", ProposalVerdict::Accept).await;
+        let (accepted, body) = decide(&ada, "p1", ProposalVerdict::Accept).await;
         assert_eq!(accepted, "http/1.1 200 ok");
         assert_eq!(
             serde_json::from_str::<ProposalOutcome>(&body).unwrap(),
             ProposalOutcome::Accepted { version: 1 }
         );
-        let (rejected, body) = ada.decide("p2", ProposalVerdict::Reject).await;
+        let (rejected, body) = decide(&ada, "p2", ProposalVerdict::Reject).await;
         assert_eq!(rejected, "http/1.1 200 ok");
         assert_eq!(
             serde_json::from_str::<ProposalOutcome>(&body).unwrap(),
@@ -218,9 +181,9 @@ mod tests {
     #[tokio::test]
     async fn a_decision_needs_an_open_proposal() {
         let fixture = Fixture::new().await;
-        let (_server, ada) = ada(&fixture).await;
+        let (_server, ada) = fixture.client("ada@example.com").await;
         proposed(&fixture, "p1", "Ship").await;
-        ada.decide("p1", ProposalVerdict::Reject).await;
+        decide(&ada, "p1", ProposalVerdict::Reject).await;
 
         for (head, body, answer, refused) in [
             (
@@ -262,7 +225,7 @@ mod tests {
         ] {
             let (answered, refusal_body) = ada.send(head, body).await;
             assert_eq!(
-                (answered.as_str(), refusal(&refusal_body).as_str()),
+                (answered.as_str(), error_code(&refusal_body).as_str()),
                 (answer, refused),
                 "{head} {body}"
             );
@@ -281,9 +244,11 @@ mod tests {
 
     #[test]
     fn refusals_answer_with_their_status_and_nothing_else_is_a_failure() {
-        for (refused, status) in REFUSALS {
+        let answer =
+            |fault: Fault| axum::response::IntoResponse::into_response(Refused::from(fault));
+        for (refused, status, _) in Proposals::REFUSALS {
             let fault = Fault::new(refused.clone(), "Refused");
-            assert_eq!(answer(fault).status(), status, "{refused:?}");
+            assert_eq!(answer(fault).status(), *status, "{refused:?}");
         }
         let failed = Fault::new(code!("db.failed"), "The database failed");
         assert_eq!(answer(failed).status(), StatusCode::INTERNAL_SERVER_ERROR);

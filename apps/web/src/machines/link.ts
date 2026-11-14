@@ -65,8 +65,13 @@ function ask(link: Link, later: Later, envelope: (id: number, request: RequestId
     };
     unsubscribe = link.subscribe((message) => {
       if (message.type === "machine_settings_answer" && message.request === request) {
-        const { kind, ...settings } = message.answer;
-        finish(kind === "current" ? { ok: true, value: settings } : { ok: false, code: MALFORMED });
+        const { answer } = message;
+        if (answer.kind === "current") {
+          const { kind, ...settings } = answer;
+          finish({ ok: true, value: settings });
+        } else {
+          finish({ ok: false, code: MALFORMED });
+        }
       } else if (message.type === "error" && message.id === id) {
         finish({ ok: false, code: message.code });
       }

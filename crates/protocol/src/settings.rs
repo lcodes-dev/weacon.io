@@ -1,7 +1,7 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::{AccessLevel, AgentKind, Asker, MachineId, RequestId, WorkspaceId};
+use crate::{AccessLevel, AgentKind, Asker, MachineId, RepoId, RequestId, WorkspaceId};
 
 /// From the owner of `machine` to its core, which offers `machine.settings`: what the machine
 /// keeps for `workspace`. The server relays it only from the machine's owner, and the core
@@ -24,6 +24,9 @@ pub struct MachineSettingsQuery {
 pub enum MachineSettingsQueryKind {
     /// The settings as they are now.
     Current,
+    /// The repositories the owner registered for the workspace, of a core that offers
+    /// `repo.list`; an older core answers `request.unknown`.
+    Repos,
     /// A query this build doesn't know, from a newer peer; only ever received.
     #[serde(other)]
     #[schemars(skip)]
@@ -79,6 +82,11 @@ pub struct MachineSettingsAnswer {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum MachineSettingsAnswerKind {
     Current(MachineSettings),
+    /// The ids of the workspace's repositories, sorted. Where each is on the machine is never
+    /// said: everyone who may ask would see it.
+    Repos {
+        repos: Vec<RepoId>,
+    },
     /// An answer this build doesn't know, from a newer peer; only ever received.
     #[serde(other)]
     #[schemars(skip)]
@@ -143,6 +151,7 @@ impl MachineSettingsAnswerKind {
                             || matches!(sign_in.state, SignInState::Newer)
                     })
             }
+            Self::Repos { .. } => false,
             Self::Newer => true,
         }
     }
@@ -291,6 +300,32 @@ mod tests {
         assert_eq!(states, [SignInState::SignedOut, SignInState::Unknown]);
     }
 
+    #[test]
+    fn the_repos_a_workspace_has_are_asked_for_and_answered_by_id_alone() {
+        travels(
+            &query(MachineSettingsQueryKind::Repos, Some(asker())),
+            stamped(wire(
+                "machine_settings_query",
+                "query",
+                json!({ "kind": "repos" }),
+            )),
+        );
+        let ids = |repos: &[&str]| repos.iter().map(|id| id.parse().unwrap()).collect();
+        for repos in [vec!["api_2", "site"], vec![]] {
+            travels(
+                &answer(MachineSettingsAnswerKind::Repos { repos: ids(&repos) }),
+                wire(
+                    "machine_settings_answer",
+                    "answer",
+                    json!({ "kind": "repos", "repos": repos }),
+                ),
+            );
+        }
+        let path = json!({ "kind": "repos", "repos": ["../site"] });
+        serde_json::from_value::<Envelope>(wire("machine_settings_answer", "answer", path))
+            .unwrap_err();
+    }
+
     // What a newer peer sends: it parses, and is never sent on.
     fn newer(message: &str, field: &str, body: Value) -> Message {
         never_sent(wire(message, field, body)).message
@@ -344,7 +379,7 @@ mod tests {
         let current = |access: &str, sign_ins: Value| json!({ "kind": "current", "access": access, "team": false, "sign_ins": sign_ins });
         let sign_in = |answer: MachineSettingsAnswerKind| match answer {
             MachineSettingsAnswerKind::Current(settings) => settings.sign_ins.first().cloned(),
-            MachineSettingsAnswerKind::Newer => None,
+            MachineSettingsAnswerKind::Repos { .. } | MachineSettingsAnswerKind::Newer => None,
         };
 
         assert_eq!(

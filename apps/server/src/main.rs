@@ -18,6 +18,7 @@ mod pairing;
 mod proposals;
 mod relay;
 mod secret;
+mod shared;
 mod sign_in;
 mod sign_up;
 mod socket;
@@ -43,9 +44,9 @@ use weacon_protocol::code;
 
 use crate::cli::{Command, Serve};
 use crate::db::Db;
-use crate::http::Shared;
 use crate::outbox::Outbox;
 use crate::secret::Secret;
+use crate::shared::Shared;
 
 /// How many wake-ups a feed may miss before it rereads the database.
 const CHANGES: usize = 256;
@@ -122,12 +123,9 @@ async fn serve(app: &App, args: Serve) -> Result<(), Fault> {
         links: Arc::default(),
         relay: Arc::default(),
         sign_ins: Arc::new(Semaphore::new(sign_in::AT_ONCE)),
-        finish_within: sign_in::FINISH_TAKES,
-        starts: Arc::new(sign_in::starts()),
-        tries: Arc::new(sign_in::tries()),
-        pair_starts: Arc::new(pairing::starts()),
-        pair_tries: Arc::new(pairing::tries()),
-        pair_claims: Arc::new(pairing::claims()),
+        finish_takes: sign_in::FINISH_TAKES,
+        sign_in_limits: Arc::new(sign_in::limits()),
+        pairing_limits: Arc::new(pairing::limits()),
         web: web::FILES,
     };
     http::serve(listener, shared, signals.wait()).await;
