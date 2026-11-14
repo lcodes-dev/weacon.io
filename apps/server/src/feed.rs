@@ -263,7 +263,7 @@ mod tests {
     use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async};
     use weacon_protocol::{Hello, MemberId, PROTOCOL, WorkspaceChange, WorkspaceUpdate};
 
-    use weacon_model::{Change, OrderKey, Task, Title};
+    use weacon_model::{Attribution, OrderKey, Task, Title};
     use weacon_protocol::TaskId;
 
     use super::*;
@@ -458,8 +458,12 @@ mod tests {
             Title::try_from("Write".to_owned()).unwrap(),
             OrderKey::try_from("V".to_owned()).unwrap(),
         );
-        let change = Change::by(member_id("m1"), 0);
-        w1(&fixture).await.add_task(&task, &change).await.unwrap();
+        let attribution = Attribution::by(member_id("m1"), 0);
+        w1(&fixture)
+            .await
+            .add_task(&task, &attribution)
+            .await
+            .unwrap();
         fixture.shared.changed(&workspace_id("w1"));
         join(&fixture, server.address, "m2", "bo@example.com").await;
         let after_the_task = next(&mut plain).await;
