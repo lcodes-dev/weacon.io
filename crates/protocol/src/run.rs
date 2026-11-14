@@ -148,12 +148,12 @@ pub struct RunStatus {
     pub agent: Option<AgentRef>,
 }
 
-/// An agent as people know it: which vendor's, whose, and the machine it runs on, left out
-/// when not known.
+/// An agent as people know it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct AgentRef {
     pub kind: AgentKind,
     pub owner: AgentOwner,
+    /// Left out when not known.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(with = "MachineId")]
     pub machine: Option<MachineId>,

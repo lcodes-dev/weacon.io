@@ -313,13 +313,14 @@
       ]
     },
     "AgentRef": {
-      "description": "An agent as people know it: which vendor's, whose, and the machine it runs on, left out\nwhen not known.",
+      "description": "An agent as people know it.",
       "type": "object",
       "properties": {
         "kind": {
           "$ref": "#/$defs/AgentKind"
         },
         "machine": {
+          "description": "Left out when not known.",
           "$ref": "#/$defs/MachineId"
         },
         "owner": {

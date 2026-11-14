@@ -107,11 +107,13 @@ export type AgentOwner = (
 );
 
 /**
- * An agent as people know it: which vendor's, whose, and the machine it runs on, left out
- * when not known.
+ * An agent as people know it.
  */
 export type AgentRef = {
   kind: AgentKind;
+  /**
+   * Left out when not known.
+   */
   machine?: MachineId;
   owner: AgentOwner;
 };
