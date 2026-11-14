@@ -13,7 +13,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use http_body_util::combinators::BoxBody;
-use http_body_util::{BodyExt, Empty};
+use http_body_util::{BodyExt, Empty, Full, Limited};
 use hyper::body::{Bytes, Incoming};
 use hyper::server::conn::http1;
 use hyper::service::service_fn;
@@ -143,8 +143,7 @@ async fn serve(
         .with_legacy_session_mode(false)
         .with_json_response(true)
         .with_allowed_hosts([address.to_string()])
-        .enforce_origin_validation()
-        .with_max_request_body_bytes(MAX_BODY);
+        .enforce_origin_validation();
     let log = handler.log.clone();
     let rmcp = StreamableHttpService::new(
         move || Ok(handler.clone()),
@@ -238,7 +237,17 @@ impl Front {
             return empty(StatusCode::UNAUTHORIZED);
         };
         request.extensions_mut().insert(grant);
-        self.rmcp.handle(request).await
+        // A body that trickles in would hold its connection; tools run after it is read.
+        let (parts, body) = request.into_parts();
+        let read = tokio::time::timeout(self.stall, Limited::new(body, MAX_BODY).collect()).await;
+        match read {
+            Ok(Ok(body)) => {
+                let request = Request::from_parts(parts, Full::new(body.to_bytes()));
+                self.rmcp.handle(request).await
+            }
+            Ok(Err(_)) => empty(StatusCode::PAYLOAD_TOO_LARGE),
+            Err(_) => empty(StatusCode::REQUEST_TIMEOUT),
+        }
     }
 }
 
@@ -620,6 +629,35 @@ mod tests {
         drop(revoke);
         assert_eq!(live_grant(&extensions).unwrap_err().message, "No run");
         live_grant(&Extensions::default()).unwrap_err();
+    }
+
+    #[tokio::test]
+    async fn a_body_that_stops_arriving_is_given_up_on() {
+        let dir = TempDir::new().unwrap();
+        let (log, _records) = recording_logger();
+        let quick = Duration::from_millis(50);
+        let (mcp, _server) = listen(&weacon_appkit::build(&VERSION), &log, quick).unwrap();
+        let (token, _revoke) = mcp
+            .grants
+            .issue(run_grant("w-1", "run-1", repo(&dir, "one")))
+            .unwrap();
+        let address = mcp
+            .url
+            .trim_start_matches("http://")
+            .trim_end_matches("/mcp");
+        let mut stream = TcpStream::connect(address).await.unwrap();
+        let head = format!(
+            "POST /mcp HTTP/1.1\r\nHost: {address}\r\nAuthorization: {}\r\n\
+             Content-Length: 100\r\n\r\n{{",
+            bearer(&token)
+        );
+
+        stream.write_all(head.as_bytes()).await.unwrap();
+        let mut reply = String::new();
+        let read = tokio::time::timeout(Duration::from_secs(5), stream.read_to_string(&mut reply));
+        read.await.unwrap().unwrap();
+
+        assert!(reply.starts_with("HTTP/1.1 408"), "{reply}");
     }
 
     #[tokio::test]
