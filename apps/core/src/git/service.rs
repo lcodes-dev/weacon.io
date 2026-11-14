@@ -19,6 +19,7 @@ use weacon_protocol::{
 use super::branch::{Draft, Gh};
 use super::chats::{ChatRepo, ChatRepos};
 use super::removal::Journal;
+use super::repos::Repos;
 use super::{Git, branch, diff};
 use crate::platform::trash::Trashed;
 use crate::workspaces::Workspaces;
@@ -249,7 +250,7 @@ impl Inner {
         let branch = branch(&record.chat);
         git.push(worktree, &branch)?;
         let config = self.root(&record.workspace).join("gh");
-        let gh = Gh::find(self.path.as_deref(), config);
+        let gh = Gh::find(self.path.as_deref(), config).map(|gh| gh.in_tree(git));
         if let Some(gh) = gh.filter(|gh| gh.signed_in(worktree)) {
             let draft = Draft {
                 base,
@@ -274,7 +275,18 @@ impl Inner {
         let record = records.get(chat)?.ok_or_else(none)?;
         let work_root = self.work_root.as_deref().ok_or_else(none)?;
         let worktree = crate::chats::chat_folder(work_root, workspace, chat);
-        let git = Git::open(&self.state_dir, self.path.as_deref())?;
+        let repos = Repos::new(
+            workspace.clone(),
+            self.root(workspace).join("git/repos.json"),
+        );
+        let repo = repos.get(&record.repo)?.ok_or_else(|| {
+            Fault::new(
+                code!("repo.unknown"),
+                "The chat's repository isn't registered",
+            )
+        })?;
+        let git =
+            Git::open(&self.state_dir, self.path.as_deref())?.in_tree(&repo.path, &worktree)?;
         Ok(Chat {
             git,
             record,
@@ -339,12 +351,12 @@ pub(crate) fn with_chat(dir: &Path) -> (Worktrees, WorkspaceId, ChatId, PathBuf)
         .start
         .unwrap();
     let root = Workspaces::new(&state, None).root(&workspace);
+    let site = RepoId::try_from("site".to_owned()).unwrap();
+    Repos::new(workspace.clone(), root.join("git/repos.json"))
+        .add(&git(dir), site.clone(), &repo)
+        .unwrap();
     ChatRepos::new(workspace.clone(), root.join("git/chats.json"))
-        .record(
-            &chat_id,
-            RepoId::try_from("site".to_owned()).unwrap(),
-            start,
-        )
+        .record(&chat_id, site, start)
         .unwrap();
     let worktrees = Worktrees::new(&state, std::env::var_os("PATH"), Some(work), bin);
     (worktrees, workspace, chat_id, worktree)
@@ -421,6 +433,58 @@ mod tests {
             };
             Ok(self.worktrees.command(command).await?.answer)
         }
+    }
+
+    // An agent points the worktree's `.git` file at a repository of its own, whose config runs a
+    // command whenever git reads a changed file.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_worktrees_git_file_is_never_followed() {
+        let bench = bench();
+        let (evil, marker) = (bench.dir.join("evil"), bench.dir.join("ran"));
+        let repo = bench.dir.join("repo");
+        fixture(
+            &bench.dir,
+            &bench.dir,
+            &[
+                "clone",
+                "--quiet",
+                repo.to_str().unwrap(),
+                evil.to_str().unwrap(),
+            ],
+        );
+        fs::write(evil.join(".git/info/attributes"), "* filter=evil\n").unwrap();
+        let clean = format!("touch '{}'; cat", marker.display());
+        fixture(&bench.dir, &evil, &["config", "filter.evil.clean", &clean]);
+        let points = format!("gitdir: {}\n", evil.join(".git").display());
+        fs::write(bench.worktree.join(".git"), points).unwrap();
+        fs::write(bench.worktree.join("README.md"), "# Changed\n").unwrap();
+
+        let changed = bench.changes().await.unwrap();
+
+        assert_eq!(changed.len(), 1, "{changed:?}");
+        assert_eq!(bench.state().await.unwrap(), state(false, true, false));
+        assert!(!marker.exists(), "the agent's filter ran");
+    }
+
+    #[tokio::test]
+    async fn a_worktree_its_repository_doesnt_list_is_refused() {
+        let bench = bench();
+        fixture(
+            &bench.dir,
+            &bench.dir.join("repo"),
+            &[
+                "worktree",
+                "remove",
+                "--force",
+                bench.worktree.to_str().unwrap(),
+            ],
+        );
+        fs::create_dir_all(&bench.worktree).unwrap();
+
+        let error = bench.state().await.unwrap_err();
+
+        assert_eq!(code(&error), "worktree.unregistered");
     }
 
     fn one_line(text: String) -> DiffAnswer {
