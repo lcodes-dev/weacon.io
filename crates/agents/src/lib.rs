@@ -5,6 +5,7 @@ mod claude;
 mod codex;
 mod launch;
 mod lines;
+pub mod outside;
 mod platform;
 mod run;
 pub mod sessions;
