@@ -47,8 +47,8 @@ mod tests {
         MachineSettingsQueryKind, Message, RequestId, RunId, code,
     };
 
-    use crate::test_support::socket::{Socket, next, open, say, send};
-    use crate::test_support::{Fixture, workspace_id};
+    use crate::test_support::socket::{Socket, ends, next, open, say, send};
+    use crate::test_support::{Fixture, member_id, workspace_id};
 
     // Something that gets an answer at once, so every frame before it has been read.
     async fn fence(client: &mut Socket) {
@@ -162,6 +162,54 @@ mod tests {
 
         let records = feed(&fixture, &["workspace.feed", "machine.settings"]).await;
 
+        assert!(
+            records
+                .iter()
+                .all(|record| !record.fields.contains_key("client")),
+            "{records:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_member_removed_writes_nothing_more_and_loses_the_feed() {
+        let mut fixture = Fixture::new().await;
+        fixture.quiet();
+        let (server, ada) = fixture.client("ada@example.com").await;
+        let mut client = open(
+            server.address,
+            "/api/workspaces/w1/feed?since=1",
+            &ada.token,
+        )
+        .await
+        .unwrap();
+        say(&mut client, &["workspace.feed", "log.forward"]).await;
+        next(&mut client).await;
+        let w1 = fixture
+            .shared
+            .db
+            .workspace(&workspace_id("w1"))
+            .await
+            .unwrap();
+        w1.unlink(&member_id("m1")).await;
+
+        let log = ClientLog {
+            level: Level::Info,
+            msg: LogEvent::try_from("app started".to_owned()).unwrap(),
+            run_id: None,
+            request_id: None,
+            code: None,
+        };
+        send(
+            &mut client,
+            Envelope {
+                id: 0,
+                message: Message::Log(log),
+            },
+        )
+        .await;
+
+        assert!(ends(&mut client).await);
+        let records = fixture.records.lock().unwrap().clone();
         assert!(
             records
                 .iter()

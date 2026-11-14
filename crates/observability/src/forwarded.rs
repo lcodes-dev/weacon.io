@@ -67,9 +67,14 @@ impl Forwarded {
     }
 
     fn admit(&mut self, log: &Logger, now: SystemTime) -> bool {
-        let earned = now
-            .duration_since(self.refilled)
-            .map_or(0, |since| since.as_secs());
+        // A clock set back starts the count again from there, rather than waiting for it.
+        let earned = now.duration_since(self.refilled).map_or_else(
+            |_| {
+                self.refilled = now;
+                0
+            },
+            |since| since.as_secs(),
+        );
         let tokens = u64::from(self.tokens).saturating_add(earned);
         if let Ok(tokens) = u32::try_from(tokens)
             && tokens < BURST
@@ -281,5 +286,24 @@ mod tests {
             .filter(|(_, msg, _)| *msg == "app started")
             .count();
         assert_eq!(started, usize::try_from(BURST * 2).unwrap());
+    }
+
+    #[test]
+    fn a_clock_set_back_still_refills_from_where_it_was_set() {
+        let (log, records) = capture(Level::Trace);
+        let mut forwarded = Forwarded::new(&KNOWN, at(100));
+        let started = record(Level::Info, "app started", None);
+
+        for _ in 0..=BURST {
+            forwarded.take(&log, &started, at(100));
+        }
+        forwarded.take(&log, &started, at(10));
+        forwarded.take(&log, &started, at(11));
+
+        let started = written(&records)
+            .iter()
+            .filter(|(_, msg, _)| *msg == "app started")
+            .count();
+        assert_eq!(started, usize::try_from(BURST + 1).unwrap());
     }
 }

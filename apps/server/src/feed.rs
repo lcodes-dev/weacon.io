@@ -193,6 +193,7 @@ async fn received(
 ) -> Result<(), Closed> {
     if let Message::Log(record) = &envelope.message {
         if feed.hears(LOG_FORWARD) {
+            feed.allowed(shared).await?;
             feed.logs.take(shared, record);
         }
         return Ok(());
