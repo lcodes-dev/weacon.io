@@ -179,7 +179,9 @@ mod tests {
     use weacon_protocol::TaskStatus;
 
     use super::*;
-    use crate::test_support::{Fixture, Running, bearer, request_with, status, workspace_id};
+    use crate::test_support::{
+        Fixture, Running, bearer, refusal, request_with, status, workspace_id,
+    };
 
     struct Ada {
         address: SocketAddr,
@@ -234,11 +236,6 @@ mod tests {
             auth: bearer(&body),
         };
         (server, ada)
-    }
-
-    fn refusal(body: &str) -> String {
-        let error: ErrorBody = serde_json::from_str(body).unwrap();
-        error.code.as_str().to_owned()
     }
 
     fn titles(tasks: &[TaskRecord]) -> Vec<&str> {

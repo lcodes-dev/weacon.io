@@ -1,9 +1,10 @@
 use sqlx::SqliteConnection;
 use weacon_model::{Attribution, EditError, Revision, Task, TaskEdit};
 use weacon_observability::Fault;
-use weacon_protocol::{Author, MemberId, TaskId, TaskStatus, code};
+use weacon_protocol::{TaskId, TaskStatus, code};
 
-use super::{Workspace, failed, stored, unreadable};
+use super::changes::Versioned;
+use super::{Workspace, author_columns, failed, stored, stored_version, unreadable};
 
 type Row = (String, String, String, String, i64);
 
@@ -118,7 +119,7 @@ impl Workspace {
         task: &Task,
         attribution: &Attribution,
     ) -> Result<(), Fault> {
-        let (kind, author) = author_columns(attribution.author())?;
+        let (kind, author) = author_columns(attribution.author()).ok_or_else(unknown_value)?;
         let version = version_number(task.version)?;
         sqlx::query(
             "INSERT INTO task_versions
@@ -135,7 +136,8 @@ impl Workspace {
         .execute(&mut *transaction)
         .await
         .map_err(failed)?;
-        self.task_changed(transaction, &task.id, version, attribution.accepted_by())
+        let versioned = Versioned::Task(&task.id, version);
+        self.changed(transaction, versioned, attribution.accepted_by())
             .await
     }
 }
@@ -146,9 +148,7 @@ fn stored_task((id, title, status, order, version): Row) -> Result<Task, Fault> 
         title: stored(title)?,
         status: stored_status(&status)?,
         order: stored(order)?,
-        version: u64::try_from(version)
-            .map(Revision::new)
-            .map_err(|_| unreadable())?,
+        version: stored_version(version)?,
     })
 }
 
@@ -204,17 +204,10 @@ fn stored_status(text: &str) -> Result<TaskStatus, Fault> {
     }
 }
 
-fn author_columns(author: &Author) -> Result<(&'static str, &MemberId), Fault> {
-    match author {
-        Author::Person { member } => Ok(("person", member)),
-        Author::Agent { owner } => Ok(("agent", owner)),
-        Author::Newer => Err(unknown_value()),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use weacon_model::{OrderKey, Title};
+    use weacon_protocol::Author;
     use weacon_testing::TempDir;
 
     use super::*;
@@ -513,10 +506,7 @@ mod tests {
         assert_eq!(code(&edited), "task.unknown_value");
         assert_eq!(code(&added), "task.unknown_value");
         assert_eq!(code(&last), "task.last_version");
-        assert_eq!(
-            code(&author_columns(&Author::Newer).unwrap_err()),
-            "task.unknown_value"
-        );
+        assert_eq!(author_columns(&Author::Newer), None);
         assert_eq!(one.tasks().await.unwrap(), [task]);
     }
 
