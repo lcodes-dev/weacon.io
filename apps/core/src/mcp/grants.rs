@@ -89,6 +89,12 @@ impl Grants {
         })
     }
 
+    /// How many tokens work now.
+    #[cfg(test)]
+    pub(crate) fn live(&self) -> usize {
+        self.held().len()
+    }
+
     fn held(&self) -> MutexGuard<'_, Held> {
         self.0.lock().unwrap_or_else(PoisonError::into_inner)
     }

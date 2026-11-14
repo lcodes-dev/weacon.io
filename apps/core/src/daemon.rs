@@ -80,7 +80,7 @@ pub(crate) struct Daemon {
     disk: disk::Watch,
     memory: memory::Watch,
     engine: JoinHandle<()>,
-    mcp: JoinHandle<()>,
+    mcp: mcp::Server,
     // Held for the daemon's life, so a second daemon can't start.
     _lock: File,
 }
@@ -169,7 +169,7 @@ impl Daemon {
         drop(self.listener);
         drop(fs::remove_file(&self.socket));
         clients.shutdown().await;
-        self.mcp.abort();
+        drop(self.mcp);
         // The engine stops once the last way to it is gone; its writes end before the lock goes.
         let log = self.shared.log.clone();
         drop(self.shared);

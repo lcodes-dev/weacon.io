@@ -66,8 +66,13 @@ pub(crate) fn command(launch: &Launch, session: Option<&AgentSession>) -> Comman
             json!({"type": "http", "url": mcp.url, "headers": {"Authorization": TOKEN_HEADER}});
         let config = json!({"mcpServers": {"weacon": server}});
         command.args(["--mcp-config", &config.to_string()]);
-        // Every tool of Weacon's MCP only reads, so none waits for a person.
-        command.args(["--allowedTools", "mcp__weacon"]);
+        // Each of these tools only reads, so none waits for a person.
+        let tools: Vec<_> = mcp
+            .tools
+            .iter()
+            .map(|tool| format!("mcp__weacon__{tool}"))
+            .collect();
+        command.args(["--allowedTools", &tools.join(",")]);
         command.env(TOKEN_VARIABLE, &mcp.token);
     }
     if let Some(session) = session {
@@ -442,6 +447,7 @@ mod tests {
         let server = McpServer {
             url: "http://127.0.0.1:9/mcp".into(),
             token: "secret-token".into(),
+            tools: vec!["map".into(), "symbol".into()],
         };
         let (with, given) = with_mcp(Some(server));
         let after = |flag: &str| {
@@ -456,7 +462,11 @@ mod tests {
             "headers": {"Authorization": "Bearer ${WEACON_MCP_TOKEN}"},
         }}});
         assert_eq!(config, expected);
-        assert_eq!(after("--allowedTools").as_deref(), Some("mcp__weacon"));
+        let allowed = after("--allowedTools");
+        assert_eq!(
+            allowed.as_deref(),
+            Some("mcp__weacon__map,mcp__weacon__symbol")
+        );
         assert!(!given.iter().any(|arg| arg.contains("secret-token")));
         assert_eq!(token(&with), Some(OsStr::new("secret-token")));
     }
@@ -475,10 +485,11 @@ mod tests {
         let server = McpServer {
             url: "http://127.0.0.1:9/mcp".into(),
             token: "secret-token".into(),
+            tools: vec!["map".into(), "symbol".into()],
         };
         assert_eq!(
             format!("{server:?}"),
-            r#"McpServer { url: "http://127.0.0.1:9/mcp", .. }"#
+            r#"McpServer { url: "http://127.0.0.1:9/mcp", tools: ["map", "symbol"], .. }"#
         );
     }
 

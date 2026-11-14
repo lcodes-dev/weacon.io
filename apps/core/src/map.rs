@@ -90,7 +90,7 @@ fn source_files(root: &Path, folder: &str, files: &mut Vec<SourceFile>) -> io::R
         };
         let kind = entry.file_type()?;
         if kind.is_dir() && !skipped(&root.join(&path), name) {
-            source_files(root, &path, files)?;
+            gone_or(source_files(root, &path, files))?;
         } else if kind.is_file()
             && is_source(&path, name)
             && let Some(text) = text_or_skip(fs::read_to_string(root.join(&path)))?
@@ -101,12 +101,20 @@ fn source_files(root: &Path, folder: &str, files: &mut Vec<SourceFile>) -> io::R
     Ok(())
 }
 
-/// A file's text, or `None` for a file that isn't UTF-8.
+/// A file's text, or `None` for a file that isn't UTF-8 or was removed while the folder was read.
 fn text_or_skip(read: io::Result<String>) -> io::Result<Option<String>> {
     match read {
         Ok(text) => Ok(Some(text)),
         Err(error) if error.kind() == io::ErrorKind::InvalidData => Ok(None),
-        Err(error) => Err(error),
+        Err(error) => gone_or(Err(error)).map(|()| None),
+    }
+}
+
+/// `read`, with a folder that was removed while it was read counting as read.
+fn gone_or(read: io::Result<()>) -> io::Result<()> {
+    match read {
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        read => read,
     }
 }
 
@@ -203,9 +211,13 @@ mod tests {
     }
 
     #[test]
-    fn skips_only_files_that_are_not_utf8() {
-        let skipped = text_or_skip(Err(io::ErrorKind::InvalidData.into())).unwrap();
-        assert_eq!(skipped, None);
+    fn skips_only_files_that_are_not_utf8_or_were_removed_meanwhile() {
+        for kind in [io::ErrorKind::InvalidData, io::ErrorKind::NotFound] {
+            assert_eq!(text_or_skip(Err(kind.into())).unwrap(), None);
+        }
+        gone_or(Err(io::ErrorKind::NotFound.into())).unwrap();
+        let denied = gone_or(Err(io::ErrorKind::PermissionDenied.into())).unwrap_err();
+        assert_eq!(denied.kind(), io::ErrorKind::PermissionDenied);
         let failed = text_or_skip(Err(io::ErrorKind::PermissionDenied.into())).unwrap_err();
         assert_eq!(failed.kind(), io::ErrorKind::PermissionDenied);
     }

@@ -38,12 +38,15 @@ pub struct Launch {
 pub struct McpServer {
     pub url: String,
     pub token: String,
+    /// The names of its tools, which all only read.
+    pub tools: Vec<String>,
 }
 
 impl fmt::Debug for McpServer {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("McpServer")
             .field("url", &self.url)
+            .field("tools", &self.tools)
             .finish_non_exhaustive()
     }
 }

@@ -48,22 +48,32 @@ pub(crate) fn start(
     log: Logger,
 ) -> Result<(Chats, Engine<Granted>), Fault> {
     let runs = Runs::load(state_dir)?;
-    let workspaces = Workspaces::new(state_dir, places.path);
+    let workspaces = Workspaces::new(state_dir, places.path.clone());
     let roots = workspaces.clone();
     let host = Host {
-        start: Arc::new(move |start: &Start| {
-            let cwd = work_dir(places.work_root.as_deref(), &start.workspace, &start.chat)?;
-            let launch = roots.launch(&start.workspace, start.agent, cwd)?;
-            let (launch, revoke) = mcp::grant(places.mcp.as_ref(), launch, start)?;
-            let agent = launch.start(&policy, &app, start.run.clone(), start.session.as_ref())?;
-            Ok(Granted {
-                agent,
-                _revoke: revoke,
-            })
-        }),
+        start: Arc::new(move |start: &Start| launch(&roots, &places, &policy, &app, start)),
         now: unix_now,
     };
     Ok(Engine::new(runs, workspaces, host, log))
+}
+
+/// Starts `start`'s agent in its chat's folder, with a token for the core's MCP that ends with
+/// the agent.
+fn launch(
+    roots: &Workspaces,
+    places: &Places,
+    policy: &SpawnPolicy,
+    app: &App,
+    start: &Start,
+) -> Result<Granted, Fault> {
+    let cwd = work_dir(places.work_root.as_deref(), &start.workspace, &start.chat)?;
+    let launch = roots.launch(&start.workspace, start.agent, cwd)?;
+    let (launch, revoke) = mcp::grant(places.mcp.as_ref(), launch, start)?;
+    let agent = launch.start(policy, app, start.run.clone(), start.session.as_ref())?;
+    Ok(Granted {
+        agent,
+        _revoke: revoke,
+    })
 }
 
 /// The name of a chat's own files and folders.
@@ -145,6 +155,42 @@ mod tests {
             refused.unwrap_err().code().as_str(),
             "workspace.cwd_refused"
         );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_runs_token_lives_as_long_as_its_agent_and_a_failed_start_keeps_none() {
+        let dir = TempDir::new().unwrap();
+        let claude = platform::plant_program(&dir.join("bin"), "claude", 0o755);
+        std::fs::write(&claude, "#!/bin/sh\nexec sleep 30\n").unwrap();
+        platform::plant_program(&dir.join("broken"), "claude", 0o755);
+        let app = weacon_appkit::build(&VERSION);
+        let (log, _records) = recording_logger();
+        let (mcp, _server) = mcp::start(&app, &log).unwrap();
+        let places = |bin: &str| Places {
+            path: Some(dir.join(bin).into_os_string()),
+            work_root: Some(dir.join("Weacon")),
+            mcp: Some(mcp.clone()),
+        };
+        let start = Start {
+            workspace: workspace(),
+            chat: chat("c-1"),
+            agent: AgentKind::Claude,
+            run: weacon_protocol::RunId::try_from("run-1".to_owned()).unwrap(),
+            session: None,
+        };
+        let run = |bin: &str| {
+            let places = places(bin);
+            let roots = Workspaces::new(&dir.join("state"), places.path.clone());
+            launch(&roots, &places, &SpawnPolicy::default(), &app, &start)
+        };
+
+        let agent = run("bin").unwrap();
+        assert_eq!(mcp.grants.live(), 1);
+        drop(agent);
+        assert_eq!(mcp.grants.live(), 0);
+        run("broken").map(drop).unwrap_err();
+        assert_eq!(mcp.grants.live(), 0);
     }
 
     #[test]
