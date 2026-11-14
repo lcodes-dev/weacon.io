@@ -165,7 +165,7 @@ mod tests {
     use crate::test_support::socket::{
         Socket, ends, frame, next, next_envelope, open, pongs, say, upgrade_status,
     };
-    use crate::test_support::{Fixture, Paired, ask, pair_machine};
+    use crate::test_support::{Fixture, PATIENCE, Paired, ask, pair_machine};
 
     const CONNECT_PATH: &str = "/api/machines/connect";
 
@@ -255,9 +255,14 @@ mod tests {
 
     #[tokio::test]
     async fn a_machine_that_connects_again_ends_its_older_connection() {
-        let fixture = Fixture::new().await;
+        let mut fixture = Fixture::new().await;
+        // Pings far apart, so only the takeover can end a connection in time.
+        fixture.quiet();
         let server = fixture.run().await;
+        let mut opened = fixture.shared.links.connected();
         let (paired, mut older) = connected(server.address, &fixture).await;
+        // Its welcome comes before it's attached; wait until it is.
+        timeout(PATIENCE, opened.recv()).await.unwrap().unwrap();
         let mut newer = open(server.address, CONNECT_PATH, &paired.token)
             .await
             .unwrap();
