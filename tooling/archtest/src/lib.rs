@@ -1,5 +1,6 @@
 //! Checks that the workspace keeps its dependency rules and conventions; see `rules.rs`.
 
+mod integrations;
 mod manifest;
 mod rules;
 mod sources;
@@ -91,9 +92,12 @@ pub fn violations(root: &Path) -> Result<Vec<String>, String> {
             if is_app {
                 out.extend(manifest::check_app_needs(package));
             }
-            out.extend(sources::check_sources(rule, &read_sources(dir)?));
+            let sources = read_sources(dir)?;
+            out.extend(sources::check_sources(rule, &sources));
+            out.extend(integrations::check_readers(&package.name, &sources));
         }
     }
+    out.extend(integrations::check_folder(&metadata.workspace_root)?);
     Ok(out)
 }
 

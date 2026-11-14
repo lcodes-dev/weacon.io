@@ -38,6 +38,7 @@ The default branch is `main`: start from it and open draft PRs against it. This 
 | `tooling/ts` | nothing in the repo; reads `crates/protocol`'s schema, `Cargo.toml` and git | yes |
 | `apps/web` | TypeScript and React, built into the server's binary; only the types generated from `protocol`, and `tooling/ts` | — |
 | `apps/extension` | TypeScript; only the types generated from `protocol`, and `tooling/ts` | — |
+| `integrations/` | no code: the plugin files, hooks and skills Weacon gives people's agents, one folder per vendor; only `apps/core` reads them, built into its binary | — |
 
 - Apps never depend on other apps, except that the server embeds the web app's built files. The web app and the core reach the server only through its API, defined in `protocol`; the extension reaches the core only through native messaging.
 - Besides its API and MCP endpoint, the server serves only the web app's static files: no server-rendered pages.
@@ -46,6 +47,7 @@ The default branch is `main`: start from it and open draft PRs against it. This 
 - Only the `db` module (`src/db.rs` or `src/db/`) of `apps/core` and `apps/server` uses a database driver, and only those apps may depend on one. The database is SQLite.
 - Only a `platform` module (`src/platform.rs` or `src/platform/`) selects an operating system with `cfg`; in the core that is `apps/core/src/platform`.
 - Only `crates/agents` starts agent processes.
+- `integrations/` holds only data files, such as JSON and Markdown, never code, and only `apps/core` includes them. Their text reaches people's agents, so it follows the UI copy rules and names no real project.
 - Only `crates/observability` depends on Sentry's crates.
 - A source file holds at most 400 lines before its test module, and no TODO or FIXME: finish the work, or leave the note out.
 
