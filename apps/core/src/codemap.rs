@@ -17,6 +17,9 @@ use weacon_protocol::code;
 use crate::app::blocking;
 use crate::db::{BASE, Layer, Map, Stored};
 
+/// The most hits a search returns before its answer is cut to its budget.
+const SEARCHED: u32 = 50;
+
 /// What the code map reads from a repository. Every call may block.
 pub(crate) trait Source: Clone + Send + Sync + 'static {
     /// The commit the main worktree is at.
@@ -151,6 +154,26 @@ impl<S: Source> RepoMap<S> {
         };
         self.map.replace(&layer, &read, &entries).await?;
         Ok(facts)
+    }
+
+    /// What search finds for `words` in the worktree at `path`, or in the base without one,
+    /// best first, within `budget` bytes.
+    pub(crate) async fn search(
+        &self,
+        path: Option<&Path>,
+        words: &str,
+        budget: usize,
+    ) -> Result<String, Fault> {
+        let layer = path.map_or_else(|| BASE.to_owned(), layer_name);
+        let hits = self.map.search(&layer, words, SEARCHED).await?;
+        let header = format!("Found {}:", hits.len());
+        let lines = hits
+            .into_iter()
+            .map(|hit| format!("- {} {}  {}", hit.kind, hit.name, hit.path));
+        Ok(weacon_codemap::fit(
+            std::iter::once(header).chain(lines),
+            budget,
+        ))
     }
 
     /// The stored facts of `files`, and the files with text that has none yet.
@@ -337,6 +360,49 @@ mod tests {
         assert_eq!(repo.map.search(&layer, "old", 10).await.unwrap(), []);
         assert_eq!(repo.map.search(BASE, "old", 10).await.unwrap().len(), 1);
         assert_eq!(repo.map.search(&layer, "run", 10).await.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn searches_a_worktree_or_the_base_within_a_budget() {
+        let dir = TempDir::new().unwrap();
+        let (repo, source) = repo(&dir).await;
+        source.commit(
+            "c1",
+            &[
+                ("Cargo.toml", MANIFEST),
+                ("src/lib.rs", "pub fn serve() {}\npub fn served() {}\n"),
+            ],
+        );
+        source.change(&[("docs/serving.md", Some("# Serving pages\n"))]);
+        let base = repo.base().await.unwrap();
+        let worktree = Path::new("/w/chat");
+        let changed = repo.changed(&base, worktree).await.unwrap();
+        repo.worktree(&base, worktree, changed).await.unwrap();
+
+        let found = repo.search(Some(worktree), "serv", 10_000).await.unwrap();
+        let mut lines: Vec<&str> = found.lines().collect();
+        assert_eq!(lines.remove(0), "Found 3:");
+        lines.sort_unstable();
+        assert_eq!(
+            lines,
+            [
+                "- doc docs/serving.md  docs/serving.md",
+                "- fn a::serve  src/lib.rs",
+                "- fn a::served  src/lib.rs",
+            ]
+        );
+        assert_eq!(
+            repo.search(None, "serv", 10_000)
+                .await
+                .unwrap()
+                .lines()
+                .count(),
+            3
+        );
+        assert_eq!(
+            repo.search(None, "serv", 40).await.unwrap(),
+            "Found 2:\n… 2 more lines\n"
+        );
     }
 
     #[test]
