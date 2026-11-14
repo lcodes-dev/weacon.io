@@ -149,8 +149,8 @@ mod tests {
 
         use super::*;
         use weacon_testing::TempDir;
+        use weacon_testing::platform::write_program;
 
-        use crate::platform::write_program;
         use crate::run::AgentRun;
         use crate::spawn::SpawnPolicy;
         use crate::test_support::{app, run_id, started};
@@ -195,7 +195,8 @@ mod tests {
             write_program(
                 &program,
                 &format!("#!/bin/sh\nprintf '%s' '{status}'\nexit {code}\n"),
-            );
+            )
+            .unwrap();
             Launch {
                 agent: AgentKind::Claude,
                 program,
@@ -216,7 +217,8 @@ mod tests {
                  sh -c 'cat /proc/self/oom_score_adj; echo \"$CARGO_BUILD_JOBS $CLAUDE_CONFIG_DIR\"' \
                  > \"$CLAUDE_CONFIG_DIR/tool\" 2>/dev/null\n\
                  cat \"$CLAUDE_CONFIG_DIR/session\"\n",
-            );
+            )
+            .unwrap();
             program
         }
 

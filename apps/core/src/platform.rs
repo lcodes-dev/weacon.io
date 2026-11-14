@@ -14,8 +14,6 @@ mod windows;
 pub(crate) use chrome::{CHROME_HOST, register_chrome_host};
 pub(crate) use procs::{PROCESSES, Process, processes};
 pub(crate) use programs::find_program;
-#[cfg(all(test, unix))]
-pub(crate) use programs::write_program;
 #[cfg(test)]
 pub(crate) use programs::{plant_link, plant_program};
 pub(crate) use spawn_policy::spawn_policy;

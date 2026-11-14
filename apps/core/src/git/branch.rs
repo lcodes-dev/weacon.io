@@ -434,7 +434,7 @@ esac
         fs::create_dir_all(&config).unwrap();
         let program = dir.join("bin/gh");
         fs::create_dir_all(dir.join("bin")).unwrap();
-        platform::write_program(&program, FAKE_GH);
+        weacon_testing::platform::write_program(&program, FAKE_GH).unwrap();
         let gh = Gh {
             program,
             config: config.clone(),

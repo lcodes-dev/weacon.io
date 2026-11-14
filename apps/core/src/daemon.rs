@@ -130,7 +130,7 @@ impl Daemon {
         let worktrees = worktrees::worktrees(state_dir, &places);
         let (chats, engine) = chats::start(state_dir, places, app.clone(), spawn, log.clone())?;
         let listener = platform::bind(&socket).map_err(failed)?;
-        let engine = tokio::spawn(engine.run());
+        let engine = tokio::spawn(engine.serve());
         log.info("daemon started", &[]);
         Ok(Self {
             listener,
