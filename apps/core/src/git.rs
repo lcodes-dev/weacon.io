@@ -12,6 +12,7 @@ use weacon_protocol::{ChatId, code};
 use crate::platform;
 use crate::workspaces::resolved;
 
+pub(crate) mod diff;
 pub(crate) mod removal;
 
 // Variables that would point git at another repository, or stand in for `-c` options.
@@ -193,6 +194,8 @@ impl Git {
             .args(["-c", "core.fsmonitor=false"])
             .env("GIT_TERMINAL_PROMPT", "0")
             .env("GIT_OPTIONAL_LOCKS", "0")
+            // Paths are only ever paths, never patterns.
+            .env("GIT_LITERAL_PATHSPECS", "1")
             .stdin(Stdio::null())
             .stderr(Stdio::piped());
         for name in REDIRECTS {
@@ -285,18 +288,18 @@ mod tests {
 
     use super::*;
 
-    fn chat(id: &str) -> ChatId {
+    pub(super) fn chat(id: &str) -> ChatId {
         ChatId::try_from(id.to_owned()).unwrap()
     }
 
-    fn git(dir: &Path) -> Git {
+    pub(super) fn git(dir: &Path) -> Git {
         let no_hooks = dir.join("no-hooks");
         fs::create_dir_all(&no_hooks).unwrap();
         Git::find(&std::env::var_os("PATH").unwrap(), no_hooks).unwrap()
     }
 
     // Runs the fixture's own git in `repo`, without the person's configuration or redirects.
-    fn fixture(dir: &Path, repo: &Path, args: &[&str]) {
+    pub(super) fn fixture(dir: &Path, repo: &Path, args: &[&str]) {
         let mut command = Command::new("git");
         for name in REDIRECTS {
             command.env_remove(name);
@@ -319,7 +322,7 @@ mod tests {
     }
 
     // A repository with one commit.
-    fn repo(dir: &Path) -> PathBuf {
+    pub(super) fn repo(dir: &Path) -> PathBuf {
         let repo = dir.join("repo");
         fs::create_dir_all(&repo).unwrap();
         let git = |args: &[&str]| fixture(dir, &repo, args);
@@ -452,6 +455,7 @@ mod tests {
         }
         assert!(envs.contains(&("GIT_TERMINAL_PROMPT".as_ref(), Some("0".as_ref()))));
         assert!(envs.contains(&("GIT_OPTIONAL_LOCKS".as_ref(), Some("0".as_ref()))));
+        assert!(envs.contains(&("GIT_LITERAL_PATHSPECS".as_ref(), Some("1".as_ref()))));
     }
 
     #[test]
