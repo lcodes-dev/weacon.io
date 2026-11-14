@@ -56,10 +56,11 @@ test("signing in sends the email, then the code with its challenge, as JSON", as
 });
 
 test("signing out takes the server's empty answer", async () => {
-  const { api, sent } = serve({ status: 204 }, { status: 403, body: { code: "request.cross_site", retryable: false } });
+  const { api, sent } = serve({ status: 204 }, { status: 403, body: { code: "request.cross_site", retryable: false } }, { status: 200 });
 
   assert.deepEqual(await api.signOut(), { ok: true, value: undefined });
   assert.deepEqual(await api.signOut(), { ok: false, code: "request.cross_site" });
+  assert.deepEqual(await api.signOut(), { ok: false, code: MALFORMED });
   assert.deepEqual(sent[0], { path: "/api/sign-out", method: "POST" });
 });
 
