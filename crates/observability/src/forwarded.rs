@@ -258,4 +258,28 @@ mod tests {
             .count();
         assert_eq!(started, usize::try_from(BURST * 2 + 2).unwrap());
     }
+
+    #[test]
+    fn a_full_bucket_keeps_no_part_of_a_second() {
+        let (log, records) = capture(Level::Trace);
+        let start = UNIX_EPOCH + Duration::from_millis(500);
+        let after = |millis| start + Duration::from_millis(millis);
+        let mut forwarded = Forwarded::new(&KNOWN, start);
+        let started = record(Level::Info, "app started", None);
+
+        for _ in 0..BURST {
+            forwarded.take(&log, &started, start);
+        }
+        // Exactly full again, with 900 ms over that no longer count.
+        for _ in 0..BURST {
+            forwarded.take(&log, &started, after(20_900));
+        }
+        forwarded.take(&log, &started, after(21_500));
+
+        let started = written(&records)
+            .iter()
+            .filter(|(_, msg, _)| *msg == "app started")
+            .count();
+        assert_eq!(started, usize::try_from(BURST * 2).unwrap());
+    }
 }
