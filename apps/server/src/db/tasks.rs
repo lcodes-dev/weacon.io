@@ -132,7 +132,7 @@ impl Workspace {
         .await
         .map_err(failed)?;
         let versioned = Versioned::Task(&task.id, version);
-        self.changed(transaction, versioned, attribution.accepted_by())
+        self.record_change(transaction, versioned, attribution.accepted_by())
             .await
     }
 }

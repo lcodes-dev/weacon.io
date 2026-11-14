@@ -233,7 +233,7 @@ impl Workspace {
             .map_err(failed)?;
         }
         let versioned = Versioned::Doc(&doc.id, version);
-        self.changed(transaction, versioned, attribution.accepted_by())
+        self.record_change(transaction, versioned, attribution.accepted_by())
             .await
     }
 }

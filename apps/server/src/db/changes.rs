@@ -47,7 +47,7 @@ impl Workspace {
 
     /// Records, inside the transaction that stores it, that `versioned` is at a new version,
     /// through a change `member` made or accepted.
-    pub(super) async fn changed(
+    pub(super) async fn record_change(
         &self,
         transaction: &mut SqliteConnection,
         versioned: Versioned<'_>,
