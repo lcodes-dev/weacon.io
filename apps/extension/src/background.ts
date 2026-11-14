@@ -7,23 +7,24 @@ import type { Picked, Picker } from "./picker.ts";
 const ME = app(chrome.runtime.getManifest());
 const picking = new Set<number>();
 
-chrome.action.onClicked.addListener((tab) => {
+chrome.action.onClicked.addListener(async (tab) => {
   if (tab.id === undefined || picking.has(tab.id)) {
     return;
   }
   const tabId = tab.id;
   picking.add(tabId);
   show(tabId, "", "Pick an element to send to Weacon");
-  pickIn(tab, tabId)
-    .then(
-      (sent) => sent && show(tabId, "✓", "Sent to Weacon"),
-      (error: unknown) => {
-        const code = error instanceof Failure ? error.code : "extension.failed";
-        show(tabId, "!", title(code));
-        tell(code);
-      },
-    )
-    .finally(() => picking.delete(tabId));
+  try {
+    if (await pickIn(tab, tabId)) {
+      show(tabId, "✓", "Sent to Weacon");
+    }
+  } catch (error: unknown) {
+    const code = error instanceof Failure ? error.code : "extension.failed";
+    show(tabId, "!", title(code));
+    tell(code);
+  } finally {
+    picking.delete(tabId);
+  }
 });
 addEventListener("error", () => tell("extension.failed"));
 addEventListener("unhandledrejection", () => tell("extension.failed"));
