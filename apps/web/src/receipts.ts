@@ -25,10 +25,15 @@ type Waiting = { id: number; settled: Promise<Settled>; resolve: (settled: Settl
  */
 export class Receipts {
   #waiting = new Map<RequestId, Waiting>();
+  // Commands whose wait ran out before their receipt came.
+  #overdue = new Set<RequestId>();
   #later: Later;
+  #late: (request: RequestId, settled: Settled) => void;
 
-  constructor(later: Later) {
+  /** `late` hears how a command ended when its receipt comes after its wait ran out. */
+  constructor(later: Later, late: (request: RequestId, settled: Settled) => void = () => {}) {
     this.#later = later;
+    this.#late = late;
   }
 
   /** How the command sent under `request`, in the envelope `id`, ends. */
@@ -47,6 +52,7 @@ export class Receipts {
       // Only this wait's deadline, not that of an earlier send of the same request.
       if (this.#waiting.get(request) === waiting) {
         this.settle(request, "unsure");
+        this.#overdue.add(request);
       }
     }, WAIT_MS);
     return settled;
@@ -55,7 +61,11 @@ export class Receipts {
   /** Settles the command `envelope` answers, if any. */
   take(envelope: Incoming): void {
     if (envelope.type === "receipt") {
-      this.settle(envelope.request, SETTLED.get(envelope.state) ?? "unsure");
+      const settled = SETTLED.get(envelope.state) ?? "unsure";
+      if (this.#overdue.delete(envelope.request) && !this.#waiting.has(envelope.request)) {
+        this.#late(envelope.request, settled);
+      }
+      this.settle(envelope.request, settled);
       return;
     }
     const refused = envelope.type === "error" ? [...this.#waiting].find(([, waiting]) => waiting.id === envelope.id) : undefined;

@@ -4,7 +4,7 @@ import { createRoot } from "react-dom/client";
 import "./app.css";
 import { App } from "./app.tsx";
 import { chatRefOf } from "./chat-ref.ts";
-import { type Send, type Sent, chatCommand, deliver } from "./composer/prompt.ts";
+import { type Late, type Send, type Sent, chatCommand, deliver } from "./composer/prompt.ts";
 import { type Asks, Connection, type Later, type Status, offers } from "./connection.ts";
 import { NO_CHANGES, ask, cut, needsAsking, receive } from "./diff/changes.ts";
 import { type Answers, askKey, sending, settle } from "./chat/asks.ts";
@@ -46,6 +46,7 @@ function Root({ url }: { url: string }) {
   const [sync, setSync] = useState<Sync>(START);
   const [answers, setAnswers] = useState<Answers>(new Map());
   const [stopping, setStopping] = useState(false);
+  const [late, setLate] = useState<Late>();
   const [changes, setChanges] = useState(NO_CHANGES);
   // The connection while it is live, and the commands sent on it that wait for an answer.
   const live = useRef<{ connection: Connection; receipts: Receipts; feed: ChatFeed | undefined }>(undefined);
@@ -63,7 +64,7 @@ function Root({ url }: { url: string }) {
       return;
     }
     const later: Later = (run, ms) => setTimeout(run, ms);
-    const receipts = new Receipts(later);
+    const receipts = new Receipts(later, (request, settled) => current && setLate({ request, settled }));
     const schedule = nextFrame(
       () => document.hidden,
       (run) => requestAnimationFrame(run),
@@ -161,7 +162,7 @@ function Root({ url }: { url: string }) {
     }
   };
   return (
-    <App me={ME} status={status} chat={shown} chatRef={chatRef} send={send} changes={changes} openChanges={openChanges} />
+    <App me={ME} status={status} chat={shown} chatRef={chatRef} send={send} late={late} changes={changes} openChanges={openChanges} />
   );
 }
 

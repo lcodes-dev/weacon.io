@@ -1,7 +1,7 @@
 import { useState } from "react";
 
 import { Composer } from "./composer/composer.tsx";
-import { type Send, blocked } from "./composer/prompt.ts";
+import { type Late, type Send, blocked } from "./composer/prompt.ts";
 import { type Status, statusText } from "./connection.ts";
 import { type Changes, canAsk } from "./diff/changes.ts";
 import type { Comment } from "./diff/comments.ts";
@@ -31,6 +31,7 @@ export function App({
   chat,
   chatRef,
   send,
+  late,
   changes,
   openChanges,
 }: {
@@ -39,6 +40,8 @@ export function App({
   chat: ChatView;
   chatRef: ChatRef | undefined;
   send: Send;
+  /** How a prompt ended, heard after its wait ran out. */
+  late: Late | undefined;
   changes: Changes;
   /** Asks the server for the chat's changes, when they need asking. */
   openChanges: () => void;
@@ -88,7 +91,7 @@ export function App({
           </div>
         )}
       </main>
-      <Composer send={send} blocked={blocked(status, chatRef)} hidden={shown !== "run"} />
+      <Composer send={send} blocked={blocked(status, chatRef)} hidden={shown !== "run"} late={late} />
     </div>
   );
 }

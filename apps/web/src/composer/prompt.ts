@@ -70,6 +70,21 @@ export function after(sent: Sent, text: string, request: RequestId): After {
   return { text, problem: PROBLEMS[sent], retry };
 }
 
+/** How a command ended, heard after its wait ran out. */
+export type Late = { request: RequestId; settled: Settled };
+
+/**
+ * What the box holds once `late` says how the send it may retry ended, or `undefined` when `late`
+ * is about another send. Text edited since is kept.
+ */
+export function afterLate(retry: Retry | undefined, text: string, late: Late): After | undefined {
+  if (retry?.request !== late.request) {
+    return undefined;
+  }
+  const ended = after(late.settled, retry.text, retry.request);
+  return text === retry.text ? ended : { ...ended, text };
+}
+
 /** Why the box can't send to `chatRef` now, or `undefined` when it can. */
 export function blocked(status: Status, chatRef: ChatRef | undefined): string | undefined {
   if (chatRef === undefined) {
