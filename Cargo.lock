@@ -2120,6 +2120,7 @@ dependencies = [
  "weacon-appkit",
  "weacon-client",
  "weacon-codemap",
+ "weacon-model",
  "weacon-observability",
  "weacon-protocol",
  "weacon-testing",
@@ -2131,6 +2132,7 @@ dependencies = [
 name = "weacon-model"
 version = "0.0.0"
 dependencies = [
+ "serde_json",
  "weacon-protocol",
 ]
 
