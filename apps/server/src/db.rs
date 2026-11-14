@@ -225,7 +225,7 @@ mod tests {
     use weacon_testing::TempDir;
 
     use super::*;
-    use crate::db::workspace::Member;
+    use crate::db::workspace::MemberRow;
     use crate::email::Email;
     use crate::test_support::{fresh_account, member_id, workspace_id};
 
@@ -436,7 +436,7 @@ mod tests {
             &[("m2", "ada@example.com"), ("m3", "bo@example.com")],
         )
         .await;
-        let member = |id: &str, address: &str| Member {
+        let member = |id: &str, address: &str| MemberRow {
             id: member_id(id),
             email: email(address),
         };

@@ -20,7 +20,7 @@ use crate::db::Attempt;
 use crate::email::Email;
 use crate::http::{Shared, cross_site, failure, refused, report, too_many};
 use crate::limit::Limit;
-use crate::mail::mail_failed;
+use crate::outbox::mail_failed;
 use crate::secret::{os_secrets, random_failed};
 use crate::sign_up;
 use crate::workspaces;
@@ -694,7 +694,7 @@ mod tests {
     async fn a_code_that_cant_be_sent_is_logged_and_answered_the_same() {
         let fixture = Fixture::new().await;
         let mut shared = fixture.shared.clone();
-        shared.outbox = crate::mail::Outbox::new("missing-outbox".into());
+        shared.outbox = crate::outbox::Outbox::new("missing-outbox".into());
         let server = run(shared).await;
         let (started, _) = start_sign_in(server.address, "ada@example.com").await;
         fixture.settled().await;
@@ -714,7 +714,7 @@ mod tests {
     async fn codes_that_couldnt_be_sent_leave_room_for_ones_that_can() {
         let fixture = Fixture::new().await;
         let mut broken = fixture.shared.clone();
-        broken.outbox = crate::mail::Outbox::new("missing-outbox".into());
+        broken.outbox = crate::outbox::Outbox::new("missing-outbox".into());
         let failing = run(broken).await;
         for _ in 0..3 {
             start_sign_in(failing.address, "ada@example.com").await;

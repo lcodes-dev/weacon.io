@@ -20,7 +20,7 @@ use crate::connections;
 use crate::db::Db;
 use crate::feed;
 use crate::limit::Limit;
-use crate::mail::Outbox;
+use crate::outbox::Outbox;
 use crate::secret::Secret;
 use crate::sign_in;
 use crate::sign_up::SignUp;

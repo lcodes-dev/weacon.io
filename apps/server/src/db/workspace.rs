@@ -14,7 +14,7 @@ pub(crate) struct Workspace {
 }
 
 #[derive(Debug, PartialEq, Eq)]
-pub(crate) struct Member {
+pub(crate) struct MemberRow {
     pub(crate) id: MemberId,
     pub(crate) email: Email,
 }
@@ -85,7 +85,7 @@ impl Workspace {
     }
 
     /// The members, in the order they were added.
-    pub(crate) async fn members(&self) -> Result<Vec<Member>, Fault> {
+    pub(crate) async fn members(&self) -> Result<Vec<MemberRow>, Fault> {
         sqlx::query_as::<_, (String, String)>(
             "SELECT member_id, email FROM members WHERE workspace_id = ? ORDER BY rowid",
         )
@@ -95,7 +95,7 @@ impl Workspace {
         .map_err(failed)?
         .into_iter()
         .map(|(id, email)| {
-            Ok(Member {
+            Ok(MemberRow {
                 id: stored(id)?,
                 email: Email::parse(&email).map_err(|_| unreadable())?,
             })
