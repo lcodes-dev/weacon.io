@@ -43,18 +43,25 @@ impl MachineKey {
     }
 }
 
-impl<'de> Deserialize<'de> for MachineKey {
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let key = String::deserialize(deserializer)?;
-        if key.len() == 64
-            && key
-                .bytes()
-                .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
-        {
+impl TryFrom<String> for MachineKey {
+    type Error = String;
+
+    fn try_from(key: String) -> Result<Self, Self::Error> {
+        let hex = key
+            .bytes()
+            .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'));
+        if key.len() == 64 && hex {
             Ok(Self(key))
         } else {
-            Err(de::Error::custom("not a machine key"))
+            Err(key)
         }
+    }
+}
+
+impl<'de> Deserialize<'de> for MachineKey {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        Self::try_from(String::deserialize(deserializer)?)
+            .map_err(|_| de::Error::custom("not a machine key"))
     }
 }
 
@@ -294,6 +301,7 @@ mod tests {
         let hex = format!("ab{}0f", "0".repeat(60));
 
         assert!(pattern.is_match(&hex));
+        assert_eq!(MachineKey::try_from(hex.clone()), Ok(key()));
         assert_eq!(key().as_str(), hex);
         assert_eq!(serde_json::to_value(key()).unwrap(), json!(hex));
         assert_eq!(
@@ -308,6 +316,7 @@ mod tests {
             String::new(),
         ] {
             assert!(!pattern.is_match(&bad), "{bad}");
+            assert_eq!(MachineKey::try_from(bad.clone()), Err(bad.clone()));
             let error = serde_json::from_value::<MachineKey>(json!(bad)).unwrap_err();
             assert!(error.to_string().contains("not a machine key"), "{bad}");
         }
