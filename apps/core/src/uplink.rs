@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
 use tokio::sync::mpsc;
-use tokio::time::{Instant, sleep, timeout, timeout_at};
+use tokio::time::{Instant, sleep, sleep_until, timeout, timeout_at};
 use tokio_tungstenite::tungstenite::{Message as Wire, Utf8Bytes};
 use weacon_observability::{Fault, Field, Logger};
 use weacon_protocol::{
@@ -35,11 +35,14 @@ pub(crate) struct Timing {
     pub(crate) quiet_within: Duration,
     /// A connection lost sooner backs off as if it never came up.
     pub(crate) steady_after: Duration,
+    /// How often an open connection checks that its pairing is still the one kept.
+    pub(crate) look_every: Duration,
 }
 
 pub(crate) const TIMING: Timing = Timing {
     quiet_within: Duration::from_secs(75),
     steady_after: Duration::from_secs(30),
+    look_every: LOOK_EVERY,
 };
 
 /// Where the messages from the server that the uplink doesn't handle itself go in the daemon,
@@ -176,7 +179,7 @@ impl Uplink {
         }
         log.info("uplink connected", &[]);
         let up = Instant::now();
-        if self.serve(&mut socket, &paired.owner, from_daemon).await {
+        if self.serve(&mut socket, paired, from_daemon).await {
             return Ok(Ended::Unpaired);
         }
         let steady = up.elapsed() >= self.timing.steady_after;
@@ -187,22 +190,30 @@ impl Uplink {
         })
     }
 
-    /// Carries messages both ways until the connection breaks or goes quiet; `true` when it
-    /// ends because the machine was unpaired.
+    /// Carries messages both ways until the connection breaks, goes quiet or `paired` is no
+    /// longer the pairing kept; `true` when it ends because the machine was unpaired.
     async fn serve(
         &self,
         socket: &mut Socket,
-        owner: &AccountId,
+        paired: &Paired,
         from_daemon: &mut FromDaemon,
     ) -> bool {
         // Only what the server sends keeps the connection alive, and no send outlasts it.
         let mut quiet_at = Instant::now() + self.timing.quiet_within;
+        let mut look_at = Instant::now() + self.timing.look_every;
         loop {
             let reply = tokio::select! {
+                () = sleep_until(look_at) => {
+                    if self.paired().await.as_ref() != Some(paired) {
+                        return false;
+                    }
+                    look_at = Instant::now() + self.timing.look_every;
+                    None
+                }
                 frame = timeout_at(quiet_at, socket.next()) => {
                     let Ok(Some(Ok(frame))) = frame else { return false };
                     quiet_at = Instant::now() + self.timing.quiet_within;
-                    match self.answer(frame, owner) {
+                    match self.answer(frame, &paired.owner) {
                         Step::Unpaired => return true,
                         Step::Reply(reply) => Some(*reply),
                         Step::Nothing => None,
@@ -428,6 +439,7 @@ mod tests {
             timing: Timing {
                 quiet_within: Duration::from_secs(10),
                 steady_after: Duration::ZERO,
+                look_every: Duration::from_hours(1),
             },
             random: || 0,
         }
@@ -827,6 +839,7 @@ mod tests {
         link.timing = Timing {
             quiet_within: Duration::from_millis(100),
             steady_after: Duration::from_hours(1),
+            look_every: Duration::from_hours(1),
         };
         let pairing = paired(&tls);
 
@@ -867,6 +880,7 @@ mod tests {
         link.timing = Timing {
             quiet_within: Duration::from_millis(100),
             steady_after: Duration::ZERO,
+            look_every: Duration::from_hours(1),
         };
         let pairing = paired(&tls);
         let (outgoing, mut from_daemon) = mpsc::channel(4);
@@ -877,6 +891,30 @@ mod tests {
         let listening = async { drain(welcoming(&tls, &[CONNECT]).await).await };
         let (ended, ()) = tokio::join!(timeout(Duration::from_secs(10), connection), listening);
         chatter.abort();
+
+        assert_eq!(ended.unwrap().unwrap(), Ended::Lost);
+    }
+
+    #[tokio::test]
+    async fn a_pairing_replaced_while_connected_ends_the_connection() {
+        let (dir, tls) = (TempDir::new().unwrap(), Tls::new().await);
+        let mut link = uplink(&dir);
+        link.timing.look_every = Duration::from_millis(10);
+        link.timing.quiet_within = Duration::from_hours(1);
+        let pairing = paired(&tls);
+        machine::write(&dir, &pairing).unwrap();
+        let mut replaced = pairing.clone();
+        replaced.token = "n3wer".to_owned();
+
+        // The server stays and says nothing, while `weacon pair` keeps another pairing.
+        let (_daemon, mut from_daemon) = mpsc::channel(1);
+        let connection = link.connection(&pairing, &link.log, &mut from_daemon);
+        let listening = async {
+            let peer = welcoming(&tls, &[CONNECT]).await;
+            machine::write(&dir, &replaced).unwrap();
+            drain(peer).await;
+        };
+        let (ended, ()) = tokio::join!(timeout(Duration::from_secs(10), connection), listening);
 
         assert_eq!(ended.unwrap().unwrap(), Ended::Lost);
     }
