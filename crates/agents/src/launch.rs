@@ -33,6 +33,8 @@ pub struct Launch {
     pub access: AccessLevel,
     /// The core's MCP for this run; only Claude Code is pointed at it.
     pub mcp: Option<McpServer>,
+    /// A Claude Code plugin folder for this run, given only when absolute.
+    pub plugin: Option<PathBuf>,
 }
 
 /// Where the core's MCP listens, and the token of the one run it serves.
@@ -89,6 +91,7 @@ impl Launch {
             cwd,
             access: AccessLevel::AskFirst,
             mcp: None,
+            plugin: None,
         })
     }
 
@@ -272,6 +275,7 @@ mod tests {
             cwd: dir.to_path_buf(),
             access: AccessLevel::AskFirst,
             mcp: None,
+            plugin: None,
         }
     }
 
@@ -347,6 +351,7 @@ mod tests {
                 cwd: PathBuf::from("/work"),
                 access: AccessLevel::AskFirst,
                 mcp: None,
+                plugin: None,
             }
         );
         assert_eq!(

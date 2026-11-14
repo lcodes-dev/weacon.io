@@ -88,24 +88,15 @@ mod tests {
         assert!(!dir.join("state/workspaces").exists());
     }
 
-    // Scripts stand in for the vendors' programs; a child shell writes them, so this process
-    // never holds a write handle a fork could inherit, which makes running one fail as busy.
+    // Scripts stand in for the vendors' programs.
     #[cfg(unix)]
     #[test]
     fn login_ends_as_the_vendors_own_sign_in_does() {
         let dir = TempDir::new().unwrap();
         fs::create_dir(dir.join("bin")).unwrap();
         for (name, exit) in [("claude", "0"), ("codex", "1")] {
-            let written = Command::new("sh")
-                .args([
-                    "-c",
-                    "printf '#!/bin/sh\\nexit %s\\n' \"$1\" > \"$2\" && chmod 755 \"$2\"",
-                ])
-                .args(["sh", exit])
-                .arg(dir.join("bin").join(name))
-                .status()
-                .unwrap();
-            assert!(written.success());
+            let script = format!("#!/bin/sh\nexit {exit}\n");
+            weacon_testing::platform::write_program(&dir.join("bin").join(name), &script).unwrap();
         }
 
         let state = dir.join("state");

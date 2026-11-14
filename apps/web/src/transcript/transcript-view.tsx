@@ -6,7 +6,7 @@ import { AskView } from "../chat/parts.tsx";
 import type { Outcome, RunId } from "../protocol.ts";
 import { MarkdownView } from "./markdown-view.ts";
 import { useFollow, useHeldFormatting } from "./transcript-hooks.ts";
-import type { Row, ToolState } from "./transcript.ts";
+import type { TranscriptRow, ToolState } from "./transcript.ts";
 
 /** What answering a chat's permission prompts needs: the answers on their way, and a way to send one. */
 export type Answerer = { answers: Answers; answer: (run: RunId, prompt: number, allow: boolean) => void };
@@ -132,7 +132,7 @@ const RowView = memo(function RowView({
   formatted,
 }: {
   rowKey: string;
-  row: Row;
+  row: TranscriptRow;
   writing: boolean;
   formatted: boolean;
 }) {

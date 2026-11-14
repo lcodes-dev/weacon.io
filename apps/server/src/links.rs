@@ -163,7 +163,7 @@ mod tests {
     }
 
     fn settings() -> Capability {
-        Capability::from(code!("machine.settings"))
+        Capability::new(code!("machine.settings"))
     }
 
     fn sent(links: &Links, to: &str, id: u32) -> Result<(), Offline> {

@@ -3,9 +3,9 @@
 use std::io;
 use std::path::{Path, PathBuf};
 
-use weacon_observability::{Field, Logger};
+use weacon_observability::Logger;
 
-use crate::app::blocking;
+use crate::app::{WarnOnce, blocking};
 
 const MIB: u64 = 1 << 20;
 const GIB: u64 = 1 << 30;
@@ -52,16 +52,16 @@ pub(crate) struct Watch {
     dir: PathBuf,
     free_space: FreeSpace,
     level: Level,
-    failing: bool,
+    failures: WarnOnce,
 }
 
 impl Watch {
-    pub(crate) const fn new(dir: PathBuf, free_space: FreeSpace) -> Self {
+    pub(crate) fn new(dir: PathBuf, free_space: FreeSpace) -> Self {
         Self {
             dir,
             free_space,
             level: Level::Ok,
-            failing: false,
+            failures: WarnOnce::default(),
         }
     }
 
@@ -74,17 +74,9 @@ impl Watch {
 
     /// A failed reading keeps the level and is logged once until one succeeds.
     fn observe(&mut self, free: io::Result<u64>, log: &Logger) {
-        let free = match free {
-            Ok(free) => free,
-            Err(error) => {
-                if !self.failing {
-                    log.warn("disk check failed", &[("err", Field::error(&error))]);
-                }
-                self.failing = true;
-                return;
-            }
+        let Some(free) = self.failures.check(free, log, "disk check failed") else {
+            return;
         };
-        self.failing = false;
         let next = self.level.next(free);
         if next != self.level {
             let fields = [("free_mib", (free / MIB).into())];

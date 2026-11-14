@@ -60,16 +60,16 @@ export function settleLate(answers: Answers, request: RequestId, settled: Settle
 }
 
 const PROBLEMS: Record<Exclude<Settled, "accepted">, string> = {
-  refused: "The answer wasn't taken",
-  lost: "The connection closed; the answer may not have been sent",
-  unsure: "The server didn't answer; the answer may not have been sent",
+  refused: "The answer wasn't taken.",
+  lost: "The connection closed. The answer may not have been sent.",
+  unsure: "The server didn't answer. The answer may not have been sent.",
 };
 
 const STOP_PROBLEMS: Record<Exclude<Sent, "accepted">, string> = {
-  refused: "The agent wasn't stopped",
-  too_long: "The agent wasn't stopped",
-  lost: "The connection closed; the agent may not have stopped",
-  unsure: "The server didn't answer; the agent may not have stopped",
+  refused: "The agent wasn't stopped.",
+  too_long: "The agent wasn't stopped.",
+  lost: "The connection closed. The agent may not have stopped.",
+  unsure: "The server didn't answer. The agent may not have stopped.",
 };
 
 /** What Stop says once its interrupt ended as `sent`: nothing when it was taken. */

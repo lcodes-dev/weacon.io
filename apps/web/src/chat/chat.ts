@@ -1,5 +1,5 @@
 import type { AgentRef, ChatEntry, RunEvent, RunId, RunState, RunStatus } from "../protocol.ts";
-import { EMPTY, type Transcript, apply } from "../transcript/transcript.ts";
+import { EMPTY_TRANSCRIPT, type Transcript, apply } from "../transcript/transcript.ts";
 
 /** A permission prompt, shown after `at` rows of its turn. */
 /** A permission prompt, and how it was answered once the log says. */
@@ -189,7 +189,7 @@ function step(items: Item[], entry: ChatEntry, waiting: boolean): void {
 // Changes `run`'s open turn, starting one called `key` at the end when it has none.
 function addTo(items: Item[], run: RunId, key: string, change: (turn: Turn) => Turn): void {
   if (!update(items, run, change)) {
-    items.push({ kind: "turn", turn: change({ key, run, transcript: EMPTY, asks: [], open: true }) });
+    items.push({ kind: "turn", turn: change({ key, run, transcript: EMPTY_TRANSCRIPT, asks: [], open: true }) });
   }
 }
 

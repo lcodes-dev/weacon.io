@@ -38,7 +38,7 @@ use grants::{Grant, Grants, Revoke};
 use weacon_agents::{Launch, McpServer};
 use weacon_protocol::{AgentKind, App};
 
-use crate::chats::engine::Start;
+use crate::chats::engine::RunAs;
 use crate::daemon::ACCEPT_BACKOFF;
 
 // So local processes, other users' included, can't hold the core's sockets.
@@ -97,19 +97,19 @@ impl Drop for Server {
     }
 }
 
-/// Points a Claude Code `launch` at the MCP with a token for `start`'s run, which works until
+/// Points a Claude Code `launch` at the MCP with a token for `run_as`'s run, which works until
 /// the [`Revoke`] is dropped. Other agents are left as they are.
 pub(crate) fn grant(
     mcp: Option<&Mcp>,
     launch: Launch,
-    start: &Start,
+    run_as: &RunAs,
 ) -> Result<(Launch, Option<Revoke>), Fault> {
     let Some(mcp) = mcp.filter(|_| launch.agent == AgentKind::Claude) else {
         return Ok((launch, None));
     };
     let grant = Grant::new(
-        start.workspace.clone(),
-        start.run.clone(),
+        run_as.key.workspace.clone(),
+        run_as.run.clone(),
         launch.cwd.clone(),
     );
     let (token, revoke) = mcp.grants.issue(grant)?;
@@ -450,34 +450,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn only_claude_is_granted_the_mcp_with_only_the_up_front_tools() {
-        let (log, _records) = recording_logger();
-        let (mcp, _server) = start(&weacon_appkit::build(&VERSION), &log).unwrap();
-        let launch = |agent| Launch {
-            agent,
-            program: PathBuf::from("agent"),
-            config_dir: PathBuf::from("/work/config"),
-            cwd: PathBuf::from("/work"),
-            access: weacon_protocol::AccessLevel::AskFirst,
-            mcp: None,
-        };
-        let start = |agent| Start {
-            workspace: WorkspaceId::try_from("w-1".to_owned()).unwrap(),
-            chat: weacon_protocol::ChatId::try_from("c-1".to_owned()).unwrap(),
-            agent,
-            run: RunId::try_from("run-1".to_owned()).unwrap(),
-            session: None,
-        };
-        let granted = |agent| grant(Some(&mcp), launch(agent), &start(agent)).unwrap();
-
-        let (claude, revoke) = granted(AgentKind::Claude);
-        assert_eq!(claude.mcp.unwrap().tools, ["map", "symbol"]);
-        drop(revoke);
-        let (codex, none) = granted(AgentKind::Codex);
-        assert!(codex.mcp.is_none() && none.is_none());
-    }
-
-    #[tokio::test]
     async fn a_missing_unknown_or_ended_token_is_refused_and_never_logged() {
         let dir = TempDir::new().unwrap();
         let (log, records) = recording_logger();
@@ -737,7 +709,7 @@ mod tests {
     }
 
     #[test]
-    fn only_claude_gets_the_mcp_and_its_token_ends_with_the_revoke() {
+    fn only_claude_gets_the_mcp_with_the_up_front_tools_and_a_token_the_revoke_ends() {
         let mcp = Mcp {
             url: "http://127.0.0.1:9/mcp".into(),
             grants: Grants::default(),
@@ -749,21 +721,22 @@ mod tests {
             cwd: PathBuf::from("/work"),
             access: weacon_protocol::AccessLevel::AskFirst,
             mcp: None,
+            plugin: None,
         };
-        let start = Start {
-            workspace: WorkspaceId::try_from("w-1".to_owned()).unwrap(),
-            chat: weacon_protocol::ChatId::try_from("c-1".to_owned()).unwrap(),
+        let run_as = RunAs {
+            key: crate::chats::test_support::key(),
             agent: AgentKind::Claude,
             run: RunId::try_from("run-1".to_owned()).unwrap(),
             session: None,
         };
 
-        let (claude, revoke) = grant(Some(&mcp), launch(AgentKind::Claude), &start).unwrap();
-        let (codex, none) = grant(Some(&mcp), launch(AgentKind::Codex), &start).unwrap();
-        let (alone, no_mcp) = grant(None, launch(AgentKind::Claude), &start).unwrap();
+        let (claude, revoke) = grant(Some(&mcp), launch(AgentKind::Claude), &run_as).unwrap();
+        let (codex, none) = grant(Some(&mcp), launch(AgentKind::Codex), &run_as).unwrap();
+        let (alone, no_mcp) = grant(None, launch(AgentKind::Claude), &run_as).unwrap();
 
         let server = claude.mcp.unwrap();
         assert_eq!(server.url, mcp.url);
+        assert_eq!(server.tools, tools::UP_FRONT);
         let found = mcp.grants.find(&server.token).unwrap();
         assert_eq!(
             (found.run.as_str(), found.folder.as_path()),

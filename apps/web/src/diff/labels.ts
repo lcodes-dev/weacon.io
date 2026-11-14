@@ -1,5 +1,5 @@
 import type { DiffContent, FileChange, LineOp } from "../protocol.ts";
-import type { Changes, Row } from "./changes.ts";
+import type { Changes, DiffRow } from "./changes.ts";
 
 /** What the page says above a chat's files, or instead of them. */
 export function summary({ asked, files, total, cut }: Changes): string {
@@ -58,7 +58,7 @@ export function hunkText(old: number, next: number): string {
 }
 
 /** Which lines rows `first` to `last` are: by their new number, or their old one on removed lines. */
-export function linesText(rows: readonly Row[], first: number, last: number): string {
+export function linesText(rows: readonly DiffRow[], first: number, last: number): string {
   const from = rows[first];
   const to = rows[last];
   if (from?.kind !== "line" || to?.kind !== "line") {
@@ -72,6 +72,6 @@ export function linesText(rows: readonly Row[], first: number, last: number): st
   return `Lines ${ref(from)} to ${side}${ref(to)}`;
 }
 
-function ref(row: Row & { kind: "line" }): string {
+function ref(row: DiffRow & { kind: "line" }): string {
   return row.new === undefined ? `old ${row.old}` : `${row.new}`;
 }

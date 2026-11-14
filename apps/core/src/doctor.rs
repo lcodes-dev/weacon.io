@@ -207,6 +207,7 @@ mod tests {
             cwd: dir.to_path_buf(),
             access: weacon_protocol::AccessLevel::AskFirst,
             mcp: None,
+            plugin: None,
         };
         let launches = ["true", "/missing/codex", "false"].map(launch);
 
@@ -231,14 +232,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let (log, records) = test_support::recording_logger();
         let program = dir.join("hang");
-        // Written from a child shell, so no fork of this process inherits a write handle.
-        let script = "printf '#!/bin/sh\\nexec sleep 1000\\n' > \"$1\" && chmod 755 \"$1\"";
-        let written = std::process::Command::new("sh")
-            .args(["-c", script, "sh"])
-            .arg(&program)
-            .status()
-            .unwrap();
-        assert!(written.success());
+        weacon_testing::platform::write_program(&program, "#!/bin/sh\nexec sleep 1000\n").unwrap();
         let hanging = Launch {
             agent: AgentKind::Claude,
             program,
@@ -246,6 +240,7 @@ mod tests {
             cwd: dir.to_path_buf(),
             access: weacon_protocol::AccessLevel::AskFirst,
             mcp: None,
+            plugin: None,
         };
         let launches = vec![hanging; AT_ONCE + 1];
         let started = tokio::time::Instant::now();
