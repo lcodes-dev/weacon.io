@@ -101,10 +101,17 @@ pub(crate) fn state_dir(env: Env<'_>) -> Option<PathBuf> {
 }
 
 /// Where the core keeps what agents work in, apart from its state so no agent reaches that;
-/// `WEACON_DATA_DIR` overrides it.
+/// `WEACON_DATA_DIR` overrides it, and a set `WEACON_STATE_DIR` moves it beside that.
 pub(crate) fn data_dir(env: Env<'_>) -> Option<PathBuf> {
     if let Some(dir) = var(env, "WEACON_DATA_DIR") {
         return std::path::absolute(dir).ok();
+    }
+    // A state folder of its own, as per worktree, gets a data folder of its own beside it.
+    if var(env, "WEACON_STATE_DIR").is_some() {
+        let state = state_dir(env)?;
+        let mut name = state.file_name()?.to_os_string();
+        name.push("-data");
+        return Some(state.with_file_name(name));
     }
     // Not `Weacon`: that is the state folder there.
     if cfg!(windows) {
@@ -408,6 +415,11 @@ mod tests {
         ]);
 
         assert_eq!(data_dir(&set), Some(PathBuf::from("/srv/work")));
+        let own_state = env(&[("WEACON_STATE_DIR", "/srv/weacon"), ("HOME", "/home/ada")]);
+        assert_eq!(
+            data_dir(&own_state),
+            Some(PathBuf::from("/srv/weacon-data"))
+        );
         assert_eq!(
             data_dir(&relative),
             Some(std::env::current_dir().unwrap().join(".dev/data"))
