@@ -165,12 +165,14 @@ impl Uses {
             if colons != 2 {
                 self.note_path(prefix, path);
             }
+            // After `use`, even one segment names a crate, as in `use sqlx as db;`.
+            let used = ident == "use";
             path.push(ident);
-            return 0;
+            return if used { 2 } else { 0 };
         }
         // A group straight after `::` continues the path, as in `std::{fs, env}`.
         let outer = if colons == 2 {
-            [prefix, path].concat()
+            [prefix, used(path).0].concat()
         } else {
             Vec::new()
         };
@@ -182,8 +184,9 @@ impl Uses {
     }
 
     fn note_path(&mut self, prefix: &[Ident], path: &mut Vec<Ident>) {
-        if prefix.len() + path.len() > 1 {
-            self.note(prefix.iter().chain(path.iter()));
+        let (segments, after_use) = used(path);
+        if prefix.len() + segments.len() > 1 || after_use && !segments.is_empty() {
+            self.note(prefix.iter().chain(segments));
         }
         path.clear();
     }
@@ -204,6 +207,14 @@ impl Uses {
                 }
             }
         }
+    }
+}
+
+// `path` without a leading `use`, and whether it had one.
+fn used(path: &[Ident]) -> (&[Ident], bool) {
+    match path.split_first() {
+        Some((first, rest)) if first == "use" => (rest, true),
+        _ => (path, false),
     }
 }
 
@@ -397,6 +408,17 @@ mod tests {
             check(&IO, "src/chats.rs", "fn rows() { m!(a::b sqlx::query) }"),
             ["uses sqlx outside the db module"]
         );
+        for text in [
+            "macro_rules! driver { () => { use sqlx as db; }; }",
+            "macro_rules! driver { () => { use sqlx; }; }",
+            "macro_rules! driver { () => { use sqlx::{self as db}; }; }",
+        ] {
+            assert_eq!(
+                check(&IO, "src/chats.rs", text),
+                ["uses sqlx outside the db module"],
+                "{text}"
+            );
+        }
     }
 
     #[test]
