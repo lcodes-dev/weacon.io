@@ -93,6 +93,7 @@ impl Fixture {
             finish_within: Duration::ZERO,
             starts: Arc::new(sign_in::starts()),
             tries: Arc::new(sign_in::tries()),
+            sign_up: Arc::new([]),
             web: WEB,
         };
         Self {
