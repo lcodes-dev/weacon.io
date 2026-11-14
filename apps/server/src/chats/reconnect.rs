@@ -58,7 +58,7 @@ pub(crate) async fn pick_up(shared: &Shared, connected: &Connected) -> Result<()
 
 #[cfg(test)]
 mod tests {
-    use weacon_protocol::{ChatCommand, ChatQuery, ChatQueryKind};
+    use weacon_protocol::{ChatQuery, ChatQueryKind};
 
     use super::*;
     use crate::chats::test_support::{ada, attach, sent};
@@ -94,7 +94,7 @@ mod tests {
             })
         };
         let resent = |chat: &str| {
-            let command: ChatCommand =
+            let command =
                 crate::db::test_support::command(&format!("r-{chat}"), chat, "Fix the build");
             Message::ChatCommand(command)
         };

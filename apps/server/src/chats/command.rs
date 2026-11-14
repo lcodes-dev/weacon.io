@@ -176,11 +176,11 @@ mod tests {
         }
     }
 
-    fn accepted(request: &str) -> Option<Message> {
-        Some(Message::Receipt(Receipt {
+    fn accepted(request: &str) -> Message {
+        Message::Receipt(Receipt {
             request: id(request),
             outcome: Outcome::Accepted,
-        }))
+        })
     }
 
     #[tokio::test]
@@ -193,7 +193,7 @@ mod tests {
         let asked = prompt("r-1", "c-1", "Fix it", Some(&ada.machine));
         let answer = take(&ada.member, &ada.asker, shared, asked).await.unwrap();
 
-        assert_eq!(answer, accepted("r-1"));
+        assert_eq!(answer, Some(accepted("r-1")));
         let mut relayed = prompt("r-1", "c-1", "Fix it", None);
         relayed.by = Some(ada.asker.clone());
         let follow = ChatQuery {
@@ -245,7 +245,7 @@ mod tests {
             prompt("r-2", "c-1", "Go", None),
         )
         .await;
-        assert_eq!(taken.unwrap(), accepted("r-2"));
+        assert_eq!(taken.unwrap(), Some(accepted("r-2")));
         assert!(workspace.has_request(&id("r-2")).await.unwrap());
         assert_eq!(sent(&mut serving).len(), 2);
         let retried = take(
@@ -255,7 +255,7 @@ mod tests {
             prompt("r-2", "c-1", "Go", None),
         )
         .await;
-        assert_eq!(retried.unwrap(), accepted("r-2"));
+        assert_eq!(retried.unwrap(), Some(accepted("r-2")));
         assert_eq!(sent(&mut serving).len(), 2);
     }
 }
