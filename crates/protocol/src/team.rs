@@ -192,8 +192,8 @@ pub enum WorkspaceChange {
     /// A chat was made, or its title, state or latest turn changed. Only for clients that have
     /// the capability `workspace.chats`, which read the chats again.
     ChatChanged { chat: ChatId },
-    /// A proposal was made or decided, or left open no more. Only for clients that have the
-    /// capability `workspace.proposals`, which read the proposals again.
+    /// A proposal was made or its state changed. Only for clients that have the capability
+    /// `workspace.proposals`, which read the proposals again.
     ProposalChanged { proposal: ProposalId },
     /// A change this build doesn't know, from a newer peer; only ever received.
     #[serde(other)]

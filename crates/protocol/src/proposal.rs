@@ -3,13 +3,15 @@ use serde::{Deserialize, Serialize};
 
 use crate::token::token_id;
 use crate::{
-    AgentKind, Author, DocContent, DocId, MemberId, RequestId, TaskId, TaskStatus, WorkspaceId,
+    AgentKind, Author, DocContent, DocId, MemberId, RequestId, TaskEditBody, TaskId, TaskStatus,
+    WorkspaceId,
 };
 
 token_id!(
     /// A proposal in a workspace, chosen by the core that proposes it and kept across
-    /// reconnects, so that sending it again is the same proposal; 1–64 ASCII letters, digits,
-    /// `-` or `_`.
+    /// reconnects: sending it again with the same change is the same proposal, while the same
+    /// id with another change, or from another machine, is refused with `proposal.conflict`.
+    /// 1–64 ASCII letters, digits, `-` or `_`.
     ProposalId,
     "not a proposal id"
 );
@@ -26,28 +28,22 @@ pub struct ProposalCommand {
 
 impl ProposalCommand {
     /// Whether it holds a part this build doesn't know, so it can only have been received.
-    #[must_use]
-    pub const fn is_newer(&self) -> bool {
-        matches!(
-            self.action,
-            ProposalAction::Newer
-                | ProposalAction::Propose {
-                    agent: AgentKind::Newer,
-                    ..
-                }
-                | ProposalAction::Propose {
-                    change: ProposalChange::Newer,
-                    ..
-                }
-        )
+    pub(crate) fn is_newer(&self) -> bool {
+        match &self.action {
+            ProposalAction::Propose { agent, change, .. } => {
+                *agent == AgentKind::Newer || change.is_newer()
+            }
+            ProposalAction::Withdraw { .. } => false,
+            ProposalAction::Newer => true,
+        }
     }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ProposalAction {
-    /// Proposes `change`, made by an agent of `agent`'s kind, which the server can't check. It
-    /// takes the place of the same machine's open proposal to the same doc or task.
+    /// Proposes `change`, made by an agent of `agent`'s kind, which the server can't check. An
+    /// edit takes the place of the same machine's open edit of the same doc or task.
     Propose {
         proposal: ProposalId,
         agent: AgentKind,
@@ -71,28 +67,38 @@ pub enum ProposalChange {
         base: u64,
         content: DocContent,
     },
-    /// New values for the task's fields, read at its version `base`; one left out stays as it
-    /// is.
+    /// At least one edit to the task, made from its version `base`.
     TaskEdit {
         task: TaskId,
         base: u64,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        title: Option<String>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        #[schemars(with = "TaskStatus")]
-        status: Option<TaskStatus>,
+        edits: Vec<TaskEditBody>,
     },
-    NewDoc {
-        content: DocContent,
-    },
+    /// A doc to make, at its first revision.
+    NewDoc { content: DocContent },
     /// A task to do, placed last.
-    NewTask {
-        title: String,
-    },
+    NewTask { title: String },
     /// A change this build doesn't know, from a newer peer; only ever received.
     #[serde(other)]
     #[schemars(skip)]
     Newer,
+}
+
+impl ProposalChange {
+    fn is_newer(&self) -> bool {
+        match self {
+            Self::TaskEdit { edits, .. } => edits.iter().any(|edit| {
+                matches!(
+                    edit,
+                    TaskEditBody::Newer
+                        | TaskEditBody::Status {
+                            status: TaskStatus::Newer
+                        }
+                )
+            }),
+            Self::DocEdit { .. } | Self::NewDoc { .. } | Self::NewTask { .. } => false,
+            Self::Newer => true,
+        }
+    }
 }
 
 /// The doc or task a proposal is about; a new one has the id it gets once accepted.
@@ -118,7 +124,7 @@ pub enum ProposalAbout {
 }
 
 /// Where a proposal stands. It is open until a person accepts or rejects it, the same
-/// machine's newer proposal supersedes it, or that machine withdraws it.
+/// machine's newer edit supersedes it, or that machine withdraws it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum ProposalState {
@@ -147,6 +153,7 @@ pub struct ProposalRecord {
     pub id: ProposalId,
     pub about: ProposalAbout,
     pub author: Author,
+    /// Its fields sit beside the record's, so no record field may take one of their names.
     #[serde(flatten)]
     pub state: ProposalState,
     pub at: i64,
@@ -196,10 +203,9 @@ pub enum ProposalOutcome {
         title: bool,
         anchors: bool,
     },
-    /// The task's `fields` changed since the proposal's base, and the proposal changes them
-    /// too.
+    /// The proposal's `edits` that change what changed in the task since the proposal's base.
     TaskConflict {
-        fields: Vec<TaskField>,
+        edits: Vec<TaskEditBody>,
     },
     /// An outcome this build doesn't know, from a newer peer; only ever received.
     #[serde(other)]
@@ -212,8 +218,8 @@ pub enum ProposalOutcome {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum MergeHunk {
-    /// Lines both sides agree on.
-    Same { text: String },
+    /// Lines the merge settled: the same on both sides, or changed on one only.
+    Agreed { text: String },
     /// Lines the doc and the proposal both changed since `base`, each in its own way.
     Conflict {
         base: String,
@@ -226,25 +232,13 @@ pub enum MergeHunk {
     Newer,
 }
 
-/// A task's field a proposal can change.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum TaskField {
-    Title,
-    Status,
-    /// A field this build doesn't know, from a newer peer; only ever received.
-    #[serde(other)]
-    #[schemars(skip)]
-    Newer,
-}
-
 #[cfg(test)]
 mod tests {
     use serde_json::{Value, json};
 
     use super::*;
-    use crate::test_support::{request, workspace};
-    use crate::{AgentOwner, AgentRef};
+    use crate::test_support::{envelope, never_sent, request, travels, workspace};
+    use crate::{AgentOwner, AgentRef, Envelope, Message};
 
     fn round_trip<T>(value: &T, wire: Value)
     where
@@ -262,8 +256,19 @@ mod tests {
         }
     }
 
-    fn propose(change: ProposalChange) -> ProposalCommand {
-        ProposalCommand {
+    fn content_wire() -> Value {
+        json!({ "title": "Plan", "body": "Ship it.\n" })
+    }
+
+    fn command(action: Value) -> Value {
+        let mut wire = json!({ "id": 4, "type": "proposal_command", "request": "r-1" });
+        wire["workspace"] = json!("w-1");
+        wire["action"] = action;
+        wire
+    }
+
+    fn propose(change: ProposalChange) -> Envelope {
+        envelope(Message::ProposalCommand(ProposalCommand {
             request: request(),
             workspace: workspace(),
             action: ProposalAction::Propose {
@@ -271,73 +276,103 @@ mod tests {
                 agent: AgentKind::Claude,
                 change,
             },
-        }
+        }))
+    }
+
+    fn proposed(agent: &str, change: Value) -> Value {
+        let mut action = json!({ "kind": "propose", "proposal": "p-1", "agent": agent });
+        action["change"] = change;
+        command(action)
     }
 
     #[test]
-    fn a_core_proposes_and_withdraws_in_tagged_commands() {
-        let edit = propose(ProposalChange::TaskEdit {
+    fn a_core_proposes_edits_in_tagged_commands() {
+        let edit = ProposalChange::TaskEdit {
             task: "t-1".parse().unwrap(),
             base: 2,
-            title: None,
-            status: Some(TaskStatus::Done),
-        });
-        let withdraw = ProposalCommand {
+            edits: vec![
+                TaskEditBody::Title {
+                    title: "Ship".to_owned(),
+                },
+                TaskEditBody::Status {
+                    status: TaskStatus::Done,
+                },
+            ],
+        };
+        let edits = json!([
+            { "kind": "title", "title": "Ship" },
+            { "kind": "status", "status": "done" },
+        ]);
+        let revise = ProposalChange::DocEdit {
+            doc: "d-1".parse().unwrap(),
+            base: 3,
+            content: content(),
+        };
+        let mut revise_wire = json!({ "kind": "doc_edit", "doc": "d-1", "base": 3 });
+        revise_wire["content"] = content_wire();
+
+        travels(
+            &propose(edit),
+            proposed(
+                "claude",
+                json!({ "kind": "task_edit", "task": "t-1", "base": 2, "edits": edits }),
+            ),
+        );
+        travels(&propose(revise), proposed("claude", revise_wire));
+    }
+
+    #[test]
+    fn a_core_proposes_new_things_and_withdraws_in_tagged_commands() {
+        let new_task = ProposalChange::NewTask {
+            title: "Ship".to_owned(),
+        };
+        let withdraw = envelope(Message::ProposalCommand(ProposalCommand {
             request: request(),
             workspace: workspace(),
             action: ProposalAction::Withdraw {
                 proposal: "p-1".parse().unwrap(),
             },
+        }));
+
+        travels(
+            &propose(ProposalChange::NewDoc { content: content() }),
+            proposed(
+                "claude",
+                json!({ "kind": "new_doc", "content": content_wire() }),
+            ),
+        );
+        travels(
+            &propose(new_task),
+            proposed("claude", json!({ "kind": "new_task", "title": "Ship" })),
+        );
+        travels(
+            &withdraw,
+            command(json!({ "kind": "withdraw", "proposal": "p-1" })),
+        );
+    }
+
+    #[test]
+    fn a_command_with_any_part_this_build_does_not_know_is_never_sent() {
+        let edits = |edit: Value| {
+            let title = json!({ "kind": "title", "title": "A" });
+            json!({ "kind": "task_edit", "task": "t-1", "base": 1, "edits": [title, edit] })
         };
 
-        round_trip(
-            &edit,
-            json!({
-                "request": "r-1",
-                "workspace": "w-1",
-                "action": {
-                    "kind": "propose",
-                    "proposal": "p-1",
-                    "agent": "claude",
-                    "change": { "kind": "task_edit", "task": "t-1", "base": 2, "status": "done" },
-                },
-            }),
-        );
-        round_trip(
-            &withdraw,
-            json!({
-                "request": "r-1",
-                "workspace": "w-1",
-                "action": { "kind": "withdraw", "proposal": "p-1" },
-            }),
-        );
-        round_trip(
-            &ProposalChange::NewDoc { content: content() },
-            json!({ "kind": "new_doc", "content": { "title": "Plan", "body": "Ship it.\n" } }),
-        );
+        never_sent(command(json!({ "kind": "retract" })));
+        never_sent(proposed(
+            "gemini",
+            json!({ "kind": "new_task", "title": "A" }),
+        ));
+        never_sent(proposed("claude", json!({ "kind": "new_chat" })));
+        never_sent(proposed("claude", edits(json!({ "kind": "archive" }))));
+        never_sent(proposed(
+            "claude",
+            edits(json!({ "kind": "status", "status": "blocked" })),
+        ));
     }
 
-    #[test]
-    fn a_command_with_any_part_this_build_does_not_know_is_only_received() {
-        let mut newer = propose(ProposalChange::NewTask {
-            title: "Ship".to_owned(),
-        });
-        assert!(!newer.is_newer());
-        for action in [
-            json!({ "kind": "retract" }),
-            json!({ "kind": "propose", "proposal": "p-1", "agent": "gemini",
-                    "change": { "kind": "new_task", "title": "Ship" } }),
-            json!({ "kind": "propose", "proposal": "p-1", "agent": "claude",
-                    "change": { "kind": "new_chat" } }),
-        ] {
-            newer.action = serde_json::from_value(action).unwrap();
-            assert!(newer.is_newer(), "{:?}", newer.action);
-        }
-    }
-
-    #[test]
-    fn a_record_says_where_it_stands_and_keeps_its_change_only_while_open() {
-        let author = Author::Agent {
+    fn author() -> Author {
+        Author::Agent {
             owner: "m-1".parse().unwrap(),
             agent: Some(AgentRef {
                 kind: AgentKind::Codex,
@@ -346,100 +381,171 @@ mod tests {
                 },
                 machine: None,
             }),
-        };
-        let accepted = ProposalRecord {
+        }
+    }
+
+    fn record(about: ProposalAbout, state: ProposalState) -> ProposalRecord {
+        ProposalRecord {
             id: "p-1".parse().unwrap(),
-            about: ProposalAbout::NewDoc {
-                doc: "d-1".parse().unwrap(),
-            },
-            author,
-            state: ProposalState::Accepted {
-                version: 1,
-                by: "m-2".parse().unwrap(),
-            },
+            about,
+            author: author(),
+            state,
             at: 5,
             change: None,
-        };
-        let wire = json!({
-            "id": "p-1",
-            "about": { "kind": "new_doc", "doc": "d-1" },
-            "author": {
-                "kind": "agent",
-                "owner": "m-1",
-                "agent": { "kind": "codex", "owner": { "kind": "member", "member": "m-1" } },
-            },
-            "state": "accepted",
-            "version": 1,
-            "by": "m-2",
-            "at": 5,
-        });
+        }
+    }
 
-        round_trip(&accepted, wire);
-        let open = ProposalRecord {
-            state: ProposalState::Open,
-            change: Some(ProposalChange::NewDoc { content: content() }),
-            ..accepted
+    // A record's wire: its own fields, then `about` and the state's fields beside them.
+    fn record_wire(about: Value, state: Value) -> Value {
+        let mut record = json!({ "id": "p-1", "at": 5 });
+        record["author"] = json!({ "kind": "agent", "owner": "m-1" });
+        record["author"]["agent"] =
+            json!({ "kind": "codex", "owner": { "kind": "member", "member": "m-1" } });
+        record["about"] = about;
+        if let Value::Object(fields) = state {
+            for (key, value) in fields {
+                record[key] = value;
+            }
+        }
+        record
+    }
+
+    #[test]
+    fn a_record_says_where_it_stands_and_keeps_its_change_only_while_open() {
+        let by = || "m-2".parse().unwrap();
+        let new_task = ProposalAbout::NewTask {
+            task: "t-1".parse().unwrap(),
         };
-        let record = serde_json::to_value(&open).unwrap();
-        assert_eq!(record["state"], "open");
-        assert_eq!(record["change"]["kind"], "new_doc");
+        let open = ProposalRecord {
+            change: Some(ProposalChange::NewTask {
+                title: "Ship".to_owned(),
+            }),
+            ..record(new_task, ProposalState::Open)
+        };
+        let mut open_wire = record_wire(
+            json!({ "kind": "new_task", "task": "t-1" }),
+            json!({ "state": "open" }),
+        );
+        open_wire["change"] = json!({ "kind": "new_task", "title": "Ship" });
+        let doc = |id: &str| ProposalAbout::Doc {
+            doc: id.parse().unwrap(),
+        };
+
+        round_trip(&open, open_wire);
+        for (record, wire) in [
+            (
+                record(
+                    doc("d-1"),
+                    ProposalState::Accepted {
+                        version: 1,
+                        by: by(),
+                    },
+                ),
+                record_wire(
+                    json!({ "kind": "doc", "doc": "d-1" }),
+                    json!({ "state": "accepted", "version": 1, "by": "m-2" }),
+                ),
+            ),
+            (
+                record(doc("d-2"), ProposalState::Rejected { by: by() }),
+                record_wire(
+                    json!({ "kind": "doc", "doc": "d-2" }),
+                    json!({ "state": "rejected", "by": "m-2" }),
+                ),
+            ),
+        ] {
+            round_trip(&record, wire);
+        }
+    }
+
+    #[test]
+    fn a_list_holds_records_that_are_open_no_more() {
+        let new_doc = ProposalAbout::NewDoc {
+            doc: "d-1".parse().unwrap(),
+        };
+        let task = ProposalAbout::Task {
+            task: "t-3".parse().unwrap(),
+        };
+        let list = ProposalList {
+            proposals: vec![
+                record(new_doc, ProposalState::Withdrawn),
+                record(task, ProposalState::Superseded),
+            ],
+        };
+        let withdrawn = || json!({ "state": "withdrawn" });
+
+        round_trip(
+            &list,
+            json!({ "proposals": [
+                record_wire(json!({ "kind": "new_doc", "doc": "d-1" }), withdrawn()),
+                record_wire(
+                    json!({ "kind": "task", "task": "t-3" }),
+                    json!({ "state": "superseded" }),
+                ),
+            ] }),
+        );
+    }
+
+    #[test]
+    fn a_record_in_a_state_this_build_does_not_know_still_parses() {
+        let mut wire = record_wire(
+            json!({ "kind": "chat", "chat": "c-1" }),
+            json!({ "state": "parked", "until": 9 }),
+        );
+
+        let parsed: ProposalRecord = serde_json::from_value(wire.clone()).unwrap();
+        assert_eq!(parsed, record(ProposalAbout::Newer, ProposalState::Newer));
+        wire["change"] = json!({ "kind": "new_chat" });
+        let parsed: ProposalRecord = serde_json::from_value(wire).unwrap();
+        assert_eq!(parsed.change, Some(ProposalChange::Newer));
     }
 
     #[test]
     fn a_decision_answers_with_its_outcome_or_what_conflicts() {
-        round_trip(
-            &ProposalDecision {
-                verdict: ProposalVerdict::Accept,
-            },
-            json!({ "verdict": "accept" }),
-        );
+        for (verdict, wire) in [
+            (ProposalVerdict::Accept, "accept"),
+            (ProposalVerdict::Reject, "reject"),
+        ] {
+            round_trip(&ProposalDecision { verdict }, json!({ "verdict": wire }));
+        }
         round_trip(
             &ProposalOutcome::Accepted { version: 4 },
             json!({ "outcome": "accepted", "version": 4 }),
         );
+        round_trip(&ProposalOutcome::Rejected, json!({ "outcome": "rejected" }));
+        let hunks = vec![
+            MergeHunk::Agreed {
+                text: "# Plan\n".to_owned(),
+            },
+            MergeHunk::Conflict {
+                base: "a\n".to_owned(),
+                current: "b\n".to_owned(),
+                proposed: "c\n".to_owned(),
+            },
+        ];
+        let mut conflict = json!({ "outcome": "doc_conflict", "title": false, "anchors": true });
+        conflict["hunks"] = json!([
+            { "kind": "agreed", "text": "# Plan\n" },
+            { "kind": "conflict", "base": "a\n", "current": "b\n", "proposed": "c\n" },
+        ]);
         round_trip(
             &ProposalOutcome::DocConflict {
-                hunks: vec![
-                    MergeHunk::Same {
-                        text: "# Plan\n".to_owned(),
-                    },
-                    MergeHunk::Conflict {
-                        base: "a\n".to_owned(),
-                        current: "b\n".to_owned(),
-                        proposed: "c\n".to_owned(),
-                    },
-                ],
+                hunks,
                 title: false,
                 anchors: true,
             },
-            json!({
-                "outcome": "doc_conflict",
-                "hunks": [
-                    { "kind": "same", "text": "# Plan\n" },
-                    { "kind": "conflict", "base": "a\n", "current": "b\n", "proposed": "c\n" },
-                ],
-                "title": false,
-                "anchors": true,
-            }),
+            conflict,
         );
         round_trip(
             &ProposalOutcome::TaskConflict {
-                fields: vec![TaskField::Title, TaskField::Status],
+                edits: vec![TaskEditBody::Move { before: None }],
             },
-            json!({ "outcome": "task_conflict", "fields": ["title", "status"] }),
+            json!({ "outcome": "task_conflict", "edits": [{ "kind": "move" }] }),
         );
     }
 
     #[test]
     fn every_part_from_a_newer_peer_still_parses() {
-        assert_eq!(
-            serde_json::from_value::<ProposalState>(json!({ "state": "parked" })).unwrap(),
-            ProposalState::Newer
-        );
-        assert_eq!(
-            serde_json::from_value::<ProposalAbout>(json!({ "kind": "chat" })).unwrap(),
-            ProposalAbout::Newer
-        );
         assert_eq!(
             serde_json::from_value::<ProposalVerdict>(json!("defer")).unwrap(),
             ProposalVerdict::Newer
@@ -451,10 +557,6 @@ mod tests {
         assert_eq!(
             serde_json::from_value::<MergeHunk>(json!({ "kind": "moved" })).unwrap(),
             MergeHunk::Newer
-        );
-        assert_eq!(
-            serde_json::from_value::<TaskField>(json!("order")).unwrap(),
-            TaskField::Newer
         );
         let id = serde_json::from_value::<ProposalId>(json!("../p")).unwrap_err();
         assert!(id.to_string().contains("not a proposal id"), "{id}");

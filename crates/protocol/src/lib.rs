@@ -51,7 +51,6 @@ pub use pick::Pick;
 pub use proposal::{
     MergeHunk, ProposalAbout, ProposalAction, ProposalChange, ProposalCommand, ProposalDecision,
     ProposalId, ProposalList, ProposalOutcome, ProposalRecord, ProposalState, ProposalVerdict,
-    TaskField,
 };
 pub use receipt::{Outcome, Receipt, RequestId};
 pub use repo::RepoId;

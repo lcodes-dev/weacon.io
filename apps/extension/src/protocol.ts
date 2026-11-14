@@ -776,7 +776,7 @@ export type MemberId = string;
  */
 export type MergeHunk = (
   | {
-    kind: "same";
+    kind: "agreed";
     text: string;
   }
   | {
@@ -972,13 +972,9 @@ export type ProposalChange = (
   }
   | {
     base: number;
+    edits: Array<TaskEditBody>;
     kind: "task_edit";
-    status?: TaskStatus;
     task: TaskId;
-    title?: (
-      | string
-      | null
-    );
   }
   | {
     content: DocContent;
@@ -1011,8 +1007,9 @@ export type ProposalDecision = {
 
 /**
  * A proposal in a workspace, chosen by the core that proposes it and kept across
- * reconnects, so that sending it again is the same proposal; 1–64 ASCII letters, digits,
- * `-` or `_`.
+ * reconnects: sending it again with the same change is the same proposal, while the same
+ * id with another change, or from another machine, is refused with `proposal.conflict`.
+ * 1–64 ASCII letters, digits, `-` or `_`.
  */
 export type ProposalId = string;
 
@@ -1042,7 +1039,7 @@ export type ProposalOutcome = (
     title: boolean;
   }
   | {
-    fields: Array<TaskField>;
+    edits: Array<TaskEditBody>;
     outcome: "task_conflict";
   }
 );
@@ -1323,16 +1320,6 @@ export type TaskEditBody = (
     before?: TaskId;
     kind: "move";
   }
-);
-
-/**
- * A task's field a proposal can change.
- */
-export type TaskField = (
-  | (
-    | "title"
-    | "status"
-  )
 );
 
 /**

@@ -1907,12 +1907,12 @@
       "description": "A run of a doc's body in a [`ProposalOutcome::DocConflict`]; the hunks in order are the\nwhole body.",
       "oneOf": [
         {
-          "description": "Lines both sides agree on.",
+          "description": "Lines the merge settled: the same on both sides, or changed on one only.",
           "type": "object",
           "properties": {
             "kind": {
               "type": "string",
-              "const": "same"
+              "const": "agreed"
             },
             "text": {
               "type": "string"
@@ -2312,7 +2312,7 @@
     "ProposalAction": {
       "oneOf": [
         {
-          "description": "Proposes `change`, made by an agent of `agent`'s kind, which the server can't check. It\ntakes the place of the same machine's open proposal to the same doc or task.",
+          "description": "Proposes `change`, made by an agent of `agent`'s kind, which the server can't check. An\nedit takes the place of the same machine's open edit of the same doc or task.",
           "type": "object",
           "properties": {
             "agent": {
@@ -2386,7 +2386,7 @@
           ]
         },
         {
-          "description": "New values for the task's fields, read at its version `base`; one left out stays as it\nis.",
+          "description": "At least one edit to the task, made from its version `base`.",
           "type": "object",
           "properties": {
             "base": {
@@ -2394,30 +2394,29 @@
               "format": "uint64",
               "minimum": 0
             },
+            "edits": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/TaskEditBody"
+              }
+            },
             "kind": {
               "type": "string",
               "const": "task_edit"
             },
-            "status": {
-              "$ref": "#/$defs/TaskStatus"
-            },
             "task": {
               "$ref": "#/$defs/TaskId"
-            },
-            "title": {
-              "type": [
-                "string",
-                "null"
-              ]
             }
           },
           "required": [
             "kind",
             "task",
-            "base"
+            "base",
+            "edits"
           ]
         },
         {
+          "description": "A doc to make, at its first revision.",
           "type": "object",
           "properties": {
             "content": {
@@ -2485,7 +2484,7 @@
       ]
     },
     "ProposalId": {
-      "description": "A proposal in a workspace, chosen by the core that proposes it and kept across\nreconnects, so that sending it again is the same proposal; 1–64 ASCII letters, digits,\n`-` or `_`.",
+      "description": "A proposal in a workspace, chosen by the core that proposes it and kept across\nreconnects: sending it again with the same change is the same proposal, while the same\nid with another change, or from another machine, is refused with `proposal.conflict`.\n1–64 ASCII letters, digits, `-` or `_`.",
       "type": "string",
       "maxLength": 64,
       "pattern": "^[A-Za-z0-9_-]+$"
@@ -2568,13 +2567,13 @@
           ]
         },
         {
-          "description": "The task's `fields` changed since the proposal's base, and the proposal changes them\ntoo.",
+          "description": "The proposal's `edits` that change what changed in the task since the proposal's base.",
           "type": "object",
           "properties": {
-            "fields": {
+            "edits": {
               "type": "array",
               "items": {
-                "$ref": "#/$defs/TaskField"
+                "$ref": "#/$defs/TaskEditBody"
               }
             },
             "outcome": {
@@ -2584,7 +2583,7 @@
           },
           "required": [
             "outcome",
-            "fields"
+            "edits"
           ]
         }
       ]
@@ -3281,18 +3280,6 @@
         }
       ]
     },
-    "TaskField": {
-      "description": "A task's field a proposal can change.",
-      "oneOf": [
-        {
-          "type": "string",
-          "enum": [
-            "title",
-            "status"
-          ]
-        }
-      ]
-    },
     "TaskId": {
       "description": "A task in a workspace, 1–64 ASCII letters, digits, `-` or `_`.",
       "type": "string",
@@ -3708,7 +3695,7 @@
           ]
         },
         {
-          "description": "A proposal was made or decided, or left open no more. Only for clients that have the\ncapability `workspace.proposals`, which read the proposals again.",
+          "description": "A proposal was made or its state changed. Only for clients that have the capability\n`workspace.proposals`, which read the proposals again.",
           "type": "object",
           "properties": {
             "kind": {
