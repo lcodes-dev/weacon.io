@@ -6,6 +6,9 @@ mod fixtures;
 mod install;
 mod settings;
 mod verify;
+mod watch;
+
+pub(crate) use watch::{TICK as CHECK_EVERY, Watch};
 
 use std::fs::File;
 use std::io::{self, Write};
@@ -60,7 +63,8 @@ pub(crate) fn run(
     let https = fetch::https();
     let release = || fetch::release(&https, &verify::TRUSTED);
     let restart = || service::restart(&mut service::system);
-    let healthy = |commit: &Commit| daemon_runs(state_dir, app, commit);
+    let me = daemon::build(&app.version);
+    let healthy = |commit: &Commit| daemon_runs(state_dir, &me, commit, HEALTHY_WITHIN);
     let restart: &dyn Fn() -> Result<(), Fault> = &restart;
     let world = World {
         release: &release,
@@ -175,16 +179,33 @@ fn version_of(binary: &Path) -> io::Result<String> {
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
-/// Waits for the daemon to answer with `commit`, up to [`HEALTHY_WITHIN`].
-fn daemon_runs(state_dir: &Path, app: &App, commit: &Commit) -> bool {
+/// A line saying which newer release the daemon found, if it found one.
+pub(crate) fn offer(state_dir: &Path, own: &str) -> Option<String> {
+    let own: ReleaseVersion = own.parse().ok()?;
+    let offered = Settings::read(&settings::file(state_dir)).ok()?.offered?;
+    (offered > own)
+        .then(|| format!("Update: weacon {offered} is out. Run `weacon update` to install it."))
+}
+
+/// The latest release, fetched and checked against the keys every build trusts.
+pub(crate) fn latest() -> Result<ReleaseManifest, Fault> {
+    fetch::release(&fetch::https(), &verify::TRUSTED)
+}
+
+/// Waits up to `within` for the daemon to answer `me` with `commit`.
+fn daemon_runs(
+    state_dir: &Path,
+    me: &weacon_protocol::App,
+    commit: &Commit,
+    within: Duration,
+) -> bool {
     let socket = daemon::socket_path(state_dir);
     let Ok(runtime) = daemon::runtime() else {
         return false;
     };
     let poll = async {
         loop {
-            if let Ok(welcome) =
-                weacon_client::handshake(&socket, daemon::build(&app.version)).await
+            if let Ok(welcome) = weacon_client::handshake(&socket, me.clone()).await
                 && welcome.app.commit == commit.as_str()
             {
                 return;
@@ -192,7 +213,7 @@ fn daemon_runs(state_dir: &Path, app: &App, commit: &Commit) -> bool {
             tokio::time::sleep(Duration::from_millis(500)).await;
         }
     };
-    runtime.block_on(async { tokio::time::timeout(HEALTHY_WITHIN, poll).await.is_ok() })
+    runtime.block_on(async { tokio::time::timeout(within, poll).await.is_ok() })
 }
 
 const fn schedule_name(schedule: UpdateSchedule) -> &'static str {
@@ -457,6 +478,75 @@ mod tests {
         assert_eq!(result.unwrap(), Outcome::Done);
         assert_eq!(out, "Updates: install each week.\n");
         assert_eq!(machine.settings().schedule, UpdateSchedule::Weekly);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_binary_is_asked_for_its_version() {
+        let dir = TempDir::new().unwrap();
+        let binary = dir.join("weacon");
+        fs::write(&binary, "#!/bin/sh\necho \"asked $1\"\n").unwrap();
+        crate::platform::make_runnable(&binary).unwrap();
+        assert_eq!(version_of(&binary).unwrap(), "asked --version\n");
+        version_of(&dir.join("missing")).unwrap_err();
+    }
+
+    #[test]
+    fn a_restarted_daemon_counts_once_it_answers_with_the_new_commit() {
+        let dir = TempDir::new().unwrap();
+        let me = daemon::build(&crate::test_support::VERSION);
+        let commit = Commit::try_from(COMMIT.to_owned()).unwrap();
+        assert!(!daemon_runs(&dir, &me, &commit, Duration::ZERO));
+
+        let (stop, served) = serve_daemon(&dir);
+        assert!(daemon_runs(&dir, &me, &commit, Duration::from_secs(10)));
+        let other = Commit::try_from("1".repeat(40)).unwrap();
+        assert!(!daemon_runs(&dir, &me, &other, Duration::ZERO));
+        stop.send(()).unwrap();
+        served.join().unwrap();
+    }
+
+    /// A daemon on its own thread, running the build of [`COMMIT`], until `stop` is sent.
+    fn serve_daemon(
+        dir: &Path,
+    ) -> (
+        tokio::sync::oneshot::Sender<()>,
+        std::thread::JoinHandle<()>,
+    ) {
+        let (started, ready) = std::sync::mpsc::channel();
+        let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
+        let state_dir = dir.to_path_buf();
+        let new = weacon_protocol::App {
+            commit: COMMIT.to_owned(),
+            ..daemon::build(&crate::test_support::VERSION)
+        };
+        let served = std::thread::spawn(move || {
+            let (log, _) = weacon_testing::recording_logger();
+            let until_stopped = async { drop(stopped.await) };
+            let serve = async {
+                let daemon = daemon::Daemon::start(&state_dir, new, log).unwrap();
+                started.send(()).unwrap();
+                daemon.serve(until_stopped).await;
+            };
+            daemon::runtime().unwrap().block_on(serve);
+        });
+        ready.recv().unwrap();
+        (stop, served)
+    }
+
+    #[test]
+    fn status_mentions_a_newer_release_the_daemon_found() {
+        let machine = Machine::new();
+        assert_eq!(offer(&machine.dir, "1.0.0"), None);
+        let found = Settings {
+            offered: Some("1.2.3".parse().unwrap()),
+            ..Settings::default()
+        };
+        found.write(&settings::file(&machine.dir)).unwrap();
+        let line = "Update: weacon 1.2.3 is out. Run `weacon update` to install it.";
+        assert_eq!(offer(&machine.dir, "1.0.0").as_deref(), Some(line));
+        assert_eq!(offer(&machine.dir, "1.2.3"), None);
+        assert_eq!(offer(&machine.dir, "dev"), None);
     }
 
     #[test]

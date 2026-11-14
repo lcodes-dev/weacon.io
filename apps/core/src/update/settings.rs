@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use weacon_observability::Fault;
-use weacon_protocol::{UpdateSchedule, code};
+use weacon_protocol::{ReleaseVersion, UpdateSchedule, code};
 
 use crate::platform;
 
@@ -17,6 +17,10 @@ pub(crate) struct Settings {
     /// When the newest manifest seen was published, so an older one can't be passed off as
     /// the latest.
     pub(crate) last_published: u64,
+    /// When the daemon last looked for a release.
+    pub(crate) last_checked: u64,
+    /// The newest release the daemon found and didn't install.
+    pub(crate) offered: Option<ReleaseVersion>,
 }
 
 pub(crate) fn file(state_dir: &Path) -> PathBuf {
@@ -71,12 +75,14 @@ mod tests {
         let chosen = Settings {
             schedule: UpdateSchedule::Weekly,
             last_published: 7,
+            last_checked: 8,
+            offered: Some("1.2.3".parse().unwrap()),
         };
         chosen.write(&file).unwrap();
         assert_eq!(Settings::read(&file).unwrap(), chosen);
         assert_eq!(
             fs::read_to_string(&file).unwrap(),
-            r#"{"schedule":"weekly","last_published":7}"#
+            r#"{"schedule":"weekly","last_published":7,"last_checked":8,"offered":"1.2.3"}"#
         );
     }
 
@@ -86,6 +92,10 @@ mod tests {
         let file = file(&dir);
         fs::create_dir_all(file.parent().unwrap()).unwrap();
         fs::write(&file, "not json").unwrap();
+        let fault = Settings::read(&file).unwrap_err();
+        assert_eq!(fault.code().as_str(), "update.settings_unreadable");
+        fs::remove_file(&file).unwrap();
+        fs::create_dir(&file).unwrap();
         let fault = Settings::read(&file).unwrap_err();
         assert_eq!(fault.code().as_str(), "update.settings_unreadable");
     }
@@ -99,5 +109,6 @@ mod tests {
         let read = Settings::read(&file).unwrap();
         assert_eq!(read.schedule, UpdateSchedule::Off);
         assert_eq!(read.last_published, 0);
+        assert_eq!(read.last_checked, 0);
     }
 }

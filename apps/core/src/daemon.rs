@@ -17,6 +17,7 @@ use crate::memory;
 use crate::picks::{KeepError, Picks};
 use crate::platform::{self, Listener, Owner, Stream};
 use crate::session::{Reply, Session};
+use crate::update;
 
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
 pub(crate) const READ_CHUNK: usize = 8192;
@@ -33,6 +34,25 @@ pub(crate) use weacon_appkit::build;
 /// The single-threaded async runtime the core's commands run on.
 pub(crate) fn runtime() -> Result<tokio::runtime::Runtime, Fault> {
     weacon_appkit::runtime(tokio::runtime::Builder::new_current_thread())
+}
+
+/// The update schedule, for a build whose version releases number.
+fn updates(state_dir: &Path, app: &App) -> Option<update::Watch> {
+    let own = app.version.parse().ok()?;
+    let launch = crate::service::launch_update;
+    Some(update::Watch::new(
+        state_dir.to_owned(),
+        own,
+        update::latest,
+        launch,
+        unix_now,
+    ))
+}
+
+fn unix_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |since| since.as_secs())
 }
 
 /// Runs the daemon until Ctrl-C or the system asks it to stop.
@@ -70,6 +90,7 @@ pub(crate) struct Daemon {
     shared: Shared,
     disk: disk::Watch,
     memory: memory::Watch,
+    updates: Option<update::Watch>,
     // Held for the daemon's life, so a second daemon can't start.
     _lock: File,
 }
@@ -105,6 +126,7 @@ impl Daemon {
         }
         let listener = platform::bind(&socket).map_err(failed)?;
         log.info("daemon started", &[]);
+        let updates = updates(state_dir, &app);
         Ok(Self {
             listener,
             socket,
@@ -116,6 +138,7 @@ impl Daemon {
             },
             disk: disk::Watch::new(state_dir.to_owned(), platform::free_space),
             memory: memory::Watch::new(platform::processes),
+            updates,
             _lock: lock,
         })
     }
@@ -125,12 +148,16 @@ impl Daemon {
         let mut clients = JoinSet::new();
         let mut disk_check = tokio::time::interval(DISK_CHECK);
         let mut memory_sample = tokio::time::interval(MEMORY_SAMPLE);
+        let mut update_check = tokio::time::interval(update::CHECK_EVERY);
         tokio::pin!(shutdown);
         loop {
             tokio::select! {
                 () = &mut shutdown => break,
                 _ = disk_check.tick() => self.disk.check(&self.shared.log).await,
                 _ = memory_sample.tick(), if platform::PROCESSES => self.memory.record(&self.shared.log).await,
+                _ = update_check.tick() => if let Some(updates) = &mut self.updates {
+                    updates.check(&self.shared.log).await;
+                },
                 accepted = self.listener.accept() => match accepted {
                     Ok(stream) => self.admit(stream, &mut clients),
                     Err(error) => {
@@ -301,6 +328,8 @@ mod tests {
     fn start_as(dir: &Path, change: impl FnOnce(&mut Daemon)) -> Result<Running, Fault> {
         let (log, records) = recording_logger();
         let mut daemon = Daemon::start(dir, build(&VERSION), log)?;
+        // Tests never reach the release server.
+        daemon.updates = None;
         change(&mut daemon);
         let socket = daemon.socket.clone();
         let (stop, stopped) = oneshot::channel();
@@ -374,6 +403,38 @@ mod tests {
     fn free_in_file(dir: &Path) -> io::Result<u64> {
         let free = fs::read_to_string(dir.join("free"))?;
         free.parse().map_err(io::Error::other)
+    }
+
+    #[tokio::test]
+    async fn the_update_schedule_is_checked_at_start() {
+        let dir = TempDir::new().unwrap();
+        let watched = dir.to_path_buf();
+        let running = start_as(&dir, |daemon| {
+            let unreachable = || Err(Fault::new(code!("update.fetch_failed"), "x"));
+            let own = "1.0.0".parse().unwrap();
+            let watch =
+                update::Watch::new(watched, own, unreachable, |_| Ok(false), || 1_800_000_000);
+            daemon.updates = Some(watch);
+        })
+        .unwrap();
+        logs(&running.records, "update check failed").await;
+        running.stop().await;
+    }
+
+    #[test]
+    fn only_a_build_numbered_like_a_release_watches_for_updates() {
+        let dir = TempDir::new().unwrap();
+        let released = App {
+            version: "1.2.3".to_owned(),
+            ..build(&VERSION)
+        };
+        assert!(updates(&dir, &released).is_some());
+        let local = App {
+            version: "dev".to_owned(),
+            ..build(&VERSION)
+        };
+        assert!(updates(&dir, &local).is_none());
+        assert!(unix_now() > 1_700_000_000);
     }
 
     #[tokio::test(start_paused = true)]

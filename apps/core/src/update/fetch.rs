@@ -118,6 +118,9 @@ mod tests {
         let long: &'static str = "x".repeat(5 * 1024).leak();
         let fault = release(&serving(MANIFEST, long.as_bytes()), &[TEST_KEY]).unwrap_err();
         assert_eq!(fault.code().as_str(), "update.too_large");
+        // Minisign ignores the padding, so only the size limit could refuse it.
+        let padded: &'static str = format!("{SIGNATURE:<4096}").leak();
+        release(&serving(MANIFEST, padded.as_bytes()), &[TEST_KEY]).unwrap();
         let exact: &'static str = "x".repeat(64 * 1024).leak();
         let fault = release(&serving(exact, SIGNATURE.as_bytes()), &[TEST_KEY]).unwrap_err();
         assert_eq!(fault.code().as_str(), "update.unsigned");

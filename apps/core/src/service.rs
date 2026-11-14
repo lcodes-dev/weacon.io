@@ -124,6 +124,37 @@ pub(crate) fn restart(runner: Runner<'_>) -> Result<(), Fault> {
     run_step(&RESTART, runner)
 }
 
+/// Starts `weacon update` for `state_dir` in a unit of its own, so restarting the service
+/// doesn't stop it; false when no service is installed.
+pub(crate) fn launch_update(state_dir: &Path) -> io::Result<bool> {
+    launch_with(state_dir, &|key: &str| std::env::var_os(key), &mut system)
+}
+
+fn launch_with(state_dir: &Path, env: Env<'_>, runner: Runner<'_>) -> io::Result<bool> {
+    if !installed(env) {
+        return Ok(false);
+    }
+    let exe = std::env::current_exe()?;
+    let (Some(exe), Some(dir)) = (exe.to_str(), state_dir.to_str()) else {
+        return Ok(false);
+    };
+    // Both are absolute, so neither reads as an option.
+    if !(Path::new(exe).is_absolute() && state_dir.is_absolute()) {
+        return Ok(false);
+    }
+    let state = format!("--setenv=WEACON_STATE_DIR={dir}");
+    let args = [
+        "--user",
+        "--collect",
+        "--quiet",
+        &state,
+        "--",
+        exe,
+        "update",
+    ];
+    runner("systemd-run", &args)
+}
+
 fn run_step(step: &Step, runner: Runner<'_>) -> Result<(), Fault> {
     let failed = || Fault::new(code!("service.step_failed"), step.failed);
     match runner(step.program, step.args) {
@@ -260,6 +291,33 @@ mod tests {
         fs::write(dir.join("systemd/user").join(UNIT), "").unwrap();
         assert_eq!(installed(&env), platform::USER_SERVICES);
         assert!(!installed(&|_: &str| None));
+    }
+
+    #[test]
+    fn a_scheduled_update_runs_in_a_unit_of_its_own() {
+        let dir = weacon_testing::TempDir::new().unwrap();
+        let env = env(&[("XDG_CONFIG_HOME", dir.to_str().unwrap())]);
+        let state = dir.join("state");
+        let mut calls = Calls::new();
+        assert!(!launch_with(&state, &env, &mut runner(&mut calls, "")).unwrap());
+        assert!(calls.is_empty());
+
+        fs::create_dir_all(dir.join("systemd/user")).unwrap();
+        fs::write(dir.join("systemd/user").join(UNIT), "").unwrap();
+        let launched = launch_with(&state, &env, &mut runner(&mut calls, "")).unwrap();
+        assert_eq!(launched, platform::USER_SERVICES);
+        let exe = std::env::current_exe().unwrap();
+        let expected = format!(
+            "systemd-run --user --collect --quiet --setenv=WEACON_STATE_DIR={} -- {} update",
+            state.display(),
+            exe.display()
+        );
+        if platform::USER_SERVICES {
+            assert_eq!(calls, [expected]);
+            let relative = launch_with(Path::new("state"), &env, &mut runner(&mut calls, ""));
+            assert!(!relative.unwrap());
+            assert_eq!(calls.len(), 1);
+        }
     }
 
     #[test]
