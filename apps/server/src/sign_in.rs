@@ -240,11 +240,7 @@ mod tests {
         request_with, run, sign_in, start_sign_in, status, workspace_id,
     };
 
-    async fn finish_with(address: SocketAddr, body: &str) -> (String, Value) {
-        let (head, body) = request(address, "POST /api/sign-in/finish", body).await;
-        let body = serde_json::from_str(&body).unwrap_or_default();
-        (status(&head).to_owned(), body)
-    }
+    const FINISH: &str = "POST /api/sign-in/finish";
 
     #[test]
     fn codes_are_eight_digits_and_tokens_are_hex() {
@@ -261,7 +257,7 @@ mod tests {
         let (started, challenge) = start_sign_in(server.address, " Ada@Example.com ").await;
         let (to, code) = fixture.letter().await;
         let finish = finish_body("ada@example.com", &challenge, &code);
-        let (finished, body) = finish_with(server.address, &finish).await;
+        let (finished, body) = ask(server.address, FINISH, "", &finish).await;
         let token = body["token"].as_str().unwrap();
         let w1 = fixture
             .shared
@@ -473,8 +469,8 @@ mod tests {
         let rotated = fixture.run().await;
         let finish = finish_body("ada@example.com", &challenge, &code);
 
-        let (refused, _) = finish_with(rotated.address, &finish).await;
-        let (finished, _) = finish_with(server.address, &finish).await;
+        let (refused, _) = ask(rotated.address, FINISH, "", &finish).await;
+        let (finished, _) = ask(server.address, FINISH, "", &finish).await;
 
         assert_eq!(refused, "http/1.1 401 unauthorized");
         assert_eq!(finished, "http/1.1 200 ok");
@@ -586,12 +582,20 @@ mod tests {
             finish("bo@example.com", &code),
             finish("not an email", &code),
         ] {
-            refusals.push(finish_with(server.address, &body).await);
+            refusals.push(ask(server.address, FINISH, "", &body).await);
         }
         fixture.advance(CODE_LIFETIME);
-        refusals.push(finish_with(server.address, &finish("ada@example.com", &code)).await);
+        refusals.push(
+            ask(
+                server.address,
+                FINISH,
+                "",
+                &finish("ada@example.com", &code),
+            )
+            .await,
+        );
         let unchallenged = finish_body("ada@example.com", &Value::Null, &code);
-        let (unreadable, _) = finish_with(server.address, &unchallenged).await;
+        let (unreadable, _) = ask(server.address, FINISH, "", &unchallenged).await;
 
         assert_eq!(unreadable, "http/1.1 400 bad request");
         for (head, body) in refusals {
@@ -614,10 +618,12 @@ mod tests {
         let unknown = json!("0".repeat(64));
         for (guess, challenge) in (0..10).zip([&theirs, &unknown].into_iter().cycle()) {
             let wrong = finish_body("ada@example.com", challenge, &format!("{guess:08}"));
-            finish_with(server.address, &wrong).await;
+            ask(server.address, FINISH, "", &wrong).await;
         }
-        let (finished, _) = finish_with(
+        let (finished, _) = ask(
             server.address,
+            FINISH,
+            "",
             &finish_body("ada@example.com", &mine, &code),
         )
         .await;
@@ -641,9 +647,9 @@ mod tests {
         .await;
         fixture.settled().await;
         let finish = finish_body("ada@example.com", &challenge, "00000000");
-        let wrong = finish_with(server.address, &finish).await;
+        let wrong = ask(server.address, FINISH, "", &finish).await;
         let right = finish_body("ada@example.com", &challenge, &code);
-        let (too_many, answer) = finish_with(server.address, &right).await;
+        let (too_many, answer) = ask(server.address, FINISH, "", &right).await;
         let refused = json!({ "code": "sign_in.too_many", "retryable": true });
 
         assert_eq!(first, "http/1.1 202 accepted");
