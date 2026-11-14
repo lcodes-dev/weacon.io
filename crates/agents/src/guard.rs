@@ -2,8 +2,15 @@
 //!
 //! A command runs without asking only when the reader reads it exactly and every part of it is
 //! on the table of what is known safe (`safe`), working inside the chat's worktree; anything
-//! else asks. It is not a sandbox: what a listed build or test tool runs, or a script written
-//! earlier, isn't inspected.
+//! else asks. The table is an allow-list at each level: only listed programs run, each with the
+//! option forms it may take, the variable names that may precede it, and paths inside the
+//! worktree; an unlisted program, option, variable or path asks. Git writes only in the chat's
+//! own checkout.
+//!
+//! It is not a sandbox: what a listed build or test tool runs, or a script written earlier,
+//! isn't inspected. Git itself runs programs named in a repository's config and hooks, so a
+//! write to any `.git` path asks (`check_word`); but a config already placed by other means is
+//! outside what this reader can see.
 
 mod git;
 mod rules;

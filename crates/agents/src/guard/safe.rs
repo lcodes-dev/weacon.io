@@ -7,97 +7,151 @@ use super::shell::Word;
 use super::words::{has, positional, short_flags};
 use super::{Context, Reason, check_word};
 
-/// Programs that only read, each with the options that would make it write or run something.
-/// Their paths may be anywhere but the credential and Weacon folders, which are read-checked
-/// before this.
-const READERS: [(&str, Forbids); 33] = [
-    ("ls", NONE),
-    ("cat", NONE),
-    ("head", NONE),
-    ("tail", NONE),
-    ("wc", NONE),
-    ("pwd", NONE),
-    ("echo", NONE),
-    ("printf", NONE),
-    ("true", NONE),
-    ("false", NONE),
-    ("test", NONE),
-    ("[", NONE),
-    ("stat", NONE),
-    ("which", NONE),
-    ("basename", NONE),
-    ("dirname", NONE),
-    ("realpath", NONE),
-    ("readlink", NONE),
+/// Programs that only read. `ANY` marks one with no option that writes, runs, or reads a file
+/// it isn't handed as an operand, so any option is safe; the rest list the exact options they
+/// may take, and any other option asks. Operands are read-checked against the credential and
+/// Weacon folders before this.
+const READERS: [(&str, Option<Options>); 33] = [
+    ("ls", ANY),
+    ("cat", ANY),
+    ("head", ANY),
+    ("tail", ANY),
+    ("wc", ANY),
+    ("pwd", ANY),
+    ("echo", ANY),
+    ("printf", ANY),
+    ("true", ANY),
+    ("false", ANY),
+    ("test", ANY),
+    ("[", ANY),
+    ("stat", ANY),
+    ("which", ANY),
+    ("basename", ANY),
+    ("dirname", ANY),
+    ("realpath", ANY),
+    ("readlink", ANY),
+    ("uname", ANY),
+    ("whoami", ANY),
+    ("printenv", ANY),
+    ("cut", ANY),
+    ("tr", ANY),
+    ("du", ANY),
+    // `-s`/`--set` would set the clock.
     (
         "date",
-        Forbids {
-            short: &['s'],
-            long: &["--set"],
-            operands: usize::MAX,
-            text: &[],
-        },
+        options(
+            "udrRI",
+            &["--utc", "--date", "--rfc-3339", "--iso-8601", "--reference"],
+        ),
     ),
-    ("uname", NONE),
-    ("whoami", NONE),
-    ("printenv", NONE),
     ("grep", GREP),
     ("egrep", GREP),
     ("fgrep", GREP),
+    // `-L`/`--follow` would leave the worktree through a symlink; `--pre*` runs a program.
     (
         "rg",
-        Forbids {
-            short: &['L'],
-            long: &["--pre", "--pre-glob", "--follow"],
-            operands: usize::MAX,
-            text: &[],
-        },
+        options(
+            "nilcwxeEsoHApC",
+            &[
+                "--line-number",
+                "--ignore-case",
+                "--count",
+                "--word-regexp",
+                "--regexp",
+                "--fixed-strings",
+                "--color",
+                "--glob",
+                "--type",
+                "--context",
+                "--before-context",
+                "--after-context",
+                "--hidden",
+                "--no-ignore",
+                "--files",
+                "--smart-case",
+                "--multiline",
+            ],
+        ),
     ),
     (
         "diff",
-        Forbids {
-            short: &[],
-            long: &["--to-file", "--from-file"],
-            operands: usize::MAX,
-            text: &[],
-        },
+        options(
+            "uUyqrbBiwNpcd",
+            &[
+                "--unified",
+                "--recursive",
+                "--brief",
+                "--ignore-case",
+                "--ignore-all-space",
+                "--ignore-space-change",
+                "--new-file",
+                "--color",
+                "--context",
+                "--side-by-side",
+            ],
+        ),
     ),
-    ("cut", NONE),
-    ("tr", NONE),
+    // `-o`/`-T`/`--compress-program`/`--files0-from` would write a file or run a program.
     (
         "sort",
-        Forbids {
-            short: &['o', 'T'],
-            long: &[
-                "--output",
-                "--temporary-directory",
-                "--compress-program",
-                "--files0-from",
+        options(
+            "nrubfkSsc",
+            &[
+                "--numeric-sort",
+                "--reverse",
+                "--unique",
+                "--ignore-leading-blanks",
+                "--dictionary-order",
+                "--key",
+                "--field-separator",
+                "--stable",
+                "--check",
+                "--human-numeric-sort",
+                "--version-sort",
+                "--month-sort",
             ],
-            operands: usize::MAX,
-            text: &[],
-        },
+        ),
     ),
     // A second operand is the file it writes.
     (
         "uniq",
-        Forbids {
-            short: &[],
-            long: &[],
+        Some(Options {
+            short: "cduiwfs",
+            long: &[
+                "--count",
+                "--repeated",
+                "--unique",
+                "--ignore-case",
+                "--check-chars",
+                "--skip-fields",
+                "--skip-chars",
+            ],
             operands: 1,
             text: &[],
-        },
+        }),
     ),
-    ("du", NONE),
-    // A module it imports, from its search path or one the program names, is a file it reads.
+    // `-L`/`-f` read a file, and `import`/`include` in the filter program reads a module.
     (
         "jq",
-        Forbids {
-            short: &['L', 'f'],
-            long: &["--library-path", "--from-file"],
+        Some(Options {
+            short: "nrceSMas",
+            long: &[
+                "--null-input",
+                "--raw-output",
+                "--compact-output",
+                "--slurp",
+                "--arg",
+                "--argjson",
+                "--args",
+                "--raw-input",
+                "--tab",
+                "--sort-keys",
+                "--join-output",
+                "--exit-status",
+            ],
             operands: usize::MAX,
             text: &["import", "include"],
-        },
+        }),
     ),
 ];
 
@@ -207,36 +261,65 @@ pub(super) const GIT_FORBIDS: [&str; 7] = [
     "--no-index",
 ];
 
-/// Options that make a reader write or run something, how many operands it may take, and
-/// text no word may hold.
+/// A reader's allowed options: the short-option letters and the exact long options it may take,
+/// the most operands it may be given before one is a file it writes, and operand text that would
+/// read or run something. An option outside these asks.
 #[derive(Clone, Copy)]
-struct Forbids {
-    short: &'static [char],
+struct Options {
+    short: &'static str,
     long: &'static [&'static str],
     operands: usize,
     text: &'static [&'static str],
 }
 
-const NONE: Forbids = Forbids {
-    short: &[],
-    long: &[],
-    operands: usize::MAX,
-    text: &[],
-};
+// Any option is safe.
+const ANY: Option<Options> = None;
 
-// Following symlinks while recursing could leave the worktree past the read checks.
-const GREP: Forbids = Forbids {
-    short: &['R'],
-    long: &["--dereference-recursive"],
-    operands: usize::MAX,
-    text: &[],
-};
+// A reader whose only dangerous options are spelled out; its operands and text are unrestricted.
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "the table holds Option<Options>, so this builds the Some"
+)]
+const fn options(short: &'static str, long: &'static [&'static str]) -> Option<Options> {
+    Some(Options {
+        short,
+        long,
+        operands: usize::MAX,
+        text: &[],
+    })
+}
+
+// `-R`/`--dereference-recursive` follows symlinks out; plain `-r`/`--recursive` stays put.
+const GREP: Option<Options> = options(
+    "nricvlLoswxeEFHhq",
+    &[
+        "--line-number",
+        "--recursive",
+        "--ignore-case",
+        "--invert-match",
+        "--count",
+        "--files-with-matches",
+        "--files-without-match",
+        "--only-matching",
+        "--word-regexp",
+        "--extended-regexp",
+        "--fixed-strings",
+        "--color",
+        "--regexp",
+        "--before-context",
+        "--after-context",
+        "--context",
+        "--directories",
+        "--include",
+        "--exclude",
+    ],
+);
 
 /// Why a person must be asked before `name` with `args`, run in `cwd`, or nothing when its
 /// table entry allows it. Git's own checks have already run.
 pub(super) fn judge(name: &str, args: &[Word], context: &Context, cwd: &Path) -> Option<Reason> {
-    if let Some((_, forbids)) = READERS.iter().find(|(reader, _)| *reader == name) {
-        return writes_or_runs(args, forbids).then_some(Reason::NotListed);
+    if let Some((_, options)) = READERS.iter().find(|(reader, _)| *reader == name) {
+        return options.and_then(|options| reader(args, &options));
     }
     if name == "find" {
         return find(args, context, cwd);
@@ -282,13 +365,39 @@ fn find(args: &[Word], context: &Context, cwd: &Path) -> Option<Reason> {
     starts.find_map(|start| check_word(start, context, cwd, Reason::DeleteOutside))
 }
 
-// Whether a reader's arguments use one of its writing options or too many operands.
-fn writes_or_runs(args: &[Word], forbids: &Forbids) -> bool {
-    positional(args).len() > forbids.operands
-        || has(args, forbids.long, forbids.short)
-        || args
-            .iter()
-            .any(|arg| forbids.text.iter().any(|text| arg.text.contains(text)))
+// A reader runs only when every option is one it allows, it has no extra operand that it would
+// write, and no operand reads or runs something.
+fn reader(args: &[Word], options: &Options) -> Option<Reason> {
+    if positional(args).len() > options.operands {
+        return Some(Reason::NotListed);
+    }
+    let mut operands = false;
+    for arg in args {
+        if arg.text == "--" {
+            operands = true;
+        } else if !operands && arg.text.starts_with('-') && arg.text != "-" {
+            if !allowed(&arg.text, options) {
+                return Some(Reason::NotListed);
+            }
+        } else if options.text.iter().any(|text| arg.text.contains(text)) {
+            return Some(Reason::NotListed);
+        }
+    }
+    None
+}
+
+// Whether `option` is one the reader allows: a long option spelled exactly, or a short cluster
+// whose letters are all allowed (digits and punctuation in it are counts or arguments).
+fn allowed(option: &str, options: &Options) -> bool {
+    if let Some(long) = option.strip_prefix("--") {
+        let name = long.split_once('=').map_or(long, |(name, _)| name);
+        return options.long.contains(&format!("--{name}").as_str());
+    }
+    short_flags(option).is_some_and(|flags| {
+        flags
+            .chars()
+            .all(|flag| !flag.is_ascii_alphabetic() || options.short.contains(flag))
+    })
 }
 
 // Every option one of `letters` and every other word a path inside the worktree.
