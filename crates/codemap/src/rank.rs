@@ -1,8 +1,7 @@
 use std::collections::BTreeMap;
 
-use crate::edges::id;
-use crate::graph::{Links, ModuleNode};
-use crate::{Edge, EdgeKind, Symbol};
+use crate::graph::Links;
+use crate::{Edge, EdgeKind};
 
 const DAMPING: f64 = 0.85;
 const ITERATIONS: usize = 100;
@@ -50,18 +49,12 @@ pub(crate) fn by_rank(mut ranked: Vec<(&str, f64)>) -> Vec<&str> {
     ranked.into_iter().map(|(name, _)| name).collect()
 }
 
-/// The nodes' items, most central first: an item gains from those that call, use or implement it.
-pub(crate) fn central(nodes: &[ModuleNode<'_>], edges: &[Edge]) -> Vec<String> {
-    let items: Vec<String> = nodes
-        .iter()
-        .flat_map(|&ModuleNode { krate, module }| {
-            let path = |symbol: &Symbol| id(&krate.name, &module.path, &symbol.name);
-            module.symbols.iter().map(path)
-        })
-        .collect();
+/// The items' paths, most central first: an item gains from those that call, use or implement it.
+pub(crate) fn central<T>(items: &BTreeMap<String, T>, edges: &[Edge]) -> Vec<String> {
+    let items: Vec<&String> = items.keys().collect();
     let numbers: BTreeMap<&str, usize> = (0..)
         .zip(&items)
-        .map(|(number, id)| (id.as_str(), number))
+        .map(|(number, path)| (path.as_str(), number))
         .collect();
     let mut links: Links = vec![BTreeMap::new(); items.len()];
     for edge in edges.iter().filter(|edge| edge.kind != EdgeKind::Tests) {
@@ -74,7 +67,7 @@ pub(crate) fn central(nodes: &[ModuleNode<'_>], edges: &[Edge]) -> Vec<String> {
         }
     }
     let ranks = page_rank(&links);
-    let ranked = items.iter().map(String::as_str).zip(ranks).collect();
+    let ranked = items.iter().map(|path| path.as_str()).zip(ranks).collect();
     by_rank(ranked).into_iter().map(str::to_owned).collect()
 }
 

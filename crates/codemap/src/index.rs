@@ -3,10 +3,10 @@ use std::fmt;
 
 use crate::area::areas;
 use crate::contracts::{self, Contract};
-use crate::edges::{Edge, edges};
+use crate::edges::{Edge, edges, id};
 use crate::facts::{Facts, FileKind, Reader};
 use crate::flows::{self, Flow};
-use crate::graph::{file_links, nodes};
+use crate::graph::{ModuleNode, file_links, nodes};
 use crate::rank::central;
 use crate::{Area, Error, Symbol};
 
@@ -37,8 +37,27 @@ pub struct Index {
     pub(crate) contracts: Vec<Contract>,
     /// Sorted by file and line.
     pub(crate) flows: Vec<Flow>,
+    /// Every item, by its path.
+    pub(crate) items: BTreeMap<String, Located>,
     /// Every item's path, most central first.
     pub(crate) central: Vec<String>,
+}
+
+/// An item and the file it is in.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Located {
+    pub(crate) symbol: Symbol,
+    pub(crate) file: String,
+}
+
+impl Located {
+    /// `fn a::run  a/src/lib.rs:3`.
+    pub(crate) fn describe(&self, path: &str) -> String {
+        format!(
+            "{} {path}  {}:{}",
+            self.symbol.kind, self.file, self.symbol.line
+        )
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -105,11 +124,7 @@ pub(crate) fn assemble(facts: &[Facts]) -> Index {
         owner.modules.push(Module {
             path,
             file: file.to_owned(),
-            symbols: outline
-                .items
-                .iter()
-                .map(|item| item.symbol.clone())
-                .collect(),
+            symbols: outline.symbols(),
         });
     }
     crates.iter_mut().for_each(root_binary);
@@ -117,16 +132,38 @@ pub(crate) fn assemble(facts: &[Facts]) -> Index {
     let areas = areas(&nodes, &file_links(&nodes, &named_by_file));
     let edges = edges(&crates, &named_by_file, &outlines);
     let contracts = contracts::assemble(&crates, &outlines);
-    let central = central(&nodes, &edges);
-    let flows = flows::check(facts, &central, &edges);
+    let items = located(&nodes);
+    let central = central(&items, &edges);
+    let flows = flows::check(facts, &items, &edges);
     Index {
         crates,
         areas,
         edges,
         contracts,
         flows,
+        items,
         central,
     }
+}
+
+/// Every item of the nodes, by its path.
+fn located(nodes: &[ModuleNode<'_>]) -> BTreeMap<String, Located> {
+    nodes
+        .iter()
+        .flat_map(|&ModuleNode { krate, module }| {
+            module.symbols.iter().map(|symbol| {
+                let path = id(&krate.name, &module.path, &symbol.name);
+                let file = module.file.clone();
+                (
+                    path,
+                    Located {
+                        symbol: symbol.clone(),
+                        file,
+                    },
+                )
+            })
+        })
+        .collect()
 }
 
 fn manifest(facts: &Facts) -> Option<Crate> {
@@ -175,15 +212,7 @@ impl Index {
     /// The item at `crate_name::module::path::Name`.
     #[must_use]
     pub(crate) fn symbol(&self, path: &str) -> Option<&Symbol> {
-        let (name, rest) = path.split_once("::")?;
-        let krate = self.crates.iter().find(|krate| krate.name == name)?;
-        krate.modules.iter().find_map(|module| {
-            let name = match module.path.as_str() {
-                "" => Some(rest),
-                prefix => rest.strip_prefix(prefix)?.strip_prefix("::"),
-            }?;
-            module.symbols.iter().find(|symbol| symbol.name == name)
-        })
+        self.items.get(path).map(|found| &found.symbol)
     }
 
     #[must_use]

@@ -1,12 +1,12 @@
-//! Answers about an index as plain text within a byte budget, most central first, so the
-//! command line and MCP can print the same text.
+//! Answers about an index as plain text within a byte budget, most central first.
 
 mod item;
 
+use std::cmp::Reverse;
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::graph::nodes;
-use crate::{Break, ContractKind, EdgeKind, Index, Symbol, edges::id};
+use crate::{Break, ContractKind, EdgeKind, Index};
 
 /// How often a file changed, as git counts it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -49,29 +49,10 @@ impl Text {
 
     fn finish(mut self) -> String {
         if self.left_out > 0 {
-            self.out.push_str("… ");
-            self.out.push_str(&self.left_out.to_string());
-            self.out.push_str(
-                " more lines
-",
-            );
+            let tail = format!("… {} more lines\n", self.left_out);
+            self.out.push_str(&tail);
         }
         self.out
-    }
-}
-
-/// Where an item is: its symbol and its file.
-struct Located<'a> {
-    symbol: &'a Symbol,
-    file: &'a str,
-}
-
-impl Located<'_> {
-    fn describe(&self, path: &str) -> String {
-        format!(
-            "{} {path}  {}:{}",
-            self.symbol.kind, self.file, self.symbol.line
-        )
     }
 }
 
@@ -79,17 +60,16 @@ impl Index {
     /// Where to begin reading: entry points, the most central items, and the crates.
     #[must_use]
     pub fn start_here(&self, budget: usize) -> String {
-        let located = self.located();
         let mut text = Text::new(budget);
         text.line(&format!(
             "Start here: {} crates, {} items.",
             self.crates.len(),
-            located.len()
+            self.items.len()
         ));
         self.entry_points(&mut text);
         text.line("Most central items:");
         for path in self.central.iter().take(15) {
-            if let Some(found) = located.get(path) {
+            if let Some(found) = self.items.get(path) {
                 text.line(&format!("- {}", found.describe(path)));
             }
         }
@@ -119,8 +99,7 @@ impl Index {
             self.areas.len()
         ));
         text.line("Crates and the crates they use, with how many edges:");
-        let crate_of = |path: &str| path.split("::").next().unwrap_or_default().to_owned();
-        let mut uses: BTreeMap<String, BTreeMap<String, usize>> = BTreeMap::new();
+        let mut uses: BTreeMap<&str, BTreeMap<&str, usize>> = BTreeMap::new();
         for edge in self
             .edges
             .iter()
@@ -132,8 +111,8 @@ impl Index {
             }
         }
         for (from, targets) in &uses {
-            let mut targets: Vec<(&String, &usize)> = targets.iter().collect();
-            targets.sort_by(|one, other| other.1.cmp(one.1).then_with(|| one.0.cmp(other.0)));
+            let mut targets: Vec<(&&str, &usize)> = targets.iter().collect();
+            targets.sort_by_key(|(to, count)| (Reverse(**count), **to));
             let listed: Vec<String> = targets
                 .iter()
                 .map(|(to, count)| format!("{to} {count}"))
@@ -142,13 +121,7 @@ impl Index {
         }
         text.line("Areas, each named by its most central file, largest first:");
         let mut areas: Vec<_> = self.areas.iter().collect();
-        areas.sort_by(|one, other| {
-            other
-                .files
-                .len()
-                .cmp(&one.files.len())
-                .then_with(|| one.id.cmp(&other.id))
-        });
+        areas.sort_by_key(|area| (Reverse(area.files.len()), &area.id));
         for area in areas {
             text.line(&format!(
                 "- area:{} ({} files): {}",
@@ -165,7 +138,6 @@ impl Index {
     #[must_use]
     pub fn hotspots(&self, churn: &[Churn], budget: usize) -> String {
         let mut edges_in: BTreeMap<&str, u64> = BTreeMap::new();
-        let file_of = self.file_of();
         let modules: BTreeSet<&str> = nodes(&self.crates)
             .into_iter()
             .map(|node| node.module.file.as_str())
@@ -175,8 +147,8 @@ impl Index {
             .iter()
             .filter(|edge| edge.kind != EdgeKind::Tests)
         {
-            if let Some(file) = file_of.get(edge.to.as_str()) {
-                *edges_in.entry(file).or_default() += 1;
+            if let Some(found) = self.items.get(&edge.to) {
+                *edges_in.entry(&found.file).or_default() += 1;
             }
         }
         let mut scored: Vec<(u64, &Churn, u64)> = churn
@@ -191,12 +163,7 @@ impl Index {
                 )
             })
             .collect();
-        scored.sort_by(|one, other| {
-            other
-                .0
-                .cmp(&one.0)
-                .then_with(|| one.1.file.cmp(&other.1.file))
-        });
+        scored.sort_by_key(|(score, changed, _)| (Reverse(*score), &changed.file));
         let mut text = Text::new(budget);
         text.line("Hotspots: files that change often and that much depends on.");
         for (_, changed, depended) in scored {
@@ -281,33 +248,6 @@ impl Index {
             ));
         }
     }
-
-    /// Every item by its path.
-    fn located(&self) -> BTreeMap<String, Located<'_>> {
-        nodes(&self.crates)
-            .into_iter()
-            .flat_map(|node| {
-                node.module.symbols.iter().map(move |symbol| {
-                    let path = id(&node.krate.name, &node.module.path, &symbol.name);
-                    (
-                        path,
-                        Located {
-                            symbol,
-                            file: &node.module.file,
-                        },
-                    )
-                })
-            })
-            .collect()
-    }
-
-    /// Each item's file, by the item's path.
-    fn file_of(&self) -> BTreeMap<String, &str> {
-        self.located()
-            .into_iter()
-            .map(|(path, found)| (path, found.file))
-            .collect()
-    }
 }
 
 /// The first few of `names`, and how many more there are.
@@ -317,6 +257,10 @@ fn named(names: &[String]) -> String {
         0 => shown.join(", "),
         more => format!("{}, and {more} more", shown.join(", ")),
     }
+}
+
+fn crate_of(path: &str) -> &str {
+    path.split("::").next().unwrap_or_default()
 }
 
 fn folder(folder: &str) -> &str {

@@ -4,7 +4,7 @@ use std::iter::once;
 use crate::graph::{ModuleNode, absolute, longest_module, nodes, segments_of};
 use crate::paths::{Bound, NamedPath};
 use crate::refs::Ref;
-use crate::symbols::{Item, Outline};
+use crate::symbols::{Impl, Item, Outline, items_in};
 use crate::{Crate, Kind};
 
 /// One item's code naming another item: `from` and `to` are paths such as `weacon_core::map::run`.
@@ -34,11 +34,7 @@ pub(crate) fn edges(
     named_paths: &BTreeMap<&str, &[NamedPath]>,
     outlines: &BTreeMap<&str, &Outline>,
 ) -> Vec<Edge> {
-    let items_of = |file: &str| {
-        outlines
-            .get(file)
-            .map_or(&[][..], |outline| &outline.items[..])
-    };
+    let items_of = |file: &str| items_in(outlines, file);
     let scope = Scope::new(crates, named_paths, &items_of);
     let mut found = BTreeSet::new();
     for ModuleNode { krate, module } in nodes(crates) {
@@ -57,26 +53,41 @@ pub(crate) fn edges(
             }));
         }
         for implemented in &outline.impls {
-            let edges = scope.edges(krate, module, &implemented.as_item());
-            let traits = edges
-                .into_iter()
-                .filter(|edge| scope.ids.get(&edge.to) == Some(&Kind::Trait));
-            found.extend(traits.map(|edge| Edge {
-                kind: EdgeKind::Implements,
-                ..edge
-            }));
+            found.extend(scope.implements(krate, module, implemented));
         }
     }
     found.into_iter().collect()
 }
 
-/// A method's crate, the module its type is written in, its type, its name and its path.
-type Method<'a> = (&'a str, String, &'a str, &'a str, String);
+/// A method, before its type is resolved.
+struct Method<'a> {
+    krate: &'a str,
+    /// The module its type is written in.
+    here: String,
+    owner: &'a str,
+    name: &'a str,
+    path: String,
+}
 
 fn method<'a>(krate: &'a str, module: &str, item: &'a Item, path: String) -> Option<Method<'a>> {
     let owner = item.owner.as_deref()?;
     let (_, name) = item.symbol.name.rsplit_once("::")?;
-    (item.symbol.kind == Kind::Fn).then(|| (krate, inside(module, &item.within), owner, name, path))
+    (item.symbol.kind == Kind::Fn).then(|| Method {
+        krate,
+        here: inside(module, &item.within),
+        owner,
+        name,
+        path,
+    })
+}
+
+/// Where a path is written: its crate, its module, the inline modules around it and the type
+/// `Self` names there.
+struct Spot<'s> {
+    krate: &'s str,
+    module: &'s str,
+    within: &'s [String],
+    owner: Option<&'s str>,
 }
 
 /// `crate::module::Name`, leaving out an empty module.
@@ -147,9 +158,10 @@ impl<'a> Scope<'a> {
             .max()
             .unwrap_or(0);
         // Owners resolve only once every item and import is known.
-        for (krate, here, owner, method, path) in methods {
-            let owner = scope.owner(krate, &here, owner);
-            scope.methods.entry(method).or_default().push((owner, path));
+        for method in methods {
+            let owner = scope.owner(method.krate, &method.here, method.owner);
+            let entry = scope.methods.entry(method.name).or_default();
+            entry.push((owner, method.path));
         }
         scope
     }
@@ -161,8 +173,33 @@ impl<'a> Scope<'a> {
             .unwrap_or_else(|| id(krate, here, owner))
     }
 
+    /// The edge from an `impl Trait for Type`'s type to its trait, when the trait is in the repository.
+    fn implements(&self, krate: &str, module: &str, implemented: &Impl) -> Option<Edge> {
+        let spot = Spot {
+            krate,
+            module,
+            within: &implemented.within,
+            owner: Some(&implemented.owner),
+        };
+        let (to, true) = self.path(&spot, &implemented.trait_path)? else {
+            return None;
+        };
+        let here = inside(module, &implemented.within);
+        (self.ids.get(&to) == Some(&Kind::Trait)).then(|| Edge {
+            from: self.owner(krate, &here, &implemented.owner),
+            to,
+            kind: EdgeKind::Implements,
+        })
+    }
+
     fn edges(&self, krate: &str, module: &str, item: &Item) -> Vec<Edge> {
         let from = id(krate, module, &item.symbol.name);
+        let spot = Spot {
+            krate,
+            module,
+            within: &item.within,
+            owner: item.owner.as_deref(),
+        };
         let mut found: Vec<(String, EdgeKind)> = item
             .refs
             .iter()
@@ -172,7 +209,7 @@ impl<'a> Scope<'a> {
                     Ref::Use(path) => (path, EdgeKind::Uses),
                     Ref::Method(_) => return None,
                 };
-                let (to, exact) = self.path(krate, module, item, path)?;
+                let (to, exact) = self.path(&spot, path)?;
                 Some((to, if exact { kind } else { EdgeKind::Uses }))
             })
             .collect();
@@ -200,22 +237,16 @@ impl<'a> Scope<'a> {
 
     /// The item a path written in `item` names, and whether it names that item itself rather
     /// than something inside it that isn't an item, such as an enum's variant.
-    fn path(
-        &self,
-        krate: &str,
-        module: &str,
-        item: &Item,
-        path: &[String],
-    ) -> Option<(String, bool)> {
+    fn path(&self, spot: &Spot<'_>, path: &[String]) -> Option<(String, bool)> {
         let segments = path
             .iter()
-            .map(|segment| match (segment.as_str(), &item.owner) {
-                ("Self", Some(owner)) => owner.as_str(),
+            .map(|segment| match (segment.as_str(), spot.owner) {
+                ("Self", Some(owner)) => owner,
                 (segment, _) => segment,
             });
-        let mut here = segments_of(module);
-        here.extend(item.within.iter().map(String::as_str));
-        let (krate, segments) = absolute(&self.crates, krate, here, segments);
+        let mut here = segments_of(spot.module);
+        here.extend(spot.within.iter().map(String::as_str));
+        let (krate, segments) = absolute(&self.crates, spot.krate, here, segments);
         if let Some(exact) = self.find(krate, &segments, HOPS) {
             return Some((exact, true));
         }

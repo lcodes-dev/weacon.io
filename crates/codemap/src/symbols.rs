@@ -99,25 +99,15 @@ pub(crate) struct Impl {
     pub(crate) trait_path: Segments,
 }
 
-impl Impl {
-    /// The impl as an item of its type that uses the trait, so the trait resolves as any path.
-    pub(crate) fn as_item(&self) -> Item {
-        let name = [&self.within[..], std::slice::from_ref(&self.owner)]
-            .concat()
-            .join("::");
-        Item {
-            symbol: Symbol {
-                kind: Kind::Struct,
-                name,
-                line: 0,
-                fingerprint: Fingerprint::of([""]),
-            },
-            within: self.within.clone(),
-            owner: Some(self.owner.clone()),
-            refs: vec![Ref::Use(self.trait_path.clone())],
-            contracts: Vec::new(),
-        }
+impl Outline {
+    pub(crate) fn symbols(&self) -> Vec<Symbol> {
+        self.items.iter().map(|item| item.symbol.clone()).collect()
     }
+}
+
+/// The items of `file`, none when it has no outline.
+pub(crate) fn items_in<'a>(outlines: &BTreeMap<&str, &'a Outline>, file: &str) -> &'a [Item] {
+    outlines.get(file).map_or(&[], |outline| &outline.items)
 }
 
 /// Where items sit: the inline modules around them, their owner, and the prefix of their names.

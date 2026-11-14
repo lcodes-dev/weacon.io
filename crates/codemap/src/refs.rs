@@ -20,9 +20,9 @@ pub(crate) enum Ref {
 /// read on their own.
 pub(crate) fn refs(item: Node<'_>, source: &[u8]) -> Vec<Ref> {
     let generics = generics(item, source);
-    let body = (item.kind() == "trait_item")
-        .then(|| item.child_by_field_name("body"))
-        .flatten()
+    let body = Some(item)
+        .filter(|item| item.kind() == "trait_item")
+        .and_then(|item| item.child_by_field_name("body"))
         .map(|body| body.id());
     let mut found = BTreeSet::new();
     let mut called = BTreeSet::new();

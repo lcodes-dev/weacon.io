@@ -11,7 +11,7 @@ use tables::Tables;
 use crate::edges::id;
 use crate::graph::{ModuleNode, nodes};
 use crate::paths::segments;
-use crate::symbols::{Item, Outline};
+use crate::symbols::{Item, Outline, items_in};
 use crate::syntax::{attributes, line, preorder, text};
 use crate::{Crate, Module};
 
@@ -81,9 +81,7 @@ pub(crate) fn assemble(crates: &[Crate], outlines: &BTreeMap<&str, &Outline>) ->
     let mut found = BTreeSet::new();
     let mut commands = Commands::new();
     for ModuleNode { krate, module } in nodes(crates) {
-        let items = outlines
-            .get(module.file.as_str())
-            .map_or(&[][..], |it| &it.items[..]);
+        let items = items_in(outlines, &module.file);
         for item in items {
             declare(&mut found, &mut commands, krate, module, item);
         }

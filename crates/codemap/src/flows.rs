@@ -46,14 +46,15 @@ pub(crate) fn written(text: &str) -> Vec<(Vec<String>, usize)> {
 }
 
 /// Checks each flow the documents pin against the items and the calls between them.
-pub(crate) fn check(facts: &[Facts], items: &[String], edges: &[Edge]) -> Vec<Flow> {
-    let items: BTreeSet<&str> = items.iter().map(String::as_str).collect();
-    let written = facts.iter().flat_map(|facts| match &facts.kind {
-        FileKind::Doc(flows) => flows
+pub(crate) fn check<T>(facts: &[Facts], items: &BTreeMap<String, T>, edges: &[Edge]) -> Vec<Flow> {
+    let written = facts.iter().flat_map(|facts| {
+        let flows = match &facts.kind {
+            FileKind::Doc(flows) => flows.as_slice(),
+            FileKind::Manifest(_) | FileKind::Rust { .. } => &[],
+        };
+        flows
             .iter()
             .map(|(steps, line)| (facts.path.clone(), steps.clone(), *line))
-            .collect(),
-        FileKind::Manifest(_) | FileKind::Rust { .. } => Vec::new(),
     });
     let calls = Calls::new(edges);
     let mut flows: Vec<Flow> = written
@@ -61,7 +62,7 @@ pub(crate) fn check(facts: &[Facts], items: &[String], edges: &[Edge]) -> Vec<Fl
         .map(|(file, steps, line)| {
             let missing = steps
                 .iter()
-                .find(|step| !items.contains(step.as_str()))
+                .find(|step| !items.contains_key(*step))
                 .cloned()
                 .map(Break::Missing);
             let unreached = || {
