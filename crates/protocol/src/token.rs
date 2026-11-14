@@ -66,7 +66,25 @@ pub(crate) use token_id;
 
 #[cfg(test)]
 mod tests {
+    use serde_json::json;
+
     use super::*;
+    // Every id comes from `token_id!`, so one of them stands for all.
+    use crate::RunId;
+
+    #[test]
+    fn an_id_takes_only_tokens_however_it_arrives() {
+        let id: RunId = "t_1".parse().unwrap();
+
+        assert_eq!(id.as_str(), "t_1");
+        assert_eq!(RunId::try_from("t_1".to_owned()), Ok(id.clone()));
+        assert_eq!(serde_json::to_value(&id).unwrap(), json!("t_1"));
+        assert_eq!(serde_json::from_value::<RunId>(json!("t_1")).unwrap(), id);
+        assert_eq!(RunId::try_from("a b".to_owned()), Err("a b".to_owned()));
+        assert_eq!("a b".parse::<RunId>(), Err("not a run id"));
+        let bad = serde_json::from_value::<RunId>(json!("../x")).unwrap_err();
+        assert!(bad.to_string().contains("not a run id"), "{bad}");
+    }
 
     #[test]
     fn tokens_are_short_and_plain_and_match_the_schema() {

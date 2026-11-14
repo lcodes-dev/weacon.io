@@ -108,16 +108,6 @@ mod tests {
     }
 
     #[test]
-    fn task_ids_are_plain_tokens_checked_on_arrival() {
-        let task: TaskId = serde_json::from_value(json!("t_1")).unwrap();
-
-        assert_eq!(task.as_str(), "t_1");
-        assert_eq!(TaskId::try_from("a b".to_owned()), Err("a b".to_owned()));
-        let bad = serde_json::from_value::<TaskId>(json!("../x")).unwrap_err();
-        assert!(bad.to_string().contains("not a task id"), "{bad}");
-    }
-
-    #[test]
     fn statuses_are_snake_case_and_a_newer_one_still_parses() {
         for (status, wire) in [
             (TaskStatus::Todo, "todo"),

@@ -280,12 +280,6 @@ mod tests {
     }
 
     #[test]
-    fn chat_ids_are_plain_tokens_checked_on_arrival() {
-        assert_eq!(ChatId::try_from("a b".to_owned()), Err("a b".to_owned()));
-        serde_json::from_value::<ChatId>(json!("a/b")).unwrap_err();
-    }
-
-    #[test]
     fn commands_have_a_tagged_shape() {
         let answer = PermissionAnswer {
             run: run(),

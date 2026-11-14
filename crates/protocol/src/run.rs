@@ -217,15 +217,6 @@ mod tests {
     }
 
     #[test]
-    fn run_ids_are_plain_tokens_checked_on_arrival() {
-        let run: RunId = serde_json::from_value(json!("run-7")).unwrap();
-
-        assert_eq!(serde_json::to_value(&run).unwrap(), json!("run-7"));
-        assert_eq!(RunId::try_from("a b".to_owned()), Err("a b".to_owned()));
-        serde_json::from_value::<RunId>(json!("a/b")).unwrap_err();
-    }
-
-    #[test]
     fn events_are_tagged_and_a_newer_one_still_parses() {
         let event = RunEvent::Finished {
             outcome: Outcome::Unknown,
