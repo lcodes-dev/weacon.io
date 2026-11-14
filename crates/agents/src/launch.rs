@@ -182,9 +182,18 @@ impl Launch {
             }
             AgentKind::Newer => return Err(unknown()),
         };
-        command.status().await.map(drop).map_err(|error| {
+        let failed = |error| {
             Fault::new(code!("agent.resume_failed"), "The agent couldn't start").because(error)
-        })
+        };
+        // The terminal's Ctrl-C reaches this process too; caught, it leaves the agent the terminal.
+        let mut interrupts = platform::interrupts().map_err(failed)?;
+        let mut child = command.spawn().map_err(failed)?;
+        loop {
+            tokio::select! {
+                status = child.wait() => return status.map(drop).map_err(failed),
+                Some(()) = interrupts.recv() => {}
+            }
+        }
     }
 
     /// Runs the vendor's own sign-in in a new terminal of `size`: the same program, fixed
@@ -305,21 +314,16 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
-    async fn claude_is_resumed_by_hand_on_the_session_in_the_chats_folder_with_its_own_config() {
+    async fn a_resumed_agent_keeps_the_terminal_through_ctrl_c_until_the_person_ends_it() {
         let dir = TempDir::new().unwrap();
         let claude = launch(AgentKind::Claude, &dir);
-        let script = "#!/bin/sh\nprintf '%s %s %s %s' \"$1\" \"$2\" \"$PWD\" \"$CLAUDE_CONFIG_DIR\" > ran\nexit 3\n";
+        // Ctrl-C reaches the whole foreground group, this process too.
+        let script = "#!/bin/sh\nkill -INT $PPID\nprintf ended > ended\nexit 3\n";
         weacon_testing::platform::write_program(&claude.program, script).unwrap();
         let session = AgentSession::try_from(SESSION.to_owned()).unwrap();
         // Whatever the agent exits with, the person ended it.
         claude.resume_by_hand(&session).await.unwrap();
-        let ran = std::fs::read_to_string(dir.join("ran")).unwrap();
-        let expected = format!(
-            "--resume {SESSION} {} {}",
-            dir.display(),
-            claude.config_dir.display()
-        );
-        assert_eq!(ran, expected);
+        assert_eq!(std::fs::read_to_string(dir.join("ended")).unwrap(), "ended");
         let missing = Launch {
             program: dir.join("missing"),
             ..claude

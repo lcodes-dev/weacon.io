@@ -56,6 +56,9 @@ pub(crate) enum Command {
     },
     /// Carry on a chat's agent by hand in this terminal, on the session the chat holds, once
     /// its run here sleeps.
+    ///
+    /// You answer the agent's own prompts, whatever the workspace's access level. Send the chat
+    /// nothing from the web app until you end it here.
     Resume {
         /// The workspace's id.
         #[arg(long)]

@@ -129,8 +129,13 @@ mod tests {
             write_program(&dir.join("bin/claude"), script).unwrap();
             resume(&dir).unwrap();
             let ran = fs::read_to_string(dir.join("bin/claude.ran")).unwrap();
-            let folder = dir.join("work/w-w-1/c-c-1");
-            let config = dir.join("state/workspaces/w-w-1/claude");
+            let (workspace, chat) = ids();
+            let workspace = crate::workspaces::folder_name(&workspace);
+            let folder = dir
+                .join("work")
+                .join(&workspace)
+                .join(chats::file_stem(&chat));
+            let config = dir.join("state/workspaces").join(workspace).join("claude");
             let expected = format!(
                 "--resume {SESSION} {} {}",
                 folder.display(),
