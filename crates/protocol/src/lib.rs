@@ -50,6 +50,7 @@ pub use team::{
 };
 pub use update::{
     BuildTarget, Commit, DownloadUrl, ReleaseBuild, ReleaseManifest, ReleaseVersion, Sha256,
+    UpdateSchedule,
 };
 
 #[cfg(test)]
@@ -83,6 +84,7 @@ mod tests {
         generator.subschema_for::<DocRevise>();
         generator.subschema_for::<DocHistory>();
         generator.subschema_for::<ReleaseManifest>();
+        generator.subschema_for::<UpdateSchedule>();
         let schema = generator.into_root_schema_for::<Envelope>();
         let current = serde_json::to_string_pretty(&schema).unwrap() + "\n";
         let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("schema.json");
