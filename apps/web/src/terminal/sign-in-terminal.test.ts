@@ -4,7 +4,7 @@ import { test } from "node:test";
 import { hex } from "../hex.ts";
 import { type PinStore, Pins } from "../machines/pins.ts";
 import type { MachineSummary, TerminalCommand, TerminalEvent } from "../protocol.ts";
-import { SignInTerminal, type TerminalState, prologue } from "./sign-in-terminal.ts";
+import { SignInTerminal, type TerminalState, closedOnce, prologue } from "./sign-in-terminal.ts";
 import { bytes, fixed, vectors } from "./vectors.ts";
 
 const vector = vectors.weacon;
@@ -170,6 +170,20 @@ test("updates that come at once are taken in order", async () => {
   assert.deepEqual(written, ["Paste the code: "]);
 });
 
+test("a terminal closed while it checks or opens sends nothing, and opens only once", async () => {
+  const { session, sent, states } = terminal(new Pins(store(machine.key)));
+  const starting = session.start();
+  session.close();
+  await starting;
+  assert.deepEqual(sent.map((command) => command.action.kind), ["close"]);
+  assert.deepEqual(states.at(-1), { kind: "closed" });
+
+  const unpinned = terminal(new Pins(store()));
+  await unpinned.session.start();
+  await Promise.all([unpinned.session.confirm(), unpinned.session.confirm()]);
+  assert.deepEqual(unpinned.sent.map((command) => command.action.kind), ["open"]);
+});
+
 test("closing sends one close and nothing after", async () => {
   const { session, sent, receive } = terminal(new Pins(store(machine.key)));
   await session.start();
@@ -181,4 +195,18 @@ test("closing sends one close and nothing after", async () => {
     sent.map((command) => command.action.kind),
     ["open", "frame", "close"],
   );
+});
+
+test("the page hears once that a terminal closed, and sees every state", () => {
+  const seen: string[] = [];
+  let closed = 0;
+  const state = closedOnce(
+    (next) => seen.push(next.kind),
+    () => (closed += 1),
+  );
+  state({ kind: "open" });
+  state({ kind: "closed" });
+  state({ kind: "closed", problem: "broken" });
+  assert.deepEqual(seen, ["open", "closed", "closed"]);
+  assert.equal(closed, 1);
 });

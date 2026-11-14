@@ -6,6 +6,7 @@ mod seal;
 mod session;
 
 use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, Weak};
 
 use tokio::sync::mpsc;
 use weacon_observability::{Fault, Field, Logger};
@@ -16,7 +17,7 @@ use weacon_protocol::{
 use x25519_dalek::StaticSecret;
 
 use crate::workspaces::Workspaces;
-use session::{Input, Session};
+use session::Session;
 
 // Frames waiting for a terminal that hasn't taken them yet.
 const WAITING: usize = 64;
@@ -39,10 +40,12 @@ pub(crate) struct Terminals {
     open: HashMap<TerminalId, Open>,
 }
 
+// A terminal until its session has ended: closing it drops `frames` but keeps its slot.
 struct Open {
     workspace: WorkspaceId,
     agent: AgentKind,
-    inputs: mpsc::Sender<Input>,
+    frames: Option<mpsc::Sender<Bytes>>,
+    alive: Weak<()>,
 }
 
 impl Terminals {
@@ -73,8 +76,8 @@ impl Terminals {
         if !asked {
             return self.refuse(command, code!("terminal.refused")).await;
         }
-        self.open.retain(|_, open| !open.inputs.is_closed());
-        let open = self.open.get(&command.terminal);
+        self.open.retain(|_, open| open.alive.strong_count() > 0);
+        let open = self.open.get_mut(&command.terminal);
         let ours = open.filter(|open| open.workspace == command.workspace);
         match (&command.action, ours) {
             (TerminalAction::Open { agent, handshake }, None) => {
@@ -84,9 +87,13 @@ impl Terminals {
             // A frame that finds the terminal's queue full is dropped, so the next one fails
             // to open and the terminal closes as any other does.
             (TerminalAction::Frame { sealed }, Some(open)) => {
-                drop(open.inputs.try_send(Input::Frame(sealed.clone())));
+                if let Some(frames) = &open.frames {
+                    drop(frames.try_send(sealed.clone()));
+                }
             }
-            (TerminalAction::Close, Some(open)) => drop(open.inputs.try_send(Input::Close)),
+            (TerminalAction::Close, Some(open)) => open.frames = None,
+            // Answering would tell the browser its terminal closed while it still runs.
+            (TerminalAction::Open { .. }, Some(_)) => {}
             _ => self.refuse(command, code!("terminal.unknown")).await,
         }
     }
@@ -113,17 +120,25 @@ impl Terminals {
                 return self.refuse(command, fault.code().clone()).await;
             }
         };
-        let (inputs, received) = mpsc::channel(WAITING);
+        let (frames, received) = mpsc::channel(WAITING);
+        let alive = Arc::new(());
         log.info(
             "terminal opened",
             &[("agent", agent.name().unwrap_or("").into())],
         );
-        tokio::spawn(session::run(session, received, self.updates.clone(), log));
         let open = Open {
             workspace: command.workspace,
             agent,
-            inputs,
+            frames: Some(frames),
+            alive: Arc::downgrade(&alive),
         };
+        tokio::spawn(session::run(
+            session,
+            received,
+            alive,
+            self.updates.clone(),
+            log,
+        ));
         self.open.insert(command.terminal, open);
     }
 
@@ -513,6 +528,36 @@ mod tests {
         };
         machine.terminals.handle(command("t-1", action)).await;
         assert_eq!(next(&mut machine).await, closed("terminal.seal_failed"));
+        assert!(!machine.dir.join("ran").exists());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn opening_a_live_terminal_again_changes_nothing() {
+        let mut machine = machine();
+        let (_browser, open) = opening(&machine, "t-1");
+        machine.terminals.handle(open.clone()).await;
+        assert!(matches!(next(&mut machine).await, TerminalEvent::Accepted { .. }));
+        machine.terminals.handle(open).await;
+        machine.terminals.handle(command("t-1", TerminalAction::Close)).await;
+        machine.terminals.handle(command("t-1", TerminalAction::Close)).await;
+        assert_eq!(next(&mut machine).await, TerminalEvent::Closed { code: None });
+        machine.updates.try_recv().unwrap_err();
+    }
+
+    // Time is paused, so the deadline passes as soon as nothing else can happen.
+    #[cfg(unix)]
+    #[tokio::test(start_paused = true)]
+    async fn a_browser_that_never_seals_a_frame_loses_its_terminal() {
+        let mut machine = machine();
+        let (_browser, open) = opening(&machine, "t-1");
+        machine.terminals.handle(open).await;
+        let accepted = machine.updates.recv().await.unwrap();
+        assert!(matches!(accepted.event, TerminalEvent::Accepted { .. }));
+        let started = tokio::time::Instant::now();
+        let ended = machine.updates.recv().await.unwrap();
+        assert_eq!(ended.event, closed("terminal.timed_out"));
+        assert_eq!(started.elapsed(), Duration::from_mins(1));
         assert!(!machine.dir.join("ran").exists());
     }
 }

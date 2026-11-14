@@ -60,6 +60,7 @@ export class SignInTerminal {
   #pending: Pending | undefined;
   #channel: Channel | undefined;
   #done = false;
+  #handshaken = false;
   #received: Promise<void> = Promise.resolve();
 
   constructor(options: Options) {
@@ -77,11 +78,15 @@ export class SignInTerminal {
     } catch {
       return this.#close("key_unchecked");
     }
+    if (this.#done) {
+      return;
+    }
     if (check === "mismatch") {
       return this.#close("key_changed");
     }
     if (check === "unpinned") {
-      return screen.state({ kind: "confirm", fingerprint: await fingerprint(machine.key) });
+      const shown = await fingerprint(machine.key);
+      return this.#done ? undefined : screen.state({ kind: "confirm", fingerprint: shown });
     }
     await this.#open();
   }
@@ -89,6 +94,9 @@ export class SignInTerminal {
   /** The person said the fingerprint matches the machine's: pins its key, then opens. */
   async confirm(): Promise<void> {
     const { machine, pins } = this.#options;
+    if (this.#done || this.#handshaken) {
+      return;
+    }
     try {
       await pins.pin(machine.id, machine.key);
     } catch {
@@ -135,7 +143,12 @@ export class SignInTerminal {
     this.#end();
   }
 
+  // Once only, and not once closed: a handshake nobody finishes would hold the machine's slot.
   async #open(): Promise<void> {
+    if (this.#done || this.#handshaken) {
+      return;
+    }
+    this.#handshaken = true;
     const { machine, size, screen } = this.#options;
     const remote = fromHex(machine.key);
     if (remote === undefined) {
@@ -145,6 +158,9 @@ export class SignInTerminal {
     const resize = json({ kind: "resize", ...size } satisfies TerminalInput);
     try {
       const { message, pending } = await initiate(remote, this.#prologue(), resize, this.#options.ephemeral ?? ephemeral());
+      if (this.#done) {
+        return;
+      }
       this.#pending = pending;
       this.#send({ kind: "open", agent: this.#options.agent, handshake: hex(message) });
     } catch {
@@ -223,10 +239,25 @@ export class SignInTerminal {
   }
 
   #close(problem?: Problem): void {
+    if (this.#done) {
+      return;
+    }
     this.#done = true;
     this.#channel?.close();
     this.#options.screen.state({ kind: "closed", ...(problem === undefined ? {} : { problem }) });
   }
+}
+
+/** Passes each state on, and calls `closed` the first time one is closed. */
+export function closedOnce(state: (state: TerminalState) => void, closed: () => void): (next: TerminalState) => void {
+  let called = false;
+  return (next) => {
+    state(next);
+    if (next.kind === "closed" && !called) {
+      called = true;
+      closed();
+    }
+  };
 }
 
 /** What both ends hash before the handshake, as the core's `TerminalCommand::prologue`. */

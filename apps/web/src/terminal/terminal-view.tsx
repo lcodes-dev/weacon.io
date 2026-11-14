@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from "react";
 
 import type { Pins } from "../machines/pins.ts";
 import type { AgentKind, MachineSummary, TerminalCommand, TerminalUpdate, WorkspaceId } from "../protocol.ts";
-import { SignInTerminal, type TerminalState } from "./sign-in-terminal.ts";
+import { SignInTerminal, type TerminalState, closedOnce } from "./sign-in-terminal.ts";
 
 const SIZE = { cols: 80, rows: 24 };
 
@@ -20,9 +20,14 @@ export type TerminalProps = {
   onClosed?: () => void;
 };
 
-/** A vendor's sign-in on the person's machine, sealed between this page and the machine. */
+/**
+ * A vendor's sign-in on the person's machine, sealed between this page and the machine. A new
+ * machine key, workspace, agent or pins opens a new terminal; new callbacks don't.
+ */
 export function TerminalView(props: TerminalProps) {
-  const { machine, workspace, agent, pins, send, subscribe, onClosed } = props;
+  const { machine, workspace, agent, pins } = props;
+  const latest = useRef(props);
+  latest.current = props;
   const screen = useRef<HTMLDivElement>(null);
   const session = useRef<SignInTerminal>(undefined);
   const [state, setState] = useState<TerminalState>({ kind: "checking" });
@@ -31,6 +36,7 @@ export function TerminalView(props: TerminalProps) {
     if (host === null) {
       return;
     }
+    let mounted = true;
     const terminal = new Terminal({ ...SIZE, cursorBlink: true });
     terminal.open(host);
     const opened = new SignInTerminal({
@@ -38,30 +44,26 @@ export function TerminalView(props: TerminalProps) {
       workspace,
       agent,
       pins,
-      send,
+      send: (command) => latest.current.send(command),
       size: SIZE,
       screen: {
         write: (data) => terminal.write(data),
-        state: (next) => {
-          setState(next);
-          if (next.kind === "closed") {
-            onClosed?.();
-          }
-        },
+        state: closedOnce(setState, () => mounted && latest.current.onClosed?.()),
       },
     });
     session.current = opened;
     const encoder = new TextEncoder();
     const typing = terminal.onData((data) => void opened.input(encoder.encode(data)));
-    const unsubscribe = subscribe((update) => void opened.receive(update));
+    const unsubscribe = latest.current.subscribe((update) => void opened.receive(update));
     void opened.start();
     return () => {
+      mounted = false;
       unsubscribe();
       typing.dispose();
       opened.close();
       terminal.dispose();
     };
-  }, [machine, workspace, agent, pins, send, subscribe, onClosed]);
+  }, [machine.id, machine.key, workspace, agent, pins]);
   return (
     <div className="sign-in-terminal">
       <TerminalNote state={state} confirm={() => void session.current?.confirm()} />
