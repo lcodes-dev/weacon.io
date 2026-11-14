@@ -319,7 +319,7 @@ mod tests {
     }
 
     fn hello(protocol: u32) -> Vec<u8> {
-        encode_line(&test_support::hello(1, protocol)).unwrap()
+        encode_line(&test_support::client_hello(1, protocol, [])).unwrap()
     }
 
     // Sends `bytes` and reads replies until the daemon hangs up or `count` arrive.

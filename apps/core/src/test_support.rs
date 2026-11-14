@@ -5,9 +5,10 @@ use std::path::Path;
 use std::time::SystemTime;
 
 use weacon_observability::Reporter;
-use weacon_protocol::{Envelope, Hello, Message, Pick, RequestId};
+use weacon_protocol::{Message, Pick, RequestId};
 use weacon_version::Version;
 
+pub(crate) use weacon_testing::fake_core::client_hello;
 pub(crate) use weacon_testing::{Records, messages, recording_logger, recording_sink};
 
 use crate::app::App;
@@ -75,18 +76,6 @@ impl Write for Broken {
 
     fn flush(&mut self) -> io::Result<()> {
         Ok(())
-    }
-}
-
-/// A hello from this build on `protocol`, offering nothing.
-pub(crate) fn hello(id: u32, protocol: u32) -> Envelope {
-    Envelope {
-        id,
-        message: Message::Hello(Hello {
-            protocol,
-            app: crate::daemon::build(&VERSION),
-            capabilities: Vec::new(),
-        }),
     }
 }
 

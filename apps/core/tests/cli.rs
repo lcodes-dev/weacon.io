@@ -6,8 +6,9 @@ mod tests {
     use std::process::{Command, Output, Stdio};
     use std::{env, fs};
 
-    use weacon_protocol::{App, Envelope, Hello, Message, PROTOCOL};
+    use weacon_protocol::PROTOCOL;
     use weacon_testing::TempDir;
+    use weacon_testing::fake_core::client_hello;
 
     fn weacon(args: &[&str], state_dir: &str) -> Output {
         command(args, state_dir).output().unwrap()
@@ -204,18 +205,7 @@ mod tests {
             .unwrap();
         let mut stdin = host.stdin.take().unwrap();
         let mut stdout = host.stdout.take().unwrap();
-        let hello = Envelope {
-            id: 1,
-            message: Message::Hello(Hello {
-                protocol: PROTOCOL,
-                app: App {
-                    name: "weacon-extension".to_owned(),
-                    version: "0.1.0".to_owned(),
-                    commit: "1a2b3c4".to_owned(),
-                },
-                capabilities: Vec::new(),
-            }),
-        };
+        let hello = client_hello(1, PROTOCOL, []);
         stdin.write_all(&frame(&hello.to_json().unwrap())).unwrap();
         let mut length = [0; 4];
         stdout.read_exact(&mut length).unwrap();
