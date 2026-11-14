@@ -104,7 +104,7 @@ mod tests {
     use super::*;
 
     fn member() -> MemberId {
-        MemberId::try_from("m-1".to_owned()).unwrap()
+        "m-1".parse().unwrap()
     }
 
     #[test]
@@ -149,7 +149,7 @@ mod tests {
 
     fn record() -> TaskRecord {
         TaskRecord {
-            id: TaskId::try_from("t-1".to_owned()).unwrap(),
+            id: "t-1".parse().unwrap(),
             title: "Write the docs".to_owned(),
             status: TaskStatus::InProgress,
             order: "V".to_owned(),
@@ -187,7 +187,7 @@ mod tests {
 
     #[test]
     fn a_new_task_names_the_one_it_goes_in_front_of_or_none() {
-        let before = TaskId::try_from("t-2".to_owned()).unwrap();
+        let before: TaskId = "t-2".parse().unwrap();
         let create = |before| TaskCreate {
             title: "Ship".to_owned(),
             before,
@@ -214,7 +214,7 @@ mod tests {
 
     #[test]
     fn a_change_names_the_version_read_and_one_tagged_edit() {
-        let before = TaskId::try_from("t-2".to_owned()).unwrap();
+        let before: TaskId = "t-2".parse().unwrap();
         for (edit, wire) in [
             (
                 TaskEditBody::Title {

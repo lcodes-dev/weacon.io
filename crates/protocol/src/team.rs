@@ -213,7 +213,7 @@ mod tests {
 
     #[test]
     fn sign_in_bodies_travel_as_plain_json() {
-        let challenge = ChallengeId::try_from("c-1".to_owned()).unwrap();
+        let challenge: ChallengeId = "c-1".parse().unwrap();
         let finish = |challenge| SignInFinish {
             workspace: workspace(),
             email: "ada@example.com".to_owned(),
@@ -263,13 +263,13 @@ mod tests {
             workspace: workspace(),
             email: "MARKER-EMAIL".to_owned(),
             code: "MARKER-CODE".to_owned(),
-            challenge: Some(ChallengeId::try_from("MARKER-CHALLENGE".to_owned()).unwrap()),
+            challenge: Some("MARKER-CHALLENGE".parse().unwrap()),
         };
         let started = SignInStarted {
-            challenge: ChallengeId::try_from("MARKER-CHALLENGE".to_owned()).unwrap(),
+            challenge: "MARKER-CHALLENGE".parse().unwrap(),
         };
         let signed_in = SignedIn {
-            member: MemberId::try_from("m-1".to_owned()).unwrap(),
+            member: "m-1".parse().unwrap(),
             token: "MARKER-TOKEN".to_owned(),
         };
         assert_eq!(
@@ -293,7 +293,7 @@ mod tests {
             workspace: workspace(),
             seq: 7,
             change: WorkspaceChange::MemberJoined {
-                member: MemberId::try_from("m-1".to_owned()).unwrap(),
+                member: "m-1".parse().unwrap(),
             },
         };
         let wire = json!({
@@ -308,7 +308,7 @@ mod tests {
             update
         );
         let changed = WorkspaceChange::TaskChanged {
-            task: TaskId::try_from("t-1".to_owned()).unwrap(),
+            task: "t-1".parse().unwrap(),
             version: 2,
         };
         let changed_wire = json!({ "kind": "task_changed", "task": "t-1", "version": 2 });
@@ -319,7 +319,7 @@ mod tests {
             changed
         );
         let revised = WorkspaceChange::DocChanged {
-            doc: DocId::try_from("d-1".to_owned()).unwrap(),
+            doc: "d-1".parse().unwrap(),
             version: 3,
         };
         let revised_wire = json!({ "kind": "doc_changed", "doc": "d-1", "version": 3 });
@@ -336,7 +336,7 @@ mod tests {
     }
 
     fn account() -> AccountId {
-        AccountId::try_from("a-1".to_owned()).unwrap()
+        "a-1".parse().unwrap()
     }
 
     #[test]
@@ -344,7 +344,7 @@ mod tests {
         let finish = AccountSignInFinish {
             email: "ada@example.com".to_owned(),
             code: "12345678".to_owned(),
-            challenge: ChallengeId::try_from("c-1".to_owned()).unwrap(),
+            challenge: "c-1".parse().unwrap(),
         };
         let finish_wire =
             json!({ "email": "ada@example.com", "code": "12345678", "challenge": "c-1" });
@@ -387,7 +387,7 @@ mod tests {
         let finish = AccountSignInFinish {
             email: "MARKER-EMAIL".to_owned(),
             code: "MARKER-CODE".to_owned(),
-            challenge: ChallengeId::try_from("MARKER-CHALLENGE".to_owned()).unwrap(),
+            challenge: "MARKER-CHALLENGE".parse().unwrap(),
         };
         let start = AccountSignInStart {
             email: "MARKER-EMAIL".to_owned(),

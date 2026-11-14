@@ -53,7 +53,7 @@ mod tests {
     use crate::{Envelope, Message, code};
 
     fn request(id: &str) -> RequestId {
-        RequestId::try_from(id.to_owned()).unwrap()
+        id.parse().unwrap()
     }
 
     #[test]
