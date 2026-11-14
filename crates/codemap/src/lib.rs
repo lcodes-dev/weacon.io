@@ -17,6 +17,7 @@ mod louvain;
 mod paths;
 mod rank;
 mod refs;
+mod search;
 mod symbols;
 mod syntax;
 #[cfg(test)]
@@ -25,13 +26,15 @@ mod test_support;
 use std::fmt;
 
 pub use anchor::{Anchor, Finding, Pin};
-pub use answers::Churn;
+pub use answers::{Churn, fit};
 pub(crate) use area::Area;
 pub use contracts::ContractKind;
 pub(crate) use edges::{Edge, EdgeKind};
+pub use facts::{Facts, Reader, is_mapped};
 pub use fingerprint::Fingerprint;
 pub(crate) use flows::Break;
-pub use index::{Crate, Index, Module, SourceFile, index};
+pub use index::{Crate, Index, Module, SourceFile, assemble, index};
+pub use search::Entry;
 pub use symbols::{Kind, Symbol};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

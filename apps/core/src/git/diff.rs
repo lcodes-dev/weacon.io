@@ -5,7 +5,9 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 
 use weacon_observability::Fault;
-use weacon_protocol::{DiffContent, DiffFile, DiffLine, FileChange, Hunk, LineOp, MAX_FRAME, code};
+use weacon_protocol::{
+    CommitId, DiffContent, DiffFile, DiffLine, FileChange, Hunk, LineOp, MAX_FRAME, code,
+};
 
 use super::{Git, Start, failed, not_run, run, text};
 
@@ -72,7 +74,10 @@ impl Git {
             run(self.command(worktree).args(["merge-base", &full, "HEAD"])).ok()
         });
         let found = merged.or_else(|| {
-            let commit = format!("{}^{{commit}}", CommitId::parse(&start.commit)?.as_str());
+            let commit = format!(
+                "{}^{{commit}}",
+                start.commit.parse::<CommitId>().ok()?.as_str()
+            );
             let verify = ["rev-parse", "--verify", "--quiet", &commit];
             run(self.command(worktree).args(verify)).ok()
         });
@@ -83,7 +88,7 @@ impl Git {
             )
         };
         let out = text(found.ok_or_else(gone)?)?;
-        CommitId::parse(out.trim_end()).ok_or_else(gone)
+        out.trim_end().parse::<CommitId>().map_err(|_| gone())
     }
 
     fn patch(
@@ -140,28 +145,6 @@ fn run_within(command: &mut Command, limit: usize) -> Result<Option<Vec<u8>>, Fa
     }
     let status = child.wait().map_err(not_run)?;
     status.success().then_some(Some(out)).ok_or_else(failed)
-}
-
-/// A full SHA-1 or SHA-256 commit id in lowercase hex, which a command line never reads as an
-/// option.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct CommitId(String);
-
-impl CommitId {
-    pub(super) fn parse(id: &str) -> Option<Self> {
-        is_commit_id(id).then(|| Self(id.to_owned()))
-    }
-
-    pub(crate) fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-fn is_commit_id(id: &str) -> bool {
-    matches!(id.len(), 40 | 64)
-        && id
-            .bytes()
-            .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
 }
 
 // The changes `git diff --name-status -z -M` lists; a type change counts as a change.
@@ -315,7 +298,7 @@ mod tests {
         let path = dir.join("trees/c-d");
         git.chat_worktree(&repo, &chat("d"), &path).unwrap();
         let base = text(run(git.command(&path).args(["rev-parse", "HEAD"])).unwrap()).unwrap();
-        (git, path, CommitId::parse(base.trim_end()).unwrap())
+        (git, path, base.trim_end().parse::<CommitId>().unwrap())
     }
 
     fn line(op: LineOp, text: &str) -> DiffLine {
@@ -524,7 +507,7 @@ mod tests {
         fs::write(path.join("[ab]"), "new\n").unwrap();
         fs::write(path.join("a"), "other\n").unwrap();
 
-        let base = CommitId::parse(base.trim_end()).unwrap();
+        let base = base.trim_end().parse::<CommitId>().unwrap();
         let files = git.changes(&path, &base).unwrap();
 
         let pair = files.iter().find(|file| file.path == "[ab]").unwrap();
@@ -593,7 +576,7 @@ mod tests {
         fs::write(path.join("lib.rs"), "one\n\nthree\n").unwrap();
 
         let files = git
-            .changes(&path, &CommitId::parse(base.trim_end()).unwrap())
+            .changes(&path, &base.trim_end().parse::<CommitId>().unwrap())
             .unwrap();
 
         let DiffContent::Text { hunks } = &files[0].content else {
@@ -648,22 +631,6 @@ mod tests {
 
         assert_eq!(files.len(), 1);
         assert_eq!(files[0].change, FileChange::Added);
-    }
-
-    #[test]
-    fn only_a_full_commit_id_is_a_base() {
-        for id in [
-            "HEAD",
-            "--output=x",
-            "abc",
-            &"A".repeat(40),
-            &"a".repeat(41),
-        ] {
-            assert_eq!(CommitId::parse(id), None, "{id}");
-        }
-        for id in ["a1".repeat(20), "f".repeat(64)] {
-            assert_eq!(CommitId::parse(&id).unwrap().as_str(), id);
-        }
     }
 
     #[test]

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import type { ChatEntry, ChatEvent, RunEvent, RunState } from "../protocol.ts";
-import { type Ask, type Chat, type Item, type Run, answered, commit, fromSnapshot, missing, older, stream, working } from "./chat.ts";
+import { type Chat, type Item, type Run, answered, commit, fromSnapshot, missing, older, stream, working } from "./chat.ts";
 
 const at = (seq: number, event: ChatEvent): ChatEntry => ({ seq, event });
 const said = (seq: number, text: string) => at(seq, { kind: "prompt", request: `q-${seq}`, text });
@@ -36,8 +36,7 @@ function shown(items: readonly Item[]): string[] {
     }
     const { run, transcript, asks, open } = item.turn;
     const rows = transcript.rows.map((row) => (row.kind === "text" ? row.pieces.join("|") : row.kind));
-    const answer = (ask: Ask) => (ask.allowed === undefined ? "" : ask.allowed ? " allowed" : " denied");
-    const prompts = asks.map((ask) => `ask ${ask.prompt}@${ask.at}${ask.open ? " open" : ""}${answer(ask)}`);
+    const prompts = asks.map((ask) => `ask ${ask.prompt}@${ask.at}${ask.state === "closed" ? "" : ` ${ask.state}`}`);
     return `${run}${open ? "" : " done"}: ${[...rows, ...prompts].join(", ")}`;
   });
 }

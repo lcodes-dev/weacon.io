@@ -18,6 +18,7 @@ pub(crate) mod chats;
 pub(crate) mod diff;
 pub(crate) mod launch;
 mod lock;
+mod reads;
 pub(crate) mod removal;
 pub(crate) mod repos;
 pub(crate) mod service;
@@ -186,23 +187,21 @@ impl Git {
         full: &str,
     ) -> Result<Start, Fault> {
         let on = self.checked_out(repo);
-        let head = text(run(self.command(repo).args([
-            "rev-parse",
-            "--verify",
-            "HEAD^{commit}",
-        ]))?)?;
-        let head = head.trim_end();
-        run(self.command(repo).args(["update-ref", full, head, ""])).map_err(|_| taken())?;
+        let head = self.head(repo)?;
+        run(self
+            .command(repo)
+            .args(["update-ref", full, head.as_str(), ""]))
+        .map_err(|_| taken())?;
         self.add(repo, path, &[], branch).inspect_err(|_| {
             drop(run(self.command(repo).args([
                 "update-ref",
                 "-d",
                 full,
-                head,
+                head.as_str(),
             ])));
         })?;
         Ok(Start {
-            commit: head.to_owned(),
+            commit: head.as_str().to_owned(),
             branch: on,
         })
     }
@@ -391,6 +390,9 @@ fn absolute(paths: &[&Path]) -> Result<(), Fault> {
 }
 
 #[cfg(test)]
+pub(crate) use tests::{fixture, git, repo};
+
+#[cfg(test)]
 mod tests {
     use std::fs;
 
@@ -402,14 +404,14 @@ mod tests {
         ChatId::try_from(id.to_owned()).unwrap()
     }
 
-    pub(super) fn git(dir: &Path) -> Git {
+    pub(crate) fn git(dir: &Path) -> Git {
         let no_hooks = dir.join("no-hooks");
         fs::create_dir_all(&no_hooks).unwrap();
         Git::find(&std::env::var_os("PATH").unwrap(), no_hooks).unwrap()
     }
 
     // Runs the fixture's own git in `repo`, without the person's configuration or redirects.
-    pub(super) fn fixture(dir: &Path, repo: &Path, args: &[&str]) {
+    pub(crate) fn fixture(dir: &Path, repo: &Path, args: &[&str]) {
         let mut command = Command::new("git");
         for name in REDIRECTS {
             command.env_remove(name);
@@ -432,7 +434,7 @@ mod tests {
     }
 
     // A repository with one commit.
-    pub(super) fn repo(dir: &Path) -> PathBuf {
+    pub(crate) fn repo(dir: &Path) -> PathBuf {
         let repo = dir.join("repo");
         fs::create_dir_all(&repo).unwrap();
         let git = |args: &[&str]| fixture(dir, &repo, args);
