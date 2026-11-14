@@ -39,8 +39,25 @@ const PLAIN: [&str; 12] = [
 ];
 // Subcommands that, in the main checkout, can throw away its changes or files.
 const DISCARDING: [&str; 4] = ["checkout", "switch", "restore", "stash"];
-// What `stash` does that keeps everything.
+// What `stash` does that keeps every stash; the stashes are shared by every worktree.
 const STASH_KEEPS: [&str; 4] = ["list", "show", "push", "save"];
+// Subcommands that change neither a checkout's files nor its branch, so they may look anywhere.
+const LOOKS: [&str; 12] = [
+    "status",
+    "diff",
+    "log",
+    "show",
+    "rev-parse",
+    "ls-files",
+    "remote",
+    "blame",
+    "grep",
+    "merge-base",
+    "branch",
+    "fetch",
+];
+// What `remote` does that changes no setting.
+const REMOTE_LOOKS: [&str; 4] = ["-v", "--verbose", "show", "get-url"];
 
 /// What `git` with `args`, run in `cwd`, needs a person for.
 pub(super) fn judge(args: &[Word], context: &Context, cwd: &Path) -> Option<Reason> {
@@ -76,49 +93,57 @@ pub(super) fn judge(args: &[Word], context: &Context, cwd: &Path) -> Option<Reas
 }
 
 fn subcommand(name: &str, args: &[Word], context: &Context, repo: &Path) -> Option<Reason> {
-    let runs = args.iter().any(|arg| {
-        GIT_FORBIDS
-            .iter()
-            .any(|option| arg.text.starts_with(option))
-    });
-    if runs || !GIT_SAFE.contains(&name) {
+    let has = |long: &[&str], short: &[char]| has(args, long, short);
+    let first = args.first().map(|arg| arg.text.as_str());
+    let unlisted = match name {
+        "grep" => has(&[], &['O']),
+        "remote" => first.is_some_and(|action| !REMOTE_LOOKS.contains(&action)),
+        "stash" => first.is_some_and(|action| !STASH_KEEPS.contains(&action)),
+        _ => !GIT_SAFE.contains(&name),
+    };
+    if unlisted || has(&GIT_FORBIDS, &[]) {
         return Some(Reason::NotListed);
     }
-    let has = |long: &[&str], short: &[char]| has(args, long, short);
+    // Elsewhere, as in the main checkout, only what changes nothing runs without asking.
+    let elsewhere = !LOOKS.contains(&name) && !inside_worktree(repo, context);
     match name {
-        "push" => push(args),
-        "branch" if has(&["--delete", "--force"], &['d', 'D', 'f', 'M', 'C']) => {
+        "push" => push(args).or_else(|| elsewhere.then_some(Reason::WriteOutside)),
+        "branch"
+            if has(
+                &["--delete", "--force", "--move"],
+                &['d', 'D', 'f', 'm', 'M', 'C'],
+            ) =>
+        {
             Some(Reason::DeleteBranch)
         }
+        "tag" if has(&["--delete", "--force"], &['d', 'f']) => Some(Reason::DeleteBranch),
         "fetch" | "pull" if fetch_overwrites(args) => Some(Reason::DeleteBranch),
         "checkout" if has(&[], &['B']) => Some(Reason::DeleteBranch),
         "switch" if has(&["--force-create"], &['C']) => Some(Reason::DeleteBranch),
         "reset" if has(&["--hard", "--merge", "--keep"], &[]) => main_checkout(repo, context),
-        "stash"
-            if args
-                .first()
-                .is_none_or(|action| STASH_KEEPS.contains(&action.text.as_str())) =>
-        {
-            None
+        // A new branch, or a stash, keeps the checkout's changes.
+        "stash" if matches!(first, Some("list" | "show")) => None,
+        "stash" => elsewhere.then_some(Reason::WriteOutside),
+        "checkout" if has(&[], &['b']) && !has(&["--force"], &['f']) => {
+            elsewhere.then_some(Reason::WriteOutside)
         }
-        // A new branch keeps the checkout's changes.
-        "checkout" if has(&[], &['b']) && !has(&["--force"], &['f']) => None,
         "switch"
             if has(&["--create"], &['c']) && !has(&["--discard-changes", "--force"], &['f']) =>
         {
-            None
+            elsewhere.then_some(Reason::WriteOutside)
         }
         _ if DISCARDING.contains(&name) => main_checkout(repo, context),
         // Only the full option counts here: a shortened one could be another.
         "clean"
-            if !args.iter().any(|arg| {
+            if args.iter().any(|arg| {
                 arg.text == "--dry-run"
                     || short_flags(&arg.text).is_some_and(|flags| flags.contains('n'))
             }) =>
         {
-            (!own_checkout(repo, context)).then_some(Reason::CleanMainCheckout)
+            None
         }
-        _ => None,
+        "clean" => (!own_checkout(repo, context)).then_some(Reason::CleanMainCheckout),
+        _ => elsewhere.then_some(Reason::WriteOutside),
     }
 }
 
@@ -182,10 +207,16 @@ fn main_checkout(repo: &Path, context: &Context) -> Option<Reason> {
 
 // Whether `repo` is in the chat's own worktree, which isn't the main checkout.
 fn own_checkout(repo: &Path, context: &Context) -> bool {
-    let real = |path: &Path| resolve(path).unwrap_or_else(|| PathBuf::from(path));
-    let (repo, worktree) = (real(repo), real(&context.worktree));
     let Some(main) = context.main_checkout.as_deref().map(real) else {
         return false;
     };
-    repo.starts_with(&worktree) && worktree != main
+    inside_worktree(repo, context) && real(&context.worktree) != main
+}
+
+fn inside_worktree(repo: &Path, context: &Context) -> bool {
+    real(repo).starts_with(real(&context.worktree))
+}
+
+fn real(path: &Path) -> PathBuf {
+    resolve(path).unwrap_or_else(|| PathBuf::from(path))
 }

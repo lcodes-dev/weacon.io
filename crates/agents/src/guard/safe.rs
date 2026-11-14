@@ -35,20 +35,22 @@ const READERS: [(&str, Forbids); 33] = [
             short: &['s'],
             long: &["--set"],
             operands: usize::MAX,
+            text: &[],
         },
     ),
     ("uname", NONE),
     ("whoami", NONE),
     ("printenv", NONE),
-    ("grep", NONE),
-    ("egrep", NONE),
-    ("fgrep", NONE),
+    ("grep", GREP),
+    ("egrep", GREP),
+    ("fgrep", GREP),
     (
         "rg",
         Forbids {
-            short: &[],
-            long: &["--pre", "--pre-glob"],
+            short: &['L'],
+            long: &["--pre", "--pre-glob", "--follow"],
             operands: usize::MAX,
+            text: &[],
         },
     ),
     (
@@ -57,6 +59,7 @@ const READERS: [(&str, Forbids); 33] = [
             short: &[],
             long: &["--to-file", "--from-file"],
             operands: usize::MAX,
+            text: &[],
         },
     ),
     ("cut", NONE),
@@ -65,8 +68,14 @@ const READERS: [(&str, Forbids); 33] = [
         "sort",
         Forbids {
             short: &['o', 'T'],
-            long: &["--output", "--temporary-directory"],
+            long: &[
+                "--output",
+                "--temporary-directory",
+                "--compress-program",
+                "--files0-from",
+            ],
             operands: usize::MAX,
+            text: &[],
         },
     ),
     // A second operand is the file it writes.
@@ -76,10 +85,20 @@ const READERS: [(&str, Forbids); 33] = [
             short: &[],
             long: &[],
             operands: 1,
+            text: &[],
         },
     ),
     ("du", NONE),
-    ("jq", NONE),
+    // A module it imports, from its search path or one the program names, is a file it reads.
+    (
+        "jq",
+        Forbids {
+            short: &['L', 'f'],
+            long: &["--library-path", "--from-file"],
+            operands: usize::MAX,
+            text: &["import", "include"],
+        },
+    ),
 ];
 
 // `find`'s own options are single words after a single dash, so they are matched whole.
@@ -177,26 +196,40 @@ pub(super) const GIT_SAFE: [&str; 26] = [
     "tag",
 ];
 // Git options that run a command or write a file of their own.
-pub(super) const GIT_FORBIDS: [&str; 5] = [
+// `--no-index` reads files outside any repository.
+pub(super) const GIT_FORBIDS: [&str; 7] = [
     "--receive-pack",
     "--upload-pack",
     "--exec",
     "--output",
     "--ext-diff",
+    "--open-files-in-pager",
+    "--no-index",
 ];
 
-/// Options that make a reader write or run something, and how many operands it may take.
+/// Options that make a reader write or run something, how many operands it may take, and
+/// text no word may hold.
 #[derive(Clone, Copy)]
 struct Forbids {
     short: &'static [char],
     long: &'static [&'static str],
     operands: usize,
+    text: &'static [&'static str],
 }
 
 const NONE: Forbids = Forbids {
     short: &[],
     long: &[],
     operands: usize::MAX,
+    text: &[],
+};
+
+// Following symlinks while recursing could leave the worktree past the read checks.
+const GREP: Forbids = Forbids {
+    short: &['R'],
+    long: &["--dereference-recursive"],
+    operands: usize::MAX,
+    text: &[],
 };
 
 /// Why a person must be asked before `name` with `args`, run in `cwd`, or nothing when its
@@ -211,8 +244,8 @@ pub(super) fn judge(name: &str, args: &[Word], context: &Context, cwd: &Path) ->
     if let Some((_, letters, outside)) = WRITERS.iter().find(|(writer, ..)| *writer == name) {
         return writes(args, letters, *outside, context, cwd);
     }
-    if BUILD_AND_TEST.iter().any(|entry| leads(name, args, entry)) {
-        return builds(args, context, cwd);
+    if is_build(name, args) {
+        return builds(name, args, context, cwd);
     }
     Some(Reason::NotListed)
 }
@@ -251,7 +284,11 @@ fn find(args: &[Word], context: &Context, cwd: &Path) -> Option<Reason> {
 
 // Whether a reader's arguments use one of its writing options or too many operands.
 fn writes_or_runs(args: &[Word], forbids: &Forbids) -> bool {
-    positional(args).len() > forbids.operands || has(args, forbids.long, forbids.short)
+    positional(args).len() > forbids.operands
+        || has(args, forbids.long, forbids.short)
+        || args
+            .iter()
+            .any(|arg| forbids.text.iter().any(|text| arg.text.contains(text)))
 }
 
 // Every option one of `letters` and every other word a path inside the worktree.
@@ -280,6 +317,11 @@ fn writes(
     None
 }
 
+/// Whether `name` with `args` is one of the build and test tools.
+pub(super) fn is_build(name: &str, args: &[Word]) -> bool {
+    BUILD_AND_TEST.iter().any(|entry| leads(name, args, entry))
+}
+
 // The entry's words lead the command exactly, so no option comes before them.
 fn leads(name: &str, args: &[Word], entry: &[&str]) -> bool {
     let Some((program, rest)) = entry.split_first() else {
@@ -291,20 +333,31 @@ fn leads(name: &str, args: &[Word], entry: &[&str]) -> bool {
 }
 
 // A build tool may take any option, but no path it is given may lead outside the worktree.
-fn builds(args: &[Word], context: &Context, cwd: &Path) -> Option<Reason> {
-    // Running Weacon's own build runs Weacon, and `make --eval` runs text from the line.
+fn builds(name: &str, args: &[Word], context: &Context, cwd: &Path) -> Option<Reason> {
     let runs = args.first().is_some_and(|first| first.text == "run");
     if runs && args.iter().any(|arg| arg.text.starts_with("weacon")) {
         return Some(Reason::Weacon);
     }
-    if args.iter().any(|arg| arg.text.starts_with("--eval")) {
+    // Text from the line run as a makefile or a cargo setting, or code fetched from elsewhere.
+    let inline = match name {
+        "make" => has(args, &["--eval"], &['E']),
+        "cargo" => has(args, &["--config"], &['Z']),
+        _ => false,
+    };
+    let fetched = args
+        .iter()
+        .any(|arg| arg.text.contains("://") || (name == "go" && arg.text.contains('@')));
+    if inline || fetched {
         return Some(Reason::NotListed);
     }
     args.iter().find_map(|arg| {
-        let value = if arg.text.starts_with('-') {
-            arg.text.split_once('=').map(|(_, value)| arg.tail(value))?
-        } else {
-            arg.clone()
+        let value = match short_flags(&arg.text) {
+            // An attached value, as in `-C../main`, follows the option's letter.
+            Some(flags) => arg.tail(flags.get(1..).filter(|value| !value.is_empty())?),
+            None if arg.text.starts_with('-') => {
+                arg.text.split_once('=').map(|(_, value)| arg.tail(value))?
+            }
+            None => arg.clone(),
         };
         check_word(&value, context, cwd, Reason::WriteOutside)
     })

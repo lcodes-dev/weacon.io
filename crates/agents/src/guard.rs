@@ -177,7 +177,9 @@ fn check_word(word: &Word, context: &Context, cwd: &Path, outside: Reason) -> Op
             .skip_while(|part| !part.contains(['*', '?', '[']))
             .nth(1)
             .is_some();
-    if outside == Reason::WriteOutside && deep_glob {
+    // A repository's settings and hooks name programs that git then runs.
+    let in_git = word.text.split('/').any(|part| part == ".git");
+    if (outside == Reason::WriteOutside && deep_glob) || in_git {
         return Some(Reason::Unsure);
     }
     path_of(word, context, cwd).map_or(Some(Reason::Unsure), |path| {
@@ -412,8 +414,8 @@ mod tests {
         let context = context(&dir);
         let check = |line: &str| check_command(line, &context);
 
-        assert_eq!(check("_X=1 rm -rf /"), Some(Reason::DeleteOutside));
-        assert_eq!(check("X_Y=1 rm -rf /"), Some(Reason::DeleteOutside));
+        assert_eq!(check("_X=1 make -C /"), Some(Reason::WriteOutside));
+        assert_eq!(check("X_Y=1 make -C /"), Some(Reason::WriteOutside));
         assert_eq!(check("1X=1 rm /tmp/x"), Some(Reason::NotListed));
         let home = Context {
             cwd: dir.join("home"),
@@ -455,7 +457,7 @@ mod tests {
             check("git update-ref refs/heads/main HEAD"),
             Some(Reason::NotListed)
         );
-        assert_eq!(in_main("git reset HEAD~1"), None);
+        assert_eq!(in_main("git reset HEAD~1"), Some(Reason::WriteOutside));
         assert_eq!(in_main("git clean -n"), None);
         assert_eq!(in_main("git clean --dry-run"), None);
         assert_eq!(check("git config --get user.name"), Some(Reason::NotListed));
@@ -468,6 +470,37 @@ mod tests {
         );
         assert_eq!(check("git config --add a.b c"), Some(Reason::NotListed));
         assert_eq!(check("git config set user.name"), Some(Reason::NotListed));
+    }
+
+    #[test]
+    fn git_outside_the_worktree_only_looks() {
+        let dir = TempDir::new().unwrap();
+        let context = context(&dir);
+        let main = Context {
+            cwd: dir.join("main"),
+            ..context.clone()
+        };
+        let check = |line: &str| check_command(line, &context);
+        let in_main = |line: &str| check_command(line, &main);
+
+        assert_eq!(in_main("git commit -am x"), Some(Reason::WriteOutside));
+        assert_eq!(in_main("git push origin main"), Some(Reason::WriteOutside));
+        assert_eq!(in_main("git checkout -b x"), Some(Reason::WriteOutside));
+        assert_eq!(in_main("git stash"), Some(Reason::WriteOutside));
+        assert_eq!(in_main("git log --oneline"), None);
+        assert_eq!(in_main("git stash show"), None);
+        assert_eq!(check("git push origin main"), None);
+        assert_eq!(check("git stash pop"), Some(Reason::NotListed));
+        assert_eq!(check("git branch -m main old"), Some(Reason::DeleteBranch));
+        assert_eq!(check("git tag -d v1"), Some(Reason::DeleteBranch));
+        assert_eq!(check("git tag v1"), None);
+        assert_eq!(
+            check("git remote set-url origin /x"),
+            Some(Reason::NotListed)
+        );
+        assert_eq!(check("git remote -v"), None);
+        assert_eq!(check("git grep -n fn"), None);
+        assert_eq!(check("git diff --stat"), None);
     }
 
     #[test]
@@ -646,8 +679,6 @@ mod tests {
             "git checkout -- notes.md",
             "git checkout .",
             "git checkout -f main",
-            "git stash clear",
-            "git stash drop",
         ] {
             assert_eq!(
                 check_command(line, &main),
@@ -656,7 +687,7 @@ mod tests {
             );
             assert_eq!(check_command(line, &worktree), None, "{line}");
         }
-        assert_eq!(check_command("git checkout -b feature", &main), None);
+        assert_eq!(check_command("git checkout -b feature", &worktree), None);
         assert_eq!(check_command("git stash list", &main), None);
     }
 
@@ -712,7 +743,7 @@ mod tests {
         ] {
             assert_eq!(check_command(line, &main), Some(reason), "{line}");
         }
-        assert_eq!(check_command("git checkout -b feature", &main), None);
+        assert_eq!(check_command("git checkout -b feature", &worktree), None);
     }
 
     #[test]
@@ -769,7 +800,7 @@ mod tests {
         for line in [
             "cat ~alice/.codex/auth.json",
             "cd - && cat auth.json",
-            "CDPATH=../main cd src && rm -rf x",
+            "CDPATH=../main; cd src && rm -rf x",
         ] {
             assert_eq!(
                 check_command(line, &context),
@@ -799,7 +830,7 @@ mod tests {
             let line = "git push origin -- main";
             assert_eq!(check(line), None, "{line}");
         }
-        assert_eq!(check_command("git switch -c feature", &main), None);
+        assert_eq!(check("git switch -c feature"), None);
         assert!(check_command("git switch -c feature -f", &main).is_some());
         assert!(check_command("git switch other", &main).is_some());
         assert_eq!(check("cat ~/.cod${X}"), Some(Reason::Credentials));

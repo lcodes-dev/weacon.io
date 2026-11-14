@@ -26,24 +26,26 @@ const SHELL_SETTINGS: [&str; 8] = [
     "PAGER",
     "SUDO_EDITOR",
 ];
+// Variables that change only how a program prints, so they may come before any listed one.
+// Before a build tool any other may come too, since its build scripts run as they please.
+const DISPLAY_SETTINGS: [&str; 10] = [
+    "LANG",
+    "TZ",
+    "TERM",
+    "NO_COLOR",
+    "FORCE_COLOR",
+    "CLICOLOR",
+    "COLUMNS",
+    "LINES",
+    "GIT_PAGER",
+    "GIT_TERMINAL_PROMPT",
+];
 // Programs that print their words and read no file they name, so an expansion there is only text.
 const TEXT_ONLY: [&str; 3] = ["echo", "printf", "git"];
 
 /// What `simple`, run in `cwd`, needs a person for; a `cd` moves `cwd` for what follows.
 pub(super) fn judge(simple: &Simple, context: &Context, cwd: &mut PathBuf) -> Option<Reason> {
-    let redirected = simple
-        .writes
-        .iter()
-        .filter(|target| !DEVICES.contains(&target.text.to_ascii_lowercase().as_str()))
-        .find_map(|target| check_word(target, context, cwd, Reason::WriteOutside))
-        .or_else(|| {
-            simple
-                .reads
-                .iter()
-                .find_map(|source| read(source, context, cwd, false, true))
-        })
-        .or_else(|| assignments(simple, context, cwd));
-    if let Some(reason) = redirected {
+    if let Some(reason) = redirected(simple, context, cwd) {
         return Some(reason);
     }
     let words = match command(&simple.words) {
@@ -64,6 +66,9 @@ pub(super) fn judge(simple: &Simple, context: &Context, cwd: &mut PathBuf) -> Op
     {
         return Some(Reason::Addition);
     }
+    if !safe::is_build(&name, args) && changes_program(simple, words) {
+        return Some(Reason::NotListed);
+    }
     let deep = goes_deep(&name, args);
     let strict = !TEXT_ONLY.contains(&name.as_str());
     let reads = (!matches!(name.as_str(), "cd" | "pushd"))
@@ -82,6 +87,22 @@ pub(super) fn judge(simple: &Simple, context: &Context, cwd: &mut PathBuf) -> Op
     call.judge(cwd).or(reads)
 }
 
+// What the command's redirections and assignments reach.
+fn redirected(simple: &Simple, context: &Context, cwd: &Path) -> Option<Reason> {
+    simple
+        .writes
+        .iter()
+        .filter(|target| !DEVICES.contains(&target.text.to_ascii_lowercase().as_str()))
+        .find_map(|target| check_word(target, context, cwd, Reason::WriteOutside))
+        .or_else(|| {
+            simple
+                .reads
+                .iter()
+                .find_map(|source| read(source, context, cwd, false, true))
+        })
+        .or_else(|| assignments(simple, context, cwd))
+}
+
 // Whether the program reads through the folders it's given (`rg` always does), so naming one above a credential
 // folder reaches it.
 fn goes_deep(name: &str, args: &[Word]) -> bool {
@@ -91,10 +112,24 @@ fn goes_deep(name: &str, args: &[Word]) -> bool {
             || args.iter().any(|arg| {
                 // `--recursive` and `--dereference-recursive`, shortened as the tools allow.
                 (arg.text.starts_with("--") && arg.text.contains("rec"))
+                    // `grep -d recurse`.
+                    || arg.text.ends_with("recurse")
                     || short_flags(&arg.text).is_some_and(|flags| flags.contains(['r', 'R']))
                     || (name == "cp"
                         && short_flags(&arg.text).is_some_and(|flags| flags.contains('a')))
             }))
+}
+
+// Whether a variable set before the program's `words` may change what it does, beyond how it
+// prints.
+fn changes_program(simple: &Simple, words: &[Word]) -> bool {
+    let leading = simple.words.len().saturating_sub(words.len());
+    let settings = simple.words.get(..leading).unwrap_or_default();
+    settings.iter().any(|word| {
+        word.text.split_once('=').is_some_and(|(name, _)| {
+            is_assignment(word) && !name.starts_with("LC_") && !DISPLAY_SETTINGS.contains(&name)
+        })
+    })
 }
 
 // A variable set to a credential's path is read through later; `GIT_` ones redirect git.
@@ -106,7 +141,8 @@ fn assignments(simple: &Simple, context: &Context, cwd: &Path) -> Option<Reason>
         .find_map(|word| {
             let (name, _) = word.text.split_once('=')?;
             let redirects_git = name.starts_with("GIT_") && !GIT_HARMLESS.contains(&name);
-            if redirects_git || SHELL_SETTINGS.contains(&name) {
+            let loads = name.starts_with("LD_") || name.starts_with("DYLD_");
+            if redirects_git || loads || SHELL_SETTINGS.contains(&name) {
                 return Some(Reason::Unsure);
             }
             // A value made wholly by the shell is checked where it is used.
