@@ -2,7 +2,7 @@ import type { Later } from "../connection.ts";
 import { newRequestId } from "../ids.ts";
 import type { Incoming } from "../incoming.ts";
 import type { Envelope, MachineId, MachineSettings, MachineSettingsAction, RequestId, WorkspaceId } from "../protocol.ts";
-import { type Answer, MALFORMED, UNREACHABLE } from "../shell/api.ts";
+import { type Answer, MALFORMED, UNREACHABLE } from "../api/api.ts";
 
 /** The open workspace's socket, through which the server reaches the person's machines. */
 export type Link = {

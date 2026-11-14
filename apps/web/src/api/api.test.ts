@@ -41,8 +41,8 @@ test("the session is the signed-in account, or nobody when the server asks to si
 test("signing in sends the email, then the code with its challenge, as JSON", async () => {
   const { api, sent } = serve({ status: 202, body: { challenge: "ch-1" } }, { status: 200, body: ADA });
 
-  assert.deepEqual(await api.start("ada@example.com"), { ok: true, value: { challenge: "ch-1" } });
-  assert.deepEqual(await api.finish({ email: "ada@example.com", code: "12345678", challenge: "ch-1" }), { ok: true, value: ADA });
+  assert.deepEqual(await api.startSignIn("ada@example.com"), { ok: true, value: { challenge: "ch-1" } });
+  assert.deepEqual(await api.finishSignIn({ email: "ada@example.com", code: "12345678", challenge: "ch-1" }), { ok: true, value: ADA });
   const json = { "content-type": "application/json" };
   assert.deepEqual(sent, [
     { path: "/api/sign-in", method: "POST", headers: json, body: '{"email":"ada@example.com"}' },
@@ -73,14 +73,14 @@ test("a refusal carries the server's code, and anything else that goes wrong a c
     { status: 200, body: { account: "acc-1" } },
     { status: 202, body: { challenge: 7 } },
   );
-  const finish = () => api.finish({ email: "ada@example.com", code: "1", challenge: "ch-1" });
+  const finish = () => api.finishSignIn({ email: "ada@example.com", code: "1", challenge: "ch-1" });
 
   assert.deepEqual(await finish(), { ok: false, code: "sign_in.failed" });
   assert.deepEqual(await finish(), { ok: false, code: UNREACHABLE });
   assert.deepEqual(await finish(), { ok: false, code: MALFORMED });
   assert.deepEqual(await finish(), { ok: false, code: MALFORMED });
   assert.deepEqual(await finish(), { ok: false, code: MALFORMED });
-  assert.deepEqual(await api.start("ada@example.com"), { ok: false, code: MALFORMED });
+  assert.deepEqual(await api.startSignIn("ada@example.com"), { ok: false, code: MALFORMED });
 });
 
 test("workspaces are listed and made, and an answer of the wrong shape is refused", async () => {
@@ -95,8 +95,8 @@ test("workspaces are listed and made, and an answer of the wrong shape is refuse
   );
 
   assert.deepEqual(await api.workspaces(), { ok: true, value: { workspaces: [personal] } });
-  assert.deepEqual(await api.create("Made up"), { ok: true, value: { id: "ws-2", name: "Made up", role: "owner" } });
-  assert.deepEqual(await api.create(" "), { ok: false, code: "workspace.name_invalid" });
+  assert.deepEqual(await api.createWorkspace("Made up"), { ok: true, value: { id: "ws-2", name: "Made up", role: "owner" } });
+  assert.deepEqual(await api.createWorkspace(" "), { ok: false, code: "workspace.name_invalid" });
   assert.deepEqual(await api.workspaces(), { ok: false, code: MALFORMED });
   assert.deepEqual(await api.workspaces(), { ok: false, code: MALFORMED });
   assert.deepEqual(await api.workspaces(), { ok: false, code: MALFORMED });
@@ -112,9 +112,9 @@ test("whenever the server says the session is over, the page is told", async () 
 
   assert.deepEqual(await api.workspaces(), { ok: false, code: "sign_in.required" });
   assert.equal(ended(), 1);
-  await api.finish({ email: "ada@example.com", code: "1", challenge: "ch-1" });
+  await api.finishSignIn({ email: "ada@example.com", code: "1", challenge: "ch-1" });
   assert.equal(ended(), 1);
-  await api.create("Made up");
+  await api.createWorkspace("Made up");
   assert.equal(ended(), 2);
 });
 
@@ -135,7 +135,7 @@ test("a request sent before a newer sign-in can't end it, but one before a faile
     const api = new Api(() => answers.shift()?.() ?? Promise.reject(new TypeError("none")), () => ends++);
 
     const late = api.workspaces();
-    await api.finish({ email: "ada@example.com", code: "12345678", challenge: "ch-1" });
+    await api.finishSignIn({ email: "ada@example.com", code: "12345678", challenge: "ch-1" });
     answerLate(over);
 
     assert.deepEqual(await late, { ok: false, code: "sign_in.required" });
@@ -156,8 +156,8 @@ test("machines are listed, looked up by code, confirmed and unpaired", async () 
   );
 
   assert.deepEqual(await api.machines(), { ok: true, value: { machines: [MACHINE] } });
-  assert.deepEqual(await api.lookup(" abcd-1234 "), { ok: true, value: PENDING });
-  assert.deepEqual(await api.confirm({ pairing: "p-1", code: "abcd-1234" }), { ok: true, value: MACHINE });
+  assert.deepEqual(await api.lookUpPairing(" abcd-1234 "), { ok: true, value: PENDING });
+  assert.deepEqual(await api.confirmPairing({ pairing: "p-1", code: "abcd-1234" }), { ok: true, value: MACHINE });
   assert.deepEqual(await api.unpair("mc-1"), { ok: true, value: undefined });
   const json = { "content-type": "application/json" };
   assert.deepEqual(sent, [
@@ -180,9 +180,9 @@ test("a machine whose id, key or date isn't one is a malformed answer, and a new
   for (const _ of bad) {
     assert.deepEqual(await api.machines(), { ok: false, code: MALFORMED });
   }
-  assert.deepEqual(await api.lookup("abcd"), { ok: false, code: MALFORMED });
+  assert.deepEqual(await api.lookUpPairing("abcd"), { ok: false, code: MALFORMED });
   assert.deepEqual(await api.machines(), { ok: true, value: { machines: [{ ...MACHINE, os: "plan9" }] } });
-  assert.deepEqual(await api.confirm({ pairing: "p-1", code: "abcd" }), { ok: false, code: "pairing.not_found" });
+  assert.deepEqual(await api.confirmPairing({ pairing: "p-1", code: "abcd" }), { ok: false, code: "pairing.not_found" });
 });
 
 test("a workspace's chats are listed, and an answer of the wrong shape is refused", async () => {

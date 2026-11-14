@@ -1,5 +1,6 @@
 import { type Status, offers } from "../connection.ts";
 import type { ChatId, DiffFile, Envelope, Hunk, LineOp, RequestId, WorkspaceId } from "../protocol.ts";
+import { record } from "../fields.ts";
 
 /** What the core has sent of a chat's changes under the latest request. */
 export type Changes = {
@@ -75,16 +76,16 @@ export function cut(changes: Changes): Changes {
 }
 
 /** One row of a file's diff: a hunk's start, or a line with its number on each side it is on. */
-export type Row =
+export type DiffRow =
   | { kind: "hunk"; old: number; new: number }
   | { kind: "line"; op: LineOp; old: number | undefined; new: number | undefined; text: string; noNewline: boolean };
 
 /** The rows of `hunks`, in order. */
-export function rows(hunks: readonly Hunk[]): Row[] {
-  return hunks.flatMap((hunk): Row[] => {
+export function rows(hunks: readonly Hunk[]): DiffRow[] {
+  return hunks.flatMap((hunk): DiffRow[] => {
     let [old, next] = [hunk.old_start, hunk.new_start];
-    const lines = hunk.lines.map((line): Row => {
-      const row: Row = {
+    const lines = hunk.lines.map((line): DiffRow => {
+      const row: DiffRow = {
         kind: "line",
         op: line.op,
         old: line.op === "added" ? undefined : old,
@@ -148,6 +149,3 @@ function isHunk(hunk: unknown): boolean {
   );
 }
 
-function record(value: unknown): Record<string, unknown> | undefined {
-  return typeof value === "object" && value !== null ? (value as Record<string, unknown>) : undefined;
-}

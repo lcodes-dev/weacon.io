@@ -285,3 +285,63 @@ pub(crate) const VERSION_AGENTS: &str = "
 ALTER TABLE task_versions ADD COLUMN agent TEXT;
 ALTER TABLE doc_versions ADD COLUMN agent TEXT;
 ";
+
+/// Agents' proposals to docs and tasks. Only an open one holds its `change`, whose bytes count
+/// toward the doc quota; `change_hash` stays, so that one sent again answers as it first did.
+/// The proposing machine is plain text, as it outlives the machine's pairing.
+pub(crate) const PROPOSALS: &str = "
+CREATE TABLE proposals (
+    workspace_id TEXT NOT NULL REFERENCES workspaces (workspace_id),
+    proposal_id TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    doc_id TEXT,
+    task_id TEXT,
+    new_id TEXT,
+    base INTEGER,
+    change TEXT,
+    change_hash BLOB NOT NULL,
+    snapshot TEXT,
+    bytes INTEGER NOT NULL,
+    author_member TEXT NOT NULL,
+    agent TEXT NOT NULL,
+    machine_id TEXT NOT NULL,
+    state TEXT NOT NULL,
+    decided_by TEXT,
+    version INTEGER,
+    at INTEGER NOT NULL,
+    PRIMARY KEY (workspace_id, proposal_id),
+    FOREIGN KEY (workspace_id, doc_id) REFERENCES docs (workspace_id, doc_id),
+    FOREIGN KEY (workspace_id, task_id) REFERENCES tasks (workspace_id, task_id),
+    FOREIGN KEY (workspace_id, author_member) REFERENCES members (workspace_id, member_id),
+    FOREIGN KEY (workspace_id, decided_by) REFERENCES members (workspace_id, member_id)
+) STRICT;
+
+CREATE INDEX proposals_open ON proposals (workspace_id, author_member) WHERE state = 'open';
+
+CREATE TABLE changes_with_proposals (
+    workspace_id TEXT NOT NULL,
+    seq INTEGER NOT NULL,
+    kind TEXT NOT NULL,
+    member_id TEXT NOT NULL,
+    task_id TEXT,
+    task_version INTEGER,
+    doc_id TEXT,
+    doc_version INTEGER,
+    proposal_id TEXT,
+    PRIMARY KEY (workspace_id, seq),
+    FOREIGN KEY (workspace_id, member_id) REFERENCES members (workspace_id, member_id),
+    FOREIGN KEY (workspace_id, task_id, task_version)
+        REFERENCES task_versions (workspace_id, task_id, version),
+    FOREIGN KEY (workspace_id, doc_id, doc_version)
+        REFERENCES doc_versions (workspace_id, doc_id, version),
+    FOREIGN KEY (workspace_id, proposal_id) REFERENCES proposals (workspace_id, proposal_id)
+) STRICT;
+
+INSERT INTO changes_with_proposals
+    (workspace_id, seq, kind, member_id, task_id, task_version, doc_id, doc_version)
+SELECT workspace_id, seq, kind, member_id, task_id, task_version, doc_id, doc_version
+FROM changes;
+
+DROP TABLE changes;
+ALTER TABLE changes_with_proposals RENAME TO changes;
+";
