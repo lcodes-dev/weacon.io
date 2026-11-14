@@ -3,6 +3,7 @@
 use std::collections::{HashMap, HashSet};
 
 use tokio::sync::broadcast::{Receiver, error::RecvError};
+use tokio::sync::mpsc;
 use weacon_observability::{Fault, Field, Logger};
 use weacon_protocol::{
     ChatAnswer, ChatAnswerKind, ChatEntry, ChatId, ChatQuery, ChatQueryKind, ChatUpdate, Envelope,
@@ -22,14 +23,20 @@ pub(crate) struct Watch {
     /// Each chat followed, with the last of its events sent.
     following: HashMap<ChatId, u64>,
     behind: HashSet<ChatId>,
+    /// Says, after each page, that the next may be waiting, so pages go out one per turn.
+    pub(crate) more: mpsc::Receiver<()>,
+    again: mpsc::Sender<()>,
 }
 
 impl Watch {
     pub(crate) fn new(shared: &Shared) -> Self {
+        let (again, more) = mpsc::channel(1);
         Self {
             notices: shared.chats.notices(),
             following: HashMap::new(),
             behind: HashSet::new(),
+            more,
+            again,
         }
     }
 
@@ -106,6 +113,7 @@ impl Watch {
     }
 
     /// The next page of events of a chat it follows that is behind; empty once none is.
+    /// After a page, [`Self::more`] hears that there may be another.
     pub(crate) async fn next(&mut self, workspace: &Workspace) -> Result<Vec<Message>, Fault> {
         while let Some(chat) = self.behind.iter().next().cloned() {
             let Some(&last) = self.following.get(&chat) else {
@@ -120,6 +128,8 @@ impl Watch {
                 continue;
             };
             self.following.insert(chat.clone(), *seq);
+            // One is already waiting if this fails: the next turn takes the next page either way.
+            let _waiting = self.again.try_send(());
             return Ok(page
                 .into_iter()
                 .map(|entry| {
@@ -393,5 +403,24 @@ mod tests {
         let told = refusal(&log, &id("w1"), &chat_not_found());
         assert_eq!(refused(&told), ("chat.not_found", false));
         assert_eq!(test_support::messages(&records).len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_chat_longer_than_a_page_reaches_its_follower_page_by_page() {
+        let fixture = Fixture::new().await;
+        let (server, token) = ada(&fixture).await;
+        let workspace = w1(&fixture).await;
+        make(&workspace, "c-1", "m1", NOW).await.unwrap();
+        let more = u64::from(PAGE) + 5;
+        let events: Vec<_> = (1..=more).map(|seq| (Some(seq), said("a"))).collect();
+        append(&workspace, "c-1", &events).await.unwrap();
+        let mut client = feed(&server, &token, &["workspace.feed", "workspace.chats"]).await;
+
+        let from_start = query("w1", ChatQueryKind::Subscribe { after: 0 });
+        ask(&mut client, 2, from_start).await;
+
+        for seq in 1..=more {
+            assert_eq!(seq_of(&heard(&mut client).await), seq);
+        }
     }
 }

@@ -10,6 +10,7 @@ use weacon_protocol::{
 #[cfg(test)]
 pub(crate) use events::Incoming;
 pub(crate) use ledger::NewRequest;
+pub(crate) use runs::Snapshot;
 
 use super::changes::Versioned;
 use super::{Workspace, failed, stored, unreadable};

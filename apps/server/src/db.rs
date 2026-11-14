@@ -14,7 +14,7 @@ mod tasks;
 pub(crate) mod test_support;
 mod workspace;
 
-pub(crate) use chats::chat_not_found;
+pub(crate) use chats::{Snapshot, chat_not_found};
 pub(crate) use tasks::task_not_found;
 
 use std::path::{Path, PathBuf};

@@ -1,13 +1,63 @@
 use sqlx::SqliteConnection;
 use weacon_model::{ChatRuns, Waiting};
 use weacon_observability::Fault;
-use weacon_protocol::{ChatId, RunStatus};
+use weacon_protocol::{ChatEntry, ChatId, RunStatus};
 
 use super::super::{Workspace, failed, stored, unreadable};
+use super::events::{Place, Read};
 use super::{count, number};
 
+/// The most bytes a waiting prompt's place takes in a snapshot: a `u64` and its comma.
+const WAITING_BYTES: usize = 21;
+
+/// A chat as one read sees it: the last of its events, its runs and its latest events.
+#[derive(Debug)]
+pub(crate) struct Snapshot {
+    pub(crate) seq: u64,
+    pub(crate) runs: ChatRuns,
+    pub(crate) events: Vec<ChatEntry>,
+}
+
 impl Workspace {
+    /// The chat `chat`, if this workspace has it, read in one transaction: at most `limit` of
+    /// its latest events, which with its waiting prompts' places fit `max_bytes`, though there
+    /// is always one event when there is one.
+    pub(crate) async fn snapshot(
+        &self,
+        chat: &ChatId,
+        limit: u32,
+        max_bytes: usize,
+    ) -> Result<Option<Snapshot>, Fault> {
+        let mut reader = self.db.readers.begin().await.map_err(failed)?;
+        let seq = sqlx::query_scalar::<_, i64>(
+            "SELECT seq FROM chats WHERE workspace_id = ? AND chat_id = ?",
+        )
+        .bind(self.id.as_str())
+        .bind(chat.as_str())
+        .fetch_optional(&mut *reader)
+        .await
+        .map_err(failed)?;
+        let Some(seq) = seq else {
+            return Ok(None);
+        };
+        let runs = self.read_runs(&mut reader, chat).await?;
+        let room = max_bytes.saturating_sub(WAITING_BYTES.saturating_mul(runs.waiting.len()));
+        let latest = Read {
+            chat,
+            place: Place::Before(u64::MAX),
+            limit,
+            max_bytes: room,
+        };
+        let events = self.read_events(&mut reader, latest).await?;
+        Ok(Some(Snapshot {
+            seq: count(seq)?,
+            runs,
+            events,
+        }))
+    }
+
     /// The chat's latest run and the prompts that wait for its owner.
+    #[cfg(test)]
     pub(crate) async fn chat_runs(&self, chat: &ChatId) -> Result<ChatRuns, Fault> {
         let mut reader = self.db.readers.acquire().await.map_err(failed)?;
         self.read_runs(&mut reader, chat).await
@@ -156,5 +206,40 @@ mod tests {
                 .await
                 .unwrap();
         assert_eq!(run_id.as_deref(), Some("run-1"));
+    }
+
+    #[tokio::test]
+    async fn a_snapshot_leaves_room_for_its_waiting_prompts_places() {
+        let dir = TempDir::new().unwrap();
+        let (one, _) = two_teams(&dir).await;
+        make(&one, "c-1", "m1", NOW).await.unwrap();
+        let said = crate::db::test_support::said("a");
+        let events = [
+            (Some(1), status(RunState::Waiting)),
+            (Some(2), asks(1)),
+            (Some(3), said.clone()),
+        ];
+        append(&one, "c-1", &events).await.unwrap();
+        let bytes = |event| serde_json::to_string(event).unwrap().len();
+        let both = bytes(&asks(1)) + bytes(&said) + WAITING_BYTES;
+
+        let fits = one.snapshot(&id("c-1"), 50, both).await.unwrap().unwrap();
+        let short = one
+            .snapshot(&id("c-1"), 50, both - 1)
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert_eq!((fits.seq, waits(&fits.runs)), (3, vec![(1, 2)]));
+        let seqs = |snapshot: &Snapshot| {
+            snapshot
+                .events
+                .iter()
+                .map(|entry| entry.seq)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(seqs(&fits), [2, 3]);
+        assert_eq!(seqs(&short), [3]);
+        assert!(one.snapshot(&id("c-9"), 50, both).await.unwrap().is_none());
     }
 }

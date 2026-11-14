@@ -5,7 +5,7 @@ use weacon_protocol::{ChatAnswerKind, ChatId, ChatQueryKind};
 
 use super::{PAGE, PAGE_BYTES};
 
-use crate::db::{Workspace, chat_not_found};
+use crate::db::{Snapshot, Workspace, chat_not_found};
 
 /// The events a snapshot carries, when they fit.
 const SNAPSHOT_EVENTS: u32 = 50;
@@ -16,25 +16,27 @@ pub(crate) async fn answer(
     chat: &ChatId,
     query: &ChatQueryKind,
 ) -> Result<ChatAnswerKind, Fault> {
-    let found = workspace.chat(chat).await?.ok_or_else(chat_not_found)?;
     match *query {
         ChatQueryKind::Snapshot => {
-            let runs = workspace.chat_runs(chat).await?;
-            let events = workspace
-                .events_before(chat, u64::MAX, SNAPSHOT_EVENTS, PAGE_BYTES)
-                .await?;
+            let Snapshot { seq, runs, events } = workspace
+                .snapshot(chat, SNAPSHOT_EVENTS, PAGE_BYTES)
+                .await?
+                .ok_or_else(chat_not_found)?;
             Ok(ChatAnswerKind::Snapshot {
-                seq: found.seq,
+                seq,
                 waiting: runs.waiting_seqs(),
                 runs: runs.runs,
                 events,
             })
         }
-        ChatQueryKind::Window { before, limit } => Ok(ChatAnswerKind::Window {
-            events: workspace
-                .events_before(chat, before, limit.min(PAGE), PAGE_BYTES)
-                .await?,
-        }),
+        ChatQueryKind::Window { before, limit } => {
+            workspace.chat(chat).await?.ok_or_else(chat_not_found)?;
+            Ok(ChatAnswerKind::Window {
+                events: workspace
+                    .events_before(chat, before, limit.min(PAGE), PAGE_BYTES)
+                    .await?,
+            })
+        }
         ChatQueryKind::Subscribe { .. } | ChatQueryKind::Newer => Err(super::unsupported()),
     }
 }

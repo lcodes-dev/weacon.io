@@ -169,6 +169,7 @@ async fn run(
                 Ok(_) | Err(RecvError::Lagged(_)) => catch_up(socket, shared, feed).await?,
                 Err(RecvError::Closed) => return Err(Closed),
             },
+            Some(()) = feed.chats.more.recv() => send_chats(socket, shared, feed, None).await?,
             notice = feed.chats.notices.recv() => {
                 if feed.chats.noticed(notice, feed.member.workspace.id())? {
                     send_chats(socket, shared, feed, None).await?;
@@ -192,8 +193,8 @@ async fn run(
     }
 }
 
-/// Sends `answer`, then the events of the chats it follows that it hasn't sent, while its
-/// member still is one.
+/// Sends `answer`, then a page of the events of the chats it follows that it hasn't sent,
+/// while its member still is one.
 async fn send_chats(
     socket: &mut WebSocket,
     shared: &Shared,
@@ -204,21 +205,17 @@ async fn send_chats(
         feed.allowed(shared).await?;
         reply(socket, shared, id, answer).await?;
     }
-    loop {
-        let workspace = &feed.member.workspace;
-        let page = feed
-            .chats
-            .next(workspace)
-            .await
-            .map_err(|fault| feed_failed(shared, workspace.id(), &fault))?;
-        if page.is_empty() {
-            return Ok(());
-        }
-        for update in page {
-            feed.allowed(shared).await?;
-            reply(socket, shared, 0, update).await?;
-        }
+    let workspace = &feed.member.workspace;
+    let page = feed
+        .chats
+        .next(workspace)
+        .await
+        .map_err(|fault| feed_failed(shared, workspace.id(), &fault))?;
+    for update in page {
+        feed.allowed(shared).await?;
+        reply(socket, shared, 0, update).await?;
     }
+    Ok(())
 }
 
 /// Gives what the client sent to the feature it is for, if the client offered that feature;

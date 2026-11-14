@@ -1,3 +1,4 @@
+use futures_util::TryStreamExt as _;
 use sqlx::SqliteConnection;
 use weacon_observability::Fault;
 use weacon_protocol::{ChatEntry, ChatEvent, ChatId, Outcome, RequestId, code};
@@ -175,18 +176,15 @@ impl Workspace {
         limit: u32,
         max_bytes: usize,
     ) -> Result<Vec<ChatEntry>, Fault> {
-        let rows = sqlx::query_as::<_, (i64, String)>(
-            "SELECT seq, body FROM chat_events WHERE workspace_id = ? AND chat_id = ? AND seq > ?
-             ORDER BY seq LIMIT ?",
-        )
-        .bind(self.id.as_str())
-        .bind(chat.as_str())
-        .bind(i64::try_from(after).unwrap_or(i64::MAX))
-        .bind(limit)
-        .fetch_all(&self.db.readers)
-        .await
-        .map_err(failed)?;
-        entries(rows, max_bytes)
+        let mut reader = self.db.readers.acquire().await.map_err(failed)?;
+        let place = Place::After(after);
+        let read = Read {
+            chat,
+            place,
+            limit,
+            max_bytes,
+        };
+        self.read_events(&mut reader, read).await
     }
 
     /// The chat's latest events before `before`, oldest first, limited as in
@@ -198,21 +196,80 @@ impl Workspace {
         limit: u32,
         max_bytes: usize,
     ) -> Result<Vec<ChatEntry>, Fault> {
-        let rows = sqlx::query_as::<_, (i64, String)>(
-            "SELECT seq, body FROM chat_events WHERE workspace_id = ? AND chat_id = ? AND seq < ?
-             ORDER BY seq DESC LIMIT ?",
-        )
-        .bind(self.id.as_str())
-        .bind(chat.as_str())
-        .bind(i64::try_from(before).unwrap_or(i64::MAX))
-        .bind(limit)
-        .fetch_all(&self.db.readers)
-        .await
-        .map_err(failed)?;
-        let mut latest = entries(rows, max_bytes)?;
-        latest.reverse();
-        Ok(latest)
+        let mut reader = self.db.readers.acquire().await.map_err(failed)?;
+        let place = Place::Before(before);
+        let read = Read {
+            chat,
+            place,
+            limit,
+            max_bytes,
+        };
+        self.read_events(&mut reader, read).await
     }
+
+    /// Reads rows only while they fit `max_bytes`, and the first one whatever its size.
+    pub(super) async fn read_events(
+        &self,
+        connection: &mut SqliteConnection,
+        read: Read<'_>,
+    ) -> Result<Vec<ChatEntry>, Fault> {
+        let Read {
+            chat,
+            place,
+            limit,
+            max_bytes,
+        } = read;
+        let (sql, seq) = match place {
+            Place::After(seq) => (
+                "SELECT seq, body FROM chat_events
+                 WHERE workspace_id = ? AND chat_id = ? AND seq > ? ORDER BY seq LIMIT ?",
+                seq,
+            ),
+            Place::Before(seq) => (
+                "SELECT seq, body FROM chat_events
+                 WHERE workspace_id = ? AND chat_id = ? AND seq < ? ORDER BY seq DESC LIMIT ?",
+                seq,
+            ),
+        };
+        let mut rows = sqlx::query_as::<_, (i64, String)>(sql)
+            .bind(self.id.as_str())
+            .bind(chat.as_str())
+            .bind(i64::try_from(seq).unwrap_or(i64::MAX))
+            .bind(limit)
+            .fetch(&mut *connection);
+        let mut used = 0_usize;
+        let mut taken = Vec::new();
+        while let Some((seq, body)) = rows.try_next().await.map_err(failed)? {
+            used = used.saturating_add(body.len());
+            if used > max_bytes && !taken.is_empty() {
+                break;
+            }
+            let event = serde_json::from_str(&body).map_err(|_| unreadable())?;
+            taken.push(ChatEntry {
+                seq: count(seq)?,
+                event,
+            });
+        }
+        if matches!(place, Place::Before(_)) {
+            taken.reverse();
+        }
+        Ok(taken)
+    }
+}
+
+/// Which of a chat's events to read: at most `limit` from `place`, which fit `max_bytes`.
+pub(super) struct Read<'a> {
+    pub(super) chat: &'a ChatId,
+    pub(super) place: Place,
+    pub(super) limit: u32,
+    pub(super) max_bytes: usize,
+}
+
+/// Where in a chat's log a read starts, going forwards after it or backwards before it.
+#[derive(Clone, Copy)]
+pub(super) enum Place {
+    After(u64),
+    Before(u64),
 }
 
 struct Row<'a> {
@@ -267,24 +324,6 @@ fn size(rows: &[Row<'_>]) -> Result<i64, Fault> {
         let len = i64::try_from(row.body.len()).map_err(|_| unstorable())?;
         Ok(sum.saturating_add(len))
     })
-}
-
-// Takes rows in their order while they fit `max_bytes`, and the first one whatever its size.
-fn entries(rows: Vec<(i64, String)>, max_bytes: usize) -> Result<Vec<ChatEntry>, Fault> {
-    let mut used = 0_usize;
-    let mut taken = Vec::new();
-    for (seq, body) in rows {
-        used = used.saturating_add(body.len());
-        if used > max_bytes && !taken.is_empty() {
-            break;
-        }
-        let event = serde_json::from_str(&body).map_err(|_| unreadable())?;
-        taken.push(ChatEntry {
-            seq: count(seq)?,
-            event,
-        });
-    }
-    Ok(taken)
 }
 
 pub(crate) fn chat_quota_full() -> Fault {
