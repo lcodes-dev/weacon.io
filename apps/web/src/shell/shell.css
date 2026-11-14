@@ -75,8 +75,19 @@
   font-size: 1em;
 }
 
-.workspace .page {
+.workspace > section {
   flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.heading {
+  padding: 16px 16px 0;
+}
+
+.heading h1 {
+  margin: 0;
 }
 
 .chats ul {

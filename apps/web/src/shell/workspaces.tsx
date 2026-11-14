@@ -65,14 +65,14 @@ export function Workspaces({
   );
   return (
     <Frame middle={page === undefined && selector} right={who}>
-      {page?.(socket)}
-      <div style={{ display: page === undefined ? "contents" : "none" }}>
+      <div className={page === undefined ? "pane" : "pane away"}>
         {workspace !== undefined && socket !== undefined ? (
-          <Workspace key={workspace.id} api={api} log={log} workspace={workspace} socket={socket} chosen={chat} choose={chooseChat} />
+          <Workspace key={workspace.id} api={api} log={log} workspace={workspace} socket={socket} away={covered} chosen={chat} choose={chooseChat} />
         ) : (
           <AllWorkspaces api={api} loaded={loaded} listing={listing} choose={choose} />
         )}
       </div>
+      {page !== undefined && <div className="pane">{page(socket)}</div>}
     </Frame>
   );
 }
@@ -184,12 +184,12 @@ function NewWorkspace({ api, made }: { api: Api; made(workspace: WorkspaceSummar
   );
 }
 
-// The open workspace's page: its chats, beside the chosen one or the workspace's own heading.
 function Workspace({
   api,
   log,
   workspace,
   socket,
+  away,
   chosen,
   choose,
 }: {
@@ -197,6 +197,7 @@ function Workspace({
   log: Log;
   workspace: WorkspaceSummary;
   socket: WorkspaceSocket;
+  away: boolean;
   chosen: ChatId | undefined;
   choose: (chat: ChatId) => void;
 }) {
@@ -206,21 +207,22 @@ function Workspace({
   if (!read) {
     return (
       <div className="workspace">
-        <ChatsNav loaded={undefined} none={status.state === "connecting" ? "Loading" : "No chats yet. Connect a machine to start one."} chosen={chosen} choose={choose} />
-        <Heading title={workspace.name} status={status} />
+        <ChatsNav loaded={status.state === "connecting" ? "connecting" : "none"} chosen={chosen} choose={choose} />
+        <section>
+          <Heading title={workspace.name} status={status} />
+        </section>
       </div>
     );
   }
-  return <WorkspaceChats api={api} workspace={workspace} socket={socket} status={status} chosen={chosen} choose={choose} />;
+  return <WorkspaceChats api={api} workspace={workspace} socket={socket} status={status} away={away} chosen={chosen} choose={choose} />;
 }
 
-// What heads a page of the workspace: its title, and where its feed stands.
 function Heading({ title, status }: { title: string; status: Status }) {
   return (
-    <header className="heading">
+    <div className="heading">
       <h1>{title}</h1>
       <p className="status">{statusText(status)}</p>
-    </header>
+    </div>
   );
 }
 
@@ -233,6 +235,7 @@ function WorkspaceChats({
   workspace,
   socket,
   status,
+  away,
   chosen,
   choose,
 }: {
@@ -240,6 +243,7 @@ function WorkspaceChats({
   workspace: WorkspaceSummary;
   socket: WorkspaceSocket;
   status: Status;
+  away: boolean;
   chosen: ChatId | undefined;
   choose: (chat: ChatId) => void;
 }) {
@@ -259,14 +263,12 @@ function WorkspaceChats({
   return (
     <div className="workspace">
       <ChatsNav loaded={chats} chosen={chosen} choose={choose} />
-      {open === undefined ? (
-        <Heading title={workspace.name} status={status} />
-      ) : (
-        <section className="chat-page">
-          <Heading title={open.title} status={status} />
-          <ChatScreen key={open.id} link={socket} live={status.state === "live"} chatRef={{ workspace: workspace.id, chat: open.id }} mine={mine} />
-        </section>
-      )}
+      <section>
+        <Heading title={open?.title ?? workspace.name} status={status} />
+        {open !== undefined && (
+          <ChatScreen key={open.id} link={socket} live={status.state === "live"} chatRef={{ workspace: workspace.id, chat: open.id }} mine={mine} away={away} />
+        )}
+      </section>
     </div>
   );
 }

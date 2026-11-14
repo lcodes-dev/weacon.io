@@ -1,15 +1,14 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 
 import type { ChatRef } from "../chat-ref.ts";
 import { ChatScreen } from "../chat/chat-screen.tsx";
-import { type Asks, Connection, type Later, type Status, offers, statusText } from "../connection.ts";
+import { type Asks, Connection, type Status, later, offers, statusText } from "../connection.ts";
 import type { Log } from "../log.ts";
 import { ME } from "../me.ts";
 import { Settings } from "../settings/settings.tsx";
-import { WorkspaceSocket } from "../shell/workspace-socket.ts";
+import { useSocketFor } from "../shell/workspace-socket.ts";
 
 const TRANSCRIPT: Asks = { needs: "run.stream", offers: ["diff.view", "chat.events", "log.forward"] };
-const later: Later = (run, ms) => setTimeout(run, ms);
 // The fake server keeps one workspace; a page without a chat in its address still needs a name for it.
 const FAKE_WORKSPACE = "w-1";
 
@@ -20,7 +19,7 @@ const FAKE_WORKSPACE = "w-1";
 export function ChatPage({ url, log, chatRef }: { url: string; log: Log; chatRef: ChatRef | undefined }) {
   const [status, setStatus] = useState<Status>({ state: "connecting" });
   const [settings, setSettings] = useState(false);
-  const socket = useMemo(() => new WorkspaceSocket(chatRef?.workspace ?? FAKE_WORKSPACE), [chatRef?.workspace]);
+  const socket = useSocketFor(chatRef?.workspace ?? FAKE_WORKSPACE);
   useEffect(() => {
     let opened: WebSocket;
     try {
@@ -64,13 +63,16 @@ export function ChatPage({ url, log, chatRef }: { url: string; log: Log; chatRef
           {settings ? "Back" : "Settings"}
         </button>
       </header>
-      <ChatScreen
-        link={socket}
-        live={status.state === "live"}
-        chatRef={chatRef}
-        mine
-        page={settings ? <Settings me={ME} server={status.state === "live" ? status.server : undefined} /> : undefined}
-      />
+      <main>
+        <div className={settings ? "pane away" : "pane"}>
+          <ChatScreen link={socket} live={status.state === "live"} chatRef={chatRef} mine away={settings} />
+        </div>
+        {settings && (
+          <div className="pane">
+            <Settings me={ME} server={status.state === "live" ? status.server : undefined} />
+          </div>
+        )}
+      </main>
     </div>
   );
 }

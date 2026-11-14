@@ -53,6 +53,9 @@ export type Status =
 /** Runs `run` once `ms` have passed; injected, so tests can run it at will. */
 export type Later = (run: () => void, ms: number) => void;
 
+/** The browser's own timer, as a `Later`. */
+export const later: Later = (run, ms) => setTimeout(run, ms);
+
 /** Told each change of status, and each message after the welcome. */
 export type Listener = {
   status(status: Status): void;

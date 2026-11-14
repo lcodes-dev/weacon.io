@@ -4,7 +4,7 @@ import { Api, type Fetch } from "../api/api.ts";
 import { useAsk } from "../api/ask.ts";
 import { Problem } from "../api/problem.tsx";
 import { problemText } from "../api/problems.ts";
-import type { Later } from "../connection.ts";
+import { later } from "../connection.ts";
 import type { Log } from "../log.ts";
 import { Machines } from "../machines/machines.tsx";
 import { Pins, browserStore } from "../machines/pins.ts";
@@ -23,8 +23,6 @@ type Screen =
   | { name: "failed"; code: Code }
   | { name: "signed out" }
   | { name: "signed in"; account: AccountSignedIn };
-
-const later: Later = (run, ms) => setTimeout(run, ms);
 
 // Keys pinned in this browser, opened on first use.
 const PINS = new Pins(browserStore());

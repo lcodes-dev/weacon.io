@@ -255,7 +255,6 @@ function turnKey(seq: number, run: RunId): string {
   return `t${seq}-${run}`;
 }
 
-
 /**
  * `runs` with the runs whose statuses `entries` log, so an earlier run's turns name its agent:
  * a run `runs` already holds keeps its state, and takes a logged agent only where it has none.

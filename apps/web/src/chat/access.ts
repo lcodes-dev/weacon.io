@@ -1,9 +1,9 @@
 import { useSyncExternalStore } from "react";
 
 import type { WebCapability } from "../connection.ts";
-import type { Link } from "../shell/workspace-socket.ts";
+import type { WorkspaceSocket } from "../shell/workspace-socket.ts";
 
-// The second code of each pair is the fake server's, until it offers the server's own.
+// The second code of each pair is the fake server's.
 const READS: readonly WebCapability[] = ["workspace.chats", "chat.events"];
 const SENDS: readonly WebCapability[] = ["workspace.chat_commands", "chat.send"];
 
@@ -13,7 +13,7 @@ export function chatAccess(offers: (capability: WebCapability) => boolean): { re
 }
 
 /** `chatAccess` on `link`, kept current as welcomes change what the server offers. */
-export function useChatAccess(link: Link): { read: boolean; send: boolean } {
+export function useChatAccess(link: WorkspaceSocket): { read: boolean; send: boolean } {
   const subscribe = (changed: () => void) => link.watch(changed);
   const read = useSyncExternalStore(subscribe, () => chatAccess((capability) => link.offers(capability)).read);
   const send = useSyncExternalStore(subscribe, () => chatAccess((capability) => link.offers(capability)).send);

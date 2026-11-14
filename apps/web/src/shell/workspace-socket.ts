@@ -67,16 +67,15 @@ export class WorkspaceSocket {
   }
 }
 
-/** What a page of the open workspace uses of its socket. */
-export type Link = Pick<WorkspaceSocket, "workspace" | "send" | "nextId" | "subscribe" | "offers" | "watch">;
-
 /** One socket per open `workspace`, the same for as long as it stays open; none while none is. */
+export function useSocketFor(workspace: WorkspaceId): WorkspaceSocket;
+export function useSocketFor(workspace: WorkspaceId | undefined): WorkspaceSocket | undefined;
 export function useSocketFor(workspace: WorkspaceId | undefined): WorkspaceSocket | undefined {
   return useMemo(() => (workspace === undefined ? undefined : new WorkspaceSocket(workspace)), [workspace]);
 }
 
 /** Whether the server offers `capability` on `socket`, kept current as welcomes change it. */
-export function useOffers(socket: Link | undefined, capability: WebCapability): boolean {
+export function useOffers(socket: WorkspaceSocket | undefined, capability: WebCapability): boolean {
   return useSyncExternalStore(
     (changed) => socket?.watch(changed) ?? (() => {}),
     () => socket?.offers(capability) ?? false,

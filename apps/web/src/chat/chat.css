@@ -45,12 +45,14 @@
   color: #c4372b;
 }
 
-header .problem {
+.toolbar .problem {
   color: #c4372b;
-  align-self: center;
 }
 
-/* A chat over its toolbar, transcript or changes, and message box, filling what holds it. */
+.pane > .chat-screen {
+  height: 100%;
+}
+
 .chat-screen {
   flex: 1;
   min-height: 0;

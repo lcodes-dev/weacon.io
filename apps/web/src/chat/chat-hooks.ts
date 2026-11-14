@@ -2,12 +2,12 @@ import { useEffect, useRef, useState } from "react";
 
 import type { ChatRef } from "../chat-ref.ts";
 import { type Late, type Send, deliverPrompt } from "../composer/prompt.ts";
-import type { Later } from "../connection.ts";
+import { later } from "../connection.ts";
 import { newRequestId } from "../ids.ts";
 import { route } from "../incoming.ts";
 import type { ChatAction, Envelope, RequestId, RunId } from "../protocol.ts";
 import { Receipts, type Settled } from "../receipts.ts";
-import type { Link } from "../shell/workspace-socket.ts";
+import type { WorkspaceSocket } from "../shell/workspace-socket.ts";
 import { type Answers, sending, settleAnswer, stopProblem } from "./asks.ts";
 import { type Command, chatCommand, deliver } from "./commands.ts";
 import { receiptsIn } from "./heard.ts";
@@ -16,14 +16,12 @@ import { START, type Sync, ended } from "./sync.ts";
 
 // How long a hidden tab waits for a frame before its batch of run events goes out anyway.
 const HIDDEN_MS = 250;
-const later: Later = (run, ms) => setTimeout(run, ms);
-const ignore = () => {};
 
 /**
  * The chat at `chatRef`, kept in step over `link` while it is `live` and the server lets this
  * client read it; what it shows stays once that ends.
  */
-export function useLiveChat(link: Link, chatRef: ChatRef | undefined, live: boolean, readable: boolean) {
+export function useLiveChat(link: WorkspaceSocket, chatRef: ChatRef | undefined, live: boolean, readable: boolean) {
   const [sync, setSync] = useState<Sync>(START);
   const current = useRef<LiveChat>(undefined);
   const workspace = chatRef?.workspace;
@@ -41,7 +39,7 @@ export function useLiveChat(link: Link, chatRef: ChatRef | undefined, live: bool
     const liveChat = new LiveChat({ workspace, chat }, { id: () => link.nextId(), send: (envelope) => link.send(envelope), schedule, show: setSync });
     current.current = liveChat;
     const unsubscribe = link.subscribe((message) =>
-      route(message, { run: (run) => liveChat.push(run), chat: (said) => liveChat.push(said), answers: ignore, changes: ignore }),
+      route(message, { run: (run) => liveChat.push(run), chat: (said) => liveChat.push(said) }),
     );
     liveChat.open();
     return () => {
@@ -65,7 +63,7 @@ type Through<T> = (command: Command, receipts: Receipts, send: (envelope: Envelo
  * Prompts, permission answers and Stop for the chat at `chatRef` over `link`, each waiting for its
  * receipt while the link is `live`; an accepted answer tells `answered` its prompt.
  */
-export function useChatCommands(link: Link, chatRef: ChatRef | undefined, live: boolean, answered: (run: RunId, prompt: number) => void) {
+export function useChatCommands(link: WorkspaceSocket, chatRef: ChatRef | undefined, live: boolean, answered: (run: RunId, prompt: number) => void) {
   const [answers, setAnswers] = useState<Answers>(new Map());
   // Every answer's request, with its prompt, for a late receipt to close the prompt it answers,
   // even after a later answer to the same prompt replaced it on screen.
@@ -92,10 +90,8 @@ export function useChatCommands(link: Link, chatRef: ChatRef | undefined, live: 
     receipts.current = waiting;
     const unsubscribe = link.subscribe((message) =>
       route(message, {
-        run: ignore,
         chat: (said) => receiptsIn(said).forEach((receipt) => waiting.take(receipt)),
         answers: (answer) => waiting.take(answer),
-        changes: ignore,
       }),
     );
     return () => {

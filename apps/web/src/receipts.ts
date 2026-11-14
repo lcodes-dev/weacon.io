@@ -85,9 +85,10 @@ export class Receipts {
     if (envelope.type !== "error") {
       return;
     }
+    const settled = REFUSALS.get(envelope.code) ?? "refused";
     const refused = [...this.#waiting].find(([, waiting]) => waiting.id === envelope.id);
     if (refused !== undefined) {
-      this.settle(refused[0], REFUSALS.get(envelope.code) ?? "refused");
+      this.settle(refused[0], settled);
       return;
     }
     const overdue = [...this.#overdue].find(([, id]) => id === envelope.id);
@@ -95,7 +96,7 @@ export class Receipts {
     if (overdue !== undefined) {
       this.#overdue.delete(overdue[0]);
       if (!this.#waiting.has(overdue[0])) {
-        this.#late(overdue[0], REFUSALS.get(envelope.code) ?? "refused");
+        this.#late(overdue[0], settled);
       }
     }
   }

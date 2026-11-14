@@ -6,23 +6,21 @@ import { newestFirst, stateNote } from "./chat-list.ts";
 /** The workspace's chats, newest first, with the one `chosen` marked; picking one calls `choose`. */
 export function ChatsNav({
   loaded,
-  none,
   chosen,
   choose,
 }: {
-  /** The chats, or none to show, with `none` saying why. */
-  loaded: Loading<ChatList> | undefined;
-  none?: string;
+  /** The chats, or none yet while the server is connecting, or none it serves. */
+  loaded: Loading<ChatList> | "connecting" | "none";
   chosen: ChatId | undefined;
   choose: (chat: ChatId) => void;
 }) {
-  const chats = loaded?.value === undefined ? undefined : newestFirst(loaded.value.chats);
+  const listed = typeof loaded === "string" ? undefined : loaded;
+  const chats = listed?.value === undefined ? undefined : newestFirst(listed.value.chats);
   return (
     <nav className="chats" aria-label="Chats">
       <h2>Chats</h2>
-      {loaded === undefined && <p className="muted">{none}</p>}
-      {loaded?.loading === true && <p className="muted">Loading</p>}
-      {chats?.length === 0 && <p className="muted">No chats yet. Connect a machine to start one.</p>}
+      {(loaded === "connecting" || listed?.loading === true) && <p className="muted">Loading</p>}
+      {(loaded === "none" || chats?.length === 0) && <p className="muted">No chats yet. Connect a machine to start one.</p>}
       {chats !== undefined && chats.length > 0 && (
         <ul>
           {chats.map(({ id, title, machine, state }) => {
@@ -41,7 +39,7 @@ export function ChatsNav({
           })}
         </ul>
       )}
-      {loaded?.problem !== undefined && <Problem text={loaded.problem} retry={() => void loaded.load()} />}
+      {listed?.problem !== undefined && <Problem text={listed.problem} retry={() => void listed.load()} />}
     </nav>
   );
 }
