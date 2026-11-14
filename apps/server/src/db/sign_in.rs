@@ -3,7 +3,7 @@ use subtle::ConstantTimeEq;
 use weacon_observability::Fault;
 use weacon_protocol::{AccountId, ChallengeId};
 
-use super::owned::{NewWorkspace, ensure_personal};
+use super::account::{NewWorkspace, ensure_personal};
 use super::{Db, exists, failed, stored, unreadable};
 use crate::email::Email;
 
