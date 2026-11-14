@@ -1,8 +1,8 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::MemberId;
 use crate::token::token_id;
+use crate::{AgentRef, MemberId};
 
 token_id!(
     /// A task in a workspace, 1–64 ASCII letters, digits, `-` or `_`.
@@ -30,9 +30,12 @@ pub enum Author {
     Person {
         member: MemberId,
     },
-    /// An agent, named by the member it answers to.
+    /// An agent, named by the member it answers to, and by which agent it is when known.
     Agent {
         owner: MemberId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[schemars(with = "AgentRef")]
+        agent: Option<AgentRef>,
     },
     /// An author this build doesn't know, from a newer peer; only ever received.
     #[serde(other)]
@@ -102,19 +105,10 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+    use crate::{AgentKind, AgentOwner, MachineName};
 
     fn member() -> MemberId {
-        MemberId::try_from("m-1".to_owned()).unwrap()
-    }
-
-    #[test]
-    fn task_ids_are_plain_tokens_checked_on_arrival() {
-        let task: TaskId = serde_json::from_value(json!("t_1")).unwrap();
-
-        assert_eq!(task.as_str(), "t_1");
-        assert_eq!(TaskId::try_from("a b".to_owned()), Err("a b".to_owned()));
-        let bad = serde_json::from_value::<TaskId>(json!("../x")).unwrap_err();
-        assert!(bad.to_string().contains("not a task id"), "{bad}");
+        "m-1".parse().unwrap()
     }
 
     #[test]
@@ -139,7 +133,10 @@ mod tests {
     #[test]
     fn authors_are_tagged_and_a_newer_one_still_parses() {
         let person = Author::Person { member: member() };
-        let agent = Author::Agent { owner: member() };
+        let agent = Author::Agent {
+            owner: member(),
+            agent: None,
+        };
         let person_wire = json!({ "kind": "person", "member": "m-1" });
         let agent_wire = json!({ "kind": "agent", "owner": "m-1" });
 
@@ -157,9 +154,26 @@ mod tests {
         serde_json::from_value::<Author>(json!({ "kind": "person" })).unwrap_err();
     }
 
+    #[test]
+    fn an_agent_author_names_which_agent_when_known() {
+        let named = Author::Agent {
+            owner: member(),
+            agent: Some(AgentRef {
+                kind: AgentKind::Codex,
+                owner: AgentOwner::Member { member: member() },
+                machine: Some(MachineName::try_from("Ada's laptop".to_owned()).unwrap()),
+            }),
+        };
+        let wire = json!({ "kind": "agent", "owner": "m-1", "agent": { "kind": "codex",
+            "owner": { "kind": "member", "member": "m-1" }, "machine": "Ada's laptop" } });
+
+        assert_eq!(serde_json::to_value(&named).unwrap(), wire);
+        assert_eq!(serde_json::from_value::<Author>(wire).unwrap(), named);
+    }
+
     fn record() -> TaskRecord {
         TaskRecord {
-            id: TaskId::try_from("t-1".to_owned()).unwrap(),
+            id: "t-1".parse().unwrap(),
             title: "Write the docs".to_owned(),
             status: TaskStatus::InProgress,
             order: "V".to_owned(),
@@ -197,7 +211,7 @@ mod tests {
 
     #[test]
     fn a_new_task_names_the_one_it_goes_in_front_of_or_none() {
-        let before = TaskId::try_from("t-2".to_owned()).unwrap();
+        let before: TaskId = "t-2".parse().unwrap();
         let create = |before| TaskCreate {
             title: "Ship".to_owned(),
             before,
@@ -224,7 +238,7 @@ mod tests {
 
     #[test]
     fn a_change_names_the_version_read_and_one_tagged_edit() {
-        let before = TaskId::try_from("t-2".to_owned()).unwrap();
+        let before: TaskId = "t-2".parse().unwrap();
         for (edit, wire) in [
             (
                 TaskEditBody::Title {

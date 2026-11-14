@@ -188,7 +188,7 @@ impl Workspaces {
 
 // `path` with its deepest existing folder resolved, so a missing path compares like an existing
 // one; `None` when something on the way exists but can't be resolved, such as a dangling symlink.
-fn resolved(path: &Path) -> Option<PathBuf> {
+pub(crate) fn resolved(path: &Path) -> Option<PathBuf> {
     let mut missing = Vec::new();
     let mut base = path;
     loop {
@@ -277,6 +277,7 @@ mod tests {
                 config_dir: dir.join("workspaces/w-w1/claude"),
                 cwd: PathBuf::from("/work"),
                 access: AccessLevel::AskFirst,
+                mcp: None,
             }
         );
         assert_eq!(codex.program, program(&dir, "codex"));

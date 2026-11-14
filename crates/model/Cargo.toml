@@ -1,6 +1,6 @@
 [package]
 name = "weacon-model"
-description = "The rules of tasks: their order, their versions and who changed them"
+description = "The rules of tasks, docs and chats: their order, their versions, who changed them and what a chat's log says now"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -9,6 +9,9 @@ publish.workspace = true
 
 [dependencies]
 weacon-protocol.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
 
 [lints]
 workspace = true
