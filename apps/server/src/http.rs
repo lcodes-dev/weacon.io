@@ -8,7 +8,7 @@ use axum::extract::{DefaultBodyLimit, FromRequest, MatchedPath, Request, State};
 use axum::http::{HeaderValue, Method, StatusCode, header};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, post};
+use axum::routing::{delete, get, post};
 use serde::de::DeserializeOwned;
 use tokio::net::TcpListener;
 use tokio::sync::{Semaphore, broadcast, watch};
@@ -22,6 +22,7 @@ use crate::db::Db;
 use crate::feed;
 use crate::limit::Limit;
 use crate::outbox::Outbox;
+use crate::pairing;
 use crate::secret::Secret;
 use crate::sign_in;
 use crate::sign_up::SignUp;
@@ -74,6 +75,12 @@ pub(crate) struct Shared {
     pub(crate) tries: Arc<Limit>,
     /// Who may make an account by signing in.
     pub(crate) sign_up: Arc<[SignUp]>,
+    /// How many pairings each client may start.
+    pub(crate) pair_starts: Arc<Limit>,
+    /// How many pairing codes each client may try.
+    pub(crate) pair_tries: Arc<Limit>,
+    /// How many pairing claims each client may make.
+    pub(crate) pair_claims: Arc<Limit>,
     /// The web app's built files it serves.
     pub(crate) web: &'static [WebFile],
 }
@@ -137,6 +144,12 @@ fn router(shared: Shared) -> Router {
             "/api/workspaces",
             get(workspaces::list).post(workspaces::create),
         )
+        .route("/api/machines", get(pairing::list))
+        .route("/api/machines/{machine}", delete(pairing::unpair))
+        .route("/api/machines/pair", post(pairing::start))
+        .route("/api/machines/pair/lookup", post(pairing::lookup))
+        .route("/api/machines/pair/confirm", post(pairing::confirm))
+        .route("/api/machines/pair/claim", post(pairing::claim))
         .route("/api/workspaces/{workspace}", get(workspaces::read))
         .route("/api/workspaces/{workspace}/feed", get(feed::feed))
         .route(
@@ -261,6 +274,11 @@ impl IntoResponse for Unreadable {
         };
         error(status, code, false)
     }
+}
+
+/// Answers that there is no such thing, or none the asker may see, with `code`.
+pub(crate) fn not_found(code: Code) -> Response {
+    error(StatusCode::NOT_FOUND, code, false)
 }
 
 /// Answers that the request isn't from the server's own pages.

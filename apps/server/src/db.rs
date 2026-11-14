@@ -4,6 +4,7 @@
 mod account;
 mod backup;
 mod changes;
+mod machine;
 mod owned;
 mod schema;
 mod tasks;
@@ -23,6 +24,7 @@ use weacon_protocol::{AccountId, MemberId, WorkspaceId, code};
 pub(crate) use account::CODE_LIFETIME;
 pub(crate) use account::{Account, Attempt};
 pub(crate) use backup::restore;
+pub(crate) use machine::{Claim, Confirmation, NewPairing};
 pub(crate) use owned::NewWorkspace;
 pub(crate) use workspace::Workspace;
 
