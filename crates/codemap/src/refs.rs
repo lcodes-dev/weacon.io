@@ -3,7 +3,7 @@ use std::collections::BTreeSet;
 use tree_sitter::Node;
 
 use crate::paths::{Segments, segments};
-use crate::syntax::{preorder, text};
+use crate::syntax::{name, preorder, text};
 
 /// A name an item's code refers to, as written.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -45,11 +45,11 @@ pub(crate) fn refs(item: Node<'_>, source: &[u8]) -> Vec<Ref> {
             // What a `use` names is read when a name it binds is used.
             "use_declaration" => false,
             "type_identifier" => {
-                found.insert(Ref::Use(vec![text(node, source).to_owned()]));
+                found.insert(Ref::Use(vec![name(node, source).to_owned()]));
                 false
             }
             "identifier" if is_constant(text(node, source)) && !called.contains(&node.id()) => {
-                found.insert(Ref::Use(vec![text(node, source).to_owned()]));
+                found.insert(Ref::Use(vec![name(node, source).to_owned()]));
                 false
             }
             "scoped_identifier" | "scoped_type_identifier" => match segments(node, source) {
@@ -97,7 +97,7 @@ fn generics<'a>(item: Node<'_>, source: &'a [u8]) -> BTreeSet<&'a str> {
     let mut cursor = list.walk();
     list.named_children(&mut cursor)
         .filter_map(|parameter| parameter.child_by_field_name("name"))
-        .map(|name| text(name, source))
+        .map(|node| name(node, source))
         .collect()
 }
 
@@ -110,7 +110,7 @@ fn call(function: Node<'_>, source: &[u8], called: &mut BTreeSet<usize>) -> Opti
     match function.kind() {
         "field_expression" => {
             let field = function.child_by_field_name("field")?;
-            Some(Ref::Method(text(field, source).to_owned()))
+            Some(Ref::Method(name(field, source).to_owned()))
         }
         "identifier" | "scoped_identifier" => {
             let path = segments(function, source)?;

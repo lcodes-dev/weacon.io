@@ -9,7 +9,7 @@ use crate::Fingerprint;
 use crate::contracts::{Declared, contracts};
 use crate::paths::{Bound, Segments, local_imports, segments};
 use crate::refs::{Ref, refs};
-use crate::syntax::{line, preorder, push_reversed, test_only, text};
+use crate::syntax::{self, line, preorder, push_reversed, test_only};
 
 /// An item declared in a module, named relative to it: `Frame`, `Frame::new`, `tests::helper`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -158,7 +158,7 @@ fn visit<'tree>(
     }
     let name = item
         .child_by_field_name("name")
-        .map(|node| plain(text(node, source)));
+        .map(|node| syntax::name(node, source));
     let (Some(kind), Some(name)) = (Kind::of(item.kind()), name) else {
         return;
     };
@@ -298,8 +298,7 @@ pub(crate) fn base_name(node: Node<'_>, source: &[u8]) -> String {
     } {
         base = inner;
     }
-    let name = text(base, source);
-    let name = plain(name);
+    let name = syntax::name(base, source);
     name.chars()
         .filter(|ch| ch.is_alphanumeric() || *ch == '_')
         .collect()
@@ -330,10 +329,6 @@ fn fingerprint(item: Node<'_>, source: &[u8]) -> Fingerprint {
         !skipped
     });
     Fingerprint::of(tokens)
-}
-
-fn plain(name: &str) -> &str {
-    name.strip_prefix("r#").unwrap_or(name)
 }
 
 fn join(prefix: &str, name: &str) -> String {

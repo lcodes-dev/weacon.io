@@ -1,6 +1,6 @@
 use tree_sitter::Node;
 
-use crate::syntax::{preorder, push_reversed, test_only, text};
+use crate::syntax::{name, preorder, push_reversed, test_only};
 
 /// A path as written in code, split on `::`: `["crate", "frame", "encode_line"]`.
 pub(crate) type Segments = Vec<String>;
@@ -76,7 +76,7 @@ fn visit<'tree>(
         "mod_item" => {
             let name = node
                 .child_by_field_name("name")
-                .map(|name| text(name, source).to_owned());
+                .map(|node| name(node, source).to_owned());
             match (node.child_by_field_name("body"), name) {
                 (None, Some(name)) => found.push((vec![name], None)),
                 (Some(body), Some(name)) => scopes.push((body, [within, &[name]].concat())),
@@ -146,7 +146,7 @@ fn use_tree(root: Node<'_>, source: &[u8], found: &mut Found) {
             }
             "use_as_clause" => {
                 let alias = node.child_by_field_name("alias");
-                let alias = alias.map(|alias| Bound::Name(text(alias, source).to_owned()));
+                let alias = alias.map(|alias| Bound::Name(name(alias, source).to_owned()));
                 found.extend(path(node.child_by_field_name("path")).map(|path| (path, alias)));
             }
             "use_wildcard" => {
@@ -184,7 +184,7 @@ pub(crate) fn segments(node: Node<'_>, source: &[u8]) -> Option<Segments> {
             }
             _ => return None,
         };
-        reversed.push(text(name, source).to_owned());
+        reversed.push(self::name(name, source).to_owned());
     }
     reversed.reverse();
     Some(reversed)
