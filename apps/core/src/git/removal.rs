@@ -157,6 +157,10 @@ impl Journal {
             Err(error) => return Err(restore_failed().because(error)),
         };
         if gone {
+            // Back where it was by another way, as from Finder: still locked, so unlock it.
+            if read_git_file(&removal.worktree).is_ok_and(|git_file| git_file == removal.git_file) {
+                self.git.unlock(&removal.worktree);
+            }
             self.save(&removals)?;
             return Err(Fault::new(
                 code!("worktree.gone_from_trash"),
@@ -535,6 +539,8 @@ mod tests {
         assert_eq!(code(&error), "worktree.gone_from_trash");
         assert!(path.join("work.txt").exists());
         assert_eq!(journal.removed(&one).unwrap(), None);
+        // Unlocked, so it can be removed again.
+        journal.remove(&one, &path, bin(&dir), UNIX_EPOCH).unwrap();
     }
 
     #[test]
