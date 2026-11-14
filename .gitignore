@@ -1,5 +1,6 @@
 /target/
 .dev/
+/mutants.out*/
 *.profraw
 lcov.info
 .DS_Store

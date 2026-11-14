@@ -7,13 +7,23 @@ import { type Draft, EMPTY, type Item, type Placed, edit, pick, query } from "./
 import { AttachButton, Files } from "./files.tsx";
 import { composing, picker, sends } from "./keys.ts";
 import { offered } from "./mentionables.ts";
-import { type Retry, type Send, after, requestFor } from "./prompt.ts";
+import { type Late, type Retry, type Send, after, afterLate, requestFor } from "./prompt.ts";
 
 /**
  * The message box. While `blocked` says why, it still takes text, but can't send it. It keeps the
- * text until the server accepts it, and says so when it doesn't.
+ * text until the server accepts it, and says so when it doesn't; a `late` receipt settles it.
  */
-export function Composer({ send, blocked, hidden }: { send: Send; blocked: string | undefined; hidden: boolean }) {
+export function Composer({
+  send,
+  blocked,
+  hidden,
+  late,
+}: {
+  send: Send;
+  blocked: string | undefined;
+  hidden: boolean;
+  late: Late | undefined;
+}) {
   const [placed, setPlaced] = useState<Placed>({ draft: EMPTY, caret: 0 });
   const [active, setActive] = useState(0);
   const [dismissed, setDismissed] = useState<number>();
@@ -37,6 +47,17 @@ export function Composer({ send, blocked, hidden }: { send: Send; blocked: strin
       document.removeEventListener("drop", keep);
     };
   }, []);
+  useEffect(() => {
+    const next = late === undefined || sending ? undefined : afterLate(retry.current, placed.draft.text, late);
+    if (next === undefined) {
+      return;
+    }
+    setProblem(next.problem);
+    retry.current = next.retry;
+    if (next.text === "") {
+      setPlaced({ draft: EMPTY, caret: 0 });
+    }
+  }, [late]);
   const backdrop = useRef<HTMLDivElement>(null);
   const { draft, caret } = placed;
   const at = query(draft, caret);

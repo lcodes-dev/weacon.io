@@ -7,7 +7,7 @@ use crate::{Area, Fingerprint, Index};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Anchor {
     /// `sym:weacon_protocol::frame::encode_line`: one item.
-    Sym(String),
+    Symbol(String),
     /// `flow:weacon_core::cli::run->weacon_core::daemon::serve`: items a flow passes through, in order.
     Flow(Vec<String>),
     /// `area:crates/protocol/src/lib`: a group of files, named by its highest-ranked one.
@@ -38,7 +38,7 @@ impl Index {
     #[must_use]
     pub fn fingerprint(&self, anchor: &Anchor) -> Option<Fingerprint> {
         match anchor {
-            Anchor::Sym(path) => self.symbol(path).map(|symbol| symbol.fingerprint),
+            Anchor::Symbol(path) => self.symbol(path).map(|symbol| symbol.fingerprint),
             Anchor::Flow(steps) => steps
                 .iter()
                 .map(|step| self.symbol(step).map(|symbol| symbol.fingerprint))
@@ -81,7 +81,7 @@ impl FromStr for Anchor {
         if let Some(path) = text.strip_prefix("sym:")
             && is_symbol_path(path)
         {
-            return Ok(Self::Sym(path.to_owned()));
+            return Ok(Self::Symbol(path.to_owned()));
         }
         if let Some(id) = text.strip_prefix("area:")
             && is_area_id(id)
@@ -105,7 +105,7 @@ fn is_area_id(id: &str) -> bool {
 }
 
 fn is_symbol_path(path: &str) -> bool {
-    let name = |it: char| it.is_alphanumeric() || matches!(it, '_' | '[' | ']');
+    let name = |ch: char| ch.is_alphanumeric() || matches!(ch, '_' | '[' | ']');
     path.split("::")
         .all(|part| !part.is_empty() && part.chars().all(name))
 }
@@ -113,7 +113,7 @@ fn is_symbol_path(path: &str) -> bool {
 impl fmt::Display for Anchor {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Sym(path) => write!(formatter, "sym:{path}"),
+            Self::Symbol(path) => write!(formatter, "sym:{path}"),
             Self::Flow(steps) => write!(formatter, "flow:{}", steps.join(FLOW_STEP)),
             Self::Area(id) => write!(formatter, "area:{id}"),
         }
@@ -151,13 +151,10 @@ impl fmt::Display for Finding {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{SourceFile, index};
+    use crate::index;
+    use crate::test_support::file;
 
     fn repo(lib: &str) -> Index {
-        let file = |path: &str, text: &str| SourceFile {
-            path: path.to_owned(),
-            text: text.to_owned(),
-        };
         index(&[
             file("a/Cargo.toml", "[package]\nname = \"a-b\"\n"),
             file("a/src/lib.rs", lib),
@@ -183,7 +180,9 @@ mod tests {
         let index = repo(LIB);
         for path in ["a_b::run", "a_b::m::S", "a_b::m::S::go"] {
             assert!(
-                index.fingerprint(&Anchor::Sym(path.to_owned())).is_some(),
+                index
+                    .fingerprint(&Anchor::Symbol(path.to_owned()))
+                    .is_some(),
                 "{path}"
             );
         }
@@ -196,7 +195,7 @@ mod tests {
             "a_b::ru",
         ] {
             assert_eq!(
-                index.fingerprint(&Anchor::Sym(path.to_owned())),
+                index.fingerprint(&Anchor::Symbol(path.to_owned())),
                 None,
                 "{path}"
             );
@@ -237,7 +236,7 @@ mod tests {
             [
                 changed("sym:a_b::run"),
                 changed("flow:a_b::run->a_b::m::S::go"),
-                Finding::Missing(Anchor::Sym("a_b::gone".to_owned())),
+                Finding::Missing(Anchor::Symbol("a_b::gone".to_owned())),
                 Finding::Missing("flow:a_b::m::S->a_b::gone".parse().unwrap()),
                 Finding::Malformed(6),
                 Finding::Missing(Anchor::Area("a/src/gone".to_owned())),
@@ -248,10 +247,10 @@ mod tests {
     #[test]
     fn a_flow_depends_on_its_steps_and_their_order() {
         let index = repo(LIB);
-        let print = |anchor: &str| index.fingerprint(&anchor.parse().unwrap()).unwrap();
+        let fingerprint_of = |anchor: &str| index.fingerprint(&anchor.parse().unwrap()).unwrap();
         assert_ne!(
-            print("flow:a_b::run->a_b::m::S::go"),
-            print("flow:a_b::m::S::go->a_b::run")
+            fingerprint_of("flow:a_b::run->a_b::m::S::go"),
+            fingerprint_of("flow:a_b::m::S::go->a_b::run")
         );
     }
 

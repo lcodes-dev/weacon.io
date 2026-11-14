@@ -64,7 +64,6 @@
       ]
     },
     {
-      "description": "An element picked in Chrome, from the extension's host to a core that offers element.pick.",
       "type": "object",
       "properties": {
         "type": {
@@ -78,7 +77,6 @@
       ]
     },
     {
-      "description": "What a run reported, from the core to clients that have the capability `run.stream`.",
       "type": "object",
       "properties": {
         "type": {
@@ -92,7 +90,6 @@
       ]
     },
     {
-      "description": "A change to a workspace, from the server to clients that have the capability\n`workspace.feed`.",
       "type": "object",
       "properties": {
         "type": {
@@ -106,7 +103,6 @@
       ]
     },
     {
-      "description": "A log record from a client, sent only to a peer that offers `log.forward`.",
       "type": "object",
       "properties": {
         "type": {
@@ -120,7 +116,6 @@
       ]
     },
     {
-      "description": "What a person asks of a chat's agent, from a client to a core that offers `chat.send`.",
       "type": "object",
       "properties": {
         "type": {
@@ -134,7 +129,6 @@
       ]
     },
     {
-      "description": "A committed event of a chat, from the core to a client that subscribed under\n`chat.events`.",
       "type": "object",
       "properties": {
         "type": {
@@ -148,7 +142,6 @@
       ]
     },
     {
-      "description": "A question about a chat's log, from a client to a core that offers `chat.events`.",
       "type": "object",
       "properties": {
         "type": {
@@ -162,7 +155,6 @@
       ]
     },
     {
-      "description": "The core's answer to a [`ChatQuery`], or its word that the client missed events, to a\nclient that has `chat.events`.",
       "type": "object",
       "properties": {
         "type": {
@@ -176,7 +168,6 @@
       ]
     },
     {
-      "description": "A question about a chat's changes, from a client to a core that offers `diff.view`.",
       "type": "object",
       "properties": {
         "type": {
@@ -190,7 +181,6 @@
       ]
     },
     {
-      "description": "The core's answer to a [`DiffQuery`], one changed file at a time, to a client that has\n`diff.view`.",
       "type": "object",
       "properties": {
         "type": {
@@ -204,7 +194,6 @@
       ]
     },
     {
-      "description": "A question about what a machine keeps for a workspace, from a client to a core that\noffers `machine.settings`.",
       "type": "object",
       "properties": {
         "type": {
@@ -218,7 +207,6 @@
       ]
     },
     {
-      "description": "A change to what a machine keeps for a workspace, from a client to a core that offers\n`machine.settings`.",
       "type": "object",
       "properties": {
         "type": {
@@ -232,7 +220,6 @@
       ]
     },
     {
-      "description": "The core's answer to a [`MachineSettingsQuery`] or a [`MachineSettingsCommand`], to a\nclient that has `machine.settings`.",
       "type": "object",
       "properties": {
         "type": {
@@ -246,7 +233,6 @@
       ]
     },
     {
-      "description": "A question about the sessions a person ran outside Weacon, from a client to their own\ncore that offers `sessions.read`.",
       "type": "object",
       "properties": {
         "type": {
@@ -260,7 +246,6 @@
       ]
     },
     {
-      "description": "The core's answer to a [`SessionsQuery`], to a client that has `sessions.read`.",
       "type": "object",
       "properties": {
         "type": {
@@ -274,7 +259,6 @@
       ]
     },
     {
-      "description": "A sign-in terminal's sealed input, from a browser through the server to a core that\noffers `terminal.sign_in`; the server relays it only if it offers `terminal.relay`.",
       "type": "object",
       "properties": {
         "type": {
@@ -288,7 +272,6 @@
       ]
     },
     {
-      "description": "A sign-in terminal's sealed output, from a core that offers `terminal.sign_in` through\nthe server to the browser that opened it.",
       "type": "object",
       "properties": {
         "type": {
@@ -302,7 +285,6 @@
       ]
     },
     {
-      "description": "A question about a chat's worktree, from a client to a core that offers\n`worktree.manage`.",
       "type": "object",
       "properties": {
         "type": {
@@ -316,7 +298,6 @@
       ]
     },
     {
-      "description": "What a person asks of a chat's worktree, from a client to a core that offers\n`worktree.manage`.",
       "type": "object",
       "properties": {
         "type": {
@@ -330,7 +311,6 @@
       ]
     },
     {
-      "description": "The core's answer to a [`WorktreeQuery`] or a [`WorktreeCommand`], to a client that has\n`worktree.manage`.",
       "type": "object",
       "properties": {
         "type": {
@@ -344,7 +324,6 @@
       ]
     },
     {
-      "description": "What a core asks of the server for its owner's agents, under `workspace.proposals`.",
       "type": "object",
       "properties": {
         "type": {
@@ -692,6 +671,7 @@
       ]
     },
     "ChatAnswer": {
+      "description": "The core's answer to a [`ChatQuery`], or its word that the client missed events, to a client\nthat has `chat.events`.",
       "type": "object",
       "properties": {
         "answer": {
@@ -789,7 +769,7 @@
       ]
     },
     "ChatCommand": {
-      "description": "The core answers with receipts under `request`.",
+      "description": "What a person asks of a chat's agent, from a client to a core that offers `chat.send`. The\ncore answers with receipts under `request`.",
       "type": "object",
       "properties": {
         "action": {
@@ -953,7 +933,7 @@
       ]
     },
     "ChatQuery": {
-      "description": "The answer is a [`ChatAnswer`], or for `subscribe` the [`ChatUpdate`]s themselves.",
+      "description": "A question about a chat's log, from a client to a core that offers `chat.events`. The answer\nis a [`ChatAnswer`], or for `subscribe` the [`ChatUpdate`]s themselves.",
       "type": "object",
       "properties": {
         "chat": {
@@ -1086,7 +1066,7 @@
       ]
     },
     "ChatUpdate": {
-      "description": "Text deltas are never committed; they arrive only as run updates.",
+      "description": "A committed event of a chat, from the core to a client that subscribed under `chat.events`.\nText deltas are never committed; they arrive only as run updates.",
       "type": "object",
       "properties": {
         "chat": {
@@ -1106,7 +1086,7 @@
       ]
     },
     "ClientLog": {
-      "description": "A log record from a client that has no log of its own, such as the web app: an event name and\ntyped ids. The receiver logs only events it knows, so no other text reaches its log.",
+      "description": "A log record from a client that has no log of its own, such as the web app: an event name\nand typed ids, sent only to a peer that offers `log.forward`. The receiver logs only events\nit knows, so no other text reaches its log.",
       "type": "object",
       "properties": {
         "code": {
@@ -1516,6 +1496,7 @@
       "pattern": "^https://[A-Za-z0-9.-]+(:[0-9]{1,5})?([/?#][!-~]*)?$"
     },
     "ErrorBody": {
+      "description": "Why a request failed, in an error message or an HTTP error answer.",
       "type": "object",
       "properties": {
         "code": {
@@ -1843,6 +1824,26 @@
           "required": [
             "kind"
           ]
+        },
+        {
+          "description": "The ids of the workspace's repositories, sorted. Where each is on the machine is never\nsaid: everyone who may ask would see it.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "repos"
+            },
+            "repos": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/RepoId"
+              }
+            }
+          },
+          "required": [
+            "kind",
+            "repos"
+          ]
         }
       ]
     },
@@ -1911,6 +1912,19 @@
             "kind": {
               "type": "string",
               "const": "current"
+            }
+          },
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "description": "The repositories the owner registered for the workspace, of a core that offers\n`repo.list`; an older core answers `request.unknown`.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "repos"
             }
           },
           "required": [
@@ -2131,7 +2145,7 @@
           ]
         },
         {
-          "description": "Paired with `owner`'s account. The core proves itself with `token`, sent as a bearer\ntoken, which the server hands out only once.",
+          "description": "Paired with `owner`'s account. The core proves itself with `token`, sent as a bearer\ntoken, which every claim with the pairing's secret returns until the pairing expires or\nthe machine is unpaired.",
           "type": "object",
           "properties": {
             "machine": {
@@ -2283,7 +2297,7 @@
       ]
     },
     "Pick": {
-      "description": "An element someone picked on a local web page, sent to the core for a chat. The sender cuts\nthe HTML short and shrinks the screenshot so the message fits in one frame.",
+      "description": "An element someone picked in Chrome, from the extension's host to a core that offers\n`element.pick`, for a chat. The sender cuts the HTML short and shrinks the screenshot so the\nmessage fits in one frame.",
       "type": "object",
       "properties": {
         "html": {
@@ -2784,7 +2798,7 @@
       ]
     },
     "Receipt": {
-      "description": "The daemon's word on a command, sent when it is accepted and again when it ends.",
+      "description": "The core's or server's word on a command, sent when it accepts it and again when it ends.",
       "type": "object",
       "properties": {
         "request": {
@@ -3185,7 +3199,7 @@
       ]
     },
     "RunUpdate": {
-      "description": "One event of the run `run`, in the order the run reported it.",
+      "description": "One event of the run `run`, in the order the run reported it, from the core to clients that\nhave `run.stream`.",
       "type": "object",
       "properties": {
         "event": {
@@ -3377,7 +3391,7 @@
       ]
     },
     "SignInStart": {
-      "description": "Sign-in to one workspace, which [`AccountSignInStart`] replaces: asks the server to send\na one-time code to `email`, if it is a member of `workspace`. The answer, a [`SignInStarted`], is the same either way.",
+      "description": "Sign-in to one workspace, which [`AccountSignInStart`] replaces: asks the server to send a\none-time code to `email`, if it is a member of `workspace`. The answer, a [`SignInStarted`],\nis the same either way.",
       "type": "object",
       "properties": {
         "email": {
@@ -3644,7 +3658,7 @@
       ]
     },
     "TerminalCommand": {
-      "description": "From the owner of `machine`'s browser to its core, which offers `terminal.sign_in`. The\nserver relays it only from the machine's owner, and the core acts only when `by` is its\nowner and refuses a terminal id it has already seen.",
+      "description": "A sign-in terminal's sealed input, from the owner of `machine`'s browser to its core, which\noffers `terminal.sign_in`. The server relays it only when it offers `terminal.relay`, and\nonly from the machine's owner, and the core acts only when `by` is its owner and refuses a\nterminal id it has already seen.",
       "type": "object",
       "properties": {
         "action": {
@@ -3818,7 +3832,7 @@
       ]
     },
     "TerminalUpdate": {
-      "description": "From a core that offers `terminal.sign_in`, through the server, to the browser that opened\n`terminal`.",
+      "description": "A sign-in terminal's sealed output, from a core that offers `terminal.sign_in`, through the\nserver, to the browser that opened `terminal`.",
       "type": "object",
       "properties": {
         "event": {
@@ -4026,7 +4040,7 @@
       ]
     },
     "WorkspaceUpdate": {
-      "description": "One change to `workspace`. `seq` grows strictly within a workspace, and a feed opened with\n`since=N` sends every change after `N`.",
+      "description": "One change to `workspace`, from the server to clients that have `workspace.feed`. `seq` grows\nstrictly within a workspace, and a feed opened with `since=N` sends every change after `N`.",
       "type": "object",
       "properties": {
         "change": {
