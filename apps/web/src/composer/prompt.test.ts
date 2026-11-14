@@ -3,7 +3,7 @@ import { test } from "node:test";
 
 import type { Envelope } from "../protocol.ts";
 import { Receipts } from "../receipts.ts";
-import { after, blocked, deliver, prompt, requestFor } from "./prompt.ts";
+import { after, blocked, deliver, prompt } from "./prompt.ts";
 
 test("a prompt is a chat command for the chat, under its request", () => {
   assert.deepEqual(prompt(3, { workspace: "w-1", chat: "c-1" }, "r-1", "日本語"), {
@@ -42,14 +42,6 @@ test("a prompt is sent and waits for its receipt, unless it is over the server's
 
   assert.equal(await waiting, "accepted");
   assert.deepEqual(sent, [fits]);
-});
-
-test("a prompt that may have run is retried under its own request, and only while its text is the same", () => {
-  const fresh = () => "r-new";
-  assert.equal(requestFor(undefined, "hi", fresh), "r-new");
-  assert.equal(requestFor({ text: "hi", request: "r-1" }, "hi", fresh), "r-1");
-  assert.equal(requestFor({ text: "hi", request: "r-1" }, "hi!", fresh), "r-new");
-
 });
 
 test("an accepted prompt empties the box; any other keeps it and says why", () => {

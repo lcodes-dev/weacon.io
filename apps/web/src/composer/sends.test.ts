@@ -63,3 +63,14 @@ test("a late refusal ends the wait without taking the text", () => {
   });
   assert.equal(sends.start("hi", ids), "q-2");
 });
+
+test("a text sent again after another goes under the request it may have run under", () => {
+  const sends = new Sends();
+  const ids = fresh();
+  const a = sends.start("A", ids);
+  sends.end("A", a, "unsure");
+  const b = sends.start("B", ids);
+  sends.end("B", b, "refused");
+
+  assert.equal(sends.start("A", ids), a);
+});

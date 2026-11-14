@@ -43,11 +43,6 @@ export function deliver(command: Command, receipts: Receipts, send: (envelope: E
 /** A prompt that may have run, kept with its request so sending it again can't run it twice. */
 export type Retry = { text: string; request: RequestId };
 
-/** The request to send `text` under: the retry's when it is the same text, else `fresh`. */
-export function requestFor(retry: Retry | undefined, text: string, fresh: () => RequestId): RequestId {
-  return retry?.text === text ? retry.request : fresh();
-}
-
 const PROBLEMS: Record<Exclude<Sent, "accepted">, string> = {
   too_long: "It's too long to send. Shorten it and try again.",
   refused: "The message wasn't sent.",

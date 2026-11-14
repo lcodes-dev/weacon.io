@@ -1,5 +1,5 @@
 import type { RequestId } from "../protocol.ts";
-import { type Late, type Retry, type Sent, after, requestFor } from "./prompt.ts";
+import { type Late, type Retry, type Sent, after } from "./prompt.ts";
 
 /** How one send ended: whether it was taken, and, for the latest send, why it may not have been. */
 export type Ended = { text: string; taken: boolean; latest: boolean; problem: string | undefined };
@@ -10,14 +10,13 @@ export type Ended = { text: string; taken: boolean; latest: boolean; problem: st
  */
 export class Sends {
   #latest: Retry | undefined;
-  #retry: Retry | undefined;
   // Sends that may have run, by request; the send on its way, and whether a late receipt accepted it.
   #unsure = new Map<RequestId, string>();
   #out: { request: RequestId; accepted: boolean } | undefined;
 
-  /** The request to send `text` under. */
+  /** The request to send `text` under: that of a send of the same text that may have run, or a fresh one. */
   start(text: string, fresh: () => RequestId): RequestId {
-    const request = requestFor(this.#retry, text, fresh);
+    const request = [...this.#unsure].find(([, sent]) => sent === text)?.[0] ?? fresh();
     this.#latest = { text, request };
     this.#out = { request, accepted: false };
     return request;
@@ -49,10 +48,6 @@ export class Sends {
     } else {
       this.#unsure.set(request, text);
     }
-    const latest = this.#latest?.request === request;
-    if (latest) {
-      this.#retry = next.retry;
-    }
-    return { text, taken: next.text === "", latest, problem: next.problem };
+    return { text, taken: next.text === "", latest: this.#latest?.request === request, problem: next.problem };
   }
 }
