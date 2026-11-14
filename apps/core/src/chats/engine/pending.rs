@@ -16,9 +16,11 @@ pub(super) struct PendingEnd {
     pub(super) outcome: Outcome,
 }
 
-/// An interrupt committed and not yet sent, and the turn it stops.
+/// An interrupt not yet sent, and the turn it stops.
 #[derive(Debug, PartialEq, Eq)]
 pub(super) struct PendingInterrupt {
     pub(super) request: RequestId,
     pub(super) turn: Option<RequestId>,
+    /// Its receipt is in, and its turn hasn't begun: it is sent once the turn does.
+    pub(super) committed: bool,
 }

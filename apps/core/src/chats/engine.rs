@@ -854,6 +854,27 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
+    async fn an_interrupt_sent_while_the_agent_starts_stops_the_turn_it_was_starting_for() {
+        let mut bench = bench();
+        let release = bench.hold_next_start();
+        bench.chats.command(prompt("r-1", "Hi")).await.unwrap();
+
+        let interrupt = command("r-2", "c-1", ChatAction::Interrupt);
+        bench.chats.command(interrupt).await.unwrap();
+        drop(release);
+
+        let mut started = soon(bench.started.recv()).await.unwrap();
+        let told = [
+            soon(started.told.recv()).await,
+            soon(started.told.recv()).await,
+        ];
+        assert_eq!(
+            told,
+            [Some(Told::Send("Hi".to_owned())), Some(Told::Interrupt)]
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
     async fn reading_a_chat_this_machine_never_had_writes_nothing() {
         let (_bench, mut engine) = parts();
         let root = engine.workspaces.root(&workspace());

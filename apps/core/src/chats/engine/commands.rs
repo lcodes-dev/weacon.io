@@ -191,7 +191,12 @@ impl<A: Agent> Engine<A> {
     // Committed first and bound to the turn it stops, so a retry after a failed write still
     // stops that turn and never a later one.
     async fn interrupt(&mut self, key: &ChatKey, request: RequestId) -> Result<(), Fault> {
-        let turn = self.turn(key);
+        // While its run starts, a chat's turn is the prompt that run will take first.
+        let starting = self.is_launching(key).then(|| self.runs.of(key)).flatten();
+        let first = starting.and_then(|record| record.queue.first());
+        let turn = self
+            .turn(key)
+            .or_else(|| first.map(|queued| queued.request.clone()));
         let chat = self.open(key).await?;
         // A retry keeps the turn its first try was bound to, whatever was interrupted since.
         let stops = &mut chat.pending_interrupts;
@@ -199,6 +204,7 @@ impl<A: Agent> Engine<A> {
             stops.push(PendingInterrupt {
                 request: request.clone(),
                 turn,
+                committed: false,
             });
         }
         self.commit_receipt(key, &request, Outcome::Completed)
@@ -209,14 +215,25 @@ impl<A: Agent> Engine<A> {
     // Sends the interrupt `request` committed, while the turn it stops is still running.
     async fn stop_turn(&mut self, key: &ChatKey, request: &RequestId) -> Result<(), Fault> {
         let turn = self.turn(key);
+        let queued = self.runs.of(key).map(|record| record.queue.clone());
         let stops = &mut self.open(key).await?.pending_interrupts;
-        let bound = stops
-            .iter()
-            .find(|stop| stop.request == *request)
-            .map(|stop| stop.turn.clone());
+        let Some(at) = stops.iter().position(|stop| stop.request == *request) else {
+            return Ok(());
+        };
+        let bound = stops.get(at).and_then(|stop| stop.turn.clone());
+        let waits = queued.unwrap_or_default();
+        // A turn not yet begun is stopped as it begins; one ended since, never.
+        if bound
+            .as_ref()
+            .is_some_and(|bound| waits.iter().any(|queued| queued.request == *bound))
+        {
+            if let Some(stop) = stops.get_mut(at) {
+                stop.committed = true;
+            }
+            return Ok(());
+        }
         stops.retain(|stop| stop.request != *request);
-        // Its turn may have ended since; then it stops nothing.
-        if bound.flatten().is_some_and(|bound| Some(bound) == turn) {
+        if bound.is_some_and(|bound| Some(bound) == turn) {
             self.order(key, Order::Interrupt);
         }
         Ok(())

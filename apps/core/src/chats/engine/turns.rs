@@ -107,6 +107,13 @@ impl<A: Agent> Engine<A> {
                 })
                 .await;
         }
+        // An interrupt sent before the turn began stops it now.
+        let stops = &mut self.open(key).await?.pending_interrupts;
+        let before = stops.len();
+        stops.retain(|stop| !(stop.committed && stop.turn.as_ref() == Some(&next.request)));
+        if stops.len() < before {
+            self.order(key, Order::Interrupt);
+        }
         self.set_state(key, run, RunState::Running).await
     }
 
