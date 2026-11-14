@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use serde::de::DeserializeOwned;
 use weacon_agents::SpawnPolicy;
-use weacon_appkit::{KEEP, MAX_BYTES, Outcome, RotatingFile, panic_hook, root_logger};
+use weacon_appkit::{Ending, KEEP, MAX_BYTES, RotatingFile, panic_hook, root_logger};
 use weacon_observability::{
     Deliver, Fault, Field, Level, Logger, Reporter, Reports, Sink, json_lines, tee,
 };
@@ -81,7 +81,7 @@ impl App {
     }
 
     /// Logs and reports how the command ended, and gives its exit code.
-    pub(crate) fn finish(&self, result: Result<Outcome, Fault>) -> ExitCode {
+    pub(crate) fn finish(&self, result: Result<Ending, Fault>) -> ExitCode {
         weacon_appkit::finish(&self.log, &self.reporter, result)
     }
 

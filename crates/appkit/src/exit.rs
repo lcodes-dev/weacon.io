@@ -7,13 +7,13 @@ const FAILED: u8 = 2;
 
 /// How a command that ran to the end came out.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Outcome {
+pub enum Ending {
     Done,
     /// A check found something, such as a stale anchor.
     Findings,
 }
 
-impl From<()> for Outcome {
+impl From<()> for Ending {
     fn from((): ()) -> Self {
         Self::Done
     }
@@ -21,13 +21,13 @@ impl From<()> for Outcome {
 
 /// Logs how a command ended, reports a failure, and gives the exit code: 0 when it's done,
 /// 1 when a check found something, 2 when it failed.
-pub fn finish(log: &Logger, reporter: &Reporter, result: Result<Outcome, Fault>) -> ExitCode {
+pub fn finish(log: &Logger, reporter: &Reporter, result: Result<Ending, Fault>) -> ExitCode {
     let fault = match result {
-        Ok(Outcome::Done) => {
+        Ok(Ending::Done) => {
             log.info("app stopped", &[]);
             return ExitCode::SUCCESS;
         }
-        Ok(Outcome::Findings) => {
+        Ok(Ending::Findings) => {
             log.info("app stopped", &[("findings", true.into())]);
             return ExitCode::from(FINDINGS);
         }
@@ -62,7 +62,7 @@ mod tests {
 
         assert_eq!(finish(&log, &reporter, Ok(().into())), ExitCode::SUCCESS);
         assert_eq!(
-            finish(&log, &reporter, Ok(Outcome::Findings)),
+            finish(&log, &reporter, Ok(Ending::Findings)),
             ExitCode::from(1)
         );
         assert!(uploads.lock().unwrap().is_empty());

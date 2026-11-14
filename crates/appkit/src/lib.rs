@@ -13,7 +13,7 @@ mod test_support;
 
 pub use app::{build, panic_hook, reporter, reports, root_logger, version_text};
 pub use deliver::http;
-pub use exit::{Outcome, finish};
+pub use exit::{Ending, finish};
 pub use id::random_id;
 pub use logs::{KEEP, MAX_BYTES, RotatingFile};
 pub use platform::{Signals, owner_only, private_append, sync_dir, write_whole};
