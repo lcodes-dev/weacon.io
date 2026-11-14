@@ -19,6 +19,7 @@
 exclude_globs = [
     "**/platform/**/windows.rs",
     "**/platform/pty/windows/*.rs",
+    "**/platform/windows/*.rs",
     "**/platform/pty/macos.rs",
 ]
 exclude_re = [
