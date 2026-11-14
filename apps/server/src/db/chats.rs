@@ -242,7 +242,7 @@ impl Workspace {
     /// Stores `events` after the chat's last, in order, and gives the chat's seq after them.
     /// Those from its machine at or before the last one stored are replays and are skipped.
     /// Events that would take the workspace past [`CHAT_QUOTA`] make the chat `full` and are
-    /// `store.full`, with none of them stored.
+    /// `chat.quota_full`, with none of them stored.
     pub(crate) async fn append_events(
         &self,
         chat: &ChatId,
@@ -254,10 +254,8 @@ impl Workspace {
             .begin_with("BEGIN IMMEDIATE")
             .await
             .map_err(failed)?;
-        let (mut seq, mut core_seq, used) = sqlx::query_as::<_, (i64, i64, i64)>(
-            "SELECT c.seq, c.core_seq, w.chat_bytes FROM chats AS c
-             JOIN workspaces AS w ON w.workspace_id = c.workspace_id
-             WHERE c.workspace_id = ? AND c.chat_id = ?",
+        let (mut seq, mut core_seq) = sqlx::query_as::<_, (i64, i64)>(
+            "SELECT seq, core_seq FROM chats WHERE workspace_id = ? AND chat_id = ?",
         )
         .bind(self.id.as_str())
         .bind(chat.as_str())
@@ -280,13 +278,10 @@ impl Workspace {
             i64::try_from(body.len()).map(|len| sum.saturating_add(len))
         });
         let bytes = bytes.map_err(|_| unstorable())?;
-        if used.saturating_add(bytes) > CHAT_QUOTA {
+        if !self.charge_chats(&mut transaction, bytes).await? {
             drop(transaction);
             self.set_chat_state(chat, ChatState::Full).await?;
-            return Err(Fault::new(
-                code!("store.full"),
-                "The workspace has no room for more",
-            ));
+            return Err(chat_quota_full());
         }
         for (seq, from_core, body, at) in &rows {
             sqlx::query(
@@ -303,8 +298,7 @@ impl Workspace {
             .await
             .map_err(failed)?;
         }
-        self.advance(&mut transaction, chat, seq, core_seq, bytes)
-            .await?;
+        self.advance(&mut transaction, chat, seq, core_seq).await?;
         transaction.commit().await.map_err(failed)?;
         count(seq)
     }
@@ -315,7 +309,6 @@ impl Workspace {
         chat: &ChatId,
         seq: i64,
         core_seq: i64,
-        bytes: i64,
     ) -> Result<(), Fault> {
         sqlx::query(
             "UPDATE chats SET seq = ?, core_seq = ? WHERE workspace_id = ? AND chat_id = ?",
@@ -327,13 +320,26 @@ impl Workspace {
         .execute(&mut *transaction)
         .await
         .map_err(failed)?;
-        sqlx::query("UPDATE workspaces SET chat_bytes = chat_bytes + ? WHERE workspace_id = ?")
-            .bind(bytes)
-            .bind(self.id.as_str())
-            .execute(&mut *transaction)
-            .await
-            .map_err(failed)?;
         Ok(())
+    }
+
+    /// Counts `bytes` more against the workspace's quota; `false` when it has no room for them.
+    async fn charge_chats(
+        &self,
+        transaction: &mut SqliteConnection,
+        bytes: i64,
+    ) -> Result<bool, Fault> {
+        let charged = sqlx::query(
+            "UPDATE workspaces SET chat_bytes = chat_bytes + ?2
+             WHERE workspace_id = ?1 AND chat_bytes + ?2 <= ?3",
+        )
+        .bind(self.id.as_str())
+        .bind(bytes)
+        .bind(CHAT_QUOTA)
+        .execute(&mut *transaction)
+        .await
+        .map_err(failed)?;
+        Ok(charged.rows_affected() > 0)
     }
 
     /// The chat's events after `after`, oldest first: at most `limit`, and only as many as
@@ -401,6 +407,13 @@ fn entries(rows: Vec<(i64, String)>, max_bytes: usize) -> Result<Vec<ChatEntry>,
         });
     }
     Ok(taken)
+}
+
+pub(crate) fn chat_quota_full() -> Fault {
+    Fault::new(
+        code!("chat.quota_full"),
+        "The workspace has no room left for chats",
+    )
 }
 
 pub(crate) fn chat_not_found() -> Fault {
@@ -736,7 +749,7 @@ mod tests {
         let over = append(&one, "c-1", &[(Some(3), said("a"))])
             .await
             .unwrap_err();
-        assert_eq!(code(&over), "store.full");
+        assert_eq!(code(&over), "chat.quota_full");
         let chat = one.chat(&id("c-1")).await.unwrap().unwrap();
         assert_eq!(
             (chat.state, chat.seq, chat.core_seq),

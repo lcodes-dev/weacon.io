@@ -75,12 +75,7 @@ pub(crate) fn admit(
     }
     match chat.state {
         ChatState::Open => {}
-        ChatState::Full => {
-            return Err(Fault::new(
-                code!("store.full"),
-                "The workspace has no room for more",
-            ));
-        }
+        ChatState::Full => return Err(crate::db::chat_quota_full()),
         ChatState::Detached | ChatState::Newer => {
             return Err(Fault::new(
                 code!("chat.detached"),
@@ -208,7 +203,10 @@ mod tests {
         let full = chat(ChatState::Full);
         let detached = chat(ChatState::Detached);
 
-        assert_eq!(refused(Some(&full), "m1", prompt("Go", None)), "store.full");
+        assert_eq!(
+            refused(Some(&full), "m1", prompt("Go", None)),
+            "chat.quota_full"
+        );
         assert_eq!(
             refused(Some(&detached), "m1", ChatAction::Interrupt),
             "chat.detached"
