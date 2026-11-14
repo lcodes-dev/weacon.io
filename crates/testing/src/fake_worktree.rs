@@ -3,12 +3,14 @@
 //! chat has no worktree, and this core opens no terminals.
 
 use weacon_protocol::{
-    ChatId, Code, DownloadUrl, Envelope, ErrorBody, Message, WorktreeAction, WorktreeAnswer,
-    WorktreeAnswerKind, WorktreeQueryKind, code,
+    ChatId, Code, DownloadUrl, Envelope, ErrorBody, Message, RequestId, WorkspaceId,
+    WorktreeAction, WorktreeAnswer, WorktreeAnswerKind, WorktreeQueryKind, code,
 };
 
 const CHAT: &str = "c-1";
 const COMPARE: &str = "https://github.com/example/shopping-list/compare/weacon-c-1?expand=1";
+
+type Answer = Result<WorktreeAnswerKind, Code>;
 
 /// Whether the worktree is in the Trash.
 #[derive(Debug, Default)]
@@ -18,57 +20,42 @@ pub(crate) struct FakeWorktree {
 
 impl FakeWorktree {
     /// The answer to a worktree query or command in `envelope`, under its id; none for any other
-    /// message.
+    /// message, or a query or action this build doesn't know.
     pub(crate) fn answer(&mut self, envelope: &Envelope) -> Option<Envelope> {
         let (asked, answer) = if let Message::WorktreeQuery(query) = &envelope.message {
             let asked = (&query.request, &query.workspace, &query.chat);
-            (asked, self.query(&query.chat, &query.query)?)
+            (
+                asked,
+                matches!(query.query, WorktreeQueryKind::State).then(|| self.state(&query.chat))?,
+            )
         } else if let Message::WorktreeCommand(command) = &envelope.message {
             let asked = (&command.request, &command.workspace, &command.chat);
             (asked, self.act(&command.chat, &command.action)?)
         } else {
             return None;
         };
-        let (request, workspace, chat) = asked;
-        let message = match answer {
-            Ok(answer) => Message::WorktreeAnswer(WorktreeAnswer {
-                request: request.clone(),
-                workspace: workspace.clone(),
-                chat: chat.clone(),
-                answer,
-            }),
-            Err(code) => Message::Error(ErrorBody {
-                code,
-                retryable: false,
-            }),
-        };
         Some(Envelope {
             id: envelope.id,
-            message,
+            message: answered(asked, answer),
         })
     }
 
-    fn query(&self, chat: &ChatId, query: &WorktreeQueryKind) -> Option<Answer> {
-        if !matches!(query, WorktreeQueryKind::State) {
-            return None;
-        }
-        Some(self.state(chat))
-    }
-
     fn act(&mut self, chat: &ChatId, action: &WorktreeAction) -> Option<Answer> {
+        match action {
+            WorktreeAction::OpenTerminal => return Some(Err(code!("request.unknown"))),
+            WorktreeAction::Newer => return None,
+            WorktreeAction::Remove
+            | WorktreeAction::Restore
+            | WorktreeAction::OpenPullRequest { .. } => {}
+        }
         if chat.as_str() != CHAT {
             return Some(Err(code!("worktree.none")));
         }
-        match action {
-            WorktreeAction::Remove => self.removed = true,
-            WorktreeAction::Restore => self.removed = false,
-            WorktreeAction::OpenPullRequest { .. } => {
-                let url = DownloadUrl::try_from(COMPARE.to_owned()).ok()?;
-                return Some(Ok(WorktreeAnswerKind::PullRequestPage { url }));
-            }
-            WorktreeAction::OpenTerminal => return Some(Err(code!("request.unknown"))),
-            WorktreeAction::Newer => return None,
+        if let WorktreeAction::OpenPullRequest { .. } = action {
+            let url = DownloadUrl::try_from(COMPARE.to_owned()).ok()?;
+            return Some(Ok(WorktreeAnswerKind::PullRequestPage { url }));
         }
+        self.removed = matches!(action, WorktreeAction::Remove);
         Some(self.state(chat))
     }
 
@@ -84,11 +71,27 @@ impl FakeWorktree {
     }
 }
 
-type Answer = Result<WorktreeAnswerKind, Code>;
+fn answered(
+    (request, workspace, chat): (&RequestId, &WorkspaceId, &ChatId),
+    answer: Answer,
+) -> Message {
+    match answer {
+        Ok(answer) => Message::WorktreeAnswer(WorktreeAnswer {
+            request: request.clone(),
+            workspace: workspace.clone(),
+            chat: chat.clone(),
+            answer,
+        }),
+        Err(code) => Message::Error(ErrorBody {
+            code,
+            retryable: false,
+        }),
+    }
+}
 
 #[cfg(test)]
 mod tests {
-    use weacon_protocol::{RequestId, WorkspaceId, WorktreeCommand, WorktreeQuery};
+    use weacon_protocol::{WorktreeCommand, WorktreeQuery};
 
     use super::*;
 
@@ -106,13 +109,13 @@ mod tests {
         }
     }
 
-    fn state(chat: &str) -> Envelope {
+    fn query(chat: &str, query: WorktreeQueryKind) -> Envelope {
         asked(chat, |request, workspace, chat| {
             Message::WorktreeQuery(WorktreeQuery {
                 request,
                 workspace,
                 chat,
-                query: WorktreeQueryKind::State,
+                query,
                 by: None,
             })
         })
@@ -130,12 +133,20 @@ mod tests {
         })
     }
 
-    // What the answer says, as the id it came under and a short line.
-    fn told(answer: Option<Envelope>) -> (u32, String) {
-        let answer = answer.unwrap();
-        if let Message::Error(ErrorBody { code, retryable }) = &answer.message {
-            assert!(!retryable);
-            return (answer.id, format!("error {}", code.as_str()));
+    fn refused(code: Code) -> Message {
+        Message::Error(ErrorBody {
+            code,
+            retryable: false,
+        })
+    }
+
+    // What answers `asked` under its id: the state or page, or the code it was refused with.
+    fn told(fake: &mut FakeWorktree, asked: &Envelope) -> Answer {
+        let answer = fake.answer(asked).unwrap();
+        assert_eq!(answer.id, 9);
+        if let Message::Error(ErrorBody { code, .. }) = &answer.message {
+            assert_eq!(answer.message, refused(code.clone()));
+            return Err(code.clone());
         }
         let Message::WorktreeAnswer(told) = answer.message else {
             panic!("not a worktree answer");
@@ -148,85 +159,87 @@ mod tests {
             ),
             ("q-1", "w-1", "c-1")
         );
-        (answer.id, format!("{:?}", told.answer))
+        Ok(told.answer)
     }
 
-    const IN_PLACE: &str = "State { removed: false, uncommitted: true, unpushed: true }";
-    const IN_TRASH: &str = "State { removed: true, uncommitted: true, unpushed: true }";
+    fn state(removed: bool) -> WorktreeAnswerKind {
+        WorktreeAnswerKind::State {
+            removed,
+            uncommitted: true,
+            unpushed: true,
+        }
+    }
 
     #[test]
     fn the_worktree_goes_to_the_trash_and_back_and_a_repeat_answers_the_same() {
         let mut fake = FakeWorktree::default();
+        let ask = query("c-1", WorktreeQueryKind::State);
+        let remove = command("c-1", WorktreeAction::Remove);
+        let restore = command("c-1", WorktreeAction::Restore);
 
-        assert_eq!(told(fake.answer(&state("c-1"))), (9, IN_PLACE.to_owned()));
-        assert_eq!(
-            told(fake.answer(&command("c-1", WorktreeAction::Remove))),
-            (9, IN_TRASH.to_owned())
-        );
-        assert_eq!(
-            told(fake.answer(&command("c-1", WorktreeAction::Remove))),
-            (9, IN_TRASH.to_owned())
-        );
-        assert_eq!(told(fake.answer(&state("c-1"))), (9, IN_TRASH.to_owned()));
-        assert_eq!(
-            told(fake.answer(&command("c-1", WorktreeAction::Restore))),
-            (9, IN_PLACE.to_owned())
-        );
-        assert_eq!(
-            told(fake.answer(&command("c-1", WorktreeAction::Restore))),
-            (9, IN_PLACE.to_owned())
-        );
+        assert_eq!(told(&mut fake, &ask), Ok(state(false)));
+        assert_eq!(told(&mut fake, &remove), Ok(state(true)));
+        assert_eq!(told(&mut fake, &remove), Ok(state(true)));
+        assert_eq!(told(&mut fake, &ask), Ok(state(true)));
+        assert_eq!(told(&mut fake, &restore), Ok(state(false)));
+        assert_eq!(told(&mut fake, &restore), Ok(state(false)));
     }
 
     #[test]
     fn a_pull_request_gets_the_compare_page_and_a_terminal_is_refused() {
         let mut fake = FakeWorktree::default();
+        told(&mut fake, &command("c-1", WorktreeAction::Remove)).unwrap();
         let pull = WorktreeAction::OpenPullRequest {
             title: "Merge the lists".to_owned(),
             body: String::new(),
         };
+        let url = DownloadUrl::try_from(COMPARE.to_owned()).unwrap();
 
         assert_eq!(
-            told(fake.answer(&command("c-1", pull))).1,
-            format!("PullRequestPage {{ url: DownloadUrl({COMPARE:?}) }}")
+            told(&mut fake, &command("c-1", pull)),
+            Ok(WorktreeAnswerKind::PullRequestPage { url })
         );
-        assert_eq!(
-            told(fake.answer(&command("c-1", WorktreeAction::OpenTerminal))),
-            (9, "error request.unknown".to_owned())
-        );
+        for chat in ["c-1", "c-2"] {
+            let terminal = fake.answer(&command(chat, WorktreeAction::OpenTerminal));
+            assert_eq!(terminal.unwrap().message, refused(code!("request.unknown")));
+        }
         assert_eq!(fake.answer(&command("c-1", WorktreeAction::Newer)), None);
-        assert_eq!(told(fake.answer(&state("c-1"))).1, IN_PLACE);
+        // Neither moved the worktree.
+        assert_eq!(
+            told(&mut fake, &query("c-1", WorktreeQueryKind::State)),
+            Ok(state(true))
+        );
     }
 
     #[test]
     fn another_chat_has_no_worktree_and_other_messages_get_nothing() {
         let mut fake = FakeWorktree::default();
-        let newer = asked("c-1", |request, workspace, chat| {
-            Message::WorktreeQuery(WorktreeQuery {
-                request,
-                workspace,
-                chat,
-                query: WorktreeQueryKind::Newer,
-                by: None,
-            })
-        });
+        let pull = WorktreeAction::OpenPullRequest {
+            title: String::new(),
+            body: String::new(),
+        };
 
+        for asked in [
+            query("c-2", WorktreeQueryKind::State),
+            command("c-2", WorktreeAction::Remove),
+            command("c-2", WorktreeAction::Restore),
+            command("c-2", pull),
+        ] {
+            assert_eq!(
+                fake.answer(&asked).unwrap().message,
+                refused(code!("worktree.none"))
+            );
+        }
+        assert_eq!(fake.answer(&query("c-1", WorktreeQueryKind::Newer)), None);
+        let unknown = Envelope {
+            id: 1,
+            message: Message::Unknown,
+        };
+        assert_eq!(fake.answer(&unknown), None);
+        // The other chat's remove moved nothing.
         assert_eq!(
-            told(fake.answer(&state("c-2"))),
-            (9, "error worktree.none".to_owned())
-        );
-        assert_eq!(
-            told(fake.answer(&command("c-2", WorktreeAction::Remove))),
-            (9, "error worktree.none".to_owned())
-        );
-        assert_eq!(told(fake.answer(&state("c-1"))).1, IN_PLACE);
-        assert_eq!(fake.answer(&newer), None);
-        assert_eq!(
-            fake.answer(&Envelope {
-                id: 1,
-                message: Message::Unknown
-            }),
-            None
+            told(&mut fake, &query("c-1", WorktreeQueryKind::State)),
+            Ok(state(false))
         );
     }
 }

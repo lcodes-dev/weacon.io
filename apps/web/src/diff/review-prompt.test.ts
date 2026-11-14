@@ -30,7 +30,7 @@ test("each comment names its file, side and lines, then quotes its words", () =>
     [list, logo],
     [
       { id: 1, path: "src/list.rs", first: 1, last: 1, text: "Keep this name." },
-      { id: 2, path: "src/list.rs", first: 2, last: 4, text: "  Why remove these?\nThey sort the list.  " },
+      { id: 2, path: "src/list.rs", first: 2, last: 4, text: "Why remove these?\nThey sort the list.  " },
       { id: 3, path: "logo.png", first: 0, last: 0, text: "Smaller, please." },
     ],
   );
@@ -41,7 +41,7 @@ test("each comment names its file, side and lines, then quotes its words", () =>
       "Review comments on your changes:",
       "src/list.rs, line 12:\n> Keep this name.",
       "src/list.rs, lines old 11 to new 13:\n> Why remove these?\n> They sort the list.",
-      "logo.png, lines:\n> Smaller, please.",
+      "logo.png:\n> Smaller, please.",
     ].join("\n\n"),
   );
 });
@@ -49,6 +49,13 @@ test("each comment names its file, side and lines, then quotes its words", () =>
 test("a comment on a file no longer among the changes still names it", () => {
   assert.equal(
     reviewPrompt([], [{ id: 1, path: "gone.rs", first: 3, last: 5, text: "Bring it back." }]),
-    "Review comments on your changes:\n\ngone.rs, lines:\n> Bring it back.",
+    "Review comments on your changes:\n\ngone.rs:\n> Bring it back.",
+  );
+});
+
+test("a file name can't add a line of its own, and a comment keeps its indentation", () => {
+  assert.equal(
+    reviewPrompt([], [{ id: 1, path: "a\nb.rs", first: 0, last: 0, text: "\n    let x = 1;\n" }]),
+    "Review comments on your changes:\n\na?b.rs:\n>     let x = 1;",
   );
 });

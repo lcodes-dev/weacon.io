@@ -1,59 +1,53 @@
 import { useRef, useState } from "react";
 
-import { type Retry, type Send, after, requestFor } from "../composer/prompt.ts";
-import { newRequestId } from "../ids.ts";
+import type { Late, Send } from "../composer/prompt.ts";
+import { useSend } from "../composer/send.ts";
 import type { Changes } from "./changes.ts";
-import type { Comment } from "./comments.ts";
+import { type Comment, unsent } from "./comments.ts";
 import { DiffView } from "./diff-view.tsx";
 import { reviewPrompt } from "./review-prompt.ts";
 
 /**
  * A chat's changes with the comments on them, kept while `hidden`; its owner (`mine`) can send
- * them to the agent as one prompt, unless `blocked` says why not.
+ * them to the agent as one prompt, unless `blocked` says why not. A comment edited while its
+ * review was on its way stays.
  */
 export function ChatChanges({
   changes,
   hidden,
   mine,
   send,
+  late,
   blocked,
 }: {
   changes: Changes;
   hidden: boolean;
   mine: boolean;
   send: Send;
+  /** How a review ended, heard after its wait ran out. */
+  late: Late | undefined;
   blocked: string | undefined;
 }) {
   const [comments, setComments] = useState<readonly Comment[]>([]);
-  const [sending, setSending] = useState(false);
-  const [problem, setProblem] = useState<string>();
-  // The request the last review was sent under, so sending the same review again can't run it twice.
-  const retry = useRef<Retry>(undefined);
+  // The comments each review sent carried, by its text.
+  const carried = useRef(new Map<string, readonly Comment[]>());
+  const { sending, problem, submit } = useSend(send, late, (text) => {
+    const sent = carried.current.get(text) ?? [];
+    setComments((now) => unsent(now, sent));
+  });
+  const sendReview = async () => {
+    const text = reviewPrompt(changes.files, comments);
+    carried.current.set(text, comments);
+    await submit(text);
+  };
   if (hidden) {
     return null;
   }
-  const sendReview = () => {
-    const text = reviewPrompt(changes.files, comments);
-    const request = requestFor(retry.current, text, newRequestId);
-    const sent = new Set(comments.map(({ id }) => id));
-    setSending(true);
-    setProblem(undefined);
-    void send(text, request).then((ended) => {
-      const next = after(ended, text, request);
-      retry.current = next.retry;
-      setSending(false);
-      setProblem(next.problem);
-      if (ended === "accepted") {
-        // Comments made while it was on its way stay for the next review.
-        setComments((now) => now.filter(({ id }) => !sent.has(id)));
-      }
-    });
-  };
   return (
-    <div className="chat-changes">
+    <div className="pane chat-changes">
       {mine && comments.length > 0 && (
         <div className="review-send">
-          <button type="button" disabled={sending || blocked !== undefined} onClick={sendReview}>
+          <button type="button" disabled={sending || blocked !== undefined} onClick={() => void sendReview()}>
             Send review
           </button>
           {blocked !== undefined && <span className="muted">{blocked}</span>}

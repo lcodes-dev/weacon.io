@@ -1,13 +1,13 @@
-import { type KeyboardEvent, type RefObject, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { type KeyboardEvent, type RefObject, useLayoutEffect, useRef, useState } from "react";
 
-import { newRequestId } from "../ids.ts";
 import "./composer.css";
 import { NO_ATTACHMENTS, attachFiles, removeAttachment, settled } from "./attachments.ts";
 import { type Draft, EMPTY_DRAFT, type MentionItem, type Placed, editDraft, pickMention, query } from "./draft.ts";
 import { AttachButton, Files, useFileDrop } from "./files.tsx";
 import { composing, picker, sends } from "./keys.ts";
 import { offered } from "./mentionables.ts";
-import { type Late, type Retry, type Send, after, afterLate, requestFor } from "./prompt.ts";
+import type { Late, Send } from "./prompt.ts";
+import { useSend } from "./send.ts";
 
 /**
  * The message box. While `blocked` says why, it still takes text, but can't send it. It keeps the
@@ -27,22 +27,12 @@ export function Composer({
   const [placed, setPlaced] = useState<Placed>({ draft: EMPTY_DRAFT, caret: 0 });
   const [active, setActive] = useState(0);
   const [dismissed, setDismissed] = useState<number>();
-  const [sending, setSending] = useState(false);
-  const [problem, setProblem] = useState<string>();
-  const retry = useRef<Retry>(undefined);
+  // A draft edited after it was sent stays in the box.
+  const { sending, problem, submit: deliver, clear } = useSend(send, late, (sent) =>
+    setPlaced((now) => (now.draft.text === sent ? { draft: EMPTY_DRAFT, caret: 0 } : now)),
+  );
   const [files, setFiles] = useState(NO_ATTACHMENTS);
   const box = useRef<HTMLTextAreaElement>(null);
-  useEffect(() => {
-    const next = late === undefined || sending ? undefined : afterLate(retry.current, placed.draft.text, late);
-    if (next === undefined) {
-      return;
-    }
-    setProblem(next.problem);
-    retry.current = next.retry;
-    if (next.text === "") {
-      setPlaced({ draft: EMPTY_DRAFT, caret: 0 });
-    }
-  }, [late]);
   const backdrop = useRef<HTMLDivElement>(null);
   const { draft, caret } = placed;
   const at = query(draft, caret);
@@ -66,19 +56,8 @@ export function Composer({
     }
   };
   const submit = async () => {
-    if (!ready) {
-      return;
-    }
-    const { text } = draft;
-    const request = requestFor(retry.current, text, newRequestId);
-    setSending(true);
-    setProblem(undefined);
-    const next = after(await send(text, request), text, request);
-    setSending(false);
-    setProblem(next.problem);
-    retry.current = next.retry;
-    if (next.text === "") {
-      place({ draft: EMPTY_DRAFT, caret: 0 });
+    if (ready) {
+      await deliver(draft.text);
     }
   };
   const attach = (added: File[]) => setFiles((before) => attachFiles(before, added));
@@ -133,7 +112,7 @@ export function Composer({
           onChange={(event) => {
             place(editDraft(draft, event.target.value, event.target.selectionEnd, (event.nativeEvent as InputEvent).isComposing));
             setFiles(settled);
-            setProblem(undefined);
+            clear();
           }}
           onSelect={(event) => {
             const end = event.currentTarget.selectionEnd;

@@ -54,7 +54,6 @@ pub async fn serve(
         return Err("the client speaks another protocol".into());
     }
     let chat = Mutex::new(FakeChat::new()?);
-    let worktree = Mutex::new(FakeWorktree::default());
     let (run_out, run_lines) = duplex(BUFFER);
     let (reply_sender, replies) = unbounded_channel();
     let playing = play(recording, BufReader::new(tokio::io::empty()), run_out, pace);
@@ -67,7 +66,7 @@ pub async fn serve(
             ))
         ));
     };
-    let keeping = keep(&mut frames, received, (&chat, &worktree), reply_sender);
+    let keeping = keep(&mut frames, received, &chat, reply_sender);
     tokio::pin!(keeping);
     tokio::select! {
         kept = &mut keeping => kept,
@@ -104,9 +103,10 @@ async fn send_all(
 async fn keep(
     frames: &mut (impl Stream<Item = tungstenite::Result<Frame>> + Unpin),
     received: &Path,
-    fakes: (&Mutex<FakeChat>, &Mutex<FakeWorktree>),
+    chat: &Mutex<FakeChat>,
     replies: UnboundedSender<String>,
 ) -> Result<(), Failure> {
+    let mut worktree = FakeWorktree::default();
     let mut file = OpenOptions::new()
         .create(true)
         .append(true)
@@ -116,7 +116,7 @@ async fn keep(
         file.write_all(format!("{text}\n").as_bytes()).await?;
         // Tokio's file writes in the background; a reader may look at any moment.
         file.flush().await?;
-        reply_to(&text, fakes, &replies);
+        reply_to(&text, chat, &mut worktree, &replies);
     }
     Ok(())
 }
@@ -153,16 +153,15 @@ fn send_texts(replies: &UnboundedSender<String>, envelopes: &[Envelope]) {
 // what the chat says to a query or a command, its receipt included.
 fn reply_to(
     text: &str,
-    (chat, worktree): (&Mutex<FakeChat>, &Mutex<FakeWorktree>),
+    chat: &Mutex<FakeChat>,
+    worktree: &mut FakeWorktree,
     replies: &UnboundedSender<String>,
 ) {
     let Ok(envelope) = Envelope::from_json(text.as_bytes()) else {
         return;
     };
     send_texts(replies, &fake_diff::answers(&envelope));
-    if let Ok(mut worktree) = worktree.lock() {
-        send_texts(replies, worktree.answer(&envelope).as_slice());
-    }
+    send_texts(replies, worktree.answer(&envelope).as_slice());
     if let Ok(mut chat) = chat.lock() {
         send_texts(replies, &chat.answer(&envelope));
     }

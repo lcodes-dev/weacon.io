@@ -90,17 +90,11 @@ test("a prompt the socket can't take is lost", async () => {
 test("a late receipt settles the send the box may retry, keeping text edited since", () => {
   const retry = { text: "Ship it", request: "q-1" };
 
-  assert.deepEqual(afterLate(retry, "Ship it", { request: "q-1", settled: "accepted" }), { text: "", problem: undefined, retry: undefined });
-  assert.deepEqual(afterLate(retry, "Ship it now", { request: "q-1", settled: "accepted" }), {
-    text: "Ship it now",
-    problem: undefined,
-    retry: undefined,
-  });
-  assert.deepEqual(afterLate(retry, "Ship it", { request: "q-1", settled: "refused" }), {
+  assert.deepEqual(afterLate(retry, { request: "q-1", settled: "accepted" }), { text: "", problem: undefined, retry: undefined });
+  assert.deepEqual(afterLate(retry, { request: "q-1", settled: "refused" }), {
     text: "Ship it",
     problem: "The message wasn't sent.",
     retry: undefined,
   });
-  assert.equal(afterLate(retry, "Ship it", { request: "q-2", settled: "accepted" }), undefined);
-  assert.equal(afterLate(undefined, "Ship it", { request: "q-1", settled: "accepted" }), undefined);
+  assert.equal(afterLate(retry, { request: "q-2", settled: "accepted" }), undefined);
 });

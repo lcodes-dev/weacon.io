@@ -88,10 +88,15 @@ export function ChatPageView({
             away={shown !== "run"}
           />
         </div>
-        <div className="pane" hidden={shown !== "changes"}>
-          {/* The fake server's page shows its one person their own chat. */}
-          <ChatChanges changes={changes} hidden={shown !== "changes"} mine send={send} blocked={blocked(status, chatRef)} />
-        </div>
+        <ChatChanges
+          changes={changes}
+          hidden={shown !== "changes"}
+          // The fake server's page shows its one person their own chat.
+          mine
+          send={send}
+          late={late}
+          blocked={blocked(status, chatRef)}
+        />
         {shown === "settings" && (
           <div className="pane">
             <Settings me={me} server={status.state === "live" ? status.server : undefined} />

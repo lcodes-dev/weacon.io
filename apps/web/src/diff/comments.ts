@@ -25,6 +25,11 @@ export function editComment(comments: readonly Comment[], id: number, text: stri
   return comments.map((comment) => (comment.id === id ? { ...comment, text } : comment));
 }
 
+/** The comments of `now` a review that sent `sent` leaves: those it didn't carry, or carried with other words. */
+export function unsent(now: readonly Comment[], sent: readonly Comment[]): readonly Comment[] {
+  return now.filter((comment) => !sent.some(({ id, text }) => id === comment.id && text === comment.text));
+}
+
 export function removeComment(comments: readonly Comment[], id: number): readonly Comment[] {
   return comments.filter((comment) => comment.id !== id);
 }

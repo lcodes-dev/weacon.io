@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { type Comment, addComment, editComment, removeComment, selectRows, span } from "./comments.ts";
+import { type Comment, addComment, editComment, removeComment, selectRows, span, unsent } from "./comments.ts";
 
 test("a pick starts a selection, and an extending pick in the same file moves its end", () => {
   const one = selectRows(undefined, "a.rs", 5, false);
@@ -26,4 +26,19 @@ test("comments get the next id, and are edited and removed by it", () => {
   assert.deepEqual(editComment(both, 1, "Why not?"), [{ ...comment, text: "Why not?" }, both[1]]);
   assert.deepEqual(removeComment(both, 1), [both[1]]);
   assert.deepEqual(removeComment(both, 3), both);
+});
+
+test("a sent review leaves the comments it didn't carry, and those edited since", () => {
+  const sent: Comment[] = [
+    { id: 1, path: "a.rs", first: 1, last: 2, text: "Why?" },
+    { id: 2, path: "a.rs", first: 4, last: 4, text: "Rename." },
+  ];
+  const now: Comment[] = [
+    sent[0]!,
+    { ...sent[1]!, text: "Rename it to total." },
+    { id: 3, path: "b.rs", first: 0, last: 0, text: "Added while sending." },
+  ];
+
+  assert.deepEqual(unsent(now, sent), now.slice(1));
+  assert.deepEqual(unsent(now, []), now);
 });
