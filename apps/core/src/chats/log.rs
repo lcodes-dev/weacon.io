@@ -59,7 +59,7 @@ pub(crate) enum Seen {
     Never,
     /// The same prompt, committed but without a receipt yet: it may not have been queued.
     Pending,
-    /// With the same content: nothing more to do.
+    /// The same command again: the caller finishes what its first try began.
     Same,
     /// With other content.
     Other,

@@ -65,8 +65,8 @@ impl<A: Agent> Engine<A> {
         let Some(record) = self.runs.of(key) else {
             return Ok(());
         };
-        // A turn whose agent is gone is over, even if the journal couldn't be told.
-        if record.turn.is_some() && self.is_live(key) {
+        // `save_ended` has ended a turn whose agent is gone, so one still here is running.
+        if record.turn.is_some() {
             return Ok(());
         }
         let Some(next) = record.queue.first().cloned() else {

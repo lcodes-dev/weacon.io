@@ -18,27 +18,41 @@ impl<A: Agent> Engine<A> {
         command: ChatCommand,
     ) -> Result<(), Fault> {
         let request = command.request;
-        let seen = self.open(key).await?.log.seen(&request, &command.action);
-        let seen = seen.await?;
+        let action = command.action;
+        let seen = self.open(key).await?.log.seen(&request, &action).await?;
         match seen {
-            Seen::Never | Seen::Pending => {}
-            // Whatever cut the first try short, what it began still happens: an answer still
-            // waiting reaches its run, and a prompt it queued gets its turn.
-            Seen::Same => {
-                return match command.action {
-                    ChatAction::Permission { answer } => self.deliver(key, &request, answer).await,
-                    ChatAction::Interrupt => self.stop_turn(key, &request).await,
-                    ChatAction::Prompt { .. } | ChatAction::Newer => self.advance(key).await,
-                };
-            }
-            Seen::Other => {
-                return Err(Fault::new(
-                    code!("request.conflict"),
-                    "That request id was used for another command",
-                ));
-            }
+            Seen::Same => self.resume(key, &request, action).await,
+            Seen::Other => Err(Fault::new(
+                code!("request.conflict"),
+                "That request id was used for another command",
+            )),
+            Seen::Never | Seen::Pending => self.act(key, request, action, seen).await,
         }
-        match command.action {
+    }
+
+    // Whatever cut the first try short, what it began still happens: an answer still waiting
+    // reaches its run, and a prompt it queued gets its turn.
+    async fn resume(
+        &mut self,
+        key: &ChatKey,
+        request: &RequestId,
+        action: ChatAction,
+    ) -> Result<(), Fault> {
+        match action {
+            ChatAction::Permission { answer } => self.deliver(key, request, answer).await,
+            ChatAction::Interrupt => self.stop_turn(key, request).await,
+            ChatAction::Prompt { .. } | ChatAction::Newer => self.advance(key).await,
+        }
+    }
+
+    async fn act(
+        &mut self,
+        key: &ChatKey,
+        request: RequestId,
+        action: ChatAction,
+        seen: Seen,
+    ) -> Result<(), Fault> {
+        match action {
             ChatAction::Prompt { text, repo, .. } => {
                 if seen != Seen::Pending {
                     self.log_prompt(key, &request, &text, repo).await?;
@@ -100,30 +114,24 @@ impl<A: Agent> Engine<A> {
         request: RequestId,
         answer: PermissionAnswer,
     ) -> Result<(), Fault> {
-        if !self.waits_for(key, &answer).await? {
+        let live = self.is_live(key);
+        let chat = self.open(key).await?;
+        // The log forgets another run's prompts as soon as a newer run reports.
+        if !live || !chat.log.runs().waits(&answer.run, answer.prompt) {
             return Err(Fault::new(
                 code!("agent.no_such_prompt"),
                 "That permission prompt isn't waiting",
             ));
         }
-        let answered = PendingAnswer {
+        let answers = &mut chat.pending_answers;
+        answers.retain(|other| other.answer.prompt != answer.prompt);
+        answers.push(PendingAnswer {
             request: request.clone(),
             answer: answer.clone(),
-        };
-        let answers = &mut self.open(key).await?.pending_answers;
-        answers.retain(|other| other.answer.prompt != answer.prompt);
-        answers.push(answered);
+        });
         self.commit_receipt(key, &request, Outcome::Completed)
             .await?;
         self.deliver(key, &request, answer).await
-    }
-
-    // Whether the prompt waits, as the log says, for a person to answer it in a run still going.
-    async fn waits_for(&mut self, key: &ChatKey, answer: &PermissionAnswer) -> Result<bool, Fault> {
-        // The log forgets another run's prompts as soon as a newer run reports.
-        let live = self.is_live(key);
-        let log = &self.open(key).await?.log;
-        Ok(live && log.runs().waits(&answer.run, answer.prompt))
     }
 
     // Gives the answer `request` committed to its run. It is logged unless the log has it
@@ -134,15 +142,17 @@ impl<A: Agent> Engine<A> {
         request: &RequestId,
         answer: PermissionAnswer,
     ) -> Result<(), Fault> {
-        let given = PendingAnswer {
-            request: request.clone(),
-            answer: answer.clone(),
-        };
         let live = self.is_live(key);
         let chat = self.open(key).await?;
-        if !live || !chat.pending_answers.contains(&given) {
+        let pending = |other: &PendingAnswer| other.request == *request && other.answer == answer;
+        let Some(at) = chat
+            .pending_answers
+            .iter()
+            .position(pending)
+            .filter(|_| live)
+        else {
             return Ok(());
-        }
+        };
         if chat.log.runs().waits(&answer.run, answer.prompt) {
             // In the log before the agent is told, so a crash between the two leaves the truth.
             let update = RunUpdate {
@@ -154,7 +164,7 @@ impl<A: Agent> Engine<A> {
             self.commit(key, ChatEvent::Run { update }).await?;
         }
         let chat = self.open(key).await?;
-        chat.pending_answers.retain(|other| *other != given);
+        chat.pending_answers.remove(at);
         let run = answer.run.clone();
         let resumed = !chat.log.runs().waiting.iter().any(|waits| waits.run == run);
         self.order(key, Order::Answer(answer));
