@@ -1,5 +1,5 @@
 import type { End } from "../connection.ts";
-import { isId } from "../place.ts";
+import { isId } from "../ids.ts";
 import type {
   AccountSignedIn,
   AccountSignInFinish,
