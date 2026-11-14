@@ -152,7 +152,7 @@ pub(crate) fn task_not_found() -> Fault {
 
 fn refused(error: EditError) -> Fault {
     match error {
-        EditError::Stale { .. } => Fault::new(
+        EditError::Stale => Fault::new(
             code!("task.stale"),
             "The task has changed since it was read",
         ),
