@@ -5,6 +5,7 @@ use crate::area::areas;
 use crate::contracts::{self, Contract};
 use crate::edges::{Edge, edges};
 use crate::facts::{Facts, FileKind, Reader};
+use crate::flows::{self, Flow};
 use crate::graph::{file_links, nodes};
 use crate::rank::central;
 use crate::{Area, Error, Symbol};
@@ -34,6 +35,8 @@ pub struct Index {
     pub edges: Vec<Edge>,
     /// Sorted.
     pub contracts: Vec<Contract>,
+    /// Sorted by file and line.
+    pub flows: Vec<Flow>,
     /// Every item's path, most central first.
     pub(crate) central: Vec<String>,
 }
@@ -115,11 +118,13 @@ pub(crate) fn assemble(facts: &[Facts]) -> Index {
     let edges = edges(&crates, &named_by_file, &outlines);
     let contracts = contracts::assemble(&crates, &outlines);
     let central = central(&nodes, &edges);
+    let flows = flows::check(facts, &central, &edges);
     Index {
         crates,
         areas,
         edges,
         contracts,
+        flows,
         central,
     }
 }

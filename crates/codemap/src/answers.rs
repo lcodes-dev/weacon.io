@@ -6,7 +6,7 @@ mod item;
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::graph::nodes;
-use crate::{ContractKind, EdgeKind, Index, Symbol, edges::id};
+use crate::{Break, ContractKind, EdgeKind, Index, Symbol, edges::id};
 
 /// How often a file changed, as git counts it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -204,6 +204,29 @@ impl Index {
             text.line(&format!(
                 "- {}  {commits} commits, {depended} edges in",
                 changed.file
+            ));
+        }
+        text.finish()
+    }
+
+    /// The flows the documents pin, and where each breaks.
+    #[must_use]
+    pub fn flows(&self, budget: usize) -> String {
+        let mut text = Text::new(budget);
+        text.line(&format!("Flows pinned in the docs: {}.", self.flows.len()));
+        for flow in &self.flows {
+            let state = match &flow.breaks {
+                None => "holds".to_owned(),
+                Some(Break::Missing(step)) => format!("breaks: no item {step}"),
+                Some(Break::Unreached(from, to)) => {
+                    format!("breaks: {from} doesn't reach {to} through calls")
+                }
+            };
+            text.line(&format!(
+                "- {}:{}  {}: {state}",
+                flow.file,
+                flow.line,
+                flow.steps.join(" -> ")
             ));
         }
         text.finish()

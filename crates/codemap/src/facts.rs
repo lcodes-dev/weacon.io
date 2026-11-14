@@ -3,6 +3,7 @@ use std::path::Path;
 use serde::Deserialize;
 use tree_sitter::Parser;
 
+use crate::flows::written;
 use crate::paths::{NamedPath, named_paths};
 use crate::symbols::{Outline, symbols};
 use crate::syntax::{parse, rust_parser};
@@ -24,6 +25,8 @@ pub(crate) enum FileKind {
         outline: Outline,
         named_paths: Vec<NamedPath>,
     },
+    /// A Markdown file, and the flows it pins with their lines.
+    Doc(Vec<(Vec<String>, usize)>),
 }
 
 /// Reads files into `Facts`, reusing one parser.
@@ -51,7 +54,7 @@ impl Reader {
         })
     }
 
-    /// The facts of a `.rs` file or of a `Cargo.toml` with a package; `None` for anything else,
+    /// The facts of a `.rs` or `.md` file or of a `Cargo.toml` with a package; `None` for anything else,
     /// a manifest that isn't valid included.
     ///
     /// # Errors
@@ -59,12 +62,14 @@ impl Reader {
     /// When the parser gives up on the file.
     pub(crate) fn facts(&mut self, file: &SourceFile) -> Result<Option<Facts>, Error> {
         let name = file.path.rsplit('/').next().unwrap_or_default();
+        let extension = Path::new(name)
+            .extension()
+            .and_then(|extension| extension.to_str());
         let kind = if name == "Cargo.toml" {
             manifest(&file.text)
-        } else if Path::new(name)
-            .extension()
-            .is_some_and(|extension| extension == "rs")
-        {
+        } else if extension == Some("md") {
+            Some(FileKind::Doc(written(&file.text)))
+        } else if extension == Some("rs") {
             let tree = parse(&mut self.parser, &file.text)?;
             let source = file.text.as_bytes();
             Some(FileKind::Rust {
@@ -126,7 +131,12 @@ mod tests {
             .collect();
         assert_eq!(names, ["top"]);
         assert_eq!(named_paths.len(), 1);
-        assert_eq!(read("README.md", "fn top() {}"), None);
+        assert_eq!(read("notes.txt", "fn top() {}"), None);
+        let doc = read("docs/a.md", "See `flow:a::run->a::serve`.\n").unwrap();
+        assert_eq!(
+            doc.kind,
+            FileKind::Doc(vec![(vec!["a::run".to_owned(), "a::serve".to_owned()], 1)])
+        );
         assert_eq!(read("src/lib.rs.bak", "fn top() {}"), None);
     }
 }

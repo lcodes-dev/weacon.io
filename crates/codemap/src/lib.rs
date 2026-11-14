@@ -10,6 +10,7 @@ mod contracts;
 mod edges;
 mod facts;
 mod fingerprint;
+mod flows;
 mod graph;
 mod index;
 mod louvain;
@@ -29,6 +30,7 @@ pub use area::Area;
 pub use contracts::{Contract, ContractKind};
 pub use edges::{Edge, EdgeKind};
 pub use fingerprint::Fingerprint;
+pub use flows::{Break, Flow};
 pub use index::{Crate, Index, Module, SourceFile, index};
 pub use symbols::{Kind, Symbol};
 
