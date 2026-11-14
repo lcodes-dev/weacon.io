@@ -75,16 +75,18 @@ fn from_person(message: Message, transcript: &mut Transcript) {
         transcript.said.push(Said::Prompt(text.clone()));
         return;
     }
-    let mut texts = Vec::new();
+    // One prompt, where its first text was.
+    let mut prompt: Option<(usize, Vec<String>)> = None;
     for block in message.blocks() {
         if let Block::Text { text } = block {
-            texts.push(text);
+            let at = transcript.said.len();
+            prompt.get_or_insert((at, Vec::new())).1.push(text);
         } else {
             transcript.said.extend(event(block).map(Said::Event));
         }
     }
-    if !texts.is_empty() {
-        transcript.said.push(Said::Prompt(texts.join("\n\n")));
+    if let Some((at, texts)) = prompt {
+        transcript.said.insert(at, Said::Prompt(texts.join("\n\n")));
     }
 }
 
@@ -137,6 +139,25 @@ mod tests {
                 ],
                 skipped: 0,
             }
+        );
+    }
+
+    #[test]
+    fn a_prompt_keeps_its_place_among_tool_results() {
+        let transcript = read(&[json!({ "type": "user", "message": { "content": [
+            { "type": "tool_result", "tool_use_id": "t1" },
+            { "type": "text", "text": "Stop" },
+            { "type": "tool_result", "tool_use_id": "t2" },
+            { "type": "text", "text": "here" },
+        ] } })]);
+
+        assert_eq!(
+            transcript.said,
+            [
+                Said::Event(tool_done("t1", false)),
+                Said::Prompt("Stop\n\nhere".to_owned()),
+                Said::Event(tool_done("t2", false)),
+            ]
         );
     }
 
