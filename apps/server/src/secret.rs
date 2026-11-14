@@ -4,7 +4,7 @@ use std::fs::{self, File};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 
-use hmac::{Hmac, Mac};
+use hmac::{Hmac, KeyInit, Mac};
 use sha2::Sha256;
 use weacon_appkit::{owner_only, private_append, sync_dir};
 use weacon_observability::{Fault, Logger};
