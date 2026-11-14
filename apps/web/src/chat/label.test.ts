@@ -8,12 +8,12 @@ const members = new Map([["m-1", "Ada"]]);
 
 test("a label names the agent, whose it is and where it runs, as far as that is known", () => {
   const cases: [AgentRef | undefined, string][] = [
-    [{ kind: "claude", owner: { kind: "member", member: "m-1" }, machine: "laptop" }, "Ada's Claude · laptop"],
+    [{ kind: "claude", owner: { kind: "member", member: "m-1" }, machine: "laptop" }, "Ada's Claude Code · laptop"],
     [{ kind: "codex", owner: { kind: "shared" }, machine: "team VPS" }, "Shared Codex · team VPS"],
-    [{ kind: "claude", owner: { kind: "member", member: "m-1" } }, "Ada's Claude"],
-    [{ kind: "claude", owner: { kind: "member", member: "m-9" }, machine: "laptop" }, "Claude · laptop"],
+    [{ kind: "claude", owner: { kind: "member", member: "m-1" } }, "Ada's Claude Code"],
+    [{ kind: "claude", owner: { kind: "member", member: "m-9" }, machine: "laptop" }, "Claude Code · laptop"],
     [{ kind: "codex", owner: { kind: "shared" } }, "Shared Codex"],
-    [{ kind: "claude", owner: { kind: "member", member: "m-9" } }, "Claude"],
+    [{ kind: "claude", owner: { kind: "member", member: "m-9" } }, "Claude Code"],
     [{ kind: "gemini" as AgentRef["kind"], owner: { kind: "member", member: "m-1" } }, "Ada's Agent"],
     [undefined, "Agent"],
   ];

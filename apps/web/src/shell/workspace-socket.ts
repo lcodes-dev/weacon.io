@@ -1,6 +1,6 @@
-import { createContext, useContext, useSyncExternalStore } from "react";
+import { useState, useSyncExternalStore } from "react";
 
-import { HELLO_ID } from "../connection.ts";
+import { HELLO_ID, type WebCapability } from "../connection.ts";
 import type { Incoming } from "../incoming.ts";
 import type { Envelope, WorkspaceId } from "../protocol.ts";
 
@@ -12,6 +12,7 @@ export class WorkspaceSocket {
   #lastId = HELLO_ID;
   #offered: readonly string[] = [];
   #watchers = new Set<() => void>();
+  #connection = 0;
 
   constructor(workspace: WorkspaceId) {
     this.workspace = workspace;
@@ -23,6 +24,9 @@ export class WorkspaceSocket {
    */
   attach(send: ((envelope: Envelope) => void) | undefined, offered?: readonly string[]): void {
     this.#send = send;
+    if (send !== undefined) {
+      this.#connection += 1;
+    }
     if (offered !== undefined && offered !== this.#offered) {
       this.#offered = offered;
       for (const watcher of [...this.#watchers]) {
@@ -37,8 +41,13 @@ export class WorkspaceSocket {
     return () => this.#watchers.delete(watcher);
   }
 
+  /** Counts the connections attached so far, so what one connection holds isn't taken for the next's. */
+  get connection(): number {
+    return this.#connection;
+  }
+
   /** Whether the server offered `capability` when it last welcomed the feed. */
-  offers(capability: string): boolean {
+  offers(capability: WebCapability): boolean {
     return this.#offered.includes(capability);
   }
 
@@ -67,20 +76,26 @@ export class WorkspaceSocket {
   }
 }
 
-/** The open workspace's socket, for its pages. */
-export const WorkspaceSocketContext = createContext<WorkspaceSocket | undefined>(undefined);
-
-/** The open workspace's socket; only a page of the open workspace may ask for it. */
-export function useWorkspaceSocket(): WorkspaceSocket {
-  const socket = useContext(WorkspaceSocketContext);
-  if (socket === undefined) {
-    throw new Error("useWorkspaceSocket outside an open workspace");
+/** One socket per open `workspace`, the same for as long as it stays open; none while none is. */
+export function useSocketFor(workspace: WorkspaceId): WorkspaceSocket;
+export function useSocketFor(workspace: WorkspaceId | undefined): WorkspaceSocket | undefined;
+export function useSocketFor(workspace: WorkspaceId | undefined): WorkspaceSocket | undefined {
+  // Held in state, which React keeps, where a memo it may drop would open a second feed.
+  const [held, setHeld] = useState(() => socketFor(workspace));
+  if (held?.workspace === workspace) {
+    return held;
   }
-  return socket;
+  const next = socketFor(workspace);
+  setHeld(next);
+  return next;
+}
+
+function socketFor(workspace: WorkspaceId | undefined): WorkspaceSocket | undefined {
+  return workspace === undefined ? undefined : new WorkspaceSocket(workspace);
 }
 
 /** Whether the server offers `capability` on `socket`, kept current as welcomes change it. */
-export function useOffers(socket: WorkspaceSocket | undefined, capability: string): boolean {
+export function useOffers(socket: WorkspaceSocket | undefined, capability: WebCapability): boolean {
   return useSyncExternalStore(
     (changed) => socket?.watch(changed) ?? (() => {}),
     () => socket?.offers(capability) ?? false,

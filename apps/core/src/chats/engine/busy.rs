@@ -2,25 +2,18 @@
 //! memory holds.
 
 use tokio::sync::oneshot;
-use weacon_observability::Fault;
 use weacon_protocol::RunState;
 
-use super::{Agent, Ask, Chats, Engine, stopped};
-
-impl Chats {
-    /// Whether an agent is on a turn or waits on a person, or a session or a turn's end the
-    /// journal couldn't save yet is only in memory, which a restart would cut off or lose.
-    pub(crate) async fn busy(&self) -> Result<bool, Fault> {
-        let (answer, answered) = oneshot::channel();
-        self.asks
-            .send(Ask::Busy(answer))
-            .await
-            .map_err(|_| stopped())?;
-        answered.await.map_err(|_| stopped())
-    }
-}
+use super::{Agent, Engine};
 
 impl<A: Agent> Engine<A> {
+    // Saves what it can first, so one failed write doesn't keep the engine busy for good.
+    pub(super) async fn answer_busy(&mut self, answer: oneshot::Sender<bool>) {
+        self.save_pending_sessions().await;
+        // An asker that's gone needs no answer.
+        answer.send(self.busy()).unwrap_or_default();
+    }
+
     pub(super) fn busy(&self) -> bool {
         self.open_chats.iter().any(|(key, chat)| {
             let live = chat.orders.is_some()

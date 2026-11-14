@@ -47,7 +47,7 @@ export function fromSnapshot(snapshot: Snapshot): Chat {
     base: snapshot.seq,
     waiting: new Set(snapshot.waiting),
     entries,
-    runs: snapshot.runs,
+    runs: logged(snapshot.runs, entries),
     items: [],
   };
   return { ...chat, items: fold(chat, entries) };
@@ -114,7 +114,13 @@ export function older(chat: Chat, events: readonly ChatEntry[]): Chat {
       showAnswer(earlier, entry);
     }
   }
-  return { ...chat, first: before[0]?.seq ?? chat.first, entries: [...before, ...chat.entries], items: [...earlier, ...chat.items] };
+  return {
+    ...chat,
+    first: before[0]?.seq ?? chat.first,
+    entries: [...before, ...chat.entries],
+    runs: logged(chat.runs, before),
+    items: [...earlier, ...chat.items],
+  };
 }
 
 /** `chat` with the prompt `prompt` of `run` no longer answerable, as once its answer is taken. */
@@ -249,6 +255,20 @@ function turnKey(seq: number, run: RunId): string {
   return `t${seq}-${run}`;
 }
 
+/**
+ * `runs` with the runs whose statuses `entries` log, so an earlier run's turns name its agent. A
+ * run `runs` already holds keeps its state; one only the log knows is over, since `runs` has every run still on.
+ */
+function logged(runs: ReadonlyMap<RunId, Run>, entries: readonly ChatEntry[]): ReadonlyMap<RunId, Run> {
+  const next = new Map(runs);
+  for (const { event } of entries) {
+    if (event.kind === "run_status") {
+      const known = runs.get(event.status.run);
+      next.set(event.status.run, { state: known?.state ?? "ended", agent: known?.agent ?? agentOf(event.status, next) });
+    }
+  }
+  return next;
+}
 
 // A status that names no agent keeps the one the run had.
 function agentOf(status: RunStatus, runs: ReadonlyMap<RunId, Run>): AgentRef | undefined {

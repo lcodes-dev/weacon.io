@@ -1,12 +1,12 @@
 import { type RefObject, memo, useLayoutEffect, useRef } from "react";
 
-import { type Answers, askKey } from "../chat/asks.ts";
-import type { Line } from "../chat/lines.ts";
-import { AskView } from "../chat/parts.tsx";
+import { type Answers, askKey } from "./asks.ts";
+import type { Line } from "./lines.ts";
+import { AskView } from "./ask-view.tsx";
 import type { Outcome, RunId } from "../protocol.ts";
-import { MarkdownView } from "./markdown-view.ts";
-import { useFollow, useHeldFormatting } from "./transcript-hooks.ts";
-import type { TranscriptRow, ToolState } from "./transcript.ts";
+import { MarkdownView } from "../transcript/markdown-view.ts";
+import { useFollow, useHeldFormatting } from "../transcript/transcript-hooks.ts";
+import type { TranscriptRow, ToolState } from "../transcript/transcript.ts";
 
 /** What answering a chat's permission prompts needs: the answers on their way, and a way to send one. */
 export type Answerer = { answers: Answers; answer: (run: RunId, prompt: number, allow: boolean) => void };
@@ -25,7 +25,8 @@ export function TranscriptView({
 }: {
   lines: readonly Line[];
   away: boolean;
-  answering: Answerer;
+  /** Answers the permission prompts; none for someone who may not. */
+  answering: Answerer | undefined;
   /** Shows the events before the first one shown, when there are any. */
   older: (() => void) | undefined;
   /** Whether the chat's first snapshot is on its way. */
@@ -106,7 +107,7 @@ function useKeptPlace(
   };
 }
 
-function LineView({ line, formatted, answering }: { line: Line; formatted: boolean; answering: Answerer }) {
+function LineView({ line, formatted, answering }: { line: Line; formatted: boolean; answering: Answerer | undefined }) {
   switch (line.kind) {
     case "prompt":
       return <div className="row prompt">{line.text}</div>;
@@ -116,8 +117,8 @@ function LineView({ line, formatted, answering }: { line: Line; formatted: boole
       return (
         <AskView
           ask={line.ask}
-          answering={answering.answers.get(askKey(line.run, line.ask.prompt))}
-          onAnswer={(allow) => answering.answer(line.run, line.ask.prompt, allow)}
+          answering={answering?.answers.get(askKey(line.run, line.ask.prompt))}
+          onAnswer={answering && ((allow) => answering.answer(line.run, line.ask.prompt, allow))}
         />
       );
     case "row":

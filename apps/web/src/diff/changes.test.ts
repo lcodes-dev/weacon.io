@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import type { DiffFile, Envelope } from "../protocol.ts";
-import { NO_CHANGES, ask, canAsk, cut, needsAsking, receive, rows } from "./changes.ts";
+import { NO_CHANGES, ask, cut, needsAsking, receive, rows } from "./changes.ts";
 
 const file = (path: string): DiffFile => ({
   path,
@@ -105,15 +105,6 @@ test("a connection that ends cuts short only changes still coming", () => {
   assert.equal(cut(all), all);
   assert.equal(cut(none), none);
   assert.equal(cut(NO_CHANGES), NO_CHANGES);
-});
-
-test("changes can be asked for only on a live connection to a server that offers them", () => {
-  const server = { name: "weacon-server", version: "0.1.0", commit: "abc" };
-
-  assert.equal(canAsk({ state: "live", server, capabilities: ["run.stream", "diff.view"] }), true);
-  assert.equal(canAsk({ state: "live", server, capabilities: ["run.stream"] }), false);
-  assert.equal(canAsk({ state: "connecting" }), false);
-  assert.equal(canAsk({ state: "ended", code: "connection.lost" }), false);
 });
 
 test("an unchanged chat has no files, and a newer peer's kinds of file still arrive", () => {

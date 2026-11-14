@@ -65,6 +65,10 @@ impl Watch {
         }
     }
 
+    pub(crate) const fn level(&self) -> Level {
+        self.level
+    }
+
     /// Reads the free space off the async runtime, since a slow disk can block.
     pub(crate) async fn check(&mut self, log: &Logger) {
         let (dir, free_space) = (self.dir.clone(), self.free_space);

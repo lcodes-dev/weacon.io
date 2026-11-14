@@ -58,7 +58,7 @@ pub(crate) fn written(text: &str) -> Vec<(Vec<String>, usize)> {
 pub(crate) fn check<T>(facts: &[Facts], items: &BTreeMap<String, T>, edges: &[Edge]) -> Vec<Flow> {
     let written = facts.iter().flat_map(|facts| {
         let flows = match &facts.kind {
-            FileKind::Doc(flows) => flows.as_slice(),
+            FileKind::Doc { flows, .. } => flows.as_slice(),
             FileKind::Manifest(_) | FileKind::Rust { .. } => &[],
         };
         flows

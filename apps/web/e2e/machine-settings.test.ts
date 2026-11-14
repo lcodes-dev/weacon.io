@@ -31,6 +31,9 @@ test("a person reads and changes a machine's settings for the open workspace, th
   await page.getByRole("button", { name: "Personal" }).click();
   await page.getByRole("heading", { name: "Personal" }).waitFor();
   await page.getByRole("button", { name: "Settings" }).click();
+  // Paired with no workspace open, so they don't open by themselves once one is.
+  await row.getByRole("button", { name: "Studio settings" }).waitFor();
+  assert.equal(await row.getByRole("region", { name: "Studio settings" }).count(), 0);
   await row.getByRole("button", { name: "Studio settings" }).click();
   await row.getByText("This machine isn't connected. Start Weacon on it, then try again.").waitFor();
 
@@ -75,4 +78,26 @@ test("a person reads and changes a machine's settings for the open workspace, th
   await settings.getByText("Only this machine's owner can see or change its settings.").waitFor();
   await settings.getByText("On.", { exact: true }).waitFor();
   assert.deepEqual({ ...machine.settings, sign_ins: [] }, { access: "ask_first", team: true, reports: true, sign_ins: [] });
+});
+
+test("a machine paired with a workspace open shows its settings at once, to ask about error reports", { timeout: 600_000 }, async (t) => {
+  const served = await serve();
+  t.after(() => served.close());
+  const { page } = served;
+  await signIn(served);
+  await page.getByRole("button", { name: "Personal" }).click();
+  await page.getByRole("heading", { name: "Personal" }).waitFor();
+  await page.getByRole("button", { name: "Settings" }).click();
+  const token = await pair(page);
+  const machine = await core(page, token, START);
+  t.after(() => machine.close());
+  const row = page.getByRole("list", { name: "Machines" }).getByRole("listitem").filter({ hasText: "Studio" });
+
+  // Nobody opened them; they ask until the person answers, and nothing is sent meanwhile.
+  const settings = row.getByRole("region", { name: "Studio settings" });
+  await settings.getByText("Not chosen yet, so none are sent.").waitFor();
+  assert.equal(machine.settings.reports, undefined);
+  await settings.getByRole("button", { name: "Keep off" }).click();
+  await settings.getByText("Off.", { exact: true }).waitFor();
+  assert.equal(machine.settings.reports, false);
 });
