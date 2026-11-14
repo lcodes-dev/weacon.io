@@ -1,7 +1,7 @@
 import { memo, useRef } from "react";
 
 import { MarkdownView } from "./markdown-view.ts";
-import type { Outcome } from "./protocol.ts";
+import type { Outcome } from "../protocol.ts";
 import { useFollow, useHeldFormatting } from "./transcript-hooks.ts";
 import type { Row, ToolState } from "./transcript.ts";
 

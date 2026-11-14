@@ -1,4 +1,4 @@
-import type { DiffContent, FileChange } from "../protocol.ts";
+import type { DiffContent, FileChange, LineOp } from "../protocol.ts";
 import type { Changes, Row } from "./changes.ts";
 
 /** What the page says above a chat's files, or instead of them. */
@@ -31,10 +31,16 @@ export function changeText(change: FileChange): string {
   }
 }
 
+const OPS: readonly string[] = ["context", "added", "removed"] satisfies LineOp[];
+
 /** What a file shows instead of lines, if it has none to show. */
 export function contentText(content: DiffContent): string | undefined {
   switch (content.kind) {
     case "text":
+      if (!content.hunks.every((hunk) => hunk.lines.every((line) => OPS.includes(line.op)))) {
+        // A newer core's line this app can't number.
+        return "This app can't show this file.";
+      }
       return content.hunks.length === 0 ? "Only the file's mode changed." : undefined;
     case "binary":
       return "Binary file.";

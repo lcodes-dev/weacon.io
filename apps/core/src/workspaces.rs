@@ -15,14 +15,13 @@ use weacon_protocol::{AccessLevel, AgentKind, WorkspaceId, code};
 use access::Settings;
 pub(crate) use access::{parse_level, run as access};
 
-use crate::app::{App, state_unavailable};
-use crate::daemon::runtime;
+use crate::app::{App, runtime};
 use crate::platform;
 
 /// Runs the vendor's own sign-in for `agent` in this terminal, against `workspace`'s config
 /// folder.
 pub(crate) fn login(app: &App, agent: AgentKind, workspace: &WorkspaceId) -> Result<(), Fault> {
-    let state_dir = app.state_dir.as_deref().ok_or_else(state_unavailable)?;
+    let state_dir = app.state_dir()?;
     let workspaces = Workspaces::new(state_dir, app.path.clone());
     let launch = workspaces.prepared(workspace, agent, workspaces.root(workspace))?;
     runtime()?.block_on(launch.log_in())?;
@@ -31,7 +30,7 @@ pub(crate) fn login(app: &App, agent: AgentKind, workspace: &WorkspaceId) -> Res
     Ok(())
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub(crate) struct Workspaces {
     state: PathBuf,
     dir: PathBuf,
@@ -134,10 +133,6 @@ impl Workspaces {
 
     /// How to start `agent` in `cwd` with `workspace`'s own config folder; the only place runs
     /// get an agent, and none when the workspace's access level doesn't let agents run.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "runs start their agents through this")
-    )]
     pub(crate) fn launch(
         &self,
         workspace: &WorkspaceId,

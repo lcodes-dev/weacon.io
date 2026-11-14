@@ -17,9 +17,10 @@ impl TryFrom<String> for Title {
     type Error = String;
 
     fn try_from(title: String) -> Result<Self, Self::Error> {
-        let fits = (1..=TITLE_MAX).contains(&title.chars().count())
-            && !title.contains(|char: char| char.is_control() || breaks_or_turns(char));
-        if fits && title.trim() == title {
+        let fits = (1..=TITLE_MAX).contains(&title.chars().count());
+        let one_line =
+            !title.contains(|ch: char| ch.is_control() || is_separator_or_bidi_control(ch));
+        if fits && one_line && title.trim() == title {
             Ok(Self(title))
         } else {
             Err(title)
@@ -27,9 +28,8 @@ impl TryFrom<String> for Title {
     }
 }
 
-/// Whether `char` is a line or paragraph separator, or overrides or isolates text direction.
-const fn breaks_or_turns(char: char) -> bool {
-    matches!(char, '\u{2028}'..='\u{202E}' | '\u{2066}'..='\u{2069}')
+const fn is_separator_or_bidi_control(ch: char) -> bool {
+    matches!(ch, '\u{2028}'..='\u{202E}' | '\u{2066}'..='\u{2069}')
 }
 
 #[cfg(test)]

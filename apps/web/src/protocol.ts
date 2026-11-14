@@ -48,6 +48,42 @@ export type Envelope = {
   | {
     type: "diff_answer";
   } & DiffAnswer
+  | {
+    type: "machine_settings_query";
+  } & MachineSettingsQuery
+  | {
+    type: "machine_settings_command";
+  } & MachineSettingsCommand
+  | {
+    type: "machine_settings_answer";
+  } & MachineSettingsAnswer
+  | {
+    type: "terminal_command";
+  } & TerminalCommand
+  | {
+    type: "terminal";
+  } & TerminalUpdate
+  | {
+    type: "worktree_query";
+  } & WorktreeQuery
+  | {
+    type: "worktree_command";
+  } & WorktreeCommand
+  | {
+    type: "worktree_answer";
+  } & WorktreeAnswer
+);
+
+/**
+ * What a workspace's agents may do on one machine, chosen by the machine's owner.
+ */
+export type AccessLevel = (
+  | (
+    | "read_only"
+  )
+  | "off"
+  | "ask_first"
+  | "full"
 );
 
 /**
@@ -84,9 +120,24 @@ export type AccountSignedIn = {
 };
 
 /**
+ * Which vendor's agent.
+ */
+export type AgentKind = (
+  | (
+    | "claude"
+    | "codex"
+  )
+);
+
+/**
  * An agent's own id for a conversation, a lowercase UUID, which resumes it later.
  */
 export type AgentSession = string;
+
+export type AgentSignIn = {
+  agent: AgentKind;
+  state: SignInState;
+};
 
 /**
  * A program, such as `weacon-core`, and the exact build it is.
@@ -95,6 +146,16 @@ export type App = {
   commit: string;
   name: string;
   version: string;
+};
+
+/**
+ * Who asked for a command, stamped by the server on what it relays to a machine and never
+ * taken from a client. The core acts only when `account` is its owner's, and records only
+ * `member`.
+ */
+export type Asker = {
+  account: AccountId;
+  member: MemberId;
 };
 
 /**
@@ -110,6 +171,17 @@ export type Author = (
     owner: MemberId;
   }
 );
+
+/**
+ * A Rust target a release is built for, such as `x86_64-unknown-linux-musl`.
+ */
+export type BuildTarget = string;
+
+/**
+ * Bytes that travel as lowercase hex, at most [`NOISE_MAX`] of them. Its `Debug` shows only
+ * how many, since they are sealed or terminal content.
+ */
+export type Bytes = string;
 
 /**
  * A feature a peer supports, such as `chat.send`, named like a [`Code`]. A peer keeps the ones
@@ -166,6 +238,10 @@ export type ChatAnswerKind = (
  */
 export type ChatCommand = {
   action: ChatAction;
+  /**
+   * Who asked, when the server relays the command to a machine.
+   */
+  by?: Asker;
   chat: ChatId;
   request: RequestId;
   workspace: WorkspaceId;
@@ -255,6 +331,11 @@ export type ClientLog = {
  * errors, and capabilities too.
  */
 export type Code = string;
+
+/**
+ * A full git commit id: 40 lowercase hex digits.
+ */
+export type Commit = string;
 
 /**
  * A git commit, as 40 or 64 lowercase hex digits.
@@ -416,6 +497,12 @@ export type DocSummary = {
   version: number;
 };
 
+/**
+ * An `https://` address of printable ASCII, at most 2,048 bytes, with a plain host name and
+ * optionally a port: no user name or password.
+ */
+export type DownloadUrl = string;
+
 export type ErrorBody = {
   code: Code;
   /**
@@ -483,6 +570,141 @@ export type LineOp = (
 export type LogEvent = string;
 
 /**
+ * A machine paired with an account, 1–64 ASCII letters, digits, `-` or `_`.
+ */
+export type MachineId = string;
+
+/**
+ * A machine's public X25519 key, the static key of its sealed channels, as 64 lowercase hex
+ * digits. A browser pins it when the person confirms the pairing.
+ */
+export type MachineKey = string;
+
+/**
+ * The machines paired with the signed-in account.
+ */
+export type MachineList = {
+  machines: Array<MachineSummary>;
+};
+
+/**
+ * What a machine is called: 1–64 characters, none of them control or bidirectional
+ * formatting characters, so it shows the same wherever it is shown.
+ */
+export type MachineName = string;
+
+/**
+ * The operating system a machine runs.
+ */
+export type MachineOs = (
+  | (
+    | "macos"
+    | "linux"
+    | "windows"
+  )
+);
+
+/**
+ * What a machine keeps for one workspace, and whether it sends error reports.
+ */
+export type MachineSettings = {
+  access: AccessLevel;
+  /**
+   * The owner's answer to error reports; absent until they give one, when none are sent.
+   */
+  reports?: boolean;
+  /**
+   * Each agent the core runs, signed in or not with the workspace's own config folder.
+   */
+  sign_ins: Array<AgentSignIn>;
+  /**
+   * Whether other people are in the workspace.
+   */
+  team: boolean;
+};
+
+export type MachineSettingsAction = (
+  | {
+    kind: "set_reports";
+    send: boolean;
+  }
+  | {
+    kind: "set_access";
+    level: AccessLevel;
+    team?: boolean;
+  }
+);
+
+/**
+ * From the core to a client that has `machine.settings`, in answer to a
+ * [`MachineSettingsQuery`] or a [`MachineSettingsCommand`].
+ */
+export type MachineSettingsAnswer = {
+  answer: MachineSettingsAnswerKind;
+  machine: MachineId;
+  request: RequestId;
+  workspace: WorkspaceId;
+};
+
+export type MachineSettingsAnswerKind = (
+  | {
+    kind: "current";
+  } & MachineSettings
+);
+
+/**
+ * From the owner of `machine` to its core, which offers `machine.settings`: changes what the
+ * machine keeps for `workspace`. The server relays it only from the machine's owner, and the
+ * core acts only when `by` is its owner; the answer is a [`MachineSettingsAnswer`] that echoes
+ * `request` and holds the settings after the change.
+ */
+export type MachineSettingsCommand = {
+  action: MachineSettingsAction;
+  /**
+   * Who asked, when the server relays the message to a machine.
+   */
+  by?: Asker;
+  machine: MachineId;
+  request: RequestId;
+  workspace: WorkspaceId;
+};
+
+/**
+ * From the owner of `machine` to its core, which offers `machine.settings`: what the machine
+ * keeps for `workspace`. The server relays it only from the machine's owner, and the core
+ * answers only when `by` is its owner; the answer is a [`MachineSettingsAnswer`] that echoes
+ * `request`.
+ */
+export type MachineSettingsQuery = {
+  /**
+   * Who asked, when the server relays the message to a machine.
+   */
+  by?: Asker;
+  machine: MachineId;
+  query: MachineSettingsQueryKind;
+  request: RequestId;
+  workspace: WorkspaceId;
+};
+
+export type MachineSettingsQueryKind = (
+  | {
+    kind: "current";
+  }
+);
+
+/**
+ * A machine paired with the signed-in account, at `paired_at`, in seconds since the Unix
+ * epoch.
+ */
+export type MachineSummary = {
+  id: MachineId;
+  key: MachineKey;
+  name: MachineName;
+  os: MachineOs;
+  paired_at: number;
+};
+
+/**
  * A member of a workspace, 1–64 ASCII letters, digits, `-` or `_`.
  */
 export type MemberId = string;
@@ -510,6 +732,85 @@ export type Outcome = (
     state: "unknown";
   }
 );
+
+/**
+ * From the core that started `pairing`: whether the person has confirmed it yet. The answer
+ * is a [`PairClaimed`].
+ */
+export type PairClaim = {
+  pairing: PairingId;
+  secret: string;
+};
+
+/**
+ * The answer to a [`PairClaim`].
+ */
+export type PairClaimed = (
+  | {
+    state: "waiting";
+  }
+  | {
+    machine: MachineId;
+    owner: AccountId;
+    state: "paired";
+    token: string;
+  }
+);
+
+/**
+ * From the web app, signed in: pairs the machine waiting under `code` with the signed-in
+ * account. The answer is its [`MachineSummary`].
+ */
+export type PairConfirm = {
+  code: string;
+  pairing: PairingId;
+};
+
+/**
+ * From the web app, signed in: the machine waiting under `code`. The answer is a
+ * [`PairPending`].
+ */
+export type PairLookup = {
+  code: string;
+};
+
+/**
+ * A machine waiting to be paired, for the person to check against what its terminal shows.
+ */
+export type PairPending = {
+  key: MachineKey;
+  name: MachineName;
+  os: MachineOs;
+  pairing: PairingId;
+};
+
+/**
+ * From a core to the server, unauthenticated: starts pairing the machine. The answer is a
+ * [`PairStarted`]; the server refuses an `os` it doesn't know.
+ */
+export type PairStart = {
+  key: MachineKey;
+  name: MachineName;
+  os: MachineOs;
+};
+
+/**
+ * The answer to a [`PairStart`]: the single-use `code` the person enters in the web app, and
+ * the `secret` only the core that started may claim the machine with, until `expires_at`, in
+ * seconds since the Unix epoch.
+ */
+export type PairStarted = {
+  code: string;
+  expires_at: number;
+  pairing: PairingId;
+  secret: string;
+};
+
+/**
+ * One pairing of a machine, from its start to its claim; 1–64 ASCII letters, digits, `-`
+ * or `_`.
+ */
+export type PairingId = string;
 
 /**
  * A person's answer to a [`RunEvent::PermissionAsked`].
@@ -569,6 +870,39 @@ export type Receipt = {
     state: "unknown";
   }
 );
+
+/**
+ * One target's binary in a release.
+ */
+export type ReleaseBuild = {
+  sha256: Sha256;
+  size: number;
+  target: BuildTarget;
+  url: DownloadUrl;
+};
+
+/**
+ * A release, as its signed manifest describes it; a core reads it to update itself.
+ */
+export type ReleaseManifest = {
+  /**
+   * At most one for each target.
+   */
+  builds: Array<ReleaseBuild>;
+  commit: Commit;
+  protocol: number;
+  /**
+   * When the release was signed, in seconds since the Unix epoch, so a core can tell a
+   * manifest that is being held back from the newest one.
+   */
+  published_at: number;
+  version: ReleaseVersion;
+};
+
+/**
+ * A release's `major.minor.patch`, ordered by its numbers.
+ */
+export type ReleaseVersion = string;
 
 /**
  * A git repository the owner registered for a workspace on their machine, 1–64 ASCII
@@ -660,6 +994,11 @@ export type RunUpdate = {
 };
 
 /**
+ * A SHA-256 digest: 64 lowercase hex digits.
+ */
+export type Sha256 = string;
+
+/**
  * Trades the one-time code sent to `email` for a [`SignedIn`]. `challenge` is the one its
  * [`SignInStarted`] gave; a server that hands out challenges refuses a finish without one.
  */
@@ -686,6 +1025,18 @@ export type SignInStart = {
 export type SignInStarted = {
   challenge: ChallengeId;
 };
+
+/**
+ * Only whether an agent is signed in: never its credentials.
+ */
+export type SignInState = (
+  | (
+    | "signed_in"
+    | "signed_out"
+    | "not_installed"
+  )
+  | "unknown"
+);
 
 /**
  * A signed-in member and the session token that proves it, sent as a bearer token.
@@ -766,6 +1117,97 @@ export type TaskStatus = (
   )
 );
 
+export type TerminalAction = (
+  | {
+    agent: AgentKind;
+    handshake: Bytes;
+    kind: "open";
+  }
+  | {
+    kind: "frame";
+    sealed: Bytes;
+  }
+  | {
+    kind: "close";
+  }
+);
+
+/**
+ * From the owner of `machine`'s browser to its core, which offers `terminal.sign_in`. The
+ * server relays it only from the machine's owner, and the core acts only when `by` is its
+ * owner and refuses a terminal id it has already seen.
+ */
+export type TerminalCommand = {
+  action: TerminalAction;
+  /**
+   * Who asked, when the server relays the message to a machine.
+   */
+  by?: Asker;
+  machine: MachineId;
+  terminal: TerminalId;
+  workspace: WorkspaceId;
+};
+
+export type TerminalEvent = (
+  | {
+    handshake: Bytes;
+    kind: "accepted";
+  }
+  | {
+    kind: "frame";
+    sealed: Bytes;
+  }
+  | {
+    code?: Code;
+    kind: "closed";
+  }
+);
+
+/**
+ * One sign-in terminal, chosen by the browser that opens it; 1–64 ASCII letters, digits,
+ * `-` or `_`.
+ */
+export type TerminalId = string;
+
+/**
+ * From the browser to the core, only inside the seal.
+ */
+export type TerminalInput = (
+  | {
+    data: Bytes;
+    kind: "input";
+  }
+  | {
+    cols: number;
+    kind: "resize";
+    rows: number;
+  }
+);
+
+/**
+ * From the core to the browser, only inside the seal.
+ */
+export type TerminalOutput = (
+  | {
+    data: Bytes;
+    kind: "output";
+  }
+  | {
+    kind: "ended";
+    sign_in: SignInState;
+  }
+);
+
+/**
+ * From a core that offers `terminal.sign_in`, through the server, to the browser that opened
+ * `terminal`.
+ */
+export type TerminalUpdate = {
+  event: TerminalEvent;
+  terminal: TerminalId;
+  workspace: WorkspaceId;
+};
+
 /**
  * The answer to a [`Hello`] that speaks the same protocol.
  */
@@ -840,3 +1282,87 @@ export type WorkspaceUpdate = {
   seq: number;
   workspace: WorkspaceId;
 };
+
+export type WorktreeAction = (
+  | {
+    kind: "remove";
+  }
+  | {
+    kind: "restore";
+  }
+  | {
+    body: string;
+    kind: "open_pull_request";
+    title: string;
+  }
+);
+
+/**
+ * From the core to a client that has `worktree.manage`, in answer to a [`WorktreeQuery`] or a
+ * [`WorktreeCommand`].
+ */
+export type WorktreeAnswer = {
+  answer: WorktreeAnswerKind;
+  chat: ChatId;
+  request: RequestId;
+  workspace: WorkspaceId;
+};
+
+export type WorktreeAnswerKind = (
+  | {
+    kind: "state";
+    /**
+     * In the Trash.
+     */
+    removed: boolean;
+    uncommitted: boolean;
+    unpushed: boolean;
+  }
+  | {
+    kind: "pull_request_opened";
+    url: DownloadUrl;
+  }
+  | {
+    kind: "pull_request_page";
+    url: DownloadUrl;
+  }
+);
+
+/**
+ * From a client to a core that offers `worktree.manage`: what a person asks of a chat's
+ * worktree. The core acts only for someone who may act on the chat, and a client asks the
+ * person before `remove`, whatever the access level. The answer is a [`WorktreeAnswer`] that
+ * echoes `request`: the worktree's state after `remove` or `restore`, which a repeated one
+ * answers too.
+ */
+export type WorktreeCommand = {
+  action: WorktreeAction;
+  /**
+   * Who asked, when the server relays the command to a machine.
+   */
+  by?: Asker;
+  chat: ChatId;
+  request: RequestId;
+  workspace: WorkspaceId;
+};
+
+/**
+ * From a client to a core that offers `worktree.manage`: a question about a chat's worktree.
+ * The answer is a [`WorktreeAnswer`] that echoes `request`.
+ */
+export type WorktreeQuery = {
+  /**
+   * Who asked, when the server relays the query to a machine.
+   */
+  by?: Asker;
+  chat: ChatId;
+  query: WorktreeQueryKind;
+  request: RequestId;
+  workspace: WorkspaceId;
+};
+
+export type WorktreeQueryKind = (
+  | {
+    kind: "state";
+  }
+);

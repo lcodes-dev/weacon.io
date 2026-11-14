@@ -8,20 +8,25 @@ mod diff;
 mod doc;
 mod frame;
 mod log;
+mod machine;
 mod message;
 mod pick;
 mod receipt;
 mod repo;
 mod run;
+mod settings;
 mod task;
 mod team;
+mod terminal;
 mod token;
+mod update;
+mod worktree;
 
 pub use access::AccessLevel;
 pub use capability::Capability;
 pub use chat::{
-    ChatAction, ChatAnswer, ChatAnswerKind, ChatCommand, ChatEntry, ChatEvent, ChatId, ChatQuery,
-    ChatQueryKind, ChatUpdate,
+    Asker, ChatAction, ChatAnswer, ChatAnswerKind, ChatCommand, ChatEntry, ChatEvent, ChatId,
+    ChatQuery, ChatQueryKind, ChatUpdate,
 };
 pub use code::Code;
 pub use diff::{
@@ -34,12 +39,21 @@ pub use doc::{
 };
 pub use frame::{FrameError, LineDecoder, MAX_FRAME, encode_line};
 pub use log::{ClientLog, Level, LogEvent};
+pub use machine::{
+    MachineId, MachineKey, MachineList, MachineName, MachineOs, MachineSummary, PairClaim,
+    PairClaimed, PairConfirm, PairLookup, PairPending, PairStart, PairStarted, PairingId,
+};
 pub use message::{App, Envelope, ErrorBody, Hello, Message, PROTOCOL, Welcome};
 pub use pick::Pick;
 pub use receipt::{Outcome, Receipt, RequestId};
 pub use repo::RepoId;
 pub use run::{
     AgentKind, AgentSession, PermissionAnswer, RunEvent, RunId, RunState, RunStatus, RunUpdate,
+};
+pub use settings::{
+    AgentSignIn, MachineSettings, MachineSettingsAction, MachineSettingsAnswer,
+    MachineSettingsAnswerKind, MachineSettingsCommand, MachineSettingsQuery,
+    MachineSettingsQueryKind, SignInState,
 };
 pub use task::{
     Author, TaskChange, TaskCreate, TaskEditBody, TaskId, TaskList, TaskRecord, TaskStatus,
@@ -49,6 +63,25 @@ pub use team::{
     SignInFinish, SignInStart, SignInStarted, SignedIn, WorkspaceChange, WorkspaceCreate,
     WorkspaceId, WorkspaceList, WorkspaceRole, WorkspaceSummary, WorkspaceUpdate,
 };
+pub use terminal::{
+    Bytes, NOISE_MAX, SEALED_MAX, TERMINAL_NOISE, TerminalAction, TerminalCommand, TerminalEvent,
+    TerminalId, TerminalInput, TerminalOutput, TerminalUpdate,
+};
+pub use update::{
+    BuildTarget, Commit, DownloadUrl, ReleaseBuild, ReleaseManifest, ReleaseVersion, Sha256,
+};
+pub use worktree::{
+    WorktreeAction, WorktreeAnswer, WorktreeAnswerKind, WorktreeCommand, WorktreeQuery,
+    WorktreeQueryKind,
+};
+
+/// `bytes` as lowercase hex.
+pub(crate) fn to_hex(bytes: &[u8]) -> String {
+    let nibbles = bytes.iter().flat_map(|byte| [byte >> 4, byte & 0xf]);
+    nibbles
+        .filter_map(|nibble| char::from_digit(u32::from(nibble), 16))
+        .collect()
+}
 
 #[cfg(test)]
 mod tests {
@@ -76,10 +109,21 @@ mod tests {
         generator.subschema_for::<TaskList>();
         generator.subschema_for::<TaskCreate>();
         generator.subschema_for::<TaskChange>();
+        generator.subschema_for::<PairStart>();
+        generator.subschema_for::<PairStarted>();
+        generator.subschema_for::<PairLookup>();
+        generator.subschema_for::<PairPending>();
+        generator.subschema_for::<PairConfirm>();
+        generator.subschema_for::<PairClaim>();
+        generator.subschema_for::<PairClaimed>();
+        generator.subschema_for::<MachineList>();
         generator.subschema_for::<DocList>();
         generator.subschema_for::<DocRecord>();
         generator.subschema_for::<DocRevise>();
         generator.subschema_for::<DocHistory>();
+        generator.subschema_for::<ReleaseManifest>();
+        generator.subschema_for::<TerminalInput>();
+        generator.subschema_for::<TerminalOutput>();
         let schema = generator.into_root_schema_for::<Envelope>();
         let current = serde_json::to_string_pretty(&schema).unwrap() + "\n";
         let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("schema.json");

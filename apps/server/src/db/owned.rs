@@ -2,7 +2,7 @@ use sqlx::SqliteConnection;
 use weacon_observability::Fault;
 use weacon_protocol::{AccountId, MemberId, WorkspaceId, WorkspaceRole, WorkspaceSummary};
 
-use super::{Db, Workspace, failed, stored, unreadable};
+use super::{Account, Workspace, failed, stored, unreadable};
 
 const OWNER: &str = "owner";
 const MEMBER: &str = "member";
@@ -16,15 +16,16 @@ pub(crate) struct NewWorkspace {
     pub(crate) owner: MemberId,
 }
 
-impl Db {
-    /// Makes a workspace that `account` owns, as its first member; `None` when it owns as
+impl Account {
+    /// Makes a workspace that the account owns, as its first member; `None` when it owns as
     /// many as it may.
-    pub(crate) async fn create_owned_workspace(
+    pub(crate) async fn create_workspace(
         &self,
-        account: &AccountId,
         new: NewWorkspace,
     ) -> Result<Option<WorkspaceSummary>, Fault> {
+        let account = &self.id;
         let mut transaction = self
+            .db
             .writer
             .begin_with("BEGIN IMMEDIATE")
             .await
@@ -48,18 +49,15 @@ impl Db {
         }))
     }
 
-    /// The workspaces `account` is a member of, oldest membership first.
-    pub(crate) async fn workspaces_of(
-        &self,
-        account: &AccountId,
-    ) -> Result<Vec<WorkspaceSummary>, Fault> {
+    /// The workspaces the account is a member of, oldest membership first.
+    pub(crate) async fn workspaces(&self) -> Result<Vec<WorkspaceSummary>, Fault> {
         sqlx::query_as::<_, (String, String, String)>(
             "SELECT w.workspace_id, w.name, m.role
              FROM members AS m JOIN workspaces AS w ON w.workspace_id = m.workspace_id
              WHERE m.account_id = ? ORDER BY m.rowid",
         )
-        .bind(account.as_str())
-        .fetch_all(&self.readers)
+        .bind(self.id.as_str())
+        .fetch_all(&self.db.readers)
         .await
         .map_err(failed)?
         .into_iter()
@@ -147,8 +145,8 @@ mod tests {
     use weacon_testing::TempDir;
 
     use super::*;
-    use crate::email::Email;
-    use crate::test_support::{member_id, two_teams, workspace_id};
+    use crate::db::Db;
+    use crate::test_support::{email, member_id, two_teams, workspace_id};
 
     fn account(id: &str) -> AccountId {
         AccountId::try_from(id.to_owned()).unwrap()
@@ -175,10 +173,8 @@ mod tests {
     async fn people(dir: &TempDir) -> (Db, AccountId) {
         let (one, _) = two_teams(dir).await;
         let db = one.db.clone();
-        let ada = db
-            .account_with(&Email::parse("ada@example.com").unwrap())
-            .await;
-        db.add_account(&account("a2"), &Email::parse("cy@example.com").unwrap())
+        let ada = db.account_with(&email("ada@example.com")).await;
+        db.add_account(&account("a2"), &email("cy@example.com"))
             .await
             .unwrap();
         (db, ada.unwrap().unwrap())
@@ -188,16 +184,11 @@ mod tests {
     async fn an_account_owns_what_it_makes_and_sees_only_its_own_workspaces() {
         let dir = TempDir::new().unwrap();
         let (db, ada) = people(&dir).await;
+        let (bo, stranger) = (db.account(account("a2")), db.account(account("a9")));
 
-        let made = db
-            .create_owned_workspace(&account("a2"), new("w3", "Three"))
-            .await;
-        let taken = db
-            .create_owned_workspace(&account("a2"), new("w3", "Again"))
-            .await;
-        let nobody = db
-            .create_owned_workspace(&account("a9"), new("w4", "Four"))
-            .await;
+        let made = bo.create_workspace(new("w3", "Three")).await;
+        let taken = bo.create_workspace(new("w3", "Again")).await;
+        let nobody = stranger.create_workspace(new("w4", "Four")).await;
 
         assert_eq!(
             made.unwrap(),
@@ -212,17 +203,17 @@ mod tests {
                 .is_none()
         );
         assert_eq!(
-            db.workspaces_of(&account("a2")).await.unwrap(),
+            bo.workspaces().await.unwrap(),
             [seen("w3", "Three", WorkspaceRole::Owner)]
         );
         assert_eq!(
-            db.workspaces_of(&ada).await.unwrap(),
+            db.account(ada.clone()).workspaces().await.unwrap(),
             [
                 seen("w1", "One", WorkspaceRole::Member),
                 seen("w2", "Two", WorkspaceRole::Member)
             ]
         );
-        assert!(db.workspaces_of(&account("a9")).await.unwrap().is_empty());
+        assert!(stranger.workspaces().await.unwrap().is_empty());
         let w3 = db.workspace(&workspace_id("w3")).await.unwrap();
         let owner = w3.summary(&member_id("o-w3")).await.unwrap().unwrap();
         assert_eq!(owner.role, WorkspaceRole::Owner);
@@ -240,16 +231,19 @@ mod tests {
         let (db, _) = people(&dir).await;
         for index in 0..MAX_OWNED {
             let id = format!("w-{index}");
-            db.create_owned_workspace(&account("a2"), new(&id, "Many"))
+            db.account(account("a2"))
+                .create_workspace(new(&id, "Many"))
                 .await
                 .unwrap();
         }
 
         let more = db
-            .create_owned_workspace(&account("a2"), new("w-x", "More"))
+            .account(account("a2"))
+            .create_workspace(new("w-x", "More"))
             .await;
         let others = db
-            .create_owned_workspace(&account("a9"), new("w-y", "Other"))
+            .account(account("a9"))
+            .create_workspace(new("w-y", "Other"))
             .await;
 
         assert_eq!(more.unwrap(), None);
@@ -273,7 +267,7 @@ mod tests {
         drop(connection);
 
         assert_eq!(
-            db.workspaces_of(&account("a2")).await.unwrap(),
+            db.account(account("a2")).workspaces().await.unwrap(),
             [seen("p1", "Personal", WorkspaceRole::Owner)]
         );
         for id in ["p2", "p3"] {
@@ -295,7 +289,7 @@ mod tests {
             .await
             .unwrap();
 
-        let listed = db.workspaces_of(&ada).await.unwrap_err();
+        let listed = db.account(ada.clone()).workspaces().await.unwrap_err();
         let read = db.workspace(&workspace_id("w1")).await.unwrap();
         let read = read.summary(&member_id("m1")).await.unwrap_err();
 

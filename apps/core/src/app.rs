@@ -5,8 +5,9 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::Arc;
 
+use serde::de::DeserializeOwned;
 use weacon_agents::SpawnPolicy;
-use weacon_appkit::{KEEP, MAX_BYTES, RotatingFile, panic_hook, root_logger};
+use weacon_appkit::{KEEP, MAX_BYTES, Outcome, RotatingFile, panic_hook, root_logger};
 use weacon_observability::{
     Deliver, Fault, Field, Level, Logger, Reporter, Reports, Sink, json_lines, tee,
 };
@@ -15,14 +16,14 @@ use weacon_version::Version;
 
 use crate::platform::{self, Env};
 
-use weacon_appkit::Outcome;
-
 /// What a command runs with: its build, logger, error reporter and where its state lives.
 pub(crate) struct App {
     pub(crate) version: Version,
     pub(crate) log: Logger,
     pub(crate) reporter: Arc<Reporter>,
     pub(crate) state_dir: Option<PathBuf>,
+    /// Where chats' working folders go, apart from the state.
+    pub(crate) work_root: Option<PathBuf>,
     pub(crate) log_file: Option<PathBuf>,
     pub(crate) spawn: SpawnPolicy,
     /// The person's `PATH`, where their agents' programs are found.
@@ -70,10 +71,16 @@ impl App {
             reporter: Arc::new(weacon_appkit::reporter(reports, agreed, setup.deliver)),
             log,
             state_dir,
+            work_root: platform::work_root(setup.env),
             log_file,
             spawn: platform::spawn_policy(setup.env),
             path: (setup.env)("PATH"),
         }
+    }
+
+    /// The state folder, or why there is none.
+    pub(crate) fn state_dir(&self) -> Result<&Path, Fault> {
+        self.state_dir.as_deref().ok_or_else(state_unavailable)
     }
 
     /// Logs and reports how the command ended, and gives its exit code.
@@ -96,6 +103,29 @@ pub(crate) fn state_unavailable() -> Fault {
         code!("state.unavailable"),
         "The state folder can't be used: set HOME or WEACON_STATE_DIR to a writable folder",
     )
+}
+
+/// The single-threaded async runtime the core's commands run on.
+pub(crate) fn runtime() -> Result<tokio::runtime::Runtime, Fault> {
+    weacon_appkit::runtime(tokio::runtime::Builder::new_current_thread())
+}
+
+/// Runs `work` off the async runtime, for file and process I/O that can block.
+pub(crate) async fn blocking<T: Send + 'static>(
+    work: impl FnOnce() -> io::Result<T> + Send + 'static,
+) -> io::Result<T> {
+    tokio::task::spawn_blocking(work)
+        .await
+        .unwrap_or_else(|error| Err(io::Error::other(error)))
+}
+
+/// The JSON in `path`, or `None` when there is no such file.
+pub(crate) fn read_json<T: DeserializeOwned>(path: &Path) -> io::Result<Option<T>> {
+    match std::fs::read(path) {
+        Ok(json) => Ok(Some(serde_json::from_slice(&json)?)),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error),
+    }
 }
 
 fn open_log(state_dir: &Path, name: &str) -> io::Result<(PathBuf, RotatingFile)> {
@@ -136,6 +166,15 @@ mod tests {
     use crate::test_support::{Records, VERSION, env, messages, recording_sink};
 
     const DSN: &str = "https://key@sentry.example.com/1";
+
+    #[tokio::test]
+    async fn blocking_work_that_panics_fails_with_io() {
+        let answer = blocking(|| Ok(7)).await.unwrap();
+        let failed = blocking(|| -> io::Result<()> { panic!("work failed") }).await;
+
+        assert_eq!(answer, 7);
+        assert_eq!(failed.unwrap_err().kind(), io::ErrorKind::Other);
+    }
 
     fn start(vars: &[(&str, &str)], verbose: bool) -> (App, Records, Arc<Mutex<Vec<Upload>>>) {
         let env = env(vars);

@@ -56,25 +56,24 @@ async fn check(path: &Path) -> Result<(), Fault> {
     if !path.exists() {
         return Err(not_found());
     }
-    let mut connection = read_only(path)
-        .await
-        .map_err(|error| corrupt().because(error))?;
+    match is_sound(path).await {
+        Ok(true) => Ok(()),
+        Ok(false) => Err(corrupt()),
+        Err(error) => Err(corrupt().because(error)),
+    }
+}
+
+/// Whether the file at `path` passes the integrity and foreign key checks.
+async fn is_sound(path: &Path) -> Result<bool, sqlx::Error> {
+    let mut connection = read_only(path).await?;
     let integrity: Vec<String> = sqlx::query_scalar("PRAGMA integrity_check")
         .fetch_all(&mut connection)
-        .await
-        .map_err(|error| corrupt().because(error))?;
+        .await?;
     let broken_references = sqlx::query("PRAGMA foreign_key_check")
         .fetch_optional(&mut connection)
-        .await
-        .map_err(|error| corrupt().because(error))?;
-    connection
-        .close()
-        .await
-        .map_err(|error| corrupt().because(error))?;
-    if integrity != ["ok"] || broken_references.is_some() {
-        return Err(corrupt());
-    }
-    Ok(())
+        .await?;
+    connection.close().await?;
+    Ok(integrity == ["ok"] && broken_references.is_none())
 }
 
 /// Copies the database `from` into the new file `to`, then checks the copy.
@@ -151,8 +150,7 @@ mod tests {
     use weacon_testing::TempDir;
 
     use super::*;
-    use crate::email::Email;
-    use crate::test_support::{fresh_account, member_id, workspace_id};
+    use crate::test_support::{email, fresh_account, member_id, workspace_id};
 
     async fn team(dir: &TempDir) -> Db {
         let db = Db::create(&dir.join("weacon.db")).await.unwrap();
@@ -163,7 +161,7 @@ mod tests {
         team.add_member(
             &member_id("m1"),
             &fresh_account(),
-            &Email::parse("ada@example.com").unwrap(),
+            &email("ada@example.com"),
         )
         .await
         .unwrap();
@@ -179,11 +177,7 @@ mod tests {
         db.workspace(&workspace_id("w1"))
             .await
             .unwrap()
-            .add_member(
-                &member_id("m2"),
-                &fresh_account(),
-                &Email::parse("bo@example.com").unwrap(),
-            )
+            .add_member(&member_id("m2"), &fresh_account(), &email("bo@example.com"))
             .await
             .unwrap();
         restore(&backup, &restored).await.unwrap();
