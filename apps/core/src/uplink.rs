@@ -582,10 +582,16 @@ mod tests {
     #[tokio::test]
     async fn a_server_that_doesnt_offer_the_connection_or_refuses_the_token_is_left() {
         let (dir, tls) = (TempDir::new().unwrap(), Tls::new().await);
-        let link = uplink(&dir);
+        let (log, records) = recording_logger();
+        let link = Uplink {
+            log,
+            ..uplink(&dir)
+        };
         let pairing = paired(&tls);
 
-        let (unoffered, _) = tokio::join!(once(&link, &pairing), welcoming(&tls, &[]));
+        // The server goes once it has welcomed the core, which then mustn't stay.
+        let leaves = async { drop(welcoming(&tls, &[]).await) };
+        let (unoffered, ()) = tokio::join!(once(&link, &pairing), leaves);
         let (unauthorized, ()) = tokio::join!(
             once(&link, &pairing),
             refusing(&tls, "401 Unauthorized", code!("machine.unpaired"))
@@ -598,6 +604,7 @@ mod tests {
         assert_eq!(unoffered.unwrap(), Ended::Unwelcome);
         assert_eq!(unauthorized.unwrap(), Ended::Unpaired);
         assert_eq!(busy.unwrap(), Ended::Unwelcome);
+        assert!(!messages(&records).contains(&"uplink connected"));
     }
 
     #[tokio::test]
