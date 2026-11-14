@@ -276,6 +276,7 @@ mod tests {
     use weacon_testing::TempDir;
 
     use super::*;
+    use crate::db::test_support::{NOW, id};
     use crate::test_support::{email, member_id, workspace_id};
 
     fn personal(name: &str) -> NewWorkspace {
@@ -284,12 +285,6 @@ mod tests {
             name: "Personal".to_owned(),
             owner: member_id(&format!("o-{name}")),
         }
-    }
-
-    const NOW: i64 = 100_000;
-
-    fn id<T: TryFrom<String>>(text: &str) -> T {
-        T::try_from(text.to_owned()).ok().unwrap()
     }
 
     // A database where ada@example.com has account a1 and bo@example.com has a2.

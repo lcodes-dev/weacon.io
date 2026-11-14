@@ -311,9 +311,8 @@ mod tests {
     use super::*;
     use crate::db::Db;
     use crate::db::schema::{database_before, steps};
+    use crate::db::test_support::{NOW, by, code};
     use crate::test_support::{agent, member_id, two_teams, workspace_id};
-
-    const NOW: i64 = 1_762_077_600;
 
     fn doc_id(id: &str) -> DocId {
         DocId::try_from(id.to_owned()).unwrap()
@@ -345,14 +344,6 @@ mod tests {
 
     fn new_doc(id: &str, title: &str) -> Doc {
         Doc::new(doc_id(id), text(title, "Plain.", &[]))
-    }
-
-    fn by(member: &str) -> Attribution {
-        Attribution::by(member_id(member), NOW)
-    }
-
-    fn code(fault: &Fault) -> &str {
-        fault.code().as_str()
     }
 
     fn summary(doc: &Doc) -> DocSummary {

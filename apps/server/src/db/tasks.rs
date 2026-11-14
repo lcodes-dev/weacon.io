@@ -203,20 +203,11 @@ mod tests {
 
     use super::*;
     use crate::db::stored_author;
+    use crate::db::test_support::{NOW, by, code};
     use crate::test_support::{agent, member_id, new_task, two_teams};
-
-    const NOW: i64 = 1_762_077_600;
-
-    fn by(member: &str) -> Attribution {
-        Attribution::by(member_id(member), NOW)
-    }
 
     fn rename(title: &str) -> TaskEdit {
         TaskEdit::Title(Title::try_from(title.to_owned()).unwrap())
-    }
-
-    fn code(fault: &Fault) -> &str {
-        fault.code().as_str()
     }
 
     async fn changes(workspace: &Workspace) -> Vec<(String, i64, String, String, String, i64)> {

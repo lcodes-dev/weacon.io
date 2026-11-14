@@ -9,6 +9,8 @@ mod machine;
 mod schema;
 mod sign_in;
 mod tasks;
+#[cfg(test)]
+mod test_support;
 mod workspace;
 
 pub(crate) use tasks::task_not_found;
