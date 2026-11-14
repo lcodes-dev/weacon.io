@@ -30,6 +30,25 @@ pub(crate) fn login(app: &App, agent: AgentKind, workspace: &WorkspaceId) -> Res
     Ok(())
 }
 
+/// Refuses `launch` unless its agent is signed in from the workspace's own config folder.
+///
+/// # Errors
+/// `agent.signed_out` when it isn't signed in that way; the check's own fault when it can't run.
+pub(crate) fn require_sign_in(launch: &Launch) -> Result<(), Fault> {
+    // `block_on` panics on a thread already inside a runtime, so the check gets one of its own.
+    let checked = std::thread::scope(|scope| {
+        scope
+            .spawn(|| runtime()?.block_on(launch.require_sign_in()))
+            .join()
+    });
+    checked.unwrap_or_else(|_| {
+        Err(Fault::new(
+            code!("agent.not_started"),
+            "The agent couldn't start",
+        ))
+    })
+}
+
 #[derive(Clone, Debug)]
 pub(crate) struct Workspaces {
     state: PathBuf,
@@ -537,5 +556,42 @@ mod tests {
             blocked.unwrap_err().code().as_str(),
             "workspace.cwd_refused"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_run_starts_only_when_its_workspace_is_signed_in_on_its_own() {
+        let dir = TempDir::new().unwrap();
+        let launch = |code: u8| {
+            let bin = dir.join(format!("bin-{code}"));
+            fs::create_dir_all(&bin).unwrap();
+            weacon_testing::platform::write_program(
+                &bin.join("codex"),
+                &format!("#!/bin/sh\nexit {code}\n"),
+            )
+            .unwrap();
+            Workspaces::new(&dir.join("state"), Some(bin.into_os_string()))
+                .located(&id("w1"), AgentKind::Codex, dir.to_path_buf())
+                .unwrap()
+        };
+
+        require_sign_in(&launch(0)).unwrap();
+        let signed_out = require_sign_in(&launch(1)).unwrap_err();
+        assert_eq!(signed_out.code().as_str(), "agent.signed_out");
+    }
+
+    #[test]
+    fn a_check_that_cant_run_keeps_the_run_from_starting() {
+        let dir = TempDir::new().unwrap();
+        let workspaces =
+            Workspaces::new(&dir.join("state"), Some(dir.join("bin").into_os_string()));
+        program(&dir, "codex");
+        let launch = workspaces
+            .located(&id("w1"), AgentKind::Codex, dir.to_path_buf())
+            .unwrap();
+
+        let error = require_sign_in(&launch).unwrap_err();
+
+        assert_eq!(error.code().as_str(), "agent.status_failed");
     }
 }
