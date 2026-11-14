@@ -489,6 +489,7 @@ mod tests {
     fn kind(event: &ChatEvent) -> String {
         match event {
             ChatEvent::Prompt { text, .. } => format!("prompt {text}"),
+            ChatEvent::OutsidePrompt { text } => format!("outside {text}"),
             ChatEvent::Run { update } => format!(
                 "{} {}",
                 update.run.as_str(),

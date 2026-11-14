@@ -2,7 +2,10 @@ import { record } from "./fields.ts";
 import type { App, ChatEntry, Envelope, RunEvent } from "./protocol.ts";
 
 /** A message from the server that this app acts on, its fields checked where it arrives. */
-export type Incoming = Extract<Envelope, { type: "welcome" | "error" | "receipt" | "run" | "diff_answer" | "chat" | "chat_answer" }>;
+export type Incoming = Extract<
+  Envelope,
+  { type: "welcome" | "error" | "receipt" | "run" | "diff_answer" | "chat" | "chat_answer" | "workspace" }
+>;
 
 /** A run message, checked. */
 export type RunMessage = Extract<Incoming, { type: "run" }>;
@@ -57,35 +60,37 @@ export function route(message: Incoming, to: Routes): void {
       to.chat(message);
       return;
     case "welcome":
+    case "workspace":
       return;
   }
 }
 
+type Fields = Record<string, unknown>;
+
+const text = (fields: Fields, key: string) => typeof fields[key] === "string";
+
+// The fields each message this app acts on must have.
+const CHECKS: { [T in Incoming["type"]]: (fields: Fields) => boolean } = {
+  welcome: (fields) => isApp(fields["app"]) && (fields["capabilities"] === undefined || isStrings(fields["capabilities"])),
+  error: (fields) => text(fields, "code"),
+  receipt: (fields) => text(fields, "request") && text(fields, "state"),
+  run: (fields) => text(fields, "run") && isRunEvent(fields["event"]),
+  // The answer itself is checked where the chat's changes take it.
+  diff_answer: (fields) => text(fields, "request") && text(fields, "workspace") && text(fields, "chat"),
+  chat: (fields) => text(fields, "workspace") && text(fields, "chat") && isEntry(fields["entry"]),
+  chat_answer: (fields) => text(fields, "workspace") && text(fields, "chat") && isChatAnswer(fields["answer"]),
+  workspace: (fields) => text(fields, "workspace") && Number.isSafeInteger(fields["seq"]) && isChange(fields["change"]),
+};
+
 function isIncoming(value: unknown): value is Incoming {
   const fields = record(value);
-  if (typeof fields?.["id"] !== "number") {
-    return false;
-  }
-  const text = (key: string) => typeof fields[key] === "string";
-  switch (fields["type"]) {
-    case "welcome":
-      return isApp(fields["app"]) && (fields["capabilities"] === undefined || isStrings(fields["capabilities"]));
-    case "error":
-      return text("code");
-    case "receipt":
-      return text("request") && text("state");
-    case "run":
-      return text("run") && isRunEvent(fields["event"]);
-    case "diff_answer":
-      // The answer itself is checked where the chat's changes take it.
-      return text("request") && text("workspace") && text("chat");
-    case "chat":
-      return text("workspace") && text("chat") && isEntry(fields["entry"]);
-    case "chat_answer":
-      return text("workspace") && text("chat") && isChatAnswer(fields["answer"]);
-    default:
-      return false;
-  }
+  const type = fields?.["type"];
+  return (
+    typeof fields?.["id"] === "number" &&
+    typeof type === "string" &&
+    Object.hasOwn(CHECKS, type) &&
+    CHECKS[type as Incoming["type"]](fields)
+  );
 }
 
 function isApp(app: unknown): app is App {
@@ -195,4 +200,10 @@ function isAgent(value: unknown): boolean {
   const known =
     owner?.["kind"] === "shared" || (owner?.["kind"] === "member" && typeof owner["member"] === "string");
   return typeof agent?.["kind"] === "string" && known && (agent["machine"] === undefined || typeof agent["machine"] === "string");
+}
+
+// A change of a kind this app reads has its fields; one of a newer kind passes, to be skipped.
+function isChange(value: unknown): boolean {
+  const fields = record(value);
+  return fields?.["kind"] === "chat_changed" ? typeof fields["chat"] === "string" : typeof fields?.["kind"] === "string";
 }

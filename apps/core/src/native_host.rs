@@ -192,7 +192,7 @@ mod tests {
     use weacon_testing::TempDir;
 
     use super::*;
-    use crate::test_support::{self, messages, recording_logger};
+    use crate::test_support::{self, Broken, messages, recording_logger};
 
     fn app(state_dir: Option<&Path>) -> App {
         test_support::app(state_dir, None)
@@ -369,19 +369,6 @@ mod tests {
             assert_eq!(messages(&records), ["native message refused"]);
             assert!(logged.contains(code), "{logged}");
             assert_eq!(daemon.read(&mut [0; 16]).await.unwrap(), 0);
-        }
-    }
-
-    // A reader that fails as a broken pipe would.
-    struct Broken;
-
-    impl AsyncRead for Broken {
-        fn poll_read(
-            self: std::pin::Pin<&mut Self>,
-            _: &mut std::task::Context<'_>,
-            _: &mut tokio::io::ReadBuf<'_>,
-        ) -> std::task::Poll<io::Result<()>> {
-            std::task::Poll::Ready(Err(io::ErrorKind::BrokenPipe.into()))
         }
     }
 

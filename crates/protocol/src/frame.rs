@@ -82,11 +82,14 @@ fn only_received(message: &Message) -> bool {
         }
         Message::MachineSettingsCommand(command) => command.action.is_newer(),
         Message::MachineSettingsAnswer(answer) => answer.answer.is_newer(),
+        Message::SessionsQuery(query) => query.query.is_newer(),
+        Message::SessionsAnswer(answer) => answer.answer.is_newer(),
         Message::TerminalCommand(command) => command.is_newer(),
         Message::Terminal(update) => update.is_newer(),
         Message::WorktreeQuery(query) => matches!(query.query, WorktreeQueryKind::Newer),
         Message::WorktreeCommand(command) => matches!(command.action, WorktreeAction::Newer),
         Message::WorktreeAnswer(answer) => matches!(answer.answer, WorktreeAnswerKind::Newer),
+        Message::ProposalCommand(command) => command.is_newer(),
         Message::Hello(_)
         | Message::Welcome(_)
         | Message::Error(_)
@@ -154,7 +157,10 @@ fn parse(line: &[u8]) -> Option<Result<Envelope, FrameError>> {
 mod tests {
     use super::*;
     use crate::test_support::{request, run, workspace};
-    use crate::{App, ErrorBody, Hello, Outcome, Receipt, RunEvent, RunUpdate, WorkspaceUpdate};
+    use crate::{
+        App, ErrorBody, Hello, Outcome, ProposalAction, ProposalCommand, Receipt, RunEvent,
+        RunUpdate, WorkspaceUpdate,
+    };
 
     fn envelope(id: u32) -> Envelope {
         Envelope {
@@ -277,6 +283,11 @@ mod tests {
                 workspace: workspace(),
                 seq: 1,
                 change: WorkspaceChange::Newer,
+            }),
+            Message::ProposalCommand(ProposalCommand {
+                request: request(),
+                workspace: workspace(),
+                action: ProposalAction::Newer,
             }),
         ];
 
