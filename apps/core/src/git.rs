@@ -13,6 +13,7 @@ use weacon_protocol::{ChatId, code};
 use crate::platform;
 use crate::workspaces::resolved;
 
+pub(crate) mod branch;
 pub(crate) mod chats;
 pub(crate) mod diff;
 pub(crate) mod removal;

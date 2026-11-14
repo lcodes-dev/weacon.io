@@ -115,7 +115,7 @@ impl Git {
 }
 
 // A full SHA-1 or SHA-256 commit id, in lowercase hex.
-fn is_commit_id(id: &str) -> bool {
+pub(super) fn is_commit_id(id: &str) -> bool {
     matches!(id.len(), 40 | 64)
         && id
             .bytes()
