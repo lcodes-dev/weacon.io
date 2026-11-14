@@ -347,12 +347,15 @@
     "ChatAction": {
       "oneOf": [
         {
-          "description": "Starts a turn with `text`, or queues it behind the turn that is running.",
+          "description": "Starts a turn with `text`, or queues it behind the turn that is running. On a chat's\nfirst prompt, `repo` fixes the repository its agents work in; later prompts leave it out.",
           "type": "object",
           "properties": {
             "kind": {
               "type": "string",
               "const": "prompt"
+            },
+            "repo": {
+              "$ref": "#/$defs/RepoId"
             },
             "text": {
               "type": "string"
@@ -537,12 +540,15 @@
     "ChatEvent": {
       "oneOf": [
         {
-          "description": "A person's prompt, accepted under `request`.",
+          "description": "A person's prompt, accepted under `request`, with the repository it fixed, if any.",
           "type": "object",
           "properties": {
             "kind": {
               "type": "string",
               "const": "prompt"
+            },
+            "repo": {
+              "$ref": "#/$defs/RepoId"
             },
             "request": {
               "$ref": "#/$defs/RequestId"
@@ -1578,6 +1584,12 @@
       "description": "A release's `major.minor.patch`, ordered by its numbers.",
       "type": "string",
       "pattern": "^(0|[1-9][0-9]{0,8})\\.(0|[1-9][0-9]{0,8})\\.(0|[1-9][0-9]{0,8})$"
+    },
+    "RepoId": {
+      "description": "A git repository the owner registered for a workspace on their machine, 1–64 ASCII\nletters, digits, `-` or `_`.",
+      "type": "string",
+      "maxLength": 64,
+      "pattern": "^[A-Za-z0-9_-]+$"
     },
     "RequestId": {
       "description": "A command's id, chosen by the client and kept across reconnects and retries. Sending the\nsame id again returns the first receipt instead of repeating the work; the same id with\ndifferent content is refused with the error `request.conflict`.",

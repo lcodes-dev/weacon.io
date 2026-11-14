@@ -83,3 +83,41 @@
 .composer .mentions [aria-selected="true"] {
   background: color-mix(in srgb, var(--fg) 8%, transparent);
 }
+
+.composer .files {
+  flex-basis: 100%;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.composer .files li {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  padding: 2px 4px 2px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 13px;
+}
+
+.composer .files .name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.composer .files button {
+  border: none;
+  padding: 0 6px;
+}
+
+.composer[data-dropping] .field {
+  outline: 2px dashed var(--muted);
+  outline-offset: 2px;
+  border-radius: 6px;
+}
