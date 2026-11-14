@@ -206,7 +206,7 @@ mod tests {
     use serde_json::{Value, json};
 
     use super::*;
-    use crate::test_support::run;
+    use crate::test_support::{round_trips, run};
 
     #[test]
     fn sessions_are_lowercase_uuids() {
@@ -235,12 +235,8 @@ mod tests {
     #[test]
     fn agent_kinds_travel_as_names_and_a_newer_one_still_parses() {
         for (kind, name) in [(AgentKind::Claude, "claude"), (AgentKind::Codex, "codex")] {
-            assert_eq!(serde_json::to_value(kind).unwrap(), json!(name));
+            round_trips(&kind, json!(name));
             assert_eq!(kind.name(), Some(name));
-            assert_eq!(
-                serde_json::from_value::<AgentKind>(json!(name)).unwrap(),
-                kind
-            );
         }
         assert_eq!(
             serde_json::from_value::<AgentKind>(json!("amp")).unwrap(),
@@ -263,8 +259,7 @@ mod tests {
             "answer": { "run": "run-1", "prompt": 2, "allow": false }
         });
 
-        assert_eq!(serde_json::to_value(&event).unwrap(), wire);
-        assert_eq!(serde_json::from_value::<RunEvent>(wire).unwrap(), event);
+        round_trips(&event, wire);
     }
 
     #[test]
@@ -274,8 +269,7 @@ mod tests {
         };
         let wire = json!({ "event": "finished", "outcome": { "state": "unknown" } });
 
-        assert_eq!(serde_json::to_value(&event).unwrap(), wire);
-        assert_eq!(serde_json::from_value::<RunEvent>(wire).unwrap(), event);
+        round_trips(&event, wire);
         assert_eq!(
             serde_json::from_value::<RunEvent>(json!({ "event": "thinking" })).unwrap(),
             RunEvent::Newer
@@ -314,8 +308,7 @@ mod tests {
         ];
 
         for (status, wire) in cases {
-            assert_eq!(serde_json::to_value(&status).unwrap(), wire);
-            assert_eq!(serde_json::from_value::<RunStatus>(wire).unwrap(), status);
+            round_trips(&status, wire);
             assert!(!status.is_newer());
         }
         let newer = |agent: Value| {

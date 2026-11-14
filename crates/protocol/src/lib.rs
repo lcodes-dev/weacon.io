@@ -106,8 +106,8 @@ mod tests {
 
     #[test]
     fn the_committed_schema_is_current() {
-        // The HTTP bodies, which no `Envelope` carries, are defined beside it, in the order of
-        // the `pub use` block above.
+        // The HTTP bodies, which no `Envelope` carries, are defined beside it; schemars sorts
+        // the definitions, so this order is only for readers.
         let mut generator = SchemaGenerator::default();
         generator.subschema_for::<SignInStart>();
         generator.subschema_for::<SignInStarted>();
