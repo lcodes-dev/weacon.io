@@ -1,8 +1,9 @@
+use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::str::FromStr;
 
 /// A stable 64-bit hash of code, the same on every platform and in every release.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Fingerprint(u64);
 
 const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;

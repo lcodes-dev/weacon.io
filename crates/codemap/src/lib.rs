@@ -29,10 +29,11 @@ pub use answers::Churn;
 pub(crate) use area::Area;
 pub use contracts::ContractKind;
 pub(crate) use edges::{Edge, EdgeKind};
+pub use facts::{Facts, Reader};
 pub use fingerprint::Fingerprint;
 pub(crate) use flows::Break;
 pub(crate) use index::{Crate, Module};
-pub use index::{Index, SourceFile, index};
+pub use index::{Index, SourceFile, assemble, index};
 pub(crate) use symbols::{Kind, Symbol};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

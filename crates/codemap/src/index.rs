@@ -95,7 +95,7 @@ pub fn index(files: &[SourceFile]) -> Result<Index, Error> {
 
 /// The index of a repository from the facts of its files.
 #[must_use]
-pub(crate) fn assemble(facts: &[Facts]) -> Index {
+pub fn assemble(facts: &[Facts]) -> Index {
     let mut crates: Vec<Crate> = facts.iter().filter_map(manifest).collect();
     crates.sort_by(|one, other| one.folder.cmp(&other.folder));
     let mut named_by_file = BTreeMap::new();
