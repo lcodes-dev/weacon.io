@@ -36,7 +36,7 @@ export function ChatChanges({
     setComments((now) => unsent(now, sent));
   });
   const sendReview = async () => {
-    const text = reviewPrompt(changes.files, comments);
+    const text = reviewPrompt(comments);
     carried.current.set(text, comments);
     await submit(text);
   };

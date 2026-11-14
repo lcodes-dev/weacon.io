@@ -1,38 +1,35 @@
 import { useEffect, useRef, useState } from "react";
 
 import { newRequestId } from "../ids.ts";
-import { type After, type Late, type Retry, type Send, after, afterLate, requestFor } from "./prompt.ts";
+import type { Late, Send } from "./prompt.ts";
+import { type Ended, Sends } from "./sends.ts";
 
-/**
- * Sends one text at a time through `send`, sending the same text again under the same request so
- * it can't run twice, and settles a send whose receipt comes `late`. `taken` hears each text once
- * it is accepted, at once or late.
- */
+/** One box's `Sends` for React: `taken` hears each text once it is accepted, at once or late. */
 export function useSend(send: Send, late: Late | undefined, taken: (text: string) => void) {
   const [sending, setSending] = useState(false);
   const [problem, setProblem] = useState<string>();
-  const retry = useRef<Retry>(undefined);
-  const settle = (next: After, text: string) => {
-    setProblem(next.problem);
-    retry.current = next.retry;
-    if (next.text === "") {
-      taken(text);
+  const sends = useRef(new Sends());
+  const show = (ended: Ended) => {
+    if (ended.latest) {
+      setProblem(ended.problem);
+    }
+    if (ended.taken) {
+      taken(ended.text);
     }
   };
   useEffect(() => {
-    const sent = retry.current;
-    const next = late === undefined || sending || sent === undefined ? undefined : afterLate(sent, late);
-    if (sent !== undefined && next !== undefined) {
-      settle(next, sent.text);
+    const ended = late === undefined ? undefined : sends.current.late(late);
+    if (ended !== undefined) {
+      show(ended);
     }
   }, [late]);
   const submit = async (text: string) => {
-    const request = requestFor(retry.current, text, newRequestId);
+    const request = sends.current.start(text, newRequestId);
     setSending(true);
     setProblem(undefined);
-    const next = after(await send(text, request), text, request);
+    const sent = await send(text, request);
     setSending(false);
-    settle(next, text);
+    show(sends.current.end(text, request, sent));
   };
   return { sending, problem, submit, clear: () => setProblem(undefined) };
 }
