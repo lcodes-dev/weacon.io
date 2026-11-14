@@ -164,6 +164,7 @@ async fn run(
             },
             () = pings.due() => pings.ping(socket, feed.allowed(shared)).await?,
             Some(answer) = feed.answers.recv() => {
+                feed.allowed(shared).await?;
                 reply(socket, shared, answer.id, answer.message).await?;
             }
             frame = socket.recv() => {

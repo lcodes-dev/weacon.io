@@ -524,11 +524,14 @@ mod tests {
         let machine = id("mc-p1");
 
         assert_eq!(unclaimed, []);
+        assert!(db.has_machine(&ada, &machine).await.unwrap());
+        assert!(!db.has_machine(&bo, &machine).await.unwrap());
         assert_eq!(db.machines_of(&bo).await.unwrap(), []);
         assert!(!db.unpair(&bo, &machine).await.unwrap());
         assert_eq!(db.machines_of(&ada).await.unwrap().len(), 1);
         assert!(db.unpair(&ada, &machine).await.unwrap());
         assert_eq!(db.machines_of(&ada).await.unwrap(), []);
+        assert!(!db.has_machine(&ada, &machine).await.unwrap());
         assert!(!db.unpair(&ada, &machine).await.unwrap());
         assert_eq!(claim(&db, "p1", b"secret", NOW + 3).await, Claim::Unknown);
     }
