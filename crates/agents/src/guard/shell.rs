@@ -170,7 +170,7 @@ impl Parser {
             return self.redirect_target(simple, word, true);
         }
         let pipe = char == '|' && self.peek() != Some('|');
-        let or = char == '|' && self.peek() == Some('|');
+        let or = char == '|' && !pipe;
         let background = char == '&' && self.peek() != Some('&');
         if matches!(
             (char, self.peek()),
