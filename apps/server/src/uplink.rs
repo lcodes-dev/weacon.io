@@ -141,7 +141,8 @@ fn hand_off(shared: &Shared, machine: &MachineId, envelope: Envelope) {
         envelope.message,
         Message::MachineSettingsAnswer(_) | Message::Error(_)
     ) {
-        shared.relay.answered(machine, envelope);
+        // An error the relay doesn't claim is for no other feature yet.
+        let _claimed = shared.relay.answered(machine, envelope);
     }
 }
 

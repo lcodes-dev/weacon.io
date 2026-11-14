@@ -25,15 +25,10 @@ pub(crate) const SETTINGS: Code = code!("machine.settings");
 
 /// The asks waiting for their machines' answers.
 pub(crate) struct Relay {
-    inner: Mutex<Inner>,
+    /// Each ask that waits, under the id it was relayed with.
+    waiting: Mutex<HashMap<u32, Waiter>>,
     most_waiting: usize,
     answer_within: Duration,
-}
-
-#[derive(Default)]
-struct Inner {
-    waiting: HashMap<u32, Waiter>,
-    next_id: u32,
 }
 
 /// An ask's way back to the connection that asked.
@@ -125,13 +120,14 @@ pub(crate) async fn forward(
     if !shared.links.offers(&machine, &Capability::from(SETTINGS)) {
         return Err(offline());
     }
-    let relayed = shared.relay.wait(asked, envelope.id, back)?;
+    let relayed = shared.links.next_id();
+    shared.relay.wait(relayed, asked, envelope.id, back)?;
     let sent = Envelope {
         id: relayed,
         message,
     };
     if shared.links.send(&machine, sent).is_err() {
-        shared.relay.lock().waiting.remove(&relayed);
+        shared.relay.lock().remove(&relayed);
         return Err(offline());
     }
     Ok(())
@@ -147,7 +143,7 @@ impl Relay {
     /// A relay where at most `most_waiting` asks wait, each for at most `answer_within`.
     pub(crate) fn new(most_waiting: usize, answer_within: Duration) -> Self {
         Self {
-            inner: Mutex::default(),
+            waiting: Mutex::default(),
             most_waiting,
             answer_within,
         }
@@ -155,46 +151,48 @@ impl Relay {
 
     /// Takes `envelope` from `machine`'s connection: an answer, or an error, to an ask the
     /// relay forwarded to that machine goes back to the connection that asked. Anything else,
-    /// or an answer that names another machine, is dropped.
-    pub(crate) fn answered(&self, machine: &MachineId, envelope: Envelope) {
-        let named = answering(&envelope.message);
-        if named.is_none() && !matches!(envelope.message, Message::Error(_)) {
-            return;
-        }
-        let mut inner = self.lock();
-        let Entry::Occupied(entry) = inner.waiting.entry(envelope.id) else {
-            return;
+    /// or an answer that names another machine, is dropped. False when its id isn't one of
+    /// the relay's, so another feature may claim it.
+    #[must_use]
+    pub(crate) fn answered(&self, machine: &MachineId, envelope: Envelope) -> bool {
+        let mut waiting = self.lock();
+        let Entry::Occupied(entry) = waiting.entry(envelope.id) else {
+            return false;
         };
+        let named = answering(&envelope.message);
         let asked = &entry.get().asked;
-        if asked.machine != *machine || named.is_some_and(|named| named != *asked) {
-            return;
+        let answers = match &named {
+            Some(named) => named == asked,
+            None => matches!(envelope.message, Message::Error(_)),
+        };
+        if asked.machine != *machine || !answers {
+            return true;
         }
         let waiter = entry.remove();
-        drop(inner);
+        drop(waiting);
         waiter.tell(envelope.message);
+        true
     }
 
-    /// Waits for `machine`'s answer to the asker's `id`, under the id it returns.
+    /// Waits, under `relayed`, for the answer to what the asker `asked` under `id`.
     fn wait(
         self: &Arc<Self>,
+        relayed: u32,
         asked: Asked,
         id: u32,
         back: &mpsc::Sender<Envelope>,
-    ) -> Result<u32, Refusal> {
-        let mut inner = self.lock();
-        inner.waiting.retain(|_, waiter| !waiter.back.is_closed());
-        let theirs = inner
-            .waiting
+    ) -> Result<(), Refusal> {
+        let mut waiting = self.lock();
+        waiting.retain(|_, waiter| !waiter.back.is_closed());
+        let theirs = waiting
             .values()
             .filter(|waiter| waiter.back.same_channel(back))
             .count();
         // Within the asker's room, so every answer fits.
-        if inner.waiting.len() >= self.most_waiting || theirs >= back.capacity() {
+        if waiting.len() >= self.most_waiting || theirs >= back.capacity() {
             return Err(refused(code!("relay.busy"), true));
         }
-        inner.next_id = inner.next_id.wrapping_add(1);
-        let relayed = inner.next_id;
-        let Entry::Vacant(entry) = inner.waiting.entry(relayed) else {
+        let Entry::Vacant(entry) = waiting.entry(relayed) else {
             return Err(refused(code!("relay.busy"), true));
         };
         let relay = Arc::clone(self);
@@ -208,7 +206,7 @@ impl Relay {
             back: back.clone(),
             timer: timer.abort_handle(),
         });
-        Ok(relayed)
+        Ok(())
     }
 
     /// Tells the ask under `relayed`, if it still waits, that no answer came.
@@ -222,8 +220,8 @@ impl Relay {
         }
     }
 
-    fn lock(&self) -> MutexGuard<'_, Inner> {
-        self.inner.lock().unwrap_or_else(PoisonError::into_inner)
+    fn lock(&self) -> MutexGuard<'_, HashMap<u32, Waiter>> {
+        self.waiting.lock().unwrap_or_else(PoisonError::into_inner)
     }
 }
 
@@ -507,7 +505,7 @@ mod tests {
         send(&mut browser, envelope(1, query(&machine_of(&paired), "w1"))).await;
 
         assert!(ends(&mut browser).await);
-        assert!(fixture.shared.relay.lock().waiting.is_empty());
+        assert!(fixture.shared.relay.lock().is_empty());
         drop(core);
     }
 
@@ -569,7 +567,7 @@ mod tests {
         send(&mut browser, envelope(2, settings_answer(&machine))).await;
         synced(&mut browser).await;
 
-        assert!(fixture.shared.relay.lock().waiting.is_empty());
+        assert!(fixture.shared.relay.lock().is_empty());
         drop(core);
     }
 
@@ -587,7 +585,7 @@ mod tests {
             back,
             timer: tokio::spawn(async {}).abort_handle(),
         };
-        relay.lock().waiting.insert(7, waiter);
+        relay.lock().insert(7, waiter);
         (relay, answers)
     }
 
@@ -606,18 +604,23 @@ mod tests {
             retryable: false,
         });
 
-        relay.answered(&two, envelope(7, settings_answer(&one)));
-        relay.answered(&two, envelope(7, settings_answer(&two)));
-        relay.answered(&two, envelope(7, refused));
-        relay.answered(&one, envelope(7, settings_answer(&two)));
-        relay.answered(&one, envelope(7, changed(&one, elsewhere)));
-        relay.answered(&one, envelope(7, changed(&one, another)));
-        relay.answered(&one, envelope(8, settings_answer(&one)));
-        relay.answered(&one, envelope(7, Message::Unknown));
+        let claimed = [
+            relay.answered(&two, envelope(7, settings_answer(&one))),
+            relay.answered(&two, envelope(7, settings_answer(&two))),
+            relay.answered(&two, envelope(7, refused)),
+            relay.answered(&one, envelope(7, settings_answer(&two))),
+            relay.answered(&one, envelope(7, changed(&one, elsewhere))),
+            relay.answered(&one, envelope(7, changed(&one, another))),
+            relay.answered(&one, envelope(8, settings_answer(&one))),
+            relay.answered(&one, envelope(7, Message::Unknown)),
+        ];
         let before = answers.try_recv();
-        relay.answered(&one, envelope(7, settings_answer(&one)));
-        relay.answered(&one, envelope(7, settings_answer(&one)));
+        let answered = relay.answered(&one, envelope(7, settings_answer(&one)));
+        let again = relay.answered(&one, envelope(7, settings_answer(&one)));
 
+        assert_eq!(claimed, [true, true, true, true, true, true, false, true]);
+        assert!(answered);
+        assert!(!again);
         before.unwrap_err();
         assert_eq!(
             heard(&mut answers).await,
@@ -635,7 +638,7 @@ mod tests {
             retryable: false,
         });
 
-        relay.answered(&one, envelope(7, refused.clone()));
+        assert!(relay.answered(&one, envelope(7, refused.clone()));
 
         assert_eq!(heard(&mut answers).await, envelope(41, refused));
     }
@@ -691,7 +694,7 @@ mod tests {
 
         let busy = Some("relay.busy".to_owned());
         assert_eq!(codes, [None, busy.clone(), None, None, busy, None]);
-        assert_eq!(fixture.shared.relay.lock().waiting.len(), 3);
+        assert_eq!(fixture.shared.relay.lock().len(), 3);
     }
 
     #[tokio::test]
@@ -717,7 +720,7 @@ mod tests {
 
         assert_eq!(code_of(sent), None);
         assert_eq!(refusal(&told), (1, "machine.no_answer", true));
-        assert!(fixture.shared.relay.lock().waiting.is_empty());
+        assert!(fixture.shared.relay.lock().is_empty());
     }
 
     #[tokio::test]
@@ -739,7 +742,7 @@ mod tests {
 
         assert!(codes.iter().take(QUEUE).all(Option::is_none));
         assert_eq!(codes.last(), Some(&Some("machine.offline".to_owned())));
-        assert_eq!(fixture.shared.relay.lock().waiting.len(), QUEUE);
+        assert_eq!(fixture.shared.relay.lock().len(), QUEUE);
     }
 
     #[tokio::test]
@@ -766,14 +769,14 @@ mod tests {
                 None
             );
         }
-        let timers: Vec<_> = (fixture.shared.relay.lock().waiting.values())
+        let timers: Vec<_> = (fixture.shared.relay.lock().values())
             .map(|waiter| waiter.timer.clone())
             .collect();
         let first = heard(&mut attached.incoming).await.id;
         let second = heard(&mut attached.incoming).await.id;
         let relay = &fixture.shared.relay;
-        relay.answered(&machine, envelope(second, failed(code!("test.second"))));
-        relay.answered(&machine, envelope(first, failed(code!("test.first"))));
+        assert!(relay.answered(&machine, envelope(second, failed(code!("test.second"))));
+        assert!(relay.answered(&machine, envelope(first, failed(code!("test.first"))));
 
         assert_eq!(refusal(&heard(&mut to_one).await), (1, "test.first", false));
         assert_eq!(
@@ -821,6 +824,6 @@ mod tests {
         let result = forward(&fixture.shared, &ask, sent, &mpsc::channel(4).0).await;
 
         assert_eq!(code_of(result), Some("failed db.failed".to_owned()));
-        assert!(fixture.shared.relay.lock().waiting.is_empty());
+        assert!(fixture.shared.relay.lock().is_empty());
     }
 }

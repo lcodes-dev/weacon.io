@@ -1,6 +1,7 @@
 //! The machines whose connections are open: the one way the server sends a machine anything.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use tokio::sync::{broadcast, mpsc};
@@ -14,6 +15,7 @@ const CONNECTED: usize = 64;
 pub(crate) struct Links {
     open: Mutex<HashMap<MachineId, Open>>,
     connected: broadcast::Sender<Connected>,
+    last_id: AtomicU32,
 }
 
 struct Open {
@@ -46,6 +48,7 @@ impl Default for Links {
         Self {
             open: Mutex::default(),
             connected: broadcast::channel(CONNECTED).0,
+            last_id: AtomicU32::new(0),
         }
     }
 }
@@ -83,6 +86,12 @@ impl Links {
         let open = self.lock();
         let link = open.get(machine).ok_or(Offline)?;
         link.to_machine.try_send(envelope).map_err(|_| Offline)
+    }
+
+    /// The id for an envelope sent to a machine, unique among those its answers may name for
+    /// a long while; never 0, which the server and the core use for messages of their own.
+    pub(crate) fn next_id(&self) -> u32 {
+        self.last_id.fetch_add(1, Ordering::Relaxed).wrapping_add(1).max(1)
     }
 
     /// Whether `machine` is connected, and its core offers `capability`.
@@ -163,6 +172,18 @@ mod tests {
         assert!(!links.offers(&machine("mc-3"), &settings));
         assert_eq!(subscriber.try_recv().unwrap(), connected("mc-1"));
         assert_eq!(subscriber.try_recv().unwrap(), connected("mc-2"));
+    }
+
+    #[test]
+    fn ids_count_up_and_skip_0_as_they_wrap() {
+        let links = Links::default();
+
+        let first = [links.next_id(), links.next_id()];
+        links.last_id.store(u32::MAX - 1, Ordering::Relaxed);
+        let wrapped = [links.next_id(), links.next_id(), links.next_id()];
+
+        assert_eq!(first, [1, 2]);
+        assert_eq!(wrapped, [u32::MAX, 1, 1]);
     }
 
     #[test]

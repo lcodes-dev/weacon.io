@@ -185,7 +185,7 @@ async fn run(
 async fn received(
     socket: &mut WebSocket,
     shared: &Shared,
-    feed: &Feed,
+    feed: &mut Feed,
     envelope: Envelope,
 ) -> Result<(), Closed> {
     if feed.offers.settings && relay::carries(&envelope.message) {
