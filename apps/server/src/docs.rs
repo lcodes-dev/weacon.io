@@ -484,6 +484,7 @@ mod tests {
         let stranger = Client {
             address: ada.address,
             auth: String::new(),
+            token: String::new(),
         };
         let body = serde_json::to_string(&linked()).unwrap();
         for (who, head) in [

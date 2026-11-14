@@ -8,11 +8,14 @@ use futures_util::{SinkExt, StreamExt};
 use serde_json::json;
 use tokio::time::timeout;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
-use tokio_tungstenite::tungstenite::{self, Message as Wire, Utf8Bytes};
+use tokio_tungstenite::tungstenite::{self, Message as Wire};
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async};
 use weacon_protocol::{Envelope, Hello, Message, PROTOCOL};
 
 use super::VERSION;
+
+/// How long a test waits for a socket before taking it as broken.
+pub(crate) const PATIENCE: Duration = Duration::from_secs(10);
 
 pub(crate) type Client = WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>;
 
@@ -57,49 +60,54 @@ pub(crate) async fn send(client: &mut Client, envelope: Envelope) {
     client.send(Wire::text(json)).await.unwrap();
 }
 
-// The client's next frame; a socket that sends nothing for this long is
-// broken.
+// The client's next frame.
 pub(crate) async fn frame(client: &mut Client) -> Option<Result<Wire, tungstenite::Error>> {
-    timeout(Duration::from_secs(10), client.next())
+    timeout(PATIENCE, client.next())
         .await
         .expect("the socket went quiet")
 }
 
-// The client's next message, pings aside: they come every 100 ms.
+// The client's next frame other than a ping: they come every 100 ms.
+pub(crate) async fn past_pings(client: &mut Client) -> Option<Result<Wire, tungstenite::Error>> {
+    let past = async {
+        loop {
+            let frame = client.next().await;
+            if !matches!(frame, Some(Ok(Wire::Ping(_)))) {
+                return frame;
+            }
+        }
+    };
+    timeout(PATIENCE, past)
+        .await
+        .expect("the socket went quiet")
+}
+
+// The client's next message, pings aside.
 pub(crate) async fn next(client: &mut Client) -> Message {
     next_envelope(client).await.message
 }
 
 // The client's next envelope, pings aside.
 pub(crate) async fn next_envelope(client: &mut Client) -> Envelope {
-    let text = timeout(Duration::from_secs(10), text(client))
-        .await
-        .expect("no message in time");
-    Envelope::from_json(text.as_bytes()).unwrap()
-}
-
-pub(crate) async fn text(client: &mut Client) -> Utf8Bytes {
-    loop {
-        match client.next().await {
-            Some(Ok(Wire::Ping(_))) => {}
-            Some(Ok(Wire::Text(text))) => return text,
-            other => panic!("no message: {other:?}"),
-        }
+    match past_pings(client).await {
+        Some(Ok(Wire::Text(text))) => Envelope::from_json(text.as_bytes()).unwrap(),
+        other => panic!("no message: {other:?}"),
     }
 }
 
-// Whether the socket ends, pings aside, before it has had ten seconds to.
+// Whether the socket ends, pings aside.
 pub(crate) async fn ends(client: &mut Client) -> bool {
-    let ended = async {
-        loop {
-            match client.next().await {
-                Some(Ok(Wire::Ping(_))) => {}
-                None | Some(Ok(Wire::Close(_)) | Err(_)) => return true,
-                Some(Ok(_)) => return false,
-            }
-        }
-    };
-    timeout(Duration::from_secs(10), ended)
-        .await
-        .unwrap_or(false)
+    matches!(
+        past_pings(client).await,
+        None | Some(Ok(Wire::Close(_)) | Err(_))
+    )
+}
+
+// The status a WebSocket upgrade was refused with.
+pub(crate) fn refused<T>(result: Result<T, tungstenite::Error>) -> u16 {
+    match result {
+        Err(tungstenite::Error::Http(response)) => response.status().as_u16(),
+        Err(error) => panic!("{error}"),
+        Ok(_) => panic!("not refused"),
+    }
 }

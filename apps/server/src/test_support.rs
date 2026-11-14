@@ -108,6 +108,12 @@ impl Fixture {
         }
     }
 
+    /// Pings sockets no more while a test runs, for tests whose client stops reading or that
+    /// wait on something other than a ping.
+    pub(crate) fn quiet(&mut self) {
+        self.shared.sockets.ping_every = Duration::from_hours(1);
+    }
+
     /// A server running on the fixture's state.
     pub(crate) async fn run(&self) -> Running {
         run(self.shared.clone()).await
@@ -121,6 +127,7 @@ impl Fixture {
         let client = Client {
             address: server.address,
             auth: bearer(&body),
+            token: body["token"].as_str().unwrap().to_owned(),
         };
         (server, client)
     }

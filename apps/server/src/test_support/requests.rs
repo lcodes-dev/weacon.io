@@ -6,6 +6,7 @@ use std::time::Duration;
 use serde_json::{Value, json};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
+use weacon_protocol::MachineId;
 
 use super::Fixture;
 
@@ -114,6 +115,12 @@ pub(crate) struct Paired {
     pub(crate) token: String,
 }
 
+impl Paired {
+    pub(crate) fn machine_id(&self) -> MachineId {
+        MachineId::try_from(self.machine["id"].as_str().unwrap().to_owned()).unwrap()
+    }
+}
+
 /// A `POST /api/machines/pair` body.
 pub(crate) fn pairing_start(os: &str) -> String {
     json!({ "name": "Studio", "os": os, "key": "ab".repeat(32) }).to_string()
@@ -143,10 +150,11 @@ pub(crate) async fn pair_machine(fixture: &Fixture, address: SocketAddr) -> Pair
 }
 
 /// A client of the server at `address` that proves a sign-in with `auth`, or sends no proof
-/// when it is empty.
+/// when it is empty, and the sign-in's session token.
 pub(crate) struct Client {
     pub(crate) address: SocketAddr,
     pub(crate) auth: String,
+    pub(crate) token: String,
 }
 
 impl Client {

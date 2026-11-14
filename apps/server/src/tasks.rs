@@ -422,6 +422,7 @@ mod tests {
         let stranger = Client {
             address: ada.address,
             auth: String::new(),
+            token: String::new(),
         };
 
         for (who, head) in [

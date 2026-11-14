@@ -267,8 +267,8 @@ mod tests {
     use futures_util::SinkExt;
     use tokio::io::AsyncReadExt;
     use tokio::sync::Semaphore;
+    use tokio_tungstenite::tungstenite::Message as Wire;
     use tokio_tungstenite::tungstenite::client::IntoClientRequest;
-    use tokio_tungstenite::tungstenite::{self, Message as Wire};
     use tokio_tungstenite::{MaybeTlsStream, connect_async};
     use weacon_protocol::{MemberId, PROTOCOL, WorkspaceChange, WorkspaceUpdate};
 
@@ -278,30 +278,12 @@ mod tests {
     use super::*;
     use crate::auth::SESSION_COOKIE;
     use crate::db::Workspace;
-    use crate::email::Email;
     use crate::sign_in::SESSION_LIFETIME;
     use crate::socket::refusal;
-    use crate::test_support::socket::{Client, ends, frame, next, open, say, say_as};
-    use crate::test_support::{
-        self, Fixture, Running, fresh_account, member_id, run, workspace_id,
+    use crate::test_support::socket::{
+        Client, PATIENCE, ends, frame, next, open, refused, say, say_as,
     };
-
-    // For tests whose client stops reading, or that wait on something other than a ping: no
-    // ping comes while they run.
-    const QUIET: Duration = Duration::from_hours(1);
-
-    // Signs `email` in, and gives the session's token.
-    async fn sign_in(fixture: &Fixture, address: SocketAddr, email: &str) -> String {
-        let (_, body) = test_support::sign_in(fixture, address, email).await;
-        body["token"].as_str().unwrap().to_owned()
-    }
-
-    // A server for `fixture` that ada has signed in to, and her token.
-    async fn signed_in(fixture: &Fixture) -> (Running, String) {
-        let server = run(fixture.shared.clone()).await;
-        let token = sign_in(fixture, server.address, "ada@example.com").await;
-        (server, token)
-    }
+    use crate::test_support::{self, Fixture, fresh_account, member_id, workspace_id};
 
     fn w1(fixture: &Fixture) -> impl Future<Output = Workspace> {
         let db = fixture.shared.db.clone();
@@ -311,13 +293,16 @@ mod tests {
     // Adds `email` to w1 as member `id`, who signs in and opens the workspace.
     async fn join(fixture: &Fixture, address: SocketAddr, id: &str, email: &str) {
         let workspace = w1(fixture).await;
-        let address_of = Email::parse(email).unwrap();
         workspace
-            .add_member(&member_id(id), &fresh_account(), &address_of)
+            .add_member(
+                &member_id(id),
+                &fresh_account(),
+                &test_support::email(email),
+            )
             .await
             .unwrap();
-        let token = sign_in(fixture, address, email).await;
-        greeted(address, &token, 0).await;
+        let (_, body) = test_support::sign_in(fixture, address, email).await;
+        greeted(address, body["token"].as_str().unwrap(), 0).await;
     }
 
     // A feed of w1 for `token` after `since`, past its welcome.
@@ -343,17 +328,17 @@ mod tests {
     #[tokio::test]
     async fn a_feed_keeps_its_place_among_the_connections() {
         let mut fixture = Fixture::new().await;
-        fixture.shared.sockets.ping_every = QUIET;
+        fixture.quiet();
         let room = Arc::new(Semaphore::new(2));
         fixture.shared.connections = Arc::clone(&room);
-        let (server, token) = signed_in(&fixture).await;
-        let client = greeted(server.address, &token, 0).await;
+        let (server, ada) = fixture.client("ada@example.com").await;
+        let client = greeted(server.address, &ada.token, 0).await;
 
         // One place is the feed's, the other is kept for the next connection.
         assert_eq!(room.available_permits(), 0);
         drop(client);
         drop(
-            timeout(Duration::from_secs(10), room.acquire())
+            timeout(PATIENCE, room.acquire())
                 .await
                 .expect("the feed kept its place after it closed"),
         );
@@ -362,9 +347,9 @@ mod tests {
     #[tokio::test]
     async fn a_member_gets_what_they_missed_then_each_change() {
         let mut fixture = Fixture::new().await;
-        fixture.shared.sockets.ping_every = QUIET;
-        let (server, token) = signed_in(&fixture).await;
-        let mut client = open(server.address, "/api/workspaces/w1/feed", &token)
+        fixture.quiet();
+        let (server, ada) = fixture.client("ada@example.com").await;
+        let mut client = open(server.address, "/api/workspaces/w1/feed", &ada.token)
             .await
             .unwrap();
         say(&mut client, &["workspace.feed"]).await;
@@ -387,9 +372,9 @@ mod tests {
     #[tokio::test]
     async fn only_a_client_that_offers_tasks_hears_of_task_changes() {
         let mut fixture = Fixture::new().await;
-        fixture.shared.sockets.ping_every = QUIET;
-        let (server, token) = signed_in(&fixture).await;
-        let mut plain = greeted(server.address, &token, 0).await;
+        fixture.quiet();
+        let (server, ada) = fixture.client("ada@example.com").await;
+        let mut plain = greeted(server.address, &ada.token, 0).await;
         let first = next(&mut plain).await;
         let task = Task::new(
             TaskId::try_from("t1".to_owned()).unwrap(),
@@ -406,7 +391,7 @@ mod tests {
         join(&fixture, server.address, "m2", "bo@example.com").await;
         let after_the_task = next(&mut plain).await;
         let path = "/api/workspaces/w1/feed";
-        let mut both = open(server.address, path, &token).await.unwrap();
+        let mut both = open(server.address, path, &ada.token).await.unwrap();
         say(&mut both, &["workspace.feed", "workspace.tasks"]).await;
         next(&mut both).await;
 
@@ -427,8 +412,8 @@ mod tests {
     #[tokio::test]
     async fn only_a_client_that_offers_docs_hears_of_doc_changes() {
         let fixture = Fixture::new().await;
-        let (server, token) = signed_in(&fixture).await;
-        let mut plain = greeted(server.address, &token, 0).await;
+        let (server, ada) = fixture.client("ada@example.com").await;
+        let mut plain = greeted(server.address, &ada.token, 0).await;
         next(&mut plain).await;
         let doc = Doc::new(
             DocId::try_from("d1".to_owned()).unwrap(),
@@ -449,7 +434,7 @@ mod tests {
         join(&fixture, server.address, "m2", "bo@example.com").await;
         let after_the_doc = next(&mut plain).await;
         let path = "/api/workspaces/w1/feed";
-        let mut docs = open(server.address, path, &token).await.unwrap();
+        let mut docs = open(server.address, path, &ada.token).await.unwrap();
         say(&mut docs, &["workspace.feed", "workspace.docs"]).await;
         next(&mut docs).await;
 
@@ -470,9 +455,9 @@ mod tests {
     #[tokio::test]
     async fn changes_arrive_once_and_in_order_whatever_wakes_the_feed() {
         let mut fixture = Fixture::new().await;
-        fixture.shared.sockets.ping_every = QUIET;
-        let (server, token) = signed_in(&fixture).await;
-        let mut client = greeted(server.address, &token, 1).await;
+        fixture.quiet();
+        let (server, ada) = fixture.client("ada@example.com").await;
+        let mut client = greeted(server.address, &ada.token, 1).await;
         join(&fixture, server.address, "m2", "bo@example.com").await;
         let other = WorkspaceId::try_from("w9".to_owned()).unwrap();
         fixture.shared.changes.send(other).unwrap();
@@ -489,37 +474,34 @@ mod tests {
     #[tokio::test]
     async fn without_a_live_token_there_is_no_feed() {
         let fixture = Fixture::new().await;
-        let (server, token) = signed_in(&fixture).await;
+        let (server, ada) = fixture.client("ada@example.com").await;
         let address = server.address;
-        let refused = |result: Result<Client, tungstenite::Error>| match result {
-            Err(tungstenite::Error::Http(response)) => response.status().as_u16(),
-            other => panic!("{:?}", other.map(|_| ())),
-        };
 
         assert_eq!(
             refused(open(address, "/api/workspaces/w1/feed", "wrong").await),
             401
         );
         assert_eq!(
-            refused(open(address, "/api/workspaces/w9/feed", &token).await),
+            refused(open(address, "/api/workspaces/w9/feed", &ada.token).await),
             401
         );
         assert_eq!(
-            refused(open(address, "/api/workspaces/w.1/feed", &token).await),
+            refused(open(address, "/api/workspaces/w.1/feed", &ada.token).await),
             400
         );
         // Signed in, but to an account that isn't a member.
-        let bo = Email::parse("bo@example.com").unwrap();
+        let bo = test_support::email("bo@example.com");
         let db = &fixture.shared.db;
         db.add_account(&fresh_account(), &bo).await.unwrap();
-        let stranger = sign_in(&fixture, address, "bo@example.com").await;
+        let (_, stranger) = test_support::sign_in(&fixture, address, "bo@example.com").await;
+        let stranger = stranger["token"].as_str().unwrap();
         assert_eq!(
-            refused(open(address, "/api/workspaces/w1/feed", &stranger).await),
+            refused(open(address, "/api/workspaces/w1/feed", stranger).await),
             401
         );
         fixture.advance(SESSION_LIFETIME);
         assert_eq!(
-            refused(open(address, "/api/workspaces/w1/feed", &token).await),
+            refused(open(address, "/api/workspaces/w1/feed", &ada.token).await),
             401
         );
     }
@@ -527,20 +509,20 @@ mod tests {
     #[tokio::test]
     async fn a_client_must_say_hello_and_offer_the_feed() {
         let fixture = Fixture::new().await;
-        let (server, token) = signed_in(&fixture).await;
+        let (server, ada) = fixture.client("ada@example.com").await;
         let address = server.address;
-        let mut wrong = open(address, "/api/workspaces/w1/feed", &token)
+        let mut wrong = open(address, "/api/workspaces/w1/feed", &ada.token)
             .await
             .unwrap();
         wrong
             .send(Wire::text("{\"id\":3,\"type\":\"welcome\"}"))
             .await
             .unwrap();
-        let mut without = open(address, "/api/workspaces/w1/feed", &token)
+        let mut without = open(address, "/api/workspaces/w1/feed", &ada.token)
             .await
             .unwrap();
         say(&mut without, &[]).await;
-        let mut older = open(address, "/api/workspaces/w1/feed", &token)
+        let mut older = open(address, "/api/workspaces/w1/feed", &ada.token)
             .await
             .unwrap();
         say_as(&mut older, PROTOCOL + 1, &["workspace.feed"]).await;
@@ -561,8 +543,8 @@ mod tests {
     #[tokio::test]
     async fn a_client_that_says_nothing_is_let_go() {
         let fixture = Fixture::new().await;
-        let (server, token) = signed_in(&fixture).await;
-        let mut silent = open(server.address, "/api/workspaces/w1/feed", &token)
+        let (server, ada) = fixture.client("ada@example.com").await;
+        let mut silent = open(server.address, "/api/workspaces/w1/feed", &ada.token)
             .await
             .unwrap();
 
@@ -573,8 +555,8 @@ mod tests {
     async fn an_oversized_message_ends_the_feed() {
         assert_eq!(MAX_MESSAGE, 16_384);
         let fixture = Fixture::new().await;
-        let (server, token) = signed_in(&fixture).await;
-        let mut client = open(server.address, "/api/workspaces/w1/feed", &token)
+        let (server, ada) = fixture.client("ada@example.com").await;
+        let mut client = open(server.address, "/api/workspaces/w1/feed", &ada.token)
             .await
             .unwrap();
         client
@@ -588,8 +570,8 @@ mod tests {
     #[tokio::test]
     async fn a_client_that_answers_pings_stays_until_its_session_ends() {
         let fixture = Fixture::new().await;
-        let (server, token) = signed_in(&fixture).await;
-        let mut client = greeted(server.address, &token, 1).await;
+        let (server, ada) = fixture.client("ada@example.com").await;
+        let mut client = greeted(server.address, &ada.token, 1).await;
         // Reading answers each ping; five of them outlast the two a silent client gets.
         for _ in 0..5 {
             let got = frame(&mut client).await;
@@ -603,9 +585,9 @@ mod tests {
     #[tokio::test]
     async fn a_change_reaches_no_feed_whose_member_is_one_no_more() {
         let mut fixture = Fixture::new().await;
-        fixture.shared.sockets.ping_every = QUIET;
-        let (server, token) = signed_in(&fixture).await;
-        let mut client = greeted(server.address, &token, 1).await;
+        fixture.quiet();
+        let (server, ada) = fixture.client("ada@example.com").await;
+        let mut client = greeted(server.address, &ada.token, 1).await;
         w1(&fixture).await.unlink(&member_id("m1")).await;
 
         join(&fixture, server.address, "m2", "bo@example.com").await;
@@ -616,7 +598,7 @@ mod tests {
     #[tokio::test]
     async fn a_member_whose_session_ends_during_a_page_gets_no_more_of_it() {
         let mut fixture = Fixture::new().await;
-        fixture.shared.sockets.ping_every = QUIET;
+        fixture.quiet();
         // The clock reads as usual for `checks` more readings, then past every session.
         let checks = Arc::new(AtomicU64::new(u64::MAX));
         let (left, clock) = (Arc::clone(&checks), Arc::clone(&fixture.shared.clock));
@@ -627,14 +609,14 @@ mod tests {
                 .is_err();
             clock() + past * u32::from(ended)
         }));
-        let (server, token) = signed_in(&fixture).await;
+        let (server, ada) = fixture.client("ada@example.com").await;
         let w1 = w1(&fixture).await;
-        let bo = Email::parse("bo@example.com").unwrap();
+        let bo = test_support::email("bo@example.com");
         w1.add_member(&member_id("m2"), &fresh_account(), &bo)
             .await
             .unwrap();
         w1.join(&member_id("m2")).await.unwrap();
-        let mut client = open(server.address, "/api/workspaces/w1/feed", &token)
+        let mut client = open(server.address, "/api/workspaces/w1/feed", &ada.token)
             .await
             .unwrap();
         // A page of two changes, m2's and m1's: the session lasts through the first's check.
@@ -649,26 +631,24 @@ mod tests {
     #[tokio::test]
     async fn a_quiet_feed_ends_when_its_member_is_one_no_more() {
         let fixture = Fixture::new().await;
-        let (server, token) = signed_in(&fixture).await;
-        let mut client = greeted(server.address, &token, 1).await;
+        let (server, ada) = fixture.client("ada@example.com").await;
+        let mut client = greeted(server.address, &ada.token, 1).await;
         // Read meanwhile, so it's the unlinking that ends the feed, not unanswered pings.
         let unlink = async { w1(&fixture).await.unlink(&member_id("m1")).await };
 
         let ((), ended) = tokio::join!(unlink, ends(&mut client));
         assert!(ended);
-        let again = open(server.address, "/api/workspaces/w1/feed", &token).await;
+        let again = open(server.address, "/api/workspaces/w1/feed", &ada.token).await;
         again.unwrap_err();
     }
 
     #[tokio::test]
     async fn a_feed_ends_when_its_session_is_signed_out() {
         let fixture = Fixture::new().await;
-        let (server, token) = signed_in(&fixture).await;
-        let mut client = greeted(server.address, &token, 1).await;
-        let bearer = format!("authorization: Bearer {token}\r\n");
+        let (server, ada) = fixture.client("ada@example.com").await;
+        let mut client = greeted(server.address, &ada.token, 1).await;
 
-        let sign_out =
-            test_support::request_with(server.address, "POST /api/sign-out", &bearer, "");
+        let sign_out = ada.send("POST /api/sign-out", "");
 
         let (_, ended) = tokio::join!(sign_out, ends(&mut client));
         assert!(ended);
@@ -677,12 +657,12 @@ mod tests {
     #[tokio::test]
     async fn a_browsers_cookie_opens_a_feed_from_the_servers_own_page_only() {
         let fixture = Fixture::new().await;
-        let (server, token) = signed_in(&fixture).await;
+        let (server, ada) = fixture.client("ada@example.com").await;
         let open_from = async |origin: &str| {
             let mut request = format!("ws://{}/api/workspaces/w1/feed", server.address)
                 .into_client_request()
                 .unwrap();
-            let cookie = format!("{SESSION_COOKIE}={token}");
+            let cookie = format!("{SESSION_COOKIE}={}", ada.token);
             request
                 .headers_mut()
                 .insert("cookie", cookie.parse().unwrap());
@@ -696,25 +676,22 @@ mod tests {
         let other = open_from("http://other.example").await;
 
         own.unwrap();
-        let Err(tungstenite::Error::Http(refused)) = other else {
-            panic!("{other:?}");
-        };
-        assert_eq!(refused.status().as_u16(), 403);
+        assert_eq!(refused(other), 403);
     }
 
     #[tokio::test]
     async fn only_a_session_token_opens_a_feed() {
         let fixture = Fixture::new().await;
-        let (server, token) = signed_in(&fixture).await;
+        let (server, ada) = fixture.client("ada@example.com").await;
         let upgrade = "connection: upgrade\r\nupgrade: websocket\r\nsec-websocket-version: 13\r\n\
                        sec-websocket-key: dGhlIHNhbXBsZSBub25jZQ==\r\n";
         let mut statuses = Vec::new();
         for authorization in [
             String::new(),
             "authorization: Bearer \r\n".to_owned(),
-            format!("authorization: Basic {token}\r\n"),
-            format!("authorization: bearer{token}\r\n"),
-            format!("authorization: Bearer {token}\r\n"),
+            format!("authorization: Basic {}\r\n", ada.token),
+            format!("authorization: bearer{}\r\n", ada.token),
+            ada.auth.clone(),
         ] {
             let headers = format!("{authorization}{upgrade}");
             let feed = "GET /api/workspaces/w1/feed";
@@ -738,15 +715,15 @@ mod tests {
     #[tokio::test]
     async fn a_client_that_stops_answering_is_let_go() {
         let fixture = Fixture::new().await;
-        let (server, token) = signed_in(&fixture).await;
-        let client = greeted(server.address, &token, 1).await;
+        let (server, ada) = fixture.client("ada@example.com").await;
+        let client = greeted(server.address, &ada.token, 1).await;
         // Read below the WebSocket, so nothing answers the pings.
         let MaybeTlsStream::Plain(mut stream) = client.into_inner() else {
             panic!("not plain TCP");
         };
         let mut rest = Vec::new();
 
-        timeout(Duration::from_secs(10), stream.read_to_end(&mut rest))
+        timeout(PATIENCE, stream.read_to_end(&mut rest))
             .await
             .expect("the feed never let go")
             .unwrap();
