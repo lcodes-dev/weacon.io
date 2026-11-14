@@ -13,6 +13,31 @@ pub(crate) struct Word {
     pub(crate) glob: bool,
     /// Starts with an unquoted `~`, the home folder.
     pub(crate) tilde: bool,
+    /// When `dynamic`, how much of `text` came before the first expansion.
+    pub(crate) known: usize,
+}
+
+impl Word {
+    // From here on the word holds what only the shell knows.
+    pub(crate) fn unknown(&mut self) {
+        if !self.dynamic {
+            self.known = self.text.len();
+        }
+        self.dynamic = true;
+    }
+
+    /// The word made of `value`, the end of this word's text, as after an option's `=`; the
+    /// shell expands a `~` that starts it.
+    pub(crate) fn tail(&self, value: &str) -> Self {
+        Self {
+            text: value.to_owned(),
+            tilde: value.starts_with('~'),
+            known: self
+                .known
+                .saturating_sub(self.text.len().saturating_sub(value.len())),
+            ..self.clone()
+        }
+    }
 }
 
 /// One command with its words and where its output goes.
@@ -154,6 +179,8 @@ impl Parser {
             '\n' | ';' | '&' | '|' | '(' | ')' => self.separator(char, simple, word)?,
             '<' | '>' => self.redirect(char, simple, word)?,
             '#' if word.is_none() => self.comment(),
+            // A line continuation before a word starts makes no word.
+            '\\' if word.is_none() && self.peek_at(1) == Some('\n') => self.advance(2),
             _ => self.word_part(word.get_or_insert_with(Word::default))?,
         }
         Some(())
@@ -169,6 +196,12 @@ impl Parser {
         if char == '&' && self.peek() == Some('>') {
             self.advance(1);
             return self.redirect_target(simple, word, true);
+        }
+        // A `(` after a word defines a function or an array, and `((` is arithmetic: what runs
+        // then isn't on this line.
+        let defines = word.is_some() || !simple.words.is_empty() || self.peek() == Some('(');
+        if char == '(' && defines {
+            self.unsure = true;
         }
         let pipe = char == '|' && self.peek() != Some('|');
         let or = char == '|' && !pipe;
@@ -228,6 +261,10 @@ impl Parser {
                 self.advance(1);
             }
             let delimiter = self.target()?;
+            // A delimiter with an expansion in it is matched as the shell spells it, not as read.
+            if delimiter.dynamic {
+                return None;
+            }
             self.heredocs.push((delimiter.text, strips));
             return Some(());
         }
@@ -343,8 +380,10 @@ impl Parser {
             self.blocks = self.blocks.saturating_sub(1);
         }
         let done = std::mem::take(simple);
-        // A `case` pattern's `)` would close the substitution it's in too early.
-        if self.depth > 1 && done.words.first().is_some_and(|word| word.text == "case") {
+        // A `case` pattern's `)` would close the substitution it's in too early, and a function
+        // runs its body where it's called, not where it's defined.
+        let first = done.words.first().map(|word| word.text.as_str());
+        if (self.depth > 1 && first == Some("case")) || first == Some("function") {
             self.unsure = true;
         }
         if !done.words.is_empty() || !done.writes.is_empty() || !done.reads.is_empty() {
@@ -405,7 +444,7 @@ mod tests {
         let echo = parse("echo $(id)").unwrap().pop().unwrap();
         assert!(echo.words[1].dynamic);
         assert!(parse("echo ${X}y").unwrap()[0].words[1].dynamic);
-        assert!(parse("echo $((1 + 2))").is_some());
+        assert!(parse("echo $((1 + 2))").is_none());
     }
 
     #[test]
@@ -482,14 +521,8 @@ mod tests {
         assert!(word("echo $?").dynamic);
         let literal = word("echo a$/b");
         assert_eq!((literal.text.as_str(), literal.dynamic), ("a$/b", false));
-        let arithmetic = parse("echo $((1 + 2)) x").unwrap();
-        assert_eq!(
-            arithmetic
-                .iter()
-                .map(|simple| simple.words.len())
-                .collect::<Vec<_>>(),
-            [3, 3]
-        );
+        assert_eq!(word("echo $\"a b\"").text, "a b");
+        assert_eq!(word("echo \"$'\"").text, "$'");
     }
 
     #[test]

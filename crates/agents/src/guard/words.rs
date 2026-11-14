@@ -4,7 +4,7 @@ use super::shell::Word;
 
 // Programs that run the command after them; each with its options that take a value, and how
 // many words it takes before the command.
-const WRAPPERS: [(&str, &[&str], usize); 25] = [
+const WRAPPERS: [(&str, &[&str], usize); 24] = [
     ("sudo", &["-u", "-g", "-h", "-p", "-r", "-t", "-U"], 0),
     ("doas", &["-u"], 0),
     ("env", &["-u", "--unset"], 0),
@@ -25,7 +25,6 @@ const WRAPPERS: [(&str, &[&str], usize); 25] = [
         0,
     ),
     ("busybox", &[], 0),
-    ("coproc", &[], 0),
     ("unshare", &[], 0),
     ("strace", &["-o", "-e", "-p", "-s", "-u"], 0),
     ("chrt", &[], 1),
@@ -48,9 +47,9 @@ const MOVING: [&str; 7] = [
 ];
 
 // Programs that run a command given as text, which the guard doesn't follow.
-const RUNNERS: [&str; 13] = [
+const RUNNERS: [&str; 18] = [
     "su", "runuser", "script", "parallel", "trap", "alias", "chroot", "watch", "ssh", "nsenter",
-    "eval", "flock", "taskset",
+    "eval", "flock", "taskset", "coproc", "let", "hash", "enable", "shopt",
 ];
 
 // Words that start or join shell constructs rather than name a program.
@@ -222,10 +221,7 @@ pub(super) fn value_of(args: &[Word], options: &[&str]) -> Option<Word> {
                     .then(|| arg.text.strip_prefix(option))
                     .flatten()
             })?;
-            Some(Word {
-                text: value.to_owned(),
-                ..arg.clone()
-            })
+            Some(arg.tail(value))
         })
     })
 }

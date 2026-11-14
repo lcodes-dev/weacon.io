@@ -38,6 +38,8 @@ const DEVICES: [&str; 5] = ["/dev/null", "/dev/stdout", "/dev/stderr", "/dev/tty
 // Of the variables that point git at another repository or have it run a command, these do
 // neither.
 const GIT_HARMLESS: [&str; 2] = ["GIT_PAGER", "GIT_TERMINAL_PROMPT"];
+// Variables that choose which programs run or how the shell splits words.
+const SHELL_SETTINGS: [&str; 4] = ["PATH", "BASH_ENV", "ENV", "IFS"];
 const FIND_RUNS: [&str; 4] = ["-exec", "-execdir", "-ok", "-okdir"];
 // Programs that read through every folder they're given.
 const DEEP: [&str; 11] = [
@@ -116,7 +118,8 @@ fn assignments(simple: &Simple, context: &Context, cwd: &Path) -> Option<Reason>
         .filter(|word| is_assignment(word))
         .find_map(|word| {
             let (name, _) = word.text.split_once('=')?;
-            if name.starts_with("GIT_") && !GIT_HARMLESS.contains(&name) {
+            let redirects_git = name.starts_with("GIT_") && !GIT_HARMLESS.contains(&name);
+            if redirects_git || SHELL_SETTINGS.contains(&name) {
                 return Some(Reason::Unsure);
             }
             read(word, context, cwd, false)
@@ -129,11 +132,7 @@ fn read(word: &Word, context: &Context, cwd: &Path, deep: bool) -> Option<Reason
     let value = value
         .or_else(|| word.text.strip_prefix('@'))
         .filter(|value| !value.is_empty());
-    let inner = value.map(|value| Word {
-        text: value.to_owned(),
-        tilde: value.starts_with('~'),
-        ..word.clone()
-    });
+    let inner = value.map(|value| word.tail(value));
     inner
         .and_then(|inner| read_path(&inner, context, cwd, deep))
         .or_else(|| read_path(word, context, cwd, deep))
@@ -148,7 +147,11 @@ fn read_path(word: &Word, context: &Context, cwd: &Path, deep: bool) -> Option<R
     if !word.dynamic {
         return Some(Reason::Unsure);
     }
-    let (folder, _) = word.text.rsplit_once('/')?;
+    // Only the text before the first expansion is known; one that starts a path may be anywhere.
+    let before = word.text.get(..word.known)?;
+    let Some((folder, _)) = before.rsplit_once('/') else {
+        return word.text.contains('/').then_some(Reason::Unsure);
+    };
     let known = Word {
         text: if folder.is_empty() {
             "/".to_owned()
@@ -265,11 +268,7 @@ impl Call<'_> {
     fn dd(&self, cwd: &Path) -> Option<Reason> {
         self.args.iter().find_map(|arg| {
             let file = arg.text.strip_prefix("of=")?;
-            let target = Word {
-                text: file.to_owned(),
-                ..arg.clone()
-            };
-            check_word(&target, self.context, cwd, Reason::WriteOutside)
+            check_word(&arg.tail(file), self.context, cwd, Reason::WriteOutside)
         })
     }
 

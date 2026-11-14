@@ -31,7 +31,9 @@ impl Parser {
                     .iter()
                     .take_while(|next| !matches!(next, '}' | ' ' | '\t' | '\n' | ';' | '|' | '&'))
                     .collect();
-                word.dynamic |= inside.contains(',') || inside.contains("..");
+                if inside.contains(',') || inside.contains("..") {
+                    word.unknown();
+                }
                 word.text.push(char);
             }
             _ => word.text.push(char),
@@ -45,6 +47,8 @@ impl Parser {
             match self.next()? {
                 '"' => return Some(()),
                 '\\' => self.escaped_in_quotes(word)?,
+                // Inside double quotes, `$'` and `$"` are plain text.
+                '$' if matches!(self.peek(), Some('\'' | '"')) => word.text.push('$'),
                 '$' => self.expansion(word)?,
                 '`' => self.backquoted(word)?,
                 char => word.text.push(char),
@@ -70,13 +74,9 @@ impl Parser {
     // After a `$`: a substitution's commands run, and any expansion makes the word unknown.
     fn expansion(&mut self, word: &mut Word) -> Option<()> {
         match self.peek() {
-            Some('(') if self.peek_at(1) == Some('(') => {
-                self.advance(2);
-                self.list(Some(')'))?;
-                if self.next()? != ')' {
-                    return None;
-                }
-            }
+            // Arithmetic evaluates what variables hold, which can run commands.
+            Some('(') if self.peek_at(1) == Some('(') => return None,
+            Some('[') => return None,
             Some('(') => {
                 self.advance(1);
                 self.list(Some(')'))?;
@@ -84,8 +84,8 @@ impl Parser {
             Some('{') => {
                 self.advance(1);
                 let name = self.until('}')?;
-                // A default value can hold a substitution, which this doesn't follow.
-                if name.contains(['$', '`']) {
+                // A default value can hold a substitution or quotes, which this doesn't follow.
+                if name.contains(['$', '`', '\'', '"', '\\', '{']) {
                     return None;
                 }
                 home_or_unknown(word, &name);
@@ -103,12 +103,17 @@ impl Parser {
                 self.advance(1);
                 self.until('\'')?;
             }
+            // `$"…"` is text in double quotes.
+            Some('"') => {
+                self.advance(1);
+                return self.double_quoted(word);
+            }
             _ => {
                 word.text.push('$');
                 return Some(());
             }
         }
-        word.dynamic = true;
+        word.unknown();
         Some(())
     }
 
@@ -136,7 +141,7 @@ impl Parser {
     fn backquoted(&mut self, word: &mut Word) -> Option<()> {
         let inner = self.backquoted_text()?;
         self.found.extend(parse_nested(&inner, self.depth + 1)?);
-        word.dynamic = true;
+        word.unknown();
         Some(())
     }
 }
@@ -149,6 +154,6 @@ fn home_or_unknown(word: &mut Word, name: &str) {
         word.tilde |= word.text.is_empty();
         word.text.push('~');
     } else {
-        word.dynamic = true;
+        word.unknown();
     }
 }

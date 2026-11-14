@@ -52,7 +52,8 @@ const DROPS: [&str; 6] = [
 /// What a program that runs code needs a person for; nothing when it isn't one.
 pub(super) fn judge(name: &str, args: &[Word], simple: &Simple) -> Option<Reason> {
     let kind = family(name);
-    if SHELLS.contains(&kind) {
+    // `source` and `.` run a file's commands, or a pipe's, in this shell.
+    if SHELLS.contains(&kind) || matches!(name, "source" | ".") {
         return shell(args, simple);
     }
     if OTHER_SHELLS.contains(&kind) {
