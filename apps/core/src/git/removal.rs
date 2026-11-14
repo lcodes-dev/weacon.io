@@ -61,6 +61,7 @@ impl Journal {
         if let Some(at) = self.find(&removals, chat)
             && removals.get(at).is_some_and(stale)
         {
+            // Cut short before its move; a lock it left is taken over below.
             removals.remove(at);
         }
         if self.find(&removals, chat).is_some() {
@@ -80,22 +81,13 @@ impl Journal {
                 .duration_since(UNIX_EPOCH)
                 .map_or(0, |since| since.as_secs()),
         };
-        self.git.lock(worktree).map_err(|error| {
-            Fault::new(
-                code!("worktree.lock_failed"),
-                "The worktree couldn't be locked, so it wasn't moved",
-            )
-            .because(error)
-        })?;
-        let moved = self.move_locked(removals, removal, worktree, to_trash);
-        if moved.is_err() {
-            // Only one still in place can be unlocked; git can't reach one in the Trash.
-            self.git.unlock(worktree);
-        }
-        moved
+        // On record before the lock, so a removal cut short after it can undo it.
+        removals.push(removal.clone());
+        self.save(&removals)?;
+        self.move_locked(removals, removal, worktree, to_trash)
     }
 
-    // `remove` once the worktree is locked: on record as pending, moved, then on record where.
+    // `remove` once the worktree is on record as pending: locked, moved, then on record where.
     fn move_locked(
         &self,
         mut removals: Vec<Removal>,
@@ -103,18 +95,20 @@ impl Journal {
         worktree: &Path,
         to_trash: impl FnOnce(&Path) -> io::Result<Trashed>,
     ) -> Result<Removal, Fault> {
-        removals.push(removal.clone());
-        self.save(&removals)?;
-        let trashed = match to_trash(worktree) {
-            Ok(trashed) => trashed,
-            Err(error) => {
-                removals.pop();
-                drop(self.save(&removals));
-                return Err(Fault::new(
+        let moved = self.git.lock(worktree).map_err(lock_failed).and_then(|()| {
+            to_trash(worktree).map_err(|error| {
+                Fault::new(
                     code!("worktree.trash_failed"),
                     "The worktree couldn't be moved to the Trash",
                 )
-                .because(error));
+                .because(error)
+            })
+        });
+        let trashed = match moved {
+            Ok(trashed) => trashed,
+            Err(fault) => {
+                self.forget_pending(&mut removals, worktree);
+                return Err(fault);
             }
         };
         removal.trashed = Some(trashed.clone());
@@ -126,11 +120,18 @@ impl Journal {
             if trash::restore(&trashed, worktree).is_err() {
                 return Err(unjournaled());
             }
-            removals.pop();
-            drop(self.save(&removals));
+            self.forget_pending(&mut removals, worktree);
             return Err(error);
         }
         Ok(removal)
+    }
+
+    // Undoes a pending removal of `worktree`, still in place: its lock, then its entry. Either
+    // may fail without harm, since the next removal takes both over, so the cause is what's told.
+    fn forget_pending(&self, removals: &mut Vec<Removal>, worktree: &Path) {
+        drop(self.git.unlock(worktree));
+        removals.pop();
+        drop(self.save(removals));
     }
 
     /// Brings `chat`'s worktree back from the Trash to where it was. Its entry stays until it's
@@ -144,8 +145,8 @@ impl Journal {
         let Some(trashed) = &removal.trashed else {
             // Cut short: the move either never happened or isn't on record.
             self.save(&removals)?;
+            self.git.unlock(&removal.worktree).map_err(unlock_failed)?;
             return Err(if stale(&removal) {
-                self.git.unlock(&removal.worktree);
                 not_removed()
             } else {
                 unjournaled()
@@ -157,11 +158,10 @@ impl Journal {
             Err(error) => return Err(restore_failed().because(error)),
         };
         if gone {
-            // Back where it was by another way, as from Finder: still locked, so unlock it.
-            if read_git_file(&removal.worktree).is_ok_and(|git_file| git_file == removal.git_file) {
-                self.git.unlock(&removal.worktree);
-            }
+            // Put back by another way, as from Finder, or emptied: forgotten, and its lock with
+            // it, else git would keep the chat from a worktree there again.
             self.save(&removals)?;
+            self.git.unlock(&removal.worktree).map_err(unlock_failed)?;
             return Err(Fault::new(
                 code!("worktree.gone_from_trash"),
                 "The worktree is no longer in the Trash",
@@ -175,9 +175,10 @@ impl Journal {
             };
             fault.because(error)
         })?;
-        self.git.unlock(&removal.worktree);
         // If this save fails, the next restore finds the worktree gone and drops the entry.
         self.save(&removals)?;
+        // Back in place, so a lock left here is taken over by the next removal.
+        drop(self.git.unlock(&removal.worktree));
         Ok(removal)
     }
 
@@ -268,6 +269,22 @@ fn not_removed() -> Fault {
         code!("worktree.not_removed"),
         "The chat's worktree isn't in the Trash",
     )
+}
+
+fn lock_failed(error: Fault) -> Fault {
+    Fault::new(
+        code!("worktree.lock_failed"),
+        "The worktree couldn't be locked, so it wasn't moved",
+    )
+    .because(error)
+}
+
+fn unlock_failed(error: Fault) -> Fault {
+    Fault::new(
+        code!("worktree.unlock_failed"),
+        "The worktree couldn't be unlocked",
+    )
+    .because(error)
 }
 
 fn unjournaled() -> Fault {
@@ -428,11 +445,17 @@ mod tests {
         Journal::new(workspace(id), dir.join("removed.json"), git_tests::git(dir))
     }
 
+    // A journal with git for `worktree` alone, as the core gives it.
+    fn journal_at(dir: &Path, id: &str, worktree: &Path) -> Journal {
+        let git = git_tests::git(dir).in_tree(&dir.join("repo"), worktree);
+        Journal::new(workspace(id), dir.join("removed.json"), git.unwrap())
+    }
+
     #[test]
     fn a_removed_worktree_is_in_the_trash_until_it_is_restored() {
         let dir = TempDir::new().unwrap();
-        let (journal, one) = (journal(&dir, "w-1"), chat("c-1"));
         let path = worktree(&dir, "c-1");
+        let (journal, one) = (journal_at(&dir, "w-1", &path), chat("c-1"));
         let at = UNIX_EPOCH + std::time::Duration::from_secs(9);
 
         let removal = journal.remove(&one, &path, bin(&dir), at).unwrap();
@@ -503,8 +526,8 @@ mod tests {
     #[test]
     fn a_worktree_replaced_in_the_trash_is_forgotten_not_restored() {
         let dir = TempDir::new().unwrap();
-        let (journal, one) = (journal(&dir, "w-1"), chat("c-1"));
         let path = worktree(&dir, "c-1");
+        let (journal, one) = (journal_at(&dir, "w-1", &path), chat("c-1"));
         let removal = journal.remove(&one, &path, bin(&dir), UNIX_EPOCH).unwrap();
         // The Trash emptied, and another folder trashed under the same name.
         fs::write(item(&removal).join(".git"), "gitdir: /other\n").unwrap();
@@ -520,8 +543,8 @@ mod tests {
     #[test]
     fn a_restore_cut_short_after_the_move_is_tidied_next_time() {
         let dir = TempDir::new().unwrap();
-        let (journal, one) = (journal(&dir, "w-1"), chat("c-1"));
         let path = worktree(&dir, "c-1");
+        let (journal, one) = (journal_at(&dir, "w-1", &path), chat("c-1"));
         let removal = journal.remove(&one, &path, bin(&dir), UNIX_EPOCH).unwrap();
         // Moved back, but stopped before the journal was saved.
         trash::restore(removal.trashed.as_ref().unwrap(), &path).unwrap();
@@ -561,8 +584,8 @@ mod tests {
     #[test]
     fn another_repository_in_the_trash_is_never_restored() {
         let dir = TempDir::new().unwrap();
-        let (journal, one) = (journal(&dir, "w-1"), chat("c-1"));
         let path = worktree(&dir, "c-1");
+        let (journal, one) = (journal_at(&dir, "w-1", &path), chat("c-1"));
         let removal = journal.remove(&one, &path, bin(&dir), UNIX_EPOCH).unwrap();
         // The Trash emptied, and a clone, whose `.git` is a folder, trashed under the name.
         fs::remove_file(item(&removal).join(".git")).unwrap();
@@ -598,8 +621,8 @@ mod tests {
     #[test]
     fn a_removal_cut_short_is_tidied_where_the_worktree_is() {
         let dir = TempDir::new().unwrap();
-        let (journal, one) = (journal(&dir, "w-1"), chat("c-1"));
         let path = worktree(&dir, "c-1");
+        let (journal, one) = (journal_at(&dir, "w-1", &path), chat("c-1"));
         let pending = Removal {
             workspace: workspace("w-1"),
             chat: one.clone(),
@@ -684,8 +707,8 @@ mod tests {
     #[test]
     fn a_removal_cut_short_before_the_move_never_blocks_the_chat() {
         let dir = TempDir::new().unwrap();
-        let (journal, one) = (journal(&dir, "w-1"), chat("c-1"));
         let path = worktree(&dir, "c-1");
+        let (journal, one) = (journal_at(&dir, "w-1", &path), chat("c-1"));
         let pending = Removal {
             workspace: workspace("w-1"),
             chat: one.clone(),
@@ -707,11 +730,71 @@ mod tests {
         assert_eq!(journal.removed(&one).unwrap(), Some(removal));
     }
 
+    // As a removal cut short after its lock leaves things: on record as pending, and locked.
+    #[test]
+    fn a_removal_cut_short_after_its_lock_never_blocks_the_chat() {
+        let dir = TempDir::new().unwrap();
+        let path = worktree(&dir, "c-1");
+        let (journal, one) = (journal_at(&dir, "w-1", &path), chat("c-1"));
+        let pending = Removal {
+            workspace: workspace("w-1"),
+            chat: one.clone(),
+            worktree: path.clone(),
+            trashed: None,
+            git_file: fs::read_to_string(path.join(".git")).unwrap(),
+            at: 0,
+        };
+        let file = dir.join("removed.json");
+        fs::write(&file, serde_json::to_vec(&[&pending]).unwrap()).unwrap();
+        git_tests::git(&dir).lock(&path).unwrap();
+
+        journal.remove(&one, &path, bin(&dir), UNIX_EPOCH).unwrap();
+        journal.restore(&one).unwrap();
+
+        assert!(path.join("work.txt").exists());
+        // Cut short again, as `restore` finds it: tidied, and the lock gone with it.
+        let git = git_tests::git(&dir);
+        git.lock(&path).unwrap();
+        fs::write(&file, serde_json::to_vec(&[&pending]).unwrap()).unwrap();
+        assert_eq!(
+            code(&journal.restore(&one).unwrap_err()),
+            "worktree.not_removed"
+        );
+        assert!(git.lock_reason(&path).unwrap().is_none());
+    }
+
+    #[test]
+    fn a_worktree_put_back_by_hand_is_unlocked_and_forgotten() {
+        let dir = TempDir::new().unwrap();
+        let path = worktree(&dir, "c-1");
+        let (journal, one) = (journal_at(&dir, "w-1", &path), chat("c-1"));
+        let removal = journal.remove(&one, &path, bin(&dir), UNIX_EPOCH).unwrap();
+        fs::rename(item(&removal), &path).unwrap();
+
+        let error = journal.restore(&one).unwrap_err();
+
+        assert_eq!(code(&error), "worktree.gone_from_trash");
+        assert!(git_tests::git(&dir).lock_reason(&path).unwrap().is_none());
+        assert_eq!(journal.removed(&one).unwrap(), None);
+    }
+
+    #[test]
+    fn a_lock_left_with_no_entry_is_taken_over() {
+        let dir = TempDir::new().unwrap();
+        let path = worktree(&dir, "c-1");
+        let (journal, one) = (journal_at(&dir, "w-1", &path), chat("c-1"));
+        git_tests::git(&dir).lock(&path).unwrap();
+
+        journal.remove(&one, &path, bin(&dir), UNIX_EPOCH).unwrap();
+
+        assert!(journal.removed(&one).unwrap().is_some());
+    }
+
     #[test]
     fn a_worktree_is_locked_while_in_the_trash_and_unlocked_once_back() {
         let dir = TempDir::new().unwrap();
-        let (journal, one) = (journal(&dir, "w-1"), chat("c-1"));
         let path = worktree(&dir, "c-1");
+        let (journal, one) = (journal_at(&dir, "w-1", &path), chat("c-1"));
         let git = git_tests::git(&dir);
         let locked = || {
             let listed =
@@ -737,10 +820,9 @@ mod tests {
     #[test]
     fn only_absence_or_replacement_forgets_a_trashed_worktree() {
         let dir = TempDir::new().unwrap();
-        let (journal, one) = (journal(&dir, "w-1"), chat("c-1"));
-        let removal = journal
-            .remove(&one, &worktree(&dir, "c-1"), bin(&dir), UNIX_EPOCH)
-            .unwrap();
+        let path = worktree(&dir, "c-1");
+        let (journal, one) = (journal_at(&dir, "w-1", &path), chat("c-1"));
+        let removal = journal.remove(&one, &path, bin(&dir), UNIX_EPOCH).unwrap();
         // A `.git` this long reads as nothing like the worktree's own.
         fs::write(item(&removal).join(".git"), "g".repeat(5000)).unwrap();
 
@@ -785,8 +867,8 @@ mod tests {
     #[test]
     fn a_worktree_gone_from_the_trash_is_forgotten() {
         let dir = TempDir::new().unwrap();
-        let (journal, one) = (journal(&dir, "w-1"), chat("c-1"));
         let path = worktree(&dir, "c-1");
+        let (journal, one) = (journal_at(&dir, "w-1", &path), chat("c-1"));
         let removal = journal.remove(&one, &path, bin(&dir), UNIX_EPOCH).unwrap();
         fs::remove_dir_all(item(&removal)).unwrap();
 
@@ -795,6 +877,9 @@ mod tests {
         assert_eq!(code(&error), "worktree.gone_from_trash");
         assert_eq!(journal.removed(&one).unwrap(), None);
         assert!(!path.exists());
+        // Its lock lifted, so the chat gets a worktree there again.
+        let git = git_tests::git(&dir);
+        git.chat_worktree(&dir.join("repo"), &one, &path).unwrap();
         journal
             .remove(&one, &worktree(&dir, "c-2"), bin(&dir), UNIX_EPOCH)
             .unwrap();
@@ -803,8 +888,8 @@ mod tests {
     #[test]
     fn a_worktree_whose_place_is_taken_stays_in_the_trash() {
         let dir = TempDir::new().unwrap();
-        let (journal, one) = (journal(&dir, "w-1"), chat("c-1"));
         let path = worktree(&dir, "c-1");
+        let (journal, one) = (journal_at(&dir, "w-1", &path), chat("c-1"));
         let removal = journal.remove(&one, &path, bin(&dir), UNIX_EPOCH).unwrap();
         fs::create_dir_all(path.join("new")).unwrap();
 
