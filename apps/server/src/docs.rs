@@ -13,9 +13,10 @@ use crate::app::new_id;
 use crate::auth::Member;
 use crate::http::{Shared, error, failure};
 
-/// The most a doc request's body may be: its Markdown, its pins and their JSON around them.
-pub(crate) const MAX_BODY: usize = 512 * 1024;
-/// How many revisions a history holds, newest first.
+/// The most a doc request's body may be: room for the largest doc the model allows, even
+/// when JSON escapes each byte of its Markdown as `\u00XX`, with its pins.
+pub(crate) const MAX_BODY: usize = 2 * 1024 * 1024;
+/// How many revisions a history holds, newest first; older ones are still read by version.
 const HISTORY: u32 = 1000;
 
 /// `GET /api/workspaces/{workspace}/docs`: the workspace's docs, by title, without bodies.
@@ -459,6 +460,21 @@ mod tests {
             ada.get::<DocRecord>(&format!("/{}", doc.id.as_str())).await,
             doc
         );
+    }
+
+    #[tokio::test]
+    async fn a_doc_larger_than_other_requests_or_heavy_with_escapes_fits() {
+        let fixture = Fixture::new().await;
+        let (_server, ada) = ada(&fixture).await;
+        let large = content("Large", &"a".repeat(100 * 1024), &[]);
+        let escaped = content("Escaped", &"\u{1}".repeat(256 * 1024), &[]);
+
+        let made = ada.create(&large).await;
+        let (status, body) = ada.revise(&made, &escaped).await;
+
+        assert_eq!(status, "http/1.1 200 ok", "{body}");
+        let revised: DocRecord = serde_json::from_str(&body).unwrap();
+        assert_eq!((made.content, revised.content), (large, escaped));
     }
 
     #[tokio::test]

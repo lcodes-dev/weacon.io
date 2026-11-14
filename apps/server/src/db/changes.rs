@@ -134,7 +134,12 @@ mod tests {
 
     use weacon_model::{Attribution, OrderKey, Task, Title};
 
+    use sqlx::sqlite::SqliteConnectOptions;
+    use sqlx::{AssertSqlSafe, ConnectOptions, raw_sql};
+
     use super::*;
+    use crate::db::Db;
+    use crate::db::schema::STEPS;
     use crate::test_support::{member_id, two_teams, workspace_id};
 
     fn joined(seq: u64, member: &str) -> WorkspaceUpdate {
@@ -227,5 +232,54 @@ mod tests {
             assert_eq!(fault.code().as_str(), "db.unreadable");
         }
         orphan.unwrap_err();
+    }
+
+    #[tokio::test]
+    async fn changes_from_before_docs_are_kept() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.join("weacon.db");
+        let mut old = SqliteConnectOptions::new()
+            .filename(&path)
+            .create_if_missing(true)
+            .connect()
+            .await
+            .unwrap();
+        let before_docs = STEPS.len() - 1;
+        for step in &STEPS[..before_docs] {
+            raw_sql(*step).execute(&mut old).await.unwrap();
+        }
+        let rows = format!(
+            "INSERT INTO workspaces VALUES ('w1', 'One');
+             INSERT INTO accounts (account_id, email) VALUES ('a1', 'ada@example.com');
+             INSERT INTO members (workspace_id, member_id, email, account_id)
+                 VALUES ('w1', 'm1', 'ada@example.com', 'a1');
+             INSERT INTO tasks VALUES ('w1', 't1', 'Write', 'todo', 'V', 1);
+             INSERT INTO task_versions VALUES ('w1', 't1', 1, 'person', 'm1', 'm1', 0);
+             INSERT INTO changes VALUES
+                 ('w1', 1, 'member_joined', 'm1', NULL, NULL),
+                 ('w1', 2, 'task_changed', 'm1', 't1', 1);
+             PRAGMA user_version = {before_docs};"
+        );
+        raw_sql(AssertSqlSafe(rows))
+            .execute(&mut old)
+            .await
+            .unwrap();
+        drop(old);
+
+        let db = Db::open(&path).await.unwrap();
+        let w1 = db.workspace(&workspace_id("w1")).await.unwrap();
+
+        let task_changed = WorkspaceUpdate {
+            workspace: workspace_id("w1"),
+            seq: 2,
+            change: WorkspaceChange::TaskChanged {
+                task: TaskId::try_from("t1".to_owned()).unwrap(),
+                version: 1,
+            },
+        };
+        assert_eq!(
+            w1.changes_since(0, 10).await.unwrap(),
+            [joined(1, "m1"), task_changed]
+        );
     }
 }
