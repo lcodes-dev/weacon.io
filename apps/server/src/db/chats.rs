@@ -7,22 +7,14 @@ use weacon_protocol::{
     ChatId, ChatState, ChatSummary, MachineId, MachineName, MemberId, RepoId, code,
 };
 
-#[cfg(test)]
-pub(crate) use events::Incoming;
-pub(crate) use ledger::NewRequest;
+pub(crate) use events::{Incoming, chat_quota_full, turns};
+pub(crate) use ledger::{NewRequest, Recorded};
 
 use super::changes::Versioned;
 use super::{Workspace, failed, stored, unreadable};
 
 /// A chat as its first prompt makes it.
 #[derive(Debug)]
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "a chat is made when the relay sends its first prompt"
-    )
-)]
 pub(crate) struct NewChat<'a> {
     pub(crate) id: &'a ChatId,
     pub(crate) owner: &'a MemberId,
@@ -52,13 +44,6 @@ impl Workspace {
     /// Makes the chat `chat` with the request that makes it, before that is sent: feeds hear
     /// of it once [`Self::chat_made`] says it was. A chat id or request id already in this
     /// workspace is `db.exists`.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "a chat is made when the relay sends its first prompt"
-        )
-    )]
     pub(crate) async fn add_chat(
         &self,
         chat: &NewChat<'_>,
@@ -87,17 +72,28 @@ impl Workspace {
     }
 
     /// Tells the feed that `owner` made `chat`, once its first prompt reached its machine.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "a chat is made when the relay sends its first prompt"
-        )
-    )]
     pub(crate) async fn chat_made(&self, chat: &ChatId, owner: &MemberId) -> Result<(), Fault> {
         let mut transaction = self.db.writer.begin().await.map_err(failed)?;
         self.record_change(&mut transaction, Versioned::Chat(chat), owner)
             .await?;
+        transaction.commit().await.map_err(failed)
+    }
+
+    /// Takes back `chat`, made for a first prompt its machine never got.
+    pub(crate) async fn forget_chat(&self, chat: &ChatId) -> Result<(), Fault> {
+        let mut transaction = self.db.writer.begin().await.map_err(failed)?;
+        sqlx::query("DELETE FROM chat_requests WHERE workspace_id = ? AND chat_id = ?")
+            .bind(self.id.as_str())
+            .bind(chat.as_str())
+            .execute(&mut *transaction)
+            .await
+            .map_err(failed)?;
+        sqlx::query("DELETE FROM chats WHERE workspace_id = ? AND chat_id = ?")
+            .bind(self.id.as_str())
+            .bind(chat.as_str())
+            .execute(&mut *transaction)
+            .await
+            .map_err(failed)?;
         transaction.commit().await.map_err(failed)
     }
 
@@ -124,6 +120,24 @@ impl Workspace {
         .transpose()
     }
 
+    /// Whether `chat` runs on `machine`, and the account that owns the machine is still the
+    /// chat's owner here.
+    pub(crate) async fn runs_on(&self, chat: &ChatId, machine: &MachineId) -> Result<bool, Fault> {
+        let found = sqlx::query(
+            "SELECT 1 FROM chats AS c
+             JOIN members AS m ON m.workspace_id = c.workspace_id AND m.member_id = c.owner_member
+             JOIN machines AS d ON d.machine_id = c.machine_id AND d.account_id = m.account_id
+             WHERE c.workspace_id = ? AND c.chat_id = ? AND c.machine_id = ?",
+        )
+        .bind(self.id.as_str())
+        .bind(chat.as_str())
+        .bind(machine.as_str())
+        .fetch_optional(&self.db.readers)
+        .await
+        .map_err(failed)?;
+        Ok(found.is_some())
+    }
+
     /// The workspace's chats, the latest updated first.
     pub(crate) async fn chats(&self) -> Result<Vec<ChatSummary>, Fault> {
         sqlx::query_as::<_, SummaryRow>(
@@ -148,13 +162,6 @@ impl Workspace {
         .collect()
     }
 
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "the relay detaches a chat whose machine was unpaired"
-        )
-    )]
     pub(crate) async fn set_chat_state(&self, id: &ChatId, state: ChatState) -> Result<(), Fault> {
         sqlx::query("UPDATE chats SET state = ? WHERE workspace_id = ? AND chat_id = ?")
             .bind(state_text(state)?)
@@ -164,6 +171,30 @@ impl Workspace {
             .await
             .map_err(failed)?;
         Ok(())
+    }
+
+    /// The open chats on `machine` whose turn may not be over, a run at work or a command no
+    /// receipt has ended, each with the last of the machine's events it has.
+    pub(crate) async fn unsettled_on(
+        &self,
+        machine: &MachineId,
+    ) -> Result<Vec<(ChatId, u64)>, Fault> {
+        sqlx::query_as::<_, (String, i64)>(
+            "SELECT chat_id, core_seq FROM chats AS c
+             WHERE workspace_id = ? AND machine_id = ? AND state = 'open'
+                 AND (json_extract(run_status, '$.state') IN ('starting', 'running', 'waiting')
+                     OR EXISTS (SELECT 1 FROM chat_requests AS r WHERE r.workspace_id = c.workspace_id
+                         AND r.chat_id = c.chat_id AND r.open = 1))
+             ORDER BY chat_id",
+        )
+        .bind(self.id.as_str())
+        .bind(machine.as_str())
+        .fetch_all(&self.db.readers)
+        .await
+        .map_err(failed)?
+        .into_iter()
+        .map(|(chat, core_seq)| Ok((stored(chat)?, count(core_seq)?)))
+        .collect()
     }
 }
 
@@ -205,8 +236,10 @@ fn stored_state(text: &str) -> Result<ChatState, Fault> {
 mod tests {
     use weacon_testing::TempDir;
 
+    use weacon_protocol::RunState;
+
     use super::*;
-    use crate::db::test_support::{NOW, code, id, make};
+    use crate::db::test_support::{NOW, append, code, id, make, status};
     use crate::test_support::{member_id, two_teams};
 
     #[tokio::test]
@@ -257,5 +290,37 @@ mod tests {
 
     fn ids(list: &[ChatSummary]) -> Vec<&str> {
         list.iter().map(|chat| chat.id.as_str()).collect()
+    }
+
+    #[tokio::test]
+    async fn a_machine_follows_again_only_its_open_chats_whose_turn_may_not_be_over() {
+        let dir = TempDir::new().unwrap();
+        let (one, two) = two_teams(&dir).await;
+        for chat in ["c-1", "c-2", "c-3", "c-4", "c-5"] {
+            make(&one, chat, "m1", NOW).await.unwrap();
+        }
+        make(&two, "c-1", "m2", NOW).await.unwrap();
+        for chat in ["c-2", "c-3"] {
+            one.close(chat, &format!("r-{chat}")).await;
+        }
+        let running = status(RunState::Running);
+        let idle = status(RunState::Idle);
+        append(&one, "c-2", &[(Some(4), idle)]).await.unwrap();
+        append(&one, "c-3", &[(Some(7), running)]).await.unwrap();
+        one.set_chat_state(&id("c-4"), ChatState::Detached)
+            .await
+            .unwrap();
+        sqlx::query("UPDATE chats SET machine_id = 'mc-2' WHERE chat_id = 'c-5'")
+            .execute(&one.db.writer)
+            .await
+            .unwrap();
+
+        let unsettled = one.unsettled_on(&id("mc-1")).await.unwrap();
+        let ids: Vec<_> = unsettled
+            .iter()
+            .map(|(chat, core_seq)| (chat.as_str(), *core_seq))
+            .collect();
+        assert_eq!(ids, [("c-1", 0), ("c-3", 7)]);
+        assert_eq!(two.unsettled_on(&id("mc-1")).await.unwrap().len(), 1);
     }
 }

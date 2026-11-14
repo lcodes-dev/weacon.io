@@ -14,6 +14,7 @@ use weacon_observability::{Field, Logger};
 use weacon_protocol::{Capability, Code, Envelope, MAX_FRAME, MachineId, Message, code};
 
 use crate::auth::Machine;
+use crate::chats;
 use crate::connections::Place;
 use crate::links::Connected;
 use crate::relay::SETTINGS;
@@ -101,7 +102,11 @@ async fn run(
     link: &mut Link,
 ) -> Result<Infallible, Closed> {
     let offer = Capability::from(CONNECT);
-    let offers = vec![offer.clone(), Capability::from(SETTINGS)];
+    let offers = vec![
+        offer.clone(),
+        Capability::from(SETTINGS),
+        Capability::from(chats::upload::UPLOAD),
+    ];
     let greeted = greet(socket, shared, offers, &offer);
     let hello = timeout(shared.sockets.hello_within, greeted)
         .await
@@ -134,16 +139,18 @@ async fn run(
                 if let Ok(Frame::Text(text)) = &frame
                     && let Ok(envelope) = Envelope::from_json(text.as_bytes())
                 {
-                    hand_off(shared, &link.machine.id, envelope);
+                    hand_off(shared, &link.machine.id, envelope).await;
                 }
             }
         }
     }
 }
 
-/// Gives what `machine` sent to the feature it is for.
-fn hand_off(shared: &Shared, machine: &MachineId, envelope: Envelope) {
-    if matches!(
+/// Gives what `machine` sent to the feature it is for, in the order it came.
+async fn hand_off(shared: &Shared, machine: &MachineId, envelope: Envelope) {
+    if let Message::Chat(update) = envelope.message {
+        chats::upload::store(shared, machine, update).await;
+    } else if matches!(
         envelope.message,
         Message::MachineSettingsAnswer(_) | Message::Error(_)
     ) {
@@ -155,16 +162,19 @@ fn hand_off(shared: &Shared, machine: &MachineId, envelope: Envelope) {
 #[cfg(test)]
 mod tests {
     use std::net::SocketAddr;
+    use std::time::Duration;
 
     use futures_util::SinkExt;
+    use tokio::time::timeout;
     use tokio_tungstenite::tungstenite::Message as Wire;
-    use weacon_protocol::{AccountId, Message, Welcome};
+    use weacon_protocol::{AccountId, ChatEntry, ChatUpdate, Message, Welcome};
 
     use super::*;
+    use crate::db::test_support::{NOW, id, make, said};
     use crate::test_support::socket::{
         Socket, ends, frame, next, open, pongs, say, upgrade_status,
     };
-    use crate::test_support::{Fixture, Paired, ask, pair_machine};
+    use crate::test_support::{Fixture, Paired, ask, pair_machine, run};
 
     const CONNECT_PATH: &str = "/api/machines/connect";
 
@@ -177,7 +187,11 @@ mod tests {
         let welcome = next(&mut client).await;
         assert!(
             matches!(&welcome, Message::Welcome(Welcome { capabilities, .. })
-                if *capabilities == [Capability::from(CONNECT), Capability::from(SETTINGS)]),
+            if *capabilities == [
+                Capability::from(CONNECT),
+                Capability::from(SETTINGS),
+                Capability::from(chats::upload::UPLOAD),
+            ]),
             "{welcome:?}"
         );
         (paired, client)
@@ -313,5 +327,39 @@ mod tests {
         fixture.shared.unpaired.send(other).unwrap();
 
         assert!(pongs(&mut client).await);
+    }
+
+    #[tokio::test]
+    async fn a_machines_chat_events_are_stored_in_the_order_they_come() {
+        let fixture = Fixture::new().await;
+        let server = run(fixture.shared.clone()).await;
+        let (paired, mut client) = connected(server.address, &fixture).await;
+        let machine: MachineId = serde_json::from_value(paired.machine["id"].clone()).unwrap();
+        let workspace = fixture.shared.db.workspace(&id("w1")).await.unwrap();
+        make(&workspace, "c-1", "m1", NOW).await.unwrap();
+        workspace.move_chats_to(&machine).await;
+        let mut stored = fixture.shared.chats.notices();
+
+        for seq in [1, 2] {
+            let update = ChatUpdate {
+                workspace: id("w1"),
+                chat: id("c-1"),
+                entry: ChatEntry {
+                    seq,
+                    event: said("more"),
+                },
+            };
+            let message = Message::Chat(update);
+            crate::test_support::socket::send(&mut client, Envelope { id: 0, message }).await;
+        }
+        for _ in [1, 2] {
+            timeout(Duration::from_secs(10), stored.recv())
+                .await
+                .unwrap()
+                .unwrap();
+        }
+
+        let chat = workspace.chat(&id("c-1")).await.unwrap().unwrap();
+        assert_eq!((chat.seq, chat.core_seq), (2, 2));
     }
 }

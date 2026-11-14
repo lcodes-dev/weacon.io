@@ -14,7 +14,9 @@ mod tasks;
 pub(crate) mod test_support;
 mod workspace;
 
-pub(crate) use chats::chat_not_found;
+pub(crate) use chats::{
+    Chat, Incoming, NewChat, NewRequest, Recorded, chat_not_found, chat_quota_full, turns,
+};
 pub(crate) use tasks::task_not_found;
 
 use std::path::{Path, PathBuf};

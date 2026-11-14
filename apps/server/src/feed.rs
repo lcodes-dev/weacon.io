@@ -31,6 +31,8 @@ const TASKS: Code = code!("workspace.tasks");
 const DOCS: Code = code!("workspace.docs");
 /// What the server offers to clients that read chats and ask their agents.
 const CHATS: Code = code!("workspace.chats");
+/// What the server offers to clients that ask chats' agents.
+const CHAT_COMMANDS: Code = code!("workspace.chat_commands");
 /// How many answers from machines wait for the client to take them.
 const ANSWERS: usize = 16;
 
@@ -151,7 +153,7 @@ async fn run(
     feed: &mut Feed,
 ) -> Result<Infallible, Closed> {
     let feed_offer = Capability::from(FEED);
-    let offered = [FEED, TASKS, DOCS, SETTINGS, CHATS]
+    let offered = [FEED, TASKS, DOCS, SETTINGS, CHATS, CHAT_COMMANDS]
         .map(Capability::from)
         .to_vec();
     let greeted = greet(socket, shared, offered, &feed_offer);
@@ -232,9 +234,15 @@ async fn received(
     if feed.offers.has(SETTINGS) && relay::carries(&envelope.message) {
         return relay(socket, shared, feed, envelope).await;
     }
-    if feed.offers.has(CHATS) && chats::carries(&envelope.message) {
+    let reads = feed.offers.has(CHATS) && chats::carries(&envelope.message);
+    let asks =
+        feed.offers.has(CHAT_COMMANDS) && matches!(envelope.message, Message::ChatCommand(_));
+    if reads || asks {
         feed.allowed(shared).await?;
-        let answer = feed.chats.heard(envelope, &feed.member, shared).await;
+        let answer = feed
+            .chats
+            .heard(envelope, &feed.member, &feed.asker, shared)
+            .await;
         return send_chats(socket, shared, feed, answer).await;
     }
     Ok(())
@@ -401,7 +409,7 @@ mod tests {
         };
         assert_eq!(
             welcome.capabilities,
-            [FEED, TASKS, DOCS, SETTINGS, CHATS].map(Capability::from)
+            [FEED, TASKS, DOCS, SETTINGS, CHATS, CHAT_COMMANDS].map(Capability::from)
         );
         assert_eq!(missed, joined(1, "m1"));
         assert_eq!(live, joined(2, "m2"));

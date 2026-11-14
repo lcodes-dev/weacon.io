@@ -11,10 +11,6 @@ const CHAT_QUOTA: i64 = 512 << 20;
 
 /// An event to store, with its place in its machine's log, when it came from there.
 #[derive(Debug)]
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "events are stored as a machine uploads them")
-)]
 pub(crate) struct Incoming<'a> {
     pub(crate) core_seq: Option<u64>,
     pub(crate) event: &'a ChatEvent,
@@ -26,10 +22,6 @@ impl Workspace {
     /// Those from its machine at or before the last one stored are replays and are skipped.
     /// Events that would take the workspace past [`CHAT_QUOTA`] make an open chat `full`, and
     /// they and every later event of a full chat are `chat.quota_full`, with none stored.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "events are stored as a machine uploads them")
-    )]
     pub(crate) async fn append_events(
         &self,
         chat: &ChatId,

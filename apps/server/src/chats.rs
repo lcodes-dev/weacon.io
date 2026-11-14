@@ -1,8 +1,16 @@
 //! A workspace's chats, which its members' machines run.
 
+mod admit;
+mod command;
+mod link;
 mod read;
+mod reconnect;
+#[cfg(test)]
+mod test_support;
+pub(crate) mod upload;
 mod watch;
 
+pub(crate) use reconnect::follow_machines;
 pub(crate) use watch::Watch;
 
 use axum::response::{IntoResponse, Response};
@@ -39,13 +47,6 @@ impl Default for Hub {
 
 impl Hub {
     /// Tells the sockets that follow `chat` that it has new events.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "a machine's upload tells the sockets that follow its chat"
-        )
-    )]
     pub(crate) fn stored(&self, workspace: WorkspaceId, chat: ChatId) {
         // No socket follows it: no one to tell.
         drop(self.stored.send((workspace, chat)));

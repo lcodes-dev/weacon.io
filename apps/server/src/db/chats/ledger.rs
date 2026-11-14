@@ -15,13 +15,6 @@ pub(crate) struct NewRequest<'a> {
 
 /// Whether a request was seen before.
 #[derive(Debug, PartialEq, Eq)]
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the relay keeps each command it sends to a machine"
-    )
-)]
 pub(crate) enum Recorded {
     New,
     /// The same command again; `open` until its receipt ended it.
@@ -34,13 +27,6 @@ pub(crate) enum Recorded {
 
 impl Workspace {
     /// Records `request` in the ledger, unless it is there already.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "the relay keeps each command it sends to a machine"
-        )
-    )]
     pub(crate) async fn record_request(&self, request: &NewRequest<'_>) -> Result<Recorded, Fault> {
         let mut transaction = self.db.write().await?;
         let earlier = sqlx::query_as::<_, (String, i64)>(
@@ -84,13 +70,6 @@ impl Workspace {
     }
 
     /// Takes `request` out of the ledger: it was recorded but never sent.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "the relay keeps each command it sends to a machine"
-        )
-    )]
     pub(crate) async fn forget_request(&self, request: &RequestId) -> Result<(), Fault> {
         sqlx::query("DELETE FROM chat_requests WHERE workspace_id = ? AND request_id = ?")
             .bind(self.id.as_str())
@@ -122,13 +101,6 @@ impl Workspace {
     }
 
     /// The commands to `chat` no receipt has ended yet, oldest first, with when each was sent.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "the relay keeps each command it sends to a machine"
-        )
-    )]
     pub(crate) async fn open_requests(
         &self,
         chat: &ChatId,

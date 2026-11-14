@@ -5,8 +5,7 @@ use weacon_protocol::{
     PermissionAnswer, RepoId, RequestId, RunEvent, RunId, RunState, RunStatus, RunUpdate,
 };
 
-use super::Workspace;
-use super::chats::{Incoming, NewChat, NewRequest};
+use super::{Incoming, NewChat, NewRequest, Workspace};
 use crate::test_support::member_id;
 
 /// When the db tests' changes are made, in seconds since the Unix epoch.
@@ -167,6 +166,16 @@ impl Workspace {
         let mut writer = self.db.writer.acquire().await.unwrap();
         let request = id::<RequestId>(request);
         self.end_request(&mut writer, &id(chat), &request)
+            .await
+            .unwrap();
+    }
+
+    /// Puts every chat of the workspace on `machine`.
+    pub(crate) async fn move_chats_to(&self, machine: &MachineId) {
+        sqlx::query("UPDATE chats SET machine_id = ? WHERE workspace_id = ?")
+            .bind(machine.as_str())
+            .bind(self.id.as_str())
+            .execute(&self.db.writer)
             .await
             .unwrap();
     }
