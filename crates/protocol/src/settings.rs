@@ -153,8 +153,8 @@ mod tests {
     use serde_json::{Value, json};
 
     use super::*;
-    use crate::test_support::{envelope, request, travels, workspace};
-    use crate::{Envelope, FrameError, Message};
+    use crate::test_support::{envelope, never_sent, request, travels, workspace};
+    use crate::{Envelope, Message};
 
     fn asker() -> Asker {
         Asker {
@@ -293,10 +293,7 @@ mod tests {
 
     // What a newer peer sends: it parses, and is never sent on.
     fn newer(message: &str, field: &str, body: Value) -> Message {
-        let envelope =
-            Envelope::from_json(&serde_json::to_vec(&wire(message, field, body)).unwrap()).unwrap();
-        assert_eq!(envelope.to_json(), Err(FrameError::Invalid), "{message}");
-        envelope.message
+        never_sent(wire(message, field, body)).message
     }
 
     fn newer_answer(body: Value) -> MachineSettingsAnswerKind {

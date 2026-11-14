@@ -97,8 +97,8 @@ mod tests {
     use serde_json::{Value, json};
 
     use super::*;
-    use crate::test_support::{chat, envelope, request, travels, workspace};
-    use crate::{Envelope, FrameError, Message};
+    use crate::test_support::{chat, envelope, never_sent, request, travels, workspace};
+    use crate::{Envelope, Message};
 
     fn wire(message: &str, field: &str, body: Value) -> Value {
         let mut wire = json!({ "id": 4, "type": message, "request": "r-1",
@@ -244,8 +244,7 @@ mod tests {
             wire("worktree_answer", "answer", json!({ "kind": "merged" })),
         ];
         for wire in newer {
-            let envelope: Envelope = serde_json::from_value(wire.clone()).unwrap();
-            assert_eq!(envelope.to_json(), Err(FrameError::Invalid), "{wire}");
+            never_sent(wire);
         }
     }
 

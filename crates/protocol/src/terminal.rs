@@ -263,7 +263,7 @@ mod tests {
     use serde_json::{Value, json};
 
     use super::*;
-    use crate::test_support::{envelope, travels, workspace};
+    use crate::test_support::{envelope, never_sent, travels, workspace};
     use crate::{Envelope, Message};
 
     fn bytes(raw: &[u8]) -> Bytes {
@@ -378,8 +378,7 @@ mod tests {
                 "event": { "kind": "paused" } }),
         ];
         for wire in received {
-            let envelope: Envelope = serde_json::from_value(wire.clone()).unwrap();
-            assert_eq!(envelope.to_json(), Err(FrameError::Invalid), "{wire}");
+            never_sent(wire);
         }
         assert_eq!(
             TerminalInput::from_json(br#"{"kind":"paste"}"#).unwrap(),

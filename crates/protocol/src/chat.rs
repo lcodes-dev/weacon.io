@@ -229,8 +229,8 @@ mod tests {
     use serde_json::{Value, json};
 
     use super::*;
-    use crate::test_support::{chat, envelope, request, run, travels, workspace};
-    use crate::{Envelope, FrameError, Message, Outcome, RunEvent, RunState};
+    use crate::test_support::{chat, envelope, never_sent, request, run, travels, workspace};
+    use crate::{Envelope, Message, Outcome, RunEvent, RunState};
 
     fn repo() -> RepoId {
         "site".parse().unwrap()
@@ -298,13 +298,6 @@ mod tests {
 
     fn entry_wire(event: &Value) -> Value {
         about("chat", "entry", &json!({ "seq": 9, "event": event }))
-    }
-
-    fn never_sent(received: impl IntoIterator<Item = Value>) {
-        for wire in received {
-            let envelope: Envelope = serde_json::from_value(wire.clone()).unwrap();
-            assert_eq!(envelope.to_json(), Err(FrameError::Invalid), "{wire}");
-        }
     }
 
     #[test]
@@ -498,12 +491,12 @@ mod tests {
 
     #[test]
     fn a_newer_peers_actions_events_and_queries_parse_and_are_never_sent() {
-        let newer: Envelope =
-            serde_json::from_value(command_wire(&json!({ "kind": "fork", "at": 3 }))).unwrap();
-        assert_eq!(newer, command(ChatAction::Newer));
+        assert_eq!(
+            never_sent(command_wire(&json!({ "kind": "fork", "at": 3 }))),
+            command(ChatAction::Newer)
+        );
 
-        never_sent([
-            command_wire(&json!({ "kind": "fork", "at": 3 })),
+        let received = [
             entry_wire(&json!({ "kind": "note" })),
             entry_wire(&json!({ "kind": "run_status",
                                 "status": { "run": "run-7", "state": "paused" } })),
@@ -520,7 +513,10 @@ mod tests {
                                 "agent": { "kind": "claude", "owner": { "kind": "team" } } } }),
             ),
             about("chat_query", "query", &json!({ "kind": "search" })),
-        ]);
+        ];
+        for wire in received {
+            never_sent(wire);
+        }
     }
 
     #[test]
@@ -529,16 +525,15 @@ mod tests {
         let state = json!({ "run": "run-7", "state": "paused" });
         let snapshot = |runs: Value, events: Value| json!({ "kind": "snapshot", "seq": 1, "runs": runs, "waiting": [], "events": events });
 
-        never_sent(
-            [
-                json!({ "kind": "moved" }),
-                json!({ "kind": "window", "events": [event] }),
-                snapshot(json!([state]), json!([])),
-                snapshot(json!([]), json!([event])),
-            ]
-            .iter()
-            .map(|answer| about("chat_answer", "answer", answer)),
-        );
+        let answers = [
+            json!({ "kind": "moved" }),
+            json!({ "kind": "window", "events": [event] }),
+            snapshot(json!([state]), json!([])),
+            snapshot(json!([]), json!([event])),
+        ];
+        for answer in answers {
+            never_sent(about("chat_answer", "answer", &answer));
+        }
     }
 
     #[test]
