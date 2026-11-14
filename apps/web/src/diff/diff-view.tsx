@@ -106,7 +106,7 @@ const FileView = memo(function FileView({
 }) {
   const { content, path } = file;
   const note = contentText(content);
-  const lines = useMemo(() => (content.kind === "text" ? rows(content.hunks) : []), [content]);
+  const lines = useMemo(() => (note === undefined && content.kind === "text" ? rows(content.hunks) : []), [note, content]);
   const picked = live && span(live);
   const boxAt = box && span(box);
   const marked = (at: number) =>

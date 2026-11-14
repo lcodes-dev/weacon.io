@@ -7,7 +7,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 
 use crate::token::token_id;
-use crate::{AgentKind, Asker, Code, FrameError, MachineId, WorkspaceId, to_hex};
+use crate::{AgentKind, Asker, Code, FrameError, MachineId, SignInState, WorkspaceId, to_hex};
 
 token_id!(
     /// One sign-in terminal, chosen by the browser that opens it; 1–64 ASCII letters, digits,
@@ -26,14 +26,16 @@ pub const NOISE_MAX: usize = 65535;
 /// The largest plaintext one sealed frame holds: a Noise message less its tag.
 pub const SEALED_MAX: usize = NOISE_MAX - 16;
 
-/// From a browser, through the server, to a core that offers `terminal.sign_in`.
+/// From the owner of `machine`'s browser to its core, which offers `terminal.sign_in`. The
+/// server relays it only from the machine's owner, and the core acts only when `by` is its
+/// owner and refuses a terminal id it has already seen.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct TerminalCommand {
     pub terminal: TerminalId,
     pub machine: MachineId,
     pub workspace: WorkspaceId,
     pub action: TerminalAction,
-    /// Who asked, stamped by the server on what it relays.
+    /// Who asked, when the server relays the message to a machine.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(with = "Asker")]
     pub by: Option<Asker>,
@@ -106,20 +108,6 @@ pub enum TerminalOutput {
     /// The login ended, and then the vendor's status command said this.
     Ended { sign_in: SignInState },
     /// Output this build doesn't know, from a newer peer; only ever received.
-    #[serde(other)]
-    #[schemars(skip)]
-    Newer,
-}
-
-/// Whether an agent is signed in from its workspace's own config folder.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum SignInState {
-    SignedIn,
-    SignedOut,
-    /// The status command failed or didn't end.
-    Unknown,
-    /// A state this build doesn't know, from a newer peer; only ever received.
     #[serde(other)]
     #[schemars(skip)]
     Newer,

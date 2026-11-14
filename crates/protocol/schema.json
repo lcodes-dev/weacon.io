@@ -204,6 +204,48 @@
       ]
     },
     {
+      "description": "A question about what a machine keeps for a workspace, from a client to a core that\noffers `machine.settings`.",
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "machine_settings_query"
+        }
+      },
+      "$ref": "#/$defs/MachineSettingsQuery",
+      "required": [
+        "type"
+      ]
+    },
+    {
+      "description": "A change to what a machine keeps for a workspace, from a client to a core that offers\n`machine.settings`.",
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "machine_settings_command"
+        }
+      },
+      "$ref": "#/$defs/MachineSettingsCommand",
+      "required": [
+        "type"
+      ]
+    },
+    {
+      "description": "The core's answer to a [`MachineSettingsQuery`] or a [`MachineSettingsCommand`], to a\nclient that has `machine.settings`.",
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "machine_settings_answer"
+        }
+      },
+      "$ref": "#/$defs/MachineSettingsAnswer",
+      "required": [
+        "type"
+      ]
+    },
+    {
       "description": "A sign-in terminal's sealed input, from a browser through the server to a core that\noffers `terminal.sign_in`; the server relays it only if it offers `terminal.relay`.",
       "type": "object",
       "properties": {
@@ -236,6 +278,32 @@
     "id"
   ],
   "$defs": {
+    "AccessLevel": {
+      "description": "What a workspace's agents may do on one machine, chosen by the machine's owner.",
+      "oneOf": [
+        {
+          "type": "string",
+          "enum": [
+            "read_only"
+          ]
+        },
+        {
+          "description": "No agent runs.",
+          "type": "string",
+          "const": "off"
+        },
+        {
+          "description": "Agents ask a person before each change.",
+          "type": "string",
+          "const": "ask_first"
+        },
+        {
+          "description": "Agents change things without asking; destructive operations still ask.",
+          "type": "string",
+          "const": "full"
+        }
+      ]
+    },
     "AccountId": {
       "description": "A person's account on the server, 1–64 ASCII letters, digits, `-` or `_`.",
       "type": "string",
@@ -309,6 +377,21 @@
       "description": "An agent's own id for a conversation, a lowercase UUID, which resumes it later.",
       "type": "string",
       "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+    },
+    "AgentSignIn": {
+      "type": "object",
+      "properties": {
+        "agent": {
+          "$ref": "#/$defs/AgentKind"
+        },
+        "state": {
+          "$ref": "#/$defs/SignInState"
+        }
+      },
+      "required": [
+        "agent",
+        "state"
+      ]
     },
     "App": {
       "description": "A program, such as `weacon-core`, and the exact build it is.",
@@ -1416,6 +1499,190 @@
         }
       ]
     },
+    "MachineSettings": {
+      "description": "What a machine keeps for one workspace, and whether it sends error reports.",
+      "type": "object",
+      "properties": {
+        "access": {
+          "$ref": "#/$defs/AccessLevel"
+        },
+        "reports": {
+          "description": "The owner's answer to error reports; absent until they give one, when none are sent.",
+          "type": "boolean"
+        },
+        "sign_ins": {
+          "description": "Each agent the core runs, signed in or not with the workspace's own config folder.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/AgentSignIn"
+          }
+        },
+        "team": {
+          "description": "Whether other people are in the workspace.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "access",
+        "team",
+        "sign_ins"
+      ]
+    },
+    "MachineSettingsAction": {
+      "oneOf": [
+        {
+          "description": "Whether the machine sends error reports; for the whole machine, not one workspace.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "set_reports"
+            },
+            "send": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "kind",
+            "send"
+          ]
+        },
+        {
+          "description": "What `workspace`'s agents may do on the machine, and whether other people are in it;\n`team` is kept as it was when left out.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "set_access"
+            },
+            "level": {
+              "$ref": "#/$defs/AccessLevel"
+            },
+            "team": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "kind",
+            "level"
+          ]
+        }
+      ]
+    },
+    "MachineSettingsAnswer": {
+      "description": "From the core to a client that has `machine.settings`, in answer to a\n[`MachineSettingsQuery`] or a [`MachineSettingsCommand`].",
+      "type": "object",
+      "properties": {
+        "answer": {
+          "$ref": "#/$defs/MachineSettingsAnswerKind"
+        },
+        "machine": {
+          "$ref": "#/$defs/MachineId"
+        },
+        "request": {
+          "$ref": "#/$defs/RequestId"
+        },
+        "workspace": {
+          "$ref": "#/$defs/WorkspaceId"
+        }
+      },
+      "required": [
+        "request",
+        "machine",
+        "workspace",
+        "answer"
+      ]
+    },
+    "MachineSettingsAnswerKind": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "current"
+            }
+          },
+          "$ref": "#/$defs/MachineSettings",
+          "required": [
+            "kind"
+          ]
+        }
+      ]
+    },
+    "MachineSettingsCommand": {
+      "description": "From the owner of `machine` to its core, which offers `machine.settings`: changes what the\nmachine keeps for `workspace`. The server relays it only from the machine's owner, and the\ncore acts only when `by` is its owner; the answer is a [`MachineSettingsAnswer`] that echoes\n`request` and holds the settings after the change.",
+      "type": "object",
+      "properties": {
+        "action": {
+          "$ref": "#/$defs/MachineSettingsAction"
+        },
+        "by": {
+          "description": "Who asked, when the server relays the message to a machine.",
+          "$ref": "#/$defs/Asker"
+        },
+        "machine": {
+          "$ref": "#/$defs/MachineId"
+        },
+        "request": {
+          "$ref": "#/$defs/RequestId"
+        },
+        "workspace": {
+          "$ref": "#/$defs/WorkspaceId"
+        }
+      },
+      "required": [
+        "request",
+        "machine",
+        "workspace",
+        "action"
+      ]
+    },
+    "MachineSettingsQuery": {
+      "description": "From the owner of `machine` to its core, which offers `machine.settings`: what the machine\nkeeps for `workspace`. The server relays it only from the machine's owner, and the core\nanswers only when `by` is its owner; the answer is a [`MachineSettingsAnswer`] that echoes\n`request`.",
+      "type": "object",
+      "properties": {
+        "by": {
+          "description": "Who asked, when the server relays the message to a machine.",
+          "$ref": "#/$defs/Asker"
+        },
+        "machine": {
+          "$ref": "#/$defs/MachineId"
+        },
+        "query": {
+          "$ref": "#/$defs/MachineSettingsQueryKind"
+        },
+        "request": {
+          "$ref": "#/$defs/RequestId"
+        },
+        "workspace": {
+          "$ref": "#/$defs/WorkspaceId"
+        }
+      },
+      "required": [
+        "request",
+        "machine",
+        "workspace",
+        "query"
+      ]
+    },
+    "MachineSettingsQueryKind": {
+      "oneOf": [
+        {
+          "description": "The settings as they are now.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "current"
+            }
+          },
+          "required": [
+            "kind"
+          ]
+        }
+      ]
+    },
     "MachineSummary": {
       "description": "A machine paired with the signed-in account, at `paired_at`, in seconds since the Unix\nepoch.",
       "type": "object",
@@ -2194,17 +2461,18 @@
       ]
     },
     "SignInState": {
-      "description": "Whether an agent is signed in from its workspace's own config folder.",
+      "description": "Only whether an agent is signed in: never its credentials.",
       "oneOf": [
         {
           "type": "string",
           "enum": [
             "signed_in",
-            "signed_out"
+            "signed_out",
+            "not_installed"
           ]
         },
         {
-          "description": "The status command failed or didn't end.",
+          "description": "The vendor's tool didn't say.",
           "type": "string",
           "const": "unknown"
         }
@@ -2432,14 +2700,14 @@
       ]
     },
     "TerminalCommand": {
-      "description": "From a browser, through the server, to a core that offers `terminal.sign_in`.",
+      "description": "From the owner of `machine`'s browser to its core, which offers `terminal.sign_in`. The\nserver relays it only from the machine's owner, and the core acts only when `by` is its\nowner and refuses a terminal id it has already seen.",
       "type": "object",
       "properties": {
         "action": {
           "$ref": "#/$defs/TerminalAction"
         },
         "by": {
-          "description": "Who asked, stamped by the server on what it relays.",
+          "description": "Who asked, when the server relays the message to a machine.",
           "$ref": "#/$defs/Asker"
         },
         "machine": {
