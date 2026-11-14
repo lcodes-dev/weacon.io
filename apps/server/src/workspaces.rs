@@ -192,7 +192,7 @@ mod tests {
             refusals.push(ask(server.address, &read, &bo, "").await);
             refusals.push(ask(server.address, &read, "", "").await);
         }
-        let (bad_id, _) = ask(server.address, "GET /api/workspaces/w.1", &ada, "").await;
+        let bad_id = ask(server.address, "GET /api/workspaces/w.1", &ada, "").await;
         let (nobody, _) = ask(server.address, "GET /api/workspaces", "", "").await;
 
         assert_eq!(theirs.len(), 2);
@@ -206,7 +206,13 @@ mod tests {
                 ("http/1.1 401 unauthorized".to_owned(), required.clone())
             );
         }
-        assert_eq!(bad_id, "http/1.1 400 bad request");
+        assert_eq!(
+            bad_id,
+            (
+                "http/1.1 400 bad request".to_owned(),
+                json!({ "code": "request.invalid", "retryable": false })
+            )
+        );
         assert_eq!(nobody, "http/1.1 401 unauthorized");
     }
 

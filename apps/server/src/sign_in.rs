@@ -6,7 +6,6 @@ use axum::extract::State;
 use axum::http::header::SET_COOKIE;
 use axum::http::{HeaderMap, Method, StatusCode};
 use axum::response::{IntoResponse, Response};
-use sha2::{Digest, Sha256};
 use tokio::time::{Instant, sleep_until};
 use weacon_observability::Fault;
 use weacon_protocol::{
@@ -15,7 +14,7 @@ use weacon_protocol::{
 };
 
 use crate::app::{fresh, new_id};
-use crate::auth::{Session, Unproven, proof, same_origin, set_session_cookie};
+use crate::auth::{Sender, Session, Unproven, proof, sender, set_session_cookie, token_hash};
 use crate::client::Client;
 use crate::db::Attempt;
 use crate::email::Email;
@@ -118,12 +117,12 @@ pub(crate) async fn finish(
     if !shared.tries.allow(from, now) {
         return too_many(code!("sign_in.too_many"));
     }
-    let page = same_origin(&headers);
-    if page == Some(false) {
+    let page = sender(&headers);
+    if page == Sender::OtherSite {
         return cross_site();
     }
     let answer = match signed_in(&shared, &body).await {
-        Ok(Some((who, token))) if page.is_some() => {
+        Ok(Some((who, token))) if page == Sender::OwnPage => {
             let cookie = set_session_cookie(&token, SESSION_LIFETIME);
             ([(SET_COOKIE, cookie)], Json(who)).into_response()
         }
@@ -158,7 +157,7 @@ pub(crate) async fn sign_out(
     let ended = match proof(&method, &headers) {
         Ok(token_hash) => shared.db.end_session(&token_hash).await,
         // Nothing to end, but another site's page may not clear the cookie either.
-        Err(Unproven::Missing) if same_origin(&headers) != Some(false) => Ok(()),
+        Err(Unproven::Missing) if sender(&headers) != Sender::OtherSite => Ok(()),
         Err(_) => return Unproven::CrossSite.into(),
     };
     match ended {
@@ -225,11 +224,6 @@ fn hex(bytes: &[u8]) -> String {
         .collect()
 }
 
-/// Unkeyed: a token is too long to guess.
-pub(crate) fn token_hash(text: &str) -> [u8; 32] {
-    Sha256::digest(text.as_bytes()).into()
-}
-
 #[cfg(test)]
 mod tests {
     use std::net::SocketAddr;
@@ -257,8 +251,6 @@ mod tests {
         assert_eq!(code_text(&[1; 32]), "38076673");
         assert_eq!(code_text(&[0; 32]), "00000000");
         assert_eq!(hex(&[0, 10, 255]), "000aff");
-        assert_eq!(token_hash("a"), token_hash("a"));
-        assert_ne!(token_hash("a"), token_hash("b"));
         assert_eq!(new_challenge().unwrap().as_str().len(), 64);
     }
 
