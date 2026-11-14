@@ -109,3 +109,27 @@ test("each message goes to the handlers it may be for; an error to both a prompt
 
   assert.deepEqual(seen, ["run run", "answers receipt", "changes diff_answer", "answers error", "changes error"]);
 });
+
+test("a machine's settings answer passes with the fields the page reads, and a newer kind passes to be ignored", () => {
+  const settings = (answer: unknown) => frame({ id: 6, type: "machine_settings_answer", request: "r-1", machine: "mc-1", workspace: "w-1", answer });
+  const current = { kind: "current", access: "full", team: true, sign_ins: [{ agent: "claude", state: "signed_in" }] };
+  const good = [current, { ...current, reports: false }, { ...current, sign_ins: [] }, { kind: "later" }];
+  const bad = [
+    null,
+    { access: "full" },
+    { ...current, team: "yes" },
+    { ...current, reports: "on" },
+    { ...current, sign_ins: "none" },
+    { ...current, sign_ins: [{ agent: "claude" }] },
+    { ...current, sign_ins: [null] },
+    { ...current, access: undefined },
+  ];
+
+  for (const answer of good) {
+    assert.equal(parse(settings(answer))?.type, "machine_settings_answer", JSON.stringify(answer));
+  }
+  for (const answer of bad) {
+    assert.equal(parse(settings(answer)), undefined, JSON.stringify(answer));
+  }
+  assert.equal(parse(frame({ id: 6, type: "machine_settings_answer", request: "r-1", workspace: "w-1", answer: current })), undefined);
+});
