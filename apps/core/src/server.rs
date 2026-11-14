@@ -19,7 +19,7 @@ use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
 use tokio_tungstenite::tungstenite::{Error as WireError, http::header::AUTHORIZATION};
 use ureq::tls::{Certificate, RootCerts, TlsConfig};
 use weacon_observability::Fault;
-use weacon_protocol::{MAX_FRAME, code};
+use weacon_protocol::{Code, ErrorBody, MAX_FRAME, code};
 
 /// How long connecting, the TLS handshake, and each request may take.
 const WITHIN: Duration = Duration::from_secs(20);
@@ -43,8 +43,8 @@ pub(crate) struct Server {
 pub(crate) enum Failure {
     /// The server couldn't be reached, or broke off; worth trying again later.
     Unreachable(Fault),
-    /// The server answered with this error status.
-    Refused(u16),
+    /// The server answered with this error status, and this code when its body gave one.
+    Refused(u16, Option<Code>),
 }
 
 impl Server {
@@ -74,6 +74,7 @@ impl Server {
             .https_only(true)
             // A redirect would leave the checked server.
             .max_redirects(0)
+            .http_status_as_error(false)
             .tls_config(TlsConfig::builder().root_certs(root_certs).build())
             .build()
             .into();
@@ -99,17 +100,17 @@ impl Server {
             .post(format!("https://{}{path}", self.authority()))
             .header("Content-Type", "application/json")
             .send(body.as_slice());
-        let mut response = match sent {
-            Ok(response) => response,
-            Err(ureq::Error::StatusCode(status)) => return Err(Failure::Refused(status)),
-            Err(error) => return Err(Failure::Unreachable(unreachable().because(error))),
-        };
+        let mut response = sent.map_err(|error| unreachable().because(error))?;
         let answer = response
             .body_mut()
             .with_config()
             .limit(MAX_ANSWER)
             .read_to_vec()
             .map_err(|error| odd().because(error))?;
+        let status = response.status();
+        if !status.is_success() {
+            return Err(Failure::Refused(status.as_u16(), code_in(&answer)));
+        }
         serde_json::from_slice(&answer).map_err(|error| Failure::Unreachable(odd().because(error)))
     }
 
@@ -129,7 +130,10 @@ impl Server {
         let opened = tokio_tungstenite::client_async_with_config(request, stream, Some(config));
         match timeout(WITHIN, opened).await {
             Ok(Ok((socket, _))) => Ok(socket),
-            Ok(Err(WireError::Http(response))) => Err(Failure::Refused(response.status().as_u16())),
+            Ok(Err(WireError::Http(response))) => {
+                let code = response.body().as_deref().and_then(code_in);
+                Err(Failure::Refused(response.status().as_u16(), code))
+            }
             Ok(Err(error)) => Err(Failure::Unreachable(unreachable().because(error))),
             Err(_) => Err(Failure::Unreachable(unreachable())),
         }
@@ -160,6 +164,13 @@ impl From<Fault> for Failure {
     fn from(fault: Fault) -> Self {
         Self::Unreachable(fault)
     }
+}
+
+/// The error code in a refusal's body, if it has one.
+fn code_in(body: &[u8]) -> Option<Code> {
+    serde_json::from_slice::<ErrorBody>(body)
+        .ok()
+        .map(|error| error.code)
 }
 
 /// The certificates in `pem`, at least one.
@@ -245,7 +256,7 @@ mod tests {
         .unwrap()
     }
 
-    fn error_body(code: weacon_protocol::Code) -> String {
+    fn error_body(code: Code) -> String {
         serde_json::to_string(&ErrorBody {
             code,
             retryable: false,
@@ -346,7 +357,7 @@ mod tests {
         );
 
         assert!(
-            matches!(answered, Err(Failure::Refused(404))),
+            matches!(&answered, Err(Failure::Refused(404, Some(code))) if *code == code!("pairing.not_found")),
             "{answered:?}"
         );
     }
@@ -400,6 +411,8 @@ mod tests {
 
         let (socket, ()) = tokio::join!(server.socket("/api/machines/connect", "t0ken"), serve);
 
-        assert!(matches!(socket, Err(Failure::Refused(401))));
+        assert!(
+            matches!(socket, Err(Failure::Refused(401, Some(code))) if code == code!("machine.unpaired"))
+        );
     }
 }

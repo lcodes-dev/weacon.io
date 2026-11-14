@@ -107,16 +107,29 @@ pub(crate) fn read(state_dir: &Path) -> Result<Option<Paired>, Fault> {
 /// When it can't be written.
 pub(crate) fn write(state_dir: &Path, paired: &Paired) -> Result<(), Fault> {
     let json = serde_json::to_vec_pretty(paired).map_err(|error| not_saved().because(error))?;
-    platform::private_dir(state_dir)
-        .and_then(|()| weacon_appkit::write_whole(&file(state_dir), &json))
-        .map_err(|error| not_saved().because(error))
+    let private = platform::private_dir(state_dir)
+        .and_then(|()| platform::private_owner(state_dir))
+        .map_err(|error| not_saved().because(error))?;
+    if private.is_none() {
+        return Err(Fault::new(
+            code!("state.not_private"),
+            "Other users can reach the state folder; make it readable only by you",
+        ));
+    }
+    weacon_appkit::write_whole(&file(state_dir), &json).map_err(|error| not_saved().because(error))
 }
 
-/// Forgets the pairing, once the server has said the machine is unpaired.
+/// Forgets `paired` once the server has said the machine is unpaired, unless another pairing
+/// has taken its place meanwhile.
 ///
 /// # Errors
-/// When the file is there but can't be removed.
-pub(crate) fn forget(state_dir: &Path) -> Result<(), Fault> {
+/// When the file can't be read, or is there but can't be removed.
+pub(crate) fn forget(state_dir: &Path, paired: &Paired) -> Result<(), Fault> {
+    let same = read(state_dir)?
+        .is_some_and(|kept| kept.machine == paired.machine && kept.token == paired.token);
+    if !same {
+        return Ok(());
+    }
     match fs::remove_file(file(state_dir)) {
         Err(error) if error.kind() != io::ErrorKind::NotFound => Err(not_saved().because(error)),
         _ => Ok(()),
@@ -234,11 +247,41 @@ mod tests {
         assert_eq!(read(&state).unwrap(), None);
         write(&state, &paired()).unwrap();
         let back = read(&state).unwrap();
-        forget(&state).unwrap();
-        forget(&state).unwrap();
+        forget(&state, &paired()).unwrap();
+        forget(&state, &paired()).unwrap();
 
         assert_eq!(back, Some(paired()));
         assert_eq!(read(&state).unwrap(), None);
+    }
+
+    #[test]
+    fn a_newer_pairing_isnt_forgotten_for_an_older_one() {
+        let dir = TempDir::new().unwrap();
+        let mut newer = paired();
+        newer.token = "n3wer".to_owned();
+        write(&dir, &newer).unwrap();
+        let mut other_machine = newer.clone();
+        other_machine.machine = MachineId::try_from("mc-2".to_owned()).unwrap();
+
+        forget(&dir, &paired()).unwrap();
+        forget(&dir, &other_machine).unwrap();
+
+        assert_eq!(read(&dir).unwrap(), Some(newer));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_pairing_is_kept_only_in_a_folder_others_cant_reach() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = TempDir::new().unwrap();
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).unwrap();
+
+        assert_eq!(
+            write(&dir, &paired()).unwrap_err().code().as_str(),
+            "state.not_private"
+        );
+        assert!(!file(&dir).exists());
     }
 
     #[test]

@@ -47,6 +47,14 @@ impl Tls {
     }
 }
 
+/// A URL on this machine where nothing listens.
+pub(crate) fn nowhere() -> String {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    drop(listener);
+    format!("https://localhost:{port}")
+}
+
 /// Reads one HTTP request from `stream`: its head and body.
 pub(crate) async fn read_request(stream: &mut TlsStream<TcpStream>) -> (String, String) {
     let mut seen = Vec::new();

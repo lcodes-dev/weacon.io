@@ -17,7 +17,7 @@ use crate::memory;
 use crate::picks::{KeepError, Picks};
 use crate::platform::{self, Listener, Owner, Stream};
 use crate::session::{CAPABILITIES, Reply, Session};
-use crate::uplink::Uplink;
+use crate::uplink::{self, Uplink};
 
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
 pub(crate) const READ_CHUNK: usize = 8192;
@@ -60,6 +60,7 @@ pub(crate) fn run(app: &crate::app::App) -> Result<(), Fault> {
             capabilities: CAPABILITIES.iter().cloned().map(Capability::from).collect(),
             log: app.log.child(&[("component", "uplink".into())]),
             commands,
+            timing: uplink::TIMING,
             random: weacon_appkit::random_id,
         };
         let serve = async {

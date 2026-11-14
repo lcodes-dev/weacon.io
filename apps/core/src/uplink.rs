@@ -6,8 +6,8 @@ use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
 use tokio::sync::mpsc;
-use tokio::time::{sleep, timeout};
-use tokio_tungstenite::tungstenite::Message as Wire;
+use tokio::time::{Instant, sleep, timeout};
+use tokio_tungstenite::tungstenite::{Message as Wire, Utf8Bytes};
 use weacon_observability::{Fault, Field, Logger};
 use weacon_protocol::{
     AccountId, App, Capability, ChatCommand, Code, Envelope, ErrorBody, Hello, Message, Outcome,
@@ -26,6 +26,20 @@ const FIRST_WAIT: Duration = Duration::from_secs(1);
 const LONGEST_WAIT: Duration = Duration::from_mins(1);
 const HELLO_WITHIN: Duration = Duration::from_secs(10);
 
+/// How long a connection may stay quiet, and how long it must last to count as steady.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Timing {
+    /// The server pings every 30 seconds, so a connection this quiet is gone.
+    pub(crate) quiet_within: Duration,
+    /// A connection lost sooner backs off as if it never came up.
+    pub(crate) steady_after: Duration,
+}
+
+pub(crate) const TIMING: Timing = Timing {
+    quiet_within: Duration::from_secs(75),
+    steady_after: Duration::from_secs(30),
+};
+
 /// Where the owner's chat commands go in the daemon.
 pub(crate) type Commands = mpsc::Sender<ChatCommand>;
 
@@ -34,9 +48,9 @@ pub(crate) type Commands = mpsc::Sender<ChatCommand>;
 enum Ended {
     /// The server says the machine isn't paired.
     Unpaired,
-    /// It was up, and broke.
+    /// It was up and steady, and broke or went quiet.
     Lost,
-    /// It never came up: the server refused it or didn't welcome it.
+    /// It never came up, the server refused it or didn't welcome it, or it broke soon after.
     Unwelcome,
 }
 
@@ -83,6 +97,7 @@ pub(crate) struct Uplink {
     pub(crate) capabilities: Vec<Capability>,
     pub(crate) log: Logger,
     pub(crate) commands: Commands,
+    pub(crate) timing: Timing,
     /// Random numbers, for the backoff's jitter.
     pub(crate) random: fn() -> u128,
 }
@@ -91,17 +106,25 @@ impl Uplink {
     pub(crate) async fn run(self) -> ! {
         let mut retry = Retry::default();
         loop {
-            let Some(paired) = self.paired().await else {
-                sleep(LOOK_EVERY).await;
-                continue;
-            };
-            let log = self
-                .log
-                .child(&[("machine_id", paired.machine.as_str().into())]);
-            match self.connection(&paired, &log).await {
-                Ok(Ended::Unpaired) => self.unpaired(&log).await,
-                ended => sleep(retry.after(ended, &log, (self.random)())).await,
+            let wait = self.step(&mut retry).await;
+            sleep(wait).await;
+        }
+    }
+
+    /// Connects once if the machine is paired, and says how long to wait before the next try.
+    async fn step(&self, retry: &mut Retry) -> Duration {
+        let Some(paired) = self.paired().await else {
+            return LOOK_EVERY;
+        };
+        let log = self
+            .log
+            .child(&[("machine_id", paired.machine.as_str().into())]);
+        match self.connection(&paired, &log).await {
+            Ok(Ended::Unpaired) => {
+                self.unpaired(&paired, &log).await;
+                LOOK_EVERY
             }
+            ended => retry.after(ended, &log, (self.random)()),
         }
     }
 
@@ -119,10 +142,10 @@ impl Uplink {
         }
     }
 
-    async fn unpaired(&self, log: &Logger) {
+    async fn unpaired(&self, paired: &Paired, log: &Logger) {
         log.warn("machine unpaired", &[]);
-        let dir = self.state_dir.clone();
-        let forgotten = tokio::task::spawn_blocking(move || machine::forget(&dir)).await;
+        let (dir, paired) = (self.state_dir.clone(), paired.clone());
+        let forgotten = tokio::task::spawn_blocking(move || machine::forget(&dir, &paired)).await;
         if let Ok(Err(fault)) = forgotten {
             log.warn("uplink failed", &[("err", Field::error(&fault))]);
         }
@@ -132,26 +155,35 @@ impl Uplink {
         let server = Server::new(&paired.server, paired.pinned.as_deref().map(str::as_bytes))?;
         let mut socket = match server.socket(PATH, &paired.token).await {
             Ok(socket) => socket,
-            Err(Failure::Refused(401)) => return Ok(Ended::Unpaired),
-            Err(Failure::Refused(_)) => return Ok(Ended::Unwelcome),
+            Err(Failure::Refused(401, Some(code))) if code == code!("machine.unpaired") => {
+                return Ok(Ended::Unpaired);
+            }
+            Err(Failure::Refused(..)) => return Ok(Ended::Unwelcome),
             Err(Failure::Unreachable(fault)) => return Err(fault),
         };
         if !self.greeted(&mut socket).await {
             return Ok(Ended::Unwelcome);
         }
         log.info("uplink connected", &[]);
-        while let Some(Ok(frame)) = socket.next().await {
+        let up = Instant::now();
+        let quiet_within = self.timing.quiet_within;
+        while let Ok(Some(Ok(frame))) = timeout(quiet_within, socket.next()).await {
             let Wire::Text(text) = frame else { continue };
             let Ok(envelope) = Envelope::from_json(text.as_bytes()) else {
                 continue;
             };
-            match self.answer(envelope, &paired.owner).await {
+            match self.answer(envelope, &paired.owner) {
                 Step::Unpaired => return Ok(Ended::Unpaired),
                 Step::Reply(reply) => send(&mut socket, &reply).await,
                 Step::Nothing => {}
             }
         }
-        Ok(Ended::Lost)
+        let steady = up.elapsed() >= self.timing.steady_after;
+        Ok(if steady {
+            Ended::Lost
+        } else {
+            Ended::Unwelcome
+        })
     }
 
     /// Says hello, and whether the server welcomed it with the connection.
@@ -165,8 +197,7 @@ impl Uplink {
             }),
         };
         send(socket, &hello).await;
-        let welcome = timeout(HELLO_WITHIN, socket.next()).await;
-        let Ok(Some(Ok(Wire::Text(text)))) = welcome else {
+        let Ok(Some(text)) = timeout(HELLO_WITHIN, first_text(socket)).await else {
             return false;
         };
         matches!(
@@ -180,7 +211,7 @@ impl Uplink {
 impl Uplink {
     /// What to do with a message from the server. Only the machine's owner may ask it to act,
     /// whatever the server allows.
-    async fn answer(&self, envelope: Envelope, owner: &AccountId) -> Step {
+    fn answer(&self, envelope: Envelope, owner: &AccountId) -> Step {
         if let Message::Error(ErrorBody { code, .. }) = &envelope.message
             && *code == code!("machine.unpaired")
         {
@@ -193,7 +224,7 @@ impl Uplink {
         let from_owner = command.by.as_ref().is_some_and(|by| by.account == *owner);
         let code = if !from_owner {
             code!("chat.not_owner")
-        } else if self.commands.send(command).await.is_err() {
+        } else if self.commands.try_send(command).is_err() {
             code!("chat.unavailable")
         } else {
             return Step::Nothing;
@@ -212,6 +243,17 @@ enum Step {
     Unpaired,
     Reply(Envelope),
     Nothing,
+}
+
+/// The next text frame, past any pings.
+async fn first_text(socket: &mut Socket) -> Option<Utf8Bytes> {
+    loop {
+        match socket.next().await? {
+            Ok(Wire::Text(text)) => return Some(text),
+            Ok(_) => {}
+            Err(_) => return None,
+        }
+    }
 }
 
 /// Sends `envelope`; a connection that broke shows up on its next read.
@@ -235,7 +277,7 @@ mod tests {
 
     use super::*;
     use crate::machine::Key;
-    use crate::test_support::tls::{Tls, answer, read_request};
+    use crate::test_support::tls::{Tls, answer, nowhere, read_request};
     use crate::test_support::{VERSION, messages, recording_logger};
 
     type Peer = WebSocketStream<TlsStream<tokio::net::TcpStream>>;
@@ -266,6 +308,10 @@ mod tests {
             capabilities: vec![Capability::from(CONNECT)],
             log: recording_logger().0,
             commands,
+            timing: Timing {
+                quiet_within: Duration::from_secs(10),
+                steady_after: Duration::ZERO,
+            },
             random: || 0,
         }
     }
@@ -309,12 +355,12 @@ mod tests {
         heard(peer).await
     }
 
-    // A server that refuses the socket's handshake with `status`.
-    async fn refusing(tls: &Tls, status: &str) {
+    // A server that refuses the socket's handshake with `status` and `code`.
+    async fn refusing(tls: &Tls, status: &str, code: Code) {
         let mut stream = tls.accept().await.unwrap();
         read_request(&mut stream).await;
         let body = ErrorBody {
-            code: code!("machine.unpaired"),
+            code,
             retryable: false,
         };
         answer(&mut stream, status, &serde_json::to_string(&body).unwrap()).await;
@@ -458,16 +504,84 @@ mod tests {
             tokio::join!(link.connection(&pairing, &link.log), welcoming(&tls, &[]));
         let (unauthorized, ()) = tokio::join!(
             link.connection(&pairing, &link.log),
-            refusing(&tls, "401 Unauthorized")
+            refusing(&tls, "401 Unauthorized", code!("machine.unpaired"))
         );
         let (busy, ()) = tokio::join!(
             link.connection(&pairing, &link.log),
-            refusing(&tls, "503 Service Unavailable")
+            refusing(&tls, "401 Unauthorized", code!("proxy.sign_in"))
         );
 
         assert_eq!(unoffered.unwrap(), Ended::Unwelcome);
         assert_eq!(unauthorized.unwrap(), Ended::Unpaired);
         assert_eq!(busy.unwrap(), Ended::Unwelcome);
+    }
+
+    #[tokio::test]
+    async fn a_connection_lost_at_once_or_gone_quiet_is_told_apart() {
+        let (dir, tls) = (TempDir::new().unwrap(), Tls::new().await);
+        let mut link = uplink(&dir);
+        link.timing = Timing {
+            quiet_within: Duration::from_millis(100),
+            steady_after: Duration::from_hours(1),
+        };
+        let pairing = paired(&tls);
+
+        let (at_once, ()) = tokio::join!(link.connection(&pairing, &link.log), async {
+            drop(welcoming(&tls, &[CONNECT]).await);
+        });
+        link.timing.steady_after = Duration::ZERO;
+        let offers = [CONNECT];
+        let (quiet, _peer) = tokio::join!(
+            link.connection(&pairing, &link.log),
+            welcoming(&tls, &offers)
+        );
+
+        assert_eq!(at_once.unwrap(), Ended::Unwelcome);
+        assert_eq!(quiet.unwrap(), Ended::Lost);
+    }
+
+    #[tokio::test]
+    async fn a_ping_before_the_welcome_is_skipped() {
+        let (dir, tls) = (TempDir::new().unwrap(), Tls::new().await);
+        let link = uplink(&dir);
+        let pairing = paired(&tls);
+        let serve = async {
+            let stream = tls.accept().await.unwrap();
+            let mut peer = tokio_tungstenite::accept_async(stream).await.unwrap();
+            peer.send(Wire::Ping(Vec::new().into())).await.unwrap();
+            heard(&mut peer).await;
+            let welcome = Welcome {
+                app: weacon_appkit::build(&VERSION),
+                capabilities: vec![Capability::from(CONNECT)],
+            };
+            let envelope = Envelope {
+                id: 1,
+                message: Message::Welcome(welcome),
+            };
+            peer.send(text(&envelope)).await.unwrap();
+        };
+
+        let (ended, ()) = tokio::join!(link.connection(&pairing, &link.log), serve);
+
+        assert_eq!(ended.unwrap(), Ended::Lost);
+    }
+
+    #[tokio::test]
+    async fn after_an_unpairing_or_without_a_pairing_the_core_waits_to_look_again() {
+        let (dir, tls) = (TempDir::new().unwrap(), Tls::new().await);
+        let link = uplink(&dir);
+        let mut retry = Retry::default();
+        machine::write(&dir, &paired(&tls)).unwrap();
+
+        let (unpaired, ()) = tokio::join!(
+            link.step(&mut retry),
+            refusing(&tls, "401 Unauthorized", code!("machine.unpaired"))
+        );
+        let alone = link.step(&mut retry).await;
+
+        assert_eq!(unpaired, LOOK_EVERY);
+        assert_eq!(alone, LOOK_EVERY);
+        assert_eq!(machine::read(&dir).unwrap(), None);
     }
 
     #[tokio::test]
@@ -477,7 +591,7 @@ mod tests {
         let link = uplink(&dir);
 
         let found = link.paired().await;
-        link.unpaired(&link.log).await;
+        link.unpaired(&paired(&tls), &link.log).await;
 
         assert_eq!(found, Some(paired(&tls)));
         assert_eq!(link.paired().await, None);
@@ -488,7 +602,7 @@ mod tests {
         let (dir, tls) = (TempDir::new().unwrap(), Tls::new().await);
         let link = uplink(&dir);
         let mut gone = paired(&tls);
-        gone.server = "https://localhost:1".to_owned();
+        gone.server = nowhere();
 
         let failed = link.connection(&gone, &link.log).await;
 

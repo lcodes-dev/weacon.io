@@ -20,7 +20,7 @@ serde_json.workspace = true
 sha2.workspace = true
 tokio-rustls.workspace = true
 tokio-tungstenite.workspace = true
-tokio.workspace = true
+tokio = { workspace = true, features = ["sync"] }
 ureq.workspace = true
 weacon-agents.workspace = true
 weacon-appkit.workspace = true

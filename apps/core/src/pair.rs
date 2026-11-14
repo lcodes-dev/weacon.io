@@ -16,6 +16,10 @@ use crate::server::{Failure, Server};
 
 /// How often the core asks whether the person has confirmed.
 const CLAIM_EVERY: Duration = Duration::from_secs(2);
+/// How many times it asks: a little past the ten minutes a pairing lasts.
+const CLAIMS: u32 = 330;
+/// How many failed claims in a row mean the server is gone.
+const FAILED_CLAIMS: u32 = 15;
 
 /// Pairs this machine with the server at `url`, named `name`, trusting the certificates in
 /// the PEM file `pin` in place of the public ones; prints the code to confirm and the key's
@@ -108,15 +112,23 @@ fn pair(
 
 /// Claims the pairing every `every` until the person confirms it, or it ends.
 fn claimed(server: &Server, claim: &PairClaim, every: Duration) -> Result<PairClaimed, Fault> {
-    loop {
+    let mut failed_in_a_row = 0;
+    for _ in 0..CLAIMS {
         match server.post("/api/machines/pair/claim", claim) {
-            Ok(PairClaimed::Waiting) | Err(Failure::Unreachable(_)) => {}
+            Ok(PairClaimed::Waiting) => failed_in_a_row = 0,
             Ok(claimed) => return Ok(claimed),
-            Err(Failure::Refused(404)) => return Err(expired()),
-            Err(Failure::Refused(_)) => return Err(refused()),
+            Err(Failure::Unreachable(fault)) => {
+                failed_in_a_row += 1;
+                if failed_in_a_row >= FAILED_CLAIMS {
+                    return Err(fault);
+                }
+            }
+            Err(Failure::Refused(404, _)) => return Err(expired()),
+            Err(Failure::Refused(..)) => return Err(refused()),
         }
         sleep(every);
     }
+    Err(expired())
 }
 
 fn random_key() -> Result<[u8; 32], Fault> {
@@ -129,7 +141,7 @@ fn random_key() -> Result<[u8; 32], Fault> {
 fn failed(failure: Failure) -> Fault {
     match failure {
         Failure::Unreachable(fault) => fault,
-        Failure::Refused(_) => refused(),
+        Failure::Refused(..) => refused(),
     }
 }
 
@@ -178,7 +190,7 @@ mod tests {
     use super::*;
     use crate::test_support::{
         self,
-        tls::{Tls, answer, read_request},
+        tls::{Tls, answer, nowhere, read_request},
     };
 
     fn started() -> PairStarted {
@@ -347,19 +359,29 @@ mod tests {
         assert_eq!(machine::read(&dir).unwrap(), None);
     }
 
+    #[tokio::test]
+    async fn a_server_that_stops_answering_ends_the_wait() {
+        let (dir, tls) = (TempDir::new().unwrap(), Tls::new().await);
+        let mut answers = vec![("201 Created", json(&started()))];
+        answers.extend((0..FAILED_CLAIMS).map(|_| ("200 OK", "<html>".to_owned())));
+
+        let outcome = pair_with(&dir, &tls, None, answers).await;
+
+        assert_eq!(
+            outcome.done.unwrap_err().code().as_str(),
+            "server.answer_invalid"
+        );
+        assert_eq!(outcome.requests.len(), 16);
+        assert_eq!(machine::read(&dir).unwrap(), None);
+    }
+
     #[test]
     fn a_pin_that_cant_be_read_pairs_nothing() {
         let dir = TempDir::new().unwrap();
         let app = test_support::app(Some(&dir), None);
         let missing = dir.join("missing.pem");
 
-        let failed = run(
-            &app,
-            "https://localhost:1",
-            None,
-            Some(&missing),
-            &mut Vec::new(),
-        );
+        let failed = run(&app, &nowhere(), None, Some(&missing), &mut Vec::new());
 
         assert_eq!(failed.unwrap_err().code().as_str(), "server.pin_unreadable");
         assert_eq!(machine::read(&dir).unwrap(), None);
