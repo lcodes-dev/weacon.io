@@ -1,4 +1,3 @@
-use std::ffi::OsString;
 use std::fs::{self, File, TryLockError};
 use std::future::Future;
 use std::io;
@@ -17,7 +16,7 @@ use weacon_protocol::{
 };
 
 use crate::chats::feed::{self, Client};
-use crate::chats::{self, Chats};
+use crate::chats::{self, Chats, Places};
 use crate::disk;
 use crate::memory;
 use crate::picks::{KeepError, Picks};
@@ -59,7 +58,10 @@ pub(crate) fn run(app: &crate::app::App) -> Result<(), Fault> {
             state_dir,
             build(&app.version),
             app.spawn.clone(),
-            app.path.clone(),
+            Places {
+                path: app.path.clone(),
+                data_dir: app.data_dir.clone(),
+            },
             app.log.clone(),
         )?;
         daemon.serve(signals.wait()).await;
@@ -94,7 +96,7 @@ impl Daemon {
         state_dir: &Path,
         app: App,
         spawn: SpawnPolicy,
-        path: Option<OsString>,
+        places: Places,
         log: Logger,
     ) -> Result<Self, Fault> {
         let failed = |error: io::Error| {
@@ -123,7 +125,7 @@ impl Daemon {
         {
             return Err(failed(error));
         }
-        let (chats, engine) = chats::start(state_dir, path, app.clone(), spawn, log.clone())?;
+        let (chats, engine) = chats::start(state_dir, places, app.clone(), spawn, log.clone())?;
         let listener = platform::bind(&socket).map_err(failed)?;
         let engine = tokio::spawn(engine.run());
         log.info("daemon started", &[]);
@@ -412,7 +414,13 @@ mod tests {
     // Starts a daemon, letting `change` adjust it before it serves.
     fn start_as(dir: &Path, change: impl FnOnce(&mut Daemon)) -> Result<Running, Fault> {
         let (log, records) = recording_logger();
-        let mut daemon = Daemon::start(dir, build(&VERSION), SpawnPolicy::default(), None, log)?;
+        let mut daemon = Daemon::start(
+            dir,
+            build(&VERSION),
+            SpawnPolicy::default(),
+            Places::default(),
+            log,
+        )?;
         change(&mut daemon);
         let socket = daemon.socket.clone();
         let (stop, stopped) = oneshot::channel();

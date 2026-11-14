@@ -100,6 +100,22 @@ pub(crate) fn state_dir(env: Env<'_>) -> Option<PathBuf> {
     xdg_dir(env, "XDG_STATE_HOME", ".local/state").map(|dir| dir.join("weacon"))
 }
 
+/// Where the core keeps what agents work in, apart from its state so no agent reaches that;
+/// `WEACON_DATA_DIR` overrides it.
+pub(crate) fn data_dir(env: Env<'_>) -> Option<PathBuf> {
+    if let Some(dir) = var(env, "WEACON_DATA_DIR") {
+        return std::path::absolute(dir).ok();
+    }
+    // Not `Weacon`: that is the state folder there.
+    if cfg!(windows) {
+        return var(env, "LOCALAPPDATA").map(|dir| PathBuf::from(dir).join("Weacon Data"));
+    }
+    if cfg!(target_os = "macos") {
+        return home_dir(env).map(|home| home.join("Library/Application Support/Weacon Data"));
+    }
+    xdg_dir(env, "XDG_DATA_HOME", ".local/share").map(|dir| dir.join("weacon"))
+}
+
 /// A file or folder name for `id`, a token id, after `prefix`. A capital becomes `.` and its
 /// small letter, so ids differing only in case don't share a name; the prefix keeps Windows'
 /// device names, such as `CON`, out.
@@ -379,6 +395,41 @@ mod tests {
         assert_eq!(
             state_dir(&relative),
             Some(std::env::current_dir().unwrap().join(".dev/state"))
+        );
+    }
+
+    #[test]
+    fn the_data_folder_can_be_set_and_is_never_the_state_folder() {
+        let set = env(&[("WEACON_DATA_DIR", "/srv/work"), ("HOME", "/home/ada")]);
+        let relative = env(&[("WEACON_DATA_DIR", ".dev/data")]);
+        let home = env(&[
+            ("HOME", "/home/ada"),
+            ("LOCALAPPDATA", "C:/Users/ada/AppData"),
+        ]);
+
+        assert_eq!(data_dir(&set), Some(PathBuf::from("/srv/work")));
+        assert_eq!(
+            data_dir(&relative),
+            Some(std::env::current_dir().unwrap().join(".dev/data"))
+        );
+        if let (Some(state), Some(data)) = (state_dir(&home), data_dir(&home)) {
+            assert!(!data.starts_with(&state) && !state.starts_with(&data));
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn on_linux_the_data_folder_follows_xdg() {
+        let data = |vars: &[(&str, &str)]| data_dir(&env(vars));
+        let home = ("HOME", "/home/ada");
+
+        assert_eq!(
+            data(&[home]),
+            Some(PathBuf::from("/home/ada/.local/share/weacon"))
+        );
+        assert_eq!(
+            data(&[home, ("XDG_DATA_HOME", "/data")]),
+            Some(PathBuf::from("/data/weacon"))
         );
     }
 
