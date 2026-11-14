@@ -29,7 +29,7 @@ pub(crate) fn login(app: &App, agent: AgentKind, workspace: &WorkspaceId) -> Res
     Ok(())
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub(crate) struct Workspaces {
     state: PathBuf,
     dir: PathBuf,
@@ -132,10 +132,6 @@ impl Workspaces {
 
     /// How to start `agent` in `cwd` with `workspace`'s own config folder; the only place runs
     /// get an agent, and none when the workspace's access level doesn't let agents run.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "runs start their agents through this")
-    )]
     pub(crate) fn launch(
         &self,
         workspace: &WorkspaceId,
