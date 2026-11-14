@@ -11,10 +11,10 @@ mod watch;
 pub(crate) use watch::{CHECK_EVERY, Check, Launch, Watch};
 
 use std::fs::{File, TryLockError};
-use std::io::{self, Write};
+use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::Command;
-use std::time::Duration;
+use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
 
 use weacon_appkit::Outcome;
 use weacon_observability::Fault;
@@ -35,6 +35,9 @@ const TARGET: &str = env!("WEACON_TARGET");
 /// How often, and how far apart, a restarted daemon is asked for its build: 30 s in all.
 const HEALTH_TRIES: u32 = 60;
 const HEALTH_PAUSE: Duration = Duration::from_millis(500);
+
+/// How long a binary has to answer `--version` or `status` before it is killed.
+const ANSWER_WITHIN: Duration = Duration::from_secs(10);
 
 /// What an update reaches outside the core; tests pass fakes.
 pub(crate) struct World<'a> {
@@ -179,8 +182,40 @@ fn lock(state_dir: &Path) -> Result<File, Fault> {
 }
 
 fn version_of(binary: &Path) -> io::Result<String> {
-    let output = Command::new(binary).arg("--version").output()?;
-    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+    output_within(Command::new(binary).arg("--version"), ANSWER_WITHIN)
+}
+
+/// What `command` prints, up to 64 KiB, once it ends; it is killed if it takes over `within`.
+fn output_within(command: &mut Command, within: Duration) -> io::Result<String> {
+    let mut child = command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| io::Error::other("no stdout"))?;
+    let read = std::thread::spawn(move || {
+        let mut printed = Vec::new();
+        stdout
+            .take(64 * 1024)
+            .read_to_end(&mut printed)
+            .map(|_| printed)
+    });
+    let started = Instant::now();
+    while child.try_wait()?.is_none() {
+        if started.elapsed() >= within {
+            drop(child.kill());
+            child.wait()?;
+            return Err(io::Error::from(io::ErrorKind::TimedOut));
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let printed = read
+        .join()
+        .map_err(|_| io::Error::other("the output reader stopped"))??;
+    Ok(String::from_utf8_lossy(&printed).into_owned())
 }
 
 /// A line saying which newer release the daemon found, if it found one.
@@ -202,8 +237,8 @@ fn status_names(exe: &Path, commit: &Commit, tries: u32, pause: Duration) -> boo
     let wanted = format!("({})", commit.as_str());
     (0..tries).any(|_| {
         std::thread::sleep(pause);
-        let status = Command::new(exe).arg("status").output();
-        status.is_ok_and(|status| String::from_utf8_lossy(&status.stdout).contains(&wanted))
+        output_within(Command::new(exe).arg("status"), ANSWER_WITHIN)
+            .is_ok_and(|printed| printed.contains(&wanted))
     })
 }
 
@@ -507,6 +542,24 @@ mod tests {
             1,
             Duration::ZERO
         ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_binary_that_hangs_is_killed() {
+        let dir = TempDir::new().unwrap();
+        let hangs = dir.join("hangs");
+        // Long enough to be killed, short enough that a broken deadline fails quickly.
+        fs::write(&hangs, "#!/bin/sh\nexec sleep 2\n").unwrap();
+        crate::platform::make_runnable(&hangs).unwrap();
+        let error = output_within(&mut Command::new(&hangs), Duration::ZERO).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+        let fast = answering(&dir, "quick");
+        let printed = output_within(&mut Command::new(&fast), Duration::from_secs(30)).unwrap();
+        assert_eq!(printed, "quick\n");
+        let long = answering(&dir, &"x".repeat(5000));
+        let printed = output_within(&mut Command::new(&long), Duration::from_secs(30)).unwrap();
+        assert_eq!(printed.len(), 5001);
     }
 
     #[test]

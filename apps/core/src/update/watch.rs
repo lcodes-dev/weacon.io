@@ -149,7 +149,10 @@ fn record(
     settings.last_checked = now;
     let accepted = settings.accept(release);
     let newer = accepted.is_ok() && release.version > own;
-    settings.offered = newer.then_some(release.version);
+    // A refused manifest keeps the offer there was.
+    if accepted.is_ok() {
+        settings.offered = newer.then_some(release.version);
+    }
     settings.write(&file)?;
     drop(lock);
     accepted?;
@@ -299,13 +302,17 @@ mod tests {
         assert_eq!(run(&dir, SAME, STARTS).unwrap(), Found::Nothing);
         let seen = Settings {
             last_published: 6,
+            offered: Some(version("1.5.0")),
             ..Settings::default()
         };
         seen.write(&settings::file(&dir)).unwrap();
         let fault = run(&dir, NEWER, STARTS).unwrap_err();
         assert_eq!(fault.code().as_str(), "update.stale");
         let settings = Settings::read(&settings::file(&dir)).unwrap();
-        assert_eq!((settings.last_checked, settings.offered), (NOW, None));
+        assert_eq!(
+            (settings.last_checked, settings.offered),
+            (NOW, Some(version("1.5.0")))
+        );
     }
 
     #[test]
