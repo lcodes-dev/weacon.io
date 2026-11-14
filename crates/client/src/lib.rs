@@ -58,7 +58,7 @@ impl Connection {
     ) -> Result<(Welcome, Self), Fault> {
         tokio::time::timeout(TIMEOUT, Self::greet(socket, me, capabilities))
             .await
-            .unwrap_or_else(|_| Err(no_answer(io::Error::from(io::ErrorKind::TimedOut))))
+            .map_err(no_answer)?
     }
 
     async fn greet(
