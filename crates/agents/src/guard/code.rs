@@ -5,10 +5,12 @@ use super::Reason;
 use super::shell::{Simple, Word};
 use super::words::{family, short_flags};
 
-const SHELLS: [&str; 6] = ["sh", "bash", "zsh", "dash", "ksh", "fish"];
+const SHELLS: [&str; 9] = [
+    "sh", "bash", "zsh", "dash", "ksh", "mksh", "ash", "yash", "fish",
+];
 // Shells whose code isn't the POSIX shell's, so the guard can't read it.
-const OTHER_SHELLS: [&str; 4] = ["pwsh", "powershell", "cmd", "csh"];
-const INTERPRETERS: [&str; 10] = [
+const OTHER_SHELLS: [&str; 5] = ["pwsh", "powershell", "cmd", "csh", "tcsh"];
+const INTERPRETERS: [&str; 12] = [
     "python",
     "node",
     "perl",
@@ -19,6 +21,8 @@ const INTERPRETERS: [&str; 10] = [
     "lua",
     "osascript",
     "rscript",
+    "pypy",
+    "nodejs",
 ];
 const AWKS: [&str; 4] = ["awk", "gawk", "mawk", "nawk"];
 const DATABASES: [&str; 10] = [

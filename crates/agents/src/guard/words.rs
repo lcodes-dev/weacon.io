@@ -85,8 +85,9 @@ pub(super) fn command(words: &[Word]) -> Command<'_> {
         let Some(program) = rest.first() else {
             return Command::Empty;
         };
+        // A wildcard in the program's name is expanded to a program the guard can't name.
         let name = program_name(&program.text);
-        if RUNNERS.contains(&name.as_str()) {
+        if program.glob || RUNNERS.contains(&name.as_str()) {
             return Command::Unsure;
         }
         let Some((_, with_value, before)) = WRAPPERS.iter().find(|(wrapper, ..)| *wrapper == name)
@@ -99,7 +100,10 @@ pub(super) fn command(words: &[Word]) -> Command<'_> {
         partial |= name == "xargs";
         let after = rest.get(1..).unwrap_or_default();
         let (skipped, after) = skip_options(after, with_value);
-        if skipped.iter().any(|option| moves(&option.text)) {
+        if skipped
+            .iter()
+            .any(|option| unclear(&option.text, with_value))
+        {
             return Command::Unsure;
         }
         let Some(after) = after.get(*before..) else {
@@ -109,10 +113,22 @@ pub(super) fn command(words: &[Word]) -> Command<'_> {
     }
 }
 
+// Whether a wrapper's option moves the command elsewhere, or is a long one that may take the
+// next word as its value without the guard knowing.
+fn unclear(option: &str, with_value: &[&str]) -> bool {
+    let unknown =
+        option.starts_with("--") && !option.contains('=') && !with_value.contains(&option);
+    moves(option) || unknown
+}
+
+// A short option may carry its value or sit among others, as in `-C/tmp` or `-iC`.
 fn moves(option: &str) -> bool {
-    MOVING
-        .iter()
-        .any(|moving| option == *moving || option.starts_with(&format!("{moving}=")))
+    MOVING.iter().any(|moving| match moving.strip_prefix('-') {
+        Some(letter) if !letter.starts_with('-') => {
+            short_flags(option).is_some_and(|flags| flags.contains(letter))
+        }
+        _ => option == *moving || option.starts_with(&format!("{moving}=")),
+    })
 }
 
 // The options at the start of `rest`, and what follows them.

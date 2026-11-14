@@ -25,6 +25,9 @@ pub(crate) struct Simple {
     pub(crate) reads: Vec<Word>,
     /// Reads its input from a file, a pipe or text in the command line.
     pub(crate) fed: bool,
+    /// Runs in a shell of its own, as in a pipeline, `( … )`, `$( … )` or with `&`, so a `cd`
+    /// there doesn't move the commands after it.
+    pub(crate) apart: bool,
 }
 
 /// The simple commands in `line`, those inside substitutions included; `None` when it can't be
@@ -44,6 +47,7 @@ fn parse_nested(line: &str, depth: usize) -> Option<Vec<Simple>> {
         heredocs: Vec::new(),
         depth,
         unsure: false,
+        parens: 0,
     };
     parser.list(None)?;
     (!parser.unsure).then_some(parser.found)
@@ -57,6 +61,8 @@ struct Parser {
     heredocs: Vec<String>,
     // How many substitutions this text is inside.
     depth: usize,
+    // How many `(` are open.
+    parens: usize,
     // Met something it can split but not follow, such as a `case` inside a substitution.
     unsure: bool,
 }
@@ -158,14 +164,22 @@ impl Parser {
             return self.redirect_target(simple, word, true);
         }
         let pipe = char == '|' && self.peek() != Some('|');
+        let background = char == '&' && self.peek() != Some('&');
         if matches!(
             (char, self.peek()),
             ('&', Some('&')) | ('|', Some('|' | '&'))
         ) {
             self.advance(1);
         }
+        simple.apart |= pipe || background;
         self.finish(simple, word);
+        match char {
+            '(' => self.parens += 1,
+            ')' => self.parens = self.parens.saturating_sub(1),
+            _ => {}
+        }
         simple.fed = pipe;
+        simple.apart = pipe;
         if char == '\n' {
             self.skip_heredocs()?;
         }
@@ -218,15 +232,17 @@ impl Parser {
         writes: bool,
     ) -> Option<()> {
         end_word(simple, word);
-        if self.peek() == Some('&') {
-            // `>&2` copies a descriptor; `>&-` closes one.
+        // `>&2` copies a descriptor and `>&-` closes one; after a plain `>`, `2` is a file.
+        let duplicates = self.peek() == Some('&');
+        if duplicates {
             self.advance(1);
         }
         let target = self.target()?;
-        let descriptor = target
-            .text
-            .chars()
-            .all(|char| char.is_ascii_digit() || char == '-');
+        let descriptor = duplicates
+            && target
+                .text
+                .chars()
+                .all(|char| char.is_ascii_digit() || char == '-');
         if writes && !descriptor {
             simple.writes.push(target);
         } else if !writes {
@@ -298,6 +314,7 @@ impl Parser {
 
     fn finish(&mut self, simple: &mut Simple, word: &mut Option<Word>) {
         end_word(simple, word);
+        simple.apart |= self.parens > 0 || self.depth > 1;
         let done = std::mem::take(simple);
         // A `case` pattern's `)` would close the substitution it's in too early.
         if self.depth > 1 && done.words.first().is_some_and(|word| word.text == "case") {

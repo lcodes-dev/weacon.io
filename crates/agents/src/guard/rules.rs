@@ -176,6 +176,8 @@ impl Call<'_> {
         let name = self.name;
         match name {
             "weacon" => Some(Reason::Weacon),
+            // In a shell of its own, a `cd` moves nothing after it.
+            "cd" | "pushd" if self.simple.apart => Some(Reason::Unsure),
             "cd" | "pushd" => self.change_folder(cwd),
             "popd" => Some(Reason::Unsure),
             "git" if self.partial => Some(Reason::Unsure),
@@ -246,9 +248,18 @@ impl Call<'_> {
             // A link can lead anywhere once it exists.
             return Some(Reason::Unsure);
         }
-        let destination = value_of(self.args, &["-t", "--target-directory"])
-            .or_else(|| positional(self.args).last().copied().cloned());
-        destination.and_then(|word| self.targets(cwd, Reason::WriteOutside, &[&word]))
+        let into = value_of(self.args, &["-t", "--target-directory"]);
+        let named = positional(self.args);
+        let destination = into.as_ref().or_else(|| named.last().copied());
+        // A hard link is the file it links to, so writing it later writes that file.
+        let linked = self.name == "ln"
+            || self.args.iter().any(|arg| {
+                arg.text == "--link"
+                    || short_flags(&arg.text).is_some_and(|flags| flags.contains('l'))
+            });
+        let sources = named.iter().copied().filter(|_| linked);
+        let targets: Vec<&Word> = destination.into_iter().chain(sources).collect();
+        self.targets(cwd, Reason::WriteOutside, &targets)
     }
 
     fn dd(&self, cwd: &Path) -> Option<Reason> {

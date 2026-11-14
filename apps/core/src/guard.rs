@@ -58,13 +58,15 @@ fn check(
 ) -> Result<(), Fault> {
     let mut call = Vec::new();
     let read = input.take(INPUT_LIMIT).read_to_end(&mut call);
-    let answer = read.ok().and_then(|_| {
+    // Additions that can't be read can't be checked, so every call asks.
+    let additions = added(app, &hook.workspace);
+    let answer = read.ok().zip(additions).and_then(|(_, additions)| {
         let context = |cwd: &Path| Context {
             cwd: cwd.to_path_buf(),
             worktree: hook.worktree.clone(),
             main_checkout: main_checkout(&hook.worktree),
             cdpath: platform::var(env, "CDPATH").is_some_and(|value| !value.is_empty()),
-            additions: added(app, &hook.workspace),
+            additions,
             ..protected(app, env)
         };
         guard::claude_hook(&call, context).ok()
@@ -104,14 +106,12 @@ fn main_checkout(folder: &Path) -> Option<PathBuf> {
 }
 
 // The workspace's additions; none when its settings can't be read.
-fn added(app: &App, workspace: &WorkspaceId) -> Vec<Vec<String>> {
-    let Some(state_dir) = app.state_dir.as_deref() else {
-        return Vec::new();
-    };
-    Workspaces::new(state_dir, None)
+fn added(app: &App, workspace: &WorkspaceId) -> Option<Vec<Vec<String>>> {
+    let workspaces = Workspaces::new(app.state_dir.as_deref()?, None);
+    workspaces
         .settings(workspace)
+        .ok()
         .map(|settings| settings.additions)
-        .unwrap_or_default()
 }
 
 // Adds or removes `change`'s words, saves the list if that changed it, and prints it.
@@ -387,6 +387,9 @@ mod tests {
 
         assert!(check(&app, &dir, "w1", &call).contains(Reason::Addition.text()));
         assert_eq!(check(&app, &dir, "w2", &call), "");
+        fs::write(dir.join("state/settings/w-w2.json"), "not json").unwrap();
+        let unreadable = check(&app, &dir, "w2", &bash(&work, "cargo test"));
+        assert!(unreadable.contains(Reason::Unsure.text()));
     }
 
     #[test]

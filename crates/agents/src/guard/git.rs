@@ -102,7 +102,9 @@ fn subcommand(name: &str, args: &[Word], context: &Context, repo: &Path) -> Opti
         "branch" if has(&["--delete", "--force"], &['d', 'D', 'f', 'M', 'C']) => {
             Some(Reason::DeleteBranch)
         }
-        "update-ref" if has(&[], &['d']) => Some(Reason::DeleteBranch),
+        // It sets or deletes any ref, from its arguments or its input.
+        "update-ref" => Some(Reason::DeleteBranch),
+        "fetch" if fetch_overwrites(args) => Some(Reason::DeleteBranch),
         "checkout" if has(&[], &['B']) => Some(Reason::DeleteBranch),
         "switch" if has(&["--force-create"], &['C']) => Some(Reason::DeleteBranch),
         "reset" if has(&["--hard", "--merge", "--keep"], &[]) => main_checkout(repo, context),
@@ -139,6 +141,14 @@ fn subcommand(name: &str, args: &[Word], context: &Context, repo: &Path) -> Opti
         "config" if writes_config(args) => Some(Reason::WriteOutside),
         _ => None,
     }
+}
+
+// A forced refspec with a local side, as in `+main:main`, overwrites that branch.
+fn fetch_overwrites(args: &[Word]) -> bool {
+    let forced = has(args, &["--force"], &['f']);
+    positional(args).iter().any(|refspec| {
+        refspec.dynamic || (refspec.text.contains(':') && (forced || refspec.text.starts_with('+')))
+    })
 }
 
 fn push(args: &[Word]) -> Option<Reason> {

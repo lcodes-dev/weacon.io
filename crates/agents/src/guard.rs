@@ -119,7 +119,9 @@ pub(crate) fn check_path(file: &Path, context: &Context, outside: Reason) -> Opt
     if under_any(&file, &context.credentials) {
         return Some(Reason::Credentials);
     }
-    (!under(&file, &context.worktree)).then_some(outside)
+    // Inside the worktree only by its exact name: a folder that differs in case may be another.
+    let inside = resolve(&context.worktree).is_some_and(|worktree| file.starts_with(worktree));
+    (!inside).then_some(outside)
 }
 
 // Asks about a path inside a credential folder, or, for a `deep` read that goes through
@@ -202,6 +204,7 @@ fn before_glob(text: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
     use std::fs;
 
     use weacon_testing::TempDir;
@@ -406,7 +409,10 @@ mod tests {
             check("git update-ref -d refs/heads/old"),
             Some(Reason::DeleteBranch)
         );
-        assert_eq!(check("git update-ref refs/heads/new HEAD"), None);
+        assert_eq!(
+            check("git update-ref refs/heads/main HEAD"),
+            Some(Reason::DeleteBranch)
+        );
         assert_eq!(in_main("git reset HEAD~1"), None);
         assert_eq!(in_main("git clean -n"), None);
         assert_eq!(in_main("git clean --dry-run"), None);
@@ -820,5 +826,69 @@ mod tests {
         assert!(check_command("git switch other", &main).is_some());
         assert_eq!(check("cat ~/.cod${X}"), Some(Reason::Credentials));
         assert_eq!(check("cat ~/.codex/*${X}"), Some(Reason::Credentials));
+    }
+
+    #[test]
+    fn the_review_bots_bypasses_ask() {
+        let dir = TempDir::new().unwrap();
+        let context = context(&dir);
+        let check = |line: &str| check_command(line, &context);
+
+        for line in [
+            "cd .. ; ( cd wt ) ; rm -rf main",
+            "cd .. ; cd wt | cat ; rm -rf main",
+            "cd .. ; cd wt & rm -rf main",
+            "cd .. ; echo $(cd wt) ; rm -rf main",
+            "tcsh -c 'rm -rf /'",
+            "mksh -c 'rm -rf /'",
+            "ash -c 'rm -rf /'",
+            "yash -c 'rm -rf /'",
+            "pypy3 -c 'import shutil'",
+            "nodejs -e 1",
+            "/bin/r[m] -rf ../main",
+            "env -C/tmp rm -rf x",
+            "env -iC/tmp rm -rf x",
+            "nice --adjustment 0 rm -rf ../main",
+        ] {
+            assert!(check(line).is_some(), "{line}");
+        }
+        for (line, reason) in [
+            (
+                "echo 'delete refs/heads/main' | git update-ref --stdin",
+                Reason::DeleteBranch,
+            ),
+            ("git fetch . +feature:main", Reason::DeleteBranch),
+            ("git fetch -f origin x:main", Reason::DeleteBranch),
+            ("ln ../main/src/lib.rs h", Reason::WriteOutside),
+            ("cp -l ../main/src/lib.rs h", Reason::WriteOutside),
+            ("cp --link ../main/src/lib.rs h", Reason::WriteOutside),
+            ("cd /tmp; printf x >123", Reason::WriteOutside),
+            ("echo `r\\m -rf ../main`", Reason::DeleteOutside),
+        ] {
+            assert_eq!(check(line), Some(reason), "{line}");
+        }
+        for line in [
+            "git fetch origin main",
+            "git fetch origin main:main",
+            "cp notes.md copy.md",
+            "make 2>&1 >build.log",
+            "echo hi >&2",
+            "cd src && ls",
+        ] {
+            assert_eq!(check(line), None, "{line}");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_folder_named_like_the_worktree_in_another_case_is_outside_it() {
+        let dir = TempDir::new().unwrap();
+        let context = context(&dir);
+        fs::create_dir_all(dir.join("WT")).unwrap();
+
+        assert_eq!(
+            check_command("rm -rf ../WT", &context),
+            Some(Reason::DeleteOutside)
+        );
     }
 }

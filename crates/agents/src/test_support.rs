@@ -143,6 +143,7 @@ pub(crate) const fn finished(outcome: Outcome) -> RunEvent {
 
 /// Writes an executable `script` to `path` from a child shell, so this process never holds a
 /// write handle that another test's fork could inherit, which makes running it fail as busy.
+#[cfg(unix)]
 pub(crate) fn write_program(path: &Path, script: &str) {
     let written = std::process::Command::new("sh")
         .args([

@@ -101,7 +101,12 @@ pub(crate) fn run(
     let state_dir = app.state_dir()?;
     let workspaces = Workspaces::new(state_dir, None);
     let current = workspaces.settings(workspace);
-    // Saying whether it's a team replaces settings that can't be read.
+    // Saying whether it's a team replaces settings that can't be read, guard additions too.
+    let lost = if current.is_err() {
+        "Its guard additions couldn't be read and are gone; add them again with weacon guard add.\n"
+    } else {
+        ""
+    };
     let settings = match team {
         Some(team) => Settings {
             access,
@@ -124,7 +129,7 @@ pub(crate) fn run(
         level_name(settings.access),
         settings.warning(),
     );
-    write!(out, "Workspace {id}: access {level}\n{warning}").map_err(|error| {
+    write!(out, "Workspace {id}: access {level}\n{warning}{lost}").map_err(|error| {
         Fault::new(
             code!("access.output_failed"),
             "The access level couldn't be printed",
@@ -272,7 +277,10 @@ mod tests {
         assert_eq!(unreadable.code().as_str(), "workspace.settings_unreadable");
         assert_eq!(unsaved.code().as_str(), "access.not_saved");
         assert_eq!(kept.code().as_str(), "workspace.settings_unreadable");
-        assert_eq!(replaced, "Workspace w1: access off\n");
+        assert_eq!(
+            replaced,
+            "Workspace w1: access off\nIts guard additions couldn't be read and are gone; add them again with weacon guard add.\n"
+        );
         let full = set(&broken, AccessLevel::Full, None).unwrap();
         assert_eq!(full.lines().count(), 2);
         assert_eq!(nowhere.code().as_str(), "state.unavailable");

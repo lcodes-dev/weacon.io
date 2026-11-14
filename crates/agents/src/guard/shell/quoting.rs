@@ -112,8 +112,29 @@ impl Parser {
         Some(())
     }
 
+    // The command up to the closing `` ` ``, as the shell reads it: without the `\\` before a
+    // `\\`, `` ` `` or `$`.
+    fn backquoted_text(&mut self) -> Option<String> {
+        let mut text = String::new();
+        loop {
+            let char = self.next()?;
+            if char == '`' {
+                return Some(text);
+            }
+            let escaped = self
+                .peek()
+                .filter(|next| char == '\\' && matches!(next, '\\' | '`' | '$'));
+            if let Some(escaped) = escaped {
+                self.advance(1);
+                text.push(escaped);
+            } else {
+                text.push(char);
+            }
+        }
+    }
+
     fn backquoted(&mut self, word: &mut Word) -> Option<()> {
-        let inner = self.until('`')?;
+        let inner = self.backquoted_text()?;
         self.found.extend(parse_nested(&inner, self.depth + 1)?);
         word.dynamic = true;
         Some(())
