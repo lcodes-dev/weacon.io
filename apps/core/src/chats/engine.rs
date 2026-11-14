@@ -197,6 +197,16 @@ impl<A: Agent> Engine<A> {
         self.tell_state(key, run, state).await
     }
 
+    // Once nothing of `run` waits for a person, its turn is running again.
+    async fn running_again(&mut self, key: &ChatKey, run: &RunId) -> Result<(), Fault> {
+        let log = &self.open(key).await?.events;
+        let asks = log.runs().waiting.iter().any(|waits| waits.run == *run);
+        if asks || self.turn(key).is_none() {
+            return Ok(());
+        }
+        self.set_state(key, run, RunState::Running).await
+    }
+
     // Commits the run's state for the chat's subscribers; the journal already holds it.
     async fn tell_state(
         &mut self,

@@ -3,7 +3,7 @@
 use weacon_observability::Fault;
 use weacon_protocol::{
     AgentKind, ChatAction, ChatCommand, ChatEvent, Outcome, PermissionAnswer, RequestId, RunEvent,
-    RunState, RunUpdate, code,
+    RunUpdate, code,
 };
 
 use super::agent::{Agent, Order};
@@ -180,17 +180,8 @@ impl<A: Agent> Engine<A> {
         };
         chat.pending_answers.retain(|other| !answered(other));
         let run = answer.run.clone();
-        let resumed = !chat
-            .events
-            .runs()
-            .waiting
-            .iter()
-            .any(|waits| waits.run == run);
         self.order(key, Order::Answer(answer));
-        if resumed {
-            self.set_state(key, &run, RunState::Running).await?;
-        }
-        Ok(())
+        self.running_again(key, &run).await
     }
 
     // Committed first and bound to the turn it stops, so a retry after a failed write still
