@@ -1,10 +1,9 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { isId } from "../place.ts";
 import type { Envelope } from "../protocol.ts";
 import { Receipts } from "../receipts.ts";
-import { after, blocked, deliver, prompt, requestFor, requestId } from "./prompt.ts";
+import { after, blocked, deliver, prompt, requestFor } from "./prompt.ts";
 
 test("a prompt is a chat command for the chat, under its request", () => {
   assert.deepEqual(prompt(3, { workspace: "w-1", chat: "c-1" }, "r-1", "日本語"), {
@@ -18,24 +17,24 @@ test("a prompt is a chat command for the chat, under its request", () => {
 });
 
 test("the box sends only to a chat, on a live connection to a server that takes messages", () => {
-  const place = { workspace: "w-1", chat: "c-1" };
+  const chatRef = { workspace: "w-1", chat: "c-1" };
   const server = { name: "weacon-server", version: "0.0.0", commit: "0000000" };
   const live = (capabilities: string[]) => ({ state: "live" as const, server, capabilities });
 
-  assert.equal(blocked(live(["chat.send"]), place), undefined);
+  assert.equal(blocked(live(["chat.send"]), chatRef), undefined);
   assert.equal(blocked(live(["chat.send"]), undefined), "Pick a chat to send");
-  assert.equal(blocked(live(["run.stream"]), place), "This server can't take messages yet");
-  assert.equal(blocked({ state: "connecting" }, place), "Messages send once the server is connected");
-  assert.equal(blocked({ state: "ended", code: "connection.lost" }, place), "Messages send once the server is connected");
+  assert.equal(blocked(live(["run.stream"]), chatRef), "This server can't take messages yet");
+  assert.equal(blocked({ state: "connecting" }, chatRef), "Messages send once the server is connected");
+  assert.equal(blocked({ state: "ended", code: "connection.lost" }, chatRef), "Messages send once the server is connected");
 });
 
 test("a prompt is sent and waits for its receipt, unless it is over the server's limit", async () => {
-  const place = { workspace: "w-1", chat: "c-1" };
+  const chatRef = { workspace: "w-1", chat: "c-1" };
   const receipts = new Receipts(() => {});
   const sent: Envelope[] = [];
   // With empty text the envelope takes 114 bytes, so 16,270 more fill the 16 KiB limit; あ takes 3.
-  const fits = prompt(2, place, "r-1", `${"あ".repeat(5_423)}a`);
-  const over = prompt(2, place, "r-2", `${"あ".repeat(5_423)}ab`);
+  const fits = prompt(2, chatRef, "r-1", `${"あ".repeat(5_423)}a`);
+  const over = prompt(2, chatRef, "r-2", `${"あ".repeat(5_423)}ab`);
 
   const waiting = deliver(fits, receipts, (envelope) => sent.push(envelope));
   assert.equal(await deliver(over, receipts, (envelope) => sent.push(envelope)), "too_long");
@@ -86,10 +85,4 @@ test("a prompt the socket can't take is lost", async () => {
   const waiting = deliver(retry, receipts, () => {});
   receipts.take({ id: 3, type: "error", code: "request.conflict", retryable: false });
   assert.equal(await waiting, "refused");
-});
-
-test("a request id is its bytes in hex, and a well-formed id", () => {
-  const id = requestId(Uint8Array.from({ length: 16 }, (_, at) => at * 17));
-  assert.equal(id, "00112233445566778899aabbccddeeff");
-  assert.equal(isId(id), true);
 });

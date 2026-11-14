@@ -102,7 +102,7 @@ impl Workspace {
 mod tests {
     use weacon_testing::TempDir;
 
-    use weacon_model::Change;
+    use weacon_model::Attribution;
 
     use super::*;
     use crate::test_support::{member_id, new_task, two_teams, workspace_id};
@@ -161,7 +161,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let (one, _) = two_teams(&dir).await;
         let task = new_task("t1", "Write", "V");
-        one.add_task(&task, &Change::by(member_id("m1"), 0))
+        one.add_task(&task, &Attribution::by(member_id("m1"), 0))
             .await
             .unwrap();
         sqlx::query(
