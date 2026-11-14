@@ -89,3 +89,33 @@ jobs:
           name: weacon-server-${{ matrix.target }}
           path: weacon-server-${{ matrix.target }}.tar
           if-no-files-found: error
+
+  # A tag's builds go up as a draft release with their unsigned manifest; its owner signs the
+  # manifest with scripts/sign-release.sh and publishes it.
+  draft:
+    name: draft release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [build, server]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    defaults:
+      run:
+        shell: bash
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: ${{ github.ref_name }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: gh run download "$GITHUB_RUN_ID" --repo "$GITHUB_REPOSITORY" --dir artifacts
+      - run: mkdir dist && for tar in artifacts/*/*.tar; do tar -xf "$tar" -C dist; done
+      - run: >-
+          scripts/release.sh manifest "$TAG" dist
+          "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases/download/$TAG"
+          | tee -a "$GITHUB_STEP_SUMMARY"
+      - run: >-
+          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --draft --verify-tag
+          --title "weacon ${TAG#v}" dist/*

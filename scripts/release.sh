@@ -7,6 +7,8 @@
 #   scripts/release.sh server <target>
 # Or copies a Linux build to a host over SSH and installs it there as a systemd user service:
 #   scripts/release.sh install <[user@]host> <target>
+# Or writes the unsigned manifest of the core's builds in a folder, as published at a base URL:
+#   scripts/release.sh manifest <tag> <folder> <https base URL>
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -66,10 +68,45 @@ check_serves() {
   done
 }
 
-if [ "${1:-}" = install ]; then
-  install_on "${2:-}" "${3:-}"
-  exit
-fi
+# Writes <folder>/manifest.json for the core's builds there, named weacon-<target>[.exe].
+write_manifest() {
+  local tag=${1:-} dir=${2:-} base=${3:-} version protocol file name target builds=()
+  if ! [[ $tag =~ ^v(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})$ ]] \
+    || ! [ -d "$dir" ] || ! [[ $base =~ ^https://[A-Za-z0-9.-]+(/[!-~]*)?$ ]]; then
+    die "usage: scripts/release.sh manifest <vX.Y.Z> <folder> <https base URL>"
+  fi
+  version=${tag#v}
+  [ "$version" = "$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)" ] \
+    || die "$tag isn't the workspace's version"
+  protocol=$(sed -n 's/^pub const PROTOCOL: u32 = \([0-9]*\);$/\1/p' crates/protocol/src/message.rs)
+  [ -n "$protocol" ] || die "the protocol version wasn't found"
+  for file in "$dir"/weacon-*; do
+    name=$(basename "$file")
+    target=${name#weacon-}
+    target=${target%.exe}
+    # Servers update on their own; the manifest is the core's.
+    case "$target" in server-* | *.tar) continue ;; esac
+    builds+=("$(jq -cn --arg target "$target" --arg url "${base%/}/$name" \
+      --argjson size "$(wc -c <"$file" | tr -d ' ')" \
+      --arg sha256 "$(sha256sum "$file" | cut -d ' ' -f 1)" \
+      '{target: $target, url: $url, size: $size, sha256: $sha256}')")
+  done
+  [ "${#builds[@]}" -gt 0 ] || die "$dir holds no builds of the core"
+  printf '%s\n' "${builds[@]}" | jq -cs --arg version "$version" --arg commit "$(git rev-parse HEAD)" \
+    --argjson published_at "$(date +%s)" --argjson protocol "$protocol" \
+    '{version: $version, commit: $commit, published_at: $published_at, protocol: $protocol,
+      builds: .}' >"$dir/manifest.json"
+  printf '%s: %s builds\n' "$dir/manifest.json" "${#builds[@]}"
+}
+
+case "${1:-}" in
+  install)
+    install_on "${2:-}" "${3:-}"
+    exit ;;
+  manifest)
+    write_manifest "${2:-}" "${3:-}" "${4:-}"
+    exit ;;
+esac
 
 server='' bin=weacon package=weacon-core
 if [ "${1:-}" = server ]; then
