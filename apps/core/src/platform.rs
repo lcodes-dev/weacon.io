@@ -23,6 +23,9 @@ pub(crate) use procs::{PROCESSES, Process, processes};
 pub(crate) use programs::find_program;
 #[cfg(test)]
 pub(crate) use programs::plant_program;
+#[cfg(test)]
+#[cfg(unix)]
+pub(crate) use programs::plant_script;
 pub(crate) use spawn_policy::spawn_policy;
 #[cfg(unix)]
 pub(crate) use unix::*;

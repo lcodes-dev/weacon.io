@@ -30,6 +30,28 @@ pub(crate) fn plant_program(dir: &std::path::Path, name: &str, mode: u32) -> Pat
     file
 }
 
+/// Writes a shell script `name` running `body` into `dir`, from a child shell, so no other
+/// test's fork holds it open for writing when it runs.
+#[cfg(test)]
+#[cfg(unix)]
+pub(crate) fn plant_script(dir: &std::path::Path, name: &str, body: &str) -> PathBuf {
+    let file = dir.join(name);
+    std::fs::create_dir_all(dir).unwrap();
+    let script = format!("#!/bin/sh\n{body}\n");
+    let written = std::process::Command::new("sh")
+        .args([
+            "-c",
+            "printf '%s' \"$1\" > \"$2\" && chmod 755 \"$2\"",
+            "sh",
+            &script,
+        ])
+        .arg(&file)
+        .status()
+        .unwrap();
+    assert!(written.success());
+    file
+}
+
 #[cfg(test)]
 mod tests {
     use std::env::join_paths;

@@ -149,6 +149,21 @@ impl Launch {
         }
     }
 
+    /// Refuses unless the agent is signed in only from the workspace's own config folder,
+    /// checked afresh on every call.
+    ///
+    /// # Errors
+    /// `agent.signed_out` when it isn't; the check's own fault when it can't run.
+    pub async fn require_sign_in(&self) -> Result<(), Fault> {
+        match self.sign_in().await? {
+            SignIn::SignedIn => Ok(()),
+            SignIn::SignedOut => Err(Fault::new(
+                code!("agent.signed_out"),
+                "The agent isn't signed in for this workspace on this machine",
+            )),
+        }
+    }
+
     /// Runs the vendor's own sign-in in the terminal this process has, for the person to
     /// finish there. Nothing that passes between them is read.
     ///

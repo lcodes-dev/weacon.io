@@ -162,10 +162,20 @@ mod tests {
     #[tokio::test]
     async fn a_runs_token_lives_as_long_as_its_agent_and_a_failed_start_keeps_none() {
         let dir = TempDir::new().unwrap();
-        let claude = platform::plant_program(&dir.join("bin"), "claude", 0o755);
-        // Signed in from its own folder when asked, and otherwise a run that waits.
-        let script = "#!/bin/sh\n[ \"$1\" = auth ] && { printf '{\"authMethod\":\"claude.ai\"}'; exit 0; }\nexec sleep 30\n";
-        std::fs::write(&claude, script).unwrap();
+        // Signed in from its own folder when asked, and otherwise a run that waits; the second
+        // isn't signed in.
+        let signed_in = "[ \"$1\" = auth ] && { printf '{\"authMethod\":\"claude.ai\"}'; exit 0; }";
+        platform::plant_script(
+            &dir.join("bin"),
+            "claude",
+            &format!("{signed_in}\nexec sleep 30"),
+        );
+        let signed_out = "[ \"$1\" = auth ] && exit 1";
+        platform::plant_script(
+            &dir.join("signed-out"),
+            "claude",
+            &format!("{signed_out}\nexec sleep 30"),
+        );
         platform::plant_program(&dir.join("broken"), "claude", 0o755);
         let app = weacon_appkit::build(&VERSION);
         let (log, _records) = recording_logger();
@@ -193,6 +203,9 @@ mod tests {
         drop(agent);
         assert_eq!(mcp.grants.live(), 0);
         run("broken").map(drop).unwrap_err();
+        assert_eq!(mcp.grants.live(), 0);
+        let refused = run("signed-out").map(drop).unwrap_err();
+        assert_eq!(refused.code().as_str(), "agent.signed_out");
         assert_eq!(mcp.grants.live(), 0);
     }
 
