@@ -69,8 +69,8 @@ mod tests {
     use weacon_protocol::{Hello, PROTOCOL, Welcome};
 
     use super::*;
-    use crate::daemon::build;
     use crate::test_support::{self, VERSION};
+    use weacon_appkit::build;
 
     fn hello(id: u32, protocol: u32) -> Envelope {
         Envelope {

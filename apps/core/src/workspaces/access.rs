@@ -9,7 +9,7 @@ use weacon_observability::Fault;
 use weacon_protocol::{AccessLevel, WorkspaceId, code};
 
 use super::Workspaces;
-use crate::app::{App, state_unavailable};
+use crate::app::App;
 use crate::platform;
 
 /// What this machine's owner chose for one workspace; a workspace without a choice asks first.
@@ -100,7 +100,7 @@ pub(crate) fn run(
     team: Option<bool>,
     out: &mut impl Write,
 ) -> Result<(), Fault> {
-    let state_dir = app.state_dir.as_deref().ok_or_else(state_unavailable)?;
+    let state_dir = app.state_dir()?;
     let workspaces = Workspaces::new(state_dir, None);
     let file = workspaces.settings_file(workspace);
     // Saying whether it's a team replaces settings that can't be read.
