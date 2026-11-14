@@ -7,7 +7,7 @@ use std::path::Path;
 use weacon_observability::Fault;
 use weacon_protocol::{DiffContent, DiffFile, DiffLine, FileChange, Hunk, LineOp, MAX_FRAME, code};
 
-use super::{Git, run, text};
+use super::{Git, Start, run, text};
 
 // A file's changes past this many bytes of patch are only said to be too large, so each still
 // fits one frame with room for its JSON.
@@ -56,6 +56,34 @@ impl Git {
         }
         files.sort_by(|one, other| one.path.cmp(&other.path));
         Ok(files)
+    }
+
+    /// Where `worktree`'s changes count from: where its branch meets the one it began from,
+    /// while that one is there, so merging or rebasing on it adds no one else's changes; else
+    /// the commit it began at.
+    pub(crate) fn base(&self, worktree: &Path, start: &Start) -> Result<String, Fault> {
+        let merged = start.branch.as_ref().and_then(|branch| {
+            let full = format!("refs/heads/{branch}");
+            run(self.command(worktree).args(["merge-base", &full, "HEAD"])).ok()
+        });
+        let found = match merged {
+            Some(out) => Some(out),
+            None if is_commit_id(&start.commit) => {
+                let commit = format!("{}^{{commit}}", start.commit);
+                run(self
+                    .command(worktree)
+                    .args(["rev-parse", "--verify", "--quiet", &commit]))
+                .ok()
+            }
+            None => None,
+        };
+        let base = found.ok_or_else(|| {
+            Fault::new(
+                code!("git.base_gone"),
+                "Neither the branch the chat began from nor the commit it began at is there",
+            )
+        })?;
+        Ok(text(base)?.trim_end().to_owned())
     }
 
     fn patch(
@@ -225,6 +253,7 @@ mod tests {
     use weacon_testing::TempDir;
 
     use super::*;
+    use crate::git::Start;
     use crate::git::tests::{chat, fixture, git, repo};
 
     // A chat's worktree, the commit it began at, and its git.
@@ -246,6 +275,96 @@ mod tests {
             op,
             text: text.to_owned(),
             no_newline: false,
+        }
+    }
+
+    // A chat whose agent changed `agent.txt`, and the start its worktree was made with.
+    fn started(dir: &Path) -> (Git, std::path::PathBuf, std::path::PathBuf, Start) {
+        let (git, repo) = (git(dir), repo(dir));
+        let path = dir.join("trees/c-s");
+        let start = git
+            .chat_worktree(&repo, &chat("s"), &path)
+            .unwrap()
+            .start
+            .unwrap();
+        fs::write(path.join("agent.txt"), "mine\n").unwrap();
+        fixture(dir, &path, &["add", "agent.txt"]);
+        fixture(dir, &path, &["commit", "--quiet", "-m", "Agent"]);
+        (git, repo, path, start)
+    }
+
+    // Someone else's commit on the repository's main branch.
+    fn others(dir: &Path, repo: &Path) {
+        fs::write(repo.join("theirs.txt"), "theirs\n").unwrap();
+        fixture(dir, repo, &["add", "theirs.txt"]);
+        fixture(dir, repo, &["commit", "--quiet", "-m", "Theirs"]);
+    }
+
+    fn changed(git: &Git, path: &Path, start: &Start) -> Vec<String> {
+        let base = git.base(path, start).unwrap();
+        let files = git.changes(path, &base).unwrap();
+        files.into_iter().map(|file| file.path).collect()
+    }
+
+    #[test]
+    fn changes_count_from_where_the_chats_branch_began() {
+        let dir = TempDir::new().unwrap();
+        let (git, repo, path, start) = started(&dir);
+        others(&dir, &repo);
+
+        assert_eq!(git.base(&path, &start).unwrap(), start.commit);
+        assert_eq!(changed(&git, &path, &start), ["agent.txt"]);
+    }
+
+    #[test]
+    fn merging_or_rebasing_on_the_start_branch_adds_no_one_elses_changes() {
+        let dir = TempDir::new().unwrap();
+        let (git, repo, path, start) = started(&dir);
+        others(&dir, &repo);
+        fixture(&dir, &path, &["merge", "--quiet", "--no-edit", "main"]);
+
+        assert_eq!(changed(&git, &path, &start), ["agent.txt"]);
+
+        let dir = TempDir::new().unwrap();
+        let (git, repo, path, start) = started(&dir);
+        others(&dir, &repo);
+        fixture(&dir, &path, &["rebase", "--quiet", "main"]);
+
+        assert_eq!(changed(&git, &path, &start), ["agent.txt"]);
+    }
+
+    #[test]
+    fn without_its_start_branch_a_chat_counts_from_its_first_commit() {
+        let dir = TempDir::new().unwrap();
+        let (git, repo) = (git(&dir), repo(&dir));
+        fixture(&dir, &repo, &["checkout", "--quiet", "-b", "dev"]);
+        let path = dir.join("trees/c-t");
+        let start = git
+            .chat_worktree(&repo, &chat("t"), &path)
+            .unwrap()
+            .start
+            .unwrap();
+        fixture(&dir, &repo, &["checkout", "--quiet", "main"]);
+        fixture(&dir, &repo, &["branch", "--quiet", "-D", "dev"]);
+        fs::write(path.join("agent.txt"), "mine\n").unwrap();
+
+        assert_eq!(start.branch.as_deref(), Some("dev"));
+        assert_eq!(git.base(&path, &start).unwrap(), start.commit);
+        assert_eq!(changed(&git, &path, &start), ["agent.txt"]);
+    }
+
+    #[test]
+    fn a_chat_with_neither_start_has_no_base() {
+        let dir = TempDir::new().unwrap();
+        let (git, _, path, _) = started(&dir);
+        let gone = |commit: &str| Start {
+            commit: commit.to_owned(),
+            branch: Some("gone".to_owned()),
+        };
+
+        for commit in ["0".repeat(40), "HEAD".to_owned()] {
+            let error = git.base(&path, &gone(&commit)).unwrap_err();
+            assert_eq!(error.code().as_str(), "git.base_gone", "{commit}");
         }
     }
 

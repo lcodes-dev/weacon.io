@@ -41,6 +41,16 @@ pub(crate) struct Worktree {
     pub(crate) path: PathBuf,
     /// The branch checked out, such as `refs/heads/main`; none when its head is detached.
     pub(crate) branch: Option<String>,
+    /// Where its branch began, when the call that returns it made the branch.
+    pub(crate) start: Option<Start>,
+}
+
+/// The commit a chat's branch began at, and the branch the repository had checked out then,
+/// such as `main`; the chat keeps it to measure its changes from.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Start {
+    pub(crate) commit: String,
+    pub(crate) branch: Option<String>,
 }
 
 impl Git {
@@ -88,6 +98,7 @@ impl Git {
                 return Ok(Worktree {
                     path: path.to_owned(),
                     branch: tree.branch.clone(),
+                    start: None,
                 });
             }
             // Its folder was deleted, and no other worktree has its branch: check it out again.
@@ -103,14 +114,16 @@ impl Git {
             None => true,
         };
         make_parent(path)?;
-        if fresh {
-            self.new_branch(repo, path, &branch, &full)?;
+        let start = if fresh {
+            Some(self.new_branch(repo, path, &branch, &full)?)
         } else {
             self.add(repo, path, &["--force"], &branch)?;
-        }
+            None
+        };
         Ok(Worktree {
             path: path.to_owned(),
             branch: Some(full),
+            start,
         })
     }
 
@@ -127,7 +140,19 @@ impl Git {
 
     // The branch is made only where none has its name, so the one deleted again when the
     // checkout fails is always this call's.
-    fn new_branch(&self, repo: &Path, path: &Path, branch: &str, full: &str) -> Result<(), Fault> {
+    fn new_branch(
+        &self,
+        repo: &Path,
+        path: &Path,
+        branch: &str,
+        full: &str,
+    ) -> Result<Start, Fault> {
+        let on = run(self
+            .command(repo)
+            .args(["symbolic-ref", "--quiet", "--short", "HEAD"]))
+        .ok()
+        .and_then(|out| text(out).ok())
+        .map(|name| name.trim_end().to_owned());
         let head = text(run(self.command(repo).args([
             "rev-parse",
             "--verify",
@@ -142,6 +167,10 @@ impl Git {
                 full,
                 head,
             ])));
+        })?;
+        Ok(Start {
+            commit: head.to_owned(),
+            branch: on,
         })
     }
 
@@ -275,6 +304,7 @@ fn parse_worktree(record: &str) -> Option<(Worktree, bool)> {
         Worktree {
             path: path?,
             branch,
+            start: None,
         },
         prunable,
     ))
@@ -350,7 +380,19 @@ mod tests {
 
         assert_eq!(real(&made.path), real(&path));
         assert_eq!(made.branch.as_deref(), Some("refs/heads/weacon/a-1"));
-        assert_eq!(again, made);
+        let head = text(run(git.command(&repo).args(["rev-parse", "HEAD"])).unwrap()).unwrap();
+        let start = Start {
+            commit: head.trim_end().to_owned(),
+            branch: Some("main".to_owned()),
+        };
+        assert_eq!(made.start, Some(start));
+        assert_eq!(
+            again,
+            Worktree {
+                start: None,
+                ..made
+            }
+        );
         assert_eq!(again.path, path);
         assert_eq!(
             fs::read_to_string(path.join("README.md")).unwrap(),
@@ -481,6 +523,7 @@ mod tests {
         let tree = |path: &str, branch: Option<&str>| Worktree {
             path: PathBuf::from(path),
             branch: branch.map(str::to_owned),
+            start: None,
         };
 
         assert_eq!(
@@ -600,6 +643,19 @@ mod tests {
 
         assert_eq!(error.code().as_str(), "git.failed");
         assert!(!path.exists());
+    }
+
+    #[test]
+    fn a_branch_made_from_a_detached_head_starts_at_its_commit_alone() {
+        let dir = TempDir::new().unwrap();
+        let (git, repo) = (git(&dir), repo(&dir));
+        fixture(&dir, &repo, &["checkout", "--quiet", "--detach"]);
+
+        let made = git
+            .chat_worktree(&repo, &chat("e"), &dir.join("trees/c-e"))
+            .unwrap();
+
+        assert_eq!(made.start.unwrap().branch, None);
     }
 
     #[test]
