@@ -139,7 +139,7 @@ const FileView = memo(function FileView({
           action="Comment"
           onChange={review.setDraft}
           onSave={() => {
-            review.setComments((before) => addComment(before, box, draft));
+            review.setComments((before) => addComment(before, box, linesText(lines, boxAt.first, boxAt.last), draft));
             close();
           }}
           onCancel={close}

@@ -43,11 +43,6 @@ export function deliver(command: Command, receipts: Receipts, send: (envelope: E
 /** A prompt that may have run, kept with its request so sending it again can't run it twice. */
 export type Retry = { text: string; request: RequestId };
 
-/** The request to send `text` under: the retry's when it is the same text, else `fresh`. */
-export function requestFor(retry: Retry | undefined, text: string, fresh: () => RequestId): RequestId {
-  return retry?.text === text ? retry.request : fresh();
-}
-
 const PROBLEMS: Record<Exclude<Sent, "accepted">, string> = {
   too_long: "It's too long to send. Shorten it and try again.",
   refused: "The message wasn't sent.",
@@ -72,18 +67,6 @@ export function after(sent: Sent, text: string, request: RequestId): After {
 
 /** How a command ended, heard after its wait ran out. */
 export type Late = { request: RequestId; settled: Settled };
-
-/**
- * What the box holds once `late` says how the send it may retry ended, or `undefined` when `late`
- * is about another send. Text edited since is kept.
- */
-export function afterLate(retry: Retry | undefined, text: string, late: Late): After | undefined {
-  if (retry?.request !== late.request) {
-    return undefined;
-  }
-  const ended = after(late.settled, retry.text, retry.request);
-  return text === retry.text ? ended : { ...ended, text };
-}
 
 /** Why the box can't send to `chatRef` now, or `undefined` when it can. */
 export function blocked(status: Status, chatRef: ChatRef | undefined): string | undefined {
