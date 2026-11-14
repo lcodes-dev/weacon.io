@@ -1,8 +1,6 @@
 use std::process::ExitCode;
 
-use tokio::runtime::{Builder, Runtime};
 use weacon_observability::{Fault, Field, Logger, Reporter};
-use weacon_protocol::code;
 
 const FINDINGS: u8 = 1;
 const FAILED: u8 = 2;
@@ -40,19 +38,10 @@ pub fn finish(log: &Logger, reporter: &Reporter, result: Result<Outcome, Fault>)
     ExitCode::from(FAILED)
 }
 
-/// The async runtime `builder` describes, with I/O and timers on.
-///
-/// # Errors
-/// `runtime.failed` when it can't start.
-pub fn runtime(mut builder: Builder) -> Result<Runtime, Fault> {
-    builder.enable_all().build().map_err(|error| {
-        Fault::new(code!("runtime.failed"), "Weacon couldn't start its runtime").because(error)
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use weacon_observability::{Level, Reports};
+    use weacon_protocol::code;
     use weacon_testing::{messages, recording_logger};
 
     use super::*;
@@ -87,12 +76,5 @@ mod tests {
         assert_eq!(records[1].fields["findings"], true);
         assert_eq!(records[2].level, Level::Fatal);
         assert_eq!(records[2].fields["err"]["code"], "store.full");
-    }
-
-    #[test]
-    fn a_runtime_runs_what_it_is_given() {
-        let runtime = runtime(Builder::new_current_thread()).unwrap();
-
-        assert_eq!(runtime.block_on(async { 7 }), 7);
     }
 }
