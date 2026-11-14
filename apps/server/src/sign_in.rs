@@ -82,7 +82,7 @@ async fn send_code(
         return Ok(());
     }
     let code = code_text(random_u64()?);
-    let code_hash = shared.secret.code_hash(&email, &code);
+    let code_hash = shared.secret.sign_in_code_hash(&email, &code);
     let now = shared.now();
     if !shared
         .db
@@ -184,7 +184,7 @@ async fn signed_in(
     let attempt = Attempt {
         email: &email,
         challenge: &body.challenge,
-        code_hash: &shared.secret.code_hash(&email, body.code.trim()),
+        code_hash: &shared.secret.sign_in_code_hash(&email, body.code.trim()),
         token_hash: &token_hash(&token),
         now,
         token_expires_at: now.saturating_add(SESSION_LIFETIME),

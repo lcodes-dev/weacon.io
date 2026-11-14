@@ -11,8 +11,8 @@ use weacon_protocol::{code, to_hex};
 
 use crate::email::Email;
 
-/// The server's own key, which sign-in codes are hashed with: a stolen database alone can't
-/// be searched for its eight-digit codes.
+/// The server's own key, which sign-in and pairing codes are hashed with and machine tokens
+/// derived from: a stolen database alone can't be searched for its codes.
 pub(crate) struct Secret(Hmac<Sha256>);
 
 impl Secret {
@@ -62,7 +62,7 @@ impl Secret {
 
     /// What is stored for a code mailed to `email`, which is part of it so that the same code
     /// for two addresses is stored differently; any of the address's challenges can check it.
-    pub(crate) fn code_hash(&self, email: &Email, code: &str) -> [u8; 32] {
+    pub(crate) fn sign_in_code_hash(&self, email: &Email, code: &str) -> [u8; 32] {
         // An address never holds a zero byte, so this keeps the two apart.
         self.mac(&[email.as_str().as_bytes(), &[0], code.as_bytes()])
     }
@@ -146,17 +146,14 @@ mod tests {
     use weacon_testing::{TempDir, messages, recording_logger};
 
     use super::*;
+    use crate::test_support::email;
 
     fn open(path: &Path) -> Result<Secret, Fault> {
         Secret::open(path, &recording_logger().0)
     }
 
-    fn address(text: &str) -> Email {
-        Email::parse(text).unwrap()
-    }
-
     fn hash(secret: &Secret) -> [u8; 32] {
-        secret.code_hash(&address("ada@example.com"), "12345678")
+        secret.sign_in_code_hash(&email("ada@example.com"), "12345678")
     }
 
     // A private file holding `bytes`.
@@ -182,7 +179,7 @@ mod tests {
             open(&dir.join("one")).unwrap(),
             open(&dir.join("two")).unwrap(),
         );
-        let email = Email::parse("pairing.code@example.com").unwrap();
+        let email = email("pairing.code@example.com");
 
         assert_eq!(one.machine_token("s"), one.machine_token("s"));
         assert_ne!(one.machine_token("s"), one.machine_token("t"));
@@ -191,8 +188,11 @@ mod tests {
         assert_ne!(one.pairing_code_hash("c"), one.pairing_code_hash("d"));
         assert_ne!(one.pairing_code_hash("c"), two.pairing_code_hash("c"));
         assert_ne!(one.pairing_code_hash("c"), one.machine_token("c"));
-        assert_ne!(one.pairing_code_hash("c"), one.code_hash(&email, "c"));
-        assert_ne!(one.machine_token("c"), one.code_hash(&email, "c"));
+        assert_ne!(
+            one.pairing_code_hash("c"),
+            one.sign_in_code_hash(&email, "c")
+        );
+        assert_ne!(one.machine_token("c"), one.sign_in_code_hash(&email, "c"));
         Email::parse("pairing.code").unwrap_err();
         Email::parse("machine.token").unwrap_err();
     }
@@ -289,11 +289,11 @@ mod tests {
         );
         assert_ne!(
             hash(&secret),
-            secret.code_hash(&address("bo@example.com"), "12345678")
+            secret.sign_in_code_hash(&email("bo@example.com"), "12345678")
         );
         assert_ne!(
             hash(&secret),
-            secret.code_hash(&address("ada@example.com"), "12345679")
+            secret.sign_in_code_hash(&email("ada@example.com"), "12345679")
         );
         assert_ne!(hash(&secret), hash(&other));
     }
