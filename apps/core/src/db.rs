@@ -12,7 +12,7 @@ use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, S
 use weacon_observability::Fault;
 use weacon_protocol::{WorkspaceId, code};
 
-pub(crate) use map::{BASE, Entry, Hit, Layer, Map, Stored};
+pub(crate) use map::{BASE, Hit, Layer, Map, Stored};
 
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 const CONNECTIONS: u32 = 4;

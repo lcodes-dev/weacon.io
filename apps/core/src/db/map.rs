@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
 use sqlx::{QueryBuilder, Row, Sqlite};
-use weacon_codemap::Facts;
+use weacon_codemap::{Entry, Facts};
 use weacon_observability::Fault;
 use weacon_protocol::RepoId;
 
@@ -34,15 +34,6 @@ pub(crate) struct Layer {
 pub(crate) struct Stored {
     pub(crate) path: String,
     pub(crate) blob: Option<String>,
-}
-
-/// Something search can find: an item by its path, or a document by its text.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct Entry {
-    pub(crate) path: String,
-    pub(crate) kind: String,
-    pub(crate) name: String,
-    pub(crate) body: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -236,7 +227,7 @@ impl Map {
                 row.push_bind(workspace)
                     .push_bind(repo)
                     .push_bind(&layer.name)
-                    .push_bind(&entry.path)
+                    .push_bind(&entry.file)
                     .push_bind(&entry.kind)
                     .push_bind(&entry.name)
                     .push_bind(&entry.body);
@@ -350,7 +341,7 @@ mod tests {
 
     fn entry(path: &str, name: &str, body: &str) -> Entry {
         Entry {
-            path: path.to_owned(),
+            file: path.to_owned(),
             kind: "fn".to_owned(),
             name: name.to_owned(),
             body: body.to_owned(),

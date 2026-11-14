@@ -17,6 +17,7 @@ mod louvain;
 mod paths;
 mod rank;
 mod refs;
+mod search;
 mod symbols;
 mod syntax;
 #[cfg(test)]
@@ -34,6 +35,7 @@ pub use fingerprint::Fingerprint;
 pub(crate) use flows::Break;
 pub(crate) use index::{Crate, Module};
 pub use index::{Index, SourceFile, assemble, index};
+pub use search::Entry;
 pub(crate) use symbols::{Kind, Symbol};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
