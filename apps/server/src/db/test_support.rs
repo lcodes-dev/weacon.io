@@ -163,7 +163,7 @@ pub(crate) fn answers(prompt: u32) -> ChatEvent {
 
 impl Workspace {
     /// Ends `request` to `chat`, as its receipt would.
-    pub(crate) async fn close(&self, chat: &str, request: &str) {
+    pub(crate) async fn close_request(&self, chat: &str, request: &str) {
         let mut writer = self.db.writer.acquire().await.unwrap();
         let request = id::<RequestId>(request);
         self.end_request(&mut writer, &id(chat), &request)

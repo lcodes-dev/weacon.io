@@ -7,6 +7,7 @@ mod changes;
 mod chats;
 mod docs;
 mod machine;
+mod proposals;
 mod schema;
 mod sign_in;
 mod tasks;
@@ -15,7 +16,7 @@ pub(crate) mod test_support;
 mod workspace;
 
 pub(crate) use chats::{Snapshot, chat_not_found};
-pub(crate) use tasks::task_not_found;
+pub(crate) use tasks::{no_room, task_not_found};
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -29,6 +30,8 @@ use weacon_protocol::{AccountId, AgentOwner, AgentRef, Author, MemberId, Workspa
 pub(crate) use account::{Account, NewWorkspace};
 pub(crate) use backup::restore;
 pub(crate) use machine::{Claim, Claiming, Confirmation, NewPairing};
+#[cfg(test)]
+pub(crate) use proposals::Proposed;
 pub(crate) use sign_in::{Attempt, NewChallenge};
 pub(crate) use workspace::Workspace;
 
@@ -170,6 +173,11 @@ fn path_unusable() -> Fault {
 }
 
 /// A value read back from the database, such as an id, checked like one that arrived.
+/// A value stored as JSON.
+fn parsed<T: serde::de::DeserializeOwned>(json: &str) -> Result<T, Fault> {
+    serde_json::from_str(json).map_err(|_| unreadable())
+}
+
 fn stored<T: TryFrom<String>>(value: String) -> Result<T, Fault> {
     T::try_from(value).map_err(|_| unreadable())
 }
@@ -216,9 +224,7 @@ fn stored_author(kind: &str, member: String, agent: Option<&str>) -> Result<Auth
         ("person", None) => Ok(Author::Person { member }),
         ("agent", agent) => Ok(Author::Agent {
             owner: member,
-            agent: agent
-                .map(|json| serde_json::from_str(json).map_err(|_| unreadable()))
-                .transpose()?,
+            agent: agent.map(parsed).transpose()?,
         }),
         _ => Err(unreadable()),
     }

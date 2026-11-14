@@ -234,7 +234,7 @@ mod tests {
         let expected = [("r-c-1", NOW), ("r-2", NOW + 1), ("r-1", NOW + 2)];
         assert_eq!(open, expected.map(|(request, at)| (request.to_owned(), at)));
 
-        one.close("c-1", "r-1").await;
+        one.close_request("c-1", "r-1").await;
         assert_eq!(
             record(&one, "r-1", "c-1", "Go", NOW).await,
             Recorded::Same { open: false }

@@ -21,6 +21,7 @@ pub(super) const STEPS: &[&str] = &[
     steps::MACHINES,
     steps::DOC_BYTES,
     steps::VERSION_AGENTS,
+    steps::PROPOSALS,
     steps::CHATS,
 ];
 
@@ -167,6 +168,7 @@ mod tests {
                 "doc_pins",
                 "machines",
                 "pairings",
+                "proposals",
                 "chats",
                 "chat_events",
                 "chat_waiting",

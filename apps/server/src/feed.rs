@@ -19,6 +19,7 @@ use crate::auth::{Member, Session};
 use crate::chats::{self, Watch};
 use crate::connections::Place;
 use crate::http::failure;
+use crate::proposals::PROPOSALS;
 use crate::relay::{self, Ask, Refusal, SETTINGS};
 use crate::shared::Shared;
 use crate::socket::{Closed, Pings, greet, reply};
@@ -75,7 +76,7 @@ pub(crate) async fn feed(
         asker,
         changes,
         last_seq: since,
-        offers: Offers::default(),
+        offers: Vec::new(),
         chats: Watch::new(&shared),
         answer_to,
         answers,
@@ -95,24 +96,20 @@ struct Feed {
     /// Which workspace changed; the changes themselves are read from the database, in order.
     changes: Receiver<WorkspaceId>,
     last_seq: u64,
-    offers: Offers,
+    /// What the client offered besides the feed; it hears only of those features' changes.
+    offers: Vec<Capability>,
     chats: Watch,
     /// Machines' answers to what the client asked them through the relay.
     answer_to: mpsc::Sender<Envelope>,
     answers: mpsc::Receiver<Envelope>,
 }
 
-/// Which features the client offered besides the feed; it hears only of their changes.
-#[derive(Default)]
-struct Offers(Vec<Capability>);
-
-impl Offers {
-    fn has(&self, feature: Code) -> bool {
-        self.0.contains(&Capability::from(feature))
-    }
-}
-
 impl Feed {
+    /// Whether the client offered `feature`.
+    fn hears(&self, feature: Code) -> bool {
+        self.offers.contains(&Capability::from(feature))
+    }
+
     /// Goes on only while the feed's session is live and its account still a member.
     async fn allowed(&self, shared: &Shared) -> Result<(), Closed> {
         let Member {
@@ -151,14 +148,14 @@ async fn run(
     feed: &mut Feed,
 ) -> Result<Infallible, Closed> {
     let feed_offer = Capability::from(FEED);
-    let offered = [FEED, TASKS, DOCS, SETTINGS, CHATS]
+    let offered = [FEED, TASKS, DOCS, SETTINGS, PROPOSALS, CHATS]
         .map(Capability::from)
         .to_vec();
     let greeted = greet(socket, shared, offered, &feed_offer);
     let hello = timeout(shared.sockets.hello_within, greeted)
         .await
         .map_err(|_| Closed)??;
-    feed.offers = Offers(hello.capabilities);
+    feed.offers = hello.capabilities;
     catch_up(socket, shared, feed).await?;
     let mut pings = Pings::new(shared.sockets.ping_every);
     loop {
@@ -226,10 +223,10 @@ async fn received(
     feed: &mut Feed,
     envelope: Envelope,
 ) -> Result<(), Closed> {
-    if feed.offers.has(SETTINGS) && relay::carries(&envelope.message) {
+    if feed.hears(SETTINGS) && relay::carries(&envelope.message) {
         return relay(socket, shared, feed, envelope).await;
     }
-    if feed.offers.has(CHATS) && chats::carries(&envelope.message) {
+    if feed.hears(CHATS) && chats::carries(&envelope.message) {
         feed.allowed(shared).await?;
         let answer = feed.chats.heard(envelope, &feed.member, shared).await;
         return send_chats(socket, shared, feed, answer).await;
@@ -271,11 +268,10 @@ async fn catch_up(socket: &mut WebSocket, shared: &Shared, feed: &mut Feed) -> R
         for update in page {
             feed.last_seq = update.seq;
             let wanted = match update.change {
-                WorkspaceChange::TaskChanged { .. } => feed.offers.has(TASKS),
-                WorkspaceChange::DocChanged { .. } => feed.offers.has(DOCS),
-                WorkspaceChange::ChatChanged { .. } => feed.offers.has(CHATS),
-                // No feed offers `workspace.proposals` yet.
-                WorkspaceChange::ProposalChanged { .. } => false,
+                WorkspaceChange::TaskChanged { .. } => feed.hears(TASKS),
+                WorkspaceChange::DocChanged { .. } => feed.hears(DOCS),
+                WorkspaceChange::ProposalChanged { .. } => feed.hears(PROPOSALS),
+                WorkspaceChange::ChatChanged { .. } => feed.hears(CHATS),
                 WorkspaceChange::MemberJoined { .. } | WorkspaceChange::Newer => true,
             };
             if !wanted {
@@ -308,7 +304,7 @@ mod tests {
     use weacon_protocol::{MemberId, PROTOCOL, WorkspaceChange, WorkspaceUpdate};
 
     use weacon_model::{Attribution, Doc, DocText, OrderKey, Task, Title};
-    use weacon_protocol::{DocId, TaskId};
+    use weacon_protocol::{DocId, ProposalChange, ProposalId, TaskId};
 
     use super::*;
     use crate::auth::SESSION_COOKIE;
@@ -398,7 +394,7 @@ mod tests {
         };
         assert_eq!(
             welcome.capabilities,
-            [FEED, TASKS, DOCS, SETTINGS, CHATS].map(Capability::from)
+            [FEED, TASKS, DOCS, SETTINGS, PROPOSALS, CHATS].map(Capability::from)
         );
         assert_eq!(missed, joined(1, "m1"));
         assert_eq!(live, joined(2, "m2"));
@@ -485,6 +481,38 @@ mod tests {
         assert_eq!(next(&mut docs).await, joined(1, "m1"));
         assert_eq!(next(&mut docs).await, doc_changed);
         assert_eq!(next(&mut docs).await, joined(3, "m2"));
+    }
+
+    #[tokio::test]
+    async fn only_a_client_that_offers_proposals_hears_of_proposal_changes() {
+        let mut fixture = Fixture::new().await;
+        fixture.quiet();
+        let (server, ada) = fixture.client("ada@example.com").await;
+        let mut plain = greeted(server.address, &ada.token, 0).await;
+        next(&mut plain).await;
+        let proposal = ProposalId::try_from("p1".to_owned()).unwrap();
+        let task = ProposalChange::NewTask {
+            title: "Ship".to_owned(),
+        };
+        let proposed = test_support::proposals::proposed("p1", "mc1", task);
+        w1(&fixture).await.propose(&proposed).await.unwrap();
+        fixture.shared.wake_feeds(&workspace_id("w1"));
+        join(&fixture, server.address, "m2", "bo@example.com").await;
+        let after_the_proposal = next(&mut plain).await;
+        let path = "/api/workspaces/w1/feed";
+        let mut proposals = open(server.address, path, &ada.token).await.unwrap();
+        say(&mut proposals, &["workspace.feed", "workspace.proposals"]).await;
+        next(&mut proposals).await;
+
+        let proposal_changed = Message::Workspace(WorkspaceUpdate {
+            workspace: workspace_id("w1"),
+            seq: 2,
+            change: WorkspaceChange::ProposalChanged { proposal },
+        });
+        assert_eq!(after_the_proposal, joined(3, "m2"));
+        assert_eq!(next(&mut proposals).await, joined(1, "m1"));
+        assert_eq!(next(&mut proposals).await, proposal_changed);
+        assert_eq!(next(&mut proposals).await, joined(3, "m2"));
     }
 
     #[tokio::test]
