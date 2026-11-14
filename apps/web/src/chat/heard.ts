@@ -1,5 +1,5 @@
 import type { ChatRef } from "../chat-ref.ts";
-import type { ChatMessage, ErrorMessage, RunMessage } from "../incoming.ts";
+import type { ChatMessage, ErrorMessage, Incoming, RunMessage } from "../incoming.ts";
 import type { ChatEntry, RunEvent, RunId } from "../protocol.ts";
 import type { Run, Snapshot } from "./chat.ts";
 
@@ -40,4 +40,15 @@ export function heard(message: ChatMessage | RunMessage | ErrorMessage, ref: Cha
       return { kind: "snapshot", id: message.id, snapshot: { seq: answer.seq, runs, waiting: answer.waiting, events: answer.events } };
     }
   }
+}
+
+/**
+ * The receipt a committed entry carries, as commands wait for one: a core's receipts are events in
+ * its chat's log.
+ */
+export function receiptIn(message: ChatMessage | RunMessage | ErrorMessage): Extract<Incoming, { type: "receipt" }> | undefined {
+  if (message.type !== "chat" || message.entry.event.kind !== "receipt") {
+    return undefined;
+  }
+  return { id: message.id, type: "receipt", ...message.entry.event.receipt };
 }

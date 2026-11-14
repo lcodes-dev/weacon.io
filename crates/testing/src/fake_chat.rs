@@ -8,8 +8,8 @@ use serde_json::Value;
 use weacon_protocol::{
     AgentKind, AgentOwner, AgentRef, ChatAction, ChatAnswer, ChatAnswerKind, ChatCommand,
     ChatEntry, ChatEvent, ChatId, ChatQuery, ChatQueryKind, ChatUpdate, Envelope, ErrorBody,
-    MachineName, MemberId, Message, Outcome, RequestId, RunEvent, RunId, RunState, RunStatus,
-    RunUpdate, WorkspaceId, code,
+    MachineName, MemberId, Message, Outcome, Receipt, RequestId, RunEvent, RunId, RunState,
+    RunStatus, RunUpdate, WorkspaceId, code,
 };
 
 /// The prompt text that makes the fake drop its client's subscription.
@@ -35,6 +35,8 @@ pub(crate) struct FakeChat {
     entries: Vec<ChatEntry>,
     runs: Vec<RunStatus>,
     subscription: Option<u32>,
+    /// Runs a person stopped, whose recording plays no further.
+    stopped: Vec<RunId>,
 }
 
 impl FakeChat {
@@ -46,6 +48,7 @@ impl FakeChat {
             entries: Vec::new(),
             runs: Vec::new(),
             subscription: None,
+            stopped: Vec::new(),
         };
         let (mine, shared) = (run("r-1")?, run("r-2")?);
         let member = MemberId::try_from("m-1".to_owned())?;
@@ -123,7 +126,7 @@ impl FakeChat {
         let Message::Run(update) = &envelope.message else {
             return Vec::new();
         };
-        if matches!(update.event, RunEvent::TextDelta { .. }) {
+        if !self.plays(envelope) || matches!(update.event, RunEvent::TextDelta { .. }) {
             return Vec::new();
         }
         let run = update.run.clone();
@@ -154,6 +157,11 @@ impl FakeChat {
             told.extend(self.status(&run, RunState::Waiting, agent));
         }
         told
+    }
+
+    /// Whether a recorded message is still played: not one of a run a person stopped.
+    pub(crate) fn plays(&self, envelope: &Envelope) -> bool {
+        !matches!(&envelope.message, Message::Run(update) if self.stopped.contains(&update.run))
     }
 
     fn is(&self, workspace: &WorkspaceId, chat: &ChatId) -> bool {
@@ -198,8 +206,14 @@ impl FakeChat {
         }
     }
 
+    // A command's receipt is an event in the log, as a core's is.
     fn command(&mut self, request: &RequestId, action: &ChatAction) -> Vec<Envelope> {
-        let mut told = Vec::new();
+        let mut told = self.commit(ChatEvent::Receipt {
+            receipt: Receipt {
+                request: request.clone(),
+                outcome: Outcome::Accepted,
+            },
+        });
         match action {
             ChatAction::Prompt { text, .. } => {
                 told.extend(self.commit(ChatEvent::Prompt {
@@ -235,6 +249,7 @@ impl FakeChat {
                     .collect();
                 for (run, agent) in stopped {
                     told.extend(self.finish(&run, Outcome::Interrupted, agent));
+                    self.stopped.push(run);
                 }
             }
             ChatAction::Newer => {}
@@ -484,7 +499,8 @@ mod tests {
             ChatEvent::RunStatus { status } => {
                 format!("{} {:?}", status.run.as_str(), status.state)
             }
-            ChatEvent::Receipt { .. } | ChatEvent::Newer => "other".to_owned(),
+            ChatEvent::Receipt { receipt } => format!("receipt {}", receipt.request.as_str()),
+            ChatEvent::Newer => "other".to_owned(),
         }
     }
 
@@ -621,6 +637,19 @@ mod tests {
     }
 
     #[test]
+    fn a_stopped_run_plays_no_further() {
+        let mut fake = fake();
+        let recorded = played(RunEvent::Text {
+            text: "Merged.".to_owned(),
+        });
+        assert!(fake.plays(&recorded));
+        fake.answer(&command(ChatAction::Interrupt));
+        assert!(!fake.plays(&recorded));
+        assert!(fake.played(&recorded).is_empty());
+        assert!(fake.plays(&query(1, "c-1", ChatQueryKind::Snapshot)));
+    }
+
+    #[test]
     fn prompts_answers_and_interrupts_are_committed_and_told() {
         let mut fake = fake();
         fake.answer(&query(4, "c-1", ChatQueryKind::Subscribe { after: SEEDED }));
@@ -641,24 +670,32 @@ mod tests {
             },
         }));
 
-        assert_eq!(shape(&said), [(4, "70 prompt Also sort them.".to_owned())]);
+        assert_eq!(
+            shape(&said),
+            [
+                (4, "70 receipt q-9".to_owned()),
+                (4, "71 prompt Also sort them.".to_owned())
+            ]
+        );
         assert_eq!(
             shape(&allowed),
             [
-                (4, "71 r-2 Running".to_owned()),
-                (4, "72 r-2 text".to_owned()),
-                (4, "73 r-2 finished".to_owned()),
-                (4, "74 r-2 Idle".to_owned())
+                (4, "72 receipt q-9".to_owned()),
+                (4, "73 r-2 Running".to_owned()),
+                (4, "74 r-2 text".to_owned()),
+                (4, "75 r-2 finished".to_owned()),
+                (4, "76 r-2 Idle".to_owned())
             ]
         );
         assert_eq!(
             shape(&stopped),
             [
-                (4, "75 r-1 finished".to_owned()),
-                (4, "76 r-1 Idle".to_owned())
+                (4, "77 receipt q-9".to_owned()),
+                (4, "78 r-1 finished".to_owned()),
+                (4, "79 r-1 Idle".to_owned())
             ]
         );
-        assert!(unknown.is_empty());
+        assert_eq!(shape(&unknown), [(4, "80 receipt q-9".to_owned())]);
         assert_eq!(snapshot(&mut fake).2, Vec::<u64>::new());
     }
 
@@ -673,7 +710,11 @@ mod tests {
 
         assert_eq!(
             shape(&lost),
-            [(4, format!("70 prompt {LOSE}")), (4, "lost".to_owned())]
+            [
+                (4, "70 receipt q-9".to_owned()),
+                (4, format!("71 prompt {LOSE}")),
+                (4, "lost".to_owned())
+            ]
         );
         assert!(after.is_empty());
         assert!(fake.answer(&prompt(LOSE)).is_empty());

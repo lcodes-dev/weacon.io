@@ -80,9 +80,10 @@ export function commit(chat: Chat, entry: ChatEntry): Chat | undefined {
   return { ...chat, seq: entry.seq, entries: [...chat.entries, entry], runs, items };
 }
 
-/** `chat` with the text a run streams, when the run is one of the chat's. */
+/** `chat` with the text a run streams, when the run is one of the chat's on a turn. */
 export function stream(chat: Chat, run: RunId, event: RunEvent): Chat {
-  if (event.event !== "text_delta" || !chat.runs.has(run)) {
+  const state = chat.runs.get(run)?.state;
+  if (event.event !== "text_delta" || state === undefined || !ON_TURN.includes(state)) {
     return chat;
   }
   const items = [...chat.items];
@@ -122,8 +123,11 @@ export function answered(chat: Chat, run: RunId, prompt: number): Chat {
 
 /** Whether a run of the chat is on a turn, so that it can be stopped. */
 export function working(chat: Chat): boolean {
-  return [...chat.runs.values()].some((run) => ["starting", "running", "waiting"].includes(run.state));
+  return [...chat.runs.values()].some((run) => ON_TURN.includes(run.state));
 }
+
+// The states of a run on a turn, which streams text and can be stopped.
+const ON_TURN: readonly RunState[] = ["starting", "running", "waiting"];
 
 // The entries of `events` that run without a gap up to `last`, the newest first found.
 function contiguous(events: readonly ChatEntry[], last: number): ChatEntry[] {

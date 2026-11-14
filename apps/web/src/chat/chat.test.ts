@@ -234,3 +234,18 @@ test("a run that stops while it writes leaves its text written", () => {
   assert.equal(turn?.kind === "turn" && turn.turn.transcript.writing, false);
   assert.equal(turn?.kind === "turn" && turn.turn.open, false);
 });
+
+test("a run that isn't on a turn streams nothing, even a late piece of its text", () => {
+  const start = fromSnapshot({
+    seq: 1,
+    runs: new Map<string, Run>([
+      ["r-1", { state: "idle", agent: undefined }],
+      ["r-2", { state: "starting", agent: undefined }],
+    ]),
+    waiting: [],
+    events: [said(1, "Hi")],
+  });
+
+  assert.equal(stream(start, "r-1", delta("late")), start);
+  assert.deepEqual(shown(stream(start, "r-2", delta("Hel")).items), ["> Hi", "r-2: Hel"]);
+});
