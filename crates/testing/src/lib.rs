@@ -9,7 +9,7 @@ mod temp;
 
 use std::time::Duration;
 
-pub use logs::{Records, messages, recording_logger, recording_sink};
+pub use logs::{Records, Uploads, messages, recording_deliver, recording_logger, recording_sink};
 pub use temp::TempDir;
 
 use serde_json::Value;
