@@ -25,6 +25,7 @@ use crate::memory;
 use crate::picks::{KeepError, Picks};
 use crate::platform::{self, Listener, Owner, Stream};
 use crate::session::{Reply, Session};
+use crate::uplink;
 
 mod route;
 mod worktrees;
@@ -62,7 +63,13 @@ pub(crate) fn run(app: &crate::app::App) -> Result<(), Fault> {
             },
             app.log.clone(),
         )?;
-        let serve = daemon.serve(signals.wait());
+        let (uplink, from_daemon) = uplink::unrouted(app, state_dir);
+        let serve = async {
+            tokio::select! {
+                () = daemon.serve(signals.wait()) => {}
+                never = Box::pin(uplink.run(from_daemon)) => match never {},
+            }
+        };
         crate::reports::following(state_dir, &app.reporter, &app.log, serve).await;
         Ok(())
     })

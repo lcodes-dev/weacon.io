@@ -37,6 +37,24 @@ pub(crate) fn home_dir(env: Env<'_>) -> Option<PathBuf> {
 /// Whether `weacon service` can install the daemon here, as a systemd user unit.
 pub(crate) const USER_SERVICES: bool = cfg!(target_os = "linux");
 
+/// The system this core runs on, as the server is told when it pairs.
+pub(crate) const MACHINE_OS: weacon_protocol::MachineOs = if cfg!(target_os = "macos") {
+    weacon_protocol::MachineOs::Macos
+} else if cfg!(windows) {
+    weacon_protocol::MachineOs::Windows
+} else {
+    weacon_protocol::MachineOs::Linux
+};
+
+/// What a machine is called when its person names it nothing else.
+pub(crate) const MACHINE_NAME: &str = if cfg!(target_os = "macos") {
+    "My Mac"
+} else if cfg!(windows) {
+    "My PC"
+} else {
+    "My Linux machine"
+};
+
 /// The XDG base folder in `key`, or `fallback` under the home folder.
 pub(crate) fn xdg_dir(env: Env<'_>, key: &str, fallback: &str) -> Option<PathBuf> {
     // The XDG spec says to ignore a relative path.

@@ -48,6 +48,17 @@ pub(crate) enum Command {
         #[arg(long)]
         team: Option<bool>,
     },
+    /// Pair this machine with your Weacon account: confirm the code it shows in the web app.
+    Pair {
+        /// The server's address, an https URL with no path.
+        server: String,
+        /// What the web app calls this machine.
+        #[arg(long)]
+        name: Option<String>,
+        /// A PEM file of the certificates to trust for the server, in place of the public ones.
+        #[arg(long)]
+        pin: Option<PathBuf>,
+    },
     /// Add a git repository a workspace's chats may work in, or list them.
     #[command(subcommand)]
     Repo(RepoCommand),
@@ -160,6 +171,7 @@ impl Command {
             | Self::Service(_)
             | Self::Login { .. }
             | Self::Access { .. }
+            | Self::Pair { .. }
             | Self::Repo(_)
             | Self::Reports { .. }
             | Self::Resume { .. }
@@ -178,6 +190,7 @@ impl Command {
             Self::Service(_) => "service",
             Self::Login { .. } => "login",
             Self::Access { .. } => "access",
+            Self::Pair { .. } => "pair",
             Self::Repo(_) => "repo",
             Self::Reports { .. } => "reports",
             Self::Resume { .. } => "resume",
@@ -260,6 +273,26 @@ mod tests {
         assert_eq!((service.name(), service.log_name()), ("service", "cli.log"));
         assert!(!doctor.verbose);
         assert!(verbose.verbose);
+    }
+
+    #[test]
+    fn pair_takes_the_server_first_and_its_name_and_pin_as_options() {
+        let url = "https://weacon.example.com";
+        let pair = run(&[
+            "weacon", "pair", url, "--name", "Studio", "--pin", "cert.pem",
+        ]);
+        let bare = run(&["weacon", "pair", url]).unwrap().command;
+
+        assert_eq!(
+            pair.unwrap().command,
+            Command::Pair {
+                server: url.to_owned(),
+                name: Some("Studio".to_owned()),
+                pin: Some(PathBuf::from("cert.pem")),
+            }
+        );
+        assert_eq!((bare.name(), bare.log_name()), ("pair", "cli.log"));
+        run(&["weacon", "pair", "--server", url]).unwrap_err();
     }
 
     #[test]

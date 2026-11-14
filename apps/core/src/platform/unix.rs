@@ -92,6 +92,12 @@ pub(crate) fn is_owner(stream: &Stream, owner: Owner) -> bool {
     stream.peer_cred().is_ok_and(|cred| cred.uid() == owner)
 }
 
+/// Lets other users into `dir`; true, since here they can be.
+#[cfg(test)]
+pub(crate) fn open_to_others(dir: &Path) -> bool {
+    fs::set_permissions(dir, fs::Permissions::from_mode(0o755)).is_ok()
+}
+
 #[cfg(test)]
 mod tests {
     use weacon_testing::TempDir;
