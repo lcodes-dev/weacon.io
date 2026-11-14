@@ -248,6 +248,10 @@ export type ChatAction = (
   }
 );
 
+/**
+ * The core's answer to a [`ChatQuery`], or its word that the client missed events, to a client
+ * that has `chat.events`.
+ */
 export type ChatAnswer = {
   answer: ChatAnswerKind;
   chat: ChatId;
@@ -272,7 +276,8 @@ export type ChatAnswerKind = (
 );
 
 /**
- * The core answers with receipts under `request`.
+ * What a person asks of a chat's agent, from a client to a core that offers `chat.send`. The
+ * core answers with receipts under `request`.
  */
 export type ChatCommand = {
   action: ChatAction;
@@ -333,7 +338,8 @@ export type ChatList = {
 };
 
 /**
- * The answer is a [`ChatAnswer`], or for `subscribe` the [`ChatUpdate`]s themselves.
+ * A question about a chat's log, from a client to a core that offers `chat.events`. The answer
+ * is a [`ChatAnswer`], or for `subscribe` the [`ChatUpdate`]s themselves.
  */
 export type ChatQuery = {
   chat: ChatId;
@@ -379,6 +385,7 @@ export type ChatSummary = {
 };
 
 /**
+ * A committed event of a chat, from the core to a client that subscribed under `chat.events`.
  * Text deltas are never committed; they arrive only as run updates.
  */
 export type ChatUpdate = {
@@ -388,8 +395,9 @@ export type ChatUpdate = {
 };
 
 /**
- * A log record from a client that has no log of its own, such as the web app: an event name and
- * typed ids. The receiver logs only events it knows, so no other text reaches its log.
+ * A log record from a client that has no log of its own, such as the web app: an event name
+ * and typed ids, sent only to a peer that offers `log.forward`. The receiver logs only events
+ * it knows, so no other text reaches its log.
  */
 export type ClientLog = {
   code?: Code;
@@ -576,6 +584,9 @@ export type DocSummary = {
  */
 export type DownloadUrl = string;
 
+/**
+ * Why a request failed, in an error message or an HTTP error answer.
+ */
 export type ErrorBody = {
   code: Code;
   /**
@@ -936,8 +947,9 @@ export type PermissionAnswer = {
 };
 
 /**
- * An element someone picked on a local web page, sent to the core for a chat. The sender cuts
- * the HTML short and shrinks the screenshot so the message fits in one frame.
+ * An element someone picked in Chrome, from the extension's host to a core that offers
+ * `element.pick`, for a chat. The sender cuts the HTML short and shrinks the screenshot so the
+ * message fits in one frame.
  */
 export type Pick = {
   /**
@@ -1120,7 +1132,7 @@ export type ProposalVerdict = (
 );
 
 /**
- * The daemon's word on a command, sent when it is accepted and again when it ends.
+ * The core's or server's word on a command, sent when it accepts it and again when it ends.
  */
 export type Receipt = {
   request: RequestId;
@@ -1266,7 +1278,8 @@ export type RunStatus = {
 };
 
 /**
- * One event of the run `run`, in the order the run reported it.
+ * One event of the run `run`, in the order the run reported it, from the core to clients that
+ * have `run.stream`.
  */
 export type RunUpdate = {
   event: RunEvent;
@@ -1342,8 +1355,9 @@ export type SignInFinish = {
 };
 
 /**
- * Sign-in to one workspace, which [`AccountSignInStart`] replaces: asks the server to send
- * a one-time code to `email`, if it is a member of `workspace`. The answer, a [`SignInStarted`], is the same either way.
+ * Sign-in to one workspace, which [`AccountSignInStart`] replaces: asks the server to send a
+ * one-time code to `email`, if it is a member of `workspace`. The answer, a [`SignInStarted`],
+ * is the same either way.
  */
 export type SignInStart = {
   email: string;
@@ -1465,9 +1479,10 @@ export type TerminalAction = (
 );
 
 /**
- * From the owner of `machine`'s browser to its core, which offers `terminal.sign_in`. The
- * server relays it only from the machine's owner, and the core acts only when `by` is its
- * owner and refuses a terminal id it has already seen.
+ * A sign-in terminal's sealed input, from the owner of `machine`'s browser to its core, which
+ * offers `terminal.sign_in`. The server relays it only when it offers `terminal.relay`, and
+ * only from the machine's owner, and the core acts only when `by` is its owner and refuses a
+ * terminal id it has already seen.
  */
 export type TerminalCommand = {
   action: TerminalAction;
@@ -1531,8 +1546,8 @@ export type TerminalOutput = (
 );
 
 /**
- * From a core that offers `terminal.sign_in`, through the server, to the browser that opened
- * `terminal`.
+ * A sign-in terminal's sealed output, from a core that offers `terminal.sign_in`, through the
+ * server, to the browser that opened `terminal`.
  */
 export type TerminalUpdate = {
   event: TerminalEvent;
@@ -1614,8 +1629,8 @@ export type WorkspaceSummary = {
 };
 
 /**
- * One change to `workspace`. `seq` grows strictly within a workspace, and a feed opened with
- * `since=N` sends every change after `N`.
+ * One change to `workspace`, from the server to clients that have `workspace.feed`. `seq` grows
+ * strictly within a workspace, and a feed opened with `since=N` sends every change after `N`.
  */
 export type WorkspaceUpdate = {
   change: WorkspaceChange;
