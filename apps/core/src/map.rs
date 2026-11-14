@@ -10,7 +10,7 @@ use weacon_protocol::code;
 
 use crate::app::App;
 use crate::cli::MapCommand;
-use crate::codemap::{index_failed, read_failed};
+use crate::codemap::{LARGEST, index_failed, read_failed};
 
 /// Checks the repository; `Findings` when a pin no longer matches.
 pub(crate) fn run(
@@ -70,8 +70,9 @@ pub(crate) fn index_folder(root: &Path) -> Result<(Index, usize), Fault> {
     Ok((index, files.len()))
 }
 
-/// Every file the code map takes under `root/folder`, its path joined with `/`. Hidden entries, links, `node_modules`, Cargo's build folders and files
-/// that aren't UTF-8 are left out.
+/// Every file the code map takes under `root/folder`, its path joined with `/`. Hidden entries,
+/// links, `node_modules`, Cargo's build folders, files over [`LARGEST`] bytes and files that
+/// aren't UTF-8 are left out.
 fn source_files(root: &Path, folder: &str, files: &mut Vec<SourceFile>) -> io::Result<()> {
     for entry in fs::read_dir(root.join(folder))? {
         let Some(entry) = present(entry)? else {
@@ -93,6 +94,7 @@ fn source_files(root: &Path, folder: &str, files: &mut Vec<SourceFile>) -> io::R
             present(source_files(root, &path, files))?;
         } else if kind.is_file()
             && weacon_codemap::is_mapped(&path)
+            && present(entry.metadata())?.is_some_and(|about| about.len() <= LARGEST)
             && let Some(text) = text_or_skip(fs::read_to_string(root.join(&path)))?
         {
             files.push(SourceFile { path, text });
@@ -191,6 +193,9 @@ mod tests {
         ]);
         let root = repo(&files);
         fs::write(root.join("a/src/bad.rs"), [0xff, 0xfe]).unwrap();
+        let largest = usize::try_from(LARGEST).unwrap();
+        fs::write(root.join("a/src/full.rs"), " ".repeat(largest)).unwrap();
+        fs::write(root.join("a/src/huge.rs"), " ".repeat(largest + 1)).unwrap();
         let mut files = Vec::new();
         source_files(&root, "", &mut files).unwrap();
         let mut paths: Vec<String> = files.into_iter().map(|file| file.path).collect();
@@ -200,6 +205,7 @@ mod tests {
             [
                 "a/Cargo.toml",
                 "a/notes.md",
+                "a/src/full.rs",
                 "a/src/lib.rs",
                 "a/src/m.rs",
                 "a/src/target/x.rs"
