@@ -70,6 +70,15 @@ pub(crate) fn edges(
     found.into_iter().collect()
 }
 
+/// A method's crate, the module its type is written in, its type, its name and its path.
+type Method<'a> = (&'a str, String, &'a str, &'a str, String);
+
+fn method<'a>(krate: &'a str, module: &str, item: &'a Item, path: String) -> Option<Method<'a>> {
+    let owner = item.owner.as_deref()?;
+    let (_, name) = item.symbol.name.rsplit_once("::")?;
+    (item.symbol.kind == Kind::Fn).then(|| (krate, inside(module, &item.within), owner, name, path))
+}
+
 /// `crate::module::Name`, leaving out an empty module.
 pub(crate) fn id(krate: &str, module: &str, name: &str) -> String {
     join([krate, module, name])
@@ -93,6 +102,8 @@ struct Scope<'a> {
     imports: BTreeMap<(&'a str, String), Vec<&'a NamedPath>>,
     /// Methods by their own name, with the type they belong to.
     methods: BTreeMap<&'a str, Vec<(String, String)>>,
+    /// How deep the deepest module is, so no longer start of a path is tried.
+    deepest: usize,
 }
 
 impl<'a> Scope<'a> {
@@ -106,7 +117,9 @@ impl<'a> Scope<'a> {
             ids: BTreeMap::new(),
             imports: BTreeMap::new(),
             methods: BTreeMap::new(),
+            deepest: 0,
         };
+        let mut methods = Vec::new();
         for ModuleNode { krate, module } in nodes(crates) {
             let krate = krate.name.as_str();
             scope
@@ -122,24 +135,30 @@ impl<'a> Scope<'a> {
                 scope.imports.entry(key).or_default().push(path);
             }
             for item in items_of(&module.file) {
-                scope.add(krate, &module.path, item);
+                let path = id(krate, &module.path, &item.symbol.name);
+                scope.ids.insert(path.clone(), item.symbol.kind);
+                methods.extend(method(krate, &module.path, item, path));
             }
+        }
+        scope.deepest = scope
+            .imports
+            .keys()
+            .map(|(_, module)| segments_of(module).len())
+            .max()
+            .unwrap_or(0);
+        // Owners resolve only once every item and import is known.
+        for (krate, here, owner, method, path) in methods {
+            let owner = scope.owner(krate, &here, owner);
+            scope.methods.entry(method).or_default().push((owner, path));
         }
         scope
     }
 
-    fn add(&mut self, krate: &'a str, module: &str, item: &'a Item) {
-        let symbol = &item.symbol;
-        let path = id(krate, module, &symbol.name);
-        if symbol.kind == Kind::Fn
-            && let Some(owner) = &item.owner
-            && let Some((_, method)) = symbol.name.rsplit_once("::")
-        {
-            let owner = id(krate, &inside(module, &item.within), owner);
-            let entry = self.methods.entry(method).or_default();
-            entry.push((owner, path.clone()));
-        }
-        self.ids.insert(path, symbol.kind);
+    /// The path of the type that `owner`, as written in module `here`, names.
+    fn owner(&self, krate: &str, here: &str, owner: &str) -> String {
+        let (found_in, segments) = absolute(&self.crates, krate, segments_of(here), [owner]);
+        self.find(found_in, &segments, HOPS)
+            .unwrap_or_else(|| id(krate, here, owner))
     }
 
     fn edges(&self, krate: &str, module: &str, item: &Item) -> Vec<Edge> {
@@ -159,7 +178,11 @@ impl<'a> Scope<'a> {
             .collect();
         let mut known: BTreeSet<String> = found.iter().map(|(to, _)| to.clone()).collect();
         let here = inside(module, &item.within);
-        known.extend(item.owner.as_deref().map(|owner| id(krate, &here, owner)));
+        known.extend(
+            item.owner
+                .as_deref()
+                .map(|owner| self.owner(krate, &here, owner)),
+        );
         found.extend(item.refs.iter().filter_map(|named| match named {
             Ref::Method(name) => Some((self.method(name, &known)?, EdgeKind::Calls)),
             Ref::Call(_) | Ref::Use(_) => None,
@@ -212,7 +235,7 @@ impl<'a> Scope<'a> {
         }
         let hops = hops.checked_sub(1)?;
         let (_, before_name) = segments.split_last()?;
-        let length = longest_module(before_name, usize::MAX, |module| {
+        let length = longest_module(before_name, self.deepest, |module| {
             self.imports.contains_key(&(krate, module.to_owned()))
         })?;
         let (module, name, rest) = (
@@ -454,6 +477,50 @@ mod tests {
             ),
         ]);
         assert!(found.is_empty(), "{found:?}");
+    }
+
+    #[test]
+    fn resolves_what_code_review_found_missing() {
+        let found = edges(&[
+            ("a/Cargo.toml", CRATE_A),
+            (
+                "a/src/lib.rs",
+                "mod model;\nuse model::X;\nimpl X { fn run(&self) {} }\nfn caller(x: X) { x.run(); }\n\
+                 const LIMIT: u8 = 1;\nfn limit() -> u8 { LIMIT }\n\
+                 pub struct Store<A>(A);\nimpl<A> Store<A> { fn new() {} }\nfn make() { Store::<u8>::new(); }\n\
+                 pub trait Base {}\npub trait Derived: Base {}\n\
+                 fn generic<T: Base>() { T::new(); }\n",
+            ),
+            ("a/src/model.rs", "pub struct X;\n"),
+        ]);
+        assert_eq!(
+            found,
+            [
+                "a::Derived Uses a::Base",
+                "a::caller Calls a::X::run",
+                "a::caller Uses a::model::X",
+                "a::generic Uses a::Base",
+                "a::limit Uses a::LIMIT",
+                "a::make Uses a::Store",
+                "a::make Calls a::Store::new",
+            ]
+        );
+    }
+
+    #[test]
+    fn a_use_in_a_block_stays_in_it() {
+        let found = edges(&[
+            ("a/Cargo.toml", CRATE_A),
+            (
+                "a/src/lib.rs",
+                "mod left { pub fn run() {} }\nmod right { pub fn run() {} }\n\
+                 fn first() { use crate::left::run; run(); }\nfn second() { run(); }\n",
+            ),
+        ]);
+        assert!(
+            !found.iter().any(|edge| edge.starts_with("a::second")),
+            "{found:?}"
+        );
     }
 
     #[test]

@@ -16,13 +16,18 @@ pub(crate) enum Ref {
     Use(Segments),
 }
 
-/// What `item` refers to, each once, in order.
+/// What `item` refers to, each once, in order. A trait's body is left out: its items are
+/// read on their own.
 pub(crate) fn refs(item: Node<'_>, source: &[u8]) -> Vec<Ref> {
     let generics = generics(item, source);
+    let body = (item.kind() == "trait_item")
+        .then(|| item.child_by_field_name("body"))
+        .flatten()
+        .map(|body| body.id());
     let mut found = BTreeSet::new();
     let mut called = BTreeSet::new();
     preorder(item, |node| {
-        if called.contains(&node.id()) {
+        if Some(node.id()) == body {
             return false;
         }
         match node.kind() {
@@ -38,23 +43,48 @@ pub(crate) fn refs(item: Node<'_>, source: &[u8]) -> Vec<Ref> {
                 false
             }
             "type_identifier" => {
-                let name = text(node, source);
-                if !generics.contains(name) {
-                    found.insert(Ref::Use(vec![name.to_owned()]));
-                }
+                found.insert(Ref::Use(vec![text(node, source).to_owned()]));
+                false
+            }
+            "identifier" if is_constant(text(node, source)) && !called.contains(&node.id()) => {
+                found.insert(Ref::Use(vec![text(node, source).to_owned()]));
                 false
             }
             "scoped_identifier" | "scoped_type_identifier" => match segments(node, source) {
                 Some(path) => {
-                    found.insert(Ref::Use(path));
-                    false
+                    if !called.contains(&node.id()) {
+                        found.insert(Ref::Use(path));
+                    }
+                    // Type arguments, as in `Store::<A>::new`, are read on their own.
+                    text(node, source).contains('<')
                 }
                 None => true,
             },
             _ => true,
         }
     });
-    found.into_iter().collect()
+    found
+        .into_iter()
+        .filter(|found| !rooted_in(found, &generics))
+        .collect()
+}
+
+/// `LIMIT` or `MAX_2`: how a constant or a static is named.
+fn is_constant(name: &str) -> bool {
+    name.chars().any(|ch| ch.is_ascii_uppercase())
+        && name
+            .chars()
+            .all(|ch| ch.is_ascii_uppercase() || ch.is_ascii_digit() || ch == '_')
+}
+
+/// Whether a path starts at one of the item's type parameters, as `T::make` does.
+fn rooted_in(found: &Ref, generics: &BTreeSet<&str>) -> bool {
+    match found {
+        Ref::Call(path) | Ref::Use(path) => path
+            .first()
+            .is_some_and(|first| generics.contains(first.as_str())),
+        Ref::Method(_) => false,
+    }
 }
 
 /// The names of `item`'s type parameters.
@@ -131,8 +161,27 @@ mod tests {
     }
 
     #[test]
-    fn reads_a_path_through_a_generic_type_by_its_parts() {
-        assert_eq!(found("fn f() { Vec::<A>::new(); }"), ["use A", "use Vec"]);
+    fn calls_through_type_arguments_and_uses_them_too() {
+        assert_eq!(
+            found("fn f() { Store::<A>::new(); }"),
+            ["call Store::new", "use A", "use Store"]
+        );
+    }
+
+    #[test]
+    fn reads_constants_but_not_what_starts_at_a_type_parameter() {
+        assert_eq!(
+            found("fn f<T: Make>(x: u8) { T::make(); T::Assoc; LIMIT; MAX_2; x; Mixed; }"),
+            ["use LIMIT", "use MAX_2", "use Make"]
+        );
+    }
+
+    #[test]
+    fn reads_a_trait_header_but_not_its_body() {
+        assert_eq!(
+            found("trait Derived: Base where Self: Other { fn go(&self) { helper(); } }"),
+            ["use Base", "use Derived", "use Other", "use Self"]
+        );
     }
 
     #[test]

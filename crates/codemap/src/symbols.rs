@@ -176,10 +176,17 @@ fn visit<'tree>(
         fingerprint: fingerprint(item, source),
     };
     let inside = place.inside(kind, name, full);
-    let (refs, contracts) = if inside.is_some() {
-        (Vec::new(), Vec::new())
-    } else {
-        (refs(item, source), contracts(item, source))
+    let (refs, contracts) = match kind {
+        Kind::Mod => (Vec::new(), Vec::new()),
+        Kind::Trait => (refs(item, source), Vec::new()),
+        Kind::Const
+        | Kind::Enum
+        | Kind::Fn
+        | Kind::Macro
+        | Kind::Static
+        | Kind::Struct
+        | Kind::Type
+        | Kind::Union => (refs(item, source), contracts(item, source)),
     };
     found.items.push(Item {
         symbol,
@@ -203,7 +210,7 @@ fn visit_impl<'tree>(
     let body = item.child_by_field_name("body");
     let (owner, path) = impl_owner(item, source);
     let written = item.child_by_field_name("trait");
-    if let Some(trait_path) = written.and_then(|written| trait_path(written, source)) {
+    if let Some(trait_path) = written.and_then(|written| segments(written, source)) {
         found.impls.push(Impl {
             within: place.within.clone(),
             owner: owner.clone(),
@@ -263,14 +270,6 @@ fn impl_owner(item: Node<'_>, source: &[u8]) -> (String, String) {
         None => owner.clone(),
     };
     (owner, path)
-}
-
-/// `fmt::Display` for `fmt::Display` or `From<u8>`'s `From`.
-fn trait_path(node: Node<'_>, source: &[u8]) -> Option<Segments> {
-    match node.kind() {
-        "generic_type" => trait_path(node.child_by_field_name("type")?, source),
-        _ => segments(node, source),
-    }
 }
 
 /// The `#[test]` functions in `item`, a test-only item, each read as if written in `place`.

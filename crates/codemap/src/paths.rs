@@ -61,7 +61,15 @@ fn visit<'tree>(
     match node.kind() {
         "use_declaration" => {
             if let Some(tree) = node.child_by_field_name("argument") {
+                let start = found.len();
                 use_tree(tree, source, found);
+                // A `use` in a block binds names only there, so it brings nothing into the module.
+                if in_block(node) {
+                    found
+                        .iter_mut()
+                        .skip(start)
+                        .for_each(|(_, bound)| *bound = None);
+                }
             }
             false
         }
@@ -85,6 +93,10 @@ fn visit<'tree>(
         },
         _ => true,
     }
+}
+
+fn in_block(node: Node<'_>) -> bool {
+    std::iter::successors(node.parent(), Node::parent).any(|parent| parent.kind() == "block")
 }
 
 fn use_tree(root: Node<'_>, source: &[u8], found: &mut Found) {
@@ -139,6 +151,11 @@ pub(crate) fn segments(node: Node<'_>, source: &[u8]) -> Option<Segments> {
             "scoped_identifier" | "scoped_type_identifier" => {
                 next = node.child_by_field_name("path");
                 node.child_by_field_name("name")?
+            }
+            // `Store::<A>::new` is the path `Store::new`; its type arguments aren't part of it.
+            "generic_type" => {
+                next = node.child_by_field_name("type");
+                continue;
             }
             _ => return None,
         };
