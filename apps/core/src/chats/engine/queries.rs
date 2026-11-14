@@ -43,7 +43,11 @@ impl<A: Agent> Engine<A> {
             ChatQueryKind::Snapshot => Ok(Some(ChatAnswerKind::Snapshot {
                 seq: chat.log.seq(),
                 runs: run
-                    .map(|(run, state)| RunStatus { run, state })
+                    .map(|(run, state)| RunStatus {
+                        run,
+                        state,
+                        agent: None,
+                    })
                     .into_iter()
                     .collect(),
                 waiting: chat.waiting.iter().map(|waiting| waiting.seq).collect(),
