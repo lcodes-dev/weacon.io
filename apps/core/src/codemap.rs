@@ -2,6 +2,10 @@
 //! commit, and a layer per worktree with what it changed, kept in the core's database. It
 //! never leaves this machine.
 
+#[cfg(test)]
+mod fake;
+mod watch;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
@@ -10,6 +14,7 @@ use weacon_codemap::{Facts, Reader, SourceFile};
 use weacon_observability::Fault;
 use weacon_protocol::code;
 
+use crate::app::blocking;
 use crate::db::{BASE, Layer, Map, Stored};
 
 /// What the code map reads from a repository. Every call may block.
@@ -25,6 +30,13 @@ pub(crate) trait Source: Clone + Send + Sync + 'static {
     fn changed(&self, path: &Path, commit: &str) -> Result<Vec<(String, Option<String>)>, Fault>;
 }
 
+/// The base layer's commit and the facts of its files.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Base {
+    pub(crate) commit: String,
+    pub(crate) facts: Vec<Facts>,
+}
+
 /// One repository's code map, read from `source` and kept in `map`.
 #[derive(Clone, Debug)]
 pub(crate) struct RepoMap<S> {
@@ -33,14 +45,20 @@ pub(crate) struct RepoMap<S> {
 }
 
 impl<S: Source> RepoMap<S> {
+    /// The commit the main worktree is at.
+    pub(crate) async fn head(&self) -> Result<String, Fault> {
+        self.blocking(Source::head).await
+    }
+
     /// The facts of every file at the main worktree's commit, reading only files whose blob
     /// the map hasn't seen.
-    pub(crate) async fn base(&self) -> Result<(String, Vec<Facts>), Fault> {
-        let commit = self.blocking(|source| source.head()).await?;
+    pub(crate) async fn base(&self) -> Result<Base, Fault> {
+        let commit = self.head().await?;
         if let Some(layer) = self.map.layer(BASE).await?
             && layer.commit == commit
         {
-            return Ok((commit, self.stored_facts(&layer.files).await?));
+            let facts = self.stored_facts(&layer.files).await?;
+            return Ok(Base { commit, facts });
         }
         let wanted = {
             let commit = commit.clone();
@@ -69,22 +87,33 @@ impl<S: Source> RepoMap<S> {
         };
         let entries = weacon_codemap::assemble(&facts).entries();
         self.map.replace(&layer, &read, &entries).await?;
-        Ok((commit, facts))
+        Ok(Base { commit, facts })
     }
 
-    /// The facts of every file as the worktree at `path` has it: the base's, with what the
-    /// worktree changed in their place. Only text the map hasn't seen is read.
-    pub(crate) async fn worktree(&self, path: &Path) -> Result<Vec<Facts>, Fault> {
-        let (commit, base) = self.base().await?;
-        let changed = {
-            let path = path.to_owned();
-            self.blocking(move |source| source.changed(&path, &commit))
-                .await?
-        };
-        let changed: Vec<(String, Option<String>)> = changed
+    /// What the worktree at `path` changed from `base`'s commit.
+    pub(crate) async fn changed(
+        &self,
+        base: &Base,
+        path: &Path,
+    ) -> Result<Vec<(String, Option<String>)>, Fault> {
+        let (path, commit) = (path.to_owned(), base.commit.clone());
+        let changed = self
+            .blocking(move |source| source.changed(&path, &commit))
+            .await?;
+        Ok(changed
             .into_iter()
             .filter(|(path, _)| is_mapped(path))
-            .collect();
+            .collect())
+    }
+
+    /// The facts of every file as the worktree at `path` has it: `base`'s, with what the
+    /// worktree `changed` in their place. Only text the map hasn't seen is read.
+    pub(crate) async fn worktree(
+        &self,
+        base: &Base,
+        path: &Path,
+        changed: Vec<(String, Option<String>)>,
+    ) -> Result<Vec<Facts>, Fault> {
         let files: Vec<Stored> = changed
             .iter()
             .map(|(path, text)| Stored {
@@ -104,8 +133,10 @@ impl<S: Source> RepoMap<S> {
         overlay.extend(read.iter().map(|(_, _, facts)| facts.clone()));
         let shadowed: BTreeSet<&str> = files.iter().map(|file| file.path.as_str()).collect();
         let mut facts: Vec<Facts> = base
-            .into_iter()
+            .facts
+            .iter()
             .filter(|facts| !shadowed.contains(facts.path()))
+            .cloned()
             .collect();
         facts.extend(overlay);
         let entries: Vec<_> = weacon_codemap::assemble(&facts)
@@ -150,12 +181,9 @@ impl<S: Source> RepoMap<S> {
         call: impl FnOnce(&S) -> Result<T, Fault> + Send + 'static,
     ) -> Result<T, Fault> {
         let source = self.source.clone();
-        tokio::task::spawn_blocking(move || call(&source))
-            .await
-            .map_err(|error| {
-                Fault::new(code!("map.read_failed"), "The repository couldn't be read")
-                    .because(error)
-            })?
+        blocking(move || Ok(call(&source))).await.map_err(|error| {
+            Fault::new(code!("map.read_failed"), "The repository couldn't be read").because(error)
+        })?
     }
 }
 
@@ -186,14 +214,15 @@ fn index_failed(error: weacon_codemap::Error) -> Fault {
 fn is_mapped(path: &str) -> bool {
     let name = path.rsplit('/').next().unwrap_or_default();
     let in_src = path.split('/').any(|part| part == "src");
-    name == "Cargo.toml" || name.ends_with(".md") || (in_src && name.ends_with(".rs"))
+    let extension = Path::new(name)
+        .extension()
+        .and_then(|extension| extension.to_str());
+    name == "Cargo.toml" || extension == Some("md") || (in_src && extension == Some("rs"))
 }
 
 /// What a worktree's text is stored under: its hash, which no git blob id looks like.
 fn content_key(text: &str) -> String {
-    let digest = Sha256::digest(text.as_bytes());
-    let hex: String = digest.iter().map(|byte| format!("{byte:02x}")).collect();
-    format!("sha256:{hex}")
+    format!("sha256:{:x}", Sha256::digest(text.as_bytes()))
 }
 
 /// The layer that holds what the worktree at `path` changed.
@@ -203,86 +232,12 @@ fn layer_name(path: &Path) -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::{Arc, Mutex};
-
     use weacon_protocol::{RepoId, WorkspaceId};
     use weacon_testing::TempDir;
 
+    use super::fake::{Fake, blob};
     use super::*;
     use crate::db::Db;
-
-    /// A repository in memory: commits by id, each its files' text by path.
-    #[derive(Clone, Default)]
-    struct Fake {
-        state: Arc<Mutex<State>>,
-    }
-
-    #[derive(Default)]
-    struct State {
-        head: String,
-        commits: BTreeMap<String, BTreeMap<String, String>>,
-        changed: Vec<(String, Option<String>)>,
-        blobs_read: Vec<String>,
-    }
-
-    fn blob(text: &str) -> String {
-        format!("blob-{}", content_key(text))
-    }
-
-    impl Fake {
-        fn commit(&self, id: &str, files: &[(&str, &str)]) {
-            let mut state = self.state.lock().unwrap();
-            let files = files
-                .iter()
-                .map(|(path, text)| ((*path).to_owned(), (*text).to_owned()));
-            state.commits.insert(id.to_owned(), files.collect());
-            id.clone_into(&mut state.head);
-        }
-
-        fn change(&self, changed: &[(&str, Option<&str>)]) {
-            let changed = changed
-                .iter()
-                .map(|(path, text)| ((*path).to_owned(), text.map(str::to_owned)));
-            self.state.lock().unwrap().changed = changed.collect();
-        }
-
-        fn blobs_read(&self) -> Vec<String> {
-            std::mem::take(&mut self.state.lock().unwrap().blobs_read)
-        }
-    }
-
-    impl Source for Fake {
-        fn head(&self) -> Result<String, Fault> {
-            Ok(self.state.lock().unwrap().head.clone())
-        }
-
-        fn tree(&self, commit: &str) -> Result<Vec<(String, String)>, Fault> {
-            let state = self.state.lock().unwrap();
-            let files = state.commits.get(commit).cloned().unwrap_or_default();
-            Ok(files
-                .into_iter()
-                .map(|(path, text)| (path, blob(&text)))
-                .collect())
-        }
-
-        fn blobs(&self, blobs: &[String]) -> Result<BTreeMap<String, String>, Fault> {
-            let mut state = self.state.lock().unwrap();
-            state.blobs_read.extend(blobs.iter().cloned());
-            let texts: BTreeMap<String, String> = state
-                .commits
-                .values()
-                .flat_map(|files| files.values().map(|text| (blob(text), text.clone())))
-                .collect();
-            Ok(blobs
-                .iter()
-                .filter_map(|id| Some((id.clone(), texts.get(id)?.clone())))
-                .collect())
-        }
-
-        fn changed(&self, _: &Path, _: &str) -> Result<Vec<(String, Option<String>)>, Fault> {
-            Ok(self.state.lock().unwrap().changed.clone())
-        }
-    }
 
     const MANIFEST: &str = "[package]\nname = \"a\"\n";
 
@@ -318,7 +273,7 @@ mod tests {
                 ("web/app.ts", "x"),
             ],
         );
-        let (commit, facts) = repo.base().await.unwrap();
+        let Base { commit, facts } = repo.base().await.unwrap();
         assert_eq!((commit.as_str(), facts.len()), ("c1", 3));
         assert_eq!(source.blobs_read().len(), 3);
         assert!(items(&facts, "a::run").contains("calls fn a::m::go"));
@@ -335,7 +290,7 @@ mod tests {
                 ("src/m.rs", moved),
             ],
         );
-        let (_, facts) = repo.base().await.unwrap();
+        let facts = repo.base().await.unwrap().facts;
         assert_eq!(source.blobs_read(), [blob(moved)]);
         assert!(items(&facts, "a::m::went").starts_with("fn a::m::went"));
     }
@@ -360,7 +315,9 @@ mod tests {
             ("src/new.rs", Some("fn x() {}")),
         ]);
         let worktree = Path::new("/w/chat");
-        let facts = repo.worktree(worktree).await.unwrap();
+        let base = repo.base().await.unwrap();
+        let changed = repo.changed(&base, worktree).await.unwrap();
+        let facts = repo.worktree(&base, worktree, changed).await.unwrap();
         let paths: BTreeSet<&str> = facts.iter().map(Facts::path).collect();
         assert_eq!(
             paths,

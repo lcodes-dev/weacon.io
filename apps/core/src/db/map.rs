@@ -178,66 +178,10 @@ impl Map {
         .execute(&mut *transaction)
         .await
         .map_err(failed)?;
-        for batch in layer.files.chunks(BATCH) {
-            let mut query = QueryBuilder::<Sqlite>::new(
-                "INSERT INTO map_files (workspace_id, repo, layer, path, blob) ",
-            );
-            query.push_values(batch, |mut row, file| {
-                row.push_bind(workspace)
-                    .push_bind(repo)
-                    .push_bind(&layer.name)
-                    .push_bind(&file.path)
-                    .push_bind(&file.blob);
-            });
-            query
-                .build()
-                .execute(&mut *transaction)
-                .await
-                .map_err(failed)?;
-        }
-        for batch in facts.chunks(BATCH) {
-            let rows = batch
-                .iter()
-                .map(|(path, blob, facts)| {
-                    let json = serde_json::to_string(facts).map_err(|_| unreadable())?;
-                    Ok((path, blob, json))
-                })
-                .collect::<Result<Vec<_>, Fault>>()?;
-            let mut query = QueryBuilder::<Sqlite>::new(
-                "INSERT OR REPLACE INTO map_facts (workspace_id, repo, path, blob, facts) ",
-            );
-            query.push_values(rows, |mut row, (path, blob, json)| {
-                row.push_bind(workspace)
-                    .push_bind(repo)
-                    .push_bind(path)
-                    .push_bind(blob)
-                    .push_bind(json);
-            });
-            query
-                .build()
-                .execute(&mut *transaction)
-                .await
-                .map_err(failed)?;
-        }
-        for batch in entries.chunks(BATCH) {
-            let mut query = QueryBuilder::<Sqlite>::new(
-                "INSERT INTO map_search (workspace_id, repo, layer, path, kind, name, body) ",
-            );
-            query.push_values(batch, |mut row, entry| {
-                row.push_bind(workspace)
-                    .push_bind(repo)
-                    .push_bind(&layer.name)
-                    .push_bind(&entry.file)
-                    .push_bind(&entry.kind)
-                    .push_bind(&entry.name)
-                    .push_bind(&entry.body);
-            });
-            query
-                .build()
-                .execute(&mut *transaction)
-                .await
-                .map_err(failed)?;
-        }
+        let keys = (workspace, repo, layer.name.as_str());
+        insert_files(&mut transaction, keys, &layer.files).await?;
+        insert_facts(&mut transaction, (workspace, repo), facts).await?;
+        insert_entries(&mut transaction, keys, entries).await?;
         transaction.commit().await.map_err(failed)
     }
 
@@ -296,6 +240,92 @@ impl Map {
         }
         transaction.commit().await.map_err(failed)
     }
+}
+
+type Transaction<'a> = sqlx::Transaction<'a, Sqlite>;
+
+async fn insert_files(
+    transaction: &mut Transaction<'_>,
+    (workspace, repo, layer): (&str, &str, &str),
+    files: &[Stored],
+) -> Result<(), Fault> {
+    for batch in files.chunks(BATCH) {
+        let mut query = QueryBuilder::<Sqlite>::new(
+            "INSERT INTO map_files (workspace_id, repo, layer, path, blob) ",
+        );
+        query.push_values(batch, |mut row, file| {
+            row.push_bind(workspace)
+                .push_bind(repo)
+                .push_bind(layer)
+                .push_bind(&file.path)
+                .push_bind(&file.blob);
+        });
+        query
+            .build()
+            .execute(&mut **transaction)
+            .await
+            .map_err(failed)?;
+    }
+    Ok(())
+}
+
+async fn insert_facts(
+    transaction: &mut Transaction<'_>,
+    (workspace, repo): (&str, &str),
+    facts: &[(String, String, Facts)],
+) -> Result<(), Fault> {
+    for batch in facts.chunks(BATCH) {
+        let rows = batch
+            .iter()
+            .map(|(path, blob, facts)| {
+                let json = serde_json::to_string(facts).map_err(|_| unreadable())?;
+                Ok((path, blob, json))
+            })
+            .collect::<Result<Vec<_>, Fault>>()?;
+        let mut query = QueryBuilder::<Sqlite>::new(
+            "INSERT OR REPLACE INTO map_facts (workspace_id, repo, path, blob, facts) ",
+        );
+        query.push_values(rows, |mut row, (path, blob, json)| {
+            row.push_bind(workspace)
+                .push_bind(repo)
+                .push_bind(path)
+                .push_bind(blob)
+                .push_bind(json);
+        });
+        query
+            .build()
+            .execute(&mut **transaction)
+            .await
+            .map_err(failed)?;
+    }
+    Ok(())
+}
+
+async fn insert_entries(
+    transaction: &mut Transaction<'_>,
+    (workspace, repo, layer): (&str, &str, &str),
+    entries: &[Entry],
+) -> Result<(), Fault> {
+    for batch in entries.chunks(BATCH) {
+        let mut query = QueryBuilder::<Sqlite>::new(
+            "INSERT INTO map_search (workspace_id, repo, layer, path, kind, name, body) ",
+        );
+        query.push_values(batch, |mut row, entry| {
+            row.push_bind(workspace)
+                .push_bind(repo)
+                .push_bind(layer)
+                .push_bind(&entry.file)
+                .push_bind(&entry.kind)
+                .push_bind(&entry.name)
+                .push_bind(&entry.body);
+        });
+        query
+            .build()
+            .execute(&mut **transaction)
+            .await
+            .map_err(failed)?;
+    }
+    Ok(())
 }
 
 /// Each word as a quoted FTS5 prefix term, so no input reads as query syntax; `None` without
