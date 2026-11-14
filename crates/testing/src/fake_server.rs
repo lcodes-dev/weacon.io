@@ -57,10 +57,11 @@ pub async fn serve(
     let (played, lines) = duplex(BUFFER);
     let mut lines = BufReader::new(lines).lines();
     let (replies, mut answered) = unbounded_channel();
+    let committed = replies.clone();
     let forward = async {
         loop {
             let texts = tokio::select! {
-                Ok(Some(line)) = lines.next_line() => with_chat(&chat, line),
+                Ok(Some(line)) = lines.next_line() => commit_played(&chat, &committed, line),
                 Some(reply) = answered.recv() => vec![reply],
                 else => break,
             };
@@ -99,24 +100,34 @@ async fn keep(
             .map_err(|error| error.to_string())?;
         // Tokio's file writes in the background; a reader may look at any moment.
         file.flush().await.map_err(|error| error.to_string())?;
-        for reply in replies_to(&text, chat) {
-            // This fails only once `serve` is done with the client.
-            drop(replies.send(reply));
-        }
+        reply_to(&text, chat, &replies);
     }
     Ok(())
 }
 
-// A played line, and what tells the client the chat committed it.
-fn with_chat(chat: &Mutex<FakeChat>, line: String) -> Vec<String> {
-    let told = Envelope::from_json(line.as_bytes())
-        .ok()
-        .zip(chat.lock().ok())
-        .map(|(envelope, mut chat)| chat.played(&envelope))
-        .unwrap_or_default();
-    std::iter::once(line)
-        .chain(told.iter().filter_map(|told| fake_core::text(told).ok()))
-        .collect()
+// A played line, to send at once; what tells the client the chat committed it goes to `replies`
+// under the chat's lock, so the chat's messages keep the order of their seqs.
+fn commit_played(
+    chat: &Mutex<FakeChat>,
+    replies: &UnboundedSender<String>,
+    line: String,
+) -> Vec<String> {
+    if let Ok(envelope) = Envelope::from_json(line.as_bytes())
+        && let Ok(mut chat) = chat.lock()
+    {
+        send_all(replies, &chat.played(&envelope));
+    }
+    vec![line]
+}
+
+fn send_all(replies: &UnboundedSender<String>, envelopes: &[Envelope]) {
+    for text in envelopes
+        .iter()
+        .filter_map(|envelope| fake_core::text(envelope).ok())
+    {
+        // This fails only once `serve` is done with the client.
+        drop(replies.send(text));
+    }
 }
 
 async fn send_each<S: Sink<Frame> + Unpin>(
@@ -129,37 +140,34 @@ async fn send_each<S: Sink<Frame> + Unpin>(
     Ok(())
 }
 
-// What answers `text`: a receipt that accepts a prompt, the answers to a diff query, and what
-// the chat says to a query or a command.
-fn replies_to(text: &str, chat: &Mutex<FakeChat>) -> Vec<String> {
+// Sends what answers `text` to `replies`: a receipt that accepts a prompt, the answers to a
+// diff query, and what the chat says to a query or a command.
+fn reply_to(text: &str, chat: &Mutex<FakeChat>, replies: &UnboundedSender<String>) {
     let Ok(envelope) = Envelope::from_json(text.as_bytes()) else {
-        return Vec::new();
+        return;
     };
-    let replies = if let Message::ChatCommand(ChatCommand {
+    if let Message::ChatCommand(ChatCommand {
         request,
         action: ChatAction::Prompt { .. },
         ..
     }) = &envelope.message
     {
-        vec![Envelope {
-            id: envelope.id,
-            message: Message::Receipt(Receipt {
-                request: request.clone(),
-                outcome: Outcome::Accepted,
-            }),
-        }]
-    } else {
-        fake_diff::answers(&envelope)
-    };
-    let told = chat
-        .lock()
-        .map(|mut chat| chat.answer(&envelope))
-        .unwrap_or_default();
-    replies
-        .iter()
-        .chain(&told)
-        .filter_map(|reply| fake_core::text(reply).ok())
-        .collect()
+        let receipt = Message::Receipt(Receipt {
+            request: request.clone(),
+            outcome: Outcome::Accepted,
+        });
+        send_all(
+            replies,
+            &[Envelope {
+                id: envelope.id,
+                message: receipt,
+            }],
+        );
+    }
+    send_all(replies, &fake_diff::answers(&envelope));
+    if let Ok(mut chat) = chat.lock() {
+        send_all(replies, &chat.answer(&envelope));
+    }
 }
 
 // The next text frame, skipping pings and pongs; `None` once the connection ends. Reading past
@@ -276,7 +284,7 @@ mod tests {
         let mut seen = Vec::new();
         let played = |text: &Value| {
             let update = &text["entry"]["event"]["update"];
-            update["run"] == "r-1" && update["event"]["event"] == "text"
+            update["run"] == "r-1" && text["entry"]["seq"].as_u64() > Some(69)
         };
         while !seen.iter().any(played) {
             seen.extend(texts(&mut client, 1).await);
@@ -294,7 +302,7 @@ mod tests {
             seqs,
             (1..=u64::try_from(seqs.len()).unwrap()).collect::<Vec<_>>()
         );
-        assert!(seqs.len() > 5);
+        assert!(seqs.len() > 69);
     }
 
     #[tokio::test]

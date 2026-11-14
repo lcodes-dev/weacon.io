@@ -1,6 +1,6 @@
-//! A made-up chat log that the fake server keeps for its client: a person's prompt, a Claude
-//! run of a member's that plays the recording, and a shared Codex run waiting on a permission
-//! prompt. It answers the client's chat queries and commands, and commits the recording's
+//! A made-up chat log that the fake server keeps for its client: a person's prompt and a long
+//! answer, another prompt, a member's Claude run that plays the recording, and a shared Codex run
+//! waiting on a permission prompt. It answers the client's chat queries and commands, and commits the recording's
 //! events as they play. A prompt of exactly [`LOSE`] makes it tell the client it lost events.
 
 use serde_json::Value;
@@ -16,6 +16,11 @@ pub(crate) const LOSE: &str = "/lose";
 
 // At most this many events go in a snapshot or a window.
 const PAGE: usize = 50;
+
+/// The chat's first prompt, more than a snapshot's worth of events before its latest.
+pub(crate) const FIRST: &str = "Merge the duplicate lines in the shopping list.";
+// The steps of the turn that answered the first prompt.
+const EARLIER: u64 = 60;
 
 /// One chat's log, and the envelope id of the client's subscription to it.
 #[derive(Debug)]
@@ -39,16 +44,18 @@ impl FakeChat {
         };
         let (mine, shared) = (run("r-1")?, run("r-2")?);
         let member = MemberId::try_from("m-1".to_owned())?;
-        fake.commit(ChatEvent::Prompt {
-            request: RequestId::try_from("q-0".to_owned())?,
-            text: "Merge the duplicate lines in the shopping list.".to_owned(),
-            repo: None,
-        });
-        fake.status(
-            &mine,
-            RunState::Running,
-            agent(AgentKind::Claude, AgentOwner::Member { member }, "laptop")?,
-        );
+        let claude = agent(AgentKind::Claude, AgentOwner::Member { member }, "laptop")?;
+        fake.prompt("q-0", FIRST)?;
+        fake.status(&mine, RunState::Running, claude.clone());
+        for step in 1..=EARLIER {
+            fake.commit(said(
+                &mine,
+                &format!("Step {step} of the first pass is done."),
+            ));
+        }
+        fake.finish(&mine, Outcome::Completed, claude.clone());
+        fake.prompt("q-1", "Now merge across units too.")?;
+        fake.status(&mine, RunState::Running, claude);
         fake.status(
             &shared,
             RunState::Waiting,
@@ -194,6 +201,15 @@ impl FakeChat {
             ChatAction::Newer => {}
         }
         told
+    }
+
+    fn prompt(&mut self, request: &str, text: &str) -> Result<Vec<Envelope>, String> {
+        let request = RequestId::try_from(request.to_owned())?;
+        Ok(self.commit(ChatEvent::Prompt {
+            request,
+            text: text.to_owned(),
+            repo: None,
+        }))
     }
 
     fn finish(&mut self, run: &RunId, outcome: Outcome, agent: AgentRef) -> Vec<Envelope> {
@@ -427,8 +443,17 @@ mod tests {
     fn the_chat_starts_with_a_prompt_two_agents_and_a_prompt_waiting() {
         let mut fake = fake();
         let (seq, runs, waiting) = snapshot(&mut fake);
+        let first = fake.answer(&query(
+            1,
+            "c-1",
+            ChatQueryKind::Window {
+                before: 2,
+                limit: 1,
+            },
+        ));
 
-        assert_eq!((seq, waiting), (5, vec![5]));
+        assert_eq!((seq, waiting), (69, vec![69]));
+        assert_eq!(shape(&first), [(1, "window [1]".to_owned())]);
         let agents: Vec<_> = runs
             .iter()
             .map(|status| {
@@ -458,7 +483,7 @@ mod tests {
     #[test]
     fn a_subscription_gets_what_it_missed_then_each_new_event_under_its_id() {
         let mut fake = fake();
-        let missed = fake.answer(&query(4, "c-1", ChatQueryKind::Subscribe { after: 3 }));
+        let missed = fake.answer(&query(4, "c-1", ChatQueryKind::Subscribe { after: 67 }));
         let delta = fake.played(&played(RunEvent::TextDelta {
             text: "Mer".to_owned(),
         }));
@@ -469,14 +494,14 @@ mod tests {
         assert_eq!(
             shape(&missed),
             [
-                (4, "4 r-2 text".to_owned()),
-                (4, "5 r-2 permission_asked".to_owned())
+                (4, "68 r-2 text".to_owned()),
+                (4, "69 r-2 permission_asked".to_owned())
             ]
         );
         assert!(delta.is_empty());
-        assert_eq!(shape(&text), [(4, "6 r-1 text".to_owned())]);
+        assert_eq!(shape(&text), [(4, "70 r-1 text".to_owned())]);
         assert_eq!(
-            shape(&fake.answer(&query(6, "c-1", ChatQueryKind::Subscribe { after: 9 }))),
+            shape(&fake.answer(&query(6, "c-1", ChatQueryKind::Subscribe { after: 99 }))),
             [(6, "lost".to_owned())]
         );
     }
@@ -491,10 +516,10 @@ mod tests {
             .is_empty()
         );
 
-        assert_eq!(snapshot(&mut fake).0, 6);
+        assert_eq!(snapshot(&mut fake).0, 70);
         assert_eq!(
-            shape(&fake.answer(&query(2, "c-1", ChatQueryKind::Subscribe { after: 5 }))),
-            [(2, "6 r-1 text".to_owned())]
+            shape(&fake.answer(&query(2, "c-1", ChatQueryKind::Subscribe { after: 69 }))),
+            [(2, "70 r-1 text".to_owned())]
         );
     }
 
@@ -506,7 +531,7 @@ mod tests {
         };
 
         assert_eq!(window(&mut fake, 4, 2), [(3, "window [2, 3]".to_owned())]);
-        assert_eq!(window(&mut fake, 9, 1), [(3, "window [5]".to_owned())]);
+        assert_eq!(window(&mut fake, 9, 1), [(3, "window [8]".to_owned())]);
         assert_eq!(window(&mut fake, 1, 9), [(3, "window []".to_owned())]);
         for _ in 0..60 {
             fake.played(&played(RunEvent::Text {
@@ -521,13 +546,13 @@ mod tests {
             panic!("no snapshot");
         };
         assert_eq!(events.len(), PAGE);
-        assert_eq!(events.last().map(|entry| entry.seq), Some(65));
+        assert_eq!(events.last().map(|entry| entry.seq), Some(129));
     }
 
     #[test]
     fn prompts_answers_and_interrupts_are_committed_and_told() {
         let mut fake = fake();
-        fake.answer(&query(4, "c-1", ChatQueryKind::Subscribe { after: 5 }));
+        fake.answer(&query(4, "c-1", ChatQueryKind::Subscribe { after: 69 }));
         let said = fake.answer(&prompt("Also sort them."));
         let allowed = fake.answer(&command(ChatAction::Permission {
             answer: PermissionAnswer {
@@ -545,21 +570,21 @@ mod tests {
             },
         }));
 
-        assert_eq!(shape(&said), [(4, "6 prompt Also sort them.".to_owned())]);
+        assert_eq!(shape(&said), [(4, "70 prompt Also sort them.".to_owned())]);
         assert_eq!(
             shape(&allowed),
             [
-                (4, "7 r-2 Running".to_owned()),
-                (4, "8 r-2 text".to_owned()),
-                (4, "9 r-2 finished".to_owned()),
-                (4, "10 r-2 Idle".to_owned())
+                (4, "71 r-2 Running".to_owned()),
+                (4, "72 r-2 text".to_owned()),
+                (4, "73 r-2 finished".to_owned()),
+                (4, "74 r-2 Idle".to_owned())
             ]
         );
         assert_eq!(
             shape(&stopped),
             [
-                (4, "11 r-1 finished".to_owned()),
-                (4, "12 r-1 Idle".to_owned())
+                (4, "75 r-1 finished".to_owned()),
+                (4, "76 r-1 Idle".to_owned())
             ]
         );
         assert!(unknown.is_empty());
@@ -569,7 +594,7 @@ mod tests {
     #[test]
     fn the_lose_prompt_ends_the_subscription_with_lost_events() {
         let mut fake = fake();
-        fake.answer(&query(4, "c-1", ChatQueryKind::Subscribe { after: 5 }));
+        fake.answer(&query(4, "c-1", ChatQueryKind::Subscribe { after: 69 }));
         let lost = fake.answer(&prompt(LOSE));
         let after = fake.played(&played(RunEvent::Text {
             text: "Merged.".to_owned(),
@@ -577,7 +602,7 @@ mod tests {
 
         assert_eq!(
             shape(&lost),
-            [(4, format!("6 prompt {LOSE}")), (4, "lost".to_owned())]
+            [(4, format!("70 prompt {LOSE}")), (4, "lost".to_owned())]
         );
         assert!(after.is_empty());
         assert!(fake.answer(&prompt(LOSE)).is_empty());
