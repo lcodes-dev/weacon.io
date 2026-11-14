@@ -460,6 +460,21 @@ mod tests {
         assert_eq!(error.code().as_str(), "agent.status_failed");
     }
 
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_run_is_refused_unless_the_workspace_is_signed_in_on_its_own() {
+        let dir = TempDir::new().unwrap();
+        let with = |program: &str| Launch {
+            program: PathBuf::from(program),
+            ..launch(AgentKind::Codex, &dir)
+        };
+
+        let refused = with("false").require_sign_in().await.unwrap_err();
+
+        with("true").require_sign_in().await.unwrap();
+        assert_eq!(refused.code().as_str(), "agent.signed_out");
+    }
+
     async fn log_in_code(launch: Launch) -> Option<String> {
         Some(launch.log_in().await.err()?.code().as_str().to_owned())
     }
