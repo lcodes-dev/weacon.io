@@ -92,7 +92,7 @@ mod tests {
             4
         );
         assert_eq!(notices.try_recv().unwrap(), (id("w1"), id("c-1")));
-        assert!(notices.try_recv().is_err());
+        notices.try_recv().unwrap_err();
         let logged = serde_json::to_string(&*fixture.records.lock().unwrap()).unwrap();
         assert_eq!(logged.matches("chat upload refused").count(), 3);
         assert!(!logged.contains("MARKER"), "{logged}");
