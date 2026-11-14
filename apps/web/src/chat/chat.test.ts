@@ -286,12 +286,14 @@ test("earlier runs take their agents from the statuses the log holds, by the sna
     seq: 6,
     runs: new Map([["r-3", { state: "waiting", agent: claude }]]),
     waiting: [],
-    events: [named(3, "r-2", "running", claude), named(4, "r-2", "ended", claude), named(5, "r-3", "starting", codex), status(6, "r-3", "running")],
+    events: [named(3, "r-2", "running", claude), named(4, "r-2", "waiting", claude), named(5, "r-3", "starting", codex), status(6, "r-3", "running")],
   });
   const widened = older(snapshot, [named(1, "r-1", "running", codex), named(2, "r-1", "ended", codex)]);
 
   assert.deepEqual(widened.runs.get("r-1"), { state: "ended", agent: codex });
+  // A run the snapshot doesn't hold is over, whatever its last logged status said.
   assert.deepEqual(widened.runs.get("r-2"), { state: "ended", agent: claude });
+  assert.equal(working(fromSnapshot({ seq: 4, runs: new Map(), waiting: [], events: [named(3, "r-2", "running", claude)] })), false);
   // The snapshot's own word on a run wins over what its log said before.
   assert.deepEqual(widened.runs.get("r-3"), { state: "waiting", agent: claude });
   assert.equal(snapshot.runs.get("r-1"), undefined);

@@ -71,7 +71,7 @@ export function ChatScreen({
           )}
         </div>
       )}
-      <main>
+      <div className="panes">
         <div className={shown === "run" ? "pane" : "pane away"}>
           <TranscriptView
             lines={chat === undefined ? [] : lines(chat, NO_MEMBERS)}
@@ -91,7 +91,7 @@ export function ChatScreen({
           late={commands.late}
           blocked={why}
         />
-      </main>
+      </div>
       {mine && <Composer send={commands.send} blocked={why} hidden={shown !== "run"} late={commands.late} />}
     </div>
   );

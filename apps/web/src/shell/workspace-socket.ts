@@ -1,4 +1,4 @@
-import { useMemo, useSyncExternalStore } from "react";
+import { useState, useSyncExternalStore } from "react";
 
 import { HELLO_ID, type WebCapability } from "../connection.ts";
 import type { Incoming } from "../incoming.ts";
@@ -71,7 +71,18 @@ export class WorkspaceSocket {
 export function useSocketFor(workspace: WorkspaceId): WorkspaceSocket;
 export function useSocketFor(workspace: WorkspaceId | undefined): WorkspaceSocket | undefined;
 export function useSocketFor(workspace: WorkspaceId | undefined): WorkspaceSocket | undefined {
-  return useMemo(() => (workspace === undefined ? undefined : new WorkspaceSocket(workspace)), [workspace]);
+  // Held in state, which React keeps, where a memo it may drop would open a second feed.
+  const [held, setHeld] = useState(() => socketFor(workspace));
+  if (held?.workspace === workspace) {
+    return held;
+  }
+  const next = socketFor(workspace);
+  setHeld(next);
+  return next;
+}
+
+function socketFor(workspace: WorkspaceId | undefined): WorkspaceSocket | undefined {
+  return workspace === undefined ? undefined : new WorkspaceSocket(workspace);
 }
 
 /** Whether the server offers `capability` on `socket`, kept current as welcomes change it. */

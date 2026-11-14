@@ -20,12 +20,14 @@ export type Wiring = {
 export class LiveChat {
   #ref: ChatRef;
   #wiring: Wiring;
-  #sync: Sync = START;
+  #sync: Sync;
   #pending = false;
 
-  constructor(ref: ChatRef, wiring: Wiring) {
+  /** `from` is what an earlier live chat for `ref` showed, kept on screen until the server answers. */
+  constructor(ref: ChatRef, wiring: Wiring, from: Sync = START) {
     this.#ref = ref;
     this.#wiring = wiring;
+    this.#sync = ended(from);
   }
 
   /** Asks for the chat afresh, as once the connection is live. */

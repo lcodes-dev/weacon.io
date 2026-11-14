@@ -256,15 +256,15 @@ function turnKey(seq: number, run: RunId): string {
 }
 
 /**
- * `runs` with the runs whose statuses `entries` log, so an earlier run's turns name its agent:
- * a run `runs` already holds keeps its state, and takes a logged agent only where it has none.
+ * `runs` with the runs whose statuses `entries` log, so an earlier run's turns name its agent. A
+ * run `runs` already holds keeps its state; one only the log knows is over, since `runs` has every run still on.
  */
 function logged(runs: ReadonlyMap<RunId, Run>, entries: readonly ChatEntry[]): ReadonlyMap<RunId, Run> {
   const next = new Map(runs);
   for (const { event } of entries) {
     if (event.kind === "run_status") {
       const known = runs.get(event.status.run);
-      next.set(event.status.run, { state: known?.state ?? event.status.state, agent: known?.agent ?? agentOf(event.status, next) });
+      next.set(event.status.run, { state: known?.state ?? "ended", agent: known?.agent ?? agentOf(event.status, next) });
     }
   }
   return next;

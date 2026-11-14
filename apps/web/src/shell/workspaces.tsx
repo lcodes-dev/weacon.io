@@ -10,6 +10,7 @@ import { ChatScreen } from "../chat/chat-screen.tsx";
 import { type Status, statusText } from "../connection.ts";
 import type { Log } from "../log.ts";
 import type { ChatId, WorkspaceId, WorkspaceList, WorkspaceSummary } from "../protocol.ts";
+import { owns } from "./chat-list.ts";
 import { ChatsNav } from "./chats.tsx";
 import { useBurst, useFeed } from "./feed-hooks.ts";
 import { Frame } from "./frame.tsx";
@@ -259,14 +260,13 @@ function WorkspaceChats({
     [socket],
   );
   const open = chats.value?.chats.find(({ id }) => id === chosen);
-  const mine = open !== undefined && workspace.member !== undefined && open.owner === workspace.member;
   return (
     <div className="workspace">
       <ChatsNav loaded={chats} chosen={chosen} choose={choose} />
       <section>
         <Heading title={open?.title ?? workspace.name} status={status} />
         {open !== undefined && (
-          <ChatScreen key={open.id} link={socket} live={status.state === "live"} chatRef={{ workspace: workspace.id, chat: open.id }} mine={mine} away={away} />
+          <ChatScreen key={open.id} link={socket} live={status.state === "live"} chatRef={{ workspace: workspace.id, chat: open.id }} mine={owns(workspace.member, open)} away={away} />
         )}
       </section>
     </div>

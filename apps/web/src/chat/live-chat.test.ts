@@ -101,6 +101,26 @@ test("the end of the connection keeps the chat but drops what was asked", () => 
   assert.equal(shown[0]?.chat?.seq, 4);
 });
 
+test("a live chat made from what an earlier one showed keeps it on screen while it asks again", () => {
+  const first = wired();
+  first.live.open();
+  first.live.push(answer(1, 4));
+  first.flushes[0]?.();
+  const before = first.shown.at(-1);
+  assert.ok(before !== undefined);
+
+  const shown: Sync[] = [];
+  const flushes: (() => void)[] = [];
+  const sent: Envelope[] = [];
+  const again = new LiveChat({ workspace: "w-1", chat: "c-1" }, { id: () => 7, send: (envelope) => sent.push(envelope), schedule: (flush) => flushes.push(flush), show: (sync) => shown.push(sync) }, before);
+  again.open();
+  flushes[0]?.();
+
+  assert.equal(shown[0]?.chat?.seq, 4);
+  assert.deepEqual(shown[0]?.state, { kind: "asking", snapshot: 7 });
+  assert.equal(sent.length, 1);
+});
+
 test("a batch goes out on the next frame, or on the timer once the tab is hidden", () => {
   let hidden = false;
   const frames = new Map<number, () => void>();

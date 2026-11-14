@@ -24,6 +24,8 @@ const HIDDEN_MS = 250;
 export function useLiveChat(link: WorkspaceSocket, chatRef: ChatRef | undefined, live: boolean, readable: boolean) {
   const [sync, setSync] = useState<Sync>(START);
   const current = useRef<LiveChat>(undefined);
+  // What was last shown, and for which chat, so reconnecting keeps it on screen.
+  const shown = useRef<{ key: string; sync: Sync }>(undefined);
   const workspace = chatRef?.workspace;
   const chat = chatRef?.chat;
   useEffect(() => {
@@ -36,7 +38,13 @@ export function useLiveChat(link: WorkspaceSocket, chatRef: ChatRef | undefined,
       (frame) => cancelAnimationFrame(frame),
       (run) => later(run, HIDDEN_MS),
     );
-    const liveChat = new LiveChat({ workspace, chat }, { id: () => link.nextId(), send: (envelope) => link.send(envelope), schedule, show: setSync });
+    const key = `${workspace}/${chat}`;
+    const show = (next: Sync) => {
+      shown.current = { key, sync: next };
+      setSync(next);
+    };
+    const from = shown.current?.key === key ? shown.current.sync : START;
+    const liveChat = new LiveChat({ workspace, chat }, { id: () => link.nextId(), send: (envelope) => link.send(envelope), schedule, show }, from);
     current.current = liveChat;
     const unsubscribe = link.subscribe((message) =>
       route(message, { run: (run) => liveChat.push(run), chat: (said) => liveChat.push(said) }),

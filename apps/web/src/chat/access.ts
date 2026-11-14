@@ -1,4 +1,4 @@
-import { useSyncExternalStore } from "react";
+import { useCallback, useSyncExternalStore } from "react";
 
 import type { WebCapability } from "../connection.ts";
 import type { WorkspaceSocket } from "../shell/workspace-socket.ts";
@@ -14,7 +14,7 @@ export function chatAccess(offers: (capability: WebCapability) => boolean): { re
 
 /** `chatAccess` on `link`, kept current as welcomes change what the server offers. */
 export function useChatAccess(link: WorkspaceSocket): { read: boolean; send: boolean } {
-  const subscribe = (changed: () => void) => link.watch(changed);
+  const subscribe = useCallback((changed: () => void) => link.watch(changed), [link]);
   const read = useSyncExternalStore(subscribe, () => chatAccess((capability) => link.offers(capability)).read);
   const send = useSyncExternalStore(subscribe, () => chatAccess((capability) => link.offers(capability)).send);
   return { read, send };

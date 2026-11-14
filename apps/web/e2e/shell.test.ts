@@ -5,7 +5,7 @@ import type { Page } from "playwright-core";
 
 import type { ChatList, Envelope } from "../src/protocol.ts";
 import { waitFor } from "./harness.ts";
-import { EMAIL, serve, signIn, signInAgain } from "./server.ts";
+import { EMAIL, type Served, serve, signIn, signInAgain } from "./server.ts";
 
 const CHANGE_AFTER_MS = 500;
 
@@ -426,12 +426,14 @@ test("the served app forwards its logs and crash reports on a feed that offers i
   assert.doesNotMatch(JSON.stringify(sent), /MARKER/);
 });
 
-// A chat's snapshot as the server answers it: a prompt and Claude Code's answer, still running.
+// A chat's snapshot as the server answers it: a prompt, and Claude Code's answer so far, waiting
+// on a permission prompt. Each chat's answer says which chat it is.
 function snapshot(asked: Envelope): Envelope[] {
   if (asked.type !== "chat_query" || asked.query.kind !== "snapshot") {
     return [];
   }
   const agent = { kind: "claude" as const, owner: { kind: "member" as const, member: "m-1" }, machine: "laptop" };
+  const said = asked.chat === "c-1" ? "Sorting the shelves now." : "Watering the plants now.";
   return [
     {
       id: asked.id,
@@ -440,68 +442,118 @@ function snapshot(asked: Envelope): Envelope[] {
       chat: asked.chat,
       answer: {
         kind: "snapshot",
-        seq: 2,
-        runs: [{ run: "r-1", state: "running", agent }],
-        waiting: [],
+        seq: 3,
+        runs: [{ run: "r-1", state: "waiting", agent }],
+        waiting: [3],
         events: [
           { seq: 1, event: { kind: "prompt", request: "q-1", text: "Sort the pantry." } },
-          { seq: 2, event: { kind: "run", update: { run: "r-1", event: { event: "text", text: "Sorting the shelves now." } } } },
+          { seq: 2, event: { kind: "run", update: { run: "r-1", event: { event: "text", text: said } } } },
+          { seq: 3, event: { kind: "run", update: { run: "r-1", event: { event: "permission_asked", run: "r-1", prompt: 1, tool: "Bash", input: {} } } } },
         ],
       },
     },
   ];
 }
 
-// The signed-in person's member in their first workspace, as the server says.
-async function member(page: Page): Promise<string> {
+// Answers a chat's snapshot, and takes every command.
+function chatServer(asked: Envelope): Envelope[] {
+  return asked.type === "chat_command" ? [{ id: asked.id, type: "receipt", request: asked.request, state: "accepted" }] : snapshot(asked);
+}
+
+// The commands the page sent, as the chat each names and what it asked.
+function commands(sent: Envelope[]): Array<{ workspace: string; chat: string; request: string; action: unknown }> {
+  return sent.flatMap((envelope) =>
+    envelope.type === "chat_command" ? [{ workspace: envelope.workspace, chat: envelope.chat, request: envelope.request, action: envelope.action }] : [],
+  );
+}
+
+// The signed-in person's first workspace, and their member in it, as the server says.
+async function firstWorkspace(page: Page): Promise<{ id: string; member: string }> {
   return page.evaluate(async () => {
-    const answer = (await (await fetch("/api/workspaces")).json()) as { workspaces: Array<{ member?: string }> };
-    return answer.workspaces[0]?.member ?? "";
+    const answer = (await (await fetch("/api/workspaces")).json()) as { workspaces: Array<{ id: string; member?: string }> };
+    return { id: answer.workspaces[0]?.id ?? "", member: answer.workspaces[0]?.member ?? "" };
   });
 }
 
-test("a person's own chat shows its transcript, and takes their messages and Stop", { timeout: 600_000 }, async (t) => {
+// Signs in and opens the first workspace, whose chats are `chats`, each owned by `owner` of its member.
+async function openChats(served: Served, chats: Array<{ id: string; title: string }>, owner: (member: string) => string): Promise<string> {
+  const { page } = served;
+  await signIn(served);
+  await page.getByRole("button", { name: "Personal" }).waitFor();
+  const { id, member } = await firstWorkspace(page);
+  await listChats(page, () => ({ chats: chats.map((chat) => ({ ...chat, owner: owner(member), machine: "laptop", state: "open" as const, updated_at: 1 })) }));
+  await page.getByRole("button", { name: "Personal" }).click();
+  return id;
+}
+
+const nav = (page: Page) => page.getByRole("navigation", { name: "Chats" });
+
+test("a person's own chat shows its transcript and prompts, and takes their messages and Stop", { timeout: 600_000 }, async (t) => {
   const served = await serve();
   t.after(() => served.close());
   const { page } = served;
-  const { sent } = await serveFeed(page, {
-    also: ["workspace.chat_commands"],
-    answer: (asked) =>
-      asked.type === "chat_command" ? [{ id: asked.id, type: "receipt", request: asked.request, state: "accepted" }] : snapshot(asked),
-  });
-  await signIn(served);
-  await page.getByRole("button", { name: "Personal" }).waitFor();
-  const owner = await member(page);
-  await listChats(page, () => ({ chats: [{ id: "c-1", title: "Sort the pantry", owner, machine: "laptop", state: "open", updated_at: 1 }] }));
-  await page.getByRole("button", { name: "Personal" }).click();
-  await page.getByRole("navigation", { name: "Chats" }).getByRole("button", { name: /Sort the pantry/ }).click();
+  const { sent } = await serveFeed(page, { also: ["workspace.chat_commands"], answer: chatServer });
+  const workspace = await openChats(served, [{ id: "c-1", title: "Sort the pantry" }], (member) => member);
+  await nav(page).getByRole("button", { name: /Sort the pantry/ }).click();
 
   await page.getByText("Sorting the shelves now.").waitFor();
+  await page.getByRole("button", { name: "Allow" }).waitFor();
   await page.getByRole("combobox", { name: "Message" }).fill("Use the top shelf too.");
   await page.getByRole("button", { name: "Send" }).click();
   await page.getByRole("button", { name: "Stop" }).click();
-  await waitFor(() => sent.filter((envelope) => envelope.type === "chat_command").length === 2);
+  await waitFor(() => commands(sent).length === 2);
 
-  const actions = sent.flatMap((envelope) => (envelope.type === "chat_command" ? [envelope.action] : []));
-  assert.deepEqual(actions, [{ kind: "prompt", text: "Use the top shelf too." }, { kind: "interrupt" }]);
+  const [prompt, stop] = commands(sent);
+  assert.deepEqual([prompt?.action, stop?.action], [{ kind: "prompt", text: "Use the top shelf too." }, { kind: "interrupt" }]);
+  for (const command of [prompt, stop]) {
+    assert.equal(command?.workspace, workspace);
+    assert.equal(command?.chat, "c-1");
+  }
+  assert.notEqual(prompt?.request, stop?.request);
   assert.ok(sent.some((envelope) => envelope.type === "chat_query" && envelope.query.kind === "subscribe"));
 });
 
-test("someone else's chat shows its transcript, without the message box or Stop", { timeout: 600_000 }, async (t) => {
+test("someone else's chat shows its transcript, without the message box, Stop or the prompts' answers", { timeout: 600_000 }, async (t) => {
   const served = await serve();
   t.after(() => served.close());
   const { page } = served;
   const { sent } = await serveFeed(page, { also: ["workspace.chat_commands"], answer: snapshot });
-  await signIn(served);
-  await listChats(page, () => ({ chats: [{ id: "c-1", title: "Sort the pantry", owner: "m-someone-else", machine: "laptop", state: "open", updated_at: 1 }] }));
-  await page.getByRole("button", { name: "Personal" }).click();
-  await page.getByRole("navigation", { name: "Chats" }).getByRole("button", { name: /Sort the pantry/ }).click();
+  await openChats(served, [{ id: "c-1", title: "Sort the pantry" }], () => "m-someone-else");
+  await nav(page).getByRole("button", { name: /Sort the pantry/ }).click();
 
   await page.getByText("Sorting the shelves now.").waitFor();
+  await page.getByText("Bash").first().waitFor();
+  for (const name of ["Send", "Stop", "Allow", "Deny"]) {
+    assert.equal(await page.getByRole("button", { name }).count(), 0, name);
+  }
   assert.equal(await page.getByRole("combobox", { name: "Message" }).count(), 0);
-  assert.equal(await page.getByRole("button", { name: "Stop" }).count(), 0);
+  assert.deepEqual(commands(sent), []);
+});
+
+test("picking another chat shows that one, and sends only to it", { timeout: 600_000 }, async (t) => {
+  const served = await serve();
+  t.after(() => served.close());
+  const { page } = served;
+  const { sent } = await serveFeed(page, { also: ["workspace.chat_commands"], answer: chatServer });
+  await openChats(
+    served,
+    [
+      { id: "c-1", title: "Sort the pantry" },
+      { id: "c-2", title: "Water the plants" },
+    ],
+    (member) => member,
+  );
+  await nav(page).getByRole("button", { name: /Sort the pantry/ }).click();
+  await page.getByText("Sorting the shelves now.").waitFor();
+  await nav(page).getByRole("button", { name: /Water the plants/ }).click();
+
+  await page.getByText("Watering the plants now.").waitFor();
+  assert.equal(await page.getByText("Sorting the shelves now.").count(), 0);
+  await page.getByRole("combobox", { name: "Message" }).fill("Only the ferns.");
+  await page.getByRole("button", { name: "Send" }).click();
+  await waitFor(() => commands(sent).length === 1);
   assert.deepEqual(
-    sent.filter((envelope) => envelope.type === "chat_command"),
-    [],
+    commands(sent).map(({ chat, action }) => ({ chat, action })),
+    [{ chat: "c-2", action: { kind: "prompt", text: "Only the ferns." } }],
   );
 });
