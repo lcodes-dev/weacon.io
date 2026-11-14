@@ -260,7 +260,7 @@ impl<'de> Deserialize<'de> for Bytes {
         let pairs = hex.as_bytes().chunks(2);
         let bytes = pairs
             .map(|pair| match pair {
-                [high, low] => Some(nibble(*high)? << 4 | nibble(*low)?),
+                [high, low] => Some(nibble(*high)? * 16 + nibble(*low)?),
                 _ => None,
             })
             .collect::<Option<Vec<u8>>>()
@@ -470,12 +470,12 @@ mod tests {
     #[test]
     fn a_plaintext_that_wouldnt_fit_one_sealed_frame_is_refused() {
         // Each byte of data takes two in the JSON, around which the rest takes 26 or 27.
-        let fits = (SEALED_MAX - 27) / 2;
+        let fits = 32_746;
         let data = |len| bytes(&vec![7; len]);
         let output = |len| TerminalOutput::Output { data: data(len) }.to_json();
         let input = |len| TerminalInput::Input { data: data(len) }.to_json();
-        assert_eq!(output(fits).unwrap().len(), SEALED_MAX);
-        assert_eq!(input(fits).unwrap().len(), SEALED_MAX - 1);
+        assert_eq!(output(fits).unwrap().len(), 65_519);
+        assert_eq!(input(fits).unwrap().len(), 65_518);
         assert_eq!(output(fits + 1), Err(FrameError::TooLarge));
         assert_eq!(input(fits + 1), Err(FrameError::TooLarge));
     }
