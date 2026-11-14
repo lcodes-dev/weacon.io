@@ -8,6 +8,7 @@ mod app;
 mod chats;
 mod cli;
 mod daemon;
+mod db;
 mod disk;
 mod doctor;
 mod map;
