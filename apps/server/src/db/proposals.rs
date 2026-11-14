@@ -509,6 +509,7 @@ mod tests {
             (revise("d9", 1, "A\n"), "proposal.invalid"),
             (revise("d1", 0, "A\n"), "proposal.invalid"),
             (revise("d1", 2, "A\n"), "proposal.invalid"),
+            (revise("d1", 1, "One\nTwo\nThree\n"), "proposal.invalid"),
             (retitle("t9", 1, "A"), "proposal.invalid"),
             (retitle("t1", 2, "A"), "proposal.stale"),
             (retitle("t1", 1, ""), "proposal.invalid"),

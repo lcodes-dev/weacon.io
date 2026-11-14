@@ -93,8 +93,9 @@ fn invalid() -> Fault {
     )
 }
 
-const REFUSALS: [(Code, StatusCode); 6] = [
+const REFUSALS: [(Code, StatusCode); 7] = [
     (code!("proposal.invalid"), StatusCode::BAD_REQUEST),
+    (code!("doc.too_large"), StatusCode::PAYLOAD_TOO_LARGE),
     (code!("proposal.not_found"), StatusCode::NOT_FOUND),
     (code!("proposal.closed"), StatusCode::CONFLICT),
     (code!("doc.quota_full"), StatusCode::PAYLOAD_TOO_LARGE),
@@ -276,5 +277,15 @@ mod tests {
         let path = "GET /api/workspaces/w1/proposals";
         let (head, _) = request_with(server.address, path, "", "").await;
         assert_eq!(status(&head), "http/1.1 401 unauthorized");
+    }
+
+    #[test]
+    fn refusals_answer_with_their_status_and_nothing_else_is_a_failure() {
+        for (refused, status) in REFUSALS {
+            let fault = Fault::new(refused.clone(), "Refused");
+            assert_eq!(answer(fault).status(), status, "{refused:?}");
+        }
+        let failed = Fault::new(code!("db.failed"), "The database failed");
+        assert_eq!(answer(failed).status(), StatusCode::INTERNAL_SERVER_ERROR);
     }
 }

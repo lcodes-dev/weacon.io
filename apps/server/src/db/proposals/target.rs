@@ -36,18 +36,17 @@ impl Workspace {
         let new_id = Some(proposed.fresh.as_str());
         match &proposed.change {
             ProposalChange::DocEdit { doc, base, content } => {
-                doc_text(content)?;
-                let current = self
-                    .read_doc(transaction, doc, None)
-                    .await
-                    .map_err(|_| invalid())?;
-                if *base == 0 || *base > current.version.get() {
+                let text = doc_text(content)?;
+                let base = i64::try_from(*base).map_err(|_| invalid())?;
+                // A revision there isn't, and an edit that changes nothing, are both refused.
+                let was = self.read_doc(transaction, doc, Some(base)).await;
+                if was.map_err(|_| invalid())?.text == text {
                     return Err(invalid());
                 }
                 Ok(Target {
                     kind: DOC_EDIT,
                     doc: Some(doc),
-                    base: Some(i64::try_from(*base).map_err(|_| invalid())?),
+                    base: Some(base),
                     ..Target::default()
                 })
             }
