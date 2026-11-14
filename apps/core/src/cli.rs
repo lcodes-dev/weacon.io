@@ -58,7 +58,7 @@ pub(crate) enum Command {
     /// Relay messages between Chrome's extension and the daemon; Chrome starts it.
     #[command(hide = true)]
     NativeHost { origin: String },
-    /// Print where to begin in a repository's code, or work with its code map.
+    /// Print the text the MCP's `map` tool answers: where to begin in a repository's code.
     Map(MapCommand),
 }
 
@@ -77,23 +77,27 @@ pub(crate) enum ServiceCommand {
     Uninstall,
 }
 
-/// Without a subcommand, prints the text the MCP's `map` tool answers.
 #[derive(Debug, PartialEq, Eq, Args)]
 pub(crate) struct MapCommand {
     #[command(subcommand)]
-    pub(crate) read: Option<MapRead>,
+    pub(crate) command: Option<MapSubcommand>,
     /// The repository's root folder.
     #[arg(long, global = true, default_value = ".")]
     pub(crate) root: PathBuf,
-    /// The most bytes an answer may hold.
-    #[arg(long, global = true)]
+    /// The most bytes the answer may hold.
+    #[arg(long)]
     pub(crate) budget: Option<u32>,
 }
 
 #[derive(Debug, PartialEq, Eq, Subcommand)]
-pub(crate) enum MapRead {
+pub(crate) enum MapSubcommand {
     /// Print the text the MCP's `symbol` tool answers for an item's full path.
-    Symbol { path: String },
+    Symbol {
+        path: String,
+        /// The most bytes the answer may hold.
+        #[arg(long)]
+        budget: Option<u32>,
+    },
     /// Read pinned anchors on stdin, one per line, and print those that no longer match.
     CheckAnchors,
 }
@@ -190,12 +194,6 @@ mod tests {
             .map(|name| run(&["weacon", name]).unwrap().command.name());
         let install = run(&["weacon", "service", "install"]).unwrap().command;
         let uninstall = run(&["weacon", "service", "uninstall"]).unwrap().command;
-        let map = run(&["weacon", "map", "check-anchors"]).unwrap().command;
-        let rooted = run(&["weacon", "map", "check-anchors", "--root", "/srv/repo"]).unwrap();
-        let outline = run(&["weacon", "map", "--budget", "2000"]).unwrap().command;
-        let symbol = run(&["weacon", "map", "symbol", "a::b", "--root", "r"])
-            .unwrap()
-            .command;
         let verbose = run(&["weacon", "doctor", "--verbose"]).unwrap();
 
         assert_eq!(doctor.command, Command::Doctor);
@@ -206,24 +204,51 @@ mod tests {
         );
         let service = run(&["weacon", "service", "install"]).unwrap().command;
         assert_eq!((service.name(), service.log_name()), ("service", "cli.log"));
-        let map_of = |read, root: &str, budget| {
-            Command::Map(MapCommand {
-                read,
-                root: root.into(),
-                budget,
-            })
-        };
-        assert_eq!(map, map_of(Some(MapRead::CheckAnchors), ".", None));
-        assert_eq!((map.name(), map.log_name()), ("map", "cli.log"));
-        assert_eq!(
-            rooted.command,
-            map_of(Some(MapRead::CheckAnchors), "/srv/repo", None)
-        );
-        assert_eq!(outline, map_of(None, ".", Some(2000)));
-        let path = "a::b".to_owned();
-        assert_eq!(symbol, map_of(Some(MapRead::Symbol { path }), "r", None));
         assert!(!doctor.verbose);
         assert!(verbose.verbose);
+    }
+
+    #[test]
+    fn map_reads_take_a_root_anywhere_and_a_budget_where_they_answer() {
+        let map = |args: &[&str]| {
+            let args = [["weacon", "map"].as_slice(), args].concat();
+            run(&args).map(|cli| cli.command).ok()
+        };
+        let map_of = |command, root: &str, budget| {
+            Some(Command::Map(MapCommand {
+                command,
+                root: root.into(),
+                budget,
+            }))
+        };
+        let symbol = |budget| {
+            let path = "a::b".to_owned();
+            Some(MapSubcommand::Symbol { path, budget })
+        };
+        let check = || Some(MapSubcommand::CheckAnchors);
+
+        let outline = map(&["--budget", "2000"]);
+        let item = map(&["--root", "r", "symbol", "a::b", "--budget", "1500"]);
+        let checked = map(&["check-anchors"]).unwrap();
+
+        assert_eq!(outline, map_of(None, ".", Some(2000)));
+        assert_eq!(item, map_of(symbol(Some(1500)), "r", None));
+        assert_eq!(
+            map(&["symbol", "a::b", "--root", "r"]),
+            map_of(symbol(None), "r", None)
+        );
+        assert_eq!((checked.name(), checked.log_name()), ("map", "cli.log"));
+        assert_eq!(Some(checked), map_of(check(), ".", None));
+        assert_eq!(
+            map(&["--root", "/srv", "check-anchors"]),
+            map_of(check(), "/srv", None)
+        );
+        assert_eq!(
+            map(&["check-anchors", "--root", "/srv"]),
+            map_of(check(), "/srv", None)
+        );
+        let ignored = run(&["weacon", "map", "check-anchors", "--budget", "3"]).unwrap_err();
+        assert_eq!(ignored.kind(), ErrorKind::UnknownArgument);
     }
 
     #[test]
