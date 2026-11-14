@@ -114,6 +114,16 @@ fn apply(
     Ok(())
 }
 
+/// Whether `weacon service install` set up a service for this user.
+pub(crate) fn installed(env: Env<'_>) -> bool {
+    platform::USER_SERVICES && unit_path(env).is_some_and(|path| path.is_file())
+}
+
+/// Restarts the service, so it runs the binary now at its path.
+pub(crate) fn restart(runner: Runner<'_>) -> Result<(), Fault> {
+    run_step(&RESTART, runner)
+}
+
 fn run_step(step: &Step, runner: Runner<'_>) -> Result<(), Fault> {
     let failed = || Fault::new(code!("service.step_failed"), step.failed);
     match runner(step.program, step.args) {
@@ -238,6 +248,28 @@ mod tests {
         assert_eq!(quoted("/opt/$HOME"), None);
         let error = unit(Path::new("/usr/bin/weacon"), Path::new("/srv/$state")).unwrap_err();
         assert_eq!(error.code().as_str(), "service.bad_path");
+    }
+
+    #[test]
+    fn a_service_counts_as_installed_once_its_unit_is_there() {
+        let dir = weacon_testing::TempDir::new().unwrap();
+        let config = dir.to_str().unwrap();
+        let env = env(&[("XDG_CONFIG_HOME", config)]);
+        assert!(!installed(&env));
+        fs::create_dir_all(dir.join("systemd/user")).unwrap();
+        fs::write(dir.join("systemd/user").join(UNIT), "").unwrap();
+        assert_eq!(installed(&env), platform::USER_SERVICES);
+        assert!(!installed(&|_: &str| None));
+    }
+
+    #[test]
+    fn a_restart_restarts_the_unit_and_says_when_it_fails() {
+        let mut calls = Calls::new();
+        restart(&mut runner(&mut calls, "")).unwrap();
+        assert_eq!(calls, ["systemctl --user restart weacon.service"]);
+        let failing = "systemctl --user restart weacon.service";
+        let fault = restart(&mut runner(&mut Calls::new(), failing)).unwrap_err();
+        assert_eq!(fault.code().as_str(), "service.step_failed");
     }
 
     #[cfg(unix)]

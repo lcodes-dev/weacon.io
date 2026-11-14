@@ -25,10 +25,6 @@ mod session;
 mod status;
 #[cfg(test)]
 mod test_support;
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "`weacon update`, which uses it, comes next")
-)]
 mod update;
 mod workspaces;
 
@@ -94,5 +90,6 @@ fn run(app: &App, command: Command, env: platform::Env<'_>) -> Result<Outcome, F
             &mut io::stdin().lock(),
             &mut io::stdout().lock(),
         ),
+        Command::Update(command) => update::run(app, command, env, &mut io::stdout().lock()),
     }
 }

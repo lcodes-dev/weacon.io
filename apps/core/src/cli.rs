@@ -1,9 +1,9 @@
 use std::ffi::OsString;
 use std::path::PathBuf;
 
-use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
+use clap::{Args, CommandFactory, FromArgMatches, Parser, Subcommand};
 use weacon_appkit::version_text;
-use weacon_protocol::{AccessLevel, AgentKind, WorkspaceId};
+use weacon_protocol::{AccessLevel, AgentKind, UpdateSchedule, WorkspaceId};
 use weacon_version::Version;
 
 /// Weacon's core: runs agents for your chats and tasks.
@@ -56,6 +56,9 @@ pub(crate) enum Command {
     /// Work with the code map of a repository.
     #[command(subcommand)]
     Map(MapCommand),
+    /// Install the latest release over this binary, checking its signature first, and restart
+    /// the service.
+    Update(UpdateCommand),
 }
 
 fn agent(name: &str) -> Result<AgentKind, &'static str> {
@@ -71,6 +74,33 @@ pub(crate) enum ServiceCommand {
     Install,
     /// Stop the service and remove it.
     Uninstall,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Args)]
+pub(crate) struct UpdateCommand {
+    /// Install a release that speaks a new protocol too.
+    #[arg(long)]
+    pub(crate) yes: bool,
+    #[command(subcommand)]
+    pub(crate) action: Option<UpdateAction>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Subcommand)]
+pub(crate) enum UpdateAction {
+    /// Say whether a newer release is out, without installing it.
+    Check,
+    /// Choose when the daemon looks for releases: off, notify, daily or weekly.
+    Schedule {
+        #[arg(value_parser = schedule)]
+        schedule: UpdateSchedule,
+    },
+}
+
+fn schedule(name: &str) -> Result<UpdateSchedule, &'static str> {
+    serde_json::from_value(name.into())
+        .ok()
+        .filter(|schedule| *schedule != UpdateSchedule::Newer)
+        .ok_or("not a schedule: off, notify, daily or weekly")
 }
 
 #[derive(Debug, PartialEq, Eq, Subcommand)]
@@ -101,7 +131,8 @@ impl Command {
             | Self::Login { .. }
             | Self::Access { .. }
             | Self::ConnectChrome
-            | Self::Map(_) => "cli.log",
+            | Self::Map(_)
+            | Self::Update(_) => "cli.log",
             Self::NativeHost { .. } => "native-host.log",
         }
     }
@@ -117,6 +148,7 @@ impl Command {
             Self::ConnectChrome => "connect-chrome",
             Self::NativeHost { .. } => "native-host",
             Self::Map(_) => "map",
+            Self::Update(_) => "update",
         }
     }
 }
@@ -273,6 +305,44 @@ mod tests {
         ] {
             run(bad).unwrap_err();
         }
+    }
+
+    #[test]
+    fn update_installs_checks_or_sets_a_schedule() {
+        let update = |args: &[&str]| {
+            let Command::Update(update) = run(args).unwrap().command else {
+                panic!("not an update command");
+            };
+            update
+        };
+        let now = update(&["weacon", "update"]);
+        assert_eq!(
+            now,
+            UpdateCommand {
+                yes: false,
+                action: None
+            }
+        );
+        assert!(update(&["weacon", "update", "--yes"]).yes);
+        assert_eq!(
+            update(&["weacon", "update", "check"]).action,
+            Some(UpdateAction::Check)
+        );
+        for (name, schedule) in [
+            ("off", UpdateSchedule::Off),
+            ("notify", UpdateSchedule::Notify),
+            ("daily", UpdateSchedule::Daily),
+            ("weekly", UpdateSchedule::Weekly),
+        ] {
+            let chosen = update(&["weacon", "update", "schedule", name]).action;
+            assert_eq!(chosen, Some(UpdateAction::Schedule { schedule }));
+        }
+        run(&["weacon", "update", "schedule", "hourly"]).unwrap_err();
+        assert_eq!(run(&["weacon", "update"]).unwrap().command.name(), "update");
+        assert_eq!(
+            run(&["weacon", "update"]).unwrap().command.log_name(),
+            "cli.log"
+        );
     }
 
     #[test]
