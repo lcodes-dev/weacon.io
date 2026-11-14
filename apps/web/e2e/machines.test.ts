@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import type { MachineSummary, PairClaim, PairClaimed } from "../src/protocol.ts";
-import { FINGERPRINT, KEY, pinned, startPairing } from "./pairing.ts";
+import type { MachineSummary } from "../src/protocol.ts";
+import { FINGERPRINT, KEY, claim, pinned, startPairing } from "./pairing.ts";
 import { serve, signIn } from "./server.ts";
 
 test("a person pairs a machine by its code after checking its fingerprint, then unpairs it", { timeout: 600_000 }, async (t) => {
@@ -26,10 +26,7 @@ test("a person pairs a machine by its code after checking its fingerprint, then 
   await page.getByRole("button", { name: "Confirm" }).click();
   await page.getByText("Waiting for the machine to connect.").waitFor();
 
-  const claim: PairClaim = { pairing, secret };
-  const claimed = await page.request.post(new URL("/api/machines/pair/claim", page.url()).href, { data: claim });
-  const paired = (await claimed.json()) as PairClaimed;
-  assert.ok(paired.state === "paired");
+  const paired = await claim(page, { pairing, secret });
   const machines = page.getByRole("list", { name: "Machines" });
   await machines.getByText("Studio").waitFor();
   await page.getByText("Waiting for the machine to connect.").waitFor({ state: "detached" });

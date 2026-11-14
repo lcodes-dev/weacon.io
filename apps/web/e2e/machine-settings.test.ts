@@ -20,7 +20,7 @@ test("a person reads and changes a machine's settings for the open workspace, th
   const { page } = served;
   await signIn(served);
   await page.getByRole("button", { name: "Settings" }).click();
-  const { token } = await pair(page);
+  const token = await pair(page);
   const row = page.getByRole("list", { name: "Machines" }).getByRole("listitem").filter({ hasText: "Studio" });
   await row.waitFor();
   // With no workspace open, a machine's settings have no workspace to be for.

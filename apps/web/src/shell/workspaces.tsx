@@ -157,11 +157,11 @@ function NewWorkspace({ api, made }: { api: Api; made(workspace: WorkspaceSummar
  * without remounting what it holds when that changes.
  */
 function SocketScope({ workspace, children }: { workspace: WorkspaceId | undefined; children: ReactNode }) {
-  const [scope, setScope] = useState<{ workspace: WorkspaceId; socket: WorkspaceSocket }>();
-  if (scope?.workspace !== workspace) {
-    setScope(workspace === undefined ? undefined : { workspace, socket: new WorkspaceSocket(workspace) });
+  const [socket, setSocket] = useState<WorkspaceSocket>();
+  if (socket?.workspace !== workspace) {
+    setSocket(workspace === undefined ? undefined : new WorkspaceSocket(workspace));
   }
-  return <WorkspaceSocketContext value={scope?.workspace === workspace ? scope?.socket : undefined}>{children}</WorkspaceSocketContext>;
+  return <WorkspaceSocketContext value={socket?.workspace === workspace ? socket : undefined}>{children}</WorkspaceSocketContext>;
 }
 
 function Workspace({

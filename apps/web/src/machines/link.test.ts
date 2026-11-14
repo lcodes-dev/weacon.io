@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
+import type { Later } from "../connection.ts";
 import type { Incoming } from "../incoming.ts";
 import type { Envelope, MachineSettings } from "../protocol.ts";
-import { type Link, NO_ANSWER, RECONNECTING, type Wait, change, current } from "./link.ts";
+import { type Link, NO_ANSWER, RECONNECTING, change, current } from "./link.ts";
 
 const PLACE = { machine: "mc-1", workspace: "w-1" };
 const SETTINGS: MachineSettings = {
@@ -13,54 +14,39 @@ const SETTINGS: MachineSettings = {
   sign_ins: [{ agent: "claude", state: "signed_in" }],
 };
 
-/** A link whose core the test plays, and a clock it moves by hand. */
-function fake(): {
-  link: Link;
-  sent: Envelope[];
-  deliver(message: Incoming): void;
-  listeners(): number;
-  wait: Wait;
-  expire(): void;
-  failing(): void;
-  offline(): void;
-} {
+/** A link to the open workspace `w-1` whose core the test plays, and a clock it runs by hand. */
+function fake(how: { send?: "throws" | "dropped" } = {}) {
   const sent: Envelope[] = [];
   const handles = new Set<(message: Incoming) => void>();
-  const timers = new Set<() => void>();
+  const timers: Array<() => void> = [];
   let ids = 10;
-  let broken = false;
-  let live = true;
-  return {
-    link: {
-      send: (envelope) => {
-        if (broken) throw new Error("closed");
-        if (!live) return false;
-        sent.push(envelope);
-        return true;
-      },
-      subscribe: (handle) => {
-        handles.add(handle);
-        return () => handles.delete(handle);
-      },
-      nextId: () => ++ids,
+  const link: Link = {
+    workspace: "w-1",
+    send: (envelope) => {
+      if (how.send === "throws") throw new Error("closed");
+      if (how.send === "dropped") return false;
+      sent.push(envelope);
+      return true;
     },
+    subscribe: (handle) => {
+      handles.add(handle);
+      return () => handles.delete(handle);
+    },
+    nextId: () => ++ids,
+  };
+  const later: Later = (run) => {
+    timers.push(run);
+  };
+  return {
+    link,
+    later,
     sent,
-    deliver: (message) => {
+    deliver: (message: Incoming) => {
       for (const handle of [...handles]) handle(message);
     },
     listeners: () => handles.size,
-    wait: (run) => {
-      timers.add(run);
-      return () => timers.delete(run);
-    },
     expire: () => {
-      for (const run of [...timers]) run();
-    },
-    failing: () => {
-      broken = true;
-    },
-    offline: () => {
-      live = false;
+      for (const run of timers) run();
     },
   };
 }
@@ -70,53 +56,51 @@ function request(envelope: Envelope | undefined): string {
   return envelope.request;
 }
 
-test("a query names the machine and the workspace, and takes the answer to its own request", async () => {
+test("a query names the machine and the link's workspace, and takes the answer to its own request", async () => {
   const core = fake();
-  const asked = current(core.link, PLACE, core.wait);
+  const asked = current(core.link, "mc-1", core.later);
   const [query] = core.sent;
   core.deliver({ id: 1, type: "machine_settings_answer", request: "someone-else", ...PLACE, answer: { kind: "current", ...SETTINGS, reports: false } });
   core.deliver({ id: 2, type: "machine_settings_answer", request: request(query), ...PLACE, answer: { kind: "current", ...SETTINGS } });
+  core.expire();
 
   assert.deepEqual(await asked, { ok: true, value: SETTINGS });
-  assert.equal(query?.type, "machine_settings_query");
   assert.deepEqual({ ...query, request: "r" }, { id: 11, type: "machine_settings_query", request: "r", ...PLACE, query: { kind: "current" } });
   assert.equal(core.listeners(), 0);
 });
 
 test("a command carries its action, and an error for its envelope answers it", async () => {
   const core = fake();
-  const changed = change(core.link, PLACE, { kind: "set_access", level: "full" }, core.wait);
+  const changed = change(core.link, "mc-1", { kind: "set_access", level: "full" }, core.later);
   const [command] = core.sent;
   core.deliver({ id: 99, type: "error", code: "settings.unrelated", retryable: false });
   core.deliver({ id: command?.id ?? 0, type: "error", code: "settings.not_owner", retryable: false });
 
   assert.deepEqual(await changed, { ok: false, code: "settings.not_owner" });
-  assert.equal(command?.type, "machine_settings_command");
   assert.ok(command?.type === "machine_settings_command");
   assert.deepEqual(command.action, { kind: "set_access", level: "full" });
   assert.deepEqual({ machine: command.machine, workspace: command.workspace }, PLACE);
   assert.equal(core.listeners(), 0);
 });
 
-test("a core that never answers, a newer answer, a closed connection or a reconnecting one each end the request", async () => {
+test("no answer in time, a newer answer, a closed socket or a reconnecting one each end the request", async () => {
   const silent = fake();
-  const waiting = current(silent.link, PLACE, silent.wait);
+  const waiting = current(silent.link, "mc-1", silent.later);
   silent.expire();
   const newer = fake();
-  const odd = current(newer.link, PLACE, newer.wait);
+  const odd = current(newer.link, "mc-1", newer.later);
   newer.deliver({ id: 3, type: "machine_settings_answer", request: request(newer.sent[0]), ...PLACE, answer: { kind: "later" } as never });
-  const closed = fake();
-  closed.failing();
+  const closed = fake({ send: "throws" });
+  const dropped = fake({ send: "dropped" });
 
   assert.deepEqual(await waiting, { ok: false, code: NO_ANSWER });
   assert.deepEqual(await odd, { ok: false, code: "answer.malformed" });
-  assert.deepEqual(await current(closed.link, PLACE, closed.wait), { ok: false, code: "connection.refused" });
-  const reconnecting = fake();
-  reconnecting.offline();
-  assert.deepEqual(await change(reconnecting.link, PLACE, { kind: "set_reports", send: true }, reconnecting.wait), {
+  assert.deepEqual(await current(closed.link, "mc-1", closed.later), { ok: false, code: "connection.refused" });
+  assert.deepEqual(await change(dropped.link, "mc-1", { kind: "set_reports", send: true }, dropped.later), {
     ok: false,
     code: RECONNECTING,
   });
-  assert.equal(reconnecting.sent.length, 0);
-  assert.equal(silent.listeners() + newer.listeners() + closed.listeners() + reconnecting.listeners(), 0);
+  for (const core of [silent, newer, closed, dropped]) {
+    assert.equal(core.listeners(), 0);
+  }
 });

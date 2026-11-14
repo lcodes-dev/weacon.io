@@ -13,7 +13,7 @@ test("each failure reads as a plain sentence, and unknown ones as a general line
   assert.equal(problemText("machine.offline"), "This machine isn't connected. Start Weacon on it, then try again.");
   assert.equal(problemText("machine.no_answer"), "The machine didn't answer. Try again.");
   assert.equal(problemText("relay.busy"), "The server is busy. Try again in a moment.");
-  assert.equal(problemText("settings.reconnecting"), "The workspace is reconnecting. Try again in a moment.");
+  assert.equal(problemText("workspace.reconnecting"), "The workspace is reconnecting. Try again in a moment.");
   assert.equal(problemText("store.full"), "Something went wrong. Try again.");
   assert.equal(problemText("constructor"), "Something went wrong. Try again.");
   assert.equal(problemText(MALFORMED), "Something went wrong. Try again.");

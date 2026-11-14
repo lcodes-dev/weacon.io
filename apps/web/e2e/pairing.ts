@@ -38,17 +38,21 @@ export function pinned(page: Page, machine: string): Promise<unknown> {
   );
 }
 
-/** Pairs a machine through the page as a person would, then claims it as its core does. */
-export async function pair(page: Page): Promise<{ machine: string; token: string }> {
-  const { pairing, code, secret } = await startPairing(page);
-  await page.getByLabel("Code").fill(code);
-  await page.getByRole("button", { name: "Look up" }).click();
-  await page.getByRole("button", { name: "Confirm" }).click();
-  const claim: PairClaim = { pairing, secret };
+/** Claims a confirmed pairing as its core does, and gives the machine and its token. */
+export async function claim(page: Page, claim: PairClaim): Promise<{ machine: string; token: string }> {
   const claimed = await page.request.post(new URL("/api/machines/pair/claim", page.url()).href, { data: claim });
   const paired = (await claimed.json()) as PairClaimed;
   assert.ok(paired.state === "paired");
   return { machine: paired.machine, token: paired.token };
+}
+
+/** Pairs a machine through the page as a person would, then claims it; gives the core's token. */
+export async function pair(page: Page): Promise<string> {
+  const { pairing, code, secret } = await startPairing(page);
+  await page.getByLabel("Code").fill(code);
+  await page.getByRole("button", { name: "Look up" }).click();
+  await page.getByRole("button", { name: "Confirm" }).click();
+  return (await claim(page, { pairing, secret })).token;
 }
 
 /** A machine's core, connected to the server, that keeps `settings` and answers for them. */
