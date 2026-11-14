@@ -9,18 +9,24 @@ import { EMAIL, serve, signIn, signInAgain } from "./server.ts";
 
 const CHANGE_AFTER_MS = 500;
 
+/** What the feed stand-in does beyond welcoming each socket. */
+type Feed = {
+  /** What to send the nth socket for its workspace, a moment after its welcome. */
+  changes?: (opened: number, workspace: string) => Envelope[];
+  /** Whether to close the nth socket after its changes. */
+  close?: (opened: number) => boolean;
+  /** Capabilities to offer besides the feed and chats. */
+  also?: string[];
+  /** What to answer each envelope the page sends after its hello. */
+  answer?: (sent: Envelope) => Envelope[];
+};
+
 /**
- * Stands in for every workspace's feed: welcomes it offering chats and `also`, then sends what
- * `changes` gives the nth socket for its workspace, closing it after when `close` says so. Gives the
- * addresses opened and what the page sent after its hellos. Only pages loaded after this have their
- * sockets routed, so it reloads the page.
+ * Stands in for every workspace's feed: welcomes it offering chats and `also`, then does what
+ * `feed` says. Gives the addresses opened and what the page sent after its hellos. Only pages
+ * loaded after this have their sockets routed, so it reloads the page.
  */
-async function serveFeed(
-  page: Page,
-  changes: (opened: number, workspace: string) => Envelope[] = () => [],
-  close: (opened: number) => boolean = () => false,
-  also: string[] = [],
-): Promise<{ opened: string[]; sent: Envelope[] }> {
+async function serveFeed(page: Page, { changes = () => [], close = () => false, also = [], answer = () => [] }: Feed = {}): Promise<{ opened: string[]; sent: Envelope[] }> {
   const opened: string[] = [];
   const sent: Envelope[] = [];
   await page.routeWebSocket(/\/api\/workspaces\/[^/]+\/feed/, (socket) => {
@@ -30,6 +36,9 @@ async function serveFeed(
       const hello = JSON.parse(String(text)) as Envelope;
       if (hello.type !== "hello") {
         sent.push(hello);
+        for (const reply of answer(hello)) {
+          socket.send(JSON.stringify(reply));
+        }
         return;
       }
       const app = { name: "weacon-server", version: "0.0.0", commit: "0000000" };
@@ -382,11 +391,10 @@ test("a chat change on the feed reloads the list, and a feed that ends opens aga
   }));
   const change = (workspace: string, seq: number): Envelope => ({ id: 0, type: "workspace", workspace, seq, change: { kind: "chat_changed", chat: "c-9" } });
   // A burst of two changes and one of another workspace, then, once reopened, the same two again and one more.
-  const { opened } = await serveFeed(
-    page,
-    (nth, workspace) => [change(workspace, 7), change(workspace, 8), change("someone-else", 9), ...(nth > 1 ? [change(workspace, 9)] : [])],
-    (nth) => nth === 1,
-  );
+  const { opened } = await serveFeed(page, {
+    changes: (nth, workspace) => [change(workspace, 7), change(workspace, 8), change("someone-else", 9), ...(nth > 1 ? [change(workspace, 9)] : [])],
+    close: (nth) => nth === 1,
+  });
   await signIn(served);
   await page.getByRole("button", { name: "Personal" }).click();
   const chats = page.getByRole("navigation", { name: "Chats" });
@@ -403,7 +411,7 @@ test("the served app forwards its logs and crash reports on a feed that offers i
   const served = await serve();
   t.after(() => served.close());
   const { page } = served;
-  const { sent } = await serveFeed(page, undefined, undefined, ["log.forward"]);
+  const { sent } = await serveFeed(page, { also: ["log.forward"] });
   await signIn(served);
   await page.getByRole("button", { name: "Personal" }).click();
   await page.getByText("Connected").waitFor();
@@ -416,4 +424,84 @@ test("the served app forwards its logs and crash reports on a feed that offers i
 
   assert.deepEqual(sent[0], { id: 0, type: "log", level: "info", msg: "app started" });
   assert.doesNotMatch(JSON.stringify(sent), /MARKER/);
+});
+
+// A chat's snapshot as the server answers it: a prompt and Claude Code's answer, still running.
+function snapshot(asked: Envelope): Envelope[] {
+  if (asked.type !== "chat_query" || asked.query.kind !== "snapshot") {
+    return [];
+  }
+  const agent = { kind: "claude" as const, owner: { kind: "member" as const, member: "m-1" }, machine: "laptop" };
+  return [
+    {
+      id: asked.id,
+      type: "chat_answer",
+      workspace: asked.workspace,
+      chat: asked.chat,
+      answer: {
+        kind: "snapshot",
+        seq: 2,
+        runs: [{ run: "r-1", state: "running", agent }],
+        waiting: [],
+        events: [
+          { seq: 1, event: { kind: "prompt", request: "q-1", text: "Sort the pantry." } },
+          { seq: 2, event: { kind: "run", update: { run: "r-1", event: { event: "text", text: "Sorting the shelves now." } } } },
+        ],
+      },
+    },
+  ];
+}
+
+// The signed-in person's member in their first workspace, as the server says.
+async function member(page: Page): Promise<string> {
+  return page.evaluate(async () => {
+    const answer = (await (await fetch("/api/workspaces")).json()) as { workspaces: Array<{ member?: string }> };
+    return answer.workspaces[0]?.member ?? "";
+  });
+}
+
+test("a person's own chat shows its transcript, and takes their messages and Stop", { timeout: 600_000 }, async (t) => {
+  const served = await serve();
+  t.after(() => served.close());
+  const { page } = served;
+  const { sent } = await serveFeed(page, {
+    also: ["workspace.chat_commands"],
+    answer: (asked) =>
+      asked.type === "chat_command" ? [{ id: asked.id, type: "receipt", request: asked.request, state: "accepted" }] : snapshot(asked),
+  });
+  await signIn(served);
+  await page.getByRole("button", { name: "Personal" }).waitFor();
+  const owner = await member(page);
+  await listChats(page, () => ({ chats: [{ id: "c-1", title: "Sort the pantry", owner, machine: "laptop", state: "open", updated_at: 1 }] }));
+  await page.getByRole("button", { name: "Personal" }).click();
+  await page.getByRole("navigation", { name: "Chats" }).getByRole("button", { name: /Sort the pantry/ }).click();
+
+  await page.getByText("Sorting the shelves now.").waitFor();
+  await page.getByRole("combobox", { name: "Message" }).fill("Use the top shelf too.");
+  await page.getByRole("button", { name: "Send" }).click();
+  await page.getByRole("button", { name: "Stop" }).click();
+  await waitFor(() => sent.filter((envelope) => envelope.type === "chat_command").length === 2);
+
+  const actions = sent.flatMap((envelope) => (envelope.type === "chat_command" ? [envelope.action] : []));
+  assert.deepEqual(actions, [{ kind: "prompt", text: "Use the top shelf too." }, { kind: "interrupt" }]);
+  assert.ok(sent.some((envelope) => envelope.type === "chat_query" && envelope.query.kind === "subscribe"));
+});
+
+test("someone else's chat shows its transcript, without the message box or Stop", { timeout: 600_000 }, async (t) => {
+  const served = await serve();
+  t.after(() => served.close());
+  const { page } = served;
+  const { sent } = await serveFeed(page, { also: ["workspace.chat_commands"], answer: snapshot });
+  await signIn(served);
+  await listChats(page, () => ({ chats: [{ id: "c-1", title: "Sort the pantry", owner: "m-someone-else", machine: "laptop", state: "open", updated_at: 1 }] }));
+  await page.getByRole("button", { name: "Personal" }).click();
+  await page.getByRole("navigation", { name: "Chats" }).getByRole("button", { name: /Sort the pantry/ }).click();
+
+  await page.getByText("Sorting the shelves now.").waitFor();
+  assert.equal(await page.getByRole("combobox", { name: "Message" }).count(), 0);
+  assert.equal(await page.getByRole("button", { name: "Stop" }).count(), 0);
+  assert.deepEqual(
+    sent.filter((envelope) => envelope.type === "chat_command"),
+    [],
+  );
 });

@@ -15,6 +15,7 @@ import { Frame } from "./frame.tsx";
 import { STORE, remember } from "./last-workspace.ts";
 import "./shell.css";
 import { SignIn } from "./sign-in.tsx";
+import type { WorkspaceSocket } from "./workspace-socket.ts";
 import { Workspaces } from "./workspaces.tsx";
 
 type Screen =
@@ -94,11 +95,13 @@ function SignedIn({ api, log, account, signedOut }: { api: Api; log: Log; accoun
       </button>
     </span>
   );
-  const page = settings ? (
-    <Settings me={ME} account={{ email: account.email, signOut, signingOut: signingOut.busy }}>
-      <Machines api={api} pins={PINS} later={later} />
-    </Settings>
-  ) : undefined;
+  const page = settings
+    ? (socket: WorkspaceSocket | undefined) => (
+        <Settings me={ME} account={{ email: account.email, signOut, signingOut: signingOut.busy }}>
+          <Machines api={api} pins={PINS} later={later} socket={socket} />
+        </Settings>
+      )
+    : undefined;
   return <Workspaces api={api} log={log} who={who} page={page} />;
 }
 

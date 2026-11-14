@@ -1,5 +1,4 @@
 import { type Command, deliver } from "../chat/commands.ts";
-import { type Status, offers } from "../connection.ts";
 import type { ChatRef } from "../chat-ref.ts";
 import type { Envelope, RequestId } from "../protocol.ts";
 import type { Receipts, Settled } from "../receipts.ts";
@@ -50,12 +49,12 @@ export function after(sent: Sent, text: string, request: RequestId): After {
 export type Late = { request: RequestId; settled: Settled };
 
 /** Why the box can't send to `chatRef` now, or `undefined` when it can. */
-export function blocked(status: Status, chatRef: ChatRef | undefined): string | undefined {
+export function blocked(live: boolean, chatRef: ChatRef | undefined, sends: boolean): string | undefined {
   if (chatRef === undefined) {
     return "Pick a chat to send to.";
   }
-  if (status.state !== "live") {
+  if (!live) {
     return "Messages send once the server is connected.";
   }
-  return offers(status, "chat.send") ? undefined : "This server can't take messages yet.";
+  return sends ? undefined : "This server can't take messages yet.";
 }

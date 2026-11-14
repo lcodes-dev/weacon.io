@@ -1,6 +1,6 @@
-import { createContext, useContext, useSyncExternalStore } from "react";
+import { useMemo, useSyncExternalStore } from "react";
 
-import { HELLO_ID } from "../connection.ts";
+import { HELLO_ID, type WebCapability } from "../connection.ts";
 import type { Incoming } from "../incoming.ts";
 import type { Envelope, WorkspaceId } from "../protocol.ts";
 
@@ -38,7 +38,7 @@ export class WorkspaceSocket {
   }
 
   /** Whether the server offered `capability` when it last welcomed the feed. */
-  offers(capability: string): boolean {
+  offers(capability: WebCapability): boolean {
     return this.#offered.includes(capability);
   }
 
@@ -67,20 +67,16 @@ export class WorkspaceSocket {
   }
 }
 
-/** The open workspace's socket, for its pages. */
-export const WorkspaceSocketContext = createContext<WorkspaceSocket | undefined>(undefined);
+/** What a page of the open workspace uses of its socket. */
+export type Link = Pick<WorkspaceSocket, "workspace" | "send" | "nextId" | "subscribe" | "offers" | "watch">;
 
-/** The open workspace's socket; only a page of the open workspace may ask for it. */
-export function useWorkspaceSocket(): WorkspaceSocket {
-  const socket = useContext(WorkspaceSocketContext);
-  if (socket === undefined) {
-    throw new Error("useWorkspaceSocket outside an open workspace");
-  }
-  return socket;
+/** One socket per open `workspace`, the same for as long as it stays open; none while none is. */
+export function useSocketFor(workspace: WorkspaceId | undefined): WorkspaceSocket | undefined {
+  return useMemo(() => (workspace === undefined ? undefined : new WorkspaceSocket(workspace)), [workspace]);
 }
 
 /** Whether the server offers `capability` on `socket`, kept current as welcomes change it. */
-export function useOffers(socket: WorkspaceSocket | undefined, capability: string): boolean {
+export function useOffers(socket: Link | undefined, capability: WebCapability): boolean {
   return useSyncExternalStore(
     (changed) => socket?.watch(changed) ?? (() => {}),
     () => socket?.offers(capability) ?? false,

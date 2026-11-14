@@ -7,6 +7,7 @@ export type WebCapability =
   | "run.stream"
   | "workspace.feed"
   | "workspace.chats"
+  | "workspace.chat_commands"
   | "diff.view"
   | "chat.send"
   | "chat.events"

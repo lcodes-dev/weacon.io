@@ -6,18 +6,22 @@ import { newestFirst, stateNote } from "./chat-list.ts";
 /** The workspace's chats, newest first, with the one `chosen` marked; picking one calls `choose`. */
 export function ChatsNav({
   loaded,
+  none,
   chosen,
   choose,
 }: {
-  loaded: Loading<ChatList>;
+  /** The chats, or none to show, with `none` saying why. */
+  loaded: Loading<ChatList> | undefined;
+  none?: string;
   chosen: ChatId | undefined;
   choose: (chat: ChatId) => void;
 }) {
-  const chats = loaded.value === undefined ? undefined : newestFirst(loaded.value.chats);
+  const chats = loaded?.value === undefined ? undefined : newestFirst(loaded.value.chats);
   return (
     <nav className="chats" aria-label="Chats">
       <h2>Chats</h2>
-      {loaded.loading && <p className="muted">Loading</p>}
+      {loaded === undefined && <p className="muted">{none}</p>}
+      {loaded?.loading === true && <p className="muted">Loading</p>}
       {chats?.length === 0 && <p className="muted">No chats yet. Connect a machine to start one.</p>}
       {chats !== undefined && chats.length > 0 && (
         <ul>
@@ -37,7 +41,7 @@ export function ChatsNav({
           })}
         </ul>
       )}
-      {loaded.problem !== undefined && <Problem text={loaded.problem} retry={() => void loaded.load()} />}
+      {loaded?.problem !== undefined && <Problem text={loaded.problem} retry={() => void loaded.load()} />}
     </nav>
   );
 }
