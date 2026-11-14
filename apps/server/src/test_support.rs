@@ -13,6 +13,7 @@ use weacon_testing::TempDir;
 use weacon_version::Version;
 
 pub(crate) mod data;
+pub(crate) mod proposals;
 pub(crate) mod requests;
 pub(crate) mod socket;
 

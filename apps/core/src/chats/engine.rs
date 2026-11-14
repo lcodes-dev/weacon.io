@@ -147,7 +147,7 @@ struct PendingEnd {
 #[derive(Debug, PartialEq, Eq)]
 struct PendingInterrupt {
     request: RequestId,
-    turn: RequestId,
+    turn: Option<RequestId>,
 }
 
 pub(crate) struct Engine<A> {
