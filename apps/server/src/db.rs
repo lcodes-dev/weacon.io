@@ -4,6 +4,7 @@
 mod account;
 mod backup;
 mod changes;
+mod docs;
 mod owned;
 mod schema;
 mod tasks;
@@ -16,12 +17,13 @@ use std::time::Duration;
 
 use sqlx::SqlitePool;
 use sqlx::sqlite::{SqliteConnectOptions, SqliteConnection, SqlitePoolOptions, SqliteSynchronous};
+use weacon_model::Revision;
 use weacon_observability::Fault;
-use weacon_protocol::{MemberId, WorkspaceId, code};
+use weacon_protocol::{AccountId, Author, MemberId, WorkspaceId, code};
 
-pub(crate) use account::Attempt;
 #[cfg(test)]
 pub(crate) use account::CODE_LIFETIME;
+pub(crate) use account::{Account, Attempt};
 pub(crate) use backup::restore;
 pub(crate) use owned::NewWorkspace;
 pub(crate) use workspace::Workspace;
@@ -115,6 +117,15 @@ impl Db {
         Ok(found.map(|_| Workspace::new(self.clone(), id.clone())))
     }
 
+    /// The handle to the account `id`, which reaches only that account's own rows; the id
+    /// comes from a session, so the account is there.
+    pub(crate) fn account(&self, id: AccountId) -> Account {
+        Account {
+            db: self.clone(),
+            id,
+        }
+    }
+
     /// Closes every connection, so the file can be copied or removed.
     pub(crate) async fn close(&self) {
         self.readers.close().await;
@@ -148,6 +159,30 @@ fn path_unusable() -> Fault {
 /// A value read back from the database, such as an id, checked like one that arrived.
 fn stored<T: TryFrom<String>>(value: String) -> Result<T, Fault> {
     T::try_from(value).map_err(|_| unreadable())
+}
+
+fn stored_version(version: i64) -> Result<Revision, Fault> {
+    u64::try_from(version)
+        .map(Revision::new)
+        .map_err(|_| unreadable())
+}
+
+/// How `author` is stored, unless it is one from a newer peer.
+fn author_columns(author: &Author) -> Option<(&'static str, &MemberId)> {
+    match author {
+        Author::Person { member } => Some(("person", member)),
+        Author::Agent { owner } => Some(("agent", owner)),
+        Author::Newer => None,
+    }
+}
+
+fn stored_author(kind: &str, member: String) -> Result<Author, Fault> {
+    let member = stored(member)?;
+    match kind {
+        "person" => Ok(Author::Person { member }),
+        "agent" => Ok(Author::Agent { owner: member }),
+        _ => Err(unreadable()),
+    }
 }
 
 fn unreadable() -> Fault {
