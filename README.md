@@ -207,6 +207,8 @@ When the agent asks to use a tool, the chat says "Asks to use a tool" with **All
 
 **Stop** ends the agent's turn. Send another prompt in the same chat to carry on. Reloading the page keeps the chat as it was.
 
+The server keeps only a chat's messages: the prompts, the agent's text, the run's state and its permission prompts. Tool calls and changes aren't kept, so the chat shows text only. Only the person who started a chat can prompt it; the workspace's other members can read it. The machine must be connected when you send: if it isn't, the prompt is refused and nothing waits to run later, so send it again once the machine is back.
+
 While the agent isn't signed in on that machine, the form says "Claude Code isn't signed in on this machine." and **Send** stays off. **Sign in from Settings** opens Settings with that machine's settings open: choose **Sign in** next to Claude Code, then **Back**. A Codex that isn't installed shows "Codex isn't installed on this machine."
 
 Codex works differently from Claude Code: it asks you before every command and every file change, whatever the workspace's access level. Weacon's start-of-session hook for it runs only after you have reviewed it once in Codex.
