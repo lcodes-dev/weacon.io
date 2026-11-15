@@ -3,9 +3,8 @@
 
 pub(crate) const TOKEN_MAX: usize = 64;
 
-// The schema's form of `is_token`, which also refuses a leading `-`; a test keeps the two in
-// step.
-pub(crate) const TOKEN_PATTERN: &str = r"^[A-Za-z0-9_-]+$";
+// The schema's form of `is_token`; a test keeps the two in step.
+pub(crate) const TOKEN_PATTERN: &str = r"^[A-Za-z0-9_][A-Za-z0-9_-]*$";
 
 /// 1–64 ASCII letters, digits, `-` or `_`, not starting with `-`, so no command line reads one
 /// as an option.
@@ -161,14 +160,10 @@ mod tests {
             assert!(pattern.is_match(good), "{good}");
         }
         let too_long = "a".repeat(TOKEN_MAX + 1);
-        for bad in ["", "a b", "a/b", "é", too_long.as_str()] {
+        for bad in ["", "a b", "a/b", "é", "-", "-a", "--help", too_long.as_str()] {
             assert!(!is_token(bad), "{bad}");
             // The schema states the length limit apart from the pattern.
             assert!(bad.len() > TOKEN_MAX || !pattern.is_match(bad), "{bad}");
-        }
-        for option in ["-", "-a", "--help"] {
-            assert!(!is_token(option), "{option}");
-            assert!(pattern.is_match(option), "{option}");
         }
     }
 }
