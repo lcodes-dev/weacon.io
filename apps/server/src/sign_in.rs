@@ -110,8 +110,9 @@ async fn send_code(
     };
     if shared.db.start_challenge(&new).await? {
         let text = format!(
-            "Your code is {}. It works for 10 minutes; if you didn't ask for it, ignore this mail.",
-            shown(&code)
+            "Your code is {}. It works for {} minutes; if you didn't ask for it, ignore this mail.",
+            shown(&code),
+            CODE_LIFETIME / 60
         );
         shared.log.mail(email.as_str(), "Your Weacon sign-in code", &text);
     }
@@ -257,8 +258,9 @@ mod tests {
         let finish = finish_body("ada@example.com", &challenge, &code);
         let (finished, body) = finish_with(server.address, &finish).await;
         let token = body["token"].as_str().unwrap();
-        let records = fixture.records.lock().unwrap().clone();
-        let mail = records.iter().find(|record| record.msg == "mail printed");
+        let subject = fixture.records.lock().unwrap().iter().any(|record| {
+            record.msg == "mail printed" && record.fields["subject"] == "Your Weacon sign-in code"
+        });
         let w1 = fixture
             .shared
             .db
@@ -271,7 +273,7 @@ mod tests {
 
         assert_eq!(started, "http/1.1 202 accepted");
         assert_eq!(to, "ada@example.com");
-        assert_eq!(mail.unwrap().fields["subject"], "Your Weacon sign-in code");
+        assert!(subject);
         assert_eq!(code.len(), 9);
         assert_eq!(code.get(4..5), Some("-"));
         assert_eq!(normalised(&code).len(), 8);

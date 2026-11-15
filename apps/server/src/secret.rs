@@ -10,7 +10,7 @@ use weacon_observability::{Fault, Logger};
 use weacon_protocol::{code, to_hex};
 
 /// The server's own key, which pairing codes are hashed with and machine tokens derived from:
-/// a stolen database alone can't be searched for its codes.
+/// a stolen database alone can't be searched for its pairing codes.
 pub(crate) struct Secret(Hmac<Sha256>);
 
 impl Secret {

@@ -87,8 +87,7 @@ impl Logger {
         self.write(Level::Fatal, msg, fields);
     }
 
-    /// Prints a mail it would send, whole: the one record whose fields aren't redacted, until
-    /// the server sends mail itself.
+    /// Logs a mail whole: the one record whose fields aren't redacted.
     pub fn mail(&self, to: &str, subject: &str, text: &str) {
         let fields = [("to", to), ("subject", subject), ("text", text)]
             .map(|(key, value)| (key.to_owned(), Value::from(value)));
