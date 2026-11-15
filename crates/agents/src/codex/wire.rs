@@ -471,9 +471,7 @@ mod tests {
             };
             (line["method"].clone(), line["params"].clone())
         };
-        let params = |sandbox: &str| {
-            json!({ "approvalPolicy": "untrusted", "approvalsReviewer": "user", "sandbox": sandbox })
-        };
+        let params = |sandbox: &str| json!({ "approvalPolicy": "untrusted", "approvalsReviewer": "user", "sandbox": sandbox });
 
         for (access, sandbox) in [
             (AccessLevel::ReadOnly, "read-only"),
