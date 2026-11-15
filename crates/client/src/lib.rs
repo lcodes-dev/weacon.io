@@ -303,6 +303,42 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn what_is_sent_after_the_welcome_reaches_the_daemon_as_one_frame() {
+        let dir = TempDir::new().unwrap();
+        let socket = dir.join("weacon.sock");
+        let server = Server::bind(&socket).unwrap();
+        let welcome = Envelope {
+            id: 1,
+            message: Message::Welcome(Welcome {
+                app: app("weacon-core"),
+                capabilities: Vec::new(),
+            }),
+        };
+        let daemon = tokio::spawn(async move {
+            let mut stream = BufReader::new(server.accept().await.unwrap());
+            let (mut hello, mut sent) = (String::new(), String::new());
+            stream.read_line(&mut hello).await.unwrap();
+            stream
+                .write_all(&encode_line(&welcome).unwrap())
+                .await
+                .unwrap();
+            stream.read_line(&mut sent).await.unwrap();
+            serde_json::from_str::<Envelope>(&sent).unwrap()
+        });
+        let envelope = Envelope {
+            id: 2,
+            message: update("Hi"),
+        };
+
+        let (_, mut connection) = Connection::open(&socket, app("weacon-core"), Vec::new())
+            .await
+            .unwrap();
+        connection.send(&envelope).await.unwrap();
+
+        assert_eq!(daemon.await.unwrap(), envelope);
+    }
+
+    #[tokio::test]
     async fn a_daemon_that_hangs_up_gave_no_answer() {
         let dir = TempDir::new().unwrap();
         let socket = dir.join("weacon.sock");

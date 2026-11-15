@@ -162,12 +162,7 @@ fn answered(
 /// # Errors
 /// When the folder can't be read.
 pub(crate) fn map_or_empty(call: &McpCall, folder: &Path) -> Result<String, Fault> {
-    let (map, _) = index_folder(folder)?;
-    Ok(if map.crates.is_empty() {
-        String::new()
-    } else {
-        tools::answer_from(call, &map, &[])
-    })
+    answer(call, folder).map(tools::or_empty)
 }
 
 /// The code map of the repository at `root`, and how many files it read; it blocks.

@@ -82,6 +82,12 @@ export type Envelope = {
     type: "proposal_command";
   } & ProposalCommand
   | {
+    type: "map_query";
+  } & MapQuery
+  | {
+    type: "map_answer";
+  } & MapAnswer
+  | {
     type: "symbols_query";
   } & SymbolsQuery
   | {
@@ -828,6 +834,46 @@ export type MachineSummary = {
   os: MachineOs;
   paired_at: number;
 };
+
+/**
+ * The core's answer to a [`MapQuery`], under its envelope id.
+ */
+export type MapAnswer = {
+  /**
+   * None when the core has no map to give for that token and folder.
+   */
+  text?: string;
+};
+
+/**
+ * From a run's agent, under `McpCall::Map` or `McpCall::Hotspots`, or its hook, under
+ * `MapQueryKind::Map`: how much of the map it wants.
+ */
+export type MapArgs = {
+  /**
+   * The most bytes the answer may hold; the core clamps it to its own bounds.
+   */
+  budget?: number;
+};
+
+/**
+ * From a hook that an agent the core started runs, to that core over its socket, under
+ * `map.read`: the code map of `folder`, in the workspace of the run whose MCP token it holds.
+ */
+export type MapQuery = {
+  folder: string;
+  query: MapQueryKind;
+  /**
+   * The run's token for the core's MCP.
+   */
+  token: string;
+};
+
+export type MapQueryKind = (
+  | {
+    kind: "map";
+  } & MapArgs
+);
 
 /**
  * The part of a [`Snippet`] from `start` up to `end`, counted in UTF-16 code units as a

@@ -341,6 +341,32 @@
       "properties": {
         "type": {
           "type": "string",
+          "const": "map_query"
+        }
+      },
+      "$ref": "#/$defs/MapQuery",
+      "required": [
+        "type"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "map_answer"
+        }
+      },
+      "$ref": "#/$defs/MapAnswer",
+      "required": [
+        "type"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
           "const": "symbols_query"
         }
       },
@@ -2035,6 +2061,67 @@
         "os",
         "key",
         "paired_at"
+      ]
+    },
+    "MapAnswer": {
+      "description": "The core's answer to a [`MapQuery`], under its envelope id.",
+      "type": "object",
+      "properties": {
+        "text": {
+          "description": "None when the core has no map to give for that token and folder.",
+          "type": "string"
+        }
+      }
+    },
+    "MapArgs": {
+      "description": "From a run's agent, under `McpCall::Map` or `McpCall::Hotspots`, or its hook, under\n`MapQueryKind::Map`: how much of the map it wants.",
+      "type": "object",
+      "properties": {
+        "budget": {
+          "description": "The most bytes the answer may hold; the core clamps it to its own bounds.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        }
+      }
+    },
+    "MapQuery": {
+      "description": "From a hook that an agent the core started runs, to that core over its socket, under\n`map.read`: the code map of `folder`, in the workspace of the run whose MCP token it holds.",
+      "type": "object",
+      "properties": {
+        "folder": {
+          "type": "string"
+        },
+        "query": {
+          "$ref": "#/$defs/MapQueryKind"
+        },
+        "token": {
+          "description": "The run's token for the core's MCP.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "token",
+        "folder",
+        "query"
+      ]
+    },
+    "MapQueryKind": {
+      "oneOf": [
+        {
+          "description": "Where to begin reading the folder's code, as the MCP's `map` tool answers.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "map"
+            }
+          },
+          "$ref": "#/$defs/MapArgs",
+          "required": [
+            "kind"
+          ]
+        }
       ]
     },
     "Mark": {

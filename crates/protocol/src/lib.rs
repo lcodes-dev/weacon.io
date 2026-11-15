@@ -11,6 +11,7 @@ mod frame;
 mod hex;
 mod log;
 mod machine;
+mod map;
 mod mcp;
 mod message;
 mod pick;
@@ -58,6 +59,7 @@ pub use machine::{
     MachineId, MachineKey, MachineList, MachineName, MachineOs, MachineSummary, PairClaim,
     PairClaimed, PairConfirm, PairLookup, PairPending, PairStart, PairStarted, PairingId,
 };
+pub use map::{MapAnswer, MapQuery, MapQueryKind};
 pub use mcp::{FlowArgs, MapArgs, McpCall, SearchArgs, SymbolArgs};
 pub use message::{App, Envelope, ErrorBody, Hello, Message, PROTOCOL, Welcome};
 pub use pick::Pick;
