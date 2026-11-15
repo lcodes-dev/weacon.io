@@ -1,4 +1,4 @@
-import type { AgentRef, ChatEntry, RunEvent, RunId, RunState, RunStatus } from "../protocol.ts";
+import type { AgentRef, ChatEntry, Code, RunEvent, RunId, RunState, RunStatus } from "../protocol.ts";
 import { EMPTY_TRANSCRIPT, type Transcript, apply } from "../transcript/transcript.ts";
 
 /** A permission prompt, shown after `at` rows of its turn, and how the log says it ended. */
@@ -11,7 +11,7 @@ export type Ask = { prompt: number; tool: string; at: number; state: "open" | "c
 export type Turn = { key: string; run: RunId; transcript: Transcript; asks: readonly Ask[]; open: boolean };
 
 /** What the screen shows, in order: people's prompts, agents' turns, and the commands their machine refused. */
-export type Item = { kind: "prompt"; seq: number; text: string } | { kind: "turn"; turn: Turn } | { kind: "refused"; seq: number; code: string };
+export type Item = { kind: "prompt"; seq: number; text: string } | { kind: "turn"; turn: Turn } | { kind: "refused"; seq: number; code: Code };
 
 /** A run as its chat's log records it. */
 export type Run = { state: RunState; agent: AgentRef | undefined };

@@ -29,7 +29,7 @@ struct Kept {
 }
 
 /// The command an envelope carried.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub(crate) struct Asked {
     workspace: WorkspaceId,
     chat: ChatId,
@@ -95,15 +95,17 @@ pub(crate) async fn take(
     if matches!(outcome, Outcome::Accepted | Outcome::Newer) {
         return Ok(());
     }
-    let ended = match shared.db.find_workspace(&asked.workspace).await {
-        Ok(Some(place)) => end(shared, &place, &asked.chat, &asked.request, outcome).await,
-        Ok(None) => Ok(()),
-        Err(fault) => Err(fault),
-    };
-    if let Err(fault) = ended {
+    if let Err(fault) = failed(shared, &asked, outcome).await {
         warn(shared, machine, &asked, "chat refusal not kept", &fault);
     }
     Ok(())
+}
+
+async fn failed(shared: &Shared, asked: &Asked, outcome: Outcome) -> Result<(), Fault> {
+    let Some(place) = shared.db.find_workspace(&asked.workspace).await? else {
+        return Ok(());
+    };
+    end(shared, &place, &asked.chat, &asked.request, outcome).await
 }
 
 /// Ends `request` to `chat` with `outcome`, a final receipt the server writes for the chat's
@@ -130,7 +132,7 @@ async fn refused(shared: &Shared, asked: &Asked) -> Result<(), Fault> {
     let Some(place) = shared.db.find_workspace(&asked.workspace).await? else {
         return Ok(());
     };
-    place.mark_refused(&asked.request, true).await
+    place.mark_refused(&asked.request).await
 }
 
 fn warn(shared: &Shared, machine: &MachineId, asked: &Asked, event: &'static str, fault: &Fault) {

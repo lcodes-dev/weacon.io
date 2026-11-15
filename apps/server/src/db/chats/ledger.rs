@@ -137,16 +137,25 @@ impl Workspace {
         Ok(())
     }
 
-    /// Marks `request` refused for now by its machine's core, or sent it again.
-    pub(crate) async fn mark_refused(
-        &self,
-        request: &RequestId,
-        refused: bool,
-    ) -> Result<(), Fault> {
+    /// Marks `request` refused for now by its machine's core.
+    pub(crate) async fn mark_refused(&self, request: &RequestId) -> Result<(), Fault> {
         sqlx::query(
-            "UPDATE chat_requests SET refused = ? WHERE workspace_id = ? AND request_id = ?",
+            "UPDATE chat_requests SET refused = 1 WHERE workspace_id = ? AND request_id = ?",
         )
-        .bind(refused)
+        .bind(self.id.as_str())
+        .bind(request.as_str())
+        .execute(&self.db.writer)
+        .await
+        .map_err(failed)?;
+        Ok(())
+    }
+
+    /// Marks `request` sent, before it is sent again, so only its core's next answer counts.
+    pub(crate) async fn sending(&self, request: &RequestId) -> Result<(), Fault> {
+        sqlx::query(
+            "UPDATE chat_requests SET sent = 1, refused = 0
+             WHERE workspace_id = ? AND request_id = ?",
+        )
         .bind(self.id.as_str())
         .bind(request.as_str())
         .execute(&self.db.writer)

@@ -62,7 +62,7 @@ test("a command its machine refused shows why, in place, and an unknown reason i
   assert.deepEqual(lines(chat), [
     { key: "p2", kind: "prompt", text: "Fix it" },
     { key: "f3", kind: "refused", text: "The agent is busy with this chat. Try again once it's done." },
-    { key: "f4", kind: "refused", text: "The machine couldn't do this." },
+    { key: "f4", kind: "refused", text: "Something went wrong. Try again." },
   ]);
   const done: ChatEntry = { seq: 3, event: { kind: "receipt", receipt: { request: "q-2", state: "completed" } } };
   assert.equal(lines(chatOf([said(2, "Fix it"), done], 3)).length, 1);

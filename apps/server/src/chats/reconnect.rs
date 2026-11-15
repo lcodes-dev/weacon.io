@@ -44,45 +44,36 @@ async fn follow(shared: Shared, mut connected: Receiver<Connected>) {
 
 async fn pick_up(shared: Shared, connected: Connected) {
     let machine = ("machine_id", connected.machine.as_str().into());
-    let route = Route::open_now(&shared, &connected.machine);
-    match resend(&shared, &connected, route.as_ref()).await {
-        Err(fault) => {
-            let fields = [machine, ("err", Field::error(&fault))];
-            shared.log.warn("chats not picked up", &fields);
-            // Connecting again, it is picked up again.
-            if let Some(route) = route {
-                route.close(&shared);
+    let Some(route) = Route::open_now(&shared, &connected.machine) else {
+        // A core that serves no chats is sent none, and its first prompts wait.
+        match unserved(&shared, &connected).await {
+            Ok(0) => {}
+            Ok(unsent) => {
+                let fields = [machine, ("unsent", unsent.into())];
+                shared.log.warn("chats not all picked up", &fields);
+            }
+            Err(fault) => {
+                let fields = [machine, ("err", Field::error(&fault))];
+                shared.log.warn("chats not picked up", &fields);
             }
         }
-        Ok(0) => {}
-        Ok(unsent) => {
-            let fields = [machine, ("unsent", unsent.into())];
-            shared.log.warn("chats not all picked up", &fields);
-        }
+        return;
+    };
+    if let Err(fault) = resend(&shared, &connected, &route).await {
+        let fields = [machine, ("err", Field::error(&fault))];
+        shared.log.warn("chats not picked up", &fields);
+        // Connecting again, it is picked up again.
+        route.close(&shared);
     }
 }
 
-/// Follows again `connected`'s unsettled chats in its owner's workspaces over `route` and sends
-/// again their commands sent within [`RESEND_WITHIN`], which the core does once, oldest first;
-/// one its core refused for now and too old to send again ends in a failed receipt. A core that
-/// serves no chats has no route and is sent none, and gives how many it would have followed;
-/// one that can't take them all is `machine.offline`, and its link is closed so they are all
-/// sent again.
-async fn resend(
-    shared: &Shared,
-    connected: &Connected,
-    route: Option<&Route>,
-) -> Result<usize, Fault> {
+/// Follows again `connected`'s unsettled chats in its owner's workspaces over `route`, then
+/// sends again their open commands, oldest first, and the first prompts it never got.
+async fn resend(shared: &Shared, connected: &Connected, route: &Route) -> Result<(), Fault> {
     let Connected { machine, owner } = connected;
-    let mut unserved = 0_usize;
     for summary in shared.db.account(owner.clone()).workspaces().await? {
         let workspace = shared.db.workspace(&summary.id).await?;
-        let unsettled = workspace.unsettled_on(machine).await?;
-        let Some(route) = route else {
-            unserved += unsettled.len() + workspace.unmade_on(machine).await?.len();
-            continue;
-        };
-        for (chat, core_seq) in unsettled {
+        for (chat, core_seq) in workspace.unsettled_on(machine).await? {
             let open = workspace.open_requests(&chat).await?;
             route
                 .deliver(shared, link::follow(workspace.id(), &chat, core_seq))
@@ -92,6 +83,18 @@ async fn resend(
             }
         }
         first_prompts(shared, &workspace, route).await?;
+    }
+    Ok(())
+}
+
+// How many chats `connected` would have been sent, had its core served chats.
+async fn unserved(shared: &Shared, connected: &Connected) -> Result<usize, Fault> {
+    let Connected { machine, owner } = connected;
+    let mut unserved = 0_usize;
+    for summary in shared.db.account(owner.clone()).workspaces().await? {
+        let workspace = shared.db.workspace(&summary.id).await?;
+        unserved += workspace.unsettled_on(machine).await?.len();
+        unserved += workspace.unmade_on(machine).await?.len();
     }
     Ok(unserved)
 }
@@ -107,7 +110,7 @@ async fn again(
 ) -> Result<(), Fault> {
     let command = request.command;
     if recent(shared, request.sent_at) {
-        workspace.mark_refused(&command.request, false).await?;
+        workspace.sending(&command.request).await?;
         return route.deliver(shared, Message::ChatCommand(command)).await;
     }
     if !request.refused {
@@ -119,11 +122,8 @@ async fn again(
     answers::end(shared, workspace, chat, &command.request, outcome).await
 }
 
-/// Sends `route`'s machine the first prompts in `workspace` it never got, as when the server
-/// stopped before sending one, and takes back the chats of those not sent within
-/// [`RESEND_WITHIN`]. A first prompt is marked sent before it is, so its chat failing elsewhere
-/// meanwhile can't be taken back, and its chat is made only once it was, so no later prompt
-/// goes before it.
+/// Sends `route`'s machine the first prompts in `workspace` it never got, and takes back the
+/// chats of those not sent within [`RESEND_WITHIN`].
 async fn first_prompts(shared: &Shared, workspace: &Workspace, route: &Route) -> Result<(), Fault> {
     for (chat, owner) in workspace.unmade_on(route.machine()).await? {
         let first = workspace.open_requests(&chat).await?.into_iter().next();
@@ -132,8 +132,8 @@ async fn first_prompts(shared: &Shared, workspace: &Workspace, route: &Route) ->
             continue;
         };
         let request = first.command.request.clone();
-        workspace.mark_sent(&request, true).await?;
-        workspace.mark_refused(&request, false).await?;
+        // Marked sent before it is, so its chat failing elsewhere meanwhile can't be taken back.
+        workspace.sending(&request).await?;
         let sent = route
             .deliver(shared, Message::ChatCommand(first.command))
             .await;
@@ -141,6 +141,7 @@ async fn first_prompts(shared: &Shared, workspace: &Workspace, route: &Route) ->
             workspace.mark_sent(&request, false).await?;
             return Err(fault);
         }
+        // Made only once it was sent, so no later prompt goes before it.
         if !workspace.chat_made(&chat, &owner).await? {
             continue;
         }
@@ -181,8 +182,10 @@ mod tests {
 
     // What `connected` is resent over the connection it has open now.
     async fn resend_now(shared: &Shared, connected: &Connected) -> Result<usize, Fault> {
-        let route = Route::open_now(shared, &connected.machine);
-        resend(shared, connected, route.as_ref()).await
+        let Some(route) = Route::open_now(shared, &connected.machine) else {
+            return unserved(shared, connected).await;
+        };
+        resend(shared, connected, &route).await.map(|()| 0)
     }
 
     fn connected(ada: &Ada) -> Connected {
@@ -334,7 +337,7 @@ mod tests {
 
         assert_eq!(resend_now(shared, &connected(&ada)).await.unwrap(), 0);
 
-        shared.links.close(&ada.machine);
+        Route::open_now(shared, &ada.machine).unwrap().close(shared);
         // Its follow, its first prompt and every command after it.
         assert_eq!(taken.await.unwrap(), crate::links::QUEUE + 2);
     }
@@ -484,7 +487,7 @@ mod tests {
         make(workspace, "c-1", "m1", NOW - 601).await.unwrap();
         make(workspace, "c-2", "m1", NOW - 601).await.unwrap();
         workspace.move_chats_to(&ada.machine).await;
-        workspace.mark_refused(&id("r-c-1"), true).await.unwrap();
+        workspace.mark_refused(&id("r-c-1")).await.unwrap();
         let mut feeds = shared.changes.subscribe();
         let mut attached = attach(shared, &ada, &["chat.serve"]);
 
@@ -521,7 +524,7 @@ mod tests {
         begin(workspace, "c-2", "m1", NOW).await.unwrap();
         workspace.move_chats_to(&ada.machine).await;
         for request in ["r-c-1", "r-c-2"] {
-            workspace.mark_refused(&id(request), true).await.unwrap();
+            workspace.mark_refused(&id(request)).await.unwrap();
         }
         let _attached = attach(shared, &ada, &["chat.serve"]);
 

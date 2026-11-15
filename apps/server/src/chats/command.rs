@@ -148,7 +148,7 @@ async fn go_on(
         Recorded::Same { open: false } => return Ok(()),
         Recorded::New => {}
         // Sent again, whatever its core answered before: its answer to this send counts.
-        Recorded::Same { open: true } => workspace.mark_refused(&command.request, false).await?,
+        Recorded::Same { open: true } => workspace.sending(&command.request).await?,
     }
     let sent = [
         Message::ChatCommand(command.clone()),
@@ -260,7 +260,7 @@ mod tests {
         assert!(workspace.has_request(&id("r-2")).await.unwrap());
         assert_eq!(sent(&mut serving).len(), 2);
         // Its core refused it for now; sent again, only its next answer counts.
-        workspace.mark_refused(&id("r-2"), true).await.unwrap();
+        workspace.mark_refused(&id("r-2")).await.unwrap();
         let retried = take(
             &ada.member,
             &ada.asker,

@@ -39,10 +39,10 @@ pub(crate) struct Route {
 impl Route {
     /// `machine`'s connection open now, if its core serves chats.
     pub(crate) fn open_now(shared: &Shared, machine: &MachineId) -> Option<Self> {
-        let sender = shared.links.sender(machine, &Capability::new(SERVE))?;
+        let to = shared.links.sender(machine, &Capability::new(SERVE))?;
         Some(Self {
             machine: machine.clone(),
-            to: sender.downgrade(),
+            to,
         })
     }
 

@@ -2,7 +2,7 @@
 
 use super::*;
 
-// The envelope Ada's machine is sent next past the follows, and what it holds.
+// The id of the next envelope holding a chat command that Ada's machine is sent.
 async fn command_sent(core: &mut Socket) -> u32 {
     loop {
         let envelope = next_envelope(core).await;
