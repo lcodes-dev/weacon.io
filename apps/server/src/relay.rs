@@ -203,7 +203,7 @@ pub(crate) fn command(
         (relayed, Message::ChatCommand(command)),
         (shared.links.next_id(), follow),
     ];
-    let sent = crate::chats::send_all(shared, machine, crate::chats::ANSWERS, messages);
+    let sent = crate::chats::send_all(shared, machine, messages);
     if sent.is_err() {
         shared.relay.lock().remove(&relayed);
     }

@@ -135,13 +135,6 @@ impl Links {
         drop(self.lock().remove(machine));
     }
 
-    /// Whether `machine` has a connection open now that offers `needs`.
-    pub(crate) fn offers(&self, machine: &MachineId, needs: &Capability) -> bool {
-        let open = self.lock();
-        open.get(machine)
-            .is_some_and(|link| link.offers.contains(needs))
-    }
-
     /// Whether `machine` has a connection open now.
     pub(crate) fn is_open(&self, machine: &MachineId) -> bool {
         self.lock().contains_key(machine)

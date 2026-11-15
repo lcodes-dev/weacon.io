@@ -13,7 +13,7 @@ mod test_support;
 pub(crate) mod upload;
 mod watch;
 
-pub(crate) use link::{ANSWERS, SERVE, send_all};
+pub(crate) use link::{SERVE, send_all};
 pub(crate) use live::LIVE;
 pub(crate) use reconnect::follow_machines;
 pub(crate) use watch::{Asking, Watch};

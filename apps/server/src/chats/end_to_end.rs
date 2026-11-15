@@ -109,11 +109,7 @@ async fn connected(fixture: &Fixture, server: &Running) -> (MachineId, Socket, S
     let mut core = open(server.address, "/api/machines/connect", &paired.token)
         .await
         .unwrap();
-    say(
-        &mut core,
-        &["machine.connect", "chat.serve", "chat.answers"],
-    )
-    .await;
+    say(&mut core, &["machine.connect", "chat.serve"]).await;
     assert!(matches!(next(&mut core).await, Message::Welcome(_)));
     let ada = feed(server, "w1", &paired.session).await;
     (paired.machine_id(), core, ada)
