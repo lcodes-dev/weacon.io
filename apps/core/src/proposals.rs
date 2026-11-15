@@ -382,7 +382,8 @@ mod tests {
 
     #[tokio::test]
     async fn an_answer_of_the_wrong_kind_is_unsent() {
-        let (proposals, asks) = channel();
+        let (mut proposals, asks) = channel();
+        proposals.patience = Duration::from_secs(1);
         let (to_server, sent) = mpsc::channel(4);
         let (answered, answers) = mpsc::channel(4);
         tokio::spawn(serve(asks, to_server, answers));

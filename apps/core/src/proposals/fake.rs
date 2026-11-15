@@ -28,7 +28,7 @@ impl Fake {
     pub(crate) fn connect(&self) -> Proposals {
         let (mut proposals, asks) = channel();
         // So that a test whose answer never comes fails soon.
-        proposals.set_patience(Duration::from_secs(5));
+        proposals.set_patience(Duration::from_secs(1));
         let (to_server, mut sent) = mpsc::channel(8);
         let (answered, answers) = mpsc::channel(8);
         tokio::spawn(serve(asks, to_server, answers));
