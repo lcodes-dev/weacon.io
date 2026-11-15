@@ -5,8 +5,7 @@ use weacon_protocol::{
     PermissionAnswer, RepoId, RequestId, RunEvent, RunId, RunState, RunStatus, RunUpdate,
 };
 
-use super::Workspace;
-use super::chats::{Incoming, NewChat, NewRequest};
+use super::{Incoming, NewChat, NewRequest, Workspace};
 use crate::test_support::member_id;
 
 /// When the db tests' changes are made, in seconds since the Unix epoch.
@@ -65,6 +64,29 @@ pub(crate) struct Making<'a> {
 
 /// Makes the chat `making` describes, its first prompt sent.
 pub(crate) async fn make_as(workspace: &Workspace, making: &Making<'_>) -> Result<(), Fault> {
+    begin_as(workspace, making).await?;
+    let (chat, owner) = (id(making.chat), member_id(making.owner));
+    workspace.chat_made(&chat, &owner).await.map(drop)
+}
+
+/// Begins chat `chat` as [`make`] does, its first prompt not yet sent.
+pub(crate) async fn begin(
+    workspace: &Workspace,
+    chat: &str,
+    owner: &str,
+    at: i64,
+) -> Result<(), Fault> {
+    let making = Making {
+        chat,
+        owner,
+        title: "Fix the build",
+        machine: "mc-1",
+        at,
+    };
+    begin_as(workspace, &making).await
+}
+
+async fn begin_as(workspace: &Workspace, making: &Making<'_>) -> Result<(), Fault> {
     let Making {
         chat,
         owner,
@@ -91,8 +113,28 @@ pub(crate) async fn make_as(workspace: &Workspace, making: &Making<'_>) -> Resul
         member: &owner,
         at,
     };
-    workspace.add_chat(&new, &first).await?;
-    workspace.chat_made(&chat, &owner).await
+    // Made on its owner's machine, unpaired again unless it was paired before.
+    let paired = sqlx::query(
+        "INSERT OR IGNORE INTO machines (machine_id, account_id, name, os, machine_key,
+             token_hash, paired_at)
+         SELECT ?, account_id, 'Made-up machine', 'linux', 'key', randomblob(16), 0
+         FROM members WHERE workspace_id = ? AND member_id = ?",
+    )
+    .bind(machine_id.as_str())
+    .bind(workspace.id.as_str())
+    .bind(owner.as_str())
+    .execute(&workspace.db.writer)
+    .await
+    .map_err(super::failed)?;
+    let added = workspace.add_chat(&new, &first).await;
+    if paired.rows_affected() > 0 {
+        sqlx::query("DELETE FROM machines WHERE machine_id = ?")
+            .bind(machine_id.as_str())
+            .execute(&workspace.db.writer)
+            .await
+            .map_err(super::failed)?;
+    }
+    added
 }
 
 pub(crate) fn status(state: RunState) -> ChatEvent {
@@ -195,6 +237,59 @@ impl Workspace {
         let mut writer = self.db.writer.acquire().await.unwrap();
         let request = id::<RequestId>(request);
         self.end_request(&mut writer, &id(chat), &request)
+            .await
+            .unwrap();
+    }
+
+    /// Puts every chat of the workspace on `machine`.
+    pub(crate) async fn move_chats_to(&self, machine: &MachineId) {
+        sqlx::query("UPDATE chats SET machine_id = ? WHERE workspace_id = ?")
+            .bind(machine.as_str())
+            .bind(self.id.as_str())
+            .execute(&self.db.writer)
+            .await
+            .unwrap();
+    }
+
+    /// Pairs `machine` to the account of `member`, as its own.
+    pub(crate) async fn pair_for(&self, member: &str, machine: &str) {
+        sqlx::query(
+            "INSERT INTO machines (machine_id, account_id, name, os, machine_key, token_hash,
+                 paired_at)
+             SELECT ?, account_id, 'Made-up machine', 'linux', 'key', randomblob(16), 0
+             FROM members WHERE workspace_id = ? AND member_id = ?",
+        )
+        .bind(machine)
+        .bind(self.id.as_str())
+        .bind(member)
+        .execute(&self.db.writer)
+        .await
+        .unwrap();
+    }
+
+    /// Makes every chat event this workspace stores fail in the database, as a full disk would.
+    pub(crate) async fn break_chat_events(&self) {
+        sqlx::query(
+            "CREATE TRIGGER broken BEFORE INSERT ON chat_events BEGIN SELECT RAISE(ABORT, 'broken'); END",
+        )
+        .execute(&self.db.writer)
+        .await
+        .unwrap();
+    }
+
+    /// Makes reading the workspace's commands fail in the database.
+    pub(crate) async fn break_chat_requests(&self) {
+        sqlx::query("ALTER TABLE chat_requests RENAME TO broken_requests")
+            .execute(&self.db.writer)
+            .await
+            .unwrap();
+    }
+
+    /// Leaves the workspace no room for more chat events.
+    pub(crate) async fn fill_quota(&self) {
+        sqlx::query("UPDATE workspaces SET chat_bytes = 536870912 WHERE workspace_id = ?")
+            .bind(self.id.as_str())
+            .execute(&self.db.writer)
             .await
             .unwrap();
     }

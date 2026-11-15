@@ -22,6 +22,7 @@ struct Open {
     /// The only sender to its connection, so replacing it ends that connection.
     to_machine: mpsc::Sender<Envelope>,
     offers: Vec<Capability>,
+    owner: AccountId,
 }
 
 /// A machine whose connection just opened, and whose machine it is.
@@ -65,7 +66,11 @@ impl Links {
     ) -> Attached {
         let (to_machine, incoming) = mpsc::channel(QUEUE);
         let ours = to_machine.downgrade();
-        let open = Open { to_machine, offers };
+        let open = Open {
+            to_machine,
+            offers,
+            owner: connected.owner.clone(),
+        };
         self.lock().insert(connected.machine.clone(), open);
         let machine = connected.machine.clone();
         // No subscriber is no one to tell.
@@ -89,12 +94,45 @@ impl Links {
         needs: &Capability,
         envelope: Envelope,
     ) -> Result<(), Offline> {
+        self.send_all(machine, needs, vec![envelope])
+    }
+
+    /// [`Self::send`] for each of `envelopes`, in order: all of them, or none.
+    ///
+    /// # Errors
+    /// [`Offline`] as [`Self::send`], or when its queue hasn't room for them all.
+    pub(crate) fn send_all(
+        &self,
+        machine: &MachineId,
+        needs: &Capability,
+        envelopes: Vec<Envelope>,
+    ) -> Result<(), Offline> {
         let open = self.lock();
         let link = open
             .get(machine)
             .filter(|link| link.offers.contains(needs))
             .ok_or(Offline)?;
-        link.to_machine.try_send(envelope).map_err(|_| Offline)
+        // Only a holder of this lock sends, so the room seen here stays for each send.
+        if link.to_machine.capacity() < envelopes.len() {
+            return Err(Offline);
+        }
+        let mut envelopes = envelopes.into_iter();
+        envelopes.try_for_each(|envelope| link.to_machine.try_send(envelope).map_err(|_| Offline))
+    }
+
+    /// The machines connected now.
+    pub(crate) fn open_now(&self) -> Vec<Connected> {
+        let open = self.lock();
+        let connected = open.iter().map(|(machine, link)| Connected {
+            machine: machine.clone(),
+            owner: link.owner.clone(),
+        });
+        connected.collect()
+    }
+
+    /// Ends `machine`'s connection, which its core then opens again.
+    pub(crate) fn close(&self, machine: &MachineId) {
+        drop(self.lock().remove(machine));
     }
 
     /// Whether `machine` has a connection open now.
@@ -115,13 +153,6 @@ impl Links {
     }
 
     /// Each machine connected from now on.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "chats subscribe to it to resend a machine's open requests"
-        )
-    )]
     pub(crate) fn connected(&self) -> broadcast::Receiver<Connected> {
         self.connected.subscribe()
     }
@@ -193,6 +224,41 @@ mod tests {
         assert_eq!(sent(&links, "mc-3", 4), Err(Offline));
         assert_eq!(subscriber.try_recv().unwrap(), connected("mc-1"));
         assert_eq!(subscriber.try_recv().unwrap(), connected("mc-2"));
+    }
+
+    #[test]
+    fn messages_sent_together_all_go_or_none_does() {
+        let links = Arc::new(Links::default());
+        let mut attached = links.open(connected("mc-1"), vec![settings()]);
+        for id in 1..u32::try_from(QUEUE).unwrap() {
+            sent(&links, "mc-1", id).unwrap();
+        }
+        let both = || vec![envelope(100), envelope(101)];
+
+        let refused = links.send_all(&machine("mc-1"), &settings(), both());
+        attached.incoming.try_recv().unwrap();
+        let taken = links.send_all(&machine("mc-1"), &settings(), both());
+
+        assert_eq!(refused, Err(Offline));
+        assert_eq!(taken, Ok(()));
+        let queued: Vec<_> = std::iter::from_fn(|| attached.incoming.try_recv().ok()).collect();
+        assert_eq!(queued.len(), QUEUE);
+        assert_eq!(queued.last(), Some(&envelope(101)));
+    }
+
+    #[test]
+    fn the_machines_connected_now_are_listed_and_one_closed_is_gone() {
+        let links = Arc::new(Links::default());
+        let mut one = links.open(connected("mc-1"), vec![settings()]);
+        let _two = links.open(connected("mc-2"), vec![settings()]);
+
+        links.close(&machine("mc-1"));
+
+        assert_eq!(links.open_now(), [connected("mc-2")]);
+        assert_eq!(
+            one.incoming.try_recv(),
+            Err(mpsc::error::TryRecvError::Disconnected)
+        );
     }
 
     #[test]

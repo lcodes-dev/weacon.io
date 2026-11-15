@@ -16,6 +16,7 @@ use weacon_protocol::{
 };
 
 use crate::auth::Machine;
+use crate::chats;
 use crate::connections::Place;
 use crate::links::Connected;
 use crate::proposals::{PROPOSALS, machines as proposals};
@@ -103,7 +104,14 @@ async fn serve(mut socket: WebSocket, shared: Shared, mut link: Link) {
 /// What the server offers every core, and needs of it for all its features to reach it.
 pub(crate) fn offers() -> Vec<Capability> {
     [
-        CONNECT, SETTINGS, DIFF, WORKTREE, SESSIONS, SYMBOLS, PROPOSALS,
+        CONNECT,
+        SETTINGS,
+        DIFF,
+        WORKTREE,
+        SESSIONS,
+        SYMBOLS,
+        PROPOSALS,
+        chats::SERVE,
     ]
     .map(Capability::new)
     .into()
@@ -130,7 +138,10 @@ async fn run(
     link: &mut Link,
 ) -> Result<Infallible, Closed> {
     let offer = Capability::new(CONNECT);
-    let heard = hear(socket, shared, offers(), &offer);
+    let mut offered = offers();
+    // A core uploads its chats' events without offering it back.
+    offered.push(Capability::new(chats::upload::UPLOAD));
+    let heard = hear(socket, shared, offered, &offer);
     let (hello, welcome) = timeout(shared.sockets.hello_within, heard)
         .await
         .map_err(|_| Closed)??;
@@ -172,7 +183,7 @@ async fn run(
                     && let Ok(envelope) = Envelope::from_json(text.as_bytes())
                 {
                     let id = envelope.id;
-                    if let Some(answer) = hand_off(shared, &link.machine, envelope).await {
+                    if let Some(answer) = hand_off(shared, &link.machine, envelope).await? {
                         reply(socket, shared, id, answer).await?;
                     }
                 }
@@ -181,21 +192,27 @@ async fn run(
     }
 }
 
-/// Gives what `machine` sent to the feature it is for, and gives what to answer, if anything.
-async fn hand_off(shared: &Shared, machine: &Machine, envelope: Envelope) -> Option<Message> {
+/// Gives what `machine` sent to the feature it is for, in the order it came, and gives what to
+/// answer, if anything.
+async fn hand_off(
+    shared: &Shared,
+    machine: &Machine,
+    envelope: Envelope,
+) -> Result<Option<Message>, Closed> {
     #[expect(
         clippy::wildcard_enum_match_arm,
         reason = "the relay takes every other message a machine sends"
     )]
     match envelope.message {
+        Message::Chat(update) => chats::upload::store(shared, &machine.id, update).await?,
         Message::Terminal(update) => terminals::delivered(shared, &machine.id, update),
         Message::ProposalCommand(command) => {
             let receipt = proposals::command(shared, machine, command).await;
-            return Some(Message::Receipt(receipt));
+            return Ok(Some(Message::Receipt(receipt)));
         }
         Message::ProposalQuery(query) => {
             let answer = proposals::query(shared, machine, query).await;
-            return Some(Message::ProposalAnswer(answer));
+            return Ok(Some(Message::ProposalAnswer(answer)));
         }
         // The relay passes over what answers none of its asks; an error it doesn't claim is
         // for no other feature yet.
@@ -207,22 +224,25 @@ async fn hand_off(shared: &Shared, machine: &Machine, envelope: Envelope) -> Opt
             let _claimed = shared.relay.answered(&machine.id, envelope);
         }
     }
-    None
+    Ok(None)
 }
 
 #[cfg(test)]
 mod tests {
     use std::net::SocketAddr;
+    use std::time::Duration;
 
     use futures_util::SinkExt;
+    use tokio::time::timeout;
     use tokio_tungstenite::tungstenite::Message as Wire;
-    use weacon_protocol::{AccountId, Message, PROTOCOL, Welcome};
+    use weacon_protocol::{AccountId, ChatEntry, ChatUpdate, Message, PROTOCOL, Welcome};
 
     use super::*;
+    use crate::db::test_support::{NOW, id, make, said};
     use crate::test_support::socket::{
         Socket, ends, frame, next, next_envelope, open, pongs, say, upgrade_status,
     };
-    use crate::test_support::{Fixture, Paired, ask, pair_machine};
+    use crate::test_support::{Fixture, Paired, ask, pair_machine, run};
 
     const CONNECT_PATH: &str = "/api/machines/connect";
 
@@ -235,7 +255,17 @@ mod tests {
         let welcome = next(&mut client).await;
         assert!(
             matches!(&welcome, Message::Welcome(Welcome { capabilities, .. })
-                if *capabilities == [CONNECT, SETTINGS, DIFF, WORKTREE, SESSIONS, SYMBOLS, PROPOSALS].map(Capability::new)),
+                if *capabilities == [
+                    CONNECT,
+                    SETTINGS,
+                    DIFF,
+                    WORKTREE,
+                    SESSIONS,
+                    SYMBOLS,
+                    PROPOSALS,
+                    code!("chat.serve"),
+                    code!("chat.upload"),
+                ].map(Capability::new)),
             "{welcome:?}"
         );
         (paired, client)
@@ -288,6 +318,7 @@ mod tests {
             "sessions.read",
             "symbols.search",
             "workspace.proposals",
+            "chat.serve",
         ];
         assert_eq!(machine["missing"], serde_json::json!(missing));
     }
@@ -474,5 +505,39 @@ mod tests {
         fixture.shared.unpaired.send(other).unwrap();
 
         assert!(pongs(&mut client).await);
+    }
+
+    #[tokio::test]
+    async fn a_machines_chat_events_are_stored_in_the_order_they_come() {
+        let fixture = Fixture::new().await;
+        let server = run(fixture.shared.clone()).await;
+        let (paired, mut client) = connected(server.address, &fixture).await;
+        let machine: MachineId = serde_json::from_value(paired.machine["id"].clone()).unwrap();
+        let workspace = fixture.shared.db.workspace(&id("w1")).await.unwrap();
+        make(&workspace, "c-1", "m1", NOW).await.unwrap();
+        workspace.move_chats_to(&machine).await;
+        let mut stored = fixture.shared.chats.notices();
+
+        for seq in [1, 2] {
+            let update = ChatUpdate {
+                workspace: id("w1"),
+                chat: id("c-1"),
+                entry: ChatEntry {
+                    seq,
+                    event: said("more"),
+                },
+            };
+            let message = Message::Chat(update);
+            crate::test_support::socket::send(&mut client, Envelope { id: 0, message }).await;
+        }
+        for _ in [1, 2] {
+            timeout(Duration::from_secs(10), stored.recv())
+                .await
+                .unwrap()
+                .unwrap();
+        }
+
+        let chat = workspace.chat(&id("c-1")).await.unwrap().unwrap();
+        assert_eq!((chat.seq, chat.core_seq), (2, 2));
     }
 }

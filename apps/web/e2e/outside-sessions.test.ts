@@ -20,7 +20,7 @@ test("a person reads a session they ran outside Weacon, read only, and sees its 
   await signIn(served);
   await page.getByRole("button", { name: "Personal" }).click();
   await page.getByRole("heading", { name: "Personal" }).waitFor();
-  await page.getByRole("button", { name: "Settings" }).click();
+  await page.getByRole("button", { name: "Settings", exact: true }).click();
   const { token } = await pair(page);
   const outside: Outside = {
     sessions: [
