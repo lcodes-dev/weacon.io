@@ -34,9 +34,6 @@ function shown(items: readonly Item[]): string[] {
     if (item.kind === "prompt") {
       return `> ${item.text}`;
     }
-    if (item.kind === "refused") {
-      return `refused ${item.code}`;
-    }
     const { run, transcript, asks, open } = item.turn;
     const rows = transcript.rows.map((row) => (row.kind === "text" ? row.pieces.join("|") : row.kind));
     const prompts = asks.map((ask) => `ask ${ask.prompt}@${ask.at}${ask.state === "closed" ? "" : ` ${ask.state}`}`);

@@ -217,16 +217,15 @@ async fn hand_off(
         // The relay passes over what answers none of its asks; an error it doesn't claim is
         // for no other feature yet.
         message => {
-            if let Some(asked) = shared.chats.sent.answered(&machine.id, envelope.id) {
-                return chats::answers::take(shared, &machine.id, asked, message)
-                    .await
-                    .map(|()| None);
-            }
+            let busy = matches!(&message, Message::Error(error) if error.code == code!("chat.unavailable"));
             let envelope = Envelope {
                 id: envelope.id,
                 message,
             };
-            let _claimed = shared.relay.answered(&machine.id, envelope);
+            // A chat command the core has no room for yet is sent again once it connects again.
+            if !shared.relay.answered(&machine.id, envelope) && busy {
+                return Err(Closed);
+            }
         }
     }
     Ok(None)
@@ -301,6 +300,27 @@ mod tests {
                 "{version:?}"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn a_core_with_no_room_for_a_chat_command_connects_again_and_another_refusal_doesnt() {
+        let fixture = Fixture::new().await;
+        let server = fixture.run().await;
+        let (_paired, mut client) = connected(server.address, &fixture).await;
+        let refused = |id, code| Envelope {
+            id,
+            message: Message::Error(weacon_protocol::ErrorBody {
+                code,
+                retryable: true,
+            }),
+        };
+
+        crate::test_support::socket::send(&mut client, refused(7, code!("relay.busy"))).await;
+        assert!(pongs(&mut client).await);
+        crate::test_support::socket::send(&mut client, refused(8, code!("chat.unavailable"))).await;
+
+        // Closed before it reads the ping after the refusal.
+        assert!(!pongs(&mut client).await);
     }
 
     #[tokio::test]

@@ -7,7 +7,6 @@ import { label } from "./label.ts";
 /** One line of a chat's transcript, under a key that names it as long as the chat is shown. */
 export type Line =
   | { key: string; kind: "prompt"; text: string }
-  | { key: string; kind: "refused"; text: string }
   | { key: string; kind: "agent"; label: string }
   | { key: string; kind: "row"; row: TranscriptRow; writing: boolean }
   | { key: string; kind: "ask"; run: RunId; ask: Ask };
@@ -21,9 +20,6 @@ export function lines(chat: Chat, names?: Names): Line[] {
     if (item.kind === "prompt") {
       return [{ key: `p${item.seq}`, kind: "prompt", text: item.text }];
     }
-    if (item.kind === "refused") {
-      return [{ key: `f${item.seq}`, kind: "refused", text: refusedText(item.code) }];
-    }
     const { key, run, transcript, asks } = item.turn;
     const shown: Line[] = [{ key, kind: "agent", label: label(chat.runs.get(run)?.agent, names) }];
     const asksAt = (at: number) => asks.filter((ask) => ask.at === at).map((ask): Line => ({ key: `${key}.a${ask.prompt}`, kind: "ask", run, ask }));
@@ -32,18 +28,4 @@ export function lines(chat: Chat, names?: Names): Line[] {
     });
     return [...shown, ...asksAt(transcript.rows.length)];
   });
-}
-
-// Why the machine refused a command, for the codes a person can do something about.
-const REFUSED: Record<string, string> = {
-  "chat.busy": "The agent is busy with this chat. Try again once it's done.",
-  "chat.held": "Someone is using this chat in their own terminal. Try again once they're done.",
-  "chat.repo_conflict": "Another chat is using this repository. Try again once it's done.",
-  "chat.unavailable": "The machine is busy. Try again.",
-  "message.unsupported": "The machine's core can't do this. Update Weacon on it.",
-};
-
-/** What a person reads when the chat's machine refused a command with `code`. */
-export function refusedText(code: string): string {
-  return REFUSED[code] ?? "The machine couldn't do this.";
 }

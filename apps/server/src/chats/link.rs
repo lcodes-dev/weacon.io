@@ -19,9 +19,10 @@ pub(crate) fn send_all(
     machine: &MachineId,
     messages: Vec<Message>,
 ) -> Result<(), Fault> {
-    let envelopes = messages
-        .into_iter()
-        .map(|message| envelope(shared, machine, message));
+    let envelopes = messages.into_iter().map(|message| Envelope {
+        id: shared.links.next_id(),
+        message,
+    });
     let serve = Capability::new(SERVE);
     shared
         .links
@@ -39,20 +40,14 @@ pub(crate) async fn deliver(
 ) -> Result<(), Fault> {
     let sender = shared.links.sender(machine, &Capability::new(SERVE));
     let sender = sender.ok_or_else(offline)?;
-    let envelope = envelope(shared, machine, message);
+    let envelope = Envelope {
+        id: shared.links.next_id(),
+        message,
+    };
     match timeout(shared.sockets.room_within, sender.send(envelope)).await {
         Ok(Ok(())) => Ok(()),
         Ok(Err(_)) | Err(_) => Err(offline()),
     }
-}
-
-// `message` in an envelope of its own, remembered when it holds a command.
-fn envelope(shared: &Shared, machine: &MachineId, message: Message) -> Envelope {
-    let id = shared.links.next_id();
-    if let Message::ChatCommand(command) = &message {
-        shared.chats.sent.sent(machine, id, command);
-    }
-    Envelope { id, message }
 }
 
 /// Asks for `chat`'s events after `after`, then each new one as it is committed.
