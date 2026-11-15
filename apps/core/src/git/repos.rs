@@ -1,6 +1,6 @@
 //! The repositories a workspace's chats may work in on this machine, which the owner adds.
 
-use std::io::{self, Write};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -34,10 +34,7 @@ pub(crate) struct Repos {
 pub(crate) fn run(app: &App, command: RepoCommand, out: &mut impl Write) -> Result<(), Fault> {
     let state_dir = app.state_dir.as_deref().ok_or_else(state_unavailable)?;
     let workspaces = Workspaces::new(state_dir, app.path.clone());
-    let repos = |workspace: WorkspaceId| {
-        let file = workspaces.root(&workspace).join("git/repos.json");
-        Repos::new(workspace, file)
-    };
+    let repos = |workspace: WorkspaceId| state::Stores::new(&workspaces, &workspace).repos();
     match command {
         RepoCommand::Add {
             workspace,
@@ -83,17 +80,7 @@ impl Repos {
                 "That folder isn't the top of a git repository",
             ));
         }
-        let _held = state::hold(&self.file).map_err(|error| {
-            let fault = if error.kind() == io::ErrorKind::WouldBlock {
-                Fault::new(
-                    code!("repo.busy"),
-                    "Another change to the workspace's repositories is under way",
-                )
-            } else {
-                failed()
-            };
-            fault.because(error)
-        })?;
+        let _held = state::hold(&self.file).map_err(|error| failed().because(error))?;
         let mut repos = state::load::<Repo>(&self.file).map_err(|error| failed().because(error))?;
         let ours = |repo: &&Repo| repo.workspace == self.workspace;
         if let Some(kept) = repos
@@ -151,7 +138,7 @@ fn printing() -> Fault {
 
 #[cfg(test)]
 mod tests {
-    use std::fs;
+    use std::{fs, io};
 
     use weacon_testing::TempDir;
 
@@ -189,17 +176,26 @@ mod tests {
     }
 
     #[test]
-    fn one_change_to_the_list_at_a_time() {
+    fn repositories_added_at_once_are_all_kept() {
         let dir = TempDir::new().unwrap();
-        let (git, folder) = (git(&dir), repo(&dir));
-        let ours = repos(&dir, "w-1");
+        let git = git(&dir);
+        let folders: Vec<PathBuf> = (0..8)
+            .map(|at| {
+                let made = TempDir::new().unwrap();
+                let folder = dir.join(format!("repo-{at}"));
+                fs::rename(repo(&made), &folder).unwrap();
+                folder
+            })
+            .collect();
 
-        let held = state::hold(&dir.join("repos.json")).unwrap();
-        let error = ours.add(&git, id("site"), &folder).unwrap_err();
-        assert_eq!(code(&error), "repo.busy");
-        drop(held);
+        std::thread::scope(|scope| {
+            for (at, folder) in folders.iter().enumerate() {
+                let (git, ours) = (&git, repos(&dir, "w-1"));
+                scope.spawn(move || ours.add(git, id(&format!("r-{at}")), folder).unwrap());
+            }
+        });
 
-        ours.add(&git, id("site"), &folder).unwrap();
+        assert_eq!(repos(&dir, "w-1").list().unwrap().len(), 8);
     }
 
     #[test]
@@ -251,6 +247,37 @@ mod tests {
             code(&repos(&dir, "w-1").list().unwrap_err()),
             "repo.list_failed"
         );
+    }
+
+    // Output that can't be written, as a closed pipe.
+    struct Closed;
+
+    impl Write for Closed {
+        fn write(&mut self, _: &[u8]) -> io::Result<usize> {
+            Err(io::ErrorKind::BrokenPipe.into())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn a_list_that_cant_be_printed_says_so() {
+        let dir = TempDir::new().unwrap();
+        let mut app = app(Some(&dir.join("state")), None);
+        app.path = std::env::var_os("PATH");
+        let workspace = WorkspaceId::try_from("w-1".to_owned()).unwrap();
+        let add = RepoCommand::Add {
+            workspace: workspace.clone(),
+            id: id("site"),
+            path: repo(&dir),
+        };
+        run(&app, add, &mut Vec::new()).unwrap();
+
+        let error = run(&app, RepoCommand::List { workspace }, &mut Closed).unwrap_err();
+
+        assert_eq!(code(&error), "repo.print_failed");
     }
 
     #[test]

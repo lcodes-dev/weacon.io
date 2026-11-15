@@ -88,8 +88,8 @@ pub use terminal::{
     TerminalId, TerminalInput, TerminalOutput, TerminalUpdate,
 };
 pub use workspace::{
-    Asker, MemberId, WorkspaceChange, WorkspaceCreate, WorkspaceId, WorkspaceList, WorkspaceRole,
-    WorkspaceSummary, WorkspaceUpdate,
+    Asker, MemberId, MemberList, MemberSummary, WorkspaceChange, WorkspaceCreate, WorkspaceId,
+    WorkspaceList, WorkspaceRole, WorkspaceSummary, WorkspaceUpdate,
 };
 pub use worktree::{
     WorktreeAction, WorktreeAnswer, WorktreeAnswerKind, WorktreeCommand, WorktreeQuery,
@@ -130,6 +130,7 @@ mod tests {
         generator.subschema_for::<PairClaim>();
         generator.subschema_for::<PairClaimed>();
         generator.subschema_for::<MachineList>();
+        generator.subschema_for::<MemberList>();
         generator.subschema_for::<ProposalList>();
         generator.subschema_for::<ProposalDecision>();
         generator.subschema_for::<ProposalOutcome>();

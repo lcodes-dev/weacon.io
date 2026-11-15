@@ -19,19 +19,13 @@ mod git;
 mod hook;
 mod integrations;
 mod machine;
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the server's uplink, which uses it, comes with pairing"
-    )
-)]
 mod machine_settings;
 mod map;
 mod mcp;
 mod memory;
 mod names;
 mod native_host;
+mod outside;
 mod pair;
 mod picks;
 mod platform;
