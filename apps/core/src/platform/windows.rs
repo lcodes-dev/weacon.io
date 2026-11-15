@@ -67,6 +67,12 @@ impl Listener {
     }
 }
 
+/// Takes this process's lock on all of `file`, waiting while another process has it. A child
+/// never inherits the handle, so it never keeps the lock.
+pub(crate) fn lock_for_process(file: &fs::File) -> io::Result<()> {
+    file.lock()
+}
+
 /// Removes `dir` and all it holds, read-only files too, which Windows won't delete as they are.
 pub(crate) fn remove_tree(dir: &Path) -> io::Result<()> {
     writable(dir)?;

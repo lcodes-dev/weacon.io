@@ -24,7 +24,8 @@ use crate::chats::Places;
 use crate::codemap::{Repo, Watch, locate, off_runtime, watch, worktree_index};
 use crate::db::Db;
 use crate::git::Git;
-use crate::git::repos::{Repo as Registered, Repos};
+use crate::git::repos::Repo as Registered;
+use crate::git::state::Stores as GitStores;
 use crate::workspaces::Workspaces;
 
 /// The longest a call waits for its map; a first read of a large repository can take longer.
@@ -195,7 +196,9 @@ impl Stores {
         let Ok((main, worktree)) = locate(&self.git, folder) else {
             return Ok(None);
         };
-        let repos = Repos::of(&self.workspaces, workspace.clone()).list()?;
+        let repos = GitStores::new(&self.workspaces, &workspace)
+            .repos()
+            .list()?;
         let listed = |repo: &Registered| repo.path == main || repo.path == worktree;
         Ok(repos.iter().any(listed).then_some(Watched {
             workspace,

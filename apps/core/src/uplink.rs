@@ -285,6 +285,8 @@ fn asking(message: &Message) -> Asking<'_> {
         &command.by
     } else if let Message::TerminalCommand(command) = message {
         &command.by
+    } else if let Message::DiffQuery(query) = message {
+        &query.by
     } else if let Message::WorktreeQuery(query) = message {
         &query.by
     } else if let Message::WorktreeCommand(command) = message {
@@ -689,11 +691,18 @@ mod tests {
         .collect()
     }
 
-    fn worktree_asks(by: Option<Asker>) -> [Message; 2] {
+    fn worktree_asks(by: Option<Asker>) -> [Message; 3] {
         let request = RequestId::try_from("r-1".to_owned()).unwrap();
         let workspace = WorkspaceId::try_from("w-1".to_owned()).unwrap();
         let chat = ChatId::try_from("c-1".to_owned()).unwrap();
         [
+            Message::DiffQuery(weacon_protocol::DiffQuery {
+                request: request.clone(),
+                workspace: workspace.clone(),
+                chat: chat.clone(),
+                query: weacon_protocol::DiffQueryKind::Changes,
+                by: by.clone(),
+            }),
             Message::WorktreeQuery(WorktreeQuery {
                 request: request.clone(),
                 workspace: workspace.clone(),
@@ -761,8 +770,8 @@ mod tests {
             }),
         );
 
-        assert_eq!(owners, [None, None, None, None, None, None]);
-        assert_eq!(others, vec![not_owner; 12]);
+        assert_eq!(owners, vec![None; 7]);
+        assert_eq!(others, vec![not_owner; 14]);
         // A kind this build doesn't know arrives as `Message::Unknown`.
         assert!(matches!(asking(&Message::Unknown), Asking::Unknown));
         assert_eq!(error, None);

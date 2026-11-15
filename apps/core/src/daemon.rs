@@ -71,9 +71,11 @@ pub(crate) fn run(app: &crate::app::App) -> Result<(), Fault> {
             app.log.clone(),
         )?;
         daemon.shared.outside = app.outside.clone();
+        // The daemon's own worktrees, so a relayed removal and a local one share their lock.
+        let (chats, worktrees) = (daemon.shared.chats.clone(), daemon.shared.worktrees.clone());
         daemon
             .uplink
-            .spawn(route::server(app, state_dir, daemon.shared.chats.clone()));
+            .spawn(route::server(app, state_dir, chats, worktrees));
         let serve = daemon.serve(signals.wait());
         crate::reports::following(state_dir, &app.reporter, &app.log, serve).await;
         Ok(())
@@ -578,8 +580,10 @@ mod tests {
         machine::write(&dir, &paired).unwrap();
         let app = test_support::app(Some(&dir), None);
         let running = start_as(&dir, |daemon| {
-            let chats = daemon.shared.chats.clone();
-            daemon.uplink.spawn(route::server(&app, &dir, chats));
+            let (chats, worktrees) = (daemon.shared.chats.clone(), daemon.shared.worktrees.clone());
+            daemon
+                .uplink
+                .spawn(route::server(&app, &dir, chats, worktrees));
         })
         .unwrap();
 
@@ -934,7 +938,6 @@ mod tests {
         let Message::Welcome(welcome) = &replies[0] else {
             panic!("no welcome");
         };
-        // Not diff.view or worktree.manage until chats are given worktrees.
         assert_eq!(welcome.capabilities, crate::session::CAPABILITIES);
         let (events, answers) = events_and_answers(&replies[1..]);
         assert_eq!(error_code(answers[0]), Some("chat.empty_prompt"));
