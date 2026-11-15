@@ -6,7 +6,8 @@ use super::shell::Word;
 // take a value, and how many words it takes before the command. Any other wrapper isn't on the
 // table of what's known safe, so it asks.
 const WRAPPERS: [(&str, &[&str], usize); 4] = [
-    ("env", &["-u", "--unset"], 0),
+    // `-a NAME`/`--argv0 NAME` (coreutils 9.5+) sets the command's zeroth argument.
+    ("env", &["-u", "--unset", "-a", "--argv0"], 0),
     ("nice", &["-n"], 0),
     ("time", &["-f", "-o"], 0),
     ("timeout", &["-s", "-k", "--signal", "--kill-after"], 1),
@@ -86,7 +87,19 @@ pub(super) fn command(words: &[Word]) -> Command<'_> {
 fn unclear(option: &str, with_value: &[&str]) -> bool {
     let unknown =
         option.starts_with("--") && !option.contains('=') && !with_value.contains(&option);
-    moves(option) || unknown
+    moves(option) || unknown || hidden_value(option, with_value)
+}
+
+// A short cluster ending in a letter that takes a value, as `-ia` ends in `env`'s `-a`, puts the
+// value in the next word, so where the command begins can't be told.
+fn hidden_value(option: &str, with_value: &[&str]) -> bool {
+    short_flags(option).is_some_and(|flags| {
+        flags.len() > 1
+            && flags
+                .chars()
+                .next_back()
+                .is_some_and(|last| with_value.contains(&format!("-{last}").as_str()))
+    })
 }
 
 // A short option may carry its value or sit among others, as in `-C/tmp` or `-iC`.

@@ -1,13 +1,14 @@
 //! What each simple command does that a person must be asked about: its redirections, its
 //! variables and the files it reads, then the table of what is known safe.
 
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use super::shell::{Simple, Word};
 use super::words::{
     Command, begins, command, is_assignment, positional, program_name, short_flags,
 };
 use super::{Context, Reason, check_word, git, path_of, reading, safe};
+use crate::access::resolve;
 
 // Output that goes to no file.
 const DEVICES: [&str; 5] = ["/dev/null", "/dev/stdout", "/dev/stderr", "/dev/tty", "nul"];
@@ -123,6 +124,21 @@ fn goes_deep(name: &str, args: &[Word]) -> bool {
                     || (name == "cp"
                         && short_flags(&arg.text).is_some_and(|flags| flags.contains('a')))
             }))
+}
+
+// `path` with each `..` taken away together with the part before it, as a shell's `cd` does.
+fn logical(path: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for part in path.components() {
+        match part {
+            Component::ParentDir => {
+                out.pop();
+            }
+            Component::CurDir => {}
+            Component::Prefix(_) | Component::RootDir | Component::Normal(_) => out.push(part),
+        }
+    }
+    out
 }
 
 // Whether a variable set before the program's `words` may change what it does, beyond how it
@@ -254,6 +270,11 @@ impl Call<'_> {
         let Some(folder) = folder.filter(|folder| folder.is_dir()) else {
             return Some(Reason::Unsure);
         };
+        // The shell's `cd` drops `x/..` as text; the file system follows a symlink `x` first, so
+        // where it lands can differ.
+        if resolve(&logical(&folder)) != resolve(&folder) {
+            return Some(Reason::Unsure);
+        }
         *cwd = folder;
         None
     }

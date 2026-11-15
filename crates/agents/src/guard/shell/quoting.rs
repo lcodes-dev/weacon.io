@@ -85,8 +85,9 @@ impl Parser {
                 self.advance(1);
                 let name = self.until('}')?;
                 // A default value can hold a substitution or quotes, which this doesn't follow.
-                // A subscript is arithmetic, which can run what a variable holds.
-                if name.contains(['$', '`', '\'', '"', '\\', '{', '[']) {
+                // A subscript is arithmetic, which can run what a variable holds. `${!X}` and
+                // `${X:offset}` evaluate a value; `${X@P}` and zsh's `${(e)X}` expand it.
+                if name.contains(['$', '`', '\'', '"', '\\', '{', '[']) || evaluates(&name) {
                     return None;
                 }
                 home_or_unknown(word, &name);
@@ -163,6 +164,19 @@ impl Parser {
         word.unknown();
         Some(())
     }
+}
+
+// Whether a `${…}` body has the shell evaluate or expand what a variable holds, rather than just
+// read it: an indirect `!`, a zsh flag `(`, an `@` operator, or a `:` offset (arithmetic).
+fn evaluates(body: &str) -> bool {
+    let operator = body
+        .trim_start_matches('#')
+        .trim_start_matches(|char: char| char.is_ascii_alphanumeric() || char == '_');
+    body.starts_with(['!', '('])
+        || operator.starts_with('@')
+        || operator
+            .strip_prefix(':')
+            .is_some_and(|rest| !rest.starts_with(['-', '=', '?', '+']))
 }
 
 // `$HOME` at the start of a word, or of an option's value after `=` or `@`, is the home

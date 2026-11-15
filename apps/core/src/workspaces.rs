@@ -198,9 +198,10 @@ impl Workspaces {
             ));
         }
         let launch = self.prepared(workspace, agent, cwd)?;
-        // Claude Code answers a pre-tool hook; that is where the command guard runs.
-        let hook = launch
-            .takes_hook()
+        // Claude Code answers a pre-tool hook; that is where the command guard runs. Without a
+        // shell sure to be POSIX the hook could fail open, so there the agent runs under the
+        // vendor's own prompt for every command instead.
+        let hook = (launch.takes_hook() && platform::POSIX_HOOK)
             .then(|| guard_hook(workspace, &launch.cwd))
             .transpose()?;
         Ok(Launch {
@@ -374,14 +375,17 @@ mod tests {
         assert_eq!(claude.config_dir, dir.join("workspaces/w-w1/claude"));
         assert_eq!(claude.access, AccessLevel::AskFirst);
         assert_eq!((claude.mcp.as_ref(), claude.plugin.as_ref()), (None, None));
-        // Claude Code answers the guard's pre-tool hook; Codex has none.
-        let hook = claude.hook.clone().unwrap();
-        assert_eq!(
-            hook.get(1..3),
-            Some(["guard".to_owned(), "check".to_owned()].as_slice())
-        );
-        assert!(hook.contains(&"--workspace=w1".to_owned()));
-        assert!(hook.contains(&"--worktree=/work".to_owned()));
+        // Claude Code answers the guard's pre-tool hook, but only where a POSIX shell is sure, so
+        // on Windows the launch carries no hook and the agent runs under the vendor's own prompt.
+        assert_eq!(claude.hook.is_some(), platform::POSIX_HOOK);
+        if let Some(hook) = &claude.hook {
+            assert_eq!(
+                hook.get(1..3),
+                Some(["guard".to_owned(), "check".to_owned()].as_slice())
+            );
+            assert!(hook.contains(&"--workspace=w1".to_owned()));
+            assert!(hook.contains(&"--worktree=/work".to_owned()));
+        }
         assert!(codex.hook.is_none());
         assert_eq!(codex.program, program(&dir, "codex"));
         assert_eq!(codex.config_dir, dir.join("workspaces/w-w1/codex"));

@@ -184,3 +184,16 @@ HOME=/tmp cargo build
 printf -v x %s
 env -P/tmp ls
 ./env cat notes.md
+cd ../main && git clean -fdxenone
+git -C ../main clean -fd -e -n
+git -C ../main clean -fdx --excl -n
+git -C ../main clean -fdxe x
+touch sub/.GIT/hooks/pre-commit
+printf x > sub/.GIT/config
+echo 'ref: refs/heads/main' > sub/.Git/HEAD
+X='$(rm -rf ../main)'; echo ${X@P}
+echo ${!X}
+echo ${Z:X}
+env -a ls rm -rf ../main
+env -ia ls rm -rf ../main
+echo $'\'' ; rm -rf ~ # '

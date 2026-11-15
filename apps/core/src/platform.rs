@@ -39,6 +39,12 @@ pub(crate) fn home_dir(env: Env<'_>) -> Option<PathBuf> {
 /// Whether `weacon service` can install the daemon here, as a systemd user unit.
 pub(crate) const USER_SERVICES: bool = cfg!(target_os = "linux");
 
+/// Whether Claude Code's pre-tool hook is sure to run under a POSIX shell here, so the command
+/// guard can be relied on. The hook command uses POSIX quoting and `|| exit 2`; on Windows it may
+/// run under PowerShell, where neither applies and the guard would fail open, so there the agent
+/// runs under the vendor's own prompt for every command instead of the guard.
+pub(crate) const POSIX_HOOK: bool = cfg!(unix);
+
 /// The system this core runs on, as the server is told when it pairs.
 pub(crate) const MACHINE_OS: weacon_protocol::MachineOs = if cfg!(target_os = "macos") {
     weacon_protocol::MachineOs::Macos
@@ -119,6 +125,13 @@ mod tests {
         );
         assert_eq!(home_dir(&vars), Some(PathBuf::from(r"C:\Users\ada")));
         assert_eq!(state_dir(&env(&[])), None);
+    }
+
+    #[test]
+    fn the_guard_hook_is_relied_on_only_where_the_shell_is_posix() {
+        // Flipping the constant must change this, so the gate it drives is really tested.
+        assert_eq!(POSIX_HOOK, cfg!(unix));
+        assert_eq!(POSIX_HOOK, !cfg!(windows));
     }
 
     #[cfg(unix)]

@@ -34,16 +34,16 @@ exclude_re = [
     "replace match guard error.kind\\(\\) == io::ErrorKind::NotFound with true in place$",
     "replace Lines<R>::next -> io::Result<Option<Vec<u8>>> with Ok\\(Some",
     "replace \\+ with \\* in full_names",
+    # `dry_run`'s `len() > 2` only keeps `-` and `--` out of the `--exclude` prefix test; `--`
+    # already returned earlier and no other 2-char string is a prefix of `--exclude`, so `>= 2`
+    # behaves the same.
+    "replace > with >= in dry_run",
     # The guard's `landing` dynamic flag is masked: `safe::judge` flags a dynamic operand on its
     # own, so a copy into a folder asks either way.
     "replace \\|\\| with && in Call<'_>::landing",
     # A `\\n`-continuation at a word's start is dropped by both `step` and `word_part`, so no word
     # forms either way.
     "word.is_none\\(\\) && self.peek_at\\(1\\) == Some.* with false in Parser::step",
-    # `pipe` and `or` in `separator` both set `apart`, so cd-propagation and splitting are the same.
-    "replace != with == in Parser::separator",
-    # `is_assignment`'s first-char/all-chars edge only flips between two NotListed results.
-    "replace && with \\|\\| in is_assignment",
 ]
 # Some mutants make a blocking client wait out its 5 s read timeout.
 minimum_test_timeout = 60

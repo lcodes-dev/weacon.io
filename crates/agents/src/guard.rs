@@ -194,8 +194,12 @@ fn check_word(word: &Word, context: &Context, cwd: &Path, outside: Reason) -> Op
             .skip_while(|part| !part.contains(['*', '?', '[']))
             .nth(1)
             .is_some();
-    // A repository's settings and hooks name programs that git then runs.
-    let in_git = word.text.split('/').any(|part| part == ".git");
+    // A repository's settings and hooks name programs that git then runs. Some file systems
+    // ignore case, where `.GIT` names the same folder.
+    let in_git = word
+        .text
+        .split(['/', '\\'])
+        .any(|part| part.eq_ignore_ascii_case(".git"));
     if (outside == Reason::WriteOutside && deep_glob) || in_git {
         return Some(Reason::Unsure);
     }
@@ -350,6 +354,15 @@ mod tests {
         assert_eq!(check("f() { rm -rf /; }"), Some(Reason::Unsure));
         assert_eq!(check("((rm -rf /))"), Some(Reason::Unsure));
 
+        // shell.rs separator: a cd after `&&` is in the same shell but can't be tracked (unsure);
+        // after a single `&` it runs in the foreground and moves the cwd.
+        assert_eq!(check("true && cd .."), Some(Reason::Unsure));
+        assert_eq!(check("true & cd .."), None);
+
+        // words.rs is_assignment: a name starting with a digit isn't an assignment, so the word is
+        // the program; `1A=x cargo test` runs the unlisted `1A=x`, not `cargo`.
+        assert_eq!(check("1A=x cargo test"), Some(Reason::NotListed));
+
         // quoting.rs: $HOME at a word's start is the home folder.
         assert_eq!(
             check("cat $HOME/.claude/auth.json"),
@@ -470,6 +483,22 @@ mod tests {
         assert_eq!(
             check_command("rm -rf link/src", &context),
             Some(Reason::DeleteOutside)
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_cd_a_dot_dot_undoes_differently_through_a_symlink_asks() {
+        let dir = TempDir::new().unwrap();
+        let context = context(&dir);
+        fs::create_dir_all(dir.join("wt/src/deep")).unwrap();
+        std::os::unix::fs::symlink(dir.join("wt/src/deep"), dir.join("wt/a")).unwrap();
+
+        // `cd a/../..` drops `a/..` textually and lands above the worktree; following the symlink
+        // first lands inside it, so where it ends up can't be told and it asks.
+        assert_eq!(
+            check_command("cd a/../.. && rm -rf main", &context),
+            Some(Reason::Unsure)
         );
     }
 
@@ -784,6 +813,8 @@ mod tests {
         assert_eq!(check_command("git stash list", &main), None);
     }
 
+    // POSIX paths and `..` semantics; the guard runs only under a POSIX shell.
+    #[cfg(unix)]
     #[test]
     fn options_and_their_values_are_read_where_they_are() {
         let dir = TempDir::new().unwrap();
@@ -1244,6 +1275,8 @@ mod tests {
         assert_eq!(check_command("printf x > wt*", &context), None);
     }
 
+    // POSIX paths and `..` semantics; the guard runs only under a POSIX shell.
+    #[cfg(unix)]
     #[test]
     fn a_copy_or_move_out_of_or_into_another_folder_asks() {
         let dir = TempDir::new().unwrap();
@@ -1263,6 +1296,8 @@ mod tests {
             .collect()
     }
 
+    // POSIX paths and `..` semantics; the guard runs only under a POSIX shell.
+    #[cfg(unix)]
     #[test]
     fn the_findings_of_five_review_rounds_all_ask() {
         let dir = TempDir::new().unwrap();

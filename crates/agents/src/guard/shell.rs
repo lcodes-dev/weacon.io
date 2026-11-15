@@ -162,10 +162,12 @@ impl Parser {
         if char == '(' && defines {
             self.unsure = true;
         }
-        let pipe = char == '|' && self.peek() != Some('|');
-        let or = char == '|' && !pipe;
-        let background = char == '&' && self.peek() != Some('&');
-        let and = char == '&' && !background;
+        // `||` and `&&` double the character; a lone `|` or `&` does not.
+        let double = self.peek() == Some(char);
+        let pipe = char == '|' && !double;
+        let or = char == '|' && double;
+        let background = char == '&' && !double;
+        let and = char == '&' && double;
         if matches!(
             (char, self.peek()),
             ('&', Some('&')) | ('|', Some('|' | '&'))

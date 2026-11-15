@@ -133,15 +133,7 @@ fn subcommand(name: &str, args: &[Word], context: &Context, repo: &Path) -> Opti
             elsewhere.then_some(Reason::WriteOutside)
         }
         _ if DISCARDING.contains(&name) => main_checkout(repo, context),
-        // Only the full option counts here: a shortened one could be another.
-        "clean"
-            if args.iter().any(|arg| {
-                arg.text == "--dry-run"
-                    || short_flags(&arg.text).is_some_and(|flags| flags.contains('n'))
-            }) =>
-        {
-            None
-        }
+        "clean" if dry_run(args) => None,
         "clean" => (!own_checkout(repo, context)).then_some(Reason::CleanMainCheckout),
         _ => elsewhere.then_some(Reason::WriteOutside),
     }
@@ -153,6 +145,36 @@ fn fetch_overwrites(args: &[Word]) -> bool {
     positional(args).iter().any(|refspec| {
         refspec.dynamic || (refspec.text.contains(':') && (forced || refspec.text.starts_with('+')))
     })
+}
+
+// Whether `git clean` runs as a dry run. Letters after `-e`, and the word after `-e` or
+// `--exclude` (or an unambiguous prefix of it), are the exclude pattern, not a `-n` dry run.
+fn dry_run(args: &[Word]) -> bool {
+    let mut pattern = false;
+    for arg in args {
+        if std::mem::take(&mut pattern) {
+            continue;
+        }
+        if arg.text == "--" {
+            return false;
+        }
+        if arg.text == "--dry-run" {
+            return true;
+        }
+        if arg.text.len() > 2 && "--exclude".starts_with(arg.text.as_str()) {
+            pattern = true;
+            continue;
+        }
+        let Some(flags) = short_flags(&arg.text) else {
+            continue;
+        };
+        let (before, after) = flags.split_once('e').unwrap_or((flags, "x"));
+        if before.contains('n') {
+            return true;
+        }
+        pattern = after.is_empty();
+    }
+    false
 }
 
 fn push(args: &[Word]) -> Option<Reason> {
@@ -214,13 +236,9 @@ fn own_checkout(repo: &Path, context: &Context) -> bool {
 }
 
 fn inside_worktree(repo: &Path, context: &Context) -> bool {
-    let repo = real(repo);
-    // A `..` left after resolving couldn't be followed, so where it lands isn't known: don't
-    // count it as inside, where a write would run without asking.
-    !repo
-        .components()
-        .any(|part| part == std::path::Component::ParentDir)
-        && repo.starts_with(real(&context.worktree))
+    // When `repo` can't be resolved — a `..` the file system couldn't follow, or a dangling
+    // symlink — where it lands isn't known, so don't count it as inside the worktree.
+    resolve(repo).is_some_and(|repo| repo.starts_with(real(&context.worktree)))
 }
 
 fn real(path: &Path) -> PathBuf {
