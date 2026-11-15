@@ -36,9 +36,9 @@ use weacon_protocol::{McpCall, code};
 use deadline::Deadline;
 use grants::{Grant, Grants, Revoke};
 use weacon_agents::{Launch, McpServer};
-use weacon_protocol::{AgentKind, App};
+use weacon_protocol::App;
 
-use crate::chats::engine::Start;
+use crate::chats::engine::RunAs;
 use crate::daemon::ACCEPT_BACKOFF;
 
 // So local processes, other users' included, can't hold the core's sockets.
@@ -97,29 +97,26 @@ impl Drop for Server {
     }
 }
 
-/// Points a Claude Code `launch` at the MCP with a token for `start`'s run, which works until
-/// the [`Revoke`] is dropped. Other agents are left as they are.
+/// Points `launch`, if its agent takes the MCP, at it with a token for `run_as`'s run, which
+/// works until the [`Revoke`] is dropped.
 pub(crate) fn grant(
     mcp: Option<&Mcp>,
     launch: Launch,
-    start: &Start,
+    run_as: &RunAs,
 ) -> Result<(Launch, Option<Revoke>), Fault> {
-    let Some(mcp) = mcp.filter(|_| launch.agent == AgentKind::Claude) else {
+    let Some(mcp) = mcp.filter(|_| launch.takes_mcp()) else {
         return Ok((launch, None));
     };
     let grant = Grant::new(
-        start.workspace.clone(),
-        start.run.clone(),
+        run_as.key.workspace.clone(),
+        run_as.run.clone(),
         launch.cwd.clone(),
     );
     let (token, revoke) = mcp.grants.issue(grant)?;
     let server = McpServer {
         url: mcp.url.clone(),
         token: token.as_str().to_owned(),
-        tools: tools::listed()
-            .into_iter()
-            .map(|tool| tool.name.into_owned())
-            .collect(),
+        tools: tools::UP_FRONT.map(str::to_owned).to_vec(),
     };
     Ok((
         Launch {
@@ -289,6 +286,7 @@ impl ServerHandler for Handler {
         let tool = match &call {
             McpCall::Map(_) => "map",
             McpCall::Symbol(_) => "symbol",
+            McpCall::Flow(_) => "flow",
             McpCall::Newer => return Err(ErrorData::invalid_params("No such tool", None)),
         };
         let Ok(_permit) = grant.calls.try_acquire() else {
@@ -343,6 +341,7 @@ mod tests {
 
     use super::*;
     use crate::test_support::VERSION;
+    use weacon_protocol::AgentKind;
 
     struct Reply {
         status: u16,
@@ -441,11 +440,13 @@ mod tests {
         assert_eq!((one.status, two.status), (200, 200));
         assert_eq!(
             answer_text(&one),
-            "one .: 1 module\n  (root) src/lib.rs: 1 item\n"
+            "Start here: 1 crates, 1 items.\nEntry points:\nMost central items:\n\
+             - fn one::run  src/lib.rs:1\nCrates:\n- one  .  1 items\n"
         );
         assert_eq!(
             answer_text(&two),
-            "two .: 1 module\n  (root) src/lib.rs: 1 item\n"
+            "Start here: 1 crates, 1 items.\nEntry points:\nMost central items:\n\
+             - fn two::run  src/lib.rs:1\nCrates:\n- two  .  1 items\n"
         );
     }
 
@@ -709,7 +710,7 @@ mod tests {
     }
 
     #[test]
-    fn only_claude_gets_the_mcp_and_its_token_ends_with_the_revoke() {
+    fn only_claude_gets_the_mcp_with_the_up_front_tools_and_a_token_the_revoke_ends() {
         let mcp = Mcp {
             url: "http://127.0.0.1:9/mcp".into(),
             grants: Grants::default(),
@@ -721,21 +722,22 @@ mod tests {
             cwd: PathBuf::from("/work"),
             access: weacon_protocol::AccessLevel::AskFirst,
             mcp: None,
+            plugin: None,
         };
-        let start = Start {
-            workspace: WorkspaceId::try_from("w-1".to_owned()).unwrap(),
-            chat: weacon_protocol::ChatId::try_from("c-1".to_owned()).unwrap(),
+        let run_as = RunAs {
+            key: crate::chats::test_support::key(),
             agent: AgentKind::Claude,
             run: RunId::try_from("run-1".to_owned()).unwrap(),
             session: None,
         };
 
-        let (claude, revoke) = grant(Some(&mcp), launch(AgentKind::Claude), &start).unwrap();
-        let (codex, none) = grant(Some(&mcp), launch(AgentKind::Codex), &start).unwrap();
-        let (alone, no_mcp) = grant(None, launch(AgentKind::Claude), &start).unwrap();
+        let (claude, revoke) = grant(Some(&mcp), launch(AgentKind::Claude), &run_as).unwrap();
+        let (codex, none) = grant(Some(&mcp), launch(AgentKind::Codex), &run_as).unwrap();
+        let (alone, no_mcp) = grant(None, launch(AgentKind::Claude), &run_as).unwrap();
 
         let server = claude.mcp.unwrap();
         assert_eq!(server.url, mcp.url);
+        assert_eq!(server.tools, tools::UP_FRONT);
         let found = mcp.grants.find(&server.token).unwrap();
         assert_eq!(
             (found.run.as_str(), found.folder.as_path()),

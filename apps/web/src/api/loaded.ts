@@ -86,15 +86,14 @@ export class Loader<T> {
   }
 }
 
+/** A fetched thing as a page shows it, and how to fetch it again or change it here. */
+export type Loading<T> = Loaded<T> & Pick<Loader<T>, "change"> & { loading: boolean; load(): Promise<void> };
+
 /**
- * What `fetch` answers, fetched on mount, on each `load` (one fetch at a time), and afresh whenever `key` changes. A
- * refresh clears nothing but the last problem: loading is when `value` and `problem` are both
- * undefined.
+ * What `fetch` answers, fetched on mount, on each `load` (one fetch at a time), and afresh whenever
+ * `key` changes. A refresh clears nothing but the last problem.
  */
-export function useLoaded<T>(
-  fetch: () => Promise<Answer<T>>,
-  key: unknown,
-): Loaded<T> & Pick<Loader<T>, "change"> & { load(): Promise<void> } {
+export function useLoaded<T>(fetch: () => Promise<Answer<T>>, key: unknown): Loading<T> {
   const [shown, setShown] = useState<Loaded<T>>({ value: undefined, problem: undefined });
   const [loader] = useState(() => new Loader<T>(setShown));
   const latest = useRef(fetch);
@@ -104,5 +103,10 @@ export function useLoaded<T>(
     void loader.load(latest.current);
     return () => loader.stop();
   }, [key]);
-  return { ...shown, load: () => loader.load(latest.current), change: (update) => loader.change(update) };
+  return {
+    ...shown,
+    loading: shown.value === undefined && shown.problem === undefined,
+    load: () => loader.load(latest.current),
+    change: (update) => loader.change(update),
+  };
 }

@@ -20,12 +20,19 @@ export type Wiring = {
 export class LiveChat {
   #ref: ChatRef;
   #wiring: Wiring;
-  #sync: Sync = START;
+  #sync: Sync;
   #pending = false;
 
-  constructor(ref: ChatRef, wiring: Wiring) {
+  /** `from` is what an earlier live chat for `ref` showed, kept on screen until the server answers. */
+  constructor(ref: ChatRef, wiring: Wiring, from: Sync = START) {
     this.#ref = ref;
     this.#wiring = wiring;
+    this.#sync = ended(from);
+  }
+
+  /** Where the chat stands now, flushed to the screen or not. */
+  get sync(): Sync {
+    return this.#sync;
   }
 
   /** Asks for the chat afresh, as once the connection is live. */
@@ -44,6 +51,11 @@ export class LiveChat {
     if (chat !== undefined) {
       this.#change({ ...this.#sync, chat: answered(chat, run, prompt) });
     }
+  }
+
+  /** Sends and shows nothing more, a flush still to come included, as when the page is gone. */
+  close(): void {
+    this.#wiring = { ...this.#wiring, send: () => {}, show: () => {} };
   }
 
   /** Stops waiting for answers, keeping the chat, as when the connection ends. */

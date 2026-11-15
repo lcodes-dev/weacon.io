@@ -96,7 +96,8 @@ mod tests {
 
     use super::*;
     use crate::test_support::{
-        Client, Fixture, ask, email, fresh_account, header, request_with, status,
+        Client, Fixture, ask, email, fresh_account, header, member_id, request_with, status,
+        workspace_id,
     };
 
     async fn listed(who: &Client) -> Vec<Value> {
@@ -124,12 +125,47 @@ mod tests {
         assert_eq!(created, "http/1.1 201 created");
         assert_eq!(made["name"], "Team two");
         assert_eq!(made["role"], "owner");
+        assert!(made["member"].is_string());
         assert_eq!(id.len(), 32);
         assert_eq!(read, ("http/1.1 200 ok".to_owned(), made.clone()));
         let names: Vec<_> = workspaces.iter().map(|seen| seen["name"].clone()).collect();
         let roles: Vec<_> = workspaces.iter().map(|seen| seen["role"].clone()).collect();
         assert_eq!(names, [json!("Team"), json!("Personal"), json!("Team two")]);
         assert_eq!(roles, [json!("member"), json!("owner"), json!("owner")]);
+        assert_eq!(workspaces[2]["member"], made["member"]);
+    }
+
+    #[tokio::test]
+    async fn each_person_sees_their_own_member_and_no_one_elses() {
+        let fixture = Fixture::new().await;
+        let w1 = fixture
+            .shared
+            .db
+            .workspace(&workspace_id("w1"))
+            .await
+            .unwrap();
+        let bo = email("bo@example.com");
+        w1.add_member(&member_id("m3"), &fresh_account(), &bo)
+            .await
+            .unwrap();
+        let (_server, ada) = fixture.client("ada@example.com").await;
+        let (_server, bo) = fixture.client("bo@example.com").await;
+
+        let (ada_sees, bo_sees) = (listed(&ada).await, listed(&bo).await);
+        let (_, ada_reads) = ask(ada.address, "GET /api/workspaces/w1", &ada.proof(), "").await;
+        let (_, bo_reads) = ask(bo.address, "GET /api/workspaces/w1", &bo.proof(), "").await;
+
+        assert_eq!((ada_sees.len(), bo_sees.len()), (2, 2));
+        assert_eq!(
+            (&ada_sees[0]["member"], &bo_sees[0]["member"]),
+            (&json!("m1"), &json!("m3"))
+        );
+        assert_eq!(
+            (&ada_reads["member"], &bo_reads["member"]),
+            (&json!("m1"), &json!("m3"))
+        );
+        assert!(ada_sees[1]["member"].is_string());
+        assert_ne!(ada_sees[1]["member"], bo_sees[1]["member"]);
     }
 
     #[tokio::test]

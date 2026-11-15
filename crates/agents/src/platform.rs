@@ -5,8 +5,6 @@ mod pty;
 pub(crate) use pty::Pty;
 #[cfg(unix)]
 pub(crate) use unix::links;
-#[cfg(all(test, unix))]
-pub(crate) use unix::write_program;
 #[cfg(unix)]
 use unix::{links_of, open_unfollowed};
 #[cfg(windows)]
@@ -17,6 +15,18 @@ use windows::{links_of, open_unfollowed};
 use std::fs::File;
 use std::io;
 use std::path::Path;
+
+/// The terminal's interrupt, caught from now on instead of ending this process.
+#[cfg(unix)]
+pub(crate) fn interrupts() -> io::Result<tokio::signal::unix::Signal> {
+    tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())
+}
+
+/// The console's Ctrl-C, caught from now on instead of ending this process.
+#[cfg(windows)]
+pub(crate) fn interrupts() -> io::Result<tokio::signal::windows::CtrlC> {
+    tokio::signal::windows::ctrl_c()
+}
 
 /// `file` opened to read, when it is a regular file with one link and not a symlink.
 pub(crate) fn open_plain(file: &Path) -> io::Result<File> {
@@ -53,23 +63,6 @@ mod unix {
 
     pub(super) fn links_of(opened: &File) -> io::Result<u64> {
         Ok(opened.metadata()?.nlink())
-    }
-
-    /// Writes an executable `script` to `path` from a child shell, so this process never holds a
-    /// write handle that another test's fork could inherit, which makes running it fail as busy.
-    #[cfg(test)]
-    pub(crate) fn write_program(path: &Path, script: &str) {
-        let written = std::process::Command::new("sh")
-            .args([
-                "-c",
-                "printf '%s' \"$1\" > \"$2\" && chmod 755 \"$2\"",
-                "sh",
-                script,
-            ])
-            .arg(path)
-            .status()
-            .unwrap();
-        assert!(written.success());
     }
 }
 

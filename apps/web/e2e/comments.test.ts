@@ -3,7 +3,34 @@ import { test } from "node:test";
 
 import type { Locator, Page } from "playwright-core";
 
-import { fakeServer, start } from "./harness.ts";
+import type { Envelope } from "../src/protocol.ts";
+import { fakeServer, start, waitFor } from "./harness.ts";
+
+// The first of the fake's changed files, in path order, as `fake_diff.rs` names them.
+const FIRST_FILE = "src/ember/part_10.rs";
+
+test("Send review sends every comment as one prompt, and clears them once it is taken", { timeout: 180_000 }, async (t) => {
+  const harness = await start(fakeServer(1_000, 1), { query: "&workspace=w-1&chat=c-1" });
+  t.after(() => harness.close());
+  const { page } = harness;
+  await page.getByRole("button", { name: "Changes" }).click();
+  const file = page.locator(".diff .file").first();
+  assert.equal(await page.getByRole("button", { name: "Send review" }).count(), 0);
+
+  await dragGutter(page, file, 4, 9);
+  await page.getByRole("textbox", { name: "Lines old 44 to new 45" }).fill("Why gather here?");
+  await page.getByRole("button", { name: "Comment", exact: true }).click();
+  await page.getByRole("button", { name: "Send review" }).click();
+  await page.getByRole("button", { name: "Send review" }).waitFor({ state: "detached" });
+  const prompts = () =>
+    (harness.received() as Envelope[]).flatMap((sent) =>
+      sent.type === "chat_command" && sent.action.kind === "prompt" ? [sent.action.text] : [],
+    );
+  await waitFor(() => prompts().length > 0);
+
+  assert.deepEqual(prompts(), [`Review comments on your changes:\n\n${FIRST_FILE}, lines old 44 to new 45:\n> Why gather here?`]);
+  assert.equal(await page.locator(".comment").count(), 0);
+});
 
 test("a dragged range of lines takes a comment that can be edited and removed", { timeout: 180_000 }, async (t) => {
   const harness = await start(fakeServer(1_000, 1), { query: "&workspace=w-1&chat=c-1" });
@@ -23,7 +50,8 @@ test("a dragged range of lines takes a comment that can be edited and removed", 
   await page.getByRole("button", { name: "Comment", exact: true }).click();
 
   const comment = file.locator(".comment");
-  assert.deepEqual(await comment.locator("p").allInnerTexts(), ["Lines old 44 to new 45", "Why gather here?"]);
+  // Out of view a file's section skips rendering, and `innerText` then reads nothing.
+  assert.deepEqual(await comment.locator("p").allTextContents(), ["Lines old 44 to new 45", "Why gather here?"]);
   assert.deepEqual(await marked("commented"), [4, 5, 6, 7, 8, 9]);
   assert.ok(await below(comment, file.locator('.line[data-row="9"]')), "the comment isn't under its last line");
 
@@ -32,7 +60,7 @@ test("a dragged range of lines takes a comment that can be edited and removed", 
   await page.getByRole("button", { name: "Save" }).click();
   await page.getByRole("button", { name: "Back" }).click();
   await page.getByRole("button", { name: "Changes" }).click();
-  assert.equal(await comment.locator(".text").innerText(), "Why collect here?");
+  assert.equal(await comment.locator(".text").textContent(), "Why collect here?");
 
   await comment.getByRole("button", { name: "Remove" }).click();
   assert.equal(await page.locator(".comment").count(), 0);

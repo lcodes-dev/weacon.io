@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::token::token_id;
 use crate::{
-    AccountId, AgentKind, MachineId, MachineName, MemberId, PermissionAnswer, Receipt, RepoId,
+    AgentKind, Asker, MachineId, MachineName, MemberId, PermissionAnswer, Receipt, RepoId,
     RequestId, RunStatus, RunUpdate, WorkspaceId,
 };
 
@@ -25,15 +25,6 @@ pub struct ChatCommand {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(with = "Asker")]
     pub by: Option<Asker>,
-}
-
-/// Who asked for a command, stamped by the server on what it relays to a machine and never
-/// taken from a client. The core acts only when `account` is its owner's, and records only
-/// `member`.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct Asker {
-    pub account: AccountId,
-    pub member: MemberId,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -59,6 +50,12 @@ pub enum ChatAction {
     Permission { answer: PermissionAnswer },
     /// Stops the turn that is running.
     Interrupt,
+    /// Holds the chat for a person carrying its session on by hand: while the connection that
+    /// sent it is open, no run starts and prompts queue. Sent by a local client under
+    /// `chat.hold`, never through the server.
+    Hold,
+    /// Ends this connection's hold, under `chat.hold`; queued prompts then go on.
+    Release,
     /// An action this build doesn't know, from a newer peer; only ever received.
     #[serde(other)]
     #[schemars(skip)]
@@ -217,7 +214,7 @@ impl ChatAction {
     pub(crate) const fn is_newer(&self) -> bool {
         match self {
             Self::Prompt { agent, .. } => matches!(agent, Some(AgentKind::Newer)),
-            Self::Permission { .. } | Self::Interrupt => false,
+            Self::Permission { .. } | Self::Interrupt | Self::Hold | Self::Release => false,
             Self::Newer => true,
         }
     }
@@ -362,6 +359,8 @@ mod tests {
                         "answer": { "run": "run-7", "prompt": 2, "allow": true } }),
             ),
             (ChatAction::Interrupt, json!({ "kind": "interrupt" })),
+            (ChatAction::Hold, json!({ "kind": "hold" })),
+            (ChatAction::Release, json!({ "kind": "release" })),
         ];
 
         for (action, wire) in cases {
@@ -576,7 +575,7 @@ mod tests {
                 id: chat(),
                 title: "Fix the build".to_owned(),
                 owner: "m-1".parse().unwrap(),
-                machine: MachineName::try_from("Ada's laptop".to_owned()).unwrap(),
+                machine: "Ada's laptop".parse().unwrap(),
                 state: ChatState::Full,
                 updated_at: 1_700_000_000,
             }],

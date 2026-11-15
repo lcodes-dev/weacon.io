@@ -5,7 +5,8 @@ use std::str::FromStr;
 use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 
-use crate::token::token_id;
+use crate::hex::hex_string;
+use crate::token::{checked_string, token_id};
 
 token_id!(
     /// A Rust target a release is built for, such as `x86_64-unknown-linux-musl`.
@@ -131,44 +132,6 @@ impl JsonSchema for ReleaseVersion {
     }
 }
 
-/// Declares a string of `$len` lowercase hex digits; parsing anything else fails with `$what`.
-macro_rules! hex_string {
-    ($(#[$doc:meta])* $name:ident, $len:literal, $what:literal) => {
-        $(#[$doc])*
-        #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, JsonSchema)]
-        pub struct $name(#[schemars(regex(pattern = Self::PATTERN))] String);
-
-        impl $name {
-            // The schema's form of `try_from`; a test keeps the two in step.
-            const PATTERN: &str = concat!("^[0-9a-f]{", stringify!($len), "}$");
-
-            #[must_use]
-            pub fn as_str(&self) -> &str {
-                &self.0
-            }
-        }
-
-        impl TryFrom<String> for $name {
-            type Error = String;
-
-            fn try_from(text: String) -> Result<Self, Self::Error> {
-                if text.len() == $len && text.bytes().all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f')) {
-                    Ok(Self(text))
-                } else {
-                    Err(text)
-                }
-            }
-        }
-
-        impl<'de> Deserialize<'de> for $name {
-            fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-                Self::try_from(String::deserialize(deserializer)?)
-                    .map_err(|_| de::Error::custom($what))
-            }
-        }
-    };
-}
-
 hex_string!(
     /// A full git commit id: 40 lowercase hex digits.
     Commit,
@@ -183,13 +146,6 @@ hex_string!(
     "not a SHA-256 digest"
 );
 
-impl Sha256 {
-    #[must_use]
-    pub fn from_bytes(digest: [u8; 32]) -> Self {
-        Self(crate::to_hex(&digest))
-    }
-}
-
 /// An `https://` address of printable ASCII, at most 2,048 bytes, with a plain host name and
 /// optionally a port: no user name or password.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, JsonSchema)]
@@ -197,43 +153,26 @@ pub struct DownloadUrl(#[schemars(regex(pattern = URL_PATTERN), length(max = URL
 
 const URL_MAX: usize = 2048;
 
-// The schema's form of `DownloadUrl::try_from`; a test keeps the two in step.
+// The schema's form of `is_https_url`; a test keeps the two in step.
 const URL_PATTERN: &str = r"^https://[A-Za-z0-9.-]+(:[0-9]{1,5})?([/?#][!-~]*)?$";
 
-impl DownloadUrl {
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
+checked_string!(DownloadUrl, is_https_url, "not an https address");
 
-impl TryFrom<String> for DownloadUrl {
-    type Error = String;
-
-    fn try_from(text: String) -> Result<Self, Self::Error> {
-        let valid = text.len() <= URL_MAX
-            && text.strip_prefix("https://").is_some_and(|rest| {
-                let (authority, path) = rest
-                    .find(['/', '?', '#'])
-                    .map_or((rest, ""), |at| rest.split_at(at));
-                let (host, port) = authority.split_once(':').unwrap_or((authority, "0"));
-                let host_ok = !host.is_empty()
-                    && host
-                        .bytes()
-                        .all(|byte| byte.is_ascii_alphanumeric() || b".-".contains(&byte));
-                let port_ok =
-                    (1..=5).contains(&port.len()) && port.bytes().all(|byte| byte.is_ascii_digit());
-                host_ok && port_ok && path.bytes().all(|byte| byte.is_ascii_graphic())
-            });
-        if valid { Ok(Self(text)) } else { Err(text) }
-    }
-}
-
-impl<'de> Deserialize<'de> for DownloadUrl {
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        Self::try_from(String::deserialize(deserializer)?)
-            .map_err(|_| de::Error::custom("not an https address"))
-    }
+fn is_https_url(text: &str) -> bool {
+    text.len() <= URL_MAX
+        && text.strip_prefix("https://").is_some_and(|rest| {
+            let (authority, path) = rest
+                .find(['/', '?', '#'])
+                .map_or((rest, ""), |at| rest.split_at(at));
+            let (host, port) = authority.split_once(':').unwrap_or((authority, "0"));
+            let host_ok = !host.is_empty()
+                && host
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || b".-".contains(&byte));
+            let port_ok =
+                (1..=5).contains(&port.len()) && port.bytes().all(|byte| byte.is_ascii_digit());
+            host_ok && port_ok && path.bytes().all(|byte| byte.is_ascii_graphic())
+        })
 }
 
 #[cfg(test)]
@@ -242,6 +181,7 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+    use crate::MachineKey;
 
     const COMMIT: &str = "0123456789abcdef0123456789abcdef01234567";
     const SHA: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
@@ -265,7 +205,7 @@ mod tests {
     fn a_manifest_round_trips_and_finds_its_target() {
         let parsed: ReleaseManifest = serde_json::from_value(manifest()).unwrap();
         assert_eq!(serde_json::to_value(&parsed).unwrap(), manifest());
-        let target = |name: &str| BuildTarget::try_from(name.to_owned()).unwrap();
+        let target = |name: &str| name.parse().unwrap();
         let build = parsed
             .build_for(&target("x86_64-unknown-linux-musl"))
             .unwrap();
@@ -404,11 +344,14 @@ mod tests {
             "",
             "abc",
             "g123456789abcdef0123456789abcdef01234567",
+            "0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF",
         ];
         let commit = |text: &str| Commit::try_from(text.to_owned()).is_ok();
         let sha = |text: &str| Sha256::try_from(text.to_owned()).is_ok();
+        let key = |text: &str| MachineKey::try_from(text.to_owned()).is_ok();
         matches_its_parser(Commit::PATTERN, commit, &samples);
         matches_its_parser(Sha256::PATTERN, sha, &samples);
+        matches_its_parser(MachineKey::PATTERN, key, &samples);
     }
 
     #[test]

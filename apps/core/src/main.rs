@@ -3,7 +3,9 @@
 mod app;
 mod chats;
 mod cli;
+mod codemap;
 mod daemon;
+mod db;
 mod disk;
 mod doctor;
 #[cfg_attr(
@@ -14,15 +16,29 @@ mod doctor;
     )
 )]
 mod git;
+mod hook;
+mod integrations;
+mod machine;
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "the server's uplink, which uses it, comes with pairing"
+    )
+)]
+mod machine_settings;
 mod map;
 mod mcp;
 mod memory;
 mod names;
 mod native_host;
+mod pair;
 mod picks;
 mod platform;
 mod reports;
+mod resume;
 mod runs;
+mod server;
 mod service;
 mod session;
 mod status;
@@ -38,6 +54,7 @@ mod test_support;
     expect(dead_code, reason = "`weacon update`, which uses it, comes next")
 )]
 mod update;
+mod uplink;
 mod workspaces;
 
 use std::io::{self, IsTerminal};
@@ -87,9 +104,14 @@ fn run(app: &App, command: Command, env: platform::Env<'_>) -> Result<Ending, Fa
             level,
             team,
         } => workspaces::access(app, &workspace, level, team, &mut io::stdout().lock()),
+        Command::Pair { server, name, pin } => {
+            pair::run(app, &server, name, pin.as_deref(), &mut io::stdout().lock())
+        }
         Command::Reports { answer } => reports::run(app, answer, &mut io::stdout().lock()),
+        Command::Resume { workspace, chat } => resume::run(app, &workspace, &chat),
         Command::ConnectChrome => native_host::connect_chrome(app, env, &mut io::stdout().lock()),
         Command::NativeHost { origin } => native_host::run(app, &origin),
+        Command::Hook(command) => return Ok(hook::run(app, command, &mut io::stdout().lock())),
         Command::Map(command) => {
             return map::run(
                 app,

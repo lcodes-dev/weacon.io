@@ -24,6 +24,7 @@ use crate::memory;
 use crate::picks::{KeepError, Picks};
 use crate::platform::{self, Listener, Owner, Stream};
 use crate::session::{Reply, Session};
+use crate::uplink;
 
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
 pub(crate) const READ_CHUNK: usize = 8192;
@@ -54,10 +55,17 @@ pub(crate) fn run(app: &crate::app::App) -> Result<(), Fault> {
                 path: app.path.clone(),
                 work_root: app.work_root.clone(),
                 mcp: None,
+                plugin: crate::integrations::Plugin::new(state_dir, &app.version, &app.log),
             },
             app.log.clone(),
         )?;
-        let serve = daemon.serve(signals.wait());
+        let (uplink, from_daemon) = uplink::unrouted(app, state_dir);
+        let serve = async {
+            tokio::select! {
+                () = daemon.serve(signals.wait()) => {}
+                never = Box::pin(uplink.run(from_daemon)) => match never {},
+            }
+        };
         crate::reports::following(state_dir, &app.reporter, &app.log, serve).await;
         Ok(())
     })
@@ -124,7 +132,7 @@ impl Daemon {
         places.mcp = Some(mcp);
         let (chats, engine) = chats::start(state_dir, places, app.clone(), spawn, log.clone())?;
         let listener = platform::bind(&socket).map_err(failed)?;
-        let engine = tokio::spawn(engine.run());
+        let engine = tokio::spawn(engine.serve());
         log.info("daemon started", &[]);
         Ok(Self {
             listener,
@@ -153,7 +161,10 @@ impl Daemon {
         loop {
             tokio::select! {
                 () = &mut shutdown => break,
-                _ = disk_check.tick() => self.disk.check(&self.shared.log).await,
+                _ = disk_check.tick() => {
+                    self.disk.check(&self.shared.log).await;
+                    self.shared.chats.disk_full(self.disk.level() == disk::Level::Full);
+                }
                 _ = memory_sample.tick(), if platform::PROCESSES => self.memory.record(&self.shared.log).await,
                 accepted = self.listener.accept() => match accepted {
                     Ok(stream) => self.admit(stream, &mut clients),
@@ -385,7 +396,7 @@ mod tests {
     use tokio::io::{AsyncBufReadExt, AsyncRead};
     use tokio::sync::oneshot;
     use tokio::time::timeout;
-    use weacon_protocol::{ErrorBody, PROTOCOL, Welcome};
+    use weacon_protocol::{Capability, ErrorBody, PROTOCOL, Welcome};
     use weacon_testing::TempDir;
 
     use super::*;
@@ -420,6 +431,8 @@ mod tests {
             Places::default(),
             log,
         )?;
+        // The machine's own disk may be nearly full; a test reads its disk from a fake.
+        daemon.disk = disk::Watch::new(dir.to_path_buf(), |_| Ok(8 << 30));
         change(&mut daemon);
         let socket = daemon.socket.clone();
         let (stop, stopped) = oneshot::channel();
@@ -489,18 +502,25 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn the_disk_is_checked_at_start_and_again_each_minute() {
+        use crate::chats::test_support::bench;
+
         let dir = TempDir::new().unwrap();
         fs::write(dir.join("free"), "0").unwrap();
         let watched = dir.to_path_buf();
+        let bench = bench();
+        let chats = bench.chats.clone();
         let running = start_as(&dir, |daemon| {
             daemon.disk = disk::Watch::new(watched, free_in_file);
+            daemon.shared.chats = chats;
         })
         .unwrap();
 
         logs(&running.records, "disk full").await;
+        logs(&bench.records, "turns paused").await;
         fs::write(dir.join("free"), (8_u64 << 30).to_string()).unwrap();
         tokio::time::sleep(DISK_CHECK).await;
         logs(&running.records, "disk ok").await;
+        logs(&bench.records, "turns resumed").await;
         let records = running.stop().await;
 
         let disk: Vec<_> = messages(&records)
@@ -682,7 +702,7 @@ mod tests {
         let kept = Picks::new(&dir).read(&"p-1".to_owned().try_into().unwrap());
 
         assert!(matches!(&replies[0], Message::Welcome(welcome)
-            if welcome.capabilities.contains(&code!("element.pick").into())));
+            if welcome.capabilities.contains(&Capability::new(code!("element.pick")))));
         assert_eq!(receipt(&replies[1]), Some(&Outcome::Completed));
         assert_eq!(receipt(&replies[2]), Some(&Outcome::Completed));
         assert_eq!(error_code(&replies[3]), Some("request.conflict"));
@@ -785,9 +805,20 @@ mod tests {
         running.stop().await;
     }
 
+    // A chat's pushed events in brief, and the other replies. The run starts off the engine's
+    // loop, so a snapshot can come before it is up.
+    fn events_and_answers(replies: &[Message]) -> (Vec<String>, Vec<&Message>) {
+        use crate::chats::test_support::brief;
+
+        let (events, answers): (Vec<_>, Vec<_>) = replies
+            .iter()
+            .partition(|reply| matches!(reply, Message::Chat(_)));
+        (events.into_iter().map(brief).collect(), answers)
+    }
+
     #[tokio::test]
     async fn chat_commands_and_queries_reach_the_engine_and_its_events_come_back() {
-        use crate::chats::test_support::{bench, brief, prompt, query, soon};
+        use crate::chats::test_support::{bench, prompt, query, soon};
         use weacon_protocol::ChatQueryKind;
 
         let dir = TempDir::new().unwrap();
@@ -818,13 +849,14 @@ mod tests {
             panic!("no welcome");
         };
         for capability in offered {
-            assert!(welcome.capabilities.contains(&capability.into()));
+            assert!(welcome.capabilities.contains(&Capability::new(capability)));
         }
-        assert_eq!(error_code(&replies[1]), Some("chat.empty_prompt"));
-        assert!(matches!(&replies[2], Message::ChatAnswer(answer)
-            if matches!(answer.answer, weacon_protocol::ChatAnswerKind::Snapshot { seq: 4, .. })));
+        let (events, answers) = events_and_answers(&replies[1..]);
+        assert_eq!(error_code(answers[0]), Some("chat.empty_prompt"));
+        assert!(matches!(answers[1], Message::ChatAnswer(answer)
+            if matches!(answer.answer, weacon_protocol::ChatAnswerKind::Snapshot { seq, .. } if seq >= 2)));
         assert_eq!(
-            replies[3..].iter().map(brief).collect::<Vec<_>>(),
+            events,
             [
                 "1 prompt r-1 MARKER-PROMPT",
                 "2 receipt r-1 accepted",

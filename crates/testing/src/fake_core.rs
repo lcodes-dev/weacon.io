@@ -73,7 +73,7 @@ pub fn client_hello(
                 version: "0.1.0".to_owned(),
                 commit: "1a2b3c4".to_owned(),
             },
-            capabilities: capabilities.into_iter().map(Capability::from).collect(),
+            capabilities: capabilities.into_iter().map(Capability::new).collect(),
         }),
     }
 }

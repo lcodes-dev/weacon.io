@@ -32,32 +32,32 @@ export function parse(data: unknown): Incoming | undefined {
 
 /** Where incoming messages go: each handler takes only the messages that may be for it. */
 export type Routes = {
-  run(message: RunMessage): void;
-  answers(message: Extract<Incoming, { type: "receipt" | "error" }>): void;
-  changes(message: Extract<Incoming, { type: "diff_answer" | "error" }>): void;
-  chat(message: ChatMessage | ErrorMessage): void;
+  run?(message: RunMessage): void;
+  answers?(message: Extract<Incoming, { type: "receipt" | "error" }>): void;
+  changes?(message: Extract<Incoming, { type: "diff_answer" | "error" }>): void;
+  chat?(message: ChatMessage | ErrorMessage): void;
 };
 
 /** Hands `message` to the handlers it may be for; an error may answer a command, a chat query or the diff query. */
 export function route(message: Incoming, to: Routes): void {
   switch (message.type) {
     case "run":
-      to.run(message);
+      to.run?.(message);
       return;
     case "receipt":
-      to.answers(message);
+      to.answers?.(message);
       return;
     case "diff_answer":
-      to.changes(message);
+      to.changes?.(message);
       return;
     case "chat":
     case "chat_answer":
-      to.chat(message);
+      to.chat?.(message);
       return;
     case "error":
-      to.answers(message);
-      to.changes(message);
-      to.chat(message);
+      to.answers?.(message);
+      to.changes?.(message);
+      to.chat?.(message);
       return;
     case "welcome":
     case "workspace":
@@ -76,8 +76,8 @@ const CHECKS: { [T in Incoming["type"]]: (fields: Fields) => boolean } = {
   error: (fields) => text(fields, "code"),
   receipt: (fields) => text(fields, "request") && text(fields, "state"),
   run: (fields) => text(fields, "run") && isRunEvent(fields["event"]),
-  // The answer itself is checked where the chat's changes take it.
-  diff_answer: (fields) => text(fields, "request") && text(fields, "workspace") && text(fields, "chat"),
+  diff_answer: (fields) =>
+    text(fields, "request") && text(fields, "workspace") && text(fields, "chat") && isDiffAnswer(fields["answer"]),
   chat: (fields) => text(fields, "workspace") && text(fields, "chat") && isEntry(fields["entry"]),
   chat_answer: (fields) => text(fields, "workspace") && text(fields, "chat") && isChatAnswer(fields["answer"]),
   workspace: (fields) => text(fields, "workspace") && Number.isSafeInteger(fields["seq"]) && isChange(fields["change"]),
@@ -235,6 +235,57 @@ function isMachineSettingsAnswer(answer: unknown): boolean {
     signIns.every((signIn: unknown) => {
       const one = signIn as Fields | null;
       return typeof one === "object" && one !== null && text(one, "agent") && text(one, "state");
+    })
+  );
+}
+
+// An answer of a kind this app reads has every field the diff view reads; others are dropped.
+function isDiffAnswer(answer: unknown): boolean {
+  const fields = record(answer);
+  if (fields?.["kind"] === "unchanged") {
+    return true;
+  }
+  const file = record(fields?.["file"]);
+  const files = fields?.["files"];
+  return (
+    fields?.["kind"] === "file" &&
+    typeof files === "number" &&
+    Number.isSafeInteger(files) &&
+    files >= 1 &&
+    typeof file?.["path"] === "string" &&
+    isFileChange(file["change"]) &&
+    isContent(file["content"])
+  );
+}
+
+function isFileChange(change: unknown): boolean {
+  const fields = record(change);
+  const kind = fields?.["kind"];
+  return typeof kind === "string" && (kind !== "renamed" || typeof fields?.["from"] === "string");
+}
+
+function isContent(content: unknown): boolean {
+  const fields = record(content);
+  switch (fields?.["kind"]) {
+    case "text": {
+      const hunks = fields["hunks"];
+      return Array.isArray(hunks) && hunks.every(isHunk);
+    }
+    default:
+      return typeof fields?.["kind"] === "string";
+  }
+}
+
+function isHunk(hunk: unknown): boolean {
+  const fields = record(hunk);
+  const lines = fields?.["lines"];
+  return (
+    Number.isSafeInteger(fields?.["old_start"]) &&
+    Number.isSafeInteger(fields?.["new_start"]) &&
+    Array.isArray(lines) &&
+    lines.every((line) => {
+      const parts = record(line);
+      return typeof parts?.["op"] === "string" && typeof parts["text"] === "string";
     })
   );
 }

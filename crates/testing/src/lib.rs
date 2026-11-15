@@ -4,6 +4,7 @@ mod fake_chat;
 pub mod fake_core;
 mod fake_diff;
 pub mod fake_server;
+mod fake_worktree;
 mod logs;
 pub mod platform;
 pub mod recording;

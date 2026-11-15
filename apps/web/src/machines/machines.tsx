@@ -1,25 +1,37 @@
-import { useContext, useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 
 import type { Later } from "../connection.ts";
 import type { MachineId, MachineSummary, PairPending } from "../protocol.ts";
 import type { Api } from "../api/api.ts";
 import { useAsk } from "../api/ask.ts";
 import { useLoaded } from "../api/loaded.ts";
-import { WorkspaceSocketContext, useOffers } from "../shell/workspace-socket.ts";
+import { Problem } from "../api/problem.tsx";
+import { type WorkspaceSocket, useOffers } from "../shell/workspace-socket.ts";
 import { waitForClaim } from "./claim.ts";
 import { fingerprint } from "./fingerprint.ts";
 import { keep } from "./keep.ts";
 import { MachineSettingsView } from "./machine-settings.tsx";
 import { osName } from "./os.ts";
 import type { Pins } from "./pins.ts";
-import { unpair } from "./unpair.ts";
 
 /** The signed-in account's machines: pairing one by its code, the list, and unpairing. */
-export function Machines({ api, pins, later }: { api: Api; pins: Pins; later: Later }) {
-  const { value, problem, load } = useLoaded(() => api.machines(), api);
+export function Machines({
+  api,
+  pins,
+  later,
+  socket,
+}: {
+  api: Api;
+  pins: Pins;
+  later: Later;
+  /** The open workspace's socket, for its settings on each machine; none while no workspace is open. */
+  socket: WorkspaceSocket | undefined;
+}) {
+  const { value, problem, loading, load } = useLoaded(() => api.machines(), api);
   const list = value?.machines;
   const [waiting, setWaiting] = useState<MachineId>();
   const [stalled, setStalled] = useState(false);
+  const [justPaired, setJustPaired] = useState<MachineId>();
   useEffect(() => {
     if (waiting === undefined) {
       return;
@@ -31,31 +43,25 @@ export function Machines({ api, pins, later }: { api: Api; pins: Pins; later: La
   }, [waiting]);
   useEffect(() => {
     if (list?.some(({ id }) => id === waiting)) {
+      setJustPaired(waiting);
       setWaiting(undefined);
     }
   }, [list, waiting]);
   return (
     <>
       <h2>Machines</h2>
-      {list === undefined && problem === undefined && <p className="muted">Loading</p>}
+      {loading && <p className="muted">Loading</p>}
       {list?.length === 0 && waiting === undefined && (
         <p className="muted">No machines yet. Run weacon pair on one, then enter the code it shows.</p>
       )}
       {list !== undefined && list.length > 0 && (
         <ul aria-label="Machines">
           {list.map((machine) => (
-            <Machine key={machine.id} api={api} pins={pins} later={later} machine={machine} unpaired={() => void load()} />
+            <Machine key={machine.id} api={api} pins={pins} later={later} socket={socket} machine={machine} justPaired={machine.id === justPaired} unpaired={() => void load()} />
           ))}
         </ul>
       )}
-      {problem !== undefined && (
-        <p role="alert">
-          {problem}{" "}
-          <button type="button" onClick={() => void load()}>
-            Try again
-          </button>
-        </p>
-      )}
+      {problem !== undefined && <Problem text={problem} retry={() => void load()} />}
       {waiting !== undefined && <p className="muted">Waiting for the machine to connect.</p>}
       {stalled && <p role="alert">The machine didn't connect. Check that weacon pair is still running there.</p>}
       <Pair
@@ -75,19 +81,28 @@ function Machine({
   api,
   pins,
   later,
+  socket,
   machine,
+  justPaired,
   unpaired,
 }: {
   api: Api;
   pins: Pins;
   later: Later;
+  socket: WorkspaceSocket | undefined;
   machine: MachineSummary;
+  justPaired: boolean;
   unpaired(): void;
 }) {
   const [confirming, setConfirming] = useState(false);
   const [open, setOpen] = useState(false);
+  // Its settings open by themselves once, so the person is asked about error reports at once.
+  useEffect(() => {
+    if (justPaired && socket !== undefined) {
+      setOpen(true);
+    }
+  }, [justPaired]);
   // A machine's settings are kept for each workspace, so they show only while one is open.
-  const socket = useContext(WorkspaceSocketContext);
   const settable = useOffers(socket, "machine.settings");
   const { busy, problem, ask } = useAsk();
   const paired = new Date(machine.paired_at * 1000).toLocaleDateString();
@@ -105,7 +120,7 @@ function Machine({
             disabled={busy}
             onClick={() =>
               void ask(
-                () => unpair(api, machine.id),
+                () => api.unpair(machine.id),
                 () => {
                   // The key goes with the pairing; a failure to forget it leaves a key no one shows.
                   void pins.unpin(machine.id).catch(() => {});
@@ -132,7 +147,7 @@ function Machine({
         </button>
       )}
       {socket !== undefined && settable && open && (
-        <MachineSettingsView key={socket.workspace} machine={machine} link={socket} later={later} />
+        <MachineSettingsView key={socket.workspace} machine={machine} socket={socket} later={later} />
       )}
     </li>
   );

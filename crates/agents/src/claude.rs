@@ -8,11 +8,27 @@ use std::path::PathBuf;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use tokio::process::Command;
-use weacon_protocol::{AccessLevel, AgentSession};
+use weacon_protocol::{AccessLevel, AgentSession, App};
 
 pub(crate) use wire::{Wire, answer, prompt, read};
 
-use crate::launch::{Launch, OtherSignIns};
+use crate::launch::{Launch, McpServer, OtherSignIns};
+use crate::vendor::Vendor;
+use crate::wire::Wire as RunWire;
+
+pub(crate) const VENDOR: Vendor = Vendor {
+    config_variable: "CLAUDE_CONFIG_DIR",
+    other_sign_ins: OtherSignIns {
+        prefixes: &["ANTHROPIC_", "CLAUDE_"],
+        names: &["AWS_BEARER_TOKEN_BEDROCK"],
+    },
+    status: &["auth", "status", "--json"],
+    login: &["auth", "login"],
+    own_sign_in,
+    takes_mcp: true,
+    drive,
+    resume: Some(resume),
+};
 
 /// The tools that only change files, and the input naming each one's file.
 const FILE_TOOLS: [(&str, &str); 4] = [
@@ -28,18 +44,16 @@ pub(crate) fn changed_file(tool: &str, input: &Value) -> Option<PathBuf> {
     input.get(key)?.as_str().map(PathBuf::from)
 }
 
-// Sign-ins and providers that would win over the workspace's own.
-const OTHER_SIGN_INS: OtherSignIns = OtherSignIns {
-    prefixes: &["ANTHROPIC_", "CLAUDE_"],
-    names: &["AWS_BEARER_TOKEN_BEDROCK"],
-};
-
 const TOKEN_VARIABLE: &str = "WEACON_MCP_TOKEN";
 const TOKEN_HEADER: &str = "Bearer ${WEACON_MCP_TOKEN}";
 
 /// `claude` in its stream-json mode, resuming `session` when given.
-pub(crate) fn command(launch: &Launch, session: Option<&AgentSession>) -> Command {
-    let mut command = with_workspace_sign_in(launch);
+fn drive(launch: &Launch, _: &App, session: Option<&AgentSession>) -> (Command, RunWire) {
+    (command(launch, session), RunWire::Claude(Wire::default()))
+}
+
+fn command(launch: &Launch, session: Option<&AgentSession>) -> Command {
+    let mut command = launch.with_workspace_sign_in(&VENDOR);
     command.args([
         "--print",
         "--verbose",
@@ -61,19 +75,11 @@ pub(crate) fn command(launch: &Launch, session: Option<&AgentSession>) -> Comman
         command.args(["--disallowedTools", &format!("Bash,{}", tools.join(","))]);
     }
     if let Some(mcp) = &launch.mcp {
-        // Claude reads the token from its environment, so it never reaches the command line.
-        let server =
-            json!({"type": "http", "url": mcp.url, "headers": {"Authorization": TOKEN_HEADER}});
-        let config = json!({"mcpServers": {"weacon": server}});
-        command.args(["--mcp-config", &config.to_string()]);
-        // Each of these tools only reads, so none waits for a person.
-        let tools: Vec<_> = mcp
-            .tools
-            .iter()
-            .map(|tool| format!("mcp__weacon__{tool}"))
-            .collect();
-        command.args(["--allowedTools", &tools.join(",")]);
-        command.env(TOKEN_VARIABLE, &mcp.token);
+        point_at(&mut command, mcp);
+    }
+    // An absolute path can't be read as an option.
+    if let Some(plugin) = launch.plugin.as_ref().filter(|plugin| plugin.is_absolute()) {
+        command.arg("--plugin-dir").arg(plugin);
     }
     if let Some(session) = session {
         command.args(["--resume", session.as_str()]);
@@ -82,16 +88,24 @@ pub(crate) fn command(launch: &Launch, session: Option<&AgentSession>) -> Comman
     command
 }
 
-/// `claude`'s own check of its sign-in, which exits with success when signed in and prints
-/// how; it runs wherever Weacon does.
-pub(crate) fn status(launch: &Launch) -> Command {
-    let mut command = with_workspace_sign_in(launch);
-    command.args(["auth", "status", "--json"]);
-    command
+/// Points `command` at the core's MCP, whose read-only tools then need no person.
+fn point_at(command: &mut Command, mcp: &McpServer) {
+    // Claude reads the token from its environment, so it never reaches the command line.
+    let server =
+        json!({"type": "http", "url": mcp.url, "headers": {"Authorization": TOKEN_HEADER}});
+    let config = json!({"mcpServers": {"weacon": server}});
+    command.args(["--mcp-config", &config.to_string()]);
+    let tools: Vec<_> = mcp
+        .tools
+        .iter()
+        .map(|tool| format!("mcp__weacon__{tool}"))
+        .collect();
+    command.args(["--allowedTools", &tools.join(",")]);
+    command.env(TOKEN_VARIABLE, &mcp.token);
 }
 
-/// The two fields of `status`'s answer that say where a sign-in comes from; nothing else in it
-/// is kept.
+/// The two fields of `claude auth status --json`'s answer that say where a sign-in comes
+/// from; nothing else in it is kept.
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct Source {
@@ -99,9 +113,9 @@ struct Source {
     api_key_source: Option<String>,
 }
 
-/// Whether `status` printed a sign-in kept in the config folder: a claude.ai login, or a key
+/// Whether the status printed a sign-in kept in the config folder: a claude.ai login, or a key
 /// that `claude auth login` stored. Anything else, such as a token from the host, isn't one.
-pub(crate) fn own_sign_in(status: &[u8]) -> bool {
+fn own_sign_in(status: &[u8]) -> bool {
     let Ok(source) = serde_json::from_slice::<Source>(status) else {
         return false;
     };
@@ -115,17 +129,12 @@ pub(crate) fn own_sign_in(status: &[u8]) -> bool {
     }
 }
 
-/// `claude`'s own sign-in, for the person's terminal.
-pub(crate) fn login(launch: &Launch) -> Command {
-    let mut command = with_workspace_sign_in(launch);
-    command.args(["auth", "login"]);
-    command
-}
-
-fn with_workspace_sign_in(launch: &Launch) -> Command {
-    let mut command = Command::new(&launch.program);
-    OTHER_SIGN_INS.remove(&mut command, std::env::vars_os().map(|(name, _)| name));
-    command.env("CLAUDE_CONFIG_DIR", &launch.config_dir);
+/// `claude` on `session`, for a person to carry on by hand in their terminal, in the folder the
+/// chat works in. Weacon's own limits are left out: the person answers its prompts.
+fn resume(launch: &Launch, session: &AgentSession) -> Command {
+    let mut command = launch.with_workspace_sign_in(&VENDOR);
+    command.args(["--resume", session.as_str()]);
+    command.current_dir(&launch.cwd);
     command
 }
 
@@ -136,6 +145,7 @@ mod tests {
 
     use super::*;
     use crate::launch::McpServer;
+    use crate::test_support::launch;
     use weacon_protocol::AgentKind;
 
     // Real processes: a shell script stands in for `claude`.
@@ -149,8 +159,8 @@ mod tests {
 
         use super::*;
         use weacon_testing::TempDir;
+        use weacon_testing::platform::write_program;
 
-        use crate::platform::write_program;
         use crate::run::AgentRun;
         use crate::spawn::SpawnPolicy;
         use crate::test_support::{OTHER_SESSION, SESSION, app, run_id, started};
@@ -192,14 +202,11 @@ mod tests {
             write_program(
                 &program,
                 &format!("#!/bin/sh\nprintf '%s' '{status}'\nexit {code}\n"),
-            );
+            )
+            .unwrap();
             Launch {
-                agent: AgentKind::Claude,
-                program,
                 config_dir: dir.to_path_buf(),
-                cwd: dir.to_path_buf(),
-                access: AccessLevel::AskFirst,
-                mcp: None,
+                ..launch(AgentKind::Claude, program, dir)
             }
         }
 
@@ -213,7 +220,8 @@ mod tests {
                  sh -c 'cat /proc/self/oom_score_adj; echo \"$CARGO_BUILD_JOBS $CLAUDE_CONFIG_DIR\"' \
                  > \"$CLAUDE_CONFIG_DIR/tool\" 2>/dev/null\n\
                  cat \"$CLAUDE_CONFIG_DIR/session\"\n",
-            );
+            )
+            .unwrap();
             program
         }
 
@@ -229,12 +237,8 @@ mod tests {
             )
             .unwrap();
             Launch {
-                agent: AgentKind::Claude,
-                program: dir.join("claude"),
                 config_dir,
-                cwd: dir.to_owned(),
-                access: AccessLevel::AskFirst,
-                mcp: None,
+                ..launch(AgentKind::Claude, dir.join("claude"), dir)
             }
         }
 
@@ -328,31 +332,40 @@ mod tests {
 
     #[test]
     fn every_command_runs_with_the_workspaces_config() {
-        let claude = Launch {
-            agent: AgentKind::Claude,
-            program: PathBuf::from("claude"),
-            config_dir: PathBuf::from("/work/config"),
-            cwd: PathBuf::from("/work"),
-            access: AccessLevel::AskFirst,
-            mcp: None,
-        };
-        let check = status(&claude);
+        let claude = launch(AgentKind::Claude, "claude", Path::new("/work"));
+        let check = claude.status_command(&VENDOR);
         assert_eq!(
             check.as_std().get_args().collect::<Vec<_>>(),
             ["auth", "status", "--json"]
         );
         assert_eq!(check.as_std().get_current_dir(), None);
-        let login = login(&claude);
+        let login = claude.login_command(&VENDOR);
         assert_eq!(
             login.as_std().get_args().collect::<Vec<_>>(),
             ["auth", "login"]
         );
-        for command in [command(&claude, None), check, login] {
+        let session = AgentSession::try_from("0b7c6a52-3f1e-4d2a-9c8b-5e4f3a2b1c0d".to_owned());
+        let by_hand = resume(&claude, &session.unwrap());
+        assert_eq!(
+            by_hand.as_std().get_args().collect::<Vec<_>>(),
+            ["--resume", "0b7c6a52-3f1e-4d2a-9c8b-5e4f3a2b1c0d"]
+        );
+        assert_eq!(by_hand.as_std().get_current_dir(), Some(Path::new("/work")));
+        let commands = [
+            ("run", command(&claude, None)),
+            ("status", check),
+            ("login", login),
+            ("resume", by_hand),
+        ];
+        for (name, command) in commands {
             let config = (
                 OsStr::new("CLAUDE_CONFIG_DIR"),
-                Some(OsStr::new("/work/config")),
+                Some(claude.config_dir.as_os_str()),
             );
-            assert!(command.as_std().get_envs().any(|env| env == config));
+            assert!(
+                command.as_std().get_envs().any(|env| env == config),
+                "{name}"
+            );
         }
         let run = command(&claude, None);
         assert_eq!(run.as_std().get_current_dir(), Some(Path::new("/work")));
@@ -367,10 +380,10 @@ mod tests {
             "CLAUDE_CODE_USE_BEDROCK",
             "AWS_BEARER_TOKEN_BEDROCK",
         ] {
-            assert!(OTHER_SIGN_INS.matches(OsStr::new(name)), "{name}");
+            assert!(VENDOR.other_sign_ins.matches(OsStr::new(name)), "{name}");
         }
         for name in ["PATH", "HOME", "AWS_REGION"] {
-            assert!(!OTHER_SIGN_INS.matches(OsStr::new(name)), "{name}");
+            assert!(!VENDOR.other_sign_ins.matches(OsStr::new(name)), "{name}");
         }
     }
 
@@ -378,12 +391,8 @@ mod tests {
     fn every_level_ignores_the_repositorys_settings_and_read_only_refuses_changing_tools() {
         let args = |access| {
             let launch = Launch {
-                agent: AgentKind::Claude,
-                program: PathBuf::from("claude"),
-                config_dir: PathBuf::from("/work/config"),
-                cwd: PathBuf::from("/work"),
                 access,
-                mcp: None,
+                ..launch(AgentKind::Claude, "claude", Path::new("/work"))
             };
             let command = command(&launch, None);
             let args: Vec<_> = command.as_std().get_args().map(ToOwned::to_owned).collect();
@@ -403,14 +412,12 @@ mod tests {
         }
     }
 
-    fn with_mcp(mcp: Option<McpServer>) -> (Command, Vec<String>) {
+    fn launched(mcp: Option<McpServer>, plugin: Option<PathBuf>) -> (Command, Vec<String>) {
         let launch = Launch {
-            agent: AgentKind::Claude,
-            program: PathBuf::from("claude"),
-            config_dir: PathBuf::from("/work/config"),
-            cwd: PathBuf::from("/work"),
             access: AccessLevel::ReadOnly,
             mcp,
+            plugin,
+            ..launch(AgentKind::Claude, "claude", Path::new("/work"))
         };
         let command = command(&launch, None);
         let args = command.as_std().get_args();
@@ -431,7 +438,7 @@ mod tests {
             token: "secret-token".into(),
             tools: vec!["map".into(), "symbol".into()],
         };
-        let (with, given) = with_mcp(Some(server));
+        let (with, given) = launched(Some(server), None);
         let after = |flag: &str| {
             let at = given.iter().position(|arg| arg == flag)?;
             given.get(at + 1).cloned()
@@ -455,11 +462,28 @@ mod tests {
 
     #[test]
     fn a_run_without_the_mcp_gets_neither_its_flags_nor_a_token() {
-        let (without, plain) = with_mcp(None);
+        let (without, plain) = launched(None, None);
 
         let flags = ["--mcp-config", "--allowedTools"];
         assert!(!plain.iter().any(|arg| flags.contains(&arg.as_str())));
         assert_eq!(token(&without), None);
+    }
+
+    #[test]
+    fn only_an_absolute_plugin_folder_is_given_to_claude() {
+        let plugin = std::env::temp_dir().join("weacon-plugin");
+        let (_, given) = launched(None, Some(plugin.clone()));
+        let at = given.iter().position(|arg| arg == "--plugin-dir").unwrap();
+        assert_eq!(given.get(at + 1).map(PathBuf::from), Some(plugin));
+
+        for plugin in [
+            None,
+            Some(PathBuf::from("--plugin")),
+            Some(PathBuf::from("plugin")),
+        ] {
+            let (_, given) = launched(None, plugin);
+            assert!(!given.iter().any(|arg| arg.contains("plugin")), "{given:?}");
+        }
     }
 
     #[test]

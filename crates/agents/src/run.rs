@@ -136,8 +136,7 @@ impl<W: AsyncWrite + Unpin, R: AsyncBufRead + Unpin> Run<W, R> {
                 )
             })?;
         let prompt = self.prompts.swap_remove(at);
-        let effects = self.wire.answer(&prompt.asked, answer.allow);
-        self.apply(effects);
+        self.reply(&prompt.asked, answer.allow);
         self.flush().await
     }
 
@@ -193,6 +192,10 @@ impl<W: AsyncWrite + Unpin, R: AsyncBufRead + Unpin> Run<W, R> {
         }
     }
 
+    fn reply(&mut self, asked: &Asked, allow: bool) {
+        self.apply(self.wire.answer(asked, allow));
+    }
+
     fn started(&mut self, session: AgentSession) {
         if self.session.as_ref() != Some(&session) {
             self.session = Some(session.clone());
@@ -203,10 +206,7 @@ impl<W: AsyncWrite + Unpin, R: AsyncBufRead + Unpin> Run<W, R> {
     fn settle(&mut self, asked: Asked) {
         match self.rules.decide(self.wire.changed_file(&asked)) {
             Decision::Ask => self.ask_person(asked),
-            Decision::Refuse => {
-                let effects = self.wire.answer(&asked, false);
-                self.apply(effects);
-            }
+            Decision::Refuse => self.reply(&asked, false),
             Decision::Check(file) => self.checks.push_back((asked, file)),
         }
     }
@@ -222,8 +222,7 @@ impl<W: AsyncWrite + Unpin, R: AsyncBufRead + Unpin> Run<W, R> {
                 return;
             };
             if allowed {
-                let effects = self.wire.answer(&asked, true);
-                self.apply(effects);
+                self.reply(&asked, true);
             } else {
                 self.ask_person(asked);
             }

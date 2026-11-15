@@ -1,12 +1,13 @@
 use weacon_protocol::{App, Capability, Code, Envelope, ErrorBody, FrameError, Message, code};
 
 /// What the daemon offers its clients; each feature adds its capability here.
-const CAPABILITIES: &[Capability] = &[
+pub(crate) const CAPABILITIES: &[Capability] = &[
     Capability::new(code!("element.pick")),
     Capability::new(code!("chat.send")),
     Capability::new(code!("chat.events")),
     Capability::new(code!("chat.agent")),
     Capability::new(code!("run.stream")),
+    Capability::new(code!("machine.connect")),
 ];
 
 /// One client's place in the conversation with the daemon.
@@ -96,11 +97,12 @@ mod tests {
                     message: Message::Welcome(Welcome {
                         app: build(&VERSION),
                         capabilities: vec![
-                            code!("element.pick").into(),
-                            code!("chat.send").into(),
-                            code!("chat.events").into(),
-                            code!("chat.agent").into(),
-                            code!("run.stream").into(),
+                            Capability::new(code!("element.pick")),
+                            Capability::new(code!("chat.send")),
+                            Capability::new(code!("chat.events")),
+                            Capability::new(code!("chat.agent")),
+                            Capability::new(code!("run.stream")),
+                            Capability::new(code!("machine.connect")),
                         ],
                     }),
                 }),

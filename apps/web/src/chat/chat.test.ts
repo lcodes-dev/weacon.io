@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import type { ChatEntry, ChatEvent, RunEvent, RunState } from "../protocol.ts";
-import { type Ask, type Chat, type Item, type Run, answered, commit, fromSnapshot, missing, older, stream, working } from "./chat.ts";
+import type { AgentRef, ChatEntry, ChatEvent, RunEvent, RunState } from "../protocol.ts";
+import { type Chat, type Item, type Run, answered, commit, fromSnapshot, missing, older, stream, working } from "./chat.ts";
 
 const at = (seq: number, event: ChatEvent): ChatEntry => ({ seq, event });
 const said = (seq: number, text: string) => at(seq, { kind: "prompt", request: `q-${seq}`, text });
@@ -36,8 +36,7 @@ function shown(items: readonly Item[]): string[] {
     }
     const { run, transcript, asks, open } = item.turn;
     const rows = transcript.rows.map((row) => (row.kind === "text" ? row.pieces.join("|") : row.kind));
-    const answer = (ask: Ask) => (ask.allowed === undefined ? "" : ask.allowed ? " allowed" : " denied");
-    const prompts = asks.map((ask) => `ask ${ask.prompt}@${ask.at}${ask.open ? " open" : ""}${answer(ask)}`);
+    const prompts = asks.map((ask) => `ask ${ask.prompt}@${ask.at}${ask.state === "closed" ? "" : ` ${ask.state}`}`);
     return `${run}${open ? "" : " done"}: ${[...rows, ...prompts].join(", ")}`;
   });
 }
@@ -277,4 +276,25 @@ test("a run that isn't on a turn streams nothing, even a late piece of its text"
 
   assert.equal(stream(start, "r-1", delta("late")), start);
   assert.deepEqual(shown(stream(start, "r-2", delta("Hel")).items), ["> Hi", "r-2: Hel"]);
+});
+
+test("earlier runs take their agents from the statuses the log holds, by the snapshot or a window", () => {
+  const codex = { kind: "codex" as const, owner: { kind: "shared" as const }, machine: "team VPS" };
+  const claude = { kind: "claude" as const, owner: { kind: "member" as const, member: "m-1" }, machine: "laptop" };
+  const named = (seq: number, run: string, state: RunState, agent: AgentRef) => at(seq, { kind: "run_status", status: { run, state, agent } });
+  const snapshot = fromSnapshot({
+    seq: 6,
+    runs: new Map([["r-3", { state: "waiting", agent: claude }]]),
+    waiting: [],
+    events: [named(3, "r-2", "running", claude), named(4, "r-2", "waiting", claude), named(5, "r-3", "starting", codex), status(6, "r-3", "running")],
+  });
+  const widened = older(snapshot, [named(1, "r-1", "running", codex), named(2, "r-1", "ended", codex)]);
+
+  assert.deepEqual(widened.runs.get("r-1"), { state: "ended", agent: codex });
+  // A run the snapshot doesn't hold is over, whatever its last logged status said.
+  assert.deepEqual(widened.runs.get("r-2"), { state: "ended", agent: claude });
+  assert.equal(working(fromSnapshot({ seq: 4, runs: new Map(), waiting: [], events: [named(3, "r-2", "running", claude)] })), false);
+  // The snapshot's own word on a run wins over what its log said before.
+  assert.deepEqual(widened.runs.get("r-3"), { state: "waiting", agent: claude });
+  assert.equal(snapshot.runs.get("r-1"), undefined);
 });

@@ -174,7 +174,7 @@ mod tests {
     #[test]
     fn answers_tag_each_kind() {
         let link = "https://github.com/acme/site/pull/7";
-        let url = DownloadUrl::try_from(link.to_owned()).unwrap();
+        let url: DownloadUrl = link.parse().unwrap();
         let cases = [
             (
                 WorktreeAnswerKind::State {

@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
 use std::io::{self, BufRead, BufReader, Read, Seek, SeekFrom, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use weacon_model::ChatRuns;
 use weacon_observability::Fault;
@@ -21,15 +21,18 @@ const WINDOW_MAX: usize = MAX_FRAME - (16 << 10);
 // More missed entries than this are lost to a subscriber, which then takes a snapshot.
 const REPLAY_MAX: usize = 8 * MAX_FRAME;
 
-/// One chat's journal. Its owner keeps one per chat and awaits each call to the end: calls
+/// One chat's log. Its owner keeps one per chat and awaits each call to the end: calls
 /// aren't safe to cancel or to run side by side.
 #[derive(Debug)]
-pub(crate) struct Log {
-    file: File,
+pub(crate) struct ChatLog {
+    /// `None` until the first entry of a chat this machine had no log for.
+    file: Option<File>,
+    path: PathBuf,
+    workspace_root: PathBuf,
     /// Where each entry starts in the file; the entry `seq` starts at `starts[seq - 1]`.
     starts: Vec<u64>,
     end: u64,
-    requests: HashMap<RequestId, Asked>,
+    requests: HashMap<RequestId, Commanded>,
     /// Set by a failed write, which may have left half an entry; opening the log again mends it.
     broken: bool,
     /// The agent the chat's first prompt named, Claude when it named none.
@@ -39,12 +42,20 @@ pub(crate) struct Log {
 
 /// What the log holds of one command.
 #[derive(Debug, Default)]
-struct Asked {
+struct Commanded {
     /// The place of its prompt, when it was one.
     prompt: Option<u64>,
-    receipted: bool,
-    /// Whether a receipt other than `accepted` ended it.
-    ended: bool,
+    stage: Stage,
+}
+
+/// How far a command got, as its receipts say; a later receipt never moves it back.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
+enum Stage {
+    #[default]
+    Logged,
+    Accepted,
+    /// A receipt other than `accepted` ended it.
+    Ended,
 }
 
 /// Whether a command was seen before under the same request.
@@ -53,30 +64,42 @@ pub(crate) enum Seen {
     Never,
     /// The same prompt, committed but without a receipt yet: it may not have been queued.
     Pending,
-    /// With the same content: nothing more to do.
+    /// The same command again: the caller finishes what its first try began.
     Same,
     /// With other content.
     Other,
+}
+
+// Opens a log file to append, creating it and its folder private and synced when missing.
+fn open_or_create(path: &Path, workspace_root: &Path) -> io::Result<File> {
+    let dir = path.parent().ok_or(io::ErrorKind::NotFound)?;
+    platform::private_dir(dir)?;
+    let file = weacon_appkit::private_append(path)?;
+    weacon_appkit::sync_dir(dir)?;
+    weacon_appkit::sync_dir(workspace_root)?;
+    Ok(file)
 }
 
 fn unreadable(error: io::Error) -> Fault {
     Fault::new(code!("chat.log_unreadable"), "The chat's log can't be read").because(error)
 }
 
-impl Log {
-    /// Opens `chat`'s journal under its workspace's own folder, `workspace_root`, created
-    /// private when missing and kept through a power loss. An entry a crash cut short is dropped.
+impl ChatLog {
+    /// Opens `chat`'s log under its workspace's own folder, `workspace_root`. A missing log is
+    /// created private, and kept through a power loss, only with its first entry. An entry a crash
+    /// cut short is dropped.
     ///
     /// # Errors
-    /// When the journal can't be read or an entry before its last is damaged.
+    /// When the log can't be read or an entry before its last is damaged.
     pub(crate) async fn open(workspace_root: &Path, chat: &ChatId) -> Result<Self, Fault> {
         let dir = workspace_root.join("chats");
         let path = dir.join(super::file_stem(chat) + ".jsonl");
         let workspace_root = workspace_root.to_path_buf();
         blocking(move || {
-            platform::private_dir(&dir)?;
             let mut log = Self {
-                file: weacon_appkit::private_append(&path)?,
+                file: None,
+                path: path.clone(),
+                workspace_root,
                 starts: Vec::new(),
                 end: 0,
                 requests: HashMap::new(),
@@ -84,10 +107,13 @@ impl Log {
                 agent: None,
                 runs: ChatRuns::default(),
             };
-            weacon_appkit::sync_dir(&dir)?;
-            weacon_appkit::sync_dir(&workspace_root)?;
-            let len = log.file.metadata()?.len();
-            log.replay()?;
+            if !path.try_exists()? {
+                return Ok(log);
+            }
+            let file = open_or_create(&path, &log.workspace_root)?;
+            let len = file.metadata()?.len();
+            log.replay(&file)?;
+            log.file = Some(file);
             if log.end != len {
                 // Not through `file`: on Windows a handle opened to append can't truncate.
                 OpenOptions::new()
@@ -101,8 +127,8 @@ impl Log {
         .map_err(unreadable)
     }
 
-    fn replay(&mut self) -> io::Result<()> {
-        let mut lines = BufReader::new(self.file.try_clone()?);
+    fn replay(&mut self, file: &File) -> io::Result<()> {
+        let mut lines = BufReader::new(file.try_clone()?);
         let mut line = Vec::new();
         loop {
             line.clear();
@@ -131,9 +157,13 @@ impl Log {
                     .or_else(|| Some(agent.unwrap_or(AgentKind::Claude)));
             }
             ChatEvent::Receipt { receipt } => {
-                let asked = self.requests.entry(receipt.request.clone()).or_default();
-                asked.receipted = true;
-                asked.ended |= receipt.outcome != Outcome::Accepted;
+                let commanded = self.requests.entry(receipt.request.clone()).or_default();
+                let stage = if receipt.outcome == Outcome::Accepted {
+                    Stage::Accepted
+                } else {
+                    Stage::Ended
+                };
+                commanded.stage = commanded.stage.max(stage);
             }
             ChatEvent::Run { .. }
             | ChatEvent::RunStatus { .. }
@@ -199,7 +229,10 @@ impl Log {
             ));
         }
         let len = line.len();
-        let written = match self.usable().and_then(|()| self.file.try_clone()) {
+        self.ensure_file()
+            .await
+            .map_err(|error| not_written().because(error))?;
+        let written = match self.handle() {
             Ok(mut file) => {
                 blocking(move || file.write_all(&line).and_then(|()| file.sync_data())).await
             }
@@ -243,10 +276,10 @@ impl Log {
         request: &RequestId,
         action: &ChatAction,
     ) -> Result<Seen, Fault> {
-        let Some(asked) = self.requests.get(request) else {
+        let Some(commanded) = self.requests.get(request) else {
             return Ok(Seen::Never);
         };
-        let Some(seq) = asked.prompt else {
+        let Some(seq) = commanded.prompt else {
             let same = !matches!(action, ChatAction::Prompt { .. });
             return Ok(if same { Seen::Same } else { Seen::Other });
         };
@@ -265,16 +298,18 @@ impl Log {
                 },
             ) if was_text == *text && was_repo == *repo && was_agent == *agent
         );
-        Ok(match (same, asked.receipted) {
-            (true, true) => Seen::Same,
-            (true, false) => Seen::Pending,
+        Ok(match (same, commanded.stage) {
+            (true, Stage::Logged) => Seen::Pending,
+            (true, Stage::Accepted | Stage::Ended) => Seen::Same,
             (false, _) => Seen::Other,
         })
     }
 
     /// Whether a receipt that ends the command under `request` is in the log.
     pub(crate) fn has_ended(&self, request: &RequestId) -> bool {
-        self.requests.get(request).is_some_and(|asked| asked.ended)
+        self.requests
+            .get(request)
+            .is_some_and(|commanded| commanded.stage == Stage::Ended)
     }
 
     async fn read(&self, first: u64, last: u64) -> Result<Vec<ChatEntry>, Fault> {
@@ -282,7 +317,7 @@ impl Log {
             return Ok(Vec::new());
         }
         let (start, len) = (self.start_of(first), self.bytes(first, last));
-        let file = self.usable().and_then(|()| self.file.try_clone());
+        let file = self.handle();
         blocking(move || {
             let mut file = file?;
             let mut bytes = vec![0; len];
@@ -303,11 +338,25 @@ impl Log {
         self.broken = true;
     }
 
-    fn usable(&self) -> io::Result<()> {
+    // Creates the log file on the first entry of a chat that had none.
+    async fn ensure_file(&mut self) -> io::Result<()> {
+        if self.file.is_some() || self.broken {
+            return Ok(());
+        }
+        let (path, root) = (self.path.clone(), self.workspace_root.clone());
+        self.file = Some(blocking(move || open_or_create(&path, &root)).await?);
+        Ok(())
+    }
+
+    // A handle of its own on the log file, refused once a write has failed.
+    fn handle(&self) -> io::Result<File> {
         if self.broken {
             return Err(io::Error::other("a write to the log failed"));
         }
-        Ok(())
+        self.file
+            .as_ref()
+            .ok_or(io::ErrorKind::NotFound)?
+            .try_clone()
     }
 
     // How many bytes the entries `first..=last` take in the file.
@@ -332,35 +381,15 @@ mod tests {
 
     use weacon_protocol::{
         ChatAnswer, ChatAnswerKind, ChatUpdate, Envelope, Message, Outcome, PermissionAnswer,
-        Receipt, RepoId, RunId, WorkspaceId, encode_line,
+        Receipt, RepoId, WorkspaceId, encode_line,
     };
     use weacon_testing::TempDir;
 
     use super::*;
-
-    fn chat(id: &str) -> ChatId {
-        ChatId::try_from(id.to_owned()).unwrap()
-    }
-
-    fn request(id: &str) -> RequestId {
-        RequestId::try_from(id.to_owned()).unwrap()
-    }
-
-    fn run() -> RunId {
-        RunId::try_from("run-1".to_owned()).unwrap()
-    }
+    use crate::chats::test_support::{chat, logged_prompt, request, run};
 
     fn longest_workspace() -> WorkspaceId {
         WorkspaceId::try_from("w".repeat(64)).unwrap()
-    }
-
-    fn prompt(id: &str, text: &str) -> ChatEvent {
-        ChatEvent::Prompt {
-            request: request(id),
-            text: text.to_owned(),
-            repo: None,
-            agent: None,
-        }
     }
 
     fn accepted(id: &str) -> ChatEvent {
@@ -375,7 +404,7 @@ mod tests {
     fn said(text: String) -> ChatEvent {
         ChatEvent::Run {
             update: RunUpdate {
-                run: run(),
+                run: run("run-1"),
                 event: RunEvent::Text { text },
             },
         }
@@ -400,24 +429,24 @@ mod tests {
         }
     }
 
-    fn journal(root: &Path) -> PathBuf {
+    fn file_of(root: &Path) -> PathBuf {
         root.join("chats/c-c-1.jsonl")
     }
 
-    async fn open(root: &Path) -> Log {
-        Log::open(root, &chat("c-1")).await.unwrap()
+    async fn open(root: &Path) -> ChatLog {
+        ChatLog::open(root, &chat("c-1")).await.unwrap()
     }
 
-    async fn since(log: &Log, after: u64) -> Option<Vec<u64>> {
+    async fn since(log: &ChatLog, after: u64) -> Option<Vec<u64>> {
         let found = log.since(after).await.unwrap();
         found.map(|found| seqs(&found))
     }
 
-    async fn seen(log: &Log, id: &str, action: ChatAction) -> Seen {
+    async fn seen(log: &ChatLog, id: &str, action: ChatAction) -> Seen {
         log.seen(&request(id), &action).await.unwrap()
     }
 
-    async fn window(log: &Log, before: u64, limit: u32) -> Vec<u64> {
+    async fn window(log: &ChatLog, before: u64, limit: u32) -> Vec<u64> {
         seqs(&log.window(before, limit).await.unwrap())
     }
 
@@ -432,7 +461,7 @@ mod tests {
         assert_eq!(log.seq(), 0);
         assert_eq!(log.window(9, 9).await.unwrap(), []);
 
-        let first = log.append(prompt("r-1", "Hi")).await.unwrap();
+        let first = log.append(logged_prompt("r-1", "Hi")).await.unwrap();
         let second = log.append(accepted("r-1")).await.unwrap();
         drop(log);
         let mut reopened = open(&dir).await;
@@ -442,7 +471,7 @@ mod tests {
             first,
             ChatEntry {
                 seq: 1,
-                event: prompt("r-1", "Hi")
+                event: logged_prompt("r-1", "Hi")
             }
         );
         assert_eq!(seqs(&[second.clone(), third.clone()]), [2, 3]);
@@ -457,16 +486,18 @@ mod tests {
     async fn chats_keep_apart_by_workspace_and_by_case_in_private_files() {
         let dir = TempDir::new().unwrap();
         let (one, other) = (dir.join("w-one"), dir.join("w-other"));
-        let mut upper = Log::open(&one, &chat("Ab")).await.unwrap();
-        upper.append(prompt("r-1", "Hi")).await.unwrap();
+        let mut upper = ChatLog::open(&one, &chat("Ab")).await.unwrap();
+        upper.append(logged_prompt("r-1", "Hi")).await.unwrap();
 
-        let lower = Log::open(&one, &chat("ab")).await.unwrap();
-        let elsewhere = Log::open(&other, &chat("Ab")).await.unwrap();
+        let mut lower = ChatLog::open(&one, &chat("ab")).await.unwrap();
+        let elsewhere = ChatLog::open(&other, &chat("Ab")).await.unwrap();
 
         assert_eq!((lower.seq(), elsewhere.seq()), (0, 0));
         assert!(one.join("chats/c-.ab.jsonl").exists());
+        // Opening a log that isn't there yet makes nothing; its first entry makes the file.
+        assert!(!one.join("chats/c-ab.jsonl").exists() && !other.exists());
+        lower.append(logged_prompt("r-2", "Hi")).await.unwrap();
         assert!(one.join("chats/c-ab.jsonl").exists());
-        assert!(other.join("chats/c-.ab.jsonl").exists());
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -479,9 +510,9 @@ mod tests {
     #[tokio::test]
     async fn an_entry_cut_short_is_dropped_and_a_damaged_one_before_it_stops_the_open() {
         let dir = TempDir::new().unwrap();
-        let path = journal(&dir);
+        let path = file_of(&dir);
         let mut log = open(&dir).await;
-        log.append(prompt("r-1", "Hi")).await.unwrap();
+        log.append(logged_prompt("r-1", "Hi")).await.unwrap();
         drop(log);
         let whole = fs::read(&path).unwrap();
 
@@ -496,7 +527,7 @@ mod tests {
 
         // The second entry has the wrong place and another follows it.
         fs::write(&path, [&whole[..], &whole[..], &whole[..]].concat()).unwrap();
-        let damaged = Log::open(&dir, &chat("c-1")).await.unwrap_err();
+        let damaged = ChatLog::open(&dir, &chat("c-1")).await.unwrap_err();
         assert_eq!(damaged.code().as_str(), "chat.log_unreadable");
     }
 
@@ -504,8 +535,8 @@ mod tests {
     async fn a_failed_write_breaks_the_log_until_it_is_opened_again() {
         let dir = TempDir::new().unwrap();
         let mut log = open(&dir).await;
-        log.append(prompt("r-1", "Hi")).await.unwrap();
-        log.file = File::open(journal(&dir)).unwrap();
+        log.append(logged_prompt("r-1", "Hi")).await.unwrap();
+        log.file = Some(File::open(file_of(&dir)).unwrap());
 
         let failed = log.append(accepted("r-1")).await.unwrap_err();
         let after = log.append(accepted("r-1")).await.unwrap_err();
@@ -525,7 +556,7 @@ mod tests {
         let mut log = open(&dir).await;
         let delta = ChatEvent::Run {
             update: RunUpdate {
-                run: run(),
+                run: run("run-1"),
                 event: RunEvent::TextDelta {
                     text: "Hel".to_owned(),
                 },
@@ -621,19 +652,19 @@ mod tests {
         let mut log = open(&dir).await;
         let allow = ChatAction::Permission {
             answer: PermissionAnswer {
-                run: run(),
+                run: run("run-1"),
                 prompt: 1,
                 allow: true,
             },
         };
         assert_eq!(seen(&log, "r-1", asks("Hi")).await, Seen::Never);
         log.append(said("Hello.".to_owned())).await.unwrap();
-        log.append(prompt("r-1", "Hi")).await.unwrap();
+        log.append(logged_prompt("r-1", "Hi")).await.unwrap();
         assert_eq!(seen(&log, "r-1", asks("Hi")).await, Seen::Pending);
         assert_eq!(seen(&log, "r-1", asks("Bye")).await, Seen::Other);
         log.append(accepted("r-1")).await.unwrap();
         log.append(accepted("r-2")).await.unwrap();
-        log.append(prompt("r-4", "Hi")).await.unwrap();
+        log.append(logged_prompt("r-4", "Hi")).await.unwrap();
         drop(log);
 
         let log = open(&dir).await;
@@ -659,5 +690,33 @@ mod tests {
         assert_eq!(seen(&log, "r-2", asks("Hi")).await, Seen::Other);
         assert_eq!(seen(&log, "r-3", ChatAction::Interrupt).await, Seen::Never);
         assert_eq!(seen(&log, "r-4", asks("Hi")).await, Seen::Pending);
+    }
+
+    #[tokio::test]
+    async fn a_command_ends_with_its_first_receipt_that_isnt_accepted() {
+        let dir = TempDir::new().unwrap();
+        let mut log = open(&dir).await;
+        let receipt = |id: &str, outcome| ChatEvent::Receipt {
+            receipt: Receipt {
+                request: request(id),
+                outcome,
+            },
+        };
+        log.append(logged_prompt("r-1", "Hi")).await.unwrap();
+        log.append(accepted("r-1")).await.unwrap();
+        assert!(!log.has_ended(&request("r-1")));
+        log.append(receipt("r-1", Outcome::Interrupted))
+            .await
+            .unwrap();
+        log.append(accepted("r-1")).await.unwrap();
+        log.append(receipt("r-2", Outcome::Completed))
+            .await
+            .unwrap();
+        drop(log);
+
+        let log = open(&dir).await;
+        assert!(log.has_ended(&request("r-1")) && log.has_ended(&request("r-2")));
+        assert!(!log.has_ended(&request("r-3")));
+        assert_eq!(seen(&log, "r-1", asks("Hi")).await, Seen::Same);
     }
 }

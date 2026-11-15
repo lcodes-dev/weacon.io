@@ -1,4 +1,5 @@
-import type { Loaded } from "../api/loaded.ts";
+import type { Loading } from "../api/loaded.ts";
+import { Problem } from "../api/problem.tsx";
 import type { ChatId, ChatList } from "../protocol.ts";
 import { newestFirst, stateNote } from "./chat-list.ts";
 
@@ -8,16 +9,18 @@ export function ChatsNav({
   chosen,
   choose,
 }: {
-  loaded: Loaded<ChatList> & { load(): Promise<void> };
+  /** The chats, or none yet while the server is connecting, or none it serves. */
+  loaded: Loading<ChatList> | "connecting" | "none";
   chosen: ChatId | undefined;
   choose: (chat: ChatId) => void;
 }) {
-  const chats = loaded.value === undefined ? undefined : newestFirst(loaded.value.chats);
+  const listed = typeof loaded === "string" ? undefined : loaded;
+  const chats = listed?.value === undefined ? undefined : newestFirst(listed.value.chats);
   return (
     <nav className="chats" aria-label="Chats">
       <h2>Chats</h2>
-      {chats === undefined && loaded.problem === undefined && <p className="muted">Loading</p>}
-      {chats?.length === 0 && <p className="muted">No chats yet. Connect a machine to start one.</p>}
+      {(loaded === "connecting" || listed?.loading === true) && <p className="muted">Loading</p>}
+      {(loaded === "none" || chats?.length === 0) && <p className="muted">No chats yet. Connect a machine to start one.</p>}
       {chats !== undefined && chats.length > 0 && (
         <ul>
           {chats.map(({ id, title, machine, state }) => {
@@ -36,14 +39,7 @@ export function ChatsNav({
           })}
         </ul>
       )}
-      {loaded.problem !== undefined && (
-        <>
-          <p role="alert">{loaded.problem}</p>
-          <button type="button" onClick={() => void loaded.load()}>
-            Try again
-          </button>
-        </>
-      )}
+      {listed?.problem !== undefined && <Problem text={listed.problem} retry={() => void listed.load()} />}
     </nav>
   );
 }
