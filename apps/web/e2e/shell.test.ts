@@ -15,8 +15,8 @@ type Feed = {
   changes?: (opened: number, workspace: string) => Envelope[];
   /** Whether to close the nth socket after its changes. */
   close?: (opened: number) => boolean;
-  /** Capabilities to offer besides the feed and chats. */
-  also?: string[];
+  /** Capabilities to offer besides the feed and chats, or those the nth socket offers. */
+  also?: string[] | ((opened: number) => string[]);
   /** What the nth socket answers each envelope the page sends after its hello; `reply` answers later. */
   answer?: (sent: Envelope, opened: number, reply: (envelope: Envelope) => void) => Envelope[];
   /** Whether the nth socket closes once it has answered `sent`. */
@@ -46,7 +46,7 @@ async function serveFeed(page: Page, { changes = () => [], close = () => false, 
         return;
       }
       const app = { name: "weacon-server", version: "0.0.0", commit: "0000000" };
-      const capabilities = ["workspace.feed", "workspace.chats", ...also];
+      const capabilities = ["workspace.feed", "workspace.chats", ...(typeof also === "function" ? also(nth) : also)];
       const welcome: Envelope = { id: hello.id, type: "welcome", app, capabilities };
       socket.send(JSON.stringify(welcome));
       const workspace = /workspaces\/([^/]+)\/feed/.exec(socket.url())?.[1] ?? "";
@@ -828,4 +828,34 @@ test("the palette keeps focus on its input and the chosen hit in view", { timeou
   }
   await page.keyboard.press("Escape");
   await search.waitFor({ state: "detached" });
+});
+
+test("the palette's symbols go once the server stops offering symbol search", { timeout: 600_000 }, async (t) => {
+  const served = await serve();
+  t.after(() => served.close());
+  const { page } = served;
+  const core = { name: "weacon-core", version: "0.1.0", commit: "1a2b3c4" };
+  const studio = { id: "mc-1", name: "Studio", os: "linux", key: "ab".repeat(32), paired_at: 1, core, connected: true };
+  await page.route("**/api/machines", (route) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ machines: [studio] }) }));
+  await page.route("**/api/workspaces/*/search", (route) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ hits: [] }) }));
+  const symbol = { repo: "garden", kind: "fn" as const, name: "garden::plant", path: "src/lib.rs", line: 8 };
+  await serveFeed(page, {
+    also: (opened) => ["workspace.search", ...(opened === 1 ? ["symbols.search"] : [])],
+    close: (opened) => opened === 1,
+    answer: (sent) =>
+      sent.type === "symbols_query"
+        ? [{ id: sent.id, type: "symbols_answer", request: sent.request, machine: sent.machine, workspace: sent.workspace, answer: { kind: "found", symbols: [symbol], more: false } }]
+        : [],
+  });
+  await signIn(served);
+  await page.getByRole("button", { name: "Personal" }).click();
+
+  await page.keyboard.press("ControlOrMeta+k");
+  const search = page.getByRole("dialog", { name: "Search" });
+  await search.getByRole("combobox", { name: "Search" }).fill("plant");
+  const group = search.getByRole("group", { name: "Symbols" });
+  await group.getByRole("option").first().waitFor();
+  // The feed closes after its first welcome, and the next one no longer offers symbol search.
+  await group.waitFor({ state: "detached" });
+  assert.equal(await search.count(), 1);
 });

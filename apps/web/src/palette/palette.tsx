@@ -230,14 +230,15 @@ function useSymbols(api: Api, socket: WorkspaceSocket, chatMachine: string | und
   }, [api, offered, chatMachine]);
   useEffect(() => () => loader.stop(), [loader]);
   useEffect(() => {
-    if (typeof machine === "string" && text.trim() !== "") {
+    if (offered && typeof machine === "string" && text.trim() !== "") {
       void loader.load(async () => {
         const answer = await symbols(socket, machine, text, later);
         return answer.ok ? { ok: true, value: { machine, text, symbols: answer.value } } : answer;
       });
     }
-  }, [loader, socket, machine, text]);
-  const asking = typeof machine === "string";
+  }, [loader, socket, machine, text, offered]);
+  // A server that stops offering symbols takes the section away at once.
+  const asking = offered && typeof machine === "string";
   const answered = asking && coded.value?.machine === machine && coded.value.text === text;
   return {
     symbols: answered ? (coded.value?.symbols ?? []) : [],
