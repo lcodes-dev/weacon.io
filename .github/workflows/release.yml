@@ -3,19 +3,6 @@ name: release
 on:
   push:
     tags: ["v*"]
-  pull_request:
-    branches: [main]
-    paths:
-      - .github/workflows/release.yml
-      - scripts/release.sh
-      - apps/web/package-lock.json
-      - apps/server/build.rs
-      - apps/server/src/web.rs
-      - apps/web/tools/build.ts
-      - tooling/ts/build.ts
-      - rust-toolchain.toml
-      - Cargo.lock
-      - "**/Cargo.toml"
   workflow_dispatch:
 
 permissions:
