@@ -85,6 +85,13 @@ function Search({ api, workspace, socket, chatMachine, close, go }: Omit<Props, 
   const count = keys.length;
   const at = Math.max(0, keys.indexOf(chosen ?? ""));
   const setAt = (index: number) => setChosen(keys[index]);
+  // The first result shown is chosen until the person moves, so results that come later keep it.
+  const first = keys[0];
+  useEffect(() => {
+    if (chosen === undefined && first !== undefined) {
+      setChosen(first);
+    }
+  }, [chosen, first]);
   useEffect(() => {
     document.getElementById(`palette-${at}`)?.scrollIntoView({ block: "nearest" });
   }, [at, found]);

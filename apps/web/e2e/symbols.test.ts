@@ -48,7 +48,6 @@ test("⌘K finds the symbols on the person's machine, and choosing one copies wh
   // The list for "bed" goes once the words change, so this is the answer for "bed water".
   await found.first().waitFor();
   assert.deepEqual(await found.locator(".title").allInnerTexts(), ["garden::Bed::water"]);
-  await page.keyboard.press("ArrowDown");
   answerHits();
   await search.getByRole("option", { name: /Water the bed/ }).waitFor();
   await page.keyboard.press("Enter");
