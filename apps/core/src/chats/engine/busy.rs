@@ -93,7 +93,7 @@ impl<A: Agent> Engine<A> {
             .install
             .pause
             .as_mut()
-            .filter(|pause| pause.leave == leave);
+            .filter(|pause| pause.leave == leave && pause.until > Instant::now());
         let Some(pause) = pause else {
             return answer.send(false).unwrap_or_default();
         };
@@ -254,6 +254,21 @@ mod tests {
         assert!(soon(bench.started.recv()).await.is_none());
         tokio::time::sleep(LEAVE_LASTS / 4).await;
         assert!(soon(bench.started.recv()).await.is_some());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_step_that_comes_after_its_leave_ran_out_is_refused() {
+        let (_bench, mut engine) = parts();
+        let (answer, answered) = oneshot::channel();
+        engine.answer_leave(answer).await;
+        let leave = answered.await.unwrap().unwrap();
+        // The engine's loop isn't running, as when it was held up past the deadline.
+        tokio::time::sleep(LEAVE_LASTS).await;
+        let (answer, answered) = oneshot::channel();
+        engine
+            .answer_step(leave, LeaveStep::Restarting, answer)
+            .await;
+        assert!(!answered.await.unwrap());
     }
 
     #[tokio::test(start_paused = true)]

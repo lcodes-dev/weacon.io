@@ -140,24 +140,33 @@ pub(crate) fn update(
         )?;
         return Ok(Ending::Findings);
     }
-    let installed = match install_release(&release, world)? {
-        Installed::Running => "The daemon runs it now.",
-        Installed::Waiting => "Restart the daemon to run it.",
-        Installed::Refused => return refused(&mut settings, &file, version, out),
+    let installed = match install_release(&release, world) {
+        Ok(Installed::Running) => "The daemon runs it now.",
+        Ok(Installed::Waiting) => "Restart the daemon to run it.",
+        Ok(Installed::Refused) => return refused(&mut settings, &file, version, out),
+        Err(fault) => {
+            // A failed write still leaves the install's own fault to report.
+            drop(check_again(&mut settings, &file));
+            return Err(fault);
+        }
     };
     say(out, &format!("Installed weacon {version}. {installed}")).map(Ending::from)
 }
 
-// Says nothing was installed for a busy chat. Counted as never checked, so the daemon's
-// schedule tries again within the hour.
+// Counts the release as never checked, so the daemon's schedule tries again within the hour.
+fn check_again(settings: &mut Settings, file: &Path) -> Result<(), Fault> {
+    settings.last_checked = 0;
+    settings.write(file)
+}
+
+// Says nothing was installed for a busy chat.
 fn refused(
     settings: &mut Settings,
     file: &Path,
     version: ReleaseVersion,
     out: &mut impl Write,
 ) -> Result<Ending, Fault> {
-    settings.last_checked = 0;
-    settings.write(file)?;
+    check_again(settings, file)?;
     say(
         out,
         &format!(
@@ -225,7 +234,10 @@ fn install_release(release: &ReleaseManifest, world: &World<'_>) -> Result<Insta
     // Leave that ran out may have let a turn start, so the old build goes back for the
     // schedule to try again.
     if !report(InstallAction::Restarting) {
-        install::roll_back(&paths)?;
+        let rolled_back = install::roll_back(&paths);
+        // A restart refused for want of an answer still holds turns until told otherwise.
+        report(InstallAction::Failed);
+        rolled_back?;
         return Ok(Installed::Refused);
     }
     restarted(release, &paths, restart, world, report)
@@ -520,14 +532,20 @@ mod tests {
     }
 
     #[test]
-    fn a_daemon_that_gives_no_answer_gets_no_install() {
+    fn a_daemon_that_gives_no_answer_gets_no_install_and_the_schedule_tries_again() {
         let mut machine = Machine::new();
         machine.leave = Err(());
+        let checked = Settings {
+            last_checked: 99,
+            ..Settings::default()
+        };
+        checked.write(&settings::file(&machine.dir)).unwrap();
         let (result, _) = machine.update(NOW, Ok(release("1.2.3", 10, PROTOCOL)), Some(true));
         assert_eq!(code(result), "update.no_leave");
         assert_eq!(machine.binary(), "old");
         assert_eq!(machine.restarts.get(), 0);
         assert!(!machine.dir.join("bin/weacon.new").exists());
+        assert_eq!(machine.settings().last_checked, 0);
     }
 
     #[test]
@@ -545,7 +563,8 @@ mod tests {
         assert_eq!(machine.binary(), "old");
         assert_eq!(machine.restarts.get(), 0);
         assert_eq!(machine.settings().last_checked, 0);
-        assert_eq!(machine.reports(), [InstallAction::Restarting]);
+        let reports = [InstallAction::Restarting, InstallAction::Failed];
+        assert_eq!(machine.reports(), reports);
     }
 
     #[test]
