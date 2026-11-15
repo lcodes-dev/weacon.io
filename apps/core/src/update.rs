@@ -686,6 +686,21 @@ mod tests {
         ));
     }
 
+    // What the script at `path` prints within `within`. A fork in another test may still hold
+    // the script open for writing when it starts, which lasts only until that fork's exec.
+    #[cfg(unix)]
+    fn run(path: &Path, within: Duration) -> io::Result<String> {
+        for _ in 0..1000 {
+            match output_within(&mut Command::new(path), within) {
+                Err(error) if error.kind() == io::ErrorKind::ExecutableFileBusy => {
+                    std::thread::yield_now();
+                }
+                answer => return answer,
+            }
+        }
+        Err(io::ErrorKind::ExecutableFileBusy.into())
+    }
+
     // `answer`'s result, failing the test rather than hanging it when it doesn't come in time.
     #[cfg(unix)]
     fn soon<T: Send + 'static>(answer: impl FnOnce() -> T + Send + 'static) -> T {
@@ -702,14 +717,14 @@ mod tests {
         // Far longer than the test waits, so only the deadline can end it in time.
         fs::write(&hangs, "#!/bin/sh\nexec sleep 60\n").unwrap();
         crate::platform::make_runnable(&hangs).unwrap();
-        let error = soon(move || output_within(&mut Command::new(&hangs), Duration::ZERO));
+        let error = soon(move || run(&hangs, Duration::ZERO));
         let error = error.unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::TimedOut);
         let fast = answering(&dir, "quick");
-        let printed = output_within(&mut Command::new(&fast), Duration::from_secs(30)).unwrap();
+        let printed = run(&fast, Duration::from_secs(30)).unwrap();
         assert_eq!(printed, "quick\n");
         let long = answering(&dir, &"x".repeat(5000));
-        let printed = output_within(&mut Command::new(&long), Duration::from_secs(30)).unwrap();
+        let printed = run(&long, Duration::from_secs(30)).unwrap();
         assert_eq!(printed.len(), 5001);
     }
 
@@ -725,8 +740,7 @@ mod tests {
         );
         fs::write(&leaves, script).unwrap();
         crate::platform::make_runnable(&leaves).unwrap();
-        let answer =
-            soon(move || output_within(&mut Command::new(&leaves), Duration::from_millis(500)));
+        let answer = soon(move || run(&leaves, Duration::from_millis(500)));
         let error = answer.unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::TimedOut);
         let pid = fs::read_to_string(&left).unwrap();
