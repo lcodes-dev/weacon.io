@@ -9,6 +9,7 @@ import { Problem } from "../api/problem.tsx";
 import { type WorkspaceSocket, useOffers } from "../shell/workspace-socket.ts";
 import { waitForClaim } from "./claim.ts";
 import { ConfirmKey } from "./confirm-key.tsx";
+import { coreVersion, isOutdated } from "./core.ts";
 import { fingerprint } from "./fingerprint.ts";
 import { keep } from "./keep.ts";
 import { MachineSettingsView } from "./machine-settings.tsx";
@@ -112,7 +113,9 @@ function Machine({
       <span>{machine.name}</span>
       <span className="muted">
         {osName(machine.os)}, paired {paired}
+        {coreVersion(machine)}
       </span>
+      {isOutdated(machine) && <p role="status">Its weacon is older than this server supports. Run weacon update there.</p>}
       {confirming ? (
         <span>
           Unpair {machine.name}? It disconnects at once.{" "}

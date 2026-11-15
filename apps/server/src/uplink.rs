@@ -95,14 +95,18 @@ async fn serve(mut socket: WebSocket, shared: Shared, mut link: Link) {
     }
 }
 
+/// What the server offers every core, and needs of it for all its features to reach it.
+pub(crate) fn offers() -> Vec<Capability> {
+    vec![Capability::new(CONNECT), Capability::new(SETTINGS)]
+}
+
 async fn run(
     socket: &mut WebSocket,
     shared: &Shared,
     link: &mut Link,
 ) -> Result<Infallible, Closed> {
     let offer = Capability::new(CONNECT);
-    let offers = vec![offer.clone(), Capability::new(SETTINGS)];
-    let greeted = greet(socket, shared, offers, &offer);
+    let greeted = greet(socket, shared, offers(), &offer);
     let hello = timeout(shared.sockets.hello_within, greeted)
         .await
         .map_err(|_| Closed)??;
@@ -110,6 +114,13 @@ async fn run(
     link.paired(shared).await?;
     link.connected = true;
     link.log.info("machine connected", &[]);
+    if let Err(fault) = (shared.db)
+        .saw_core(&link.machine.id, &hello.app, &hello.capabilities)
+        .await
+    {
+        // The machines list shows it as it last was; the connection goes on.
+        link.log.warn("core build not kept", &[("err", Field::error(&fault))]);
+    }
     let connected = Connected {
         machine: link.machine.id.clone(),
         owner: link.machine.owner.clone(),
