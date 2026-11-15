@@ -12,7 +12,9 @@ export type WebCapability =
   | "chat.send"
   | "chat.events"
   | "log.forward"
-  | "machine.settings";
+  | "machine.settings"
+  | "worktree.manage"
+  | "worktree.open_terminal";
 
 /** The hello's envelope id; a connection's requests take the ids after it. */
 export const HELLO_ID = 1;
