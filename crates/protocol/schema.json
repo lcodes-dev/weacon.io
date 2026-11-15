@@ -1230,7 +1230,7 @@
       "pattern": "^[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)+$"
     },
     "Commit": {
-      "description": "A full git commit id: 40 lowercase hex digits.",
+      "description": "A full git commit id: 40 lowercase hex digits. Unlike a doc's `CommitId`, not 64.",
       "type": "string",
       "pattern": "^[0-9a-f]{40}$"
     },
@@ -3646,11 +3646,41 @@
             "title",
             "snippet"
           ]
+        },
+        {
+          "description": "A chat, by its title or by one of the messages its log keeps: a person's prompt or an\nagent's text. `seq` is that message's place in the log.",
+          "type": "object",
+          "properties": {
+            "chat": {
+              "$ref": "#/$defs/ChatId"
+            },
+            "kind": {
+              "type": "string",
+              "const": "chat"
+            },
+            "seq": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            },
+            "snippet": {
+              "$ref": "#/$defs/Snippet"
+            },
+            "title": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "chat",
+            "title",
+            "snippet"
+          ]
         }
       ]
     },
     "SearchQuery": {
-      "description": "Asks the server, under the capability `workspace.search`, for what in the workspace holds\nevery word of `text`, at most 8 words of at most 64 characters, in 256 bytes. Words of three\nor more characters match\nwhatever their case and accents; shorter ones match as typed, ignoring only ASCII case, and\ntext without a longer word finds nothing. `limit` is 20 without one, and at most 50.",
+      "description": "Asks the server, under the capability `workspace.search`, for the tasks, docs and chats in\nthe workspace that hold every word of `text`, at most 8 words of at most 64 characters, in\n256 bytes. Words of three or more characters match whatever their case and accents; shorter\nones match as typed, ignoring only ASCII case, and text without a longer word finds nothing.\n`limit` is 20 without one, and at most 50.",
       "type": "object",
       "properties": {
         "limit": {
@@ -3815,7 +3845,7 @@
       ]
     },
     "Sha256": {
-      "description": "A SHA-256 digest: 64 lowercase hex digits.",
+      "description": "A SHA-256 digest: 64 lowercase hex digits. Not the `sha2::Sha256` hasher.",
       "type": "string",
       "pattern": "^[0-9a-f]{64}$"
     },
@@ -4337,6 +4367,32 @@
         "terminal",
         "workspace",
         "event"
+      ]
+    },
+    "UpdateSchedule": {
+      "description": "When a core looks for a release, chosen by its owner. Only `off` keeps it from ever asking.",
+      "oneOf": [
+        {
+          "type": "string",
+          "enum": [
+            "off"
+          ]
+        },
+        {
+          "description": "Look once a day and say when one is out; install only when asked.",
+          "type": "string",
+          "const": "notify"
+        },
+        {
+          "description": "Look once a day and install what's out.",
+          "type": "string",
+          "const": "daily"
+        },
+        {
+          "description": "Look once a week and install what's out.",
+          "type": "string",
+          "const": "weekly"
+        }
       ]
     },
     "Welcome": {

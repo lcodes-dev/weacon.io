@@ -19,7 +19,7 @@ use crate::links::Connected;
 use crate::proposals::{PROPOSALS, machines as proposals};
 use crate::relay::{DIFF, SESSIONS, SETTINGS, WORKTREE};
 use crate::shared::Shared;
-use crate::socket::{Closed, Pings, greet, refusal, reply, send};
+use crate::socket::{Closed, Pings, hear, refusal, reply, send};
 use crate::terminals;
 
 /// What a core must offer, and the server offers, to keep a machine's connection.
@@ -104,16 +104,9 @@ async fn run(
     link: &mut Link,
 ) -> Result<Infallible, Closed> {
     let offer = Capability::new(CONNECT);
-    let offers = vec![
-        offer.clone(),
-        Capability::new(SETTINGS),
-        Capability::new(DIFF),
-        Capability::new(WORKTREE),
-        Capability::new(SESSIONS),
-        Capability::new(PROPOSALS),
-    ];
-    let greeted = greet(socket, shared, offers, &offer);
-    let hello = timeout(shared.sockets.hello_within, greeted)
+    let offers = [CONNECT, SETTINGS, DIFF, WORKTREE, SESSIONS, PROPOSALS].map(Capability::new);
+    let heard = hear(socket, shared, offers.to_vec(), &offer);
+    let (hello, welcome) = timeout(shared.sockets.hello_within, heard)
         .await
         .map_err(|_| Closed)??;
     // It may have been unpaired since it was let in, before it could hear of it.
@@ -125,6 +118,8 @@ async fn run(
         owner: link.machine.owner.clone(),
     };
     let mut attached = shared.links.open(connected, hello.capabilities);
+    // Welcomed only once attached, so whatever a welcomed core is asked reaches it.
+    reply(socket, shared, welcome.id, welcome.answer).await?;
     let mut pings = Pings::new(shared.sockets.ping_every);
     loop {
         tokio::select! {
@@ -196,7 +191,7 @@ mod tests {
     use crate::test_support::socket::{
         Socket, ends, frame, next, next_envelope, open, pongs, say, upgrade_status,
     };
-    use crate::test_support::{Fixture, PATIENCE, Paired, ask, pair_machine};
+    use crate::test_support::{Fixture, Paired, ask, pair_machine};
 
     const CONNECT_PATH: &str = "/api/machines/connect";
 
@@ -293,13 +288,32 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_welcomed_core_is_reachable_at_once() {
+        let fixture = Fixture::new().await;
+        let server = fixture.run().await;
+        let paired = pair_machine(&fixture, server.address).await;
+        let mut core = open(server.address, CONNECT_PATH, &paired.token)
+            .await
+            .unwrap();
+        say(&mut core, &["machine.connect", "machine.settings"]).await;
+        assert!(matches!(next(&mut core).await, Message::Welcome(_)));
+
+        let asked = Envelope {
+            id: 9,
+            message: refusal(code!("machine.test")),
+        };
+        let settings = Capability::new(SETTINGS);
+        let sent = (fixture.shared.links).send(&paired.machine_id(), &settings, asked.clone());
+
+        assert_eq!(sent, Ok(()));
+        assert_eq!(next_envelope(&mut core).await, asked);
+    }
+
+    #[tokio::test]
     async fn a_machine_that_connects_again_ends_its_older_connection() {
         let fixture = Fixture::new().await;
         let server = fixture.run().await;
-        let mut opened = fixture.shared.links.connected();
         let (paired, mut older) = connected(server.address, &fixture).await;
-        // Its welcome comes before it's attached; wait until it is.
-        timeout(PATIENCE, opened.recv()).await.unwrap().unwrap();
         let mut newer = open(server.address, CONNECT_PATH, &paired.token)
             .await
             .unwrap();
@@ -349,7 +363,7 @@ mod tests {
 
         say(&mut client, &["machine.connect"]).await;
 
-        assert!(matches!(next(&mut client).await, Message::Welcome(_)));
+        // It isn't welcomed, so nothing it could be asked is relayed to it.
         assert_eq!(next(&mut client).await, refusal(code!("machine.unpaired")));
         assert!(ends(&mut client).await);
     }

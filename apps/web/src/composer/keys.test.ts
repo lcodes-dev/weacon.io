@@ -29,6 +29,8 @@ test("in the picker, Enter and Tab pick, Escape closes, and the arrows wrap arou
   assert.equal(picker(key("Escape"), 3, 1), "close");
   assert.equal(picker(key("ArrowDown"), 3, 1), 2);
   assert.equal(picker(key("ArrowDown"), 3, 2), 0);
+  assert.equal(picker(key("ArrowDown"), 0, 0), undefined);
+  assert.equal(picker(key("Escape"), 0, 0), "close");
   assert.equal(picker(key("ArrowUp"), 3, 1), 0);
   assert.equal(picker(key("ArrowUp"), 3, 0), 2);
   assert.equal(picker(key("a"), 3, 0), undefined);

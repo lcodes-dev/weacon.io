@@ -454,7 +454,7 @@ export type ClientLog = {
 export type Code = string;
 
 /**
- * A full git commit id: 40 lowercase hex digits.
+ * A full git commit id: 40 lowercase hex digits. Unlike a doc's `CommitId`, not 64.
  */
 export type Commit = string;
 
@@ -1439,14 +1439,21 @@ export type SearchHit = (
     snippet: Snippet;
     title: string;
   }
+  | {
+    chat: ChatId;
+    kind: "chat";
+    seq?: number;
+    snippet: Snippet;
+    title: string;
+  }
 );
 
 /**
- * Asks the server, under the capability `workspace.search`, for what in the workspace holds
- * every word of `text`, at most 8 words of at most 64 characters, in 256 bytes. Words of three
- * or more characters match
- * whatever their case and accents; shorter ones match as typed, ignoring only ASCII case, and
- * text without a longer word finds nothing. `limit` is 20 without one, and at most 50.
+ * Asks the server, under the capability `workspace.search`, for the tasks, docs and chats in
+ * the workspace that hold every word of `text`, at most 8 words of at most 64 characters, in
+ * 256 bytes. Words of three or more characters match whatever their case and accents; shorter
+ * ones match as typed, ignoring only ASCII case, and text without a longer word finds nothing.
+ * `limit` is 20 without one, and at most 50.
  */
 export type SearchQuery = {
   limit?: number;
@@ -1506,7 +1513,7 @@ export type SessionsQueryKind = (
 );
 
 /**
- * A SHA-256 digest: 64 lowercase hex digits.
+ * A SHA-256 digest: 64 lowercase hex digits. Not the `sha2::Sha256` hasher.
  */
 export type Sha256 = string;
 
@@ -1740,6 +1747,18 @@ export type TerminalUpdate = {
   terminal: TerminalId;
   workspace: WorkspaceId;
 };
+
+/**
+ * When a core looks for a release, chosen by its owner. Only `off` keeps it from ever asking.
+ */
+export type UpdateSchedule = (
+  | (
+    | "off"
+  )
+  | "notify"
+  | "daily"
+  | "weekly"
+);
 
 /**
  * The answer to a [`Hello`] that speaks the same protocol.

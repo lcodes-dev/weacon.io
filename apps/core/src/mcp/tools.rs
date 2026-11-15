@@ -4,13 +4,16 @@ use std::borrow::Cow;
 
 use rmcp::model::{JsonObject, Tool, ToolAnnotations};
 use serde_json::{Value, json};
-use weacon_codemap::Index;
+use weacon_codemap::{Churn, Index};
 use weacon_protocol::McpCall;
 
 /// The answer's size when a call names none, and the bounds a named one is kept within.
 const BUDGET: u32 = 6000;
 const LEAST: u32 = 1000;
 const MOST: u32 = 16_000;
+
+/// How many of the latest commits `hotspots` counts changes in.
+pub(crate) const CHURN_COMMITS: u32 = 500;
 
 pub(crate) const NO_MAP: &str = "No code map for this folder.\n";
 
@@ -57,17 +60,29 @@ pub(crate) fn listed() -> Vec<Tool> {
             json!({"budget": budget}),
             &[],
         ),
-        writes(tool(
-            McpCall::PROPOSE,
-            "Proposes a change to a doc or task of this chat's workspace; nothing changes until \
-             a person accepts it. Only when the person asks. `change` is one of {kind: \
-             new_task, title}, {kind: new_doc, content: {title, body}}, {kind: task_edit, task, \
-             base, edits: [{kind: title, title} or {kind: status, status}]}, {kind: doc_edit, \
-             doc, base, content}.",
-            json!({"change": {"type": "object"}}),
-            &["change"],
-        )),
+        tool(
+            McpCall::HOTSPOTS,
+            "The files that changed most in recent commits, weighed by how much depends on \
+             them; changes there need the most care.",
+            json!({"budget": budget}),
+            &[],
+        ),
+        propose(),
     ]
+}
+
+/// The one tool that writes, and only what a person then accepts.
+fn propose() -> Tool {
+    writes(tool(
+        McpCall::PROPOSE,
+        "Proposes a change to a doc or task of this chat's workspace; nothing changes until \
+         a person accepts it. Only when the person asks. `change` is one of {kind: \
+         new_task, title}, {kind: new_doc, content: {title, body}}, {kind: task_edit, task, \
+         base, edits: [{kind: title, title} or {kind: status, status}]}, {kind: doc_edit, \
+         doc, base, content}.",
+        json!({"change": {"type": "object"}}),
+        &["change"],
+    ))
 }
 
 /// `tool`, as one that writes: what it changes, a person accepts first.
@@ -97,11 +112,12 @@ fn tool(
 }
 
 // Docs can pin flows in a folder with no crate, so `flow` answers even without a code map.
-pub(crate) fn answer_from(call: &McpCall, map: &Index) -> String {
+pub(crate) fn answer_from(call: &McpCall, map: &Index, churn: &[Churn]) -> String {
     match call {
         McpCall::Flow(args) => map.flows(budget(args.budget)),
         _ if map.crates.is_empty() => NO_MAP.to_owned(),
         McpCall::Map(args) => map.start_here(budget(args.budget)),
+        McpCall::Hotspots(args) => map.hotspots(churn, budget(args.budget)),
         McpCall::Symbol(args) | McpCall::DocsFor(args) if args.path.len() > LONGEST_PATH => {
             NO_ITEM.to_owned()
         }
@@ -160,19 +176,29 @@ mod tests {
             .map(|tool| tool.description.as_deref().map(str::len))
             .collect();
 
-        assert_eq!(names, ["map", "symbol", "docs_for", "flow", "propose"]);
+        assert_eq!(
+            names,
+            ["map", "symbol", "docs_for", "flow", "hotspots", "propose"]
+        );
         assert_eq!(names.get(..2), Some(UP_FRONT.as_slice()));
         assert_eq!(
             sizes,
-            [Some(189), Some(170), Some(106), Some(106), Some(341)]
+            [
+                Some(189),
+                Some(170),
+                Some(106),
+                Some(106),
+                Some(117),
+                Some(341)
+            ]
         );
-        assert_eq!(serde_json::to_string(&tools).unwrap().len(), 2011);
+        assert_eq!(serde_json::to_string(&tools).unwrap().len(), 2329);
     }
 
     #[test]
     fn map_says_where_to_begin() {
         assert_eq!(
-            answer_from(&map(None), &repo()),
+            answer_from(&map(None), &repo(), &[]),
             "Start here: 1 crates, 3 items.\nEntry points:\nMost central items:\n\
              - struct a_b::m::S  src/m.rs:1\n- fn a_b::m::S::go  src/m.rs:2\n\
              - fn a_b::run  src/lib.rs:2\nCrates:\n- a_b  .  3 items\n"
@@ -181,8 +207,8 @@ mod tests {
 
     #[test]
     fn symbol_says_where_an_item_is_or_which_items_end_with_the_path() {
-        let found = answer_from(&symbol_call("a_b::m::S::go"), &repo());
-        let close = answer_from(&symbol_call("S::go"), &repo());
+        let found = answer_from(&symbol_call("a_b::m::S::go"), &repo(), &[]);
+        let close = answer_from(&symbol_call("S::go"), &repo(), &[]);
 
         assert_eq!(found, "fn a_b::m::S::go  src/m.rs:2\n");
         assert_eq!(
@@ -204,7 +230,7 @@ mod tests {
                 path: path.to_owned(),
                 budget: None,
             };
-            answer_from(&McpCall::DocsFor(args), &docs)
+            answer_from(&McpCall::DocsFor(args), &docs, &[])
         };
 
         assert_eq!(
@@ -223,12 +249,30 @@ mod tests {
         ])
         .unwrap();
 
-        let flows = answer_from(&McpCall::Flow(FlowArgs::default()), &docs);
+        let flows = answer_from(&McpCall::Flow(FlowArgs::default()), &docs, &[]);
 
         assert_eq!(
             flows,
             "Flows pinned in the docs: 1.\n- docs/a.md:1  a_b::run -> a_b::gone: breaks: no item a_b::gone\n"
         );
+    }
+
+    #[test]
+    fn hotspots_answer_from_the_churn_given() {
+        let churn =
+            [("src/m.rs", 2), ("src/lib.rs", 5), ("Cargo.toml", 9)].map(|(file, commits)| Churn {
+                file: file.to_owned(),
+                commits,
+            });
+        let hotspots = McpCall::Hotspots(MapArgs::default());
+        let empty = index(&[file("docs/a.md", "# A\n")]).unwrap();
+
+        assert_eq!(
+            answer_from(&hotspots, &repo(), &churn),
+            "Hotspots: files that change often and that much depends on.\n\
+             - src/lib.rs  5 commits, 0 edges in\n- src/m.rs  2 commits, 0 edges in\n"
+        );
+        assert_eq!(answer_from(&hotspots, &empty, &churn), NO_MAP);
     }
 
     #[test]
@@ -259,11 +303,11 @@ mod tests {
         });
         let flow = McpCall::Flow(FlowArgs { budget: Some(1000) });
 
-        let start = answer_from(&map(Some(1000)), &large);
+        let start = answer_from(&map(Some(1000)), &large, &[]);
         assert!(start.len() <= 1000 && start.ends_with('\n'), "{start}");
         // Too many lines for the budget, so each ends by counting those it left out.
         for call in [symbol, flow] {
-            let answer = answer_from(&call, &large);
+            let answer = answer_from(&call, &large, &[]);
             assert!(answer.len() <= 1000, "{answer}");
             let last = answer.lines().last().unwrap();
             assert!(last.starts_with("… ") && answer.ends_with('\n'), "{answer}");
@@ -276,9 +320,9 @@ mod tests {
         let longer = symbol_call(&"x".repeat(LONGEST_PATH + 1));
 
         assert_eq!(
-            answer_from(&at_most, &repo()),
+            answer_from(&at_most, &repo(), &[]),
             format!("No item {}.\n", "x".repeat(500))
         );
-        assert_eq!(answer_from(&longer, &repo()), NO_ITEM);
+        assert_eq!(answer_from(&longer, &repo(), &[]), NO_ITEM);
     }
 }

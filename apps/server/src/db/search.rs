@@ -3,8 +3,9 @@ mod snippet;
 use sqlx::SqliteConnection;
 use weacon_model::{Doc, Task};
 use weacon_observability::Fault;
-use weacon_protocol::SearchHit;
+use weacon_protocol::{ChatEvent, ChatId, RunEvent, RunUpdate, SearchHit};
 
+use super::chats::Row;
 use super::{Workspace, failed, stored, unreadable};
 use crate::search::query::{Marks, Query};
 
@@ -12,7 +13,13 @@ use crate::search::query::{Marks, Query};
 const MATCH_START: char = '\u{1}';
 const MATCH_END: char = '\u{2}';
 
-/// What search finds a task or doc by, and when it last changed.
+// What a search row is of; a message's item is its chat and its place in the log, `c-1/12`.
+const TASK: &str = "task";
+const DOC: &str = "doc";
+const CHAT: &str = "chat";
+const MESSAGE: &str = "message";
+
+/// What search finds a task, doc, chat or message by, and when it last changed.
 struct Indexed<'a> {
     kind: &'static str,
     item: &'a str,
@@ -32,7 +39,7 @@ impl Workspace {
         at: i64,
     ) -> Result<(), Fault> {
         let indexed = Indexed {
-            kind: "task",
+            kind: TASK,
             item: task.id.as_str(),
             title: task.title.as_str(),
             body: "",
@@ -58,13 +65,56 @@ impl Workspace {
             body + "\n" + pin.as_str()
         });
         let indexed = Indexed {
-            kind: "doc",
+            kind: DOC,
             item: doc.id.as_str(),
             title: doc.text.title().as_str(),
             body: &body,
             at,
         };
         self.index(transaction, indexed).await
+    }
+
+    /// Indexes the chat `chat` by its title, as made at `at`.
+    pub(super) async fn index_chat(
+        &self,
+        transaction: &mut SqliteConnection,
+        chat: &ChatId,
+        title: &str,
+        at: i64,
+    ) -> Result<(), Fault> {
+        let indexed = Indexed {
+            kind: CHAT,
+            item: chat.as_str(),
+            title,
+            body: "",
+            at,
+        };
+        self.index(transaction, indexed).await
+    }
+
+    /// Indexes each of `rows`, stored in `chat`'s log, that is a message: a person's prompt or
+    /// an agent's text.
+    pub(super) async fn index_messages(
+        &self,
+        transaction: &mut SqliteConnection,
+        chat: &ChatId,
+        rows: &[Row<'_>],
+    ) -> Result<(), Fault> {
+        for row in rows {
+            let Some(text) = message_text(row.event) else {
+                continue;
+            };
+            let item = message_item(chat, row.seq);
+            let indexed = Indexed {
+                kind: MESSAGE,
+                item: &item,
+                title: "",
+                body: text,
+                at: row.at,
+            };
+            self.index(transaction, indexed).await?;
+        }
+        Ok(())
     }
 
     /// Puts `indexed` in the search index in place of what it held for the same item.
@@ -117,12 +167,17 @@ impl Workspace {
         Ok(())
     }
 
-    /// The workspace's tasks and docs that match `query`, at most `limit` of them: those
-    /// matching in their title first, then the most recently changed.
+    /// The workspace's tasks, docs, chats and messages that match `query`, at most `limit` of
+    /// them: those matching in their title first, then the most recently changed. A message
+    /// takes its chat's title.
     pub(crate) async fn search(&self, query: &Query, limit: u32) -> Result<Vec<SearchHit>, Fault> {
         let short = serde_json::to_string(&query.short).map_err(|_| unreadable())?;
         sqlx::query_as::<_, HitRow>(
-            "SELECT search.kind, search.item, search.title,
+            "SELECT search.kind, search.item,
+                 COALESCE((SELECT title FROM chats
+                     WHERE chats.workspace_id = search.workspace_id
+                         AND chats.chat_id = substr(search.item, 1, instr(search.item, '/') - 1)
+                         AND search.kind = 'message'), search.title),
                  search.body
              FROM search
              JOIN search_rows AS rows
@@ -132,7 +187,9 @@ impl Workspace {
                      WHERE search.title || char(10) || search.body NOT LIKE value ESCAPE '\\')
              ORDER BY search.rowid IN
                      (SELECT rowid FROM search
-                      WHERE search MATCH 'title : (' || ?1 || ')' AND workspace_id = ?2) DESC,
+                      WHERE search MATCH 'title : (' || ?1 || ')' AND workspace_id = ?2)
+                 AND NOT EXISTS (SELECT 1 FROM json_each(?3)
+                     WHERE search.title NOT LIKE value ESCAPE '\\') DESC,
                  rows.at DESC, search.rowid DESC
              LIMIT ?4",
         )
@@ -152,17 +209,56 @@ impl Workspace {
 fn hit((kind, item, title, body): HitRow, marks: &Marks) -> Result<SearchHit, Fault> {
     let snippet = snippet::of(&body, &title, marks);
     match kind.as_str() {
-        "task" => Ok(SearchHit::Task {
+        TASK => Ok(SearchHit::Task {
             task: stored(item)?,
             title,
             snippet,
         }),
-        "doc" => Ok(SearchHit::Doc {
+        DOC => Ok(SearchHit::Doc {
             doc: stored(item)?,
             title,
             snippet,
         }),
+        CHAT => Ok(SearchHit::Chat {
+            chat: stored(item)?,
+            title,
+            seq: None,
+            snippet,
+        }),
+        MESSAGE => {
+            let (chat, seq) = item.split_once('/').ok_or_else(unreadable)?;
+            Ok(SearchHit::Chat {
+                chat: stored(chat.to_owned())?,
+                title,
+                seq: Some(seq.parse().map_err(|_| unreadable())?),
+                snippet,
+            })
+        }
         _ => Err(unreadable()),
+    }
+}
+
+/// How the search index names the event at `seq` in `chat`'s log.
+fn message_item(chat: &ChatId, seq: i64) -> String {
+    format!("{}/{seq}", chat.as_str())
+}
+
+/// The message `event` carries, if it carries one.
+fn message_text(event: &ChatEvent) -> Option<&str> {
+    match event {
+        ChatEvent::Prompt { text, .. }
+        | ChatEvent::OutsidePrompt { text }
+        | ChatEvent::Run {
+            update:
+                RunUpdate {
+                    event: RunEvent::Text { text },
+                    ..
+                },
+        } => Some(text),
+        ChatEvent::Run { .. }
+        | ChatEvent::Receipt { .. }
+        | ChatEvent::RunStatus { .. }
+        | ChatEvent::Newer => None,
     }
 }
 
@@ -181,6 +277,7 @@ mod tests {
     use super::*;
     use crate::db::Db;
     use crate::db::schema::{database_before, steps};
+    use crate::db::test_support::{append, make_titled, said};
     use crate::search::query::{MAX_WORD, parse};
     use crate::test_support::{email, fresh_account, member_id, new_task, two_teams, workspace_id};
 
@@ -213,6 +310,10 @@ mod tests {
             .map(|hit| match hit {
                 SearchHit::Task { task, .. } => task.as_str().to_owned(),
                 SearchHit::Doc { doc, .. } => doc.as_str().to_owned(),
+                SearchHit::Chat { chat, seq, .. } => match seq {
+                    Some(seq) => format!("{}/{seq}", chat.as_str()),
+                    None => chat.as_str().to_owned(),
+                },
                 SearchHit::Newer => "newer".to_owned(),
             })
             .collect()
@@ -241,6 +342,21 @@ mod tests {
             panic!("{first:?}");
         };
         assert_eq!((task.as_str(), title.as_str()), ("t2", "Ship the release"));
+    }
+
+    #[tokio::test]
+    async fn a_title_holding_the_short_words_too_comes_first() {
+        let dir = TempDir::new().unwrap();
+        let (one, _) = two_teams(&dir).await;
+        one.add_task(&new_task("t1", "Release v2", "a"), &by(5))
+            .await
+            .unwrap();
+        one.add_doc(&doc("d1", "Release", "Notes for v2.", &[]), &by(40))
+            .await
+            .unwrap();
+
+        assert_eq!(found(&one, "release v2").await, ["t1", "d1"]);
+        assert_eq!(found(&one, "release").await, ["d1", "t1"]);
     }
 
     #[tokio::test]
@@ -473,6 +589,146 @@ mod tests {
         let rows = index_rows(&old).await;
         assert_eq!(rows, index_rows(&new).await);
         assert_eq!(rows.len(), 2);
+    }
+
+    // c-1 titled "Fix the build" in w1, whose log holds a prompt, an agent's text, a text
+    // being written and an outside prompt, at seqs 1 to 4.
+    async fn chatted(workspace: &Workspace) {
+        make_titled(workspace, "c-1", "m1", "Fix the build", 3)
+            .await
+            .unwrap();
+        let prompt = ChatEvent::Prompt {
+            request: "r-2".parse().unwrap(),
+            text: "Why is the deploy flaky".to_owned(),
+            repo: None,
+            agent: None,
+        };
+        let delta = ChatEvent::Run {
+            update: RunUpdate {
+                run: "run-1".parse().unwrap(),
+                event: RunEvent::TextDelta {
+                    text: "Half written".to_owned(),
+                },
+            },
+        };
+        let outside = ChatEvent::OutsidePrompt {
+            text: "Typed in the terminal".to_owned(),
+        };
+        let events = [
+            (Some(1), prompt),
+            (Some(2), said("The cache expired")),
+            (Some(3), delta),
+            (Some(4), outside),
+        ];
+        append(workspace, "c-1", &events).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_chat_is_found_by_its_title_and_the_messages_its_log_keeps() {
+        let dir = TempDir::new().unwrap();
+        let (one, two) = two_teams(&dir).await;
+        chatted(&one).await;
+
+        assert_eq!(found(&one, "build").await, ["c-1"]);
+        assert_eq!(found(&one, "flaky").await, ["c-1/1"]);
+        assert_eq!(found(&one, "cache").await, ["c-1/2"]);
+        assert_eq!(found(&one, "terminal").await, ["c-1/4"]);
+        assert!(found(&one, "written").await.is_empty());
+        assert!(found(&two, "build").await.is_empty());
+        let query = parse("cache").unwrap().unwrap();
+        let hits = one.search(&query, 5).await.unwrap();
+        let [SearchHit::Chat { title, .. }] = hits.as_slice() else {
+            panic!("{hits:?}");
+        };
+        assert_eq!(title, "Fix the build");
+    }
+
+    #[tokio::test]
+    async fn a_message_takes_the_title_of_its_own_workspaces_chat() {
+        let dir = TempDir::new().unwrap();
+        let (one, two) = two_teams(&dir).await;
+        for (workspace, owner, title) in
+            [(&one, "m1", "Fix the build"), (&two, "m2", "Plan the trip")]
+        {
+            make_titled(workspace, "c-1", owner, title, 3)
+                .await
+                .unwrap();
+            append(workspace, "c-1", &[(Some(1), said("The cache expired"))])
+                .await
+                .unwrap();
+        }
+
+        let query = parse("cache").unwrap().unwrap();
+        for (workspace, title) in [(&one, "Fix the build"), (&two, "Plan the trip")] {
+            let hits = workspace.search(&query, 5).await.unwrap();
+            assert!(
+                matches!(hits.as_slice(), [SearchHit::Chat { title: found, seq: Some(1), .. }] if found == title),
+                "{hits:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn chats_stored_before_their_search_are_indexed_as_a_write_indexes_them() {
+        let dir = TempDir::new().unwrap();
+        let (one, _) = two_teams(&dir).await;
+        chatted(&one).await;
+        let written = index_rows(&one.db).await;
+        sqlx::raw_sql(
+            "DELETE FROM search WHERE kind IN ('chat', 'message');
+             DELETE FROM search_rows WHERE kind IN ('chat', 'message');",
+        )
+        .execute(&one.db.writer)
+        .await
+        .unwrap();
+
+        sqlx::raw_sql(steps::SEARCH_CHATS)
+            .execute(&one.db.writer)
+            .await
+            .unwrap();
+        assert_eq!(index_rows(&one.db).await, written);
+        assert_eq!(written.len(), 4);
+    }
+
+    #[tokio::test]
+    async fn chats_stored_before_search_are_found_in_their_own_workspace_only() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.join("old.db");
+        let rows = "INSERT INTO workspaces (workspace_id, name) VALUES ('w1', 'One'), ('w2', 'Two');
+             INSERT INTO accounts (account_id, email) VALUES ('a1', 'ada@example.com');
+             INSERT INTO members (workspace_id, member_id, email, account_id)
+                 VALUES ('w1', 'm1', 'ada@example.com', 'a1'), ('w2', 'm2', 'ada@example.com', 'a1');
+             INSERT INTO tasks VALUES ('w1', 't1', 'Ship the build', 'todo', 'a', 1);
+             INSERT INTO task_versions (workspace_id, task_id, version, author_kind,
+                 author_member, accepted_by, at) VALUES ('w1', 't1', 1, 'person', 'm1', 'm1', 5);
+             INSERT INTO chats (workspace_id, chat_id, owner_member, title, machine_id,
+                 machine_name, state, created_at, updated_at)
+                 VALUES ('w1', 'c-1', 'm1', 'Fix the build', 'mc1', 'Laptop', 'open', 6, 6),
+                        ('w2', 'c-2', 'm2', 'Fix the build', 'mc1', 'Laptop', 'open', 7, 7);
+             INSERT INTO chat_events (workspace_id, chat_id, seq, body, at) VALUES
+                 ('w1', 'c-1', 1, '{\"kind\":\"prompt\",\"request\":\"r-1\",\"text\":\"Why\\u0001 flaky\"}', 8),
+                 ('w1', 'c-1', 2, 'not json, flaky', 9),
+                 ('w2', 'c-2', 1, '{\"kind\":\"outside_prompt\",\"text\":\"Flaky deploy\"}', 10);";
+        database_before(&path, steps::SEARCH, rows).await;
+
+        let db = Db::open(&path).await.unwrap();
+        let (one, two) = (
+            db.workspace(&workspace_id("w1")).await.unwrap(),
+            db.workspace(&workspace_id("w2")).await.unwrap(),
+        );
+        assert_eq!(found(&one, "build").await, ["c-1", "t1"]);
+        assert_eq!(found(&one, "flaky").await, ["c-1/1"]);
+        assert_eq!(found(&two, "flaky").await, ["c-2/1"]);
+        assert_eq!(found(&two, "build").await, ["c-2"]);
+        let bodies: Vec<String> =
+            sqlx::query_scalar("SELECT body FROM search WHERE kind = 'message'")
+                .fetch_all(&db.readers)
+                .await
+                .unwrap();
+        assert!(
+            bodies.iter().all(|body| !body.contains('\u{1}')),
+            "{bodies:?}"
+        );
     }
 
     #[tokio::test]

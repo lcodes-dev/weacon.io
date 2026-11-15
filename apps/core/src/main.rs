@@ -44,10 +44,6 @@ mod status;
 mod terminal;
 #[cfg(test)]
 mod test_support;
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "`weacon update`, which uses it, comes next")
-)]
 mod update;
 mod uplink;
 mod workspaces;
@@ -115,6 +111,9 @@ fn run(app: &App, command: Command, env: platform::Env<'_>) -> Result<Ending, Fa
                 &mut io::stdin().lock(),
                 &mut io::stdout().lock(),
             );
+        }
+        Command::Update(command) => {
+            return update::run(app, command, env, &mut io::stdout().lock());
         }
     };
     done.map(Ending::from)

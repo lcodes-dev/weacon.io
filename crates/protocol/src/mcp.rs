@@ -19,6 +19,8 @@ pub enum McpCall {
     Flow(FlowArgs),
     /// The doc lines that pin one item.
     DocsFor(SymbolArgs),
+    /// The files that change often and that much depends on.
+    Hotspots(MapArgs),
     /// A change to a doc or task of the run's workspace, for a person to accept.
     Propose(ProposeArgs),
     /// A tool this build doesn't offer; only ever received.
@@ -31,6 +33,7 @@ impl McpCall {
     pub const SYMBOL: &str = "symbol";
     pub const FLOW: &str = "flow";
     pub const DOCS_FOR: &str = "docs_for";
+    pub const HOTSPOTS: &str = "hotspots";
     pub const PROPOSE: &str = "propose";
 
     /// The tool's name, as `parse` takes it; none for a tool this build doesn't offer.
@@ -41,6 +44,7 @@ impl McpCall {
             Self::Symbol(_) => Some(Self::SYMBOL),
             Self::Flow(_) => Some(Self::FLOW),
             Self::DocsFor(_) => Some(Self::DOCS_FOR),
+            Self::Hotspots(_) => Some(Self::HOTSPOTS),
             Self::Propose(_) => Some(Self::PROPOSE),
             Self::Newer => None,
         }
@@ -57,7 +61,7 @@ impl McpCall {
     }
 }
 
-/// From a run's agent, under `McpCall::Map`: how much of the map it wants.
+/// From a run's agent, under `McpCall::Map` or `McpCall::Hotspots`: how much of the map it wants.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize)]
 pub struct MapArgs {
     /// The most bytes the answer may hold; the core clamps it to its own bounds.
@@ -131,6 +135,7 @@ mod tests {
             (McpCall::SYMBOL, path),
             (McpCall::FLOW, json!({})),
             (McpCall::DOCS_FOR, json!({"path": "a::b"})),
+            (McpCall::HOTSPOTS, json!({"budget": 2000})),
             (
                 McpCall::PROPOSE,
                 json!({"change": {"kind": "new_task", "title": "Ship"}}),
