@@ -8,8 +8,7 @@ mod settings;
 mod verify;
 mod watch;
 
-use watch::Found;
-pub(crate) use watch::{CHECK_EVERY, Check, Hooks, Watch};
+use watch::{Hooks, Watch};
 
 use std::fs::{File, TryLockError};
 use std::io::{self, Read, Write};
@@ -25,6 +24,7 @@ use weacon_protocol::{
 };
 
 use crate::app::{App, state_unavailable};
+use crate::chats::WeakChats;
 use crate::cli::{UpdateAction, UpdateCommand};
 use crate::platform::Env;
 use crate::service;
@@ -287,37 +287,21 @@ pub(crate) fn watch(state_dir: &Path, version: &str) -> Option<Watch> {
 }
 
 /// Whether an agent is on a turn; an engine that doesn't answer in time counts as busy.
-pub(crate) async fn agents_busy(chats: &crate::chats::Chats) -> bool {
+pub(crate) async fn agents_busy(chats: &WeakChats) -> bool {
     let answer = tokio::time::timeout(ENGINE_ANSWERS_WITHIN, chats.busy()).await;
     answer.map_or(true, |busy| busy.unwrap_or(true))
 }
 
-/// A check with `updates`, if there are any, once the engine says whether an agent is busy.
-pub(crate) async fn start(updates: Option<&Watch>, chats: &crate::chats::Chats) -> Option<Check> {
-    let updates = updates?;
-    Some(updates.start(agents_busy(chats).await))
-}
-
-/// Logs what the check in `checking` found, and clears it.
-pub(crate) fn ended(
-    checking: &mut Option<Check>,
-    updates: Option<&mut Watch>,
-    joined: Result<Result<Found, Fault>, tokio::task::JoinError>,
+/// Checks for releases on the daemon's schedule while it serves; a build that isn't a
+/// release's checks nothing. It doesn't keep the engine running.
+pub(crate) async fn schedule(
+    state_dir: &Path,
+    version: &str,
+    chats: &WeakChats,
     log: &Logger,
-) {
-    *checking = None;
-    if let Some(updates) = updates {
-        updates.finished(joined, log);
-    }
-}
-
-/// A running check's result; never, when none runs. Awaiting a task by reference can be
-/// cancelled, so it fits a `select!` branch.
-pub(crate) async fn finished<T>(
-    task: &mut Option<tokio::task::JoinHandle<T>>,
-) -> Result<T, tokio::task::JoinError> {
-    match task {
-        Some(task) => task.await,
+) -> ! {
+    match watch(state_dir, version) {
+        Some(updates) => updates.run(|| agents_busy(chats), log).await,
         None => std::future::pending().await,
     }
 }
@@ -747,12 +731,15 @@ mod tests {
     async fn agents_count_as_busy_when_the_engine_says_so_or_doesnt_answer() {
         use crate::chats::test_support::{bench, parts};
 
-        assert!(!agents_busy(&bench().chats).await);
+        let running = bench();
+        assert!(!agents_busy(&running.chats.downgrade()).await);
         let (silent, _engine) = parts();
-        assert!(agents_busy(&silent.chats).await);
+        assert!(agents_busy(&silent.chats.downgrade()).await);
         let (stopped, engine) = parts();
         drop(engine);
-        assert!(agents_busy(&stopped.chats).await);
+        assert!(agents_busy(&stopped.chats.downgrade()).await);
+        let gone = bench().chats.downgrade();
+        assert!(agents_busy(&gone).await);
     }
 
     #[test]

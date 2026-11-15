@@ -28,7 +28,7 @@ use weacon_protocol::{
 
 use self::agent::{Agent, Order, Said};
 use self::handle::Ask;
-pub(crate) use self::handle::Chats;
+pub(crate) use self::handle::{Chats, WeakChats};
 use self::launch::Launched;
 use self::pending::{PendingAnswer, PendingEnd, PendingInterrupt};
 use super::feed::Subscriber;
@@ -460,13 +460,16 @@ mod tests {
     async fn the_engine_is_busy_only_while_a_live_run_is_on_a_turn() {
         let mut bench = bench();
         let mut pushes = watch(&bench).await;
-        assert!(!bench.chats.busy().await.unwrap(), "no run");
+        assert!(!bench.chats.downgrade().busy().await.unwrap(), "no run");
 
         let agent = first_turn(&mut bench, &mut pushes).await;
-        assert!(bench.chats.busy().await.unwrap(), "on a turn");
+        assert!(bench.chats.downgrade().busy().await.unwrap(), "on a turn");
         agent.say.send(done(Outcome::Completed)).unwrap();
         pushed(&mut pushes, 3).await;
-        assert!(!bench.chats.busy().await.unwrap(), "idle between turns");
+        assert!(
+            !bench.chats.downgrade().busy().await.unwrap(),
+            "idle between turns"
+        );
     }
 
     #[tokio::test(start_paused = true)]

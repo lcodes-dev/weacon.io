@@ -61,6 +61,21 @@ impl Watch {
         }
     }
 
+    /// Checks every [`CHECK_EVERY`], first at once, asking `busy` each time whether an agent
+    /// is on a turn.
+    pub(crate) async fn run<F: Future<Output = bool>>(
+        mut self,
+        busy: impl Fn() -> F,
+        log: &Logger,
+    ) -> ! {
+        let mut ticks = tokio::time::interval(CHECK_EVERY);
+        loop {
+            ticks.tick().await;
+            let joined = self.start(busy().await).await;
+            self.finished(joined, log);
+        }
+    }
+
     /// Starts a check, which does nothing unless one is due. While an agent is `busy`, an
     /// install, which restarts the daemon, waits for the next check.
     pub(crate) fn start(&self, busy: bool) -> Check {
@@ -531,5 +546,29 @@ mod tests {
         let joined = watch.start(false).await;
         watch.finished(joined, &log);
         assert_eq!(messages(&records), ["update available"]);
+    }
+
+    #[tokio::test]
+    async fn the_schedule_checks_at_once_asking_whether_an_agent_is_busy() {
+        let dir = TempDir::new().unwrap();
+        let (log, records) = recording_logger();
+        let (asked, mut was_asked) = tokio::sync::mpsc::unbounded_channel();
+        let busy = move || {
+            asked.send(()).unwrap_or_default();
+            std::future::ready(false)
+        };
+        let watch = Watch::new(
+            dir.to_path_buf(),
+            version("1.0.0"),
+            hooks(UNREACHABLE, STARTS),
+        );
+        let running = tokio::spawn(async move { watch.run(busy, &log).await });
+
+        was_asked.recv().await.unwrap();
+        while messages(&records).is_empty() {
+            tokio::task::yield_now().await;
+        }
+        running.abort();
+        assert_eq!(messages(&records), ["update check failed"]);
     }
 }

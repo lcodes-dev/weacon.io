@@ -15,7 +15,7 @@ use weacon_agents::{Launch, SpawnPolicy};
 use weacon_observability::{Fault, Logger};
 use weacon_protocol::{App, ChatId, code};
 
-pub(crate) use engine::Chats;
+pub(crate) use engine::{Chats, WeakChats};
 use engine::{Engine, Host, RunAs};
 
 use crate::integrations::Plugin;

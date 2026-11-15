@@ -24,7 +24,6 @@ use crate::memory;
 use crate::picks::{KeepError, Picks};
 use crate::platform::{self, Listener, Owner, Stream};
 use crate::session::{Reply, Session};
-use crate::update;
 use crate::uplink;
 
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
@@ -61,10 +60,12 @@ pub(crate) fn run(app: &crate::app::App) -> Result<(), Fault> {
             app.log.clone(),
         )?;
         let (uplink, from_daemon) = uplink::unrouted(app, state_dir);
+        let chats = daemon.shared.chats.downgrade();
         let serve = async {
             tokio::select! {
                 () = daemon.serve(signals.wait()) => {}
                 never = Box::pin(uplink.run(from_daemon)) => match never {},
+                never = crate::update::schedule(state_dir, app.version.version, &chats, &app.log) => match never {},
             }
         };
         crate::reports::following(state_dir, &app.reporter, &app.log, serve).await;
@@ -88,7 +89,6 @@ pub(crate) struct Daemon {
     shared: Shared,
     disk: disk::Watch,
     memory: memory::Watch,
-    updates: Option<update::Watch>,
     engine: JoinHandle<()>,
     mcp: mcp::Server,
     // Held for the daemon's life, so a second daemon can't start.
@@ -137,7 +137,6 @@ impl Daemon {
         let engine = tokio::spawn(engine.serve());
         log.info("daemon started", &[]);
         Ok(Self {
-            updates: update::watch(state_dir, &app.version),
             listener,
             socket,
             owner,
@@ -160,8 +159,6 @@ impl Daemon {
         let mut clients = JoinSet::new();
         let mut disk_check = tokio::time::interval(DISK_CHECK);
         let mut memory_sample = tokio::time::interval(MEMORY_SAMPLE);
-        let mut update_check = tokio::time::interval(update::CHECK_EVERY);
-        let mut checking: Option<update::Check> = None;
         tokio::pin!(shutdown);
         loop {
             tokio::select! {
@@ -171,8 +168,6 @@ impl Daemon {
                     self.shared.chats.disk_full(self.disk.level() == disk::Level::Full);
                 }
                 _ = memory_sample.tick(), if platform::PROCESSES => self.memory.record(&self.shared.log).await,
-                _ = update_check.tick(), if checking.is_none() => checking = update::start(self.updates.as_ref(), &self.shared.chats).await,
-                joined = update::finished(&mut checking), if checking.is_some() => update::ended(&mut checking, self.updates.as_mut(), joined, &self.shared.log),
                 accepted = self.listener.accept() => match accepted {
                     Ok(stream) => self.admit(stream, &mut clients),
                     Err(error) => {
@@ -438,8 +433,6 @@ mod tests {
             Places::default(),
             log,
         )?;
-        // Tests never reach the release server.
-        daemon.updates = None;
         // The machine's own disk may be nearly full; a test reads its disk from a fake.
         daemon.disk = disk::Watch::new(dir.to_path_buf(), |_| Ok(8 << 30));
         change(&mut daemon);
@@ -507,24 +500,6 @@ mod tests {
     fn free_in_file(dir: &Path) -> io::Result<u64> {
         let free = fs::read_to_string(dir.join("free"))?;
         free.parse().map_err(io::Error::other)
-    }
-
-    #[tokio::test]
-    async fn the_update_schedule_is_checked_at_start() {
-        let dir = TempDir::new().unwrap();
-        let watched = dir.to_path_buf();
-        let running = start_as(&dir, |daemon| {
-            let hooks = update::Hooks {
-                latest: || Err(Fault::new(code!("update.fetch_failed"), "x")),
-                launch: |_| Ok(false),
-                now: || 1_800_000_000,
-            };
-            let watch = update::Watch::new(watched, "1.0.0".parse().unwrap(), hooks);
-            daemon.updates = Some(watch);
-        })
-        .unwrap();
-        logs(&running.records, "update check failed").await;
-        running.stop().await;
     }
 
     #[tokio::test(start_paused = true)]
