@@ -1,3 +1,7 @@
+mod chats;
+
+pub(crate) use chats::CHATS;
+
 pub(crate) const WORKSPACES: &str = "
 CREATE TABLE workspaces (
     workspace_id TEXT PRIMARY KEY,
