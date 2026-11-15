@@ -25,7 +25,6 @@ use crate::memory;
 use crate::picks::{KeepError, Picks};
 use crate::platform::{self, Listener, Owner, Stream};
 use crate::session::{Reply, Session};
-use crate::uplink;
 
 mod route;
 mod worktrees;
@@ -51,7 +50,7 @@ pub(crate) fn run(app: &crate::app::App) -> Result<(), Fault> {
             )
             .because(error)
         })?;
-        let daemon = Daemon::start(
+        let mut daemon = Daemon::start(
             state_dir,
             build(&app.version),
             app.spawn.clone(),
@@ -63,6 +62,9 @@ pub(crate) fn run(app: &crate::app::App) -> Result<(), Fault> {
             },
             app.log.clone(),
         )?;
+        daemon
+            .uplink
+            .spawn(route::server(app, state_dir, daemon.shared.chats.clone()));
         let serve = daemon.serve(signals.wait());
         crate::reports::following(state_dir, &app.reporter, &app.log, serve).await;
         Ok(())
@@ -138,7 +140,7 @@ impl Daemon {
             listener,
             socket,
             owner,
-            uplink: uplink::start(&app, &log, state_dir, chats.clone()),
+            uplink: JoinSet::new(),
             engine: tokio::spawn(engine.serve()),
             shared: Shared {
                 app,
@@ -564,9 +566,7 @@ mod tests {
             let mode = fs::metadata(&socket).unwrap().permissions().mode() & 0o777;
             assert_eq!(mode, 0o600);
         }
-        // The uplink each daemon keeps must not hold the engine up.
-        let stopped = timeout(Duration::from_secs(10), running.stop()).await;
-        let records = stopped.expect("the daemon never stopped");
+        let records = running.stop().await;
         assert!(!socket.exists());
         assert_eq!(
             ask(&socket).await.unwrap_err().code().as_str(),
@@ -580,7 +580,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_paired_daemon_dials_its_server() {
+    async fn a_paired_daemon_dials_its_server_and_still_stops() {
         use crate::machine::{self, Key, Paired};
         let (dir, tls) = (TempDir::new().unwrap(), test_support::tls::Tls::new().await);
         let paired = Paired {
@@ -592,12 +592,19 @@ mod tests {
             key: Key::from_random([7; 32]),
         };
         machine::write(&dir, &paired).unwrap();
-        let running = start(&dir).unwrap();
+        let app = test_support::app(Some(&dir), None);
+        let running = start_as(&dir, |daemon| {
+            let chats = daemon.shared.chats.clone();
+            daemon.uplink.spawn(route::server(&app, &dir, chats));
+        })
+        .unwrap();
 
         let dialed = tls.accept().await;
 
         assert!(dialed.is_some(), "the daemon never dialed its server");
-        running.stop().await;
+        // Its uplink, which holds a way to the engine, must not hold the engine up.
+        let stopped = timeout(Duration::from_secs(10), running.stop()).await;
+        assert!(stopped.is_ok(), "the daemon never stopped");
     }
 
     #[tokio::test]

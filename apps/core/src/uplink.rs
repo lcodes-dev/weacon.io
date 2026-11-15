@@ -6,7 +6,6 @@ use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
 use tokio::sync::mpsc;
-use tokio::task::JoinSet;
 use tokio::time::{Instant, sleep, sleep_until, timeout, timeout_at};
 use tokio_tungstenite::tungstenite::{Message as Wire, Utf8Bytes};
 use weacon_observability::{Fault, Field, Logger};
@@ -28,7 +27,7 @@ const PATH: &str = "/api/machines/connect";
 const LOOK_EVERY: Duration = Duration::from_secs(30);
 const HELLO_WITHIN: Duration = Duration::from_secs(10);
 /// How many messages wait to cross between the daemon and the uplink.
-const QUEUE: usize = 64;
+pub(crate) const QUEUE: usize = 64;
 
 mod chats;
 mod retry;
@@ -247,13 +246,13 @@ impl Uplink {
         let owners = match asking(&envelope.message) {
             Asking::By(by) => by == Some(owner),
             Asking::NotAnAsk => true,
-            Asking::Unknown => return failure(envelope.id, code!("uplink.unknown")),
+            Asking::Unknown => return reply(failure(envelope.id, code!("uplink.unknown"))),
         };
         if !owners {
             if let Message::ChatCommand(command) = &envelope.message {
-                return refusal(envelope.id, command, code!("chat.not_owner"));
+                return reply(refusal(envelope.id, command, code!("chat.not_owner")));
             }
-            return failure(envelope.id, code!("machine.not_owner"));
+            return reply(failure(envelope.id, code!("machine.not_owner")));
         }
         if ChatLink::is_for(&envelope.message) {
             return chats.take(envelope);
@@ -261,6 +260,10 @@ impl Uplink {
         drop(self.to_daemon.try_send(envelope));
         Step::Nothing
     }
+}
+
+fn reply(envelope: Envelope) -> Step {
+    Step::Reply(Box::new(envelope))
 }
 
 /// Who asks the machine to act, in a message from the server.
@@ -298,25 +301,25 @@ fn asking(message: &Message) -> Asking<'_> {
 }
 
 /// An error under the envelope `id` it answers.
-fn failure(id: u32, code: Code) -> Step {
-    Step::Reply(Box::new(Envelope {
+pub(crate) const fn failure(id: u32, code: Code) -> Envelope {
+    Envelope {
         id,
         message: Message::Error(ErrorBody {
             code,
             retryable: false,
         }),
-    }))
+    }
 }
 
 /// A receipt that fails `command` with `code`, under the envelope `id` it came in.
-fn refusal(id: u32, command: &ChatCommand, code: Code) -> Step {
-    Step::Reply(Box::new(Envelope {
+pub(crate) fn refusal(id: u32, command: &ChatCommand, code: Code) -> Envelope {
+    Envelope {
         id,
         message: Message::Receipt(Receipt {
             request: command.request.clone(),
             outcome: Outcome::Failed { code },
         }),
-    }))
+    }
 }
 
 enum Step {
@@ -345,30 +348,24 @@ async fn send(socket: &mut Socket, envelope: &Envelope) {
     drop(socket.send(Wire::text(text)).await);
 }
 
-/// Keeps the machine connected to its server, for as long as the set is kept.
-pub(crate) fn start(app: &App, log: &Logger, state_dir: &Path, chats: Chats) -> JoinSet<()> {
-    let (link, from_daemon) = new(app, log, state_dir, chats);
-    let mut uplink = JoinSet::new();
-    uplink.spawn(async move { match link.run(from_daemon).await {} });
-    uplink
-}
-
-/// The daemon's uplink, which takes the server's chat messages to `chats`; the daemon sends
-/// nothing else up it.
-fn new(app: &App, log: &Logger, state_dir: &Path, chats: Chats) -> (Uplink, FromDaemon) {
-    let (to_daemon, _) = mpsc::channel(QUEUE);
-    let (_, from_daemon) = mpsc::channel(QUEUE);
-    let uplink = Uplink {
+/// The daemon's uplink, which takes the server's chat messages to `chats` and hands the
+/// rest of what it asks to `to_daemon`.
+pub(crate) fn new(
+    app: &crate::app::App,
+    state_dir: &Path,
+    to_daemon: ToDaemon,
+    chats: Chats,
+) -> Uplink {
+    Uplink {
         state_dir: state_dir.to_owned(),
-        app: app.clone(),
+        app: weacon_appkit::build(&app.version),
         capabilities: crate::session::CAPABILITIES.to_vec(),
-        log: log.child(&[("component", "uplink".into())]),
+        log: app.log.child(&[("component", "uplink".into())]),
         to_daemon,
         chats,
         timing: TIMING,
         random: weacon_appkit::random_id,
-    };
-    (uplink, from_daemon)
+    }
 }
 
 #[cfg(test)]

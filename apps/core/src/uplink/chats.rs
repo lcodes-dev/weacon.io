@@ -10,7 +10,7 @@ use weacon_protocol::{
     ChatQueryKind, ChatUpdate, Code, Envelope, Message, RunEvent, code,
 };
 
-use super::{QUEUE, Step, failure, refusal};
+use super::{QUEUE, Step, failure, refusal, reply};
 use crate::chats::Chats;
 use crate::chats::feed::{self, Client};
 use crate::runs::ChatKey;
@@ -69,10 +69,10 @@ impl ChatLink {
         if let Message::ChatCommand(command) = message {
             // Only a client on the core's own socket may hold a chat.
             if matches!(command.action, ChatAction::Hold | ChatAction::Release) {
-                return refusal(id, &command, code!("message.unsupported"));
+                return reply(refusal(id, &command, code!("message.unsupported")));
             }
             if self.waiting.len() >= QUEUE {
-                return refusal(id, &command, code!("chat.unavailable"));
+                return reply(refusal(id, &command, code!("chat.unavailable")));
             }
             self.queue(Ask::Command(command));
             return Step::Nothing;
@@ -86,13 +86,13 @@ impl ChatLink {
         {
             let key = ChatKey { workspace, chat };
             if !self.came.contains_key(&key) && self.came.len() >= FOLLOWS_MAX {
-                return failure(id, code!("chat.follows_full"));
+                return reply(failure(id, code!("chat.follows_full")));
             }
             self.came.insert(key.clone(), after);
             self.queue(Ask::Follow(key, after));
             return Step::Nothing;
         }
-        failure(id, code!("message.unsupported"))
+        reply(failure(id, code!("message.unsupported")))
     }
 
     // Passes `ask` on in the order asked: at once when nothing waits and there is room, else
