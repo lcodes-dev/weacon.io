@@ -2,6 +2,7 @@ mod events;
 mod ledger;
 mod runs;
 
+use sqlx::SqliteConnection;
 use weacon_observability::Fault;
 use weacon_protocol::{
     ChatId, ChatState, ChatSummary, MachineId, MachineName, MemberId, RepoId, RunState, RunStatus,
@@ -86,9 +87,14 @@ impl Workspace {
         transaction.commit().await.map_err(failed)
     }
 
-    /// Takes back `chat`, made for a first prompt its machine never got.
+    /// Takes back `chat`, made for a first prompt its machine never got, unless it was made
+    /// meanwhile.
     pub(crate) async fn forget_chat(&self, chat: &ChatId) -> Result<(), Fault> {
-        let mut transaction = self.db.writer.begin().await.map_err(failed)?;
+        let mut transaction = self.db.write().await?;
+        if self.made(&mut transaction, chat).await? {
+            return Ok(());
+        }
+        self.unindex_chat(&mut transaction, chat).await?;
         sqlx::query("DELETE FROM chat_requests WHERE workspace_id = ? AND chat_id = ?")
             .bind(self.id.as_str())
             .bind(chat.as_str())
@@ -102,6 +108,17 @@ impl Workspace {
             .await
             .map_err(failed)?;
         transaction.commit().await.map_err(failed)
+    }
+
+    async fn made(&self, connection: &mut SqliteConnection, chat: &ChatId) -> Result<bool, Fault> {
+        sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM changes WHERE workspace_id = ? AND chat_id = ?)",
+        )
+        .bind(self.id.as_str())
+        .bind(chat.as_str())
+        .fetch_one(connection)
+        .await
+        .map_err(failed)
     }
 
     /// The chat `id`, if this workspace has it.
@@ -132,6 +149,17 @@ impl Workspace {
     /// Whether `chat` runs on `machine`, and the account that owns the machine is still the
     /// chat's owner here.
     pub(crate) async fn runs_on(&self, chat: &ChatId, machine: &MachineId) -> Result<bool, Fault> {
+        let mut reader = self.db.readers.acquire().await.map_err(failed)?;
+        self.runs_on_in(&mut reader, chat, machine).await
+    }
+
+    /// [`Self::runs_on`], read through `connection`.
+    async fn runs_on_in(
+        &self,
+        connection: &mut SqliteConnection,
+        chat: &ChatId,
+        machine: &MachineId,
+    ) -> Result<bool, Fault> {
         let found = sqlx::query(
             "SELECT 1 FROM chats AS c
              JOIN members AS m ON m.workspace_id = c.workspace_id AND m.member_id = c.owner_member
@@ -141,10 +169,37 @@ impl Workspace {
         .bind(self.id.as_str())
         .bind(chat.as_str())
         .bind(machine.as_str())
-        .fetch_optional(&self.db.readers)
+        .fetch_optional(connection)
         .await
         .map_err(failed)?;
         Ok(found.is_some())
+    }
+
+    /// [`Self::append`] for events from no machine in particular.
+    #[cfg(test)]
+    pub(crate) async fn append_events(
+        &self,
+        chat: &ChatId,
+        events: &[Incoming<'_>],
+    ) -> Result<u64, Fault> {
+        let transaction = self.db.write().await?;
+        self.append(transaction, chat, events).await
+    }
+
+    /// [`Self::append`] for events `machine` sent, stored only while `chat` runs on it
+    /// and its owner still owns it, checked in the transaction that stores them; otherwise
+    /// `chat.not_found`.
+    pub(crate) async fn append_from(
+        &self,
+        machine: &MachineId,
+        chat: &ChatId,
+        events: &[Incoming<'_>],
+    ) -> Result<u64, Fault> {
+        let mut transaction = self.db.write().await?;
+        if !self.runs_on_in(&mut transaction, chat, machine).await? {
+            return Err(chat_not_found());
+        }
+        self.append(transaction, chat, events).await
     }
 
     /// The workspace's chats, the latest updated first.
@@ -197,6 +252,31 @@ impl Workspace {
             .await
             .map_err(failed)?;
         Ok(())
+    }
+
+    /// The open chats on `machine`, whose owner still owns it, whose first prompt never
+    /// reached it, each with its owner.
+    pub(crate) async fn unmade_on(
+        &self,
+        machine: &MachineId,
+    ) -> Result<Vec<(ChatId, MemberId)>, Fault> {
+        sqlx::query_as::<_, (String, String)>(
+            "SELECT c.chat_id, c.owner_member FROM chats AS c
+             JOIN members AS m ON m.workspace_id = c.workspace_id AND m.member_id = c.owner_member
+             JOIN machines AS d ON d.machine_id = c.machine_id AND d.account_id = m.account_id
+             WHERE c.workspace_id = ? AND c.machine_id = ? AND c.state = 'open'
+                 AND NOT EXISTS (SELECT 1 FROM changes AS h WHERE h.workspace_id = c.workspace_id
+                     AND h.chat_id = c.chat_id)
+             ORDER BY c.chat_id",
+        )
+        .bind(self.id.as_str())
+        .bind(machine.as_str())
+        .fetch_all(&self.db.readers)
+        .await
+        .map_err(failed)?
+        .into_iter()
+        .map(|(chat, owner)| Ok((stored(chat)?, stored(owner)?)))
+        .collect()
     }
 
     /// The open chats made on `machine`, whose owner still owns it, and whose turn may not be
@@ -351,7 +431,7 @@ mod tests {
             make(&one, chat, "m1", NOW).await.unwrap();
         }
         // Its first prompt never reached the machine.
-        begin(&one, "c-6", "m1").await.unwrap();
+        begin(&one, "c-6", "m1", NOW).await.unwrap();
         // On mc-1 too, but mc-1 isn't Bo's machine.
         make(&one, "c-7", "m3", NOW).await.unwrap();
         make(&two, "c-1", "m2", NOW).await.unwrap();
@@ -378,5 +458,41 @@ mod tests {
             .collect();
         assert_eq!(ids, [("c-1", 0), ("c-3", 7)]);
         assert_eq!(two.unsettled_on(&id("mc-1")).await.unwrap().len(), 1);
+        let unmade = one.unmade_on(&id("mc-1")).await.unwrap();
+        assert_eq!(unmade, [(id("c-6"), member_id("m1"))]);
+        assert!(two.unmade_on(&id("mc-1")).await.unwrap().is_empty());
+    }
+
+    async fn indexed(workspace: &Workspace, chat: &str) -> i64 {
+        sqlx::query_scalar(
+            "SELECT count(*) FROM search_rows AS r JOIN search AS s ON s.rowid = r.row
+             WHERE r.workspace_id = ? AND r.kind = 'chat' AND r.item = ?",
+        )
+        .bind(workspace.id.as_str())
+        .bind(chat)
+        .fetch_one(&workspace.db.readers)
+        .await
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_chat_taken_back_leaves_nothing_behind_and_a_made_one_is_kept() {
+        let dir = TempDir::new().unwrap();
+        let (one, two) = two_teams(&dir).await;
+        begin(&one, "c-1", "m1", NOW).await.unwrap();
+        make(&two, "c-1", "m2", NOW).await.unwrap();
+        make(&one, "c-2", "m1", NOW).await.unwrap();
+        assert_eq!(indexed(&one, "c-1").await, 1);
+
+        one.forget_chat(&id("c-1")).await.unwrap();
+        one.forget_chat(&id("c-2")).await.unwrap();
+
+        assert_eq!(one.chat(&id("c-1")).await.unwrap(), None);
+        assert!(!one.has_request(&id("r-c-1")).await.unwrap());
+        assert_eq!(indexed(&one, "c-1").await, 0);
+        assert_eq!(indexed(&two, "c-1").await, 1);
+        assert!(one.chat(&id("c-2")).await.unwrap().is_some());
+        assert!(one.has_request(&id("r-c-2")).await.unwrap());
+        assert_eq!(indexed(&one, "c-2").await, 1);
     }
 }

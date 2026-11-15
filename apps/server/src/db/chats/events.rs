@@ -1,5 +1,5 @@
 use futures_util::TryStreamExt as _;
-use sqlx::SqliteConnection;
+use sqlx::{Sqlite, SqliteConnection, Transaction};
 use weacon_model::ChatRuns;
 use weacon_observability::Fault;
 use weacon_protocol::{ChatEntry, ChatEvent, ChatId, MemberId, Outcome, RequestId, code};
@@ -32,12 +32,12 @@ impl Workspace {
     /// with none stored. So do events that would leave more than [`WAITING_MAX`] prompts
     /// waiting, as `chat.too_many_waiting`. An event over [`EVENT_MAX`] is
     /// `chat.event_too_large`.
-    pub(crate) async fn append_events(
+    pub(super) async fn append(
         &self,
+        mut transaction: Transaction<'static, Sqlite>,
         chat: &ChatId,
         events: &[Incoming<'_>],
     ) -> Result<u64, Fault> {
-        let mut transaction = self.db.write().await?;
         let (seq, core_seq, state, owner) = sqlx::query_as::<_, (i64, i64, String, String)>(
             "SELECT seq, core_seq, state, owner_member FROM chats
              WHERE workspace_id = ? AND chat_id = ?",

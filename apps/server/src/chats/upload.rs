@@ -8,21 +8,27 @@ use weacon_protocol::{
 
 use crate::db::{Incoming, turns};
 use crate::shared::Shared;
+use crate::socket::Closed;
 
 /// What the server offers to cores whose chats' events it stores.
 pub(crate) const UPLOAD: Code = code!("chat.upload");
 
 /// Stores what is [`kept`] of `update` from `machine`, and tells the sockets that follow its
 /// chat. An event of a chat that isn't on `machine`, or whose owner no longer owns it there, is
-/// dropped.
-pub(crate) async fn store(shared: &Shared, machine: &MachineId, update: ChatUpdate) {
+/// dropped. When the database fails, the link closes, so nothing later is stored before it
+/// and the core, connecting again, sends it once more.
+pub(crate) async fn store(
+    shared: &Shared,
+    machine: &MachineId,
+    update: ChatUpdate,
+) -> Result<(), Closed> {
     let ChatUpdate {
         workspace,
         chat,
         entry,
     } = update;
     let Some(event) = kept(entry.event) else {
-        return;
+        return Ok(());
     };
     let seq = entry.seq;
     let update = ChatUpdate {
@@ -51,8 +57,12 @@ pub(crate) async fn store(shared: &Shared, machine: &MachineId, update: ChatUpda
             }
             let fields = [&fields[..], &[("err", Field::error(&fault))]].concat();
             shared.log.warn("chat upload failed", &fields);
+            if *fault.code() == code!("db.failed") {
+                return Err(Closed);
+            }
         }
     }
+    Ok(())
 }
 
 /// What the server keeps of a chat event: its messages, never a tool's name or input.
@@ -105,16 +115,15 @@ async fn append(shared: &Shared, machine: &MachineId, update: &ChatUpdate) -> Re
     let Some(place) = shared.db.find_workspace(workspace).await? else {
         return Ok(false);
     };
-    if !place.runs_on(chat, machine).await? {
-        return Ok(false);
-    }
     let incoming = Incoming {
         core_seq: Some(entry.seq),
         event: &entry.event,
         at: shared.now(),
     };
-    place.append_events(chat, &[incoming]).await?;
-    Ok(true)
+    match place.append_from(machine, chat, &[incoming]).await {
+        Err(fault) if *fault.code() == code!("chat.not_found") => Ok(false),
+        appended => appended.map(drop).map(|()| true),
+    }
 }
 
 #[cfg(test)]
@@ -150,12 +159,22 @@ mod tests {
         let mut notices = shared.chats.notices();
         let other = id::<MachineId>("mc-2");
 
-        store(shared, ours, update("w1", "c-1", 4, said("MARKER-TEXT"))).await;
-        store(shared, &other, update("w1", "c-1", 5, said("MARKER-TEXT"))).await;
-        store(shared, ours, update("w1", "c-9", 6, said("MARKER-TEXT"))).await;
-        store(shared, ours, update("w-9", "c-1", 7, said("MARKER-TEXT"))).await;
+        store(shared, ours, update("w1", "c-1", 4, said("MARKER-TEXT")))
+            .await
+            .unwrap();
+        store(shared, &other, update("w1", "c-1", 5, said("MARKER-TEXT")))
+            .await
+            .unwrap();
+        store(shared, ours, update("w1", "c-9", 6, said("MARKER-TEXT")))
+            .await
+            .unwrap();
+        store(shared, ours, update("w-9", "c-1", 7, said("MARKER-TEXT")))
+            .await
+            .unwrap();
         workspace.unlink(&member_id("m1")).await;
-        store(shared, ours, update("w1", "c-1", 8, said("MARKER-TEXT"))).await;
+        store(shared, ours, update("w1", "c-1", 8, said("MARKER-TEXT")))
+            .await
+            .unwrap();
 
         let events = workspace.events_after(&id("c-1"), 0, 10, usize::MAX).await;
         assert_eq!(events.unwrap().len(), 1);
@@ -179,14 +198,15 @@ mod tests {
             &ada.machine,
             update("w1", "c-1", 1, said("working")),
         )
-        .await;
+        .await
+        .unwrap();
         feeds.try_recv().unwrap_err();
         let receipt = Receipt {
             request: id("r-c-1"),
             outcome: Outcome::Completed,
         };
         let ended = update("w1", "c-1", 2, ChatEvent::Receipt { receipt });
-        store(shared, &ada.machine, ended).await;
+        store(shared, &ada.machine, ended).await.unwrap();
 
         assert_eq!(feeds.try_recv().unwrap(), id::<WorkspaceId>("w1"));
     }
@@ -198,11 +218,62 @@ mod tests {
         ada.member.workspace.fill_quota().await;
         let mut feeds = shared.changes.subscribe();
 
-        store(shared, &ada.machine, update("w1", "c-1", 1, said("a"))).await;
+        store(shared, &ada.machine, update("w1", "c-1", 1, said("a")))
+            .await
+            .unwrap();
 
         assert_eq!(feeds.try_recv().unwrap(), id::<WorkspaceId>("w1"));
         let logged = crate::test_support::messages(&fixture.records);
         assert!(logged.contains(&"chat upload failed"), "{logged:?}");
+    }
+
+    #[tokio::test]
+    async fn a_failed_store_closes_the_link_and_keeps_the_chats_place() {
+        let fixture = Fixture::new().await;
+        let (shared, ada) = (&fixture.shared, ada_chatting(&fixture).await);
+        let workspace = &ada.member.workspace;
+        store(shared, &ada.machine, update("w1", "c-1", 1, said("a")))
+            .await
+            .unwrap();
+        workspace.break_chat_events().await;
+
+        let failed = store(shared, &ada.machine, update("w1", "c-1", 2, said("b"))).await;
+
+        failed.unwrap_err();
+        let chat = workspace.chat(&id("c-1")).await.unwrap().unwrap();
+        assert_eq!(chat.core_seq, 1);
+        // Refused for good, not failed: the link goes on.
+        workspace.fill_quota().await;
+        store(shared, &ada.machine, update("w1", "c-1", 3, said("c")))
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn an_unpaired_machine_stores_nothing_in_the_chats_it_ran() {
+        let fixture = Fixture::new().await;
+        let (shared, ada) = (&fixture.shared, ada_chatting(&fixture).await);
+        let (workspace, chat) = (&ada.member.workspace, id("c-1"));
+        let event = said("a");
+        let incoming = || Incoming {
+            core_seq: Some(1),
+            event: &event,
+            at: NOW,
+        };
+        let elsewhere = workspace
+            .append_from(&id("mc-2"), &chat, &[incoming()])
+            .await;
+        assert_eq!(elsewhere.unwrap_err().code(), &code!("chat.not_found"));
+        let unpaired = shared.db.unpair(&ada.asker.account, &ada.machine).await;
+        assert!(unpaired.unwrap());
+
+        let stored = workspace
+            .append_from(&ada.machine, &chat, &[incoming()])
+            .await;
+
+        assert_eq!(stored.unwrap_err().code(), &code!("chat.not_found"));
+        let events = workspace.events_after(&chat, 0, 10, usize::MAX).await;
+        assert!(events.unwrap().is_empty());
     }
 
     #[tokio::test]
@@ -230,7 +301,9 @@ mod tests {
         };
 
         for (seq, event) in [(1, run(call)), (2, run(asked)), (3, said("MARKER-TEXT"))] {
-            store(shared, &ada.machine, update("w1", "c-1", seq, event)).await;
+            store(shared, &ada.machine, update("w1", "c-1", seq, event))
+                .await
+                .unwrap();
         }
 
         let events = workspace.events_after(&id("c-1"), 0, 10, usize::MAX).await;

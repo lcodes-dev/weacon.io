@@ -1,7 +1,7 @@
 //! A member's command to a chat: checked here, then relayed to the chat's machine.
 
 use weacon_observability::Fault;
-use weacon_protocol::{Asker, ChatCommand, Message, Outcome, Receipt, code};
+use weacon_protocol::{Asker, ChatAction, ChatCommand, MachineId, Message, Outcome, Receipt, code};
 
 use super::admit::{Admitted, admit, detached};
 use super::link;
@@ -45,7 +45,7 @@ pub(crate) async fn take(
             match start(shared, member, &chat, &command).await {
                 // Made meanwhile, by this command sent again or by another.
                 Err(fault) if *fault.code() == code!("db.exists") => {
-                    again(member, asker, shared, command).await?;
+                    again(member, asker, shared, command, machine).await?;
                 }
                 started => started?,
             }
@@ -58,13 +58,18 @@ pub(crate) async fn take(
     }))
 }
 
-// A first prompt whose chat was made while it was on its way, taken as one to that chat.
+// A first prompt to `machine` whose chat was made while it was on its way, taken as one to
+// that chat, which must be on `machine` too.
 async fn again(
     member: &Member,
     asker: &Asker,
     shared: &Shared,
-    command: ChatCommand,
+    mut command: ChatCommand,
+    machine: MachineId,
 ) -> Result<(), Fault> {
+    if let ChatAction::Prompt { machine: named, .. } = &mut command.action {
+        *named = Some(machine);
+    }
     // Not made, so its request id is another chat's.
     let Some(chat) = member.workspace.chat(&command.chat).await? else {
         return Err(conflict());
@@ -175,7 +180,7 @@ fn conflict() -> Fault {
 
 #[cfg(test)]
 mod tests {
-    use weacon_protocol::{AgentKind, ChatAction, ChatQuery, ChatQueryKind};
+    use weacon_protocol::{AgentKind, ChatQuery, ChatQueryKind};
 
     use super::*;
     use crate::chats::test_support::{ada, attach, sent};
@@ -290,12 +295,33 @@ mod tests {
         assert_eq!(again.unwrap(), accepted("r-1"));
         assert_eq!(sent(&mut serving).len(), 2);
 
-        begin(workspace, "c-2", "m1").await.unwrap();
+        begin(workspace, "c-2", "m1", NOW).await.unwrap();
         workspace.move_chats_to(&ada.machine).await;
         let racing = prompt("r-c-2", "c-2", "Fix the build", Some(&ada.machine));
         let refused = take(&ada.member, &ada.asker, shared, racing).await;
         assert_eq!(refused.unwrap_err().code().as_str(), "machine.offline");
         assert!(sent(&mut serving).is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_first_prompt_losing_its_chat_to_one_on_another_machine_is_refused() {
+        let fixture = Fixture::new().await;
+        let shared = &fixture.shared;
+        let ada = ada(&fixture).await;
+        let workspace = &ada.member.workspace;
+        make(workspace, "c-1", "m1", NOW).await.unwrap();
+        workspace.move_chats_to(&ada.machine).await;
+        let mut serving = attach(shared, &ada, &["chat.serve"]);
+        // As admitted for a new chat, its machine taken out.
+        let lost = || prompt("r-c-1", "c-1", "Fix the build", None);
+
+        let elsewhere = again(&ada.member, &ada.asker, shared, lost(), id("mc-2")).await;
+
+        assert_eq!(elsewhere.unwrap_err().code().as_str(), "chat.machine_fixed");
+        assert!(sent(&mut serving).is_empty());
+        let same = again(&ada.member, &ada.asker, shared, lost(), ada.machine.clone()).await;
+        same.unwrap();
+        assert_eq!(sent(&mut serving).len(), 2);
     }
 
     #[tokio::test]

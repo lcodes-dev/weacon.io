@@ -92,6 +92,28 @@ impl Workspace {
         self.index(transaction, indexed).await
     }
 
+    /// Takes the chat `chat`, which has no messages yet, out of the search index.
+    pub(super) async fn unindex_chat(
+        &self,
+        transaction: &mut SqliteConnection,
+        chat: &ChatId,
+    ) -> Result<(), Fault> {
+        for statement in [
+            "DELETE FROM search WHERE rowid =
+                 (SELECT row FROM search_rows WHERE workspace_id = ? AND kind = ? AND item = ?)",
+            "DELETE FROM search_rows WHERE workspace_id = ? AND kind = ? AND item = ?",
+        ] {
+            sqlx::query(statement)
+                .bind(self.id.as_str())
+                .bind(CHAT)
+                .bind(chat.as_str())
+                .execute(&mut *transaction)
+                .await
+                .map_err(failed)?;
+        }
+        Ok(())
+    }
+
     /// Indexes each of `rows`, stored in `chat`'s log, that is a message: a person's prompt or
     /// an agent's text.
     pub(super) async fn index_messages(

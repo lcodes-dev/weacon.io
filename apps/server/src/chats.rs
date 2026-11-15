@@ -2,6 +2,8 @@
 
 mod admit;
 mod command;
+#[cfg(test)]
+mod end_to_end;
 mod link;
 mod read;
 mod reconnect;

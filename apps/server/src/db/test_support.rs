@@ -71,13 +71,18 @@ pub(crate) async fn make_as(workspace: &Workspace, making: &Making<'_>) -> Resul
 }
 
 /// Begins chat `chat` as [`make`] does, its first prompt not yet sent.
-pub(crate) async fn begin(workspace: &Workspace, chat: &str, owner: &str) -> Result<(), Fault> {
+pub(crate) async fn begin(
+    workspace: &Workspace,
+    chat: &str,
+    owner: &str,
+    at: i64,
+) -> Result<(), Fault> {
     let making = Making {
         chat,
         owner,
         title: "Fix the build",
         machine: "mc-1",
-        at: NOW,
+        at,
     };
     begin_as(workspace, &making).await
 }
@@ -243,6 +248,16 @@ impl Workspace {
     }
 
     /// Leaves the workspace no room for more chat events.
+    /// Makes every chat event this workspace stores fail in the database, as a full disk would.
+    pub(crate) async fn break_chat_events(&self) {
+        sqlx::query(
+            "CREATE TRIGGER broken BEFORE INSERT ON chat_events BEGIN SELECT RAISE(ABORT, 'broken'); END",
+        )
+        .execute(&self.db.writer)
+        .await
+        .unwrap();
+    }
+
     pub(crate) async fn fill_quota(&self) {
         sqlx::query("UPDATE workspaces SET chat_bytes = 536870912 WHERE workspace_id = ?")
             .bind(self.id.as_str())

@@ -102,9 +102,17 @@ async fn serve(mut socket: WebSocket, shared: Shared, mut link: Link) {
 
 /// What the server offers every core, and needs of it for all its features to reach it.
 pub(crate) fn offers() -> Vec<Capability> {
-    [CONNECT, SETTINGS, DIFF, WORKTREE, SESSIONS, SYMBOLS, chats::SERVE]
-        .map(Capability::new)
-        .into()
+    [
+        CONNECT,
+        SETTINGS,
+        DIFF,
+        WORKTREE,
+        SESSIONS,
+        SYMBOLS,
+        chats::SERVE,
+    ]
+    .map(Capability::new)
+    .into()
 }
 
 /// The most capabilities of a core's hello that the machines list keeps.
@@ -172,7 +180,7 @@ async fn run(
                 if let Ok(Frame::Text(text)) = &frame
                     && let Ok(envelope) = Envelope::from_json(text.as_bytes())
                 {
-                    hand_off(shared, &link.machine.id, envelope).await;
+                    hand_off(shared, &link.machine.id, envelope).await?;
                 }
             }
         }
@@ -180,15 +188,17 @@ async fn run(
 }
 
 /// Gives what `machine` sent to the feature it is for, in the order it came.
-async fn hand_off(shared: &Shared, machine: &MachineId, envelope: Envelope) {
+async fn hand_off(shared: &Shared, machine: &MachineId, envelope: Envelope) -> Result<(), Closed> {
     if let Message::Chat(update) = envelope.message {
-        chats::upload::store(shared, machine, update).await;
-    } else if let Message::Terminal(update) = envelope.message {
+        return chats::upload::store(shared, machine, update).await;
+    }
+    if let Message::Terminal(update) = envelope.message {
         terminals::delivered(shared, machine, update);
     } else if relay::takes(&envelope.message) {
         // An error the relay doesn't claim is for no other feature yet.
         let _claimed = shared.relay.answered(machine, envelope);
     }
+    Ok(())
 }
 
 #[cfg(test)]

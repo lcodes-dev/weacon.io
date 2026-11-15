@@ -23,6 +23,7 @@ pub(crate) const TIMING: Timing = Timing {
 };
 
 /// The socket has ended: its client left, may have it no more, or something failed.
+#[derive(Debug)]
 pub(crate) struct Closed;
 
 /// A web socket's pings, which end it once two go unanswered: the client is gone, or its
@@ -191,9 +192,9 @@ mod tests {
         let failed = Err(axum::Error::new("gone"));
         let text = Ok(Frame::Text("hi".into()));
 
-        assert!(pings.heard(&close).is_err());
-        assert!(pings.heard(&failed).is_err());
-        assert!(pings.heard(&text).is_ok());
+        pings.heard(&close).unwrap_err();
+        pings.heard(&failed).unwrap_err();
+        pings.heard(&text).unwrap();
     }
 
     #[tokio::test(start_paused = true)]
@@ -205,6 +206,6 @@ mod tests {
         let frame = || Frame::Ping(Vec::new().into());
 
         assert!(send(&mut stuck, TIMING.ping_every, frame()).await.is_err());
-        assert!(send(&mut taken, TIMING.ping_every, frame()).await.is_ok());
+        send(&mut taken, TIMING.ping_every, frame()).await.unwrap();
     }
 }
