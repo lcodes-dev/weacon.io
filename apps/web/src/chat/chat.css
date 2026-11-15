@@ -3,6 +3,11 @@
   padding-left: 10px;
 }
 
+.row.landed {
+  background: var(--border);
+  border-radius: 6px;
+}
+
 .row.agent {
   color: var(--muted);
   font-size: 13px;

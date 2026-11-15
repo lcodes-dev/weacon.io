@@ -18,6 +18,10 @@ pub struct MapQuery {
 pub enum MapQueryKind {
     /// Where to begin reading the folder's code, as the MCP's `map` tool answers.
     Map(MapArgs),
+    /// What a session starts with: the flows
+    /// pinned by the docs that best match the title of the task of the run's chat, then the
+    /// folder's map, both within `budget`; the map alone for a chat without a task.
+    SessionStart(MapArgs),
     /// A query this build doesn't know, from a newer peer; only ever received.
     #[serde(other, skip_serializing)]
     #[schemars(skip)]
@@ -52,6 +56,11 @@ mod tests {
             text: Some("Start here.\n".to_owned()),
         }));
         let none = envelope(Message::MapAnswer(MapAnswer { text: None }));
+        let start = envelope(Message::MapQuery(MapQuery {
+            token: "t".into(),
+            folder: "/work".to_owned(),
+            query: MapQueryKind::SessionStart(MapArgs { budget: Some(4000) }),
+        }));
 
         let query_wire = json!({ "id": 4, "type": "map_query", "token": "t0k3n",
             "folder": "/work/app", "query": { "kind": "map", "budget": 4000 } });
@@ -59,6 +68,9 @@ mod tests {
         let found_wire = json!({ "id": 4, "type": "map_answer", "text": "Start here.\n" });
         travels(&found, found_wire);
         travels(&none, json!({ "id": 4, "type": "map_answer" }));
+        let start_wire = json!({ "id": 4, "type": "map_query", "token": "t",
+            "folder": "/work", "query": { "kind": "session_start", "budget": 4000 } });
+        travels(&start, start_wire);
         assert!(!format!("{query:?}").contains("t0k3n"));
     }
 

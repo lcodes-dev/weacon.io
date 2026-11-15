@@ -285,6 +285,7 @@ export type ChatAction = (
     kind: "prompt";
     machine?: MachineId;
     repo?: RepoId;
+    task?: ChatTask;
     text: string;
   }
   | {
@@ -358,6 +359,7 @@ export type ChatEvent = (
     kind: "prompt";
     repo?: RepoId;
     request: RequestId;
+    task?: ChatTask;
     text: string;
   }
   | {
@@ -442,20 +444,34 @@ export type ChatState = (
 );
 
 /**
- * A chat in a [`ChatList`]: `machine` is a name, never an id, and `updated_at` is when its
- * latest turn began or ended, in seconds since the Unix epoch.
+ * A chat in a [`ChatList`]: `machine` is its machine's name and `machine_id` its id, and
+ * `updated_at` is when its latest turn began or ended, in seconds since the Unix epoch.
  */
 export type ChatSummary = {
   id: ChatId;
   machine: MachineName;
+  machine_id: MachineId;
   owner: MemberId;
   /**
    * What its latest run is doing; left out when it has had none.
    */
   run?: RunState;
   state: ChatState;
+  /**
+   * The task it was made for, if any.
+   */
+  task?: TaskId;
   title: string;
   updated_at: number;
+};
+
+/**
+ * The task a chat works on: its id, and its title as the chat's first prompt found it, a
+ * person's words.
+ */
+export type ChatTask = {
+  id: TaskId;
+  title: string;
 };
 
 /**
@@ -952,6 +968,9 @@ export type MapQuery = {
 export type MapQueryKind = (
   | {
     kind: "map";
+  } & MapArgs
+  | {
+    kind: "session_start";
   } & MapArgs
 );
 

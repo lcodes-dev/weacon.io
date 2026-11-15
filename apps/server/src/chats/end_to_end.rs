@@ -221,6 +221,7 @@ fn turn() -> [ChatEvent; 4] {
         text: "MARKER-PROMPT".to_owned(),
         repo: None,
         agent: None,
+        task: None,
     };
     let ended = ChatEvent::Run {
         update: RunUpdate {

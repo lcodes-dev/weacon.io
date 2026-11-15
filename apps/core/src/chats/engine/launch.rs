@@ -4,10 +4,33 @@ use std::sync::Arc;
 
 use tokio::sync::mpsc;
 use weacon_observability::{Fault, Field};
-use weacon_protocol::{AgentSession, RunId, RunState, code};
+use weacon_protocol::{AgentKind, AgentSession, ChatTask, RepoId, RunId, RunState, code};
 
 use super::agent::{Agent, drive};
-use super::{ChatKey, Engine, RunAs, about, failed};
+use super::{ChatKey, Engine, about, failed};
+
+/// Which agent to start, and as what.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct RunAs {
+    pub(crate) key: ChatKey,
+    pub(crate) agent: AgentKind,
+    pub(crate) run: RunId,
+    pub(crate) session: Option<AgentSession>,
+    /// The repository the chat's first prompt named, whose worktree it runs in.
+    pub(crate) repo: Option<RepoId>,
+    /// The task the chat's first prompt named, which the run's session starts from.
+    pub(crate) task: Option<ChatTask>,
+}
+
+type Launcher<A> = Arc<dyn Fn(&RunAs) -> Result<A, Fault> + Send + Sync>;
+
+/// What the engine takes from the machine; the daemon wires the real ones.
+pub(crate) struct Host<A> {
+    /// Starts an agent; may block, so it is called off the runtime.
+    pub(crate) launch: Launcher<A>,
+    /// Unix seconds.
+    pub(crate) now: fn() -> u64,
+}
 
 /// A run's agent, or why it didn't start, back from starting off the engine's loop.
 pub(super) struct Launched<A> {
@@ -79,7 +102,8 @@ impl<A: Agent> Engine<A> {
         self.save_pending_session(key).await?;
         let kind = self.runs.of(key).ok_or_else(not_started)?.agent;
         // Read first, so a log that can't be opened leaves no run begun.
-        let repo = self.open(key).await?.log.repo().cloned();
+        let log = &self.open(key).await?.log;
+        let (repo, task) = (log.repo().cloned(), log.task().cloned());
         let run = self.runs.begin(key, kind, self.now()).await?;
         let session = self.runs.of(key).and_then(|record| record.session.clone());
         let run_as = RunAs {
@@ -88,6 +112,7 @@ impl<A: Agent> Engine<A> {
             run: run.clone(),
             session,
             repo,
+            task,
         };
         self.open(key).await?.launching = Some(run.clone());
         let (start, starts) = (Arc::clone(&self.host.launch), self.starts.clone());

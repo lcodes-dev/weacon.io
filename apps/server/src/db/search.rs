@@ -169,28 +169,39 @@ impl Workspace {
 
     /// The workspace's tasks, docs, chats and messages that match `query`, at most `limit` of
     /// them: those matching in their title first, then the most recently changed. A message
-    /// takes its chat's title.
+    /// takes its chat's title, and a chat comes up once, by its best match.
     pub(crate) async fn search(&self, query: &Query, limit: u32) -> Result<Vec<SearchHit>, Fault> {
         let short = serde_json::to_string(&query.short).map_err(|_| unreadable())?;
         sqlx::query_as::<_, HitRow>(
-            "SELECT search.kind, search.item,
+            "WITH hits AS (
+                 SELECT search.kind, search.item, search.title, search.body, rows.at,
+                     search.rowid AS row,
+                     CASE search.kind WHEN 'message'
+                         THEN substr(search.item, 1, instr(search.item, '/') - 1) END AS chat,
+                     search.rowid IN
+                         (SELECT rowid FROM search
+                          WHERE search MATCH 'title : (' || ?1 || ')' AND workspace_id = ?2)
+                     AND NOT EXISTS (SELECT 1 FROM json_each(?3)
+                         WHERE search.title NOT LIKE value ESCAPE '\\') AS in_title
+                 FROM search
+                 JOIN search_rows AS rows
+                     ON rows.workspace_id = search.workspace_id AND rows.row = search.rowid
+                 WHERE search MATCH ?1 AND search.workspace_id = ?2
+                     AND NOT EXISTS (SELECT 1 FROM json_each(?3)
+                         WHERE search.title || char(10) || search.body NOT LIKE value ESCAPE '\\')
+             ), ranked AS (
+                 SELECT *, ROW_NUMBER() OVER (
+                     PARTITION BY CASE kind WHEN 'message' THEN 'chat' ELSE kind END,
+                         COALESCE(chat, item)
+                     ORDER BY in_title DESC, at DESC, row DESC) AS place
+                 FROM hits
+             )
+             SELECT kind, item,
                  COALESCE((SELECT title FROM chats
-                     WHERE chats.workspace_id = search.workspace_id
-                         AND chats.chat_id = substr(search.item, 1, instr(search.item, '/') - 1)
-                         AND search.kind = 'message'), search.title),
-                 search.body
-             FROM search
-             JOIN search_rows AS rows
-                 ON rows.workspace_id = search.workspace_id AND rows.row = search.rowid
-             WHERE search MATCH ?1 AND search.workspace_id = ?2
-                 AND NOT EXISTS (SELECT 1 FROM json_each(?3)
-                     WHERE search.title || char(10) || search.body NOT LIKE value ESCAPE '\\')
-             ORDER BY search.rowid IN
-                     (SELECT rowid FROM search
-                      WHERE search MATCH 'title : (' || ?1 || ')' AND workspace_id = ?2)
-                 AND NOT EXISTS (SELECT 1 FROM json_each(?3)
-                     WHERE search.title NOT LIKE value ESCAPE '\\') DESC,
-                 rows.at DESC, search.rowid DESC
+                     WHERE chats.workspace_id = ?2 AND chats.chat_id = ranked.chat), title),
+                 body
+             FROM ranked WHERE place = 1
+             ORDER BY in_title DESC, at DESC, row DESC
              LIMIT ?4",
         )
         .bind(&query.words)
@@ -603,6 +614,7 @@ mod tests {
             text: "Why is the deploy flaky".to_owned(),
             repo: None,
             agent: None,
+            task: None,
         };
         let delta = ChatEvent::Run {
             update: RunUpdate {
@@ -642,6 +654,35 @@ mod tests {
             panic!("{hits:?}");
         };
         assert_eq!(title, "Fix the build");
+    }
+
+    #[tokio::test]
+    async fn a_chat_comes_up_once_by_its_best_match_beside_a_task_with_its_id() {
+        let dir = TempDir::new().unwrap();
+        let (one, _) = two_teams(&dir).await;
+        chatted(&one).await;
+        let later = [
+            (Some(5), said("The build is flaky again")),
+            (Some(6), said("Still flaky")),
+        ];
+        append(&one, "c-1", &later).await.unwrap();
+        one.add_task(&new_task("c-1", "Flaky build", "a"), &by(1))
+            .await
+            .unwrap();
+
+        assert_eq!(found(&one, "build").await, ["c-1", "c-1"]);
+        let query = parse("build").unwrap().unwrap();
+        let kinds: Vec<_> = one
+            .search(&query, 5)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|hit| matches!(hit, SearchHit::Task { .. }))
+            .collect();
+        assert_eq!(kinds, [false, true]);
+        assert_eq!(found(&one, "flaky").await, ["c-1", "c-1/6"]);
+        let query = parse("flaky").unwrap().unwrap();
+        assert_eq!(one.search(&query, 1).await.unwrap().len(), 1);
     }
 
     #[tokio::test]

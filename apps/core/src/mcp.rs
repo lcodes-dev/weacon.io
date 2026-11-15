@@ -134,7 +134,8 @@ pub(crate) fn grant(
         run_as.run.clone(),
         run_as.agent,
         launch.cwd.clone(),
-    );
+    )
+    .for_task(run_as.task.clone());
     let (token, revoke) = mcp.grants.issue(grant)?;
     let server = McpServer {
         url: mcp.url.clone(),
@@ -819,6 +820,10 @@ mod tests {
             run: RunId::try_from("run-1".to_owned()).unwrap(),
             session: None,
             repo: None,
+            task: Some(weacon_protocol::ChatTask {
+                id: "t-1".parse().unwrap(),
+                title: "Speed up the build".to_owned(),
+            }),
         };
 
         let (claude, revoke) = grant(Some(&mcp), launch(AgentKind::Claude), &run_as).unwrap();
@@ -833,6 +838,7 @@ mod tests {
             (found.run.as_str(), found.folder.as_path()),
             ("run-1", "/work".as_ref())
         );
+        assert_eq!(found.task, run_as.task);
         assert_eq!((codex.mcp, none.is_none()), (None, true));
         assert_eq!((alone.mcp, no_mcp.is_none()), (None, true));
         drop(revoke);

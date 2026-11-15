@@ -51,6 +51,9 @@ test("a retry of a first prompt that may have run goes to the same chat with the
   // A late receipt that accepts it opens the chat.
   assert.equal(starts.end("r-1", "accepted"), "c-1");
   assert.equal(starts.end("r-1", "accepted"), undefined);
+  const task = { id: "t-1", title: "Speed up the build" };
+  const forTask = starts.begin("r-2", "w-1", "Go.", { ...choice, task }, fresh);
+  assert.deepEqual(forTask.action, { kind: "prompt", text: "Go.", machine: "mc-1", repo: "api", agent: "codex", task });
 });
 
 test("a refused first prompt is forgotten, so the next send makes a fresh chat", () => {
