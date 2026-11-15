@@ -184,6 +184,27 @@ test("a beat after a resize keeps the new size", async () => {
   assert.equal(again, resized);
 });
 
+test("a frame still being sealed when the terminal closes isn't sent after the close", async () => {
+  const { session, sent, receive } = terminal(new Pins(store(machine.key)));
+  await session.start();
+  await receive({ kind: "accepted", handshake: message(1).ciphertext });
+
+  const subtle = crypto.subtle;
+  const encrypt = subtle.encrypt.bind(subtle);
+  // The person closes it while the frame is encrypted.
+  subtle.encrypt = (...args: Parameters<SubtleCrypto["encrypt"]>) => {
+    session.close();
+    return encrypt(...args);
+  };
+  try {
+    await session.input(new TextEncoder().encode("y"));
+  } finally {
+    delete (subtle as Partial<SubtleCrypto>).encrypt;
+  }
+
+  assert.equal(sent.at(-1)?.action.kind, "close");
+});
+
 test("a changed key, or a pin that can't be read, sends nothing", async () => {
   for (const [pins, problem] of [
     [new Pins(store("00".repeat(32))), "key_changed"],

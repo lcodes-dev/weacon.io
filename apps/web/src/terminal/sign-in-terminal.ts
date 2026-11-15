@@ -238,7 +238,11 @@ export class SignInTerminal {
       return;
     }
     try {
-      this.#send({ kind: "frame", sealed: hex(await channel.seal(json(input))) });
+      const sealed = hex(await channel.seal(json(input)));
+      // Closed while it was sealed: the close went first, so nothing follows it.
+      if (!this.#done) {
+        this.#send({ kind: "frame", sealed });
+      }
     } catch {
       this.#fail();
     }
