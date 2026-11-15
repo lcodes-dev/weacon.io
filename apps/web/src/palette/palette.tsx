@@ -67,6 +67,8 @@ function Search({ api, workspace, socket, chatMachine, close, go }: Omit<Props, 
   // The chosen result by its key, so results that arrive later never move the choice.
   const [chosen, setChosen] = useState<string | undefined>(undefined);
   const [copyProblem, setCopyProblem] = useState<string | undefined>(undefined);
+  // Each copy's number; typing starts a new one, so a copy that ends late changes nothing.
+  const copying = useRef(0);
   const input = useRef<HTMLInputElement>(null);
   useEffect(() => {
     input.current?.focus();
@@ -88,7 +90,12 @@ function Search({ api, workspace, socket, chatMachine, close, go }: Omit<Props, 
     if (hit !== undefined) {
       go(hit.place);
     } else if (symbol !== undefined) {
-      navigator.clipboard.writeText(place(symbol)).then(close, () => setCopyProblem("The place couldn't be copied."));
+      const copy = ++copying.current;
+      const current = () => copy === copying.current;
+      navigator.clipboard.writeText(place(symbol)).then(
+        () => current() && close(),
+        () => current() && setCopyProblem("The place couldn't be copied."),
+      );
     }
   };
   return (
@@ -107,6 +114,7 @@ function Search({ api, workspace, socket, chatMachine, close, go }: Omit<Props, 
             const typed = event.target.value;
             setText(typed);
             setChosen(undefined);
+            copying.current += 1;
             setCopyProblem(undefined);
             if (typed.trim() !== "") {
               void loader.load(() => search(api, workspace, typed));

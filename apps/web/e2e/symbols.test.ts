@@ -64,4 +64,19 @@ test("⌘K finds the symbols on the person's machine, and choosing one copies wh
   await found.first().waitFor();
   await found.first().click();
   await search.getByRole("alert").filter({ hasText: "The place couldn't be copied." }).waitFor();
+
+  // A copy that ends after the words changed neither closes the palette nor says it failed.
+  await page.evaluate(() => {
+    const late = window as unknown as { finish?: () => void };
+    navigator.clipboard.writeText = () =>
+      new Promise((resolve) => {
+        late.finish = () => resolve();
+      });
+  });
+  await found.first().click();
+  await search.getByRole("combobox", { name: "Search" }).fill("bed");
+  await page.evaluate(() => (window as unknown as { finish: () => void }).finish());
+  await found.nth(1).waitFor();
+  assert.equal(await search.count(), 1);
+  assert.equal(await search.getByRole("alert").count(), 0);
 });
