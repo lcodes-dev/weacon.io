@@ -17,8 +17,9 @@ use weacon_protocol::{
 
 use crate::auth::{Member, Session};
 use crate::chats::{self, Watch};
+use crate::client_log::{ClientLogs, LOG_FORWARD};
 use crate::connections::Place;
-use crate::http::failure;
+use crate::http::{RequestTag, failure};
 use crate::proposals::PROPOSALS;
 use crate::relay::{self, Ask, DIFF, Refusal, SESSIONS, SETTINGS, WORKTREE};
 use crate::shared::Shared;
@@ -33,6 +34,20 @@ const TASKS: Code = code!("workspace.tasks");
 const DOCS: Code = code!("workspace.docs");
 /// What the server offers to clients that read chats and ask their agents.
 const CHATS: Code = code!("workspace.chats");
+/// What the feed offers; a client hears of the features it offers too.
+const OFFERED: [Code; 11] = [
+    FEED,
+    TASKS,
+    DOCS,
+    SETTINGS,
+    PROPOSALS,
+    CHATS,
+    MEMBERS,
+    DIFF,
+    WORKTREE,
+    SESSIONS,
+    LOG_FORWARD,
+];
 /// How many answers from machines wait for the client to take them.
 const ANSWERS: usize = 16;
 
@@ -54,7 +69,7 @@ pub(crate) fn routes() -> Router<Shared> {
 pub(crate) async fn feed(
     State(shared): State<Shared>,
     Query(Since { since }): Query<Since>,
-    Extension(place): Extension<Place>,
+    (Extension(place), Extension(request)): (Extension<Place>, Extension<RequestTag>),
     (member, session): (Member, Session),
     upgrade: WebSocketUpgrade,
 ) -> Response {
@@ -73,6 +88,7 @@ pub(crate) async fn feed(
     let (answer_to, answers) = mpsc::channel(ANSWERS);
     let feed = Feed {
         _place: place,
+        logs: ClientLogs::new(&shared, &member, &request),
         member,
         asker,
         changes,
@@ -91,6 +107,8 @@ pub(crate) async fn feed(
 struct Feed {
     /// The feed's place among the open connections.
     _place: Place,
+    /// The logs the client forwards, if it offered to.
+    logs: ClientLogs,
     member: Member,
     /// Who the feed's client is, for the messages it relays to its machines.
     asker: Asker,
@@ -149,11 +167,7 @@ async fn run(
     feed: &mut Feed,
 ) -> Result<Infallible, Closed> {
     let feed_offer = Capability::new(FEED);
-    let offered = [
-        FEED, TASKS, DOCS, SETTINGS, PROPOSALS, CHATS, MEMBERS, DIFF, WORKTREE, SESSIONS,
-    ]
-    .map(Capability::new)
-    .to_vec();
+    let offered = OFFERED.map(Capability::new).to_vec();
     let greeted = greet(socket, shared, offered, &feed_offer);
     let hello = timeout(shared.sockets.hello_within, greeted)
         .await
@@ -226,6 +240,13 @@ async fn received(
     feed: &mut Feed,
     envelope: Envelope,
 ) -> Result<(), Closed> {
+    if let Message::Log(record) = &envelope.message {
+        if feed.hears(LOG_FORWARD) {
+            feed.allowed(shared).await?;
+            feed.logs.take(shared, record);
+        }
+        return Ok(());
+    }
     if let Some(needs) = relay::needs(&envelope.message)
         && feed.hears(needs)
     {
@@ -397,7 +418,17 @@ mod tests {
         assert_eq!(
             welcome.capabilities,
             [
-                FEED, TASKS, DOCS, SETTINGS, PROPOSALS, CHATS, MEMBERS, DIFF, WORKTREE, SESSIONS
+                FEED,
+                TASKS,
+                DOCS,
+                SETTINGS,
+                PROPOSALS,
+                CHATS,
+                MEMBERS,
+                DIFF,
+                WORKTREE,
+                SESSIONS,
+                LOG_FORWARD
             ]
             .map(Capability::new)
         );

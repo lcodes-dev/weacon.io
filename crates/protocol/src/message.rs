@@ -49,7 +49,7 @@ pub enum Message {
     WorktreeAnswer(WorktreeAnswer),
     ProposalCommand(ProposalCommand),
     /// A message type this build doesn't know, from a newer peer.
-    #[serde(other)]
+    #[serde(other, skip_serializing)]
     #[schemars(skip)]
     Unknown,
 }
