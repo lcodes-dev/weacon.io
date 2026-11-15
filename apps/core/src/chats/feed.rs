@@ -14,6 +14,13 @@ pub(crate) struct Client {
     pub(crate) push: mpsc::Sender<Message>,
 }
 
+impl Client {
+    /// Whether the client's connection has closed.
+    pub(crate) fn is_gone(&self) -> bool {
+        self.push.is_closed()
+    }
+}
+
 /// One client's subscription to one chat.
 #[derive(Debug)]
 pub(crate) struct Subscriber {

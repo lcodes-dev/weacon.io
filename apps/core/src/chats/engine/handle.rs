@@ -7,6 +7,7 @@ use weacon_observability::Fault;
 use weacon_protocol::{ChatAnswerKind, ChatCommand, ChatQuery, code};
 
 use crate::chats::feed::Client;
+use crate::runs::ChatKey;
 
 /// The clients' way to the engine.
 #[derive(Clone, Debug)]
@@ -18,6 +19,8 @@ pub(crate) struct Chats {
 
 pub(super) enum Ask {
     Command(ChatCommand, oneshot::Sender<Result<(), Fault>>),
+    /// Holds the chat for the client, or with none releases it.
+    Hold(ChatKey, Option<Client>, oneshot::Sender<Result<(), Fault>>),
     Query(
         ChatQuery,
         Client,
@@ -33,6 +36,15 @@ impl Chats {
     pub(super) fn new(asks: mpsc::Sender<Ask>, disk_full: watch::Sender<bool>) -> Self {
         let disk_full = Arc::new(disk_full);
         Self { asks, disk_full }
+    }
+
+    /// Holds `key`'s chat for `holder`, a local client, while its connection is open, or with
+    /// none releases it.
+    pub(crate) async fn hold(&self, key: ChatKey, holder: Option<&Client>) -> Result<(), Fault> {
+        let (answer, answered) = oneshot::channel();
+        let ask = Ask::Hold(key, holder.cloned(), answer);
+        self.asks.send(ask).await.map_err(|_| stopped())?;
+        answered.await.map_err(|_| stopped())?
     }
 
     /// Acts on `command`. Its receipts are events in the chat's log; an error means it has no

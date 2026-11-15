@@ -11,7 +11,8 @@ pub(super) const IDLE: u64 = 30 * 60;
 
 impl<A: Agent> Engine<A> {
     // Stops each agent idle for `IDLE`, never on a turn, while a person is asked something or
-    // while a write is owed. Its session stays, so the chat's next prompt resumes it.
+    // while a write is owed. Its session stays, so the chat's next prompt resumes it. Then lets
+    // go of holds whose holder has gone.
     pub(super) async fn sleep_idle(&mut self) {
         let now = self.now();
         let idle: Vec<ChatKey> = self
@@ -26,6 +27,7 @@ impl<A: Agent> Engine<A> {
             }
             self.settle(&key);
         }
+        self.release_gone().await;
     }
 
     fn dozes(&self, key: &ChatKey, chat: &Chat, now: u64) -> bool {
@@ -42,7 +44,7 @@ impl<A: Agent> Engine<A> {
     }
 
     // Dropping its orders stops the agent; its run sleeps.
-    async fn sleep(&mut self, key: &ChatKey) -> Result<(), Fault> {
+    pub(super) async fn sleep(&mut self, key: &ChatKey) -> Result<(), Fault> {
         let Some(run) = self.run_of(key) else {
             return Ok(());
         };
@@ -129,7 +131,7 @@ impl<A: Agent> Engine<A> {
     }
 }
 
-fn chat_fields(key: &ChatKey, fault: &Fault) -> [(&'static str, Field); 3] {
+pub(super) fn chat_fields(key: &ChatKey, fault: &Fault) -> [(&'static str, Field); 3] {
     let [workspace, chat] = chat_about(key);
     [workspace, chat, ("err", Field::error(fault))]
 }

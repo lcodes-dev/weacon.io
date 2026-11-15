@@ -6,7 +6,8 @@ use std::sync::Arc;
 use tokio::sync::{Semaphore, mpsc};
 use weacon_observability::{Fault, Field};
 use weacon_protocol::{
-    Asker, Envelope, FrameError, Message, Outcome, Pick, Receipt, SessionsQuery, code,
+    Asker, ChatAction, ChatCommand, Envelope, FrameError, Message, Outcome, Pick, Receipt,
+    SessionsQuery, code,
 };
 
 use super::worktrees::{self, Late};
@@ -16,9 +17,24 @@ use crate::chats::feed::Client;
 use crate::git::service::Worktrees;
 use crate::machine_settings::{self, Host, Identity};
 use crate::picks::KeepError;
+use crate::runs::ChatKey;
 use crate::session::{Reply, Session};
 use crate::uplink::{self, failure};
 use crate::{app, machine};
+
+// Holds or releases a chat for this local client: nothing when it's done, else why not. The
+// server's entry never reaches here, so a hold is never relayed.
+async fn hold_chat(shared: &Shared, id: u32, command: &ChatCommand, client: &Client) -> Reply {
+    let key = ChatKey::new(&command.workspace, &command.chat);
+    let holder = matches!(command.action, ChatAction::Hold).then_some(client);
+    match shared.chats.hold(key, holder).await {
+        Ok(()) => Reply {
+            envelope: None,
+            close: false,
+        },
+        Err(fault) => Reply::error(id, fault.code().clone(), false),
+    }
+}
 
 /// How many of the server's queries are answered at once; each may run vendors' status checks.
 const QUERIES_AT_ONCE: usize = 4;
@@ -41,6 +57,11 @@ pub(super) async fn route(
     )]
     match message {
         Message::Pick(pick) => keep(shared, id, pick).await,
+        Message::ChatCommand(command)
+            if matches!(command.action, ChatAction::Hold | ChatAction::Release) =>
+        {
+            hold_chat(shared, id, &command, client).await
+        }
         Message::ChatCommand(command) => command_chat(shared, id, command).await,
         Message::ChatQuery(query) => query_chat(shared, id, query, client).await,
         Message::DiffQuery(query) => worktrees::diff(shared, id, query, late),

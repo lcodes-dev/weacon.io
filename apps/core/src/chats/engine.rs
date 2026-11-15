@@ -7,6 +7,7 @@ mod by_hand;
 mod commands;
 mod cut;
 mod handle;
+mod hold;
 mod launch;
 mod pending;
 mod queries;
@@ -30,7 +31,7 @@ use self::handle::Ask;
 pub(crate) use self::handle::Chats;
 use self::launch::Launched;
 use self::pending::{PendingAnswer, PendingEnd, PendingInterrupt};
-use super::feed::Subscriber;
+use super::feed::{Client, Subscriber};
 use super::log::ChatLog;
 use crate::runs::{ChatKey, Runs};
 use crate::workspaces::Workspaces;
@@ -82,6 +83,8 @@ struct Chat {
     pending_interrupts: Vec<PendingInterrupt>,
     /// The agent's session when the runs journal couldn't save it.
     pending_session: Option<AgentSession>,
+    /// Who carries the chat on by hand, while their connection is open.
+    held: Option<Client>,
 }
 
 impl Chat {
@@ -98,6 +101,7 @@ impl Chat {
             && self.pending_answers.is_empty()
             && self.pending_end.is_none()
             && self.pending_session.is_none()
+            && self.held.is_none()
     }
 }
 
@@ -162,6 +166,7 @@ impl<A: Agent> Engine<A> {
                         drop(answer.send(self.command(&key, command).await));
                         key
                     }
+                    Some(Ask::Hold(key, holder, answer)) => { drop(answer.send(self.hold_or_release(&key, holder).await)); key }
                     Some(Ask::Query(query, client, answer)) => {
                         let key = ChatKey::new(&query.workspace, &query.chat);
                         drop(answer.send(self.query(&key, query.query, &client).await));
@@ -339,6 +344,7 @@ impl<A: Agent> Engine<A> {
                 pending_end: None,
                 pending_interrupts: Vec::new(),
                 pending_session: None,
+                held: None,
             })),
         }
     }
@@ -918,7 +924,7 @@ mod tests {
         let (mut bench, engine) = parts();
         let (anyone, _pushes) = client(1);
         // Enough queries to fill the engine's queue before it serves.
-        let ask = |chats: Chats, anyone: crate::chats::feed::Client| async move {
+        let ask = |chats: Chats, anyone: Client| async move {
             let snapshot = query("c-2", ChatQueryKind::Snapshot);
             chats.query(snapshot, &anyone).await
         };
