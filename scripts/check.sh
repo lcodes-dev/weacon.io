@@ -114,7 +114,7 @@ other_checks() {
     [ "$mode" = 120000 ] || continue
     target=$(git cat-file blob "$blob")
     case $target in
-      /*) die "${entry#*$'\t'} is a link to an absolute path; a tracked link stays inside the repository" ;;
+      /* | [A-Za-z]:* | \\*) die "${entry#*$'\t'} is a link to an absolute path; a tracked link stays inside the repository" ;;
     esac
   done < <(git ls-files -s -z)
 
