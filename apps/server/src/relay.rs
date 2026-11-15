@@ -1299,6 +1299,7 @@ mod tests {
             title: "Fix the build",
             machine: machine.as_str(),
             at: 1,
+            task: None,
         };
         make_as(&w1.unwrap(), &making).await.unwrap();
     }

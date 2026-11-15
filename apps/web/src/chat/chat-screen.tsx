@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 import type { ChatRef } from "../chat-ref.ts";
 import { Composer } from "../composer/composer.tsx";
@@ -11,6 +11,7 @@ import type { WorkspaceSocket } from "../shell/workspace-socket.ts";
 import { useChatAccess } from "./access.ts";
 import { working } from "./chat.ts";
 import { useChatCommands, useLiveChat } from "./chat-hooks.ts";
+import { landing } from "./landing.ts";
 import type { Names } from "../members/names.ts";
 import { lines } from "./lines.ts";
 import { StopButton } from "./stop-button.tsx";
@@ -30,6 +31,7 @@ export function ChatScreen({
   away,
   title,
   names,
+  at,
 }: {
   link: WorkspaceSocket;
   /** Whether the link's connection is up. */
@@ -41,6 +43,8 @@ export function ChatScreen({
   title?: string | undefined;
   /** The workspace's members' names, for its agents' owners. */
   names?: Names;
+  /** The message in the chat's log to open it at, rather than at its latest. */
+  at?: number | undefined;
 }) {
   const [shown, setShown] = useState<"run" | "changes">("run");
   const access = useChatAccess(link);
@@ -49,6 +53,14 @@ export function ChatScreen({
   const changes = useChanges(link, chatRef, live, shown === "changes");
   const worktree = useWorktree(link, chatRef, live, mine, shown === "changes");
   const { chat, state } = reading.sync;
+  const landed = landing(chat, at);
+  const subscribed = state.kind === "live";
+  // Each window that comes back moves `first` on, and asks for the next until the message is in.
+  useEffect(() => {
+    if (landed.kind === "older" && subscribed) {
+      reading.more();
+    }
+  }, [landed.kind, chat?.first, subscribed]);
   const acts = mine && access.send;
   const stop = acts && chat !== undefined && working(chat) ? commands.stop : undefined;
   const why = blocked(live, chatRef, access.send);
@@ -82,6 +94,7 @@ export function ChatScreen({
             loading={chatRef !== undefined && chat === undefined && state.kind !== "failed" && (!live || access.read)}
             retry={state.kind === "failed" ? reading.open : undefined}
             away={away || shown !== "run"}
+            landed={landed.kind === "line" ? landed.key : undefined}
           />
         </div>
         <ChatChanges

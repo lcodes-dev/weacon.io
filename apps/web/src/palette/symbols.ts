@@ -7,10 +7,17 @@ import { lacks } from "../machines/core.ts";
 /** What a core offers to search its code. */
 export const SYMBOLS: WebCapability = "symbols.search";
 
-/** The machine the palette asks for symbols: the open chat's, by its name, when it offers them, else the first that does. */
-export function searcher(machines: readonly MachineSummary[], chatMachine: string | undefined): MachineId | undefined {
+/** The open chat's machine: its id, which an older server leaves out, and its name. */
+export type ChatMachine = { id?: MachineId | undefined; name: string };
+
+/**
+ * The machine the palette asks for symbols: the open chat's when it offers them, by its id, or by
+ * its name from an older server, else the first that does.
+ */
+export function searcher(machines: readonly MachineSummary[], chatMachine: ChatMachine | undefined): MachineId | undefined {
   const offering = machines.filter(offers);
-  return (offering.find((machine) => machine.name === chatMachine) ?? offering[0])?.id;
+  const chats = (machine: MachineSummary) => (chatMachine?.id === undefined ? machine.name === chatMachine?.name : machine.id === chatMachine.id);
+  return (offering.find(chats) ?? offering[0])?.id;
 }
 
 /**

@@ -10,6 +10,7 @@ import { ChatScreen } from "../chat/chat-screen.tsx";
 import { type Status, statusText } from "../connection.ts";
 import type { Log } from "../log.ts";
 import { Palette } from "../palette/palette.tsx";
+import type { ChatMachine } from "../palette/symbols.ts";
 import type { Names } from "../members/names.ts";
 import { DocsPage } from "../docs/docs-page.tsx";
 import { useNames } from "../members/use-names.ts";
@@ -18,6 +19,8 @@ import { NewChat, StartMissing } from "../new-chat/new-chat.tsx";
 import { readiness } from "../new-chat/start.ts";
 import { ProposalsPage } from "../proposals/proposals-page.tsx";
 import { TasksPage } from "../tasks/tasks-page.tsx";
+import { useTasks } from "../tasks/use-tasks.ts";
+import { ChatTask } from "./chat-task.tsx";
 import { owns } from "./chat-list.ts";
 import { ChatsNav } from "./chats.tsx";
 import { useFeed, useReloadOn } from "./feed-hooks.ts";
@@ -222,9 +225,9 @@ function Workspace({ log, ...open }: Open & { log: Log }) {
   const names = useNames(api, workspace.id, socket);
   const served = useSections(socket);
   const searches = useOffers(socket, "workspace.search");
-  const palette = (chatMachine?: string) => <Palette api={api} workspace={workspace.id} socket={socket} chatMachine={chatMachine} enabled={searches && !open.away} go={open.go} />;
+  const palette = (chatMachine?: ChatMachine) => <Palette api={api} workspace={workspace.id} socket={socket} chatMachine={chatMachine} enabled={searches && !open.away} go={open.go} />;
   if (place.view === "chats") {
-    return <WorkspaceChats {...open} place={place} status={status} read={read} send={send} names={names} palette={palette} />;
+    return <WorkspaceChats {...open} place={place} status={status} read={read} send={send} names={names} palette={palette} tasksServed={served.tasks} />;
   }
   return (
     <div className="workspace">
@@ -237,7 +240,7 @@ function Workspace({ log, ...open }: Open & { log: Log }) {
         {!served[place.view] ? (
           <p className="page muted">{status.state === "connecting" ? "Loading" : `This server doesn't offer ${TITLES[place.view].toLowerCase()}.`}</p>
         ) : place.view === "tasks" ? (
-          <TasksPage api={api} workspace={workspace.id} socket={socket} />
+          <TasksPage api={api} workspace={workspace.id} socket={socket} shown={place.task} startChat={send ? (task) => open.go({ view: "chats", task }) : undefined} />
         ) : place.view === "docs" ? (
           <DocsPage api={api} workspace={workspace.id} socket={socket} names={names} doc={place.doc} choose={(doc) => open.go(doc === undefined ? { view: "docs" } : { view: "docs", doc })} />
         ) : (
@@ -304,15 +307,17 @@ function WorkspaceChats({
   names,
   palette,
   openSettings,
-}: Open & { place: Extract<Place, { view: "chats" }>; status: Status; read: boolean; send: boolean; names: Names; palette(chatMachine?: string): ReactNode }) {
+  tasksServed,
+}: Open & { place: Extract<Place, { view: "chats" }>; status: Status; read: boolean; send: boolean; names: Names; palette(chatMachine?: ChatMachine): ReactNode; tasksServed: boolean }) {
   const chats = useLoaded(() => (read ? api.chats(workspace.id) : answered({ chats: [] })), `${workspace.id} ${read}`);
   useReloadOn(socket, ({ kind }) => read && kind === "chat_changed", () => void chats.load(), [read]);
   const machines = useLoaded(() => api.machines(), api);
   // Until the feed is welcomed, whether it takes commands isn't known yet.
   const ready = machines.value === undefined || status.state === "connecting" ? undefined : readiness(send, machines.value.machines);
-  const [starting, setStarting] = useState(false);
-  // Going to a chat, however, leaves the new one.
-  useEffect(() => setStarting(false), [place.chat]);
+  const tasks = useTasks(api, workspace.id, socket, tasksServed).value?.tasks;
+  // New chat for a task opens with it; going to a chat, however, leaves the new one.
+  const [starting, setStarting] = useState(place.task !== undefined);
+  useEffect(() => setStarting(place.chat === undefined && place.task !== undefined), [place.chat, place.task]);
   // The chat just started here, shown before the list has it.
   const [started, setStarted] = useState<ChatId>();
   const live = status.state === "live";
@@ -324,7 +329,7 @@ function WorkspaceChats({
   const listed = read ? chats : status.state === "connecting" ? "connecting" : "none";
   return (
     <div className="workspace">
-      {palette(listedChat?.machine)}
+      {palette(listedChat && { id: listedChat.machine_id, name: listedChat.machine })}
       <div className="side">
         <Sections socket={socket} place={place} go={go} />
         <ChatsNav
@@ -350,7 +355,10 @@ function WorkspaceChats({
         <Heading title={newChat !== undefined ? "New chat" : (open?.title ?? workspace.name)} status={status} />
         {newChat !== undefined ? (
           <NewChat
+            key={place.task}
             socket={socket}
+            tasks={tasksServed ? tasks : undefined}
+            task={place.task}
             live={live && send}
             away={away}
             machines={newChat}
@@ -364,16 +372,20 @@ function WorkspaceChats({
           />
         ) : (
           open !== undefined && (
-            <ChatScreen
-              key={open.id}
-              link={socket}
-              live={live}
-              chatRef={{ workspace: workspace.id, chat: open.id }}
-              mine={owns(workspace.member, open)}
-              away={away}
-              title={open.title}
-              names={names}
-            />
+            <>
+              {listedChat?.task !== undefined && <ChatTask workspace={workspace.id} task={listedChat.task} tasks={tasks} go={go} />}
+              <ChatScreen
+                key={open.id}
+                link={socket}
+                live={live}
+                chatRef={{ workspace: workspace.id, chat: open.id }}
+                mine={owns(workspace.member, open)}
+                away={away}
+                title={open.title}
+                names={names}
+                at={place.at}
+              />
+            </>
           )
         )}
       </section>

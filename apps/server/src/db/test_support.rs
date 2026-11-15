@@ -49,6 +49,7 @@ pub(crate) async fn make_titled(
         title,
         machine: "mc-1",
         at,
+        task: None,
     };
     make_as(workspace, &making).await
 }
@@ -60,6 +61,7 @@ pub(crate) struct Making<'a> {
     pub(crate) title: &'a str,
     pub(crate) machine: &'a str,
     pub(crate) at: i64,
+    pub(crate) task: Option<&'a weacon_protocol::ChatTask>,
 }
 
 /// Makes the chat `making` describes, its first prompt sent.
@@ -82,17 +84,20 @@ pub(crate) async fn begin(
         title: "Fix the build",
         machine: "mc-1",
         at,
+        task: None,
     };
     begin_as(workspace, &making).await
 }
 
-async fn begin_as(workspace: &Workspace, making: &Making<'_>) -> Result<(), Fault> {
+/// Begins the chat `making` describes, its first prompt not yet sent.
+pub(crate) async fn begin_as(workspace: &Workspace, making: &Making<'_>) -> Result<(), Fault> {
     let Making {
         chat,
         owner,
         title,
         machine,
         at,
+        task,
     } = *making;
     let request = id::<RequestId>(&format!("r-{chat}"));
     let (chat, owner) = (id::<ChatId>(chat), member_id(owner));
@@ -106,6 +111,7 @@ async fn begin_as(workspace: &Workspace, making: &Making<'_>) -> Result<(), Faul
         machine_id: &machine_id,
         machine: &machine,
         at,
+        task,
     };
     let asked = command(request.as_str(), chat.as_str(), title);
     let first = NewRequest {

@@ -2,7 +2,7 @@ mod chats;
 mod cores;
 mod search;
 
-pub(crate) use chats::CHATS;
+pub(crate) use chats::{CHAT_TASKS, CHATS};
 pub(crate) use cores::CORE_BUILDS;
 pub(crate) use search::{SEARCH, SEARCH_CHATS};
 

@@ -82,6 +82,12 @@ pub(crate) fn admit(
         ChatState::Full => return Err(crate::db::chat_quota_full()),
         ChatState::Detached | ChatState::Newer => return Err(detached()),
     }
+    // A chat keeps the task it was made for, as its first prompt sent again names it.
+    if let ChatAction::Prompt { task, .. } = &mut command.action
+        && task.is_some()
+    {
+        task.clone_from(&chat.task);
+    }
     command.by = Some(by);
     Ok(Admitted::Existing { chat, command })
 }
@@ -147,12 +153,50 @@ mod tests {
             seq: 3,
             core_seq: 3,
             made: true,
+            task: None,
         }
     }
 
     fn refused(chat: Option<Chat>, member: &str, action: ChatAction) -> String {
         let fault = admit(chat, asker(member), command(action)).unwrap_err();
         fault.code().as_str().to_owned()
+    }
+
+    #[test]
+    fn a_later_prompt_naming_a_task_names_its_chats_own_or_none() {
+        let named = |id: &str| weacon_protocol::ChatTask {
+            id: id.parse().unwrap(),
+            title: "Named".to_owned(),
+        };
+        let for_task = |task: &str| {
+            let mut action = prompt("Go", None);
+            if let ChatAction::Prompt { task: field, .. } = &mut action {
+                *field = Some(named(task));
+            }
+            action
+        };
+        let task_of = |chat: Chat, action: ChatAction| match admit(
+            Some(chat),
+            asker("m1"),
+            command(action),
+        ) {
+            Ok(Admitted::Existing { command, .. }) => match command.action {
+                ChatAction::Prompt { task, .. } => task,
+                _ => panic!("not a prompt"),
+            },
+            other => panic!("{other:?}"),
+        };
+        let with_task = Chat {
+            task: Some(named("t-1")),
+            ..chat(ChatState::Open)
+        };
+
+        assert_eq!(
+            task_of(with_task.clone(), for_task("t-2")),
+            Some(named("t-1"))
+        );
+        assert_eq!(task_of(with_task, prompt("Go", None)), None);
+        assert_eq!(task_of(chat(ChatState::Open), for_task("t-2")), None);
     }
 
     #[test]

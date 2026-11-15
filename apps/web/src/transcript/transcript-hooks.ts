@@ -10,7 +10,7 @@ export function useFollow(
   scroller: RefObject<HTMLDivElement | null>,
   content: RefObject<HTMLDivElement | null>,
   { rows, refreshes, away }: { rows: readonly unknown[]; refreshes: number; away: boolean },
-): UIEventHandler<HTMLDivElement> {
+): { onScroll: UIEventHandler<HTMLDivElement>; stop(): void } {
   const following = useRef(true);
   // Where the last scroll left the view. The browser also moves the view, down as rows reach their
   // height, so only a scroll up from there is the reader leaving the bottom.
@@ -48,11 +48,16 @@ export function useFollow(
     return () => watch.disconnect();
   }, [empty]);
 
-  return ({ currentTarget: element }) => {
+  const onScroll: UIEventHandler<HTMLDivElement> = ({ currentTarget: element }) => {
     const top = element.scrollTop;
     following.current = atBottom(element) || (following.current && top >= lastTop.current);
     lastTop.current = top;
   };
+  // Leaves the bottom, as when the view moves to an older line; the reader's scroll back down follows again.
+  const stop = () => {
+    following.current = false;
+  };
+  return { onScroll, stop };
 }
 
 /**

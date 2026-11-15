@@ -1,3 +1,4 @@
+mod rebuild;
 mod snippet;
 
 use sqlx::SqliteConnection;
@@ -6,12 +7,15 @@ use weacon_observability::Fault;
 use weacon_protocol::{ChatEvent, ChatId, RunEvent, RunUpdate, SearchHit};
 
 use super::chats::Row;
-use super::{Workspace, failed, stored, unreadable};
+use super::{Db, Workspace, failed, stored, unreadable};
 use crate::search::query::{Marks, Query};
 
 /// Control bytes indexed text leaves out, as the schema's backfill does.
 const MATCH_START: char = '\u{1}';
 const MATCH_END: char = '\u{2}';
+
+/// The most characters of a message the index holds; the rest of a long one isn't found.
+const MESSAGE_MAX: usize = 8192;
 
 // What a search row is of; a message's item is its chat and its place in the log, `c-1/12`.
 const TASK: &str = "task";
@@ -29,6 +33,14 @@ struct Indexed<'a> {
 }
 
 type HitRow = (String, String, String, String);
+
+impl Db {
+    /// Indexes every workspace again when its search rows are missing or behind: a task, doc or
+    /// made chat without one, or rows that don't match the index; gives whether it did.
+    pub(crate) async fn index_if_missing(&self) -> Result<bool, Fault> {
+        rebuild::catch_up(&self.writer).await
+    }
+}
 
 impl Workspace {
     /// Indexes `task` by its title, as changed at `at`.
@@ -109,7 +121,7 @@ impl Workspace {
                 kind: MESSAGE,
                 item: &item,
                 title: "",
-                body: text,
+                body: capped(text),
                 at: row.at,
             };
             self.index(transaction, indexed).await?;
@@ -169,28 +181,39 @@ impl Workspace {
 
     /// The workspace's tasks, docs, chats and messages that match `query`, at most `limit` of
     /// them: those matching in their title first, then the most recently changed. A message
-    /// takes its chat's title.
+    /// takes its chat's title, and a chat comes up once, by its best match.
     pub(crate) async fn search(&self, query: &Query, limit: u32) -> Result<Vec<SearchHit>, Fault> {
         let short = serde_json::to_string(&query.short).map_err(|_| unreadable())?;
         sqlx::query_as::<_, HitRow>(
-            "SELECT search.kind, search.item,
+            "WITH hits AS (
+                 SELECT search.kind, search.item, search.title, search.body, rows.at,
+                     search.rowid AS row,
+                     CASE search.kind WHEN 'message'
+                         THEN substr(search.item, 1, instr(search.item, '/') - 1) END AS chat,
+                     search.rowid IN
+                         (SELECT rowid FROM search
+                          WHERE search MATCH 'title : (' || ?1 || ')' AND workspace_id = ?2)
+                     AND NOT EXISTS (SELECT 1 FROM json_each(?3)
+                         WHERE search.title NOT LIKE value ESCAPE '\\') AS in_title
+                 FROM search
+                 JOIN search_rows AS rows
+                     ON rows.workspace_id = search.workspace_id AND rows.row = search.rowid
+                 WHERE search MATCH ?1 AND search.workspace_id = ?2
+                     AND NOT EXISTS (SELECT 1 FROM json_each(?3)
+                         WHERE search.title || char(10) || search.body NOT LIKE value ESCAPE '\\')
+             ), ranked AS (
+                 SELECT *, ROW_NUMBER() OVER (
+                     PARTITION BY CASE kind WHEN 'message' THEN 'chat' ELSE kind END,
+                         COALESCE(chat, item)
+                     ORDER BY in_title DESC, at DESC, row DESC) AS place
+                 FROM hits
+             )
+             SELECT kind, item,
                  COALESCE((SELECT title FROM chats
-                     WHERE chats.workspace_id = search.workspace_id
-                         AND chats.chat_id = substr(search.item, 1, instr(search.item, '/') - 1)
-                         AND search.kind = 'message'), search.title),
-                 search.body
-             FROM search
-             JOIN search_rows AS rows
-                 ON rows.workspace_id = search.workspace_id AND rows.row = search.rowid
-             WHERE search MATCH ?1 AND search.workspace_id = ?2
-                 AND NOT EXISTS (SELECT 1 FROM json_each(?3)
-                     WHERE search.title || char(10) || search.body NOT LIKE value ESCAPE '\\')
-             ORDER BY search.rowid IN
-                     (SELECT rowid FROM search
-                      WHERE search MATCH 'title : (' || ?1 || ')' AND workspace_id = ?2)
-                 AND NOT EXISTS (SELECT 1 FROM json_each(?3)
-                     WHERE search.title NOT LIKE value ESCAPE '\\') DESC,
-                 rows.at DESC, search.rowid DESC
+                     WHERE chats.workspace_id = ?2 AND chats.chat_id = ranked.chat), title),
+                 body
+             FROM ranked WHERE place = 1
+             ORDER BY in_title DESC, at DESC, row DESC
              LIMIT ?4",
         )
         .bind(&query.words)
@@ -260,6 +283,14 @@ fn message_text(event: &ChatEvent) -> Option<&str> {
         | ChatEvent::RunStatus { .. }
         | ChatEvent::Newer => None,
     }
+}
+
+/// The first [`MESSAGE_MAX`] characters of `text`.
+fn capped(text: &str) -> &str {
+    text.char_indices()
+        .nth(MESSAGE_MAX)
+        .and_then(|(end, _)| text.get(..end))
+        .unwrap_or(text)
 }
 
 /// `text` without the bytes snippets mark matches with, which the schema's backfill also
@@ -642,6 +673,110 @@ mod tests {
             panic!("{hits:?}");
         };
         assert_eq!(title, "Fix the build");
+    }
+
+    #[tokio::test]
+    async fn a_chat_comes_up_once_by_its_best_match_beside_a_task_with_its_id() {
+        let dir = TempDir::new().unwrap();
+        let (one, _) = two_teams(&dir).await;
+        chatted(&one).await;
+        let later = [
+            (Some(5), said("The build is flaky again")),
+            (Some(6), said("Still flaky")),
+        ];
+        append(&one, "c-1", &later).await.unwrap();
+        one.add_task(&new_task("c-1", "Flaky build", "a"), &by(1))
+            .await
+            .unwrap();
+
+        assert_eq!(found(&one, "build").await, ["c-1", "c-1"]);
+        let query = parse("build").unwrap().unwrap();
+        let kinds: Vec<_> = one
+            .search(&query, 5)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|hit| matches!(hit, SearchHit::Task { .. }))
+            .collect();
+        assert_eq!(kinds, [false, true]);
+        assert_eq!(found(&one, "flaky").await, ["c-1", "c-1/6"]);
+        let query = parse("flaky").unwrap().unwrap();
+        assert_eq!(one.search(&query, 1).await.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_message_is_indexed_up_to_its_cap_and_cut_between_characters() {
+        let dir = TempDir::new().unwrap();
+        let (one, _) = two_teams(&dir).await;
+        make_titled(&one, "c-1", "m1", "Notes", 3).await.unwrap();
+        let long = format!("{}deep end", "é".repeat(MESSAGE_MAX - 4));
+        append(&one, "c-1", &[(Some(1), said(&long))])
+            .await
+            .unwrap();
+
+        assert_eq!(found(&one, "deep").await, ["c-1/1"]);
+        assert!(found(&one, "end").await.is_empty());
+        let body: String = sqlx::query_scalar("SELECT body FROM search WHERE kind = 'message'")
+            .fetch_one(&one.db.readers)
+            .await
+            .unwrap();
+        assert_eq!(body.chars().count(), MESSAGE_MAX);
+        assert!(body.ends_with("deep"), "{}", &body[body.len() - 8..]);
+        assert_eq!(capped("é"), "é");
+    }
+
+    #[tokio::test]
+    async fn a_database_without_its_search_rows_is_indexed_again_as_its_writes_indexed_it() {
+        let dir = TempDir::new().unwrap();
+        let (one, _) = two_teams(&dir).await;
+        chatted(&one).await;
+        let long = format!("{}deep end", "é".repeat(MESSAGE_MAX - 4));
+        append(&one, "c-1", &[(Some(5), said(&long))])
+            .await
+            .unwrap();
+        one.add_task(&new_task("t1", "Ship it", "a"), &by(4))
+            .await
+            .unwrap();
+        let pinned = doc("d1", "Framing", "See [a](sym:a).", &["sym:a"]);
+        one.add_doc(&pinned, &by(7)).await.unwrap();
+        // Made, never sent: no one lists or finds it.
+        crate::db::test_support::begin(&one, "c-2", "m1", 8)
+            .await
+            .unwrap();
+        let db = &one.db;
+        let written = index_rows(db).await;
+        assert!(!db.index_if_missing().await.unwrap());
+
+        sqlx::raw_sql("DELETE FROM search; DELETE FROM search_rows;")
+            .execute(&db.writer)
+            .await
+            .unwrap();
+        assert!(db.index_if_missing().await.unwrap());
+        assert_eq!(index_rows(db).await, written);
+        assert_eq!(found(&one, "flaky").await, ["c-1/1"]);
+        assert!(!db.index_if_missing().await.unwrap());
+
+        sqlx::query("DELETE FROM search WHERE kind = 'message'")
+            .execute(&db.writer)
+            .await
+            .unwrap();
+        assert!(db.index_if_missing().await.unwrap());
+        assert_eq!(index_rows(db).await, written);
+        let missing = ["task", "doc", "chat"];
+        for kind in missing {
+            let gone =
+                "DELETE FROM search WHERE rowid IN (SELECT row FROM search_rows WHERE kind = ?);
+                DELETE FROM search_rows WHERE kind = ?";
+            for statement in gone.split(';') {
+                sqlx::query(statement)
+                    .bind(kind)
+                    .execute(&db.writer)
+                    .await
+                    .unwrap();
+            }
+            assert!(db.index_if_missing().await.unwrap(), "{kind}");
+            assert_eq!(index_rows(db).await, written);
+        }
     }
 
     #[tokio::test]

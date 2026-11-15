@@ -1,19 +1,34 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import type { Api } from "../api/api.ts";
 import { useAsk } from "../api/ask.ts";
-import { type Loading, useLoaded } from "../api/loaded.ts";
+import type { Loading } from "../api/loaded.ts";
 import { Problem } from "../api/problem.tsx";
-import type { Code, TaskList, TaskRecord, TaskStatus, WorkspaceId } from "../protocol.ts";
-import { useReloadOn } from "../shell/feed-hooks.ts";
+import type { Code, TaskId, TaskList, TaskRecord, TaskStatus, WorkspaceId } from "../protocol.ts";
 import type { WorkspaceSocket } from "../shell/workspace-socket.ts";
 import { STATUSES, withTask } from "./tasks.ts";
+import { useTasks } from "./use-tasks.ts";
 import "./tasks.css";
 
-/** The workspace's tasks in their order, kept fresh by its feed, to add to, retitle and move along. */
-export function TasksPage({ api, workspace, socket }: { api: Api; workspace: WorkspaceId; socket: WorkspaceSocket }) {
-  const tasks = useLoaded(() => api.tasks(workspace), workspace);
-  useReloadOn(socket, ({ kind }) => kind === "task_changed", () => void tasks.load());
+/**
+ * The workspace's tasks in their order, kept fresh by its feed, to add to, retitle, move along and
+ * start a chat for, with the one `shown` in view.
+ */
+export function TasksPage({
+  api,
+  workspace,
+  socket,
+  shown,
+  startChat,
+}: {
+  api: Api;
+  workspace: WorkspaceId;
+  socket: WorkspaceSocket;
+  shown?: TaskId | undefined;
+  /** Opens New chat for an open task; none where chats can't be started. */
+  startChat?: ((task: TaskId) => void) | undefined;
+}) {
+  const tasks = useTasks(api, workspace, socket);
   const list = tasks.value?.tasks;
   return (
     <div className="page tasks">
@@ -22,7 +37,7 @@ export function TasksPage({ api, workspace, socket }: { api: Api; workspace: Wor
       {list !== undefined && list.length > 0 && (
         <ul aria-label="Tasks">
           {list.map((task) => (
-            <TaskRow key={task.id} api={api} workspace={workspace} task={task} tasks={tasks} />
+            <TaskRow key={task.id} api={api} workspace={workspace} task={task} tasks={tasks} shown={task.id === shown} startChat={startChat} />
           ))}
         </ul>
       )}
@@ -32,13 +47,19 @@ export function TasksPage({ api, workspace, socket }: { api: Api; workspace: Wor
   );
 }
 
-type Row = { api: Api; workspace: WorkspaceId; task: TaskRecord; tasks: Loading<TaskList> };
+type Row = { api: Api; workspace: WorkspaceId; task: TaskRecord; tasks: Loading<TaskList>; shown: boolean; startChat: ((task: TaskId) => void) | undefined };
 
 /**
  * One task, its status to change, and its title to edit. An edit holds the version it began from,
  * so a change made meanwhile is reported, and the edit stays to be saved again over it.
  */
-function TaskRow({ api, workspace, task, tasks }: Row) {
+function TaskRow({ api, workspace, task, tasks, shown, startChat }: Row) {
+  const row = useRef<HTMLLIElement>(null);
+  useEffect(() => {
+    if (shown) {
+      row.current?.scrollIntoView({ block: "nearest" });
+    }
+  }, [shown]);
   // Without a version, the edit goes over the task as it is now, after a change it was told of.
   const [draft, setDraft] = useState<{ title: string; version?: number }>();
   const asking = useAsk();
@@ -71,7 +92,7 @@ function TaskRow({ api, workspace, task, tasks }: Row) {
       },
     );
   return (
-    <li>
+    <li ref={row} className={shown ? "shown" : undefined} aria-current={shown || undefined}>
       <select aria-label={`Status of ${task.title}`} value={task.status} disabled={asking.busy} onChange={(event) => status(event.target.value as TaskStatus)}>
         {STATUSES.map(([value, text]) => (
           <option key={value} value={value}>
@@ -113,6 +134,11 @@ function TaskRow({ api, workspace, task, tasks }: Row) {
             Cancel
           </button>
         </form>
+      )}
+      {draft === undefined && startChat !== undefined && task.status !== "done" && (
+        <button type="button" aria-label={`Start a chat for ${task.title}`} onClick={() => startChat(task.id)}>
+          Start a chat
+        </button>
       )}
       {asking.problem !== undefined && <p role="alert">{asking.problem}</p>}
       {draft !== undefined && draft.version === undefined && <p className="muted">It now reads “{task.title}”. Save to put yours in its place.</p>}

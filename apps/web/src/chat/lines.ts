@@ -29,3 +29,17 @@ export function lines(chat: Chat, names?: Names): Line[] {
     return [...shown, ...asksAt(transcript.rows.length)];
   });
 }
+
+/** The key of the line that shows the message at `seq` in `chat`'s log, once the chat holds it. */
+export function lineAt(chat: Chat, seq: number): string | undefined {
+  for (const item of chat.items) {
+    if (item.kind === "prompt" && item.seq === seq) {
+      return `p${seq}`;
+    }
+    const row = item.kind === "turn" ? item.turn.texts.get(seq) : undefined;
+    if (item.kind === "turn" && row !== undefined) {
+      return `${item.turn.key}.${row}`;
+    }
+  }
+  return undefined;
+}

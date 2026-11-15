@@ -22,6 +22,7 @@ export function TranscriptView({
   older,
   loading,
   retry,
+  landed,
 }: {
   lines: readonly Line[];
   away: boolean;
@@ -33,12 +34,15 @@ export function TranscriptView({
   loading: boolean;
   /** Asks for the chat again, when the server refused it. */
   retry: (() => void) | undefined;
+  /** The line the chat was opened at, which it shows marked, and scrolls to once. */
+  landed?: string | undefined;
 }) {
   const scroller = useRef<HTMLDivElement>(null);
   const content = useRef<HTMLDivElement>(null);
   const { mayFormat, refreshes } = useHeldFormatting(scroller, away);
-  const onScroll = useFollow(scroller, content, { rows: lines, refreshes, away });
+  const { onScroll, stop } = useFollow(scroller, content, { rows: lines, refreshes, away });
   const kept = useKeptPlace(scroller, content, lines);
+  useLanding(content, landed, stop);
 
   const problem = retry !== undefined && (
     <p className="row problem" role="alert">
@@ -71,6 +75,7 @@ export function TranscriptView({
           <LineView
             key={line.key}
             line={line}
+            landed={line.key === landed}
             formatted={line.kind === "row" && line.row.kind === "text" && !line.writing && mayFormat(line.key)}
             answering={answering}
           />
@@ -107,10 +112,29 @@ function useKeptPlace(
   };
 }
 
-function LineView({ line, formatted, answering }: { line: Line; formatted: boolean; answering: Answerer | undefined }) {
+/** Scrolls the line `landed` names into view once it is shown, leaving the bottom so it stays there. */
+function useLanding(content: RefObject<HTMLDivElement | null>, landed: string | undefined, stop: () => void): void {
+  const shown = useRef<string>(undefined);
+  // After `useKeptPlace`'s, so the landing has the last word on where the view is.
+  useLayoutEffect(() => {
+    const row = landed === undefined ? null : (content.current?.querySelector(`[data-key="${CSS.escape(landed)}"]`) ?? null);
+    if (row === null || shown.current === landed) {
+      return;
+    }
+    shown.current = landed;
+    stop();
+    row.scrollIntoView({ block: "center" });
+  });
+}
+
+function LineView({ line, formatted, answering, landed }: { line: Line; formatted: boolean; answering: Answerer | undefined; landed: boolean }) {
   switch (line.kind) {
     case "prompt":
-      return <div className="row prompt">{line.text}</div>;
+      return (
+        <div className={landed ? "row prompt landed" : "row prompt"} data-key={line.key}>
+          {line.text}
+        </div>
+      );
     case "agent":
       return <div className="row agent">{line.label}</div>;
     case "ask":
@@ -122,7 +146,7 @@ function LineView({ line, formatted, answering }: { line: Line; formatted: boole
         />
       );
     case "row":
-      return <RowView rowKey={line.key} row={line.row} writing={line.writing} formatted={formatted} />;
+      return <RowView rowKey={line.key} row={line.row} writing={line.writing} formatted={formatted} landed={landed} />;
   }
 }
 
@@ -131,16 +155,18 @@ const RowView = memo(function RowView({
   row,
   writing,
   formatted,
+  landed,
 }: {
   rowKey: string;
   row: TranscriptRow;
   writing: boolean;
   formatted: boolean;
+  landed: boolean;
 }) {
   switch (row.kind) {
     case "text":
       return (
-        <div className="row text" data-key={rowKey} data-writing={writing || undefined}>
+        <div className={landed ? "row text landed" : "row text"} data-key={rowKey} data-writing={writing || undefined}>
           {formatted ? <MarkdownView source={row.pieces.join("")} /> : row.pieces}
         </div>
       );
