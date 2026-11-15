@@ -1971,11 +1971,22 @@
       "description": "A machine paired with the signed-in account, at `paired_at`, in seconds since the Unix\nepoch.",
       "type": "object",
       "properties": {
+        "core": {
+          "description": "The core's build when it last connected; none until it has.",
+          "$ref": "#/$defs/App"
+        },
         "id": {
           "$ref": "#/$defs/MachineId"
         },
         "key": {
           "$ref": "#/$defs/MachineKey"
+        },
+        "missing": {
+          "description": "What the server offers cores that this one didn't offer back when it last connected:\nit is older than the server supports, and those features don't reach it.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Capability"
+          }
         },
         "name": {
           "$ref": "#/$defs/MachineName"
