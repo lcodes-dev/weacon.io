@@ -124,7 +124,7 @@ async fn run(
     };
     let mut attached = shared.links.open(connected, hello.capabilities);
     // Welcomed only once attached, so whatever a welcomed core is asked reaches it.
-    welcome.send(socket, shared).await?;
+    reply(socket, shared, welcome.id, welcome.answer).await?;
     let mut pings = Pings::new(shared.sockets.ping_every);
     loop {
         tokio::select! {

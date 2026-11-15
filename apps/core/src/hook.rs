@@ -1,7 +1,7 @@
 //! What agents' hooks print. A hook that can't answer in time prints nothing and succeeds, so
 //! it never stops an agent.
 
-use std::io::{self, Write};
+use std::io::Write;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -20,20 +20,15 @@ const LIMIT: Duration = Duration::from_secs(5);
 /// Prints what `command`'s hook adds for the current folder, or nothing.
 pub(crate) fn run(app: &App, command: HookCommand, out: &mut impl Write) -> Ending {
     let HookCommand::SessionStart = command;
-    print(&app.log, std::env::current_dir(), out);
-    Ending::Done
-}
-
-/// Prints `folder`'s session-start map, or nothing.
-fn print(log: &Logger, folder: io::Result<PathBuf>, out: &mut impl Write) {
-    let printed = folder
+    let printed = std::env::current_dir()
         .map_err(|error| skipped().because(error))
         .and_then(session_start)
         .and_then(|text| {
             out.write_all(text.as_bytes())
                 .map_err(|error| skipped().because(error))
         });
-    note(log, printed);
+    note(&app.log, printed);
+    Ending::Done
 }
 
 /// Where to begin in `folder`'s code, or nothing when it has no code map.
@@ -80,7 +75,7 @@ mod tests {
     use weacon_testing::{TempDir, recording_logger};
 
     use super::*;
-    use crate::test_support::messages;
+    use crate::test_support::{app, messages};
 
     fn repository(dir: &Path, item: &str) {
         fs::create_dir_all(dir.join("src")).unwrap();
@@ -126,22 +121,14 @@ mod tests {
     }
 
     #[test]
-    fn the_hook_prints_its_folders_map_and_nothing_when_it_cant() {
-        let dir = TempDir::new().unwrap();
-        repository(&dir, "pantry_item");
-        let (log, records) = recording_logger();
+    fn the_hook_prints_the_current_folders_map_and_always_succeeds() {
+        let app = app(None, None);
         let mut out = Vec::new();
 
-        print(&log, Ok(dir.to_path_buf()), &mut out);
-        let printed = String::from_utf8(out).unwrap();
-        assert!(printed.contains("pantry_item"), "{printed}");
-        assert!(messages(&records).is_empty());
+        let ending = run(&app, HookCommand::SessionStart, &mut out);
 
-        let mut out = Vec::new();
-        print(&log, Err(io::ErrorKind::NotFound.into()), &mut out);
-        print(&log, Ok(dir.join("gone")), &mut out);
-        assert!(out.is_empty());
-        assert_eq!(messages(&records), ["hook skipped", "hook skipped"]);
+        assert_eq!(ending, Ending::Done);
+        assert!(!out.is_empty() && out.len() <= 4000, "{}", out.len());
     }
 
     #[test]

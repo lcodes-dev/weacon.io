@@ -87,20 +87,14 @@ pub(crate) async fn greet(
     needs: &Capability,
 ) -> Result<Hello, Closed> {
     let (hello, welcome) = hear(socket, shared, offers, needs).await?;
-    welcome.send(socket, shared).await?;
+    reply(socket, shared, welcome.id, welcome.answer).await?;
     Ok(hello)
 }
 
 /// A welcome not sent yet, for a caller that gets ready for the client first.
 pub(crate) struct PendingWelcome {
-    id: u32,
-    answer: Message,
-}
-
-impl PendingWelcome {
-    pub(crate) async fn send(self, socket: &mut WebSocket, shared: &Shared) -> Result<(), Closed> {
-        reply(socket, shared, self.id, self.answer).await
-    }
+    pub(crate) id: u32,
+    pub(crate) answer: Message,
 }
 
 /// The client's hello, as `greet` takes it, and the welcome that answers it, still to send.
