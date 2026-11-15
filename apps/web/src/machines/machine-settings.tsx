@@ -8,6 +8,7 @@ import { Problem } from "../api/problem.tsx";
 import { type LinkSocket, terminalLink } from "../terminal/link.ts";
 import { TerminalView } from "../terminal/terminal-view.tsx";
 import type { MachineSocket } from "./ask-machine.ts";
+import { isOutdated } from "./core.ts";
 import type { Pins } from "./pins.ts";
 import { change, current } from "./remote-settings.ts";
 
@@ -55,6 +56,7 @@ export function MachineSettingsView({ machine, socket, later, pins, relays }: Pr
   return (
     <section aria-label={`${machine.name} settings`}>
       <h3>{machine.name}</h3>
+      {isOutdated(machine) && <p role="status">Its weacon is older than this server supports, so some settings may not reach it.</p>}
       {settings.loading && <p className="muted">Loading</p>}
       {settings.problem !== undefined && <Problem text={settings.problem} retry={() => void settings.load()} />}
       {shown !== undefined && (

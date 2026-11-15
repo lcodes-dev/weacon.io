@@ -25,6 +25,7 @@ use crate::http::{Body, error, failure, not_found, too_many};
 use crate::limit::{HOUR, Limit};
 use crate::secret::random_token;
 use crate::shared::Shared;
+use crate::uplink;
 
 /// How long a person has to confirm a pairing, in seconds.
 const PAIRING_LIFETIME: i64 = 600;
@@ -202,7 +203,11 @@ async fn claimed(shared: &Shared, body: &PairClaim) -> Result<Option<PairClaimed
 
 /// `GET /api/machines`: the machines paired with the signed-in account.
 pub(crate) async fn machines(State(shared): State<Shared>, session: Session) -> Response {
-    match shared.db.machines_of(&session.account).await {
+    match shared
+        .db
+        .machines_of(&session.account, &uplink::offers())
+        .await
+    {
         Ok(machines) => Json(MachineList { machines }).into_response(),
         Err(fault) => failure(fault),
     }
