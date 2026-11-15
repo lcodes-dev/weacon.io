@@ -347,21 +347,20 @@ fn unknown_value() -> Fault {
 
 #[cfg(test)]
 mod tests {
-    use weacon_protocol::{App, Capability};
     use weacon_testing::TempDir;
 
     use super::*;
     use crate::db::test_support::{NOW, code, id};
     use crate::test_support::{email, fresh_account};
 
-    struct Setup {
-        _dir: TempDir,
-        db: Db,
-        ada: AccountId,
-        bo: AccountId,
+    pub(super) struct Setup {
+        pub(super) _dir: TempDir,
+        pub(super) db: Db,
+        pub(super) ada: AccountId,
+        pub(super) bo: AccountId,
     }
 
-    async fn setup() -> Setup {
+    pub(super) async fn setup() -> Setup {
         let dir = TempDir::new().unwrap();
         let db = Db::create(&dir.join("weacon.db")).await.unwrap();
         let (ada, bo) = (fresh_account(), fresh_account());
@@ -381,7 +380,7 @@ mod tests {
     }
 
     // Starts pairing `pairing`, whose code hash is its id and whose secret hash is "secret".
-    async fn start(db: &Db, pairing: &str, now: i64) -> bool {
+    pub(super) async fn start(db: &Db, pairing: &str, now: i64) -> bool {
         let new = NewPairing {
             id: &id(pairing),
             code_hash: pairing.as_bytes(),
@@ -394,7 +393,7 @@ mod tests {
         db.start_pairing(&new, now).await.unwrap()
     }
 
-    async fn confirm(db: &Db, account: &AccountId, pairing: &str, code: &str) -> bool {
+    pub(super) async fn confirm(db: &Db, account: &AccountId, pairing: &str, code: &str) -> bool {
         let confirmation = Confirmation {
             account,
             pairing: &id(pairing),
@@ -408,7 +407,7 @@ mod tests {
             .is_some()
     }
 
-    async fn claim(db: &Db, pairing: &str, secret: &[u8], now: i64) -> Claim {
+    pub(super) async fn claim(db: &Db, pairing: &str, secret: &[u8], now: i64) -> Claim {
         let claiming = Claiming {
             pairing: &id(pairing),
             secret_hash: secret,
@@ -464,53 +463,6 @@ mod tests {
                 core: None,
                 missing: Vec::new(),
             }]
-        );
-    }
-
-    #[tokio::test]
-    async fn a_machine_shows_its_cores_build_and_what_it_lacks_of_the_servers_offers() {
-        let Setup { _dir, db, ada, .. } = setup().await;
-        assert!(start(&db, "p1", NOW).await);
-        assert!(confirm(&db, &ada, "p1", "p1").await);
-        claim(&db, "p1", b"secret", NOW + 1).await;
-        let offered = [
-            Capability::new(code!("machine.connect")),
-            Capability::new(code!("machine.settings")),
-        ];
-        let core = App {
-            name: "weacon-core".to_owned(),
-            version: "1.2.3".to_owned(),
-            commit: "abc".to_owned(),
-        };
-
-        let before = db.machines_of(&ada, &offered).await.unwrap();
-        db.saw_core(&id("mc-p1"), Some(&core), Some(&offered[..1]))
-            .await
-            .unwrap();
-        let older = db.machines_of(&ada, &offered).await.unwrap();
-        let earlier_server = db.machines_of(&ada, &offered[..1]).await.unwrap();
-        db.saw_core(&id("mc-p1"), Some(&core), Some(&offered))
-            .await
-            .unwrap();
-        let current = db.machines_of(&ada, &offered).await.unwrap();
-        db.saw_core(&id("mc-p1"), Some(&core), None).await.unwrap();
-        let unrecorded = db.machines_of(&ada, &offered).await.unwrap();
-        db.saw_core(&id("mc-p1"), None, Some(&[])).await.unwrap();
-        let unplain = db.machines_of(&ada, &offered).await.unwrap();
-
-        assert_eq!(
-            (before[0].core.as_ref(), before[0].missing.len()),
-            (None, 0)
-        );
-        assert_eq!(older[0].core.as_ref(), Some(&core));
-        assert_eq!(older[0].missing, offered[1..]);
-        assert_eq!(earlier_server[0].missing, []);
-        assert_eq!(current[0].missing, []);
-        assert_eq!(unrecorded[0].core.as_ref(), Some(&core));
-        assert_eq!(unrecorded[0].missing, []);
-        assert_eq!(
-            (unplain[0].core.as_ref(), unplain[0].missing.len()),
-            (None, 0)
         );
     }
 

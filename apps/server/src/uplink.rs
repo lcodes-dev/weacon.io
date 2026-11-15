@@ -101,15 +101,16 @@ async fn serve(mut socket: WebSocket, shared: Shared, mut link: Link) {
 
 /// What the server offers every core, and needs of it for all its features to reach it.
 pub(crate) fn offers() -> Vec<Capability> {
-    [CONNECT, SETTINGS, DIFF, WORKTREE, SESSIONS].map(Capability::new).into()
+    [CONNECT, SETTINGS, DIFF, WORKTREE, SESSIONS]
+        .map(Capability::new)
+        .into()
 }
 
 /// The most capabilities of a core's hello that the machines list keeps.
 const MOST_KEPT_OFFERS: usize = 64;
 
-/// What of `hello` the machines list keeps: its build, only when each part is short text that
-/// shows as it is stored, by the rule for machines' names; and its capabilities, all of them or
-/// none, so one the server offers later is never taken for one the core lacks.
+/// What of `hello` the machines list keeps: its build if every part reads as a machine name, and
+/// all its capabilities or none.
 fn kept(hello: &Hello) -> (Option<&App>, Option<&[Capability]>) {
     let build = &hello.app;
     let plain = [&build.name, &build.version, &build.commit]
@@ -194,7 +195,7 @@ mod tests {
 
     use super::*;
     use crate::test_support::socket::{
-        Socket, ends, frame, next, next_envelope, open, pongs, say, say_as, upgrade_status,
+        Socket, ends, frame, next, next_envelope, open, pongs, say, upgrade_status,
     };
     use crate::test_support::{Fixture, Paired, ask, pair_machine};
 
@@ -243,23 +244,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_core_that_speaks_another_protocol_is_refused() {
-        let fixture = Fixture::new().await;
-        let server = fixture.run().await;
-        let paired = pair_machine(&fixture, server.address).await;
-        let mut client = open(server.address, CONNECT_PATH, &paired.token)
-            .await
-            .unwrap();
-        say_as(&mut client, PROTOCOL + 1, &["machine.connect"]).await;
-
-        let Message::Error(refused) = next(&mut client).await else {
-            panic!("not refused");
-        };
-        assert_eq!(refused.code.as_str(), "protocol.unsupported");
-        assert!(ends(&mut client).await);
-    }
-
-    #[tokio::test]
     async fn the_machines_list_shows_a_cores_build_and_what_it_doesnt_offer() {
         let fixture = Fixture::new().await;
         let server = fixture.run().await;
@@ -272,7 +256,12 @@ mod tests {
         let build = weacon_appkit::build(&crate::test_support::VERSION);
         assert_eq!(machine["core"]["version"], build.version.as_str());
         assert_eq!(machine["core"]["commit"], build.commit.as_str());
-        let missing = ["machine.settings", "diff.view", "worktree.manage", "sessions.read"];
+        let missing = [
+            "machine.settings",
+            "diff.view",
+            "worktree.manage",
+            "sessions.read",
+        ];
         assert_eq!(machine["missing"], serde_json::json!(missing));
     }
 

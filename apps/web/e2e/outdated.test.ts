@@ -26,7 +26,6 @@ test("a core older than the server shows as outdated in the machines list and it
     await row.getByText("Linux, paired").waitFor();
   };
   const outdated = row.getByText("Its weacon is older than this server supports. Run weacon update there.");
-  // A core that has never said its build is nothing to worry about.
   await reopen();
   assert.equal(await row.getByText("weacon 0.0.0").count(), 0);
   assert.equal(await row.getByRole("status").count(), 0);
