@@ -16,9 +16,6 @@ import { StopButton } from "./stop-button.tsx";
 import { TranscriptView } from "./transcript-view.tsx";
 import "./chat.css";
 
-// No message carries members' names, so labels leave them out.
-const NO_MEMBERS = new Map<string, string>();
-
 /**
  * The chat at `chatRef` over its workspace's `link`: its transcript, and its changes with Changes,
  * kept in place while `away` under another page such as Settings. Its owner (`mine`) also gets the message box, Stop and the permission prompts' answers, where
@@ -74,7 +71,7 @@ export function ChatScreen({
       <div className="panes">
         <div className={shown === "run" ? "pane" : "pane away"}>
           <TranscriptView
-            lines={chat === undefined ? [] : lines(chat, NO_MEMBERS)}
+            lines={chat === undefined ? [] : lines(chat)}
             older={chat !== undefined && state.kind === "live" && chat.first > 1 ? reading.more : undefined}
             answering={acts ? commands.answering : undefined}
             // A chat is on its way while the connection is made, then only from a server that serves chats.

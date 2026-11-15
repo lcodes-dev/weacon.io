@@ -1,4 +1,4 @@
-import type { AgentRef, MemberId } from "../protocol.ts";
+import type { AgentRef } from "../protocol.ts";
 
 const AGENTS = new Map([
   ["claude", "Claude Code"],
@@ -6,13 +6,11 @@ const AGENTS = new Map([
 ]);
 
 /**
- * What an agent's messages are labelled, such as "Ada's Claude · laptop", from the members'
- * names the screen knows: the parts that aren't known are left out, down to "Agent".
+ * What an agent's messages are labelled, such as "Shared Codex · team VPS": the parts that aren't
+ * known are left out, down to "Agent". No message names a member, so a member's agent goes unnamed.
  */
-export function label(agent: AgentRef | undefined, members: ReadonlyMap<MemberId, string>): string {
+export function label(agent: AgentRef | undefined): string {
   const vendor = AGENTS.get(agent?.kind ?? "") ?? "Agent";
-  const owner = agent?.owner;
-  const member = owner?.kind === "member" ? members.get(owner.member) : undefined;
-  const who = owner?.kind === "shared" ? `Shared ${vendor}` : member === undefined ? vendor : `${member}'s ${vendor}`;
+  const who = agent?.owner.kind === "shared" ? `Shared ${vendor}` : vendor;
   return agent?.machine === undefined ? who : `${who} · ${agent.machine}`;
 }

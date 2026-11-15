@@ -143,3 +143,13 @@ test("the state line and Remove's question say what is there, what goes and what
   );
   assert.equal(removeQuestion(at(false, false, false)), "Remove this chat's worktree? It goes to the Trash. Its branch stays. You can restore it from here.");
 });
+
+test("asking the state again keeps the last action's outcome, and the next action clears it", () => {
+  const pr = asked(UNASKED, 3, { kind: "open_pull_request", title: "t", body: "" });
+  const linked = hear(pr, { id: 0, type: "worktree_answer", ...REF, request: "q-3", answer: { kind: "pull_request_page", url: "https://example.com/compare" } });
+
+  assert.deepEqual(asked(linked, 4, { kind: "state" }).outcome, linked.outcome);
+  assert.equal(asked(linked, 5, { kind: "state", confirm: true }).outcome, undefined);
+  assert.equal(asked(linked, 6, { kind: "restore" }).outcome, undefined);
+});
+

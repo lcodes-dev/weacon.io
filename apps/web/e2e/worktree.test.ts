@@ -2,13 +2,13 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import type { Envelope } from "../src/protocol.ts";
-import { fakeServer, start, waitFor } from "./harness.ts";
+import { FAKE_CHAT, fakeServer, start, waitFor } from "./harness.ts";
 
 // The page the fake core opens a pull request on.
 const COMPARE = "https://github.com/example/shopping-list/compare/weacon-c-1?expand=1";
 
 test("the review bar says where the worktree stands, and Remove asks first, then Restore brings it back", { timeout: 180_000 }, async (t) => {
-  const harness = await start(fakeServer(1_000, 1), { query: "&workspace=w-1&chat=c-1" });
+  const harness = await start(fakeServer(1_000, 1), { query: FAKE_CHAT });
   t.after(() => harness.close());
   const { page } = harness;
   await page.getByRole("button", { name: "Changes" }).click();
@@ -32,7 +32,7 @@ test("the review bar says where the worktree stands, and Remove asks first, then
 });
 
 test("Cancel leaves the worktree where it is", { timeout: 180_000 }, async (t) => {
-  const harness = await start(fakeServer(1_000, 1), { query: "&workspace=w-1&chat=c-1" });
+  const harness = await start(fakeServer(1_000, 1), { query: FAKE_CHAT });
   t.after(() => harness.close());
   const { page } = harness;
   await page.getByRole("button", { name: "Changes" }).click();
@@ -48,7 +48,7 @@ test("Cancel leaves the worktree where it is", { timeout: 180_000 }, async (t) =
 });
 
 test("Open pull request sends the title and description, and links to the page the core gives", { timeout: 180_000 }, async (t) => {
-  const harness = await start(fakeServer(1_000, 1), { query: "&workspace=w-1&chat=c-1" });
+  const harness = await start(fakeServer(1_000, 1), { query: FAKE_CHAT });
   t.after(() => harness.close());
   const { page } = harness;
   await page.getByRole("button", { name: "Changes" }).click();

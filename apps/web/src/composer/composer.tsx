@@ -28,7 +28,7 @@ export function Composer({
   const [active, setActive] = useState(0);
   const [dismissed, setDismissed] = useState<number>();
   // A draft edited after it was sent stays in the box.
-  const { sending, problem, submit: deliver, clear } = useSend(send, lates, (sent) =>
+  const { sending, problem, submit: deliver, clear } = useSend<string>(send, lates, (sent) =>
     setPlaced((now) => (now.draft.text === sent ? { draft: EMPTY_DRAFT, caret: 0 } : now)),
   );
   const [files, setFiles] = useState(NO_ATTACHMENTS);
@@ -57,7 +57,7 @@ export function Composer({
   };
   const submit = async () => {
     if (ready) {
-      await deliver(draft.text);
+      await deliver(draft.text, draft.text);
     }
   };
   const attach = (added: File[]) => setFiles((before) => attachFiles(before, added));

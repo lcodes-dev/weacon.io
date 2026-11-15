@@ -17,8 +17,8 @@ type Feed = {
   close?: (opened: number) => boolean;
   /** Capabilities to offer besides the feed and chats. */
   also?: string[];
-  /** What the nth socket answers each envelope the page sends after its hello. */
-  answer?: (sent: Envelope, opened: number) => Envelope[];
+  /** What the nth socket answers each envelope the page sends after its hello; `reply` answers later. */
+  answer?: (sent: Envelope, opened: number, reply: (envelope: Envelope) => void) => Envelope[];
   /** Whether the nth socket closes once it has answered `sent`. */
   drop?: (sent: Envelope, opened: number) => boolean;
 };
@@ -38,9 +38,8 @@ async function serveFeed(page: Page, { changes = () => [], close = () => false, 
       const hello = JSON.parse(String(text)) as Envelope;
       if (hello.type !== "hello") {
         sent.push(hello);
-        for (const reply of answer(hello, nth)) {
-          socket.send(JSON.stringify(reply));
-        }
+        const reply = (envelope: Envelope) => socket.send(JSON.stringify(envelope));
+        answer(hello, nth, reply).forEach(reply);
         if (drop(hello, nth)) {
           void socket.close();
         }
@@ -690,5 +689,51 @@ test("the worktree's state is asked again on each opening of the changes, and af
   await page.getByRole("button", { name: "Changes" }).click();
   await bar.getByText("Uncommitted changes").waitFor();
   assert.equal(asked, 3);
+});
+
+test("a pull request's draft stays until the core opens it, and its answer comes while the changes are closed", { timeout: 600_000 }, async (t) => {
+  const served = await serve();
+  t.after(() => served.close());
+  const { page } = served;
+  // The first pull request is refused; the second's answer waits until the test sends it.
+  let tries = 0;
+  let later: (() => void) | undefined;
+  await serveFeed(page, {
+    also: WORKTREES,
+    answer: (asked, _nth, reply) => {
+      if (asked.type !== "worktree_command") {
+        return worktreeServer(asked);
+      }
+      tries += 1;
+      if (tries === 1) {
+        return [{ id: asked.id, type: "error", code: "request.unknown", retryable: false }];
+      }
+      const url = "https://example.com/pantry/compare";
+      later = () => reply({ id: asked.id, type: "worktree_answer", workspace: asked.workspace, chat: asked.chat, request: asked.request, answer: { kind: "pull_request_page", url } });
+      return [];
+    },
+  });
+  await openChats(served, [{ id: "c-1", title: "Sort the pantry" }], (member) => member);
+  await nav(page).getByRole("button", { name: /Sort the pantry/ }).click();
+  await page.getByRole("button", { name: "Changes" }).click();
+  const bar = page.getByRole("region", { name: "Worktree" });
+  await bar.getByRole("button", { name: "Open pull request" }).click();
+  await bar.getByLabel("Description").fill("Sorted by aisle.");
+  await bar.getByRole("button", { name: "Open draft pull request" }).click();
+
+  await bar.getByRole("alert").getByText("The pull request wasn't opened.").waitFor();
+  assert.equal(await bar.getByLabel("Description").inputValue(), "Sorted by aisle.");
+  await bar.getByRole("button", { name: "Open draft pull request" }).click();
+  await waitFor(() => later !== undefined);
+  // What is typed while it is on its way couldn't be sent, so the form takes nothing then.
+  assert.equal(await bar.getByLabel("Description").isDisabled(), true);
+  await page.getByRole("button", { name: "Back" }).click();
+  later?.();
+  await page.getByRole("button", { name: "Changes" }).click();
+
+  const link = bar.getByRole("link", { name: "Open it" });
+  await link.waitFor();
+  assert.equal(await link.getAttribute("href"), "https://example.com/pantry/compare");
+  assert.equal(await bar.getByLabel("Description").count(), 0);
 });
 

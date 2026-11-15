@@ -16,7 +16,7 @@ import "./diff.css";
 import type { DiffFile } from "../protocol.ts";
 import { type Changes, type DiffRow, rows } from "./changes.ts";
 import { type Comment, type Selection, addComment, editComment, removeComment, selectRows, span } from "./comments.ts";
-import { changeText, contentText, hunkText, linesText, summary } from "./labels.ts";
+import { changeText, contentText, hunkText, linesPhrase, linesText, summary } from "./labels.ts";
 import { CommentBox, CommentView } from "./review.tsx";
 
 // Keep in step with `.diff .lines` in diff.css; an off-screen file reserves this much per row.
@@ -139,7 +139,7 @@ const FileView = memo(function FileView({
           action="Comment"
           onChange={review.setDraft}
           onSave={() => {
-            review.setComments((before) => addComment(before, box, linesText(lines, boxAt.first, boxAt.last), draft));
+            review.setComments((before) => addComment(before, box, linesPhrase(lines, boxAt.first, boxAt.last), draft));
             close();
           }}
           onCancel={close}

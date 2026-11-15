@@ -8,11 +8,13 @@ import { type Ask, UNASKED, answered, cancelled, ended, envelopeFor, unsent, wai
 
 /**
  * The worktree of the chat at `chatRef`, asked over `link` while it is `live`, for its owner (`mine`)
- * alone, each time it is `shown`; what the core offers decides whether there is one, and whether it
- * opens terminals.
+ * alone: its state each time it is `shown`, and answers while it isn't. A pull request's draft stays
+ * until the core opens it. What the core offers decides whether there is one, and whether it opens
+ * terminals.
  */
 export function useWorktree(link: WorkspaceSocket, chatRef: ChatRef | undefined, live: boolean, mine: boolean, shown: boolean) {
   const [worktree, setWorktree] = useState(UNASKED);
+  const [draft, setDraft] = useState<{ title: string; body: string }>();
   const manages = useOffers(link, "worktree.manage");
   const terminals = useOffers(link, "worktree.open_terminal");
   const usable = chatRef !== undefined && live && mine && manages;
@@ -28,19 +30,29 @@ export function useWorktree(link: WorkspaceSocket, chatRef: ChatRef | undefined,
   };
   const workspace = chatRef?.workspace;
   const chat = chatRef?.chat;
-  const asking = usable && shown;
   useEffect(() => {
-    if (!asking || workspace === undefined || chat === undefined) {
+    if (!usable || workspace === undefined || chat === undefined) {
       return;
     }
     const ref = { workspace, chat };
     const unsubscribe = link.subscribe((message) => route(message, { worktree: (heard) => setWorktree((before) => answered(before, ref, heard)) }));
-    ask({ kind: "state" });
     return () => {
       unsubscribe();
       setWorktree(ended);
     };
-  }, [link, asking, workspace, chat]);
+  }, [link, usable, workspace, chat]);
+  const asking = usable && shown;
+  useEffect(() => {
+    if (asking) {
+      ask({ kind: "state" });
+    }
+  }, [asking]);
+  const opened = worktree.outcome?.kind === "link";
+  useEffect(() => {
+    if (opened) {
+      setDraft(undefined);
+    }
+  }, [opened]);
   return {
     worktree,
     terminals,
@@ -54,7 +66,9 @@ export function useWorktree(link: WorkspaceSocket, chatRef: ChatRef | undefined,
     },
     cancel: () => setWorktree(cancelled),
     restore: () => ask({ kind: "restore" }),
-    openPullRequest: (title: string, body: string) => ask({ kind: "open_pull_request", title, body }),
+    draft,
+    editDraft: setDraft,
+    openPullRequest: () => draft !== undefined && ask({ kind: "open_pull_request", title: draft.title.trim(), body: draft.body }),
     openTerminal: () => ask({ kind: "open_terminal" }),
   };
 }
