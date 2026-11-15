@@ -1,6 +1,6 @@
 use tree_sitter::Node;
 
-use super::{Item, Kind, Place, Symbol, fingerprint, join};
+use super::{Item, Kind, Place, Symbol, fingerprint, join, shape};
 use crate::paths::{self, Bound, Segments};
 use crate::refs::refs;
 use crate::syntax::{attributes, line, text};
@@ -42,23 +42,37 @@ pub(super) fn tests(item: Node<'_>, place: &Place, source: &[u8]) -> Vec<Item> {
                         .map(|child| (child, inside.clone(), imports.clone())),
                 );
             }
-            ("function_item", Some(name), _) if is_test(node, source) => found.push(Item {
-                symbol: Symbol {
-                    kind: Kind::Fn,
-                    name: join(&place.prefix, name),
-                    line: line(node),
-                    fingerprint: fingerprint(node, source),
-                },
-                within: place.within.clone(),
-                owner: None,
-                imports: [paths::local_imports(node, source), imports].concat(),
-                refs: refs(node, source),
-                contracts: Vec::new(),
-            }),
+            ("function_item", Some(name), _) if is_test(node, source) => {
+                found.push(test(node, name, &place, imports, source));
+            }
             _ => {}
         }
     }
     found
+}
+
+/// The test `node`, named `name` in `place`, which brings in `imports`.
+fn test(
+    node: Node<'_>,
+    name: &str,
+    place: &Place,
+    imports: Vec<(Segments, Bound)>,
+    source: &[u8],
+) -> Item {
+    Item {
+        symbol: Symbol {
+            kind: Kind::Fn,
+            name: join(&place.prefix, name),
+            line: line(node),
+            fingerprint: fingerprint(node, source),
+            shape: shape(node, source),
+        },
+        within: place.within.clone(),
+        owner: None,
+        imports: [paths::local_imports(node, source), imports].concat(),
+        refs: refs(node, source),
+        contracts: Vec::new(),
+    }
 }
 
 /// A name its parent module's `use` binds, as a child module reaches it: `self` becomes

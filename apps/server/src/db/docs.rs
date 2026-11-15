@@ -1,7 +1,7 @@
 use sqlx::SqliteConnection;
 use weacon_model::{Attribution, Doc, DocText, ReviseError, Revision};
 use weacon_observability::Fault;
-use weacon_protocol::{DocAnchors, DocId, DocRevision, DocSummary, code};
+use weacon_protocol::{DocAnchors, DocId, DocRevision, DocSummary, RepoId, code};
 
 use super::changes::Versioned;
 use super::{
@@ -14,7 +14,7 @@ const DOC_QUOTA: i64 = 1 << 30;
 /// What each revision counts besides its text: its rows, keys and feed entry.
 const REVISION_OVERHEAD: usize = 256;
 
-type VersionRow = (i64, String, String, Option<String>);
+type VersionRow = (i64, String, String, Option<String>, Option<String>);
 type RevisionRow = (i64, String, String, Option<String>, String, i64);
 
 impl Workspace {
@@ -148,8 +148,8 @@ impl Workspace {
         at: Option<Revision>,
     ) -> Result<Doc, Fault> {
         let at = at.map(|at| version_number(at, doc_not_found)).transpose()?;
-        let (version, title, body, commit) = sqlx::query_as::<_, VersionRow>(
-            "SELECT version, title, body, commit_id FROM doc_versions
+        let (version, title, body, commit, repo) = sqlx::query_as::<_, VersionRow>(
+            "SELECT version, title, body, commit_id, repo_id FROM doc_versions
              WHERE workspace_id = ?1 AND doc_id = ?2 AND version = COALESCE(?3,
                  (SELECT version FROM docs WHERE workspace_id = ?1 AND doc_id = ?2))",
         )
@@ -174,6 +174,7 @@ impl Workspace {
             Some(commit) => Some(DocAnchors {
                 commit: stored(commit)?,
                 pins: pins.into_iter().map(stored).collect::<Result<_, _>>()?,
+                repo: repo.map(stored).transpose()?,
             }),
             None => None,
         };
@@ -222,8 +223,8 @@ impl Workspace {
         self.charge(transaction, size).await?;
         sqlx::query(
             "INSERT INTO doc_versions (workspace_id, doc_id, version, title, body, commit_id,
-                 author_kind, author_member, agent, accepted_by, at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                 repo_id, author_kind, author_member, agent, accepted_by, at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(self.id.as_str())
         .bind(doc.id.as_str())
@@ -231,6 +232,11 @@ impl Workspace {
         .bind(doc.text.title().as_str())
         .bind(doc.text.body())
         .bind(anchors.map(|anchors| anchors.commit.as_str()))
+        .bind(
+            anchors
+                .and_then(|anchors| anchors.repo.as_ref())
+                .map(RepoId::as_str),
+        )
         .bind(kind)
         .bind(author.as_str())
         .bind(agent)
@@ -263,18 +269,26 @@ impl Workspace {
 }
 
 /// The bytes a revision of `text` by an author whose agent is stored as `agent` counts: its
-/// title, body, commit, pins and agent, and its rows.
+/// title, body, commit, repository, pins and agent, and its rows.
 fn size(text: &DocText, agent: Option<&str>) -> i64 {
     let anchors = text.anchors();
     let commit = anchors.map_or(0, |anchors| anchors.commit.as_str().len());
+    let repo = anchors
+        .and_then(|anchors| anchors.repo.as_ref())
+        .map_or(0, |repo| repo.as_str().len());
     let pins: usize = anchors
         .iter()
         .flat_map(|anchors| &anchors.pins)
         .map(|pin| pin.as_str().len())
         .sum();
     let agent = agent.map_or(0, str::len);
-    let size =
-        REVISION_OVERHEAD + text.title().as_str().len() + text.body().len() + commit + pins + agent;
+    let size = REVISION_OVERHEAD
+        + text.title().as_str().len()
+        + text.body().len()
+        + commit
+        + repo
+        + pins
+        + agent;
     i64::try_from(size).unwrap_or(i64::MAX)
 }
 
@@ -354,6 +368,7 @@ mod tests {
                 .iter()
                 .map(|anchor| DocPin::try_from(format!("{anchor}#0123456789abcdef")).unwrap())
                 .collect(),
+            repo: Some(RepoId::try_from("site".to_owned()).unwrap()),
         });
         DocText::new(
             Title::try_from(title.to_owned()).unwrap(),
@@ -672,6 +687,7 @@ mod tests {
             + "Framing".len()
             + "See [a](sym:a) and [b](area:b).".len()
             + 40
+            + "site".len()
             + "sym:a#0123456789abcdef".len()
             + "area:b#0123456789abcdef".len();
         let plain = 256 + "Two".len() + "Plain.".len();
@@ -747,9 +763,15 @@ mod tests {
         let one = db.workspace(&workspace_id("w1")).await.unwrap();
 
         let unicode = text("Ünïcode", "Plain.", &[]);
+        let old = one.doc(&doc_id("d1"), None).await.unwrap().text;
+        assert_eq!(old.anchors().map(|anchors| &anchors.repo), Some(&None));
         assert_eq!(
             doc_bytes(&one).await,
-            size(&linked(), None) + size(&unicode, None)
+            size(&old, None) + size(&unicode, None)
+        );
+        assert_eq!(
+            size(&old, None) + i64::try_from("site".len()).unwrap(),
+            size(&linked(), None)
         );
     }
 }

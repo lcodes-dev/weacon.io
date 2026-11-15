@@ -2,11 +2,11 @@
 //! as proposals for a person to accept: no agent is started for it.
 
 use weacon_codemap::{Index, Moved, Pin};
-use weacon_model::{DocText, Title, relinked};
+use weacon_model::{DocText, Title};
 use weacon_observability::Fault;
 use weacon_protocol::{
     AnchorChange, Batched, CommitId, DocAnchors, DocContent, DocPin, PinnedDoc, ProposalAction,
-    ProposalAnswerKind, ProposalChange, ProposalQueryKind, StaleAnchor, WorkspaceId, code,
+    ProposalAnswerKind, ProposalChange, ProposalQueryKind, RepoId, StaleAnchor, WorkspaceId, code,
 };
 
 use super::{Proposals, proposal_id};
@@ -21,16 +21,30 @@ struct Reanchor {
     to: DocPin,
 }
 
-/// Proposes, for each of `workspace`'s docs that pin code, what moving the code to `now`, at
-/// `commit`, did to its anchors: a re-anchor and a "needs an update" proposal, as one batch.
-/// Each pin moves from the first of the bases `was` it was taken from, as `pin_moved` says. Gives how many docs it proposed for; a doc refused doesn't stop the others, and
-/// the first refusal is the error once all are tried.
+/// A move of the base of the repository `repo`, from the bases `was` to the code `now`, at
+/// `commit`, whose `history` says which commits it holds.
+pub(crate) struct BaseMove<'a, H> {
+    pub(crate) repo: &'a RepoId,
+    pub(crate) was: &'a [&'a Index],
+    pub(crate) now: &'a Index,
+    pub(crate) commit: &'a CommitId,
+    pub(crate) history: &'a H,
+}
+
+/// The history of the commit a repository's base moved to.
+pub(crate) trait History: Sync {
+    /// Whether `commit` is the base's commit or one before it; false when that can't be told.
+    fn holds(&self, commit: &CommitId) -> impl Future<Output = bool> + Send;
+}
+
+/// Proposes, for each of `workspace`'s docs that pin code, what `moved` did to its anchors: a
+/// re-anchor and a "needs an update" proposal, as one batch. Each pin moves from the first of
+/// the bases it was taken from, as `pin_moved` says. Gives how many docs it proposed for; a doc
+/// refused doesn't stop the others, and the first refusal is the error once all are tried.
 pub(crate) async fn moved(
     proposals: &Proposals,
     workspace: &WorkspaceId,
-    was: &[&Index],
-    now: &Index,
-    commit: &CommitId,
+    moved: &BaseMove<'_, impl History>,
 ) -> Result<usize, Fault> {
     let (mut after, mut batches, mut refused) = (None, 0, None);
     loop {
@@ -41,7 +55,7 @@ pub(crate) async fn moved(
             return Err(unexpected());
         };
         for doc in &docs {
-            match proposed(proposals, workspace, doc, (was, now), commit).await {
+            match proposed(proposals, workspace, doc, moved).await {
                 Ok(true) => batches += 1,
                 Ok(false) => {}
                 Err(fault) => refused = refused.or(Some(fault)),
@@ -60,10 +74,9 @@ async fn proposed(
     proposals: &Proposals,
     workspace: &WorkspaceId,
     doc: &PinnedDoc,
-    indexes: (&[&Index], &Index),
-    commit: &CommitId,
+    moved: &BaseMove<'_, impl History>,
 ) -> Result<bool, Fault> {
-    let changes = batch(proposals, workspace, doc, indexes, commit).await?;
+    let changes = batch(proposals, workspace, doc, moved).await?;
     if changes.is_empty() {
         return Ok(false);
     }
@@ -90,15 +103,18 @@ fn split(changes: Vec<Batched>, limit: usize) -> Vec<Vec<Batched>> {
     }
 }
 
-/// The proposals of one doc whose pins `moved` from one index to the other.
+/// The proposals of one doc whose pins `moved`.
 async fn batch(
     proposals: &Proposals,
     workspace: &WorkspaceId,
     doc: &PinnedDoc,
-    (was, now): (&[&Index], &Index),
-    commit: &CommitId,
+    moved: &BaseMove<'_, impl History>,
 ) -> Result<Vec<Batched>, Fault> {
-    let (reanchors, mut stale) = findings(&doc.anchors.pins, was, now);
+    let anchors = &doc.anchors;
+    // Pins taken in the base's history are of this repository, whatever their id names here.
+    let ours =
+        anchors.repo.as_ref() == Some(moved.repo) && moved.history.holds(&anchors.commit).await;
+    let (reanchors, mut stale) = findings(anchors, moved, ours);
     let mut changes = Vec::new();
     if !reanchors.is_empty() {
         let query = ProposalQueryKind::Doc {
@@ -109,7 +125,7 @@ async fn batch(
             return Err(unexpected());
         };
         let content = (record.version == doc.version)
-            .then(|| reanchored(&record.content, &reanchors, commit))
+            .then(|| reanchored(&record.content, &reanchors, moved))
             .flatten();
         match content {
             Some(content) => changes.push(ProposalChange::DocEdit {
@@ -143,15 +159,23 @@ async fn batch(
         .collect()
 }
 
-/// What moving from `was` to `now` did to `pins`: those to re-anchor, and those whose code
-/// changed or went.
-fn findings(pins: &[DocPin], was: &[&Index], now: &Index) -> (Vec<Reanchor>, Vec<StaleAnchor>) {
+/// What `moved` did to the pins of `anchors`, which are `ours` when known to be of its
+/// repository: those to re-anchor, and those whose code changed or went; nothing when they say
+/// they are of another repository.
+fn findings<H>(
+    anchors: &DocAnchors,
+    moved: &BaseMove<'_, H>,
+    ours: bool,
+) -> (Vec<Reanchor>, Vec<StaleAnchor>) {
     let (mut reanchors, mut stale) = (Vec::new(), Vec::new());
-    for from in pins {
+    if anchors.repo.as_ref().is_some_and(|repo| repo != moved.repo) {
+        return (reanchors, stale);
+    }
+    for from in &anchors.pins {
         let Ok(pin) = from.as_str().parse::<Pin>() else {
             continue;
         };
-        let change = match pin_moved(&pin, was, now) {
+        let change = match pin_moved(&pin, moved, ours) {
             None => continue,
             // A pin a doc can't hold, such as one past its length, is as good as gone.
             Some(Moved::Reanchored(to)) => match to.to_string().parse() {
@@ -177,10 +201,12 @@ fn findings(pins: &[DocPin], was: &[&Index], now: &Index) -> (Vec<Reanchor>, Vec
     (reanchors, stale)
 }
 
-/// What moving to `now` did to `pin`, from the first of `was` it was taken from, else from the
+/// What `moved` did to `pin`, from the first of its bases it was taken from, else from the
 /// first that holds its anchor, else from the first. When none was taken from, code that
-/// differs from the pin has changed; an anchor no index holds may be another repository's.
-fn pin_moved(pin: &Pin, was: &[&Index], now: &Index) -> Option<Moved> {
+/// differs from the pin has changed; an anchor no index holds is gone when the pin is `ours`,
+/// and may be another repository's otherwise.
+fn pin_moved<H>(pin: &Pin, moved: &BaseMove<'_, H>, ours: bool) -> Option<Moved> {
+    let BaseMove { was, now, .. } = moved;
     let taken = |base: &&&Index| base.fingerprint(&pin.anchor) == Some(pin.fingerprint);
     if let Some(base) = was.iter().find(taken) {
         return base.after_move(now, pin);
@@ -192,29 +218,28 @@ fn pin_moved(pin: &Pin, was: &[&Index], now: &Index) -> Option<Moved> {
         .or_else(|| was.first())?
         .after_move(now, pin);
     moved.or_else(|| {
-        let code = now.fingerprint(&pin.anchor)?;
         let anchor = pin.anchor.to_string();
-        (code != pin.fingerprint).then(|| Moved::Changed {
-            was: anchor.clone(),
-            now: anchor,
-        })
+        match now.fingerprint(&pin.anchor) {
+            Some(code) => (code != pin.fingerprint).then(|| Moved::Changed {
+                was: anchor.clone(),
+                now: anchor,
+            }),
+            None => ours.then_some(Moved::Gone { was: anchor }),
+        }
     })
 }
 
 /// `content` with each of `reanchors` made, its links to a renamed anchor relinked, and its
-/// pins said to be at `commit`; none when the result isn't a doc the server would take.
+/// pins said to be of `moved`'s repository at its commit; none when the result isn't a doc the
+/// server would take.
 fn reanchored(
     content: &DocContent,
     reanchors: &[Reanchor],
-    commit: &CommitId,
+    moved: &BaseMove<'_, impl History>,
 ) -> Option<DocContent> {
     let anchors = content.anchors.as_ref()?;
-    let mut body = content.body.clone();
-    for Reanchor { from, to } in reanchors {
-        if from.anchor() != to.anchor() {
-            body = relinked(&body, from.anchor(), to.anchor());
-        }
-    }
+    let pairs = reanchors.iter().map(|Reanchor { from, to }| (from, to));
+    let body = weacon_model::reanchored(&content.body, pairs);
     let pins = anchors
         .pins
         .iter()
@@ -224,8 +249,9 @@ fn reanchored(
         })
         .collect();
     let anchors = DocAnchors {
-        commit: commit.clone(),
+        commit: moved.commit.clone(),
         pins,
+        repo: Some(moved.repo.clone()),
     };
     let title = Title::try_from(content.title.clone()).ok()?;
     DocText::new(title, body, Some(anchors))
@@ -293,6 +319,7 @@ mod tests {
                 anchors: Some(DocAnchors {
                     commit: commit('a'),
                     pins: anchors.iter().map(|anchor| pin(index, anchor)).collect(),
+                    repo: None,
                 }),
             },
         }
@@ -300,6 +327,66 @@ mod tests {
 
     fn workspace() -> WorkspaceId {
         "w-1".parse().unwrap()
+    }
+
+    /// A history that holds every commit, or none.
+    struct Held(bool);
+
+    impl History for Held {
+        async fn holds(&self, _: &CommitId) -> bool {
+            self.0
+        }
+    }
+
+    /// A move of `site`'s base whose history holds every commit.
+    fn site_move<'a>(
+        repo: &'a RepoId,
+        commit: &'a CommitId,
+        was: &'a [&'a Index],
+        now: &'a Index,
+    ) -> BaseMove<'a, Held> {
+        BaseMove {
+            repo,
+            was,
+            now,
+            commit,
+            history: &Held(true),
+        }
+    }
+
+    fn site() -> RepoId {
+        "site".parse().unwrap()
+    }
+
+    fn anchors(pins: &[DocPin], repo: Option<&str>) -> DocAnchors {
+        DocAnchors {
+            commit: commit('a'),
+            pins: pins.to_vec(),
+            repo: repo.map(|repo| repo.parse().unwrap()),
+        }
+    }
+
+    /// What moving `site` from `was` to `now` did to `anchors`.
+    fn found(
+        anchors: &DocAnchors,
+        was: &[&Index],
+        now: &Index,
+    ) -> (Vec<Reanchor>, Vec<StaleAnchor>) {
+        let (repo, commit) = (site(), commit('b'));
+        let moved = site_move(&repo, &commit, was, now);
+        findings(anchors, &moved, anchors.repo == Some(site()))
+    }
+
+    /// Proposes what moving `site` from `was` to `now`, at `commit`, did to the docs.
+    async fn checked(
+        proposals: &Proposals,
+        was: &[&Index],
+        now: &Index,
+        commit: &CommitId,
+    ) -> Result<usize, Fault> {
+        let repo = site();
+        let moved = site_move(&repo, commit, was, now);
+        super::moved(proposals, &workspace(), &moved).await
     }
 
     fn changes(command: &ProposalCommand) -> Vec<ProposalChange> {
@@ -323,7 +410,7 @@ mod tests {
             .push(doc("d-1", &before, &["sym:a_b::m::go"]));
         let proposals = fake.connect();
 
-        let docs = moved(&proposals, &workspace(), &[&before], &after, &commit('b'))
+        let docs = checked(&proposals, &[&before], &after, &commit('b'))
             .await
             .unwrap();
 
@@ -335,6 +422,7 @@ mod tests {
             anchors: Some(DocAnchors {
                 commit: commit('b'),
                 pins: vec![pin(&after, "sym:a_b::go")],
+                repo: Some(site()),
             }),
         };
         let edit = ProposalChange::DocEdit {
@@ -362,7 +450,7 @@ mod tests {
         let proposals = fake.connect();
         let line = "struct a_b::m::S  src/m.rs:2".to_owned();
 
-        let docs = moved(&proposals, &workspace(), &[&before], &after, &commit('b'))
+        let docs = checked(&proposals, &[&before], &after, &commit('b'))
             .await
             .unwrap();
 
@@ -424,7 +512,7 @@ mod tests {
         fake.docs.lock().unwrap().extend(docs);
         let proposals = fake.connect();
 
-        let batches = moved(&proposals, &workspace(), &[&before], &after, &commit('b'))
+        let batches = checked(&proposals, &[&before], &after, &commit('b'))
             .await
             .unwrap();
 
@@ -455,22 +543,16 @@ mod tests {
         }
         let proposals = fake.connect();
 
-        moved(&proposals, &workspace(), &[&before], &after, &commit('b'))
+        checked(&proposals, &[&before], &after, &commit('b'))
             .await
             .unwrap();
-        let again = moved(&proposals, &workspace(), &[&after], &later, &commit('c'))
+        let again = checked(&proposals, &[&after], &later, &commit('c'))
             .await
             .unwrap();
         // Another core that sees the same move.
-        moved(
-            &other.connect(),
-            &workspace(),
-            &[&before],
-            &after,
-            &commit('b'),
-        )
-        .await
-        .unwrap();
+        checked(&other.connect(), &[&before], &after, &commit('b'))
+            .await
+            .unwrap();
 
         let commands = fake.commands();
         assert_eq!((again, commands.len()), (0, 1));
@@ -489,10 +571,10 @@ mod tests {
             .push(doc("d-1", &before, &["sym:a_b::m::go"]));
         let proposals = fake.connect();
 
-        moved(&proposals, &workspace(), &[&before], &after, &commit('b'))
+        checked(&proposals, &[&before], &after, &commit('b'))
             .await
             .unwrap();
-        let again = moved(&proposals, &workspace(), &[&after], &later, &commit('c'))
+        let again = checked(&proposals, &[&after], &later, &commit('c'))
             .await
             .unwrap();
 
@@ -527,11 +609,11 @@ mod tests {
         *fake.refuse.lock().unwrap() = Some(code!("proposal.too_many"));
         let proposals = fake.connect();
 
-        moved(&proposals, &workspace(), &[&before], &after, &commit('b'))
+        checked(&proposals, &[&before], &after, &commit('b'))
             .await
             .unwrap_err();
         *fake.refuse.lock().unwrap() = None;
-        let again = moved(&proposals, &workspace(), &[&before], &after, &commit('b'))
+        let again = checked(&proposals, &[&before], &after, &commit('b'))
             .await
             .unwrap();
 
@@ -595,15 +677,9 @@ mod tests {
         fake.docs.lock().unwrap().extend(docs);
         let proposals = fake.connect();
 
-        let batches = moved(
-            &proposals,
-            &workspace(),
-            &[&before, &after],
-            &later,
-            &commit('c'),
-        )
-        .await
-        .unwrap();
+        let batches = checked(&proposals, &[&before, &after], &later, &commit('c'))
+            .await
+            .unwrap();
 
         let about: Vec<String> = fake
             .commands()
@@ -624,8 +700,8 @@ mod tests {
             "mod m;\npub fn run() { go() }\npub fn go() -> u8 { 1 }\n",
             "",
         );
-        let moved =
-            |was: &[&Index], now: &Index| findings(&[pin(&elsewhere, "sym:a_b::go")], was, now).1;
+        let pins = anchors(&[pin(&elsewhere, "sym:a_b::go")], None);
+        let moved = |was: &[&Index], now: &Index| found(&pins, was, now).1;
         let change = |stale: Vec<StaleAnchor>| {
             stale
                 .into_iter()
@@ -668,7 +744,7 @@ mod tests {
         *fake.refuse.lock().unwrap() = Some(code!("proposal.too_many"));
         let proposals = fake.connect();
 
-        let refused = moved(&proposals, &workspace(), &[&before], &after, &commit('b')).await;
+        let refused = checked(&proposals, &[&before], &after, &commit('b')).await;
 
         assert_eq!(refused.unwrap_err().code(), &code!("proposal.too_many"));
         assert_eq!(fake.commands().len(), 2);
@@ -697,9 +773,10 @@ mod tests {
         doc: &PinnedDoc,
         (was, now): (&Index, &Index),
     ) -> Vec<Batched> {
-        batch(proposals, &workspace(), doc, (&[was], now), &commit('b'))
-            .await
-            .unwrap()
+        let (repo, commit) = (site(), commit('b'));
+        let was = [was];
+        let moved = site_move(&repo, &commit, &was, now);
+        batch(proposals, &workspace(), doc, &moved).await.unwrap()
     }
 
     #[tokio::test]
@@ -714,7 +791,7 @@ mod tests {
         );
         let pins = [pin(&before, "sym:a_b::m::go")];
 
-        let (reanchors, stale) = findings(&pins, &[&before], &after);
+        let (reanchors, stale) = found(&anchors(&pins, None), &[&before], &after);
 
         assert!(reanchors.is_empty());
         let gone = AnchorChange::Gone {
@@ -739,6 +816,86 @@ mod tests {
             to: pin(&index, "sym:a_b::run"),
         }];
 
-        assert_eq!(reanchored(&content, &reanchors, &commit('b')), None);
+        let (repo, commit) = (site(), commit('b'));
+        let moved = site_move(&repo, &commit, &[], &index);
+        assert_eq!(reanchored(&content, &reanchors, &moved), None);
+    }
+    #[test]
+    fn a_pin_of_this_repository_that_no_index_holds_is_gone_and_another_repositorys_is_left_alone()
+    {
+        let before = repo(LIB, "pub fn go() {}\n");
+        let after = repo("mod m;\npub fn run() {}\n", "");
+        let changed = repo(LIB, "pub fn go() -> u8 { 1 }\n");
+        let pins = [pin(&before, "sym:a_b::m::go")];
+        let gone = |anchors: &DocAnchors, was: &[&Index], now: &Index| {
+            let (reanchors, stale) = found(anchors, was, now);
+            assert!(reanchors.is_empty());
+            stale
+                .into_iter()
+                .map(|stale| stale.change)
+                .collect::<Vec<_>>()
+        };
+
+        // The base it was taken from was let go.
+        assert_eq!(
+            gone(&anchors(&pins, Some("site")), &[&after], &after),
+            [AnchorChange::Gone {
+                was: "sym:a_b::m::go".to_owned()
+            }]
+        );
+        assert_eq!(gone(&anchors(&pins, None), &[&after], &after), []);
+        for (was, now) in [(&before, &after), (&before, &changed), (&after, &after)] {
+            assert_eq!(gone(&anchors(&pins, Some("other")), &[was], now), []);
+        }
+    }
+
+    #[tokio::test]
+    async fn a_symbol_renamed_unchanged_is_reanchored_and_one_also_edited_needs_an_update() {
+        let before = repo(LIB, "pub fn go() {}\n");
+        let renamed = repo("mod m;\npub fn run() { m::went() }\n", "pub fn went() {}\n");
+        let edited = repo(
+            "mod m;\npub fn run() { went() }\npub fn went() -> u8 { 1 }\n",
+            "",
+        );
+        let pins = anchors(&[pin(&before, "sym:a_b::m::go")], None);
+
+        let (reanchors, stale) = found(&pins, &[&before], &renamed);
+        assert!(stale.is_empty());
+        let to: Vec<&DocPin> = reanchors.iter().map(|reanchor| &reanchor.to).collect();
+        assert_eq!(to, [&pin(&renamed, "sym:a_b::m::went")]);
+
+        let (reanchors, stale) = found(&pins, &[&before], &edited);
+        assert!(reanchors.is_empty());
+        assert_eq!(
+            stale[0].change,
+            AnchorChange::Gone {
+                was: "fn a_b::m::go  src/m.rs:1".to_owned()
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn a_pin_is_gone_only_when_taken_in_the_history_of_the_base_that_moved() {
+        let before = repo(LIB, "pub fn go() {}\n");
+        let after = repo("mod m;\npub fn run() {}\n", "");
+        let pinned = PinnedDoc {
+            id: "d-1".parse().unwrap(),
+            version: 3,
+            anchors: anchors(&[pin(&before, "sym:a_b::m::go")], Some("site")),
+        };
+        let proposals = Fake::default().connect();
+        let (repo, commit) = (site(), commit('b'));
+        let (no, yes, was) = (Held(false), Held(true), [&after]);
+        let moved = |history| BaseMove {
+            history,
+            ..site_move(&repo, &commit, &was, &after)
+        };
+
+        let unheld = batch(&proposals, &workspace(), &pinned, &moved(&no)).await;
+        let held = batch(&proposals, &workspace(), &pinned, &moved(&yes)).await;
+
+        // On a branch the base hasn't merged, or of another repository named the same here.
+        assert!(unheld.unwrap().is_empty());
+        assert_eq!(held.unwrap().len(), 1);
     }
 }
