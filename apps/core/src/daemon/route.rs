@@ -5,15 +5,19 @@ use std::sync::Arc;
 
 use tokio::sync::{Semaphore, mpsc};
 use weacon_observability::{Fault, Field};
-use weacon_protocol::{Envelope, FrameError, Message, TerminalCommand, code};
+use weacon_protocol::{
+    Envelope, FrameError, Message, Outcome, Pick, Receipt, SessionsQuery, TerminalCommand, code,
+};
 
 use super::worktrees::{self, Late};
-use super::{Shared, command_chat, keep, query_chat};
+use super::{Shared, command_chat, query_chat};
+use crate::chats::Chats;
 use crate::chats::feed::Client;
 use crate::machine_settings::{self, Host, Identity};
+use crate::picks::KeepError;
 use crate::session::{Reply, Session};
 use crate::terminal::Terminals;
-use crate::uplink::{self, failure, refusal};
+use crate::uplink::{self, failure};
 use crate::workspaces::Workspaces;
 use crate::{app, machine};
 
@@ -43,24 +47,78 @@ pub(super) async fn route(
         Message::DiffQuery(query) => worktrees::diff(shared, id, query, late),
         Message::WorktreeQuery(query) => worktrees::query(shared, id, query, late),
         Message::WorktreeCommand(command) => worktrees::command(shared, id, command, late),
+        // The socket is its owner's alone, so only a query the server relays names who asked.
+        Message::SessionsQuery(query) if query.by.is_none() => {
+            match shared.outside.answer(query, &shared.log).await {
+                Ok(answer) => Reply {
+                    envelope: Some(Envelope {
+                        id,
+                        message: Message::SessionsAnswer(answer),
+                    }),
+                    close: false,
+                },
+                Err(fault) => Reply::error(id, fault.code().clone(), false),
+            }
+        }
         message => session.answer(Ok(Envelope { id, message }), &shared.app),
     }
 }
 
+// The receipt for a pick the extension sent, once it is kept.
+async fn keep(shared: &Shared, id: u32, pick: Pick) -> Reply {
+    let (picks, request) = (shared.picks.clone(), pick.request.clone());
+    let kept = tokio::task::spawn_blocking(move || picks.keep(&pick))
+        .await
+        .unwrap_or_else(|error| Err(KeepError::Io(error.into())));
+    let outcome = match kept {
+        Ok(()) => {
+            let request_id = request.as_str().into();
+            shared
+                .log
+                .info("element picked", &[("request_id", request_id)]);
+            Outcome::Completed
+        }
+        Err(KeepError::Conflict) => return Reply::error(id, code!("request.conflict"), false),
+        Err(KeepError::Io(error)) => {
+            shared
+                .log
+                .warn("pick not kept", &[("err", Field::error(&error))]);
+            Outcome::Failed {
+                code: code!("pick.not_kept"),
+            }
+        }
+    };
+    Reply {
+        envelope: Some(Envelope {
+            id,
+            message: Message::Receipt(Receipt { request, outcome }),
+        }),
+        close: false,
+    }
+}
+
 /// Keeps the machine connected to its server, and answers what the server asks, for as long
-/// as the daemon runs.
-pub(super) async fn server(app: &app::App, state_dir: &Path) -> ! {
+/// as the task runs; chat messages go to `chats`.
+pub(super) fn server(
+    app: &app::App,
+    state_dir: &Path,
+    chats: Chats,
+) -> impl Future<Output = ()> + Send + 'static {
     let (to_daemon, asks) = mpsc::channel(uplink::QUEUE);
     let (replies, from_daemon) = mpsc::channel(uplink::QUEUE);
     let host = Host {
         state_dir: state_dir.to_owned(),
         path: app.path.clone(),
         reporter: Arc::clone(&app.reporter),
+        outside: app.outside.clone(),
         log: app.log.child(&[("component", "asks".into())]),
     };
-    tokio::select! {
-        never = Box::pin(uplink::new(app, state_dir, to_daemon).run(from_daemon)) => match never {},
-        never = uplink(host, asks, replies) => match never {},
+    let link = uplink::new(app, state_dir, to_daemon, chats);
+    async move {
+        tokio::select! {
+            never = Box::pin(link.run(from_daemon)) => match never {},
+            never = uplink(host, asks, replies) => match never {},
+        }
     }
 }
 
@@ -129,19 +187,27 @@ async fn terminals(
 /// would only echo.
 async fn relayed(host: &Host, ask: Envelope) -> Option<Envelope> {
     let Envelope { id, message } = ask;
-    let answered = if let Message::Error(_) = message {
-        return None;
-    } else if let Message::ChatCommand(command) = message {
-        return Some(refusal(id, &command, code!("chat.unavailable")));
-    } else if let Message::MachineSettingsQuery(query) = message {
-        async { machine_settings::query(host, &owner(host).await?, query).await }.await
-    } else if let Message::MachineSettingsCommand(command) = message {
-        async { machine_settings::command(host, &owner(host).await?, command).await }.await
-    } else {
-        Err(Fault::new(
+    #[expect(
+        clippy::wildcard_enum_match_arm,
+        reason = "the server relays no other ask a core answers"
+    )]
+    let answered = match message {
+        Message::Error(_) => return None,
+        Message::MachineSettingsQuery(query) => {
+            async { machine_settings::query(host, &owner(host).await?, query).await }
+                .await
+                .map(Message::MachineSettingsAnswer)
+        }
+        Message::MachineSettingsCommand(command) => {
+            async { machine_settings::command(host, &owner(host).await?, command).await }
+                .await
+                .map(Message::MachineSettingsAnswer)
+        }
+        Message::SessionsQuery(query) => sessions(host, query).await,
+        _ => Err(Fault::new(
             code!("request.unknown"),
             "This core doesn't answer that request",
-        ))
+        )),
     };
     Some(answered.map_or_else(
         |fault| {
@@ -149,11 +215,21 @@ async fn relayed(host: &Host, ask: Envelope) -> Option<Envelope> {
                 .warn("ask failed", &[("err", Field::error(&fault))]);
             failure(id, fault.code().clone())
         },
-        |answer| Envelope {
-            id,
-            message: Message::MachineSettingsAnswer(answer),
-        },
+        |message| Envelope { id, message },
     ))
+}
+
+/// The machine owner's own sessions outside Weacon, for them alone.
+async fn sessions(host: &Host, query: SessionsQuery) -> Result<Message, Fault> {
+    let owner = owner(host).await?;
+    if query.by.as_ref() != Some(&owner.account) {
+        return Err(Fault::new(
+            code!("sessions.not_owner"),
+            "Only this machine's owner can read its sessions",
+        ));
+    }
+    let answer = host.outside.answer(query, &host.log).await?;
+    Ok(Message::SessionsAnswer(answer))
 }
 
 /// The machine and its owner, as the pairing kept now says.
@@ -170,16 +246,17 @@ mod tests {
     use std::sync::Arc;
 
     use weacon_protocol::{
-        AccountId, Asker, ChatAction, ChatCommand, ErrorBody, MachineSettingsAction,
-        MachineSettingsAnswerKind, MachineSettingsCommand, MachineSettingsQuery,
-        MachineSettingsQueryKind, Outcome, SessionsQuery, SessionsQueryKind,
+        AccountId, AgentKind, Asker, ErrorBody, MachineSettingsAction, MachineSettingsAnswerKind,
+        MachineSettingsCommand, MachineSettingsQuery, MachineSettingsQueryKind, SessionsAnswer,
+        SessionsAnswerKind, SessionsQuery, SessionsQueryKind,
     };
     use weacon_testing::TempDir;
 
     use super::*;
     use crate::machine::{Key, Paired};
+    use crate::outside::Outside;
     use crate::reports;
-    use crate::test_support;
+    use crate::test_support::{self, SESSION, claude_home};
 
     fn id<T: TryFrom<String>>(id: &str) -> T
     where
@@ -195,6 +272,13 @@ mod tests {
             state_dir: dir.to_path_buf(),
             path: Some(dir.join("bin").into_os_string()),
             reporter: Arc::clone(&app.reporter),
+            outside: Outside::new(
+                vec![(
+                    AgentKind::Claude,
+                    claude_home(dir, "/MARKER-FOLDER", "MARKER-PROMPT"),
+                )],
+                Some(&dir.join("state")),
+            ),
             log,
         };
         (host, records)
@@ -277,27 +361,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_chat_command_is_refused_any_other_ask_is_unknown_and_an_error_goes_unanswered() {
+    async fn an_ask_it_doesnt_answer_is_unknown_and_an_error_goes_unanswered() {
         let dir = TempDir::new().unwrap();
         let (host, _) = host(&dir);
-        let command = Envelope {
-            id: 3,
-            message: Message::ChatCommand(ChatCommand {
-                request: id("r-2"),
-                workspace: id("w1"),
-                chat: id("c-1"),
-                action: ChatAction::Interrupt,
-                by: Some(by("a-1")),
-            }),
-        };
         let other = Envelope {
             id: 4,
-            message: Message::SessionsQuery(SessionsQuery {
-                request: id("r-3"),
-                machine: id("mc-1"),
-                query: SessionsQueryKind::List,
-                by: Some(id("a-1")),
-            }),
+            message: Message::Pick(test_support::pick("r-3", "<p>Hi</p>")),
         };
         let error = Envelope {
             id: 5,
@@ -307,26 +376,78 @@ mod tests {
             }),
         };
 
-        let refused = relayed(&host, command).await.unwrap();
         let unknown = relayed(&host, other).await.unwrap();
         let echoed = relayed(&host, error).await;
 
-        let Message::Receipt(receipt) = refused.message else {
-            panic!("expected a receipt, got {:?}", refused.message);
-        };
-        assert_eq!((refused.id, receipt.request.as_str()), (3, "r-2"));
-        assert_eq!(
-            receipt.outcome,
-            Outcome::Failed {
-                code: code!("chat.unavailable")
-            }
-        );
         assert_eq!(unknown.id, 4);
         assert_eq!(
             test_support::error_code(&unknown.message),
             Some("request.unknown")
         );
         assert_eq!(echoed, None);
+    }
+
+    fn sessions(by: Option<&str>, query: SessionsQueryKind) -> Envelope {
+        Envelope {
+            id: 9,
+            message: Message::SessionsQuery(SessionsQuery {
+                request: id("r-4"),
+                machine: id("mc-1"),
+                query,
+                by: by.map(id),
+            }),
+        }
+    }
+
+    #[tokio::test]
+    async fn only_the_machines_owner_reads_its_sessions_and_none_of_them_is_logged() {
+        let dir = TempDir::new().unwrap();
+        pair(&dir);
+        let (host, records) = host(&dir);
+        let open = SessionsQueryKind::Open {
+            agent: AgentKind::Claude,
+            session: id(SESSION),
+            after: 0,
+        };
+
+        let listed = relayed(&host, sessions(Some("a-1"), SessionsQueryKind::List)).await;
+        let opened = relayed(&host, sessions(Some("a-1"), open)).await.unwrap();
+        let stranger = relayed(&host, sessions(Some("a-2"), SessionsQueryKind::List)).await;
+        let nobody = relayed(&host, sessions(None, SessionsQueryKind::List)).await;
+        let newer = relayed(&host, sessions(Some("a-1"), SessionsQueryKind::Newer)).await;
+
+        let listed = listed.unwrap();
+        assert_eq!(listed.id, 9);
+        let Message::SessionsAnswer(answer) = listed.message else {
+            panic!("expected an answer, got {:?}", listed.message);
+        };
+        assert_eq!(answer.request.as_str(), "r-4");
+        let SessionsAnswerKind::List { sessions } = answer.answer else {
+            panic!("expected a list, got {:?}", answer.answer);
+        };
+        assert_eq!(
+            sessions.first().and_then(|found| found.folder.as_deref()),
+            Some("/MARKER-FOLDER")
+        );
+        assert!(matches!(
+            opened.message,
+            Message::SessionsAnswer(SessionsAnswer {
+                answer: SessionsAnswerKind::Opened { ref events, more: false },
+                ..
+            }) if events.len() == 1
+        ));
+        for refused in [stranger, nobody] {
+            assert_eq!(
+                test_support::error_code(&refused.unwrap().message),
+                Some("sessions.not_owner")
+            );
+        }
+        assert_eq!(
+            test_support::error_code(&newer.unwrap().message),
+            Some("message.unsupported")
+        );
+        let logged = serde_json::to_string(&*records.lock().unwrap()).unwrap();
+        assert!(!logged.contains("MARKER"), "{logged}");
     }
 
     fn reports(envelope: u32, send: bool) -> Envelope {

@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import type { Page } from "playwright-core";
 
 import { PROTOCOL } from "../../../tooling/ts/version.ts";
-import type { Envelope, MachineSettings, PairClaim, PairClaimed, PairStart, PairStarted } from "../src/protocol.ts";
+import type { ChatEntry, Envelope, MachineSettings, OutsideSession, PairClaim, PairClaimed, PairStart, PairStarted, SessionsAnswerKind } from "../src/protocol.ts";
 
 // The core's own test key, and the fingerprint the core prints for it.
 export const KEY = "8520f0098930a754748b7ddcb43ef75a0dbf3a0d26381af4eba4a98eaa9b4e6a";
@@ -77,14 +77,19 @@ export async function pair(page: Page): Promise<{ machine: string; token: string
   return claim(page, { pairing, secret });
 }
 
+/** The sessions a person ran outside Weacon, as a core reads them: its list, and the one session's events so far. */
+export type Outside = { sessions: OutsideSession[]; events: ChatEntry[] };
+
 /**
  * A machine's core, connected to the server, that keeps `settings` and answers for them, and
  * counts the queries; once told to refuse, it refuses changes as a core does a stranger's.
+ * Given `outside`, it also answers for those sessions, as they are when asked.
  */
 export async function core(
   page: Page,
   token: string,
   settings: MachineSettings,
+  outside?: Outside,
 ): Promise<{ settings: MachineSettings; queries: number; set(settings: MachineSettings): void; refuse(): void; close(): void }> {
   const url = new URL("/api/machines/connect", page.url());
   url.protocol = "ws:";
@@ -95,12 +100,17 @@ export async function core(
   await new Promise<void>((resolve, reject) => {
     socket.onerror = () => reject(new Error("the core couldn't connect"));
     socket.onopen = () => {
-      send({ id: 1, type: "hello", protocol: PROTOCOL, app: { name: "weacon-core", version: "0.0.0", commit: "0000000" }, capabilities: ["machine.connect", "machine.settings"] });
+      send({ id: 1, type: "hello", protocol: PROTOCOL, app: { name: "weacon-core", version: "0.0.0", commit: "0000000" }, capabilities: ["machine.connect", "machine.settings", ...(outside === undefined ? [] : ["sessions.read"])] });
     };
     socket.onmessage = ({ data }) => {
       const envelope = JSON.parse(String(data)) as Envelope;
       if (envelope.type === "welcome") {
         resolve();
+      } else if (envelope.type === "sessions_query" && outside !== undefined) {
+        const { query } = envelope;
+        const answer: SessionsAnswerKind =
+          query.kind === "list" ? { kind: "list", sessions: outside.sessions } : { kind: "opened", events: outside.events.filter(({ seq }) => seq > query.after), more: false };
+        send({ id: envelope.id, type: "sessions_answer", request: envelope.request, machine: envelope.machine, answer });
       } else if (envelope.type === "machine_settings_command" && held.refusing) {
         send({ id: envelope.id, type: "error", code: "settings.not_owner", retryable: false });
         return;

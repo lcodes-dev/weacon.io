@@ -256,6 +256,40 @@ test("a terminal update passes with the fields the terminal reads, and a newer k
   assert.equal(parse(frame({ id: 0, type: "terminal", terminal: "t-1", event: { kind: "closed" } })), undefined);
 });
 
+test("a sessions answer passes with the fields the list and the transcript read, and a newer kind passes to be ignored", () => {
+  const sessions = (answer: unknown) => frame({ id: 6, type: "sessions_answer", request: "r-1", machine: "mc-1", answer });
+  const session = { agent: "codex", session: "0b7c6a52-3f1e-4d2a-9c8b-5e4f3a2b1c0d", modified_at: 5 };
+  const entry = { seq: 1, event: { kind: "outside_prompt", text: "Hi" } };
+  const good = [
+    { kind: "list", sessions: [session, { ...session, folder: "/work" }] },
+    { kind: "opened", events: [entry], more: false },
+    { kind: "missing" },
+    { kind: "later" },
+  ];
+  const bad = [
+    null,
+    {},
+    { kind: "list", sessions: "none" },
+    { kind: "list", sessions: [{ ...session, folder: 3 }] },
+    { kind: "list", sessions: [{ ...session, modified_at: 1.5 }] },
+    { kind: "list", sessions: [{ ...session, agent: undefined }] },
+    { kind: "list", sessions: [{ ...session, session: undefined }] },
+    { kind: "list", sessions: [null] },
+    { kind: "opened", events: [entry] },
+    { kind: "opened", events: [{ seq: 0, event: entry.event }], more: false },
+    { kind: "opened", events: "none", more: false },
+  ];
+
+  for (const answer of good) {
+    assert.equal(parse(sessions(answer))?.type, "sessions_answer", JSON.stringify(answer));
+  }
+  for (const answer of bad) {
+    assert.equal(parse(sessions(answer)), undefined, JSON.stringify(answer));
+  }
+  assert.equal(parse(frame({ id: 6, type: "sessions_answer", machine: "mc-1", answer: { kind: "missing" } })), undefined);
+  assert.equal(parse(frame({ id: 6, type: "sessions_answer", request: "r-1", answer: { kind: "missing" } })), undefined);
+});
+
 test("a diff answer passes only with every field the diff view reads", () => {
   const file = (path: string) => ({
     path,

@@ -72,7 +72,7 @@ async fn serve(
     };
     let first = session.channel.open(first.as_slice())?;
     let (launch, size) = (session.launch.clone(), session.size);
-    let (terminal, mut events) = off_runtime(move || launch.log_in_terminal(size)).await?;
+    let (terminal, mut events) = off_runtime(move || launch.open_login(size)).await?;
     let (typed, to_write) = mpsc::channel(WAITING);
     let mut writer = Writer(tokio::spawn(write(terminal, to_write)));
     pass(&typed, &first)?;
@@ -183,7 +183,7 @@ async fn output(
 }
 
 async fn signed_in(launch: &Launch, log: &Logger) -> SignInState {
-    match launch.sign_in().await {
+    match launch.sign_in_status().await {
         Ok(SignIn::SignedIn) => SignInState::SignedIn,
         Ok(SignIn::SignedOut) => SignInState::SignedOut,
         Err(fault) => {

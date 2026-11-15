@@ -25,6 +25,7 @@ mod mcp;
 mod memory;
 mod names;
 mod native_host;
+mod outside;
 mod pair;
 mod picks;
 mod platform;

@@ -64,7 +64,10 @@ async fn sent(
     command: &mut TerminalCommand,
     back: &mpsc::Sender<Envelope>,
 ) -> Result<(), Refusal> {
-    relay::theirs(shared, ask, &command.machine, &command.workspace).await?;
+    if command.workspace != *ask.workspace.id() {
+        return Err(relay::refused(code!("machine.not_found"), false));
+    }
+    relay::theirs(shared, ask, &command.machine).await?;
     command.by = Some(ask.asker.clone());
     let envelope = Envelope {
         id: shared.links.next_id(),
@@ -122,13 +125,16 @@ pub(crate) fn delivered(shared: &Shared, machine: &MachineId, update: TerminalUp
     }
 }
 
-/// Closes each terminal open on `machine` as offline, once its connection has ended.
+/// Closes each terminal open on `machine` as offline, once its connection has ended, unless a
+/// newer connection of the machine has taken over.
 pub(crate) fn offline(shared: &Shared, machine: &MachineId) {
-    let gone: Vec<_> = shared
-        .terminals
-        .lock()
-        .extract_if(|(on, _), _| on == machine)
-        .collect();
+    // Checked under the routes' lock, so no route opened on a newer connection is taken.
+    let mut open = shared.terminals.lock();
+    if shared.links.is_open(machine) {
+        return;
+    }
+    let gone: Vec<_> = open.extract_if(|(on, _), _| on == machine).collect();
+    drop(open);
     for ((_, terminal), route) in gone {
         tell(
             &route.back,
@@ -563,5 +569,31 @@ mod tests {
         assert_eq!(first, frame(SHOWN));
         assert_eq!(closed_code(&then), Some("terminal.lagged"));
         assert!(shared.terminals.lock().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_machine_connected_again_keeps_its_terminals() {
+        let fixture = Fixture::new().await;
+        let shared = &fixture.shared;
+        let machine: MachineId = id("mc-1");
+        let (back, _answers) = mpsc::channel(1);
+        let asker = Asker {
+            account: id::<AccountId>("a-1"),
+            member: id::<MemberId>("m-1"),
+        };
+        let Message::TerminalCommand(open) = opening(&machine, "w1").message else {
+            panic!("not a command");
+        };
+        let key = (machine.clone(), open.terminal.clone());
+        shared.terminals.route(key, &open, &asker, &back).unwrap();
+        let connected = crate::links::Connected {
+            machine: machine.clone(),
+            owner: asker.account,
+        };
+        let _again = shared.links.open(connected, Vec::new());
+
+        offline(shared, &machine);
+
+        assert_eq!(shared.terminals.lock().len(), 1);
     }
 }

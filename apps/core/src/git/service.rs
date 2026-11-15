@@ -275,9 +275,9 @@ impl Inner {
         let record = records.get(chat)?.ok_or_else(none)?;
         let work_root = self.work_root.as_deref().ok_or_else(none)?;
         let worktree = crate::chats::chat_folder(work_root, workspace, chat);
-        let repos = Repos::new(
+        let repos = Repos::of(
+            &Workspaces::new(&self.state_dir, self.path.clone()),
             workspace.clone(),
-            self.root(workspace).join("git/repos.json"),
         );
         let repo = repos.get(&record.repo)?.ok_or_else(|| {
             Fault::new(
@@ -352,7 +352,7 @@ pub(crate) fn with_chat(dir: &Path) -> (Worktrees, WorkspaceId, ChatId, PathBuf)
         .unwrap();
     let root = Workspaces::new(&state, None).root(&workspace);
     let site = RepoId::try_from("site".to_owned()).unwrap();
-    Repos::new(workspace.clone(), root.join("git/repos.json"))
+    Repos::of(&Workspaces::new(&state, None), workspace.clone())
         .add(&git(dir), site.clone(), &repo)
         .unwrap();
     ChatRepos::new(workspace.clone(), root.join("git/chats.json"))

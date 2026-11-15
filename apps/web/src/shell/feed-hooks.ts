@@ -5,7 +5,7 @@ import { Connection, type Status, later, offers } from "../connection.ts";
 import type { Incoming } from "../incoming.ts";
 import type { Log } from "../log.ts";
 import { ME } from "../me.ts";
-import type { WorkspaceId } from "../protocol.ts";
+import type { WorkspaceChange, WorkspaceId } from "../protocol.ts";
 import { FEED, STAYED_MS, failedAfter, feedUrl, heardAfter, retries, retryAfter } from "./workspace-feed.ts";
 import type { WorkspaceSocket } from "./workspace-socket.ts";
 
@@ -92,4 +92,18 @@ export function useBurst(run: () => void): () => void {
       }, BURST_MS);
     }
   };
+}
+
+/** Calls `load`, at most once per burst, each time `socket` hears a change of its workspace that `matters`. */
+export function useReloadOn(socket: WorkspaceSocket, matters: (change: WorkspaceChange) => boolean, load: () => void, deps: unknown[] = []): void {
+  const reload = useBurst(load);
+  useEffect(
+    () =>
+      socket.subscribe((message) => {
+        if (message.type === "workspace" && matters(message.change)) {
+          reload();
+        }
+      }),
+    [socket, ...deps],
+  );
 }

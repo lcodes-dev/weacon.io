@@ -7,8 +7,9 @@ import { useLoaded } from "../api/loaded.ts";
 import { Problem } from "../api/problem.tsx";
 import { type LinkSocket, terminalLink } from "../terminal/link.ts";
 import { TerminalView } from "../terminal/terminal-view.tsx";
+import type { MachineSocket } from "./ask-machine.ts";
 import type { Pins } from "./pins.ts";
-import { type SettingsSocket, change, current } from "./remote-settings.ts";
+import { change, current } from "./remote-settings.ts";
 
 const LEVELS: Array<[AccessLevel, string]> = [
   ["off", "Off"],
@@ -30,7 +31,7 @@ const STATES = new Map<SignInState | string, string>([
 
 type Props = {
   machine: MachineSummary;
-  socket: SettingsSocket & LinkSocket;
+  socket: MachineSocket & LinkSocket;
   later: Later;
   pins: Pins;
   /** Whether the server relays sign-in terminals. */

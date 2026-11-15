@@ -47,17 +47,35 @@ test("a fetch shows its value, a failed one keeps it with the problem, and tryin
   ]);
 });
 
-test("an answer never replaces a change made here", async () => {
+test("an answer never replaces a change made here, and the fetch on its way is made again", async () => {
   const { list, shown } = recorded();
   const pending = held<string[]>();
-  const loading = list.load(pending.fetch);
+  const asked: string[] = [];
+  let calls = 0;
+  const fetch = () => (++calls === 1 ? named(asked, "first", pending.fetch)() : named(asked, "again", async () => ({ ok: true, value: ["made", "elsewhere"] }))());
+  const loading = list.load(fetch);
   list.change((value) => [...(value ?? []), "made"]);
   pending.answer({ ok: true, value: ["before it"] });
   await loading;
 
+  assert.deepEqual(asked, ["first", "again"]);
   assert.deepEqual(
     shown.map(({ value }) => value),
-    [["made"]],
+    [["made"], ["made", "elsewhere"]],
+  );
+});
+
+test("a change with no fetch on its way asks for nothing", async () => {
+  const { list, shown } = recorded();
+  const asked: string[] = [];
+  await list.load(named(asked, "first"));
+  list.change((value) => [...(value ?? []), "made"]);
+  await list.load(async () => ({ ok: true, value: ["later"] }));
+
+  assert.deepEqual(asked, ["first"]);
+  assert.deepEqual(
+    shown.map(({ value }) => value),
+    [["first"], ["first", "made"], ["later"]],
   );
 });
 
