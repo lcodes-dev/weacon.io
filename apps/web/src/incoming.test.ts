@@ -385,5 +385,8 @@ test("a run's live update is read with its chat and a run event, and nothing els
   assert.equal(parse(live({ run: "r-1" })), undefined);
   assert.equal(parse(live({ event })), undefined);
   assert.equal(parse(live("r-1")), undefined);
+  const stamped = (after: unknown) => frame({ id: 0, type: "chat_live", workspace: "w-1", chat: "c-1", update: { run: "r-1", event }, after });
+  assert.equal(parse(stamped(3))?.type, "chat_live");
+  assert.equal(parse(stamped("3")), undefined);
   assert.equal(parse(frame({ id: 0, type: "chat_live", chat: "c-1", update: { run: "r-1", event } })), undefined);
 });

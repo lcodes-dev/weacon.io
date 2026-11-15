@@ -91,7 +91,8 @@ const CHECKS: { [T in Incoming["type"]]: (fields: Fields) => boolean } = {
     text(fields, "request") && text(fields, "workspace") && text(fields, "chat") && isDiffAnswer(fields["answer"]),
   chat: (fields) => text(fields, "workspace") && text(fields, "chat") && isEntry(fields["entry"]),
   chat_answer: (fields) => text(fields, "workspace") && text(fields, "chat") && isChatAnswer(fields["answer"]),
-  chat_live: (fields) => text(fields, "workspace") && text(fields, "chat") && isRunUpdate(fields["update"]),
+  chat_live: (fields) =>
+    text(fields, "workspace") && text(fields, "chat") && isRunUpdate(fields["update"]) && (fields["after"] === undefined || isSeq(fields["after"], 0)),
   workspace: (fields) => text(fields, "workspace") && Number.isSafeInteger(fields["seq"]) && isChange(fields["change"]),
   worktree_answer: (fields) =>
     text(fields, "request") && text(fields, "workspace") && text(fields, "chat") && isWorktreeAnswer(fields["answer"]),
@@ -213,10 +214,8 @@ function isEntry(value: unknown): value is ChatEntry {
       return typeof event["text"] === "string";
     case "receipt":
       return typeof record(event["receipt"])?.["state"] === "string";
-    case "run": {
-      const update = record(event["update"]);
-      return typeof update?.["run"] === "string" && isRunEvent(update["event"]);
-    }
+    case "run":
+      return isRunUpdate(event["update"]);
     case "run_status":
       return isStatus(event["status"]);
     default:

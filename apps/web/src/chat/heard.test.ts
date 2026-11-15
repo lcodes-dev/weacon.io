@@ -72,4 +72,6 @@ test("a run's live update is heard for its own chat only", () => {
   assert.equal(heard(live("c-2"), ref), undefined);
   assert.equal(heard({ ...live("c-1"), workspace: "w-2" }, ref), undefined);
   assert.deepEqual(receiptsIn(live("c-1")), []);
+  const stamped: ChatMessage = { id: 0, type: "chat_live", workspace: "w-1", chat: "c-1", update: { run: "r-1", event }, after: 4 };
+  assert.deepEqual(heard(stamped, ref), { kind: "run", run: "r-1", event, after: 4 });
 });

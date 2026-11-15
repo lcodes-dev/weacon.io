@@ -156,8 +156,8 @@ impl ChatLink {
         }
     }
 
-    /// What of `pushed` goes up: a chat's events as the server stores them, then what of them a
-    /// viewer needs live, and text as it is written.
+    /// What of `pushed` goes up: a chat's events as the server stores them, and its runs' live
+    /// updates.
     /// A chat whose events were lost is followed again after the last that came.
     pub(super) fn upload(&mut self, pushed: Message) -> Option<Envelope> {
         if let Message::Chat(update) = pushed {
@@ -168,7 +168,7 @@ impl ChatLink {
             return Some(Envelope { id: 0, message });
         }
         if let Message::Run(update) = pushed {
-            return self.live.of(update);
+            return self.live.of(update, &self.came);
         }
         if let Message::ChatAnswer(ChatAnswer {
             workspace,

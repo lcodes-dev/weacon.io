@@ -316,3 +316,23 @@ test("a prompt's tool heard live names it whether it comes before its stored pro
   const other: RunEvent = { event: "permission_asked", run: "r-1", prompt: 2, tool: "Other", input: null };
   assert.deepEqual(tools(stream(late, "r-1", other)), tools(late));
 });
+
+test("text heard live after its message was stored is not shown again, and newer text is", () => {
+  const started = commitAll(chat([said(1, "Fix it"), status(2, "r-1", "running")]), [text(3, "r-1", "Hello")]);
+  const rows = (shown: Chat) => shown.items.flatMap((item) => (item.kind === "turn" ? item.turn.transcript.rows.map((row) => (row.kind === "text" ? row.pieces.join("") : row.kind)) : []));
+
+  assert.deepEqual(rows(stream(started, "r-1", delta("lo"), 2)), ["Hello"]);
+  assert.deepEqual(rows(stream(started, "r-1", delta("Next"), 3)), ["Hello", "Next"]);
+  assert.deepEqual(rows(stream(started, "r-1", delta("Next"))), ["Hello", "Next"]);
+});
+
+test("a fresh snapshot keeps the tools heard live, which no snapshot holds", () => {
+  const waiting = ran(3, "r-1", { event: "permission_asked", run: "r-1", prompt: 1, tool: "", input: null });
+  const named: RunEvent = { event: "permission_asked", run: "r-1", prompt: 1, tool: "Bash", input: null };
+  const heard = stream(chat([said(1, "Fix it"), status(2, "r-1", "waiting"), waiting], 3, [3]), "r-1", named);
+
+  const again = fromSnapshot({ seq: 3, runs: runs("r-1"), waiting: [3], events: [said(1, "Fix it"), status(2, "r-1", "waiting"), waiting] }, heard.tools);
+
+  const tools = again.items.flatMap((item) => (item.kind === "turn" ? item.turn.asks.map((ask) => ask.tool) : []));
+  assert.deepEqual(tools, ["Bash"]);
+});

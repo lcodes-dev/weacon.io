@@ -35,6 +35,9 @@ const PAGE_BYTES: usize = weacon_protocol::MAX_FRAME - (16 << 10);
 
 /// How many chats' new events a socket may fall behind by before it reads them all again.
 const NOTICES: usize = 256;
+/// How many live updates, of every workspace, a socket may fall behind by; those it misses are
+/// let go, and the chat's stored events still come.
+const LIVE_UPDATES: usize = 4096;
 
 /// What the server's connections share of its chats.
 #[derive(Clone, Debug)]
@@ -47,7 +50,7 @@ impl Default for Hub {
     fn default() -> Self {
         Self {
             stored: broadcast::channel(NOTICES).0,
-            live: broadcast::channel(NOTICES).0,
+            live: broadcast::channel(LIVE_UPDATES).0,
         }
     }
 }

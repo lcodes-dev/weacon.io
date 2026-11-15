@@ -9,9 +9,8 @@ use crate::shared::Shared;
 /// What a core offers, and the server offers, to pass a chat's live updates on.
 pub(crate) const LIVE: Code = code!("chat.live");
 
-/// Passes `live` from `machine` on to the chat's followers: text as it is written, and the tool
-/// a permission prompt names, never its input. An update of a chat that isn't on `machine`, or
-/// whose owner no longer owns it there, goes nowhere.
+/// Passes `live` from `machine` to its chat's followers, when the chat runs there. Text from
+/// before the chat's last stored event is dropped; the rest is told the chat's own seq.
 pub(crate) async fn pass(shared: &Shared, machine: &MachineId, mut live: ChatLive) {
     match &mut live.update.event {
         RunEvent::TextDelta { .. } => {}
@@ -25,9 +24,12 @@ pub(crate) async fn pass(shared: &Shared, machine: &MachineId, mut live: ChatLiv
         | RunEvent::Finished { .. }
         | RunEvent::Newer => return,
     }
-    match runs_on(shared, machine, &live).await {
-        Ok(true) => shared.chats.live(live),
-        Ok(false) => {}
+    match placed(shared, machine, &live).await {
+        Ok(Some(seq)) => {
+            live.after = Some(seq);
+            shared.chats.live(live);
+        }
+        Ok(None) => {}
         Err(fault) => {
             let fields = [
                 ("machine_id", machine.as_str().into()),
@@ -40,9 +42,25 @@ pub(crate) async fn pass(shared: &Shared, machine: &MachineId, mut live: ChatLiv
     }
 }
 
-async fn runs_on(shared: &Shared, machine: &MachineId, live: &ChatLive) -> Result<bool, Fault> {
+// The chat's seq when `live` goes on: it runs on `machine`, whose owner still owns it there,
+// and holds no event stored after the one `live` came after.
+async fn placed(
+    shared: &Shared,
+    machine: &MachineId,
+    live: &ChatLive,
+) -> Result<Option<u64>, Fault> {
     let Some(place) = shared.db.find_workspace(&live.workspace).await? else {
-        return Ok(false);
+        return Ok(None);
     };
-    place.runs_on(&live.chat, machine).await
+    let Some(chat) = place.chat(&live.chat).await? else {
+        return Ok(None);
+    };
+    let text = matches!(live.update.event, RunEvent::TextDelta { .. });
+    if text && live.after.is_some_and(|after| after < chat.core_seq) {
+        return Ok(None);
+    }
+    Ok(place
+        .runs_on(&live.chat, machine)
+        .await?
+        .then_some(chat.seq))
 }

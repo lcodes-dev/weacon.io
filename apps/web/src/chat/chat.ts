@@ -40,8 +40,11 @@ export type Snapshot = {
   events: readonly ChatEntry[];
 };
 
-/** The chat as `snapshot` has it: its latest events with nothing missing before `seq`. */
-export function fromSnapshot(snapshot: Snapshot): Chat {
+/**
+ * The chat as `snapshot` has it: its latest events with nothing missing before `seq`, its
+ * prompts' tools named by those heard live in `tools`.
+ */
+export function fromSnapshot(snapshot: Snapshot, tools: ReadonlyMap<string, string> = new Map()): Chat {
   const entries = contiguous(snapshot.events, snapshot.seq);
   const chat: Chat = {
     first: entries[0]?.seq ?? snapshot.seq + 1,
@@ -51,7 +54,7 @@ export function fromSnapshot(snapshot: Snapshot): Chat {
     entries,
     runs: logged(snapshot.runs, entries),
     items: [],
-    tools: new Map(),
+    tools,
   };
   return { ...chat, items: fold(chat, entries) };
 }
@@ -85,9 +88,9 @@ export function commit(chat: Chat, entry: ChatEntry): Chat | undefined {
 
 /**
  * `chat` with what a run says live: the text it streams, when the run is one of the chat's on a
- * turn, and the tool a permission prompt names.
+ * turn and the chat holds no event after `after`, and the tool a permission prompt names.
  */
-export function stream(chat: Chat, run: RunId, event: RunEvent): Chat {
+export function stream(chat: Chat, run: RunId, event: RunEvent, after?: number): Chat {
   if (event.event === "permission_asked") {
     const tools = new Map(chat.tools).set(toolKey(run, event.prompt), event.tool);
     const items = [...chat.items];
@@ -95,7 +98,9 @@ export function stream(chat: Chat, run: RunId, event: RunEvent): Chat {
     return { ...chat, items, tools };
   }
   const state = chat.runs.get(run)?.state;
-  if (event.event !== "text_delta" || state === undefined || !ON_TURN.includes(state)) {
+  // Text from before the chat's latest event is in that event already.
+  const late = after !== undefined && after < chat.seq;
+  if (event.event !== "text_delta" || state === undefined || !ON_TURN.includes(state) || late) {
     return chat;
   }
   const items = [...chat.items];

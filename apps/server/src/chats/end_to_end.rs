@@ -291,6 +291,7 @@ async fn a_new_chat_followed_at_once_or_later_is_heard_whole_and_in_order() {
     }
 }
 
+// A live update of `chat` from its machine, after the second event of its log.
 fn live(chat: &str, event: RunEvent) -> ChatLive {
     ChatLive {
         workspace: id("w1"),
@@ -299,6 +300,7 @@ fn live(chat: &str, event: RunEvent) -> ChatLive {
             run: id("run-1"),
             event,
         },
+        after: Some(2),
     }
 }
 
@@ -357,6 +359,12 @@ async fn a_runs_text_and_its_prompts_tool_reach_the_chats_followers_live_and_are
         text: "MARKER-REPLY".to_owned(),
     };
     socket::send(&mut core, up(live("c-1", whole))).await;
+    // Text from before the reply the chat stored already.
+    let stale = ChatLive {
+        after: Some(1),
+        ..live("c-1", writing.clone())
+    };
+    socket::send(&mut core, up(stale)).await;
     socket::send(&mut core, up(live("c-1", writing.clone()))).await;
     socket::send(&mut core, up(live("c-1", asked))).await;
 
@@ -376,4 +384,57 @@ async fn a_runs_text_and_its_prompts_tool_reach_the_chats_followers_live_and_are
     assert!(kept, "{read:?}");
     let logged = serde_json::to_string(&*fixture.records.lock().unwrap()).unwrap();
     assert!(!logged.contains("MARKER"), "{logged}");
+}
+
+#[tokio::test]
+async fn live_updates_go_only_to_a_client_that_takes_them_and_a_member_no_more_gets_none() {
+    let fixture = Fixture::new().await;
+    let server = fixture.run().await;
+    others(&fixture).await;
+    let (machine, mut core, mut ada) = connected(&fixture, &server).await;
+    ada_chats(&machine, &mut core, &mut ada).await;
+    let bo_token = token(&fixture, &server, "bo@example.com").await;
+    let mut bo = feed(&server, "w1", &bo_token).await;
+    let follow = chat_query("w1", ChatQueryKind::Subscribe { after: 2 });
+    socket::send(
+        &mut bo,
+        Envelope {
+            id: 2,
+            message: follow,
+        },
+    )
+    .await;
+    let token = token(&fixture, &server, "ada@example.com").await;
+    let mut older = open(server.address, "/api/workspaces/w1/feed", &token)
+        .await
+        .unwrap();
+    say(&mut older, &OFFERS[..3]).await;
+    assert!(matches!(next(&mut older).await, Message::Welcome(_)));
+    let follow = chat_query("w1", ChatQueryKind::Subscribe { after: 2 });
+    socket::send(
+        &mut older,
+        Envelope {
+            id: 2,
+            message: follow,
+        },
+    )
+    .await;
+    let writing = || RunEvent::TextDelta {
+        text: "Wor".to_owned(),
+    };
+    let up = |live| Envelope {
+        id: 0,
+        message: Message::ChatLive(live),
+    };
+
+    socket::send(&mut core, up(live("c-1", writing()))).await;
+
+    assert_eq!(live_heard(&mut ada).await, live("c-1", writing()));
+    assert_eq!(live_heard(&mut bo).await, live("c-1", writing()));
+    assert!(quiet(&mut older).await);
+    let w1 = fixture.shared.db.workspace(&id("w1")).await.unwrap();
+    w1.unlink(&member_id("m3")).await;
+    socket::send(&mut core, up(live("c-1", writing()))).await;
+    assert_eq!(live_heard(&mut ada).await, live("c-1", writing()));
+    assert!(socket::ends(&mut bo).await);
 }

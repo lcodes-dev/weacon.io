@@ -287,6 +287,7 @@ mod tests {
                     text: "Wor".to_owned(),
                 },
             },
+            after: None,
         };
         let (w1, w2) = (id::<WorkspaceId>("w1"), id::<WorkspaceId>("w2"));
 

@@ -397,6 +397,11 @@ export type ChatList = {
  * server to the feeds that follow the chat, each under `chat.live`.
  */
 export type ChatLive = {
+  /**
+   * The seq of the chat's last event committed before it, in the sender's log: a viewer
+   * that holds a later one shows no text from it.
+   */
+  after?: number;
   chat: ChatId;
   update: RunUpdate;
   workspace: WorkspaceId;

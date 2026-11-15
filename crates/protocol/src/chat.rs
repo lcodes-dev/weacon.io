@@ -79,6 +79,11 @@ pub struct ChatLive {
     pub workspace: WorkspaceId,
     pub chat: ChatId,
     pub update: RunUpdate,
+    /// The seq of the chat's last event committed before it, in the sender's log: a viewer
+    /// that holds a later one shows no text from it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "u64")]
+    pub after: Option<u64>,
 }
 
 /// An event and its place in its chat's log: `seq` starts at 1 and grows by one.

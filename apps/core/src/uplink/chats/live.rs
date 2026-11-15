@@ -1,7 +1,7 @@
 //! What a chat's viewers need of its runs as they happen, which the server passes on and never
 //! keeps: text as it is written, and the tool a permission prompt names.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 
 use weacon_protocol::{
     ChatEvent, ChatLive, ChatUpdate, Code, Envelope, Message, RunEvent, RunId, RunUpdate, code,
@@ -19,7 +19,7 @@ const RUNS_MAX: usize = 1024;
 pub(super) struct Live {
     on: bool,
     runs: HashMap<RunId, ChatKey>,
-    order: Vec<RunId>,
+    order: VecDeque<RunId>,
 }
 
 impl Live {
@@ -45,23 +45,26 @@ impl Live {
         };
         self.remember(run, &key);
         let event = asked?;
-        self.up(&key, run.clone(), event)
+        self.up(&key, run.clone(), event, update.entry.seq)
     }
 
-    /// `pushed`, a run's update, as it goes up live: text as it is written, and nothing else.
-    pub(super) fn of(&self, pushed: RunUpdate) -> Option<Envelope> {
+    /// `pushed`, a run's update, as it goes up live: text as it is written, after `came`, the
+    /// last event of its chat that went up, and nothing else.
+    pub(super) fn of(&self, pushed: RunUpdate, came: &HashMap<ChatKey, u64>) -> Option<Envelope> {
         if !matches!(pushed.event, RunEvent::TextDelta { .. }) {
             return None;
         }
         let key = self.runs.get(&pushed.run)?.clone();
-        self.up(&key, pushed.run, pushed.event)
+        let after = came.get(&key).copied().unwrap_or_default();
+        self.up(&key, pushed.run, pushed.event, after)
     }
 
-    fn up(&self, key: &ChatKey, run: RunId, event: RunEvent) -> Option<Envelope> {
+    fn up(&self, key: &ChatKey, run: RunId, event: RunEvent, after: u64) -> Option<Envelope> {
         let live = ChatLive {
             workspace: key.workspace.clone(),
             chat: key.chat.clone(),
             update: RunUpdate { run, event },
+            after: Some(after),
         };
         self.on.then_some(Envelope {
             id: 0,
@@ -73,9 +76,10 @@ impl Live {
         if self.runs.insert(run.clone(), key.clone()).is_some() {
             return;
         }
-        self.order.push(run.clone());
-        if self.order.len() > RUNS_MAX {
-            let oldest = self.order.remove(0);
+        self.order.push_back(run.clone());
+        if self.order.len() > RUNS_MAX
+            && let Some(oldest) = self.order.pop_front()
+        {
             self.runs.remove(&oldest);
         }
     }
@@ -143,7 +147,7 @@ mod tests {
         }
     }
 
-    fn up(chat: &str, event: RunEvent) -> Envelope {
+    fn up(chat: &str, event: RunEvent, after: u64) -> Envelope {
         let live = ChatLive {
             workspace: id("w1"),
             chat: id(chat),
@@ -151,6 +155,7 @@ mod tests {
                 run: id("run-1"),
                 event,
             },
+            after: Some(after),
         };
         Envelope {
             id: 0,
@@ -161,7 +166,8 @@ mod tests {
     #[test]
     fn text_being_written_and_a_prompts_tool_go_up_live_named_by_their_chat_and_nothing_else() {
         let mut live = Live::new(true);
-        assert_eq!(live.of(delta("run-1")), None);
+        let came = HashMap::from([(ChatKey::new(&id("w1"), &id("c-1")), 7)]);
+        assert_eq!(live.of(delta("run-1"), &came), None);
 
         assert_eq!(live.saw(&update("c-1", started("run-1"))), None);
         let asked = ChatEvent::Run {
@@ -172,21 +178,21 @@ mod tests {
         };
 
         assert_eq!(
-            live.of(delta("run-1")),
-            Some(up("c-1", delta("run-1").event))
+            live.of(delta("run-1"), &came),
+            Some(up("c-1", delta("run-1").event, 7))
         );
-        assert_eq!(live.of(delta("run-2")), None);
+        assert_eq!(live.of(delta("run-2"), &came), None);
         let said = RunUpdate {
             run: id("run-1"),
             event: RunEvent::Text {
                 text: "Done".to_owned(),
             },
         };
-        assert_eq!(live.of(said), None);
+        assert_eq!(live.of(said, &came), None);
         let beside = live.saw(&update("c-1", asked));
         assert_eq!(
             beside,
-            Some(up("c-1", ask("Bash", serde_json::Value::Null)))
+            Some(up("c-1", ask("Bash", serde_json::Value::Null), 1))
         );
     }
 
@@ -194,14 +200,14 @@ mod tests {
     fn nothing_goes_up_live_to_a_server_that_doesnt_pass_it_on_and_old_runs_are_let_go() {
         let mut off = Live::new(false);
         off.saw(&update("c-1", started("run-1")));
-        assert_eq!(off.of(delta("run-1")), None);
+        assert_eq!(off.of(delta("run-1"), &HashMap::new()), None);
 
         let mut live = Live::new(true);
         for n in 0..=RUNS_MAX {
             live.saw(&update("c-1", started(&format!("run-{n}"))));
         }
-        assert_eq!(live.of(delta("run-0")), None);
-        assert!(live.of(delta("run-1")).is_some());
+        assert_eq!(live.of(delta("run-0"), &HashMap::new()), None);
+        assert!(live.of(delta("run-1"), &HashMap::new()).is_some());
         live.saw(&update("c-1", started("run-1")));
         assert_eq!(live.order.len(), RUNS_MAX);
     }
