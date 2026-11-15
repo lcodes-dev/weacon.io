@@ -26,9 +26,21 @@ pub(crate) enum Recorded {
 }
 
 impl Workspace {
-    /// Records `request` in the ledger, unless it is there already.
+    /// Records `request` in the ledger, unless it is there already; a chat the quota filled
+    /// meanwhile takes none, as `chat.quota_full`.
     pub(crate) async fn record_request(&self, request: &NewRequest<'_>) -> Result<Recorded, Fault> {
         let mut transaction = self.db.write().await?;
+        let full = sqlx::query(
+            "SELECT 1 FROM chats WHERE workspace_id = ? AND chat_id = ? AND state = 'full'",
+        )
+        .bind(self.id.as_str())
+        .bind(request.command.chat.as_str())
+        .fetch_optional(&mut *transaction)
+        .await
+        .map_err(failed)?;
+        if full.is_some() {
+            return Err(super::chat_quota_full());
+        }
         let earlier = sqlx::query_as::<_, (String, i64)>(
             "SELECT command, open FROM chat_requests WHERE workspace_id = ? AND request_id = ?",
         )
@@ -219,6 +231,34 @@ mod tests {
             command: &asked,
             member: &member,
             at: NOW,
+        };
+        assert_eq!(two.record_request(&elsewhere).await.unwrap(), Recorded::New);
+    }
+
+    #[tokio::test]
+    async fn a_chat_the_quota_filled_records_no_more_commands() {
+        let dir = TempDir::new().unwrap();
+        let (one, two) = two_teams(&dir).await;
+        make(&one, "c-1", "m1", NOW).await.unwrap();
+        make(&two, "c-1", "m2", NOW).await.unwrap();
+        one.set_chat_state(&id("c-1"), weacon_protocol::ChatState::Full)
+            .await
+            .unwrap();
+        let (asked, member) = (command("r-2", "c-1", "Go"), member_id("m1"));
+        let new = NewRequest {
+            command: &asked,
+            member: &member,
+            at: NOW,
+        };
+
+        let refused = one.record_request(&new).await.unwrap_err();
+
+        assert_eq!(refused.code().as_str(), "chat.quota_full");
+        assert!(!one.has_request(&id("r-2")).await.unwrap());
+        let theirs = member_id("m2");
+        let elsewhere = NewRequest {
+            member: &theirs,
+            ..new
         };
         assert_eq!(two.record_request(&elsewhere).await.unwrap(), Recorded::New);
     }
