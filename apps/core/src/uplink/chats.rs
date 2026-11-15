@@ -10,7 +10,7 @@ use weacon_protocol::{
     ChatQueryKind, ChatUpdate, Code, Envelope, Message, RunEvent, code,
 };
 
-use super::{QUEUE, Step, failure, refusal, reply};
+use super::{QUEUE, Step, failure, for_now, refusal, reply};
 use crate::chats::Chats;
 use crate::chats::feed::{self, Client};
 use crate::runs::ChatKey;
@@ -72,7 +72,7 @@ impl ChatLink {
                 return reply(refusal(id, &command, code!("message.unsupported")));
             }
             if self.waiting.len() >= QUEUE {
-                return reply(refusal(id, &command, code!("chat.unavailable")));
+                return reply(for_now(id, code!("chat.unavailable")));
             }
             self.queue(Ask::Command(command));
             return Step::Nothing;
@@ -198,13 +198,13 @@ fn stored(mut update: ChatUpdate) -> Option<ChatUpdate> {
 async fn take_up(chats: Chats, client: Client, mut asked: mpsc::Receiver<Ask>, log: Logger) {
     let mut jumps = Jumps::new();
     while let Some(ask) = asked.recv().await
-        && !client.push.is_closed()
+        && !client.is_gone()
     {
         let (key, request, taken) = match ask {
             Ask::Command(command) => {
                 let key = ChatKey::new(&command.workspace, &command.chat);
                 let request = Some(command.request.clone());
-                (key, request, chats.command(command).await)
+                (key, request, chats.command(command, &client).await)
             }
             Ask::Follow(key, after) => {
                 let followed = follow(&chats, &client, &key, after, &mut jumps).await;
@@ -327,7 +327,7 @@ mod tests {
     use super::*;
     use crate::chats::test_support::{
         bench, chat, command, key, logged_prompt, parts, prompt, query, request, run, session,
-        soon, text, workspace,
+        someone, soon, text, workspace,
     };
 
     // A link with no worker, whose asks wait in a queue with room for `room` for the test to
@@ -567,7 +567,7 @@ mod tests {
     }
 
     #[test]
-    fn a_command_with_no_room_left_is_refused_as_unavailable() {
+    fn a_command_with_no_room_left_is_refused_as_unavailable_for_now() {
         let (mut link, _asked, _push) = link(true, 1);
         let interrupt = |request: &str| command(request, "c-1", ChatAction::Interrupt);
 
@@ -583,14 +583,20 @@ mod tests {
 
         assert!(taken.iter().all(|step| matches!(step, Step::Nothing)));
         assert_eq!(link.waiting.len(), QUEUE);
-        assert_eq!(error_code(&refused), Some("chat.unavailable"));
         let Step::Reply(reply) = refused else {
             panic!("not refused");
         };
-        let Message::Receipt(receipt) = reply.message else {
-            panic!("not a receipt");
+        let busy = weacon_protocol::ErrorBody {
+            code: code!("chat.unavailable"),
+            retryable: true,
         };
-        assert_eq!((reply.id, receipt.request.as_str()), (9, "r-2"));
+        assert_eq!(
+            *reply,
+            Envelope {
+                id: 9,
+                message: Message::Error(busy)
+            }
+        );
     }
 
     // Events the server keeps, as they are.
@@ -697,7 +703,7 @@ mod tests {
     async fn prompts(chats: &Chats, count: usize, size: usize) {
         for at in 0..count {
             let asked = prompt(&format!("r-{at}"), &"a".repeat(size));
-            chats.command(asked).await.unwrap();
+            chats.command(asked, &someone()).await.unwrap();
         }
     }
 
@@ -715,7 +721,7 @@ mod tests {
             seqs.push(seq);
             prompted.extend(asked);
         }
-        bench.chats.command(prompt("r-new", "Hi")).await.unwrap();
+        bench.command(prompt("r-new", "Hi")).await.unwrap();
         let (later, newer) = until_prompt(&mut link).await;
         seqs.extend(later);
 
@@ -735,7 +741,7 @@ mod tests {
         drop(link.take(subscribe(100)));
         // Passes the follow on, and gives what went up meanwhile, if anything did.
         let first = next_up(&mut link).await;
-        bench.chats.command(prompt("r-new", "Hi")).await.unwrap();
+        bench.command(prompt("r-new", "Hi")).await.unwrap();
         let (mut seqs, newer) = until_prompt(&mut link).await;
         if let Some(Envelope {
             message: Message::Chat(update),
@@ -761,7 +767,7 @@ mod tests {
             .unwrap();
         // The first subscription is gone before the chat goes on, as one that lost events is.
         drop(first_pushes);
-        bench.chats.command(prompt("r-new", "Hi")).await.unwrap();
+        bench.command(prompt("r-new", "Hi")).await.unwrap();
 
         let (again, mut pushes) = crate::chats::test_support::client(16);
         follow(&bench.chats, &again, &key(), 100, &mut jumps)

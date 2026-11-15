@@ -1,6 +1,5 @@
 //! A chat's log: its committed events as JSON lines, in the order they were committed.
 
-use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
 use std::io::{self, BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
@@ -8,16 +7,19 @@ use std::path::{Path, PathBuf};
 use weacon_model::ChatRuns;
 use weacon_observability::Fault;
 use weacon_protocol::{
-    AgentKind, ChatAction, ChatEntry, ChatEvent, ChatId, MAX_FRAME, Outcome, RepoId, RequestId,
-    RunEvent, RunUpdate, code,
+    AgentKind, ChatAction, ChatEntry, ChatEvent, ChatId, MAX_FRAME, RepoId, RequestId, RunEvent,
+    RunUpdate, code,
 };
 
 use crate::app::blocking;
 use crate::platform;
 
 mod line;
+mod requests;
 
 use line::entry_line;
+use requests::Requests;
+pub(crate) use requests::{Seen, digest};
 
 // An entry, and a window of entries, each fit one frame with room for what travels with them.
 const ENTRY_MAX: usize = MAX_FRAME - (32 << 10);
@@ -36,7 +38,7 @@ pub(crate) struct ChatLog {
     /// Where each entry starts in the file; the entry `seq` starts at `starts[seq - 1]`.
     starts: Vec<u64>,
     end: u64,
-    requests: HashMap<RequestId, Commanded>,
+    requests: Requests,
     /// Set by a failed write, which may have left half an entry; opening the log again mends it.
     broken: bool,
     /// The agent the chat's first prompt named, Claude when it named none.
@@ -44,36 +46,6 @@ pub(crate) struct ChatLog {
     /// The repository the chat's first prompt named, if it named one.
     repo: Option<RepoId>,
     runs: ChatRuns,
-}
-
-/// What the log holds of one command.
-#[derive(Debug, Default)]
-struct Commanded {
-    /// The place of its prompt, when it was one.
-    prompt: Option<u64>,
-    stage: Stage,
-}
-
-/// How far a command got, as its receipts say; a later receipt never moves it back.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
-enum Stage {
-    #[default]
-    Logged,
-    Accepted,
-    /// A receipt other than `accepted` ended it.
-    Ended,
-}
-
-/// Whether a command was seen before under the same request.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Seen {
-    Never,
-    /// The same prompt, committed but without a receipt yet: it may not have been queued.
-    Pending,
-    /// The same command again: the caller finishes what its first try began.
-    Same,
-    /// With other content.
-    Other,
 }
 
 // Opens a log file to append, creating it and its folder private and synced when missing.
@@ -108,7 +80,7 @@ impl ChatLog {
                 workspace_root,
                 starts: Vec::new(),
                 end: 0,
-                requests: HashMap::new(),
+                requests: Requests::default(),
                 broken: false,
                 agent: None,
                 repo: None,
@@ -163,22 +135,14 @@ impl ChatLog {
                 repo,
                 ..
             } => {
-                self.requests.entry(request.clone()).or_default().prompt = Some(entry.seq);
+                self.requests.prompted(request, entry.seq);
                 // The first prompt names the chat's agent and repository; later ones can't.
                 if self.agent.is_none() {
                     self.agent = Some(agent.unwrap_or(AgentKind::Claude));
                     self.repo.clone_from(repo);
                 }
             }
-            ChatEvent::Receipt { receipt } => {
-                let commanded = self.requests.entry(receipt.request.clone()).or_default();
-                let stage = if receipt.outcome == Outcome::Accepted {
-                    Stage::Accepted
-                } else {
-                    Stage::Ended
-                };
-                commanded.stage = commanded.stage.max(stage);
-            }
+            ChatEvent::Receipt { receipt } => self.requests.receipted(receipt),
             ChatEvent::Run { .. }
             | ChatEvent::RunStatus { .. }
             | ChatEvent::OutsidePrompt { .. }
@@ -283,7 +247,7 @@ impl ChatLog {
 
     /// Whether a command under `request` was committed before, and with the same content. Only
     /// a prompt's content is kept, in the prompt entry its owner commits before any receipt, so
-    /// any other command counts as the same.
+    /// any other command counts as the same, and so does anything under a refused request.
     pub(crate) async fn seen(
         &self,
         request: &RequestId,
@@ -293,8 +257,7 @@ impl ChatLog {
             return Ok(Seen::Never);
         };
         let Some(seq) = commanded.prompt else {
-            let same = !matches!(action, ChatAction::Prompt { .. });
-            return Ok(if same { Seen::Same } else { Seen::Other });
+            return Ok(commanded.seen_unprompted(action));
         };
         let earlier = self.read(seq, seq).await?.pop().map(|entry| entry.event);
         let same = matches!(
@@ -311,18 +274,17 @@ impl ChatLog {
                 },
             ) if was_text == *text && was_repo == *repo && was_agent == *agent
         );
-        Ok(match (same, commanded.stage) {
-            (true, Stage::Logged) => Seen::Pending,
-            (true, Stage::Accepted | Stage::Ended) => Seen::Same,
-            (false, _) => Seen::Other,
-        })
+        Ok(commanded.seen_prompt(same))
+    }
+
+    /// Keeps the digest of the command refused for good under `request`, its receipt in.
+    pub(crate) fn refused(&mut self, request: &RequestId, digest: u64) {
+        self.requests.refused(request, digest);
     }
 
     /// Whether a receipt that ends the command under `request` is in the log.
     pub(crate) fn has_ended(&self, request: &RequestId) -> bool {
-        self.requests
-            .get(request)
-            .is_some_and(|commanded| commanded.stage == Stage::Ended)
+        self.requests.has_ended(request)
     }
 
     async fn read(&self, first: u64, last: u64) -> Result<Vec<ChatEntry>, Fault> {
@@ -757,5 +719,29 @@ mod tests {
         assert!(log.has_ended(&request("r-1")) && log.has_ended(&request("r-2")));
         assert!(!log.has_ended(&request("r-3")));
         assert_eq!(seen(&log, "r-1", asks("Hi")).await, Seen::Same);
+    }
+
+    #[tokio::test]
+    async fn a_refused_request_is_the_same_command_again_only_while_the_log_is_open() {
+        let dir = TempDir::new().unwrap();
+        let mut log = open(&dir).await;
+        let failed = Outcome::Failed {
+            code: code!("chat.empty_prompt"),
+        };
+        let receipt = Receipt {
+            request: request("r-1"),
+            outcome: failed,
+        };
+        log.append(ChatEvent::Receipt { receipt }).await.unwrap();
+        log.refused(&request("r-1"), digest(&asks(" ")));
+
+        assert_eq!(seen(&log, "r-1", asks(" ")).await, Seen::Same);
+        assert_eq!(seen(&log, "r-1", asks("Deploy")).await, Seen::Other);
+        drop(log);
+
+        // Opened again, the digest is gone: nothing more is taken under a refused request.
+        let log = open(&dir).await;
+        assert_eq!(seen(&log, "r-1", asks("Deploy")).await, Seen::Other);
+        assert_eq!(seen(&log, "r-1", ChatAction::Interrupt).await, Seen::Other);
     }
 }

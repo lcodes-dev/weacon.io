@@ -14,10 +14,20 @@ pub(crate) struct Client {
     pub(crate) push: mpsc::Sender<Message>,
 }
 
+impl Client {
+    pub(crate) fn is(&self, other: &Self) -> bool {
+        self.push.same_channel(&other.push)
+    }
+
+    pub(crate) fn is_gone(&self) -> bool {
+        self.push.is_closed()
+    }
+}
+
 /// One client's subscription to one chat.
 #[derive(Debug)]
 pub(crate) struct Subscriber {
-    push: mpsc::Sender<Message>,
+    client: Client,
     // A place in the client's queue kept free, so it can always be told it missed events.
     lost: mpsc::OwnedPermit<Message>,
     notice: Message,
@@ -32,24 +42,20 @@ impl Subscriber {
             answer: ChatAnswerKind::EventsLost,
         });
         Some(Self {
-            push: client.push.clone(),
+            client: client.clone(),
             lost: client.push.clone().try_reserve_owned().ok()?,
             notice,
         })
     }
 
-    pub(crate) fn is_for(&self, client: &Client) -> bool {
-        self.push.same_channel(&client.push)
-    }
-
-    pub(crate) fn is_gone(&self) -> bool {
-        self.push.is_closed()
+    pub(crate) const fn client(&self) -> &Client {
+        &self.client
     }
 
     /// Queues `message`, or ends the subscription by telling the client it missed events;
     /// `None` once the subscription is over.
     pub(crate) fn tell(self, message: Message) -> Option<Self> {
-        match self.push.try_send(message) {
+        match self.client.push.try_send(message) {
             Ok(()) => Some(self),
             Err(TrySendError::Full(_)) => {
                 self.end();
