@@ -602,6 +602,7 @@ mod tests {
             text: "Why is the deploy flaky".to_owned(),
             repo: None,
             agent: None,
+            task: None,
         };
         let delta = ChatEvent::Run {
             update: RunUpdate {

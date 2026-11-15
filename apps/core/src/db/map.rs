@@ -73,6 +73,8 @@ pub(crate) enum Looking {
     Everything,
     /// Items alone, no documents.
     Items,
+    /// Documents alone that hold any of the words, such as a task's title, best first.
+    DocsWithAnyWord,
 }
 
 impl Workspace {
@@ -288,14 +290,14 @@ impl Map {
         looking: Looking,
         limit: u32,
     ) -> Result<Vec<Hit>, Fault> {
-        let Some(query) = match_query(words) else {
+        let Some(query) = match_query(words, looking == Looking::DocsWithAnyWord) else {
             return Ok(Vec::new());
         };
         let (workspace, repo) = self.keys();
         let rows: Vec<(String, i64, String, String)> = sqlx::query_as(
             "SELECT path, line, kind, name FROM map_search \
              WHERE map_search MATCH ?1 AND workspace_id = ?2 AND repo = ?3 \
-             AND (?7 OR kind != 'doc') \
+             AND (?7 OR kind != 'doc') AND (NOT ?8 OR kind = 'doc') \
              AND (layer = ?4 OR (layer = ?6 AND path NOT IN (SELECT path FROM map_files \
                  WHERE workspace_id = ?2 AND repo = ?3 AND layer = ?4))) \
              AND EXISTS (SELECT 1 FROM map_layers AS overlay JOIN map_layers AS base \
@@ -310,7 +312,8 @@ impl Map {
         .bind(layer)
         .bind(limit)
         .bind(BASE)
-        .bind(looking == Looking::Everything)
+        .bind(looking != Looking::Items)
+        .bind(looking == Looking::DocsWithAnyWord)
         .fetch_all(&self.workspace.db.pool)
         .await
         .map_err(failed)?;
@@ -371,12 +374,12 @@ impl Map {
 
 /// Each word as a quoted FTS5 prefix term, so no input reads as query syntax; `None` without
 /// words.
-fn match_query(words: &str) -> Option<String> {
+fn match_query(words: &str, any: bool) -> Option<String> {
     let terms: Vec<String> = words
         .split_whitespace()
         .map(|word| format!("\"{}\"*", word.replace('"', "\"\"")))
         .collect();
-    (!terms.is_empty()).then(|| terms.join(" "))
+    (!terms.is_empty()).then(|| terms.join(if any { " OR " } else { " " }))
 }
 
 #[cfg(test)]
@@ -718,12 +721,50 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn docs_with_any_word_are_found_best_first_without_items() {
+        let dir = TempDir::new().unwrap();
+        let map = map(&dir, "one").await;
+        let doc = |path: &str, body: &str| Entry {
+            kind: "doc".to_owned(),
+            line: 1,
+            ..entry(path, path, body)
+        };
+        let entries = [
+            entry("src/lib.rs", "a::release", "release signing"),
+            doc("docs/both.md", "release signing signing"),
+            doc("docs/one.md", "the release"),
+            doc("docs/none.md", "unrelated"),
+        ];
+        map.replace(&layer(BASE, vec![]), &[], &entries)
+            .await
+            .unwrap();
+        let paths = |hits: Vec<Hit>| hits.into_iter().map(|hit| hit.path).collect::<Vec<_>>();
+        let words = "signing release";
+
+        let any = map.search(BASE, words, Looking::DocsWithAnyWord, 10).await;
+        assert_eq!(paths(any.unwrap()), ["docs/both.md", "docs/one.md"]);
+        let every = paths(
+            map.search(BASE, words, Looking::Everything, 10)
+                .await
+                .unwrap(),
+        );
+        assert_eq!(every.len(), 2);
+        assert!(every.contains(&"src/lib.rs".to_owned()), "{every:?}");
+        let items = map.search(BASE, "signing", Looking::Items, 10).await;
+        assert_eq!(paths(items.unwrap()), ["src/lib.rs"]);
+    }
+
     #[test]
     fn quotes_every_word_of_a_search() {
         assert_eq!(
-            match_query(" a  \"b "),
+            match_query(" a  \"b ", false),
             Some("\"a\"* \"\"\"b\"*".to_owned())
         );
-        assert_eq!(match_query(""), None);
+        assert_eq!(
+            match_query("a b", true),
+            Some("\"a\"* OR \"b\"*".to_owned())
+        );
+        assert_eq!(match_query("", true), None);
     }
 }

@@ -25,6 +25,7 @@ const LIMIT: Duration = Duration::from_secs(5);
 /// The core's share of [`LIMIT`], so a map it is still reading leaves time to index here.
 const CORE_LIMIT: Duration = Duration::from_secs(2);
 const MAP_READ: Capability = Capability::new(code!("map.read"));
+const SESSION_START_READ: Capability = Capability::new(code!("map.session_start"));
 
 /// How a hook finds its folder's map: from its run's core when it has one, else by `index`,
 /// within `limit` in all.
@@ -85,7 +86,8 @@ fn run_in(
 }
 
 impl Hook {
-    /// Where to begin in `folder`'s code, or nothing when it has no code map.
+    /// Where to begin in `folder`'s code, after the flows of the task of the run's chat when its
+    /// core has them, or nothing when it has no code map.
     fn session_start(&self, folder: PathBuf, log: &Logger) -> Result<String, Fault> {
         let call = McpCall::Map(SESSION_START);
         let index = self.index;
@@ -120,13 +122,18 @@ impl Core {
     async fn stored(&self, folder: &str) -> Result<Option<String>, Fault> {
         let (welcome, mut connection) =
             Connection::open(&self.socket, self.me.clone(), Vec::new()).await?;
-        if !welcome.capabilities.contains(&MAP_READ) {
+        let offers = |capability: Capability| welcome.capabilities.contains(&capability);
+        let query = if offers(SESSION_START_READ) {
+            MapQueryKind::SessionStart(SESSION_START)
+        } else if offers(MAP_READ) {
+            MapQueryKind::Map(SESSION_START)
+        } else {
             return Ok(None);
-        }
+        };
         let query = MapQuery {
             token: self.token.clone(),
             folder: folder.to_owned(),
-            query: MapQueryKind::Map(SESSION_START),
+            query,
         };
         let message = Message::MapQuery(query);
         connection.send(&Envelope { id: 2, message }).await?;
@@ -169,7 +176,7 @@ mod tests {
     use std::path::Path;
 
     use weacon_agents::SpawnPolicy;
-    use weacon_protocol::{AgentKind, RunId, WorkspaceId};
+    use weacon_protocol::{AgentKind, ChatTask, RunId, WorkspaceId};
     use weacon_testing::{TempDir, recording_logger};
 
     use super::*;
@@ -290,9 +297,23 @@ mod tests {
         }
 
         fn token(&self, workspace: &WorkspaceId, folder: &Path) -> (String, Revoke) {
+            self.token_for(workspace, folder, None)
+        }
+
+        // A token of a run whose chat was made for a task titled `title`.
+        fn token_for(
+            &self,
+            workspace: &WorkspaceId,
+            folder: &Path,
+            title: Option<&str>,
+        ) -> (String, Revoke) {
             let run = RunId::try_from("run-1".to_owned()).unwrap();
+            let task = title.map(|title| ChatTask {
+                id: "t-1".parse().unwrap(),
+                title: title.to_owned(),
+            });
             let grant = Grant::new(workspace.clone(), run, AgentKind::Claude, folder.to_owned());
-            let (token, revoke) = self.mcp.grants.issue(grant).unwrap();
+            let (token, revoke) = self.mcp.grants.issue(grant.for_task(task)).unwrap();
             (token.as_str().to_owned(), revoke)
         }
     }
@@ -336,6 +357,78 @@ mod tests {
         assert_eq!(start("other", &main), "indexed\n");
         drop(revoke);
         assert_eq!(start(&token, &main), "indexed\n");
+        core.stop(&token);
+    }
+
+    // Docs whose flows a task about release signing finds, among others it doesn't.
+    fn flow_docs(dir: &Path) {
+        let pins: String = (0..60)
+            .map(|n| format!("flow:crate_number_{n}::item_{n}->crate_number_1::item_1\n"))
+            .collect();
+        fs::create_dir_all(dir.join("docs")).unwrap();
+        let release = format!("# Release signing\n\nHow a release is signed.\n\n{pins}");
+        fs::write(dir.join("docs/release.md"), release).unwrap();
+        let other = "# Storage\n\nflow:crate_number_2::item_2->crate_number_3::item_3\n";
+        fs::write(dir.join("docs/storage.md"), other).unwrap();
+    }
+
+    #[test]
+    fn a_session_start_gives_its_tasks_flows_first_then_the_map_within_the_same_bytes() {
+        let dir = TempDir::new().unwrap();
+        let one = workspace("one");
+        let main = repo(&dir);
+        crates(&main);
+        flow_docs(&main);
+        fixture(&dir, &main, &["add", "."]);
+        fixture(&dir, &main, &["commit", "--quiet", "-m", "Add crates"]);
+        let main = main.canonicalize().unwrap();
+        let core = Running::start(&register(&dir, &one, "site", &main));
+        let (log, _) = recording_logger();
+        let start = |title: Option<&str>| {
+            let (token, _revoke) = core.token_for(&one, &main, title);
+            let hook = asking(core.socket.clone(), &token);
+            hook.session_start(main.clone(), &log).unwrap()
+        };
+
+        let plain = start(None);
+        let text = start(Some("Speed up release signing"));
+
+        sized(&plain);
+        assert!(text.len() <= 4000 && text.ends_with('\n'), "{}", text.len());
+        let (flows, map) = text.split_once("\n\n").unwrap();
+        assert!(
+            flows.len() + 2 <= 1200 && flows.len() > 1000,
+            "{}",
+            flows.len()
+        );
+        let mut lines = flows.lines();
+        assert_eq!(
+            lines.next(),
+            Some("This chat is for the task a person titled \"Speed up release signing\".")
+        );
+        assert_eq!(
+            lines.next(),
+            Some("Flows pinned in the docs that best match that title: 60.")
+        );
+        assert!(
+            lines
+                .next()
+                .unwrap()
+                .starts_with("- docs/release.md:5  crate_number_0::")
+        );
+        assert!(
+            flows.ends_with(" more lines") && !flows.contains("storage"),
+            "{flows}"
+        );
+        assert_eq!(map.lines().next(), plain.lines().next());
+        assert!(
+            map.len() > plain.len() - 1300 && map.ends_with('\n'),
+            "{}",
+            map.len()
+        );
+        assert_eq!(start(Some("Zebra")), plain);
+        assert_eq!(start(Some("")), plain);
+        let token = core.token(&one, &main).0;
         core.stop(&token);
     }
 

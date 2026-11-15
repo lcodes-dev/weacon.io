@@ -240,6 +240,8 @@ impl Workspace {
                 state: stored_state(&state)?,
                 updated_at,
                 run: run.as_deref().map(stored_run_state).transpose()?.flatten(),
+                machine_id: None,
+                task: None,
             })
         })
         .collect()
@@ -398,6 +400,8 @@ mod tests {
             state: ChatState::Open,
             updated_at: NOW + 5,
             run: None,
+            machine_id: None,
+            task: None,
         };
         assert_eq!(listed.first(), Some(&summary));
         assert_eq!(ids(&listed), ["c-2", "c-1"]);

@@ -199,21 +199,21 @@ impl Index {
         let mut text = Text::new(budget);
         text.line(&format!("Flows pinned in the docs: {}.", self.flows.len()));
         for flow in &self.flows {
-            let state = match &flow.breaks {
-                None => "holds".to_owned(),
-                Some(Break::Missing(step)) => format!("breaks: no item {step}"),
-                Some(Break::Unreached(from, to)) => {
-                    format!("breaks: {from} doesn't reach {to} through calls")
-                }
-            };
-            text.line(&format!(
-                "- {}:{}  {}: {state}",
-                flow.file,
-                flow.line,
-                flow.steps.join(" -> ")
-            ));
+            text.line(&flow_line(flow));
         }
         text.finish()
+    }
+
+    /// The flows that each of `docs` pins, a doc's own in its order, as [`Self::flows`] lists
+    /// them, without its heading.
+    #[must_use]
+    pub fn flows_of(&self, docs: &[&str]) -> Vec<String> {
+        let mut seen = BTreeSet::new();
+        docs.iter()
+            .filter(|doc| seen.insert(**doc))
+            .flat_map(|doc| self.flows.iter().filter(move |flow| flow.file == *doc))
+            .map(flow_line)
+            .collect()
     }
 
     /// The contracts of one kind, or of every kind, in order.
@@ -286,6 +286,18 @@ fn folder(folder: &str) -> &str {
     if folder.is_empty() { "." } else { folder }
 }
 
+fn flow_line(flow: &crate::flows::Flow) -> String {
+    let state = match &flow.breaks {
+        None => "holds".to_owned(),
+        Some(Break::Missing(step)) => format!("breaks: no item {step}"),
+        Some(Break::Unreached(from, to)) => {
+            format!("breaks: {from} doesn't reach {to} through calls")
+        }
+    };
+    let steps = flow.steps.join(" -> ");
+    format!("- {}:{}  {steps}: {state}", flow.file, flow.line)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -311,6 +323,37 @@ mod tests {
             ),
         ]))
         .unwrap()
+    }
+
+    #[test]
+    fn the_flows_of_some_docs_are_listed_doc_by_doc_once_each() {
+        let index = index(&files(&[
+            ("lib/Cargo.toml", "[package]\nname = \"lib\"\n"),
+            (
+                "lib/src/lib.rs",
+                "pub fn run() { keep(); }\npub fn keep() {}\n",
+            ),
+            (
+                "docs/a.md",
+                "flow:lib::run->lib::keep\n\nflow:lib::keep->lib::run\n",
+            ),
+            ("docs/b.md", "See flow:lib::run->lib::gone.\n"),
+            ("docs/c.md", "flow:lib::keep->lib::keep\n"),
+        ]))
+        .unwrap();
+
+        let listed = index.flows_of(&["docs/b.md", "docs/a.md", "docs/b.md", "docs/none.md"]);
+
+        assert_eq!(
+            listed,
+            [
+                "- docs/b.md:1  lib::run -> lib::gone: breaks: no item lib::gone",
+                "- docs/a.md:1  lib::run -> lib::keep: holds",
+                "- docs/a.md:3  lib::keep -> lib::run: breaks: lib::keep doesn't reach lib::run \
+                 through calls",
+            ]
+        );
+        assert!(index.flows_of(&[]).is_empty());
     }
 
     #[test]

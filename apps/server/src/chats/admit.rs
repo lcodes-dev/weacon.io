@@ -135,6 +135,7 @@ mod tests {
             repo: None,
             machine: machine.map(id),
             agent: None,
+            task: None,
         }
     }
 
@@ -249,6 +250,7 @@ mod tests {
             repo: None,
             machine: Some(id("mc-1")),
             agent: Some(weacon_protocol::AgentKind::Newer),
+            task: None,
         };
         assert_eq!(refused(None, "m1", newer_agent), "message.unsupported");
     }

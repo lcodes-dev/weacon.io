@@ -234,6 +234,7 @@ pub(crate) fn logged_prompt(request_id: &str, text: &str) -> ChatEvent {
         text: text.to_owned(),
         repo: None,
         agent: None,
+        task: None,
     }
 }
 
@@ -257,6 +258,7 @@ pub(crate) fn prompt(request: &str, text: &str) -> ChatCommand {
             repo: None,
             machine: None,
             agent: None,
+            task: None,
         },
     )
 }

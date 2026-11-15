@@ -167,6 +167,7 @@ pub(crate) fn prompt(
             repo: None,
             machine: machine.cloned(),
             agent: None,
+            task: None,
         },
         by: None,
     }

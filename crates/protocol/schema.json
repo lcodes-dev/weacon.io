@@ -774,7 +774,7 @@
     "ChatAction": {
       "oneOf": [
         {
-          "description": "Starts or queues a turn. Only a chat's first prompt has `repo` and `machine`, one of the\nsender's; the server drops `machine` before relaying. `agent` fixes the chat's agent on\nits first prompt, Claude when missing; a later prompt naming another agent is refused as\n`chat.agent_conflict`, and an agent the core doesn't know as `message.unsupported`.",
+          "description": "Starts or queues a turn. Only a chat's first prompt has `repo` and `machine`, one of the\nsender's; the server drops `machine` before relaying. `agent` fixes the chat's agent on\nits first prompt, Claude when missing; a later prompt naming another agent is refused as\n`chat.agent_conflict`, and an agent the core doesn't know as `message.unsupported`.\n`task` links a new chat to a task of its workspace; the server relays it with the\ntask's title as it is then, and drops it from a later prompt.",
           "type": "object",
           "properties": {
             "agent": {
@@ -789,6 +789,9 @@
             },
             "repo": {
               "$ref": "#/$defs/RepoId"
+            },
+            "task": {
+              "$ref": "#/$defs/ChatTask"
             },
             "text": {
               "type": "string"
@@ -1004,7 +1007,7 @@
     "ChatEvent": {
       "oneOf": [
         {
-          "description": "A person's prompt, accepted under `request`, with the repository and the agent it\nnamed, if any.",
+          "description": "A person's prompt, accepted under `request`, with the repository, the agent and the\ntask it named, if any.",
           "type": "object",
           "properties": {
             "agent": {
@@ -1019,6 +1022,9 @@
             },
             "request": {
               "$ref": "#/$defs/RequestId"
+            },
+            "task": {
+              "$ref": "#/$defs/ChatTask"
             },
             "text": {
               "type": "string"
@@ -1246,7 +1252,7 @@
       ]
     },
     "ChatSummary": {
-      "description": "A chat in a [`ChatList`]: `machine` is a name, never an id, and `updated_at` is when its\nlatest turn began or ended, in seconds since the Unix epoch.",
+      "description": "A chat in a [`ChatList`]: `machine` is its machine's name, `machine_id` its id, left out by\nan older server, and `updated_at` is when its latest turn began or ended, in seconds since\nthe Unix epoch.",
       "type": "object",
       "properties": {
         "id": {
@@ -1254,6 +1260,9 @@
         },
         "machine": {
           "$ref": "#/$defs/MachineName"
+        },
+        "machine_id": {
+          "$ref": "#/$defs/MachineId"
         },
         "owner": {
           "$ref": "#/$defs/MemberId"
@@ -1264,6 +1273,10 @@
         },
         "state": {
           "$ref": "#/$defs/ChatState"
+        },
+        "task": {
+          "description": "The task it was made for, if any.",
+          "$ref": "#/$defs/TaskId"
         },
         "title": {
           "type": "string"
@@ -1280,6 +1293,22 @@
         "machine",
         "state",
         "updated_at"
+      ]
+    },
+    "ChatTask": {
+      "description": "The task a chat works on: its id, and its title as the chat's first prompt found it, a\nperson's words.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/TaskId"
+        },
+        "title": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "title"
       ]
     },
     "ChatUpdate": {
@@ -2309,6 +2338,20 @@
             "kind": {
               "type": "string",
               "const": "map"
+            }
+          },
+          "$ref": "#/$defs/MapArgs",
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "description": "What a session starts with, from a core that offers `map.session_start`: the flows\npinned by the docs that best match the title of the task of the run's chat, then the\nfolder's map, both within `budget`; the map alone for a chat without a task.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "session_start"
             }
           },
           "$ref": "#/$defs/MapArgs",

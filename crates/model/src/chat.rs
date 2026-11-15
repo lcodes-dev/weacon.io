@@ -201,6 +201,7 @@ mod tests {
                 text: "Hi".to_owned(),
                 repo: None,
                 agent: None,
+                task: None,
             },
             status("run-1", RunState::Running),
             said(

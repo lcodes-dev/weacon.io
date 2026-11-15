@@ -104,31 +104,36 @@ impl Maps {
         permit: OwnedSemaphorePermit,
         log: &Logger,
     ) -> String {
-        let place = (grant.workspace.clone(), grant.folder.clone());
-        match self.stored(call, place, permit, log).await {
+        let (call, workspace, folder) =
+            (call.clone(), grant.workspace.clone(), grant.folder.clone());
+        let read =
+            move |stores: Stores| async move { stores.answer(&call, workspace, folder).await };
+        match self.stored(read, permit, log).await {
             Ok(Some(answer)) => answer,
             Ok(None) => NO_MAP.to_owned(),
             Err(TooSlow) => TOO_SLOW.to_owned(),
         }
     }
 
-    /// [`Self::answer`]'s answer from the map of the folder in `place`'s workspace when there
-    /// is one; none when there isn't, and [`TooSlow`] once the limit passes.
-    async fn stored(
+    /// What `read` answers from the stores when there is a map to read; none when there isn't,
+    /// and [`TooSlow`] once the limit passes.
+    async fn stored<F>(
         &self,
-        call: &McpCall,
-        (workspace, folder): (WorkspaceId, PathBuf),
+        read: impl FnOnce(Stores) -> F + Send + 'static,
         permit: OwnedSemaphorePermit,
         log: &Logger,
-    ) -> Result<Option<String>, TooSlow> {
+    ) -> Result<Option<String>, TooSlow>
+    where
+        F: Future<Output = Result<Option<String>, Fault>> + Send,
+    {
         let Some(stores) = self.stores(log).await else {
             return Ok(None);
         };
-        let (call, reading_log) = (call.clone(), log.clone());
+        let reading_log = log.clone();
         // Its own task, so a read the limit cuts off still finishes and is stored for the next.
         let reading = tokio::spawn(async move {
             let _permit = permit;
-            let answer = stores.answer(&call, workspace, folder).await;
+            let answer = read(stores).await;
             answer
                 .inspect_err(|fault| {
                     reading_log.warn("mcp map failed", &[("err", Field::error(fault))]);
