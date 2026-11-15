@@ -57,7 +57,7 @@ Weacon is in early development. This is what works on `main` today:
 | Workspaces | A personal workspace for each account; new workspaces; members the operator adds with `weacon-server add-member` | Inviting people from the web app |
 | Machines | Pairing with a key fingerprint check; online status; per-workspace agent access; error report choice; a note when a machine's core is too old for the server | |
 | Agent sign-in | The sealed sign-in terminal in a machine's settings; `weacon login` in a terminal | |
-| Chats | **New chat** picks a machine, a repository and an agent; the server passes the prompt to that machine and keeps what the agent does; the chat screen shows it | |
+| Chats | **New chat** picks a machine, a repository and an agent; the server passes the prompt to that machine and keeps what the agent does; the chat screen shows it | The agent's text as it is written, proven with a real agent |
 | Agents | Claude Code and Codex | |
 | Terminals | **Open terminal** in a chat, once the machine's owner allows it there; `weacon resume` to carry on a chat's agent in a terminal | |
 | Tasks and docs | Adding, editing, statuses, doc revisions | |
@@ -185,7 +185,7 @@ Sign the agent in first, as in step 6, and give the workspace a repository.
 2. Pick the **Machine**, the **Repository** and the **Agent**.
 3. Type what you want done and choose **Send**.
 
-The chat opens with your prompt at the top. The server passes the prompt to your machine, and the core starts the agent in a folder of its own for this chat. Each of the agent's messages appears under **Agent** once it is complete. In the left column, the chat shows who started it, the machine and what it's doing, such as **Waiting for a person**.
+The chat opens with your prompt at the top. The server passes the prompt to your machine, and the core starts the agent in a folder of its own for this chat. The agent's text appears under **Agent** as it is written, and each message replaces its pieces once it is complete. Live text is not yet proven with a real agent: if the pieces don't come, each message still appears once it is complete. In the left column, the chat shows who started it, the machine and what it's doing, such as **Waiting for a person**.
 
 When the agent asks to use a tool, the chat names the tool, such as "Asks to use Bash", with **Allow** and **Deny**; with the access level at ask first, it waits for you. After a reload, a prompt still waiting says "Asks to use a tool" until the agent's next prompt, because the tool's name is passed on as it happens and never kept. It never shows the command or the file's contents, because a tool's input doesn't leave your machine, so you can't see them before you answer. Once the agent has stopped running, you can carry the chat on, on the machine itself (step 8).
 

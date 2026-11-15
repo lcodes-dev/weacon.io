@@ -1,0 +1,23 @@
+# Written from the documentation of `codex app-server`, whose item/agentMessage/delta appends
+# to an agent message; not a capture of a real run. Between the text's pieces are notices and
+# shapes the driver doesn't know, and another thread's piece.
+> {"id":1,"method":"initialize","params":{"clientInfo":{"name":"weacon-core","title":"Weacon","version":"0.1.0"}}}
+< {"id":1,"result":{"userAgent":"codex_cli_rs/0.166.0"}}
+> {"method":"initialized"}
+> {"id":2,"method":"thread/start","params":{"approvalPolicy":"untrusted","approvalsReviewer":"user","sandbox":"workspace-write"}}
+< {"id":2,"result":{"thread":{"id":"019a2b3c-4d5e-7f60-8a9b-0c1d2e3f4a5b"}}}
+> {"id":3,"method":"turn/start","params":{"threadId":"019a2b3c-4d5e-7f60-8a9b-0c1d2e3f4a5b","input":[{"type":"text","text":"Explain the build","text_elements":[]}]}}
+< {"id":3,"result":{"turn":{"id":"turn-1","items":[],"status":"inProgress"}}}
+< {"method":"turn/started","params":{"threadId":"019a2b3c-4d5e-7f60-8a9b-0c1d2e3f4a5b","turn":{"id":"turn-1","items":[],"status":"inProgress"}}}
+< {"method":"item/started","params":{"threadId":"019a2b3c-4d5e-7f60-8a9b-0c1d2e3f4a5b","turnId":"turn-1","item":{"type":"agentMessage","id":"item-1","text":""}}}
+< {"method":"item/agentMessage/delta","params":{"threadId":"019a2b3c-4d5e-7f60-8a9b-0c1d2e3f4a5b","turnId":"turn-1","itemId":"item-1","delta":"Cargo"}}
+< {"method":"item/reasoning/summaryTextDelta","params":{"threadId":"019a2b3c-4d5e-7f60-8a9b-0c1d2e3f4a5b","turnId":"turn-1","itemId":"item-0","delta":"skipped","summaryIndex":0}}
+< {"method":"item/newer/delta","params":{"threadId":"019a2b3c-4d5e-7f60-8a9b-0c1d2e3f4a5b","turnId":"turn-1","itemId":"item-1","delta":"skipped"}}
+< {"method":"item/agentMessage/delta","params":{"threadId":"019a2b3c-4d5e-7f60-8a9b-0c1d2e3f4a5b","turnId":"turn-1","itemId":"item-1","delta":7}}
+< {"method":"item/agentMessage/delta","params":{"threadId":"019a2b3c-4d5e-7f60-8a9b-0c1d2e3f4a5b","turnId":"turn-1","itemId":"item-1","text":"skipped"}}
+< {"method":"item/agentMessage/delta","params":{"threadId":"019a2b3c-0000-7000-8000-00000000c0de","turnId":"turn-1","itemId":"item-9","delta":"skipped"}}
+< {"method":"item/agentMessage/delta"}
+< {"method":"item/agentMessage/delta","params":{
+< {"method":"item/agentMessage/delta","params":{"threadId":"019a2b3c-4d5e-7f60-8a9b-0c1d2e3f4a5b","turnId":"turn-1","itemId":"item-1","delta":" builds it."}}
+< {"method":"item/completed","params":{"threadId":"019a2b3c-4d5e-7f60-8a9b-0c1d2e3f4a5b","turnId":"turn-1","item":{"type":"agentMessage","id":"item-1","text":"Cargo builds it."}}}
+< {"method":"turn/completed","params":{"threadId":"019a2b3c-4d5e-7f60-8a9b-0c1d2e3f4a5b","turn":{"id":"turn-1","items":[],"status":"completed"}}}

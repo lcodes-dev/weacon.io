@@ -110,6 +110,12 @@ pub(crate) fn text(text: &str) -> RunEvent {
     }
 }
 
+pub(crate) fn delta(text: &str) -> RunEvent {
+    RunEvent::TextDelta {
+        text: text.to_owned(),
+    }
+}
+
 pub(crate) fn tool_done(call: &str, failed: bool) -> RunEvent {
     RunEvent::ToolDone {
         call: call.to_owned(),
