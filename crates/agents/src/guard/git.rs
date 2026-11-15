@@ -155,11 +155,13 @@ fn dry_run(args: &[Word]) -> bool {
     let mut dry = false;
     let mut pattern = false;
     for arg in args {
-        if std::mem::take(&mut pattern) {
-            continue;
-        }
+        // A word only the shell can spell could be, or could hold, any option, even where it
+        // stands as an exclude pattern (`-e $x`), so the run can't be proven dry.
         if arg.dynamic || arg.glob {
             return false;
+        }
+        if std::mem::take(&mut pattern) {
+            continue;
         }
         if arg.text == "--" {
             break;
