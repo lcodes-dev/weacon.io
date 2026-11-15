@@ -216,9 +216,7 @@ mod tests {
 
     #[tokio::test]
     async fn unpairing_a_machine_ends_its_connection_at_once() {
-        let mut fixture = Fixture::new().await;
-        // Pings far apart, so only the notice can end it in time.
-        fixture.quiet();
+        let fixture = Fixture::new().await;
         let server = fixture.run().await;
         let (paired, mut client) = connected(server.address, &fixture).await;
         let path = format!(
@@ -239,7 +237,8 @@ mod tests {
 
     #[tokio::test]
     async fn a_connection_ends_at_its_next_ping_once_the_machine_is_gone() {
-        let fixture = Fixture::new().await;
+        let mut fixture = Fixture::new().await;
+        fixture.pinging();
         let server = fixture.run().await;
         let (paired, mut client) = connected(server.address, &fixture).await;
         // Unpaired without a notice, as by another server, while the client reads on, so it
@@ -264,9 +263,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_machine_that_connects_again_ends_its_older_connection() {
-        let mut fixture = Fixture::new().await;
-        // Pings far apart, so only the takeover can end a connection in time.
-        fixture.quiet();
+        let fixture = Fixture::new().await;
         let server = fixture.run().await;
         let mut opened = fixture.shared.links.connected();
         let (paired, mut older) = connected(server.address, &fixture).await;
@@ -293,7 +290,8 @@ mod tests {
 
     #[tokio::test]
     async fn a_paired_machines_connection_outlasts_its_pings() {
-        let fixture = Fixture::new().await;
+        let mut fixture = Fixture::new().await;
+        fixture.pinging();
         let server = fixture.run().await;
         let (_, mut client) = connected(server.address, &fixture).await;
         // Reading answers each ping; the fixture pings every 100 ms.
@@ -307,9 +305,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_machine_unpaired_before_its_hello_is_told_so() {
-        let mut fixture = Fixture::new().await;
-        // Pings far apart, so only the check after the hello can find it unpaired in time.
-        fixture.quiet();
+        let fixture = Fixture::new().await;
         let server = fixture.run().await;
         let paired = pair_machine(&fixture, server.address).await;
         let mut client = open(server.address, CONNECT_PATH, &paired.token)
@@ -343,8 +339,7 @@ mod tests {
 
     #[tokio::test]
     async fn another_machines_unpairing_leaves_a_connection_open() {
-        let mut fixture = Fixture::new().await;
-        fixture.quiet();
+        let fixture = Fixture::new().await;
         let server = fixture.run().await;
         let (_, mut client) = connected(server.address, &fixture).await;
         let other = MachineId::try_from("other".to_owned()).unwrap();

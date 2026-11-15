@@ -407,8 +407,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_query_reaches_the_owners_machine_as_theirs_and_its_answer_comes_back() {
-        let mut fixture = Fixture::new().await;
-        fixture.quiet();
+        let fixture = Fixture::new().await;
         let server = fixture.run().await;
         let (paired, mut core, mut browser) = both(
             &fixture,
@@ -449,8 +448,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_query_for_a_machine_not_theirs_another_workspace_or_one_offline_is_refused() {
-        let mut fixture = Fixture::new().await;
-        fixture.quiet();
+        let fixture = Fixture::new().await;
         let server = fixture.run().await;
         let (paired, core, mut browser) = both(
             &fixture,
@@ -479,8 +477,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_feed_whose_member_is_one_no_more_relays_nothing_and_ends() {
-        let mut fixture = Fixture::new().await;
-        fixture.quiet();
+        let fixture = Fixture::new().await;
         let server = fixture.run().await;
         let (paired, core, mut browser) = both(
             &fixture,
@@ -505,8 +502,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_member_who_leaves_while_their_machine_answers_hears_nothing_more() {
-        let mut fixture = Fixture::new().await;
-        fixture.quiet();
+        let fixture = Fixture::new().await;
         let server = fixture.run().await;
         let (paired, mut core, mut browser) = both(
             &fixture,
@@ -527,8 +523,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_database_that_fails_while_relaying_ends_the_feed() {
-        let mut fixture = Fixture::new().await;
-        fixture.quiet();
+        let fixture = Fixture::new().await;
         let server = fixture.run().await;
         let (paired, _core, mut browser) = both(
             &fixture,
@@ -553,8 +548,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_client_that_doesnt_offer_the_settings_relays_nothing() {
-        let mut fixture = Fixture::new().await;
-        fixture.quiet();
+        let fixture = Fixture::new().await;
         let server = fixture.run().await;
         let (paired, core, mut browser) = both(&fixture, server.address, &["workspace.feed"]).await;
         let machine = paired.machine_id();
