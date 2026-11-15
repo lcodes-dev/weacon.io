@@ -7,7 +7,8 @@ use tokio::sync::mpsc;
 use weacon_observability::{Fault, Field, Logger};
 use weacon_protocol::{
     ChatAction, ChatAnswer, ChatAnswerKind, ChatCommand, ChatEntry, ChatEvent, ChatQuery,
-    ChatQueryKind, ChatUpdate, Code, Envelope, Message, RunEvent, code,
+    ChatQueryKind, ChatUpdate, Code, Envelope, Message, Outcome, Receipt, RequestId, RunEvent,
+    code,
 };
 
 mod live;
@@ -42,8 +43,8 @@ enum Ask {
 pub(super) struct ChatLink {
     asks: mpsc::Sender<Ask>,
     pushes: mpsc::Receiver<Message>,
-    /// The errors that refused commands, under their envelopes' ids.
-    refused: mpsc::Receiver<Envelope>,
+    /// The answers to commands taken up, under their envelopes' ids.
+    answers: mpsc::Receiver<Envelope>,
     uploads: bool,
     /// Asks waiting for room in `asks`, in the order asked; a follow is never dropped, so a
     /// chat is never left unfollowed.
@@ -61,12 +62,12 @@ impl ChatLink {
     pub(super) fn new(chats: Chats, uploads: bool, live: bool, log: Logger) -> Self {
         let (asks, asked) = mpsc::channel(QUEUE);
         let (push, pushes) = mpsc::channel(feed::QUEUE + FOLLOWS_MAX);
-        let (refuse, refused) = mpsc::channel(QUEUE);
-        tokio::spawn(take_up(chats, Client { push }, asked, refuse, log));
+        let (answer, answers) = mpsc::channel(QUEUE);
+        tokio::spawn(take_up(chats, Client { push }, asked, answer, log));
         Self {
             asks,
             pushes,
-            refused,
+            answers,
             uploads,
             waiting: VecDeque::new(),
             came: HashMap::new(),
@@ -147,7 +148,7 @@ impl ChatLink {
                         return Some(up);
                     }
                 }
-                Some(refusal) = self.refused.recv() => return Some(refusal),
+                Some(answer) = self.answers.recv() => return Some(answer),
                 room = self.asks.clone().reserve_owned(), if !self.waiting.is_empty() => {
                     let Ok(room) = room else {
                         // Nothing takes asks any more, so none can wait for room.
@@ -218,13 +219,13 @@ fn stored(mut update: ChatUpdate) -> Option<ChatUpdate> {
     Some(update)
 }
 
-// Takes up the server's asks in the order they came, until the connection is gone; the server
-// sends again what was left when it connects again.
+// Takes up the server's asks in the order they came, until the connection is gone, and answers
+// each command, taken or refused.
 async fn take_up(
     chats: Chats,
     client: Client,
     mut asked: mpsc::Receiver<Ask>,
-    refuse: mpsc::Sender<Envelope>,
+    answer: mpsc::Sender<Envelope>,
     log: Logger,
 ) {
     let mut jumps = Jumps::new();
@@ -235,11 +236,9 @@ async fn take_up(
             Ask::Command(id, command) => {
                 let key = ChatKey::new(&command.workspace, &command.chat);
                 let request = Some(command.request.clone());
+                let asked = command.request.clone();
                 let taken = chats.command(command, &client).await;
-                if let Err(fault) = &taken {
-                    // The server ends the command with it, or sends it again when it was cut short.
-                    drop(refuse.send(answer(id, fault)).await);
-                }
+                drop(answer.send(answered(id, asked, &taken)).await);
                 (key, request, taken)
             }
             Ask::Follow(key, after) => {
@@ -259,13 +258,18 @@ async fn take_up(
     }
 }
 
-// The error answering the command under the envelope `id` that `fault` refused.
-fn answer(id: u32, fault: &Fault) -> Envelope {
-    let code = fault.code().clone();
-    if code == code!("chat.unfinished") {
-        return for_now(id, code);
+// The answer to `request`'s command under the envelope `id`: taken, or the error that refused it.
+fn answered(id: u32, request: RequestId, taken: &Result<(), Fault>) -> Envelope {
+    match taken {
+        Ok(()) => Envelope {
+            id,
+            message: Message::Receipt(Receipt {
+                request,
+                outcome: Outcome::Accepted,
+            }),
+        },
+        Err(fault) => failure(id, fault.code().clone()),
     }
-    failure(id, code)
 }
 
 // Follows `key`'s chat after `after`. When that is too much to send again at once, what is
@@ -383,7 +387,7 @@ mod tests {
         let link = ChatLink {
             asks,
             pushes,
-            refused: mpsc::channel(1).1,
+            answers: mpsc::channel(1).1,
             uploads,
             waiting: VecDeque::new(),
             came: HashMap::new(),
@@ -806,11 +810,24 @@ mod tests {
     }
 
     #[test]
-    fn only_a_command_cut_short_is_answered_as_worth_sending_again() {
-        let cut_short = Fault::new(code!("chat.unfinished"), "Cut short");
-        assert_eq!(answer(3, &cut_short), for_now(3, code!("chat.unfinished")));
-        let refused = Fault::new(code!("chat.busy"), "Busy");
-        assert_eq!(answer(3, &refused), failure(3, code!("chat.busy")));
+    fn a_command_taken_is_answered_accepted_and_one_refused_with_its_code() {
+        let taken = answered(3, request("r-1"), &Ok(()));
+        let accepted = Message::Receipt(Receipt {
+            request: request("r-1"),
+            outcome: Outcome::Accepted,
+        });
+        assert_eq!(
+            taken,
+            Envelope {
+                id: 3,
+                message: accepted
+            }
+        );
+        let busy = Err(Fault::new(code!("chat.busy"), "Busy"));
+        assert_eq!(
+            answered(3, request("r-1"), &busy),
+            failure(3, code!("chat.busy"))
+        );
     }
 
     #[tokio::test(start_paused = true)]

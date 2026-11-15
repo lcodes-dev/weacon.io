@@ -1,20 +1,15 @@
-mod attempts;
 mod events;
-mod ledger;
 mod runs;
 
 use sqlx::SqliteConnection;
 use weacon_observability::Fault;
 use weacon_protocol::{
-    ChatId, ChatState, ChatSummary, MachineId, MachineName, MemberId, RepoId, RequestId, RunState,
-    RunStatus, code,
+    ChatId, ChatState, ChatSummary, MachineId, MachineName, MemberId, RepoId, RunState, RunStatus,
+    code,
 };
 
-use attempts::Attempt;
-pub(crate) use attempts::Guard;
 pub(super) use events::Row;
 pub(crate) use events::{Incoming, chat_quota_full, turns};
-pub(crate) use ledger::{NewRequest, OpenRequest, Recorded};
 pub(crate) use runs::Snapshot;
 
 use super::changes::Versioned;
@@ -50,14 +45,10 @@ type ChatRow = (String, String, String, i64, i64, bool);
 type SummaryRow = (String, String, String, String, String, i64, Option<String>);
 
 impl Workspace {
-    /// Makes the chat `chat` with the request that makes it, before that is sent: feeds hear
-    /// of it once [`Self::chat_made`] says it was. A chat id or request id already in this
-    /// workspace is `db.exists`, and a machine its owner doesn't own `machine.not_found`.
-    pub(crate) async fn add_chat(
-        &self,
-        chat: &NewChat<'_>,
-        request: &NewRequest<'_>,
-    ) -> Result<(), Fault> {
+    /// Makes the chat `chat` before its first prompt is sent: feeds hear of it once
+    /// [`Self::chat_made`] says it was. A chat id already in this workspace is `db.exists`, and
+    /// a machine its owner doesn't own `machine.not_found`.
+    pub(crate) async fn add_chat(&self, chat: &NewChat<'_>) -> Result<(), Fault> {
         let mut transaction = self.db.write().await?;
         sqlx::query(
             "INSERT INTO chats (workspace_id, chat_id, owner_member, title, repo, machine_id,
@@ -81,23 +72,13 @@ impl Workspace {
         if !owned.await? {
             return Err(machine_not_found());
         }
-        self.insert_request(&mut transaction, request).await?;
         transaction.commit().await.map_err(failed)
     }
 
     /// Tells the feed that `owner` made `chat`, once its first prompt reached its machine, and
-    /// indexes it; gives whether there still was such a chat. With `queued`, marks that attempt
-    /// of the first prompt queued in the same write, so the member hears of it sooner.
-    pub(crate) async fn chat_made(
-        &self,
-        chat: &ChatId,
-        owner: &MemberId,
-        queued: Option<(&RequestId, Attempt)>,
-    ) -> Result<bool, Fault> {
+    /// indexes it; gives whether there still was such a chat.
+    pub(crate) async fn chat_made(&self, chat: &ChatId, owner: &MemberId) -> Result<bool, Fault> {
         let mut transaction = self.db.write().await?;
-        if let Some((request, attempt)) = queued {
-            self.queued_in(&mut transaction, request, attempt).await?;
-        }
         let found = sqlx::query_as::<_, (String, i64)>(
             "SELECT title, created_at FROM chats WHERE workspace_id = ? AND chat_id = ?",
         )
@@ -116,19 +97,13 @@ impl Workspace {
         Ok(true)
     }
 
-    /// Takes back `chat`, made for a first prompt its machine never got, unless it was made,
-    /// its first prompt queued, or another attempt of it begun than `attempt`, meanwhile.
-    pub(crate) async fn forget_chat(&self, chat: &ChatId, attempt: i64) -> Result<(), Fault> {
+    /// Takes back `chat`, made for a first prompt its machine never got, unless it was made
+    /// meanwhile.
+    pub(crate) async fn forget_chat(&self, chat: &ChatId) -> Result<(), Fault> {
         let mut transaction = self.db.write().await?;
-        if self.made(&mut transaction, chat, attempt).await? {
+        if self.made(&mut transaction, chat).await? {
             return Ok(());
         }
-        sqlx::query("DELETE FROM chat_requests WHERE workspace_id = ? AND chat_id = ?")
-            .bind(self.id.as_str())
-            .bind(chat.as_str())
-            .execute(&mut *transaction)
-            .await
-            .map_err(failed)?;
         sqlx::query("DELETE FROM chats WHERE workspace_id = ? AND chat_id = ?")
             .bind(self.id.as_str())
             .bind(chat.as_str())
@@ -138,21 +113,12 @@ impl Workspace {
         transaction.commit().await.map_err(failed)
     }
 
-    // Whether `chat` was made, or its first prompt queued or sent by another attempt.
-    async fn made(
-        &self,
-        connection: &mut SqliteConnection,
-        chat: &ChatId,
-        attempt: i64,
-    ) -> Result<bool, Fault> {
+    async fn made(&self, connection: &mut SqliteConnection, chat: &ChatId) -> Result<bool, Fault> {
         sqlx::query_scalar(
-            "SELECT EXISTS (SELECT 1 FROM changes WHERE workspace_id = ?1 AND chat_id = ?2)
-                 OR EXISTS (SELECT 1 FROM chat_requests
-                     WHERE workspace_id = ?1 AND chat_id = ?2 AND (delivered >= 0 OR attempt != ?3))",
+            "SELECT EXISTS (SELECT 1 FROM changes WHERE workspace_id = ? AND chat_id = ?)",
         )
         .bind(self.id.as_str())
         .bind(chat.as_str())
-        .bind(attempt)
         .fetch_one(connection)
         .await
         .map_err(failed)
@@ -293,34 +259,8 @@ impl Workspace {
         Ok(())
     }
 
-    /// The open chats on `machine`, whose owner still owns it, whose first prompt never
-    /// reached it, each with its owner.
-    pub(crate) async fn unmade_on(
-        &self,
-        machine: &MachineId,
-    ) -> Result<Vec<(ChatId, MemberId)>, Fault> {
-        sqlx::query_as::<_, (String, String)>(
-            "SELECT c.chat_id, c.owner_member FROM chats AS c
-             JOIN members AS m ON m.workspace_id = c.workspace_id AND m.member_id = c.owner_member
-             JOIN machines AS d ON d.machine_id = c.machine_id AND d.account_id = m.account_id
-             WHERE c.workspace_id = ? AND c.machine_id = ? AND c.state = 'open'
-                 AND NOT EXISTS (SELECT 1 FROM changes AS h WHERE h.workspace_id = c.workspace_id
-                     AND h.chat_id = c.chat_id)
-             ORDER BY c.chat_id",
-        )
-        .bind(self.id.as_str())
-        .bind(machine.as_str())
-        .fetch_all(&self.db.readers)
-        .await
-        .map_err(failed)?
-        .into_iter()
-        .map(|(chat, owner)| Ok((stored(chat)?, stored(owner)?)))
-        .collect()
-    }
-
-    /// The open chats made on `machine`, whose owner still owns it, and whose turn may not be
-    /// over, a run at work or a command no receipt has ended, each with the last of its events
-    /// it has.
+    /// The open chats made on `machine`, whose owner still owns it, with a run at work, each
+    /// with the last of its events it has.
     pub(crate) async fn unsettled_on(
         &self,
         machine: &MachineId,
@@ -332,9 +272,7 @@ impl Workspace {
              WHERE c.workspace_id = ? AND c.machine_id = ? AND c.state = 'open'
                  AND EXISTS (SELECT 1 FROM changes AS h WHERE h.workspace_id = c.workspace_id
                      AND h.chat_id = c.chat_id)
-                 AND (json_extract(c.run_status, '$.state') IN ('starting', 'running', 'waiting')
-                     OR EXISTS (SELECT 1 FROM chat_requests AS r WHERE r.workspace_id = c.workspace_id
-                         AND r.chat_id = c.chat_id AND r.open = 1))
+                 AND json_extract(c.run_status, '$.state') IN ('starting', 'running', 'waiting')
              ORDER BY c.chat_id",
         )
         .bind(self.id.as_str())
@@ -399,7 +337,7 @@ mod tests {
     use weacon_protocol::RunState;
 
     use super::*;
-    use crate::db::test_support::{NOW, append, begin, code, command, id, make, status};
+    use crate::db::test_support::{NOW, append, begin, code, id, make, status};
     use crate::test_support::{member_id, two_teams};
 
     #[tokio::test]
@@ -467,7 +405,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_machine_follows_again_only_its_open_chats_whose_turn_may_not_be_over() {
+    async fn a_machine_follows_again_only_its_open_chats_with_a_run_at_work() {
         let dir = TempDir::new().unwrap();
         let (one, two) = two_teams(&dir).await;
         for chat in ["c-1", "c-2", "c-3", "c-4", "c-5"] {
@@ -479,13 +417,15 @@ mod tests {
         make(&one, "c-7", "m3", NOW).await.unwrap();
         make(&two, "c-1", "m2", NOW).await.unwrap();
         one.pair_for("m1", "mc-1").await;
-        for chat in ["c-2", "c-3"] {
-            one.close_request(chat, &format!("r-{chat}")).await;
-        }
-        let running = status(RunState::Running);
-        let idle = status(RunState::Idle);
-        append(&one, "c-2", &[(Some(4), idle)]).await.unwrap();
-        append(&one, "c-3", &[(Some(7), running)]).await.unwrap();
+        let running = || status(RunState::Running);
+        append(&one, "c-2", &[(Some(4), status(RunState::Idle))])
+            .await
+            .unwrap();
+        append(&one, "c-3", &[(Some(7), running())]).await.unwrap();
+        append(&one, "c-4", &[(Some(2), running())]).await.unwrap();
+        append(&one, "c-5", &[(Some(2), running())]).await.unwrap();
+        append(&one, "c-7", &[(Some(2), running())]).await.unwrap();
+        append(&two, "c-1", &[(Some(2), running())]).await.unwrap();
         one.set_chat_state(&id("c-4"), ChatState::Detached)
             .await
             .unwrap();
@@ -499,11 +439,8 @@ mod tests {
             .iter()
             .map(|(chat, core_seq)| (chat.as_str(), *core_seq))
             .collect();
-        assert_eq!(ids, [("c-1", 0), ("c-3", 7)]);
+        assert_eq!(ids, [("c-3", 7)]);
         assert_eq!(two.unsettled_on(&id("mc-1")).await.unwrap().len(), 1);
-        let unmade = one.unmade_on(&id("mc-1")).await.unwrap();
-        assert_eq!(unmade, [(id("c-6"), member_id("m1"))]);
-        assert!(two.unmade_on(&id("mc-1")).await.unwrap().is_empty());
     }
 
     #[tokio::test]
@@ -512,12 +449,6 @@ mod tests {
         let (one, _two) = two_teams(&dir).await;
         one.pair_for("m1", "mc-1").await;
         let (chat, owner, name) = (id("c-1"), member_id("m1"), id("Ada's laptop"));
-        let asked = command("r-1", "c-1", "Fix the build");
-        let request = NewRequest {
-            command: &asked,
-            member: &owner,
-            at: NOW,
-        };
         let on = |machine_id| NewChat {
             id: &chat,
             owner: &owner,
@@ -529,12 +460,11 @@ mod tests {
         };
         // Unpaired since its owner chose it.
         let (theirs, ours) = (id::<MachineId>("mc-2"), id::<MachineId>("mc-1"));
-        let unpaired = one.add_chat(&on(&theirs), &request).await;
+        let unpaired = one.add_chat(&on(&theirs)).await;
 
         assert_eq!(code(&unpaired.unwrap_err()), "machine.not_found");
         assert_eq!(one.chat(&chat).await.unwrap(), None);
-        assert!(!one.has_request(&id("r-1")).await.unwrap());
-        one.add_chat(&on(&ours), &request).await.unwrap();
+        one.add_chat(&on(&ours)).await.unwrap();
         assert!(one.chat(&chat).await.unwrap().is_some());
     }
 
@@ -551,24 +481,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_chat_whose_first_prompt_was_queued_or_sent_again_is_not_taken_back() {
-        let dir = TempDir::new().unwrap();
-        let (one, _two) = two_teams(&dir).await;
-        begin(&one, "c-1", "m1", NOW).await.unwrap();
-        one.mark_sent(&id("r-c-1"), true).await.unwrap();
-
-        one.forget_chat(&id("c-1"), 0).await.unwrap();
-
-        assert!(one.chat(&id("c-1")).await.unwrap().is_some());
-        one.mark_sent(&id("r-c-1"), false).await.unwrap();
-        one.begin_attempt(&id("r-c-1"), NOW).await.unwrap();
-        one.forget_chat(&id("c-1"), 0).await.unwrap();
-        assert!(one.chat(&id("c-1")).await.unwrap().is_some());
-        one.forget_chat(&id("c-1"), 1).await.unwrap();
-        assert_eq!(one.chat(&id("c-1")).await.unwrap(), None);
-    }
-
-    #[tokio::test]
     async fn a_chat_taken_back_leaves_nothing_behind_and_a_made_one_is_kept() {
         let dir = TempDir::new().unwrap();
         let (one, two) = two_teams(&dir).await;
@@ -579,20 +491,14 @@ mod tests {
         assert_eq!(indexed(&one, "c-1").await, 0);
         assert_eq!(ids(&one.chats().await.unwrap()), ["c-2"]);
 
-        one.forget_chat(&id("c-1"), 0).await.unwrap();
-        one.forget_chat(&id("c-2"), 0).await.unwrap();
+        one.forget_chat(&id("c-1")).await.unwrap();
+        one.forget_chat(&id("c-2")).await.unwrap();
 
         assert_eq!(one.chat(&id("c-1")).await.unwrap(), None);
-        assert!(!one.has_request(&id("r-c-1")).await.unwrap());
-        assert!(
-            !one.chat_made(&id("c-1"), &member_id("m1"), None)
-                .await
-                .unwrap()
-        );
+        assert!(!one.chat_made(&id("c-1"), &member_id("m1")).await.unwrap());
         assert_eq!(ids(&one.chats().await.unwrap()), ["c-2"]);
         assert_eq!(indexed(&two, "c-1").await, 1);
         assert!(one.chat(&id("c-2")).await.unwrap().is_some());
-        assert!(one.has_request(&id("r-c-2")).await.unwrap());
         assert_eq!(indexed(&one, "c-2").await, 1);
     }
 }

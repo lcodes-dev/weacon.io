@@ -134,11 +134,8 @@ impl<A: Agent> Engine<A> {
         match ask {
             Ask::Command(command, client, answer) => {
                 let key = ChatKey::new(&command.workspace, &command.chat);
-                let (request, action) = (command.request.clone(), command.action.clone());
                 let done = self.command_from(&key, command, &client).await;
-                let done = self.checked(&key, done).await;
-                let done = self.cut_short(&key, &request, &action, done).await;
-                drop(answer.send(done));
+                drop(answer.send(self.checked(&key, done).await));
                 Some(key)
             }
             Ask::Query(query, client, answer) => {

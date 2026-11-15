@@ -930,7 +930,7 @@ mod tests {
 
     #[tokio::test]
     async fn chat_commands_and_queries_reach_the_engine_and_its_events_come_back() {
-        use crate::chats::test_support::{bench, prompt, query, soon};
+        use crate::chats::test_support::{allow, bench, prompt, query, soon};
         use weacon_protocol::ChatQueryKind;
 
         let dir = TempDir::new().unwrap();
@@ -944,12 +944,12 @@ mod tests {
             line(2, Message::ChatQuery(subscribe)),
             line(3, Message::ChatCommand(prompt("r-2", " "))),
             line(4, Message::ChatCommand(prompt("r-1", "MARKER-PROMPT"))),
-            line(5, Message::ChatCommand(prompt("r-1", "Other"))),
+            line(5, Message::ChatCommand(allow("r-3", "c-1", "run-1", 9))),
             line(6, Message::ChatQuery(query("c-1", ChatQueryKind::Snapshot))),
         ]
         .concat();
 
-        let (replies, _stream) = exchange(connect(&running.socket).await, &bytes, 8).await;
+        let (replies, _stream) = exchange(connect(&running.socket).await, &bytes, 9).await;
         let records = running.stop().await;
 
         let Message::Welcome(welcome) = &replies[0] else {
@@ -957,8 +957,9 @@ mod tests {
         };
         assert_eq!(welcome.capabilities, crate::session::CAPABILITIES);
         let (events, answers) = events_and_answers(&replies[1..]);
-        assert_eq!(error_code(answers[0]), Some("request.conflict"));
-        assert!(matches!(answers[1], Message::ChatAnswer(answer)
+        assert_eq!(error_code(answers[0]), Some("chat.empty_prompt"));
+        assert_eq!(error_code(answers[1]), Some("agent.no_such_prompt"));
+        assert!(matches!(answers[2], Message::ChatAnswer(answer)
             if matches!(answer.answer, weacon_protocol::ChatAnswerKind::Snapshot { seq, .. } if seq >= 3)));
         assert_eq!(
             events,

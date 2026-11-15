@@ -276,7 +276,7 @@ async fn received(
         feed.allowed(shared).await?;
         let answer = feed
             .chats
-            .heard(envelope, &feed.member, &feed.asker, shared)
+            .heard(envelope, &feed.member, &feed.asker, shared, &feed.answer_to)
             .await;
         return send_chats(socket, shared, feed, answer).await;
     }

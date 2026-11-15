@@ -387,15 +387,22 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn an_answer_on_its_way_to_a_withdrawn_prompt_is_never_given() {
         let mut on = on_ask().await;
-        let (answers, _) = on_its_way(&mut on.engine, 1).await;
+        on_its_way(&mut on.engine, 1).await;
         let withdrawn = RunEvent::PermissionWithdrawn {
             run: run("run-1"),
             prompt: 1,
         };
+
         hear(&mut on.engine, withdrawn).await.unwrap();
 
-        on.engine.command(&key(), answers).await.unwrap();
-
+        assert!(
+            on.engine
+                .open(&key())
+                .await
+                .unwrap()
+                .pending_answers
+                .is_empty()
+        );
         assert_eq!(soon(on.agent.told.recv()).await, None);
     }
 

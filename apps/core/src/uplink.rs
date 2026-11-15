@@ -298,7 +298,7 @@ pub(crate) const fn failure(id: u32, code: Code) -> Envelope {
     }
 }
 
-/// An error refusing the ask under the envelope `id` for now, so the server sends it again.
+/// An error refusing the ask under the envelope `id` for now: asked again later, it may be taken.
 pub(crate) const fn for_now(id: u32, code: Code) -> Envelope {
     Envelope {
         id,
@@ -657,6 +657,11 @@ mod tests {
         let (ended, briefs) = tokio::join!(once(&link, &pairing), serve);
 
         assert_eq!(ended.unwrap(), Ended::Lost);
+        // The prompt's answer, that the chats took it, comes beside them.
+        let (answers, briefs): (Vec<_>, Vec<_>) = briefs
+            .into_iter()
+            .partition(|brief| brief == "another message");
+        assert_eq!(answers.len(), 1);
         // Seq 5, the tool's call, stays on the machine.
         assert_eq!(
             briefs,

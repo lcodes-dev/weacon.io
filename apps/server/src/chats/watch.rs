@@ -93,13 +93,15 @@ impl Watch {
     }
 
     /// The answer to `envelope`, a chat query or command from `asker`, under the id it
-    /// answers; none for a subscription, whose events follow.
+    /// answers; none for a subscription, whose events follow, or a command relayed, whose
+    /// machine's answer reaches `back`.
     pub(crate) async fn heard(
         &mut self,
         envelope: Envelope,
         member: &Member,
         asker: &Asker,
         shared: &Shared,
+        back: &mpsc::Sender<Envelope>,
     ) -> Option<(u32, Message)> {
         let Envelope { id, message } = envelope;
         let here = member.workspace.id();
@@ -112,7 +114,8 @@ impl Watch {
             }
         } else if let Message::ChatCommand(sent) = message {
             if sent.workspace == *here {
-                command::take(member, asker, shared, sent).await.map(Some)
+                let relayed = command::take(member, asker, shared, sent, (id, back)).await;
+                relayed.map(|()| None)
             } else {
                 Err(chat_not_found())
             }
@@ -495,7 +498,6 @@ mod tests {
 
         ask(&mut client, 2, prompt("c-9", Some(&machine))).await;
 
-        assert!(matches!(next(&mut client).await, Message::Receipt(_)));
         let Message::Workspace(update) = next(&mut client).await else {
             panic!("the feed didn't hear of the chat");
         };

@@ -107,29 +107,17 @@ impl Links {
         needs: &Capability,
         envelopes: Vec<Envelope>,
     ) -> Result<(), Offline> {
-        let to_machine = self.sender(machine, needs).and_then(|to| to.upgrade());
-        let to_machine = to_machine.ok_or(Offline)?;
-        let permits = to_machine
-            .try_reserve_many(envelopes.len())
-            .map_err(|_| Offline)?;
-        permits
-            .zip(envelopes)
-            .for_each(|(permit, envelope)| permit.send(envelope));
-        Ok(())
-    }
-
-    /// A sender to `machine`'s open connection, if its core offers `needs`, which never keeps
-    /// the connection open.
-    pub(crate) fn sender(
-        &self,
-        machine: &MachineId,
-        needs: &Capability,
-    ) -> Option<mpsc::WeakSender<Envelope>> {
         let open = self.lock();
         let link = open
             .get(machine)
-            .filter(|link| link.offers.contains(needs))?;
-        Some(link.to_machine.downgrade())
+            .filter(|link| link.offers.contains(needs))
+            .ok_or(Offline)?;
+        // Only a holder of this lock sends, so the room seen here stays for each send.
+        if link.to_machine.capacity() < envelopes.len() {
+            return Err(Offline);
+        }
+        let mut envelopes = envelopes.into_iter();
+        envelopes.try_for_each(|envelope| link.to_machine.try_send(envelope).map_err(|_| Offline))
     }
 
     /// The machines connected now.
@@ -142,16 +130,9 @@ impl Links {
         connected.collect()
     }
 
-    /// Ends `machine`'s connection that `to_machine` sends to, which its core then opens again,
-    /// unless a newer one took over.
-    pub(crate) fn close_link(&self, machine: &MachineId, to_machine: &mpsc::Sender<Envelope>) {
-        let mut open = self.lock();
-        if open
-            .get(machine)
-            .is_some_and(|link| link.to_machine.same_channel(to_machine))
-        {
-            drop(open.remove(machine));
-        }
+    /// Ends `machine`'s connection, which its core then opens again.
+    pub(crate) fn close(&self, machine: &MachineId) {
+        drop(self.lock().remove(machine));
     }
 
     /// Whether `machine` has a connection open now.
@@ -271,8 +252,7 @@ mod tests {
         let mut one = links.open(connected("mc-1"), vec![settings()]);
         let _two = links.open(connected("mc-2"), vec![settings()]);
 
-        let to = links.sender(&machine("mc-1"), &settings()).unwrap();
-        links.close_link(&machine("mc-1"), &to.upgrade().unwrap());
+        links.close(&machine("mc-1"));
 
         assert_eq!(links.open_now(), [connected("mc-2")]);
         assert_eq!(

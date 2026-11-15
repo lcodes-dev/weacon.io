@@ -1,6 +1,6 @@
 //! What people ask of a chat's agent: a prompt, a permission answer, an interrupt.
 
-use weacon_observability::{Fault, Field};
+use weacon_observability::Fault;
 use weacon_protocol::{
     AgentKind, ChatAction, ChatCommand, ChatEvent, Outcome, PermissionAnswer, RepoId, RequestId,
     RunEvent, RunUpdate, code,
@@ -8,8 +8,7 @@ use weacon_protocol::{
 
 use super::agent::{Agent, Order};
 use super::launch::not_started;
-use super::{ChatKey, Engine, PendingAnswer, PendingInterrupt, chat_about, unsupported};
-use crate::chats::log::{Seen, digest};
+use super::{ChatKey, Engine, PendingAnswer, PendingInterrupt, unsupported};
 use crate::git::state::Stores;
 use crate::runs::Queued;
 
@@ -20,71 +19,17 @@ impl<A: Agent> Engine<A> {
         command: ChatCommand,
     ) -> Result<(), Fault> {
         let request = command.request;
-        let action = command.action;
-        let seen = self.open(key).await?.log.seen(&request, &action).await?;
-        match seen {
-            Seen::Same => self.finish_repeated(key, &request, action).await,
-            Seen::Other => Err(Fault::new(
-                code!("request.conflict"),
-                "That request id was used for another command",
-            )),
-            Seen::Never | Seen::Pending => {
-                let digest = digest(&action);
-                match self.act(key, request.clone(), action, seen).await {
-                    // Its receipt ends it, so asking again changes nothing.
-                    Err(fault) if never_taken(&fault) => {
-                        let code = fault.code().clone();
-                        let refused = Outcome::Failed { code };
-                        self.commit_receipt(key, &request, refused).await?;
-                        self.open(key).await?.log.refused(&request, digest);
-                        Ok(())
-                    }
-                    acted => acted,
-                }
-            }
+        let acted = self.act(key, request.clone(), command.action).await;
+        if let Err(fault) = &acted
+            && never_taken(fault)
+        {
+            // Its receipt ends it in the log, and the refusal answers it.
+            let refused = Outcome::Failed {
+                code: fault.code().clone(),
+            };
+            self.commit_receipt(key, &request, refused).await?;
         }
-    }
-
-    // A command that failed once it reached the log isn't refused but unfinished, which asking
-    // again finishes; its receipt, if it has one, stays its only one.
-    pub(super) async fn cut_short(
-        &mut self,
-        key: &ChatKey,
-        request: &RequestId,
-        action: &ChatAction,
-        done: Result<(), Fault>,
-    ) -> Result<(), Fault> {
-        let fault = match done {
-            Ok(()) => return Ok(()),
-            Err(fault) => fault,
-        };
-        let Ok(chat) = self.open(key).await else {
-            return Err(fault);
-        };
-        let seen = chat.log.seen(request, action).await;
-        if !matches!(seen, Ok(Seen::Pending | Seen::Same)) {
-            return Err(fault);
-        }
-        let fields = [&chat_about(key)[..], &[("err", Field::error(&fault))]].concat();
-        self.log.warn("chat command cut short", &fields);
-        Err(unfinished())
-    }
-
-    // Whatever cut the first try short, what it began still happens: an answer still waiting
-    // reaches its run, and a prompt it queued gets its turn.
-    async fn finish_repeated(
-        &mut self,
-        key: &ChatKey,
-        request: &RequestId,
-        action: ChatAction,
-    ) -> Result<(), Fault> {
-        match action {
-            ChatAction::Permission { answer } => self.deliver(key, request, answer).await,
-            ChatAction::Interrupt => self.stop_turn(key, request).await,
-            ChatAction::Prompt { .. } | ChatAction::Newer => self.advance(key).await,
-            // Taken before the log, by `command_from`.
-            ChatAction::Hold | ChatAction::Release => Err(unsupported()),
-        }
+        acted
     }
 
     async fn act(
@@ -92,7 +37,6 @@ impl<A: Agent> Engine<A> {
         key: &ChatKey,
         request: RequestId,
         action: ChatAction,
-        seen: Seen,
     ) -> Result<(), Fault> {
         // Before the log, so a chat a newer core runs gets nothing from this one.
         self.runs.refuse_newer(key)?;
@@ -103,26 +47,22 @@ impl<A: Agent> Engine<A> {
                 agent: named,
                 ..
             } => {
-                let (agent, fresh) = (self.agent_of(key, named).await?, seen != Seen::Pending);
-                if fresh {
-                    self.check_repo(key, repo.as_ref()).await?;
-                }
-                if fresh && text.trim().is_empty() {
+                let agent = self.agent_of(key, named).await?;
+                self.check_repo(key, repo.as_ref()).await?;
+                if text.trim().is_empty() {
                     return Err(Fault::new(
                         code!("chat.empty_prompt"),
                         "The prompt is empty",
                     ));
                 }
-                if fresh {
-                    self.has_room(key)?;
-                    let prompt = ChatEvent::Prompt {
-                        request: request.clone(),
-                        text: text.clone(),
-                        repo,
-                        agent: named,
-                    };
-                    self.commit(key, prompt).await?;
-                }
+                self.has_room(key)?;
+                let prompt = ChatEvent::Prompt {
+                    request: request.clone(),
+                    text: text.clone(),
+                    repo,
+                    agent: named,
+                };
+                self.commit(key, prompt).await?;
                 self.prompt(key, request, text, agent).await
             }
             ChatAction::Permission { answer } => self.permission(key, request, answer).await,
@@ -268,15 +208,11 @@ impl<A: Agent> Engine<A> {
             .turn(key)
             .or_else(|| first.map(|queued| queued.request.clone()));
         let chat = self.open(key).await?;
-        // A retry keeps the turn its first try was bound to, whatever was interrupted since.
-        let stops = &mut chat.pending_interrupts;
-        if !stops.iter().any(|stop| stop.request == request) {
-            stops.push(PendingInterrupt {
-                request: request.clone(),
-                turn,
-                committed: false,
-            });
-        }
+        chat.pending_interrupts.push(PendingInterrupt {
+            request: request.clone(),
+            turn,
+            committed: false,
+        });
         self.commit_receipt(key, &request, Outcome::Completed)
             .await?;
         self.stop_turn(key, &request).await
@@ -311,14 +247,6 @@ impl<A: Agent> Engine<A> {
 }
 
 // Whether a command refused with `fault` could never be taken, however often it is sent.
-// A command its core began but couldn't finish; sending it again finishes it.
-fn unfinished() -> Fault {
-    Fault::new(
-        code!("chat.unfinished"),
-        "The command was cut short; send it again",
-    )
-}
-
 fn never_taken(fault: &Fault) -> bool {
     [
         code!("chat.empty_prompt"),
@@ -330,16 +258,12 @@ fn never_taken(fault: &Fault) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use weacon_protocol::RunState;
     use weacon_testing::{TempDir, messages};
 
-    use super::super::by_hand::{
-        allow_one, hear, launched, on_ask, on_its_way, on_turn, waiting_in,
-    };
+    use super::super::by_hand::{allow_one, hear, launched, on_ask, on_its_way, on_turn};
     use super::*;
     use crate::chats::test_support::{
-        Told, allow, asks, chat, command, key, logged_prompt, parts, prompt, prompt_in,
-        prompt_naming, request, run, soon,
+        Told, allow, asks, chat, command, key, parts, prompt, prompt_in, prompt_naming, run, soon,
     };
     use crate::runs::Runs;
 
@@ -418,35 +342,6 @@ mod tests {
         assert_eq!(named.unwrap_err().code().as_str(), "chat.repo_conflict");
     }
 
-    // What a first prompt that failed with `message.unsupported` makes of it, as its log stands.
-    async fn cut(engine: &mut Engine<crate::chats::test_support::FakeAgent>) -> Result<(), Fault> {
-        let asked = prompt("r-1", "Hi").action;
-        engine
-            .cut_short(&key(), &request("r-1"), &asked, Err(unsupported()))
-            .await
-    }
-
-    #[tokio::test]
-    async fn a_command_cut_short_once_logged_is_unfinished_and_one_never_logged_refused() {
-        let (bench, mut engine) = parts();
-        let refused = cut(&mut engine).await.unwrap_err();
-        assert_eq!(refused.code().as_str(), "message.unsupported");
-        assert!(!messages(&bench.records).contains(&"chat command cut short"));
-        engine
-            .commit(&key(), logged_prompt("r-1", "Hi"))
-            .await
-            .unwrap();
-        let unfinished = cut(&mut engine).await.unwrap_err();
-        assert_eq!(unfinished.code().as_str(), "chat.unfinished");
-        assert!(messages(&bench.records).contains(&"chat command cut short"));
-        engine
-            .commit_receipt(&key(), &request("r-1"), Outcome::Accepted)
-            .await
-            .unwrap();
-        let taken = cut(&mut engine).await.unwrap_err();
-        assert_eq!(taken.code().as_str(), "chat.unfinished");
-    }
-
     #[tokio::test(start_paused = true)]
     async fn the_agent_a_logged_first_prompt_named_holds_even_if_it_wasnt_queued() {
         let (mut bench, mut engine) = parts();
@@ -458,62 +353,14 @@ mod tests {
         engine.runs.unjam(path);
 
         let other = prompt_naming("r-2", "Hi", AgentKind::Claude);
-        engine.command(&key(), other).await.unwrap();
-        let refused = &request("r-2");
+        let conflict = engine.command(&key(), other).await.unwrap_err();
+        assert_eq!(conflict.code().as_str(), "chat.agent_conflict");
+        let refused = &crate::chats::test_support::request("r-2");
         assert!(engine.open(&key()).await.unwrap().log.has_ended(refused));
         engine.command(&key(), first).await.unwrap();
 
         let started = soon(bench.started.recv()).await.unwrap();
         assert_eq!(started.run_as.agent, AgentKind::Codex);
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn a_prompt_sent_again_goes_on_from_where_its_first_try_stopped() {
-        let (mut bench, mut engine) = parts();
-        let chat_of = key();
-        let agent = AgentKind::Claude;
-
-        // Stopped after the prompt reached the log, before it was queued.
-        engine
-            .commit(&key(), logged_prompt("r-1", "Hi"))
-            .await
-            .unwrap();
-        engine.command(&key(), prompt("r-1", "Hi")).await.unwrap();
-        launched(&mut engine).await;
-        let mut started = soon(bench.started.recv()).await.unwrap();
-        assert_eq!(
-            soon(started.told.recv()).await,
-            Some(Told::Send("Hi".to_owned()))
-        );
-        assert_eq!(engine.open(&key()).await.unwrap().log.seq(), 4);
-        engine.command(&key(), prompt("r-1", "Hi")).await.unwrap();
-        started.told.try_recv().unwrap_err();
-        assert_eq!(engine.open(&key()).await.unwrap().log.seq(), 4);
-        let outcome = Outcome::Completed;
-        hear(&mut engine, RunEvent::Finished { outcome })
-            .await
-            .unwrap();
-
-        // Stopped after it was queued, before it was accepted.
-        engine
-            .commit(&key(), logged_prompt("r-2", "More"))
-            .await
-            .unwrap();
-        let queued = Queued {
-            request: prompt("r-2", "More").request,
-            text: "More".to_owned(),
-        };
-        engine
-            .runs
-            .enqueue(&chat_of, agent, queued, 1)
-            .await
-            .unwrap();
-        engine.command(&key(), prompt("r-2", "More")).await.unwrap();
-        assert_eq!(
-            soon(started.told.recv()).await,
-            Some(Told::Send("More".to_owned()))
-        );
-        started.told.try_recv().unwrap_err();
     }
 
     #[tokio::test(start_paused = true)]
@@ -572,69 +419,6 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn an_answer_whose_receipt_was_written_reaches_its_run_when_sent_again() {
-        let mut on = on_ask().await;
-        let (answers, answer) = allow_one("r-2");
-        on.engine.open(&key()).await.unwrap().log.jam();
-        let failed = on.engine.command(&key(), answers.clone()).await;
-        assert_eq!(failed.unwrap_err().code().as_str(), "chat.log_not_written");
-        // As when its receipt reached the disk all the same.
-        let request = answers.request.clone();
-        on.engine
-            .commit_receipt(&key(), &request, Outcome::Completed)
-            .await
-            .unwrap();
-
-        on.engine.command(&key(), answers.clone()).await.unwrap();
-        on.engine.command(&key(), answers).await.unwrap();
-
-        assert_eq!(soon(on.agent.told.recv()).await, Some(Told::Answer(answer)));
-        assert_eq!(soon(on.agent.told.recv()).await, None);
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn a_retry_naming_another_run_gives_nothing_and_changes_no_run() {
-        let mut on = on_ask().await;
-        let (mut answers, _) = on_its_way(&mut on.engine, 1).await;
-        if let ChatAction::Permission { answer } = &mut answers.action {
-            answer.run = run("run-9");
-        }
-
-        on.engine.command(&key(), answers).await.unwrap();
-
-        assert_eq!(soon(on.agent.told.recv()).await, None);
-        let log = &on.engine.open(&key()).await.unwrap().log;
-        assert_eq!(
-            log.runs().run().map(|status| &status.run),
-            Some(&run("run-1"))
-        );
-        assert_eq!(waiting_in(&mut on.engine).await.len(), 1);
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn an_answer_already_in_the_log_reaches_its_run_once_and_is_logged_once() {
-        let mut on = on_ask().await;
-        // As when its receipt and its answer reached the disk but the write was reported failed.
-        let (answers, answer) = on_its_way(&mut on.engine, 1).await;
-        let event = RunEvent::PermissionAnswered {
-            answer: answer.clone(),
-        };
-        hear(&mut on.engine, event).await.unwrap();
-
-        on.engine.command(&key(), answers.clone()).await.unwrap();
-        on.engine.command(&key(), answers).await.unwrap();
-
-        assert_eq!(soon(on.agent.told.recv()).await, Some(Told::Answer(answer)));
-        assert_eq!(soon(on.agent.told.recv()).await, None);
-        let log = &on.engine.open(&key()).await.unwrap().log;
-        let entries = log.window(u64::MAX, 64).await.unwrap();
-        let logged = entries.iter().filter(|entry| {
-            matches!(&entry.event, ChatEvent::Run { update } if matches!(update.event, RunEvent::PermissionAnswered { .. }))
-        });
-        assert_eq!(logged.count(), 1);
-    }
-
-    #[tokio::test(start_paused = true)]
     async fn a_permission_of_a_run_cut_off_by_a_restart_takes_no_answer() {
         let mut on = on_ask().await;
         // As after a restart: the log still shows the prompt, but its run is gone.
@@ -665,43 +449,6 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn an_answer_under_another_commands_request_never_reaches_the_run() {
-        let mut on = on_ask().await;
-        let interrupt = command("r-2", "c-1", ChatAction::Interrupt);
-        on.engine.command(&key(), interrupt).await.unwrap();
-        assert_eq!(soon(on.agent.told.recv()).await, Some(Told::Interrupt));
-
-        on.engine.command(&key(), allow_one("r-2").0).await.unwrap();
-
-        assert_eq!(soon(on.agent.told.recv()).await, None);
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn an_interrupt_whose_receipt_was_written_stops_its_turn_when_sent_again() {
-        let mut on = on_turn().await;
-        assert_eq!(
-            soon(on.agent.told.recv()).await,
-            Some(Told::Send("Hi".to_owned()))
-        );
-        let interrupt = command("r-2", "c-1", ChatAction::Interrupt);
-        on.engine.open(&key()).await.unwrap().log.jam();
-        let failed = on.engine.command(&key(), interrupt.clone()).await;
-        assert_eq!(failed.unwrap_err().code().as_str(), "chat.log_not_written");
-        // As when its receipt reached the disk all the same.
-        let request = interrupt.request.clone();
-        on.engine
-            .commit_receipt(&key(), &request, Outcome::Completed)
-            .await
-            .unwrap();
-
-        on.engine.command(&key(), interrupt.clone()).await.unwrap();
-        on.engine.command(&key(), interrupt).await.unwrap();
-
-        assert_eq!(soon(on.agent.told.recv()).await, Some(Told::Interrupt));
-        assert_eq!(soon(on.agent.told.recv()).await, None);
-    }
-
-    #[tokio::test(start_paused = true)]
     async fn an_interrupt_that_cant_be_committed_isnt_sent() {
         let mut on = on_turn().await;
         assert_eq!(
@@ -714,57 +461,6 @@ mod tests {
         let refused = on.engine.command(&key(), interrupt).await;
 
         assert_eq!(refused.unwrap_err().code().as_str(), "chat.log_not_written");
-        assert_eq!(soon(on.agent.told.recv()).await, None);
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn an_answer_on_its_way_outlasts_another_whose_receipt_fails() {
-        let mut on = on_ask().await;
-        let (first, answer) = on_its_way(&mut on.engine, 1).await;
-        on.engine.open(&key()).await.unwrap().log.jam();
-
-        let other = allow("r-3", "c-1", "run-1", 1);
-        let failed = on.engine.command(&key(), other.clone()).await;
-        assert_eq!(failed.unwrap_err().code().as_str(), "chat.log_not_written");
-        on.engine.command(&key(), first).await.unwrap();
-        assert_eq!(soon(on.agent.told.recv()).await, Some(Told::Answer(answer)));
-
-        // Even if the other's receipt landed, the prompt has its answer.
-        on.engine
-            .commit_receipt(&key(), &other.request, Outcome::Completed)
-            .await
-            .unwrap();
-        on.engine.command(&key(), other).await.unwrap();
-        assert_eq!(soon(on.agent.told.recv()).await, None);
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn a_retried_interrupt_never_stops_a_later_turn() {
-        let mut on = on_turn().await;
-        assert_eq!(
-            soon(on.agent.told.recv()).await,
-            Some(Told::Send("Hi".to_owned()))
-        );
-        on.engine.open(&key()).await.unwrap().log.jam();
-        let interrupt = command("r-2", "c-1", ChatAction::Interrupt);
-        let failed = on.engine.command(&key(), interrupt.clone()).await;
-        assert_eq!(failed.unwrap_err().code().as_str(), "chat.log_not_written");
-
-        // The turn it was sent against ends, and the next prompt gets a turn of its own.
-        let outcome = Outcome::Completed;
-        hear(&mut on.engine, RunEvent::Finished { outcome })
-            .await
-            .unwrap();
-        on.engine
-            .command(&key(), prompt("r-3", "More"))
-            .await
-            .unwrap();
-        assert_eq!(
-            soon(on.agent.told.recv()).await,
-            Some(Told::Send("More".to_owned()))
-        );
-        on.engine.command(&key(), interrupt).await.unwrap();
-
         assert_eq!(soon(on.agent.told.recv()).await, None);
     }
 
@@ -795,23 +491,6 @@ mod tests {
 
         assert_eq!(soon(on.agent.told.recv()).await, None);
         assert_eq!(on.engine.turn(&key()), Some(prompt("r-4", "More").request));
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn an_answer_given_whose_run_state_wasnt_saved_saves_it_when_sent_again() {
-        let mut on = on_ask().await;
-        let path = on.engine.runs.jam();
-        let (answers, answer) = allow_one("r-2");
-
-        let failed = on.engine.command(&key(), answers.clone()).await;
-        assert_eq!(failed.unwrap_err().code().as_str(), "runs.not_saved");
-        assert_eq!(soon(on.agent.told.recv()).await, Some(Told::Answer(answer)));
-        on.engine.runs.unjam(path);
-        on.engine.command(&key(), answers).await.unwrap();
-
-        assert_eq!(soon(on.agent.told.recv()).await, None);
-        let state = on.engine.runs.of(&key()).unwrap().state;
-        assert_eq!(state, RunState::Running);
     }
 
     #[tokio::test(start_paused = true)]

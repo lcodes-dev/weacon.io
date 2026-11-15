@@ -27,6 +27,7 @@ pub(super) const STEPS: &[&str] = &[
     steps::SEARCH_CHATS,
     steps::CORE_BUILDS,
     steps::DOC_REPOS,
+    steps::REQUESTS_GONE,
 ];
 
 /// Applies the steps the database hasn't had yet, each in its own transaction that holds the
@@ -238,7 +239,6 @@ mod tests {
                 "chats",
                 "chat_events",
                 "chat_waiting",
-                "chat_requests",
                 "changes",
                 "search",
                 "search_rows"

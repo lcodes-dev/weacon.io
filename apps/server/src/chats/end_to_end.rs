@@ -1,12 +1,11 @@
 //! The whole loop over the real server: a member's prompt reaches their machine, and what it
 //! says of the chat is stored and read by the workspace only.
 
-mod answers;
 mod live;
 
 use weacon_protocol::{
-    ChatAnswerKind, ChatEntry, ChatEvent, ChatLive, ChatQuery, ChatQueryKind, ChatUpdate, Envelope,
-    ErrorBody, MachineId, Outcome, Receipt, RunEvent, RunState, RunUpdate,
+    ChatAnswerKind, ChatCommand, ChatEntry, ChatEvent, ChatLive, ChatQuery, ChatQueryKind,
+    ChatUpdate, Envelope, ErrorBody, MachineId, Outcome, Receipt, RunEvent, RunState, RunUpdate,
 };
 
 use crate::db::test_support::{prompt, said, status};
@@ -20,7 +19,7 @@ use crate::test_support::{
     Fixture, Running, email, fresh_account, member_id, pair_machine, sign_in, workspace_id,
 };
 
-use weacon_protocol::{Message, code};
+use weacon_protocol::Message;
 
 use crate::db::test_support::id;
 
@@ -116,21 +115,40 @@ async fn connected(fixture: &Fixture, server: &Running) -> (MachineId, Socket, S
     (paired.machine_id(), core, ada)
 }
 
+// Ada's first prompt `first`, sent as her envelope 2, reaches her machine, whose answer, that
+// it took it, reaches her as the command's receipt.
+async fn first_taken(core: &mut Socket, ada: &mut Socket, first: ChatCommand) {
+    let request = first.request.clone();
+    socket::send(
+        ada,
+        Envelope {
+            id: 2,
+            message: Message::ChatCommand(first),
+        },
+    )
+    .await;
+    let relayed = next_envelope(core).await;
+    let Message::ChatCommand(command) = relayed.message else {
+        panic!("the machine wasn't asked: {:?}", relayed.message);
+    };
+    assert_eq!(command.by.map(|by| by.member), Some(member_id("m1")));
+    assert!(matches!(next(core).await, Message::ChatQuery(_)));
+    let receipt = Message::Receipt(Receipt {
+        request,
+        outcome: Outcome::Accepted,
+    });
+    let taken = Envelope {
+        id: relayed.id,
+        message: receipt.clone(),
+    };
+    socket::send(core, taken).await;
+    assert_eq!(heard(ada).await, receipt);
+}
+
 // Ada's first prompt reaches her machine, and what it says of the chat reaches her feed.
 async fn ada_chats(machine: &MachineId, core: &mut Socket, ada: &mut Socket) {
     let first = prompt("r-1", "c-1", "MARKER-PROMPT", Some(machine));
-    let answer = ask(ada, 2, Message::ChatCommand(first)).await;
-    let receipt = Receipt {
-        request: id("r-1"),
-        outcome: Outcome::Accepted,
-    };
-    assert_eq!(answer, Message::Receipt(receipt));
-    let relayed = next(core).await;
-    let Message::ChatCommand(relayed) = relayed else {
-        panic!("the machine wasn't asked: {relayed:?}");
-    };
-    assert_eq!(relayed.by.map(|by| by.member), Some(member_id("m1")));
-    assert!(matches!(next(core).await, Message::ChatQuery(_)));
+    first_taken(core, ada, first).await;
     let follow = chat_query("w1", ChatQueryKind::Subscribe { after: 0 });
     socket::send(
         ada,
@@ -248,9 +266,7 @@ async fn a_new_chat_followed_at_once_or_later_is_heard_whole_and_in_order() {
     others(&fixture).await;
     let (machine, mut core, mut ada) = connected(&fixture, &server).await;
     let first = prompt("r-1", "c-1", "MARKER-PROMPT", Some(&machine));
-    ask(&mut ada, 2, Message::ChatCommand(first)).await;
-    next(&mut core).await;
-    next(&mut core).await;
+    first_taken(&mut core, &mut ada, first).await;
 
     // Followed the moment it is accepted, before its machine sent anything of it.
     let read = ask(&mut ada, 3, chat_query("w1", ChatQueryKind::Snapshot)).await;

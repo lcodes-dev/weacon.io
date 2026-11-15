@@ -1,23 +1,27 @@
-//! A member's command to a chat: checked here, then relayed to the chat's machine.
+//! A member's command to a chat: checked here, then relayed to the chat's machine, whose
+//! answer is the command's receipt.
 
+use tokio::sync::mpsc;
 use weacon_observability::Fault;
-use weacon_protocol::{Asker, ChatAction, ChatCommand, MachineId, Message, Outcome, Receipt, code};
+use weacon_protocol::{Asker, ChatCommand, Envelope};
 
 use super::admit::{Admitted, admit, detached};
 use super::link;
 use crate::auth::Member;
-use crate::db::{Chat, NewChat, NewRequest, Recorded};
+use crate::db::{Chat, NewChat};
+use crate::relay;
 use crate::shared::Shared;
 
 /// Takes `command` from `asker`, one of the chat's workspace's members, refusing what the
-/// chat's owner or machine doesn't allow, and relays it; its receipt says the machine has it.
+/// chat's owner or machine doesn't allow, and relays it once; the machine's answer reaches
+/// `asked`, the envelope id it came under and the way back.
 pub(crate) async fn take(
     member: &Member,
     asker: &Asker,
     shared: &Shared,
     command: ChatCommand,
-) -> Result<Message, Fault> {
-    let request = command.request.clone();
+    asked: (u32, &mpsc::Sender<Envelope>),
+) -> Result<(), Fault> {
     let chat = member.workspace.chat(&command.chat).await?;
     match admit(chat, asker.clone(), command)? {
         Admitted::New {
@@ -30,8 +34,9 @@ pub(crate) async fn take(
             let Some(summary) = owned.iter().find(|summary| summary.id == machine) else {
                 return Err(crate::db::machine_not_found());
             };
+            let id = command.chat.clone();
             let chat = NewChat {
-                id: &command.chat,
+                id: &id,
                 owner: &member.id,
                 title: &title,
                 repo: repo.as_ref(),
@@ -39,41 +44,11 @@ pub(crate) async fn take(
                 machine: &summary.name,
                 at: shared.now(),
             };
-            match start(shared, member, &chat, &command).await {
-                // Made meanwhile, by this command sent again or by another.
-                Err(fault) if *fault.code() == code!("db.exists") => {
-                    again(member, asker, shared, command, machine).await?;
-                }
-                started => started?,
-            }
+            start(shared, member, &chat, command, asked).await
         }
-        Admitted::Existing { chat, command } => existing(shared, member, &chat, &command).await?,
-    }
-    Ok(Message::Receipt(Receipt {
-        request,
-        outcome: Outcome::Accepted,
-    }))
-}
-
-// A first prompt to `machine` whose chat was made while it was on its way, taken as one to
-// that chat, which must be on `machine` too.
-async fn again(
-    member: &Member,
-    asker: &Asker,
-    shared: &Shared,
-    mut command: ChatCommand,
-    machine: MachineId,
-) -> Result<(), Fault> {
-    if let ChatAction::Prompt { machine: named, .. } = &mut command.action {
-        *named = Some(machine);
-    }
-    // Not made, so its request id is another chat's.
-    let Some(chat) = member.workspace.chat(&command.chat).await? else {
-        return Err(conflict());
-    };
-    match admit(Some(chat), asker.clone(), command)? {
-        Admitted::Existing { chat, command } => existing(shared, member, &chat, &command).await,
-        Admitted::New { .. } => Err(conflict()),
+        Admitted::Existing { chat, command } => {
+            existing(shared, member, &chat, command, asked).await
+        }
     }
 }
 
@@ -83,35 +58,18 @@ async fn start(
     shared: &Shared,
     member: &Member,
     chat: &NewChat<'_>,
-    command: &ChatCommand,
+    command: ChatCommand,
+    asked: (u32, &mpsc::Sender<Envelope>),
 ) -> Result<(), Fault> {
     let workspace = &member.workspace;
-    let asked = NewRequest {
-        command,
-        member: &member.id,
-        at: chat.at,
-    };
-    workspace.add_chat(chat, &asked).await?;
-    let Some(attempt) = workspace.begin_attempt(&command.request, chat.at).await? else {
-        return Err(link::offline());
-    };
-    let sent = [
-        Message::ChatCommand(command.clone()),
-        link::follow(workspace.id(), &command.chat, 0),
-    ];
-    if let Err(fault) = link::send_all(shared, chat.machine_id, sent.into(), attempt.number) {
-        // A pick-up that began sending it first makes the chat, or takes it back.
-        if attempt.number == 1 {
-            workspace.forget_chat(&command.chat, attempt.number).await?;
-        } else {
-            workspace.abandon(&command.request, attempt).await?;
-        }
+    workspace.add_chat(chat).await?;
+    let follow = link::follow(workspace.id(), &command.chat, 0);
+    let made = command.chat.clone();
+    if let Err(fault) = relay::command(shared, chat.machine_id, command, follow, asked) {
+        workspace.forget_chat(&made).await?;
         return Err(fault);
     }
-    let first = Some((&command.request, attempt));
-    workspace
-        .chat_made(&command.chat, &member.id, first)
-        .await?;
+    workspace.chat_made(&made, &member.id).await?;
     shared.wake_feeds(workspace.id());
     Ok(())
 }
@@ -121,7 +79,8 @@ async fn existing(
     shared: &Shared,
     member: &Member,
     chat: &Chat,
-    command: &ChatCommand,
+    command: ChatCommand,
+    asked: (u32, &mpsc::Sender<Envelope>),
 ) -> Result<(), Fault> {
     let workspace = &member.workspace;
     if !workspace.runs_on(&command.chat, &chat.machine).await? {
@@ -134,88 +93,19 @@ async fn existing(
         // Its first prompt is still on its way, and may yet be taken back.
         return Err(link::offline());
     }
-    go_on(shared, member, chat, command).await
-}
-
-// A command to a made chat: in the ledger before it is sent, and out of it again when it
-// can't be, so nothing waits to run later.
-async fn go_on(
-    shared: &Shared,
-    member: &Member,
-    chat: &Chat,
-    command: &ChatCommand,
-) -> Result<(), Fault> {
-    let workspace = &member.workspace;
-    let asked = NewRequest {
-        command,
-        member: &member.id,
-        at: shared.now(),
-    };
-    let recorded = workspace.record_request(&asked).await?;
-    match recorded {
-        Recorded::Conflict => return Err(conflict()),
-        // Its receipt has ended it: nothing more to send.
-        Recorded::Same { open: false } => return Ok(()),
-        Recorded::New | Recorded::Same { open: true } => {}
-    }
-    // A prompt goes after one its core refused for now, once that one is sent again.
-    let prompt = matches!(command.action, ChatAction::Prompt { .. });
-    if prompt
-        && workspace
-            .refused_before(&command.chat, &command.request)
-            .await?
-    {
-        if recorded == Recorded::New {
-            workspace.forget_request(&command.request, 0).await?;
-        }
-        return Err(busy());
-    }
-    let begun = workspace
-        .begin_attempt(&command.request, shared.now())
-        .await?;
-    // Ended meanwhile by its receipt: nothing more to send.
-    let Some(attempt) = begun else {
-        return Ok(());
-    };
-    let sent = [
-        Message::ChatCommand(command.clone()),
-        link::follow(workspace.id(), &command.chat, chat.core_seq),
-    ];
-    if let Err(fault) = link::send_all(shared, &chat.machine, sent.into(), attempt.number) {
-        // Forgotten only if no other attempt was ever made, by a pick-up or a retry.
-        if recorded == Recorded::New && attempt.number == 1 {
-            workspace
-                .forget_request(&command.request, attempt.number)
-                .await?;
-        } else {
-            workspace.abandon(&command.request, attempt).await?;
-        }
-        return Err(fault);
-    }
-    workspace.queued(&command.request, attempt).await
-}
-
-fn busy() -> Fault {
-    Fault::new(
-        code!("chat.unavailable"),
-        "The chat's machine has no room for it yet",
-    )
-}
-
-fn conflict() -> Fault {
-    Fault::new(
-        code!("request.conflict"),
-        "That request id was used for another command",
-    )
+    let follow = link::follow(workspace.id(), &command.chat, chat.core_seq);
+    relay::command(shared, &chat.machine, command, follow, asked)
 }
 
 #[cfg(test)]
 mod tests {
-    use weacon_protocol::{AgentKind, ChatQuery, ChatQueryKind};
+    use weacon_protocol::{
+        AgentKind, ChatAction, ChatQuery, ChatQueryKind, ErrorBody, Message, Outcome, Receipt, code,
+    };
 
     use super::*;
-    use crate::chats::test_support::{ada, attach, sent};
-    use crate::db::test_support::{NOW, begin, id, make, prompt};
+    use crate::chats::test_support::{Ada, ada, attach, sent};
+    use crate::db::test_support::{NOW, id, make, prompt};
     use crate::test_support::Fixture;
 
     // `command`, a prompt, naming the agent to run; the server passes it on as it is.
@@ -226,214 +116,131 @@ mod tests {
         command
     }
 
-    fn accepted(request: &str) -> Message {
-        Message::Receipt(Receipt {
-            request: id(request),
-            outcome: Outcome::Accepted,
+    fn follow(after: u64) -> Message {
+        Message::ChatQuery(ChatQuery {
+            workspace: id("w1"),
+            chat: id("c-1"),
+            query: ChatQueryKind::Subscribe { after },
         })
     }
 
+    // Takes `command` from Ada as her browser's envelope 4, with room for its answer.
+    async fn asked(
+        ada: &Ada,
+        shared: &Shared,
+        command: ChatCommand,
+    ) -> (Result<(), Fault>, mpsc::Receiver<Envelope>) {
+        let (back, answers) = mpsc::channel(4);
+        let taken = take(&ada.member, &ada.asker, shared, command, (4, &back)).await;
+        (taken, answers)
+    }
+
     #[tokio::test]
-    async fn a_first_prompt_reaches_the_machine_stamped_then_the_chat_is_made_and_followed() {
+    async fn a_first_prompt_reaches_the_machine_stamped_then_its_chat_is_made_and_its_answer_returns()
+     {
         let fixture = Fixture::new().await;
         let shared = &fixture.shared;
         let ada = ada(&fixture).await;
         let mut attached = attach(shared, &ada, &["machine.connect", "chat.serve"]);
 
-        let asked = with_codex(prompt("r-1", "c-1", "Fix it", Some(&ada.machine)));
-        let answer = take(&ada.member, &ada.asker, shared, asked).await.unwrap();
+        let first = with_codex(prompt("r-1", "c-1", "Fix it", Some(&ada.machine)));
+        let (taken, mut answers) = asked(&ada, shared, first).await;
 
-        assert_eq!(answer, accepted("r-1"));
+        taken.unwrap();
+        let envelope = attached.incoming.try_recv().unwrap();
         let mut relayed = with_codex(prompt("r-1", "c-1", "Fix it", None));
         relayed.by = Some(ada.asker.clone());
-        let follow = ChatQuery {
-            workspace: id("w1"),
-            chat: id("c-1"),
-            query: ChatQueryKind::Subscribe { after: 0 },
-        };
-        assert_eq!(
-            sent(&mut attached),
-            [Message::ChatCommand(relayed), Message::ChatQuery(follow)]
-        );
+        assert_eq!(envelope.message, Message::ChatCommand(relayed));
+        assert_eq!(sent(&mut attached), [follow(0)]);
         let chats = ada.member.workspace.chats().await.unwrap();
         let made: Vec<_> = chats
             .iter()
             .map(|chat| (chat.title.as_str(), chat.machine.as_str()))
             .collect();
         assert_eq!(made, [("Fix it", "Studio")]);
-        let again = prompt("r-1", "c-2", "Fix it", Some(&ada.machine));
-        let taken = take(&ada.member, &ada.asker, shared, again).await;
-        assert_eq!(taken.unwrap_err().code().as_str(), "request.conflict");
-    }
-
-    #[tokio::test]
-    async fn a_prompt_waits_behind_one_its_core_refused_for_now_and_an_interrupt_doesnt() {
-        let fixture = Fixture::new().await;
-        let shared = &fixture.shared;
-        let ada = ada(&fixture).await;
-        let workspace = &ada.member.workspace;
-        make(workspace, "c-1", "m1", NOW).await.unwrap();
-        workspace.move_chats_to(&ada.machine).await;
-        workspace.mark_refused(&id("r-c-1"), 0).await.unwrap();
-        let mut serving = attach(shared, &ada, &["chat.serve"]);
-        let ask = |command| take(&ada.member, &ada.asker, shared, command);
-
-        let later = ask(prompt("r-2", "c-1", "Go", None)).await;
-        assert_eq!(later.unwrap_err().code().as_str(), "chat.unavailable");
-        assert!(!workspace.has_request(&id("r-2")).await.unwrap());
-        let again = ask(prompt("r-c-1", "c-1", "Fix the build", None)).await;
-        assert_eq!(again.unwrap(), accepted("r-c-1"));
-        let stop = crate::db::test_support::command("r-3", "c-1", "Stop");
-        let stop = ChatCommand {
-            action: ChatAction::Interrupt,
-            ..stop
+        assert!(answers.try_recv().is_err());
+        let busy = Message::Receipt(Receipt {
+            request: id("r-1"),
+            outcome: Outcome::Failed {
+                code: code!("chat.busy"),
+            },
+        });
+        let answer = Envelope {
+            id: envelope.id,
+            message: busy.clone(),
         };
-        assert_eq!(ask(stop).await.unwrap(), accepted("r-3"));
-        assert_eq!(sent(&mut serving).len(), 4);
+        assert!(shared.relay.answered(&ada.machine, answer));
         assert_eq!(
-            ask(prompt("r-2", "c-1", "Go", None)).await.unwrap(),
-            accepted("r-2")
+            answers.try_recv().unwrap(),
+            Envelope {
+                id: 4,
+                message: busy
+            }
         );
     }
 
     #[tokio::test]
-    async fn a_command_to_a_machine_that_cant_take_it_is_refused_and_not_kept() {
+    async fn a_command_to_a_machine_that_cant_take_it_is_refused_and_a_first_prompts_chat_taken_back()
+     {
         let fixture = Fixture::new().await;
         let shared = &fixture.shared;
         let ada = ada(&fixture).await;
-        let workspace = &ada.member.workspace;
-        make(workspace, "c-1", "m1", NOW).await.unwrap();
-        workspace.move_chats_to(&ada.machine).await;
         let mut attached = attach(shared, &ada, &["machine.connect"]);
 
-        let refused = take(
-            &ada.member,
-            &ada.asker,
-            shared,
-            prompt("r-2", "c-1", "Go", None),
-        )
-        .await;
+        let first = prompt("r-1", "c-1", "Fix it", Some(&ada.machine));
+        let (refused, _answers) = asked(&ada, shared, first).await;
+
         assert_eq!(refused.unwrap_err().code().as_str(), "machine.offline");
-        assert!(!workspace.has_request(&id("r-2")).await.unwrap());
         assert!(sent(&mut attached).is_empty());
-
-        let mut serving = attach(shared, &ada, &["chat.serve"]);
-        let taken = take(
-            &ada.member,
-            &ada.asker,
-            shared,
-            prompt("r-2", "c-1", "Go", None),
-        )
-        .await;
-        assert_eq!(taken.unwrap(), accepted("r-2"));
-        assert!(workspace.has_request(&id("r-2")).await.unwrap());
-        assert_eq!(sent(&mut serving).len(), 2);
-        // Its core refused it for now; sent again, only its next answer counts.
-        workspace.mark_refused(&id("r-2"), 1).await.unwrap();
-        let retried = take(
-            &ada.member,
-            &ada.asker,
-            shared,
-            prompt("r-2", "c-1", "Go", None),
-        )
-        .await;
-        assert_eq!(retried.unwrap(), accepted("r-2"));
-        assert_eq!(sent(&mut serving).len(), 2);
-        let open = workspace.open_requests(&id("c-1")).await.unwrap();
-        assert!(open.iter().all(|request| !request.refused), "{open:?}");
-    }
-
-    #[tokio::test]
-    async fn a_retry_that_cant_be_sent_leaves_the_send_that_went_out_answerable() {
-        let fixture = Fixture::new().await;
-        let shared = &fixture.shared;
-        let ada = ada(&fixture).await;
         let workspace = &ada.member.workspace;
+        assert_eq!(workspace.chat(&id("c-1")).await.unwrap(), None);
         make(workspace, "c-1", "m1", NOW).await.unwrap();
         workspace.move_chats_to(&ada.machine).await;
-        let ask = |command| take(&ada.member, &ada.asker, shared, command);
-        let serving = attach(shared, &ada, &["chat.serve"]);
-        assert_eq!(
-            ask(prompt("r-2", "c-1", "Go", None)).await.unwrap(),
-            accepted("r-2")
-        );
-        drop(serving);
-
-        let retried = ask(prompt("r-2", "c-1", "Go", None)).await;
-
-        assert_eq!(retried.unwrap_err().code().as_str(), "machine.offline");
-        assert!(workspace.mark_refused(&id("r-2"), 1).await.unwrap());
-    }
-
-    #[tokio::test]
-    async fn a_retry_of_a_request_kept_but_never_sent_that_cant_be_sent_keeps_it() {
-        let fixture = Fixture::new().await;
-        let shared = &fixture.shared;
-        let ada = ada(&fixture).await;
-        let workspace = &ada.member.workspace;
-        make(workspace, "c-1", "m1", NOW).await.unwrap();
-        workspace.move_chats_to(&ada.machine).await;
-        let asked = prompt("r-2", "c-1", "Go", None);
-        let kept = NewRequest {
-            command: &asked,
-            member: &ada.member.id,
-            at: NOW,
-        };
-        assert_eq!(
-            workspace.record_request(&kept).await.unwrap(),
-            Recorded::New
-        );
-
-        let retried = take(&ada.member, &ada.asker, shared, asked.clone()).await;
-
-        assert_eq!(retried.unwrap_err().code().as_str(), "machine.offline");
-        assert!(workspace.has_request(&id("r-2")).await.unwrap());
-    }
-
-    #[tokio::test]
-    async fn a_first_prompt_sent_again_is_taken_as_itself_and_one_racing_its_chat_retries() {
-        let fixture = Fixture::new().await;
-        let shared = &fixture.shared;
-        let ada = ada(&fixture).await;
-        let workspace = &ada.member.workspace;
-        let mut serving = attach(shared, &ada, &["chat.serve"]);
-        let first = || prompt("r-1", "c-1", "Fix it", Some(&ada.machine));
-
-        let taken = take(&ada.member, &ada.asker, shared, first()).await;
-        assert_eq!(taken.unwrap(), accepted("r-1"));
-        assert_eq!(sent(&mut serving).len(), 2);
-        // Its receipt was lost: the same command again, which the core does once.
-        let again = take(&ada.member, &ada.asker, shared, first()).await;
-        assert_eq!(again.unwrap(), accepted("r-1"));
-        assert_eq!(sent(&mut serving).len(), 2);
-
-        begin(workspace, "c-2", "m1", NOW).await.unwrap();
-        workspace.move_chats_to(&ada.machine).await;
-        let racing = prompt("r-c-2", "c-2", "Fix the build", Some(&ada.machine));
-        let refused = take(&ada.member, &ada.asker, shared, racing).await;
+        let (refused, _answers) = asked(&ada, shared, prompt("r-2", "c-1", "Go", None)).await;
         assert_eq!(refused.unwrap_err().code().as_str(), "machine.offline");
-        assert!(sent(&mut serving).is_empty());
+        assert!(sent(&mut attached).is_empty());
     }
 
     #[tokio::test]
-    async fn a_first_prompt_losing_its_chat_to_one_on_another_machine_is_refused() {
+    async fn a_command_sent_again_goes_again_and_each_answer_returns_to_its_own_ask() {
         let fixture = Fixture::new().await;
         let shared = &fixture.shared;
         let ada = ada(&fixture).await;
         let workspace = &ada.member.workspace;
         make(workspace, "c-1", "m1", NOW).await.unwrap();
         workspace.move_chats_to(&ada.machine).await;
-        let mut serving = attach(shared, &ada, &["chat.serve"]);
-        // As admitted for a new chat, its machine taken out.
-        let lost = || prompt("r-c-1", "c-1", "Fix the build", None);
+        let mut attached = attach(shared, &ada, &["chat.serve"]);
 
-        let elsewhere = again(&ada.member, &ada.asker, shared, lost(), id("mc-2")).await;
+        let (one, mut first) = asked(&ada, shared, prompt("r-2", "c-1", "Go", None)).await;
+        let (two, mut second) = asked(&ada, shared, prompt("r-2", "c-1", "Go", None)).await;
 
-        assert_eq!(elsewhere.unwrap_err().code().as_str(), "chat.machine_fixed");
-        assert!(sent(&mut serving).is_empty());
-        let same = again(&ada.member, &ada.asker, shared, lost(), ada.machine.clone()).await;
-        same.unwrap();
-        assert_eq!(sent(&mut serving).len(), 2);
+        one.unwrap();
+        two.unwrap();
+        let envelopes: Vec<_> = std::iter::from_fn(|| attached.incoming.try_recv().ok()).collect();
+        let commands: Vec<_> = envelopes
+            .iter()
+            .filter(|envelope| matches!(envelope.message, Message::ChatCommand(_)))
+            .collect();
+        assert_eq!(commands.len(), 2);
+        assert!(
+            envelopes
+                .iter()
+                .any(|envelope| envelope.message == follow(0))
+        );
+        let refused = Message::Error(ErrorBody {
+            code: code!("chat.unavailable"),
+            retryable: true,
+        });
+        let ids: Vec<_> = commands.iter().map(|command| command.id).collect();
+        for id in ids.iter().rev() {
+            let answer = Envelope {
+                id: *id,
+                message: refused.clone(),
+            };
+            assert!(shared.relay.answered(&ada.machine, answer));
+        }
+        assert_eq!(first.try_recv().unwrap().message, refused);
+        assert_eq!(second.try_recv().unwrap().message, refused);
     }
 
     #[tokio::test]
@@ -445,8 +252,7 @@ mod tests {
         make(workspace, "c-1", "m1", NOW).await.unwrap();
         let before = workspace.changes_since(0, 50).await.unwrap().len();
 
-        let asked = prompt("r-2", "c-1", "Go", None);
-        let refused = take(&ada.member, &ada.asker, shared, asked).await;
+        let (refused, _answers) = asked(&ada, shared, prompt("r-2", "c-1", "Go", None)).await;
 
         assert_eq!(refused.unwrap_err().code().as_str(), "chat.detached");
         let chat = workspace.chat(&id("c-1")).await.unwrap().unwrap();
@@ -464,18 +270,14 @@ mod tests {
         make(workspace, "c-1", "m1", NOW).await.unwrap();
         workspace.move_chats_to(&ada.machine).await;
         let mut serving = attach(shared, &ada, &["chat.serve"]);
-        let mut asked = prompt("r-2", "c-1", "Go", None);
-        asked.action = ChatAction::Hold;
+        for action in [ChatAction::Hold, ChatAction::Release] {
+            let mut command = prompt("r-2", "c-1", "Go", None);
+            command.action = action;
 
-        let refused = take(&ada.member, &ada.asker, shared, asked).await;
+            let (refused, _answers) = asked(&ada, shared, command).await;
 
-        assert_eq!(refused.unwrap_err().code().as_str(), "message.unsupported");
-        assert!(sent(&mut serving).is_empty());
-        assert!(!workspace.has_request(&id("r-2")).await.unwrap());
-        let mut released = prompt("r-3", "c-1", "Go", None);
-        released.action = ChatAction::Release;
-        let refused = take(&ada.member, &ada.asker, shared, released).await;
-        assert_eq!(refused.unwrap_err().code().as_str(), "message.unsupported");
-        assert!(sent(&mut serving).is_empty());
+            assert_eq!(refused.unwrap_err().code().as_str(), "message.unsupported");
+            assert!(sent(&mut serving).is_empty());
+        }
     }
 }

@@ -11,8 +11,8 @@ use tokio::task::AbortHandle;
 use tokio::time::sleep;
 use weacon_observability::Fault;
 use weacon_protocol::{
-    Asker, Capability, Code, DiffAnswer, DiffAnswerKind, Envelope, ErrorBody, MachineId, Message,
-    code,
+    Asker, Capability, ChatCommand, Code, DiffAnswer, DiffAnswerKind, Envelope, ErrorBody,
+    MachineId, Message, code,
 };
 
 use crate::db::Workspace;
@@ -170,6 +170,52 @@ pub(crate) async fn forward(
     Ok(())
 }
 
+/// Sends `command` to `machine`, then `follow`, both or neither, and takes the core's answer to
+/// it, its receipt or refusal, back to `back` under `id`, as [`forward`] does.
+///
+/// # Errors
+/// `relay.busy`, which may pass, and `machine.offline`.
+pub(crate) fn command(
+    shared: &Shared,
+    machine: &MachineId,
+    command: ChatCommand,
+    follow: Message,
+    asked: (u32, &mpsc::Sender<Envelope>),
+) -> Result<(), Fault> {
+    let (id, back) = asked;
+    let relayed = shared.links.next_id();
+    let about = About::Command(command.chat.clone());
+    let sent = Sent {
+        asked: Asked::new(&command.workspace, &command.request, about),
+        machine: machine.clone(),
+    };
+    if shared.relay.wait(relayed, sent, id, back).is_err() {
+        return Err(Fault::new(
+            code!("relay.busy"),
+            "Too many asks wait for answers",
+        ));
+    }
+    let envelopes = vec![
+        Envelope {
+            id: relayed,
+            message: Message::ChatCommand(command),
+        },
+        Envelope {
+            id: shared.links.next_id(),
+            message: follow,
+        },
+    ];
+    let serve = Capability::new(crate::chats::SERVE);
+    if shared.links.send_all(machine, &serve, envelopes).is_err() {
+        shared.relay.lock().remove(&relayed);
+        return Err(Fault::new(
+            code!("machine.offline"),
+            "The chat's machine isn't connected",
+        ));
+    }
+    Ok(())
+}
+
 /// The asker's machine that `asked` goes to.
 async fn machine_for(shared: &Shared, ask: &Ask<'_>, asked: &Asked) -> Result<MachineId, Refusal> {
     let elsewhere = asked
@@ -183,10 +229,10 @@ async fn machine_for(shared: &Shared, ask: &Ask<'_>, asked: &Asked) -> Result<Ma
         About::Machine(machine) | About::Sessions(machine) | About::Symbols(machine) => {
             machine.clone()
         }
-        About::Diff(_) | About::Worktree(_) if elsewhere => {
+        About::Diff(_) | About::Worktree(_) | About::Command(_) if elsewhere => {
             return Err(refused(code!("chat.not_found"), false));
         }
-        About::Diff(chat) | About::Worktree(chat) => {
+        About::Diff(chat) | About::Worktree(chat) | About::Command(chat) => {
             let chat = ask.workspace.chat(chat).await.map_err(Refusal::Failed)?;
             let chat = chat.ok_or_else(|| refused(code!("chat.not_found"), false))?;
             if chat.owner != ask.asker.member {
@@ -229,9 +275,13 @@ impl Relay {
         let mut message = envelope.message;
         let named = answering(&message);
         let waiter = entry.get_mut();
-        let answers = match &named {
-            Some(named) => *named == waiter.sent.asked,
-            None => matches!(message, Message::Error(_)),
+        let asked = &waiter.sent.asked;
+        let answers = match (&named, &message) {
+            (Some(named), _) => named == asked,
+            (None, Message::Receipt(receipt)) => {
+                matches!(asked.about, About::Command(_)) && receipt.request == asked.request
+            }
+            (None, message) => matches!(message, Message::Error(_)),
         };
         if waiter.sent.machine != *machine || !answers {
             return true;

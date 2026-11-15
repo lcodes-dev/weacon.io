@@ -219,11 +219,6 @@ async fn hand_off(
         // The relay passes over what answers none of its asks; an error it doesn't claim is
         // for no other feature yet.
         message => {
-            if let Some(asked) = shared.chats.sent.answered(&machine.id, envelope.id) {
-                return chats::answers::take(shared, &machine.id, asked, message)
-                    .await
-                    .map(|()| None);
-            }
             let envelope = Envelope {
                 id: envelope.id,
                 message,
