@@ -13,7 +13,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use weacon_agents::{Launch, SpawnPolicy};
 use weacon_observability::{Fault, Logger};
-use weacon_protocol::{App, ChatId, RepoId, WorkspaceId, code};
+use weacon_protocol::{AgentKind, App, ChatId, RepoId, WorkspaceId, code};
 
 pub(crate) use engine::{Chats, WeakChats};
 use engine::{Engine, Host, RunAs};
@@ -92,6 +92,11 @@ fn prepared(roots: &Workspaces, places: &Places, run_as: &RunAs) -> Result<Launc
     let cwd = chat_folder(work_root, &run_as.key.workspace, &run_as.key.chat);
     let mut launch = roots.launch(&run_as.key.workspace, run_as.agent, cwd)?;
     launch.plugin = places.plugin.as_ref().and_then(Plugin::folder);
+    if run_as.agent == AgentKind::Codex
+        && let Some(plugin) = &places.plugin
+    {
+        plugin.give_codex(&launch.config_dir);
+    }
     Ok(launch)
 }
 
@@ -150,7 +155,7 @@ fn unix_now() -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use weacon_protocol::{AgentKind, ChatEvent, ChatQueryKind, Message, Outcome, Receipt};
+    use weacon_protocol::{ChatEvent, ChatQueryKind, Message, Outcome, Receipt};
     use weacon_testing::{TempDir, recording_logger};
 
     use super::test_support::{chat, client, key, prompt, query, someone, soon, workspace};
@@ -279,9 +284,10 @@ mod tests {
     }
 
     #[test]
-    fn each_agent_is_given_the_cores_plugin() {
+    fn each_agent_is_given_the_cores_plugin_and_codex_its_hooks() {
         let dir = TempDir::new().unwrap();
         platform::plant_program(&dir.join("bin"), "claude", 0o755);
+        platform::plant_program(&dir.join("bin"), "codex", 0o755);
         let (log, _records) = recording_logger();
         let plugin = Plugin::at(&dir.join("state"), Path::new("/opt/weacon"), &VERSION, &log);
         let places = Places {
@@ -299,8 +305,15 @@ mod tests {
             repo: None,
         };
 
+        let codex = RunAs {
+            agent: AgentKind::Codex,
+            ..run_as.clone()
+        };
+        let codex = prepared(&roots, &places, &codex).unwrap();
         let launch = prepared(&roots, &places, &run_as).unwrap();
 
+        assert!(codex.config_dir.join("hooks.json").is_file());
+        assert!(!launch.config_dir.join("hooks.json").exists());
         let plugin = launch.plugin.unwrap();
         assert!(
             plugin.join("hooks/hooks.json").is_file(),

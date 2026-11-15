@@ -336,8 +336,9 @@ impl Call<'_> {
                     .unwrap_or_default();
                 Word {
                     text: format!("{}/{name}", folder.text.trim_end_matches('/')),
-                    dynamic: folder.dynamic || source.dynamic,
-                    splits: folder.splits || source.splits,
+                    // `path_of` found the folder, so it isn't dynamic, and only a dynamic word splits.
+                    dynamic: source.dynamic,
+                    splits: source.splits,
                     glob: folder.glob || source.glob,
                     tilde: folder.tilde,
                     known: folder.known,
