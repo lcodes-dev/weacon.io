@@ -4,7 +4,7 @@ use std::future::Future;
 
 use tokio::sync::broadcast::{Receiver, error::RecvError};
 use weacon_observability::{Fault, Field};
-use weacon_protocol::{Capability, MachineId, Message};
+use weacon_protocol::{MachineId, Message};
 
 use super::link;
 use crate::db::Workspace;
@@ -54,46 +54,40 @@ async fn pick_up(shared: &Shared, connected: &Connected) {
 }
 
 /// Follows again `connected`'s unsettled chats in its owner's workspaces and sends again their
-/// commands sent within [`RESEND_WITHIN`], which the core does once, oldest first. A core that
-/// serves no chats is sent none, and gives how many it would have followed; one that can't take
-/// them all is `machine.offline`, and its link is closed so they are all sent again.
+/// commands sent within [`RESEND_WITHIN`], which the core does once; gives how many weren't sent.
 async fn resend(shared: &Shared, connected: &Connected) -> Result<usize, Fault> {
     let Connected { machine, owner } = connected;
-    let serving = shared.links.sender(machine, &Capability::new(link::SERVE));
-    let mut unserved = 0_usize;
+    let mut unsent = 0_usize;
     for summary in shared.db.account(owner.clone()).workspaces().await? {
         let workspace = shared.db.workspace(&summary.id).await?;
-        let unsettled = workspace.unsettled_on(machine).await?;
-        if serving.is_none() {
-            unserved += unsettled.len() + workspace.unmade_on(machine).await?.len();
-            continue;
-        }
-        for (chat, core_seq) in unsettled {
+        for (chat, core_seq) in workspace.unsettled_on(machine).await? {
             let open = workspace.open_requests(&chat).await?.into_iter();
-            link::deliver(
-                shared,
-                machine,
-                link::follow(workspace.id(), &chat, core_seq),
-            )
-            .await?;
-            for (command, _) in open.filter(|(_, sent_at)| recent(shared, *sent_at)) {
-                link::deliver(shared, machine, Message::ChatCommand(command)).await?;
+            let commands = open.filter(|(_, sent_at)| recent(shared, *sent_at));
+            let follow = link::follow(workspace.id(), &chat, core_seq);
+            let sent: Vec<_> = std::iter::once(follow)
+                .chain(commands.map(|(command, _)| Message::ChatCommand(command)))
+                .collect();
+            // What can't be sent now is sent the next time the machine connects.
+            let count = sent.len();
+            if link::send_all(shared, machine, sent).is_err() {
+                unsent += count;
             }
         }
-        first_prompts(shared, &workspace, machine).await?;
+        unsent += first_prompts(shared, &workspace, machine).await?;
     }
-    Ok(unserved)
+    Ok(unsent)
 }
 
 /// Sends `machine` the first prompts in `workspace` it never got, as when the server stopped
-/// before sending one, and takes back the chats of those not sent within [`RESEND_WITHIN`].
-/// Each chat is made before its prompt is sent, so a first prompt failing elsewhere meanwhile
-/// can't take it back; one not sent is sent again, first, when the machine connects again.
+/// before sending one, and takes back the chats of those not sent within [`RESEND_WITHIN`];
+/// gives how many weren't sent. Each chat is made before its prompt is sent, so a first prompt
+/// failing elsewhere meanwhile can't take it back, and one not sent stays to be sent again.
 async fn first_prompts(
     shared: &Shared,
     workspace: &Workspace,
     machine: &MachineId,
-) -> Result<(), Fault> {
+) -> Result<usize, Fault> {
+    let mut unsent = 0_usize;
     for (chat, owner) in workspace.unmade_on(machine).await? {
         let first = workspace.open_requests(&chat).await?.into_iter().next();
         let Some((command, _)) = first.filter(|(_, sent_at)| recent(shared, *sent_at)) else {
@@ -104,10 +98,15 @@ async fn first_prompts(
             continue;
         }
         shared.wake_feeds(workspace.id());
-        link::deliver(shared, machine, Message::ChatCommand(command)).await?;
-        link::deliver(shared, machine, link::follow(workspace.id(), &chat, 0)).await?;
+        let sent = [
+            Message::ChatCommand(command),
+            link::follow(workspace.id(), &chat, 0),
+        ];
+        if link::send_all(shared, machine, sent.into()).is_err() {
+            unsent += 2;
+        }
     }
-    Ok(())
+    Ok(unsent)
 }
 
 // Whether a command sent at `sent_at` was sent within [`RESEND_WITHIN`] of now.
@@ -127,15 +126,6 @@ mod tests {
     use crate::chats::test_support::{Ada, ada, attach, sent};
     use crate::db::test_support::{NOW, begin, id, make};
     use crate::test_support::Fixture;
-
-    // How many messages `attached` takes until its connection ends.
-    async fn taken_all(attached: &mut crate::links::Attached) -> usize {
-        let mut taken = 0_usize;
-        while attached.incoming.recv().await.is_some() {
-            taken += 1;
-        }
-        taken
-    }
 
     fn connected(ada: &Ada) -> Connected {
         Connected {
@@ -219,7 +209,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_first_prompt_waits_for_a_core_that_serves_chats() {
+    async fn a_first_prompt_the_machine_cant_take_is_counted_and_sent_again_next_time() {
         let fixture = Fixture::new().await;
         let shared = &fixture.shared;
         let ada = ada(&fixture).await;
@@ -228,65 +218,14 @@ mod tests {
         workspace.move_chats_to(&ada.machine).await;
         let older = attach(shared, &ada, &["machine.connect"]);
 
-        assert_eq!(resend(shared, &connected(&ada)).await.unwrap(), 1);
+        // Its prompt and its follow.
+        assert_eq!(resend(shared, &connected(&ada)).await.unwrap(), 2);
 
-        assert!(!workspace.chat(&id("c-1")).await.unwrap().unwrap().made);
+        assert!(workspace.chat(&id("c-1")).await.unwrap().unwrap().made);
         drop(older);
         let mut serving = attach(shared, &ada, &["chat.serve"]);
         assert_eq!(resend(shared, &connected(&ada)).await.unwrap(), 0);
-        assert_eq!(sent(&mut serving), [resent("c-1"), follow_query("c-1")]);
-        assert!(workspace.chat(&id("c-1")).await.unwrap().unwrap().made);
-    }
-
-    #[tokio::test]
-    async fn a_core_without_room_for_its_chats_connects_again_and_gets_them_first() {
-        let fixture = Fixture::new().await;
-        let shared = &fixture.shared;
-        let ada = ada(&fixture).await;
-        let workspace = &ada.member.workspace;
-        begin(workspace, "c-1", "m1", NOW).await.unwrap();
-        workspace.move_chats_to(&ada.machine).await;
-        let mut full = attach(shared, &ada, &["chat.serve"]);
-        let other = || link::follow(&id("w1"), &id("c-9"), 0);
-        let queued = (0..crate::links::QUEUE).map(|_| other()).collect();
-        link::send_all(shared, &ada.machine, queued).unwrap();
-
-        pick_up(shared, &connected(&ada)).await;
-
-        assert!(!shared.links.is_open(&ada.machine));
-        assert_eq!(sent(&mut full).len(), crate::links::QUEUE);
-        assert!(workspace.chat(&id("c-1")).await.unwrap().unwrap().made);
-        let mut again = attach(shared, &ada, &["chat.serve"]);
-        assert_eq!(resend(shared, &connected(&ada)).await.unwrap(), 0);
-        assert_eq!(sent(&mut again), [follow_query("c-1"), resent("c-1")]);
-    }
-
-    #[tokio::test]
-    async fn more_commands_than_the_queue_holds_reach_a_machine_that_takes_them() {
-        let fixture = Fixture::new().await;
-        let shared = &fixture.shared;
-        let ada = ada(&fixture).await;
-        let workspace = &ada.member.workspace;
-        make(workspace, "c-1", "m1", NOW).await.unwrap();
-        workspace.move_chats_to(&ada.machine).await;
-        let member = crate::test_support::member_id("m1");
-        for n in 0..crate::links::QUEUE {
-            let asked = crate::db::test_support::command(&format!("r-{n}"), "c-1", "Go on");
-            let request = crate::db::NewRequest {
-                command: &asked,
-                member: &member,
-                at: NOW,
-            };
-            workspace.record_request(&request).await.unwrap();
-        }
-        let mut attached = attach(shared, &ada, &["chat.serve"]);
-        let taken = tokio::spawn(async move { taken_all(&mut attached).await });
-
-        assert_eq!(resend(shared, &connected(&ada)).await.unwrap(), 0);
-
-        shared.links.close(&ada.machine);
-        // Its follow, its first prompt and every command after it.
-        assert_eq!(taken.await.unwrap(), crate::links::QUEUE + 2);
+        assert_eq!(sent(&mut serving), [follow_query("c-1"), resent("c-1")]);
     }
 
     #[tokio::test]
@@ -379,8 +318,8 @@ mod tests {
             machine: ada.machine.clone(),
             owner: ada.asker.account.clone(),
         };
-        // Both chats, which this core doesn't serve.
-        assert_eq!(resend(shared, &connected).await.unwrap(), 2);
+        // Each chat's follow and its one open command, none of which this core serves.
+        assert_eq!(resend(shared, &connected).await.unwrap(), 4);
         pick_up(shared, &connected).await;
         let warned = crate::test_support::messages(&fixture.records);
         assert!(warned.contains(&"chats not all picked up"), "{warned:?}");

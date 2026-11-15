@@ -120,19 +120,6 @@ impl Links {
         envelopes.try_for_each(|envelope| link.to_machine.try_send(envelope).map_err(|_| Offline))
     }
 
-    /// A sender to `machine`'s open connection, if its core offers `needs`.
-    pub(crate) fn sender(
-        &self,
-        machine: &MachineId,
-        needs: &Capability,
-    ) -> Option<mpsc::Sender<Envelope>> {
-        let open = self.lock();
-        let link = open
-            .get(machine)
-            .filter(|link| link.offers.contains(needs))?;
-        Some(link.to_machine.clone())
-    }
-
     /// The machines connected now.
     pub(crate) fn open_now(&self) -> Vec<Connected> {
         let open = self.lock();

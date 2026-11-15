@@ -1,6 +1,5 @@
 //! What the server sends the machines that run chats, over their connections.
 
-use tokio::time::timeout;
 use weacon_observability::Fault;
 use weacon_protocol::{
     Capability, ChatId, ChatQuery, ChatQueryKind, Code, Envelope, MachineId, Message, WorkspaceId,
@@ -28,26 +27,6 @@ pub(crate) fn send_all(
         .links
         .send_all(machine, &serve, envelopes.collect())
         .map_err(|_| offline())
-}
-
-/// Sends `message` to `machine` once its queue has room, waiting as long as the sockets' timing
-/// allows;
-/// refuses with `machine.offline` when it isn't connected, doesn't serve chats or has no room.
-pub(crate) async fn deliver(
-    shared: &Shared,
-    machine: &MachineId,
-    message: Message,
-) -> Result<(), Fault> {
-    let sender = shared.links.sender(machine, &Capability::new(SERVE));
-    let sender = sender.ok_or_else(offline)?;
-    let envelope = Envelope {
-        id: shared.links.next_id(),
-        message,
-    };
-    match timeout(shared.sockets.room_within, sender.send(envelope)).await {
-        Ok(Ok(())) => Ok(()),
-        Ok(Err(_)) | Err(_) => Err(offline()),
-    }
 }
 
 /// Asks for `chat`'s events after `after`, then each new one as it is committed.

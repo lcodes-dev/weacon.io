@@ -98,7 +98,6 @@ impl Fixture {
             sockets: crate::socket::Timing {
                 hello_within: Duration::from_millis(100),
                 ping_every: Duration::from_hours(1),
-                room_within: Duration::from_millis(100),
             },
             clock: Arc::new(Box::new(move || {
                 UNIX_EPOCH + Duration::from_secs(now.load(Ordering::Relaxed))
