@@ -17,6 +17,7 @@ mod doctor;
 )]
 mod git;
 mod guard;
+mod hold;
 mod hook;
 mod integrations;
 mod machine;

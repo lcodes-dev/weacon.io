@@ -166,18 +166,9 @@ impl Workspaces {
 
     /// Holds `workspace`'s settings for one read, change and save at a time, across processes,
     /// until the returned file is dropped.
-    pub(crate) fn hold(&self, workspace: &WorkspaceId) -> io::Result<fs::File> {
+    pub(crate) fn hold(&self, workspace: &WorkspaceId) -> io::Result<crate::hold::Hold> {
         platform::private_dir(&self.settings)?;
-        let lock = self
-            .settings
-            .join(format!("{}.lock", folder_name(workspace)));
-        let file = fs::File::options()
-            .create(true)
-            .truncate(false)
-            .write(true)
-            .open(lock)?;
-        file.lock()?;
-        Ok(file)
+        crate::hold::hold(&self.settings.join(format!("{}.lock", folder_name(workspace))))
     }
 
     /// Saves `settings` for `workspace`; its folder makes it one this machine knows.
@@ -808,20 +799,34 @@ mod tests {
         assert_eq!(error.code().as_str(), "agent.status_failed");
     }
 
+    // Each thread adds to a count read and written whole while holding one workspace's settings:
+    // with the holds taking turns, none of the additions is lost.
     #[test]
     fn a_workspaces_settings_are_held_by_one_change_at_a_time() {
         let dir = TempDir::new().unwrap();
-        let workspaces = Workspaces::new(&dir.join("state"), None);
+        let workspaces = std::sync::Arc::new(Workspaces::new(&dir.join("state"), None));
+        let count = dir.join("count");
+        let add = |workspaces: std::sync::Arc<Workspaces>, count: PathBuf| {
+            for _ in 0..50 {
+                let _held = workspaces.hold(&id("w1")).unwrap();
+                let now: u32 = fs::read_to_string(&count)
+                    .ok()
+                    .and_then(|text| text.trim().parse().ok())
+                    .unwrap_or(0);
+                fs::write(&count, (now + 1).to_string()).unwrap();
+            }
+        };
+        let adding: Vec<_> = (0..4)
+            .map(|_| {
+                let workspaces = std::sync::Arc::clone(&workspaces);
+                let count = count.clone();
+                std::thread::spawn(move || add(workspaces, count))
+            })
+            .collect();
 
-        let held = workspaces.hold(&id("w1")).unwrap();
-        let lock = workspaces
-            .settings
-            .join(format!("{}.lock", folder_name(&id("w1"))));
-        let again = fs::File::open(&lock).unwrap();
-
-        assert!(again.try_lock().is_err());
-        workspaces.hold(&id("w2")).unwrap();
-        drop(held);
-        again.try_lock().unwrap();
+        for thread in adding {
+            thread.join().unwrap();
+        }
+        assert_eq!(fs::read_to_string(&count).unwrap().trim(), "200");
     }
 }
