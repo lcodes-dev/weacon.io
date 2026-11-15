@@ -136,7 +136,7 @@ Leave it running, and open a second terminal in the same folder for the next ste
 What runs:
 
 - the server on `http://localhost:8080`, with its database, sign-in codes and key in `.dev/server/`;
-- `dev-tls`, a TLS front on `https://localhost:8443`, because the core only dials a server over TLS it can verify. It makes a certificate for `localhost` once, in `.dev/tls/`, and the core pins it. It is for development only;
+- `dev-tls`, a TLS front on `https://localhost:8443`, because the core only dials a server over TLS it can verify. It makes a certificate for `localhost` once, in `.dev/tls/`, and the core pins it. It is for development only: a real deployment puts a reverse proxy with a real certificate in front of `weacon-server`;
 - the core's daemon, with its state in `.dev/state/`.
 
 ### 4. Sign in
@@ -187,13 +187,16 @@ target/debug/weacon repo add --workspace <workspace id> demo "$HOME/code/demo"
 target/debug/weacon repo list --workspace <workspace id>
 ```
 
-### 7. Try the rest
+### 7. Start a chat
+
+Not yet: starting a chat from the web app, and the server relaying it to your machine, are on their way. This step will say how once they are on `main`.
+
+### 8. Try the rest
 
 - **Tasks**: type a title under **New task** and choose **Add**. Change its status from the list.
 - **Docs**: **New doc**, then a title and text, then **Save**. Each edit is a new revision.
 - **Proposals**: changes agents propose wait here. Nothing makes them yet.
 - **Search**: press ⌘K (Ctrl+K on Linux), then type.
-- **Chats**: the list is empty, because nothing starts a chat yet; see Status.
 - **Teammates**: the operator adds them from the command line. Each signs in with their own email and pairs their own machine. With the server running:
 
 ```bash
@@ -303,7 +306,7 @@ Start with [`AGENTS.md`](AGENTS.md): the rules every change keeps, the code styl
 
 ## Troubleshooting
 
-- **The daemon doesn't start, with `daemon.start_failed`.** The clone's path is too long for the core's socket. Clone into a shorter path; `scripts/dev.sh` checks this first.
+- **The daemon doesn't start, with `daemon.start_failed`.** The core's socket is `weacon.sock` in its state folder, and a socket's path holds at most 103 bytes on macOS and 107 on Linux. Clone into a shorter path, or set `WEACON_STATE_DIR` to a short folder, such as `/tmp/weacon-dev`, for `scripts/dev.sh` and every `weacon` command. `scripts/dev.sh` checks the length first.
 - **`scripts/setup.sh` says Weacon needs another Node.** Install the version in `.node-version` and make it the one on your `PATH`, then run it again.
 - **`scripts/dev.sh` says the server didn't start.** Something else uses port 8080, or 8443 for the TLS front. Stop it, then run again. Read `.dev/server.log` and `.dev/tls.log`.
 - **`weacon-server add-account` says there is no database.** The server makes the database when it first starts; `scripts/dev.sh` adds the account after that.

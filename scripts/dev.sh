@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Runs Weacon on this machine for development: the server on http://localhost:8080, a TLS front
 # for it on https://localhost:8443 that the core pins, and the core's daemon, with their data in
-# .dev/. The first run needs your email, for the server's owner. Ctrl-C stops all three.
+# .dev/; the core's goes in WEACON_STATE_DIR when it is set. The first run needs your email, for
+# the server's owner. Ctrl-C stops all three.
 # Usage: scripts/dev.sh [email]
 set -euo pipefail
 
@@ -18,12 +19,15 @@ die() {
 
 email=${1:-}
 data=.dev/server
-state="$PWD/.dev/state"
+state=${WEACON_STATE_DIR:-.dev/state}
 bin="${CARGO_TARGET_DIR:-target}/debug"
 
 # A Unix socket's path holds at most 103 bytes on macOS.
-socket="$state/weacon.sock"
-[ "${#socket}" -le 103 ] || die "$socket is too long for a socket; clone Weacon into a shorter path"
+case $state in
+  /*) socket="$state/weacon.sock" ;;
+  *) socket="$PWD/$state/weacon.sock" ;;
+esac
+[ "${#socket}" -le 103 ] || die "$socket is too long for a socket; set WEACON_STATE_DIR to a shorter folder"
 new=false
 if [ ! -e "$data/weacon.db" ]; then
   [ -n "$email" ] || die "the first run makes your account: scripts/dev.sh you@example.com"
@@ -70,7 +74,7 @@ cat <<EOF
 Weacon is running. Ctrl-C stops it.
   Web app:        http://localhost:8080
   Sign-in codes:  $data/outbox, one JSON file per code
-  Pair the core:  WEACON_STATE_DIR=.dev/state $bin/weacon pair https://localhost:8443 --pin .dev/tls/cert.pem
-  Logs:           .dev/server.log, .dev/tls.log, .dev/core.log and .dev/state/logs/
+  Pair the core:  WEACON_STATE_DIR=$state $bin/weacon pair https://localhost:8443 --pin .dev/tls/cert.pem
+  Logs:           .dev/server.log, .dev/tls.log, .dev/core.log and $state/logs/
 EOF
 wait "${pids[0]}"
