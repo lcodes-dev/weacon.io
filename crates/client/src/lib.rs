@@ -91,6 +91,15 @@ impl Connection {
         }
     }
 
+    /// Sends `message` to the daemon under `id`.
+    ///
+    /// # Errors
+    /// When it can't be sent, as when the daemon has gone.
+    pub async fn send(&mut self, id: u32, message: Message) -> Result<(), Fault> {
+        let line = encode_line(&Envelope { id, message }).map_err(no_answer)?;
+        self.stream.write_all(&line).await.map_err(no_answer)
+    }
+
     /// The next frame from the daemon, a message or why it isn't one; `None` once it hangs up.
     ///
     /// # Errors
@@ -207,6 +216,48 @@ mod tests {
                     app: app("weacon-extension"),
                     capabilities: Vec::new(),
                 }),
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn what_is_sent_after_the_welcome_reaches_the_daemon_under_its_id() {
+        let dir = TempDir::new().unwrap();
+        let socket = dir.join("weacon.sock");
+        let server = Server::bind(&socket).unwrap();
+        let daemon = tokio::spawn(async move {
+            let mut stream = BufReader::new(server.accept().await.unwrap());
+            let mut line = String::new();
+            stream.read_line(&mut line).await.unwrap();
+            let welcome = Message::Welcome(Welcome {
+                app: app("weacon-core"),
+                capabilities: Vec::new(),
+            });
+            stream
+                .write_all(
+                    &encode_line(&Envelope {
+                        id: 1,
+                        message: welcome,
+                    })
+                    .unwrap(),
+                )
+                .await
+                .unwrap();
+            line.clear();
+            stream.read_line(&mut line).await.unwrap();
+            serde_json::from_str::<Envelope>(&line).unwrap()
+        });
+
+        let (_, mut connection) = Connection::open(&socket, app("weacon"), Vec::new())
+            .await
+            .unwrap();
+        connection.send(7, update("Hi")).await.unwrap();
+
+        assert_eq!(
+            daemon.await.unwrap(),
+            Envelope {
+                id: 7,
+                message: update("Hi")
             }
         );
     }

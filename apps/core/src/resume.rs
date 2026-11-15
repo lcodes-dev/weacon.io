@@ -1,23 +1,112 @@
 //! `weacon resume`: a chat's agent, carried on by hand in the person's terminal, on the session
 //! the chat holds, in the chat's folder, with the workspace's own sign-in.
 
+use std::path::Path;
+
+use weacon_appkit::build;
+use weacon_client::Connection;
 use weacon_observability::Fault;
-use weacon_protocol::{ChatId, RunState, WorkspaceId, code};
+use weacon_protocol::{
+    Capability, ChatAction, ChatCommand, ChatId, ChatQuery, ChatQueryKind, Message, RequestId,
+    RunState, WorkspaceId, code,
+};
 
 use crate::app::{App, runtime};
 use crate::chats;
 use crate::chats::log::ChatLog;
+use crate::daemon::socket_path;
 use crate::runs::{ChatKey, Runs};
 use crate::workspaces::Workspaces;
 
-/// Runs the chat's agent here until the person ends it.
+/// Runs the chat's agent here until the person ends it, the chat held meanwhile.
 pub(crate) fn run(app: &App, workspace: &WorkspaceId, chat: &ChatId) -> Result<(), Fault> {
     let state_dir = app.state_dir()?;
     let key = ChatKey::new(workspace, chat);
+    // The engine keeps no receipt for a hold, so its request needs no id of its own.
+    let request = RequestId::try_from("r-hold".to_owned()).map_err(|_| not_held())?;
+    runtime()?.block_on(async {
+        // Held first, so the chat's agent has stopped and no prompt starts one until this ends.
+        let mut daemon = hold(app, state_dir, &key, &request).await?;
+        let resumed = resume(app, state_dir, &key).await;
+        if let Some(daemon) = &mut daemon {
+            // Closing lets the hold go too, only later; a daemon gone has nothing to hold.
+            let release = held(&key, &request, ChatAction::Release);
+            daemon.send(3, release).await.unwrap_or_default();
+        }
+        resumed
+    })
+}
+
+/// Holds the chat through the running daemon; none when no daemon runs, so none runs its agent.
+pub(crate) async fn hold(
+    app: &App,
+    state_dir: &Path,
+    key: &ChatKey,
+    request: &RequestId,
+) -> Result<Option<Connection>, Fault> {
+    let socket = socket_path(state_dir);
+    let (welcome, mut daemon) =
+        match Connection::open(&socket, build(&app.version), Vec::new()).await {
+            Ok(opened) => opened,
+            Err(fault) if fault.code().as_str() == "daemon.not_running" => return Ok(None),
+            Err(fault) => return Err(fault),
+        };
+    if !welcome
+        .capabilities
+        .contains(&Capability::new(code!("chat.hold")))
+    {
+        return Err(not_held());
+    }
+    daemon.send(2, held(key, request, ChatAction::Hold)).await?;
+    let snapshot = ChatQuery {
+        workspace: key.workspace.clone(),
+        chat: key.chat.clone(),
+        query: ChatQueryKind::Snapshot,
+    };
+    daemon.send(3, Message::ChatQuery(snapshot)).await?;
+    // Answered in order: an error is the hold's, and the snapshot's answer means it was held.
+    loop {
+        match daemon.next().await? {
+            Some(Ok(Message::Error(_))) => {
+                return Err(Fault::new(
+                    code!("resume.agent_running"),
+                    "The chat's agent is on a turn here; carry on once it ends",
+                ));
+            }
+            Some(Ok(Message::ChatAnswer(_))) => return Ok(Some(daemon)),
+            Some(_) => {}
+            None => {
+                return Err(Fault::new(
+                    code!("daemon.no_answer"),
+                    "The daemon didn't answer",
+                ));
+            }
+        }
+    }
+}
+
+pub(crate) fn held(key: &ChatKey, request: &RequestId, action: ChatAction) -> Message {
+    Message::ChatCommand(ChatCommand {
+        request: request.clone(),
+        workspace: key.workspace.clone(),
+        chat: key.chat.clone(),
+        action,
+        by: None,
+    })
+}
+
+fn not_held() -> Fault {
+    Fault::new(
+        code!("resume.not_held"),
+        "The daemon here can't hold the chat; update it, then carry on",
+    )
+}
+
+async fn resume(app: &App, state_dir: &Path, key: &ChatKey) -> Result<(), Fault> {
     let runs = Runs::load(state_dir)?;
     // A newer core ran it last, and carries it on.
-    runs.refuse_newer(&key)?;
-    let record = runs.of(&key).ok_or_else(|| {
+    runs.refuse_newer(key)?;
+    let record = runs.of(key).ok_or_else(|| {
         Fault::new(
             code!("resume.no_chat"),
             "This chat hasn't run on this machine",
@@ -36,23 +125,19 @@ pub(crate) fn run(app: &App, workspace: &WorkspaceId, chat: &ChatId) -> Result<(
             "The chat's agent is still running here; carry on once it sleeps",
         ));
     }
+    let (workspace, chat) = (&key.workspace, &key.chat);
     let workspaces = Workspaces::new(state_dir, app.path.clone());
     let root = workspaces.root(workspace);
-    let repo = runtime()?
-        .block_on(ChatLog::open(&root, chat))?
-        .repo()
-        .cloned();
-    let cwd = chats::chat_dir(&workspaces, app.work_root.as_deref(), &key, repo.as_ref())?;
+    let repo = ChatLog::open(&root, chat).await?.repo().cloned();
+    let cwd = chats::chat_dir(&workspaces, app.work_root.as_deref(), key, repo.as_ref())?;
     let launch = workspaces.launch(workspace, record.agent, cwd)?;
     let ids = [
         ("workspace_id", workspace.as_str().into()),
         ("chat_id", chat.as_str().into()),
     ];
     app.log.info("resume started", &ids);
-    runtime()?.block_on(async {
-        launch.require_sign_in().await?;
-        launch.resume_by_hand(&session).await
-    })?;
+    launch.require_sign_in().await?;
+    launch.resume_by_hand(&session).await?;
     app.log.info("resume ended", &ids);
     Ok(())
 }

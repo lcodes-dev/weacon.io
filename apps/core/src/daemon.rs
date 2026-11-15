@@ -961,6 +961,44 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn resume_holds_an_idle_chat_and_not_one_on_a_turn() {
+        use crate::chats::test_support::{bench, prompt, soon};
+        use crate::runs::ChatKey;
+        use weacon_protocol::{ChatAction, RequestId};
+
+        let dir = TempDir::new().unwrap();
+        let mut bench = bench();
+        let chats = bench.chats.clone();
+        let running = start_as(&dir, |daemon| daemon.shared.chats = chats).unwrap();
+        let app = test_support::app(Some(&dir), None);
+        let (workspace, chat) = (
+            WorkspaceId::try_from("w-1".to_owned()).unwrap(),
+            ChatId::try_from("c-1".to_owned()).unwrap(),
+        );
+        let key = ChatKey::new(&workspace, &chat);
+        let request = RequestId::try_from("r-hold".to_owned()).unwrap();
+
+        let mut held = crate::resume::hold(&app, &dir, &key, &request)
+            .await
+            .unwrap()
+            .unwrap();
+        held.send(4, Message::ChatCommand(prompt("r-1", "go on")))
+            .await
+            .unwrap();
+        let release = crate::resume::held(&key, &request, ChatAction::Release);
+        held.send(5, release).await.unwrap();
+        assert!(soon(bench.started.recv()).await.is_some());
+
+        let refused = crate::resume::hold(&app, &dir, &key, &request).await;
+        let Err(fault) = refused else {
+            panic!("held on a turn");
+        };
+        assert_eq!(fault.code().as_str(), "resume.agent_running");
+        drop(held);
+        running.stop().await;
+    }
+
+    #[tokio::test]
     async fn the_owner_lists_their_outside_sessions_through_the_socket_and_relayed_asks_dont() {
         use weacon_protocol::{AgentKind, SessionsAnswerKind, SessionsQuery, SessionsQueryKind};
 
