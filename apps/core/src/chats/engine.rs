@@ -722,6 +722,34 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
+    async fn a_hold_is_refused_by_a_core_that_doesnt_offer_it() {
+        let bench = bench();
+
+        for action in [ChatAction::Hold, ChatAction::Release] {
+            let asked = bench.chats.command(command("r-1", "c-1", action)).await;
+            assert_eq!(code_of(asked), "message.unsupported");
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_hold_under_another_commands_request_is_refused_too() {
+        let bench = bench();
+        drop(
+            bench
+                .chats
+                .command(command("r-1", "c-1", ChatAction::Interrupt))
+                .await,
+        );
+
+        let asked = bench
+            .chats
+            .command(command("r-1", "c-1", ChatAction::Hold))
+            .await;
+
+        assert_eq!(code_of(asked), "message.unsupported");
+    }
+
+    #[tokio::test(start_paused = true)]
     async fn an_agent_that_cant_start_fails_the_prompt_and_the_next_one_tries_again() {
         let mut bench = bench();
         let mut pushes = watch(&bench).await;

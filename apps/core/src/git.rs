@@ -206,12 +206,17 @@ impl Git {
         })
     }
 
-    // The branch `repo` has checked out, such as `main`; none when its head is detached.
+    // The branch `repo` has checked out, such as `main`; none when its head is detached. Read in
+    // full: `--short` can say `heads/main` when a tag is also called `main`.
     fn checked_out(&self, repo: &Path) -> Option<String> {
-        let out = run(self
-            .command(repo)
-            .args(["symbolic-ref", "--quiet", "--short", "HEAD"]));
-        Some(text(out.ok()?).ok()?.trim_end().to_owned())
+        let out = run(self.command(repo).args(["symbolic-ref", "--quiet", "HEAD"]));
+        Some(
+            text(out.ok()?)
+                .ok()?
+                .trim_end()
+                .strip_prefix("refs/heads/")?
+                .to_owned(),
+        )
     }
 
     // Every worktree git knows of, and whether its folder is missing.
@@ -449,6 +454,19 @@ mod tests {
 
     fn real(path: &Path) -> PathBuf {
         path.canonicalize().unwrap()
+    }
+
+    #[test]
+    fn the_branch_a_chat_began_from_is_its_name_even_beside_a_tag_of_it() {
+        let dir = TempDir::new().unwrap();
+        let (git, repo) = (git(&dir), repo(&dir));
+        fixture(&dir, &repo, &["tag", "main"]);
+
+        let made = git
+            .chat_worktree(&repo, &chat("a-1"), &dir.join("trees/c-a"))
+            .unwrap();
+
+        assert_eq!(made.start.unwrap().branch.as_deref(), Some("main"));
     }
 
     #[test]

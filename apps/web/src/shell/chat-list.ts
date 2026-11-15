@@ -1,8 +1,13 @@
-import type { ChatState, ChatSummary } from "../protocol.ts";
+import type { ChatState, ChatSummary, MemberId } from "../protocol.ts";
 
 /** `chats`, the one whose latest turn began or ended last first. */
 export function newestFirst(chats: readonly ChatSummary[]): ChatSummary[] {
   return [...chats].sort((a, b) => b.updated_at - a.updated_at || a.id.localeCompare(b.id));
+}
+
+/** Whether `member`, the person's in the chat's workspace, owns `chat`; an unknown member owns none. */
+export function owns(member: MemberId | undefined, chat: ChatSummary | undefined): boolean {
+  return member !== undefined && chat?.owner === member;
 }
 
 const NOTES: Partial<Record<ChatState, string>> = { full: "Full", detached: "Read only" };
