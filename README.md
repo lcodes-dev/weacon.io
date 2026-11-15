@@ -55,16 +55,18 @@ Weacon is in early development. This is what works on `main` today:
 | --- | --- | --- |
 | Accounts | Email sign-in with a code; the first account owns the server | Sending the codes by email: they wait in a folder for a mail relay |
 | Workspaces | A personal workspace for each account; new workspaces; members the operator adds with `weacon-server add-member` | Inviting people from the web app |
-| Machines | Pairing with a key fingerprint check; online status; per-workspace agent access; error report choice | |
+| Machines | Pairing with a key fingerprint check; online status; per-workspace agent access; error report choice; a note when a machine's core is too old for the server | |
 | Agent sign-in | The sealed sign-in terminal in a machine's settings; `weacon login` in a terminal | |
-| Chats | The chat list, the chat screen and **New chat** | The server relaying a chat's prompt to your machine, so an agent can answer |
+| Chats | **New chat** picks a machine, a repository and an agent; the server passes the prompt to that machine and keeps what the agent does; the chat screen shows it | |
+| Agents | Claude Code; Codex, which asks before every command and every file change, whatever the access level | |
+| Terminals | **Open terminal** in a chat and `weacon resume`, once the machine's owner allows them on that machine | |
 | Tasks and docs | Adding, editing, statuses, doc revisions | |
-| Proposals | Listing, accepting and rejecting; the core passes on its agents' proposals | Agents making them, which needs chats to reach your machine |
-| Search | ⌘K finds docs and tasks | |
+| Proposals | Accepting and rejecting; agents propose through their core; the core proposes what a move of a repository's main branch does to docs that pin its code | |
+| Search | ⌘K finds docs, tasks and chats, and in a chat the code's symbols | |
 | Code map | `weacon map` and the local MCP the core gives its agents | |
 | Server MCP | | An MCP endpoint for agents Weacon didn't start |
 | Chrome extension | Builds and registers with the core | |
-| Updates | `weacon update schedule` | Installing updates: there is no signed release manifest yet |
+| Updates | `weacon update schedule` | Checking for and installing updates: nothing arrives until a signed release is published |
 
 ## Run it on your machine
 
@@ -193,14 +195,31 @@ target/debug/weacon repo list --workspace <workspace id>
 
 ### 7. Start a chat
 
-Not yet: the server doesn't relay a chat's prompt to your machine yet. This step will say how once it does.
+Sign the agent in first, as in step 6, and give the workspace a repository.
+
+1. Open your workspace and choose **New chat** in the left column.
+2. Pick the **Machine**, the **Repository** and the **Agent**.
+3. Type what you want done and choose **Send**.
+
+The server passes the prompt to your machine, the core starts the agent in a folder of its own for this chat, and the chat screen shows what the agent says and does as it goes.
+
+While the agent isn't signed in on that machine, the form says "Claude Code isn't signed in on this machine." and **Send** stays off. **Sign in from Settings** opens Settings: open the machine's **Settings** there, then **Sign in** next to Claude Code. A Codex that isn't installed shows "Codex isn't installed on this machine."
+
+Codex works differently from Claude Code: it asks you before every command and every file change, whatever the workspace's access level. Weacon's start-of-session hook for it runs only after you have reviewed it once in Codex.
 
 ### 8. Try the rest
 
 - **Tasks**: type a title under **New task** and choose **Add**. Change its status from the list.
 - **Docs**: **New doc**, then a title and text, then **Save**. Each edit is a new revision.
-- **Proposals**: changes agents propose wait here. Nothing makes them yet.
-- **Search**: press ⌘K (Ctrl+K on Linux and Windows), then type.
+- **Proposals**: changes to docs and tasks wait here until someone accepts or rejects them. Agents propose them from their chats. When a repository's main branch moves, the core also proposes what that did to docs that pin its code.
+- **Open terminal**: a chat's **Open terminal** opens its folder in your own terminal on that machine. It's off until you allow it, on that machine:
+
+```bash
+target/debug/weacon terminals on
+```
+
+  Once a chat's run sleeps, `target/debug/weacon resume --workspace <workspace id> --chat <chat id>` carries on its agent in your terminal.
+- **Search**: press ⌘K (Ctrl+K on Linux and Windows), then type. It finds docs, tasks and chats by title, and in a chat the symbols in its code.
 - **Teammates**: the operator adds them from the command line. Each signs in with their own email and pairs their own machine. With the server running:
 
 ```bash
@@ -231,7 +250,7 @@ Ctrl-C in the first terminal stops the server, the TLS front and the core. `scri
 | `.dev/state/` | The core's state: its pairing, settings, sign-in folders and logs |
 | `.dev/work/` | The folders agents work in |
 
-To start over, stop Weacon, then remove the server's and the core's data together, since a core paired with a server you removed can't connect. If you set `WEACON_STATE_DIR` to a folder of its own, such as `~/.weacon-dev/state`, remove that folder too. The core keeps agents' work in a `work` folder beside it, such as `~/.weacon-dev/work`: check that it holds only Weacon's folders before you remove it.
+To start over, stop Weacon, then remove the server's and the core's data together, since a core paired with a server you removed can't connect. If you paired a second core for the Chrome extension, pair it again afterwards, as in that section. If you set `WEACON_STATE_DIR` to a folder of its own, such as `~/.weacon-dev/state`, remove that folder too. The core keeps agents' work in a `work` folder beside it, such as `~/.weacon-dev/work`: check that it holds only Weacon's folders before you remove it.
 
 ```bash
 rm -rf .dev/server .dev/state .dev/work
