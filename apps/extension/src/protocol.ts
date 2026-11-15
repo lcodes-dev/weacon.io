@@ -1215,8 +1215,8 @@ export type Pick = {
 };
 
 /**
- * What a chat's log keeps of a pick a prompt carried: the page's address without its query or
- * fragment, its title and the element's selector, never its HTML or screenshot.
+ * What a chat's log keeps of a pick a prompt carried: the page's address without its query,
+ * fragment or sign-in, its title and the element's selector, never its HTML or screenshot.
  */
 export type PickNote = {
   selector: string;

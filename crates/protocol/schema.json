@@ -2876,7 +2876,7 @@
       ]
     },
     "PickNote": {
-      "description": "What a chat's log keeps of a pick a prompt carried: the page's address without its query or\nfragment, its title and the element's selector, never its HTML or screenshot.",
+      "description": "What a chat's log keeps of a pick a prompt carried: the page's address without its query,\nfragment or sign-in, its title and the element's selector, never its HTML or screenshot.",
       "type": "object",
       "properties": {
         "selector": {
