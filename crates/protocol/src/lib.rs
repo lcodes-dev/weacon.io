@@ -109,11 +109,9 @@ mod tests {
 
     use super::*;
 
-    #[test]
-    fn the_committed_schema_is_current() {
-        // The HTTP bodies, which no `Envelope` carries, are defined beside it; schemars sorts
-        // the definitions, so this order is only for readers.
-        let mut generator = SchemaGenerator::default();
+    // The HTTP bodies, which no `Envelope` carries; schemars sorts the definitions, so this
+    // order is only for readers.
+    fn define_http_bodies(generator: &mut SchemaGenerator) {
         generator.subschema_for::<SignInStart>();
         generator.subschema_for::<SignInStarted>();
         generator.subschema_for::<SignInFinish>();
@@ -150,6 +148,12 @@ mod tests {
         generator.subschema_for::<WorkspaceCreate>();
         generator.subschema_for::<WorkspaceSummary>();
         generator.subschema_for::<WorkspaceList>();
+    }
+
+    #[test]
+    fn the_committed_schema_is_current() {
+        let mut generator = SchemaGenerator::default();
+        define_http_bodies(&mut generator);
         let schema = generator.into_root_schema_for::<Envelope>();
         let current = serde_json::to_string_pretty(&schema).unwrap() + "\n";
         let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("schema.json");
