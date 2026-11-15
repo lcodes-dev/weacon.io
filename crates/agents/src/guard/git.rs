@@ -197,7 +197,9 @@ fn hidden_option(name: &str, args: &[Word]) -> bool {
         if std::mem::take(&mut message) {
             continue;
         }
-        if arg.text == "--" {
+        // Only a literal `--` ends the options; a dynamic `--$x` has known text `--` but could
+        // expand to anything, so it is judged as the hidden option it may be.
+        if !arg.dynamic && !arg.glob && arg.text == "--" {
             operands = true;
             continue;
         }
@@ -205,7 +207,10 @@ fn hidden_option(name: &str, args: &[Word]) -> bool {
             continue;
         }
         if name == "commit" {
-            if matches!(arg.text.as_str(), "-m" | "--message") {
+            // `-m X` takes the next word as the message only when `-m` is a plain literal word; a
+            // dynamic or glob `-m"$A"` / `--message=$A` carries the message in this word itself, so
+            // skip only this one and leave the next to be judged.
+            if !arg.dynamic && !arg.glob && matches!(arg.text.as_str(), "-m" | "--message") {
                 message = true;
                 continue;
             }

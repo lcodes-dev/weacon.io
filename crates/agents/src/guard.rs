@@ -646,16 +646,29 @@ mod tests {
         assert_eq!(check("git grep $X pattern"), Some(Reason::Unsure));
         assert_eq!(check("git diff $X"), Some(Reason::Unsure));
         assert_eq!(check("git grep pattern *"), Some(Reason::Unsure));
+        // A dynamic `--$V` is not a literal `--`, so it can't end option parsing or hide the action.
+        assert_eq!(
+            check("git remote --$V set-url origin /x"),
+            Some(Reason::Unsure)
+        );
         // A sub-action is read past leading options, so a change hidden behind `-v` still asks.
         assert_eq!(
             check("git remote -v set-url origin /tmp/x"),
             Some(Reason::NotListed)
         );
         // Past a literal `--`, and the value of commit's message in any of its forms, a word
-        // can't be an option.
+        // can't be an option. But the message value is exactly one word: an attached `-m"$A"`
+        // leaves a following word free, so that word is still judged.
         assert_eq!(check("git grep pattern -- *"), None);
         assert_eq!(check("git commit -m $X"), None);
-        assert_eq!(check("git commit --message=$X"), None);
+        assert_eq!(check(r#"git commit -m"$A""#), None);
+        assert_eq!(check(r#"git commit --message="$A" -- $B"#), None);
+        assert_eq!(check(r#"git commit -m"$A" $B"#), Some(Reason::Unsure));
+        assert_eq!(check("git commit -m $A $B"), Some(Reason::Unsure));
+        assert_eq!(
+            check(r#"git commit --message "$A" $B"#),
+            Some(Reason::Unsure)
+        );
     }
 
     #[test]
