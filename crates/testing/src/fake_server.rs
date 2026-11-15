@@ -261,7 +261,9 @@ mod tests {
     ) -> Vec<Value> {
         let mut texts = Vec::new();
         while texts.len() < count {
-            if let Frame::Text(text) = client.next().await.unwrap().unwrap() {
+            // A server that goes quiet fails the test instead of hanging it.
+            let frame = tokio::time::timeout(Duration::from_secs(10), client.next()).await;
+            if let Frame::Text(text) = frame.unwrap().unwrap().unwrap() {
                 texts.push(serde_json::from_str(text.as_str()).unwrap());
             }
         }
