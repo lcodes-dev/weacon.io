@@ -1,7 +1,7 @@
 import type { Later } from "../connection.ts";
-import type { MachineId, OutsideSession, SessionsAnswerKind, SessionsQueryKind } from "../protocol.ts";
+import type { ChatEntry, MachineId, OutsideSession, SessionsAnswerKind, SessionsQueryKind } from "../protocol.ts";
 import { type Answer, MALFORMED } from "../api/api.ts";
-import { type Chat, commit, fromSnapshot } from "../chat/chat.ts";
+import { type Chat, fromSnapshot } from "../chat/chat.ts";
 import { type MachineSocket, askMachine } from "./ask-machine.ts";
 
 export const MISSING = "session.missing";
@@ -26,7 +26,10 @@ export async function readOn(
   later: Later,
   wanted: () => boolean,
 ): Promise<Answer<Read>> {
-  let { chat, after } = read ?? { chat: fromSnapshot({ seq: 0, runs: new Map(), waiting: [], events: [] }), after: 0 };
+  const entries: ChatEntry[] = [...(read?.chat.entries ?? [])];
+  let after = read?.after ?? 0;
+  // Built once from every entry, since committing them one by one copies the chat each time.
+  const done = () => ({ chat: fromSnapshot({ seq: entries.length, runs: new Map(), waiting: [], events: entries }), after });
   for (;;) {
     const query: SessionsQueryKind = { kind: "open", agent: session.agent, session: session.session, after };
     const page = await ask(socket, machine, query, later, (answer) => (answer.kind === "opened" ? { ok: true, value: answer } : undefined));
@@ -35,11 +38,11 @@ export async function readOn(
     }
     const fresh = page.value.events.filter((entry) => entry.seq > after);
     for (const { seq, event } of fresh) {
-      chat = commit(chat, { seq: chat.seq + 1, event }) ?? chat;
+      entries.push({ seq: entries.length + 1, event });
       after = seq;
     }
     if (!page.value.more || fresh.length === 0 || !wanted()) {
-      return { ok: true, value: { chat, after } };
+      return { ok: true, value: done() };
     }
   }
 }
