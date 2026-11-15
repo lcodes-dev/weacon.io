@@ -19,9 +19,9 @@ test("a prompt is sent and waits for its receipt, unless it is over the server's
   const chatRef = { workspace: "w-1", chat: "c-1" };
   const receipts = new Receipts(() => {});
   const sent: Envelope[] = [];
-  // With empty text the envelope takes 114 bytes, so 1,048,462 more fill the 1 MiB limit; あ takes 3.
-  const fits = chatCommand(2, chatRef, "r-1", { kind: "prompt", text: `${"あ".repeat(349_487)}a` });
-  const over = chatCommand(2, chatRef, "r-2", { kind: "prompt", text: `${"あ".repeat(349_487)}ab` });
+  // With empty text the envelope takes 114 bytes, so 1,015,694 more fill the limit; あ takes 3.
+  const fits = chatCommand(2, chatRef, "r-1", { kind: "prompt", text: `${"あ".repeat(338_564)}aa` });
+  const over = chatCommand(2, chatRef, "r-2", { kind: "prompt", text: `${"あ".repeat(338_564)}aaa` });
 
   const waiting = deliverPrompt(fits, receipts, (envelope) => sent.push(envelope));
   assert.equal(await deliverPrompt(over, receipts, (envelope) => sent.push(envelope)), "too_long");

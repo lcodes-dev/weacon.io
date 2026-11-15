@@ -260,8 +260,12 @@ impl Workspace {
     }
 
     /// The open chats made on `machine`, whose owner still owns it, each with the last of its
-    /// events it has.
-    pub(crate) async fn open_on(&self, machine: &MachineId) -> Result<Vec<(ChatId, u64)>, Fault> {
+    /// events it has: those with a run at work, then the latest used, `most` of them at most.
+    pub(crate) async fn open_on(
+        &self,
+        machine: &MachineId,
+        most: u32,
+    ) -> Result<Vec<(ChatId, u64)>, Fault> {
         sqlx::query_as::<_, (String, i64)>(
             "SELECT c.chat_id, c.core_seq FROM chats AS c
              JOIN members AS m ON m.workspace_id = c.workspace_id AND m.member_id = c.owner_member
@@ -269,10 +273,13 @@ impl Workspace {
              WHERE c.workspace_id = ? AND c.machine_id = ? AND c.state = 'open'
                  AND EXISTS (SELECT 1 FROM changes AS h WHERE h.workspace_id = c.workspace_id
                      AND h.chat_id = c.chat_id)
-             ORDER BY c.chat_id",
+             ORDER BY json_extract(c.run_status, '$.state') IN ('starting', 'running', 'waiting')
+                 DESC, c.updated_at DESC, c.chat_id
+             LIMIT ?",
         )
         .bind(self.id.as_str())
         .bind(machine.as_str())
+        .bind(most)
         .fetch_all(&self.db.readers)
         .await
         .map_err(failed)?
@@ -424,13 +431,19 @@ mod tests {
             .await
             .unwrap();
 
-        let open = one.open_on(&id("mc-1")).await.unwrap();
+        let open = one.open_on(&id("mc-1"), 9).await.unwrap();
         let ids: Vec<_> = open
             .iter()
             .map(|(chat, core_seq)| (chat.as_str(), *core_seq))
             .collect();
-        assert_eq!(ids, [("c-1", 0), ("c-2", 4)]);
-        assert_eq!(two.open_on(&id("mc-1")).await.unwrap().len(), 1);
+        assert_eq!(ids, [("c-2", 4), ("c-1", 0)]);
+        assert_eq!(two.open_on(&id("mc-1"), 9).await.unwrap().len(), 1);
+        // A run at work comes first, so it is followed whatever the bound.
+        append(&one, "c-2", &[(Some(5), status(RunState::Running))])
+            .await
+            .unwrap();
+        let first = one.open_on(&id("mc-1"), 1).await.unwrap();
+        assert_eq!(first, [(id("c-2"), 5)]);
     }
 
     #[tokio::test]

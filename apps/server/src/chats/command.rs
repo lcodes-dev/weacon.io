@@ -196,8 +196,7 @@ mod tests {
         let fixture = Fixture::new().await;
         let shared = &fixture.shared;
         let ada = ada(&fixture).await;
-        // A core that serves chats but answers no command, as an older one, is sent none.
-        let mut attached = attach(shared, &ada, &["machine.connect", "chat.serve"]);
+        let mut attached = attach(shared, &ada, &["machine.connect"]);
 
         let first = prompt("r-1", "c-1", "Fix it", Some(&ada.machine));
         let (refused, _answers) = asked(&ada, shared, first).await;
@@ -211,6 +210,11 @@ mod tests {
         let (refused, _answers) = asked(&ada, shared, prompt("r-2", "c-1", "Go", None)).await;
         assert_eq!(refused.unwrap_err().code().as_str(), "machine.offline");
         assert!(sent(&mut attached).is_empty());
+        // A core that serves chats but answers no command, as an older one, is too old for it.
+        let mut older = attach(shared, &ada, &["chat.serve"]);
+        let (refused, _answers) = asked(&ada, shared, prompt("r-3", "c-1", "Go", None)).await;
+        assert_eq!(refused.unwrap_err().code().as_str(), "message.unsupported");
+        assert!(sent(&mut older).is_empty());
     }
 
     #[tokio::test]

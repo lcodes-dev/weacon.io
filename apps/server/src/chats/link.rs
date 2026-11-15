@@ -14,7 +14,8 @@ pub(crate) const SERVE: Code = code!("chat.serve");
 pub(crate) const ANSWERS: Code = code!("chat.answers");
 
 /// Sends `messages` to `machine` under their envelope ids, all of them or none, refusing with
-/// `machine.offline` when it isn't connected, doesn't offer `needs` or hasn't room for them all.
+/// `message.unsupported` when its core serves chats but doesn't offer `needs`, and with
+/// `machine.offline` when it isn't connected or hasn't room for them all.
 pub(crate) fn send_all(
     shared: &Shared,
     machine: &MachineId,
@@ -24,10 +25,17 @@ pub(crate) fn send_all(
     let envelopes = messages
         .into_iter()
         .map(|(id, message)| Envelope { id, message });
-    shared
-        .links
-        .send_all(machine, &Capability::new(needs), envelopes.collect())
-        .map_err(|_| offline())
+    let needs = Capability::new(needs);
+    let sent = shared.links.send_all(machine, &needs, envelopes.collect());
+    // A core that serves chats but can't do what they need is there, only too old.
+    let there = |offer: &Capability| shared.links.offers(machine, offer);
+    sent.map_err(|_| {
+        if there(&Capability::new(SERVE)) && !there(&needs) {
+            super::unsupported()
+        } else {
+            offline()
+        }
+    })
 }
 
 /// Asks for `chat`'s events after `after`, then each new one as it is committed.

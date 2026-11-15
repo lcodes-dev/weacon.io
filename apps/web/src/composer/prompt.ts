@@ -10,7 +10,7 @@ export type Sent = Settled | "too_long";
 export type Send = (text: string, request: RequestId) => Promise<Sent>;
 
 // The server's limit on one message from a browser, in bytes: `MAX_MESSAGE` in its feed.
-const FEED_LIMIT = 1_048_576;
+const FEED_LIMIT = 1_015_808;
 
 /** Sends the prompt `command` through `send` and waits for its receipt, unless it is too long to send. */
 export function deliverPrompt(command: Command, receipts: Receipts, send: (envelope: Envelope) => void): Promise<Sent> {

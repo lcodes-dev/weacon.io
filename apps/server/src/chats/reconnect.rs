@@ -9,6 +9,10 @@ use super::link;
 use crate::links::Connected;
 use crate::shared::Shared;
 
+/// How many chats of a workspace a machine is followed for again when it connects: half its
+/// queue, so commands still find room.
+const FOLLOWED_AGAIN: u32 = 32;
+
 /// Picks up each machine's chats as it connects, from now on, for as long as the server runs.
 pub(crate) fn follow_machines(shared: Shared) -> impl Future<Output = ()> {
     let connected = shared.links.connected();
@@ -54,7 +58,7 @@ async fn follow_again(shared: &Shared, connected: &Connected) -> Result<usize, F
     let mut unsent = 0_usize;
     for summary in shared.db.account(owner.clone()).workspaces().await? {
         let workspace = shared.db.workspace(&summary.id).await?;
-        for (chat, core_seq) in workspace.open_on(machine).await? {
+        for (chat, core_seq) in workspace.open_on(machine, FOLLOWED_AGAIN).await? {
             let follow = link::follow(workspace.id(), &chat, core_seq);
             // What can't be followed now is the next time the machine connects.
             let sent = vec![(shared.links.next_id(), follow)];

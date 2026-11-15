@@ -60,8 +60,9 @@ const OFFERED: [Code; 16] = [
 /// How many answers from machines wait for the client to take them.
 const ANSWERS: usize = 16;
 
-/// As much as a machine may send, so a prompt as long as a pasted log goes through.
-const MAX_MESSAGE: usize = weacon_protocol::MAX_FRAME;
+/// As much as a core keeps in one entry of a chat's log, so a prompt as long as a pasted log
+/// goes through, and still fits a frame once the server stamps it.
+const MAX_MESSAGE: usize = weacon_protocol::MAX_FRAME - (32 << 10);
 const PAGE: u32 = 500;
 
 #[derive(Deserialize)]
@@ -701,7 +702,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_long_message_is_taken_and_an_oversized_one_ends_the_feed() {
-        assert_eq!(MAX_MESSAGE, 1 << 20);
+        assert_eq!(MAX_MESSAGE, 1_015_808);
         let fixture = Fixture::new().await;
         let (server, ada) = fixture.client("ada@example.com").await;
         let mut client = greeted(server.address, &ada.token, 0).await;
