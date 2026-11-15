@@ -231,14 +231,12 @@ Ctrl-C in the first terminal stops the server, the TLS front and the core. `scri
 | `.dev/state/` | The core's state: its pairing, settings, sign-in folders and logs |
 | `.dev/work/` | The folders agents work in |
 
-To start over, stop Weacon, then remove the server's and the core's data together, since a core paired with a server you removed can't connect:
+To start over, stop Weacon, then remove the server's and the core's data together, since a core paired with a server you removed can't connect. If you set `WEACON_STATE_DIR`, remove that folder and the `work` folder beside it too, before you start again.
 
 ```bash
 rm -rf .dev/server .dev/state .dev/work
 scripts/dev.sh you@example.com
 ```
-
-If you set `WEACON_STATE_DIR`, remove that folder and the `work` folder beside it too.
 
 ## Development
 
@@ -291,6 +289,7 @@ target/debug/weacon daemon
 Then, in another terminal, pair it as a second machine and let Chrome reach it:
 
 ```bash
+unset WEACON_STATE_DIR
 target/debug/weacon pair https://localhost:8443 --pin .dev/tls/cert.pem --name "Dev laptop, Chrome"
 target/debug/weacon connect-chrome
 ```
