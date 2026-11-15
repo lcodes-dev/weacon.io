@@ -193,6 +193,7 @@ mod tests {
         let anchors = DocAnchors {
             commit: "89abcdef0123456789abcdef0123456789abcdef".parse().unwrap(),
             pins: vec!["sym:a::go#0123456789abcdef".parse().unwrap()],
+            repo: None,
         };
         DocText::new(title, "[go](sym:a::go)\n".to_owned(), Some(anchors)).unwrap()
     }
@@ -281,6 +282,7 @@ mod tests {
         let anchors = DocAnchors {
             commit: "a".repeat(40).parse().unwrap(),
             pins: vec![moved.clone()],
+            repo: None,
         };
         let content = DocContent {
             title: "Plan".to_owned(),

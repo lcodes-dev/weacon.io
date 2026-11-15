@@ -85,6 +85,21 @@ impl From<DocText> for DocContent {
 /// Where each link target in `body` starts, after `](`, `<` or `]:`, and the `end` that closes it.
 const OPENERS: [(&str, char); 3] = [("](", ')'), ("<", '>'), ("]:", ' ')];
 
+/// `body` with its links to each pin's anchor in `moves` relinked to the pin it moves to, in
+/// order, as a re-anchor makes it.
+#[must_use]
+pub fn reanchored<'a>(
+    body: &str,
+    moves: impl IntoIterator<Item = (&'a DocPin, &'a DocPin)>,
+) -> String {
+    moves
+        .into_iter()
+        .filter(|(from, to)| from.anchor() != to.anchor())
+        .fold(body.to_owned(), |body, (from, to)| {
+            relinked(&body, from.anchor(), to.anchor())
+        })
+}
+
 /// `body` with each link whose target is `from`, as [`DocText`] finds links, now to `to`.
 #[must_use]
 pub fn relinked(body: &str, from: &str, to: &str) -> String {
@@ -210,6 +225,7 @@ mod tests {
         DocAnchors {
             commit: CommitId::try_from("a".repeat(40)).unwrap(),
             pins,
+            repo: None,
         }
     }
 
@@ -334,6 +350,21 @@ mod tests {
             last.revise(Revision::new(u64::MAX), next()),
             Err(ReviseError::LastVersion)
         );
+    }
+
+    #[test]
+    fn a_reanchor_relinks_each_moved_pin_in_order_and_leaves_the_rest() {
+        let pin = |text: &str| DocPin::try_from(format!("{text}#{FINGERPRINT}")).unwrap();
+        let (one, two, three, keep) = (pin("sym:a"), pin("sym:b"), pin("sym:c"), pin("sym:k"));
+
+        assert_eq!(
+            reanchored(
+                "[x](sym:a) [k](sym:k)",
+                [(&one, &two), (&keep, &keep), (&two, &three)]
+            ),
+            "[x](sym:c) [k](sym:k)"
+        );
+        assert_eq!(reanchored("[x](sym:a)", [(&two, &three)]), "[x](sym:a)");
     }
 
     #[test]

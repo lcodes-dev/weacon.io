@@ -26,6 +26,7 @@ pub(super) const STEPS: &[&str] = &[
     steps::SEARCH,
     steps::SEARCH_CHATS,
     steps::CORE_BUILDS,
+    steps::DOC_REPOS,
     steps::INVITATIONS,
 ];
 
