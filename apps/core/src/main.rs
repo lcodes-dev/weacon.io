@@ -107,6 +107,7 @@ fn run(app: &App, command: Command, env: platform::Env<'_>) -> Result<Ending, Fa
         Command::Pair { server, name, pin } => {
             pair::run(app, &server, name, pin.as_deref(), &mut io::stdout().lock())
         }
+        Command::Repo(command) => git::repos::run(app, command, &mut io::stdout().lock()),
         Command::Reports { answer } => reports::run(app, answer, &mut io::stdout().lock()),
         Command::Resume { workspace, chat } => resume::run(app, &workspace, &chat),
         Command::ConnectChrome => native_host::connect_chrome(app, env, &mut io::stdout().lock()),

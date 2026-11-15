@@ -13,7 +13,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use weacon_agents::{Launch, SpawnPolicy};
 use weacon_observability::{Fault, Logger};
-use weacon_protocol::{App, ChatId, code};
+use weacon_protocol::{App, ChatId, WorkspaceId, code};
 
 pub(crate) use engine::Chats;
 use engine::{Engine, Host, RunAs};
@@ -100,12 +100,16 @@ pub(crate) fn work_dir(work_root: Option<&Path>, key: &ChatKey) -> Result<PathBu
             "The chat's working folder couldn't be created",
         )
     };
-    let dir = work_root
-        .ok_or_else(failed)?
-        .join(workspaces::folder_name(&key.workspace))
-        .join(file_stem(&key.chat));
+    let dir = chat_folder(work_root.ok_or_else(failed)?, &key.workspace, &key.chat);
     platform::private_dir(&dir).map_err(|error| failed().because(error))?;
     Ok(dir)
+}
+
+/// The folder a chat's agents work in under `work_root`.
+pub(crate) fn chat_folder(work_root: &Path, workspace: &WorkspaceId, chat: &ChatId) -> PathBuf {
+    work_root
+        .join(workspaces::folder_name(workspace))
+        .join(file_stem(chat))
 }
 
 fn unix_now() -> u64 {
