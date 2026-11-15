@@ -695,9 +695,10 @@ mod tests {
         };
         let (mcp, _server) =
             listen(&weacon_appkit::build(&VERSION), &log, Maps::off(), limits).unwrap();
+        // Timed from before the idle connection opens, so its stall can't have begun earlier.
+        let started = Instant::now();
         // Accepted first, it holds the only place until it stalls out.
         let _idle = TcpStream::connect(address(&mcp)).await.unwrap();
-        let started = Instant::now();
 
         let reply = post(&mcp, &[], &call("map", json!({}))).await;
 
