@@ -1,8 +1,11 @@
 use weacon_observability::Fault;
-use weacon_protocol::{AccountId, DocId, MachineId, MachineName, MemberId, PinnedDoc, ProposalId};
+use weacon_protocol::{
+    AccountId, DocContent, DocId, MachineId, MachineName, MemberId, PinnedDoc, ProposalChange,
+    ProposalId,
+};
 
-use super::super::{Workspace, failed, stored, unreadable};
-use super::{Closing, not_found};
+use super::super::{Workspace, failed, parsed, stored, unreadable};
+use super::{Closing, DOC_EDIT, OPEN, not_found};
 
 /// How many docs a page of pinned docs holds: each pins at most 256 anchors of at most 512
 /// bytes, so a page fits in a frame.
@@ -62,6 +65,35 @@ impl Workspace {
             });
         }
         Ok((docs, more))
+    }
+
+    /// What the open re-anchor that `machine` made of its own, from the doc's revision
+    /// `version`, would make the doc `id`, if there is one.
+    pub(crate) async fn own_edit(
+        &self,
+        id: &DocId,
+        version: u64,
+        machine: &MachineId,
+    ) -> Result<Option<DocContent>, Fault> {
+        let base = i64::try_from(version).map_err(|_| unreadable())?;
+        let change: Option<String> = sqlx::query_scalar(
+            "SELECT change FROM proposals WHERE workspace_id = ? AND machine_id = ? AND agent = ''
+                 AND state = ? AND kind = ? AND doc_id = ? AND base = ?",
+        )
+        .bind(self.id.as_str())
+        .bind(machine.as_str())
+        .bind(OPEN)
+        .bind(DOC_EDIT)
+        .bind(id.as_str())
+        .bind(base)
+        .fetch_optional(&self.db.readers)
+        .await
+        .map_err(failed)?;
+        let change: Option<ProposalChange> = change.as_deref().map(parsed).transpose()?;
+        let Some(ProposalChange::DocEdit { content, .. }) = change else {
+            return Ok(None);
+        };
+        Ok(Some(content))
     }
 
     /// Withdraws the open proposal `id` that `machine` made, on behalf of its owner `member`;

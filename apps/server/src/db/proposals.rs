@@ -12,7 +12,7 @@ use weacon_protocol::{
 };
 
 use super::changes::Versioned;
-use super::{Workspace, author_columns, failed, stored};
+use super::{Workspace, author_columns, failed, parsed, stored};
 use target::Target;
 
 /// The most proposals one machine may have open in a workspace.
@@ -82,9 +82,17 @@ impl Workspace {
             return Ok(());
         }
         let target = self.proposal_target(transaction, proposed).await?;
-        if target.base.is_some() {
-            self.supersede(transaction, proposed, &target).await?;
-        }
+        let older = match target.base {
+            Some(_) => {
+                self.supersede(transaction, proposed, &target, &agent)
+                    .await?
+            }
+            None => Vec::new(),
+        };
+        let change = match kept_findings(&proposed.change, older) {
+            Some(merged) => serde_json::to_string(&merged).map_err(|_| invalid())?,
+            None => change,
+        };
         self.room_for_proposal(transaction, &proposed.machine)
             .await?;
         // At least what its revision will count, so that accepting it fits in what it frees.
@@ -171,21 +179,24 @@ impl Workspace {
         Ok(())
     }
 
-    /// Supersedes the same machine's open edits of the doc or task `target` is to; one of
-    /// `doc_id` and `task_id` is bound to null, which matches nothing.
+    /// Supersedes the open edits of the doc or task `target` is to that the same machine made
+    /// for the same `agent`, or of its own, and gives what they changed; one of `doc_id` and
+    /// `task_id` is bound to null, which matches nothing.
     async fn supersede(
         &self,
         transaction: &mut SqliteConnection,
         proposed: &Proposed,
         target: &Target<'_>,
-    ) -> Result<(), Fault> {
-        let older: Vec<String> = sqlx::query_scalar(
-            "SELECT proposal_id FROM proposals
-             WHERE workspace_id = ? AND machine_id = ? AND state = ? AND kind = ?
+        agent: &str,
+    ) -> Result<Vec<ProposalChange>, Fault> {
+        let older: Vec<(String, String)> = sqlx::query_as(
+            "SELECT proposal_id, change FROM proposals
+             WHERE workspace_id = ? AND machine_id = ? AND agent = ? AND state = ? AND kind = ?
                  AND (doc_id = ? OR task_id = ?)",
         )
         .bind(self.id.as_str())
         .bind(proposed.machine.as_str())
+        .bind(agent)
         .bind(OPEN)
         .bind(target.kind)
         .bind(target.doc.map(DocId::as_str))
@@ -193,12 +204,14 @@ impl Workspace {
         .fetch_all(&mut *transaction)
         .await
         .map_err(failed)?;
-        for older in older {
+        let mut changes = Vec::new();
+        for (older, change) in older {
             let older: ProposalId = stored(older)?;
             self.close_proposal(transaction, &older, Closing::Superseded, &proposed.owner)
                 .await?;
+            changes.push(parsed(&change)?);
         }
-        Ok(())
+        Ok(changes)
     }
 
     /// What the open proposal `id` counts toward the quota; `proposal.not_found` when there's
@@ -290,6 +303,35 @@ fn stored_agent(proposed: &Proposed) -> Result<String, Fault> {
         Some((_, _, None)) => Ok(String::new()),
         None => Err(invalid()),
     }
+}
+
+/// A "needs an update" `change` with the findings of the `older` ones it supersedes that it
+/// lacks, from the same revision, so that a later move doesn't hide what an earlier one found;
+/// none for any other change, or when there are none to keep.
+fn kept_findings(change: &ProposalChange, older: Vec<ProposalChange>) -> Option<ProposalChange> {
+    let ProposalChange::NeedsUpdate { doc, base, anchors } = change else {
+        return None;
+    };
+    let mut kept = anchors.clone();
+    for older in older {
+        let ProposalChange::NeedsUpdate {
+            base: older_base,
+            anchors: older,
+            ..
+        } = older
+        else {
+            continue;
+        };
+        let new = older
+            .into_iter()
+            .filter(|stale| older_base == *base && !kept.iter().any(|kept| kept.pin == stale.pin));
+        kept.extend(new.collect::<Vec<_>>());
+    }
+    (kept.len() > anchors.len()).then(|| ProposalChange::NeedsUpdate {
+        doc: doc.clone(),
+        base: *base,
+        anchors: kept,
+    })
 }
 
 /// The agent stored in a proposal's `agent` column, if it has one.
@@ -820,5 +862,70 @@ mod tests {
                 .unwrap_err();
             assert_eq!(code(&fault), "db.failed");
         }
+    }
+
+    fn stale_of(pins: &[&str]) -> ProposalChange {
+        ProposalChange::NeedsUpdate {
+            doc: id("p"),
+            base: 1,
+            anchors: pins
+                .iter()
+                .map(|pin| weacon_protocol::StaleAnchor {
+                    pin: pin.parse().unwrap(),
+                    change: weacon_protocol::AnchorChange::Gone {
+                        was: "fn a::go  a.rs:1".to_owned(),
+                    },
+                })
+                .collect(),
+        }
+    }
+
+    #[tokio::test]
+    async fn only_the_same_authors_edit_is_superseded_and_needs_updates_keep_earlier_findings() {
+        let dir = TempDir::new().unwrap();
+        let (one, _) = workspaces(&dir).await;
+        let (go, run) = ("sym:a::go#0123456789abcdef", "sym:a::run#0123456789abcdef");
+        let anchors = weacon_protocol::DocAnchors {
+            commit: "a".repeat(40).parse().unwrap(),
+            pins: vec![go.parse().unwrap(), run.parse().unwrap()],
+        };
+        let text = weacon_model::DocText::new(
+            weacon_model::Title::try_from("P".to_owned()).unwrap(),
+            "[a](sym:a::go) [b](sym:a::run)\n".to_owned(),
+            Some(anchors),
+        )
+        .unwrap();
+        one.add_doc(&Doc::new(id("p"), text), &by("m1"))
+            .await
+            .unwrap();
+        let core = |proposal: &str, change| Proposed {
+            agent: None,
+            ..proposed(proposal, "mc1", change)
+        };
+
+        one.propose(&proposed("agent", "mc1", revise("d1", 1, "A\n")))
+            .await
+            .unwrap();
+        one.propose(&core("own", revise("d1", 1, "B\n")))
+            .await
+            .unwrap();
+        one.propose(&core("first", stale_of(&[go]))).await.unwrap();
+        one.propose(&core("second", stale_of(&[run])))
+            .await
+            .unwrap();
+
+        let state = |list: &[ProposalRecord], proposal: &str| {
+            list.iter()
+                .find(|record| record.id.as_str() == proposal)
+                .unwrap()
+                .state
+                .clone()
+        };
+        let list = one.proposals().await.unwrap();
+        assert_eq!(state(&list, "agent"), ProposalState::Open);
+        assert_eq!(state(&list, "own"), ProposalState::Open);
+        assert_eq!(state(&list, "first"), ProposalState::Superseded);
+        let second = one.proposal(&id("second")).await.unwrap();
+        assert_eq!(second.change, Some(stale_of(&[run, go])));
     }
 }

@@ -13,7 +13,7 @@ use std::time::Duration;
 
 use tokio::sync::{OnceCell, OwnedSemaphorePermit, Semaphore};
 use tokio::time::MissedTickBehavior;
-use weacon_codemap::{Index, assemble};
+use weacon_codemap::{Facts, Index, assemble};
 use weacon_observability::{Fault, Field, Logger};
 use weacon_protocol::{CommitId, McpCall, WorkspaceId, code};
 
@@ -59,7 +59,15 @@ struct Stores {
     /// Where what a move of a base did to docs' anchors is proposed, and the commit each
     /// repository's base last moved to, by its workspace and main worktree.
     proposals: Option<Proposals>,
-    moves: Arc<Mutex<HashMap<(WorkspaceId, PathBuf), CommitId>>>,
+    moves: Arc<Mutex<HashMap<(WorkspaceId, PathBuf), Checked>>>,
+}
+
+/// The commit a repository's base last moved to, and the base before it while checking that
+/// move failed, so the next move is checked from there.
+#[derive(Debug)]
+struct Checked {
+    commit: CommitId,
+    failed: Option<Vec<Facts>>,
 }
 
 /// A live run's worktree, in a repository its workspace registered, by its canonical paths.
@@ -289,22 +297,46 @@ impl Stores {
     }
 
     /// Proposes, on a task of its own, what `moved` did to the anchors of `watched`'s
-    /// workspace's docs, once for each commit a repository's base moves to.
-    fn moved(&self, watched: &Watched, moved: Move, log: &Logger) {
+    /// workspace's docs, once for each commit a repository's base moves to; a move whose
+    /// check failed is checked again with the next.
+    fn moved(&self, watched: &Watched, mut moved: Move, log: &Logger) {
         let Some(proposals) = self.proposals.clone() else {
             return;
         };
         let key = (watched.workspace.clone(), watched.main.clone());
         let mut seen = self.moves.lock().unwrap_or_else(PoisonError::into_inner);
-        if seen.get(&key) == Some(&moved.commit) {
+        let earlier = seen.get(&key);
+        if earlier.is_some_and(|earlier| earlier.commit == moved.commit) {
             return;
         }
-        seen.insert(key, moved.commit.clone());
-        let (workspace, log) = (watched.workspace.clone(), log.clone());
+        if let Some(was) = earlier.and_then(|earlier| earlier.failed.clone()) {
+            moved.was = was;
+        }
+        let checked = Checked {
+            commit: moved.commit.clone(),
+            failed: None,
+        };
+        seen.insert(key.clone(), checked);
+        drop(seen);
+        let (workspace, log, moves) = (
+            watched.workspace.clone(),
+            log.clone(),
+            Arc::clone(&self.moves),
+        );
         tokio::spawn(async move {
-            match check_move(&proposals, &workspace, moved).await {
-                Ok(docs) => log.info("anchors checked", &[("docs", docs.into())]),
-                Err(fault) => log.warn("anchors check failed", &[("err", Field::error(&fault))]),
+            let (was, commit) = (moved.was.clone(), moved.commit.clone());
+            let Err(fault) = check_move(&proposals, &workspace, moved).await.map(|docs| {
+                log.info("anchors checked", &[("docs", docs.into())]);
+            }) else {
+                return;
+            };
+            log.warn("anchors check failed", &[("err", Field::error(&fault))]);
+            let mut seen = moves.lock().unwrap_or_else(PoisonError::into_inner);
+            if let Some(checked) = seen
+                .get_mut(&key)
+                .filter(|checked| checked.commit == commit)
+            {
+                checked.failed = Some(was);
             }
         });
     }
@@ -551,7 +583,7 @@ mod tests {
         assert_eq!(messages(&records), ["mcp maps off"]);
     }
 
-    fn facts(files: &[(&str, &str)]) -> Vec<weacon_codemap::Facts> {
+    fn facts(files: &[(&str, &str)]) -> Vec<Facts> {
         let mut reader = weacon_codemap::Reader::new().unwrap();
         files
             .iter()
@@ -625,5 +657,68 @@ mod tests {
         let off = open(&dir, path, None).await.unwrap();
         off.moved(&watched, moved('d'), &log);
         assert!(off.moves.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_move_whose_check_failed_is_checked_again_with_the_next() {
+        let dir = TempDir::new().unwrap();
+        let fake = Fake::default();
+        *fake.refuse.lock().unwrap() = Some(code!("proposal.too_many"));
+        let path = std::env::var_os("PATH");
+        let stores = open(&dir, path, Some(fake.connect())).await.unwrap();
+        let manifest = ("Cargo.toml", "[package]\nname = \"a\"\n");
+        let was = facts(&[manifest, ("src/lib.rs", "pub fn go() {}\n")]);
+        let now = facts(&[manifest, ("src/lib.rs", "pub fn go() { let x = 1; }\n")]);
+        let anchor: weacon_codemap::Anchor = "sym:a::go".parse().unwrap();
+        let pin = weacon_codemap::Pin {
+            fingerprint: assemble(&was).fingerprint(&anchor).unwrap(),
+            anchor,
+        };
+        fake.docs.lock().unwrap().push(pinned_doc(&pin.to_string()));
+        let watched = Watched {
+            workspace: workspace("one"),
+            main: dir.join("main"),
+            worktree: dir.join("main"),
+        };
+        let (log, _) = recording_logger();
+        let key = (watched.workspace.clone(), watched.main.clone());
+
+        let first = Move {
+            was: was.clone(),
+            now: now.clone(),
+            commit: "b".repeat(40).parse().unwrap(),
+        };
+        stores.moved(&watched, first, &log);
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while stores
+                .moves
+                .lock()
+                .unwrap()
+                .get(&key)
+                .is_none_or(|checked| checked.failed.is_none())
+            {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        *fake.refuse.lock().unwrap() = None;
+        // The next move changes nothing more, so only the failed one has anything to propose.
+        let next = Move {
+            was: now.clone(),
+            now,
+            commit: "c".repeat(40).parse().unwrap(),
+        };
+        stores.moved(&watched, next, &log);
+        tokio::time::timeout(Duration::from_secs(10), fake.heard.notified())
+            .await
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(10), fake.heard.notified())
+            .await
+            .unwrap();
+
+        let commands = fake.commands();
+        assert_eq!(commands.len(), 2);
+        assert_eq!(commands[0].action, commands[1].action);
     }
 }

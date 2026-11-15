@@ -3,9 +3,9 @@
 
 use weacon_observability::{Fault, Field};
 use weacon_protocol::{
-    AgentOwner, AgentRef, Code, MachineName, MemberId, Outcome, ProposalAction, ProposalAnswer,
-    ProposalAnswerKind, ProposalCommand, ProposalQuery, ProposalQueryKind, Receipt, WorkspaceId,
-    code,
+    AgentOwner, AgentRef, Batched, Code, DocId, MAX_PROPOSAL, MachineName, MemberId, Outcome,
+    ProposalAction, ProposalAnswer, ProposalAnswerKind, ProposalChange, ProposalCommand,
+    ProposalQuery, ProposalQueryKind, Receipt, WorkspaceId, code,
 };
 
 use crate::app::new_id;
@@ -90,7 +90,7 @@ async fn proposed(
                 .await?;
         }
         ProposalAction::Batch { proposals } => {
-            if proposals.is_empty() {
+            if !one_docs_anchors(&proposals) {
                 return Err(invalid());
             }
             let batch: Vec<Proposed> = proposals
@@ -138,11 +138,43 @@ async fn answer(
             Ok(ProposalAnswerKind::Pinned { docs, more })
         }
         ProposalQueryKind::Doc { doc } => {
-            let doc = workspace.doc(doc, None).await?;
-            Ok(ProposalAnswerKind::Doc { doc: record(doc) })
+            let mut doc = record(workspace.doc(doc, None).await?);
+            let own = workspace
+                .own_edit(&doc.id, doc.version, &machine.id)
+                .await?;
+            if let Some(content) = own {
+                doc.content = content;
+            }
+            let json = serde_json::to_vec(&doc).map_err(|_| invalid())?;
+            if json.len() > MAX_PROPOSAL {
+                return Err(Fault::new(
+                    code!("proposal.too_large"),
+                    "The doc is larger than an answer may be",
+                ));
+            }
+            Ok(ProposalAnswerKind::Doc { doc })
         }
         ProposalQueryKind::Newer => Err(invalid()),
     }
+}
+
+/// Whether `proposals` is what a batch may hold: at least one re-anchor or "needs an update"
+/// proposal, all of one doc.
+fn one_docs_anchors(proposals: &[Batched]) -> bool {
+    let doc = |batched: &Batched| match &batched.change {
+        ProposalChange::DocEdit { doc, .. } | ProposalChange::NeedsUpdate { doc, .. } => {
+            Some(doc.clone())
+        }
+        ProposalChange::TaskEdit { .. }
+        | ProposalChange::NewDoc { .. }
+        | ProposalChange::NewTask { .. }
+        | ProposalChange::Newer => None,
+    };
+    let docs: Option<Vec<DocId>> = proposals.iter().map(doc).collect();
+    docs.is_some_and(|docs| {
+        docs.first()
+            .is_some_and(|first| docs.iter().all(|doc| doc == first))
+    })
 }
 
 /// The code a refusal answers with; a failure that isn't the core's to fix is logged too.
@@ -511,5 +543,60 @@ mod tests {
             ]
         );
         assert_eq!(messages(&fixture.records), ["proposal failed"]);
+    }
+
+    #[tokio::test]
+    async fn a_batch_holds_one_docs_anchors_and_a_doc_reads_as_the_cores_own_edit_makes_it() {
+        let fixture = Fixture::new().await;
+        docs(&fixture).await;
+        let server = fixture.run().await;
+        let mut core = connected(&fixture, server.address).await;
+        let batch = |changes: Vec<ProposalChange>| ProposalAction::Batch {
+            proposals: changes
+                .into_iter()
+                .enumerate()
+                .map(|(at, change)| Batched {
+                    proposal: id(&format!("b{at}")),
+                    change,
+                })
+                .collect(),
+        };
+        let task = ProposalChange::NewTask {
+            title: "Ship".to_owned(),
+        };
+
+        let tasked = commanded(&mut core, "w1", batch(vec![needs_update("d1"), task])).await;
+        let two = commanded(&mut core, "w1", batch(vec![edit("d1"), needs_update("d2")])).await;
+        let edited = commanded(&mut core, "w1", batch(vec![edit("d1")])).await;
+        let read = queried(&mut core, "w1", ProposalQueryKind::Doc { doc: id("d1") }).await;
+
+        assert_eq!(
+            (tasked, two),
+            (failed("proposal.invalid"), failed("proposal.invalid"))
+        );
+        assert_eq!(edited, Outcome::Completed);
+        assert!(matches!(read, ProposalAnswerKind::Doc { doc } if doc.content.body == "Gone.\n"));
+    }
+
+    #[tokio::test]
+    async fn a_doc_too_large_to_answer_is_refused() {
+        let fixture = Fixture::new().await;
+        let db = &fixture.shared.db;
+        let one = db.workspace(&workspace_id("w1")).await.unwrap();
+        let title = Title::try_from("Plan".to_owned()).unwrap();
+        let text = DocText::new(title, "\u{1}".repeat(200_000), None).unwrap();
+        let by = Attribution::by(member_id("m1"), 0);
+        one.add_doc(&Doc::new(id("big"), text), &by).await.unwrap();
+        let server = fixture.run().await;
+        let mut core = connected(&fixture, server.address).await;
+
+        let read = queried(&mut core, "w1", ProposalQueryKind::Doc { doc: id("big") }).await;
+
+        assert_eq!(
+            read,
+            ProposalAnswerKind::Failed {
+                code: code!("proposal.too_large")
+            }
+        );
     }
 }

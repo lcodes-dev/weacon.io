@@ -10,6 +10,7 @@ use weacon_protocol::{
 };
 
 use super::{Proposals, proposal_id};
+use weacon_protocol::MAX_PROPOSAL;
 
 /// Who the proposals of a move are by, in their ids.
 const BY: &str = "moves";
@@ -22,7 +23,8 @@ struct Reanchor {
 
 /// Proposes, for each of `workspace`'s docs that pin code, what moving the code from `was` to
 /// `now`, at `commit`, did to its anchors: a re-anchor and a "needs an update" proposal, as
-/// one batch. Gives how many docs it proposed for.
+/// one batch. Gives how many docs it proposed for; a doc refused doesn't stop the others, and
+/// the first refusal is the error once all are tried.
 pub(crate) async fn moved(
     proposals: &Proposals,
     workspace: &WorkspaceId,
@@ -30,7 +32,7 @@ pub(crate) async fn moved(
     now: &Index,
     commit: &CommitId,
 ) -> Result<usize, Fault> {
-    let (mut after, mut batches) = (None, 0);
+    let (mut after, mut batches, mut refused) = (None, 0, None);
     loop {
         let page = proposals
             .query(workspace, ProposalQueryKind::Pinned { after })
@@ -39,17 +41,52 @@ pub(crate) async fn moved(
             return Err(unexpected());
         };
         for doc in &docs {
-            let batch = batch(proposals, workspace, doc, (was, now), commit).await?;
-            if !batch.is_empty() {
-                let action = ProposalAction::Batch { proposals: batch };
-                proposals.command(workspace, action).await?;
-                batches += 1;
+            match proposed(proposals, workspace, doc, (was, now), commit).await {
+                Ok(true) => batches += 1,
+                Ok(false) => {}
+                Err(fault) => refused = refused.or(Some(fault)),
             }
         }
         after = docs.last().map(|doc| doc.id.clone());
         if !more || after.is_none() {
-            return Ok(batches);
+            return refused.map_or(Ok(batches), Err);
         }
+    }
+}
+
+/// Sends the batch of one doc whose pins moved, split where it would be larger than a
+/// proposal may be; whether there was one.
+async fn proposed(
+    proposals: &Proposals,
+    workspace: &WorkspaceId,
+    doc: &PinnedDoc,
+    indexes: (&Index, &Index),
+    commit: &CommitId,
+) -> Result<bool, Fault> {
+    let changes = batch(proposals, workspace, doc, indexes, commit).await?;
+    if changes.is_empty() {
+        return Ok(false);
+    }
+    let batches = split(changes, MAX_PROPOSAL);
+    for proposals_of_doc in batches {
+        let action = ProposalAction::Batch {
+            proposals: proposals_of_doc,
+        };
+        proposals.command(workspace, action).await?;
+    }
+    Ok(true)
+}
+
+/// `changes` as one batch, or one batch each when together they are more than `limit` bytes.
+fn split(changes: Vec<Batched>, limit: usize) -> Vec<Vec<Batched>> {
+    let size = |batched: &Batched| {
+        serde_json::to_vec(&batched.change).map_or(usize::MAX, |json| json.len())
+    };
+    let total = changes.iter().map(size).fold(0, usize::saturating_add);
+    if total > limit {
+        changes.into_iter().map(|batched| vec![batched]).collect()
+    } else {
+        vec![changes]
     }
 }
 
@@ -61,7 +98,7 @@ async fn batch(
     (was, now): (&Index, &Index),
     commit: &CommitId,
 ) -> Result<Vec<Batched>, Fault> {
-    let (reanchors, stale) = findings(&doc.anchors.pins, was, now);
+    let (reanchors, mut stale) = findings(&doc.anchors.pins, was, now);
     let mut changes = Vec::new();
     if !reanchors.is_empty() {
         let query = ProposalQueryKind::Doc {
@@ -71,15 +108,23 @@ async fn batch(
         else {
             return Err(unexpected());
         };
-        // A doc revised since its pins were read is checked again at the next move.
-        if record.version == doc.version
-            && let Some(content) = reanchored(&record.content, &reanchors, commit)
-        {
-            changes.push(ProposalChange::DocEdit {
+        let content = (record.version == doc.version)
+            .then(|| reanchored(&record.content, &reanchors, commit))
+            .flatten();
+        match content {
+            Some(content) => changes.push(ProposalChange::DocEdit {
                 doc: doc.id.clone(),
                 base: doc.version,
                 content,
-            });
+            }),
+            // A move is seen once, so a rename the doc can't take now needs an update.
+            None => stale.extend(reanchors.into_iter().map(|Reanchor { from, to }| {
+                let change = AnchorChange::Changed {
+                    was: from.anchor().to_owned(),
+                    now: to.anchor().to_owned(),
+                };
+                StaleAnchor { pin: from, change }
+            })),
         }
     }
     if !stale.is_empty() {
@@ -403,7 +448,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_doc_revised_since_its_pins_were_read_is_not_reanchored() {
+    async fn a_rename_the_doc_cant_take_now_needs_an_update() {
         let before = repo(LIB, "pub fn go() {}\n");
         let after = repo("mod m;\npub fn run() { m::went() }\n", "pub fn went() {}\n");
         let fake = Fake::default();
@@ -423,7 +468,59 @@ mod tests {
 
         let made = batch_of(&proposals, &docs[0], (&before, &after)).await;
 
-        assert!(made.is_empty(), "{made:?}");
+        let renamed = StaleAnchor {
+            pin: pin(&before, "sym:a_b::m::go"),
+            change: AnchorChange::Changed {
+                was: "sym:a_b::m::go".to_owned(),
+                now: "sym:a_b::m::went".to_owned(),
+            },
+        };
+        let changes: Vec<ProposalChange> = made.into_iter().map(|batched| batched.change).collect();
+        assert_eq!(
+            changes,
+            [ProposalChange::NeedsUpdate {
+                doc: "d-1".parse().unwrap(),
+                base: 3,
+                anchors: vec![renamed],
+            }]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_refused_doc_leaves_the_others_to_be_proposed() {
+        let before = repo(LIB, "pub fn go() {}\n");
+        let after = repo(LIB, "pub fn go() { let x = 1; }\n");
+        let fake = Fake::default();
+        let docs = [
+            doc("d-1", &before, &["sym:a_b::m::go"]),
+            doc("d-2", &before, &["sym:a_b::m::go"]),
+        ];
+        fake.docs.lock().unwrap().extend(docs);
+        *fake.refuse.lock().unwrap() = Some(code!("proposal.too_many"));
+        let proposals = fake.connect();
+
+        let refused = moved(&proposals, &workspace(), &before, &after, &commit('b')).await;
+
+        assert_eq!(refused.unwrap_err().code(), &code!("proposal.too_many"));
+        assert_eq!(fake.commands().len(), 2);
+    }
+
+    #[test]
+    fn a_batch_larger_than_a_proposal_goes_one_proposal_at_a_time() {
+        let batched = |title: &str| Batched {
+            proposal: "p-1".parse().unwrap(),
+            change: ProposalChange::NewTask {
+                title: title.to_owned(),
+            },
+        };
+        let both = || vec![batched("a"), batched("b")];
+        let size = serde_json::to_vec(&both()[0].change).unwrap().len();
+
+        assert_eq!(split(both(), 2 * size), [both()]);
+        assert_eq!(
+            split(both(), 2 * size - 1),
+            [vec![batched("a")], vec![batched("b")]]
+        );
     }
 
     async fn batch_of(

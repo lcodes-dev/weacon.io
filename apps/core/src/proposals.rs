@@ -113,8 +113,15 @@ impl Proposals {
             answer,
         };
         self.asks.try_send(ask).map_err(|_| unsent())?;
+        // Sent once the uplink is up, an ask it timed out on may still reach the server.
         let answered = tokio::time::timeout(self.patience, answered).await;
-        answered.map_err(|_| unsent())?.map_err(|_| unsent())
+        answered.map_err(|_| unanswered())?.map_err(|_| unsent())
+    }
+
+    /// How long each ask waits for the server.
+    #[cfg(test)]
+    pub(crate) const fn set_patience(&mut self, patience: Duration) {
+        self.patience = patience;
     }
 
     fn request(&self) -> Result<RequestId, Fault> {
@@ -219,6 +226,13 @@ fn unsent() -> Fault {
     Fault::new(
         code!("proposal.unsent"),
         "The proposal couldn't reach the server",
+    )
+}
+
+fn unanswered() -> Fault {
+    Fault::new(
+        code!("proposal.unanswered"),
+        "The server didn't answer the proposal in time",
     )
 }
 
@@ -332,7 +346,8 @@ mod tests {
         };
         answered.send(stranger).await.unwrap();
 
-        for fault in [gone, unanswered, full] {
+        assert_eq!(unanswered.code(), &code!("proposal.unanswered"));
+        for fault in [gone, full] {
             assert_eq!(fault.code(), &code!("proposal.unsent"));
         }
     }

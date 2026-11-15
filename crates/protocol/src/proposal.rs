@@ -134,7 +134,7 @@ pub enum ProposalQueryKind {
         #[schemars(with = "DocId")]
         after: Option<DocId>,
     },
-    /// One doc as it is now.
+    /// One doc as it is now, or as the core's own open re-anchor of its revision would make it.
     Doc { doc: DocId },
     /// A query this build doesn't know, from a newer peer; only ever received.
     #[serde(other, skip_serializing)]

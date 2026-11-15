@@ -2,13 +2,15 @@
 //! workspace, which the server holds until a person accepts it.
 
 use weacon_observability::{Fault, Field, Logger};
-use weacon_protocol::{ProposalAction, ProposeArgs};
+use weacon_protocol::{ProposalAction, ProposeArgs, code};
 
 use super::grants::Grant;
 use crate::proposals::{Proposals, proposal_id};
 
 pub(crate) const PROPOSED: &str = "Proposed. It changes nothing until a person accepts it.\n";
 const NO_SERVER: &str = "Not proposed: this machine isn't connected to a server.\n";
+const UNANSWERED: &str =
+    "The server didn't answer in time, so it may hold the proposal yet. Don't propose it again.\n";
 
 /// What to answer the agent: an error when the proposal didn't reach the server.
 pub(crate) async fn propose(
@@ -20,6 +22,9 @@ pub(crate) async fn propose(
     let proposals = proposals.ok_or_else(|| NO_SERVER.to_owned())?;
     sent(proposals, grant, args).await.map_err(|fault| {
         log.warn("mcp proposal refused", &[("err", Field::error(&fault))]);
+        if *fault.code() == code!("proposal.unanswered") {
+            return UNANSWERED.to_owned();
+        }
         format!("Not proposed: {}.\n", fault.code().as_str())
     })?;
     Ok(PROPOSED.to_owned())
@@ -39,7 +44,7 @@ async fn sent(proposals: &Proposals, grant: &Grant, args: ProposeArgs) -> Result
 mod tests {
     use std::path::PathBuf;
 
-    use weacon_protocol::{AgentKind, ProposalChange, code};
+    use weacon_protocol::{AgentKind, ProposalChange};
     use weacon_testing::{messages, recording_logger};
 
     use super::*;
@@ -110,5 +115,16 @@ mod tests {
         assert_eq!(alone, Err(NO_SERVER.to_owned()));
         assert_eq!(fake.commands().len(), 1);
         assert_eq!(messages(&records), ["mcp proposal refused"; 2]);
+    }
+
+    #[tokio::test]
+    async fn a_proposal_the_server_never_answered_may_still_be_held() {
+        let (log, _) = recording_logger();
+        let (mut proposals, _asks) = crate::proposals::channel();
+        proposals.set_patience(std::time::Duration::from_millis(10));
+
+        let answer = propose(Some(&proposals), &grant(), args("Ship".to_owned()), &log).await;
+
+        assert_eq!(answer, Err(UNANSWERED.to_owned()));
     }
 }
