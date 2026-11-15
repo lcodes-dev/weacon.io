@@ -222,6 +222,7 @@ impl Relay {
     #[must_use]
     pub(crate) fn answered(self: &Arc<Self>, machine: &MachineId, envelope: Envelope) -> bool {
         let mut waiting = self.lock();
+        let others = sharing(&waiting, envelope.id);
         let Entry::Occupied(mut entry) = waiting.entry(envelope.id) else {
             return false;
         };
@@ -236,8 +237,9 @@ impl Relay {
             return true;
         }
         if waiter.more_after(&mut message) {
-            // The last room goes to telling a slow asker it fell behind.
-            if waiter.back.capacity() <= 1 {
+            // The asker's other asks keep their room, and the last of the rest goes to telling
+            // a slow asker it fell behind.
+            if waiter.back.capacity() <= others + 1 {
                 entry.remove().tell(Message::Error(ErrorBody {
                     code: code!("relay.busy"),
                     retryable: true,
@@ -318,6 +320,17 @@ impl Relay {
     fn lock(&self) -> MutexGuard<'_, HashMap<u32, Waiter>> {
         self.waiting.lock().unwrap_or_else(PoisonError::into_inner)
     }
+}
+
+/// How many other asks wait for answers on the same way back as the one under `id`.
+fn sharing(waiting: &HashMap<u32, Waiter>, id: u32) -> usize {
+    let Some(asker) = waiting.get(&id) else {
+        return 0;
+    };
+    let same = waiting
+        .values()
+        .filter(|waiter| waiter.back.same_channel(&asker.back));
+    same.count().saturating_sub(1)
 }
 
 const fn refused(code: Code, retryable: bool) -> Refusal {
@@ -1293,6 +1306,37 @@ mod tests {
             (41, "relay.busy", true)
         );
         answers.try_recv().unwrap_err();
+        assert!(relay.lock().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_diff_leaves_room_for_the_askers_other_answers() {
+        let (relay, mut answers) = diff_waiting(3, ANSWER_WITHIN);
+        let back = relay.lock().get(&7).unwrap().back.clone();
+        let asked = Asked {
+            workspace: workspace_id("w1"),
+            request: request(),
+            about: About::Machine(mc1()),
+        };
+        let sent = Sent {
+            asked,
+            machine: mc1(),
+        };
+        relay.wait(8, sent, 42, &back).unwrap();
+
+        let claimed = [1, 2, 3].map(|_| relay.answered(&mc1(), envelope(7, file(9, "a", "x"))));
+        assert!(relay.answered(&mc1(), envelope(8, settings_answer(&mc1()))));
+
+        assert_eq!(claimed, [true, true, false]);
+        assert_eq!(heard(&mut answers).await, envelope(41, file(9, "a", "x")));
+        assert_eq!(
+            error_of(&heard(&mut answers).await),
+            (41, "relay.busy", true)
+        );
+        assert_eq!(
+            heard(&mut answers).await,
+            envelope(42, settings_answer(&mc1()))
+        );
         assert!(relay.lock().is_empty());
     }
 
