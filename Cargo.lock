@@ -2636,6 +2636,7 @@ dependencies = [
  "serde_json",
  "tokio",
  "tokio-tungstenite 0.30.0",
+ "weacon-model",
  "weacon-observability",
  "weacon-protocol",
 ]
