@@ -114,7 +114,7 @@ fn added(app: &App, workspace: &WorkspaceId) -> Option<Vec<Vec<String>>> {
         .map(|settings| settings.additions)
 }
 
-// Far more than a workspace needs, and short enough that the guard checks them all at once.
+// Far more than a workspace needs, and few enough to keep each hook's check quick.
 const MAX_ADDITIONS: usize = 64;
 const MAX_WORDS: usize = 8;
 const MAX_WORD: usize = 128;
@@ -164,24 +164,25 @@ fn edit(
 // Applies `change` to `additions`; whether that changed them.
 fn changed(additions: &mut Vec<Vec<String>>, change: Change) -> Result<bool, Fault> {
     let before = additions.clone();
-    let (Change::Add(words) | Change::Remove(words)) = &change;
-    additions.retain(|known| known != words);
-    let Change::Add(words) = change else {
-        return Ok(*additions != before);
-    };
-    if words.len() > MAX_WORDS || words.iter().any(|word| word.len() > MAX_WORD) {
-        return Err(Fault::new(
-            code!("guard.addition_too_long"),
-            "An addition takes at most 8 words of at most 128 bytes each",
-        ));
+    match change {
+        Change::Remove(words) => additions.retain(|known| known != &words),
+        Change::Add(words) => {
+            if words.len() > MAX_WORDS || words.iter().any(|word| word.len() > MAX_WORD) {
+                return Err(Fault::new(
+                    code!("guard.addition_too_long"),
+                    "An addition takes at most 8 words of at most 128 bytes each",
+                ));
+            }
+            additions.retain(|known| known != &words);
+            if additions.len() >= MAX_ADDITIONS {
+                return Err(Fault::new(
+                    code!("guard.too_many_additions"),
+                    "A workspace has at most 64 additions",
+                ));
+            }
+            additions.push(words);
+        }
     }
-    if additions.len() >= MAX_ADDITIONS {
-        return Err(Fault::new(
-            code!("guard.too_many_additions"),
-            "A workspace has at most 64 additions",
-        ));
-    }
-    additions.push(words);
     Ok(*additions != before)
 }
 

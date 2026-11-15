@@ -166,12 +166,13 @@ impl Wire {
             "approvalsReviewer": "user",
             "sandbox": self.sandbox,
         });
-        let method = match (&self.resume, params.as_object_mut()) {
-            (Some(session), Some(params)) => {
-                params.insert("threadId".to_owned(), json!(session.as_str()));
-                "thread/resume"
-            }
-            _ => "thread/start",
+        let method = if let Some(session) = &self.resume
+            && let Some(params) = params.as_object_mut()
+        {
+            params.insert("threadId".to_owned(), json!(session.as_str()));
+            "thread/resume"
+        } else {
+            "thread/start"
         };
         self.request(Waiting::Thread, method, &params)
     }

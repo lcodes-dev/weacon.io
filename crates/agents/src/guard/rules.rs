@@ -336,7 +336,7 @@ impl Call<'_> {
                     .unwrap_or_default();
                 Word {
                     text: format!("{}/{name}", folder.text.trim_end_matches('/')),
-                    // A folder with a path is never dynamic, and only a dynamic word splits.
+                    // `path_of` found the folder, so it isn't dynamic, and only a dynamic word splits.
                     dynamic: source.dynamic,
                     splits: source.splits,
                     glob: folder.glob || source.glob,
