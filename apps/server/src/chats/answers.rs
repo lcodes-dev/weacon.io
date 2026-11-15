@@ -212,6 +212,45 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_final_refusal_ends_its_command_once_and_tells_the_feeds_once() {
+        let fixture = Fixture::new().await;
+        let shared = &fixture.shared;
+        let workspace = shared.db.workspace(&id("w1")).await.unwrap();
+        make(&workspace, "c-1", "m1", NOW).await.unwrap();
+        let mut feeds = shared.changes.subscribe();
+        let sent = Sent::default();
+        let machine = id::<MachineId>("mc-1");
+        let busy = || {
+            Message::Error(ErrorBody {
+                code: weacon_protocol::code!("chat.busy"),
+                retryable: false,
+            })
+        };
+
+        let mut woken = Vec::new();
+        for envelope in [7, 8] {
+            sent.sent(
+                &machine,
+                envelope,
+                &command("r-c-1", "c-1", "Fix the build"),
+                0,
+            );
+            let asked = sent.answered(&machine, envelope).unwrap();
+            take(shared, &machine, asked, busy()).await.unwrap();
+            woken.push(feeds.try_recv().ok());
+        }
+
+        assert!(
+            workspace
+                .open_requests(&id("c-1"))
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(woken, [Some(id::<WorkspaceId>("w1")), None]);
+    }
+
+    #[tokio::test]
     async fn a_refusal_that_cant_be_kept_is_logged_and_keeps_the_link() {
         let fixture = Fixture::new().await;
         let shared = &fixture.shared;

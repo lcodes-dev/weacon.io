@@ -364,6 +364,31 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_retry_of_a_request_kept_but_never_sent_that_cant_be_sent_keeps_it() {
+        let fixture = Fixture::new().await;
+        let shared = &fixture.shared;
+        let ada = ada(&fixture).await;
+        let workspace = &ada.member.workspace;
+        make(workspace, "c-1", "m1", NOW).await.unwrap();
+        workspace.move_chats_to(&ada.machine).await;
+        let asked = prompt("r-2", "c-1", "Go", None);
+        let kept = NewRequest {
+            command: &asked,
+            member: &ada.member.id,
+            at: NOW,
+        };
+        assert_eq!(
+            workspace.record_request(&kept).await.unwrap(),
+            Recorded::New
+        );
+
+        let retried = take(&ada.member, &ada.asker, shared, asked.clone()).await;
+
+        assert_eq!(retried.unwrap_err().code().as_str(), "machine.offline");
+        assert!(workspace.has_request(&id("r-2")).await.unwrap());
+    }
+
+    #[tokio::test]
     async fn a_first_prompt_sent_again_is_taken_as_itself_and_one_racing_its_chat_retries() {
         let fixture = Fixture::new().await;
         let shared = &fixture.shared;
