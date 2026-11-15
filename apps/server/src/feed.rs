@@ -22,6 +22,7 @@ use crate::proposals::PROPOSALS;
 use crate::relay::{self, Ask, Refusal, SETTINGS};
 use crate::shared::Shared;
 use crate::socket::{Closed, Pings, greet, reply};
+use crate::workspaces::MEMBERS;
 
 /// What a client must offer, and the server offers, to get a workspace's changes.
 const FEED: Code = code!("workspace.feed");
@@ -143,7 +144,7 @@ async fn run(
     feed: &mut Feed,
 ) -> Result<Infallible, Closed> {
     let feed_offer = Capability::new(FEED);
-    let offered = [FEED, TASKS, DOCS, SETTINGS, PROPOSALS]
+    let offered = [FEED, TASKS, DOCS, SETTINGS, PROPOSALS, MEMBERS]
         .map(Capability::new)
         .to_vec();
     let greeted = greet(socket, shared, offered, &feed_offer);
@@ -352,7 +353,7 @@ mod tests {
         };
         assert_eq!(
             welcome.capabilities,
-            [FEED, TASKS, DOCS, SETTINGS, PROPOSALS].map(Capability::new)
+            [FEED, TASKS, DOCS, SETTINGS, PROPOSALS, MEMBERS].map(Capability::new)
         );
         assert_eq!(missed, joined(1, "m1"));
         assert_eq!(live, joined(2, "m2"));
