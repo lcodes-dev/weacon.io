@@ -13,11 +13,11 @@ const MAX_ATTEMPTS: i64 = 5;
 /// inbox; `ada+1@` and `ada+2@` count apart, though they may reach the same one.
 const MAX_LIVE: i64 = 3;
 
-/// A sign-in code to record, as `code_hash`. Times are seconds since the Unix epoch.
+/// A sign-in code to record. Times are seconds since the Unix epoch.
 pub(crate) struct NewChallenge<'a> {
     pub(crate) email: &'a Email,
     pub(crate) id: &'a ChallengeId,
-    pub(crate) code_hash: &'a [u8],
+    pub(crate) code: &'a str,
     pub(crate) now: i64,
     pub(crate) expires_at: i64,
 }
@@ -26,7 +26,7 @@ pub(crate) struct NewChallenge<'a> {
 pub(crate) struct Attempt<'a> {
     pub(crate) email: &'a Email,
     pub(crate) challenge: &'a ChallengeId,
-    pub(crate) code_hash: &'a [u8],
+    pub(crate) code: &'a str,
     pub(crate) token_hash: &'a [u8],
     pub(crate) now: i64,
     pub(crate) token_expires_at: i64,
@@ -71,14 +71,14 @@ impl Db {
             .map_err(failed)?;
         let mailed = sqlx::query_scalar(
             "INSERT INTO sign_in_challenges
-                 (challenge_id, email, code_hash, expires_at, attempts, mailed)
+                 (challenge_id, email, code, expires_at, attempts, mailed)
              VALUES (?1, ?2, ?3, ?4, 0,
                  (SELECT count(*) FROM sign_in_challenges WHERE email = ?2 AND mailed) < ?5)
              RETURNING mailed",
         )
         .bind(new.id.as_str())
         .bind(new.email.as_str())
-        .bind(new.code_hash)
+        .bind(new.code)
         .bind(new.expires_at)
         .bind(MAX_LIVE)
         .fetch_one(&mut *transaction)
@@ -86,16 +86,6 @@ impl Db {
         .map_err(failed)?;
         transaction.commit().await.map_err(failed)?;
         Ok(mailed)
-    }
-
-    /// Gives back the place of `challenge`, whose code couldn't be mailed; its code works nowhere.
-    pub(crate) async fn unmail(&self, challenge: &ChallengeId) -> Result<(), Fault> {
-        sqlx::query("UPDATE sign_in_challenges SET mailed = 0 WHERE challenge_id = ?")
-            .bind(challenge.as_str())
-            .execute(&self.writer)
-            .await
-            .map_err(failed)?;
-        Ok(())
     }
 
     /// Trades a code for a session, and gives the account, made now if the address had none
@@ -216,8 +206,8 @@ async fn matched_code(
     connection: &mut SqliteConnection,
     attempt: &Attempt<'_>,
 ) -> Result<Option<String>, Fault> {
-    let codes = sqlx::query_as::<_, (String, Vec<u8>)>(
-        "SELECT challenge_id, code_hash FROM sign_in_challenges
+    let codes = sqlx::query_as::<_, (String, String)>(
+        "SELECT challenge_id, code FROM sign_in_challenges
          WHERE email = ? AND expires_at > ? AND mailed",
     )
     .bind(attempt.email.as_str())
@@ -225,12 +215,10 @@ async fn matched_code(
     .fetch_all(connection)
     .await
     .map_err(failed)?;
-    Ok(codes
-        .into_iter()
-        .fold(None, |found, (challenge, code_hash)| {
-            let right = bool::from(code_hash.ct_eq(attempt.code_hash));
-            found.or_else(|| right.then_some(challenge))
-        }))
+    Ok(codes.into_iter().fold(None, |found, (challenge, code)| {
+        let right = bool::from(code.as_bytes().ct_eq(attempt.code.as_bytes()));
+        found.or_else(|| right.then_some(challenge))
+    }))
 }
 
 async fn end_challenge(connection: &mut SqliteConnection, challenge: &str) -> Result<(), Fault> {
@@ -279,6 +267,7 @@ mod tests {
     use weacon_testing::TempDir;
 
     use super::*;
+    use crate::db::schema::{database_before, steps};
     use crate::db::test_support::{NOW, id};
     use crate::test_support::{email, member_id, workspace_id};
 
@@ -303,12 +292,12 @@ mod tests {
 
     // Starts challenge `name` for the address `who`, with `code`.
     // A code that works for a code's lifetime from `now`.
-    async fn challenge(db: &Db, who: &str, name: &str, code: &[u8], now: i64) -> bool {
+    async fn challenge(db: &Db, who: &str, name: &str, code: &str, now: i64) -> bool {
         let (email, id) = (email(who), id(name));
         let new = NewChallenge {
             email: &email,
             id: &id,
-            code_hash: code,
+            code,
             now,
             expires_at: now + CODE_LIFETIME,
         };
@@ -317,14 +306,14 @@ mod tests {
 
     // A try by `who` at challenge `name` with `code` at `now`, and the account it signs in to;
     // a session it starts has `name` as its token.
-    async fn try_as(db: &Db, who: &str, name: &str, code: &[u8], now: i64) -> Option<String> {
+    async fn try_as(db: &Db, who: &str, name: &str, code: &str, now: i64) -> Option<String> {
         let (who, challenge) = (email(who), id(name));
         finish(
             db,
             Attempt {
                 email: &who,
                 challenge: &challenge,
-                code_hash: code,
+                code,
                 token_hash: name.as_bytes(),
                 now,
                 token_expires_at: now + 100,
@@ -343,7 +332,7 @@ mod tests {
             Attempt {
                 email: &who,
                 challenge: &challenge,
-                code_hash: b"code",
+                code: "code",
                 token_hash: name.as_bytes(),
                 now: NOW,
                 token_expires_at: NOW + 100,
@@ -359,7 +348,7 @@ mod tests {
         account.map(|account| account.as_str().to_owned())
     }
 
-    async fn try_code(db: &Db, name: &str, code: &[u8], now: i64) -> Option<String> {
+    async fn try_code(db: &Db, name: &str, code: &str, now: i64) -> Option<String> {
         try_as(db, "ada@example.com", name, code, now).await
     }
 
@@ -393,11 +382,11 @@ mod tests {
     async fn a_right_code_signs_in_once() {
         let dir = TempDir::new().unwrap();
         let db = people(&dir).await;
-        challenge(&db, "ada@example.com", "c1", b"code", NOW).await;
-        let first = try_code(&db, "c1", b"code", NOW).await;
-        let again = try_code(&db, "c1", b"code", NOW).await;
-        challenge(&db, "ada@example.com", "c2", b"code-2", NOW).await;
-        let second = try_code(&db, "c2", b"code-2", NOW).await;
+        challenge(&db, "ada@example.com", "c1", "code", NOW).await;
+        let first = try_code(&db, "c1", "code", NOW).await;
+        let again = try_code(&db, "c1", "code", NOW).await;
+        challenge(&db, "ada@example.com", "c2", "code-2", NOW).await;
+        let second = try_code(&db, "c2", "code-2", NOW).await;
 
         assert_eq!(first.as_deref(), Some("a1"));
         assert_eq!(again, None);
@@ -409,36 +398,30 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let db = people(&dir).await;
         for name in ["c1", "c2", "c3"] {
-            challenge(&db, "ada@example.com", name, b"code", NOW).await;
+            challenge(&db, "ada@example.com", name, "code", NOW).await;
         }
         for _ in 0..MAX_ATTEMPTS - 1 {
-            assert_eq!(try_code(&db, "c1", b"guess", NOW).await, None);
+            assert_eq!(try_code(&db, "c1", "guess", NOW).await, None);
         }
         for _ in 0..MAX_ATTEMPTS {
-            assert_eq!(try_code(&db, "c2", b"guess", NOW).await, None);
+            assert_eq!(try_code(&db, "c2", "guess", NOW).await, None);
         }
 
-        assert!(try_code(&db, "c1", b"code", NOW).await.is_some());
-        assert_eq!(try_code(&db, "c2", b"code", NOW).await, None);
-        assert!(try_code(&db, "c3", b"code", NOW).await.is_some());
+        assert!(try_code(&db, "c1", "code", NOW).await.is_some());
+        assert_eq!(try_code(&db, "c2", "code", NOW).await, None);
+        assert!(try_code(&db, "c3", "code", NOW).await.is_some());
     }
 
     #[tokio::test]
     async fn a_challenge_is_only_for_its_address() {
         let dir = TempDir::new().unwrap();
         let db = people(&dir).await;
-        challenge(&db, "ada@example.com", "c1", b"code", NOW).await;
+        challenge(&db, "ada@example.com", "c1", "code", NOW).await;
 
-        assert_eq!(
-            try_as(&db, "bo@example.com", "c1", b"code", NOW).await,
-            None
-        );
-        assert_eq!(
-            try_as(&db, "cy@example.com", "c1", b"code", NOW).await,
-            None
-        );
-        assert_eq!(try_code(&db, "c9", b"code", NOW).await, None);
-        assert!(try_code(&db, "c1", b"code", NOW).await.is_some());
+        assert_eq!(try_as(&db, "bo@example.com", "c1", "code", NOW).await, None);
+        assert_eq!(try_as(&db, "cy@example.com", "c1", "code", NOW).await, None);
+        assert_eq!(try_code(&db, "c9", "code", NOW).await, None);
+        assert!(try_code(&db, "c1", "code", NOW).await.is_some());
     }
 
     #[tokio::test]
@@ -446,15 +429,15 @@ mod tests {
         assert_eq!(CODE_LIFETIME, 600);
         let dir = TempDir::new().unwrap();
         let db = people(&dir).await;
-        challenge(&db, "ada@example.com", "c1", b"k1", NOW).await;
-        challenge(&db, "ada@example.com", "c2", b"k2", NOW).await;
+        challenge(&db, "ada@example.com", "c1", "k1", NOW).await;
+        challenge(&db, "ada@example.com", "c2", "k2", NOW).await;
         let ended = NOW + CODE_LIFETIME;
 
-        assert_eq!(try_code(&db, "c1", b"k1", ended).await, None);
-        assert!(try_code(&db, "c2", b"k2", ended - 1).await.is_some());
-        challenge(&db, "ada@example.com", "c3", b"code", ended - 1).await;
+        assert_eq!(try_code(&db, "c1", "k1", ended).await, None);
+        assert!(try_code(&db, "c2", "k2", ended - 1).await.is_some());
+        challenge(&db, "ada@example.com", "c3", "code", ended - 1).await;
         assert_eq!(count(&db, "sign_in_challenges").await, 2);
-        challenge(&db, "bo@example.com", "c4", b"code", ended).await;
+        challenge(&db, "bo@example.com", "c4", "code", ended).await;
         assert_eq!(count(&db, "sign_in_challenges").await, 2);
     }
 
@@ -462,10 +445,10 @@ mod tests {
     async fn a_session_is_its_accounts_until_it_ends_or_is_ended() {
         let dir = TempDir::new().unwrap();
         let db = people(&dir).await;
-        challenge(&db, "ada@example.com", "c1", b"code", NOW).await;
-        challenge(&db, "bo@example.com", "c2", b"code", NOW).await;
-        try_code(&db, "c1", b"code", NOW).await.unwrap();
-        try_as(&db, "bo@example.com", "c2", b"code", NOW)
+        challenge(&db, "ada@example.com", "c1", "code", NOW).await;
+        challenge(&db, "bo@example.com", "c2", "code", NOW).await;
+        try_code(&db, "c1", "code", NOW).await.unwrap();
+        try_as(&db, "bo@example.com", "c2", "code", NOW)
             .await
             .unwrap();
         let ends = NOW + 100;
@@ -486,11 +469,11 @@ mod tests {
     async fn expired_sessions_end_when_another_starts() {
         let dir = TempDir::new().unwrap();
         let db = people(&dir).await;
-        challenge(&db, "ada@example.com", "c1", b"code", NOW).await;
-        try_code(&db, "c1", b"code", NOW).await.unwrap();
+        challenge(&db, "ada@example.com", "c1", "code", NOW).await;
+        try_code(&db, "c1", "code", NOW).await.unwrap();
         let later = NOW + 100;
-        challenge(&db, "ada@example.com", "c2", b"code", later).await;
-        try_code(&db, "c2", b"code", later).await.unwrap();
+        challenge(&db, "ada@example.com", "c2", "code", later).await;
+        try_code(&db, "c2", "code", later).await.unwrap();
 
         assert_eq!(count(&db, "sessions").await, 1);
     }
@@ -508,7 +491,7 @@ mod tests {
         let made = people(&dir).await;
         let other = TempDir::new().unwrap();
         let signed_up = Db::create(&other.join("weacon.db")).await.unwrap();
-        challenge(&signed_up, "cy@example.com", "c1", b"code", NOW).await;
+        challenge(&signed_up, "cy@example.com", "c1", "code", NOW).await;
         sign_up(&signed_up, "cy@example.com", "c1", "a3")
             .await
             .unwrap();
@@ -536,16 +519,13 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let db = people(&dir).await;
         for name in ["c1", "c2", "c3"] {
-            challenge(&db, "cy@example.com", name, b"code", NOW).await;
+            challenge(&db, "cy@example.com", name, "code", NOW).await;
         }
-        challenge(&db, "ada@example.com", "c5", b"code", NOW).await;
+        challenge(&db, "ada@example.com", "c5", "code", NOW).await;
 
+        assert_eq!(try_as(&db, "cy@example.com", "c1", "code", NOW).await, None);
         assert_eq!(
-            try_as(&db, "cy@example.com", "c1", b"code", NOW).await,
-            None
-        );
-        assert_eq!(
-            try_as(&db, "cy@example.com", "c2", b"guess", NOW).await,
+            try_as(&db, "cy@example.com", "c2", "guess", NOW).await,
             None
         );
         assert_eq!(
@@ -553,7 +533,7 @@ mod tests {
             None
         );
         // Using c1 freed a place.
-        challenge(&db, "cy@example.com", "c4", b"code", NOW).await;
+        challenge(&db, "cy@example.com", "c4", "code", NOW).await;
         assert_eq!(
             sign_up(&db, "cy@example.com", "c3", "a3").await.as_deref(),
             Some("a3")
@@ -583,13 +563,13 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let db = people(&dir).await;
         let mut mailed = Vec::new();
-        for (name, code) in [("c1", b"k1"), ("c2", b"k2"), ("c3", b"k3"), ("c4", b"k4")] {
+        for (name, code) in [("c1", "k1"), ("c2", "k2"), ("c3", "k3"), ("c4", "k4")] {
             mailed.push(challenge(&db, "ada@example.com", name, code, NOW).await);
         }
-        let other = challenge(&db, "bo@example.com", "c5", b"k5", NOW).await;
+        let other = challenge(&db, "bo@example.com", "c5", "k5", NOW).await;
         // A code that was never mailed works nowhere, not even for its own challenge.
-        let unmailed = try_code(&db, "c4", b"k4", NOW).await;
-        let later = challenge(&db, "ada@example.com", "c6", b"k6", NOW + CODE_LIFETIME).await;
+        let unmailed = try_code(&db, "c4", "k4", NOW).await;
+        let later = challenge(&db, "ada@example.com", "c6", "k6", NOW + CODE_LIFETIME).await;
 
         assert_eq!(mailed, [true, true, true, false]);
         assert!(other);
@@ -602,37 +582,37 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let db = people(&dir).await;
         // Someone else asks three times for ada, and those codes reach her inbox.
-        for (name, code) in [("x1", b"k1"), ("x2", b"k2"), ("x3", b"k3")] {
+        for (name, code) in [("x1", "k1"), ("x2", "k2"), ("x3", "k3")] {
             assert!(challenge(&db, "ada@example.com", name, code, NOW).await);
         }
-        let own = challenge(&db, "ada@example.com", "c1", b"never-sent", NOW).await;
-        let signed_in = try_code(&db, "c1", b"k2", NOW).await;
-        let used = try_code(&db, "c1", b"k2", NOW).await;
+        let own = challenge(&db, "ada@example.com", "c1", "never-sent", NOW).await;
+        let signed_in = try_code(&db, "c1", "k2", NOW).await;
+        let used = try_code(&db, "c1", "k2", NOW).await;
         // Another address's codes don't count.
-        let bo = try_as(&db, "bo@example.com", "x1", b"k1", NOW).await;
+        let bo = try_as(&db, "bo@example.com", "x1", "k1", NOW).await;
 
         assert!(!own);
         assert_eq!(signed_in.as_deref(), Some("a1"));
         assert_eq!(used, None);
         assert_eq!(bo, None);
         // Using k2 freed a place, so this one is mailed.
-        assert!(challenge(&db, "ada@example.com", "c2", b"k4", NOW).await);
-        assert_eq!(try_code(&db, "c2", b"k3", NOW).await.as_deref(), Some("a1"));
+        assert!(challenge(&db, "ada@example.com", "c2", "k4", NOW).await);
+        assert_eq!(try_code(&db, "c2", "k3", NOW).await.as_deref(), Some("a1"));
     }
 
     #[tokio::test]
     async fn guessing_wrong_ends_no_mailed_code_and_frees_no_place() {
         let dir = TempDir::new().unwrap();
         let db = people(&dir).await;
-        for (name, code) in [("x1", b"k1"), ("x2", b"k2"), ("x3", b"k3")] {
+        for (name, code) in [("x1", "k1"), ("x2", "k2"), ("x3", "k3")] {
             challenge(&db, "ada@example.com", name, code, NOW).await;
         }
         for _ in 0..MAX_ATTEMPTS {
-            assert_eq!(try_code(&db, "x1", b"guess", NOW).await, None);
+            assert_eq!(try_code(&db, "x1", "guess", NOW).await, None);
         }
-        let mailed = challenge(&db, "ada@example.com", "c1", b"k4", NOW).await;
-        let burnt = try_code(&db, "x1", b"k1", NOW).await;
-        let own = try_code(&db, "c1", b"k1", NOW).await;
+        let mailed = challenge(&db, "ada@example.com", "c1", "k4", NOW).await;
+        let burnt = try_code(&db, "x1", "k1", NOW).await;
+        let own = try_code(&db, "c1", "k1", NOW).await;
 
         assert!(!mailed);
         assert_eq!(burnt, None);
@@ -642,16 +622,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_code_that_couldnt_be_mailed_gives_its_place_back() {
+    async fn hashed_codes_are_dropped_and_codes_after_work() {
         let dir = TempDir::new().unwrap();
-        let db = people(&dir).await;
-        for (name, code) in [("c1", b"k1"), ("c2", b"k2"), ("c3", b"k3")] {
-            challenge(&db, "ada@example.com", name, code, NOW).await;
-        }
-        db.unmail(&id("c2")).await.unwrap();
+        let path = dir.join("weacon.db");
+        let rows = "INSERT INTO accounts (account_id, email, owner) VALUES ('a1', 'ada@example.com', 1);
+             INSERT INTO sign_in_challenges VALUES ('c0', 'ada@example.com', x'02', 9999999999, 0, 1)";
+        database_before(&path, steps::PLAIN_CODES, rows).await;
+        let db = Db::open(&path).await.unwrap();
+        let dropped = count(&db, "sign_in_challenges").await;
 
-        assert!(challenge(&db, "ada@example.com", "c4", b"k4", NOW).await);
-        assert_eq!(try_code(&db, "c1", b"k2", NOW).await, None);
-        assert_eq!(try_code(&db, "c1", b"k4", NOW).await.as_deref(), Some("a1"));
+        assert_eq!(dropped, 0);
+        assert!(challenge(&db, "ada@example.com", "c1", "k1", NOW).await);
+        assert_eq!(try_code(&db, "c1", "k1", NOW).await.as_deref(), Some("a1"));
     }
 }

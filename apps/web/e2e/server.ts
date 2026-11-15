@@ -1,23 +1,24 @@
 // Starts the real server, with the built web app inside it, for the shell's end-to-end tests.
 
 import { execFile, spawn } from "node:child_process";
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { createInterface } from "node:readline";
 import { promisify } from "node:util";
 
 import type { Page } from "playwright-core";
 
-import { REPO, firstLine, open, waitFor } from "./harness.ts";
+import { REPO, STARTUP_MS, open, waitFor } from "./harness.ts";
 
 /** A page on the server's own origin. */
 export type Served = {
   page: Page;
   /** Runs one of the server's admin commands against its database, such as `add-account`. */
   admin(command: string, ...args: string[]): Promise<void>;
-  /** The code in the one letter waiting for `email`, which it takes out of the outbox. */
+  /** The code in the next mail the server printed, which must be for `email`. */
   code(email: string): Promise<string>;
-  /** How many letters wait in the outbox. */
+  /** How many printed mails no `code` has taken. */
   letters(): number;
   close(): Promise<void>;
 };
@@ -28,14 +29,26 @@ const cargo = (...args: string[]) => ["run", "--locked", "--quiet", "-p", "weaco
 export async function serve(): Promise<Served> {
   const dir = mkdtempSync(join(tmpdir(), "weacon-shell-"));
   const db = join(dir, "db");
-  const outbox = join(dir, "outbox");
-  mkdirSync(outbox);
-  const child = spawn("cargo", cargo("serve", "--listen", "127.0.0.1:0", "--db", db, "--outbox", outbox, "--secret", join(dir, "key")), {
+  const child = spawn("cargo", cargo("serve", "--listen", "127.0.0.1:0", "--db", db, "--secret", join(dir, "key")), {
     cwd: REPO,
     stdio: ["ignore", "pipe", "inherit"],
   });
-  const { page, stop } = await open(dir, child, (child) => firstLine(child, undefined, listening), (address) => `http://${address}/`);
-  const letters = () => readdirSync(outbox).filter((name) => name.endsWith(".json"));
+  const records: LogLine[] = [];
+  if (child.stdout !== null) {
+    createInterface({ input: child.stdout }).on("line", (line) => records.push(parsed(line)));
+  }
+  const listening = () => records.find((record) => record.msg === "listening")?.address;
+  const ready = async () => {
+    await waitFor(() => listening() !== undefined || child.exitCode !== null || child.signalCode !== null, STARTUP_MS);
+    const address = listening();
+    if (address === undefined) {
+      throw new Error("the server exited before it listened");
+    }
+    return address;
+  };
+  const { page, stop } = await open(dir, child, ready, (address) => `http://${address}/`);
+  let taken = 0;
+  const letters = () => records.filter((record) => record.msg === "mail printed").slice(taken);
   return {
     page,
     admin: async (command, ...args) => {
@@ -43,26 +56,28 @@ export async function serve(): Promise<Served> {
     },
     code: async (email) => {
       await waitFor(() => letters().length > 0);
-      const path = join(outbox, letters()[0] ?? "");
-      const letter = JSON.parse(readFileSync(path, "utf8")) as { to: string; code: string };
-      rmSync(path);
-      if (letter.to !== email) {
-        throw new Error("the letter is for someone else");
+      const [mail] = letters();
+      taken += 1;
+      const code = /\b[0-9A-Z]{4}-[0-9A-Z]{4}\b/.exec(mail?.text ?? "")?.[0];
+      if (mail?.to !== email || code === undefined) {
+        throw new Error("the mail is for someone else, or holds no code");
       }
-      return letter.code;
+      return code;
     },
     letters: () => letters().length,
     close: stop,
   };
 }
 
-/** The address in the server's `listening` log line. */
-function listening(line: string): string | undefined {
+/** The fields of the server's log lines that these tests read. */
+type LogLine = { msg?: string; address?: string; to?: string; text?: string };
+
+/** One of the server's log lines, or nothing from a line that isn't one. */
+function parsed(line: string): LogLine {
   try {
-    const record = JSON.parse(line) as { msg?: string; address?: string };
-    return record.msg === "listening" ? record.address : undefined;
+    return JSON.parse(line) as LogLine;
   } catch {
-    return undefined;
+    return {};
   }
 }
 

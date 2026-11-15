@@ -27,6 +27,7 @@ pub(super) const STEPS: &[&str] = &[
     steps::SEARCH_CHATS,
     steps::CORE_BUILDS,
     steps::DOC_REPOS,
+    steps::PLAIN_CODES,
 ];
 
 /// Applies the steps the database hasn't had yet, each in its own transaction that holds the
@@ -228,7 +229,6 @@ mod tests {
                 "sessions",
                 "tasks",
                 "task_versions",
-                "sign_in_challenges",
                 "docs",
                 "doc_versions",
                 "doc_pins",
@@ -241,7 +241,8 @@ mod tests {
                 "chat_requests",
                 "changes",
                 "search",
-                "search_rows"
+                "search_rows",
+                "sign_in_challenges"
             ]
         );
         for table in SERVER_WIDE {
