@@ -20,6 +20,7 @@ mod outbox;
 mod pairing;
 mod proposals;
 mod relay;
+mod search;
 mod secret;
 mod shared;
 mod sign_in;
