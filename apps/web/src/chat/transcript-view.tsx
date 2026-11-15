@@ -111,6 +111,12 @@ function LineView({ line, formatted, answering }: { line: Line; formatted: boole
   switch (line.kind) {
     case "prompt":
       return <div className="row prompt">{line.text}</div>;
+    case "refused":
+      return (
+        <p className="row problem" role="status">
+          {line.text}
+        </p>
+      );
     case "agent":
       return <div className="row agent">{line.label}</div>;
     case "ask":

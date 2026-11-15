@@ -10,8 +10,8 @@ export type Ask = { prompt: number; tool: string; at: number; state: "open" | "c
  */
 export type Turn = { key: string; run: RunId; transcript: Transcript; asks: readonly Ask[]; open: boolean };
 
-/** What the screen shows, in order: people's prompts and agents' turns. */
-export type Item = { kind: "prompt"; seq: number; text: string } | { kind: "turn"; turn: Turn };
+/** What the screen shows, in order: people's prompts, agents' turns, and the commands their machine refused. */
+export type Item = { kind: "prompt"; seq: number; text: string } | { kind: "turn"; turn: Turn } | { kind: "refused"; seq: number; code: string };
 
 /** A run as its chat's log records it. */
 export type Run = { state: RunState; agent: AgentRef | undefined };
@@ -170,6 +170,10 @@ function step(items: Item[], entry: ChatEntry, waiting: boolean): void {
     return;
   }
   closeBy(items, entry);
+  if (event.kind === "receipt" && event.receipt.state === "failed") {
+    items.push({ kind: "refused", seq: entry.seq, code: event.receipt.code });
+    return;
+  }
   // A run that stops without a finished event, as when its core crashed, ends its turn too.
   if (event.kind === "run_status" && !["starting", "running", "waiting"].includes(event.status.state)) {
     update(items, event.status.run, (turn) => ({ ...turn, open: false, transcript: { ...turn.transcript, writing: false } }));
