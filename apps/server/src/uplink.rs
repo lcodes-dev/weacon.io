@@ -144,7 +144,9 @@ async fn run(
 
 /// Gives what `machine` sent to the feature it is for.
 fn hand_off(shared: &Shared, machine: &MachineId, envelope: Envelope) {
-    if matches!(
+    if let Message::Terminal(update) = envelope.message {
+        shared.terminals.delivered(machine, update);
+    } else if matches!(
         envelope.message,
         Message::MachineSettingsAnswer(_) | Message::Error(_)
     ) {

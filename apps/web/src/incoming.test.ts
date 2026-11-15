@@ -242,6 +242,20 @@ test("a machine's settings answer passes with the fields the page reads, and a n
   assert.equal(parse(frame({ id: 6, type: "machine_settings_answer", request: "r-1", workspace: "w-1", answer: current })), undefined);
 });
 
+test("a terminal update passes with the fields the terminal reads, and a newer kind is dropped", () => {
+  const update = (event: unknown) => frame({ id: 0, type: "terminal", terminal: "t-1", workspace: "w-1", event });
+  const good = [{ kind: "accepted", handshake: "ab" }, { kind: "frame", sealed: "cd" }, { kind: "closed" }, { kind: "closed", code: "terminal.busy" }];
+  const bad = [null, { kind: "accepted" }, { kind: "frame", sealed: 7 }, { kind: "closed", code: 7 }, { kind: "later", sealed: "cd" }];
+
+  for (const event of good) {
+    assert.equal(parse(update(event))?.type, "terminal", JSON.stringify(event));
+  }
+  for (const event of bad) {
+    assert.equal(parse(update(event)), undefined, JSON.stringify(event));
+  }
+  assert.equal(parse(frame({ id: 0, type: "terminal", terminal: "t-1", event: { kind: "closed" } })), undefined);
+});
+
 test("a diff answer passes only with every field the diff view reads", () => {
   const file = (path: string) => ({
     path,

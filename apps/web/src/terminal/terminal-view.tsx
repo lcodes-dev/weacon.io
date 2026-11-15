@@ -95,6 +95,10 @@ function noteOf(state: TerminalState): string | undefined {
           return "This machine's key couldn't be checked, so the terminal didn't open.";
         case "broken":
           return "The terminal closed because something didn't check out.";
+        case "machine.offline":
+          return "The machine isn't connected, or its core can't open sign-in terminals.";
+        case "terminal.busy":
+          return "A sign-in for this agent is already running on this machine.";
         default:
           return "The machine closed the terminal.";
       }

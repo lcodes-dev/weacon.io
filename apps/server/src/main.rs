@@ -24,6 +24,7 @@ mod sign_in;
 mod sign_up;
 mod socket;
 mod tasks;
+mod terminals;
 #[cfg(test)]
 mod test_support;
 mod uplink;
@@ -123,6 +124,7 @@ async fn serve(app: &App, args: Serve) -> Result<(), Fault> {
         unpaired: broadcast::channel(CHANGES).0,
         links: Arc::default(),
         relay: Arc::default(),
+        terminals: Arc::default(),
         sign_ins: Arc::new(Semaphore::new(sign_in::AT_ONCE)),
         finish_takes: sign_in::FINISH_TAKES,
         sign_in_limits: Arc::new(sign_in::limits()),

@@ -5,14 +5,16 @@ use std::sync::Arc;
 
 use tokio::sync::{Semaphore, mpsc};
 use weacon_observability::{Fault, Field};
-use weacon_protocol::{Envelope, FrameError, Message, code};
+use weacon_protocol::{Envelope, FrameError, Message, TerminalCommand, code};
 
 use super::worktrees::{self, Late};
 use super::{Shared, command_chat, keep, query_chat};
 use crate::chats::feed::Client;
 use crate::machine_settings::{self, Host, Identity};
 use crate::session::{Reply, Session};
+use crate::terminal::Terminals;
 use crate::uplink::{self, failure, refusal};
+use crate::workspaces::Workspaces;
 use crate::{app, machine};
 
 /// How many of the server's queries are answered at once; each may run vendors' status checks.
@@ -71,8 +73,16 @@ pub(super) async fn uplink(
 ) -> ! {
     let (commands, in_order) = mpsc::channel(uplink::QUEUE);
     tokio::spawn(one_by_one(host.clone(), in_order, replies.clone()));
+    let (terminal_commands, for_terminals) = mpsc::channel(uplink::QUEUE);
+    tokio::spawn(terminals(host.clone(), for_terminals, replies.clone()));
     let room = Arc::new(Semaphore::new(QUERIES_AT_ONCE));
-    while let Some(ask) = asks.recv().await {
+    while let Some(Envelope { id, message }) = asks.recv().await {
+        let ask = if let Message::TerminalCommand(command) = message {
+            drop(terminal_commands.send(command).await);
+            continue;
+        } else {
+            Envelope { id, message }
+        };
         if matches!(ask.message, Message::MachineSettingsCommand(_)) {
             drop(commands.send(ask).await);
             continue;
@@ -100,6 +110,28 @@ async fn one_by_one(
         if let Some(reply) = relayed(&host, command).await {
             drop(replies.send(reply).await);
         }
+    }
+}
+
+// Hands each terminal command to this machine's terminals, in the order they came, and their
+// updates back to the server.
+async fn terminals(
+    host: Host,
+    mut commands: mpsc::Receiver<TerminalCommand>,
+    replies: mpsc::Sender<Envelope>,
+) {
+    let (updates, mut outgoing) = mpsc::channel(uplink::QUEUE);
+    let workspaces = Workspaces::new(&host.state_dir, host.path.clone());
+    let log = host.log.child(&[("component", "terminals".into())]);
+    let mut terminals = Terminals::new(host.state_dir, workspaces, log, updates);
+    tokio::spawn(async move {
+        while let Some(update) = outgoing.recv().await {
+            let message = Message::Terminal(update);
+            drop(replies.send(Envelope { id: 0, message }).await);
+        }
+    });
+    while let Some(command) = commands.recv().await {
+        terminals.handle(command).await;
     }
 }
 
@@ -136,11 +168,7 @@ async fn relayed(host: &Host, ask: Envelope) -> Option<Envelope> {
 
 /// The machine and its owner, as the pairing kept now says.
 async fn owner(host: &Host) -> Result<Identity, Fault> {
-    let dir = host.state_dir.clone();
-    let paired = app::blocking(move || Ok(machine::read(&dir)))
-        .await
-        .map_err(|error| machine::unreadable().because(error))??
-        .ok_or_else(|| Fault::new(code!("machine.unpaired"), "This machine isn't paired"))?;
+    let paired = machine::current(&host.state_dir).await?;
     Ok(Identity {
         machine: paired.machine,
         account: paired.owner,
@@ -369,5 +397,40 @@ mod tests {
         assert_eq!(commands, [1, 2, 3, 4]);
         assert_eq!(refused, [7]);
         assert_eq!(reports::current(&dir), Some(false));
+    }
+
+    #[tokio::test]
+    async fn a_terminal_command_is_answered_with_an_update_for_its_terminal() {
+        let dir = TempDir::new().unwrap();
+        let (host, _) = host(&dir);
+        let (to_daemon, asks) = mpsc::channel(8);
+        let (replies, mut from_daemon) = mpsc::channel(8);
+        tokio::spawn(uplink(host, asks, replies));
+        let close = TerminalCommand {
+            terminal: id("t-1"),
+            machine: id("mc-1"),
+            workspace: id("w1"),
+            action: weacon_protocol::TerminalAction::Close,
+            by: Some(by("a-1")),
+        };
+        let message = Message::TerminalCommand(close);
+        to_daemon.send(Envelope { id: 7, message }).await.unwrap();
+
+        let reply = tokio::time::timeout(std::time::Duration::from_secs(10), from_daemon.recv())
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(reply.id, 0);
+        let Message::Terminal(update) = reply.message else {
+            panic!("expected an update, got {:?}", reply.message);
+        };
+        assert_eq!(update.terminal.as_str(), "t-1");
+        assert_eq!(
+            update.event,
+            weacon_protocol::TerminalEvent::Closed {
+                code: Some(code!("terminal.unknown"))
+            }
+        );
     }
 }

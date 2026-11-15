@@ -1,37 +1,32 @@
 //! Sign-in terminals: the vendor's login on this machine, shown sealed in its owner's browser.
-//! Only the machine's owner may ask for one, and nothing that passes through one is read,
-//! kept or logged.
+//! The uplink passes on only the owner's commands, and nothing that passes through a terminal
+//! is read, kept or logged.
 
 mod seal;
 mod session;
 
 use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
 use std::sync::{Arc, Weak};
 
 use tokio::sync::mpsc;
 use weacon_observability::{Fault, Field, Logger};
 use weacon_protocol::{
-    AccountId, AgentKind, Bytes, Code, MachineId, TerminalAction, TerminalCommand, TerminalEvent,
-    TerminalId, TerminalInput, TerminalUpdate, WorkspaceId, code,
+    AgentKind, Bytes, Code, TerminalAction, TerminalCommand, TerminalEvent, TerminalId,
+    TerminalInput, TerminalUpdate, WorkspaceId, code,
 };
-use x25519_dalek::StaticSecret;
 
+use crate::machine;
 use crate::workspaces::Workspaces;
 use session::Session;
 
 // Frames waiting for a terminal that hasn't taken them yet.
 const WAITING: usize = 64;
 
-/// Who this machine is: its id, its owner and the private half of its key.
-pub(crate) struct Paired {
-    pub(crate) machine: MachineId,
-    pub(crate) owner: AccountId,
-    pub(crate) key: StaticSecret,
-}
-
 /// This machine's sign-in terminals, which it answers its owner's terminal commands with.
 pub(crate) struct Terminals {
-    paired: Paired,
+    // Where the pairing, and so the machine's key, is read at each open.
+    state_dir: PathBuf,
     workspaces: Workspaces,
     log: Logger,
     updates: mpsc::Sender<TerminalUpdate>,
@@ -51,13 +46,13 @@ struct Open {
 impl Terminals {
     /// What they send goes to `updates`.
     pub(crate) fn new(
-        paired: Paired,
+        state_dir: PathBuf,
         workspaces: Workspaces,
         log: Logger,
         updates: mpsc::Sender<TerminalUpdate>,
     ) -> Self {
         Self {
-            paired,
+            state_dir,
             workspaces,
             log,
             updates,
@@ -66,16 +61,8 @@ impl Terminals {
         }
     }
 
-    /// Answers one command, from the owner of this machine only.
+    /// Answers one command.
     pub(crate) async fn handle(&mut self, command: TerminalCommand) {
-        let asked = command.machine == self.paired.machine
-            && command
-                .by
-                .as_ref()
-                .is_some_and(|by| by.account == self.paired.owner);
-        if !asked {
-            return self.refuse(command, code!("terminal.refused")).await;
-        }
         self.open.retain(|_, open| open.alive.strong_count() > 0);
         let open = self.open.get_mut(&command.terminal);
         let ours = open.filter(|open| open.workspace == command.workspace);
@@ -113,7 +100,7 @@ impl Terminals {
             return self.refuse(command, code!("terminal.unknown")).await;
         };
         let log = self.log.child(&ids(&command.terminal, &command.workspace));
-        let session = match self.session(&command, agent, handshake, &prologue) {
+        let session = match self.session(&command, agent, handshake, &prologue).await {
             Ok(session) => session,
             Err(fault) => {
                 log.warn("terminal refused", &[("err", Field::error(&fault))]);
@@ -142,14 +129,15 @@ impl Terminals {
         self.open.insert(command.terminal, open);
     }
 
-    fn session(
+    async fn session(
         &self,
         command: &TerminalCommand,
         agent: AgentKind,
         handshake: &Bytes,
         prologue: &[u8],
     ) -> Result<Session, Fault> {
-        let accepted = seal::accept(self.paired.key.as_bytes(), prologue, handshake.as_slice())?;
+        let key = machine::current(&self.state_dir).await?.key.secret();
+        let accepted = seal::accept(key.as_bytes(), prologue, handshake.as_slice())?;
         let Ok(TerminalInput::Resize { cols, rows }) = TerminalInput::from_json(&accepted.first)
         else {
             return Err(session::size_refused());
@@ -190,7 +178,7 @@ mod tests {
     use tokio::time::timeout;
     use weacon_protocol::{Asker, MemberId, SignInState, TerminalOutput};
     use weacon_testing::TempDir;
-    use x25519_dalek::PublicKey;
+    use x25519_dalek::{PublicKey, StaticSecret};
 
     use super::*;
     use snow::{HandshakeState, TransportState};
@@ -228,17 +216,21 @@ mod tests {
         let bin = dir.join("bin");
         std::fs::create_dir_all(&bin).unwrap();
         plant_claude(&bin, &dir.join("ran"));
-        let key = StaticSecret::from([7; 32]);
-        let public = PublicKey::from(&key).as_bytes().to_vec();
-        let workspaces = Workspaces::new(&dir.join("state"), Some(bin.into_os_string()));
-        let (log, records) = test_support::recording_logger();
-        let (sender, updates) = mpsc::channel(64);
-        let paired = Paired {
+        let state = dir.join("state");
+        let paired = machine::Paired {
+            server: "https://weacon.example.com".to_owned(),
+            pinned: None,
             machine: id("m-1"),
             owner: id("a-owner"),
-            key,
+            token: "t0ken".to_owned(),
+            key: machine::Key::from_random([7; 32]),
         };
-        let terminals = Terminals::new(paired, workspaces, log, sender);
+        machine::write(&state, &paired).unwrap();
+        let public = PublicKey::from(&paired.key.secret()).as_bytes().to_vec();
+        let workspaces = Workspaces::new(&state, Some(bin.into_os_string()));
+        let (log, records) = test_support::recording_logger();
+        let (sender, updates) = mpsc::channel(64);
+        let terminals = Terminals::new(state, workspaces, log, sender);
         Machine {
             dir,
             terminals,
@@ -392,35 +384,21 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
-    async fn only_the_machines_owner_may_open_a_terminal_or_send_it_anything() {
+    async fn a_terminal_it_doesnt_have_or_an_open_while_unpaired_is_refused() {
         let mut machine = machine();
         let (_browser, open) = opening(&machine, "t-1");
-        let strangers = [
-            TerminalCommand {
-                by: None,
-                ..open.clone()
-            },
-            TerminalCommand {
-                by: Some(Asker {
-                    account: id("a-other"),
-                    member: id::<MemberId>("p-2"),
-                }),
-                ..open.clone()
-            },
-            TerminalCommand {
-                machine: id("m-2"),
-                ..open.clone()
-            },
-        ];
-        for stranger in strangers {
-            machine.terminals.handle(stranger).await;
-            assert_eq!(next(&mut machine).await, closed("terminal.refused"));
-        }
+
         machine
             .terminals
             .handle(command("t-9", TerminalAction::Close))
             .await;
-        assert_eq!(next(&mut machine).await, closed("terminal.unknown"));
+        let unknown = next(&mut machine).await;
+        std::fs::remove_file(machine.dir.join("state").join("machine.json")).unwrap();
+        machine.terminals.handle(open).await;
+        let unpaired = next(&mut machine).await;
+
+        assert_eq!(unknown, closed("terminal.unknown"));
+        assert_eq!(unpaired, closed("machine.unpaired"));
         assert!(!machine.dir.join("ran").exists());
     }
 

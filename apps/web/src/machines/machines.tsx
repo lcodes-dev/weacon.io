@@ -105,6 +105,7 @@ function Machine({
   }, [justPaired]);
   // A machine's settings are kept for each workspace, so they show only while one is open.
   const settable = useOffers(socket, "machine.settings");
+  const relays = useOffers(socket, "terminal.relay");
   const { busy, problem, ask } = useAsk();
   const paired = new Date(machine.paired_at * 1000).toLocaleDateString();
   return (
@@ -149,7 +150,7 @@ function Machine({
         </button>
       )}
       {socket !== undefined && settable && open && (
-        <MachineSettingsView key={socket.workspace} machine={machine} socket={socket} later={later} />
+        <MachineSettingsView key={socket.workspace} machine={machine} socket={socket} later={later} pins={pins} relays={relays} />
       )}
     </li>
   );
