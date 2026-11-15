@@ -136,11 +136,11 @@ test("the header says how the connection stands", () => {
 });
 
 test("a capability counts only while the server is live and offers it", () => {
-  const live: Status = { state: "live", server: SERVER, capabilities: ["run.stream", "diff.view"] };
-  assert.equal(offers(live, "diff.view"), true);
+  const live: Status = { state: "live", server: SERVER, capabilities: ["run.stream", "workspace.chats"] };
+  assert.equal(offers(live, "workspace.chats"), true);
   assert.equal(offers(live, "diff.view"), false);
-  assert.equal(offers({ state: "connecting" }, "diff.view"), false);
-  assert.equal(offers({ state: "ended", code: "connection.lost" }, "diff.view"), false);
+  assert.equal(offers({ state: "connecting" }, "workspace.chats"), false);
+  assert.equal(offers({ state: "ended", code: "connection.lost" }, "workspace.chats"), false);
 });
 
 test("a connection that needs another capability asks for it and takes only a server that offers it", () => {
