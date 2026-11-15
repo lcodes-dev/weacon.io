@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 
 use super::safe::{GIT_FORBIDS, GIT_SAFE};
 use super::shell::Word;
-use super::words::{has, positional, short_flags};
+use super::words::{has, positional};
 use super::{Context, Reason, path_of};
 use crate::access::resolve;
 
@@ -133,7 +133,8 @@ fn subcommand(name: &str, args: &[Word], context: &Context, repo: &Path) -> Opti
             elsewhere.then_some(Reason::WriteOutside)
         }
         _ if DISCARDING.contains(&name) => main_checkout(repo, context),
-        "clean" if dry_run(args) => None,
+        // Outside the chat's own worktree a clean could delete the main checkout's files; a `-n`
+        // dry run can't be told from the real thing once the shell has had the line, so it asks.
         "clean" => (!own_checkout(repo, context)).then_some(Reason::CleanMainCheckout),
         _ => elsewhere.then_some(Reason::WriteOutside),
     }
@@ -145,42 +146,6 @@ fn fetch_overwrites(args: &[Word]) -> bool {
     positional(args).iter().any(|refspec| {
         refspec.dynamic || (refspec.text.contains(':') && (forced || refspec.text.starts_with('+')))
     })
-}
-
-// Whether `git clean` runs as a dry run, so it deletes nothing. `-e`, `--exclude` and its
-// unambiguous prefixes take an exclude pattern, not a `-n` dry run; `--no-dry-run` turns it back
-// off, so the last word wins; a word only the shell can spell, or a glob, could be any of these,
-// so it can't be proven a dry run.
-fn dry_run(args: &[Word]) -> bool {
-    let mut dry = false;
-    let mut pattern = false;
-    for arg in args {
-        // A word only the shell can spell could be, or could hold, any option, even where it
-        // stands as an exclude pattern (`-e $x`), so the run can't be proven dry.
-        if arg.dynamic || arg.glob {
-            return false;
-        }
-        if std::mem::take(&mut pattern) {
-            continue;
-        }
-        if arg.text == "--" {
-            break;
-        }
-        if arg.text == "--dry-run" {
-            dry = true;
-        } else if arg.text == "--no-dry-run" {
-            dry = false;
-        } else if arg.text.len() > 2 && "--exclude".starts_with(arg.text.as_str()) {
-            pattern = true;
-        } else if let Some(flags) = short_flags(&arg.text) {
-            let (before, after) = flags.split_once('e').unwrap_or((flags, "x"));
-            if before.contains('n') {
-                dry = true;
-            }
-            pattern = after.is_empty();
-        }
-    }
-    dry
 }
 
 fn push(args: &[Word]) -> Option<Reason> {

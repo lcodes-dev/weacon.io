@@ -579,8 +579,9 @@ mod tests {
             Some(Reason::NotListed)
         );
         assert_eq!(in_main("git reset HEAD~1"), Some(Reason::WriteOutside));
-        assert_eq!(in_main("git clean -n"), None);
-        assert_eq!(in_main("git clean --dry-run"), None);
+        // A clean outside the chat's worktree asks even as a `-n` dry run; inside it runs.
+        assert_eq!(in_main("git clean -n"), Some(Reason::CleanMainCheckout));
+        assert_eq!(check("git clean -nfdx"), None);
         assert_eq!(check("git config --get user.name"), Some(Reason::NotListed));
         assert_eq!(check("git config user.name"), Some(Reason::NotListed));
         assert_eq!(check("git config --list"), Some(Reason::NotListed));
