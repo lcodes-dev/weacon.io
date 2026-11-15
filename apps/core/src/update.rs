@@ -166,6 +166,13 @@ fn install_release(release: &ReleaseManifest, world: &World<'_>) -> Result<(), F
         )
         .because(error)
     })?;
+    // Another state folder's update may have put a newer build in place while this waited.
+    if installed_version(world, &paths.exe).is_some_and(|installed| release.version <= installed) {
+        return Err(Fault::new(
+            code!("update.superseded"),
+            "A build as new or newer was installed meanwhile",
+        ));
+    }
     install::stage(&paths, &mut (world.get)(build.url.as_str())?, &build)?;
     install::check_version(&paths, &release.commit, (world.version_of)(&paths.new))?;
     install::swap(&paths)?;
@@ -217,6 +224,12 @@ fn held(path: &Path, unwritable: fn(io::Error) -> Fault) -> Result<File, Fault> 
         code!("update.busy"),
         "Another update is running",
     ))
+}
+
+// The version the binary at `exe` says it is, as `weacon 1.2.3 (commit)`; none when it can't say.
+fn installed_version(world: &World<'_>, exe: &Path) -> Option<ReleaseVersion> {
+    let said = (world.version_of)(exe).ok()?;
+    said.split_whitespace().nth(1)?.parse().ok()
 }
 
 fn version_of(binary: &Path) -> io::Result<String> {
@@ -385,11 +398,23 @@ mod tests {
         }
     }
 
+    // What `binary --version` prints: the running one says `installed`, a staged one the release.
+    fn says(binary: &Path, installed: &str) -> String {
+        let version = if binary.ends_with("bin/weacon") {
+            installed
+        } else {
+            "1.2.3"
+        };
+        format!("weacon {version} ({COMMIT})\n")
+    }
+
     /// A state folder, and a running binary `bin/weacon` that holds `old`.
     struct Machine {
         dir: TempDir,
         restarts: Cell<u32>,
         restart_fails: bool,
+        /// The version `bin/weacon` says it is.
+        installed: &'static str,
     }
 
     impl Machine {
@@ -401,6 +426,7 @@ mod tests {
                 dir,
                 restarts: Cell::new(0),
                 restart_fails: false,
+                installed: "1.0.0",
             }
         }
 
@@ -423,7 +449,7 @@ mod tests {
             let offered = std::cell::RefCell::new(Some(offered));
             let release = || offered.borrow_mut().take().unwrap();
             let get = |_: &str| -> Result<fetch::Body, Fault> { Ok(Box::new(Cursor::new("new"))) };
-            let version_of = |_: &Path| Ok(format!("weacon 1.2.3 ({COMMIT})\n"));
+            let version_of = |binary: &Path| Ok(says(binary, self.installed));
             let restart = || {
                 self.restarts.set(self.restarts.get() + 1);
                 let failed = Fault::new(code!("test.restart_failed"), "x");
@@ -469,6 +495,16 @@ mod tests {
         assert_eq!(machine.binary(), "new");
         assert_eq!(machine.restarts.get(), 1);
         assert_eq!(machine.settings().last_published, 10);
+    }
+
+    #[test]
+    fn a_build_installed_meanwhile_from_another_state_folder_isnt_replaced() {
+        let mut machine = Machine::new();
+        machine.installed = "1.2.3";
+        let (result, _) = machine.update(NOW, Ok(release("1.2.3", 10, PROTOCOL)), Some(true));
+        assert_eq!(code(result), "update.superseded");
+        assert_eq!(machine.binary(), "old");
+        assert_eq!(machine.restarts.get(), 0);
     }
 
     #[test]
@@ -655,24 +691,37 @@ mod tests {
     fn a_binary_that_hangs_is_killed() {
         let dir = TempDir::new().unwrap();
         let hangs = dir.join("hangs");
-        // Long enough to be killed, short enough that a broken deadline fails quickly.
-        fs::write(&hangs, "#!/bin/sh\nexec sleep 2\n").unwrap();
+        // It never ends on its own, so only the deadline ends it.
+        fs::write(&hangs, "#!/bin/sh\nexec tail -f /dev/null\n").unwrap();
         crate::platform::make_runnable(&hangs).unwrap();
         let error = output_within(&mut Command::new(&hangs), Duration::ZERO).unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::TimedOut);
         let fast = answering(&dir, "quick");
         let printed = output_within(&mut Command::new(&fast), Duration::from_secs(30)).unwrap();
         assert_eq!(printed, "quick\n");
-        // A process left running with the output open doesn't hold the answer past its time.
+        let long = answering(&dir, &"x".repeat(5000));
+        let printed = output_within(&mut Command::new(&long), Duration::from_secs(30)).unwrap();
+        assert_eq!(printed.len(), 5001);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_process_left_holding_the_output_doesnt_hold_the_answer_past_its_time() {
+        let dir = TempDir::new().unwrap();
         let leaves = dir.join("leaves");
-        fs::write(&leaves, "#!/bin/sh\necho started\nsleep 2 &\n").unwrap();
+        let left = dir.join("left");
+        let script = format!(
+            "#!/bin/sh\necho started\ntail -f /dev/null &\necho $! > '{}'\n",
+            left.display()
+        );
+        fs::write(&leaves, script).unwrap();
         crate::platform::make_runnable(&leaves).unwrap();
         let error =
             output_within(&mut Command::new(&leaves), Duration::from_millis(500)).unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::TimedOut);
-        let long = answering(&dir, &"x".repeat(5000));
-        let printed = output_within(&mut Command::new(&long), Duration::from_secs(30)).unwrap();
-        assert_eq!(printed.len(), 5001);
+        let pid = fs::read_to_string(&left).unwrap();
+        let killed = Command::new("kill").arg(pid.trim()).status().unwrap();
+        assert!(killed.success());
     }
 
     #[test]

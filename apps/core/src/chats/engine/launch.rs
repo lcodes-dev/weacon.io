@@ -44,7 +44,7 @@ impl<A: Agent> Engine<A> {
     }
 
     // Tries again to save every session and turn's end the journal or the log couldn't; one
-    // that still fails stays.
+    // that still fails stays. A chat whose end is saved goes on to its queued prompt.
     pub(super) async fn save_pending(&mut self) {
         let pending: Vec<ChatKey> = (self.open_chats.iter())
             .filter(|(_, chat)| chat.pending_session.is_some() || chat.pending_end.is_some())
@@ -52,7 +52,7 @@ impl<A: Agent> Engine<A> {
             .collect();
         for key in pending {
             let saved = match self.save_pending_session(&key).await {
-                Ok(()) => self.save_ended(&key).await,
+                Ok(()) => self.advance(&key).await,
                 failed => failed,
             };
             if let Err(fault) = saved {

@@ -444,6 +444,26 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
+    async fn a_turns_end_saved_late_starts_the_prompt_queued_behind_it() {
+        let mut on = on_turn().await;
+        on.engine
+            .command(&key(), prompt("r-2", "More"))
+            .await
+            .unwrap();
+        let chat = on.engine.open(&key()).await.unwrap();
+        chat.orders = None;
+        chat.pending_end = Some(PendingEnd {
+            turn: prompt("r-1", "Hi").request,
+            outcome: Outcome::Completed,
+        });
+
+        on.engine.save_pending().await;
+        launched(&mut on.engine).await;
+        let next = soon(on.bench.started.recv()).await.unwrap();
+        assert_eq!(next.run_as.run, run("run-2"));
+    }
+
+    #[tokio::test(start_paused = true)]
     async fn an_outcome_left_by_another_turn_doesnt_end_this_one() {
         let mut on = on_turn().await;
         let other = PendingEnd {
