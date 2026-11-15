@@ -21,6 +21,26 @@ impl Listener {
 }
 
 /// Bytes this user may still write on the disk holding `dir`.
+/// Takes this process's lock on all of `file`; `WouldBlock` while another process has it. The lock
+/// is the process's own, so a child it forks, even one that hasn't yet run its program, never
+/// keeps it, and it ends when the process closes `file`.
+#[expect(unsafe_code, reason = "fcntl has no safe API in std")]
+pub(crate) fn lock_for_process(file: &fs::File) -> io::Result<()> {
+    use std::os::fd::AsRawFd;
+
+    // SAFETY: `flock` is plain data, valid all zeros: a lock on the whole file from its start.
+    let mut lock: libc::flock = unsafe { std::mem::zeroed() };
+    lock.l_type = libc::c_short::try_from(libc::F_WRLCK).map_err(|_| io::ErrorKind::Unsupported)?;
+    lock.l_whence =
+        libc::c_short::try_from(libc::SEEK_SET).map_err(|_| io::ErrorKind::Unsupported)?;
+    // SAFETY: the descriptor stays open for the call, and `lock` is a valid `flock` it only reads.
+    if unsafe { libc::fcntl(file.as_raw_fd(), libc::F_SETLK, &raw const lock) } == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
+    }
+}
+
 #[expect(unsafe_code, reason = "statvfs has no safe API in std")]
 #[cfg_attr(
     target_os = "linux",

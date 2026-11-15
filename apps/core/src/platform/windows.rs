@@ -68,6 +68,15 @@ impl Listener {
 }
 
 /// Bytes this user may still write on the disk holding `dir`.
+/// Takes this process's lock on all of `file`; `WouldBlock` while another process has it. A
+/// child never inherits the handle, so it never keeps the lock.
+pub(crate) fn lock_for_process(file: &fs::File) -> io::Result<()> {
+    file.try_lock().map_err(|error| match error {
+        fs::TryLockError::WouldBlock => io::ErrorKind::WouldBlock.into(),
+        fs::TryLockError::Error(error) => error,
+    })
+}
+
 #[expect(unsafe_code, reason = "GetDiskFreeSpaceExW has no safe API in std")]
 pub(crate) fn free_space(dir: &Path) -> io::Result<u64> {
     use std::os::windows::ffi::OsStrExt;
