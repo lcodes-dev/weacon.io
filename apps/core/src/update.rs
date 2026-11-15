@@ -45,6 +45,7 @@ const HEALTH_PAUSE: Duration = Duration::from_millis(500);
 /// How often, and how far apart, the update lock is tried before it counts as taken: 1 s.
 const LOCK_TRIES: u32 = 50;
 const LOCK_PAUSE: Duration = Duration::from_millis(20);
+
 /// What an update reaches outside the core; tests pass fakes.
 pub(crate) struct World<'a> {
     /// The latest release, once its signature checks out.

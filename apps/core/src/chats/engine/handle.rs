@@ -1,6 +1,7 @@
 //! The clients' way to the engine, and how the engine answers them.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use tokio::sync::{mpsc, oneshot, watch};
 use weacon_observability::Fault;
@@ -33,6 +34,9 @@ pub(super) enum Ask {
     Left,
 }
 
+/// How long the engine has to say whether it is busy, or to give leave.
+const ENGINE_ANSWERS_WITHIN: Duration = Duration::from_secs(5);
+
 fn stopped() -> Fault {
     Fault::new(code!("chat.engine_stopped"), "The daemon is stopping")
 }
@@ -58,8 +62,18 @@ impl WeakChats {
     async fn ask(&self, ask: fn(oneshot::Sender<bool>) -> Ask) -> Result<bool, Fault> {
         let asks = self.0.upgrade().ok_or_else(stopped)?;
         let (answer, answered) = oneshot::channel();
-        asks.send(ask(answer)).await.map_err(|_| stopped())?;
-        answered.await.map_err(|_| stopped())
+        let asked = async {
+            asks.send(ask(answer)).await.map_err(|_| stopped())?;
+            answered.await.map_err(|_| stopped())
+        };
+        tokio::time::timeout(ENGINE_ANSWERS_WITHIN, asked)
+            .await
+            .unwrap_or_else(|_| {
+                Err(Fault::new(
+                    code!("chat.engine_silent"),
+                    "The engine didn't answer",
+                ))
+            })
     }
 
     /// Lets turns go on after an install that had leave.

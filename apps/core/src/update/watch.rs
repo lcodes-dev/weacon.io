@@ -18,8 +18,6 @@ const WEEK: u64 = 7 * DAY;
 
 /// How often the daemon asks itself whether a check is due.
 pub(crate) const CHECK_EVERY: Duration = Duration::from_hours(1);
-/// How long the chat engine has to say whether an agent is busy.
-const ENGINE_ANSWERS_WITHIN: Duration = Duration::from_secs(5);
 
 /// The latest release, once its signature checks out.
 pub(crate) type Latest = fn() -> Result<ReleaseManifest, Fault>;
@@ -257,8 +255,7 @@ fn launched(launch: Launch, state_dir: &Path) -> Result<bool, Fault> {
 /// Whether an agent is on a turn, as [`WeakChats::busy`] says; an engine that doesn't answer
 /// in time counts as busy.
 async fn busy(chats: &WeakChats) -> bool {
-    let answer = tokio::time::timeout(ENGINE_ANSWERS_WITHIN, chats.busy()).await;
-    answer.map_or(true, |busy| busy.unwrap_or(true))
+    chats.busy().await.unwrap_or(true)
 }
 
 /// Checks for releases on the daemon's schedule while it serves; a build that isn't a
