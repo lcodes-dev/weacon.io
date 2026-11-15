@@ -1,7 +1,7 @@
 //! The daemon's answers to a client's chat commands and queries.
 
 use weacon_observability::{Fault, Field};
-use weacon_protocol::{ChatAnswer, ChatCommand, ChatQuery, Envelope, Message, code};
+use weacon_protocol::{ChatAnswer, ChatCommand, ChatQuery, Envelope, ErrorBody, Message, code};
 
 use super::Shared;
 use crate::chats::feed::Client;
@@ -56,23 +56,44 @@ fn refused(shared: &Shared, id: u32, fault: &Fault) -> Reply {
     shared
         .log
         .warn("chat request refused", &[("err", Field::error(fault))]);
-    Reply::error(id, fault.code().clone(), again(fault))
+    refusal(id, fault)
 }
 
-// Whether a request `fault` refused is worth sending again: one cut short is.
-fn again(fault: &Fault) -> bool {
-    *fault.code() == code!("chat.unfinished")
+// The error a request `fault` refused gets, worth sending again when it was cut short.
+fn refusal(id: u32, fault: &Fault) -> Reply {
+    let code = fault.code().clone();
+    let retryable = code == code!("chat.unfinished");
+    Reply {
+        envelope: Some(Envelope {
+            id,
+            message: Message::Error(ErrorBody { code, retryable }),
+        }),
+        close: false,
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    // Whether the reply to request 7, refused with `code`, is worth sending again.
+    fn sent_again(code: &weacon_protocol::Code) -> bool {
+        let reply = refusal(7, &Fault::new(code.clone(), "Refused"));
+        assert!(!reply.close);
+        let Some(Envelope {
+            id: 7,
+            message: Message::Error(error),
+        }) = reply.envelope
+        else {
+            panic!("no error");
+        };
+        assert_eq!(&error.code, code);
+        error.retryable
+    }
+
     #[test]
-    fn only_a_request_cut_short_is_worth_sending_again() {
-        let cut_short = Fault::new(code!("chat.unfinished"), "The command was cut short");
-        assert!(again(&cut_short));
-        let refused = Fault::new(code!("chat.busy"), "The agent is busy");
-        assert!(!again(&refused));
+    fn only_a_request_cut_short_is_worth_sending_again_and_neither_closes() {
+        assert!(sent_again(&code!("chat.unfinished")));
+        assert!(!sent_again(&code!("chat.busy")));
     }
 }

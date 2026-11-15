@@ -5,7 +5,7 @@ use std::future::Future;
 use tokio::sync::broadcast::{Receiver, error::RecvError};
 use tokio::task::JoinSet;
 use weacon_observability::{Fault, Field};
-use weacon_protocol::{ChatCommand, ChatId, Message, Outcome, code};
+use weacon_protocol::{ChatCommand, ChatId, Message, Outcome, Receipt, code};
 
 use super::answers;
 use super::link::{self, Route};
@@ -108,18 +108,28 @@ async fn again(
     chat: &ChatId,
     request: OpenRequest,
 ) -> Result<(), Fault> {
-    let command = request.command;
+    let id = request.command.request.clone();
     if recent(shared, request.sent_at) {
-        workspace.sending(&command.request).await?;
-        return route.deliver(shared, Message::ChatCommand(command)).await;
+        workspace.sending(&id).await?;
+        let sent = route
+            .deliver(shared, Message::ChatCommand(request.command))
+            .await;
+        // Not sent after all, so its core's refusal still stands.
+        if sent.is_err() && request.refused {
+            workspace.mark_refused(&id).await?;
+        }
+        return sent;
     }
     if !request.refused {
         return Ok(());
     }
-    let outcome = Outcome::Failed {
-        code: code!("chat.unavailable"),
+    let receipt = Receipt {
+        request: id,
+        outcome: Outcome::Failed {
+            code: code!("chat.unavailable"),
+        },
     };
-    answers::end(shared, workspace, chat, &command.request, outcome).await
+    answers::end(shared, workspace, chat, receipt, true).await
 }
 
 /// Sends `route`'s machine the first prompts in `workspace` it never got, and takes back the
@@ -558,6 +568,41 @@ mod tests {
         assert_eq!(workspace.open_requests(&id("c-2")).await.unwrap().len(), 1);
         assert_eq!(resend_now(shared, &connected(&ada)).await.unwrap(), 0);
         assert_eq!(sent(&mut attached), [follow_query("c-2")]);
+    }
+
+    #[tokio::test]
+    async fn a_refused_command_not_sent_again_stays_refused_and_one_sent_since_isnt_ended() {
+        let fixture = Fixture::new().await;
+        let shared = &fixture.shared;
+        let ada = ada(&fixture).await;
+        let workspace = &ada.member.workspace;
+        make(workspace, "c-1", "m1", NOW).await.unwrap();
+        workspace.move_chats_to(&ada.machine).await;
+        workspace.mark_refused(&id("r-c-1")).await.unwrap();
+        let _attached = attach(shared, &ada, &["chat.serve"]);
+        let route = Route::open_now(shared, &ada.machine).unwrap();
+        route.close(shared);
+        let chat = id::<ChatId>("c-1");
+
+        let request = workspace.open_requests(&chat).await.unwrap().pop().unwrap();
+        again(shared, workspace, &route, &id("c-1"), request)
+            .await
+            .unwrap_err();
+
+        let request = workspace.open_requests(&chat).await.unwrap().pop().unwrap();
+        assert!(request.refused && !request.sent, "{request:?}");
+        // Sent again by a member meanwhile: its core's answer to that send counts, not this.
+        workspace.sending(&id("r-c-1")).await.unwrap();
+        let receipt = Receipt {
+            request: id("r-c-1"),
+            outcome: Outcome::Failed {
+                code: code!("chat.unavailable"),
+            },
+        };
+        answers::end(shared, workspace, &id("c-1"), receipt, true)
+            .await
+            .unwrap();
+        assert_eq!(workspace.open_requests(&chat).await.unwrap().len(), 1);
     }
 
     #[tokio::test]

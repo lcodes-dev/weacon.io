@@ -491,12 +491,6 @@ mod tests {
         peer
     }
 
-    // Sends `envelope` and gives what the core says back.
-    async fn asked(peer: &mut Peer, envelope: &Envelope) -> Message {
-        peer.send(text(envelope)).await.unwrap();
-        heard(peer).await
-    }
-
     // A server that refuses the socket's handshake with `status` and `code`.
     async fn refusing(tls: &Tls, status: &str, code: Code) {
         let mut stream = tls.accept().await.unwrap();
@@ -543,12 +537,21 @@ mod tests {
         let stranger = AccountId::try_from("a-other".to_owned()).unwrap();
         let serve = async {
             let mut peer = welcoming(&tls, &[CONNECT]).await;
-            peer.send(text(&command("r-owner", Some(&owner()))))
-                .await
-                .unwrap();
+            let sent = [
+                command("r-owner", Some(&owner())),
+                command("r-stranger", Some(&stranger)),
+                command("r-nobody", None),
+            ];
+            peer.send_all(&mut futures_util::stream::iter(
+                sent.iter().map(|asked| Ok(text(asked))),
+            ))
+            .await
+            .unwrap();
+            // The owner's interrupt reaches the chats, which have no such chat to stop.
             let heard_back = [
-                asked(&mut peer, &command("r-stranger", Some(&stranger))).await,
-                asked(&mut peer, &command("r-nobody", None)).await,
+                heard(&mut peer).await,
+                heard(&mut peer).await,
+                heard(&mut peer).await,
             ];
             let unpaired = ErrorBody {
                 code: code!("machine.unpaired"),
@@ -565,14 +568,19 @@ mod tests {
         let (ended, heard_back) = tokio::join!(once(&link, &pairing), serve);
 
         assert_eq!(ended.unwrap(), Ended::Unpaired);
-        let refusals: Vec<_> = heard_back.iter().map(refusal).collect();
+        let mut refusals: Vec<_> = heard_back.iter().filter_map(refusal).collect();
+        refusals.sort_unstable();
         assert_eq!(
             refusals,
             [
-                Some(("r-stranger", "chat.not_owner")),
-                Some(("r-nobody", "chat.not_owner")),
+                ("r-nobody", "chat.not_owner"),
+                ("r-stranger", "chat.not_owner")
             ]
         );
+        let errors = heard_back
+            .iter()
+            .filter(|heard| matches!(heard, Message::Error(_)));
+        assert_eq!(errors.count(), 1, "{heard_back:?}");
     }
 
     fn the_owner() -> Asker {

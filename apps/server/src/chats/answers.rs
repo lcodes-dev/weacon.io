@@ -105,23 +105,27 @@ async fn failed(shared: &Shared, asked: &Asked, outcome: Outcome) -> Result<(), 
     let Some(place) = shared.db.find_workspace(&asked.workspace).await? else {
         return Ok(());
     };
-    end(shared, &place, &asked.chat, &asked.request, outcome).await
+    let receipt = Receipt {
+        request: asked.request.clone(),
+        outcome,
+    };
+    end(shared, &place, &asked.chat, receipt, false).await
 }
 
-/// Ends `request` to `chat` with `outcome`, a final receipt the server writes for the chat's
-/// machine, and tells the chat's feeds; nothing when a receipt ended it already.
+/// Ends a request to `chat` with `receipt`, a final receipt the server writes for the chat's
+/// machine, and tells the chat's feeds; nothing when a receipt ended it already or, when
+/// `refused_only`, it was sent again since its core refused it.
 pub(crate) async fn end(
     shared: &Shared,
     workspace: &Workspace,
     chat: &ChatId,
-    request: &RequestId,
-    outcome: Outcome,
+    receipt: Receipt,
+    refused_only: bool,
 ) -> Result<(), Fault> {
-    let receipt = Receipt {
-        request: request.clone(),
-        outcome,
-    };
-    if !workspace.end_open(chat, receipt, shared.now()).await? {
+    if !workspace
+        .end_open(chat, receipt, shared.now(), refused_only)
+        .await?
+    {
         return Ok(());
     }
     shared.wake_feeds(workspace.id());

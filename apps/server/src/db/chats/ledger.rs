@@ -140,21 +140,24 @@ impl Workspace {
     }
 
     /// Ends `receipt`'s request to `chat` with it, a final receipt the server writes for the
-    /// chat's machine, unless another receipt ended it first; whether it did.
+    /// chat's machine, unless another receipt ended it first or, when `refused_only`, it was
+    /// sent again since its core refused it; whether it did.
     pub(crate) async fn end_open(
         &self,
         chat: &ChatId,
         receipt: Receipt,
         at: i64,
+        refused_only: bool,
     ) -> Result<bool, Fault> {
         let mut transaction = self.db.write().await?;
         let open: bool = sqlx::query_scalar(
-            "SELECT EXISTS (SELECT 1 FROM chat_requests
-                 WHERE workspace_id = ? AND chat_id = ? AND request_id = ? AND open = 1)",
+            "SELECT EXISTS (SELECT 1 FROM chat_requests WHERE workspace_id = ? AND chat_id = ?
+                 AND request_id = ? AND open = 1 AND (refused = 1 OR NOT ?))",
         )
         .bind(self.id.as_str())
         .bind(chat.as_str())
         .bind(receipt.request.as_str())
+        .bind(refused_only)
         .fetch_one(&mut *transaction)
         .await
         .map_err(failed)?;
