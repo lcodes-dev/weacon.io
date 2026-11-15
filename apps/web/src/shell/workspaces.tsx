@@ -9,13 +9,14 @@ import { useChatAccess } from "../chat/access.ts";
 import { ChatScreen } from "../chat/chat-screen.tsx";
 import { type Status, statusText } from "../connection.ts";
 import type { Log } from "../log.ts";
+import { Palette } from "../palette/palette.tsx";
 import type { ChatId, WorkspaceId, WorkspaceList, WorkspaceSummary } from "../protocol.ts";
 import { owns } from "./chat-list.ts";
 import { ChatsNav } from "./chats.tsx";
 import { useBurst, useFeed } from "./feed-hooks.ts";
 import { Frame } from "./frame.tsx";
 import { STORE, opening, remember } from "./last-workspace.ts";
-import { type WorkspaceSocket, useSocketFor } from "./workspace-socket.ts";
+import { type WorkspaceSocket, useOffers, useSocketFor } from "./workspace-socket.ts";
 
 /**
  * The signed-in person's workspaces, and the one `?workspace=` names, or else the last one opened
@@ -203,8 +204,10 @@ function Workspace({
   choose: (chat: ChatId) => void;
 }) {
   const status = useFeed(workspace.id, api, socket, log);
-  // Whether the server serves chats, known once the feed is welcomed.
+  // Whether the server serves chats, and search, known once the feed is welcomed.
   const { read } = useChatAccess(socket);
+  const searches = useOffers(socket, "workspace.search");
+  const palette = <Palette api={api} workspace={workspace.id} enabled={searches && !away} openChat={choose} />;
   if (!read) {
     return (
       <div className="workspace">
@@ -212,10 +215,16 @@ function Workspace({
         <section>
           <Heading title={workspace.name} status={status} />
         </section>
+        {palette}
       </div>
     );
   }
-  return <WorkspaceChats api={api} workspace={workspace} socket={socket} status={status} away={away} chosen={chosen} choose={choose} />;
+  return (
+    <>
+      <WorkspaceChats api={api} workspace={workspace} socket={socket} status={status} away={away} chosen={chosen} choose={choose} />
+      {palette}
+    </>
+  );
 }
 
 function Heading({ title, status }: { title: string; status: Status }) {

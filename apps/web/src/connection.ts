@@ -8,6 +8,7 @@ export type WebCapability =
   | "workspace.feed"
   | "workspace.chats"
   | "workspace.chat_commands"
+  | "workspace.search"
   | "diff.view"
   | "chat.send"
   | "chat.events"

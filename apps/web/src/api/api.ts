@@ -14,6 +14,8 @@ import type {
   PairConfirm,
   PairLookup,
   PairPending,
+  SearchAnswer,
+  SearchQuery,
   SignInStarted,
   WorkspaceCreate,
   WorkspaceId,
@@ -89,6 +91,11 @@ export class Api {
     return this.#ask("GET", `/api/workspaces/${workspace}/chats`, undefined, isChats);
   }
 
+  /** What in `workspace` holds every word of `query`'s text, best first. */
+  search(workspace: WorkspaceId, query: SearchQuery): Promise<Answer<SearchAnswer>> {
+    return this.#ask("POST", `/api/workspaces/${workspace}/search`, query, isSearchAnswer);
+  }
+
   /** The machines paired with the signed-in account, oldest first. */
   machines(): Promise<Answer<MachineList>> {
     return this.#ask("GET", "/api/machines", undefined, isMachineList);
@@ -160,6 +167,22 @@ const isChat = (value: unknown): value is ChatSummary =>
   isId((value as ChatSummary).id) &&
   Number.isSafeInteger((value as ChatSummary).updated_at);
 const isChats = listOf<ChatList>("chats", isChat);
+// A hit of a kind this build doesn't know only needs its kind; the palette leaves it out.
+const isHit = (value: unknown): boolean => {
+  if (!fields(value, ["kind"])) {
+    return false;
+  }
+  const hit = value as { kind: string; title?: unknown; snippet?: unknown; chat?: unknown };
+  if (!["task", "doc", "chat"].includes(hit.kind)) {
+    return true;
+  }
+  // A chat's id goes into the address, so it must be one.
+  return typeof hit.title === "string" && isSnippet(hit.snippet) && (hit.kind !== "chat" || (typeof hit.chat === "string" && isId(hit.chat)));
+};
+const isSnippet = (value: unknown): boolean =>
+  fields(value, ["text"]) &&
+  listOf("marks", (mark) => typeof mark === "object" && mark !== null && Number.isSafeInteger((mark as { start: unknown }).start) && Number.isSafeInteger((mark as { end: unknown }).end))(value);
+const isSearchAnswer = listOf<SearchAnswer>("hits", isHit);
 const isEmpty = (value: unknown): value is undefined => value === undefined;
 const isPending = (value: unknown): value is PairPending =>
   fields(value, ["pairing", "name", "os", "key"]) &&

@@ -737,3 +737,44 @@ test("a pull request's draft stays until the core opens it, and its answer comes
   assert.equal(await bar.getByLabel("Description").count(), 0);
 });
 
+
+test("⌘K searches the open workspace, and choosing a chat opens it", { timeout: 600_000 }, async (t) => {
+  const served = await serve();
+  t.after(() => served.close());
+  const { page } = served;
+  await listChats(page, () => ({
+    chats: [{ id: "c-1", title: "Merge the shopping lists", owner: "m-1", machine: "laptop", state: "open", updated_at: 1_800_000_000 }],
+  }));
+  const asked: string[] = [];
+  await page.route("**/api/workspaces/*/search", (route) => {
+    asked.push(JSON.parse(route.request().postData() ?? "{}").text);
+    const hits = [
+      { kind: "task", task: "t-1", title: "Buy milk", snippet: { text: "Buy milk", marks: [{ start: 4, end: 8 }] } },
+      { kind: "chat", chat: "c-1", title: "Merge the shopping lists", seq: 4, snippet: { text: "add the milk", marks: [{ start: 8, end: 12 }] } },
+    ];
+    return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ hits }) });
+  });
+  await serveFeed(page, { also: ["workspace.search"] });
+  await signIn(served);
+  await page.getByRole("button", { name: "Personal" }).click();
+  await page.getByRole("navigation", { name: "Chats" }).getByText("Merge the shopping lists").waitFor();
+
+  await page.keyboard.press("ControlOrMeta+k");
+  const search = page.getByRole("dialog", { name: "Search" });
+  await search.getByRole("combobox", { name: "Search" }).fill("milk");
+  const results = search.getByRole("option");
+  await results.nth(1).waitFor();
+  assert.deepEqual(await results.locator(".title").allInnerTexts(), ["Buy milk", "Merge the shopping lists"]);
+  assert.deepEqual(await search.locator("mark").allInnerTexts(), ["milk", "milk"]);
+  assert.equal(await results.nth(0).getAttribute("aria-disabled"), "true");
+  assert.deepEqual(asked, ["milk"]);
+  await page.keyboard.press("ArrowDown");
+  await page.keyboard.press("Enter");
+  await page.getByRole("heading", { name: "Merge the shopping lists" }).waitFor();
+  assert.match(page.url(), /&chat=c-1$/);
+  assert.equal(await search.count(), 0);
+  await page.keyboard.press("ControlOrMeta+k");
+  await search.waitFor();
+  await page.keyboard.press("Escape");
+  await search.waitFor({ state: "detached" });
+});
