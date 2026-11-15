@@ -12,6 +12,6 @@ export function withTask(list: TaskList | undefined, task: TaskRecord): TaskList
   const others = (list?.tasks ?? []).filter(({ id }) => id !== task.id);
   const kept = list?.tasks.find(({ id }) => id === task.id);
   const newest = kept !== undefined && kept.version > task.version ? kept : task;
-  const tasks = [...others, newest].sort((a, b) => (a.order < b.order ? -1 : a.order > b.order ? 1 : 0));
+  const tasks = [...others, newest].sort((a, b) => (a.order === b.order ? 0 : a.order < b.order ? -1 : 1));
   return { tasks };
 }

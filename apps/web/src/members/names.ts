@@ -1,5 +1,8 @@
-import { type Names, label } from "../chat/label.ts";
-import type { Author, MemberList } from "../protocol.ts";
+import { label } from "../chat/label.ts";
+import type { Author, MemberId, MemberList } from "../protocol.ts";
+
+/** Each member's name, by their id. */
+export type Names = ReadonlyMap<MemberId, string>;
 
 /** The names `list` gives its members, none before it is loaded. */
 export function namesOf(list: MemberList | undefined): Names {

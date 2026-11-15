@@ -1,15 +1,15 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 
 import type { Api } from "../api/api.ts";
 import { useAsk } from "../api/ask.ts";
 import { type Loading, useLoaded } from "../api/loaded.ts";
 import { Problem } from "../api/problem.tsx";
-import type { Names } from "../chat/label.ts";
-import { authorText } from "../members/names.ts";
+import { type Names, authorText } from "../members/names.ts";
 import type { ProposalChange, ProposalList, ProposalOutcome, ProposalRecord, ProposalVerdict, TaskRecord, WorkspaceId } from "../protocol.ts";
-import { useBurst } from "../shell/feed-hooks.ts";
+import { useReloadOn } from "../shell/feed-hooks.ts";
 import type { WorkspaceSocket } from "../shell/workspace-socket.ts";
-import { DiffLines } from "./diff-lines.tsx";
+import { DiffLines } from "../diff/diff-lines.tsx";
+import "./proposals.css";
 import { aboutText, conflictText, stateText, taskEditText } from "./proposals.ts";
 
 type Props = { api: Api; workspace: WorkspaceId; socket: WorkspaceSocket; names: Names };
@@ -18,19 +18,8 @@ type Props = { api: Api; workspace: WorkspaceId; socket: WorkspaceSocket; names:
 export function ProposalsPage({ api, workspace, socket, names }: Props) {
   const proposals = useLoaded(() => api.proposals(workspace), workspace);
   const tasks = useLoaded(() => api.tasks(workspace), workspace);
-  const reloadProposals = useBurst(() => void proposals.load());
-  const reloadTasks = useBurst(() => void tasks.load());
-  useEffect(
-    () =>
-      socket.subscribe((message) => {
-        if (message.type === "workspace" && message.change.kind === "proposal_changed") {
-          reloadProposals();
-        } else if (message.type === "workspace" && message.change.kind === "task_changed") {
-          reloadTasks();
-        }
-      }),
-    [socket],
-  );
+  useReloadOn(socket, ({ kind }) => kind === "proposal_changed", () => void proposals.load());
+  useReloadOn(socket, ({ kind }) => kind === "task_changed", () => void tasks.load());
   const list = proposals.value?.proposals;
   const open = list?.filter(({ state }) => state === "open") ?? [];
   const decided = list?.filter(({ state }) => state !== "open") ?? [];

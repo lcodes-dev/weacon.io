@@ -1,12 +1,12 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 
 import type { Api } from "../api/api.ts";
 import { useAsk } from "../api/ask.ts";
 import { useLoaded } from "../api/loaded.ts";
 import { Problem } from "../api/problem.tsx";
-import type { Names } from "../chat/label.ts";
-import type { DocId, WorkspaceId } from "../protocol.ts";
-import { useBurst } from "../shell/feed-hooks.ts";
+import type { Names } from "../members/names.ts";
+import type { DocContent, DocId, WorkspaceId } from "../protocol.ts";
+import { useReloadOn } from "../shell/feed-hooks.ts";
 import type { WorkspaceSocket } from "../shell/workspace-socket.ts";
 import { DocEditor } from "./doc-editor.tsx";
 import { DocView } from "./doc-view.tsx";
@@ -25,35 +25,27 @@ type Props = {
 /** The workspace's docs by title, kept fresh by its feed, or the one `doc` names. */
 export function DocsPage(props: Props) {
   const { doc, choose } = props;
-  return doc === undefined ? <DocList {...props} /> : <DocView {...props} doc={doc} back={() => choose(undefined)} />;
+  return doc === undefined ? <DocList {...props} /> : <DocView key={doc} {...props} doc={doc} back={() => choose(undefined)} />;
 }
 
 function DocList({ api, workspace, socket, choose }: Props) {
   const docs = useLoaded(() => api.docs(workspace), workspace);
-  const [making, setMaking] = useState(false);
+  const [making, setMaking] = useState<DocContent>();
   const creating = useAsk();
-  const reload = useBurst(() => void docs.load());
-  useEffect(
-    () =>
-      socket.subscribe((message) => {
-        if (message.type === "workspace" && message.change.kind === "doc_changed") {
-          reload();
-        }
-      }),
-    [socket],
-  );
+  useReloadOn(socket, ({ kind }) => kind === "doc_changed", () => void docs.load());
   const list = docs.value?.docs;
-  if (making) {
+  if (making !== undefined) {
     return (
       <div className="page docs">
         <DocEditor
-          initial={{ title: "", body: "" }}
+          content={making}
+          change={setMaking}
           busy={creating.busy}
           problem={creating.problem}
           save={(content) => void creating.ask(() => api.createDoc(workspace, content), (made) => choose(made.id))}
           cancel={() => {
             creating.clear();
-            setMaking(false);
+            setMaking(undefined);
           }}
         />
       </div>
@@ -76,7 +68,7 @@ function DocList({ api, workspace, socket, choose }: Props) {
       )}
       {docs.problem !== undefined && <Problem text={docs.problem} retry={() => void docs.load()} />}
       {list !== undefined && (
-        <button type="button" onClick={() => setMaking(true)}>
+        <button type="button" onClick={() => setMaking({ title: "", body: "" })}>
           New doc
         </button>
       )}

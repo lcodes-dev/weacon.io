@@ -216,12 +216,10 @@ const docPath = (workspace: WorkspaceId, doc: DocId) => `${base(workspace)}/docs
 // What a body that doesn't parse reads as, which no answer's shape fits.
 const NOT_JSON = Symbol("not JSON");
 
+const isObject = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null;
+
 function fields(value: unknown, keys: string[]): boolean {
-  return (
-    typeof value === "object" &&
-    value !== null &&
-    keys.every((key) => typeof (value as Record<string, unknown>)[key] === "string")
-  );
+  return isObject(value) && keys.every((key) => typeof value[key] === "string");
 }
 
 const isAccount = (value: unknown): value is AccountSignedIn => fields(value, ["account", "email"]);
@@ -232,7 +230,7 @@ const isWorkspace = (value: unknown): value is WorkspaceSummary =>
 /** A guard for an object whose `key` holds a list of items that `item` accepts. */
 function listOf<T>(key: string, item: (value: unknown) => boolean): (value: unknown) => value is T {
   return (value): value is T => {
-    const items = typeof value === "object" && value !== null ? (value as Record<string, unknown>)[key] : undefined;
+    const items = isObject(value) ? value[key] : undefined;
     return Array.isArray(items) && items.every(item);
   };
 }
@@ -254,7 +252,6 @@ const isMachine = (value: unknown): value is MachineSummary =>
   isMachineKey((value as MachineSummary).key) &&
   typeof (value as MachineSummary).paired_at === "number";
 const isMachineList = listOf<MachineList>("machines", isMachine);
-const isObject = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null;
 const versioned = (value: unknown, keys: string[]): boolean =>
   fields(value, ["id", ...keys]) && isId((value as { id: string }).id) && Number.isSafeInteger((value as { version: unknown }).version);
 const isMembers = listOf<MemberList>("members", (value) => fields(value, ["id", "name"]));
@@ -262,16 +259,10 @@ const isTask = (value: unknown): value is TaskRecord => versioned(value, ["title
 const isTasks = listOf<TaskList>("tasks", isTask);
 const isDocs = listOf<DocList>("docs", (value) => versioned(value, ["title"]));
 const isDoc = (value: unknown): value is DocRecord => versioned(value, []) && fields((value as DocRecord).content, ["title", "body"]);
-const isHistory = listOf<DocHistory>(
-  "revisions",
-  (value) => fields(value, ["accepted_by"]) && isObject((value as { author?: unknown }).author) && Number.isSafeInteger((value as { version?: unknown }).version),
-);
-const isProposals = listOf<ProposalList>(
-  "proposals",
-  (value) =>
-    fields(value, ["id", "state"]) &&
-    isObject((value as { about?: unknown }).about) &&
-    isObject((value as { author?: unknown }).author) &&
-    Number.isSafeInteger((value as { at?: unknown }).at),
-);
+const isRevision = (value: unknown): boolean =>
+  fields(value, ["accepted_by"]) && isObject(value) && isObject(value["author"]) && Number.isSafeInteger(value["version"]);
+const isHistory = listOf<DocHistory>("revisions", isRevision);
+const isProposal = (value: unknown): boolean =>
+  fields(value, ["id", "state"]) && isObject(value) && isObject(value["about"]) && isObject(value["author"]) && Number.isSafeInteger(value["at"]);
+const isProposals = listOf<ProposalList>("proposals", isProposal);
 const isOutcome = (value: unknown): value is ProposalOutcome => fields(value, ["outcome"]);

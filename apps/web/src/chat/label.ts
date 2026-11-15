@@ -1,12 +1,10 @@
+import type { Names } from "../members/names.ts";
 import type { AgentRef, MemberId } from "../protocol.ts";
 
 const AGENTS = new Map([
   ["claude", "Claude Code"],
   ["codex", "Codex"],
 ]);
-
-/** Each member's name, by their id. */
-export type Names = ReadonlyMap<MemberId, string>;
 
 const NO_NAMES: Names = new Map();
 
@@ -17,8 +15,10 @@ const NO_NAMES: Names = new Map();
  */
 export function label(agent: AgentRef | undefined, names: Names = NO_NAMES, owner?: MemberId): string {
   const vendor = AGENTS.get(agent?.kind ?? "") ?? "Agent";
-  const member = agent?.owner.kind === "member" ? agent.owner.member : owner;
-  const name = member === undefined || agent?.owner.kind === "shared" ? undefined : names.get(member);
-  const who = agent?.owner.kind === "shared" ? `Shared ${vendor}` : name === undefined ? vendor : `${name}'s ${vendor === "Agent" ? "agent" : vendor}`;
-  return agent?.machine === undefined ? who : `${who} · ${agent.machine}`;
+  const where = (who: string) => (agent?.machine === undefined ? who : `${who} · ${agent.machine}`);
+  if (agent?.owner.kind === "shared") {
+    return where(`Shared ${vendor}`);
+  }
+  const name = names.get((agent?.owner.kind === "member" ? agent.owner.member : owner) ?? "");
+  return where(name === undefined ? vendor : `${name}'s ${vendor === "Agent" ? "agent" : vendor}`);
 }

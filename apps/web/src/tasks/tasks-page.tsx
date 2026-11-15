@@ -1,11 +1,11 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 
 import type { Api } from "../api/api.ts";
 import { useAsk } from "../api/ask.ts";
 import { type Loading, useLoaded } from "../api/loaded.ts";
 import { Problem } from "../api/problem.tsx";
-import type { TaskList, TaskRecord, TaskStatus, WorkspaceId } from "../protocol.ts";
-import { useBurst } from "../shell/feed-hooks.ts";
+import type { Code, TaskList, TaskRecord, TaskStatus, WorkspaceId } from "../protocol.ts";
+import { useReloadOn } from "../shell/feed-hooks.ts";
 import type { WorkspaceSocket } from "../shell/workspace-socket.ts";
 import { STATUSES, withTask } from "./tasks.ts";
 import "./tasks.css";
@@ -13,16 +13,7 @@ import "./tasks.css";
 /** The workspace's tasks in their order, kept fresh by its feed, to add to, retitle and move along. */
 export function TasksPage({ api, workspace, socket }: { api: Api; workspace: WorkspaceId; socket: WorkspaceSocket }) {
   const tasks = useLoaded(() => api.tasks(workspace), workspace);
-  const reload = useBurst(() => void tasks.load());
-  useEffect(
-    () =>
-      socket.subscribe((message) => {
-        if (message.type === "workspace" && message.change.kind === "task_changed") {
-          reload();
-        }
-      }),
-    [socket],
-  );
+  useReloadOn(socket, ({ kind }) => kind === "task_changed", () => void tasks.load());
   const list = tasks.value?.tasks;
   return (
     <div className="page tasks">
@@ -52,12 +43,21 @@ function TaskRow({ api, workspace, task, tasks }: Row) {
   const [draft, setDraft] = useState<{ title: string; version?: number }>();
   const asking = useAsk();
   const saved = (record: TaskRecord) => tasks.change((list) => withTask(list, record));
-  const stale = (code: string) => {
+  const stale = (code: Code) => {
     if (code === "task.stale") {
       void tasks.load();
     }
   };
-  const status = (next: TaskStatus) => void asking.ask(() => api.changeTask(workspace, task.id, task.version, { kind: "status", status: next }), saved, stale);
+  // A status saved here moves an open title edit on with it, so the edit isn't stale by its own row.
+  const status = (next: TaskStatus) =>
+    void asking.ask(
+      () => api.changeTask(workspace, task.id, task.version, { kind: "status", status: next }),
+      (record) => {
+        setDraft((held) => (held?.version === task.version ? { ...held, version: record.version } : held));
+        saved(record);
+      },
+      stale,
+    );
   const save = (title: string, version: number) =>
     void asking.ask(
       () => api.changeTask(workspace, task.id, version, { kind: "title", title: title.trim() }),

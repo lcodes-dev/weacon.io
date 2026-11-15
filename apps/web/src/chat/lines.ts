@@ -1,7 +1,8 @@
 import type { RunId } from "../protocol.ts";
 import type { TranscriptRow } from "../transcript/transcript.ts";
 import type { Ask, Chat } from "./chat.ts";
-import { type Names, label } from "./label.ts";
+import type { Names } from "../members/names.ts";
+import { label } from "./label.ts";
 
 /** One line of a chat's transcript, under a key that names it as long as the chat is shown. */
 export type Line =

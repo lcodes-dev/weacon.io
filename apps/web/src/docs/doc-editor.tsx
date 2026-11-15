@@ -1,31 +1,25 @@
-import { type ReactNode, useState } from "react";
+import type { ReactNode } from "react";
 
 import type { DocContent } from "../protocol.ts";
 
-/** A doc's title and Markdown to edit from `initial`, with Save and Cancel; `children` show above the buttons. */
+/** A doc's title and Markdown, which `change` is told of, with Save and Cancel; `children` show above the buttons. */
 export function DocEditor({
-  initial,
+  content,
+  change,
   busy,
   problem,
   save,
   cancel,
-  edited,
   children,
 }: {
-  initial: DocContent;
+  content: DocContent;
+  change(content: DocContent): void;
   busy: boolean;
   problem: string | undefined;
   save(content: DocContent): void;
   cancel(): void;
-  /** Told of each change, so the page holding the edit keeps it. */
-  edited?: (content: DocContent) => void;
   children?: ReactNode;
 }) {
-  const [content, setContent] = useState(initial);
-  const change = (next: DocContent) => {
-    setContent(next);
-    edited?.(next);
-  };
   return (
     <form
       className="doc-editor"

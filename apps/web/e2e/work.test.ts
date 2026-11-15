@@ -6,7 +6,10 @@ import type { Page } from "playwright-core";
 import type { DocRecord, ProposalList, ProposalOutcome, ProposalRecord, TaskList, WorkspaceList } from "../src/protocol.ts";
 import { type Served, serve, signIn } from "./server.ts";
 
-/** Asks the server from the page, as another tab of the same person would, and gives its answer. */
+/**
+ * Asks the server from the page, as another tab of the same person would, and gives its answer;
+ * from the page, since the session's cookie is kept for the browser's secure origins only.
+ */
 async function ask<T>(page: Page, method: string, path: string, body?: unknown): Promise<T> {
   return page.evaluate(
     async ({ method, path, body }) => {
@@ -101,7 +104,21 @@ test("a member writes a doc, reads who revised it, and keeps their edit when som
   await page.getByRole("list", { name: "Docs" }).getByRole("button", { name: "Recipes" }).click();
   await page.getByText("Revision 3 by ada").waitFor();
   await page.goBack();
-  await page.getByRole("list", { name: "Docs" }).waitFor();
+  const docs = page.getByRole("list", { name: "Docs" });
+
+  // Moving from one doc straight to another leaves the first one's edit behind.
+  const chores = await ask<DocRecord>(page, "POST", `${base}/docs`, { title: "Chores", body: "Sweep.\n" });
+  await docs.getByRole("button", { name: "Chores" }).click();
+  await page.getByRole("heading", { name: "Chores" }).waitFor();
+  await page.getByRole("button", { name: "All docs" }).click();
+  await docs.getByRole("button", { name: "Recipes" }).click();
+  await page.getByRole("button", { name: "Edit" }).click();
+  await page.getByLabel("Text", { exact: true }).fill("Not for the chores.");
+  await page.evaluate(() => window.history.go(-2));
+  await page.getByRole("heading", { name: "Chores" }).waitFor();
+  await page.getByRole("button", { name: "Edit" }).waitFor();
+  assert.equal(await page.getByLabel("Text", { exact: true }).count(), 0);
+  assert.equal((await ask<DocRecord>(page, "GET", `${base}/docs/${chores.id}`)).content.body, "Sweep.\n");
 });
 
 test("an agent's proposals show with their changes and who proposed them, and any member accepts or rejects them", { timeout: 600_000 }, async (t) => {

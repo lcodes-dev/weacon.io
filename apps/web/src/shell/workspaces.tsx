@@ -2,22 +2,22 @@ import { type ReactNode, type RefObject, useEffect, useRef, useState } from "rea
 
 import type { Api } from "../api/api.ts";
 import { useAsk } from "../api/ask.ts";
-import { type Loading, useLoaded } from "../api/loaded.ts";
+import { type Loading, answered, useLoaded } from "../api/loaded.ts";
 import { Problem } from "../api/problem.tsx";
 import { workspaceOf } from "../chat-ref.ts";
 import { useChatAccess } from "../chat/access.ts";
 import { ChatScreen } from "../chat/chat-screen.tsx";
 import { type Status, statusText } from "../connection.ts";
 import type { Log } from "../log.ts";
-import type { Names } from "../chat/label.ts";
+import type { Names } from "../members/names.ts";
 import { DocsPage } from "../docs/docs-page.tsx";
 import { useNames } from "../members/use-names.ts";
-import type { DocId, WorkspaceId, WorkspaceList, WorkspaceSummary } from "../protocol.ts";
+import type { WorkspaceId, WorkspaceList, WorkspaceSummary } from "../protocol.ts";
 import { ProposalsPage } from "../proposals/proposals-page.tsx";
 import { TasksPage } from "../tasks/tasks-page.tsx";
 import { owns } from "./chat-list.ts";
 import { ChatsNav } from "./chats.tsx";
-import { useBurst, useFeed } from "./feed-hooks.ts";
+import { useFeed, useReloadOn } from "./feed-hooks.ts";
 import { Frame } from "./frame.tsx";
 import { STORE, opening, remember } from "./last-workspace.ts";
 import { type Place, placeOf, searchOf } from "./place.ts";
@@ -209,11 +209,6 @@ function Workspace({ log, ...open }: Open & { log: Log }) {
   if (place.view === "chats") {
     return <WorkspaceChats {...open} place={place} status={status} read={read} names={names} />;
   }
-  const page = {
-    tasks: () => <TasksPage api={api} workspace={workspace.id} socket={socket} />,
-    docs: (doc: DocId | undefined) => <DocsPage api={api} workspace={workspace.id} socket={socket} names={names} doc={doc} choose={(chosen) => open.go(chosen === undefined ? { view: "docs" } : { view: "docs", doc: chosen })} />,
-    proposals: () => <ProposalsPage api={api} workspace={workspace.id} socket={socket} names={names} />,
-  };
   return (
     <div className="workspace">
       <div className="side">
@@ -221,7 +216,13 @@ function Workspace({ log, ...open }: Open & { log: Log }) {
       </div>
       <section>
         <Heading title={TITLES[place.view]} status={status} />
-        {place.view === "docs" ? page.docs(place.doc) : page[place.view]()}
+        {place.view === "tasks" ? (
+          <TasksPage api={api} workspace={workspace.id} socket={socket} />
+        ) : place.view === "docs" ? (
+          <DocsPage api={api} workspace={workspace.id} socket={socket} names={names} doc={place.doc} choose={(doc) => open.go(doc === undefined ? { view: "docs" } : { view: "docs", doc })} />
+        ) : (
+          <ProposalsPage api={api} workspace={workspace.id} socket={socket} names={names} />
+        )}
       </section>
     </div>
   );
@@ -230,7 +231,7 @@ function Workspace({ log, ...open }: Open & { log: Log }) {
 const TITLES = { chats: "Chats", tasks: "Tasks", docs: "Docs", proposals: "Proposals" } as const;
 
 // The workspace's sections the server serves, besides its chats; none when it serves no other.
-function Sections({ socket, place, go }: Open) {
+function Sections({ socket, place, go }: Pick<Open, "socket" | "place" | "go">) {
   const served = {
     tasks: useOffers(socket, "workspace.tasks"),
     docs: useOffers(socket, "workspace.docs"),
@@ -275,24 +276,14 @@ function WorkspaceChats({
   read,
   names,
 }: Open & { place: Extract<Place, { view: "chats" }>; status: Status; read: boolean; names: Names }) {
-  const none = { ok: true as const, value: { chats: [] } };
-  const chats = useLoaded(() => (read ? api.chats(workspace.id) : Promise.resolve(none)), `${workspace.id} ${read}`);
-  const reload = useBurst(() => void chats.load());
-  useEffect(
-    () =>
-      socket.subscribe((message) => {
-        if (read && message.type === "workspace" && message.change.kind === "chat_changed") {
-          reload();
-        }
-      }),
-    [socket, read],
-  );
+  const chats = useLoaded(() => (read ? api.chats(workspace.id) : answered({ chats: [] })), `${workspace.id} ${read}`);
+  useReloadOn(socket, ({ kind }) => read && kind === "chat_changed", () => void chats.load(), [read]);
   const open = chats.value?.chats.find(({ id }) => id === place.chat);
   const listed = read ? chats : status.state === "connecting" ? "connecting" : "none";
   return (
     <div className="workspace">
       <div className="side">
-        <Sections api={api} workspace={workspace} socket={socket} away={away} place={place} go={go} />
+        <Sections socket={socket} place={place} go={go} />
         <ChatsNav loaded={listed} chosen={place.chat} choose={(chat) => go({ view: "chats", chat })} />
       </div>
       <section>

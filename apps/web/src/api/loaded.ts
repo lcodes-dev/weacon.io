@@ -86,6 +86,11 @@ export class Loader<T> {
   }
 }
 
+/** An answer of `value` without asking, as for a thing the server doesn't serve. */
+export function answered<T>(value: T): Promise<Answer<T>> {
+  return Promise.resolve({ ok: true, value });
+}
+
 /** A fetched thing as a page shows it, and how to fetch it again or change it here. */
 export type Loading<T> = Loaded<T> & Pick<Loader<T>, "change"> & { loading: boolean; load(): Promise<void> };
 

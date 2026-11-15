@@ -1,4 +1,5 @@
-import type { Names } from "../chat/label.ts";
+import type { Names } from "../members/names.ts";
+import { STATUSES } from "../tasks/tasks.ts";
 import type { ProposalOutcome, ProposalRecord, TaskEditBody, TaskRecord } from "../protocol.ts";
 
 /** What a proposal is about, in a line: "Edit of the doc “Plan”", or "New task “Ship it”". */
@@ -27,7 +28,7 @@ export function taskEditText(edit: TaskEditBody, tasks: readonly TaskRecord[]): 
     case "title":
       return `Retitle it “${edit.title}”`;
     case "status":
-      return `Mark it ${edit.status === "todo" ? "to do" : edit.status === "in_progress" ? "in progress" : "done"}`;
+      return `Mark it ${(STATUSES.find(([status]) => status === edit.status)?.[1] ?? "changed").toLowerCase()}`;
     case "move": {
       const before = tasks.find((task) => task.id === edit.before)?.title;
       return edit.before === undefined ? "Move it last" : before === undefined ? "Move it" : `Move it before “${before}”`;

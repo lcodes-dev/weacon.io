@@ -75,15 +75,28 @@ pub(crate) async fn read(member: Member) -> Response {
 }
 
 /// `GET /api/workspaces/{workspace}/members`: the workspace's members, past ones too, each named
-/// by their address's part before the `@`, since accounts hold no other name.
+/// by their address's part before the `@`, since accounts hold no other name, or by their whole
+/// address where another member's has the same part, so no one can pass as another.
 pub(crate) async fn members(member: Member) -> Response {
     match member.workspace.members().await {
         Ok(rows) => Json(MemberList {
             members: rows
-                .into_iter()
-                .map(|row| MemberSummary {
-                    name: row.email.local().to_owned(),
-                    id: row.id,
+                .iter()
+                .map(|row| {
+                    let local = row.email.local();
+                    let shared = rows
+                        .iter()
+                        .filter(|other| other.email.local() == local)
+                        .count();
+                    let name = if shared > 1 {
+                        row.email.as_str()
+                    } else {
+                        local
+                    };
+                    MemberSummary {
+                        id: row.id.clone(),
+                        name: name.to_owned(),
+                    }
                 })
                 .collect(),
         })
@@ -203,6 +216,13 @@ mod tests {
         w1.add_member(&member_id("m3"), &fresh_account(), &email("bo@example.com"))
             .await
             .unwrap();
+        w1.add_member(
+            &member_id("m5"),
+            &fresh_account(),
+            &email("bo@other.example"),
+        )
+        .await
+        .unwrap();
         w2.add_member(&member_id("m4"), &fresh_account(), &email("cy@example.com"))
             .await
             .unwrap();
@@ -227,7 +247,11 @@ mod tests {
         assert_eq!(listed, "http/1.1 200 ok");
         assert_eq!(
             members,
-            json!({ "members": [{ "id": "m1", "name": "ada" }, { "id": "m3", "name": "bo" }] })
+            json!({ "members": [
+                { "id": "m1", "name": "ada" },
+                { "id": "m3", "name": "bo@example.com" },
+                { "id": "m5", "name": "bo@other.example" },
+            ] })
         );
         assert_eq!(refused, "http/1.1 401 unauthorized");
         assert_eq!(other["code"], "sign_in.required");

@@ -1,5 +1,4 @@
-import type { Names } from "../chat/label.ts";
-import { authorText } from "../members/names.ts";
+import { type Names, authorText } from "../members/names.ts";
 import type { DocRevision } from "../protocol.ts";
 
 /** Who made a doc's `revision`, and who accepted it when that was someone else, as its page says. */

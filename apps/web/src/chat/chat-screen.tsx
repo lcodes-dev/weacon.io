@@ -11,7 +11,7 @@ import type { WorkspaceSocket } from "../shell/workspace-socket.ts";
 import { useChatAccess } from "./access.ts";
 import { working } from "./chat.ts";
 import { useChatCommands, useLiveChat } from "./chat-hooks.ts";
-import type { Names } from "./label.ts";
+import type { Names } from "../members/names.ts";
 import { lines } from "./lines.ts";
 import { StopButton } from "./stop-button.tsx";
 import { TranscriptView } from "./transcript-view.tsx";
