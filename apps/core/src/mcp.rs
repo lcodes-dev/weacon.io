@@ -29,7 +29,7 @@ use rmcp::{ErrorData, RoleServer, ServerHandler};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::task::{JoinHandle, JoinSet};
 use weacon_observability::{Fault, Field, Logger};
-use weacon_protocol::{MapAnswer, MapQuery, MapQueryKind, McpCall, code};
+use weacon_protocol::{McpCall, code};
 
 use deadline::Deadline;
 use grants::{Grant, Grants, Revoke};
@@ -62,7 +62,6 @@ const MAX_BODY: usize = 64 * 1024;
 pub(crate) struct Mcp {
     pub(crate) url: String,
     pub(crate) grants: Grants,
-    maps: Maps,
 }
 
 type Body = BoxBody<Bytes, Infallible>;
@@ -87,7 +86,7 @@ fn listen(app: &App, log: &Logger, maps: Maps, limits: Limits) -> Result<(Mcp, S
     let (watched, watch_log, watched_grants) = (maps.clone(), log.clone(), grants.clone());
     let handler = Handler {
         version: app.version.clone(),
-        maps: maps.clone(),
+        maps,
         log,
     };
     handler
@@ -102,50 +101,8 @@ fn listen(app: &App, log: &Logger, maps: Maps, limits: Limits) -> Result<(Mcp, S
     let mcp = Mcp {
         url: format!("http://{address}/mcp"),
         grants,
-        maps,
     };
     Ok((mcp, Server(server)))
-}
-
-impl Mcp {
-    /// The answer to a hook's `query`: the stored map of its folder, in the workspace of the
-    /// live run whose token it holds; none for any other token or folder, or a map not read in
-    /// time.
-    pub(crate) async fn hook_map(&self, query: MapQuery, log: &Logger) -> MapAnswer {
-        let MapQuery {
-            token,
-            folder,
-            query: MapQueryKind::Map(args),
-        } = query
-        else {
-            return MapAnswer { text: None };
-        };
-        let Some(run) = self.grants.find(token.expose()) else {
-            return MapAnswer { text: None };
-        };
-        let Ok(permit) = Arc::clone(&run.calls).try_acquire_owned() else {
-            return MapAnswer { text: None };
-        };
-        let log = log.child(&[
-            ("workspace_id", run.workspace.as_str().into()),
-            ("run_id", run.run.as_str().into()),
-        ]);
-        let (call, grant) = (
-            McpCall::Map(args),
-            Grant::new(run.workspace.clone(), run.run.clone(), folder.into()),
-        );
-        let stored = self.maps.stored(&call, &grant, permit, &log);
-        // A repository without code adds nothing to a session, as `map::map_or_empty` does.
-        let text = stored.await.ok().flatten().map(|text| {
-            if text == tools::NO_MAP {
-                String::new()
-            } else {
-                text
-            }
-        });
-        log.info("hook map answered", &[("stored", text.is_some().into())]);
-        MapAnswer { text }
-    }
 }
 
 /// The server's task, which stops when this is dropped.
@@ -481,9 +438,9 @@ mod tests {
     async fn each_token_reads_only_its_own_runs_registered_repository() {
         let dir = TempDir::new().unwrap();
         let (log, _records) = recording_logger();
-        let setup = maps_support::setup(&dir).await;
-        let one = maps_support::workspace("one");
-        let repo = maps_support::crate_repo(&dir, "one");
+        let setup = maps::test_support::setup(&dir).await;
+        let one = maps::test_support::workspace("one");
+        let repo = maps::test_support::crate_repo(&dir, "one");
         setup.register(&one, "one", &repo);
         let build = weacon_appkit::build(&VERSION);
         let (mcp, _server) = start(&build, &log, setup.maps.clone()).unwrap();
@@ -508,7 +465,11 @@ mod tests {
              - fn one::run  src/lib.rs:1\nCrates:\n- one  .  1 items\n"
         );
         assert_eq!(answer_text(&two), tools::NO_MAP);
-        assert!(!setup.stored(&maps_support::workspace("two"), &repo).await);
+        assert!(
+            !setup
+                .stored(&maps::test_support::workspace("two"), &repo)
+                .await
+        );
     }
 
     #[tokio::test]
@@ -804,7 +765,6 @@ mod tests {
         let mcp = Mcp {
             url: "http://127.0.0.1:9/mcp".into(),
             grants: Grants::default(),
-            maps: Maps::off(),
         };
         let launch = |agent| Launch {
             agent,

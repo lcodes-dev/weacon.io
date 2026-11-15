@@ -15,10 +15,10 @@ use tokio::sync::{OnceCell, OwnedSemaphorePermit, Semaphore};
 use tokio::time::MissedTickBehavior;
 use weacon_codemap::{Index, assemble};
 use weacon_observability::{Fault, Field, Logger};
-use weacon_protocol::{McpCall, RepoId, WorkspaceId, code};
+use weacon_protocol::{MapQuery, MapQueryKind, McpCall, RepoId, WorkspaceId, code};
 
 use super::grants::{Grant, Grants};
-use super::tools::{CHURN_COMMITS, NO_MAP, answer_from, budget, found};
+use super::tools::{CHURN_COMMITS, NO_MAP, answer_from, budget, found, or_empty};
 use crate::app::WarnOnce;
 use crate::chats::Places;
 use crate::codemap::{Repo, Watch, locate, off_runtime, repo_map, watch, worktree_index};
@@ -57,8 +57,8 @@ struct Stores {
 }
 
 /// A read of a map that didn't end within its limit.
-#[derive(Debug, PartialEq, Eq)]
-pub(crate) struct TooSlow;
+#[derive(Debug)]
+struct TooSlow;
 
 /// A live run's worktree, in a repository its workspace registered, by its canonical paths.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -95,26 +95,64 @@ impl Maps {
         permit: OwnedSemaphorePermit,
         log: &Logger,
     ) -> String {
-        match self.stored(call, grant, permit, log).await {
+        let (workspace, folder) = (grant.workspace.clone(), grant.folder.clone());
+        match self.stored(call, workspace, folder, permit, log).await {
             Ok(Some(answer)) => answer,
             Ok(None) => NO_MAP.to_owned(),
             Err(TooSlow) => TOO_SLOW.to_owned(),
         }
     }
 
+    /// The text a hook's `query` gets: the stored map of its folder, in the workspace of the
+    /// live run in `grants` whose token it holds; none for any other token or folder, or a map
+    /// not read in time.
+    pub(crate) async fn for_hook(
+        &self,
+        grants: &Grants,
+        query: MapQuery,
+        log: &Logger,
+    ) -> Option<String> {
+        let MapQueryKind::Map(args) = query.query else {
+            return None;
+        };
+        let run = grants.find(query.token.expose())?;
+        let permit = Arc::clone(&run.calls).try_acquire_owned().ok()?;
+        let log = log.child(&[
+            ("workspace_id", run.workspace.as_str().into()),
+            ("run_id", run.run.as_str().into()),
+        ]);
+        let folder = PathBuf::from(query.folder);
+        let git = self.stores(&log).await?.git;
+        let (own, asked) = (run.folder.clone(), folder.clone());
+        let worktree = move |folder: &Path| locate(&git, folder).ok().map(|(_, worktree)| worktree);
+        // A token reads only its own run's worktree, as its MCP calls do.
+        let same =
+            off_runtime(
+                move || Ok(worktree(&own).is_some_and(|own| worktree(&asked) == Some(own))),
+            );
+        if !same.await.ok()? {
+            return None;
+        }
+        let call = McpCall::Map(args);
+        let stored = self.stored(&call, run.workspace.clone(), folder, permit, &log);
+        let text = stored.await.ok().flatten().map(or_empty);
+        log.info("hook map answered", &[("stored", text.is_some().into())]);
+        text
+    }
+
     /// [`Self::answer`]'s answer when there is a map; none when there isn't, and [`TooSlow`]
     /// once the limit passes.
-    pub(crate) async fn stored(
+    async fn stored(
         &self,
         call: &McpCall,
-        grant: &Grant,
+        workspace: WorkspaceId,
+        folder: PathBuf,
         permit: OwnedSemaphorePermit,
         log: &Logger,
     ) -> Result<Option<String>, TooSlow> {
         let Some(stores) = self.stores(log).await else {
             return Ok(None);
         };
-        let (workspace, folder) = (grant.workspace.clone(), grant.folder.clone());
         let (call, reading_log) = (call.clone(), log.clone());
         // Its own task, so a read the limit cuts off still finishes and is stored for the next.
         let reading = tokio::spawn(async move {

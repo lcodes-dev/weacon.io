@@ -38,9 +38,7 @@ pub(crate) async fn setup(dir: &Path) -> Setup {
 impl Setup {
     /// Registers `repo` for `workspace` as `id`.
     pub(crate) fn register(&self, workspace: &WorkspaceId, id: &str, repo: &Path) {
-        let id = RepoId::try_from(id.to_owned()).unwrap();
-        let repos = Stores::new(&self.workspaces, workspace).repos();
-        repos.add(&self.git, id, repo).unwrap();
+        register(&self.workspaces, &self.git, workspace, id, repo);
     }
 
     /// Whether `workspace` holds a stored base for `repo`.
@@ -60,6 +58,19 @@ pub(crate) fn crate_repo(dir: &Path, name: &str) -> PathBuf {
     fixture(dir, &main, &["add", "Cargo.toml", "src"]);
     fixture(dir, &main, &["commit", "--quiet", "-m", "Add a crate"]);
     main.canonicalize().unwrap()
+}
+
+/// Registers `repo` for `workspace` as `id` in `workspaces`.
+pub(crate) fn register(
+    workspaces: &Workspaces,
+    git: &Git,
+    workspace: &WorkspaceId,
+    id: &str,
+    repo: &Path,
+) {
+    let id = RepoId::try_from(id.to_owned()).unwrap();
+    let repos = Stores::new(workspaces, workspace).repos();
+    repos.add(git, id, repo).unwrap();
 }
 
 pub(crate) fn workspace(id: &str) -> WorkspaceId {

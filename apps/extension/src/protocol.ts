@@ -840,7 +840,7 @@ export type MachineSummary = {
  */
 export type MapAnswer = {
   /**
-   * None when the core holds no map of the folder for that run's workspace.
+   * None when the core has no map to give for that token and folder.
    */
   text?: string;
 };

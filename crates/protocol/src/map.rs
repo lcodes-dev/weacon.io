@@ -27,7 +27,7 @@ pub enum MapQueryKind {
 /// The core's answer to a [`MapQuery`], under its envelope id.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct MapAnswer {
-    /// None when the core holds no map of the folder for that run's workspace.
+    /// None when the core has no map to give for that token and folder.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(with = "String")]
     pub text: Option<String>,

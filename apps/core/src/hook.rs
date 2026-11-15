@@ -22,6 +22,8 @@ use crate::map;
 /// The most a session-start hook adds to an agent's context.
 const SESSION_START: MapArgs = MapArgs { budget: Some(4000) };
 const LIMIT: Duration = Duration::from_secs(5);
+/// The core's share of [`LIMIT`], so a map it is still reading leaves time to index here.
+const CORE_LIMIT: Duration = Duration::from_secs(2);
 const MAP_READ: Capability = Capability::new(code!("map.read"));
 
 /// How a hook finds its folder's map: from its run's core when it has one, else by `index`,
@@ -32,11 +34,13 @@ struct Hook {
     limit: Duration,
 }
 
-/// The core that started the hook's run, and that run's token for its MCP.
+/// The core that started the hook's run, that run's token for its MCP, and how long to wait
+/// for its answer.
 struct Core {
     socket: PathBuf,
     token: Secret,
     me: Build,
+    limit: Duration,
 }
 
 /// Prints what `command`'s hook adds for the current folder, or nothing.
@@ -50,6 +54,7 @@ pub(crate) fn run(app: &App, command: HookCommand, out: &mut impl Write) -> Endi
             socket: socket_path(state_dir),
             token: token.into(),
             me: build(&app.version),
+            limit: CORE_LIMIT,
         });
     let hook = Hook {
         core,
@@ -97,8 +102,14 @@ impl Hook {
     /// no map of the folder.
     async fn stored(&self, folder: &Path, log: &Logger) -> Option<String> {
         let core = self.core.as_ref()?;
-        core.stored(folder.to_str()?)
-            .await
+        let asked = tokio::time::timeout(core.limit, core.stored(folder.to_str()?)).await;
+        asked
+            .unwrap_or_else(|_| {
+                Err(Fault::new(
+                    code!("hook.core_too_slow"),
+                    "The core didn't answer in time",
+                ))
+            })
             .inspect_err(|fault| log.info("hook core skipped", &[("err", Field::error(fault))]))
             .ok()
             .flatten()
@@ -160,21 +171,20 @@ mod tests {
     use std::path::Path;
 
     use weacon_agents::SpawnPolicy;
-    use weacon_protocol::{RepoId, RunId, WorkspaceId};
+    use weacon_protocol::{RunId, WorkspaceId};
     use weacon_testing::{TempDir, recording_logger};
 
     use super::*;
     use crate::chats::Places;
     use crate::daemon::Daemon;
-    use crate::git::state::Stores;
     use crate::git::{fixture, git, repo};
     use crate::mcp::grants::{Grant, Revoke};
-    use crate::mcp::maps_support::workspace;
+    use crate::mcp::maps_support::{self, workspace};
     use crate::test_support::{VERSION, app, messages};
     use crate::workspaces::Workspaces;
 
     /// Long enough that no test meets it.
-    const NEVER: Duration = Duration::from_secs(3600);
+    const NEVER: Duration = Duration::from_hours(1);
 
     fn repository(dir: &Path, item: &str) {
         fs::create_dir_all(dir.join("src")).unwrap();
@@ -207,6 +217,7 @@ mod tests {
             socket,
             token: token.into(),
             me: build(&VERSION),
+            limit: NEVER,
         };
         Hook {
             core: Some(core),
@@ -224,6 +235,7 @@ mod tests {
     struct Running {
         socket: PathBuf,
         mcp: crate::mcp::Mcp,
+        records: crate::test_support::Records,
         stop: tokio::sync::oneshot::Sender<()>,
         served: std::thread::JoinHandle<()>,
     }
@@ -234,12 +246,12 @@ mod tests {
                 path: std::env::var_os("PATH"),
                 ..Places::default()
             };
+            let (log, records) = recording_logger();
             let (started, mcp) = std::sync::mpsc::channel();
             let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
             let dir = state.to_owned();
             let served = std::thread::spawn(move || {
                 runtime().unwrap().block_on(async move {
-                    let (log, _) = recording_logger();
                     let daemon =
                         Daemon::start(&dir, build(&VERSION), SpawnPolicy::default(), places, log);
                     let daemon = daemon.unwrap();
@@ -250,14 +262,22 @@ mod tests {
             Self {
                 socket: socket_path(state),
                 mcp: mcp.recv().unwrap(),
+                records,
                 stop,
                 served,
             }
         }
 
-        fn stop(self) {
+        // The core's own log, which must hold neither `token` nor any folder's code.
+        fn stop(self, token: &str) {
             self.stop.send(()).unwrap();
             self.served.join().unwrap();
+            let logged = format!("{:?}", self.records.lock().unwrap());
+            assert!(logged.contains("hook map answered"), "{logged}");
+            assert!(
+                !logged.contains(token) && !logged.contains("item_"),
+                "{logged}"
+            );
         }
 
         fn token(&self, workspace: &WorkspaceId, folder: &Path) -> (String, Revoke) {
@@ -269,12 +289,11 @@ mod tests {
     }
 
     // Registers `repo` for `workspace` in `dir/state`, made private as the core requires.
-    fn register(dir: &Path, workspace: &WorkspaceId, repo: &Path) -> PathBuf {
+    fn register(dir: &Path, workspace: &WorkspaceId, id: &str, repo: &Path) -> PathBuf {
         let state = dir.join("state");
         crate::platform::private_dir(&state).unwrap();
-        let repos = Stores::new(&Workspaces::new(&state, None), workspace).repos();
-        let id = RepoId::try_from("site".to_owned()).unwrap();
-        repos.add(&git(dir), id, repo).unwrap();
+        let workspaces = Workspaces::new(&state, None);
+        maps_support::register(&workspaces, &git(dir), workspace, id, repo);
         state
     }
 
@@ -287,26 +306,28 @@ mod tests {
         fixture(&dir, &main, &["add", "."]);
         fixture(&dir, &main, &["commit", "--quiet", "-m", "Add crates"]);
         let main = main.canonicalize().unwrap();
-        let core = Running::start(&register(&dir, &one, &main));
+        let other = repo(&dir.join("other")).canonicalize().unwrap();
+        register(&dir, &one, "other", &other);
+        let core = Running::start(&register(&dir, &one, "site", &main));
         let (token, revoke) = core.token(&one, &main);
+        // Workspace two never registered `main`, though its run's folder is there.
+        let (two, _two_revoke) = core.token(&workspace("two"), &main);
         let (log, _) = recording_logger();
-        let start = |hook: &Hook, folder: &Path| hook.session_start(folder.to_owned(), &log);
+        let start = |token: &str, folder: &Path| {
+            let hook = asking(core.socket.clone(), token);
+            hook.session_start(folder.to_owned(), &log).unwrap()
+        };
 
-        let text = start(
-            &asking(core.socket.clone(), &token),
-            &main.join("crate_number_3"),
-        );
-        sized(&text.unwrap());
+        sized(&start(&token, &main.join("crate_number_3")));
         let outside = dir.join("outside");
         fs::create_dir(&outside).unwrap();
-        let outside = start(&asking(core.socket.clone(), &token), &outside);
-        assert_eq!(outside.unwrap(), "indexed\n");
-        let stranger = start(&asking(core.socket.clone(), "other"), &main);
-        assert_eq!(stranger.unwrap(), "indexed\n");
+        assert_eq!(start(&token, &outside), "indexed\n");
+        assert_eq!(start(&token, &other), "indexed\n");
+        assert_eq!(start(&two, &main), "indexed\n");
+        assert_eq!(start("other", &main), "indexed\n");
         drop(revoke);
-        let ended = start(&asking(core.socket.clone(), &token), &main);
-        assert_eq!(ended.unwrap(), "indexed\n");
-        core.stop();
+        assert_eq!(start(&token, &main), "indexed\n");
+        core.stop(&token);
     }
 
     #[test]
@@ -314,14 +335,14 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let one = workspace("one");
         let main = repo(&dir).canonicalize().unwrap();
-        let core = Running::start(&register(&dir, &one, &main));
+        let core = Running::start(&register(&dir, &one, "site", &main));
         let (token, _revoke) = core.token(&one, &main);
         let (log, _) = recording_logger();
 
         let text = asking(core.socket.clone(), &token).session_start(main, &log);
 
         assert_eq!(text.unwrap(), "");
-        core.stop();
+        core.stop(&token);
     }
 
     #[test]
@@ -336,6 +357,27 @@ mod tests {
 
         sized(&text.unwrap());
         assert_eq!(unanswered.unwrap(), "indexed\n");
+        assert_eq!(messages(&records), ["hook core skipped"]);
+    }
+
+    #[test]
+    fn a_core_that_doesnt_answer_in_its_share_of_the_time_leaves_the_rest_to_indexing() {
+        let dir = TempDir::new().unwrap();
+        let socket = dir.join("weacon.sock");
+        let runtime = runtime().unwrap();
+        let _entered = runtime.enter();
+        let _stalled = crate::platform::bind(&socket).unwrap();
+        let (log, records) = recording_logger();
+        let mut hook = asking(socket, "t");
+        // Shorter than the client's own wait for a welcome, which a stalled core never sends.
+        hook.limit = Duration::from_secs(3);
+        if let Some(core) = hook.core.as_mut() {
+            core.limit = Duration::ZERO;
+        }
+
+        let text = hook.session_start(dir.to_path_buf(), &log);
+
+        assert_eq!(text.unwrap(), "indexed\n");
         assert_eq!(messages(&records), ["hook core skipped"]);
     }
 
