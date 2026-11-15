@@ -318,27 +318,8 @@ impl Stores {
         };
         seen.insert(key.clone(), checked);
         drop(seen);
-        let (workspace, log, moves) = (
-            watched.workspace.clone(),
-            log.clone(),
-            Arc::clone(&self.moves),
-        );
-        tokio::spawn(async move {
-            let (was, commit) = (moved.was.clone(), moved.commit.clone());
-            let Err(fault) = check_move(&proposals, &workspace, moved).await.map(|docs| {
-                log.info("anchors checked", &[("docs", docs.into())]);
-            }) else {
-                return;
-            };
-            log.warn("anchors check failed", &[("err", Field::error(&fault))]);
-            let mut seen = moves.lock().unwrap_or_else(PoisonError::into_inner);
-            if let Some(checked) = seen
-                .get_mut(&key)
-                .filter(|checked| checked.commit == commit)
-            {
-                checked.failed = Some(was);
-            }
-        });
+        let checks = Arc::clone(&self.moves);
+        tokio::spawn(check_move(proposals, key, moved, checks, log.clone()));
     }
 
     // Only the map is guarded, so a poisoned lock still holds a usable one.
@@ -347,15 +328,33 @@ impl Stores {
     }
 }
 
-/// Proposes what `moved` did to `workspace`'s docs, with the indexes assembled off the runtime.
+/// Proposes what `moved` did to the docs of the workspace in `key`, and when that fails keeps
+/// the base it started from in `checks`, for the next move.
 async fn check_move(
-    proposals: &Proposals,
-    workspace: &WorkspaceId,
+    proposals: Proposals,
+    key: (WorkspaceId, PathBuf),
     moved: Move,
-) -> Result<usize, Fault> {
+    checks: Arc<Mutex<HashMap<(WorkspaceId, PathBuf), Checked>>>,
+    log: Logger,
+) {
+    let (was, commit) = (moved.was.clone(), moved.commit.clone());
     let assembled = move || Ok((assemble(&moved.was), assemble(&moved.now), moved.commit));
-    let (was, now, commit) = off_runtime(assembled).await?;
-    proposals::moved(proposals, workspace, &was, &now, &commit).await
+    let checked = async {
+        let (was, now, commit) = off_runtime(assembled).await?;
+        proposals::moved(&proposals, &key.0, &was, &now, &commit).await
+    };
+    let fault = match checked.await {
+        Ok(docs) => return log.info("anchors checked", &[("docs", docs.into())]),
+        Err(fault) => fault,
+    };
+    log.warn("anchors check failed", &[("err", Field::error(&fault))]);
+    let mut seen = checks.lock().unwrap_or_else(PoisonError::into_inner);
+    if let Some(checked) = seen
+        .get_mut(&key)
+        .filter(|checked| checked.commit == commit)
+    {
+        checked.failed = Some(was);
+    }
 }
 
 fn failed() -> Fault {
@@ -659,6 +658,23 @@ mod tests {
         assert!(off.moves.lock().unwrap().is_empty());
     }
 
+    async fn until_failed(stores: &Stores, key: &(WorkspaceId, PathBuf)) {
+        let failed = || {
+            let checks = stores.moves.lock().unwrap();
+            checks
+                .get(key)
+                .is_some_and(|checked| checked.failed.is_some())
+        };
+        let waited = async {
+            while !failed() {
+                tokio::task::yield_now().await;
+            }
+        };
+        tokio::time::timeout(Duration::from_secs(10), waited)
+            .await
+            .unwrap();
+    }
+
     #[tokio::test]
     async fn a_move_whose_check_failed_is_checked_again_with_the_next() {
         let dir = TempDir::new().unwrap();
@@ -689,19 +705,7 @@ mod tests {
             commit: "b".repeat(40).parse().unwrap(),
         };
         stores.moved(&watched, first, &log);
-        tokio::time::timeout(Duration::from_secs(10), async {
-            while stores
-                .moves
-                .lock()
-                .unwrap()
-                .get(&key)
-                .is_none_or(|checked| checked.failed.is_none())
-            {
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .unwrap();
+        until_failed(&stores, &key).await;
         *fake.refuse.lock().unwrap() = None;
         // The next move changes nothing more, so only the failed one has anything to propose.
         let next = Move {

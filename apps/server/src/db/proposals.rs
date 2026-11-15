@@ -82,17 +82,9 @@ impl Workspace {
             return Ok(());
         }
         let target = self.proposal_target(transaction, proposed).await?;
-        let older = match target.base {
-            Some(_) => {
-                self.supersede(transaction, proposed, &target, &agent)
-                    .await?
-            }
-            None => Vec::new(),
-        };
-        let change = match kept_findings(&proposed.change, older) {
-            Some(merged) => serde_json::to_string(&merged).map_err(|_| invalid())?,
-            None => change,
-        };
+        let change = self
+            .superseding(transaction, proposed, &target, change)
+            .await?;
         self.room_for_proposal(transaction, &proposed.machine)
             .await?;
         // At least what its revision will count, so that accepting it fits in what it frees.
@@ -126,6 +118,28 @@ impl Workspace {
         let versioned = Versioned::Proposal(&proposed.id);
         self.record_change(transaction, versioned, &proposed.owner)
             .await
+    }
+
+    /// `change`, the JSON of `proposed`'s, once the edits it supersedes are closed, with the
+    /// findings it keeps of theirs.
+    async fn superseding(
+        &self,
+        transaction: &mut SqliteConnection,
+        proposed: &Proposed,
+        target: &Target<'_>,
+        change: String,
+    ) -> Result<String, Fault> {
+        if target.base.is_none() {
+            return Ok(change);
+        }
+        let agent = stored_agent(proposed)?;
+        let older = self
+            .supersede(transaction, proposed, target, &agent)
+            .await?;
+        match kept_findings(&proposed.change, older) {
+            Some(merged) => serde_json::to_string(&merged).map_err(|_| invalid()),
+            None => Ok(change),
+        }
     }
 
     /// Whether the same machine sent the same proposal before; `proposal.conflict` when its
@@ -322,10 +336,11 @@ fn kept_findings(change: &ProposalChange, older: Vec<ProposalChange>) -> Option<
         else {
             continue;
         };
-        let new = older
-            .into_iter()
-            .filter(|stale| older_base == *base && !kept.iter().any(|kept| kept.pin == stale.pin));
-        kept.extend(new.collect::<Vec<_>>());
+        for stale in older {
+            if older_base == *base && !kept.iter().any(|kept| kept.pin == stale.pin) {
+                kept.push(stale);
+            }
+        }
     }
     (kept.len() > anchors.len()).then(|| ProposalChange::NeedsUpdate {
         doc: doc.clone(),
