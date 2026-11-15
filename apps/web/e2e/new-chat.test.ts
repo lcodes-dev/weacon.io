@@ -19,8 +19,11 @@ const SETTINGS: MachineSettings = {
 };
 const AGENT = { kind: "claude" as const, owner: { kind: "member" as const, member: "m-1" }, machine: "Studio" };
 
-/** A stand-in for the server and the machine's core: what a person's first prompts made, and the refusals still to come. */
-type Chats = { made: Map<string, string>; offline: number };
+/**
+ * A stand-in for the server and the machine's core: what a person's first prompts made, and the
+ * refusals still to come; with `held`, answers wait there, and with `unlisted`, the list leaves the chats out.
+ */
+type Chats = { made: Map<string, string>; offline: number; held?: Array<() => void>; unlisted?: boolean };
 
 // Answers the machine's settings and repositories, takes a first prompt on the person's own
 // machine unless it is offline, and plays the made chat: the prompt, then a running run's reply.
@@ -39,10 +42,15 @@ function newChatServer(chats: Chats): (asked: Envelope, opened: number, reply: (
         return [{ id: asked.id, type: "error", code: "machine.offline", retryable: true }];
       }
       chats.made.set(asked.chat, asked.action.text);
-      return [
+      const answers: Envelope[] = [
         { id: asked.id, type: "receipt", request: asked.request, state: "accepted" },
         { id: 0, type: "workspace", workspace: asked.workspace, seq: 1, change: { kind: "chat_changed", chat: asked.chat } },
       ];
+      if (chats.held === undefined) {
+        return answers;
+      }
+      chats.held.push(() => answers.forEach(reply));
+      return [];
     }
     if (asked.type !== "chat_query") {
       return [];
@@ -68,7 +76,7 @@ async function standIn(page: Page, machines: MachineList, chats: Chats): Promise
   await page.route("**/api/workspaces/*/chats", async (route) => {
     const member = await page.evaluate(async () => ((await (await fetch("/api/workspaces")).json()) as { workspaces: Array<{ member?: string }> }).workspaces[0]?.member ?? "");
     const list: ChatList = {
-      chats: [...chats.made].map(([id, text]) => ({ id, title: text, owner: member, machine: STUDIO.name, state: "open", updated_at: 1 })),
+      chats: [...(chats.unlisted === true ? [] : chats.made)].map(([id, text]) => ({ id, title: text, owner: member, machine: STUDIO.name, state: "open", updated_at: 1 })),
     };
     return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(list) });
   });
@@ -121,8 +129,20 @@ test("with no machine paired, New chat can't be used and the empty state says wh
   t.after(() => served.close());
   const { page } = served;
   await standIn(page, { machines: [] }, { made: new Map(), offline: 0 });
+  let failed = false;
+  await page.route("**/api/machines", async (route) => {
+    if (failed) {
+      return route.fallback();
+    }
+    failed = true;
+    return route.fulfill({ status: 500 });
+  });
   await serveFeed(page, { also: ["workspace.chat_commands", "machine.settings"] });
   await openPersonal(served);
+
+  // A failed fetch of the machines says so, and asks again.
+  await nav(page).getByText("Something went wrong. Try again.").waitFor();
+  await nav(page).getByRole("button", { name: "Try again" }).click();
 
   await nav(page).getByText("Pair a machine in Settings to start a chat.").waitFor();
   assert.ok(await nav(page).getByRole("button", { name: "New chat" }).isDisabled());
@@ -156,4 +176,31 @@ test("with the machine offline, the first prompt is kept and can be sent again o
   // The refused prompt made no chat, so the one sent again makes its own.
   assert.notEqual(taken?.chat, refused?.chat);
   assert.equal(new URL(page.url()).searchParams.get("chat"), taken?.chat);
+});
+
+test("a first prompt accepted after its wait ran out still opens its chat, before the list has it", { timeout: 600_000 }, async (t) => {
+  const served = await serve();
+  t.after(() => served.close());
+  const { page } = served;
+  const chats: Chats = { made: new Map(), offline: 0, held: [], unlisted: true };
+  await standIn(page, { machines: [{ ...STUDIO, connected: true }] }, chats);
+  await page.clock.install();
+  const { sent } = await serveFeed(page, { also: ["workspace.chat_commands", "machine.settings"], answer: newChatServer(chats) });
+  await openPersonal(served);
+  await nav(page).getByRole("button", { name: "New chat" }).click();
+
+  const form = page.getByRole("region", { name: "New chat" });
+  await form.getByLabel("Repository").waitFor();
+  await form.getByRole("combobox", { name: "Message" }).fill("Sort the pantry.");
+  await form.getByRole("button", { name: "Send" }).click();
+  await waitFor(() => firstPrompts(sent).length === 1);
+  await page.clock.fastForward(16_000);
+  await form.getByText("The server didn't answer. The chat may have started.").waitFor();
+  chats.held?.forEach((answer) => answer());
+
+  await page.getByText("Sorting the shelves now.").waitFor();
+  assert.equal(await form.count(), 0);
+  assert.equal(new URL(page.url()).searchParams.get("chat"), firstPrompts(sent)[0]?.chat);
+  assert.equal(await nav(page).getByRole("button", { name: /Sort the pantry/ }).count(), 0);
+  assert.equal(firstPrompts(sent).length, 1);
 });

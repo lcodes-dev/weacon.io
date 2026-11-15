@@ -47,6 +47,8 @@ test("a retry of a first prompt that may have run goes to the same chat with the
   });
   assert.equal(starts.end("r-1", "lost"), undefined);
   assert.deepEqual(starts.begin("r-1", "w-1", "Fix the build.", { ...choice, repo: "web" }, fresh), first);
+  assert.equal(starts.end("r-1", "unsure"), undefined);
+  // A late receipt that accepts it opens the chat.
   assert.equal(starts.end("r-1", "accepted"), "c-1");
   assert.equal(starts.end("r-1", "accepted"), undefined);
 });

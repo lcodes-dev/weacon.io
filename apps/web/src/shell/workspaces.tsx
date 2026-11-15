@@ -308,8 +308,11 @@ function WorkspaceChats({
   const chats = useLoaded(() => (read ? api.chats(workspace.id) : answered({ chats: [] })), `${workspace.id} ${read}`);
   useReloadOn(socket, ({ kind }) => read && kind === "chat_changed", () => void chats.load(), [read]);
   const machines = useLoaded(() => api.machines(), api);
-  const ready = machines.value === undefined ? undefined : readiness(send, machines.value.machines);
+  // Until the feed is welcomed, whether it takes commands isn't known yet.
+  const ready = machines.value === undefined || status.state === "connecting" ? undefined : readiness(send, machines.value.machines);
   const [starting, setStarting] = useState(false);
+  // Going to a chat, however, leaves the new one.
+  useEffect(() => setStarting(false), [place.chat]);
   // The chat just started here, shown before the list has it.
   const [started, setStarted] = useState<ChatId>();
   const live = status.state === "live";
@@ -338,7 +341,7 @@ function WorkspaceChats({
                 }
               : undefined
           }
-          missing={<StartMissing ready={ready} check={() => void machines.load()} openSettings={openSettings} />}
+          missing={<StartMissing ready={ready} problem={machines.problem} check={() => void machines.load()} openSettings={openSettings} />}
         />
       </div>
       <section>

@@ -132,11 +132,24 @@ export function NewChat({
 
 /**
  * Why New chat can't be used, in one line, with what fixes it: Settings, to pair a machine, and
- * Check again; nothing when it can.
+ * Check again; nothing when it can. A `problem` fetching the machines shows with Try again.
  */
-export function StartMissing({ ready, check, openSettings }: { ready: Readiness | undefined; check(): void; openSettings(): void }) {
+export function StartMissing({
+  ready,
+  problem,
+  check,
+  openSettings,
+}: {
+  ready: Readiness | undefined;
+  problem: string | undefined;
+  check(): void;
+  openSettings(): void;
+}) {
   if (ready?.kind === "ready") {
     return undefined;
+  }
+  if (ready === undefined && problem !== undefined) {
+    return <Problem text={problem} retry={check} />;
   }
   return (
     <p className="muted">
