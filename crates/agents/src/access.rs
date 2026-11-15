@@ -68,9 +68,11 @@ impl Rules {
     }
 }
 
-// `path` with symlinks resolved as far as it exists; `None` if the rest climbs with `..` or
-// anything on the way can't be resolved, such as a symlink to nowhere.
-fn resolve(path: &Path) -> Option<PathBuf> {
+/// `path` with symlinks resolved as far as it exists, so a missing path compares like an
+/// existing one; `None` if the rest climbs with `..` or anything on the way can't be resolved,
+/// such as a symlink to nowhere.
+#[must_use]
+pub fn resolve(path: &Path) -> Option<PathBuf> {
     let mut missing = Vec::new();
     let mut base = path;
     loop {
@@ -82,8 +84,13 @@ fn resolve(path: &Path) -> Option<PathBuf> {
                     .fold(found, |path, name| path.join(name)),
             );
         }
+        // A name the system can't hold, such as one with `:` on Windows, names nothing yet.
         match base.symlink_metadata() {
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::NotFound | io::ErrorKind::InvalidFilename
+                ) => {}
             _ => return None,
         }
         missing.push(base.file_name()?);
@@ -258,5 +265,16 @@ mod tests {
             ..rules
         };
         assert!(linked.may_change(&dir.join("link/file.md")));
+    }
+
+    #[test]
+    fn a_name_the_system_cant_hold_resolves_like_a_missing_one() {
+        let dir = TempDir::new().unwrap();
+        let long = "x".repeat(300);
+
+        assert_eq!(
+            resolve(&dir.join(&long).join("y")),
+            Some(dir.canonicalize().unwrap().join(&long).join("y"))
+        );
     }
 }

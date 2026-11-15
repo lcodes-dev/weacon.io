@@ -25,11 +25,6 @@ pub(super) type Late = mpsc::Sender<Envelope>;
 /// How many late replies wait for the connection before their tasks wait too.
 pub(super) const LATE: usize = 64;
 
-const NONE: Reply = Reply {
-    envelope: None,
-    close: false,
-};
-
 pub(super) fn worktrees(state_dir: &Path, places: &Places) -> Worktrees {
     let (path, work_root) = (places.path.clone(), places.work_root.clone());
     Worktrees::new(state_dir, path, work_root, to_trash)
@@ -54,7 +49,7 @@ pub(super) fn diff(shared: &Shared, id: u32, query: DiffQuery, late: &Late) -> R
             }
         }
     });
-    NONE
+    Reply::NOTHING
 }
 
 pub(super) fn query(shared: &Shared, id: u32, query: WorktreeQuery, late: &Late) -> Reply {
@@ -94,7 +89,7 @@ fn send(
             Err(fault) => refuse(&log, id, &fault, &late).await,
         }
     });
-    NONE
+    Reply::NOTHING
 }
 
 async fn refuse(log: &Logger, id: u32, fault: &Fault, late: &Late) {

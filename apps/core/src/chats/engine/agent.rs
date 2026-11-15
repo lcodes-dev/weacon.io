@@ -50,20 +50,14 @@ pub(crate) enum Order {
     Interrupt,
 }
 
-/// Which run of which chat.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct RunOf {
+/// What the run `run` of the chat `key` said, for the engine.
+pub(crate) struct FromRun {
     pub(crate) key: ChatKey,
     pub(crate) run: RunId,
+    pub(crate) said: Said,
 }
 
-/// What a run's agent said, for the engine.
-pub(crate) struct Said {
-    pub(crate) of: RunOf,
-    pub(crate) heard: Heard,
-}
-
-pub(crate) enum Heard {
+pub(crate) enum Said {
     Event(RunEvent),
     /// The agent is gone, with why when its output couldn't be read; nothing follows.
     Exited(Option<Fault>),
@@ -74,18 +68,19 @@ const LAST_WORDS: Duration = Duration::from_secs(5);
 // How long an order may take to write; an agent that stops reading counts as broken.
 const ORDER_WRITE: Duration = Duration::from_secs(30);
 
-/// Drives `agent` as the run `of` until it exits or the engine drops `orders`.
+/// Drives `agent` as the chat's run `run` until it exits or the engine drops `orders`.
 pub(crate) async fn drive<A: Agent>(
     mut agent: A,
-    of: RunOf,
+    key: ChatKey,
+    run: RunId,
     mut orders: mpsc::UnboundedReceiver<Order>,
-    says: mpsc::Sender<Said>,
+    says: mpsc::Sender<FromRun>,
 ) {
     // Once its pipes break, the agent takes no more orders and has a while to finish speaking.
     let mut broken: Option<(Fault, Instant)> = None;
     loop {
         let deadline = broken.as_ref().map_or_else(Instant::now, |(_, at)| *at);
-        let heard = tokio::select! {
+        let said = tokio::select! {
             order = orders.recv(), if broken.is_none() => {
                 let Some(order) = order else { return };
                 match obey(&mut agent, order).await {
@@ -100,20 +95,17 @@ pub(crate) async fn drive<A: Agent>(
                 continue;
             }
             () = tokio::time::sleep_until(deadline), if broken.is_some() => {
-                Heard::Exited(broken.take().map(|(fault, _)| fault))
+                Said::Exited(broken.take().map(|(fault, _)| fault))
             }
             event = agent.next() => match event {
-                Ok(Some(event)) => Heard::Event(event),
-                Ok(None) => Heard::Exited(None),
-                Err(fault) => Heard::Exited(Some(fault)),
+                Ok(Some(event)) => Said::Event(event),
+                Ok(None) => Said::Exited(None),
+                Err(fault) => Said::Exited(Some(fault)),
             },
         };
-        let exited = matches!(heard, Heard::Exited(_));
-        let said = Said {
-            of: of.clone(),
-            heard,
-        };
-        if says.send(said).await.is_err() || exited {
+        let exited = matches!(said, Said::Exited(_));
+        let (key, run) = (key.clone(), run.clone());
+        if says.send(FromRun { key, run, said }).await.is_err() || exited {
             return;
         }
     }
@@ -143,13 +135,6 @@ mod tests {
 
     use super::*;
     use crate::chats::test_support::{key, run};
-
-    fn of() -> RunOf {
-        RunOf {
-            key: key(),
-            run: run("run-1"),
-        }
-    }
 
     // Says one text, then exits; it panics if asked for more after that.
     struct Brief {
@@ -183,19 +168,21 @@ mod tests {
 
     #[tokio::test]
     async fn a_run_passes_on_what_its_agent_says_then_its_exit_once_and_stops() {
-        let of = of();
         let (_orders, ordered) = mpsc::unbounded_channel();
         let (says, mut heard) = mpsc::channel(8);
 
-        let driven = drive(Brief { said: 0 }, of.clone(), ordered, says);
+        let driven = drive(Brief { said: 0 }, key(), run("run-1"), ordered, says);
         tokio::time::timeout(Duration::from_secs(5), driven)
             .await
             .unwrap();
 
         let first = heard.recv().await.unwrap();
-        assert!(first.of == of && matches!(first.heard, Heard::Event(RunEvent::Text { .. })));
+        assert!(
+            (first.key == key() && first.run == run("run-1"))
+                && matches!(first.said, Said::Event(RunEvent::Text { .. }))
+        );
         let last = heard.recv().await.unwrap();
-        assert!(matches!(last.heard, Heard::Exited(None)));
+        assert!(matches!(last.said, Said::Exited(None)));
         assert!(heard.recv().await.is_none());
     }
 
@@ -235,21 +222,26 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn an_agent_whose_pipes_break_is_stopped_once_it_has_said_its_last_words() {
-        let of = of();
         let (orders, ordered) = mpsc::unbounded_channel();
         let (says, mut heard) = mpsc::channel(8);
         orders.send(Order::Send("busy".to_owned())).unwrap();
         orders.send(Order::Send("broken".to_owned())).unwrap();
 
-        let driven = tokio::spawn(drive(Refuses { said: false }, of, ordered, says));
+        let driven = tokio::spawn(drive(
+            Refuses { said: false },
+            key(),
+            run("run-1"),
+            ordered,
+            says,
+        ));
 
         let said = heard.recv().await.unwrap();
-        assert!(matches!(said.heard, Heard::Event(RunEvent::Text { .. })));
+        assert!(matches!(said.said, Said::Event(RunEvent::Text { .. })));
         // Still speaking, it takes no more orders.
         assert!(!driven.is_finished() && orders.is_closed());
         let last = heard.recv().await.unwrap();
         assert!(
-            matches!(&last.heard, Heard::Exited(Some(fault)) if fault.code().as_str() == "agent.io_failed")
+            matches!(&last.said, Said::Exited(Some(fault)) if fault.code().as_str() == "agent.io_failed")
         );
         assert!(heard.recv().await.is_none());
         tokio::time::timeout(LAST_WORDS, driven)
@@ -260,19 +252,18 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn an_agent_that_stops_reading_its_orders_is_stopped() {
-        let of = of();
         let (orders, ordered) = mpsc::unbounded_channel();
         let (says, mut heard) = mpsc::channel(8);
         orders.send(Order::Send("stuck".to_owned())).unwrap();
 
-        let driven = drive(Refuses { said: true }, of, ordered, says);
+        let driven = drive(Refuses { said: true }, key(), run("run-1"), ordered, says);
         tokio::time::timeout(ORDER_WRITE + LAST_WORDS * 2, driven)
             .await
             .unwrap();
 
         let last = heard.recv().await.unwrap();
         assert!(
-            matches!(&last.heard, Heard::Exited(Some(fault)) if fault.code().as_str() == "agent.io_failed")
+            matches!(&last.said, Said::Exited(Some(fault)) if fault.code().as_str() == "agent.io_failed")
         );
     }
 
@@ -315,6 +306,7 @@ printf '%s\n' '{"type":"result","subtype":"error_during_execution","is_error":tr
                 config_dir: dir.join("config"),
                 cwd: dir.to_path_buf(),
                 access: AccessLevel::AskFirst,
+                hook: None,
                 mcp: None,
                 plugin: None,
             };

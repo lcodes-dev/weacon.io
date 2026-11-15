@@ -2,6 +2,7 @@
 //! repository, only when the run's workspace registered that repository, kept current by a
 //! watch of each live run's worktree.
 
+mod moves;
 #[cfg(test)]
 pub(crate) mod test_support;
 
@@ -11,22 +12,23 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
-use tokio::sync::{OnceCell, OwnedSemaphorePermit, Semaphore, mpsc};
+use tokio::sync::{OnceCell, OwnedSemaphorePermit, Semaphore};
 use tokio::time::MissedTickBehavior;
-use weacon_codemap::{Facts, Index, assemble};
+use weacon_codemap::{Index, assemble};
 use weacon_observability::{Fault, Field, Logger};
-use weacon_protocol::{CommitId, McpCall, WorkspaceId, code};
+use weacon_protocol::{McpCall, RepoId, WorkspaceId, code};
 
+use self::moves::Moves;
 use super::grants::{Grant, Grants};
-use super::tools::{CHURN_COMMITS, NO_MAP, answer_from};
+use super::tools::{CHURN_COMMITS, NO_MAP, answer_from, budget, found};
 use crate::app::WarnOnce;
 use crate::chats::Places;
-use crate::codemap::{Move, Repo, Watch, locate, off_runtime, watch, worktree_index};
-use crate::db::Db;
+use crate::codemap::{Repo, Watch, locate, off_runtime, repo_map, watch, worktree_index};
+use crate::db::{Db, Hit, Looking};
 use crate::git::Git;
 use crate::git::repos::Repo as Registered;
 use crate::git::state::Stores as GitStores;
-use crate::proposals::{self, Proposals};
+use crate::proposals::Proposals;
 use crate::workspaces::Workspaces;
 
 /// The longest a call waits for its map; a first read of a large repository can take longer.
@@ -36,8 +38,6 @@ const TOO_SLOW: &str = "The code map is still being read: try again shortly.\n";
 const POLL: Duration = Duration::from_secs(5);
 /// How many calls at once, across every run, may read a worktree no watch has read yet.
 const READS_AT_ONCE: usize = 2;
-/// How many bases of failed checks a repository's next check starts from, at most.
-const KEPT_BASES: usize = 4;
 
 /// The stores the MCP's answers come from, opened when its watches start, once the daemon
 /// holds its state folder, so a second daemon that can't start changes nothing.
@@ -62,17 +62,6 @@ struct Stores {
     moves: Option<Moves>,
 }
 
-/// A repository, by its workspace and main worktree.
-type Repository = (WorkspaceId, PathBuf);
-
-/// The commit each repository's base last moved to, and the queue that checks each move,
-/// one at a time and in the order they came.
-#[derive(Clone, Debug)]
-struct Moves {
-    seen: Arc<Mutex<HashMap<Repository, CommitId>>>,
-    checks: mpsc::UnboundedSender<(Repository, Move, Logger)>,
-}
-
 /// A live run's worktree, in a repository its workspace registered, by its canonical paths.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 struct Watched {
@@ -90,15 +79,6 @@ impl Maps {
             stores: Arc::default(),
             limit: LIMIT,
             proposals: None,
-        }
-    }
-
-    /// These maps, proposing what each move of a watched repository's base did to its
-    /// workspace's docs through `proposals`.
-    pub(crate) fn proposing(self, proposals: Proposals) -> Self {
-        Self {
-            proposals: Some(proposals),
-            ..self
         }
     }
 
@@ -167,6 +147,31 @@ impl Maps {
         }
     }
 
+    /// What search finds for `words` among the items of each repository `workspace`
+    /// registered, at its main worktree's commit, best first in each; one that can't be read is
+    /// left out. A base read past the limit goes on, so the next search finds it stored.
+    pub(crate) async fn symbols(
+        &self,
+        workspace: &WorkspaceId,
+        words: &str,
+        log: &Logger,
+    ) -> Result<Vec<(RepoId, Vec<Hit>)>, Fault> {
+        let stores = self.stores(log).await.ok_or_else(failed)?;
+        // One of the reads at once for the whole search, taken here so searches never pile up.
+        let read = Arc::clone(&stores.reads).try_acquire_owned();
+        let read = read.map_err(|_| still_reading())?;
+        let (workspace, words, log) = (workspace.clone(), words.to_owned(), log.clone());
+        let reading = tokio::spawn(async move {
+            let _read = read;
+            stores.symbols(workspace, &words, &log).await
+        });
+        match tokio::time::timeout(self.limit, reading).await {
+            Err(_) => Err(still_reading()),
+            Ok(Ok(found)) => found,
+            Ok(Err(error)) => Err(failed().because(error)),
+        }
+    }
+
     /// The stores, opened at the first use; none, logged once, when either can't be.
     async fn stores(&self, log: &Logger) -> Option<Stores> {
         let opened = self.stores.get_or_init(|| async {
@@ -192,31 +197,58 @@ async fn open(
         workspaces: Workspaces::new(state_dir, path),
         live: Arc::default(),
         reads: Arc::new(Semaphore::new(READS_AT_ONCE)),
-        moves: proposals.map(|proposals| {
-            let (checks, queued) = mpsc::unbounded_channel();
-            tokio::spawn(check_moves(proposals, queued));
-            Moves {
-                seen: Arc::default(),
-                checks,
-            }
-        }),
+        moves: proposals.map(Moves::start),
     })
 }
 
 impl Stores {
+    /// What [`Maps::symbols`] finds, reading a repository's base when it must.
+    async fn symbols(
+        &self,
+        workspace: WorkspaceId,
+        words: &str,
+        log: &Logger,
+    ) -> Result<Vec<(RepoId, Vec<Hit>)>, Fault> {
+        let (listing, asked) = (self.clone(), workspace.clone());
+        let repos = off_runtime(move || listing.mains(&asked)).await?;
+        let store = self.db.workspace(&workspace);
+        let mut found = Vec::new();
+        for (repo, main) in repos {
+            let map = repo_map(&store, &self.git, main);
+            match map.search_head(words, Looking::Items).await {
+                Ok(hits) => found.push((repo, hits)),
+                Err(fault) => {
+                    let about = [
+                        ("repo", repo.as_str().into()),
+                        ("err", Field::error(&fault)),
+                    ];
+                    log.warn("symbols repo failed", &about);
+                }
+            }
+        }
+        Ok(found)
+    }
+
     /// The answer to `call` from the map of `folder`, with the churn of its worktree for
-    /// `hotspots`; none when [`Self::index`] finds no map.
+    /// `hotspots`; none when [`Self::index`] finds no map. A search looks through the
+    /// worktree's stored layer.
     async fn answer(
         &self,
         call: &McpCall,
         workspace: WorkspaceId,
         folder: PathBuf,
     ) -> Result<Option<String>, Fault> {
-        let Some((index, worktree)) = self.index(workspace, folder).await? else {
+        let Some((watched, index)) = self.index(workspace, folder).await? else {
             return Ok(None);
         };
+        if let McpCall::Search(args) = call {
+            let store = self.db.workspace(&watched.workspace);
+            let map = repo_map(&store, &self.git, watched.main);
+            let hits = map.search(Some(&watched.worktree), &args.words, Looking::Everything);
+            return Ok(Some(found(&hits.await?, budget(args.budget))));
+        }
         let churn = if matches!(call, McpCall::Hotspots(_)) {
-            let git = self.git.clone();
+            let (git, worktree) = (self.git.clone(), watched.worktree);
             off_runtime(move || git.churn(&worktree, CHURN_COMMITS)).await?
         } else {
             Vec::new()
@@ -225,19 +257,20 @@ impl Stores {
     }
 
     /// The index of `folder` and its worktree, or none when it isn't in a repository
-    /// `workspace` registered: its watch's index when it has one, else read now.
+    /// `workspace` registered: its watch's index when it has one, else read now, which stores it.
     async fn index(
         &self,
         workspace: WorkspaceId,
         folder: PathBuf,
-    ) -> Result<Option<(Arc<Index>, PathBuf)>, Fault> {
+    ) -> Result<Option<(Watched, Arc<Index>)>, Fault> {
         let stores = self.clone();
         let Some(watched) = off_runtime(move || stores.registered(workspace, &folder)).await?
         else {
             return Ok(None);
         };
-        if let Some(index) = self.live().get(&watched) {
-            return Ok(Some((Arc::clone(index), watched.worktree)));
+        let live = self.live().get(&watched).map(Arc::clone);
+        if let Some(index) = live {
+            return Ok(Some((watched, index)));
         }
         let _read = self
             .reads
@@ -245,8 +278,9 @@ impl Stores {
             .await
             .map_err(|error| failed().because(error))?;
         let store = self.db.workspace(&watched.workspace);
-        let index = worktree_index(&store, &self.git, watched.main, &watched.worktree).await?;
-        Ok(Some((Arc::new(index), watched.worktree)))
+        let main = watched.main.clone();
+        let index = worktree_index(&store, &self.git, main, &watched.worktree).await?;
+        Ok(Some((watched, Arc::new(index))))
     }
 
     /// `folder`'s worktree, when its repository is one `workspace` registered by its main
@@ -264,6 +298,22 @@ impl Stores {
             main,
             worktree,
         }))
+    }
+
+    /// The id and main worktree of each repository `workspace` registered that is one here,
+    /// once each; it blocks.
+    fn mains(&self, workspace: &WorkspaceId) -> Result<Vec<(RepoId, PathBuf)>, Fault> {
+        let repos = GitStores::new(&self.workspaces, workspace).repos().list()?;
+        let mut mains: Vec<(RepoId, PathBuf)> = Vec::new();
+        for repo in repos {
+            let Ok((main, _)) = locate(&self.git, &repo.path) else {
+                continue;
+            };
+            if !mains.iter().any(|(_, known)| *known == main) {
+                mains.push((repo.id, main));
+            }
+        }
+        Ok(mains)
     }
 
     /// The worktrees of `folders`, each a live run's folder in its own workspace, once each,
@@ -325,66 +375,17 @@ impl Stores {
         }
     }
 
-    /// Queues `moved`, to propose what it did to the anchors of `watched`'s workspace's docs,
-    /// once for each commit a repository's base moves to.
-    fn moved(&self, watched: &Watched, moved: Move, log: &Logger) {
-        let Some(queue) = &self.moves else {
-            return;
-        };
-        let key = (watched.workspace.clone(), watched.main.clone());
-        let mut seen = queue.seen.lock().unwrap_or_else(PoisonError::into_inner);
-        if seen.get(&key) == Some(&moved.commit) {
-            return;
-        }
-        seen.insert(key.clone(), moved.commit.clone());
-        drop(seen);
-        drop(queue.checks.send((key, moved, log.clone())));
-    }
-
     // Only the map is guarded, so a poisoned lock still holds a usable one.
     fn live(&self) -> MutexGuard<'_, HashMap<Watched, Arc<Index>>> {
         self.live.lock().unwrap_or_else(PoisonError::into_inner)
     }
 }
 
-/// Checks each queued move in turn; a move whose check failed is checked again, from its
-/// base, with the repository's next move.
-async fn check_moves(
-    proposals: Proposals,
-    mut queued: mpsc::UnboundedReceiver<(Repository, Move, Logger)>,
-) {
-    let mut failed: HashMap<Repository, Vec<Vec<Facts>>> = HashMap::new();
-    while let Some((key, moved, log)) = queued.recv().await {
-        // A pin re-anchored by a check that failed for another doc is from a later base.
-        let mut bases = failed.remove(&key).unwrap_or_default();
-        bases.push(moved.was);
-        let kept = bases.clone();
-        let (now, commit) = (moved.now, moved.commit);
-        let assembled = move || {
-            let was: Vec<Index> = bases.iter().map(|base| assemble(base)).collect();
-            Ok((was, assemble(&now), commit))
-        };
-        let checked = async {
-            let (was, now, commit) = off_runtime(assembled).await?;
-            let was: Vec<&Index> = was.iter().collect();
-            proposals::moved(&proposals, &key.0, &was, &now, &commit).await
-        };
-        match checked.await {
-            Ok(docs) => log.info("anchors checked", &[("docs", docs.into())]),
-            Err(fault) => {
-                log.warn("anchors check failed", &[("err", Field::error(&fault))]);
-                failed.insert(key, kept_bases(kept));
-            }
-        }
-    }
-}
-
-/// The oldest of `bases`, which holds at least one, and the latest of the rest, at most
-/// `KEPT_BASES` in all.
-fn kept_bases(mut bases: Vec<Vec<Facts>>) -> Vec<Vec<Facts>> {
-    let over = bases.len().saturating_sub(KEPT_BASES);
-    bases.drain(1..over.saturating_add(1));
-    bases
+fn still_reading() -> Fault {
+    Fault::new(
+        code!("symbols.still_reading"),
+        "The code map is still being read",
+    )
 }
 
 fn failed() -> Fault {
@@ -400,6 +401,10 @@ mod tests {
     use weacon_testing::{TempDir, messages, recording_logger};
 
     use super::test_support::{crate_repo, setup, workspace};
+    use weacon_codemap::Facts;
+
+    use crate::codemap::Move;
+
     use super::*;
     use crate::git::fixture;
     use crate::proposals::fake::Fake;
@@ -491,6 +496,111 @@ mod tests {
         assert_eq!((elsewhere.as_str(), no_repo.as_str()), (NO_MAP, NO_MAP));
         assert!(!setup.stored(&two, &main).await);
         assert!(records.lock().unwrap().is_empty());
+    }
+
+    fn search(words: &str) -> McpCall {
+        McpCall::Search(weacon_protocol::SearchArgs {
+            words: words.to_owned(),
+            budget: None,
+        })
+    }
+
+    #[tokio::test]
+    async fn a_search_looks_through_the_runs_worktree_as_it_is_now() {
+        let dir = TempDir::new().unwrap();
+        let setup = setup(&dir).await;
+        let (one, two) = (workspace("one"), workspace("two"));
+        let main = crate_repo(&dir, "one");
+        setup.register(&one, "site", &main);
+        fs::write(main.join("src/lib.rs"), "\npub fn walk() {}\n").unwrap();
+        let (log, records) = recording_logger();
+        let ask = async |call: McpCall, workspace: &WorkspaceId| {
+            let grant = grant(workspace, &main);
+            setup.maps.answer(&call, &grant, permit(), &log).await
+        };
+
+        assert_eq!(
+            ask(search("walk"), &one).await,
+            "Found 1:\n- fn one::walk  src/lib.rs:2\n"
+        );
+        assert_eq!(ask(search("run"), &one).await, "Found 0:\n");
+        assert_eq!(ask(search("walk"), &two).await, NO_MAP);
+        assert!(records.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn symbols_are_searched_at_the_commit_of_each_repository_the_workspace_registered() {
+        let dir = TempDir::new().unwrap();
+        let setup = setup(&dir).await;
+        let (one, two) = (workspace("one"), workspace("two"));
+        let (alpha, beta, empty) = (dir.join("a"), dir.join("b"), dir.join("empty"));
+        let (alpha, beta) = (crate_repo(&alpha, "alpha"), crate_repo(&beta, "beta"));
+        fs::write(alpha.join("src/lib.rs"), "pub fn walk() {}\n").unwrap();
+        fs::write(alpha.join("README.md"), "How to run.\n").unwrap();
+        fs::create_dir_all(&empty).unwrap();
+        fixture(&dir, &empty, &["init", "--quiet"]);
+        let linked = dir.join("linked");
+        let linked_arg = linked.to_str().unwrap();
+        fixture(
+            &dir,
+            &alpha,
+            &["worktree", "add", "--quiet", "-b", "w", linked_arg],
+        );
+        for (id, repo) in [
+            ("a", &alpha),
+            ("again", &linked),
+            ("b", &beta),
+            ("empty", &empty),
+        ] {
+            setup.register(&one, id, repo);
+        }
+        setup.register(&two, "b", &beta);
+        let (log, records) = recording_logger();
+
+        let found = setup.maps.symbols(&one, "run", &log).await.unwrap();
+
+        let names = |found: &[(RepoId, Vec<Hit>)]| -> Vec<(String, Vec<String>)> {
+            let names = |hits: &[Hit]| hits.iter().map(|hit| hit.name.clone()).collect();
+            let repo = |(repo, hits): &(RepoId, Vec<Hit>)| (repo.as_str().to_owned(), names(hits));
+            found.iter().map(repo).collect()
+        };
+        let run = |name: &str| vec![name.to_owned()];
+        assert_eq!(
+            names(&found),
+            [
+                ("a".to_owned(), run("alpha::run")),
+                ("b".to_owned(), run("beta::run"))
+            ]
+        );
+        assert_eq!(messages(&records), ["symbols repo failed"]);
+        let theirs = setup.maps.symbols(&two, "run", &log).await.unwrap();
+        assert_eq!(names(&theirs), [("b".to_owned(), run("beta::run"))]);
+        let off = Maps::off().symbols(&one, "run", &log).await;
+        assert_eq!(off.unwrap_err().code().as_str(), "mcp.map_failed");
+    }
+
+    #[tokio::test]
+    async fn a_symbols_search_past_the_limit_or_with_no_read_free_is_still_reading() {
+        let dir = TempDir::new().unwrap();
+        let setup = setup(&dir).await;
+        let one = workspace("one");
+        setup.register(&one, "site", &crate_repo(&dir, "one"));
+        let (log, _records) = recording_logger();
+
+        let mut slow = setup.maps.clone();
+        slow.limit = Duration::ZERO;
+        let late = slow.symbols(&one, "run", &log).await.unwrap_err();
+        assert_eq!(late.code().as_str(), "symbols.still_reading");
+        let stores = setup.maps.stores(&log).await.unwrap();
+        let held = Arc::clone(&stores.reads)
+            .acquire_many_owned(2)
+            .await
+            .unwrap();
+        let busy = setup.maps.symbols(&one, "run", &log).await.unwrap_err();
+        assert_eq!(busy.code().as_str(), "symbols.still_reading");
+        drop(held);
+        let found = setup.maps.symbols(&one, "run", &log).await.unwrap();
+        assert_eq!(found.len(), 1);
     }
 
     #[tokio::test]
@@ -769,23 +879,6 @@ mod tests {
         assert_eq!(commands.len(), 3);
         assert_eq!(commands[0].action, commands[1].action);
         assert_eq!(commands[1].action, commands[2].action);
-    }
-
-    #[test]
-    fn a_repository_keeps_its_oldest_failed_base_and_the_latest() {
-        let bases = |count: usize| -> Vec<Vec<Facts>> {
-            (0..count)
-                .map(|n| facts(&[("src/lib.rs", &format!("pub fn f{n}() {{}}\n"))]))
-                .collect()
-        };
-        let all = bases(6);
-
-        assert_eq!(kept_bases(bases(1)), bases(1));
-        assert_eq!(kept_bases(bases(KEPT_BASES)), bases(KEPT_BASES));
-        let kept = kept_bases(all.clone());
-        assert_eq!(kept.len(), KEPT_BASES);
-        assert_eq!(kept[0], all[0]);
-        assert_eq!(kept[1..], all[3..]);
     }
 
     #[tokio::test]

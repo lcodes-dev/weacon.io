@@ -7,7 +7,7 @@ mod fake;
 mod repo;
 mod watch;
 
-pub(crate) use repo::{LARGEST, Repo, locate, watch, worktree_index};
+pub(crate) use repo::{LARGEST, Repo, locate, repo_map, watch, worktree_index};
 pub(crate) use watch::{Move, Watch};
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -19,14 +19,10 @@ use weacon_observability::Fault;
 use weacon_protocol::{CommitId, Sha256 as Sha256Hex, code};
 
 use crate::app::blocking;
-use crate::db::{BASE, Layer, Map, Stored};
+use crate::db::{BASE, Hit, Layer, Looking, Map, Stored};
 
 /// The most hits a search returns before its answer is cut to its budget.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "the search tool uses it in its own change")
-)]
-const SEARCHED: u32 = 50;
+pub(crate) const SEARCHED: u32 = 50;
 
 /// What the code map reads from a repository. Every call may block.
 pub(crate) trait Source: Clone + Send + Sync + 'static {
@@ -233,27 +229,32 @@ impl<S: Source> RepoMap<S> {
     }
 
     /// What search finds for `words` in the worktree at `path`, or in the base without one,
-    /// best first, within `budget` bytes.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "the search tool uses it in its own change")
-    )]
+    /// best first.
     pub(crate) async fn search(
         &self,
         path: Option<&Path>,
         words: &str,
-        budget: usize,
-    ) -> Result<String, Fault> {
+        looking: Looking,
+    ) -> Result<Vec<Hit>, Fault> {
         let layer = path.map_or_else(|| BASE.to_owned(), layer_name);
-        let hits = self.map.search(&layer, words, SEARCHED).await?;
-        let header = format!("Found {}:", hits.len());
-        let lines = hits
-            .into_iter()
-            .map(|hit| format!("- {} {}  {}", hit.kind, hit.name, hit.path));
-        Ok(weacon_codemap::fit(
-            std::iter::once(header).chain(lines),
-            budget,
-        ))
+        self.map.search(&layer, words, looking, SEARCHED).await
+    }
+
+    /// What search finds for `words` at the main worktree's commit, reading the base first
+    /// when the map holds none at that commit.
+    pub(crate) async fn search_head(
+        &self,
+        words: &str,
+        looking: Looking,
+    ) -> Result<Vec<Hit>, Fault> {
+        if words.trim().is_empty() {
+            return Ok(Vec::new());
+        }
+        let head = self.head().await?;
+        if self.map.commit_of(BASE).await?.as_deref() != Some(head.as_str()) {
+            self.base().await?;
+        }
+        self.search(None, words, looking).await
     }
 
     /// The stored facts of `files`, and the files whose text hasn't been read yet.
@@ -465,6 +466,13 @@ mod tests {
         assert_eq!(source.blobs_read().len(), 2);
         assert_eq!(repo.base().await.unwrap().facts.len(), 2);
         assert!(source.blobs_read().is_empty());
+
+        // An older reader's facts of the unchanged files are read again, then kept.
+        repo.map.age_facts().await;
+        assert_eq!(repo.base().await.unwrap().facts.len(), 2);
+        assert_eq!(source.blobs_read().len(), 2);
+        assert_eq!(repo.base().await.unwrap().facts.len(), 2);
+        assert!(source.blobs_read().is_empty());
     }
 
     #[tokio::test]
@@ -548,17 +556,19 @@ mod tests {
         assert!(items(&facts, "a::m::stop").starts_with("fn a::m::stop"));
 
         let layer = layer_name(worktree);
-        let found = repo.map.search(&layer, "stop", 10).await.unwrap();
-        assert_eq!(
-            found
-                .iter()
-                .map(|hit| hit.name.as_str())
-                .collect::<Vec<_>>(),
-            ["a::m::stop"]
-        );
-        assert_eq!(repo.map.search(&layer, "old", 10).await.unwrap(), []);
-        assert_eq!(repo.map.search(BASE, "old", 10).await.unwrap().len(), 1);
-        assert_eq!(repo.map.search(&layer, "run", 10).await.unwrap().len(), 1);
+        let search = async |layer: &str, words: &str| {
+            names(repo.map.search(layer, words, Looking::Everything, 10).await)
+        };
+        assert_eq!(search(&layer, "stop").await, ["a::m::stop"]);
+        assert!(search(&layer, "old").await.is_empty());
+        assert_eq!(search(BASE, "old").await.len(), 1);
+        assert_eq!(search(&layer, "run").await.len(), 1);
+    }
+
+    fn names(hits: Result<Vec<Hit>, Fault>) -> Vec<String> {
+        let mut names: Vec<String> = hits.unwrap().into_iter().map(|hit| hit.name).collect();
+        names.sort_unstable();
+        names
     }
 
     #[tokio::test]
@@ -578,14 +588,14 @@ mod tests {
         let changed = repo.changed(&base, worktree).await.unwrap();
         repo.worktree(&base, worktree, changed).await.unwrap();
 
-        let found = repo.search(Some(worktree), "run", 10_000).await.unwrap();
-        assert_eq!(found, "Found 1:\n- fn b::run  src/lib.rs\n");
-        let found = repo.search(None, "run", 10_000).await.unwrap();
-        assert_eq!(found, "Found 1:\n- fn a::run  src/lib.rs\n");
+        let found = repo.search(Some(worktree), "run", Looking::Everything);
+        assert_eq!(names(found.await), ["b::run"]);
+        let found = repo.search(None, "run", Looking::Everything);
+        assert_eq!(names(found.await), ["a::run"]);
     }
 
     #[tokio::test]
-    async fn searches_a_worktree_or_the_base_within_a_budget() {
+    async fn searches_a_worktree_or_the_base_with_its_documents_or_without() {
         let dir = TempDir::new().unwrap();
         let (repo, source) = repo(&dir).await;
         source.commit(
@@ -601,30 +611,50 @@ mod tests {
         let changed = repo.changed(&base, worktree).await.unwrap();
         repo.worktree(&base, worktree, changed).await.unwrap();
 
-        let found = repo.search(Some(worktree), "serv", 10_000).await.unwrap();
-        let mut lines: Vec<&str> = found.lines().collect();
-        assert_eq!(lines.remove(0), "Found 3:");
-        lines.sort_unstable();
+        let found = repo.search(Some(worktree), "serv", Looking::Everything);
         assert_eq!(
-            lines,
-            [
-                "- doc docs/serving.md  docs/serving.md",
-                "- fn a::serve  src/lib.rs",
-                "- fn a::served  src/lib.rs",
-            ]
+            names(found.await),
+            ["a::serve", "a::served", "docs/serving.md"]
         );
-        assert_eq!(
-            repo.search(None, "serv", 10_000)
+        let items = repo.search(Some(worktree), "serv", Looking::Items);
+        assert_eq!(names(items.await), ["a::serve", "a::served"]);
+        let base = repo.search(None, "serv", Looking::Everything).await;
+        assert_eq!(base.unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn a_search_at_the_head_reads_the_base_only_when_its_commit_moved() {
+        let dir = TempDir::new().unwrap();
+        let (repo, source) = repo(&dir).await;
+        source.commit(
+            "c1",
+            &[("Cargo.toml", MANIFEST), ("src/lib.rs", "pub fn go() {}\n")],
+        );
+
+        let first = repo.search_head("go", Looking::Items).await.unwrap();
+        assert_eq!(first.len(), 1);
+        assert_eq!((first[0].path.as_str(), first[0].line), ("src/lib.rs", 1));
+        source.commit(
+            "c2",
+            &[
+                ("Cargo.toml", MANIFEST),
+                ("src/lib.rs", "pub fn gone() {}\n"),
+            ],
+        );
+        let moved = repo.search_head("go", Looking::Items).await;
+        assert_eq!(names(moved), ["a::gone"]);
+        assert_eq!(source.trees_read(), 2);
+        let again = repo.search_head("gone", Looking::Items).await;
+        assert_eq!(names(again), ["a::gone"]);
+        assert_eq!(source.trees_read(), 0);
+        source.heads_read();
+        assert!(
+            repo.search_head("  ", Looking::Items)
                 .await
                 .unwrap()
-                .lines()
-                .count(),
-            3
+                .is_empty()
         );
-        assert_eq!(
-            repo.search(None, "serv", 40).await.unwrap(),
-            "Found 2:\n… 2 more lines\n"
-        );
+        assert_eq!(source.heads_read(), 0);
     }
 
     #[test]

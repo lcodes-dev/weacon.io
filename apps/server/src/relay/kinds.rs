@@ -4,7 +4,7 @@ use weacon_protocol::{
     Asker, ChatId, Code, MachineId, Message, RequestId, WorkspaceId, WorktreeAction,
 };
 
-use super::{DIFF, SESSIONS, SETTINGS, TERMINAL, WORKTREE};
+use super::{DIFF, SESSIONS, SETTINGS, SYMBOLS, TERMINAL, WORKTREE};
 
 /// The workspace, request and subject an ask or its answer names.
 #[derive(PartialEq, Eq)]
@@ -15,12 +15,13 @@ pub(super) struct Asked {
     pub(super) about: About,
 }
 
-/// What an ask is about: a machine it names, its owner's own sessions on a machine, or a chat's
-/// diff or worktree, whose machine the server knows. Its answer must be about the same.
+/// What an ask is about: a machine it names, its owner's own sessions or code on a machine, or a
+/// chat's diff or worktree, whose machine the server knows. Its answer must be about the same.
 #[derive(PartialEq, Eq)]
 pub(super) enum About {
     Machine(MachineId),
     Sessions(MachineId),
+    Symbols(MachineId),
     Diff(ChatId),
     Worktree(ChatId),
 }
@@ -55,6 +56,8 @@ pub(crate) const fn needs(message: &Message) -> Option<Code> {
         Some(SESSIONS)
     } else if matches!(message, Message::DiffQuery(_)) {
         Some(DIFF)
+    } else if matches!(message, Message::SymbolsQuery(_)) {
+        Some(SYMBOLS)
     } else if matches!(
         message,
         Message::WorktreeQuery(_) | Message::WorktreeCommand(_)
@@ -95,6 +98,10 @@ pub(super) fn stamped(mut message: Message, by: &Asker) -> Option<(Asked, Messag
         query.by = by;
         let about = About::Diff(query.chat.clone());
         Asked::new(&query.workspace, &query.request, about)
+    } else if let Message::SymbolsQuery(query) = &mut message {
+        query.by = by;
+        let about = About::Symbols(query.machine.clone());
+        Asked::new(&query.workspace, &query.request, about)
     } else if let Message::WorktreeQuery(query) = &mut message {
         query.by = by;
         let about = About::Worktree(query.chat.clone());
@@ -118,6 +125,9 @@ pub(super) fn answering(message: &Message) -> Option<Asked> {
         Some(Asked::sessions(&answer.machine, &answer.request))
     } else if let Message::DiffAnswer(answer) = message {
         let about = About::Diff(answer.chat.clone());
+        Some(Asked::new(&answer.workspace, &answer.request, about))
+    } else if let Message::SymbolsAnswer(answer) = message {
+        let about = About::Symbols(answer.machine.clone());
         Some(Asked::new(&answer.workspace, &answer.request, about))
     } else if let Message::WorktreeAnswer(answer) = message {
         let about = About::Worktree(answer.chat.clone());

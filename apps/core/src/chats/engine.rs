@@ -8,12 +8,14 @@ mod by_hand;
 mod commands;
 mod cut;
 mod handle;
+mod hold;
 mod launch;
 mod pending;
 mod queries;
 mod rest;
 mod said;
 mod turns;
+mod unwritten;
 
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
@@ -26,17 +28,19 @@ use weacon_protocol::{
     RequestId, RunId, RunState, RunStatus, code,
 };
 
-use self::agent::{Agent, Order, Said};
+use self::agent::{Agent, FromRun, Order};
 use self::handle::Ask;
 pub(crate) use self::handle::{Chats, WeakChats};
 use self::launch::Launched;
 use self::pending::{PendingAnswer, PendingEnd, PendingInterrupt};
-use super::feed::Subscriber;
+use super::feed::{Client, Subscriber};
 use super::log::ChatLog;
 use crate::runs::{ChatKey, Runs};
 use crate::workspaces::Workspaces;
 
+/// How many clients' asks may wait for the engine.
 const ASKS: usize = 64;
+/// How many events from the chats' runs may wait for the engine.
 const SAYS: usize = 256;
 const IDLE_CHECK: std::time::Duration = std::time::Duration::from_mins(1);
 
@@ -70,35 +74,48 @@ fn unsupported() -> Fault {
 
 /// A chat the engine has open: one with a running agent, a waiting prompt or a subscriber.
 struct Chat {
-    events: ChatLog,
+    log: ChatLog,
     subscribers: Vec<Subscriber>,
     /// The way to the chat's agent: none without one, closed once it stopped reading, until
     /// its exit is reported.
     orders: Option<mpsc::UnboundedSender<Order>>,
     /// The run whose agent is starting, off the engine's loop.
     launching: Option<RunId>,
+    /// A run let go after a failed write whose agent is still starting.
+    let_go: Option<RunId>,
     pending_answers: Vec<PendingAnswer>,
     pending_end: Option<PendingEnd>,
     /// Interrupts committed or tried and not yet sent, each bound to the turn it stops.
     pending_interrupts: Vec<PendingInterrupt>,
     /// The agent's session when the runs journal couldn't save it.
     pending_session: Option<AgentSession>,
+    /// The local client carrying the chat on by hand: no turn starts while it holds it.
+    held: Option<Client>,
 }
 
 impl Chat {
-    fn forget_gone(&mut self) {
-        self.subscribers.retain(|subscriber| !subscriber.is_gone());
+    // Lets go of clients that hung up; whether one of them held the chat.
+    fn forget_gone(&mut self) -> bool {
+        self.subscribers
+            .retain(|subscriber| !subscriber.client().is_gone());
+        self.held.take_if(|holder| holder.is_gone()).is_some()
+    }
+
+    // Whether an agent is starting for the chat, even one let go after a failed write.
+    const fn is_starting(&self) -> bool {
+        self.launching.is_some() || self.let_go.is_some()
     }
 
     // Whether nothing needs the chat open.
     fn is_unused(&self) -> bool {
         self.orders.is_none()
-            && self.launching.is_none()
+            && !self.is_starting()
             && self.pending_interrupts.is_empty()
             && self.subscribers.is_empty()
             && self.pending_answers.is_empty()
             && self.pending_end.is_none()
             && self.pending_session.is_none()
+            && self.held.is_none()
     }
 }
 
@@ -108,11 +125,13 @@ pub(crate) struct Engine<A> {
     open_chats: HashMap<ChatKey, Chat>,
     host: Host<A>,
     asked: mpsc::Receiver<Ask>,
-    incoming: mpsc::Receiver<Said>,
-    says: mpsc::Sender<Said>,
+    incoming: mpsc::Receiver<FromRun>,
+    says: mpsc::Sender<FromRun>,
     /// The disk's state as last logged; turns wait on `disk`, never on this.
     disk_full: bool,
     disk: watch::Receiver<bool>,
+    /// Set while an install may be under way: prompts are queued and no new turn starts.
+    installing: bool,
     starts: mpsc::UnboundedSender<Launched<A>>,
     started: mpsc::UnboundedReceiver<Launched<A>>,
     log: Logger,
@@ -138,6 +157,7 @@ impl<A: Agent> Engine<A> {
             incoming,
             says,
             disk_full: false,
+            installing: false,
             disk,
             starts,
             started,
@@ -158,41 +178,21 @@ impl<A: Agent> Engine<A> {
                     continue;
                 }
                 ask = self.asked.recv() => match ask {
-                    Some(Ask::Command(command, answer)) => {
-                        let key = ChatKey::new(&command.workspace, &command.chat);
-                        drop(answer.send(self.command(&key, command).await));
-                        key
-                    }
-                    Some(Ask::Query(query, client, answer)) => {
-                        let key = ChatKey::new(&query.workspace, &query.chat);
-                        drop(answer.send(self.query(&key, query.query, &client).await));
-                        key
-                    }
-                    Some(Ask::Busy(answer)) => { self.answer_busy(answer).await; continue; }
+                    Some(ask) => match self.answer(ask).await {
+                        Some(key) => key,
+                        None => continue,
+                    },
                     None => return self.log.info("engine stopped", &[]),
                 },
-                Some(said) = self.incoming.recv() => {
-                    let key = said.of.key;
-                    if let Err(fault) = self.heard(&key, &said.of.run, said.heard).await {
-                        let fields = failed(&key, &said.of.run, &fault);
-                        self.log.error("run event not committed", &fields);
-                    }
-                    key
-                }
+                Some(said) = self.incoming.recv() => self.take_said(said).await,
                 Ok(()) = self.disk.changed() => {
                     let full = *self.disk.borrow_and_update();
                     self.set_disk_full(full).await;
                     continue;
                 }
-                Some(launched) = self.started.recv() => {
-                    let (key, run) = (launched.key.clone(), launched.run.clone());
-                    if let Err(fault) = self.finish_launch(launched).await {
-                        self.log.error("run start not handled", &failed(&key, &run, &fault));
-                    }
-                    key
-                }
+                Some(launched) = self.started.recv() => self.take_launched(launched).await,
             };
-            self.settle(&key);
+            self.close_if_unused(&key);
         }
     }
 
@@ -208,7 +208,7 @@ impl<A: Agent> Engine<A> {
 
     // Once nothing of `run`, the chat's own run, waits for a person, its turn is running again.
     async fn running_again(&mut self, key: &ChatKey, run: &RunId) -> Result<(), Fault> {
-        let log = &self.open(key).await?.events;
+        let log = &self.open(key).await?.log;
         let asks = log.runs().asks(run);
         let running = self
             .runs
@@ -243,7 +243,7 @@ impl<A: Agent> Engine<A> {
         outcome: Outcome,
     ) -> Result<(), Fault> {
         // A command's end is told once, whichever path gets there first.
-        if self.open(key).await?.events.has_ended(request) {
+        if self.open(key).await?.log.has_ended(request) {
             return Ok(());
         }
         let receipt = Receipt {
@@ -256,7 +256,7 @@ impl<A: Agent> Engine<A> {
     // Commits `event` to the chat's log, then tells its subscribers.
     async fn commit(&mut self, key: &ChatKey, event: ChatEvent) -> Result<(), Fault> {
         let chat = self.open(key).await?;
-        match chat.events.append(event).await {
+        match chat.log.append(event).await {
             Ok(entry) => {
                 self.publish(key, &update(key, entry));
                 Ok(())
@@ -280,7 +280,7 @@ impl<A: Agent> Engine<A> {
             subscriber.end();
         }
         if let Ok(log) = ChatLog::open(&root, &key.chat).await {
-            chat.events = log;
+            chat.log = log;
         }
     }
 
@@ -333,33 +333,34 @@ impl<A: Agent> Engine<A> {
         match self.open_chats.entry(key.clone()) {
             Entry::Occupied(open) => Ok(open.into_mut()),
             Entry::Vacant(closed) => Ok(closed.insert(Chat {
-                events: ChatLog::open(&root, &key.chat).await?,
+                log: ChatLog::open(&root, &key.chat).await?,
                 subscribers: Vec::new(),
                 orders: None,
                 launching: None,
+                let_go: None,
                 pending_answers: Vec::new(),
                 pending_end: None,
                 pending_interrupts: Vec::new(),
                 pending_session: None,
+                held: None,
             })),
         }
     }
 
-    // Closes a chat nobody is using, so its log doesn't stay open for good.
-    fn settle(&mut self, key: &ChatKey) {
-        let Some(chat) = self.open_chats.get_mut(key) else {
+    // Closes a chat nobody is using, so its log doesn't stay open for good. A held one is left
+    // to `close_unused`, which takes its prompts on once its holder is gone.
+    fn close_if_unused(&mut self, key: &ChatKey) {
+        let Some(chat) = self
+            .open_chats
+            .get_mut(key)
+            .filter(|chat| chat.held.is_none())
+        else {
             return;
         };
         chat.forget_gone();
         if chat.is_unused() {
             self.open_chats.remove(key);
         }
-    }
-
-    // Lets go of clients that hung up, and of the chats only they were watching.
-    fn sweep(&mut self) {
-        self.open_chats.values_mut().for_each(Chat::forget_gone);
-        self.open_chats.retain(|_, chat| !chat.is_unused());
     }
 }
 
@@ -398,7 +399,7 @@ mod tests {
     use weacon_model::ChatRuns;
     use weacon_protocol::{ChatAction, ChatAnswerKind, ChatQueryKind, RunEvent};
 
-    use super::agent::Heard;
+    use super::agent::Said;
     use super::by_hand::on_turn;
     use super::*;
     use crate::chats::test_support::{
@@ -436,7 +437,7 @@ mod tests {
 
     // Sends the chat's first prompt and returns the agent started for it.
     async fn first_turn(bench: &mut Bench, pushes: &mut mpsc::Receiver<Message>) -> Started {
-        bench.chats.command(prompt("r-1", "Hi")).await.unwrap();
+        bench.command(prompt("r-1", "Hi")).await.unwrap();
         assert_eq!(
             pushed(pushes, 4).await,
             [
@@ -459,17 +460,25 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn the_engine_is_busy_only_while_a_live_run_is_on_a_turn() {
+    async fn a_live_run_is_busy_on_a_turn_and_not_before_or_between_turns() {
         let mut bench = bench();
         let mut pushes = watch(&bench).await;
-        assert!(!bench.chats.downgrade().busy().await.unwrap(), "no run");
+        assert!(
+            !bench.chats.downgrade().pause_unless_busy().await.unwrap(),
+            "no run"
+        );
+        // Not busy, it paused new turns for an install that never came.
+        bench.chats.downgrade().resume_turns().await;
 
         let agent = first_turn(&mut bench, &mut pushes).await;
-        assert!(bench.chats.downgrade().busy().await.unwrap(), "on a turn");
+        assert!(
+            bench.chats.downgrade().pause_unless_busy().await.unwrap(),
+            "on a turn"
+        );
         agent.say.send(done(Outcome::Completed)).unwrap();
         pushed(&mut pushes, 3).await;
         assert!(
-            !bench.chats.downgrade().busy().await.unwrap(),
+            !bench.chats.downgrade().pause_unless_busy().await.unwrap(),
             "idle between turns"
         );
     }
@@ -515,7 +524,7 @@ mod tests {
             ]
         );
 
-        bench.chats.command(prompt("r-2", "More")).await.unwrap();
+        bench.command(prompt("r-2", "More")).await.unwrap();
         assert_eq!(
             pushed(&mut pushes, 3).await,
             [
@@ -537,11 +546,7 @@ mod tests {
         let mut pushes = watch(&bench).await;
         let mut agent = first_turn(&mut bench, &mut pushes).await;
 
-        bench
-            .chats
-            .command(prompt("r-2", "Then this"))
-            .await
-            .unwrap();
+        bench.command(prompt("r-2", "Then this")).await.unwrap();
         assert_eq!(
             pushed(&mut pushes, 2).await,
             ["5 prompt r-2 Then this", "6 receipt r-2 accepted"]
@@ -565,19 +570,28 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn a_repeated_request_does_nothing_and_a_conflicting_or_empty_one_is_refused() {
+    async fn a_repeated_request_does_nothing_a_conflicting_one_is_refused_and_an_empty_one_fails() {
         let mut bench = bench();
         let mut pushes = watch(&bench).await;
         let mut agent = first_turn(&mut bench, &mut pushes).await;
 
-        bench.chats.command(prompt("r-1", "Hi")).await.unwrap();
-        let conflict = bench.chats.command(prompt("r-1", "Bye")).await;
-        let empty = bench.chats.command(prompt("r-2", " \n")).await;
-        bench.chats.command(prompt("r-3", "Next")).await.unwrap();
+        bench.command(prompt("r-1", "Hi")).await.unwrap();
+        let conflict = bench.command(prompt("r-1", "Bye")).await;
+        for _ in 0..2 {
+            bench.command(prompt("r-2", " \n")).await.unwrap();
+        }
+        let other = bench.command(prompt("r-2", "Deploy")).await;
+        bench.command(prompt("r-3", "Next")).await.unwrap();
 
         assert_eq!(code_of(conflict), "request.conflict");
-        assert_eq!(code_of(empty), "chat.empty_prompt");
-        assert_eq!(pushed(&mut pushes, 1).await, ["5 prompt r-3 Next"]);
+        assert_eq!(code_of(other), "request.conflict");
+        assert_eq!(
+            pushed(&mut pushes, 2).await,
+            [
+                "5 receipt r-2 failed chat.empty_prompt",
+                "6 prompt r-3 Next"
+            ]
+        );
         agent.told.try_recv().unwrap_err();
     }
 
@@ -601,15 +615,11 @@ mod tests {
             allow("r-2", "c-1", "run-1", 2),
             allow("r-2", "c-2", "run-1", 1),
         ] {
-            assert_eq!(
-                code_of(bench.chats.command(wrong).await),
-                "agent.no_such_prompt"
-            );
+            assert_eq!(code_of(bench.command(wrong).await), "agent.no_such_prompt");
         }
         agent.told.try_recv().unwrap_err();
 
         bench
-            .chats
             .command(allow("r-2", "c-1", "run-1", 1))
             .await
             .unwrap();
@@ -624,7 +634,7 @@ mod tests {
         assert!(
             matches!(soon(agent.told.recv()).await, Some(Told::Answer(answer)) if answer.allow)
         );
-        let again = bench.chats.command(allow("r-3", "c-1", "run-1", 1)).await;
+        let again = bench.command(allow("r-3", "c-1", "run-1", 1)).await;
         assert_eq!(code_of(again), "agent.no_such_prompt");
     }
 
@@ -648,7 +658,7 @@ mod tests {
                 "10 run-1 is Sleeping",
             ]
         );
-        bench.chats.command(prompt("r-4", "Again")).await.unwrap();
+        bench.command(prompt("r-4", "Again")).await.unwrap();
         let mut next = soon(bench.started.recv()).await.unwrap();
         assert_eq!(
             (next.run_as.run.as_str(), next.run_as.session.clone()),
@@ -658,7 +668,7 @@ mod tests {
             soon(next.told.recv()).await,
             Some(Told::Send("Again".to_owned()))
         );
-        let late = bench.chats.command(allow("r-5", "c-1", "run-1", 2)).await;
+        let late = bench.command(allow("r-5", "c-1", "run-1", 2)).await;
         assert_eq!(code_of(late), "agent.no_such_prompt");
         next.told.try_recv().unwrap_err();
     }
@@ -683,11 +693,11 @@ mod tests {
                 "8 run-1 is Running",
             ]
         );
-        let late = bench.chats.command(allow("r-2", "c-1", "run-1", 1)).await;
+        let late = bench.command(allow("r-2", "c-1", "run-1", 1)).await;
         assert_eq!(code_of(late), "agent.no_such_prompt");
 
         let interrupt = command("r-3", "c-1", ChatAction::Interrupt);
-        bench.chats.command(interrupt).await.unwrap();
+        bench.command(interrupt).await.unwrap();
         assert_eq!(soon(agent.told.recv()).await, Some(Told::Interrupt));
         agent.say.send(done(Outcome::Interrupted)).unwrap();
         assert_eq!(
@@ -701,7 +711,7 @@ mod tests {
         );
 
         let idle = command("r-4", "c-1", ChatAction::Interrupt);
-        bench.chats.command(idle).await.unwrap();
+        bench.command(idle).await.unwrap();
         assert_eq!(pushed(&mut pushes, 1).await, ["13 receipt r-4 completed"]);
         agent.told.try_recv().unwrap_err();
     }
@@ -712,59 +722,34 @@ mod tests {
         let mut pushes = watch(&bench).await;
 
         let first = prompt_naming("r-1", "Hi", AgentKind::Codex);
-        bench.chats.command(first).await.unwrap();
+        bench.command(first).await.unwrap();
 
         let started = soon(bench.started.recv()).await.unwrap();
         assert_eq!(started.run_as.agent, AgentKind::Codex);
         skip(&mut pushes, 4).await;
         let other = prompt_naming("r-2", "More", AgentKind::Claude);
-        assert_eq!(
-            code_of(bench.chats.command(other).await),
-            "chat.agent_conflict"
-        );
+        bench.command(other).await.unwrap();
         let same = prompt_naming("r-3", "More", AgentKind::Codex);
-        bench.chats.command(same).await.unwrap();
-        assert_eq!(pushed(&mut pushes, 1).await, ["5 prompt r-3 More"]);
+        bench.command(same).await.unwrap();
+        assert_eq!(
+            pushed(&mut pushes, 2).await,
+            [
+                "5 receipt r-2 failed chat.agent_conflict",
+                "6 prompt r-3 More"
+            ]
+        );
     }
 
     #[tokio::test(start_paused = true)]
-    async fn an_agent_this_build_doesnt_know_is_refused() {
+    async fn a_prompt_naming_an_agent_this_build_doesnt_know_fails() {
         let bench = bench();
+        let mut pushes = watch(&bench).await;
 
         let newer = prompt_naming("r-1", "Hi", AgentKind::Newer);
+        bench.command(newer).await.unwrap();
 
-        assert_eq!(
-            code_of(bench.chats.command(newer).await),
-            "message.unsupported"
-        );
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn a_hold_is_refused_by_a_core_that_doesnt_offer_it() {
-        let bench = bench();
-
-        for action in [ChatAction::Hold, ChatAction::Release] {
-            let asked = bench.chats.command(command("r-1", "c-1", action)).await;
-            assert_eq!(code_of(asked), "message.unsupported");
-        }
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn a_hold_under_another_commands_request_is_refused_too() {
-        let bench = bench();
-        drop(
-            bench
-                .chats
-                .command(command("r-1", "c-1", ChatAction::Interrupt))
-                .await,
-        );
-
-        let asked = bench
-            .chats
-            .command(command("r-1", "c-1", ChatAction::Hold))
-            .await;
-
-        assert_eq!(code_of(asked), "message.unsupported");
+        let failed = pushed(&mut pushes, 1).await;
+        assert_eq!(failed, ["1 receipt r-1 failed message.unsupported"]);
     }
 
     #[tokio::test(start_paused = true)]
@@ -773,7 +758,7 @@ mod tests {
         let mut pushes = watch(&bench).await;
         bench.broken.store(true, Ordering::SeqCst);
 
-        bench.chats.command(prompt("r-1", "Hi")).await.unwrap();
+        bench.command(prompt("r-1", "Hi")).await.unwrap();
         assert_eq!(
             pushed(&mut pushes, 4).await,
             [
@@ -784,7 +769,7 @@ mod tests {
             ]
         );
         bench.broken.store(false, Ordering::SeqCst);
-        bench.chats.command(prompt("r-2", "Again")).await.unwrap();
+        bench.command(prompt("r-2", "Again")).await.unwrap();
 
         // The failed prompt left the queue: the new run gets only the next one.
         let mut started = soon(bench.started.recv()).await.unwrap();
@@ -800,8 +785,8 @@ mod tests {
         let mut bench = bench();
         let mut pushes = watch(&bench).await;
         let agent = first_turn(&mut bench, &mut pushes).await;
-        bench.chats.command(prompt("r-2", "Second")).await.unwrap();
-        bench.chats.command(prompt("r-3", "Third")).await.unwrap();
+        bench.command(prompt("r-2", "Second")).await.unwrap();
+        bench.command(prompt("r-3", "Third")).await.unwrap();
         skip(&mut pushes, 4).await;
 
         drop(agent);
@@ -844,8 +829,8 @@ mod tests {
 
         // Room for one event beside the place kept for the notice.
         let (slow, mut slowly) = client(2);
-        let resume = query("c-1", ChatQueryKind::Subscribe { after: 4 });
-        assert_eq!(bench.chats.query(resume, &slow).await.unwrap(), None);
+        let again = query("c-1", ChatQueryKind::Subscribe { after: 4 });
+        assert_eq!(bench.chats.query(again, &slow).await.unwrap(), None);
         for said in ["One", "Two", "Three"] {
             agent.say.send(text(said)).unwrap();
         }
@@ -873,9 +858,12 @@ mod tests {
         let mut bench = bench();
         let release = bench.hold_next_start();
 
-        let sent = soon(async { Some(bench.chats.command(prompt("r-1", "Hi")).await) }).await;
+        let sent = soon(async { Some(bench.command(prompt("r-1", "Hi")).await) }).await;
         assert!(matches!(sent, Some(Ok(()))));
-        assert!(bench.chats.downgrade().busy().await.unwrap(), "starting");
+        assert!(
+            bench.chats.downgrade().pause_unless_busy().await.unwrap(),
+            "starting"
+        );
         let (anyone, _pushes) = client(1);
         let elsewhere = query("c-2", ChatQueryKind::Snapshot);
         let answer = soon(async { Some(bench.chats.query(elsewhere, &anyone).await) }).await;
@@ -898,7 +886,7 @@ mod tests {
         let mut pushes = watch(&bench).await;
         bench.chats.disk_full(true);
 
-        bench.chats.command(prompt("r-1", "Hi")).await.unwrap();
+        bench.command(prompt("r-1", "Hi")).await.unwrap();
         let accepted = pushed(&mut pushes, 2).await;
         assert_eq!(accepted, ["1 prompt r-1 Hi", "2 receipt r-1 accepted"]);
         assert!(soon(bench.started.recv()).await.is_none());
@@ -915,10 +903,10 @@ mod tests {
     async fn an_interrupt_sent_while_the_agent_starts_stops_the_turn_it_was_starting_for() {
         let mut bench = bench();
         let release = bench.hold_next_start();
-        bench.chats.command(prompt("r-1", "Hi")).await.unwrap();
+        bench.command(prompt("r-1", "Hi")).await.unwrap();
 
         let interrupt = command("r-2", "c-1", ChatAction::Interrupt);
-        bench.chats.command(interrupt).await.unwrap();
+        bench.command(interrupt).await.unwrap();
         drop(release);
 
         let mut started = soon(bench.started.recv()).await.unwrap();
@@ -937,7 +925,7 @@ mod tests {
         let (mut bench, engine) = parts();
         let (anyone, _pushes) = client(1);
         // Enough queries to fill the engine's queue before it serves.
-        let ask = |chats: Chats, anyone: crate::chats::feed::Client| async move {
+        let ask = |chats: Chats, anyone: Client| async move {
             let snapshot = query("c-2", ChatQueryKind::Snapshot);
             chats.query(snapshot, &anyone).await
         };
@@ -952,7 +940,7 @@ mod tests {
             asked.await.unwrap().unwrap();
         }
 
-        bench.chats.command(prompt("r-1", "Hi")).await.unwrap();
+        bench.command(prompt("r-1", "Hi")).await.unwrap();
         assert!(soon(bench.started.recv()).await.is_none());
     }
 
@@ -1032,7 +1020,7 @@ mod tests {
         skip(&mut pushes, 4).await;
 
         let first = allow("r-2", "c-1", "run-1", 1);
-        bench.chats.command(first).await.unwrap();
+        bench.command(first).await.unwrap();
         // Of the two prompts, only the second still waits, as the fold of the log says.
         let (runs, waiting, events) = snapshot(&bench).await;
         let folded = ChatRuns::fold(&events);
@@ -1040,7 +1028,7 @@ mod tests {
         let folded_runs: Vec<_> = folded.run().cloned().into_iter().collect();
         assert_eq!((folded.waiting_seqs(), folded_runs), (waiting, runs));
         let second = allow("r-3", "c-1", "run-1", 2);
-        bench.chats.command(second).await.unwrap();
+        bench.command(second).await.unwrap();
 
         assert_eq!(
             pushed(&mut pushes, 5).await,
@@ -1114,11 +1102,14 @@ mod tests {
     async fn what_this_build_doesnt_know_is_refused_and_a_stopped_engine_says_so() {
         let bench = bench();
         let (anyone, _pushes) = client(2);
+        let mut pushes = watch(&bench).await;
 
         let action = bench
             .chats
-            .command(command("r-1", "c-1", ChatAction::Newer));
-        assert_eq!(code_of(action.await), "message.unsupported");
+            .command(command("r-1", "c-1", ChatAction::Newer), &anyone);
+        action.await.unwrap();
+        let failed = pushed(&mut pushes, 1).await;
+        assert_eq!(failed, ["1 receipt r-1 failed message.unsupported"]);
         let asked = bench
             .chats
             .query(query("c-1", ChatQueryKind::Newer), &anyone);
@@ -1129,7 +1120,7 @@ mod tests {
 
         let (stopped, engine) = parts();
         drop(engine);
-        let command = stopped.chats.command(prompt("r-1", "Hi")).await;
+        let command = stopped.command(prompt("r-1", "Hi")).await;
         assert_eq!(code_of(command), "chat.engine_stopped");
         let snapshot = query("c-1", ChatQueryKind::Snapshot);
         let asked = stopped.chats.query(snapshot, &anyone).await;
@@ -1150,8 +1141,8 @@ mod tests {
             .await
             .unwrap();
 
-        on.engine.settle(&key());
-        on.engine.settle(&other);
+        on.engine.close_if_unused(&key());
+        on.engine.close_if_unused(&other);
         assert!(
             on.engine.open_chats.contains_key(&key()) && on.engine.open_chats.contains_key(&other)
         );
@@ -1159,16 +1150,16 @@ mod tests {
         // The agent exits, and both clients hang up.
         drop(on.agent);
         on.engine
-            .heard(&key(), &run("run-1"), Heard::Exited(None))
+            .hear(&key(), &run("run-1"), Said::Exited(None))
             .await
             .unwrap();
-        on.engine.settle(&key());
+        on.engine.close_if_unused(&key());
         assert!(
             on.engine.open_chats.contains_key(&key()),
             "a client still watches it"
         );
         drop((on.pushes, watching));
-        on.engine.settle(&key());
+        on.engine.close_if_unused(&key());
         assert!(!on.engine.open_chats.contains_key(&key()));
 
         // A hung-up client's chat is let go when anyone subscribes anywhere.

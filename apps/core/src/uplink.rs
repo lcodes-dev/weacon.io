@@ -10,10 +10,11 @@ use tokio::time::{Instant, sleep, sleep_until, timeout, timeout_at};
 use tokio_tungstenite::tungstenite::{Message as Wire, Utf8Bytes};
 use weacon_observability::{Fault, Field, Logger};
 use weacon_protocol::{
-    AccountId, App, Asker, Capability, ChatCommand, Code, Envelope, ErrorBody, Hello, Message,
-    Outcome, PROTOCOL, Receipt, Welcome, code,
+    AccountId, App, Capability, ChatCommand, Code, Envelope, ErrorBody, Hello, Message, Outcome,
+    PROTOCOL, Receipt, Welcome, code,
 };
 
+use self::asking::{Asking, asking};
 use self::chats::{ChatLink, UPLOAD};
 use self::retry::Retry;
 use crate::chats::Chats;
@@ -32,6 +33,7 @@ const HELLO_WITHIN: Duration = Duration::from_secs(10);
 /// How many messages wait to cross between the daemon and the uplink.
 pub(crate) const QUEUE: usize = 64;
 
+mod asking;
 mod chats;
 mod retry;
 
@@ -263,51 +265,16 @@ impl Uplink {
         if ChatLink::is_for(&envelope.message) {
             return chats.take(envelope);
         }
-        drop(self.to_daemon.try_send(envelope));
-        Step::Nothing
+        let id = envelope.id;
+        match self.to_daemon.try_send(envelope) {
+            Ok(()) => Step::Nothing,
+            Err(_) => reply(for_now(id, code!("uplink.busy"))),
+        }
     }
 }
 
 fn reply(envelope: Envelope) -> Step {
     Step::Reply(Box::new(envelope))
-}
-
-/// Who asks the machine to act, in a message from the server.
-enum Asking<'a> {
-    /// The account the server stamped as the asker, if it did.
-    By(Option<&'a AccountId>),
-    /// Something the server says of its own, such as an error.
-    NotAnAsk,
-    /// A kind with no arm in [`asking`], refused until one says where its asker is.
-    Unknown,
-}
-
-fn asking(message: &Message) -> Asking<'_> {
-    let asker = if let Message::ChatCommand(command) = message {
-        &command.by
-    } else if let Message::MachineSettingsQuery(query) = message {
-        &query.by
-    } else if let Message::MachineSettingsCommand(command) = message {
-        &command.by
-    } else if let Message::TerminalCommand(command) = message {
-        &command.by
-    } else if let Message::DiffQuery(query) = message {
-        &query.by
-    } else if let Message::WorktreeQuery(query) = message {
-        &query.by
-    } else if let Message::WorktreeCommand(command) = message {
-        &command.by
-    } else if let Message::SessionsQuery(query) = message {
-        return Asking::By(query.by.as_ref());
-    } else if let Message::Error(_) | Message::ChatQuery(_) = message {
-        // A chat query is the server following a chat it stores.
-        return Asking::NotAnAsk;
-    } else if proposals::answers(message) {
-        return Asking::NotAnAsk;
-    } else {
-        return Asking::Unknown;
-    };
-    Asking::By(asker.as_ref().map(|asker: &Asker| &asker.account))
 }
 
 /// An error under the envelope `id` it answers.
@@ -317,6 +284,17 @@ pub(crate) const fn failure(id: u32, code: Code) -> Envelope {
         message: Message::Error(ErrorBody {
             code,
             retryable: false,
+        }),
+    }
+}
+
+/// An error refusing the ask under the envelope `id` for now, so the server sends it again.
+pub(crate) const fn for_now(id: u32, code: Code) -> Envelope {
+    Envelope {
+        id,
+        message: Message::Error(ErrorBody {
+            code,
+            retryable: true,
         }),
     }
 }
@@ -403,7 +381,7 @@ mod tests {
     use tokio_rustls::server::TlsStream;
     use tokio_tungstenite::WebSocketStream;
     use weacon_protocol::{
-        ChatAction, ChatId, ChatQuery, ChatQueryKind, MachineId, MachineSettingsAction,
+        Asker, ChatAction, ChatId, ChatQuery, ChatQueryKind, MachineId, MachineSettingsAction,
         MachineSettingsCommand, MachineSettingsQuery, MachineSettingsQueryKind, MemberId,
         RequestId, RunEvent, SessionsQuery, SessionsQueryKind, TerminalAction, TerminalCommand,
         TerminalId, Welcome, WorkspaceId, WorktreeAction, WorktreeCommand, WorktreeQuery,
@@ -701,10 +679,19 @@ mod tests {
                 by: by.clone(),
             }),
             Message::SessionsQuery(SessionsQuery {
-                request,
+                request: request.clone(),
                 machine: machine.clone(),
                 query: SessionsQueryKind::List,
                 by: account,
+            }),
+            Message::SymbolsQuery(weacon_protocol::SymbolsQuery {
+                request,
+                machine: machine.clone(),
+                workspace: workspace.clone(),
+                query: weacon_protocol::SymbolsQueryKind::Search {
+                    words: "run".to_owned(),
+                },
+                by: by.clone(),
             }),
             Message::TerminalCommand(TerminalCommand {
                 terminal: TerminalId::try_from("t-1".to_owned()).unwrap(),
@@ -798,8 +785,8 @@ mod tests {
             }),
         );
 
-        assert_eq!(owners, vec![None; 7]);
-        assert_eq!(others, vec![not_owner; 14]);
+        assert_eq!(owners, vec![None; 8]);
+        assert_eq!(others, vec![not_owner; 16]);
         // A kind this build doesn't know arrives as `Message::Unknown`.
         assert!(matches!(asking(&Message::Unknown), Asking::Unknown));
         assert_eq!(error, None);
@@ -845,6 +832,36 @@ mod tests {
         assert_eq!(ended.unwrap(), Ended::Lost);
         assert_eq!(heard_back, answer.message);
         assert_eq!(taken.try_recv().unwrap(), query);
+    }
+
+    #[tokio::test]
+    async fn an_ask_the_daemon_has_no_room_for_is_refused_for_now() {
+        let dir = TempDir::new().unwrap();
+        let (to_daemon, _taken) = mpsc::channel(1);
+        let link = with_commands(&dir, to_daemon);
+        let ask = || every_ask(Some(&owner())).remove(0);
+        assert_eq!(answered(&link, ask()), None);
+
+        let frame = text(&Envelope {
+            id: 9,
+            message: ask(),
+        });
+        let mut chats = ChatLink::new(link.chats.clone(), false, link.log.clone());
+        let Step::Reply(reply) = link.answer(frame, &owner(), &mut chats) else {
+            panic!("not refused");
+        };
+
+        let busy = ErrorBody {
+            code: code!("uplink.busy"),
+            retryable: true,
+        };
+        assert_eq!(
+            *reply,
+            Envelope {
+                id: 9,
+                message: Message::Error(busy)
+            }
+        );
     }
 
     #[tokio::test]

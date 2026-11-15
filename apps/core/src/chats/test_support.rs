@@ -86,6 +86,11 @@ pub(crate) struct Bench {
 }
 
 impl Bench {
+    /// Sends `command` from a client whose identity doesn't matter.
+    pub(crate) async fn command(&self, command: ChatCommand) -> Result<(), Fault> {
+        self.chats.command(command, &someone()).await
+    }
+
     /// Registers a new, empty repository as `id` in the chats' workspace.
     pub(crate) fn register(&self, id: &str) -> RepoId {
         let folder = self.dir.join("repos").join(id);
@@ -286,6 +291,11 @@ pub(crate) fn query(chat_id: &str, query: ChatQueryKind) -> ChatQuery {
 pub(crate) fn client(queue: usize) -> (Client, mpsc::Receiver<Message>) {
     let (push, pushed) = mpsc::channel(queue);
     (Client { push }, pushed)
+}
+
+/// A client whose identity doesn't matter, such as a prompt's sender.
+pub(crate) fn someone() -> Client {
+    client(1).0
 }
 
 /// What `received` gives within a few seconds, or `None`, so a test that waits fails instead

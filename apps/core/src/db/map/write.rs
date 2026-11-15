@@ -1,7 +1,7 @@
 //! The rows a layer's replacement writes, inside its transaction.
 
 use sqlx::{QueryBuilder, Sqlite};
-use weacon_codemap::{Entry, Facts};
+use weacon_codemap::{Entry, FACTS_VERSION, Facts};
 use weacon_observability::Fault;
 use weacon_protocol::code;
 
@@ -101,14 +101,15 @@ pub(super) async fn insert_facts(
             })
             .collect::<Result<Vec<_>, Fault>>()?;
         let mut query = QueryBuilder::<Sqlite>::new(
-            "INSERT OR REPLACE INTO map_facts (workspace_id, repo, path, blob, facts) ",
+            "INSERT OR REPLACE INTO map_facts (workspace_id, repo, path, blob, facts, version) ",
         );
         query.push_values(rows, |mut row, (path, blob, json)| {
             row.push_bind(workspace)
                 .push_bind(repo)
                 .push_bind(path)
                 .push_bind(blob)
-                .push_bind(json);
+                .push_bind(json)
+                .push_bind(FACTS_VERSION);
         });
         query
             .build()
@@ -126,7 +127,7 @@ pub(super) async fn insert_entries(
 ) -> Result<(), Fault> {
     for batch in entries.chunks(BATCH) {
         let mut query = QueryBuilder::<Sqlite>::new(
-            "INSERT INTO map_search (workspace_id, repo, layer, path, kind, name, body) ",
+            "INSERT INTO map_search (workspace_id, repo, layer, path, kind, line, name, body) ",
         );
         query.push_values(batch, |mut row, entry| {
             row.push_bind(workspace)
@@ -134,6 +135,7 @@ pub(super) async fn insert_entries(
                 .push_bind(layer)
                 .push_bind(&entry.file)
                 .push_bind(&entry.kind)
+                .push_bind(i64::try_from(entry.line).unwrap_or(i64::MAX))
                 .push_bind(&entry.name)
                 .push_bind(&entry.body);
         });

@@ -1,11 +1,9 @@
 //! The git module's own state files: each a JSON list, read whole and written whole, in the
 //! workspace's folder.
 
-use std::collections::BTreeSet;
-use std::fs::{self, File};
+use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::{Condvar, Mutex, PoisonError};
 
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -16,7 +14,7 @@ use super::Git;
 use super::chats::ChatRepos;
 use super::removal::Journal;
 use super::repos::{Repo, Repos};
-use crate::platform;
+use crate::hold::{Hold, hold as take};
 use crate::workspaces::Workspaces;
 
 /// A workspace's git state: its repositories, its chats' worktrees, and those in the Trash.
@@ -74,59 +72,9 @@ pub(super) fn save<T: Serialize>(file: &Path, items: &[T]) -> io::Result<()> {
     weacon_appkit::write_whole(file, &serde_json::to_vec(items)?)
 }
 
-// The lock files this process holds: the system's lock is the whole process's, so it can't keep
-// one of its own threads from another.
-static HELD: Mutex<BTreeSet<PathBuf>> = Mutex::new(BTreeSet::new());
-static LET_GO: Condvar = Condvar::new();
-
-/// A hold on changing a file, kept until dropped, so nothing else changes it meanwhile.
-#[derive(Debug)]
-pub(super) struct Hold {
-    file: Option<File>,
-    lock: PathBuf,
-}
-
-impl Drop for Hold {
-    fn drop(&mut self) {
-        // Closed first: closing the file lets the system's lock go, and another thread could
-        // otherwise take the path and then lose its lock to this close.
-        drop(self.file.take());
-        let_go(&self.lock);
-    }
-}
-
 /// A hold on changing `file`, once another holding it, in this process or another, lets go.
 pub(super) fn hold(file: &Path) -> io::Result<Hold> {
-    let lock = file.with_extension("lock");
-    if let Some(parent) = lock.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    let mut held = HELD.lock().unwrap_or_else(PoisonError::into_inner);
-    while !held.insert(lock.clone()) {
-        held = LET_GO.wait(held).unwrap_or_else(PoisonError::into_inner);
-    }
-    drop(held);
-    let taken = File::create(&lock).and_then(|opened| {
-        platform::lock_for_process(&opened)?;
-        Ok(opened)
-    });
-    match taken {
-        Ok(opened) => Ok(Hold {
-            file: Some(opened),
-            lock,
-        }),
-        Err(error) => {
-            let_go(&lock);
-            Err(error)
-        }
-    }
-}
-
-fn let_go(lock: &Path) {
-    HELD.lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .remove(lock);
-    LET_GO.notify_all();
+    take(&file.with_extension("lock"))
 }
 
 #[cfg(test)]

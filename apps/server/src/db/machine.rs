@@ -317,6 +317,7 @@ pub(super) fn paired(
         paired_at,
         core: None,
         missing: Vec::new(),
+        connected: false,
     })
 }
 
@@ -462,6 +463,7 @@ mod tests {
                 paired_at: NOW + 1,
                 core: None,
                 missing: Vec::new(),
+                connected: false,
             }]
         );
     }

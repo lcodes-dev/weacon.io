@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import type { Page } from "playwright-core";
 
 import { PROTOCOL } from "../../../tooling/ts/version.ts";
-import type { App, ChatEntry, Envelope, MachineSettings, OutsideSession, PairClaim, PairClaimed, PairStart, PairStarted, SessionsAnswerKind } from "../src/protocol.ts";
+import type { App, ChatEntry, Envelope, MachineSettings, OutsideSession, PairClaim, PairClaimed, PairStart, PairStarted, SessionsAnswerKind, Symbol as CodeSymbol } from "../src/protocol.ts";
 
 // The core's own test key, and the fingerprint the core prints for it.
 export const KEY = "8520f0098930a754748b7ddcb43ef75a0dbf3a0d26381af4eba4a98eaa9b4e6a";
@@ -96,15 +96,17 @@ export type Outside = { sessions: OutsideSession[]; events: ChatEntry[] };
 /**
  * A machine's core, connected to the server, that keeps `settings` and answers for them, and
  * counts the queries; once told to refuse, it refuses changes as a core does a stranger's.
- * Given `outside`, it also answers for those sessions, as they are when asked.
+ * Given `outside`, it also answers for those sessions, as they are when asked, and given
+ * `symbols`, it finds those whose name holds every word asked.
  */
 export async function core(
   page: Page,
   token: string,
   settings: MachineSettings,
   outside?: Outside,
+  symbols?: CodeSymbol[],
 ): Promise<{ settings: MachineSettings; queries: number; set(settings: MachineSettings): void; refuse(): void; close(): void }> {
-  const socket = dial(page, token, BUILD, ["machine.connect", "machine.settings", ...(outside === undefined ? [] : ["sessions.read"])]);
+  const socket = dial(page, token, BUILD, ["machine.connect", "machine.settings", ...(outside === undefined ? [] : ["sessions.read"]), ...(symbols === undefined ? [] : ["symbols.search"])]);
   const held = { settings, refusing: false, queries: 0 };
   const send = (envelope: Envelope) => socket.send(JSON.stringify(envelope));
   await new Promise<void>((resolve, reject) => {
@@ -118,6 +120,11 @@ export async function core(
         const answer: SessionsAnswerKind =
           query.kind === "list" ? { kind: "list", sessions: outside.sessions } : { kind: "opened", events: outside.events.filter(({ seq }) => seq > query.after), more: false };
         send({ id: envelope.id, type: "sessions_answer", request: envelope.request, machine: envelope.machine, answer });
+      } else if (envelope.type === "symbols_query" && symbols !== undefined && envelope.query.kind === "search") {
+        const words = envelope.query.words.toLowerCase().split(/\s+/).filter((word) => word !== "");
+        const found = symbols.filter(({ name }) => words.every((word) => name.toLowerCase().includes(word)));
+        const { request, machine, workspace } = envelope;
+        send({ id: envelope.id, type: "symbols_answer", request, machine, workspace, answer: { kind: "found", symbols: found, more: false } });
       } else if (envelope.type === "machine_settings_command" && held.refusing) {
         send({ id: envelope.id, type: "error", code: "settings.not_owner", retryable: false });
         return;

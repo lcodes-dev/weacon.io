@@ -7,7 +7,7 @@ use weacon_protocol::{
     RunEvent,
 };
 
-use super::agent::Heard;
+use super::agent::Said;
 use super::{Engine, PendingAnswer};
 use crate::chats::test_support::{
     Bench, FakeAgent, Started, Told, allow, asks, client, key, parts, prompt, run, skip, soon,
@@ -39,13 +39,11 @@ pub(super) async fn on_turn() -> OnTurn {
 }
 
 pub(super) async fn hear(engine: &mut Engine<FakeAgent>, event: RunEvent) -> Result<(), Fault> {
-    engine
-        .heard(&key(), &run("run-1"), Heard::Event(event))
-        .await
+    engine.hear(&key(), &run("run-1"), Said::Event(event)).await
 }
 
 pub(super) async fn latest(engine: &mut Engine<FakeAgent>) -> ChatEvent {
-    let log = &engine.open(&key()).await.unwrap().events;
+    let log = &engine.open(&key()).await.unwrap().log;
     let mut window = log.window(u64::MAX, 1).await.unwrap();
     window.pop().unwrap().event
 }

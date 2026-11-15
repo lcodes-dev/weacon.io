@@ -5,8 +5,9 @@ use weacon_protocol::{
     ChatEvent, Message, Outcome, PermissionAnswer, RunEvent, RunId, RunState, RunUpdate, code,
 };
 
-use super::agent::{Agent, Heard, Order};
+use super::agent::{Agent, Order, Said};
 use super::cut::cut;
+use super::unwritten::is_unwritten;
 use super::{ChatKey, Engine, about, failed};
 
 /// How a run's event reached the log: whole, or cut down to fit one frame.
@@ -16,24 +17,24 @@ enum Logged {
 }
 
 impl<A: Agent> Engine<A> {
-    pub(super) async fn heard(
+    pub(super) async fn hear(
         &mut self,
         key: &ChatKey,
         run: &RunId,
-        heard: Heard,
+        said: Said,
     ) -> Result<(), Fault> {
         if !self.is_live(key) || self.run_of(key).as_ref() != Some(run) {
             return Ok(());
         }
-        match heard {
-            Heard::Exited(fault) => {
+        match said {
+            Said::Exited(fault) => {
                 if let Some(fault) = fault {
                     let fields = failed(key, run, &fault);
                     self.log.warn("run output not read", &fields);
                 }
                 self.exited(key, run).await
             }
-            Heard::Event(event @ RunEvent::TextDelta { .. }) => {
+            Said::Event(event @ RunEvent::TextDelta { .. }) => {
                 let update = RunUpdate {
                     run: run.clone(),
                     event,
@@ -41,13 +42,13 @@ impl<A: Agent> Engine<A> {
                 self.publish(key, &Message::Run(update));
                 Ok(())
             }
-            Heard::Event(event) => self.said(key, run, event).await,
+            Said::Event(event) => self.on_event(key, run, event).await,
         }
     }
 
     // Commits what the run said and acts on it.
-    async fn said(&mut self, key: &ChatKey, run: &RunId, event: RunEvent) -> Result<(), Fault> {
-        let committed = self.commit_said(key, run, &event).await;
+    async fn on_event(&mut self, key: &ChatKey, run: &RunId, event: RunEvent) -> Result<(), Fault> {
+        let committed = self.commit_event(key, run, &event).await;
         match event {
             // Kept whether or not the event was committed: the chat's next run resumes it.
             RunEvent::Started { session } => {
@@ -58,8 +59,8 @@ impl<A: Agent> Engine<A> {
                 self.permission_asked(key, run, prompt, committed).await
             }
             RunEvent::PermissionWithdrawn { prompt, .. } => {
-                self.permission_withdrawn(key, run, prompt, committed.map(drop))
-                    .await
+                let withdrawn = self.permission_withdrawn(key, run, prompt).await;
+                committed.map(drop).and(withdrawn)
             }
             // An agent that leaves its turn unknown is exiting; nothing more goes to it.
             RunEvent::Finished {
@@ -68,9 +69,15 @@ impl<A: Agent> Engine<A> {
                 let exited = self.exited(key, run).await;
                 committed.and(exited)
             }
-            // The turn is over whether or not its last event could be committed.
+            // The turn is over whether or not its last event could be committed; a run whose last
+            // word couldn't be written is ended next, so it takes no other turn.
             RunEvent::Finished { outcome } => {
                 let ended = self.end_turn(key, run, outcome).await;
+                if let Err(fault) = &committed
+                    && is_unwritten(fault)
+                {
+                    return committed.map(drop).and(ended);
+                }
                 let advanced = self.advance(key).await;
                 committed.and(ended).and(advanced)
             }
@@ -83,26 +90,30 @@ impl<A: Agent> Engine<A> {
         }
     }
 
-    // The agent no longer asks. An answer still on its way is never given, and a failed write
-    // is tried again, which reopens the log, unless the log has the withdrawal all the same.
+    // The agent no longer asks. An answer still on its way is never given, and a withdrawal
+    // whose write failed is tried again, which reopens the log.
     async fn permission_withdrawn(
         &mut self,
         key: &ChatKey,
         run: &RunId,
         prompt: u32,
-        committed: Result<(), Fault>,
     ) -> Result<(), Fault> {
         let answers = &mut self.open(key).await?.pending_answers;
         answers.retain(|answered| answered.answer.prompt != prompt);
-        let logged = !self.open(key).await?.events.runs().waits(run, prompt);
-        if committed.is_err() && !logged {
-            let event = RunEvent::PermissionWithdrawn {
-                run: run.clone(),
-                prompt,
-            };
-            self.commit_said(key, run, &event).await?;
-        }
+        self.withdraw(key, run, prompt).await?;
         self.running_again(key, run).await
+    }
+
+    // Withdraws `prompt` while the log has it waiting, as after a write reported failed.
+    async fn withdraw(&mut self, key: &ChatKey, run: &RunId, prompt: u32) -> Result<(), Fault> {
+        if !self.open(key).await?.log.runs().waits(run, prompt) {
+            return Ok(());
+        }
+        let event = RunEvent::PermissionWithdrawn {
+            run: run.clone(),
+            prompt,
+        };
+        self.commit_event(key, run, &event).await.map(drop)
     }
 
     // A prompt a person can't be shown in full is refused for them; it never waits unseen.
@@ -124,20 +135,12 @@ impl<A: Agent> Engine<A> {
         self.order(key, Order::Answer(answer));
         self.log
             .warn("permission prompt refused unseen", &about(key, run));
-        // Withdrawn wherever it reached the log, even by a write reported failed.
-        let logged = self.open(key).await?.events.runs().waits(run, prompt);
-        if committed.is_ok() || logged {
-            let event = RunEvent::PermissionWithdrawn {
-                run: run.clone(),
-                prompt,
-            };
-            self.commit_said(key, run, &event).await?;
-        }
+        self.withdraw(key, run, prompt).await?;
         committed.map(drop)
     }
 
     // Commits a run's event, cut down when it is too large for one frame.
-    async fn commit_said(
+    async fn commit_event(
         &mut self,
         key: &ChatKey,
         run: &RunId,
@@ -267,7 +270,7 @@ mod tests {
             soon(on.agent.told.recv()).await,
             Some(Told::Send("Hi".to_owned()))
         );
-        on.engine.open(&key()).await.unwrap().events.jam();
+        on.engine.open(&key()).await.unwrap().log.jam();
 
         let refused = on.engine.command(&key(), prompt("r-2", "More")).await;
         assert_eq!(refused.unwrap_err().code().as_str(), "chat.log_not_written");
@@ -308,7 +311,7 @@ mod tests {
     async fn an_agents_session_is_kept_even_when_its_event_cant_be_committed() {
         let mut on = on_turn().await;
         let session = session();
-        on.engine.open(&key()).await.unwrap().events.jam();
+        on.engine.open(&key()).await.unwrap().log.jam();
 
         let started = RunEvent::Started {
             session: session.clone(),
@@ -323,14 +326,15 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn a_withdrawal_whose_write_fails_is_written_again_and_the_prompt_stops_waiting() {
         let mut on = on_ask().await;
-        on.engine.open(&key()).await.unwrap().events.jam();
+        on.engine.open(&key()).await.unwrap().log.jam();
         let withdrawn = RunEvent::PermissionWithdrawn {
             run: run("run-1"),
             prompt: 1,
         };
 
-        hear(&mut on.engine, withdrawn).await.unwrap();
+        let failed = hear(&mut on.engine, withdrawn).await;
 
+        assert_eq!(failed.unwrap_err().code().as_str(), "chat.log_not_written");
         assert!(waiting_in(&mut on.engine).await.is_empty());
         let refused = on.engine.command(&key(), allow_one("r-2").0).await;
         assert_eq!(refused.unwrap_err().code().as_str(), "agent.no_such_prompt");
@@ -339,23 +343,23 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn what_another_run_says_is_ignored_and_a_read_failure_is_logged_once() {
         let mut on = on_turn().await;
-        let stale = Heard::Event(text("Old"));
-        on.engine.heard(&key(), &run("run-9"), stale).await.unwrap();
+        let stale = Said::Event(text("Old"));
+        on.engine.hear(&key(), &run("run-9"), stale).await.unwrap();
         let other = ChatKey {
             chat: chat("c-2"),
             ..key()
         };
-        let elsewhere = Heard::Event(text("Other"));
+        let elsewhere = Said::Event(text("Other"));
         on.engine
-            .heard(&other, &run("run-1"), elsewhere)
+            .hear(&other, &run("run-1"), elsewhere)
             .await
             .unwrap();
-        assert_eq!(on.engine.open(&key()).await.unwrap().events.seq(), 4);
+        assert_eq!(on.engine.open(&key()).await.unwrap().log.seq(), 4);
         assert!(!on.engine.open_chats.contains_key(&other));
 
         let fault = Fault::new(code!("agent.io_failed"), "The agent's pipes failed");
-        let gone = Heard::Exited(Some(fault));
-        on.engine.heard(&key(), &run("run-1"), gone).await.unwrap();
+        let gone = Said::Exited(Some(fault));
+        on.engine.hear(&key(), &run("run-1"), gone).await.unwrap();
 
         assert!(!on.engine.is_live(&key()));
         assert_eq!(on.engine.turn(&key()), None);
@@ -374,10 +378,10 @@ mod tests {
         );
         assert_eq!(err["code"], "agent.io_failed");
         on.engine
-            .heard(&key(), &run("run-1"), Heard::Exited(None))
+            .hear(&key(), &run("run-1"), Said::Exited(None))
             .await
             .unwrap();
-        assert_eq!(on.engine.open(&key()).await.unwrap().events.seq(), 6);
+        assert_eq!(on.engine.open(&key()).await.unwrap().log.seq(), 6);
     }
 
     #[tokio::test(start_paused = true)]
@@ -407,7 +411,7 @@ mod tests {
             .join("chats/c-c-1.jsonl");
         std::fs::rename(&file, file.with_extension("moved")).unwrap();
         std::fs::create_dir(&file).unwrap();
-        on.engine.open(&key()).await.unwrap().events.jam();
+        on.engine.open(&key()).await.unwrap().log.jam();
         let withdrawn = RunEvent::PermissionWithdrawn {
             run: run("run-1"),
             prompt: 1,
@@ -435,17 +439,13 @@ mod tests {
             prompt: 1,
         };
         hear(&mut on.engine, event).await.unwrap();
-        let failed = Fault::new(
-            code!("chat.log_not_written"),
-            "The chat's log can't be written",
-        );
 
         on.engine
-            .permission_withdrawn(&key(), &run("run-1"), 1, Err(failed))
+            .permission_withdrawn(&key(), &run("run-1"), 1)
             .await
             .unwrap();
 
-        let log = &on.engine.open(&key()).await.unwrap().events;
+        let log = &on.engine.open(&key()).await.unwrap().log;
         let entries = log.window(u64::MAX, 64).await.unwrap();
         let withdrawals = entries.iter().filter(|entry| {
             matches!(&entry.event, ChatEvent::Run { update } if matches!(update.event, RunEvent::PermissionWithdrawn { .. }))

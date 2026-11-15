@@ -6,11 +6,12 @@ use std::time::Instant;
 use weacon_appkit::Ending;
 use weacon_codemap::{ContractKind, Index, SourceFile, index};
 use weacon_observability::Fault;
-use weacon_protocol::{FlowArgs, MapArgs, McpCall, SymbolArgs, code};
+use weacon_protocol::{FlowArgs, MapArgs, McpCall, SymbolArgs, WorkspaceId, code};
 
 use crate::app::App;
 use crate::cli::{ContractFilter, MapCommand, MapSubcommand};
-use crate::codemap::{LARGEST, index_failed, read_failed};
+use crate::codemap::{LARGEST, SEARCHED, index_failed, read_failed};
+use crate::db::{BASE, Db, Layer, LocalRepo, Looking};
 use crate::git::Git;
 use crate::mcp::tools;
 
@@ -36,6 +37,7 @@ pub(crate) fn run(
         Some(MapSubcommand::DocsFor { path }) => {
             answer(&McpCall::DocsFor(SymbolArgs { path, budget }), &root)?
         }
+        Some(MapSubcommand::Search { words }) => search(&root, &words.join(" "), budget)?,
         Some(MapSubcommand::Hotspots) => hotspots(app, budget, &root)?,
         Some(MapSubcommand::Architecture) => answered(&root, budget, Index::architecture)?,
         Some(MapSubcommand::Contracts { kind }) => {
@@ -117,6 +119,28 @@ fn print(out: &mut impl Write, text: &str) -> Result<(), Fault> {
 /// What the MCP's tool answers to `call` from the code in `folder`, read now; it blocks.
 fn answer(call: &McpCall, folder: &Path) -> Result<String, Fault> {
     index_folder(folder).map(|(map, _)| tools::answer_from(call, &map, &[]))
+}
+
+/// What the MCP's `search` tool answers for `words` from the code in `folder`, read now into a
+/// map in memory; it blocks.
+fn search(folder: &Path, words: &str, budget: Option<u32>) -> Result<String, Fault> {
+    let (map, _) = index_folder(folder)?;
+    let entries = map.entries();
+    let hits = crate::app::runtime()?.block_on(async {
+        let db = Db::memory().await?;
+        // A workspace of its own, in a database no one else opens.
+        let local = WorkspaceId::try_from("local".to_owned()).map_err(|_| read_failed())?;
+        let map = db.workspace(&local).map(&LocalRepo::at(folder));
+        let layer = Layer {
+            name: BASE.to_owned(),
+            commit: String::new(),
+            generation: map.begin().await?,
+            files: Vec::new(),
+        };
+        map.replace(&layer, &[], &entries).await?;
+        map.search(BASE, words, Looking::Everything, SEARCHED).await
+    })?;
+    Ok(tools::found(&hits, tools::budget(budget)))
 }
 
 /// What `answer` gives the index of `folder` within `budget`, or that it has no map; it blocks.
@@ -486,6 +510,38 @@ mod tests {
             printed(&docs_only, Some(MapSubcommand::Flows), None),
             "Flows pinned in the docs: 1.\n- docs/run.md:1  a::run -> a::gone: breaks: no item a::run\n"
         );
+    }
+
+    fn search(words: &[&str]) -> MapSubcommand {
+        let words = words.iter().map(|word| (*word).to_owned()).collect();
+        MapSubcommand::Search { words }
+    }
+
+    #[test]
+    fn search_prints_the_items_and_docs_that_match_every_word_within_the_budget() {
+        let many = (0..100).fold(String::new(), |text, n| {
+            text + &format!("pub fn go_{n}() {{}}\n")
+        });
+        let mut files = CRATE.to_vec();
+        files.extend([
+            ("docs/run.md", "How a run goes.\n"),
+            ("b/Cargo.toml", "[package]\nname = \"b\"\n"),
+            ("b/src/lib.rs", &many),
+        ]);
+        let root = repo(&files);
+
+        assert_eq!(
+            printed(&root, Some(search(&["run"])), None),
+            "Found 2:\n- fn a::run  a/src/lib.rs:2\n- doc docs/run.md  docs/run.md:1\n"
+        );
+        assert_eq!(
+            printed(&root, Some(search(&["m", "go"])), None),
+            "Found 2:\n- fn a::m::go  a/src/m.rs:1\n- doc docs/run.md  docs/run.md:1\n"
+        );
+        assert_eq!(printed(&root, Some(search(&["\" OR"])), None), "Found 0:\n");
+        let cut = printed(&root, Some(search(&["go"])), Some(1000));
+        assert!(cut.starts_with("Found 50:\n") && cut.len() <= 1000, "{cut}");
+        assert!(printed(&root, Some(search(&["go"])), None).len() > 1000);
     }
 
     fn symbol(path: &str) -> MapSubcommand {

@@ -1,7 +1,7 @@
 import { useState } from "react";
 
 import type { Later } from "../connection.ts";
-import type { AccessLevel, AgentKind, MachineSettings, MachineSettingsAction, MachineSummary, SignInState } from "../protocol.ts";
+import type { AccessLevel, AgentKind, MachineOs, MachineSettings, MachineSettingsAction, MachineSummary, SignInState } from "../protocol.ts";
 import { useAsk } from "../api/ask.ts";
 import { useLoaded } from "../api/loaded.ts";
 import { Problem } from "../api/problem.tsx";
@@ -60,7 +60,13 @@ export function MachineSettingsView({ machine, socket, later, pins, relays }: Pr
       {settings.loading && <p className="muted">Loading</p>}
       {settings.problem !== undefined && <Problem text={settings.problem} retry={() => void settings.load()} />}
       {shown !== undefined && (
-        <Shown settings={shown} busy={changing.busy} set={set} signIn={relays && signingIn === undefined ? setSigningIn : undefined} />
+        <Shown
+          settings={shown}
+          os={machine.os}
+          busy={changing.busy}
+          set={set}
+          signIn={relays && signingIn === undefined ? setSigningIn : undefined}
+        />
       )}
       {changing.problem !== undefined && <p role="alert">{changing.problem}</p>}
       {signingIn !== undefined && (
@@ -90,13 +96,14 @@ export function MachineSettingsView({ machine, socket, later, pins, relays }: Pr
 
 type ShownProps = {
   settings: MachineSettings;
+  os: MachineOs;
   busy: boolean;
   set(action: MachineSettingsAction): void;
   /** Opens a sign-in terminal for an agent; none while one is open or none can be. */
   signIn: ((agent: AgentKind) => void) | undefined;
 };
 
-function Shown({ settings, busy, set, signIn }: ShownProps) {
+function Shown({ settings, os, busy, set, signIn }: ShownProps) {
   const { reports, access, team } = settings;
   return (
     <>
@@ -146,6 +153,12 @@ function Shown({ settings, busy, set, signIn }: ShownProps) {
       </label>
       {team && access === "full" && (
         <p role="alert">Full access is on in a team workspace. Its agents change files on this machine without asking.</p>
+      )}
+      {access === "full" && os === "windows" && (
+        <p>On Windows the command guard needs a POSIX shell, such as Git Bash, which can't be assured here, so at full access Claude Code still asks before every command — the same as ask first. Codex has no such guard.</p>
+      )}
+      {access === "full" && os !== "windows" && (
+        <p>Even at full access, Claude Code still asks before it reaches outside the workspace or an agent's sign-ins. It catches mistakes, not an agent that is trying, and is not a sandbox. Codex has no such guard.</p>
       )}
       <h4>Sign-ins</h4>
       <ul aria-label="Sign-ins">

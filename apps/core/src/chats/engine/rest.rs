@@ -13,6 +13,8 @@ impl<A: Agent> Engine<A> {
     // Stops each agent idle for `IDLE`, never on a turn, while a person is asked something or
     // while a write is owed. Its session stays, so the chat's next prompt resumes it.
     pub(super) async fn sleep_idle(&mut self) {
+        // The backstop for a connection whose end wasn't reported.
+        self.close_unused().await;
         let now = self.now();
         let idle: Vec<ChatKey> = self
             .open_chats
@@ -21,10 +23,11 @@ impl<A: Agent> Engine<A> {
             .map(|(key, _)| key.clone())
             .collect();
         for key in idle {
-            if let Err(fault) = self.sleep(&key).await {
+            let slept = self.sleep(&key).await;
+            if let Some(fault) = self.unlogged(&key, None, slept).await {
                 self.log.warn("run not stopped", &chat_fields(&key, &fault));
             }
-            self.settle(&key);
+            self.close_if_unused(&key);
         }
     }
 
@@ -35,7 +38,7 @@ impl<A: Agent> Engine<A> {
         chat.orders.is_some()
             && chat.launching.is_none()
             && record.turn.is_none()
-            && chat.events.runs().waiting().is_empty()
+            && chat.log.runs().waiting().is_empty()
             && chat.pending_answers.is_empty()
             && chat.pending_end.is_none()
             && record.active_at.saturating_add(IDLE) <= now
@@ -59,9 +62,13 @@ impl<A: Agent> Engine<A> {
             (true, false) => self.log.info("turns resumed", &[]),
             _ => {}
         }
-        if full {
-            return;
+        if !full {
+            self.go_on().await;
         }
+    }
+
+    // Lets every chat with prompts queued go on, where nothing else holds its turns back.
+    pub(super) async fn go_on(&mut self) {
         let queued: Vec<ChatKey> = self
             .runs
             .records()
@@ -69,11 +76,12 @@ impl<A: Agent> Engine<A> {
             .map(|record| record.key.clone())
             .collect();
         for key in queued {
-            if let Err(fault) = self.advance(&key).await {
+            let advanced = self.advance(&key).await;
+            if let Some(fault) = self.unlogged(&key, None, advanced).await {
                 self.log
                     .warn("chat not picked up", &chat_fields(&key, &fault));
             }
-            self.settle(&key);
+            self.close_if_unused(&key);
         }
     }
 
@@ -103,11 +111,12 @@ impl<A: Agent> Engine<A> {
             })
             .collect();
         for (key, recent) in awake {
-            if let Err(fault) = self.pick_up(&key, recent).await {
+            let picked = self.pick_up(&key, recent).await;
+            if let Some(fault) = self.unlogged(&key, None, picked).await {
                 self.log
                     .warn("chat not picked up", &chat_fields(&key, &fault));
             }
-            self.settle(&key);
+            self.close_if_unused(&key);
         }
     }
 
@@ -129,7 +138,7 @@ impl<A: Agent> Engine<A> {
     }
 }
 
-fn chat_fields(key: &ChatKey, fault: &Fault) -> [(&'static str, Field); 3] {
+pub(super) fn chat_fields(key: &ChatKey, fault: &Fault) -> [(&'static str, Field); 3] {
     let [workspace, chat] = chat_about(key);
     [workspace, chat, ("err", Field::error(fault))]
 }
@@ -282,13 +291,7 @@ mod tests {
         assert!(!messages(&on.bench.records).contains(&"runs records kept unread"));
 
         let first = prompt("r-1", "Hi").request;
-        let ended = on
-            .engine
-            .open(&key())
-            .await
-            .unwrap()
-            .events
-            .has_ended(&first);
+        let ended = on.engine.open(&key()).await.unwrap().log.has_ended(&first);
         assert!(ended);
         let mut started = Vec::new();
         while let Ok(next) = on.bench.started.try_recv() {
