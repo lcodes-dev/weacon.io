@@ -86,7 +86,15 @@ export function Workspaces({
       leave(name === undefined ? "You're no longer a member of that workspace." : `You're no longer a member of ${name}.`);
     }
   }, [left]);
-  const menu = workspace !== undefined && <WorkspaceMenu api={api} loaded={loaded} workspace={workspace} email={email} choose={choose} />;
+  // A workspace opened again is one the person is back in, so leaving it is news once more.
+  const pick = (id: WorkspaceId | undefined) => {
+    if (id === departed.current) {
+      departed.current = undefined;
+    }
+    setNotice(undefined);
+    choose(id);
+  };
+  const menu = workspace !== undefined && <WorkspaceMenu api={api} loaded={loaded} workspace={workspace} email={email} choose={pick} />;
   const opened = workspace !== undefined && socket !== undefined ? { workspace, socket, left: (text: string) => {
           departed.current = workspace.id;
           leave(text);
@@ -103,10 +111,7 @@ export function Workspaces({
             loaded={loaded}
             listing={listing}
             notice={notice}
-            choose={(id) => {
-              setNotice(undefined);
-              choose(id);
-            }}
+            choose={pick}
           />
         )}
       </div>

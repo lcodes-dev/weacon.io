@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import type { Later } from "../connection.ts";
 import type { AccessLevel, AgentKind, MachineOs, MachineSettings, MachineSettingsAction, MachineSummary, SignInState } from "../protocol.ts";
@@ -55,12 +55,22 @@ export function MachineSettingsView({ machine, socket, later, pins, relays, team
       (after) => settings.change(() => after),
     );
   const shown = settings.value;
-  // The machine keeps whether others are in the workspace; it is told when its mark is out of date.
+  // The machine keeps whether others are in the workspace; it is told when its mark is out of
+  // date, once for each value, with the access it holds now, which may have changed elsewhere.
   const stale = shown !== undefined && team !== undefined && shown.team !== team;
+  const told = useRef<boolean>(undefined);
   useEffect(() => {
-    if (stale && !changing.busy) {
-      set({ kind: "set_access", level: shown.access, team });
+    if (!stale || changing.busy || told.current === team) {
+      return;
     }
+    told.current = team;
+    void changing.ask(
+      async () => {
+        const now = await current(socket, machine.id, later);
+        return now.ok ? change(socket, machine.id, { kind: "set_access", level: now.value.access, team }, later) : now;
+      },
+      (after) => settings.change(() => after),
+    );
   }, [stale, changing.busy]);
   return (
     <section aria-label={`${machine.name} settings`}>

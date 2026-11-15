@@ -67,8 +67,7 @@ test("an owner invites someone, who signs in and joins, leaves, joins again and 
   await row.getByRole("button", { name: "Remove" }).click();
   await row.getByText("Past member").waitFor();
 
-  // The server refuses bo the workspace from now on.
-  await bo.reload();
-  await bo.getByRole("heading", { name: "Workspaces" }).waitFor();
+  // Back in after leaving, bo is told of the removal like anyone.
+  await bo.getByText("You're no longer a member of Crew.").waitFor();
   assert.equal(await bo.getByRole("heading", { name: "Crew" }).count(), 0);
 });

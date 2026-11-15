@@ -64,8 +64,9 @@ pub(crate) async fn command(
 /// Invites `email`, and mails it the workspace's name and how to take the invitation up.
 async fn invite(shared: &Shared, member: &Member, email: &Email) -> Result<(), Fault> {
     let workspace = &member.workspace;
+    let summary = workspace.summary(&member.id).await?;
     workspace.invite(&member.id, email, shared.now()).await?;
-    if let Some(summary) = workspace.summary(&member.id).await? {
+    if let Some(summary) = summary {
         let text = format!(
             "You're invited to the workspace {} on Weacon. Sign in with this address to accept; \
              the invitation lasts 7 days.",
