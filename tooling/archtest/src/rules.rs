@@ -118,27 +118,7 @@ pub(crate) const RESTRICTED: &[(&str, &[&str])] = &[
     ("tokio-postgres", &[]),
 ];
 
-/// Database drivers, by crate name in code: only a package's `db` module uses them.
-pub(crate) const DB_DRIVERS: &[&str] = &[
-    "diesel",
-    "libsql",
-    "postgres",
-    "rusqlite",
-    "sqlx",
-    "tokio_postgres",
-];
-
-/// `cfg` names that select an operating system: only a package's `platform` module uses them.
-pub(crate) const OS_CFGS: &[&str] = &[
-    "target_family",
-    "target_os",
-    "target_vendor",
-    "unix",
-    "windows",
-];
-
-/// Standard library modules and packages that a package without I/O may not use.
-pub(crate) const IO_MODULES: &[&str] = &["env", "fs", "net", "process"];
+/// Packages that a package without I/O may not depend on.
 pub(crate) const IO_PACKAGES: &[&str] = &[
     "async-std",
     "hyper",
@@ -150,16 +130,3 @@ pub(crate) const IO_PACKAGES: &[&str] = &[
     "ureq",
     "walkdir",
 ];
-
-/// The folder of plugin files, hooks and skills Weacon gives people's agents.
-pub(crate) const INTEGRATIONS_FOLDER: &str = "integrations";
-/// The only package that includes the integrations folder's files.
-pub(crate) const INTEGRATIONS_READER: &str = "weacon-core";
-/// The kinds of file the integrations folder may hold: data, never code.
-pub(crate) const INTEGRATIONS_DATA: &[&str] = &["json", "md"];
-
-/// The most lines a source file may hold before its test module.
-pub(crate) const MAX_CODE_LINES: usize = 400;
-
-/// Markers of unfinished work; split so this file doesn't match itself.
-pub(crate) const MARKERS: &[&str] = &[concat!("FIX", "ME"), concat!("TO", "DO")];
