@@ -128,3 +128,19 @@ export async function waitFor(done: () => boolean, deadlineMs = 10_000): Promise
     await new Promise((resolve) => setTimeout(resolve, 20));
   }
 }
+
+// Selects the first piece of the text row still being written, and gives what is selected.
+// Waits for a row being written and selects it in the same frame, before the row can close.
+export async function selectInWritingRow(): Promise<string> {
+  for (let frame = 0; frame < 600; frame += 1) {
+    const row = document.querySelector("[data-writing]");
+    const piece = row?.firstChild;
+    if (row !== null && piece) {
+      row.setAttribute("data-picked", "");
+      document.getSelection()?.setBaseAndExtent(piece, 0, piece, piece.textContent?.length ?? 0);
+      return document.getSelection()?.toString() ?? "";
+    }
+    await new Promise(requestAnimationFrame);
+  }
+  throw new Error("no row is being written");
+}
