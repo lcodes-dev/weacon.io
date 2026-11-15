@@ -12,6 +12,7 @@ use crate::{ChatId, DocId, TaskId};
 pub struct SearchQuery {
     pub text: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "u32")]
     pub limit: Option<u32>,
 }
 

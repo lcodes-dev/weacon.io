@@ -9,6 +9,9 @@ use crate::search::query::Query;
 /// The bytes a snippet marks a match with; indexed text holds neither.
 const MATCH_START: char = '\u{1}';
 const MATCH_END: char = '\u{2}';
+/// How many characters a snippet shows before its first match, and in all.
+const BEFORE: usize = 40;
+const SHOWN: usize = 200;
 
 // What a search row is of; a message's item is its chat and its place in the log, `c-1/12`.
 const TASK: &str = "task";
@@ -25,7 +28,7 @@ struct Indexed<'a> {
     at: i64,
 }
 
-type HitRow = (String, String, String, String);
+type HitRow = (String, String, String, String, String);
 
 impl Workspace {
     /// Indexes `task` by its title, as changed at `at`.
@@ -172,7 +175,7 @@ impl Workspace {
                      WHERE chats.workspace_id = search.workspace_id
                          AND chats.chat_id = substr(search.item, 1, instr(search.item, '/') - 1)
                          AND search.kind = 'message'), search.title),
-                 snippet(search, -1, char(1), char(2), '…', 64)
+                 highlight(search, 3, char(1), char(2)), highlight(search, 4, char(1), char(2))
              FROM search
              JOIN search_rows AS rows
                  ON rows.workspace_id = search.workspace_id AND rows.row = search.rowid
@@ -198,8 +201,14 @@ impl Workspace {
     }
 }
 
-fn hit((kind, item, title, marked): HitRow) -> Result<SearchHit, Fault> {
-    let snippet = snippet(&marked);
+fn hit((kind, item, title, title_marked, body_marked): HitRow) -> Result<SearchHit, Fault> {
+    // `highlight` marks every match in linear time, where `snippet` scores each against all.
+    let marked = if body_marked.contains(MATCH_START) {
+        body_marked
+    } else {
+        title_marked
+    };
+    let snippet = snippet(&around_first_match(&marked));
     match kind.as_str() {
         TASK => Ok(SearchHit::Task {
             task: stored(item)?,
@@ -258,6 +267,38 @@ fn message_text(event: &ChatEvent) -> Option<&str> {
 /// leaves out.
 fn unmarked(text: &str) -> String {
     text.replace([MATCH_START, MATCH_END], " ")
+}
+
+/// [`SHOWN`] characters of `marked` from a word at most [`BEFORE`] before its first match, with
+/// an ellipsis where they are cut; a match the cut ends inside is closed there.
+fn around_first_match(marked: &str) -> String {
+    let chars: Vec<char> = marked.chars().collect();
+    let first = chars.iter().position(|ch| *ch == MATCH_START).unwrap_or(0);
+    let earliest = first.saturating_sub(BEFORE);
+    let start = match chars.get(earliest..first) {
+        Some(before) if earliest > 0 => before
+            .iter()
+            .position(|ch| ch.is_whitespace())
+            .map_or(first, |space| earliest + space + 1),
+        _ => 0,
+    };
+    let end = chars.len().min(start + SHOWN);
+    let shown = chars.get(start..end).unwrap_or_default();
+    let mut text: String = shown.iter().collect();
+    let open = shown
+        .iter()
+        .rev()
+        .find(|ch| matches!(ch, &&MATCH_START | &&MATCH_END));
+    if open == Some(&MATCH_START) {
+        text.push(MATCH_END);
+    }
+    if start > 0 {
+        text.insert_str(0, "… ");
+    }
+    if end < chars.len() {
+        text.push_str(" …");
+    }
+    text
 }
 
 /// A snippet's text and marks, from one with its matches between the marking bytes.
@@ -724,5 +765,34 @@ mod tests {
             bodies.iter().all(|body| !body.contains('\u{1}')),
             "{bodies:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn a_body_of_one_repeated_letter_is_found_with_a_short_snippet() {
+        let dir = TempDir::new().unwrap();
+        let (one, _) = two_teams(&dir).await;
+        one.add_doc(&doc("d1", "Notes", &"a".repeat(256 * 1024), &[]), &by(1))
+            .await
+            .unwrap();
+
+        let (word, around) = marked(&one, "aaa").await;
+        // The window counts the marking byte before the letters.
+        assert_eq!(word.chars().count(), SHOWN - 1);
+        assert_eq!(around, format!("{word} …"));
+    }
+
+    #[test]
+    fn a_snippet_starts_at_a_word_before_the_match_and_closes_a_cut_one() {
+        let match_at = |at: usize| format!("{}\u{1}hit\u{2} tail", "word ".repeat(at));
+
+        assert_eq!(around_first_match("a \u{1}hit\u{2} b"), "a \u{1}hit\u{2} b");
+        assert_eq!(around_first_match("no match here"), "no match here");
+        let cut = around_first_match(&match_at(20));
+        assert!(cut.starts_with("… word word"), "{cut:?}");
+        assert!(cut.contains("\u{1}hit\u{2}"), "{cut:?}");
+        let long = format!("\u{1}{}\u{2}", "a".repeat(SHOWN * 2));
+        let closed = around_first_match(&long);
+        assert!(closed.ends_with("\u{2} …"), "{closed:?}");
+        assert_eq!(closed.chars().filter(|ch| *ch == MATCH_START).count(), 1);
     }
 }
