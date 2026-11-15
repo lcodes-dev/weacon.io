@@ -2,6 +2,7 @@
 //! the latest attempt queued for its machine, and for any begun after it, which may have gone
 //! out before it is known to.
 
+use sqlx::SqliteConnection;
 use weacon_observability::Fault;
 use weacon_protocol::{ChatEvent, ChatId, Receipt, RequestId};
 
@@ -23,7 +24,7 @@ pub(crate) struct Attempt {
 }
 
 /// Which request a receipt the server writes may end: one that `attempt` may answer, and when
-/// `refused_only`, only while its core refused it for now.
+/// `refused_only`, only while its core refused it for now and no attempt began after `attempt`.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Guard {
     pub(crate) attempt: i64,
@@ -54,6 +55,17 @@ impl Workspace {
     /// Marks `attempt` of `request` queued for its machine, and no longer on its way unless
     /// another began since.
     pub(crate) async fn queued(&self, request: &RequestId, attempt: Attempt) -> Result<(), Fault> {
+        let mut writer = self.db.writer.acquire().await.map_err(failed)?;
+        self.queued_in(&mut writer, request, attempt).await
+    }
+
+    /// [`Self::queued`], written through `connection`.
+    pub(super) async fn queued_in(
+        &self,
+        connection: &mut SqliteConnection,
+        request: &RequestId,
+        attempt: Attempt,
+    ) -> Result<(), Fault> {
         sqlx::query(
             "UPDATE chat_requests SET delivered = MAX(delivered, ?1),
                  attempt_at = CASE WHEN attempt = ?1 THEN 0 ELSE attempt_at END
@@ -62,7 +74,7 @@ impl Workspace {
         .bind(attempt.number)
         .bind(self.id.as_str())
         .bind(request.as_str())
-        .execute(&self.db.writer)
+        .execute(connection)
         .await
         .map_err(failed)?;
         Ok(())
@@ -84,8 +96,8 @@ impl Workspace {
         Ok(())
     }
 
-    /// Keeps that `request`'s core refused its `attempt` for now; whether that refusal counts,
-    /// as no later attempt was queued since.
+    /// Keeps that `request`'s core refused its `attempt` for now; whether its link should close
+    /// so it is sent again, no later attempt being on its way.
     pub(crate) async fn mark_refused(
         &self,
         request: &RequestId,
@@ -94,7 +106,7 @@ impl Workspace {
         let counts = sqlx::query_scalar(
             "UPDATE chat_requests SET refused_attempt = MAX(refused_attempt, ?1)
              WHERE workspace_id = ?2 AND request_id = ?3 AND open = 1 AND attempt >= ?1
-             RETURNING ?1 >= delivered",
+             RETURNING ?1 >= delivered AND (attempt = ?1 OR attempt_at = 0)",
         )
         .bind(attempt)
         .bind(self.id.as_str())
@@ -138,9 +150,9 @@ impl Workspace {
         let open: bool = sqlx::query_scalar(concat!(
             "SELECT EXISTS (SELECT 1 FROM chat_requests WHERE workspace_id = ?1
                      AND chat_id = ?2 AND request_id = ?3 AND open = 1
-                     AND ?4 >= delivered AND ?4 <= attempt AND (",
+                     AND ?4 >= delivered AND ?4 <= attempt AND (NOT ?5 OR attempt = ?4 AND ",
             refused!(),
-            " OR NOT ?5))",
+            "))",
         ))
         .bind(self.id.as_str())
         .bind(chat.as_str())

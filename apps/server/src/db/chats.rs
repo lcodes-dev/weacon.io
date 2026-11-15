@@ -6,10 +6,11 @@ mod runs;
 use sqlx::SqliteConnection;
 use weacon_observability::Fault;
 use weacon_protocol::{
-    ChatId, ChatState, ChatSummary, MachineId, MachineName, MemberId, RepoId, RunState, RunStatus,
-    code,
+    ChatId, ChatState, ChatSummary, MachineId, MachineName, MemberId, RepoId, RequestId, RunState,
+    RunStatus, code,
 };
 
+use attempts::Attempt;
 pub(crate) use attempts::Guard;
 pub(super) use events::Row;
 pub(crate) use events::{Incoming, chat_quota_full, turns};
@@ -85,9 +86,18 @@ impl Workspace {
     }
 
     /// Tells the feed that `owner` made `chat`, once its first prompt reached its machine, and
-    /// indexes it; gives whether there still was such a chat.
-    pub(crate) async fn chat_made(&self, chat: &ChatId, owner: &MemberId) -> Result<bool, Fault> {
+    /// indexes it; gives whether there still was such a chat. With `queued`, marks that attempt
+    /// of the first prompt queued in the same write, so the member hears of it sooner.
+    pub(crate) async fn chat_made(
+        &self,
+        chat: &ChatId,
+        owner: &MemberId,
+        queued: Option<(&RequestId, Attempt)>,
+    ) -> Result<bool, Fault> {
         let mut transaction = self.db.write().await?;
+        if let Some((request, attempt)) = queued {
+            self.queued_in(&mut transaction, request, attempt).await?;
+        }
         let found = sqlx::query_as::<_, (String, i64)>(
             "SELECT title, created_at FROM chats WHERE workspace_id = ? AND chat_id = ?",
         )
@@ -574,7 +584,11 @@ mod tests {
 
         assert_eq!(one.chat(&id("c-1")).await.unwrap(), None);
         assert!(!one.has_request(&id("r-c-1")).await.unwrap());
-        assert!(!one.chat_made(&id("c-1"), &member_id("m1")).await.unwrap());
+        assert!(
+            !one.chat_made(&id("c-1"), &member_id("m1"), None)
+                .await
+                .unwrap()
+        );
         assert_eq!(ids(&one.chats().await.unwrap()), ["c-2"]);
         assert_eq!(indexed(&two, "c-1").await, 1);
         assert!(one.chat(&id("c-2")).await.unwrap().is_some());

@@ -108,8 +108,10 @@ async fn start(
         }
         return Err(fault);
     }
-    workspace.queued(&command.request, attempt).await?;
-    workspace.chat_made(&command.chat, &member.id).await?;
+    let first = Some((&command.request, attempt));
+    workspace
+        .chat_made(&command.chat, &member.id, first)
+        .await?;
     shared.wake_feeds(workspace.id());
     Ok(())
 }

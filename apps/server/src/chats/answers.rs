@@ -69,7 +69,8 @@ impl Sent {
 }
 
 /// What a core's `answer` to the chat command `asked` makes of it, unless a later attempt of its
-/// request was queued since. A refusal for now marks the request refused and closes the link,
+/// request was queued since. A refusal for now marks the request refused and, unless a later
+/// attempt is on its way, closes the link,
 /// so it is sent again once the core connects again; any other is the command's final receipt,
 /// stored in its chat for its feeds to hear.
 pub(crate) async fn take(
@@ -88,7 +89,7 @@ pub(crate) async fn take(
         }) => {
             return match refused(shared, &asked).await {
                 Ok(true) => Err(Closed),
-                // A later attempt was queued since: its answer counts.
+                // A later attempt is on its way, or was queued since.
                 Ok(false) => Ok(()),
                 Err(fault) => {
                     warn(shared, machine, &asked, "chat refusal not marked", &fault);
@@ -144,7 +145,7 @@ pub(crate) async fn end(
     Ok(())
 }
 
-// Whether the refusal of `asked` counts, as no later attempt of its request was queued since.
+// Whether the refusal of `asked` should close the link, its attempt being its request's last.
 async fn refused(shared: &Shared, asked: &Asked) -> Result<bool, Fault> {
     let Some(place) = shared.db.find_workspace(&asked.workspace).await? else {
         return Ok(false);
@@ -213,7 +214,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_refusal_heard_while_a_later_send_waits_counts_and_stays_once_it_never_goes_out() {
+    async fn a_refusal_heard_while_a_later_send_waits_keeps_the_link_and_stays_if_it_fails() {
         let fixture = Fixture::new().await;
         let shared = &fixture.shared;
         let workspace = shared.db.workspace(&id("w1")).await.unwrap();
@@ -230,7 +231,7 @@ mod tests {
         });
 
         let asked = sent.answered(&machine, 7).unwrap();
-        take(shared, &machine, asked, for_now).await.unwrap_err();
+        take(shared, &machine, asked, for_now).await.unwrap();
         workspace.abandon(&request, second.unwrap()).await.unwrap();
 
         let open = workspace.open_requests(&id("c-1")).await.unwrap();
@@ -241,6 +242,49 @@ mod tests {
                 .refused_before(&id("c-1"), &id("r-2"))
                 .await
                 .unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn a_final_refusal_heard_while_a_later_send_waits_ends_the_command() {
+        let fixture = Fixture::new().await;
+        let shared = &fixture.shared;
+        let workspace = shared.db.workspace(&id("w1")).await.unwrap();
+        make(&workspace, "c-1", "m1", NOW).await.unwrap();
+        let sent = Sent::default();
+        let machine = id::<MachineId>("mc-1");
+        let request = id::<RequestId>("r-c-1");
+        let first = workspace
+            .begin_attempt(&request, NOW)
+            .await
+            .unwrap()
+            .unwrap();
+        workspace.queued(&request, first).await.unwrap();
+        sent.sent(
+            &machine,
+            7,
+            &command("r-c-1", "c-1", "Fix the build"),
+            first.number,
+        );
+        workspace
+            .begin_attempt(&request, NOW)
+            .await
+            .unwrap()
+            .unwrap();
+        let busy = Message::Error(ErrorBody {
+            code: weacon_protocol::code!("chat.busy"),
+            retryable: false,
+        });
+
+        let asked = sent.answered(&machine, 7).unwrap();
+        take(shared, &machine, asked, busy).await.unwrap();
+
+        assert!(
+            workspace
+                .open_requests(&id("c-1"))
+                .await
+                .unwrap()
+                .is_empty()
         );
     }
 

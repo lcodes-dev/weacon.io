@@ -66,7 +66,7 @@ pub(crate) struct Making<'a> {
 pub(crate) async fn make_as(workspace: &Workspace, making: &Making<'_>) -> Result<(), Fault> {
     begin_as(workspace, making).await?;
     let (chat, owner) = (id(making.chat), member_id(making.owner));
-    workspace.chat_made(&chat, &owner).await.map(drop)
+    workspace.chat_made(&chat, &owner, None).await.map(drop)
 }
 
 /// Begins chat `chat` as [`make`] does, its first prompt not yet sent.
