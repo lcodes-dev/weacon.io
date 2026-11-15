@@ -42,6 +42,7 @@ impl<A: Agent> Engine<A> {
             ChatAction::Permission { answer } => self.deliver(key, request, answer).await,
             ChatAction::Interrupt => self.stop_turn(key, request).await,
             ChatAction::Prompt { .. } | ChatAction::Newer => self.advance(key).await,
+            // Taken before the log, by `command_from`.
             ChatAction::Hold | ChatAction::Release => Err(unsupported()),
         }
     }
@@ -70,6 +71,7 @@ impl<A: Agent> Engine<A> {
                     ));
                 }
                 if fresh {
+                    self.has_room(key)?;
                     let prompt = ChatEvent::Prompt {
                         request: request.clone(),
                         text: text.clone(),
@@ -82,7 +84,7 @@ impl<A: Agent> Engine<A> {
             }
             ChatAction::Permission { answer } => self.permission(key, request, answer).await,
             ChatAction::Interrupt => self.interrupt(key, request).await,
-            // This core doesn't offer `chat.hold`.
+            // Taken before the log, by `command_from`.
             ChatAction::Hold | ChatAction::Release | ChatAction::Newer => Err(unsupported()),
         }
     }

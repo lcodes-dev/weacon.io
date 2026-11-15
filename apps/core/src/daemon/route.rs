@@ -37,7 +37,7 @@ pub(super) async fn route(
     )]
     match message {
         Message::Pick(pick) => keep(shared, id, pick).await,
-        Message::ChatCommand(command) => command_chat(shared, id, command).await,
+        Message::ChatCommand(command) => command_chat(shared, id, command, client).await,
         Message::ChatQuery(query) => query_chat(shared, id, query, client).await,
         Message::DiffQuery(query) => worktrees::diff(shared, id, query, late),
         Message::WorktreeQuery(query) => worktrees::query(shared, id, query, late),

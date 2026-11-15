@@ -209,6 +209,7 @@ impl Daemon {
                     .log
                     .debug("client failed", &[("err", Field::error(&error))]);
             }
+            shared.chats.left().await;
         });
     }
 }
@@ -319,19 +320,16 @@ async fn answer(
 
 // The reply to a chat command: nothing when it was taken, since its receipts are events in the
 // chat's log, or the error that refused it.
-async fn command_chat(shared: &Shared, id: u32, command: ChatCommand) -> Reply {
+async fn command_chat(shared: &Shared, id: u32, command: ChatCommand, client: &Client) -> Reply {
     let fields = [
         ("request_id", command.request.as_str().into()),
         ("workspace_id", command.workspace.as_str().into()),
         ("chat_id", command.chat.as_str().into()),
     ];
-    match shared.chats.command(command).await {
+    match shared.chats.command(command, client).await {
         Ok(()) => {
             shared.log.info("chat command taken", &fields);
-            Reply {
-                envelope: None,
-                close: false,
-            }
+            Reply::NOTHING
         }
         Err(fault) => refused(shared, id, &fault),
     }
@@ -971,6 +969,38 @@ mod tests {
         assert!(logged.contains("chat request refused"), "{logged}");
         assert!(logged.contains("r-1"), "{logged}");
         assert!(!logged.contains("MARKER"), "{logged}");
+    }
+
+    #[tokio::test]
+    async fn a_local_client_holds_a_chat_until_it_hangs_up() {
+        use crate::chats::test_support::{bench, command, prompt, query, soon};
+        use weacon_protocol::{ChatAction, ChatAnswerKind, ChatQueryKind};
+
+        let dir = TempDir::new().unwrap();
+        let mut bench = bench();
+        let chats = bench.chats.clone();
+        let running = start_as(&dir, |daemon| daemon.shared.chats = chats).unwrap();
+        let line = |id, message| encode_line(&Envelope { id, message }).unwrap();
+        let hold = || Message::ChatCommand(command("h-1", "c-1", ChatAction::Hold));
+        let snapshot = || Message::ChatQuery(query("c-1", ChatQueryKind::Snapshot));
+        let asked = [hello(PROTOCOL), line(2, hold()), line(3, snapshot())].concat();
+        let (answers, holder) = exchange(connect(&running.socket).await, &asked, 2).await;
+        let other = [
+            hello(PROTOCOL),
+            line(2, Message::ChatCommand(prompt("r-1", "Hi"))),
+            line(3, hold()),
+            line(4, snapshot()),
+        ]
+        .concat();
+        let (refused, _other) = exchange(connect(&running.socket).await, &other, 3).await;
+
+        assert!(matches!(&answers[1], Message::ChatAnswer(_)), "{answers:?}");
+        assert_eq!(error_code(&refused[1]), Some("chat.busy"));
+        assert!(matches!(&refused[2], Message::ChatAnswer(answer)
+            if matches!(answer.answer, ChatAnswerKind::Snapshot { seq: 2, .. })));
+        drop(holder);
+        assert!(soon(bench.started.recv()).await.is_some());
+        running.stop().await;
     }
 
     #[tokio::test]

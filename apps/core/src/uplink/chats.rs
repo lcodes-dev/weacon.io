@@ -197,13 +197,13 @@ fn stored(mut update: ChatUpdate) -> Option<ChatUpdate> {
 // sends again what was left when it connects again.
 async fn take_up(chats: Chats, client: Client, mut asked: mpsc::Receiver<Ask>, log: Logger) {
     while let Some(ask) = asked.recv().await
-        && !client.push.is_closed()
+        && !client.is_gone()
     {
         let (key, request, taken) = match ask {
             Ask::Command(command) => {
                 let key = ChatKey::new(&command.workspace, &command.chat);
                 let request = Some(command.request.clone());
-                (key, request, chats.command(command).await)
+                (key, request, chats.command(command, &client).await)
             }
             Ask::Follow(key, after) => {
                 let followed = follow(&chats, &client, &key, after).await;
@@ -311,7 +311,7 @@ mod tests {
     use super::*;
     use crate::chats::test_support::{
         bench, chat, command, key, logged_prompt, parts, prompt, query, request, run, session,
-        soon, text, workspace,
+        someone, soon, text, workspace,
     };
 
     // A link with no worker, whose asks wait in a queue with room for `room` for the test to
@@ -681,7 +681,7 @@ mod tests {
     async fn prompts(chats: &Chats, count: usize, size: usize) {
         for at in 0..count {
             let asked = prompt(&format!("r-{at}"), &"a".repeat(size));
-            chats.command(asked).await.unwrap();
+            chats.command(asked, &someone()).await.unwrap();
         }
     }
 
@@ -699,7 +699,7 @@ mod tests {
             seqs.push(seq);
             prompted.extend(asked);
         }
-        bench.chats.command(prompt("r-new", "Hi")).await.unwrap();
+        bench.command(prompt("r-new", "Hi")).await.unwrap();
         let (later, newer) = until_prompt(&mut link).await;
         seqs.extend(later);
 
@@ -719,7 +719,7 @@ mod tests {
         drop(link.take(subscribe(100)));
         // Passes the follow on, and gives what went up meanwhile, if anything did.
         let first = next_up(&mut link).await;
-        bench.chats.command(prompt("r-new", "Hi")).await.unwrap();
+        bench.command(prompt("r-new", "Hi")).await.unwrap();
         let (mut seqs, newer) = until_prompt(&mut link).await;
         if let Some(Envelope {
             message: Message::Chat(update),

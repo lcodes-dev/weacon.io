@@ -19,14 +19,14 @@ impl<A: Agent> Engine<A> {
         // A client that hung up is noticed only when told something, so each subscription first
         // closes chats only gone clients watched, before opening one more.
         if matches!(query, ChatQueryKind::Subscribe { .. }) {
-            self.sweep();
+            self.sweep().await;
         }
         let chat = self.open(key).await?;
         match query {
             ChatQueryKind::Subscribe { after } => {
                 // A client has one subscription to a chat: its latest.
                 chat.subscribers
-                    .retain(|subscriber| !subscriber.is_for(client));
+                    .retain(|subscriber| !subscriber.client().is(client));
                 let missed = chat.events.since(after).await?;
                 let subscriber = Subscriber::new(client, key);
                 let (Some(missed), Some(subscriber)) = (missed, subscriber) else {

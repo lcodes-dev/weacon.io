@@ -10,6 +10,7 @@ pub(crate) const CAPABILITIES: &[Capability] = &[
     Capability::new(code!("machine.connect")),
     Capability::new(code!("chat.serve")),
     Capability::new(code!("machine.settings")),
+    Capability::new(code!("chat.hold")),
 ];
 
 /// One client's place in the conversation with the daemon.
@@ -26,6 +27,11 @@ pub(crate) struct Reply {
 }
 
 impl Reply {
+    pub(crate) const NOTHING: Self = Self {
+        envelope: None,
+        close: false,
+    };
+
     pub(crate) const fn error(id: u32, code: Code, close: bool) -> Self {
         Self {
             envelope: Some(Envelope {
@@ -63,10 +69,7 @@ impl Session {
                 }
             }
             (false, _) => Reply::error(id, code!("handshake.required"), true),
-            (true, Message::Error(_)) => Reply {
-                envelope: None,
-                close: false,
-            },
+            (true, Message::Error(_)) => Reply::NOTHING,
             (true, Message::Hello(_)) => Reply::error(id, code!("handshake.repeated"), false),
             (true, _) => Reply::error(id, code!("message.unsupported"), false),
         }
@@ -107,6 +110,7 @@ mod tests {
                             Capability::new(code!("machine.connect")),
                             Capability::new(code!("chat.serve")),
                             Capability::new(code!("machine.settings")),
+                            Capability::new(code!("chat.hold")),
                         ],
                     }),
                 }),

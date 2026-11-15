@@ -13,6 +13,8 @@ impl<A: Agent> Engine<A> {
     // Stops each agent idle for `IDLE`, never on a turn, while a person is asked something or
     // while a write is owed. Its session stays, so the chat's next prompt resumes it.
     pub(super) async fn sleep_idle(&mut self) {
+        // The backstop for a connection whose end wasn't reported.
+        self.sweep().await;
         let now = self.now();
         let idle: Vec<ChatKey> = self
             .open_chats
@@ -129,7 +131,7 @@ impl<A: Agent> Engine<A> {
     }
 }
 
-fn chat_fields(key: &ChatKey, fault: &Fault) -> [(&'static str, Field); 3] {
+pub(super) fn chat_fields(key: &ChatKey, fault: &Fault) -> [(&'static str, Field); 3] {
     let [workspace, chat] = chat_about(key);
     [workspace, chat, ("err", Field::error(fault))]
 }

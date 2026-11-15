@@ -84,6 +84,11 @@ pub(crate) struct Bench {
 }
 
 impl Bench {
+    /// Sends `command` from a client whose identity doesn't matter.
+    pub(crate) async fn command(&self, command: ChatCommand) -> Result<(), Fault> {
+        self.chats.command(command, &someone()).await
+    }
+
     /// Holds up the next agent's start until the returned sender is sent to or dropped.
     pub(crate) fn hold_next_start(&self) -> std::sync::mpsc::Sender<()> {
         let (release, held) = std::sync::mpsc::channel();
@@ -255,6 +260,11 @@ pub(crate) fn query(chat_id: &str, query: ChatQueryKind) -> ChatQuery {
 pub(crate) fn client(queue: usize) -> (Client, mpsc::Receiver<Message>) {
     let (push, pushed) = mpsc::channel(queue);
     (Client { push }, pushed)
+}
+
+/// A client whose identity doesn't matter, such as a prompt's sender.
+pub(crate) fn someone() -> Client {
+    client(1).0
 }
 
 /// What `received` gives within a few seconds, or `None`, so a test that waits fails instead
