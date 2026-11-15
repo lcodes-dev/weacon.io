@@ -11,9 +11,7 @@ use tokio::time::Instant;
 use weacon_agents::SpawnPolicy;
 pub(crate) use weacon_appkit::build;
 use weacon_observability::{Fault, Field, Logger};
-use weacon_protocol::{
-    App, ChatAnswer, ChatCommand, ChatQuery, Envelope, LineDecoder, Message, code, encode_line,
-};
+use weacon_protocol::{App, Envelope, LineDecoder, Message, code, encode_line};
 
 use crate::chats::feed::{self, Client};
 use crate::chats::{self, Chats, Places};
@@ -25,8 +23,10 @@ use crate::outside::Outside;
 use crate::picks::Picks;
 use crate::platform::{self, Listener, Owner, Stream};
 use crate::proposals;
-use crate::session::{Reply, Session};
+use crate::session::Session;
 
+mod chat;
+mod leave;
 mod route;
 mod worktrees;
 
@@ -254,6 +254,7 @@ struct Connection {
     decoder: LineDecoder,
     client: Client,
     late: worktrees::Late,
+    leave: leave::Leave,
 }
 
 async fn serve_client(stream: Stream, shared: &Shared) -> io::Result<()> {
@@ -267,6 +268,7 @@ async fn serve_client(stream: Stream, shared: &Shared) -> io::Result<()> {
         decoder: LineDecoder::default(),
         client: Client { push },
         late,
+        leave: leave::Leave::default(),
     };
     loop {
         // Until the hello, reading counts against the deadline, as `answer`'s replies do.
@@ -321,6 +323,7 @@ async fn answer(
         decoder,
         client,
         late,
+        leave,
     } = connection;
     for received in decoder.push(bytes) {
         let limit = (!session.greeted()).then_some(deadline);
@@ -335,7 +338,13 @@ async fn answer(
                 .log
                 .warn("client reported an error", &[("code", code)]);
         }
-        let reply = route::route(shared, session, received, client, late).await;
+        let reply = match received {
+            Ok(Envelope {
+                id,
+                message: Message::InstallCommand(command),
+            }) if session.greeted() => leave.answer(&shared.chats.downgrade(), id, command).await,
+            received => route::route(shared, session, received, client, late).await,
+        };
         if let Some(envelope) = reply.envelope
             && let Ok(line) = encode_line(&envelope)
         {
@@ -349,48 +358,6 @@ async fn answer(
         }
     }
     Ok(true)
-}
-
-// The reply to a chat command: nothing when it was taken, since its receipts are events in the
-// chat's log, or the error that refused it.
-async fn command_chat(shared: &Shared, id: u32, command: ChatCommand, client: &Client) -> Reply {
-    let fields = [
-        ("request_id", command.request.as_str().into()),
-        ("workspace_id", command.workspace.as_str().into()),
-        ("chat_id", command.chat.as_str().into()),
-    ];
-    match shared.chats.command(command, client).await {
-        Ok(()) => {
-            shared.log.info("chat command taken", &fields);
-            Reply::NOTHING
-        }
-        Err(fault) => refused(shared, id, &fault),
-    }
-}
-
-async fn query_chat(shared: &Shared, id: u32, query: ChatQuery, client: &Client) -> Reply {
-    let (workspace, chat) = (query.workspace.clone(), query.chat.clone());
-    match shared.chats.query(query, client).await {
-        Ok(answer) => Reply {
-            envelope: answer.map(|answer| Envelope {
-                id,
-                message: Message::ChatAnswer(ChatAnswer {
-                    workspace,
-                    chat,
-                    answer,
-                }),
-            }),
-            close: false,
-        },
-        Err(fault) => refused(shared, id, &fault),
-    }
-}
-
-fn refused(shared: &Shared, id: u32, fault: &Fault) -> Reply {
-    shared
-        .log
-        .warn("chat request refused", &[("err", Field::error(fault))]);
-    Reply::error(id, fault.code().clone(), false)
 }
 
 #[cfg(test)]
@@ -798,6 +765,30 @@ mod tests {
 
         assert_eq!(error_code(&replies[0]), Some("handshake.required"));
         assert!(!dir.join("picks").exists());
+    }
+
+    #[tokio::test]
+    async fn leave_to_install_is_given_only_after_the_hello() {
+        use weacon_protocol::{InstallAction, InstallCommand, RequestId};
+
+        let dir = TempDir::new().unwrap();
+        let running = start(&dir).unwrap();
+        let leave = encode_line(&Envelope {
+            id: 2,
+            message: Message::InstallCommand(InstallCommand {
+                request: RequestId::try_from("i-1".to_owned()).unwrap(),
+                action: InstallAction::Leave,
+            }),
+        })
+        .unwrap();
+        let (early, _) = exchange(connect(&running.socket).await, &leave, 1).await;
+        let mut greeted = hello(PROTOCOL);
+        greeted.extend(&leave);
+        let (replies, _) = exchange(connect(&running.socket).await, &greeted, 2).await;
+        running.stop().await;
+
+        assert_eq!(error_code(&early[0]), Some("handshake.required"));
+        assert!(matches!(replies[1], Message::Receipt(_)), "{replies:?}");
     }
 
     #[tokio::test]

@@ -3,8 +3,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     Capability, ChatAnswer, ChatCommand, ChatQuery, ChatUpdate, ClientLog, Code, DiffAnswer,
-    DiffQuery, MachineSettingsAnswer, MachineSettingsCommand, MachineSettingsQuery, MapAnswer,
-    MapQuery, Pick, ProposalAnswer, ProposalCommand, ProposalQuery, Receipt, RunUpdate,
+    DiffQuery, InstallCommand, MachineSettingsAnswer, MachineSettingsCommand, MachineSettingsQuery,
+    MapAnswer, MapQuery, Pick, ProposalAnswer, ProposalCommand, ProposalQuery, Receipt, RunUpdate,
     SessionsAnswer, SessionsQuery, SymbolsAnswer, SymbolsQuery, TerminalCommand, TerminalUpdate,
     WorkspaceUpdate, WorktreeAnswer, WorktreeCommand, WorktreeQuery, code,
 };
@@ -55,6 +55,7 @@ pub enum Message {
     SymbolsAnswer(SymbolsAnswer),
     ProposalQuery(ProposalQuery),
     ProposalAnswer(ProposalAnswer),
+    InstallCommand(InstallCommand),
     /// A message type this build doesn't know, from a newer peer.
     #[serde(other, skip_serializing)]
     #[schemars(skip)]

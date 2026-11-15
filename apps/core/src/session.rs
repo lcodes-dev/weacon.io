@@ -19,6 +19,7 @@ pub(crate) const CAPABILITIES: &[Capability] = &[
     Capability::new(code!("map.read")),
     Capability::new(code!("symbols.search")),
     Capability::new(code!("workspace.proposals")),
+    crate::update::LEAVE,
 ];
 
 /// What the core offers its server: all of [`CAPABILITIES`], and opening terminals where the
@@ -157,6 +158,7 @@ mod tests {
                             Capability::new(code!("map.read")),
                             Capability::new(code!("symbols.search")),
                             Capability::new(code!("workspace.proposals")),
+                            Capability::new(code!("update.leave")),
                         ],
                     }),
                 }),

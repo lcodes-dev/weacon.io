@@ -160,6 +160,11 @@ fn rollback_failed(error: io::Error) -> Fault {
     .because(error)
 }
 
+/// Removes a staged build that won't be swapped in.
+pub(crate) fn discard(paths: &Paths) {
+    remove(&paths.new);
+}
+
 fn remove(file: &Path) {
     // Missing is the goal; any other failure shows up at the next step that needs the file.
     drop(fs::remove_file(file));

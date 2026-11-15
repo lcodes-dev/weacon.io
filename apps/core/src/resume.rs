@@ -167,7 +167,9 @@ async fn answer(daemon: &mut Connection) -> Result<(), Fault> {
 // Why the daemon wouldn't hold the chat, in words the person can act on.
 fn refused(code: Code) -> Fault {
     let why = match code.as_str() {
-        "chat.busy" => "The chat's agent is running here; carry on once it sleeps",
+        "chat.busy" => {
+            "The chat's agent is running here, or an update is installing; carry on once it's done"
+        }
         "chat.held" => "Someone else carries this chat on by hand already",
         _ => "The daemon wouldn't hold the chat",
     };
@@ -555,7 +557,7 @@ mod tests {
         let said = [
             (
                 "chat.busy",
-                "The chat's agent is running here; carry on once it sleeps",
+                "The chat's agent is running here, or an update is installing; carry on once it's done",
             ),
             (
                 "chat.held",
