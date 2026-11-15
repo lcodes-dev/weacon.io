@@ -74,13 +74,27 @@ pub(crate) fn admit(
             "A chat stays on the machine it started on",
         ));
     }
-    match chat.state {
-        ChatState::Open => {}
-        ChatState::Full => return Err(crate::db::chat_quota_full()),
-        ChatState::Detached | ChatState::Newer => return Err(detached()),
-    }
+    takes_prompts(chat.state)?;
+    own_task(&chat, &mut command.action);
     command.by = Some(by);
     Ok(Admitted::Existing { chat, command })
+}
+
+fn takes_prompts(state: ChatState) -> Result<(), Fault> {
+    match state {
+        ChatState::Open => Ok(()),
+        ChatState::Full => Err(crate::db::chat_quota_full()),
+        ChatState::Detached | ChatState::Newer => Err(detached()),
+    }
+}
+
+// A prompt to a made chat names only the chat's own task, as a first prompt sent again does.
+fn own_task(chat: &Chat, action: &mut ChatAction) {
+    if let ChatAction::Prompt { task, .. } = action
+        && task.is_some()
+    {
+        task.clone_from(&chat.task);
+    }
 }
 
 pub(super) fn not_owner() -> Fault {
@@ -128,6 +142,7 @@ mod tests {
             repo: None,
             machine: machine.map(id),
             agent: None,
+            task: None,
         }
     }
 
@@ -139,12 +154,49 @@ mod tests {
             seq: 3,
             core_seq: 3,
             made: true,
+            task: None,
         }
     }
 
     fn refused(chat: Option<Chat>, member: &str, action: ChatAction) -> String {
         let fault = admit(chat, asker(member), command(action)).unwrap_err();
         fault.code().as_str().to_owned()
+    }
+
+    #[test]
+    fn a_later_prompt_naming_a_task_names_its_chats_own_or_none() {
+        let named = |id: &str| weacon_protocol::ChatTask {
+            id: id.parse().unwrap(),
+            title: "Named".to_owned(),
+        };
+        let for_task = |task: &str| {
+            let mut action = prompt("Go", None);
+            if let ChatAction::Prompt { task: field, .. } = &mut action {
+                *field = Some(named(task));
+            }
+            action
+        };
+        let task_of = |chat: Chat, action: ChatAction| {
+            let admitted = admit(Some(chat), asker("m1"), command(action));
+            let Ok(Admitted::Existing { command, .. }) = admitted else {
+                panic!("{admitted:?}");
+            };
+            let ChatAction::Prompt { task, .. } = command.action else {
+                panic!("not a prompt");
+            };
+            task
+        };
+        let with_task = Chat {
+            task: Some(named("t-1")),
+            ..chat(ChatState::Open)
+        };
+
+        assert_eq!(
+            task_of(with_task.clone(), for_task("t-2")),
+            Some(named("t-1"))
+        );
+        assert_eq!(task_of(with_task, prompt("Go", None)), None);
+        assert_eq!(task_of(chat(ChatState::Open), for_task("t-2")), None);
     }
 
     #[test]
@@ -243,6 +295,7 @@ mod tests {
             repo: None,
             machine: Some(id("mc-1")),
             agent: Some(weacon_protocol::AgentKind::Newer),
+            task: None,
         };
         assert_eq!(refused(None, "m1", newer_agent), "message.unsupported");
     }

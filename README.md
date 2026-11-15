@@ -57,13 +57,13 @@ Weacon is in early development. This is what works on `main` today:
 | Workspaces | A personal workspace for each account; new workspaces; members the operator adds with `weacon-server add-member` | Inviting people from the web app |
 | Machines | Pairing with a key fingerprint check; online status; per-workspace agent access; error report choice; a note when a machine's core is too old for the server | |
 | Agent sign-in | The sealed sign-in terminal in a machine's settings; `weacon login` in a terminal | |
-| Chats | **New chat** picks a machine, a repository and an agent; the server passes the prompt to that machine and keeps what the agent does; the chat screen shows it | |
+| Chats | **New chat** picks a machine, a repository, an agent and, if you want, an open task; the server passes the prompt to that machine and keeps what the agent does; the chat screen shows it, with its task | Changing a chat's task after it starts |
 | Agents | Claude Code and Codex | |
 | Terminals | **Open terminal** in a chat, once the machine's owner allows it there; `weacon resume` to carry on a chat's agent in a terminal | |
 | Tasks and docs | Adding, editing, statuses, doc revisions | |
 | Proposals | Accepting and rejecting; agents propose through their core; while an agent works in a repository, the core proposes what a new commit in its folder does to docs that pin its code | |
-| Search | ⌘K finds docs, tasks and chats by their words, and the code's symbols on your machine | |
-| Code map | `weacon map` and the local MCP the core gives its agents | |
+| Search | ⌘K finds docs, tasks and chats by their words, each chat once, and opens a message where it is in its chat; and the code's symbols on your machine | |
+| Code map | `weacon map` and the local MCP the core gives its agents; at the start of a Claude Code session, the flows of the chat's task, then the folder's map | The task's flows for Codex, whose runs get no MCP token |
 | Server MCP | | An MCP endpoint for agents Weacon didn't start |
 | Chrome extension | A side panel that lists the chats your machine's core serves, shows one live and sends prompts, permission answers and Stop; **Pick an element** attaches an element of any web page, with its screenshot, to the next message, and the agent gets the page's part quoted apart from your words | Starting a new chat from the panel; signing the extension in without a core |
 | Updates | `weacon update`, `weacon update check` and `weacon update schedule`, which check a release's signature | A signed release to install: none is published yet |
@@ -182,10 +182,10 @@ target/debug/weacon repo list --workspace <workspace id>
 Sign the agent in first, as in step 6, and give the workspace a repository.
 
 1. Open your workspace and choose **New chat** in the left column.
-2. Pick the **Machine**, the **Repository** and the **Agent**.
+2. Pick the **Machine**, the **Repository** and the **Agent**. To work on a task, type part of its title under **Task** and pick it, or choose **Start a chat** next to the task under **Tasks**.
 3. Type what you want done and choose **Send**.
 
-The chat opens with your prompt at the top. The server passes the prompt to your machine, and the core starts the agent in a folder of its own for this chat. Each of the agent's messages appears under **Agent** once it is complete. In the left column, the chat shows who started it, the machine and what it's doing, such as **Waiting for a person**.
+The chat opens with your prompt at the top, and its task's title under the heading, linked to the task. A chat keeps the task it started with. When Claude Code starts in a chat that has a task, it is first given the flows pinned by the repository's Markdown docs whose words best match the task's title, then the map of its folder. The server passes the prompt to your machine, and the core starts the agent in a folder of its own for this chat. Each of the agent's messages appears under **Agent** once it is complete. In the left column, the chat shows who started it, the machine and what it's doing, such as **Waiting for a person**.
 
 When the agent asks to use a tool, the chat names the tool, such as "Asks to use Bash", with **Allow** and **Deny**; with the access level at ask first, it waits for you. After a reload, a prompt still waiting says "Asks to use a tool" until the agent's next prompt, because the tool's name is passed on as it happens and never kept. It never shows the command or the file's contents, because a tool's input doesn't leave your machine, so you can't see them before you answer. Once the agent has stopped running, you can carry the chat on, on the machine itself (step 8).
 
@@ -209,7 +209,7 @@ Codex works differently from Claude Code: it asks you before every file change a
 target/debug/weacon terminals on
 ```
 
-- **Search**: press ⌘K (Ctrl+K on Linux and Windows), then type. It finds docs, tasks and chats by their words, and the code's symbols on your machine.
+- **Search**: press ⌘K (Ctrl+K on Linux and Windows), then type. It finds docs, tasks and chats by their words, and the code's symbols on your machine. A chat comes up once, and a message opens its chat at that message.
 - **Teammates**: the operator adds them from the command line. Each signs in with their own email and pairs their own machine. With the server running:
 
 ```bash

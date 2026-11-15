@@ -108,7 +108,7 @@ mod tests {
     async fn commanded(engine: &mut Engine<FakeAgent>, command: ChatCommand) -> Result<(), Fault> {
         let (answer, answered) = oneshot::channel();
         engine
-            .answer(Ask::Command(command, someone(), answer))
+            .answer(Ask::Command(Box::new(command), someone(), answer))
             .await;
         answered.await.unwrap()
     }

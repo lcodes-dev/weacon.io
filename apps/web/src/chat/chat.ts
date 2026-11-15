@@ -6,9 +6,10 @@ export type Ask = { prompt: number; tool: string; at: number; state: "open" | "c
 
 /**
  * What one run did from its first event after a prompt until it finished; `key` names it for
- * as long as the chat is shown, as older events load before it.
+ * as long as the chat is shown, as older events load before it. `texts` has the row each of its
+ * committed messages shows in, by the message's seq.
  */
-export type Turn = { key: string; run: RunId; transcript: Transcript; asks: readonly Ask[]; open: boolean };
+export type Turn = { key: string; run: RunId; transcript: Transcript; asks: readonly Ask[]; open: boolean; texts: ReadonlyMap<number, number> };
 
 /** What the screen shows, in order: people's prompts and agents' turns. */
 export type Item = { kind: "prompt"; seq: number; text: string; pick?: PickNote } | { kind: "turn"; turn: Turn };
@@ -208,17 +209,15 @@ function step(items: Item[], entry: ChatEntry, waiting: boolean, tools: Readonly
       return { ...turn, asks: [...turn.asks, ask] };
     }
     const transcript = apply(turn.transcript, [done]);
-    if (done.event !== "finished") {
-      return { ...turn, transcript };
-    }
-    return { ...turn, transcript, open: false };
+    const texts = done.event === "text" ? new Map(turn.texts).set(entry.seq, transcript.rows.length - 1) : turn.texts;
+    return { ...turn, transcript, texts, open: turn.open && done.event !== "finished" };
   });
 }
 
 // Changes `run`'s open turn, starting one called `key` at the end when it has none.
 function addTo(items: Item[], run: RunId, key: string, change: (turn: Turn) => Turn): void {
   if (!update(items, run, change)) {
-    items.push({ kind: "turn", turn: change({ key, run, transcript: EMPTY_TRANSCRIPT, asks: [], open: true }) });
+    items.push({ kind: "turn", turn: change({ key, run, transcript: EMPTY_TRANSCRIPT, asks: [], open: true, texts: new Map() }) });
   }
 }
 

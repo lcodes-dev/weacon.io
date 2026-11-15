@@ -21,13 +21,12 @@ mod unwritten;
 
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
-use std::sync::Arc;
 
 use tokio::sync::{mpsc, watch};
 use weacon_observability::{Fault, Logger};
 use weacon_protocol::{
-    AgentKind, AgentSession, ChatEntry, ChatEvent, ChatUpdate, Message, Outcome, Receipt, RepoId,
-    RequestId, RunId, RunState, RunStatus, code,
+    AgentSession, ChatEntry, ChatEvent, ChatUpdate, Message, Outcome, Receipt, RequestId, RunId,
+    RunState, RunStatus, code,
 };
 
 use self::agent::{Agent, FromRun, Order};
@@ -35,6 +34,7 @@ pub(crate) use self::busy::{Install, LeaveId, LeaveStep};
 use self::handle::Ask;
 pub(crate) use self::handle::{Chats, WeakChats};
 use self::launch::Launched;
+pub(crate) use self::launch::{Host, RunAs};
 use self::named::{about, chat_about, failed};
 use self::pending::{PendingAnswer, PendingEnd, PendingInterrupt};
 pub(crate) use self::queries::Listed;
@@ -48,27 +48,6 @@ const ASKS: usize = 64;
 /// How many events from the chats' runs may wait for the engine.
 const SAYS: usize = 256;
 const IDLE_CHECK: std::time::Duration = std::time::Duration::from_mins(1);
-
-/// Which agent to start, and as what.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct RunAs {
-    pub(crate) key: ChatKey,
-    pub(crate) agent: AgentKind,
-    pub(crate) run: RunId,
-    pub(crate) session: Option<AgentSession>,
-    /// The repository the chat's first prompt named, whose worktree it runs in.
-    pub(crate) repo: Option<RepoId>,
-}
-
-type Launcher<A> = Arc<dyn Fn(&RunAs) -> Result<A, Fault> + Send + Sync>;
-
-/// What the engine takes from the machine; the daemon wires the real ones.
-pub(crate) struct Host<A> {
-    /// Starts an agent; may block, so it is called off the runtime.
-    pub(crate) launch: Launcher<A>,
-    /// Unix seconds.
-    pub(crate) now: fn() -> u64,
-}
 
 fn unsupported() -> Fault {
     Fault::new(
@@ -387,7 +366,7 @@ mod tests {
     use std::sync::atomic::Ordering;
 
     use weacon_model::ChatRuns;
-    use weacon_protocol::{ChatAction, ChatAnswerKind, ChatQueryKind, RunEvent};
+    use weacon_protocol::{AgentKind, ChatAction, ChatAnswerKind, ChatQueryKind, RunEvent};
 
     use super::agent::Said;
     use super::by_hand::on_turn;
@@ -471,16 +450,12 @@ mod tests {
         let mut pushes = watch(&bench).await;
 
         let mut agent = first_turn(&mut bench, &mut pushes).await;
+        let run_as = &agent.run_as;
         assert_eq!(
-            agent.run_as,
-            RunAs {
-                key: key(),
-                agent: AgentKind::Claude,
-                run: run("run-1"),
-                session: None,
-                repo: None,
-            }
+            (&run_as.key, run_as.agent, &run_as.run),
+            (&key(), AgentKind::Claude, &run("run-1"))
         );
+        assert!(run_as.session.is_none() && run_as.repo.is_none() && run_as.task.is_none());
         let delta = RunEvent::TextDelta {
             text: "Hel".to_owned(),
         };

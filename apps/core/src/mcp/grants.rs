@@ -10,7 +10,9 @@ use subtle::ConstantTimeEq;
 use tokio::sync::Semaphore;
 use weacon_agents::AgentRun;
 use weacon_observability::Fault;
-use weacon_protocol::{AgentKind, PermissionAnswer, RunEvent, RunId, WorkspaceId, code, to_hex};
+use weacon_protocol::{
+    AgentKind, ChatTask, PermissionAnswer, RunEvent, RunId, WorkspaceId, code, to_hex,
+};
 
 use crate::chats::engine::agent::Agent;
 
@@ -42,6 +44,8 @@ pub(crate) struct Grant {
     /// Which agent the run is, as its proposals say.
     pub(crate) agent: AgentKind,
     pub(crate) folder: PathBuf,
+    /// The task of the run's chat, if it has one.
+    pub(crate) task: Option<ChatTask>,
     pub(crate) calls: Arc<Semaphore>,
     revoked: AtomicBool,
 }
@@ -58,9 +62,15 @@ impl Grant {
             run,
             agent,
             folder,
+            task: None,
             calls: Arc::new(Semaphore::new(CALLS_AT_ONCE)),
             revoked: AtomicBool::new(false),
         }
+    }
+
+    /// The grant of a run of a chat made for `task`.
+    pub(crate) fn for_task(self, task: Option<ChatTask>) -> Self {
+        Self { task, ..self }
     }
 
     /// Whether its token still works.

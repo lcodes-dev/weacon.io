@@ -59,3 +59,8 @@
 .new-task {
   max-width: 72ch;
 }
+
+.tasks li.shown {
+  background: var(--border);
+  border-radius: 6px;
+}

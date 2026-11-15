@@ -322,6 +322,7 @@ mod tests {
             text: "Go".to_owned(),
             repo: Some("site".parse().unwrap()),
             agent: None,
+            task: None,
         };
         runtime().unwrap().block_on(async {
             let mut log = ChatLog::open(&root, &chat).await.unwrap();
