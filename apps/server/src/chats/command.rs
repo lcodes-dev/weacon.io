@@ -92,21 +92,16 @@ async fn start(
         at: chat.at,
     };
     workspace.add_chat(chat, &asked).await?;
-    let machine = chat.machine_id;
-    if let Err(fault) = link::send(shared, machine, Message::ChatCommand(command.clone())) {
+    let sent = [
+        Message::ChatCommand(command.clone()),
+        link::follow(workspace.id(), &command.chat, 0),
+    ];
+    if let Err(fault) = link::send_all(shared, chat.machine_id, sent.into()) {
         workspace.forget_chat(&command.chat).await?;
         return Err(fault);
     }
     workspace.chat_made(&command.chat, &member.id).await?;
     shared.wake_feeds(workspace.id());
-    // A machine that left meanwhile follows the chat when it connects again.
-    drop(link::follow(
-        shared,
-        machine,
-        workspace.id(),
-        &command.chat,
-        0,
-    ));
     Ok(())
 }
 
@@ -152,19 +147,16 @@ async fn go_on(
         Recorded::Same { open: false } => return Ok(()),
         Recorded::New | Recorded::Same { open: true } => {}
     }
-    if let Err(fault) = link::send(shared, &chat.machine, Message::ChatCommand(command.clone())) {
+    let sent = [
+        Message::ChatCommand(command.clone()),
+        link::follow(workspace.id(), &command.chat, chat.core_seq),
+    ];
+    if let Err(fault) = link::send_all(shared, &chat.machine, sent.into()) {
         if recorded == Recorded::New {
             workspace.forget_request(&command.request).await?;
         }
         return Err(fault);
     }
-    drop(link::follow(
-        shared,
-        &chat.machine,
-        workspace.id(),
-        &command.chat,
-        chat.core_seq,
-    ));
     Ok(())
 }
 

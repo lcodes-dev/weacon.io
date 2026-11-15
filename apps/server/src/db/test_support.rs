@@ -277,6 +277,14 @@ impl Workspace {
         .unwrap();
     }
 
+    /// Makes reading the workspace's commands fail in the database.
+    pub(crate) async fn break_chat_requests(&self) {
+        sqlx::query("ALTER TABLE chat_requests RENAME TO broken_requests")
+            .execute(&self.db.writer)
+            .await
+            .unwrap();
+    }
+
     /// Leaves the workspace no room for more chat events.
     pub(crate) async fn fill_quota(&self) {
         sqlx::query("UPDATE workspaces SET chat_bytes = 536870912 WHERE workspace_id = ?")

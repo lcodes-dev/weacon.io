@@ -25,8 +25,12 @@ async fn follow(shared: Shared, mut connected: Receiver<Connected>) {
     loop {
         match connected.recv().await {
             Ok(machine) => pick_up(&shared, &machine).await,
-            // A connection missed here picks up its chats the next time it connects.
-            Err(RecvError::Lagged(_)) => {}
+            // Connections were missed: every machine connected now picks up its chats.
+            Err(RecvError::Lagged(_)) => {
+                for machine in shared.links.open_now() {
+                    pick_up(&shared, &machine).await;
+                }
+            }
             Err(RecvError::Closed) => return,
         }
     }
@@ -38,6 +42,8 @@ async fn pick_up(shared: &Shared, connected: &Connected) {
         Err(fault) => {
             let fields = [machine, ("err", Field::error(&fault))];
             shared.log.warn("chats not picked up", &fields);
+            // Connecting again, it is picked up again.
+            shared.links.close(&connected.machine);
         }
         Ok(0) => {}
         Ok(unsent) => {
@@ -55,13 +61,16 @@ async fn resend(shared: &Shared, connected: &Connected) -> Result<usize, Fault> 
     for summary in shared.db.account(owner.clone()).workspaces().await? {
         let workspace = shared.db.workspace(&summary.id).await?;
         for (chat, core_seq) in workspace.unsettled_on(machine).await? {
-            // One that can't be sent now is sent the next time the machine connects.
-            let followed = link::follow(shared, machine, workspace.id(), &chat, core_seq);
-            unsent += usize::from(followed.is_err());
             let open = workspace.open_requests(&chat).await?.into_iter();
-            for (command, _) in open.filter(|(_, sent_at)| recent(shared, *sent_at)) {
-                let sent = link::send(shared, machine, Message::ChatCommand(command));
-                unsent += usize::from(sent.is_err());
+            let commands = open.filter(|(_, sent_at)| recent(shared, *sent_at));
+            let follow = link::follow(workspace.id(), &chat, core_seq);
+            let sent: Vec<_> = std::iter::once(follow)
+                .chain(commands.map(|(command, _)| Message::ChatCommand(command)))
+                .collect();
+            // What can't be sent now is sent the next time the machine connects.
+            let count = sent.len();
+            if link::send_all(shared, machine, sent).is_err() {
+                unsent += count;
             }
         }
         unsent += first_prompts(shared, &workspace, machine).await?;
@@ -89,9 +98,13 @@ async fn first_prompts(
             continue;
         }
         shared.wake_feeds(workspace.id());
-        let sent = link::send(shared, machine, Message::ChatCommand(command));
-        let followed = link::follow(shared, machine, workspace.id(), &chat, 0);
-        unsent += usize::from(sent.is_err()) + usize::from(followed.is_err());
+        let sent = [
+            Message::ChatCommand(command),
+            link::follow(workspace.id(), &chat, 0),
+        ];
+        if link::send_all(shared, machine, sent.into()).is_err() {
+            unsent += 2;
+        }
     }
     Ok(unsent)
 }
@@ -121,7 +134,7 @@ mod tests {
         }
     }
 
-    fn follow(chat: &str) -> Message {
+    fn follow_query(chat: &str) -> Message {
         Message::ChatQuery(ChatQuery {
             workspace: id("w1"),
             chat: id(chat),
@@ -156,7 +169,7 @@ mod tests {
 
         assert_eq!(
             sent(&mut attached),
-            [follow("c-1"), resent("c-1"), follow("c-2")]
+            [follow_query("c-1"), resent("c-1"), follow_query("c-2")]
         );
         let elsewhere = Connected {
             machine: id("mc-other"),
@@ -186,13 +199,13 @@ mod tests {
         let first = crate::db::test_support::command("r-c-1", "c-1", "Fix the build");
         assert_eq!(
             sent(&mut attached),
-            [Message::ChatCommand(first), follow("c-1")]
+            [Message::ChatCommand(first), follow_query("c-1")]
         );
         assert!(workspace.chat(&id("c-1")).await.unwrap().unwrap().made);
         assert_eq!(workspace.chat(&id("c-2")).await.unwrap(), None);
         assert_eq!(feeds.try_recv().unwrap(), id::<WorkspaceId>("w1"));
         assert_eq!(resend(shared, &connected(&ada)).await.unwrap(), 0);
-        assert_eq!(sent(&mut attached), [follow("c-1"), resent("c-1")]);
+        assert_eq!(sent(&mut attached), [follow_query("c-1"), resent("c-1")]);
     }
 
     #[tokio::test]
@@ -212,7 +225,7 @@ mod tests {
         drop(older);
         let mut serving = attach(shared, &ada, &["chat.serve"]);
         assert_eq!(resend(shared, &connected(&ada)).await.unwrap(), 0);
-        assert_eq!(sent(&mut serving), [follow("c-1"), resent("c-1")]);
+        assert_eq!(sent(&mut serving), [follow_query("c-1"), resent("c-1")]);
     }
 
     #[tokio::test]
@@ -237,7 +250,49 @@ mod tests {
 
         assert_eq!(
             sent(&mut attached),
-            [follow("c-1"), resent("c-1"), follow("c-2")]
+            [follow_query("c-1"), resent("c-1"), follow_query("c-2")]
+        );
+    }
+
+    #[tokio::test]
+    async fn connections_missed_pick_up_every_machine_connected_now() {
+        let fixture = Fixture::new().await;
+        let shared = &fixture.shared;
+        let ada = ada(&fixture).await;
+        let workspace = &ada.member.workspace;
+        make(workspace, "c-1", "m1", NOW).await.unwrap();
+        workspace.move_chats_to(&ada.machine).await;
+        let mut attached = attach(shared, &ada, &["chat.serve"]);
+        let (notices, missed) = tokio::sync::broadcast::channel(1);
+        let elsewhere = Connected {
+            machine: id("mc-other"),
+            owner: ada.asker.account.clone(),
+        };
+        notices.send(elsewhere.clone()).unwrap();
+        notices.send(elsewhere).unwrap();
+        drop(notices);
+
+        follow(shared.clone(), missed).await;
+
+        assert_eq!(sent(&mut attached), [follow_query("c-1"), resent("c-1")]);
+    }
+
+    #[tokio::test]
+    async fn a_machine_whose_chats_cant_be_read_connects_again() {
+        let fixture = Fixture::new().await;
+        let shared = &fixture.shared;
+        let ada = ada(&fixture).await;
+        make(&ada.member.workspace, "c-1", "m1", NOW).await.unwrap();
+        ada.member.workspace.move_chats_to(&ada.machine).await;
+        ada.member.workspace.break_chat_requests().await;
+        let mut attached = attach(shared, &ada, &["chat.serve"]);
+
+        pick_up(shared, &connected(&ada)).await;
+
+        assert!(!shared.links.is_open(&ada.machine));
+        assert_eq!(
+            attached.incoming.try_recv(),
+            Err(tokio::sync::mpsc::error::TryRecvError::Disconnected)
         );
     }
 

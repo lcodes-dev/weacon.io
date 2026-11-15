@@ -3,10 +3,10 @@
 
 use weacon_protocol::{
     ChatAnswerKind, ChatEntry, ChatEvent, ChatQuery, ChatQueryKind, ChatUpdate, Envelope,
-    ErrorBody, MachineId, Outcome, Receipt,
+    ErrorBody, MachineId, Outcome, Receipt, RunEvent, RunState, RunUpdate,
 };
 
-use crate::db::test_support::{prompt, said};
+use crate::db::test_support::{prompt, said, status};
 use futures_util::SinkExt as _;
 use tokio_tungstenite::tungstenite::Message as Wire;
 
@@ -208,4 +208,84 @@ async fn a_feed_answers_a_chat_query_before_what_its_client_sends_next() {
     let answer = answered_at_once(&mut client, chat_query("w1", ChatQueryKind::Snapshot)).await;
 
     assert_eq!(refusal(&answer), "chat.not_found");
+}
+
+// What Ada's machine sends of her chat's first turn: her prompt, the run starting, its text and
+// its end.
+fn turn() -> [ChatEvent; 4] {
+    let prompted = ChatEvent::Prompt {
+        request: id("r-1"),
+        text: "MARKER-PROMPT".to_owned(),
+        repo: None,
+        agent: None,
+    };
+    let ended = ChatEvent::Run {
+        update: RunUpdate {
+            run: id("run-1"),
+            event: RunEvent::Finished {
+                outcome: Outcome::Completed,
+            },
+        },
+    };
+    [
+        prompted,
+        status(RunState::Running),
+        said("MARKER-REPLY"),
+        ended,
+    ]
+}
+
+#[tokio::test]
+async fn a_new_chat_followed_at_once_or_later_is_heard_whole_and_in_order() {
+    let fixture = Fixture::new().await;
+    let server = fixture.run().await;
+    others(&fixture).await;
+    let (machine, mut core, mut ada) = connected(&fixture, &server).await;
+    let first = prompt("r-1", "c-1", "MARKER-PROMPT", Some(&machine));
+    ask(&mut ada, 2, Message::ChatCommand(first)).await;
+    next(&mut core).await;
+    next(&mut core).await;
+
+    // Followed the moment it is accepted, before its machine sent anything of it.
+    let read = ask(&mut ada, 3, chat_query("w1", ChatQueryKind::Snapshot)).await;
+    let empty = matches!(&read, Message::ChatAnswer(read)
+        if matches!(&read.answer, ChatAnswerKind::Snapshot { seq: 0, events, .. } if events.is_empty()));
+    assert!(empty, "{read:?}");
+    let follow = chat_query("w1", ChatQueryKind::Subscribe { after: 0 });
+    socket::send(
+        &mut ada,
+        Envelope {
+            id: 4,
+            message: follow.clone(),
+        },
+    )
+    .await;
+    let [prompted, running, text, ended] = turn();
+    socket::send(&mut core, uploaded(1, prompted.clone())).await;
+    socket::send(&mut core, uploaded(2, running.clone())).await;
+    assert_eq!(chat_event(&mut ada).await.event, prompted);
+    assert_eq!(chat_event(&mut ada).await.event, running);
+    // Followed a moment later, after some of it was stored.
+    let bo_token = token(&fixture, &server, "bo@example.com").await;
+    let mut bo = feed(&server, "w1", &bo_token).await;
+    socket::send(
+        &mut bo,
+        Envelope {
+            id: 2,
+            message: follow,
+        },
+    )
+    .await;
+    assert_eq!(chat_event(&mut bo).await.event, prompted);
+    assert_eq!(chat_event(&mut bo).await.event, running);
+    socket::send(&mut core, uploaded(3, text.clone())).await;
+    socket::send(&mut core, uploaded(4, ended.clone())).await;
+
+    for client in [&mut ada, &mut bo] {
+        let heard = [chat_event(client).await, chat_event(client).await];
+        assert_eq!(
+            heard.map(|entry| (entry.seq, entry.event)),
+            [(3, text.clone()), (4, ended.clone())]
+        );
+    }
 }

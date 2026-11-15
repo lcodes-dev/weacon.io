@@ -51,8 +51,9 @@ pub(crate) async fn store(
         }
         Ok(false) => shared.log.warn("chat upload refused", &fields),
         Err(fault) => {
-            // A chat the quota just filled is news to the list.
-            if *fault.code() == code!("chat.quota_full") {
+            // A chat a limit just filled is news to the list.
+            let full = [code!("chat.quota_full"), code!("chat.too_many_waiting")];
+            if full.contains(fault.code()) {
                 shared.wake_feeds(&workspace);
             }
             let fields = [&fields[..], &[("err", Field::error(&fault))]].concat();
@@ -128,7 +129,7 @@ mod tests {
 
     use super::*;
     use crate::chats::test_support::{Ada, ada};
-    use crate::db::test_support::{NOW, id, make, said};
+    use crate::db::test_support::{NOW, append, asks, id, make, said};
     use crate::test_support::{Fixture, member_id};
 
     fn update(workspace: &str, chat: &str, seq: u64, event: ChatEvent) -> ChatUpdate {
@@ -270,6 +271,22 @@ mod tests {
         assert_eq!(stored.unwrap_err().code(), &code!("chat.not_found"));
         let events = workspace.events_after(&chat, 0, 10, usize::MAX).await;
         assert!(events.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_chat_too_many_prompts_fill_wakes_the_workspaces_feeds() {
+        let fixture = Fixture::new().await;
+        let (shared, ada) = (&fixture.shared, ada_chatting(&fixture).await);
+        let waiting: Vec<_> = (1..=1000).map(|prompt| (None, asks(prompt))).collect();
+        append(&ada.member.workspace, "c-1", &waiting)
+            .await
+            .unwrap();
+        let mut feeds = shared.changes.subscribe();
+
+        let one_more = update("w1", "c-1", 1, asks(1001));
+        store(shared, &ada.machine, one_more).await.unwrap();
+
+        assert_eq!(feeds.try_recv().unwrap(), id::<WorkspaceId>("w1"));
     }
 
     #[tokio::test]

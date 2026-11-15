@@ -11,33 +11,31 @@ use crate::shared::Shared;
 /// What a core must offer to be sent chats' commands and queries.
 pub(crate) const SERVE: Code = code!("chat.serve");
 
-/// Sends `message` to `machine`, or refuses with `machine.offline` when it isn't connected,
-/// doesn't serve chats or doesn't keep up.
-pub(crate) fn send(shared: &Shared, machine: &MachineId, message: Message) -> Result<(), Fault> {
-    let envelope = Envelope {
+/// Sends `messages` to `machine`, all of them or none, refusing with `machine.offline` when it
+/// isn't connected, doesn't serve chats or hasn't room for them all.
+pub(crate) fn send_all(
+    shared: &Shared,
+    machine: &MachineId,
+    messages: Vec<Message>,
+) -> Result<(), Fault> {
+    let envelopes = messages.into_iter().map(|message| Envelope {
         id: shared.links.next_id(),
         message,
-    };
+    });
+    let serve = Capability::new(SERVE);
     shared
         .links
-        .send(machine, &Capability::new(SERVE), envelope)
+        .send_all(machine, &serve, envelopes.collect())
         .map_err(|_| offline())
 }
 
-/// Asks `machine` for `chat`'s events after `after`, then each new one as it is committed.
-pub(crate) fn follow(
-    shared: &Shared,
-    machine: &MachineId,
-    workspace: &WorkspaceId,
-    chat: &ChatId,
-    after: u64,
-) -> Result<(), Fault> {
-    let query = ChatQuery {
+/// Asks for `chat`'s events after `after`, then each new one as it is committed.
+pub(crate) fn follow(workspace: &WorkspaceId, chat: &ChatId, after: u64) -> Message {
+    Message::ChatQuery(ChatQuery {
         workspace: workspace.clone(),
         chat: chat.clone(),
         query: ChatQueryKind::Subscribe { after },
-    };
-    send(shared, machine, Message::ChatQuery(query))
+    })
 }
 
 pub(super) fn offline() -> Fault {
