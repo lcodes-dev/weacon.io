@@ -16,7 +16,7 @@ use weacon_protocol::{Capability, Code, Envelope, MAX_FRAME, MachineId, code};
 use crate::auth::Machine;
 use crate::connections::Place;
 use crate::links::Connected;
-use crate::relay::RELAYED;
+use crate::relay::{self, DIFF, SESSIONS, SETTINGS, WORKTREE};
 use crate::shared::Shared;
 use crate::socket::{Closed, Pings, greet, refusal, reply, send};
 
@@ -101,10 +101,13 @@ async fn run(
     link: &mut Link,
 ) -> Result<Infallible, Closed> {
     let offer = Capability::new(CONNECT);
-    let offers = std::iter::once(CONNECT)
-        .chain(RELAYED)
-        .map(Capability::new)
-        .collect();
+    let offers = vec![
+        offer.clone(),
+        Capability::new(SETTINGS),
+        Capability::new(DIFF),
+        Capability::new(WORKTREE),
+        Capability::new(SESSIONS),
+    ];
     let greeted = greet(socket, shared, offers, &offer);
     let hello = timeout(shared.sockets.hello_within, greeted)
         .await
@@ -138,12 +141,18 @@ async fn run(
                 if let Ok(Frame::Text(text)) = &frame
                     && let Ok(envelope) = Envelope::from_json(text.as_bytes())
                 {
-                    // The relay drops what isn't an answer it waits for; no other feature hears
-                    // machines yet.
-                    let _claimed = shared.relay.answered(&link.machine.id, envelope);
+                    hand_off(shared, &link.machine.id, envelope);
                 }
             }
         }
+    }
+}
+
+/// Gives what `machine` sent to the feature it is for.
+fn hand_off(shared: &Shared, machine: &MachineId, envelope: Envelope) {
+    if relay::takes(&envelope.message) {
+        // An error the relay doesn't claim is for no other feature yet.
+        let _claimed = shared.relay.answered(machine, envelope);
     }
 }
 
@@ -156,7 +165,6 @@ mod tests {
     use weacon_protocol::{AccountId, Message, Welcome};
 
     use super::*;
-    use crate::relay::{SESSIONS, SETTINGS};
     use crate::test_support::socket::{
         Socket, ends, frame, next, next_envelope, open, pongs, say, upgrade_status,
     };
@@ -173,7 +181,7 @@ mod tests {
         let welcome = next(&mut client).await;
         assert!(
             matches!(&welcome, Message::Welcome(Welcome { capabilities, .. })
-                if *capabilities == [CONNECT, SETTINGS, SESSIONS].map(Capability::new)),
+                if *capabilities == [CONNECT, SETTINGS, DIFF, WORKTREE, SESSIONS].map(Capability::new)),
             "{welcome:?}"
         );
         (paired, client)

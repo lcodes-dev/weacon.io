@@ -120,7 +120,8 @@ pub(crate) async fn blocking<T: Send + 'static>(
         .unwrap_or_else(|error| Err(io::Error::other(error)))
 }
 
-/// A watch's failed readings: the first since a success warns, the rest are quiet.
+/// Failures in a row, such as a watch's readings: the first since a success warns, the rest
+/// are quiet.
 #[derive(Default)]
 pub(crate) struct WarnOnce {
     failing: bool,

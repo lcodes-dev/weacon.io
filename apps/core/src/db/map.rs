@@ -54,6 +54,10 @@ pub(crate) struct Stored {
     pub(crate) blob: Option<String>,
 }
 
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "the search tool uses it in its own change")
+)]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Hit {
     pub(crate) path: String,
@@ -265,6 +269,10 @@ impl Map {
     /// What matches every word of `words` in `layer`, best first: a worktree's layer finds its
     /// own files and the base's files it didn't change, and nothing once the base has moved on
     /// from the commit it was read at.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "the search tool uses it in its own change")
+    )]
     pub(crate) async fn search(
         &self,
         layer: &str,
@@ -311,6 +319,13 @@ impl Map {
     }
 
     /// Removes this repository's map, every layer of it.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "removing a repository forgets its map in its own change"
+        )
+    )]
     pub(crate) async fn forget(&self) -> Result<(), Fault> {
         let (workspace, repo) = self.keys();
         let mut transaction = self.workspace.db.pool.begin().await.map_err(failed)?;
@@ -331,6 +346,10 @@ impl Map {
 
 /// Each word as a quoted FTS5 prefix term, so no input reads as query syntax; `None` without
 /// words.
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "the search tool uses it in its own change")
+)]
 fn match_query(words: &str) -> Option<String> {
     let terms: Vec<String> = words
         .split_whitespace()

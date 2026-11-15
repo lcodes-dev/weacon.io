@@ -34,10 +34,7 @@ pub(crate) struct Repos {
 pub(crate) fn run(app: &App, command: RepoCommand, out: &mut impl Write) -> Result<(), Fault> {
     let state_dir = app.state_dir.as_deref().ok_or_else(state_unavailable)?;
     let workspaces = Workspaces::new(state_dir, app.path.clone());
-    let repos = |workspace: WorkspaceId| {
-        let file = workspaces.root(&workspace).join("git/repos.json");
-        Repos::new(workspace, file)
-    };
+    let repos = |workspace: WorkspaceId| Repos::of(&workspaces, workspace);
     match command {
         RepoCommand::Add {
             workspace,
@@ -63,6 +60,12 @@ pub(crate) fn run(app: &App, command: RepoCommand, out: &mut impl Write) -> Resu
 impl Repos {
     pub(crate) const fn new(workspace: WorkspaceId, file: PathBuf) -> Self {
         Self { workspace, file }
+    }
+
+    /// `workspace`'s repositories, in its own folder of `workspaces`.
+    pub(crate) fn of(workspaces: &Workspaces, workspace: WorkspaceId) -> Self {
+        let file = workspaces.root(&workspace).join("git/repos.json");
+        Self::new(workspace, file)
     }
 
     /// Adds the repository whose top folder is `path` as `id`. Adding the same again changes

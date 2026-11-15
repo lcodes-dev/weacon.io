@@ -8,6 +8,7 @@ pub(crate) const CAPABILITIES: &[Capability] = &[
     Capability::new(code!("chat.agent")),
     Capability::new(code!("run.stream")),
     Capability::new(code!("machine.connect")),
+    Capability::new(code!("chat.serve")),
     Capability::new(code!("machine.settings")),
     Capability::new(code!("sessions.read")),
 ];
@@ -105,6 +106,7 @@ mod tests {
                             Capability::new(code!("chat.agent")),
                             Capability::new(code!("run.stream")),
                             Capability::new(code!("machine.connect")),
+                            Capability::new(code!("chat.serve")),
                             Capability::new(code!("machine.settings")),
                             Capability::new(code!("sessions.read")),
                         ],

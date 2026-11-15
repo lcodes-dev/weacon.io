@@ -67,6 +67,32 @@ impl Listener {
     }
 }
 
+/// Removes `dir` and all it holds, read-only files too, which Windows won't delete as they are.
+pub(crate) fn remove_tree(dir: &Path) -> io::Result<()> {
+    writable(dir)?;
+    fs::remove_dir_all(dir)
+}
+
+// A link is left as it is, so no file outside `dir` changes.
+fn writable(dir: &Path) -> io::Result<()> {
+    for entry in fs::read_dir(dir)? {
+        let entry = entry?;
+        let kind = entry.file_type()?;
+        if kind.is_dir() {
+            writable(&entry.path())?;
+        } else if kind.is_file() {
+            let mut permissions = entry.metadata()?.permissions();
+            #[expect(
+                clippy::permissions_set_readonly_false,
+                reason = "Windows has no bit for others to write; only this flag stops the delete"
+            )]
+            permissions.set_readonly(false);
+            fs::set_permissions(entry.path(), permissions)?;
+        }
+    }
+    Ok(())
+}
+
 /// Bytes this user may still write on the disk holding `dir`.
 #[expect(unsafe_code, reason = "GetDiskFreeSpaceExW has no safe API in std")]
 pub(crate) fn free_space(dir: &Path) -> io::Result<u64> {
