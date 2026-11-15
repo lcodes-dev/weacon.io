@@ -318,7 +318,9 @@ function WorkspaceChats({
   const live = status.state === "live";
   const listedChat = chats.value?.chats.find(({ id }) => id === place.chat);
   const open = listedChat ?? (place.chat !== undefined && place.chat === started ? { id: started, title: undefined, owner: workspace.member ?? "" } : undefined);
-  const newChat = starting && ready?.kind === "ready" ? ready.machines : undefined;
+  // The view stays while the feed reconnects; it sends only once the feed is back.
+  const own = machines.value === undefined ? undefined : readiness(true, machines.value.machines);
+  const newChat = starting && own?.kind === "ready" ? own.machines : undefined;
   const listed = read ? chats : status.state === "connecting" ? "connecting" : "none";
   return (
     <div className="workspace">
@@ -349,7 +351,8 @@ function WorkspaceChats({
         {newChat !== undefined ? (
           <NewChat
             socket={socket}
-            live={live}
+            live={live && send}
+            away={away}
             machines={newChat}
             openSettings={openSettings}
             started={(chat) => {

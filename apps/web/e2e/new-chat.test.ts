@@ -23,14 +23,14 @@ const AGENT = { kind: "claude" as const, owner: { kind: "member" as const, membe
  * A stand-in for the server and the machine's core: what a person's first prompts made, and the
  * refusals still to come; with `held`, answers wait there, and with `unlisted`, the list leaves the chats out.
  */
-type Chats = { made: Map<string, string>; offline: number; held?: Array<() => void>; unlisted?: boolean };
+type Chats = { made: Map<string, string>; offline: number; held?: Array<() => void>; unlisted?: boolean; settings?: MachineSettings };
 
 // Answers the machine's settings and repositories, takes a first prompt on the person's own
 // machine unless it is offline, and plays the made chat: the prompt, then a running run's reply.
 function newChatServer(chats: Chats): (asked: Envelope, opened: number, reply: (envelope: Envelope) => void) => Envelope[] {
   return (asked, _opened, reply) => {
     if (asked.type === "machine_settings_query") {
-      const answer = asked.query.kind === "repos" ? { kind: "repos" as const, repos: ["kitchen", "garden"] } : { kind: "current" as const, ...SETTINGS };
+      const answer = asked.query.kind === "repos" ? { kind: "repos" as const, repos: ["kitchen", "garden"] } : { kind: "current" as const, ...(chats.settings ?? SETTINGS) };
       return [{ id: 0, type: "machine_settings_answer", request: asked.request, machine: asked.machine, workspace: asked.workspace, answer }];
     }
     if (asked.type === "chat_command" && asked.action.kind === "prompt") {
@@ -109,7 +109,12 @@ test("from an empty workspace, a person starts a chat on their connected machine
   await form.getByLabel("Repository").selectOption("garden");
   await form.getByLabel("Agent").selectOption("codex");
   await form.getByText("Codex isn't signed in on this machine.").waitFor();
-  await form.getByRole("button", { name: "Sign in from Settings" }).waitFor();
+  // Signed in from Settings, the agent can be picked once the person is back.
+  chats.settings = { ...SETTINGS, sign_ins: [{ agent: "codex", state: "signed_in" }] };
+  await form.getByRole("button", { name: "Sign in from Settings" }).click();
+  await page.getByRole("heading", { name: "Machines" }).waitFor();
+  await page.getByRole("button", { name: "Back" }).click();
+  await form.getByText("Codex isn't signed in on this machine.").waitFor({ state: "detached" });
   await form.getByLabel("Agent").selectOption("claude");
   assert.equal(await form.getByLabel("Machine").inputValue(), STUDIO.id);
   await form.getByRole("combobox", { name: "Message" }).fill("Sort the pantry.");
@@ -156,7 +161,7 @@ test("with the machine offline, the first prompt is kept and can be sent again o
   const { page } = served;
   const chats: Chats = { made: new Map(), offline: 1 };
   await standIn(page, { machines: [{ ...STUDIO, connected: true }] }, chats);
-  const { sent } = await serveFeed(page, { also: ["workspace.chat_commands", "machine.settings"], answer: newChatServer(chats) });
+  const { sent, opened, closeLatest } = await serveFeed(page, { also: ["workspace.chat_commands", "machine.settings"], answer: newChatServer(chats) });
   await openPersonal(served);
   await nav(page).getByRole("button", { name: "New chat" }).click();
 
@@ -166,6 +171,11 @@ test("with the machine offline, the first prompt is kept and can be sent again o
   await box.fill("Water the plants.");
   await form.getByRole("button", { name: "Send" }).click();
   await form.getByText("The machine is offline, so the chat wasn't started. Try again once it's back.").waitFor();
+  assert.equal(await box.inputValue(), "Water the plants.");
+  // The view and its text stay while the feed reconnects.
+  await closeLatest();
+  await waitFor(() => opened.length === 2);
+  await page.getByText("Connected").first().waitFor();
   assert.equal(await box.inputValue(), "Water the plants.");
 
   await form.getByRole("button", { name: "Send" }).click();

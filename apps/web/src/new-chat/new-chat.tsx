@@ -18,17 +18,21 @@ const KINDS: AgentKind[] = ["claude", "codex"];
 /**
  * Starts a chat on one of `machines`, the person's own that run chats: in a repository the
  * machine has for the workspace, with an agent, by its first prompt. Once the server takes it,
- * `started` hears the chat's id; until then the box keeps the text.
+ * `started` hears the chat's id; until then the box keeps the text. Back from `away`, such as
+ * Settings, where an agent may have been signed in, it asks the machine again.
  */
 export function NewChat({
   socket,
   live,
+  away,
   machines,
   started,
   openSettings,
 }: {
   socket: WorkspaceSocket;
+  /** Whether the feed is up and takes commands. */
   live: boolean;
+  away: boolean;
   machines: MachineSummary[];
   started(chat: ChatId): void;
   /** Opens Settings, where the person signs an agent in on a machine. */
@@ -40,6 +44,14 @@ export function NewChat({
   const key = `${id} ${socket.workspace}`;
   const settings = useLoaded(() => (id === undefined ? answered<MachineSettings | undefined>(undefined) : current(socket, id, later)), key);
   const listed = useLoaded(() => (id === undefined ? answered<RepoId[]>([]) : repos(socket, id, later)), key);
+  const back = useRef(away);
+  useEffect(() => {
+    if (back.current && !away) {
+      void settings.load();
+      void listed.load();
+    }
+    back.current = away;
+  }, [away]);
   const [repo, setRepo] = useState<RepoId>();
   const [agent, setAgent] = useState<AgentKind>("claude");
   const commands = useChatCommands(socket, undefined, live, () => {});
