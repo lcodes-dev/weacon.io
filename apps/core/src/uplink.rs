@@ -15,7 +15,7 @@ use weacon_protocol::{
 };
 
 use self::asking::{Asking, asking};
-use self::chats::{ChatLink, UPLOAD};
+use self::chats::{ChatLink, Upload};
 use self::retry::Retry;
 use crate::chats::Chats;
 use crate::machine::{self, Paired};
@@ -156,7 +156,7 @@ impl Uplink {
         let up = Instant::now();
         let offers = |code| welcome.capabilities.contains(&Capability::new(code));
         let mut link = Link {
-            chats: ChatLink::new(self.chats.clone(), offers(UPLOAD), log.clone()),
+            chats: ChatLink::new(self.chats.clone(), Upload::offered(offers), log.clone()),
             proposals: offers(PROPOSALS),
         };
         if self
@@ -743,7 +743,7 @@ mod tests {
     // What the uplink answers `message` under id 9 with: `None` when it passes it on.
     fn answered(link: &Uplink, message: Message) -> Option<String> {
         let frame = text(&Envelope { id: 9, message });
-        let mut chats = ChatLink::new(link.chats.clone(), false, link.log.clone());
+        let mut chats = ChatLink::new(link.chats.clone(), Upload::Nothing, link.log.clone());
         let reply = match link.answer(frame, &owner(), &mut chats) {
             Step::Nothing => return None,
             Step::Unpaired => return Some("unpaired".to_owned()),
@@ -851,7 +851,7 @@ mod tests {
             id: 9,
             message: ask(),
         });
-        let mut chats = ChatLink::new(link.chats.clone(), false, link.log.clone());
+        let mut chats = ChatLink::new(link.chats.clone(), Upload::Nothing, link.log.clone());
         let Step::Reply(reply) = link.answer(frame, &owner(), &mut chats) else {
             panic!("not refused");
         };

@@ -5,6 +5,7 @@ mod command;
 #[cfg(test)]
 mod end_to_end;
 mod link;
+pub(crate) mod live;
 mod read;
 mod reconnect;
 #[cfg(test)]
@@ -13,14 +14,15 @@ pub(crate) mod upload;
 mod watch;
 
 pub(crate) use link::SERVE;
+pub(crate) use live::{News, Notice};
 pub(crate) use reconnect::follow_machines;
-pub(crate) use watch::Watch;
+pub(crate) use watch::{Noticed, Watch};
 
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::{Json, Router};
 use tokio::sync::broadcast;
-use weacon_protocol::{ChatId, ChatList, Message, WorkspaceId};
+use weacon_protocol::{ChatEntry, ChatId, ChatList, Message, RunUpdate, WorkspaceId};
 
 use crate::auth::Member;
 use crate::http::failure;
@@ -31,32 +33,54 @@ const PAGE: u32 = 200;
 /// The bytes of a page of events, which leaves room in its frame for what travels with it.
 const PAGE_BYTES: usize = weacon_protocol::MAX_FRAME - (16 << 10);
 
-/// How many chats' new events a socket may fall behind by before it reads them all again.
-const NOTICES: usize = 256;
+/// How many notices a socket may fall behind by before it reads all its chats again and misses
+/// what live viewers see meanwhile.
+const NOTICES: usize = 1024;
 
 /// What the server's connections share of its chats.
 #[derive(Clone, Debug)]
 pub(crate) struct Hub {
-    stored: broadcast::Sender<(WorkspaceId, ChatId)>,
+    notices: broadcast::Sender<Notice>,
 }
 
 impl Default for Hub {
     fn default() -> Self {
         Self {
-            stored: broadcast::channel(NOTICES).0,
+            notices: broadcast::channel(NOTICES).0,
         }
     }
 }
 
 impl Hub {
-    /// Tells the sockets that follow `chat` that it has new events.
-    pub(crate) fn stored(&self, workspace: WorkspaceId, chat: ChatId) {
-        // No socket follows it: no one to tell.
-        drop(self.stored.send((workspace, chat)));
+    /// Tells the sockets that follow `chat` that its events reach `seq`, the last as live
+    /// viewers see it when that isn't what is stored.
+    pub(crate) fn stored(
+        &self,
+        workspace: WorkspaceId,
+        chat: ChatId,
+        seq: u64,
+        shown: Option<ChatEntry>,
+    ) {
+        self.tell(workspace, chat, News::Stored { seq, shown });
     }
 
-    pub(crate) fn notices(&self) -> broadcast::Receiver<(WorkspaceId, ChatId)> {
-        self.stored.subscribe()
+    /// Passes `update` to the sockets that follow `chat` and have sent all it stored so far.
+    pub(crate) fn live(&self, workspace: WorkspaceId, chat: ChatId, update: RunUpdate) {
+        self.tell(workspace, chat, News::Run(update));
+    }
+
+    fn tell(&self, workspace: WorkspaceId, chat: ChatId, news: News) {
+        let notice = Notice {
+            workspace,
+            chat,
+            news,
+        };
+        // No socket follows it: no one to tell.
+        drop(self.notices.send(notice));
+    }
+
+    pub(crate) fn notices(&self) -> broadcast::Receiver<Notice> {
+        self.notices.subscribe()
     }
 }
 

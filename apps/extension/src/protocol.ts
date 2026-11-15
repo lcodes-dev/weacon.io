@@ -43,6 +43,9 @@ export type Envelope = {
     type: "chat_answer";
   } & ChatAnswer
   | {
+    type: "chat_live";
+  } & ChatLive
+  | {
     type: "diff_query";
   } & DiffQuery
   | {
@@ -389,6 +392,17 @@ export type ChatList = {
 };
 
 /**
+ * What a live viewer of a chat sees of one of its runs and no one stores, from the core to a
+ * server that offers `chat.live`: the text a run is writing. The server passes it to the
+ * chat's followers as a [`Message::Run`](crate::Message::Run).
+ */
+export type ChatLive = {
+  chat: ChatId;
+  update: RunUpdate;
+  workspace: WorkspaceId;
+};
+
+/**
  * A question about a chat's log, from a client to a core that offers `chat.events`. The answer
  * is a [`ChatAnswer`], or for `subscribe` the [`ChatUpdate`]s themselves.
  */
@@ -441,7 +455,7 @@ export type ChatSummary = {
 
 /**
  * A committed event of a chat, from the core to a client that subscribed under `chat.events`.
- * Text deltas are never committed; they arrive only as run updates.
+ * Text deltas are never committed; they arrive only as run updates, or as a [`ChatLive`].
  */
 export type ChatUpdate = {
   chat: ChatId;

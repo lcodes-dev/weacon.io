@@ -7,6 +7,7 @@ use weacon_protocol::{
     code,
 };
 
+use super::live;
 use crate::db::{Incoming, turns};
 use crate::shared::Shared;
 use crate::socket::Closed;
@@ -15,7 +16,7 @@ use crate::socket::Closed;
 pub(crate) const UPLOAD: Code = code!("chat.upload");
 
 /// Stores what is [`kept`] of `update` from `machine`, and tells the sockets that follow its
-/// chat. An event of a chat that isn't on `machine`, or whose owner no longer owns it there, is
+/// chat, with what live viewers see of it. An event of a chat that isn't on `machine`, or whose owner no longer owns it there, is
 /// dropped. When the database fails, the link closes, so nothing later is stored before it
 /// and the core, connecting again, sends it once more.
 pub(crate) async fn store(
@@ -28,6 +29,7 @@ pub(crate) async fn store(
         chat,
         entry: ChatEntry { seq, event },
     } = update;
+    let shown = live::shown(&event);
     let Some(event) = kept(event) else {
         return Ok(());
     };
@@ -42,14 +44,15 @@ pub(crate) async fn store(
         at: shared.now(),
     };
     match append(shared, machine, &workspace, &chat, incoming).await {
-        Ok(true) => {
+        Ok(Some(seq)) => {
             // A turn's start or end changes the chat's summary in the workspace's list.
             if turns(&event) {
                 shared.wake_feeds(&workspace);
             }
-            shared.chats.stored(workspace, chat);
+            let shown = shown.map(|event| ChatEntry { seq, event });
+            shared.chats.stored(workspace, chat, seq, shown);
         }
-        Ok(false) => shared.log.warn("chat upload refused", &fields),
+        Ok(None) => shared.log.warn("chat upload refused", &fields),
         Err(fault) => {
             // A chat a limit just filled is news to the list.
             let full = [code!("chat.quota_full"), code!("chat.too_many_waiting")];
@@ -106,20 +109,20 @@ fn kept_run(event: RunEvent) -> Option<RunEvent> {
     }
 }
 
-// Whether `incoming` was one to store, which it then is.
+// The chat's seq once `incoming` is stored, if it was one to store.
 async fn append(
     shared: &Shared,
     machine: &MachineId,
     workspace: &WorkspaceId,
     chat: &ChatId,
     incoming: Incoming<'_>,
-) -> Result<bool, Fault> {
+) -> Result<Option<u64>, Fault> {
     let Some(place) = shared.db.find_workspace(workspace).await? else {
-        return Ok(false);
+        return Ok(None);
     };
     match place.append_from(machine, chat, &[incoming]).await {
-        Err(fault) if *fault.code() == code!("chat.not_found") => Ok(false),
-        appended => appended.map(|_| true),
+        Err(fault) if *fault.code() == code!("chat.not_found") => Ok(None),
+        appended => appended.map(Some),
     }
 }
 
@@ -129,6 +132,7 @@ mod tests {
 
     use super::*;
     use crate::chats::test_support::{Ada, ada};
+    use crate::chats::{News, Notice};
     use crate::db::test_support::{NOW, append, asks, id, make, said};
     use crate::test_support::{Fixture, member_id};
 
@@ -177,7 +181,15 @@ mod tests {
         assert_eq!(events.unwrap().len(), 1);
         let core_seq = workspace.chat(&id("c-1")).await.unwrap().unwrap().core_seq;
         assert_eq!(core_seq, 4);
-        assert_eq!(notices.try_recv().unwrap(), (id("w1"), id("c-1")));
+        let stored = Notice {
+            workspace: id("w1"),
+            chat: id("c-1"),
+            news: News::Stored {
+                seq: 1,
+                shown: None,
+            },
+        };
+        assert_eq!(notices.try_recv().unwrap(), stored);
         notices.try_recv().unwrap_err();
         let logged = serde_json::to_string(&*fixture.records.lock().unwrap()).unwrap();
         assert_eq!(logged.matches("chat upload refused").count(), 4);
@@ -313,6 +325,8 @@ mod tests {
             input: marked(),
         };
 
+        let mut notices = shared.chats.notices();
+
         for (seq, event) in [(1, run(call)), (2, run(asked)), (3, said("MARKER-TEXT"))] {
             store(shared, &ada.machine, update("w1", "c-1", seq, event))
                 .await
@@ -332,6 +346,21 @@ mod tests {
             input: Value::Null,
         };
         assert_eq!(stored, [run(blank), said("MARKER-TEXT")]);
+        let shown = RunEvent::PermissionAsked {
+            run: id("run-1"),
+            prompt: 1,
+            tool: "MARKER-TOOL".to_owned(),
+            input: Value::Null,
+        };
+        let told: Vec<_> = std::iter::from_fn(|| notices.try_recv().ok())
+            .map(|notice| notice.news)
+            .collect();
+        let entry = ChatEntry {
+            seq: 1,
+            event: run(shown),
+        };
+        let news = [(1, Some(entry)), (2, None)].map(|(seq, shown)| News::Stored { seq, shown });
+        assert_eq!(told, news);
         let logged = serde_json::to_string(&*fixture.records.lock().unwrap()).unwrap();
         assert!(!logged.contains("chat upload refused"), "{logged}");
     }

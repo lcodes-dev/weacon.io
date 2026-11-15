@@ -10,7 +10,7 @@ use weacon_protocol::{
     Envelope, ErrorBody, Message, WorkspaceId,
 };
 
-use super::{PAGE, PAGE_BYTES, command, read};
+use super::{News, Notice, PAGE, PAGE_BYTES, command, read};
 use crate::auth::Member;
 use crate::db::{Workspace, chat_not_found};
 use crate::shared::Shared;
@@ -18,15 +18,41 @@ use crate::socket::Closed;
 
 /// The chats one socket follows, and which of them have events it hasn't sent yet.
 pub(crate) struct Watch {
-    /// Which chats have new events, for [`Watch::noticed`].
-    pub(crate) notices: Receiver<(WorkspaceId, ChatId)>,
-    /// Each chat followed, with the last of its events sent.
-    following: HashMap<ChatId, u64>,
+    /// What is new in the chats, for [`Watch::noticed`].
+    pub(crate) notices: Receiver<Notice>,
+    following: HashMap<ChatId, Followed>,
     /// The chats with events it hasn't sent, served in turn, a page each.
     behind: VecDeque<ChatId>,
     /// Says, after each page, that the next may be waiting, so pages go out one per turn.
     pub(crate) more: mpsc::Receiver<()>,
     again: mpsc::Sender<()>,
+}
+
+/// A chat a socket follows.
+#[derive(Debug)]
+struct Followed {
+    /// The last of its events sent.
+    sent: u64,
+    /// The last of its events stored that the socket heard of, which it sends no event past;
+    /// `None` from a notice missed until the next one.
+    heard: Option<u64>,
+}
+
+impl Followed {
+    // Whether all the socket heard of was sent, so what live viewers see goes next.
+    fn caught_up(&self) -> bool {
+        self.heard == Some(self.sent)
+    }
+}
+
+/// What a socket does about a notice.
+#[derive(Debug, PartialEq)]
+pub(crate) enum Noticed {
+    Nothing,
+    /// A chat it follows is behind: send what it hasn't.
+    Behind,
+    /// Send this now: what live viewers of a chat it follows see.
+    Live(Message),
 }
 
 impl Watch {
@@ -47,29 +73,63 @@ impl Watch {
         }
     }
 
-    /// Takes in a notice from `notices`: whether a chat it follows in `workspace` is behind.
+    /// Takes in a notice from `notices` about the chats it follows in `workspace`.
     pub(crate) fn noticed(
         &mut self,
-        notice: Result<(WorkspaceId, ChatId), RecvError>,
+        notice: Result<Notice, RecvError>,
         workspace: &WorkspaceId,
-    ) -> Result<bool, Closed> {
+    ) -> Result<Noticed, Closed> {
         match notice {
-            Ok((place, chat)) if place == *workspace && self.following.contains_key(&chat) => {
-                self.lag(chat);
-                Ok(true)
-            }
-            Ok(_) => Ok(false),
+            Ok(notice) if notice.workspace == *workspace => Ok(self.heard_of(notice)),
+            Ok(_) => Ok(Noticed::Nothing),
             // A notice missed may have been for any of them.
             Err(RecvError::Lagged(_)) => {
-                let behind = &self.behind;
-                let missed: Vec<_> = (self.following.keys())
-                    .filter(|chat| !behind.contains(chat))
-                    .cloned()
-                    .collect();
-                self.behind.extend(missed);
-                Ok(true)
+                let missed: Vec<_> = self.following.keys().cloned().collect();
+                for chat in missed {
+                    self.lag(chat);
+                }
+                for followed in self.following.values_mut() {
+                    followed.heard = None;
+                }
+                Ok(Noticed::Behind)
             }
             Err(RecvError::Closed) => Err(Closed),
+        }
+    }
+
+    // A stored event that comes right after all that was sent goes as live viewers see it.
+    fn heard_of(&mut self, notice: Notice) -> Noticed {
+        let Notice {
+            workspace,
+            chat,
+            news,
+        } = notice;
+        let Some(followed) = self.following.get_mut(&chat) else {
+            return Noticed::Nothing;
+        };
+        let caught_up = followed.caught_up();
+        match news {
+            News::Run(update) if caught_up => Noticed::Live(Message::Run(update)),
+            News::Run(_) => Noticed::Nothing,
+            News::Stored { seq, shown } => {
+                let next = followed.heard.and_then(|heard| heard.checked_add(1)) == Some(seq);
+                if caught_up
+                    && next
+                    && let Some(entry) = shown
+                {
+                    followed.sent = seq;
+                    followed.heard = Some(seq);
+                    let update = ChatUpdate {
+                        workspace,
+                        chat,
+                        entry,
+                    };
+                    return Noticed::Live(Message::Chat(update));
+                }
+                followed.heard = Some(followed.heard.map_or(seq, |heard| heard.max(seq)));
+                self.lag(chat);
+                Noticed::Behind
+            }
         }
     }
 
@@ -117,7 +177,11 @@ impl Watch {
                 if after > chat.seq {
                     ChatAnswerKind::EventsLost
                 } else {
-                    self.following.insert(query.chat.clone(), after);
+                    let followed = Followed {
+                        sent: after,
+                        heard: Some(chat.seq),
+                    };
+                    self.following.insert(query.chat.clone(), followed);
                     self.lag(query.chat);
                     return Ok(None);
                 }
@@ -137,18 +201,21 @@ impl Watch {
     /// After a page, [`Self::more`] hears that there may be another.
     pub(crate) async fn next(&mut self, workspace: &Workspace) -> Result<Vec<Message>, Fault> {
         while let Some(chat) = self.behind.pop_front() {
-            let Some(&last) = self.following.get(&chat) else {
+            let Some(&Followed { sent, heard }) = self.following.get(&chat) else {
                 continue;
             };
-            let page = workspace
-                .events_after(&chat, last, PAGE, PAGE_BYTES)
+            let mut page = workspace
+                .events_after(&chat, sent, PAGE, PAGE_BYTES)
                 .await?;
-            let Some(ChatEntry { seq, .. }) = page.last() else {
+            page.retain(|entry| heard.is_none_or(|heard| entry.seq <= heard));
+            let Some(&ChatEntry { seq, .. }) = page.last() else {
                 continue;
             };
             // After the others behind, so a long history holds none of them up.
             self.behind.push_back(chat.clone());
-            self.following.insert(chat.clone(), *seq);
+            if let Some(followed) = self.following.get_mut(&chat) {
+                followed.sent = seq;
+            }
             // One is already waiting if this fails: the next turn takes the next page either way.
             let _waiting = self.again.try_send(());
             return Ok(page
@@ -186,6 +253,8 @@ fn refusal(log: &Logger, workspace: &WorkspaceId, fault: &Fault) -> Message {
 #[cfg(test)]
 mod tests {
     use weacon_protocol::{Capability, ChatState, code};
+
+    use weacon_protocol::RunUpdate;
 
     use super::*;
     use crate::db::test_support::{NOW, append, id, make, said};
@@ -279,7 +348,7 @@ mod tests {
         append(&workspace, "c-1", &[(Some(3), said("c"))])
             .await
             .unwrap();
-        fixture.shared.chats.stored(id("w1"), id("c-1"));
+        fixture.shared.chats.stored(id("w1"), id("c-1"), 3, None);
         assert_eq!(seq_of(&heard(&mut client).await), 3);
 
         ask(&mut client, 3, query("w1", ChatQueryKind::Snapshot)).await;
@@ -497,42 +566,115 @@ mod tests {
         append(&workspace, "c-1", &[(Some(2), said("b"))])
             .await
             .unwrap();
-        fixture.shared.chats.stored(id("w1"), id("c-1"));
+        fixture.shared.chats.stored(id("w1"), id("c-1"), 2, None);
 
         assert_eq!(seq_of(&heard(&mut client).await), 2);
+    }
+
+    fn notice(workspace: &str, chat: &str, news: News) -> Result<Notice, RecvError> {
+        Ok(Notice {
+            workspace: id(workspace),
+            chat: id(chat),
+            news,
+        })
+    }
+
+    fn stored(seq: u64, shown: Option<ChatEntry>) -> News {
+        News::Stored { seq, shown }
+    }
+
+    fn followed(sent: u64) -> Followed {
+        Followed {
+            sent,
+            heard: Some(sent),
+        }
     }
 
     #[tokio::test]
     async fn a_watch_is_behind_only_on_its_chats_in_its_workspace_or_when_it_missed_notices() {
         let fixture = Fixture::new().await;
         let mut watch = Watch::new(&fixture.shared);
-        watch.following.insert(id("c-1"), 0);
-        watch.following.insert(id("c-2"), 0);
+        watch.following.insert(id("c-1"), followed(0));
+        watch.following.insert(id("c-2"), followed(0));
         let w1 = id("w1");
 
-        assert!(matches!(
-            watch.noticed(Ok((id("w2"), id("c-1"))), &w1),
-            Ok(false)
-        ));
-        assert!(matches!(
-            watch.noticed(Ok((id("w1"), id("c-3"))), &w1),
-            Ok(false)
-        ));
+        let elsewhere = watch.noticed(notice("w2", "c-1", stored(1, None)), &w1);
+        let unfollowed = watch.noticed(notice("w1", "c-3", stored(1, None)), &w1);
+        assert_eq!(
+            (elsewhere.ok(), unfollowed.ok()),
+            (Some(Noticed::Nothing), Some(Noticed::Nothing))
+        );
         assert!(watch.behind.is_empty());
-        assert!(matches!(
-            watch.noticed(Ok((id("w1"), id("c-1"))), &w1),
-            Ok(true)
-        ));
+        let ours = watch.noticed(notice("w1", "c-1", stored(1, None)), &w1);
+        assert_eq!(ours.ok(), Some(Noticed::Behind));
         assert_eq!(watch.behind, [id("c-1")]);
-        assert!(matches!(
-            watch.noticed(Err(RecvError::Lagged(1)), &w1),
-            Ok(true)
-        ));
+        let missed = watch.noticed(Err(RecvError::Lagged(1)), &w1);
+        assert_eq!(missed.ok(), Some(Noticed::Behind));
         assert_eq!(watch.behind, [id("c-1"), id("c-2")]);
+        assert!(watch.following.values().all(|chat| chat.heard.is_none()));
         assert!(matches!(
             watch.noticed(Err(RecvError::Closed), &w1),
             Err(Closed)
         ));
+    }
+
+    fn written(text: &str) -> RunUpdate {
+        RunUpdate {
+            run: id("run-1"),
+            event: weacon_protocol::RunEvent::TextDelta {
+                text: text.to_owned(),
+            },
+        }
+    }
+
+    fn shown(seq: u64) -> ChatEntry {
+        ChatEntry {
+            seq,
+            event: said("shown"),
+        }
+    }
+
+    fn seen(entry: ChatEntry) -> Option<Noticed> {
+        let update = ChatUpdate {
+            workspace: id("w1"),
+            chat: id("c-1"),
+            entry,
+        };
+        Some(Noticed::Live(Message::Chat(update)))
+    }
+
+    #[tokio::test]
+    async fn what_live_viewers_see_goes_only_right_after_all_that_was_sent() {
+        let fixture = Fixture::new().await;
+        let workspace = w1(&fixture).await;
+        make(&workspace, "c-1", "m1", NOW).await.unwrap();
+        let events = [1, 2, 3].map(|seq| (Some(seq), said("a")));
+        append(&workspace, "c-1", &events).await.unwrap();
+        let mut watch = Watch::new(&fixture.shared);
+        watch.following.insert(id("c-1"), followed(0));
+        let w1 = id("w1");
+        let mut hear = |news| watch.noticed(notice("w1", "c-1", news), &w1).ok();
+
+        let live = Some(Noticed::Live(Message::Run(written("Hel"))));
+        assert_eq!(hear(News::Run(written("Hel"))), live);
+        assert_eq!(hear(stored(1, Some(shown(1)))), seen(shown(1)));
+        assert_eq!(hear(stored(2, None)), Some(Noticed::Behind));
+        assert_eq!(hear(News::Run(written("lo"))), Some(Noticed::Nothing));
+        let page = watch.next(&workspace).await.unwrap();
+        assert_eq!(page.iter().map(seq_of).collect::<Vec<_>>(), [2]);
+        let mut hear = |news| watch.noticed(notice("w1", "c-1", news), &w1).ok();
+        let live = Some(Noticed::Live(Message::Run(written("lo"))));
+        assert_eq!(hear(News::Run(written("lo"))), live);
+        assert_eq!(hear(stored(2, Some(shown(2)))), Some(Noticed::Behind));
+        assert_eq!(hear(stored(3, Some(shown(3)))), seen(shown(3)));
+        drop(watch.noticed(Err(RecvError::Lagged(1)), &w1));
+        let mut hear = |news| watch.noticed(notice("w1", "c-1", news), &w1).ok();
+        assert_eq!(hear(News::Run(written("!"))), Some(Noticed::Nothing));
+        assert_eq!(hear(stored(4, Some(shown(4)))), Some(Noticed::Behind));
+        assert_eq!(
+            watch.following.get(&id("c-1")).and_then(|chat| chat.heard),
+            Some(4)
+        );
     }
 
     #[test]
@@ -583,7 +725,11 @@ mod tests {
             .unwrap();
         let mut watch = Watch::new(&fixture.shared);
         for chat in ["c-1", "c-2"] {
-            watch.following.insert(id(chat), 0);
+            let unknown = Followed {
+                sent: 0,
+                heard: None,
+            };
+            watch.following.insert(id(chat), unknown);
             watch.lag(id(chat));
         }
 
@@ -627,7 +773,7 @@ mod tests {
         append(&workspace, "c-1", &[(Some(2), said("b"))])
             .await
             .unwrap();
-        fixture.shared.chats.stored(id("w1"), id("c-1"));
+        fixture.shared.chats.stored(id("w1"), id("c-1"), 2, None);
 
         for client in [&mut one, &mut two] {
             assert_eq!(seq_of(&heard(client).await), 2);

@@ -2,11 +2,11 @@
 //! says of the chat is stored and read by the workspace only.
 
 use weacon_protocol::{
-    ChatAnswerKind, ChatEntry, ChatEvent, ChatQuery, ChatQueryKind, ChatUpdate, Envelope,
-    ErrorBody, MachineId, Outcome, Receipt, RunEvent, RunState, RunUpdate,
+    ChatAnswer, ChatAnswerKind, ChatEntry, ChatEvent, ChatLive, ChatQuery, ChatQueryKind,
+    ChatUpdate, Envelope, ErrorBody, MachineId, Outcome, Receipt, RunEvent, RunState, RunUpdate,
 };
 
-use crate::db::test_support::{prompt, said, status};
+use crate::db::test_support::{NOW, make, prompt, said, status};
 use futures_util::SinkExt as _;
 use tokio_tungstenite::tungstenite::Message as Wire;
 
@@ -287,5 +287,120 @@ async fn a_new_chat_followed_at_once_or_later_is_heard_whole_and_in_order() {
             heard.map(|entry| (entry.seq, entry.event)),
             [(3, text.clone()), (4, ended.clone())]
         );
+    }
+}
+
+fn live(workspace: &str, text: &str) -> Envelope {
+    let update = RunUpdate {
+        run: id("run-1"),
+        event: RunEvent::TextDelta {
+            text: text.to_owned(),
+        },
+    };
+    let live = ChatLive {
+        workspace: id(workspace),
+        chat: id("c-1"),
+        update,
+    };
+    Envelope {
+        id: 0,
+        message: Message::ChatLive(live),
+    }
+}
+
+fn asks(tool: &str, input: serde_json::Value) -> ChatEvent {
+    ChatEvent::Run {
+        update: RunUpdate {
+            run: id("run-1"),
+            event: RunEvent::PermissionAsked {
+                run: id("run-1"),
+                prompt: 1,
+                tool: tool.to_owned(),
+                input,
+            },
+        },
+    }
+}
+
+#[tokio::test]
+async fn followers_see_text_being_written_and_the_tools_name_live_and_neither_is_stored() {
+    let fixture = Fixture::new().await;
+    let server = fixture.run().await;
+    others(&fixture).await;
+    let (machine, mut core, mut ada) = connected(&fixture, &server).await;
+    ada_chats(&machine, &mut core, &mut ada).await;
+    let two = fixture.shared.db.workspace(&id("w2")).await.unwrap();
+    make(&two, "c-1", "m4", NOW).await.unwrap();
+    let cy_token = token(&fixture, &server, "cy@example.com").await;
+    let mut cy = feed(&server, "w2", &cy_token).await;
+    let follow = chat_query("w2", ChatQueryKind::Subscribe { after: 0 });
+    socket::send(
+        &mut cy,
+        Envelope {
+            id: 2,
+            message: follow,
+        },
+    )
+    .await;
+    assert!(quiet(&mut cy).await);
+
+    socket::send(&mut core, live("w2", "MARKER-ELSEWHERE")).await;
+    socket::send(&mut core, live("w1", "MARKER-DELTA")).await;
+    let input = serde_json::json!({ "command": "MARKER-INPUT" });
+    socket::send(&mut core, uploaded(3, asks("MARKER-TOOL", input))).await;
+
+    let Message::Run(written) = heard(&mut ada).await else {
+        panic!("no text being written");
+    };
+    assert_eq!(written, *live_update(&live("w1", "MARKER-DELTA")));
+    let shown = chat_event(&mut ada).await;
+    assert_eq!(
+        shown,
+        ChatEntry {
+            seq: 3,
+            event: asks("MARKER-TOOL", serde_json::Value::Null)
+        }
+    );
+    assert!(quiet(&mut cy).await, "another workspace heard of it");
+    let read = ask(&mut ada, 4, chat_query("w1", ChatQueryKind::Snapshot)).await;
+    let Message::ChatAnswer(ChatAnswer {
+        answer: ChatAnswerKind::Snapshot { events, .. },
+        ..
+    }) = &read
+    else {
+        panic!("no snapshot: {read:?}");
+    };
+    let stored = events.last().map(|entry| entry.event.clone());
+    assert_eq!(stored, Some(asks("", serde_json::Value::Null)));
+    let read = serde_json::to_string(&read).unwrap();
+    assert!(
+        !read.contains("MARKER-TOOL") && !read.contains("MARKER-DELTA"),
+        "{read}"
+    );
+    let logged = serde_json::to_string(&*fixture.records.lock().unwrap()).unwrap();
+    assert!(!logged.contains("MARKER"), "{logged}");
+}
+
+fn live_update(envelope: &Envelope) -> &RunUpdate {
+    let Message::ChatLive(live) = &envelope.message else {
+        panic!("not live");
+    };
+    &live.update
+}
+
+// Whether `client` hears nothing but the workspace's own changes before the pong to a ping.
+async fn quiet(client: &mut Socket) -> bool {
+    client.send(Wire::Ping(Vec::new().into())).await.unwrap();
+    loop {
+        match past_pings(client).await {
+            Some(Ok(Wire::Pong(_))) => return true,
+            Some(Ok(Wire::Text(text))) => {
+                let message = Envelope::from_json(text.as_bytes()).unwrap().message;
+                if !matches!(message, Message::Workspace(_)) {
+                    return false;
+                }
+            }
+            _ => return false,
+        }
     }
 }

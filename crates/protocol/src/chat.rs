@@ -63,12 +63,22 @@ pub enum ChatAction {
 }
 
 /// A committed event of a chat, from the core to a client that subscribed under `chat.events`.
-/// Text deltas are never committed; they arrive only as run updates.
+/// Text deltas are never committed; they arrive only as run updates, or as a [`ChatLive`].
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ChatUpdate {
     pub workspace: WorkspaceId,
     pub chat: ChatId,
     pub entry: ChatEntry,
+}
+
+/// What a live viewer of a chat sees of one of its runs and no one stores, from the core to a
+/// server that offers `chat.live`: the text a run is writing. The server passes it to the
+/// chat's followers as a [`Message::Run`](crate::Message::Run).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ChatLive {
+    pub workspace: WorkspaceId,
+    pub chat: ChatId,
+    pub update: RunUpdate,
 }
 
 /// An event and its place in its chat's log: `seq` starts at 1 and grows by one.
@@ -410,6 +420,23 @@ mod tests {
         for (event, wire) in cases {
             travels(&update(event), entry_wire(&wire));
         }
+    }
+
+    #[test]
+    fn a_live_update_names_its_chat_and_run() {
+        let live = envelope(Message::ChatLive(ChatLive {
+            workspace: workspace(),
+            chat: chat(),
+            update: RunUpdate {
+                run: run(),
+                event: RunEvent::TextDelta {
+                    text: "Hel".to_owned(),
+                },
+            },
+        }));
+        let update = json!({ "run": "run-7", "event": { "event": "text_delta", "text": "Hel" } });
+
+        travels(&live, about("chat_live", "update", &update));
     }
 
     #[test]

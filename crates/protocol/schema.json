@@ -172,6 +172,19 @@
       "properties": {
         "type": {
           "type": "string",
+          "const": "chat_live"
+        }
+      },
+      "$ref": "#/$defs/ChatLive",
+      "required": [
+        "type"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
           "const": "diff_query"
         }
       },
@@ -1106,6 +1119,26 @@
         "chats"
       ]
     },
+    "ChatLive": {
+      "description": "What a live viewer of a chat sees of one of its runs and no one stores, from the core to a\nserver that offers `chat.live`: the text a run is writing. The server passes it to the\nchat's followers as a [`Message::Run`](crate::Message::Run).",
+      "type": "object",
+      "properties": {
+        "chat": {
+          "$ref": "#/$defs/ChatId"
+        },
+        "update": {
+          "$ref": "#/$defs/RunUpdate"
+        },
+        "workspace": {
+          "$ref": "#/$defs/WorkspaceId"
+        }
+      },
+      "required": [
+        "workspace",
+        "chat",
+        "update"
+      ]
+    },
     "ChatQuery": {
       "description": "A question about a chat's log, from a client to a core that offers `chat.events`. The answer\nis a [`ChatAnswer`], or for `subscribe` the [`ChatUpdate`]s themselves.",
       "type": "object",
@@ -1244,7 +1277,7 @@
       ]
     },
     "ChatUpdate": {
-      "description": "A committed event of a chat, from the core to a client that subscribed under `chat.events`.\nText deltas are never committed; they arrive only as run updates.",
+      "description": "A committed event of a chat, from the core to a client that subscribed under `chat.events`.\nText deltas are never committed; they arrive only as run updates, or as a [`ChatLive`].",
       "type": "object",
       "properties": {
         "chat": {

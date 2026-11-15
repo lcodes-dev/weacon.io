@@ -16,7 +16,7 @@ use weacon_protocol::{
 };
 
 use crate::auth::{Member, Session};
-use crate::chats::{self, Watch};
+use crate::chats::{self, Noticed, Watch};
 use crate::client_log::{ClientLogs, LOG_FORWARD};
 use crate::connections::Place;
 use crate::http::{RequestTag, failure};
@@ -194,8 +194,13 @@ async fn run(
             },
             Some(()) = feed.chats.more.recv() => send_chats(socket, shared, feed, None).await?,
             notice = feed.chats.notices.recv() => {
-                if feed.chats.noticed(notice, feed.member.workspace.id())? {
-                    send_chats(socket, shared, feed, None).await?;
+                match feed.chats.noticed(notice, feed.member.workspace.id())? {
+                    Noticed::Behind => send_chats(socket, shared, feed, None).await?,
+                    Noticed::Live(message) => {
+                        feed.allowed(shared).await?;
+                        reply(socket, shared, 0, message).await?;
+                    }
+                    Noticed::Nothing => {}
                 }
             }
             () = pings.due() => pings.ping(socket, feed.allowed(shared)).await?,

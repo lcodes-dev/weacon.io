@@ -139,8 +139,10 @@ async fn run(
 ) -> Result<Infallible, Closed> {
     let offer = Capability::new(CONNECT);
     let mut offered = offers();
-    // A core uploads its chats' events without offering it back.
+    // A core uploads its chats' events, and what their live viewers see, without offering either
+    // back.
     offered.push(Capability::new(chats::upload::UPLOAD));
+    offered.push(Capability::new(chats::live::LIVE));
     let heard = hear(socket, shared, offered, &offer);
     let (hello, welcome) = timeout(shared.sockets.hello_within, heard)
         .await
@@ -205,6 +207,7 @@ async fn hand_off(
     )]
     match envelope.message {
         Message::Chat(update) => chats::upload::store(shared, &machine.id, update).await?,
+        Message::ChatLive(live) => chats::live::pass(shared, &machine.id, live).await,
         Message::Terminal(update) => terminals::delivered(shared, &machine.id, update),
         Message::ProposalCommand(command) => {
             let receipt = proposals::command(shared, machine, command).await;
@@ -265,6 +268,7 @@ mod tests {
                     PROPOSALS,
                     code!("chat.serve"),
                     code!("chat.upload"),
+                    code!("chat.live"),
                 ].map(Capability::new)),
             "{welcome:?}"
         );
