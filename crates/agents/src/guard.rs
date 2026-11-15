@@ -656,19 +656,22 @@ mod tests {
             check("git remote -v set-url origin /tmp/x"),
             Some(Reason::NotListed)
         );
-        // Past a literal `--`, and the value of commit's message in any of its forms, a word
-        // can't be an option. But the message value is exactly one word: an attached `-m"$A"`
-        // leaves a following word free, so that word is still judged.
+        // Past a literal `--` every word is an operand, however it splits. The value of a literal
+        // `-m`/`--message`, attached or separate, is message text, not an option — but only when
+        // the shell can't split it: a literal, or an expansion wholly inside double quotes. An
+        // unquoted expansion can split off a `-S`, so it is judged.
         assert_eq!(check("git grep pattern -- *"), None);
-        assert_eq!(check("git commit -m $X"), None);
+        assert_eq!(check("git commit -mfix"), None);
         assert_eq!(check(r#"git commit -m"$A""#), None);
+        assert_eq!(check(r#"git commit -m "$A""#), None);
+        assert_eq!(check(r#"git commit --message="$A""#), None);
         assert_eq!(check(r#"git commit --message="$A" -- $B"#), None);
+        assert_eq!(check("git commit -m$A"), Some(Reason::Unsure));
+        assert_eq!(check("git commit -m $A"), Some(Reason::Unsure));
+        assert_eq!(check("git commit --message=$A"), Some(Reason::Unsure));
         assert_eq!(check(r#"git commit -m"$A" $B"#), Some(Reason::Unsure));
+        assert_eq!(check(r#"git commit -m "$A" $B"#), Some(Reason::Unsure));
         assert_eq!(check("git commit -m $A $B"), Some(Reason::Unsure));
-        assert_eq!(
-            check(r#"git commit --message "$A" $B"#),
-            Some(Reason::Unsure)
-        );
     }
 
     #[test]

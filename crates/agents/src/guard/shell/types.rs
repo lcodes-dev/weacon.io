@@ -2,11 +2,18 @@
 
 /// One word of a command, with what the shell would do to it before running it.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "each flag is an independent lexical property the shell gives a word, not a state"
+)]
 pub(crate) struct Word {
     /// The text with quotes removed.
     pub(crate) text: String,
     /// Holds an expansion, such as `$HOME` or `$(…)`, so its value isn't known here.
     pub(crate) dynamic: bool,
+    /// Holds an expansion outside double quotes, or a brace list, which the shell may split into
+    /// several words; a quoted `"$A"` or an ANSI-C `$'…'` holds one word and sets only `dynamic`.
+    pub(crate) splits: bool,
     /// Holds an unquoted `*`, `?` or `[`, which the shell expands to file names.
     pub(crate) glob: bool,
     /// Starts with an unquoted `~`, the home folder.

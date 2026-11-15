@@ -337,6 +337,7 @@ impl Call<'_> {
                 Word {
                     text: format!("{}/{name}", folder.text.trim_end_matches('/')),
                     dynamic: folder.dynamic || source.dynamic,
+                    splits: folder.splits || source.splits,
                     glob: folder.glob || source.glob,
                     tilde: folder.tilde,
                     known: folder.known,

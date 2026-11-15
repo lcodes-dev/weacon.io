@@ -191,10 +191,14 @@ fn subcommand(name: &str, args: &[Word], context: &Context, repo: &Path) -> Opti
 // Whether a word the shell alone can spell, or a glob, could be an option here. Only a word after
 // a literal `--`, and the value of commit's `-m`/`--message`, cannot be one.
 fn hidden_option(name: &str, args: &[Word]) -> bool {
+    // git's `-m`/`--message` makes its value one word of message text, never an option — but only
+    // when that value stays one word. An unquoted expansion or a glob can split off a `-S`, so the
+    // exemption holds only for a value the shell can't split: a literal or a value wholly quoted.
+    let cannot_split = |arg: &Word| !arg.splits && !arg.glob;
     let mut operands = false;
     let mut message = false;
     for arg in args {
-        if std::mem::take(&mut message) {
+        if std::mem::take(&mut message) && cannot_split(arg) {
             continue;
         }
         // Only a literal `--` ends the options; a dynamic `--$x` has known text `--` but could
@@ -207,14 +211,16 @@ fn hidden_option(name: &str, args: &[Word]) -> bool {
             continue;
         }
         if name == "commit" {
-            // `-m X` takes the next word as the message only when `-m` is a plain literal word; a
-            // dynamic or glob `-m"$A"` / `--message=$A` carries the message in this word itself, so
-            // skip only this one and leave the next to be judged.
+            // A plain literal `-m`/`--message` takes the next word as the message, judged above.
             if !arg.dynamic && !arg.glob && matches!(arg.text.as_str(), "-m" | "--message") {
                 message = true;
                 continue;
             }
-            if arg.text.starts_with("-m") || arg.text.starts_with("--message=") {
+            // An attached `-m<v>`/`--message=<v>` carries the message in this word; exempt it on
+            // the same rule, so an unquoted `-m$A` that could split still meets the check below.
+            if cannot_split(arg)
+                && (arg.text.starts_with("-m") || arg.text.starts_with("--message="))
+            {
                 continue;
             }
         }

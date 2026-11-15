@@ -14,8 +14,8 @@ impl Parser {
                     word.text.push(escaped);
                 }
             }
-            '$' => self.expansion(word)?,
-            '`' => self.backquoted(word)?,
+            '$' => self.expansion(word, false)?,
+            '`' => self.backquoted(word, false)?,
             '~' if word.text.is_empty() && !word.dynamic => {
                 word.tilde = true;
                 word.text.push(char);
@@ -33,6 +33,7 @@ impl Parser {
                     .collect();
                 if inside.contains(',') || inside.contains("..") {
                     word.unknown();
+                    word.splits = true;
                 }
                 word.text.push(char);
             }
@@ -49,8 +50,8 @@ impl Parser {
                 '\\' => self.escaped_in_quotes(word)?,
                 // Inside double quotes, `$'` and `$"` are plain text.
                 '$' if matches!(self.peek(), Some('\'' | '"')) => word.text.push('$'),
-                '$' => self.expansion(word)?,
-                '`' => self.backquoted(word)?,
+                '$' => self.expansion(word, true)?,
+                '`' => self.backquoted(word, true)?,
                 char => word.text.push(char),
             }
             if self.at <= before {
@@ -71,8 +72,9 @@ impl Parser {
         Some(())
     }
 
-    // After a `$`: a substitution's commands run, and any expansion makes the word unknown.
-    fn expansion(&mut self, word: &mut Word) -> Option<()> {
+    // After a `$`: a substitution's commands run, and any expansion makes the word unknown. Unless
+    // `quoted`, an expansion also splits the word, so its value can become several words.
+    fn expansion(&mut self, word: &mut Word, quoted: bool) -> Option<()> {
         match self.peek() {
             // Arithmetic evaluates what variables hold, which can run commands.
             Some('(') if self.peek_at(1) == Some('(') => return None,
@@ -80,6 +82,8 @@ impl Parser {
             Some('(') => {
                 self.advance(1);
                 self.list(Some(')'))?;
+                word.unknown();
+                word.splits |= !quoted;
             }
             Some('{') => {
                 self.advance(1);
@@ -90,34 +94,33 @@ impl Parser {
                 if name.contains(['$', '`', '\'', '"', '\\', '{', '[']) || evaluates(&name) {
                     return None;
                 }
-                home_or_unknown(word, &name);
-                return Some(());
+                home_or_unknown(word, &name, quoted);
             }
             Some(char) if char.is_ascii_alphanumeric() || char == '_' => {
                 let start = self.at;
                 self.skip_while(|char| char.is_ascii_alphanumeric() || char == '_');
                 let name: String = self.chars.get(start..self.at)?.iter().collect();
-                home_or_unknown(word, &name);
-                return Some(());
+                home_or_unknown(word, &name, quoted);
             }
-            Some(char) if "@*#?$!-".contains(char) => self.advance(1),
+            Some(char) if "@*#?$!-".contains(char) => {
+                self.advance(1);
+                word.unknown();
+                word.splits |= !quoted;
+            }
             // `$'…'` is ANSI-C quoting, where a backslash escapes the next character, `\'` and `\\`
-            // included, so the string ends only at an unescaped `'`.
+            // included, so the string ends only at an unescaped `'`. It is one literal word.
             Some('\'') => {
                 self.advance(1);
                 self.skip_ansi_c()?;
+                word.unknown();
             }
             // `$"…"` is text in double quotes.
             Some('"') => {
                 self.advance(1);
                 return self.double_quoted(word);
             }
-            _ => {
-                word.text.push('$');
-                return Some(());
-            }
+            _ => word.text.push('$'),
         }
-        word.unknown();
         Some(())
     }
 
@@ -158,10 +161,11 @@ impl Parser {
         }
     }
 
-    fn backquoted(&mut self, word: &mut Word) -> Option<()> {
+    fn backquoted(&mut self, word: &mut Word, quoted: bool) -> Option<()> {
         let inner = self.backquoted_text()?;
         self.found.extend(parse_nested(&inner, self.depth + 1)?);
         word.unknown();
+        word.splits |= !quoted;
         Some(())
     }
 }
@@ -181,12 +185,13 @@ fn evaluates(body: &str) -> bool {
 
 // `$HOME` at the start of a word, or of an option's value after `=` or `@`, is the home
 // folder, as `~` is; any other variable is unknown.
-fn home_or_unknown(word: &mut Word, name: &str) {
+fn home_or_unknown(word: &mut Word, name: &str, quoted: bool) {
     let starts = word.text.is_empty() || word.text == "@" || word.text.ends_with('=');
     if name == "HOME" && starts && !word.dynamic {
         word.tilde |= word.text.is_empty();
         word.text.push('~');
     } else {
         word.unknown();
+        word.splits |= !quoted;
     }
 }
