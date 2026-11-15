@@ -58,12 +58,9 @@ fn best(found: Vec<(RepoId, Vec<Hit>)>) -> (Vec<Symbol>, bool) {
         .map(|(repo, hits)| hits.into_iter().filter_map(move |hit| symbol(&repo, hit)))
         .collect();
     let mut symbols = Vec::new();
-    loop {
-        let before = symbols.len();
+    // A round takes one from each repository, so this many rounds pass the most an answer holds.
+    for _ in 0..=MOST {
         symbols.extend(each.iter_mut().filter_map(Iterator::next));
-        if symbols.len() == before || symbols.len() > MOST {
-            break;
-        }
     }
     let more = cut || symbols.len() > MOST;
     symbols.truncate(MOST);
@@ -209,6 +206,8 @@ mod tests {
         let (symbols, more) = best(vec![(one, hits("a", 30)), (two, hits("b", 30))]);
         assert_eq!((symbols.len(), more), (MOST, true));
         assert_eq!(names(&symbols).last().map(String::as_str), Some("b24"));
+        let (symbols, more) = best(vec![(id("one"), hits("a", 25)), (id("two"), hits("b", 25))]);
+        assert_eq!((symbols.len(), more), (MOST, false));
         assert_eq!(best(Vec::new()), (Vec::new(), false));
     }
 
