@@ -3,10 +3,10 @@
 use std::sync::Arc;
 
 use tokio::sync::mpsc;
-use weacon_observability::Fault;
+use weacon_observability::{Fault, Field};
 use weacon_protocol::{AgentSession, RunId, RunState, code};
 
-use super::agent::{Agent, RunOf, drive};
+use super::agent::{Agent, drive};
 use super::{ChatKey, Engine, RunAs, about, failed};
 
 /// A run's agent, or why it didn't start, back from starting off the engine's loop.
@@ -16,7 +16,7 @@ pub(super) struct Launched<A> {
     pub(super) agent: Result<A, Fault>,
 }
 
-fn not_started() -> Fault {
+pub(super) fn not_started() -> Fault {
     Fault::new(code!("agent.not_started"), "The agent couldn't start")
 }
 
@@ -43,6 +43,29 @@ impl<A: Agent> Engine<A> {
         kept
     }
 
+    // Tries again to save every session and turn's end the journal or the log couldn't; one
+    // that still fails stays. A chat whose end is saved goes on to its queued prompt.
+    pub(super) async fn save_pending(&mut self) {
+        let pending: Vec<ChatKey> = (self.open_chats.iter())
+            .filter(|(_, chat)| chat.pending_session.is_some() || chat.pending_end.is_some())
+            .map(|(key, _)| key.clone())
+            .collect();
+        for key in pending {
+            let saved = match self.save_pending_session(&key).await {
+                Ok(()) => self.advance(&key).await,
+                failed => failed,
+            };
+            if let Err(fault) = saved {
+                let fields = [
+                    ("workspace_id", key.workspace.as_str().into()),
+                    ("chat_id", key.chat.as_str().into()),
+                    ("err", Field::error(&fault)),
+                ];
+                self.log.warn("chat not saved", &fields);
+            }
+        }
+    }
+
     async fn save_pending_session(&mut self, key: &ChatKey) -> Result<(), Fault> {
         match self.open(key).await?.pending_session.take() {
             Some(session) => self.keep_session(key, session).await,
@@ -55,6 +78,8 @@ impl<A: Agent> Engine<A> {
     pub(super) async fn launch(&mut self, key: &ChatKey) -> Result<(), Fault> {
         self.save_pending_session(key).await?;
         let kind = self.runs.of(key).ok_or_else(not_started)?.agent;
+        // Read first, so a log that can't be opened leaves no run begun.
+        let repo = self.open(key).await?.log.repo().cloned();
         let run = self.runs.begin(key, kind, self.now()).await?;
         let session = self.runs.of(key).and_then(|record| record.session.clone());
         let run_as = RunAs {
@@ -62,6 +87,7 @@ impl<A: Agent> Engine<A> {
             agent: kind,
             run: run.clone(),
             session,
+            repo,
         };
         self.open(key).await?.launching = Some(run.clone());
         let (start, starts) = (Arc::clone(&self.host.launch), self.starts.clone());
@@ -80,6 +106,11 @@ impl<A: Agent> Engine<A> {
     pub(super) async fn finish_launch(&mut self, launched: Launched<A>) -> Result<(), Fault> {
         let Launched { key, run, agent } = launched;
         let chat = self.open(&key).await?;
+        // Let go after a failed write, it is dropped; the chat's prompts may go on now.
+        if chat.let_go.take_if(|let_go| *let_go == run).is_some() {
+            drop(agent);
+            return self.advance(&key).await;
+        }
         if chat.launching.as_ref() != Some(&run) {
             return Ok(());
         }
@@ -108,19 +139,11 @@ impl<A: Agent> Engine<A> {
 
     async fn attach(&mut self, key: &ChatKey, run: &RunId, agent: A) -> Result<(), Fault> {
         let (orders, ordered) = mpsc::unbounded_channel();
-        let of = RunOf {
-            key: key.clone(),
-            run: run.clone(),
-        };
-        tokio::spawn(drive(agent, of, ordered, self.says.clone()));
+        let says = self.says.clone();
+        tokio::spawn(drive(agent, key.clone(), run.clone(), ordered, says));
         self.open(key).await?.orders = Some(orders);
         self.log.info("run started", &about(key, run));
-        // The agent is up: a status that can't be committed doesn't stop its turn.
-        if let Err(fault) = self.tell_state(key, run, RunState::Starting).await {
-            self.log
-                .warn("run status not committed", &failed(key, run, &fault));
-        }
-        Ok(())
+        self.tell_state(key, run, RunState::Starting).await
     }
 }
 
@@ -128,7 +151,7 @@ impl<A: Agent> Engine<A> {
 mod tests {
     use weacon_protocol::{Outcome, RunEvent};
 
-    use super::super::agent::Heard;
+    use super::super::agent::Said;
     use super::super::by_hand::{hear, launched, on_turn, until_deaf};
     use crate::chats::test_support::{key, prompt, run, session, soon};
 
@@ -143,12 +166,12 @@ mod tests {
 
         // The agent exits and nobody watches: the chat stays open for its session.
         drop((on.agent, on.pushes));
-        let exited = Heard::Exited(None);
-        on.engine
-            .heard(&key(), &run("run-1"), exited)
-            .await
-            .unwrap();
-        on.engine.settle(&key());
+        let exited = Said::Exited(None);
+        on.engine.hear(&key(), &run("run-1"), exited).await.unwrap();
+        on.engine.close_if_unused(&key());
+        assert!(on.engine.busy(), "its session is only in memory");
+        on.engine.save_pending().await;
+        assert!(!on.engine.busy(), "its session is saved");
         on.engine
             .command(&key(), prompt("r-2", "More"))
             .await
@@ -177,7 +200,7 @@ mod tests {
             .await
             .unwrap();
         launched(&mut on.engine).await;
-        on.engine.settle(&key());
+        on.engine.close_if_unused(&key());
 
         assert!(!on.engine.open_chats.contains_key(&key()));
     }

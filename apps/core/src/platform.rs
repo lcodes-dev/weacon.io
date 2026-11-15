@@ -1,6 +1,8 @@
 use std::ffi::OsString;
 use std::path::PathBuf;
 
+use weacon_protocol::AgentKind;
+
 mod beneath;
 mod chrome;
 mod procs;
@@ -38,6 +40,12 @@ pub(crate) fn home_dir(env: Env<'_>) -> Option<PathBuf> {
 
 /// Whether `weacon service` can install the daemon here, as a systemd user unit.
 pub(crate) const USER_SERVICES: bool = cfg!(target_os = "linux");
+
+/// Whether Claude Code's pre-tool hook is sure to run under a POSIX shell here, so the command
+/// guard can be relied on. The hook command uses POSIX quoting and `|| exit 2`; on Windows it may
+/// run under PowerShell, where neither applies and the guard would fail open, so there the agent
+/// runs under the vendor's own prompt for every command instead of the guard.
+pub(crate) const POSIX_HOOK: bool = cfg!(unix);
 
 /// The system this core runs on, as the server is told when it pairs.
 pub(crate) const MACHINE_OS: weacon_protocol::MachineOs = if cfg!(target_os = "macos") {
@@ -98,6 +106,23 @@ pub(crate) fn work_root(env: Env<'_>) -> Option<PathBuf> {
     home_dir(env).map(|home| home.join("Weacon"))
 }
 
+/// The person's own config folder for each agent, as the vendor's own tool finds it.
+pub(crate) fn agent_homes(env: Env<'_>) -> Vec<(AgentKind, PathBuf)> {
+    let home = |key, fallback| {
+        var(env, key)
+            .map(PathBuf::from)
+            .filter(|dir| dir.is_absolute())
+            .or_else(|| home_dir(env).map(|home| home.join(fallback)))
+    };
+    [
+        (AgentKind::Claude, home("CLAUDE_CONFIG_DIR", ".claude")),
+        (AgentKind::Codex, home("CODEX_HOME", ".codex")),
+    ]
+    .into_iter()
+    .filter_map(|(agent, dir)| Some((agent, dir?)))
+    .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use weacon_testing::TempDir;
@@ -119,6 +144,39 @@ mod tests {
         );
         assert_eq!(home_dir(&vars), Some(PathBuf::from(r"C:\Users\ada")));
         assert_eq!(state_dir(&env(&[])), None);
+    }
+
+    #[test]
+    fn the_guard_hook_is_relied_on_only_where_the_shell_is_posix() {
+        // Flipping the constant must change this, so the gate it drives is really tested.
+        assert_eq!(POSIX_HOOK, cfg!(unix));
+        assert_eq!(POSIX_HOOK, !cfg!(windows));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn each_agents_own_folder_is_where_its_tool_looks() {
+        let set = env(&[
+            ("HOME", "/home/ada"),
+            ("CLAUDE_CONFIG_DIR", "/srv/claude"),
+            ("CODEX_HOME", "relative"),
+        ]);
+
+        assert_eq!(
+            agent_homes(&set),
+            [
+                (AgentKind::Claude, PathBuf::from("/srv/claude")),
+                (AgentKind::Codex, PathBuf::from("/home/ada/.codex")),
+            ]
+        );
+        assert_eq!(
+            agent_homes(&env(&[("HOME", "/home/ada")])),
+            [
+                (AgentKind::Claude, PathBuf::from("/home/ada/.claude")),
+                (AgentKind::Codex, PathBuf::from("/home/ada/.codex")),
+            ]
+        );
+        assert_eq!(agent_homes(&env(&[])), []);
     }
 
     #[cfg(unix)]

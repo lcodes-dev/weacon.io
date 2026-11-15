@@ -9,10 +9,12 @@ import { Problem } from "../api/problem.tsx";
 import { type WorkspaceSocket, useOffers } from "../shell/workspace-socket.ts";
 import { waitForClaim } from "./claim.ts";
 import { ConfirmKey } from "./confirm-key.tsx";
+import { isOutdated } from "./core.ts";
 import { fingerprint } from "./fingerprint.ts";
 import { keep } from "./keep.ts";
 import { MachineSettingsView } from "./machine-settings.tsx";
 import { osName } from "./os.ts";
+import { OutsideSessions } from "./outside-sessions.tsx";
 import type { Pins } from "./pins.ts";
 
 /** The signed-in account's machines: pairing one by its code, the list, and unpairing. */
@@ -105,6 +107,10 @@ function Machine({
   }, [justPaired]);
   // A machine's settings are kept for each workspace, so they show only while one is open.
   const settable = useOffers(socket, "machine.settings");
+  // Outside sessions belong to no workspace, but the open one's socket is the way to the machine.
+  const readable = useOffers(socket, "sessions.read");
+  const [reading, setReading] = useState(false);
+  const relays = useOffers(socket, "terminal.relay");
   const { busy, problem, ask } = useAsk();
   const paired = new Date(machine.paired_at * 1000).toLocaleDateString();
   return (
@@ -112,7 +118,9 @@ function Machine({
       <span>{machine.name}</span>
       <span className="muted">
         {osName(machine.os)}, paired {paired}
+        {machine.core !== undefined && `, weacon ${machine.core.version}`}
       </span>
+      {isOutdated(machine) && <p role="status">Its weacon is older than this server supports. Run weacon update there.</p>}
       {confirming ? (
         <span>
           Unpair {machine.name}? It disconnects at once.{" "}
@@ -149,7 +157,15 @@ function Machine({
         </button>
       )}
       {socket !== undefined && settable && open && (
-        <MachineSettingsView key={socket.workspace} machine={machine} socket={socket} later={later} />
+        <MachineSettingsView key={socket.workspace} machine={machine} socket={socket} later={later} pins={pins} relays={relays} />
+      )}
+      {socket !== undefined && readable && (
+        <>
+          <button type="button" aria-label={`${machine.name} sessions`} aria-expanded={reading} onClick={() => setReading(!reading)}>
+            {reading ? "Hide sessions" : "Sessions"}
+          </button>
+          {reading && <OutsideSessions machine={machine} socket={socket} later={later} />}
+        </>
       )}
     </li>
   );

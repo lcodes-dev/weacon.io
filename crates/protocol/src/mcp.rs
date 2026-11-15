@@ -2,11 +2,11 @@
 //! protocol, which rmcp parses; a call's name and arguments are these types. Neither the web
 //! app nor the extension reads them, so they stay out of `schema.json`.
 
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use serde_json::{Map, Value};
 
 /// From an agent the core started, to that core's MCP: one tool call, by name.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 #[serde(tag = "tool", rename_all = "snake_case")]
 pub enum McpCall {
     /// Where to begin reading the code of the run's folder.
@@ -15,12 +15,39 @@ pub enum McpCall {
     Symbol(SymbolArgs),
     /// The flows the folder's docs pin, and where each breaks.
     Flow(FlowArgs),
+    /// The doc lines that pin one item.
+    DocsFor(SymbolArgs),
+    /// The items and docs that match some words.
+    Search(SearchArgs),
+    /// The files that change often and that much depends on.
+    Hotspots(MapArgs),
     /// A tool this build doesn't offer; only ever received.
-    #[serde(other)]
+    #[serde(other, skip_serializing)]
     Newer,
 }
 
 impl McpCall {
+    pub const MAP: &str = "map";
+    pub const SYMBOL: &str = "symbol";
+    pub const FLOW: &str = "flow";
+    pub const DOCS_FOR: &str = "docs_for";
+    pub const SEARCH: &str = "search";
+    pub const HOTSPOTS: &str = "hotspots";
+
+    /// The tool's name, as `parse` takes it; none for a tool this build doesn't offer.
+    #[must_use]
+    pub const fn name(&self) -> Option<&'static str> {
+        match self {
+            Self::Map(_) => Some(Self::MAP),
+            Self::Symbol(_) => Some(Self::SYMBOL),
+            Self::Flow(_) => Some(Self::FLOW),
+            Self::DocsFor(_) => Some(Self::DOCS_FOR),
+            Self::Search(_) => Some(Self::SEARCH),
+            Self::Hotspots(_) => Some(Self::HOTSPOTS),
+            Self::Newer => None,
+        }
+    }
+
     /// The call to the tool `name` with MCP's `arguments`, which may be left out.
     ///
     /// # Errors
@@ -32,8 +59,8 @@ impl McpCall {
     }
 }
 
-/// From a run's agent, under `McpCall::Map`: how much of the map it wants.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+/// From a run's agent, under `McpCall::Map` or `McpCall::Hotspots`: how much of the map it wants.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize)]
 pub struct MapArgs {
     /// The most bytes the answer may hold; the core clamps it to its own bounds.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -41,18 +68,27 @@ pub struct MapArgs {
 }
 
 /// From a run's agent, under `McpCall::Flow`: how much of the flows it wants.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize)]
 pub struct FlowArgs {
     /// The most bytes the answer may hold; the core clamps it to its own bounds.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub budget: Option<u32>,
 }
 
-/// From a run's agent, under `McpCall::Symbol`: the item it asks about.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// From a run's agent, under `McpCall::Symbol` or `McpCall::DocsFor`: the item it asks about.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 pub struct SymbolArgs {
     /// The item's path, `weacon_protocol::frame::Envelope`.
     pub path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub budget: Option<u32>,
+}
+
+/// From a run's agent, under `McpCall::Search`: what it looks for.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+pub struct SearchArgs {
+    /// Words each match holds, or begins a word of, such as `envelope json`.
+    pub words: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub budget: Option<u32>,
 }
@@ -93,9 +129,26 @@ mod tests {
     }
 
     #[test]
+    fn each_call_is_named_as_it_is_parsed() {
+        let path = json!({"path": "a::b"});
+        for (name, arguments) in [
+            (McpCall::MAP, json!({})),
+            (McpCall::SYMBOL, path),
+            (McpCall::FLOW, json!({})),
+            (McpCall::DOCS_FOR, json!({"path": "a::b"})),
+            (McpCall::SEARCH, json!({"words": "a b"})),
+            (McpCall::HOTSPOTS, json!({"budget": 2000})),
+        ] {
+            assert_eq!(call(name, arguments).unwrap().name(), Some(name));
+        }
+        assert_eq!(McpCall::Newer.name(), None);
+    }
+
+    #[test]
     fn an_unknown_tool_is_newer_and_a_symbol_needs_its_path() {
         assert_eq!(call("later", json!({"path": 1})).unwrap(), McpCall::Newer);
         call("symbol", json!({})).unwrap_err();
+        call("search", json!({"budget": 2000})).unwrap_err();
         call("map", json!({"budget": "big"})).unwrap_err();
     }
 }

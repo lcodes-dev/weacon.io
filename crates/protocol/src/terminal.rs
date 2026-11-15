@@ -54,7 +54,7 @@ pub enum TerminalAction {
     /// Ends the login, if it still runs.
     Close,
     /// An action this build doesn't know, from a newer peer; only ever received.
-    #[serde(other)]
+    #[serde(other, skip_serializing)]
     #[schemars(skip)]
     Newer,
 }
@@ -82,7 +82,7 @@ pub enum TerminalEvent {
         code: Option<Code>,
     },
     /// An event this build doesn't know, from a newer peer; only ever received.
-    #[serde(other)]
+    #[serde(other, skip_serializing)]
     #[schemars(skip)]
     Newer,
 }
@@ -96,7 +96,7 @@ pub enum TerminalInput {
     /// The terminal's size in characters.
     Resize { cols: u32, rows: u32 },
     /// Input this build doesn't know, from a newer peer; only ever received.
-    #[serde(other)]
+    #[serde(other, skip_serializing)]
     #[schemars(skip)]
     Newer,
 }
@@ -110,7 +110,7 @@ pub enum TerminalOutput {
     /// The login ended, and then the vendor's status command said this.
     Ended { sign_in: SignInState },
     /// Output this build doesn't know, from a newer peer; only ever received.
-    #[serde(other)]
+    #[serde(other, skip_serializing)]
     #[schemars(skip)]
     Newer,
 }
@@ -121,7 +121,7 @@ impl TerminalInput {
     /// # Errors
     /// For [`Self::Newer`], which is only ever received, or beyond [`SEALED_MAX`].
     pub fn to_json(&self) -> Result<Vec<u8>, FrameError> {
-        sealed_json(self, matches!(self, Self::Newer))
+        sealed_json(self)
     }
 
     /// # Errors
@@ -137,14 +137,7 @@ impl TerminalOutput {
     /// # Errors
     /// For anything only ever received, or beyond [`SEALED_MAX`].
     pub fn to_json(&self) -> Result<Vec<u8>, FrameError> {
-        let newer = matches!(
-            self,
-            Self::Newer
-                | Self::Ended {
-                    sign_in: SignInState::Newer
-                }
-        );
-        sealed_json(self, newer)
+        sealed_json(self)
     }
 
     /// # Errors
@@ -154,10 +147,7 @@ impl TerminalOutput {
     }
 }
 
-fn sealed_json(value: &impl Serialize, newer: bool) -> Result<Vec<u8>, FrameError> {
-    if newer {
-        return Err(FrameError::Invalid);
-    }
+fn sealed_json(value: &impl Serialize) -> Result<Vec<u8>, FrameError> {
     let json = serde_json::to_vec(value).map_err(|_| FrameError::Invalid)?;
     if json.len() > SEALED_MAX {
         return Err(FrameError::TooLarge);
@@ -166,17 +156,6 @@ fn sealed_json(value: &impl Serialize, newer: bool) -> Result<Vec<u8>, FrameErro
 }
 
 impl TerminalCommand {
-    pub(crate) const fn is_newer(&self) -> bool {
-        matches!(
-            self.action,
-            TerminalAction::Newer
-                | TerminalAction::Open {
-                    agent: AgentKind::Newer,
-                    ..
-                }
-        )
-    }
-
     /// The Noise prologue both ends hash before the handshake of an [`TerminalAction::Open`],
     /// so the server can't move it to another machine, workspace, terminal or vendor. `None`
     /// for any other action, or an agent this build doesn't know.
@@ -194,12 +173,6 @@ impl TerminalCommand {
             agent.name()?,
         ];
         Some(parts.join("\n").into_bytes())
-    }
-}
-
-impl TerminalUpdate {
-    pub(crate) const fn is_newer(&self) -> bool {
-        matches!(self.event, TerminalEvent::Newer)
     }
 }
 

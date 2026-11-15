@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import type { Page } from "playwright-core";
 
 import { PROTOCOL } from "../../../tooling/ts/version.ts";
-import type { Envelope, MachineSettings, PairClaim, PairClaimed, PairStart, PairStarted } from "../src/protocol.ts";
+import type { App, ChatEntry, Envelope, MachineSettings, OutsideSession, PairClaim, PairClaimed, PairStart, PairStarted, SessionsAnswerKind, Symbol as CodeSymbol } from "../src/protocol.ts";
 
 // The core's own test key, and the fingerprint the core prints for it.
 export const KEY = "8520f0098930a754748b7ddcb43ef75a0dbf3a0d26381af4eba4a98eaa9b4e6a";
@@ -77,27 +77,54 @@ export async function pair(page: Page): Promise<{ machine: string; token: string
   return claim(page, { pairing, secret });
 }
 
-/** A machine's core, connected to the server, that keeps `settings` and answers for them; once told to refuse, it refuses changes as a core does a stranger's. */
-export async function core(
-  page: Page,
-  token: string,
-  settings: MachineSettings,
-): Promise<{ settings: MachineSettings; refuse(): void; close(): void }> {
+/** The build the test cores say they are. */
+export const BUILD: App = { name: "weacon-core", version: "0.0.0", commit: "0000000" };
+
+/** A core's connection to the server, which says `hello` as `app` offering `capabilities` once open. */
+export function dial(page: Page, token: string, app: App, capabilities: string[]): WebSocket {
   const url = new URL("/api/machines/connect", page.url());
   url.protocol = "ws:";
   // Node's WebSocket takes headers, as the core's own client sends its bearer token.
   const socket = new WebSocket(url, { headers: { authorization: `Bearer ${token}` } } as unknown as string[]);
-  const held = { settings, refusing: false };
+  socket.onopen = () => socket.send(JSON.stringify({ id: 1, type: "hello", protocol: PROTOCOL, app, capabilities } satisfies Envelope));
+  return socket;
+}
+
+/** The sessions a person ran outside Weacon, as a core reads them: its list, and the one session's events so far. */
+export type Outside = { sessions: OutsideSession[]; events: ChatEntry[] };
+
+/**
+ * A machine's core, connected to the server, that keeps `settings` and answers for them, and
+ * counts the queries; once told to refuse, it refuses changes as a core does a stranger's.
+ * Given `outside`, it also answers for those sessions, as they are when asked, and given
+ * `symbols`, it finds those whose name holds every word asked.
+ */
+export async function core(
+  page: Page,
+  token: string,
+  settings: MachineSettings,
+  outside?: Outside,
+  symbols?: CodeSymbol[],
+): Promise<{ settings: MachineSettings; queries: number; set(settings: MachineSettings): void; refuse(): void; close(): void }> {
+  const socket = dial(page, token, BUILD, ["machine.connect", "machine.settings", ...(outside === undefined ? [] : ["sessions.read"]), ...(symbols === undefined ? [] : ["symbols.search"])]);
+  const held = { settings, refusing: false, queries: 0 };
   const send = (envelope: Envelope) => socket.send(JSON.stringify(envelope));
   await new Promise<void>((resolve, reject) => {
     socket.onerror = () => reject(new Error("the core couldn't connect"));
-    socket.onopen = () => {
-      send({ id: 1, type: "hello", protocol: PROTOCOL, app: { name: "weacon-core", version: "0.0.0", commit: "0000000" }, capabilities: ["machine.connect", "machine.settings"] });
-    };
     socket.onmessage = ({ data }) => {
       const envelope = JSON.parse(String(data)) as Envelope;
       if (envelope.type === "welcome") {
         resolve();
+      } else if (envelope.type === "sessions_query" && outside !== undefined) {
+        const { query } = envelope;
+        const answer: SessionsAnswerKind =
+          query.kind === "list" ? { kind: "list", sessions: outside.sessions } : { kind: "opened", events: outside.events.filter(({ seq }) => seq > query.after), more: false };
+        send({ id: envelope.id, type: "sessions_answer", request: envelope.request, machine: envelope.machine, answer });
+      } else if (envelope.type === "symbols_query" && symbols !== undefined && envelope.query.kind === "search") {
+        const words = envelope.query.words.toLowerCase().split(/\s+/).filter((word) => word !== "");
+        const found = symbols.filter(({ name }) => words.every((word) => name.toLowerCase().includes(word)));
+        const { request, machine, workspace } = envelope;
+        send({ id: envelope.id, type: "symbols_answer", request, machine, workspace, answer: { kind: "found", symbols: found, more: false } });
       } else if (envelope.type === "machine_settings_command" && held.refusing) {
         send({ id: envelope.id, type: "error", code: "settings.not_owner", retryable: false });
         return;
@@ -109,6 +136,9 @@ export async function core(
           held.settings = { ...held.settings, access: action.level, team: action.team ?? held.settings.team };
         }
       }
+      if (envelope.type === "machine_settings_query") {
+        held.queries += 1;
+      }
       if (envelope.type === "machine_settings_query" || envelope.type === "machine_settings_command") {
         const { request, machine, workspace } = envelope;
         send({ id: envelope.id, type: "machine_settings_answer", request, machine, workspace, answer: { kind: "current", ...held.settings } });
@@ -118,6 +148,12 @@ export async function core(
   return {
     get settings() {
       return held.settings;
+    },
+    get queries() {
+      return held.queries;
+    },
+    set: (next) => {
+      held.settings = next;
     },
     refuse: () => {
       held.refusing = true;

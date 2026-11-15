@@ -16,6 +16,8 @@ mod doctor;
     )
 )]
 mod git;
+mod guard;
+mod hold;
 mod hook;
 mod integrations;
 mod machine;
@@ -25,6 +27,7 @@ mod mcp;
 mod memory;
 mod names;
 mod native_host;
+mod outside;
 mod pair;
 mod picks;
 mod platform;
@@ -35,6 +38,7 @@ mod server;
 mod service;
 mod session;
 mod status;
+mod symbols;
 #[cfg_attr(
     not(test),
     expect(dead_code, reason = "the sign-in terminal, which uses it, comes next")
@@ -42,10 +46,6 @@ mod status;
 mod terminal;
 #[cfg(test)]
 mod test_support;
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "`weacon update`, which uses it, comes next")
-)]
 mod update;
 mod uplink;
 mod workspaces;
@@ -97,6 +97,13 @@ fn run(app: &App, command: Command, env: platform::Env<'_>) -> Result<Ending, Fa
             level,
             team,
         } => workspaces::access(app, &workspace, level, team, &mut io::stdout().lock()),
+        Command::Guard(command) => guard::run(
+            app,
+            command,
+            env,
+            &mut io::stdin().lock(),
+            &mut io::stdout().lock(),
+        ),
         Command::Pair { server, name, pin } => {
             pair::run(app, &server, name, pin.as_deref(), &mut io::stdout().lock())
         }
@@ -113,6 +120,9 @@ fn run(app: &App, command: Command, env: platform::Env<'_>) -> Result<Ending, Fa
                 &mut io::stdin().lock(),
                 &mut io::stdout().lock(),
             );
+        }
+        Command::Update(command) => {
+            return update::run(app, command, env, &mut io::stdout().lock());
         }
     };
     done.map(Ending::from)

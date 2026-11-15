@@ -1,0 +1,61 @@
+.tasks ul {
+  list-style: none;
+  margin: 0 0 16px;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-width: 72ch;
+}
+
+.tasks li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.tasks li form,
+.new-task {
+  display: flex;
+  gap: 8px;
+  flex: 1;
+}
+
+.tasks li .title {
+  flex: 1;
+  text-align: left;
+  border-color: transparent;
+  overflow-wrap: anywhere;
+}
+
+.tasks .title.done {
+  color: var(--muted);
+  text-decoration: line-through;
+}
+
+.tasks li > p {
+  flex-basis: 100%;
+  margin: 0;
+}
+
+.tasks input,
+.tasks select,
+.docs input,
+.docs textarea {
+  font: inherit;
+  color: inherit;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 4px 8px;
+}
+
+.tasks li input,
+.new-task input {
+  flex: 1;
+}
+
+.new-task {
+  max-width: 72ch;
+}

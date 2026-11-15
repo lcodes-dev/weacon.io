@@ -18,7 +18,7 @@ pub(crate) struct ChatRepo {
 }
 
 /// One workspace's records of its chats' repositories, a JSON file written whole. Every call
-/// blocks, and callers make one call at a time per file.
+/// blocks.
 #[derive(Debug)]
 pub(crate) struct ChatRepos {
     workspace: WorkspaceId,
@@ -45,6 +45,7 @@ impl ChatRepos {
         repo: RepoId,
         start: Start,
     ) -> Result<ChatRepo, Fault> {
+        let _held = state::hold(&self.file).map_err(|error| failed().because(error))?;
         let mut records = self.load()?;
         if let Some(kept) = records.iter().find(|record| self.is(record, chat)) {
             return Ok(kept.clone());
@@ -119,6 +120,25 @@ mod tests {
         assert_eq!(ours.get(&chat("c-1")).unwrap(), Some(first.clone()));
         assert_eq!((first.repo, first.start), (repo("site"), start("a")));
         assert_eq!(ours.get(&chat("c-2")).unwrap(), None);
+    }
+
+    #[test]
+    fn chats_recorded_at_once_are_all_kept() {
+        let dir = TempDir::new().unwrap();
+        let record = |thread: u32| {
+            let ours = records(&dir, "w-1");
+            for at in 0..25 {
+                let one = chat(&format!("c-{thread}-{at}"));
+                ours.record(&one, repo("site"), start("a")).unwrap();
+            }
+        };
+        std::thread::scope(|scope| {
+            for thread in 0..4 {
+                scope.spawn(move || record(thread));
+            }
+        });
+        let ours = records(&dir, "w-1");
+        assert_eq!(ours.load().unwrap().len(), 100);
     }
 
     #[test]

@@ -5,7 +5,7 @@ import type { App, ChatEntry, Envelope, RunEvent } from "./protocol.ts";
 export type Incoming = Extract<
   Envelope,
   {
-    type: "welcome" | "error" | "receipt" | "run" | "diff_answer" | "chat" | "chat_answer" | "workspace" | "machine_settings_answer" | "worktree_answer";
+    type: "welcome" | "error" | "receipt" | "run" | "diff_answer" | "chat" | "chat_answer" | "workspace" | "machine_settings_answer" | "sessions_answer" | "symbols_answer" | "worktree_answer" | "terminal";
   }
 >;
 
@@ -69,6 +69,9 @@ export function route(message: Incoming, to: Routes): void {
     case "welcome":
     case "workspace":
     case "machine_settings_answer":
+    case "sessions_answer":
+    case "symbols_answer":
+    case "terminal":
       return;
   }
 }
@@ -92,7 +95,28 @@ const CHECKS: { [T in Incoming["type"]]: (fields: Fields) => boolean } = {
     text(fields, "request") && text(fields, "workspace") && text(fields, "chat") && isWorktreeAnswer(fields["answer"]),
   machine_settings_answer: (fields) =>
     text(fields, "request") && text(fields, "machine") && text(fields, "workspace") && isMachineSettingsAnswer(fields["answer"]),
+  sessions_answer: (fields) => text(fields, "request") && text(fields, "machine") && isSessionsAnswer(fields["answer"]),
+  symbols_answer: (fields) => text(fields, "request") && text(fields, "machine") && text(fields, "workspace") && isSymbolsAnswer(fields["answer"]),
+  terminal: (fields) => text(fields, "terminal") && text(fields, "workspace") && isTerminalEvent(fields["event"]),
 };
+
+// A terminal event of a kind this app knows, with its fields; a newer kind would be read as a frame.
+function isTerminalEvent(value: unknown): boolean {
+  const event = record(value);
+  if (event === undefined) {
+    return false;
+  }
+  switch (event["kind"]) {
+    case "accepted":
+      return text(event, "handshake");
+    case "frame":
+      return text(event, "sealed");
+    case "closed":
+      return event["code"] === undefined || text(event, "code");
+    default:
+      return false;
+  }
+}
 
 function isIncoming(value: unknown): value is Incoming {
   const fields = record(value);
@@ -313,5 +337,53 @@ function isHunk(hunk: unknown): boolean {
       const parts = record(line);
       return typeof parts?.["op"] === "string" && typeof parts["text"] === "string";
     })
+  );
+}
+
+function isSessionsAnswer(answer: unknown): boolean {
+  const fields = record(answer);
+  if (fields === undefined) {
+    return false;
+  }
+  switch (fields["kind"]) {
+    case "list": {
+      const sessions = fields["sessions"];
+      return Array.isArray(sessions) && sessions.every(isOutsideSession);
+    }
+    case "opened": {
+      const events = fields["events"];
+      return Array.isArray(events) && events.every(isEntry) && typeof fields["more"] === "boolean";
+    }
+    default:
+      return typeof fields["kind"] === "string";
+  }
+}
+
+function isSymbolsAnswer(answer: unknown): boolean {
+  const fields = record(answer);
+  if (fields?.["kind"] !== "found") {
+    return typeof fields?.["kind"] === "string";
+  }
+  const symbols = fields["symbols"];
+  return Array.isArray(symbols) && symbols.every(isSymbol) && typeof fields["more"] === "boolean";
+}
+
+function isSymbol(symbol: unknown): boolean {
+  const fields = record(symbol);
+  return (
+    fields !== undefined &&
+    ["repo", "kind", "name", "path"].every((key) => text(fields, key)) &&
+    isSeq(fields["line"], 1)
+  );
+}
+
+function isOutsideSession(session: unknown): boolean {
+  const fields = record(session);
+  return (
+    fields !== undefined &&
+    text(fields, "agent") &&
+    text(fields, "session") &&
+    Number.isSafeInteger(fields["modified_at"]) &&
+    (fields["folder"] === undefined || text(fields, "folder"))
   );
 }

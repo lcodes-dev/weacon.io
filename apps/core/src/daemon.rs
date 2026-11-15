@@ -12,8 +12,7 @@ use weacon_agents::SpawnPolicy;
 pub(crate) use weacon_appkit::build;
 use weacon_observability::{Fault, Field, Logger};
 use weacon_protocol::{
-    App, ChatAnswer, ChatCommand, ChatQuery, Envelope, LineDecoder, Message, Outcome, Pick,
-    Receipt, code, encode_line,
+    App, ChatAnswer, ChatCommand, ChatQuery, Envelope, LineDecoder, Message, code, encode_line,
 };
 
 use crate::chats::feed::{self, Client};
@@ -22,7 +21,8 @@ use crate::disk;
 use crate::git::service::Worktrees;
 use crate::mcp;
 use crate::memory;
-use crate::picks::{KeepError, Picks};
+use crate::outside::Outside;
+use crate::picks::Picks;
 use crate::platform::{self, Listener, Owner, Stream};
 use crate::session::{Reply, Session};
 
@@ -34,6 +34,14 @@ pub(crate) const READ_CHUNK: usize = 8192;
 pub(crate) const ACCEPT_BACKOFF: Duration = Duration::from_millis(100);
 const DISK_CHECK: Duration = Duration::from_mins(1);
 const MEMORY_SAMPLE: Duration = Duration::from_mins(5);
+
+// Removes the socket a daemon that stopped left behind, if there is one.
+fn remove_stale(socket: &Path) -> io::Result<()> {
+    match fs::remove_file(socket) {
+        Err(error) if error.kind() != io::ErrorKind::NotFound => Err(error),
+        _ => Ok(()),
+    }
+}
 
 pub(crate) fn socket_path(state_dir: &Path) -> PathBuf {
     state_dir.join("weacon.sock")
@@ -50,7 +58,7 @@ pub(crate) fn run(app: &crate::app::App) -> Result<(), Fault> {
             )
             .because(error)
         })?;
-        let daemon = Daemon::start(
+        let mut daemon = Daemon::start(
             state_dir,
             build(&app.version),
             app.spawn.clone(),
@@ -62,10 +70,18 @@ pub(crate) fn run(app: &crate::app::App) -> Result<(), Fault> {
             },
             app.log.clone(),
         )?;
+        daemon.shared.outside = app.outside.clone();
+        // The daemon's own worktrees, so a relayed removal and a local one share their lock.
+        let (chats, worktrees) = (daemon.shared.chats.clone(), daemon.shared.worktrees.clone());
+        let maps = daemon.shared.maps.clone();
+        daemon
+            .uplink
+            .spawn(route::server(app, state_dir, chats, worktrees, maps));
+        let checks = daemon.shared.chats.downgrade();
         let serve = async {
             tokio::select! {
                 () = daemon.serve(signals.wait()) => {}
-                never = Box::pin(route::server(app, state_dir)) => match never {},
+                never = crate::update::schedule(state_dir, app.version.version, &checks, &app.log) => match never {},
             }
         };
         crate::reports::following(state_dir, &app.reporter, &app.log, serve).await;
@@ -79,6 +95,8 @@ struct Shared {
     picks: Picks,
     chats: Chats,
     worktrees: Worktrees,
+    outside: Outside,
+    maps: mcp::Maps,
     log: Logger,
 }
 
@@ -91,6 +109,7 @@ pub(crate) struct Daemon {
     disk: disk::Watch,
     memory: memory::Watch,
     engine: JoinHandle<()>,
+    uplink: JoinSet<()>,
     mcp: mcp::Server,
     // Held for the daemon's life, so a second daemon can't start.
     _lock: File,
@@ -126,32 +145,31 @@ impl Daemon {
             TryLockError::Error(error) => failed(error),
         })?;
         let socket = socket_path(state_dir);
-        if let Err(error) = fs::remove_file(&socket)
-            && error.kind() != io::ErrorKind::NotFound
-        {
-            return Err(failed(error));
-        }
-        let (mcp, mcp_server) = mcp::start(&app, &log)?;
+        remove_stale(&socket).map_err(failed)?;
+        let maps = mcp::Maps::new(state_dir, &places);
+        let (mcp, mcp_server) = mcp::start(&app, &log, maps.clone())?;
         places.mcp = Some(mcp);
         let worktrees = worktrees::worktrees(state_dir, &places);
         let (chats, engine) = chats::start(state_dir, places, app.clone(), spawn, log.clone())?;
         let listener = platform::bind(&socket).map_err(failed)?;
-        let engine = tokio::spawn(engine.serve());
         log.info("daemon started", &[]);
         Ok(Self {
             listener,
             socket,
             owner,
+            uplink: JoinSet::new(),
+            engine: tokio::spawn(engine.serve()),
             shared: Shared {
                 app,
                 picks: Picks::new(state_dir),
                 chats,
                 worktrees,
+                outside: Outside::default(),
+                maps,
                 log,
             },
             disk: disk::Watch::new(state_dir.to_owned(), platform::free_space),
             memory: memory::Watch::new(platform::processes),
-            engine,
             mcp: mcp_server,
             _lock: lock,
         })
@@ -185,6 +203,8 @@ impl Daemon {
         drop(self.listener);
         drop(fs::remove_file(&self.socket));
         clients.shutdown().await;
+        // The uplink's way to the engine goes first, or the engine would never stop.
+        self.uplink.shutdown().await;
         // Worktree work outlives its asker; it ends before the lock goes.
         self.shared.worktrees.drain().await;
         drop(self.mcp);
@@ -208,6 +228,7 @@ impl Daemon {
                     .log
                     .debug("client failed", &[("err", Field::error(&error))]);
             }
+            shared.chats.left().await;
         });
     }
 }
@@ -318,19 +339,16 @@ async fn answer(
 
 // The reply to a chat command: nothing when it was taken, since its receipts are events in the
 // chat's log, or the error that refused it.
-async fn command_chat(shared: &Shared, id: u32, command: ChatCommand) -> Reply {
+async fn command_chat(shared: &Shared, id: u32, command: ChatCommand, client: &Client) -> Reply {
     let fields = [
         ("request_id", command.request.as_str().into()),
         ("workspace_id", command.workspace.as_str().into()),
         ("chat_id", command.chat.as_str().into()),
     ];
-    match shared.chats.command(command).await {
+    match shared.chats.command(command, client).await {
         Ok(()) => {
             shared.log.info("chat command taken", &fields);
-            Reply {
-                envelope: None,
-                close: false,
-            }
+            Reply::NOTHING
         }
         Err(fault) => refused(shared, id, &fault),
     }
@@ -361,45 +379,12 @@ fn refused(shared: &Shared, id: u32, fault: &Fault) -> Reply {
     Reply::error(id, fault.code().clone(), false)
 }
 
-// Keeps `pick` off the runtime's thread and answers with its receipt.
-async fn keep(shared: &Shared, id: u32, pick: Pick) -> Reply {
-    let (picks, request) = (shared.picks.clone(), pick.request.clone());
-    let kept = tokio::task::spawn_blocking(move || picks.keep(&pick))
-        .await
-        .unwrap_or_else(|error| Err(KeepError::Io(error.into())));
-    let outcome = match kept {
-        Ok(()) => {
-            let request_id = request.as_str().into();
-            shared
-                .log
-                .info("element picked", &[("request_id", request_id)]);
-            Outcome::Completed
-        }
-        Err(KeepError::Conflict) => return Reply::error(id, code!("request.conflict"), false),
-        Err(KeepError::Io(error)) => {
-            shared
-                .log
-                .warn("pick not kept", &[("err", Field::error(&error))]);
-            Outcome::Failed {
-                code: code!("pick.not_kept"),
-            }
-        }
-    };
-    Reply {
-        envelope: Some(Envelope {
-            id,
-            message: Message::Receipt(Receipt { request, outcome }),
-        }),
-        close: false,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use tokio::io::{AsyncBufReadExt, AsyncRead};
     use tokio::sync::oneshot;
     use tokio::time::timeout;
-    use weacon_protocol::{Capability, ChatId, ErrorBody, PROTOCOL, Welcome, WorkspaceId};
+    use weacon_protocol::{Capability, ChatId, ErrorBody, Outcome, PROTOCOL, Welcome, WorkspaceId};
     use weacon_testing::TempDir;
 
     use super::*;
@@ -576,6 +561,47 @@ mod tests {
             .filter(|message| message.starts_with("daemon "))
             .collect();
         assert_eq!(lifecycle, ["daemon started", "daemon stopped"]);
+    }
+
+    #[test]
+    fn a_socket_that_cant_be_removed_is_an_error_and_none_there_is_fine() {
+        let dir = TempDir::new().unwrap();
+        let held = dir.join("held");
+        fs::create_dir(&held).unwrap();
+
+        remove_stale(&dir.join("gone")).unwrap();
+        remove_stale(&held).unwrap_err();
+    }
+
+    #[tokio::test]
+    async fn a_paired_daemon_dials_its_server_and_still_stops() {
+        use crate::machine::{self, Key, Paired};
+        let (dir, tls) = (TempDir::new().unwrap(), test_support::tls::Tls::new().await);
+        let paired = Paired {
+            server: tls.url(),
+            pinned: Some(tls.pem.clone()),
+            machine: "mc-1".parse().unwrap(),
+            owner: "a-owner".parse().unwrap(),
+            token: "t0ken".to_owned(),
+            key: Key::from_random([7; 32]),
+        };
+        machine::write(&dir, &paired).unwrap();
+        let app = test_support::app(Some(&dir), None);
+        let running = start_as(&dir, |daemon| {
+            let (chats, worktrees) = (daemon.shared.chats.clone(), daemon.shared.worktrees.clone());
+            let maps = daemon.shared.maps.clone();
+            daemon
+                .uplink
+                .spawn(route::server(&app, &dir, chats, worktrees, maps));
+        })
+        .unwrap();
+
+        let dialed = tls.accept().await;
+
+        assert!(dialed.is_some(), "the daemon never dialed its server");
+        // Its uplink, which holds a way to the engine, must not hold the engine up.
+        let stopped = timeout(Duration::from_secs(10), running.stop()).await;
+        assert!(stopped.is_ok(), "the daemon never stopped");
     }
 
     #[tokio::test]
@@ -909,31 +935,32 @@ mod tests {
         let bytes = [
             hello(PROTOCOL),
             line(2, Message::ChatQuery(subscribe)),
-            line(3, Message::ChatCommand(prompt("r-1", "MARKER-PROMPT"))),
-            line(4, Message::ChatCommand(prompt("r-2", " "))),
-            line(5, Message::ChatQuery(query("c-1", ChatQueryKind::Snapshot))),
+            line(3, Message::ChatCommand(prompt("r-2", " "))),
+            line(4, Message::ChatCommand(prompt("r-1", "MARKER-PROMPT"))),
+            line(5, Message::ChatCommand(prompt("r-1", "Other"))),
+            line(6, Message::ChatQuery(query("c-1", ChatQueryKind::Snapshot))),
         ]
         .concat();
 
-        let (replies, _stream) = exchange(connect(&running.socket).await, &bytes, 7).await;
+        let (replies, _stream) = exchange(connect(&running.socket).await, &bytes, 8).await;
         let records = running.stop().await;
 
         let Message::Welcome(welcome) = &replies[0] else {
             panic!("no welcome");
         };
-        // Not diff.view or worktree.manage until chats are given worktrees.
         assert_eq!(welcome.capabilities, crate::session::CAPABILITIES);
         let (events, answers) = events_and_answers(&replies[1..]);
-        assert_eq!(error_code(answers[0]), Some("chat.empty_prompt"));
+        assert_eq!(error_code(answers[0]), Some("request.conflict"));
         assert!(matches!(answers[1], Message::ChatAnswer(answer)
-            if matches!(answer.answer, weacon_protocol::ChatAnswerKind::Snapshot { seq, .. } if seq >= 2)));
+            if matches!(answer.answer, weacon_protocol::ChatAnswerKind::Snapshot { seq, .. } if seq >= 3)));
         assert_eq!(
             events,
             [
-                "1 prompt r-1 MARKER-PROMPT",
-                "2 receipt r-1 accepted",
-                "3 run-1 is Starting",
-                "4 run-1 is Running",
+                "1 receipt r-2 failed chat.empty_prompt",
+                "2 prompt r-1 MARKER-PROMPT",
+                "3 receipt r-1 accepted",
+                "4 run-1 is Starting",
+                "5 run-1 is Running",
             ]
         );
         assert!(soon(bench.started.recv()).await.is_some());
@@ -945,7 +972,69 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn chat_messages_before_the_hello_are_refused_like_any_other() {
+    async fn a_local_client_holds_a_chat_until_it_hangs_up() {
+        use crate::chats::test_support::{bench, command, prompt, query, soon};
+        use weacon_protocol::{ChatAction, ChatAnswerKind, ChatQueryKind};
+
+        let dir = TempDir::new().unwrap();
+        let mut bench = bench();
+        let chats = bench.chats.clone();
+        let running = start_as(&dir, |daemon| daemon.shared.chats = chats).unwrap();
+        let line = |id, message| encode_line(&Envelope { id, message }).unwrap();
+        let hold = || Message::ChatCommand(command("h-1", "c-1", ChatAction::Hold));
+        let snapshot = || Message::ChatQuery(query("c-1", ChatQueryKind::Snapshot));
+        let asked = [hello(PROTOCOL), line(2, hold()), line(3, snapshot())].concat();
+        let (answers, holder) = exchange(connect(&running.socket).await, &asked, 2).await;
+        let other = [
+            hello(PROTOCOL),
+            line(2, Message::ChatCommand(prompt("r-1", "Hi"))),
+            line(3, hold()),
+            line(4, snapshot()),
+        ]
+        .concat();
+        let (refused, _other) = exchange(connect(&running.socket).await, &other, 3).await;
+
+        assert!(matches!(&answers[1], Message::ChatAnswer(_)), "{answers:?}");
+        assert_eq!(error_code(&refused[1]), Some("chat.busy"));
+        assert!(matches!(&refused[2], Message::ChatAnswer(answer)
+            if matches!(answer.answer, ChatAnswerKind::Snapshot { seq: 2, .. })));
+        drop(holder);
+        assert!(soon(bench.started.recv()).await.is_some());
+        running.stop().await;
+    }
+
+    #[tokio::test]
+    async fn the_owner_lists_their_outside_sessions_through_the_socket_and_relayed_asks_dont() {
+        use weacon_protocol::{AgentKind, SessionsAnswerKind, SessionsQuery, SessionsQueryKind};
+
+        let dir = TempDir::new().unwrap();
+        let home = test_support::claude_home(&dir, "/work", "Hi");
+        let state = dir.join("state");
+        let outside = Outside::new(vec![(AgentKind::Claude, home)], Some(&state));
+        let running = start_as(&state, |daemon| daemon.shared.outside = outside).unwrap();
+        let query = |id, by: Option<&str>| {
+            let by = by.map(|account| account.to_owned().try_into().unwrap());
+            let query = SessionsQuery {
+                request: "r-1".to_owned().try_into().unwrap(),
+                machine: "mc-1".to_owned().try_into().unwrap(),
+                query: SessionsQueryKind::List,
+                by,
+            };
+            let message = Message::SessionsQuery(query);
+            encode_line(&Envelope { id, message }).unwrap()
+        };
+
+        let bytes = [hello(PROTOCOL), query(2, None), query(3, Some("a-1"))].concat();
+        let (replies, _stream) = exchange(connect(&running.socket).await, &bytes, 3).await;
+        running.stop().await;
+
+        assert!(matches!(&replies[1], Message::SessionsAnswer(answer)
+            if matches!(&answer.answer, SessionsAnswerKind::List { sessions } if sessions.len() == 1)));
+        assert!(error_code(&replies[2]).is_some(), "{:?}", replies[2]);
+    }
+
+    #[tokio::test]
+    async fn chat_and_sessions_messages_before_the_hello_are_refused_like_any_other() {
         use crate::chats::test_support::{bench, prompt, query};
         use weacon_protocol::ChatQueryKind;
 
@@ -958,6 +1047,12 @@ mod tests {
         for first in [
             Message::ChatCommand(prompt("r-1", "Hi")),
             Message::ChatQuery(query("c-1", ChatQueryKind::Snapshot)),
+            Message::SessionsQuery(weacon_protocol::SessionsQuery {
+                request: "r-1".to_owned().try_into().unwrap(),
+                machine: "mc-1".to_owned().try_into().unwrap(),
+                query: weacon_protocol::SessionsQueryKind::List,
+                by: None,
+            }),
         ] {
             let stream = connect(&running.socket).await;
             let (replies, _stream) = exchange(stream, &line(1, first), 1).await;

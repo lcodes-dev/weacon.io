@@ -4,12 +4,15 @@
 use std::fs;
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, PoisonError};
 
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use weacon_observability::{Fault, Field, Logger};
 use weacon_protocol::{code, to_hex};
 use weacon_version::Version;
+
+use crate::platform::remove_tree;
 
 const MANIFEST: &str = include_str!("../../../integrations/claude/.claude-plugin/plugin.json");
 const HOOKS: &str = include_str!("../../../integrations/claude/hooks/hooks.json");
@@ -25,6 +28,8 @@ pub(crate) struct Plugin {
     dir: PathBuf,
     files: [(&'static str, String); 3],
     log: Logger,
+    // Held through each launch, so two never clash; true once the folders beside it are swept.
+    swept: Arc<Mutex<bool>>,
 }
 
 impl Plugin {
@@ -52,23 +57,35 @@ impl Plugin {
             dir,
             files,
             log: log.clone(),
+            swept: Arc::default(),
         })
     }
 
     /// The plugin's folder, rewritten when anything in it differs; none, logged, when it
-    /// can't be.
+    /// can't be. The first call also removes every other folder beside it.
     pub(crate) fn folder(&self) -> Option<PathBuf> {
+        let mut swept = self.swept.lock().unwrap_or_else(PoisonError::into_inner);
+        if !*swept {
+            if let Err(error) = sweep(&self.dir) {
+                self.log
+                    .warn("plugin sweep failed", &[("err", Field::error(&error))]);
+            }
+            *swept = true;
+        }
         logged(
             &self.log,
             self.ensure().map_err(|error| failed().because(error)),
         )
     }
 
-    // A folder an agent changed is set aside, since every later run would load it.
+    // A folder an agent changed goes, since every later run would load it; it is renamed first
+    // so that a folder that can't be removed still isn't loaded.
     fn ensure(&self) -> io::Result<PathBuf> {
         if !holds(&self.dir, &self.files) {
             if fs::symlink_metadata(&self.dir).is_ok() {
-                fs::rename(&self.dir, aside(&self.dir, "stale"))?;
+                let stale = aside(&self.dir, "stale");
+                fs::rename(&self.dir, &stale)?;
+                drop(remove(&stale));
             }
             write(&self.dir, &self.files)?;
         }
@@ -154,12 +171,41 @@ fn listed(root: &Path, dir: &Path, found: &mut Vec<PathBuf>) -> io::Result<()> {
     Ok(())
 }
 
+/// Removes every folder beside `dir`: other builds' plugins, and any set aside or half written.
+fn sweep(dir: &Path) -> io::Result<()> {
+    let Some(parent) = dir.parent() else {
+        return Ok(());
+    };
+    // An unreadable folder is skipped; writing the plugin reports the error.
+    let Ok(entries) = fs::read_dir(parent) else {
+        return Ok(());
+    };
+    // Each is tried, so one that can't be removed leaves no other behind.
+    let mut first = Ok(());
+    for entry in entries {
+        let removed = entry.and_then(|entry| {
+            let path = entry.path();
+            if path == dir { Ok(()) } else { remove(&path) }
+        });
+        first = first.and(removed);
+    }
+    first
+}
+
+fn remove(path: &Path) -> io::Result<()> {
+    if fs::symlink_metadata(path)?.is_dir() {
+        remove_tree(path)
+    } else {
+        fs::remove_file(path)
+    }
+}
+
 // Written beside the folder, then renamed, so a folder that exists is always whole.
 fn write(dir: &Path, files: &[(&str, String)]) -> io::Result<()> {
     let staging = aside(dir, "part");
     let written = fill(&staging, files).and_then(|()| fs::rename(&staging, dir));
     if written.is_err() {
-        drop(fs::remove_dir_all(&staging));
+        drop(remove_tree(&staging));
     }
     written
 }
@@ -275,8 +321,12 @@ mod tests {
         assert_eq!(first, again);
         assert_ne!(first, moved);
         assert_ne!(first, updated);
-        let folders = fs::read_dir(state.join("integrations/claude")).unwrap();
-        assert_eq!(folders.count(), 3);
+        // Each new plugin removes the folders before it.
+        let folders: Vec<_> = fs::read_dir(state.join("integrations/claude"))
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .collect();
+        assert_eq!(folders, [updated]);
     }
 
     #[test]
@@ -303,9 +353,63 @@ mod tests {
             json(&dir, "hooks/hooks.json").pointer(COMMAND).unwrap(),
             "'/opt/weacon' hook session-start 2>/dev/null || true"
         );
-        // The plugin and the three it replaced.
+        // The three it replaced are gone.
         let folders = fs::read_dir(state.join("integrations/claude")).unwrap();
-        assert_eq!(folders.count(), 4);
+        assert_eq!(folders.count(), 1);
+    }
+
+    #[test]
+    fn a_plugins_first_launch_removes_every_other_folder_beside_it() {
+        let temp = TempDir::new().unwrap();
+        let state: &Path = &temp;
+        let old = plugin(state, "/opt/weacon", &VERSION).folder().unwrap();
+        let claude = state.join("integrations/claude");
+        fs::create_dir_all(claude.join("abc.stale-1/hooks")).unwrap();
+        fs::write(claude.join("abc.stale-1/hooks/hooks.json"), "{}").unwrap();
+        fs::write(claude.join("loose"), "").unwrap();
+        let listed = || {
+            let mut names: Vec<_> = fs::read_dir(&claude)
+                .unwrap()
+                .map(|entry| entry.unwrap().path())
+                .collect();
+            names.sort();
+            names
+        };
+        let before = listed();
+
+        // A daemon that never launches, such as one that finds another running, removes none.
+        let current = plugin(state, "/usr/bin/weacon", &VERSION);
+        assert_eq!(listed(), before);
+        let dir = current.folder().unwrap();
+
+        assert_eq!(listed(), std::slice::from_ref(&dir));
+        assert!(!old.exists());
+        assert!(dir.join("hooks/hooks.json").is_file());
+    }
+
+    #[test]
+    fn launches_at_once_all_get_the_same_whole_folder() {
+        let temp = TempDir::new().unwrap();
+        let plugin = plugin(&temp, "/opt/weacon", &VERSION);
+        let dir = plugin.folder().unwrap();
+        fs::write(dir.join("hooks/more.json"), "{}").unwrap();
+
+        let folders: Vec<_> = std::thread::scope(|scope| {
+            #[expect(
+                clippy::needless_collect,
+                reason = "every launch starts before the first is joined"
+            )]
+            let launches: Vec<_> = (0..8).map(|_| scope.spawn(|| plugin.folder())).collect();
+            launches
+                .into_iter()
+                .map(|launch| launch.join().unwrap())
+                .collect()
+        });
+
+        assert!(folders.iter().all(|folder| folder.as_ref() == Some(&dir)));
+        assert!(holds(&dir, &plugin.files));
+        let claude = temp.join("integrations/claude");
+        assert_eq!(fs::read_dir(claude).unwrap().count(), 1);
     }
 
     #[test]

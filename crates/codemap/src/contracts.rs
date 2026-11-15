@@ -1,5 +1,6 @@
 mod commands;
 mod tables;
+mod tools;
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -36,6 +37,7 @@ impl Contract {
         let kind = match self.kind {
             ContractKind::Command => "command",
             ContractKind::ErrorCode => "code",
+            ContractKind::McpTool => "mcp tool",
             ContractKind::Route => "route",
             ContractKind::Serde => "serde",
             ContractKind::Table => "table",
@@ -50,6 +52,8 @@ pub enum ContractKind {
     Command,
     /// A code given to `code!`.
     ErrorCode,
+    /// A tool an MCP server offers, by name.
+    McpTool,
     /// A method and a path, or only a path for a route that takes any method.
     Route,
     /// A type that derives `Serialize` or `Deserialize`.
@@ -71,6 +75,7 @@ pub(crate) enum Declares {
     ErrorCode(String),
     Route(String),
     Table(String),
+    McpTool(String),
     /// A variant of an enum that derives `Subcommand`.
     Command(Variant),
 }
@@ -113,6 +118,7 @@ fn declare<'a>(
             Declares::ErrorCode(code) => (ContractKind::ErrorCode, code.clone()),
             Declares::Route(route) => (ContractKind::Route, route.clone()),
             Declares::Table(table) => (ContractKind::Table, table.clone()),
+            Declares::McpTool(tool) => (ContractKind::McpTool, tool.clone()),
             Declares::Command(variant) => {
                 let key = (krate.name.as_str(), last(&item.symbol.name));
                 let command = contract(ContractKind::Command, variant.name.clone());
@@ -141,11 +147,15 @@ pub(crate) fn contracts(item: Node<'_>, source: &[u8]) -> Vec<Declared> {
     if derives.contains(&"Subcommand") && item.kind() == "enum_item" {
         found.extend(variants(item, source));
     }
+    found.extend(tools::attributed(item, source));
     let mut tables = Tables::default();
     preorder(item, |node| {
         match node.kind() {
             "macro_invocation" => found.extend(error_code(node, source)),
-            "call_expression" => found.extend(routes(node, source)),
+            "call_expression" => {
+                found.extend(routes(node, source));
+                found.extend(tools::created(node, source));
+            }
             "string_literal" | "raw_string_literal" => {
                 tables.apply(&literal(node, source), line(node));
             }
@@ -302,6 +312,30 @@ mod tests {
                 "Serde a::Hello @a::Hello:3",
                 "Table found @a::STEPS:13",
                 "Table notes @a::STEPS:12",
+            ]
+        );
+    }
+
+    #[test]
+    fn finds_mcp_tools_by_their_literal_names() {
+        let lib = "fn list() -> [Tool; 6] { [Tool::new(\"se\\x61rch\\n\", \"Finds\", schema()),\n\
+                   rmcp::model::Tool::new(r\"fetch\", d, s), Tool::new(NAME, d, s), Other::new(\"x\"),\n\
+                   Tool::open(\"y\"), new(\"z\")] }\n\
+                   struct Server;\nimpl Server {\n\
+                   #[tool(description = \"Adds\", name = r#\"sum\"#)]\nasync fn add(&self) {}\n#[tool(name = \"take\\u{5f}\\\"one\\\"\")]\nfn take(&self) {}\n\
+                   #[rmcp::tool(description = \"Echoes\", annotations(name = \"inner\"))]\n\
+                   /// Says it again.\nfn echo(&self) {}\n\
+                   #[tool]\nfn ping(&self) {}\n#[tooling]\nfn not_a_tool(&self) {} }\n\
+                   #[tool(name = \"loose\")]\nstruct NotAFunction;\n";
+        assert_eq!(
+            found(lib),
+            [
+                "McpTool echo @a::Server::echo:10",
+                "McpTool fetch @a::list:2",
+                "McpTool ping @a::Server::ping:13",
+                "McpTool search @a::list:1",
+                "McpTool sum @a::Server::add:6",
+                "McpTool take_\"one\" @a::Server::take:8",
             ]
         );
     }

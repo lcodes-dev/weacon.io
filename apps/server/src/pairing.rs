@@ -25,6 +25,7 @@ use crate::http::{Body, error, failure, not_found, too_many};
 use crate::limit::{HOUR, Limit};
 use crate::secret::random_token;
 use crate::shared::Shared;
+use crate::uplink;
 
 /// How long a person has to confirm a pairing, in seconds.
 const PAIRING_LIFETIME: i64 = 600;
@@ -100,8 +101,8 @@ async fn started(shared: &Shared, body: &PairStart) -> Result<Option<PairStarted
     let recorded = shared.db.start_pairing(&new, now).await?;
     Ok(recorded.then(|| PairStarted {
         pairing,
-        code: shown(&code),
-        secret,
+        code: shown(&code).into(),
+        secret: secret.into(),
         expires_at,
     }))
 }
@@ -117,7 +118,9 @@ pub(crate) async fn lookup(
     if !shared.pairing_limits.tries.allow(from, Instant::now()) {
         return too_many(code!("pairing.too_many"));
     }
-    let code_hash = shared.secret.pairing_code_hash(&normalised(&body.code));
+    let code_hash = shared
+        .secret
+        .pairing_code_hash(&normalised(body.code.expose()));
     match shared.db.pending_pairing(&code_hash, shared.now()).await {
         Ok(Some(pending)) => Json(pending).into_response(),
         Ok(None) => not_found(code!("pairing.not_found")),
@@ -152,7 +155,9 @@ async fn confirmed(
     let confirmation = Confirmation {
         account: &session.account,
         pairing: &body.pairing,
-        code_hash: &shared.secret.pairing_code_hash(&normalised(&body.code)),
+        code_hash: &shared
+            .secret
+            .pairing_code_hash(&normalised(body.code.expose())),
         machine: &fresh(&new_id)?,
         claim_by: now.saturating_add(CLAIM_WITHIN),
     };
@@ -178,10 +183,10 @@ pub(crate) async fn claim(
 }
 
 async fn claimed(shared: &Shared, body: &PairClaim) -> Result<Option<PairClaimed>, Fault> {
-    let token = to_hex(&shared.secret.machine_token(&body.secret));
+    let token = to_hex(&shared.secret.machine_token(body.secret.expose()));
     let claiming = Claiming {
         pairing: &body.pairing,
-        secret_hash: &token_hash(&body.secret),
+        secret_hash: &token_hash(body.secret.expose()),
         token_hash: &token_hash(&token),
     };
     let claim = shared.db.claim_pairing(&claiming, shared.now()).await?;
@@ -191,15 +196,24 @@ async fn claimed(shared: &Shared, body: &PairClaim) -> Result<Option<PairClaimed
         Claim::Paired { machine, owner } => Some(PairClaimed::Paired {
             machine,
             owner,
-            token,
+            token: token.into(),
         }),
     })
 }
 
 /// `GET /api/machines`: the machines paired with the signed-in account.
 pub(crate) async fn machines(State(shared): State<Shared>, session: Session) -> Response {
-    match shared.db.machines_of(&session.account).await {
-        Ok(machines) => Json(MachineList { machines }).into_response(),
+    match shared
+        .db
+        .machines_of(&session.account, &uplink::offers())
+        .await
+    {
+        Ok(mut machines) => {
+            for machine in &mut machines {
+                machine.connected = shared.links.is_open(&machine.id);
+            }
+            Json(MachineList { machines }).into_response()
+        }
         Err(fault) => failure(fault),
     }
 }
@@ -253,7 +267,7 @@ mod tests {
         let code = &pairing.code;
         let claim = claim_body(&pairing);
         let (_, waiting) = post(server.address, "/api/machines/pair/claim", "", &claim).await;
-        let typed_code = code.to_lowercase().replace('-', " ");
+        let typed_code = code.expose().to_lowercase().replace('-', " ");
         let lookup = lookup_body(&typed_code);
         let (looked, pending) = post(
             server.address,
@@ -275,10 +289,10 @@ mod tests {
         let (_, list) = ask(server.address, "GET /api/machines", &ada_proof, "").await;
 
         assert_eq!(started, "http/1.1 201 created");
-        assert_eq!(code.len(), 9);
-        assert_eq!(code.as_bytes().get(4), Some(&b'-'));
+        assert_eq!(code.expose().len(), 9);
+        assert_eq!(code.expose().as_bytes().get(4), Some(&b'-'));
         assert_eq!(pairing.expires_at, fixture.shared.now() + PAIRING_LIFETIME);
-        assert_eq!(pairing.secret.len(), 64);
+        assert_eq!(pairing.secret.expose().len(), 64);
         assert_eq!(waiting, json!({ "state": "waiting" }));
         assert_eq!(looked, "http/1.1 200 ok");
         assert_eq!(
@@ -293,6 +307,30 @@ mod tests {
         assert_eq!(paired["token"].as_str().unwrap().len(), 64);
         assert_eq!(again, paired);
         assert_eq!(list, json!({ "machines": [machine] }));
+    }
+
+    #[tokio::test]
+    async fn the_list_says_whether_a_machines_core_is_connected_now() {
+        use crate::test_support::socket::{next, open, say};
+
+        let fixture = Fixture::new().await;
+        let server = fixture.run().await;
+        let paired = pair_machine(&fixture, server.address).await;
+        let list = async || {
+            ask(server.address, "GET /api/machines", &paired.proof, "")
+                .await
+                .1
+        };
+        let offline = list().await;
+        let mut core = open(server.address, "/api/machines/connect", &paired.token)
+            .await
+            .unwrap();
+        say(&mut core, &["machine.connect", "symbols.search"]).await;
+        // Welcomed only once its connection is open.
+        next(&mut core).await;
+
+        assert_eq!(offline["machines"][0].get("connected"), None);
+        assert_eq!(list().await["machines"][0]["connected"], json!(true));
     }
 
     #[tokio::test]
@@ -321,7 +359,7 @@ mod tests {
         let server = fixture.run().await;
         let (_, ada) = sign_in(&fixture, server.address, "ada@example.com").await;
         let (_, pairing) = start_pairing(server.address, MachineOs::Linux).await;
-        let lookup = lookup_body(&pairing.code);
+        let lookup = lookup_body(pairing.code.expose());
         let wrong = json!({ "pairing": pairing.pairing, "code": "0000-0000" }).to_string();
         let right = confirm_body(&pairing);
 
@@ -441,7 +479,7 @@ mod tests {
         let server = fixture.run().await;
         let (_, ada) = sign_in(&fixture, server.address, "ada@example.com").await;
         let (_, pairing) = start_pairing(server.address, MachineOs::Linux).await;
-        let lookup = lookup_body(&pairing.code);
+        let lookup = lookup_body(pairing.code.expose());
         let confirm = confirm_body(&pairing);
         let claim = claim_body(&pairing);
         let mut answers = Vec::new();

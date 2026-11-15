@@ -3,7 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import type { ChatRef } from "../chat-ref.ts";
 import { type Send, deliverPrompt, lateFeed } from "../composer/prompt.ts";
 import { later } from "../connection.ts";
-import { newRequestId } from "../ids.ts";
+import { newId } from "../ids.ts";
 import { route } from "../incoming.ts";
 import type { ChatAction, Envelope, RequestId, RunId } from "../protocol.ts";
 import { Receipts, type Settled } from "../receipts.ts";
@@ -127,7 +127,7 @@ export function useChatCommands(link: WorkspaceSocket, chatRef: ChatRef | undefi
   const answering = {
     answers,
     answer(run: RunId, prompt: number, allow: boolean) {
-      const { answers: next, request } = sending(answers, { run, prompt, allow }, newRequestId);
+      const { answers: next, request } = sending(answers, { run, prompt, allow }, newId);
       sent.current.set(request, { run, prompt });
       setAnswers(next);
       void act({ kind: "permission", answer: { run, prompt, allow } }, request).then((settled) => answerSettled(request, settled));
@@ -136,7 +136,7 @@ export function useChatCommands(link: WorkspaceSocket, chatRef: ChatRef | undefi
   const stop = () => {
     setStopping(true);
     setStopFailed(undefined);
-    void act({ kind: "interrupt" }, newRequestId()).then((settled) => {
+    void act({ kind: "interrupt" }, newId()).then((settled) => {
       setStopping(false);
       setStopFailed(stopProblem(settled));
     });

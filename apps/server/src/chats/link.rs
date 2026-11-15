@@ -9,7 +9,7 @@ use weacon_protocol::{
 use crate::shared::Shared;
 
 /// What a core must offer to be sent chats' commands and queries.
-const SERVE: Code = code!("chat.serve");
+pub(crate) const SERVE: Code = code!("chat.serve");
 
 /// Sends `message` to `machine`, or refuses with `machine.offline` when it isn't connected,
 /// doesn't serve chats or doesn't keep up.

@@ -255,6 +255,7 @@ impl Workspace {
             .await
             .map_err(failed)?;
         }
+        self.index_doc(transaction, doc, attribution.at()).await?;
         let versioned = Versioned::Doc(&doc.id, version);
         self.record_change(transaction, versioned, attribution.accepted_by())
             .await

@@ -12,12 +12,15 @@ use crate::app::{App, read_json};
 use crate::platform;
 
 /// What this machine's owner chose for one workspace; a workspace without a choice asks first.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub(crate) struct Settings {
     pub(crate) access: AccessLevel,
     /// Whether other people are in the workspace.
     pub(crate) team: bool,
+    /// Commands the guard also asks about, each as its first words.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) additions: Vec<Vec<String>>,
 }
 
 impl Default for Settings {
@@ -25,6 +28,7 @@ impl Default for Settings {
         Self {
             access: AccessLevel::AskFirst,
             team: false,
+            additions: Vec::new(),
         }
     }
 }
@@ -43,19 +47,20 @@ impl Settings {
             .map_err(|error| unreadable().because(error))
     }
 
-    fn write(self, file: &Path) -> io::Result<()> {
+    /// Saves the settings in `file`, making its folder private to this user.
+    pub(crate) fn write(&self, file: &Path) -> io::Result<()> {
         if let Some(folder) = file.parent() {
             platform::private_dir(folder)?;
         }
         weacon_appkit::write_whole(file, &serde_json::to_vec(&self)?)
     }
 
-    pub(crate) const fn level(self) -> &'static str {
+    /// A line of warning for full access in a team workspace, or nothing.
+    pub(crate) const fn level(&self) -> &'static str {
         level_name(self.access)
     }
 
-    /// A line of warning for full access in a team workspace, or nothing.
-    pub(crate) fn warning(self) -> &'static str {
+    pub(crate) fn warning(&self) -> &'static str {
         if self.team && self.access == AccessLevel::Full {
             "Warning: full access is on in a team workspace. Its agents change files on this \
              machine without asking.\n"
@@ -67,7 +72,7 @@ impl Settings {
 
 /// The name `weacon access` takes and shows for `level`; one this build doesn't know allows
 /// nothing.
-const fn level_name(level: AccessLevel) -> &'static str {
+pub(crate) const fn level_name(level: AccessLevel) -> &'static str {
     match level {
         AccessLevel::Off | AccessLevel::Newer => "off",
         AccessLevel::ReadOnly => "read-only",
@@ -98,16 +103,16 @@ pub(crate) fn store(
     team: Option<bool>,
     log: &Logger,
 ) -> Result<Settings, Fault> {
-    let file = workspaces.settings_file(workspace);
-    let team = match team {
-        Some(team) => team,
-        None => Settings::read(&file)?.team,
+    let current = workspaces.settings(workspace);
+    let settings = match team {
+        Some(team) => Settings {
+            access,
+            team,
+            ..current.unwrap_or_default()
+        },
+        None => Settings { access, ..current? },
     };
-    let settings = Settings { access, team };
-    // The workspace's folder makes it one this machine knows.
-    let saved =
-        platform::private_dir(&workspaces.root(workspace)).and_then(|()| settings.write(&file));
-    saved.map_err(|error| {
+    workspaces.save(workspace, &settings).map_err(|error| {
         Fault::new(
             code!("access.not_saved"),
             "The access level couldn't be saved",
@@ -118,7 +123,8 @@ pub(crate) fn store(
     Ok(settings)
 }
 
-/// Sets what `workspace`'s agents may do on this machine, and says what it is now.
+/// Sets what `workspace`'s agents may do on this machine and says what it is now, holding the
+/// settings so one change at a time reads, changes and saves them.
 pub(crate) fn run(
     app: &App,
     workspace: &WorkspaceId,
@@ -126,15 +132,23 @@ pub(crate) fn run(
     team: Option<bool>,
     out: &mut impl Write,
 ) -> Result<(), Fault> {
-    let settings = store(
-        &Workspaces::new(app.state_dir()?, None),
-        workspace,
-        access,
-        team,
-        &app.log,
-    )?;
+    let workspaces = Workspaces::new(app.state_dir()?, None);
+    let _held = workspaces.hold(workspace).map_err(|error| {
+        Fault::new(
+            code!("access.not_saved"),
+            "The access level couldn't be saved",
+        )
+        .because(error)
+    })?;
+    // Saying whether it's a team replaces settings that can't be read, guard additions too.
+    let lost = if workspaces.settings(workspace).is_err() {
+        "Its guard additions couldn't be read and are gone; add them again with weacon guard add.\n"
+    } else {
+        ""
+    };
+    let settings = store(&workspaces, workspace, access, team, &app.log)?;
     let (id, level, warning) = (workspace.as_str(), settings.level(), settings.warning());
-    write!(out, "Workspace {id}: access {level}\n{warning}").map_err(|error| {
+    write!(out, "Workspace {id}: access {level}\n{warning}{lost}").map_err(|error| {
         Fault::new(
             code!("access.output_failed"),
             "The access level couldn't be printed",
@@ -179,7 +193,8 @@ mod tests {
             Settings::read(&file).unwrap(),
             Settings {
                 access: AccessLevel::ReadOnly,
-                team: false
+                team: false,
+                additions: Vec::new(),
             }
         );
         assert_eq!(
@@ -215,7 +230,14 @@ mod tests {
 
     #[test]
     fn only_full_access_in_a_team_workspace_has_a_warning() {
-        let warning = |access, team| Settings { access, team }.warning();
+        let warning = |access, team| {
+            Settings {
+                access,
+                team,
+                additions: Vec::new(),
+            }
+            .warning()
+        };
 
         assert!(warning(AccessLevel::Full, true).starts_with("Warning: full access"));
         assert_eq!(warning(AccessLevel::Full, false), "");
@@ -243,12 +265,13 @@ mod tests {
             read(r#"{"access":"full","team":true,"later":1}"#).unwrap(),
             Settings {
                 access: AccessLevel::Full,
-                team: true
+                team: true,
+                additions: Vec::new(),
             }
         );
         let newer = read(r#"{"access":"sandboxed"}"#).unwrap();
         assert_eq!(newer.access, AccessLevel::Newer);
-        assert_eq!((newer.level(), newer.warning()), ("off", ""));
+        assert_eq!((level_name(newer.access), newer.warning()), ("off", ""));
         let broken = read("not json").unwrap_err();
         assert_eq!(broken.code().as_str(), "workspace.settings_unreadable");
     }
@@ -273,7 +296,10 @@ mod tests {
         assert_eq!(unreadable.code().as_str(), "workspace.settings_unreadable");
         assert_eq!(unsaved.code().as_str(), "access.not_saved");
         assert_eq!(kept.code().as_str(), "workspace.settings_unreadable");
-        assert_eq!(replaced, "Workspace w1: access off\n");
+        assert_eq!(
+            replaced,
+            "Workspace w1: access off\nIts guard additions couldn't be read and are gone; add them again with weacon guard add.\n"
+        );
         let full = set(&broken, AccessLevel::Full, None).unwrap();
         assert_eq!(full.lines().count(), 2);
         assert_eq!(nowhere.code().as_str(), "state.unavailable");

@@ -2,8 +2,8 @@ use std::ffi::OsString;
 use std::path::PathBuf;
 
 use clap::error::ErrorKind;
-use clap::{Args, CommandFactory, FromArgMatches, Parser, Subcommand};
-use weacon_protocol::{AccessLevel, AgentKind, ChatId, RepoId, WorkspaceId};
+use clap::{Args, CommandFactory, FromArgMatches, Parser, Subcommand, ValueEnum};
+use weacon_protocol::{AccessLevel, AgentKind, ChatId, RepoId, UpdateSchedule, WorkspaceId};
 use weacon_version::Version;
 
 /// Weacon's core: runs agents for your chats and tasks.
@@ -42,12 +42,15 @@ pub(crate) enum Command {
         /// The workspace's id.
         workspace: WorkspaceId,
         /// What its agents may do: off, read-only, ask-first or full.
-        #[arg(value_parser = crate::workspaces::parse_level)]
+        #[arg(value_parser = crate::workspaces::access::parse_level)]
         level: AccessLevel,
         /// Whether other people are in the workspace; kept as it was when left out.
         #[arg(long)]
         team: Option<bool>,
     },
+    /// Answer an agent's hooks.
+    #[command(subcommand)]
+    Guard(GuardCommand),
     /// Pair this machine with your Weacon account: confirm the code it shows in the web app.
     Pair {
         /// The server's address, an https URL with no path.
@@ -88,6 +91,9 @@ pub(crate) enum Command {
     NativeHost { origin: String },
     /// Print what the code map says about a repository's code; where to begin, unless asked.
     Map(MapCommand),
+    /// Install the latest release over this binary, checking its signature first, and restart
+    /// the service.
+    Update(UpdateCommand),
     /// Print what an agent's hook adds; the plugin the core gives its runs calls it.
     #[command(subcommand, hide = true)]
     Hook(HookCommand),
@@ -104,6 +110,41 @@ fn agent(name: &str) -> Result<AgentKind, &'static str> {
         .ok()
         .filter(|agent| *agent != AgentKind::Newer)
         .ok_or("not an agent this core runs")
+}
+
+#[derive(Debug, PartialEq, Eq, Subcommand)]
+pub(crate) enum GuardCommand {
+    /// Read Claude Code's pre-tool hook call on stdin, and ask a person first if it's on the
+    /// guard's list.
+    Check(CheckCommand),
+    /// Also ask before commands that start with these words in this workspace.
+    Add {
+        /// The workspace's id.
+        workspace: WorkspaceId,
+        /// The command's first words, such as: terraform destroy.
+        #[arg(required = true, num_args = 1..)]
+        words: Vec<String>,
+    },
+    /// Stop asking about commands added with `weacon guard add`.
+    Remove {
+        /// The workspace's id.
+        workspace: WorkspaceId,
+        /// The command's first words, as they were added.
+        #[arg(required = true, num_args = 1..)]
+        words: Vec<String>,
+    },
+    /// List the commands this workspace added.
+    List { workspace: WorkspaceId },
+}
+
+#[derive(Debug, PartialEq, Eq, Args)]
+pub(crate) struct CheckCommand {
+    /// The workspace of the Weacon run the agent is in.
+    #[arg(long)]
+    pub(crate) workspace: WorkspaceId,
+    /// The chat's worktree.
+    #[arg(long)]
+    pub(crate) worktree: PathBuf,
 }
 
 #[derive(Debug, PartialEq, Eq, Subcommand)]
@@ -146,18 +187,70 @@ pub(crate) struct MapCommand {
     pub(crate) budget: Option<u32>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Args)]
+pub(crate) struct UpdateCommand {
+    /// Install a release that speaks a new protocol too.
+    #[arg(long)]
+    pub(crate) yes: bool,
+    #[command(subcommand)]
+    pub(crate) action: Option<UpdateAction>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Subcommand)]
+pub(crate) enum UpdateAction {
+    /// Say whether a newer release is out, without installing it.
+    Check,
+    /// Choose when the daemon looks for releases: off, notify, daily or weekly.
+    Schedule {
+        #[arg(value_parser = schedule)]
+        schedule: UpdateSchedule,
+    },
+}
+
+fn schedule(name: &str) -> Result<UpdateSchedule, &'static str> {
+    serde_json::from_value(name.into())
+        .ok()
+        .filter(|schedule| *schedule != UpdateSchedule::Newer)
+        .ok_or("not a schedule: off, notify, daily or weekly")
+}
+
 #[derive(Debug, PartialEq, Eq, Subcommand)]
 pub(crate) enum MapSubcommand {
     /// Print the text the MCP's `symbol` tool answers for an item's full path.
     Symbol { path: String },
     /// Print the text the MCP's `flow` tool answers: the flows the docs pin.
     Flows,
+    /// Print the text the MCP's `docs_for` tool answers: the doc lines that pin an item.
+    DocsFor { path: String },
+    /// Print the text the MCP's `search` tool answers: the items and docs matching the words.
+    Search {
+        #[arg(required = true)]
+        words: Vec<String>,
+    },
+    /// Print the text the MCP's `hotspots` tool answers: the files that change often and that
+    /// much depends on.
+    Hotspots,
     /// Print the areas of the code and how they depend on one another.
     Architecture,
     /// Print the commands, routes and other contracts the code declares.
-    Contracts,
+    Contracts {
+        /// Only the contracts of this kind.
+        #[arg(long)]
+        kind: Option<ContractFilter>,
+    },
     /// Read pinned anchors on stdin, one per line, and print those that no longer match.
     CheckAnchors,
+}
+
+/// A kind of contract `map contracts` can be limited to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+pub(crate) enum ContractFilter {
+    Command,
+    Code,
+    Route,
+    Serde,
+    Table,
+    McpTool,
 }
 
 impl Cli {
@@ -177,12 +270,14 @@ impl Command {
             | Self::Service(_)
             | Self::Login { .. }
             | Self::Access { .. }
+            | Self::Guard(_)
             | Self::Pair { .. }
             | Self::Repo(_)
             | Self::Reports { .. }
             | Self::Resume { .. }
             | Self::ConnectChrome
             | Self::Map(_)
+            | Self::Update(_)
             | Self::Hook(_) => "cli.log",
             Self::NativeHost { .. } => "native-host.log",
         }
@@ -196,6 +291,7 @@ impl Command {
             Self::Service(_) => "service",
             Self::Login { .. } => "login",
             Self::Access { .. } => "access",
+            Self::Guard(_) => "guard",
             Self::Pair { .. } => "pair",
             Self::Repo(_) => "repo",
             Self::Reports { .. } => "reports",
@@ -203,6 +299,7 @@ impl Command {
             Self::ConnectChrome => "connect-chrome",
             Self::NativeHost { .. } => "native-host",
             Self::Map(_) => "map",
+            Self::Update(_) => "update",
             Self::Hook(_) => "hook",
         }
     }
@@ -357,8 +454,9 @@ mod tests {
 
         for (name, view) in [
             ("flows", MapSubcommand::Flows),
+            ("hotspots", MapSubcommand::Hotspots),
             ("architecture", MapSubcommand::Architecture),
-            ("contracts", MapSubcommand::Contracts),
+            ("contracts", MapSubcommand::Contracts { kind: None }),
         ] {
             let Some(Cli {
                 command: Command::Map(map),
@@ -369,7 +467,16 @@ mod tests {
             };
             assert_eq!((map.command, map.budget), (Some(view), Some(2000)));
         }
-        assert!(map(&["hotspots"]).is_none());
+        let Some(Cli {
+            command: Command::Map(tools),
+            ..
+        }) = map(&["contracts", "--kind", "mcp-tool"])
+        else {
+            panic!("contracts --kind")
+        };
+        let kind = Some(ContractFilter::McpTool);
+        assert_eq!(tools.command, Some(MapSubcommand::Contracts { kind }));
+        assert!(map(&["contracts", "--kind", "tool"]).is_none());
     }
 
     #[test]
@@ -510,6 +617,44 @@ mod tests {
     }
 
     #[test]
+    fn update_installs_checks_or_sets_a_schedule() {
+        let update = |args: &[&str]| {
+            let Command::Update(update) = run(args).unwrap().command else {
+                panic!("not an update command");
+            };
+            update
+        };
+        let now = update(&["weacon", "update"]);
+        assert_eq!(
+            now,
+            UpdateCommand {
+                yes: false,
+                action: None
+            }
+        );
+        assert!(update(&["weacon", "update", "--yes"]).yes);
+        assert_eq!(
+            update(&["weacon", "update", "check"]).action,
+            Some(UpdateAction::Check)
+        );
+        for (name, schedule) in [
+            ("off", UpdateSchedule::Off),
+            ("notify", UpdateSchedule::Notify),
+            ("daily", UpdateSchedule::Daily),
+            ("weekly", UpdateSchedule::Weekly),
+        ] {
+            let chosen = update(&["weacon", "update", "schedule", name]).action;
+            assert_eq!(chosen, Some(UpdateAction::Schedule { schedule }));
+        }
+        run(&["weacon", "update", "schedule", "hourly"]).unwrap_err();
+        assert_eq!(run(&["weacon", "update"]).unwrap().command.name(), "update");
+        assert_eq!(
+            run(&["weacon", "update"]).unwrap().command.log_name(),
+            "cli.log"
+        );
+    }
+
+    #[test]
     fn the_daemon_logs_to_its_terminal_and_its_own_file() {
         let daemon = run(&["weacon", "daemon"]).unwrap();
         let status = run(&["weacon", "status"]).unwrap();
@@ -557,5 +702,34 @@ mod tests {
             run(&["weacon", "fly"]).unwrap_err().kind(),
             ErrorKind::InvalidSubcommand
         );
+    }
+
+    #[test]
+    fn guard_takes_a_hooks_run_or_a_workspaces_additions() {
+        let check = run(&[
+            "weacon",
+            "guard",
+            "check",
+            "--workspace=w1",
+            "--worktree=/work",
+        ])
+        .unwrap();
+        let Command::Guard(GuardCommand::Check(hook)) = &check.command else {
+            panic!("not a guard check");
+        };
+
+        assert_eq!(hook.workspace.as_str(), "w1");
+        assert_eq!(hook.worktree, std::path::Path::new("/work"));
+        assert_eq!(
+            (check.command.name(), check.command.log_name()),
+            ("guard", "cli.log")
+        );
+        let add = run(&["weacon", "guard", "add", "w1", "terraform", "destroy"]).unwrap();
+        assert!(matches!(
+            add.command,
+            Command::Guard(GuardCommand::Add { ref words, .. }) if words == &["terraform", "destroy"]
+        ));
+        run(&["weacon", "guard", "add", "w1"]).unwrap_err();
+        run(&["weacon", "guard", "check", "--workspace=w1"]).unwrap_err();
     }
 }

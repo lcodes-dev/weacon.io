@@ -72,10 +72,14 @@ fn push_quoted(line: &mut Vec<u16>, arg: &OsStr) -> io::Result<()> {
     Ok(())
 }
 
-// This process's environment with the command's changes, as the block `CreateProcessW` takes:
+// The `inherited` variables with the command's changes, as the block `CreateProcessW` takes:
 // sorted by name in any case, and ending in two NULs.
-pub(super) fn environment(command: &std::process::Command) -> io::Result<Vec<u16>> {
-    let mut variables: BTreeMap<OsString, (OsString, OsString)> = std::env::vars_os()
+pub(super) fn environment(
+    command: &std::process::Command,
+    inherited: impl IntoIterator<Item = (OsString, OsString)>,
+) -> io::Result<Vec<u16>> {
+    let mut variables: BTreeMap<OsString, (OsString, OsString)> = inherited
+        .into_iter()
         .map(|(name, value)| (name.to_ascii_uppercase(), (name, value)))
         .collect();
     for (name, value) in command.get_envs() {
@@ -132,26 +136,23 @@ mod tests {
     fn the_environment_block_takes_the_commands_changes_in_any_case() {
         let mut command = std::process::Command::new("x.exe");
         command
-            .env("Weacon_Test_Set", "1")
+            .env("Weacon_Set", "1")
+            .env("home", "C:\\new")
             .env_remove("PATH")
             .env_remove("pathext");
-        let block = String::from_utf16(&environment(&command).unwrap()).unwrap();
-        let entries: Vec<&str> = block.trim_end_matches('\0').split('\0').collect();
-        // The entries hold this process's whole environment, so no message shows them.
-        assert!(entries.contains(&"Weacon_Test_Set=1"));
-        assert!(
-            !entries
-                .iter()
-                .any(|entry| entry.to_ascii_uppercase().starts_with("PATH="))
-        );
-        assert!(
-            !entries
-                .iter()
-                .any(|entry| entry.to_ascii_uppercase().starts_with("PATHEXT="))
-        );
-        assert!(
-            entries.is_sorted_by_key(|entry| entry.split('=').next().map(str::to_ascii_uppercase))
-        );
-        assert!(block.ends_with("\0\0"));
+        let inherited = [
+            ("Path", "C:\\bin"),
+            ("PATHEXT", ".EXE"),
+            ("HOME", "C:\\old"),
+            ("zeta", "z"),
+            ("Alpha", "a"),
+        ]
+        .map(|(name, value)| (OsString::from(name), OsString::from(value)));
+
+        let block = String::from_utf16(&environment(&command, inherited).unwrap()).unwrap();
+
+        assert_eq!(block, "Alpha=a\0home=C:\\new\0Weacon_Set=1\0zeta=z\0\0");
+        let empty = environment(&std::process::Command::new("x.exe"), []).unwrap();
+        assert_eq!(empty, [0, 0]);
     }
 }

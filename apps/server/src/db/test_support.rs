@@ -43,25 +43,56 @@ pub(crate) async fn make_titled(
     title: &str,
     at: i64,
 ) -> Result<(), Fault> {
-    begin_titled(workspace, chat, owner, title, at).await?;
-    workspace.chat_made(&id(chat), &member_id(owner)).await
+    let making = Making {
+        chat,
+        owner,
+        title,
+        machine: "mc-1",
+        at,
+    };
+    make_as(workspace, &making).await
+}
+
+/// A chat [`make_as`] makes.
+pub(crate) struct Making<'a> {
+    pub(crate) chat: &'a str,
+    pub(crate) owner: &'a str,
+    pub(crate) title: &'a str,
+    pub(crate) machine: &'a str,
+    pub(crate) at: i64,
+}
+
+/// Makes the chat `making` describes, its first prompt sent.
+pub(crate) async fn make_as(workspace: &Workspace, making: &Making<'_>) -> Result<(), Fault> {
+    begin_as(workspace, making).await?;
+    workspace
+        .chat_made(&id(making.chat), &member_id(making.owner))
+        .await
 }
 
 /// Begins chat `chat` as [`make`] does, its first prompt not yet sent.
 pub(crate) async fn begin(workspace: &Workspace, chat: &str, owner: &str) -> Result<(), Fault> {
-    begin_titled(workspace, chat, owner, "Fix the build", NOW).await
+    let making = Making {
+        chat,
+        owner,
+        title: "Fix the build",
+        machine: "mc-1",
+        at: NOW,
+    };
+    begin_as(workspace, &making).await
 }
 
-async fn begin_titled(
-    workspace: &Workspace,
-    chat: &str,
-    owner: &str,
-    title: &str,
-    at: i64,
-) -> Result<(), Fault> {
+async fn begin_as(workspace: &Workspace, making: &Making<'_>) -> Result<(), Fault> {
+    let Making {
+        chat,
+        owner,
+        title,
+        machine,
+        at,
+    } = *making;
     let request = id::<RequestId>(&format!("r-{chat}"));
     let (chat, owner) = (id::<ChatId>(chat), member_id(owner));
-    let (machine_id, machine) = (id::<MachineId>("mc-1"), id::<MachineName>("Ada's laptop"));
+    let (machine_id, machine) = (id::<MachineId>(machine), id::<MachineName>("Ada's laptop"));
     let repo = id::<RepoId>("site");
     let new = NewChat {
         id: &chat,

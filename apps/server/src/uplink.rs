@@ -11,15 +11,18 @@ use axum::routing::get;
 use tokio::sync::broadcast::{Receiver, error::RecvError};
 use tokio::time::timeout;
 use weacon_observability::{Field, Logger};
-use weacon_protocol::{Capability, Code, Envelope, MAX_FRAME, MachineId, Message, code};
+use weacon_protocol::{
+    App, Capability, Code, Envelope, Hello, MAX_FRAME, MachineId, MachineName, Message, code,
+};
 
 use crate::auth::Machine;
 use crate::chats;
 use crate::connections::Place;
 use crate::links::Connected;
-use crate::relay::SETTINGS;
+use crate::relay::{self, DIFF, SESSIONS, SETTINGS, SYMBOLS, WORKTREE};
 use crate::shared::Shared;
-use crate::socket::{Closed, Pings, greet, refusal, reply, send};
+use crate::socket::{Closed, Pings, hear, refusal, reply, send};
+use crate::terminals;
 
 /// What a core must offer, and the server offers, to keep a machine's connection.
 const CONNECT: Code = code!("machine.connect");
@@ -86,6 +89,7 @@ impl Link {
 
 async fn serve(mut socket: WebSocket, shared: Shared, mut link: Link) {
     let Err(Closed) = run(&mut socket, &shared, &mut link).await;
+    terminals::offline(&shared, &link.machine.id);
     // A core that is gone just doesn't hear it.
     if link.gone {
         drop(reply(&mut socket, &shared, 0, refusal(code!("machine.unpaired"))).await);
@@ -96,30 +100,58 @@ async fn serve(mut socket: WebSocket, shared: Shared, mut link: Link) {
     }
 }
 
+/// What the server offers every core, and needs of it for all its features to reach it.
+pub(crate) fn offers() -> Vec<Capability> {
+    [CONNECT, SETTINGS, DIFF, WORKTREE, SESSIONS, SYMBOLS, chats::SERVE]
+        .map(Capability::new)
+        .into()
+}
+
+/// The most capabilities of a core's hello that the machines list keeps.
+const MOST_KEPT_OFFERS: usize = 64;
+
+/// What of `hello` the machines list keeps: its build if every part reads as a machine name, and
+/// all its capabilities or none.
+fn kept(hello: &Hello) -> (Option<&App>, Option<&[Capability]>) {
+    let build = &hello.app;
+    let plain = [&build.name, &build.version, &build.commit]
+        .into_iter()
+        .all(|part| MachineName::try_from(part.clone()).is_ok());
+    let offers = &hello.capabilities;
+    let whole = offers.len() <= MOST_KEPT_OFFERS;
+    (plain.then_some(build), whole.then_some(offers.as_slice()))
+}
+
 async fn run(
     socket: &mut WebSocket,
     shared: &Shared,
     link: &mut Link,
 ) -> Result<Infallible, Closed> {
     let offer = Capability::new(CONNECT);
-    let offers = vec![
-        offer.clone(),
-        Capability::new(SETTINGS),
-        Capability::new(chats::upload::UPLOAD),
-    ];
-    let greeted = greet(socket, shared, offers, &offer);
-    let hello = timeout(shared.sockets.hello_within, greeted)
+    let mut offered = offers();
+    // A core uploads its chats' events without offering it back.
+    offered.push(Capability::new(chats::upload::UPLOAD));
+    let heard = hear(socket, shared, offered, &offer);
+    let (hello, welcome) = timeout(shared.sockets.hello_within, heard)
         .await
         .map_err(|_| Closed)??;
     // It may have been unpaired since it was let in, before it could hear of it.
     link.paired(shared).await?;
     link.connected = true;
     link.log.info("machine connected", &[]);
+    let (build, offered) = kept(&hello);
+    if let Err(fault) = shared.db.saw_core(&link.machine.id, build, offered).await {
+        // The machines list shows it as it last was; the connection goes on.
+        link.log
+            .warn("core build not kept", &[("err", Field::error(&fault))]);
+    }
     let connected = Connected {
         machine: link.machine.id.clone(),
         owner: link.machine.owner.clone(),
     };
     let mut attached = shared.links.open(connected, hello.capabilities);
+    // Welcomed only once attached, so whatever a welcomed core is asked reaches it.
+    reply(socket, shared, welcome.id, welcome.answer).await?;
     let mut pings = Pings::new(shared.sockets.ping_every);
     loop {
         tokio::select! {
@@ -151,10 +183,9 @@ async fn run(
 async fn hand_off(shared: &Shared, machine: &MachineId, envelope: Envelope) {
     if let Message::Chat(update) = envelope.message {
         chats::upload::store(shared, machine, update).await;
-    } else if matches!(
-        envelope.message,
-        Message::MachineSettingsAnswer(_) | Message::Error(_)
-    ) {
+    } else if let Message::Terminal(update) = envelope.message {
+        terminals::delivered(shared, machine, update);
+    } else if relay::takes(&envelope.message) {
         // An error the relay doesn't claim is for no other feature yet.
         let _claimed = shared.relay.answered(machine, envelope);
     }
@@ -168,14 +199,14 @@ mod tests {
     use futures_util::SinkExt;
     use tokio::time::timeout;
     use tokio_tungstenite::tungstenite::Message as Wire;
-    use weacon_protocol::{AccountId, ChatEntry, ChatUpdate, Message, Welcome};
+    use weacon_protocol::{AccountId, ChatEntry, ChatUpdate, Message, PROTOCOL, Welcome};
 
     use super::*;
     use crate::db::test_support::{NOW, id, make, said};
     use crate::test_support::socket::{
         Socket, ends, frame, next, next_envelope, open, pongs, say, upgrade_status,
     };
-    use crate::test_support::{Fixture, PATIENCE, Paired, ask, pair_machine, run};
+    use crate::test_support::{Fixture, Paired, ask, pair_machine, run};
 
     const CONNECT_PATH: &str = "/api/machines/connect";
 
@@ -188,14 +219,70 @@ mod tests {
         let welcome = next(&mut client).await;
         assert!(
             matches!(&welcome, Message::Welcome(Welcome { capabilities, .. })
-            if *capabilities == [
-                Capability::new(CONNECT),
-                Capability::new(SETTINGS),
-                Capability::new(chats::upload::UPLOAD),
-            ]),
+                if *capabilities == [
+                    CONNECT,
+                    SETTINGS,
+                    DIFF,
+                    WORKTREE,
+                    SESSIONS,
+                    SYMBOLS,
+                    code!("chat.serve"),
+                    code!("chat.upload"),
+                ].map(Capability::new)),
             "{welcome:?}"
         );
         (paired, client)
+    }
+
+    #[test]
+    fn only_a_plain_build_and_every_offer_up_to_the_most_kept_are_kept() {
+        let hello = |version: &str, offered: Vec<String>| Hello {
+            protocol: PROTOCOL,
+            app: App {
+                name: "weacon-core".to_owned(),
+                version: version.to_owned(),
+                commit: "abc".to_owned(),
+            },
+            capabilities: serde_json::from_value(serde_json::json!(offered)).unwrap(),
+        };
+        let named = |count: usize| (0..count).map(|n| format!("future.thing{n}")).collect();
+        let most = hello("1.2.3", named(MOST_KEPT_OFFERS));
+        let (build, offers) = kept(&most);
+        assert_eq!(build, Some(&most.app));
+        assert_eq!(offers, Some(most.capabilities.as_slice()));
+        let more = hello("1.2.3", named(MOST_KEPT_OFFERS + 1));
+        assert_eq!(kept(&more), (Some(&more.app), None));
+        for version in ["1.2.3\u{202e}", "1.2.3\n", &"9".repeat(65), ""] {
+            assert_eq!(
+                kept(&hello(version, Vec::new())),
+                (None, Some(&[][..])),
+                "{version:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn the_machines_list_shows_a_cores_build_and_what_it_doesnt_offer() {
+        let fixture = Fixture::new().await;
+        let server = fixture.run().await;
+        // Welcomed once its build is kept.
+        let (paired, _client) = connected(server.address, &fixture).await;
+
+        let (_, list) = ask(server.address, "GET /api/machines", &paired.proof, "").await;
+
+        let machine = &list["machines"][0];
+        let build = weacon_appkit::build(&crate::test_support::VERSION);
+        assert_eq!(machine["core"]["version"], build.version.as_str());
+        assert_eq!(machine["core"]["commit"], build.commit.as_str());
+        let missing = [
+            "machine.settings",
+            "diff.view",
+            "worktree.manage",
+            "sessions.read",
+            "symbols.search",
+            "chat.serve",
+        ];
+        assert_eq!(machine["missing"], serde_json::json!(missing));
     }
 
     #[tokio::test]
@@ -276,13 +363,32 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_welcomed_core_is_reachable_at_once() {
+        let fixture = Fixture::new().await;
+        let server = fixture.run().await;
+        let paired = pair_machine(&fixture, server.address).await;
+        let mut core = open(server.address, CONNECT_PATH, &paired.token)
+            .await
+            .unwrap();
+        say(&mut core, &["machine.connect", "machine.settings"]).await;
+        assert!(matches!(next(&mut core).await, Message::Welcome(_)));
+
+        let asked = Envelope {
+            id: 9,
+            message: refusal(code!("machine.test")),
+        };
+        let settings = Capability::new(SETTINGS);
+        let sent = (fixture.shared.links).send(&paired.machine_id(), &settings, asked.clone());
+
+        assert_eq!(sent, Ok(()));
+        assert_eq!(next_envelope(&mut core).await, asked);
+    }
+
+    #[tokio::test]
     async fn a_machine_that_connects_again_ends_its_older_connection() {
         let fixture = Fixture::new().await;
         let server = fixture.run().await;
-        let mut opened = fixture.shared.links.connected();
         let (paired, mut older) = connected(server.address, &fixture).await;
-        // Its welcome comes before it's attached; wait until it is.
-        timeout(PATIENCE, opened.recv()).await.unwrap().unwrap();
         let mut newer = open(server.address, CONNECT_PATH, &paired.token)
             .await
             .unwrap();
@@ -332,7 +438,7 @@ mod tests {
 
         say(&mut client, &["machine.connect"]).await;
 
-        assert!(matches!(next(&mut client).await, Message::Welcome(_)));
+        // It isn't welcomed, so nothing it could be asked is relayed to it.
         assert_eq!(next(&mut client).await, refusal(code!("machine.unpaired")));
         assert!(ends(&mut client).await);
     }

@@ -13,11 +13,12 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use weacon_agents::{Launch, SpawnPolicy};
 use weacon_observability::{Fault, Logger};
-use weacon_protocol::{App, ChatId, WorkspaceId, code};
+use weacon_protocol::{App, ChatId, RepoId, WorkspaceId, code};
 
-pub(crate) use engine::Chats;
+pub(crate) use engine::{Chats, WeakChats};
 use engine::{Engine, Host, RunAs};
 
+use crate::git;
 use crate::integrations::Plugin;
 use crate::mcp::grants::Granted;
 use crate::mcp::{self, Mcp};
@@ -71,6 +72,12 @@ fn launch(
 ) -> Result<Granted, Fault> {
     let launch = prepared(roots, places, run_as)?;
     workspaces::require_sign_in(&launch)?;
+    chat_dir(
+        roots,
+        places.work_root.as_deref(),
+        &run_as.key,
+        run_as.repo.as_ref(),
+    )?;
     let (launch, revoke) = mcp::grant(places.mcp.as_ref(), launch, run_as)?;
     let agent = launch.start(policy, app, run_as.run.clone(), run_as.session.as_ref())?;
     Ok(Granted {
@@ -79,9 +86,10 @@ fn launch(
     })
 }
 
-/// `run_as`'s agent in its chat's folder, given the core's plugin.
+/// `run_as`'s agent in its chat's folder, given the core's plugin; the folder isn't made yet.
 fn prepared(roots: &Workspaces, places: &Places, run_as: &RunAs) -> Result<Launch, Fault> {
-    let cwd = work_dir(places.work_root.as_deref(), &run_as.key)?;
+    let work_root = places.work_root.as_deref().ok_or_else(folder_failed)?;
+    let cwd = chat_folder(work_root, &run_as.key.workspace, &run_as.key.chat);
     let mut launch = roots.launch(&run_as.key.workspace, run_as.agent, cwd)?;
     launch.plugin = places.plugin.as_ref().and_then(Plugin::folder);
     Ok(launch)
@@ -92,17 +100,39 @@ pub(crate) fn file_stem(chat: &ChatId) -> String {
     crate::names::case_safe_name("c-", chat.as_str())
 }
 
+/// Makes the folder `key`'s agent works in under `work_root`: its worktree of `repo`, the
+/// repository its first prompt named, if it named one.
+pub(crate) fn chat_dir(
+    roots: &Workspaces,
+    work_root: Option<&Path>,
+    key: &ChatKey,
+    repo: Option<&RepoId>,
+) -> Result<PathBuf, Fault> {
+    if let Some(repo) = repo
+        && let Some(work_root) = work_root
+    {
+        git::launch::chat_tree(roots, work_root, key, repo)
+    } else {
+        work_dir(work_root, key)
+    }
+}
+
 // A chat's agent works in a folder made for it under the work folder, out of the core's state.
-pub(crate) fn work_dir(work_root: Option<&Path>, key: &ChatKey) -> Result<PathBuf, Fault> {
-    let failed = || {
-        Fault::new(
-            code!("chat.folder_failed"),
-            "The chat's working folder couldn't be created",
-        )
-    };
-    let dir = chat_folder(work_root.ok_or_else(failed)?, &key.workspace, &key.chat);
-    platform::private_dir(&dir).map_err(|error| failed().because(error))?;
+fn work_dir(work_root: Option<&Path>, key: &ChatKey) -> Result<PathBuf, Fault> {
+    let dir = chat_folder(
+        work_root.ok_or_else(folder_failed)?,
+        &key.workspace,
+        &key.chat,
+    );
+    platform::private_dir(&dir).map_err(|error| folder_failed().because(error))?;
     Ok(dir)
+}
+
+fn folder_failed() -> Fault {
+    Fault::new(
+        code!("chat.folder_failed"),
+        "The chat's working folder couldn't be created",
+    )
 }
 
 /// The folder a chat's agents work in under `work_root`.
@@ -123,7 +153,7 @@ mod tests {
     use weacon_protocol::{AgentKind, ChatEvent, ChatQueryKind, Message, Outcome, Receipt};
     use weacon_testing::{TempDir, recording_logger};
 
-    use super::test_support::{chat, client, key, prompt, query, soon, workspace};
+    use super::test_support::{chat, client, key, prompt, query, someone, soon, workspace};
     use super::*;
     use crate::test_support::VERSION;
 
@@ -144,6 +174,30 @@ mod tests {
             let blocked = work_dir(root, &ChatKey::new(&workspace(), &chat("x"))).unwrap_err();
             assert_eq!(blocked.code().as_str(), "chat.folder_failed");
         }
+    }
+
+    #[test]
+    fn a_chat_that_named_a_repository_gets_it_from_the_registry() {
+        let dir = TempDir::new().unwrap();
+        let workspaces = Workspaces::new(&dir.join("state"), None);
+        let places = Places {
+            work_root: Some(dir.join("Weacon")),
+            ..Places::default()
+        };
+        let run_as = RunAs {
+            key: ChatKey::new(&workspace(), &chat("c-1")),
+            agent: AgentKind::Claude,
+            run: "run-1".parse().unwrap(),
+            session: None,
+            repo: Some("site".parse().unwrap()),
+        };
+
+        let repo = run_as.repo.as_ref();
+        let error =
+            chat_dir(&workspaces, places.work_root.as_deref(), &run_as.key, repo).unwrap_err();
+
+        assert_eq!(error.code().as_str(), "repo.unknown");
+        assert!(!dir.join("Weacon").exists());
     }
 
     #[test]
@@ -192,7 +246,7 @@ mod tests {
         }
         let app = weacon_appkit::build(&VERSION);
         let (log, _records) = recording_logger();
-        let (mcp, _server) = mcp::start(&app, &log).unwrap();
+        let (mcp, _server) = mcp::start(&app, &log, mcp::Maps::off()).unwrap();
         let places = |bin: &str| Places {
             path: Some(dir.join(bin).into_os_string()),
             work_root: Some(dir.join("Weacon")),
@@ -204,6 +258,7 @@ mod tests {
             agent: AgentKind::Claude,
             run: weacon_protocol::RunId::try_from("run-1".to_owned()).unwrap(),
             session: None,
+            repo: None,
         };
         let run = |bin: &str| {
             let places = places(bin);
@@ -241,6 +296,7 @@ mod tests {
             agent: AgentKind::Claude,
             run: weacon_protocol::RunId::try_from("run-1".to_owned()).unwrap(),
             session: None,
+            repo: None,
         };
 
         let launch = prepared(&roots, &places, &run_as).unwrap();
@@ -260,7 +316,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_daemons_engine_starts_agents_in_the_chats_folder_or_fails_the_prompt() {
+    async fn an_agent_that_cant_start_fails_the_prompt_and_makes_no_folder() {
         let dir = TempDir::new().unwrap();
         let app = weacon_appkit::build(&VERSION);
         let (log, _records) = recording_logger();
@@ -270,23 +326,23 @@ mod tests {
             mcp: None,
             plugin: None,
         };
-        let (chats, engine) = start(&dir, places, app, SpawnPolicy::default(), log).unwrap();
+        let state = dir.join("state");
+        let (chats, engine) = start(&state, places, app, SpawnPolicy::default(), log).unwrap();
         tokio::spawn(engine.serve());
-        // A file where the chat's working folder would go: its agent can't be started.
-        let work = dir.join("Weacon/w-w-1");
-        std::fs::create_dir_all(&work).unwrap();
-        std::fs::write(work.join("c-c-1"), b"").unwrap();
-
+        // No agent on the path: checked before the chat's folder is made, so none is.
         let (watcher, mut pushes) = client(16);
         let subscribe = query("c-1", ChatQueryKind::Subscribe { after: 0 });
         chats.query(subscribe, &watcher).await.unwrap();
-        chats.command(prompt("r-1", "Hi")).await.unwrap();
+        chats
+            .command(prompt("r-1", "Hi"), &someone())
+            .await
+            .unwrap();
 
         let failed = ChatEvent::Receipt {
             receipt: Receipt {
                 request: prompt("r-1", "Hi").request,
                 outcome: Outcome::Failed {
-                    code: code!("chat.folder_failed"),
+                    code: code!("agent.not_installed"),
                 },
             },
         };
@@ -297,7 +353,8 @@ mod tests {
             last = Some(update.entry.event);
         }
         assert_eq!(last, Some(failed));
-        let journal = Runs::load(&dir).unwrap();
+        assert!(!dir.join("Weacon").exists());
+        let journal = Runs::load(&state).unwrap();
         let record = journal.of(&key()).unwrap();
         assert!(record.active_at > 1_700_000_000);
     }

@@ -169,11 +169,19 @@ test("machines are listed, looked up by code, confirmed and unpaired", async () 
 });
 
 test("a machine whose id, key or date isn't one is a malformed answer, and a newer system is kept", async () => {
-  const bad = [{ ...MACHINE, id: "../x" }, { ...MACHINE, key: "AB".repeat(32) }, { ...MACHINE, paired_at: "today" }];
+  const bad = [
+    { ...MACHINE, id: "../x" },
+    { ...MACHINE, key: "AB".repeat(32) },
+    { ...MACHINE, paired_at: "today" },
+    { ...MACHINE, missing: "symbols.search" },
+    { ...MACHINE, missing: [7] },
+    { ...MACHINE, connected: "yes" },
+  ];
   const { api } = serve(
     ...bad.map((machine) => ({ status: 200, body: { machines: [machine] } })),
     { status: 200, body: { ...PENDING, key: "short" } },
     { status: 200, body: { machines: [{ ...MACHINE, os: "plan9" }] } },
+    { status: 200, body: { machines: [{ ...MACHINE, missing: ["symbols.search"], connected: true }] } },
     { status: 404, body: { code: "pairing.not_found", retryable: false } },
   );
 
@@ -182,6 +190,7 @@ test("a machine whose id, key or date isn't one is a malformed answer, and a new
   }
   assert.deepEqual(await api.lookUpPairing("abcd"), { ok: false, code: MALFORMED });
   assert.deepEqual(await api.machines(), { ok: true, value: { machines: [{ ...MACHINE, os: "plan9" }] } });
+  assert.deepEqual(await api.machines(), { ok: true, value: { machines: [{ ...MACHINE, missing: ["symbols.search"], connected: true }] } });
   assert.deepEqual(await api.confirmPairing({ pairing: "p-1", code: "abcd" }), { ok: false, code: "pairing.not_found" });
 });
 
@@ -189,6 +198,8 @@ test("a workspace's chats are listed, and an answer of the wrong shape is refuse
   const chat = { id: "c-1", title: "Merge the lists", owner: "m-1", machine: "laptop", state: "open", updated_at: 1_800_000_000 };
   const { api, sent } = serve(
     { status: 200, body: { chats: [chat] } },
+    { status: 200, body: { chats: [{ ...chat, run: "waiting" }] } },
+    { status: 200, body: { chats: [{ ...chat, run: 7 }] } },
     { status: 200, body: { chats: [{ ...chat, id: "a/b" }] } },
     { status: 200, body: { chats: [{ ...chat, updated_at: "now" }] } },
     { status: 200, body: { chats: [{ ...chat, machine: undefined }] } },
@@ -197,7 +208,8 @@ test("a workspace's chats are listed, and an answer of the wrong shape is refuse
   );
 
   assert.deepEqual(await api.chats("ws-1"), { ok: true, value: { chats: [chat] } });
-  for (let left = 4; left > 0; left -= 1) {
+  assert.deepEqual(await api.chats("ws-1"), { ok: true, value: { chats: [{ ...chat, run: "waiting" }] } });
+  for (let left = 5; left > 0; left -= 1) {
     assert.deepEqual(await api.chats("ws-1"), { ok: false, code: MALFORMED });
   }
   assert.deepEqual(await api.chats("ws-1"), { ok: false, code: "workspace.not_member" });
@@ -210,4 +222,52 @@ test("a machine already unpaired elsewhere counts as unpaired, and other failure
   assert.deepEqual(await api.unpair("mc-1"), { ok: true, value: undefined });
   assert.deepEqual(await api.unpair("mc-1"), { ok: false, code: "machine.busy" });
   assert.deepEqual(await api.unpair("mc-1"), { ok: false, code: UNREACHABLE });
+});
+
+test("a search posts its text and takes hits it knows, and newer kinds, but nothing malformed", async () => {
+  const snippet = { text: "the plan", marks: [{ start: 4, end: 8 }] };
+  const hits = [
+    { kind: "task", task: "t-1", title: "Plan", snippet },
+    { kind: "chat", chat: "c-1", title: "Fix the build", seq: 3, snippet },
+    { kind: "symbol", name: "a::b" },
+  ];
+  const { api, sent } = serve(
+    { status: 200, body: { hits } },
+    { status: 200, body: { hits: [{ kind: "chat", chat: "c 1", title: "Bad id", snippet }] } },
+    { status: 200, body: { hits: [{ kind: "doc", doc: "d-1", title: "Plan", snippet: { text: "x", marks: [{ start: "0" }] } }] } },
+    { status: 200, body: { hits: [{ kind: "task", task: { toString: null }, title: "Plan", snippet }] } },
+    { status: 200, body: { hits: [{ kind: "chat", chat: "c-1", title: "Plan", seq: { toString: null }, snippet }] } },
+    { status: 200, body: { hits: [{ kind: "chat", chat: "c-1", title: "Plan", seq: -1, snippet }] } },
+  );
+
+  assert.deepEqual(await api.search("w-1", { text: "plan" }), { ok: true, value: { hits } });
+  assert.deepEqual(await api.search("w-1", { text: "bad" }), { ok: false, code: MALFORMED });
+  for (const text of ["worse", "task", "seq", "negative"]) {
+    assert.deepEqual(await api.search("w-1", { text }), { ok: false, code: MALFORMED });
+  }
+  assert.deepEqual(sent[0], { path: "/api/workspaces/w-1/search", method: "POST", headers: { "content-type": "application/json" }, body: '{"text":"plan"}' });
+});
+
+test("a decision's outcome is taken only with the fields its kind needs", async () => {
+  const conflict = { outcome: "doc_conflict", title: false, anchors: true, hunks: [{ kind: "agreed", text: "a\n" }, { kind: "conflict", base: "b", current: "c", proposed: "d" }] };
+  const { api, sent } = serve(
+    { status: 200, body: conflict },
+    { status: 200, body: { outcome: "doc_conflict" } },
+    { status: 200, body: { ...conflict, hunks: [{ kind: "conflict", base: "b" }] } },
+    { status: 200, body: { outcome: "accepted" } },
+    { status: 200, body: { outcome: "task_conflict", edits: [{ kind: "move" }] } },
+    { status: 200, body: { outcome: "task_conflict", edits: [7] } },
+    { status: 200, body: { outcome: "queued" } },
+    { status: 409, body: { code: "proposal.closed", retryable: false } },
+  );
+
+  assert.deepEqual(await api.decide("w-1", "p-1", "accept"), { ok: true, value: conflict });
+  for (let at = 0; at < 3; at++) {
+    assert.deepEqual(await api.decide("w-1", "p-1", "accept"), { ok: false, code: MALFORMED });
+  }
+  assert.equal((await api.decide("w-1", "p-1", "accept")).ok, true);
+  assert.deepEqual(await api.decide("w-1", "p-1", "accept"), { ok: false, code: MALFORMED });
+  assert.deepEqual(await api.decide("w-1", "p-1", "accept"), { ok: true, value: { outcome: "queued" } });
+  assert.deepEqual(await api.decide("w-1", "p-1", "reject"), { ok: false, code: "proposal.closed" });
+  assert.deepEqual(sent.at(-1), { path: "/api/workspaces/w-1/proposals/p-1", method: "POST", headers: { "content-type": "application/json" }, body: '{"verdict":"reject"}' });
 });

@@ -5,7 +5,7 @@ use std::path::Path;
 
 use sha2::{Digest, Sha256};
 use sqlx::{QueryBuilder, Sqlite};
-use weacon_codemap::{Entry, Facts};
+use weacon_codemap::{Entry, FACTS_VERSION, Facts};
 use weacon_observability::Fault;
 use weacon_protocol::Sha256 as Sha256Hex;
 
@@ -54,11 +54,21 @@ pub(crate) struct Stored {
     pub(crate) blob: Option<String>,
 }
 
+/// What a search found: an item or a document, by its file and the line it begins at.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Hit {
     pub(crate) path: String,
+    pub(crate) line: u32,
     pub(crate) kind: String,
     pub(crate) name: String,
+}
+
+/// What a search looks through.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Looking {
+    Everything,
+    /// Items alone, no documents.
+    Items,
 }
 
 impl Workspace {
@@ -186,7 +196,9 @@ impl Map {
             query
                 .push_bind(workspace)
                 .push(" AND repo = ")
-                .push_bind(repo);
+                .push_bind(repo)
+                .push(" AND version = ")
+                .push_bind(FACTS_VERSION);
             query.push(" AND (path, blob) IN (");
             let mut pairs = query.separated(", ");
             for (path, blob) in batch {
@@ -269,15 +281,17 @@ impl Map {
         &self,
         layer: &str,
         words: &str,
+        looking: Looking,
         limit: u32,
     ) -> Result<Vec<Hit>, Fault> {
         let Some(query) = match_query(words) else {
             return Ok(Vec::new());
         };
         let (workspace, repo) = self.keys();
-        let rows: Vec<(String, String, String)> = sqlx::query_as(
-            "SELECT path, kind, name FROM map_search \
+        let rows: Vec<(String, i64, String, String)> = sqlx::query_as(
+            "SELECT path, line, kind, name FROM map_search \
              WHERE map_search MATCH ?1 AND workspace_id = ?2 AND repo = ?3 \
+             AND (?7 OR kind != 'doc') \
              AND (layer = ?4 OR (layer = ?6 AND path NOT IN (SELECT path FROM map_files \
                  WHERE workspace_id = ?2 AND repo = ?3 AND layer = ?4))) \
              AND EXISTS (SELECT 1 FROM map_layers AS overlay JOIN map_layers AS base \
@@ -292,12 +306,18 @@ impl Map {
         .bind(layer)
         .bind(limit)
         .bind(BASE)
+        .bind(looking == Looking::Everything)
         .fetch_all(&self.workspace.db.pool)
         .await
         .map_err(failed)?;
         Ok(rows
             .into_iter()
-            .map(|(path, kind, name)| Hit { path, kind, name })
+            .map(|(path, line, kind, name)| Hit {
+                path,
+                line: u32::try_from(line).unwrap_or(u32::MAX),
+                kind,
+                name,
+            })
             .collect())
     }
 
@@ -310,7 +330,23 @@ impl Map {
             .unwrap();
     }
 
+    /// Makes every stored facts row one an older reader kept.
+    #[cfg(test)]
+    pub(crate) async fn age_facts(&self) {
+        sqlx::query("UPDATE map_facts SET version = version - 1")
+            .execute(&self.workspace.db.pool)
+            .await
+            .unwrap();
+    }
+
     /// Removes this repository's map, every layer of it.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "removing a repository forgets its map in its own change"
+        )
+    )]
     pub(crate) async fn forget(&self) -> Result<(), Fault> {
         let (workspace, repo) = self.keys();
         let mut transaction = self.workspace.db.pool.begin().await.map_err(failed)?;
@@ -376,6 +412,7 @@ mod tests {
             file: path.to_owned(),
             kind: "fn".to_owned(),
             name: name.to_owned(),
+            line: 3,
             body: body.to_owned(),
         }
     }
@@ -439,26 +476,46 @@ mod tests {
         .await
         .unwrap();
 
-        let names = |hits: Vec<Hit>| hits.into_iter().map(|hit| hit.name).collect::<Vec<_>>();
-        let mut found = names(map.search("wt:chat", "pag", 10).await.unwrap());
-        found.sort();
-        assert_eq!(found, ["a::paint", "a::render"]);
-        let mut found = names(map.search(BASE, "pages", 10).await.unwrap());
-        found.sort();
-        assert_eq!(found, ["a::render", "a::serve"]);
-        assert_eq!(
-            names(map.search(BASE, "serves pages", 10).await.unwrap()),
-            ["a::serve"]
-        );
-        assert_eq!(
-            names(map.search(BASE, "\" OR body:*", 10).await.unwrap()),
-            Vec::<String>::new()
-        );
-        assert_eq!(
-            names(map.search(BASE, "  ", 10).await.unwrap()),
-            Vec::<String>::new()
-        );
-        assert_eq!(map.search(BASE, "pages", 1).await.unwrap().len(), 1);
+        let names = async |layer: &str, words: &str| -> Vec<String> {
+            let found = map.search(layer, words, Looking::Everything, 10).await;
+            let mut names: Vec<String> = found.unwrap().into_iter().map(|hit| hit.name).collect();
+            names.sort();
+            names
+        };
+        assert_eq!(names("wt:chat", "pag").await, ["a::paint", "a::render"]);
+        assert_eq!(names(BASE, "pages").await, ["a::render", "a::serve"]);
+        assert_eq!(names(BASE, "serves pages").await, ["a::serve"]);
+        assert!(names(BASE, "\" OR body:*").await.is_empty());
+        assert!(names(BASE, "  ").await.is_empty());
+        let one = map.search(BASE, "pages", Looking::Everything, 1).await;
+        assert_eq!(one.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_hit_says_where_it_begins_and_items_alone_leave_documents_out() {
+        let dir = TempDir::new().unwrap();
+        let map = map(&dir, "one").await;
+        let doc = Entry {
+            kind: "doc".to_owned(),
+            line: 1,
+            ..entry("docs/a.md", "docs/a.md", "runs pages")
+        };
+        let entries = [entry("a.rs", "a::run", ""), doc];
+        map.replace(&layer(BASE, vec![]), &[], &entries)
+            .await
+            .unwrap();
+
+        let everything = map.search(BASE, "run", Looking::Everything, 10).await;
+        let items = map.search(BASE, "run", Looking::Items, 10).await;
+
+        assert_eq!(everything.unwrap().len(), 2);
+        let run = Hit {
+            path: "a.rs".to_owned(),
+            line: 3,
+            kind: "fn".to_owned(),
+            name: "a::run".to_owned(),
+        };
+        assert_eq!(items.unwrap(), [run]);
     }
 
     #[tokio::test]
@@ -480,12 +537,18 @@ mod tests {
         let wanted = [("src/lib.rs".to_owned(), "b1".to_owned())];
         assert!(two.facts(&wanted).await.unwrap().is_empty());
         assert!(
-            two.search("wt:mine", "secret", 10)
+            two.search("wt:mine", "secret", Looking::Everything, 10)
                 .await
                 .unwrap()
                 .is_empty()
         );
-        assert_eq!(one.search("wt:mine", "secret", 10).await.unwrap().len(), 1);
+        assert_eq!(
+            one.search("wt:mine", "secret", Looking::Everything, 10)
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
 
         two.forget().await.unwrap();
         assert!(one.layer("wt:mine").await.unwrap().is_some());
@@ -493,7 +556,7 @@ mod tests {
         assert_eq!(one.layer("wt:mine").await.unwrap(), None);
         assert!(one.facts(&wanted).await.unwrap().is_empty());
         assert!(
-            one.search("wt:mine", "secret", 10)
+            one.search("wt:mine", "secret", Looking::Everything, 10)
                 .await
                 .unwrap()
                 .is_empty()
@@ -621,7 +684,13 @@ mod tests {
         map.replace(&worktree, &[], &[entry("src/new.rs", "a::runner", "y")])
             .await
             .unwrap();
-        assert_eq!(map.search("wt:mine", "run", 10).await.unwrap().len(), 2);
+        assert_eq!(
+            map.search("wt:mine", "run", Looking::Everything, 10)
+                .await
+                .unwrap()
+                .len(),
+            2
+        );
 
         map.replace(
             &at(BASE, "b", vec![]),
@@ -630,8 +699,19 @@ mod tests {
         )
         .await
         .unwrap();
-        assert!(map.search("wt:mine", "run", 10).await.unwrap().is_empty());
-        assert_eq!(map.search(BASE, "run", 10).await.unwrap().len(), 1);
+        assert!(
+            map.search("wt:mine", "run", Looking::Everything, 10)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(
+            map.search(BASE, "run", Looking::Everything, 10)
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
     }
 
     #[test]

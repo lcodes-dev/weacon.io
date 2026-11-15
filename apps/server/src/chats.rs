@@ -10,6 +10,7 @@ mod test_support;
 pub(crate) mod upload;
 mod watch;
 
+pub(crate) use link::SERVE;
 pub(crate) use reconnect::follow_machines;
 pub(crate) use watch::Watch;
 

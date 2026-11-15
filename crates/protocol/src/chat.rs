@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use crate::token::token_id;
 use crate::{
     AgentKind, Asker, MachineId, MachineName, MemberId, PermissionAnswer, Receipt, RepoId,
-    RequestId, RunStatus, RunUpdate, WorkspaceId,
+    RequestId, RunState, RunStatus, RunUpdate, WorkspaceId,
 };
 
 token_id!(
@@ -57,7 +57,7 @@ pub enum ChatAction {
     /// Ends this connection's hold, under `chat.hold`; queued prompts then go on.
     Release,
     /// An action this build doesn't know, from a newer peer; only ever received.
-    #[serde(other)]
+    #[serde(other, skip_serializing)]
     #[schemars(skip)]
     Newer,
 }
@@ -108,7 +108,7 @@ pub enum ChatEvent {
         text: String,
     },
     /// An event this build doesn't know, from a newer peer; only ever received.
-    #[serde(other)]
+    #[serde(other, skip_serializing)]
     #[schemars(skip)]
     Newer,
 }
@@ -137,7 +137,7 @@ pub enum ChatQueryKind {
         limit: u32,
     },
     /// A query this build doesn't know, from a newer peer; only ever received.
-    #[serde(other)]
+    #[serde(other, skip_serializing)]
     #[schemars(skip)]
     Newer,
 }
@@ -170,7 +170,7 @@ pub enum ChatAnswerKind {
         events: Vec<ChatEntry>,
     },
     /// An answer this build doesn't know, from a newer peer; only ever received.
-    #[serde(other)]
+    #[serde(other, skip_serializing)]
     #[schemars(skip)]
     Newer,
 }
@@ -185,6 +185,10 @@ pub struct ChatSummary {
     pub machine: MachineName,
     pub state: ChatState,
     pub updated_at: i64,
+    /// What its latest run is doing; left out when it has had none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "RunState")]
+    pub run: Option<RunState>,
 }
 
 /// What can still happen to a chat.
@@ -198,7 +202,7 @@ pub enum ChatState {
     /// Its machine was unpaired, or no longer has its log: it can be read, never prompted.
     Detached,
     /// A state this build doesn't know, from a newer peer; only ever received.
-    #[serde(other)]
+    #[serde(other, skip_serializing)]
     #[schemars(skip)]
     Newer,
 }
@@ -208,46 +212,6 @@ pub enum ChatState {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ChatList {
     pub chats: Vec<ChatSummary>,
-}
-
-impl ChatAction {
-    pub(crate) const fn is_newer(&self) -> bool {
-        match self {
-            Self::Prompt { agent, .. } => matches!(agent, Some(AgentKind::Newer)),
-            Self::Permission { .. } | Self::Interrupt | Self::Hold | Self::Release => false,
-            Self::Newer => true,
-        }
-    }
-}
-
-impl ChatEvent {
-    pub(crate) const fn is_newer(&self) -> bool {
-        match self {
-            Self::Prompt { agent, .. } => matches!(agent, Some(AgentKind::Newer)),
-            Self::OutsidePrompt { .. } => false,
-            Self::Receipt { receipt } => receipt.outcome.is_newer(),
-            Self::Run { update } => update.event.is_newer(),
-            Self::RunStatus { status } => status.is_newer(),
-            Self::Newer => true,
-        }
-    }
-}
-
-impl ChatAnswerKind {
-    pub(crate) fn is_newer(&self) -> bool {
-        match self {
-            Self::EventsLost => false,
-            Self::Snapshot { runs, events, .. } => {
-                runs.iter().any(RunStatus::is_newer) || any_newer(events)
-            }
-            Self::Window { events } => any_newer(events),
-            Self::Newer => true,
-        }
-    }
-}
-
-pub(crate) fn any_newer(entries: &[ChatEntry]) -> bool {
-    entries.iter().any(|entry| entry.event.is_newer())
 }
 
 #[cfg(test)]
@@ -578,11 +542,12 @@ mod tests {
                 machine: "Ada's laptop".parse().unwrap(),
                 state: ChatState::Full,
                 updated_at: 1_700_000_000,
+                run: Some(RunState::Waiting),
             }],
         };
         let wire = json!({ "chats": [{
             "id": "c-1", "title": "Fix the build", "owner": "m-1", "machine": "Ada's laptop",
-            "state": "full", "updated_at": 1_700_000_000,
+            "state": "full", "updated_at": 1_700_000_000, "run": "waiting",
         }] });
 
         assert_eq!(serde_json::to_value(&list).unwrap(), wire);
@@ -597,6 +562,14 @@ mod tests {
         assert_eq!(
             serde_json::from_value::<ChatState>(json!("archived")).unwrap(),
             ChatState::Newer
+        );
+        let mut never_ran = list.chats[0].clone();
+        never_ran.run = None;
+        let wire = serde_json::to_value(&never_ran).unwrap();
+        assert!(wire.get("run").is_none(), "{wire}");
+        assert_eq!(
+            serde_json::from_value::<ChatSummary>(wire).unwrap(),
+            never_ran
         );
     }
 }

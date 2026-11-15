@@ -26,7 +26,7 @@ pub(crate) async fn take(
             repo,
             command,
         } => {
-            let owned = shared.db.machines_of(&asker.account).await?;
+            let owned = shared.db.machines_of(&asker.account, &[]).await?;
             let Some(summary) = owned.iter().find(|summary| summary.id == machine) else {
                 return Err(Fault::new(
                     code!("machine.not_found"),

@@ -3,8 +3,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::token::token_id;
 use crate::{
-    AgentKind, Author, DocContent, DocId, MemberId, RequestId, TaskEditBody, TaskId, TaskStatus,
-    WorkspaceId,
+    AgentKind, Author, DocContent, DocId, MemberId, RequestId, TaskEditBody, TaskId, WorkspaceId,
 };
 
 token_id!(
@@ -26,19 +25,6 @@ pub struct ProposalCommand {
     pub action: ProposalAction,
 }
 
-impl ProposalCommand {
-    /// Whether it holds a part this build doesn't know, so it can only have been received.
-    pub(crate) fn is_newer(&self) -> bool {
-        match &self.action {
-            ProposalAction::Propose { agent, change, .. } => {
-                *agent == AgentKind::Newer || change.is_newer()
-            }
-            ProposalAction::Withdraw { .. } => false,
-            ProposalAction::Newer => true,
-        }
-    }
-}
-
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ProposalAction {
@@ -52,7 +38,7 @@ pub enum ProposalAction {
     /// Withdraws one of the same machine's open proposals.
     Withdraw { proposal: ProposalId },
     /// An action this build doesn't know, from a newer peer; only ever received.
-    #[serde(other)]
+    #[serde(other, skip_serializing)]
     #[schemars(skip)]
     Newer,
 }
@@ -78,27 +64,9 @@ pub enum ProposalChange {
     /// A task to do, placed last.
     NewTask { title: String },
     /// A change this build doesn't know, from a newer peer; only ever received.
-    #[serde(other)]
+    #[serde(other, skip_serializing)]
     #[schemars(skip)]
     Newer,
-}
-
-impl ProposalChange {
-    fn is_newer(&self) -> bool {
-        match self {
-            Self::TaskEdit { edits, .. } => edits.iter().any(|edit| {
-                matches!(
-                    edit,
-                    TaskEditBody::Newer
-                        | TaskEditBody::Status {
-                            status: TaskStatus::Newer
-                        }
-                )
-            }),
-            Self::DocEdit { .. } | Self::NewDoc { .. } | Self::NewTask { .. } => false,
-            Self::Newer => true,
-        }
-    }
 }
 
 /// The doc or task a proposal is about; a new one has the id it gets once accepted.
@@ -118,7 +86,7 @@ pub enum ProposalAbout {
         task: TaskId,
     },
     /// A subject this build doesn't know, from a newer peer; only ever received.
-    #[serde(other)]
+    #[serde(other, skip_serializing)]
     #[schemars(skip)]
     Newer,
 }
@@ -140,7 +108,7 @@ pub enum ProposalState {
     Superseded,
     Withdrawn,
     /// A state this build doesn't know, from a newer peer; only ever received.
-    #[serde(other)]
+    #[serde(other, skip_serializing)]
     #[schemars(skip)]
     Newer,
 }
@@ -181,7 +149,7 @@ pub enum ProposalVerdict {
     Accept,
     Reject,
     /// A verdict this build doesn't know, from a newer peer; only ever received.
-    #[serde(other)]
+    #[serde(other, skip_serializing)]
     #[schemars(skip)]
     Newer,
 }
@@ -208,7 +176,7 @@ pub enum ProposalOutcome {
         edits: Vec<TaskEditBody>,
     },
     /// An outcome this build doesn't know, from a newer peer; only ever received.
-    #[serde(other)]
+    #[serde(other, skip_serializing)]
     #[schemars(skip)]
     Newer,
 }
@@ -227,7 +195,7 @@ pub enum MergeHunk {
         proposed: String,
     },
     /// A hunk this build doesn't know, from a newer peer; only ever received.
-    #[serde(other)]
+    #[serde(other, skip_serializing)]
     #[schemars(skip)]
     Newer,
 }
@@ -238,7 +206,7 @@ mod tests {
 
     use super::*;
     use crate::test_support::{envelope, never_sent, request, round_trips, travels, workspace};
-    use crate::{AgentOwner, AgentRef, Envelope, Message};
+    use crate::{AgentOwner, AgentRef, Envelope, Message, TaskStatus};
 
     fn content() -> DocContent {
         DocContent {

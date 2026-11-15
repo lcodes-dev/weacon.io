@@ -97,6 +97,11 @@ impl Links {
         link.to_machine.try_send(envelope).map_err(|_| Offline)
     }
 
+    /// Whether `machine` has a connection open now.
+    pub(crate) fn is_open(&self, machine: &MachineId) -> bool {
+        self.lock().contains_key(machine)
+    }
+
     /// The id for an envelope sent to a machine, unique among those its answers may name for
     /// a long while; never 0, which the server and the core use for messages of their own.
     pub(crate) fn next_id(&self) -> u32 {

@@ -3,13 +3,12 @@
 
 mod deadline;
 pub(crate) mod grants;
+mod maps;
 pub(crate) mod tools;
 
 use std::convert::Infallible;
-use std::io;
 use std::net::{Ipv4Addr, SocketAddr};
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use http_body_util::combinators::BoxBody;
@@ -28,22 +27,34 @@ use rmcp::transport::streamable_http_server::session::local::LocalSessionManager
 use rmcp::transport::streamable_http_server::{StreamableHttpServerConfig, StreamableHttpService};
 use rmcp::{ErrorData, RoleServer, ServerHandler};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tokio::task::{JoinHandle, JoinSet};
 use weacon_observability::{Fault, Field, Logger};
 use weacon_protocol::{McpCall, code};
 
 use deadline::Deadline;
 use grants::{Grant, Grants, Revoke};
+pub(crate) use maps::Maps;
+#[cfg(test)]
+pub(crate) use maps::test_support as maps_support;
 use weacon_agents::{Launch, McpServer};
 use weacon_protocol::App;
 
+use crate::app::WarnOnce;
 use crate::chats::engine::RunAs;
 use crate::daemon::ACCEPT_BACKOFF;
 
-// So local processes, other users' included, can't hold the core's sockets.
-const CONNECTIONS: usize = 64;
-const STALL: Duration = Duration::from_secs(10);
+/// How long a connection may make no progress, and how many may be open at once, so local
+/// processes, other users' included, can't hold the core's sockets.
+#[derive(Clone, Copy, Debug)]
+struct Limits {
+    stall: Duration,
+    connections: usize,
+}
+
+const LIMITS: Limits = Limits {
+    stall: Duration::from_secs(10),
+    connections: 64,
+};
 const MAX_BODY: usize = 64 * 1024;
 
 /// The core's MCP, listening.
@@ -55,14 +66,14 @@ pub(crate) struct Mcp {
 
 type Body = BoxBody<Bytes, Infallible>;
 
-/// Listens on a free port of 127.0.0.1 and serves until the returned task is aborted; must run
-/// inside a tokio runtime.
-pub(crate) fn start(app: &App, log: &Logger) -> Result<(Mcp, Server), Fault> {
-    listen(app, log, STALL)
+/// Listens on a free port of 127.0.0.1 and serves until the returned task is aborted, answering
+/// from `maps` and keeping them current; must run inside a tokio runtime.
+pub(crate) fn start(app: &App, log: &Logger, maps: Maps) -> Result<(Mcp, Server), Fault> {
+    listen(app, log, maps, LIMITS)
 }
 
-/// [`start`], closing connections that make no progress for `stall`.
-fn listen(app: &App, log: &Logger, stall: Duration) -> Result<(Mcp, Server), Fault> {
+/// [`start`], within `limits`.
+fn listen(app: &App, log: &Logger, maps: Maps, limits: Limits) -> Result<(Mcp, Server), Fault> {
     let failed = |error| {
         Fault::new(code!("mcp.start_failed"), "The local MCP couldn't start").because(error)
     };
@@ -72,14 +83,21 @@ fn listen(app: &App, log: &Logger, stall: Duration) -> Result<(Mcp, Server), Fau
     let address = listener.local_addr().map_err(failed)?;
     let grants = Grants::default();
     let log = log.child(&[("component", "mcp".into())]);
+    let (watched, watch_log, watched_grants) = (maps.clone(), log.clone(), grants.clone());
     let handler = Handler {
         version: app.version.clone(),
+        maps,
         log,
     };
     handler
         .log
         .info("mcp started", &[("port", address.port().into())]);
-    let server = tokio::spawn(serve(listener, address, grants.clone(), handler, stall));
+    let serving = serve(listener, address, grants.clone(), handler, limits);
+    // One task, so stopping the server stops the watches too.
+    let server = tokio::spawn(async move {
+        let keep_current = watched.keep_current(&watched_grants, &watch_log);
+        tokio::join!(serving, keep_current);
+    });
     let mcp = Mcp {
         url: format!("http://{address}/mcp"),
         grants,
@@ -132,7 +150,7 @@ async fn serve(
     address: SocketAddr,
     grants: Grants,
     handler: Handler,
-    stall: Duration,
+    limits: Limits,
 ) {
     // Stateless: each request stands alone, so no session outlives its run's token. No origin is
     // allowed, so any request that names one is refused.
@@ -148,72 +166,66 @@ async fn serve(
         config,
     );
     let front = Arc::new(Front {
-        stall,
+        limits,
         grants,
         rmcp,
         log,
+        refusals: Mutex::new(WarnOnce::default()),
     });
     accept(&listener, &front).await;
 }
 
 async fn accept(listener: &TcpListener, front: &Arc<Front>) {
-    let open = Arc::new(Semaphore::new(CONNECTIONS));
     // Owned here, so stopping the server ends its connections too.
     let mut connections = JoinSet::new();
     loop {
+        let room = connections.len() < front.limits.connections;
         tokio::select! {
             Some(_) = connections.join_next() => {}
-            accepted = next(listener, &open) => match accepted {
-                Some((Ok((stream, _)), slot)) => {
-                    connections.spawn(connection(stream, Arc::clone(front), slot));
+            accepted = listener.accept(), if room => match accepted {
+                Ok((stream, _)) => {
+                    connections.spawn(connection(stream, Arc::clone(front)));
                 }
-                Some((Err(error), _)) => {
+                Err(error) => {
                     // Such as too many open files: wait, rather than spin and flood the log.
                     front.log.warn("mcp accept failed", &[("err", Field::error(&error))]);
                     tokio::time::sleep(ACCEPT_BACKOFF).await;
                 }
-                None => return,
             },
         }
     }
 }
 
-/// The next connection once one may open; safe to cancel.
-async fn next(
-    listener: &TcpListener,
-    open: &Arc<Semaphore>,
-) -> Option<(io::Result<(TcpStream, SocketAddr)>, OwnedSemaphorePermit)> {
-    let slot = Arc::clone(open).acquire_owned().await.ok()?;
-    Some((listener.accept().await, slot))
-}
-
-async fn connection(stream: TcpStream, front: Arc<Front>, _slot: OwnedSemaphorePermit) {
-    let warned = Arc::new(AtomicBool::new(false));
+async fn connection(stream: TcpStream, front: Arc<Front>) {
     let service = service_fn(|request| {
-        let (front, warned) = (Arc::clone(&front), Arc::clone(&warned));
-        async move { Ok::<_, Infallible>(front.answer(request, &warned).await) }
+        let front = Arc::clone(&front);
+        async move { Ok::<_, Infallible>(front.answer(request).await) }
     });
     // A client that hangs up mid-request, or never sends one, is no fault of the core's.
     drop(
         http1::Builder::new()
             .timer(TokioTimer::new())
-            .header_read_timeout(front.stall)
-            .serve_connection(TokioIo::new(Deadline::new(stream, front.stall)), service)
+            .header_read_timeout(front.limits.stall)
+            .serve_connection(
+                TokioIo::new(Deadline::new(stream, front.limits.stall)),
+                service,
+            )
             .await,
     );
 }
 
 struct Front {
-    /// How long a connection may go without progress on its request's headers or its answer.
-    stall: Duration,
+    limits: Limits,
     grants: Grants,
     rmcp: StreamableHttpService<Handler, LocalSessionManager>,
     log: Logger,
+    refusals: Mutex<WarnOnce>,
 }
 
 impl Front {
-    /// Answers one request; a connection's refusals are logged only once, so none floods the log.
-    async fn answer(&self, mut request: Request<Incoming>, warned: &AtomicBool) -> Response<Body> {
+    /// Answers one request; only the first refusal since a request was let in is logged, so
+    /// no number of refused connections floods the log.
+    async fn answer(&self, mut request: Request<Incoming>) -> Response<Body> {
         if request.uri().path() != "/mcp" {
             return empty(StatusCode::NOT_FOUND);
         }
@@ -222,21 +234,25 @@ impl Front {
             .get(header::AUTHORIZATION)
             .and_then(|value| value.to_str().ok())
             .and_then(|value| value.strip_prefix("Bearer "));
-        let Some(grant) = token.and_then(|token| self.grants.find(token)) else {
-            let reason = if token.is_some() {
-                "unknown"
-            } else {
-                "missing"
-            };
-            if !warned.swap(true, Ordering::Relaxed) {
-                self.log.warn("mcp refused", &[("reason", reason.into())]);
-            }
+        let missing = || Fault::new(code!("mcp.token_missing"), "The request has no token");
+        let unknown = || Fault::new(code!("mcp.token_unknown"), "The token isn't a live run's");
+        let found = token
+            .ok_or_else(missing)
+            .and_then(|token| self.grants.find(token).ok_or_else(unknown));
+        // Only a flag is guarded, so a poisoned lock still holds a usable one.
+        let grant = self
+            .refusals
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .check(found, &self.log, "mcp refused");
+        let Some(grant) = grant else {
             return empty(StatusCode::UNAUTHORIZED);
         };
         request.extensions_mut().insert(grant);
         // A body that trickles in would hold its connection; tools run after it is read.
         let (parts, body) = request.into_parts();
-        let read = tokio::time::timeout(self.stall, Limited::new(body, MAX_BODY).collect()).await;
+        let read =
+            tokio::time::timeout(self.limits.stall, Limited::new(body, MAX_BODY).collect()).await;
         match read {
             Ok(Ok(body)) => {
                 let request = Request::from_parts(parts, Full::new(body.to_bytes()));
@@ -257,6 +273,7 @@ fn empty(status: StatusCode) -> Response<Body> {
 #[derive(Clone)]
 struct Handler {
     version: String,
+    maps: Maps,
     log: Logger,
 }
 
@@ -283,22 +300,16 @@ impl ServerHandler for Handler {
         let grant = live_grant(&context.extensions)?;
         let call = McpCall::parse(&request.name, request.arguments)
             .map_err(|_| ErrorData::invalid_params("These arguments don't fit the tool", None))?;
-        let tool = match &call {
-            McpCall::Map(_) => "map",
-            McpCall::Symbol(_) => "symbol",
-            McpCall::Flow(_) => "flow",
-            McpCall::Newer => return Err(ErrorData::invalid_params("No such tool", None)),
+        let Some(tool) = call.name() else {
+            return Err(ErrorData::invalid_params("No such tool", None));
         };
-        let Ok(_permit) = grant.calls.try_acquire() else {
+        let Ok(permit) = Arc::clone(&grant.calls).try_acquire_owned() else {
             let busy = ContentBlock::text("Too many calls at once: wait for one to end.");
             return Ok(CallToolResult::error(vec![busy]).into());
         };
         let started = Instant::now();
-        let folder = grant.folder.clone();
         let log = self.log.child(&[("run_id", grant.run.as_str().into())]);
-        let text = tokio::task::spawn_blocking(move || tools::answer_or_none(&call, &folder, &log))
-            .await
-            .map_err(|_| ErrorData::internal_error("The tool failed", None))?;
+        let text = self.maps.answer(&call, &grant, permit, &log).await;
         let millis = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
         let fields: [(&str, Field); 5] = [
             ("workspace_id", grant.workspace.as_str().into()),
@@ -360,11 +371,15 @@ mod tests {
         rpc(ClientRequest::CallToolRequest(CallToolRequest::new(params)))
     }
 
-    async fn post(mcp: &Mcp, headers: &[(&str, &str)], body: &str) -> Reply {
-        let address = mcp
-            .url
+    /// The `host:port` the MCP listens on.
+    fn address(mcp: &Mcp) -> &str {
+        mcp.url
             .trim_start_matches("http://")
-            .trim_end_matches("/mcp");
+            .trim_end_matches("/mcp")
+    }
+
+    async fn post(mcp: &Mcp, headers: &[(&str, &str)], body: &str) -> Reply {
+        let address = address(mcp);
         let mut stream = TcpStream::connect(address).await.unwrap();
         let mut request = format!(
             "POST /mcp HTTP/1.1\r\nContent-Type: application/json\r\n\
@@ -420,17 +435,23 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn each_token_reads_only_its_own_runs_folder() {
+    async fn each_token_reads_only_its_own_runs_registered_repository() {
         let dir = TempDir::new().unwrap();
         let (log, _records) = recording_logger();
-        let (mcp, _server) = start(&weacon_appkit::build(&VERSION), &log).unwrap();
+        let setup = maps::test_support::setup(&dir).await;
+        let one = maps::test_support::workspace("one");
+        let repo = maps::test_support::crate_repo(&dir, "one");
+        setup.register(&one, "one", &repo);
+        let build = weacon_appkit::build(&VERSION);
+        let (mcp, _server) = start(&build, &log, setup.maps.clone()).unwrap();
         let (first, _a) = mcp
             .grants
-            .issue(run_grant("w-1", "run-1", repo(&dir, "one")))
+            .issue(run_grant("one", "run-1", repo.clone()))
             .unwrap();
+        // Another workspace's run in the repository only `one` registered.
         let (second, _b) = mcp
             .grants
-            .issue(run_grant("w-2", "run-2", repo(&dir, "two")))
+            .issue(run_grant("two", "run-2", repo.clone()))
             .unwrap();
         let map = call("map", json!({}));
 
@@ -443,10 +464,11 @@ mod tests {
             "Start here: 1 crates, 1 items.\nEntry points:\nMost central items:\n\
              - fn one::run  src/lib.rs:1\nCrates:\n- one  .  1 items\n"
         );
-        assert_eq!(
-            answer_text(&two),
-            "Start here: 1 crates, 1 items.\nEntry points:\nMost central items:\n\
-             - fn two::run  src/lib.rs:1\nCrates:\n- two  .  1 items\n"
+        assert_eq!(answer_text(&two), tools::NO_MAP);
+        assert!(
+            !setup
+                .stored(&maps::test_support::workspace("two"), &repo)
+                .await
         );
     }
 
@@ -454,7 +476,7 @@ mod tests {
     async fn a_missing_unknown_or_ended_token_is_refused_and_never_logged() {
         let dir = TempDir::new().unwrap();
         let (log, records) = recording_logger();
-        let (mcp, _server) = start(&weacon_appkit::build(&VERSION), &log).unwrap();
+        let (mcp, _server) = start(&weacon_appkit::build(&VERSION), &log, Maps::off()).unwrap();
         let (ended, revoke) = mcp
             .grants
             .issue(run_grant("w-1", "run-1", repo(&dir, "one")))
@@ -462,8 +484,9 @@ mod tests {
         drop(revoke);
         let map = call("map", json!({}));
 
-        let missing = post(&mcp, &[], &map).await;
+        // The one refusal logged is the one carrying a token.
         let unknown = post(&mcp, &[("Authorization", "Bearer marker-token-1")], &map).await;
+        let missing = post(&mcp, &[], &map).await;
         let gone = post(&mcp, &[("Authorization", &bearer(&ended))], &map).await;
         let basic = post(&mcp, &[("Authorization", "Basic marker-token-2")], &map).await;
 
@@ -471,7 +494,8 @@ mod tests {
             assert_eq!((reply.status, reply.body.as_str()), (401, ""));
         }
         let logged = format!("{:?}", records.lock().unwrap());
-        assert_eq!(logged.matches("mcp refused").count(), 4);
+        assert_eq!(logged.matches("mcp refused").count(), 1);
+        assert!(logged.contains("mcp.token_unknown"), "{logged}");
         for marker in ["marker-token", ended.as_str()] {
             assert!(!logged.contains(marker), "{marker}");
         }
@@ -481,7 +505,7 @@ mod tests {
     async fn another_host_an_origin_or_a_large_body_is_refused() {
         let dir = TempDir::new().unwrap();
         let (log, _records) = recording_logger();
-        let (mcp, _server) = start(&weacon_appkit::build(&VERSION), &log).unwrap();
+        let (mcp, _server) = start(&weacon_appkit::build(&VERSION), &log, Maps::off()).unwrap();
         let (token, _revoke) = mcp
             .grants
             .issue(run_grant("w-1", "run-1", repo(&dir, "one")))
@@ -508,14 +532,14 @@ mod tests {
         assert_eq!(host.status, 403);
         assert_eq!(origin.status, 403);
         assert_eq!(too_large.status, 413);
-        assert_eq!(answer_text(&large_enough), "No item has this path.\n");
+        assert_eq!(answer_text(&large_enough), tools::NO_MAP);
     }
 
     #[tokio::test]
     async fn a_run_gets_only_so_many_calls_at_once_and_bad_arguments_are_refused() {
         let dir = TempDir::new().unwrap();
         let (log, _records) = recording_logger();
-        let (mcp, _server) = start(&weacon_appkit::build(&VERSION), &log).unwrap();
+        let (mcp, _server) = start(&weacon_appkit::build(&VERSION), &log, Maps::off()).unwrap();
         let (token, _revoke) = mcp
             .grants
             .issue(run_grant("w-1", "run-1", repo(&dir, "one")))
@@ -553,7 +577,7 @@ mod tests {
     async fn it_names_itself_and_lists_its_tools() {
         let dir = TempDir::new().unwrap();
         let (log, _records) = recording_logger();
-        let (mcp, _server) = start(&weacon_appkit::build(&VERSION), &log).unwrap();
+        let (mcp, _server) = start(&weacon_appkit::build(&VERSION), &log, Maps::off()).unwrap();
         let (token, _revoke) = mcp
             .grants
             .issue(run_grant("w-1", "run-1", repo(&dir, "one")))
@@ -586,11 +610,8 @@ mod tests {
     #[tokio::test]
     async fn dropping_the_server_stops_it_and_its_open_connections() {
         let (log, _records) = recording_logger();
-        let (mcp, server) = start(&weacon_appkit::build(&VERSION), &log).unwrap();
-        let address = mcp
-            .url
-            .trim_start_matches("http://")
-            .trim_end_matches("/mcp");
+        let (mcp, server) = start(&weacon_appkit::build(&VERSION), &log, Maps::off()).unwrap();
+        let address = address(&mcp);
         let mut open = TcpStream::connect(address).await.unwrap();
         let request = format!("POST /mcp HTTP/1.1\r\nHost: {address}\r\nContent-Length: 0\r\n\r\n");
         open.write_all(request.as_bytes()).await.unwrap();
@@ -637,15 +658,21 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let (log, _records) = recording_logger();
         let quick = Duration::from_millis(50);
-        let (mcp, _server) = listen(&weacon_appkit::build(&VERSION), &log, quick).unwrap();
+        let (mcp, _server) = listen(
+            &weacon_appkit::build(&VERSION),
+            &log,
+            Maps::off(),
+            Limits {
+                stall: quick,
+                ..LIMITS
+            },
+        )
+        .unwrap();
         let (token, _revoke) = mcp
             .grants
             .issue(run_grant("w-1", "run-1", repo(&dir, "one")))
             .unwrap();
-        let address = mcp
-            .url
-            .trim_start_matches("http://")
-            .trim_end_matches("/mcp");
+        let address = address(&mcp);
         let mut stream = TcpStream::connect(address).await.unwrap();
         let head = format!(
             "POST /mcp HTTP/1.1\r\nHost: {address}\r\nAuthorization: {}\r\n\
@@ -662,14 +689,40 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_connection_past_the_limit_waits_for_an_open_one_to_close() {
+        let (log, _records) = recording_logger();
+        let limits = Limits {
+            stall: Duration::from_millis(300),
+            connections: 1,
+        };
+        let (mcp, _server) =
+            listen(&weacon_appkit::build(&VERSION), &log, Maps::off(), limits).unwrap();
+        // Timed from before the idle connection opens, so its stall can't have begun earlier.
+        let started = Instant::now();
+        // Accepted first, it holds the only place until it stalls out.
+        let _idle = TcpStream::connect(address(&mcp)).await.unwrap();
+
+        let reply = post(&mcp, &[], &call("map", json!({}))).await;
+
+        assert_eq!(reply.status, 401);
+        assert!(started.elapsed() >= limits.stall, "{:?}", started.elapsed());
+    }
+
+    #[tokio::test]
     async fn a_connection_that_sends_nothing_is_closed() {
         let (log, _records) = recording_logger();
         let quick = Duration::from_millis(50);
-        let (mcp, _server) = listen(&weacon_appkit::build(&VERSION), &log, quick).unwrap();
-        let address = mcp
-            .url
-            .trim_start_matches("http://")
-            .trim_end_matches("/mcp");
+        let (mcp, _server) = listen(
+            &weacon_appkit::build(&VERSION),
+            &log,
+            Maps::off(),
+            Limits {
+                stall: quick,
+                ..LIMITS
+            },
+        )
+        .unwrap();
+        let address = address(&mcp);
         let mut idle = TcpStream::connect(address).await.unwrap();
 
         let mut read = Vec::new();
@@ -680,33 +733,31 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_connection_is_warned_about_once_however_often_it_is_refused() {
+    async fn refusals_warn_once_across_connections_until_a_request_is_let_in() {
+        let dir = TempDir::new().unwrap();
         let (log, records) = recording_logger();
-        let (mcp, _server) = start(&weacon_appkit::build(&VERSION), &log).unwrap();
-        let address = mcp
-            .url
-            .trim_start_matches("http://")
-            .trim_end_matches("/mcp");
-        let body = call("map", json!({}));
-        let request = |close: &str| {
-            format!(
-                "POST /mcp HTTP/1.1\r\nHost: {address}\r\nContent-Length: {}\r\n{close}\r\n{body}",
-                body.len()
-            )
-        };
-        let mut stream = TcpStream::connect(address).await.unwrap();
+        let (mcp, _server) = start(&weacon_appkit::build(&VERSION), &log, Maps::off()).unwrap();
+        let (token, _revoke) = mcp
+            .grants
+            .issue(run_grant("w-1", "run-1", repo(&dir, "one")))
+            .unwrap();
+        let map = call("map", json!({}));
+        let unknown = [("Authorization", "Bearer marker-token-3")];
 
-        let both = request("") + &request("Connection: close\r\n");
-        stream.write_all(both.as_bytes()).await.unwrap();
-        let mut reply = String::new();
-        let read = tokio::time::timeout(Duration::from_secs(5), stream.read_to_string(&mut reply));
-        read.await.unwrap().unwrap();
+        for _ in 0..3 {
+            assert_eq!(post(&mcp, &unknown, &map).await.status, 401);
+        }
+        assert_eq!(post(&mcp, &[], &map).await.status, 401);
+        let let_in = post(&mcp, &[("Authorization", &bearer(&token))], &map).await;
+        assert_eq!(post(&mcp, &unknown, &map).await.status, 401);
 
-        assert_eq!(reply.matches("401 Unauthorized").count(), 2);
-        assert_eq!(
-            weacon_testing::messages(&records),
-            ["mcp started", "mcp refused"]
-        );
+        assert_eq!(let_in.status, 200);
+        let messages = weacon_testing::messages(&records);
+        let warned = messages
+            .iter()
+            .filter(|message| **message == "mcp refused")
+            .count();
+        assert_eq!(warned, 2);
     }
 
     #[test]
@@ -721,6 +772,7 @@ mod tests {
             config_dir: PathBuf::from("/state/w/agent"),
             cwd: PathBuf::from("/work"),
             access: weacon_protocol::AccessLevel::AskFirst,
+            hook: None,
             mcp: None,
             plugin: None,
         };
@@ -729,6 +781,7 @@ mod tests {
             agent: AgentKind::Claude,
             run: RunId::try_from("run-1".to_owned()).unwrap(),
             session: None,
+            repo: None,
         };
 
         let (claude, revoke) = grant(Some(&mcp), launch(AgentKind::Claude), &run_as).unwrap();

@@ -242,6 +242,83 @@ test("a machine's settings answer passes with the fields the page reads, and a n
   assert.equal(parse(frame({ id: 6, type: "machine_settings_answer", request: "r-1", workspace: "w-1", answer: current })), undefined);
 });
 
+test("a terminal update passes with the fields the terminal reads, and a newer kind is dropped", () => {
+  const update = (event: unknown) => frame({ id: 0, type: "terminal", terminal: "t-1", workspace: "w-1", event });
+  const good = [{ kind: "accepted", handshake: "ab" }, { kind: "frame", sealed: "cd" }, { kind: "closed" }, { kind: "closed", code: "terminal.busy" }];
+  const bad = [null, { kind: "accepted" }, { kind: "frame", sealed: 7 }, { kind: "closed", code: 7 }, { kind: "later", sealed: "cd" }];
+
+  for (const event of good) {
+    assert.equal(parse(update(event))?.type, "terminal", JSON.stringify(event));
+  }
+  for (const event of bad) {
+    assert.equal(parse(update(event)), undefined, JSON.stringify(event));
+  }
+  assert.equal(parse(frame({ id: 0, type: "terminal", terminal: "t-1", event: { kind: "closed" } })), undefined);
+});
+
+test("a sessions answer passes with the fields the list and the transcript read, and a newer kind passes to be ignored", () => {
+  const sessions = (answer: unknown) => frame({ id: 6, type: "sessions_answer", request: "r-1", machine: "mc-1", answer });
+  const session = { agent: "codex", session: "0b7c6a52-3f1e-4d2a-9c8b-5e4f3a2b1c0d", modified_at: 5 };
+  const entry = { seq: 1, event: { kind: "outside_prompt", text: "Hi" } };
+  const good = [
+    { kind: "list", sessions: [session, { ...session, folder: "/work" }] },
+    { kind: "opened", events: [entry], more: false },
+    { kind: "missing" },
+    { kind: "later" },
+  ];
+  const bad = [
+    null,
+    {},
+    { kind: "list", sessions: "none" },
+    { kind: "list", sessions: [{ ...session, folder: 3 }] },
+    { kind: "list", sessions: [{ ...session, modified_at: 1.5 }] },
+    { kind: "list", sessions: [{ ...session, agent: undefined }] },
+    { kind: "list", sessions: [{ ...session, session: undefined }] },
+    { kind: "list", sessions: [null] },
+    { kind: "opened", events: [entry] },
+    { kind: "opened", events: [{ seq: 0, event: entry.event }], more: false },
+    { kind: "opened", events: "none", more: false },
+  ];
+
+  for (const answer of good) {
+    assert.equal(parse(sessions(answer))?.type, "sessions_answer", JSON.stringify(answer));
+  }
+  for (const answer of bad) {
+    assert.equal(parse(sessions(answer)), undefined, JSON.stringify(answer));
+  }
+  assert.equal(parse(frame({ id: 6, type: "sessions_answer", machine: "mc-1", answer: { kind: "missing" } })), undefined);
+  assert.equal(parse(frame({ id: 6, type: "sessions_answer", request: "r-1", answer: { kind: "missing" } })), undefined);
+});
+
+test("a symbols answer passes with each symbol's fields, and a newer kind passes to be ignored", () => {
+  const symbols = (answer: unknown) => frame({ id: 6, type: "symbols_answer", request: "r-1", machine: "mc-1", workspace: "w-1", answer });
+  const symbol = { repo: "site", kind: "fn", name: "a::run", path: "src/lib.rs", line: 2 };
+  const good = [{ kind: "found", symbols: [symbol], more: true }, { kind: "found", symbols: [], more: false }, { kind: "later" }];
+  const bad = [
+    null,
+    {},
+    { kind: "found", symbols: "none", more: false },
+    { kind: "found", symbols: [symbol] },
+    ...["repo", "kind", "name", "path"].map((key) => ({ kind: "found", symbols: [{ ...symbol, [key]: 1 }], more: false })),
+    { kind: "found", symbols: [{ ...symbol, line: 1.5 }], more: false },
+    { kind: "found", symbols: [{ ...symbol, line: 0 }], more: false },
+    { kind: "found", symbols: [{ ...symbol, line: -1 }], more: false },
+    { kind: "found", symbols: [null], more: false },
+  ];
+
+  for (const answer of good) {
+    assert.equal(parse(symbols(answer))?.type, "symbols_answer", JSON.stringify(answer));
+  }
+  for (const answer of bad) {
+    assert.equal(parse(symbols(answer)), undefined, JSON.stringify(answer));
+  }
+  for (const missing of ["request", "machine", "workspace"]) {
+    const fields: Record<string, unknown> = { id: 6, type: "symbols_answer", request: "r-1", machine: "mc-1", workspace: "w-1", answer: good[0] };
+    delete fields[missing];
+    assert.equal(parse(frame(fields)), undefined, missing);
+  }
+});
+
 test("a diff answer passes only with every field the diff view reads", () => {
   const file = (path: string) => ({
     path,

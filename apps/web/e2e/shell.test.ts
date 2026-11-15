@@ -15,8 +15,8 @@ type Feed = {
   changes?: (opened: number, workspace: string) => Envelope[];
   /** Whether to close the nth socket after its changes. */
   close?: (opened: number) => boolean;
-  /** Capabilities to offer besides the feed and chats. */
-  also?: string[];
+  /** Capabilities to offer besides the feed and chats, or those the nth socket offers. */
+  also?: string[] | ((opened: number) => string[]);
   /** What the nth socket answers each envelope the page sends after its hello; `reply` answers later. */
   answer?: (sent: Envelope, opened: number, reply: (envelope: Envelope) => void) => Envelope[];
   /** Whether the nth socket closes once it has answered `sent`. */
@@ -25,14 +25,19 @@ type Feed = {
 
 /**
  * Stands in for every workspace's feed: welcomes it offering chats and `also`, then does what
- * `feed` says. Gives the addresses opened and what the page sent after its hellos. Only pages
- * loaded after this have their sockets routed, so it reloads the page.
+ * `feed` says. Gives the addresses opened, what the page sent after its hellos, and a way to
+ * close the latest socket. Only pages loaded after this have their sockets routed, so it reloads the page.
  */
-async function serveFeed(page: Page, { changes = () => [], close = () => false, also = [], answer = () => [], drop = () => false }: Feed = {}): Promise<{ opened: string[]; sent: Envelope[] }> {
+async function serveFeed(
+  page: Page,
+  { changes = () => [], close = () => false, also = [], answer = () => [], drop = () => false }: Feed = {},
+): Promise<{ opened: string[]; sent: Envelope[]; closeLatest(): Promise<void> }> {
   const opened: string[] = [];
   const sent: Envelope[] = [];
+  let latest: { close(): Promise<void> } | undefined;
   await page.routeWebSocket(/\/api\/workspaces\/[^/]+\/feed/, (socket) => {
     opened.push(new URL(socket.url()).search);
+    latest = socket;
     const nth = opened.length;
     socket.onMessage((text) => {
       const hello = JSON.parse(String(text)) as Envelope;
@@ -46,7 +51,7 @@ async function serveFeed(page: Page, { changes = () => [], close = () => false, 
         return;
       }
       const app = { name: "weacon-server", version: "0.0.0", commit: "0000000" };
-      const capabilities = ["workspace.feed", "workspace.chats", ...also];
+      const capabilities = ["workspace.feed", "workspace.chats", ...(typeof also === "function" ? also(nth) : also)];
       const welcome: Envelope = { id: hello.id, type: "welcome", app, capabilities };
       socket.send(JSON.stringify(welcome));
       const workspace = /workspaces\/([^/]+)\/feed/.exec(socket.url())?.[1] ?? "";
@@ -62,7 +67,7 @@ async function serveFeed(page: Page, { changes = () => [], close = () => false, 
     });
   });
   await page.reload();
-  return { opened, sent };
+  return { opened, sent, closeLatest: async () => latest?.close() };
 }
 
 // Holds back the next workspace the page makes; the returned function lets it through and waits for the answer.
@@ -366,7 +371,7 @@ test("a workspace lists its chats newest first, and opens one in the address", {
   await listChats(page, () => ({
     chats: [
       { id: "c-1", title: "Merge the shopping lists", owner: "m-1", machine: "laptop", state: "open", updated_at: 1_800_000_000 },
-      { id: "c-2", title: "Sort the pantry", owner: "m-1", machine: "team VPS", state: "full", updated_at: 1_800_000_100 },
+      { id: "c-2", title: "Sort the pantry", owner: "m-1", machine: "team VPS", state: "full", updated_at: 1_800_000_100, run: "waiting" },
       { id: "c-3", title: "Old notes", owner: "m-1", machine: "desktop", state: "detached", updated_at: 1_700_000_000 },
     ],
   }));
@@ -377,7 +382,7 @@ test("a workspace lists its chats newest first, and opens one in the address", {
   await chats.getByText("Sort the pantry").waitFor();
 
   assert.deepEqual(await chats.locator(".title").allInnerTexts(), ["Sort the pantry", "Merge the shopping lists", "Old notes"]);
-  assert.deepEqual(await chats.locator("li .muted").allInnerTexts(), ["team VPS · Full", "laptop", "desktop · Read only"]);
+  assert.deepEqual(await chats.locator("li .muted").allInnerTexts(), ["team VPS · Waiting for a person · Full", "laptop", "desktop · Read only"]);
   await chats.getByRole("button", { name: /Merge the shopping lists/ }).click();
   await page.getByRole("heading", { name: "Merge the shopping lists" }).waitFor();
   assert.match(page.url(), /\?workspace=[A-Za-z0-9_-]+&chat=c-1$/);
@@ -737,3 +742,125 @@ test("a pull request's draft stays until the core opens it, and its answer comes
   assert.equal(await bar.getByLabel("Description").count(), 0);
 });
 
+test("⌘K searches the open workspace, and choosing a hit goes to its place", { timeout: 600_000 }, async (t) => {
+  const served = await serve();
+  t.after(() => served.close());
+  const { page } = served;
+  await listChats(page, () => ({
+    chats: [{ id: "c-1", title: "Merge the shopping lists", owner: "m-1", machine: "laptop", state: "open", updated_at: 1_800_000_000 }],
+  }));
+  const asked: string[] = [];
+  let answerBread = () => {};
+  const bread = new Promise<void>((resolve) => {
+    answerBread = resolve;
+  });
+  await page.route("**/api/workspaces/*/search", async (route) => {
+    const text = (JSON.parse(route.request().postData() ?? "{}") as { text: string }).text;
+    asked.push(text);
+    // The answer for "bread" waits, so the page still holds the one for "milk".
+    if (text === "bread") {
+      await bread;
+    }
+    const hits = [
+      { kind: "task", task: "t-1", title: "Buy milk", snippet: { text: "Buy milk", marks: [{ start: 4, end: 8 }] } },
+      { kind: "chat", chat: "c-1", title: "Merge the shopping lists", seq: 4, snippet: { text: "add the milk", marks: [{ start: 8, end: 12 }] } },
+    ];
+    return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ hits }) });
+  });
+  await serveFeed(page, { also: ["workspace.search"] });
+  await signIn(served);
+  await page.getByRole("button", { name: "Personal" }).click();
+  await page.getByRole("navigation", { name: "Chats" }).getByText("Merge the shopping lists").waitFor();
+
+  await page.keyboard.press("ControlOrMeta+k");
+  const search = page.getByRole("dialog", { name: "Search" });
+  await search.getByRole("combobox", { name: "Search" }).fill("milk");
+  const results = search.getByRole("option");
+  await results.nth(1).waitFor();
+  assert.deepEqual(await results.locator(".title").allInnerTexts(), ["Buy milk", "Merge the shopping lists"]);
+  assert.deepEqual(await search.locator("mark").allInnerTexts(), ["milk", "milk"]);
+  assert.deepEqual(asked, ["milk"]);
+  await page.keyboard.press("ArrowDown");
+  await page.keyboard.press("Enter");
+  await page.getByRole("heading", { name: "Merge the shopping lists" }).waitFor();
+  assert.match(page.url(), /&chat=c-1$/);
+  assert.equal(await search.count(), 0);
+  await page.keyboard.press("ControlOrMeta+k");
+  await search.getByRole("combobox", { name: "Search" }).fill("milk");
+  await results.nth(1).waitFor();
+  await page.keyboard.press("Enter");
+  await page.waitForURL(/&view=tasks$/);
+  await page.keyboard.press("ControlOrMeta+k");
+  await search.getByRole("combobox", { name: "Search" }).fill("milk");
+  await results.nth(1).waitFor();
+  await search.getByRole("combobox", { name: "Search" }).fill("bread");
+  await results.first().waitFor({ state: "detached" });
+  await page.keyboard.press("Enter");
+  assert.equal(await search.count(), 1);
+  answerBread();
+  await results.nth(1).waitFor();
+  await page.keyboard.press("Escape");
+  await search.waitFor({ state: "detached" });
+});
+
+test("the palette keeps focus on its input and the chosen hit in view", { timeout: 600_000 }, async (t) => {
+  const served = await serve();
+  t.after(() => served.close());
+  const { page } = served;
+  await listChats(page, () => ({ chats: [] }));
+  const hits = Array.from({ length: 20 }, (_, n) => ({ kind: "task", task: `t-${n}`, title: `Buy milk ${n}`, snippet: { text: "milk", marks: [{ start: 0, end: 4 }] } }));
+  await page.route("**/api/workspaces/*/search", (route) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ hits }) }));
+  await serveFeed(page, { also: ["workspace.search"] });
+  await signIn(served);
+  await page.getByRole("button", { name: "Personal" }).click();
+
+  await page.keyboard.press("ControlOrMeta+k");
+  const search = page.getByRole("dialog", { name: "Search" });
+  const input = search.getByRole("combobox", { name: "Search" });
+  await input.fill("milk");
+  const last = search.getByRole("option").nth(19);
+  await last.waitFor();
+  const below = () => last.evaluate((row) => row.getBoundingClientRect().top >= (row.parentElement?.getBoundingClientRect().bottom ?? 0));
+  assert.equal(await below(), true);
+  for (let n = 0; n < 19; n++) {
+    await page.keyboard.press("ArrowDown");
+  }
+  assert.equal(await last.getAttribute("aria-selected"), "true");
+  assert.equal(await below(), false);
+  for (const key of ["Tab", "Shift+Tab"]) {
+    await page.keyboard.press(key);
+    assert.equal(await input.evaluate((element) => element === document.activeElement), true);
+  }
+  await page.keyboard.press("Escape");
+  await search.waitFor({ state: "detached" });
+});
+
+test("the palette's symbols go once the server stops offering symbol search", { timeout: 600_000 }, async (t) => {
+  const served = await serve();
+  t.after(() => served.close());
+  const { page } = served;
+  const core = { name: "weacon-core", version: "0.1.0", commit: "1a2b3c4" };
+  const studio = { id: "mc-1", name: "Studio", os: "linux", key: "ab".repeat(32), paired_at: 1, core, connected: true };
+  await page.route("**/api/machines", (route) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ machines: [studio] }) }));
+  await page.route("**/api/workspaces/*/search", (route) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ hits: [] }) }));
+  const symbol = { repo: "garden", kind: "fn" as const, name: "garden::plant", path: "src/lib.rs", line: 8 };
+  const feed = await serveFeed(page, {
+    also: (opened) => ["workspace.search", ...(opened === 1 ? ["symbols.search"] : [])],
+    answer: (sent) =>
+      sent.type === "symbols_query"
+        ? [{ id: sent.id, type: "symbols_answer", request: sent.request, machine: sent.machine, workspace: sent.workspace, answer: { kind: "found", symbols: [symbol], more: false } }]
+        : [],
+  });
+  await signIn(served);
+  await page.getByRole("button", { name: "Personal" }).click();
+
+  await page.keyboard.press("ControlOrMeta+k");
+  const search = page.getByRole("dialog", { name: "Search" });
+  await search.getByRole("combobox", { name: "Search" }).fill("plant");
+  const group = search.getByRole("group", { name: "Symbols" });
+  await group.getByRole("option").first().waitFor();
+  // The feed that comes back after this one no longer offers symbol search.
+  await feed.closeLatest();
+  await group.waitFor({ state: "detached" });
+  assert.equal(await search.count(), 1);
+});

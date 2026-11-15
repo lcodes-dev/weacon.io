@@ -67,6 +67,13 @@ pub(crate) struct Fixture {
 }
 
 impl Fixture {
+    /// Every byte the server stored, its database and anything else in its folder.
+    pub(crate) fn stored(&self) -> Vec<u8> {
+        let mut stored = Vec::new();
+        every_file(&self.dir, &mut stored);
+        stored
+    }
+
     pub(crate) async fn new() -> Self {
         let dir = TempDir::new().unwrap();
         let db = with_ada(&dir).await;
@@ -100,6 +107,7 @@ impl Fixture {
             unpaired: broadcast::channel(16).0,
             links: Arc::default(),
             relay: Arc::default(),
+            terminals: Arc::default(),
             sign_ins: Arc::new(Semaphore::new(sign_in::AT_ONCE)),
             finish_takes: Duration::ZERO,
             sign_in_limits: Arc::new(sign_in::limits()),
@@ -182,6 +190,18 @@ pub(crate) fn letter_in(file: &Path) -> (String, String) {
 }
 
 /// A database holding workspace `w1`, whose member `m1` is ada@example.com.
+// Appends each file's bytes under `dir`, at any depth, to `stored`.
+fn every_file(dir: &Path, stored: &mut Vec<u8>) {
+    for entry in fs::read_dir(dir).unwrap() {
+        let path = entry.unwrap().path();
+        if path.is_dir() {
+            every_file(&path, stored);
+        } else {
+            stored.extend(fs::read(path).unwrap());
+        }
+    }
+}
+
 async fn with_ada(dir: &TempDir) -> Db {
     let db = Db::create(&dir.join("weacon.db")).await.unwrap();
     let workspace = db
@@ -212,5 +232,19 @@ pub(crate) async fn run(shared: Shared) -> Running {
         address,
         stop,
         done,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn what_is_stored_includes_the_files_in_the_folders_inside() {
+        let fixture = Fixture::new().await;
+        fs::write(fixture.dir.join("outbox/letter.json"), "MARKER-NESTED").unwrap();
+
+        let stored = String::from_utf8_lossy(&fixture.stored()).into_owned();
+        assert!(stored.contains("MARKER-NESTED"));
     }
 }

@@ -62,7 +62,7 @@ test("a socket offers what the server offered when it last welcomed the feed, ac
   assert.equal(socket.offers("machine.settings"), false);
   socket.attach(() => {}, ["workspace.chats", "machine.settings"]);
   assert.equal(socket.offers("machine.settings"), true);
-  assert.equal(socket.offers("chat.send"), false);
+  assert.equal(socket.offers("diff.view"), false);
   socket.attach(undefined);
   assert.equal(socket.offers("machine.settings"), true);
   socket.attach(() => {}, ["workspace.chats"]);
@@ -70,17 +70,25 @@ test("a socket offers what the server offered when it last welcomed the feed, ac
   assert.equal(socket.offers("workspace.chats"), true);
 });
 
-test("watchers hear each change of what is offered, until they stop watching", () => {
+test("watchers hear each change of the connection or what is offered, until they stop watching", () => {
   const socket = new WorkspaceSocket("w-1");
   let heard = 0;
-  const stop = socket.watch(() => heard++);
+  const live: boolean[] = [];
+  const stop = socket.watch(() => {
+    heard++;
+    live.push(socket.live);
+  });
   const offered = ["workspace.chats"];
-  socket.attach(() => {}, offered);
+  const send = () => {};
+  socket.attach(send, offered);
+  socket.attach(send, offered);
   socket.attach(undefined);
-  socket.attach(() => {}, offered);
-  socket.attach(() => {}, ["machine.settings"]);
+  socket.attach(undefined);
+  socket.attach(send, offered);
+  socket.attach(send, ["machine.settings"]);
   stop();
   socket.attach(() => {}, ["workspace.chats"]);
 
-  assert.equal(heard, 2);
+  assert.equal(heard, 4);
+  assert.deepEqual(live, [true, false, true, true]);
 });
