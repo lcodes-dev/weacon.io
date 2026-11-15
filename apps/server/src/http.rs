@@ -14,6 +14,7 @@ use tokio::sync::watch;
 use tokio::time::timeout;
 use weacon_protocol::code;
 
+use crate::chats;
 use crate::connections;
 use crate::docs;
 use crate::feed;
@@ -95,6 +96,7 @@ fn router(shared: Shared) -> Router {
         .merge(tasks::routes())
         .merge(docs::routes())
         .merge(proposals::routes())
+        .merge(chats::routes())
         .merge(web::routes(shared.web))
         .layer(DefaultBodyLimit::max(MAX_BODY))
         .layer(middleware::map_response(uncached))
