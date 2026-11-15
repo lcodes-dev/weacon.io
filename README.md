@@ -203,11 +203,7 @@ Codex works differently from Claude Code: it asks you before every file change a
 - **Docs**: **New doc**, then a title and text, then **Save**. Each edit is a new revision.
 - **Proposals**: changes to docs and tasks wait here until someone accepts or rejects them. Agents propose them from their chats. While an agent works in a repository, the core also proposes what a new commit in the repository's folder did to docs that pin its code.
 - **Resume**: once a chat's agent has stopped running, `target/debug/weacon resume --workspace <workspace id> --chat <chat id>` carries it on in your terminal, on the chat's machine. There you answer the agent's own prompts yourself, whatever the workspace's access level. End that session before you send the chat another prompt from the web app, because the resumed agent holds the chat until then.
-- **Open terminal**: a chat's **Open terminal** opens its folder in your own terminal on that machine. It needs a desktop terminal on that machine; on a machine without one, such as a server, use **Resume** there instead. On Linux the terminal runs the resume itself, so you see the agent there and answer its prompts there. It's off until you allow it, on that machine:
-
-```bash
-target/debug/weacon terminals on
-```
+- **Open terminal**: a chat's **Open terminal** opens its folder in your own terminal on that machine. It needs a desktop terminal on that machine; on a machine without one, such as a server, use **Resume** there instead. On Linux the terminal runs the resume itself, so you see the agent there and answer its prompts there.
 
 - **Search**: press ⌘K (Ctrl+K on Linux and Windows), then type. It finds docs, tasks and chats by their words, and the code's symbols on your machine. A chat comes up once, and a message opens its chat at that message.
 - **Teammates**: the operator adds them from the command line. Each signs in with their own email and pairs their own machine. With the server running:
