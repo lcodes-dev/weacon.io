@@ -5,8 +5,7 @@ use std::sync::{Mutex, PoisonError};
 
 use weacon_observability::{Fault, Field};
 use weacon_protocol::{
-    ChatCommand, ChatEvent, ChatId, ErrorBody, MachineId, Message, Outcome, Receipt, RequestId,
-    WorkspaceId,
+    ChatCommand, ChatId, ErrorBody, MachineId, Message, Outcome, Receipt, RequestId, WorkspaceId,
 };
 
 use crate::db::Workspace;
@@ -109,7 +108,7 @@ async fn failed(shared: &Shared, asked: &Asked, outcome: Outcome) -> Result<(), 
 }
 
 /// Ends `request` to `chat` with `outcome`, a final receipt the server writes for the chat's
-/// machine, and tells the chat's feeds.
+/// machine, and tells the chat's feeds; nothing when a receipt ended it already.
 pub(crate) async fn end(
     shared: &Shared,
     workspace: &Workspace,
@@ -121,8 +120,9 @@ pub(crate) async fn end(
         request: request.clone(),
         outcome,
     };
-    let event = ChatEvent::Receipt { receipt };
-    workspace.add_receipt(chat, &event, shared.now()).await?;
+    if !workspace.end_open(chat, receipt, shared.now()).await? {
+        return Ok(());
+    }
     shared.wake_feeds(workspace.id());
     shared.chats.stored(workspace.id().clone(), chat.clone());
     Ok(())
@@ -169,7 +169,10 @@ mod tests {
         take(shared, &machine, asked, for_now).await.unwrap_err();
 
         let open = workspace.open_requests(&id("c-1")).await.unwrap();
-        assert!(open.iter().all(|request| request.refused), "{open:?}");
+        assert!(
+            open.iter().all(|request| request.refused && !request.sent),
+            "{open:?}"
+        );
         assert_eq!(open.len(), 1);
     }
 

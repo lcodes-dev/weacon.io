@@ -150,6 +150,18 @@ async fn go_on(
         // Sent again, whatever its core answered before: its answer to this send counts.
         Recorded::Same { open: true } => workspace.sending(&command.request).await?,
     }
+    // A prompt goes after one its core refused for now, once that one is sent again.
+    let prompt = matches!(command.action, ChatAction::Prompt { .. });
+    if prompt
+        && workspace
+            .refused_before(&command.chat, &command.request)
+            .await?
+    {
+        if recorded == Recorded::New {
+            workspace.forget_request(&command.request).await?;
+        }
+        return Err(busy());
+    }
     let sent = [
         Message::ChatCommand(command.clone()),
         link::follow(workspace.id(), &command.chat, chat.core_seq),
@@ -161,6 +173,13 @@ async fn go_on(
         return Err(fault);
     }
     workspace.mark_sent(&command.request, true).await
+}
+
+fn busy() -> Fault {
+    Fault::new(
+        code!("chat.unavailable"),
+        "The chat's machine has no room for it yet",
+    )
 }
 
 fn conflict() -> Fault {
@@ -225,6 +244,36 @@ mod tests {
         let again = prompt("r-1", "c-2", "Fix it", Some(&ada.machine));
         let taken = take(&ada.member, &ada.asker, shared, again).await;
         assert_eq!(taken.unwrap_err().code().as_str(), "request.conflict");
+    }
+
+    #[tokio::test]
+    async fn a_prompt_waits_behind_one_its_core_refused_for_now_and_an_interrupt_doesnt() {
+        let fixture = Fixture::new().await;
+        let shared = &fixture.shared;
+        let ada = ada(&fixture).await;
+        let workspace = &ada.member.workspace;
+        make(workspace, "c-1", "m1", NOW).await.unwrap();
+        workspace.move_chats_to(&ada.machine).await;
+        workspace.mark_refused(&id("r-c-1")).await.unwrap();
+        let mut serving = attach(shared, &ada, &["chat.serve"]);
+        let ask = |command| take(&ada.member, &ada.asker, shared, command);
+
+        let later = ask(prompt("r-2", "c-1", "Go", None)).await;
+        assert_eq!(later.unwrap_err().code().as_str(), "chat.unavailable");
+        assert!(!workspace.has_request(&id("r-2")).await.unwrap());
+        let again = ask(prompt("r-c-1", "c-1", "Fix the build", None)).await;
+        assert_eq!(again.unwrap(), accepted("r-c-1"));
+        let stop = crate::db::test_support::command("r-3", "c-1", "Stop");
+        let stop = ChatCommand {
+            action: ChatAction::Interrupt,
+            ..stop
+        };
+        assert_eq!(ask(stop).await.unwrap(), accepted("r-3"));
+        assert_eq!(sent(&mut serving).len(), 4);
+        assert_eq!(
+            ask(prompt("r-2", "c-1", "Go", None)).await.unwrap(),
+            accepted("r-2")
+        );
     }
 
     #[tokio::test]

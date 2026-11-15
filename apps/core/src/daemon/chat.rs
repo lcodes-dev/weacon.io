@@ -1,7 +1,7 @@
 //! The daemon's answers to a client's chat commands and queries.
 
 use weacon_observability::{Fault, Field};
-use weacon_protocol::{ChatAnswer, ChatCommand, ChatQuery, Envelope, Message};
+use weacon_protocol::{ChatAnswer, ChatCommand, ChatQuery, Envelope, Message, code};
 
 use super::Shared;
 use crate::chats::feed::Client;
@@ -56,5 +56,23 @@ fn refused(shared: &Shared, id: u32, fault: &Fault) -> Reply {
     shared
         .log
         .warn("chat request refused", &[("err", Field::error(fault))]);
-    Reply::error(id, fault.code().clone(), false)
+    Reply::error(id, fault.code().clone(), again(fault))
+}
+
+// Whether a request `fault` refused is worth sending again: one cut short is.
+fn again(fault: &Fault) -> bool {
+    *fault.code() == code!("chat.unfinished")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_a_request_cut_short_is_worth_sending_again() {
+        let cut_short = Fault::new(code!("chat.unfinished"), "The command was cut short");
+        assert!(again(&cut_short));
+        let refused = Fault::new(code!("chat.busy"), "The agent is busy");
+        assert!(!again(&refused));
+    }
 }

@@ -1,6 +1,6 @@
 //! What people ask of a chat's agent: a prompt, a permission answer, an interrupt.
 
-use weacon_observability::Fault;
+use weacon_observability::{Fault, Field};
 use weacon_protocol::{
     AgentKind, ChatAction, ChatCommand, ChatEvent, Outcome, PermissionAnswer, RepoId, RequestId,
     RunEvent, RunUpdate, code,
@@ -8,7 +8,7 @@ use weacon_protocol::{
 
 use super::agent::{Agent, Order};
 use super::launch::not_started;
-use super::{ChatKey, Engine, PendingAnswer, PendingInterrupt, unsupported};
+use super::{ChatKey, Engine, PendingAnswer, PendingInterrupt, chat_about, unsupported};
 use crate::chats::log::{Seen, digest};
 use crate::git::state::Stores;
 use crate::runs::Queued;
@@ -43,6 +43,31 @@ impl<A: Agent> Engine<A> {
                 }
             }
         }
+    }
+
+    // A command that failed once it reached the log isn't refused but unfinished, which asking
+    // again finishes; its receipt, if it has one, stays its only one.
+    pub(super) async fn cut_short(
+        &mut self,
+        key: &ChatKey,
+        request: &RequestId,
+        action: &ChatAction,
+        done: Result<(), Fault>,
+    ) -> Result<(), Fault> {
+        let fault = match done {
+            Ok(()) => return Ok(()),
+            Err(fault) => fault,
+        };
+        let Ok(chat) = self.open(key).await else {
+            return Err(fault);
+        };
+        let seen = chat.log.seen(request, action).await;
+        if !matches!(seen, Ok(Seen::Pending | Seen::Same)) {
+            return Err(fault);
+        }
+        let fields = [&chat_about(key)[..], &[("err", Field::error(&fault))]].concat();
+        self.log.warn("chat command cut short", &fields);
+        Err(unfinished())
     }
 
     // Whatever cut the first try short, what it began still happens: an answer still waiting
@@ -286,6 +311,14 @@ impl<A: Agent> Engine<A> {
 }
 
 // Whether a command refused with `fault` could never be taken, however often it is sent.
+// A command its core began but couldn't finish; sending it again finishes it.
+fn unfinished() -> Fault {
+    Fault::new(
+        code!("chat.unfinished"),
+        "The command was cut short; send it again",
+    )
+}
+
 fn never_taken(fault: &Fault) -> bool {
     [
         code!("chat.empty_prompt"),
@@ -306,7 +339,7 @@ mod tests {
     use super::*;
     use crate::chats::test_support::{
         Told, allow, asks, chat, command, key, logged_prompt, parts, prompt, prompt_in,
-        prompt_naming, run, soon,
+        prompt_naming, request, run, soon,
     };
     use crate::runs::Runs;
 
@@ -385,6 +418,35 @@ mod tests {
         assert_eq!(named.unwrap_err().code().as_str(), "chat.repo_conflict");
     }
 
+    // What a first prompt that failed with `message.unsupported` makes of it, as its log stands.
+    async fn cut(engine: &mut Engine<crate::chats::test_support::FakeAgent>) -> Result<(), Fault> {
+        let asked = prompt("r-1", "Hi").action;
+        engine
+            .cut_short(&key(), &request("r-1"), &asked, Err(unsupported()))
+            .await
+    }
+
+    #[tokio::test]
+    async fn a_command_cut_short_once_logged_is_unfinished_and_one_never_logged_refused() {
+        let (bench, mut engine) = parts();
+        let refused = cut(&mut engine).await.unwrap_err();
+        assert_eq!(refused.code().as_str(), "message.unsupported");
+        assert!(!messages(&bench.records).contains(&"chat command cut short"));
+        engine
+            .commit(&key(), logged_prompt("r-1", "Hi"))
+            .await
+            .unwrap();
+        let unfinished = cut(&mut engine).await.unwrap_err();
+        assert_eq!(unfinished.code().as_str(), "chat.unfinished");
+        assert!(messages(&bench.records).contains(&"chat command cut short"));
+        engine
+            .commit_receipt(&key(), &request("r-1"), Outcome::Accepted)
+            .await
+            .unwrap();
+        let taken = cut(&mut engine).await.unwrap_err();
+        assert_eq!(taken.code().as_str(), "chat.unfinished");
+    }
+
     #[tokio::test(start_paused = true)]
     async fn the_agent_a_logged_first_prompt_named_holds_even_if_it_wasnt_queued() {
         let (mut bench, mut engine) = parts();
@@ -397,7 +459,7 @@ mod tests {
 
         let other = prompt_naming("r-2", "Hi", AgentKind::Claude);
         engine.command(&key(), other).await.unwrap();
-        let refused = &crate::chats::test_support::request("r-2");
+        let refused = &request("r-2");
         assert!(engine.open(&key()).await.unwrap().log.has_ended(refused));
         engine.command(&key(), first).await.unwrap();
 

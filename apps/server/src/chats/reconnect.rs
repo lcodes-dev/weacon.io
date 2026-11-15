@@ -5,7 +5,7 @@ use std::future::Future;
 use tokio::sync::broadcast::{Receiver, error::RecvError};
 use tokio::task::JoinSet;
 use weacon_observability::{Fault, Field};
-use weacon_protocol::{ChatId, Message, Outcome, code};
+use weacon_protocol::{ChatCommand, ChatId, Message, Outcome, code};
 
 use super::answers;
 use super::link::{self, Route};
@@ -126,22 +126,18 @@ async fn again(
 /// chats of those not sent within [`RESEND_WITHIN`].
 async fn first_prompts(shared: &Shared, workspace: &Workspace, route: &Route) -> Result<(), Fault> {
     for (chat, owner) in workspace.unmade_on(route.machine()).await? {
-        let first = workspace.open_requests(&chat).await?.into_iter().next();
-        let Some(first) = first.filter(|first| recent(shared, first.sent_at)) else {
+        let Some(first) = workspace.open_requests(&chat).await?.into_iter().next() else {
             workspace.forget_chat(&chat).await?;
             continue;
         };
-        let request = first.command.request.clone();
-        // Marked sent before it is, so its chat failing elsewhere meanwhile can't be taken back.
-        workspace.sending(&request).await?;
-        let sent = route
-            .deliver(shared, Message::ChatCommand(first.command))
-            .await;
-        if let Err(fault) = sent {
-            workspace.mark_sent(&request, false).await?;
-            return Err(fault);
+        if recent(shared, first.sent_at) {
+            send_first(shared, workspace, route, first.command).await?;
+        } else if !first.sent {
+            workspace.forget_chat(&chat).await?;
+            continue;
         }
-        // Made only once it was sent, so no later prompt goes before it.
+        // Made only once it was sent, so no later prompt goes before it; one sent long ago may
+        // have run, so its chat is followed rather than taken back.
         if !workspace.chat_made(&chat, &owner).await? {
             continue;
         }
@@ -151,6 +147,24 @@ async fn first_prompts(shared: &Shared, workspace: &Workspace, route: &Route) ->
             .await?;
     }
     Ok(())
+}
+
+// Sends `first` over `route`, marked sent before it is, so its chat failing elsewhere meanwhile
+// can't be taken back.
+async fn send_first(
+    shared: &Shared,
+    workspace: &Workspace,
+    route: &Route,
+    first: ChatCommand,
+) -> Result<(), Fault> {
+    let request = first.request.clone();
+    workspace.mark_sent(&request, true).await?;
+    workspace.sending(&request).await?;
+    let sent = route.deliver(shared, Message::ChatCommand(first)).await;
+    if sent.is_err() {
+        workspace.mark_sent(&request, false).await?;
+    }
+    sent
 }
 
 // Whether a command sent at `sent_at` was sent within [`RESEND_WITHIN`] of now.
@@ -186,6 +200,14 @@ mod tests {
             return unserved(shared, connected).await;
         };
         resend(shared, connected, &route).await.map(|()| 0)
+    }
+
+    // The outcome of `entry`, when it is a receipt.
+    fn outcome(entry: weacon_protocol::ChatEntry) -> Option<Outcome> {
+        let weacon_protocol::ChatEvent::Receipt { receipt } = entry.event else {
+            return None;
+        };
+        Some(receipt.outcome)
     }
 
     fn connected(ada: &Ada) -> Connected {
@@ -267,6 +289,24 @@ mod tests {
         assert_eq!(feeds.try_recv().unwrap(), id::<WorkspaceId>("w1"));
         assert_eq!(resend_now(shared, &connected(&ada)).await.unwrap(), 0);
         assert_eq!(sent(&mut attached), [follow_query("c-1"), resent("c-1")]);
+    }
+
+    #[tokio::test]
+    async fn a_first_prompt_sent_long_ago_has_its_chat_made_and_followed_not_sent_again() {
+        let fixture = Fixture::new().await;
+        let shared = &fixture.shared;
+        let ada = ada(&fixture).await;
+        let workspace = &ada.member.workspace;
+        begin(workspace, "c-1", "m1", NOW - 601).await.unwrap();
+        workspace.move_chats_to(&ada.machine).await;
+        // Sent before the server stopped, its chat not yet made.
+        workspace.mark_sent(&id("r-c-1"), true).await.unwrap();
+        let mut attached = attach(shared, &ada, &["chat.serve"]);
+
+        assert_eq!(resend_now(shared, &connected(&ada)).await.unwrap(), 0);
+
+        assert_eq!(sent(&mut attached), [follow_query("c-1")]);
+        assert!(workspace.chat(&id("c-1")).await.unwrap().unwrap().made);
     }
 
     #[tokio::test]
@@ -491,22 +531,21 @@ mod tests {
         let mut feeds = shared.changes.subscribe();
         let mut attached = attach(shared, &ada, &["chat.serve"]);
 
-        assert_eq!(resend_now(shared, &connected(&ada)).await.unwrap(), 0);
+        // Two pick-ups of the same machine at once, as when it connects again quickly.
+        let machine = connected(&ada);
+        let (one, two) = tokio::join!(resend_now(shared, &machine), resend_now(shared, &machine));
 
-        assert_eq!(
-            sent(&mut attached),
-            [follow_query("c-1"), follow_query("c-2")]
-        );
+        assert_eq!((one.unwrap(), two.unwrap()), (0, 0));
+        let mut follows = sent(&mut attached);
+        follows.sort_by_key(|message| format!("{message:?}"));
+        let (c1, c2) = (follow_query("c-1"), follow_query("c-2"));
+        assert_eq!(follows, [c1.clone(), c1, c2.clone(), c2]);
         let events = workspace.events_after(&id("c-1"), 0, 100, 1 << 20).await;
-        let last = events.unwrap().pop().unwrap().event;
+        let receipts: Vec<_> = events.unwrap().into_iter().filter_map(outcome).collect();
         let failed = Outcome::Failed {
             code: code!("chat.unavailable"),
         };
-        let receipt = weacon_protocol::Receipt {
-            request: id("r-c-1"),
-            outcome: failed,
-        };
-        assert_eq!(last, weacon_protocol::ChatEvent::Receipt { receipt });
+        assert_eq!(receipts, [failed]);
         assert_eq!(feeds.try_recv().unwrap(), id::<WorkspaceId>("w1"));
         // The one its core may have is left to its receipts; the ended one isn't followed again.
         assert_eq!(workspace.open_requests(&id("c-2")).await.unwrap().len(), 1);

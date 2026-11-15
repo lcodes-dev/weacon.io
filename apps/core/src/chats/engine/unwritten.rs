@@ -182,7 +182,7 @@ mod tests {
 
         let failed = commanded(&mut on.engine, prompt("r-2", "More")).await;
 
-        assert_eq!(failed.unwrap_err().code().as_str(), "runs.not_saved");
+        assert_eq!(failed.unwrap_err().code().as_str(), "chat.unfinished");
         assert_eq!(soon(on.agent.told.recv()).await, None);
         let ended = last(&mut on.engine, 1).await;
         assert_eq!(ended, ["6 receipt r-1 failed runs.not_saved"]);

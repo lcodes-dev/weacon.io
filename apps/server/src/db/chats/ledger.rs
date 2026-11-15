@@ -1,9 +1,9 @@
 use sqlx::SqliteConnection;
 use weacon_observability::Fault;
-use weacon_protocol::{ChatCommand, ChatId, MemberId, RequestId};
+use weacon_protocol::{ChatCommand, ChatEvent, ChatId, MemberId, Receipt, RequestId};
 
 use super::super::{Workspace, failed, unreadable};
-use super::unstorable;
+use super::{Incoming, unstorable};
 
 /// A command a member sent a chat, as it is relayed, with `by` stamped.
 #[derive(Debug)]
@@ -19,6 +19,8 @@ pub(crate) struct OpenRequest {
     pub(crate) command: ChatCommand,
     /// When it was first sent.
     pub(crate) sent_at: i64,
+    /// Whether it was sent to its machine, as far as the server knows.
+    pub(crate) sent: bool,
     /// Whether its machine's core refused it for now when it was last sent.
     pub(crate) refused: bool,
 }
@@ -137,10 +139,61 @@ impl Workspace {
         Ok(())
     }
 
-    /// Marks `request` refused for now by its machine's core.
+    /// Ends `receipt`'s request to `chat` with it, a final receipt the server writes for the
+    /// chat's machine, unless another receipt ended it first; whether it did.
+    pub(crate) async fn end_open(
+        &self,
+        chat: &ChatId,
+        receipt: Receipt,
+        at: i64,
+    ) -> Result<bool, Fault> {
+        let mut transaction = self.db.write().await?;
+        let open: bool = sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM chat_requests
+                 WHERE workspace_id = ? AND chat_id = ? AND request_id = ? AND open = 1)",
+        )
+        .bind(self.id.as_str())
+        .bind(chat.as_str())
+        .bind(receipt.request.as_str())
+        .fetch_one(&mut *transaction)
+        .await
+        .map_err(failed)?;
+        if !open {
+            return Ok(false);
+        }
+        let event = ChatEvent::Receipt { receipt };
+        let incoming = Incoming {
+            core_seq: None,
+            event: &event,
+            at,
+        };
+        self.append(transaction, chat, &[incoming]).await?;
+        Ok(true)
+    }
+
+    /// Whether a request to `chat` other than `request` is open and was refused for now.
+    pub(crate) async fn refused_before(
+        &self,
+        chat: &ChatId,
+        request: &RequestId,
+    ) -> Result<bool, Fault> {
+        sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM chat_requests WHERE workspace_id = ? AND chat_id = ?
+                 AND request_id != ? AND open = 1 AND refused = 1)",
+        )
+        .bind(self.id.as_str())
+        .bind(chat.as_str())
+        .bind(request.as_str())
+        .fetch_one(&self.db.readers)
+        .await
+        .map_err(failed)
+    }
+
+    /// Marks `request` refused for now by its machine's core, which so never got it.
     pub(crate) async fn mark_refused(&self, request: &RequestId) -> Result<(), Fault> {
         sqlx::query(
-            "UPDATE chat_requests SET refused = 1 WHERE workspace_id = ? AND request_id = ?",
+            "UPDATE chat_requests SET refused = 1, sent = 0
+             WHERE workspace_id = ? AND request_id = ?",
         )
         .bind(self.id.as_str())
         .bind(request.as_str())
@@ -150,11 +203,11 @@ impl Workspace {
         Ok(())
     }
 
-    /// Marks `request` sent, before it is sent again, so only its core's next answer counts.
+    /// Forgets its core's last refusal of `request`, before it is sent again, so only its
+    /// answer to that send counts.
     pub(crate) async fn sending(&self, request: &RequestId) -> Result<(), Fault> {
         sqlx::query(
-            "UPDATE chat_requests SET sent = 1, refused = 0
-             WHERE workspace_id = ? AND request_id = ?",
+            "UPDATE chat_requests SET refused = 0 WHERE workspace_id = ? AND request_id = ?",
         )
         .bind(self.id.as_str())
         .bind(request.as_str())
@@ -166,8 +219,8 @@ impl Workspace {
 
     /// The commands to `chat` no receipt has ended yet, oldest first.
     pub(crate) async fn open_requests(&self, chat: &ChatId) -> Result<Vec<OpenRequest>, Fault> {
-        sqlx::query_as::<_, (String, i64, bool)>(
-            "SELECT command, sent_at, refused FROM chat_requests
+        sqlx::query_as::<_, (String, i64, bool, bool)>(
+            "SELECT command, sent_at, sent, refused FROM chat_requests
              WHERE workspace_id = ? AND chat_id = ? AND open = 1 ORDER BY sent_at, rowid",
         )
         .bind(self.id.as_str())
@@ -176,11 +229,12 @@ impl Workspace {
         .await
         .map_err(failed)?
         .into_iter()
-        .map(|(command, sent_at, refused)| {
+        .map(|(command, sent_at, sent, refused)| {
             let command = stored_command(&command)?;
             Ok(OpenRequest {
                 command,
                 sent_at,
+                sent,
                 refused,
             })
         })
@@ -365,6 +419,21 @@ mod tests {
         assert!(one.has_request(&id("r-2")).await.unwrap());
         let open = opened(one.open_requests(&id("c-1")).await.unwrap());
         assert!(open.iter().any(|(request, _)| request == "r-2"), "{open:?}");
+    }
+
+    #[tokio::test]
+    async fn a_request_sent_again_but_never_sent_is_still_forgotten() {
+        let dir = TempDir::new().unwrap();
+        let (one, _two) = two_teams(&dir).await;
+        make(&one, "c-1", "m1", NOW).await.unwrap();
+        assert_eq!(record(&one, "r-2", "c-1", "Go", NOW).await, Recorded::New);
+        one.mark_refused(&id("r-2")).await.unwrap();
+
+        // A second sender clears the refusal before its send, which fails like the first's.
+        one.sending(&id("r-2")).await.unwrap();
+        one.forget_request(&id("r-2")).await.unwrap();
+
+        assert!(!one.has_request(&id("r-2")).await.unwrap());
     }
 
     #[tokio::test]
