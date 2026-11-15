@@ -6,7 +6,7 @@ use tokio::sync::mpsc;
 use weacon_observability::Fault;
 use weacon_protocol::{AgentSession, RunId, RunState, code};
 
-use super::agent::{Agent, RunOf, drive};
+use super::agent::{Agent, drive};
 use super::{ChatKey, Engine, RunAs, about, failed};
 
 /// A run's agent, or why it didn't start, back from starting off the engine's loop.
@@ -108,11 +108,8 @@ impl<A: Agent> Engine<A> {
 
     async fn attach(&mut self, key: &ChatKey, run: &RunId, agent: A) -> Result<(), Fault> {
         let (orders, ordered) = mpsc::unbounded_channel();
-        let of = RunOf {
-            key: key.clone(),
-            run: run.clone(),
-        };
-        tokio::spawn(drive(agent, of, ordered, self.says.clone()));
+        let says = self.says.clone();
+        tokio::spawn(drive(agent, key.clone(), run.clone(), ordered, says));
         self.open(key).await?.orders = Some(orders);
         self.log.info("run started", &about(key, run));
         self.tell_state(key, run, RunState::Starting).await
@@ -123,7 +120,7 @@ impl<A: Agent> Engine<A> {
 mod tests {
     use weacon_protocol::{Outcome, RunEvent};
 
-    use super::super::agent::Heard;
+    use super::super::agent::Said;
     use super::super::by_hand::{hear, launched, on_turn, until_deaf};
     use crate::chats::test_support::{key, prompt, run, session, soon};
 
@@ -138,11 +135,8 @@ mod tests {
 
         // The agent exits and nobody watches: the chat stays open for its session.
         drop((on.agent, on.pushes));
-        let exited = Heard::Exited(None);
-        on.engine
-            .heard(&key(), &run("run-1"), exited)
-            .await
-            .unwrap();
+        let exited = Said::Exited(None);
+        on.engine.hear(&key(), &run("run-1"), exited).await.unwrap();
         on.engine.close_if_unused(&key());
         on.engine
             .command(&key(), prompt("r-2", "More"))

@@ -27,7 +27,7 @@ use weacon_protocol::{
     RequestId, RunId, RunState, RunStatus, code,
 };
 
-use self::agent::{Agent, Order, Said};
+use self::agent::{Agent, FromRun, Order};
 use self::handle::Ask;
 pub(crate) use self::handle::Chats;
 use self::launch::Launched;
@@ -115,8 +115,8 @@ pub(crate) struct Engine<A> {
     open_chats: HashMap<ChatKey, Chat>,
     host: Host<A>,
     asked: mpsc::Receiver<Ask>,
-    incoming: mpsc::Receiver<Said>,
-    says: mpsc::Sender<Said>,
+    incoming: mpsc::Receiver<FromRun>,
+    says: mpsc::Sender<FromRun>,
     /// The disk's state as last logged; turns wait on `disk`, never on this.
     disk_full: bool,
     disk: watch::Receiver<bool>,
@@ -385,7 +385,7 @@ mod tests {
     use weacon_model::ChatRuns;
     use weacon_protocol::{ChatAction, ChatAnswerKind, ChatQueryKind, RunEvent};
 
-    use super::agent::Heard;
+    use super::agent::Said;
     use super::by_hand::on_turn;
     use super::*;
     use crate::chats::test_support::{
@@ -1105,7 +1105,7 @@ mod tests {
         // The agent exits, and both clients hang up.
         drop(on.agent);
         on.engine
-            .heard(&key(), &run("run-1"), Heard::Exited(None))
+            .hear(&key(), &run("run-1"), Said::Exited(None))
             .await
             .unwrap();
         on.engine.close_if_unused(&key());

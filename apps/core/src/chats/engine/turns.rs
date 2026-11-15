@@ -193,7 +193,7 @@ mod tests {
     use tokio::sync::mpsc;
     use weacon_protocol::{ChatEvent, Receipt, RequestId, RunEvent, code};
 
-    use super::super::agent::Heard;
+    use super::super::agent::Said;
     use super::super::by_hand::{hear, latest, launched, on_ask, on_turn, until_deaf, waiting_in};
     use super::*;
     use crate::chats::test_support::{FakeAgent, Told, key, prompt, run, soon};
@@ -281,11 +281,8 @@ mod tests {
             Some(Told::Send("More".to_owned()))
         );
         // The old run's exit, heard late, leaves the new one alone.
-        let exited = Heard::Exited(None);
-        on.engine
-            .heard(&key(), &run("run-1"), exited)
-            .await
-            .unwrap();
+        let exited = Said::Exited(None);
+        on.engine.hear(&key(), &run("run-1"), exited).await.unwrap();
         assert!(on.engine.takes_orders(&key()));
         assert_eq!(on.engine.turn(&key()), Some(prompt("r-2", "More").request));
     }
@@ -416,8 +413,8 @@ mod tests {
         let mut on = on_turn().await;
         on.engine.open(&key()).await.unwrap().log.jam();
         drop(on.agent);
-        let exited = Heard::Exited(None);
-        let lost = on.engine.heard(&key(), &run("run-1"), exited).await;
+        let exited = Said::Exited(None);
+        let lost = on.engine.hear(&key(), &run("run-1"), exited).await;
         assert_eq!(lost.unwrap_err().code().as_str(), "chat.log_not_written");
         // Its outcome keeps the chat open, though nothing else does.
         on.engine.close_if_unused(&key());

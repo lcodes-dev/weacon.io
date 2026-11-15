@@ -5,7 +5,7 @@ use weacon_protocol::{
     ChatEvent, Message, Outcome, PermissionAnswer, RunEvent, RunId, RunState, RunUpdate, code,
 };
 
-use super::agent::{Agent, Heard, Order};
+use super::agent::{Agent, Order, Said};
 use super::cut::cut;
 use super::{ChatKey, Engine, about, failed};
 
@@ -16,24 +16,24 @@ enum Logged {
 }
 
 impl<A: Agent> Engine<A> {
-    pub(super) async fn heard(
+    pub(super) async fn hear(
         &mut self,
         key: &ChatKey,
         run: &RunId,
-        heard: Heard,
+        said: Said,
     ) -> Result<(), Fault> {
         if !self.is_live(key) || self.run_of(key).as_ref() != Some(run) {
             return Ok(());
         }
-        match heard {
-            Heard::Exited(fault) => {
+        match said {
+            Said::Exited(fault) => {
                 if let Some(fault) = fault {
                     let fields = failed(key, run, &fault);
                     self.log.warn("run output not read", &fields);
                 }
                 self.exited(key, run).await
             }
-            Heard::Event(event @ RunEvent::TextDelta { .. }) => {
+            Said::Event(event @ RunEvent::TextDelta { .. }) => {
                 let update = RunUpdate {
                     run: run.clone(),
                     event,
@@ -41,13 +41,13 @@ impl<A: Agent> Engine<A> {
                 self.publish(key, &Message::Run(update));
                 Ok(())
             }
-            Heard::Event(event) => self.said(key, run, event).await,
+            Said::Event(event) => self.on_event(key, run, event).await,
         }
     }
 
     // Commits what the run said and acts on it.
-    async fn said(&mut self, key: &ChatKey, run: &RunId, event: RunEvent) -> Result<(), Fault> {
-        let committed = self.commit_said(key, run, &event).await;
+    async fn on_event(&mut self, key: &ChatKey, run: &RunId, event: RunEvent) -> Result<(), Fault> {
+        let committed = self.commit_event(key, run, &event).await;
         match event {
             // Kept whether or not the event was committed: the chat's next run resumes it.
             RunEvent::Started { session } => {
@@ -100,7 +100,7 @@ impl<A: Agent> Engine<A> {
                 run: run.clone(),
                 prompt,
             };
-            self.commit_said(key, run, &event).await?;
+            self.commit_event(key, run, &event).await?;
         }
         self.running_again(key, run).await
     }
@@ -131,13 +131,13 @@ impl<A: Agent> Engine<A> {
                 run: run.clone(),
                 prompt,
             };
-            self.commit_said(key, run, &event).await?;
+            self.commit_event(key, run, &event).await?;
         }
         committed.map(drop)
     }
 
     // Commits a run's event, cut down when it is too large for one frame.
-    async fn commit_said(
+    async fn commit_event(
         &mut self,
         key: &ChatKey,
         run: &RunId,
@@ -339,23 +339,23 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn what_another_run_says_is_ignored_and_a_read_failure_is_logged_once() {
         let mut on = on_turn().await;
-        let stale = Heard::Event(text("Old"));
-        on.engine.heard(&key(), &run("run-9"), stale).await.unwrap();
+        let stale = Said::Event(text("Old"));
+        on.engine.hear(&key(), &run("run-9"), stale).await.unwrap();
         let other = ChatKey {
             chat: chat("c-2"),
             ..key()
         };
-        let elsewhere = Heard::Event(text("Other"));
+        let elsewhere = Said::Event(text("Other"));
         on.engine
-            .heard(&other, &run("run-1"), elsewhere)
+            .hear(&other, &run("run-1"), elsewhere)
             .await
             .unwrap();
         assert_eq!(on.engine.open(&key()).await.unwrap().log.seq(), 4);
         assert!(!on.engine.open_chats.contains_key(&other));
 
         let fault = Fault::new(code!("agent.io_failed"), "The agent's pipes failed");
-        let gone = Heard::Exited(Some(fault));
-        on.engine.heard(&key(), &run("run-1"), gone).await.unwrap();
+        let gone = Said::Exited(Some(fault));
+        on.engine.hear(&key(), &run("run-1"), gone).await.unwrap();
 
         assert!(!on.engine.is_live(&key()));
         assert_eq!(on.engine.turn(&key()), None);
@@ -374,7 +374,7 @@ mod tests {
         );
         assert_eq!(err["code"], "agent.io_failed");
         on.engine
-            .heard(&key(), &run("run-1"), Heard::Exited(None))
+            .hear(&key(), &run("run-1"), Said::Exited(None))
             .await
             .unwrap();
         assert_eq!(on.engine.open(&key()).await.unwrap().log.seq(), 6);

@@ -4,7 +4,7 @@
 use weacon_observability::Fault;
 use weacon_protocol::{Outcome, code};
 
-use super::agent::{Agent, Said};
+use super::agent::{Agent, FromRun};
 use super::launch::Launched;
 use super::{ChatKey, Engine, about, failed};
 
@@ -49,9 +49,9 @@ impl<A: Agent> Engine<A> {
     }
 
     // Takes up what a run said; the chat it is about.
-    pub(super) async fn take_said(&mut self, said: Said) -> ChatKey {
-        let (key, run) = (said.of.key, said.of.run);
-        let heard = self.heard(&key, &run, said.heard).await;
+    pub(super) async fn take_said(&mut self, from: FromRun) -> ChatKey {
+        let FromRun { key, run, said } = from;
+        let heard = self.hear(&key, &run, said).await;
         if let Err(fault) = self.checked(&key, heard).await {
             self.log
                 .error("run event not committed", &failed(&key, &run, &fault));
@@ -81,7 +81,7 @@ mod tests {
     use weacon_protocol::{ChatAction, ChatCommand, RunState};
     use weacon_testing::messages;
 
-    use super::super::agent::{Heard, RunOf};
+    use super::super::agent::Said;
     use super::super::by_hand::{OnTurn, launched, on_turn};
     use super::super::{Ask, update};
     use super::*;
@@ -121,14 +121,12 @@ mod tests {
         let mut on = told().await;
         on.engine.open(&key()).await.unwrap().log.jam();
 
-        let said = Said {
-            of: RunOf {
-                key: key(),
-                run: run("run-1"),
-            },
-            heard: Heard::Event(text("Hello")),
+        let from = FromRun {
+            key: key(),
+            run: run("run-1"),
+            said: Said::Event(text("Hello")),
         };
-        on.engine.take_said(said).await;
+        on.engine.take_said(from).await;
 
         assert_eq!(soon(on.agent.told.recv()).await, None);
         assert!(!on.engine.is_live(&key()));
