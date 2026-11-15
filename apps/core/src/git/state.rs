@@ -93,6 +93,10 @@ pub(super) fn hold(file: &Path) -> io::Result<Hold> {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::mpsc;
+    use std::thread;
+    use std::time::Duration;
+
     use weacon_testing::TempDir;
 
     use super::*;
@@ -104,14 +108,12 @@ mod tests {
         let _one = hold_worktrees(&state, Path::new("/repo/one")).unwrap();
 
         // Taken on a thread of its own, so a shared hold fails the test rather than hangs it.
-        let (taken, held) = std::sync::mpsc::channel();
-        std::thread::spawn(move || {
+        let (taken, held) = mpsc::channel();
+        thread::spawn(move || {
             drop(taken.send(hold_worktrees(&state, Path::new("/repo/two")).map(drop)));
         });
 
-        let two = held
-            .recv_timeout(std::time::Duration::from_secs(5))
-            .unwrap();
+        let two = held.recv_timeout(Duration::from_secs(5)).unwrap();
         two.unwrap();
     }
 
@@ -140,7 +142,7 @@ mod tests {
         let adding: Vec<_> = (0..4)
             .map(|_| {
                 let file = file.clone();
-                std::thread::spawn(move || add(file))
+                thread::spawn(move || add(file))
             })
             .collect();
 
@@ -187,8 +189,8 @@ mod tests {
         let mut said = BufReader::new(other.stdout.take().unwrap()).lines();
         assert!(said.any(|line| line.unwrap() == "held"));
 
-        let (trying, tried) = std::sync::mpsc::channel();
-        let waiting = std::thread::spawn(move || {
+        let (trying, tried) = mpsc::channel();
+        let waiting = thread::spawn(move || {
             trying.send(()).unwrap();
             let _held = hold(&file).unwrap();
             let found = load::<String>(&file).unwrap();

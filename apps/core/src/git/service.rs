@@ -42,8 +42,7 @@ struct Chat {
     git: Git,
     record: ChatRepo,
     worktree: PathBuf,
-    /// The repository's own folder.
-    repo: PathBuf,
+    repo_folder: PathBuf,
 }
 
 struct Inner {
@@ -223,12 +222,11 @@ impl Inner {
         }
         let found = self.chat(workspace, chat)?;
         let journal = self.stores(workspace).removed(found.git.clone());
-        // The Trash locks and unlocks worktrees, which git can fail at while one is added.
-        let hold = || hold_worktrees(self.workspaces.state_dir(), &found.repo);
         match action {
             WorktreeAction::Remove => {
                 let _changing = self.journals.lock().unwrap_or_else(PoisonError::into_inner);
-                let _held = hold()?;
+                // The Trash locks worktrees, which git can fail at while one is added.
+                let _held = hold_worktrees(self.workspaces.state_dir(), &found.repo_folder)?;
                 if journal.removed(chat)?.is_none() {
                     let now = SystemTime::now();
                     let to_trash = |path: &Path| (self.to_trash)(path, now);
@@ -238,7 +236,7 @@ impl Inner {
             }
             WorktreeAction::Restore => {
                 let _changing = self.journals.lock().unwrap_or_else(PoisonError::into_inner);
-                let _held = hold()?;
+                let _held = hold_worktrees(self.workspaces.state_dir(), &found.repo_folder)?;
                 if journal.removed(chat)?.is_some() {
                     journal.restore(chat)?;
                 }
@@ -300,7 +298,7 @@ impl Inner {
             git,
             record,
             worktree,
-            repo: repo.path,
+            repo_folder: repo.path,
         })
     }
 
@@ -398,7 +396,7 @@ mod tests {
     use weacon_testing::TempDir;
 
     use super::*;
-    use crate::git::tests::{chat, fixture};
+    use crate::git::tests::{block_hold, chat, fixture};
 
     struct Bench {
         dir: TempDir,
@@ -717,20 +715,10 @@ mod tests {
         );
     }
 
-    // A folder where the repository's worktree hold goes, so it can't be taken.
-    fn block_hold(bench: &Bench) -> PathBuf {
-        let repo = bench.dir.join("repo").canonicalize().unwrap();
-        let lock = super::super::state::worktrees_lock(&bench.dir.join("state"), &repo);
-        // A hold taken before leaves its lock file behind.
-        drop(fs::remove_file(&lock));
-        fs::create_dir_all(&lock).unwrap();
-        lock
-    }
-
     #[tokio::test]
     async fn the_trash_moves_a_worktree_only_under_its_repositorys_hold() {
         let bench = bench();
-        let lock = block_hold(&bench);
+        let lock = block_hold(&bench.dir);
 
         let error = bench.act(Action::Remove).await.unwrap_err();
 
@@ -738,7 +726,7 @@ mod tests {
         assert!(bench.worktree.join("README.md").exists());
         fs::remove_dir(&lock).unwrap();
         bench.act(Action::Remove).await.unwrap();
-        block_hold(&bench);
+        block_hold(&bench.dir);
 
         let error = bench.act(Action::Restore).await.unwrap_err();
 

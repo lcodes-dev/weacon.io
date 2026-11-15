@@ -17,8 +17,8 @@ use write::{
 /// The base layer: the repository at a commit. Every other layer is one worktree's changes.
 pub(crate) const BASE: &str = "base";
 
-/// A repository on this machine, known by its main worktree's canonical path; its map is kept
-/// under a hash of that path.
+/// A repository on this machine, known by its main worktree's canonical path; its map, and the
+/// hold on adding its worktrees, are kept under a hash of that path.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct LocalRepo(String);
 

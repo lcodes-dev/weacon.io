@@ -66,7 +66,7 @@ mod tests {
     use weacon_testing::TempDir;
 
     use super::*;
-    use crate::git::tests::{chat, fixture, git, repo};
+    use crate::git::tests::{block_hold, chat, fixture, git, repo};
     use crate::platform::trash::Trashed;
 
     struct Bench {
@@ -154,10 +154,7 @@ mod tests {
     #[test]
     fn a_worktree_is_made_only_under_its_repositorys_hold() {
         let bench = bench();
-        // A folder where the hold's lock file goes, so the hold can't be taken.
-        let repo = bench.stores().repo(&bench.site).unwrap().path;
-        let state = bench.dir.join("state");
-        fs::create_dir_all(super::super::state::worktrees_lock(&state, &repo)).unwrap();
+        block_hold(&bench.dir);
 
         let error = bench.tree(&bench.site).unwrap_err();
 
