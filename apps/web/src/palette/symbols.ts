@@ -2,6 +2,7 @@ import type { Later, WebCapability } from "../connection.ts";
 import type { MachineId, MachineSummary, Symbol as CodeSymbol, SymbolKind } from "../protocol.ts";
 import { type Answer, MALFORMED } from "../api/api.ts";
 import { type MachineSocket, askMachine } from "../machines/ask-machine.ts";
+import { lacks } from "../machines/core.ts";
 
 /** What a core offers to search its code. */
 export const SYMBOLS: WebCapability = "symbols.search";
@@ -16,7 +17,7 @@ export function searcher(machines: readonly MachineSummary[], chatMachine: strin
  * Whether `machine` searches its code now: connected, with a core that said what it offers and
  * didn't leave out symbol search.
  */
-const offers = (machine: MachineSummary) => machine.connected === true && machine.core !== undefined && !(machine.missing ?? []).includes(SYMBOLS);
+const offers = (machine: MachineSummary) => machine.connected === true && machine.core !== undefined && !lacks(machine, SYMBOLS);
 
 /** The items of the open workspace's code on `machine` that match `words`, best first. */
 export function symbols(socket: MachineSocket, machine: MachineId, words: string, later: Later): Promise<Answer<CodeSymbol[]>> {

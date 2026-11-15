@@ -4,9 +4,10 @@ import type { RequestId } from "./protocol.ts";
 
 /**
  * How a command ended for its sender; `lost` and `unsure` may or may not have run. `offline` and
- * `detached` are refusals because its machine is away or the chat has none.
+ * `detached` are refusals because its machine is away or the chat has none, `full` because the
+ * workspace has no room, and `unsupported` because the machine's core can't do it.
  */
-export type Settled = "accepted" | "refused" | "offline" | "detached" | "lost" | "unsure";
+export type Settled = "accepted" | "refused" | "offline" | "detached" | "full" | "unsupported" | "lost" | "unsure";
 
 /** Whether a command that ended as `settled` may have run, so sending it again must reuse its request. */
 export function mayHaveRun(settled: Settled): boolean {
@@ -25,6 +26,8 @@ const SETTLED_TEXT: Record<Exclude<Settled, "accepted">, (about: Subject) => str
   refused: ({ subject, refused }) => `${capital(subject)} ${refused}.`,
   offline: ({ subject, unsent }) => `The machine is offline, so ${subject} ${unsent}. Try again once it's back.`,
   detached: ({ gone }) => `This chat's machine is gone, so ${gone}.`,
+  full: ({ subject, unsent }) => `This workspace is full, so ${subject} ${unsent}.`,
+  unsupported: ({ subject, refused }) => `The machine's core can't do this, so ${subject} ${refused}.`,
   lost: ({ subject, unsure }) => `The connection closed. ${capital(subject)} ${unsure}.`,
   unsure: ({ subject, unsure }) => `The server didn't answer. ${capital(subject)} ${unsure}.`,
 };
@@ -50,6 +53,9 @@ const SETTLED = new Map<string, Settled>([
 const REFUSALS = new Map<string, Settled>([
   ["machine.offline", "offline"],
   ["chat.detached", "detached"],
+  ["chat.quota_full", "full"],
+  ["store.full", "full"],
+  ["message.unsupported", "unsupported"],
 ]);
 
 type Waiting = { id: number; settled: Promise<Settled>; resolve: (settled: Settled) => void };
@@ -96,7 +102,8 @@ export class Receipts {
   /** Settles the command `envelope` answers, if any. */
   take(envelope: Incoming): void {
     if (envelope.type === "receipt") {
-      const settled = SETTLED.get(envelope.state) ?? "unsure";
+      const failed = envelope.state === "failed" ? REFUSALS.get(envelope.code) : undefined;
+      const settled = failed ?? SETTLED.get(envelope.state) ?? "unsure";
       if (this.#overdue.delete(envelope.request) && !this.#waiting.has(envelope.request)) {
         this.#late(envelope.request, settled);
       }
