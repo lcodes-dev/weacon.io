@@ -138,7 +138,7 @@ impl Workspace {
         sqlx::query_scalar(
             "SELECT EXISTS (SELECT 1 FROM changes WHERE workspace_id = ?1 AND chat_id = ?2)
                  OR EXISTS (SELECT 1 FROM chat_requests
-                     WHERE workspace_id = ?1 AND chat_id = ?2 AND (sent = 1 OR attempt != ?3))",
+                     WHERE workspace_id = ?1 AND chat_id = ?2 AND (delivered >= 0 OR attempt != ?3))",
         )
         .bind(self.id.as_str())
         .bind(chat.as_str())

@@ -68,8 +68,8 @@ impl Sent {
     }
 }
 
-/// What a core's `answer` to the chat command `asked` makes of it, while `asked` is its
-/// request's current attempt. A refusal for now marks the request refused and closes the link,
+/// What a core's `answer` to the chat command `asked` makes of it, unless a later attempt of its
+/// request was queued since. A refusal for now marks the request refused and closes the link,
 /// so it is sent again once the core connects again; any other is the command's final receipt,
 /// stored in its chat for its feeds to hear.
 pub(crate) async fn take(
@@ -88,7 +88,7 @@ pub(crate) async fn take(
         }) => {
             return match refused(shared, &asked).await {
                 Ok(true) => Err(Closed),
-                // An older attempt's answer: the current one's counts.
+                // A later attempt was queued since: its answer counts.
                 Ok(false) => Ok(()),
                 Err(fault) => {
                     warn(shared, machine, &asked, "chat refusal not marked", &fault);
@@ -144,7 +144,7 @@ pub(crate) async fn end(
     Ok(())
 }
 
-// Whether the refusal of `asked` counts, its attempt being its request's current one.
+// Whether the refusal of `asked` counts, as no later attempt of its request was queued since.
 async fn refused(shared: &Shared, asked: &Asked) -> Result<bool, Fault> {
     let Some(place) = shared.db.find_workspace(&asked.workspace).await? else {
         return Ok(false);
@@ -191,13 +191,14 @@ mod tests {
             })
         };
 
-        // Its refusal is matched, then a retry begins before the refusal is kept.
+        // Its refusal is matched, then a retry is queued before the refusal is kept.
         let older = sent.answered(&machine, 7).unwrap();
         let second = workspace
             .begin_attempt(&request, NOW)
             .await
             .unwrap()
             .unwrap();
+        workspace.queued(&request, second).await.unwrap();
         take(shared, &machine, older, for_now()).await.unwrap();
 
         let open = workspace.open_requests(&id("c-1")).await.unwrap();
@@ -212,7 +213,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_refusal_heard_while_a_later_send_waits_counts_once_that_send_never_goes_out() {
+    async fn a_refusal_heard_while_a_later_send_waits_counts_and_stays_once_it_never_goes_out() {
         let fixture = Fixture::new().await;
         let shared = &fixture.shared;
         let workspace = shared.db.workspace(&id("w1")).await.unwrap();
@@ -229,7 +230,7 @@ mod tests {
         });
 
         let asked = sent.answered(&machine, 7).unwrap();
-        take(shared, &machine, asked, for_now).await.unwrap();
+        take(shared, &machine, asked, for_now).await.unwrap_err();
         workspace.abandon(&request, second.unwrap()).await.unwrap();
 
         let open = workspace.open_requests(&id("c-1")).await.unwrap();

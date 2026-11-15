@@ -633,9 +633,13 @@ mod tests {
             .unwrap_err();
 
         let request = workspace.open_requests(&chat).await.unwrap().pop().unwrap();
-        assert!(request.refused && request.attempt == 0, "{request:?}");
+        assert!(request.refused && request.attempt == 1, "{request:?}");
         // Sent again by a member since the pick-up read it: that send's answer counts.
-        workspace.begin_attempt(&id("r-c-1"), NOW).await.unwrap();
+        let retry = workspace.begin_attempt(&id("r-c-1"), NOW).await.unwrap();
+        workspace
+            .queued(&id("r-c-1"), retry.unwrap())
+            .await
+            .unwrap();
         let receipt = Receipt {
             request: id("r-c-1"),
             outcome: Outcome::Failed {

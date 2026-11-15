@@ -3,6 +3,7 @@ use weacon_observability::Fault;
 use weacon_protocol::{ChatCommand, ChatId, MemberId, RequestId};
 
 use super::super::{Workspace, failed, unreadable};
+use super::attempts::refused;
 use super::unstorable;
 
 /// A command a member sent a chat, as it is relayed, with `by` stamped.
@@ -21,12 +22,12 @@ pub(crate) struct OpenRequest {
     pub(crate) sent_at: i64,
     /// Whether it was ever queued for its machine.
     pub(crate) sent: bool,
-    /// Whether its machine's core refused its current attempt for now.
+    /// Whether its machine's core refused for now the latest attempt queued, or one after it.
     pub(crate) refused: bool,
-    /// The number of its current send attempt, 0 before the first.
+    /// The number of its last send attempt begun, 0 before the first.
     pub(crate) attempt: i64,
-    /// When its current send attempt began, while it may still be waiting to go out; 0 once
-    /// it went out or failed to.
+    /// When its last send attempt began, while it may still be on its way; 0 once it went out
+    /// or failed to.
     pub(crate) attempt_at: i64,
 }
 
@@ -120,10 +121,12 @@ impl Workspace {
 
     /// The commands to `chat` no receipt has ended yet, oldest first.
     pub(crate) async fn open_requests(&self, chat: &ChatId) -> Result<Vec<OpenRequest>, Fault> {
-        sqlx::query_as::<_, (String, i64, bool, bool, i64, i64)>(
-            "SELECT command, sent_at, sent, refused, attempt, attempt_at FROM chat_requests
-             WHERE workspace_id = ? AND chat_id = ? AND open = 1 ORDER BY sent_at, rowid",
-        )
+        sqlx::query_as::<_, (String, i64, bool, bool, i64, i64)>(concat!(
+            "SELECT command, sent_at, delivered >= 0, ",
+            refused!(),
+            ", attempt, attempt_at FROM chat_requests
+                 WHERE workspace_id = ? AND chat_id = ? AND open = 1 ORDER BY sent_at, rowid",
+        ))
         .bind(self.id.as_str())
         .bind(chat.as_str())
         .fetch_all(&self.db.readers)
@@ -325,7 +328,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn only_the_current_attempts_refusal_counts_and_a_later_send_clears_it() {
+    async fn a_refusal_counts_until_a_later_attempt_is_queued() {
         let dir = TempDir::new().unwrap();
         let (one, _two) = two_teams(&dir).await;
         make(&one, "c-1", "m1", NOW).await.unwrap();
@@ -334,7 +337,6 @@ mod tests {
         let refused = |one: Vec<OpenRequest>| one.iter().any(|open| open.refused);
 
         assert!(one.mark_refused(&id("r-2"), first.number).await.unwrap());
-        assert!(!one.mark_refused(&id("r-2"), 0).await.unwrap());
         let second = one
             .begin_attempt(&id("r-2"), NOW + 5)
             .await
@@ -352,6 +354,7 @@ mod tests {
         one.queued(&id("r-2"), first).await.unwrap();
         assert!(refused(one.open_requests(&id("c-1")).await.unwrap()));
         one.queued(&id("r-2"), third).await.unwrap();
+        assert!(!one.mark_refused(&id("r-2"), second.number).await.unwrap());
         let open = one.open_requests(&id("c-1")).await.unwrap();
         assert!(!refused(open), "{third:?}");
         let request = one.open_requests(&id("c-1")).await.unwrap().pop().unwrap();

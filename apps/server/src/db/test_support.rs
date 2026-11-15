@@ -234,8 +234,10 @@ pub(crate) fn answers(prompt: u32) -> ChatEvent {
 impl Workspace {
     /// Marks `request` queued for its machine, or not.
     pub(crate) async fn mark_sent(&self, request: &RequestId, sent: bool) -> Result<(), Fault> {
-        sqlx::query("UPDATE chat_requests SET sent = ? WHERE workspace_id = ? AND request_id = ?")
-            .bind(sent)
+        let query =
+            "UPDATE chat_requests SET delivered = ? WHERE workspace_id = ? AND request_id = ?";
+        sqlx::query(query)
+            .bind(if sent { 0 } else { -1 })
             .bind(self.id.as_str())
             .bind(request.as_str())
             .execute(&self.db.writer)
