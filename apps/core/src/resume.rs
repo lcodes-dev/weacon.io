@@ -479,17 +479,19 @@ mod tests {
     // What the daemon was sent, in brief, as far as it has read.
     fn sent(received: &mut mpsc::UnboundedReceiver<Message>) -> Vec<String> {
         std::iter::from_fn(|| received.try_recv().ok())
-            .map(|message| {
-                if let Message::ChatCommand(command) = &message {
-                    return format!("{:?}", command.action);
-                }
-                if let Message::ChatQuery(query) = &message {
-                    return format!("{:?}", query.query);
-                }
-                let hello = matches!(message, Message::Hello(_));
-                if hello { "hello" } else { "another" }.to_owned()
-            })
+            .map(|message| brief(&message))
             .collect()
+    }
+
+    fn brief(message: &Message) -> String {
+        if let Message::ChatCommand(command) = message {
+            return format!("{:?}", command.action);
+        }
+        if let Message::ChatQuery(query) = message {
+            return format!("{:?}", query.query);
+        }
+        let hello = matches!(message, Message::Hello(_));
+        if hello { "hello" } else { "another" }.to_owned()
     }
 
     async fn all_sent(mut received: mpsc::UnboundedReceiver<Message>) -> Vec<Message> {
@@ -589,7 +591,7 @@ mod tests {
         }
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn a_daemon_that_never_answers_whether_it_holds_the_chat_is_let_go() {
         let dir = TempDir::new().unwrap();
         let socket = dir.join("weacon.sock");
@@ -597,16 +599,22 @@ mod tests {
             silent: true,
             ..holding()
         };
-        let received = daemon(&socket, silent);
+        let mut received = daemon(&socket, silent);
 
-        let chat = key();
-        let waited = Box::pin(hold(&socket, build(&VERSION), &chat));
-        let answered = tokio::time::timeout(ANSWER_WITHIN * 2, waited).await;
-        let refused = answered.unwrap().map(|_| ());
+        let waiting = tokio::spawn(async move { hold(&socket, build(&VERSION), &key()).await });
+        for expected in ["hello", "Hold", "Window { before: 1, limit: 0 }"] {
+            let message = bounded(received.recv()).await.unwrap();
+            assert_eq!(brief(&message), expected);
+        }
+        // Paused only once nothing is in flight on the socket, so the clock can't outrun it.
+        tokio::time::pause();
+        let answered = tokio::time::timeout(ANSWER_WITHIN * 2, waiting).await;
+        let refused = answered.unwrap().unwrap().map(|_| ());
+        tokio::time::resume();
 
         assert_eq!(code_of(refused), "daemon.no_answer");
         // The connection is gone, and the hold with it.
-        assert_eq!(all_sent(received).await.len(), 3);
+        assert!(all_sent(received).await.is_empty());
     }
 
     #[tokio::test]
@@ -642,7 +650,7 @@ mod tests {
     async fn a_daemon_that_hangs_up_meanwhile_is_warned_of_once_and_the_agent_goes_on() {
         let dir = TempDir::new().unwrap();
         let socket = dir.join("weacon.sock");
-        let received = daemon(
+        let _received = daemon(
             &socket,
             Fake {
                 hangs_up: true,
@@ -658,15 +666,17 @@ mod tests {
                 .count()
         };
 
-        // The agent ends once the daemon has hung up; the hang-up comes first.
-        let agent = async {
-            drop(all_sent(received).await);
-            tokio::task::yield_now().await;
-            Ok(())
-        };
+        // Polled again once the hang-up is handled, the agent ends only after the warning, with
+        // a fault of its own so its end is seen.
+        let ended = || Fault::new(code!("agent.ended"), "Ended");
+        let agent = std::future::poll_fn(|_| match warned() {
+            0 => std::task::Poll::Pending,
+            _ => std::task::Poll::Ready(Err(ended())),
+        });
         let taken = held(&socket).await.unwrap();
-        bounded(carry_on(taken, agent, &log)).await.unwrap();
+        let ran = bounded(carry_on(taken, agent, &log)).await;
 
+        assert_eq!(code_of(ran), "agent.ended");
         assert_eq!(warned(), 1);
     }
 

@@ -627,10 +627,24 @@ mod tests {
         assert_eq!(list["result"]["tools"], tools);
     }
 
+    // Whether the server ended `stream`, with nothing more said.
+    async fn ended(stream: &mut TcpStream) -> bool {
+        let mut rest = Vec::new();
+        tokio::time::timeout(Duration::from_secs(5), stream.read_to_end(&mut rest))
+            .await
+            .is_ok_and(|read| read.map_or(true, |bytes| bytes == 0))
+    }
+
     #[tokio::test]
     async fn dropping_the_server_stops_it_and_its_open_connections() {
         let (log, _records) = recording_logger();
-        let (mcp, server) = start(&weacon_appkit::build(&VERSION), &log, Maps::off()).unwrap();
+        // Long enough that the open connection never stalls out before the server is dropped.
+        let limits = Limits {
+            stall: Duration::from_mins(10),
+            connections: 1,
+        };
+        let (mcp, server) =
+            listen(&weacon_appkit::build(&VERSION), &log, Maps::off(), limits).unwrap();
         let address = address(&mcp);
         let mut open = TcpStream::connect(address).await.unwrap();
         let request = format!("POST /mcp HTTP/1.1\r\nHost: {address}\r\nContent-Length: 0\r\n\r\n");
@@ -642,14 +656,15 @@ mod tests {
             answered.extend(byte);
         }
 
+        // Past the limit, this one waits unaccepted until the listener closes; a fresh connect
+        // could reach another test's listener on the freed port.
+        let mut queued = TcpStream::connect(address).await.unwrap();
+
         drop(server);
-        let mut rest = Vec::new();
-        let closed =
-            tokio::time::timeout(Duration::from_secs(5), open.read_to_end(&mut rest)).await;
 
         assert!(String::from_utf8_lossy(&answered).starts_with("HTTP/1.1 401"));
-        assert!(closed.is_ok_and(|read| read.map_or(true, |bytes| bytes == 0)));
-        TcpStream::connect(address).await.unwrap_err();
+        assert!(ended(&mut open).await);
+        assert!(ended(&mut queued).await);
     }
 
     #[test]

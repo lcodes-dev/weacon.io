@@ -72,6 +72,14 @@ pub(super) fn save<T: Serialize>(file: &Path, items: &[T]) -> io::Result<()> {
     weacon_appkit::write_whole(file, &serde_json::to_vec(items)?)
 }
 
+/// The core's hold on adding worktrees, for every workspace, since one repository can be in
+/// several: git can fail when two are added to a repository at once.
+pub(super) fn hold_worktrees(state_dir: &Path) -> Result<Hold, Fault> {
+    take(&state_dir.join("git/worktrees.lock")).map_err(|error| {
+        Fault::new(code!("git.hold_failed"), "The worktrees couldn't be held").because(error)
+    })
+}
+
 /// A hold on changing `file`, once another holding it, in this process or another, lets go.
 pub(super) fn hold(file: &Path) -> io::Result<Hold> {
     take(&file.with_extension("lock"))
