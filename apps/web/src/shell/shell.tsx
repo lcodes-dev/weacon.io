@@ -9,7 +9,7 @@ import type { Log } from "../log.ts";
 import { Machines } from "../machines/machines.tsx";
 import { Pins, browserStore } from "../machines/pins.ts";
 import { ME } from "../me.ts";
-import type { AccountSignedIn, Code } from "../protocol.ts";
+import type { AccountSignedIn, Code, MachineId } from "../protocol.ts";
 import { Settings } from "../settings/settings.tsx";
 import { Frame } from "./frame.tsx";
 import { STORE, remember } from "./last-workspace.ts";
@@ -69,6 +69,7 @@ export function Shell({ fetch, log }: { fetch: Fetch; log: Log }) {
 // The signed-in person's workspaces, or their settings, with who they are and Sign out.
 function SignedIn({ api, log, account, signedOut }: { api: Api; log: Log; account: AccountSignedIn; signedOut(): void }) {
   const [settings, setSettings] = useState(false);
+  const [opened, setOpened] = useState<MachineId>();
   const signingOut = useAsk();
   const signOut = () => void signingOut.ask(() => api.signOut(), signedOut);
   const who = (
@@ -86,6 +87,7 @@ function SignedIn({ api, log, account, signedOut }: { api: Api; log: Log; accoun
         type="button"
         onClick={() => {
           signingOut.clear();
+          setOpened(undefined);
           setSettings(!settings);
         }}
       >
@@ -96,12 +98,13 @@ function SignedIn({ api, log, account, signedOut }: { api: Api; log: Log; accoun
   const page = settings
     ? (socket: WorkspaceSocket | undefined) => (
         <Settings me={ME} account={{ email: account.email, signOut, signingOut: signingOut.busy }}>
-          <Machines api={api} pins={PINS} later={later} socket={socket} />
+          <Machines api={api} pins={PINS} later={later} socket={socket} opened={opened} />
         </Settings>
       )
     : undefined;
-  const openSettings = () => {
+  const openSettings = (machine?: MachineId) => {
     signingOut.clear();
+    setOpened(machine);
     setSettings(true);
   };
   return <Workspaces api={api} log={log} who={who} page={page} openSettings={openSettings} />;

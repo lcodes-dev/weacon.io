@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { type Answers, answerProblem, askKey, sending, settle, settleAnswer, stopProblem } from "./asks.ts";
+import { type Answers, answerProblem, askKey, askText, sending, settle, settleAnswer, stopProblem } from "./asks.ts";
 
 const key = askKey("r-1", 2);
 const mine = (allow: boolean) => ({ run: "r-1", prompt: 2, allow });
@@ -86,4 +86,15 @@ test("Stop says why it may not have worked", () => {
   assert.equal(stopProblem("detached"), "This chat's machine is gone, so there's no agent to stop.");
   assert.equal(stopProblem("lost"), "The connection closed. The agent may not have stopped.");
   assert.equal(stopProblem("unsure"), "The server didn't answer. The agent may not have stopped.");
+});
+
+test("a prompt names its tool, and says a tool when the name wasn't kept", () => {
+  assert.equal(askText({ state: "open", tool: "Bash" }), "Asks to use Bash");
+  assert.equal(askText({ state: "closed", tool: "Bash" }), "Asked to use Bash");
+  assert.equal(askText({ state: "allowed", tool: "Bash" }), "Allowed Bash");
+  assert.equal(askText({ state: "denied", tool: "Bash" }), "Denied Bash");
+  assert.equal(askText({ state: "open", tool: "" }), "Asks to use a tool");
+  assert.equal(askText({ state: "closed", tool: "" }), "Asked to use a tool");
+  assert.equal(askText({ state: "allowed", tool: "" }), "Allowed");
+  assert.equal(askText({ state: "denied", tool: "" }), "Denied");
 });

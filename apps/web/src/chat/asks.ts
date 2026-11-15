@@ -1,4 +1,5 @@
 import type { RequestId, RunId } from "../protocol.ts";
+import type { Ask } from "./chat.ts";
 import { type Settled, type Subject, mayHaveRun, settledText } from "../receipts.ts";
 
 /** A person's answer to the prompt `prompt` of `run`, on its way or not taken. */
@@ -83,4 +84,23 @@ export function stopProblem(settled: Settled): string | undefined {
 /** What a prompt says about its answer: nothing, or why it may not have been taken. */
 export function answerProblem(answering: Answering | undefined): string | undefined {
   return answering?.settled === undefined ? undefined : settledText(answering.settled, ANSWER);
+}
+
+/** What a permission prompt says; a stored chat keeps no tool names, so one may be missing. */
+export function askText({ state, tool }: Pick<Ask, "state" | "tool">): string {
+  switch (state) {
+    case "open":
+      return `Asks to use ${toolName(tool)}`;
+    case "closed":
+      return `Asked to use ${toolName(tool)}`;
+    case "allowed":
+      return tool === "" ? "Allowed" : `Allowed ${tool}`;
+    case "denied":
+      return tool === "" ? "Denied" : `Denied ${tool}`;
+  }
+}
+
+/** The tool a prompt names, or "a tool" when its name wasn't kept. */
+export function toolName(tool: string): string {
+  return tool === "" ? "a tool" : tool;
 }
