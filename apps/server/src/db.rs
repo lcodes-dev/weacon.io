@@ -9,6 +9,7 @@ mod docs;
 mod machine;
 mod proposals;
 mod schema;
+mod search;
 mod sign_in;
 mod tasks;
 #[cfg(test)]
