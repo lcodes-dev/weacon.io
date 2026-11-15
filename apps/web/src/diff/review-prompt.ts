@@ -9,7 +9,7 @@ export function reviewPrompt(comments: readonly Comment[]): string {
     // A file name's control characters, such as a newline, could otherwise pass for a line of the prompt.
     const name = path.replace(/\p{Cc}/gu, "?");
     const words = text.replace(/^\n+|\s+$/g, "").split("\n").map((line) => `> ${line}`);
-    const heading = where === "Lines" ? name : `${name}, ${where.charAt(0).toLowerCase()}${where.slice(1)}`;
+    const heading = where === undefined ? name : `${name}, ${where}`;
     return [`${heading}:`, ...words].join("\n");
   });
   return ["Review comments on your changes:", ...quoted].join("\n\n");

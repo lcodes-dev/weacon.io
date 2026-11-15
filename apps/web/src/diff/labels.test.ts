@@ -3,7 +3,7 @@ import { test } from "node:test";
 
 import type { DiffContent, FileChange, LineOp } from "../protocol.ts";
 import { NO_CHANGES, ask, rows } from "./changes.ts";
-import { changeText, contentText, hunkText, linesText, summary } from "./labels.ts";
+import { changeText, contentText, hunkText, linesPhrase, linesText, summary } from "./labels.ts";
 
 test("the summary says how far the changes have come", () => {
   const { changes } = ask(5, "q-1", "w-1", "c-1", NO_CHANGES);
@@ -72,4 +72,7 @@ test("a range is named by its lines' numbers, old ones where only the old side h
   assert.equal(linesText(lines, 2, 3), "Lines old 11 to old 12");
   assert.equal(linesText(lines, 2, 4), "Lines old 11 to new 13");
   assert.equal(linesText(lines, 0, 1), "Lines");
+  assert.equal(linesPhrase(lines, 2, 4), "lines old 11 to new 13");
+  assert.equal(linesPhrase(lines, 1, 1), "line 12");
+  assert.equal(linesPhrase(lines, 0, 1), undefined);
 });

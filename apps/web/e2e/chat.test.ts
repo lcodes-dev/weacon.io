@@ -2,9 +2,9 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import type { ChatAction, ChatQueryKind, Envelope } from "../src/protocol.ts";
-import { type Harness, fakeServer, start, waitFor } from "./harness.ts";
+import { FAKE_CHAT, type Harness, fakeServer, selectInWritingRow, start, waitFor } from "./harness.ts";
 
-const CHAT = { query: "&workspace=w-1&chat=c-1" };
+const CHAT = { query: FAKE_CHAT };
 // The chat's first prompt, which the first snapshot never holds, and its latest.
 const FIRST = "Merge the duplicate lines in the shopping list.";
 const LATEST = "Now merge across units too.";
@@ -33,7 +33,7 @@ test("a chat shows its prompts and labelled turns, and a waiting prompt is answe
 
   assert.deepEqual(
     actions(harness).filter((action) => action.kind === "permission"),
-    [{ kind: "permission", answer: { run: "r-2", prompt: 1, allow: true } }],
+    [{ kind: "permission", answer: { run: "r-1", prompt: 1, allow: true } }],
   );
   assert.equal(await page.getByRole("button", { name: "Allow" }).count(), 0);
 });
@@ -155,17 +155,3 @@ test("loading earlier messages keeps a row held back by a selection, and the sel
   await page.waitForFunction(() => document.querySelector("[data-picked] > p") !== null);
 });
 
-// Selects the first piece of the text row still being written, in the frame it is found.
-async function selectInWritingRow(): Promise<string> {
-  for (let frame = 0; frame < 600; frame += 1) {
-    const row = document.querySelector("[data-writing]");
-    const piece = row?.firstChild;
-    if (row !== null && piece) {
-      row.setAttribute("data-picked", "");
-      document.getSelection()?.setBaseAndExtent(piece, 0, piece, piece.textContent?.length ?? 0);
-      return document.getSelection()?.toString() ?? "";
-    }
-    await new Promise(requestAnimationFrame);
-  }
-  throw new Error("no row is being written");
-}

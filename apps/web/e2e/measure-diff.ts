@@ -1,13 +1,13 @@
 // The diff half of `npm run measure`: opens the fake server's 5,320-line change in the built page
 // in Chromium, scrolls it top to bottom, and prints frame gaps, memory and DOM size as JSON.
 
-import { fakeServer, start } from "./harness.ts";
+import { FAKE_CHAT, fakeServer, start } from "./harness.ts";
 import { pageMetrics } from "./metrics.ts";
 
 // Pixels scrolled each frame, about a screen a second at 60 frames a second.
 const STEP_PX = 15;
 
-const harness = await start(fakeServer(1_000, 0), { query: "&workspace=w-1&chat=c-1" });
+const harness = await start(fakeServer(1_000, 0), { query: FAKE_CHAT });
 try {
   const { page } = harness;
   await page.setViewportSize({ width: 1280, height: 800 });

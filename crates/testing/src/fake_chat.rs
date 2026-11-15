@@ -1,10 +1,10 @@
-//! A made-up chat log that the fake server keeps for its client: a person's prompt and a long
-//! answer, another prompt, a member's Claude run that plays the recording, and a shared Codex run
-//! waiting on a permission prompt. It answers the client's chat queries and commands, and commits the recording's
-//! events as they play. A prompt of exactly [`LOSE`] makes it tell the client it lost events, and a
-//! query about any other chat is refused.
+//! A made-up chat log that the fake server keeps for its client: a person's prompt and a shared
+//! Codex run's long answer, then another prompt and a member's Claude run. It commits the
+//! recording's events as that run's, which asks to use Bash once the recording ends, and answers
+//! the client's chat queries and commands. A prompt of exactly [`LOSE`] makes it tell the client
+//! it lost events, and a query about any other chat is refused.
 
-use serde_json::Value;
+use weacon_model::ChatRuns;
 use weacon_protocol::{
     AgentKind, AgentOwner, AgentRef, ChatAction, ChatAnswer, ChatAnswerKind, ChatCommand,
     ChatEntry, ChatEvent, ChatId, ChatQuery, ChatQueryKind, ChatUpdate, Envelope, ErrorBody,
@@ -14,7 +14,7 @@ use weacon_protocol::{
 
 mod events;
 
-use events::{agent, asked, closes, run, said};
+use events::{agent, asks_bash, run, said};
 
 /// The prompt text that makes the fake drop its client's subscription.
 const LOSE: &str = "/lose";
@@ -27,7 +27,8 @@ const FIRST: &str = "Merge the duplicate lines in the shopping list.";
 // The steps of the turn that answered the first prompt.
 const EARLIER: u64 = 60;
 
-/// The seq of the made-up log's last event; the server's tests read it.
+/// The seq of the made-up log's last event once its run has asked to use Bash; the server's
+/// tests read it.
 #[cfg(test)]
 pub(crate) const SEEDED: u64 = 69;
 
@@ -37,7 +38,6 @@ pub(crate) struct FakeChat {
     workspace: WorkspaceId,
     chat: ChatId,
     entries: Vec<ChatEntry>,
-    runs: Vec<RunStatus>,
     subscription: Option<u32>,
     /// Runs a person stopped, whose recording plays no further.
     stopped: Vec<RunId>,
@@ -50,44 +50,32 @@ impl FakeChat {
             workspace: WorkspaceId::try_from("w-1".to_owned())?,
             chat: ChatId::try_from("c-1".to_owned())?,
             entries: Vec::new(),
-            runs: Vec::new(),
             subscription: None,
             stopped: Vec::new(),
         };
         let (mine, shared) = (run("r-1")?, run("r-2")?);
         let member = MemberId::try_from("m-1".to_owned())?;
-        let claude = agent(AgentKind::Claude, AgentOwner::Member { member }, "laptop")?;
         fake.prompt("q-0", FIRST)?;
-        fake.status(&mine, RunState::Running, claude.clone());
+        fake.start(
+            &shared,
+            agent(AgentKind::Codex, AgentOwner::Shared, "team VPS")?,
+        );
         for step in 1..=EARLIER {
             fake.commit(said(
-                &mine,
+                &shared,
                 &format!("Step {step} of the first pass is done."),
             ));
         }
-        fake.finish(&mine, Outcome::Completed, claude.clone());
+        fake.finish(&shared, Outcome::Completed);
         fake.prompt("q-1", "Now merge across units too.")?;
-        fake.status(&mine, RunState::Running, claude);
-        fake.status(
-            &shared,
-            RunState::Waiting,
-            agent(AgentKind::Codex, AgentOwner::Shared, "team VPS")?,
+        fake.start(
+            &mine,
+            agent(AgentKind::Claude, AgentOwner::Member { member }, "laptop")?,
         );
         fake.commit(said(
-            &shared,
+            &mine,
             "I'll run the unit tests before I change anything.",
         ));
-        fake.commit(ChatEvent::Run {
-            update: RunUpdate {
-                run: shared.clone(),
-                event: RunEvent::PermissionAsked {
-                    run: shared,
-                    prompt: 1,
-                    tool: "Bash".to_owned(),
-                    input: Value::Null,
-                },
-            },
-        });
         Ok(fake)
     }
 
@@ -101,7 +89,7 @@ impl FakeChat {
         {
             if !self.is(workspace, chat) {
                 let refused = ErrorBody {
-                    code: code!("chat.unknown"),
+                    code: code!("chat.not_found"),
                     retryable: false,
                 };
                 return vec![Envelope {
@@ -111,70 +99,69 @@ impl FakeChat {
             }
             return self.query(envelope.id, query);
         }
-        if let Message::ChatCommand(ChatCommand {
+        let Message::ChatCommand(ChatCommand {
             workspace,
             chat,
             request,
             action,
             ..
         }) = &envelope.message
-            && self.is(workspace, chat)
+        else {
+            return Vec::new();
+        };
+        if !self.is(workspace, chat) {
+            return Vec::new();
+        }
+        let seq = self.seq();
+        self.command(request, action);
+        let mut told = self.told_since(seq);
+        if matches!(action, ChatAction::Prompt { text, .. } if text == LOSE)
+            && let Some(id) = self.subscription.take()
         {
-            return self.command(request, action);
-        }
-        Vec::new()
-    }
-
-    /// Commits a recorded event of a run; what tells the client of it, if it subscribed.
-    pub(crate) fn played(&mut self, envelope: &Envelope) -> Vec<Envelope> {
-        let Message::Run(update) = &envelope.message else {
-            return Vec::new();
-        };
-        if !self.plays(envelope) {
-            return Vec::new();
-        }
-        let run = update.run.clone();
-        let delta = matches!(update.event, RunEvent::TextDelta { .. });
-        let event = ChatEvent::Run {
-            update: update.clone(),
-        };
-        let Some(agent) = self.agent_of(&run) else {
-            return if delta {
-                Vec::new()
-            } else {
-                self.commit(event)
-            };
-        };
-        // The recording's run goes idle at the end of each pass, and runs again with the next.
-        if matches!(update.event, RunEvent::Finished { .. }) {
-            let mut told = self.commit(event);
-            told.extend(self.status(&run, RunState::Idle, agent));
-            return told;
-        }
-        let idle = self
-            .runs
-            .iter()
-            .any(|status| status.run == run && status.state == RunState::Idle);
-        let asks = matches!(update.event, RunEvent::PermissionAsked { .. });
-        let mut told = if idle {
-            self.status(&run, RunState::Running, agent.clone())
-        } else {
-            Vec::new()
-        };
-        // Deltas stream to the client as they are, and are never committed.
-        if delta {
-            return told;
-        }
-        told.extend(self.commit(event));
-        if asks {
-            told.extend(self.status(&run, RunState::Waiting, agent));
+            told.push(self.envelope(id, ChatAnswerKind::EventsLost));
         }
         told
     }
 
-    /// Whether a recorded message is still played: not one of a run a person stopped.
-    pub(crate) fn plays(&self, envelope: &Envelope) -> bool {
-        !matches!(&envelope.message, Message::Run(update) if self.stopped.contains(&update.run))
+    /// Commits a recorded event of a run; what tells the client of it, if it subscribed. `None`
+    /// when the message plays no further, as a run a person stopped.
+    pub(crate) fn played(&mut self, envelope: &Envelope) -> Option<Vec<Envelope>> {
+        let Message::Run(update) = &envelope.message else {
+            return Some(Vec::new());
+        };
+        let current = self.current()?;
+        // Only the chat's one run plays; a real run waiting on a permission is blocked and says
+        // nothing, and a stopped one says nothing more.
+        if current.run != update.run
+            || current.state == RunState::Waiting
+            || self.stopped.contains(&update.run)
+        {
+            return None;
+        }
+        let seq = self.seq();
+        self.play(update, current.state);
+        Some(self.told_since(seq))
+    }
+
+    /// Once the recording has played, its run asks to use Bash, unless a person stopped it or
+    /// it has asked already; what tells the client of it.
+    pub(crate) fn ended(&mut self) -> Vec<Envelope> {
+        let Some(status) = self.current() else {
+            return Vec::new();
+        };
+        let asked = self.entries.iter().any(|entry| {
+            matches!(&entry.event, ChatEvent::Run { update } if update.run == status.run
+                && matches!(update.event, RunEvent::PermissionAsked { .. }))
+        });
+        if asked || self.stopped.contains(&status.run) {
+            return Vec::new();
+        }
+        let seq = self.seq();
+        if status.state != RunState::Running {
+            self.status(&status.run, RunState::Running);
+        }
+        self.ask(&status.run);
+        self.told_since(seq)
     }
 
     fn is(&self, workspace: &WorkspaceId, chat: &ChatId) -> bool {
@@ -184,14 +171,13 @@ impl FakeChat {
     fn query(&mut self, id: u32, query: &ChatQueryKind) -> Vec<Envelope> {
         match query {
             ChatQueryKind::Snapshot => {
-                let waiting = self.waiting();
                 let events = self.before(self.seq() + 1, PAGE);
                 vec![self.envelope(
                     id,
                     ChatAnswerKind::Snapshot {
                         seq: self.seq(),
-                        runs: self.runs.clone(),
-                        waiting,
+                        runs: self.current().into_iter().collect(),
+                        waiting: ChatRuns::fold(&self.entries).waiting_seqs(),
                         events,
                     },
                 )]
@@ -207,12 +193,7 @@ impl FakeChat {
             }
             ChatQueryKind::Subscribe { after } if *after <= self.seq() => {
                 self.subscription = Some(id);
-                let missed = self
-                    .entries
-                    .iter()
-                    .filter(|entry| entry.seq > *after)
-                    .cloned();
-                missed.map(|entry| self.update(id, entry)).collect()
+                self.told_since(*after)
             }
             ChatQueryKind::Subscribe { .. } => vec![self.envelope(id, ChatAnswerKind::EventsLost)],
             ChatQueryKind::Newer => Vec::new(),
@@ -220,61 +201,46 @@ impl FakeChat {
     }
 
     // A command's receipt is an event in the log, as a core's is.
-    fn command(&mut self, request: &RequestId, action: &ChatAction) -> Vec<Envelope> {
-        let mut told = self.commit(ChatEvent::Receipt {
+    fn command(&mut self, request: &RequestId, action: &ChatAction) {
+        self.commit(ChatEvent::Receipt {
             receipt: Receipt {
                 request: request.clone(),
                 outcome: Outcome::Accepted,
             },
         });
         match action {
-            ChatAction::Prompt { text, agent, .. } => {
-                told.extend(self.commit(ChatEvent::Prompt {
-                    request: request.clone(),
-                    text: text.clone(),
-                    repo: None,
-                    agent: *agent,
-                }));
-                if text == LOSE
-                    && let Some(id) = self.subscription.take()
-                {
-                    told.push(self.envelope(id, ChatAnswerKind::EventsLost));
-                }
-            }
-            ChatAction::Permission { answer } => told.extend(self.answered(answer)),
+            ChatAction::Prompt { text, agent, .. } => self.commit(ChatEvent::Prompt {
+                request: request.clone(),
+                text: text.clone(),
+                repo: None,
+                agent: *agent,
+            }),
+            ChatAction::Permission { answer } => self.answered(answer),
             ChatAction::Interrupt => {
-                let stopped: Vec<_> = self
-                    .runs
-                    .iter()
-                    .filter(|status| matches!(status.state, RunState::Running | RunState::Waiting))
-                    .filter_map(|status| Some((status.run.clone(), status.agent.clone()?)))
-                    .collect();
-                for (run, agent) in stopped {
-                    told.extend(self.finish(&run, Outcome::Interrupted, agent));
+                let working = self
+                    .current()
+                    .filter(|status| matches!(status.state, RunState::Running | RunState::Waiting));
+                if let Some(RunStatus { run, .. }) = working {
+                    self.finish(&run, Outcome::Interrupted);
                     self.stopped.push(run);
                 }
             }
             // A hold comes only from a local client, never through the server.
             ChatAction::Hold | ChatAction::Release | ChatAction::Newer => {}
         }
-        told
     }
 
     // Commits the answer to a prompt still waiting, then plays the turn it lets the run finish.
-    fn answered(&mut self, answer: &PermissionAnswer) -> Vec<Envelope> {
-        let open = self
-            .open_prompts()
-            .iter()
-            .any(|&(run, prompt, _)| *run == answer.run && prompt == answer.prompt);
-        let Some(agent) = self.agent_of(&answer.run).filter(|_| open) else {
-            return Vec::new();
-        };
+    fn answered(&mut self, answer: &PermissionAnswer) {
+        if !ChatRuns::fold(&self.entries).waits(&answer.run, answer.prompt) {
+            return;
+        }
         let reply = if answer.allow {
             "The tests pass."
         } else {
             "I won't run them, then."
         };
-        let mut told = self.commit(ChatEvent::Run {
+        self.commit(ChatEvent::Run {
             update: RunUpdate {
                 run: answer.run.clone(),
                 event: RunEvent::PermissionAnswered {
@@ -282,54 +248,92 @@ impl FakeChat {
                 },
             },
         });
-        told.extend(self.status(&answer.run, RunState::Running, agent.clone()));
-        told.extend(self.commit(said(&answer.run, reply)));
-        told.extend(self.finish(&answer.run, Outcome::Completed, agent));
-        told
+        self.status(&answer.run, RunState::Running);
+        self.commit(said(&answer.run, reply));
+        self.finish(&answer.run, Outcome::Completed);
     }
 
-    fn prompt(&mut self, request: &str, text: &str) -> Result<Vec<Envelope>, String> {
+    // The recording's run goes idle at the end of each pass, and runs again with the next.
+    fn play(&mut self, update: &RunUpdate, state: RunState) {
+        let run = &update.run;
+        let finished = matches!(update.event, RunEvent::Finished { .. });
+        if state == RunState::Idle && !finished {
+            self.status(run, RunState::Running);
+        }
+        // Deltas stream to the client as they are, and are never committed.
+        if !matches!(update.event, RunEvent::TextDelta { .. }) {
+            self.commit(ChatEvent::Run {
+                update: update.clone(),
+            });
+        }
+        if finished {
+            self.status(run, RunState::Idle);
+        } else if matches!(update.event, RunEvent::PermissionAsked { .. }) {
+            self.status(run, RunState::Waiting);
+        }
+    }
+
+    fn ask(&mut self, run: &RunId) {
+        self.commit(asks_bash(run));
+        self.status(run, RunState::Waiting);
+    }
+
+    fn prompt(&mut self, request: &str, text: &str) -> Result<(), String> {
         let request = RequestId::try_from(request.to_owned())?;
-        Ok(self.commit(ChatEvent::Prompt {
+        self.commit(ChatEvent::Prompt {
             request,
             text: text.to_owned(),
             repo: None,
             agent: None,
-        }))
+        });
+        Ok(())
     }
 
-    fn finish(&mut self, run: &RunId, outcome: Outcome, agent: AgentRef) -> Vec<Envelope> {
-        let mut told = self.commit(ChatEvent::Run {
+    fn finish(&mut self, run: &RunId, outcome: Outcome) {
+        self.commit(ChatEvent::Run {
             update: RunUpdate {
                 run: run.clone(),
                 event: RunEvent::Finished { outcome },
             },
         });
-        told.extend(self.status(run, RunState::Idle, agent));
-        told
+        self.status(run, RunState::Idle);
     }
 
-    fn status(&mut self, run: &RunId, state: RunState, agent: AgentRef) -> Vec<Envelope> {
+    fn start(&mut self, run: &RunId, agent: AgentRef) {
+        let status = RunStatus {
+            run: run.clone(),
+            state: RunState::Running,
+            agent: Some(agent),
+        };
+        self.commit(ChatEvent::RunStatus { status });
+    }
+
+    // A run's state, under the agent its last status named.
+    fn status(&mut self, run: &RunId, state: RunState) {
+        let agent = self.last(run).and_then(|status| status.agent.clone());
         let status = RunStatus {
             run: run.clone(),
             state,
-            agent: Some(agent),
+            agent,
         };
-        self.runs.retain(|known| known.run != *run);
-        self.runs.push(status.clone());
-        self.commit(ChatEvent::RunStatus { status })
+        self.commit(ChatEvent::RunStatus { status });
     }
 
-    fn commit(&mut self, event: ChatEvent) -> Vec<Envelope> {
+    fn commit(&mut self, event: ChatEvent) {
         let entry = ChatEntry {
             seq: self.seq() + 1,
             event,
         };
-        self.entries.push(entry.clone());
-        self.subscription
-            .map(|id| self.update(id, entry))
-            .into_iter()
-            .collect()
+        self.entries.push(entry);
+    }
+
+    // What tells the subscriber of the entries after `seq`.
+    fn told_since(&self, seq: u64) -> Vec<Envelope> {
+        let Some(id) = self.subscription else {
+            return Vec::new();
+        };
+        let after = self.entries.iter().filter(|entry| entry.seq > seq);
+        after.map(|entry| self.update(id, entry.clone())).collect()
     }
 
     fn seq(&self) -> u64 {
@@ -347,32 +351,23 @@ impl FakeChat {
         earlier.into_iter().skip(skip).cloned().collect()
     }
 
-    // The permission prompts no later entry has closed: by a withdrawal, the run finishing, or the
-    // run no longer waiting.
-    fn waiting(&self) -> Vec<u64> {
-        self.open_prompts()
-            .into_iter()
-            .map(|(_, _, seq)| seq)
-            .collect()
+    // The chat's current run, as its last status says.
+    fn current(&self) -> Option<RunStatus> {
+        self.statuses().next_back().cloned()
     }
 
-    fn open_prompts(&self) -> Vec<(&RunId, u32, u64)> {
-        let mut open: Vec<(&RunId, u32, u64)> = Vec::new();
-        for entry in &self.entries {
-            open.retain(|&(run, prompt, _)| !closes(entry, run, prompt));
-            if let Some((run, prompt)) = asked(entry) {
-                open.push((run, prompt, entry.seq));
-            }
-        }
-        open
+    // The statuses in the log, oldest first.
+    fn statuses(&self) -> impl DoubleEndedIterator<Item = &RunStatus> {
+        self.entries.iter().filter_map(|entry| {
+            let ChatEvent::RunStatus { status } = &entry.event else {
+                return None;
+            };
+            Some(status)
+        })
     }
 
-    fn agent_of(&self, run: &RunId) -> Option<AgentRef> {
-        self.runs
-            .iter()
-            .find(|status| status.run == *run)?
-            .agent
-            .clone()
+    fn last(&self, run: &RunId) -> Option<&RunStatus> {
+        self.statuses().rev().find(|status| status.run == *run)
     }
 
     fn update(&self, id: u32, entry: ChatEntry) -> Envelope {
@@ -400,12 +395,34 @@ impl FakeChat {
 
 #[cfg(test)]
 mod tests {
-    use weacon_protocol::MachineName;
+    use serde_json::Value;
 
     use super::*;
 
+    // The seeded chat once its recording has played: the member's run waits on its Bash prompt.
     fn fake() -> FakeChat {
-        FakeChat::new().unwrap()
+        let mut fake = FakeChat::new().unwrap();
+        fake.ended();
+        fake
+    }
+
+    // The seq of the last event once the seeded prompt is allowed and its run is idle.
+    const ANSWERED: u64 = SEEDED + 6;
+
+    fn answered() -> FakeChat {
+        let mut fake = fake();
+        fake.answer(&allow("r-1", 1));
+        fake
+    }
+
+    fn allow(id: &str, prompt: u32) -> Envelope {
+        command(ChatAction::Permission {
+            answer: PermissionAnswer {
+                run: run(id).unwrap(),
+                prompt,
+                allow: true,
+            },
+        })
     }
 
     fn query(id: u32, chat: &str, query: ChatQueryKind) -> Envelope {
@@ -441,11 +458,19 @@ mod tests {
         })
     }
 
+    fn tell(fake: &mut FakeChat, envelope: &Envelope) -> Vec<Envelope> {
+        fake.played(envelope).unwrap()
+    }
+
     fn played(event: RunEvent) -> Envelope {
+        played_by("r-1", event)
+    }
+
+    fn played_by(id: &str, event: RunEvent) -> Envelope {
         Envelope {
             id: 0,
             message: Message::Run(RunUpdate {
-                run: run("r-1").unwrap(),
+                run: run(id).unwrap(),
                 event,
             }),
         }
@@ -513,75 +538,88 @@ mod tests {
     }
 
     #[test]
-    fn the_chat_starts_with_a_prompt_two_agents_and_a_prompt_waiting() {
+    fn the_chat_starts_with_a_finished_turn_then_a_members_run_waiting_on_a_prompt() {
         let mut fake = fake();
         let (seq, runs, waiting) = snapshot(&mut fake);
-        let first = fake.answer(&query(
-            1,
-            "c-1",
-            ChatQueryKind::Window {
-                before: 2,
-                limit: 1,
-            },
-        ));
-
-        assert_eq!((seq, waiting), (SEEDED, vec![SEEDED]));
-        assert_eq!(shape(&first), [(1, "window [1]".to_owned())]);
-        let agents: Vec<_> = runs
+        let member = MemberId::try_from("m-1".to_owned()).unwrap();
+        let claude = agent(AgentKind::Claude, AgentOwner::Member { member }, "laptop").unwrap();
+        let codex = agent(AgentKind::Codex, AgentOwner::Shared, "team VPS").unwrap();
+        let log: Vec<_> = fake
+            .entries
             .iter()
-            .map(|status| {
-                (
-                    status.run.as_str(),
-                    status.state,
-                    status.agent.clone().unwrap(),
-                )
-            })
+            .map(|entry| format!("{} {}", entry.seq, kind(&entry.event)))
+            .filter(|told| !told.ends_with("r-2 text"))
             .collect();
-        assert_eq!(agents[0].0, "r-1");
-        assert_eq!(agents[0].1, RunState::Running);
+        let agents: Vec<_> = fake.statuses().map(|status| status.agent.clone()).collect();
+
         assert_eq!(
-            agents[0].2.owner,
-            AgentOwner::Member {
-                member: MemberId::try_from("m-1".to_owned()).unwrap()
-            }
+            log,
+            [
+                format!("1 prompt {FIRST}"),
+                "2 r-2 Running".to_owned(),
+                "63 r-2 finished".to_owned(),
+                "64 r-2 Idle".to_owned(),
+                "65 prompt Now merge across units too.".to_owned(),
+                "66 r-1 Running".to_owned(),
+                "67 r-1 text".to_owned(),
+                "68 r-1 permission_asked".to_owned(),
+                format!("{SEEDED} r-1 Waiting"),
+            ]
         );
-        assert_eq!(agents[1].1, RunState::Waiting);
-        assert_eq!(agents[1].2.owner, AgentOwner::Shared);
         assert_eq!(
-            agents[1].2.machine.as_ref().map(MachineName::as_str),
-            Some("team VPS")
+            agents,
+            [codex.clone(), codex, claude.clone(), claude.clone()].map(Some)
+        );
+        assert_eq!((seq, waiting), (SEEDED, vec![SEEDED - 1]));
+        assert_eq!(
+            runs,
+            [RunStatus {
+                run: run("r-1").unwrap(),
+                state: RunState::Waiting,
+                agent: Some(claude)
+            }]
         );
     }
 
     #[test]
     fn a_subscription_gets_what_it_missed_then_each_new_event_under_its_id() {
-        let mut fake = fake();
+        let mut fake = answered();
         let missed = fake.answer(&query(
             4,
             "c-1",
-            ChatQueryKind::Subscribe { after: SEEDED - 2 },
+            ChatQueryKind::Subscribe {
+                after: ANSWERED - 2,
+            },
         ));
-        let delta = fake.played(&played(RunEvent::TextDelta {
-            text: "Mer".to_owned(),
-        }));
-        let text = fake.played(&played(RunEvent::Text {
-            text: "Merged.".to_owned(),
-        }));
+        let delta = tell(
+            &mut fake,
+            &played(RunEvent::TextDelta {
+                text: "Mer".to_owned(),
+            }),
+        );
+        let text = tell(
+            &mut fake,
+            &played(RunEvent::Text {
+                text: "Merged.".to_owned(),
+            }),
+        );
 
         assert_eq!(
             shape(&missed),
             [
-                (4, "68 r-2 text".to_owned()),
-                (4, "69 r-2 permission_asked".to_owned())
+                (4, "74 r-1 finished".to_owned()),
+                (4, "75 r-1 Idle".to_owned())
             ]
         );
-        assert!(delta.is_empty());
-        assert_eq!(shape(&text), [(4, "70 r-1 text".to_owned())]);
+        assert_eq!(shape(&delta), [(4, "76 r-1 Running".to_owned())]);
+        assert_eq!(shape(&text), [(4, "77 r-1 text".to_owned())]);
         assert_eq!(
             shape(&fake.answer(&query(
                 6,
                 "c-1",
-                ChatQueryKind::Subscribe { after: SEEDED + 9 }
+                ChatQueryKind::Subscribe {
+                    after: ANSWERED + 9
+                }
             ))),
             [(6, "lost".to_owned())]
         );
@@ -589,18 +627,25 @@ mod tests {
 
     #[test]
     fn events_played_before_a_subscription_are_kept_for_it() {
-        let mut fake = fake();
+        let mut fake = answered();
         assert!(
-            fake.played(&played(RunEvent::Text {
-                text: "Merged.".to_owned()
-            }))
+            tell(
+                &mut fake,
+                &played(RunEvent::Text {
+                    text: "Merged.".to_owned()
+                })
+            )
             .is_empty()
         );
 
-        assert_eq!(snapshot(&mut fake).0, 70);
+        assert_eq!(snapshot(&mut fake).0, ANSWERED + 2);
+        let after = ChatQueryKind::Subscribe { after: ANSWERED };
         assert_eq!(
-            shape(&fake.answer(&query(2, "c-1", ChatQueryKind::Subscribe { after: SEEDED }))),
-            [(2, "70 r-1 text".to_owned())]
+            shape(&fake.answer(&query(2, "c-1", after))),
+            [
+                (2, "76 r-1 Running".to_owned()),
+                (2, "77 r-1 text".to_owned())
+            ]
         );
     }
 
@@ -614,11 +659,6 @@ mod tests {
         assert_eq!(window(&mut fake, 4, 2), [(3, "window [2, 3]".to_owned())]);
         assert_eq!(window(&mut fake, 9, 1), [(3, "window [8]".to_owned())]);
         assert_eq!(window(&mut fake, 1, 9), [(3, "window []".to_owned())]);
-        for _ in 0..60 {
-            fake.played(&played(RunEvent::Text {
-                text: "More.".to_owned(),
-            }));
-        }
         let Message::ChatAnswer(ChatAnswer {
             answer: ChatAnswerKind::Snapshot { events, .. },
             ..
@@ -627,20 +667,89 @@ mod tests {
             panic!("no snapshot");
         };
         assert_eq!(events.len(), PAGE);
-        assert_eq!(events.last().map(|entry| entry.seq), Some(129));
+        assert_eq!(events.last().map(|entry| entry.seq), Some(SEEDED));
     }
 
     #[test]
-    fn a_stopped_run_plays_no_further() {
+    fn the_seeded_run_asks_to_use_bash_only_once_its_recording_has_ended() {
+        let mut seeded = FakeChat::new().unwrap();
+        let before = snapshot(&mut seeded);
+        seeded.answer(&query(
+            4,
+            "c-1",
+            ChatQueryKind::Subscribe { after: SEEDED - 2 },
+        ));
+        let asked = seeded.ended();
+
+        assert_eq!(
+            (before.0, before.1[0].state, before.2),
+            (SEEDED - 2, RunState::Running, vec![])
+        );
+        assert_eq!(
+            shape(&asked),
+            [
+                (4, "68 r-1 permission_asked".to_owned()),
+                (4, "69 r-1 Waiting".to_owned())
+            ]
+        );
+        assert_eq!(seeded.ended(), Vec::new());
+        assert_eq!(snapshot(&mut seeded).2, vec![SEEDED - 1]);
+    }
+
+    #[test]
+    fn an_idle_run_runs_again_to_ask_and_a_stopped_one_asks_nothing() {
+        let mut idle = FakeChat::new().unwrap();
+        idle.played(&played_by(
+            "r-1",
+            RunEvent::Finished {
+                outcome: Outcome::Completed,
+            },
+        ));
+        idle.answer(&query(4, "c-1", ChatQueryKind::Subscribe { after: SEEDED }));
+        let asked = idle.ended();
+        let mut stopped = FakeChat::new().unwrap();
+        stopped.answer(&command(ChatAction::Interrupt));
+
+        let (_, runs, waiting) = snapshot(&mut idle);
+        assert_eq!((runs[0].state, waiting.len()), (RunState::Waiting, 1));
+        assert_eq!(
+            shape(&asked),
+            [
+                (4, "70 r-1 Running".to_owned()),
+                (4, "71 r-1 permission_asked".to_owned()),
+                (4, "72 r-1 Waiting".to_owned())
+            ]
+        );
+        assert_eq!(stopped.ended(), Vec::new());
+        assert_eq!(snapshot(&mut stopped).2, Vec::<u64>::new());
+    }
+
+    #[test]
+    fn an_interrupt_finishes_the_waiting_run_which_then_plays_no_further() {
         let mut fake = fake();
-        let recorded = played(RunEvent::Text {
-            text: "Merged.".to_owned(),
-        });
-        assert!(fake.plays(&recorded));
-        fake.answer(&command(ChatAction::Interrupt));
-        assert!(!fake.plays(&recorded));
-        assert!(fake.played(&recorded).is_empty());
-        assert!(fake.plays(&query(1, "c-1", ChatQueryKind::Snapshot)));
+        fake.answer(&query(4, "c-1", ChatQueryKind::Subscribe { after: SEEDED }));
+        let recorded = played_by(
+            "r-1",
+            RunEvent::Text {
+                text: "Merged.".to_owned(),
+            },
+        );
+        let stopped = fake.answer(&command(ChatAction::Interrupt));
+
+        assert_eq!(
+            shape(&stopped),
+            [
+                (4, "70 receipt q-9".to_owned()),
+                (4, "71 r-1 finished".to_owned()),
+                (4, "72 r-1 Idle".to_owned())
+            ]
+        );
+        assert_eq!(snapshot(&mut fake).2, Vec::<u64>::new());
+        assert_eq!(fake.played(&recorded), None);
+        assert_eq!(
+            fake.played(&query(1, "c-1", ChatQueryKind::Snapshot)),
+            Some(Vec::new())
+        );
     }
 
     #[test]
@@ -650,7 +759,7 @@ mod tests {
         let said = fake.answer(&prompt("Also sort them."));
         let allowed = fake.answer(&command(ChatAction::Permission {
             answer: PermissionAnswer {
-                run: run("r-2").unwrap(),
+                run: run("r-1").unwrap(),
                 prompt: 1,
                 allow: true,
             },
@@ -675,22 +784,15 @@ mod tests {
             shape(&allowed),
             [
                 (4, "72 receipt q-9".to_owned()),
-                (4, "73 r-2 permission_answered".to_owned()),
-                (4, "74 r-2 Running".to_owned()),
-                (4, "75 r-2 text".to_owned()),
-                (4, "76 r-2 finished".to_owned()),
-                (4, "77 r-2 Idle".to_owned())
+                (4, "73 r-1 permission_answered".to_owned()),
+                (4, "74 r-1 Running".to_owned()),
+                (4, "75 r-1 text".to_owned()),
+                (4, "76 r-1 finished".to_owned()),
+                (4, "77 r-1 Idle".to_owned())
             ]
         );
-        assert_eq!(
-            shape(&stopped),
-            [
-                (4, "78 receipt q-9".to_owned()),
-                (4, "79 r-1 finished".to_owned()),
-                (4, "80 r-1 Idle".to_owned())
-            ]
-        );
-        assert_eq!(shape(&unknown), [(4, "81 receipt q-9".to_owned())]);
+        assert_eq!(shape(&stopped), [(4, "78 receipt q-9".to_owned())]);
+        assert_eq!(shape(&unknown), [(4, "79 receipt q-9".to_owned())]);
         assert_eq!(snapshot(&mut fake).2, Vec::<u64>::new());
     }
 
@@ -698,24 +800,15 @@ mod tests {
     fn an_answer_to_a_prompt_not_waiting_is_received_and_does_nothing() {
         let mut fake = fake();
         fake.answer(&query(4, "c-1", ChatQueryKind::Subscribe { after: SEEDED }));
-        let answer = |id: &str, prompt| {
-            command(ChatAction::Permission {
-                answer: PermissionAnswer {
-                    run: run(id).unwrap(),
-                    prompt,
-                    allow: true,
-                },
-            })
-        };
-        // While r-2's prompt 1 waits: the same prompt of another run, another prompt of r-2.
-        let other_run = fake.answer(&answer("r-1", 1));
-        let other_prompt = fake.answer(&answer("r-2", 2));
+        // While r-1's prompt 1 waits: the same prompt of another run, another prompt of r-1.
+        let other_run = fake.answer(&allow("r-2", 1));
+        let other_prompt = fake.answer(&allow("r-1", 2));
         fake.answer(&command(ChatAction::Interrupt));
-        let late = fake.answer(&answer("r-2", 1));
+        let late = fake.answer(&allow("r-1", 1));
 
         assert_eq!(shape(&other_run), [(4, "70 receipt q-9".to_owned())]);
         assert_eq!(shape(&other_prompt), [(4, "71 receipt q-9".to_owned())]);
-        assert_eq!(shape(&late), [(4, "77 receipt q-9".to_owned())]);
+        assert_eq!(shape(&late), [(4, "75 receipt q-9".to_owned())]);
     }
 
     #[test]
@@ -751,18 +844,25 @@ mod tests {
 
     #[test]
     fn the_lose_prompt_ends_the_subscription_with_lost_events() {
-        let mut fake = fake();
-        fake.answer(&query(4, "c-1", ChatQueryKind::Subscribe { after: SEEDED }));
+        let mut fake = FakeChat::new().unwrap();
+        fake.answer(&query(
+            4,
+            "c-1",
+            ChatQueryKind::Subscribe { after: SEEDED - 2 },
+        ));
         let lost = fake.answer(&prompt(LOSE));
-        let after = fake.played(&played(RunEvent::Text {
-            text: "Merged.".to_owned(),
-        }));
+        let after = tell(
+            &mut fake,
+            &played(RunEvent::Text {
+                text: "Merged.".to_owned(),
+            }),
+        );
 
         assert_eq!(
             shape(&lost),
             [
-                (4, "70 receipt q-9".to_owned()),
-                (4, format!("71 prompt {LOSE}")),
+                (4, "68 receipt q-9".to_owned()),
+                (4, format!("69 prompt {LOSE}")),
                 (4, "lost".to_owned())
             ]
         );
@@ -772,132 +872,153 @@ mod tests {
 
     #[test]
     fn the_recorded_run_goes_idle_when_it_finishes_and_runs_again_with_its_next_event() {
-        let mut fake = fake();
-        fake.answer(&query(4, "c-1", ChatQueryKind::Subscribe { after: SEEDED }));
-        let finished = fake.played(&played(RunEvent::Finished {
-            outcome: Outcome::Completed,
-        }));
-        let delta = fake.played(&played(RunEvent::TextDelta {
-            text: "Next".to_owned(),
-        }));
-        let again = fake.played(&played(RunEvent::Text {
-            text: "Next pass.".to_owned(),
-        }));
-        let more = fake.played(&played(RunEvent::TextDelta {
-            text: "More".to_owned(),
-        }));
+        let mut fake = answered();
+        fake.answer(&query(
+            4,
+            "c-1",
+            ChatQueryKind::Subscribe { after: ANSWERED },
+        ));
+        let finished = tell(
+            &mut fake,
+            &played(RunEvent::Finished {
+                outcome: Outcome::Completed,
+            }),
+        );
+        let delta = tell(
+            &mut fake,
+            &played(RunEvent::TextDelta {
+                text: "Next".to_owned(),
+            }),
+        );
+        let again = tell(
+            &mut fake,
+            &played(RunEvent::Text {
+                text: "Next pass.".to_owned(),
+            }),
+        );
+        let more = tell(
+            &mut fake,
+            &played(RunEvent::TextDelta {
+                text: "More".to_owned(),
+            }),
+        );
 
         assert_eq!(
             shape(&finished),
             [
-                (4, "70 r-1 finished".to_owned()),
-                (4, "71 r-1 Idle".to_owned())
+                (4, "76 r-1 finished".to_owned()),
+                (4, "77 r-1 Idle".to_owned())
             ]
         );
         // The next pass's first delta runs it again, so the client streams its text.
-        assert_eq!(shape(&delta), [(4, "72 r-1 Running".to_owned())]);
-        assert_eq!(shape(&again), [(4, "73 r-1 text".to_owned())]);
+        assert_eq!(shape(&delta), [(4, "78 r-1 Running".to_owned())]);
+        assert_eq!(shape(&again), [(4, "79 r-1 text".to_owned())]);
         assert!(more.is_empty());
-        let stranger = |event| Envelope {
-            id: 0,
-            message: Message::Run(RunUpdate {
-                run: run("r-9").unwrap(),
-                event,
-            }),
+    }
+
+    #[test]
+    fn only_the_chats_current_run_plays() {
+        let mut fake = FakeChat::new().unwrap();
+        let other = |id| {
+            played_by(
+                id,
+                RunEvent::Finished {
+                    outcome: Outcome::Completed,
+                },
+            )
         };
-        let unknown_delta = stranger(RunEvent::TextDelta {
-            text: "x".to_owned(),
-        });
-        assert!(fake.played(&unknown_delta).is_empty());
-        let unknown_finished = stranger(RunEvent::Finished {
-            outcome: Outcome::Completed,
-        });
-        assert_eq!(
-            shape(&fake.played(&unknown_finished)),
-            [(4, "74 r-9 finished".to_owned())]
-        );
+
+        assert_eq!(fake.played(&other("r-9")), None);
+        assert_eq!(fake.played(&other("r-2")), None);
+        assert_eq!(snapshot(&mut fake).0, SEEDED - 2);
     }
 
     #[test]
     fn a_replayed_permission_prompt_makes_its_run_wait() {
-        let mut fake = fake();
-        let asked = fake.played(&played(RunEvent::PermissionAsked {
-            run: run("r-1").unwrap(),
-            prompt: 7,
-            tool: "Edit".to_owned(),
-            input: Value::Null,
-        }));
+        let mut fake = answered();
+        let asked = tell(
+            &mut fake,
+            &played(RunEvent::PermissionAsked {
+                run: run("r-1").unwrap(),
+                prompt: 7,
+                tool: "Edit".to_owned(),
+                input: Value::Null,
+            }),
+        );
         let (seq, runs, waiting) = snapshot(&mut fake);
 
         assert_eq!(shape(&asked), []);
-        assert_eq!(seq, SEEDED + 2);
-        assert_eq!(waiting, [SEEDED, SEEDED + 1]);
-        assert!(
+        assert_eq!(seq, ANSWERED + 3);
+        assert_eq!(waiting, [ANSWERED + 2]);
+        assert_eq!(
             runs.iter()
-                .any(|status| status.run.as_str() == "r-1" && status.state == RunState::Waiting)
+                .map(|status| (status.run.as_str(), status.state))
+                .collect::<Vec<_>>(),
+            [("r-1", RunState::Waiting)]
         );
     }
 
     #[test]
-    fn a_snapshot_lists_only_the_prompts_still_waiting() {
+    fn a_waiting_runs_recorded_events_are_dropped_until_its_prompt_is_answered() {
         let mut fake = fake();
-        let ask = |prompt| {
-            played(RunEvent::PermissionAsked {
+        fake.answer(&query(4, "c-1", ChatQueryKind::Subscribe { after: SEEDED }));
+        let recorded = [
+            RunEvent::Text {
+                text: "Merged.".to_owned(),
+            },
+            RunEvent::PermissionAsked {
                 run: run("r-1").unwrap(),
-                prompt,
+                prompt: 2,
                 tool: "Edit".to_owned(),
                 input: Value::Null,
-            })
-        };
-        fake.played(&ask(7));
-        fake.played(&played(RunEvent::Finished {
-            outcome: Outcome::Completed,
-        }));
-        fake.played(&ask(8));
-        let after_second = snapshot(&mut fake).2;
-        fake.played(&played(RunEvent::PermissionWithdrawn {
-            run: run("r-1").unwrap(),
-            prompt: 8,
-        }));
-        let after_withdrawn = snapshot(&mut fake).2;
-        fake.played(&ask(9));
-        fake.played(&played(RunEvent::PermissionAnswered {
-            answer: PermissionAnswer {
-                run: run("r-1").unwrap(),
-                prompt: 9,
-                allow: false,
             },
-        }));
+            RunEvent::Finished {
+                outcome: Outcome::Completed,
+            },
+        ];
+        let dropped: Vec<_> = recorded
+            .iter()
+            .map(|event| fake.played(&played(event.clone())))
+            .collect();
 
-        // The seeded Codex prompt, then the second Claude one; the first ended with its turn.
-        assert_eq!(after_second, [SEEDED, SEEDED + 6]);
-        assert_eq!(after_withdrawn, [SEEDED]);
-        assert_eq!(snapshot(&mut fake).2, [SEEDED]);
+        assert_eq!(dropped, [None, None, None]);
+        let (seq, _, waiting) = snapshot(&mut fake);
+        assert_eq!((seq, waiting), (SEEDED, vec![SEEDED - 1]));
+        assert_eq!(fake.answer(&allow("r-1", 1)).len(), 6);
+        assert_eq!(
+            shape(&tell(&mut fake, &played(recorded[0].clone()))),
+            [
+                (4, "76 r-1 Running".to_owned()),
+                (4, "77 r-1 text".to_owned())
+            ]
+        );
     }
 
     #[test]
     fn another_chats_queries_are_refused_and_other_messages_get_nothing() {
         let mut fake = fake();
+        let mut elsewhere = query(2, "c-1", ChatQueryKind::Snapshot);
+        if let Message::ChatQuery(query) = &mut elsewhere.message {
+            query.workspace = WorkspaceId::try_from("w-2".to_owned()).unwrap();
+        }
+        let refused = |id| Envelope {
+            id,
+            message: Message::Error(ErrorBody {
+                code: code!("chat.not_found"),
+                retryable: false,
+            }),
+        };
 
         assert_eq!(
             fake.answer(&query(1, "c-2", ChatQueryKind::Snapshot)),
-            [Envelope {
-                id: 1,
-                message: Message::Error(ErrorBody {
-                    code: code!("chat.unknown"),
-                    retryable: false,
-                }),
-            }]
+            [refused(1)]
         );
+        assert_eq!(fake.answer(&elsewhere), [refused(2)]);
         assert!(
             fake.answer(&played(RunEvent::Text {
                 text: "x".to_owned()
             }))
             .is_empty()
-        );
-        assert!(
-            fake.played(&query(1, "c-1", ChatQueryKind::Snapshot))
-                .is_empty()
         );
         assert!(
             fake.answer(&query(1, "c-1", ChatQueryKind::Newer))
