@@ -16,9 +16,9 @@ export type Served = {
   page: Page;
   /** Runs one of the server's admin commands against its database, such as `add-account`. */
   admin(command: string, ...args: string[]): Promise<void>;
-  /** The code in the next mail the server printed, which must be for `email`. */
+  /** The code in the next sign-in mail the server printed, which must be for `email`. */
   code(email: string): Promise<string>;
-  /** How many printed mails no `code` has taken. */
+  /** How many printed sign-in mails no `code` has taken. */
   letters(): number;
   /** The server's address, for another browser's pages. */
   url: string;
@@ -50,7 +50,8 @@ export async function serve(): Promise<Served> {
   };
   const { page, stop } = await open(dir, child, ready, (address) => `http://${address}/`);
   let taken = 0;
-  const letters = () => records.filter((record) => record.msg === "mail printed").slice(taken);
+  // Sign-in mails only: an invitation's mail holds no code.
+  const letters = () => records.filter((record) => record.msg === "mail printed" && record.subject === "Your Weacon sign-in code").slice(taken);
   return {
     page,
     admin: async (command, ...args) => {
@@ -73,7 +74,7 @@ export async function serve(): Promise<Served> {
 }
 
 /** The fields of the server's log lines that these tests read. */
-type LogLine = { msg?: string; address?: string; to?: string; text?: string };
+type LogLine = { msg?: string; address?: string; to?: string; subject?: string; text?: string };
 
 /** One of the server's log lines, or nothing from a line that isn't one. */
 function parsed(line: string): LogLine {

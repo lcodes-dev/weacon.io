@@ -139,6 +139,18 @@ mod tests {
         fixture.sign_in_client(address, email_address).await
     }
 
+    // Who each printed mail but ada's sign-in code is for, and its text.
+    fn invitation_mails(fixture: &Fixture) -> Vec<(Value, Value)> {
+        let records = fixture.records.lock().unwrap();
+        records
+            .iter()
+            .filter(|record| {
+                record.msg == "mail printed" && record.fields["to"] != "ada@example.com"
+            })
+            .map(|mail| (mail.fields["to"].clone(), mail.fields["text"].clone()))
+            .collect()
+    }
+
     async fn command(who: &Client, workspace: &str, action: Value) -> (String, Value) {
         let path = format!("POST /api/workspaces/{workspace}/members");
         let body = json!({ "action": action }).to_string();
@@ -196,24 +208,13 @@ mod tests {
         let newer = command(&ada, &crew, json!({ "kind": "transfer" })).await;
 
         assert_eq!(bo, ("http/1.1 204 no content".to_owned(), Value::Null));
-        let records = fixture.records.lock().unwrap();
-        let mails: Vec<_> = records
-            .iter()
-            .filter(|record| {
-                record.msg == "mail printed" && record.fields["to"] != "ada@example.com"
-            })
-            .map(|mail| (mail.fields["to"].clone(), mail.fields["text"].clone()))
-            .collect();
         let text = "You're invited to the workspace Crew on Weacon. Sign in with this address to \
                     accept; the invitation lasts 7 days.";
-        assert_eq!(
-            mails,
-            [
-                (json!("bo@example.com"), json!(text)),
-                (json!("cy@example.com"), json!(text))
-            ]
-        );
-        drop(records);
+        let invited = [
+            (json!("bo@example.com"), json!(text)),
+            (json!("cy@example.com"), json!(text)),
+        ];
+        assert_eq!(invitation_mails(&fixture), invited);
         assert_eq!(cy, bo);
         assert_eq!(again.0, "http/1.1 409 conflict");
         assert_eq!(again.1["code"], "invitation.exists");
