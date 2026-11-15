@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 
 import { working } from "./chat.ts";
+import { afterSend } from "./draft.ts";
 import { say } from "./feedback.ts";
 import { useLive } from "./live.ts";
 import { pickOn } from "./pick.ts";
@@ -68,8 +69,7 @@ function Panel() {
   const send = () =>
     alone(async () => {
       await live.prompt(text, pick);
-      // What was typed while it was sent stays.
-      setText((now) => (now === text ? "" : now));
+      setText((now) => afterSend(now, text));
       setPick(undefined);
     });
 
