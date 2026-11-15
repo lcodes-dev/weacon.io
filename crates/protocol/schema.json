@@ -1708,7 +1708,7 @@
           ]
         },
         {
-          "description": "The new build is in place and the daemon is about to be restarted; turns stay paused.\nRefused once the leave has run out, so the daemon is then left running.",
+          "description": "The new build is in place and the daemon is about to be restarted; turns stay paused,\neven once the asker hangs up, until the leave runs out again. Refused once the leave has\nrun out, and the asker then puts the old build back.",
           "type": "object",
           "properties": {
             "kind": {

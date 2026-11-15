@@ -2,7 +2,7 @@
 //! orders agents, commits what happens to each chat's log and then publishes it.
 
 pub(crate) mod agent;
-mod busy;
+pub(super) mod busy;
 #[cfg(test)]
 mod by_hand;
 mod commands;
@@ -29,6 +29,7 @@ use weacon_protocol::{
 };
 
 use self::agent::{Agent, FromRun, Order};
+pub(crate) use self::busy::{Install, LeaveId, LeaveStep};
 use self::handle::Ask;
 pub(crate) use self::handle::{Chats, WeakChats};
 use self::launch::Launched;
@@ -130,8 +131,8 @@ pub(crate) struct Engine<A> {
     /// The disk's state as last logged; turns wait on `disk`, never on this.
     disk_full: bool,
     disk: watch::Receiver<bool>,
-    /// Set while an install has leave: prompts are queued and no new turn starts.
-    installing: bool,
+    /// While an install has leave, prompts are queued and no new turn starts.
+    install: Install,
     starts: mpsc::UnboundedSender<Launched<A>>,
     started: mpsc::UnboundedReceiver<Launched<A>>,
     log: Logger,
@@ -157,7 +158,7 @@ impl<A: Agent> Engine<A> {
             incoming,
             says,
             disk_full: false,
-            installing: false,
+            install: Install::default(),
             disk,
             starts,
             started,
@@ -191,6 +192,10 @@ impl<A: Agent> Engine<A> {
                     continue;
                 }
                 Some(launched) = self.started.recv() => self.take_launched(launched).await,
+                () = self.install.runs_out() => {
+                    self.resume_turns().await;
+                    continue;
+                }
             };
             self.close_if_unused(&key);
         }

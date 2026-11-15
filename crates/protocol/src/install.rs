@@ -19,8 +19,9 @@ pub enum InstallAction {
     /// Given only while no chat is busy. From then on no turn starts and no chat can be held
     /// until `failed`, until the asker hangs up, or until the leave runs out.
     Leave,
-    /// The new build is in place and the daemon is about to be restarted; turns stay paused.
-    /// Refused once the leave has run out, so the daemon is then left running.
+    /// The new build is in place and the daemon is about to be restarted; turns stay paused,
+    /// even once the asker hangs up, until the leave runs out again. Refused once the leave has
+    /// run out, and the asker then puts the old build back.
     Restarting,
     /// The install failed and the build before it is back; turns go on.
     Failed,

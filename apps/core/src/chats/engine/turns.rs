@@ -77,7 +77,7 @@ impl<A: Agent> Engine<A> {
         // A run still starting takes the turn once it is up; a full disk, an install or a hold
         // takes none.
         let starting = self.open_chats.get(key).is_some_and(Chat::is_starting);
-        if starting || *self.disk.borrow() || self.installing || self.is_held(key) {
+        if starting || *self.disk.borrow() || self.install.pauses() || self.is_held(key) {
             return Ok(());
         }
         let Some(run) = self.run_of(key).filter(|_| self.takes_orders(key)) else {

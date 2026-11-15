@@ -8,7 +8,7 @@ use weacon_observability::Fault;
 use weacon_protocol::{ChatAnswerKind, ChatCommand, ChatQuery, code};
 
 use super::agent::Agent;
-use super::{ChatKey, Engine};
+use super::{ChatKey, Engine, LeaveId, LeaveStep};
 use crate::chats::feed::Client;
 
 /// The clients' way to the engine.
@@ -22,9 +22,8 @@ pub(crate) struct Chats {
 pub(super) enum Ask {
     Command(ChatCommand, Client, oneshot::Sender<Result<(), Fault>>),
     Busy(oneshot::Sender<bool>),
-    Leave(oneshot::Sender<bool>),
-    /// An install the engine gave leave to is over.
-    ResumeTurns,
+    Leave(oneshot::Sender<Option<LeaveId>>),
+    Step(LeaveId, LeaveStep, oneshot::Sender<bool>),
     Query(
         ChatQuery,
         Client,
@@ -54,12 +53,18 @@ impl WeakChats {
     }
 
     /// Leave to install, given when nothing is busy and no other install holds it. Once given,
-    /// no new turn starts and no chat can be held until [`WeakChats::resume_turns`].
-    pub(crate) async fn leave(&self) -> Result<bool, Fault> {
+    /// no new turn starts and no chat can be held until a step ends it or it runs out after
+    /// [`LEAVE_LASTS`](super::busy::LEAVE_LASTS).
+    pub(crate) async fn leave(&self) -> Result<Option<LeaveId>, Fault> {
         self.ask(Ask::Leave).await
     }
 
-    async fn ask(&self, ask: fn(oneshot::Sender<bool>) -> Ask) -> Result<bool, Fault> {
+    /// Takes `step` of `leave`; false when that leave isn't in force any more.
+    pub(crate) async fn step(&self, leave: LeaveId, step: LeaveStep) -> Result<bool, Fault> {
+        self.ask(|answer| Ask::Step(leave, step, answer)).await
+    }
+
+    async fn ask<T>(&self, ask: impl FnOnce(oneshot::Sender<T>) -> Ask) -> Result<T, Fault> {
         let asks = self.0.upgrade().ok_or_else(stopped)?;
         let (answer, answered) = oneshot::channel();
         let asked = async {
@@ -74,13 +79,6 @@ impl WeakChats {
                     "The engine didn't answer",
                 ))
             })
-    }
-
-    /// Lets turns go on after an install that had leave.
-    pub(crate) async fn resume_turns(&self) {
-        if let Some(asks) = self.0.upgrade() {
-            drop(asks.send(Ask::ResumeTurns).await);
-        }
     }
 }
 
@@ -154,8 +152,8 @@ impl<A: Agent> Engine<A> {
                 self.answer_leave(answer).await;
                 None
             }
-            Ask::ResumeTurns => {
-                self.resume_turns().await;
+            Ask::Step(leave, step, answer) => {
+                self.answer_step(leave, step, answer).await;
                 None
             }
             Ask::Left => {

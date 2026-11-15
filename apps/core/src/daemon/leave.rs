@@ -2,23 +2,17 @@
 //! while no chat is busy, it pauses new turns until the updater reports, hangs up, or the leave
 //! runs out.
 
-use std::time::Duration;
-
 use tokio::sync::oneshot;
 use weacon_protocol::{
     Code, Envelope, InstallAction, InstallCommand, Message, Outcome, Receipt, code,
 };
 
-use crate::chats::WeakChats;
+use crate::chats::{LeaveId, LeaveStep, WeakChats};
 use crate::session::Reply;
 
-/// How long leave lasts at most: well past a swap and its report, so only an updater that hangs
-/// keeps turns paused this long.
-const LEAVE_LASTS: Duration = Duration::from_mins(2);
-
-/// The leave one connection holds, if any; turns go on once it is dropped with the connection.
+/// The leave one connection holds, if any; the engine hears it hung up once this is dropped.
 #[derive(Debug, Default)]
-pub(super) struct Leave(Option<oneshot::Sender<()>>);
+pub(super) struct Leave(Option<(LeaveId, oneshot::Sender<()>)>);
 
 impl Leave {
     pub(super) async fn answer(
@@ -29,12 +23,8 @@ impl Leave {
     ) -> Reply {
         let taken = match command.action {
             InstallAction::Leave => self.ask(chats).await,
-            // Once the leave has run out, turns may be on again, so the restart mustn't happen.
-            InstallAction::Restarting => match &self.0 {
-                Some(held) if !held.is_closed() => Ok(()),
-                _ => Err(code!("update.no_leave")),
-            },
-            InstallAction::Failed => self.0.take().map(drop).ok_or(code!("update.no_leave")),
+            InstallAction::Restarting => self.step(chats, LeaveStep::Restarting).await,
+            InstallAction::Failed => self.step(chats, LeaveStep::Failed).await,
             InstallAction::Newer => Err(code!("message.unsupported")),
         };
         match taken {
@@ -54,17 +44,28 @@ impl Leave {
 
     async fn ask(&mut self, chats: &WeakChats) -> Result<(), Code> {
         // An engine that is stopping or doesn't answer in time counts as busy.
-        if !matches!(chats.leave().await, Ok(true)) {
+        let Ok(Some(leave)) = chats.leave().await else {
             return Err(code!("update.chat_busy"));
-        }
-        let (held, ended) = oneshot::channel();
+        };
+        let (held, hung_up) = oneshot::channel();
         let chats = chats.clone();
         tokio::spawn(async move {
-            drop(tokio::time::timeout(LEAVE_LASTS, ended).await);
-            chats.resume_turns().await;
+            drop(hung_up.await);
+            drop(chats.step(leave, LeaveStep::HungUp).await);
         });
-        self.0 = Some(held);
+        self.0 = Some((leave, held));
         Ok(())
+    }
+
+    // The engine takes `step` only of the leave in force, so none that ran out is acted on.
+    async fn step(&self, chats: &WeakChats, step: LeaveStep) -> Result<(), Code> {
+        let Some((leave, _)) = &self.0 else {
+            return Err(code!("update.no_leave"));
+        };
+        match chats.step(*leave, step).await {
+            Ok(true) => Ok(()),
+            _ => Err(code!("update.no_leave")),
+        }
     }
 }
 
@@ -73,6 +74,7 @@ mod tests {
     use weacon_protocol::{ChatAction, RequestId};
 
     use super::*;
+    use crate::chats::LEAVE_LASTS;
     use crate::chats::test_support::{Bench, bench, client, command, prompt, soon};
     use crate::test_support::error_code;
 
@@ -152,15 +154,17 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn a_restart_keeps_turns_paused_until_the_updater_hangs_up() {
+    async fn a_restart_keeps_turns_paused_after_the_updater_hangs_up_until_it_runs_out() {
         let mut idle = bench();
         let mut leave = Leave::default();
         paused(&mut idle, &mut leave).await;
         let restarting = said(&mut leave, &idle, InstallAction::Restarting).await;
         assert_eq!(restarting, Ok(()));
+        // As when the restart stops the daemon, which drops the updater's connection.
+        drop(leave);
         assert!(soon(idle.started.recv()).await.is_none());
 
-        drop(leave);
+        tokio::time::sleep(LEAVE_LASTS + std::time::Duration::from_secs(1)).await;
         assert!(soon(idle.started.recv()).await.is_some());
     }
 
@@ -178,7 +182,7 @@ mod tests {
         let mut idle = bench();
         let mut leave = Leave::default();
         paused(&mut idle, &mut leave).await;
-        tokio::time::sleep(LEAVE_LASTS).await;
+        tokio::time::sleep(LEAVE_LASTS + std::time::Duration::from_secs(1)).await;
         assert!(soon(idle.started.recv()).await.is_some());
         let late = said(&mut leave, &idle, InstallAction::Restarting).await;
         assert_eq!(late.unwrap_err(), "update.no_leave");

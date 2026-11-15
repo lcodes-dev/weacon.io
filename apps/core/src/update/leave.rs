@@ -139,9 +139,9 @@ mod tests {
         let served = tokio::spawn(daemon.serve(async move { drop(stopped.await) }));
 
         let report = asked(socket_path(&dir)).await.unwrap().unwrap();
-        assert!(reported(report, InstallAction::Restarting).await);
+        assert!(reported(report, InstallAction::Failed).await);
         let again = asked(socket_path(&dir)).await.unwrap().unwrap();
-        assert!(reported(again, InstallAction::Failed).await);
+        assert!(reported(again, InstallAction::Restarting).await);
         stop.send(()).unwrap();
         served.await.unwrap();
     }

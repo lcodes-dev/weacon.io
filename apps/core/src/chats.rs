@@ -15,7 +15,9 @@ use weacon_agents::{Launch, SpawnPolicy};
 use weacon_observability::{Fault, Logger};
 use weacon_protocol::{App, ChatId, RepoId, WorkspaceId, code};
 
-pub(crate) use engine::{Chats, WeakChats};
+#[cfg(test)]
+pub(crate) use engine::busy::LEAVE_LASTS;
+pub(crate) use engine::{Chats, LeaveId, LeaveStep, WeakChats};
 use engine::{Engine, Host, RunAs};
 
 use crate::git;

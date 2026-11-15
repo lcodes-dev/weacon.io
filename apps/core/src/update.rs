@@ -222,9 +222,11 @@ fn install_release(release: &ReleaseManifest, world: &World<'_>) -> Result<Insta
         report(InstallAction::Failed);
         return Err(fault);
     }
-    // Leave that ran out may have let a turn start, so the daemon carries on until restarted.
+    // Leave that ran out may have let a turn start, so the old build goes back for the
+    // schedule to try again.
     if !report(InstallAction::Restarting) {
-        return Ok(Installed::Waiting);
+        install::roll_back(&paths)?;
+        return Ok(Installed::Refused);
     }
     restarted(release, &paths, restart, world, report)
 }
@@ -529,17 +531,21 @@ mod tests {
     }
 
     #[test]
-    fn leave_that_ran_out_leaves_the_daemon_running_on_the_old_build() {
+    fn leave_that_ran_out_puts_the_old_build_back_for_the_schedule_to_try_again() {
         let mut machine = Machine::new();
         machine.takes = false;
+        let checked = Settings {
+            last_checked: 99,
+            ..Settings::default()
+        };
+        checked.write(&settings::file(&machine.dir)).unwrap();
         let (result, out) = machine.update(NOW, Ok(release("1.2.3", 10, PROTOCOL)), Some(true));
-        assert_eq!(result.unwrap(), Ending::Done);
-        assert_eq!(
-            out,
-            "Installed weacon 1.2.3. Restart the daemon to run it.\n"
-        );
-        assert_eq!(machine.binary(), "new");
+        assert_eq!(result.unwrap(), Ending::Findings);
+        assert!(out.starts_with("A chat is busy"), "{out}");
+        assert_eq!(machine.binary(), "old");
         assert_eq!(machine.restarts.get(), 0);
+        assert_eq!(machine.settings().last_checked, 0);
+        assert_eq!(machine.reports(), [InstallAction::Restarting]);
     }
 
     #[test]
