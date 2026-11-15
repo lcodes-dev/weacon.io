@@ -2,7 +2,10 @@ import type { ReactNode } from "react";
 
 import type { DocContent } from "../protocol.ts";
 
-/** A doc's title and Markdown, which `change` is told of, with Save and Cancel; `children` show above the buttons. */
+/**
+ * A doc's title and Markdown, which `change` is told of, with Save and Cancel; `children` show
+ * above the buttons. While `busy` saving, nothing changes, so what was sent is what is shown.
+ */
 export function DocEditor({
   content,
   change,
@@ -30,11 +33,11 @@ export function DocEditor({
     >
       <label>
         Title
-        <input aria-label="Title" required value={content.title} onChange={(event) => change({ ...content, title: event.target.value })} />
+        <input aria-label="Title" required readOnly={busy} value={content.title} onChange={(event) => change({ ...content, title: event.target.value })} />
       </label>
       <label>
         Text
-        <textarea aria-label="Text" rows={20} value={content.body} onChange={(event) => change({ ...content, body: event.target.value })} />
+        <textarea aria-label="Text" rows={20} readOnly={busy} value={content.body} onChange={(event) => change({ ...content, body: event.target.value })} />
       </label>
       {problem !== undefined && <p role="alert">{problem}</p>}
       {children}
@@ -42,7 +45,7 @@ export function DocEditor({
         <button type="submit" disabled={busy}>
           Save
         </button>
-        <button type="button" onClick={cancel}>
+        <button type="button" disabled={busy} onClick={cancel}>
           Cancel
         </button>
       </div>

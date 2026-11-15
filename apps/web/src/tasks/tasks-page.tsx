@@ -98,12 +98,13 @@ function TaskRow({ api, workspace, task, tasks }: Row) {
             save(draft.title, draft.version ?? task.version);
           }}
         >
-          <input aria-label="Title" required autoFocus value={draft.title} onChange={(event) => setDraft({ ...draft, title: event.target.value })} />
+          <input aria-label="Title" required autoFocus readOnly={asking.busy} value={draft.title} onChange={(event) => setDraft({ ...draft, title: event.target.value })} />
           <button type="submit" disabled={asking.busy}>
             Save
           </button>
           <button
             type="button"
+            disabled={asking.busy}
             onClick={() => {
               asking.clear();
               setDraft(undefined);
@@ -136,7 +137,7 @@ function NewTask({ api, workspace, tasks }: { api: Api; workspace: WorkspaceId; 
         );
       }}
     >
-      <input aria-label="New task" placeholder="New task" required value={title} onChange={(event) => setTitle(event.target.value)} />
+      <input aria-label="New task" placeholder="New task" required readOnly={busy} value={title} onChange={(event) => setTitle(event.target.value)} />
       <button type="submit" disabled={busy}>
         Add
       </button>

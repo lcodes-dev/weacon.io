@@ -211,3 +211,27 @@ test("a machine already unpaired elsewhere counts as unpaired, and other failure
   assert.deepEqual(await api.unpair("mc-1"), { ok: false, code: "machine.busy" });
   assert.deepEqual(await api.unpair("mc-1"), { ok: false, code: UNREACHABLE });
 });
+
+test("a decision's outcome is taken only with the fields its kind needs", async () => {
+  const conflict = { outcome: "doc_conflict", title: false, anchors: true, hunks: [{ kind: "agreed", text: "a\n" }, { kind: "conflict", base: "b", current: "c", proposed: "d" }] };
+  const { api, sent } = serve(
+    { status: 200, body: conflict },
+    { status: 200, body: { outcome: "doc_conflict" } },
+    { status: 200, body: { ...conflict, hunks: [{ kind: "conflict", base: "b" }] } },
+    { status: 200, body: { outcome: "accepted" } },
+    { status: 200, body: { outcome: "task_conflict", edits: [{ kind: "move" }] } },
+    { status: 200, body: { outcome: "task_conflict", edits: [7] } },
+    { status: 200, body: { outcome: "queued" } },
+    { status: 409, body: { code: "proposal.closed", retryable: false } },
+  );
+
+  assert.deepEqual(await api.decide("w-1", "p-1", "accept"), { ok: true, value: conflict });
+  for (let at = 0; at < 3; at++) {
+    assert.deepEqual(await api.decide("w-1", "p-1", "accept"), { ok: false, code: MALFORMED });
+  }
+  assert.equal((await api.decide("w-1", "p-1", "accept")).ok, true);
+  assert.deepEqual(await api.decide("w-1", "p-1", "accept"), { ok: false, code: MALFORMED });
+  assert.deepEqual(await api.decide("w-1", "p-1", "accept"), { ok: true, value: { outcome: "queued" } });
+  assert.deepEqual(await api.decide("w-1", "p-1", "reject"), { ok: false, code: "proposal.closed" });
+  assert.deepEqual(sent.at(-1), { path: "/api/workspaces/w-1/proposals/p-1", method: "POST", headers: { "content-type": "application/json" }, body: '{"verdict":"reject"}' });
+});

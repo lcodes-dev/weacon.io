@@ -66,7 +66,7 @@ export function DocView({ api, workspace, socket, names, doc, back }: Props) {
       {current !== undefined && draft === undefined && (
         <article>
           <h2>{current.content.title}</h2>
-          <p className="muted">{byline(history.value?.revisions[0], names)}</p>
+          <p className="muted">{byline(history.value?.revisions.find(({ version }) => version === current.version), names)}</p>
           <div className="text">
             <MarkdownView source={current.content.body} />
           </div>
@@ -86,7 +86,7 @@ export function DocView({ api, workspace, socket, names, doc, back }: Props) {
                 <button type="button" disabled={saving.busy} onClick={() => save(draft.content, current.version)}>
                   Save mine over theirs
                 </button>
-                <button type="button" onClick={close}>
+                <button type="button" disabled={saving.busy} onClick={close}>
                   Discard mine
                 </button>
               </div>

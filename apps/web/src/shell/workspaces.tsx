@@ -206,6 +206,7 @@ function Workspace({ log, ...open }: Open & { log: Log }) {
   // Whether the server serves chats, known once the feed is welcomed.
   const { read } = useChatAccess(socket);
   const names = useNames(api, workspace.id, socket);
+  const served = useSections(socket);
   if (place.view === "chats") {
     return <WorkspaceChats {...open} place={place} status={status} read={read} names={names} />;
   }
@@ -216,7 +217,9 @@ function Workspace({ log, ...open }: Open & { log: Log }) {
       </div>
       <section>
         <Heading title={TITLES[place.view]} status={status} />
-        {place.view === "tasks" ? (
+        {!served[place.view] ? (
+          <p className="page muted">{status.state === "connecting" ? "Loading" : `This server doesn't offer ${TITLES[place.view].toLowerCase()}.`}</p>
+        ) : place.view === "tasks" ? (
           <TasksPage api={api} workspace={workspace.id} socket={socket} />
         ) : place.view === "docs" ? (
           <DocsPage api={api} workspace={workspace.id} socket={socket} names={names} doc={place.doc} choose={(doc) => open.go(doc === undefined ? { view: "docs" } : { view: "docs", doc })} />
@@ -228,15 +231,20 @@ function Workspace({ log, ...open }: Open & { log: Log }) {
   );
 }
 
-const TITLES = { chats: "Chats", tasks: "Tasks", docs: "Docs", proposals: "Proposals" } as const;
-
-// The workspace's sections the server serves, besides its chats; none when it serves no other.
-function Sections({ socket, place, go }: Pick<Open, "socket" | "place" | "go">) {
-  const served = {
+// Which of the sections besides chats the server offers on `socket`.
+function useSections(socket: WorkspaceSocket) {
+  return {
     tasks: useOffers(socket, "workspace.tasks"),
     docs: useOffers(socket, "workspace.docs"),
     proposals: useOffers(socket, "workspace.proposals"),
   };
+}
+
+const TITLES = { chats: "Chats", tasks: "Tasks", docs: "Docs", proposals: "Proposals" } as const;
+
+// The workspace's sections the server serves, besides its chats; none when it serves no other.
+function Sections({ socket, place, go }: Pick<Open, "socket" | "place" | "go">) {
+  const served = useSections(socket);
   const views = (["chats", "tasks", "docs", "proposals"] as const).filter((view) => view === "chats" || served[view]);
   if (views.length === 1) {
     return null;

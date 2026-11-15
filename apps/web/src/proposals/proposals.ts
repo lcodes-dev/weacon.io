@@ -1,6 +1,6 @@
 import type { Names } from "../members/names.ts";
 import { STATUSES } from "../tasks/tasks.ts";
-import type { ProposalOutcome, ProposalRecord, TaskEditBody, TaskRecord } from "../protocol.ts";
+import type { DocAnchors, ProposalOutcome, ProposalRecord, TaskEditBody, TaskRecord } from "../protocol.ts";
 
 /** What a proposal is about, in a line: "Edit of the doc “Plan”", or "New task “Ship it”". */
 export function aboutText(proposal: ProposalRecord, tasks: readonly TaskRecord[]): string {
@@ -67,4 +67,11 @@ export function conflictText(outcome: ProposalOutcome): string | undefined {
     default:
       return undefined;
   }
+}
+
+/** The links to code a doc edit pins anew and the ones it drops, each as `sym:…#fingerprint`. */
+export function pinChanges(before: DocAnchors | undefined, after: DocAnchors | undefined): { added: string[]; removed: string[] } {
+  const old = before?.pins ?? [];
+  const now = after?.pins ?? [];
+  return { added: now.filter((pin) => !old.includes(pin)), removed: old.filter((pin) => !now.includes(pin)) };
 }

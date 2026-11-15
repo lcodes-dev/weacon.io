@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import type { ProposalRecord, TaskEditBody, TaskRecord } from "../protocol.ts";
-import { aboutText, conflictText, stateText, taskEditText } from "./proposals.ts";
+import { aboutText, conflictText, pinChanges, stateText, taskEditText } from "./proposals.ts";
 
 const AUTHOR = { kind: "agent", owner: "m-1" } as const;
 const TASKS: TaskRecord[] = [
@@ -62,4 +62,17 @@ test("a decided proposal says how it ended and who decided, and a conflict what 
   assert.match(conflictText({ outcome: "task_conflict", edits: [] }) ?? "", /^The task changed/);
   assert.equal(conflictText({ outcome: "accepted", version: 2 }), undefined);
   assert.equal(conflictText({ outcome: "rejected" }), undefined);
+});
+
+test("a doc edit's pins say which links to code it adds and which it drops", () => {
+  const commit = "a".repeat(40);
+  const pins = (...pins: string[]) => ({ commit, pins });
+
+  assert.deepEqual(pinChanges(pins("sym:a#0000000000000000", "sym:b#1111111111111111"), pins("sym:b#1111111111111111", "sym:c#2222222222222222")), {
+    added: ["sym:c#2222222222222222"],
+    removed: ["sym:a#0000000000000000"],
+  });
+  assert.deepEqual(pinChanges(undefined, pins("flow:x#3333333333333333")), { added: ["flow:x#3333333333333333"], removed: [] });
+  assert.deepEqual(pinChanges(pins("sym:a#0000000000000000"), undefined), { added: [], removed: ["sym:a#0000000000000000"] });
+  assert.deepEqual(pinChanges(undefined, undefined), { added: [], removed: [] });
 });

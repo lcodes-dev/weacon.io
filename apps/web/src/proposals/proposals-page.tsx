@@ -5,12 +5,12 @@ import { useAsk } from "../api/ask.ts";
 import { type Loading, useLoaded } from "../api/loaded.ts";
 import { Problem } from "../api/problem.tsx";
 import { type Names, authorText } from "../members/names.ts";
-import type { ProposalChange, ProposalList, ProposalOutcome, ProposalRecord, ProposalVerdict, TaskRecord, WorkspaceId } from "../protocol.ts";
+import type { DocAnchors, ProposalChange, ProposalList, ProposalOutcome, ProposalRecord, ProposalVerdict, TaskRecord, WorkspaceId } from "../protocol.ts";
 import { useReloadOn } from "../shell/feed-hooks.ts";
 import type { WorkspaceSocket } from "../shell/workspace-socket.ts";
 import { DiffLines } from "../diff/diff-lines.tsx";
 import "./proposals.css";
-import { aboutText, conflictText, stateText, taskEditText } from "./proposals.ts";
+import { aboutText, conflictText, pinChanges, stateText, taskEditText } from "./proposals.ts";
 
 type Props = { api: Api; workspace: WorkspaceId; socket: WorkspaceSocket; names: Names };
 
@@ -38,6 +38,7 @@ export function ProposalsPage({ api, workspace, socket, names }: Props) {
         </>
       )}
       {proposals.problem !== undefined && <Problem text={proposals.problem} retry={() => void proposals.load()} />}
+      {tasks.problem !== undefined && <Problem text={tasks.problem} retry={() => void tasks.load()} />}
     </div>
   );
 }
@@ -97,7 +98,12 @@ function Changes({ api, workspace, change, tasks }: { api: Api; workspace: Works
         </ul>
       );
     case "new_doc":
-      return <DiffLines before="" after={change.content.body} label="Its text" />;
+      return (
+        <>
+          <DiffLines before="" after={change.content.body} label="Its text" />
+          <Pins before={undefined} after={change.content.anchors} />
+        </>
+      );
     default:
       return null;
   }
@@ -113,7 +119,30 @@ function DocEdit({ api, workspace, change }: { api: Api; workspace: WorkspaceId;
       {base.problem !== undefined && <Problem text={base.problem} retry={() => void base.load()} />}
       {before !== undefined && before.title !== change.content.title && <p>Retitle it “{change.content.title}”</p>}
       {before !== undefined && <DiffLines before={before.body} after={change.content.body} label="Its changes" />}
+      {before !== undefined && <Pins before={before.anchors} after={change.content.anchors} />}
     </>
+  );
+}
+
+// The links to code a doc change pins anew or drops, which its text alone may not show.
+function Pins({ before, after }: { before: DocAnchors | undefined; after: DocAnchors | undefined }) {
+  const { added, removed } = pinChanges(before, after);
+  if (added.length === 0 && removed.length === 0) {
+    return null;
+  }
+  return (
+    <ul className="edits" aria-label="Its links to code">
+      {added.map((pin) => (
+        <li key={`+${pin}`}>
+          Pins <code>{pin}</code>
+        </li>
+      ))}
+      {removed.map((pin) => (
+        <li key={`-${pin}`}>
+          Drops <code>{pin}</code>
+        </li>
+      ))}
+    </ul>
   );
 }
 

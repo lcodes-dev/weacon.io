@@ -265,4 +265,21 @@ const isHistory = listOf<DocHistory>("revisions", isRevision);
 const isProposal = (value: unknown): boolean =>
   fields(value, ["id", "state"]) && isObject(value) && isObject(value["about"]) && isObject(value["author"]) && Number.isSafeInteger(value["at"]);
 const isProposals = listOf<ProposalList>("proposals", isProposal);
-const isOutcome = (value: unknown): value is ProposalOutcome => fields(value, ["outcome"]);
+const isHunk = (value: unknown): boolean =>
+  isObject(value) && (value["kind"] === "agreed" ? fields(value, ["text"]) : value["kind"] === "conflict" ? fields(value, ["base", "current", "proposed"]) : fields(value, ["kind"]));
+// Each outcome this app reads has its fields; one of a newer kind passes, to be shown as such.
+const isOutcome = (value: unknown): value is ProposalOutcome => {
+  if (!fields(value, ["outcome"]) || !isObject(value)) {
+    return false;
+  }
+  switch (value["outcome"]) {
+    case "accepted":
+      return Number.isSafeInteger(value["version"]);
+    case "doc_conflict":
+      return typeof value["title"] === "boolean" && typeof value["anchors"] === "boolean" && Array.isArray(value["hunks"]) && value["hunks"].every(isHunk);
+    case "task_conflict":
+      return Array.isArray(value["edits"]) && value["edits"].every((edit) => fields(edit, ["kind"]));
+    default:
+      return true;
+  }
+};
