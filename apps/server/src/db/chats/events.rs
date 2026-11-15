@@ -147,26 +147,27 @@ impl Workspace {
             self.index_message(&mut *transaction, &item, row.event, row.at)
                 .await?;
         }
-        self.keep_runs(&mut *transaction, chat, runs).await?;
+        let moved = self.keep_runs(&mut *transaction, chat, runs).await?;
         for request in rows.iter().filter_map(|row| ended(row.event)) {
             self.end_request(&mut *transaction, chat, request).await?;
         }
-        match rows.iter().rev().find(|row| turns(row.event)) {
-            Some(row) => self.turned(transaction, chat, row.at).await,
-            None => Ok(()),
+        let turn = rows.iter().rfind(|row| turns(row.event)).map(|row| row.at);
+        if turn.is_none() && !moved {
+            return Ok(());
         }
+        self.turned(transaction, chat, turn).await
     }
 
-    // A turn began or ended at `at`: the chat is updated then, and the feed hears of it.
+    // A turn began or ended `at`, or the latest run changed: the feed hears, and a turn dates it.
     async fn turned(
         &self,
         transaction: &mut SqliteConnection,
         chat: &ChatId,
-        at: i64,
+        at: Option<i64>,
     ) -> Result<(), Fault> {
         let owner = sqlx::query_scalar::<_, String>(
-            "UPDATE chats SET updated_at = ? WHERE workspace_id = ? AND chat_id = ?
-             RETURNING owner_member",
+            "UPDATE chats SET updated_at = COALESCE(?, updated_at)
+             WHERE workspace_id = ? AND chat_id = ? RETURNING owner_member",
         )
         .bind(at)
         .bind(self.id.as_str())
@@ -609,6 +610,11 @@ mod tests {
             .collect()
     }
 
+    async fn runs(workspace: &Workspace) -> Vec<Option<RunState>> {
+        let chats = workspace.chats().await.unwrap();
+        chats.iter().map(|chat| chat.run).collect()
+    }
+
     async fn updated_at(workspace: &Workspace) -> i64 {
         workspace.chats().await.unwrap().first().unwrap().updated_at
     }
@@ -648,6 +654,39 @@ mod tests {
         let elsewhere = [(Some(10), receipt("r-c-2", Outcome::Completed))];
         append(&one, "c-1", &elsewhere).await.unwrap();
         assert_eq!(one.open_requests(&id("c-2")).await.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_run_changing_state_tells_the_feed_and_the_list_shows_it_in_its_workspace_only() {
+        let dir = TempDir::new().unwrap();
+        let (one, two) = two_teams(&dir).await;
+        make(&one, "c-1", "m1", NOW).await.unwrap();
+        make(&two, "c-1", "m2", NOW).await.unwrap();
+        assert_eq!(runs(&one).await, [None]);
+
+        append(&one, "c-1", &[(Some(1), status(RunState::Running))])
+            .await
+            .unwrap();
+        append(&one, "c-1", &[(Some(2), said("working"))])
+            .await
+            .unwrap();
+        append(&one, "c-1", &[(Some(3), status(RunState::Running))])
+            .await
+            .unwrap();
+        assert_eq!(runs(&one).await, [Some(RunState::Running)]);
+        assert_eq!(changed_chats(&one).await.len(), 2);
+
+        let waiting = Incoming {
+            core_seq: Some(4),
+            event: &status(RunState::Waiting),
+            at: NOW + 40,
+        };
+        one.append_events(&id("c-1"), &[waiting]).await.unwrap();
+        assert_eq!(runs(&one).await, [Some(RunState::Waiting)]);
+        assert_eq!(changed_chats(&one).await.len(), 3);
+        assert_eq!(updated_at(&one).await, NOW);
+        assert_eq!(runs(&two).await, [None]);
+        assert_eq!(changed_chats(&two).await.len(), 1);
     }
 
     #[tokio::test]

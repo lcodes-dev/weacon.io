@@ -247,7 +247,8 @@ const isList = listOf<WorkspaceList>("workspaces", isWorkspace);
 const isChat = (value: unknown): value is ChatSummary =>
   fields(value, ["id", "machine", "owner", "state", "title"]) &&
   isId((value as ChatSummary).id) &&
-  Number.isSafeInteger((value as ChatSummary).updated_at);
+  Number.isSafeInteger((value as ChatSummary).updated_at) &&
+  ["undefined", "string"].includes(typeof (value as ChatSummary).run);
 const isChats = listOf<ChatList>("chats", isChat);
 const isMark = (value: unknown): boolean =>
   typeof value === "object" && value !== null && Number.isSafeInteger((value as Mark).start) && Number.isSafeInteger((value as Mark).end);

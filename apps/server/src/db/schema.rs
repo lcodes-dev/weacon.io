@@ -140,9 +140,16 @@ mod tests {
         "pairings",
     ];
 
-    // The tables FTS5 makes for a virtual table's rows, named after it, which can't lead with
-    // the workspace; they are left out only beside a virtual table whose first column does.
-    const SHADOWS: [&str; 5] = ["data", "idx", "content", "docsize", "config"];
+    // The tables FTS5 makes for a virtual table's rows, named after it, each with the first
+    // column FTS5 gives it; they can't lead with the workspace, so they are left out only beside
+    // a virtual table whose first column does.
+    const SHADOWS: [(&str, &str); 5] = [
+        ("data", "id"),
+        ("idx", "segid"),
+        ("content", "id"),
+        ("docsize", "id"),
+        ("config", "k"),
+    ];
 
     async fn tables(db: &Db) -> Vec<String> {
         let all: Vec<(String, bool)> = sqlx::query_as(
@@ -152,11 +159,16 @@ mod tests {
         .fetch_all(&db.readers)
         .await
         .unwrap();
+        let first = "SELECT name FROM pragma_table_info(?) WHERE cid = 0";
         let mut shadows = Vec::new();
         for (name, virtual_table) in &all {
-            let first = "SELECT name FROM pragma_table_info(?) WHERE cid = 0";
-            if *virtual_table && first_columns(db, first, name).await == ["workspace_id"] {
-                shadows.extend(SHADOWS.map(|shadow| format!("{name}_{shadow}")));
+            if !*virtual_table || first_columns(db, first, name).await != ["workspace_id"] {
+                continue;
+            }
+            for (suffix, column) in SHADOWS {
+                let shadow = format!("{name}_{suffix}");
+                let made = first_columns(db, first, &shadow).await == [column];
+                shadows.extend(made.then_some(shadow));
             }
         }
         all.into_iter()
@@ -173,7 +185,9 @@ mod tests {
         sqlx::raw_sql(
             "CREATE VIRTUAL TABLE led USING fts5(workspace_id UNINDEXED, body); \
              CREATE VIRTUAL TABLE stray USING fts5(body, workspace_id UNINDEXED); \
-             CREATE TABLE led_extra (body TEXT)",
+             CREATE TABLE led_extra (body TEXT); \
+             CREATE VIRTUAL TABLE bare USING fts5(workspace_id UNINDEXED, body, content=''); \
+             CREATE TABLE bare_content (body TEXT)",
         )
         .execute(&db.writer)
         .await
@@ -190,7 +204,9 @@ mod tests {
                 "stray_content",
                 "stray_docsize",
                 "stray_config",
-                "led_extra"
+                "led_extra",
+                "bare",
+                "bare_content"
             ]
         );
     }

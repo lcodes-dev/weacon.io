@@ -1,3 +1,5 @@
+use super::fold::fold;
+
 /// The most bytes a search's text may hold.
 pub(crate) const MAX_TEXT: usize = 256;
 /// The most words a search's text may hold.
@@ -14,6 +16,16 @@ pub(crate) struct Query {
     /// What a row must match, and its title too to come first: every long word.
     pub(crate) words: String,
     /// What a row's text must also hold, as patterns for `LIKE … ESCAPE '\'`.
+    pub(crate) short: Vec<String>,
+    /// What a snippet marks.
+    pub(crate) marks: Marks,
+}
+
+/// A search's words as a snippet compares them: long ones as the index does, folded as
+/// [`fold`] folds, and short ones as `LIKE` does, ignoring only ASCII case.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub(crate) struct Marks {
+    pub(crate) long: Vec<String>,
     pub(crate) short: Vec<String>,
 }
 
@@ -46,6 +58,13 @@ pub(crate) fn parse(text: &str) -> Result<Option<Query>, TooLong> {
         .join(" ");
     Ok(Some(Query {
         words,
+        marks: Marks {
+            long: long
+                .iter()
+                .map(|word| word.chars().map(fold).collect())
+                .collect(),
+            short: short.iter().map(|word| word.to_ascii_lowercase()).collect(),
+        },
         short: short.into_iter().map(pattern).collect(),
     }))
 }

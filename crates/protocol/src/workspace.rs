@@ -34,7 +34,7 @@ pub enum WorkspaceRole {
     Member,
     /// A role this build doesn't know, from a newer peer; only ever received, and it allows
     /// nothing.
-    #[serde(other)]
+    #[serde(other, skip_serializing)]
     #[schemars(skip)]
     Newer,
 }
@@ -91,14 +91,14 @@ pub enum WorkspaceChange {
     /// A doc was made, at version 1, or revised. Only for clients that have the capability
     /// `workspace.docs`, which read the doc again to see what it now says.
     DocChanged { doc: DocId, version: u64 },
-    /// A chat was made, or its title, state or latest turn changed. Only for clients that have
-    /// the capability `workspace.chats`, which read the chats again.
+    /// A chat was made, or its title, state, latest turn or latest run changed. Only for clients
+    /// that have the capability `workspace.chats`, which read the chats again.
     ChatChanged { chat: ChatId },
     /// A proposal was made or its state changed. Only for clients that have the capability
     /// `workspace.proposals`, which read the proposals again.
     ProposalChanged { proposal: ProposalId },
     /// A change this build doesn't know, from a newer peer; only ever received.
-    #[serde(other)]
+    #[serde(other, skip_serializing)]
     #[schemars(skip)]
     Newer,
 }

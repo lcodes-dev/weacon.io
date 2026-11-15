@@ -6,6 +6,11 @@ const AGENTS = new Map([
   ["codex", "Codex"],
 ]);
 
+/** What `kind` of agent is called, such as "Codex"; "Agent" for one this app doesn't know. */
+export function vendorName(kind: string | undefined): string {
+  return AGENTS.get(kind ?? "") ?? "Agent";
+}
+
 const NO_NAMES: Names = new Map();
 
 /**
@@ -14,7 +19,7 @@ const NO_NAMES: Names = new Map();
  * down to "Agent".
  */
 export function label(agent: AgentRef | undefined, names: Names = NO_NAMES, owner?: MemberId): string {
-  const vendor = AGENTS.get(agent?.kind ?? "") ?? "Agent";
+  const vendor = vendorName(agent?.kind);
   const where = (who: string) => (agent?.machine === undefined ? who : `${who} · ${agent.machine}`);
   if (agent?.owner.kind === "shared") {
     return where(`Shared ${vendor}`);

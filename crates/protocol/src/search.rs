@@ -48,7 +48,7 @@ pub enum SearchHit {
         snippet: Snippet,
     },
     /// A hit this build doesn't know, from a newer peer; only ever received.
-    #[serde(other)]
+    #[serde(other, skip_serializing)]
     #[schemars(skip)]
     Newer,
 }

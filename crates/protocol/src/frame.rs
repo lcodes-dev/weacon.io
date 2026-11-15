@@ -1,9 +1,6 @@
 use std::{fmt, mem};
 
-use crate::{
-    ChatQueryKind, Code, DiffQueryKind, Envelope, MachineSettingsQueryKind, Message,
-    WorkspaceChange, WorktreeAction, WorktreeAnswerKind, WorktreeQueryKind, code,
-};
+use crate::{Code, Envelope, code};
 
 /// The largest frame accepted or sent on any transport: one message's JSON, plus its newline on
 /// a byte stream.
@@ -40,12 +37,9 @@ impl Envelope {
     /// The message as one frame of JSON, for transports that keep frames apart themselves.
     ///
     /// # Errors
-    /// When the message is one only ever received, such as [`Message::Unknown`], or exceeds
-    /// [`MAX_FRAME`].
+    /// When the message holds a part only ever received, such as [`crate::Message::Unknown`], or
+    /// exceeds [`MAX_FRAME`].
     pub fn to_json(&self) -> Result<Vec<u8>, FrameError> {
-        if only_received(&self.message) {
-            return Err(FrameError::Invalid);
-        }
         let json = serde_json::to_vec(self).map_err(|_| FrameError::Invalid)?;
         if json.len() > MAX_FRAME {
             return Err(FrameError::TooLarge);
@@ -62,39 +56,6 @@ impl Envelope {
             return Err(FrameError::TooLarge);
         }
         serde_json::from_slice(json).map_err(|_| FrameError::Invalid)
-    }
-}
-
-fn only_received(message: &Message) -> bool {
-    match message {
-        Message::Unknown => true,
-        Message::Receipt(receipt) => receipt.outcome.is_newer(),
-        Message::Run(update) => update.event.is_newer(),
-        Message::Workspace(update) => matches!(update.change, WorkspaceChange::Newer),
-        Message::ChatCommand(command) => command.action.is_newer(),
-        Message::Chat(update) => update.entry.event.is_newer(),
-        Message::ChatQuery(query) => matches!(query.query, ChatQueryKind::Newer),
-        Message::ChatAnswer(answer) => answer.answer.is_newer(),
-        Message::DiffQuery(query) => matches!(query.query, DiffQueryKind::Newer),
-        Message::DiffAnswer(answer) => answer.answer.is_newer(),
-        Message::MachineSettingsQuery(query) => {
-            matches!(query.query, MachineSettingsQueryKind::Newer)
-        }
-        Message::MachineSettingsCommand(command) => command.action.is_newer(),
-        Message::MachineSettingsAnswer(answer) => answer.answer.is_newer(),
-        Message::SessionsQuery(query) => query.query.is_newer(),
-        Message::SessionsAnswer(answer) => answer.answer.is_newer(),
-        Message::TerminalCommand(command) => command.is_newer(),
-        Message::Terminal(update) => update.is_newer(),
-        Message::WorktreeQuery(query) => matches!(query.query, WorktreeQueryKind::Newer),
-        Message::WorktreeCommand(command) => matches!(command.action, WorktreeAction::Newer),
-        Message::WorktreeAnswer(answer) => matches!(answer.answer, WorktreeAnswerKind::Newer),
-        Message::ProposalCommand(command) => command.is_newer(),
-        Message::Hello(_)
-        | Message::Welcome(_)
-        | Message::Error(_)
-        | Message::Pick(_)
-        | Message::Log(_) => false,
     }
 }
 
@@ -159,8 +120,8 @@ mod tests {
     use crate::test_support::{chat, request, run, workspace};
     use crate::{
         AgentKind, App, ChatAction, ChatCommand, ChatEntry, ChatEvent, ChatUpdate, ErrorBody,
-        Hello, Outcome, ProposalAction, ProposalCommand, Receipt, RunEvent, RunUpdate,
-        WorkspaceUpdate,
+        Hello, Message, Outcome, ProposalAction, ProposalCommand, Receipt, RunEvent, RunUpdate,
+        WorkspaceChange, WorkspaceUpdate,
     };
 
     fn envelope(id: u32) -> Envelope {

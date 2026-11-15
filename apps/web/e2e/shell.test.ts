@@ -366,7 +366,7 @@ test("a workspace lists its chats newest first, and opens one in the address", {
   await listChats(page, () => ({
     chats: [
       { id: "c-1", title: "Merge the shopping lists", owner: "m-1", machine: "laptop", state: "open", updated_at: 1_800_000_000 },
-      { id: "c-2", title: "Sort the pantry", owner: "m-1", machine: "team VPS", state: "full", updated_at: 1_800_000_100 },
+      { id: "c-2", title: "Sort the pantry", owner: "m-1", machine: "team VPS", state: "full", updated_at: 1_800_000_100, run: "waiting" },
       { id: "c-3", title: "Old notes", owner: "m-1", machine: "desktop", state: "detached", updated_at: 1_700_000_000 },
     ],
   }));
@@ -377,7 +377,7 @@ test("a workspace lists its chats newest first, and opens one in the address", {
   await chats.getByText("Sort the pantry").waitFor();
 
   assert.deepEqual(await chats.locator(".title").allInnerTexts(), ["Sort the pantry", "Merge the shopping lists", "Old notes"]);
-  assert.deepEqual(await chats.locator("li .muted").allInnerTexts(), ["team VPS · Full", "laptop", "desktop · Read only"]);
+  assert.deepEqual(await chats.locator("li .muted").allInnerTexts(), ["team VPS · Waiting for a person · Full", "laptop", "desktop · Read only"]);
   await chats.getByRole("button", { name: /Merge the shopping lists/ }).click();
   await page.getByRole("heading", { name: "Merge the shopping lists" }).waitFor();
   assert.match(page.url(), /\?workspace=[A-Za-z0-9_-]+&chat=c-1$/);

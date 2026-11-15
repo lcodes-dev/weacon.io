@@ -4,7 +4,8 @@ mod runs;
 
 use weacon_observability::Fault;
 use weacon_protocol::{
-    ChatId, ChatState, ChatSummary, MachineId, MachineName, MemberId, RepoId, code,
+    ChatId, ChatState, ChatSummary, MachineId, MachineName, MemberId, RepoId, RunState, RunStatus,
+    code,
 };
 
 #[cfg(test)]
@@ -47,7 +48,7 @@ pub(crate) struct Chat {
 }
 
 type ChatRow = (String, String, String, i64, i64);
-type SummaryRow = (String, String, String, String, String, i64);
+type SummaryRow = (String, String, String, String, String, i64, Option<String>);
 
 impl Workspace {
     /// Makes the chat `chat` with the request that makes it, before that is sent: feeds hear
@@ -130,15 +131,15 @@ impl Workspace {
     /// The workspace's chats, the latest updated first.
     pub(crate) async fn chats(&self) -> Result<Vec<ChatSummary>, Fault> {
         sqlx::query_as::<_, SummaryRow>(
-            "SELECT chat_id, title, owner_member, machine_name, state, updated_at FROM chats
-             WHERE workspace_id = ? ORDER BY updated_at DESC, chat_id",
+            "SELECT chat_id, title, owner_member, machine_name, state, updated_at, run_status
+             FROM chats WHERE workspace_id = ? ORDER BY updated_at DESC, chat_id",
         )
         .bind(self.id.as_str())
         .fetch_all(&self.db.readers)
         .await
         .map_err(failed)?
         .into_iter()
-        .map(|(id, title, owner, machine, state, updated_at)| {
+        .map(|(id, title, owner, machine, state, updated_at, run)| {
             Ok(ChatSummary {
                 id: stored(id)?,
                 title,
@@ -146,6 +147,7 @@ impl Workspace {
                 machine: stored(machine)?,
                 state: stored_state(&state)?,
                 updated_at,
+                run: run.as_deref().map(stored_run_state).transpose()?.flatten(),
             })
         })
         .collect()
@@ -190,6 +192,12 @@ fn state_text(state: ChatState) -> Result<&'static str, Fault> {
     }
 }
 
+// `status` is a stored `RunStatus` in JSON; a state from a newer core is never sent on.
+fn stored_run_state(status: &str) -> Result<Option<RunState>, Fault> {
+    let status = serde_json::from_str::<RunStatus>(status).map_err(|_| unreadable())?;
+    Ok(Some(status.state).filter(|state| *state != RunState::Newer))
+}
+
 fn stored_state(text: &str) -> Result<ChatState, Fault> {
     match text {
         "open" => Ok(ChatState::Open),
@@ -223,6 +231,7 @@ mod tests {
             machine: id("Ada's laptop"),
             state: ChatState::Open,
             updated_at: NOW + 5,
+            run: None,
         };
         assert_eq!(listed.first(), Some(&summary));
         assert_eq!(ids(&listed), ["c-2", "c-1"]);
@@ -251,6 +260,18 @@ mod tests {
         );
         let newer = one.set_chat_state(&id("c-1"), ChatState::Newer).await;
         assert_eq!(code(&newer.unwrap_err()), "chat.unstorable");
+    }
+
+    #[test]
+    fn a_stored_run_gives_its_state_but_never_one_from_a_newer_core() {
+        let status = |state: &str| format!(r#"{{"run":"run-1","state":"{state}"}}"#);
+
+        assert_eq!(
+            stored_run_state(&status("waiting")).unwrap(),
+            Some(RunState::Waiting)
+        );
+        assert_eq!(stored_run_state(&status("paused")).unwrap(), None);
+        assert_eq!(code(&stored_run_state("{").unwrap_err()), "db.unreadable");
     }
 
     fn ids(list: &[ChatSummary]) -> Vec<&str> {

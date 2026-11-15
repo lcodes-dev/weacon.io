@@ -12,14 +12,14 @@ use x25519_dalek::{PublicKey, StaticSecret};
 /// A handshake the core accepted: its channel, the first message's payload, and the reply to
 /// send back.
 pub(crate) struct Accepted {
-    pub(crate) seal: Seal,
+    pub(crate) channel: Channel,
     pub(crate) first: Vec<u8>,
     pub(crate) reply: Vec<u8>,
 }
 
 /// One terminal's channel once the handshake is done. After any failure it refuses everything,
 /// so the terminal closes.
-pub(crate) struct Seal {
+pub(crate) struct Channel {
     transport: TransportState,
     broken: bool,
 }
@@ -29,11 +29,15 @@ pub(crate) struct Seal {
 ///
 /// # Errors
 /// When the message wasn't sealed to this key, under this prologue, or isn't one at all.
-pub(crate) fn accept(key: &[u8; 32], prologue: &[u8], handshake: &[u8]) -> Result<Accepted, Fault> {
-    let responder = builder(prologue)
+pub(crate) fn accept(
+    key: &[u8; KEY_LEN],
+    prologue: &[u8],
+    handshake: &[u8],
+) -> Result<Accepted, Fault> {
+    builder(prologue)
         .and_then(|builder| builder.local_private_key(key))
-        .map_err(|error| handshake_failed().because(error))?;
-    accept_with(responder, handshake, &[])
+        .and_then(|responder| accept_with(responder, handshake, &[]))
+        .map_err(|error| handshake_failed().because(error))
 }
 
 // The published vectors put a payload in the reply too.
@@ -41,24 +45,21 @@ fn accept_with(
     responder: Builder<'_>,
     handshake: &[u8],
     payload: &[u8],
-) -> Result<Accepted, Fault> {
-    let run = || {
-        let mut state = responder.build_responder()?;
-        let first = buffered(|buffer| state.read_message(handshake, buffer))?;
-        let reply = buffered(|buffer| state.write_message(payload, buffer))?;
-        Ok(Accepted {
-            seal: Seal {
-                transport: state.into_transport_mode()?,
-                broken: false,
-            },
-            first,
-            reply,
-        })
-    };
-    run().map_err(|error: snow::Error| handshake_failed().because(error))
+) -> Result<Accepted, snow::Error> {
+    let mut state = responder.build_responder()?;
+    let first = buffered(|buffer| state.read_message(handshake, buffer))?;
+    let reply = buffered(|buffer| state.write_message(payload, buffer))?;
+    Ok(Accepted {
+        channel: Channel {
+            transport: state.into_transport_mode()?,
+            broken: false,
+        },
+        first,
+        reply,
+    })
 }
 
-impl Seal {
+impl Channel {
     /// `plaintext` as the next message to send.
     ///
     /// # Errors
@@ -113,7 +114,7 @@ fn handshake_failed() -> Fault {
     )
 }
 
-fn seal_failed() -> Fault {
+pub(super) fn seal_failed() -> Fault {
     Fault::new(code!("terminal.seal_failed"), "The terminal's seal failed")
 }
 
@@ -140,14 +141,17 @@ impl CryptoResolver for Resolver {
     }
 }
 
+const KEY_LEN: usize = 32;
+
 struct X25519 {
     secret: StaticSecret,
     public: PublicKey,
 }
 
+// snow sets or generates the key before it uses one, so the zeros never take part.
 impl Default for X25519 {
     fn default() -> Self {
-        let secret = StaticSecret::from([0; 32]);
+        let secret = StaticSecret::from([0; KEY_LEN]);
         let public = PublicKey::from(&secret);
         Self { secret, public }
     }
@@ -159,23 +163,23 @@ impl Dh for X25519 {
     }
 
     fn pub_len(&self) -> usize {
-        32
+        KEY_LEN
     }
 
     fn priv_len(&self) -> usize {
-        32
+        KEY_LEN
     }
 
     // snow always passes `priv_len` bytes.
     fn set(&mut self, privkey: &[u8]) {
-        if let Some(Ok(bytes)) = privkey.get(..32).map(<[u8; 32]>::try_from) {
-            self.secret = StaticSecret::from(bytes);
+        if let Some(bytes) = privkey.first_chunk::<KEY_LEN>() {
+            self.secret = StaticSecret::from(*bytes);
             self.public = PublicKey::from(&self.secret);
         }
     }
 
     fn generate(&mut self, rng: &mut dyn Random) -> Result<(), snow::Error> {
-        let mut bytes = [0; 32];
+        let mut bytes = [0; KEY_LEN];
         rng.try_fill_bytes(&mut bytes)?;
         self.set(&bytes);
         bytes.fill(0);
@@ -193,11 +197,9 @@ impl Dh for X25519 {
     // snow hands over buffers that may be longer than the key. A low-order point, which would
     // give everyone the same secret, is refused, as Web Crypto refuses it in the browser.
     fn dh(&self, pubkey: &[u8], out: &mut [u8]) -> Result<(), snow::Error> {
-        let Some(Ok(public)) = pubkey.get(..32).map(<[u8; 32]>::try_from) else {
-            return Err(snow::Error::Dh);
-        };
-        let shared = self.secret.diffie_hellman(&PublicKey::from(public));
-        let out = out.get_mut(..32).ok_or(snow::Error::Dh)?;
+        let public = pubkey.first_chunk::<KEY_LEN>().ok_or(snow::Error::Dh)?;
+        let shared = self.secret.diffie_hellman(&PublicKey::from(*public));
+        let out = out.first_chunk_mut::<KEY_LEN>().ok_or(snow::Error::Dh)?;
         if !shared.was_contributory() {
             return Err(snow::Error::Dh);
         }
@@ -206,17 +208,21 @@ impl Dh for X25519 {
     }
 }
 
+// For the terminal's tests, which run only where the vendor they plant can.
+#[cfg(test)]
+#[cfg(unix)]
+pub(super) use tests::{finish, initiator, opened, sealed, write};
+
 #[cfg(test)]
 mod tests {
-    use std::fmt::Write;
     use std::fs;
     use std::path::Path;
 
     use serde::{Deserialize, Serialize};
     use snow::HandshakeState;
     use weacon_protocol::{
-        AgentKind, Bytes, MachineId, TerminalAction, TerminalCommand, TerminalId, TerminalInput,
-        TerminalOutput, WorkspaceId,
+        AgentKind, Bytes, MachineId, SignInState, TerminalAction, TerminalCommand, TerminalId,
+        TerminalInput, TerminalOutput, WorkspaceId, to_hex,
     };
 
     use super::*;
@@ -248,13 +254,6 @@ mod tests {
         weacon: Vector,
     }
 
-    fn hex(bytes: &[u8]) -> String {
-        bytes.iter().fold(String::new(), |mut hex, byte| {
-            write!(hex, "{byte:02x}").unwrap();
-            hex
-        })
-    }
-
     fn unhex(hex: &str) -> Vec<u8> {
         (0..hex.len())
             .step_by(2)
@@ -272,7 +271,12 @@ mod tests {
             .to_vec()
     }
 
-    fn initiator(prologue: &[u8], remote: &[u8], ephemeral: Option<&[u8]>) -> HandshakeState {
+    /// The browser's end of a handshake with the machine whose key is `remote`.
+    pub(in crate::terminal) fn initiator(
+        prologue: &[u8],
+        remote: &[u8],
+        ephemeral: Option<&[u8]>,
+    ) -> HandshakeState {
         let builder = builder(prologue)
             .unwrap()
             .remote_public_key(remote)
@@ -284,17 +288,31 @@ mod tests {
         builder.build_initiator().unwrap()
     }
 
-    fn write(state: &mut HandshakeState, payload: &[u8]) -> Vec<u8> {
+    pub(in crate::terminal) fn write(state: &mut HandshakeState, payload: &[u8]) -> Vec<u8> {
         buffered(|buffer| state.write_message(payload, buffer)).unwrap()
     }
 
-    /// The browser's end after the handshake, and the core's.
-    fn connected(prologue: &[u8], remote: &[u8], first: &[u8]) -> (TransportState, Seal) {
-        let mut browser = initiator(prologue, remote, None);
-        let handshake = write(&mut browser, first);
-        let accepted = accept(&machine_key(), prologue, &handshake).unwrap();
-        browser.read_message(&accepted.reply, &mut [0; 64]).unwrap();
-        (browser.into_transport_mode().unwrap(), accepted.seal)
+    /// The browser's end once the core's `reply` is in.
+    pub(in crate::terminal) fn finish(mut state: HandshakeState, reply: &[u8]) -> TransportState {
+        state.read_message(reply, &mut [0; 64]).unwrap();
+        state.into_transport_mode().unwrap()
+    }
+
+    pub(in crate::terminal) fn sealed(browser: &mut TransportState, plaintext: &[u8]) -> Vec<u8> {
+        buffered(|buffer| browser.write_message(plaintext, buffer)).unwrap()
+    }
+
+    pub(in crate::terminal) fn opened(browser: &mut TransportState, message: &[u8]) -> Vec<u8> {
+        buffered(|buffer| browser.read_message(message, buffer)).unwrap()
+    }
+
+    // A browser and the core, connected under the real prologue and the machine key.
+    fn connected() -> (TransportState, Channel) {
+        let bound = prologue();
+        let mut browser = initiator(&bound, &public(&machine_key()), None);
+        let handshake = write(&mut browser, b"{}");
+        let accepted = accept(&machine_key(), &bound, &handshake).unwrap();
+        (finish(browser, &accepted.reply), accepted.channel)
     }
 
     // Plays `vector`'s payloads through both ends with its keys and checks each arrives; the
@@ -327,17 +345,17 @@ mod tests {
             .read_message(&accepted.reply, &mut payload)
             .unwrap();
         assert_eq!(payload[..len], payloads[1]);
-        let handshake_hash = hex(initiator.get_handshake_hash());
+        let handshake_hash = to_hex(initiator.get_handshake_hash());
         let mut browser = initiator.into_transport_mode().unwrap();
         let mut made = vec![first, accepted.reply];
-        made.extend(exchange(&mut browser, &mut accepted.seal, &payloads));
+        made.extend(exchange(&mut browser, &mut accepted.channel, &payloads));
         let messages = made.iter().zip(&vector.messages);
         Vector {
             handshake_hash,
             messages: messages
                 .map(|(ciphertext, message)| Message {
                     payload: message.payload.clone(),
-                    ciphertext: hex(ciphertext),
+                    ciphertext: to_hex(ciphertext),
                 })
                 .collect(),
             ..vector.clone()
@@ -347,17 +365,17 @@ mod tests {
     // Sends the payloads after the handshake's two, alternating from the browser; what was sent.
     fn exchange(
         browser: &mut TransportState,
-        seal: &mut Seal,
+        channel: &mut Channel,
         payloads: &[Vec<u8>],
     ) -> Vec<Vec<u8>> {
         let sent = payloads.iter().enumerate().skip(2).map(|(index, payload)| {
             if index % 2 == 0 {
-                let sealed = buffered(|buffer| browser.write_message(payload, buffer)).unwrap();
-                assert_eq!(seal.open(&sealed).unwrap(), *payload);
-                sealed
+                let message = sealed(browser, payload);
+                assert_eq!(channel.open(&message).unwrap(), *payload);
+                message
             } else {
-                let sealed = seal.seal(payload).unwrap();
-                let opened = buffered(|buffer| browser.read_message(&sealed, buffer)).unwrap();
+                let sealed = channel.seal(payload).unwrap();
+                let opened = opened(browser, &sealed);
                 assert_eq!(opened, *payload);
                 sealed
             }
@@ -387,14 +405,21 @@ mod tests {
 
     // Weacon's messages, before they are sealed.
     fn weacon_draft() -> Vector {
-        let prologue = hex(&prologue());
+        let prologue = to_hex(&prologue());
         let data = |text: &[u8]| Bytes::new(text.to_vec()).unwrap();
+        // As a terminal runs: the size in the handshake and again in the browser's first frame,
+        // what the login prints, what the person types, and the end.
         let payloads = [
             TerminalInput::Resize { cols: 80, rows: 24 }.to_json(),
             Ok(Vec::new()),
-            TerminalInput::Input { data: data(b"y\r") }.to_json(),
+            TerminalInput::Resize { cols: 80, rows: 24 }.to_json(),
             TerminalOutput::Output {
-                data: data(b"Signed in.\r\n"),
+                data: data(b"Paste the code: "),
+            }
+            .to_json(),
+            TerminalInput::Input { data: data(b"y\r") }.to_json(),
+            TerminalOutput::Ended {
+                sign_in: SignInState::SignedIn,
             }
             .to_json(),
         ];
@@ -403,7 +428,7 @@ mod tests {
             init_prologue: prologue.clone(),
             init_ephemeral: "5dab087e624a8a4b79e17f8b83800ee66f3bb1292618b6fd1c2f8b27ff88e0eb"
                 .to_owned(),
-            init_remote_static: hex(&public(&machine_key())),
+            init_remote_static: to_hex(&public(&machine_key())),
             resp_prologue: prologue,
             resp_static: MACHINE.to_owned(),
             resp_ephemeral: "c8f2a1e04b3d5967788f0e1d2c3b4a59687766554433221100ffeeddccbbaa99"
@@ -412,7 +437,7 @@ mod tests {
             messages: payloads
                 .into_iter()
                 .map(|payload| Message {
-                    payload: hex(&payload.unwrap()),
+                    payload: to_hex(&payload.unwrap()),
                     ciphertext: String::new(),
                 })
                 .collect(),
@@ -464,35 +489,34 @@ mod tests {
 
     #[test]
     fn a_tampered_replayed_or_reordered_frame_breaks_the_channel_for_good() {
-        let (mut browser, mut seal) = connected(&prologue(), &public(&machine_key()), b"{}");
-        let mut frame =
-            |text: &[u8]| buffered(|buffer| browser.write_message(text, buffer)).unwrap();
+        let (mut browser, mut channel) = connected();
+        let mut frame = |text: &[u8]| sealed(&mut browser, text);
         let (one, two) = (frame(b"one"), frame(b"two"));
-        assert_eq!(seal.open(&one).unwrap(), b"one");
-        seal.open(&one).err().unwrap();
-        seal.open(&two).err().unwrap();
-        seal.seal(b"after").unwrap_err();
+        assert_eq!(channel.open(&one).unwrap(), b"one");
+        channel.open(&one).err().unwrap();
+        channel.open(&two).err().unwrap();
+        channel.seal(b"after").unwrap_err();
 
-        let (mut browser, mut seal) = connected(&prologue(), &public(&machine_key()), b"{}");
-        let mut tampered = buffered(|buffer| browser.write_message(b"one", buffer)).unwrap();
+        let (mut browser, mut channel) = connected();
+        let mut tampered = sealed(&mut browser, b"one");
         tampered[0] ^= 1;
-        seal.open(&tampered).err().unwrap();
+        channel.open(&tampered).err().unwrap();
 
-        let (mut browser, mut seal) = connected(&prologue(), &public(&machine_key()), b"{}");
-        buffered(|buffer| browser.write_message(b"skipped", buffer)).unwrap();
-        let second = buffered(|buffer| browser.write_message(b"two", buffer)).unwrap();
-        seal.open(&second).err().unwrap();
+        let (mut browser, mut channel) = connected();
+        sealed(&mut browser, b"skipped");
+        let second = sealed(&mut browser, b"two");
+        channel.open(&second).err().unwrap();
     }
 
     #[test]
     fn a_plaintext_too_long_for_one_frame_is_refused_and_breaks_the_channel() {
-        let (mut browser, mut seal) = connected(&prologue(), &public(&machine_key()), b"{}");
-        let full = seal.seal(&vec![7; SEALED_MAX]).unwrap();
+        let (mut browser, mut channel) = connected();
+        let full = channel.seal(&vec![7; SEALED_MAX]).unwrap();
         assert_eq!(full.len(), NOISE_MAX);
-        let opened = buffered(|buffer| browser.read_message(&full, buffer)).unwrap();
+        let opened = opened(&mut browser, &full);
         assert_eq!(opened.len(), SEALED_MAX);
-        seal.seal(&vec![7; SEALED_MAX + 1]).err().unwrap();
-        seal.seal(b"short").err().unwrap();
+        channel.seal(&vec![7; SEALED_MAX + 1]).err().unwrap();
+        channel.seal(b"short").err().unwrap();
     }
 
     #[test]
@@ -506,11 +530,9 @@ mod tests {
 
     #[test]
     fn each_handshake_makes_fresh_keys() {
-        let remote = public(&machine_key());
-        let (mut one, _) = connected(&prologue(), &remote, b"{}");
-        let (mut two, _) = connected(&prologue(), &remote, b"{}");
-        let first = buffered(|buffer| one.write_message(b"same", buffer)).unwrap();
-        let second = buffered(|buffer| two.write_message(b"same", buffer)).unwrap();
+        let (mut one, _) = connected();
+        let (mut two, _) = connected();
+        let (first, second) = (sealed(&mut one, b"same"), sealed(&mut two, b"same"));
         assert_ne!(first, second);
     }
 }

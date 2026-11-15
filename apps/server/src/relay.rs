@@ -11,18 +11,36 @@ use tokio::task::AbortHandle;
 use tokio::time::sleep;
 use weacon_observability::Fault;
 use weacon_protocol::{
-    Asker, Capability, Code, Envelope, ErrorBody, MachineId, Message, RequestId, WorkspaceId, code,
+    Asker, Capability, Code, DiffAnswer, DiffAnswerKind, Envelope, ErrorBody, MachineId, Message,
+    code,
 };
 
+use crate::db::Workspace;
 use crate::shared::Shared;
 use crate::socket::refusal;
 
+mod kinds;
+
+use kinds::{About, Asked, answering, machine_needs, stamped};
+pub(crate) use kinds::{needs, takes};
+
 /// How many asks may wait for their answers at once, server-wide.
 const MOST_WAITING: usize = 4096;
-/// How long an ask waits for its answer.
+/// How long an ask waits for its answer, or a diff for its next file.
 const ANSWER_WITHIN: Duration = Duration::from_secs(30);
+/// The most files one diff may bring back, as many as the core sends.
+const MOST_FILES: u32 = 500;
 /// What a machine's core offers, and the server offers, to have its settings relayed.
 pub(crate) const SETTINGS: Code = code!("machine.settings");
+/// What a client and a core offer to have a person's own sessions, run outside Weacon, read
+/// through it.
+pub(crate) const SESSIONS: Code = code!("sessions.read");
+/// What a client and a core offer to have a chat's diff relayed.
+pub(crate) const DIFF: Code = code!("diff.view");
+/// What a client and a core offer to have a chat's worktree questions and commands relayed.
+pub(crate) const WORKTREE: Code = code!("worktree.manage");
+/// What a core offers once its owner lets it open terminals.
+const TERMINAL: Code = code!("worktree.open_terminal");
 
 /// The asks waiting for their machines' answers.
 pub(crate) struct Relay {
@@ -34,34 +52,56 @@ pub(crate) struct Relay {
 
 /// An ask's way back to the connection that asked.
 struct Waiter {
-    /// What it asked, which its answer must name.
-    asked: Asked,
+    sent: Sent,
     id: u32,
     back: mpsc::Sender<Envelope>,
+    /// How many of a diff's files are still to come, once its first one says.
+    files_left: Option<u32>,
     /// What tells it, if nothing answers it first, that no answer came.
     timer: AbortHandle,
+    /// Which of its timers is the live one; one that woke before its restart does nothing.
+    round: u32,
 }
 
-/// The machine, workspace and request an ask or its answer names.
-#[derive(PartialEq, Eq)]
-struct Asked {
+/// What an ask asked, which its answer must name, and the machine it was sent to, the only one
+/// that may answer it.
+struct Sent {
+    asked: Asked,
     machine: MachineId,
-    workspace: WorkspaceId,
-    request: RequestId,
 }
 
 impl Waiter {
-    // The asker that left, or reads too slowly, misses it; an answer this server can't send on
-    // is told as `relay.unsendable`, so the asker's connection goes on.
-    fn tell(self, message: Message) {
+    // A gone or slow asker misses it; an answer this server can't send on goes as
+    // `relay.unsendable`, so the asker's connection goes on. True when `message` itself went on.
+    fn tell(&self, message: Message) -> bool {
         let mut envelope = Envelope {
             id: self.id,
             message,
         };
-        if envelope.to_json().is_err() {
+        let sendable = envelope.to_json().is_ok();
+        if !sendable {
             envelope.message = refusal(code!("relay.unsendable"));
         }
-        drop(self.back.try_send(envelope));
+        self.back.try_send(envelope).is_ok() && sendable
+    }
+
+    /// Whether `message` leaves more of a diff to come; a first file past [`MOST_FILES`] ends
+    /// the diff as `diff.too_many`.
+    fn more_after(&mut self, message: &mut Message) -> bool {
+        let Message::DiffAnswer(DiffAnswer {
+            answer: DiffAnswerKind::File { files, .. },
+            ..
+        }) = message
+        else {
+            return false;
+        };
+        if *files > MOST_FILES {
+            *message = refusal(code!("diff.too_many"));
+            return false;
+        }
+        let left = self.files_left.get_or_insert(*files);
+        *left = left.saturating_sub(1);
+        *left > 0
     }
 }
 
@@ -74,7 +114,7 @@ impl Drop for Waiter {
 /// Who asks, from a signed-in connection to `workspace`.
 pub(crate) struct Ask<'a> {
     pub(crate) asker: &'a Asker,
-    pub(crate) workspace: &'a WorkspaceId,
+    pub(crate) workspace: &'a Workspace,
 }
 
 /// Why a message wasn't relayed.
@@ -86,22 +126,15 @@ pub(crate) enum Refusal {
     Failed(Fault),
 }
 
-/// Whether `message` is a kind the relay forwards.
-pub(crate) const fn carries(message: &Message) -> bool {
-    matches!(
-        message,
-        Message::MachineSettingsQuery(_) | Message::MachineSettingsCommand(_)
-    )
-}
-
-/// Forwards `envelope` to the machine its message names, if the message is for the asker's
-/// workspace and the machine is the asker's own. The answer reaches `back` under the
-/// envelope's id, `relay.unsendable` if this server can't send it on, or `machine.no_answer`
-/// once it has waited too long.
+/// Forwards `envelope` to the machine its message names, or that runs the chat it names, if
+/// the machine is the asker's own, the chat theirs too, and a message for a workspace is for
+/// the asker's. The answers reach `back` under the envelope's id, `relay.unsendable` if this
+/// server can't send one on, or `machine.no_answer` once it has waited too long.
 ///
 /// # Errors
-/// `relay.unknown` for a kind the relay doesn't carry or a value it can't send on, `machine.not_found` for a machine that
-/// isn't the asker's or another workspace, `machine.offline` and `relay.busy`, which may pass,
+/// `relay.unknown` for a kind the relay doesn't carry or a value it can't send on,
+/// `machine.not_found` for a machine that isn't the asker's or another workspace's,
+/// `chat.not_found` and `chat.not_owner`, `machine.offline` and `relay.busy`, which may pass,
 /// and the database's failure.
 pub(crate) async fn forward(
     shared: &Shared,
@@ -111,39 +144,58 @@ pub(crate) async fn forward(
 ) -> Result<(), Refusal> {
     let unknown = || refused(code!("relay.unknown"), false);
     let (asked, message) = stamped(envelope.message, ask.asker).ok_or_else(unknown)?;
+    let needs = machine_needs(&message).ok_or_else(unknown)?;
     // A newer client's ask this server can't send on would drop the machine's connection.
     let probe = Envelope { id: 0, message };
     if probe.to_json().is_err() {
         return Err(unknown());
     }
     let message = probe.message;
-    let machine = asked.machine.clone();
-    if asked.workspace != *ask.workspace {
-        return Err(refused(code!("machine.not_found"), false));
-    }
-    let theirs = shared
-        .db
-        .has_machine(&ask.asker.account, &machine)
-        .await
-        .map_err(Refusal::Failed)?;
-    if !theirs {
-        return Err(refused(code!("machine.not_found"), false));
-    }
+    let machine = machine_for(shared, ask, &asked).await?;
     let relayed = shared.links.next_id();
-    shared.relay.wait(relayed, asked, envelope.id, back)?;
+    let sent_to = Sent {
+        asked,
+        machine: machine.clone(),
+    };
+    shared.relay.wait(relayed, sent_to, envelope.id, back)?;
     let sent = Envelope {
         id: relayed,
         message,
     };
     if shared
         .links
-        .send(&machine, &Capability::new(SETTINGS), sent)
+        .send(&machine, &Capability::new(needs), sent)
         .is_err()
     {
         shared.relay.lock().remove(&relayed);
         return Err(refused(code!("machine.offline"), true));
     }
     Ok(())
+}
+
+/// The asker's machine that `asked` goes to.
+async fn machine_for(shared: &Shared, ask: &Ask<'_>, asked: &Asked) -> Result<MachineId, Refusal> {
+    let elsewhere = asked
+        .workspace
+        .as_ref()
+        .is_some_and(|named| named != ask.workspace.id());
+    let machine = match &asked.about {
+        About::Machine(_) if elsewhere => return Err(refused(code!("machine.not_found"), false)),
+        About::Machine(machine) | About::Sessions(machine) => machine.clone(),
+        About::Diff(_) | About::Worktree(_) if elsewhere => {
+            return Err(refused(code!("chat.not_found"), false));
+        }
+        About::Diff(chat) | About::Worktree(chat) => {
+            let chat = ask.workspace.chat(chat).await.map_err(Refusal::Failed)?;
+            let chat = chat.ok_or_else(|| refused(code!("chat.not_found"), false))?;
+            if chat.owner != ask.asker.member {
+                return Err(refused(code!("chat.not_owner"), false));
+            }
+            chat.machine
+        }
+    };
+    theirs(shared, ask, &machine).await?;
+    Ok(machine)
 }
 
 impl Default for Relay {
@@ -163,34 +215,53 @@ impl Relay {
     }
 
     /// Takes `envelope` from `machine`'s connection: an answer, or an error, to an ask the
-    /// relay forwarded to that machine goes back to the connection that asked. Anything else,
-    /// or an answer that names another machine, is dropped. False when its id isn't one of
-    /// the relay's, so another feature may claim it.
+    /// relay forwarded to that machine goes back to the connection that asked. A diff's answers
+    /// go back until its last file; anything else, or an answer that names another machine, is
+    /// dropped. False when its id isn't one of the relay's, so another feature may claim it.
     #[must_use]
-    pub(crate) fn answered(&self, machine: &MachineId, envelope: Envelope) -> bool {
+    pub(crate) fn answered(self: &Arc<Self>, machine: &MachineId, envelope: Envelope) -> bool {
         let mut waiting = self.lock();
-        let Entry::Occupied(entry) = waiting.entry(envelope.id) else {
+        let others = sharing(&waiting, envelope.id);
+        let Entry::Occupied(mut entry) = waiting.entry(envelope.id) else {
             return false;
         };
-        let named = answering(&envelope.message);
-        let asked = &entry.get().asked;
+        let mut message = envelope.message;
+        let named = answering(&message);
+        let waiter = entry.get_mut();
         let answers = match &named {
-            Some(named) => named == asked,
-            None => matches!(envelope.message, Message::Error(_)),
+            Some(named) => *named == waiter.sent.asked,
+            None => matches!(message, Message::Error(_)),
         };
-        if asked.machine != *machine || !answers {
+        if waiter.sent.machine != *machine || !answers {
+            return true;
+        }
+        if waiter.more_after(&mut message) {
+            // The asker's other asks keep their room, and the last of the rest goes to telling
+            // a slow asker it fell behind.
+            if waiter.back.capacity() <= others + 1 {
+                entry.remove().tell(Message::Error(ErrorBody {
+                    code: code!("relay.busy"),
+                    retryable: true,
+                }));
+            } else if waiter.tell(message) {
+                waiter.timer.abort();
+                waiter.round = waiter.round.wrapping_add(1);
+                waiter.timer = self.timer(envelope.id, waiter.round);
+            } else {
+                entry.remove();
+            }
             return true;
         }
         // Told before the lock goes, as in `expire`.
-        entry.remove().tell(envelope.message);
+        entry.remove().tell(message);
         true
     }
 
-    /// Waits, under `relayed`, for the answer to what the asker `asked` under `id`.
+    /// Waits, under `relayed`, for the answer to what the asker `sent` under `id`.
     fn wait(
         self: &Arc<Self>,
         relayed: u32,
-        asked: Asked,
+        sent: Sent,
         id: u32,
         back: &mpsc::Sender<Envelope>,
     ) -> Result<(), Refusal> {
@@ -200,37 +271,49 @@ impl Relay {
             .values()
             .filter(|waiter| waiter.back.same_channel(back))
             .count();
-        // Within the asker's room, so every answer fits.
+        // Within the asker's room, so every answer but a diff's later files fits.
         if waiting.len() >= self.most_waiting || theirs >= back.capacity() {
             return Err(refused(code!("relay.busy"), true));
         }
         let Entry::Vacant(entry) = waiting.entry(relayed) else {
             return Err(refused(code!("relay.busy"), true));
         };
-        let relay = Arc::clone(self);
-        let timer = tokio::spawn(async move {
-            sleep(relay.answer_within).await;
-            relay.expire(relayed);
-        });
         entry.insert(Waiter {
-            asked,
+            sent,
             id,
             back: back.clone(),
-            timer: timer.abort_handle(),
+            files_left: None,
+            timer: self.timer(relayed, 0),
+            round: 0,
         });
         Ok(())
     }
 
-    /// Tells the ask under `relayed`, if it still waits, that no answer came.
-    fn expire(&self, relayed: u32) {
+    /// What tells the ask under `relayed`, unless something stops it first, that no answer
+    /// came in time for its timer `round`.
+    fn timer(self: &Arc<Self>, relayed: u32, round: u32) -> AbortHandle {
+        let relay = Arc::clone(self);
+        tokio::spawn(async move {
+            sleep(relay.answer_within).await;
+            relay.expire(relayed, round);
+        })
+        .abort_handle()
+    }
+
+    /// Tells the ask under `relayed`, if it still waits on timer `round`, that no answer came.
+    fn expire(&self, relayed: u32, round: u32) {
         let mut waiting = self.lock();
-        // Told before the lock goes, so no ask is let in ahead of the answer it takes room for.
-        if let Some(waiter) = waiting.remove(&relayed) {
-            waiter.tell(Message::Error(ErrorBody {
-                code: code!("machine.no_answer"),
-                retryable: true,
-            }));
+        let Entry::Occupied(entry) = waiting.entry(relayed) else {
+            return;
+        };
+        if entry.get().round != round {
+            return;
         }
+        // Told before the lock goes, so no ask is let in ahead of the answer it takes room for.
+        entry.remove().tell(Message::Error(ErrorBody {
+            code: code!("machine.no_answer"),
+            retryable: true,
+        }));
     }
 
     fn lock(&self) -> MutexGuard<'_, HashMap<u32, Waiter>> {
@@ -238,43 +321,36 @@ impl Relay {
     }
 }
 
-const fn refused(code: Code, retryable: bool) -> Refusal {
-    Refusal::Refused(ErrorBody { code, retryable })
-}
-
-/// What a message the relay carries asks, with `by` stamped on it whatever the client
-/// put there; `None` for a kind the relay doesn't carry.
-fn stamped(mut message: Message, by: &Asker) -> Option<(Asked, Message)> {
-    let asked = if let Message::MachineSettingsQuery(query) = &mut message {
-        query.by = Some(by.clone());
-        Asked {
-            machine: query.machine.clone(),
-            workspace: query.workspace.clone(),
-            request: query.request.clone(),
-        }
-    } else if let Message::MachineSettingsCommand(command) = &mut message {
-        command.by = Some(by.clone());
-        Asked {
-            machine: command.machine.clone(),
-            workspace: command.workspace.clone(),
-            request: command.request.clone(),
-        }
-    } else {
-        return None;
+/// How many other asks wait for answers on the same way back as the one under `id`.
+fn sharing(waiting: &HashMap<u32, Waiter>, id: u32) -> usize {
+    let Some(asker) = waiting.get(&id) else {
+        return 0;
     };
-    Some((asked, message))
+    let same = waiting
+        .values()
+        .filter(|waiter| waiter.back.same_channel(&asker.back));
+    same.count().saturating_sub(1)
 }
 
-/// What an answer the relay carries back names.
-fn answering(message: &Message) -> Option<Asked> {
-    if let Message::MachineSettingsAnswer(answer) = message {
-        return Some(Asked {
-            machine: answer.machine.clone(),
-            workspace: answer.workspace.clone(),
-            request: answer.request.clone(),
-        });
+/// Refuses unless `machine` is the asker's own.
+///
+/// # Errors
+/// `machine.not_found`, or the database's failure.
+pub(crate) async fn theirs(
+    shared: &Shared,
+    ask: &Ask<'_>,
+    machine: &MachineId,
+) -> Result<(), Refusal> {
+    let theirs = shared.db.has_machine(&ask.asker.account, machine).await;
+    if theirs.map_err(Refusal::Failed)? {
+        Ok(())
+    } else {
+        Err(refused(code!("machine.not_found"), false))
     }
-    None
+}
+
+pub(crate) const fn refused(code: Code, retryable: bool) -> Refusal {
+    Refusal::Refused(ErrorBody { code, retryable })
 }
 
 #[cfg(test)]
@@ -285,14 +361,18 @@ mod tests {
     use tokio::time::timeout;
 
     use weacon_protocol::{
-        AccessLevel, AccountId, ErrorBody, MachineSettings, MachineSettingsAction,
-        MachineSettingsAnswer, MachineSettingsAnswerKind, MachineSettingsCommand,
-        MachineSettingsQuery, MachineSettingsQueryKind, MemberId, RequestId,
+        AccessLevel, AccountId, AgentKind, AgentSession, ChatId, DiffContent, DiffFile, DiffLine,
+        DiffQuery, DiffQueryKind, ErrorBody, FileChange, Hunk, LineOp, MAX_FRAME, MachineSettings,
+        MachineSettingsAction, MachineSettingsAnswer, MachineSettingsAnswerKind,
+        MachineSettingsCommand, MachineSettingsQuery, MachineSettingsQueryKind, MemberId,
+        OutsideSession, RequestId, SessionsAnswer, SessionsAnswerKind, SessionsQuery,
+        SessionsQueryKind, WorktreeAction, WorktreeAnswer, WorktreeAnswerKind, WorktreeCommand,
+        WorktreeQuery, WorktreeQueryKind,
     };
 
     use super::*;
+    use crate::db::test_support::{Making, make_as};
     use crate::links::{Attached, Connected, QUEUE};
-
     use crate::test_support::socket::{Socket, ends, next, next_envelope, open, pongs, say, send};
     use crate::test_support::{
         Fixture, PATIENCE, Paired, ask, member_id, pair_machine, workspace_id,
@@ -561,19 +641,178 @@ mod tests {
         drop(core);
     }
 
-    // A relay where `machine` was asked under 41, relayed as 7; and where its answer goes.
-    fn waiting_on(machine: &MachineId) -> (Relay, mpsc::Receiver<Envelope>) {
-        let relay = Relay::new(MOST_WAITING, ANSWER_WITHIN);
+    // A list of the sessions on `machine`, claiming to be from someone else.
+    fn sessions_query(machine: &MachineId) -> Message {
+        Message::SessionsQuery(SessionsQuery {
+            request: RequestId::try_from("r-1".to_owned()).unwrap(),
+            machine: machine.clone(),
+            query: SessionsQueryKind::List,
+            by: Some(AccountId::try_from("a-forged".to_owned()).unwrap()),
+        })
+    }
+
+    // `machine`'s list of one session, run in `folder`.
+    fn sessions_answer(machine: &MachineId, folder: &str) -> Message {
+        sessions_answer_to(machine, "r-1", folder)
+    }
+
+    fn sessions_answer_to(machine: &MachineId, request: &str, folder: &str) -> Message {
+        let session = "0b7c6a52-3f1e-4d2a-9c8b-5e4f3a2b1c0d".to_owned();
+        Message::SessionsAnswer(SessionsAnswer {
+            request: RequestId::try_from(request.to_owned()).unwrap(),
+            machine: machine.clone(),
+            answer: SessionsAnswerKind::List {
+                sessions: vec![OutsideSession {
+                    agent: AgentKind::Claude,
+                    session: AgentSession::try_from(session).unwrap(),
+                    folder: Some(folder.to_owned()),
+                    modified_at: 0,
+                }],
+            },
+        })
+    }
+
+    // Ada's machine, its core offering `core_offers`, and her feed of w1 offering sessions.
+    async fn sessions_both(
+        fixture: &Fixture,
+        address: SocketAddr,
+        core_offers: &[&str],
+    ) -> (Paired, Socket, Socket) {
+        let paired = pair_machine(fixture, address).await;
+        let core = connected(address, &paired, core_offers).await;
+        let mut browser = open(address, "/api/workspaces/w1/feed", &paired.session)
+            .await
+            .unwrap();
+        say(&mut browser, &["workspace.feed", "sessions.read"]).await;
+        assert!(matches!(next(&mut browser).await, Message::Welcome(_)));
+        assert!(matches!(next(&mut browser).await, Message::Workspace(_)));
+        (paired, core, browser)
+    }
+
+    #[tokio::test]
+    async fn a_persons_own_sessions_reach_them_as_theirs_and_nothing_of_them_is_logged() {
+        let fixture = Fixture::new().await;
+        let server = fixture.run().await;
+        let offers = ["machine.connect", "sessions.read"];
+        let (paired, mut core, mut browser) =
+            sessions_both(&fixture, server.address, &offers).await;
+        let machine = paired.machine_id();
+        let (_, session) = ask(server.address, "GET /api/session", &paired.proof, "").await;
+
+        send(&mut browser, envelope(51, sessions_query(&machine))).await;
+        let relayed = next_envelope(&mut core).await;
+        let answer = sessions_answer(&machine, "/MARKER-FOLDER");
+        send(&mut core, envelope(relayed.id, answer.clone())).await;
+        let answered = next_envelope(&mut browser).await;
+
+        let Message::SessionsQuery(query) = relayed.message else {
+            panic!("{relayed:?}");
+        };
+        let by = query.by.unwrap();
+        assert_eq!(by.as_str(), session["account"].as_str().unwrap());
+        assert_eq!(answered, envelope(51, answer));
+        let logged = serde_json::to_string(&*fixture.records.lock().unwrap()).unwrap();
+        assert!(!logged.contains("MARKER"), "{logged}");
+    }
+
+    #[tokio::test]
+    async fn a_client_that_doesnt_offer_reading_sessions_relays_none() {
+        let fixture = Fixture::new().await;
+        let server = fixture.run().await;
+        let offers = &["workspace.feed", "machine.settings"];
+        let (paired, mut core, mut browser) = both(&fixture, server.address, offers).await;
+        let machine = paired.machine_id();
+
+        send(&mut browser, envelope(51, sessions_query(&machine))).await;
+        send(&mut browser, envelope(52, query(&machine, "w1"))).await;
+
+        let relayed = next_envelope(&mut core).await;
+        assert!(
+            matches!(relayed.message, Message::MachineSettingsQuery(_)),
+            "{relayed:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn sessions_go_only_to_the_askers_own_machine_when_its_core_reads_them() {
+        let fixture = Fixture::new().await;
+        let server = fixture.run().await;
+        let offers = ["machine.connect", "machine.settings"];
+        let (paired, _core, mut browser) = sessions_both(&fixture, server.address, &offers).await;
+        let theirs = MachineId::try_from("mc-elsewhere".to_owned()).unwrap();
+
+        let unread = asked(&mut browser, 52, sessions_query(&paired.machine_id())).await;
+        let elsewhere = asked(&mut browser, 53, sessions_query(&theirs)).await;
+
+        assert_eq!(error_of(&unread), (52, "machine.offline", true));
+        assert_eq!(error_of(&elsewhere), (53, "machine.not_found", false));
+    }
+
+    // A relay where `machine`'s own sessions were asked under 41, relayed as 7.
+    fn sessions_waiting(machine: &MachineId) -> (Arc<Relay>, mpsc::Receiver<Envelope>) {
+        let relay = Arc::new(Relay::new(MOST_WAITING, ANSWER_WITHIN));
         let (back, answers) = mpsc::channel(4);
         let waiter = Waiter {
-            asked: Asked {
+            sent: Sent {
+                asked: Asked {
+                    workspace: None,
+                    request: RequestId::try_from("r-1".to_owned()).unwrap(),
+                    about: About::Sessions(machine.clone()),
+                },
                 machine: machine.clone(),
-                workspace: workspace_id("w1"),
-                request: RequestId::try_from("r-1".to_owned()).unwrap(),
             },
             id: 41,
             back,
+            files_left: None,
             timer: tokio::spawn(async {}).abort_handle(),
+            round: 0,
+        };
+        relay.lock().insert(7, waiter);
+        (relay, answers)
+    }
+
+    #[tokio::test]
+    async fn a_sessions_ask_takes_only_its_own_machines_sessions_answer() {
+        let one = MachineId::try_from("mc-1".to_owned()).unwrap();
+        let two = MachineId::try_from("mc-2".to_owned()).unwrap();
+        let (relay, mut answers) = sessions_waiting(&one);
+
+        let dropped = [
+            relay.answered(&one, envelope(7, settings_answer(&one))),
+            relay.answered(&two, envelope(7, sessions_answer(&one, "/work"))),
+            relay.answered(&one, envelope(7, sessions_answer(&two, "/work"))),
+            relay.answered(&one, envelope(7, sessions_answer_to(&one, "r-2", "/work"))),
+        ];
+        let before = answers.try_recv();
+        let answered = relay.answered(&one, envelope(7, sessions_answer(&one, "/work")));
+
+        assert_eq!(dropped, [true; 4]);
+        before.unwrap_err();
+        assert!(answered);
+        assert_eq!(
+            heard(&mut answers).await,
+            envelope(41, sessions_answer(&one, "/work"))
+        );
+    }
+
+    // A relay where `machine` was asked under 41, relayed as 7; and where its answer goes.
+    fn waiting_on(machine: &MachineId) -> (Arc<Relay>, mpsc::Receiver<Envelope>) {
+        let relay = Arc::new(Relay::new(MOST_WAITING, ANSWER_WITHIN));
+        let (back, answers) = mpsc::channel(4);
+        let waiter = Waiter {
+            sent: Sent {
+                asked: Asked {
+                    workspace: Some(workspace_id("w1")),
+                    request: RequestId::try_from("r-1".to_owned()).unwrap(),
+                    about: About::Machine(machine.clone()),
+                },
+                machine: machine.clone(),
+            },
+            id: 41,
+            back,
+            files_left: None,
+            timer: tokio::spawn(async {}).abort_handle(),
+            round: 0,
         };
         relay.lock().insert(7, waiter);
         (relay, answers)
@@ -649,21 +888,32 @@ mod tests {
 
     // Ada's paired machine, connected and offering settings, and her as an asker in w1.
     async fn adas(fixture: &Fixture) -> (MachineId, Asker, Attached) {
+        adas_offering(fixture, &[SETTINGS]).await
+    }
+
+    // Ada's paired machine, connected and offering `offers`, and her as an asker in w1.
+    async fn adas_offering(fixture: &Fixture, offers: &[Code]) -> (MachineId, Asker, Attached) {
         let server = fixture.run().await;
         let paired = pair_machine(fixture, server.address).await;
         let (_, session) = ask(server.address, "GET /api/session", &paired.proof, "").await;
         let account = AccountId::try_from(session["account"].as_str().unwrap().to_owned()).unwrap();
         let machine = paired.machine_id();
-        let connected = Connected {
-            machine: machine.clone(),
-            owner: account.clone(),
-        };
-        let attached = (fixture.shared.links).open(connected, vec![Capability::new(SETTINGS)]);
         let asker = Asker {
             account,
             member: member_id("m1"),
         };
+        let attached = relink(fixture, &machine, &asker, offers);
         (machine, asker, attached)
+    }
+
+    // `machine`, of `asker`, connected afresh and offering `offers`.
+    fn relink(fixture: &Fixture, machine: &MachineId, asker: &Asker, offers: &[Code]) -> Attached {
+        let connected = Connected {
+            machine: machine.clone(),
+            owner: asker.account.clone(),
+        };
+        let offers = offers.iter().cloned().map(Capability::new).collect();
+        fixture.shared.links.open(connected, offers)
     }
 
     fn code_of(result: Result<(), Refusal>) -> Option<String> {
@@ -679,7 +929,12 @@ mod tests {
         let mut fixture = Fixture::new().await;
         fixture.shared.relay = Arc::new(Relay::new(3, ANSWER_WITHIN));
         let (machine, asker, _attached) = adas(&fixture).await;
-        let w1 = workspace_id("w1");
+        let w1 = fixture
+            .shared
+            .db
+            .workspace(&workspace_id("w1"))
+            .await
+            .unwrap();
         let ask = Ask {
             asker: &asker,
             workspace: &w1,
@@ -706,7 +961,12 @@ mod tests {
         let mut fixture = Fixture::new().await;
         fixture.shared.relay = Arc::new(Relay::new(MOST_WAITING, Duration::ZERO));
         let (machine, asker, _attached) = adas(&fixture).await;
-        let w1 = workspace_id("w1");
+        let w1 = fixture
+            .shared
+            .db
+            .workspace(&workspace_id("w1"))
+            .await
+            .unwrap();
         let ask = Ask {
             asker: &asker,
             workspace: &w1,
@@ -731,7 +991,12 @@ mod tests {
     async fn a_machine_too_slow_to_read_is_offline_and_its_ask_doesnt_wait() {
         let fixture = Fixture::new().await;
         let (machine, asker, _attached) = adas(&fixture).await;
-        let w1 = workspace_id("w1");
+        let w1 = fixture
+            .shared
+            .db
+            .workspace(&workspace_id("w1"))
+            .await
+            .unwrap();
         let ask = Ask {
             asker: &asker,
             workspace: &w1,
@@ -753,7 +1018,12 @@ mod tests {
     async fn askers_with_the_same_id_each_get_their_own_answer() {
         let fixture = Fixture::new().await;
         let (machine, asker, mut attached) = adas(&fixture).await;
-        let w1 = workspace_id("w1");
+        let w1 = fixture
+            .shared
+            .db
+            .workspace(&workspace_id("w1"))
+            .await
+            .unwrap();
         let ask = Ask {
             asker: &asker,
             workspace: &w1,
@@ -801,7 +1071,12 @@ mod tests {
     async fn only_queries_and_commands_are_carried() {
         let fixture = Fixture::new().await;
         let (machine, asker, _attached) = adas(&fixture).await;
-        let w1 = workspace_id("w1");
+        let w1 = fixture
+            .shared
+            .db
+            .workspace(&workspace_id("w1"))
+            .await
+            .unwrap();
         let ask = Ask {
             asker: &asker,
             workspace: &w1,
@@ -818,9 +1093,15 @@ mod tests {
 
         assert_eq!(code_of(unsendable), Some("relay.unknown".to_owned()));
         assert!(fixture.shared.relay.lock().is_empty());
-        assert!(carries(&query(&machine, "w1")));
-        assert!(carries(&command(&machine)));
-        assert!(!carries(&settings_answer(&machine)));
+        assert_eq!(needs(&query(&machine, "w1")), Some(SETTINGS));
+        assert_eq!(needs(&command(&machine)), Some(SETTINGS));
+        assert_eq!(needs(&sessions_query(&machine)), Some(SESSIONS));
+        assert_eq!(needs(&settings_answer(&machine)), None);
+        assert!(takes(&sessions_answer(&machine, "/work")));
+        // From a machine, only answers and errors go back to an asker.
+        assert!(takes(&settings_answer(&machine)));
+        assert!(takes(&refusal(code!("settings.not_owner"))));
+        assert!(!takes(&query(&machine, "w1")));
         assert_eq!(code_of(result), Some("relay.unknown".to_owned()));
     }
 
@@ -828,7 +1109,12 @@ mod tests {
     async fn a_database_that_fails_fails_the_relay() {
         let fixture = Fixture::new().await;
         let (machine, asker, _attached) = adas(&fixture).await;
-        let w1 = workspace_id("w1");
+        let w1 = fixture
+            .shared
+            .db
+            .workspace(&workspace_id("w1"))
+            .await
+            .unwrap();
         let ask = Ask {
             asker: &asker,
             workspace: &w1,
@@ -840,5 +1126,448 @@ mod tests {
 
         assert_eq!(code_of(result), Some("failed db.failed".to_owned()));
         assert!(fixture.shared.relay.lock().is_empty());
+    }
+
+    // A chat's diff and worktree asks, which the server sends to the chat's machine.
+
+    fn forged() -> Asker {
+        Asker {
+            account: AccountId::try_from("a-forged".to_owned()).unwrap(),
+            member: MemberId::try_from("m-forged".to_owned()).unwrap(),
+        }
+    }
+
+    fn request() -> RequestId {
+        RequestId::try_from("r-1".to_owned()).unwrap()
+    }
+
+    fn chat_id(chat: &str) -> ChatId {
+        ChatId::try_from(chat.to_owned()).unwrap()
+    }
+
+    fn diff_query(chat: &str, in_workspace: &str) -> Message {
+        Message::DiffQuery(DiffQuery {
+            request: request(),
+            workspace: workspace_id(in_workspace),
+            chat: chat_id(chat),
+            query: DiffQueryKind::Changes,
+            by: Some(forged()),
+        })
+    }
+
+    fn worktree_query(chat: &str) -> Message {
+        Message::WorktreeQuery(WorktreeQuery {
+            request: request(),
+            workspace: workspace_id("w1"),
+            chat: chat_id(chat),
+            query: WorktreeQueryKind::State,
+            by: Some(forged()),
+        })
+    }
+
+    fn worktree_command(chat: &str, action: WorktreeAction) -> Message {
+        Message::WorktreeCommand(WorktreeCommand {
+            request: request(),
+            workspace: workspace_id("w1"),
+            chat: chat_id(chat),
+            action,
+            by: Some(forged()),
+        })
+    }
+
+    // One of a diff's `files` files, whose one line is `text`.
+    fn file(files: u32, path: &str, text: &str) -> Message {
+        let line = DiffLine {
+            op: LineOp::Added,
+            text: text.to_owned(),
+            no_newline: false,
+        };
+        let hunk = Hunk {
+            old_start: 0,
+            new_start: 1,
+            lines: vec![line],
+        };
+        Message::DiffAnswer(DiffAnswer {
+            request: request(),
+            workspace: workspace_id("w1"),
+            chat: chat_id("c-1"),
+            answer: DiffAnswerKind::File {
+                files,
+                file: DiffFile {
+                    path: path.to_owned(),
+                    change: FileChange::Added,
+                    content: DiffContent::Text { hunks: vec![hunk] },
+                },
+            },
+        })
+    }
+
+    fn state() -> Message {
+        Message::WorktreeAnswer(WorktreeAnswer {
+            request: request(),
+            workspace: workspace_id("w1"),
+            chat: chat_id("c-1"),
+            answer: WorktreeAnswerKind::State {
+                removed: false,
+                uncommitted: true,
+                unpushed: false,
+            },
+        })
+    }
+
+    // m1's chat `chat` in w1, on `machine`.
+    async fn chat_on(fixture: &Fixture, chat: &str, machine: &MachineId) {
+        let w1 = fixture.shared.db.workspace(&workspace_id("w1")).await;
+        let making = Making {
+            chat,
+            owner: "m1",
+            title: "Fix the build",
+            machine: machine.as_str(),
+            at: 1,
+        };
+        make_as(&w1.unwrap(), &making).await.unwrap();
+    }
+
+    // Ada's machine, connected as a core offering `offers`, her chat c-1 on it, and her
+    // feed of w1 offering diffs and worktrees.
+    async fn chat_and_feed(
+        fixture: &Fixture,
+        address: SocketAddr,
+        offers: &[&str],
+    ) -> (Paired, Socket, Socket) {
+        let paired = pair_machine(fixture, address).await;
+        chat_on(fixture, "c-1", &paired.machine_id()).await;
+        let core = connected(address, &paired, offers).await;
+        let mut browser = open(address, "/api/workspaces/w1/feed", &paired.session)
+            .await
+            .unwrap();
+        say(
+            &mut browser,
+            &["workspace.feed", "diff.view", "worktree.manage"],
+        )
+        .await;
+        assert!(matches!(next(&mut browser).await, Message::Welcome(_)));
+        assert!(matches!(next(&mut browser).await, Message::Workspace(_)));
+        (paired, core, browser)
+    }
+
+    const ALL: [&str; 4] = [
+        "machine.connect",
+        "diff.view",
+        "worktree.manage",
+        "worktree.open_terminal",
+    ];
+
+    #[tokio::test]
+    async fn a_chats_diff_and_worktree_reach_its_machine_as_its_owners_and_come_back() {
+        let fixture = Fixture::new().await;
+        let server = fixture.run().await;
+        let (paired, mut core, mut browser) = chat_and_feed(&fixture, server.address, &ALL).await;
+        let (_, session) = ask(server.address, "GET /api/session", &paired.proof, "").await;
+
+        send(&mut browser, envelope(41, diff_query("c-1", "w1"))).await;
+        let relayed = next_envelope(&mut core).await;
+        for (path, text) in [("a.rs", "one"), ("b.rs", "two"), ("c.rs", "extra")] {
+            send(&mut core, envelope(relayed.id, file(2, path, text))).await;
+        }
+        let first = next_envelope(&mut browser).await;
+        let second = next_envelope(&mut browser).await;
+        let remove = worktree_command("c-1", WorktreeAction::Remove);
+        send(&mut browser, envelope(42, remove)).await;
+        let commanded = next_envelope(&mut core).await;
+        send(&mut core, envelope(commanded.id, state())).await;
+        let answered = next_envelope(&mut browser).await;
+
+        let Message::DiffQuery(query) = relayed.message else {
+            panic!("{relayed:?}");
+        };
+        let Message::WorktreeCommand(command) = commanded.message else {
+            panic!("{commanded:?}");
+        };
+        for by in [query.by.unwrap(), command.by.unwrap()] {
+            assert_eq!(by.account.as_str(), session["account"].as_str().unwrap());
+            assert_eq!(by.member.as_str(), "m1");
+        }
+        assert_eq!(first, envelope(41, file(2, "a.rs", "one")));
+        assert_eq!(second, envelope(41, file(2, "b.rs", "two")));
+        // The extra file never came: the next answer is the command's.
+        assert_eq!(answered, envelope(42, state()));
+        assert!(fixture.shared.relay.lock().is_empty());
+    }
+
+    #[tokio::test]
+    async fn nothing_of_a_diff_or_a_pull_request_is_stored_or_logged() {
+        let fixture = Fixture::new().await;
+        let server = fixture.run().await;
+        let (_paired, mut core, mut browser) = chat_and_feed(&fixture, server.address, &ALL).await;
+
+        send(&mut browser, envelope(41, diff_query("c-1", "w1"))).await;
+        let relayed = next_envelope(&mut core).await;
+        let marked = file(1, "MARKER-PATH.rs", "MARKER-LINE");
+        send(&mut core, envelope(relayed.id, marked.clone())).await;
+        let diff = next_envelope(&mut browser).await;
+        let pull_request = WorktreeAction::OpenPullRequest {
+            title: "MARKER-TITLE".to_owned(),
+            body: "MARKER-BODY".to_owned(),
+        };
+        send(
+            &mut browser,
+            envelope(42, worktree_command("c-1", pull_request)),
+        )
+        .await;
+        let commanded = next_envelope(&mut core).await;
+        send(
+            &mut core,
+            envelope(
+                commanded.id,
+                Message::Error(ErrorBody {
+                    code: code!("worktree.none"),
+                    retryable: false,
+                }),
+            ),
+        )
+        .await;
+        let refused = next_envelope(&mut browser).await;
+
+        assert_eq!(diff, envelope(41, marked));
+        assert_eq!(error_of(&refused), (42, "worktree.none", false));
+        let logged = format!("{:?}", fixture.records.lock().unwrap());
+        let stored = String::from_utf8_lossy(&fixture.stored()).into_owned();
+        for marker in ["MARKER-PATH", "MARKER-LINE", "MARKER-TITLE", "MARKER-BODY"] {
+            assert!(!logged.contains(marker), "{marker} logged");
+            assert!(!stored.contains(marker), "{marker} stored");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_chat_not_theirs_unknown_or_on_a_machine_not_theirs_is_refused() {
+        let fixture = Fixture::new().await;
+        let (machine, asker, _attached) = adas_offering(&fixture, &[DIFF]).await;
+        chat_on(&fixture, "c-1", &machine).await;
+        let elsewhere = MachineId::try_from("mc-elsewhere".to_owned()).unwrap();
+        chat_on(&fixture, "c-2", &elsewhere).await;
+        let w1 = fixture
+            .shared
+            .db
+            .workspace(&workspace_id("w1"))
+            .await
+            .unwrap();
+        let someone = Asker {
+            member: member_id("m2"),
+            ..asker.clone()
+        };
+        let back = mpsc::channel(4).0;
+        let codes = async |by: &Asker, message| {
+            let ask = Ask {
+                asker: by,
+                workspace: &w1,
+            };
+            code_of(forward(&fixture.shared, &ask, envelope(1, message), &back).await)
+        };
+
+        let refused = [
+            codes(&asker, diff_query("c-9", "w1")).await,
+            codes(&asker, diff_query("c-1", "w2")).await,
+            codes(&someone, diff_query("c-1", "w1")).await,
+            codes(&asker, diff_query("c-2", "w1")).await,
+        ];
+        let mine = codes(&asker, diff_query("c-1", "w1")).await;
+
+        assert_eq!(
+            refused.map(Option::unwrap),
+            [
+                "chat.not_found",
+                "chat.not_found",
+                "chat.not_owner",
+                "machine.not_found"
+            ]
+        );
+        assert_eq!(mine, None);
+    }
+
+    #[tokio::test]
+    async fn each_ask_goes_only_to_a_machine_that_offers_what_it_needs() {
+        let fixture = Fixture::new().await;
+        let (machine, asker, attached) = adas_offering(&fixture, &[DIFF, WORKTREE]).await;
+        chat_on(&fixture, "c-1", &machine).await;
+        let w1 = fixture
+            .shared
+            .db
+            .workspace(&workspace_id("w1"))
+            .await
+            .unwrap();
+        let ask = Ask {
+            asker: &asker,
+            workspace: &w1,
+        };
+        let back = mpsc::channel(8).0;
+        let terminal = || worktree_command("c-1", WorktreeAction::OpenTerminal);
+        let sent = async |message| {
+            code_of(forward(&fixture.shared, &ask, envelope(1, message), &back).await)
+        };
+
+        let offered = [
+            sent(diff_query("c-1", "w1")).await,
+            sent(worktree_query("c-1")).await,
+            sent(worktree_command("c-1", WorktreeAction::Restore)).await,
+        ];
+        let no_terminal = sent(terminal()).await;
+        drop(attached);
+        let _with_terminal = relink(&fixture, &machine, &asker, &[TERMINAL]);
+        let only_terminal = [sent(terminal()).await, sent(worktree_query("c-1")).await];
+
+        assert_eq!(offered, [None, None, None]);
+        assert_eq!(no_terminal.as_deref(), Some("machine.offline"));
+        assert_eq!(only_terminal, [None, Some("machine.offline".to_owned())]);
+        assert_eq!(needs(&terminal()), Some(WORKTREE));
+        assert_eq!(needs(&diff_query("c-1", "w1")), Some(DIFF));
+        assert_eq!(needs(&state()), None);
+    }
+
+    // A relay where a diff of c-1 was asked under 41, relayed as 7; and where its answers
+    // go, with room for `room`.
+    fn diff_waiting(room: usize, within: Duration) -> (Arc<Relay>, mpsc::Receiver<Envelope>) {
+        let relay = Arc::new(Relay::new(MOST_WAITING, within));
+        let (back, answers) = mpsc::channel(room);
+        let asked = Asked {
+            workspace: Some(workspace_id("w1")),
+            request: request(),
+            about: About::Diff(chat_id("c-1")),
+        };
+        let sent = Sent {
+            asked,
+            machine: mc1(),
+        };
+        relay.wait(7, sent, 41, &back).unwrap();
+        (relay, answers)
+    }
+
+    fn mc1() -> MachineId {
+        MachineId::try_from("mc-1".to_owned()).unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_diff_of_one_file_past_the_most_is_too_many() {
+        let (relay, mut answers) = diff_waiting(4, ANSWER_WITHIN);
+
+        assert!(relay.answered(&mc1(), envelope(7, file(MOST_FILES + 1, "a", "x"))));
+        assert_eq!(
+            error_of(&heard(&mut answers).await),
+            (41, "diff.too_many", false)
+        );
+        assert!(relay.lock().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_diff_of_the_most_files_comes_back_whole() {
+        let (relay, mut answers) = diff_waiting(2, ANSWER_WITHIN);
+        for _ in 0..MOST_FILES {
+            assert!(relay.answered(&mc1(), envelope(7, file(MOST_FILES, "a", "x"))));
+            assert_eq!(heard(&mut answers).await.id, 41);
+        }
+        assert!(relay.lock().is_empty());
+    }
+
+    #[tokio::test]
+    async fn an_asker_that_falls_behind_a_diff_is_told_so_in_its_last_room() {
+        let (relay, mut answers) = diff_waiting(2, ANSWER_WITHIN);
+        let claimed = [1, 2, 3].map(|_| relay.answered(&mc1(), envelope(7, file(3, "a", "x"))));
+
+        assert_eq!(claimed, [true, true, false]);
+        assert_eq!(heard(&mut answers).await, envelope(41, file(3, "a", "x")));
+        assert_eq!(
+            error_of(&heard(&mut answers).await),
+            (41, "relay.busy", true)
+        );
+        answers.try_recv().unwrap_err();
+        assert!(relay.lock().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_diff_leaves_room_for_the_askers_other_answers() {
+        let (relay, mut answers) = diff_waiting(3, ANSWER_WITHIN);
+        let back = relay.lock().get(&7).unwrap().back.clone();
+        let asked = Asked {
+            workspace: Some(workspace_id("w1")),
+            request: request(),
+            about: About::Machine(mc1()),
+        };
+        let sent = Sent {
+            asked,
+            machine: mc1(),
+        };
+        relay.wait(8, sent, 42, &back).unwrap();
+
+        let claimed = [1, 2, 3].map(|_| relay.answered(&mc1(), envelope(7, file(9, "a", "x"))));
+        assert!(relay.answered(&mc1(), envelope(8, settings_answer(&mc1()))));
+
+        assert_eq!(claimed, [true, true, false]);
+        assert_eq!(heard(&mut answers).await, envelope(41, file(9, "a", "x")));
+        assert_eq!(
+            error_of(&heard(&mut answers).await),
+            (41, "relay.busy", true)
+        );
+        assert_eq!(
+            heard(&mut answers).await,
+            envelope(42, settings_answer(&mc1()))
+        );
+        assert!(relay.lock().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_timer_a_later_file_restarted_does_nothing() {
+        let (relay, mut answers) = diff_waiting(4, ANSWER_WITHIN);
+        assert!(relay.answered(&mc1(), envelope(7, file(3, "a", "x"))));
+        heard(&mut answers).await;
+
+        relay.expire(7, 0);
+        assert!(relay.lock().contains_key(&7));
+        relay.expire(7, 1);
+        assert_eq!(
+            error_of(&heard(&mut answers).await),
+            (41, "machine.no_answer", true)
+        );
+        assert!(relay.lock().is_empty());
+    }
+
+    #[tokio::test]
+    async fn an_answer_of_another_kind_doesnt_answer_the_ask() {
+        let (relay, mut answers) = diff_waiting(4, ANSWER_WITHIN);
+
+        assert!(relay.answered(&mc1(), envelope(7, state())));
+        assert!(relay.lock().contains_key(&7));
+        answers.try_recv().unwrap_err();
+    }
+
+    #[tokio::test]
+    async fn a_file_this_server_cant_send_on_ends_the_diff() {
+        let (relay, mut answers) = diff_waiting(4, ANSWER_WITHIN);
+        let big = "x".repeat(MAX_FRAME);
+
+        assert!(relay.answered(&mc1(), envelope(7, file(3, "a", &big))));
+        assert!(!relay.answered(&mc1(), envelope(7, file(3, "b", "x"))));
+        assert_eq!(
+            error_of(&heard(&mut answers).await),
+            (41, "relay.unsendable", false)
+        );
+        assert!(relay.lock().is_empty());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn each_of_a_diffs_files_gives_the_next_its_own_time() {
+        let within = Duration::from_secs(30);
+        let (relay, mut answers) = diff_waiting(4, within);
+        for _ in 0..2 {
+            sleep(Duration::from_secs(29)).await;
+            assert!(relay.answered(&mc1(), envelope(7, file(3, "a", "x"))));
+            assert_eq!(heard(&mut answers).await.id, 41);
+        }
+        sleep(Duration::from_secs(31)).await;
+
+        assert_eq!(
+            error_of(&heard(&mut answers).await),
+            (41, "machine.no_answer", true)
+        );
+        assert!(relay.lock().is_empty());
     }
 }
