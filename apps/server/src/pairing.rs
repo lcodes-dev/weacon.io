@@ -306,7 +306,7 @@ mod tests {
 
     #[tokio::test]
     async fn the_list_says_what_a_connected_machines_core_offers() {
-        use crate::test_support::socket::{next, open, say};
+        use crate::test_support::socket::{next, open, pongs, say};
 
         let fixture = Fixture::new().await;
         let server = fixture.run().await;
@@ -322,6 +322,8 @@ mod tests {
             .unwrap();
         say(&mut core, &["machine.connect", "symbols.search"]).await;
         next(&mut core).await;
+        // Only an open connection answers pings, so its offers are registered by then.
+        assert!(pongs(&mut core).await);
 
         assert_eq!(offline["machines"][0].get("capabilities"), None);
         let offers = &list().await["machines"][0]["capabilities"];

@@ -301,6 +301,8 @@ test("a symbols answer passes with each symbol's fields, and a newer kind passes
     { kind: "found", symbols: [symbol] },
     ...["repo", "kind", "name", "path"].map((key) => ({ kind: "found", symbols: [{ ...symbol, [key]: 1 }], more: false })),
     { kind: "found", symbols: [{ ...symbol, line: 1.5 }], more: false },
+    { kind: "found", symbols: [{ ...symbol, line: 0 }], more: false },
+    { kind: "found", symbols: [{ ...symbol, line: -1 }], more: false },
     { kind: "found", symbols: [null], more: false },
   ];
 

@@ -150,13 +150,16 @@ impl Maps {
         log: &Logger,
     ) -> Result<Vec<(RepoId, Vec<Hit>)>, Fault> {
         let stores = self.stores(log).await.ok_or_else(failed)?;
+        // One of the reads at once for the whole search, taken here so searches never pile up.
+        let read = Arc::clone(&stores.reads).try_acquire_owned();
+        let read = read.map_err(|_| still_reading())?;
         let (workspace, words, log) = (workspace.clone(), words.to_owned(), log.clone());
-        let reading = tokio::spawn(async move { stores.symbols(workspace, &words, &log).await });
+        let reading = tokio::spawn(async move {
+            let _read = read;
+            stores.symbols(workspace, &words, &log).await
+        });
         match tokio::time::timeout(self.limit, reading).await {
-            Err(_) => Err(Fault::new(
-                code!("symbols.still_reading"),
-                "The code map is still being read",
-            )),
+            Err(_) => Err(still_reading()),
             Ok(Ok(found)) => found,
             Ok(Err(error)) => Err(failed().because(error)),
         }
@@ -187,8 +190,7 @@ async fn open(state_dir: &Path, path: Option<OsString>) -> Result<Stores, Fault>
 }
 
 impl Stores {
-    /// What [`Maps::symbols`] finds, reading a repository's base, when it must, as one of the
-    /// reads at once.
+    /// What [`Maps::symbols`] finds, reading a repository's base when it must.
     async fn symbols(
         &self,
         workspace: WorkspaceId,
@@ -200,11 +202,6 @@ impl Stores {
         let store = self.db.workspace(&workspace);
         let mut found = Vec::new();
         for (repo, main) in repos {
-            let _read = self
-                .reads
-                .acquire()
-                .await
-                .map_err(|error| failed().because(error))?;
             let map = repo_map(&store, &self.git, main);
             match map.search_head(words, Looking::Items).await {
                 Ok(hits) => found.push((repo, hits)),
@@ -366,6 +363,13 @@ impl Stores {
     fn live(&self) -> MutexGuard<'_, HashMap<Watched, Arc<Index>>> {
         self.live.lock().unwrap_or_else(PoisonError::into_inner)
     }
+}
+
+fn still_reading() -> Fault {
+    Fault::new(
+        code!("symbols.still_reading"),
+        "The code map is still being read",
+    )
 }
 
 fn failed() -> Fault {
@@ -551,10 +555,30 @@ mod tests {
         assert_eq!(names(&theirs), [("b".to_owned(), run("beta::run"))]);
         let off = Maps::off().symbols(&one, "run", &log).await;
         assert_eq!(off.unwrap_err().code().as_str(), "mcp.map_failed");
+    }
+
+    #[tokio::test]
+    async fn a_symbols_search_past_the_limit_or_with_no_read_free_is_still_reading() {
+        let dir = TempDir::new().unwrap();
+        let setup = setup(&dir).await;
+        let one = workspace("one");
+        setup.register(&one, "site", &crate_repo(&dir, "one"));
+        let (log, _records) = recording_logger();
+
         let mut slow = setup.maps.clone();
         slow.limit = Duration::ZERO;
         let late = slow.symbols(&one, "run", &log).await.unwrap_err();
         assert_eq!(late.code().as_str(), "symbols.still_reading");
+        let stores = setup.maps.stores(&log).await.unwrap();
+        let held = Arc::clone(&stores.reads)
+            .acquire_many_owned(2)
+            .await
+            .unwrap();
+        let busy = setup.maps.symbols(&one, "run", &log).await.unwrap_err();
+        assert_eq!(busy.code().as_str(), "symbols.still_reading");
+        drop(held);
+        let found = setup.maps.symbols(&one, "run", &log).await.unwrap();
+        assert_eq!(found.len(), 1);
     }
 
     #[tokio::test]

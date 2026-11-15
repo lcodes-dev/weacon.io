@@ -47,16 +47,22 @@ pub(crate) async fn query(
     })
 }
 
-/// The best of each repository's hits in turn, at most [`MOST`], and whether any were left out,
-/// a repository's own search among them when it found as many as it returns.
+/// The best of each repository's hits in turn, at most [`MOST`], and whether any were left out:
+/// past the most, too long to send, or by a repository's own search when it found as many as it
+/// returns.
 fn best(found: Vec<(RepoId, Vec<Hit>)>) -> (Vec<Symbol>, bool) {
-    let cut = found
-        .iter()
-        .any(|(_, hits)| u32::try_from(hits.len()).unwrap_or(u32::MAX) >= SEARCHED);
-    let mut each: Vec<_> = found
-        .into_iter()
-        .map(|(repo, hits)| hits.into_iter().filter_map(move |hit| symbol(&repo, hit)))
-        .collect();
+    let mut cut = false;
+    let mut each = Vec::new();
+    for (repo, hits) in found {
+        let count = hits.len();
+        cut |= u32::try_from(count).unwrap_or(u32::MAX) >= SEARCHED;
+        let kept: Vec<Symbol> = hits
+            .into_iter()
+            .filter_map(|hit| symbol(&repo, hit))
+            .collect();
+        cut |= kept.len() < count;
+        each.push(kept.into_iter());
+    }
     let mut symbols = Vec::new();
     // A round takes one from each repository, so this many rounds pass the most an answer holds.
     for _ in 0..=MOST {
@@ -209,6 +215,9 @@ mod tests {
         let (symbols, more) = best(vec![(id("one"), hits("a", 25)), (id("two"), hits("b", 25))]);
         assert_eq!((symbols.len(), more), (MOST, false));
         assert_eq!(best(Vec::new()), (Vec::new(), false));
+        let mut long = hit("fn", "a::run");
+        long.path = "p".repeat(LONGEST + 1);
+        assert_eq!(best(vec![(id("one"), vec![long])]), (Vec::new(), true));
     }
 
     #[test]

@@ -373,7 +373,7 @@ function isSymbol(symbol: unknown): boolean {
   return (
     fields !== undefined &&
     ["repo", "kind", "name", "path"].every((key) => text(fields, key)) &&
-    Number.isSafeInteger(fields["line"])
+    isSeq(fields["line"], 1)
   );
 }
 

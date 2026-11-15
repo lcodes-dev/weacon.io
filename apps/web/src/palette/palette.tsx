@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 
 import type { Answer, Api } from "../api/api.ts";
 import { type Loaded, Loader } from "../api/loaded.ts";
+import { problemText } from "../api/problems.ts";
 import { later } from "../connection.ts";
 import type { MachineId, SearchHit, Symbol as CodeSymbol, WorkspaceId } from "../protocol.ts";
 import type { Place } from "../shell/place.ts";
@@ -63,27 +64,31 @@ function Search({ api, workspace, socket, chatMachine, close, go }: Omit<Props, 
   // Each answer keeps the text it is for, so a slow one never lists, or opens, for text since changed.
   const [found, setFound] = useState<Loaded<Answered>>({ value: undefined, problem: undefined });
   const [loader] = useState(() => new Loader<Answered>(setFound));
-  const [at, setAt] = useState(0);
+  // The chosen result by its key, so results that arrive later never move the choice.
+  const [chosen, setChosen] = useState<string | undefined>(undefined);
+  const [copyProblem, setCopyProblem] = useState<string | undefined>(undefined);
   const input = useRef<HTMLInputElement>(null);
   useEffect(() => {
     input.current?.focus();
     return () => loader.stop();
   }, [loader]);
-  useEffect(() => {
-    document.getElementById(`palette-${at}`)?.scrollIntoView({ block: "nearest" });
-  }, [at, found]);
   const asked = text.trim() !== "";
   const answered = asked && found.value?.text === text;
   const hits = answered ? listed(found.value?.hits ?? []) : [];
-  const count = hits.length + coded.symbols.length;
+  const keys = [...hits.map((hit) => hit.key), ...coded.symbols.map(symbolKey)];
+  const count = keys.length;
+  const at = Math.max(0, keys.indexOf(chosen ?? ""));
+  const setAt = (index: number) => setChosen(keys[index]);
+  useEffect(() => {
+    document.getElementById(`palette-${at}`)?.scrollIntoView({ block: "nearest" });
+  }, [at, found]);
   const choose = (index: number) => {
     const hit: Listed | undefined = hits[index];
     const symbol = coded.symbols[index - hits.length];
     if (hit !== undefined) {
       go(hit.place);
     } else if (symbol !== undefined) {
-      void navigator.clipboard.writeText(place(symbol)).catch(() => {});
-      close();
+      navigator.clipboard.writeText(place(symbol)).then(close, () => setCopyProblem("The place couldn't be copied."));
     }
   };
   return (
@@ -101,7 +106,8 @@ function Search({ api, workspace, socket, chatMachine, close, go }: Omit<Props, 
           onChange={(event) => {
             const typed = event.target.value;
             setText(typed);
-            setAt(0);
+            setChosen(undefined);
+            setCopyProblem(undefined);
             if (typed.trim() !== "") {
               void loader.load(() => search(api, workspace, typed));
             }
@@ -128,6 +134,7 @@ function Search({ api, workspace, socket, chatMachine, close, go }: Omit<Props, 
           }}
         />
         {found.problem !== undefined && <p role="alert">{found.problem}</p>}
+        {copyProblem !== undefined && <p role="alert">{copyProblem}</p>}
         <ul id="palette-hits" role="listbox" aria-label="Results">
           {hits.map((hit, index) => (
             <li
@@ -153,7 +160,7 @@ function Search({ api, workspace, socket, chatMachine, close, go }: Omit<Props, 
                   const index = hits.length + cut;
                   return (
                     <li
-                      key={`${symbol.repo}:${symbol.name}:${place(symbol)}`}
+                      key={symbolKey(symbol)}
                       id={`palette-${index}`}
                       role="option"
                       aria-selected={index === at}
@@ -181,6 +188,8 @@ type Answered = { text: string; hits: SearchHit[] };
 
 type Coded = { machine: MachineId; text: string; symbols: CodeSymbol[] };
 
+const symbolKey = (symbol: CodeSymbol) => `symbol:${symbol.repo}:${symbol.name}:${place(symbol)}`;
+
 /**
  * The symbols on the person's machine that match `text`, once its answer is for that text; none
  * while no machine of theirs offers them. `settled` once nothing is left to wait for.
@@ -189,6 +198,8 @@ function useSymbols(api: Api, socket: WorkspaceSocket, chatMachine: string | und
   const offered = useOffers(socket, SYMBOLS);
   // Undefined until the machines are listed, null when none of them offers symbols.
   const [machine, setMachine] = useState<MachineId | null | undefined>(undefined);
+  // Why the machines couldn't be listed; the palette lists them again when it next opens.
+  const [unlisted, setUnlisted] = useState<string | undefined>(undefined);
   const [coded, setCoded] = useState<Loaded<Coded>>({ value: undefined, problem: undefined });
   const [loader] = useState(() => new Loader<Coded>(setCoded));
   useEffect(() => {
@@ -197,6 +208,7 @@ function useSymbols(api: Api, socket: WorkspaceSocket, chatMachine: string | und
       void api.machines().then((answer) => {
         if (live) {
           setMachine((answer.ok ? searcher(answer.value.machines, chatMachine) : undefined) ?? null);
+          setUnlisted(answer.ok ? undefined : problemText(answer.code));
         }
       });
     }
@@ -217,7 +229,7 @@ function useSymbols(api: Api, socket: WorkspaceSocket, chatMachine: string | und
   const answered = asking && coded.value?.machine === machine && coded.value.text === text;
   return {
     symbols: answered ? (coded.value?.symbols ?? []) : [],
-    problem: asking ? coded.problem : undefined,
+    problem: asking ? coded.problem : unlisted,
     settled: !offered || machine === null || answered || coded.problem !== undefined,
     offered,
   };
