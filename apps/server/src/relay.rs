@@ -911,6 +911,10 @@ mod tests {
         assert_eq!(needs(&query(&machine, "w1")), Some(SETTINGS));
         assert_eq!(needs(&command(&machine)), Some(SETTINGS));
         assert_eq!(needs(&settings_answer(&machine)), None);
+        // From a machine, only answers and errors go back to an asker.
+        assert!(takes(&settings_answer(&machine)));
+        assert!(takes(&refusal(code!("settings.not_owner"))));
+        assert!(!takes(&query(&machine, "w1")));
         assert_eq!(code_of(result), Some("relay.unknown".to_owned()));
     }
 
