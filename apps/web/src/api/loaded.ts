@@ -16,6 +16,7 @@ export class Loader<T> {
   #latest = 0;
   #show: (loaded: Loaded<T>) => void;
   #next: (() => Promise<Answer<T>>) | undefined;
+  #last: (() => Promise<Answer<T>>) | undefined;
   #running: Promise<void> | undefined;
   #era = 0;
 
@@ -50,6 +51,7 @@ export class Loader<T> {
 
   async #fetch(fetch: () => Promise<Answer<T>>): Promise<void> {
     const asked = ++this.#latest;
+    this.#last = fetch;
     if (this.#shown.problem !== undefined) {
       this.#put({ ...this.#shown, problem: undefined });
     }
@@ -59,9 +61,15 @@ export class Loader<T> {
     }
   }
 
-  /** Changes the value here; it counts as newer than any fetch still on its way. */
+  /**
+   * Changes the value here; it counts as newer than any fetch still on its way, which is then made
+   * once more, so what changed meanwhile elsewhere still arrives.
+   */
   change(update: (value: T | undefined) => T): void {
     this.#latest++;
+    if (this.#running !== undefined) {
+      this.#next ??= this.#last;
+    }
     this.#put({ ...this.#shown, value: update(this.#shown.value) });
   }
 
@@ -84,6 +92,11 @@ export class Loader<T> {
     this.#shown = shown;
     this.#show(shown);
   }
+}
+
+/** An answer of `value` without asking, as for a thing the server doesn't serve. */
+export function answered<T>(value: T): Promise<Answer<T>> {
+  return Promise.resolve({ ok: true, value });
 }
 
 /** A fetched thing as a page shows it, and how to fetch it again or change it here. */

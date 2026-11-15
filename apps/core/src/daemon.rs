@@ -50,7 +50,7 @@ pub(crate) fn run(app: &crate::app::App) -> Result<(), Fault> {
             )
             .because(error)
         })?;
-        let daemon = Daemon::start(
+        let mut daemon = Daemon::start(
             state_dir,
             build(&app.version),
             app.spawn.clone(),
@@ -62,14 +62,12 @@ pub(crate) fn run(app: &crate::app::App) -> Result<(), Fault> {
             },
             app.log.clone(),
         )?;
-        // One for both, so a relayed removal and a local one share their journal's lock.
-        let worktrees = daemon.shared.worktrees.clone();
-        let serve = async {
-            tokio::select! {
-                () = daemon.serve(signals.wait()) => {}
-                never = Box::pin(route::server(app, state_dir, worktrees)) => match never {},
-            }
-        };
+        // The daemon's own worktrees, so a relayed removal and a local one share their lock.
+        let (chats, worktrees) = (daemon.shared.chats.clone(), daemon.shared.worktrees.clone());
+        daemon
+            .uplink
+            .spawn(route::server(app, state_dir, chats, worktrees));
+        let serve = daemon.serve(signals.wait());
         crate::reports::following(state_dir, &app.reporter, &app.log, serve).await;
         Ok(())
     })
@@ -93,6 +91,7 @@ pub(crate) struct Daemon {
     disk: disk::Watch,
     memory: memory::Watch,
     engine: JoinHandle<()>,
+    uplink: JoinSet<()>,
     mcp: mcp::Server,
     // Held for the daemon's life, so a second daemon can't start.
     _lock: File,
@@ -138,12 +137,13 @@ impl Daemon {
         let worktrees = worktrees::worktrees(state_dir, &places);
         let (chats, engine) = chats::start(state_dir, places, app.clone(), spawn, log.clone())?;
         let listener = platform::bind(&socket).map_err(failed)?;
-        let engine = tokio::spawn(engine.serve());
         log.info("daemon started", &[]);
         Ok(Self {
             listener,
             socket,
             owner,
+            uplink: JoinSet::new(),
+            engine: tokio::spawn(engine.serve()),
             shared: Shared {
                 app,
                 picks: Picks::new(state_dir),
@@ -153,7 +153,6 @@ impl Daemon {
             },
             disk: disk::Watch::new(state_dir.to_owned(), platform::free_space),
             memory: memory::Watch::new(platform::processes),
-            engine,
             mcp: mcp_server,
             _lock: lock,
         })
@@ -187,6 +186,8 @@ impl Daemon {
         drop(self.listener);
         drop(fs::remove_file(&self.socket));
         clients.shutdown().await;
+        // The uplink's way to the engine goes first, or the engine would never stop.
+        self.uplink.shutdown().await;
         // Worktree work outlives its asker; it ends before the lock goes.
         self.shared.worktrees.drain().await;
         drop(self.mcp);
@@ -578,6 +579,36 @@ mod tests {
             .filter(|message| message.starts_with("daemon "))
             .collect();
         assert_eq!(lifecycle, ["daemon started", "daemon stopped"]);
+    }
+
+    #[tokio::test]
+    async fn a_paired_daemon_dials_its_server_and_still_stops() {
+        use crate::machine::{self, Key, Paired};
+        let (dir, tls) = (TempDir::new().unwrap(), test_support::tls::Tls::new().await);
+        let paired = Paired {
+            server: tls.url(),
+            pinned: Some(tls.pem.clone()),
+            machine: "mc-1".parse().unwrap(),
+            owner: "a-owner".parse().unwrap(),
+            token: "t0ken".to_owned(),
+            key: Key::from_random([7; 32]),
+        };
+        machine::write(&dir, &paired).unwrap();
+        let app = test_support::app(Some(&dir), None);
+        let running = start_as(&dir, |daemon| {
+            let (chats, worktrees) = (daemon.shared.chats.clone(), daemon.shared.worktrees.clone());
+            daemon
+                .uplink
+                .spawn(route::server(&app, &dir, chats, worktrees));
+        })
+        .unwrap();
+
+        let dialed = tls.accept().await;
+
+        assert!(dialed.is_some(), "the daemon never dialed its server");
+        // Its uplink, which holds a way to the engine, must not hold the engine up.
+        let stopped = timeout(Duration::from_secs(10), running.stop()).await;
+        assert!(stopped.is_ok(), "the daemon never stopped");
     }
 
     #[tokio::test]

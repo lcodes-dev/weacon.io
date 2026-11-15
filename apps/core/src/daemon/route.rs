@@ -9,11 +9,12 @@ use weacon_protocol::{Envelope, FrameError, Message, code};
 
 use super::worktrees::{self, Late};
 use super::{Shared, command_chat, keep, query_chat};
+use crate::chats::Chats;
 use crate::chats::feed::Client;
 use crate::git::service::Worktrees;
 use crate::machine_settings::{self, Host, Identity};
 use crate::session::{Reply, Session};
-use crate::uplink::{self, failure, refusal};
+use crate::uplink::{self, failure};
 use crate::{app, machine};
 
 /// How many of the server's queries are answered at once; each may run vendors' status checks.
@@ -47,8 +48,13 @@ pub(super) async fn route(
 }
 
 /// Keeps the machine connected to its server, and answers what the server asks, for as long
-/// as the daemon runs.
-pub(super) async fn server(app: &app::App, state_dir: &Path, worktrees: Worktrees) -> ! {
+/// as the task runs; chat messages go to `chats`.
+pub(super) fn server(
+    app: &app::App,
+    state_dir: &Path,
+    chats: Chats,
+    worktrees: Worktrees,
+) -> impl Future<Output = ()> + Send + 'static {
     let (to_daemon, asks) = mpsc::channel(uplink::QUEUE);
     let (replies, from_daemon) = mpsc::channel(uplink::QUEUE);
     let host = Host {
@@ -57,9 +63,12 @@ pub(super) async fn server(app: &app::App, state_dir: &Path, worktrees: Worktree
         reporter: Arc::clone(&app.reporter),
         log: app.log.child(&[("component", "asks".into())]),
     };
-    tokio::select! {
-        never = Box::pin(uplink::new(app, state_dir, to_daemon).run(from_daemon)) => match never {},
-        never = uplink(Asked { host, worktrees }, asks, replies) => match never {},
+    let link = uplink::new(app, state_dir, to_daemon, chats);
+    async move {
+        tokio::select! {
+            never = Box::pin(link.run(from_daemon)) => match never {},
+            never = uplink(Asked { host, worktrees }, asks, replies) => match never {},
+        }
     }
 }
 
@@ -126,8 +135,6 @@ async fn relayed(asked: &Asked, ask: Envelope) -> Vec<Envelope> {
     let Asked { host, worktrees } = asked;
     let answered: Result<Vec<Message>, Fault> = if let Message::Error(_) = message {
         return Vec::new();
-    } else if let Message::ChatCommand(command) = message {
-        return vec![refusal(id, &command, code!("chat.unavailable"))];
     } else if let Message::MachineSettingsQuery(query) = message {
         async { machine_settings::query(host, &owner(host).await?, query).await }
             .await
@@ -186,9 +193,9 @@ mod tests {
     use std::sync::Arc;
 
     use weacon_protocol::{
-        AccountId, Asker, ChatAction, ChatCommand, ErrorBody, MachineSettingsAction,
-        MachineSettingsAnswerKind, MachineSettingsCommand, MachineSettingsQuery,
-        MachineSettingsQueryKind, Outcome, SessionsQuery, SessionsQueryKind,
+        AccountId, Asker, ErrorBody, MachineSettingsAction, MachineSettingsAnswerKind,
+        MachineSettingsCommand, MachineSettingsQuery, MachineSettingsQueryKind, SessionsQuery,
+        SessionsQueryKind,
     };
     use weacon_testing::TempDir;
 
@@ -302,19 +309,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_chat_command_is_refused_any_other_ask_is_unknown_and_an_error_goes_unanswered() {
+    async fn an_ask_it_doesnt_answer_is_unknown_and_an_error_goes_unanswered() {
         let dir = TempDir::new().unwrap();
         let (host, _) = host(&dir);
-        let command = Envelope {
-            id: 3,
-            message: Message::ChatCommand(ChatCommand {
-                request: id("r-2"),
-                workspace: id("w1"),
-                chat: id("c-1"),
-                action: ChatAction::Interrupt,
-                by: Some(by("a-1")),
-            }),
-        };
         let other = Envelope {
             id: 4,
             message: Message::SessionsQuery(SessionsQuery {
@@ -332,20 +329,9 @@ mod tests {
             }),
         };
 
-        let refused = one(&host, command).await;
         let unknown = one(&host, other).await;
         let echoed = relayed(&host, error).await;
 
-        let Message::Receipt(receipt) = refused.message else {
-            panic!("expected a receipt, got {:?}", refused.message);
-        };
-        assert_eq!((refused.id, receipt.request.as_str()), (3, "r-2"));
-        assert_eq!(
-            receipt.outcome,
-            Outcome::Failed {
-                code: code!("chat.unavailable")
-            }
-        );
         assert_eq!(unknown.id, 4);
         assert_eq!(
             test_support::error_code(&unknown.message),
