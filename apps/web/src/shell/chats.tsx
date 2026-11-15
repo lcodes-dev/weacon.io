@@ -1,18 +1,22 @@
 import type { Loading } from "../api/loaded.ts";
 import { Problem } from "../api/problem.tsx";
 import type { ChatId, ChatList } from "../protocol.ts";
-import { newestFirst, stateNote } from "./chat-list.ts";
+import type { Names } from "../members/names.ts";
+import { newestFirst, rowNote } from "./chat-list.ts";
 
 /** The workspace's chats, newest first, with the one `chosen` marked; picking one calls `choose`. */
 export function ChatsNav({
   loaded,
   chosen,
   choose,
+  names,
 }: {
   /** The chats, or none yet while the server is connecting, or none it serves. */
   loaded: Loading<ChatList> | "connecting" | "none";
   chosen: ChatId | undefined;
   choose: (chat: ChatId) => void;
+  /** The members' names, for each chat's owner. */
+  names: Names;
 }) {
   const listed = typeof loaded === "string" ? undefined : loaded;
   const chats = listed?.value === undefined ? undefined : newestFirst(listed.value.chats);
@@ -23,20 +27,14 @@ export function ChatsNav({
       {(loaded === "none" || chats?.length === 0) && <p className="muted">No chats yet. Connect a machine to start one.</p>}
       {chats !== undefined && chats.length > 0 && (
         <ul>
-          {chats.map(({ id, title, machine, state }) => {
-            const note = stateNote(state);
-            return (
-              <li key={id}>
-                <button type="button" aria-current={id === chosen ? "page" : undefined} onClick={() => choose(id)}>
-                  <span className="title">{title}</span>
-                  <span className="muted">
-                    {machine}
-                    {note !== undefined && ` · ${note}`}
-                  </span>
-                </button>
-              </li>
-            );
-          })}
+          {chats.map((chat) => (
+            <li key={chat.id}>
+              <button type="button" aria-current={chat.id === chosen ? "page" : undefined} onClick={() => choose(chat.id)}>
+                <span className="title">{chat.title}</span>
+                <span className="muted">{rowNote(chat, names)}</span>
+              </button>
+            </li>
+          ))}
         </ul>
       )}
       {listed?.problem !== undefined && <Problem text={listed.problem} retry={() => void listed.load()} />}

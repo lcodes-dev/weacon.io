@@ -11,6 +11,7 @@ import type { WorkspaceSocket } from "../shell/workspace-socket.ts";
 import { useChatAccess } from "./access.ts";
 import { working } from "./chat.ts";
 import { useChatCommands, useLiveChat } from "./chat-hooks.ts";
+import type { Names } from "../members/names.ts";
 import { lines } from "./lines.ts";
 import { StopButton } from "./stop-button.tsx";
 import { TranscriptView } from "./transcript-view.tsx";
@@ -28,6 +29,7 @@ export function ChatScreen({
   mine,
   away,
   title,
+  names,
 }: {
   link: WorkspaceSocket;
   /** Whether the link's connection is up. */
@@ -37,6 +39,8 @@ export function ChatScreen({
   away: boolean;
   /** The chat's title, a pull request's to start with. */
   title?: string;
+  /** The workspace's members' names, for its agents' owners. */
+  names?: Names;
 }) {
   const [shown, setShown] = useState<"run" | "changes">("run");
   const access = useChatAccess(link);
@@ -71,7 +75,7 @@ export function ChatScreen({
       <div className="panes">
         <div className={shown === "run" ? "pane" : "pane away"}>
           <TranscriptView
-            lines={chat === undefined ? [] : lines(chat)}
+            lines={chat === undefined ? [] : lines(chat, names)}
             older={chat !== undefined && state.kind === "live" && chat.first > 1 ? reading.more : undefined}
             answering={acts ? commands.answering : undefined}
             // A chat is on its way while the connection is made, then only from a server that serves chats.

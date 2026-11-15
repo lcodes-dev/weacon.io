@@ -6,7 +6,9 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use weacon_model::Title;
 use weacon_observability::Fault;
-use weacon_protocol::{WorkspaceCreate, WorkspaceList, WorkspaceSummary, code};
+use weacon_protocol::{
+    Code, MemberList, MemberSummary, WorkspaceCreate, WorkspaceList, WorkspaceSummary, code,
+};
 
 use crate::app::{fresh, new_id};
 use crate::auth::{Member, Session};
@@ -15,6 +17,8 @@ use crate::http::{Body, failure, invalid, unauthorized};
 use crate::shared::Shared;
 
 pub(crate) const MAX_NAME: usize = 100;
+/// What the server offers to clients that read a workspace's members.
+pub(crate) const MEMBERS: Code = code!("workspace.members");
 /// What an account's own workspace is called when it is made.
 const PERSONAL: &str = "Personal";
 
@@ -22,6 +26,7 @@ pub(crate) fn routes() -> Router<Shared> {
     Router::new()
         .route("/api/workspaces", get(list).post(create))
         .route("/api/workspaces/{workspace}", get(read))
+        .route("/api/workspaces/{workspace}/members", get(members))
 }
 
 /// `POST /api/workspaces`: makes a workspace that the signed-in account owns.
@@ -65,6 +70,37 @@ pub(crate) async fn read(member: Member) -> Response {
         Ok(Some(summary)) => Json(summary).into_response(),
         // Someone else ended the membership since it was checked.
         Ok(None) => unauthorized(code!("sign_in.required")),
+        Err(fault) => failure(fault),
+    }
+}
+
+/// `GET /api/workspaces/{workspace}/members`: the workspace's members, past ones too, each named
+/// by their address's part before the `@`, since accounts hold no other name, or by their whole
+/// address where another member's has the same part, so no one can pass as another.
+pub(crate) async fn members(member: Member) -> Response {
+    match member.workspace.members().await {
+        Ok(rows) => Json(MemberList {
+            members: rows
+                .iter()
+                .map(|row| {
+                    let local = row.email.local();
+                    let shared = rows
+                        .iter()
+                        .filter(|other| other.email.local() == local)
+                        .count();
+                    let name = if shared > 1 {
+                        row.email.as_str()
+                    } else {
+                        local
+                    };
+                    MemberSummary {
+                        id: row.id.clone(),
+                        name: name.to_owned(),
+                    }
+                })
+                .collect(),
+        })
+        .into_response(),
         Err(fault) => failure(fault),
     }
 }
@@ -166,6 +202,59 @@ mod tests {
         );
         assert!(ada_sees[1]["member"].is_string());
         assert_ne!(ada_sees[1]["member"], bo_sees[1]["member"]);
+    }
+
+    #[tokio::test]
+    async fn a_member_sees_the_names_of_their_workspaces_members_only() {
+        let fixture = Fixture::new().await;
+        let db = &fixture.shared.db;
+        let w1 = db.workspace(&workspace_id("w1")).await.unwrap();
+        let w2 = db
+            .create_workspace(&workspace_id("w2"), "Other")
+            .await
+            .unwrap();
+        w1.add_member(&member_id("m3"), &fresh_account(), &email("bo@example.com"))
+            .await
+            .unwrap();
+        w1.add_member(
+            &member_id("m5"),
+            &fresh_account(),
+            &email("bo@other.example"),
+        )
+        .await
+        .unwrap();
+        w2.add_member(&member_id("m4"), &fresh_account(), &email("cy@example.com"))
+            .await
+            .unwrap();
+        w1.unlink(&member_id("m3")).await;
+        let (_server, ada) = fixture.client("ada@example.com").await;
+
+        let (listed, members) = ask(
+            ada.address,
+            "GET /api/workspaces/w1/members",
+            &ada.proof(),
+            "",
+        )
+        .await;
+        let (refused, other) = ask(
+            ada.address,
+            "GET /api/workspaces/w2/members",
+            &ada.proof(),
+            "",
+        )
+        .await;
+
+        assert_eq!(listed, "http/1.1 200 ok");
+        assert_eq!(
+            members,
+            json!({ "members": [
+                { "id": "m1", "name": "ada" },
+                { "id": "m3", "name": "bo@example.com" },
+                { "id": "m5", "name": "bo@other.example" },
+            ] })
+        );
+        assert_eq!(refused, "http/1.1 401 unauthorized");
+        assert_eq!(other["code"], "sign_in.required");
     }
 
     #[tokio::test]
