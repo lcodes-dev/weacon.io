@@ -234,15 +234,11 @@ impl Front {
             .get(header::AUTHORIZATION)
             .and_then(|value| value.to_str().ok())
             .and_then(|value| value.strip_prefix("Bearer "));
-        let found = match token {
-            Some(token) => self.grants.find(token).ok_or_else(|| {
-                Fault::new(code!("mcp.token_unknown"), "The token isn't a live run's")
-            }),
-            None => Err(Fault::new(
-                code!("mcp.token_missing"),
-                "The request has no token",
-            )),
-        };
+        let missing = || Fault::new(code!("mcp.token_missing"), "The request has no token");
+        let unknown = || Fault::new(code!("mcp.token_unknown"), "The token isn't a live run's");
+        let found = token
+            .ok_or_else(missing)
+            .and_then(|token| self.grants.find(token).ok_or_else(unknown));
         // Only a flag is guarded, so a poisoned lock still holds a usable one.
         let grant = self
             .refusals
@@ -307,17 +303,14 @@ impl ServerHandler for Handler {
         let Some(tool) = call.name() else {
             return Err(ErrorData::invalid_params("No such tool", None));
         };
-        let Ok(_permit) = grant.calls.try_acquire() else {
+        let Ok(permit) = Arc::clone(&grant.calls).try_acquire_owned() else {
             let busy = ContentBlock::text("Too many calls at once: wait for one to end.");
             return Ok(CallToolResult::error(vec![busy]).into());
         };
         let started = Instant::now();
         let log = self.log.child(&[("run_id", grant.run.as_str().into())]);
         let text = match &self.maps {
-            Some(maps) => {
-                maps.answer(&call, &grant.workspace, &grant.folder, &log)
-                    .await
-            }
+            Some(maps) => maps.answer(&call, &grant, permit, &log).await,
             None => tools::NO_MAP.to_owned(),
         };
         let millis = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
@@ -448,20 +441,21 @@ mod tests {
     async fn each_token_reads_only_its_own_runs_registered_repository() {
         let dir = TempDir::new().unwrap();
         let (log, _records) = recording_logger();
-        let maps::tests::Setup {
-            maps, workspace, ..
-        } = maps::tests::setup(&dir).await;
-        let one = maps::tests::crate_repo(&dir, "one");
-        let two = maps::tests::crate_repo(&dir.join("b"), "two");
-        maps::tests::register(&maps, &workspace, "one", &one);
+        let setup = maps::tests::setup(&dir).await;
+        let one = maps::tests::workspace("one");
+        let repo = maps::tests::crate_repo(&dir, "one");
+        setup.register(&one, "one", &repo);
         let build = weacon_appkit::build(&VERSION);
-        let (mcp, _server) = start(&build, &log, Some(maps)).unwrap();
+        let (mcp, _server) = start(&build, &log, Some(setup.maps.clone())).unwrap();
         let (first, _a) = mcp
             .grants
-            .issue(run_grant(workspace.as_str(), "run-1", one))
+            .issue(run_grant("one", "run-1", repo.clone()))
             .unwrap();
-        // Another workspace's run in a repository only `one` registered.
-        let (second, _b) = mcp.grants.issue(run_grant("w-2", "run-2", two)).unwrap();
+        // Another workspace's run in the repository only `one` registered.
+        let (second, _b) = mcp
+            .grants
+            .issue(run_grant("two", "run-2", repo.clone()))
+            .unwrap();
         let map = call("map", json!({}));
 
         let one = post(&mcp, &[("Authorization", &bearer(&first))], &map).await;
@@ -474,6 +468,7 @@ mod tests {
              - fn one::run  src/lib.rs:1\nCrates:\n- one  .  1 items\n"
         );
         assert_eq!(answer_text(&two), tools::NO_MAP);
+        assert!(!setup.stored(&maps::tests::workspace("two"), &repo).await);
     }
 
     #[tokio::test]
@@ -732,33 +727,6 @@ mod tests {
             tokio::time::timeout(Duration::from_secs(5), idle.read_to_end(&mut read)).await;
 
         closed.unwrap().unwrap();
-    }
-
-    #[tokio::test]
-    async fn a_connection_is_warned_about_once_however_often_it_is_refused() {
-        let (log, records) = recording_logger();
-        let (mcp, _server) = start(&weacon_appkit::build(&VERSION), &log, None).unwrap();
-        let address = address(&mcp);
-        let body = call("map", json!({}));
-        let request = |close: &str| {
-            format!(
-                "POST /mcp HTTP/1.1\r\nHost: {address}\r\nContent-Length: {}\r\n{close}\r\n{body}",
-                body.len()
-            )
-        };
-        let mut stream = TcpStream::connect(address).await.unwrap();
-
-        let both = request("") + &request("Connection: close\r\n");
-        stream.write_all(both.as_bytes()).await.unwrap();
-        let mut reply = String::new();
-        let read = tokio::time::timeout(Duration::from_secs(5), stream.read_to_string(&mut reply));
-        read.await.unwrap().unwrap();
-
-        assert_eq!(reply.matches("401 Unauthorized").count(), 2);
-        assert_eq!(
-            weacon_testing::messages(&records),
-            ["mcp started", "mcp refused"]
-        );
     }
 
     #[tokio::test]

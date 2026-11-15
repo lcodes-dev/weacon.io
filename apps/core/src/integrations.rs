@@ -28,8 +28,10 @@ pub(crate) struct Plugin {
     dir: PathBuf,
     files: [(&'static str, String); 3],
     log: Logger,
-    // Two launches at once would each set the other's fresh folder aside.
-    checking: Arc<Mutex<()>>,
+    // Two launches at once would each set the other's fresh folder aside; it holds whether the
+    // folders beside this one were swept, which waits for the first launch, so a second daemon
+    // that can't start removes nothing.
+    checking: Arc<Mutex<bool>>,
 }
 
 impl Plugin {
@@ -41,7 +43,7 @@ impl Plugin {
         logged(log, plugin)
     }
 
-    /// The plugin for `program`, which its hook runs; every other folder beside its own goes.
+    /// The plugin for `program`, which its hook runs.
     pub(crate) fn at(
         state_dir: &Path,
         program: &Path,
@@ -53,9 +55,6 @@ impl Plugin {
             .join("integrations")
             .join("claude")
             .join(name(&files));
-        if let Err(error) = sweep(&dir) {
-            log.warn("plugin sweep failed", &[("err", Field::error(&error))]);
-        }
         Ok(Self {
             dir,
             files,
@@ -65,9 +64,16 @@ impl Plugin {
     }
 
     /// The plugin's folder, rewritten when anything in it differs; none, logged, when it
-    /// can't be.
+    /// can't be. The first call also removes every other folder beside it.
     pub(crate) fn folder(&self) -> Option<PathBuf> {
-        let _checking = self.checking.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut swept = self.checking.lock().unwrap_or_else(PoisonError::into_inner);
+        if !*swept {
+            if let Err(error) = sweep(&self.dir) {
+                self.log
+                    .warn("plugin sweep failed", &[("err", Field::error(&error))]);
+            }
+            *swept = true;
+        }
         logged(
             &self.log,
             self.ensure().map_err(|error| failed().because(error)),
@@ -172,17 +178,20 @@ fn sweep(dir: &Path) -> io::Result<()> {
     let Some(parent) = dir.parent() else {
         return Ok(());
     };
-    // One that can't be read holds nothing to sweep, and its write says why.
+    // An unreadable folder is skipped; writing the plugin reports the error.
     let Ok(entries) = fs::read_dir(parent) else {
         return Ok(());
     };
+    // Each is tried, so one that can't be removed leaves no other behind.
+    let mut first = Ok(());
     for entry in entries {
-        let path = entry?.path();
-        if path != dir {
-            remove(&path)?;
-        }
+        let removed = entry.and_then(|entry| {
+            let path = entry.path();
+            if path == dir { Ok(()) } else { remove(&path) }
+        });
+        first = first.and(removed);
     }
-    Ok(())
+    first
 }
 
 fn remove(path: &Path) -> io::Result<()> {
@@ -352,7 +361,7 @@ mod tests {
     }
 
     #[test]
-    fn a_new_plugin_removes_every_other_folder_beside_it() {
+    fn a_plugins_first_launch_removes_every_other_folder_beside_it() {
         let temp = TempDir::new().unwrap();
         let state: &Path = &temp;
         let old = plugin(state, "/opt/weacon", &VERSION).folder().unwrap();
@@ -360,16 +369,24 @@ mod tests {
         fs::create_dir_all(claude.join("abc.stale-1/hooks")).unwrap();
         fs::write(claude.join("abc.stale-1/hooks/hooks.json"), "{}").unwrap();
         fs::write(claude.join("loose"), "").unwrap();
+        let listed = || {
+            let mut names: Vec<_> = fs::read_dir(&claude)
+                .unwrap()
+                .map(|entry| entry.unwrap().path())
+                .collect();
+            names.sort();
+            names
+        };
+        let before = listed();
 
+        // A daemon that never launches, such as one that finds another running, removes none.
         let current = plugin(state, "/usr/bin/weacon", &VERSION);
+        assert_eq!(listed(), before);
+        let dir = current.folder().unwrap();
 
-        let left: Vec<_> = fs::read_dir(&claude)
-            .unwrap()
-            .map(|entry| entry.unwrap().path())
-            .collect();
-        assert!(left.is_empty(), "{left:?}");
+        assert_eq!(listed(), std::slice::from_ref(&dir));
         assert!(!old.exists());
-        assert!(current.folder().unwrap().join("hooks/hooks.json").is_file());
+        assert!(dir.join("hooks/hooks.json").is_file());
     }
 
     #[test]

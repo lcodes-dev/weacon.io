@@ -1,5 +1,7 @@
 //! The MCP's tools: the list agents see, and the plain text each call answers.
 
+use std::borrow::Cow;
+
 use rmcp::model::{JsonObject, Tool, ToolAnnotations};
 use serde_json::{Value, json};
 use weacon_codemap::Index;
@@ -21,13 +23,7 @@ pub(crate) const UP_FRONT: [&str; 2] = [McpCall::MAP, McpCall::SYMBOL];
 
 /// The tools every run sees from its first call, as `tools/list` sends them.
 pub(crate) fn listed() -> Vec<Tool> {
-    let budget = || {
-        (
-            "budget",
-            json!({"type": "integer", "minimum": LEAST, "maximum": MOST}),
-        )
-    };
-    let path = ("path", json!({"type": "string"}));
+    let budget = json!({"type": "integer", "minimum": LEAST, "maximum": MOST});
     vec![
         tool(
             McpCall::MAP,
@@ -36,24 +32,22 @@ pub(crate) fn listed() -> Vec<Tool> {
                  central items and its crates. Call it before reading files. Plain text within \
                  `budget` bytes, {BUDGET} unless given."
             ),
-            vec![budget()],
+            json!({"budget": budget}),
             &[],
         ),
         tool(
             McpCall::SYMBOL,
             "One item by its path, such as `weacon_protocol::message::Envelope`: where it is, \
              what calls, uses and tests it, and what it calls. A partial path lists the items it \
-             ends."
-                .to_owned(),
-            vec![path, budget()],
+             ends.",
+            json!({"path": {"type": "string"}, "budget": budget}),
             &["path"],
         ),
         tool(
             McpCall::FLOW,
             "The flows the docs pin and where the code breaks them; call it before changing \
-             code a flow passes through."
-                .to_owned(),
-            vec![budget()],
+             code a flow passes through.",
+            json!({"budget": budget}),
             &[],
         ),
     ]
@@ -62,17 +56,13 @@ pub(crate) fn listed() -> Vec<Tool> {
 /// A read-only tool taking an object with `properties`, of which `required` must be given.
 fn tool(
     name: &'static str,
-    description: String,
-    properties: Vec<(&str, Value)>,
+    description: impl Into<Cow<'static, str>>,
+    properties: Value,
     required: &[&str],
 ) -> Tool {
-    let properties = properties
-        .into_iter()
-        .map(|(name, schema)| (name.to_owned(), schema))
-        .collect();
     let mut schema = JsonObject::new();
     schema.insert("type".to_owned(), "object".into());
-    schema.insert("properties".to_owned(), Value::Object(properties));
+    schema.insert("properties".to_owned(), properties);
     if !required.is_empty() {
         schema.insert("required".to_owned(), json!(required));
     }

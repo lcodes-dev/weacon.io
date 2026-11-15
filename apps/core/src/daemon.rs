@@ -60,7 +60,6 @@ pub(crate) fn run(app: &crate::app::App) -> Result<(), Fault> {
                 work_root: app.work_root.clone(),
                 mcp: None,
                 plugin: crate::integrations::Plugin::new(state_dir, &app.version, &app.log),
-                maps: mcp::Maps::open(state_dir, app.path.clone(), &app.log).await?,
             },
             app.log.clone(),
         )?;
@@ -134,7 +133,7 @@ impl Daemon {
         {
             return Err(failed(error));
         }
-        let (mcp, mcp_server) = mcp::start(&app, &log, places.maps.clone())?;
+        let (mcp, mcp_server) = mcp::start(&app, &log, Some(mcp::Maps::new(state_dir, &places)))?;
         places.mcp = Some(mcp);
         let worktrees = worktrees::worktrees(state_dir, &places);
         let (chats, engine) = chats::start(state_dir, places, app.clone(), spawn, log.clone())?;

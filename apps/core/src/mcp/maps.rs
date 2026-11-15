@@ -3,14 +3,18 @@
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Duration;
 
+use tokio::sync::{OnceCell, OwnedSemaphorePermit};
 use weacon_codemap::Index;
 use weacon_observability::{Fault, Field, Logger};
 use weacon_protocol::{McpCall, WorkspaceId, code};
 
+use super::grants::Grant;
 use super::tools::{NO_MAP, answer_from};
 use crate::app::blocking;
+use crate::chats::Places;
 use crate::codemap::{folder_index, main_worktree};
 use crate::db::Db;
 use crate::git::Git;
@@ -21,79 +25,95 @@ use crate::workspaces::Workspaces;
 const LIMIT: Duration = Duration::from_secs(30);
 const TOO_SLOW: &str = "The code map is still being read: try again shortly.\n";
 
-/// The stores the MCP's answers come from.
+/// The stores the MCP's answers come from, opened at the first call, once the daemon holds
+/// its state folder, so a second daemon that can't start changes nothing.
 #[derive(Clone, Debug)]
 pub(crate) struct Maps {
-    db: Db,
-    git: Git,
-    workspaces: Workspaces,
+    state_dir: PathBuf,
+    path: Option<OsString>,
+    stores: Arc<OnceCell<Option<Stores>>>,
     limit: Duration,
 }
 
+#[derive(Clone, Debug)]
+struct Stores {
+    db: Db,
+    git: Git,
+    workspaces: Workspaces,
+}
+
 impl Maps {
-    pub(crate) const fn new(db: Db, git: Git, workspaces: Workspaces) -> Self {
+    /// The maps of `state_dir`, with git found on the `PATH` in `places`.
+    pub(crate) fn new(state_dir: &Path, places: &Places) -> Self {
         Self {
-            db,
-            git,
-            workspaces,
+            state_dir: state_dir.to_owned(),
+            path: places.path.clone(),
+            stores: Arc::default(),
             limit: LIMIT,
         }
     }
 
-    /// The maps of the database in `state_dir`, with the git on `path`; none, logged, without
-    /// git.
-    ///
-    /// # Errors
-    /// When the database can't be opened.
-    pub(crate) async fn open(
-        state_dir: &Path,
-        path: Option<OsString>,
-        log: &Logger,
-    ) -> Result<Option<Self>, Fault> {
-        let db = Db::open(state_dir).await?;
-        let Ok(git) = Git::open(state_dir, path.as_deref())
-            .inspect_err(|fault| log.warn("mcp maps off", &[("err", Field::error(fault))]))
-        else {
-            return Ok(None);
-        };
-        Ok(Some(Self::new(db, git, Workspaces::new(state_dir, path))))
-    }
-
-    /// The answer to `call` from the map of `folder`, which `workspace` must have registered
-    /// the repository of; "no map" otherwise, or when the map can't be read.
+    /// The answer to `call` from the map of `grant`'s folder, whose repository its workspace
+    /// must have registered; "no map" otherwise, or when the map can't be read. `permit` is
+    /// held until the read ends, even after the call stops waiting for it.
     pub(crate) async fn answer(
         &self,
         call: &McpCall,
-        workspace: &WorkspaceId,
-        folder: &Path,
+        grant: &Grant,
+        permit: OwnedSemaphorePermit,
         log: &Logger,
     ) -> String {
-        let (maps, workspace, folder) = (self.clone(), workspace.clone(), folder.to_owned());
-        // Its own task, so a read the limit cuts off still finishes and is stored for the next.
-        let reading = tokio::spawn(async move { maps.index(&workspace, folder).await });
-        let Ok(joined) = tokio::time::timeout(self.limit, reading).await else {
-            return TOO_SLOW.to_owned();
+        let Some(stores) = self.stores(log).await else {
+            return NO_MAP.to_owned();
         };
-        match joined.map_err(|error| failed().because(error)).flatten() {
-            Ok(Some(index)) => answer_from(call, &index),
-            Ok(None) => NO_MAP.to_owned(),
-            Err(fault) => {
-                log.warn("mcp map failed", &[("err", Field::error(&fault))]);
-                NO_MAP.to_owned()
-            }
+        let (workspace, folder, log) = (grant.workspace.clone(), grant.folder.clone(), log.clone());
+        // Its own task, so a read the limit cuts off still finishes and is stored for the next.
+        let reading = tokio::spawn(async move {
+            let _permit = permit;
+            let index = stores.index(&workspace, folder).await;
+            index
+                .inspect_err(|fault| log.warn("mcp map failed", &[("err", Field::error(fault))]))
+                .ok()
+                .flatten()
+        });
+        match tokio::time::timeout(self.limit, reading).await {
+            Err(_) => TOO_SLOW.to_owned(),
+            Ok(Ok(Some(index))) => answer_from(call, &index),
+            Ok(_) => NO_MAP.to_owned(),
         }
     }
 
+    /// The stores, opened at the first call; none, logged once, when either can't be.
+    async fn stores(&self, log: &Logger) -> Option<Stores> {
+        let opened = self.stores.get_or_init(|| async {
+            open(&self.state_dir, self.path.clone())
+                .await
+                .inspect_err(|fault| log.warn("mcp maps off", &[("err", Field::error(fault))]))
+                .ok()
+        });
+        opened.await.clone()
+    }
+}
+
+async fn open(state_dir: &Path, path: Option<OsString>) -> Result<Stores, Fault> {
+    let db = Db::open(state_dir).await?;
+    let git = Git::open(state_dir, path.as_deref())?;
+    let workspaces = Workspaces::new(state_dir, path);
+    Ok(Stores {
+        db,
+        git,
+        workspaces,
+    })
+}
+
+impl Stores {
     /// The index of `folder`, or none when it isn't in a repository `workspace` registered.
     async fn index(
         &self,
         workspace: &WorkspaceId,
         folder: PathBuf,
     ) -> Result<Option<Index>, Fault> {
-        let repos = Repos::new(
-            workspace.clone(),
-            self.workspaces.root(workspace).join("git/repos.json"),
-        );
+        let repos = Repos::of(&self.workspaces, workspace.clone());
         let (git, asked) = (self.git.clone(), folder.clone());
         let registered = blocking(move || Ok(registered(&git, &repos, &asked)))
             .await
@@ -122,6 +142,7 @@ fn failed() -> Fault {
 pub(super) mod tests {
     use std::fs;
 
+    use tokio::sync::Semaphore;
     use weacon_protocol::{MapArgs, RepoId};
     use weacon_testing::{TempDir, recording_logger};
 
@@ -131,22 +152,39 @@ pub(super) mod tests {
 
     pub(crate) struct Setup {
         pub(crate) maps: Maps,
-        pub(crate) workspace: WorkspaceId,
-        list: PathBuf,
+        pub(crate) db: Db,
+        git: Git,
+        workspaces: Workspaces,
     }
 
-    /// Maps over a new database in `dir`, and the repositories of workspace `one`.
+    /// Maps over a new state folder in `dir`, and its own handles on the same stores.
     pub(crate) async fn setup(dir: &Path) -> Setup {
         let state = dir.join("state");
         fs::create_dir(&state).unwrap();
-        let db = Db::open(&state).await.unwrap();
-        let workspaces = Workspaces::new(&state, None);
-        let workspace = WorkspaceId::try_from("one".to_owned()).unwrap();
-        let list = workspaces.root(&workspace).join("git/repos.json");
+        let places = Places {
+            path: std::env::var_os("PATH"),
+            ..Places::default()
+        };
         Setup {
-            maps: Maps::new(db, git(dir), workspaces),
-            workspace,
-            list,
+            maps: Maps::new(&state, &places),
+            db: Db::open(&state).await.unwrap(),
+            git: git(dir),
+            workspaces: Workspaces::new(&state, None),
+        }
+    }
+
+    impl Setup {
+        /// Registers `repo` for `workspace` as `id`.
+        pub(crate) fn register(&self, workspace: &WorkspaceId, id: &str, repo: &Path) {
+            let id = RepoId::try_from(id.to_owned()).unwrap();
+            let repos = Repos::of(&self.workspaces, workspace.clone());
+            repos.add(&self.git, id, repo).unwrap();
+        }
+
+        /// Whether `workspace` holds a stored base for `repo`.
+        pub(crate) async fn stored(&self, workspace: &WorkspaceId, repo: &Path) -> bool {
+            let map = self.db.workspace(workspace).map(&LocalRepo::at(repo));
+            map.layer(BASE).await.unwrap().is_some()
         }
     }
 
@@ -162,96 +200,105 @@ pub(super) mod tests {
         main.canonicalize().unwrap()
     }
 
-    /// Registers `repo` for `workspace` as `id`.
-    pub(crate) fn register(maps: &Maps, workspace: &WorkspaceId, id: &str, repo: &Path) {
-        let list = maps.workspaces.root(workspace).join("git/repos.json");
-        let id = RepoId::try_from(id.to_owned()).unwrap();
-        Repos::new(workspace.clone(), list)
-            .add(&maps.git, id, repo)
-            .unwrap();
+    pub(crate) fn workspace(id: &str) -> WorkspaceId {
+        WorkspaceId::try_from(id.to_owned()).unwrap()
     }
 
     fn map() -> McpCall {
         McpCall::Map(MapArgs::default())
     }
 
+    fn grant(workspace: &WorkspaceId, folder: &Path) -> Grant {
+        let run = weacon_protocol::RunId::try_from("run-1".to_owned()).unwrap();
+        Grant::new(workspace.clone(), run, folder.to_owned())
+    }
+
+    fn permit() -> OwnedSemaphorePermit {
+        Arc::new(Semaphore::new(1)).try_acquire_owned().unwrap()
+    }
+
     #[tokio::test]
     async fn a_registered_repository_answers_from_its_stored_map() {
         let dir = TempDir::new().unwrap();
-        let Setup {
-            maps, workspace, ..
-        } = setup(&dir).await;
+        let setup = setup(&dir).await;
+        let one = workspace("one");
         let main = crate_repo(&dir, "marker");
-        register(&maps, &workspace, "site", &main);
+        setup.register(&one, "site", &main);
         let (log, records) = recording_logger();
 
-        let answer = maps
-            .answer(&map(), &workspace, &main.join("src"), &log)
+        let answer = setup
+            .maps
+            .answer(&map(), &grant(&one, &main.join("src")), permit(), &log)
             .await;
 
         assert!(answer.contains("fn marker::run"), "{answer}");
-        let stored = maps.db.workspace(&workspace).map(&LocalRepo::at(&main));
-        assert!(stored.layer(BASE).await.unwrap().is_some());
+        assert!(setup.stored(&one, &main).await);
         assert!(records.lock().unwrap().is_empty());
     }
 
     #[tokio::test]
     async fn a_repository_the_workspace_never_registered_has_no_map_and_stores_none() {
         let dir = TempDir::new().unwrap();
-        let Setup {
-            maps, workspace, ..
-        } = setup(&dir).await;
+        let setup = setup(&dir).await;
+        let (one, two) = (workspace("one"), workspace("two"));
         let main = crate_repo(&dir, "one");
-        let other = crate_repo(&dir.join("other"), "two");
-        register(&maps, &workspace, "site", &other);
+        setup.register(&one, "site", &main);
         let (log, records) = recording_logger();
+        let maps = &setup.maps;
 
-        let unregistered = maps.answer(&map(), &workspace, &main, &log).await;
+        let elsewhere = maps
+            .answer(&map(), &grant(&two, &main), permit(), &log)
+            .await;
+        let state = dir.join("state");
         let no_repo = maps
-            .answer(&map(), &workspace, &dir.join("state"), &log)
+            .answer(&map(), &grant(&one, &state), permit(), &log)
             .await;
 
-        assert_eq!((unregistered.as_str(), no_repo.as_str()), (NO_MAP, NO_MAP));
-        let stored = maps.db.workspace(&workspace).map(&LocalRepo::at(&main));
-        assert_eq!(stored.layer(BASE).await.unwrap(), None);
+        assert_eq!((elsewhere.as_str(), no_repo.as_str()), (NO_MAP, NO_MAP));
+        assert!(!setup.stored(&two, &main).await);
         assert!(records.lock().unwrap().is_empty());
     }
 
     #[tokio::test]
-    async fn a_map_slower_than_the_limit_says_so_and_a_broken_list_is_logged() {
+    async fn a_read_past_the_limit_keeps_its_slot_and_a_failed_one_is_logged() {
         let dir = TempDir::new().unwrap();
-        let Setup {
-            mut maps,
-            workspace,
-            list,
-        } = setup(&dir).await;
+        let mut setup = setup(&dir).await;
+        let one = workspace("one");
         let main = crate_repo(&dir, "one");
         let (log, records) = recording_logger();
-        maps.limit = Duration::ZERO;
+        let calls = Arc::new(Semaphore::new(1));
+        setup.maps.limit = Duration::ZERO;
+        let list = setup.workspaces.root(&one).join("git/repos.json");
+        fs::create_dir_all(list).unwrap();
 
-        let late = maps.answer(&map(), &workspace, &main, &log).await;
-        maps.limit = LIMIT;
-        fs::create_dir_all(&list).unwrap();
-        let broken = maps.answer(&map(), &workspace, &main, &log).await;
+        let slot = Arc::clone(&calls).try_acquire_owned().unwrap();
+        let late = setup
+            .maps
+            .answer(&map(), &grant(&one, &main), slot, &log)
+            .await;
+        assert_eq!(calls.available_permits(), 0);
+        drop(calls.acquire().await.unwrap());
 
-        assert_eq!((late.as_str(), broken.as_str()), (TOO_SLOW, NO_MAP));
+        assert_eq!(late, TOO_SLOW);
         assert_eq!(weacon_testing::messages(&records), ["mcp map failed"]);
     }
 
     #[tokio::test]
-    async fn the_daemon_gets_maps_only_with_git_and_fails_without_a_database() {
+    async fn stores_that_cant_be_opened_turn_the_maps_off_once() {
         let dir = TempDir::new().unwrap();
-        let state = dir.join("state");
-        fs::create_dir(&state).unwrap();
+        let places = Places {
+            path: Some(dir.join("empty").into()),
+            ..Places::default()
+        };
+        let maps = Maps::new(&dir, &places);
         let (log, records) = recording_logger();
 
-        let found = Maps::open(&state, std::env::var_os("PATH"), &log).await;
-        let no_git = Maps::open(&state, Some(dir.join("empty").into()), &log).await;
-        let no_db = Maps::open(&dir.join("missing"), None, &log).await;
-
-        assert!(found.unwrap().is_some());
-        assert!(no_git.unwrap().is_none());
-        assert_eq!(no_db.unwrap_err().code().as_str(), "db.open_failed");
+        for _ in 0..2 {
+            let answer = maps
+                .answer(&map(), &grant(&workspace("one"), &dir), permit(), &log)
+                .await;
+            assert_eq!(answer, NO_MAP);
+        }
         assert_eq!(weacon_testing::messages(&records), ["mcp maps off"]);
     }
 }

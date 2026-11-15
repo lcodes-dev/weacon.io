@@ -125,6 +125,7 @@ impl Map {
         Ok(touched.rows_affected() == 1)
     }
 
+    /// The commit the layer named `name` was read at, if it has been stored.
     #[cfg_attr(
         not(test),
         expect(
@@ -132,7 +133,6 @@ impl Map {
             reason = "the watcher and the search tool use it in their own changes"
         )
     )]
-    /// The commit the layer named `name` was read at, if it has been stored.
     pub(crate) async fn commit_of(&self, name: &str) -> Result<Option<String>, Fault> {
         let (workspace, repo) = self.keys();
         sqlx::query_scalar(
@@ -276,6 +276,9 @@ impl Map {
         transaction.commit().await.map_err(failed)
     }
 
+    /// What matches every word of `words` in `layer`, best first: a worktree's layer finds its
+    /// own files and the base's files it didn't change, and nothing once the base has moved on
+    /// from the commit it was read at.
     #[cfg_attr(
         not(test),
         expect(
@@ -283,9 +286,6 @@ impl Map {
             reason = "the watcher and the search tool use it in their own changes"
         )
     )]
-    /// What matches every word of `words` in `layer`, best first: a worktree's layer finds its
-    /// own files and the base's files it didn't change, and nothing once the base has moved on
-    /// from the commit it was read at.
     pub(crate) async fn search(
         &self,
         layer: &str,
@@ -331,6 +331,7 @@ impl Map {
             .unwrap();
     }
 
+    /// Removes this repository's map, every layer of it.
     #[cfg_attr(
         not(test),
         expect(
@@ -338,7 +339,6 @@ impl Map {
             reason = "the watcher and the search tool use it in their own changes"
         )
     )]
-    /// Removes this repository's map, every layer of it.
     pub(crate) async fn forget(&self) -> Result<(), Fault> {
         let (workspace, repo) = self.keys();
         let mut transaction = self.workspace.db.pool.begin().await.map_err(failed)?;
@@ -357,6 +357,8 @@ impl Map {
     }
 }
 
+/// Each word as a quoted FTS5 prefix term, so no input reads as query syntax; `None` without
+/// words.
 #[cfg_attr(
     not(test),
     expect(
@@ -364,8 +366,6 @@ impl Map {
         reason = "the watcher and the search tool use it in their own changes"
     )
 )]
-/// Each word as a quoted FTS5 prefix term, so no input reads as query syntax; `None` without
-/// words.
 fn match_query(words: &str) -> Option<String> {
     let terms: Vec<String> = words
         .split_whitespace()

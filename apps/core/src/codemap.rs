@@ -241,6 +241,8 @@ impl<S: Source> RepoMap<S> {
         Ok(facts)
     }
 
+    /// What search finds for `words` in the worktree at `path`, or in the base without one,
+    /// best first, within `budget` bytes.
     #[cfg_attr(
         not(test),
         expect(
@@ -248,8 +250,6 @@ impl<S: Source> RepoMap<S> {
             reason = "the watcher and the search tool use it in their own changes"
         )
     )]
-    /// What search finds for `words` in the worktree at `path`, or in the base without one,
-    /// best first, within `budget` bytes.
     pub(crate) async fn search(
         &self,
         path: Option<&Path>,

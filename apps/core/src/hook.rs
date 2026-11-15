@@ -11,6 +11,7 @@ use weacon_protocol::{MapArgs, McpCall, code};
 
 use crate::app::{App, runtime};
 use crate::cli::HookCommand;
+use crate::map;
 
 /// The most a session-start hook adds to an agent's context.
 const SESSION_START_BYTES: u32 = 4000;
@@ -36,7 +37,7 @@ fn session_start(folder: PathBuf) -> Result<String, Fault> {
         let call = McpCall::Map(MapArgs {
             budget: Some(SESSION_START_BYTES),
         });
-        crate::map::map_or_empty(&call, &folder)
+        map::map_or_empty(&call, &folder)
     })
 }
 

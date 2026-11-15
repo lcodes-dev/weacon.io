@@ -39,7 +39,7 @@ pub(crate) struct Grant {
     pub(crate) workspace: WorkspaceId,
     pub(crate) run: RunId,
     pub(crate) folder: PathBuf,
-    pub(crate) calls: Semaphore,
+    pub(crate) calls: Arc<Semaphore>,
     revoked: AtomicBool,
 }
 
@@ -49,7 +49,7 @@ impl Grant {
             workspace,
             run,
             folder,
-            calls: Semaphore::new(CALLS_AT_ONCE),
+            calls: Arc::new(Semaphore::new(CALLS_AT_ONCE)),
             revoked: AtomicBool::new(false),
         }
     }
