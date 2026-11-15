@@ -291,7 +291,7 @@ mod tests {
     #[tokio::test]
     async fn a_move_with_a_rename_proposes_one_batch_for_the_doc() {
         let before = repo(LIB, "pub fn go() {}\n");
-        let after = repo("mod m;\npub fn run() { m::went() }\n", "pub fn went() {}\n");
+        let after = repo("mod m;\npub fn run() { go() }\npub fn go() {}\n", "");
         let fake = Fake::default();
         fake.docs
             .lock()
@@ -307,10 +307,10 @@ mod tests {
         assert_eq!((docs, commands.len()), (1, 1));
         let content = DocContent {
             title: "Plan".to_owned(),
-            body: "See [it](sym:a_b::m::went).\n".to_owned(),
+            body: "See [it](sym:a_b::go).\n".to_owned(),
             anchors: Some(DocAnchors {
                 commit: commit('b'),
-                pins: vec![pin(&after, "sym:a_b::m::went")],
+                pins: vec![pin(&after, "sym:a_b::go")],
             }),
         };
         let edit = ProposalChange::DocEdit {
@@ -326,8 +326,8 @@ mod tests {
     async fn a_changed_and_a_gone_symbol_need_an_update_beside_a_rename_in_the_same_batch() {
         let before = repo(LIB, "pub fn go() {}\npub struct S;\npub struct T;\n");
         let after = repo(
-            "mod m;\npub fn run() { m::went(); m::went() }\n",
-            "pub fn went() {}\npub struct S { x: u8 }\n",
+            "mod m;\npub fn run() { go(); go() }\npub fn go() {}\n",
+            "pub struct S { x: u8 }\n",
         );
         let fake = Fake::default();
         let anchors = ["sym:a_b::m::go", "sym:a_b::m::S", "sym:a_b::m::T"];
@@ -345,8 +345,7 @@ mod tests {
         let commands = fake.commands();
         assert_eq!((docs, commands.len()), (1, 1));
         let first = changes(&commands[0]);
-        let relinked =
-            |body: &str| body.contains("sym:a_b::m::went") && body.contains("sym:a_b::m::T");
+        let relinked = |body: &str| body.contains("sym:a_b::go") && body.contains("sym:a_b::m::T");
         assert!(
             matches!(&first[0], ProposalChange::DocEdit { content, .. } if relinked(&content.body))
         );
@@ -363,8 +362,8 @@ mod tests {
                     stale(
                         "sym:a_b::m::S",
                         AnchorChange::Changed {
-                            was: line.clone(),
-                            now: line
+                            was: line,
+                            now: "struct a_b::m::S  src/m.rs:1".to_owned(),
                         }
                     ),
                     stale(
@@ -420,10 +419,10 @@ mod tests {
     #[tokio::test]
     async fn a_second_move_proposes_nothing_again_and_the_same_move_names_the_same_proposals() {
         let before = repo(LIB, "pub fn go() {}\n");
-        let after = repo("mod m;\npub fn run() { m::went() }\n", "pub fn went() {}\n");
+        let after = repo("mod m;\npub fn run() { go() }\npub fn go() {}\n", "");
         let later = repo(
-            "mod m;\npub fn run() { m::went() }\n",
-            "pub fn went() {}\npub fn more() {}\n",
+            "mod m;\npub fn run() { go() }\npub fn go() {}\n",
+            "pub fn more() {}\n",
         );
         let fake = Fake::default();
         fake.docs
@@ -450,7 +449,7 @@ mod tests {
     #[tokio::test]
     async fn a_rename_the_doc_cant_take_now_needs_an_update() {
         let before = repo(LIB, "pub fn go() {}\n");
-        let after = repo("mod m;\npub fn run() { m::went() }\n", "pub fn went() {}\n");
+        let after = repo("mod m;\npub fn run() { go() }\npub fn go() {}\n", "");
         let fake = Fake::default();
         fake.docs
             .lock()
@@ -472,7 +471,7 @@ mod tests {
             pin: pin(&before, "sym:a_b::m::go"),
             change: AnchorChange::Changed {
                 was: "sym:a_b::m::go".to_owned(),
-                now: "sym:a_b::m::went".to_owned(),
+                now: "sym:a_b::go".to_owned(),
             },
         };
         let changes: Vec<ProposalChange> = made.into_iter().map(|batched| batched.change).collect();
@@ -538,8 +537,10 @@ mod tests {
         let long = "a".repeat(600);
         let before = repo(LIB, "pub fn go() {}\n");
         let after = repo(
-            &format!("mod m;\npub fn run() {{ m::{long}() }}\n"),
-            &format!("pub fn {long}() {{}}\n"),
+            &format!(
+                "mod m;\npub fn run() {{ {long}::go() }}\nmod {long} {{ pub fn go() {{}} }}\n"
+            ),
+            "",
         );
         let pins = [pin(&before, "sym:a_b::m::go")];
 

@@ -123,6 +123,39 @@ impl Workspace {
     }
 }
 
+/// A "needs an update" `change` with the findings of the `older` ones it supersedes that it
+/// lacks, from the same revision, so that a later move doesn't hide what an earlier one found;
+/// none for any other change.
+pub(super) fn kept_findings(
+    change: &ProposalChange,
+    older: Vec<ProposalChange>,
+) -> Option<ProposalChange> {
+    let ProposalChange::NeedsUpdate { doc, base, anchors } = change else {
+        return None;
+    };
+    let mut kept = anchors.clone();
+    for older in older {
+        let ProposalChange::NeedsUpdate {
+            base: older_base,
+            anchors: older,
+            ..
+        } = older
+        else {
+            continue;
+        };
+        for stale in older {
+            if older_base == *base && !kept.iter().any(|kept| kept.pin == stale.pin) {
+                kept.push(stale);
+            }
+        }
+    }
+    Some(ProposalChange::NeedsUpdate {
+        doc: doc.clone(),
+        base: *base,
+        anchors: kept,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use weacon_model::{Doc, DocText, Title};

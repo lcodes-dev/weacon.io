@@ -1,4 +1,4 @@
-use crate::{Anchor, Index, Pin};
+use crate::{Anchor, Fingerprint, Index, Pin};
 
 /// What a move of the code did to a pin whose anchor named something before it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -15,7 +15,9 @@ pub enum Moved {
 impl Index {
     /// What moving the code from `self` to `now` did to `pin`; `None` when its anchor named
     /// nothing in `self`, as in another repository's code, or when the move left it as it was.
-    /// A symbol is taken as renamed only when the pin matched it before the move.
+    /// A symbol is re-anchored only when the pin matched it before the move and its code moved
+    /// unchanged; one that another item of its kind replaced in its file has changed, to that
+    /// item, since the code may differ beyond its name.
     #[must_use]
     pub fn after_move(&self, now: &Self, pin: &Pin) -> Option<Moved> {
         let before = self.fingerprint(&pin.anchor)?;
@@ -32,19 +34,35 @@ impl Index {
                 now: now.describe(&pin.anchor)?,
                 was,
             }),
-            None => Some(
-                self.renamed(now, &pin.anchor)
-                    .filter(|_| pin.fingerprint == before)
-                    .and_then(|anchor| {
-                        let fingerprint = now.fingerprint(&anchor)?;
-                        Some(Moved::Reanchored(Pin {
-                            anchor,
-                            fingerprint,
-                        }))
-                    })
-                    .unwrap_or(Moved::Gone { was }),
-            ),
+            None => Some(self.unnamed(now, pin, before, was)),
         }
+    }
+
+    /// What became of `pin`, which named something that `before` fingerprints and `was`
+    /// describes, now that its anchor names nothing in `now`.
+    fn unnamed(&self, now: &Self, pin: &Pin, before: Fingerprint, was: String) -> Moved {
+        let reanchored = self
+            .renamed(now, &pin.anchor)
+            .filter(|_| pin.fingerprint == before)
+            .and_then(|anchor| {
+                let fingerprint = now.fingerprint(&anchor)?;
+                Some(Moved::Reanchored(Pin {
+                    anchor,
+                    fingerprint,
+                }))
+            });
+        let replaced = || {
+            let Anchor::Symbol(path) = &pin.anchor else {
+                return None;
+            };
+            let new = self.replaced(now, path)?;
+            let now = now.items.get(&new)?.describe(&new);
+            Some(Moved::Changed {
+                was: was.clone(),
+                now,
+            })
+        };
+        reanchored.or_else(replaced).unwrap_or(Moved::Gone { was })
     }
 
     /// What `anchor` names in `self`, in a line for each item.
@@ -66,7 +84,7 @@ impl Index {
     /// What `anchor`, which names nothing in `now`, was renamed to there.
     fn renamed(&self, now: &Self, anchor: &Anchor) -> Option<Anchor> {
         match anchor {
-            Anchor::Symbol(path) => self.renamed_symbol(now, path).map(Anchor::Symbol),
+            Anchor::Symbol(path) => self.moved_symbol(now, path).map(Anchor::Symbol),
             Anchor::Flow(steps) => steps
                 .iter()
                 .map(|step| match now.items.get(step) {
@@ -74,7 +92,7 @@ impl Index {
                     Some(item) => (item.symbol.fingerprint
                         == self.items.get(step)?.symbol.fingerprint)
                         .then(|| step.clone()),
-                    None => self.renamed_symbol(now, step),
+                    None => self.moved_symbol(now, step),
                 })
                 .collect::<Option<Vec<_>>>()
                 .map(Anchor::Flow),
@@ -87,22 +105,23 @@ impl Index {
         }
     }
 
-    /// The one path in `now` that the item at `path` moved to with its code unchanged, or else
-    /// the one item of its kind that arrived in its file as it left.
-    fn renamed_symbol(&self, now: &Self, path: &str) -> Option<String> {
+    /// The one path in `now` that the item at `path` moved to with its code unchanged.
+    fn moved_symbol(&self, now: &Self, path: &str) -> Option<String> {
         let old = self.items.get(path)?;
-        let arrived = || {
-            now.items
-                .iter()
-                .filter(|(path, _)| !self.items.contains_key(*path))
-        };
-        let moved: Vec<&String> = arrived()
+        let moved: Vec<&String> = self
+            .arrived(now)
             .filter(|(_, item)| item.symbol.fingerprint == old.symbol.fingerprint)
             .map(|(path, _)| path)
             .collect();
-        if let [moved] = moved.as_slice() {
-            return Some((*moved).clone());
-        }
+        let [moved] = moved.as_slice() else {
+            return None;
+        };
+        Some((*moved).clone())
+    }
+
+    /// The one item of its kind that arrived in the file of the item at `path` as that left.
+    fn replaced(&self, now: &Self, path: &str) -> Option<String> {
+        let old = self.items.get(path)?;
         let alike = |item: &crate::index::Located| {
             item.file == old.file && item.symbol.kind == old.symbol.kind
         };
@@ -111,14 +130,25 @@ impl Index {
             .iter()
             .filter(|(path, item)| alike(item) && !now.items.contains_key(*path))
             .count();
-        let renamed: Vec<&String> = arrived()
+        let arrived: Vec<&String> = self
+            .arrived(now)
             .filter(|(_, item)| alike(item))
             .map(|(path, _)| path)
             .collect();
-        match renamed.as_slice() {
-            [renamed] if left == 1 => Some((*renamed).clone()),
+        match arrived.as_slice() {
+            [arrived] if left == 1 => Some((*arrived).clone()),
             _ => None,
         }
+    }
+
+    /// The items in `now` that aren't in `self`.
+    fn arrived<'a>(
+        &'a self,
+        now: &'a Self,
+    ) -> impl Iterator<Item = (&'a String, &'a crate::index::Located)> {
+        now.items
+            .iter()
+            .filter(|(path, _)| !self.items.contains_key(*path))
     }
 }
 
@@ -165,7 +195,7 @@ mod tests {
     }
 
     #[test]
-    fn a_symbol_renamed_in_its_file_or_moved_unchanged_is_reanchored() {
+    fn a_symbol_moved_unchanged_is_reanchored_and_one_replaced_in_its_file_changed() {
         let before = repo(LIB, MODULE);
         let renamed = repo(
             "mod m;\npub fn run() { m::went() }\n",
@@ -176,9 +206,13 @@ mod tests {
             "pub struct S;\n",
         );
 
+        // Renamed in place, its code may differ beyond its name, so it is no re-anchor.
         assert_eq!(
             moved(&before, &renamed, "sym:a_b::m::go"),
-            Some(Moved::Reanchored(pin(&renamed, "sym:a_b::m::went")))
+            Some(Moved::Changed {
+                was: "fn a_b::m::go  a/src/m.rs:1".to_owned(),
+                now: "fn a_b::m::went  a/src/m.rs:1".to_owned(),
+            })
         );
         assert_eq!(
             moved(&before, &moved_out, "sym:a_b::m::go"),
@@ -220,7 +254,7 @@ mod tests {
     }
 
     #[test]
-    fn a_rename_is_only_taken_when_one_item_could_be_it_and_the_pin_matched() {
+    fn a_replacement_is_named_only_when_one_item_could_be_it() {
         let before = repo(LIB, MODULE);
         let two = repo(
             "mod m;\npub fn run() {}\n",
@@ -252,14 +286,14 @@ mod tests {
         assert_eq!(both_left, gone("fn a_b::m::go  a/src/m.rs:1"));
         assert_eq!(
             before.after_move(&renamed, &stale),
-            gone("fn a_b::m::go  a/src/m.rs:1")
+            Some(Moved::Changed {
+                was: "fn a_b::m::go  a/src/m.rs:1".to_owned(),
+                now: "fn a_b::m::went  a/src/m.rs:1".to_owned(),
+            })
         );
         assert_eq!(
             moved(&before, &renamed, "flow:a_b::m::go->a_b::m::S"),
-            Some(Moved::Reanchored(pin(
-                &renamed,
-                "flow:a_b::m::went->a_b::m::S"
-            )))
+            gone("fn a_b::m::go  a/src/m.rs:1\nstruct a_b::m::S  a/src/m.rs:2")
         );
         assert_eq!(
             moved(&before, &two, "flow:a_b::run->a_b::m::go"),
@@ -310,7 +344,7 @@ mod tests {
     }
 
     #[test]
-    fn a_rename_is_of_an_item_of_its_kind_in_its_file_whatever_else_left() {
+    fn a_replacement_is_an_item_of_its_kind_in_its_file_whatever_else_left() {
         let before = repo("mod m;\npub fn run() { m::go() }\npub struct X;\n", MODULE);
         let other_kind = repo(LIB, "pub struct W(u8);\npub struct S;\n");
         let elsewhere_left = repo(
@@ -326,7 +360,10 @@ mod tests {
         );
         assert_eq!(
             moved(&before, &elsewhere_left, "sym:a_b::m::go"),
-            Some(Moved::Reanchored(pin(&elsewhere_left, "sym:a_b::m::went")))
+            Some(Moved::Changed {
+                was: "fn a_b::m::go  a/src/m.rs:1".to_owned(),
+                now: "fn a_b::m::went  a/src/m.rs:1".to_owned(),
+            })
         );
     }
 
@@ -342,6 +379,26 @@ mod tests {
             moved(&before, &after, "flow:a_b::run->a_b::m::go"),
             Some(Moved::Gone {
                 was: "fn a_b::run  a/src/lib.rs:2\nfn a_b::m::go  a/src/m.rs:1".to_owned()
+            })
+        );
+    }
+
+    #[test]
+    fn a_replacement_whose_code_differs_needs_an_update_and_is_never_reanchored() {
+        let one = repo(
+            "mod m;\npub fn run() { m::go(); }\n",
+            "pub fn go() -> u8 { 1 }\n",
+        );
+        let two = repo(
+            "mod m;\npub fn run() { m::went(); }\n",
+            "pub fn went() -> u8 { 2 }\n",
+        );
+
+        assert_eq!(
+            moved(&one, &two, "sym:a_b::m::go"),
+            Some(Moved::Changed {
+                was: "fn a_b::m::go  a/src/m.rs:1".to_owned(),
+                now: "fn a_b::m::went  a/src/m.rs:1".to_owned(),
             })
         );
     }

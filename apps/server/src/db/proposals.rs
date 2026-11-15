@@ -13,6 +13,7 @@ use weacon_protocol::{
 
 use super::changes::Versioned;
 use super::{Workspace, author_columns, failed, parsed, stored};
+use machines::kept_findings;
 use target::Target;
 
 /// The most proposals one machine may have open in a workspace.
@@ -321,36 +322,6 @@ fn stored_agent(proposed: &Proposed) -> Result<String, Fault> {
         Some((_, _, None)) => Ok(String::new()),
         None => Err(invalid()),
     }
-}
-
-/// A "needs an update" `change` with the findings of the `older` ones it supersedes that it
-/// lacks, from the same revision, so that a later move doesn't hide what an earlier one found;
-/// none for any other change.
-fn kept_findings(change: &ProposalChange, older: Vec<ProposalChange>) -> Option<ProposalChange> {
-    let ProposalChange::NeedsUpdate { doc, base, anchors } = change else {
-        return None;
-    };
-    let mut kept = anchors.clone();
-    for older in older {
-        let ProposalChange::NeedsUpdate {
-            base: older_base,
-            anchors: older,
-            ..
-        } = older
-        else {
-            continue;
-        };
-        for stale in older {
-            if older_base == *base && !kept.iter().any(|kept| kept.pin == stale.pin) {
-                kept.push(stale);
-            }
-        }
-    }
-    Some(ProposalChange::NeedsUpdate {
-        doc: doc.clone(),
-        base: *base,
-        anchors: kept,
-    })
 }
 
 /// The agent stored in a proposal's `agent` column, if it has one.
