@@ -185,7 +185,7 @@ mod tests {
 
         bench.command(picking(asked, "p-1")).await.unwrap();
 
-        let file = bench.state_dir().join("picks/pick-p-1.png");
+        let file = bench.state_dir().join("picks").join("pick-p-1.png");
         let path = file.display().to_string();
         let expected = quoted("Make it blue", &picked, Shown::File(&path));
         assert_eq!(told(&mut bench).await, [Told::Send(expected)]);
