@@ -51,7 +51,10 @@ fn make(dir: &Path) -> Result<(), Failure> {
         return Err(error.into());
     }
     write_private(&dir.join(KEY), made.signing_key.serialize_pem().as_bytes())?;
-    std::fs::write(dir.join(CERTIFICATE), made.cert.pem())?;
+    // Renamed into place, so a run stopped while writing leaves no half certificate behind.
+    let written = dir.join("cert.pem.new");
+    std::fs::write(&written, made.cert.pem())?;
+    std::fs::rename(written, dir.join(CERTIFICATE))?;
     Ok(())
 }
 

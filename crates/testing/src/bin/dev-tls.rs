@@ -9,7 +9,6 @@ use std::process::ExitCode;
 
 use tokio::io::AsyncWriteExt;
 use tokio::net::TcpListener;
-use weacon_testing::Failure;
 use weacon_testing::dev_tls::{front, server_config};
 
 #[tokio::main(flavor = "current_thread")]
@@ -22,24 +21,46 @@ async fn main() -> ExitCode {
     let (Ok(listen_on), Ok(server)) = (port(8443), port(8080)) else {
         return ExitCode::from(2);
     };
-    match run(dir, listen_on, server).await {
-        Ok(()) => ExitCode::SUCCESS,
-        Err(_) => ExitCode::FAILURE,
-    }
+    let Err(why) = run(dir, listen_on, server).await else {
+        return ExitCode::SUCCESS;
+    };
+    let mut stderr = tokio::io::stderr();
+    // Best effort: the exit code says it failed either way.
+    drop(
+        stderr
+            .write_all(format!("dev-tls: {why}\n").as_bytes())
+            .await,
+    );
+    ExitCode::FAILURE
 }
 
-async fn run(dir: PathBuf, port: u16, server: u16) -> Result<(), Failure> {
-    let config = server_config(&dir)?;
-    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, port)).await?;
-    let address = format!("https://localhost:{}\n", listener.local_addr()?.port());
+/// Runs the front until it fails, and says which step failed.
+async fn run(dir: PathBuf, port: u16, server: u16) -> Result<(), &'static str> {
+    let config = server_config(&dir).map_err(|_| "its certificate folder can't be used")?;
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, port))
+        .await
+        .map_err(|_| "it can't listen on its port; is another one running?")?;
+    let address = format!(
+        "https://localhost:{port}\n",
+        port = listener
+            .local_addr()
+            .map_err(|_| "it can't listen on its port")?
+            .port()
+    );
     let mut stdout = tokio::io::stdout();
-    stdout.write_all(address.as_bytes()).await?;
-    stdout.flush().await?;
+    stdout
+        .write_all(address.as_bytes())
+        .await
+        .map_err(|_| "it can't print its address")?;
+    stdout
+        .flush()
+        .await
+        .map_err(|_| "it can't print its address")?;
     front(
         listener,
         config,
         SocketAddr::from((Ipv4Addr::LOCALHOST, server)),
     )
-    .await?;
-    Ok(())
+    .await
+    .map_err(|_| "it stopped accepting connections")
 }

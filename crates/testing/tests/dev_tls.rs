@@ -30,8 +30,17 @@ mod tests {
     }
 
     #[test]
-    fn a_folder_it_cant_make_is_a_failure() {
-        assert_eq!(dev_tls(&["/nonexistent/weacon-dev-tls"]), Some(1));
+    fn a_folder_it_cant_make_is_a_failure_it_names() {
+        let ran = Command::new(env!("CARGO_BIN_EXE_dev-tls"))
+            .arg("/nonexistent/weacon-dev-tls")
+            .output()
+            .unwrap();
+
+        assert_eq!(ran.status.code(), Some(1));
+        assert_eq!(
+            String::from_utf8(ran.stderr).unwrap(),
+            "dev-tls: its certificate folder can't be used\n"
+        );
     }
 
     fn pinned(pem: &[u8]) -> TlsConnector {

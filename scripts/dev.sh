@@ -28,10 +28,8 @@ case $state in
   *) socket="$PWD/$state/weacon.sock" ;;
 esac
 [ "${#socket}" -le 103 ] || die "$socket is too long for a socket; set WEACON_STATE_DIR to a shorter folder"
-new=false
-if [ ! -e "$data/weacon.db" ]; then
-  [ -n "$email" ] || die "the first run makes your account: scripts/dev.sh you@example.com"
-  new=true
+if [ ! -e "$data/weacon.db" ] && [ -z "$email" ]; then
+  die "the first run makes your account: scripts/dev.sh you@example.com"
 fi
 mkdir -p "$data/outbox"
 
@@ -41,7 +39,7 @@ cargo build --locked --quiet -p weacon-server -p weacon-core
 cargo build --locked --quiet -p weacon-testing --bin dev-tls
 
 server='' tls='' core=''
-trap 'kill $server $tls $core 2>/dev/null || true' EXIT
+trap 'kill $server $tls $core 2>/dev/null || true; wait' EXIT
 trap 'exit 130' INT TERM
 
 "$bin/weacon-server" serve --db "$data/weacon.db" --outbox "$data/outbox" --secret "$data/secret" \
@@ -61,12 +59,21 @@ until curl -fsS -o /dev/null http://localhost:8080/version 2>/dev/null; do
   fi
   sleep 1
 done
+kill -0 "$server" 2>/dev/null || die "the server didn't start; is another one on port 8080?"
 kill -0 "$tls" 2>/dev/null || die "the TLS front didn't start; see .dev/tls.log"
 kill -0 "$core" 2>/dev/null || die "the core's daemon didn't start; see .dev/core.log"
-if [ "$new" = true ]; then
-  "$bin/weacon-server" add-account --db "$data/weacon.db" --email "$email" >/dev/null 2>>.dev/server.log \
-    || die "couldn't make the account for $email; see .dev/server.log"
-  log "Made the account for $email, the server's owner"
+if [ -n "$email" ]; then
+  if answer=$("$bin/weacon-server" add-account --db "$data/weacon.db" --email "$email" 2>&1 >/dev/null); then
+    log "Made the account for $email"
+  else
+    case $answer in
+      *'"db.exists"'*) ;;
+      *)
+        printf '%s\n' "$answer" >>.dev/server.log
+        die "couldn't make the account for $email; see .dev/server.log"
+        ;;
+    esac
+  fi
 fi
 
 cat <<EOF

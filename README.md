@@ -158,7 +158,7 @@ Enter its `code` and choose **Sign in**. You see **Workspaces**, with your **Per
 In the second terminal:
 
 ```bash
-export WEACON_STATE_DIR=.dev/state
+export WEACON_STATE_DIR="$PWD/.dev/state"
 target/debug/weacon pair https://localhost:8443 --pin .dev/tls/cert.pem --name "Dev laptop"
 ```
 
@@ -211,12 +211,13 @@ target/debug/weacon-server members --db .dev/server/weacon.db --workspace <works
 
 `create-workspace` prints the new workspace's id. Add yourself too, to see it in the web app.
 
-- **Code map**: what the core's agents get through its local MCP. From the root of any repository:
+- **Code map**: what the core's agents get through its local MCP. From the clone, about this repository or, with `--root`, any other:
 
 ```bash
 target/debug/weacon map
 target/debug/weacon map search pairing code
 target/debug/weacon map hotspots
+target/debug/weacon map --root "$HOME/code/demo"
 ```
 
 ### Stop, data and starting over
@@ -310,11 +311,12 @@ Start with [`AGENTS.md`](AGENTS.md): the rules every change keeps, the code styl
 
 ## Troubleshooting
 
-- **The daemon doesn't start, with `daemon.start_failed`.** The core's socket is `weacon.sock` in its state folder, and a socket's path holds at most 103 bytes on macOS and 107 on Linux. Clone into a shorter path, or set `WEACON_STATE_DIR` to a short folder, such as `/tmp/weacon-dev`, for `scripts/dev.sh` and every `weacon` command. `scripts/dev.sh` checks the length first.
+- **The daemon doesn't start, with `daemon.start_failed`.** The core's socket is `weacon.sock` in its state folder, and a socket's path holds at most 103 bytes on macOS and 107 on Linux. Clone into a shorter path, or set `WEACON_STATE_DIR` to a short folder, such as `~/.weacon-dev`, for `scripts/dev.sh` and every `weacon` command. `scripts/dev.sh` checks the length first.
 - **`scripts/setup.sh` says Weacon needs another Node.** Install the version in `.node-version` and make it the one on your `PATH`, then run it again.
 - **`scripts/dev.sh` says the server didn't start.** Something else uses port 8080, or 8443 for the TLS front. Stop it, then run again. Read `.dev/server.log` and `.dev/tls.log`.
 - **The machine shows no version after pairing.** The daemon looks for its pairing every 30 seconds. Check that `scripts/dev.sh` is still running, then read `.dev/state/logs/daemon.log`.
 - **`update check failed` in the core's log.** There is no release to check against yet. Turn the checks off with `target/debug/weacon update schedule off`.
+- **Nobody can sign in.** If the first run stopped before it made your account, run `scripts/dev.sh you@example.com` again: it makes the account when it's missing.
 - **The sign-in page never accepts the code.** Use the newest file in `.dev/server/outbox`, and request a new code if it expired.
 
 ## Licence
