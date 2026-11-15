@@ -13,7 +13,7 @@ use super::super::docs::refused as revise_refused;
 use super::super::tasks::refused as edit_refused;
 use super::super::{Workspace, failed, parsed, stored, unreadable, version_number};
 use super::target::{Snapshot, doc_text, proposable};
-use super::{Closing, OPEN, closed, not_found};
+use super::{Closing, OPEN, agent_of, closed, not_found};
 
 /// The most lines times lines a doc edit's merge may compare once the start and end both
 /// sides share are set aside, so that accepting one takes a bounded time; a larger merge is
@@ -153,7 +153,7 @@ impl Workspace {
         if state != OPEN {
             return Err(closed());
         }
-        let agent: Option<AgentRef> = (!agent.is_empty()).then(|| parsed(&agent)).transpose()?;
+        let agent: Option<AgentRef> = agent_of(&agent).map(parsed).transpose()?;
         let snapshot = snapshot.as_deref().map(parsed).transpose()?;
         Ok(Open {
             change: checked(parsed(&change)?, snapshot, new_id).ok_or_else(unreadable)?,

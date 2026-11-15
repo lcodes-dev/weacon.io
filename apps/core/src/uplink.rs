@@ -200,10 +200,7 @@ impl Uplink {
                         Step::Nothing => None,
                     }
                 }
-                // A server that doesn't offer proposals never hears one; its asker gives up.
-                Some(envelope) = from_daemon.recv() => {
-                    (link.proposals || !proposals::asks(&envelope.message)).then_some(envelope)
-                }
+                Some(envelope) = from_daemon.recv() => link.offered(envelope, &self.to_daemon),
                 Some(up) = link.chats.next() => Some(up),
             };
             if let Some(envelope) = reply
@@ -340,6 +337,19 @@ struct Link {
     chats: ChatLink,
     /// Whether the server offered [`PROPOSALS`].
     proposals: bool,
+}
+
+impl Link {
+    /// `envelope` from the daemon, unless the server doesn't take it: a proposal to a server
+    /// that doesn't offer them is refused to the daemon at once.
+    fn offered(&self, envelope: Envelope, to_daemon: &ToDaemon) -> Option<Envelope> {
+        let refusal = proposals::unoffered(&envelope.message).filter(|_| !self.proposals);
+        let Some(message) = refusal else {
+            return Some(envelope);
+        };
+        drop(to_daemon.try_send(Envelope { id: 0, message }));
+        None
+    }
 }
 
 enum Step {
@@ -1081,9 +1091,15 @@ mod tests {
 
     #[tokio::test]
     async fn proposals_reach_only_a_server_that_offers_them_and_its_answers_reach_the_daemon() {
-        let (unoffered, handed, answer) = Box::pin(proposals_through(&[CONNECT])).await;
+        let (unoffered, handed, _) = Box::pin(proposals_through(&[CONNECT])).await;
         assert!(matches!(unoffered, Message::Error(_)), "{unoffered:?}");
-        assert_eq!(handed, Some(answer));
+        let refused = weacon_protocol::ProposalAnswerKind::Failed {
+            code: code!("proposal.unsupported"),
+        };
+        assert!(
+            matches!(&handed, Some(Message::ProposalAnswer(answer)) if answer.answer == refused),
+            "{handed:?}"
+        );
 
         let (offered, handed, answer) = Box::pin(proposals_through(&[CONNECT, PROPOSALS])).await;
         assert!(matches!(offered, Message::ProposalQuery(_)), "{offered:?}");

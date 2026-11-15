@@ -4,7 +4,7 @@ use weacon_protocol::{ProposalAbout, ProposalId, ProposalRecord, ProposalState};
 use super::super::{Workspace, failed, parsed, stored, stored_author, stored_version, unreadable};
 use super::{
     ACCEPTED, DOC_EDIT, NEEDS_UPDATE, NEW_DOC, NEW_TASK, OPEN, PAGE, REJECTED, SUPERSEDED,
-    TASK_EDIT, WITHDRAWN, not_found,
+    TASK_EDIT, WITHDRAWN, agent_of, not_found,
 };
 
 type RecordRow = (
@@ -87,11 +87,7 @@ fn record(row: RecordRow) -> Result<ProposalRecord, Fault> {
     Ok(ProposalRecord {
         id: stored(id)?,
         about,
-        author: stored_author(
-            "agent",
-            author,
-            Some(agent.as_str()).filter(|agent| !agent.is_empty()),
-        )?,
+        author: stored_author("agent", author, agent_of(&agent))?,
         state,
         at,
         change: change.as_deref().map(parsed).transpose()?,

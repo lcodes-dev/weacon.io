@@ -139,11 +139,7 @@ pub(crate) fn record(doc: Doc) -> DocRecord {
     DocRecord {
         id: doc.id,
         version: doc.version.get(),
-        content: DocContent {
-            title: doc.text.title().as_str().to_owned(),
-            body: doc.text.body().to_owned(),
-            anchors: doc.text.anchors().cloned(),
-        },
+        content: doc.text.into(),
     }
 }
 

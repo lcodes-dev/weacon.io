@@ -10,23 +10,19 @@ use crate::proposals::{Proposals, proposal_id};
 pub(crate) const PROPOSED: &str = "Proposed. It changes nothing until a person accepts it.\n";
 const NO_SERVER: &str = "Not proposed: this machine isn't connected to a server.\n";
 
-/// What to answer the agent, and whether the proposal reached the server.
+/// What to answer the agent: an error when the proposal didn't reach the server.
 pub(crate) async fn propose(
     proposals: Option<&Proposals>,
     grant: &Grant,
     args: ProposeArgs,
     log: &Logger,
-) -> (String, bool) {
-    let Some(proposals) = proposals else {
-        return (NO_SERVER.to_owned(), false);
-    };
-    match sent(proposals, grant, args).await {
-        Ok(()) => (PROPOSED.to_owned(), true),
-        Err(fault) => {
-            log.warn("mcp proposal refused", &[("err", Field::error(&fault))]);
-            (format!("Not proposed: {}.\n", fault.code().as_str()), false)
-        }
-    }
+) -> Result<String, String> {
+    let proposals = proposals.ok_or_else(|| NO_SERVER.to_owned())?;
+    sent(proposals, grant, args).await.map_err(|fault| {
+        log.warn("mcp proposal refused", &[("err", Field::error(&fault))]);
+        format!("Not proposed: {}.\n", fault.code().as_str())
+    })?;
+    Ok(PROPOSED.to_owned())
 }
 
 async fn sent(proposals: &Proposals, grant: &Grant, args: ProposeArgs) -> Result<(), Fault> {
@@ -73,7 +69,7 @@ mod tests {
 
         let answer = propose(Some(&proposals), &grant(), args("Ship".to_owned()), &log).await;
 
-        assert_eq!(answer, (PROPOSED.to_owned(), true));
+        assert_eq!(answer, Ok(PROPOSED.to_owned()));
         let [command] = fake.commands().try_into().unwrap();
         let change = ProposalChange::NewTask {
             title: "Ship".to_owned(),
@@ -105,13 +101,13 @@ mod tests {
 
         assert_eq!(
             refused,
-            ("Not proposed: proposal.too_many.\n".to_owned(), false)
+            Err("Not proposed: proposal.too_many.\n".to_owned())
         );
         assert_eq!(
             too_large,
-            ("Not proposed: proposal.too_large.\n".to_owned(), false)
+            Err("Not proposed: proposal.too_large.\n".to_owned())
         );
-        assert_eq!(alone, (NO_SERVER.to_owned(), false));
+        assert_eq!(alone, Err(NO_SERVER.to_owned()));
         assert_eq!(fake.commands().len(), 1);
         assert_eq!(messages(&records), ["mcp proposal refused"; 2]);
     }

@@ -1,5 +1,5 @@
 mod accept;
-mod pinned;
+mod machines;
 mod read;
 mod target;
 
@@ -279,7 +279,7 @@ impl Workspace {
 
 /// `proposed`'s agent as its versions will store it, checked as any version an agent makes is,
 /// so that accepting it can't be refused.
-/// An empty one for none.
+/// An empty one for none, which [`agent_of`] reads back.
 fn stored_agent(proposed: &Proposed) -> Result<String, Fault> {
     let author = Author::Agent {
         owner: proposed.owner.clone(),
@@ -290,6 +290,11 @@ fn stored_agent(proposed: &Proposed) -> Result<String, Fault> {
         Some((_, _, None)) => Ok(String::new()),
         None => Err(invalid()),
     }
+}
+
+/// The agent stored in a proposal's `agent` column, if it has one.
+fn agent_of(column: &str) -> Option<&str> {
+    Some(column).filter(|agent| !agent.is_empty())
 }
 
 /// How an open proposal closes.

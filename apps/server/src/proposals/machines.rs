@@ -14,6 +14,8 @@ use crate::db::{Proposed, Workspace};
 use crate::docs::record;
 use crate::shared::Shared;
 
+use super::invalid;
+
 /// The workspace and the member the machine's owner is there, refused the same way whether
 /// the workspace is missing or they aren't in it, so a core learns of no other workspace.
 async fn member(
@@ -88,13 +90,13 @@ async fn proposed(
                 .await?;
         }
         ProposalAction::Batch { proposals } => {
+            if proposals.is_empty() {
+                return Err(invalid());
+            }
             let batch: Vec<Proposed> = proposals
                 .into_iter()
                 .map(|batched| made(batched.proposal, batched.change, None))
                 .collect();
-            if batch.is_empty() {
-                return Err(invalid());
-            }
             workspace.propose_all(&batch).await?;
         }
         ProposalAction::Withdraw { proposal } => {
@@ -155,10 +157,6 @@ fn refused(shared: &Shared, fault: &Fault) -> Code {
             .error("proposal failed", &[("err", Field::error(fault))]);
     }
     fault.code().clone()
-}
-
-fn invalid() -> Fault {
-    Fault::new(code!("proposal.invalid"), "The proposal isn't valid")
 }
 
 #[cfg(test)]
@@ -408,7 +406,7 @@ mod tests {
             .workspace(&workspace_id("w1"))
             .await
             .unwrap();
-        let core_s = Author::Agent {
+        let by_core = Author::Agent {
             owner: member_id("m1"),
             agent: None,
         };
@@ -424,7 +422,7 @@ mod tests {
                 ("b1", &ProposalState::Open)
             ]
         );
-        assert!(records.iter().all(|record| record.author == core_s));
+        assert!(records.iter().all(|record| record.author == by_core));
         let seen = one.accept(&id("b1"), &member_id("m1"), 0).await.unwrap();
         assert_eq!(
             seen,

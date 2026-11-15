@@ -143,8 +143,8 @@ impl Daemon {
         let socket = socket_path(state_dir);
         remove_stale(&socket).map_err(failed)?;
         let (proposals, proposing) = proposals::channel();
-        let maps = mcp::Maps::new(state_dir, &places).proposing(proposals);
-        let (mcp, mcp_server) = mcp::start(&app, &log, maps)?;
+        let maps = mcp::Maps::new(state_dir, &places).proposing(proposals.clone());
+        let (mcp, mcp_server) = mcp::start(&app, &log, maps, Some(proposals))?;
         places.mcp = Some(mcp);
         let worktrees = worktrees::worktrees(state_dir, &places);
         let (chats, engine) = chats::start(state_dir, places, app.clone(), spawn, log.clone())?;

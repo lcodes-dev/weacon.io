@@ -91,11 +91,6 @@ impl Maps {
         }
     }
 
-    /// Where the MCP's proposals go, if anywhere.
-    pub(crate) const fn proposals(&self) -> Option<&Proposals> {
-        self.proposals.as_ref()
-    }
-
     /// Maps whose stores can't be opened, which answer that there's no map.
     #[cfg(test)]
     pub(crate) fn off() -> Self {

@@ -246,7 +246,7 @@ mod tests {
         }
         let app = weacon_appkit::build(&VERSION);
         let (log, _records) = recording_logger();
-        let (mcp, _server) = mcp::start(&app, &log, mcp::Maps::off()).unwrap();
+        let (mcp, _server) = mcp::start(&app, &log, mcp::Maps::off(), None).unwrap();
         let places = |bin: &str| Places {
             path: Some(dir.join(bin).into_os_string()),
             work_root: Some(dir.join("Weacon")),

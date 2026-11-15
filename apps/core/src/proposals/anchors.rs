@@ -2,7 +2,7 @@
 //! as proposals for a person to accept: no agent is started for it.
 
 use weacon_codemap::{Index, Moved, Pin};
-use weacon_model::{DocText, Title};
+use weacon_model::{DocText, Title, relinked};
 use weacon_observability::Fault;
 use weacon_protocol::{
     AnchorChange, Batched, CommitId, DocAnchors, DocContent, DocPin, PinnedDoc, ProposalAction,
@@ -108,15 +108,19 @@ fn findings(pins: &[DocPin], was: &Index, now: &Index) -> (Vec<Reanchor>, Vec<St
         };
         let change = match was.after_move(now, &pin) {
             None => continue,
-            Some(Moved::Reanchored(to)) => {
-                if let Ok(to) = to.to_string().parse() {
+            // A pin a doc can't hold, such as one past its length, is as good as gone.
+            Some(Moved::Reanchored(to)) => match to.to_string().parse() {
+                Ok(to) => {
                     reanchors.push(Reanchor {
                         from: from.clone(),
                         to,
                     });
+                    continue;
                 }
-                continue;
-            }
+                Err(_) => AnchorChange::Gone {
+                    was: from.anchor().to_owned(),
+                },
+            },
             Some(Moved::Changed { was, now }) => AnchorChange::Changed { was, now },
             Some(Moved::Gone { was }) => AnchorChange::Gone { was },
         };
@@ -155,33 +159,9 @@ fn reanchored(
         pins,
     };
     let title = Title::try_from(content.title.clone()).ok()?;
-    DocText::new(title, body.clone(), Some(anchors.clone())).ok()?;
-    Some(DocContent {
-        title: content.title.clone(),
-        body,
-        anchors: Some(anchors),
-    })
-}
-
-/// `body` with each link target `old` replaced by `new`; a longer anchor that `old` begins,
-/// such as `sym:a::go_on` for `sym:a::go`, is left alone.
-fn relinked(body: &str, old: &str, new: &str) -> String {
-    let mut out = String::with_capacity(body.len());
-    let mut rest = body;
-    while let Some(at) = rest.find(old)
-        && let Some((before, found)) = rest.split_at_checked(at)
-        && let Some(tail) = found.get(old.len()..)
-    {
-        out.push_str(before);
-        let ends = tail
-            .chars()
-            .next()
-            .is_none_or(|next| next.is_whitespace() || matches!(next, ')' | '>'));
-        out.push_str(if ends { new } else { old });
-        rest = tail;
-    }
-    out.push_str(rest);
-    out
+    DocText::new(title, body, Some(anchors))
+        .ok()
+        .map(DocContent::from)
 }
 
 fn unexpected() -> Fault {
@@ -456,13 +436,28 @@ mod tests {
             .unwrap()
     }
 
-    #[test]
-    fn only_whole_link_targets_are_relinked() {
-        let body = "[a](sym:a::go) [b](sym:a::go_on) <sym:a::go> sym:a::go\nsym:a::go.";
+    #[tokio::test]
+    async fn a_rename_to_a_pin_no_doc_can_hold_needs_an_update() {
+        let long = "a".repeat(600);
+        let before = repo(LIB, "pub fn go() {}\n");
+        let after = repo(
+            &format!("mod m;\npub fn run() {{ m::{long}() }}\n"),
+            &format!("pub fn {long}() {{}}\n"),
+        );
+        let pins = [pin(&before, "sym:a_b::m::go")];
 
+        let (reanchors, stale) = findings(&pins, &before, &after);
+
+        assert!(reanchors.is_empty());
+        let gone = AnchorChange::Gone {
+            was: "sym:a_b::m::go".to_owned(),
+        };
         assert_eq!(
-            relinked(body, "sym:a::go", "sym:a::went"),
-            "[a](sym:a::went) [b](sym:a::go_on) <sym:a::went> sym:a::went\nsym:a::go."
+            stale,
+            [StaleAnchor {
+                pin: pins[0].clone(),
+                change: gone
+            }]
         );
     }
 

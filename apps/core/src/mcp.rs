@@ -41,6 +41,7 @@ use weacon_protocol::App;
 use crate::app::WarnOnce;
 use crate::chats::engine::RunAs;
 use crate::daemon::ACCEPT_BACKOFF;
+use crate::proposals::Proposals;
 
 /// How long a connection may make no progress, and how many may be open at once, so local
 /// processes, other users' included, can't hold the core's sockets.
@@ -67,12 +68,23 @@ type Body = BoxBody<Bytes, Infallible>;
 
 /// Listens on a free port of 127.0.0.1 and serves until the returned task is aborted, answering
 /// from `maps` and keeping them current; must run inside a tokio runtime.
-pub(crate) fn start(app: &App, log: &Logger, maps: Maps) -> Result<(Mcp, Server), Fault> {
-    listen(app, log, maps, LIMITS)
+pub(crate) fn start(
+    app: &App,
+    log: &Logger,
+    maps: Maps,
+    proposals: Option<Proposals>,
+) -> Result<(Mcp, Server), Fault> {
+    listen(app, log, maps, proposals, LIMITS)
 }
 
 /// [`start`], within `limits`.
-fn listen(app: &App, log: &Logger, maps: Maps, limits: Limits) -> Result<(Mcp, Server), Fault> {
+fn listen(
+    app: &App,
+    log: &Logger,
+    maps: Maps,
+    proposals: Option<Proposals>,
+    limits: Limits,
+) -> Result<(Mcp, Server), Fault> {
     let failed = |error| {
         Fault::new(code!("mcp.start_failed"), "The local MCP couldn't start").because(error)
     };
@@ -86,6 +98,7 @@ fn listen(app: &App, log: &Logger, maps: Maps, limits: Limits) -> Result<(Mcp, S
     let handler = Handler {
         version: app.version.clone(),
         maps,
+        proposals,
         log,
     };
     handler
@@ -274,6 +287,8 @@ fn empty(status: StatusCode) -> Response<Body> {
 struct Handler {
     version: String,
     maps: Maps,
+    /// Where `propose` sends; none when the core has no way to its server.
+    proposals: Option<Proposals>,
     log: Logger,
 }
 
@@ -309,12 +324,15 @@ impl ServerHandler for Handler {
         };
         let started = Instant::now();
         let log = self.log.child(&[("run_id", grant.run.as_str().into())]);
-        let (text, done) = if let McpCall::Propose(args) = call {
-            drop(permit);
-            propose::propose(self.maps.proposals(), &grant, args, &log).await
+        let answered = if let McpCall::Propose(args) = call {
+            let _permit = permit;
+            propose::propose(self.proposals.as_ref(), &grant, args, &log).await
         } else {
-            (self.maps.answer(&call, &grant, permit, &log).await, true)
+            Ok(self.maps.answer(&call, &grant, permit, &log).await)
         };
+        let text = answered
+            .as_ref()
+            .map_or_else(String::as_str, String::as_str);
         let millis = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
         let fields: [(&str, Field); 5] = [
             ("workspace_id", grant.workspace.as_str().into()),
@@ -324,11 +342,9 @@ impl ServerHandler for Handler {
             ("ms", millis.into()),
         ];
         self.log.info("mcp answered", &fields);
-        let blocks = vec![ContentBlock::text(text)];
-        Ok(if done {
-            CallToolResult::success(blocks)
-        } else {
-            CallToolResult::error(blocks)
+        Ok(match answered {
+            Ok(text) => CallToolResult::success(vec![ContentBlock::text(text)]),
+            Err(text) => CallToolResult::error(vec![ContentBlock::text(text)]),
         }
         .into())
     }
@@ -455,7 +471,7 @@ mod tests {
         let repo = maps::test_support::crate_repo(&dir, "one");
         setup.register(&one, "one", &repo);
         let build = weacon_appkit::build(&VERSION);
-        let (mcp, _server) = start(&build, &log, setup.maps.clone()).unwrap();
+        let (mcp, _server) = start(&build, &log, setup.maps.clone(), None).unwrap();
         let (first, _a) = mcp
             .grants
             .issue(run_grant("one", "run-1", repo.clone()))
@@ -488,7 +504,8 @@ mod tests {
     async fn a_missing_unknown_or_ended_token_is_refused_and_never_logged() {
         let dir = TempDir::new().unwrap();
         let (log, records) = recording_logger();
-        let (mcp, _server) = start(&weacon_appkit::build(&VERSION), &log, Maps::off()).unwrap();
+        let (mcp, _server) =
+            start(&weacon_appkit::build(&VERSION), &log, Maps::off(), None).unwrap();
         let (ended, revoke) = mcp
             .grants
             .issue(run_grant("w-1", "run-1", repo(&dir, "one")))
@@ -517,7 +534,8 @@ mod tests {
     async fn another_host_an_origin_or_a_large_body_is_refused() {
         let dir = TempDir::new().unwrap();
         let (log, _records) = recording_logger();
-        let (mcp, _server) = start(&weacon_appkit::build(&VERSION), &log, Maps::off()).unwrap();
+        let (mcp, _server) =
+            start(&weacon_appkit::build(&VERSION), &log, Maps::off(), None).unwrap();
         let (token, _revoke) = mcp
             .grants
             .issue(run_grant("w-1", "run-1", repo(&dir, "one")))
@@ -551,7 +569,8 @@ mod tests {
     async fn a_run_gets_only_so_many_calls_at_once_and_bad_arguments_are_refused() {
         let dir = TempDir::new().unwrap();
         let (log, _records) = recording_logger();
-        let (mcp, _server) = start(&weacon_appkit::build(&VERSION), &log, Maps::off()).unwrap();
+        let (mcp, _server) =
+            start(&weacon_appkit::build(&VERSION), &log, Maps::off(), None).unwrap();
         let (token, _revoke) = mcp
             .grants
             .issue(run_grant("w-1", "run-1", repo(&dir, "one")))
@@ -589,7 +608,8 @@ mod tests {
     async fn it_names_itself_and_lists_its_tools() {
         let dir = TempDir::new().unwrap();
         let (log, _records) = recording_logger();
-        let (mcp, _server) = start(&weacon_appkit::build(&VERSION), &log, Maps::off()).unwrap();
+        let (mcp, _server) =
+            start(&weacon_appkit::build(&VERSION), &log, Maps::off(), None).unwrap();
         let (token, _revoke) = mcp
             .grants
             .issue(run_grant("w-1", "run-1", repo(&dir, "one")))
@@ -622,7 +642,8 @@ mod tests {
     #[tokio::test]
     async fn dropping_the_server_stops_it_and_its_open_connections() {
         let (log, _records) = recording_logger();
-        let (mcp, server) = start(&weacon_appkit::build(&VERSION), &log, Maps::off()).unwrap();
+        let (mcp, server) =
+            start(&weacon_appkit::build(&VERSION), &log, Maps::off(), None).unwrap();
         let address = address(&mcp);
         let mut open = TcpStream::connect(address).await.unwrap();
         let request = format!("POST /mcp HTTP/1.1\r\nHost: {address}\r\nContent-Length: 0\r\n\r\n");
@@ -674,6 +695,7 @@ mod tests {
             &weacon_appkit::build(&VERSION),
             &log,
             Maps::off(),
+            None,
             Limits {
                 stall: quick,
                 ..LIMITS
@@ -707,8 +729,14 @@ mod tests {
             stall: Duration::from_millis(300),
             connections: 1,
         };
-        let (mcp, _server) =
-            listen(&weacon_appkit::build(&VERSION), &log, Maps::off(), limits).unwrap();
+        let (mcp, _server) = listen(
+            &weacon_appkit::build(&VERSION),
+            &log,
+            Maps::off(),
+            None,
+            limits,
+        )
+        .unwrap();
         // Timed from before the idle connection opens, so its stall can't have begun earlier.
         let started = Instant::now();
         // Accepted first, it holds the only place until it stalls out.
@@ -728,6 +756,7 @@ mod tests {
             &weacon_appkit::build(&VERSION),
             &log,
             Maps::off(),
+            None,
             Limits {
                 stall: quick,
                 ..LIMITS
@@ -748,7 +777,8 @@ mod tests {
     async fn refusals_warn_once_across_connections_until_a_request_is_let_in() {
         let dir = TempDir::new().unwrap();
         let (log, records) = recording_logger();
-        let (mcp, _server) = start(&weacon_appkit::build(&VERSION), &log, Maps::off()).unwrap();
+        let (mcp, _server) =
+            start(&weacon_appkit::build(&VERSION), &log, Maps::off(), None).unwrap();
         let (token, _revoke) = mcp
             .grants
             .issue(run_grant("w-1", "run-1", repo(&dir, "one")))
@@ -818,8 +848,9 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let (log, _records) = recording_logger();
         let fake = crate::proposals::fake::Fake::default();
-        let maps = Maps::off().proposing(fake.connect());
-        let (mcp, _server) = start(&weacon_appkit::build(&VERSION), &log, maps).unwrap();
+        let proposals = Some(fake.connect());
+        let build = weacon_appkit::build(&VERSION);
+        let (mcp, _server) = start(&build, &log, Maps::off(), proposals).unwrap();
         let (token, _revoke) = mcp
             .grants
             .issue(run_grant("w-1", "run-1", repo(&dir, "one")))
