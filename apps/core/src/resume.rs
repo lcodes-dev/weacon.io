@@ -21,6 +21,8 @@ use crate::workspaces::Workspaces;
 const HOLD: u32 = 2;
 const BARRIER: u32 = 3;
 const RELEASE: u32 = 4;
+/// How long the daemon may take to answer whether it holds the chat.
+const ANSWER_WITHIN: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// Runs the chat's agent here until the person ends it.
 pub(crate) fn run(app: &App, workspace: &WorkspaceId, chat: &ChatId) -> Result<(), Fault> {
@@ -139,6 +141,15 @@ async fn take(mut daemon: Connection, key: &ChatKey) -> Result<Held, Fault> {
         message: barrier,
     };
     daemon.send(&barrier).await?;
+    // Unanswered, the connection goes, and any hold taken with it.
+    let answered = tokio::time::timeout(ANSWER_WITHIN, answer(&mut daemon)).await;
+    answered.map_err(|_| no_answer())??;
+    let release = chat_command(key, ChatAction::Release)?;
+    Ok(Held { daemon, release })
+}
+
+// Waits for the barrier's answer, or the hold's refusal before it.
+async fn answer(daemon: &mut Connection) -> Result<(), Fault> {
     while let Some(frame) = daemon.next().await? {
         match frame {
             Ok(Envelope {
@@ -150,17 +161,15 @@ async fn take(mut daemon: Connection, key: &ChatKey) -> Result<Held, Fault> {
                     "The daemon wouldn't hold the chat",
                 ));
             }
-            Ok(Envelope { id: BARRIER, .. }) => {
-                let release = chat_command(key, ChatAction::Release)?;
-                return Ok(Held { daemon, release });
-            }
+            Ok(Envelope { id: BARRIER, .. }) => return Ok(()),
             _ => {}
         }
     }
-    Err(Fault::new(
-        code!("daemon.no_answer"),
-        "The daemon didn't answer",
-    ))
+    Err(no_answer())
+}
+
+fn no_answer() -> Fault {
+    Fault::new(code!("daemon.no_answer"), "The daemon didn't answer")
 }
 
 // Runs `agent`, then releases the chat. Should the daemon go first, as when it restarts, the
@@ -355,6 +364,8 @@ mod tests {
         on_hold: Option<Box<dyn FnOnce() + Send>>,
         /// Hangs up once the barrier is answered.
         hangs_up: bool,
+        /// Never answers the barrier, and stays connected.
+        silent: bool,
     }
 
     fn holding() -> Fake {
@@ -406,6 +417,9 @@ mod tests {
             }));
         }
         if let Message::ChatQuery(query) = message {
+            if fake.silent {
+                return None;
+            }
             return Some(Message::ChatAnswer(ChatAnswer {
                 workspace: query.workspace.clone(),
                 chat: query.chat.clone(),
@@ -506,6 +520,26 @@ mod tests {
         let refused = held(&socket).await.map(|_| ());
 
         assert_eq!(code_of(refused), "chat.busy");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_daemon_that_never_answers_whether_it_holds_the_chat_is_let_go() {
+        let dir = TempDir::new().unwrap();
+        let socket = dir.join("weacon.sock");
+        let silent = Fake {
+            silent: true,
+            ..holding()
+        };
+        let received = daemon(&socket, silent);
+
+        let chat = key();
+        let waited = Box::pin(hold(&socket, build(&VERSION), &chat));
+        let answered = tokio::time::timeout(ANSWER_WITHIN * 2, waited).await;
+        let refused = answered.unwrap().map(|_| ());
+
+        assert_eq!(code_of(refused), "daemon.no_answer");
+        // The connection is gone, and the hold with it.
+        assert_eq!(all_sent(received).await.len(), 3);
     }
 
     #[tokio::test]

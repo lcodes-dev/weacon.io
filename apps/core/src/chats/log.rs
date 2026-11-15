@@ -722,7 +722,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_refused_request_is_the_same_command_again_and_another_only_while_open() {
+    async fn a_refused_request_is_the_same_command_again_only_while_the_log_is_open() {
         let dir = TempDir::new().unwrap();
         let mut log = open(&dir).await;
         let failed = Outcome::Failed {
@@ -739,8 +739,9 @@ mod tests {
         assert_eq!(seen(&log, "r-1", asks("Deploy")).await, Seen::Other);
         drop(log);
 
-        // Opened again, the digest is gone: any command under a refused request is done.
+        // Opened again, the digest is gone: nothing more is taken under a refused request.
         let log = open(&dir).await;
-        assert_eq!(seen(&log, "r-1", asks("Deploy")).await, Seen::Same);
+        assert_eq!(seen(&log, "r-1", asks("Deploy")).await, Seen::Other);
+        assert_eq!(seen(&log, "r-1", ChatAction::Interrupt).await, Seen::Other);
     }
 }

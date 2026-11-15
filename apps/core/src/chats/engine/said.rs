@@ -7,6 +7,7 @@ use weacon_protocol::{
 
 use super::agent::{Agent, Order, Said};
 use super::cut::cut;
+use super::unwritten::is_unwritten;
 use super::{ChatKey, Engine, about, failed};
 
 /// How a run's event reached the log: whole, or cut down to fit one frame.
@@ -68,9 +69,15 @@ impl<A: Agent> Engine<A> {
                 let exited = self.exited(key, run).await;
                 committed.and(exited)
             }
-            // The turn is over whether or not its last event could be committed.
+            // The turn is over whether or not its last event could be committed; a run whose last
+            // word couldn't be written is ended next, so it takes no other turn.
             RunEvent::Finished { outcome } => {
                 let ended = self.end_turn(key, run, outcome).await;
+                if let Err(fault) = &committed
+                    && is_unwritten(fault)
+                {
+                    return committed.map(drop).and(ended);
+                }
                 let advanced = self.advance(key).await;
                 committed.and(ended).and(advanced)
             }

@@ -84,11 +84,12 @@ impl Requests {
 }
 
 impl Commanded {
-    /// How `action` compares with a command that logged no prompt: any other command counts as
-    /// the same, and so does anything under a refused request but another refused command.
+    /// How `action` compares with a command that logged no prompt: any other command but a
+    /// prompt counts as the same. Under a refused request only the refused command does, and
+    /// none once the log was opened again, as its content is known only while it is open.
     pub(super) fn seen_unprompted(&self, action: &ChatAction) -> Seen {
         let same = self.refused.map_or_else(
-            || self.failed || !matches!(action, ChatAction::Prompt { .. }),
+            || !self.failed && !matches!(action, ChatAction::Prompt { .. }),
             |refused| refused == digest(action),
         );
         if same { Seen::Same } else { Seen::Other }

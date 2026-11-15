@@ -85,7 +85,7 @@ impl<A: Agent> Engine<A> {
     }
 }
 
-fn is_unwritten(fault: &Fault) -> bool {
+pub(super) fn is_unwritten(fault: &Fault) -> bool {
     [code!("chat.log_not_written"), code!("runs.not_saved")].contains(fault.code())
 }
 
@@ -315,5 +315,26 @@ mod tests {
 
         assert_eq!(on.engine.run_of(&key()), Some(run("run-2")));
         assert!(on.engine.is_launching(&key()));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_run_whose_finished_turn_cant_be_logged_takes_no_queued_prompt() {
+        let mut on = told().await;
+        on.engine
+            .command(&key(), prompt("r-2", "More"))
+            .await
+            .unwrap();
+        on.engine.open(&key()).await.unwrap().log.jam();
+
+        let outcome = Outcome::Completed;
+        let from = FromRun {
+            key: key(),
+            run: run("run-1"),
+            said: Said::Event(RunEvent::Finished { outcome }),
+        };
+        on.engine.take_said(from).await;
+
+        assert_eq!(soon(on.agent.told.recv()).await, None);
+        assert!(!on.engine.is_live(&key()));
     }
 }
