@@ -227,7 +227,7 @@ mod tests {
         picks.screenshot_file(&old).unwrap();
         fs::create_dir(dir.join("picks/folder")).unwrap();
         // What was just written is old by then; only the new pick is kept younger.
-        let now = SystemTime::now() + PICKS_LAST + Duration::from_secs(60);
+        let now = SystemTime::now() + PICKS_LAST + Duration::from_mins(1);
         let changed = |name: &str, at: SystemTime| {
             let path = dir.join("picks").join(name);
             let file = fs::File::options().write(true).open(path).unwrap();

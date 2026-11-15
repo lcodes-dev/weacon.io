@@ -60,9 +60,9 @@ pub(super) async fn query_chat(
 
 // The chats this core serves, newest first, each titled from its log off the engine's loop.
 pub(super) async fn list_chats(shared: &Shared, id: u32, query: ChatsQuery) -> Reply {
-    if query.query == ChatsQueryKind::Newer {
+    let ChatsQueryKind::List = query.query else {
         return Reply::error(id, code!("message.unsupported"), false);
-    }
+    };
     let listed = match shared.chats.list().await {
         Ok(listed) => listed,
         Err(fault) => return refused(shared, id, &fault),
@@ -98,7 +98,7 @@ fn titled(listed: Vec<Listed>) -> std::io::Result<Vec<LocalChat>> {
             })
         })
         .collect::<std::io::Result<Vec<_>>>()?;
-    chats.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+    chats.sort_by_key(|chat| std::cmp::Reverse(chat.updated_at));
     Ok(chats)
 }
 

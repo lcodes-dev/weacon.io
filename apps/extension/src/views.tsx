@@ -65,7 +65,7 @@ function Row({ line, answer }: { line: Line; answer: (line: Extract<Line, { kind
           <p>{line.text}</p>
           {line.pick === undefined ? null : (
             <p className="note">
-              Picked <code>{line.pick.selector}</code> on {line.pick.title === "" ? line.pick.url : line.pick.title}
+              Picked <code>{line.pick.selector}</code> on {place(line.pick)}
             </p>
           )}
         </>
@@ -103,6 +103,11 @@ function Row({ line, answer }: { line: Line; answer: (line: Extract<Line, { kind
   }
 }
 
+// A page by its title, or its address when it has none.
+function place({ title, url }: { title: string; url: string }): string {
+  return title === "" ? url : title;
+}
+
 /** The pick going with the next message: its screenshot, selector and page, until removed. */
 export function Attached({ pick, remove }: { pick: Pick; remove: () => void }) {
   return (
@@ -110,7 +115,7 @@ export function Attached({ pick, remove }: { pick: Pick; remove: () => void }) {
       {pick.screenshot_png === undefined ? null : <img alt="The picked element" src={`data:image/png;base64,${pick.screenshot_png}`} />}
       <figcaption>
         <code>{pick.selector}</code>
-        <span>{pick.title === "" ? pick.url : pick.title}</span>
+        <span>{place(pick)}</span>
         {pick.component === undefined ? null : <span>{pick.component}</span>}
       </figcaption>
       <button type="button" aria-label="Remove the picked element" onClick={remove}>

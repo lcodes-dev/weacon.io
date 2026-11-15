@@ -23,7 +23,7 @@ export type Snapshot = {
 
 /** One line of the transcript, under a key that names it for as long as the chat is shown. */
 export type Line =
-  | { key: string; kind: "prompt"; text: string; pick?: PickNote }
+  | { key: string; kind: "prompt"; text: string; pick?: PickNote | undefined }
   | { key: string; kind: "text"; text: string }
   | { key: string; kind: "tool"; tool: string; state: "running" | "done" | "failed" }
   | { key: string; kind: "ask"; run: RunId; prompt: number; tool: string; state: AskState }
@@ -94,7 +94,7 @@ export function lines(chat: Chat): Line[] {
 function step(shown: Line[], { seq, event }: ChatEntry, waiting: boolean): void {
   switch (event.kind) {
     case "prompt":
-      shown.push(event.pick === undefined ? { key: `p${seq}`, kind: "prompt", text: event.text } : { key: `p${seq}`, kind: "prompt", text: event.text, pick: event.pick });
+      shown.push({ key: `p${seq}`, kind: "prompt", text: event.text, pick: event.pick });
       return;
     case "outside_prompt":
       shown.push({ key: `p${seq}`, kind: "prompt", text: event.text });

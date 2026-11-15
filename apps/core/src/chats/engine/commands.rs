@@ -19,6 +19,11 @@ impl<A: Agent> Engine<A> {
         key: &ChatKey,
         command: ChatCommand,
     ) -> Result<(), Fault> {
+        if matches!(&command.action, ChatAction::Prompt { pick: Some(_), .. })
+            && command.by.is_some()
+        {
+            return Err(super::picked::local_only());
+        }
         let request = command.request;
         let action = command.action;
         let seen = self.open(key).await?.log.seen(&request, &action).await?;
@@ -91,12 +96,8 @@ impl<A: Agent> Engine<A> {
                 }
                 if fresh {
                     self.has_room(key)?;
-                    let note = match &pick {
-                        Some(pick) => Some(self.pick_note(pick).await?),
-                        None => None,
-                    };
                     let prompt = ChatEvent::Prompt {
-                        pick: note,
+                        pick: self.pick_note(pick.as_ref()).await?,
                         request: request.clone(),
                         text: text.clone(),
                         repo,

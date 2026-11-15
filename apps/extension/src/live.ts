@@ -1,11 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { ME } from "./build.ts";
-import { Failure, HOST, type Link, connect, report } from "./core.ts";
-import { reported } from "./feedback.ts";
+import { Failure, HOST, type Link, connect } from "./core.ts";
 import type { Incoming } from "./incoming.ts";
 import type { ChatAction, Envelope, LocalChat, Pick } from "./protocol.ts";
 import { type ChatRef, type Sync, hear, open } from "./sync.ts";
+import { codeOf, tell } from "./tell.ts";
 
 /** Where the panel stands with the core. */
 export type Status = { kind: "connecting" } | { kind: "ready" } | { kind: "failed"; code: string };
@@ -18,21 +18,11 @@ export type Live = {
   /** The last command's failure, until the next command. */
   refused: string | undefined;
   reconnect(): void;
-  /** Sends `action` to the chat shown; a prompt's `pick` is kept by the core first. */
-  command(action: ChatAction, pick?: Pick): Promise<void>;
+  /** Sends `action` to the chat shown. */
+  command(action: ChatAction): Promise<void>;
+  /** Sends `text` to the chat shown, with `pick`, which the core keeps first. */
+  prompt(text: string, pick: Pick | undefined): Promise<void>;
 };
-
-/** A code for `error`, which is a `Failure` when the panel knows what went wrong. */
-export function codeOf(error: unknown): string {
-  return error instanceof Failure ? error.code : "extension.failed";
-}
-
-/** Tells the core about `code`, if it is the extension's own. */
-export function tell(code: string): void {
-  if (reported(code)) {
-    void report(chrome.runtime.connectNative(HOST), ME, code);
-  }
-}
 
 /** A conversation with the core for as long as `ref` is the chat shown; a new chat starts a new one. */
 export function useLive(ref: ChatRef | undefined): Live {
@@ -101,25 +91,35 @@ export function useLive(ref: ChatRef | undefined): Live {
   }, [ref?.workspace, ref?.chat, attempt]);
 
   const command = useCallback(
-    async (action: ChatAction, pick?: Pick) => {
+    async (action: ChatAction) => {
       const to = link.current;
       if (to === undefined || ref === undefined) {
         throw new Failure("extension.core_unreachable");
       }
       setRefused(undefined);
-      if (pick !== undefined) {
-        const kept = await to.ask({ id: to.next(), type: "pick", ...pick });
-        const failed = kept.type === "error" ? kept.code : kept.type === "receipt" && kept.state === "failed" ? kept.code : undefined;
-        if (failed !== undefined || kept.type !== "receipt") {
-          throw new Failure(failed ?? "extension.unexpected_reply");
-        }
-      }
       const id = to.next();
       commands.current.add(id);
       to.send({ id, type: "chat_command", request: crypto.randomUUID(), ...ref, action });
     },
     [ref?.workspace, ref?.chat],
   );
+  const prompt = useCallback(
+    async (text: string, pick: Pick | undefined) => {
+      const to = link.current;
+      if (pick === undefined || to === undefined) {
+        return command({ kind: "prompt", text });
+      }
+      const kept = await to.ask({ id: to.next(), type: "pick", ...pick });
+      if (kept.type === "error" || (kept.type === "receipt" && kept.state === "failed")) {
+        throw new Failure(kept.code);
+      }
+      if (kept.type !== "receipt") {
+        throw new Failure("extension.unexpected_reply");
+      }
+      return command({ kind: "prompt", text, pick: pick.request });
+    },
+    [command],
+  );
 
-  return { status, chats, sync, refused, reconnect: () => setAttempt((at) => at + 1), command };
+  return { status, chats, sync, refused, reconnect: () => setAttempt((at) => at + 1), command, prompt };
 }

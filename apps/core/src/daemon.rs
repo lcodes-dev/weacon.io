@@ -756,6 +756,21 @@ mod tests {
         assert!(messages(&records).contains(&"picks not swept"));
     }
 
+    // Writes a runs journal with a waiting chat in `w-1` for each of `chats`: its id, its agent,
+    // its run as JSON and when it was last active.
+    fn journal(dir: &Path, chats: &[(&str, &str, &str, u32)]) {
+        let records: Vec<_> = chats
+            .iter()
+            .map(|(chat, agent, run, at)| {
+                format!(
+                    r#"{{"workspace":"w-1","chat":"{chat}","agent":"{agent}","run":{run},"state":"waiting","session":null,"turn":null,"queue":[],"active_at":{at}}}"#
+                )
+            })
+            .collect();
+        let journal = format!(r#"{{"issued":2,"chats":[{}]}}"#, records.join(","));
+        fs::write(dir.join("runs.json"), journal).unwrap();
+    }
+
     #[tokio::test]
     async fn the_chats_served_here_are_listed_newest_first_with_their_titles() {
         use weacon_protocol::{
@@ -771,17 +786,13 @@ mod tests {
         let mut log = ChatLog::open(&root, &"c-1".parse().unwrap()).await.unwrap();
         let text = "Fix the header\nand the footer".to_owned();
         log.append(ChatEvent::OutsidePrompt { text }).await.unwrap();
-        let record = |chat: &str, agent: &str, run: &str, at: u32| {
-            format!(
-                r#"{{"workspace":"w-1","chat":"{chat}","agent":"{agent}","run":{run},"state":"waiting","session":null,"turn":null,"queue":[],"active_at":{at}}}"#
-            )
-        };
-        let journal = format!(
-            r#"{{"issued":2,"chats":[{},{}]}}"#,
-            record("c-1", "claude", "null", 10),
-            record("c-2", "codex", r#""run-2""#, 20)
+        journal(
+            &dir,
+            &[
+                ("c-1", "claude", "null", 10),
+                ("c-2", "codex", r#""run-2""#, 20),
+            ],
         );
-        fs::write(dir.join("runs.json"), journal).unwrap();
         let running = start(&dir).unwrap();
         let list = |id, query| {
             let message = Message::ChatsQuery(ChatsQuery { query });
@@ -790,11 +801,6 @@ mod tests {
         let mut bytes = hello(PROTOCOL);
         bytes.extend(list(2, ChatsQueryKind::List));
         let (replies, _) = exchange(connect(&running.socket).await, &bytes, 2).await;
-        let newer = br#"{"id":3,"type":"chats_query","query":{"kind":"search"}}"#;
-        let mut asked = hello(PROTOCOL);
-        asked.extend(newer);
-        asked.push(b'\n');
-        let (refused, _) = exchange(connect(&running.socket).await, &asked, 2).await;
         running.stop().await;
 
         let chat = |id: &str, title: &str, agent, updated_at, run| LocalChat {
@@ -815,6 +821,18 @@ mod tests {
                 answer: ChatsAnswerKind::List { chats }
             })
         );
+    }
+
+    #[tokio::test]
+    async fn a_newer_kind_of_list_is_refused() {
+        let dir = TempDir::new().unwrap();
+        let running = start(&dir).unwrap();
+        let mut asked = hello(PROTOCOL);
+        asked.extend(br#"{"id":3,"type":"chats_query","query":{"kind":"search"}}"#);
+        asked.push(b'\n');
+        let (refused, _) = exchange(connect(&running.socket).await, &asked, 2).await;
+        running.stop().await;
+
         assert_eq!(error_code(&refused[1]), Some("message.unsupported"));
     }
 
@@ -825,8 +843,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let root = crate::workspaces::Workspaces::new(&dir, None).root(&"w-1".parse().unwrap());
         fs::create_dir_all(root.join("chats/c-c-1.jsonl")).unwrap();
-        let journal = r#"{"issued":0,"chats":[{"workspace":"w-1","chat":"c-1","agent":"claude","run":null,"state":"idle","session":null,"turn":null,"queue":[],"active_at":1}]}"#;
-        fs::write(dir.join("runs.json"), journal).unwrap();
+        journal(&dir, &[("c-1", "claude", "null", 1)]);
         let running = start(&dir).unwrap();
         let message = Message::ChatsQuery(ChatsQuery {
             query: ChatsQueryKind::List,

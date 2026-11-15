@@ -21,9 +21,6 @@ impl<A: Agent> Engine<A> {
         client: &Client,
     ) -> Result<(), Fault> {
         match command.action {
-            ChatAction::Prompt { pick: Some(_), .. } if command.by.is_some() => {
-                Err(super::picked::local_only())
-            }
             ChatAction::Hold => self.hold(key, client).await,
             ChatAction::Release => self.release(key, client).await,
             ChatAction::Prompt { .. }

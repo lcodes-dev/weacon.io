@@ -10,7 +10,7 @@ export function componentOf(selector: string, root: Pick<Document, "querySelecto
   const MAX = 256;
   const element = root.querySelector(selector) as unknown as Record<string, unknown> | null;
   const field = (from: unknown, key: string): unknown =>
-    typeof from === "object" && from !== null ? (from as Record<string, unknown>)[key] : typeof from === "function" ? (from as unknown as Record<string, unknown>)[key] : undefined;
+    (typeof from === "object" && from !== null) || typeof from === "function" ? (from as Record<string, unknown>)[key] : undefined;
   const text = (value: unknown) => (typeof value === "string" && value !== "" ? value.slice(0, MAX) : undefined);
   const found = (component: unknown, source: unknown): Component | null => {
     const named: Component = {};

@@ -90,15 +90,12 @@ async fn keep(shared: &Shared, id: u32, pick: Pick) -> Reply {
         tokio::task::spawn_blocking(move || (picks.sweep(SystemTime::now()), picks.keep(&pick)))
             .await
             .unwrap_or_else(|error| (Ok(()), Err(KeepError::Io(error.into()))));
-    let kept = match kept {
-        (Err(error), kept) => {
-            shared
-                .log
-                .warn("picks not swept", &[("err", Field::error(&error))]);
-            kept
-        }
-        (Ok(()), kept) => kept,
-    };
+    let (swept, kept) = kept;
+    if let Err(error) = swept {
+        shared
+            .log
+            .warn("picks not swept", &[("err", Field::error(&error))]);
+    }
     let outcome = match kept {
         Ok(()) => {
             let request_id = request.as_str().into();

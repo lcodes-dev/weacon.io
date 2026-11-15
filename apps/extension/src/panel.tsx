@@ -3,11 +3,12 @@ import { createRoot } from "react-dom/client";
 
 import { working } from "./chat.ts";
 import { say } from "./feedback.ts";
-import { codeOf, tell, useLive } from "./live.ts";
+import { useLive } from "./live.ts";
 import { pickOn } from "./pick.ts";
-import type { ChatAction, Pick } from "./protocol.ts";
+import type { Pick } from "./protocol.ts";
 import type { ChatRef } from "./sync.ts";
 import { choose, chosen } from "./tabs.ts";
+import { codeOf, tell } from "./tell.ts";
 import { Attached, ChatList, Transcript } from "./views.tsx";
 
 function Panel() {
@@ -53,8 +54,7 @@ function Panel() {
     });
   const send = () =>
     attempt(async () => {
-      const action: ChatAction = pick === undefined ? { kind: "prompt", text } : { kind: "prompt", text, pick: pick.request };
-      await live.command(action, pick);
+      await live.prompt(text, pick);
       setText("");
       setPick(undefined);
     });

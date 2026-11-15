@@ -5,7 +5,7 @@ use weacon_observability::{Fault, Field};
 use weacon_protocol::{AgentKind, Pick, PickNote, RequestId, code};
 
 use super::agent::{Agent, Order};
-use super::{ChatKey, Engine};
+use super::{ChatKey, Engine, chat_about};
 use crate::app::blocking;
 use crate::picks::Picks;
 use crate::picks::quote::{self, Shown};
@@ -24,10 +24,16 @@ fn missing() -> Fault {
 }
 
 impl<A: Agent> Engine<A> {
-    /// The note the log keeps of the pick kept under `request`.
-    pub(super) async fn pick_note(&self, request: &RequestId) -> Result<PickNote, Fault> {
+    /// The note the log keeps of the pick kept under `request`, if the prompt names one.
+    pub(super) async fn pick_note(
+        &self,
+        request: Option<&RequestId>,
+    ) -> Result<Option<PickNote>, Fault> {
+        let Some(request) = request else {
+            return Ok(None);
+        };
         let pick = self.read_pick(request).await?.ok_or_else(missing)?;
-        Ok(quote::note(&pick))
+        Ok(Some(quote::note(&pick)))
     }
 
     /// What starts `next`'s turn: its text, then its pick quoted, when the pick is still here.
@@ -38,8 +44,8 @@ impl<A: Agent> Engine<A> {
             None => Ok(None),
         };
         let pick = read.unwrap_or_else(|fault| {
-            let ids = [("request_id", next.request.as_str().into())];
-            let fields = [ids.as_slice(), &[("err", Field::error(&fault))]].concat();
+            let [workspace, chat] = chat_about(key);
+            let fields = [workspace, chat, ("err", Field::error(&fault))];
             self.log.warn("pick not read", &fields);
             None
         });
@@ -50,37 +56,43 @@ impl<A: Agent> Engine<A> {
             .runs
             .of(key)
             .map_or(AgentKind::Claude, |record| record.agent);
-        if weacon_agents::takes_images(agent) {
-            let shown = pick
-                .screenshot_png
-                .as_ref()
-                .map_or(Shown::Missing, |_| Shown::Attached);
-            let text = quote::prompt(&text, &pick, shown);
-            return Order::Send {
-                text,
-                png: pick.screenshot_png,
-            };
+        if !weacon_agents::takes_images(agent) {
+            return self.filed(key, &text, pick).await;
         }
+        let shown = pick
+            .screenshot_png
+            .as_ref()
+            .map_or(Shown::Missing, |_| Shown::Attached);
+        let text = quote::prompt(&text, &pick, shown);
+        Order::Send {
+            text,
+            png: pick.screenshot_png,
+        }
+    }
+
+    // `text` and `pick` quoted, for an agent that reads the screenshot from a file beside it.
+    async fn filed(&self, key: &ChatKey, text: &str, pick: Pick) -> Order {
         let picks = self.picks();
         let file = blocking(move || picks.screenshot_file(&pick).map(|file| (pick, file)))
             .await
             .map_err(unreadable);
-        match file {
-            Ok((pick, Some(path))) => {
-                let path = path.display().to_string();
-                let text = quote::prompt(&text, &pick, Shown::File(&path));
-                Order::Send { text, png: None }
+        let text = match file {
+            Ok((pick, path)) => {
+                let path = path.map(|path| path.display().to_string());
+                quote::prompt(
+                    text,
+                    &pick,
+                    path.as_deref().map_or(Shown::Missing, Shown::File),
+                )
             }
-            Ok((pick, None)) => Order::Send {
-                text: quote::prompt(&text, &pick, Shown::Missing),
-                png: None,
-            },
             Err(fault) => {
-                self.log
-                    .warn("screenshot not written", &[("err", Field::error(&fault))]);
-                Order::Send { text, png: None }
+                let [workspace, chat] = chat_about(key);
+                let fields = [workspace, chat, ("err", Field::error(&fault))];
+                self.log.warn("screenshot not written", &fields);
+                text.to_owned()
             }
-        }
+        };
+        Order::Send { text, png: None }
     }
 
     async fn read_pick(&self, request: &RequestId) -> Result<Option<Pick>, Fault> {
@@ -142,9 +154,11 @@ mod tests {
         else {
             panic!("no snapshot");
         };
-        events.into_iter().find_map(|entry| match entry.event {
-            ChatEvent::Prompt { pick, .. } => pick,
-            _ => None,
+        events.into_iter().find_map(|entry| {
+            let ChatEvent::Prompt { pick, .. } = entry.event else {
+                return None;
+            };
+            pick
         })
     }
 

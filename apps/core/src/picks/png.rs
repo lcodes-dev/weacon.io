@@ -3,7 +3,7 @@
 /// `text`, standard base64 with its padding, decoded; `None` when it isn't that.
 pub(crate) fn decode(text: &str) -> Option<Vec<u8>> {
     let bytes = text.as_bytes();
-    if bytes.len() % 4 != 0 {
+    if !bytes.len().is_multiple_of(4) {
         return None;
     }
     let mut out = Vec::with_capacity(bytes.len() / 4 * 3);
