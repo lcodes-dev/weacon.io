@@ -124,7 +124,7 @@ impl Runs {
         };
         for json in stored.chats {
             match serde_json::from_str::<Record>(json.get()) {
-                Ok(record) if !record.is_newer() && reads_whole(&record, &json) => {
+                Ok(record) if reads_whole(&record, &json) => {
                     journal.chats.push(record);
                 }
                 _ => journal.newer.push(Kept {
@@ -299,12 +299,6 @@ impl Runs {
         .map_err(|error| not_saved().because(error))?;
         self.journal = next;
         Ok(())
-    }
-}
-
-impl Record {
-    const fn is_newer(&self) -> bool {
-        matches!(self.agent, AgentKind::Newer) || matches!(self.state, RunState::Newer)
     }
 }
 

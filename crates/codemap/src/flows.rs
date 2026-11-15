@@ -27,31 +27,47 @@ pub(crate) enum Break {
 
 /// The flows a document pins, with their lines: pins sit in text, code spans or links.
 pub(crate) fn written(text: &str) -> Vec<(Vec<String>, usize)> {
+    pinned(text)
+        .into_iter()
+        .filter_map(|(anchor, line)| match anchor {
+            Anchor::Flow(steps) => Some((steps, line)),
+            Anchor::Symbol(_) | Anchor::Area(_) => None,
+        })
+        .collect()
+}
+
+/// The flows and items a document pins, with their lines, in the order they are written.
+pub(crate) fn pinned(text: &str) -> Vec<(Anchor, usize)> {
     let mut found = Vec::new();
     for (number, line) in (1..).zip(text.lines()) {
-        for (start, _) in line.match_indices("flow:") {
-            let before = line
-                .get(..start)
-                .and_then(|before| before.chars().next_back());
-            if before.is_some_and(|ch| ch.is_alphanumeric() || ch == '_') {
-                continue;
-            }
-            let rest = line.get(start..).unwrap_or_default();
-            let end = rest
-                .find(|ch: char| {
-                    ch.is_whitespace() || matches!(ch, '`' | ')' | '"' | '\'' | ',' | '#')
-                })
-                .unwrap_or(rest.len());
-            let pin = rest
-                .get(..end)
-                .unwrap_or_default()
-                .trim_end_matches(['.', '*', ']', '>', ';', ':']);
-            if let Ok(Anchor::Flow(steps)) = pin.parse() {
-                found.push((steps, number));
-            }
-        }
+        let mut on_line: Vec<(usize, Anchor)> = ["flow:", "sym:"]
+            .into_iter()
+            .flat_map(|prefix| line.match_indices(prefix))
+            .filter_map(|(start, _)| pin_at(line, start).map(|anchor| (start, anchor)))
+            .collect();
+        on_line.sort_by_key(|(start, _)| *start);
+        found.extend(on_line.into_iter().map(|(_, anchor)| (anchor, number)));
     }
     found
+}
+
+/// The pin starting at `start` in `line`, unless it is part of a longer word.
+fn pin_at(line: &str, start: usize) -> Option<Anchor> {
+    let before = line
+        .get(..start)
+        .and_then(|before| before.chars().next_back());
+    if before.is_some_and(|ch| ch.is_alphanumeric() || ch == '_') {
+        return None;
+    }
+    let rest = line.get(start..).unwrap_or_default();
+    let end = rest
+        .find(|ch: char| ch.is_whitespace() || matches!(ch, '`' | ')' | '"' | '\'' | ',' | '#'))
+        .unwrap_or(rest.len());
+    let pin = rest
+        .get(..end)
+        .unwrap_or_default()
+        .trim_end_matches(['.', '*', ']', '>', ';', ':']);
+    pin.parse().ok()
 }
 
 /// Checks each flow the documents pin against the items and the calls between them.

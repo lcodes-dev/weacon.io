@@ -93,7 +93,7 @@ async fn send_code(
     body: &AccountSignInStart,
     challenge: &ChallengeId,
 ) -> Result<(), Fault> {
-    let Ok(email) = Email::parse(&body.email) else {
+    let Ok(email) = Email::parse(body.email.expose()) else {
         return Ok(());
     };
     if !sign_up::allows(&shared.sign_up, &email) && shared.db.account_with(&email).await?.is_none()
@@ -148,7 +148,7 @@ pub(crate) async fn finish(
             ([(SET_COOKIE, cookie)], Json(who)).into_response()
         }
         Ok(Some((who, token))) => Json(AccountSignedIn {
-            token: Some(token),
+            token: Some(token.into()),
             ..who
         })
         .into_response(),
@@ -163,7 +163,7 @@ pub(crate) async fn finish(
 pub(crate) async fn session(session: Session) -> Json<AccountSignedIn> {
     Json(AccountSignedIn {
         account: session.account,
-        email: session.email.as_str().to_owned(),
+        email: session.email.as_str().into(),
         token: None,
     })
 }
@@ -195,7 +195,7 @@ async fn signed_in(
     shared: &Shared,
     body: &AccountSignInFinish,
 ) -> Result<Option<(AccountSignedIn, String)>, Fault> {
-    let Ok(email) = Email::parse(&body.email) else {
+    let Ok(email) = Email::parse(body.email.expose()) else {
         return Ok(None);
     };
     let token = random_token()?;
@@ -208,7 +208,7 @@ async fn signed_in(
         challenge: &body.challenge,
         code_hash: &shared
             .secret
-            .sign_in_code_hash(&email, &normalised(&body.code)),
+            .sign_in_code_hash(&email, &normalised(body.code.expose())),
         token_hash: &token_hash(&token),
         now,
         token_expires_at: now.saturating_add(SESSION_LIFETIME),
@@ -219,7 +219,7 @@ async fn signed_in(
     Ok(account.map(|account| {
         let who = AccountSignedIn {
             account,
-            email: email.as_str().to_owned(),
+            email: email.as_str().into(),
             token: None,
         };
         (who, token)

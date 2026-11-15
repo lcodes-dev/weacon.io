@@ -35,6 +35,7 @@ test("a chat's lines are its prompts and its turns under their labels, with prom
     ],
   );
   assert.deepEqual(lines(chat).at(1), { key: "t2-r-1", kind: "agent", label: "Claude Code · laptop" });
+  assert.deepEqual(lines(chat, new Map([["m-1", "ada"]])).at(1), { key: "t2-r-1", kind: "agent", label: "ada's Claude Code · laptop" });
   assert.deepEqual(lines(chat).at(-1), { key: "t2-r-1.a1", kind: "ask", run: "r-1", ask: { prompt: 1, tool: "Bash", at: 1, state: "open" } });
 });
 

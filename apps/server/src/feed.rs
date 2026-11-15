@@ -21,9 +21,10 @@ use crate::client_log::{ClientLogs, LOG_FORWARD};
 use crate::connections::Place;
 use crate::http::{RequestTag, failure};
 use crate::proposals::PROPOSALS;
-use crate::relay::{self, Ask, Refusal, SETTINGS};
+use crate::relay::{self, Ask, DIFF, Refusal, SESSIONS, SETTINGS, WORKTREE};
 use crate::shared::Shared;
 use crate::socket::{Closed, Pings, greet, reply};
+use crate::workspaces::MEMBERS;
 
 /// What a client must offer, and the server offers, to get a workspace's changes.
 const FEED: Code = code!("workspace.feed");
@@ -152,9 +153,21 @@ async fn run(
     feed: &mut Feed,
 ) -> Result<Infallible, Closed> {
     let feed_offer = Capability::new(FEED);
-    let offered = [FEED, TASKS, DOCS, SETTINGS, PROPOSALS, CHATS, LOG_FORWARD]
-        .map(Capability::new)
-        .to_vec();
+    let offered = [
+        FEED,
+        TASKS,
+        DOCS,
+        SETTINGS,
+        PROPOSALS,
+        CHATS,
+        MEMBERS,
+        DIFF,
+        WORKTREE,
+        SESSIONS,
+        LOG_FORWARD,
+    ]
+    .map(Capability::new)
+    .to_vec();
     let greeted = greet(socket, shared, offered, &feed_offer);
     let hello = timeout(shared.sockets.hello_within, greeted)
         .await
@@ -234,7 +247,9 @@ async fn received(
         }
         return Ok(());
     }
-    if feed.hears(SETTINGS) && relay::carries(&envelope.message) {
+    if let Some(needs) = relay::needs(&envelope.message)
+        && feed.hears(needs)
+    {
         return relay(socket, shared, feed, envelope).await;
     }
     if feed.hears(CHATS) && chats::carries(&envelope.message) {
@@ -255,15 +270,14 @@ async fn relay(
 ) -> Result<(), Closed> {
     feed.allowed(shared).await?;
     let id = envelope.id;
-    let workspace = feed.member.workspace.id();
     let ask = Ask {
         asker: &feed.asker,
-        workspace,
+        workspace: &feed.member.workspace,
     };
     match relay::forward(shared, &ask, envelope, &feed.answer_to).await {
         Ok(()) => Ok(()),
         Err(Refusal::Refused(refusal)) => reply(socket, shared, id, Message::Error(refusal)).await,
-        Err(Refusal::Failed(fault)) => Err(feed_failed(shared, workspace, &fault)),
+        Err(Refusal::Failed(fault)) => Err(feed_failed(shared, ask.workspace.id(), &fault)),
     }
 }
 
@@ -403,7 +417,20 @@ mod tests {
         };
         assert_eq!(
             welcome.capabilities,
-            [FEED, TASKS, DOCS, SETTINGS, PROPOSALS, CHATS, LOG_FORWARD].map(Capability::new)
+            [
+                FEED,
+                TASKS,
+                DOCS,
+                SETTINGS,
+                PROPOSALS,
+                CHATS,
+                MEMBERS,
+                DIFF,
+                WORKTREE,
+                SESSIONS,
+                LOG_FORWARD
+            ]
+            .map(Capability::new)
         );
         assert_eq!(missed, joined(1, "m1"));
         assert_eq!(live, joined(2, "m2"));

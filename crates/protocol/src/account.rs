@@ -1,10 +1,8 @@
-use std::fmt;
-
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::token::token_id;
-use crate::{MemberId, WorkspaceId};
+use crate::{MemberId, Secret, WorkspaceId};
 
 token_id!(
     /// A person's account on the server, 1–64 ASCII letters, digits, `-` or `_`.
@@ -21,19 +19,10 @@ token_id!(
 /// Sign-in to one workspace, which [`AccountSignInStart`] replaces: asks the server to send a
 /// one-time code to `email`, if it is a member of `workspace`. The answer, a [`SignInStarted`],
 /// is the same either way.
-#[derive(PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct SignInStart {
     pub workspace: WorkspaceId,
-    pub email: String,
-}
-
-// Emails, codes, challenges and tokens never reach a log line, even through `{:?}`.
-impl fmt::Debug for SignInStart {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("SignInStart")
-            .field("workspace", &self.workspace)
-            .finish_non_exhaustive()
-    }
+    pub email: Secret,
 }
 
 /// The answer to a [`SignInStart`], for members and strangers alike: the challenge to finish
@@ -45,85 +34,48 @@ pub struct SignInStarted {
 
 /// Trades the one-time code sent to `email` for a [`SignedIn`]. `challenge` is the one its
 /// [`SignInStarted`] gave; a server that hands out challenges refuses a finish without one.
-#[derive(PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct SignInFinish {
     pub workspace: WorkspaceId,
-    pub email: String,
-    pub code: String,
+    pub email: Secret,
+    pub code: Secret,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(with = "ChallengeId")]
     pub challenge: Option<ChallengeId>,
 }
 
-impl fmt::Debug for SignInFinish {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("SignInFinish")
-            .field("workspace", &self.workspace)
-            .finish_non_exhaustive()
-    }
-}
-
 /// A signed-in member and the session token that proves it, sent as a bearer token.
-#[derive(PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct SignedIn {
     pub member: MemberId,
-    pub token: String,
-}
-
-impl fmt::Debug for SignedIn {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("SignedIn")
-            .field("member", &self.member)
-            .finish_non_exhaustive()
-    }
+    pub token: Secret,
 }
 
 /// Asks the server to send a one-time code to `email`, if that person may sign in. The
 /// answer, a [`SignInStarted`], is the same either way.
-#[derive(PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct AccountSignInStart {
-    pub email: String,
-}
-
-impl fmt::Debug for AccountSignInStart {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("AccountSignInStart").finish_non_exhaustive()
-    }
+    pub email: Secret,
 }
 
 /// Trades the one-time code sent to `email`, and the challenge its [`SignInStarted`] gave,
 /// for an [`AccountSignedIn`].
-#[derive(PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct AccountSignInFinish {
-    pub email: String,
-    pub code: String,
+    pub email: Secret,
+    pub code: Secret,
     pub challenge: ChallengeId,
-}
-
-impl fmt::Debug for AccountSignInFinish {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("AccountSignInFinish")
-            .finish_non_exhaustive()
-    }
 }
 
 /// The signed-in account. `token`, sent as a bearer token, is only in the answer to an
 /// [`AccountSignInFinish`], for clients that keep no cookie.
-#[derive(PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct AccountSignedIn {
     pub account: AccountId,
-    pub email: String,
+    pub email: Secret,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(with = "String")]
-    pub token: Option<String>,
-}
-
-impl fmt::Debug for AccountSignedIn {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("AccountSignedIn")
-            .field("account", &self.account)
-            .finish_non_exhaustive()
-    }
+    pub token: Option<Secret>,
 }
 
 #[cfg(test)]
@@ -147,8 +99,8 @@ mod tests {
         let challenge: ChallengeId = "c-1".parse().unwrap();
         let finish = |challenge| SignInFinish {
             workspace: workspace(),
-            email: "ada@example.com".to_owned(),
-            code: "12345678".to_owned(),
+            email: "ada@example.com".into(),
+            code: "12345678".into(),
             challenge,
         };
         let wire = json!({
@@ -170,12 +122,12 @@ mod tests {
     fn debug_leaves_out_emails_codes_and_tokens() {
         let start = SignInStart {
             workspace: workspace(),
-            email: "MARKER-EMAIL".to_owned(),
+            email: "MARKER-EMAIL".into(),
         };
         let finish = SignInFinish {
             workspace: workspace(),
-            email: "MARKER-EMAIL".to_owned(),
-            code: "MARKER-CODE".to_owned(),
+            email: "MARKER-EMAIL".into(),
+            code: "MARKER-CODE".into(),
             challenge: Some("MARKER-CHALLENGE".parse().unwrap()),
         };
         let started = SignInStarted {
@@ -183,19 +135,19 @@ mod tests {
         };
         let signed_in = SignedIn {
             member: "m-1".parse().unwrap(),
-            token: "MARKER-TOKEN".to_owned(),
+            token: "MARKER-TOKEN".into(),
         };
         assert_eq!(
             format!("{start:?}"),
-            r#"SignInStart { workspace: WorkspaceId("w-1"), .. }"#
+            r#"SignInStart { workspace: WorkspaceId("w-1"), email: Secret(..) }"#
         );
         assert_eq!(
             format!("{finish:?}"),
-            r#"SignInFinish { workspace: WorkspaceId("w-1"), .. }"#
+            r#"SignInFinish { workspace: WorkspaceId("w-1"), email: Secret(..), code: Secret(..), challenge: Some(ChallengeId(..)) }"#
         );
         assert_eq!(
             format!("{signed_in:?}"),
-            r#"SignedIn { member: MemberId("m-1"), .. }"#
+            r#"SignedIn { member: MemberId("m-1"), token: Secret(..) }"#
         );
         assert_eq!(
             format!("{started:?}"),
@@ -210,21 +162,21 @@ mod tests {
     #[test]
     fn account_sign_in_bodies_travel_as_plain_json() {
         let finish = AccountSignInFinish {
-            email: "ada@example.com".to_owned(),
-            code: "12345678".to_owned(),
+            email: "ada@example.com".into(),
+            code: "12345678".into(),
             challenge: "c-1".parse().unwrap(),
         };
         let finish_wire =
             json!({ "email": "ada@example.com", "code": "12345678", "challenge": "c-1" });
         let signed_in = |token: Option<&str>| AccountSignedIn {
             account: account(),
-            email: "ada@example.com".to_owned(),
-            token: token.map(str::to_owned),
+            email: "ada@example.com".into(),
+            token: token.map(Secret::from),
         };
         let browser = json!({ "account": "a-1", "email": "ada@example.com" });
         let other = json!({ "account": "a-1", "email": "ada@example.com", "token": "t" });
         let start = AccountSignInStart {
-            email: "ada@example.com".to_owned(),
+            email: "ada@example.com".into(),
         };
 
         round_trips(&start, json!({ "email": "ada@example.com" }));
@@ -238,24 +190,30 @@ mod tests {
     #[test]
     fn debug_leaves_out_an_accounts_email_code_and_token() {
         let finish = AccountSignInFinish {
-            email: "MARKER-EMAIL".to_owned(),
-            code: "MARKER-CODE".to_owned(),
+            email: "MARKER-EMAIL".into(),
+            code: "MARKER-CODE".into(),
             challenge: "MARKER-CHALLENGE".parse().unwrap(),
         };
         let start = AccountSignInStart {
-            email: "MARKER-EMAIL".to_owned(),
+            email: "MARKER-EMAIL".into(),
         };
         let signed_in = AccountSignedIn {
             account: account(),
-            email: "MARKER-EMAIL".to_owned(),
-            token: Some("MARKER-TOKEN".to_owned()),
+            email: "MARKER-EMAIL".into(),
+            token: Some("MARKER-TOKEN".into()),
         };
 
-        assert_eq!(format!("{start:?}"), "AccountSignInStart { .. }");
-        assert_eq!(format!("{finish:?}"), "AccountSignInFinish { .. }");
+        assert_eq!(
+            format!("{start:?}"),
+            "AccountSignInStart { email: Secret(..) }"
+        );
+        assert_eq!(
+            format!("{finish:?}"),
+            "AccountSignInFinish { email: Secret(..), code: Secret(..), challenge: ChallengeId(..) }"
+        );
         assert_eq!(
             format!("{signed_in:?}"),
-            r#"AccountSignedIn { account: AccountId("a-1"), .. }"#
+            r#"AccountSignedIn { account: AccountId("a-1"), email: Secret(..), token: Some(Secret(..)) }"#
         );
     }
 }
