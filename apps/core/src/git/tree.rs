@@ -13,11 +13,7 @@ use super::{Git, resolved, run, text};
 impl Git {
     /// Git that runs in `worktree` with the git folder `main`'s repository keeps for it.
     pub(crate) fn in_tree(&self, main: &Path, worktree: &Path) -> Result<Self, Fault> {
-        let common = text(run(self.command(main).args([
-            "rev-parse",
-            "--path-format=absolute",
-            "--git-common-dir",
-        ]))?)?;
+        let common = self.common_dir(main)?;
         let ours = place(worktree);
         let unknown = || {
             Fault::new(
@@ -25,8 +21,8 @@ impl Git {
                 "The repository doesn't list the chat's worktree",
             )
         };
-        let entries = fs::read_dir(Path::new(common.trim_end()).join("worktrees"))
-            .map_err(|error| unknown().because(error))?;
+        let entries =
+            fs::read_dir(common.join("worktrees")).map_err(|error| unknown().because(error))?;
         let dir = entries
             .flatten()
             .map(|entry| entry.path())
@@ -39,6 +35,17 @@ impl Git {
             folder: Some(dir),
             ..self.clone()
         })
+    }
+
+    /// The git folder that `repo` and every worktree of it share, resolved.
+    pub(crate) fn common_dir(&self, repo: &Path) -> Result<PathBuf, Fault> {
+        let common = text(run(self.command(repo).args([
+            "rev-parse",
+            "--path-format=absolute",
+            "--git-common-dir",
+        ]))?)?;
+        let common = PathBuf::from(common.trim_end());
+        Ok(resolved(&common).unwrap_or(common))
     }
 
     /// The git folder this git is told to use, if it is told one.

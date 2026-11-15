@@ -73,16 +73,18 @@ pub(super) fn save<T: Serialize>(file: &Path, items: &[T]) -> io::Result<()> {
     weacon_appkit::write_whole(file, &serde_json::to_vec(items)?)
 }
 
-/// The core's hold on adding worktrees to `repo`, for every workspace, since one repository can
-/// be in several: git can fail when two are added to a repository at once.
-pub(super) fn hold_worktrees(state_dir: &Path, repo: &Path) -> Result<Hold, Fault> {
-    take(&worktrees_lock(state_dir, repo)).map_err(|error| {
+/// The core's hold on changing the worktrees of the repository whose git folder is
+/// `common_dir`, for every workspace, since one repository can be in several: git can fail when
+/// two are added to a repository at once.
+pub(super) fn hold_worktrees(state_dir: &Path, common_dir: &Path) -> Result<Hold, Fault> {
+    take(&worktrees_lock(state_dir, common_dir)).map_err(|error| {
         Fault::new(code!("git.hold_failed"), "The worktrees couldn't be held").because(error)
     })
 }
 
-pub(super) fn worktrees_lock(state_dir: &Path, repo: &Path) -> PathBuf {
-    let name = format!("{}.lock", LocalRepo::at(repo).as_str());
+// Named by the git folder, which a repository registered as a linked worktree shares too.
+pub(super) fn worktrees_lock(state_dir: &Path, common_dir: &Path) -> PathBuf {
+    let name = format!("{}.lock", LocalRepo::at(common_dir).as_str());
     state_dir.join("git/worktrees").join(name)
 }
 

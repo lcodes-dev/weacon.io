@@ -222,11 +222,12 @@ impl Inner {
         }
         let found = self.chat(workspace, chat)?;
         let journal = self.stores(workspace).removed(found.git.clone());
+        let common_dir = found.git.common_dir(&found.repo_folder)?;
         match action {
             WorktreeAction::Remove => {
                 let _changing = self.journals.lock().unwrap_or_else(PoisonError::into_inner);
                 // The Trash locks worktrees, which git can fail at while one is added.
-                let _held = hold_worktrees(self.workspaces.state_dir(), &found.repo_folder)?;
+                let _held = hold_worktrees(self.workspaces.state_dir(), &common_dir)?;
                 if journal.removed(chat)?.is_none() {
                     let now = SystemTime::now();
                     let to_trash = |path: &Path| (self.to_trash)(path, now);
@@ -236,7 +237,7 @@ impl Inner {
             }
             WorktreeAction::Restore => {
                 let _changing = self.journals.lock().unwrap_or_else(PoisonError::into_inner);
-                let _held = hold_worktrees(self.workspaces.state_dir(), &found.repo_folder)?;
+                let _held = hold_worktrees(self.workspaces.state_dir(), &common_dir)?;
                 if journal.removed(chat)?.is_some() {
                     journal.restore(chat)?;
                 }
