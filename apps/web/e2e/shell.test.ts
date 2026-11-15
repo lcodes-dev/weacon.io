@@ -841,11 +841,12 @@ test("the palette's symbols go once the server stops offering symbol search", { 
   const symbol = { repo: "garden", kind: "fn" as const, name: "garden::plant", path: "src/lib.rs", line: 8 };
   await serveFeed(page, {
     also: (opened) => ["workspace.search", ...(opened === 1 ? ["symbols.search"] : [])],
-    close: (opened) => opened === 1,
     answer: (sent) =>
       sent.type === "symbols_query"
         ? [{ id: sent.id, type: "symbols_answer", request: sent.request, machine: sent.machine, workspace: sent.workspace, answer: { kind: "found", symbols: [symbol], more: false } }]
         : [],
+    // The first feed closes once it answers "plants", and the next one no longer offers symbol search.
+    drop: (sent, opened) => opened === 1 && sent.type === "symbols_query" && sent.query.kind === "search" && sent.query.words === "plants",
   });
   await signIn(served);
   await page.getByRole("button", { name: "Personal" }).click();
@@ -855,7 +856,9 @@ test("the palette's symbols go once the server stops offering symbol search", { 
   await search.getByRole("combobox", { name: "Search" }).fill("plant");
   const group = search.getByRole("group", { name: "Symbols" });
   await group.getByRole("option").first().waitFor();
-  // The feed closes after its first welcome, and the next one no longer offers symbol search.
+  await search.getByRole("combobox", { name: "Search" }).fill("plants");
+  // Answered just before the feed closes, then taken away by the welcome that no longer offers it.
+  await group.getByRole("option").first().waitFor();
   await group.waitFor({ state: "detached" });
   assert.equal(await search.count(), 1);
 });
