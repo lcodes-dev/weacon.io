@@ -3337,10 +3337,7 @@
       "type": "object",
       "properties": {
         "limit": {
-          "type": [
-            "integer",
-            "null"
-          ],
+          "type": "integer",
           "format": "uint32",
           "minimum": 0
         },

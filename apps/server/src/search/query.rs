@@ -4,8 +4,7 @@ pub(crate) const MAX_TEXT: usize = 256;
 const MAX_WORDS: usize = 8;
 /// A trigram index finds only words of at least this many characters.
 const MIN_WORD: usize = 3;
-/// The most characters a word may hold: one longer has more trigrams than a snippet shows, so
-/// its match would come back unmarked.
+/// The most characters a word may hold, so that its whole match fits in a snippet.
 pub(crate) const MAX_WORD: usize = 64;
 
 /// A search's words, ready for the index. Each long word is quoted as an FTS5 phrase, so that

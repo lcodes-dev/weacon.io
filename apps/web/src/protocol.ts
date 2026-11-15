@@ -1340,10 +1340,7 @@ export type SearchHit = (
  * text without a longer word finds nothing. `limit` is 20 without one, and at most 50.
  */
 export type SearchQuery = {
-  limit?: (
-    | number
-    | null
-  );
+  limit?: number;
   text: string;
 };
 
