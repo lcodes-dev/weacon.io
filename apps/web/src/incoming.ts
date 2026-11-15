@@ -5,7 +5,7 @@ import type { App, ChatEntry, Envelope, RunEvent } from "./protocol.ts";
 export type Incoming = Extract<
   Envelope,
   {
-    type: "welcome" | "error" | "receipt" | "run" | "diff_answer" | "chat" | "chat_answer" | "workspace" | "machine_settings_answer" | "sessions_answer" | "worktree_answer";
+    type: "welcome" | "error" | "receipt" | "run" | "diff_answer" | "chat" | "chat_answer" | "workspace" | "machine_settings_answer" | "sessions_answer" | "worktree_answer" | "terminal";
   }
 >;
 
@@ -70,6 +70,7 @@ export function route(message: Incoming, to: Routes): void {
     case "workspace":
     case "machine_settings_answer":
     case "sessions_answer":
+    case "terminal":
       return;
   }
 }
@@ -94,7 +95,26 @@ const CHECKS: { [T in Incoming["type"]]: (fields: Fields) => boolean } = {
   machine_settings_answer: (fields) =>
     text(fields, "request") && text(fields, "machine") && text(fields, "workspace") && isMachineSettingsAnswer(fields["answer"]),
   sessions_answer: (fields) => text(fields, "request") && text(fields, "machine") && isSessionsAnswer(fields["answer"]),
+  terminal: (fields) => text(fields, "terminal") && text(fields, "workspace") && isTerminalEvent(fields["event"]),
 };
+
+// A terminal event of a kind this app knows, with its fields; a newer kind would be read as a frame.
+function isTerminalEvent(value: unknown): boolean {
+  const event = record(value);
+  if (event === undefined) {
+    return false;
+  }
+  switch (event["kind"]) {
+    case "accepted":
+      return text(event, "handshake");
+    case "frame":
+      return text(event, "sealed");
+    case "closed":
+      return event["code"] === undefined || text(event, "code");
+    default:
+      return false;
+  }
+}
 
 function isIncoming(value: unknown): value is Incoming {
   const fields = record(value);

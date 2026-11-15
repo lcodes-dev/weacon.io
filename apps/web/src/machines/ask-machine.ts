@@ -1,5 +1,5 @@
 import type { Later } from "../connection.ts";
-import { newRequestId } from "../ids.ts";
+import { newId } from "../ids.ts";
 import type { Incoming } from "../incoming.ts";
 import type { Envelope, RequestId } from "../protocol.ts";
 import { type Answer, UNREACHABLE } from "../api/api.ts";
@@ -24,7 +24,7 @@ export function askMachine<T>(
   take: (message: Incoming, request: RequestId) => Answer<T> | undefined,
 ): Promise<Answer<T>> {
   const id = socket.nextId();
-  const request = newRequestId();
+  const request = newId();
   return new Promise((resolve) => {
     let finished = false;
     let unsubscribe = () => {};
