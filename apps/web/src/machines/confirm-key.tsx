@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 
 import type { MachineSummary } from "../protocol.ts";
-import { type Checked, checkKey } from "./check-key.ts";
+import { type Checked, checkKey, shownStep } from "./check-key.ts";
 import type { Pins } from "./pins.ts";
 
 /**
@@ -20,22 +20,23 @@ export function ConfirmKey({ pins, machine }: { pins: Pins; machine: MachineSumm
     };
   }, [pins, machine.id]);
   const { name } = machine;
-  if (checked === undefined || checked.kind === "match") {
+  const step = shownStep(checked, machine.key);
+  if (step.kind === "none") {
     return null;
   }
-  if (checked.kind === "failed") {
+  if (step.kind === "failed") {
     return <p className="muted">This browser couldn't check {name}'s key, so its terminal won't open here.</p>;
   }
-  if (checked.kind === "mismatch") {
+  if (step.kind === "mismatch") {
     return <p role="alert">This browser trusts another key for {name}. If you didn't pair it again, unpair it.</p>;
   }
-  if (checked.key !== machine.key) {
-    return <p role="alert">{name}'s key changed while you were checking it. If you don't know why, unpair it.</p>;
+  if (step.kind === "changed") {
+    return <p role="alert">{name}'s key changed after this page checked it. If you don't know why, unpair it.</p>;
   }
-  const { key, shown } = checked;
+  const { key, shown } = step;
   const confirm = () =>
     void pins.pin(machine.id, key).then(
-      () => setChecked({ kind: "match" }),
+      () => setChecked({ kind: "match", key }),
       () => setProblem("This browser couldn't keep the key. Reload the page and check it again."),
     );
   return (
