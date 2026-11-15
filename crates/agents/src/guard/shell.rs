@@ -500,24 +500,27 @@ mod tests {
     fn an_unquoted_expansion_or_brace_list_can_split_the_word() {
         // A substitution adds an earlier command of its own, so the word is on the last command.
         let word = |line: &str| parse(line).unwrap().pop().unwrap().words.remove(1);
-        // Unquoted expansions, substitutions and a brace list may become several words.
+        // Unquoted expansions, substitutions and a brace list may become several words, and so does
+        // a quoted `"$@"`: one word per positional parameter.
         for line in [
             "echo $X",
             "echo ${X}",
             "echo $(id)",
             "echo `id`",
             "echo $@",
+            "echo \"$@\"",
             "echo a{b,c}",
         ] {
             assert!(word(line).splits, "{line}");
         }
-        // Quoted expansions, ANSI-C `$'…'`, `$\"…\"` and a brace without a list stay one word.
+        // Other quoted expansions, including `"$*"`, ANSI-C `$'…'`, `$\"…\"` and a brace without a
+        // list stay one word.
         for line in [
             "echo \"$X\"",
             "echo \"${X}\"",
             "echo \"$(id)\"",
             "echo \"`id`\"",
-            "echo \"$@\"",
+            "echo \"$*\"",
             "echo $'a b'",
             "echo $\"a b\"",
             "echo a{b}",

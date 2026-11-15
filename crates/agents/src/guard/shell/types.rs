@@ -11,8 +11,9 @@ pub(crate) struct Word {
     pub(crate) text: String,
     /// Holds an expansion, such as `$HOME` or `$(…)`, so its value isn't known here.
     pub(crate) dynamic: bool,
-    /// Holds an expansion outside double quotes, or a brace list, which the shell may split into
-    /// several words; a quoted `"$A"` or an ANSI-C `$'…'` holds one word and sets only `dynamic`.
+    /// Holds something the shell may split into several words: an expansion outside double quotes,
+    /// a brace list, or a quoted `"$@"`. A quoted `"$A"` or an ANSI-C `$'…'` holds one word and
+    /// sets only `dynamic`.
     pub(crate) splits: bool,
     /// Holds an unquoted `*`, `?` or `[`, which the shell expands to file names.
     pub(crate) glob: bool,

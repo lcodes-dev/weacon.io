@@ -669,6 +669,9 @@ mod tests {
         assert_eq!(check("git commit -m$A"), Some(Reason::Unsure));
         assert_eq!(check("git commit -m $A"), Some(Reason::Unsure));
         assert_eq!(check("git commit --message=$A"), Some(Reason::Unsure));
+        // A quoted `"$*"` is one word, but a quoted `"$@"` is one word per positional, so it splits.
+        assert_eq!(check(r#"git commit -m"$*""#), None);
+        assert_eq!(check(r#"git commit -m"$@""#), Some(Reason::Unsure));
         assert_eq!(check(r#"git commit -m"$A" $B"#), Some(Reason::Unsure));
         assert_eq!(check(r#"git commit -m "$A" $B"#), Some(Reason::Unsure));
         assert_eq!(check("git commit -m $A $B"), Some(Reason::Unsure));

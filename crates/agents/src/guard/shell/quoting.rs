@@ -102,10 +102,12 @@ impl Parser {
                 let name: String = self.chars.get(start..self.at)?.iter().collect();
                 home_or_unknown(word, &name, quoted);
             }
+            // `"$@"` is the one quoted expansion that still splits: it becomes one word per
+            // positional parameter, where `"$*"` and the rest are a single word.
             Some(char) if "@*#?$!-".contains(char) => {
                 self.advance(1);
                 word.unknown();
-                word.splits |= !quoted;
+                word.splits |= !quoted || char == '@';
             }
             // `$'…'` is ANSI-C quoting, where a backslash escapes the next character, `\'` and `\\`
             // included, so the string ends only at an unescaped `'`. It is one literal word.
