@@ -18,6 +18,8 @@ use super::{Proposals, channel, serve};
 pub(crate) struct Fake {
     pub(crate) docs: Arc<Mutex<Vec<DocRecord>>>,
     pub(crate) commands: Arc<Mutex<Vec<ProposalCommand>>>,
+    /// The commands it kept, which a refused one isn't.
+    kept: Arc<Mutex<Vec<ProposalCommand>>>,
     /// The code it refuses each command with, if any.
     pub(crate) refuse: Arc<Mutex<Option<Code>>>,
     /// Told of each command once it is kept.
@@ -55,8 +57,12 @@ impl Fake {
             return Message::Unknown;
         };
         let refuse = self.refuse.lock().unwrap().clone();
+        let kept = refuse.is_none();
         let outcome = refuse.map_or(Outcome::Completed, |code| Outcome::Failed { code });
         let request = command.request.clone();
+        if kept {
+            self.kept.lock().unwrap().push(command.clone());
+        }
         self.commands.lock().unwrap().push(command);
         self.heard.notify_one();
         Message::Receipt(Receipt { request, outcome })
@@ -65,8 +71,8 @@ impl Fake {
     /// What the latest re-anchor this core sent from `doc`'s revision makes it, as
     /// the server applies a machine's own open re-anchor to what it answers that machine.
     fn own_edit(&self, doc: &DocRecord) -> Option<DocContent> {
-        let commands = self.commands.lock().unwrap();
-        let batched = commands.iter().rev().flat_map(|command| {
+        let kept = self.kept.lock().unwrap();
+        let batched = kept.iter().rev().flat_map(|command| {
             let ProposalAction::Batch { proposals } = &command.action else {
                 return Vec::new();
             };

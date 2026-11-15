@@ -516,6 +516,31 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_refused_re_anchor_is_proposed_again_with_the_same_move() {
+        let before = repo(LIB, "pub fn go() {}\n");
+        let after = repo("mod m;\npub fn run() { go() }\npub fn go() {}\n", "");
+        let fake = Fake::default();
+        fake.docs
+            .lock()
+            .unwrap()
+            .push(doc("d-1", &before, &["sym:a_b::m::go"]));
+        *fake.refuse.lock().unwrap() = Some(code!("proposal.too_many"));
+        let proposals = fake.connect();
+
+        moved(&proposals, &workspace(), &[&before], &after, &commit('b'))
+            .await
+            .unwrap_err();
+        *fake.refuse.lock().unwrap() = None;
+        let again = moved(&proposals, &workspace(), &[&before], &after, &commit('b'))
+            .await
+            .unwrap();
+
+        let commands = fake.commands();
+        assert_eq!((again, commands.len()), (1, 2));
+        assert_eq!(commands[0].action, commands[1].action);
+    }
+
+    #[tokio::test]
     async fn a_rename_the_doc_cant_take_now_needs_an_update() {
         let before = repo(LIB, "pub fn go() {}\n");
         let after = repo("mod m;\npub fn run() { go() }\npub fn go() {}\n", "");
