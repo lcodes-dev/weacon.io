@@ -5,8 +5,7 @@ use weacon_observability::Fault;
 use weacon_protocol::{ChatEntry, ChatEvent, ChatId, MemberId, Outcome, RequestId, code};
 
 use super::super::changes::Versioned;
-use super::super::search::message_item;
-use super::super::{Workspace, failed, stored, unreadable};
+use super::super::{Workspace, failed, search::message_item, stored, unreadable};
 use super::{chat_not_found, count, number, unstorable};
 
 /// The most bytes of chat events a workspace keeps: 512 MiB.
