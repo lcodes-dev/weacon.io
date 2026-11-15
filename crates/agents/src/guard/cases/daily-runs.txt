@@ -34,6 +34,7 @@ git diff --stat
 git log --oneline -5
 git add -A
 git commit -m "Fix it"
+git commit -m $'it\'s done'
 git commit -m "$(cat <<'EOF'\nAdd it\nEOF\n)"
 git push -u origin HEAD
 git pull --rebase

@@ -66,7 +66,8 @@ pub(super) const READERS: [(&str, Option<Options>); 33] = [
     ("wc", ANY),
     ("pwd", ANY),
     ("echo", ANY),
-    ("printf", ANY),
+    // `printf -v NAME` (a shell builtin) assigns to a variable, so no option runs without asking.
+    ("printf", options("", &[])),
     ("true", ANY),
     ("false", ANY),
     ("test", ANY),

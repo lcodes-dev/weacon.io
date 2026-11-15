@@ -214,7 +214,13 @@ fn own_checkout(repo: &Path, context: &Context) -> bool {
 }
 
 fn inside_worktree(repo: &Path, context: &Context) -> bool {
-    real(repo).starts_with(real(&context.worktree))
+    let repo = real(repo);
+    // A `..` left after resolving couldn't be followed, so where it lands isn't known: don't
+    // count it as inside, where a write would run without asking.
+    !repo
+        .components()
+        .any(|part| part == std::path::Component::ParentDir)
+        && repo.starts_with(real(&context.worktree))
 }
 
 fn real(path: &Path) -> PathBuf {

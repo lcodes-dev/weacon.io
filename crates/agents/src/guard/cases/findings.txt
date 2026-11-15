@@ -179,3 +179,8 @@ printf x > sub/.git/config
 echo 'gitdir: /tmp/x' > sub/.git
 touch .git/hooks/pre-commit
 GIT_PAGER="rm -rf ../main" git log
+HOME=/tmp cargo build
+./cat notes.md
+printf -v x %s
+env -P/tmp ls
+./env cat notes.md

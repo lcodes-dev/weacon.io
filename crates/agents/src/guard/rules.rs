@@ -14,10 +14,11 @@ const DEVICES: [&str; 5] = ["/dev/null", "/dev/stdout", "/dev/stderr", "/dev/tty
 // Of the variables that point git at another repository or have it run a command, these do
 // neither.
 const GIT_HARMLESS: [&str; 1] = ["GIT_TERMINAL_PROMPT"];
-// Variables that choose which programs run or how the shell splits words; an editor or pager
-// is a program the command then runs.
-const SHELL_SETTINGS: [&str; 8] = [
+// Variables that choose which programs run, how the shell splits words, or where `~` points; an
+// editor or pager is a program the command then runs, and `HOME` changes what a later `~` reads.
+const SHELL_SETTINGS: [&str; 9] = [
     "PATH",
+    "HOME",
     "BASH_ENV",
     "ENV",
     "IFS",
@@ -55,6 +56,11 @@ pub(super) fn judge(simple: &Simple, context: &Context, cwd: &mut PathBuf) -> Op
     let program = words.first()?;
     if program.dynamic {
         return Some(Reason::Unsure);
+    }
+    // A program given by a path, such as `./ls`, isn't the listed one: it may be a local file
+    // made to share its name.
+    if program.text.contains(['/', '\\']) {
+        return Some(Reason::NotListed);
     }
     let name = program_name(&program.text);
     let args = words.get(1..).unwrap_or_default();

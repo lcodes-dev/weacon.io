@@ -12,9 +12,17 @@ const WRAPPERS: [(&str, &[&str], usize); 4] = [
     ("timeout", &["-s", "-k", "--signal", "--kill-after"], 1),
 ];
 
-// Options of the wrappers that change folder, read a command line from text, or write a file
-// (`time -o`).
-const MOVING: [&str; 6] = ["-C", "--chdir", "-S", "--split-string", "-o", "--output"];
+// Options of the wrappers that change folder, read a command line from text, write a file
+// (`time -o`), or search another path for the program (`env -P`, on BSD).
+const MOVING: [&str; 7] = [
+    "-C",
+    "--chdir",
+    "-S",
+    "--split-string",
+    "-o",
+    "--output",
+    "-P",
+];
 
 // Words that start or join shell constructs rather than name a program.
 const KEYWORDS: [&str; 14] = [
@@ -48,6 +56,11 @@ pub(super) fn command(words: &[Word]) -> Command<'_> {
         let name = program_name(&program.text);
         if program.dynamic || program.glob {
             return Command::Unsure;
+        }
+        // A wrapper given by a path, such as `./env`, isn't the listed one: let the caller's path
+        // check judge it, rather than reading its inner command as if the real wrapper ran.
+        if program.text.contains(['/', '\\']) {
+            return Command::Runs(rest);
         }
         let Some((_, with_value, before)) = WRAPPERS.iter().find(|(wrapper, ..)| *wrapper == name)
         else {

@@ -99,7 +99,7 @@ function Shown({ settings, busy, set }: { settings: MachineSettings; busy: boole
         <p role="alert">Full access is on in a team workspace. Its agents change files on this machine without asking.</p>
       )}
       {access === "full" && (
-        <p>Even at full access, the guard still asks before an agent reaches outside the workspace or an agent's sign-ins. It catches mistakes, not an agent that is trying; it is not a sandbox.</p>
+        <p>Even at full access, Claude Code still asks before it reaches outside the workspace or an agent's sign-ins. It catches mistakes, not an agent that is trying, and is not a sandbox. Codex has no such guard.</p>
       )}
       <h4>Sign-ins</h4>
       <ul aria-label="Sign-ins">

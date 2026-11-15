@@ -178,6 +178,9 @@ fn protected(app: &App, env: Env<'_>) -> Context {
         .as_deref()
         .map(guard::credential_folders)
         .unwrap_or_default();
+    // The GitHub CLI keeps its sign-in under `GH_CONFIG_DIR`, else `XDG_CONFIG_HOME/gh`, when
+    // either is set; `credential_folders` only covers the default `~/.config/gh`.
+    credentials.extend(gh_config(env));
     credentials.extend(app.state_dir.iter().map(|state| state.join("workspaces")));
     Context {
         home,
@@ -185,6 +188,17 @@ fn protected(app: &App, env: Env<'_>) -> Context {
         credentials,
         ..Context::default()
     }
+}
+
+// Where the GitHub CLI keeps its sign-in when an override is set, outside `~/.config/gh`.
+fn gh_config(env: Env<'_>) -> Option<PathBuf> {
+    if let Some(dir) = platform::var(env, "GH_CONFIG_DIR") {
+        return Some(PathBuf::from(dir));
+    }
+    platform::var(env, "XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .filter(|dir| dir.is_absolute())
+        .map(|dir| dir.join("gh"))
 }
 
 #[cfg(test)]
@@ -267,6 +281,39 @@ mod tests {
         assert_eq!(reason(&weacon), Reason::WeaconFolder.text());
         assert_eq!(reason(&config), Reason::Credentials.text());
         assert_eq!(check(&app, &dir, "w1", &bash(&work, "cargo test")), "");
+    }
+
+    #[test]
+    fn a_github_config_dir_outside_its_default_is_protected() {
+        let dir = TempDir::new().unwrap();
+        let app = test_support::app(Some(&dir.join("state")), None);
+        let work = dir.join("work");
+        fs::create_dir_all(&work).unwrap();
+        let reason = |answer: &str| {
+            let answer: Value = serde_json::from_str(answer).unwrap();
+            answer["hookSpecificOutput"]["permissionDecisionReason"].clone()
+        };
+        let read = |path: &Path| bash(&work, &format!("cat '{}/hosts.yml'", path.display()));
+
+        let named = dir.join("gh-config");
+        let by_name = check_in(
+            &app,
+            &dir,
+            "w1",
+            &[("GH_CONFIG_DIR", named.to_str().unwrap())],
+            &read(&named),
+        );
+        let xdg = dir.join("xdg");
+        let by_xdg = check_in(
+            &app,
+            &dir,
+            "w1",
+            &[("XDG_CONFIG_HOME", xdg.to_str().unwrap())],
+            &read(&xdg.join("gh")),
+        );
+
+        assert_eq!(reason(&by_name), Reason::Credentials.text());
+        assert_eq!(reason(&by_xdg), Reason::Credentials.text());
     }
 
     #[test]

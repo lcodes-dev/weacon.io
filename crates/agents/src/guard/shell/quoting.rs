@@ -100,9 +100,11 @@ impl Parser {
                 return Some(());
             }
             Some(char) if "@*#?$!-".contains(char) => self.advance(1),
+            // `$'…'` is ANSI-C quoting, where a backslash escapes the next character, `\'` and `\\`
+            // included, so the string ends only at an unescaped `'`.
             Some('\'') => {
                 self.advance(1);
-                self.until('\'')?;
+                self.skip_ansi_c()?;
             }
             // `$"…"` is text in double quotes.
             Some('"') => {
@@ -116,6 +118,22 @@ impl Parser {
         }
         word.unknown();
         Some(())
+    }
+
+    // Advances past an ANSI-C `$'…'` body to its closing `'`; a backslash escapes the next
+    // character, so `\'` doesn't end it.
+    fn skip_ansi_c(&mut self) -> Option<()> {
+        loop {
+            match self.peek() {
+                None => return None,
+                Some('\'') => {
+                    self.advance(1);
+                    return Some(());
+                }
+                Some('\\') => self.advance(2),
+                Some(_) => self.advance(1),
+            }
+        }
     }
 
     // The command up to the closing `` ` ``, as the shell reads it: without the `\\` before a
