@@ -126,7 +126,7 @@ pub(super) async fn insert_entries(
 ) -> Result<(), Fault> {
     for batch in entries.chunks(BATCH) {
         let mut query = QueryBuilder::<Sqlite>::new(
-            "INSERT INTO map_search (workspace_id, repo, layer, path, kind, name, body) ",
+            "INSERT INTO map_search (workspace_id, repo, layer, path, kind, line, name, body) ",
         );
         query.push_values(batch, |mut row, entry| {
             row.push_bind(workspace)
@@ -134,6 +134,7 @@ pub(super) async fn insert_entries(
                 .push_bind(layer)
                 .push_bind(&entry.file)
                 .push_bind(&entry.kind)
+                .push_bind(i64::try_from(entry.line).unwrap_or(i64::MAX))
                 .push_bind(&entry.name)
                 .push_bind(&entry.body);
         });

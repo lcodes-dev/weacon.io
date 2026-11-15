@@ -86,7 +86,8 @@ pub(crate) fn watch(
     Watch::new(repo_map(workspace, git, main), worktree)
 }
 
-fn repo_map(workspace: &Workspace, git: &Git, main: PathBuf) -> RepoMap<Repo> {
+/// The map of the repository whose main worktree is `main`, read through git.
+pub(crate) fn repo_map(workspace: &Workspace, git: &Git, main: PathBuf) -> RepoMap<Repo> {
     RepoMap {
         map: workspace.map(&LocalRepo::at(&main)),
         source: Repo {

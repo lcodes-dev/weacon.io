@@ -7,6 +7,8 @@ use serde_json::{Value, json};
 use weacon_codemap::Index;
 use weacon_protocol::McpCall;
 
+use crate::db::Hit;
+
 /// The answer's size when a call names none, and the bounds a named one is kept within.
 const BUDGET: u32 = 6000;
 const LEAST: u32 = 1000;
@@ -57,6 +59,13 @@ pub(crate) fn listed() -> Vec<Tool> {
             json!({"budget": budget}),
             &[],
         ),
+        tool(
+            McpCall::SEARCH,
+            "The items and docs of this chat's folder that match every word, or a word's \
+             start, such as `envelope json`, best first: each one's kind, path and line.",
+            json!({"words": {"type": "string"}, "budget": budget}),
+            &["words"],
+        ),
     ]
 }
 
@@ -88,8 +97,18 @@ pub(crate) fn answer_from(call: &McpCall, map: &Index) -> String {
         }
         McpCall::Symbol(args) => map.item(&args.path, budget(args.budget)),
         McpCall::DocsFor(args) => map.docs_for(&args.path, budget(args.budget)),
-        McpCall::Newer => String::new(),
+        // Search answers from the stored map, through `found`.
+        McpCall::Search(_) | McpCall::Newer => String::new(),
     }
+}
+
+/// What a search found, best first, within `budget` bytes.
+pub(crate) fn found(hits: &[Hit], budget: usize) -> String {
+    let header = format!("Found {}:", hits.len());
+    let lines = hits
+        .iter()
+        .map(|hit| format!("- {} {}  {}:{}", hit.kind, hit.name, hit.path, hit.line));
+    weacon_codemap::fit(std::iter::once(header).chain(lines), budget)
 }
 
 /// The bytes an answer may hold when `asked` for.
@@ -141,10 +160,39 @@ mod tests {
             .map(|tool| tool.description.as_deref().map(str::len))
             .collect();
 
-        assert_eq!(names, ["map", "symbol", "docs_for", "flow"]);
+        assert_eq!(names, ["map", "symbol", "docs_for", "flow", "search"]);
         assert_eq!(names.get(..2), Some(UP_FRONT.as_slice()));
-        assert_eq!(sizes, [Some(189), Some(170), Some(106), Some(106)]);
-        assert_eq!(serde_json::to_string(&tools).unwrap().len(), 1455);
+        assert_eq!(
+            sizes,
+            [Some(189), Some(170), Some(106), Some(106), Some(151)]
+        );
+        assert_eq!(serde_json::to_string(&tools).unwrap().len(), 1852);
+    }
+
+    #[test]
+    fn search_lists_each_hit_where_it_begins_within_its_budget() {
+        let hit = |kind: &str, name: &str, path: &str, line| Hit {
+            path: path.to_owned(),
+            line,
+            kind: kind.to_owned(),
+            name: name.to_owned(),
+        };
+        let hits = [
+            hit("fn", "a_b::serve", "src/lib.rs", 4),
+            hit("doc", "docs/serving.md", "docs/serving.md", 1),
+        ];
+
+        assert_eq!(
+            found(&hits, 1000),
+            "Found 2:\n- fn a_b::serve  src/lib.rs:4\n- doc docs/serving.md  docs/serving.md:1\n"
+        );
+        assert_eq!(found(&hits, 40), "Found 2:\n… 2 more lines\n");
+        assert_eq!(found(&[], 1000), "Found 0:\n");
+        let search = McpCall::Search(weacon_protocol::SearchArgs {
+            words: "serve".to_owned(),
+            budget: None,
+        });
+        assert_eq!(answer_from(&search, &repo()), "");
     }
 
     #[test]

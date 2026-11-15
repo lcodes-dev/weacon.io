@@ -34,6 +34,8 @@ use weacon_protocol::{McpCall, code};
 use deadline::Deadline;
 use grants::{Grant, Grants, Revoke};
 pub(crate) use maps::Maps;
+#[cfg(test)]
+pub(crate) use maps::test_support as maps_support;
 use weacon_agents::{Launch, McpServer};
 use weacon_protocol::App;
 

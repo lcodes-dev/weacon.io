@@ -6,8 +6,8 @@ use std::sync::Arc;
 use tokio::sync::{Semaphore, mpsc};
 use weacon_observability::{Fault, Field};
 use weacon_protocol::{
-    Asker, Envelope, FrameError, Message, Outcome, Pick, Receipt, SessionsQuery, TerminalCommand,
-    code,
+    Asker, Envelope, FrameError, Message, Outcome, Pick, Receipt, SessionsQuery, SymbolsQuery,
+    TerminalCommand, code,
 };
 
 use super::worktrees::{self, Late};
@@ -16,12 +16,13 @@ use crate::chats::Chats;
 use crate::chats::feed::Client;
 use crate::git::service::Worktrees;
 use crate::machine_settings::{self, Host, Identity};
+use crate::mcp::Maps;
 use crate::picks::KeepError;
 use crate::session::{Reply, Session};
 use crate::terminal::Terminals;
 use crate::uplink::{self, failure};
 use crate::workspaces::Workspaces;
-use crate::{app, machine};
+use crate::{app, machine, symbols};
 
 /// How many of the server's queries are answered at once; each may run vendors' status checks.
 const QUERIES_AT_ONCE: usize = 4;
@@ -106,6 +107,7 @@ pub(super) fn server(
     state_dir: &Path,
     chats: Chats,
     worktrees: Worktrees,
+    maps: Maps,
 ) -> impl Future<Output = ()> + Send + 'static {
     let (to_daemon, asks) = mpsc::channel(uplink::QUEUE);
     let (replies, from_daemon) = mpsc::channel(uplink::QUEUE);
@@ -120,16 +122,18 @@ pub(super) fn server(
     async move {
         tokio::select! {
             never = Box::pin(link.run(from_daemon)) => match never {},
-            never = uplink(Asked { host, worktrees }, asks, replies) => match never {},
+            never = uplink(Asked { host, worktrees, maps }, asks, replies) => match never {},
         }
     }
 }
 
-/// What answers the server's asks: the machine's settings and its chats' worktrees.
+/// What answers the server's asks: the machine's settings, its chats' worktrees and the maps
+/// of its repositories.
 #[derive(Clone)]
 pub(super) struct Asked {
     pub(super) host: Host,
     pub(super) worktrees: Worktrees,
+    pub(super) maps: Maps,
 }
 
 /// Answers each ask the uplink hands over, under its envelope id: queries on tasks of their
@@ -209,7 +213,7 @@ async fn terminals(
 /// the owner's asks.
 async fn relayed(asked: &Asked, ask: Envelope) -> Vec<Envelope> {
     let Envelope { id, message } = ask;
-    let Asked { host, worktrees } = asked;
+    let (host, worktrees) = (&asked.host, &asked.worktrees);
     #[expect(
         clippy::wildcard_enum_match_arm,
         reason = "the server relays no other ask a core answers"
@@ -227,6 +231,7 @@ async fn relayed(asked: &Asked, ask: Envelope) -> Vec<Envelope> {
                 .map(Message::MachineSettingsAnswer)
         }
         Message::SessionsQuery(query) => sessions(host, query).await,
+        Message::SymbolsQuery(query) => search(asked, query).await,
         Message::DiffQuery(query) => {
             let files = async {
                 owners(host, query.by.as_ref()).await?;
@@ -273,6 +278,13 @@ fn replies(host: &Host, id: u32, answered: Result<Vec<Message>, Fault>) -> Vec<E
     )
 }
 
+/// The items of the code the owner searched for.
+async fn search(asked: &Asked, query: SymbolsQuery) -> Result<Message, Fault> {
+    let owner = owner(&asked.host).await?;
+    let answer = symbols::query(&asked.maps, &owner, query, &asked.host.log).await?;
+    Ok(Message::SymbolsAnswer(answer))
+}
+
 /// The machine owner's own sessions outside Weacon, for them alone.
 async fn sessions(host: &Host, query: SessionsQuery) -> Result<Message, Fault> {
     let owner = owner(host).await?;
@@ -314,7 +326,8 @@ mod tests {
     use weacon_protocol::{
         AccountId, AgentKind, Asker, ErrorBody, MachineSettingsAction, MachineSettingsAnswerKind,
         MachineSettingsCommand, MachineSettingsQuery, MachineSettingsQueryKind, SessionsAnswer,
-        SessionsAnswerKind, SessionsQuery, SessionsQueryKind,
+        SessionsAnswerKind, SessionsQuery, SessionsQueryKind, SymbolsAnswerKind, SymbolsQuery,
+        SymbolsQueryKind,
     };
     use weacon_testing::TempDir;
 
@@ -349,7 +362,19 @@ mod tests {
         };
         let no_trash = |_: &Path, _| Err(std::io::ErrorKind::Unsupported.into());
         let worktrees = Worktrees::new(dir, None, None, no_trash);
-        (Asked { host, worktrees }, records)
+        let places = crate::chats::Places {
+            path: std::env::var_os("PATH"),
+            ..crate::chats::Places::default()
+        };
+        let maps = Maps::new(dir, &places);
+        (
+            Asked {
+                host,
+                worktrees,
+                maps,
+            },
+            records,
+        )
     }
 
     // The one reply to `ask`.
@@ -413,6 +438,46 @@ mod tests {
             MachineSettingsAnswerKind::Current(_)
         ));
         assert!(test_support::messages(&records).is_empty());
+    }
+
+    fn symbols(account: &str) -> Envelope {
+        Envelope {
+            id: 8,
+            message: Message::SymbolsQuery(SymbolsQuery {
+                request: id("r-2"),
+                machine: id("mc-1"),
+                workspace: id("w1"),
+                query: SymbolsQueryKind::Search {
+                    words: "MARKER-WORDS".to_owned(),
+                },
+                by: Some(by(account)),
+            }),
+        }
+    }
+
+    #[tokio::test]
+    async fn the_owners_symbols_query_is_answered_and_a_strangers_refused() {
+        let dir = TempDir::new().unwrap();
+        pair(&dir);
+        let (host, records) = host(&dir);
+
+        let reply = one(&host, symbols("a-1")).await;
+        let stranger = one(&host, symbols("a-2")).await;
+
+        assert_eq!(reply.id, 8);
+        let Message::SymbolsAnswer(answer) = reply.message else {
+            panic!("expected an answer, got {:?}", reply.message);
+        };
+        let none = SymbolsAnswerKind::Found {
+            symbols: Vec::new(),
+            more: false,
+        };
+        assert_eq!((answer.request.as_str(), answer.answer), ("r-2", none));
+        assert_eq!(
+            test_support::error_code(&stranger.message),
+            Some("symbols.not_owner")
+        );
+        assert_eq!(test_support::messages(&records), ["ask failed"]);
     }
 
     #[tokio::test]

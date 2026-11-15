@@ -73,9 +73,10 @@ pub(crate) fn run(app: &crate::app::App) -> Result<(), Fault> {
         daemon.shared.outside = app.outside.clone();
         // The daemon's own worktrees, so a relayed removal and a local one share their lock.
         let (chats, worktrees) = (daemon.shared.chats.clone(), daemon.shared.worktrees.clone());
+        let maps = daemon.shared.maps.clone();
         daemon
             .uplink
-            .spawn(route::server(app, state_dir, chats, worktrees));
+            .spawn(route::server(app, state_dir, chats, worktrees, maps));
         let serve = daemon.serve(signals.wait());
         crate::reports::following(state_dir, &app.reporter, &app.log, serve).await;
         Ok(())
@@ -89,6 +90,7 @@ struct Shared {
     chats: Chats,
     worktrees: Worktrees,
     outside: Outside,
+    maps: mcp::Maps,
     log: Logger,
 }
 
@@ -138,7 +140,8 @@ impl Daemon {
         })?;
         let socket = socket_path(state_dir);
         remove_stale(&socket).map_err(failed)?;
-        let (mcp, mcp_server) = mcp::start(&app, &log, mcp::Maps::new(state_dir, &places))?;
+        let maps = mcp::Maps::new(state_dir, &places);
+        let (mcp, mcp_server) = mcp::start(&app, &log, maps.clone())?;
         places.mcp = Some(mcp);
         let worktrees = worktrees::worktrees(state_dir, &places);
         let (chats, engine) = chats::start(state_dir, places, app.clone(), spawn, log.clone())?;
@@ -156,6 +159,7 @@ impl Daemon {
                 chats,
                 worktrees,
                 outside: Outside::default(),
+                maps,
                 log,
             },
             disk: disk::Watch::new(state_dir.to_owned(), platform::free_space),
@@ -581,9 +585,10 @@ mod tests {
         let app = test_support::app(Some(&dir), None);
         let running = start_as(&dir, |daemon| {
             let (chats, worktrees) = (daemon.shared.chats.clone(), daemon.shared.worktrees.clone());
+            let maps = daemon.shared.maps.clone();
             daemon
                 .uplink
-                .spawn(route::server(&app, &dir, chats, worktrees));
+                .spawn(route::server(&app, &dir, chats, worktrees, maps));
         })
         .unwrap();
 
