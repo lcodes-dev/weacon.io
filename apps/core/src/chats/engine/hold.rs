@@ -31,7 +31,7 @@ impl<A: Agent> Engine<A> {
     }
 
     async fn hold(&mut self, key: &ChatKey, client: &Client) -> Result<(), Fault> {
-        let installing = self.installing;
+        let installing = self.install.pauses();
         let chat = self.open(key).await?;
         let holder = chat.held.as_ref().filter(|holder| !holder.is_gone());
         if let Some(holder) = holder {

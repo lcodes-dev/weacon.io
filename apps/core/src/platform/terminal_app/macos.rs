@@ -46,4 +46,12 @@ mod tests {
         let args: Vec<_> = command.get_args().collect();
         assert_eq!(args, ["-a".as_ref(), app.as_os_str(), folder.as_os_str()]);
     }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_mac_always_has_terminal_app_whatever_its_environment() {
+        let empty = crate::test_support::env(&[]);
+
+        assert!(super::super::terminal_in(&std::env::temp_dir(), &empty, &[]).is_some());
+    }
 }

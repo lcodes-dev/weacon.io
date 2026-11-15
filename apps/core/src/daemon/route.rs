@@ -10,8 +10,9 @@ use weacon_protocol::{
     SymbolsQuery, TerminalCommand, code,
 };
 
+use super::Shared;
+use super::chat::{command_chat, query_chat};
 use super::worktrees::{self, Late};
-use super::{Shared, command_chat, query_chat};
 use crate::chats::Chats;
 use crate::chats::feed::Client;
 use crate::git::service::Worktrees;

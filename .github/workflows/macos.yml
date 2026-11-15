@@ -1,0 +1,58 @@
+name: macos
+
+# What a developer's Mac runs, on Apple silicon: the setup, then every check but the mutation tests.
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [main]
+    paths:
+      - .github/workflows/macos.yml
+      - scripts/setup.sh
+      - scripts/check.sh
+      - scripts/dev.sh
+      - rust-toolchain.toml
+      - .node-version
+
+permissions:
+  contents: read
+
+concurrency:
+  group: macos-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  macos:
+    runs-on: macos-15
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          key: ${{ hashFiles('scripts/setup.sh') }}
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .node-version
+          cache: npm
+          cache-dependency-path: |
+            apps/extension/package-lock.json
+            apps/web/package-lock.json
+      # check.sh runs ShellCheck, which a Mac gets from Homebrew.
+      - run: command -v shellcheck >/dev/null || brew install shellcheck
+      # macOS's own bash, 3.2, as a developer's Mac runs the scripts.
+      - run: /bin/bash scripts/setup.sh
+      - run: /bin/bash scripts/check.sh --mutants none
+      # The README's walk-through starts Weacon with dev.sh; check it comes up and the core answers.
+      - name: scripts/dev.sh
+        run: |
+          /bin/bash scripts/dev.sh dev@example.com >.dev/dev.out 2>&1 &
+          for _ in $(seq 1 600); do
+            grep -q 'Ctrl-C stops it' .dev/dev.out && break
+            kill -0 $! 2>/dev/null || break
+            sleep 1
+          done
+          cat .dev/dev.out
+          curl -fsS http://localhost:8080/version
+          WEACON_STATE_DIR=.dev/state target/debug/weacon status
+          kill $!

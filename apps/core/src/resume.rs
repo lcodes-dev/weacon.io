@@ -167,7 +167,9 @@ async fn answer(daemon: &mut Connection) -> Result<(), Fault> {
 // Why the daemon wouldn't hold the chat, in words the person can act on.
 fn refused(code: Code) -> Fault {
     let why = match code.as_str() {
-        "chat.busy" => "The chat's agent is running here; carry on once it sleeps",
+        "chat.busy" => {
+            "The chat's agent is running here, or an update is installing; carry on once it's done"
+        }
         "chat.held" => "Someone else carries this chat on by hand already",
         _ => "The daemon wouldn't hold the chat",
     };
@@ -369,10 +371,13 @@ mod tests {
             let ran = fs::read_to_string(dir.join("bin/claude.ran")).unwrap();
             let (workspace, chat) = ids();
             let workspace = crate::workspaces::folder_name(&workspace);
-            let folder = dir
-                .join("work")
-                .join(&workspace)
-                .join(chats::file_stem(&chat));
+            // The shell's $PWD has no links in it: macOS's temporary folder is one.
+            let folder = fs::canonicalize(
+                dir.join("work")
+                    .join(&workspace)
+                    .join(chats::file_stem(&chat)),
+            )
+            .unwrap();
             let config = dir.join("state/workspaces").join(workspace).join("claude");
             let expected = format!(
                 "--setting-sources user --resume {SESSION} {} {}",
@@ -555,7 +560,7 @@ mod tests {
         let said = [
             (
                 "chat.busy",
-                "The chat's agent is running here; carry on once it sleeps",
+                "The chat's agent is running here, or an update is installing; carry on once it's done",
             ),
             (
                 "chat.held",

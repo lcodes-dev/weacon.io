@@ -149,11 +149,15 @@ mod tests {
         assert_eq!(terminals(&dir, None, &none), off);
         let on = terminals(&dir, Some(Answer::On), &none);
         assert!(allowed(&dir));
-        assert_eq!(
-            on,
+        // macOS always has Terminal.app; elsewhere an empty environment has no desktop.
+        let desktop = platform::terminal_in(&dir, &none, &[]).is_some();
+        let expected = if desktop {
+            "Terminals from the web app: on.\n"
+        } else {
             "Terminals from the web app: on, but this machine has no desktop terminal.\n"
-        );
-        assert!(!offered(&dir, &none));
+        };
+        assert_eq!(on, expected);
+        assert_eq!(offered(&dir, &none), desktop);
         assert_eq!(terminals(&dir, Some(Answer::Off), &none), off);
         assert!(!allowed(&dir));
     }
