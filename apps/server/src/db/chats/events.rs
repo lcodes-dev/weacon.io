@@ -5,7 +5,7 @@ use weacon_observability::Fault;
 use weacon_protocol::{ChatEntry, ChatEvent, ChatId, MemberId, Outcome, RequestId, code};
 
 use super::super::changes::Versioned;
-use super::super::{Workspace, failed, search::message_item, stored, unreadable};
+use super::super::{Workspace, failed, stored, unreadable};
 use super::{chat_not_found, count, number, unstorable};
 
 /// The most bytes of chat events a workspace keeps: 512 MiB.
@@ -143,10 +143,8 @@ impl Workspace {
             .execute(&mut *transaction)
             .await
             .map_err(failed)?;
-            let item = message_item(chat, row.seq);
-            self.index_message(&mut *transaction, &item, row.event, row.at)
-                .await?;
         }
+        self.index_messages(transaction, chat, rows).await?;
         let moved = self.keep_runs(&mut *transaction, chat, runs).await?;
         for request in rows.iter().filter_map(|row| ended(row.event)) {
             self.end_request(&mut *transaction, chat, request).await?;
@@ -328,12 +326,12 @@ pub(super) enum Place {
     Before(u64),
 }
 
-struct Row<'a> {
-    seq: i64,
+pub(in crate::db) struct Row<'a> {
+    pub(in crate::db) seq: i64,
     core_seq: Option<i64>,
-    event: &'a ChatEvent,
+    pub(in crate::db) event: &'a ChatEvent,
     body: String,
-    at: i64,
+    pub(in crate::db) at: i64,
 }
 
 // Numbers the events after `seq`, skipping those from the machine at or before `core_seq`,

@@ -5,6 +5,7 @@ use weacon_model::{Doc, Task};
 use weacon_observability::Fault;
 use weacon_protocol::{ChatEvent, ChatId, RunEvent, RunUpdate, SearchHit};
 
+use super::chats::Row;
 use super::{Workspace, failed, stored, unreadable};
 use crate::search::query::{Marks, Query};
 
@@ -91,26 +92,29 @@ impl Workspace {
         self.index(transaction, indexed).await
     }
 
-    /// Indexes `event`, the log entry [`message_item`] names, if it is a message: a person's
-    /// prompt or an agent's text.
-    pub(super) async fn index_message(
+    /// Indexes each of `rows`, stored in `chat`'s log, that is a message: a person's prompt or
+    /// an agent's text.
+    pub(super) async fn index_messages(
         &self,
         transaction: &mut SqliteConnection,
-        item: &str,
-        event: &ChatEvent,
-        at: i64,
+        chat: &ChatId,
+        rows: &[Row<'_>],
     ) -> Result<(), Fault> {
-        let Some(text) = message_text(event) else {
-            return Ok(());
-        };
-        let indexed = Indexed {
-            kind: MESSAGE,
-            item,
-            title: "",
-            body: text,
-            at,
-        };
-        self.index(transaction, indexed).await
+        for row in rows {
+            let Some(text) = message_text(row.event) else {
+                continue;
+            };
+            let item = message_item(chat, row.seq);
+            let indexed = Indexed {
+                kind: MESSAGE,
+                item: &item,
+                title: "",
+                body: text,
+                at: row.at,
+            };
+            self.index(transaction, indexed).await?;
+        }
+        Ok(())
     }
 
     /// Puts `indexed` in the search index in place of what it held for the same item.
@@ -235,7 +239,7 @@ fn hit((kind, item, title, body): HitRow, marks: &Marks) -> Result<SearchHit, Fa
 }
 
 /// How the search index names the event at `seq` in `chat`'s log.
-pub(super) fn message_item(chat: &ChatId, seq: i64) -> String {
+fn message_item(chat: &ChatId, seq: i64) -> String {
     format!("{}/{seq}", chat.as_str())
 }
 
