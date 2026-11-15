@@ -6,8 +6,8 @@ use std::sync::Arc;
 use tokio::sync::{Semaphore, mpsc};
 use weacon_observability::{Fault, Field};
 use weacon_protocol::{
-    Asker, Envelope, FrameError, Message, Outcome, Pick, Receipt, SessionsQuery, SymbolsQuery,
-    TerminalCommand, code,
+    Asker, Envelope, FrameError, MapAnswer, Message, Outcome, Pick, Receipt, SessionsQuery,
+    SymbolsQuery, TerminalCommand, code,
 };
 
 use super::worktrees::{self, Late};
@@ -18,6 +18,7 @@ use crate::git::service::Worktrees;
 use crate::machine_settings::{self, Host, Identity};
 use crate::mcp::Maps;
 use crate::picks::KeepError;
+use crate::proposals::{self, Asks};
 use crate::session::{Reply, Session};
 use crate::terminal::Terminals;
 use crate::uplink::{self, failure};
@@ -63,6 +64,18 @@ pub(super) async fn route(
                 Err(fault) => Reply::error(id, fault.code().clone(), false),
             }
         }
+        Message::MapQuery(query) => Reply {
+            envelope: Some(Envelope {
+                id,
+                message: Message::MapAnswer(MapAnswer {
+                    text: shared
+                        .maps
+                        .for_hook(&shared.mcp.grants, query, &shared.log)
+                        .await,
+                }),
+            }),
+            close: false,
+        },
         message => session.answer(Ok(Envelope { id, message }), &shared.app),
     }
 }
@@ -107,10 +120,12 @@ pub(super) fn server(
     state_dir: &Path,
     chats: Chats,
     worktrees: Worktrees,
-    maps: Maps,
+    (maps, proposing): (Maps, Asks),
 ) -> impl Future<Output = ()> + Send + 'static {
     let (to_daemon, asks) = mpsc::channel(uplink::QUEUE);
     let (replies, from_daemon) = mpsc::channel(uplink::QUEUE);
+    let (answered, answers) = mpsc::channel(uplink::QUEUE);
+    let proposer = proposals::serve(proposing, replies.clone(), answers);
     let host = Host {
         state_dir: state_dir.to_owned(),
         path: app.path.clone(),
@@ -122,7 +137,12 @@ pub(super) fn server(
     async move {
         tokio::select! {
             never = Box::pin(link.run(from_daemon)) => match never {},
-            never = uplink(Asked { host, worktrees, maps }, asks, replies) => match never {},
+            never = uplink(Asked { host, worktrees, maps }, asks, replies, answered) => match never {},
+            // Once every way to propose is gone, the rest serves on.
+            () = async {
+                proposer.await;
+                std::future::pending::<()>().await;
+            } => {}
         }
     }
 }
@@ -137,11 +157,13 @@ pub(super) struct Asked {
 }
 
 /// Answers each ask the uplink hands over, under its envelope id: queries on tasks of their
-/// own, a few at once, and commands one after another in the order they came.
+/// own, a few at once, and commands one after another in the order they came. What answers the
+/// core's own proposals goes to `answered`.
 pub(super) async fn uplink(
     asked: Asked,
     mut asks: mpsc::Receiver<Envelope>,
     replies: mpsc::Sender<Envelope>,
+    answered: mpsc::Sender<Envelope>,
 ) -> ! {
     let (commands, in_order) = mpsc::channel(uplink::QUEUE);
     tokio::spawn(one_by_one(asked.clone(), in_order, replies.clone()));
@@ -153,6 +175,10 @@ pub(super) async fn uplink(
     ));
     let room = Arc::new(Semaphore::new(QUERIES_AT_ONCE));
     while let Some(ask) = asks.recv().await {
+        if proposals::answers(&ask.message) {
+            drop(answered.send(ask).await);
+            continue;
+        }
         if let Message::TerminalCommand(command) = ask.message {
             drop(terminal_commands.send(command).await);
             continue;
@@ -718,7 +744,7 @@ mod tests {
         let (host, _) = host(&dir);
         let (to_daemon, asks) = mpsc::channel(8);
         let (replies, mut from_daemon) = mpsc::channel(8);
-        tokio::spawn(uplink(host, asks, replies));
+        tokio::spawn(uplink(host, asks, replies, mpsc::channel(1).0));
         for ask in [
             reports(1, true),
             settings("a-2"),
@@ -764,7 +790,7 @@ mod tests {
         let (host, _) = host(&dir);
         let (to_daemon, asks) = mpsc::channel(8);
         let (replies, mut from_daemon) = mpsc::channel(8);
-        tokio::spawn(uplink(host, asks, replies));
+        tokio::spawn(uplink(host, asks, replies, mpsc::channel(1).0));
         let close = TerminalCommand {
             terminal: id("t-1"),
             machine: id("mc-1"),
@@ -791,5 +817,28 @@ mod tests {
                 code: Some(code!("terminal.unknown"))
             }
         );
+    }
+
+    #[tokio::test]
+    async fn what_answers_the_cores_proposals_goes_to_them_and_nothing_answers_it() {
+        let dir = TempDir::new().unwrap();
+        let (host, _) = host(&dir);
+        let (to_daemon, asks) = mpsc::channel(8);
+        let (replies, mut from_daemon) = mpsc::channel(8);
+        let (answered, mut answers) = mpsc::channel(8);
+        tokio::spawn(uplink(host, asks, replies, answered));
+        let receipt = Envelope {
+            id: 0,
+            message: Message::Receipt(Receipt {
+                request: "proposal-0".parse().unwrap(),
+                outcome: Outcome::Completed,
+            }),
+        };
+
+        to_daemon.send(receipt.clone()).await.unwrap();
+        let handed = tokio::time::timeout(std::time::Duration::from_secs(10), answers.recv());
+
+        assert_eq!(handed.await.unwrap(), Some(receipt));
+        from_daemon.try_recv().unwrap_err();
     }
 }

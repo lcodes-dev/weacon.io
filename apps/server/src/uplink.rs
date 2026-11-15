@@ -19,7 +19,8 @@ use crate::auth::Machine;
 use crate::chats;
 use crate::connections::Place;
 use crate::links::Connected;
-use crate::relay::{self, DIFF, SESSIONS, SETTINGS, SYMBOLS, WORKTREE};
+use crate::proposals::{PROPOSALS, machines as proposals};
+use crate::relay::{DIFF, SESSIONS, SETTINGS, SYMBOLS, WORKTREE};
 use crate::shared::Shared;
 use crate::socket::{Closed, Pings, hear, refusal, reply, send};
 use crate::terminals;
@@ -109,6 +110,7 @@ pub(crate) fn offers() -> Vec<Capability> {
         WORKTREE,
         SESSIONS,
         SYMBOLS,
+        PROPOSALS,
         chats::SERVE,
     ]
     .map(Capability::new)
@@ -180,25 +182,49 @@ async fn run(
                 if let Ok(Frame::Text(text)) = &frame
                     && let Ok(envelope) = Envelope::from_json(text.as_bytes())
                 {
-                    hand_off(shared, &link.machine.id, envelope).await?;
+                    let id = envelope.id;
+                    if let Some(answer) = hand_off(shared, &link.machine, envelope).await? {
+                        reply(socket, shared, id, answer).await?;
+                    }
                 }
             }
         }
     }
 }
 
-/// Gives what `machine` sent to the feature it is for, in the order it came.
-async fn hand_off(shared: &Shared, machine: &MachineId, envelope: Envelope) -> Result<(), Closed> {
-    if let Message::Chat(update) = envelope.message {
-        return chats::upload::store(shared, machine, update).await;
+/// Gives what `machine` sent to the feature it is for, in the order it came, and gives what to
+/// answer, if anything.
+async fn hand_off(
+    shared: &Shared,
+    machine: &Machine,
+    envelope: Envelope,
+) -> Result<Option<Message>, Closed> {
+    #[expect(
+        clippy::wildcard_enum_match_arm,
+        reason = "the relay takes every other message a machine sends"
+    )]
+    match envelope.message {
+        Message::Chat(update) => chats::upload::store(shared, &machine.id, update).await?,
+        Message::Terminal(update) => terminals::delivered(shared, &machine.id, update),
+        Message::ProposalCommand(command) => {
+            let receipt = proposals::command(shared, machine, command).await;
+            return Ok(Some(Message::Receipt(receipt)));
+        }
+        Message::ProposalQuery(query) => {
+            let answer = proposals::query(shared, machine, query).await;
+            return Ok(Some(Message::ProposalAnswer(answer)));
+        }
+        // The relay passes over what answers none of its asks; an error it doesn't claim is
+        // for no other feature yet.
+        message => {
+            let envelope = Envelope {
+                id: envelope.id,
+                message,
+            };
+            let _claimed = shared.relay.answered(&machine.id, envelope);
+        }
     }
-    if let Message::Terminal(update) = envelope.message {
-        terminals::delivered(shared, machine, update);
-    } else if relay::takes(&envelope.message) {
-        // An error the relay doesn't claim is for no other feature yet.
-        let _claimed = shared.relay.answered(machine, envelope);
-    }
-    Ok(())
+    Ok(None)
 }
 
 #[cfg(test)]
@@ -236,6 +262,7 @@ mod tests {
                     WORKTREE,
                     SESSIONS,
                     SYMBOLS,
+                    PROPOSALS,
                     code!("chat.serve"),
                     code!("chat.upload"),
                 ].map(Capability::new)),
@@ -290,6 +317,7 @@ mod tests {
             "worktree.manage",
             "sessions.read",
             "symbols.search",
+            "workspace.proposals",
             "chat.serve",
         ];
         assert_eq!(machine["missing"], serde_json::json!(missing));

@@ -12,7 +12,7 @@ const METHOD_NOT_FOUND: i64 = -32601;
 pub(crate) struct Wire {
     client: Value,
     resume: Option<AgentSession>,
-    read_only: bool,
+    sandbox: &'static str,
     next_id: u64,
     waiting: Vec<(u64, Waiting)>,
     thread: Option<String>,
@@ -66,13 +66,13 @@ enum Item {
 }
 
 impl Wire {
-    /// A wire that opens a new thread, or resumes `resume`, introducing itself as `app`; with
-    /// read-only `access` the thread runs in Codex's read-only sandbox.
+    /// A wire that opens a new thread, or resumes `resume`, introducing itself as `app`, in the
+    /// sandbox `access` allows.
     pub(crate) fn new(resume: Option<AgentSession>, app: &App, access: AccessLevel) -> Self {
         Self {
             client: json!({ "name": app.name, "title": "Weacon", "version": app.version }),
             resume,
-            read_only: access == AccessLevel::ReadOnly,
+            sandbox: sandbox(access),
             next_id: 0,
             waiting: Vec::new(),
             thread: None,
@@ -158,27 +158,22 @@ impl Wire {
         }
     }
 
-    // A person answers every approval, and anything not known to be safe asks first.
+    // A person answers every approval, and with `untrusted` every command and patch asks first.
+    // No `cwd`: given one, Codex marks the folder a trusted project and loads its own config.
     fn open_thread(&mut self) -> Effect {
-        let (method, mut params) = match &self.resume {
-            Some(session) => (
-                "thread/resume",
-                json!({
-                    "threadId": session.as_str(),
-                    "approvalPolicy": "untrusted",
-                    "approvalsReviewer": "user",
-                }),
-            ),
-            None => (
-                "thread/start",
-                json!({ "approvalPolicy": "untrusted", "approvalsReviewer": "user" }),
-            ),
-        };
-        if self.read_only
+        let mut params = json!({
+            "approvalPolicy": "untrusted",
+            "approvalsReviewer": "user",
+            "sandbox": self.sandbox,
+        });
+        let method = if let Some(session) = &self.resume
             && let Some(params) = params.as_object_mut()
         {
-            params.insert("sandbox".to_owned(), json!("read-only"));
-        }
+            params.insert("threadId".to_owned(), json!(session.as_str()));
+            "thread/resume"
+        } else {
+            "thread/start"
+        };
         self.request(Waiting::Thread, method, &params)
     }
 
@@ -252,6 +247,14 @@ impl Wire {
             "item/completed" => item(params).and_then(completed).into_iter().collect(),
             _ => Vec::new(),
         }
+    }
+}
+
+// Writes stay in the folder Codex starts in, unless a person lets a command out.
+const fn sandbox(access: AccessLevel) -> &'static str {
+    match access {
+        AccessLevel::AskFirst | AccessLevel::Full => "workspace-write",
+        AccessLevel::Off | AccessLevel::ReadOnly | AccessLevel::Newer => "read-only",
     }
 }
 
@@ -460,21 +463,34 @@ mod tests {
     }
 
     #[test]
-    fn a_read_only_thread_asks_for_the_read_only_sandbox_and_others_dont() {
+    fn every_thread_asks_first_in_its_levels_sandbox_and_names_no_folder() {
         let resume = AgentSession::try_from(THREAD.to_owned()).unwrap();
-        let params = |resume: Option<AgentSession>, access| {
+        let opened = |resume: Option<AgentSession>, access| {
             let Effect::Send(line) = Wire::new(resume, &app(), access).open_thread() else {
                 panic!("nothing sent");
             };
-            line["params"]["sandbox"].clone()
+            (line["method"].clone(), line["params"].clone())
         };
+        let params = |sandbox: &str| json!({ "approvalPolicy": "untrusted", "approvalsReviewer": "user", "sandbox": sandbox });
 
-        let read_only = AccessLevel::ReadOnly;
-        assert_eq!(params(None, read_only), json!("read-only"));
-        assert_eq!(params(Some(resume.clone()), read_only), json!("read-only"));
-        for access in [AccessLevel::AskFirst, AccessLevel::Full] {
-            assert_eq!(params(None, access), Value::Null);
-            assert_eq!(params(Some(resume.clone()), access), Value::Null);
+        for (access, sandbox) in [
+            (AccessLevel::ReadOnly, "read-only"),
+            (AccessLevel::Off, "read-only"),
+            (AccessLevel::AskFirst, "workspace-write"),
+            (AccessLevel::Full, "workspace-write"),
+        ] {
+            let mut resumed = params(sandbox);
+            resumed["threadId"] = json!(THREAD);
+            assert_eq!(
+                opened(None, access),
+                (json!("thread/start"), params(sandbox)),
+                "{access:?}"
+            );
+            assert_eq!(
+                opened(Some(resume.clone()), access),
+                (json!("thread/resume"), resumed),
+                "{access:?}"
+            );
         }
     }
 }

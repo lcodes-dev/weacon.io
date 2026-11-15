@@ -82,11 +82,23 @@ export type Envelope = {
     type: "proposal_command";
   } & ProposalCommand
   | {
+    type: "map_query";
+  } & MapQuery
+  | {
+    type: "map_answer";
+  } & MapAnswer
+  | {
     type: "symbols_query";
   } & SymbolsQuery
   | {
     type: "symbols_answer";
   } & SymbolsAnswer
+  | {
+    type: "proposal_query";
+  } & ProposalQuery
+  | {
+    type: "proposal_answer";
+  } & ProposalAnswer
 );
 
 /**
@@ -181,6 +193,22 @@ export type AgentSignIn = {
 };
 
 /**
+ * What a move did to an anchor's code, each item described in a line such as
+ * `fn a::run  a/src/lib.rs:3`.
+ */
+export type AnchorChange = (
+  | {
+    kind: "changed";
+    now: string;
+    was: string;
+  }
+  | {
+    kind: "gone";
+    was: string;
+  }
+);
+
+/**
  * A program, such as `weacon-core`, and the exact build it is.
  */
 export type App = {
@@ -213,6 +241,14 @@ export type Author = (
     owner: MemberId;
   }
 );
+
+/**
+ * One proposal of a [`ProposalAction::Batch`].
+ */
+export type Batched = {
+  change: ProposalChange;
+  proposal: ProposalId;
+};
 
 /**
  * A Rust target a release is built for, such as `x86_64-unknown-linux-musl`.
@@ -830,6 +866,46 @@ export type MachineSummary = {
 };
 
 /**
+ * The core's answer to a [`MapQuery`], under its envelope id.
+ */
+export type MapAnswer = {
+  /**
+   * None when the core has no map to give for that token and folder.
+   */
+  text?: string;
+};
+
+/**
+ * From a run's agent, under `McpCall::Map` or `McpCall::Hotspots`, or its hook, under
+ * `MapQueryKind::Map`: how much of the map it wants.
+ */
+export type MapArgs = {
+  /**
+   * The most bytes the answer may hold; the core clamps it to its own bounds.
+   */
+  budget?: number;
+};
+
+/**
+ * From a hook that an agent the core started runs, to that core over its socket, under
+ * `map.read`: the code map of `folder`, in the workspace of the run whose MCP token it holds.
+ */
+export type MapQuery = {
+  folder: string;
+  query: MapQueryKind;
+  /**
+   * The run's token for the core's MCP.
+   */
+  token: string;
+};
+
+export type MapQueryKind = (
+  | {
+    kind: "map";
+  } & MapArgs
+);
+
+/**
  * The part of a [`Snippet`] from `start` up to `end`, counted in UTF-16 code units as a
  * browser counts a string.
  */
@@ -1028,6 +1104,15 @@ export type Pick = {
 };
 
 /**
+ * A doc's anchors at its revision `version`.
+ */
+export type PinnedDoc = {
+  anchors: DocAnchors;
+  id: DocId;
+  version: number;
+};
+
+/**
  * The doc or task a proposal is about; a new one has the id it gets once accepted.
  */
 export type ProposalAbout = (
@@ -1060,6 +1145,34 @@ export type ProposalAction = (
     kind: "withdraw";
     proposal: ProposalId;
   }
+  | {
+    kind: "batch";
+    proposals: Array<Batched>;
+  }
+);
+
+/**
+ * The server's answer to a [`ProposalQuery`], under its `request`.
+ */
+export type ProposalAnswer = {
+  answer: ProposalAnswerKind;
+  request: RequestId;
+};
+
+export type ProposalAnswerKind = (
+  | {
+    docs: Array<PinnedDoc>;
+    kind: "pinned";
+    more: boolean;
+  }
+  | {
+    doc: DocRecord;
+    kind: "doc";
+  }
+  | {
+    code: Code;
+    kind: "failed";
+  }
 );
 
 /**
@@ -1085,6 +1198,12 @@ export type ProposalChange = (
   | {
     kind: "new_task";
     title: string;
+  }
+  | {
+    anchors: Array<StaleAnchor>;
+    base: number;
+    doc: DocId;
+    kind: "needs_update";
   }
 );
 
@@ -1143,6 +1262,27 @@ export type ProposalOutcome = (
   | {
     edits: Array<TaskEditBody>;
     outcome: "task_conflict";
+  }
+);
+
+/**
+ * What a core asks a server that offers `workspace.proposals` about its owner's workspace,
+ * to propose what a move of the code did to its docs. The answer is a [`ProposalAnswer`].
+ */
+export type ProposalQuery = {
+  query: ProposalQueryKind;
+  request: RequestId;
+  workspace: WorkspaceId;
+};
+
+export type ProposalQueryKind = (
+  | {
+    after?: DocId;
+    kind: "pinned";
+  }
+  | {
+    doc: DocId;
+    kind: "doc";
   }
 );
 
@@ -1497,6 +1637,17 @@ export type SignedIn = {
 export type Snippet = {
   marks: Array<Mark>;
   text: string;
+};
+
+/**
+ * An anchor of a doc whose code a move changed.
+ */
+export type StaleAnchor = {
+  change: AnchorChange;
+  /**
+   * The pin as the doc has it.
+   */
+  pin: DocPin;
 };
 
 /**

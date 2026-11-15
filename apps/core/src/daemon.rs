@@ -24,6 +24,7 @@ use crate::memory;
 use crate::outside::Outside;
 use crate::picks::Picks;
 use crate::platform::{self, Listener, Owner, Stream};
+use crate::proposals;
 use crate::session::{Reply, Session};
 
 mod route;
@@ -74,9 +75,10 @@ pub(crate) fn run(app: &crate::app::App) -> Result<(), Fault> {
         // The daemon's own worktrees, so a relayed removal and a local one share their lock.
         let (chats, worktrees) = (daemon.shared.chats.clone(), daemon.shared.worktrees.clone());
         let maps = daemon.shared.maps.clone();
-        daemon
-            .uplink
-            .spawn(route::server(app, state_dir, chats, worktrees, maps));
+        if let Some(proposing) = daemon.proposing.take() {
+            let server = route::server(app, state_dir, chats, worktrees, (maps, proposing));
+            daemon.uplink.spawn(server);
+        }
         let checks = daemon.shared.chats.downgrade();
         let serve = async {
             tokio::select! {
@@ -89,6 +91,13 @@ pub(crate) fn run(app: &crate::app::App) -> Result<(), Fault> {
     })
 }
 
+fn not_private() -> Fault {
+    Fault::new(
+        code!("state.not_private"),
+        "Other users can reach the state folder; make it readable only by you",
+    )
+}
+
 #[derive(Clone)]
 struct Shared {
     app: App,
@@ -96,6 +105,7 @@ struct Shared {
     chats: Chats,
     worktrees: Worktrees,
     outside: Outside,
+    mcp: mcp::Mcp,
     maps: mcp::Maps,
     log: Logger,
 }
@@ -110,6 +120,8 @@ pub(crate) struct Daemon {
     memory: memory::Watch,
     engine: JoinHandle<()>,
     uplink: JoinSet<()>,
+    /// What the MCP and the map's watches propose, until the uplink takes it.
+    proposing: Option<proposals::Asks>,
     mcp: mcp::Server,
     // Held for the daemon's life, so a second daemon can't start.
     _lock: File,
@@ -128,14 +140,8 @@ impl Daemon {
             Fault::new(code!("daemon.start_failed"), "The daemon couldn't start").because(error)
         };
         platform::private_dir(state_dir).map_err(failed)?;
-        let owner = platform::private_owner(state_dir)
-            .map_err(failed)?
-            .ok_or_else(|| {
-                Fault::new(
-                    code!("state.not_private"),
-                    "Other users can reach the state folder; make it readable only by you",
-                )
-            })?;
+        let owner = platform::private_owner(state_dir).map_err(failed)?;
+        let owner = owner.ok_or_else(not_private)?;
         let lock = weacon_appkit::private_append(&state_dir.join("weacon.lock")).map_err(failed)?;
         lock.try_lock().map_err(|error| match error {
             TryLockError::WouldBlock => Fault::new(
@@ -146,9 +152,10 @@ impl Daemon {
         })?;
         let socket = socket_path(state_dir);
         remove_stale(&socket).map_err(failed)?;
-        let maps = mcp::Maps::new(state_dir, &places);
+        let (proposals, proposing) = proposals::channel();
+        let maps = mcp::Maps::new(state_dir, &places).proposing(proposals);
         let (mcp, mcp_server) = mcp::start(&app, &log, maps.clone())?;
-        places.mcp = Some(mcp);
+        places.mcp = Some(mcp.clone());
         let worktrees = worktrees::worktrees(state_dir, &places);
         let (chats, engine) = chats::start(state_dir, places, app.clone(), spawn, log.clone())?;
         let listener = platform::bind(&socket).map_err(failed)?;
@@ -158,6 +165,7 @@ impl Daemon {
             socket,
             owner,
             uplink: JoinSet::new(),
+            proposing: Some(proposing),
             engine: tokio::spawn(engine.serve()),
             shared: Shared {
                 app,
@@ -165,6 +173,7 @@ impl Daemon {
                 chats,
                 worktrees,
                 outside: Outside::default(),
+                mcp,
                 maps,
                 log,
             },
@@ -215,6 +224,11 @@ impl Daemon {
             log.error("engine failed", &[]);
         }
         log.info("daemon stopped", &[]);
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn mcp(&self) -> &mcp::Mcp {
+        &self.shared.mcp
     }
 
     fn admit(&self, stream: Stream, clients: &mut JoinSet<()>) {
@@ -589,10 +603,12 @@ mod tests {
         let app = test_support::app(Some(&dir), None);
         let running = start_as(&dir, |daemon| {
             let (chats, worktrees) = (daemon.shared.chats.clone(), daemon.shared.worktrees.clone());
+            let proposing = daemon.proposing.take().unwrap();
             let maps = daemon.shared.maps.clone();
+            let serving = (maps, proposing);
             daemon
                 .uplink
-                .spawn(route::server(&app, &dir, chats, worktrees, maps));
+                .spawn(route::server(&app, &dir, chats, worktrees, serving));
         })
         .unwrap();
 

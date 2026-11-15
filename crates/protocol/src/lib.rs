@@ -11,6 +11,7 @@ mod frame;
 mod hex;
 mod log;
 mod machine;
+mod map;
 mod mcp;
 mod message;
 mod pick;
@@ -58,12 +59,15 @@ pub use machine::{
     MachineId, MachineKey, MachineList, MachineName, MachineOs, MachineSummary, PairClaim,
     PairClaimed, PairConfirm, PairLookup, PairPending, PairStart, PairStarted, PairingId,
 };
-pub use mcp::{FlowArgs, MapArgs, McpCall, SearchArgs, SymbolArgs};
+pub use map::{MapAnswer, MapQuery, MapQueryKind};
+pub use mcp::{FlowArgs, MapArgs, McpCall, ProposeArgs, SearchArgs, SymbolArgs};
 pub use message::{App, Envelope, ErrorBody, Hello, Message, PROTOCOL, Welcome};
 pub use pick::Pick;
 pub use proposal::{
-    MergeHunk, ProposalAbout, ProposalAction, ProposalChange, ProposalCommand, ProposalDecision,
-    ProposalId, ProposalList, ProposalOutcome, ProposalRecord, ProposalState, ProposalVerdict,
+    AnchorChange, Batched, MAX_PROPOSAL, MergeHunk, PinnedDoc, ProposalAbout, ProposalAction,
+    ProposalAnswer, ProposalAnswerKind, ProposalChange, ProposalCommand, ProposalDecision,
+    ProposalId, ProposalList, ProposalOutcome, ProposalQuery, ProposalQueryKind, ProposalRecord,
+    ProposalState, ProposalVerdict, StaleAnchor,
 };
 pub use receipt::{Outcome, Receipt, RequestId};
 pub use release::{

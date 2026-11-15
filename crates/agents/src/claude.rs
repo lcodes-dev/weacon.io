@@ -54,7 +54,8 @@ pub(crate) fn changed_file(tool: &str, input: &Value) -> Option<PathBuf> {
     input.get(key)?.as_str().map(PathBuf::from)
 }
 
-const TOKEN_VARIABLE: &str = "WEACON_MCP_TOKEN";
+/// Where a run, and the hooks it runs, find its token for the core's MCP.
+pub const TOKEN_VARIABLE: &str = "WEACON_MCP_TOKEN";
 const TOKEN_HEADER: &str = "Bearer ${WEACON_MCP_TOKEN}";
 
 /// `claude` in its stream-json mode, resuming `session` when given.

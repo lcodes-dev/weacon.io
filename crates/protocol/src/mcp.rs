@@ -1,9 +1,13 @@
 //! The tool calls of the MCP the core serves to its own runs. MCP's envelope is the vendor
 //! protocol, which rmcp parses; a call's name and arguments are these types. Neither the web
-//! app nor the extension reads them, so they stay out of `schema.json`.
+//! app nor the extension reads them, so only `MapArgs`, which a `MapQuery` carries, is in
+//! `schema.json`.
 
-use serde::Deserialize;
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
+
+use crate::ProposalChange;
 
 /// From an agent the core started, to that core's MCP: one tool call, by name.
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
@@ -21,6 +25,8 @@ pub enum McpCall {
     Search(SearchArgs),
     /// The files that change often and that much depends on.
     Hotspots(MapArgs),
+    /// A change to a doc or task of the run's workspace, for a person to accept.
+    Propose(ProposeArgs),
     /// A tool this build doesn't offer; only ever received.
     #[serde(other, skip_serializing)]
     Newer,
@@ -33,6 +39,7 @@ impl McpCall {
     pub const DOCS_FOR: &str = "docs_for";
     pub const SEARCH: &str = "search";
     pub const HOTSPOTS: &str = "hotspots";
+    pub const PROPOSE: &str = "propose";
 
     /// The tool's name, as `parse` takes it; none for a tool this build doesn't offer.
     #[must_use]
@@ -44,6 +51,7 @@ impl McpCall {
             Self::DocsFor(_) => Some(Self::DOCS_FOR),
             Self::Search(_) => Some(Self::SEARCH),
             Self::Hotspots(_) => Some(Self::HOTSPOTS),
+            Self::Propose(_) => Some(Self::PROPOSE),
             Self::Newer => None,
         }
     }
@@ -59,11 +67,13 @@ impl McpCall {
     }
 }
 
-/// From a run's agent, under `McpCall::Map` or `McpCall::Hotspots`: how much of the map it wants.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize)]
+/// From a run's agent, under `McpCall::Map` or `McpCall::Hotspots`, or its hook, under
+/// `MapQueryKind::Map`: how much of the map it wants.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct MapArgs {
     /// The most bytes the answer may hold; the core clamps it to its own bounds.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "u32")]
     pub budget: Option<u32>,
 }
 
@@ -91,6 +101,12 @@ pub struct SearchArgs {
     pub words: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub budget: Option<u32>,
+}
+
+/// From a run's agent, under `McpCall::Propose`: the change it proposes, in the protocol's form.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+pub struct ProposeArgs {
+    pub change: ProposalChange,
 }
 
 #[cfg(test)]
@@ -138,6 +154,10 @@ mod tests {
             (McpCall::DOCS_FOR, json!({"path": "a::b"})),
             (McpCall::SEARCH, json!({"words": "a b"})),
             (McpCall::HOTSPOTS, json!({"budget": 2000})),
+            (
+                McpCall::PROPOSE,
+                json!({"change": {"kind": "new_task", "title": "Ship"}}),
+            ),
         ] {
             assert_eq!(call(name, arguments).unwrap().name(), Some(name));
         }
