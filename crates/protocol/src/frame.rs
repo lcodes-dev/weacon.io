@@ -37,7 +37,7 @@ impl Envelope {
     /// The message as one frame of JSON, for transports that keep frames apart themselves.
     ///
     /// # Errors
-    /// When the message holds a part only ever received, such as [`Message::Unknown`], or
+    /// When the message holds a part only ever received, such as [`crate::Message::Unknown`], or
     /// exceeds [`MAX_FRAME`].
     pub fn to_json(&self) -> Result<Vec<u8>, FrameError> {
         let json = serde_json::to_vec(self).map_err(|_| FrameError::Invalid)?;

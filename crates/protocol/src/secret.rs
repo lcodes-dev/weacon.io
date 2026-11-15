@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 
 // A string that never reaches a log line: it travels as itself, and its `Debug` shows only
 // that it is there; a doc comment would land in the schema of every field that holds one.
-#[derive(PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(transparent)]
 #[schemars(inline)]
 pub struct Secret(String);
