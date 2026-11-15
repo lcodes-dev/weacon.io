@@ -8,17 +8,17 @@ use std::sync::{Arc, Mutex, PoisonError};
 use tokio::sync::mpsc;
 use weacon_codemap::{Facts, Index, assemble};
 use weacon_observability::{Field, Logger};
-use weacon_protocol::{CommitId, WorkspaceId};
+use weacon_protocol::{CommitId, RepoId, WorkspaceId};
 
 use super::{Maps, Stores, Watched};
 use crate::codemap::{Move, off_runtime};
-use crate::proposals::{self, Proposals};
+use crate::proposals::{self, BaseMove, Proposals};
 
 /// How many bases of failed checks a repository's next check starts from, at most.
 const KEPT_BASES: usize = 4;
 
-/// A repository, by its workspace and main worktree.
-pub(super) type Repository = (WorkspaceId, PathBuf);
+/// A repository, by its workspace, its id there and its main worktree.
+pub(super) type Repository = (WorkspaceId, RepoId, PathBuf);
 
 /// The commit each repository's base last moved to, and the queue that checks each move.
 #[derive(Clone, Debug)]
@@ -48,7 +48,11 @@ impl Stores {
     /// once for each commit a repository's base moves to.
     pub(super) fn moved(&self, watched: &Watched, moved: Move, log: &Logger) {
         if let Some(moves) = &self.moves {
-            let key = (watched.workspace.clone(), watched.main.clone());
+            let key = (
+                watched.workspace.clone(),
+                watched.repo.clone(),
+                watched.main.clone(),
+            );
             moves.queue(key, moved, log);
         }
     }
@@ -97,7 +101,13 @@ async fn check_moves(
         let checked = async {
             let (was, now, commit) = off_runtime(assembled).await?;
             let was: Vec<&Index> = was.iter().collect();
-            proposals::moved(&proposals, &key.0, &was, &now, &commit).await
+            let moved = BaseMove {
+                repo: &key.1,
+                was: &was,
+                now: &now,
+                commit: &commit,
+            };
+            proposals::moved(&proposals, &key.0, &moved).await
         };
         match checked.await {
             Ok(docs) => log.info("anchors checked", &[("docs", docs.into())]),

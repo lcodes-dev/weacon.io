@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::hex::is_lower_hex;
 use crate::token::{checked_string, token_id};
-use crate::{Author, MemberId};
+use crate::{Author, MemberId, RepoId};
 
 token_id!(
     /// A doc in a workspace, 1–64 ASCII letters, digits, `-` or `_`.
@@ -84,6 +84,11 @@ pub struct DocContent {
 pub struct DocAnchors {
     pub commit: CommitId,
     pub pins: Vec<DocPin>,
+    /// The workspace's repository whose code the pins are of; absent in pins made before
+    /// pins said so, which any repository's move may check.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "RepoId")]
+    pub repo: Option<RepoId>,
 }
 
 /// A doc at one revision; `version` rises with each revision. The server sends it to clients
@@ -252,6 +257,7 @@ mod tests {
             anchors: Some(DocAnchors {
                 commit: COMMIT.parse().unwrap(),
                 pins: vec![pin(PIN)],
+                repo: None,
             }),
         }
     }
@@ -282,6 +288,24 @@ mod tests {
         serde_json::from_value::<DocContent>(json!({ "title": "Framing" })).unwrap_err();
         let uncommitted = json!({ "title": "Framing", "body": "", "anchors": { "pins": [PIN] } });
         serde_json::from_value::<DocContent>(uncommitted).unwrap_err();
+    }
+
+    #[test]
+    fn anchors_name_their_repository_only_when_they_know_it() {
+        let mut named = content();
+        if let Some(anchors) = &mut named.anchors {
+            anchors.repo = Some("site".parse().unwrap());
+        }
+        let mut wire = content_wire();
+        wire["anchors"]["repo"] = json!("site");
+
+        assert_eq!(serde_json::to_value(&named).unwrap(), wire);
+        assert_eq!(
+            serde_json::from_value::<DocContent>(wire.clone()).unwrap(),
+            named
+        );
+        wire["anchors"]["repo"] = json!("a/b");
+        serde_json::from_value::<DocContent>(wire).unwrap_err();
     }
 
     #[test]

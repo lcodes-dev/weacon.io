@@ -210,6 +210,7 @@ mod tests {
         DocAnchors {
             commit: CommitId::try_from("a".repeat(40)).unwrap(),
             pins,
+            repo: None,
         }
     }
 

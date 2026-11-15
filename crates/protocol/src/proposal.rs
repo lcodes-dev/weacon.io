@@ -730,6 +730,7 @@ mod tests {
         let anchors = DocAnchors {
             commit: commit.parse().unwrap(),
             pins: vec![PIN.parse().unwrap()],
+            repo: None,
         };
         let page = ProposalAnswerKind::Pinned {
             docs: vec![PinnedDoc {

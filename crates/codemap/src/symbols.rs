@@ -21,6 +21,8 @@ pub struct Symbol {
     pub line: usize,
     /// Changes when the item's code does, but not its comments, attributes or layout.
     pub fingerprint: Fingerprint,
+    /// The fingerprint of its code without its own name, the same for the item renamed.
+    pub shape: Fingerprint,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -172,6 +174,7 @@ fn visit<'tree>(
         name: full.clone(),
         line: line(item),
         fingerprint: fingerprint(item, source),
+        shape: shape(item, source),
     };
     let inside = place.inside(kind, name, full);
     let (refs, contracts, imports) = read(kind, item, source);
@@ -318,12 +321,23 @@ fn number_repeats(found: &mut [Item]) {
 }
 
 fn fingerprint(item: Node<'_>, source: &[u8]) -> Fingerprint {
+    tokens(item, source, None)
+}
+
+fn shape(item: Node<'_>, source: &[u8]) -> Fingerprint {
+    let name = item.child_by_field_name("name").map(|name| name.id());
+    tokens(item, source, name)
+}
+
+/// The fingerprint of `item`'s tokens, without those of the node `left_out`.
+fn tokens(item: Node<'_>, source: &[u8], left_out: Option<usize>) -> Fingerprint {
     let mut tokens = Vec::new();
     preorder(item, |node| {
-        let skipped = matches!(
-            node.kind(),
-            "line_comment" | "block_comment" | "attribute_item" | "inner_attribute_item"
-        );
+        let skipped = Some(node.id()) == left_out
+            || matches!(
+                node.kind(),
+                "line_comment" | "block_comment" | "attribute_item" | "inner_attribute_item"
+            );
         if !skipped && node.child_count() == 0 {
             tokens.extend(source.get(node.byte_range()));
         }
@@ -462,6 +476,41 @@ mod tests {
         let found = names(text);
         assert!(found.contains(&"fn a 1".to_owned()), "{found:?}");
         assert!(found.contains(&"fn d 4".to_owned()), "{found:?}");
+    }
+
+    fn shape_of(text: &str, name: &str) -> Fingerprint {
+        symbols_in(text)
+            .into_iter()
+            .find(|symbol| symbol.name == name)
+            .unwrap()
+            .shape
+    }
+
+    #[test]
+    fn a_shape_leaves_out_only_the_items_own_name() {
+        let plain = shape_of("fn a(x: u8) -> u8 { x + 1 }", "a");
+        assert_eq!(shape_of("fn b(x: u8) -> u8 { x + 1 }", "b"), plain);
+        assert_ne!(shape_of("fn b(x: u8) -> u8 { x + 2 }", "b"), plain);
+        assert_ne!(shape_of("fn a(y: u8) -> u8 { y + 1 }", "a"), plain);
+        assert_ne!(
+            fingerprint_of("fn b(x: u8) -> u8 { x + 1 }", "b"),
+            fingerprint_of("fn a(x: u8) -> u8 { x + 1 }", "a")
+        );
+        assert_eq!(shape_of("struct S;", "S"), shape_of("struct T;", "T"));
+        assert_ne!(shape_of("struct S;", "S"), shape_of("enum S {}", "S"));
+        assert_eq!(
+            shape_of("mod m { fn a() {} }", "m::a"),
+            shape_of("mod n { fn b() {} }", "n::b")
+        );
+        let test_shape = |text: &str| symbols(&tree(text), text.as_bytes()).tests[0].symbol.shape;
+        assert_eq!(
+            test_shape("#[test]\nfn t() { 1; }"),
+            test_shape("#[test]\nfn u() { 1; }")
+        );
+        assert_ne!(
+            test_shape("#[test]\nfn t() { 1; }"),
+            test_shape("#[test]\nfn t() { 2; }")
+        );
     }
 
     #[test]

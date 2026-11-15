@@ -318,7 +318,9 @@ impl ServerHandler for Handler {
         let log = self.log.child(&[("run_id", grant.run.as_str().into())]);
         let answered = if let McpCall::Propose(args) = call {
             let _permit = permit;
-            propose::propose(self.proposals.as_ref(), &grant, args, &log).await
+            let repo = self.maps.repo(&grant, &log).await;
+            let proposals = self.proposals.as_ref();
+            propose::propose(proposals, &grant, args, repo.as_ref(), &log).await
         } else {
             Ok(self.maps.answer(&call, &grant, permit, &log).await)
         };

@@ -214,6 +214,7 @@ mod tests {
         let anchors = DocAnchors {
             commit: "89abcdef0123456789abcdef0123456789abcdef".parse().unwrap(),
             pins: vec![PIN.parse().unwrap()],
+            repo: None,
         };
         DocText::new(
             Title::try_from("Plan".to_owned()).unwrap(),
@@ -318,8 +319,12 @@ mod tests {
             base: 1,
             content: DocContent {
                 title: "Plan".to_owned(),
-                body: "Gone.\n".to_owned(),
-                anchors: None,
+                body: "See [go](sym:a::went).\n".to_owned(),
+                anchors: Some(DocAnchors {
+                    commit: "a".repeat(40).parse().unwrap(),
+                    pins: vec!["sym:a::went#0123456789abcdef".parse().unwrap()],
+                    repo: None,
+                }),
             },
         }
     }
@@ -575,7 +580,9 @@ mod tests {
             (failed("proposal.invalid"), failed("proposal.invalid"))
         );
         assert_eq!(edited, Outcome::Completed);
-        assert!(matches!(read, ProposalAnswerKind::Doc { doc } if doc.content.body == "Gone.\n"));
+        assert!(
+            matches!(read, ProposalAnswerKind::Doc { doc } if doc.content.body == "See [go](sym:a::went).\n")
+        );
     }
 
     #[tokio::test]

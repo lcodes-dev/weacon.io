@@ -580,6 +580,11 @@ export type DiffQueryKind = (
 export type DocAnchors = {
   commit: CommitId;
   pins: Array<DocPin>;
+  /**
+   * The workspace's repository whose code the pins are of; absent in pins made before
+   * pins said so, which any repository's move may check.
+   */
+  repo?: RepoId;
 };
 
 /**

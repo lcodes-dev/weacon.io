@@ -5,7 +5,7 @@ mod anchors;
 #[cfg(test)]
 pub(crate) mod fake;
 
-pub(crate) use anchors::moved;
+pub(crate) use anchors::{BaseMove, moved};
 
 use std::collections::HashMap;
 use std::sync::Arc;
