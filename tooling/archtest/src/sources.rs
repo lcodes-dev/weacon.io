@@ -158,6 +158,19 @@ impl Uses {
         self.note_path(prefix, &mut path);
     }
 
+    // A `cfg!`, `#[cfg]` or `#[cfg_attr]` in a macro's tokens, as in `assert!(cfg!(windows))`.
+    fn note_cfg(&mut self, ident: &Ident, next: Cursor<'_>) {
+        let after = next
+            .punct()
+            .filter(|(bang, _)| bang.as_char() == '!')
+            .map_or(next, |(_, rest)| rest);
+        if (ident == "cfg" || ident == "cfg_attr")
+            && let Some((inside, ..)) = after.any_group()
+        {
+            self.os_cfg |= names_os(&inside.token_stream().to_string());
+        }
+    }
+
     // Takes the token at `cursor` into `path`, and returns what now ends it.
     fn note_token(
         &mut self,
@@ -172,6 +185,7 @@ impl Uses {
             return last.colon();
         }
         if let Some((ident, next)) = cursor.ident() {
+            self.note_cfg(&ident, next);
             if INCLUDES.iter().any(|name| ident == name)
                 && let Some((bang, after)) = next.punct()
                 && bang.as_char() == '!'
@@ -325,10 +339,8 @@ impl<'ast> Visit<'ast> for Uses {
     }
 
     fn visit_macro(&mut self, mac: &'ast Macro) {
-        if mac.path.is_ident("cfg") {
-            self.os_cfg |= names_os(&mac.tokens.to_string());
-        }
         let tokens = TokenBuffer::new2(mac.tokens.clone());
+        self.os_cfg |= mac.path.is_ident("cfg") && names_os(&mac.tokens.to_string());
         if mac
             .path
             .segments
@@ -577,9 +589,13 @@ mod tests {
     fn operating_systems_are_selected_only_in_the_platform_module() {
         let attribute = "#[cfg(target_os = \"macos\")]\nfn trash() {}";
         let call = "fn sep() -> char { if cfg!(windows) { '\\\\' } else { '/' } }";
+        let nested = "fn f() { assert!(cfg!(windows)); }";
+        let in_a_macro = "macro_rules! m { () => { #[cfg(unix)] fn f() {} }; }";
+        let attr_in_a_macro = "macro_rules! m { () => { #[cfg_attr(unix, inline)] fn f() {} }; }";
+        let deeper = "fn f() { vec![(1, matches!(2, _ if cfg!(target_os = \"linux\")))]; }";
         let feature = "#[cfg(feature = \"windows\")]\nfn trash() {}";
 
-        for text in [attribute, call] {
+        for text in [attribute, call, nested, in_a_macro, attr_in_a_macro, deeper] {
             assert_eq!(
                 check(&IO, "src/git.rs", text),
                 ["selects an operating system outside the platform module"]
@@ -588,6 +604,13 @@ mod tests {
             assert!(check(&IO, "src/platform/macos.rs", text).is_empty());
         }
         assert!(check(&IO, "src/git.rs", feature).is_empty());
+        for text in [
+            "fn f() { assert!(cfg!(feature = \"windows\")); }",
+            "fn f() { assert!(windows); }",
+            "fn f() { assert!(is(windows)); }",
+        ] {
+            assert!(check(&IO, "src/git.rs", text).is_empty(), "{text}");
+        }
         assert!(check(&IO, "src/git.rs", "#[cfg(test)]\n#[cfg(unix)]\nfn f() {}").is_empty());
     }
 
