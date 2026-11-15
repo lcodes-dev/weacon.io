@@ -5,76 +5,76 @@ use std::path::{Path, PathBuf};
 
 use weacon_agents::outside;
 use weacon_agents::sessions::Disk;
-use weacon_observability::Logger;
-use weacon_protocol::{AgentKind, Envelope, Message, SessionsAnswer, SessionsQuery, code};
+use weacon_observability::{Fault, Logger};
+use weacon_protocol::{AgentKind, SessionsAnswer, SessionsQuery, code};
 
-use crate::session::Reply;
-
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Default)]
 pub(crate) struct Outside {
     homes: Vec<(AgentKind, PathBuf)>,
 }
 
 impl Outside {
     /// The person's own agent folders, less any in or around `state_dir`, where each
-    /// workspace's sign-ins are kept.
-    pub(crate) fn new(mut homes: Vec<(AgentKind, PathBuf)>, state_dir: &Path) -> Self {
-        homes.retain(|(_, dir)| !dir.starts_with(state_dir) && !state_dir.starts_with(dir));
+    /// workspace's sign-ins are kept; compared as resolved where they exist.
+    pub(crate) fn new(mut homes: Vec<(AgentKind, PathBuf)>, state_dir: Option<&Path>) -> Self {
+        if let Some(state_dir) = state_dir.map(resolved) {
+            homes.retain(|(_, dir)| {
+                let dir = resolved(dir);
+                !dir.starts_with(&state_dir) && !state_dir.starts_with(&dir)
+            });
+        }
         Self { homes }
     }
 
-    /// The answer to `query`, under its request; `None` for a query this build doesn't know.
-    pub(crate) async fn answer(&self, query: SessionsQuery) -> Option<SessionsAnswer> {
+    /// The answer to `query`, for the machine's owner, whoever checked that.
+    ///
+    /// # Errors
+    /// `message.unsupported` for a query this build doesn't know.
+    pub(crate) async fn answer(
+        &self,
+        query: SessionsQuery,
+        log: &Logger,
+    ) -> Result<SessionsAnswer, Fault> {
         let homes = self.homes.clone();
         let kind = query.query;
-        let answer = tokio::task::spawn_blocking(move || {
-            let dirs: Vec<_> = homes
-                .iter()
-                .map(|(agent, dir)| (*agent, dir.as_path()))
-                .collect();
-            outside::answer(&Disk, &dirs, &kind)
-        })
-        .await
-        .ok()??;
-        Some(SessionsAnswer {
+        let answer = tokio::task::spawn_blocking(move || outside::answer(&Disk, &homes, &kind))
+            .await
+            .map_err(|error| {
+                Fault::new(
+                    code!("sessions.read_failed"),
+                    "The sessions couldn't be read",
+                )
+                .because(error)
+            })?
+            .ok_or_else(|| {
+                Fault::new(
+                    code!("message.unsupported"),
+                    "This core doesn't know that query",
+                )
+            })?;
+        let request = query.request.as_str().into();
+        log.info("sessions answered", &[("request_id", request)]);
+        Ok(SessionsAnswer {
             request: query.request,
             machine: query.machine,
             answer,
         })
     }
+}
 
-    /// The reply to `query` in envelope `id`. Only the daemon socket's owner, or the machine's
-    /// owner through the uplink, reaches this.
-    pub(crate) async fn reply(&self, id: u32, query: SessionsQuery, log: &Logger) -> Reply {
-        let request = query.request.as_str().into();
-        let Some(answer) = self.answer(query).await else {
-            return Reply::error(id, code!("message.unsupported"), false);
-        };
-        log.info("sessions answered", &[("request_id", request)]);
-        Reply {
-            envelope: Some(Envelope {
-                id,
-                message: Message::SessionsAnswer(answer),
-            }),
-            close: false,
-        }
-    }
+fn resolved(dir: &Path) -> PathBuf {
+    std::fs::canonicalize(dir).unwrap_or_else(|_| dir.to_owned())
 }
 
 #[cfg(test)]
 mod tests {
-    use std::fs;
-
-    use serde_json::json;
     use weacon_protocol::{
         AgentSession, ChatEvent, MachineId, RequestId, SessionsAnswerKind, SessionsQueryKind,
     };
     use weacon_testing::{TempDir, recording_logger};
 
     use super::*;
-    use crate::test_support::error_code;
-
-    const SESSION: &str = "0b7c6a52-3f1e-4d2a-9c8b-5e4f3a2b1c0d";
+    use crate::test_support::{SESSION, claude_home};
 
     fn query(kind: SessionsQueryKind) -> SessionsQuery {
         SessionsQuery {
@@ -93,53 +93,62 @@ mod tests {
         }
     }
 
-    // A person's own Claude Code folder holding one session that ran in `folder`.
-    fn claude_home(dir: &Path, folder: &str, prompt: &str) -> PathBuf {
-        let home = dir.join("claude");
-        let project = home.join("projects").join("-work");
-        fs::create_dir_all(&project).unwrap();
-        let line = json!({ "type": "user", "cwd": folder, "message": { "content": prompt } });
-        fs::write(
-            project.join(format!("{SESSION}.jsonl")),
-            format!("{line}\n"),
-        )
-        .unwrap();
-        home
+    async fn listed(outside: &Outside) -> usize {
+        let (log, _) = recording_logger();
+        let answer = outside.answer(query(SessionsQueryKind::List), &log).await;
+        let SessionsAnswerKind::List { sessions } = answer.unwrap().answer else {
+            panic!("expected a list");
+        };
+        sessions.len()
     }
 
-    fn answer(reply: Reply) -> SessionsAnswer {
-        match reply.envelope.map(|envelope| envelope.message) {
-            Some(Message::SessionsAnswer(answer)) => answer,
-            other => panic!("{other:?}"),
-        }
+    #[tokio::test]
+    async fn folders_in_or_around_the_state_folder_are_never_read() {
+        let dir = TempDir::new().unwrap();
+        let state = dir.join("state");
+        let inside = claude_home(&state.join("w-1"), "/work", "Hi");
+        let own = claude_home(&dir.join("own"), "/work", "Hi");
+        let homes = |dirs: &[&PathBuf]| -> Vec<_> {
+            dirs.iter()
+                .map(|dir| (AgentKind::Claude, PathBuf::clone(dir)))
+                .collect()
+        };
+
+        let kept = Outside::new(homes(&[&own]), Some(&state));
+        let around = Outside::new(homes(&[&dir.to_path_buf(), &inside]), Some(&state));
+        let unplaced = Outside::new(homes(&[&inside]), None);
+
+        assert_eq!(listed(&kept).await, 1);
+        assert_eq!(listed(&around).await, 0);
+        assert_eq!(listed(&unplaced).await, 1);
     }
 
-    #[test]
-    fn folders_in_or_around_the_state_folder_are_never_read() {
-        let state = PathBuf::from("/home/ada/.local/state/weacon");
-        let homes = vec![
-            (AgentKind::Claude, PathBuf::from("/home/ada/.claude")),
-            (AgentKind::Codex, state.join("w-1").join("codex")),
-            (AgentKind::Claude, PathBuf::from("/home/ada")),
-        ];
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_folder_linked_into_the_state_folder_is_never_read() {
+        let dir = TempDir::new().unwrap();
+        let state = dir.join("state");
+        let inside = claude_home(&state.join("w-1"), "/work", "Hi");
+        let linked = dir.join("linked");
+        std::os::unix::fs::symlink(&inside, &linked).unwrap();
 
-        let outside = Outside::new(homes, &state);
+        let outside = Outside::new(vec![(AgentKind::Claude, linked)], Some(&state));
 
-        assert_eq!(
-            outside.homes,
-            [(AgentKind::Claude, PathBuf::from("/home/ada/.claude"))]
-        );
+        assert_eq!(listed(&outside).await, 0);
     }
 
     #[tokio::test]
     async fn the_owner_sees_the_list_and_a_session_and_no_content_reaches_the_log() {
         let dir = TempDir::new().unwrap();
         let home = claude_home(&dir, "/MARKER-FOLDER", "MARKER-PROMPT");
-        let outside = Outside::new(vec![(AgentKind::Claude, home)], &dir.join("state"));
+        let outside = Outside::new(vec![(AgentKind::Claude, home)], Some(&dir.join("state")));
         let (log, records) = recording_logger();
 
-        let listed = answer(outside.reply(7, query(SessionsQueryKind::List), &log).await);
-        let opened = answer(outside.reply(8, query(open()), &log).await);
+        let listed = outside
+            .answer(query(SessionsQueryKind::List), &log)
+            .await
+            .unwrap();
+        let opened = outside.answer(query(open()), &log).await.unwrap();
 
         assert_eq!(
             (listed.request.as_str(), listed.machine.as_str()),
@@ -170,17 +179,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_query_this_build_doesnt_know_is_refused() {
+    async fn a_query_this_build_doesnt_know_is_refused_unlogged() {
         let (log, records) = recording_logger();
 
-        let reply = Outside::default()
-            .reply(3, query(SessionsQueryKind::Newer), &log)
-            .await;
+        let refused = Outside::default()
+            .answer(query(SessionsQueryKind::Newer), &log)
+            .await
+            .unwrap_err();
 
-        let envelope = reply.envelope.unwrap();
-        assert_eq!(envelope.id, 3);
-        assert_eq!(error_code(&envelope.message), Some("message.unsupported"));
-        assert!(!reply.close);
+        assert_eq!(refused.code().as_str(), "message.unsupported");
         assert!(records.lock().unwrap().is_empty());
     }
 }

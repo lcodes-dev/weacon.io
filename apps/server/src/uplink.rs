@@ -138,17 +138,13 @@ async fn run(
                 if let Ok(Frame::Text(text)) = &frame
                     && let Ok(envelope) = Envelope::from_json(text.as_bytes())
                 {
-                    hand_off(shared, &link.machine.id, envelope);
+                    // The relay drops what isn't an answer it waits for; no other feature hears
+                    // machines yet.
+                    let _claimed = shared.relay.answered(&link.machine.id, envelope);
                 }
             }
         }
     }
-}
-
-/// Gives what `machine` sent to the feature it is for.
-fn hand_off(shared: &Shared, machine: &MachineId, envelope: Envelope) {
-    // The relay drops what isn't an answer it waits for; no other feature hears machines yet.
-    let _claimed = shared.relay.answered(machine, envelope);
 }
 
 #[cfg(test)]

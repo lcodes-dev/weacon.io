@@ -156,11 +156,13 @@ function Machine({
         <MachineSettingsView key={socket.workspace} machine={machine} socket={socket} later={later} />
       )}
       {socket !== undefined && readable && (
-        <button type="button" aria-label={`${machine.name} sessions`} aria-expanded={reading} onClick={() => setReading(!reading)}>
-          {reading ? "Hide sessions" : "Sessions"}
-        </button>
+        <>
+          <button type="button" aria-label={`${machine.name} sessions`} aria-expanded={reading} onClick={() => setReading(!reading)}>
+            {reading ? "Hide sessions" : "Sessions"}
+          </button>
+          {reading && <OutsideSessions machine={machine} socket={socket} later={later} />}
+        </>
       )}
-      {socket !== undefined && readable && reading && <OutsideSessions machine={machine} socket={socket} later={later} />}
     </li>
   );
 }

@@ -35,7 +35,7 @@ pub(crate) const ACCEPT_BACKOFF: Duration = Duration::from_millis(100);
 const DISK_CHECK: Duration = Duration::from_mins(1);
 const MEMORY_SAMPLE: Duration = Duration::from_mins(5);
 
-// Removes a socket a daemon that stopped left behind; none there is fine.
+// Removes the socket a daemon that stopped left behind, if there is one.
 fn remove_stale(socket: &Path) -> io::Result<()> {
     match fs::remove_file(socket) {
         Err(error) if error.kind() != io::ErrorKind::NotFound => Err(error),
@@ -58,7 +58,7 @@ pub(crate) fn run(app: &crate::app::App) -> Result<(), Fault> {
             )
             .because(error)
         })?;
-        let daemon = Daemon::start(
+        let mut daemon = Daemon::start(
             state_dir,
             build(&app.version),
             app.spawn.clone(),
@@ -67,10 +67,10 @@ pub(crate) fn run(app: &crate::app::App) -> Result<(), Fault> {
                 work_root: app.work_root.clone(),
                 mcp: None,
                 plugin: crate::integrations::Plugin::new(state_dir, &app.version, &app.log),
-                agent_homes: app.agent_homes.clone(),
             },
             app.log.clone(),
         )?;
+        daemon.shared.outside = app.outside.clone();
         let serve = async {
             tokio::select! {
                 () = daemon.serve(signals.wait()) => {}
@@ -137,7 +137,6 @@ impl Daemon {
         })?;
         let socket = socket_path(state_dir);
         remove_stale(&socket).map_err(failed)?;
-        let outside = Outside::new(places.agent_homes.clone(), state_dir);
         let (mcp, mcp_server) = mcp::start(&app, &log)?;
         places.mcp = Some(mcp);
         let worktrees = worktrees::worktrees(state_dir, &places);
@@ -154,7 +153,7 @@ impl Daemon {
                 picks: Picks::new(state_dir),
                 chats,
                 worktrees,
-                outside,
+                outside: Outside::default(),
                 log,
             },
             disk: disk::Watch::new(state_dir.to_owned(), platform::free_space),
@@ -368,8 +367,6 @@ fn refused(shared: &Shared, id: u32, fault: &Fault) -> Reply {
         .warn("chat request refused", &[("err", Field::error(fault))]);
     Reply::error(id, fault.code().clone(), false)
 }
-
-// Keeps `pick` off the runtime's thread and answers with its receipt.
 
 #[cfg(test)]
 mod tests {
@@ -926,15 +923,9 @@ mod tests {
         use weacon_protocol::{AgentKind, SessionsAnswerKind, SessionsQuery, SessionsQueryKind};
 
         let dir = TempDir::new().unwrap();
-        let project = dir.join("claude").join("projects").join("-work");
-        fs::create_dir_all(&project).unwrap();
-        fs::write(
-            project.join("0b7c6a52-3f1e-4d2a-9c8b-5e4f3a2b1c0d.jsonl"),
-            "",
-        )
-        .unwrap();
+        let home = test_support::claude_home(&dir, "/work", "Hi");
         let state = dir.join("state");
-        let outside = Outside::new(vec![(AgentKind::Claude, dir.join("claude"))], &state);
+        let outside = Outside::new(vec![(AgentKind::Claude, home)], Some(&state));
         let running = start_as(&state, |daemon| daemon.shared.outside = outside).unwrap();
         let query = |id, by: Option<&str>| {
             let by = by.map(|account| account.to_owned().try_into().unwrap());

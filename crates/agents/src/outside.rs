@@ -1,10 +1,10 @@
 //! What a person sees of the sessions they ran outside Weacon: a list, and pages of events.
 
 use std::cmp::Reverse;
-use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use serde::Serialize;
 use weacon_protocol::{
     AgentKind, AgentSession, ChatEntry, ChatEvent, MAX_FRAME, OutsideSession, RunId, RunUpdate,
     SessionsAnswerKind, SessionsQueryKind,
@@ -13,105 +13,108 @@ use weacon_protocol::{
 use crate::sessions::{Files, SessionFile, find};
 use crate::transcript::{Step, Transcript};
 
-/// How much of a file, 64 KiB, is read for the folder it names.
+/// How much of a file is read for the folder it names: 64 KiB.
 const HEAD: u64 = 65_536;
-/// How much of a file, 64 MiB, is read to open it; a longer session shows its start.
+/// How much of a file is read to open it, 64 MiB; a longer session shows its start.
 const WHOLE: u64 = 67_108_864;
 
-/// How many sessions a list holds at most; with their folders, they still fit one frame.
+/// How many sessions a list holds at most.
 const LISTED: usize = 200;
-/// What an answer's envelope adds to its events.
+/// What an answer's envelope adds to what it carries.
 const ENVELOPE: usize = 4096;
 
 /// The answer to `query` about the sessions in each agent's config folder in `dirs`; `None`
 /// for a query this build doesn't know. A file that can't be read counts as missing.
 pub fn answer(
     files: &impl Files,
-    dirs: &[(AgentKind, &Path)],
+    dirs: &[(AgentKind, PathBuf)],
     query: &SessionsQueryKind,
 ) -> Option<SessionsAnswerKind> {
+    let budget = MAX_FRAME - ENVELOPE;
     Some(match query {
         SessionsQueryKind::List => SessionsAnswerKind::List {
-            sessions: list(files, dirs, LISTED),
+            sessions: list(files, dirs, LISTED, budget),
         },
         SessionsQueryKind::Open {
             agent,
             session,
             after,
-        } => {
-            let dir = dirs.iter().find(|(kind, _)| kind == agent);
-            let budget = MAX_FRAME - ENVELOPE;
-            match dir.and_then(|&place| open(files, place, session, *after, budget)) {
-                Some(Ok((events, more))) => SessionsAnswerKind::Opened { events, more },
-                Some(Err(_)) | None => SessionsAnswerKind::Missing,
-            }
-        }
+        } => dirs
+            .iter()
+            .find(|(kind, _)| kind == agent)
+            .and_then(|(agent, dir)| open(files, (*agent, dir), session, *after, budget))
+            .map_or(SessionsAnswerKind::Missing, |(events, more)| {
+                SessionsAnswerKind::Opened { events, more }
+            }),
         SessionsQueryKind::Newer => return None,
     })
 }
 
-/// The sessions in each agent's config folder, newest first, at most `limit`.
-pub fn list(files: &impl Files, dirs: &[(AgentKind, &Path)], limit: usize) -> Vec<OutsideSession> {
+// The sessions in each agent's config folder, newest first: at most `limit`, in `budget` bytes.
+fn list(
+    files: &impl Files,
+    dirs: &[(AgentKind, PathBuf)],
+    limit: usize,
+    budget: usize,
+) -> Vec<OutsideSession> {
     let mut found: Vec<SessionFile> = dirs
         .iter()
         .flat_map(|(agent, dir)| find(files, *agent, dir))
         .collect();
     found.sort_by_key(|file| Reverse(file.modified));
-    found
-        .iter()
-        .take(limit)
-        .map(|file| OutsideSession {
-            agent: file.agent,
-            session: file.session.clone(),
-            folder: folder(files, file),
-            modified_at: seconds(file.modified),
-        })
-        .collect()
+    let listed = found.iter().take(limit).map(|file| OutsideSession {
+        agent: file.agent,
+        session: file.session.clone(),
+        folder: folder(files, file),
+        modified_at: seconds(file.modified),
+    });
+    fit(listed, budget).0
 }
 
-/// The events of `agent`'s `session` in `dir` after `after`, as many as fit `budget` bytes of
-/// JSON, and whether more follow; `None` when there's no such session. An event too large
-/// for `budget` on its own is left out.
-///
-/// # Errors
-/// When the session's file can't be read.
-pub fn open(
+// The events of `agent`'s `session` in `dir` after `after` that fit `budget` bytes of JSON,
+// and whether more follow; `None` when there's no such session or it can't be read.
+fn open(
     files: &impl Files,
     (agent, dir): (AgentKind, &Path),
     session: &AgentSession,
     after: u64,
     budget: usize,
-) -> Option<io::Result<(Vec<ChatEntry>, bool)>> {
+) -> Option<(Vec<ChatEntry>, bool)> {
     let file = find(files, agent, dir)
         .into_iter()
         .find(|file| file.session == *session)?;
     let run = RunId::try_from(session.as_str().to_owned()).ok()?;
-    Some(file.read(files, 0, WHOLE).map(|bytes| {
-        let steps = Transcript::read(agent, &bytes).map(|read| read.steps);
-        page(&run, steps.unwrap_or_default(), after, budget)
-    }))
+    let bytes = file.read(files, 0, WHOLE).ok()?;
+    let steps = Transcript::read(agent, &bytes).map(|read| read.steps);
+    let later = (1..)
+        .zip(steps.unwrap_or_default())
+        .skip_while(|(seq, _)| *seq <= after)
+        .map(|(seq, step)| ChatEntry {
+            seq,
+            event: event(&run, step),
+        });
+    Some(fit(later, budget))
 }
 
-fn page(run: &RunId, steps: Vec<Step>, after: u64, budget: usize) -> (Vec<ChatEntry>, bool) {
-    let mut events = Vec::new();
+// As many of `items` as fit `budget` bytes as a JSON array's elements, and whether more
+// follow; an item too large on its own is left out.
+fn fit<T: Serialize>(items: impl Iterator<Item = T>, budget: usize) -> (Vec<T>, bool) {
+    let mut kept = Vec::new();
     let mut used = 0;
-    let later = (1..).zip(steps).skip_while(|(seq, _)| *seq <= after);
-    for (seq, step) in later {
-        let entry = ChatEntry {
-            seq,
-            event: event(run, step),
-        };
-        let size = serde_json::to_vec(&entry).map_or(usize::MAX, |json| json.len());
+    for item in items {
+        let size = serde_json::to_vec(&item).map_or(usize::MAX, |json| json.len());
         if size > budget {
             continue;
         }
-        if used + size > budget {
-            return (events, true);
+        // Each element after the first takes a comma too.
+        let needs = size + usize::from(!kept.is_empty());
+        if used + needs > budget {
+            return (kept, true);
         }
-        used += size;
-        events.push(entry);
+        used += needs;
+        kept.push(item);
     }
-    (events, false)
+    (kept, false)
 }
 
 fn event(run: &RunId, step: Step) -> ChatEvent {
@@ -163,7 +166,7 @@ mod tests {
         opened.set_modified(modified).unwrap();
     }
 
-    fn claude(dir: &Path, session: &str) -> std::path::PathBuf {
+    fn claude(dir: &Path, session: &str) -> PathBuf {
         dir.join("projects")
             .join("-work")
             .join(format!("{session}.jsonl"))
@@ -191,11 +194,11 @@ mod tests {
         write(&rollout, "", 200);
         write(&claude(&claude_dir, TWO), "", 50);
         let dirs = [
-            (AgentKind::Claude, &*claude_dir),
-            (AgentKind::Codex, &*codex_dir),
+            (AgentKind::Claude, claude_dir),
+            (AgentKind::Codex, codex_dir),
         ];
 
-        let listed = list(&Disk, &dirs, 2);
+        let listed = list(&Disk, &dirs, 2, usize::MAX);
 
         assert_eq!(
             listed,
@@ -228,7 +231,6 @@ mod tests {
             after,
             budget,
         )
-        .unwrap()
         .unwrap()
     }
 
@@ -284,13 +286,13 @@ mod tests {
         };
         let size = serde_json::to_vec(&one).unwrap().len();
 
-        let (first, more) = opened(&dir, 0, 2 * size);
+        let (first, more) = opened(&dir, 0, 2 * size + 1);
         assert_eq!(
             first.iter().map(|entry| entry.seq).collect::<Vec<_>>(),
             [1, 2]
         );
         assert!(more);
-        let (rest, more) = opened(&dir, 3, 2 * size);
+        let (rest, more) = opened(&dir, 3, 2 * size + 1);
         assert_eq!(
             rest.iter().map(|entry| entry.seq).collect::<Vec<_>>(),
             [4, 5]
@@ -327,10 +329,14 @@ mod tests {
         let place = (AgentKind::Claude, &*dir);
 
         assert!(open(&Disk, place, &session(ONE), 0, 100).is_none());
-        open(&Disk, place, &session(TWO), 0, 100)
-            .unwrap()
-            .unwrap_err();
-        assert_eq!(list(&Disk, &[place], 10).first().unwrap().folder, None);
+        assert!(open(&Disk, place, &session(TWO), 0, 100).is_none());
+        let listed = list(
+            &Disk,
+            &[(AgentKind::Claude, dir.to_path_buf())],
+            10,
+            usize::MAX,
+        );
+        assert_eq!(listed.first().unwrap().folder, None);
     }
 
     #[test]
@@ -340,7 +346,7 @@ mod tests {
         let secret = dir.join(".credentials.json");
         write(&secret, "secret", 0);
         fs::hard_link(&secret, claude(&dir, TWO)).unwrap();
-        let dirs = [(AgentKind::Claude, &*dir)];
+        let dirs = [(AgentKind::Claude, dir.to_path_buf())];
         let open = |agent, id| SessionsQueryKind::Open {
             agent,
             session: session(id),
@@ -376,7 +382,7 @@ mod tests {
             after: 0,
         };
 
-        let opened = answer(&Disk, &[(AgentKind::Claude, &*dir)], &query).unwrap();
+        let opened = answer(&Disk, &[(AgentKind::Claude, dir.to_path_buf())], &query).unwrap();
 
         assert!(
             matches!(&opened, SessionsAnswerKind::Opened { events, more: true } if events.len() > 900)
@@ -390,6 +396,63 @@ mod tests {
             }),
         };
         envelope.to_json().unwrap();
+    }
+
+    fn fits_a_frame(answer: SessionsAnswerKind) {
+        let envelope = Envelope {
+            id: u32::MAX,
+            message: Message::SessionsAnswer(SessionsAnswer {
+                request: RequestId::try_from("r".repeat(64)).unwrap(),
+                machine: MachineId::try_from("m".repeat(64)).unwrap(),
+                answer,
+            }),
+        };
+        envelope.to_json().unwrap();
+    }
+
+    #[test]
+    fn a_session_of_many_small_events_opens_a_frame_at_a_time() {
+        let dir = TempDir::new().unwrap();
+        let line = jsonl(&[json!({ "type": "user", "message": { "content": "x" } })]);
+        write(&claude(&dir, ONE), &line.repeat(30_000), 0);
+        let query = SessionsQueryKind::Open {
+            agent: AgentKind::Claude,
+            session: session(ONE),
+            after: 0,
+        };
+
+        let opened = answer(&Disk, &[(AgentKind::Claude, dir.to_path_buf())], &query).unwrap();
+
+        assert!(matches!(
+            &opened,
+            SessionsAnswerKind::Opened { more: true, .. }
+        ));
+        fits_a_frame(opened);
+    }
+
+    #[test]
+    fn a_list_of_sessions_in_long_folders_fits_a_frame() {
+        let dir = TempDir::new().unwrap();
+        let long = format!("/{}", "f".repeat(20_000));
+        for at in 0..LISTED {
+            let id = format!("0b7c6a52-3f1e-4d2a-9c8b-5e4f3a2b{at:04}");
+            let line =
+                jsonl(&[json!({ "type": "user", "cwd": long, "message": { "content": "Hi" } })]);
+            write(&claude(&dir, &id), &line, 10);
+        }
+
+        let listed = answer(
+            &Disk,
+            &[(AgentKind::Claude, dir.to_path_buf())],
+            &SessionsQueryKind::List,
+        )
+        .unwrap();
+
+        let SessionsAnswerKind::List { sessions } = &listed else {
+            panic!("{listed:?}");
+        };
+        assert!((1..LISTED).contains(&sessions.len()), "{}", sessions.len());
+        fits_a_frame(listed);
     }
 
     #[test]

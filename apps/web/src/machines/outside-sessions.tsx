@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import type { Later } from "../connection.ts";
 import type { MachineSummary, OutsideSession } from "../protocol.ts";
@@ -59,7 +59,17 @@ function OutsideSessionView({
   close(): void;
 }) {
   const held = useRef<Read>(undefined);
-  const opened = useLoaded(() => readOn(socket, machine.id, session, held.current, later), `${machine.id} ${session.agent} ${session.session}`);
+  const shownNow = useRef(true);
+  useEffect(() => {
+    shownNow.current = true;
+    return () => {
+      shownNow.current = false;
+    };
+  }, []);
+  const opened = useLoaded(
+    () => readOn(socket, machine.id, session, held.current, later, () => shownNow.current),
+    `${machine.id} ${session.agent} ${session.session}`,
+  );
   held.current = opened.value;
   const chat = opened.value?.chat;
   const shown = useMemo(() => (chat === undefined ? [] : named(lines(chat), vendorName(session.agent))), [chat, session.agent]);

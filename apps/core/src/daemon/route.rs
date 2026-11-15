@@ -11,7 +11,6 @@ use super::worktrees::{self, Late};
 use super::{Shared, command_chat, query_chat};
 use crate::chats::feed::Client;
 use crate::machine_settings::{self, Host, Identity};
-use crate::outside::Outside;
 use crate::picks::KeepError;
 use crate::session::{Reply, Session};
 use crate::uplink::{self, failure, refusal};
@@ -45,7 +44,16 @@ pub(super) async fn route(
         Message::WorktreeCommand(command) => worktrees::command(shared, id, command, late),
         // The socket is its owner's alone, so only a query the server relays names who asked.
         Message::SessionsQuery(query) if query.by.is_none() => {
-            shared.outside.reply(id, query, &shared.log).await
+            match shared.outside.answer(query, &shared.log).await {
+                Ok(answer) => Reply {
+                    envelope: Some(Envelope {
+                        id,
+                        message: Message::SessionsAnswer(answer),
+                    }),
+                    close: false,
+                },
+                Err(fault) => Reply::error(id, fault.code().clone(), false),
+            }
         }
         message => session.answer(Ok(Envelope { id, message }), &shared.app),
     }
@@ -93,7 +101,7 @@ pub(super) async fn server(app: &app::App, state_dir: &Path) -> ! {
         state_dir: state_dir.to_owned(),
         path: app.path.clone(),
         reporter: Arc::clone(&app.reporter),
-        outside: Outside::new(app.agent_homes.clone(), state_dir),
+        outside: app.outside.clone(),
         log: app.log.child(&[("component", "asks".into())]),
     };
     tokio::select! {
@@ -191,12 +199,7 @@ async fn sessions(host: &Host, query: SessionsQuery) -> Result<Message, Fault> {
             "Only this machine's owner can read its sessions",
         ));
     }
-    let answer = host.outside.answer(query).await.ok_or_else(|| {
-        Fault::new(
-            code!("message.unsupported"),
-            "This core doesn't know that query",
-        )
-    })?;
+    let answer = host.outside.answer(query, &host.log).await?;
     Ok(Message::SessionsAnswer(answer))
 }
 
@@ -227,8 +230,9 @@ mod tests {
 
     use super::*;
     use crate::machine::{Key, Paired};
+    use crate::outside::Outside;
     use crate::reports;
-    use crate::test_support;
+    use crate::test_support::{self, SESSION, claude_home};
 
     fn id<T: TryFrom<String>>(id: &str) -> T
     where
@@ -245,8 +249,11 @@ mod tests {
             path: Some(dir.join("bin").into_os_string()),
             reporter: Arc::clone(&app.reporter),
             outside: Outside::new(
-                vec![(AgentKind::Claude, claude_home(dir))],
-                &dir.join("state"),
+                vec![(
+                    AgentKind::Claude,
+                    claude_home(dir, "/MARKER-FOLDER", "MARKER-PROMPT"),
+                )],
+                Some(&dir.join("state")),
             ),
             log,
         };
@@ -375,24 +382,6 @@ mod tests {
             Some("request.unknown")
         );
         assert_eq!(echoed, None);
-    }
-
-    const SESSION: &str = "0b7c6a52-3f1e-4d2a-9c8b-5e4f3a2b1c0d";
-
-    // The person's own Claude Code folder, holding one session run in a marked folder.
-    fn claude_home(dir: &TempDir) -> std::path::PathBuf {
-        let home = dir.join("claude");
-        let project = home.join("projects").join("-work");
-        std::fs::create_dir_all(&project).unwrap();
-        let line = serde_json::json!({
-            "type": "user", "cwd": "/MARKER-FOLDER", "message": { "content": "MARKER-PROMPT" },
-        });
-        std::fs::write(
-            project.join(format!("{SESSION}.jsonl")),
-            format!("{line}\n"),
-        )
-        .unwrap();
-        home
     }
 
     fn sessions(by: Option<&str>, query: SessionsQueryKind) -> Envelope {

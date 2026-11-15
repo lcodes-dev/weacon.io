@@ -6,11 +6,7 @@ import { type MachineSocket, askMachine } from "./ask-machine.ts";
 
 export const MISSING = "session.missing";
 
-/**
- * An outside session as read so far: what it shows, and the core's number for the last event
- * read. The core leaves out an event too large to send, so its numbers can skip where the
- * chat's don't.
- */
+/** An outside session read so far, and the core's number for its last event, which can skip where the chat's don't. */
 export type Read = { chat: Chat; after: number };
 
 /** The sessions the person ran outside Weacon on `machine`, newest first. */
@@ -18,13 +14,17 @@ export function sessions(socket: MachineSocket, machine: MachineId, later: Later
   return ask(socket, machine, { kind: "list" }, later, (answer) => (answer.kind === "list" ? { ok: true, value: answer.sessions } : undefined));
 }
 
-/** `read`, or the start of `session` when nothing is, with every event after it that the core has now. */
+/**
+ * `read`, or the start of `session` when nothing is, with every event after it that the core has
+ * now; it asks for no more pages once `wanted` says no one waits for them.
+ */
 export async function readOn(
   socket: MachineSocket,
   machine: MachineId,
   session: OutsideSession,
   read: Read | undefined,
   later: Later,
+  wanted: () => boolean,
 ): Promise<Answer<Read>> {
   let { chat, after } = read ?? { chat: fromSnapshot({ seq: 0, runs: new Map(), waiting: [], events: [] }), after: 0 };
   for (;;) {
@@ -33,11 +33,12 @@ export async function readOn(
     if (!page.ok) {
       return page;
     }
-    for (const { seq, event } of page.value.events.filter((entry) => entry.seq > after)) {
+    const fresh = page.value.events.filter((entry) => entry.seq > after);
+    for (const { seq, event } of fresh) {
       chat = commit(chat, { seq: chat.seq + 1, event }) ?? chat;
       after = seq;
     }
-    if (!page.value.more || page.value.events.length === 0) {
+    if (!page.value.more || fresh.length === 0 || !wanted()) {
       return { ok: true, value: { chat, after } };
     }
   }

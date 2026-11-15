@@ -318,7 +318,6 @@ function isHunk(hunk: unknown): boolean {
   );
 }
 
-// A list holds sessions with every field the list shows; an opened page holds entries.
 function isSessionsAnswer(answer: unknown): boolean {
   const fields = record(answer);
   if (fields === undefined) {

@@ -39,4 +39,3 @@ export function fake(how: { send?: "throws" | "dropped" } = {}) {
     },
   };
 }
-
