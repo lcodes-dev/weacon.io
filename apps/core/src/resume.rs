@@ -207,7 +207,6 @@ fn chat_command(key: &ChatKey, action: ChatAction) -> Result<Message, Fault> {
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
 
     use std::time::Duration;
 
@@ -446,21 +445,6 @@ mod tests {
             .collect()
     }
 
-    // A fake daemon on its own thread, since `run` makes its own runtime; it gives back all it
-    // was sent once the client hangs up.
-    fn daemon_apart(socket: PathBuf, fake: Fake) -> std::thread::JoinHandle<Vec<Message>> {
-        let (ready, listening) = std::sync::mpsc::channel();
-        let apart = std::thread::spawn(move || {
-            runtime().unwrap().block_on(async {
-                let received = daemon(&socket, fake);
-                ready.send(()).unwrap();
-                all_sent(received).await
-            })
-        });
-        listening.recv().unwrap();
-        apart
-    }
-
     async fn all_sent(mut received: mpsc::UnboundedReceiver<Message>) -> Vec<Message> {
         let mut all = Vec::new();
         while let Some(message) = bounded(received.recv()).await {
@@ -585,33 +569,60 @@ mod tests {
         assert_eq!(warned(), 1);
     }
 
+    // A fake daemon apart, for a test that runs a shell script as the agent.
     #[cfg(unix)]
-    #[test]
-    fn a_chat_whose_agent_started_before_the_hold_is_released_and_left_to_it() {
-        use std::fs;
+    mod apart {
+        use std::path::PathBuf;
 
-        use weacon_testing::platform::write_program;
+        use super::*;
 
-        let dir = TempDir::new().unwrap();
-        let state = dir.join("state");
-        chat_left(&state, RunState::Sleeping, Some(SESSION));
-        let journal = state.join("runs.json");
-        let running = fs::read_to_string(&journal)
-            .unwrap()
-            .replace("\"sleeping\"", "\"running\"");
-        fs::create_dir_all(dir.join("bin")).unwrap();
-        write_program(&dir.join("bin/claude"), "#!/bin/sh\ntouch \"$0.ran\"\n").unwrap();
-        let on_hold = move || fs::write(journal, running).unwrap();
-        let fake = Fake {
-            on_hold: Some(Box::new(on_hold)),
-            ..holding()
-        };
-        let daemon = daemon_apart(socket_path(&state), fake);
+        // A fake daemon on its own thread, since `run` makes its own runtime; it gives back all it
+        // was sent once the client hangs up.
+        fn daemon_apart(socket: PathBuf, fake: Fake) -> std::thread::JoinHandle<Vec<Message>> {
+            let (ready, listening) = std::sync::mpsc::channel();
+            let apart =
+                std::thread::spawn(move || runtime().unwrap().block_on(serve(socket, fake, ready)));
+            listening.recv().unwrap();
+            apart
+        }
 
-        assert_eq!(code_of(resume(&dir)), "resume.agent_running");
-        let sent = daemon.join().unwrap();
-        assert!(matches!(sent.last(), Some(Message::ChatCommand(command))
-            if command.action == ChatAction::Release));
-        assert!(!dir.join("bin/claude.ran").exists());
+        async fn serve(
+            socket: PathBuf,
+            fake: Fake,
+            ready: std::sync::mpsc::Sender<()>,
+        ) -> Vec<Message> {
+            let received = daemon(&socket, fake);
+            ready.send(()).unwrap();
+            all_sent(received).await
+        }
+
+        #[test]
+        fn a_chat_whose_agent_started_before_the_hold_is_released_and_left_to_it() {
+            use std::fs;
+
+            use weacon_testing::platform::write_program;
+
+            let dir = TempDir::new().unwrap();
+            let state = dir.join("state");
+            chat_left(&state, RunState::Sleeping, Some(SESSION));
+            let journal = state.join("runs.json");
+            let running = fs::read_to_string(&journal)
+                .unwrap()
+                .replace("\"sleeping\"", "\"running\"");
+            fs::create_dir_all(dir.join("bin")).unwrap();
+            write_program(&dir.join("bin/claude"), "#!/bin/sh\ntouch \"$0.ran\"\n").unwrap();
+            let on_hold = move || fs::write(journal, running).unwrap();
+            let fake = Fake {
+                on_hold: Some(Box::new(on_hold)),
+                ..holding()
+            };
+            let daemon = daemon_apart(socket_path(&state), fake);
+
+            assert_eq!(code_of(resume(&dir)), "resume.agent_running");
+            let sent = daemon.join().unwrap();
+            assert!(matches!(sent.last(), Some(Message::ChatCommand(command))
+                if command.action == ChatAction::Release));
+            assert!(!dir.join("bin/claude.ran").exists());
+        }
     }
 }
